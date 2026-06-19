@@ -34,8 +34,17 @@ export ILM_BASE_URL='http://proxy-host:11400'   # your ilm proxy
 ./wakil [workspace-path]
 ```
 
+The `workspace-path` positional argument is **optional**. When omitted, wakil
+automatically mounts the current working directory. This means `cd` to your
+project and run `wakil` with no arguments — it just works:
+
+```sh
+cd ~/projects/myapp && wakil      # mounts ~/projects/myapp
+wakil ~/projects/myapp            # same thing, explicit path
+```
+
 By default, tool calls run inside **one persistent Docker container** for the
-process lifetime. The current directory (or the `workspace-path` positional arg)
+process lifetime. The workspace directory (positional arg, or cwd if omitted)
 is bind-mounted into the container at `/mnt/<dirname>` and the host Docker socket
 is passed through so the agent can start containers on the host. Use
 `--exec direct` to run on the host instead. **Every write/execute command
@@ -58,7 +67,7 @@ requires a y/n confirmation** (toggle off with `/auto`).
 | `--exec` | `ILM_EXEC_MODE` | `docker` | `docker` \| `direct` |
 | `--image` | `ILM_CONTAINER_IMAGE` | `wakil-dev` | sandbox container image (build via the included `Dockerfile`) |
 | `--workdir` | `ILM_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
-| `--host-workdir` | `ILM_HOST_WORKDIR` | cwd | host path bind-mounted into the container |
+| `--host-workdir` | `ILM_HOST_WORKDIR` | cwd (auto-detected) | host path bind-mounted into the container; defaults to the current directory when no positional arg is given |
 | `--docker-sock` | `ILM_DOCKER_SOCKET` | `true` | pass host Docker socket into the sandbox |
 | `--resume` | — | — | resume the most recent session |
 | `--resume-id` | — | — | resume a session by chat_id (or unique prefix) |
@@ -94,6 +103,20 @@ requires a y/n confirmation** (toggle off with `/auto`).
 
 Anything else is sent to the agent as a task. Type `@` to attach a file or
 folder for context (a picker appears).
+
+### Keybindings
+
+| Key | Action |
+|---|---|
+| `Enter` | Send input (Shift+Enter for newline) |
+| `↑` / `↓` | Browse command history (previous / next) |
+| `Ctrl+R` | Reverse incremental search through command history |
+| `Ctrl+C` | Cancel in-flight turn (press twice to force-quit) |
+| `Esc` | Cancel in-flight turn |
+| `Ctrl+D` | Quit (when idle) |
+| `y` / `n` | Approve / decline a pending tool call |
+| `a` | Allow all read-only calls for this session |
+| `@` | Attach a file or folder |
 
 Sessions are saved automatically. Resume the most recent with `wakil --resume`,
 or a specific one with `wakil --resume-id <prefix>`.
