@@ -258,6 +258,9 @@ type statusLineInput struct {
 	backendUsed      string
 	backendRequested string
 	backendDefault   string
+	// Reverse-search prompt. When non-empty, buildStatusLine shows ONLY this
+	// (suppressing all other segments) so the search prompt owns the status row.
+	searchPrompt string
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.
@@ -293,6 +296,11 @@ func buildStatusLine(in statusLineInput) string {
 	const sep = " · "
 
 	dot := renderStatusDot(in.state, in.dotPhase)
+
+	// Reverse-search prompt: when active, owns the status row exclusively.
+	if in.searchPrompt != "" {
+		return dot + sep + in.searchPrompt
+	}
 
 	var parts []string
 
@@ -382,7 +390,54 @@ func (m tuiModel) statusLine() string {
 		backendUsed:      backendUsed,
 		backendRequested: backendRequested,
 		backendDefault:   backendDefault,
+		searchPrompt:     m.searchPrompt(),
 	})
+}
+
+// searchPrompt builds the reverse-search prompt string for the status line.
+// Returns "" when search is not active. On match:
+//
+//	(reverse-i-search)`<query>': <truncated match>
+//
+// On no match:
+//
+//	(failed reverse-i-search)`<query>': <last match or empty>
+//
+// The match preview is truncated so the total width fits within the terminal.
+func (m tuiModel) searchPrompt() string {
+	if !m.searchActive {
+		return ""
+	}
+	tag := "reverse-i-search"
+	if m.searchFailed {
+		tag = "failed reverse-i-search"
+	}
+	prefix := "(" + tag + ")`" + m.searchQuery + "': "
+	// Reserve room for the prefix + dot + separator (4 chars: " · ").
+	maxPreview := m.width - len(prefix) - 4
+	if maxPreview < 0 {
+		maxPreview = 0
+	}
+	preview := ""
+	if m.searchIdx >= 0 && m.searchIdx < len(m.inputHistory) {
+		preview = m.inputHistory[m.searchIdx]
+	}
+	preview = truncateForDisplay(preview, maxPreview)
+	return prefix + preview
+}
+
+// truncateForDisplay trims s to maxRunes runes, appending "…" if truncated.
+// Handles multi-byte runes correctly. Returns s unchanged if maxRunes <= 0
+// and s fits.
+func truncateForDisplay(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes-1]) + "…"
 }
 
 // ctxGap is the column gap between the textarea and the hist/ctx block.
