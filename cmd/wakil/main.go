@@ -1,0 +1,225 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"wakil/internal/agent"
+	"wakil/internal/config"
+	"wakil/internal/exec"
+	"wakil/internal/proxy"
+	"wakil/internal/trace"
+	"wakil/internal/tui"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// globalProg is the running tea.Program. Set once in main() before Run().
+// Agent goroutines use it to post tea.Msgs without threading the pointer
+// through every call site. Safe: only written once before any goroutine reads.
+var globalProg *tea.Program
+
+func main() {
+	// "wakil run" subcommand: headless, non-interactive, exits with a code.
+	if len(os.Args) >= 2 && os.Args[1] == "run" {
+		cfg, err := config.LoadConfig(nil) // flags after "run" are for RunHeadless, not LoadConfig
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "config error:", err)
+			os.Exit(ExitError)
+		}
+		os.Exit(RunHeadless(cfg, os.Args[2:]))
+	}
+
+	// --list-sessions short-circuits before config resolution so it works even
+	// without a configured proxy.
+	for _, a := range os.Args[1:] {
+		if a == "--list-sessions" || a == "-list-sessions" {
+			agent.PrintSessions(os.Stdout)
+			return
+		}
+	}
+
+	cfg, err := config.LoadConfig(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		os.Exit(2)
+	}
+	fmt.Fprintf(os.Stderr, "ctx limits: compactAt=%d hardMax=%d keep=%d summary=%d\n",
+		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
+
+	client := &proxy.Client{
+		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
+		Model:      cfg.Model,
+		ChatID:     agent.NewChatID(),
+		AuthHeader: cfg.AuthHeader(),
+		HTTP:       newHTTPClient(),
+	}
+
+	// Resume a saved session: reload its transcript and re-attach its chat_id so
+	// the proxy's server-side memory for that conversation continues.
+	var resumed *agent.Session
+	if cfg.Resume || cfg.ResumeID != "" {
+		s, err := agent.LoadSession(cfg.ResumeID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "resume error:", err)
+			os.Exit(1)
+		}
+		resumed = s
+		client.ChatID = s.ChatID
+	}
+
+	exe, err := newExecutor(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "executor error:", err)
+		os.Exit(1)
+	}
+
+	// Connect MCP servers before starting the TUI so tools are ready immediately.
+	var mcpMgr *agent.MCPManager
+	if len(cfg.MCPServers) > 0 {
+		mcpMgr = agent.NewMCPManager(context.Background(), cfg.MCPServers)
+	}
+
+	tools := agent.BuildTools(cfg, exe.Cwd(), mcpMgr)
+
+	agentPrompt := loadAgentPrompt(cfg)
+
+	// Backend-truth context sizing: ask the backend (through the proxy) for its
+	// real per-slot n_ctx and cache it for the process. On failure this prints a
+	// loud fallback note to stderr.
+	ctxLimit := agent.ResolveContextLimit(context.Background(), client.HTTP, cfg, os.Stderr)
+
+	// Backend list: fetch /v1/ilm/backends; fall back to config external_backends.
+	backendList := agent.FetchBackendListWithFallback(context.Background(), client.HTTP, cfg, os.Stderr)
+
+	// Model list: fetch /v1/ilm/models for /model completion; silently empty on failure.
+	modelList, _ := agent.FetchModelList(context.Background(), client.HTTP, cfg.BaseURL, cfg.AuthHeader())
+
+	counselMode := cfg.AutoCounsel
+	if counselMode == "" {
+		counselMode = "suggest"
+	}
+	counselMax := cfg.CounselMaxPerSession
+	if counselMode == "auto" && counselMax == 0 {
+		counselMax = 3
+	}
+
+	app := &agent.App{
+		Cfg:             cfg,
+		Client:          client,
+		Exec:            exe,
+		MCP:             mcpMgr,
+		Tools:           tools,
+		CtxLimit:        ctxLimit,
+		AgentPrompt:     agentPrompt,
+		BackendList:     backendList,
+		ModelList:       modelList,
+		SelectedBackend: cfg.Backend,
+		CounselMode:     counselMode,
+		MaxCounsel:      counselMax,
+		// Out and Confirm are injected per-turn by runTurn.
+		Out:         os.Stderr,
+		Confirm:     func(_, _, _ string, _ bool) bool { return false },
+		InjectDate:  true,
+		AutoApprove: cfg.AutoApprove,
+		Costs:       proxy.NewCostTracker(),
+	}
+
+	if resumed != nil {
+		app.Conv = resumed.Conv
+		app.Session = resumed
+		app.Workflow = resumed.SavedWorkflow
+	} else {
+		app.Session = &agent.Session{
+			ChatID:    client.ChatID,
+			Model:     client.Model,
+			Created:   time.Now(),
+			Workspace: app.SessionWorkspace(),
+		}
+	}
+
+	// Open the P38 trace store when tracing is enabled (trace_sessions:true or
+	// --trace flag). Non-fatal: a failure prints a warning and continues without
+	// tracing so a misconfigured trace_dir never prevents a session from starting.
+	if cfg.Trace {
+		ts, err := trace.Open(cfg.TraceDir, client.ChatID, client.Model, app.SessionWorkspace())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "trace: failed to open store:", err)
+		} else {
+			app.Trace = ts
+			defer ts.Close()
+		}
+	}
+
+	model := tui.NewTUIModel(app)
+	prog := tea.NewProgram(model,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+	globalProg = prog
+	app.EventSink = func(msg interface{}) { globalProg.Send(msg) }
+
+	if _, err := prog.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "tui error:", err)
+		app.StopAllBackgroundProcs()
+		exe.Close()
+		if mcpMgr != nil {
+			mcpMgr.Close()
+		}
+		os.Exit(1)
+	}
+
+	app.StopAllBackgroundProcs()
+	exe.Close()
+	if mcpMgr != nil {
+		mcpMgr.Close()
+	}
+}
+
+// newHTTPClient returns an HTTP client suitable for SSE streaming. It sets only
+// ResponseHeaderTimeout so stalls before the first response byte are caught, but
+// a live stream can run as long as needed — the per-turn ctx handles cancellation.
+func newHTTPClient() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 30 * time.Second
+	return &http.Client{Transport: tr}
+}
+
+func newExecutor(cfg config.Config) (exec.Executor, error) {
+	switch cfg.ExecMode {
+	case "direct":
+		return exec.NewDirectExecutor(cfg.WorkDir)
+	default:
+		return exec.NewDockerExecutor(cfg.Image, cfg.WorkDir, cfg.HostWorkDir, cfg.DockerSocket)
+	}
+}
+
+// defaultAgentPrompt is the built-in fallback used when agent_prompt_path is
+// missing or unreadable. Intentionally minimal — the real instructions live in
+// the agent.txt file shipped alongside the config.
+const defaultAgentPrompt = "You are Wakil, a terminal coding agent. Complete the stated task with the fewest correct actions, then report what you actually did. You are not done until the result is verified."
+
+// loadAgentPrompt reads the agent operating instructions from cfg.AgentPromptPath.
+// On success it logs the byte count and returns the content. On any failure it
+// logs a warning and returns the built-in fallback so the process always has a
+// usable system prompt.
+func loadAgentPrompt(cfg config.Config) string {
+	path := cfg.AgentPromptPath
+	if path == "" {
+		fmt.Fprintln(os.Stderr, "agent prompt: no path configured, using built-in fallback")
+		return defaultAgentPrompt
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using built-in fallback\n", path, err)
+		return defaultAgentPrompt
+	}
+	prompt := strings.TrimRight(string(b), "\n")
+	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)
+	return prompt
+}
+

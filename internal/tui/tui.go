@@ -1,0 +1,956 @@
+package tui
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	agent "wakil/internal/agent"
+	"wakil/internal/proxy"
+	"wakil/internal/tools"
+
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+)
+
+type agentState int
+
+const (
+	stateIdle agentState = iota
+	stateStreaming
+	stateConfirm
+	stateCompacting
+)
+
+const sidebarWidth = 28
+
+// maxSubTabs bounds how many subagent tabs are retained; once exceeded, the
+// oldest finished tabs (never the running or currently-viewed one) are pruned.
+const maxSubTabs = 12
+
+// itemKind tags each committed conversation entry for visual rendering.
+type itemKind int8
+
+const (
+	iUser itemKind = iota // user turn
+	iAsst                 // assistant response (may include tool result lines)
+	iSys                  // system notes, confirm prompts, approve/decline
+)
+
+// convItem is one committed (non-streaming) conversation entry.
+// text is pre-styled and may contain ANSI escape codes; it is word-wrapped
+// at render time so it reflows correctly on terminal resize.
+type convItem struct {
+	kind itemKind
+	text string
+
+	// Render cache: committed items are immutable, so the (formatted, wrapped)
+	// output is reused across refreshViewport calls and recomputed only when the
+	// width changes. Matters because iAsst markdown rendering isn't cheap.
+	cache  string
+	cacheW int
+}
+
+type tuiModel struct {
+	app    *agent.App
+	cancel     context.CancelFunc
+	cancelling bool // true after first Ctrl+C, until agent.AgentDoneMsg
+
+	vp       viewport.Model
+	ta       textarea.Model
+	state    agentState
+	pendConf *agent.ConfirmReqMsg
+
+	// When the in-flight turn started; used to chime only on turns long enough
+	// to be worth notifying about. Zero between turns.
+	turnStart time.Time
+
+	// tps is the live token/sec decode estimate shown in the status line while
+	// streaming. Set from agent.TokRateMsg, cleared when the turn ends.
+	tps float64
+
+	// Pointer to slice so Bubble Tea's value-copy model contract doesn't
+	// cause diverging copies (same reason convBuf was *strings.Builder).
+	items *[]convItem
+
+	// In-flight SSE content; committed to items on turn end or confirm gate.
+	streaming *strings.Builder
+
+	// reasoning accumulates extended-thinking deltas while the model is thinking.
+	// On the first content delta it is replaced with a single collapsed summary
+	// line and committed as an iSys item. Never written to Conv history.
+	reasoning     *strings.Builder
+	reasoningDone bool // true once reasoning has been collapsed
+
+	// Mouse text selection over the conversation pane (see tui_select.go).
+	sel        selection
+	plainLines []string // ANSI-stripped view content, kept in sync by refreshViewport
+	flash      string   // transient status shown in the input border (e.g. "copied ✓")
+
+	// Prefix cache: the rendered + stripped committed items (everything except the
+	// live streaming tail). Rebuilt only when items change or the viewport resizes,
+	// not on every streaming chunk. prefixDirty marks that a full rebuild is needed.
+	prefixStyled string
+	prefixPlain  []string
+	prefixDirty  bool
+	prefixW      int // width at which prefixStyled was built
+
+	// "@" file-mention autocomplete picker (see complete.go).
+	comp completionState
+
+	// Subagent tabs. subCur=-1 means the main sidebar tab is active.
+	subTabs    []*subTab
+	subCur     int // -1 = main, 0..n-1 = subTabs index
+	subSeq     int // auto-increment for label generation (s1, s2, …)
+	subRunning int // n of the currently running tab (0 = none)
+
+	width, height int
+	ready         bool
+
+	// dotPhase cycles 0-3 while the agent is busy, driving the pulsing dot.
+	// Reset to 0 when idle; the tick self-terminates (no re-arm when idle).
+	dotPhase int
+	// hadTurn is set after the first agent.AgentDoneMsg so the status line can show
+	// "awaiting input" instead of silent idle.
+	hadTurn bool
+
+	// Input history for UP/DOWN navigation (most-recent entry first).
+	inputHistory []string
+	histIdx      int    // -1 = editing current input (not browsing history)
+	histSaved    string // current input saved when the user starts navigating
+}
+
+// subTab holds the state of one dispatched subagent, used to render its
+// tab in the main pane and its info in the sidebar.
+type subTab struct {
+	n            int
+	task         string
+	chatID       string
+	backend      string             // resolved backend (from SubagentStartMsg.Backend)
+	usedBackend  string             // actual backend from last response (SubagentDoneMsg.UsedBackend)
+	buf          *strings.Builder   // tool-call lines + final JSON output
+	grounding    []proxy.GroundingEntry
+	ctxSize      int
+	hardMaxBytes int
+	done         bool
+
+	// Render cache for renderSubTabContent. Invalidated when buf grows or vpW changes.
+	cachedLines []string
+	cacheVpW    int
+	cacheBufLen int
+}
+
+// pruneSubTabs caps the retained subagent tabs at max, dropping the oldest
+// finished tabs first. The running tab (runningN) and the currently-viewed tab
+// (focusN) are always kept, so a long-lived session can't accumulate tabs
+// without bound nor lose the one the user is watching.
+func pruneSubTabs(tabs []*subTab, runningN, focusN, max int) []*subTab {
+	if len(tabs) <= max {
+		return tabs
+	}
+	drop := len(tabs) - max
+	kept := make([]*subTab, 0, len(tabs))
+	for _, t := range tabs {
+		if drop > 0 && t.done && t.n != runningN && t.n != focusN {
+			drop--
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept
+}
+
+// tabIndexByN maps a subtab sequence number to its slice index, or -1 (main
+// tab) when n is 0 or no longer present.
+func tabIndexByN(tabs []*subTab, n int) int {
+	if n == 0 {
+		return -1
+	}
+	for i, t := range tabs {
+		if t.n == n {
+			return i
+		}
+	}
+	return -1
+}
+
+func NewTUIModel(app *agent.App) tuiModel {
+	ta := textarea.New()
+	ta.Placeholder = "type a task… (Enter=send, Shift+Enter=newline, /help)"
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 0
+	ta.SetWidth(80)
+	ta.SetHeight(3)
+	ta.Focus()
+
+	vp := viewport.New(80, 20)
+	// Restrict scroll keys to dedicated non-typing keys only. The default
+	// keymap binds space, f, b, u, d, j, k, h, l and arrows — these all
+	// conflict with normal textarea input when the user types while scrolled.
+	vp.KeyMap = viewport.KeyMap{
+		PageDown: key.NewBinding(key.WithKeys("pgdown")),
+		PageUp:   key.NewBinding(key.WithKeys("pgup")),
+		Up:       key.NewBinding(key.WithKeys("up")),
+		Down:     key.NewBinding(key.WithKeys("down")),
+	}
+	items := make([]convItem, 0, 64)
+	// Show agent prompt source so the user can confirm which file was loaded.
+	if app != nil {
+		items = append(items, convItem{kind: iSys, text: dim2(app.AgentPromptNote())})
+	}
+	// Resumed session: rebuild the conversation view from the loaded transcript.
+	if len(app.Conv) > 0 {
+		items = convItemsFrom(app.Conv)
+		resumeNote := sprint("· resumed session %s — %d messages", agent.ShortID(app.Client.ChatID), len(app.Conv))
+		if app.Workflow != nil {
+			resumeNote += " · workflow restored: " + app.Workflow.PhaseName()
+		}
+		items = append(items, convItem{kind: iSys, text: dim2(resumeNote)})
+	}
+	return tuiModel{
+		app:          app,
+		vp:           vp,
+		ta:           ta,
+		state:        stateIdle,
+		items:        &items,
+		streaming:    &strings.Builder{},
+		reasoning:    &strings.Builder{},
+		subCur:       -1,
+		histIdx:      -1,
+		inputHistory: loadHistory(),
+	}
+}
+
+func (m tuiModel) Init() tea.Cmd {
+	return textarea.Blink
+}
+
+func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.sel = selection{} // re-wrap invalidates selection coordinates
+		m = m.reflow()
+		m.ready = true
+
+	case tea.MouseMsg:
+		var handled bool
+		var mCmd tea.Cmd
+		m, handled, mCmd = m.handleMouse(msg)
+		if mCmd != nil {
+			cmds = append(cmds, mCmd)
+		}
+		if handled {
+			// Consumed by text selection; don't also forward to the viewport
+			// (which would scroll) or the textarea.
+			return m, tea.Batch(cmds...)
+		}
+
+	case tea.KeyMsg:
+		// Any keystroke dismisses an active selection and its highlight.
+		m.flash = ""
+		if m.sel.active {
+			m.sel = selection{}
+			m.refreshViewport()
+		}
+
+		// The "@" picker swallows navigation/accept keys while it's open.
+		prevActive := m.comp.active
+		if newM, ok := m.handleCompletionKey(msg); ok {
+			m = newM
+			// Esc or accept-file closes the picker; reflow so the viewport reclaims
+			// the rows the picker was occupying (same fix as the subagent tab bar).
+			if m.comp.active != prevActive {
+				m = m.reflow()
+			}
+			var taCmd tea.Cmd
+			m.ta, taCmd = m.ta.Update(tea.Msg(nil)) // keep blink; don't feed the key
+			return m, tea.Batch(append(cmds, taCmd)...)
+		}
+
+		// Track before handleKey: Enter with the /command picker open falls
+		// through here (not consumed by handleCompletionKey) and handleKey closes
+		// the picker via m.comp = completionState{} — the reflow guard below
+		// catches that transition.
+		prevKeyComp := m.comp.active
+		var keyCmds []tea.Cmd
+		var consumed bool
+		m, keyCmds, consumed = m.handleKey(msg)
+		cmds = append(cmds, keyCmds...)
+		if consumed {
+			// Key was handled (confirm gate, send, or a control key); don't let it
+			// leak into the textarea — e.g. a sent Enter must not insert a newline.
+			var taCmd tea.Cmd
+			m.ta, taCmd = m.ta.Update(tea.Msg(nil))
+			cmds = append(cmds, taCmd)
+			if m.comp.active != prevKeyComp {
+				m = m.reflow()
+			}
+			// Don't forward UP/DOWN to the viewport when consumed for history
+			// navigation — otherwise the conversation would scroll in sync.
+			k := msg.String()
+			if k != "up" && k != "down" {
+				m.vp, _ = m.vp.Update(msg)
+			}
+			return m, tea.Batch(cmds...)
+		}
+
+		// Normal typing flows to the textarea; recompute the picker against the
+		// new input so it tracks what's being typed after "@" or "/".
+		var taCmd, vpCmd tea.Cmd
+		m.ta, taCmd = m.ta.Update(msg)
+		prevComp := m.comp.active
+		m.comp = computeCompletion(m.ta, compSrcFromApp(m.app))
+		// Picker opened or closed: reflow so the viewport height tracks the change.
+		// Without this the stale viewport overflows View() and Bubble Tea's cursor
+		// tracker drifts (same issue as the subagent tab bar, fixed at line ~402).
+		if m.comp.active != prevComp {
+			m = m.reflow()
+		}
+		m.vp, vpCmd = m.vp.Update(msg)
+		cmds = append(cmds, taCmd, vpCmd)
+		return m, tea.Batch(cmds...)
+
+	case agent.ReasoningChunkMsg:
+		m.reasoning.WriteString(msg.Text)
+		m.refreshViewport()
+
+	case agent.StreamChunkMsg:
+		// First content delta after reasoning: collapse the thinking block to a
+		// single committed iSys line and clear the live reasoning buffer.
+		if m.reasoning.Len() > 0 && !m.reasoningDone {
+			toks := m.reasoning.Len() / 4
+			m.reasoning.Reset()
+			m.reasoningDone = true
+			m.addItem(iSys, dim2(sprint("· thought (~%d tokens)", toks)))
+		}
+		m.streaming.WriteString(msg.Text)
+		m.refreshViewport()
+
+	case agent.TokRateMsg:
+		m.tps = msg.Tps
+
+	case agent.ConfirmReqMsg:
+		m.state = stateConfirm
+		m.pendConf = &msg
+		m.flushStreaming()
+		m.addItem(iSys, fmtConfirmBlock(msg.Headline, msg.Detail, msg.ReadAction))
+
+	case agent.ToolResultMsg:
+		m.addItem(iSys, dim2("· "+msg.Name+"\n"+agent.Indent(agent.Truncate(msg.Result, 800))))
+
+	case agent.AgentDoneMsg:
+		m.flushStreaming()
+		// Edge case: turn ended during/after reasoning but before any content
+		// (e.g. tool call only, cancellation). Show the collapsed thought if any.
+		if m.reasoning.Len() > 0 {
+			toks := m.reasoning.Len() / 4
+			m.addItem(iSys, dim2(sprint("· thought (~%d tokens)", toks)))
+			m.reasoning.Reset()
+		}
+		m.reasoningDone = false
+		if msg.Warn != "" {
+			// Tidy agent.Yellow warning (e.g. backend stream error) in place of a trace.
+			m.addItem(iSys, agent.Yellow(msg.Warn))
+		}
+		if msg.Err != nil && !errors.Is(msg.Err, context.Canceled) {
+			if errors.Is(msg.Err, proxy.ErrBackendStream) {
+				m.addItem(iSys, agent.Yellow("⚠ backend stream error"))
+			} else {
+				m.addItem(iSys, styleErr("error: "+msg.Err.Error()))
+			}
+		}
+		if errors.Is(msg.Err, context.Canceled) {
+			m.addItem(iSys, dim2("[turn cancelled]"))
+		}
+		if msg.LearnNudge != "" {
+			m.addItem(iSys, dim2(msg.LearnNudge))
+		}
+		// Chime on a successful finish, but only for turns long enough to have
+		// drawn the user's attention away (skip quick replies and errors/cancels).
+		if msg.Err == nil && !m.turnStart.IsZero() && time.Since(m.turnStart) > 3*time.Second {
+			cmds = append(cmds, playFinishSound())
+		}
+		m.turnStart = time.Time{}
+		m.tps = 0
+		m.state = stateIdle
+		m.dotPhase = 0 // return dot to static dim; tick self-terminates (no re-arm at idle)
+		m.hadTurn = true
+		m.cancel = nil
+		m.cancelling = false
+
+	case agent.CompactedMsg:
+		m.addItem(iSys, dim2("· compacted earlier turns"))
+
+	case agent.SubagentStartMsg:
+		// Which tab is the user currently viewing? 0 = main. Tracked by n so it
+		// survives the prune/index shuffle below.
+		focusN := 0
+		if m.subCur >= 0 && m.subCur < len(m.subTabs) {
+			focusN = m.subTabs[m.subCur].n
+		}
+		m.subSeq++
+		tab := &subTab{
+			n:       m.subSeq,
+			task:    msg.Task,
+			chatID:  msg.ChatID,
+			backend: msg.Backend,
+			buf:     new(strings.Builder),
+		}
+		m.subTabs = append(m.subTabs, tab)
+		m.subRunning = m.subSeq // track which tab is running by its n
+		// Follow the new subagent only when sitting on the main view; never yank
+		// focus away from a tab the user is already reading.
+		if focusN == 0 {
+			focusN = m.subSeq
+		}
+		m.subTabs = pruneSubTabs(m.subTabs, m.subRunning, focusN, maxSubTabs)
+		m.subCur = tabIndexByN(m.subTabs, focusN)
+		// When the first tab appears the tab bar steals one row from vpH.
+		// Reflow so m.vp.Height is updated; otherwise the stale (too-tall)
+		// viewport overflows View() by one row and Bubble Tea's cursor tracker
+		// drifts, causing the tab bar to render at the wrong screen row.
+		if len(m.subTabs) == 1 {
+			m = m.reflow()
+		}
+
+	case agent.SubagentChunkMsg:
+		// Route to the tab that is currently running, identified by n.
+		for _, t := range m.subTabs {
+			if t.n == m.subRunning {
+				t.buf.WriteString(msg.Text)
+				break
+			}
+		}
+
+	case agent.SubagentDoneMsg:
+		for _, t := range m.subTabs {
+			if t.n == m.subRunning {
+				t.done = true
+				t.grounding = msg.Grounding
+				t.ctxSize = msg.CtxSize
+				t.hardMaxBytes = msg.HardMaxBytes
+				t.usedBackend = msg.UsedBackend
+				break
+			}
+		}
+		m.subRunning = 0
+
+	case agent.LearnTurnMsg:
+		if m.state == stateIdle {
+			const learnText = "learn this for next time"
+			m.addItem(iUser, learnText)
+			m.vp.GotoBottom()
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancel = cancel
+			m.state = stateStreaming
+			m.turnStart = time.Now()
+			m.tps = 0
+			cmds = append(cmds, agent.RunTurn(m.app, ctx, learnText), startDotTick())
+		}
+
+	case dotTickMsg:
+		// Re-arm only while busy; the tick self-terminates when the model is idle.
+		if m.state != stateIdle {
+			m.dotPhase = (m.dotPhase + 1) % len(dotPulseShades)
+			cmds = append(cmds, startDotTick())
+		}
+
+	case agent.SysNoteMsg:
+		m.addItem(iSys, dim2(msg.Text))
+
+	case agent.BackendCtxLimitMsg:
+		// Apply the newly-resolved context limit in the event loop — safe because
+		// /backend is only available in stateIdle (no concurrent RunTurn goroutine).
+		// Reset the pressure warning so it re-evaluates against the new window.
+		m.app.CtxLimit = msg.Limit
+		m.app.CtxPressureWarned = false
+		if msg.Note != "" {
+			m.addItem(iSys, dim2(msg.Note))
+		}
+
+	case copiedMsg:
+		m.flash = sprint("copied %d chars ✓", msg.n)
+
+	case agent.NewConvMsg:
+		// Clear viewport items so the new conversation starts fresh.
+		*m.items = (*m.items)[:0]
+		m.streaming.Reset()
+		m.reasoning.Reset()
+		m.reasoningDone = false
+		if msg.RebuildConv && len(m.app.Conv) > 0 {
+			*m.items = convItemsFrom(m.app.Conv)
+		}
+		m.prefixDirty = true
+		m.refreshViewport()
+		if msg.Note != "" {
+			m.addItem(iSys, dim2(msg.Note))
+		}
+
+	case agent.MCPReconnectedMsg:
+		// Apply the rebuilt tool list from the Update loop — not from the Cmd
+		// goroutine — so there is no race with the agent goroutine reading app.Tools.
+		m.app.Tools = msg.Tools
+		m.addItem(iSys, dim2(sprint("· reconnected %q (%d tools)", msg.Name, len(msg.Tools))))
+
+	case agent.WFFinalReviewMsg:
+		// Closing oracle check, triggered by /plan approve after an every-step
+		// critical pause on the last step.
+		if m.state != stateIdle || m.app.Workflow == nil {
+			break
+		}
+		m.addItem(iSys, dim2("· running final oracle review"))
+		m.vp.GotoBottom()
+		{
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancel = cancel
+			m.state = stateStreaming
+			m.turnStart = time.Now()
+			m.tps = 0
+			cmds = append(cmds, agent.RunFinalReview(m.app, ctx), startDotTick())
+		}
+
+	case agent.WFStartTurnMsg:
+		// Workflow auto-turn: show a system note and kick off the next agent turn.
+		// This message arrives after agent.AgentDoneMsg (same goroutine, same channel),
+		// so state is already idle. Guard against the abort-mid-chain race: if the
+		// user typed /plan abort between agent.AgentDoneMsg being consumed and this message
+		// arriving, Workflow is nil and we must not start a stray turn.
+		if m.state != stateIdle || m.app.Workflow == nil {
+			break
+		}
+		m.addItem(iSys, dim2("· "+msg.Note))
+		m.vp.GotoBottom()
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancel = cancel
+		m.state = stateStreaming
+		m.turnStart = time.Now()
+		m.tps = 0
+		cmds = append(cmds, agent.RunTurn(m.app, ctx, msg.UserText), startDotTick())
+	}
+
+	var taCmd, vpCmd tea.Cmd
+	m.ta, taCmd = m.ta.Update(msg)
+	m.vp, vpCmd = m.vp.Update(msg)
+	cmds = append(cmds, taCmd, vpCmd)
+	return m, tea.Batch(cmds...)
+}
+
+// handleKey processes keys wakil acts on itself. The bool return reports
+// whether the key was consumed; consumed keys must not also be forwarded to
+// the textarea (otherwise a sent Enter would insert a newline after Reset).
+func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
+	if m.state == stateConfirm && m.pendConf != nil {
+		readAction := m.pendConf.ReadAction
+		// answer resolves the gate: post a note, hand the choice to the agent
+		// goroutine (buffered channel, never blocks), and resume streaming.
+		answer := func(c agent.ConfirmChoice, note string) {
+			ch := m.pendConf.RespCh
+			m.pendConf = nil
+			m.state = stateStreaming
+			m.addItem(iSys, note)
+			ch <- c
+		}
+		switch msg.String() {
+		case "y", "Y":
+			answer(agent.ChoiceApprove, styleOK("  [approved]"))
+		case "a", "A":
+			if readAction {
+				answer(agent.ChoiceAllowReads, styleOK("  [reads allowed for this session]"))
+			}
+			// 'a' is meaningless for non-read actions — swallow it (consumed below).
+		case "n", "N", "esc":
+			answer(agent.ChoiceDecline, dim2("  [declined]"))
+		case "ctrl+c":
+			answer(agent.ChoiceDecline, dim2("  [declined + cancelled]"))
+			m.cancelTurn()
+		}
+		// Every key is consumed by the confirm gate.
+		return m, nil, true
+	}
+
+	switch msg.String() {
+	case "ctrl+c":
+		if m.state == stateIdle {
+			return m, []tea.Cmd{tea.Quit}, true
+		}
+		// First Ctrl+C: request cancellation. Second Ctrl+C (cancel already
+		// sent but goroutine hasn't acknowledged yet): force-quit immediately.
+		if m.cancelling {
+			return m, []tea.Cmd{tea.Quit}, true
+		}
+		m.cancelling = true
+		m.cancelTurn()
+		return m, nil, true
+
+	case "esc":
+		// Stop the in-flight turn. When idle there's nothing to stop, so let it
+		// fall through to the textarea. (In the confirm gate above, esc declines.)
+		if m.state != stateIdle {
+			m.cancelTurn()
+			return m, nil, true
+		}
+
+	case "ctrl+d":
+		if m.state == stateIdle {
+			return m, []tea.Cmd{tea.Quit}, true
+		}
+
+	case "up":
+		if m.state == stateIdle && len(m.inputHistory) > 0 {
+			if m.histIdx == -1 {
+				m.histSaved = m.ta.Value()
+			}
+			if m.histIdx < len(m.inputHistory)-1 {
+				m.histIdx++
+				m.ta.SetValue(m.inputHistory[m.histIdx])
+			}
+			return m, nil, true
+		}
+
+	case "down":
+		if m.state == stateIdle && m.histIdx >= 0 {
+			if m.histIdx > 0 {
+				m.histIdx--
+				m.ta.SetValue(m.inputHistory[m.histIdx])
+			} else {
+				m.histIdx = -1
+				m.ta.SetValue(m.histSaved)
+			}
+			return m, nil, true
+		}
+
+	case "enter":
+		// Enter is ours (send); never let it reach the textarea as a newline.
+		// Shift+Enter, handled by the textarea below, inserts newlines instead.
+		if m.state != stateIdle {
+			return m, nil, true
+		}
+		input := strings.TrimSpace(m.ta.Value())
+		if input == "" {
+			return m, nil, true
+		}
+		// Add to history (skip duplicate of most-recent entry).
+		if len(m.inputHistory) == 0 || m.inputHistory[0] != input {
+			m.inputHistory = append([]string{input}, m.inputHistory...)
+			appendHistory(input) // persist to shared file
+		}
+		m.histIdx = -1
+		m.histSaved = ""
+		m.ta.Reset()
+		m.comp = completionState{} // input cleared; close the picker
+
+		if handled, quit, cmd := agent.HandleTUICommand(input, m.app); handled {
+			if quit {
+				return m, []tea.Cmd{tea.Quit}, true
+			}
+			if cmd != nil {
+				return m, []tea.Cmd{cmd}, true
+			}
+			return m, nil, true
+		}
+
+		// Resolve "@" mentions: the user sees their typed text plus chips; the
+		// proxy receives the text with file/folder content injected.
+		outgoing, refs := tools.ResolveMentions(input, m.app.Cfg.MentionBase)
+		m.addItem(iUser, input)
+		if len(refs) > 0 {
+			m.addItem(iSys, tools.ChipsLine(refs))
+		}
+		m.vp.GotoBottom() // re-pin: a sent turn always scrolls into view
+
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancel = cancel
+		m.state = stateStreaming
+		m.turnStart = time.Now()
+		m.tps = 0
+		return m, []tea.Cmd{agent.RunTurn(m.app, ctx, outgoing), startDotTick()}, true
+	}
+	return m, nil, false
+}
+
+func (m *tuiModel) cancelTurn() {
+	if m.cancel != nil {
+		m.cancel()
+		// Do NOT nil m.cancel here — keep it so agent.AgentDoneMsg can clean up
+		// and so we can detect a cancel is in-flight (m.cancelling).
+	}
+}
+
+func (m *tuiModel) addItem(k itemKind, text string) {
+	*m.items = append(*m.items, convItem{kind: k, text: text})
+	m.prefixDirty = true
+	m.refreshViewport()
+}
+
+func (m *tuiModel) flushStreaming() {
+	if m.streaming.Len() == 0 {
+		return
+	}
+	text := m.streaming.String()
+	m.streaming.Reset()
+	m.addItem(iAsst, text)
+}
+
+// refreshViewport re-renders the viewport. It separates committed items from the
+// live streaming tail so that per-chunk updates only re-render the tail —
+// O(chunk) rather than O(full transcript). The committed prefix is rebuilt only
+// when items change (addItem, reflow, agent.NewConvMsg) or the viewport width changes.
+func (m *tuiModel) refreshViewport() {
+	w := m.vp.Width
+	if w <= 0 {
+		return
+	}
+
+	// Only auto-follow new content if the reader is already pinned to the bottom.
+	stick := m.vp.AtBottom()
+
+	// --- committed prefix ---
+	if m.prefixDirty || m.prefixW != w {
+		var sb strings.Builder
+		for i := range *m.items {
+			item := &(*m.items)[i]
+			if i > 0 && item.kind == iUser {
+				sb.WriteString(dim2(strings.Repeat("─", w)) + "\n")
+			}
+			if item.cache == "" || item.cacheW != w {
+				item.cache = renderItem(*item, w)
+				item.cacheW = w
+			}
+			sb.WriteString(item.cache)
+			sb.WriteByte('\n')
+		}
+		m.prefixStyled = sb.String()
+		m.prefixPlain = strings.Split(ansi.Strip(m.prefixStyled), "\n")
+		m.prefixDirty = false
+		m.prefixW = w
+	}
+
+	// --- streaming tail ---
+	// During extended thinking: render live reasoning (dim/italic) above any
+	// in-flight content. Once reasoningDone is set the reasoning has already been
+	// committed as an iSys item; only content remains in m.streaming.
+	var tailStyled string
+	var tailPlain []string
+	liveReasoning := m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone
+	if liveReasoning || m.streaming.Len() > 0 {
+		var sb strings.Builder
+		if liveReasoning {
+			sb.WriteString(renderReasoning(m.reasoning.String(), w))
+		}
+		if m.streaming.Len() > 0 {
+			sb.WriteString(renderStreaming(m.streaming.String(), w))
+		}
+		tailStyled = sb.String()
+		tailPlain = strings.Split(ansi.Strip(tailStyled), "\n")
+	}
+
+	// Merge plain lines for selection hit-testing. Avoid a trailing empty line
+	// from the prefix when there is also a tail (the prefix always ends in "\n").
+	if len(tailPlain) > 0 {
+		prefix := m.prefixPlain
+		if len(prefix) > 0 && prefix[len(prefix)-1] == "" {
+			prefix = prefix[:len(prefix)-1]
+		}
+		m.plainLines = append(prefix, tailPlain...)
+	} else {
+		m.plainLines = m.prefixPlain
+	}
+
+	styled := m.prefixStyled + tailStyled
+	if m.sel.active {
+		m.vp.SetContent(m.highlightedContent())
+	} else {
+		m.vp.SetContent(styled)
+	}
+	if stick {
+		m.vp.GotoBottom()
+	}
+}
+
+// renderItem renders one committed item, word-wrapped to width.
+func renderItem(item convItem, w int) string {
+	switch item.kind {
+	case iUser:
+		// Bold amber marker on the first line; continuation lines indented.
+		lines := strings.Split(wrapAnsi(item.text, w-2), "\n")
+		marker := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render("▶")
+		first := " " + marker + " " + lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(lines[0])
+		if len(lines) == 1 {
+			return first
+		}
+		rest := make([]string, len(lines)-1)
+		for i, l := range lines[1:] {
+			rest[i] = "   " + lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(l)
+		}
+		return first + "\n" + strings.Join(rest, "\n")
+
+	case iAsst:
+		// Assistant responses are markdown — format them (headings, bold, lists,
+		// code blocks). glamour handles wrapping to w itself.
+		return renderMarkdown(item.text, w)
+
+	default: // iSys
+		return wrapAnsi(item.text, w)
+	}
+}
+
+// renderStreaming renders live in-flight SSE content.
+func renderStreaming(text string, w int) string {
+	wrapped := wrapAnsi(text, w)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(wrapped)
+}
+
+// renderReasoning renders live extended-thinking text: dim + italic so it is
+// visually distinct from the final answer and clearly marked as transient.
+func renderReasoning(text string, w int) string {
+	wrapped := wrapAnsi(text, w)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true).Render(wrapped)
+}
+
+func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
+	// Input box = border (2) + textarea, plus one row for the status line only
+	// when there is one to show (must mirror View()).
+	inputOuterH = m.ta.Height() + 2
+	if m.statusLine() != "" {
+		inputOuterH++
+	}
+	tabH := 0
+	if len(m.subTabs) > 0 {
+		tabH = 1
+	}
+	topOuterH := m.height - inputOuterH - m.completionHeight() - tabH
+	if topOuterH < 6 {
+		topOuterH = 6
+	}
+	vpH = topOuterH - 2
+	if vpH < 4 {
+		vpH = 4
+	}
+	vpW = m.width - sidebarWidth - 2
+	if vpW < 20 {
+		vpW = m.width - 2
+	}
+	return
+}
+
+func (m tuiModel) reflow() tuiModel {
+	vpW, vpH, _ := m.sizes()
+	m.vp.Width = vpW
+	m.vp.Height = vpH
+	// Narrow the textarea to leave room for the hist/ctx block (same helper as
+	// View, so the widths always agree); full width when the block is hidden.
+	_, taW, _ := m.inputContextBlock()
+	m.ta.SetWidth(taW)
+	m.prefixDirty = true // width changed — committed items must be re-wrapped
+	m.refreshViewport()
+	return m
+}
+
+// startDotTick arms a single 200 ms tick for the pulsing activity dot.
+// The tick self-terminates: the dotTickMsg handler only re-arms when busy.
+func startDotTick() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return dotTickMsg{} })
+}
+
+// wrapAnsi word-wraps s to at most width visible columns per line,
+// preserving existing newlines and ANSI escape sequences.
+func wrapAnsi(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		out = append(out, wrapAnsiLine(line, width))
+	}
+	return strings.Join(out, "\n")
+}
+
+func wrapAnsiLine(s string, width int) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	// Extract leading ANSI codes so they can be re-applied on continuation lines,
+	// fixing the bug where dim/color styling is lost after a mid-line wrap.
+	prefix := leadingAnsiCodes(s)
+	var lines []string
+	for lipgloss.Width(s) > width {
+		cut := wrapPoint(s, width)
+		seg := s[:cut]
+		if prefix != "" {
+			seg += "\x1b[0m" // self-contained: close any open codes at segment end
+		}
+		lines = append(lines, seg)
+		continuation := strings.TrimLeft(s[cut:], " ")
+		if prefix != "" && continuation != "" {
+			continuation = prefix + continuation // re-open codes on continuation
+		}
+		s = continuation
+	}
+	if s != "" {
+		lines = append(lines, s)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// leadingAnsiCodes returns the leading ANSI SGR escape sequences of s (e.g.
+// "\x1b[2m" for dim). A reset sequence (\x1b[0m) terminates the prefix with
+// no codes to carry. Returns "" if s starts with non-ANSI text.
+func leadingAnsiCodes(s string) string {
+	i := 0
+	for i+2 < len(s) {
+		if s[i] != '\x1b' || s[i+1] != '[' {
+			break
+		}
+		j := strings.IndexByte(s[i+2:], 'm')
+		if j < 0 {
+			break
+		}
+		code := s[i+2 : i+2+j]
+		i += 3 + j
+		if code == "0" || code == "" {
+			return "" // reset: nothing to propagate
+		}
+	}
+	return s[:i]
+}
+
+// wrapPoint returns the byte index at which to break s at visual column width,
+// preferring a space boundary. Skips ANSI escape sequences when counting.
+func wrapPoint(s string, width int) int {
+	visual := 0
+	inEsc := false
+	lastSpace := -1
+	for i, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == ' ' {
+			lastSpace = i
+		}
+		visual++
+		if visual >= width {
+			if lastSpace > 0 {
+				return lastSpace + 1
+			}
+			return i + len(string(r))
+		}
+	}
+	return len(s)
+}

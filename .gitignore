@@ -1,0 +1,36 @@
+# compiled binaries
+/wakil
+/wakil-old
+/wakil-*
+
+# python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# local config that may hold secrets
+config.json
+.config/
+
+# editor/OS noise
+*.swp
+*.swo
+*~
+.DS_Store
+wakil_race
+
+# IDE / tooling
+.idea/
+.vscode/
+.claude/worktrees/
+
+# /plan workflow runtime artifacts
+.wakil/
+
+# experiment / run directories
+runs/
+
+# trace output
+*.trace
+*.jsonl.trace

@@ -1,0 +1,308 @@
+package exec
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+// Executor abstracts where tool_calls actually run. Commands always execute
+// from the workspace root; in-command directory changes (cd sub && …) affect
+// only that command. Closing tears the backend down.
+type Executor interface {
+	RunShell(ctx context.Context, command string) (string, error)
+	ReadFile(path string) (string, error)
+	ListDir(path string) (string, error)
+	WriteFile(path, content string) (string, error)
+	Cwd() string
+	Describe() string
+	Close() error
+
+	// A2: one-line sandbox tool inventory, lazy-probed and cached per instance.
+	// Returns empty string on probe failure; never panics.
+	SandboxTools() string
+	// WorkspaceRoot returns the immutable workspace root used for path confinement.
+	WorkspaceRoot() string
+	// ConfinePath resolves path (relative paths resolved against WorkspaceRoot) and
+	// verifies it lies within WorkspaceRoot after symlink resolution. Returns the
+	// canonical absolute path or an error describing the violation.
+	ConfinePath(ctx context.Context, path string) (string, error)
+
+	// B1: delete a file or empty directory; returns a descriptive error for
+	// non-empty directories so the model knows to use run_shell rm -r.
+	DeletePath(ctx context.Context, path string) error
+	// B2: rename/move src to dst; fails if dst already exists.
+	MovePath(ctx context.Context, src, dst string) error
+
+	// B3: start command detached in the background; returns pid and pgid.
+	// logPath is where stdout/stderr are redirected.
+	StartBackground(ctx context.Context, command, logPath string) (pid, pgid int, err error)
+	// KillPgid sends signal sig (15=SIGTERM, 9=SIGKILL) to the entire process group.
+	KillPgid(ctx context.Context, pgid, sig int) error
+	// IsProcessAlive returns true if pid is still running (kill -0 check).
+	IsProcessAlive(ctx context.Context, pid int) bool
+	// ReadFileTail returns the last maxBytes of path; enforces the cap internally.
+	ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error)
+	// Generation returns a counter that increments when the executor backend is
+	// restarted (e.g. container recreated). Background process entries from an
+	// older generation are stale.
+	Generation() int
+}
+
+// runFromRoot starts a shell command from root (the workspace root).
+// In-command directory changes work normally but are not tracked between calls.
+// A trailing newline after the command body prevents a trailing # comment from
+// swallowing the closing brace.
+func runFromRoot(root, command string) string {
+	return fmt.Sprintf("cd %s 2>/dev/null && { %s\n}", shQuote(root), command)
+}
+
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// ---------------- Docker executor (default) ----------------
+
+// DockerExecutor runs everything inside one persistent container that lives for
+// the process lifetime. If hostMount is set, that host path is bind-mounted to
+// workdir so files written inside the container appear on the host filesystem.
+type DockerExecutor struct {
+	container     string
+	image         string
+	workspaceRoot string // project root; immutable; all commands and file ops start here
+	hostMount     string // host path mounted at workspaceRoot, empty = no mount
+	dockerSock    bool   // host docker socket bind-mounted in
+	sandboxTools  string // cached probe result (empty = not yet probed or probe failed)
+	toolsProbed   bool   // true once SandboxTools() has run the probe
+	generation    int    // increments on container restart; 1 for initial container
+}
+
+// dockerSocketPath is the host docker socket bind-mounted into the sandbox when
+// docker_socket is enabled, so the in-container docker CLI drives the host daemon.
+const dockerSocketPath = "/var/run/docker.sock"
+
+func NewDockerExecutor(image, workdir, hostMount string, dockerSock bool) (*DockerExecutor, error) {
+	if workdir == "" {
+		workdir = "/work"
+	}
+	name := "wakil-session-" + fmt.Sprint(os.Getpid())
+	// Best-effort remove a stale container from a previous crashed run.
+	_ = exec.Command("docker", "rm", "-f", name).Run()
+
+	args := []string{"run", "-d", "--name", name, "-w", workdir}
+	if hostMount != "" {
+		if err := os.MkdirAll(hostMount, 0o755); err != nil {
+			return nil, fmt.Errorf("creating host workdir %s: %w", hostMount, err)
+		}
+		args = append(args, "-v", hostMount+":"+workdir)
+	}
+	if dockerSock {
+		args = append(args, "-v", dockerSocketPath+":"+dockerSocketPath)
+	}
+
+	// Run as the current host user so files written to the mounted workspace
+	// are owned correctly. A persistent directory on the host serves as HOME
+	// so Go/Cargo module caches survive across sessions.
+	if uid := os.Getuid(); uid > 0 {
+		if hostHome, err := os.UserHomeDir(); err == nil {
+			sandboxHome := filepath.Join(hostHome, ".wakil", "sandbox-home")
+			if os.MkdirAll(sandboxHome, 0o700) == nil {
+				// PATH must be set explicitly: we prepend user bin dirs to the
+				// system PATH baked into the image by the Dockerfile.
+				const systemPath = "/usr/local/go/bin:/usr/local/go-workspace/bin" +
+					":/usr/local/cargo/bin" +
+					":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+				args = append(args,
+					"--user", fmt.Sprintf("%d:%d", uid, os.Getgid()),
+					"-v", sandboxHome+":/home/user",
+					"-e", "HOME=/home/user",
+					"-e", "GOPATH=/home/user/go",
+					"-e", "CARGO_HOME=/home/user/.cargo",
+					"-e", "PATH=/home/user/go/bin:/home/user/.cargo/bin:"+systemPath,
+				)
+			}
+		}
+	}
+
+	args = append(args, image, "sleep", "infinity")
+
+	out, err := exec.Command("docker", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("docker run failed: %s", strings.TrimSpace(string(out)))
+	}
+	d := &DockerExecutor{container: name, image: image, workspaceRoot: workdir, hostMount: hostMount, dockerSock: dockerSock, generation: 1}
+	if hostMount == "" {
+		_, _ = d.exec(false, "sh", "-c", "mkdir -p "+shQuote(workdir))
+	}
+	if dockerSock {
+		ensureDockerCLI(name)
+	}
+	return d, nil
+}
+
+// ensureDockerCLI copies the host docker binary into the container if the
+// container doesn't already have one. Copying from the host is instant, needs
+// no network, and is version-matched to the running daemon.
+func ensureDockerCLI(container string) {
+	hostBin, err := exec.LookPath("docker")
+	if err != nil {
+		return
+	}
+	out, _ := exec.Command("docker", "exec", container, "sh", "-c",
+		"command -v docker >/dev/null 2>&1 && echo yes").Output()
+	if strings.TrimSpace(string(out)) == "yes" {
+		return
+	}
+	_ = exec.Command("docker", "cp", hostBin, container+":/usr/local/bin/docker").Run()
+}
+
+func (d *DockerExecutor) exec(interactive bool, args ...string) (string, error) {
+	full := append([]string{"exec"}, append(map[bool][]string{true: {"-i"}, false: nil}[interactive], append([]string{d.container}, args...)...)...)
+	cmd := exec.Command("docker", full...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func (d *DockerExecutor) RunShell(ctx context.Context, command string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "exec", d.container, "sh", "-c", runFromRoot(d.workspaceRoot, command))
+	out, err := cmd.CombinedOutput()
+	return strings.TrimRight(string(out), "\r\n"), err
+}
+
+func (d *DockerExecutor) ReadFile(path string) (string, error) {
+	// cd into workspaceRoot first so relative paths resolve from the project root.
+	out, err := d.exec(false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && cat -- "$1"`, "sh", path)
+	if err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	return out, nil
+}
+
+func (d *DockerExecutor) ListDir(path string) (string, error) {
+	if path == "" {
+		path = "."
+	}
+	// ls -Ap: all entries except . and .., with a trailing / on directories.
+	out, err := d.exec(false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && ls -Ap -- "$1"`, "sh", path)
+	if err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	return out, nil
+}
+
+func (d *DockerExecutor) WriteFile(path, content string) (string, error) {
+	cmd := exec.Command("docker", "exec", "-i", d.container, "sh", "-c",
+		"cd "+shQuote(d.workspaceRoot)+` && mkdir -p "$(dirname -- "$1")" && cat > "$1"`, "sh", path)
+	cmd.Stdin = strings.NewReader(content)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+}
+
+func (d *DockerExecutor) Cwd() string           { return d.workspaceRoot }
+func (d *DockerExecutor) WorkspaceRoot() string  { return d.workspaceRoot }
+func (d *DockerExecutor) Generation() int        { return d.generation }
+func (d *DockerExecutor) Describe() string {
+	sock := ""
+	if d.dockerSock {
+		sock = " +docker"
+	}
+	if d.hostMount != "" {
+		return fmt.Sprintf("docker[%s → %s]%s", d.image, d.hostMount, sock)
+	}
+	return fmt.Sprintf("docker[%s]%s", d.image, sock)
+}
+func (d *DockerExecutor) Close() error {
+	return exec.Command("docker", "rm", "-f", d.container).Run()
+}
+
+// ---------------- Direct executor (opt-in) ----------------
+
+// DirectExecutor runs commands directly on the host. Still fully gated.
+type DirectExecutor struct {
+	root        string // project root; immutable; all commands and file ops start here
+	sandboxTools string
+	toolsProbed  bool
+	generation   int
+}
+
+func NewDirectExecutor(workdir string) (*DirectExecutor, error) {
+	if workdir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		workdir = wd
+	}
+	abs, err := filepath.Abs(workdir)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return nil, err
+	}
+	return &DirectExecutor{root: abs, generation: 1}, nil
+}
+
+func (e *DirectExecutor) RunShell(ctx context.Context, command string) (string, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", runFromRoot(e.root, command))
+	out, err := cmd.CombinedOutput()
+	return strings.TrimRight(string(out), "\r\n"), err
+}
+
+func (e *DirectExecutor) resolve(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(e.root, path)
+}
+
+func (e *DirectExecutor) ReadFile(path string) (string, error) {
+	b, err := os.ReadFile(e.resolve(path))
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func (e *DirectExecutor) ListDir(path string) (string, error) {
+	if path == "" {
+		path = "."
+	}
+	entries, err := os.ReadDir(e.resolve(path))
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, en := range entries {
+		name := en.Name()
+		if en.IsDir() {
+			name += "/"
+		}
+		b.WriteString(name)
+		b.WriteByte('\n')
+	}
+	return b.String(), nil
+}
+
+func (e *DirectExecutor) WriteFile(path, content string) (string, error) {
+	full := e.resolve(path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+}
+
+func (e *DirectExecutor) Cwd() string           { return e.root }
+func (e *DirectExecutor) WorkspaceRoot() string  { return e.root }
+func (e *DirectExecutor) Generation() int        { return e.generation }
+func (e *DirectExecutor) Describe() string       { return "direct[" + e.root + "]" }
+func (e *DirectExecutor) Close() error           { return nil }
