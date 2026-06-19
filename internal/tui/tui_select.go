@@ -159,7 +159,7 @@ func (m *tuiModel) renderSelection() {
 }
 
 // mouseToContent maps a screen cell to content coordinates, reporting whether it
-// landed inside the conversation pane's inner area.
+// landed inside the conversation pane's inner area and on a content line.
 func (m tuiModel) mouseToContent(x, y int) (row, col int, in bool) {
 	vpW, vpH, _ := m.sizes()
 	// The tab bar is at the bottom, so the conv pane occupies rows 1..vpH
@@ -168,7 +168,12 @@ func (m tuiModel) mouseToContent(x, y int) (row, col int, in bool) {
 	if x < 1 || x > vpW || y < 1 || y > vpH {
 		return 0, 0, false
 	}
-	return (y - 1) + m.vp.YOffset, x - 1, true
+	row = (y - 1) - m.bottomPad(vpH) + m.vp.YOffset
+	// Clicks in the blank padding above short content are not on any line.
+	if row < 0 || row >= m.vp.TotalLineCount() {
+		return 0, 0, false
+	}
+	return row, x - 1, true
 }
 
 // clampToContent is mouseToContent without the bounds check: the cell is clamped
@@ -185,7 +190,18 @@ func (m tuiModel) clampToContent(x, y int) (row, col int) {
 	} else if y > vpH {
 		y = vpH
 	}
-	return (y - 1) + m.vp.YOffset, x - 1
+	row = (y - 1) - m.bottomPad(vpH) + m.vp.YOffset
+	// Clamp to the valid content range [0, TotalLineCount-1].
+	total := m.vp.TotalLineCount()
+	if row < 0 {
+		row = 0
+	} else if row >= total {
+		row = total - 1
+	}
+	if row < 0 {
+		row = 0 // TotalLineCount()==0 guard
+	}
+	return row, x - 1
 }
 
 // sliceRange returns the inclusive rune range [a,z] of the selection on content
@@ -295,4 +311,17 @@ func copyToClipboard(text string) tea.Cmd {
 		os.Stdout.WriteString(ansi.SetSystemClipboard(text))
 		return copiedMsg{n: len([]rune(text))}
 	}
+}
+
+// bottomPad returns the number of blank rows prepended at the top of the
+// conversation pane when content is shorter than the viewport. This happens
+// because bottomAlignViewport moves the viewport's top-aligned padding to the
+// top so that short content sits flush against the input box. Mouse
+// coordinate mapping must skip these blank rows to hit the right content line.
+func (m tuiModel) bottomPad(vpH int) int {
+	n := m.vp.TotalLineCount()
+	if n >= vpH {
+		return 0
+	}
+	return vpH - n
 }

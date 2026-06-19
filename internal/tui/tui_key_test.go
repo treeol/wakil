@@ -90,6 +90,11 @@ func TestHandleKeyCtrlCIdleQuits(t *testing.T) {
 
 func TestMouseToContentBounds(t *testing.T) {
 	m := keyModel(t)
+	// Set enough content to fill the viewport so bottomPad is 0
+	// (no blank padding above the content).
+	vpH := 0
+	_, vpH, _ = m.sizes()
+	m.vp.SetContent(strings.Repeat("line\n", vpH))
 
 	// A click inside the pane maps to content coords with the y-offset applied.
 	// (YOffset is whatever the viewport clamps to given current content.)

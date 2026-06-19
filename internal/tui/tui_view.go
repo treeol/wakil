@@ -161,7 +161,7 @@ func (m tuiModel) View() string {
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
 		convContent = m.renderSubTabContent(m.subTabs[m.subCur], vpW, vpH)
 	} else {
-		convContent = m.vp.View()
+		convContent = bottomAlignViewport(m.vp.View(), vpH)
 	}
 	conv := styleConvBorder.
 		Width(vpW).
@@ -238,6 +238,30 @@ func (m tuiModel) renderSubTabContent(tab *subTab, vpW, vpH int) string {
 		lines = lines[len(lines)-vpH:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// bottomAlignViewport takes the viewport's top-aligned View() output (which
+// pads short content with blank lines at the bottom) and moves that padding to
+// the top, so the last content line sits flush against the input box below.
+// When content fills or exceeds vpH, the output is unchanged.
+func bottomAlignViewport(view string, vpH int) string {
+	lines := strings.Split(view, "\n")
+	// Count trailing blank lines.
+	trailing := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			trailing++
+		} else {
+			break
+		}
+	}
+	if trailing <= 0 {
+		return view // content fills the viewport — nothing to move
+	}
+	// Move trailing blanks to the top.
+	content := lines[:len(lines)-trailing]
+	blank := make([]string, trailing)
+	return strings.Join(append(blank, content...), "\n")
 }
 
 // statusLineInput carries all the state needed by buildStatusLine. It is a
