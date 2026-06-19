@@ -347,6 +347,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tps = msg.Tps
 
 	case agent.ConfirmReqMsg:
+		// If the user has reverse-search open when a confirm arrives, abort it
+		// so the search prompt doesn't persist into the non-idle state.
+		if m.searchActive {
+			m.searchExit(false)
+		}
 		m.state = stateConfirm
 		m.pendConf = &msg
 		m.flushStreaming()
@@ -454,6 +459,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agent.LearnTurnMsg:
 		if m.state == stateIdle {
+			if m.searchActive {
+				m.searchExit(false)
+			}
 			const learnText = "learn this for next time"
 			m.addItem(iUser, learnText)
 			m.vp.GotoBottom()
@@ -515,6 +523,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state != stateIdle || m.app.Workflow == nil {
 			break
 		}
+		if m.searchActive {
+			m.searchExit(false)
+		}
 		m.addItem(iSys, dim2("· running final oracle review"))
 		m.vp.GotoBottom()
 		{
@@ -534,6 +545,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// arriving, Workflow is nil and we must not start a stray turn.
 		if m.state != stateIdle || m.app.Workflow == nil {
 			break
+		}
+		if m.searchActive {
+			m.searchExit(false)
 		}
 		m.addItem(iSys, dim2("· "+msg.Note))
 		m.vp.GotoBottom()
@@ -671,6 +685,9 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 	case "up":
 		if m.searchActive {
 			// Exit search keeping the match, then navigate history normally.
+			// Seed histSaved with the pre-search draft so DOWN-to-bottom
+			// restores the user's original text, not a stale value.
+			m.histSaved = m.searchSaved
 			m.histIdx = m.searchIdx // reconcile: continue from the matched entry
 			m.searchExit(true)
 			// Fall through to the normal UP handler below.
@@ -688,6 +705,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 
 	case "down":
 		if m.searchActive {
+			m.histSaved = m.searchSaved
 			m.histIdx = m.searchIdx
 			m.searchExit(true)
 		}

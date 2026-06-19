@@ -414,7 +414,9 @@ func (m tuiModel) searchPrompt() string {
 	}
 	prefix := "(" + tag + ")`" + m.searchQuery + "': "
 	// Reserve room for the prefix + dot + separator (4 chars: " · ").
-	maxPreview := m.width - len(prefix) - 4
+	// Use lipgloss.Width (display columns) not byte length, so multibyte
+	// queries (CJK, accented chars) reserve the correct width.
+	maxPreview := m.width - lipgloss.Width(prefix) - 4
 	if maxPreview < 0 {
 		maxPreview = 0
 	}

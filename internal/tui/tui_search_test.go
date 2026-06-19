@@ -383,6 +383,59 @@ func TestHandleKeyCtrlR_ArrowsExitSearch(t *testing.T) {
 	}
 }
 
+func TestHandleKeyCtrlR_DownToBottomRestoresDraft(t *testing.T) {
+	h := []string{"git commit", "git push", "go build"}
+	m := searchModel(t, h...)
+	m.ta.SetValue("original draft")
+
+	// Enter search → matches index 0.
+	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if m1.searchIdx != 0 {
+		t.Fatalf("setup: searchIdx = %d, want 0", m1.searchIdx)
+	}
+
+	// DOWN from index 0 should exit search and restore the original draft,
+	// not a stale histSaved value.
+	m2, _, consumed := m1.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if !consumed {
+		t.Fatal("down during search should be consumed")
+	}
+	if m2.searchActive {
+		t.Error("search should be exited after down")
+	}
+	if m2.ta.Value() != "original draft" {
+		t.Errorf("textarea = %q, want %q (original draft restored)", m2.ta.Value(), "original draft")
+	}
+	if m2.histIdx != -1 {
+		t.Errorf("histIdx = %d, want -1 (past newest)", m2.histIdx)
+	}
+}
+
+func TestHandleKeyCtrlR_UpDownRoundTrip(t *testing.T) {
+	h := []string{"git commit", "git push", "go build"}
+	m := searchModel(t, h...)
+	m.ta.SetValue("original draft")
+
+	// Enter search → idx=0 (git commit). UP → idx=1 (git push).
+	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m2, _, _ := m1.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	if m2.ta.Value() != "git push" {
+		t.Fatalf("after up: %q, want %q", m2.ta.Value(), "git push")
+	}
+
+	// DOWN → back to idx=0 (git commit).
+	m3, _, _ := m2.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if m3.ta.Value() != "git commit" {
+		t.Errorf("after down: %q, want %q", m3.ta.Value(), "git commit")
+	}
+
+	// DOWN again → past newest, should restore original draft.
+	m4, _, _ := m3.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if m4.ta.Value() != "original draft" {
+		t.Errorf("after down-to-bottom: %q, want %q", m4.ta.Value(), "original draft")
+	}
+}
+
 func TestHandleKeyCtrlR_EmptyQueryRepeat(t *testing.T) {
 	h := []string{"git commit", "git push", "go build"}
 	m := searchModel(t, h...)
