@@ -49,11 +49,16 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		return m, false, nil
 	}
 
-	// Main tab bar (row 0) when sub tabs exist.
+	// Tab bar click (bottom row) when sub tabs exist.
 	// Layout: main tab = [0, tabMainW), visible sub slot = [subTabSlotStart(slot), +tabSubW).
 	// × close button = last 2 visual chars of each sub tab slot.
+	// The tab bar is the last section in View(), so its Y is m.height-1.
+	// This holds by construction: sizes() computes topOuterH =
+	// m.height - inputOuterH - completionHeight() - tabH, so the sections
+	// always sum to exactly m.height.
 	if len(m.subTabs) > 0 && msg.Action == tea.MouseActionRelease &&
-		msg.Button == tea.MouseButtonLeft && msg.Y == 0 {
+		msg.Button == tea.MouseButtonLeft && !m.sel.dragging &&
+		msg.Y == m.height-1 {
 		x := msg.X
 		switch {
 		case x < tabMainW:
@@ -157,37 +162,30 @@ func (m *tuiModel) renderSelection() {
 // landed inside the conversation pane's inner area.
 func (m tuiModel) mouseToContent(x, y int) (row, col int, in bool) {
 	vpW, vpH, _ := m.sizes()
-	// When sub-tabs are shown, the tab bar occupies row 0, shifting the conv
-	// pane border to row tabH and content to rows (1+tabH)..(vpH+tabH).
-	tabH := 0
-	if len(m.subTabs) > 0 {
-		tabH = 1
-	}
-	if x < 1 || x > vpW || y < 1+tabH || y > vpH+tabH {
+	// The tab bar is at the bottom, so the conv pane occupies rows 1..vpH
+	// (row 0 is the top border, rows 1..vpH are content, row vpH+1 is the
+	// bottom border) without any top offset.
+	if x < 1 || x > vpW || y < 1 || y > vpH {
 		return 0, 0, false
 	}
-	return (y - 1 - tabH) + m.vp.YOffset, x - 1, true
+	return (y - 1) + m.vp.YOffset, x - 1, true
 }
 
 // clampToContent is mouseToContent without the bounds check: the cell is clamped
 // into the pane so a drag beyond an edge selects up to that edge.
 func (m tuiModel) clampToContent(x, y int) (row, col int) {
 	vpW, vpH, _ := m.sizes()
-	tabH := 0
-	if len(m.subTabs) > 0 {
-		tabH = 1
-	}
 	if x < 1 {
 		x = 1
 	} else if x > vpW {
 		x = vpW
 	}
-	if y < 1+tabH {
-		y = 1 + tabH
-	} else if y > vpH+tabH {
-		y = vpH + tabH
+	if y < 1 {
+		y = 1
+	} else if y > vpH {
+		y = vpH
 	}
-	return (y - 1 - tabH) + m.vp.YOffset, x - 1
+	return (y - 1) + m.vp.YOffset, x - 1
 }
 
 // sliceRange returns the inclusive rune range [a,z] of the selection on content

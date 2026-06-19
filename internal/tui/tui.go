@@ -418,7 +418,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// When the first tab appears the tab bar steals one row from vpH.
 		// Reflow so m.vp.Height is updated; otherwise the stale (too-tall)
 		// viewport overflows View() by one row and Bubble Tea's cursor tracker
-		// drifts, causing the tab bar to render at the wrong screen row.
+		// drifts, causing the bottom tab bar to render at the wrong screen row.
 		if len(m.subTabs) == 1 {
 			m = m.reflow()
 		}

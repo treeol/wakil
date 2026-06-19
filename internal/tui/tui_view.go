@@ -198,16 +198,16 @@ func (m tuiModel) View() string {
 		Render(body)
 
 	// The "@" completion picker sits between the conversation and the input.
-	// The tab bar (when sub tabs exist) sits above everything.
+	// The tab bar (when sub tabs exist) sits at the bottom, below the input.
 	var sections []string
-	if len(m.subTabs) > 0 {
-		sections = append(sections, m.renderMainTabBar())
-	}
 	sections = append(sections, top)
 	if m.comp.active {
 		sections = append(sections, m.renderCompletion())
 	}
 	sections = append(sections, input)
+	if len(m.subTabs) > 0 {
+		sections = append(sections, m.renderMainTabBar())
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
@@ -518,8 +518,8 @@ func (m tuiModel) subTabSlotStart(slot int) int {
 	return base + slot*(tabSubW+tabGap)
 }
 
-// renderMainTabBar draws the full-width tab bar that appears above the
-// conversation pane when at least one subagent tab exists.
+// renderMainTabBar draws the full-width tab bar that appears below the
+// input box when at least one subagent tab exists.
 func (m tuiModel) renderMainTabBar() string {
 	active := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 	inactive := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
