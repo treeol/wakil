@@ -1360,6 +1360,43 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		}
 		return result
 
+	case "google_search":
+		var args struct {
+			Query  string `json:"query"`
+			Num    int    `json:"num"`
+			Start  int    `json:"start"`
+			After  string `json:"after"`
+			Before string `json:"before"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+		}
+		result, urls := wtools.CallGoogle(a.Cfg.GoogleAPIKey, a.Cfg.GoogleCX, args.Query, args.Num, args.Start, args.After, args.Before)
+		a.RecordSearchCost()
+		for i, u := range urls {
+			if i >= 5 {
+				break
+			}
+			label := Truncate(u, 79)
+			a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})
+		}
+		return result
+
+	case "google_fetch_url":
+		var args struct {
+			URL      string `json:"url"`
+			MaxChars int    `json:"max_chars"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+		}
+		result := wtools.GoogleFetchURL(args.URL, args.MaxChars)
+		if !strings.HasPrefix(result, "ERROR:") {
+			label := Truncate(args.URL, 79)
+			a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})
+		}
+		return result
+
 	case "delete_file":
 		var args struct {
 			Path string `json:"path"`

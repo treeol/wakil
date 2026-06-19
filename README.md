@@ -64,6 +64,7 @@ requires a y/n confirmation** (toggle off with `/auto`).
 | `--resume-id` | — | — | resume a session by chat_id (or unique prefix) |
 | `--auto` | — | — | auto-approve all tool calls without prompting |
 | `--searxng-url` | `SEARXNG_URL` | — | enable SearXNG native search tool |
+| `--google-cx` | `GOOGLE_CX` | — | Google Programmable Search Engine ID (pair with `GOOGLE_API_KEY`) |
 | `--config` | `WAKIL_CONFIG` | `~/.config/wakil/config.json` | JSON config file |
 
 ### Commands (in the TUI)
@@ -144,13 +145,13 @@ flags/env vars above):
   Wakil reads evidence files from disk — the model supplies **paths**, not
   content. Directory paths expand via `git ls-files`; line ranges are supported
   via `path_ranges`.
-- **Web search** — set `searxng_url` (or `--searxng-url`) for the native
-  `searxng_search` tool. For a Google-backed alternative, the bundled
-  `cmd/google_search_mcp` is a small MCP server (Google Custom Search + a URL
-  reader) built with the same Go MCP SDK as wakil itself. Build it with
-  `go build -o google_search_mcp ./cmd/google_search_mcp` and point a
-  `mcp_servers` entry at the binary. It needs `GOOGLE_API_KEY` and `GOOGLE_CX`
-  in its environment.
+- **Web search** — two native options, both built directly into wakil (no
+  external binaries or MCP config needed):
+  - **SearXNG** — set `searxng_url` (or `--searxng-url`) for the native
+    `searxng_search` + `searxng_url_read` tools.
+  - **Google** — set `google_api_key` and `google_cx` in config (or
+    `GOOGLE_API_KEY` / `GOOGLE_CX` env vars) for the native `google_search` +
+    `google_fetch_url` tools.
 - **Cost sidebar** — per-source token/cost accounting; rates are configured under
   `costs` and default to unpriced ("—") rather than a misleading `$0.00`.
 - **Backend-truth context sizing** — at startup wakil fetches the backend's real

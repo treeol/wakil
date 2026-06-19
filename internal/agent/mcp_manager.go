@@ -297,11 +297,14 @@ func PrettyArgs(raw string) string {
 	return string(b)
 }
 
-// BuildTools assembles the full tool list: built-ins → searxng → MCP → oracle.
+// BuildTools assembles the full tool list: built-ins → searxng → google → MCP → oracle.
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	t := wtools.DefaultTools(cwd)
 	if cfg.SearXngURL != "" {
 		t = append(t, wtools.SearxngTools()...)
+	}
+	if cfg.GoogleAPIKey != "" && cfg.GoogleCX != "" {
+		t = append(t, wtools.GoogleTools()...)
 	}
 	if mcp != nil {
 		t = append(t, mcp.OpenAITools()...)

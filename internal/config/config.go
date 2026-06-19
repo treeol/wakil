@@ -51,6 +51,8 @@ type Config struct {
 	ToolResultTTL         int               `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 1
 	MaxToolIterations     int               `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
 	SearXngURL            string            `json:"searxng_url,omitempty"`             // native searxng_search tool if set
+	GoogleAPIKey          string            `json:"google_api_key,omitempty"`          // Google Custom Search API key (enables native google_search tool)
+	GoogleCX              string            `json:"google_cx,omitempty"`               // Google Programmable Search Engine ID
 	MentionBase           string            `json:"mention_base,omitempty"`            // base dir for "@" file mentions (default: launch cwd)
 	MCPServers            []MCPServerConfig `json:"mcp_servers,omitempty"`
 
@@ -356,6 +358,8 @@ func LoadConfig(argv []string) (Config, error) {
 
 	// 2) environment
 	envStr(&cfg.SearXngURL, "SEARXNG_URL")
+	envStr(&cfg.GoogleAPIKey, "GOOGLE_API_KEY")
+	envStr(&cfg.GoogleCX, "GOOGLE_CX")
 	envStr(&cfg.MentionBase, "WAKIL_MENTION_BASE")
 	envStr(&cfg.BaseURL, "ILM_BASE_URL")
 	envStr(&cfg.Host, "ILM_HOST")
@@ -374,6 +378,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs := flag.NewFlagSet("wakil", flag.ContinueOnError)
 	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "ilm proxy base URL (overrides host/port)")
 	fs.StringVar(&cfg.SearXngURL, "searxng-url", cfg.SearXngURL, "SearXNG base URL (enables native searxng_search tool)")
+	fs.StringVar(&cfg.GoogleCX, "google-cx", cfg.GoogleCX, "Google Programmable Search Engine ID (pair with GOOGLE_API_KEY env)")
 	fs.StringVar(&cfg.MentionBase, "mention-base", cfg.MentionBase, "base directory for @ file mentions (default: current directory)")
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "ilm proxy host (alternative to base-url)")
 	fs.IntVar(&cfg.Port, "port", cfg.Port, "ilm proxy port (used with --host, default 11400)")
