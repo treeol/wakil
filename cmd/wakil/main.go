@@ -52,11 +52,12 @@ func main() {
 		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
 
 	client := &proxy.Client{
-		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
-		Model:      cfg.Model,
-		ChatID:     agent.NewChatID(),
-		AuthHeader: cfg.AuthHeader(),
-		HTTP:       newHTTPClient(),
+		BaseURL:         strings.TrimRight(cfg.BaseURL, "/"),
+		Model:           cfg.Model,
+		ChatID:          agent.NewChatID(),
+		AuthHeader:      cfg.AuthHeader(),
+		HTTP:            newHTTPClient(),
+		MaxRequestBytes: cfg.MaxRequestBytes,
 	}
 
 	// Resume a saved session: reload its transcript and re-attach its chat_id so

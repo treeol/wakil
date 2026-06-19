@@ -182,13 +182,14 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		subChatID = chatID[0]
 	}
 	subClient := &proxy.Client{
-		BaseURL:       a.Client.BaseURL,
-		Model:         a.Client.Model,
-		ChatID:        subChatID,
-		AuthHeader:    a.Client.AuthHeader,
-		NoMemoryWrite: true,
-		HTTP:          a.Client.HTTP,
-		Backend:       resolvedBackend, // propagate X-Ilm-Backend (the P31 bug fix)
+		BaseURL:         a.Client.BaseURL,
+		Model:           a.Client.Model,
+		ChatID:          subChatID,
+		AuthHeader:      a.Client.AuthHeader,
+		NoMemoryWrite:   true,
+		HTTP:            a.Client.HTTP,
+		Backend:         resolvedBackend, // propagate X-Ilm-Backend (the P31 bug fix)
+		MaxRequestBytes: a.Client.MaxRequestBytes,
 	}
 
 	cfg := config.DefaultConfig()

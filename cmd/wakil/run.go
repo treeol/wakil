@@ -427,11 +427,12 @@ func RunHeadless(cfg config.Config, args []string) int {
 	defer exe.Close()
 
 	client := &proxy.Client{
-		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
-		Model:      cfg.Model,
-		ChatID:     agent.NewChatID(),
-		AuthHeader: cfg.AuthHeader(),
-		HTTP:       newHTTPClient(),
+		BaseURL:         strings.TrimRight(cfg.BaseURL, "/"),
+		Model:           cfg.Model,
+		ChatID:          agent.NewChatID(),
+		AuthHeader:      cfg.AuthHeader(),
+		HTTP:            newHTTPClient(),
+		MaxRequestBytes: cfg.MaxRequestBytes,
 	}
 
 	var mcpMgr *agent.MCPManager

@@ -50,6 +50,8 @@ type Config struct {
 	ToolResultCap         int               `json:"tool_result_cap"`                   // max chars kept in ctx per tool result; 0 = unlimited; default 8000
 	ToolResultTTL         int               `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 1
 	MaxToolIterations     int               `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
+	ReadFileSizeLimit     int               `json:"read_file_size_limit,omitempty"`    // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
+	MaxRequestBytes       int               `json:"max_request_bytes,omitempty"`       // pre-send byte guard: trim largest tool results if request exceeds this; default 8388608 (8 MB); 0 = disabled
 	SearXngURL            string            `json:"searxng_url,omitempty"`             // native searxng_search tool if set
 	GoogleAPIKey          string            `json:"google_api_key,omitempty"`          // Google Custom Search API key (enables native google_search tool)
 	GoogleCX              string            `json:"google_cx,omitempty"`               // Google Programmable Search Engine ID
@@ -295,8 +297,10 @@ func DefaultConfig() Config {
 		ReasoningBudgetTokens: 4096,   // headroom for extended thinking
 		AnswerMarginTokens:    4096,   // headroom for the final answer
 		ContextTokensFallback: 131072, // assumed n_ctx when the backend is unreachable
-		ToolResultCap:         8000,   // keep first 8k chars in ctx; spill the rest to disk
-		ToolResultTTL:         3,      // evict after 3 completed turns (longer window before re-reads are needed)
+		ToolResultCap:         8000,      // keep first 8k chars in ctx; spill the rest to disk
+		ToolResultTTL:         3,         // evict after 3 completed turns (longer window before re-reads are needed)
+		ReadFileSizeLimit:     1 << 20,   // 1 MB: refuse larger reads at the tool layer
+		MaxRequestBytes:       8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:     3,
 		OracleModel:           "claude-sonnet-4-6",
 		OracleMaxTokens:       4096,

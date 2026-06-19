@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,6 +176,11 @@ type Client struct {
 	// loop → mutex-guarded.
 	lastUsedBackendMu sync.Mutex
 	lastUsedBackend   string
+
+	// MaxRequestBytes is the pre-send byte-size guard. When > 0 and the
+	// serialised request exceeds this limit, the largest tool-role messages are
+	// stubbed to fit before sending. 0 = disabled.
+	MaxRequestBytes int
 }
 
 // LastUsage returns the token usage recorded by the most recent Stream call.
@@ -357,6 +363,25 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		return Message{}, err
 	}
 
+	// Pre-send byte guard: trim the largest tool results to fit within MaxRequestBytes
+	// rather than letting an oversized request reach the proxy and get a 400.
+	if c.MaxRequestBytes > 0 && len(raw) > c.MaxRequestBytes {
+		trimmed := trimToolResults(reqBody.Messages, len(raw), c.MaxRequestBytes)
+		if trimmed == nil {
+			return Message{}, fmt.Errorf("%w: request %d B exceeds byte limit %d B and no large tool results to trim",
+				ErrBackendFatal, len(raw), c.MaxRequestBytes)
+		}
+		reqBody.Messages = trimmed
+		raw, err = json.Marshal(reqBody)
+		if err != nil {
+			return Message{}, err
+		}
+		if len(raw) > c.MaxRequestBytes {
+			return Message{}, fmt.Errorf("%w: request %d B still exceeds byte limit %d B after trimming tool results",
+				ErrBackendFatal, len(raw), c.MaxRequestBytes)
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/chat/completions", bytes.NewReader(raw))
 	if err != nil {
 		return Message{}, err
@@ -505,4 +530,39 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		msg.ToolCalls = append(msg.ToolCalls, *acc[i])
 	}
 	return msg, nil
+}
+
+// trimToolResults replaces the content of the largest tool-role messages with
+// stub strings until the estimated request size fits within maxBytes. Returns
+// the modified message slice, or nil if there are no large tool results to trim.
+//
+// The size estimate is heuristic (subtracts content bytes, adds stub bytes)
+// rather than re-marshalling each iteration; the caller re-marshals once after
+// to verify the result fits.
+func trimToolResults(msgs []Message, currentSize, maxBytes int) []Message {
+	type entry struct{ idx, size int }
+	var large []entry
+	for i, m := range msgs {
+		if m.Role == "tool" && m.Content != nil && len(*m.Content) > 200 {
+			large = append(large, entry{i, len(*m.Content)})
+		}
+	}
+	if len(large) == 0 {
+		return nil
+	}
+	sort.Slice(large, func(a, b int) bool { return large[a].size > large[b].size })
+
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+	cur := currentSize
+	for _, e := range large {
+		if cur <= maxBytes {
+			break
+		}
+		stub := fmt.Sprintf("[pre-send trim — %d bytes — exceeded request byte limit; retrieve with read_file if needed]", e.size)
+		s := stub
+		out[e.idx].Content = &s
+		cur -= e.size - len(stub)
+	}
+	return out
 }

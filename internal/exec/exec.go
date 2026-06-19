@@ -46,6 +46,9 @@ type Executor interface {
 	IsProcessAlive(ctx context.Context, pid int) bool
 	// ReadFileTail returns the last maxBytes of path; enforces the cap internally.
 	ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error)
+	// StatFile returns the byte size of the file at path without reading it.
+	// Returns an error if the path does not exist or is not accessible.
+	StatFile(path string) (int64, error)
 	// Generation returns a counter that increments when the executor backend is
 	// restarted (e.g. container recreated). Background process entries from an
 	// older generation are stale.
@@ -181,6 +184,18 @@ func (d *DockerExecutor) ReadFile(path string) (string, error) {
 	return out, nil
 }
 
+func (d *DockerExecutor) StatFile(path string) (int64, error) {
+	out, err := d.exec(false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && stat -c %s -- "$1"`, "sh", path)
+	if err != nil {
+		return 0, fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	var size int64
+	if _, scanErr := fmt.Sscan(strings.TrimSpace(out), &size); scanErr != nil {
+		return 0, fmt.Errorf("unexpected stat output: %q", strings.TrimSpace(out))
+	}
+	return size, nil
+}
+
 func (d *DockerExecutor) ListDir(path string) (string, error) {
 	if path == "" {
 		path = "."
@@ -260,6 +275,14 @@ func (e *DirectExecutor) resolve(path string) string {
 		return path
 	}
 	return filepath.Join(e.root, path)
+}
+
+func (e *DirectExecutor) StatFile(path string) (int64, error) {
+	info, err := os.Stat(e.resolve(path))
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 func (e *DirectExecutor) ReadFile(path string) (string, error) {

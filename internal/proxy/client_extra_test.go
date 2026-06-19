@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -150,3 +151,109 @@ func TestFatalErrMessageContainsStatus(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// ── P42: pre-send byte-size guard ─────────────────────────────────────────────
+
+// TestPresendGuardTrimsLargestToolResult verifies that when the request
+// exceeds MaxRequestBytes the largest tool result is stubbed and the
+// request is sent successfully instead of getting a 400.
+func TestPresendGuardTrimsLargestToolResult(t *testing.T) {
+	received := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	bigContent := strings.Repeat("A", 5000)
+	msgs := []Message{
+		{Role: "user", Content: strPtr("hello")},
+		{Role: "tool", ToolCallID: "tc1", Name: "read_file", Content: strPtr(bigContent)},
+	}
+
+	c := &Client{
+		BaseURL:         srv.URL,
+		Model:           "ilm",
+		ChatID:          "test",
+		HTTP:            http.DefaultClient,
+		MaxRequestBytes: 1000, // tiny limit forces trimming
+	}
+	_, err := c.Stream(t.Context(), msgs, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("expected successful send after trimming, got: %v", err)
+	}
+	// The sent body must be under the limit.
+	if len(received) > 1000 {
+		t.Errorf("sent body %d bytes, expected ≤ 1000 after trim", len(received))
+	}
+	// The large content must be replaced with a stub note.
+	if strings.Contains(received, bigContent[:100]) {
+		t.Error("large content must have been trimmed from sent body")
+	}
+	if !strings.Contains(received, "pre-send trim") {
+		t.Error("stub note 'pre-send trim' must appear in sent body")
+	}
+}
+
+// TestPresendGuardNoToolsReturnsError verifies that when the request
+// exceeds MaxRequestBytes but there are no large tool results to trim,
+// Stream returns a fatal error rather than sending an oversized request.
+func TestPresendGuardNoToolsReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Should not be reached.
+		http.Error(w, "should not receive request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	msgs := []Message{
+		{Role: "user", Content: strPtr(strings.Repeat("X", 2000))},
+	}
+
+	c := &Client{
+		BaseURL:         srv.URL,
+		Model:           "ilm",
+		ChatID:          "test",
+		HTTP:            http.DefaultClient,
+		MaxRequestBytes: 100, // impossibly small
+	}
+	_, err := c.Stream(t.Context(), msgs, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error when request cannot be trimmed")
+	}
+	if !errors.Is(err, ErrBackendFatal) {
+		t.Errorf("want ErrBackendFatal, got: %v", err)
+	}
+}
+
+// TestTrimToolResults verifies the trimmer replaces large messages largest-first.
+func TestTrimToolResults(t *testing.T) {
+	small := strings.Repeat("s", 300)
+	large := strings.Repeat("L", 3000)
+
+	msgs := []Message{
+		{Role: "user", Content: strPtr("question")},
+		{Role: "tool", Name: "read_file", Content: strPtr(small)},
+		{Role: "tool", Name: "search", Content: strPtr(large)},
+	}
+
+	// currentSize set large enough to need trimming; maxBytes small enough that
+	// only the large result needs to be replaced.
+	trimmed := trimToolResults(msgs, 5000, 2500)
+	if trimmed == nil {
+		t.Fatal("trimToolResults returned nil unexpectedly")
+	}
+	// The large result should be stubbed.
+	if trimmed[2].Content == nil || !strings.Contains(*trimmed[2].Content, "pre-send trim") {
+		t.Errorf("large tool result not stubbed: %v", trimmed[2].Content)
+	}
+	// The small result should be unchanged (trimming the large one was enough).
+	if trimmed[1].Content == nil || *trimmed[1].Content != small {
+		t.Errorf("small tool result should be unchanged")
+	}
+	// User message must be untouched.
+	if trimmed[0].Content == nil || *trimmed[0].Content != "question" {
+		t.Errorf("user message must not be modified")
+	}
+}

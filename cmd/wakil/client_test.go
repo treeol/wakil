@@ -76,6 +76,12 @@ func (f *fakeExecutor) RunShell(_ context.Context, c string) (string, error) {
 	f.shellCalls = append(f.shellCalls, c)
 	return "ran: " + c, nil
 }
+func (f *fakeExecutor) StatFile(p string) (int64, error) {
+	if v, ok := f.files[p]; ok {
+		return int64(len(v)), nil
+	}
+	return 0, fmt.Errorf("no such file: %s", p)
+}
 func (f *fakeExecutor) ReadFile(p string) (string, error) {
 	if f.dirs[p] {
 		return "", fmt.Errorf("read %s: is a directory", p)

@@ -533,3 +533,107 @@ func TestBgCapDeadEntriesDontCount(t *testing.T) {
 // Verify os and fmt imports used by SIGKILL test.
 var _ = os.TempDir
 var _ = fmt.Sprintf
+
+// ── P42: read_file size and binary guards ─────────────────────────────────────
+
+func TestReadFileSizeGuardRefuses(t *testing.T) {
+	exe := newFakeExecutor()
+	// 2 MB of text — over the 1 MB default limit.
+	exe.files["big.txt"] = strings.Repeat("x", 2<<20)
+
+	app := &App{
+		Cfg:  config.Config{ReadFileSizeLimit: 1 << 20},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file", Arguments: `{"path":"big.txt"}`,
+	}})
+	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "exceeds read limit") {
+		t.Fatalf("expected size-guard error, got: %q", res)
+	}
+}
+
+func TestReadFileSizeGuardAllowsSmall(t *testing.T) {
+	exe := newFakeExecutor()
+	exe.files["small.txt"] = "hello\nworld\n"
+
+	app := &App{
+		Cfg:  config.Config{ReadFileSizeLimit: 1 << 20},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file", Arguments: `{"path":"small.txt"}`,
+	}})
+	if strings.HasPrefix(res, "ERROR:") {
+		t.Fatalf("small file should not be refused; got: %q", res)
+	}
+	if !strings.Contains(res, "hello") {
+		t.Fatalf("expected file content in result, got: %q", res)
+	}
+}
+
+func TestReadFileSizeGuardAllowsRangedReadOnLargeFile(t *testing.T) {
+	// A "large" file (over limit) must be readable when the model supplies a Limit.
+	// The guard's error message says "specify a line/byte range" — that advice must
+	// actually work, or the refusal is a dead end.
+	exe := newFakeExecutor()
+	exe.files["big.txt"] = strings.Repeat("line\n", 300_000) // well over 1 MB
+
+	app := &App{
+		Cfg:  config.Config{ReadFileSizeLimit: 1 << 20},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file", Arguments: `{"path":"big.txt","offset":1,"limit":5}`,
+	}})
+	if strings.Contains(res, "exceeds read limit") {
+		t.Fatalf("ranged read on a large file must not be blocked by size guard; got: %q", res)
+	}
+	if !strings.Contains(res, "line") {
+		t.Fatalf("expected file content in ranged result, got: %q", res)
+	}
+}
+
+func TestReadFileBinaryGuardRefuses(t *testing.T) {
+	exe := newFakeExecutor()
+	// Small file but binary (contains null byte).
+	exe.files["a.bin"] = "ELF\x00binary content here"
+
+	app := &App{
+		Cfg:  config.Config{ReadFileSizeLimit: 1 << 20},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file", Arguments: `{"path":"a.bin"}`,
+	}})
+	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "binary file") {
+		t.Fatalf("expected binary-guard error, got: %q", res)
+	}
+}
+
+func TestReadFileSizeGuardMissingFileProceedsToReadFile(t *testing.T) {
+	// When StatFile returns an error (file not found), the guard must not block —
+	// ReadFile is called and returns the actual "no such file" error.
+	exe := newFakeExecutor()
+
+	app := &App{
+		Cfg:  config.Config{ReadFileSizeLimit: 1 << 20},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file", Arguments: `{"path":"nonexistent.txt"}`,
+	}})
+	if !strings.HasPrefix(res, "ERROR:") {
+		t.Fatalf("missing file should still return an error, got: %q", res)
+	}
+	// Must NOT say "exceeds read limit" — that would mean the size guard fired
+	// on a missing file, which it must not.
+	if strings.Contains(res, "exceeds read limit") {
+		t.Fatalf("size guard must not fire on missing file: %q", res)
+	}
+}

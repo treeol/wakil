@@ -1219,6 +1219,21 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
+		// Guard 1a: stat before reading — refuse oversized unbounded reads without
+		// loading the file. Skip when a Limit is already set: the caller explicitly
+		// bounded the read, so the size guard's advice ("specify a range") has been
+		// taken and the refusal would be a dead end.
+		sizeLimit := int64(a.Cfg.ReadFileSizeLimit)
+		if sizeLimit <= 0 {
+			sizeLimit = 1 << 20 // 1 MB safety net when config is zero
+		}
+		if args.Limit == 0 {
+			if fileSize, serr := a.Exec.StatFile(args.Path); serr == nil && fileSize > sizeLimit {
+				return fmt.Sprintf(
+					"ERROR: file is %.2f MB, exceeds read limit of %.2f MB — specify a line/byte range or use search_files.",
+					float64(fileSize)/(1<<20), float64(sizeLimit)/(1<<20))
+			}
+		}
 		out, err := a.Exec.ReadFile(args.Path)
 		// Redirect a directory read to the right tool instead of returning a raw
 		// errno the model tends to retry against (a known subagent loop trigger).
@@ -1227,6 +1242,12 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		}
 		if err != nil {
 			return formatResult(out, err)
+		}
+		// Guard 1b: refuse binary content detected via null-byte sniff.
+		if strings.ContainsRune(out, 0) {
+			return fmt.Sprintf(
+				"ERROR: binary file, %.2f MB — not readable as text.",
+				float64(len(out))/(1<<20))
 		}
 		return formatFileView(out, args.Offset, args.Limit)
 
