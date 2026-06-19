@@ -585,6 +585,27 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		return m, nil, true
 	}
 
+	// While reverse-search is active, intercept abort keys before the main
+	// switch so they don't trigger cancel-turn or quit.
+	if m.searchActive {
+		switch msg.String() {
+		case "ctrl+r":
+			// Repeat: find the next older match past the current one.
+			if m.searchIdx >= 0 {
+				m.searchRun(m.searchIdx + 1)
+			} else {
+				m.searchRun(0)
+			}
+			return m, nil, true
+		case "ctrl+g", "esc", "ctrl+c":
+			// Abort: restore the original draft, exit search mode.
+			// (Ctrl+C does NOT quit — it only aborts the search.)
+			m.searchExit(false)
+			return m, nil, true
+		}
+		// All other keys fall through to the main switch / intercept below.
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		if m.state == stateIdle {
@@ -612,7 +633,48 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			return m, []tea.Cmd{tea.Quit}, true
 		}
 
+	case "ctrl+r":
+		// Enter reverse-incremental search. Only when idle — never during
+		// streaming or confirm (the gate above already consumes in confirm).
+		if m.state != stateIdle {
+			return m, nil, true
+		}
+		// If somehow already active (shouldn't reach here — handled above),
+		// treat as repeat.
+		if m.searchActive {
+			m.searchRun(m.searchIdx + 1)
+			return m, nil, true
+		}
+		if len(m.inputHistory) == 0 {
+			// No history: enter search anyway so the prompt shows, but there
+			// will never be a match.
+			m.searchActive = true
+			m.searchQuery = ""
+			m.searchIdx = -1
+			m.searchSaved = m.ta.Value()
+			m.searchFailed = true
+			m.comp = completionState{} // close picker
+			m.ta.Reset()
+			return m, nil, true
+		}
+		m.searchActive = true
+		m.searchQuery = ""
+		m.searchIdx = -1
+		m.searchSaved = m.ta.Value()
+		m.searchFailed = false
+		m.comp = completionState{} // close picker
+		m.ta.Reset()
+		// Show the most recent entry immediately (empty query matches all).
+		m.searchRun(0)
+		return m, nil, true
+
 	case "up":
+		if m.searchActive {
+			// Exit search keeping the match, then navigate history normally.
+			m.histIdx = m.searchIdx // reconcile: continue from the matched entry
+			m.searchExit(true)
+			// Fall through to the normal UP handler below.
+		}
 		if m.state == stateIdle && len(m.inputHistory) > 0 {
 			if m.histIdx == -1 {
 				m.histSaved = m.ta.Value()
@@ -625,6 +687,10 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		}
 
 	case "down":
+		if m.searchActive {
+			m.histIdx = m.searchIdx
+			m.searchExit(true)
+		}
 		if m.state == stateIdle && m.histIdx >= 0 {
 			if m.histIdx > 0 {
 				m.histIdx--
@@ -641,6 +707,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		// Shift+Enter, handled by the textarea below, inserts newlines instead.
 		if m.state != stateIdle {
 			return m, nil, true
+		}
+		// If reverse-search is active, exit it keeping the matched entry, then
+		// fall through to the normal send logic (which reads ta.Value()).
+		if m.searchActive {
+			m.searchExit(true)
 		}
 		input := strings.TrimSpace(m.ta.Value())
 		if input == "" {
@@ -682,7 +753,71 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		m.tps = 0
 		return m, []tea.Cmd{agent.RunTurn(m.app, ctx, outgoing), startDotTick()}, true
 	}
+
+	// --- Reverse-search content intercept ---
+	// When search is active, printable/space/backspace keys build the query.
+	// All other keys exit search (keeping the match) and fall through to the
+	// textarea (return consumed=false).
+	if m.searchActive {
+		switch msg.Type {
+		case tea.KeyRunes:
+			if msg.Alt {
+				// Alt+rune: exit search, let the key go to the textarea.
+				m.searchExit(true)
+				return m, nil, false
+			}
+			m.searchQuery += string(msg.Runes)
+			m.searchRun(0)
+			return m, nil, true
+		case tea.KeySpace:
+			m.searchQuery += " "
+			m.searchRun(0)
+			return m, nil, true
+		case tea.KeyBackspace, tea.KeyCtrlH:
+			if len(m.searchQuery) > 0 {
+				// Remove last rune (handles multi-byte correctly).
+				r := []rune(m.searchQuery)
+				m.searchQuery = string(r[:len(r)-1])
+			}
+			m.searchRun(0)
+			return m, nil, true
+		default:
+			// Any other key (arrows, Ctrl+A, etc.): exit search keeping the
+			// match, then let the key flow to the textarea naturally.
+			m.searchExit(true)
+			return m, nil, false
+		}
+	}
+
 	return m, nil, false
+}
+
+// searchExit leaves reverse-search mode. When keepMatch is true the current
+// textarea content (the matched entry) is kept; when false the original draft
+// saved on entry (searchSaved) is restored. All search fields are reset.
+func (m *tuiModel) searchExit(keepMatch bool) {
+	if !keepMatch {
+		m.ta.SetValue(m.searchSaved)
+	}
+	m.searchActive = false
+	m.searchQuery = ""
+	m.searchIdx = -1
+	m.searchSaved = ""
+	m.searchFailed = false
+}
+
+// searchRun scans inputHistory from startIdx for searchQuery and updates the
+// textarea + search state. On match: shows the entry, clears searchFailed.
+// On no match: sets searchFailed, keeps the previous match and index.
+func (m *tuiModel) searchRun(startIdx int) {
+	idx := searchHistory(m.inputHistory, m.searchQuery, startIdx)
+	if idx >= 0 {
+		m.searchIdx = idx
+		m.searchFailed = false
+		m.ta.SetValue(m.inputHistory[idx])
+	} else {
+		m.searchFailed = true
+	}
 }
 
 func (m *tuiModel) cancelTurn() {
