@@ -53,6 +53,23 @@ func loadHistory() []string {
 	return lines
 }
 
+// searchHistory finds the first index >= startIdx in history (most-recent-first)
+// whose entry contains query (case-insensitive substring). Returns -1 if none.
+// An empty query matches every entry (like bash, where empty Ctrl+R steps
+// backward through all history).
+func searchHistory(history []string, query string, startIdx int) int {
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	q := strings.ToLower(query)
+	for i := startIdx; i < len(history); i++ {
+		if strings.Contains(strings.ToLower(history[i]), q) {
+			return i
+		}
+	}
+	return -1
+}
+
 // appendHistory appends entry to the history file (oldest-first on disk).
 // It is a best-effort write: errors are silently ignored.
 func appendHistory(entry string) {

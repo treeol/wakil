@@ -123,6 +123,13 @@ type tuiModel struct {
 	inputHistory []string
 	histIdx      int    // -1 = editing current input (not browsing history)
 	histSaved    string // current input saved when the user starts navigating
+
+	// Reverse-incremental search (Ctrl+R). searchActive=false = normal input.
+	searchActive bool
+	searchQuery  string // the query string typed so far
+	searchIdx    int    // index into inputHistory of current match (-1 = no match)
+	searchSaved  string // original textarea content saved on entering search mode
+	searchFailed bool   // true when the last search found no match
 }
 
 // subTab holds the state of one dispatched subagent, used to render its
