@@ -146,10 +146,11 @@ flags/env vars above):
   via `path_ranges`.
 - **Web search** — set `searxng_url` (or `--searxng-url`) for the native
   `searxng_search` tool. For a Google-backed alternative, the bundled
-  `google_search_mcp.py` is a small example MCP server (Google Custom Search +
-  a URL reader); run it as an MCP `stdio` server and point a `mcp_servers` entry
-  at it. It needs `GOOGLE_API_KEY` and `GOOGLE_CX` in its environment and
-  `pip install mcp`.
+  `cmd/google_search_mcp` is a small MCP server (Google Custom Search + a URL
+  reader) built with the same Go MCP SDK as wakil itself. Build it with
+  `go build -o google_search_mcp ./cmd/google_search_mcp` and point a
+  `mcp_servers` entry at the binary. It needs `GOOGLE_API_KEY` and `GOOGLE_CX`
+  in its environment.
 - **Cost sidebar** — per-source token/cost accounting; rates are configured under
   `costs` and default to unpriced ("—") rather than a misleading `$0.00`.
 - **Backend-truth context sizing** — at startup wakil fetches the backend's real
