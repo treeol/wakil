@@ -28,6 +28,9 @@ wakil_race
 # /plan workflow runtime artifacts
 .wakil/
 
+# local temp/workspace docs
+.tmp/
+
 # experiment / run directories
 runs/
 
