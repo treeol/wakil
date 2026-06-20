@@ -1,29 +1,54 @@
 # wakīl
 
-A standalone, long-running terminal agent — one continuous conversation, no
-per-session or per-directory ceremony. You give it tasks ad hoc; it stays open,
-keeps context, and executes locally behind a **per-command confirmation gate**.
+A long-running terminal agent — one continuous conversation, no per-session or
+per-directory ceremony. You give it tasks ad hoc; it stays open, keeps context,
+and executes locally behind a **per-command confirmation gate**.
 
-wakil is a thin HTTP **client** of a remote *ilm* proxy (an OpenAI-compatible
-Chat Completions API). The proxy is the brain — it adds memory, learned
-knowledge, and grounding server-side. wakil owns the UI, the conversation, and
-local execution.
+> *wakīl* (وكيل) is Arabic for "agent" or "deputy."
+
+wakil is a single local binary — a thin HTTP **client** of a remote *ilm* proxy
+(an OpenAI-compatible Chat Completions API). The proxy is the brain: it adds
+memory, learned knowledge, and grounding server-side. wakil owns the UI, the
+conversation, and local execution.
 
 ```
 you ── wakil (TUI, local exec) ── ilm proxy (memory + grounding) ── model
-              ↑ confirm gate                ↑ metadata.chat_id keys state
+              ↑ confirm gate
 ```
+
+## Contents
+
+- [Why](#why) · [Requirements](#requirements) · [Status](#status) · [Quickstart](#quickstart)
+- [Security and the confirmation gate](#security-and-the-confirmation-gate)
+- [Configuration](#configuration) · [The TUI](#the-tui) · [Tools](#tools)
+- [Optional features](#optional-features) · [How state works](#how-state-works)
+- [Testing](#testing) · [Project layout](#project-layout) · [Contributing](#contributing) · [License](#license)
 
 ## Why
 
 - **One conversation, kept open.** No `--session` flags, no per-project state
   to manage. Resume the last session or a specific one; context persists.
-- **Local execution, gated.** Every write or execute command asks `y/n` before
-  it runs. Toggle auto-approve per session when you trust the task.
+- **Local execution, gated.** By default every write or execute command asks
+  `y/n` before it runs. Toggle auto-approve per session (`/auto`) when you trust
+  the task — destructive commands and counsel calls still gate even then.
 - **Thin client of a proxy you control.** The proxy holds memory and grounding;
-  wakil never stores API keys for counsel models, never invents tool output.
+  wakil never stores API keys for counsel models. Tool results come only from
+  real local execution — the model cannot fabricate them.
 - **Backend-truth sized.** Context meter, pressure warnings, and compaction are
   driven by the backend's real `n_ctx`, not a guessed constant.
+
+## Requirements
+
+- **Go 1.25+** *(see `go.mod`)* to build from source
+- **Docker** for the default `docker` exec mode *(optional — use `--exec direct` to skip)*
+- **An ilm proxy** reachable at a URL you control — wakil cannot run without one
+
+## Status
+
+Early-stage. Config keys, session format, and the tool set may change between
+commits. The confirmation gate is on by default precisely because the agent
+can execute shell and Docker commands — keep it on for anything you don't
+fully trust.
 
 ## Quickstart
 
@@ -42,14 +67,26 @@ export ILM_BASE_URL='http://proxy-host:11400'
 cd ~/projects/myapp && ./wakil
 ```
 
-Prefer to run on the host without Docker? Skip step 2 and add `--exec direct`.
+In the default `docker` mode, wakil manages **one persistent container** for
+the process lifetime and runs your tool calls inside it. Prefer to run on the
+host without Docker? Skip step 2 and add `--exec direct`.
 
 ## Security and the confirmation gate
 
-wakil executes model-proposed shell commands. Every write or execute tool call
-prompts for `y/n` approval; read-only calls are ungated. Toggle auto-approve
-with `/auto` in the TUI or `--auto` on launch — shown as `AUTO` in the status
-bar.
+wakil executes model-proposed shell commands. **Gated** tools — `run_shell`,
+`write_file`, `edit_file`, `delete_file`, `move_file`, `run_background`,
+`kill_process`, and `open_url` — prompt for `y/n` approval before every call.
+**Read-only** tools — `read_file`, `list_dir`, `search_files`, `find_files`,
+`dispatch_subagent` — run without prompting. These are structured tools with
+controlled arguments, not raw shell: they can read file contents and listings
+but cannot execute arbitrary commands.
+
+`run_shell` is always gated, even for reads — a `cat ~/.ssh/id_rsa` or `env`
+goes through the same `y/n` prompt as any other shell command. Press `a` at a
+prompt to auto-approve **read-only tools only** for the rest of the session;
+gated tools still prompt unless you toggle full auto-approve with `/auto`
+(shown as `AUTO` in the status bar). Even in auto mode, destructive commands
+and counsel calls still gate.
 
 In the default `docker` mode the sandbox bind-mounts the **host Docker socket**
 (`--docker-sock=true`, the default), which is effectively host-root access. It
@@ -66,7 +103,7 @@ at `~/.config/wakil/config.json` by default, overridable via `WAKIL_CONFIG` /
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--base-url` | `ILM_BASE_URL` | — *(required* | proxy base URL |
+| `--base-url` | `ILM_BASE_URL` | — *(required)* | proxy base URL |
 | `--api-key` | `ILM_API_KEY` | — | sent as `Authorization: Bearer <key>` |
 | `--model` | `ILM_MODEL` | `ilm` | model name |
 | `--exec` | `ILM_EXEC_MODE` | `docker` | `docker` \| `direct` |
