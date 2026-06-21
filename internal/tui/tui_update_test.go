@@ -11,6 +11,8 @@ import (
 
 	"wakil/internal/config"
 	"wakil/internal/proxy"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // newTestTUI builds a driven-ready model over a minimal app.
@@ -134,8 +136,68 @@ func TestUpdateReasoningCollapsesOnFirstContent(t *testing.T) {
 	if m.reasoning.Len() != 0 || !m.reasoningDone {
 		t.Error("reasoning should be collapsed on first content")
 	}
+	if m.reasoningExpanded {
+		t.Error("reasoningExpanded should be reset on collapse")
+	}
 	if len(*m.items) != before+1 || !strings.Contains(lastItemText(m), "thought") {
 		t.Errorf("a collapsed 'thought' line should be committed; last=%q", lastItemText(m))
+	}
+}
+
+func TestUpdateReasoningExpandedResetsOnDone(t *testing.T) {
+	m := newTestTUI(t)
+	m.reasoningExpanded = true
+	m = step(m, agent.AgentDoneMsg{})
+	if m.reasoningExpanded {
+		t.Error("reasoningExpanded should be reset on AgentDoneMsg")
+	}
+}
+
+func TestUpdateReasoningExpandedResetsOnNewConv(t *testing.T) {
+	m := newTestTUI(t)
+	m.reasoningExpanded = true
+	m = step(m, agent.NewConvMsg{})
+	if m.reasoningExpanded {
+		t.Error("reasoningExpanded should be reset on NewConvMsg")
+	}
+}
+
+func TestRenderReasoningCollapsed(t *testing.T) {
+	// Generate enough text to exceed maxReasoningCollapsedLines when wrapped.
+	long := strings.Repeat("thinking about stuff ", 50)
+	out := renderReasoning(long, 40, false)
+	plain := ansi.Strip(out)
+	lines := strings.Split(plain, "\n")
+	// Collapsed: indicator + last N lines = maxReasoningCollapsedLines+1.
+	if len(lines) > maxReasoningCollapsedLines+1 {
+		t.Errorf("collapsed reasoning should be capped at %d lines; got %d",
+			maxReasoningCollapsedLines+1, len(lines))
+	}
+	if !strings.Contains(plain, "ctrl+e to expand") {
+		t.Error("collapsed reasoning should show the expand indicator")
+	}
+}
+
+func TestRenderReasoningExpanded(t *testing.T) {
+	long := strings.Repeat("thinking about stuff ", 50)
+	out := renderReasoning(long, 40, true)
+	plain := ansi.Strip(out)
+	lines := strings.Split(plain, "\n")
+	// Expanded: all lines, no indicator.
+	if len(lines) <= maxReasoningCollapsedLines {
+		t.Error("expanded reasoning should show all lines")
+	}
+	if strings.Contains(plain, "ctrl+e to expand") {
+		t.Error("expanded reasoning should not show the collapse indicator")
+	}
+}
+
+func TestRenderReasoningShortShowsAll(t *testing.T) {
+	short := "just a brief thought"
+	out := renderReasoning(short, 40, false)
+	plain := ansi.Strip(out)
+	if strings.Contains(plain, "ctrl+e to expand") {
+		t.Error("short reasoning should not show the expand indicator")
 	}
 }
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -84,8 +85,9 @@ type tuiModel struct {
 	// reasoning accumulates extended-thinking deltas while the model is thinking.
 	// On the first content delta it is replaced with a single collapsed summary
 	// line and committed as an iSys item. Never written to Conv history.
-	reasoning     *strings.Builder
-	reasoningDone bool // true once reasoning has been collapsed
+	reasoning          *strings.Builder
+	reasoningDone      bool // true once reasoning has been collapsed
+	reasoningExpanded  bool // expand live reasoning beyond the collapsed cap
 
 	// Mouse text selection over the conversation pane (see tui_select.go).
 	sel        selection
@@ -338,6 +340,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			toks := m.reasoning.Len() / 4
 			m.reasoning.Reset()
 			m.reasoningDone = true
+			m.reasoningExpanded = false
 			m.addItem(iSys, dim2(sprint("· thought (~%d tokens)", toks)))
 		}
 		m.streaming.WriteString(msg.Text)
@@ -370,6 +373,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoning.Reset()
 		}
 		m.reasoningDone = false
+		m.reasoningExpanded = false
 		if msg.Warn != "" {
 			// Tidy agent.Yellow warning (e.g. backend stream error) in place of a trace.
 			m.addItem(iSys, agent.Yellow(msg.Warn))
@@ -502,6 +506,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming.Reset()
 		m.reasoning.Reset()
 		m.reasoningDone = false
+		m.reasoningExpanded = false
 		if msg.RebuildConv && len(m.app.Conv) > 0 {
 			*m.items = convItemsFrom(m.app.Conv)
 		}
@@ -680,6 +685,15 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		m.ta.Reset()
 		// Show the most recent entry immediately (empty query matches all).
 		m.searchRun(0)
+		return m, nil, true
+
+	case "ctrl+e":
+		// Toggle expand/collapse of live reasoning text. Only meaningful while
+		// reasoning is actively streaming (before reasoningDone collapses it).
+		if m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone {
+			m.reasoningExpanded = !m.reasoningExpanded
+			m.refreshViewport()
+		}
 		return m, nil, true
 
 	case "up":
@@ -905,7 +919,7 @@ func (m *tuiModel) refreshViewport() {
 	if liveReasoning || m.streaming.Len() > 0 {
 		var sb strings.Builder
 		if liveReasoning {
-			sb.WriteString(renderReasoning(m.reasoning.String(), w))
+			sb.WriteString(renderReasoning(m.reasoning.String(), w, m.reasoningExpanded))
 		}
 		if m.streaming.Len() > 0 {
 			sb.WriteString(renderStreaming(m.streaming.String(), w))
@@ -970,10 +984,25 @@ func renderStreaming(text string, w int) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(wrapped)
 }
 
+// maxReasoningCollapsedLines bounds how many lines of live reasoning are shown
+// when collapsed (the default). The last N lines are shown plus an indicator.
+const maxReasoningCollapsedLines = 5
+
 // renderReasoning renders live extended-thinking text: dim + italic so it is
 // visually distinct from the final answer and clearly marked as transient.
-func renderReasoning(text string, w int) string {
+// When collapsed and the text exceeds maxReasoningCollapsedLines, only the
+// last N lines are shown with a dim "expand" indicator.
+func renderReasoning(text string, w int, expanded bool) string {
 	wrapped := wrapAnsi(text, w)
+	lines := strings.Split(wrapped, "\n")
+
+	if !expanded && len(lines) > maxReasoningCollapsedLines {
+		hidden := len(lines) - maxReasoningCollapsedLines
+		indicator := fmt.Sprintf("⋯ +%d lines (ctrl+e to expand)", hidden)
+		shown := append([]string{indicator}, lines[len(lines)-maxReasoningCollapsedLines:]...)
+		wrapped = strings.Join(shown, "\n")
+	}
+
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true).Render(wrapped)
 }
 
