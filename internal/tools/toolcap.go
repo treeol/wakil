@@ -7,23 +7,65 @@ import (
 	"strings"
 )
 
-// ExtractSpillPath returns the disk path embedded by CapToolResult or
-// StubToolResult in their trailing "… at: PATH]" note, or "".
-// Handles both:
+// ExtractSpillPath returns the disk path embedded by CapToolResult,
+// StubToolResult, or SpillFullResult in their trailing "… at: PATH]" note,
+// or "". It matches only when a known marker prefix sits inside the final
+// bracketed segment of the string — so arbitrary " at: " or even
+// "full content at: /path]" text in file content does not produce false
+// positives.
 //
-//	CapToolResult:  "… [+N chars omitted — full content at: PATH]"
-//	StubToolResult: "[budget — N chars at: PATH]"
+// Handled formats (all at end of string):
+//
+//	CapToolResult:    "… [+N chars omitted — full content at: PATH]"
+//	StubToolResult:   "[budget — N chars at: PATH]"
+//	SpillFullResult:  "[full content at: PATH]"
+//	MakeEvictionStub: "[evicted — N chars — full content at: PATH]"
 func ExtractSpillPath(content string) string {
-	const marker = " at: "
-	i := strings.LastIndex(content, marker)
-	if i < 0 {
+	// Find the last ']' — it must be the last non-space character of the string
+	// for the marker to be a genuine trailing segment.
+	trimmed := strings.TrimRight(content, " \t\r\n")
+	if !strings.HasSuffix(trimmed, "]") {
 		return ""
 	}
-	rest := content[i+len(marker):]
-	if j := strings.IndexByte(rest, ']'); j >= 0 {
-		return rest[:j]
+	// Find the matching '[' that opens this final bracketed segment.
+	closeIdx := len(trimmed) - 1
+	openIdx := strings.LastIndex(trimmed[:closeIdx], "[")
+	if openIdx < 0 {
+		return ""
 	}
-	return strings.TrimSpace(rest)
+	segment := trimmed[openIdx+1 : closeIdx] // content between [ and ]
+
+	// The segment must start with one of the known prefixes. This is the
+	// anchoring that prevents false positives from file body text — only
+	// a real Wakil marker at the end of the string matches.
+	knownPrefixes := []string{
+		"full content at: ",
+		"budget — ",
+		"+",
+		"evicted — ",
+		"pre-send trim — ",
+	}
+	matched := false
+	for _, p := range knownPrefixes {
+		if strings.HasPrefix(segment, p) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+
+	// Extract the path: find " at: " inside the segment and take the rest.
+	atIdx := strings.LastIndex(segment, " at: ")
+	if atIdx < 0 {
+		return ""
+	}
+	path := segment[atIdx+len(" at: "):]
+	if path == "" {
+		return ""
+	}
+	return path
 }
 
 // MakeEvictionStub replaces a large tool result with a single-line stub that
@@ -117,4 +159,26 @@ func CapToolResult(result, toolName, chatID string, cap int) string {
 		suffix = fmt.Sprintf("\n… [+%d chars omitted]", omitted)
 	}
 	return result[:cap] + suffix
+}
+
+// SpillFullResult writes the full result to the spill cache and returns the
+// complete content with a trailing path marker so that evictStaleToolResults
+// and the pre-send MaxRequestBytes trim can extract the path via
+// ExtractSpillPath and produce a recoverable stub.
+//
+// Used by read_file_full, which keeps full content in context (bypassing
+// ToolResultCap) but still needs a recovery path when eviction or pre-send
+// trimming fires. The trailing marker is harmless to the model — it appears
+// after the file content, clearly labelled.
+func SpillFullResult(result, toolName, chatID string) string {
+	if len(result) <= 200 {
+		// Small results won't be evicted or trimmed; skip the spill to avoid
+		// orphaned cache files for trivially short reads.
+		return result
+	}
+	spillPath := spillToDisk(toolCacheDir(chatID), toolName, result)
+	if spillPath == "" {
+		return result
+	}
+	return result + fmt.Sprintf("\n[full content at: %s]", spillPath)
 }

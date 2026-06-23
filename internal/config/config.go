@@ -51,6 +51,7 @@ type Config struct {
 	ToolResultTTL         int               `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 1
 	MaxToolIterations     int               `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
 	ReadFileSizeLimit     int               `json:"read_file_size_limit,omitempty"`    // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
+	MaxFullReadBytes      int               `json:"max_full_read_bytes,omitempty"`     // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
 	MaxRequestBytes       int               `json:"max_request_bytes,omitempty"`       // pre-send byte guard: trim largest tool results if request exceeds this; default 8388608 (8 MB); 0 = disabled
 	SearXngURL            string            `json:"searxng_url,omitempty"`             // native searxng_search tool if set
 	GoogleAPIKey          string            `json:"google_api_key,omitempty"`          // Google Custom Search API key (enables native google_search tool)
@@ -300,6 +301,7 @@ func DefaultConfig() Config {
 		ToolResultCap:         8000,      // keep first 8k chars in ctx; spill the rest to disk
 		ToolResultTTL:         3,         // evict after 3 completed turns (longer window before re-reads are needed)
 		ReadFileSizeLimit:     1 << 20,   // 1 MB: refuse larger reads at the tool layer
+		MaxFullReadBytes:      256 << 10, // 256 KB: full-read ceiling (higher than ToolResultCap 8K, under MaxRequestBytes 8MB)
 		MaxRequestBytes:       8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:     3,
 		OracleModel:           "claude-sonnet-4-6",

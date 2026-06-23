@@ -60,6 +60,16 @@ func DefaultTools(cwd string) []proxy.Tool {
 			}, "path"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
+			Name: "read_file_full",
+			Description: "Read an entire file in one call and return its complete contents with line numbers. " +
+				"Use read_file_full when you need the complete contents of a normal source file (up to ~256 KB); " +
+				"use read_file for large files or targeted ranges (offset/limit). " +
+				"Prefer read_file_full over repeated read_file calls with different offsets on the same file. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"path": strProp("Path to the file to read (relative paths resolve from the working directory)"),
+			}, "path"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
 			Name: "search_files",
 			Description: "Search file contents for a pattern and return matching lines with file:line context. " +
 				"Equivalent to grep -rn. " + cwdNote,

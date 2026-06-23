@@ -789,6 +789,15 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 	if a.Cfg.TurnToolBudget > 0 && turnToolBytesSoFar >= a.Cfg.TurnToolBudget {
 		return wtools.StubToolResult(result, toolName, a.chatID())
 	}
+	// read_file_full: return full content (size already checked at the tool layer
+	// against max_full_read_bytes). Spill to disk and embed the path so eviction
+	// and pre-send trim leave a recoverable pointer. Exempt from ToolResultCap
+	// (the 8K windowing that causes re-read churn) but NOT from TurnToolBudget —
+	// when the per-turn budget is exhausted, the result is stubbed to prevent
+	// context overflow. MaxRequestBytes remains the final backstop.
+	if toolName == "read_file_full" {
+		return wtools.SpillFullResult(result, toolName, a.chatID())
+	}
 	return wtools.CapToolResult(result, toolName, a.chatID(), a.Cfg.ToolResultCap)
 }
 
@@ -999,6 +1008,8 @@ func toolAbbrev(name string) string {
 		return "shell"
 	case "read_file":
 		return "read"
+	case "read_file_full":
+		return "rfull"
 	case "write_file":
 		return "write"
 	case "edit_file":
@@ -1250,6 +1261,50 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 				float64(len(out))/(1<<20))
 		}
 		return formatFileView(out, args.Offset, args.Limit)
+
+	case "read_file_full":
+		var args struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+		}
+		// Guard 1a: stat before reading — refuse oversized full reads without
+		// loading the file. The ceiling is max_full_read_bytes (default 256 KB),
+		// higher than read_file's windowed cap but well under MaxRequestBytes.
+		fullLimit := int64(a.Cfg.MaxFullReadBytes)
+		if fullLimit <= 0 {
+			fullLimit = 256 << 10 // 256 KB safety net when config is zero
+		}
+		if fileSize, serr := a.Exec.StatFile(args.Path); serr == nil && fileSize > fullLimit {
+			return fmt.Sprintf(
+				"ERROR: file is %.2f MB, exceeds full-read limit of %.2f MB — use read_file with an offset/limit range instead.",
+				float64(fileSize)/(1<<20), float64(fullLimit)/(1<<20))
+		}
+		out, err := a.Exec.ReadFile(args.Path)
+		// Redirect a directory read to the right tool (same as read_file).
+		if err != nil && strings.Contains(strings.ToLower(err.Error()), "is a directory") {
+			return fmt.Sprintf("ERROR: %q is a directory, not a file — use list_dir to see its contents or search_files to search within it.", args.Path)
+		}
+		if err != nil {
+			return formatResult(out, err)
+		}
+		// Guard 1b: refuse binary content detected via null-byte sniff.
+		if strings.ContainsRune(out, 0) {
+			return fmt.Sprintf(
+				"ERROR: binary file, %.2f MB — not readable as text.",
+				float64(len(out))/(1<<20))
+		}
+		// Guard 1c: post-read size backstop — if StatFile errored (so the
+		// pre-read guard was skipped), refuse if the loaded content exceeds
+		// the ceiling. This prevents an un-stattable file from bypassing the
+		// size guard entirely.
+		if int64(len(out)) > fullLimit {
+			return fmt.Sprintf(
+				"ERROR: file is %.2f MB, exceeds full-read limit of %.2f MB — use read_file with an offset/limit range instead.",
+				float64(len(out))/(1<<20), float64(fullLimit)/(1<<20))
+		}
+		return formatFileView(out, 0, 0)
 
 	case "list_dir":
 		var args struct {

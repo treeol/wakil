@@ -257,3 +257,53 @@ func TestTrimToolResults(t *testing.T) {
 		t.Errorf("user message must not be modified")
 	}
 }
+
+// TestTrimToolResultsPreservesSpillPath verifies that when a tool result
+// contains an embedded spill path (from CapToolResult, StubToolResult, or
+// SpillFullResult), the pre-send trim preserves it in the stub so the model
+// can recover the full content.
+func TestTrimToolResultsPreservesSpillPath(t *testing.T) {
+	large := strings.Repeat("L", 3000) + "\n[full content at: /cache/read_file_full-abc.txt]"
+
+	msgs := []Message{
+		{Role: "user", Content: strPtr("question")},
+		{Role: "tool", Name: "read_file_full", Content: strPtr(large)},
+	}
+
+	trimmed := trimToolResults(msgs, 5000, 1000)
+	if trimmed == nil {
+		t.Fatal("trimToolResults returned nil unexpectedly")
+	}
+	if trimmed[1].Content == nil {
+		t.Fatal("tool result content is nil")
+	}
+	stub := *trimmed[1].Content
+	// Must preserve the spill path.
+	if !strings.Contains(stub, "/cache/read_file_full-abc.txt") {
+		t.Errorf("pre-send trim stub must preserve spill path, got: %q", stub)
+	}
+	// Must NOT say "retrieve with read_file" when a spill path is available.
+	if strings.Contains(stub, "retrieve with read_file") {
+		t.Errorf("stub should use spill path, not 'retrieve with read_file', got: %q", stub)
+	}
+}
+
+// TestTrimToolResultsNoSpillPathUsesFallback verifies that when a tool result
+// has no embedded spill path, the trim stub falls back to the original wording.
+func TestTrimToolResultsNoSpillPathUsesFallback(t *testing.T) {
+	large := strings.Repeat("L", 3000)
+
+	msgs := []Message{
+		{Role: "user", Content: strPtr("question")},
+		{Role: "tool", Name: "read_file", Content: strPtr(large)},
+	}
+
+	trimmed := trimToolResults(msgs, 5000, 1000)
+	if trimmed == nil {
+		t.Fatal("trimToolResults returned nil unexpectedly")
+	}
+	stub := *trimmed[1].Content
+	if !strings.Contains(stub, "retrieve with read_file") {
+		t.Errorf("fallback stub should say 'retrieve with read_file', got: %q", stub)
+	}
+}

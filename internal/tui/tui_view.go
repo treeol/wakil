@@ -731,6 +731,7 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW, maxLines int) []string {
 		"",
 		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("tools"),
 		"  read_file",
+		"  read_file_full",
 		"  search_files",
 		"  find_files",
 		"  list_dir",

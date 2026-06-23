@@ -637,3 +637,391 @@ func TestReadFileSizeGuardMissingFileProceedsToReadFile(t *testing.T) {
 		t.Fatalf("size guard must not fire on missing file: %q", res)
 	}
 }
+
+// ── read_file_full: full read with size, binary, and cap-exemption guards ──────
+
+func TestReadFileFullReturnsCompleteContent(t *testing.T) {
+	exe := newFakeExecutor()
+	exe.files["small.go"] = "package main\n\nfunc main() {}\n"
+
+	app := &App{
+		Cfg:  config.Config{MaxFullReadBytes: 256 << 10},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file_full", Arguments: `{"path":"small.go"}`,
+	}})
+	if strings.HasPrefix(res, "ERROR:") {
+		t.Fatalf("small file should not be refused; got: %q", res)
+	}
+	// Must contain ALL lines — no [lines X-Y of Z] window header.
+	if strings.Contains(res, "[lines ") {
+		t.Fatalf("read_file_full must not window; got: %q", res)
+	}
+	if !strings.Contains(res, "package main") || !strings.Contains(res, "func main") {
+		t.Fatalf("expected full file content, got: %q", res)
+	}
+}
+
+func TestReadFileFullRefusesOversized(t *testing.T) {
+	exe := newFakeExecutor()
+	// 512 KB — over the 256 KB default ceiling.
+	exe.files["big.txt"] = strings.Repeat("x", 512<<10)
+
+	app := &App{
+		Cfg:  config.Config{MaxFullReadBytes: 256 << 10},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file_full", Arguments: `{"path":"big.txt"}`,
+	}})
+	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "exceeds full-read limit") {
+		t.Fatalf("expected full-read size-guard error, got: %q", res)
+	}
+	// Must suggest read_file with offset/limit.
+	if !strings.Contains(res, "read_file") {
+		t.Fatalf("error must suggest read_file with offset/limit, got: %q", res)
+	}
+}
+
+func TestReadFileFullBinaryGuardRefuses(t *testing.T) {
+	exe := newFakeExecutor()
+	// Small file but binary (contains null byte).
+	exe.files["a.bin"] = "ELF\x00binary content here"
+
+	app := &App{
+		Cfg:  config.Config{MaxFullReadBytes: 256 << 10},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file_full", Arguments: `{"path":"a.bin"}`,
+	}})
+	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "binary file") {
+		t.Fatalf("expected binary-guard error, got: %q", res)
+	}
+}
+
+func TestReadFileFullMissingFileProceedsToReadFile(t *testing.T) {
+	// When StatFile returns an error (file not found), the pre-read size guard
+	// must not block — ReadFile is called and returns the actual "no such file"
+	// error.
+	exe := newFakeExecutor()
+
+	app := &App{
+		Cfg:  config.Config{MaxFullReadBytes: 256 << 10},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file_full", Arguments: `{"path":"nonexistent.txt"}`,
+	}})
+	if !strings.HasPrefix(res, "ERROR:") {
+		t.Fatalf("missing file should still return an error, got: %q", res)
+	}
+	if strings.Contains(res, "exceeds full-read limit") {
+		t.Fatalf("size guard must not fire on missing file: %q", res)
+	}
+}
+
+// TestReadFileFullBoundarySize verifies that a file exactly at the ceiling
+// passes (guard is strict-greater-than), and one byte over refuses.
+func TestReadFileFullBoundarySize(t *testing.T) {
+	exe := newFakeExecutor()
+	limit := 256 << 10
+	exe.files["exact.txt"] = strings.Repeat("x", limit)
+	exe.files["over.txt"] = strings.Repeat("x", limit+1)
+
+	app := &App{
+		Cfg:  config.Config{MaxFullReadBytes: limit},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	// Exactly at ceiling — must pass.
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file_full", Arguments: `{"path":"exact.txt"}`,
+	}})
+	if strings.HasPrefix(res, "ERROR:") {
+		t.Fatalf("file at exact ceiling must not be refused: %q", res)
+	}
+	// One byte over — must refuse.
+	res = app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file_full", Arguments: `{"path":"over.txt"}`,
+	}})
+	if !strings.Contains(res, "exceeds full-read limit") {
+		t.Fatalf("file one byte over ceiling must be refused: %q", res)
+	}
+}
+
+// TestReadFileFullCapOrStubExemption verifies that CapOrStub does NOT cap a
+// read_file_full result to ToolResultCap — the full content is preserved.
+func TestReadFileFullCapOrStubExemption(t *testing.T) {
+	// Create content larger than ToolResultCap (8K) but under MaxFullReadBytes.
+	content := strings.Repeat("line of content here\n", 500) // ~10 KB
+	exe := newFakeExecutor()
+	exe.files["medium.go"] = content
+
+	app := &App{
+		Cfg:  config.Config{MaxFullReadBytes: 256 << 10, ToolResultCap: 8000},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	// Call ExecuteToolCall (not handleToolCall) so CapOrStub is applied.
+	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file_full", Arguments: `{"path":"medium.go"}`,
+	}})
+	// Must not be capped — no "chars omitted" marker from CapToolResult.
+	if strings.Contains(res, "chars omitted") {
+		t.Fatalf("read_file_full result must not be capped by ToolResultCap: got %q (len=%d)", res[:100], len(res))
+	}
+	// Must contain the full content (or at least a substantial portion).
+	if len(res) < len(content)/2 {
+		t.Fatalf("read_file_full result too short: %d vs content %d — likely capped", len(res), len(content))
+	}
+}
+
+// TestReadFileFullBudgetExhaustionStubs verifies that when the per-turn tool
+// budget is exhausted, read_file_full IS stubbed (to a pointer) — it is NOT
+// exempt from TurnToolBudget. This is intentional: a 256KB read that arrives
+// after the budget is blown would flood context, so it gets a recoverable
+// stub pointer instead. The stub still spills to disk, so content is
+// recoverable via the embedded path.
+func TestReadFileFullBudgetExhaustionStubs(t *testing.T) {
+	content := strings.Repeat("line of content here\n", 500) // ~10 KB
+	exe := newFakeExecutor()
+	exe.files["medium.go"] = content
+
+	app := &App{
+		Cfg:  config.Config{MaxFullReadBytes: 256 << 10, ToolResultCap: 8000, TurnToolBudget: 1000},
+		Exec: exe,
+		Out:  io.Discard,
+	}
+	// turnToolBytes=2000 >= TurnToolBudget=1000 → budget exhausted.
+	res := app.CapOrStub(content, "read_file_full", 2000)
+	// Must be stubbed (budget exhausted), not full content.
+	if strings.Contains(res, "line of content here") {
+		t.Fatalf("read_file_full must be stubbed when budget exhausted, got full content (len=%d)", len(res))
+	}
+	// Must be a budget stub with a recoverable pointer.
+	if !strings.HasPrefix(res, "[budget —") {
+		t.Fatalf("expected budget stub, got: %q", res[:min(80, len(res))])
+	}
+}
+
+// TestReadFileFullNotGated verifies read_file_full is not a gated tool (no
+// confirmation needed — it's read-only, same as read_file).
+func TestReadFileFullNotGated(t *testing.T) {
+	if tools.GatedTool("read_file_full") {
+		t.Fatal("read_file_full must not be gated (read-only tool)")
+	}
+}
+
+// TestReadFileFullInDefaultTools verifies read_file_full is in the default
+// tool set and has the right name.
+func TestReadFileFullInDefaultTools(t *testing.T) {
+	names := map[string]bool{}
+	for _, tl := range tools.DefaultTools("/work") {
+		names[tl.Function.Name] = true
+	}
+	if !names["read_file_full"] {
+		t.Fatal("read_file_full missing from DefaultTools")
+	}
+}
+
+// TestReadFileFullNotInDiscoveryTools verifies read_file_full is NOT in the
+// subagent toolset — the subagent's purpose is a lean ≤4K digest, and a
+// full-read tool contradicts that design.
+func TestReadFileFullNotInDiscoveryTools(t *testing.T) {
+	for _, tl := range tools.DiscoveryTools("/work") {
+		if tl.Function.Name == "read_file_full" {
+			t.Fatal("read_file_full must NOT be in DiscoveryTools (subagent lean-context design)")
+		}
+	}
+}
+
+// TestSpillFullResultRoundTrip verifies the full round-trip: SpillFullResult
+// embeds a path that ExtractSpillPath can recover. This is the critical
+// recovery chain — if it breaks, eviction and pre-send trim produce
+// non-recoverable stubs.
+func TestSpillFullResultRoundTrip(t *testing.T) {
+	// Content large enough to trigger the spill (> 200 bytes).
+	content := strings.Repeat("package main\n", 50) // ~650 bytes
+	result := tools.SpillFullResult(content, "read_file_full", "test-chat")
+
+	// If the spill path was embedded, ExtractSpillPath must find it.
+	path := tools.ExtractSpillPath(result)
+	if path == "" {
+		// Spill may be skipped if cache dir is unavailable (e.g. no XDG_DATA_HOME
+		// in CI). In that case the result is returned without a marker — verify
+		// that at least the full content is intact.
+		if !strings.Contains(result, "package main") {
+			t.Fatalf("result missing original content: %q", result[:min(100, len(result))])
+		}
+		t.Skip("spill path not embedded (cache dir unavailable in this env) — content intact, skipping path extraction test")
+	}
+
+	// The extracted path must point to a real file on disk.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("ExtractSpillPath returned %q but file does not exist: %v", path, err)
+	}
+
+	// The spill file must contain the original content.
+	spilled, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not read spill file %q: %v", path, err)
+	}
+	if !strings.Contains(string(spilled), content) {
+		t.Fatalf("spill file does not contain original content")
+	}
+
+	// The original content must be in the result (not truncated).
+	if !strings.Contains(result, "package main") {
+		t.Fatalf("result missing original content: %q", result[:min(100, len(result))])
+	}
+
+	// The marker must be at the end.
+	if !strings.HasSuffix(result, "]") {
+		t.Fatalf("result must end with ']' (marker), got: %q", result[len(result)-min(50, len(result)):])
+	}
+}
+
+// TestSpillFullResultMarkerCollision verifies that file content containing
+// " at: " does NOT break path extraction. The marker is always appended last,
+// so LastIndex must find the real spill path, not a false positive from the
+// file body.
+func TestSpillFullResultMarkerCollision(t *testing.T) {
+	// Content that contains " at: " sequences (plausible in source code, logs).
+	content := `// See the config at: /etc/wakil/config.json]
+// Also check data at: /var/lib/wakil/data]
+` + strings.Repeat("line\n", 50) // ensure > 200 bytes
+
+	result := tools.SpillFullResult(content, "read_file_full", "test-chat")
+	path := tools.ExtractSpillPath(result)
+
+	if path == "" {
+		t.Skip("spill path not embedded (cache dir unavailable in this env)")
+	}
+
+	// The extracted path must NOT be one of the fake paths from the file content.
+	if path == "/etc/wakil/config.json" || path == "/var/lib/wakil/data" {
+		t.Fatalf("ExtractSpillPath picked up a fake path from file content instead of the real spill path: %q", path)
+	}
+
+	// The extracted path must point to a real file (the spill file).
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("extracted path %q does not point to a real file: %v", path, err)
+	}
+
+	// The spill file must contain the original content (with the fake paths).
+	spilled, _ := os.ReadFile(path)
+	if !strings.Contains(string(spilled), "/etc/wakil/config.json") {
+		t.Fatalf("spill file should contain original content with 'at:' lines")
+	}
+}
+
+// TestExtractSpillPathNoFalsePositiveOnFileContent verifies that when a tool
+// result contains " at: /path]" in its body (but was NOT spilled — no real
+// marker appended), ExtractSpillPath returns "" rather than a bogus path.
+// This is the critical safety property: the extraction must only match markers
+// that Wakil actually emitted, not arbitrary text in file content.
+func TestExtractSpillPathNoFalsePositiveOnFileContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			"generic at: in body",
+			"// See config at: /etc/wakil/config.json]\n" + strings.Repeat("line\n", 50),
+		},
+		{
+			"full marker prefix in body (not at end)",
+			"// full content at: /fake/path]\n" + strings.Repeat("line\n", 50),
+		},
+		{
+			"full marker prefix at end but not in bracketed segment",
+			"some text full content at: /fake/path]\nmore text after",
+		},
+		{
+			"budget marker prefix in body",
+			"[budget — 5000 chars at: /fake/path]\n" + strings.Repeat("line\n", 50),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := tools.ExtractSpillPath(tc.content)
+			if path != "" {
+				t.Fatalf("ExtractSpillPath must return empty for unspilled content, got: %q (content ends with: %q)", path, tc.content[min(0, len(tc.content))-min(50, len(tc.content)):])
+			}
+		})
+	}
+}
+
+// TestExtractSpillPathMatchesRealMarkers verifies that all the real marker
+// formats emitted by CapToolResult, StubToolResult, SpillFullResult, and
+// MakeEvictionStub are correctly extracted.
+func TestExtractSpillPathMatchesRealMarkers(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			"SpillFullResult",
+			"file content here\n[full content at: /cache/spill-1.txt]",
+			"/cache/spill-1.txt",
+		},
+		{
+			"CapToolResult",
+			"first 8000 chars…\n… [+N chars omitted — full content at: /cache/spill-2.txt]",
+			"/cache/spill-2.txt",
+		},
+		{
+			"StubToolResult",
+			"[budget — 5000 chars at: /cache/spill-3.txt]",
+			"/cache/spill-3.txt",
+		},
+		{
+			"MakeEvictionStub",
+			"[evicted — 5000 chars — full content at: /cache/spill-4.txt]",
+			"/cache/spill-4.txt",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tools.ExtractSpillPath(tc.content)
+			if got != tc.want {
+				t.Fatalf("ExtractSpillPath(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSpillFullResultUnavailableNoFalsePositive verifies that when the spill
+// cache is unavailable (empty chatID → empty cache dir), SpillFullResult
+// returns content WITHOUT a marker, and ExtractSpillPath returns "" even if
+// the file content contains " at: /fake/path]".
+func TestSpillFullResultUnavailableNoFalsePositive(t *testing.T) {
+	// Content with " at: " in the body, large enough to trigger spill.
+	content := `// See config at: /etc/wakil/config.json]
+` + strings.Repeat("line\n", 50)
+
+	// Empty chatID → toolCacheDir returns "" → spillToDisk returns "" → no marker.
+	result := tools.SpillFullResult(content, "read_file_full", "")
+
+	// Must NOT have a spill marker (spill was unavailable).
+	if strings.Contains(result, "full content at: ") {
+		// If a marker was somehow added, the path must be real (not a false positive).
+		path := tools.ExtractSpillPath(result)
+		if path == "/etc/wakil/config.json" {
+			t.Fatalf("bogus path from file body extracted as spill path!")
+		}
+	}
+
+	// ExtractSpillPath must NOT return the fake path from the file body.
+	path := tools.ExtractSpillPath(result)
+	if path == "/etc/wakil/config.json" {
+		t.Fatalf("ExtractSpillPath returned a bogus path from file body: %q", path)
+	}
+}

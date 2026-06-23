@@ -559,10 +559,65 @@ func trimToolResults(msgs []Message, currentSize, maxBytes int) []Message {
 		if cur <= maxBytes {
 			break
 		}
-		stub := fmt.Sprintf("[pre-send trim — %d bytes — exceeded request byte limit; retrieve with read_file if needed]", e.size)
+		// Preserve any embedded spill path (from CapToolResult, StubToolResult,
+		// or SpillFullResult) so the model can recover the full content after
+		// trimming. The marker format is "... at: PATH]" — extract it before
+		// replacing the content.
+		var stub string
+		if path := extractSpillPath(*out[e.idx].Content); path != "" {
+			stub = fmt.Sprintf("[pre-send trim — %d bytes — full content at: %s]", e.size, path)
+		} else {
+			stub = fmt.Sprintf("[pre-send trim — %d bytes — exceeded request byte limit; retrieve with read_file if needed]", e.size)
+		}
 		s := stub
 		out[e.idx].Content = &s
 		cur -= e.size - len(stub)
 	}
 	return out
+}
+
+// extractSpillPath returns the disk path embedded in a tool result's trailing
+// "… at: PATH]" note, or "". This mirrors tools.ExtractSpillPath — duplicated
+// here to avoid a circular import (tools imports proxy). Matches only when a
+// known marker prefix sits inside the final bracketed segment of the string
+// to prevent false positives from file content.
+func extractSpillPath(content string) string {
+	trimmed := strings.TrimRight(content, " \t\r\n")
+	if !strings.HasSuffix(trimmed, "]") {
+		return ""
+	}
+	closeIdx := len(trimmed) - 1
+	openIdx := strings.LastIndex(trimmed[:closeIdx], "[")
+	if openIdx < 0 {
+		return ""
+	}
+	segment := trimmed[openIdx+1 : closeIdx]
+
+	knownPrefixes := []string{
+		"full content at: ",
+		"budget — ",
+		"+",
+		"evicted — ",
+		"pre-send trim — ",
+	}
+	matched := false
+	for _, p := range knownPrefixes {
+		if strings.HasPrefix(segment, p) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+
+	atIdx := strings.LastIndex(segment, " at: ")
+	if atIdx < 0 {
+		return ""
+	}
+	path := segment[atIdx+len(" at: "):]
+	if path == "" {
+		return ""
+	}
+	return path
 }
