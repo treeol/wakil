@@ -29,6 +29,7 @@ const (
 // The parent acts on this blind to raw content, so every gap must be visible.
 type SubagentSummary struct {
 	Objective   string        `json:"objective"`
+	Status      string        `json:"status,omitempty"` // "incomplete" when the subagent hit a budget/iteration wall; empty = complete
 	Findings    []Finding     `json:"findings,omitempty"`
 	Checked     []CheckedItem `json:"checked,omitempty"`
 	Skipped     []SkippedItem `json:"skipped,omitempty"`
@@ -53,7 +54,7 @@ type CheckedItem struct {
 
 // SkippedItem records something the subagent could not or chose not to read.
 type SkippedItem struct {
-	Path   string `json:"path"`
+	Path   string `json:"path,omitempty"`
 	Reason string `json:"reason"` // budget-exhausted|inaccessible|out-of-scope|declined
 }
 
@@ -88,7 +89,7 @@ func (s SubagentSummary) Render() string {
 const subagentSystemPrompt = `You are a focused discovery subagent. Use list_dir and find_files to navigate, search_files to grep, and read_file to read (pass offset/limit for large files), then respond with ONLY a valid JSON object — no prose, no markdown, no code fences.
 
 Required schema (omit empty arrays):
-{"objective":"<task echoed>","findings":[{"summary":"<≤200 chars>","location":"<file:line or path>","kind":"match|pattern|error|fact|ref","weight":"high|medium|low"}],"checked":[{"path":"<path>","size_k":<int>,"status":"full|truncated|stub-only"}],"skipped":[{"path":"<path>","reason":"budget-exhausted|inaccessible|out-of-scope|declined"}],"uncertainty":["<≤100 chars>"],"spill_refs":[{"tool_name":"<name>","path":"<spill-path>","size_k":<int>}]}
+{"objective":"<task echoed>","status":"<omit unless incomplete>","findings":[{"summary":"<≤200 chars>","location":"<file:line or path>","kind":"match|pattern|error|fact|ref","weight":"high|medium|low"}],"checked":[{"path":"<path>","size_k":<int>,"status":"full|truncated|stub-only"}],"skipped":[{"path":"<path>","reason":"budget-exhausted|inaccessible|out-of-scope|declined"}],"uncertainty":["<≤100 chars>"],"spill_refs":[{"tool_name":"<name>","path":"<spill-path>","size_k":<int>}]}
 
 Rules:
 - Emit ONLY the JSON object. Nothing before {, nothing after }.
@@ -201,6 +202,9 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	cfg.TurnToolBudget    = subagentTurnToolBudget
 	cfg.ToolResultTTL     = subagentToolResultTTL
 	cfg.MaxToolIterations = subagentMaxToolIter
+	if a.subMaxToolIter > 0 {
+		cfg.MaxToolIterations = a.subMaxToolIter
+	}
 
 	if progressOut == nil {
 		progressOut = io.Discard
@@ -215,6 +219,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		Session:         nil,
 		ToolCache:       map[string]bool{},
 		IsSubagent:      true,
+		pinUserMessage:  true, // pin the task instruction so it survives compaction
 		SelectedBackend: resolvedBackend,
 		BackendList:     a.BackendList,
 		// Share the parent's consent map — consent granted for the subagent's
@@ -222,12 +227,18 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// inside sub.Send when it repeats the egress check.
 		consentedBackends: a.consentedBackends,
 	}
-	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(subagentSystemPrompt)}}
+	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(subagentSystemPrompt), Pinned: true}}
 
 	raw, err := sub.Send(ctx, task)
 	grounding := sub.Client.Grounding()
 	ctxSize := TranscriptSize(sub.Conv)
 	usedBackend := sub.Client.LastUsedBackend()
+
+	// Capture exhaustion from the first Send before the retry path runs.
+	// The retry Send resets sub.exhausted at its start, so we must OR this
+	// with whatever the retry produces — otherwise a first-Send exhaustion
+	// is silently masked by a clean retry.
+	exhaustedFirstSend := sub.exhausted
 
 	if err != nil {
 		return SubagentSummary{
@@ -259,5 +270,22 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	if summary.Objective == "" {
 		summary.Objective = task
 	}
+
+	// Truthful return on exhaustion: if the subagent hit its iteration limit or
+	// enforceHardMax shed content during EITHER the first Send or the retry,
+	// override the status to "incomplete". The model's response may look normal
+	// but be based on a lobotomized context. The parent must know the subagent
+	// ran out of budget so it can re-dispatch narrower or take over, rather than
+	// trusting potentially-incomplete findings.
+	if exhaustedFirstSend || sub.exhausted {
+		summary.Status = "incomplete"
+		summary.Skipped = append(summary.Skipped, SkippedItem{
+			Reason: "budget-exhausted",
+		})
+		if len(summary.Uncertainty) == 0 || summary.Uncertainty[len(summary.Uncertainty)-1] != "subagent hit budget/iteration limit — findings may be incomplete" {
+			summary.Uncertainty = append(summary.Uncertainty, "subagent hit budget/iteration limit — findings may be incomplete")
+		}
+	}
+
 	return summary, grounding, ctxSize, usedBackend
 }

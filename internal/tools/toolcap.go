@@ -44,6 +44,7 @@ func ExtractSpillPath(content string) string {
 		"+",
 		"evicted — ",
 		"pre-send trim — ",
+		"subagent summary at: ",
 	}
 	matched := false
 	for _, p := range knownPrefixes {
@@ -124,6 +125,15 @@ func spillToDisk(cacheDir, toolName, content string) string {
 		return ""
 	}
 	return f.Name()
+}
+
+// SpillToCache writes content to the tool-cache directory for the given chatID
+// and returns the full path. Returns "" if chatID is empty or the write fails.
+// This is the exported entry point for callers outside the tools package (e.g.
+// dispatchSubagent writing a durable subagent summary) that need the same
+// spill-to-disk mechanism without reimplementing it.
+func SpillToCache(chatID, toolName, content string) string {
+	return spillToDisk(toolCacheDir(chatID), toolName, content)
 }
 
 // StubToolResult spills the entire result to disk and returns a ~50-char

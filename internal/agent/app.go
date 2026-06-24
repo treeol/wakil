@@ -67,6 +67,25 @@ type App struct {
 	// which exists for deduplication and is not a reliable presence signal.
 	IsSubagent bool
 
+	// exhausted is set by Send when the subagent hit MaxToolIterations
+	// (forceFinish) or enforceHardMax dropped content during the turn. It is
+	// read by dispatchSubagent after Send returns to produce a truthful
+	// Status:"incomplete" summary instead of relying on the model's final
+	// response — which may be a lobotomized generic message if compaction
+	// fired. Only meaningful for subagents; the parent ignores it.
+	exhausted bool
+
+	// pinUserMessage marks the user message appended by Send as Pinned, so it
+	// survives compaction and hard-max dropping. Set by dispatchSubagent for
+	// the subagent's task instruction — the subagent must never forget its own
+	// task mid-run. The parent does not set this.
+	pinUserMessage bool
+
+	// subMaxToolIter overrides the subagentMaxToolIter constant when non-zero.
+	// Used by tests to force exhaustion through the real dispatchSubagent path
+	// without changing the package-level constant. Zero = use the constant.
+	subMaxToolIter int
+
 	// RetryDelay overrides the exponential backoff schedule for backend retries.
 	// Nil uses the standard 1s/2s/4s schedule. Set in tests for speed.
 	RetryDelay func(attempt int) time.Duration
@@ -325,6 +344,12 @@ func (a *App) NewConversation(chatID string) {
 // The named return retErr lets the deferred trace flush read the error without
 // an extra variable; it does not change the calling convention.
 func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error) {
+	// Reset per-turn exhaustion flag. Set by forceFinish or enforceHardMax
+	// during this turn. dispatchSubagent captures the first-Send value before
+	// the retry, then ORs it with the retry's value, so resetting here
+	// doesn't mask first-Send exhaustion.
+	a.exhausted = false
+
 	// Lazy-initialize defaultModel so it can be restored when SelectedModel is cleared.
 	if a.defaultModel == "" {
 		a.defaultModel = a.Client.Model
@@ -396,7 +421,7 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 	// before appending the user message so we never deliver an over-window Conv.
 	a.fitConvToWindow(ctx)
 
-	a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(stored)})
+	a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(stored), Pinned: a.pinUserMessage})
 
 	// P38 trace: accumulate per-turn state written to the JSONL store on exit.
 	// retErr is captured by the defer closure — it reflects whichever error path
@@ -433,6 +458,7 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 		tools := a.Tools
 		if forceFinish {
 			tools = nil
+			a.exhausted = true // signal to dispatchSubagent: iteration limit hit
 			a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(ToolLimitPrompt)})
 		}
 
@@ -495,11 +521,17 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 			}
 
 			turnToolBytes += len(result)
+			// dispatch_subagent results carry a durable on-disk summary path.
+			// Pin the tool message so the parent's compaction never dissolves
+			// the breadcrumb — the model must always be able to read_file the
+			// full structured findings from the path marker in the content.
+			pinned := tc.Function.Name == "dispatch_subagent"
 			a.Conv = append(a.Conv, proxy.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 				Content:    StrPtr(result),
+				Pinned:     pinned,
 			})
 		}
 		// After a round of tool calls, offer mashura__debug if the rolling trace
@@ -1675,7 +1707,26 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			HardMaxBytes: subagentHardMaxBytes,
 			UsedBackend:  usedBackend,
 		})
-		return summary.Render()
+
+		// Part C: durable summary persistence. Write the full structured summary
+		// to disk under the PARENT's chatID (which is valid, unlike the subagent's
+		// ephemeral chatID). The in-context result carries a breadcrumb path so
+		// the parent's compaction can dissolve the body without losing the
+		// findings — the main agent can read_file the path to recover detail.
+		fullJSON := summary.Render()
+		result := fullJSON
+		if spillPath := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); spillPath != "" {
+			result = fullJSON + fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
+		}
+
+		// Loud warning on exhaustion — not a dim tool-line. The main agent must
+		// know the subagent ran out of budget so it can re-dispatch narrower or
+		// take over, rather than trusting potentially-incomplete findings.
+		if summary.Status == "incomplete" {
+			fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(args.Task, 80)))
+			fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
+		}
+		return result
 
 	// The mashura__* counsel family (and the legacy oracle__ask alias) all route
 	// through one handler: the model supplies intent, Wakil deterministically

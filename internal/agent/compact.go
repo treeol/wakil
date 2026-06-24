@@ -197,20 +197,95 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	// never sees verbose content that would have been pruned anyway. This is
 	// the only unconditional eviction site; Send() only evicts under pressure.
 	a.evictStaleToolResults()
+
+	// Pinned messages in the "older" block are exempt from summarization.
+	// They are extracted from older, held aside, and re-inserted verbatim
+	// after the summary so they survive compaction intact. This is what stops
+	// a subagent's task instruction from being dissolved into lossy prose.
+	//
+	// When a pinned tool-role message is found, its parent assistant message
+	// (the one carrying the matching tool_calls[].id) is also kept verbatim —
+	// otherwise the tool message would be orphaned from its call, violating
+	// the chat-completions schema (tool result without preceding tool_calls).
 	older := a.Conv[:boundary]
-	summary, err := sum(ctx, renderTranscript(older))
-	if err != nil {
-		return false, err
-	}
-	// If the generated summary itself exceeds SummaryBytes, condense it further
-	// so the running summary never balloons across repeated compaction cycles.
-	if a.Cfg.SummaryBytes > 0 && len(summary) > a.Cfg.SummaryBytes {
-		if condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary); err2 == nil {
-			summary = condensed
+	pinnedSet := make(map[int]bool) // indices in older that are pinned (or parents/children of pinned)
+	for i, m := range older {
+		if m.Pinned {
+			pinnedSet[i] = true
+			// If this is a pinned tool message, find its parent assistant
+			// tool_calls message and co-preserve it. This prevents an orphaned
+			// tool message (tool result without preceding tool_calls).
+			if m.Role == "tool" && m.ToolCallID != "" {
+				// Search backward for the nearest assistant with a matching
+				// tool_call ID — this is the structural parent, not just the
+				// first assistant that happens to reuse the ID.
+				for j := i - 1; j >= 0; j-- {
+					if older[j].Role == "assistant" && len(older[j].ToolCalls) > 0 {
+						matched := false
+						for _, tc := range older[j].ToolCalls {
+							if tc.ID == m.ToolCallID {
+								matched = true
+								break
+							}
+						}
+						if matched {
+							pinnedSet[j] = true
+							// Also co-preserve ALL sibling tool results from
+							// this assistant message, bounded to the same turn
+							// (stop at the next user or assistant message).
+							// This prevents the inverse orphan: tool_calls
+							// with no matching tool result.
+							for _, tc2 := range older[j].ToolCalls {
+								for k := j + 1; k < len(older); k++ {
+									// Stop at the next assistant or user message —
+									// siblings belong to the same turn.
+									if older[k].Role == "assistant" || older[k].Role == "user" {
+										break
+									}
+									if older[k].Role == "tool" && older[k].ToolCallID == tc2.ID {
+										pinnedSet[k] = true
+									}
+								}
+							}
+							break
+						}
+					}
+				}
+			}
 		}
 	}
-	newConv := make([]proxy.Message, 0, len(a.Conv)-boundary+1)
-	newConv = append(newConv, proxy.Message{Role: "system", Content: StrPtr("[Summary of earlier conversation]\n" + summary)})
+	var pinnedPrefix []proxy.Message
+	var summarizable []proxy.Message
+	for i, m := range older {
+		if pinnedSet[i] {
+			pinnedPrefix = append(pinnedPrefix, m)
+		} else {
+			summarizable = append(summarizable, m)
+		}
+	}
+
+	var summary string
+	if len(summarizable) > 0 {
+		var err error
+		summary, err = sum(ctx, renderTranscript(summarizable))
+		if err != nil {
+			return false, err
+		}
+		// If the generated summary itself exceeds SummaryBytes, condense it further
+		// so the running summary never balloons across repeated compaction cycles.
+		if a.Cfg.SummaryBytes > 0 && len(summary) > a.Cfg.SummaryBytes {
+			if condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary); err2 == nil {
+				summary = condensed
+			}
+		}
+	}
+
+	newConv := make([]proxy.Message, 0, len(a.Conv)-boundary+1+len(pinnedPrefix)+1)
+	// Pinned messages from older stay at the front (system prompt, task).
+	newConv = append(newConv, pinnedPrefix...)
+	if summary != "" {
+		newConv = append(newConv, proxy.Message{Role: "system", Content: StrPtr("[Summary of earlier conversation]\n" + summary)})
+	}
 	newConv = append(newConv, a.Conv[boundary:]...)
 	a.Conv = newConv
 	return true, nil
@@ -221,29 +296,44 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 // of the oldest user message; next is the index of the following user message
 // (or len(conv) when this is the last turn). Returns (-1, -1) when no user
 // message exists. Skips a leading system summary message.
+//
+// Turns containing any pinned message are skipped entirely — neither the
+// anchoring user message nor any message within the turn range is eligible
+// for dropping. This is the enforcement point for the compaction-exemption:
+// enforceHardMax's drop loop calls this function to find the next turn to
+// shed, and it must never return a turn that contains protected content
+// (subagent task instruction, subagent summary breadcrumb).
 func oldestTurnRange(conv []proxy.Message) (first, next int) {
 	start := 0
 	if len(conv) > 0 && conv[0].Role == "system" {
 		start = 1
 	}
-	first = -1
 	for i := start; i < len(conv); i++ {
-		if conv[i].Role == "user" {
-			first = i
-			break
+		if conv[i].Role != "user" || conv[i].Pinned {
+			continue
 		}
-	}
-	if first < 0 {
-		return -1, -1
-	}
-	next = len(conv)
-	for i := first + 1; i < len(conv); i++ {
-		if conv[i].Role == "user" {
-			next = i
-			break
+		// Found a candidate user message at i. Compute the turn range [i, next).
+		n := len(conv)
+		for j := i + 1; j < len(conv); j++ {
+			if conv[j].Role == "user" {
+				n = j
+				break
+			}
 		}
+		// Skip this turn if any message within [i, n) is pinned.
+		hasPinned := false
+		for _, m := range conv[i:n] {
+			if m.Pinned {
+				hasPinned = true
+				break
+			}
+		}
+		if hasPinned {
+			continue
+		}
+		return i, n
 	}
-	return first, next
+	return -1, -1
 }
 
 // turnContainsSubagent reports whether the range [first, next) of conv contains
@@ -272,13 +362,43 @@ func turnContainsSubagent(conv []proxy.Message, first, next int) bool {
 func dropOldestTurn(conv []proxy.Message) []proxy.Message {
 	first, next := oldestTurnRange(conv)
 	if first < 0 {
-		// No user turns — nothing safe to drop; remove one raw message as last resort.
+		// No droppable user turns — nothing safe to drop; remove one non-pinned
+		// raw message as last resort. Skip:
+		// - pinned messages (system prompt, task, breadcrumbs)
+		// - assistant messages with tool_calls (dropping orphans their tool results)
+		// - tool messages whose parent assistant is being retained (dropping
+		//   orphans the tool_calls — the inverse schema violation)
 		start := 0
 		if len(conv) > 0 && conv[0].Role == "system" {
 			start = 1
 		}
-		if start < len(conv) {
-			return append(conv[:start], conv[start+1:]...)
+		for i := start; i < len(conv); i++ {
+			if conv[i].Pinned {
+				continue
+			}
+			if conv[i].Role == "assistant" && len(conv[i].ToolCalls) > 0 {
+				continue
+			}
+			if conv[i].Role == "tool" && conv[i].ToolCallID != "" {
+				// Check if the parent assistant is still in conv (being retained).
+				// If it is, dropping this tool message would orphan it.
+				parentRetained := false
+				for j := i - 1; j >= 0; j-- {
+					if conv[j].Role == "assistant" && len(conv[j].ToolCalls) > 0 {
+						for _, tc := range conv[j].ToolCalls {
+							if tc.ID == conv[i].ToolCallID {
+								parentRetained = true
+								break
+							}
+						}
+						break // nearest assistant is the structural parent
+					}
+				}
+				if parentRetained {
+					continue
+				}
+			}
+			return append(conv[:i:i], conv[i+1:]...)
 		}
 		return conv
 	}
@@ -342,6 +462,12 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	if droppedTurns == 0 {
 		return
 	}
+
+	// Signal exhaustion to dispatchSubagent: content was shed from the
+	// transcript during this turn. The subagent's final response may be based
+	// on incomplete context — dispatchSubagent uses this to produce a truthful
+	// Status:"incomplete" summary instead of a misleading parse-error.
+	a.exhausted = true
 
 	// Build the warning shown in the conversation viewport.
 	userTurnsLeft := 0

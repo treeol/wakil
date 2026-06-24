@@ -42,6 +42,23 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+
+	// Pinned marks a message as exempt from compaction summarization and
+	// hard-max dropping. Pinned messages are never folded into the lossy prose
+	// summary that Compact produces, and never removed by enforceHardMax's
+	// drop-oldest-turn loop. They still count toward TranscriptSize (so the
+	// drop loop can detect an all-pinned-exceeds-max state and terminate).
+	//
+	// Used for the subagent's system prompt + task instruction (so the
+	// subagent never forgets its own task mid-run) and for durable subagent
+	// summary breadcrumbs in the parent's transcript (so the parent can
+	// recover findings that were dissolved by its own compaction).
+	//
+	// This field is deliberately NOT serialized (no json tag) — it is a
+	// local-only marker that must never leak into the proxy's request body,
+	// because the proxy/memory layer has no concept of pinning and would
+	// silently ignore it (or, worse, persist it as a stale marker).
+	Pinned bool `json:"-"`
 }
 
 type ToolCall struct {
@@ -599,6 +616,7 @@ func extractSpillPath(content string) string {
 		"+",
 		"evicted — ",
 		"pre-send trim — ",
+		"subagent summary at: ",
 	}
 	matched := false
 	for _, p := range knownPrefixes {
