@@ -824,14 +824,14 @@ func tuiConfirmer(app *App) Confirmer {
 	}
 }
 
-// resolveBackendCtxCmd returns a tea.Cmd that probes the new backend's context
-// window in a goroutine and delivers the result as a BackendCtxLimitMsg. The
-// TUI event loop applies the update to app.CtxLimit when the msg is handled,
+// resolveBackendCtxCmd returns a tea.Cmd that probes the new backend+model's
+// context window in a goroutine and delivers the result as a BackendCtxLimitMsg.
+// The TUI event loop applies the update to app.CtxLimit when the msg is handled,
 // keeping it out of the goroutine to avoid races with concurrent agent turns.
-func resolveBackendCtxCmd(app *App, backend string) tea.Cmd {
+func resolveBackendCtxCmd(app *App, backend, model string) tea.Cmd {
 	return func() tea.Msg {
 		var buf strings.Builder
-		lim := ResolveContextLimitForBackend(context.Background(), app.Client.HTTP, app.Cfg, backend, &buf)
+		lim := ResolveContextLimitForBackendModel(context.Background(), app.Client.HTTP, app.Cfg, backend, model, &buf)
 		return BackendCtxLimitMsg{Limit: lim, Note: strings.TrimSpace(buf.String())}
 	}
 }
@@ -992,7 +992,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 			// Re-probe context limits for the new backend so dynamic thresholds
 			// (compact_at_frac etc.) scale to the new window. The result arrives
 			// as BackendCtxLimitMsg and is applied safely in the TUI event loop.
-			return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, selected))
+			return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, selected, app.SelectedModel))
 		}
 		// No arg: report current selection and last-used.
 		cur := app.SelectedBackend
@@ -1015,10 +1015,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 	case "/model":
 		// /model [<name>] — set or show the model override for this session.
 		// Unlike /backend <name/model>, /model acts on the model field only,
-		// leaving the current backend selection unchanged.
+		// leaving the current backend selection unchanged. A model switch also
+		// re-resolves context limits so compaction thresholds scale to the
+		// new model's real window (not the previous model's).
 		if len(fields) >= 2 {
 			app.SelectedModel = fields[1]
-			return true, false, note("model: set to " + fields[1])
+			msg := "model: set to " + fields[1]
+			// Re-resolve limits for the selected backend + new model.
+			return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, app.SelectedBackend, fields[1]))
 		}
 		cur := app.SelectedModel
 		if cur == "" {

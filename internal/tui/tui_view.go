@@ -474,8 +474,15 @@ const ctxGap = 2
 // never on current usage, so reflow() and View() always reserve the same width.
 func (m tuiModel) contextBlockWidth() int {
 	maxK := m.app.ContextLimit().NCtx / 1000
-	capW := 5 + len(sprint("%dk / %dk  100%%", maxK, maxK)) // caption at full usage
-	meterW := 5 + 13                                        // key(5) + 12 cells + divider
+	// Estimate caption width: for ≥1000k use "%.1fM / %.1fM" format (~13 chars),
+	// otherwise use "%dk / %dk" format.
+	var capW int
+	if maxK >= 1000 {
+		capW = 5 + len(sprint("%.1fM / %.1fM  100%%", 1.0, 1.0))
+	} else {
+		capW = 5 + len(sprint("%dk / %dk  100%%", maxK, maxK))
+	}
+	meterW := 5 + 13 // key(5) + 12 cells + divider
 	if capW > meterW {
 		return capW
 	}
@@ -499,15 +506,15 @@ func (m tuiModel) inputContextBlock() (block string, taW int, show bool) {
 //
 //	hist  13  22k
 //	ctx   ⣿⣀⣀⣀⣀⣀┊⣀⣀⣀⣀⣀⣀
-//	      48k / 196k  24%
+//	      48k / 1.0M  24%
 //
 // hist is the stored transcript size in bytes (turns + KB). ctx is the real
 // token occupancy of the window — the backend's last reported prompt_tokens —
-// measured against the authoritative per-slot n_ctx (resolved at startup). The
-// caption color shifts green→amber→red: amber once usage crosses the usable
-// budget (n_ctx minus reasoning/answer headroom), red near the ceiling. When
-// n_ctx came from the config fallback rather than the backend, the "ctx" key is
-// amber as a standing cue that the ceiling is unverified.
+// measured against the authoritative per-slot n_ctx (resolved from the proxy).
+// The caption color shifts green→amber→red: amber once usage crosses the usable
+// budget (n_ctx minus headroom), red near the ceiling. When n_ctx came from the
+// config fallback rather than the backend, the "ctx" key is amber as a standing
+// cue that the ceiling is unverified. Large windows (≥1000k) use "M" suffix.
 func (m tuiModel) renderContextBlock(bw int) string {
 	turns := len(m.app.Conv)
 	histBytes := agent.TranscriptSize(m.app.Conv)
@@ -537,9 +544,18 @@ func (m tuiModel) renderContextBlock(bw int) string {
 	cell := func(s string) string {
 		return lipgloss.NewStyle().Width(bw).MaxWidth(bw).Render(s)
 	}
+	// Format total: use "k" for <1000k, "M" for ≥1000k.
+	totalStr := fmt.Sprintf("%dk", total/1000)
+	if total >= 1000000 {
+		totalStr = fmt.Sprintf("%.1fM", float64(total)/1e6)
+	}
+	usedStr := fmt.Sprintf("%dk", used/1000)
+	if used >= 1000000 {
+		usedStr = fmt.Sprintf("%.1fM", float64(used)/1e6)
+	}
 	hist := key("hist") + lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(sprint("%d  %dk", turns, histBytes/1000))
 	meter := ctxKey + brailleMeter(used, total, color, 6)
-	caption := key("") + dim2(sprint("%dk / %dk", used/1000, total/1000)) + "  " +
+	caption := key("") + dim2(sprint("%s / %s", usedStr, totalStr)) + "  " +
 		lipgloss.NewStyle().Foreground(color).Render(sprint("%d%%", pct))
 	return strings.Join([]string{cell(hist), cell(meter), cell(caption)}, "\n")
 }

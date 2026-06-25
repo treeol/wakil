@@ -14,18 +14,26 @@ import (
 )
 
 // ContextLimit is the authoritative per-slot context window, resolved once at
-// startup and cached for the process lifetime. NCtx is the real ceiling the
-// backend enforces (in tokens); everything else in Wakil that reasons about
+// startup and re-resolved on /backend or /model switch. NCtx is the real ceiling
+// the backend enforces (in tokens); everything else in Wakil that reasons about
 // "how full is the window" keys off this number rather than a hardcoded guess.
 //
-// Usable() carves the prompt budget out of NCtx by subtracting the headroom a
-// completion needs — a turn that thinks (ReasoningBudget) and then answers
-// (AnswerMargin) cannot also fill the window to the brim, so the pressure and
-// compaction logic must aim below NCtx, not at it.
+// UsableCtx is the proxy's pre-computed usable budget (n_ctx minus reasoning and
+// answer headroom, already subtracted server-side). When > 0 it is the single
+// source of truth for the usable window; when 0 (e.g. the /props fallback path
+// which doesn't emit usable_ctx) Usable() falls back to the client-side
+// computation: NCtx − ReasoningBudget − AnswerMargin.
+//
+// ContextSource is the proxy's reported origin of the n_ctx value:
+// "props" (llama-server native), "model_meta" (OpenRouter model registry), or "".
+// Distinct from Source, which records where the *client* got the number
+// ("backend" | "fallback").
 type ContextLimit struct {
 	NCtx            int    // per-slot context size in tokens (the hard ceiling)
 	NCtxTrain       int    // model's trained context length in tokens; 0 if the backend didn't report it
 	Source          string // "backend" (fetched) or "fallback" (config; backend unreachable)
+	ContextSource   string // proxy-reported origin: "props", "model_meta", or "" (unknown)
+	UsableCtx       int    // proxy's pre-computed usable budget; 0 = not reported (fall back to client-side)
 	ReasoningBudget int    // tokens reserved for extended thinking
 	AnswerMargin    int    // tokens reserved for the final answer
 }
@@ -35,12 +43,16 @@ type ContextLimit struct {
 // truth — callers surface it loudly.
 func (c ContextLimit) FromBackend() bool { return c.Source == "backend" }
 
-// Usable returns the token budget available for assembling a turn's prompt:
-// NCtx minus the reasoning and answer reservations. Never negative; if the
-// reservations exceed NCtx (a misconfiguration on a tiny backend) it clamps to a
-// small positive floor so callers don't divide by zero or treat every turn as
-// over-budget.
+// Usable returns the token budget available for assembling a turn's prompt.
+// When the proxy reported a usable_ctx (pre-computed server-side), it is the
+// authoritative single source of truth. Otherwise falls back to the client-side
+// computation: NCtx minus the reasoning and answer reservations. Never negative;
+// if the result is ≤ 0 it clamps to a small positive floor so callers don't
+// divide by zero or treat every turn as over-budget.
 func (c ContextLimit) Usable() int {
+	if c.UsableCtx > 0 {
+		return c.UsableCtx
+	}
 	u := c.NCtx - c.ReasoningBudget - c.AnswerMargin
 	if u < 1 {
 		return 1
@@ -52,91 +64,96 @@ func (c ContextLimit) Usable() int {
 // stall launch — on timeout the caller falls back to the configured ceiling.
 const limitsTimeout = 5 * time.Second
 
-// resolveContextLimit fetches the per-slot n_ctx from the backend (via the proxy)
+// limitsResult carries the full response from a context-limit probe.
+type limitsResult struct {
+	nCtx          int
+	nCtxTrain     int
+	usableCtx     int
+	contextSource string
+	path          string
+}
+
+// ResolveContextLimit fetches the per-slot n_ctx from the backend (via the proxy)
 // and returns the authoritative ContextLimit. On any failure it falls back to
 // cfg.ContextTokensFallback and writes a loud, single-line warning to out so a
 // stale fallback can't be mistaken for the real ceiling. The headroom fields are
 // always taken from cfg regardless of which path supplied NCtx.
 func ResolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Config, out io.Writer) ContextLimit {
+	return resolveContextLimit(ctx, httpc, cfg, "", "", out)
+}
+
+// resolveContextLimit is the shared implementation: probes with backend and model
+// as query params so the proxy returns per-model limits. Called by both startup
+// (empty backend/model → proxy defaults) and re-resolve on /backend or /model.
+func resolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Config, backend, model string, out io.Writer) ContextLimit {
 	lim := ContextLimit{
 		ReasoningBudget: cfg.ReasoningBudgetTokens,
 		AnswerMargin:    cfg.AnswerMarginTokens,
 	}
 
-	nCtx, nCtxTrain, path, err := fetchContextLimit(ctx, httpc, cfg.BaseURL, cfg.AuthHeader(), "")
-	if err != nil || nCtx <= 0 {
+	res, err := fetchContextLimit(ctx, httpc, cfg.BaseURL, cfg.AuthHeader(), backend, model)
+	if err != nil || res.nCtx <= 0 {
 		lim.NCtx = cfg.ContextTokensFallback
 		lim.Source = "fallback"
 		reason := "backend reported no usable n_ctx"
 		if err != nil {
 			reason = err.Error()
 		}
+		id := backend
+		if model != "" {
+			id = backend + "/" + model
+		}
 		fmt.Fprintf(out, "⚠ using fallback context limit %d tokens (%s) — set the backend or context_tokens_fallback\n",
 			lim.NCtx, reason)
+		_ = id
 		return lim
 	}
 
-	lim.NCtx = nCtx
-	lim.NCtxTrain = nCtxTrain
+	lim.NCtx = res.nCtx
+	lim.NCtxTrain = res.nCtxTrain
+	lim.UsableCtx = res.usableCtx
+	lim.ContextSource = res.contextSource
 	lim.Source = "backend"
 	trainNote := ""
-	if nCtxTrain > 0 {
-		trainNote = fmt.Sprintf(", n_ctx_train=%d", nCtxTrain)
+	if res.nCtxTrain > 0 {
+		trainNote = fmt.Sprintf(", n_ctx_train=%d", res.nCtxTrain)
 	}
-	fmt.Fprintf(out, "context limit: n_ctx=%d%s (from backend %s); usable=%d (−%d reasoning −%d answer)\n",
-		nCtx, trainNote, path, lim.Usable(), lim.ReasoningBudget, lim.AnswerMargin)
+	csNote := ""
+	if res.contextSource != "" {
+		csNote = fmt.Sprintf(", source=%s", res.contextSource)
+	}
+	fmt.Fprintf(out, "context limit: n_ctx=%d%s, usable_ctx=%d (from %s%s); usable=%d (−%d reasoning −%d answer)\n",
+		res.nCtx, trainNote, res.usableCtx, res.path, csNote, lim.Usable(), lim.ReasoningBudget, lim.AnswerMargin)
 	return lim
 }
 
-// fetchContextLimit probes the proxy for the backend's per-slot context size.
-// It tries two shapes, in order, returning on the first that yields a positive
-// n_ctx:
-//
-//  1. GET /v1/ilm/limits — the proxy's dedicated route. Flat JSON:
-//     {"n_ctx": 196608, "n_ctx_train": 262144}
-//  2. GET /props — llama-server's native props endpoint (a clean passthrough).
-//     n_ctx lives under default_generation_settings; n_ctx_train may appear
-//     top-level or nested.
-//
-// The returned path names which endpoint answered (for the startup log). On
-// total failure it returns the last error so the fallback note can explain why.
 // ResolveContextLimitForBackend is like ResolveContextLimit but probes the
 // proxy for a specific backend's context window by sending X-Ilm-Backend in the
 // request. Called by the /backend command handler to re-synchronise thresholds
 // when the user switches backends mid-session.
 func ResolveContextLimitForBackend(ctx context.Context, httpc *http.Client, cfg config.Config, backend string, out io.Writer) ContextLimit {
-	lim := ContextLimit{
-		ReasoningBudget: cfg.ReasoningBudgetTokens,
-		AnswerMargin:    cfg.AnswerMarginTokens,
-	}
-	nCtx, nCtxTrain, path, err := fetchContextLimit(ctx, httpc, cfg.BaseURL, cfg.AuthHeader(), backend)
-	if err != nil || nCtx <= 0 {
-		lim.NCtx = cfg.ContextTokensFallback
-		lim.Source = "fallback"
-		reason := "backend reported no usable n_ctx"
-		if err != nil {
-			reason = err.Error()
-		}
-		fmt.Fprintf(out, "⚠ using fallback context limit %d tokens for backend %q (%s)\n",
-			lim.NCtx, backend, reason)
-		return lim
-	}
-	lim.NCtx = nCtx
-	lim.NCtxTrain = nCtxTrain
-	lim.Source = "backend"
-	trainNote := ""
-	if nCtxTrain > 0 {
-		trainNote = fmt.Sprintf(", n_ctx_train=%d", nCtxTrain)
-	}
-	fmt.Fprintf(out, "backend %q: n_ctx=%d%s (from %s); usable=%d\n",
-		backend, nCtx, trainNote, path, lim.Usable())
-	return lim
+	return resolveContextLimit(ctx, httpc, cfg, backend, "", out)
+}
+
+// ResolveContextLimitForBackendModel probes the proxy for a specific backend+model
+// pair. Called by the /backend and /model command handlers to re-synchronise
+// thresholds when the user switches backends or models mid-session.
+func ResolveContextLimitForBackendModel(ctx context.Context, httpc *http.Client, cfg config.Config, backend, model string, out io.Writer) ContextLimit {
+	return resolveContextLimit(ctx, httpc, cfg, backend, model, out)
 }
 
 // fetchContextLimit probes the proxy for a backend's per-slot context size.
-// When backend is non-empty the X-Ilm-Backend header is sent so the proxy
-// returns the limits for that specific backend rather than the default.
-func fetchContextLimit(ctx context.Context, httpc *http.Client, baseURL, auth, backend string) (nCtx, nCtxTrain int, path string, err error) {
+// When backend is non-empty, it is sent as ?backend=<backend>.
+// When model is non-empty, it is sent as ?model=<url-encoded model>.
+//
+// Endpoints tried, in order:
+//
+//  1. GET /v1/ilm/limits — the proxy's dedicated route. Flat JSON:
+//     {"n_ctx": 196608, "n_ctx_train": 262144, "usable_ctx": 188416, "context_source": "props"}
+//  2. GET /props — llama-server's native props endpoint (a clean passthrough).
+//     n_ctx lives under default_generation_settings; n_ctx_train may appear
+//     top-level or nested. Does NOT emit usable_ctx or context_source.
+func fetchContextLimit(ctx context.Context, httpc *http.Client, baseURL, auth, backend, model string) (limitsResult, error) {
 	base := strings.TrimRight(baseURL, "/")
 	if httpc == nil {
 		httpc = http.DefaultClient
@@ -146,32 +163,47 @@ func fetchContextLimit(ctx context.Context, httpc *http.Client, baseURL, auth, b
 
 	var lastErr error
 	for _, p := range []string{"/v1/ilm/limits", "/props"} {
-		body, gErr := getJSONWithBackend(cctx, httpc, base+p, auth, backend)
+		body, gErr := getJSONWithBackend(cctx, httpc, base+p, auth, backend, model)
 		if gErr != nil {
 			lastErr = gErr
 			continue
 		}
-		c, t := ParseContextLimitJSON(body)
-		if c > 0 {
-			return c, t, p, nil
+		res := parseContextLimitJSON(body)
+		if res.nCtx > 0 {
+			res.path = p
+			return res, nil
 		}
 		lastErr = fmt.Errorf("%s returned no n_ctx", p)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no context-limit endpoint responded")
 	}
-	return 0, 0, "", lastErr
+	return limitsResult{}, lastErr
 }
 
 // getJSON issues a GET and returns the response body, bounded so a misbehaving
 // endpoint can't stream an unbounded payload into memory.
 func getJSON(ctx context.Context, httpc *http.Client, url, auth string) ([]byte, error) {
-	return getJSONWithBackend(ctx, httpc, url, auth, "")
+	return getJSONWithBackend(ctx, httpc, url, auth, "", "")
 }
 
 // getJSONWithBackend is like getJSON but adds X-Ilm-Backend when backend is
-// non-empty, routing the probe to a specific backend's context window.
-func getJSONWithBackend(ctx context.Context, httpc *http.Client, url, auth, backend string) ([]byte, error) {
+// non-empty and ?model=<url-encoded> when model is non-empty. The model is sent
+// as a query-string parameter, NOT a header — the proxy reads model from the
+// query string on the limits route.
+func getJSONWithBackend(ctx context.Context, httpc *http.Client, url, auth, backend, model string) ([]byte, error) {
+	// Build query string: ?backend=<b>&model=<url-encoded-model>
+	queryParts := make([]string, 0, 2)
+	if backend != "" {
+		queryParts = append(queryParts, "backend="+urlQueryEscape(backend))
+	}
+	if model != "" {
+		queryParts = append(queryParts, "model="+urlQueryEscape(model))
+	}
+	if len(queryParts) > 0 {
+		url = url + "?" + strings.Join(queryParts, "&")
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -179,9 +211,6 @@ func getJSONWithBackend(ctx context.Context, httpc *http.Client, url, auth, back
 	req.Header.Set("Accept", "application/json")
 	if auth != "" {
 		req.Header.Set("Authorization", auth)
-	}
-	if backend != "" {
-		req.Header.Set("X-Ilm-Backend", backend)
 	}
 	resp, err := httpc.Do(req)
 	if err != nil {
@@ -194,32 +223,42 @@ func getJSONWithBackend(ctx context.Context, httpc *http.Client, url, auth, back
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 }
 
-// parseContextLimitJSON pulls n_ctx (per-slot) and n_ctx_train out of either the
-// flat /v1/ilm/limits shape or the nested llama-server /props shape. It is
-// deliberately permissive: it checks the top level first, then
-// default_generation_settings, so it survives minor schema drift across
-// llama-server versions and proxy builds.
-func ParseContextLimitJSON(body []byte) (nCtx, nCtxTrain int) {
+// parseContextLimitJSON parses the full limits response body into a limitsResult.
+// Reads n_ctx, n_ctx_train, usable_ctx, and context_source from the flat
+// /v1/ilm/limits shape. Falls back to the nested llama-server /props shape for
+// n_ctx/n_ctx_train (usable_ctx and context_source are not present in /props).
+func parseContextLimitJSON(body []byte) limitsResult {
 	var raw map[string]json.RawMessage
 	if json.Unmarshal(body, &raw) != nil {
-		return 0, 0
+		return limitsResult{}
 	}
-	nCtx = intField(raw, "n_ctx")
-	nCtxTrain = intField(raw, "n_ctx_train")
+	res := limitsResult{
+		nCtx:          intField(raw, "n_ctx"),
+		nCtxTrain:     intField(raw, "n_ctx_train"),
+		usableCtx:     intField(raw, "usable_ctx"),
+		contextSource: stringField(raw, "context_source"),
+	}
 
 	// llama-server /props nests the per-slot n_ctx under default_generation_settings.
 	if dgs, ok := raw["default_generation_settings"]; ok {
 		var inner map[string]json.RawMessage
 		if json.Unmarshal(dgs, &inner) == nil {
-			if nCtx == 0 {
-				nCtx = intField(inner, "n_ctx")
+			if res.nCtx == 0 {
+				res.nCtx = intField(inner, "n_ctx")
 			}
-			if nCtxTrain == 0 {
-				nCtxTrain = intField(inner, "n_ctx_train")
+			if res.nCtxTrain == 0 {
+				res.nCtxTrain = intField(inner, "n_ctx_train")
 			}
 		}
 	}
-	return nCtx, nCtxTrain
+	return res
+}
+
+// ParseContextLimitJSON is the exported legacy entrypoint for callers that only
+// need n_ctx and n_ctx_train (tests, subagent compatibility).
+func ParseContextLimitJSON(body []byte) (nCtx, nCtxTrain int) {
+	res := parseContextLimitJSON(body)
+	return res.nCtx, res.nCtxTrain
 }
 
 // contextLimit returns the resolved per-slot context window. When CtxLimit was
@@ -281,4 +320,46 @@ func intField(m map[string]json.RawMessage, key string) int {
 		return 0
 	}
 	return int(f)
+}
+
+// stringField reads a JSON string field. Missing, non-string, or null fields
+// yield "".
+func stringField(m map[string]json.RawMessage, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(v, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// urlQueryEscape encodes s for use in a URL query string, escaping characters
+// like '/' that are common in model IDs (e.g. "google/gemini-2.5-pro").
+func urlQueryEscape(s string) string {
+	result := make([]byte, 0, len(s)+len(s)/3)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if shouldEscape(c) {
+			result = append(result, '%', "0123456789ABCDEF"[c>>4], "0123456789ABCDEF"[c&0xF])
+		} else {
+			result = append(result, c)
+		}
+	}
+	return string(result)
+}
+
+func shouldEscape(c byte) bool {
+	// Unreserved characters (RFC 3986): ALPHA / DIGIT / - / . / _ / ~
+	if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' {
+		return false
+	}
+	switch c {
+	case '-', '.', '_', '~':
+		return false
+	default:
+		return true
+	}
 }

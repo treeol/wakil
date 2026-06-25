@@ -109,19 +109,31 @@ func Truncate(s string, n int) string {
 
 // activeThresholds returns the compaction thresholds in chars for the current
 // session. When a live context limit is known from the backend the thresholds
-// are computed as fractions of the usable window so they scale automatically
-// when the backend or its n_ctx changes. When the limit is unknown (startup
-// before the probe, subagents, tests that leave CtxLimit zero) the absolute
-// config values are the fallback — always kept valid by validateContextLimits.
+// are computed as fractions of the effective window so they scale automatically
+// when the backend, model, or their n_ctx changes.
+//
+// effective_ctx = Usable() × cfg.ContextCapacityFrac × charsPerToken
+// Then CompactAtFrac, KeepBytesFrac, HardMaxFrac are applied on top.
+//
+// When the limit is unknown (startup before the probe, subagents, tests that
+// leave CtxLimit zero) the absolute config values are the fallback — always
+// kept valid by validateContextLimits.
 func (a *App) activeThresholds() (compactAt, keepBytes, hardMax int) {
-	// Use the raw field, not a.ContextLimit(), which synthesises a fallback with
-	// a non-zero NCtx even when the backend has never been probed. We want the
-	// fraction path only when an authoritative n_ctx is known from the backend.
+	// Use the raw NCtx field, not a.ContextLimit(), which synthesises a fallback
+	// with a non-zero NCtx even when the backend has never been probed. We want
+	// the fraction path only when an authoritative n_ctx is known from the backend.
 	if a.CtxLimit.NCtx > 0 && a.Cfg.CompactAtFrac > 0 {
-		chars := a.CtxLimit.Usable() * charsPerToken
-		ca := int(a.Cfg.CompactAtFrac * float64(chars))
-		kb := int(a.Cfg.KeepBytesFrac * float64(chars))
-		hm := int(a.Cfg.HardMaxFrac * float64(chars))
+		// effective_ctx = usable tokens × capacity_frac × charsPerToken
+		usable := a.CtxLimit.Usable()
+		capacityFrac := a.Cfg.ContextCapacityFrac
+		if capacityFrac <= 0 {
+			capacityFrac = 0.80 // zero value → use default
+		}
+		effectiveChars := int(float64(usable) * capacityFrac * float64(charsPerToken))
+
+		ca := int(a.Cfg.CompactAtFrac * float64(effectiveChars))
+		kb := int(a.Cfg.KeepBytesFrac * float64(effectiveChars))
+		hm := int(a.Cfg.HardMaxFrac * float64(effectiveChars))
 		// Only use fraction results when the hierarchy is satisfied. For tiny
 		// backends (< ~8k chars usable) the fixed SummaryBytes may violate it;
 		// fall through to absolute values in that case rather than corrupt the

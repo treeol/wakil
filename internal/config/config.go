@@ -40,6 +40,15 @@ type Config struct {
 	KeepBytesFrac float64 `json:"keep_bytes_frac"` // fraction of usable context to keep verbatim after compaction; default 0.60
 	HardMaxFrac   float64 `json:"hard_max_frac"`   // fraction of usable context as unconditional ceiling; default 0.95
 
+	// ContextCapacityFrac is headroom below the literal context ceiling.
+	// effective_ctx = usable_ctx × context_capacity_frac, then CompactAtFrac /
+	// KeepBytesFrac / HardMaxFrac are applied on top of effective_ctx. This is
+	// deliberate — it gives the model working room below the proxy-reported
+	// usable_ctx, which already has reasoning+answer margins subtracted.
+	// Default 0.80 (80% of the proxy's usable budget). Set to 1.0 to use the
+	// full ceiling with no additional headroom.
+	ContextCapacityFrac float64 `json:"context_capacity_frac,omitempty"`
+
 	// Backend-truth context sizing. The authoritative per-slot context window
 	// (n_ctx, in tokens) is fetched from the backend at startup (see ctxlimit.go);
 	// these are the headroom reservations and the fallback used only when that
@@ -291,9 +300,10 @@ func DefaultConfig() Config {
 		TurnToolBudget: 40000,  // per-turn tool output budget; reduced slice once exceeded
 		MaxChars:       512000, // transcript-byte ceiling (hist line + compaction fallback)
 		CompactAt:      145000, // fire before reaching hard max (post-compact target ~140k)
-		CompactAtFrac:  0.75,   // compact at 75% of usable context
-		KeepBytesFrac:  0.60,   // keep 60% of usable context verbatim after compaction
-		HardMaxFrac:    0.95,   // hard ceiling at 95% of usable context
+		CompactAtFrac:      0.75,   // compact at 75% of effective context
+		KeepBytesFrac:      0.60,   // keep 60% of effective context verbatim after compaction
+		HardMaxFrac:        0.95,   // hard ceiling at 95% of effective context
+		ContextCapacityFrac: 0.80,  // use 80% of proxy's usable_ctx as the working budget
 
 		ReasoningBudgetTokens: 4096,   // headroom for extended thinking
 		AnswerMarginTokens:    4096,   // headroom for the final answer
@@ -621,6 +631,11 @@ func validateContextLimits(cfg Config) error {
 			return fmt.Errorf("hard_max_frac (%g) must be in (compact_at_frac=%g, 1.0]",
 				cfg.HardMaxFrac, cfg.CompactAtFrac)
 		}
+	}
+	// context_capacity_frac: headroom fraction below the proxy's usable_ctx.
+	// Valid range is [0, 1.0]; 0 = use default (DefaultConfig supplies 0.80).
+	if cfg.ContextCapacityFrac < 0 || cfg.ContextCapacityFrac > 1.0 {
+		return fmt.Errorf("context_capacity_frac must be in [0, 1.0], got %g (0 = use default)", cfg.ContextCapacityFrac)
 	}
 	return nil
 }
