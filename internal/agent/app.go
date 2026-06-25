@@ -293,10 +293,19 @@ func (a *App) SessionWorkspace() string {
 	return a.Cfg.HostWorkDir
 }
 
-// chatID returns the current session's chat ID, or empty string if no session.
+// chatID returns the current session's chat ID. When Session is nil (e.g.
+// subagents, which have no on-disk persistence), it falls back to the Client's
+// ChatID so that spill-to-disk (StubToolResult, CapToolResult, SpillFullResult)
+// produces real recoverable paths inside a subagent instead of silently
+// no-op'ing with an empty directory. The subagent's Client.ChatID is minted
+// per-dispatch-unique (a fresh UUID v4 via NewChatID at the dispatch call site),
+// so two concurrent subagents never collide in the toolcache directory.
 func (a *App) chatID() string {
-	if a.Session != nil {
+	if a.Session != nil && a.Session.ChatID != "" {
 		return a.Session.ChatID
+	}
+	if a.Client != nil {
+		return a.Client.ChatID
 	}
 	return ""
 }

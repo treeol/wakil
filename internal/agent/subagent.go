@@ -86,7 +86,7 @@ func (s SubagentSummary) Render() string {
 }
 
 // subagentSystemPrompt instructs the subagent to emit only a SubagentSummary JSON.
-const subagentSystemPrompt = `You are a focused discovery subagent. Use list_dir and find_files to navigate, search_files to grep, and read_file to read (pass offset/limit for large files), then respond with ONLY a valid JSON object — no prose, no markdown, no code fences.
+const subagentSystemPrompt = `You are a focused discovery subagent. Use list_dir and find_files to navigate, search_files to grep, and read_file (offset/limit for large files) or read_file_full (complete file in one call, up to ~256 KB) to read, then respond with ONLY a valid JSON object — no prose, no markdown, no code fences.
 
 Required schema (omit empty arrays):
 {"objective":"<task echoed>","status":"<omit unless incomplete>","findings":[{"summary":"<≤200 chars>","location":"<file:line or path>","kind":"match|pattern|error|fact|ref","weight":"high|medium|low"}],"checked":[{"path":"<path>","size_k":<int>,"status":"full|truncated|stub-only"}],"skipped":[{"path":"<path>","reason":"budget-exhausted|inaccessible|out-of-scope|declined"}],"uncertainty":["<≤100 chars>"],"spill_refs":[{"tool_name":"<name>","path":"<spill-path>","size_k":<int>}]}

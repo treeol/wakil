@@ -830,14 +830,23 @@ func TestReadFileFullInDefaultTools(t *testing.T) {
 	}
 }
 
-// TestReadFileFullNotInDiscoveryTools verifies read_file_full is NOT in the
-// subagent toolset — the subagent's purpose is a lean ≤4K digest, and a
-// full-read tool contradicts that design.
-func TestReadFileFullNotInDiscoveryTools(t *testing.T) {
+// TestReadFileFullInDiscoveryTools verifies read_file_full IS in the
+// subagent toolset. It is a read-only tool, same class as the existing four
+// (read_file, search_files, find_files, list_dir). The lean principle is
+// capability minimization (no run_shell for security, no dispatch_subagent
+// for recursion depth) — it is NOT about making the subagent inefficient at
+// reading files, which is its core job. read_file_full reduces tool-call
+// count and kills the windowed re-read churn that subagents were doing.
+func TestReadFileFullInDiscoveryTools(t *testing.T) {
+	found := false
 	for _, tl := range tools.DiscoveryTools("/work") {
 		if tl.Function.Name == "read_file_full" {
-			t.Fatal("read_file_full must NOT be in DiscoveryTools (subagent lean-context design)")
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Fatal("read_file_full must be in DiscoveryTools (subagent read efficiency)")
 	}
 }
 
