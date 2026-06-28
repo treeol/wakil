@@ -1,7 +1,7 @@
 # LSP Integration Proposal for wakīl — v3 (locked)
 
 > **Status:** v3 locked. Resolutions R1–R4 and locks L1–L3 folded in. Frozen
-> baseline (10 tasks + measured grep numbers) committed. Implementation proceeds
+> baseline (7 wakil tasks + measured grep numbers) committed. Implementation proceeds
 > in phases after Phase 0 approval. Diagnostics scope dropped — six tools only,
 > MVP ships four.
 
@@ -297,7 +297,7 @@ answer), `window/showMessage`, `workspace/configuration`, `client/registerCapabi
 capability gating (D5). Deferred: `lsp_document_symbols`, `lsp_rename`, other
 languages.
 
-**Pre-registered claim:** On the 10 frozen tasks below, LSP reaches correct
+**Pre-registered claim:** On the 7 frozen tasks below, LSP reaches correct
 definition/callers in fewer tool-call round-trips and fewer total tokens than
 grep baseline.
 
@@ -384,14 +384,15 @@ if a.LSP != nil { a.LSP.MarkOpenFilesDirty() }  // lazy: stat on next query
 
 ## Frozen baseline (L2)
 
-### The 10 navigation tasks
+### The 7 navigation tasks (MVP eval)
 
-Each task has a precise success criterion. Tasks 1–5 are in wakil's repo
-(ground truth verified by reading source). Tasks 6–10 are in the ZDB repo
-(ground truth defined from ZDB's public command structure; the ZDB repo must be
-available at eval time — **see OPEN ITEM below**).
+Each task has a precise success criterion. All 7 are in wakil's own repo — the
+eval is a within-repo LSP-vs-grep comparison. Task set spans easy (declarations,
+W1–W5) and hard (locals/params, W6–W7) — the locals/params case is the entire
+justification for the hybrid schema's line-anchoring (R4).
 
-#### Wakil repo tasks (ground truth verified)
+Z1–Z5 (ZDB) are kept as a pre-registered seed for the generalization gate
+(Phase 5, Valon's call) — **not part of MVP eval** (see "ZDB deferred" below).
 
 **Task W1 — Find the definition of `ExecuteToolCall`**
 - Task: "Find where `ExecuteToolCall` is defined."
@@ -431,13 +432,53 @@ available at eval time — **see OPEN ITEM below**).
 - Grep challenge: only 3 matches; but agent must find the `func` definition, not
   the call sites in agent_async.go.
 
-#### ZDB repo tasks (ground truth defined; repo required at eval time)
+#### Wakil locals/params tasks (W6–W7: the case grep is WEAKEST at)
 
-> **OPEN ITEM:** The ZDB repo is not on this host (`/mnt/wakil` is the only
-> mount). These 5 tasks are designed from ZDB's command structure (grounding
-> docs). At Phase 5 eval, the ZDB repo must be cloned/mounted so the baseline
-> can be measured. If unavailable, the eval runs on 5 wakil tasks only and the
-> generalization claim is weakened.
+These two tasks test the locals/params case — the entire reason R4's line-
+anchoring costs an optional field. `documentSymbol` can't express these (it's a
+declaration outline, excludes locals/params), and grep returns same-name noise.
+
+**Task W6 — Find all references to the parameter `tc` within `ExecuteToolCall`**
+- Task: "Find all use-sites of the parameter `tc` within the `ExecuteToolCall`
+  function — not every occurrence of the name in the file."
+- Success criterion: **24 use-sites** within the function scope
+  (`app.go:1203–1760`), including the parameter declaration at `app.go:1204`,
+  `tc.Function.Name` at 1204, `tc.Function.Arguments` at ~1210/1220/1248/etc.,
+  `a.handleEditFile(tc)` at ~1391, `a.handleMashura(ctx, name, tc)` at ~1744,
+  and `a.MCP.CallTool(ctx, name, tc.Function.Arguments, ...)` at ~1751.
+- Grep challenge: `grep 'tc' app.go` returns **56 lines / 3618 bytes** — but
+  `tc` is a parameter name in **8 functions** (handleToolCall, captureToolTrace,
+  MakeTraceEntry, recordRecentTrace, ExecuteToolCall, handleEditFile, toolLine,
+  toolPrimaryArg), plus a range variable in `for _, tc := range msg.ToolCalls`.
+  The agent must isolate one function's scope — `search_files` can't scope to a
+  line range, so the agent must read the entire function body (~20.7 KB) and
+  then filter. This is where grep is genuinely bad: same-name noise across
+  function boundaries with no way to scope.
+
+**Task W7 — Type of the local variable `sink` at `app.go:477`**
+- Task: "What is the type of the local variable `sink` declared at line 477 of
+  app.go, and where is that type defined?"
+- Success criterion: type is `proxy.Sink` (a function type `func(string)`),
+  defined at `internal/proxy/client.go:346`. The local is declared as
+  `sink := a.streamSink()` at `app.go:477`.
+- Grep challenge: this is a two-hop navigation through a derived type. `grep
+  'sink' app.go` returns 6 lines (394 bytes) — 2 are comments, 1 is the decl,
+  1 is the use. The agent must (1) read the declaration, (2) see
+  `a.streamSink()`, (3) grep for `streamSink` to find its definition at
+  `app.go:772`, (4) read it to see it returns `proxy.Sink`, (5) grep for
+  `type Sink` to find the type at `proxy/client.go:346`, (6) read it. Five
+  hops for what LSP `hover` answers in one.
+
+#### ZDB repo tasks (DEFERRED — not part of MVP eval)
+
+> **ZDB deferred (Amendment C):** Do NOT clone or mount ZDB. The eval's validity
+> comes from the task set spanning easy (declarations) and hard (locals/params),
+> which the 7 wakil tasks now do. Mounting ZDB means standing up its full Go
+> toolchain + module cache so gopls can index it: real setup risk and a confound
+> (cold/partially-indexed gopls on an unfamiliar repo is a different measurement
+> than warm-on-wakil). Z1–Z5 are kept as the pre-registered seed for the
+> **generalization gate** (Phase 5, Valon's call) — they earn their setup cost
+> only if the gopls-on-wakil slice wins.
 
 **Task Z1 — Find the definition of the ZDB `get` command handler**
 - Task: "Find where the `get` command is implemented in ZDB."
@@ -469,12 +510,11 @@ available at eval time — **see OPEN ITEM below**).
 - Success criterion: all production call sites, including CLI dispatch and any
   admin/monitoring paths.
 
-### Measured grep baseline (wakil tasks)
+### Measured grep baseline (7 wakil tasks)
 
 Methodology: simulate the agent's grep-only path (search_files + read_file).
 For each task, count tool-call round-trips and estimate tokens from output byte
-counts (~4 chars/token). The agent must grep, read matches, and disambiguate
-(definition vs call site, production vs test).
+counts (~4 chars/token). The agent must grep, read matches, and disambiguate.
 
 | Task | Grep round-trips | Read round-trips | Total round-trips | Grep output (bytes) | Read output (bytes) | Est. tokens (~4 ch/tok) | Correct? |
 |---|---|---|---|---|---|---|---|
@@ -483,46 +523,47 @@ counts (~4 chars/token). The agent must grep, read matches, and disambiguate
 | W3 (type of Workflow field) | 2 | 2 | 4 | 925 + ~500 | ~1000 | ~606 | yes |
 | W4 (def handleMashura) | 1 | 2 | 3 | 1285 | ~800 | ~521 | yes |
 | W5 (def BuildTools) | 1 | 1 | 2 | 339 | ~400 | ~185 | yes |
+| W6 (param `tc` refs in ExecuteToolCall) | 1 | 1 | 2 | 3618 | 20705 | ~6080 | yes (painful) |
+| W7 (type of local `sink` at app.go:477) | 3 | 3 | 6 | 604 | 447 | ~263 | yes (5 hops) |
 
-**Baseline totals (wakil, 5 tasks):** 16 round-trips, ~3,240 tokens estimated.
+**Baseline totals (7 wakil tasks): 24 round-trips, ~9,583 tokens estimated.**
 
 **Where grep struggles (and LSP should win):**
-- **W2 is the hardest for grep:** 35 matches, 9 files, 16 non-comment lines, but
-  only 1 production call site. The agent must read multiple files to filter
-  tests and comments. LSP `references` returns exactly the 1 call site in one
-  round-trip.
-- **W3 is a two-hop navigation:** grep finds the field, then a second grep/find
-  for the type definition. LSP `hover` or `definition` on the field returns the
-  type and its definition location in one round-trip.
-- **W1/W4/W5 are definition lookups:** grep returns both definition and call
-  sites mixed; agent must read to disambiguate. LSP `definition` returns only
-  the definition.
+- **W6 is the hardest for grep:** 56 matches for `tc` across 8 functions + a
+  range variable. The agent must isolate one function's scope — `search_files`
+  can't scope to a line range, so the agent reads the entire 20.7 KB function
+  body. This is the locals/params ceiling that line-anchored resolution (R4)
+  is designed to lift.
+- **W7 is a five-hop derived-type navigation:** `sink` → `streamSink()` → return
+  type `proxy.Sink` → `type Sink`. LSP `hover` answers in one round-trip.
+- **W2 is hard for grep:** 35 matches across 9 files; only 1 production call
+  site. Agent must read multiple files to filter tests and comments.
+- **W3 is a two-hop:** field → type definition. LSP `hover`/`definition` in one.
+- **W1/W4/W5 are definition lookups:** grep returns definitions and calls mixed;
+  agent must read to disambiguate. LSP `definition` returns only the definition.
 
 **ZDB baselines:** not measured — ZDB repo not on this host (see OPEN ITEM
 above). Will be measured in Phase 5 when the repo is available, or the eval
 runs on 5 wakil tasks only.
 
-### LSP target (for comparison in Phase 5)
+### LSP target for comparison in Phase 5
 
-| Task | LSP tool | Expected round-trips | Expected tokens |
-|---|---|---|---|
-| W1 | lsp_definition | 1 | ~100 |
-| W2 | lsp_references | 1 | ~200 |
-| W3 | lsp_hover or lsp_definition | 1 | ~200 |
-| W4 | lsp_definition | 1 | ~100 |
-| W5 | lsp_definition | 1 | ~100 |
+The win condition is purely relational: both metrics (round-trips and tokens)
+strictly lower than the grep baseline AND zero correctness regressions.
 
-**LSP target totals (wakil, 5 tasks):** 5 round-trips, ~700 tokens estimated.
-
-**Win condition:** LSP wins if median round-trips and median tokens are both
-lower than grep, with no correctness regressions. Predicted: 5 vs 16 round-trips,
-~700 vs ~3,240 tokens.
+> **Informal expectation, NOT a target:** LSP tools should answer each task in
+> 1–2 round-trips, so the expectation is significantly fewer round-trips and
+> tokens than the 24 / ~9,583 grep baseline. This estimate is explicitly labeled
+> as an informal expectation — it is NOT a pre-registered target. A
+> pre-registration fixes the baseline and the comparison rule, never the
+> expected result. The Phase 5 comparison will report actual numbers honestly,
+> including regressions and ties.
 
 ## Implementation phases
 
 ### Phase 0 — Doc lock + frozen baseline (THIS PHASE)
 - Fold R1–R4 + L1–L3 into v3 ✓
-- 10 frozen tasks with success criteria ✓
+- 7 frozen tasks with success criteria ✓
 - Measured grep baseline (wakil) ✓
 - Commit: "docs(lsp): lock proposal v3 — resolutions, serialization, frozen baseline"
 - **>>> HARD STOP.** Wait for Valon's approval before writing any implementation code.
@@ -568,7 +609,7 @@ lower than grep, with no correctness regressions. Predicted: 5 vs 16 round-trips
 - Commit: "feat(lsp): 4 MVP tools, result shaping, dispatch + config wiring"
 
 ### Phase 5 — Eval against frozen baseline
-- Run the 10 frozen tasks with LSP tools; record round-trips + tokens per task;
+- Run the 7 frozen tasks with LSP tools; record round-trips + tokens per task;
   compare to L2 baseline.
 - **mashūra gate:** interpret results HONESTLY — no overclaiming, report
   regressions and ties, state per-task deltas. Fail-closed on any task where
