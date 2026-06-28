@@ -3,6 +3,7 @@ package exec
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,19 @@ type Executor interface {
 	DeletePath(ctx context.Context, path string) error
 	// B2: rename/move src to dst; fails if dst already exists.
 	MovePath(ctx context.Context, src, dst string) error
+
+	// StartInteractive spawns a long-running process with stdin/stdout/stderr
+	// pipes for bidirectional communication (e.g., an LSP server speaking
+	// JSON-RPC over stdio). The caller owns the pipes and must close them on
+	// completion. In docker mode the process runs inside the container (correct
+	// filesystem, toolchain, module cache); the pipes are on the host.
+	StartInteractive(ctx context.Context, command string) (
+		stdin  io.WriteCloser,
+		stdout io.ReadCloser,
+		stderr io.ReadCloser,
+		pid    int,
+		err    error,
+	)
 
 	// B3: start command detached in the background; returns pid and pgid.
 	// logPath is where stdout/stderr are redirected.
@@ -236,6 +250,47 @@ func (d *DockerExecutor) Close() error {
 	return exec.Command("docker", "rm", "-f", d.container).Run()
 }
 
+// StartInteractive spawns a long-running process inside the container with
+// stdin/stdout/stderr pipes for bidirectional JSON-RPC communication (e.g. gopls).
+// The -i flag keeps stdin open. The caller owns the pipes.
+//
+// Shutdown contract (R1): the caller (Manager) must send the LSP shutdown
+// request, await its response, send the exit notification, THEN close stdin.
+// Closing stdin alone causes gopls to exit via the error path (noisy, non-zero
+// exit). In docker mode, closing the host-side docker exec stdin may not
+// reliably reap the in-container gopls child — the proper shutdown sequence
+// is the reliable path. The spawn command should use 'exec gopls' so sh does
+// not linger as a separate parent.
+func (d *DockerExecutor) StartInteractive(_ context.Context, command string) (
+	stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, pid int, err error,
+) {
+	cmd := exec.Command("docker", "exec", "-i", d.container, "sh", "-c", command)
+	stdin, err = cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, 0, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdout, err = cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		return nil, nil, nil, 0, fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err = cmd.StderrPipe()
+	if err != nil {
+		stdin.Close()
+		stdout.Close()
+		return nil, nil, nil, 0, fmt.Errorf("stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		stdout.Close()
+		stderr.Close()
+		return nil, nil, nil, 0, fmt.Errorf("starting interactive process: %w", err)
+	}
+	// Reap the child when it exits so it doesn't become a zombie.
+	go func() { _ = cmd.Wait() }()
+	return stdin, stdout, stderr, cmd.Process.Pid, nil
+}
+
 // ---------------- Direct executor (opt-in) ----------------
 
 // DirectExecutor runs commands directly on the host. Still fully gated.
@@ -329,3 +384,36 @@ func (e *DirectExecutor) WorkspaceRoot() string  { return e.root }
 func (e *DirectExecutor) Generation() int        { return e.generation }
 func (e *DirectExecutor) Describe() string       { return "direct[" + e.root + "]" }
 func (e *DirectExecutor) Close() error           { return nil }
+
+// StartInteractive spawns a long-running process on the host with stdin/stdout/
+// stderr pipes for bidirectional JSON-RPC communication (e.g. gopls in direct mode).
+// The caller owns the pipes and must close stdin to terminate the server.
+func (e *DirectExecutor) StartInteractive(_ context.Context, command string) (
+	stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, pid int, err error,
+) {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Dir = e.root
+	stdin, err = cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, 0, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdout, err = cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		return nil, nil, nil, 0, fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err = cmd.StderrPipe()
+	if err != nil {
+		stdin.Close()
+		stdout.Close()
+		return nil, nil, nil, 0, fmt.Errorf("stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		stdout.Close()
+		stderr.Close()
+		return nil, nil, nil, 0, fmt.Errorf("starting interactive process: %w", err)
+	}
+	go func() { _ = cmd.Wait() }()
+	return stdin, stdout, stderr, cmd.Process.Pid, nil
+}
