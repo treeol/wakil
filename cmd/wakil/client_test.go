@@ -123,6 +123,15 @@ func (f *fakeExecutor) IsProcessAlive(_ context.Context, pid int) bool   { retur
 func (f *fakeExecutor) ReadFileTail(_ context.Context, path string, maxBytes int64) (string, error) {
 	return "", nil
 }
+func (f *fakeExecutor) StartInteractive(_ context.Context, command string) (io.WriteCloser, io.ReadCloser, io.ReadCloser, int, error) {
+	return nil, nil, nil, 0, fmt.Errorf("not implemented in fake executor")
+}
+func (f *fakeExecutor) HostPathToURI(hostPath string) (string, error) {
+	return "file://" + hostPath, nil
+}
+func (f *fakeExecutor) URIToHostPath(uri string) (string, error) {
+	return strings.TrimPrefix(uri, "file://"), nil
+}
 
 func newTestApp(url string, executor exec.Executor, confirm agent.Confirmer) *agent.App {
 	return &agent.App{

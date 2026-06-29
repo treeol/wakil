@@ -13,6 +13,7 @@ import (
 
 	"wakil/internal/agent"
 	"wakil/internal/config"
+	"wakil/internal/lsp"
 	"wakil/internal/proxy"
 	"wakil/internal/tools"
 	"wakil/internal/trace"
@@ -441,6 +442,14 @@ func RunHeadless(cfg config.Config, args []string) int {
 		defer mcpMgr.Close()
 	}
 
+	// Initialize the LSP manager when enabled.
+	var lspMgr *lsp.Manager
+	if cfg.LSPEnabled {
+		rootURI := "file://" + exe.Cwd()
+		lspMgr = lsp.NewManager(exe, cfg, rootURI)
+		defer lspMgr.Shutdown()
+	}
+
 	// Backend-truth context sizing: resolve the real per-slot n_ctx (loud
 	// fallback note to stderr if the backend is unreachable).
 	ctxLimit := agent.ResolveContextLimit(context.Background(), client.HTTP, cfg, os.Stderr)
@@ -456,6 +465,7 @@ func RunHeadless(cfg config.Config, args []string) int {
 		Client:          client,
 		Exec:            exe,
 		MCP:             mcpMgr,
+		LSP:             lspMgr,
 		Tools:           agent.BuildTools(cfg, exe.Cwd(), mcpMgr),
 		CtxLimit:        ctxLimit,
 		AgentPrompt:     loadAgentPrompt(cfg),

@@ -11,6 +11,7 @@ import (
 	"wakil/internal/agent"
 	"wakil/internal/config"
 	"wakil/internal/exec"
+	"wakil/internal/lsp"
 	"wakil/internal/proxy"
 	"wakil/internal/trace"
 	"wakil/internal/tui"
@@ -87,6 +88,14 @@ func main() {
 
 	tools := agent.BuildTools(cfg, exe.Cwd(), mcpMgr)
 
+	// Initialize the LSP manager when enabled. The manager owns language server
+	// processes (gopls) for code-intelligence tools. nil when LSPEnabled is false.
+	var lspMgr *lsp.Manager
+	if cfg.LSPEnabled {
+		rootURI := "file://" + exe.Cwd()
+		lspMgr = lsp.NewManager(exe, cfg, rootURI)
+	}
+
 	agentPrompt := loadAgentPrompt(cfg)
 
 	// Backend-truth context sizing: ask the backend (through the proxy) for its
@@ -114,6 +123,7 @@ func main() {
 		Client:          client,
 		Exec:            exe,
 		MCP:             mcpMgr,
+		LSP:             lspMgr,
 		Tools:           tools,
 		CtxLimit:        ctxLimit,
 		AgentPrompt:     agentPrompt,
@@ -178,6 +188,9 @@ func main() {
 	exe.Close()
 	if mcpMgr != nil {
 		mcpMgr.Close()
+	}
+	if lspMgr != nil {
+		lspMgr.Shutdown()
 	}
 }
 
