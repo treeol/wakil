@@ -2,6 +2,11 @@
 // (generated from the LSP 3.17 meta-model). Only the subset needed for the
 // MVP's ~7 methods is included. See:
 //   golang.org/x/tools/gopls@v0.22.0/internal/protocol/tsprotocol.go
+//
+// PROVENANCE: transcribed from gopls v0.22.0. If the Dockerfile gopls version
+// is bumped, re-diff these structs against the new version's tsprotocol.go —
+// especially the DocumentChange union and any new ServerCapabilities fields.
+// The Dockerfile pins gopls@v0.22.0 to keep them in sync.
 
 package lsp
 

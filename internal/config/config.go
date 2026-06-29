@@ -174,6 +174,12 @@ type Config struct {
 	TraceSessions bool   `json:"trace_sessions"`      // trace every TUI session (default false)
 	TraceDir      string `json:"trace_dir,omitempty"` // trace file directory; default ~/.local/share/wakil/traces
 
+	// LSP: native language-server-backed code intelligence tools.
+	LSPEnabled              bool                     `json:"lsp_enabled,omitempty"`
+	LSPServers               map[string]LSPServer      `json:"lsp_servers,omitempty"`
+	LSPIdleTimeoutSeconds    int                      `json:"lsp_idle_timeout_seconds,omitempty"`     // default 1800 (30 min)
+	LSPIndexTimeoutSeconds  int                      `json:"lsp_index_timeout_seconds,omitempty"`    // default 30
+
 	// Runtime-only flags (never read from / written to the JSON config file).
 	Resume       bool   `json:"-"` // resume the most recent session
 	ResumeID     string `json:"-"` // resume a session by chat_id or unique prefix
@@ -286,6 +292,14 @@ type MCPServerConfig struct {
 	Args      []string          `json:"args,omitempty"`    // stdio: arguments
 	Env       map[string]string `json:"env,omitempty"`     // stdio: extra env vars
 	URL       string            `json:"url,omitempty"`     // http: endpoint URL
+}
+
+// LSPServer declares one language server for the native LSP tools.
+type LSPServer struct {
+	Command     string                 `json:"command"`
+	Args        []string               `json:"args,omitempty"`
+	Env         map[string]string      `json:"env,omitempty"`
+	InitOptions map[string]interface{} `json:"init_options,omitempty"`
 }
 
 func DefaultConfig() Config {

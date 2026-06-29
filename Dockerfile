@@ -45,3 +45,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 ENV GOPATH=/usr/local/go-workspace
 
 ENV PATH="/usr/local/go/bin:/usr/local/go-workspace/bin:/usr/local/cargo/bin:${PATH}"
+
+# gopls — pinned to v0.22.0. protocol.go in internal/lsp/ is transcribed from
+# gopls v0.22.0 internal/protocol (tsprotocol.go). A version bump here MUST be
+# accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
+RUN go install golang.org/x/tools/gopls@v0.22.0
