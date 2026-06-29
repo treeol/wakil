@@ -39,10 +39,10 @@ type Executor interface {
 	MovePath(ctx context.Context, src, dst string) error
 
 	// StartInteractive spawns a long-running process with stdin/stdout/stderr
-	// pipes for bidirectional communication (e.g., an LSP server speaking
-	// JSON-RPC over stdio). The caller owns the pipes and must close them on
-	// completion. In docker mode the process runs inside the container (correct
-	// filesystem, toolchain, module cache); the pipes are on the host.
+	// pipes for bidirectional communication (e.g., an LSP server speaking JSON-RPC).
+	// The caller owns the pipes and must close them on completion. In docker mode
+	// the process runs inside the container (correct filesystem, toolchain,
+	// module cache); the pipes are on the host.
 	StartInteractive(ctx context.Context, command string) (
 		stdin  io.WriteCloser,
 		stdout io.ReadCloser,
@@ -50,6 +50,20 @@ type Executor interface {
 		pid    int,
 		err    error,
 	)
+
+	// HostPathToURI translates a host filesystem path to a file:// URI in the
+	// namespace the LSP server sees. In docker mode this maps hostMount/<rel>
+	// to workspaceRoot/<rel> (container-visible). In direct mode it's identity.
+	// This is the ONLY sanctioned way to produce a URI for gopls — never
+	// hand-build file:// URIs from host paths.
+	HostPathToURI(hostPath string) (uri string, err error)
+
+	// URIToHostPath translates a file:// URI returned by the LSP server back to
+	// a host filesystem path. In docker mode this maps workspaceRoot/<rel>
+	// (container) back to hostMount/<rel> (host). URIs outside workspaceRoot
+	// (e.g. GOROOT /usr/local/go/src/...) return an error — they have no host
+	// mapping and must be handled by explicit policy, not silently mapped.
+	URIToHostPath(uri string) (hostPath string, err error)
 
 	// B3: start command detached in the background; returns pid and pgid.
 	// logPath is where stdout/stderr are redirected.
@@ -291,6 +305,41 @@ func (d *DockerExecutor) StartInteractive(_ context.Context, command string) (
 	return stdin, stdout, stderr, cmd.Process.Pid, nil
 }
 
+// HostPathToURI translates a host filesystem path to a container-visible
+// file:// URI for gopls. In docker mode this maps hostMount/<rel> →
+// workspaceRoot/<rel>. Returns an error if the path is not under hostMount
+// (the leak guard: a host path sent to in-container gopls would silently
+// return empty results).
+func (d *DockerExecutor) HostPathToURI(hostPath string) (string, error) {
+	rel, err := filepath.Rel(d.hostMount, hostPath)
+	if err != nil {
+		return "", fmt.Errorf("rel path: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("path %q is outside host mount %q — cannot translate to container URI", hostPath, d.hostMount)
+	}
+	containerPath := filepath.Join(d.workspaceRoot, rel)
+	return pathToURI(containerPath), nil
+}
+
+// URIToHostPath translates a container-visible file:// URI back to a host
+// filesystem path. URIs outside workspaceRoot (e.g. GOROOT paths) return
+// an error — they have no host mapping.
+func (d *DockerExecutor) URIToHostPath(uri string) (string, error) {
+	containerPath, err := uriToPath(uri)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(d.workspaceRoot, containerPath)
+	if err != nil {
+		return "", fmt.Errorf("rel path: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("URI %q (container path %q) is outside workspace root %q — no host mapping (e.g. GOROOT path)", uri, containerPath, d.workspaceRoot)
+	}
+	return filepath.Join(d.hostMount, rel), nil
+}
+
 // ---------------- Direct executor (opt-in) ----------------
 
 // DirectExecutor runs commands directly on the host. Still fully gated.
@@ -416,4 +465,30 @@ func (e *DirectExecutor) StartInteractive(_ context.Context, command string) (
 	}
 	go func() { _ = cmd.Wait() }()
 	return stdin, stdout, stderr, cmd.Process.Pid, nil
+}
+
+// HostPathToURI in direct mode: identity (host path == LSP path).
+func (e *DirectExecutor) HostPathToURI(hostPath string) (string, error) {
+	return pathToURI(hostPath), nil
+}
+
+// URIToHostPath in direct mode: identity.
+func (e *DirectExecutor) URIToHostPath(uri string) (string, error) {
+	return uriToPath(uri)
+}
+
+// pathToURI converts a filesystem path to a file:// URI with proper encoding.
+func pathToURI(path string) string {
+	encoded := strings.ReplaceAll(path, " ", "%20")
+	return "file://" + encoded
+}
+
+// uriToPath extracts the filesystem path from a file:// URI.
+func uriToPath(uri string) (string, error) {
+	if !strings.HasPrefix(uri, "file://") {
+		return "", fmt.Errorf("not a file:// URI: %q", uri)
+	}
+	path := uri[len("file://"):]
+	path = strings.ReplaceAll(path, "%20", " ")
+	return path, nil
 }

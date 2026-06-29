@@ -13,6 +13,7 @@ import (
 	"wakil/internal/config"
 	"wakil/internal/counsel"
 	"wakil/internal/exec"
+	"wakil/internal/lsp"
 	"wakil/internal/proxy"
 	"wakil/internal/trace"
 	wtools "wakil/internal/tools"
@@ -236,6 +237,10 @@ type App struct {
 	// Trace, when non-nil, receives a rich JSONL record for every turn.
 	// Opened at startup when cfg.Trace is true; nil disables trace capture.
 	Trace *trace.Store
+
+	// LSP is the language server manager for code-intelligence tools.
+	// nil when LSPEnabled is false.
+	LSP *lsp.Manager
 }
 
 // ToolTraceEntry is one tool call's compact evidence record for the step log.
@@ -1238,6 +1243,13 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			}
 		}
 		out, err := a.Exec.RunShell(ctx, args.Command)
+		// LSP file-sync: after a non-read-only run_shell, mark open files dirty
+		// for lazy resync (R3). The next LSP query touching a dirty file will
+		// stat it and didChange if mtime+size changed.
+		if err == nil && a.LSP != nil && !readAction {
+			a.LSP.MarkOpenFilesDirty()
+			a.LSP.BatchNotifyWatchedFiles(context.Background())
+		}
 		return formatResult(out, err)
 
 	case "open_url":
@@ -1438,6 +1450,9 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			return "[declined by user]"
 		}
 		out, err := a.Exec.WriteFile(args.Path, args.Content)
+		if err == nil && a.LSP != nil {
+			a.LSP.NotifyChange(context.Background(), args.Path)
+		}
 		return formatResult(out, err)
 
 	case "searxng_search":
@@ -1876,6 +1891,10 @@ func (a *App) handleEditFile(tc proxy.ToolCall) string {
 	out, err := a.Exec.WriteFile(args.Path, updated)
 	if err != nil {
 		return formatResult(out, err)
+	}
+	// LSP file-sync: notify gopls of the change (didChange).
+	if a.LSP != nil {
+		a.LSP.NotifyChange(context.Background(), args.Path)
 	}
 	n := 1
 	if args.ReplaceAll {
