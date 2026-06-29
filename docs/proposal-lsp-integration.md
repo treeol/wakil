@@ -399,14 +399,14 @@ Z1–Z5 (ZDB) are kept as a pre-registered seed for the generalization gate
 
 **Task W1 — Find the definition of `ExecuteToolCall`**
 - Task: "Find where `ExecuteToolCall` is defined."
-- Success criterion: `internal/agent/app.go:1203` — the `func (a *App)
+- Success criterion: `internal/agent/app.go:1215` — the `func (a *App)
   ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string` declaration.
 - Grep challenge: 5 matches total (2 in non-test code); agent must distinguish
-  the `func` definition from the call site at app.go:922.
+  the `func` definition from the call site at app.go:934.
 
 **Task W2 — Find all callers of `dispatchSubagent` (production code only)**
 - Task: "Find all production (non-test) call sites of `dispatchSubagent`."
-- Success criterion: exactly **1 call site** — `internal/agent/app.go:1712`.
+- Success criterion: exactly **1 call site** — `internal/agent/app.go:1734`.
 - Grep challenge: 35 matches across 9 files; 16 are non-comment/non-def; only 1
   is a real call in production code (the rest are tests, comments, or the func
   definition). Agent must filter test files and comments.
@@ -415,7 +415,7 @@ Z1–Z5 (ZDB) are kept as a pre-registered seed for the generalization gate
 - Task: "What type is the `Workflow` field on the `App` struct, and where is
   that type defined?"
 - Success criterion: type is `*workflow.WorkflowState`, field at
-  `internal/agent/app.go:144`, type defined at
+  `internal/agent/app.go:145`, type defined at
   `internal/workflow/workflow.go:47`.
 - Grep challenge: 89 matches for "Workflow" across internal/; 16 in app.go
   alone. Most are `a.Workflow` usage, not the field decl or type def. Two-hop
@@ -426,11 +426,11 @@ Z1–Z5 (ZDB) are kept as a pre-registered seed for the generalization gate
 - Success criterion: `internal/agent/mashura.go:152` —
   `func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall) string`.
 - Grep challenge: 13 matches; agent must distinguish the definition from the 11
-  call sites (test files + app.go:1744 dispatch).
+  call sites (test files + app.go:1766 dispatch).
 
 **Task W5 — Find the definition of `BuildTools` and what it returns**
 - Task: "Find where `BuildTools` is defined and what it returns."
-- Success criterion: `internal/agent/mcp_manager.go:301` —
+- Success criterion: `internal/agent/mcp_manager.go:302` —
   `func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool`.
 - Grep challenge: only 3 matches; but agent must find the `func` definition, not
   the call sites in agent_async.go.
@@ -444,11 +444,13 @@ declaration outline, excludes locals/params), and grep returns same-name noise.
 **Task W6 — Find all references to the parameter `tc` within `ExecuteToolCall`**
 - Task: "Find all use-sites of the parameter `tc` within the `ExecuteToolCall`
   function — not every occurrence of the name in the file."
-- Success criterion: **24 use-sites** within the function scope
-  (`app.go:1203–1760`), including the parameter declaration at `app.go:1204`,
-  `tc.Function.Name` at 1204, `tc.Function.Arguments` at ~1210/1220/1248/etc.,
-  `a.handleEditFile(tc)` at ~1391, `a.handleMashura(ctx, name, tc)` at ~1744,
-  and `a.MCP.CallTool(ctx, name, tc.Function.Arguments, ...)` at ~1751.
+- Success criterion: **19 use-sites** within the function scope
+  (`app.go:1215–1766`), including the parameter declaration at `app.go:1215`,
+  `tc.Function.Name` at 1216, `tc.Function.Arguments` at ~1222/1238/1266/etc.,
+  `a.handleEditFile(tc)` at ~1407, `a.handleMashura(ctx, name, tc)` at ~1766,
+  and `a.MCP.CallTool(ctx, name, tc.Function.Arguments, ...)` at ~1773.
+  (Note: there is also 1 comment mentioning 'ctx' at line 1396 which is NOT a
+  use-site; the count excludes it.)
 - Grep challenge: `grep 'tc' app.go` returns **56 lines / 3618 bytes** — but
   `tc` is a parameter name in **8 functions** (handleToolCall, captureToolTrace,
   MakeTraceEntry, recordRecentTrace, ExecuteToolCall, handleEditFile, toolLine,
@@ -458,17 +460,17 @@ declaration outline, excludes locals/params), and grep returns same-name noise.
   then filter. This is where grep is genuinely bad: same-name noise across
   function boundaries with no way to scope.
 
-**Task W7 — Type of the local variable `sink` at `app.go:477`**
-- Task: "What is the type of the local variable `sink` declared at line 477 of
+**Task W7 — Type of the local variable `sink` at `app.go:486`**
+- Task: "What is the type of the local variable `sink` declared at line 486 of
   app.go, and where is that type defined?"
 - Success criterion: type is `proxy.Sink` (a function type `func(string)`),
   defined at `internal/proxy/client.go:346`. The local is declared as
-  `sink := a.streamSink()` at `app.go:477`.
+  `sink := a.streamSink()` at `app.go:486`.
 - Grep challenge: this is a two-hop navigation through a derived type. `grep
   'sink' app.go` returns 6 lines (394 bytes) — 2 are comments, 1 is the decl,
   1 is the use. The agent must (1) read the declaration, (2) see
   `a.streamSink()`, (3) grep for `streamSink` to find its definition at
-  `app.go:772`, (4) read it to see it returns `proxy.Sink`, (5) grep for
+  `app.go:784`, (4) read it to see it returns `proxy.Sink`, (5) grep for
   `type Sink` to find the type at `proxy/client.go:346`, (6) read it. Five
   hops for what LSP `hover` answers in one.
 
