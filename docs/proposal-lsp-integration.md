@@ -444,13 +444,15 @@ declaration outline, excludes locals/params), and grep returns same-name noise.
 **Task W6 — Find all references to the parameter `tc` within `ExecuteToolCall`**
 - Task: "Find all use-sites of the parameter `tc` within the `ExecuteToolCall`
   function — not every occurrence of the name in the file."
-- Success criterion: **19 use-sites** within the function scope
-  (`app.go:1215–1766`), including the parameter declaration at `app.go:1215`,
-  `tc.Function.Name` at 1216, `tc.Function.Arguments` at ~1222/1238/1266/etc.,
-  `a.handleEditFile(tc)` at ~1407, `a.handleMashura(ctx, name, tc)` at ~1766,
-  and `a.MCP.CallTool(ctx, name, tc.Function.Arguments, ...)` at ~1773.
-  (Note: there is also 1 comment mentioning 'ctx' at line 1396 which is NOT a
-  use-site; the count excludes it.)
+- Success criterion: **24 use-sites** within the function scope
+  (`app.go:1215–1789`), excluding the parameter declaration at `app.go:1215`
+  itself. The 24 use-sites include: `tc.Function.Name` at 1216,
+  `tc.Function.Arguments` at 1222/1232/1266/1290/1329/1373/1384/1419/1447/1472/
+  1491/1510/1529/1543/1568/1599/1654/1691/1724/1773/1780, `a.handleEditFile(tc)`
+  at 1410, `a.handleMashura(ctx, name, tc)` at 1766, and
+  `a.MCP.CallTool(ctx, name, tc.Function.Arguments, ...)` at 1780.
+  Count assumes includeDeclaration=false, matching the lsp_references request
+  construction (internal/lsp/tools.go:213).
 - Grep challenge: `grep 'tc' app.go` returns **56 lines / 3618 bytes** — but
   `tc` is a parameter name in **8 functions** (handleToolCall, captureToolTrace,
   MakeTraceEntry, recordRecentTrace, ExecuteToolCall, handleEditFile, toolLine,
