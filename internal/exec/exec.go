@@ -307,10 +307,15 @@ func (d *DockerExecutor) StartInteractive(_ context.Context, command string) (
 
 // HostPathToURI translates a host filesystem path to a container-visible
 // file:// URI for gopls. In docker mode this maps hostMount/<rel> →
-// workspaceRoot/<rel>. Returns an error if the path is not under hostMount
-// (the leak guard: a host path sent to in-container gopls would silently
-// return empty results).
+// workspaceRoot/<rel>. The input may be relative (resolved against hostMount)
+// or absolute (must be under hostMount).
+// Returns an error if the path is not under hostMount (the leak guard: a host
+// path sent to in-container gopls would silently return empty results).
 func (d *DockerExecutor) HostPathToURI(hostPath string) (string, error) {
+	// Resolve relative paths against hostMount (the host-side mount point).
+	if !filepath.IsAbs(hostPath) {
+		hostPath = filepath.Join(d.hostMount, hostPath)
+	}
 	rel, err := filepath.Rel(d.hostMount, hostPath)
 	if err != nil {
 		return "", fmt.Errorf("rel path: %w", err)
@@ -468,7 +473,11 @@ func (e *DirectExecutor) StartInteractive(_ context.Context, command string) (
 }
 
 // HostPathToURI in direct mode: identity (host path == LSP path).
+// Resolves relative paths against the workspace root.
 func (e *DirectExecutor) HostPathToURI(hostPath string) (string, error) {
+	if !filepath.IsAbs(hostPath) {
+		hostPath = filepath.Join(e.root, hostPath)
+	}
 	return pathToURI(hostPath), nil
 }
 

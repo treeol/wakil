@@ -166,8 +166,15 @@ func (m *Manager) HandleLSPReadOnly(ctx context.Context, toolName string, argsJS
 		return b.String()
 	}
 
-	// Build the LSP request params.
-	uri, _ := m.exec.HostPathToURI(args.Path)
+	// Build the LSP request params. Route through HostPathToURI which resolves
+	// relative paths against hostMount and translates to the container-visible
+	// URI gopls expects. The leak assertion is inside HostPathToURI — a host
+	// path that can't be translated returns an error here, not a silent empty
+	// URI to gopls.
+	uri, err := m.exec.HostPathToURI(args.Path)
+	if err != nil {
+		return m.failureContract(toolName, lang, fmt.Errorf("URI translation for %q: %w", args.Path, err), "resolve")
+	}
 	params := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 		Position:     pos,

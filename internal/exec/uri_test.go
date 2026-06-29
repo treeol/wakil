@@ -5,6 +5,29 @@ import (
 	"testing"
 )
 
+// TestDockerURI_RelativePath verifies that a relative path (as the model
+// passes) is resolved against hostMount and translated correctly.
+func TestDockerURI_RelativePath(t *testing.T) {
+	d := &DockerExecutor{
+		workspaceRoot: "/mnt/wakil",
+		hostMount:     "/home/valon/coding/wakil",
+	}
+
+	uri, err := d.HostPathToURI("internal/agent/app.go")
+	if err != nil {
+		t.Fatalf("HostPathToURI with relative path: %v", err)
+	}
+	if !strings.HasPrefix(uri, "file:///mnt/wakil/") {
+		t.Errorf("URI = %q, expected container path prefix file:///mnt/wakil/", uri)
+	}
+	if strings.Contains(uri, "/home/valon/coding/wakil") {
+		t.Errorf("HOST PATH LEAK: URI %q contains host mount path", uri)
+	}
+	if !strings.HasSuffix(uri, "internal/agent/app.go") {
+		t.Errorf("URI = %q, expected to end with internal/agent/app.go", uri)
+	}
+}
+
 // TestDockerURI_Translation verifies the host→container→host round trip.
 func TestDockerURI_Translation(t *testing.T) {
 	d := &DockerExecutor{
@@ -63,6 +86,19 @@ func TestDockerURI_GOROOTPathRejected(t *testing.T) {
 	_, err := d.URIToHostPath("file:///usr/local/go/src/fmt/print.go")
 	if err == nil {
 		t.Error("expected error for GOROOT path (outside workspace root), got nil — silent mapping is the trap")
+	}
+}
+
+// TestDirectURI_RelativePath verifies relative path resolution in direct mode.
+func TestDirectURI_RelativePath(t *testing.T) {
+	e := &DirectExecutor{root: "/home/valon/coding/wakil"}
+
+	uri, err := e.HostPathToURI("internal/agent/app.go")
+	if err != nil {
+		t.Fatalf("HostPathToURI with relative path: %v", err)
+	}
+	if uri != "file:///home/valon/coding/wakil/internal/agent/app.go" {
+		t.Errorf("URI = %q, want file:///home/valon/coding/wakil/internal/agent/app.go", uri)
 	}
 }
 
