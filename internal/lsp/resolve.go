@@ -46,15 +46,18 @@ func computeCharacterOffset(lineContent string, targetByteOffset int, encoding P
 		return uint32(len(prefix)), nil
 	case UTF16:
 		// Count UTF-16 code units: BMP = 1, astral = 2 (surrogate pair).
-		// utf16.RuneLen returns -1 for invalid runes; guard against that
-		// (though Go's range over string yields U+FFFD for malformed bytes,
-		// which is a valid BMP rune with RuneLen 1, so -1 is unreachable here
-		// in practice — but defensive correctness).
+		// FAIL CLOSED: utf16.RuneLen returns -1 for invalid runes. A -1 clamped
+		// to 0 or 1 would produce a plausible-but-wrong offset — the one trade
+		// we never make in this layer. Return an error so the failure contract
+		// can surface it truthfully.
+		// (In practice Go's range over string yields U+FFFD for malformed bytes,
+		// which is a valid BMP rune with RuneLen 1, so this branch is unreachable —
+		// but defensive correctness means the guard fails closed, not silently.)
 		var count uint32
 		for _, r := range prefix {
 			n := utf16.RuneLen(r)
 			if n < 0 {
-				n = 1 // treat invalid rune as 1 code unit (defensive)
+				return 0, fmt.Errorf("invalid rune U+%04X in line content — cannot compute UTF-16 offset", r)
 			}
 			count += uint32(n)
 		}
@@ -65,7 +68,7 @@ func computeCharacterOffset(lineContent string, targetByteOffset int, encoding P
 		for _, r := range prefix {
 			n := utf16.RuneLen(r)
 			if n < 0 {
-				n = 1
+				return 0, fmt.Errorf("invalid rune U+%04X in line content — cannot compute offset", r)
 			}
 			count += uint32(n)
 		}

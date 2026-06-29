@@ -99,6 +99,9 @@ type Server struct {
 	docs     map[string]int32 // URI → version counter
 	idleTimer *time.Timer     // idle shutdown
 
+	// File-sync manager (lazy-initialized)
+	fs *fileSyncManager
+
 	// Generation counter for re-arm: stale End from gen N must not release gen N+1.
 	generation int
 }

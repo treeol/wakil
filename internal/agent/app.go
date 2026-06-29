@@ -766,6 +766,13 @@ func (a *App) contextPreamble() string {
 			parts = append(parts, tools+".")
 		}
 	}
+	// LSP code intelligence inventory.
+	if a.LSP != nil {
+		parts = append(parts, "LSP code intelligence available: lsp_definition, lsp_references, "+
+			"lsp_hover, lsp_symbols. Pass a file path + 1-based line number (as shown by read_file) "+
+			"+ symbol name — the client resolves the position. Prefer these over search_files for "+
+			"symbol-level navigation (definition lookup, finding callers).")
+	}
 	return strings.Join(parts, "\n")
 }
 
@@ -1757,6 +1764,13 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 	// assembles the briefing. Each is gated and never auto-approved.
 	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask":
 		return a.handleMashura(ctx, name, tc)
+
+	// LSP code-intelligence tools (read-only, no confirmation needed).
+	case "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols":
+		if a.LSP == nil {
+			return "[lsp: LSP is not enabled. Configure lsp_enabled in config.]"
+		}
+		return a.LSP.HandleLSPReadOnly(ctx, name, tc.Function.Arguments)
 
 	default:
 		// MCP tool — namespaced as "{server}__{tool}".

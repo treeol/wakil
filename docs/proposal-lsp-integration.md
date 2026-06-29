@@ -302,7 +302,10 @@ definition/callers in fewer tool-call round-trips and fewer total tokens than
 grep baseline.
 
 **Generalization gate:** extend to rust-analyzer/pyright only if gopls slice
-beats grep.
+beats grep. UTF-8 offset branch is unit-tested but UNEXERCISED on the wire —
+gopls v0.22.0 negotiates UTF-16, so the utf-8 branch only runs live on the
+second language server. First live exercise = generalization; re-verify
+encoding end-to-end then.
 
 ## Architecture
 

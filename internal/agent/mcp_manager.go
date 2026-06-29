@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"wakil/internal/config"
+	"wakil/internal/lsp"
 	"wakil/internal/proxy"
 	wtools "wakil/internal/tools"
 
@@ -297,7 +298,7 @@ func PrettyArgs(raw string) string {
 	return string(b)
 }
 
-// BuildTools assembles the full tool list: built-ins → searxng → google → MCP → oracle.
+// BuildTools assembles the full tool list: built-ins → searxng → google → MCP → oracle → LSP.
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	t := wtools.DefaultTools(cwd)
 	if cfg.SearXngURL != "" {
@@ -311,6 +312,9 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	}
 	if cfg.OracleEnabled && (os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv("OPENROUTER_API_KEY") != "") {
 		t = append(t, mashuraToolDefs()...)
+	}
+	if cfg.LSPEnabled {
+		t = append(t, lsp.LSPTools(cwd)...)
 	}
 	return t
 }
