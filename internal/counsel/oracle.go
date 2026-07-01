@@ -109,7 +109,7 @@ func CallOracleURL(ctx context.Context, cfg config.Config, apiKey, question, ora
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", OracleUsage{}, fmt.Errorf("read response: %w", err)
 	}
@@ -306,13 +306,18 @@ func callMember(ctx context.Context, prov, model, question, briefing string, ccf
 
 // callAnthropic wraps the existing Anthropic path with a synthetic config.
 func callAnthropic(ctx context.Context, model, apiKey, question, briefing string, ccfg PanelCallConfig) (string, OracleUsage, error) {
+	ctxLen := ResolveContextLength(ctx, model)
+	fit := FitToContext(oracleSystemPrompt, question, briefing, ccfg.MaxTokens, ctxLen)
+	if fit.CannotFit {
+		return "", OracleUsage{}, fmt.Errorf("mashūra briefing too large for model context (%d tokens)", fit.ContextLength)
+	}
 	synCfg := config.Config{
 		OracleModel:          model,
-		OracleMaxTokens:      ccfg.MaxTokens,
+		OracleMaxTokens:      fit.MaxTokens,
 		OracleTimeoutSeconds: ccfg.TimeoutSeconds,
 		OracleEndpoint:       ccfg.AnthropicEndpoint,
 	}
-	return CallOracle(ctx, synCfg, apiKey, question, briefing)
+	return CallOracle(ctx, synCfg, apiKey, question, fit.Briefing)
 }
 
 // orFusionPlugin is the "fusion" plugin block sent in the OpenRouter request.
@@ -360,14 +365,20 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 		endpoint = ccfg.OpenRouterEndpoint
 	}
 
+	ctxLen := ResolveContextLength(ctx, model)
+	fit := FitToContext(oracleSystemPrompt, question, briefing, ccfg.MaxTokens, ctxLen)
+	if fit.CannotFit {
+		return "", OracleUsage{}, fmt.Errorf("mashūra briefing too large for model context (%d tokens)", fit.ContextLength)
+	}
+
 	userContent := question
-	if briefing != "" {
-		userContent += "\n\nContext:\n" + briefing
+	if fit.Briefing != "" {
+		userContent += "\n\nContext:\n" + fit.Briefing
 	}
 
 	body, err := json.Marshal(orReq{
 		Model:     model,
-		MaxTokens: ccfg.MaxTokens,
+		MaxTokens: fit.MaxTokens,
 		Messages: []orMsg{
 			{Role: "system", Content: oracleSystemPrompt},
 			{Role: "user", Content: userContent},
@@ -397,7 +408,7 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", OracleUsage{}, fmt.Errorf("read response: %w", err)
 	}
@@ -442,9 +453,15 @@ func callFusion(ctx context.Context, analysisModels []string, apiKey, question, 
 		endpoint = ccfg.OpenRouterEndpoint
 	}
 
+	ctxLen := ResolveContextLength(ctx, "openrouter/fusion")
+	fit := FitToContext(oracleSystemPrompt, question, briefing, ccfg.MaxTokens, ctxLen)
+	if fit.CannotFit {
+		return "", OracleUsage{}, fmt.Errorf("mashūra briefing too large for model context (%d tokens)", fit.ContextLength)
+	}
+
 	userContent := question
-	if briefing != "" {
-		userContent += "\n\nContext:\n" + briefing
+	if fit.Briefing != "" {
+		userContent += "\n\nContext:\n" + fit.Briefing
 	}
 
 	plugin := orFusionPlugin{ID: "fusion"}
@@ -460,7 +477,7 @@ func callFusion(ctx context.Context, analysisModels []string, apiKey, question, 
 
 	body, err := json.Marshal(orReq{
 		Model:     "openrouter/fusion",
-		MaxTokens: ccfg.MaxTokens,
+		MaxTokens: fit.MaxTokens,
 		Messages: []orMsg{
 			{Role: "system", Content: oracleSystemPrompt},
 			{Role: "user", Content: userContent},
@@ -491,7 +508,7 @@ func callFusion(ctx context.Context, analysisModels []string, apiKey, question, 
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", OracleUsage{}, fmt.Errorf("read response: %w", err)
 	}
