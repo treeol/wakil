@@ -295,6 +295,11 @@ func TestLoadAgentPromptFallbackAndFile(t *testing.T) {
 }
 
 func TestBuildToolsComposition(t *testing.T) {
+	// OPENROUTER_API_KEY must not leak from the host env into the test — if it
+	// is set, counsel tools appear unconditionally and the "no key" sub-test
+	// below fails (P0-5 in the improvement plan).
+	t.Setenv("OPENROUTER_API_KEY", "")
+
 	base := agent.BuildTools(config.Config{}, "/work", nil)
 	baseCount := len(base)
 	if baseCount == 0 {

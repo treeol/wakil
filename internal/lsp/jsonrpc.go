@@ -28,9 +28,9 @@ import (
 // Designed for per-server write serialization (L1): the caller (Manager)
 // owns one rpcConn per server, and all requests are serialized here.
 type rpcConn struct {
-	w  io.Writer   // server stdin
-	r  *bufio.Reader // server stdout (buffered for Content-Length framing)
-	c  io.Closer   // closes stdin (the reliable hard-stop: LSP servers exit on stdin EOF)
+	w io.Writer     // server stdin
+	r *bufio.Reader // server stdout (buffered for Content-Length framing)
+	c io.Closer     // closes stdin (the reliable hard-stop: LSP servers exit on stdin EOF)
 
 	nextID atomic.Int64
 	mu     sync.Mutex // serializes writes

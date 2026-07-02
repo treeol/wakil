@@ -194,13 +194,13 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 
 	cfg := config.DefaultConfig()
-	cfg.HardMaxBytes      = subagentHardMaxBytes
-	cfg.CompactAt         = subagentCompactAt
-	cfg.KeepBytes         = subagentKeepBytes
-	cfg.SummaryBytes      = subagentSummaryBytes
-	cfg.ToolResultCap     = subagentToolResultCap
-	cfg.TurnToolBudget    = subagentTurnToolBudget
-	cfg.ToolResultTTL     = subagentToolResultTTL
+	cfg.HardMaxBytes = subagentHardMaxBytes
+	cfg.CompactAt = subagentCompactAt
+	cfg.KeepBytes = subagentKeepBytes
+	cfg.SummaryBytes = subagentSummaryBytes
+	cfg.ToolResultCap = subagentToolResultCap
+	cfg.TurnToolBudget = subagentTurnToolBudget
+	cfg.ToolResultTTL = subagentToolResultTTL
 	cfg.MaxToolIterations = subagentMaxToolIter
 	if a.subMaxToolIter > 0 {
 		cfg.MaxToolIterations = a.subMaxToolIter

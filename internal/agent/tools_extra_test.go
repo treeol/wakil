@@ -384,9 +384,9 @@ func TestReadProcessLogCapEnforced(t *testing.T) {
 	const logTail = "LOGTAIL_MARKER"
 	// Build a log that's clearly >8 KB: ~2 KB head junk + ~9 KB tail content.
 	// ReadFileTail(8192) must return bytes from the tail section only.
-	head := strings.Repeat(logHead, 150)  // 150*14 = 2100 bytes
-	tail := strings.Repeat(logTail, 700)  // 700*14 = 9800 bytes
-	logContent := head + tail              // 11900 bytes total
+	head := strings.Repeat(logHead, 150) // 150*14 = 2100 bytes
+	tail := strings.Repeat(logTail, 700) // 700*14 = 9800 bytes
+	logContent := head + tail            // 11900 bytes total
 
 	exe := &logTailExec{fakeExecutor: newFakeExecutor(), logContent: logContent}
 	app := &App{

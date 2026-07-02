@@ -15,10 +15,10 @@ import (
 type WorkflowPhase int
 
 const (
-	WFGather    WorkflowPhase = iota
+	WFGather WorkflowPhase = iota
 	WFPlan
-	WFReview   // oracle checkpoint — no model turn driven here
-	WFPresent  // plan shown to user; waits for /plan approve
+	WFReview  // oracle checkpoint — no model turn driven here
+	WFPresent // plan shown to user; waits for /plan approve
 	WFImplement
 	WFDone
 )

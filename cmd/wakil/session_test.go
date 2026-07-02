@@ -96,4 +96,3 @@ func TestAppSaveSession(t *testing.T) {
 		t.Fatal("Updated not stamped")
 	}
 }
-

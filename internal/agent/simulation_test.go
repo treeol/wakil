@@ -22,7 +22,7 @@ func newSimApp(summarySize int) *App {
 		Cfg:       config.DefaultConfig(),
 		Out:       io.Discard,
 		Summarize: fakeSum,
-		Session: &Session{ChatID: ""},
+		Session:   &Session{ChatID: ""},
 	}
 	return app
 }

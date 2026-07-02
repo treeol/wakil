@@ -18,6 +18,7 @@ import (
 //	'ج' (Arabic) 2          1             1
 //
 // Offset before TARGET:
+//
 //	UTF-8: 1+1+4+2 = 8
 //	UTF-16: 1+1+2+1 = 5
 //	runes: 4
@@ -52,7 +53,7 @@ func TestComputeCharacterOffset_Encodings(t *testing.T) {
 // a rune-count implementation would pass this test for UTF-16 (both = 1 per char).
 // This test documents the trap; the mixed fixture above catches the bug.
 func TestComputeCharacterOffset_ArabicOnly(t *testing.T) {
-	line := "سلامTARGET" // 4 Arabic letters, each BMP
+	line := "سلامTARGET"  // 4 Arabic letters, each BMP
 	targetByteOffset := 8 // 4 Arabic letters × 2 bytes each = 8
 
 	// UTF-8: 8 bytes.

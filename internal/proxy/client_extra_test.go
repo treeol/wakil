@@ -31,13 +31,13 @@ func TestStreamErrorClassification(t *testing.T) {
 	}
 
 	cases := []struct {
-		name      string
-		handler   http.HandlerFunc
-		wantFatal bool   // ErrBackendFatal
-		wantStream bool  // ErrBackendStream
+		name       string
+		handler    http.HandlerFunc
+		wantFatal  bool // ErrBackendFatal
+		wantStream bool // ErrBackendStream
 	}{
 		{
-			name: "200 OK",
+			name:    "200 OK",
 			handler: sseOK,
 		},
 		{

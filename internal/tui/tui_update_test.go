@@ -23,7 +23,6 @@ func newTestTUI(t *testing.T) tuiModel {
 	return m
 }
 
-
 // lastItemText returns the ANSI-stripped text of the most recent conv item.
 func lastItemText(m tuiModel) string {
 	items := *m.items

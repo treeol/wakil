@@ -80,11 +80,11 @@ type orModelsResp struct {
 // modelLimitCache caches context lengths fetched from OpenRouter, shared across
 // all counsel calls in the process. Entries expire after modelCacheTTL.
 type modelLimitCache struct {
-	mu        sync.Mutex
-	entries   map[string]int // model ID → context_length (tokens)
-	fetched   time.Time
-	inflight  bool // singleflight: one goroutine fetches at a time
-	fetchErr  error
+	mu       sync.Mutex
+	entries  map[string]int // model ID → context_length (tokens)
+	fetched  time.Time
+	inflight bool // singleflight: one goroutine fetches at a time
+	fetchErr error
 }
 
 var sharedModelCache = &modelLimitCache{}

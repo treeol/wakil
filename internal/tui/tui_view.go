@@ -267,15 +267,15 @@ func bottomAlignViewport(view string, vpH int) string {
 // statusLineInput carries all the state needed by buildStatusLine. It is a
 // plain struct so the builder is a pure function and can be unit-tested.
 type statusLineInput struct {
-	state            agentState
-	autoApprove      bool
-	rawTools         bool
-	reasoning        bool    // extended-thinking in progress
-	tps              float64 // decode speed; 0 = not measured yet
-	workflowLabel    string  // e.g. "implement 3/6" or "" when no workflow
-	flash            string  // transient copied/error message
-	dotPhase         int     // 0-3, cycles while busy for the pulsing dot
-	hadTurn          bool    // at least one completed turn in this session
+	state         agentState
+	autoApprove   bool
+	rawTools      bool
+	reasoning     bool    // extended-thinking in progress
+	tps           float64 // decode speed; 0 = not measured yet
+	workflowLabel string  // e.g. "implement 3/6" or "" when no workflow
+	flash         string  // transient copied/error message
+	dotPhase      int     // 0-3, cycles while busy for the pulsing dot
+	hadTurn       bool    // at least one completed turn in this session
 	// Backend display (P29). backendUsed is the X-Ilm-Backend-Used response
 	// header from the most recent turn; backendRequested is what was requested
 	// (App.SelectedBackend); backendDefault is the configured default (Cfg.Backend).
@@ -680,8 +680,6 @@ func (m tuiModel) renderMainTabBar() string {
 	return lipgloss.NewStyle().Width(m.width).Render(bar)
 }
 
-// subTabContent returns the inner content lines for a sub-agent tab.
-
 // renderSidebar returns the right sidebar rendered to exactly sidebarWidth cols
 // and vpH+2 rows (matching the conversation pane outer height). When a sub tab
 // is active it shows that subagent's info instead of the main agent's.
@@ -689,9 +687,9 @@ func (m tuiModel) renderSidebar(vpH int) string {
 	innerW := sidebarWidth - 4
 	var lines []string
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
-		lines = m.subSidebarLines(m.subTabs[m.subCur], innerW, vpH)
+		lines = m.subSidebarLines(m.subTabs[m.subCur], innerW)
 	} else {
-		lines = m.mainSidebarLines(innerW, vpH)
+		lines = m.mainSidebarLines(innerW)
 	}
 	return styleSidebarBorder.
 		Width(sidebarWidth - 2).
@@ -700,7 +698,7 @@ func (m tuiModel) renderSidebar(vpH int) string {
 }
 
 // subSidebarLines builds the content lines for a subagent tab's sidebar view.
-func (m tuiModel) subSidebarLines(tab *subTab, innerW, maxLines int) []string {
+func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 	keyW := 6
 	valW := innerW - keyW - 1
 	row := func(k, v string) string {
@@ -779,7 +777,7 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW, maxLines int) []string {
 
 // mainSidebarLines builds the content lines for the "main" sidebar tab:
 // proxy/model/exec info, tools, and grounding.
-func (m tuiModel) mainSidebarLines(innerW, maxLines int) []string {
+func (m tuiModel) mainSidebarLines(innerW int) []string {
 	keyW := 6
 	valW := innerW - keyW - 1
 	row := func(k, v string) string {

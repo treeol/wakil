@@ -10,7 +10,7 @@ import (
 func TestDockerURI_RelativePath(t *testing.T) {
 	d := &DockerExecutor{
 		workspaceRoot: "/mnt/wakil",
-		hostMount:     "/home/valon/coding/wakil",
+		hostMount:     "/work/wakil",
 	}
 
 	uri, err := d.HostPathToURI("internal/agent/app.go")
@@ -20,7 +20,7 @@ func TestDockerURI_RelativePath(t *testing.T) {
 	if !strings.HasPrefix(uri, "file:///mnt/wakil/") {
 		t.Errorf("URI = %q, expected container path prefix file:///mnt/wakil/", uri)
 	}
-	if strings.Contains(uri, "/home/valon/coding/wakil") {
+	if strings.Contains(uri, "/work/wakil") {
 		t.Errorf("HOST PATH LEAK: URI %q contains host mount path", uri)
 	}
 	if !strings.HasSuffix(uri, "internal/agent/app.go") {
@@ -32,11 +32,11 @@ func TestDockerURI_RelativePath(t *testing.T) {
 func TestDockerURI_Translation(t *testing.T) {
 	d := &DockerExecutor{
 		workspaceRoot: "/mnt/wakil",
-		hostMount:     "/home/valon/coding/wakil",
+		hostMount:     "/work/wakil",
 	}
 
 	// Host path → container URI
-	uri, err := d.HostPathToURI("/home/valon/coding/wakil/internal/agent/app.go")
+	uri, err := d.HostPathToURI("/work/wakil/internal/agent/app.go")
 	if err != nil {
 		t.Fatalf("HostPathToURI: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestDockerURI_Translation(t *testing.T) {
 		t.Errorf("URI = %q, expected container path prefix file:///mnt/wakil/", uri)
 	}
 	// The LEAK SENTINEL: the host path must NOT appear in the URI.
-	if strings.Contains(uri, "/home/valon/coding/wakil") {
+	if strings.Contains(uri, "/work/wakil") {
 		t.Errorf("HOST PATH LEAK: URI %q contains the host mount path — gopls would silently return empty results", uri)
 	}
 
@@ -53,7 +53,7 @@ func TestDockerURI_Translation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("URIToHostPath: %v", err)
 	}
-	if hostPath != "/home/valon/coding/wakil/internal/agent/app.go" {
+	if hostPath != "/work/wakil/internal/agent/app.go" {
 		t.Errorf("round trip = %q, want original host path", hostPath)
 	}
 }
@@ -63,7 +63,7 @@ func TestDockerURI_Translation(t *testing.T) {
 func TestDockerURI_HostPathLeakRejected(t *testing.T) {
 	d := &DockerExecutor{
 		workspaceRoot: "/mnt/wakil",
-		hostMount:     "/home/valon/coding/wakil",
+		hostMount:     "/work/wakil",
 	}
 
 	// A path outside the host mount should error.
@@ -79,7 +79,7 @@ func TestDockerURI_HostPathLeakRejected(t *testing.T) {
 func TestDockerURI_GOROOTPathRejected(t *testing.T) {
 	d := &DockerExecutor{
 		workspaceRoot: "/mnt/wakil",
-		hostMount:     "/home/valon/coding/wakil",
+		hostMount:     "/work/wakil",
 	}
 
 	// gopls returns GOROOT paths like file:///usr/local/go/src/fmt/print.go
@@ -91,34 +91,34 @@ func TestDockerURI_GOROOTPathRejected(t *testing.T) {
 
 // TestDirectURI_RelativePath verifies relative path resolution in direct mode.
 func TestDirectURI_RelativePath(t *testing.T) {
-	e := &DirectExecutor{root: "/home/valon/coding/wakil"}
+	e := &DirectExecutor{root: "/work/wakil"}
 
 	uri, err := e.HostPathToURI("internal/agent/app.go")
 	if err != nil {
 		t.Fatalf("HostPathToURI with relative path: %v", err)
 	}
-	if uri != "file:///home/valon/coding/wakil/internal/agent/app.go" {
-		t.Errorf("URI = %q, want file:///home/valon/coding/wakil/internal/agent/app.go", uri)
+	if uri != "file:///work/wakil/internal/agent/app.go" {
+		t.Errorf("URI = %q, want file:///work/wakil/internal/agent/app.go", uri)
 	}
 }
 
 // TestDirectURI_Identity verifies direct mode is identity.
 func TestDirectURI_Identity(t *testing.T) {
-	e := &DirectExecutor{root: "/home/valon/coding/wakil"}
+	e := &DirectExecutor{root: "/work/wakil"}
 
-	uri, err := e.HostPathToURI("/home/valon/coding/wakil/main.go")
+	uri, err := e.HostPathToURI("/work/wakil/main.go")
 	if err != nil {
 		t.Fatalf("HostPathToURI: %v", err)
 	}
-	if uri != "file:///home/valon/coding/wakil/main.go" {
-		t.Errorf("URI = %q, want file:///home/valon/coding/wakil/main.go", uri)
+	if uri != "file:///work/wakil/main.go" {
+		t.Errorf("URI = %q, want file:///work/wakil/main.go", uri)
 	}
 
 	hostPath, err := e.URIToHostPath(uri)
 	if err != nil {
 		t.Fatalf("URIToHostPath: %v", err)
 	}
-	if hostPath != "/home/valon/coding/wakil/main.go" {
+	if hostPath != "/work/wakil/main.go" {
 		t.Errorf("round trip = %q, want original", hostPath)
 	}
 }

@@ -1,4 +1,4 @@
-// Package main — readonly.go: shell-command classification for the auto-mode gate.
+// Package agent — readonly.go: shell-command classification for the auto-mode gate.
 //
 // isDestructiveShell is friction against accidental destruction in auto mode,
 // NOT a security boundary. It is bypassable by construction: a model that wants
@@ -39,8 +39,8 @@ var readOnlyCmds = map[string]bool{
 // payloads are opaque to first-token analysis.
 var destructiveCmds = map[string]bool{
 	"rm": true, "rmdir": true, "shred": true,
-	"mv": true,   // may silently overwrite the destination
-	"dd": true,   // raw I/O, almost always destructive
+	"mv":   true, // may silently overwrite the destination
+	"dd":   true, // raw I/O, almost always destructive
 	"sudo": true, // privilege escalation — always gate
 	"kill": true, "pkill": true, "killall": true, "sigkill": true,
 	"mkfs": true, "fdisk": true, "parted": true,

@@ -29,10 +29,10 @@ import (
 
 // fileSyncState tracks one open document's sync state.
 type fileSyncState struct {
-	version   int32
-	content   string // last-synced content (for didChange full sync)
-	mtime     time.Time
-	size      int64
+	version    int32
+	content    string // last-synced content (for didChange full sync)
+	mtime      time.Time
+	size       int64
 	languageID string
 }
 
@@ -40,7 +40,7 @@ type fileSyncState struct {
 type fileSyncManager struct {
 	mu    sync.Mutex
 	docs  map[string]*fileSyncState // keyed by container URI
-	dirty map[string]bool            // container URI → dirty flag (run_shell resync)
+	dirty map[string]bool           // container URI → dirty flag (run_shell resync)
 }
 
 func newFileSyncManager() *fileSyncManager {

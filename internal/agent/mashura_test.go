@@ -758,9 +758,9 @@ func TestAutoCounselBareRunZeroCalls(t *testing.T) {
 			OracleEndpoint:       srv.URL + "/v1/messages",
 			OracleTimeoutSeconds: 5,
 		},
-		Client:      &proxy.Client{},
-		Out:         io.Discard,
-		Confirm:     func(_, _, _ string, _ bool) bool { return true },
+		Client:  &proxy.Client{},
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
 		// AutoCounsel intentionally off (default):
 		AutoCounsel: false,
 		MaxCounsel:  0,

@@ -203,4 +203,3 @@ func SessionListText(currentChatID string) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
-

@@ -76,7 +76,7 @@ func TestDispatchSubagentMalformedJSON(t *testing.T) {
 	alsoNotJSON := "Still not JSON, sorry about that."
 
 	srv := sseServer(t,
-		[]string{contentChunk(notJSON)},    // subagent first Send → no tool calls → exits
+		[]string{contentChunk(notJSON)},     // subagent first Send → no tool calls → exits
 		[]string{contentChunk(alsoNotJSON)}, // subagent retry Send → also not JSON
 	)
 	defer srv.Close()
@@ -343,10 +343,10 @@ func TestSubagentEgressGateFiresForExternal(t *testing.T) {
 			c.ExternalBackends = []string{"openrouter"}
 			return c
 		}(),
-		Client:  newTestClient(srv.URL),
-		Exec:    newFakeExecutor(),
-		Tools:   tools.DefaultTools("/work"),
-		Out:     io.Discard,
+		Client: newTestClient(srv.URL),
+		Exec:   newFakeExecutor(),
+		Tools:  tools.DefaultTools("/work"),
+		Out:    io.Discard,
 		Confirm: func(toolName, _, _ string, _ bool) bool {
 			if toolName == "external_backend" {
 				prompts++

@@ -1673,8 +1673,8 @@ func TestStepEvidenceCap(t *testing.T) {
 	trace := make([]agent.ToolTraceEntry, 20)
 	for i := range trace {
 		trace[i] = agent.ToolTraceEntry{
-			Abbrev: "read",
-			Command: "very_long_filename_to_make_entries_larger.go",
+			Abbrev:    "read",
+			Command:   "very_long_filename_to_make_entries_larger.go",
 			OutputLen: 4096,
 			FirstLine: "package main // first line of this file",
 		}
@@ -1746,9 +1746,9 @@ func TestStepEvidenceMismatch(t *testing.T) {
 // TestFormatTraceEntry covers the [ev] line format for ok and failing calls.
 func TestFormatTraceEntry(t *testing.T) {
 	ok := agent.ToolTraceEntry{
-		Abbrev: "shell",
-		Command: "go build ./...",
-		ExitErr: false,
+		Abbrev:    "shell",
+		Command:   "go build ./...",
+		ExitErr:   false,
 		OutputLen: 0,
 		FirstLine: "",
 	}
@@ -1761,12 +1761,12 @@ func TestFormatTraceEntry(t *testing.T) {
 	}
 
 	fail := agent.ToolTraceEntry{
-		Abbrev: "shell",
-		Command: "go test ./...",
-		ExitErr: true,
+		Abbrev:    "shell",
+		Command:   "go test ./...",
+		ExitErr:   true,
 		OutputLen: 156,
 		FirstLine: "FAIL",
-		LastLine: "exit status 1",
+		LastLine:  "exit status 1",
 	}
 	fline := agent.FormatTraceEntry(fail)
 	if !strings.Contains(fline, "EXIT") {
@@ -2770,7 +2770,7 @@ func TestPlanReviewFromPresent(t *testing.T) {
 func TestPlanReviewFromPresentGuard(t *testing.T) {
 	app := &agent.App{
 		Cfg:      config.DefaultConfig(),
-		Session: &agent.Session{},
+		Session:  &agent.Session{},
 		Workflow: &workflow.WorkflowState{Phase: workflow.WFGather},
 	}
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "review"}, app)
@@ -3221,7 +3221,7 @@ func TestReviewRetryOnTurnCompletion(t *testing.T) {
 func TestPlanReviewCommand(t *testing.T) {
 	app := &agent.App{
 		Cfg:      config.DefaultConfig(),
-		Session: &agent.Session{},
+		Session:  &agent.Session{},
 		Workflow: &workflow.WorkflowState{Phase: workflow.WFReview, StepCount: 2},
 	}
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "review"}, app)
@@ -3239,7 +3239,7 @@ func TestPlanReviewCommandNotInReview(t *testing.T) {
 	// workflow.WFGather is not a valid phase for /plan review.
 	app := &agent.App{
 		Cfg:      config.DefaultConfig(),
-		Session: &agent.Session{},
+		Session:  &agent.Session{},
 		Workflow: &workflow.WorkflowState{Phase: workflow.WFGather},
 	}
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "review"}, app)
@@ -3368,7 +3368,7 @@ func TestApproveIsUserOnlyInvariant(t *testing.T) {
 	makeApp := func(autoApprove bool) *agent.App {
 		return &agent.App{
 			Cfg:         config.DefaultConfig(),
-			Session: &agent.Session{},
+			Session:     &agent.Session{},
 			AutoApprove: autoApprove,
 			Workflow: &workflow.WorkflowState{
 				Phase:     workflow.WFPresent,

@@ -15,8 +15,8 @@ import (
 	"wakil/internal/exec"
 	"wakil/internal/lsp"
 	"wakil/internal/proxy"
-	"wakil/internal/trace"
 	wtools "wakil/internal/tools"
+	"wakil/internal/trace"
 	"wakil/internal/workflow"
 )
 
@@ -172,7 +172,7 @@ type App struct {
 
 	// EventSink, when set, receives events the agent goroutine posts to the TUI
 	// (stream chunks, done signals, confirm requests, etc.). Set by main to
-	// globalProg.Send; nil in tests that don't need TUI events.
+	// the TUI program's Send; nil in tests that don't need TUI events.
 	EventSink func(interface{})
 
 	// AutoCounsel, when true, fires mashura__debug automatically whenever the
@@ -958,7 +958,7 @@ func (a *App) captureToolTrace(tc proxy.ToolCall, result string) {
 
 func MakeTraceEntry(tc proxy.ToolCall, result string) ToolTraceEntry {
 	e := ToolTraceEntry{
-		Abbrev: toolAbbrev(tc.Function.Name),
+		Abbrev:    toolAbbrev(tc.Function.Name),
 		OutputLen: len(result),
 		ExitErr: strings.HasPrefix(result, "ERROR:") ||
 			strings.Contains(result, "\nERROR:"),

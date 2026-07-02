@@ -398,4 +398,3 @@ func TestSlashPickerHeightInvariantOnOpen(t *testing.T) {
 			total, want, total-want)
 	}
 }
-

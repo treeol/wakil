@@ -142,7 +142,7 @@ func TestActiveThresholdsScaleWithWindow(t *testing.T) {
 
 	// Hierarchy must hold for both windows.
 	for _, tc := range []struct {
-		name             string
+		name            string
 		ca, kb, hm, sum int
 	}{
 		{"196k", ca196, kb196, hm196, cfg.SummaryBytes},

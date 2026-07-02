@@ -44,11 +44,11 @@ type Executor interface {
 	// the process runs inside the container (correct filesystem, toolchain,
 	// module cache); the pipes are on the host.
 	StartInteractive(ctx context.Context, command string) (
-		stdin  io.WriteCloser,
+		stdin io.WriteCloser,
 		stdout io.ReadCloser,
 		stderr io.ReadCloser,
-		pid    int,
-		err    error,
+		pid int,
+		err error,
 	)
 
 	// HostPathToURI translates a host filesystem path to a file:// URI in the
@@ -248,8 +248,8 @@ func (d *DockerExecutor) WriteFile(path, content string) (string, error) {
 }
 
 func (d *DockerExecutor) Cwd() string           { return d.workspaceRoot }
-func (d *DockerExecutor) WorkspaceRoot() string  { return d.workspaceRoot }
-func (d *DockerExecutor) Generation() int        { return d.generation }
+func (d *DockerExecutor) WorkspaceRoot() string { return d.workspaceRoot }
+func (d *DockerExecutor) Generation() int       { return d.generation }
 func (d *DockerExecutor) Describe() string {
 	sock := ""
 	if d.dockerSock {
@@ -349,7 +349,7 @@ func (d *DockerExecutor) URIToHostPath(uri string) (string, error) {
 
 // DirectExecutor runs commands directly on the host. Still fully gated.
 type DirectExecutor struct {
-	root        string // project root; immutable; all commands and file ops start here
+	root         string // project root; immutable; all commands and file ops start here
 	sandboxTools string
 	toolsProbed  bool
 	generation   int
@@ -434,10 +434,10 @@ func (e *DirectExecutor) WriteFile(path, content string) (string, error) {
 }
 
 func (e *DirectExecutor) Cwd() string           { return e.root }
-func (e *DirectExecutor) WorkspaceRoot() string  { return e.root }
-func (e *DirectExecutor) Generation() int        { return e.generation }
-func (e *DirectExecutor) Describe() string       { return "direct[" + e.root + "]" }
-func (e *DirectExecutor) Close() error           { return nil }
+func (e *DirectExecutor) WorkspaceRoot() string { return e.root }
+func (e *DirectExecutor) Generation() int       { return e.generation }
+func (e *DirectExecutor) Describe() string      { return "direct[" + e.root + "]" }
+func (e *DirectExecutor) Close() error          { return nil }
 
 // StartInteractive spawns a long-running process on the host with stdin/stdout/
 // stderr pipes for bidirectional JSON-RPC communication (e.g. gopls in direct mode).

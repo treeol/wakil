@@ -15,8 +15,8 @@ import (
 // the model ID, and that bare names (no colon) default to "anthropic".
 func TestParseModelPrefix(t *testing.T) {
 	cases := []struct {
-		in   string
-		prov string
+		in    string
+		prov  string
 		model string
 	}{
 		{"anthropic:claude-opus-4-8", "anthropic", "claude-opus-4-8"},

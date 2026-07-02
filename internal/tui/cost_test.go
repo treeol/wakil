@@ -549,7 +549,7 @@ func TestShortSourceNameLocal(t *testing.T) {
 		{"mashura", "mashura"},     // 7 chars, no prefix match
 
 		// Per-backend inference: "inf·<backend>" truncated to 9.
-		{"inference·local", "inf·local"},    // "inf·local" = 9 chars
+		{"inference·local", "inf·local"},      // "inf·local" = 9 chars
 		{"inference·openrouter", "inf·open…"}, // "inf·openrouter" = 14, truncated to 9 → "inf·open…"
 		// Model is stripped from the display — only backend matters at 9 chars.
 		{"inference·openrouter/openai/gpt-4o", "inf·open…"},

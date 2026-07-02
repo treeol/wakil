@@ -84,7 +84,7 @@ func (f *fakeExecutor) WriteFile(p, c string) (string, error) {
 	f.files[p] = c
 	return fmt.Sprintf("wrote %d bytes to %s", len(c), p), nil
 }
-func (f *fakeExecutor) Cwd() string          { return "/work" }
+func (f *fakeExecutor) Cwd() string           { return "/work" }
 func (f *fakeExecutor) WorkspaceRoot() string { return "/work" }
 func (f *fakeExecutor) Describe() string      { return "fake" }
 func (f *fakeExecutor) Close() error          { return nil }
@@ -93,13 +93,13 @@ func (f *fakeExecutor) Generation() int       { return 1 }
 func (f *fakeExecutor) ConfinePath(_ context.Context, path string) (string, error) {
 	return path, nil
 }
-func (f *fakeExecutor) DeletePath(_ context.Context, path string) error  { return nil }
+func (f *fakeExecutor) DeletePath(_ context.Context, path string) error   { return nil }
 func (f *fakeExecutor) MovePath(_ context.Context, src, dst string) error { return nil }
 func (f *fakeExecutor) StartBackground(_ context.Context, command, logPath string) (int, int, error) {
 	return 1234, 1234, nil
 }
-func (f *fakeExecutor) KillPgid(_ context.Context, pgid, sig int) error           { return nil }
-func (f *fakeExecutor) IsProcessAlive(_ context.Context, pid int) bool             { return false }
+func (f *fakeExecutor) KillPgid(_ context.Context, pgid, sig int) error { return nil }
+func (f *fakeExecutor) IsProcessAlive(_ context.Context, pid int) bool  { return false }
 func (f *fakeExecutor) ReadFileTail(_ context.Context, path string, maxBytes int64) (string, error) {
 	return "", nil
 }

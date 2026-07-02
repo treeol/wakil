@@ -251,8 +251,9 @@ type PanelMemberResult struct {
 // panel mode: queries all members sequentially, collects all results.
 // fallback mode: queries in order, stops on first success.
 // fusion mode: sends ONE OpenRouter Fusion request (models → analysis_models);
-//   OpenRouter runs the panel in parallel internally and returns the judge's
-//   structured analysis.
+//
+//	OpenRouter runs the panel in parallel internally and returns the judge's
+//	structured analysis.
 //
 // Each member in panel/fallback receives an identical briefing — independent
 // opinions, never chained.

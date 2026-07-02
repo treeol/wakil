@@ -69,11 +69,11 @@ type Manager struct {
 
 // Server is one language server connection.
 type Server struct {
-	lang   string
-	mgr    *Manager
-	cmd    string
-	args   []string
-	env    map[string]string
+	lang     string
+	mgr      *Manager
+	cmd      string
+	args     []string
+	env      map[string]string
 	initOpts map[string]interface{}
 
 	mu       sync.Mutex
@@ -86,18 +86,18 @@ type Server struct {
 
 	// Readiness gate: closed when Ready, re-created on each spawn.
 	// Waiters select on readyCh and deadCh.
-	readyCh  chan struct{}
-	deadCh   chan struct{} // closed on death; never re-opened (re-spawn creates a new Server)
-	deadErr  error
+	readyCh chan struct{}
+	deadCh  chan struct{} // closed on death; never re-opened (re-spawn creates a new Server)
+	deadErr error
 
 	// $/progress tracking: refcount of open Begin-without-End tokens.
 	// Ready when refcount reaches zero (or on timeout, or on first successful query).
 	progressTokens map[any]bool // token → active
-	progressTimer  *time.Timer   // no-progress watchdog
+	progressTimer  *time.Timer  // no-progress watchdog
 
 	// Open documents (for didOpen/didChange tracking)
-	docs     map[string]int32 // URI → version counter
-	idleTimer *time.Timer     // idle shutdown
+	docs      map[string]int32 // URI → version counter
+	idleTimer *time.Timer      // idle shutdown
 
 	// File-sync manager (lazy-initialized)
 	fs *fileSyncManager
@@ -152,16 +152,16 @@ func (m *Manager) newServerLocked(lang string) *Server {
 		srvCfg = defaultLSPServer(lang)
 	}
 	s := &Server{
-		lang:   lang,
-		mgr:    m,
-		cmd:    srvCfg.Command,
-		args:   srvCfg.Args,
-		env:    srvCfg.Env,
-		initOpts: srvCfg.InitOptions,
-		readyCh: make(chan struct{}),
-		deadCh:  make(chan struct{}),
+		lang:           lang,
+		mgr:            m,
+		cmd:            srvCfg.Command,
+		args:           srvCfg.Args,
+		env:            srvCfg.Env,
+		initOpts:       srvCfg.InitOptions,
+		readyCh:        make(chan struct{}),
+		deadCh:         make(chan struct{}),
 		progressTokens: make(map[any]bool),
-		docs:    make(map[string]int32),
+		docs:           make(map[string]int32),
 	}
 	return s
 }
@@ -252,16 +252,16 @@ func (s *Server) initialize(ctx context.Context) error {
 	rootURI := s.mgr.rootURI
 	pid := int32(0) // we don't have our own PID meaningfully across docker
 	params := InitializeParams{
-		ProcessID: &pid,
+		ProcessID:  &pid,
 		ClientInfo: &ClientInfo{Name: "wakil"},
-		RootURI:   &rootURI,
+		RootURI:    &rootURI,
 		Capabilities: ClientCapabilities{
 			General: &GeneralClientCapabilities{
 				PositionEncodings: []PositionEncodingKind{UTF8, UTF16},
 			},
 			Workspace: &WorkspaceClientCapabilities{
 				WorkspaceEdit: &WorkspaceEditClientCapabilities{
-					DocumentChanges:   true,
+					DocumentChanges:    true,
 					ResourceOperations: []string{"create", "rename", "delete"},
 				},
 			},
@@ -388,11 +388,7 @@ func (s *Server) handleNotification(method string, params json.RawMessage, isReq
 		// Register the token so we expect Begin/End for it.
 		var p WorkDoneProgressCreateParams
 		json.Unmarshal(params, &p)
-		if p.Token != nil {
-			s.mu.Lock()
-			// Don't add to progressTokens here — that happens on Begin.
-			s.mu.Unlock()
-		}
+		_ = p // token registered on Begin; nothing to store here
 		return nil, nil
 	case "window/showMessage":
 		// Log and ignore for now.
@@ -584,7 +580,7 @@ func (s *Server) DidChange(ctx context.Context, uri, content string) error {
 
 	params := DidChangeTextDocumentParams{
 		TextDocument: VersionedTextDocumentIdentifier{
-			Version:               version,
+			Version:                version,
 			TextDocumentIdentifier: TextDocumentIdentifier{URI: uri},
 		},
 		ContentChanges: []TextDocumentContentChangeEvent{{Text: content}},

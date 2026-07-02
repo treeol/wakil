@@ -236,4 +236,3 @@ func loadAgentPrompt(cfg config.Config) string {
 	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)
 	return prompt
 }
-

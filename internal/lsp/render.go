@@ -252,10 +252,10 @@ func DecodeDocumentSymbol(raw json.RawMessage) ([]DocumentSymbol, []SymbolInform
 // LocationLink is the LocationLink type (we don't advertise linkSupport, but
 // decode defensively per item 1).
 type LocationLink struct {
-	OriginSelectionRange  *Range `json:"originSelectionRange,omitempty"`
-	TargetURI             string `json:"targetUri"`
-	TargetRange           Range  `json:"targetRange"`
-	TargetSelectionRange  Range  `json:"targetSelectionRange"`
+	OriginSelectionRange *Range `json:"originSelectionRange,omitempty"`
+	TargetURI            string `json:"targetUri"`
+	TargetRange          Range  `json:"targetRange"`
+	TargetSelectionRange Range  `json:"targetSelectionRange"`
 }
 
 // SymbolInfo is a unified symbol representation for rendering.

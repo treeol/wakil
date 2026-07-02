@@ -27,9 +27,9 @@ const (
 type FileChangeType int
 
 const (
-	FileChanged  FileChangeType = 2
-	FileCreated  FileChangeType = 1
-	FileDeleted  FileChangeType = 3
+	FileChanged FileChangeType = 2
+	FileCreated FileChangeType = 1
+	FileDeleted FileChangeType = 3
 )
 
 // TextDocumentSyncKind defines how documents are synced.
@@ -46,9 +46,9 @@ type SymbolKind uint32
 
 const (
 	SymFile          SymbolKind = 1
-	SymModule         SymbolKind = 2
-	SymNamespace      SymbolKind = 3
-	SymPackage        SymbolKind = 4
+	SymModule        SymbolKind = 2
+	SymNamespace     SymbolKind = 3
+	SymPackage       SymbolKind = 4
 	SymClass         SymbolKind = 5
 	SymMethod        SymbolKind = 6
 	SymProperty      SymbolKind = 7
@@ -92,16 +92,16 @@ type TextDocumentIdentifier struct {
 
 // VersionedTextDocumentIdentifier adds a version number.
 type VersionedTextDocumentIdentifier struct {
-	Version int32                  `json:"version"`
+	Version int32 `json:"version"`
 	TextDocumentIdentifier
 }
 
 // TextDocumentItem carries full document content (for didOpen).
 type TextDocumentItem struct {
-	URI       string `json:"uri"`
+	URI        string `json:"uri"`
 	LanguageID string `json:"languageId"`
-	Version   int32  `json:"version"`
-	Text      string `json:"text"`
+	Version    int32  `json:"version"`
+	Text       string `json:"text"`
 }
 
 // MarkupContent is markdown or plaintext.
@@ -124,12 +124,12 @@ type GeneralClientCapabilities struct {
 
 // WorkspaceClientCapabilities — only the fields we need.
 type WorkspaceClientCapabilities struct {
-	WorkspaceEdit   *WorkspaceEditClientCapabilities `json:"workspaceEdit,omitempty"`
+	WorkspaceEdit         *WorkspaceEditClientCapabilities         `json:"workspaceEdit,omitempty"`
 	DidChangeWatchedFiles *DidChangeWatchedFilesClientCapabilities `json:"didChangeWatchedFiles,omitempty"`
 }
 
 type WorkspaceEditClientCapabilities struct {
-	DocumentChanges   bool     `json:"documentChanges,omitempty"`
+	DocumentChanges    bool     `json:"documentChanges,omitempty"`
 	ResourceOperations []string `json:"resourceOperations,omitempty"`
 }
 
@@ -139,11 +139,11 @@ type DidChangeWatchedFilesClientCapabilities struct {
 
 // TextDocumentClientCapabilities — per-feature capabilities.
 type TextDocumentClientCapabilities struct {
-	Synchronization   *TextDocumentSyncClientCapabilities `json:"synchronization,omitempty"`
-	Hover              *HoverClientCapabilities            `json:"hover,omitempty"`
-	Definition         *DefinitionClientCapabilities       `json:"definition,omitempty"`
-	References         *ReferenceClientCapabilities       `json:"references,omitempty"`
-	DocumentSymbol     *DocumentSymbolClientCapabilities   `json:"documentSymbol,omitempty"`
+	Synchronization *TextDocumentSyncClientCapabilities `json:"synchronization,omitempty"`
+	Hover           *HoverClientCapabilities            `json:"hover,omitempty"`
+	Definition      *DefinitionClientCapabilities       `json:"definition,omitempty"`
+	References      *ReferenceClientCapabilities        `json:"references,omitempty"`
+	DocumentSymbol  *DocumentSymbolClientCapabilities   `json:"documentSymbol,omitempty"`
 }
 
 type TextDocumentSyncClientCapabilities struct {
@@ -171,20 +171,20 @@ type WindowClientCapabilities struct {
 
 // ClientCapabilities is the full client capability set sent in initialize.
 type ClientCapabilities struct {
-	Workspace     *WorkspaceClientCapabilities     `json:"workspace,omitempty"`
-	TextDocument  *TextDocumentClientCapabilities  `json:"textDocument,omitempty"`
-	Window        *WindowClientCapabilities        `json:"window,omitempty"`
-	General       *GeneralClientCapabilities       `json:"general,omitempty"`
+	Workspace    *WorkspaceClientCapabilities    `json:"workspace,omitempty"`
+	TextDocument *TextDocumentClientCapabilities `json:"textDocument,omitempty"`
+	Window       *WindowClientCapabilities       `json:"window,omitempty"`
+	General      *GeneralClientCapabilities      `json:"general,omitempty"`
 }
 
 // InitializeParams is the initialize request payload.
 type InitializeParams struct {
-	ProcessID           *int32              `json:"processId"`
-	ClientInfo          *ClientInfo         `json:"clientInfo,omitempty"`
-	RootURI             *string             `json:"rootUri"` // can be null
-	Capabilities        ClientCapabilities  `json:"capabilities"`
-	InitializationOptions any               `json:"initializationOptions,omitempty"`
-	WorkspaceFolders    []WorkspaceFolder   `json:"workspaceFolders,omitempty"`
+	ProcessID             *int32             `json:"processId"`
+	ClientInfo            *ClientInfo        `json:"clientInfo,omitempty"`
+	RootURI               *string            `json:"rootUri"` // can be null
+	Capabilities          ClientCapabilities `json:"capabilities"`
+	InitializationOptions any                `json:"initializationOptions,omitempty"`
+	WorkspaceFolders      []WorkspaceFolder  `json:"workspaceFolders,omitempty"`
 }
 
 type ClientInfo struct {
@@ -194,14 +194,14 @@ type ClientInfo struct {
 
 // ServerCapabilities is the server's advertised capabilities (subset).
 type ServerCapabilities struct {
-	PositionEncoding     *PositionEncodingKind `json:"positionEncoding,omitempty"`
-	TextDocumentSync     any                   `json:"textDocumentSync,omitempty"` // can be TextDocumentSyncKind or TextDocumentSyncOptions
-	DefinitionProvider   any                   `json:"definitionProvider,omitempty"`
-	ReferencesProvider   any                   `json:"referencesProvider,omitempty"`
-	HoverProvider        any                   `json:"hoverProvider,omitempty"`
-	DocumentSymbolProvider any                 `json:"documentSymbolProvider,omitempty"`
-	WorkspaceSymbolProvider any                `json:"workspaceSymbolProvider,omitempty"`
-	RenameProvider       any                   `json:"renameProvider,omitempty"`
+	PositionEncoding        *PositionEncodingKind `json:"positionEncoding,omitempty"`
+	TextDocumentSync        any                   `json:"textDocumentSync,omitempty"` // can be TextDocumentSyncKind or TextDocumentSyncOptions
+	DefinitionProvider      any                   `json:"definitionProvider,omitempty"`
+	ReferencesProvider      any                   `json:"referencesProvider,omitempty"`
+	HoverProvider           any                   `json:"hoverProvider,omitempty"`
+	DocumentSymbolProvider  any                   `json:"documentSymbolProvider,omitempty"`
+	WorkspaceSymbolProvider any                   `json:"workspaceSymbolProvider,omitempty"`
+	RenameProvider          any                   `json:"renameProvider,omitempty"`
 }
 
 // InitializeResult is the initialize response.
@@ -220,7 +220,7 @@ type ServerInfo struct {
 // TextDocumentPositionParams is the shared base for positional requests.
 type TextDocumentPositionParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
-	Position      Position               `json:"position"`
+	Position     Position               `json:"position"`
 }
 
 // DefinitionParams — textDocument/definition.
@@ -280,10 +280,10 @@ type DocumentSymbol struct {
 
 // SymbolInformation is a flat workspace symbol.
 type SymbolInformation struct {
-	Name          string   `json:"name"`
+	Name          string     `json:"name"`
 	Kind          SymbolKind `json:"kind"`
-	Location      Location `json:"location"`
-	ContainerName string   `json:"containerName,omitempty"`
+	Location      Location   `json:"location"`
+	ContainerName string     `json:"containerName,omitempty"`
 }
 
 // TextEdit is a single edit.
@@ -294,8 +294,8 @@ type TextEdit struct {
 
 // WorkspaceEdit is the result of rename — changes OR documentChanges.
 type WorkspaceEdit struct {
-	Changes        map[string][]TextEdit  `json:"changes,omitempty"`
-	DocumentChanges []DocumentChange       `json:"documentChanges,omitempty"`
+	Changes         map[string][]TextEdit `json:"changes,omitempty"`
+	DocumentChanges []DocumentChange      `json:"documentChanges,omitempty"`
 }
 
 // DocumentChange is a union: TextDocumentEdit | CreateFile | RenameFile | DeleteFile.
@@ -314,7 +314,7 @@ type OptionalVersionedTextDocumentIdentifier struct {
 
 type TextDocumentEdit struct {
 	TextDocument OptionalVersionedTextDocumentIdentifier `json:"textDocument"`
-	Edits        []TextEdit                                `json:"edits"`
+	Edits        []TextEdit                              `json:"edits"`
 }
 
 type CreateFile struct {
@@ -323,7 +323,7 @@ type CreateFile struct {
 }
 
 type RenameFile struct {
-	Kind  string `json:"kind"`
+	Kind   string `json:"kind"`
 	OldURI string `json:"oldUri"`
 	NewURI string `json:"newUri"`
 }
@@ -368,8 +368,8 @@ type DidOpenTextDocumentParams struct {
 
 // DidChangeTextDocumentParams — textDocument/didChange (full sync).
 type DidChangeTextDocumentParams struct {
-	TextDocument   VersionedTextDocumentIdentifier     `json:"textDocument"`
-	ContentChanges []TextDocumentContentChangeEvent    `json:"contentChanges"`
+	TextDocument   VersionedTextDocumentIdentifier  `json:"textDocument"`
+	ContentChanges []TextDocumentContentChangeEvent `json:"contentChanges"`
 }
 
 // TextDocumentContentChangeEvent — for full sync, just {text: ...}.
@@ -383,7 +383,7 @@ type DidChangeWatchedFilesParams struct {
 }
 
 type FileEvent struct {
-	URI  string          `json:"uri"`
+	URI  string         `json:"uri"`
 	Type FileChangeType `json:"type"`
 }
 
@@ -397,8 +397,8 @@ type ProgressParams struct {
 
 // WorkDoneProgressBegin is the start of a progress operation.
 type WorkDoneProgressBegin struct {
-	Kind   string `json:"kind"`
-	Title  string `json:"title"`
+	Kind    string `json:"kind"`
+	Title   string `json:"title"`
 	Message string `json:"message,omitempty"`
 }
 

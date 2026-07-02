@@ -58,7 +58,7 @@ type convItem struct {
 }
 
 type tuiModel struct {
-	app    *agent.App
+	app        *agent.App
 	cancel     context.CancelFunc
 	cancelling bool // true after first Ctrl+C, until agent.AgentDoneMsg
 
@@ -85,9 +85,9 @@ type tuiModel struct {
 	// reasoning accumulates extended-thinking deltas while the model is thinking.
 	// On the first content delta it is replaced with a single collapsed summary
 	// line and committed as an iSys item. Never written to Conv history.
-	reasoning          *strings.Builder
-	reasoningDone      bool // true once reasoning has been collapsed
-	reasoningExpanded  bool // expand live reasoning beyond the collapsed cap
+	reasoning         *strings.Builder
+	reasoningDone     bool // true once reasoning has been collapsed
+	reasoningExpanded bool // expand live reasoning beyond the collapsed cap
 
 	// Mouse text selection over the conversation pane (see tui_select.go).
 	sel        selection
@@ -140,9 +140,9 @@ type subTab struct {
 	n            int
 	task         string
 	chatID       string
-	backend      string             // resolved backend (from SubagentStartMsg.Backend)
-	usedBackend  string             // actual backend from last response (SubagentDoneMsg.UsedBackend)
-	buf          *strings.Builder   // tool-call lines + final JSON output
+	backend      string           // resolved backend (from SubagentStartMsg.Backend)
+	usedBackend  string           // actual backend from last response (SubagentDoneMsg.UsedBackend)
+	buf          *strings.Builder // tool-call lines + final JSON output
 	grounding    []proxy.GroundingEntry
 	ctxSize      int
 	hardMaxBytes int

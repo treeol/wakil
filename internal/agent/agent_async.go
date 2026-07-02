@@ -20,8 +20,8 @@ import (
 )
 
 // runTurn launches the agent turn in a goroutine and returns a no-op tea.Cmd.
-// All progress is posted into the TUI via globalProg.Send — safe because it
-// runs in its own goroutine, outside the Bubble Tea event loop.
+// All progress is posted into the TUI via EventSink — safe because it runs in
+// its own goroutine, outside the Bubble Tea event loop.
 func RunTurn(app *App, ctx context.Context, userText string) tea.Cmd {
 	return func() tea.Msg {
 		app.Out = NewProgWriter(func(m StreamChunkMsg) { app.sendEvent(m) })
@@ -246,7 +246,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 						return nil // pause: StepIdx stays at completedStep
 					}
 				} else {
-					wfProgNote(app, "⚠ step oracle unavailable (" + oracleResult + ")")
+					wfProgNote(app, "⚠ step oracle unavailable ("+oracleResult+")")
 				}
 			}
 
@@ -267,9 +267,9 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 				wf.StepIdx, wf.StepCount)
 			oracleResult, oracleAvail := doWFOracle(ctx, app, deviationQ)
 			if oracleAvail {
-				wfProgNote(app, "oracle deviation advice:\n" + oracleResult)
+				wfProgNote(app, "oracle deviation advice:\n"+oracleResult)
 			} else {
-				wfProgNote(app, "⚠ oracle unavailable for deviation advice (" + oracleResult + ") — review the failure manually")
+				wfProgNote(app, "⚠ oracle unavailable for deviation advice ("+oracleResult+") — review the failure manually")
 			}
 			// Do not auto-advance — let the user decide how to proceed.
 			return nil
@@ -566,7 +566,7 @@ func HandleFinalReview(ctx context.Context, app *App) {
 	}
 	briefing := workflow.BuildFinalReviewBriefing(app.Workflow.Task, planContent, reviewQ, app.Cfg.WFBriefingMaxBytes)
 	if reason := workflow.ValidateBriefing(briefing, true); reason != "" {
-		wfProgNote(app, "⚠ FINAL REVIEW: oracle unavailable — briefing incomplete: " + reason)
+		wfProgNote(app, "⚠ FINAL REVIEW: oracle unavailable — briefing incomplete: "+reason)
 		wfWriteFinalLog(app, "FINAL REVIEW skipped: briefing incomplete ("+reason+") — /plan approve required to close.")
 		wfProgNote(app, "· type /plan approve to force-close, or fix oracle config and retry")
 		return
@@ -660,7 +660,7 @@ func HandleReviewOracle(ctx context.Context, app *App) {
 	if !oracleAvail {
 		wf.OracleReview = ""
 		wf.ReviewSkipReason = oracleResult
-		wfProgNote(app, "⚠ REVIEW: oracle unavailable — " + oracleResult)
+		wfProgNote(app, "⚠ REVIEW: oracle unavailable — "+oracleResult)
 		wfWriteReviewSkip(app, oracleResult)
 		wfProgNote(app, "· type /plan review to retry, or /plan approve to skip (reason will be logged)")
 		return
@@ -677,7 +677,7 @@ func HandleReviewOracle(ctx context.Context, app *App) {
 		}
 	}
 
-	wfProgNote(app, "oracle review:\n" + oracleResult)
+	wfProgNote(app, "oracle review:\n"+oracleResult)
 	wf.Phase = workflow.WFPresent
 	wfProgNote(app, fmt.Sprintf("· plan ready (%d steps) — type /plan approve to begin implementation", wf.StepCount))
 }
@@ -847,9 +847,9 @@ func ShellCmdFromDetail(detail string) string {
 
 // handleTUICommand processes slash commands locally without touching the agent.
 // Returns (handled, quit, cmd) where cmd is a tea.Cmd that produces the
-// response message. All messages are returned as Cmds — never via
-// globalProg.Send — because this function is called from within Update, and
-// calling Send from inside the event loop risks a deadlock.
+// response message. All messages are returned as Cmds — never via EventSink —
+// because this function is called from within Update, and calling Send from
+// inside the event loop risks a deadlock.
 func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, "/") {

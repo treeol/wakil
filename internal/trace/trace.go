@@ -24,7 +24,7 @@ import (
 // absence ambiguous — a reader would not know if the field was missing or
 // explicitly false).
 type Record struct {
-	Type        string `json:"type"`         // "store_header" | "turn"
+	Type        string `json:"type"` // "store_header" | "turn"
 	SessionID   string `json:"session_id"`
 	Ts          string `json:"ts"`           // RFC3339Nano UTC
 	SftEligible bool   `json:"sft_eligible"` // always false, never omitted
@@ -35,10 +35,10 @@ type Record struct {
 
 	// turn fields
 	TurnIndex       int         `json:"turn_index,omitempty"`
-	TurnType        string      `json:"turn_type,omitempty"`        // "tool_loop" | "final"
-	ReasoningChars  int         `json:"reasoning_chars,omitempty"`  // streamed reasoning_content chars
+	TurnType        string      `json:"turn_type,omitempty"`       // "tool_loop" | "final"
+	ReasoningChars  int         `json:"reasoning_chars,omitempty"` // streamed reasoning_content chars
 	ToolCalls       []ToolTrace `json:"tool_calls,omitempty"`
-	Backend         string      `json:"backend,omitempty"`          // X-Ilm-Backend-Used
+	Backend         string      `json:"backend,omitempty"` // X-Ilm-Backend-Used
 	InputTokens     int64       `json:"input_tokens,omitempty"`
 	OutputTokens    int64       `json:"output_tokens,omitempty"`
 	ReasoningTokens int64       `json:"reasoning_tokens,omitempty"` // from usage chunk

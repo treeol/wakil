@@ -21,9 +21,9 @@ func populateCache(t *testing.T, entries map[string]int) {
 // the caller gets a defensive copy (mutations don't affect the cache).
 func TestFetchModelContextLimits(t *testing.T) {
 	original := map[string]int{
-		"openrouter/fusion":          1_000_000,
+		"openrouter/fusion":           1_000_000,
 		"anthropic/claude-sonnet-4-6": 200_000,
-		"google/gemini-2.5-pro":      2_000_000,
+		"google/gemini-2.5-pro":       2_000_000,
 	}
 	populateCache(t, original)
 	defer ResetModelCache()

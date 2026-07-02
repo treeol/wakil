@@ -210,7 +210,7 @@ func (m *Manager) handleDefinition(ctx context.Context, srv *Server, params Text
 func (m *Manager) handleReferences(ctx context.Context, srv *Server, params TextDocumentPositionParams) string {
 	reqParams := ReferenceParams{
 		TextDocumentPositionParams: params,
-		Context: ReferenceContext{IncludeDeclaration: false},
+		Context:                    ReferenceContext{IncludeDeclaration: false},
 	}
 	raw, err := srv.Call(ctx, "textDocument/references", reqParams)
 	if err != nil {

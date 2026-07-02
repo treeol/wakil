@@ -3,7 +3,6 @@ package tui
 import (
 	"strings"
 	"testing"
-
 )
 
 // plain strips ANSI codes so we can check segment content as plain text.
@@ -207,10 +206,10 @@ func TestBuildStatusLineBackendBeforeAuto(t *testing.T) {
 // TestLeadingAnsiCodes checks the helper used by wrapAnsiLine.
 func TestLeadingAnsiCodes(t *testing.T) {
 	cases := []struct{ input, want string }{
-		{"\x1b[2mtext", "\x1b[2m"},             // dim
+		{"\x1b[2mtext", "\x1b[2m"},                 // dim
 		{"\x1b[2m\x1b[33mtext", "\x1b[2m\x1b[33m"}, // stacked
-		{"\x1b[0mtext", ""},                    // reset: nothing to carry
-		{"plain text", ""},                     // no ANSI
+		{"\x1b[0mtext", ""},                        // reset: nothing to carry
+		{"plain text", ""},                         // no ANSI
 		{"", ""},
 	}
 	for _, c := range cases {

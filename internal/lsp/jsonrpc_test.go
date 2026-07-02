@@ -16,26 +16,26 @@ import (
 // client's view: reads from server, writes to server) and records received
 // requests.
 type mockServer struct {
-	mu            sync.Mutex
-	received      []rpcRequest
-	handlers      map[string]func(params json.RawMessage) (result any, err *rpcError)
-	clientW       io.WriteCloser // client writes to server's stdin
-	clientR       io.ReadCloser  // client reads server's stdout
-	serverStdout io.WriteCloser  // for injecting server→client messages
+	mu           sync.Mutex
+	received     []rpcRequest
+	handlers     map[string]func(params json.RawMessage) (result any, err *rpcError)
+	clientW      io.WriteCloser // client writes to server's stdin
+	clientR      io.ReadCloser  // client reads server's stdout
+	serverStdout io.WriteCloser // for injecting server→client messages
 }
 
 func newMockServer(t *testing.T, handlers map[string]func(json.RawMessage) (any, *rpcError)) *mockServer {
 	t.Helper()
 	// Two pipes: client→server (stdin) and server→client (stdout).
 	// io.Pipe() returns (*PipeReader, *PipeWriter): reader reads, writer writes.
-	stdinR, stdinW := io.Pipe() // client writes to stdinW, server reads from stdinR
+	stdinR, stdinW := io.Pipe()   // client writes to stdinW, server reads from stdinR
 	stdoutR, stdoutW := io.Pipe() // server writes to stdoutW, client reads from stdoutR
 
 	s := &mockServer{
-		handlers:      handlers,
-		clientW:       stdinW,  // client writes to server's stdin
-		clientR:       stdoutR, // client reads server's stdout
-		serverStdout:  stdoutW, // for injecting server→client messages
+		handlers:     handlers,
+		clientW:      stdinW,  // client writes to server's stdin
+		clientR:      stdoutR, // client reads server's stdout
+		serverStdout: stdoutW, // for injecting server→client messages
 	}
 
 	go func() {

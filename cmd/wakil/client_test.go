@@ -105,21 +105,21 @@ func (f *fakeExecutor) WriteFile(p, c string) (string, error) {
 	return fmt.Sprintf("wrote %d bytes to %s", len(c), p), nil
 }
 func (f *fakeExecutor) Cwd() string           { return "/work" }
-func (f *fakeExecutor) WorkspaceRoot() string  { return "/work" }
-func (f *fakeExecutor) Describe() string       { return "fake" }
-func (f *fakeExecutor) Close() error           { return nil }
-func (f *fakeExecutor) SandboxTools() string   { return "" }
-func (f *fakeExecutor) Generation() int        { return 1 }
+func (f *fakeExecutor) WorkspaceRoot() string { return "/work" }
+func (f *fakeExecutor) Describe() string      { return "fake" }
+func (f *fakeExecutor) Close() error          { return nil }
+func (f *fakeExecutor) SandboxTools() string  { return "" }
+func (f *fakeExecutor) Generation() int       { return 1 }
 func (f *fakeExecutor) ConfinePath(_ context.Context, path string) (string, error) {
 	return path, nil
 }
-func (f *fakeExecutor) DeletePath(_ context.Context, path string) error  { return nil }
+func (f *fakeExecutor) DeletePath(_ context.Context, path string) error   { return nil }
 func (f *fakeExecutor) MovePath(_ context.Context, src, dst string) error { return nil }
 func (f *fakeExecutor) StartBackground(_ context.Context, command, logPath string) (int, int, error) {
 	return 1234, 1234, nil
 }
 func (f *fakeExecutor) KillPgid(_ context.Context, pgid, sig int) error { return nil }
-func (f *fakeExecutor) IsProcessAlive(_ context.Context, pid int) bool   { return false }
+func (f *fakeExecutor) IsProcessAlive(_ context.Context, pid int) bool  { return false }
 func (f *fakeExecutor) ReadFileTail(_ context.Context, path string, maxBytes int64) (string, error) {
 	return "", nil
 }
@@ -193,8 +193,8 @@ func TestStreamPlainTextNoToolCalls(t *testing.T) {
 // 3) Full agent loop: tool_call -> gate(yes) -> execute -> result fed back -> final text.
 func TestAgentLoopExecutesAndFinishes(t *testing.T) {
 	srv := sseServer(t,
-		toolCallFrames("c1", "run_shell", `{"command":"echo hi"}`),       // call 1
-		[]string{contentChunk("Done — I ran the command.")},             // call 2
+		toolCallFrames("c1", "run_shell", `{"command":"echo hi"}`), // call 1
+		[]string{contentChunk("Done — I ran the command.")},        // call 2
 	)
 	defer srv.Close()
 
@@ -258,8 +258,8 @@ func TestConfirmDeclineAborts(t *testing.T) {
 // TestNoMemoryWriteFlag verifies that Client.NoMemoryWrite=true transmits both
 // the X-Ilm-No-Memory-Write request header and metadata["ilm-no-memory-write"]
 // in the request body. This covers the sender side; proxy-side enforcement
-// (that the write path is actually gated) must be verified on 192.168.1.135
-// by inspecting agent_memory.db before and after a subagent turn.
+// (that the write path is actually gated) must be verified against a live
+// proxy by inspecting agent_memory.db before and after a subagent turn.
 func TestNoMemoryWriteFlag(t *testing.T) {
 	var capturedHeader, capturedMeta string
 

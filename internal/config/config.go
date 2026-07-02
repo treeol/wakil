@@ -175,10 +175,10 @@ type Config struct {
 	TraceDir      string `json:"trace_dir,omitempty"` // trace file directory; default ~/.local/share/wakil/traces
 
 	// LSP: native language-server-backed code intelligence tools.
-	LSPEnabled              bool                     `json:"lsp_enabled,omitempty"`
-	LSPServers               map[string]LSPServer      `json:"lsp_servers,omitempty"`
-	LSPIdleTimeoutSeconds    int                      `json:"lsp_idle_timeout_seconds,omitempty"`     // default 1800 (30 min)
-	LSPIndexTimeoutSeconds  int                      `json:"lsp_index_timeout_seconds,omitempty"`    // default 30
+	LSPEnabled             bool                 `json:"lsp_enabled,omitempty"`
+	LSPServers             map[string]LSPServer `json:"lsp_servers,omitempty"`
+	LSPIdleTimeoutSeconds  int                  `json:"lsp_idle_timeout_seconds,omitempty"`  // default 1800 (30 min)
+	LSPIndexTimeoutSeconds int                  `json:"lsp_index_timeout_seconds,omitempty"` // default 30
 
 	// Runtime-only flags (never read from / written to the JSON config file).
 	Resume       bool   `json:"-"` // resume the most recent session
@@ -278,9 +278,9 @@ func (c CostsConfig) SearchCost() (usd float64, priced bool) {
 // analysis panel; FusionJudge is the judge that synthesizes their responses.
 // All models use the ~ prefix syntax (e.g. "~anthropic/claude-opus-latest").
 type MashuraPanelConfig struct {
-	Models             []string `json:"models"`                       // prefixed model strings, or ~ models for fusion
-	Mode               string   `json:"mode,omitempty"`               // "panel" (default) | "fallback" | "fusion"
-	FusionJudge        string   `json:"fusion_judge,omitempty"`       // fusion: judge model; "" = OpenRouter default
+	Models             []string `json:"models"`                          // prefixed model strings, or ~ models for fusion
+	Mode               string   `json:"mode,omitempty"`                  // "panel" (default) | "fallback" | "fusion"
+	FusionJudge        string   `json:"fusion_judge,omitempty"`          // fusion: judge model; "" = OpenRouter default
 	FusionMaxToolCalls int      `json:"fusion_max_tool_calls,omitempty"` // fusion: 1–16 tool steps; 0 = default (8)
 }
 
@@ -304,24 +304,24 @@ type LSPServer struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Model:          "ilm",
-		ExecMode:       "docker",
-		Image:          "wakil-dev",
-		DockerSocket:   true,
-		KeepBytes:      120000, // keep ~120k of recent verbatim turns after compaction
-		SummaryBytes:   20000,  // cap the running summary; re-condense if it grows past this
-		HardMaxBytes:   160000, // unconditional ceiling; compact then drop until under
-		TurnToolBudget: 40000,  // per-turn tool output budget; reduced slice once exceeded
-		MaxChars:       512000, // transcript-byte ceiling (hist line + compaction fallback)
-		CompactAt:      145000, // fire before reaching hard max (post-compact target ~140k)
-		CompactAtFrac:      0.75,   // compact at 75% of effective context
-		KeepBytesFrac:      0.60,   // keep 60% of effective context verbatim after compaction
-		HardMaxFrac:        0.95,   // hard ceiling at 95% of effective context
-		ContextCapacityFrac: 0.80,  // use 80% of proxy's usable_ctx as the working budget
+		Model:               "ilm",
+		ExecMode:            "docker",
+		Image:               "wakil-dev",
+		DockerSocket:        true,
+		KeepBytes:           120000, // keep ~120k of recent verbatim turns after compaction
+		SummaryBytes:        20000,  // cap the running summary; re-condense if it grows past this
+		HardMaxBytes:        160000, // unconditional ceiling; compact then drop until under
+		TurnToolBudget:      40000,  // per-turn tool output budget; reduced slice once exceeded
+		MaxChars:            512000, // transcript-byte ceiling (hist line + compaction fallback)
+		CompactAt:           145000, // fire before reaching hard max (post-compact target ~140k)
+		CompactAtFrac:       0.75,   // compact at 75% of effective context
+		KeepBytesFrac:       0.60,   // keep 60% of effective context verbatim after compaction
+		HardMaxFrac:         0.95,   // hard ceiling at 95% of effective context
+		ContextCapacityFrac: 0.80,   // use 80% of proxy's usable_ctx as the working budget
 
-		ReasoningBudgetTokens: 4096,   // headroom for extended thinking
-		AnswerMarginTokens:    4096,   // headroom for the final answer
-		ContextTokensFallback: 131072, // assumed n_ctx when the backend is unreachable
+		ReasoningBudgetTokens: 4096,      // headroom for extended thinking
+		AnswerMarginTokens:    4096,      // headroom for the final answer
+		ContextTokensFallback: 131072,    // assumed n_ctx when the backend is unreachable
 		ToolResultCap:         8000,      // keep first 8k chars in ctx; spill the rest to disk
 		ToolResultTTL:         3,         // evict after 3 completed turns (longer window before re-reads are needed)
 		ReadFileSizeLimit:     1 << 20,   // 1 MB: refuse larger reads at the tool layer

@@ -8,7 +8,6 @@ import (
 
 	"wakil/internal/tui"
 
-
 	"wakil/internal/tools"
 )
 

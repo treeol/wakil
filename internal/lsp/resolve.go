@@ -80,17 +80,17 @@ func computeCharacterOffset(lineContent string, targetByteOffset int, encoding P
 
 // ResolveResult is the outcome of resolving a (line, symbol) to an LSP position.
 type ResolveResult struct {
-	Position  Position
+	Position   Position
 	Ambiguous  bool
 	Candidates []Candidate // populated when Ambiguous == true
 }
 
 // Candidate is one possible match when the symbol name is ambiguous on the line.
 type Candidate struct {
-	Name     string
-	Kind     string // "identifier" (we don't have LSP symbol kind here)
-	Column   uint32 // 1-based column for display
-	Snippet  string
+	Name    string
+	Kind    string // "identifier" (we don't have LSP symbol kind here)
+	Column  uint32 // 1-based column for display
+	Snippet string
 }
 
 // resolvePosition finds the LSP position of symbolName on the given line.
