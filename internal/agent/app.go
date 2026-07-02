@@ -1290,6 +1290,11 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
+		// Confine the path to the workspace (P0-3: path confinement).
+		canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+		if err != nil {
+			return "ERROR: " + err.Error()
+		}
 		// Guard 1a: stat before reading — refuse oversized unbounded reads without
 		// loading the file. Skip when a Limit is already set: the caller explicitly
 		// bounded the read, so the size guard's advice ("specify a range") has been
@@ -1299,13 +1304,13 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			sizeLimit = 1 << 20 // 1 MB safety net when config is zero
 		}
 		if args.Limit == 0 {
-			if fileSize, serr := a.Exec.StatFile(args.Path); serr == nil && fileSize > sizeLimit {
+			if fileSize, serr := a.Exec.StatFile(canonical); serr == nil && fileSize > sizeLimit {
 				return fmt.Sprintf(
 					"ERROR: file is %.2f MB, exceeds read limit of %.2f MB — specify a line/byte range or use search_files.",
 					float64(fileSize)/(1<<20), float64(sizeLimit)/(1<<20))
 			}
 		}
-		out, err := a.Exec.ReadFile(args.Path)
+		out, err := a.Exec.ReadFile(canonical)
 		// Redirect a directory read to the right tool instead of returning a raw
 		// errno the model tends to retry against (a known subagent loop trigger).
 		if err != nil && strings.Contains(strings.ToLower(err.Error()), "is a directory") {
@@ -1329,6 +1334,11 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
+		// Confine the path to the workspace (P0-3: path confinement).
+		canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+		if err != nil {
+			return "ERROR: " + err.Error()
+		}
 		// Guard 1a: stat before reading — refuse oversized full reads without
 		// loading the file. The ceiling is max_full_read_bytes (default 256 KB),
 		// higher than read_file's windowed cap but well under MaxRequestBytes.
@@ -1336,12 +1346,12 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if fullLimit <= 0 {
 			fullLimit = 256 << 10 // 256 KB safety net when config is zero
 		}
-		if fileSize, serr := a.Exec.StatFile(args.Path); serr == nil && fileSize > fullLimit {
+		if fileSize, serr := a.Exec.StatFile(canonical); serr == nil && fileSize > fullLimit {
 			return fmt.Sprintf(
 				"ERROR: file is %.2f MB, exceeds full-read limit of %.2f MB — use read_file with an offset/limit range instead.",
 				float64(fileSize)/(1<<20), float64(fullLimit)/(1<<20))
 		}
-		out, err := a.Exec.ReadFile(args.Path)
+		out, err := a.Exec.ReadFile(canonical)
 		// Redirect a directory read to the right tool (same as read_file).
 		if err != nil && strings.Contains(strings.ToLower(err.Error()), "is a directory") {
 			return fmt.Sprintf("ERROR: %q is a directory, not a file — use list_dir to see its contents or search_files to search within it.", args.Path)
@@ -1373,7 +1383,11 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
-		out, err := a.Exec.ListDir(args.Path)
+		canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+		if err != nil {
+			return "ERROR: " + err.Error()
+		}
+		out, err := a.Exec.ListDir(canonical)
 		return formatResult(out, err)
 
 	case "find_files":
@@ -1387,15 +1401,20 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if args.Pattern == "" {
 			return "ERROR: pattern is required"
 		}
-		path := args.Path
-		if path == "" {
-			path = "."
+		findPath := args.Path
+		if findPath == "" {
+			findPath = "."
+		}
+		// Confine the path to the workspace (P0-3: path confinement).
+		canonical, err := a.Exec.ConfinePath(ctx, findPath)
+		if err != nil {
+			return "ERROR: " + err.Error()
 		}
 		// Constrained find: model-supplied values are single-quoted so no shell
 		// metacharacters leak. Errors (permission denied) are dropped and the
 		// list is capped so a huge tree can't flood ctx.
 		const findCap = 200
-		cmd := "find " + shellQuote(path) + " -type f -name " + shellQuote(args.Pattern) +
+		cmd := "find " + shellQuote(canonical) + " -type f -name " + shellQuote(args.Pattern) +
 			fmt.Sprintf(" 2>/dev/null | head -n %d", findCap)
 		out, err := a.Exec.RunShell(ctx, cmd)
 		if err == nil && strings.TrimSpace(out) == "" {
@@ -1422,6 +1441,11 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if args.Pattern == "" || args.Path == "" {
 			return "ERROR: pattern and path are required"
 		}
+		// Confine the path to the workspace (P0-3: path confinement).
+		canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+		if err != nil {
+			return "ERROR: " + err.Error()
+		}
 		// Build a controlled grep command. All model-supplied values are
 		// single-quoted so the model cannot inject shell metacharacters.
 		cmd := "grep -rn"
@@ -1431,7 +1455,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if args.FilePattern != "" {
 			cmd += " --include=" + shellQuote(args.FilePattern)
 		}
-		cmd += " -- " + shellQuote(args.Pattern) + " " + shellQuote(args.Path)
+		cmd += " -- " + shellQuote(args.Pattern) + " " + shellQuote(canonical)
 		out, err := a.Exec.RunShell(ctx, cmd)
 		// grep exits 1 when it finds zero matches — not an error.
 		if err != nil && strings.TrimSpace(out) == "" && strings.Contains(err.Error(), "exit status 1") {
@@ -1447,6 +1471,11 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
+		// Confine the path to the workspace (P0-3: path confinement).
+		canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+		if err != nil {
+			return "ERROR: " + err.Error()
+		}
 		preview := args.Content
 		if len(preview) > 280 {
 			preview = preview[:280] + "…"
@@ -1456,9 +1485,9 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if !a.Confirm("write_file", "Write file?", detail, false) {
 			return "[declined by user]"
 		}
-		out, err := a.Exec.WriteFile(args.Path, args.Content)
+		out, err := a.Exec.WriteFile(canonical, args.Content)
 		if err == nil && a.LSP != nil {
-			a.LSP.NotifyChange(context.Background(), args.Path)
+			a.LSP.NotifyChange(context.Background(), canonical)
 		}
 		return formatResult(out, err)
 
@@ -1881,7 +1910,12 @@ func (a *App) handleEditFile(tc proxy.ToolCall) string {
 	if args.OldString == args.NewString {
 		return "ERROR: old_string and new_string are identical — nothing to change"
 	}
-	cur, err := a.Exec.ReadFile(args.Path)
+	// Confine the path to the workspace (P0-3: path confinement).
+	canonical, err := a.Exec.ConfinePath(context.Background(), args.Path)
+	if err != nil {
+		return "ERROR: " + err.Error()
+	}
+	cur, err := a.Exec.ReadFile(canonical)
 	if err != nil {
 		return "ERROR: could not read " + args.Path + ": " + err.Error()
 	}
@@ -1902,13 +1936,13 @@ func (a *App) handleEditFile(tc proxy.ToolCall) string {
 	if !a.Confirm("edit_file", "Apply edit?", editDiffPreview(args.Path, args.OldString, args.NewString, count, args.ReplaceAll, a.Exec.Describe()), false) {
 		return "[declined by user]"
 	}
-	out, err := a.Exec.WriteFile(args.Path, updated)
+	out, err := a.Exec.WriteFile(canonical, updated)
 	if err != nil {
 		return formatResult(out, err)
 	}
 	// LSP file-sync: notify gopls of the change (didChange).
 	if a.LSP != nil {
-		a.LSP.NotifyChange(context.Background(), args.Path)
+		a.LSP.NotifyChange(context.Background(), canonical)
 	}
 	n := 1
 	if args.ReplaceAll {

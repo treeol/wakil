@@ -6,10 +6,13 @@
 // construct that defeats first-token analysis. The goal is to catch common
 // accidental cases, not adversarial ones.
 //
-// Known gaps (out of scope for this pass):
-//   - Output redirection (`>`, `>>`, `2>`) is not inspected; `echo x > /etc/passwd`
-//     passes the destructive check. Redirection detection is deferred.
-//   - Env-var wrappers (`VAR=$(rm foo)`) are not inspected.
+// Known limitations (inherent to first-token analysis, not fixable without a
+// real shell parser):
+//   - Env-var wrappers like `VAR=$(rm foo)` are caught by the $() check, but
+//     deeply nested constructs could still evade detection.
+//   - This is friction, not a security boundary. A model that wants to run
+//     `rm -rf /` can wrap it in constructs that defeat first-token analysis.
+//     The goal is to catch common accidental cases, not adversarial ones.
 package agent
 
 import "strings"
@@ -57,23 +60,48 @@ var destructiveCmds = map[string]bool{
 // require user confirmation, even when AutoApprove is enabled.
 //
 // Strategy: split on shell sequence operators (&&, ||, |, ;, &, newline) using
-// splitShellSegments, then for each segment tokenize and match the FIRST token.
+// splitShellSegments, then for each segment tokenize and match the FIRST token
+// (after skipping leading VAR=value env assignments, same as IsReadOnlyShell).
 // This avoids false positives like `echo "rm is a command"` (first token: echo)
 // while still catching `safe-cmd && rm -rf x` (second segment first token: rm).
+// Redirection (>, >>, 2>, &>) and command substitution ($(...), backticks) make
+// a segment destructive because they can hide writes or arbitrary commands.
 func IsDestructiveShell(cmd string) bool {
-	for _, seg := range splitShellSegments(strings.TrimSpace(cmd)) {
+	c := strings.TrimSpace(cmd)
+	if c == "" {
+		return false
+	}
+	// Any redirection (>, >>, 2>, &>), backtick, or command/process
+	// substitution can hide a write or arbitrary execution — gate it.
+	if strings.ContainsAny(c, ">`") {
+		return true
+	}
+	if strings.Contains(c, "$(") || strings.Contains(c, "<(") {
+		return true
+	}
+	for _, seg := range splitShellSegments(c) {
 		fields := strings.Fields(seg)
 		if len(fields) == 0 {
 			continue
 		}
-		bin := fields[0]
+		// Skip leading "VAR=value" env assignments before the binary, mirroring
+		// IsReadOnlyShell. Without this, `X=1 rm -rf /` is tokenized as bin
+		// "X=1" and the rm payload is missed.
+		i := 0
+		for i < len(fields) && !strings.HasPrefix(fields[i], "-") && strings.Contains(fields[i], "=") {
+			i++
+		}
+		if i >= len(fields) {
+			continue
+		}
+		bin := fields[i]
 		if j := strings.LastIndex(bin, "/"); j >= 0 {
 			bin = bin[j+1:]
 		}
 		if destructiveCmds[bin] {
 			return true
 		}
-		args := fields[1:]
+		args := fields[i+1:]
 		switch bin {
 		case "git":
 			if len(args) == 0 {
