@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/config"
+	"github.com/treeol/wakil/internal/config"
 )
 
 func backendsServer(t *testing.T, statusCode int, body interface{}) *httptest.Server {

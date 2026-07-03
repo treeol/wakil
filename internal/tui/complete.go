@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	agent "wakil/internal/agent"
+	agent "github.com/treeol/wakil/internal/agent"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"wakil/internal/config"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // ContextLimit is the authoritative per-slot context window, resolved once at

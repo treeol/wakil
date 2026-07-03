@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/config"
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 // --- Test 1: parent ctx isolation ---

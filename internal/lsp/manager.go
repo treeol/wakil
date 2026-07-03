@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"wakil/internal/config"
-	"wakil/internal/exec"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
 )
 
 // ServerState is the lifecycle state of one language server.

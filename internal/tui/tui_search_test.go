@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "wakil/internal/agent"
+	agent "github.com/treeol/wakil/internal/agent"
 
 	tea "github.com/charmbracelet/bubbletea"
 )

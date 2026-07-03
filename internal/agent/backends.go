@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"wakil/internal/config"
+	"github.com/treeol/wakil/internal/config"
 )
 
 // BackendInfo describes one available backend as reported by the proxy.

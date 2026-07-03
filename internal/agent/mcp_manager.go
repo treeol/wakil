@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"wakil/internal/config"
-	"wakil/internal/lsp"
-	"wakil/internal/proxy"
-	wtools "wakil/internal/tools"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/lsp"
+	"github.com/treeol/wakil/internal/proxy"
+	wtools "github.com/treeol/wakil/internal/tools"
 
 	gosdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )

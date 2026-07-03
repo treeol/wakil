@@ -5,8 +5,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
-	agent "wakil/internal/agent"
-	"wakil/internal/config"
+	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
 )
 
 // layoutModel builds a tuiModel with just enough state for sizes() to run.

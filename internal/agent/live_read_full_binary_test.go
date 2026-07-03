@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/config"
-	"wakil/internal/exec"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 func TestLiveReadFileFullRealBinary(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/config"
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 // buildTurn appends a complete user→tool→assistant exchange to conv.

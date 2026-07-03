@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"wakil/internal/config"
-	"wakil/internal/counsel"
-	"wakil/internal/exec"
-	"wakil/internal/lsp"
-	"wakil/internal/proxy"
-	wtools "wakil/internal/tools"
-	"wakil/internal/trace"
-	"wakil/internal/workflow"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/lsp"
+	"github.com/treeol/wakil/internal/proxy"
+	wtools "github.com/treeol/wakil/internal/tools"
+	"github.com/treeol/wakil/internal/trace"
+	"github.com/treeol/wakil/internal/workflow"
 )
 
 // Confirmer is the safety gate: it is shown the exact action and returns whether

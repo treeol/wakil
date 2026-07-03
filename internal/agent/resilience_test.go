@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // errorServer returns a test HTTP server whose handler is selected per-call via

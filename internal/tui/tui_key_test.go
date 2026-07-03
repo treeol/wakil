@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	agent "wakil/internal/agent"
+	agent "github.com/treeol/wakil/internal/agent"
 
-	"wakil/internal/config"
+	"github.com/treeol/wakil/internal/config"
 
 	tea "github.com/charmbracelet/bubbletea"
 )

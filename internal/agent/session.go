@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"wakil/internal/proxy"
-	"wakil/internal/workflow"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/workflow"
 )
 
 // Session is the persisted record of one conversation. The full transcript is

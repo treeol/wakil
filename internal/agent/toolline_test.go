@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 func tcall(name, args string) proxy.ToolCall {

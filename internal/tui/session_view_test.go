@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	agent "wakil/internal/agent"
-	"wakil/internal/proxy"
+	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 func TestConvItemsFromRoundTrip(t *testing.T) {

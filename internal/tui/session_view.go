@@ -3,8 +3,8 @@ package tui
 import (
 	"strings"
 
-	agent "wakil/internal/agent"
-	"wakil/internal/proxy"
+	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // convItemsFrom reconstructs the TUI conversation view from a stored transcript.

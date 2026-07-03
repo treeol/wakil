@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	agent "wakil/internal/agent"
+	agent "github.com/treeol/wakil/internal/agent"
 
-	"wakil/internal/config"
-	"wakil/internal/counsel"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/proxy"
 
 	"github.com/charmbracelet/lipgloss"
 )

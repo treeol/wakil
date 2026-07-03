@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"wakil/internal/config"
-	"wakil/internal/counsel"
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
-	"wakil/internal/workflow"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
+	"github.com/treeol/wakil/internal/workflow"
 
 	tea "github.com/charmbracelet/bubbletea"
 )

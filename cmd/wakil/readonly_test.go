@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	agent "wakil/internal/agent"
+	agent "github.com/treeol/wakil/internal/agent"
 )
 
 func TestIsReadOnlyShell(t *testing.T) {

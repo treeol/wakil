@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"wakil/internal/config"
-	"wakil/internal/proxy"
-	wtools "wakil/internal/tools"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
+	wtools "github.com/treeol/wakil/internal/tools"
 )
 
 // ── Part A: Pinned message survives Compact ──────────────────────────────

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"wakil/internal/agent"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // noDelay is an agent.RetryDelay override that eliminates backoff in tests.

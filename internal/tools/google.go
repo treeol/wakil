@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // GoogleTools returns the google_search and google_fetch_url tool definitions.

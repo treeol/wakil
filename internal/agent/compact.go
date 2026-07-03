@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 // charsPerToken is the chars-to-token ratio used to convert a token budget

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // LSPTools returns the LSP tool definitions for the MVP.

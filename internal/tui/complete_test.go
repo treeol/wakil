@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	agent "wakil/internal/agent"
+	agent "github.com/treeol/wakil/internal/agent"
 
-	"wakil/internal/config"
+	"github.com/treeol/wakil/internal/config"
 
 	"github.com/charmbracelet/bubbles/textarea"
 )

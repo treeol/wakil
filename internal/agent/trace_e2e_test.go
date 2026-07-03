@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/trace"
+	"github.com/treeol/wakil/internal/trace"
 )
 
 // traceServer returns an httptest.Server that serves two SSE responses:

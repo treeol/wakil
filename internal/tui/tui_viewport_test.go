@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	agent "wakil/internal/agent"
-	"wakil/internal/config"
+	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
 )
 
 // TestViewportBottomAlignShortContent verifies that short content is

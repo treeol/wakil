@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"wakil/internal/config"
+	"github.com/treeol/wakil/internal/config"
 )
 
 // TestServer_EncodingNegotiation verifies the stored-not-assumed invariant:

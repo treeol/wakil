@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"wakil/internal/config"
-	"wakil/internal/exec"
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 func TestFormatFileView(t *testing.T) {

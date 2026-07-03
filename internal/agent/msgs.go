@@ -1,6 +1,6 @@
 package agent
 
-import "wakil/internal/proxy"
+import "github.com/treeol/wakil/internal/proxy"
 
 // StreamChunkMsg is an SSE content delta posted to the TUI event loop.
 type StreamChunkMsg struct{ Text string }

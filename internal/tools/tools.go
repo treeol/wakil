@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // DefaultTools returns the built-in tool set with descriptions that include

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // SearxngTools returns the searxng_search and searxng_url_read tool definitions.

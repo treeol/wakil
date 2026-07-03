@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"wakil/internal/exec"
+	"github.com/treeol/wakil/internal/exec"
 )
 
 // ─── File synchronization (Decision 3, R3) ────────────────────────────────────

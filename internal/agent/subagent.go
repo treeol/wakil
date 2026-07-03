@@ -7,9 +7,9 @@ import (
 	"io"
 	"strings"
 
-	"wakil/internal/config"
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 // Subagent context budget constants. Conservative for a 32k-token backend;

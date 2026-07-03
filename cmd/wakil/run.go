@@ -11,13 +11,13 @@ import (
 	"strings"
 	"sync"
 
-	"wakil/internal/agent"
-	"wakil/internal/config"
-	"wakil/internal/lsp"
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
-	"wakil/internal/trace"
-	"wakil/internal/workflow"
+	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/lsp"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
+	"github.com/treeol/wakil/internal/trace"
+	"github.com/treeol/wakil/internal/workflow"
 
 	"github.com/charmbracelet/x/ansi"
 )

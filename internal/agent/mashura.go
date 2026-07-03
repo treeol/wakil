@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"wakil/internal/config"
-	"wakil/internal/counsel"
-	"wakil/internal/proxy"
-	"wakil/internal/workflow"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/workflow"
 )
 
 // Mashūra counsel tools. The single oracle__ask tool became this family: each

@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/agent"
-	"wakil/internal/config"
-	"wakil/internal/exec"
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 // sseServer returns a test server that replies with the given SSE frames.

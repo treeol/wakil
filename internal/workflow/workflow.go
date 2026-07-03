@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"wakil/internal/config"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // WorkflowPhase represents the current phase of a /plan workflow.

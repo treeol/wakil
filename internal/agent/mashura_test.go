@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/config"
-	"wakil/internal/counsel"
-	"wakil/internal/proxy"
-	"wakil/internal/workflow"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/workflow"
 )
 
 // mashuraTestApp builds an App in a workflow with a fake executor whose plan.md

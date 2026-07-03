@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 // Phase 0 learn-candidate logging (detection only — no UI, no proposals, no

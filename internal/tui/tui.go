@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	agent "wakil/internal/agent"
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
+	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"

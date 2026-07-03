@@ -12,10 +12,10 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	agent "wakil/internal/agent"
-	"wakil/internal/config"
-	"wakil/internal/exec"
-	"wakil/internal/proxy"
+	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 func strPtr(s string) *string { return &s }

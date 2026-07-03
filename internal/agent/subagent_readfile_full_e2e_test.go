@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 func TestDispatchSubagentReadFileFull(t *testing.T) {

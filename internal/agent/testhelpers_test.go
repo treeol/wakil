@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/config"
-	"wakil/internal/exec"
-	"wakil/internal/proxy"
-	wtools "wakil/internal/tools"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
+	wtools "github.com/treeol/wakil/internal/tools"
 )
 
 func newTestClient(url string) *proxy.Client {

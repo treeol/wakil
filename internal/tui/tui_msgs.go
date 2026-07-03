@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 
-	agent "wakil/internal/agent"
+	agent "github.com/treeol/wakil/internal/agent"
 )
 
 // dotTickMsg fires every ~200 ms while the agent is busy.

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"wakil/internal/config"
+	"github.com/treeol/wakil/internal/config"
 )
 
 const oracleEndpoint = "https://api.anthropic.com/v1/messages"

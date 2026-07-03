@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/config"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // newSimApp builds a test App with all ctx-management machinery wired up but

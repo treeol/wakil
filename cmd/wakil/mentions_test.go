@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/tui"
+	"github.com/treeol/wakil/internal/tui"
 
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 func setupMentionTree(t *testing.T) string {

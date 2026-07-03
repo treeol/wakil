@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"wakil/internal/proxy"
-	"wakil/internal/tools"
+	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/tools"
 )
 
 // The iteration cap is the hard backstop against a runaway tool loop: once

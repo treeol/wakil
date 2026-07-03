@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"wakil/internal/config"
+	"github.com/treeol/wakil/internal/config"
 )
 
 // isolateConfig points WAKIL_CONFIG at a nonexistent path so LoadConfig doesn't

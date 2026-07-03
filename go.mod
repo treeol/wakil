@@ -1,4 +1,4 @@
-module wakil
+module github.com/treeol/wakil
 
 go 1.25.0
 

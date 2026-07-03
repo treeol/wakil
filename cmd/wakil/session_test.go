@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"wakil/internal/agent"
-	"wakil/internal/config"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 func TestSessionRoundTrip(t *testing.T) {

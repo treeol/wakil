@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"wakil/internal/config"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // Compaction folds older turns into a summary and keeps recent turns that fit

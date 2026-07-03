@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	agent "wakil/internal/agent"
+	agent "github.com/treeol/wakil/internal/agent"
 
-	"wakil/internal/config"
-	"wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // limitsServer serves /v1/ilm/limits and/or /props with caller-supplied bodies.
