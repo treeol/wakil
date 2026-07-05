@@ -24,6 +24,7 @@ type Config struct {
 	WorkDir        string `json:"work_dir"`                // working dir inside the container
 	HostWorkDir    string `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
 	DockerSocket   bool   `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
+	SSHSigning     string `json:"ssh_signing,omitempty"`   // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
 	KeepBytes      int    `json:"keep_bytes"`              // max bytes of verbatim turns kept after compaction; default 120000
 	SummaryBytes   int    `json:"summary_bytes"`           // cap on the running summary; re-summarize if exceeded; default 20000; 0=unlimited
 	HardMaxBytes   int    `json:"hard_max_bytes"`          // unconditional ctx ceiling; compact+drop oldest until under; 0=disabled; default 160000
@@ -401,6 +402,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.WorkDir, "ILM_WORKDIR")
 	envStr(&cfg.HostWorkDir, "ILM_HOST_WORKDIR")
 	envBool(&cfg.DockerSocket, "ILM_DOCKER_SOCKET")
+	envStr(&cfg.SSHSigning, "ILM_SSH_SIGNING")
 	envBool(&cfg.TraceSessions, "WAKIL_TRACE_SESSIONS")
 	envStr(&cfg.TraceDir, "WAKIL_TRACE_DIR")
 
@@ -419,6 +421,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "working directory inside the container")
 	fs.StringVar(&cfg.HostWorkDir, "host-workdir", cfg.HostWorkDir, "host path bind-mounted into container (files appear here locally)")
 	fs.BoolVar(&cfg.DockerSocket, "docker-sock", cfg.DockerSocket, "pass host docker socket into the sandbox so the agent can start host containers (default: on; use --docker-sock=false to disable)")
+	fs.StringVar(&cfg.SSHSigning, "ssh-signing", cfg.SSHSigning, "SSH commit signing in the sandbox: off|auto|<path to .pub> (auto reads the host git config; agent socket is passed through, the private key never enters the sandbox)")
 	fs.String("config", cfgPath, "path to config file")
 	fs.BoolVar(&cfg.Resume, "resume", false, "resume the most recent session")
 	fs.StringVar(&cfg.ResumeID, "resume-id", "", "resume a session by chat_id (or unique prefix)")

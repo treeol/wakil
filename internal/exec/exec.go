@@ -106,6 +106,7 @@ type DockerExecutor struct {
 	workspaceRoot string // project root; immutable; all commands and file ops start here
 	hostMount     string // host path mounted at workspaceRoot, empty = no mount
 	dockerSock    bool   // host docker socket bind-mounted in
+	signing       bool   // SSH signing passthrough active (agent socket mounted)
 	sandboxTools  string // cached probe result (empty = not yet probed or probe failed)
 	toolsProbed   bool   // true once SandboxTools() has run the probe
 	generation    int    // increments on container restart; 1 for initial container
@@ -115,7 +116,20 @@ type DockerExecutor struct {
 // docker_socket is enabled, so the in-container docker CLI drives the host daemon.
 const dockerSocketPath = "/var/run/docker.sock"
 
-func NewDockerExecutor(image, workdir, hostMount string, dockerSock bool) (*DockerExecutor, error) {
+// DockerOpts bundles the DockerExecutor constructor parameters. Introduced
+// when the positional list hit four and SSH signing added more.
+type DockerOpts struct {
+	Image      string
+	Workdir    string // in-container workspace root
+	HostMount  string // host path mounted at Workdir; empty = no mount
+	DockerSock bool   // bind-mount the host docker socket
+	// Signing carries the host-resolved SSH commit-signing setup (agent
+	// socket + literal public key). Zero value = signing disabled.
+	Signing SigningSetup
+}
+
+func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
+	image, workdir, hostMount, dockerSock := opts.Image, opts.Workdir, opts.HostMount, opts.DockerSock
 	if workdir == "" {
 		workdir = "/work"
 	}
@@ -133,6 +147,11 @@ func NewDockerExecutor(image, workdir, hostMount string, dockerSock bool) (*Dock
 	if dockerSock {
 		args = append(args, "-v", dockerSocketPath+":"+dockerSocketPath)
 	}
+	// SSH commit signing: mount the host agent socket at a fixed neutral path
+	// and inject git config via GIT_CONFIG_* env ("command" scope). The
+	// private key never enters the container — signatures are requested
+	// through the agent socket. See internal/exec/signing.go.
+	args = append(args, signingEnv(opts.Signing)...)
 
 	// Run as the current host user so files written to the mounted workspace
 	// are owned correctly. A persistent directory on the host serves as HOME
@@ -164,14 +183,29 @@ func NewDockerExecutor(image, workdir, hostMount string, dockerSock bool) (*Dock
 	if err != nil {
 		return nil, fmt.Errorf("docker run failed: %s", strings.TrimSpace(string(out)))
 	}
-	d := &DockerExecutor{container: name, image: image, workspaceRoot: workdir, hostMount: hostMount, dockerSock: dockerSock, generation: 1}
+	d := &DockerExecutor{container: name, image: image, workspaceRoot: workdir, hostMount: hostMount, dockerSock: dockerSock, signing: opts.Signing.Enabled, generation: 1}
 	if hostMount == "" {
 		_, _ = d.exec(false, "sh", "-c", "mkdir -p "+shQuote(workdir))
+	}
+	if uid := os.Getuid(); uid > 0 {
+		ensurePasswdEntry(name, uid, os.Getgid())
 	}
 	if dockerSock {
 		ensureDockerCLI(name)
 	}
 	return d, nil
+}
+
+// ensurePasswdEntry appends an /etc/passwd entry for the mapped host uid if
+// none exists. Images have no user for arbitrary --user uids; tools that
+// resolve the current user (ssh-keygen -Y sign, whoami, git commit signing)
+// fail with "No user exists for uid N" otherwise. Runs as root via docker
+// exec -u 0; best-effort.
+func ensurePasswdEntry(container string, uid, gid int) {
+	script := fmt.Sprintf(
+		"getent passwd %d >/dev/null 2>&1 || echo 'user:x:%d:%d:sandbox user:/home/user:/bin/sh' >> /etc/passwd",
+		uid, uid, gid)
+	_ = exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).Run()
 }
 
 // ensureDockerCLI copies the host docker binary into the container if the
@@ -254,6 +288,9 @@ func (d *DockerExecutor) Describe() string {
 	sock := ""
 	if d.dockerSock {
 		sock = " +docker"
+	}
+	if d.signing {
+		sock += " +sign"
 	}
 	if d.hostMount != "" {
 		return fmt.Sprintf("docker[%s → %s]%s", d.image, d.hostMount, sock)

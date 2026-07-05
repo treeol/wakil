@@ -30,6 +30,7 @@ RUN apt-get update \
            python3-pip \
            python3-venv \
            nodejs \
+           openssh-client \
            procps \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

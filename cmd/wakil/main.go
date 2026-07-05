@@ -208,7 +208,23 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 	case "direct":
 		return exec.NewDirectExecutor(cfg.WorkDir)
 	default:
-		return exec.NewDockerExecutor(cfg.Image, cfg.WorkDir, cfg.HostWorkDir, cfg.DockerSocket)
+		// Resolve SSH commit signing on the host before the container starts.
+		// Best-effort: a skip reason is logged, never fatal.
+		signing, skip := exec.DetectSigning(cfg.SSHSigning, cfg.HostWorkDir)
+		if skip != "" {
+			fmt.Fprintln(os.Stderr, "signing disabled —", skip)
+		}
+		if signing.Enabled {
+			fmt.Fprintf(os.Stderr, "ssh signing: active (agent %s, key %.24s…, autosign=%v)\n",
+				signing.AgentSock, signing.PublicKey, signing.AutoSign)
+		}
+		return exec.NewDockerExecutor(exec.DockerOpts{
+			Image:      cfg.Image,
+			Workdir:    cfg.WorkDir,
+			HostMount:  cfg.HostWorkDir,
+			DockerSock: cfg.DockerSocket,
+			Signing:    signing,
+		})
 	}
 }
 
