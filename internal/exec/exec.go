@@ -146,6 +146,12 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	}
 	if dockerSock {
 		args = append(args, "-v", dockerSocketPath+":"+dockerSocketPath)
+		// --user (below) drops supplementary groups, so the in-container
+		// user loses the host docker-group membership that made the socket
+		// accessible. Re-grant the socket's owning group explicitly.
+		if gid, ok := fileGid(dockerSocketPath); ok {
+			args = append(args, "--group-add", fmt.Sprint(gid))
+		}
 	}
 	// SSH commit signing: mount the host agent socket at a fixed neutral path
 	// and inject git config via GIT_CONFIG_* env ("command" scope). The
