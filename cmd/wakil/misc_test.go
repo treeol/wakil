@@ -68,7 +68,7 @@ func TestChipsLine(t *testing.T) {
 func TestColorHelpersWrapAndReset(t *testing.T) {
 	// Only the raw ANSI wrap() helpers are deterministic in a non-TTY test env;
 	// dim2 goes through lipgloss, which may emit no codes when color is disabled.
-	for _, fn := range []func(string) string{agent.Bold, agent.Red, agent.Dim, agent.Yellow} {
+	for _, fn := range []func(string) string{agent.Dim, agent.Yellow} {
 		got := fn("x")
 		if !strings.Contains(got, "x") || !strings.HasSuffix(got, "\x1b[0m") {
 			t.Errorf("color helper output %q should wrap content and reset", got)

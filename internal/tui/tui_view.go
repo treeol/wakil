@@ -82,12 +82,6 @@ var (
 	styleState = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
-func styleUser(s string) string {
-	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render(s)
-}
-func styleAsst(s string) string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(s)
-}
 func styleOK(s string) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(s)
 }

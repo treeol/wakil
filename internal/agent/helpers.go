@@ -49,9 +49,7 @@ func Indent(s string) string {
 // since Lip Gloss's renderer understands ANSI sequences.
 
 func wrap(code, s string) string { return "\x1b[" + code + "m" + s + "\x1b[0m" }
-func Bold(s string) string       { return wrap("1", s) }
 func Dim(s string) string        { return wrap("2", s) }
-func Red(s string) string        { return wrap("31", s) }
 func Yellow(s string) string     { return wrap("33", s) }
 
 // shellQuote wraps s in single quotes with internal single-quotes escaped.

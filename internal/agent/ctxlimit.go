@@ -127,14 +127,6 @@ func resolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Con
 	return lim
 }
 
-// ResolveContextLimitForBackend is like ResolveContextLimit but probes the
-// proxy for a specific backend's context window by sending X-Ilm-Backend in the
-// request. Called by the /backend command handler to re-synchronise thresholds
-// when the user switches backends mid-session.
-func ResolveContextLimitForBackend(ctx context.Context, httpc *http.Client, cfg config.Config, backend string, out io.Writer) ContextLimit {
-	return resolveContextLimit(ctx, httpc, cfg, backend, "", out)
-}
-
 // ResolveContextLimitForBackendModel probes the proxy for a specific backend+model
 // pair. Called by the /backend and /model command handlers to re-synchronise
 // thresholds when the user switches backends or models mid-session.

@@ -74,11 +74,6 @@ func LSPTools(cwd string) []proxy.Tool {
 	}
 }
 
-// LSPToolNames returns the names of the MVP LSP tools (for capability gating).
-func LSPToolNames() []string {
-	return []string{"lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols"}
-}
-
 // ─── Capability gating ────────────────────────────────────────────────────────
 //
 // At tool-declaration time (BuildTools), the config gate decides whether LSP
