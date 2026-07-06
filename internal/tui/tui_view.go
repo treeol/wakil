@@ -261,15 +261,16 @@ func bottomAlignViewport(view string, vpH int) string {
 // statusLineInput carries all the state needed by buildStatusLine. It is a
 // plain struct so the builder is a pure function and can be unit-tested.
 type statusLineInput struct {
-	state         agentState
-	autoApprove   bool
-	rawTools      bool
-	reasoning     bool    // extended-thinking in progress
-	tps           float64 // decode speed; 0 = not measured yet
-	workflowLabel string  // e.g. "implement 3/6" or "" when no workflow
-	flash         string  // transient copied/error message
-	dotPhase      int     // 0-3, cycles while busy for the pulsing dot
-	hadTurn       bool    // at least one completed turn in this session
+	state            agentState
+	autoApprove      bool
+	allowDestructive bool // /auto destructive grant active (renders AUTO!)
+	rawTools         bool
+	reasoning        bool    // extended-thinking in progress
+	tps              float64 // decode speed; 0 = not measured yet
+	workflowLabel    string  // e.g. "implement 3/6" or "" when no workflow
+	flash            string  // transient copied/error message
+	dotPhase         int     // 0-3, cycles while busy for the pulsing dot
+	hadTurn          bool    // at least one completed turn in this session
 	// Backend display (P29). backendUsed is the X-Ilm-Backend-Used response
 	// header from the most recent turn; backendRequested is what was requested
 	// (App.SelectedBackend); backendDefault is the configured default (Cfg.Backend).
@@ -337,7 +338,11 @@ func buildStatusLine(in statusLineInput) string {
 		}
 	}
 	if in.autoApprove {
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render("AUTO"))
+		label := "AUTO"
+		if in.allowDestructive {
+			label = "AUTO!" // destructive grant active — louder marker
+		}
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(label))
 	}
 	if in.rawTools {
 		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("raw"))
@@ -398,6 +403,7 @@ func (m tuiModel) statusLine() string {
 	return buildStatusLine(statusLineInput{
 		state:            m.state,
 		autoApprove:      m.app != nil && m.app.AutoApprove,
+		allowDestructive: m.app != nil && m.app.AllowDestructive,
 		rawTools:         m.app != nil && m.app.RawTools,
 		reasoning:        m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
 		tps:              m.tps,

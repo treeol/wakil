@@ -170,16 +170,18 @@ func TestMashuraCheckStaysUnderTokenCap(t *testing.T) {
 	}
 }
 
-// All four tools (and the legacy oracle__ask alias) hit the human gate and are
-// never auto-approved.
-func TestMashuraToolsAlwaysGate(t *testing.T) {
+// All four tools (and the legacy oracle__ask alias) are auto-approved in /auto
+// mode like any other tool call — opting into /auto covers counsel calls the
+// same way headless --auto does. Outside auto mode they still hit the gate
+// (covered by TestMashuraGateDeclineShortCircuits).
+func TestMashuraToolsAutoApproveInAutoMode(t *testing.T) {
 	app := &App{AutoApprove: true}
 	for _, name := range []string{"mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask"} {
-		if reason := SuspendAuto(name, app, "detail"); reason == "" {
-			t.Errorf("%s: suspendAuto returned no reason — it would auto-approve", name)
+		if reason := SuspendAuto(name, app, "detail"); reason != "" {
+			t.Errorf("%s: suspendAuto returned %q — mashūra must auto-approve in /auto mode", name, reason)
 		}
-		if !ShouldGateEvenWithAutoApprove(name, app, "detail") {
-			t.Errorf("%s: must gate even in auto mode", name)
+		if ShouldGateEvenWithAutoApprove(name, app, "detail") {
+			t.Errorf("%s: must not gate in auto mode", name)
 		}
 	}
 }

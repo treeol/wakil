@@ -19,10 +19,12 @@ import (
 // authoritative, Wakil-known context. The model supplies intent; Wakil supplies
 // the truth — counsel quality tracks briefing quality, not question phrasing.
 //
-// They are explicit-call only (the model chooses which), every one is gated and
-// never auto-approved (see isMashuraTool / suspendAuto), all share the same
-// timeout/cost config and the same shown-vs-recalled honesty (oracleSystemPrompt),
-// and each validates fail-closed (missing required intent → ERROR, no call made).
+// They are explicit-call only (the model chooses which), every one is gated
+// through the normal confirm flow (auto-approved in /auto mode like other tool
+// calls, with a visible ⚡ auto note carrying panel/question/briefing), all share
+// the same timeout/cost config and the same shown-vs-recalled honesty
+// (oracleSystemPrompt), and each validates fail-closed (missing required
+// intent → ERROR, no call made).
 
 const (
 	// Source-reading caps. Wakil reads paths from disk; the model never pastes content.
@@ -177,9 +179,10 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 		return "ERROR: " + keyErr.Error()
 	}
 
-	// Single gate for the whole panel — never auto-approved (suspendAuto fires)
-	// unless autoCounselSkipGate is set by maybeSuggestDebug when the session is
-	// also in /auto mode. Consume the flag immediately so it can't leak.
+	// Single gate for the whole panel. In /auto mode the confirm auto-approves
+	// with a visible ⚡ auto note (tuiConfirmer); autoCounselSkipGate bypasses
+	// the gate entirely for auto-counsel fires. Consume the flag immediately
+	// so it can't leak.
 	skipGate := a.autoCounselSkipGate
 	a.autoCounselSkipGate = false
 	maxTokens := a.mashuraMaxTokensFor(name)

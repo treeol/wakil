@@ -273,8 +273,9 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 
 // IsMashuraTool reports whether name is one of the mashūra counsel tools (the
 // mashura__* family) or the legacy oracle__ask alias kept for back-compat. Every
-// such tool is gated and never auto-approved (it sends data to an external AI),
-// and its response is kept in full (capOrStub never truncates it).
+// such tool goes through the confirm gate (auto-approved in /auto mode with a
+// visible ⚡ auto note), and its response is kept in full (capOrStub never
+// truncates it).
 func IsMashuraTool(name string) bool {
 	switch name {
 	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask":

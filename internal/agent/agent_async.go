@@ -141,8 +141,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 						wf.PlanFormatInvalid = false
 						wfProgNote(app, fmt.Sprintf("· plan re-parsed: %d steps — running oracle review", n))
 						wf.Phase = workflow.WFReview
-						HandleReviewOracle(ctx, app)
-						return nil
+						return HandleReviewOracle(ctx, app)
 					}
 					wfProgNote(app, "⚠ plan still has no numbered steps — reformat as 'N. description' and emit %%PHASE_DONE%%")
 				}
@@ -173,15 +172,13 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 		wf.PlanFormatInvalid = false // clear any previous format error
 		wf.Phase = workflow.WFReview
 		wfProgNote(app, "· plan complete — running oracle review")
-		HandleReviewOracle(ctx, app)
-		return nil
+		return HandleReviewOracle(ctx, app)
 
 	case workflow.WFReview:
 		// Any completed turn while in WFReview re-attempts the oracle review
 		// automatically — mirroring the verify remediation loop.
 		wfProgNote(app, "· re-attempting oracle plan review")
-		HandleReviewOracle(ctx, app)
-		return nil
+		return HandleReviewOracle(ctx, app)
 
 	case workflow.WFImplement:
 		// Verify state: StepIdx > StepCount means all steps completed but the
@@ -647,11 +644,16 @@ func wfWriteFinalLog(app *App, entry string) {
 }
 
 // handleReviewOracle runs the mandatory oracle plan review (WFReview phase).
-// Assumes wf.Phase == WFReview. On success: advances to WFPresent.
-// On failure: stays in WFReview, stores reason, waits for /plan review or /plan approve.
+// Assumes wf.Phase == WFReview. On success: advances to WFPresent — or, in
+// auto mode (AutoApprove) with a fresh successful review, straight to
+// WFImplement, returning the auto-turn message for step 1 (mirrors the
+// headless auto-advance in runWorkflowLoop).
+// On failure: stays in WFReview, stores reason, waits for /plan review or
+// /plan approve — auto mode never skips a failed or unavailable review; only
+// a successful review can be auto-approved.
 // This is the single entry point for the review oracle — called both from initial
 // plan completion and from the WFReview auto-retry path.
-func HandleReviewOracle(ctx context.Context, app *App) {
+func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 	wf := app.Workflow
 	reviewQ := "Critically review this implementation plan. Identify missing steps, " +
 		"incorrect assumptions, unclear acceptance criteria, risks, and improvements."
@@ -663,7 +665,7 @@ func HandleReviewOracle(ctx context.Context, app *App) {
 		wfProgNote(app, "⚠ REVIEW: oracle unavailable — "+oracleResult)
 		wfWriteReviewSkip(app, oracleResult)
 		wfProgNote(app, "· type /plan review to retry, or /plan approve to skip (reason will be logged)")
-		return
+		return nil
 	}
 
 	wf.OracleReview = oracleResult
@@ -679,7 +681,24 @@ func HandleReviewOracle(ctx context.Context, app *App) {
 
 	wfProgNote(app, "oracle review:\n"+oracleResult)
 	wf.Phase = workflow.WFPresent
+
+	// Auto mode: a successful review with a parseable plan auto-approves and
+	// starts implementation. The plan hash was fingerprinted moments ago, so
+	// the stale-plan check the manual /plan approve performs cannot trip here.
+	// StepCount==0 (empty plan section) never auto-advances — that state needs
+	// a human decision.
+	if app.AutoApprove && wf.StepCount > 0 {
+		wf.Phase = workflow.WFImplement
+		wf.StepIdx = 1
+		wfProgNote(app, fmt.Sprintf("⚡ auto: plan approved after successful review (%d steps) — starting implementation", wf.StepCount))
+		return &WFStartTurnMsg{
+			Note:     fmt.Sprintf("auto-approved — starting implementation: step 1/%d", wf.StepCount),
+			UserText: "continue",
+		}
+	}
+
 	wfProgNote(app, fmt.Sprintf("· plan ready (%d steps) — type /plan approve to begin implementation", wf.StepCount))
+	return nil
 }
 
 // wfWriteReviewSkip appends a REVIEW-skipped log entry to plan.md. Best-effort:
@@ -763,22 +782,35 @@ func wfWritePlanFormatError(app *App) {
 //
 // Every carve-out routes through here so no fall-through can occur without
 // a reason, making all auto-suspensions visible and auditable.
+//
+// Mashūra calls are NOT suspended: opting into /auto covers counsel calls the
+// same way headless --auto does (see headlessConfirmer). The ⚡ auto note still
+// announces the panel, question, and briefing before the call fires, so cost
+// stays visible — it just no longer blocks.
 func SuspendAuto(toolName string, app *App, detail string) string {
-	// Mashūra calls (and the legacy oracle__ask alias) send data to an external
-	// AI; cost and payload always need human review, even in auto mode.
-	if tools.IsMashuraTool(toolName) {
-		return "mashūra call (cost + payload review)"
-	}
 	switch toolName {
 	case "external_backend":
 		// Egress consent gate: session context would be sent to an external backend.
 		// Always requires explicit approval — never auto-approved, even in /auto.
 		return "external backend egress (privacy gate)"
-	case "run_shell":
-		if IsDestructiveShell(ShellCmdFromDetail(detail)) {
+	case "run_shell", "run_background":
+		// run_background detail lines are "$ <cmd> (background)" — the trailing
+		// marker is harmless: the destructive check matches on segment-leading
+		// tokens. Gating both mirrors headlessConfirmer's carve-out.
+		cmd := ShellCmdFromDetail(detail)
+		// AllowDestructive (/auto destructive) is the TUI counterpart of the
+		// headless --allow-destructive flag: an explicit second opt-in that
+		// covers destructive shell commands. Never covers the egress gate.
+		if IsDestructiveShell(cmd) && !app.AllowDestructive {
 			return "destructive command"
 		}
-		if app.Workflow != nil && workflow.IsPreImplementPhase(app.Workflow.Phase) {
+		// Pre-implementation phases gate only commands that could write: the
+		// write-containment invariant is enforced separately by wfPhaseBlock
+		// (write_file/edit_file/run_background are rejected outright), so
+		// read-only investigative commands (ls, grep, git status) may proceed
+		// in auto mode without a prompt.
+		if toolName == "run_shell" &&
+			app.Workflow != nil && workflow.IsPreImplementPhase(app.Workflow.Phase) && !IsReadOnlyShell(cmd) {
 			return "pre-implementation phase (" + app.Workflow.PhaseName() + ")"
 		}
 	}
@@ -840,9 +872,18 @@ func resolveBackendCtxCmd(app *App, backend, model string) tea.Cmd {
 // app.go passes to Confirmer for run_shell calls. The format is:
 //
 //	"$ <command>\n  (<exec>, cwd=<path>)"
+//
+// In pre-IMPLEMENT workflow phases a "⚠ workflow phase: …" line precedes the
+// "$ <command>" line, so scan for the first line with the "$ " marker rather
+// than assuming it is line one. Falls back to the first line for robustness.
 func ShellCmdFromDetail(detail string) string {
+	for _, line := range strings.Split(detail, "\n") {
+		if cmd, ok := strings.CutPrefix(strings.TrimSpace(line), "$ "); ok {
+			return cmd
+		}
+	}
 	line, _, _ := strings.Cut(detail, "\n")
-	return strings.TrimPrefix(strings.TrimSpace(line), "$ ")
+	return strings.TrimSpace(line)
 }
 
 // handleTUICommand processes slash commands locally without touching the agent.
@@ -880,10 +921,31 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 			len(app.Conv), TranscriptSize(app.Conv), app.Cfg.MaxChars))
 
 	case "/auto":
+		// /auto destructive — separate explicit opt-in for destructive shell
+		// commands (TUI counterpart of headless --allow-destructive). Requires
+		// auto mode to already be ON so the grant is always a deliberate second
+		// step, never part of the first toggle.
+		if len(fields) > 1 {
+			if fields[1] != "destructive" {
+				return true, false, note("usage: /auto | /auto destructive")
+			}
+			if !app.AutoApprove {
+				return true, false, note("auto mode is OFF — enable /auto first, then /auto destructive")
+			}
+			app.AllowDestructive = !app.AllowDestructive
+			if app.AllowDestructive {
+				return true, false, note("⚠ destructive auto-approve: ON — rm, mv, git reset, … run without prompting\n" +
+					"  still confirmed: external-backend egress; /auto destructive again to revoke")
+			}
+			return true, false, note("destructive auto-approve: OFF — destructive commands require confirmation again")
+		}
 		app.AutoApprove = !app.AutoApprove
 		if app.AutoApprove {
-			return true, false, note("auto mode: ON — all tool calls approved without prompting")
+			return true, false, note("auto mode: ON — tool calls approved without prompting\n" +
+				"  still confirmed: destructive shell commands (opt in with /auto destructive), external-backend egress")
 		}
+		// The destructive grant never outlives the auto session it was given for.
+		app.AllowDestructive = false
 		return true, false, note("auto mode: OFF — tool calls require confirmation")
 
 	case "/rawtools":
@@ -1114,7 +1176,10 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.C
 	case "review":
 		// Phase acknowledgments (/plan approve, /plan review) are ONLY ever
 		// user-typed commands — handlePlanCommand is only called from handleKey
-		// which requires a physical tea.KeyMsg. No auto-mode path can trigger them.
+		// which requires a physical tea.KeyMsg. Auto mode never invokes these
+		// commands; its only workflow shortcut is in HandleReviewOracle, which
+		// auto-advances PAST a review only when that review ran successfully
+		// (a failed/unavailable review always parks and waits for the user).
 		if app.Workflow == nil ||
 			(app.Workflow.Phase != workflow.WFReview && app.Workflow.Phase != workflow.WFPresent) {
 			return true, false, note("no active workflow in review state (/plan review works from WFReview or WFPresent)")
@@ -1324,7 +1389,11 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /learn               send "learn this for next time" — proxy synthesises a fact to save
 /counsel auto|suggest|off  auto-counsel mode: auto=fire mashura__debug on struggle, suggest=hint, off=silent
 /counsel                   show current counsel mode and per-turn cap
-/auto                toggle: auto-approve all tool calls without prompting (shown as AUTO in status)
+/auto                toggle: auto-approve tool calls without prompting (shown as AUTO in status)
+                     still confirmed: destructive shell commands, external-backend egress
+                     in /plan: a successful review auto-approves the plan and starts implementation
+/auto destructive    toggle: also auto-approve destructive shell commands (rm, mv, git reset, …)
+                     requires /auto ON; cleared when /auto goes OFF; shown as AUTO! in status
 /rawtools            toggle: include full tool output in context (default: capped at 8k chars)
 /cwd                 show executor working directory
 /mode                show execution backend

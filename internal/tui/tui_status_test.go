@@ -71,6 +71,19 @@ func TestBuildStatusLineAutoMode(t *testing.T) {
 	}
 }
 
+func TestBuildStatusLineAutoDestructive(t *testing.T) {
+	s := buildStatusLine(statusLineInput{state: stateIdle, autoApprove: true, allowDestructive: true, hadTurn: true})
+	p := plain(s)
+	if !strings.Contains(p, "AUTO!") {
+		t.Errorf("AUTO! must appear when allowDestructive; got: %q", p)
+	}
+	// Without autoApprove the destructive flag alone renders nothing.
+	s = buildStatusLine(statusLineInput{state: stateIdle, allowDestructive: true, hadTurn: true})
+	if p := plain(s); strings.Contains(p, "AUTO") {
+		t.Errorf("no AUTO segment without autoApprove; got: %q", p)
+	}
+}
+
 func TestBuildStatusLineWorkflowLabel(t *testing.T) {
 	s := buildStatusLine(statusLineInput{
 		state:         stateStreaming,

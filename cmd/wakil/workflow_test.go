@@ -1411,29 +1411,44 @@ func TestFailedPlanReadRoutesUnavailable(t *testing.T) {
 func TestAutoGateReasons(t *testing.T) {
 	app := &agent.App{AutoApprove: true}
 
-	// mashura__review (and the legacy oracle__ask alias) → cost + payload review.
-	reason := agent.SuspendAuto("mashura__review", app, "detail")
-	if !strings.Contains(reason, "cost + payload") {
-		t.Errorf("mashura: reason=%q, want 'cost + payload'", reason)
+	// mashura__review (and the legacy oracle__ask alias) auto-approve in /auto —
+	// same trust level as headless --auto.
+	if reason := agent.SuspendAuto("mashura__review", app, "detail"); reason != "" {
+		t.Errorf("mashura: reason=%q, want auto-approve (empty)", reason)
 	}
-	if legacy := agent.SuspendAuto("oracle__ask", app, "detail"); !strings.Contains(legacy, "cost + payload") {
-		t.Errorf("oracle__ask back-compat: reason=%q, want 'cost + payload'", legacy)
+	if legacy := agent.SuspendAuto("oracle__ask", app, "detail"); legacy != "" {
+		t.Errorf("oracle__ask back-compat: reason=%q, want auto-approve (empty)", legacy)
 	}
 
 	// Destructive shell.
-	reason = agent.SuspendAuto("run_shell", app, "$ rm -rf /tmp\n  (exec)")
+	reason := agent.SuspendAuto("run_shell", app, "$ rm -rf /tmp\n  (exec)")
 	if !strings.Contains(reason, "destructive command") {
 		t.Errorf("destructive shell: reason=%q, want 'destructive command'", reason)
 	}
 
-	// Pre-implementation workflow phase — reason must name the phase.
+	// Pre-implementation workflow phase: non-read-only commands gate (reason
+	// must name the phase); read-only investigative commands auto-approve
+	// because write containment is enforced by wfPhaseBlock separately.
 	app.Workflow = &workflow.WorkflowState{Phase: workflow.WFGather}
-	reason = agent.SuspendAuto("run_shell", app, "$ ls\n  (exec)")
+	reason = agent.SuspendAuto("run_shell", app, "$ go generate ./...\n  (exec)")
 	if !strings.Contains(reason, "pre-implementation phase") {
 		t.Errorf("pre-impl phase: reason=%q, want 'pre-implementation phase'", reason)
 	}
 	if !strings.Contains(reason, "gather") {
 		t.Errorf("pre-impl phase: reason should name the phase, got %q", reason)
+	}
+	if r := agent.SuspendAuto("run_shell", app, "$ ls\n  (exec)"); r != "" {
+		t.Errorf("pre-impl read-only shell should auto-approve, got %q", r)
+	}
+	// Pre-impl detail carries the phase-warning prefix line before "$ cmd" —
+	// extraction must still find the command.
+	preImplDetail := "⚠ workflow phase: gather (read-only expected — is this command investigative?)\n$ grep -rn foo .\n  (exec)"
+	if r := agent.SuspendAuto("run_shell", app, preImplDetail); r != "" {
+		t.Errorf("pre-impl read-only shell with warning prefix should auto-approve, got %q", r)
+	}
+	destructivePreImpl := "⚠ workflow phase: gather (read-only expected — is this command investigative?)\n$ rm -rf /tmp\n  (exec)"
+	if r := agent.SuspendAuto("run_shell", app, destructivePreImpl); !strings.Contains(r, "destructive command") {
+		t.Errorf("pre-impl destructive shell with warning prefix: reason=%q, want 'destructive command'", r)
 	}
 
 	// No reason for safe non-gated tools.
@@ -1446,17 +1461,48 @@ func TestAutoGateReasons(t *testing.T) {
 	}
 }
 
+// TestAllowDestructiveGrant: the /auto destructive grant auto-approves
+// destructive shell (and background) commands, but never the egress gate.
+func TestAllowDestructiveGrant(t *testing.T) {
+	app := &agent.App{AutoApprove: true, AllowDestructive: true}
+
+	if r := agent.SuspendAuto("run_shell", app, "$ rm -rf /tmp/x\n  (exec)"); r != "" {
+		t.Errorf("destructive shell should auto-approve with AllowDestructive, got %q", r)
+	}
+	if r := agent.SuspendAuto("run_background", app, "$ rm -rf /tmp/x (background)\n  label=x\n  (exec)"); r != "" {
+		t.Errorf("destructive background should auto-approve with AllowDestructive, got %q", r)
+	}
+	// The egress gate is never covered by the destructive grant.
+	if r := agent.SuspendAuto("external_backend", app, ""); r == "" {
+		t.Error("external_backend must still gate even with AllowDestructive")
+	}
+
+	// Without the grant, destructive background commands gate (parity with
+	// headlessConfirmer, which checks run_shell AND run_background).
+	app.AllowDestructive = false
+	if r := agent.SuspendAuto("run_background", app, "$ rm -rf /tmp/x (background)\n  label=x\n  (exec)"); !strings.Contains(r, "destructive") {
+		t.Errorf("destructive background without grant: reason=%q, want 'destructive'", r)
+	}
+	// Safe background commands still auto-approve without the grant.
+	if r := agent.SuspendAuto("run_background", app, "$ npm start (background)\n  label=dev\n  (exec)"); r != "" {
+		t.Errorf("safe background should auto-approve, got %q", r)
+	}
+}
+
 // TestShouldGateEvenWithAutoApprove: the boolean wrapper is consistent with suspendAuto.
 func TestShouldGateEvenWithAutoApprove(t *testing.T) {
 	app := &agent.App{AutoApprove: true}
-	if !agent.ShouldGateEvenWithAutoApprove("oracle__ask", app, "detail") {
-		t.Error("oracle__ask must always gate in auto mode")
+	if agent.ShouldGateEvenWithAutoApprove("oracle__ask", app, "detail") {
+		t.Error("oracle__ask should auto-approve in auto mode (same trust as headless --auto)")
 	}
 	if agent.ShouldGateEvenWithAutoApprove("write_file", app, "detail") {
 		t.Error("write_file should not gate in auto mode")
 	}
 	if !agent.ShouldGateEvenWithAutoApprove("run_shell", app, "$ rm -rf /tmp\n  (exec)") {
 		t.Error("destructive run_shell must still gate in auto mode")
+	}
+	if !agent.ShouldGateEvenWithAutoApprove("external_backend", app, "") {
+		t.Error("external_backend must always gate in auto mode")
 	}
 }
 
@@ -2692,6 +2738,118 @@ func TestReReviewClearsStaleFlag(t *testing.T) {
 	// New hash must match the current plan.
 	if app.Workflow.ReviewPlanHash != workflow.HashPlanSection(updatedPlan) {
 		t.Error("ReviewPlanHash should equal the fingerprint of the current plan")
+	}
+}
+
+// TestAutoModeAdvancesPastSuccessfulReview: with AutoApprove on, a successful
+// oracle review auto-approves the plan (WFReview → WFImplement, StepIdx=1) and
+// returns the auto-turn message for step 1 — no /plan approve needed.
+func TestAutoModeAdvancesPastSuccessfulReview(t *testing.T) {
+	oracleSrv := oracleServer(t, "Plan looks good.\nVERDICT: PASS")
+	defer oracleSrv.Close()
+
+	exec := newFakeExecutor()
+	plan := "## Task\n\nt\n\n## Plan\n\n1. do the thing\n"
+	exec.files[".wakil/plan.md"] = plan
+
+	srv := sseServer(t) // no model turns; we call HandleReviewOracle directly
+	defer srv.Close()
+
+	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
+	app.AutoApprove = true
+	app.Cfg.OracleEnabled = true
+	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	t.Setenv("TEST_KEY", "fake-key")
+
+	app.Workflow = &workflow.WorkflowState{
+		Task:      "t",
+		Phase:     workflow.WFReview,
+		PlanPath:  ".wakil/plan.md",
+		StepCount: 1,
+	}
+
+	next := agent.HandleReviewOracle(context.Background(), app)
+
+	if app.Workflow == nil || app.Workflow.Phase != workflow.WFImplement {
+		t.Fatalf("auto mode should advance to workflow.WFImplement after successful review, got %v", app.Workflow.Phase)
+	}
+	if app.Workflow.StepIdx != 1 {
+		t.Errorf("StepIdx should be 1, got %d", app.Workflow.StepIdx)
+	}
+	if next == nil {
+		t.Fatal("auto mode should return a WFStartTurnMsg to begin step 1")
+	}
+	// Hash must be fingerprinted so a later stale check has a baseline.
+	if app.Workflow.ReviewPlanHash != workflow.HashPlanSection(plan) {
+		t.Error("ReviewPlanHash should be fingerprinted before auto-approve")
+	}
+}
+
+// TestAutoModeDoesNotSkipFailedReview: with AutoApprove on, an unavailable
+// oracle review still parks the workflow in WFReview — auto mode may only
+// advance past a SUCCESSFUL review, never a failed or skipped one.
+func TestAutoModeDoesNotSkipFailedReview(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.files[".wakil/plan.md"] = "## Task\n\nt\n\n## Plan\n\n1. step\n"
+
+	srv := sseServer(t)
+	defer srv.Close()
+
+	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
+	app.AutoApprove = true
+	app.Cfg.OracleEnabled = false // oracle unavailable
+
+	app.Workflow = &workflow.WorkflowState{
+		Task:      "t",
+		Phase:     workflow.WFReview,
+		PlanPath:  ".wakil/plan.md",
+		StepCount: 1,
+	}
+
+	next := agent.HandleReviewOracle(context.Background(), app)
+
+	if next != nil {
+		t.Error("failed review must not return an auto-turn message")
+	}
+	if app.Workflow == nil || app.Workflow.Phase != workflow.WFReview {
+		t.Errorf("workflow should stay in workflow.WFReview when oracle unavailable, got %v", app.Workflow.Phase)
+	}
+}
+
+// TestAutoModeStopsAtZeroStepPlan: auto mode never advances a reviewed plan
+// with StepCount == 0 — an empty plan needs a human decision.
+func TestAutoModeStopsAtZeroStepPlan(t *testing.T) {
+	oracleSrv := oracleServer(t, "Plan looks fine.\nVERDICT: PASS")
+	defer oracleSrv.Close()
+
+	exec := newFakeExecutor()
+	exec.files[".wakil/plan.md"] = "## Task\n\nt\n\n## Plan\n\n(pending plan phase)\n"
+
+	srv := sseServer(t)
+	defer srv.Close()
+
+	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
+	app.AutoApprove = true
+	app.Cfg.OracleEnabled = true
+	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	t.Setenv("TEST_KEY", "fake-key")
+
+	app.Workflow = &workflow.WorkflowState{
+		Task:      "t",
+		Phase:     workflow.WFReview,
+		PlanPath:  ".wakil/plan.md",
+		StepCount: 0, // no parseable steps
+	}
+
+	next := agent.HandleReviewOracle(context.Background(), app)
+
+	if next != nil {
+		t.Error("zero-step plan must not auto-advance")
+	}
+	if app.Workflow == nil || app.Workflow.Phase != workflow.WFPresent {
+		t.Errorf("zero-step plan should park at workflow.WFPresent, got %v", app.Workflow.Phase)
 	}
 }
 

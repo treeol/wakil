@@ -62,7 +62,7 @@ type compSources struct {
 // hasArgs marks commands that take a following argument — Tab appends " " and
 // re-opens the picker to complete that argument.
 var allTUICommands = []candidate{
-	{name: "/auto"},
+	{name: "/auto", hasArgs: true},
 	{name: "/backend", hasArgs: true},
 	{name: "/compact"},
 	{name: "/counsel", hasArgs: true},
@@ -180,8 +180,8 @@ func computeAtCompletion(ta textarea.Model, base string) completionState {
 //     inserts the chosen "/command" name in one step.
 //
 //   - Space before cursor ("/backend op"): argument picker for the command
-//     before the space. Only /backend, /model, and /resume have argument
-//     completion; other commands are not completed past the space.
+//     before the space. Only /auto, /backend, /model, and /resume have
+//     argument completion; other commands are not completed past the space.
 func computeSlashCompletion(ta textarea.Model, src compSources) completionState {
 	lines := strings.Split(ta.Value(), "\n")
 	row := ta.Line()
@@ -218,6 +218,8 @@ func computeSlashCompletion(ta textarea.Model, src compSources) completionState 
 
 	var cands []candidate
 	switch cmdWord {
+	case "/auto":
+		cands = listNameCandidates(argLeaf, []string{"destructive"})
 	case "/backend":
 		cands = listNameCandidates(argLeaf, src.backends)
 	case "/model":

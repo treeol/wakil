@@ -59,6 +59,15 @@ type App struct {
 	// tool call automatically. Toggled by /auto or set via --auto flag.
 	AutoApprove bool
 
+	// AllowDestructive, when true alongside AutoApprove, auto-approves
+	// destructive shell commands (rm, mv, git reset, …) instead of suspending
+	// auto mode for them. Toggled by /auto destructive — a separate explicit
+	// opt-in, mirroring headless --allow-destructive. Cleared whenever /auto
+	// is switched off so the grant never outlives the auto session it was
+	// given for. Has no effect outside auto mode. The external-backend egress
+	// gate is NOT covered — that always prompts.
+	AllowDestructive bool
+
 	// IsHeadless marks wakil-run sessions where no human is present to re-send a
 	// failed turn. Backend stream errors are retried automatically regardless of
 	// workflow phase. Set by RunHeadless before the first Send call.
@@ -1236,8 +1245,11 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		// otherwise prompt, offering the "allow all reads" choice for reads.
 		readAction := IsReadOnlyShell(args.Command)
 
-		// In pre-IMPLEMENT workflow phases, always show the confirm prompt —
-		// AllowReads shortcut is suppressed so the user sees the phase warning.
+		// In pre-IMPLEMENT workflow phases, route through the confirm gate —
+		// the AllowReads shortcut is suppressed so the user sees the phase
+		// warning. In /auto mode, read-only commands are auto-approved by
+		// SuspendAuto (the phase warning still shows in the ⚡ auto note);
+		// non-read-only commands suspend auto and prompt.
 		preImpl := a.Workflow != nil && workflow.IsPreImplementPhase(a.Workflow.Phase)
 		detail := fmt.Sprintf("$ %s\n  (%s)", args.Command, a.Exec.Describe())
 		if preImpl {
@@ -1790,7 +1802,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 
 	// The mashura__* counsel family (and the legacy oracle__ask alias) all route
 	// through one handler: the model supplies intent, Wakil deterministically
-	// assembles the briefing. Each is gated and never auto-approved.
+	// assembles the briefing. Each is gated through the normal confirm flow
+	// (auto-approved in /auto mode with a visible ⚡ auto note).
 	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask":
 		return a.handleMashura(ctx, name, tc)
 
