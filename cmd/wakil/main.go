@@ -10,6 +10,7 @@ import (
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/proxy"
@@ -102,6 +103,19 @@ func main() {
 	// real per-slot n_ctx and cache it for the process. On failure this prints a
 	// loud fallback note to stderr.
 	ctxLimit := agent.ResolveContextLimit(context.Background(), client.HTTP, cfg, os.Stderr)
+
+	// Prime the OpenRouter model-context cache in the background when any
+	// mashura panel routes through OpenRouter. ResolveContextLength never
+	// fetches on its own (oracle calls must not block on cold-cache network
+	// I/O), so without this warm-up OpenRouter models silently get the
+	// conservative fallback context length. Best-effort; errors are ignored.
+	if panelsUseOpenRouter(cfg) {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, _ = counsel.FetchModelContextLimits(ctx)
+		}()
+	}
 
 	// Backend list: fetch /v1/ilm/backends; fall back to config external_backends.
 	backendList := agent.FetchBackendListWithFallback(context.Background(), client.HTTP, cfg, os.Stderr)
@@ -201,6 +215,24 @@ func newHTTPClient() *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 30 * time.Second
 	return &http.Client{Transport: tr}
+}
+
+// panelsUseOpenRouter reports whether any configured mashura panel routes at
+// least one model through OpenRouter ("openrouter:..." prefix or "~..." fusion
+// syntax). Used to decide whether priming the OpenRouter model-context cache
+// is worthwhile at startup.
+func panelsUseOpenRouter(cfg config.Config) bool {
+	for _, panel := range cfg.MashuraPanels {
+		if panel.Mode == "fusion" {
+			return true
+		}
+		for _, m := range panel.Models {
+			if strings.HasPrefix(m, "openrouter:") || strings.HasPrefix(m, "~") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func newExecutor(cfg config.Config) (exec.Executor, error) {
