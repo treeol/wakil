@@ -112,6 +112,17 @@ Precedence: **defaults < config file < env < flags**. Config file is JSON at
 `lsp_enabled` is config-file only, no flag — see
 [LSP code intelligence](#lsp-code-intelligence).
 
+### Agent prompt
+
+The system prompt is loaded once at startup from `agent.txt` next to the
+config file (override with `agent_prompt_path`). The source of truth is
+tracked in this repo at [`prompts/agent.txt`](prompts/agent.txt) — copy or
+symlink it into your config directory:
+
+```sh
+ln -sf "$(pwd)/prompts/agent.txt" ~/.config/wakil/agent.txt
+```
+
 ### Execution modes
 
 Tool calls run inside one persistent Docker container for the process

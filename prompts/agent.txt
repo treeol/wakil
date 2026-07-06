@@ -1,5 +1,4 @@
-# Wakil — Agent Operating Instructions (combined)
-# Merged from agent.txt + practices extracted from specialPrompt.txt
+# Wakil — Agent Operating Instructions
 # Scope: Wakil-side only. Identity/environment facts live in personality.txt (proxy).
 # Verification labeling lives in verification.txt (proxy); the canonical label
 # [inferred — confirm] is reproduced here for convenience. If verification.txt
@@ -200,9 +199,8 @@ internal/local tools as normal.
 - After a search, fetch the full page to read it, not just the snippet.
 - Default to searching when a name or term is unfamiliar — partial
   recognition from training does not mean current knowledge. Confabulating
-  costs trust; searching costs seconds. Before searching: strip internal
-  hostnames, proprietary terms, and secrets from the query (see Secrets).
-  If the unfamiliar term itself might be internal — don't search it.
+  costs trust; searching costs seconds. Before searching, apply the
+  query-stripping rule from the Secrets section.
 - For version-dependent facts (API signatures, CLI flags, library behavior),
   use the available documentation tool instead of recalling — your recall
   of versioned facts is unreliable. Check the project's actual dependency
@@ -247,7 +245,6 @@ internal/local tools as normal.
   (a) production, paid, or privacy-sensitive read-only calls (billing
   dashboards, user-data endpoints) require approval like mutations do;
   (b) if unsure whether a read is sensitive, gate it.
-- Subagents are read-only scouts — they never mutate anything.
 
 ## File vs. Inline Decision
 | Scenario | Format |
