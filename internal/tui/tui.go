@@ -106,10 +106,12 @@ type tuiModel struct {
 	comp completionState
 
 	// Subagent tabs. subCur=-1 means the main sidebar tab is active.
-	subTabs    []*subTab
-	subCur     int // -1 = main, 0..n-1 = subTabs index
-	subSeq     int // auto-increment for label generation (s1, s2, …)
-	subRunning int // n of the currently running tab (0 = none)
+	// A tab is "running" iff !tab.done — multiple tabs may run concurrently
+	// (parallel subagent dispatch), so there is no single "running tab" field;
+	// chunk/done messages are routed by ChatID.
+	subTabs []*subTab
+	subCur  int // -1 = main, 0..n-1 = subTabs index
+	subSeq  int // auto-increment for label generation (s1, s2, …)
 
 	width, height int
 	ready         bool
@@ -155,17 +157,18 @@ type subTab struct {
 }
 
 // pruneSubTabs caps the retained subagent tabs at max, dropping the oldest
-// finished tabs first. The running tab (runningN) and the currently-viewed tab
-// (focusN) are always kept, so a long-lived session can't accumulate tabs
-// without bound nor lose the one the user is watching.
-func pruneSubTabs(tabs []*subTab, runningN, focusN, max int) []*subTab {
+// finished tabs first. Running tabs (done == false) and the currently-viewed
+// tab (focusN) are always kept, so a long-lived session can't accumulate tabs
+// without bound nor lose a live stream or the one the user is watching. With
+// parallel dispatch several tabs may be running at once — all are protected.
+func pruneSubTabs(tabs []*subTab, focusN, max int) []*subTab {
 	if len(tabs) <= max {
 		return tabs
 	}
 	drop := len(tabs) - max
 	kept := make([]*subTab, 0, len(tabs))
 	for _, t := range tabs {
-		if drop > 0 && t.done && t.n != runningN && t.n != focusN {
+		if drop > 0 && t.done && t.n != focusN {
 			drop--
 			continue
 		}
@@ -423,13 +426,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			buf:     new(strings.Builder),
 		}
 		m.subTabs = append(m.subTabs, tab)
-		m.subRunning = m.subSeq // track which tab is running by its n
 		// Follow the new subagent only when sitting on the main view; never yank
 		// focus away from a tab the user is already reading.
 		if focusN == 0 {
 			focusN = m.subSeq
 		}
-		m.subTabs = pruneSubTabs(m.subTabs, m.subRunning, focusN, maxSubTabs)
+		m.subTabs = pruneSubTabs(m.subTabs, focusN, maxSubTabs)
 		m.subCur = tabIndexByN(m.subTabs, focusN)
 		// When the first tab appears the tab bar steals one row from vpH.
 		// Reflow so m.vp.Height is updated; otherwise the stale (too-tall)
@@ -440,9 +442,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case agent.SubagentChunkMsg:
-		// Route to the tab that is currently running, identified by n.
+		// Route by ChatID: with parallel dispatch, several tabs may stream at
+		// once, so the chunk carries the identity of its producer.
 		for _, t := range m.subTabs {
-			if t.n == m.subRunning {
+			if t.chatID == msg.ChatID {
 				t.buf.WriteString(msg.Text)
 				break
 			}
@@ -450,7 +453,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agent.SubagentDoneMsg:
 		for _, t := range m.subTabs {
-			if t.n == m.subRunning {
+			if t.chatID == msg.ChatID {
 				t.done = true
 				t.grounding = msg.Grounding
 				t.ctxSize = msg.CtxSize
@@ -459,7 +462,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		m.subRunning = 0
 
 	case agent.LearnTurnMsg:
 		if m.state == stateIdle {

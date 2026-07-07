@@ -8,7 +8,7 @@ func TestPruneSubTabsKeepsRunningAndFocus(t *testing.T) {
 	mk := func(n int, done bool) *subTab { return &subTab{n: n, done: done} }
 	tabs := []*subTab{mk(1, true), mk(2, true), mk(3, true), mk(4, false)}
 
-	got := pruneSubTabs(tabs, 4 /*running*/, 1 /*focus*/, 2 /*max*/)
+	got := pruneSubTabs(tabs, 1 /*focus*/, 2 /*max*/)
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
 	}
@@ -26,7 +26,7 @@ func TestPruneSubTabsKeepsRunningAndFocus(t *testing.T) {
 
 func TestPruneSubTabsNoOpUnderCap(t *testing.T) {
 	tabs := []*subTab{{n: 1}, {n: 2}}
-	if got := pruneSubTabs(tabs, 2, 1, 12); len(got) != 2 {
+	if got := pruneSubTabs(tabs, 1, 12); len(got) != 2 {
 		t.Fatalf("len = %d, want 2 (no prune under cap)", len(got))
 	}
 }
