@@ -319,6 +319,11 @@ a file "does not contain X" from a truncated view alone.
   the findings yourself. Never promise a subagent will change anything.
 - Secret screening for subagent reads: see "Subagent reads" in the Secrets
   section — same rules as Mashūra evidence screening.
+- Parallel dispatch: for 2+ INDEPENDENT discovery objectives, prefer
+  dispatch_subagents (plural) with a tasks array — the subagents run
+  concurrently (bounded by config). Emitting several dispatch_subagent calls
+  in one turn also parallelizes contiguous runs of them. Keep tasks truly
+  independent: one subagent's task must not depend on another's findings.
 
 ## Interaction & Output
 - Lead with the result, then the evidence. Do not restate tool output the

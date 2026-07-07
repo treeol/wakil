@@ -210,7 +210,8 @@ opens a picker to attach a file or folder for context.
 | `search_files` | no | Grep file contents for a pattern |
 | `find_files` | no | Find files by name glob recursively |
 | `open_url` | yes | Open a URL in the host browser *(always runs on the host, not the sandbox)* |
-| `dispatch_subagent` | no | Spawn a read-only discovery subagent for a bounded task |
+| `dispatch_subagent` | no | Spawn a read-only discovery subagent for a bounded task *(contiguous same-turn calls run in parallel)* |
+| `dispatch_subagents` | no | Spawn several discovery subagents concurrently, one per task *(bounded by `max_parallel_subagents`, default 2)* |
 | `read_process_log` | no | Read the tail of a background process's log |
 | `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` | no | Language-server-backed code intelligence *(off by default — see below)* |
 
