@@ -151,6 +151,13 @@ type Config struct {
 	// Default: "inherit".
 	SubagentBackend string `json:"subagent_backend,omitempty"`
 
+	// MaxParallelSubagents bounds how many dispatch_subagent workers may run
+	// concurrently when the model emits several dispatches in one turn (or via
+	// the dispatch_subagents batch tool). Values ≤ 1 mean sequential execution
+	// (the pre-parallelism behavior); the default is 2. Raising this only helps
+	// when the backend serves concurrent requests.
+	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`
+
 	// AgentPromptPath is the file loaded once at startup to supply the agent
 	// operating instructions (system message). Default: agent.txt next to the
 	// config file. If missing, the built-in fallback prompt is used.
@@ -329,6 +336,7 @@ func DefaultConfig() Config {
 		MaxFullReadBytes:      256 << 10, // 256 KB: full-read ceiling (higher than ToolResultCap 8K, under MaxRequestBytes 8MB)
 		MaxRequestBytes:       8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:     3,
+		MaxParallelSubagents:  2,
 		OracleModel:           "claude-sonnet-4-6",
 		OracleMaxTokens:       4096,
 		OracleAPIKeyEnv:       "ANTHROPIC_API_KEY",
