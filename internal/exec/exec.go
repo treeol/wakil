@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Executor abstracts where tool_calls actually run. Commands always execute
@@ -107,8 +108,8 @@ type DockerExecutor struct {
 	hostMount     string // host path mounted at workspaceRoot, empty = no mount
 	dockerSock    bool   // host docker socket bind-mounted in
 	signing       bool   // SSH signing passthrough active (agent socket mounted)
-	sandboxTools  string // cached probe result (empty = not yet probed or probe failed)
-	toolsProbed   bool   // true once SandboxTools() has run the probe
+	sandboxTools  string    // cached probe result (empty = not yet probed or probe failed)
+	toolsOnce     sync.Once // guards the probe: executor is shared with concurrent subagents
 	generation    int    // increments on container restart; 1 for initial container
 }
 
@@ -394,7 +395,7 @@ func (d *DockerExecutor) URIToHostPath(uri string) (string, error) {
 type DirectExecutor struct {
 	root         string // project root; immutable; all commands and file ops start here
 	sandboxTools string
-	toolsProbed  bool
+	toolsOnce    sync.Once // guards the probe: executor is shared with concurrent subagents
 	generation   int
 }
 

@@ -79,26 +79,24 @@ func probeTools(run func(string) string) string {
 	return result
 }
 
+// SandboxTools is guarded by sync.Once: executors are shared with concurrent
+// subagent workers, so the lazy probe cache must not be written racily.
 func (d *DockerExecutor) SandboxTools() string {
-	if d.toolsProbed {
-		return d.sandboxTools
-	}
-	d.toolsProbed = true
-	d.sandboxTools = probeTools(func(script string) string {
-		out, _ := d.exec(false, "sh", "-c", script)
-		return out
+	d.toolsOnce.Do(func() {
+		d.sandboxTools = probeTools(func(script string) string {
+			out, _ := d.exec(false, "sh", "-c", script)
+			return out
+		})
 	})
 	return d.sandboxTools
 }
 
 func (e *DirectExecutor) SandboxTools() string {
-	if e.toolsProbed {
-		return e.sandboxTools
-	}
-	e.toolsProbed = true
-	e.sandboxTools = probeTools(func(script string) string {
-		out, _ := exec.Command("sh", "-c", script).CombinedOutput()
-		return string(out)
+	e.toolsOnce.Do(func() {
+		e.sandboxTools = probeTools(func(script string) string {
+			out, _ := exec.Command("sh", "-c", script).CombinedOutput()
+			return string(out)
+		})
 	})
 	return e.sandboxTools
 }
