@@ -123,14 +123,15 @@ func extractJSON(s string) string {
 }
 
 // subagentProgressOut returns a writer that forwards subagent output to the
-// TUI's subagent sidebar panel. Returns io.Discard when the parent app has no
-// EventSink set (CLI invocation or tests).
-func subagentProgressOut(parent *App) io.Writer {
+// TUI's subagent sidebar panel, tagged with the dispatch's chatID so the TUI
+// can route concurrent streams to the right tab. Returns io.Discard when the
+// parent app has no EventSink set (CLI invocation or tests).
+func subagentProgressOut(parent *App, chatID string) io.Writer {
 	if parent == nil || parent.EventSink == nil {
 		return io.Discard
 	}
 	return NewProgWriter(func(m StreamChunkMsg) {
-		parent.sendEvent(SubagentChunkMsg{Text: m.Text})
+		parent.sendEvent(SubagentChunkMsg{ChatID: chatID, Text: m.Text})
 	})
 }
 
@@ -140,14 +141,73 @@ func readOnlyConfirmer() Confirmer {
 	return func(_, _, _ string, readAction bool) bool { return readAction }
 }
 
+// ensureSubagentConsent runs the egress consent gate for resolvedBackend on
+// behalf of a subagent dispatch. Returns true when the dispatch may proceed
+// (backend is local, already consented, or the user just approved).
+//
+// MAIN GOROUTINE ONLY: this reads and writes a.consentedBackends and may fire
+// an interactive Confirm prompt. It must be called before any dispatch worker
+// goroutine spawns — never from inside one. Workers receive an immutable
+// snapshot of the consent state instead (see dispatchSubagent).
+func (a *App) ensureSubagentConsent(resolvedBackend string) bool {
+	if resolvedBackend == "" || !IsExternalBackend(a.BackendList, a.Cfg, resolvedBackend) {
+		return true
+	}
+	if a.consentedBackends != nil && a.consentedBackends[resolvedBackend] {
+		return true
+	}
+	detail := fmt.Sprintf(
+		"This subagent's briefing (including session context, grounding, and "+
+			"learned notes) will be sent to external backend %q. Proceed?",
+		resolvedBackend)
+	if !a.Confirm("external_backend",
+		"⚠ Send subagent context to external backend "+resolvedBackend+"?",
+		detail, false) {
+		return false
+	}
+	if a.consentedBackends == nil {
+		a.consentedBackends = make(map[string]bool)
+	}
+	a.consentedBackends[resolvedBackend] = true
+	return true
+}
+
+// declinedSubagentSummary is the summary returned when the egress gate for a
+// subagent dispatch is declined: no request is made, the parent learns why.
+func declinedSubagentSummary(task, resolvedBackend string) SubagentSummary {
+	return SubagentSummary{
+		Objective:   task,
+		Uncertainty: []string{"subagent declined: external backend " + resolvedBackend + " not consented"},
+	}
+}
+
+// dispatchSubagentGated is the consent-then-dispatch sequence used by the
+// sequential (single-dispatch) path: run the egress gate, then dispatch.
+// MAIN GOROUTINE ONLY (it calls ensureSubagentConsent). The parallel path
+// must instead call ensureSubagentConsent once in its prepare phase and then
+// invoke dispatchSubagent directly from workers.
+func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string) {
+	if !a.ensureSubagentConsent(resolvedBackend) {
+		return declinedSubagentSummary(task, resolvedBackend), nil, 0, ""
+	}
+	return a.dispatchSubagent(ctx, task, progressOut, resolvedBackend, chatID...)
+}
+
 // dispatchSubagent runs a bounded read-only discovery subagent for task and
 // returns a structured SubagentSummary. The subagent:
 //   - shares the parent's Executor (same filesystem, read-only toolset only)
 //   - uses a fresh Client (new ChatID, NoMemoryWrite=true)
-//   - routes to resolvedBackend (X-Ilm-Backend), inheriting the parent's
-//     consent map so no duplicate egress prompt fires inside the sub-turn
+//   - routes to resolvedBackend (X-Ilm-Backend); egress consent must already
+//     have been granted by the caller via ensureSubagentConsent — this
+//     function never prompts and never touches a.consentedBackends
 //   - runs cap/evict/compact/enforceHardMax internally — bounded by its own HardMaxBytes
 //   - is completely silent (Out=io.Discard)
+//
+// CONCURRENCY: safe to call from multiple goroutines at once, provided the
+// caller ran ensureSubagentConsent on the main goroutine first. It reads only
+// immutable parent fields (Client config, Cfg, Exec, BackendList) and builds
+// a fully isolated child App. The child receives a snapshot COPY of the
+// consent map, so no goroutine ever writes parent-shared state.
 //
 // Only the ≤4k rendered summary enters the parent's transcript; raw file content
 // examined by the subagent never touches the parent's Conv.
@@ -155,29 +215,6 @@ func readOnlyConfirmer() Confirmer {
 // The fourth return value is the X-Ilm-Backend-Used header from the subagent's
 // last Stream call (empty when the proxy didn't send it).
 func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string) {
-	// Egress consent: if the subagent's backend is external, gate via the parent's
-	// confirm mechanism (shared session consent, never auto-approved).
-	if resolvedBackend != "" && IsExternalBackend(a.BackendList, a.Cfg, resolvedBackend) {
-		if a.consentedBackends == nil || !a.consentedBackends[resolvedBackend] {
-			detail := fmt.Sprintf(
-				"This subagent's briefing (including session context, grounding, and "+
-					"learned notes) will be sent to external backend %q. Proceed?",
-				resolvedBackend)
-			if !a.Confirm("external_backend",
-				"⚠ Send subagent context to external backend "+resolvedBackend+"?",
-				detail, false) {
-				return SubagentSummary{
-					Objective:   task,
-					Uncertainty: []string{"subagent declined: external backend " + resolvedBackend + " not consented"},
-				}, nil, 0, ""
-			}
-			if a.consentedBackends == nil {
-				a.consentedBackends = make(map[string]bool)
-			}
-			a.consentedBackends[resolvedBackend] = true
-		}
-	}
-
 	subChatID := NewChatID()
 	if len(chatID) > 0 && chatID[0] != "" {
 		subChatID = chatID[0]
@@ -209,23 +246,29 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	if progressOut == nil {
 		progressOut = io.Discard
 	}
+	// Snapshot the parent's consent map. The child must see the consent that
+	// ensureSubagentConsent just granted (so sub.Send's egress check doesn't
+	// re-prompt), but it must NOT share the parent's map: concurrent dispatch
+	// workers reading a map the parent could write is a fatal data race.
+	consentSnapshot := make(map[string]bool, len(a.consentedBackends))
+	for k, v := range a.consentedBackends {
+		consentSnapshot[k] = v
+	}
+
 	sub := &App{
-		Cfg:             cfg,
-		Client:          subClient,
-		Exec:            a.Exec,
-		Tools:           tools.DiscoveryTools(a.Exec.Cwd()),
-		Confirm:         readOnlyConfirmer(),
-		Out:             progressOut,
-		Session:         nil,
-		ToolCache:       map[string]bool{},
-		IsSubagent:      true,
-		pinUserMessage:  true, // pin the task instruction so it survives compaction
-		SelectedBackend: resolvedBackend,
-		BackendList:     a.BackendList,
-		// Share the parent's consent map — consent granted for the subagent's
-		// backend above is immediately visible here, preventing a duplicate prompt
-		// inside sub.Send when it repeats the egress check.
-		consentedBackends: a.consentedBackends,
+		Cfg:               cfg,
+		Client:            subClient,
+		Exec:              a.Exec,
+		Tools:             tools.DiscoveryTools(a.Exec.Cwd()),
+		Confirm:           readOnlyConfirmer(),
+		Out:               progressOut,
+		Session:           nil,
+		ToolCache:         map[string]bool{},
+		IsSubagent:        true,
+		pinUserMessage:    true, // pin the task instruction so it survives compaction
+		SelectedBackend:   resolvedBackend,
+		BackendList:       a.BackendList,
+		consentedBackends: consentSnapshot,
 	}
 	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(subagentSystemPrompt), Pinned: true}}
 

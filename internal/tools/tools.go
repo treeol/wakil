@@ -37,10 +37,26 @@ func DefaultTools(cwd string) []proxy.Tool {
 				"The subagent navigates and reads code (list_dir, find_files, search_files, read_file), then " +
 				"returns a structured JSON summary (findings with file:line locations, checked/skipped " +
 				"files, uncertainty). Use when gathering information from many files without loading " +
-				"all raw content into the main context.",
+				"all raw content into the main context. Multiple independent dispatch_subagent calls " +
+				"emitted in the same turn run in parallel (bounded); for several related discovery " +
+				"tasks prefer dispatch_subagents (plural) which runs them concurrently by design.",
 			Parameters: obj(map[string]interface{}{
 				"task": strProp("Specific discovery objective, e.g. 'find where ToolResultCap is configured across the repo'."),
 			}, "task"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "dispatch_subagents",
+			Description: "Dispatch several read-only discovery subagents CONCURRENTLY, one per task (bounded " +
+				"by config). Each task is a bounded, single-objective discovery job, independent of the " +
+				"others. Returns a JSON array of structured summaries in task order. Use for 2+ independent " +
+				"discovery objectives — faster than sequential dispatch_subagent calls.",
+			Parameters: obj(map[string]interface{}{
+				"tasks": map[string]interface{}{
+					"type":        "array",
+					"items":       strProp("One discovery objective."),
+					"description": "Independent discovery objectives (1–8), each handled by its own subagent.",
+				},
+			}, "tasks"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "run_shell",
@@ -284,12 +300,13 @@ func IsMashuraTool(name string) bool {
 	return false
 }
 
-// IsSubagentResult reports whether name is the dispatch_subagent tool. Its
-// result is already a ≤4k structured JSON digest of dozens of internal tool
-// iterations — re-truncating or stubbing a digest discards the work. Protected
-// from cap/stub the same way mashūra responses are, for the same reason.
+// IsSubagentResult reports whether name is the dispatch_subagent tool or its
+// batch variant dispatch_subagents. Their results are already structured JSON
+// digests of dozens of internal tool iterations — re-truncating or stubbing a
+// digest discards the work. Protected from cap/stub the same way mashūra
+// responses are, for the same reason.
 func IsSubagentResult(name string) bool {
-	return name == "dispatch_subagent"
+	return name == "dispatch_subagent" || name == "dispatch_subagents"
 }
 
 // The mashūra counsel tools (mashura__review / debug / decide / check) are

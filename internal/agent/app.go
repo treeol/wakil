@@ -522,8 +522,9 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 		if len(msg.ToolCalls) == 0 || forceFinish {
 			break
 		}
-		for _, tc := range msg.ToolCalls {
-			result := a.handleToolCall(ctx, tc)
+		// finalizeToolResult runs the shared per-result bookkeeping on the main
+		// goroutine: progress line, cap/stub, trace, budget, Conv append.
+		finalizeToolResult := func(tc proxy.ToolCall, result string) {
 			// Show a one-line summary (path/command + a result digest). The full
 			// result still goes into the transcript below for the model to read.
 			fmt.Fprintln(a.Out, Dim(toolLine(tc, result)))
@@ -544,11 +545,11 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 			}
 
 			turnToolBytes += len(result)
-			// dispatch_subagent results carry a durable on-disk summary path.
+			// dispatch_subagent(s) results carry durable on-disk summary paths.
 			// Pin the tool message so the parent's compaction never dissolves
 			// the breadcrumb — the model must always be able to read_file the
 			// full structured findings from the path marker in the content.
-			pinned := tc.Function.Name == "dispatch_subagent"
+			pinned := wtools.IsSubagentResult(tc.Function.Name)
 			a.Conv = append(a.Conv, proxy.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -556,6 +557,35 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 				Content:    StrPtr(result),
 				Pinned:     pinned,
 			})
+		}
+
+		// Walk tool calls in order. A maximal contiguous run of ≥2
+		// dispatch_subagent calls executes concurrently (bounded — see
+		// runParallelSubagentBlock); everything else, including single
+		// dispatches, runs sequentially exactly as before. Non-subagent tools
+		// act as ordering barriers: [dispatch, shell, dispatch] never runs the
+		// second dispatch before the shell. Results are finalized in original
+		// call order either way, so every tool_call_id is answered in sequence.
+		for ti := 0; ti < len(msg.ToolCalls); {
+			tc := msg.ToolCalls[ti]
+			tj := ti
+			for tj < len(msg.ToolCalls) && msg.ToolCalls[tj].Function.Name == "dispatch_subagent" {
+				tj++
+			}
+			if tj-ti >= 2 {
+				block := msg.ToolCalls[ti:tj]
+				blockResults := a.runParallelSubagentBlock(ctx, block)
+				for bi, btc := range block {
+					a.captureToolTrace(btc, blockResults[bi])
+					a.recordRecentTrace(btc, blockResults[bi])
+					finalizeToolResult(btc, blockResults[bi])
+				}
+				ti = tj
+				continue
+			}
+			result := a.handleToolCall(ctx, tc)
+			finalizeToolResult(tc, result)
+			ti++
 		}
 		// After a round of tool calls, offer mashura__debug if the rolling trace
 		// shows a struggle signal. In auto-counsel mode this fires the call
@@ -1084,6 +1114,8 @@ func toolAbbrev(name string) string {
 		return "list"
 	case "dispatch_subagent":
 		return "subagent"
+	case "dispatch_subagents":
+		return "subagents"
 	default:
 		if len([]rune(name)) > 8 {
 			return string([]rune(name)[:8])
@@ -1771,9 +1803,16 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		fmt.Fprintln(a.Out, Dim("· subagent: "+Truncate(args.Task, 60)))
 		subChatID := NewChatID()
 		subBackend := ResolveSubagentBackend(a.SelectedBackend, a.Cfg.SubagentBackend)
+		// Consent gate BEFORE the start event: a declined dispatch never opens
+		// a TUI tab. This is the sequential path; the parallel block path runs
+		// ensureSubagentConsent once for the whole block in its prepare phase.
+		if !a.ensureSubagentConsent(subBackend) {
+			return declinedSubagentSummary(args.Task, subBackend).Render()
+		}
 		a.sendEvent(SubagentStartMsg{Task: args.Task, ChatID: subChatID, Backend: subBackend})
-		summary, grounding, ctxSize, usedBackend := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a), subBackend, subChatID)
+		summary, grounding, ctxSize, usedBackend := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, subChatID)
 		a.sendEvent(SubagentDoneMsg{
+			ChatID:       subChatID,
 			Grounding:    grounding,
 			CtxSize:      ctxSize,
 			HardMaxBytes: subagentHardMaxBytes,
@@ -1799,6 +1838,46 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
 		}
 		return result
+
+	case "dispatch_subagents":
+		// Batch front-end onto the same fan-out core as the per-turn contiguous
+		// block path: explicit, observable parallelism under one tool_call_id.
+		var args struct {
+			Tasks []string `json:"tasks"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+		}
+		if len(args.Tasks) == 0 {
+			return "ERROR: tasks is required (1–8 discovery objectives)"
+		}
+		const maxBatchTasks = 8
+		if len(args.Tasks) > maxBatchTasks {
+			return fmt.Sprintf("ERROR: too many tasks (%d) — maximum is %d per batch", len(args.Tasks), maxBatchTasks)
+		}
+		for i, task := range args.Tasks {
+			if strings.TrimSpace(task) == "" {
+				return fmt.Sprintf("ERROR: task %d is empty", i+1)
+			}
+		}
+		// Reuse the block runner: build synthetic single-task calls so Phase
+		// A→B→C runs identically; then aggregate into one JSON array result.
+		block := make([]proxy.ToolCall, len(args.Tasks))
+		for i, task := range args.Tasks {
+			taskJSON, _ := json.Marshal(struct {
+				Task string `json:"task"`
+			}{task})
+			block[i] = proxy.ToolCall{
+				ID:       fmt.Sprintf("%s-b%d", tc.ID, i),
+				Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: string(taskJSON)},
+			}
+		}
+		results := a.runParallelSubagentBlock(ctx, block)
+		agg, err := json.Marshal(results)
+		if err != nil {
+			return fmt.Sprintf("ERROR: could not aggregate results: %v", err)
+		}
+		return string(agg)
 
 	// The mashura__* counsel family (and the legacy oracle__ask alias) all route
 	// through one handler: the model supplies intent, Wakil deterministically

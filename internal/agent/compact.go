@@ -355,12 +355,12 @@ func turnContainsSubagent(conv []proxy.Message, first, next int) bool {
 	for _, m := range conv[first:next] {
 		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
-				if tc.Function.Name == "dispatch_subagent" {
+				if tools.IsSubagentResult(tc.Function.Name) {
 					return true
 				}
 			}
 		}
-		if m.Role == "tool" && m.Name == "dispatch_subagent" {
+		if m.Role == "tool" && tools.IsSubagentResult(m.Name) {
 			return true
 		}
 	}

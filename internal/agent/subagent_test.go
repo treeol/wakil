@@ -355,12 +355,12 @@ func TestSubagentEgressGateFiresForExternal(t *testing.T) {
 		},
 	}
 
-	parent.dispatchSubagent(context.Background(), "check", io.Discard, "openrouter")
+	parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter")
 	if prompts != 1 {
 		t.Errorf("expected 1 egress prompt for external subagent backend; got %d", prompts)
 	}
 	// Second dispatch: already consented, no new prompt.
-	parent.dispatchSubagent(context.Background(), "check again", io.Discard, "openrouter")
+	parent.dispatchSubagentGated(context.Background(), "check again", io.Discard, "openrouter")
 	if prompts != 1 {
 		t.Errorf("second dispatch to same consented backend should not re-prompt; got %d total prompts", prompts)
 	}
@@ -390,7 +390,7 @@ func TestSubagentEgressDeclineReturnsUncertainty(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return false }, // always decline
 	}
 
-	summary, _, _, _ := parent.dispatchSubagent(context.Background(), "check", io.Discard, "openrouter")
+	summary, _, _, _ := parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter")
 	if requestCount != 0 {
 		t.Errorf("no request should be sent after egress decline; got %d", requestCount)
 	}
