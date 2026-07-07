@@ -46,11 +46,16 @@ type SubagentStartMsg struct {
 	Backend string // resolved backend for this dispatch (empty = proxy default)
 }
 
-// SubagentChunkMsg delivers a line of subagent output.
-type SubagentChunkMsg struct{ Text string }
+// SubagentChunkMsg delivers a line of subagent output. ChatID identifies which
+// subagent produced it, so the TUI can route concurrent streams to their tabs.
+type SubagentChunkMsg struct {
+	ChatID string
+	Text   string
+}
 
-// SubagentDoneMsg marks the subagent as finished.
+// SubagentDoneMsg marks the subagent identified by ChatID as finished.
 type SubagentDoneMsg struct {
+	ChatID       string
 	Grounding    []proxy.GroundingEntry
 	CtxSize      int
 	HardMaxBytes int
