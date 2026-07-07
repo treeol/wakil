@@ -174,10 +174,11 @@ func fetchContextLimit(ctx context.Context, httpc *http.Client, baseURL, auth, b
 }
 
 // getJSONWithBackend issues a GET and returns the response body, bounded so a
-// misbehaving endpoint can't stream an unbounded payload into memory. When
-// backend is non-empty it adds X-Ilm-Backend; when model is non-empty it sends
-// ?model=<url-encoded> as a query parameter (the proxy reads model from the
-// query string on the limits route).
+// misbehaving endpoint can't stream an unbounded payload into memory. Backend
+// and model are both sent as query parameters (?backend=<b>&model=<url-encoded>)
+// when non-empty — the proxy reads them from the query string on the limits
+// route (unlike chat requests, which send the backend via the X-Ilm-Backend
+// header).
 func getJSONWithBackend(ctx context.Context, httpc *http.Client, url, auth, backend, model string) ([]byte, error) {
 	// Build query string: ?backend=<b>&model=<url-encoded-model>
 	queryParts := make([]string, 0, 2)
