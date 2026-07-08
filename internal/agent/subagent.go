@@ -282,6 +282,14 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// with whatever the retry produces — otherwise a first-Send exhaustion
 	// is silently masked by a clean retry.
 	exhaustedFirstSend := sub.exhausted
+	// Same capture-before-retry pattern for the path-confinement breaker: the
+	// retry Send does not reset confinementTripped (only Send's exhausted
+	// reset is inside Send itself — confinementTripped is set once per turn
+	// and never cleared, so this is belt-and-suspenders, not strictly needed,
+	// but keeps the two flags symmetric and equally safe against future
+	// changes to either reset path).
+	confinementFirstSend := sub.confinementTripped
+	confinementPathsFirstSend := sub.confinementPathsHit
 
 	if err != nil {
 		return SubagentSummary{
@@ -314,13 +322,38 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		summary.Objective = task
 	}
 
-	// Truthful return on exhaustion: if the subagent hit its iteration limit or
-	// enforceHardMax shed content during EITHER the first Send or the retry,
-	// override the status to "incomplete". The model's response may look normal
-	// but be based on a lobotomized context. The parent must know the subagent
-	// ran out of budget so it can re-dispatch narrower or take over, rather than
-	// trusting potentially-incomplete findings.
-	if exhaustedFirstSend || sub.exhausted {
+	// Truthful return on the path-confinement breaker: distinct from generic
+	// budget exhaustion below — this is a deterministic, structural dead end
+	// (a path outside the sandbox root can never become readable on retry),
+	// not a "ran out of budget, might succeed with more room" situation. The
+	// parent gets the exact unreachable path(s) so it knows re-dispatching the
+	// same task narrower will NOT help — the parent must either accept the
+	// gap or dispatch against a different, reachable path/repo.
+	if confinementFirstSend || sub.confinementTripped {
+		summary.Status = "incomplete"
+		paths := confinementPathsFirstSend
+		if len(sub.confinementPathsHit) > 0 {
+			paths = sub.confinementPathsHit
+		}
+		if len(paths) == 0 {
+			summary.Skipped = append(summary.Skipped, SkippedItem{Reason: "inaccessible"})
+		} else {
+			for _, p := range paths {
+				summary.Skipped = append(summary.Skipped, SkippedItem{Path: p, Reason: "inaccessible"})
+			}
+		}
+		note := "path(s) outside the sandboxed workspace — permanently unreachable, not a budget issue: re-dispatching narrower will not help"
+		if len(summary.Uncertainty) == 0 || summary.Uncertainty[len(summary.Uncertainty)-1] != note {
+			summary.Uncertainty = append(summary.Uncertainty, note)
+		}
+	} else if exhaustedFirstSend || sub.exhausted {
+		// Truthful return on generic exhaustion: if the subagent hit its
+		// iteration limit or enforceHardMax shed content during EITHER the
+		// first Send or the retry, override the status to "incomplete". The
+		// model's response may look normal but be based on a lobotomized
+		// context. The parent must know the subagent ran out of budget so it
+		// can re-dispatch narrower or take over, rather than trusting
+		// potentially-incomplete findings.
 		summary.Status = "incomplete"
 		summary.Skipped = append(summary.Skipped, SkippedItem{
 			Reason: "budget-exhausted",

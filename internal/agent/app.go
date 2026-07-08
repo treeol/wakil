@@ -85,6 +85,19 @@ type App struct {
 	// fired. Only meaningful for subagents; the parent ignores it.
 	exhausted bool
 
+	// confinementTripped is set by Send when the path-confinement circuit
+	// breaker fires: confinementBreakerThreshold consecutive ConfinePath
+	// rejections within the turn. ConfinePath failures are a deterministic
+	// error class — the same path fails identically on every retry — so this
+	// is distinct from generic budget exhaustion: the model is stopped early
+	// (well before MaxToolIterations) and told plainly which path(s) are
+	// unreachable, rather than being left to burn its whole iteration budget
+	// retrying a doomed path. Read by dispatchSubagent to attach a precise
+	// "inaccessible" Skipped entry. confinementPathsHit holds the distinct
+	// path arguments observed during the tripped streak, for reporting.
+	confinementTripped  bool
+	confinementPathsHit []string
+
 	// pinUserMessage marks the user message appended by Send as Pinned, so it
 	// survives compaction and hard-max dropping. Set by dispatchSubagent for
 	// the subagent's task instruction — the subagent must never forget its own
@@ -372,6 +385,10 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 	// the retry, then ORs it with the retry's value, so resetting here
 	// doesn't mask first-Send exhaustion.
 	a.exhausted = false
+	// Reset per-turn confinement-breaker flags, same rationale as exhausted
+	// above: dispatchSubagent captures the first-Send value before the retry.
+	a.confinementTripped = false
+	a.confinementPathsHit = nil
 
 	// Lazy-initialize defaultModel so it can be restored when SelectedModel is cleared.
 	if a.defaultModel == "" {
@@ -473,16 +490,36 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 	var final string
 	var turnToolBytes int
 	firstStream := true
+	// Path-confinement circuit breaker state (see confinementBreakerThreshold):
+	// confinementFailures counts ConfinePath rejections per distinct path across
+	// the whole turn; confinementPaths preserves first-seen order for the honest
+	// final message; confinementTrip is set once any path crosses the threshold
+	// and forces an early, precise wrap-up on the NEXT iteration — well before
+	// MaxToolIterations would otherwise exhaust the budget on a foregone
+	// conclusion (the same unreachable path can never resolve differently).
+	confinementFailures := map[string]int{}
+	var confinementPaths []string
+	confinementTrip := false
 	for iter := 0; ; iter++ {
 		// Hard backstop against runaway tool loops: on the final allowed iteration
 		// drop the tools and force the model to answer from what it already has.
 		// 0 = unlimited (the parent's default; a human gates each tool there).
-		forceFinish := a.Cfg.MaxToolIterations > 0 && iter >= a.Cfg.MaxToolIterations
+		forceFinish := (a.Cfg.MaxToolIterations > 0 && iter >= a.Cfg.MaxToolIterations) || confinementTrip
 		tools := a.Tools
 		if forceFinish {
 			tools = nil
 			a.exhausted = true // signal to dispatchSubagent: iteration limit hit
-			a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(ToolLimitPrompt)})
+			if confinementTrip {
+				// Precise, honest wrap-up: name the unreachable path(s) instead of
+				// the generic ToolLimitPrompt, and record the reason so
+				// dispatchSubagent can report Skipped{Reason:"inaccessible"}
+				// rather than a bare "budget-exhausted".
+				a.confinementTripped = true
+				a.confinementPathsHit = confinementPaths
+				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(confinementBreakerPrompt(confinementPaths))})
+			} else {
+				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(ToolLimitPrompt)})
+			}
 		}
 
 		// Prepend a fresh context preamble at send time (never stored in Conv,
@@ -522,12 +559,39 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 		if len(msg.ToolCalls) == 0 || forceFinish {
 			break
 		}
+		// Circuit breaker (checked pre-cap, on the raw tool result): a
+		// ConfinePath rejection is deterministic per resolved path — it cannot
+		// succeed on retry, so repeated hits on the SAME path (not the same
+		// call; the model retries with varied quoting/tool/relative-vs-absolute
+		// form) signal a doomed loop rather than progress, not a transient
+		// failure worth spending the rest of MaxToolIterations on. Trips after
+		// confinementBreakerThreshold distinct hits on one path.
+		trackConfinement := func(result string) {
+			if !isConfinementError(result) {
+				return
+			}
+			p := confinementPathQuoted(result)
+			if confinementFailures[p] == 0 {
+				confinementPaths = append(confinementPaths, p)
+			}
+			confinementFailures[p]++
+			if confinementFailures[p] >= confinementBreakerThreshold {
+				confinementTrip = true
+			}
+		}
+
 		// finalizeToolResult runs the shared per-result bookkeeping on the main
-		// goroutine: progress line, cap/stub, trace, budget, Conv append.
+		// goroutine: progress line, breaker check, cap/stub, trace, budget, Conv
+		// append.
 		finalizeToolResult := func(tc proxy.ToolCall, result string) {
 			// Show a one-line summary (path/command + a result digest). The full
 			// result still goes into the transcript below for the model to read.
 			fmt.Fprintln(a.Out, Dim(toolLine(tc, result)))
+
+			// Check the RAW result (before CapOrStub can touch it) against the
+			// path-confinement breaker — ConfinePath error text is short and
+			// never capped, so this ordering is only for clarity/robustness.
+			trackConfinement(result)
 
 			// Capture pre-cap size before CapOrStub so the trace reflects actual
 			// tool output, not the truncated version the model sees.
@@ -689,6 +753,79 @@ func (a *App) WarnContextPressure() {
 // ToolLimitPrompt is injected on the final allowed iteration when MaxToolIterations
 // is reached; tools are dropped for that turn so the model must answer with this.
 const ToolLimitPrompt = "You have reached the tool-call limit for this turn. Stop calling tools and produce your final response now, using only the information you already have."
+
+// confinementBreakerThreshold is how many times the SAME path may fail path
+// confinement (ConfinePath: outside workspace / unresolvable) within one turn
+// before the circuit breaker trips and force-finishes the turn early.
+//
+// Rationale: unlike most tool failures, a ConfinePath rejection is a
+// deterministic error class — given the same resolved path, the outcome can
+// never change on retry (the path is either inside the workspace root or it
+// isn't; that doesn't flip mid-turn). A model that keeps retrying variants of
+// an unreachable path (different quoting, relative vs absolute, a different
+// read tool) is not making progress and, left alone, burns its entire
+// MaxToolIterations budget on a foregone conclusion — the exact
+// "ran out of budget" failure mode this breaker exists to short-circuit.
+// 2 strikes (not 1) tolerates one legitimate retry with a corrected path.
+const confinementBreakerThreshold = 2
+
+// confinementErrorMarkers are substrings unique to Executor.ConfinePath's
+// error text (see internal/exec/exec_ops.go: DockerExecutor/DirectExecutor
+// ConfinePath). Any tool result containing one of these is a deterministic,
+// non-retryable path-confinement rejection, never a transient failure —
+// matching on these lets the breaker fire on the ERROR CLASS rather than on
+// byte-identical retries, which real model retries rarely are (they vary
+// quoting, tool choice, and path form call to call).
+var confinementErrorMarkers = []string{
+	"outside workspace",  // both executors: "... is outside workspace %q — traversal not allowed"
+	"resolving path",     // Docker: readlink -f failed
+	"could not resolve path", // Docker: readlink -f produced empty output
+}
+
+// isConfinementError reports whether a tool result string is a path-confinement
+// rejection from Executor.ConfinePath, as opposed to any other tool error.
+func isConfinementError(result string) bool {
+	if !strings.HasPrefix(result, "ERROR:") {
+		return false
+	}
+	for _, m := range confinementErrorMarkers {
+		if strings.Contains(result, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// confinementPathQuoted extracts the first double-quoted path segment from a
+// ConfinePath error (all its error strings quote the offending path with %q).
+// Used both as the breaker's per-path counter key and for the honest final
+// message. Falls back to the full result string if no quoted segment is found
+// so distinct-but-unparseable errors don't collapse into one counter bucket.
+func confinementPathQuoted(result string) string {
+	start := strings.IndexByte(result, '"')
+	if start < 0 {
+		return result
+	}
+	end := strings.IndexByte(result[start+1:], '"')
+	if end < 0 {
+		return result
+	}
+	return result[start+1 : start+1+end]
+}
+
+// confinementBreakerPrompt builds the honest, specific final-answer directive
+// shown to the model when the breaker trips — named paths, named reason —
+// instead of the generic ToolLimitPrompt, which never explains why the model
+// is being cut off. paths is the de-duplicated list of unreachable paths hit.
+func confinementBreakerPrompt(paths []string) string {
+	var b strings.Builder
+	b.WriteString("The following path(s) are outside the accessible workspace and cannot be read, listed, or searched no matter how they are re-specified (this will not change on retry):\n")
+	for _, p := range paths {
+		fmt.Fprintf(&b, "  - %s\n", p)
+	}
+	b.WriteString("Stop retrying them. Produce your final response now: state plainly that these paths are unreachable from this sandbox, and answer using only what you have already gathered.")
+	return b.String()
+}
 
 // RecordInferenceCost records the most recent Stream call's token usage. When
 // the proxy reports which backend handled the request (X-Ilm-Backend-Used),

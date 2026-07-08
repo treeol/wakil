@@ -26,6 +26,11 @@ type fakeExecutor struct {
 	writeCalls  map[string]string
 	files       map[string]string
 	dirs        map[string]bool
+
+	// confineErrFn, when set, lets tests simulate ConfinePath rejections (e.g.
+	// the real "outside workspace" error DockerExecutor/DirectExecutor return)
+	// without needing a real sandboxed executor. Return "" error to allow.
+	confineErrFn func(path string) error
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -78,6 +83,11 @@ func (f *fakeExecutor) Close() error          { return nil }
 func (f *fakeExecutor) SandboxTools() string  { return "" }
 func (f *fakeExecutor) Generation() int       { return 1 }
 func (f *fakeExecutor) ConfinePath(_ context.Context, path string) (string, error) {
+	if f.confineErrFn != nil {
+		if err := f.confineErrFn(path); err != nil {
+			return "", err
+		}
+	}
 	return path, nil
 }
 func (f *fakeExecutor) DeletePath(_ context.Context, path string) error   { return nil }
