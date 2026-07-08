@@ -615,6 +615,35 @@ func (m tuiModel) subTabSlotStart(slot int) int {
 	return base + slot*(tabSubW+tabGap)
 }
 
+// subTabPulseShades are the yellow/orange levels cycled by an actively running
+// subagent's tab dot. Queued (dispatched but waiting for a parallelism slot)
+// tabs show a static dim dot instead — see renderSubTabDot.
+var subTabPulseShades = []lipgloss.Color{"94", "172", "214", "220"}
+
+// subTabDotSpec returns the glyph and color for a subagent tab's status dot:
+//
+//	done   → green ✓
+//	active → yellow pulsing ● (worker holds a slot, request in flight)
+//	queued → gray static ● (dispatched, waiting for a slot under the cap)
+//
+// Split from rendering so the state→color mapping is testable in non-TTY
+// environments where lipgloss strips escape codes.
+func subTabDotSpec(tab *subTab, phase int) (glyph string, color lipgloss.Color) {
+	switch {
+	case tab.done:
+		return "✓", "2"
+	case tab.active:
+		return "●", subTabPulseShades[phase%len(subTabPulseShades)]
+	default:
+		return "●", "240"
+	}
+}
+
+func renderSubTabDot(tab *subTab, phase int) string {
+	glyph, color := subTabDotSpec(tab, phase)
+	return lipgloss.NewStyle().Foreground(color).Render(glyph)
+}
+
 // renderMainTabBar draws the full-width tab bar that appears below the
 // input box when at least one subagent tab exists.
 func (m tuiModel) renderMainTabBar() string {
@@ -647,10 +676,7 @@ func (m tuiModel) renderMainTabBar() string {
 	for slot := 0; slot < count; slot++ {
 		i := start + slot
 		tab := m.subTabs[i]
-		dot := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("●") // running
-		if tab.done {
-			dot = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("✓") // done
-		}
+		dot := renderSubTabDot(tab, m.dotPhase)
 		label := sprint("s%d", tab.n)
 		if len(label) > 2 {
 			label = label[:2]

@@ -148,6 +148,7 @@ type subTab struct {
 	grounding    []proxy.GroundingEntry
 	ctxSize      int
 	hardMaxBytes int
+	active       bool // worker acquired a parallelism slot (queued → running)
 	done         bool
 
 	// Render cache for renderSubTabContent. Invalidated when buf grows or vpW changes.
@@ -426,11 +427,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			buf:     new(strings.Builder),
 		}
 		m.subTabs = append(m.subTabs, tab)
-		// Follow the new subagent only when sitting on the main view; never yank
-		// focus away from a tab the user is already reading.
-		if focusN == 0 {
-			focusN = m.subSeq
-		}
+		// Never steal focus: the user stays on whatever view they are reading
+		// (usually main). The new tab is reachable via the tab bar; with
+		// parallel dispatch, auto-following would bounce the view N times.
 		m.subTabs = pruneSubTabs(m.subTabs, focusN, maxSubTabs)
 		m.subCur = tabIndexByN(m.subTabs, focusN)
 		// When the first tab appears the tab bar steals one row from vpH.
@@ -439,6 +438,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// drifts, causing the bottom tab bar to render at the wrong screen row.
 		if len(m.subTabs) == 1 {
 			m = m.reflow()
+		}
+
+	case agent.SubagentActiveMsg:
+		// Queued → running: the worker acquired a parallelism slot.
+		for _, t := range m.subTabs {
+			if t.chatID == msg.ChatID {
+				t.active = true
+				break
+			}
 		}
 
 	case agent.SubagentChunkMsg:

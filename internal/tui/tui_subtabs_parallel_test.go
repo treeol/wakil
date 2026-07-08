@@ -83,6 +83,87 @@ func TestSubagentDoneClosesOnlyItsTab(t *testing.T) {
 	}
 }
 
+// TestSubagentStartDoesNotStealFocus verifies that dispatching subagents keeps
+// the user's current view: main stays main, and a focused tab stays focused.
+func TestSubagentStartDoesNotStealFocus(t *testing.T) {
+	m := newTabModel()
+	if m.subCur != -1 {
+		t.Fatalf("precondition: subCur = %d, want -1 (main)", m.subCur)
+	}
+	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
+	if m.subCur != -1 {
+		t.Errorf("after first Start: subCur = %d, want -1 (stay on main)", m.subCur)
+	}
+	// Simulate the user focusing tab A, then a new dispatch arriving.
+	m.subCur = tabIndexByN(m.subTabs, 1)
+	m = step(m, agent.SubagentStartMsg{Task: "task B", ChatID: "chat-b"})
+	if got := m.subTabs[m.subCur].chatID; got != "chat-a" {
+		t.Errorf("focus moved to %q, want to stay on chat-a", got)
+	}
+}
+
+// TestSubagentActiveMarksTab verifies the queued→running transition: only the
+// tab whose worker acquired a slot becomes active.
+func TestSubagentActiveMarksTab(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
+	m = step(m, agent.SubagentStartMsg{Task: "task B", ChatID: "chat-b"})
+
+	for _, tab := range m.subTabs {
+		if tab.active {
+			t.Errorf("tab %s active before SubagentActiveMsg", tab.chatID)
+		}
+	}
+	m = step(m, agent.SubagentActiveMsg{ChatID: "chat-a"})
+	for _, tab := range m.subTabs {
+		switch tab.chatID {
+		case "chat-a":
+			if !tab.active {
+				t.Error("chat-a should be active")
+			}
+		case "chat-b":
+			if tab.active {
+				t.Error("chat-b should still be queued")
+			}
+		}
+	}
+}
+
+// TestRenderSubTabDotStates verifies the three dot states: queued = static
+// gray, active = pulsing yellow (phase-dependent), done = green check.
+func TestRenderSubTabDotStates(t *testing.T) {
+	queued := &subTab{}
+	active := &subTab{active: true}
+	done := &subTab{active: true, done: true}
+
+	// Compare glyph+color specs, not rendered strings: lipgloss strips escape
+	// codes in non-TTY test environments, making all renders look identical.
+	if g, c := subTabDotSpec(done, 0); g != "✓" || c != "2" {
+		t.Errorf("done dot = %q/%v, want ✓/2", g, c)
+	}
+	if g, c := subTabDotSpec(queued, 0); g != "●" || c != "240" {
+		t.Errorf("queued dot = %q/%v, want ●/240", g, c)
+	}
+	// Queued is static: identical across phases.
+	_, q0 := subTabDotSpec(queued, 0)
+	_, q1 := subTabDotSpec(queued, 1)
+	if q0 != q1 {
+		t.Error("queued dot must not pulse")
+	}
+	// Active pulses: shade differs across phases.
+	_, a0 := subTabDotSpec(active, 0)
+	_, a1 := subTabDotSpec(active, 1)
+	if a0 == a1 {
+		t.Error("active dot should pulse (different shades per phase)")
+	}
+	// Active differs from queued at every phase (yellow family vs gray).
+	for phase := 0; phase < len(subTabPulseShades); phase++ {
+		if _, ac := subTabDotSpec(active, phase); ac == q0 {
+			t.Errorf("phase %d: active dot color identical to queued", phase)
+		}
+	}
+}
+
 // TestPruneNeverDropsAnyRunningTab verifies the new prune contract: with
 // several tabs running concurrently, none of them may be pruned.
 func TestPruneNeverDropsAnyRunningTab(t *testing.T) {
