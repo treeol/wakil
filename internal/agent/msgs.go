@@ -46,6 +46,12 @@ type SubagentStartMsg struct {
 	Backend string // resolved backend for this dispatch (empty = proxy default)
 }
 
+// SubagentActiveMsg marks the moment a dispatched subagent actually starts
+// running (its worker acquired a slot under max_parallel_subagents). Between
+// SubagentStartMsg and this event the subagent is queued, not running — the
+// TUI renders queued tabs with a dimmed dot and active ones with a pulsing dot.
+type SubagentActiveMsg struct{ ChatID string }
+
 // SubagentChunkMsg delivers a line of subagent output. ChatID identifies which
 // subagent produced it, so the TUI can route concurrent streams to their tabs.
 type SubagentChunkMsg struct {

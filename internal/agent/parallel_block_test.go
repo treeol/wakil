@@ -348,6 +348,67 @@ func TestBatchToolValidation(t *testing.T) {
 	}
 }
 
+// TestActiveEventsRespectCap verifies SubagentActiveMsg fires only when a
+// worker actually acquires a slot: with cap=1 and two jobs, the second Active
+// event must not fire before the first subagent's request completes.
+func TestActiveEventsRespectCap(t *testing.T) {
+	release := make(chan struct{})
+	arrived := make(chan struct{})
+	var first sync.Once
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		task := taskFromBody(body)
+		// Hold whichever subagent request arrives FIRST (slot acquisition
+		// order is nondeterministic); the second proceeds normally.
+		hold := false
+		first.Do(func() { hold = true; close(arrived) })
+		if hold {
+			<-release
+		}
+		writeSSE(w, contentChunk(summaryFor(task)))
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	var activeIDs []string
+	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.MaxParallelSubagents = 1
+	app.EventSink = func(msg interface{}) {
+		if m, ok := msg.(SubagentActiveMsg); ok {
+			mu.Lock()
+			activeIDs = append(activeIDs, m.ChatID)
+			mu.Unlock()
+		}
+	}
+
+	jobs := []subagentJob{
+		{Index: 0, Task: "TASK-A", ChatID: "chat-a"},
+		{Index: 1, Task: "TASK-B", ChatID: "chat-b"},
+	}
+	done := make(chan []subagentJobResult, 1)
+	go func() { done <- app.runSubagentJobs(context.Background(), jobs, "") }()
+
+	<-arrived // the first worker holds the only slot and is blocked in-flight
+	mu.Lock()
+	if len(activeIDs) != 1 {
+		t.Errorf("while slot held: %d active events (%v), want exactly 1", len(activeIDs), activeIDs)
+	}
+	mu.Unlock()
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("jobs did not finish")
+	}
+	mu.Lock()
+	if len(activeIDs) != 2 {
+		t.Errorf("after completion: %d active events, want 2 (%v)", len(activeIDs), activeIDs)
+	}
+	mu.Unlock()
+}
+
 // TestWorkerPanicIsolated verifies a panicking worker is converted to an
 // error summary and does not crash the parent or its sibling.
 func TestWorkerPanicIsolated(t *testing.T) {

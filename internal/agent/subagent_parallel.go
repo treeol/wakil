@@ -117,6 +117,9 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 				results[i] = cancelledJobResult(jobs[i].Task)
 				return
 			}
+			// Slot acquired — this subagent is now actually running (was queued).
+			// sendEvent is goroutine-safe (Program.Send), same as chunk events.
+			a.sendEvent(SubagentActiveMsg{ChatID: jobs[i].ChatID})
 			summary, grounding, ctxSize, usedBackend := a.dispatchSubagent(
 				ctx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].ChatID)
 			results[i] = subagentJobResult{
