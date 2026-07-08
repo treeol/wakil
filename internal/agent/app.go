@@ -1474,6 +1474,31 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
+		// Toolcache spill-path interception (root-cause fix for the
+		// "subagent retries its own capped tool result forever" failure
+		// mode): a path returned inside an earlier "[... at: PATH]" marker
+		// (CapToolResult/StubToolResult/SpillFullResult, or a dispatch_subagent
+		// summary spill) is a HOST-side wakil artifact — it was never part of
+		// the sandboxed workspace, so Executor.ConfinePath rejects it
+		// deterministically, every single time (Docker: the toolcache dir is
+		// never bind-mounted; Direct: it's outside the workspace root either
+		// way). Recognise it here and serve it directly from the host
+		// filesystem, bypassing the executor entirely, instead of handing the
+		// model a guaranteed dead end to retry until it exhausts its budget.
+		if wtools.IsToolCacheHostPath(args.Path) {
+			sizeLimit := int64(a.Cfg.ReadFileSizeLimit)
+			if sizeLimit <= 0 {
+				sizeLimit = 1 << 20
+			}
+			if args.Limit != 0 {
+				sizeLimit = 0 // caller explicitly bounded the read; skip the guard, same as the executor path below
+			}
+			out, errResult := hostCacheReadResult(args.Path, sizeLimit, "read", "specify a line/byte range or use search_files.")
+			if errResult != "" {
+				return errResult
+			}
+			return formatFileView(out, args.Offset, args.Limit)
+		}
 		// Confine the path to the workspace (P0-3: path confinement).
 		canonical, err := a.Exec.ConfinePath(ctx, args.Path)
 		if err != nil {
@@ -1517,6 +1542,21 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		}
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+		}
+		// Toolcache spill-path interception — see the matching comment in the
+		// read_file case above for the full rationale. read_file_full is, if
+		// anything, the MORE common trigger in practice: it's the tool guided
+		// to recover a "[full content at: PATH]" spill marker.
+		if wtools.IsToolCacheHostPath(args.Path) {
+			fullLimit := int64(a.Cfg.MaxFullReadBytes)
+			if fullLimit <= 0 {
+				fullLimit = 256 << 10
+			}
+			out, errResult := hostCacheReadResult(args.Path, fullLimit, "full-read", "use read_file with an offset/limit range instead.")
+			if errResult != "" {
+				return errResult
+			}
+			return formatFileView(out, 0, 0)
 		}
 		// Confine the path to the workspace (P0-3: path confinement).
 		canonical, err := a.Exec.ConfinePath(ctx, args.Path)
@@ -2087,6 +2127,37 @@ func formatResult(out string, err error) string {
 		return "(no output)"
 	}
 	return out
+}
+
+// hostCacheReadResult reads a wakil toolcache spill file directly from the
+// host filesystem (see wtools.IsToolCacheHostPath / ReadHostCacheFile) and
+// applies the same size-guard and binary-sniff checks the executor-backed
+// read_file/read_file_full paths apply, so a spilled artifact is held to the
+// same guarantees as a normal workspace file. Returns (content, "") on
+// success, or ("", errorResult) when the read should be refused/failed —
+// callers pass errorResult straight back as the tool result.
+//
+// sizeLimit <= 0 disables the pre-read size guard (mirrors the read_file
+// behavior when an explicit Limit/offset already bounds the read).
+// adviceSuffix is appended to the size-guard error message so read_file and
+// read_file_full keep their existing distinct wording ("specify a line/byte
+// range..." vs "use read_file with an offset/limit range instead.").
+func hostCacheReadResult(path string, sizeLimit int64, kind, adviceSuffix string) (content, errorResult string) {
+	if sizeLimit > 0 {
+		if fileSize, serr := wtools.StatHostCacheFile(path); serr == nil && fileSize > sizeLimit {
+			return "", fmt.Sprintf(
+				"ERROR: file is %.2f MB, exceeds %s limit of %.2f MB — %s",
+				float64(fileSize)/(1<<20), kind, float64(sizeLimit)/(1<<20), adviceSuffix)
+		}
+	}
+	out, err := wtools.ReadHostCacheFile(path)
+	if err != nil {
+		return "", formatResult(out, err)
+	}
+	if strings.ContainsRune(out, 0) {
+		return "", fmt.Sprintf("ERROR: binary file, %.2f MB — not readable as text.", float64(len(out))/(1<<20))
+	}
+	return out, ""
 }
 
 // formatFileView renders file content with cat -n style line numbers, optionally

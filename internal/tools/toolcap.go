@@ -80,22 +80,117 @@ func MakeEvictionStub(toolName, content string) string {
 	return fmt.Sprintf("[evicted — %d chars]", n)
 }
 
+// toolCacheBase resolves the wakil data directory (sibling to the sessions
+// dir) using the same precedence as toolCacheDir, but without the chatID
+// subdirectory. Shared by toolCacheDir and toolCacheRoot so the two never
+// drift out of sync. Returns "" if no data dir can be resolved.
+func toolCacheBase() string {
+	if x := os.Getenv("WAKIL_SESSIONS_DIR"); x != "" {
+		return filepath.Dir(x)
+	}
+	if x := os.Getenv("XDG_DATA_HOME"); x != "" {
+		return filepath.Join(x, "wakil")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "share", "wakil")
+	}
+	return ""
+}
+
 // toolCacheDir returns the directory used to spill oversized tool results for
 // the given chat session. Sibling to the sessions dir; empty string if the
 // data dir cannot be resolved (results are still truncated, just not cached).
 func toolCacheDir(chatID string) string {
-	base := ""
-	if x := os.Getenv("WAKIL_SESSIONS_DIR"); x != "" {
-		base = filepath.Dir(x)
-	} else if x := os.Getenv("XDG_DATA_HOME"); x != "" {
-		base = filepath.Join(x, "wakil")
-	} else if home, err := os.UserHomeDir(); err == nil {
-		base = filepath.Join(home, ".local", "share", "wakil")
-	}
+	base := toolCacheBase()
 	if base == "" || chatID == "" {
 		return ""
 	}
 	return filepath.Join(base, "toolcache", chatID)
+}
+
+// ToolCacheRoot returns the toolcache root directory (all chat sessions),
+// e.g. ~/.local/share/wakil/toolcache. Exported so callers outside this
+// package (the read_file/read_file_full tool handlers) can recognise a spill
+// path WITHOUT needing a chatID — the whole point is to intercept these paths
+// before they ever reach a sandboxed Executor.
+//
+// Root cause this exists to fix: SpillToCache/CapToolResult/StubToolResult/
+// SpillFullResult all run on the HOST wakil process and write under this
+// root. But the model is later told (via the embedded "... at: PATH" marker)
+// to read_file that path — and read_file always routes through
+// Executor.ConfinePath first, which rejects anything outside the sandboxed
+// workspace root (Docker: not bind-mounted; Direct: outside the workspace
+// root either way). The result: a tool result that was capped/spilled is a
+// GUARANTEED, deterministic dead end for the model to retry, every time,
+// until it exhausts its tool-call budget. IsToolCacheHostPath + ReadHostCacheFile
+// let the read_file/read_file_full handlers recognise and serve these paths
+// directly from the host filesystem, bypassing the executor round-trip
+// entirely — the content never needed to cross that boundary in the first
+// place, since Wakil itself (not the sandboxed workspace) owns it.
+func ToolCacheRoot() string {
+	base := toolCacheBase()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "toolcache")
+}
+
+// IsToolCacheHostPath reports whether path resolves (after Clean) to a
+// location under the wakil toolcache root on THIS host. Used by read_file/
+// read_file_full to recognise a spill-cache pointer before attempting
+// Executor.ConfinePath, which would otherwise reject it unconditionally.
+//
+// Deliberately an EXACT-PREFIX check on the canonicalized toolcache root, not
+// a loose substring match — a path merely containing the word "toolcache"
+// elsewhere (e.g. inside a legitimate workspace file) must not be
+// misidentified as a cache artifact. path is Clean'd but not symlink-resolved:
+// spill files are created fresh by os.CreateTemp and never symlinked, so this
+// is not a confinement-escape surface — see the doc comment on
+// ReadHostCacheFile for the matching read-side guarantee.
+func IsToolCacheHostPath(path string) bool {
+	root := ToolCacheRoot()
+	if root == "" || path == "" {
+		return false
+	}
+	root = filepath.Clean(root)
+	p := filepath.Clean(path)
+	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
+}
+
+// ReadHostCacheFile reads a toolcache spill file directly from the host
+// filesystem, bypassing the sandboxed Executor entirely. Callers MUST verify
+// IsToolCacheHostPath(path) first — this function performs no confinement
+// check of its own; it trusts the caller's classification because the whole
+// point is to serve these paths WITHOUT an Executor/ConfinePath round-trip
+// (that round-trip is exactly what makes them unreachable in the first
+// place: Docker mode never mounts this directory into the container, and
+// Direct mode's workspace root is a different tree entirely).
+//
+// This is safe as a design (not just as an implementation) because the only
+// paths that satisfy IsToolCacheHostPath are ones Wakil itself generated via
+// os.CreateTemp under ToolCacheRoot() moments earlier — the model can only
+// ever supply back a path it was FIRST handed by Wakil in a "... at: PATH"
+// marker; it cannot conjure an arbitrary toolcache-rooted path referring to
+// content it wasn't already given, because that path includes a random
+// CreateTemp-suffixed filename it cannot predict.
+func ReadHostCacheFile(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// StatHostCacheFile returns the byte size of a toolcache spill file directly
+// from the host filesystem (no Executor round-trip) — the toolcache-path
+// counterpart to Executor.StatFile, used by read_file/read_file_full's
+// pre-read size guards.
+func StatHostCacheFile(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 // spillToDisk writes content to a uniquely-named temp file under cacheDir and
