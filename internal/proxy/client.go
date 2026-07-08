@@ -418,6 +418,15 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		req.Header.Set("X-Ilm-Aux-Model", c.AuxModel)
 	}
 
+	// Provisional usage: the serialised request payload is a faithful proxy for
+	// prompt occupancy and is known before the backend answers. Publishing an
+	// estimate here lets the TUI's ctx meter move at the *start* of every inner
+	// stream — mid-turn, as tool results grow the transcript — instead of only
+	// when the trailing usage chunk lands. Exact=false marks it an estimate;
+	// the authoritative figure overwrites it at stream end (SetUsage below).
+	// Output fields are zeroed: this call's output is genuinely unknown yet.
+	c.SetUsage(UsageStat{InputTok: ApproxTokens(len(raw))})
+
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		// All pre-response transport errors (timeout, reset, connection refused)

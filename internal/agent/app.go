@@ -671,7 +671,10 @@ func (a *App) WarnContextPressure() {
 		return
 	}
 	// Only warn on a measured occupancy, not the ~4-chars/token fallback estimate.
-	if a.Client == nil || a.Client.LastUsage().InputTok == 0 {
+	// Exact is the authoritative marker: the provisional pre-send usage (published
+	// so the ctx meter moves mid-turn) and the length-based fallback both carry
+	// Exact=false and must never trip this warning.
+	if a.Client == nil || !a.Client.LastUsage().Exact || a.Client.LastUsage().InputTok == 0 {
 		return
 	}
 	if a.CtxPressureWarned {
