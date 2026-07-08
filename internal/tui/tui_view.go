@@ -536,9 +536,11 @@ func (m tuiModel) renderContextBlock(bw int) string {
 	key := func(s string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Width(5).Render(s)
 	}
-	// The "ctx" key turns amber when the ceiling is an unverified fallback.
+	// The "ctx" key turns amber when the ceiling is an unverified fallback, or
+	// when the proxy flagged the model as unresolved (the limits belong to a
+	// different, fallback model — see ContextLimit.ModelUnresolved).
 	ctxKey := key("ctx")
-	if !lim.FromBackend() {
+	if !lim.FromBackend() || lim.ModelUnresolved {
 		ctxKey = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Width(5).Render("ctx")
 	}
 	cell := func(s string) string {

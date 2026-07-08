@@ -113,6 +113,96 @@ func TestResolveContextLimitFallback(t *testing.T) {
 	}
 }
 
+// TestResolveContextLimitUnresolvedModel: when the proxy flags the model as
+// unresolved (resolved:false — the limits belong to a fallback model), the
+// client marks the limit and emits a loud warning naming both models.
+func TestResolveContextLimitUnresolvedModel(t *testing.T) {
+	body := `{"n_ctx":131072,"usable_ctx":124928,"context_source":"model_meta",` +
+		`"model":"aion-labs/aion-3.0-mini","resolved":false,` +
+		`"requested_model":"does/not-exist","fallback_model":"aion-labs/aion-3.0-mini","backend":"openrouter"}`
+	srv := limitsServer(t, body, "")
+	defer srv.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.BaseURL = srv.URL
+	var out bytes.Buffer
+	lim := agent.ResolveContextLimitForBackendModel(context.Background(), http.DefaultClient, cfg,
+		"openrouter", "does/not-exist", &out)
+
+	if !lim.FromBackend() {
+		t.Fatalf("expected backend source, got %q", lim.Source)
+	}
+	if !lim.ModelUnresolved {
+		t.Error("ModelUnresolved = false, want true (proxy said resolved:false)")
+	}
+	if !strings.Contains(out.String(), "did not recognise model") {
+		t.Errorf("missing unresolved-model warning; got: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "aion-labs/aion-3.0-mini") {
+		t.Errorf("warning should name the fallback model; got: %q", out.String())
+	}
+}
+
+// TestResolveContextLimitResolvedFieldAbsent: proxies without the P41 fix don't
+// emit "resolved" at all — absence must NOT mark the limit unresolved.
+func TestResolveContextLimitResolvedFieldAbsent(t *testing.T) {
+	srv := limitsServer(t, `{"n_ctx":262144,"usable_ctx":256000,"context_source":"props"}`, "")
+	defer srv.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.BaseURL = srv.URL
+	var out bytes.Buffer
+	lim := agent.ResolveContextLimit(context.Background(), http.DefaultClient, cfg, &out)
+
+	if lim.ModelUnresolved {
+		t.Error("ModelUnresolved = true, want false when the proxy omits the field")
+	}
+	if strings.Contains(out.String(), "did not recognise") {
+		t.Errorf("no warning expected; got: %q", out.String())
+	}
+}
+
+// TestSidebarAmberOnUnresolvedModel: the ctx key uses the amber style when the
+// proxy flagged the model as unresolved, matching the fallback-source cue.
+func TestSidebarAmberOnUnresolvedModel(t *testing.T) {
+	app := &agent.App{
+		Cfg: config.DefaultConfig(),
+		CtxLimit: agent.ContextLimit{NCtx: 131072, Source: "backend",
+			ModelUnresolved: true, ReasoningBudget: 4096, AnswerMargin: 4096},
+	}
+	m := tuiModel{app: app, width: 120}
+	block := m.renderContextBlock(m.contextBlockWidth())
+	if !strings.Contains(block, "ctx") {
+		t.Fatalf("ctx block missing key; got %q", block)
+	}
+	// The amber style is color 214 — assert on the escape sequence the same way
+	// a fallback-source block renders it.
+	fbApp := &agent.App{
+		Cfg:      config.DefaultConfig(),
+		CtxLimit: agent.ContextLimit{NCtx: 131072, Source: "fallback", ReasoningBudget: 4096, AnswerMargin: 4096},
+	}
+	fbBlock := tuiModel{app: fbApp, width: 120}.renderContextBlock(m.contextBlockWidth())
+	// Compare only the first line region containing the styled key: both must
+	// carry identical styling bytes for "ctx".
+	if keyStyling(block) != keyStyling(fbBlock) {
+		t.Errorf("unresolved-model ctx key styling %q != fallback styling %q", keyStyling(block), keyStyling(fbBlock))
+	}
+}
+
+// keyStyling extracts the meter line (2nd line) up to the end of the "ctx" key
+// so styling bytes can be compared between two rendered blocks.
+func keyStyling(block string) string {
+	lines := strings.Split(block, "\n")
+	if len(lines) < 2 {
+		return ""
+	}
+	i := strings.Index(lines[1], "ctx")
+	if i < 0 {
+		return lines[1]
+	}
+	return lines[1][:i+3]
+}
+
 // TestContextLimitUsable: the usable prompt budget subtracts the reasoning and
 // answer headroom from n_ctx — a turn that thinks and answers can't also fill
 // the window to the brim.

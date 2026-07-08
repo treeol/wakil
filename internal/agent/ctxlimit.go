@@ -36,6 +36,13 @@ type ContextLimit struct {
 	UsableCtx       int    // proxy's pre-computed usable budget; 0 = not reported (fall back to client-side)
 	ReasoningBudget int    // tokens reserved for extended thinking
 	AnswerMargin    int    // tokens reserved for the final answer
+
+	// ModelUnresolved is true when the proxy reported "resolved": false — the
+	// requested model was not in its catalogue and the returned limits belong
+	// to a *different* (fallback) model. The numbers are real but may be wrong
+	// for the model actually in use, so callers surface it loudly (amber ctx
+	// key, startup warning) instead of trusting them silently.
+	ModelUnresolved bool
 }
 
 // FromBackend reports whether NCtx came from the live backend (true) rather than
@@ -71,6 +78,14 @@ type limitsResult struct {
 	usableCtx     int
 	contextSource string
 	path          string
+
+	// Model-resolution telemetry from the proxy (P41 fix). resolvedPresent
+	// distinguishes "proxy said resolved:false" from "old proxy that doesn't
+	// emit the field" — only an explicit false marks the limit unresolved.
+	resolved        bool
+	resolvedPresent bool
+	model           string // the model the returned limits actually belong to
+	fallbackModel   string // proxy-reported fallback model when resolved=false
 }
 
 // ResolveContextLimit fetches the per-slot n_ctx from the backend (via the proxy)
@@ -114,6 +129,7 @@ func resolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Con
 	lim.UsableCtx = res.usableCtx
 	lim.ContextSource = res.contextSource
 	lim.Source = "backend"
+	lim.ModelUnresolved = res.resolvedPresent && !res.resolved
 	trainNote := ""
 	if res.nCtxTrain > 0 {
 		trainNote = fmt.Sprintf(", n_ctx_train=%d", res.nCtxTrain)
@@ -124,6 +140,14 @@ func resolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Con
 	}
 	fmt.Fprintf(out, "context limit: n_ctx=%d%s, usable_ctx=%d (from %s%s); usable=%d (−%d reasoning −%d answer)\n",
 		res.nCtx, trainNote, res.usableCtx, res.path, csNote, lim.Usable(), lim.ReasoningBudget, lim.AnswerMargin)
+	if lim.ModelUnresolved {
+		fb := res.fallbackModel
+		if fb == "" {
+			fb = res.model
+		}
+		fmt.Fprintf(out, "⚠ proxy did not recognise model %q — the limits above belong to fallback model %q and may be wrong for this session\n",
+			model, fb)
+	}
 	return lim
 }
 
@@ -225,6 +249,17 @@ func parseContextLimitJSON(body []byte) limitsResult {
 		nCtxTrain:     intField(raw, "n_ctx_train"),
 		usableCtx:     intField(raw, "usable_ctx"),
 		contextSource: stringField(raw, "context_source"),
+		model:         stringField(raw, "model"),
+		fallbackModel: stringField(raw, "fallback_model"),
+	}
+	// "resolved" is only emitted by proxies with the P41 fix. Absence must not
+	// mark the limit unresolved — old proxies resolve fine and just don't say so.
+	if v, ok := raw["resolved"]; ok {
+		var b bool
+		if json.Unmarshal(v, &b) == nil {
+			res.resolved = b
+			res.resolvedPresent = true
+		}
 	}
 
 	// llama-server /props nests the per-slot n_ctx under default_generation_settings.
