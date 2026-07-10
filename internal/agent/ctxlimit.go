@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/orregistry"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -100,13 +102,22 @@ func ResolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Con
 // resolveContextLimit is the shared implementation: probes with backend and model
 // as query params so the proxy returns per-model limits. Called by both startup
 // (empty backend/model → proxy defaults) and re-resolve on /backend or /model.
+//
+// Resolution is endpoint-kind aware:
+//   - kind ilm-proxy (or a hand-built Config with no endpoint, which
+//     ActiveEndpoint maps to ilm-proxy): /v1/ilm/limits → /props → fallback,
+//     unchanged from the pre-endpoints behavior.
+//   - kind openai: never touches /v1/ilm/limits. openrouter.ai hosts resolve
+//     the configured model against the OpenRouter registry (no /props probe —
+//     OpenRouter doesn't serve it); all other hosts probe /props (llama.cpp).
+//     Neither → the existing fallback path.
 func resolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Config, backend, model string, out io.Writer) ContextLimit {
 	lim := ContextLimit{
 		ReasoningBudget: cfg.ReasoningBudgetTokens,
 		AnswerMargin:    cfg.AnswerMarginTokens,
 	}
 
-	res, err := fetchContextLimit(ctx, httpc, cfg.BaseURL, cfg.AuthHeader(), backend, model)
+	res, err := fetchContextLimitForKind(ctx, httpc, cfg, backend, model)
 	if err != nil || res.nCtx <= 0 {
 		lim.NCtx = cfg.ContextTokensFallback
 		lim.Source = "fallback"
@@ -195,6 +206,85 @@ func fetchContextLimit(ctx context.Context, httpc *http.Client, baseURL, auth, b
 		lastErr = fmt.Errorf("no context-limit endpoint responded")
 	}
 	return limitsResult{}, lastErr
+}
+
+// fetchContextLimitForKind dispatches the limits probe by endpoint kind.
+// ilm-proxy keeps the exact historical sequence; openai never calls
+// /v1/ilm/limits.
+func fetchContextLimitForKind(ctx context.Context, httpc *http.Client, cfg config.Config, backend, model string) (limitsResult, error) {
+	ep := cfg.ActiveEndpoint()
+	if ep.Kind != config.EndpointKindOpenAI {
+		// ilm-proxy (and legacy/hand-built configs): unchanged.
+		return fetchContextLimit(ctx, httpc, cfg.BaseURL, cfg.AuthHeader(), backend, model)
+	}
+	return fetchContextLimitOpenAI(ctx, httpc, cfg, ep, model)
+}
+
+// fetchContextLimitOpenAI resolves limits for a plain OpenAI-compatible
+// endpoint. openrouter.ai → registry lookup of the configured model (no
+// /props probe); anything else → GET /props (llama.cpp), reusing the existing
+// nested-shape parse. usable_ctx stays 0 — no server-side computation exists
+// in this mode and Usable() falls back to the client-side reservation math.
+func fetchContextLimitOpenAI(ctx context.Context, httpc *http.Client, cfg config.Config, ep config.EndpointConfig, model string) (limitsResult, error) {
+	if isOpenRouterHost(ep.BaseURL) {
+		return fetchContextLimitFromORRegistry(ctx, ep, model)
+	}
+
+	base := strings.TrimRight(ep.BaseURL, "/")
+	if httpc == nil {
+		httpc = http.DefaultClient
+	}
+	cctx, cancel := context.WithTimeout(ctx, limitsTimeout)
+	defer cancel()
+
+	body, err := getJSONWithBackend(cctx, httpc, base+"/props", cfg.AuthHeader(), "", "")
+	if err != nil {
+		return limitsResult{}, err
+	}
+	res := parseContextLimitJSON(body)
+	if res.nCtx <= 0 {
+		return limitsResult{}, fmt.Errorf("/props returned no n_ctx")
+	}
+	res.path = "/props"
+	return res, nil
+}
+
+// fetchContextLimitFromORRegistry resolves the model's context length against
+// the OpenRouter models registry (shared fetch+cache in internal/orregistry).
+// model overrides the endpoint's configured model when non-empty (the /model
+// command re-resolve path). NCtxTrain is left 0 — the registry doesn't
+// distinguish trained vs served context.
+func fetchContextLimitFromORRegistry(ctx context.Context, ep config.EndpointConfig, model string) (limitsResult, error) {
+	m := model
+	if m == "" {
+		m = ep.Model
+	}
+	entries, err := orregistry.Fetch(ctx)
+	if err != nil {
+		return limitsResult{}, fmt.Errorf("openrouter registry: %w", err)
+	}
+	cl, ok := entries[m]
+	if !ok || cl <= 0 {
+		return limitsResult{}, fmt.Errorf("openrouter registry: model %q not found", m)
+	}
+	return limitsResult{
+		nCtx:          cl,
+		contextSource: "model_meta",
+		path:          "openrouter-registry",
+		model:         m,
+	}, nil
+}
+
+// isOpenRouterHost reports whether rawURL's host is openrouter.ai (or a
+// subdomain). Parsed-host check, not string-contains — "http://evil.example/
+// openrouter.ai" must not match.
+func isOpenRouterHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	return h == "openrouter.ai" || strings.HasSuffix(h, ".openrouter.ai")
 }
 
 // getJSONWithBackend issues a GET and returns the response body, bounded so a

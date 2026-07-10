@@ -126,8 +126,9 @@ func main() {
 	// Backend list: fetch /v1/ilm/backends; fall back to config external_backends.
 	backendList := agent.FetchBackendListWithFallback(context.Background(), client.HTTP, cfg, os.Stderr)
 
-	// Model list: fetch /v1/ilm/models for /model completion; silently empty on failure.
-	modelList, _ := agent.FetchModelList(context.Background(), client.HTTP, cfg.BaseURL, cfg.AuthHeader())
+	// Model list for /model completion: /v1/ilm/models (proxy) or /v1/models
+	// (openai kind); silently empty on failure.
+	modelList := agent.FetchModelListForEndpoint(context.Background(), client.HTTP, cfg)
 
 	counselMode := cfg.AutoCounsel
 	if counselMode == "" {

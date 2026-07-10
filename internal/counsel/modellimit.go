@@ -2,14 +2,11 @@ package counsel
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"sync"
-	"time"
 	"unicode/utf8"
+
+	"github.com/treeol/wakil/internal/orregistry"
 )
 
 // Context-limit awareness for counsel (mashūra) calls.
@@ -36,17 +33,6 @@ import (
 //     either fits or signals CannotFit.
 
 const (
-	// openRouterModelsURL is the public endpoint that returns all model metadata
-	// including context_length. No API key required.
-	openRouterModelsURL = "https://openrouter.ai/api/v1/models"
-
-	// modelCacheTTL: model metadata changes infrequently; cache for 1 hour.
-	modelCacheTTL = time.Hour
-
-	// modelsFetchTimeout bounds the metadata fetch so a slow/unreachable
-	// OpenRouter cannot stall a counsel call beyond this.
-	modelsFetchTimeout = 10 * time.Second
-
 	// fallbackContextLength is the last-resort assumption when a model's context
 	// length cannot be determined from any source. Deliberately conservative.
 	fallbackContextLength = 128_000
@@ -66,29 +52,6 @@ const (
 	contextSafetyMargin = 0.90
 )
 
-// orModelEntry is one model entry in the OpenRouter /api/v1/models response.
-type orModelEntry struct {
-	ID            string `json:"id"`
-	ContextLength int    `json:"context_length"`
-}
-
-// orModelsResp is the top-level response from OpenRouter's models endpoint.
-type orModelsResp struct {
-	Data []orModelEntry `json:"data"`
-}
-
-// modelLimitCache caches context lengths fetched from OpenRouter, shared across
-// all counsel calls in the process. Entries expire after modelCacheTTL.
-type modelLimitCache struct {
-	mu       sync.Mutex
-	entries  map[string]int // model ID → context_length (tokens)
-	fetched  time.Time
-	inflight bool // singleflight: one goroutine fetches at a time
-	fetchErr error
-}
-
-var sharedModelCache = &modelLimitCache{}
-
 // knownModelContexts is a small fallback table for common models when the
 // OpenRouter registry is unreachable or doesn't list the model. This covers
 // Anthropic direct calls (which don't go through OpenRouter's catalog) and
@@ -106,128 +69,12 @@ var knownModelContexts = map[string]int{
 }
 
 // FetchModelContextLimits retrieves model context lengths from OpenRouter's
-// public /api/v1/models endpoint (no API key required). Results are cached for
-// modelCacheTTL. On failure returns stale cached data if available (with nil
-// error); otherwise returns nil and the error.
-//
-// HTTP I/O happens outside the cache mutex. A singleflight flag ensures only one
-// goroutine fetches at a time; concurrent callers wait on the mutex for the
-// fetcher to finish, then read the result.
+// public /api/v1/models endpoint (no API key required). The fetch, cache, and
+// singleflight logic live in internal/orregistry (shared with the agent's
+// context-limit resolution); this is a thin delegation kept for existing
+// counsel callers.
 func FetchModelContextLimits(ctx context.Context) (map[string]int, error) {
-	cache := sharedModelCache
-
-	// Fast path: check cache under lock.
-	cache.mu.Lock()
-	if cache.entries != nil && time.Since(cache.fetched) < modelCacheTTL {
-		entries := cache.entries
-		cache.mu.Unlock()
-		return cloneMap(entries), nil
-	}
-
-	// Someone already fetching? Wait for them with ctx cancellation support.
-	if cache.inflight {
-		cache.mu.Unlock()
-		for {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
-			cache.mu.Lock()
-			if !cache.inflight {
-				if cache.entries != nil && time.Since(cache.fetched) < modelCacheTTL {
-					entries := cache.entries
-					cache.mu.Unlock()
-					return cloneMap(entries), nil
-				}
-				// Fetch completed but failed; release lock and fall through to our own fetch.
-				cache.mu.Unlock()
-				break
-			}
-			cache.mu.Unlock()
-		}
-		// Re-acquire to claim the fetch slot below.
-		cache.mu.Lock()
-	}
-
-	// Claim the fetch slot.
-	cache.inflight = true
-	cache.mu.Unlock()
-
-	// Fetch outside the lock so other callers aren't blocked on I/O.
-	entries, err := fetchModelsFromOpenRouter(ctx)
-
-	cache.mu.Lock()
-	cache.inflight = false
-	if err != nil {
-		cache.fetchErr = err
-		// Serve stale data if we have it.
-		if cache.entries != nil {
-			stale := cache.entries
-			cache.mu.Unlock()
-			return cloneMap(stale), nil
-		}
-		cache.mu.Unlock()
-		return nil, err
-	}
-	cache.entries = entries
-	cache.fetched = time.Now()
-	cache.fetchErr = nil
-	cache.mu.Unlock()
-	return cloneMap(entries), nil
-}
-
-// fetchModelsFromOpenRouter does the actual HTTP fetch and parse.
-func fetchModelsFromOpenRouter(ctx context.Context) (map[string]int, error) {
-	fctx, cancel := context.WithTimeout(ctx, modelsFetchTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(fctx, http.MethodGet, openRouterModelsURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build models request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch models: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch models: %s", resp.Status)
-	}
-
-	// The models list is large (~hundreds of entries) but well under 16 MB.
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read models response: %w", err)
-	}
-
-	var result orModelsResp
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("parse models response: %w", err)
-	}
-
-	entries := make(map[string]int, len(result.Data))
-	for _, m := range result.Data {
-		if m.ContextLength > 0 {
-			entries[m.ID] = m.ContextLength
-		}
-	}
-	return entries, nil
-}
-
-// cloneMap returns a shallow copy so callers can't mutate the cached map.
-func cloneMap(m map[string]int) map[string]int {
-	if m == nil {
-		return nil
-	}
-	c := make(map[string]int, len(m))
-	for k, v := range m {
-		c[k] = v
-	}
-	return c
+	return orregistry.Fetch(ctx)
 }
 
 // ResolveContextLength returns the context length (in tokens) for the given
@@ -254,18 +101,12 @@ func ResolveContextLength(_ context.Context, modelID string) int {
 	}
 
 	// 2. If the OpenRouter cache is warm, read it without triggering a fetch.
-	sharedModelCache.mu.Lock()
-	entries := sharedModelCache.entries
-	fetched := sharedModelCache.fetched
-	sharedModelCache.mu.Unlock()
-	if entries != nil && time.Since(fetched) < modelCacheTTL {
-		if cl, ok := entries[modelID]; ok {
+	if cl, ok := orregistry.Lookup(modelID); ok {
+		return cl
+	}
+	if !strings.Contains(modelID, "/") {
+		if cl, ok := orregistry.Lookup("anthropic/" + modelID); ok {
 			return cl
-		}
-		if !strings.Contains(modelID, "/") {
-			if cl, ok := entries["anthropic/"+modelID]; ok {
-				return cl
-			}
 		}
 	}
 
@@ -419,11 +260,5 @@ func approxTokens(chars int) int {
 
 // ResetModelCache clears the shared model metadata cache. For testing only.
 func ResetModelCache() {
-	cache := sharedModelCache
-	cache.mu.Lock()
-	cache.entries = nil
-	cache.fetched = time.Time{}
-	cache.inflight = false
-	cache.fetchErr = nil
-	cache.mu.Unlock()
+	orregistry.ResetCache()
 }

@@ -30,6 +30,18 @@ func wrapStreamErr(cause error) error {
 	return fmt.Errorf("%w: %v", ErrBackendStream, cause)
 }
 
+// isFatalStatus classifies a non-200 status as fatal (never retry). 4xx are
+// fatal except the transient trio: 429 (rate limited), 408 (request timeout),
+// and 529 (site overloaded — Anthropic/OpenRouter convention; already outside
+// 4xx but listed for clarity). Everything not fatal is retryable.
+func isFatalStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusRequestTimeout, 529:
+		return false
+	}
+	return code >= 400 && code < 500
+}
+
 // --- OpenAI-compatible wire types ---
 
 // Message is one entry in the conversation sent to / received from the proxy.
@@ -495,11 +507,12 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := strings.TrimSpace(string(body))
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			// 4xx: request error — retrying the same request will fail identically.
+		if isFatalStatus(resp.StatusCode) {
+			// Non-retryable request error — retrying will fail identically.
 			return Message{}, fmt.Errorf("%w: %s: %s", ErrBackendFatal, resp.Status, msg)
 		}
-		// 5xx and other non-success: transient backend failure, retryable.
+		// Transient failure (5xx, 429 rate limit, 408 timeout, 529 overloaded,
+		// other non-success): retryable.
 		return Message{}, fmt.Errorf("%w: %s: %s", ErrBackendStream, resp.Status, msg)
 	}
 

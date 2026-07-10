@@ -80,7 +80,21 @@ func FetchBackendList(ctx context.Context, httpc *http.Client, baseURL, auth str
 // cfg.ExternalBackends (all marked external) and logs a note. Either way the
 // returned slice is safe to use for IsExternalBackend checks; nil means both
 // the endpoint and the config list were empty (treat all backends as local).
+//
+// kind=openai endpoints have no /v1/ilm/backends — the call is skipped
+// entirely (no request fired) and the config-list fallback applies directly,
+// which is the same place a failed fetch already lands.
 func FetchBackendListWithFallback(ctx context.Context, httpc *http.Client, cfg config.Config, out io.Writer) []BackendInfo {
+	if cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI {
+		if len(cfg.ExternalBackends) == 0 {
+			return nil
+		}
+		out2 := make([]BackendInfo, len(cfg.ExternalBackends))
+		for i, name := range cfg.ExternalBackends {
+			out2[i] = BackendInfo{Name: name, External: true}
+		}
+		return out2
+	}
 	list, ok := FetchBackendList(ctx, httpc, cfg.BaseURL, cfg.AuthHeader())
 	if ok {
 		var names []string
@@ -151,6 +165,72 @@ func FetchModelList(ctx context.Context, httpc *http.Client, baseURL, auth strin
 	out := make([]string, len(parsed.Models))
 	for i, m := range parsed.Models {
 		out[i] = m.Name
+	}
+	return out, true
+}
+
+// openAIModelListJSON mirrors the standard OpenAI /v1/models response shape
+// (served by llama.cpp server and OpenRouter alike).
+type openAIModelListJSON struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+// FetchModelListForEndpoint returns the model-name list appropriate to the
+// active endpoint's kind: ilm-proxy → /v1/ilm/models (unchanged); openai →
+// best-effort GET {base_url}/v1/models (OpenAI standard), silently empty on
+// any failure — a bare server without the route just yields no completion.
+func FetchModelListForEndpoint(ctx context.Context, httpc *http.Client, cfg config.Config) []string {
+	ep := cfg.ActiveEndpoint()
+	if ep.Kind == config.EndpointKindOpenAI {
+		names, _ := fetchOpenAIModelList(ctx, httpc, ep.BaseURL, cfg.AuthHeader())
+		return names
+	}
+	names, _ := FetchModelList(ctx, httpc, cfg.BaseURL, cfg.AuthHeader())
+	return names
+}
+
+// fetchOpenAIModelList fetches the standard /v1/models list. Same tolerance
+// contract as FetchModelList: (nil, false) on any failure.
+func fetchOpenAIModelList(ctx context.Context, httpc *http.Client, baseURL, auth string) ([]string, bool) {
+	base := strings.TrimRight(baseURL, "/")
+	if httpc == nil {
+		httpc = http.DefaultClient
+	}
+	cctx, cancel := context.WithTimeout(ctx, backendsTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set("Accept", "application/json")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, false
+	}
+	var parsed openAIModelListJSON
+	if json.Unmarshal(body, &parsed) != nil {
+		return nil, false
+	}
+	if len(parsed.Data) == 0 {
+		return nil, false
+	}
+	out := make([]string, len(parsed.Data))
+	for i, m := range parsed.Data {
+		out[i] = m.ID
 	}
 	return out, true
 }

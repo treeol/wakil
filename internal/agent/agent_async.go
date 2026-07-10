@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -856,6 +857,89 @@ func tuiConfirmer(app *App) Confirmer {
 	}
 }
 
+// handleEndpointSwitch switches the session to the named endpoint from
+// cfg.Endpoints: reconfigures the client in place (kind, base_url, model,
+// auth, sampling) and re-resolves context limits. Subagent clients are built
+// from the live parent Client fields at dispatch time, so they inherit the
+// new endpoint automatically — nothing is snapshotted at startup.
+func handleEndpointSwitch(app *App, name string, note func(string) tea.Cmd) (handled, quit bool, cmd tea.Cmd) {
+	ep, ok := app.Cfg.Endpoints[name]
+	if !ok {
+		return true, false, note(fmt.Sprintf("endpoint %q not found — %s", name, listEndpoints(app)))
+	}
+	// Apply the same defaulting rules as config load (validation errors on
+	// malformed entries were already caught there for the startup endpoint;
+	// a switched-to entry may not have been validated, so repeat the checks).
+	if ep.Kind == "" {
+		ep.Kind = config.EndpointKindOpenAI
+	}
+	switch ep.Kind {
+	case config.EndpointKindOpenAI:
+		if ep.Model == "" {
+			return true, false, note(fmt.Sprintf("endpoint %q: model is required for kind %q — not switching", name, config.EndpointKindOpenAI))
+		}
+	case config.EndpointKindIlmProxy:
+		if ep.Model == "" {
+			ep.Model = "ilm"
+		}
+	default:
+		return true, false, note(fmt.Sprintf("endpoint %q: unknown kind %q — not switching", name, ep.Kind))
+	}
+	if ep.BaseURL == "" {
+		return true, false, note(fmt.Sprintf("endpoint %q: base_url is required — not switching", name))
+	}
+
+	// Commit: config mirror first (AuthHeader() reads Cfg.Endpoint), then client.
+	app.Cfg.Endpoint = ep
+	app.Cfg.EndpointName = name
+	app.Cfg.BaseURL = ep.BaseURL
+	app.Cfg.Model = ep.Model
+
+	app.Client.BaseURL = strings.TrimRight(ep.BaseURL, "/")
+	app.Client.Kind = ep.Kind
+	app.Client.Model = ep.Model
+	app.Client.ConfiguredModel = ep.Model
+	app.Client.AuthHeader = app.Cfg.AuthHeader()
+	app.Client.Temperature = ep.Temperature
+	app.Client.TopP = ep.TopP
+	app.Client.MaxTokens = ep.MaxTokens
+
+	// Session model/backend overrides belong to the previous endpoint.
+	app.SelectedModel = ""
+	app.SelectedBackend = ""
+	app.defaultModel = ep.Model
+
+	msg := fmt.Sprintf("endpoint: switched to %q (kind %s, %s, model %s)", name, ep.Kind, ep.BaseURL, ep.Model)
+	return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, "", ep.Model))
+}
+
+// listEndpoints renders the configured endpoints with the active one marked.
+func listEndpoints(app *App) string {
+	if len(app.Cfg.Endpoints) == 0 {
+		return "no endpoints configured — add an \"endpoints\" block to config; /backend <endpoint-name> switches between them"
+	}
+	names := make([]string, 0, len(app.Cfg.Endpoints))
+	for n := range app.Cfg.Endpoints {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("endpoints:")
+	for _, n := range names {
+		ep := app.Cfg.Endpoints[n]
+		kind := ep.Kind
+		if kind == "" {
+			kind = config.EndpointKindOpenAI
+		}
+		marker := "  "
+		if n == app.Cfg.EndpointName {
+			marker = "* "
+		}
+		fmt.Fprintf(&b, "\n%s%s  (%s, %s, model %s)", marker, n, kind, ep.BaseURL, ep.Model)
+	}
+	return b.String()
+}
+
 // resolveBackendCtxCmd returns a tea.Cmd that probes the new backend+model's
 // context window in a goroutine and delivers the result as a BackendCtxLimitMsg.
 // The TUI event loop applies the update to app.CtxLimit when the msg is handled,
@@ -1033,6 +1117,18 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		return true, false, note(mcpStatus(args, app))
 
 	case "/backend":
+		// kind=openai: /backend is repurposed as the endpoint switcher —
+		// proxy backends don't exist on a plain endpoint, but named endpoints
+		// from config do. /backend <endpoint-name> reconfigures the client
+		// (kind, base_url, model, auth, sampling) and re-resolves limits;
+		// no argument lists configured endpoints. The proxy-prefix routing
+		// below applies only while the ACTIVE endpoint is kind ilm-proxy.
+		if app.Cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI {
+			if len(fields) >= 2 {
+				return handleEndpointSwitch(app, fields[1], note)
+			}
+			return true, false, note(listEndpoints(app))
+		}
 		// /backend [<name>[/<model-path>]] — set or show the current backend selection.
 		// When <name> contains a slash (e.g. "openrouter/anthropic/claude-opus-4-8"),
 		// the part before the first slash is the backend name and the full string is
@@ -1080,7 +1176,22 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		// leaving the current backend selection unchanged. A model switch also
 		// re-resolves context limits so compaction thresholds scale to the
 		// new model's real window (not the previous model's).
+		//
+		// kind=openai: pass A forces ConfiguredModel into every request, which
+		// would make /model a silent no-op (apparent success, zero effect).
+		// Instead, update the endpoint's effective model for the session —
+		// the literal string the client sends. No server-side validation: a
+		// bad name surfaces as a request error, which is honest.
 		if len(fields) >= 2 {
+			if app.Cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI {
+				app.Client.ConfiguredModel = fields[1]
+				app.Client.Model = fields[1]
+				app.Cfg.Endpoint.Model = fields[1]
+				app.SelectedModel = "" // openai mode: ConfiguredModel is the single source
+				app.defaultModel = fields[1]
+				msg := "model: set to " + fields[1] + " (endpoint " + app.Cfg.EndpointName + ")"
+				return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, "", fields[1]))
+			}
 			app.SelectedModel = fields[1]
 			msg := "model: set to " + fields[1]
 			// Re-resolve limits for the selected backend + new model.
@@ -1131,6 +1242,19 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		return HandlePlanCommand(fields, app)
 
 	case "/learn":
+		// /learn asks the PROXY to synthesize and persist a fact — a plain
+		// OpenAI endpoint has no such machinery and a bare model would
+		// improvise "understood, I'll remember that": a fabricated success.
+		// Hard-fail client-side; the request must never reach the model.
+		if app.Cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI {
+			epName := app.Cfg.EndpointName
+			if epName == "" {
+				epName = "(unnamed)"
+			}
+			return true, false, note(fmt.Sprintf(
+				"/learn requires an ilm-proxy endpoint — current endpoint %q is kind %q (nothing was sent; no memory exists to write to)",
+				epName, config.EndpointKindOpenAI))
+		}
 		return true, false, func() tea.Msg { return LearnTurnMsg{} }
 
 	case "/help":

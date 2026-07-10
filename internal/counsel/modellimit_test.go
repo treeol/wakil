@@ -4,17 +4,15 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/treeol/wakil/internal/orregistry"
 )
 
 // populateCache fills the shared cache with test data (avoids network dependency).
 func populateCache(t *testing.T, entries map[string]int) {
 	t.Helper()
 	ResetModelCache()
-	sharedModelCache.mu.Lock()
-	sharedModelCache.entries = entries
-	sharedModelCache.fetched = time.Now().Add(time.Hour) // far future = fresh
-	sharedModelCache.mu.Unlock()
+	orregistry.SetCacheForTest(entries)
 }
 
 // TestFetchModelContextLimits verifies that cached entries are returned and
