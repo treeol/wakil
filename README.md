@@ -407,7 +407,14 @@ Coverage in `cmd/wakil/*_test.go` and `internal/`: streamed tool_call assembly
 from incremental arg fragments, the plain-text *(no-tool_calls)* branch, the
 full agent loop, the confirm gate *(accept/decline)*, executor read/write +
 cwd tracking, transcript compaction, config resolution, and the LSP
-protocol/serialization layer.
+protocol/serialization layer. Endpoint decoupling is golden-tested: request
+shape per kind *(no `metadata` / `X-Ilm-*` on `openai`; byte-identical proxy
+shape preserved)*, endpoint config validation and legacy synthesis,
+kind-aware limits resolution *(props / OpenRouter registry / proxy route,
+with request-log assertions that the wrong routes are never called)*,
+`/learn` gating *(zero requests on `openai`)*, `/model` and `/backend`
+switch semantics with subagent inheritance, and retry classification
+*(429/408/529 retryable, other 4xx fatal)*.
 
 ## Project layout
 
