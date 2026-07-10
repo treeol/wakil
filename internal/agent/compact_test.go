@@ -36,12 +36,17 @@ func TestCompactKeepsRecentTurnsAndSummarizes(t *testing.T) {
 	if !ok {
 		t.Fatal("expected compaction to occur")
 	}
-	if app.Conv[0].Role != "system" || !strings.Contains(DerefStr(app.Conv[0].Content), "SUMMARY") {
-		t.Errorf("first message should be the summary, got %+v", app.Conv[0])
+	// Latest-user-task pin: the most recent user message of the older block
+	// survives verbatim ahead of the summary; the summary follows it.
+	if app.Conv[0].Role != "user" {
+		t.Errorf("first message should be the pinned latest-older user message, got %+v", app.Conv[0])
 	}
-	// 1 summary + last 2 turns (2 user + 2 assistant) = 5 messages.
-	if len(app.Conv) != 5 {
-		t.Errorf("expected 5 messages after compaction, got %d", len(app.Conv))
+	if app.Conv[1].Role != "system" || !strings.Contains(DerefStr(app.Conv[1].Content), "SUMMARY") {
+		t.Errorf("second message should be the summary, got %+v", app.Conv[1])
+	}
+	// 1 pinned older user + 1 summary + last 2 turns (2 user + 2 assistant) = 6.
+	if len(app.Conv) != 6 {
+		t.Errorf("expected 6 messages after compaction, got %d", len(app.Conv))
 	}
 	users := 0
 	for _, m := range app.Conv {
@@ -49,8 +54,114 @@ func TestCompactKeepsRecentTurnsAndSummarizes(t *testing.T) {
 			users++
 		}
 	}
-	if users != 2 {
-		t.Errorf("expected 2 user turns kept verbatim, got %d", users)
+	// 2 tail user turns + the pinned latest-older user message.
+	if users != 3 {
+		t.Errorf("expected 3 user messages kept verbatim, got %d", users)
+	}
+}
+
+// TestCompactPinsLatestUserTask verifies the latest-user-task pin: the most
+// recent user message in the summarizable range survives compaction verbatim
+// instead of being folded into lossy summary prose (the "there wasn't a
+// specific question in your message" failure).
+func TestCompactPinsLatestUserTask(t *testing.T) {
+	app := &App{Cfg: config.DefaultConfig(), Out: io.Discard}
+	app.Cfg.KeepBytes = 100 // tail = only the small recent turn
+	app.Cfg.CompactAt = 50  // force compaction
+	app.Cfg.SummaryBytes = 5000
+
+	task := "TASK: fix the flux capacitor in reactor.go and add tests"
+
+	app.Conv = []proxy.Message{
+		// Older user turn — summarizable.
+		{Role: "user", Content: StrPtr("earlier question about something else")},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("a", 200))},
+		// The task turn: most recent user message in the summarizable range,
+		// followed by assistant/tool activity.
+		{Role: "user", Content: StrPtr(task)},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: "t1", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"reactor.go"}`}}}},
+		{Role: "tool", ToolCallID: "t1", Name: "read_file", Content: StrPtr(strings.Repeat("code-", 60))},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("work-", 40))},
+		// Recent small turn that fits KeepBytes — forces the task turn into "older".
+		{Role: "user", Content: StrPtr("proceed?")},
+		{Role: "assistant", Content: StrPtr("ok")},
+	}
+
+	fakeSum := func(_ context.Context, _ string) (string, error) {
+		return "SUMMARY", nil
+	}
+	ok, err := app.Compact(context.Background(), fakeSum, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
+
+	// The task message must appear verbatim in the post-compaction Conv.
+	found := false
+	for _, m := range app.Conv {
+		if m.Role == "user" && DerefStr(m.Content) == task {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("latest user task was not preserved verbatim after compaction; Conv:\n%s",
+			renderTranscript(app.Conv))
+	}
+}
+
+// TestCompactPinsOnlyLatestUserMessage verifies that with two user messages in
+// the summarizable range, only the latest survives verbatim — older user
+// messages are still summarized (pinning all of them would erode compaction
+// savings; the latest carries the current task or redirect).
+func TestCompactPinsOnlyLatestUserMessage(t *testing.T) {
+	app := &App{Cfg: config.DefaultConfig(), Out: io.Discard}
+	app.Cfg.KeepBytes = 100
+	app.Cfg.CompactAt = 50
+	app.Cfg.SummaryBytes = 5000
+
+	oldMsg := "OLD: first request, now superseded"
+	newMsg := "NEW: redirect — do this other thing instead"
+
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr(oldMsg)},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("a", 200))},
+		{Role: "user", Content: StrPtr(newMsg)},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("b", 200))},
+		// Recent small turn — tail.
+		{Role: "user", Content: StrPtr("status?")},
+		{Role: "assistant", Content: StrPtr("done")},
+	}
+
+	fakeSum := func(_ context.Context, _ string) (string, error) {
+		return "SUMMARY", nil
+	}
+	ok, err := app.Compact(context.Background(), fakeSum, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
+
+	oldFound, newFound := false, false
+	for _, m := range app.Conv {
+		if m.Role == "user" {
+			switch DerefStr(m.Content) {
+			case oldMsg:
+				oldFound = true
+			case newMsg:
+				newFound = true
+			}
+		}
+	}
+	if !newFound {
+		t.Error("latest user message in summarizable range was not preserved verbatim")
+	}
+	if oldFound {
+		t.Error("older user message survived verbatim — it should have been summarized")
 	}
 }
 

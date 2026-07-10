@@ -243,27 +243,73 @@ func StubToolResult(result, toolName, chatID string) string {
 	return fmt.Sprintf("[budget — %d chars]", n)
 }
 
+// rangedTools are tools whose output can be re-read with offset/limit
+// parameters, so their truncation marker carries that hint. read_file is the
+// only capped tool with ranged access — read_file_full bypasses CapToolResult
+// entirely (it routes through SpillFullResult).
+var rangedTools = map[string]bool{
+	"read_file": true,
+}
+
+// capSuffix renders the truncation-feedback marker appended by CapToolResult.
+// The whole marker lives inside ONE trailing bracketed segment that starts
+// with "+" — this keeps ExtractSpillPath (and its proxy-side duplicate, which
+// matches the same known prefixes) able to recover the embedded spill path,
+// while giving the model an explicit signal that content is missing and how
+// to get the remainder. Silent truncation is the failure mode this fixes:
+// without the marker the model re-reads the same file, gets truncated again,
+// and loops.
+func capSuffix(toolName string, shown, total int, spillPath string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n… [+%d chars omitted — TRUNCATED: showing %d of %d chars", total-shown, shown, total)
+	if rangedTools[toolName] {
+		b.WriteString("; use offset/limit parameters to read the remainder")
+	} else {
+		b.WriteString("; result truncated")
+	}
+	if spillPath != "" {
+		fmt.Fprintf(&b, " — full content at: %s", spillPath)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
 // CapToolResult enforces the per-result context cap. When the result exceeds
 // cap characters the full content is written to a cache file and the in-context
-// version is replaced with the leading cap chars plus a note pointing at the
-// file. The model can read the full content later with read_file if needed.
+// version is replaced with the leading chars plus an explicit truncation
+// marker (see capSuffix) pointing at the file. The model can read the full
+// content later with read_file if needed.
+//
+// The marker counts toward the cap: content + marker together never exceed
+// cap, so capping cannot push a result over the very limit it enforces.
 //
 // cap ≤ 0 means unlimited — the result passes through unchanged.
 // chatID is used to scope the cache directory; if empty the spill path note
-// says "(cache unavailable)" but the truncation still applies.
+// is omitted but the truncation (and marker) still apply.
 func CapToolResult(result, toolName, chatID string, cap int) string {
 	if cap <= 0 || len(result) <= cap {
 		return result
 	}
 	spillPath := spillToDisk(toolCacheDir(chatID), toolName, result)
-	omitted := len(result) - cap
-	var suffix string
-	if spillPath != "" {
-		suffix = fmt.Sprintf("\n… [+%d chars omitted — full content at: %s]", omitted, spillPath)
-	} else {
-		suffix = fmt.Sprintf("\n… [+%d chars omitted]", omitted)
+	total := len(result)
+
+	// Size the kept head so head+marker fits within cap. First render uses
+	// upper-bound digits (shown=cap, omitted=total) so the real render can
+	// only be shorter or equal; the loop is a belt-and-suspenders guard
+	// against digit-count drift between renders.
+	head := cap - len(capSuffix(toolName, cap, total, spillPath))
+	if head < 0 {
+		head = 0
 	}
-	return result[:cap] + suffix
+	suffix := capSuffix(toolName, head, total, spillPath)
+	for head > 0 && head+len(suffix) > cap {
+		head = cap - len(suffix)
+		if head < 0 {
+			head = 0
+		}
+		suffix = capSuffix(toolName, head, total, spillPath)
+	}
+	return result[:head] + suffix
 }
 
 // SpillFullResult writes the full result to the spill cache and returns the

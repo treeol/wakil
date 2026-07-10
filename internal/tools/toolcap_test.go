@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -83,6 +85,80 @@ func TestReadHostCacheFileRoundTrip(t *testing.T) {
 	}
 	if size != int64(len(content)) {
 		t.Errorf("StatHostCacheFile = %d, want %d", size, len(content))
+	}
+}
+
+// TestCapToolResultTruncationMarker verifies the truncation-feedback marker:
+// a result over the cap ends with an explicit TRUNCATED marker, the total
+// output never exceeds the cap, and read_file's marker carries the
+// offset/limit hint (silent truncation is the re-read-loop failure this fixes).
+func TestCapToolResultTruncationMarker(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
+
+	const cap = 500
+	big := ""
+	for i := 0; len(big) < 3*cap; i++ {
+		big += "line of tool output content\n"
+	}
+	total := len(big)
+
+	out := CapToolResult(big, "read_file", "chat-cap-marker", cap)
+
+	if len(out) > cap {
+		t.Errorf("capped output is %d chars, exceeds cap %d — marker must fit within the cap", len(out), cap)
+	}
+	if !strings.HasSuffix(strings.TrimRight(out, " \t\r\n"), "]") {
+		t.Errorf("output does not end with the bracketed marker: %q", out[max(0, len(out)-120):])
+	}
+	if !strings.Contains(out, "TRUNCATED") {
+		t.Errorf("marker missing TRUNCATED signal: %q", out[max(0, len(out)-200):])
+	}
+	if !strings.Contains(out, "offset/limit") {
+		t.Errorf("read_file marker missing offset/limit hint: %q", out[max(0, len(out)-200):])
+	}
+	wantTotal := fmt.Sprintf("of %d chars", total)
+	if !strings.Contains(out, wantTotal) {
+		t.Errorf("marker missing actual total size %q: %q", wantTotal, out[max(0, len(out)-200):])
+	}
+	// The spill path must still be recoverable from the marker.
+	if p := ExtractSpillPath(out); p == "" {
+		t.Errorf("ExtractSpillPath failed on the new marker format: %q", out[max(0, len(out)-200):])
+	}
+}
+
+// TestCapToolResultMarkerNonRangedTool verifies that tools without offset/limit
+// access get "result truncated" instead of the misleading offset/limit hint.
+func TestCapToolResultMarkerNonRangedTool(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
+
+	big := strings.Repeat("x", 2000)
+	out := CapToolResult(big, "run_shell", "chat-cap-shell", 500)
+
+	if strings.Contains(out, "offset/limit") {
+		t.Errorf("non-ranged tool marker must not suggest offset/limit: %q", out[max(0, len(out)-200):])
+	}
+	if !strings.Contains(out, "result truncated") {
+		t.Errorf("non-ranged tool marker missing 'result truncated': %q", out[max(0, len(out)-200):])
+	}
+	if len(out) > 500 {
+		t.Errorf("capped output is %d chars, exceeds cap 500", len(out))
+	}
+}
+
+// TestCapToolResultNoMarkerUnderCap verifies results within the cap pass
+// through unchanged — no marker, no spill.
+func TestCapToolResultNoMarkerUnderCap(t *testing.T) {
+	small := "short result"
+	out := CapToolResult(small, "read_file", "chat-under", 500)
+	if out != small {
+		t.Errorf("under-cap result was modified: %q", out)
+	}
+	if strings.Contains(out, "TRUNCATED") {
+		t.Error("under-cap result must not carry a truncation marker")
 	}
 }
 

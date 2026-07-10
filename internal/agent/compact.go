@@ -266,6 +266,26 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 			}
 		}
 	}
+	// Latest-user-task pin (parent task-loss fix): the most recent user
+	// message in the summarizable block is treated as pinned for THIS
+	// compaction pass — it carries the current task or redirect, and folding
+	// it into lossy summary prose is how the agent forgets what it was asked
+	// ("there wasn't a specific question in your message"). Older user
+	// messages remain summarizable (the summary prompt's soft "preserve open
+	// tasks" instruction covers those). The pin is deliberately NOT persisted
+	// on the message: a message that is "latest" now won't be later, and a
+	// future pass must be free to summarize it once a newer user message
+	// exists. Subagents are excluded — their task instruction is already
+	// pinned at append time (pinUserMessage) and their injected wrap-up
+	// prompts must not gain compaction immunity.
+	if !a.IsSubagent {
+		for i := len(older) - 1; i >= 0; i-- {
+			if older[i].Role == "user" {
+				pinnedSet[i] = true // idempotent if already pinned
+				break
+			}
+		}
+	}
 	var pinnedPrefix []proxy.Message
 	var summarizable []proxy.Message
 	for i, m := range older {
