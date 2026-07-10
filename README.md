@@ -1,13 +1,14 @@
 # wakīl
 
 A terminal-native coding agent. Go binary, thin HTTP client, zero framework
-overhead — talks to any OpenAI-compatible Chat Completions endpoint through a
-remote *ilm* proxy that owns memory, grounding, and the model. wakil owns the
-TUI, tool execution, and session persistence.
+overhead — talks to any OpenAI-compatible Chat Completions endpoint directly
+(llama.cpp server, OpenRouter, vLLM…), or through a remote *ilm* proxy that
+adds memory and grounding. Endpoints are named in config and switchable
+mid-session. wakil owns the TUI, tool execution, and session persistence.
 
 ```
-you ── wakil (TUI · tool exec · sessions) ── ilm proxy (memory · grounding) ── model
-                        ↑
+you ── wakil (TUI · tool exec · sessions) ──┬── OpenAI-compatible endpoint ── model
+                        ↑                   └── ilm proxy (memory · grounding) ── model
                 per-command confirm gate
 ```
 
@@ -31,7 +32,7 @@ navigation is backed by an actual language server (`lsp_definition` /
 |---|---|
 | **Go 1.25+** | to build from source *(see `go.mod`)* |
 | **Docker** | for the default `docker` exec mode *(skip with `--exec direct`)* |
-| **An ilm proxy** | reachable at a URL you control — wakil is a client, not a standalone brain |
+| **An OpenAI-compatible endpoint** | a llama.cpp server, OpenRouter, or an ilm proxy — wakil is a client, not a standalone brain |
 
 ## Status
 
@@ -50,12 +51,17 @@ go build -o wakil ./cmd/wakil
 #    (Go, Node, Rust, Python toolchains + gopls, baked in)
 docker build -t wakil-dev .
 
-# 3. Point it at your ilm proxy and go — workspace arg is optional
-export ILM_BASE_URL='http://proxy-host:11400'
+# 3. Point it at an endpoint and go — workspace arg is optional
+export ILM_BASE_URL='http://proxy-host:11400'   # ilm proxy (legacy shape)
 ./wakil ~/projects/myapp        # explicit path
 # no argument → auto-mounts the current directory
 cd ~/projects/myapp && ./wakil
 ```
+
+For direct mode against a plain OpenAI-compatible server, declare named
+endpoints in the config file instead (see
+[Endpoints](#endpoints)) — `config.example.json` in this repo is a working
+starting point.
 
 Default `docker` mode: one persistent container for the process lifetime,
 every tool call executes inside it. Skip step 2 and pass `--exec direct` to
@@ -83,7 +89,7 @@ Default `docker` mode bind-mounts the **host Docker socket**
 (`--docker-sock=true`) — that's host-root, functionally. It buys the agent the
 ability to run `docker` / `docker compose` against your real daemon. Powerful,
 and exactly as dangerous as it sounds. Run untrusted tasks with the gate on,
-against a proxy and model you actually trust, and reach for
+against an endpoint and model you actually trust, and reach for
 `--docker-sock=false` or `--exec direct` in a disposable VM when you don't
 need host-Docker control.
 
@@ -94,9 +100,9 @@ Precedence: **defaults < config file < env < flags**. Config file is JSON at
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--base-url` | `ILM_BASE_URL` | — *(required)* | proxy base URL |
-| `--api-key` | `ILM_API_KEY` | — | sent as `Authorization: Bearer <key>` |
-| `--model` | `ILM_MODEL` | `ilm` | model name |
+| `--base-url` | `ILM_BASE_URL` | — *(required unless `endpoints` is set)* | endpoint base URL; overrides the selected endpoint's `base_url` |
+| `--api-key` | `ILM_API_KEY` | — | sent as `Authorization: Bearer <key>` *(endpoint-level `auth_header` wins)* |
+| `--model` | `ILM_MODEL` | `ilm` | model name; overrides the selected endpoint's `model` |
 | `--exec` | `ILM_EXEC_MODE` | `docker` | `docker` \| `direct` |
 | `--image` | `ILM_CONTAINER_IMAGE` | `wakil-dev` | sandbox image *(build from `Dockerfile`)* |
 | `--workdir` | `ILM_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
@@ -111,6 +117,55 @@ Precedence: **defaults < config file < env < flags**. Config file is JSON at
 
 `lsp_enabled` is config-file only, no flag — see
 [LSP code intelligence](#lsp-code-intelligence).
+
+### Endpoints
+
+The `endpoints` block names each server wakil can talk to;
+`default_endpoint` selects the active one at startup. Two kinds:
+
+- `openai` — any plain OpenAI-compatible Chat Completions server
+  (llama.cpp server, OpenRouter, vLLM…). `model` is **required** and is the
+  literal string sent in requests. No ilm-specific headers or body fields are
+  sent.
+- `ilm-proxy` — the ilm proxy with memory/grounding. `model` defaults to the
+  proxy alias `ilm`; backend prefix-routing and `X-Ilm-*` headers apply.
+
+```json
+{
+  "endpoints": {
+    "llama": {
+      "kind": "openai",
+      "base_url": "http://llama-host:8080",
+      "model": "qwen3.6-35b"
+    },
+    "or": {
+      "kind": "openai",
+      "base_url": "https://openrouter.ai/api",
+      "model": "anthropic/claude-sonnet-4-6",
+      "auth_header": "Bearer sk-or-..."
+    },
+    "ilm": {
+      "kind": "ilm-proxy",
+      "base_url": "http://proxy-host:11400"
+    }
+  },
+  "default_endpoint": "llama"
+}
+```
+
+Per-endpoint options: `auth_header` (verbatim `Authorization` value, beats
+the global `api_key`) and optional `temperature` / `top_p` / `max_tokens` —
+omitted from the request body entirely when unset, so server defaults stay
+authoritative.
+
+**Backward compatibility:** configs without an `endpoints` block keep working
+unchanged — the top-level `base_url` (or `host`+`port`) synthesizes a single
+`ilm-proxy` endpoint with model `ilm`, byte-identical request shape to before.
+
+At runtime, `/backend <name>` switches endpoints (on `openai`-kind
+endpoints), and `/model <name>` switches models — both re-resolve context
+limits. Note the key caveat: `auth_header` values live in plaintext in
+`config.json`; `chmod 600` it.
 
 ### Agent prompt
 
@@ -173,10 +228,19 @@ opens a picker to attach a file or folder for context.
 /mcp reconnect NAME  reconnect a named MCP server
 ```
 
+**Endpoint and model**
+
+```
+/backend             ilm-proxy: show backend selection · openai: list configured endpoints
+/backend <name>      ilm-proxy: set proxy backend · openai: switch to named endpoint
+/model <name>        switch model (re-resolves context limits); tab-completes from the server's model list
+```
+
 **Meta**
 
 ```
-/learn               ask the proxy to synthesise a fact to remember for next time
+/learn               ask the proxy to synthesise a fact to remember (ilm-proxy endpoints only —
+                     refuses client-side on openai endpoints instead of faking success)
 /auto                toggle auto-approve (shown as AUTO in status bar)
 /rawtools            toggle full tool output in context (default: capped at 8k chars)
 /help                full command list
@@ -299,21 +363,31 @@ sources show `—`, not a misleading `$0.00`.
 
 ### Backend-truth context sizing
 
-At startup wakil pulls the backend's real per-slot context window (`n_ctx`)
-through the proxy and sizes the context meter, pressure warnings, and
-compaction against it — with a loud fallback warning if the backend is
-unreachable.
+At startup (and on every `/backend` / `/model` switch) wakil resolves the
+real per-slot context window (`n_ctx`) and sizes the context meter, pressure
+warnings, and compaction against it — with a loud fallback warning when
+nothing answers. Resolution depends on endpoint kind:
+
+- `ilm-proxy` — `/v1/ilm/limits` (includes the proxy's pre-computed
+  `usable_ctx`), then `/props`.
+- `openai` — `/props` for llama.cpp servers; for `openrouter.ai` the
+  configured model is resolved against OpenRouter's public model registry.
 
 ## How state works
 
-The proxy routes by **message content**; statefulness differs by path.
+**On `openai` endpoints** state is simple: the standard agent loop runs
+against a stateless server — assistant `tool_calls` → execute → `role:"tool"`
+result → resend → final answer. wakil keeps a **bounded client-side
+transcript**, compacting older turns into a running summary *(last N turns
+verbatim + summary)*. There is no server-side memory; `/learn` refuses
+client-side rather than letting a bare model fake a memory ack.
+
+**On `ilm-proxy` endpoints** the proxy additionally routes by **message
+content**; statefulness differs by path.
 
 **Task path** *(normal requests with `tools`)* — standard OpenAI passthrough
-to a llama.cpp Qwen backend. The client `messages` array is honored, so the
-standard agent loop runs clean: assistant `tool_calls` → execute →
-`role:"tool"` result → resend → final answer. Multi-turn continuity holds.
-wakil keeps a **bounded client-side transcript**, compacting older turns into
-a running summary *(last N turns verbatim + summary)* to keep context bounded.
+to a llama.cpp Qwen backend. Same clean agent loop and bounded transcript as
+above.
 
 **Memory / meta path** *(`### learn this`, `remember`, `what have you
 learned`, `forget …`)* — short-circuits server-side, returns plain assistant
@@ -345,7 +419,8 @@ internal/
   counsel/         mashūra — external-model counsel (review/debug/decide/check)
   exec/            executor backends (docker, direct) + cwd tracking
   lsp/             language-server client — manager, JSON-RPC transport, tools
-  proxy/           ilm proxy HTTP client
+  orregistry/      OpenRouter model registry fetch + cache (context lengths)
+  proxy/           chat endpoint HTTP client (openai + ilm-proxy kinds)
   tools/           the tool set (run_shell, read_file, edit_file, …)
   trace/           execution tracing
   tui/             terminal UI
