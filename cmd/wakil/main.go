@@ -53,9 +53,15 @@ func main() {
 	fmt.Fprintf(os.Stderr, "ctx limits: compactAt=%d hardMax=%d keep=%d summary=%d\n",
 		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
 
+	ep := cfg.ActiveEndpoint()
 	client := &proxy.Client{
-		BaseURL:         strings.TrimRight(cfg.BaseURL, "/"),
-		Model:           cfg.Model,
+		BaseURL:         strings.TrimRight(ep.BaseURL, "/"),
+		Model:           ep.Model,
+		Kind:            ep.Kind,
+		ConfiguredModel: ep.Model,
+		Temperature:     ep.Temperature,
+		TopP:            ep.TopP,
+		MaxTokens:       ep.MaxTokens,
 		ChatID:          agent.NewChatID(),
 		AuthHeader:      cfg.AuthHeader(),
 		HTTP:            newHTTPClient(),

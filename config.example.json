@@ -1,0 +1,21 @@
+{
+  "_comment": "Example Wakil config — copy to ~/.config/wakil/config.json. The endpoints block names each server Wakil can talk to; default_endpoint selects the active one. kind 'openai' is any plain OpenAI-compatible server (llama.cpp server, OpenRouter, vLLM); kind 'ilm-proxy' is the ilm proxy with memory/grounding. For kind 'openai', model is REQUIRED and is the literal string sent in requests. temperature/top_p/max_tokens are optional — when omitted the server's own defaults apply. Legacy configs without an endpoints block keep working unchanged (top-level base_url + model, treated as ilm-proxy).",
+
+  "endpoints": {
+    "llama": {
+      "kind": "openai",
+      "base_url": "http://llama-host:11400",
+      "model": "qwen3.6-35b",
+      "auth_header": ""
+    },
+    "ilm": {
+      "kind": "ilm-proxy",
+      "base_url": "http://llama-host:11400",
+      "model": "ilm"
+    }
+  },
+  "default_endpoint": "llama",
+
+  "exec_mode": "docker",
+  "image": "wakil-dev"
+}

@@ -222,6 +222,11 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	subClient := &proxy.Client{
 		BaseURL:         a.Client.BaseURL,
 		Model:           a.Client.Model,
+		Kind:            a.Client.Kind,            // endpoint kind gates the proxy-specific request shape
+		ConfiguredModel: a.Client.ConfiguredModel, // plain endpoints always send the configured model
+		Temperature:     a.Client.Temperature,
+		TopP:            a.Client.TopP,
+		MaxTokens:       a.Client.MaxTokens,
 		ChatID:          subChatID,
 		AuthHeader:      a.Client.AuthHeader,
 		NoMemoryWrite:   true,

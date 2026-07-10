@@ -9,6 +9,33 @@ import (
 	"strings"
 )
 
+// Endpoint kinds. "openai" is a plain OpenAI-compatible chat-completions
+// server (llama.cpp server, OpenRouter, vLLM…); "ilm-proxy" is the ilm proxy
+// with its memory/grounding extensions (X-Ilm-* headers, metadata routing,
+// model aliasing).
+const (
+	EndpointKindOpenAI   = "openai"
+	EndpointKindIlmProxy = "ilm-proxy"
+)
+
+// EndpointConfig is one named endpoint in the "endpoints" block.
+//
+// Kind defaults to "openai" when omitted. Model is REQUIRED for kind "openai"
+// (it is the literal model string sent in every request); for kind "ilm-proxy"
+// it defaults to the proxy alias "ilm". The sampling fields are pointers so
+// "unset" is distinguishable from zero: unset fields are omitted from the
+// request body entirely and the server's own defaults stay authoritative —
+// Wakil never invents sampling defaults.
+type EndpointConfig struct {
+	Kind        string   `json:"kind,omitempty"`        // "openai" (default) | "ilm-proxy"
+	BaseURL     string   `json:"base_url"`              // full URL, e.g. "http://llama-host:11400"
+	Model       string   `json:"model,omitempty"`       // required for kind=openai; defaults to "ilm" for kind=ilm-proxy
+	AuthHeader  string   `json:"auth_header,omitempty"` // verbatim Authorization value; empty = fall back to api_key
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	MaxTokens   *int     `json:"max_tokens,omitempty"`
+}
+
 // Config is resolved with precedence: defaults < config file < env < flags.
 // base_url takes precedence over host+port; if only host (and optionally port)
 // are set, the URL is constructed as http://{host}:{port}.
@@ -16,6 +43,21 @@ type Config struct {
 	BaseURL string `json:"base_url"` // full URL, e.g. "http://proxy-host:11400"
 	Host    string `json:"host"`     // alternative to base_url: just the hostname/IP
 	Port    int    `json:"port"`     // port for host (default 11400)
+
+	// Endpoints is the named-endpoint block. When present it supersedes the
+	// legacy top-level base_url/model fields: DefaultEndpoint selects the
+	// active entry. When absent, a single "ilm-proxy" endpoint is synthesized
+	// from the legacy fields so existing configs behave exactly as before.
+	// ILM_MODEL / --model and ILM_BASE_URL / --base-url, when explicitly set,
+	// override the selected endpoint's model / base_url.
+	Endpoints       map[string]EndpointConfig `json:"endpoints,omitempty"`
+	DefaultEndpoint string                    `json:"default_endpoint,omitempty"`
+
+	// Endpoint is the resolved active endpoint (runtime-only, never serialized).
+	// Populated by LoadConfig; hand-built Configs should go through
+	// ActiveEndpoint(), which falls back to the legacy fields when this is empty.
+	Endpoint     EndpointConfig `json:"-"`
+	EndpointName string         `json:"-"`
 
 	APIKey         string `json:"api_key"` // sent as "Authorization: Bearer <key>"
 	Model          string `json:"model"`
@@ -450,6 +492,12 @@ func LoadConfig(argv []string) (Config, error) {
 		return cfg, err
 	}
 
+	// Record which flags were explicitly passed — needed to distinguish
+	// "user set --model/--base-url" (overrides the selected endpoint) from
+	// "flag default carried the config value through".
+	flagsSet := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { flagsSet[f.Name] = true })
+
 	// Resolve trace: --trace flag enables for this run; config trace_sessions makes
 	// it the standing default. Either way cfg.Trace is the single bit callers check.
 	cfg.Trace = cfg.TraceSessions || traceFlag
@@ -479,8 +527,12 @@ func LoadConfig(argv []string) (Config, error) {
 		cfg.BaseURL = fmt.Sprintf("http://%s:%d", cfg.Host, port)
 	}
 
-	if cfg.BaseURL == "" {
-		return cfg, fmt.Errorf("proxy address required — set base_url (or host+port) in config, ILM_BASE_URL, or --base-url")
+	// Resolve the active endpoint. With an endpoints block, the selected entry
+	// governs; without one, a single ilm-proxy endpoint is synthesized from the
+	// legacy fields (exact pre-endpoints behavior). Env/flag overrides for
+	// model and base_url apply on top of the selected endpoint.
+	if err := resolveEndpoint(&cfg, flagsSet); err != nil {
+		return cfg, err
 	}
 	if cfg.ExecMode != "docker" && cfg.ExecMode != "direct" {
 		return cfg, fmt.Errorf("invalid exec mode %q (want docker|direct)", cfg.ExecMode)
@@ -594,7 +646,102 @@ func envInt(dst *int, key string) {
 	}
 }
 
+// resolveEndpoint populates cfg.Endpoint/EndpointName from the endpoints block,
+// or synthesizes a legacy ilm-proxy endpoint when no block exists. It then
+// applies explicit env/flag overrides (ILM_MODEL/--model, ILM_BASE_URL/
+// --base-url) and mirrors the result into the legacy cfg.BaseURL/cfg.Model
+// fields so existing call sites keep reading one source of truth.
+func resolveEndpoint(cfg *Config, flagsSet map[string]bool) error {
+	modelOverridden := flagsSet["model"] || os.Getenv("ILM_MODEL") != ""
+	baseURLOverridden := flagsSet["base-url"] || os.Getenv("ILM_BASE_URL") != ""
+
+	if len(cfg.Endpoints) == 0 {
+		// Legacy config: synthesize a single ilm-proxy endpoint from the
+		// top-level fields. Behavior must be byte-identical to pre-endpoints
+		// Wakil, including the original missing-URL error.
+		if cfg.BaseURL == "" {
+			return fmt.Errorf("proxy address required — set base_url (or host+port) in config, ILM_BASE_URL, or --base-url")
+		}
+		cfg.Endpoint = EndpointConfig{
+			Kind:    EndpointKindIlmProxy,
+			BaseURL: cfg.BaseURL,
+			Model:   cfg.Model, // default "ilm", possibly overridden by file/env/flag
+		}
+		cfg.EndpointName = "ilm"
+		return nil
+	}
+
+	// Endpoints block present: select and validate.
+	name := cfg.DefaultEndpoint
+	if name == "" {
+		if len(cfg.Endpoints) == 1 {
+			for n := range cfg.Endpoints {
+				name = n
+			}
+		} else {
+			return fmt.Errorf("endpoints block has %d entries — set default_endpoint to choose one", len(cfg.Endpoints))
+		}
+	}
+	ep, ok := cfg.Endpoints[name]
+	if !ok {
+		return fmt.Errorf("default_endpoint %q not found in endpoints block", name)
+	}
+	if ep.Kind == "" {
+		ep.Kind = EndpointKindOpenAI
+	}
+	switch ep.Kind {
+	case EndpointKindOpenAI:
+		if ep.Model == "" {
+			return fmt.Errorf("endpoint %q: model is required for kind %q — set the literal model string the server expects (e.g. \"qwen3.6-35b\")", name, EndpointKindOpenAI)
+		}
+	case EndpointKindIlmProxy:
+		if ep.Model == "" {
+			ep.Model = "ilm" // proxy alias routing, current behavior
+		}
+	default:
+		return fmt.Errorf("endpoint %q: unknown kind %q (want %q or %q)", name, ep.Kind, EndpointKindOpenAI, EndpointKindIlmProxy)
+	}
+	if ep.BaseURL == "" {
+		return fmt.Errorf("endpoint %q: base_url is required", name)
+	}
+
+	// Explicit env/flag overrides win over the endpoint entry.
+	if modelOverridden {
+		ep.Model = cfg.Model
+	}
+	if baseURLOverridden {
+		ep.BaseURL = cfg.BaseURL
+	}
+
+	cfg.Endpoint = ep
+	cfg.EndpointName = name
+	// Mirror into the legacy fields — the rest of the code reads one set.
+	cfg.BaseURL = ep.BaseURL
+	cfg.Model = ep.Model
+	return nil
+}
+
+// ActiveEndpoint returns the resolved endpoint. For Configs built by hand
+// (tests, subagents) that never went through LoadConfig, it synthesizes the
+// legacy ilm-proxy shape from the top-level fields — preserving pre-endpoints
+// behavior for every existing construction path.
+func (c Config) ActiveEndpoint() EndpointConfig {
+	if c.Endpoint.Kind != "" {
+		return c.Endpoint
+	}
+	return EndpointConfig{
+		Kind:    EndpointKindIlmProxy,
+		BaseURL: c.BaseURL,
+		Model:   c.Model,
+	}
+}
+
 func (c Config) AuthHeader() string {
+	// An endpoint-level auth_header (verbatim Authorization value) wins over
+	// the legacy api_key ("Bearer <key>").
+	if c.Endpoint.AuthHeader != "" {
+		return c.Endpoint.AuthHeader
+	}
 	if c.APIKey == "" {
 		return ""
 	}

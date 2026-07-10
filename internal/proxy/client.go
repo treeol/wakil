@@ -91,6 +91,13 @@ type chatRequest struct {
 	Messages      []Message         `json:"messages"`
 	Tools         []Tool            `json:"tools,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
+
+	// Sampling parameters, pointer-typed so unset fields are omitted from the
+	// JSON entirely (the server's own defaults stay authoritative). Populated
+	// from the endpoint config; never defaulted Wakil-side.
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	MaxTokens   *int     `json:"max_tokens,omitempty"`
 }
 
 // streamOptions asks the proxy to emit a trailing usage chunk (OpenAI-standard).
@@ -152,7 +159,17 @@ type GroundingEntry struct {
 	Score float64 // 0 if absent
 }
 
-// Client is a thin HTTP client of the remote ilm proxy.
+// Endpoint kinds understood by the client. Mirrors config.EndpointKind* —
+// duplicated here (two string constants) rather than importing config, which
+// would invert the package dependency.
+const (
+	KindOpenAI   = "openai"
+	KindIlmProxy = "ilm-proxy"
+)
+
+// Client is a thin HTTP client of an OpenAI-compatible chat endpoint —
+// either the remote ilm proxy (Kind "ilm-proxy") or a plain server
+// (Kind "openai": llama.cpp server, OpenRouter, vLLM…).
 type Client struct {
 	BaseURL       string
 	Model         string
@@ -160,6 +177,26 @@ type Client struct {
 	AuthHeader    string // full "Authorization" value, e.g. "Bearer sk-…"; empty = none
 	NoMemoryWrite bool   // when true: tell the proxy not to write this traffic to memory/learn stores
 	HTTP          *http.Client
+
+	// Kind gates the proxy-specific request shape. "" is treated as
+	// KindIlmProxy — every pre-endpoints construction site (tests, subagents,
+	// hand-built clients) gets the exact historical behavior.
+	// When KindOpenAI: no X-Ilm-* request headers, no metadata body field
+	// (entirely absent, not empty — strict servers 400 on unknown fields),
+	// and the model field is always ConfiguredModel.
+	Kind string
+
+	// ConfiguredModel is the endpoint's literal model string, sent as the
+	// model field on every request when Kind is KindOpenAI — session model
+	// overrides and the proxy's name/model prefix-routing trick do not apply
+	// to plain endpoints. Ignored for KindIlmProxy.
+	ConfiguredModel string
+
+	// Sampling overrides from the endpoint config. nil = omit from the
+	// request body (server defaults stay authoritative).
+	Temperature *float64
+	TopP        *float64
+	MaxTokens   *int
 
 	// Backend is the requested backend name sent as X-Ilm-Backend. Empty = don't
 	// send the header (proxy uses its own default). Set by App.Send before each
@@ -355,25 +392,44 @@ type Sink func(string)
 // deltas. Reasoning is NEVER written into the returned Message — the stored
 // assistant turn is always final-answer content only.
 func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, sink Sink, reasoningSink Sink) (Message, error) {
+	// proxyShape gates every ilm-proxy-specific request element. Kind ""
+	// means an old construction site that predates endpoint kinds — treat as
+	// the proxy so existing behavior is untouched.
+	proxyShape := c.Kind == "" || c.Kind == KindIlmProxy
+
+	model := c.Model
+	if !proxyShape && c.ConfiguredModel != "" {
+		// Plain endpoints get the endpoint's literal model string. Session
+		// state may hold the proxy alias ("ilm") or a backend-prefixed
+		// "name/model" routing string — neither means anything to a plain
+		// server, so the configured model always wins.
+		model = c.ConfiguredModel
+	}
+
 	reqBody := chatRequest{
-		Model:         c.Model,
+		Model:         model,
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
 		Messages:      messages,
 		Tools:         tools,
+		Temperature:   c.Temperature,
+		TopP:          c.TopP,
+		MaxTokens:     c.MaxTokens,
 	}
-	metadata := map[string]string{}
-	if c.ChatID != "" && !c.NoMemoryWrite {
-		// Subagent clients (NoMemoryWrite=true) never send chat_id — they stay
-		// outside the session's pending/confirmation mechanics (defence in depth
-		// on top of NoMemoryWrite).
-		metadata["chat_id"] = c.ChatID
-	}
-	if c.NoMemoryWrite {
-		metadata["ilm-no-memory-write"] = "true"
-	}
-	if len(metadata) > 0 {
-		reqBody.Metadata = metadata
+	if proxyShape {
+		metadata := map[string]string{}
+		if c.ChatID != "" && !c.NoMemoryWrite {
+			// Subagent clients (NoMemoryWrite=true) never send chat_id — they stay
+			// outside the session's pending/confirmation mechanics (defence in depth
+			// on top of NoMemoryWrite).
+			metadata["chat_id"] = c.ChatID
+		}
+		if c.NoMemoryWrite {
+			metadata["ilm-no-memory-write"] = "true"
+		}
+		if len(metadata) > 0 {
+			reqBody.Metadata = metadata
+		}
 	}
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
@@ -408,14 +464,16 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	if c.AuthHeader != "" {
 		req.Header.Set("Authorization", c.AuthHeader)
 	}
-	if c.NoMemoryWrite {
-		req.Header.Set("X-Ilm-No-Memory-Write", "true")
-	}
-	if c.Backend != "" {
-		req.Header.Set("X-Ilm-Backend", c.Backend)
-	}
-	if c.AuxModel != "" {
-		req.Header.Set("X-Ilm-Aux-Model", c.AuxModel)
+	if proxyShape {
+		if c.NoMemoryWrite {
+			req.Header.Set("X-Ilm-No-Memory-Write", "true")
+		}
+		if c.Backend != "" {
+			req.Header.Set("X-Ilm-Backend", c.Backend)
+		}
+		if c.AuxModel != "" {
+			req.Header.Set("X-Ilm-Aux-Model", c.AuxModel)
+		}
 	}
 
 	// Provisional usage: the serialised request payload is a faithful proxy for
