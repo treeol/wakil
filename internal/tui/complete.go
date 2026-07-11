@@ -56,6 +56,7 @@ type compSources struct {
 	backends    []string // from app.BackendList (names only)
 	models      []string // from app.ModelList (fetched from /v1/ilm/models)
 	sessions    []string // short session IDs; nil = read from disk when needed
+	endpoints   []string // from app.Cfg.Endpoints (keys) + "inherit", for /subagent
 }
 
 // allTUICommands is the authoritative command list for "/" picker completion.
@@ -82,6 +83,8 @@ var allTUICommands = []candidate{
 	{name: "/resume", hasArgs: true},
 	{name: "/session", hasArgs: true},
 	{name: "/sessions"},
+	{name: "/subagent", hasArgs: true},
+	{name: "/submodel", hasArgs: true},
 }
 
 // compSrcFromApp builds a compSources from the running App. Sessions are left
@@ -94,10 +97,17 @@ func compSrcFromApp(app *agent.App) compSources {
 	for i, b := range app.BackendList {
 		backends[i] = b.Name
 	}
+	endpoints := make([]string, 0, len(app.Cfg.Endpoints)+1)
+	endpoints = append(endpoints, "inherit")
+	for name := range app.Cfg.Endpoints {
+		endpoints = append(endpoints, name)
+	}
+	sort.Strings(endpoints[1:]) // keep "inherit" first, sort the rest
 	return compSources{
 		mentionBase: app.Cfg.MentionBase,
 		backends:    backends,
 		models:      app.ModelList,
+		endpoints:   endpoints,
 	}
 }
 
@@ -180,8 +190,9 @@ func computeAtCompletion(ta textarea.Model, base string) completionState {
 //     inserts the chosen "/command" name in one step.
 //
 //   - Space before cursor ("/backend op"): argument picker for the command
-//     before the space. Only /auto, /backend, /model, and /resume have
-//     argument completion; other commands are not completed past the space.
+//     before the space. Only /auto, /backend, /model, /resume, /subagent, and
+//     /submodel have argument completion; other commands are not completed
+//     past the space.
 func computeSlashCompletion(ta textarea.Model, src compSources) completionState {
 	lines := strings.Split(ta.Value(), "\n")
 	row := ta.Line()
@@ -230,6 +241,10 @@ func computeSlashCompletion(ta textarea.Model, src compSources) completionState 
 			sessions = fetchSessionShortIDs()
 		}
 		cands = listNameCandidates(argLeaf, sessions)
+	case "/subagent":
+		cands = listNameCandidates(argLeaf, src.endpoints)
+	case "/submodel":
+		cands = listNameCandidates(argLeaf, src.models)
 	default:
 		return completionState{} // no argument completion for other commands
 	}

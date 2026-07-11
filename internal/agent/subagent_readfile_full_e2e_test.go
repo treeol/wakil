@@ -47,7 +47,7 @@ func TestDispatchSubagentReadFileFull(t *testing.T) {
 		t.Fatal("read_file_full is not in DiscoveryTools — subagent cannot use it")
 	}
 
-	summary, _, _, _ := parent.dispatchSubagent(context.Background(), "find ToolResultCap", io.Discard, "")
+	summary, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find ToolResultCap", io.Discard, "")
 
 	// Must have real findings.
 	if len(summary.Findings) == 0 {
@@ -88,7 +88,7 @@ func TestSubagentReadFileFullNoWindowedReReads(t *testing.T) {
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
-	summary, _, _, _ := parent.dispatchSubagent(context.Background(), "read big.go", io.Discard, "")
+	summary, _, _, _, _ := parent.dispatchSubagent(context.Background(), "read big.go", io.Discard, "")
 
 	if len(summary.Findings) == 0 {
 		t.Fatal("no findings returned")

@@ -239,6 +239,42 @@ type App struct {
 	// Set by /backend <backend>/<model>; cleared by /backend <name> (no model).
 	SelectedModel string
 
+	// SubagentEndpointOverride is the session-scoped override for which
+	// endpoint dispatch_subagent targets, set by /subagent <name> (cleared by
+	// /subagent inherit). Takes precedence over Cfg.SubagentEndpoint when
+	// non-empty. Empty (the default) falls through to the config value, then
+	// to inheriting the parent's live endpoint — see resolveSubagentEndpoint.
+	SubagentEndpointOverride string
+
+	// SubagentModelOverride is the session-scoped model override for
+	// dispatch_subagent, set by /submodel <name> (cleared by /submodel inherit).
+	// Mirrors /model's semantics but scoped to subagents: overrides only the
+	// model string the child sends, leaving kind/base_url/auth unchanged.
+	// Applied AFTER endpoint resolution (inherit or named override), so it
+	// composes with /subagent: /subagent picks the endpoint, /submodel picks
+	// the model within it. Empty = use the resolved endpoint's model.
+	SubagentModelOverride string
+
+	// subagentLimitsCachePtr backs a singleflight cache for context-limit
+	// probes against overridden subagent endpoints: concurrent dispatch_subagent
+	// workers targeting the same endpoint+backend fire at most one /props or
+	// /v1/ilm/limits request. A pointer field (not an embedded mutex value)
+	// keeps App itself safe to copy by value, as some tests do.
+	//
+	// MAIN GOROUTINE ONLY to set: ensureSubagentLimitsCache() populates it
+	// before any worker goroutine spawns (Phase A of runParallelSubagentBlock,
+	// or inline in the sequential dispatch_subagent handler — both run on the
+	// main goroutine only). Go's memory model guarantees a value written on
+	// the main goroutine before a `go` statement is visible inside that
+	// goroutine without extra synchronization, so workers may safely read
+	// (never write) this field after being spawned. Once set, the cache's own
+	// internal mutex guards all concurrent access to its map. Callers that
+	// invoke dispatchSubagent directly without going through either wrapper
+	// (most existing tests) see a nil pointer here; resolveChildCtxLimit falls
+	// back to an unshared, call-local cache in that case — correct but without
+	// cross-call dedup, since there is only one call to dedup against anyway.
+	subagentLimitsCachePtr *subagentLimitsCache
+
 	// defaultModel is Client.Model at construction time, used to restore the
 	// model when SelectedModel is cleared.
 	defaultModel string
@@ -1982,7 +2018,11 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		}
 		fmt.Fprintln(a.Out, Dim("· subagent: "+Truncate(args.Task, 60)))
 		subChatID := NewChatID()
-		subBackend := ResolveSubagentBackend(a.SelectedBackend, a.Cfg.SubagentBackend)
+		// Backend resolution only applies when the child's resolved endpoint is
+		// kind ilm-proxy; for kind openai there is no backend-routing concept to
+		// resolve, so skip it entirely rather than compute an inert value.
+		subBackend := a.resolveSubagentBackendForEndpoint(a.resolvedSubagentEndpointKind())
+		a.ensureSubagentLimitsCache()
 		// Consent gate BEFORE the start event: a declined dispatch never opens
 		// a TUI tab. This is the sequential path; the parallel block path runs
 		// ensureSubagentConsent once for the whole block in its prepare phase.
@@ -1992,13 +2032,19 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		a.sendEvent(SubagentStartMsg{Task: args.Task, ChatID: subChatID, Backend: subBackend})
 		// Sequential path: the dispatch begins immediately, no queue wait.
 		a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
-		summary, grounding, ctxSize, usedBackend := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, subChatID)
+		summary, grounding, ctxSize, usedBackend, costRows := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, subChatID)
+		// Cost fold happens HERE — the caller's side of the goroutine boundary,
+		// where parent-state mutation is already safe — never inside
+		// dispatchSubagent. The child's fresh CostTracker never touches a.Costs
+		// directly; this is the only place its rows are merged in.
+		subagentCostUSD := foldSubagentCost(a.Costs, costRows)
 		a.sendEvent(SubagentDoneMsg{
 			ChatID:       subChatID,
 			Grounding:    grounding,
 			CtxSize:      ctxSize,
 			HardMaxBytes: subagentHardMaxBytes,
 			UsedBackend:  usedBackend,
+			CostUSD:      subagentCostUSD,
 		})
 
 		// Part C: durable summary persistence. Write the full structured summary

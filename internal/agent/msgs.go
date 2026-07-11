@@ -66,6 +66,14 @@ type SubagentDoneMsg struct {
 	CtxSize      int
 	HardMaxBytes int
 	UsedBackend  string // X-Ilm-Backend-Used from the subagent's last Stream call
+
+	// CostUSD is the child's total priced cost (sum of its own CostTracker's
+	// priced rows, at the child's own model/backend rate), already folded into
+	// the parent's CostTracker by the time this message is sent — see
+	// foldSubagentCost at the dispatch_subagent join point (app.go, and Phase C
+	// of runParallelSubagentBlock for the parallel path). 0 when nothing was
+	// priced or no usage was recorded.
+	CostUSD float64
 }
 
 // SysNoteMsg delivers a status line into the viewport.

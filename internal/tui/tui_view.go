@@ -767,6 +767,10 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 			lines = append(lines, row("backend", label))
 		}
 	}
+	// Cost display: only once the subagent is done and something was priced.
+	if tab.done && tab.costUSD > 0 {
+		lines = append(lines, row("cost", proxy.FmtUSDCompact(tab.costUSD)))
+	}
 	lines = append(lines,
 		"",
 		statusStr,

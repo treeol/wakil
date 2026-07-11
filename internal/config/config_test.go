@@ -63,6 +63,89 @@ func TestSearchCost(t *testing.T) {
 	}
 }
 
+// ---------------- subagent_endpoint validation ----------------
+
+func TestValidateSubagentEndpoint(t *testing.T) {
+	base := func() Config {
+		c := DefaultConfig()
+		c.Endpoints = map[string]EndpointConfig{
+			"real": {Kind: EndpointKindOpenAI, BaseURL: "http://x", Model: "m"},
+		}
+		return c
+	}
+
+	if err := validateSubagentEndpoint(base()); err != nil {
+		t.Errorf("no subagent_endpoint set: unexpected error %v", err)
+	}
+
+	c := base()
+	c.SubagentEndpoint = "inherit"
+	if err := validateSubagentEndpoint(c); err != nil {
+		t.Errorf("subagent_endpoint=inherit: unexpected error %v", err)
+	}
+
+	c = base()
+	c.SubagentEndpoint = "real"
+	if err := validateSubagentEndpoint(c); err != nil {
+		t.Errorf("subagent_endpoint naming a real key: unexpected error %v", err)
+	}
+
+	c = base()
+	c.SubagentEndpoint = "missing"
+	err := validateSubagentEndpoint(c)
+	if err == nil {
+		t.Fatal("expected error for missing subagent_endpoint key")
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Errorf("error should name the missing key %q, got: %v", "missing", err)
+	}
+}
+
+// TestNormalizeEndpointDefaultsAndErrors verifies NormalizeEndpoint applies
+// the same defaulting rules as resolveEndpoint/handleEndpointSwitch.
+func TestNormalizeEndpointDefaultsAndErrors(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Endpoints = map[string]EndpointConfig{
+		"oa":         {Kind: EndpointKindOpenAI, BaseURL: "http://x", Model: "m"},
+		"px-default": {Kind: EndpointKindIlmProxy, BaseURL: "http://y"}, // Model empty → defaults to "ilm"
+		"oa-nomodel": {Kind: EndpointKindOpenAI, BaseURL: "http://z"},   // missing required model
+		"nobase":     {Kind: EndpointKindOpenAI, Model: "m"},            // missing required base_url
+		"badkind":    {Kind: "bogus", BaseURL: "http://w", Model: "m"},
+	}
+
+	if ep, err := cfg.NormalizeEndpoint("oa"); err != nil || ep.Model != "m" {
+		t.Errorf("oa: ep=%+v err=%v", ep, err)
+	}
+	if ep, err := cfg.NormalizeEndpoint("px-default"); err != nil || ep.Model != "ilm" {
+		t.Errorf("px-default: want Model=ilm default, got ep=%+v err=%v", ep, err)
+	}
+	if _, err := cfg.NormalizeEndpoint("oa-nomodel"); err == nil {
+		t.Error("oa-nomodel: expected error (model required for openai)")
+	}
+	if _, err := cfg.NormalizeEndpoint("nobase"); err == nil {
+		t.Error("nobase: expected error (base_url required)")
+	}
+	if _, err := cfg.NormalizeEndpoint("badkind"); err == nil {
+		t.Error("badkind: expected error (unknown kind)")
+	}
+	if _, err := cfg.NormalizeEndpoint("nope"); err == nil {
+		t.Error("nope: expected error (key not found)")
+	}
+}
+
+// TestAuthHeaderForFallsBackToAPIKey verifies AuthHeaderFor mirrors AuthHeader
+// for an arbitrary endpoint: the endpoint's own auth_header wins; otherwise
+// the legacy api_key ("Bearer <key>") fallback applies.
+func TestAuthHeaderForFallsBackToAPIKey(t *testing.T) {
+	cfg := Config{APIKey: "k"}
+	if got := cfg.AuthHeaderFor(EndpointConfig{}); got != "Bearer k" {
+		t.Errorf("AuthHeaderFor(empty ep) = %q, want Bearer k (api_key fallback)", got)
+	}
+	if got := cfg.AuthHeaderFor(EndpointConfig{AuthHeader: "Custom xyz"}); got != "Custom xyz" {
+		t.Errorf("AuthHeaderFor(ep with auth_header) = %q, want Custom xyz (endpoint wins)", got)
+	}
+}
+
 // ---------------- small helpers ----------------
 
 func TestExpandTilde(t *testing.T) {

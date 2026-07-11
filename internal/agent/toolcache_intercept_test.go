@@ -267,7 +267,7 @@ func TestSubagentActuallyRecoversItsOwnCappedResult(t *testing.T) {
 	defer srv.Close()
 
 	parent := newTestApp(srv.URL, execFake, func(_, _, _ string, _ bool) bool { return true })
-	summary, _, _, _ := parent.dispatchSubagent(context.Background(), "count all matches", nil, "")
+	summary, _, _, _, _ := parent.dispatchSubagent(context.Background(), "count all matches", nil, "")
 
 	if summary.Status == "incomplete" {
 		t.Errorf("subagent reported incomplete purely from its own capped tool result — Bug A regression. Skipped=%v Uncertainty=%v",

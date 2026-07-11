@@ -84,7 +84,7 @@ func TestDispatchSubagentMalformedJSON(t *testing.T) {
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
-	summary, _, _, _ := parent.dispatchSubagent(context.Background(), "find something", io.Discard, "")
+	summary, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find something", io.Discard, "")
 
 	if len(summary.Findings) == 0 {
 		t.Fatal("expected a degraded finding, got empty Findings")
@@ -119,7 +119,7 @@ func TestDispatchSubagentDirectly(t *testing.T) {
 	exec.files["config.go"] = fileContent
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	summary, _, _, _ := parent.dispatchSubagent(context.Background(), "find CompactAt", io.Discard, "")
+	summary, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find CompactAt", io.Discard, "")
 
 	if summary.Objective == "" {
 		t.Error("objective not populated")
@@ -319,7 +319,7 @@ func TestSubagentUsedBackendReturned(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 	}
 
-	_, _, _, usedBackend := parent.dispatchSubagent(context.Background(), "check", io.Discard, "openrouter")
+	_, _, _, usedBackend, _ := parent.dispatchSubagent(context.Background(), "check", io.Discard, "openrouter")
 	if usedBackend != "openrouter" {
 		t.Errorf("usedBackend = %q, want %q", usedBackend, "openrouter")
 	}
@@ -390,7 +390,7 @@ func TestSubagentEgressDeclineReturnsUncertainty(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return false }, // always decline
 	}
 
-	summary, _, _, _ := parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter")
+	summary, _, _, _, _ := parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter")
 	if requestCount != 0 {
 		t.Errorf("no request should be sent after egress decline; got %d", requestCount)
 	}

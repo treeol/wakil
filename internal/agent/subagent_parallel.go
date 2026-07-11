@@ -42,6 +42,7 @@ type subagentJobResult struct {
 	Grounding   []proxy.GroundingEntry
 	CtxSize     int
 	UsedBackend string
+	CostRows    []proxy.CostRow // child's own priced rows; folded into a.Costs in Phase C only
 }
 
 // cancelledJobResult is the truthful summary for a job that never ran (or was
@@ -83,10 +84,18 @@ func panicJobResult(task string, r interface{}) subagentJobResult {
 //     commands per call (runFromRoot); the one lazily-written cache
 //     (SandboxTools probe) is sync.Once-guarded. Discovery tools are
 //     read-only, so no workspace write races from workers.
-//   - Costs: the child App's Costs tracker is nil and its Client is fresh, so
-//     RecordInferenceCost inside a child Send is a no-op on parent state.
-//     Subagent inference cost is NOT folded into the parent ledger (documented
-//     limitation, unchanged from sequential dispatch).
+//   - Costs: each child App gets its OWN fresh CostTracker (never a.Costs, the
+//     parent's pointer) — RecordInferenceCost inside a child Send writes only
+//     to that private tracker, so no worker ever touches parent-shared cost
+//     state. dispatchSubagent returns the child's priced rows in the result;
+//     Phase C (main goroutine, after wg.Wait) folds them into a.Costs — see
+//     foldSubagentCost. This is the only point subagent cost touches the
+//     parent ledger, and it happens strictly after all workers have joined.
+//   - Limits: the child's CtxLimit is resolved by dispatchSubagent itself
+//     (inherit: a.CtxLimit directly, zero requests; override: through
+//     a.subagentLimitsCache, which is mutex-guarded and singleflights
+//     concurrent probes for the same endpoint+backend key — safe to call from
+//     every worker without duplicating probes).
 //   - consentedBackends: workers receive a snapshot copy; only Phase A writes
 //     the parent map.
 func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend string) []subagentJobResult {
@@ -120,13 +129,14 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 			// Slot acquired — this subagent is now actually running (was queued).
 			// sendEvent is goroutine-safe (Program.Send), same as chunk events.
 			a.sendEvent(SubagentActiveMsg{ChatID: jobs[i].ChatID})
-			summary, grounding, ctxSize, usedBackend := a.dispatchSubagent(
+			summary, grounding, ctxSize, usedBackend, costRows := a.dispatchSubagent(
 				ctx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].ChatID)
 			results[i] = subagentJobResult{
 				Summary:     summary,
 				Grounding:   grounding,
 				CtxSize:     ctxSize,
 				UsedBackend: usedBackend,
+				CostRows:    costRows,
 			}
 		}(i)
 	}
@@ -164,7 +174,11 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		return out
 	}
 
-	backend := ResolveSubagentBackend(a.SelectedBackend, a.Cfg.SubagentBackend)
+	// Backend resolution only applies when the child's resolved endpoint is
+	// kind ilm-proxy; for kind openai there is no backend-routing concept, so
+	// skip resolution entirely rather than compute an inert value.
+	backend := a.resolveSubagentBackendForEndpoint(a.resolvedSubagentEndpointKind())
+	a.ensureSubagentLimitsCache()
 	if !a.ensureSubagentConsent(backend) {
 		for _, j := range jobs {
 			out[j.Index] = declinedSubagentSummary(j.Task, backend).Render()
@@ -183,14 +197,19 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 	results := a.runSubagentJobs(ctx, jobs, backend)
 
 	// ---- Phase C: finalize in original order (main goroutine) ----
+	// Cost fold happens HERE, after wg.Wait() in Phase B has fully joined every
+	// worker — parent-state mutation (a.Costs) is safe only on this side of the
+	// goroutine boundary. No worker ever calls foldSubagentCost itself.
 	for k, j := range jobs {
 		r := results[k]
+		subagentCostUSD := foldSubagentCost(a.Costs, r.CostRows)
 		a.sendEvent(SubagentDoneMsg{
 			ChatID:       j.ChatID,
 			Grounding:    r.Grounding,
 			CtxSize:      r.CtxSize,
 			HardMaxBytes: subagentHardMaxBytes,
 			UsedBackend:  r.UsedBackend,
+			CostUSD:      subagentCostUSD,
 		})
 		fullJSON := r.Summary.Render()
 		result := fullJSON

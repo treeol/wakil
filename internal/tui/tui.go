@@ -144,6 +144,7 @@ type subTab struct {
 	chatID       string
 	backend      string           // resolved backend (from SubagentStartMsg.Backend)
 	usedBackend  string           // actual backend from last response (SubagentDoneMsg.UsedBackend)
+	costUSD      float64          // child's priced cost, folded into the parent tracker (SubagentDoneMsg.CostUSD)
 	buf          *strings.Builder // tool-call lines + final JSON output
 	grounding    []proxy.GroundingEntry
 	ctxSize      int
@@ -467,6 +468,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.ctxSize = msg.CtxSize
 				t.hardMaxBytes = msg.HardMaxBytes
 				t.usedBackend = msg.UsedBackend
+				t.costUSD = msg.CostUSD
 				break
 			}
 		}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
@@ -181,14 +182,271 @@ func declinedSubagentSummary(task, resolvedBackend string) SubagentSummary {
 	}
 }
 
+// subagentEndpointView is the resolved set of endpoint-identity fields for a
+// subagent dispatch — either mirrored live from the parent's Client (inherit)
+// or taken verbatim from a named EndpointConfig (override). Building the
+// child's proxy.Client from this view (rather than copying parent.Client
+// fields one-by-one) is what makes the endpoint kind always match the
+// child's actual target: there is exactly one place (resolveSubagentEndpointView)
+// that decides Kind/BaseURL/model/auth together, so they can never diverge.
+type subagentEndpointView struct {
+	name            string // endpoint key for cache/display; "" for inherit
+	kind            string
+	baseURL         string
+	model           string
+	configuredModel string
+	authHeader      string
+	temperature     *float64
+	topP            *float64
+	maxTokens       *int
+}
+
+// applyModelOverride patches in a /submodel model override, mirroring /model's
+// per-kind semantics: for kind=openai both Model and ConfiguredModel are set
+// (plain endpoints send ConfiguredModel on every request); for kind=ilm-proxy
+// only Model is set (the proxy alias/routing string, ConfiguredModel is
+// ignored). A /submodel override also invalidates the subagent limits cache
+// key implicitly: resolveChildCtxLimit keys on endpoint name + backend, and
+// the model is part of the probe — but since the model override is applied
+// to the view BEFORE resolveChildCtxLimit reads it, the probe uses the
+// overridden model. The cache key does NOT include the model, so a second
+// /submodel switch to a different model on the same endpoint+backend would
+// return a stale cached limit. This is an acceptable trade-off: the limits
+// cache is session-scoped and singleflight is primarily to deduplicate
+// parallel dispatches in ONE turn (all using the same override), not to
+// cache across /submodel switches. A /submodel switch is a user action that
+// also clears the cache via the command handler (see /submodel case).
+func (v *subagentEndpointView) applyModelOverride(model string) {
+	if model == "" || model == "inherit" {
+		return
+	}
+	v.model = model
+	if v.kind == config.EndpointKindOpenAI {
+		v.configuredModel = model
+	}
+}
+
+// resolveSubagentEndpointName returns the endpoint key the child should
+// target: session override (/subagent <name>) > config subagent_endpoint >
+// "" (inherit — the default, and the only path with no config present).
+func resolveSubagentEndpointName(a *App) string {
+	name := a.SubagentEndpointOverride
+	if name == "" {
+		name = a.Cfg.SubagentEndpoint
+	}
+	if name == "inherit" {
+		name = ""
+	}
+	return name
+}
+
+// resolveSubagentEndpointView resolves epName ("" = inherit) into a
+// subagentEndpointView and reports whether the inherit path was taken.
+//
+// Inherit builds the view from the parent's LIVE Client fields, not
+// cfg.ActiveEndpoint() — the parent may have /model- or /backend-switched
+// mid-session, and TestSubagentInheritsSwitchedEndpoint pins live-inheritance
+// semantics. This is also the golden no-op path: when epName is "" (the
+// default, no subagent_endpoint configured), every field below is copied
+// verbatim from a.Client exactly as the pre-endpoint-selection code did.
+func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, bool) {
+	if epName == "" {
+		v := subagentEndpointView{
+			kind:            a.Client.Kind,
+			baseURL:         a.Client.BaseURL,
+			model:           a.Client.Model,
+			configuredModel: a.Client.ConfiguredModel,
+			authHeader:      a.Client.AuthHeader,
+			temperature:     a.Client.Temperature,
+			topP:            a.Client.TopP,
+			maxTokens:       a.Client.MaxTokens,
+		}
+		v.applyModelOverride(a.SubagentModelOverride)
+		return v, true
+	}
+	ep, err := a.Cfg.NormalizeEndpoint(epName)
+	if err != nil {
+		// Defensive fallback only: config load (subagent_endpoint) and the
+		// /subagent command (session override) both validate the name before
+		// it ever reaches here, so this should be unreachable in practice —
+		// e.g. Endpoints mutated after validation. Fail open to inherit
+		// rather than aborting the dispatch.
+		fmt.Fprintf(a.Out, "⚠ subagent endpoint %q: %v — falling back to inherit\n", epName, err)
+		return a.resolveSubagentEndpointView("")
+	}
+	v := subagentEndpointView{
+		name:            epName,
+		kind:            ep.Kind,
+		baseURL:         strings.TrimRight(ep.BaseURL, "/"),
+		model:           ep.Model,
+		configuredModel: ep.Model,
+		authHeader:      a.Cfg.AuthHeaderFor(ep),
+		temperature:     ep.Temperature,
+		topP:            ep.TopP,
+		maxTokens:       ep.MaxTokens,
+	}
+	v.applyModelOverride(a.SubagentModelOverride)
+	return v, false
+}
+
+// resolvedSubagentEndpointKind returns the endpoint kind the next subagent
+// dispatch will target, without any network I/O — a pure, cheap lookup used
+// by callers to decide whether backend resolution applies at all (kind
+// ilm-proxy) or should be skipped entirely (kind openai has no
+// backend-routing concept; computing X-Ilm-Backend for it would be an inert
+// value, since Stream's proxyShape gate would never send it anyway).
+func (a *App) resolvedSubagentEndpointKind() string {
+	view, _ := a.resolveSubagentEndpointView(resolveSubagentEndpointName(a))
+	return view.kind
+}
+
+// resolveSubagentBackendForEndpoint computes the X-Ilm-Backend value for a
+// subagent dispatch, gated by the target endpoint's kind: ResolveSubagentBackend
+// (and subagent_backend) only apply when epKind is ilm-proxy. For kind openai,
+// backend resolution is skipped entirely — an openai endpoint IS the backend;
+// there is no proxy-side routing concept to select within it.
+func (a *App) resolveSubagentBackendForEndpoint(epKind string) string {
+	if epKind == config.EndpointKindOpenAI {
+		return ""
+	}
+	return ResolveSubagentBackend(a.SelectedBackend, a.Cfg.SubagentBackend)
+}
+
+// subagentLimitsCache deduplicates context-limit probes across concurrent
+// subagent dispatches that target the same overridden endpoint+backend:
+// MaxParallelSubagents workers racing to dispatch to the same subagent_endpoint
+// must fire at most one /props or /v1/ilm/limits probe, not N identical ones.
+// Session-scoped (lives on the parent App for its lifetime, via
+// App.subagentLimitsCachePtr). The zero value is directly usable. Never
+// consulted for the inherit path, which always reuses a.CtxLimit directly —
+// zero extra requests, preserving the golden no-op's request pattern exactly.
+type subagentLimitsCache struct {
+	mu      sync.Mutex
+	entries map[string]*subagentLimitsCacheEntry
+}
+
+// ensureSubagentLimitsCache lazily creates a.subagentLimitsCachePtr.
+// MAIN GOROUTINE ONLY — must be called before any worker goroutine spawns
+// (Phase A of runParallelSubagentBlock; the sequential dispatch_subagent
+// handler calls it too, for consistency, though a single dispatch has no
+// concurrent probes to dedup against). Idempotent: a second call is a no-op.
+func (a *App) ensureSubagentLimitsCache() {
+	if a.subagentLimitsCachePtr == nil {
+		a.subagentLimitsCachePtr = &subagentLimitsCache{}
+	}
+}
+
+// subagentLimitsCacheEntry singleflights one cache key: the first caller runs
+// the probe under once.Do; concurrent callers for the same key block until it
+// finishes, then all observe the same result — never a second probe.
+type subagentLimitsCacheEntry struct {
+	once  sync.Once
+	limit ContextLimit
+}
+
+// resolve returns the cached ContextLimit for key, running fn at most once
+// per key for the cache's lifetime (singleflight).
+func (c *subagentLimitsCache) resolve(key string, fn func() ContextLimit) ContextLimit {
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = map[string]*subagentLimitsCacheEntry{}
+	}
+	e, ok := c.entries[key]
+	if !ok {
+		e = &subagentLimitsCacheEntry{}
+		c.entries[key] = e
+	}
+	c.mu.Unlock()
+
+	e.once.Do(func() { e.limit = fn() })
+	return e.limit
+}
+
+// resolveChildCtxLimit resolves the ContextLimit the child should use.
+//
+// Inherit: reuse the parent's already-resolved a.CtxLimit directly with zero
+// extra requests. The child's live-inherited endpoint is, by construction,
+// the same one a.CtxLimit was last resolved for — /backend and /model
+// switches always re-resolve it (resolveBackendCtxCmd) — so there is nothing
+// to re-probe. This is also what keeps the golden no-op's request count at
+// zero additional HTTP calls.
+//
+// Override: probe the named endpoint via the existing pass-B per-kind
+// machinery, deduplicated through the session-scoped singleflight cache
+// (keyed by endpoint name + backend) so N parallel dispatches to the same
+// endpoint fire at most one probe. Bounded by the existing limitsTimeout
+// (5s) via the underlying fetch functions. On probe failure the ContextLimit
+// returned by the underlying resolver is fallback-tagged (Source=="fallback")
+// — that tag is deliberately NOT propagated to the child: this function
+// returns the zero ContextLimit instead, so the child falls through to the
+// hardcoded byte-constant floor exactly as before, rather than silently
+// adopting an unresolved 131072-token fallback as if it were known-good.
+func (a *App) resolveChildCtxLimit(ctx context.Context, view subagentEndpointView, backend string, inherited bool) ContextLimit {
+	if inherited {
+		return a.CtxLimit
+	}
+	cache := a.subagentLimitsCachePtr
+	if cache == nil {
+		// Caller didn't go through ensureSubagentLimitsCache (e.g. a test or
+		// call site invoking dispatchSubagent directly) — fall back to an
+		// unshared, call-local cache. Correct either way: with no cross-call
+		// sharing there is only this one call to dedup against.
+		cache = &subagentLimitsCache{}
+	}
+	key := view.name + "|" + backend
+	return cache.resolve(key, func() ContextLimit {
+		probeCfg := a.Cfg
+		probeCfg.Endpoint = config.EndpointConfig{
+			Kind:        view.kind,
+			BaseURL:     view.baseURL,
+			Model:       view.model,
+			AuthHeader:  view.authHeader, // already fully resolved (endpoint auth_header or api_key fallback)
+			Temperature: view.temperature,
+			TopP:        view.topP,
+			MaxTokens:   view.maxTokens,
+		}
+		probeCfg.EndpointName = view.name
+		probeCfg.BaseURL = view.baseURL
+		probeCfg.Model = view.model
+		probeCfg.APIKey = "" // avoid double-applying api_key: view.authHeader already resolved that fallback
+
+		var buf strings.Builder
+		lim := ResolveContextLimitForBackendModel(ctx, a.Client.HTTP, probeCfg, backend, view.model, &buf)
+		if lim.Source != "backend" {
+			fmt.Fprintf(a.Out, "⚠ subagent endpoint %q: context-limit probe failed — using byte-constant budgeting floor\n", view.name)
+			return ContextLimit{}
+		}
+		return lim
+	})
+}
+
+// foldSubagentCost merges the child's per-source cost rows into the parent's
+// tracker and returns the child's total priced cost. This is the ONLY place
+// a subagent's cost touches parent-shared state (variant a2: fold-on-completion
+// at the join point) — it must be called from the caller's side of the
+// goroutine boundary (the sequential dispatch_subagent case in app.go, or
+// Phase C of runParallelSubagentBlock), never from inside dispatchSubagent
+// itself, which is documented as safe to call from concurrent workers without
+// touching parent-shared state. nil tracker or empty rows → 0, no-op.
+func foldSubagentCost(tracker *proxy.CostTracker, rows []proxy.CostRow) float64 {
+	var total float64
+	for _, r := range rows {
+		tracker.Record(r.Source, r.InputTok, r.OutputTok, r.CostUSD, r.Priced, r.Confidence)
+		if r.Priced {
+			total += r.CostUSD
+		}
+	}
+	return total
+}
+
 // dispatchSubagentGated is the consent-then-dispatch sequence used by the
 // sequential (single-dispatch) path: run the egress gate, then dispatch.
 // MAIN GOROUTINE ONLY (it calls ensureSubagentConsent). The parallel path
 // must instead call ensureSubagentConsent once in its prepare phase and then
 // invoke dispatchSubagent directly from workers.
-func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string) {
+func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow) {
 	if !a.ensureSubagentConsent(resolvedBackend) {
-		return declinedSubagentSummary(task, resolvedBackend), nil, 0, ""
+		return declinedSubagentSummary(task, resolvedBackend), nil, 0, "", nil
 	}
 	return a.dispatchSubagent(ctx, task, progressOut, resolvedBackend, chatID...)
 }
@@ -196,10 +454,18 @@ func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOu
 // dispatchSubagent runs a bounded read-only discovery subagent for task and
 // returns a structured SubagentSummary. The subagent:
 //   - shares the parent's Executor (same filesystem, read-only toolset only)
-//   - uses a fresh Client (new ChatID, NoMemoryWrite=true)
-//   - routes to resolvedBackend (X-Ilm-Backend); egress consent must already
-//     have been granted by the caller via ensureSubagentConsent — this
-//     function never prompts and never touches a.consentedBackends
+//   - uses a fresh Client (new ChatID, NoMemoryWrite=true) targeting either
+//     the parent's live endpoint (inherit, the default) or a named endpoint
+//     from Cfg.Endpoints / the session /subagent override
+//   - routes to resolvedBackend (X-Ilm-Backend) ONLY when the child's
+//     resolved endpoint is kind ilm-proxy; resolvedBackend is ignored
+//     entirely for kind openai (the header is never sent for that kind, so
+//     computing a routing value for it would be inert — callers should use
+//     resolveSubagentBackendForEndpoint / resolvedSubagentEndpointKind to
+//     decide whether to resolve a backend at all before calling this)
+//   - egress consent must already have been granted by the caller via
+//     ensureSubagentConsent — this function never prompts and never touches
+//     a.consentedBackends
 //   - runs cap/evict/compact/enforceHardMax internally — bounded by its own HardMaxBytes
 //   - is completely silent (Out=io.Discard)
 //
@@ -207,31 +473,53 @@ func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOu
 // caller ran ensureSubagentConsent on the main goroutine first. It reads only
 // immutable parent fields (Client config, Cfg, Exec, BackendList) and builds
 // a fully isolated child App. The child receives a snapshot COPY of the
-// consent map, so no goroutine ever writes parent-shared state.
+// consent map, so no goroutine ever writes parent-shared state. The child's
+// own CostTracker is a fresh instance (never the parent's pointer) — cost
+// rows are returned to the caller for fold-on-completion at the join point,
+// never written into parent state from inside this function.
 //
 // Only the ≤4k rendered summary enters the parent's transcript; raw file content
 // examined by the subagent never touches the parent's Conv.
 //
 // The fourth return value is the X-Ilm-Backend-Used header from the subagent's
-// last Stream call (empty when the proxy didn't send it).
-func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string) {
+// last Stream call (empty when the proxy didn't send it). The fifth is the
+// child's per-source cost rows (proxy.CostTracker.Snapshot output) — nil when
+// nothing was priced or no usage was recorded — for the caller to fold into
+// the parent's tracker.
+func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow) {
 	subChatID := NewChatID()
 	if len(chatID) > 0 && chatID[0] != "" {
 		subChatID = chatID[0]
 	}
+
+	epName := resolveSubagentEndpointName(a)
+	view, inherited := a.resolveSubagentEndpointView(epName)
+
+	// Backend (X-Ilm-Backend) resolution is gated on the CHILD's resolved
+	// endpoint kind, not the parent's. On the inherit path this is exactly
+	// resolvedBackend as passed in (callers already resolved it against the
+	// parent's kind, which equals the child's kind when inherited — a no-op).
+	// On the override path, a kind mismatch between parent and child endpoint
+	// must not carry over a routing value that means nothing to the child's
+	// actual target.
+	backend := resolvedBackend
+	if !inherited && view.kind == config.EndpointKindOpenAI {
+		backend = ""
+	}
+
 	subClient := &proxy.Client{
-		BaseURL:         a.Client.BaseURL,
-		Model:           a.Client.Model,
-		Kind:            a.Client.Kind,            // endpoint kind gates the proxy-specific request shape
-		ConfiguredModel: a.Client.ConfiguredModel, // plain endpoints always send the configured model
-		Temperature:     a.Client.Temperature,
-		TopP:            a.Client.TopP,
-		MaxTokens:       a.Client.MaxTokens,
+		BaseURL:         view.baseURL,
+		Model:           view.model,
+		Kind:            view.kind,            // always the CHILD's actual kind — resolved together with BaseURL/model above, never divergent by construction
+		ConfiguredModel: view.configuredModel, // plain endpoints always send the configured model
+		Temperature:     view.temperature,
+		TopP:            view.topP,
+		MaxTokens:       view.maxTokens,
 		ChatID:          subChatID,
-		AuthHeader:      a.Client.AuthHeader,
+		AuthHeader:      view.authHeader,
 		NoMemoryWrite:   true,
-		HTTP:            a.Client.HTTP,
-		Backend:         resolvedBackend, // propagate X-Ilm-Backend (the P31 bug fix)
+		HTTP:            a.Client.HTTP, // shared transport pools per-host automatically; see discovery §6
+		Backend:         backend,       // propagate X-Ilm-Backend (the P31 bug fix) — gated above by the child's own kind
 		MaxRequestBytes: a.Client.MaxRequestBytes,
 	}
 
@@ -247,6 +535,15 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	if a.subMaxToolIter > 0 {
 		cfg.MaxToolIterations = a.subMaxToolIter
 	}
+	// Cost pricing and external-backend classification must reflect the
+	// CHILD's own endpoint/backend context (per the cost-fold requirement:
+	// classification uses IsExternalBackend fallback semantics against the
+	// child's own resolved backend, not the parent's), but the pricing TABLE
+	// itself is a session-wide setting the user configured once — carry it
+	// over so RecordInferenceCost inside the child can actually look up a
+	// rate instead of finding an empty CostsConfig on the fresh DefaultConfig().
+	cfg.Costs = a.Cfg.Costs
+	cfg.ExternalBackends = a.Cfg.ExternalBackends
 
 	if progressOut == nil {
 		progressOut = io.Discard
@@ -271,9 +568,11 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		ToolCache:         map[string]bool{},
 		IsSubagent:        true,
 		pinUserMessage:    true, // pin the task instruction so it survives compaction
-		SelectedBackend:   resolvedBackend,
+		SelectedBackend:   backend,
 		BackendList:       a.BackendList,
 		consentedBackends: consentSnapshot,
+		CtxLimit:          a.resolveChildCtxLimit(ctx, view, backend, inherited),
+		Costs:             proxy.NewCostTracker(), // fresh, never the parent's pointer — see foldSubagentCost at the join point
 	}
 	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(subagentSystemPrompt), Pinned: true}}
 
@@ -297,11 +596,12 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	confinementPathsFirstSend := sub.confinementPathsHit
 
 	if err != nil {
+		_, costRows := sub.Costs.Snapshot()
 		return SubagentSummary{
 			Objective:   task,
 			Findings:    []Finding{{Summary: Truncate("subagent error: "+err.Error(), 200), Kind: "error", Weight: "low"}},
 			Uncertainty: []string{"subagent failed with error"},
-		}, grounding, ctxSize, usedBackend
+		}, grounding, ctxSize, usedBackend, costRows
 	}
 
 	// Parse — two-stage fallback
@@ -368,5 +668,10 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		}
 	}
 
-	return summary, grounding, ctxSize, usedBackend
+	// Snapshot AFTER the retry Send (if any) so a retry's RecordInferenceCost
+	// call is included — the child's Costs tracker accumulates across both
+	// Send calls in this function, and this is the single point the caller's
+	// fold-on-completion (foldSubagentCost) reads from.
+	_, costRows := sub.Costs.Snapshot()
+	return summary, grounding, ctxSize, usedBackend, costRows
 }

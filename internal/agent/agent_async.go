@@ -1203,6 +1203,69 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		}
 		return true, false, note("model: " + cur)
 
+	case "/subagent":
+		// /subagent [<endpoint-name>|inherit] — set, show, or reset which
+		// endpoint dispatch_subagent targets for this session. Deliberately a
+		// distinct command, not an overload of /model or /backend: both of
+		// those parse only fields[1] and silently drop any further token, so
+		// a scope-modifier form like "/model subagent <name>" would set the
+		// model to the literal string "subagent" and silently discard the
+		// intended endpoint name — see the discovery scan's parsing-trap note.
+		// Session-scoped, like /model; the config file's subagent_endpoint is
+		// the persistent default this overrides.
+		if len(fields) >= 2 {
+			name := fields[1]
+			if name == "inherit" {
+				app.SubagentEndpointOverride = ""
+				return true, false, note("subagent endpoint: inherit (parent endpoint)")
+			}
+			if _, err := app.Cfg.NormalizeEndpoint(name); err != nil {
+				return true, false, note(fmt.Sprintf("subagent endpoint %q: %v — not set", name, err))
+			}
+			app.SubagentEndpointOverride = name
+			return true, false, note("subagent endpoint: set to " + name)
+		}
+		epName := resolveSubagentEndpointName(app)
+		if epName == "" {
+			return true, false, note("subagent endpoint: inherit (parent endpoint)")
+		}
+		view, _ := app.resolveSubagentEndpointView(epName)
+		return true, false, note(fmt.Sprintf("subagent endpoint: %s (kind %s, model %s)", epName, view.kind, view.model))
+
+	case "/submodel":
+		// /submodel [<name>|inherit] — set, show, or reset the model override
+		// for dispatch_subagent, mirroring /model's semantics but scoped to
+		// subagents. Overrides only the model string; kind/base_url/auth are
+		// left to /subagent (or inherit). Composes with /subagent: set the
+		// endpoint with /subagent, then the model with /submodel. No
+		// server-side validation — a bad name surfaces as a request error.
+		// Session-scoped, like /model.
+		if len(fields) >= 2 {
+			name := fields[1]
+			if name == "inherit" {
+				app.SubagentModelOverride = ""
+				// Clear the limits cache so the next dispatch re-probes with
+				// the endpoint's original model, not the stale override.
+				app.subagentLimitsCachePtr = nil
+				return true, false, note("subagent model: inherit (endpoint model)")
+			}
+			app.SubagentModelOverride = name
+			// Clear the limits cache so the next dispatch probes the new
+			// model's context window rather than returning a stale cached
+			// limit from the previous model.
+			app.subagentLimitsCachePtr = nil
+			return true, false, note("subagent model: set to " + name)
+		}
+		cur := app.SubagentModelOverride
+		if cur == "" {
+			// Show what the child will actually use: the override if set,
+			// else the resolved endpoint's model.
+			epName := resolveSubagentEndpointName(app)
+			view, _ := app.resolveSubagentEndpointView(epName)
+			cur = view.model
+		}
+		return true, false, note("subagent model: " + cur)
+
 	case "/counsel":
 		// /counsel [auto|suggest|off] — set or show the auto-counsel mode.
 		if len(fields) < 2 {
@@ -1502,6 +1565,12 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /backend             show current backend selection and last-used backend
 /model <name>        set the model for this session (overrides backend default)
 /model               show current model
+/subagent <name>     set which endpoint dispatch_subagent targets this session
+/subagent inherit    reset dispatch_subagent to follow the parent's endpoint
+/subagent            show current subagent endpoint selection
+/submodel <name>     set the model for dispatch_subagent (overrides endpoint model)
+/submodel inherit    reset subagent model to the endpoint's configured model
+/submodel            show current subagent model
 /plan <task>         start a gather→plan→review→implement workflow for <task>
 /plan --oracle=MODE  set per-run oracle schedule (every-step|on-deviation|phases-only)
 /plan status         show current workflow phase and step

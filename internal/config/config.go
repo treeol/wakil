@@ -193,6 +193,22 @@ type Config struct {
 	// Default: "inherit".
 	SubagentBackend string `json:"subagent_backend,omitempty"`
 
+	// SubagentEndpoint controls which endpoint (from the "endpoints" block)
+	// dispatch_subagent uses. Orthogonal to SubagentBackend: SubagentBackend
+	// selects a *backend* within an ilm-proxy endpoint, while SubagentEndpoint
+	// selects which endpoint the subagent talks to in the first place.
+	// SubagentBackend only applies when the child's resolved endpoint is kind
+	// "ilm-proxy" — a kind "openai" endpoint has no backend concept.
+	//   "" or "inherit" (default): the child follows the parent's live
+	//     endpoint (kind, base_url, model, auth, sampling) exactly — including
+	//     mid-session /backend or /model switches. This is the pre-existing
+	//     behavior and remains the default.
+	//   "<name>": a key into Endpoints — the child always targets that named
+	//     endpoint regardless of the parent's current selection.
+	// Validated at config load: a value other than "", "inherit", or a key
+	// present in Endpoints fails LoadConfig with an error naming the missing key.
+	SubagentEndpoint string `json:"subagent_endpoint,omitempty"`
+
 	// MaxParallelSubagents bounds how many dispatch_subagent workers may run
 	// concurrently when the model emits several dispatches in one turn (or via
 	// the dispatch_subagents batch tool). Values ≤ 1 mean sequential execution
@@ -534,6 +550,9 @@ func LoadConfig(argv []string) (Config, error) {
 	if err := resolveEndpoint(&cfg, flagsSet); err != nil {
 		return cfg, err
 	}
+	if err := validateSubagentEndpoint(cfg); err != nil {
+		return cfg, err
+	}
 	if cfg.ExecMode != "docker" && cfg.ExecMode != "direct" {
 		return cfg, fmt.Errorf("invalid exec mode %q (want docker|direct)", cfg.ExecMode)
 	}
@@ -721,6 +740,23 @@ func resolveEndpoint(cfg *Config, flagsSet map[string]bool) error {
 	return nil
 }
 
+// validateSubagentEndpoint checks that subagent_endpoint, when set to
+// something other than "" or "inherit", names a key present in Endpoints.
+// Called after resolveEndpoint so Endpoints is fully populated by the time
+// this runs (env/flag overrides don't touch Endpoints, so ordering relative
+// to those doesn't matter).
+func validateSubagentEndpoint(cfg Config) error {
+	switch cfg.SubagentEndpoint {
+	case "", "inherit":
+		return nil
+	default:
+		if _, ok := cfg.Endpoints[cfg.SubagentEndpoint]; !ok {
+			return fmt.Errorf("subagent_endpoint %q not found in endpoints block", cfg.SubagentEndpoint)
+		}
+		return nil
+	}
+}
+
 // ActiveEndpoint returns the resolved endpoint. For Configs built by hand
 // (tests, subagents) that never went through LoadConfig, it synthesizes the
 // legacy ilm-proxy shape from the top-level fields — preserving pre-endpoints
@@ -737,15 +773,57 @@ func (c Config) ActiveEndpoint() EndpointConfig {
 }
 
 func (c Config) AuthHeader() string {
-	// An endpoint-level auth_header (verbatim Authorization value) wins over
-	// the legacy api_key ("Bearer <key>").
-	if c.Endpoint.AuthHeader != "" {
-		return c.Endpoint.AuthHeader
+	return c.AuthHeaderFor(c.Endpoint)
+}
+
+// AuthHeaderFor returns the Authorization header value for an arbitrary
+// endpoint entry: the endpoint's own auth_header (verbatim Authorization
+// value) wins over the legacy api_key ("Bearer <key>") fallback. Mirrors
+// AuthHeader() but works for any EndpointConfig, not just the currently
+// active one — used to resolve a named endpoint that may differ from
+// c.Endpoint (e.g. a subagent_endpoint override).
+func (c Config) AuthHeaderFor(ep EndpointConfig) string {
+	if ep.AuthHeader != "" {
+		return ep.AuthHeader
 	}
 	if c.APIKey == "" {
 		return ""
 	}
 	return "Bearer " + c.APIKey
+}
+
+// NormalizeEndpoint resolves and validates a named entry from the Endpoints
+// block, applying the same defaulting rules used when an endpoint becomes
+// active (resolveEndpoint at config load, handleEndpointSwitch on /backend):
+// Kind defaults to "openai" when empty; kind=ilm-proxy defaults Model to
+// "ilm" when empty; kind=openai requires Model; base_url is always required.
+// Unlike ActiveEndpoint(), this works for any key in Endpoints, not just the
+// currently active one — used to resolve a subagent_endpoint override that
+// may name a different entry than the session's current endpoint.
+func (c Config) NormalizeEndpoint(name string) (EndpointConfig, error) {
+	ep, ok := c.Endpoints[name]
+	if !ok {
+		return EndpointConfig{}, fmt.Errorf("endpoint %q not found in endpoints block", name)
+	}
+	if ep.Kind == "" {
+		ep.Kind = EndpointKindOpenAI
+	}
+	switch ep.Kind {
+	case EndpointKindOpenAI:
+		if ep.Model == "" {
+			return EndpointConfig{}, fmt.Errorf("endpoint %q: model is required for kind %q", name, EndpointKindOpenAI)
+		}
+	case EndpointKindIlmProxy:
+		if ep.Model == "" {
+			ep.Model = "ilm"
+		}
+	default:
+		return EndpointConfig{}, fmt.Errorf("endpoint %q: unknown kind %q (want %q or %q)", name, ep.Kind, EndpointKindOpenAI, EndpointKindIlmProxy)
+	}
+	if ep.BaseURL == "" {
+		return EndpointConfig{}, fmt.Errorf("endpoint %q: base_url is required", name)
+	}
+	return ep, nil
 }
 
 // validateContextLimits checks the four context-management sizing fields for

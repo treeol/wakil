@@ -199,6 +199,61 @@ func TestComputeSlashCompletionResumeArg(t *testing.T) {
 	}
 }
 
+func TestComputeSlashCompletionSubagentNarrowing(t *testing.T) {
+	src := compSources{}
+	st := computeSlashCompletion(newTA("/su"), src)
+	if !st.active {
+		t.Fatal("picker should activate for /su")
+	}
+	// Both /subagent and /submodel start with /su.
+	names := map[string]bool{}
+	for _, c := range st.cands {
+		names[c.name] = true
+	}
+	if !names["/subagent"] || !names["/submodel"] {
+		t.Errorf("expected /subagent and /submodel; got %v", names)
+	}
+	// /sub narrows further to only /subagent.
+	st = computeSlashCompletion(newTA("/suba"), src)
+	if len(st.cands) != 1 || st.cands[0].name != "/subagent" {
+		t.Errorf("expected only /subagent for /suba; got %+v", st.cands)
+	}
+}
+
+func TestComputeSlashCompletionSubmodelNarrowing(t *testing.T) {
+	src := compSources{}
+	st := computeSlashCompletion(newTA("/subm"), src)
+	if !st.active {
+		t.Fatal("picker should activate for /subm")
+	}
+	if len(st.cands) != 1 || st.cands[0].name != "/submodel" {
+		t.Errorf("expected only /submodel; got %+v", st.cands)
+	}
+}
+
+func TestComputeSlashCompletionSubmodelArg(t *testing.T) {
+	src := compSources{models: []string{"claude-sonnet-4-6", "claude-opus-4-8", "qwen3-8b"}}
+	st := computeSlashCompletion(newTA("/submodel claude"), src)
+	if !st.active {
+		t.Fatal("picker should activate after /submodel ")
+	}
+	// Both claude-* models match "claude" (substring).
+	if len(st.cands) != 2 {
+		t.Errorf("expected 2 claude-* models; got %+v", st.cands)
+	}
+}
+
+func TestComputeSlashCompletionSubagentArg(t *testing.T) {
+	src := compSources{endpoints: []string{"inherit", "openai-a", "proxy-b"}}
+	st := computeSlashCompletion(newTA("/subagent proxy"), src)
+	if !st.active {
+		t.Fatal("picker should activate after /subagent ")
+	}
+	if len(st.cands) != 1 || st.cands[0].name != "proxy-b" {
+		t.Errorf("expected proxy-b; got %+v", st.cands)
+	}
+}
+
 func TestComputeSlashCompletionNoArgForOtherCommands(t *testing.T) {
 	src := compSources{}
 	// /compact takes no argument — picker should be inactive after the space.
@@ -320,6 +375,32 @@ func TestSlashPickerLiveModelFires(t *testing.T) {
 	if !strings.Contains(view, "claude-sonnet-4-6") {
 		t.Errorf("rendered view missing model name; got snippet: %q",
 			view[max(0, len(view)-400):])
+	}
+}
+
+func TestSlashPickerLiveSubagentFires(t *testing.T) {
+	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
+	app.Cfg.Endpoints = map[string]config.EndpointConfig{
+		"openai-a": {Kind: config.EndpointKindOpenAI, BaseURL: "http://x", Model: "m"},
+	}
+	m := NewTUIModel(app)
+	m = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = typeString(m, "/subagent ")
+
+	if !m.comp.active {
+		t.Fatalf("picker should be active after /subagent ; active=%v cands=%d",
+			m.comp.active, len(m.comp.cands))
+	}
+	names := map[string]bool{}
+	for _, c := range m.comp.cands {
+		names[c.name] = true
+	}
+	if !names["inherit"] || !names["openai-a"] {
+		t.Errorf("subagent arg picker missing expected names; got %v", names)
+	}
+	view := plain(m.View())
+	if !strings.Contains(view, "openai-a") {
+		t.Errorf("rendered view missing endpoint name")
 	}
 }
 
