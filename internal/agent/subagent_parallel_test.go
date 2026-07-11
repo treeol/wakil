@@ -65,8 +65,8 @@ func TestConcurrentDispatchAfterConsentHoist(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			s, _, _, _, _ := parent.dispatchSubagent(context.Background(),
-				fmt.Sprintf("task %d", i), io.Discard, "openrouter")
+			s, _, _, _, _, _ := parent.dispatchSubagent(context.Background(),
+				fmt.Sprintf("task %d", i), io.Discard, "openrouter", "")
 			summaries[i] = s
 		}(i)
 	}
@@ -106,7 +106,7 @@ func TestDispatchGatedDecline(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return false },
 	}
 
-	summary, _, _, _, _ := parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter")
+	summary, _, _, _, _, _ := parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter", "")
 	if requestCount != 0 {
 		t.Errorf("declined dispatch must not make a request; got %d", requestCount)
 	}

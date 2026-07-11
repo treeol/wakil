@@ -326,7 +326,7 @@ func TestExhaustedSubagentReturnsIncompleteStatusRealPath(t *testing.T) {
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	parent.subMaxToolIter = 1 // force exhaustion after 1 tool iteration
 
-	summary, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find things", io.Discard, "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find things", io.Discard, "", "")
 
 	if summary.Status != "incomplete" {
 		t.Errorf("status = %q, want 'incomplete' (subagent hit MaxToolIterations=1)", summary.Status)
@@ -372,7 +372,7 @@ func TestExhaustionSurvivesRetryRealPath(t *testing.T) {
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	parent.subMaxToolIter = 1 // force exhaustion on first Send
 
-	summary, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find", io.Discard, "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find", io.Discard, "", "")
 
 	// Despite the retry producing valid JSON, the first-Send exhaustion must
 	// be captured and produce Status:"incomplete".

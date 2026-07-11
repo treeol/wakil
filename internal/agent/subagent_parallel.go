@@ -31,9 +31,10 @@ import (
 // worker goroutine. Index points back at the originating tool call so results
 // can be finalized in original call order.
 type subagentJob struct {
-	Index  int
-	Task   string
-	ChatID string
+	Index      int
+	Task       string
+	ChatID     string
+	Capability string
 }
 
 // subagentJobResult carries one worker's outcome back to the main goroutine.
@@ -43,6 +44,7 @@ type subagentJobResult struct {
 	CtxSize     int
 	UsedBackend string
 	CostRows    []proxy.CostRow // child's own priced rows; folded into a.Costs in Phase C only
+	FilesChanged []string       // mechanical record of canonical paths touched (edit-tier only)
 }
 
 // cancelledJobResult is the truthful summary for a job that never ran (or was
@@ -83,7 +85,10 @@ func panicJobResult(task string, r interface{}) subagentJobResult {
 //   - Executor: shared with workers. RunShell/ReadFile/ListDir compose fresh
 //     commands per call (runFromRoot); the one lazily-written cache
 //     (SandboxTools probe) is sync.Once-guarded. Discovery tools are
-//     read-only, so no workspace write races from workers.
+//     read-only, so no workspace write races from discovery workers. Edit-
+//     tier children are serialized by subagentWriterMu (at most one edit
+//     child executing at a time); discovery children still parallelize freely,
+//     including alongside one running edit child.
 //   - Costs: each child App gets its OWN fresh CostTracker (never a.Costs, the
 //     parent's pointer) — RecordInferenceCost inside a child Send writes only
 //     to that private tracker, so no worker ever touches parent-shared cost
@@ -129,14 +134,15 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 			// Slot acquired — this subagent is now actually running (was queued).
 			// sendEvent is goroutine-safe (Program.Send), same as chunk events.
 			a.sendEvent(SubagentActiveMsg{ChatID: jobs[i].ChatID})
-			summary, grounding, ctxSize, usedBackend, costRows := a.dispatchSubagent(
-				ctx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].ChatID)
+			summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(
+				ctx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].ChatID)
 			results[i] = subagentJobResult{
-				Summary:     summary,
-				Grounding:   grounding,
-				CtxSize:     ctxSize,
-				UsedBackend: usedBackend,
-				CostRows:    costRows,
+				Summary:      summary,
+				Grounding:    grounding,
+				CtxSize:      ctxSize,
+				UsedBackend:  usedBackend,
+				CostRows:     costRows,
+				FilesChanged: filesChanged,
 			}
 		}(i)
 	}
@@ -158,7 +164,8 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 	jobs := make([]subagentJob, 0, len(block))
 	for i, tc := range block {
 		var args struct {
-			Task string `json:"task"`
+			Task       string `json:"task"`
+			Capability string `json:"capability"`
 		}
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			out[i] = fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -168,7 +175,26 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 			out[i] = "ERROR: task is required"
 			continue
 		}
-		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID()})
+		capability := args.Capability
+		if capability == "" {
+			capability = wtools.CapabilityDiscovery
+		}
+		if !wtools.ValidCapability(capability) {
+			out[i] = fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q",
+				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit)
+			continue
+		}
+		// Consent gate (same as sequential path at app.go — the two must move
+		// together): edit capability requires session write consent. The parent's
+		// write predicate for edit-category tools is AutoApprove alone (see the
+		// verbatim trace in the comment at app.go's dispatch_subagent case).
+		// INVARIANT: child may write iff parent may write.
+		if capability == wtools.CapabilityEdit && !a.AutoApprove {
+			out[i] = "ERROR: edit capability requires /auto or --auto (session write consent). " +
+				"Re-dispatch with capability \"discovery\" (the default) for read-only research."
+			continue
+		}
+		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability})
 	}
 	if len(jobs) == 0 {
 		return out
@@ -210,11 +236,16 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 			HardMaxBytes: subagentHardMaxBytes,
 			UsedBackend:  r.UsedBackend,
 			CostUSD:      subagentCostUSD,
+			FilesChanged: r.FilesChanged,
 		})
 		fullJSON := r.Summary.Render()
 		result := fullJSON
 		if spillPath := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); spillPath != "" {
 			result = fullJSON + fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
+		}
+		// Append the mechanical files_changed list (ground truth) for edit-tier.
+		if len(r.FilesChanged) > 0 {
+			result += renderFilesChanged(r.Summary.FilesChanged, r.FilesChanged)
 		}
 		if r.Summary.Status == "incomplete" {
 			fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(j.Task, 80)))

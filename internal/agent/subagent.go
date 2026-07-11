@@ -10,7 +10,7 @@ import (
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
-	"github.com/treeol/wakil/internal/tools"
+	wtools "github.com/treeol/wakil/internal/tools"
 )
 
 // Subagent context budget constants. Conservative for a 32k-token backend;
@@ -36,6 +36,7 @@ type SubagentSummary struct {
 	Skipped     []SkippedItem `json:"skipped,omitempty"`
 	Uncertainty []string      `json:"uncertainty,omitempty"`
 	SpillRefs   []SpillRef    `json:"spill_refs,omitempty"`
+	FilesChanged []string     `json:"files_changed,omitempty"` // model self-report for edit-tier; mechanical record is ground truth
 }
 
 // Finding is one discrete result the parent should consider acting on.
@@ -99,6 +100,23 @@ Rules:
 - List files you could not reach in skipped[].
 - Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.`
 
+// subagentEditSystemPrompt instructs an edit-capable subagent to make bounded
+// changes and report every file it modified. Zero interpolation — all edit-tier
+// dispatches must share a byte-identical prefix among themselves, exactly as
+// discovery-tier dispatches do (see the cache-pass prefix-stability property).
+const subagentEditSystemPrompt = `You are a focused subagent with edit capability. Use list_dir and find_files to navigate, search_files to grep, and read_file (offset/limit for large files) or read_file_full (complete file in one call, up to ~256 KB) to read. Use edit_file for targeted changes to existing files, write_file to create or replace files, delete_file to remove files, and move_file to rename or move. Make bounded, minimal changes — do not refactor beyond the task. Then respond with ONLY a valid JSON object — no prose, no markdown, no code fences.
+
+Required schema (omit empty arrays):
+{"objective":"<task echoed>","status":"<omit unless incomplete>","findings":[{"summary":"<≤200 chars>","location":"<file:line or path>","kind":"match|pattern|error|fact|ref","weight":"high|medium|low"}],"checked":[{"path":"<path>","size_k":<int>,"status":"full|truncated|stub-only"}],"skipped":[{"path":"<path>","reason":"budget-exhausted|inaccessible|out-of-scope|declined"}],"uncertainty":["<≤100 chars>"],"spill_refs":[{"tool_name":"<name>","path":"<spill-path>","size_k":<int>}],"files_changed":["<canonical path of every file you modified>"]}
+
+Rules:
+- Emit ONLY the JSON object. Nothing before {, nothing after }.
+- Keep total rendered JSON under 4000 characters.
+- List every file you examined in checked[]; set status: full|truncated|stub-only.
+- List files you could not reach in skipped[].
+- List every file you modified (created, edited, deleted, or moved) in files_changed[]. For move_file, list both src and dst.
+- Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.`
+
 // subagentRetryPrompt is sent on parse failure to request a clean JSON retry.
 const subagentRetryPrompt = `Your previous response was not valid JSON. Respond with ONLY the JSON object — no text before {, no text after }. Start directly with { and end with }.`
 
@@ -136,10 +154,65 @@ func subagentProgressOut(parent *App, chatID string) io.Writer {
 	})
 }
 
+// subagentWriterMu serializes edit-capable children: at most one edit child
+// executing at a time. Discovery children are unaffected and still parallelize
+// freely, including alongside one running edit child. The parent is strictly
+// blocked during both dispatch modes (sequential: dispatchSubagent is synchronous;
+// parallel: wg.Wait joins all workers), so the lock only needs to serialize
+// children among themselves — the parallel path under the semaphore
+// (subagent_parallel.go runSubagentJobs).
+var subagentWriterMu sync.Mutex
+
 // readOnlyConfirmer auto-approves read actions and silently declines mutations.
 // discoveryTools contains no mutating tools; this is belt-and-suspenders.
 func readOnlyConfirmer() Confirmer {
 	return func(_, _, _ string, readAction bool) bool { return readAction }
+}
+
+// editConfirmer auto-approves read actions and edit-category tool calls
+// (write_file, edit_file, delete_file, move_file), and declines everything
+// else (exec tools: run_shell, run_background, kill_process). The child never
+// prompts — consent was established at the session level before dispatch.
+func editConfirmer() Confirmer {
+	return func(toolName, _, _ string, readAction bool) bool {
+		if readAction {
+			return true
+		}
+		return wtools.IsEditTool(toolName)
+	}
+}
+
+// filesChangedRecorder tracks canonical paths touched by successful edit-category
+// tool calls. It is carried on the child App and populated during the child's
+// tool-execution loop. Deduplicated, order-preserving. move_file records both
+// src and dst. Failed calls (ERROR: or [declined by user]) are not recorded.
+type filesChangedRecorder struct {
+	paths map[string]bool // dedup set
+	list  []string        // order-preserving
+}
+
+func newFilesChangedRecorder() *filesChangedRecorder {
+	return &filesChangedRecorder{paths: map[string]bool{}}
+}
+
+// record appends path if it is not already recorded. Called only for successful
+// edit-category tool calls with the post-ConfinePath canonical path.
+// Nil-safe: no-op when the recorder is nil (parent, discovery-tier children).
+func (r *filesChangedRecorder) record(path string) {
+	if r == nil || path == "" || r.paths[path] {
+		return
+	}
+	r.paths[path] = true
+	r.list = append(r.list, path)
+}
+
+// snapshot returns the deduplicated, order-preserving list (nil when empty or
+// when the recorder is nil — discovery-tier children have no recorder).
+func (r *filesChangedRecorder) snapshot() []string {
+	if r == nil || len(r.list) == 0 {
+		return nil
+	}
+	return r.list
 }
 
 // ensureSubagentConsent runs the egress consent gate for resolvedBackend on
@@ -199,6 +272,7 @@ type subagentEndpointView struct {
 	temperature     *float64
 	topP            *float64
 	maxTokens       *int
+	cachePrompt     *bool
 }
 
 // applyModelOverride patches in a /submodel model override, mirroring /model's
@@ -260,6 +334,7 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 			temperature:     a.Client.Temperature,
 			topP:            a.Client.TopP,
 			maxTokens:       a.Client.MaxTokens,
+			cachePrompt:     a.Client.CachePrompt,
 		}
 		v.applyModelOverride(a.SubagentModelOverride)
 		return v, true
@@ -284,6 +359,7 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 		temperature:     ep.Temperature,
 		topP:            ep.TopP,
 		maxTokens:       ep.MaxTokens,
+		cachePrompt:     ep.CachePrompt,
 	}
 	v.applyModelOverride(a.SubagentModelOverride)
 	return v, false
@@ -431,7 +507,7 @@ func (a *App) resolveChildCtxLimit(ctx context.Context, view subagentEndpointVie
 func foldSubagentCost(tracker *proxy.CostTracker, rows []proxy.CostRow) float64 {
 	var total float64
 	for _, r := range rows {
-		tracker.Record(r.Source, r.InputTok, r.OutputTok, r.CostUSD, r.Priced, r.Confidence)
+		tracker.Record(r.Source, r.InputTok, r.OutputTok, r.CostUSD, r.Priced, r.Confidence, r.CachedTok)
 		if r.Priced {
 			total += r.CostUSD
 		}
@@ -444,30 +520,33 @@ func foldSubagentCost(tracker *proxy.CostTracker, rows []proxy.CostRow) float64 
 // MAIN GOROUTINE ONLY (it calls ensureSubagentConsent). The parallel path
 // must instead call ensureSubagentConsent once in its prepare phase and then
 // invoke dispatchSubagent directly from workers.
-func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow) {
+func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
 	if !a.ensureSubagentConsent(resolvedBackend) {
-		return declinedSubagentSummary(task, resolvedBackend), nil, 0, "", nil
+		return declinedSubagentSummary(task, resolvedBackend), nil, 0, "", nil, nil
 	}
-	return a.dispatchSubagent(ctx, task, progressOut, resolvedBackend, chatID...)
+	return a.dispatchSubagent(ctx, task, progressOut, resolvedBackend, capability, chatID...)
 }
 
-// dispatchSubagent runs a bounded read-only discovery subagent for task and
-// returns a structured SubagentSummary. The subagent:
-//   - shares the parent's Executor (same filesystem, read-only toolset only)
+// dispatchSubagent runs a bounded subagent for task and returns a structured
+// SubagentSummary. The subagent:
+//   - shares the parent's Executor (same filesystem)
 //   - uses a fresh Client (new ChatID, NoMemoryWrite=true) targeting either
 //     the parent's live endpoint (inherit, the default) or a named endpoint
 //     from Cfg.Endpoints / the session /subagent override
 //   - routes to resolvedBackend (X-Ilm-Backend) ONLY when the child's
 //     resolved endpoint is kind ilm-proxy; resolvedBackend is ignored
-//     entirely for kind openai (the header is never sent for that kind, so
-//     computing a routing value for it would be inert — callers should use
-//     resolveSubagentBackendForEndpoint / resolvedSubagentEndpointKind to
-//     decide whether to resolve a backend at all before calling this)
+//     entirely for kind openai
 //   - egress consent must already have been granted by the caller via
 //     ensureSubagentConsent — this function never prompts and never touches
 //     a.consentedBackends
 //   - runs cap/evict/compact/enforceHardMax internally — bounded by its own HardMaxBytes
 //   - is completely silent (Out=io.Discard)
+//
+// capability selects the toolset, confirmer, and system prompt:
+//   - CapabilityDiscovery (default, ""): read-only 5 tools, readOnlyConfirmer,
+//     subagentSystemPrompt
+//   - CapabilityEdit: 9 tools (5 read + 4 edit), editConfirmer, subagentEditSystemPrompt;
+//     serialized by subagentWriterMu so at most one edit child runs at a time
 //
 // CONCURRENCY: safe to call from multiple goroutines at once, provided the
 // caller ran ensureSubagentConsent on the main goroutine first. It reads only
@@ -481,16 +560,16 @@ func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOu
 // Only the ≤4k rendered summary enters the parent's transcript; raw file content
 // examined by the subagent never touches the parent's Conv.
 //
-// The fourth return value is the X-Ilm-Backend-Used header from the subagent's
-// last Stream call (empty when the proxy didn't send it). The fifth is the
-// child's per-source cost rows (proxy.CostTracker.Snapshot output) — nil when
-// nothing was priced or no usage was recorded — for the caller to fold into
-// the parent's tracker.
-func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow) {
+// Returns: summary, grounding, ctxSize, usedBackend, costRows, filesChanged.
+// filesChanged is the mechanically-recorded canonical paths touched by successful
+// edit-category tool calls (nil for discovery-tier).
+func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
 	subChatID := NewChatID()
 	if len(chatID) > 0 && chatID[0] != "" {
 		subChatID = chatID[0]
 	}
+
+	isEdit := capability == wtools.CapabilityEdit
 
 	epName := resolveSubagentEndpointName(a)
 	view, inherited := a.resolveSubagentEndpointView(epName)
@@ -515,6 +594,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		Temperature:     view.temperature,
 		TopP:            view.topP,
 		MaxTokens:       view.maxTokens,
+		CachePrompt:     view.cachePrompt,
 		ChatID:          subChatID,
 		AuthHeader:      view.authHeader,
 		NoMemoryWrite:   true,
@@ -557,12 +637,37 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		consentSnapshot[k] = v
 	}
 
+	// Select toolset, confirmer, and system prompt by capability. Discovery is
+	// the golden no-op path: the three fields are byte-identical to the pre-
+	// capability code. Edit adds the 4 edit tools, an edit confirmer, and the
+	// edit-tier prompt const.
+	var childTools []proxy.Tool
+	var childConfirmer Confirmer
+	var childPrompt string
+	if isEdit {
+		childTools = wtools.EditTools(a.Exec.Cwd())
+		childConfirmer = editConfirmer()
+		childPrompt = subagentEditSystemPrompt
+	} else {
+		childTools = wtools.DiscoveryTools(a.Exec.Cwd())
+		childConfirmer = readOnlyConfirmer()
+		childPrompt = subagentSystemPrompt
+	}
+
+	// filesChangedRecorder tracks canonical paths touched by successful edit-
+	// category tool calls. Populated during the child's Send loop via a wrapper
+	// around ExecuteToolCall; read here at construction (nil for discovery).
+	var fileRecorder *filesChangedRecorder
+	if isEdit {
+		fileRecorder = newFilesChangedRecorder()
+	}
+
 	sub := &App{
 		Cfg:               cfg,
 		Client:            subClient,
 		Exec:              a.Exec,
-		Tools:             tools.DiscoveryTools(a.Exec.Cwd()),
-		Confirm:           readOnlyConfirmer(),
+		Tools:             childTools,
+		Confirm:           childConfirmer,
 		Out:               progressOut,
 		Session:           nil,
 		ToolCache:         map[string]bool{},
@@ -574,7 +679,19 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		CtxLimit:          a.resolveChildCtxLimit(ctx, view, backend, inherited),
 		Costs:             proxy.NewCostTracker(), // fresh, never the parent's pointer — see foldSubagentCost at the join point
 	}
-	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(subagentSystemPrompt), Pinned: true}}
+	sub.filesChanged = fileRecorder
+	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(childPrompt), Pinned: true}}
+
+	// Edit-tier children are serialized by the writer lock: at most one edit
+	// child executing at a time. Discovery children are unaffected. The lock
+	// is held for the duration of the child's run (around its Send loop), not
+	// per-tool-call — per-tool interleaving of two writers is exactly what
+	// we're excluding. The parent is strictly blocked during dispatch (the
+	// call is synchronous), so this only serializes children among themselves.
+	if isEdit {
+		subagentWriterMu.Lock()
+		defer subagentWriterMu.Unlock()
+	}
 
 	raw, err := sub.Send(ctx, task)
 	grounding := sub.Client.Grounding()
@@ -601,7 +718,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 			Objective:   task,
 			Findings:    []Finding{{Summary: Truncate("subagent error: "+err.Error(), 200), Kind: "error", Weight: "low"}},
 			Uncertainty: []string{"subagent failed with error"},
-		}, grounding, ctxSize, usedBackend, costRows
+		}, grounding, ctxSize, usedBackend, costRows, fileRecorder.snapshot()
 	}
 
 	// Parse — two-stage fallback
@@ -673,5 +790,5 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// Send calls in this function, and this is the single point the caller's
 	// fold-on-completion (foldSubagentCost) reads from.
 	_, costRows := sub.Costs.Snapshot()
-	return summary, grounding, ctxSize, usedBackend, costRows
+	return summary, grounding, ctxSize, usedBackend, costRows, fileRecorder.snapshot()
 }

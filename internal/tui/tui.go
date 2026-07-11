@@ -149,6 +149,7 @@ type subTab struct {
 	grounding    []proxy.GroundingEntry
 	ctxSize      int
 	hardMaxBytes int
+	filesChanged []string // mechanical record of canonical paths touched (edit-tier only)
 	active       bool // worker acquired a parallelism slot (queued → running)
 	done         bool
 
@@ -469,6 +470,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.hardMaxBytes = msg.HardMaxBytes
 				t.usedBackend = msg.UsedBackend
 				t.costUSD = msg.CostUSD
+				t.filesChanged = msg.FilesChanged
 				break
 			}
 		}

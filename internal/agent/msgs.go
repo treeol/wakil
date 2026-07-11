@@ -74,6 +74,13 @@ type SubagentDoneMsg struct {
 	// of runParallelSubagentBlock for the parallel path). 0 when nothing was
 	// priced or no usage was recorded.
 	CostUSD float64
+
+	// FilesChanged is the mechanically-recorded list of canonical workspace
+	// paths touched by edit-category tool calls that succeeded. Populated only
+	// for edit-tier children; nil for discovery-tier. move_file records both
+	// src and dst. Failed tool calls are not recorded. This is ground truth —
+	// the model's self-reported files_changed in SubagentSummary is a claim.
+	FilesChanged []string
 }
 
 // SysNoteMsg delivers a status line into the viewport.

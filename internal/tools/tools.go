@@ -33,29 +33,31 @@ func DefaultTools(cwd string) []proxy.Tool {
 	return []proxy.Tool{
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "dispatch_subagent",
-			Description: "Dispatch a read-only discovery subagent for a bounded, single-objective task. " +
-				"The subagent navigates and reads code (list_dir, find_files, search_files, read_file), then " +
-				"returns a structured JSON summary (findings with file:line locations, checked/skipped " +
-				"files, uncertainty). Use when gathering information from many files without loading " +
-				"all raw content into the main context. Multiple independent dispatch_subagent calls " +
-				"emitted in the same turn run in parallel (bounded); for several related discovery " +
-				"tasks prefer dispatch_subagents (plural) which runs them concurrently by design.",
+			Description: "Dispatch a subagent for a bounded, single-objective task. " +
+				"capability \"discovery\" (default) is read-only: navigate and read code, return a structured " +
+				"JSON summary (findings with file:line locations, checked/skipped files, uncertainty). " +
+				"capability \"edit\" adds write_file, edit_file, delete_file, and move_file for delegated " +
+				"bounded implementation; requires session write consent (/auto or --auto). Multiple " +
+				"independent dispatch_subagent calls emitted in the same turn run in parallel (bounded); " +
+				"for several related tasks prefer dispatch_subagents (plural) which runs them concurrently by design.",
 			Parameters: obj(map[string]interface{}{
-				"task": strProp("Specific discovery objective, e.g. 'find where ToolResultCap is configured across the repo'."),
+				"task":       strProp("Specific discovery objective, e.g. 'find where ToolResultCap is configured across the repo'."),
+				"capability": strProp("Capability tier: \"discovery\" (default, read-only) or \"edit\" (adds file mutation tools; requires /auto or --auto)."),
 			}, "task"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "dispatch_subagents",
-			Description: "Dispatch several read-only discovery subagents CONCURRENTLY, one per task (bounded " +
-				"by config). Each task is a bounded, single-objective discovery job, independent of the " +
-				"others. Returns a JSON array of structured summaries in task order. Use for 2+ independent " +
-				"discovery objectives — faster than sequential dispatch_subagent calls.",
+			Description: "Dispatch several subagents CONCURRENTLY, one per task (bounded by config). " +
+				"Each task is a bounded, single-objective job, independent of the others. Returns a JSON " +
+				"array of structured summaries in task order. Use for 2+ independent objectives — faster " +
+				"than sequential dispatch_subagent calls. All tasks share the same capability tier.",
 			Parameters: obj(map[string]interface{}{
 				"tasks": map[string]interface{}{
 					"type":        "array",
 					"items":       strProp("One discovery objective."),
-					"description": "Independent discovery objectives (1–8), each handled by its own subagent.",
+					"description": "Independent objectives (1–8), each handled by its own subagent.",
 				},
+				"capability": strProp("Capability tier for all tasks: \"discovery\" (default, read-only) or \"edit\" (adds file mutation tools; requires /auto or --auto)."),
 			}, "tasks"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
@@ -285,6 +287,153 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 			}),
 		}},
 	}
+}
+
+// CapabilityDiscovery is the default read-only subagent capability.
+const CapabilityDiscovery = "discovery"
+
+// CapabilityEdit adds file mutation tools (write_file, edit_file, delete_file,
+// move_file) to the discovery set. Requires session write consent at dispatch time.
+// exec tools (run_shell, run_background, kill_process) are deliberately excluded:
+// run_shell has no path confinement by design, the shared Executor is read-safe
+// only, and child bgProcs would orphan on child completion.
+const CapabilityEdit = "edit"
+
+// validCapabilities is the exhaustive set of accepted capability values.
+var validCapabilities = map[string]bool{
+	CapabilityDiscovery: true,
+	CapabilityEdit:      true,
+}
+
+// ValidCapability reports whether capability is a recognized value.
+func ValidCapability(capability string) bool {
+	return validCapabilities[capability]
+}
+
+// EditTools returns the edit-tier tool set: DiscoveryTools' 5 read-only tools
+// plus the 4 edit tools (write_file, edit_file, delete_file, move_file). Same
+// deterministic-schema construction as DiscoveryTools — no interpolation, so
+// all edit-tier dispatches share a byte-identical tool-schema prefix.
+func EditTools(cwd string) []proxy.Tool {
+	cwdNote := fmt.Sprintf("Working directory: %s — prefer relative paths.", cwd)
+	strProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "string", "description": desc}
+	}
+	intProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "integer", "description": desc}
+	}
+	boolProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "boolean", "description": desc}
+	}
+	obj := func(props map[string]interface{}, required ...string) json.RawMessage {
+		m := map[string]interface{}{"type": "object", "properties": props}
+		if len(required) > 0 {
+			m["required"] = required
+		}
+		b, _ := json.Marshal(m)
+		return b
+	}
+	return []proxy.Tool{
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "read_file",
+			Description: "Read a file and return its contents with line numbers. Reads the whole file by default; " +
+				"pass offset/limit to read only a line range. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"path":   strProp("Path to the file to read."),
+				"offset": intProp("Optional 1-based line number to start reading from."),
+				"limit":  intProp("Optional maximum number of lines to read from offset."),
+			}, "path"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "read_file_full",
+			Description: "Read an entire file in one call and return its complete contents with line numbers. " +
+				"Use read_file_full when you need the complete contents of a normal source file (up to ~256 KB); " +
+				"use read_file for large files or targeted ranges (offset/limit). " +
+				"Prefer read_file_full over repeated read_file calls with different offsets on the same file. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"path": strProp("Path to the file to read."),
+			}, "path"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "search_files",
+			Description: "Search for a pattern in files and return matching lines with file:line context. " +
+				"Equivalent to grep -rn. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"pattern":          strProp("Search pattern (literal string or basic regex)."),
+				"path":             strProp("File or directory to search."),
+				"file_pattern":     strProp("Optional glob to restrict which files are searched, e.g. '*.go'."),
+				"case_insensitive": boolProp("Case-insensitive search (default false)."),
+			}, "pattern", "path"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "find_files",
+			Description: "Find files by name recursively under a path. Equivalent to find -type f -name. " +
+				"Use to locate files when you don't know where they live. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"pattern": strProp("Filename glob, e.g. '*.go' or 'config.*'."),
+				"path":    strProp("Directory to search under (defaults to the working directory)."),
+			}, "pattern"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "list_dir",
+			Description: "List the entries of a directory (names, with a trailing / on subdirectories). " +
+				"Use this to discover what files exist before reading them. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"path": strProp("Directory to list (defaults to the working directory)."),
+			}),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "edit_file",
+			Description: "Replace an exact substring in a file. old_string must match the file's raw text " +
+				"verbatim (including whitespace, and WITHOUT the line-number gutter that read_file shows) and " +
+				"must be unique unless replace_all is set. Prefer this over write_file for changes to existing " +
+				"files. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"path":        strProp("Path to the file to edit."),
+				"old_string":  strProp("Exact text to replace, copied verbatim from the file (no line-number prefix)."),
+				"new_string":  strProp("Replacement text."),
+				"replace_all": boolProp("Replace every occurrence instead of requiring a unique match (default false)."),
+			}, "path", "old_string", "new_string"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name:        "write_file",
+			Description: "Write content to a file, overwriting it if it exists. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"path":    strProp("Path to the file to write."),
+				"content": strProp("The full content to write to the file"),
+			}, "path", "content"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "delete_file",
+			Description: "Delete a file or empty directory. " +
+				"Does NOT delete non-empty directories — path must be inside the workspace. " +
+				cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"path": strProp("Path to the file or empty directory to delete."),
+			}, "path"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
+			Name: "move_file",
+			Description: "Rename or move a file or directory within the workspace. " +
+				"Both src and dst must be inside the workspace. " +
+				"Fails if dst already exists. " + cwdNote,
+			Parameters: obj(map[string]interface{}{
+				"src": strProp("Source path (file or directory to move)."),
+				"dst": strProp("Destination path. Must not already exist."),
+			}, "src", "dst"),
+		}},
+	}
+}
+
+// IsEditTool reports whether name is one of the edit-category tools that mutate
+// files (write_file, edit_file, delete_file, move_file). Used by the files_changed
+// recorder to decide which tool calls to track.
+func IsEditTool(name string) bool {
+	switch name {
+	case "write_file", "edit_file", "delete_file", "move_file":
+		return true
+	}
+	return false
 }
 
 // IsMashuraTool reports whether name is one of the mashūra counsel tools (the

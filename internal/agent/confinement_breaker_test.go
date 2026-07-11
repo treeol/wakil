@@ -273,7 +273,7 @@ func TestConfinementBreakerReportedAsInaccessibleNotBudgetExhausted(t *testing.T
 		Out:     io.Discard,
 	}
 
-	summary, _, _, _, _ := parent.dispatchSubagent(context.Background(), "read the sibling repo", io.Discard, "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "read the sibling repo", io.Discard, "", "")
 
 	if summary.Status != "incomplete" {
 		t.Errorf("status = %q, want incomplete", summary.Status)

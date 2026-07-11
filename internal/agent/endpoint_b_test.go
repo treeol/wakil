@@ -545,7 +545,7 @@ func TestSubagentInheritsSwitchedEndpoint(t *testing.T) {
 	_, _, cmd := HandleTUICommand("/backend b", app)
 	runCmd(cmd)
 
-	app.dispatchSubagent(context.Background(), "check", io.Discard, "")
+	app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
 
 	raw, _ := subBody.Load().([]byte)
 	if raw == nil {

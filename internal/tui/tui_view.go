@@ -771,6 +771,10 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 	if tab.done && tab.costUSD > 0 {
 		lines = append(lines, row("cost", proxy.FmtUSDCompact(tab.costUSD)))
 	}
+	// Files changed: show count when the subagent modified files (edit-tier).
+	if tab.done && len(tab.filesChanged) > 0 {
+		lines = append(lines, row("files", sprint("%d changed", len(tab.filesChanged))))
+	}
 	lines = append(lines,
 		"",
 		statusStr,

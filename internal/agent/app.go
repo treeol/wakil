@@ -85,6 +85,14 @@ type App struct {
 	// fired. Only meaningful for subagents; the parent ignores it.
 	exhausted bool
 
+	// filesChanged is the recorder for edit-tier subagents: tracks canonical
+	// paths touched by successful edit-category tool calls during the child's
+	// Send loop. nil for the parent and discovery-tier children. Populated by
+	// ExecuteToolCall when it detects an edit-tool success; read by
+	// dispatchSubagent after Send returns to produce the mechanical
+	// files_changed list on the done message.
+	filesChanged *filesChangedRecorder
+
 	// confinementTripped is set by Send when the path-confinement circuit
 	// breaker fires: confinementBreakerThreshold consecutive ConfinePath
 	// rejections within the turn. ConfinePath failures are a deterministic
@@ -138,10 +146,21 @@ type App struct {
 	// are unaffected).
 	AgentPrompt string
 
-	// InjectDate prepends a system message stating the current date to every
-	// request, so the model doesn't fall back to its training-era guess about
-	// "now". Enabled for the parent; off for subagents and tests.
+	// InjectDate keeps a day-stable system message (agent prompt + date + cwd
+	// + tool inventory) as Conv[0], so the model doesn't fall back to its
+	// training-era guess about "now". Enabled for the parent; off for
+	// subagents and tests. See ensurePreamble.
 	InjectDate bool
+
+	// preambleDay is the calendar day (format "Monday, 2 January 2006") that
+	// Conv[0]'s content currently reflects. Empty means "no preamble stored
+	// yet" (fresh App, or Conv was just reset by NewConversation). Read/written
+	// only by ensurePreamble, called once per turn at Send entry — never per
+	// tool-loop iteration — so the request's leading bytes are byte-identical
+	// across every Stream call within one calendar day, the single largest
+	// lever on prompt-cache prefix stability (see internal/proxy/client.go
+	// Stream: this is messages[0], the earliest possible byte position).
+	preambleDay string
 
 	// Session is the on-disk record persisted after each turn. nil disables
 	// persistence (e.g. in tests).
@@ -399,6 +418,10 @@ func (a *App) summarizeFn() summarizer {
 // a fresh persisted session.
 func (a *App) NewConversation(chatID string) {
 	a.Conv = nil
+	// Force ensurePreamble to re-insert Conv[0] on the next Send — otherwise
+	// a same-day preambleDay would read as "already up to date" against the
+	// now-empty Conv and silently leave the new conversation with no preamble.
+	a.preambleDay = ""
 	a.Client.ChatID = chatID
 	a.Session = &Session{
 		ChatID:    chatID,
@@ -484,14 +507,20 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 	defer a.SaveSession()
 
 	// Prepend the workflow phase directive so the model knows its current
-	// obligation. The combined text is stored in Conv (not ephemeral like the
-	// context preamble) so it participates in caching and compaction normally.
+	// obligation. The combined text is stored in Conv so it participates in
+	// caching and compaction normally.
 	stored := userText
 	if a.Workflow != nil {
 		if d := a.Workflow.Directive(); d != "" {
 			stored = d + "\n\n" + userText
 		}
 	}
+
+	// Keep Conv[0]'s day-stable preamble current before anything below reads
+	// or resizes Conv. Once per turn, not per tool-loop iteration — see
+	// ensurePreamble.
+	a.ensurePreamble()
+
 	// P36 downshift guard: if /backend switched to a smaller-context model since
 	// the last turn, Conv may already exceed the new hard ceiling. Compact+drop
 	// before appending the user message so we never deliver an over-window Conv.
@@ -558,12 +587,9 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 			}
 		}
 
-		// Prepend a fresh context preamble at send time (never stored in Conv,
-		// so it can't go stale, duplicate, or be compacted away).
+		// Conv[0] already carries the day-stable preamble (ensurePreamble, run
+		// once at Send entry) when InjectDate is on — no per-iteration rebuild.
 		msgs := a.Conv
-		if a.InjectDate {
-			msgs = append([]proxy.Message{{Role: "system", Content: StrPtr(a.contextPreamble())}}, a.Conv...)
-		}
 
 		sink := a.streamSink()
 		msg, err := a.Client.Stream(ctx, msgs, tools, sink, rsink)
@@ -904,8 +930,12 @@ func (a *App) RecordInferenceCost() {
 	var usd float64
 	var priced bool
 	if isExternal {
-		usd, priced = a.Cfg.Costs.ExternalInferenceCost(usedBackend+"/"+modelForCost, u.InputTok, u.OutputTok)
+		usd, priced = a.Cfg.Costs.ExternalInferenceCost(usedBackend+"/"+modelForCost, u.InputTok, u.OutputTok, u.CachedTok)
 	} else {
+		// Local/modeled tier has one flat combined rate (no separate input
+		// rate to split a cache discount against) — cached tokens stay folded
+		// into InputTok exactly as before; only the exact/external tier above
+		// gets split-rate cache pricing.
 		usd, priced = a.Cfg.Costs.InferenceCost(u.InputTok + u.OutputTok)
 	}
 
@@ -920,7 +950,7 @@ func (a *App) RecordInferenceCost() {
 		conf = proxy.ConfApprox
 	}
 
-	a.Costs.Record(source, u.InputTok, u.OutputTok, usd, priced, conf)
+	a.Costs.Record(source, u.InputTok, u.OutputTok, usd, priced, conf, u.CachedTok)
 }
 
 // RecordOracleCostFor records one panel member's exact token usage under the
@@ -947,12 +977,19 @@ func (a *App) RecordSearchCost() {
 	a.Costs.Record(proxy.CostSourceSearch, 0, 0, usd, priced, proxy.ConfModeled)
 }
 
-// contextPreamble builds the ephemeral system message prepended to every
-// request. It leads with the static agent operating instructions (loaded once
-// from AgentPromptPath at startup), then appends the per-turn context: current
-// date/time, working directory, and available sandbox tools.
-func (a *App) contextPreamble() string {
-	date := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") +
+// buildPreamble builds the day-stable system message stored at Conv[0] (see
+// ensurePreamble). It leads with the static agent operating instructions
+// (loaded once from AgentPromptPath at startup), then appends the per-day
+// context: current date, working directory, and available sandbox tools.
+//
+// today is deliberately day-granularity (the caller formats it without a
+// time-of-day component) — this string becomes the request's leading system
+// message, the earliest possible byte position in the serialized body, so
+// any change here invalidates the whole prompt-cache prefix from position
+// zero. Time-of-day is not worth paying that cost on every request; a
+// same-day timestamp accuracy is enough for the "treat this as now" framing.
+func (a *App) buildPreamble(today string) string {
+	date := "Current date: " + today +
 		". Treat this as the present moment for any reasoning about dates, recency, or current events."
 
 	cwd := ""
@@ -989,6 +1026,43 @@ func (a *App) contextPreamble() string {
 			"symbol-level navigation (definition lookup, finding callers).")
 	}
 	return strings.Join(parts, "\n")
+}
+
+// ensurePreamble keeps Conv[0] as a day-stable pinned system message carrying
+// the agent prompt, date, cwd, and tool inventory — the request's leading
+// bytes, and therefore the dominant lever on prompt-cache prefix stability.
+// Called once per turn at Send entry, never per tool-loop iteration, so every
+// Stream call within one calendar day sends a byte-identical messages[0].
+//
+// A day rollover mutates Conv[0].Content in place — one deliberate prefix
+// invalidation per day, no worse than a compaction event, and never more
+// than once per day even if a turn happens to straddle midnight (the check
+// runs once, at turn start; mid-turn iterations keep whatever day was
+// current when the turn began).
+//
+// No-op when InjectDate is off (subagents, tests) — those paths are
+// unaffected and continue to get no preamble at all.
+func (a *App) ensurePreamble() {
+	if !a.InjectDate {
+		return
+	}
+	today := time.Now().Format("Monday, 2 January 2006")
+	if a.preambleDay == today {
+		return
+	}
+	text := a.buildPreamble(today)
+	if a.preambleDay != "" && len(a.Conv) > 0 && a.Conv[0].Role == "system" {
+		// Same session, day rolled over — refresh the existing slot in place.
+		a.Conv[0].Content = StrPtr(text)
+	} else {
+		// First turn this session, or Conv was just reset (NewConversation) —
+		// insert fresh. Pinned so compaction/hard-max never dissolve or drop
+		// it (see compact.go's leading-system-message handling in
+		// oldestTurnRange/dropOldestTurn, which already special-cases Conv[0]
+		// being a system message).
+		a.Conv = append([]proxy.Message{{Role: "system", Content: StrPtr(text), Pinned: true}}, a.Conv...)
+	}
+	a.preambleDay = today
 }
 
 // streamSink returns the per-call SSE content sink. Beyond forwarding deltas to
@@ -1126,6 +1200,15 @@ func (a *App) normPath(p string) string {
 		p = filepath.Join(a.Exec.WorkspaceRoot(), p)
 	}
 	return filepath.Clean(p)
+}
+
+// recordFileChanged appends a canonical path to the filesChanged recorder when
+// the App has one (edit-tier subagents). No-op for the parent and discovery-tier
+// children (filesChanged is nil). Called after a successful edit-category tool call.
+func (a *App) recordFileChanged(canonical string) {
+	if a.filesChanged != nil {
+		a.filesChanged.record(canonical)
+	}
 }
 
 func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) string {
@@ -1749,6 +1832,9 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err == nil && a.LSP != nil {
 			a.LSP.NotifyChange(context.Background(), canonical)
 		}
+		if err == nil {
+			a.recordFileChanged(canonical)
+		}
 		return formatResult(out, err)
 
 	case "searxng_search":
@@ -1847,6 +1933,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := a.Exec.DeletePath(ctx, canonical); err != nil {
 			return "ERROR: " + err.Error()
 		}
+		a.recordFileChanged(canonical)
 		return "deleted: " + rel
 
 	case "move_file":
@@ -1878,6 +1965,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := a.Exec.MovePath(ctx, canonSrc, canonDst); err != nil {
 			return "ERROR: " + err.Error()
 		}
+		a.recordFileChanged(canonSrc)
+		a.recordFileChanged(canonDst)
 		return fmt.Sprintf("moved: %s → %s", relSrc, relDst)
 
 	case "run_background":
@@ -2008,13 +2097,44 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 
 	case "dispatch_subagent":
 		var args struct {
-			Task string `json:"task"`
+			Task       string `json:"task"`
+			Capability string `json:"capability"`
 		}
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
 		if args.Task == "" {
 			return "ERROR: task is required"
+		}
+		// Normalize capability: empty = discovery (the default, golden no-op).
+		capability := args.Capability
+		if capability == "" {
+			capability = wtools.CapabilityDiscovery
+		}
+		if !wtools.ValidCapability(capability) {
+			return fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q",
+				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit)
+		}
+		// Consent gate: edit capability requires the session to have write consent.
+		// This deliberately mirrors the parent's own write predicate: in /auto
+		// mode (AutoApprove=true), write_file/edit_file/delete_file/move_file
+		// auto-approve via SuspendAuto (they are not classified as "destructive"
+		// by IsDestructiveShell, which only covers run_shell/run_background).
+		// AllowDestructive and AllowReads are NOT consulted for these tools —
+		// the parent's write gate is AutoApprove alone (see tuiConfirmer at
+		// agent_async.go:827-858, headlessConfirmer at run.go:178-212, and
+		// SuspendAuto at agent_async.go:791-819 which returns "" for all four
+		// edit-category tools). Without AutoApprove the parent's confirmer
+		// would prompt for each write; a child cannot prompt, so edit dispatch
+		// is rejected. Do not silently downgrade to discovery — a silent
+		// downgrade produces a child that "completes" without doing the work,
+		// which is a fabricated success.
+		// INVARIANT: child may write iff parent may write. If the parent's write
+		// predicate ever changes (e.g. a new consent bool is added), this gate
+		// MUST be updated to match — the two must move together.
+		if capability == wtools.CapabilityEdit && !a.AutoApprove {
+			return "ERROR: edit capability requires /auto or --auto (session write consent). " +
+				"Re-dispatch with capability \"discovery\" (the default) for read-only research."
 		}
 		fmt.Fprintln(a.Out, Dim("· subagent: "+Truncate(args.Task, 60)))
 		subChatID := NewChatID()
@@ -2032,7 +2152,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		a.sendEvent(SubagentStartMsg{Task: args.Task, ChatID: subChatID, Backend: subBackend})
 		// Sequential path: the dispatch begins immediately, no queue wait.
 		a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
-		summary, grounding, ctxSize, usedBackend, costRows := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, subChatID)
+		summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, subChatID)
 		// Cost fold happens HERE — the caller's side of the goroutine boundary,
 		// where parent-state mutation is already safe — never inside
 		// dispatchSubagent. The child's fresh CostTracker never touches a.Costs
@@ -2045,6 +2165,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			HardMaxBytes: subagentHardMaxBytes,
 			UsedBackend:  usedBackend,
 			CostUSD:      subagentCostUSD,
+			FilesChanged: filesChanged,
 		})
 
 		// Part C: durable summary persistence. Write the full structured summary
@@ -2056,6 +2177,12 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		result := fullJSON
 		if spillPath := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); spillPath != "" {
 			result = fullJSON + fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
+		}
+		// Append the mechanical files_changed list (ground truth) for edit-tier
+		// children. When the model's self-reported files_changed disagrees with
+		// the mechanical record, render both with the discrepancy noted.
+		if len(filesChanged) > 0 {
+			result += renderFilesChanged(summary.FilesChanged, filesChanged)
 		}
 
 		// Loud warning on exhaustion — not a dim tool-line. The main agent must
@@ -2071,7 +2198,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		// Batch front-end onto the same fan-out core as the per-turn contiguous
 		// block path: explicit, observable parallelism under one tool_call_id.
 		var args struct {
-			Tasks []string `json:"tasks"`
+			Tasks      []string `json:"tasks"`
+			Capability string   `json:"capability"`
 		}
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -2088,13 +2216,28 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 				return fmt.Sprintf("ERROR: task %d is empty", i+1)
 			}
 		}
+		// Normalize capability: empty = discovery (the default, golden no-op).
+		capability := args.Capability
+		if capability == "" {
+			capability = wtools.CapabilityDiscovery
+		}
+		if !wtools.ValidCapability(capability) {
+			return fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q",
+				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit)
+		}
+		// Consent gate (same as sequential path).
+		if capability == wtools.CapabilityEdit && !a.AutoApprove {
+			return "ERROR: edit capability requires /auto or --auto (session write consent). " +
+				"Re-dispatch with capability \"discovery\" (the default) for read-only research."
+		}
 		// Reuse the block runner: build synthetic single-task calls so Phase
 		// A→B→C runs identically; then aggregate into one JSON array result.
 		block := make([]proxy.ToolCall, len(args.Tasks))
 		for i, task := range args.Tasks {
 			taskJSON, _ := json.Marshal(struct {
-				Task string `json:"task"`
-			}{task})
+				Task       string `json:"task"`
+				Capability string `json:"capability"`
+			}{task, capability})
 			block[i] = proxy.ToolCall{
 				ID:       fmt.Sprintf("%s-b%d", tc.ID, i),
 				Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: string(taskJSON)},
@@ -2159,6 +2302,56 @@ func (a *App) StopAllBackgroundProcs() {
 	if any {
 		time.Sleep(2 * time.Second)
 	}
+}
+
+// renderFilesChanged appends the mechanical files_changed list (ground truth) to
+// the subagent result string. When the model's self-reported list disagrees with
+// the mechanical record, both are rendered with the discrepancy noted — the
+// mechanical list is ground truth, the model's list is a claim.
+func renderFilesChanged(modelClaim, mechanical []string) string {
+	var b strings.Builder
+	b.WriteString("\n[files_changed (mechanical)]")
+	for _, p := range mechanical {
+		b.WriteString("\n  " + p)
+	}
+	// Check for discrepancy: model claims a file not in the mechanical record,
+	// or the mechanical record has files the model didn't claim.
+	mechSet := make(map[string]bool, len(mechanical))
+	for _, p := range mechanical {
+		mechSet[p] = true
+	}
+	claimSet := make(map[string]bool, len(modelClaim))
+	for _, p := range modelClaim {
+		claimSet[p] = true
+	}
+	var extra []string // model claimed but not mechanically recorded
+	for _, p := range modelClaim {
+		if !mechSet[p] {
+			extra = append(extra, p)
+		}
+	}
+	var missing []string // mechanically recorded but model didn't claim
+	for _, p := range mechanical {
+		if !claimSet[p] {
+			missing = append(missing, p)
+		}
+	}
+	if len(extra) > 0 || len(missing) > 0 {
+		b.WriteString("\n[discrepancy: model self-report differs from mechanical record]")
+		if len(extra) > 0 {
+			b.WriteString("\n  model claimed (not mechanically confirmed):")
+			for _, p := range extra {
+				b.WriteString("\n  + " + p)
+			}
+		}
+		if len(missing) > 0 {
+			b.WriteString("\n  mechanical record (model did not report):")
+			for _, p := range missing {
+				b.WriteString("\n  - " + p)
+			}
+		}
+	}
+	return b.String()
 }
 
 func formatResult(out string, err error) string {
@@ -2295,6 +2488,7 @@ func (a *App) handleEditFile(tc proxy.ToolCall) string {
 	if a.LSP != nil {
 		a.LSP.NotifyChange(context.Background(), canonical)
 	}
+	a.recordFileChanged(canonical)
 	n := 1
 	if args.ReplaceAll {
 		n = count

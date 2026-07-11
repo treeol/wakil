@@ -41,6 +41,7 @@ func TestInheritNoOpFieldsMatchTodaysCopy(t *testing.T) {
 	app.Client.TopP = top
 	app.Client.MaxTokens = maxTok
 	app.Client.AuthHeader = "Bearer parent-key"
+	app.Client.CachePrompt = boolPtr(true)
 
 	name := resolveSubagentEndpointName(app)
 	if name != "" {
@@ -73,6 +74,9 @@ func TestInheritNoOpFieldsMatchTodaysCopy(t *testing.T) {
 	}
 	if view.maxTokens != app.Client.MaxTokens {
 		t.Errorf("maxTokens pointer = %p, want %p", view.maxTokens, app.Client.MaxTokens)
+	}
+	if view.cachePrompt != app.Client.CachePrompt {
+		t.Errorf("cachePrompt pointer = %p, want %p (same pointer value)", view.cachePrompt, app.Client.CachePrompt)
 	}
 }
 
@@ -112,7 +116,7 @@ func TestGoldenInheritRequestShape(t *testing.T) {
 	// /model or /backend switch) — the golden no-op must reuse this directly.
 	app.CtxLimit = ContextLimit{NCtx: 99999, Source: "backend"}
 
-	_, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
 
 	if lastModel != "parent-model" {
 		t.Errorf("request model = %q, want parent-model (inherited)", lastModel)
@@ -155,7 +159,7 @@ func TestSubagentInheritsSwitchedEndpointStillGreen(t *testing.T) {
 	_, _, cmd := HandleTUICommand("/backend b", app)
 	runCmd(cmd)
 
-	app.dispatchSubagent(context.Background(), "check", io.Discard, "")
+	app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
 
 	raw, _ := subBody.Load().([]byte)
 	if raw == nil {
@@ -177,6 +181,7 @@ func TestSubagentInheritsSwitchedEndpointStillGreen(t *testing.T) {
 
 func floatPtr(f float64) *float64 { return &f }
 func intPtr(i int) *int           { return &i }
+func boolPtr(b bool) *bool        { return &b }
 
 // TestOverrideOpenAIChildFromProxyParent: parent is on an ilm-proxy endpoint;
 // subagent_endpoint names an openai entry. The child request must have no
@@ -201,13 +206,13 @@ func TestOverrideOpenAIChildFromProxyParent(t *testing.T) {
 	app := newTestApp("http://proxy-parent", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg = proxyCfg("http://proxy-parent")
 	app.Cfg.Endpoints = map[string]config.EndpointConfig{
-		"oa": {Kind: config.EndpointKindOpenAI, BaseURL: openaiSrv.URL, Model: "gpt-child", AuthHeader: "Bearer child-key"},
+		"oa": {Kind: config.EndpointKindOpenAI, BaseURL: openaiSrv.URL, Model: "gpt-child", AuthHeader: "Bearer child-key", CachePrompt: boolPtr(true)},
 	}
 	app.Cfg.SubagentEndpoint = "oa"
 	app.Client.Kind = proxy.KindIlmProxy
 	app.Client.Model = "ilm"
 
-	_, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
 
 	if capturedBody == nil {
 		t.Fatal("subagent request did not reach the openai override endpoint")
@@ -230,6 +235,16 @@ func TestOverrideOpenAIChildFromProxyParent(t *testing.T) {
 	}
 	if capturedHeaders.Get("X-Ilm-Backend") != "" {
 		t.Error("openai-kind child must not send X-Ilm-Backend")
+	}
+	// The named endpoint's cache_prompt opt-in must reach the child's actual
+	// request — proof that subagentEndpointView.cachePrompt (override branch)
+	// flows into subClient.CachePrompt.
+	var cachePrompt bool
+	if err := json.Unmarshal(parsed["cache_prompt"], &cachePrompt); err != nil {
+		t.Fatalf("cache_prompt missing or malformed on child request: %v", err)
+	}
+	if !cachePrompt {
+		t.Errorf("cache_prompt = %v, want true (from the named endpoint's config)", cachePrompt)
 	}
 }
 
@@ -275,7 +290,7 @@ func TestOverrideProxyChildFromOpenAIParent(t *testing.T) {
 		t.Fatalf("resolved backend = %q, want llama (subagent_backend applies for ilm-proxy child)", backend)
 	}
 
-	_, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, backend)
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, backend, "")
 
 	if capturedBody == nil {
 		t.Fatal("subagent request did not reach the ilm-proxy override endpoint")
@@ -428,7 +443,7 @@ func TestChildLimitsSingleflightAcrossParallelDispatches(t *testing.T) {
 	done := make(chan struct{}, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			app.dispatchSubagent(context.Background(), "check", io.Discard, "")
+			app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
 			done <- struct{}{}
 		}()
 	}
@@ -469,7 +484,7 @@ func TestCostFoldSequentialDispatchViaAppHandleToolCall(t *testing.T) {
 
 	// Call dispatchSubagent directly (as a worker would) — this must NOT fold
 	// into the parent tracker by itself.
-	_, _, _, _, costRows := app.dispatchSubagent(context.Background(), "check", io.Discard, "")
+	_, _, _, _, costRows, _ := app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
 	totalAfterDispatchOnly, _ := app.Costs.Snapshot()
 	if totalAfterDispatchOnly != 0 {
 		t.Errorf("parent tracker changed by dispatchSubagent alone (got %v) — fold must happen only at the join point", totalAfterDispatchOnly)
