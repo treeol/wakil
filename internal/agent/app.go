@@ -1270,6 +1270,21 @@ func MakeTraceEntry(tc proxy.ToolCall, result string) ToolTraceEntry {
 		if json.Unmarshal([]byte(tc.Function.Arguments), &a) == nil {
 			e.Command = a.Command
 		}
+	case "move_file":
+		var a struct {
+			Src string `json:"src"`
+			Dst string `json:"dst"`
+		}
+		if json.Unmarshal([]byte(tc.Function.Arguments), &a) == nil {
+			switch {
+			case a.Src != "" && a.Dst != "":
+				e.Command = a.Src + " → " + a.Dst
+			case a.Src != "":
+				e.Command = a.Src
+			case a.Dst != "":
+				e.Command = a.Dst
+			}
+		}
 	default:
 		var a struct {
 			Path    string `json:"path"`
@@ -1371,6 +1386,10 @@ func toolAbbrev(name string) string {
 		return "search"
 	case "list_dir":
 		return "list"
+	case "delete_file":
+		return "delete"
+	case "move_file":
+		return "move"
 	case "dispatch_subagent":
 		return "subagent"
 	case "dispatch_subagents":
@@ -2545,7 +2564,7 @@ func toolPrimaryArg(tc proxy.ToolCall) string {
 	if json.Unmarshal([]byte(tc.Function.Arguments), &m) != nil {
 		return ""
 	}
-	for _, k := range []string{"path", "command", "query", "url", "pattern", "file"} {
+	for _, k := range []string{"path", "command", "query", "url", "pattern", "file", "src"} {
 		if v, ok := m[k].(string); ok && v != "" {
 			return Truncate(strings.Join(strings.Fields(v), " "), 50)
 		}
