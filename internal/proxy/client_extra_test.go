@@ -307,3 +307,52 @@ func TestTrimToolResultsNoSpillPathUsesFallback(t *testing.T) {
 		t.Errorf("fallback stub should say 'retrieve with read_file', got: %q", stub)
 	}
 }
+
+// TestUsageCachedTokensParsed verifies prompt_tokens_details.cached_tokens on
+// the trailing usage chunk lands in UsageStat.CachedTok.
+func TestUsageCachedTokensParsed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":20,\"prompt_tokens_details\":{\"cached_tokens\":250}}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Kind: KindOpenAI, ConfiguredModel: "m", Model: "m", HTTP: http.DefaultClient}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	u := c.LastUsage()
+	if u.CachedTok != 250 {
+		t.Errorf("CachedTok = %d, want 250", u.CachedTok)
+	}
+	if u.InputTok != 1000 || u.OutputTok != 20 {
+		t.Errorf("InputTok/OutputTok = %d/%d, want 1000/20", u.InputTok, u.OutputTok)
+	}
+	if !u.Exact {
+		t.Error("usage chunk present — Exact should be true")
+	}
+}
+
+// TestUsageWithoutPromptTokensDetailsCachedTokZero verifies a usage chunk
+// missing prompt_tokens_details entirely (proxy, older servers) decodes to
+// CachedTok 0 with no nil-dereference.
+func TestUsageWithoutPromptTokensDetailsCachedTokZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":10}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Kind: KindOpenAI, ConfiguredModel: "m", Model: "m", HTTP: http.DefaultClient}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	u := c.LastUsage()
+	if u.CachedTok != 0 {
+		t.Errorf("CachedTok = %d, want 0 when prompt_tokens_details absent", u.CachedTok)
+	}
+}

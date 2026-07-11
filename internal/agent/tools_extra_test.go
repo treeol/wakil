@@ -180,7 +180,10 @@ func TestContextPreambleIncludesTools(t *testing.T) {
 		InjectDate: true,
 	}
 	// fakeExecutor.SandboxTools returns ""; preamble should omit the line silently.
-	p := app.contextPreamble()
+	// buildPreamble now takes the day string explicitly (day-granularity
+	// preamble, built once per day at Send entry rather than reformatted
+	// per request) — contextPreamble()'s zero-arg signature no longer exists.
+	p := app.buildPreamble(time.Now().Format("Monday, 2 January 2006"))
 	if !strings.Contains(p, "Working directory:") {
 		t.Errorf("preamble missing working directory: %q", p)
 	}
@@ -203,7 +206,8 @@ func TestContextPreambleWithTools(t *testing.T) {
 		Exec:       exec,
 		InjectDate: true,
 	}
-	p := app.contextPreamble()
+	// Same signature-change justification as TestContextPreambleIncludesTools above.
+	p := app.buildPreamble(time.Now().Format("Monday, 2 January 2006"))
 	if !strings.Contains(p, "Sandbox tools: git 2.39.5") {
 		t.Errorf("preamble missing tools line: %q", p)
 	}

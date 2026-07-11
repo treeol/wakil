@@ -48,6 +48,7 @@ type costEntry struct {
 	Calls      int
 	InputTok   int64
 	OutputTok  int64
+	CachedTok  int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
 	CostUSD    float64
 	Priced     bool   // false → render "—" rather than a fake "$0.00"
 	Confidence string // ConfExact | ConfModeled | ConfApprox (weakest seen wins)
@@ -70,9 +71,18 @@ func NewCostTracker() *CostTracker {
 // the source has no configured rate; its displayed cost stays "—". The displayed
 // confidence escalates toward the least-certain value seen (exact→modeled→approx)
 // so one estimated call taints the whole source — a number never overstates.
-func (t *CostTracker) Record(source string, inTok, outTok int64, costUSD float64, priced bool, confidence string) {
+//
+// cachedTok is optional (variadic so every pre-existing call site, including
+// tests, keeps compiling unchanged) — the count of inTok served from the
+// backend's prompt cache, purely additive bookkeeping alongside the cost
+// arithmetic the caller already computed.
+func (t *CostTracker) Record(source string, inTok, outTok int64, costUSD float64, priced bool, confidence string, cachedTok ...int64) {
 	if t == nil {
 		return
+	}
+	var cached int64
+	if len(cachedTok) > 0 {
+		cached = cachedTok[0]
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -87,6 +97,7 @@ func (t *CostTracker) Record(source string, inTok, outTok int64, costUSD float64
 	e.Calls++
 	e.InputTok += inTok
 	e.OutputTok += outTok
+	e.CachedTok += cached
 	e.CostUSD += costUSD
 	if priced {
 		e.Priced = true
@@ -100,6 +111,7 @@ type CostRow struct {
 	Calls      int
 	InputTok   int64
 	OutputTok  int64
+	CachedTok  int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
 	CostUSD    float64
 	Priced     bool
 	Confidence string
@@ -120,6 +132,7 @@ func (t *CostTracker) Snapshot() (total float64, rows []CostRow) {
 			Calls:      e.Calls,
 			InputTok:   e.InputTok,
 			OutputTok:  e.OutputTok,
+			CachedTok:  e.CachedTok,
 			CostUSD:    e.CostUSD,
 			Priced:     e.Priced,
 			Confidence: e.Confidence,
@@ -156,6 +169,7 @@ func (t *CostTracker) SnapshotSplit() (billedTotal, estimatedTotal float64, anyB
 			Calls:      e.Calls,
 			InputTok:   e.InputTok,
 			OutputTok:  e.OutputTok,
+			CachedTok:  e.CachedTok,
 			CostUSD:    e.CostUSD,
 			Priced:     e.Priced,
 			Confidence: e.Confidence,

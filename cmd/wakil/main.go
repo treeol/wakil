@@ -62,6 +62,7 @@ func main() {
 		Temperature:     ep.Temperature,
 		TopP:            ep.TopP,
 		MaxTokens:       ep.MaxTokens,
+		CachePrompt:     ep.CachePrompt,
 		ChatID:          agent.NewChatID(),
 		AuthHeader:      cfg.AuthHeader(),
 		HTTP:            newHTTPClient(),

@@ -173,6 +173,14 @@ func TestToolSchemasNeverNullRequired(t *testing.T) {
 // When InjectDate is on, every request must carry a leading system message
 // stating the current date — otherwise the model defaults to its training-era
 // year. When off (subagents/tests), no such message is added.
+//
+// Prior behavior (pre prompt-cache pass) rebuilt this message fresh on every
+// Stream call and never stored it in Conv, specifically to keep it out of the
+// transcript. That is now inverted on purpose: Conv[0] IS the day-stable
+// preamble (see App.ensurePreamble), so every request within one calendar day
+// sends a byte-identical messages[0] — the dominant lever on prompt-cache
+// prefix stability. The "must not be persisted" assertion below is replaced
+// with "must be persisted, pinned, and byte-stable across turns".
 func TestInjectDateSystemMessage(t *testing.T) {
 	var captured struct {
 		Messages []struct {
@@ -180,8 +188,11 @@ func TestInjectDateSystemMessage(t *testing.T) {
 			Content *string `json:"content"`
 		} `json:"messages"`
 	}
+	var rawBodies [][]byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&captured)
+		raw, _ := io.ReadAll(r.Body)
+		rawBodies = append(rawBodies, raw)
+		_ = json.Unmarshal(raw, &captured)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: " + contentChunk("ok") + "\n\ndata: [DONE]\n\n"))
 	}))
@@ -201,11 +212,38 @@ func TestInjectDateSystemMessage(t *testing.T) {
 	if !strings.Contains(DerefStr(captured.Messages[0].Content), year) {
 		t.Errorf("date preamble missing current year %s: %q", year, DerefStr(captured.Messages[0].Content))
 	}
-	// It must not be persisted into the transcript.
-	for _, m := range on.Conv {
-		if m.Role == "system" && strings.Contains(DerefStr(m.Content), "Current date") {
-			t.Error("date preamble leaked into stored Conv")
+	// It must now be persisted into Conv[0], pinned so compaction/hard-max
+	// never drop or dissolve it.
+	if len(on.Conv) == 0 || on.Conv[0].Role != "system" || !strings.Contains(DerefStr(on.Conv[0].Content), "Current date") {
+		t.Fatalf("date preamble must be stored at Conv[0], got %+v", on.Conv)
+	}
+	if !on.Conv[0].Pinned {
+		t.Error("stored preamble at Conv[0] must be pinned")
+	}
+
+	// A second turn, same calendar day: messages[0] (the preamble) and
+	// messages[1] (turn 1's user message) must be a byte-identical prefix of
+	// the second request's messages array — asserted on raw JSON bytes, not
+	// decoded struct equality, since struct equality can't see key ordering
+	// or whitespace drift.
+	if _, err := on.Send(context.Background(), "again"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rawBodies) != 2 {
+		t.Fatalf("expected 2 captured request bodies, got %d", len(rawBodies))
+	}
+	messagesRaw := func(raw []byte) string {
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decoding captured request body: %v", err)
 		}
+		return string(body["messages"])
+	}
+	m1 := messagesRaw(rawBodies[0])
+	m2 := messagesRaw(rawBodies[1])
+	prefix1 := strings.TrimSuffix(strings.TrimSpace(m1), "]") // drop the array's closing bracket
+	if !strings.HasPrefix(m2, prefix1) {
+		t.Errorf("second request's messages array is not a byte-identical extension of the first:\nfirst:  %s\nsecond: %s", m1, m2)
 	}
 
 	// InjectDate off → no synthetic system message.

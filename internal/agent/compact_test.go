@@ -60,6 +60,55 @@ func TestCompactKeepsRecentTurnsAndSummarizes(t *testing.T) {
 	}
 }
 
+// TestCompactPreservesLeadingPinnedPreamble verifies the prompt-cache
+// invariant App.ensurePreamble relies on: a pinned system message at Conv[0]
+// (the day-stable preamble) survives compaction completely unchanged and
+// stays literally first — the existing pinnedPrefix mechanism in Compact
+// already preserves original relative order among pinned messages, so no
+// code change to compact.go was needed for this; this test is that
+// verification. The compaction summary system message must land after it.
+func TestCompactPreservesLeadingPinnedPreamble(t *testing.T) {
+	app := &App{Cfg: config.DefaultConfig(), Out: io.Discard}
+	app.Cfg.KeepBytes = 160
+	app.Cfg.CompactAt = 100 // force compaction
+
+	preamble := proxy.Message{Role: "system", Content: StrPtr("PREAMBLE stable prefix"), Pinned: true}
+	app.Conv = append(app.Conv, preamble)
+	for i := 0; i < 5; i++ {
+		app.Conv = append(app.Conv,
+			proxy.Message{Role: "user", Content: StrPtr(strings.Repeat("u", 40))},
+			proxy.Message{Role: "assistant", Content: StrPtr(strings.Repeat("a", 40))},
+		)
+	}
+
+	fakeSum := func(_ context.Context, text string) (string, error) {
+		return "SUMMARY of earlier turns", nil
+	}
+	ok, err := app.Compact(context.Background(), fakeSum, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
+	if app.Conv[0].Role != "system" || DerefStr(app.Conv[0].Content) != "PREAMBLE stable prefix" {
+		t.Fatalf("Conv[0] must remain the pinned preamble, byte-unchanged, got %+v", app.Conv[0])
+	}
+	if !app.Conv[0].Pinned {
+		t.Error("preamble must stay pinned across compaction")
+	}
+	summaryIdx := -1
+	for i, m := range app.Conv {
+		if m.Role == "system" && strings.Contains(DerefStr(m.Content), "SUMMARY") {
+			summaryIdx = i
+			break
+		}
+	}
+	if summaryIdx <= 0 {
+		t.Fatalf("compaction summary message must exist and land after Conv[0], got index %d in %+v", summaryIdx, app.Conv)
+	}
+}
+
 // TestCompactPinsLatestUserTask verifies the latest-user-task pin: the most
 // recent user message in the summarizable range survives compaction verbatim
 // instead of being folded into lossy summary prose (the "there wasn't a

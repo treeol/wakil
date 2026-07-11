@@ -51,6 +51,44 @@ func TestExternalInferenceCost(t *testing.T) {
 	}
 }
 
+// TestExternalInferenceCostWithCachedTokens verifies the split-rate formula
+// when a CachedInputUSDPer1M discount is configured: cached tokens bill at
+// the cached rate, the remaining (uncached) input tokens at the normal input
+// rate, output unaffected.
+func TestExternalInferenceCostWithCachedTokens(t *testing.T) {
+	c := CostsConfig{InferenceBackends: map[string]ModelRate{
+		"openrouter/x/y": {InputUSDPer1M: 10, OutputUSDPer1M: 30, CachedInputUSDPer1M: 2},
+	}}
+	// 1M total prompt tokens, 400k of them cached, 100k output.
+	// = 600k/1e6*10 + 400k/1e6*2 + 100k/1e6*30 = 6 + 0.8 + 3 = 9.8
+	usd, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, 400_000)
+	if !priced {
+		t.Fatal("expected priced=true")
+	}
+	if usd != 9.8 {
+		t.Errorf("usd = %v, want 9.8", usd)
+	}
+}
+
+// TestExternalInferenceCostCachedTokensDefaultToInputRateWhenUnset verifies
+// that passing a nonzero cachedTok with NO CachedInputUSDPer1M configured
+// produces byte-identical cost arithmetic to the pre-cache-accounting
+// formula (cached tokens billed at the plain input rate) — the golden
+// "unconfigured stays unchanged" guarantee.
+func TestExternalInferenceCostCachedTokensDefaultToInputRateWhenUnset(t *testing.T) {
+	c := CostsConfig{InferenceBackends: map[string]ModelRate{
+		"openrouter/x/y": {InputUSDPer1M: 10, OutputUSDPer1M: 30}, // no CachedInputUSDPer1M
+	}}
+	withoutCached, _ := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000)
+	withCached, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, 400_000)
+	if !priced {
+		t.Fatal("expected priced=true")
+	}
+	if withCached != withoutCached {
+		t.Errorf("cost with cachedTok=400_000 (no cached rate configured) = %v, want %v (identical to the cache-unaware call)", withCached, withoutCached)
+	}
+}
+
 func TestSearchCost(t *testing.T) {
 	var c CostsConfig
 	if _, priced := c.SearchCost(); priced {

@@ -110,6 +110,15 @@ type chatRequest struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
 	MaxTokens   *int     `json:"max_tokens,omitempty"`
+
+	// CachePrompt is llama.cpp's non-standard prompt-cache hint. Pointer +
+	// omitempty so it is entirely absent unless an endpoint explicitly opts
+	// in — sent as literal false would be as much a "not every server knows
+	// this field" risk as any other unrecognised key. Not gated on Kind:
+	// kind=openai also covers OpenRouter/vLLM, which don't understand this
+	// field, so the opt-in is per-endpoint (Client.CachePrompt), never implied
+	// by Kind alone.
+	CachePrompt *bool `json:"cache_prompt,omitempty"`
 }
 
 // streamOptions asks the proxy to emit a trailing usage chunk (OpenAI-standard).
@@ -149,6 +158,13 @@ type streamChunk struct {
 		CompletionTokensDetails *struct {
 			ReasoningTokens int64 `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
+		// PromptTokensDetails carries cache-hit accounting (OpenAI-shaped
+		// convention adopted by llama.cpp/vLLM/OpenRouter alike). Pointer so a
+		// backend that never emits it (proxy, older servers) leaves CachedTok
+		// at zero rather than a decode error.
+		PromptTokensDetails *struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -159,7 +175,12 @@ type UsageStat struct {
 	InputTok     int64
 	OutputTok    int64
 	ReasoningTok int64
-	Exact        bool
+	// CachedTok is the subset of InputTok served from the backend's prompt
+	// cache (prompt_tokens_details.cached_tokens). Zero when the backend
+	// doesn't report it — never estimated, unlike InputTok/OutputTok's
+	// length-based fallback.
+	CachedTok int64
+	Exact     bool
 }
 
 // GroundingEntry is one provenance record attached to a turn. Proxy-sourced
@@ -209,6 +230,11 @@ type Client struct {
 	Temperature *float64
 	TopP        *float64
 	MaxTokens   *int
+
+	// CachePrompt mirrors EndpointConfig.CachePrompt: llama.cpp's non-standard
+	// cache_prompt hint. nil = omit from the request body entirely (server
+	// default / no opinion); set only for endpoints that explicitly opt in.
+	CachePrompt *bool
 
 	// Backend is the requested backend name sent as X-Ilm-Backend. Empty = don't
 	// send the header (proxy uses its own default). Set by App.Send before each
@@ -427,6 +453,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		Temperature:   c.Temperature,
 		TopP:          c.TopP,
 		MaxTokens:     c.MaxTokens,
+		CachePrompt:   c.CachePrompt,
 	}
 	if proxyShape {
 		metadata := map[string]string{}
@@ -554,6 +581,9 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 					usage.OutputTok = chunk.Usage.CompletionTokens
 					if d := chunk.Usage.CompletionTokensDetails; d != nil {
 						usage.ReasoningTok = d.ReasoningTokens
+					}
+					if d := chunk.Usage.PromptTokensDetails; d != nil {
+						usage.CachedTok = d.CachedTokens
 					}
 				}
 				if len(chunk.Choices) > 0 {

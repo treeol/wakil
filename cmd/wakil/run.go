@@ -436,6 +436,7 @@ func RunHeadless(cfg config.Config, args []string) int {
 		Temperature:     ep.Temperature,
 		TopP:            ep.TopP,
 		MaxTokens:       ep.MaxTokens,
+		CachePrompt:     ep.CachePrompt,
 		ChatID:          agent.NewChatID(),
 		AuthHeader:      cfg.AuthHeader(),
 		HTTP:            newHTTPClient(),

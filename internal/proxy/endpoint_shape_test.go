@@ -29,6 +29,7 @@ func captureServer(t *testing.T) (*httptest.Server, *http.Header, *[]byte) {
 
 func floatPtr(f float64) *float64 { return &f }
 func intPtr(i int) *int           { return &i }
+func boolPtr(b bool) *bool        { return &b }
 
 // TestOpenAIKindRequestShape: a KindOpenAI client must emit no metadata key
 // at all, no X-Ilm-* headers, and the configured model — even when session
@@ -217,5 +218,68 @@ func TestIlmProxyKindNoMemoryWriteShape(t *testing.T) {
 	}
 	if _, ok := meta["chat_id"]; ok {
 		t.Error("NoMemoryWrite client must not send chat_id (defence in depth)")
+	}
+}
+
+// TestCachePromptAbsentWhenUnset: cache_prompt is llama.cpp-specific and must
+// never appear unless an endpoint explicitly opts in — an unset *bool must
+// omit the key entirely (never send a literal false), same discipline as the
+// other pointer-typed sampling fields.
+func TestCachePromptAbsentWhenUnset(t *testing.T) {
+	srv, _, body := captureServer(t)
+	c := &Client{BaseURL: srv.URL, Kind: KindOpenAI, ConfiguredModel: "m", Model: "m", HTTP: http.DefaultClient}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(*body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["cache_prompt"]; ok {
+		t.Errorf("cache_prompt unset — must be absent, got %s", raw["cache_prompt"])
+	}
+}
+
+// TestCachePromptPresentWhenSet: an endpoint that opts in gets the field sent
+// verbatim.
+func TestCachePromptPresentWhenSet(t *testing.T) {
+	srv, _, body := captureServer(t)
+	c := &Client{BaseURL: srv.URL, Kind: KindOpenAI, ConfiguredModel: "m", Model: "m", CachePrompt: boolPtr(true), HTTP: http.DefaultClient}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(*body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	var got bool
+	if err := json.Unmarshal(raw["cache_prompt"], &got); err != nil {
+		t.Fatalf("cache_prompt missing or malformed: %v", err)
+	}
+	if !got {
+		t.Errorf("cache_prompt = %v, want true", got)
+	}
+}
+
+// TestCachePromptSentForIlmProxyKindToo: cache_prompt is deliberately NOT
+// gated on Kind — the proxy fronts llama.cpp too, so an ilm-proxy endpoint
+// that opts in must also get the field. Only the explicit per-endpoint flag
+// controls it, never Kind.
+func TestCachePromptSentForIlmProxyKindToo(t *testing.T) {
+	srv, _, body := captureServer(t)
+	c := &Client{BaseURL: srv.URL, Kind: KindIlmProxy, Model: "ilm", CachePrompt: boolPtr(true), HTTP: http.DefaultClient}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(*body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	var got bool
+	if err := json.Unmarshal(raw["cache_prompt"], &got); err != nil {
+		t.Fatalf("cache_prompt missing or malformed for ilm-proxy kind: %v", err)
+	}
+	if !got {
+		t.Errorf("cache_prompt = %v, want true", got)
 	}
 }

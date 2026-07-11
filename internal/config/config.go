@@ -34,6 +34,13 @@ type EndpointConfig struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
 	MaxTokens   *int     `json:"max_tokens,omitempty"`
+
+	// CachePrompt is llama.cpp's non-standard "cache_prompt" hint, sent
+	// verbatim when set. Not gated on Kind — kind=openai also covers
+	// OpenRouter/vLLM, which don't understand this field — so it is an
+	// explicit per-endpoint opt-in, pointer-typed like the sampling fields
+	// above: unset omits the field entirely, never sends a literal false.
+	CachePrompt *bool `json:"cache_prompt,omitempty"`
 }
 
 // Config is resolved with precedence: defaults < config file < env < flags.
@@ -283,6 +290,14 @@ type CostsConfig struct {
 type ModelRate struct {
 	InputUSDPer1M  float64 `json:"input_usd_per_1m"`
 	OutputUSDPer1M float64 `json:"output_usd_per_1m"`
+
+	// CachedInputUSDPer1M is the discounted rate for cache-hit prompt tokens
+	// (prompt_tokens_details.cached_tokens). Optional: 0 (the zero value, and
+	// the default for every config that predates this field) means "no
+	// discount configured" — cached tokens are billed at InputUSDPer1M like
+	// any other input token, so cost arithmetic is byte-identical to before
+	// this field existed. See CostsConfig.ExternalInferenceCost.
+	CachedInputUSDPer1M float64 `json:"cached_input_usd_per_1m,omitempty"`
 }
 
 // InferenceRate is the single proxy-compute rate applied to main+aux tokens.
@@ -319,12 +334,31 @@ func (c CostsConfig) InferenceCost(totalTok int64) (usd float64, priced bool) {
 // ExternalInferenceCost returns the exact cost of one external inference call
 // given the "backend/model" key's configured rate. priced is false when the
 // key has no rate (or a zero rate), so the source renders "—".
-func (c CostsConfig) ExternalInferenceCost(backendModel string, inTok, outTok int64) (usd float64, priced bool) {
+//
+// cachedTok is optional (variadic so every pre-existing call site, including
+// tests, keeps compiling unchanged) and defaults to 0 — the cache-unaware
+// call shape. When cachedTok > 0 and the rate has no CachedInputUSDPer1M
+// configured, cached tokens are billed at InputUSDPer1M like any other input
+// token, so the returned usd is byte-identical to the pre-cache-accounting
+// formula regardless of whether the caller passes a real cachedTok.
+func (c CostsConfig) ExternalInferenceCost(backendModel string, inTok, outTok int64, cachedTok ...int64) (usd float64, priced bool) {
 	r, ok := c.InferenceBackends[backendModel]
 	if !ok || (r.InputUSDPer1M == 0 && r.OutputUSDPer1M == 0) {
 		return 0, false
 	}
-	usd = float64(inTok)/1e6*r.InputUSDPer1M + float64(outTok)/1e6*r.OutputUSDPer1M
+	var cached int64
+	if len(cachedTok) > 0 {
+		cached = cachedTok[0]
+	}
+	cachedRate := r.CachedInputUSDPer1M
+	if cachedRate == 0 {
+		cachedRate = r.InputUSDPer1M // no discount configured — same rate as uncached input
+	}
+	uncached := inTok - cached
+	if uncached < 0 {
+		uncached = 0
+	}
+	usd = float64(uncached)/1e6*r.InputUSDPer1M + float64(cached)/1e6*cachedRate + float64(outTok)/1e6*r.OutputUSDPer1M
 	return usd, true
 }
 
