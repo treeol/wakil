@@ -245,6 +245,14 @@ type App struct {
 	// when AutoApprove=true; consumed (cleared) by handleMashura.
 	autoCounselSkipGate bool
 
+	// StartupNote, when non-empty, is a message the TUI's Init() should emit
+	// as a SysNoteMsg on the very first update — used by RestoreRepoState
+	// (repostate.go) to surface "restored from last session in this folder"
+	// through the normal message pipeline instead of stderr, which would be
+	// invisible once tea.WithAltScreen() engages. Consumed (cleared) by
+	// tuiModel.Init() so it never re-fires. Unused headless.
+	StartupNote string
+
 	// SelectedBackend is the current session's requested backend name, sent as
 	// X-Ilm-Backend on every chat request. Empty = use the proxy's default (no
 	// header sent). Set by /backend; initialized from Cfg.Backend at startup.
@@ -839,8 +847,8 @@ const confinementBreakerThreshold = 2
 // byte-identical retries, which real model retries rarely are (they vary
 // quoting, tool choice, and path form call to call).
 var confinementErrorMarkers = []string{
-	"outside workspace",  // both executors: "... is outside workspace %q — traversal not allowed"
-	"resolving path",     // Docker: readlink -f failed
+	"outside workspace",      // both executors: "... is outside workspace %q — traversal not allowed"
+	"resolving path",         // Docker: readlink -f failed
 	"could not resolve path", // Docker: readlink -f produced empty output
 }
 
@@ -931,7 +939,7 @@ func (a *App) RecordInferenceCost() {
 	var priced bool
 	if isExternal {
 		usd, priced = a.Cfg.Costs.ExternalInferenceCost(usedBackend+"/"+modelForCost, u.InputTok, u.OutputTok, config.TokenDetail{
-			CachedTok:    u.CachedTok,
+			CachedTok:     u.CachedTok,
 			CacheWriteTok: u.CacheWriteTok,
 		})
 	} else {
@@ -954,7 +962,7 @@ func (a *App) RecordInferenceCost() {
 	}
 
 	a.Costs.Record(source, u.InputTok, u.OutputTok, usd, priced, conf, config.TokenDetail{
-		CachedTok:    u.CachedTok,
+		CachedTok:     u.CachedTok,
 		CacheWriteTok: u.CacheWriteTok,
 	})
 }

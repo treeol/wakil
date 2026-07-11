@@ -268,6 +268,16 @@ type Config struct {
 	ListSessions bool   `json:"-"` // list saved sessions and exit
 	AutoApprove  bool   `json:"-"` // skip all confirmation prompts
 	Trace        bool   `json:"-"` // tracing enabled for this run (TraceSessions || --trace flag)
+
+	// ModelExplicit and AutoExplicit record whether THIS run's invocation
+	// explicitly set --model/ILM_MODEL or --auto, as opposed to picking up a
+	// default. Used by the per-repo terminal-settings restore feature
+	// (RestoreRepoState) to decide whether a remembered folder preference
+	// may apply: an explicit flag or env var for this run always wins over a
+	// restored value. Computed once in LoadConfig from the same flagsSet map
+	// resolveEndpoint already uses for model/base-url override precedence.
+	ModelExplicit bool `json:"-"`
+	AutoExplicit  bool `json:"-"`
 }
 
 // CostsConfig is the [costs] pricing block consumed by the CostTracker. Rates
@@ -354,7 +364,7 @@ func (c CostsConfig) InferenceCost(totalTok int64) (usd float64, priced bool) {
 // ExternalInferenceCost and CostTracker.Record with a single typed struct,
 // so new fields (e.g. CacheWriteTok) can be added without signature churn.
 type TokenDetail struct {
-	CachedTok    int64 // subset of InputTok served from the backend's prompt cache (cache reads)
+	CachedTok     int64 // subset of InputTok served from the backend's prompt cache (cache reads)
 	CacheWriteTok int64 // tokens written to the cache this turn (cache_creation_input_tokens)
 }
 
@@ -581,6 +591,12 @@ func LoadConfig(argv []string) (Config, error) {
 	// "flag default carried the config value through".
 	flagsSet := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { flagsSet[f.Name] = true })
+
+	// Record explicit-this-run overrides for the per-repo settings restore
+	// feature (RestoreRepoState): a --model/ILM_MODEL or --auto set for THIS
+	// invocation always wins over a remembered folder preference.
+	cfg.ModelExplicit = flagsSet["model"] || os.Getenv("ILM_MODEL") != ""
+	cfg.AutoExplicit = flagsSet["auto"]
 
 	// Resolve trace: --trace flag enables for this run; config trace_sessions makes
 	// it the standing default. Either way cfg.Trace is the single bit callers check.

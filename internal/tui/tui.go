@@ -152,7 +152,7 @@ type subTab struct {
 	filesChanged []string // mechanical record of canonical paths touched (edit-tier only)
 	capability   string   // "discovery" or "edit" — drives the sidebar tool list (from Start)
 	model        string   // child's resolved model (from Start)
-	active       bool // worker acquired a parallelism slot (queued → running)
+	active       bool     // worker acquired a parallelism slot (queued → running)
 	done         bool
 
 	// Render cache for renderSubTabContent. Invalidated when buf grows or vpW changes.
@@ -244,6 +244,11 @@ func NewTUIModel(app *agent.App) tuiModel {
 }
 
 func (m tuiModel) Init() tea.Cmd {
+	if m.app != nil && m.app.StartupNote != "" {
+		note := m.app.StartupNote
+		m.app.StartupNote = "" // consume once — Init() may run more than once in theory
+		return tea.Batch(textarea.Blink, func() tea.Msg { return agent.SysNoteMsg{Text: note} })
+	}
 	return textarea.Blink
 }
 

@@ -79,6 +79,7 @@ var allTUICommands = []candidate{
 	{name: "/plan", hasArgs: true},
 	{name: "/quit"},
 	{name: "/rawtools"},
+	{name: "/repostate", hasArgs: true},
 	{name: "/reset"},
 	{name: "/resume", hasArgs: true},
 	{name: "/session", hasArgs: true},
@@ -231,6 +232,8 @@ func computeSlashCompletion(ta textarea.Model, src compSources) completionState 
 	switch cmdWord {
 	case "/auto":
 		cands = listNameCandidates(argLeaf, []string{"destructive"})
+	case "/repostate":
+		cands = listNameCandidates(argLeaf, []string{"clear"})
 	case "/backend":
 		cands = listNameCandidates(argLeaf, src.backends)
 	case "/model":

@@ -174,6 +174,23 @@ func main() {
 			Created:   time.Now(),
 			Workspace: app.SessionWorkspace(),
 		}
+		// Per-repo terminal settings restore: only on a fresh conversation.
+		// A resumed session's model/backend must never be silently changed by
+		// a remembered folder preference. TUI-only — cmd/wakil/run.go (the
+		// headless path) never calls this, since App.AutoApprove has no
+		// effect on headless tool confirmation (see repostate.go doc comment).
+		result := agent.RestoreRepoState(app)
+		if result.Note != "" {
+			app.StartupNote = result.Note
+		}
+		// Re-resolve context limits using the literal restored strings —
+		// mirrors resolveBackendCtxCmd's own calling convention, avoiding the
+		// empty-SelectedModel trap ApplyModelOverride leaves for openai-kind
+		// endpoints (reading app.SelectedModel back here would be wrong).
+		if result.Model != "" || result.Backend != "" {
+			ctxLimit = agent.ResolveContextLimitForBackendModel(context.Background(), client.HTTP, cfg, result.Backend, result.Model, os.Stderr)
+			app.CtxLimit = ctxLimit
+		}
 	}
 
 	// Open the P38 trace store when tracing is enabled (trace_sessions:true or

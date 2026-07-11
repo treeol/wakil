@@ -940,6 +940,29 @@ func listEndpoints(app *App) string {
 	return b.String()
 }
 
+// ApplyModelOverride sets the effective model for the session, branching on
+// endpoint kind exactly as the live /model command does. Shared by the
+// /model command handler and RestoreRepoState (repostate.go) so both paths
+// stay in sync — a behavior-preserving extraction of what was previously
+// inlined in the /model case.
+//
+// kind=openai: ConfiguredModel is forced into every request, which would
+// make a plain SelectedModel override a silent no-op (apparent success,
+// zero effect). Instead this updates the endpoint's effective model for the
+// session — the literal string the client sends. No server-side
+// validation: a bad name surfaces as a request error, which is honest.
+func ApplyModelOverride(app *App, model string) {
+	if app.Cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI {
+		app.Client.ConfiguredModel = model
+		app.Client.Model = model
+		app.Cfg.Endpoint.Model = model
+		app.SelectedModel = "" // openai mode: ConfiguredModel is the single source
+		app.defaultModel = model
+		return
+	}
+	app.SelectedModel = model
+}
+
 // resolveBackendCtxCmd returns a tea.Cmd that probes the new backend+model's
 // context window in a goroutine and delivers the result as a BackendCtxLimitMsg.
 // The TUI event loop applies the update to app.CtxLimit when the msg is handled,
@@ -1024,6 +1047,13 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 			return true, false, note("destructive auto-approve: OFF — destructive commands require confirmation again")
 		}
 		app.AutoApprove = !app.AutoApprove
+		// Persist the toggle (TUI-only: HandleTUICommand is never invoked from
+		// the headless "wakil run" path — see repostate.go's RestoreRepoState
+		// doc comment for why AutoApprove restore must stay TUI-only).
+		// Deliberately NOT reached from the /auto destructive branch above,
+		// and RepoState has no field for AllowDestructive regardless — that
+		// grant can never be written to disk from here.
+		app.saveRepoState(func(s *RepoState) { s.AutoApprove = app.AutoApprove })
 		if app.AutoApprove {
 			return true, false, note("auto mode: ON — tool calls approved without prompting\n" +
 				"  still confirmed: destructive shell commands (opt in with /auto destructive), external-backend egress")
@@ -1034,6 +1064,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 
 	case "/rawtools":
 		app.RawTools = !app.RawTools
+		app.saveRepoState(func(s *RepoState) { s.RawTools = app.RawTools })
 		if app.RawTools {
 			return true, false, note("raw tool results: ON — full output kept in context (cap disabled)")
 		}
@@ -1147,6 +1178,15 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 			if app.SelectedModel != "" {
 				msg += " · model: " + app.SelectedModel
 			}
+			// Persist (ilm-proxy kind only — this branch is unreachable for
+			// kind=openai, which is repurposed above as the endpoint switcher).
+			app.saveRepoState(func(s *RepoState) {
+				s.Backend = app.SelectedBackend
+				if app.SelectedModel != "" {
+					s.Model = app.SelectedModel
+				}
+				s.EndpointName = app.Cfg.EndpointName
+			})
 			// Re-probe context limits for the new backend so dynamic thresholds
 			// (compact_at_frac etc.) scale to the new window. The result arrives
 			// as BackendCtxLimitMsg and is applied safely in the TUI event loop.
@@ -1183,19 +1223,24 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		// the literal string the client sends. No server-side validation: a
 		// bad name surfaces as a request error, which is honest.
 		if len(fields) >= 2 {
-			if app.Cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI {
-				app.Client.ConfiguredModel = fields[1]
-				app.Client.Model = fields[1]
-				app.Cfg.Endpoint.Model = fields[1]
-				app.SelectedModel = "" // openai mode: ConfiguredModel is the single source
-				app.defaultModel = fields[1]
-				msg := "model: set to " + fields[1] + " (endpoint " + app.Cfg.EndpointName + ")"
-				return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, "", fields[1]))
+			model := fields[1]
+			isOpenAI := app.Cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI
+			ApplyModelOverride(app, model)
+			// Persist: repo-state stores the literal model string regardless
+			// of endpoint kind, since ApplyModelOverride clears SelectedModel
+			// for openai kind — reading SelectedModel back here would lose
+			// the value. See repo-state-plan.md fix #2.
+			app.saveRepoState(func(s *RepoState) {
+				s.Model = model
+				s.EndpointName = app.Cfg.EndpointName
+			})
+			if isOpenAI {
+				msg := "model: set to " + model + " (endpoint " + app.Cfg.EndpointName + ")"
+				return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, "", model))
 			}
-			app.SelectedModel = fields[1]
-			msg := "model: set to " + fields[1]
+			msg := "model: set to " + model
 			// Re-resolve limits for the selected backend + new model.
-			return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, app.SelectedBackend, fields[1]))
+			return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, app.SelectedBackend, model))
 		}
 		cur := app.SelectedModel
 		if cur == "" {
@@ -1217,12 +1262,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 			name := fields[1]
 			if name == "inherit" {
 				app.SubagentEndpointOverride = ""
+				app.saveRepoState(func(s *RepoState) { s.SubagentEndpoint = "" })
 				return true, false, note("subagent endpoint: inherit (parent endpoint)")
 			}
 			if _, err := app.Cfg.NormalizeEndpoint(name); err != nil {
 				return true, false, note(fmt.Sprintf("subagent endpoint %q: %v — not set", name, err))
 			}
 			app.SubagentEndpointOverride = name
+			app.saveRepoState(func(s *RepoState) { s.SubagentEndpoint = name })
 			return true, false, note("subagent endpoint: set to " + name)
 		}
 		epName := resolveSubagentEndpointName(app)
@@ -1247,6 +1294,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 				// Clear the limits cache so the next dispatch re-probes with
 				// the endpoint's original model, not the stale override.
 				app.subagentLimitsCachePtr = nil
+				app.saveRepoState(func(s *RepoState) { s.SubagentModel = "" })
 				return true, false, note("subagent model: inherit (endpoint model)")
 			}
 			app.SubagentModelOverride = name
@@ -1254,6 +1302,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 			// model's context window rather than returning a stale cached
 			// limit from the previous model.
 			app.subagentLimitsCachePtr = nil
+			app.saveRepoState(func(s *RepoState) { s.SubagentModel = name })
 			return true, false, note("subagent model: set to " + name)
 		}
 		cur := app.SubagentModelOverride
@@ -1319,6 +1368,18 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 				epName, config.EndpointKindOpenAI))
 		}
 		return true, false, func() tea.Msg { return LearnTurnMsg{} }
+
+	case "/repostate":
+		// /repostate [clear] — show or clear the per-folder terminal settings
+		// remembered for this workspace (model/backend/subagent/rawtools/auto).
+		if len(fields) >= 2 && fields[1] == "clear" {
+			if err := ClearRepoState(app); err != nil {
+				return true, false, note("repostate: clear failed: " + err.Error())
+			}
+			return true, false, note("repostate: cleared for " + app.SessionWorkspace() +
+				" (this session's current values are unchanged)")
+		}
+		return true, false, note(DescribeRepoState(app))
 
 	case "/help":
 		return true, false, note(helpTextTUI)
@@ -1588,6 +1649,8 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /auto destructive    toggle: also auto-approve destructive shell commands (rm, mv, git reset, …)
                      requires /auto ON; cleared when /auto goes OFF; shown as AUTO! in status
 /rawtools            toggle: include full tool output in context (default: capped at 8k chars)
+/repostate           show terminal settings remembered for this folder (model/backend/auto/…)
+/repostate clear     delete the remembered settings for this folder
 /cwd                 show executor working directory
 /mode                show execution backend
 /history             transcript size
