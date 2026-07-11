@@ -930,7 +930,10 @@ func (a *App) RecordInferenceCost() {
 	var usd float64
 	var priced bool
 	if isExternal {
-		usd, priced = a.Cfg.Costs.ExternalInferenceCost(usedBackend+"/"+modelForCost, u.InputTok, u.OutputTok, u.CachedTok)
+		usd, priced = a.Cfg.Costs.ExternalInferenceCost(usedBackend+"/"+modelForCost, u.InputTok, u.OutputTok, config.TokenDetail{
+			CachedTok:    u.CachedTok,
+			CacheWriteTok: u.CacheWriteTok,
+		})
 	} else {
 		// Local/modeled tier has one flat combined rate (no separate input
 		// rate to split a cache discount against) — cached tokens stay folded
@@ -950,7 +953,10 @@ func (a *App) RecordInferenceCost() {
 		conf = proxy.ConfApprox
 	}
 
-	a.Costs.Record(source, u.InputTok, u.OutputTok, usd, priced, conf, u.CachedTok)
+	a.Costs.Record(source, u.InputTok, u.OutputTok, usd, priced, conf, config.TokenDetail{
+		CachedTok:    u.CachedTok,
+		CacheWriteTok: u.CacheWriteTok,
+	})
 }
 
 // RecordOracleCostFor records one panel member's exact token usage under the

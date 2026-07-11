@@ -273,6 +273,7 @@ type subagentEndpointView struct {
 	topP            *float64
 	maxTokens       *int
 	cachePrompt     *bool
+	cacheControl    *bool
 }
 
 // applyModelOverride patches in a /submodel model override, mirroring /model's
@@ -335,6 +336,7 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 			topP:            a.Client.TopP,
 			maxTokens:       a.Client.MaxTokens,
 			cachePrompt:     a.Client.CachePrompt,
+			cacheControl:    a.Client.CacheControl,
 		}
 		v.applyModelOverride(a.SubagentModelOverride)
 		return v, true
@@ -360,6 +362,7 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 		topP:            ep.TopP,
 		maxTokens:       ep.MaxTokens,
 		cachePrompt:     ep.CachePrompt,
+		cacheControl:    ep.CacheControl,
 	}
 	v.applyModelOverride(a.SubagentModelOverride)
 	return v, false
@@ -522,7 +525,10 @@ func (a *App) resolveChildCtxLimit(ctx context.Context, view subagentEndpointVie
 func foldSubagentCost(tracker *proxy.CostTracker, rows []proxy.CostRow) float64 {
 	var total float64
 	for _, r := range rows {
-		tracker.Record(r.Source, r.InputTok, r.OutputTok, r.CostUSD, r.Priced, r.Confidence, r.CachedTok)
+		tracker.Record(r.Source, r.InputTok, r.OutputTok, r.CostUSD, r.Priced, r.Confidence, config.TokenDetail{
+			CachedTok:    r.CachedTok,
+			CacheWriteTok: r.CacheWriteTok,
+		})
 		if r.Priced {
 			total += r.CostUSD
 		}
@@ -610,6 +616,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		TopP:            view.topP,
 		MaxTokens:       view.maxTokens,
 		CachePrompt:     view.cachePrompt,
+		CacheControl:    view.cacheControl,
 		ChatID:          subChatID,
 		AuthHeader:      view.authHeader,
 		NoMemoryWrite:   true,

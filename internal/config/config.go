@@ -41,6 +41,15 @@ type EndpointConfig struct {
 	// explicit per-endpoint opt-in, pointer-typed like the sampling fields
 	// above: unset omits the field entirely, never sends a literal false.
 	CachePrompt *bool `json:"cache_prompt,omitempty"`
+
+	// CacheControl enables Anthropic-style prompt caching via cache_control
+	// breakpoints on message content parts. When set, Stream injects two
+	// ephemeral breakpoints on the wire copy of the request: one on
+	// messages[0] (the day-stable preamble) and one on the last non-null-
+	// content message. The stored transcript is never modified — decoration
+	// is transient and per-request. Independent of CachePrompt (different
+	// mechanisms, different providers); both may be set on the same endpoint.
+	CacheControl *bool `json:"cache_control,omitempty"`
 }
 
 // Config is resolved with precedence: defaults < config file < env < flags.
@@ -298,6 +307,15 @@ type ModelRate struct {
 	// any other input token, so cost arithmetic is byte-identical to before
 	// this field existed. See CostsConfig.ExternalInferenceCost.
 	CachedInputUSDPer1M float64 `json:"cached_input_usd_per_1m,omitempty"`
+
+	// CacheWriteUSDPer1M is the rate for cache-write prompt tokens
+	// (cache_creation_input_tokens). Optional: 0 (the zero value) means
+	// "no separate write rate configured" — write tokens are billed at
+	// InputUSDPer1M, so cost arithmetic is byte-identical to before this
+	// field existed. Anthropic charges a 25% premium over base input for
+	// cache writes; users who want that precision set this field explicitly.
+	// No default multiplier is applied when unset.
+	CacheWriteUSDPer1M float64 `json:"cache_write_usd_per_1m,omitempty"`
 }
 
 // InferenceRate is the single proxy-compute rate applied to main+aux tokens.
@@ -331,34 +349,50 @@ func (c CostsConfig) InferenceCost(totalTok int64) (usd float64, priced bool) {
 	return float64(totalTok) / 1e6 * c.Inference.USDPer1MTokens, true
 }
 
+// TokenDetail carries the per-call token breakdown that cost arithmetic
+// consumes. It replaces the variadic cachedTok ...int64 parameter on
+// ExternalInferenceCost and CostTracker.Record with a single typed struct,
+// so new fields (e.g. CacheWriteTok) can be added without signature churn.
+type TokenDetail struct {
+	CachedTok    int64 // subset of InputTok served from the backend's prompt cache (cache reads)
+	CacheWriteTok int64 // tokens written to the cache this turn (cache_creation_input_tokens)
+}
+
 // ExternalInferenceCost returns the exact cost of one external inference call
 // given the "backend/model" key's configured rate. priced is false when the
 // key has no rate (or a zero rate), so the source renders "—".
 //
-// cachedTok is optional (variadic so every pre-existing call site, including
-// tests, keeps compiling unchanged) and defaults to 0 — the cache-unaware
-// call shape. When cachedTok > 0 and the rate has no CachedInputUSDPer1M
-// configured, cached tokens are billed at InputUSDPer1M like any other input
-// token, so the returned usd is byte-identical to the pre-cache-accounting
-// formula regardless of whether the caller passes a real cachedTok.
-func (c CostsConfig) ExternalInferenceCost(backendModel string, inTok, outTok int64, cachedTok ...int64) (usd float64, priced bool) {
+// detail carries cache-read and cache-write token counts. When a rate field
+// is unset (0), the corresponding tokens are billed at InputUSDPer1M — so the
+// returned usd is byte-identical to the pre-cache-accounting formula when no
+// cache rates are configured, regardless of whether the caller passes real
+// token counts. This is the golden "unconfigured stays unchanged" guarantee.
+//
+// Cache-write tokens are treated as additive (NOT inside prompt_tokens) —
+// they are priced independently and added to the total. When CacheWriteUSDPer1M
+// is unset, write tokens bill at InputUSDPer1M.
+func (c CostsConfig) ExternalInferenceCost(backendModel string, inTok, outTok int64, detail TokenDetail) (usd float64, priced bool) {
 	r, ok := c.InferenceBackends[backendModel]
 	if !ok || (r.InputUSDPer1M == 0 && r.OutputUSDPer1M == 0) {
 		return 0, false
 	}
-	var cached int64
-	if len(cachedTok) > 0 {
-		cached = cachedTok[0]
-	}
 	cachedRate := r.CachedInputUSDPer1M
 	if cachedRate == 0 {
-		cachedRate = r.InputUSDPer1M // no discount configured — same rate as uncached input
+		cachedRate = r.InputUSDPer1M
 	}
+	writeRate := r.CacheWriteUSDPer1M
+	if writeRate == 0 {
+		writeRate = r.InputUSDPer1M
+	}
+	cached := detail.CachedTok
 	uncached := inTok - cached
 	if uncached < 0 {
 		uncached = 0
 	}
-	usd = float64(uncached)/1e6*r.InputUSDPer1M + float64(cached)/1e6*cachedRate + float64(outTok)/1e6*r.OutputUSDPer1M
+	usd = float64(uncached)/1e6*r.InputUSDPer1M +
+		float64(cached)/1e6*cachedRate +
+		float64(detail.CacheWriteTok)/1e6*writeRate +
+		float64(outTok)/1e6*r.OutputUSDPer1M
 	return usd, true
 }
 

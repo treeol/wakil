@@ -42,11 +42,11 @@ func TestExternalInferenceCost(t *testing.T) {
 	c := CostsConfig{InferenceBackends: map[string]ModelRate{
 		"openrouter/x/y": {InputUSDPer1M: 1, OutputUSDPer1M: 2},
 	}}
-	usd, priced := c.ExternalInferenceCost("openrouter/x/y", 2_000_000, 1_000_000)
+	usd, priced := c.ExternalInferenceCost("openrouter/x/y", 2_000_000, 1_000_000, TokenDetail{})
 	if !priced || usd != 4 {
 		t.Errorf("ExternalInferenceCost = %v, %v; want 4, true", usd, priced)
 	}
-	if _, priced := c.ExternalInferenceCost("nope", 1, 1); priced {
+	if _, priced := c.ExternalInferenceCost("nope", 1, 1, TokenDetail{}); priced {
 		t.Error("unknown backend/model should be unpriced")
 	}
 }
@@ -61,7 +61,7 @@ func TestExternalInferenceCostWithCachedTokens(t *testing.T) {
 	}}
 	// 1M total prompt tokens, 400k of them cached, 100k output.
 	// = 600k/1e6*10 + 400k/1e6*2 + 100k/1e6*30 = 6 + 0.8 + 3 = 9.8
-	usd, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, 400_000)
+	usd, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, TokenDetail{CachedTok: 400_000})
 	if !priced {
 		t.Fatal("expected priced=true")
 	}
@@ -79,13 +79,60 @@ func TestExternalInferenceCostCachedTokensDefaultToInputRateWhenUnset(t *testing
 	c := CostsConfig{InferenceBackends: map[string]ModelRate{
 		"openrouter/x/y": {InputUSDPer1M: 10, OutputUSDPer1M: 30}, // no CachedInputUSDPer1M
 	}}
-	withoutCached, _ := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000)
-	withCached, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, 400_000)
+	withoutCached, _ := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, TokenDetail{})
+	withCached, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, TokenDetail{CachedTok: 400_000})
 	if !priced {
 		t.Fatal("expected priced=true")
 	}
 	if withCached != withoutCached {
 		t.Errorf("cost with cachedTok=400_000 (no cached rate configured) = %v, want %v (identical to the cache-unaware call)", withCached, withoutCached)
+	}
+}
+
+// TestExternalInferenceCostCacheWriteTokens verifies the split-rate formula
+// when a CacheWriteUSDPer1M rate is configured: write tokens bill at the write
+// rate, uncached input at the input rate, cached at the cached rate, output
+// at the output rate. Write tokens are treated as additive (not inside
+// prompt_tokens).
+func TestExternalInferenceCostCacheWriteTokens(t *testing.T) {
+	c := CostsConfig{InferenceBackends: map[string]ModelRate{
+		"openrouter/x/y": {InputUSDPer1M: 10, OutputUSDPer1M: 30, CachedInputUSDPer1M: 2, CacheWriteUSDPer1M: 12.5},
+	}}
+	// 1M prompt tokens (600k uncached + 400k cached), 200k write tokens, 100k output.
+	// = 600k/1e6*10 + 400k/1e6*2 + 200k/1e6*12.5 + 100k/1e6*30
+	// = 6 + 0.8 + 2.5 + 3 = 12.3
+	usd, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, TokenDetail{
+		CachedTok:    400_000,
+		CacheWriteTok: 200_000,
+	})
+	if !priced {
+		t.Fatal("expected priced=true")
+	}
+	if usd != 12.3 {
+		t.Errorf("usd = %v, want 12.3", usd)
+	}
+}
+
+// TestExternalInferenceCostCacheWriteUnsetDefaultsToInputRate verifies that
+// when CacheWriteUSDPer1M is unset (0), write tokens are billed at
+// InputUSDPer1M — the golden "unconfigured stays unchanged" guarantee for
+// the write side.
+func TestExternalInferenceCostCacheWriteUnsetDefaultsToInputRate(t *testing.T) {
+	c := CostsConfig{InferenceBackends: map[string]ModelRate{
+		"openrouter/x/y": {InputUSDPer1M: 10, OutputUSDPer1M: 30}, // no CacheWriteUSDPer1M
+	}}
+	// Without write tokens, without cached:
+	// 1M input * 10 + 100k output * 30 = 10 + 3 = 13
+	withoutWrite, _ := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, TokenDetail{})
+	// With 200k write tokens (billed at InputUSDPer1M=10 since unset):
+	// 1M input * 10 + 200k write * 10 + 100k output * 30 = 10 + 2 + 3 = 15
+	withWrite, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, TokenDetail{CacheWriteTok: 200_000})
+	if !priced {
+		t.Fatal("expected priced=true")
+	}
+	// The difference should be exactly 200k/1e6*10 = 2.0
+	if withWrite-withoutWrite != 2.0 {
+		t.Errorf("cost delta from write tokens = %v, want 2.0 (200k/1M * InputUSDPer1M=10)", withWrite-withoutWrite)
 	}
 }
 

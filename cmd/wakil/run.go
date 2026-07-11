@@ -437,6 +437,7 @@ func RunHeadless(cfg config.Config, args []string) int {
 		TopP:            ep.TopP,
 		MaxTokens:       ep.MaxTokens,
 		CachePrompt:     ep.CachePrompt,
+		CacheControl:    ep.CacheControl,
 		ChatID:          agent.NewChatID(),
 		AuthHeader:      cfg.AuthHeader(),
 		HTTP:            newHTTPClient(),

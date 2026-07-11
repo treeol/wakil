@@ -1,14 +1,18 @@
 package proxy
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/treeol/wakil/internal/config"
+)
 
 // TestCostTrackerRecordCachedTokensAccumulate verifies the optional cachedTok
 // argument to Record accumulates per-source into CostRow.CachedTok, the same
 // way InputTok/OutputTok already do.
 func TestCostTrackerRecordCachedTokensAccumulate(t *testing.T) {
 	tr := NewCostTracker()
-	tr.Record("inference·local", 1000, 100, 0.01, true, ConfModeled, 250)
-	tr.Record("inference·local", 2000, 200, 0.02, true, ConfModeled, 500)
+	tr.Record("inference·local", 1000, 100, 0.01, true, ConfModeled, config.TokenDetail{CachedTok: 250})
+	tr.Record("inference·local", 2000, 200, 0.02, true, ConfModeled, config.TokenDetail{CachedTok: 500})
 
 	_, rows := tr.Snapshot()
 	if len(rows) != 1 {
@@ -28,7 +32,7 @@ func TestCostTrackerRecordCachedTokensAccumulate(t *testing.T) {
 // variadic argument is omitted.
 func TestCostTrackerRecordWithoutCachedTokensDefaultsToZero(t *testing.T) {
 	tr := NewCostTracker()
-	tr.Record(CostSourceSearch, 0, 0, 0.05, true, ConfModeled) // no cachedTok arg at all
+	tr.Record(CostSourceSearch, 0, 0, 0.05, true, ConfModeled) // no TokenDetail arg at all
 
 	_, rows := tr.Snapshot()
 	if len(rows) != 1 || rows[0].CachedTok != 0 {

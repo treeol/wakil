@@ -96,29 +96,122 @@ type ToolFunction struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-type chatRequest struct {
-	Model         string            `json:"model"`
-	Stream        bool              `json:"stream"`
-	StreamOptions *streamOptions    `json:"stream_options,omitempty"`
-	Messages      []Message         `json:"messages"`
-	Tools         []Tool            `json:"tools,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
+// wireMessage is the serialization-time wire shape for one message. It mirrors
+// Message's JSON fields exactly, but allows content to be either a plain JSON
+// string/null (unmarked, byte-identical to today) or an array of content parts
+// (marked, for Anthropic cache_control). The input messages slice is never
+// mutated — wireMessage values are built fresh per request from the Message
+// slice. Pinned is excluded (no json tag, same as Message).
+//
+// When cacheControl is off, marshalWireMessages produces JSON byte-identical
+// to json.Marshal of []Message — the golden no-op guarantee.
+type wireMessage struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+}
 
-	// Sampling parameters, pointer-typed so unset fields are omitted from the
-	// JSON entirely (the server's own defaults stay authoritative). Populated
-	// from the endpoint config; never defaulted Wakil-side.
-	Temperature *float64 `json:"temperature,omitempty"`
-	TopP        *float64 `json:"top_p,omitempty"`
-	MaxTokens   *int     `json:"max_tokens,omitempty"`
+// contentPart is one element of the parts-shaped content array used for
+// cache_control decoration.
+type contentPart struct {
+	Type         string `json:"type"`
+	Text         string `json:"text"`
+	CacheControl *cacheControlDirective `json:"cache_control,omitempty"`
+}
 
-	// CachePrompt is llama.cpp's non-standard prompt-cache hint. Pointer +
-	// omitempty so it is entirely absent unless an endpoint explicitly opts
-	// in — sent as literal false would be as much a "not every server knows
-	// this field" risk as any other unrecognised key. Not gated on Kind:
-	// kind=openai also covers OpenRouter/vLLM, which don't understand this
-	// field, so the opt-in is per-endpoint (Client.CachePrompt), never implied
-	// by Kind alone.
-	CachePrompt *bool `json:"cache_prompt,omitempty"`
+// cacheControlDirective is the Anthropic ephemeral cache breakpoint.
+type cacheControlDirective struct {
+	Type string `json:"type"`
+}
+
+// marshalWireMessages builds a []wireMessage from messages, decorating marked
+// indices with cache_control content parts. Unmarked messages get content as a
+// plain JSON string (or null) — byte-identical to json.Marshal of []Message.
+// The input slice is never mutated.
+func marshalWireMessages(messages []Message, marked map[int]bool) ([]wireMessage, error) {
+	out := make([]wireMessage, len(messages))
+	for i, m := range messages {
+	 wm := wireMessage{
+			Role:       m.Role,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+			Name:       m.Name,
+		}
+		if marked[i] && m.Content != nil {
+			// Marked message with non-null content: emit parts-shaped content
+			// with an ephemeral cache_control breakpoint.
+			part := contentPart{
+				Type:         "text",
+				Text:         *m.Content,
+				CacheControl: &cacheControlDirective{Type: "ephemeral"},
+			}
+			b, err := json.Marshal([]contentPart{part})
+			if err != nil {
+				return nil, err
+			}
+			wm.Content = b
+		} else {
+			// Unmarked or null content: plain JSON string or null, matching
+			// json.Marshal of *string exactly.
+			b, err := json.Marshal(m.Content)
+			if err != nil {
+				return nil, err
+			}
+			wm.Content = b
+		}
+		out[i] = wm
+	}
+	return out, nil
+}
+
+// computeCacheBreakpoints returns the set of message indices to mark with
+// cache_control. At most 2 breakpoints: messages[0] (static preamble) and
+// the last message with non-null content (moving breakpoint). If both point
+// to the same message, only one mark is set. Null-content messages are never
+// marked. Returns nil (empty) when the slice is empty.
+func computeCacheBreakpoints(messages []Message) map[int]bool {
+	marked := map[int]bool{}
+	if len(messages) == 0 {
+		return marked
+	}
+	// Static: messages[0], but only if it has non-null content.
+	if messages[0].Content != nil {
+		marked[0] = true
+	}
+	// Moving: last message with non-null content, scanning backward.
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Content != nil {
+			marked[i] = true // idempotent if already set (single-message case)
+			break
+		}
+	}
+	return marked
+}
+
+// anthropicCacheHeuristic decides whether to inject cache_control breakpoints
+// for this request. Three states:
+//
+//   - flag explicitly *true  → on (user opted in)
+//   - flag explicitly *false → off (user opted out — overrides the heuristic)
+//   - flag nil (unset)       → heuristic: on when model looks like an Anthropic
+//     model routed through OpenRouter ("anthropic/claude-*" or "claude-*").
+//
+// The heuristic makes caching work out-of-the-box for OpenRouter/Anthropic
+// endpoints without requiring a config opt-in, while local llama.cpp/vLLM
+// endpoints (model strings like "qwen3.6-35b") stay untouched — their requests
+// are byte-identical to the pre-cache_control shape.
+//
+// Setting cache_control: false in the config is the explicit override that
+// disables the heuristic for a model that would otherwise match.
+func anthropicCacheHeuristic(flag *bool, model string) bool {
+	if flag != nil {
+		return *flag
+	}
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "anthropic/claude") ||
+		strings.HasPrefix(lower, "claude-")
 }
 
 // streamOptions asks the proxy to emit a trailing usage chunk (OpenAI-standard).
@@ -165,6 +258,10 @@ type streamChunk struct {
 		PromptTokensDetails *struct {
 			CachedTokens int64 `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
+		// CacheCreationInputTokens is Anthropic's cache-write token count,
+		// surfaced by OpenRouter as a top-level usage field for Anthropic
+		// models. Zero when absent (non-Anthropic models, older servers).
+		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -180,6 +277,9 @@ type UsageStat struct {
 	// doesn't report it — never estimated, unlike InputTok/OutputTok's
 	// length-based fallback.
 	CachedTok int64
+	// CacheWriteTok is the count of tokens written to the cache this turn
+	// (cache_creation_input_tokens). Zero when absent — never estimated.
+	CacheWriteTok int64
 	Exact     bool
 }
 
@@ -235,6 +335,13 @@ type Client struct {
 	// cache_prompt hint. nil = omit from the request body entirely (server
 	// default / no opinion); set only for endpoints that explicitly opt in.
 	CachePrompt *bool
+
+	// CacheControl mirrors EndpointConfig.CacheControl: Anthropic-style
+	// prompt-caching breakpoints injected on the wire copy at serialization
+	// time. nil = no decoration (byte-identical to today); set only for
+	// endpoints that explicitly opt in. The stored transcript is never
+	// modified — breakpoints are computed per-request from the message slice.
+	CacheControl *bool
 
 	// Backend is the requested backend name sent as X-Ilm-Backend. Empty = don't
 	// send the header (proxy uses its own default). Set by App.Send before each
@@ -444,11 +551,49 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		model = c.ConfiguredModel
 	}
 
-	reqBody := chatRequest{
+	// Build the request body. Messages are encoded via wireMessage to allow
+	// cache_control decoration when the endpoint opts in. When cache_control is
+	// off, encoding is byte-identical to json.Marshal of []Message — the golden
+	// no-op guarantee. The input messages slice is never mutated.
+	//
+	// cacheOn has two paths:
+	//   1. Explicit: CacheControl is set to *true on the endpoint config.
+	//   2. Heuristic: CacheControl is nil (unset) AND the model string looks
+	//      like an Anthropic model routed through OpenRouter. This makes
+	//      caching work out-of-the-box for "anthropic/claude-*" models without
+	//      requiring a config opt-in, while local llama.cpp/vLLM endpoints
+	//      (whose model strings are like "qwen3.6-35b") stay untouched.
+	//      Setting CacheControl to *false explicitly disables the heuristic.
+	cacheOn := anthropicCacheHeuristic(c.CacheControl, model)
+
+	marked := map[int]bool{}
+	if cacheOn {
+		marked = computeCacheBreakpoints(messages)
+	}
+
+	wireMsgs, err := marshalWireMessages(messages, marked)
+	if err != nil {
+		return Message{}, err
+	}
+
+	type wireBody struct {
+		Model         string            `json:"model"`
+		Stream        bool              `json:"stream"`
+		StreamOptions *streamOptions    `json:"stream_options,omitempty"`
+		Messages      []wireMessage     `json:"messages"`
+		Tools         []Tool            `json:"tools,omitempty"`
+		Metadata      map[string]string `json:"metadata,omitempty"`
+		Temperature   *float64          `json:"temperature,omitempty"`
+		TopP          *float64          `json:"top_p,omitempty"`
+		MaxTokens     *int              `json:"max_tokens,omitempty"`
+		CachePrompt   *bool             `json:"cache_prompt,omitempty"`
+	}
+
+	body := wireBody{
 		Model:         model,
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
-		Messages:      messages,
+		Messages:      wireMsgs,
 		Tools:         tools,
 		Temperature:   c.Temperature,
 		TopP:          c.TopP,
@@ -467,10 +612,10 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 			metadata["ilm-no-memory-write"] = "true"
 		}
 		if len(metadata) > 0 {
-			reqBody.Metadata = metadata
+			body.Metadata = metadata
 		}
 	}
-	raw, err := json.Marshal(reqBody)
+	raw, err := json.Marshal(body)
 	if err != nil {
 		return Message{}, err
 	}
@@ -478,13 +623,24 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// Pre-send byte guard: trim the largest tool results to fit within MaxRequestBytes
 	// rather than letting an oversized request reach the proxy and get a 400.
 	if c.MaxRequestBytes > 0 && len(raw) > c.MaxRequestBytes {
-		trimmed := trimToolResults(reqBody.Messages, len(raw), c.MaxRequestBytes)
+		trimmed := trimToolResults(messages, len(raw), c.MaxRequestBytes)
 		if trimmed == nil {
 			return Message{}, fmt.Errorf("%w: request %d B exceeds byte limit %d B and no large tool results to trim",
 				ErrBackendFatal, len(raw), c.MaxRequestBytes)
 		}
-		reqBody.Messages = trimmed
-		raw, err = json.Marshal(reqBody)
+		// Recompute breakpoints on the trimmed slice (positions may have
+		// changed — trim replaces content, not indices, but correctness
+		// demands we recompute from the actual data we'll send).
+		marked = map[int]bool{}
+		if cacheOn {
+			marked = computeCacheBreakpoints(trimmed)
+		}
+		wireMsgs, err = marshalWireMessages(trimmed, marked)
+		if err != nil {
+			return Message{}, err
+		}
+		body.Messages = wireMsgs
+		raw, err = json.Marshal(body)
 		if err != nil {
 			return Message{}, err
 		}
@@ -585,6 +741,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 					if d := chunk.Usage.PromptTokensDetails; d != nil {
 						usage.CachedTok = d.CachedTokens
 					}
+					usage.CacheWriteTok = chunk.Usage.CacheCreationInputTokens
 				}
 				if len(chunk.Choices) > 0 {
 					d := chunk.Choices[0].Delta

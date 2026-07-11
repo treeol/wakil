@@ -803,3 +803,82 @@ func TestResolvedSubagentDisplayModelWithOverride(t *testing.T) {
 		t.Errorf("with override: got %q, want child-model", got)
 	}
 }
+
+// --- 7. CacheControl carry ---
+
+// TestInheritCarriesCacheControl verifies that the inherit path carries
+// CacheControl from the parent's Client into the view, matching the CachePrompt
+// pattern. This is the golden no-op proof for cache_control inheritance.
+func TestInheritCarriesCacheControl(t *testing.T) {
+	app := newTestApp("http://parent", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Client.Kind = proxy.KindOpenAI
+	app.Client.ConfiguredModel = "parent-model"
+	app.Client.Model = "parent-model"
+	app.Client.CacheControl = boolPtr(true)
+
+	view, inherited := app.resolveSubagentEndpointView("")
+	if !inherited {
+		t.Fatal("expected inherited=true")
+	}
+	if view.cacheControl != app.Client.CacheControl {
+		t.Errorf("cacheControl pointer = %p, want %p (same pointer value)", view.cacheControl, app.Client.CacheControl)
+	}
+}
+
+// TestOverrideCarriesCacheControl verifies that the named-endpoint override path
+// carries CacheControl from the endpoint config into the view, and that the
+// child's request actually carries the cache_control breakpoints.
+func TestOverrideCarriesCacheControl(t *testing.T) {
+	var capturedBody []byte
+	summaryJSON := `{"objective":"check","findings":[{"summary":"done","location":"","kind":"fact","weight":"low"}]}`
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
+			capturedBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: "+contentChunk(summaryJSON)+"\n\ndata: [DONE]\n\n")
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer openaiSrv.Close()
+
+	app := newTestApp("http://proxy-parent", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg = proxyCfg("http://proxy-parent")
+	app.Cfg.Endpoints = map[string]config.EndpointConfig{
+		"oa": {Kind: config.EndpointKindOpenAI, BaseURL: openaiSrv.URL, Model: "gpt-child", AuthHeader: "Bearer child-key", CacheControl: boolPtr(true)},
+	}
+	app.Cfg.SubagentEndpoint = "oa"
+	app.Client.Kind = proxy.KindIlmProxy
+	app.Client.Model = "ilm"
+
+	view, inherited := app.resolveSubagentEndpointView("oa")
+	if inherited {
+		t.Fatal("expected override, got inherited=true")
+	}
+	if view.cacheControl == nil || !*view.cacheControl {
+		t.Errorf("view.cacheControl = %v, want *true (from named endpoint config)", view.cacheControl)
+	}
+
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
+
+	if capturedBody == nil {
+		t.Fatal("subagent request did not reach the openai override endpoint")
+	}
+	var parsed struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(parsed.Messages) < 1 {
+		t.Fatal("no messages in request")
+	}
+	// messages[0] (system prompt) must be parts-shaped with cache_control.
+	contentStr := string(parsed.Messages[0].Content)
+	if len(contentStr) == 0 || contentStr[0] != '[' {
+		t.Errorf("messages[0] content should be parts-shaped (array) when CacheControl is on, got: %s", contentStr)
+	}
+}
