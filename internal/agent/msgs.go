@@ -41,9 +41,11 @@ type CompactedMsg struct{}
 
 // SubagentStartMsg opens a new subagent tab in the main pane.
 type SubagentStartMsg struct {
-	Task    string
-	ChatID  string
-	Backend string // resolved backend for this dispatch (empty = proxy default)
+	Task       string
+	ChatID     string
+	Backend    string // resolved backend for this dispatch (empty = proxy default)
+	Capability string // "discovery" (default) or "edit" — drives the sidebar tool list
+	Model      string // child's resolved model (view.model), shown in the sidebar
 }
 
 // SubagentActiveMsg marks the moment a dispatched subagent actually starts

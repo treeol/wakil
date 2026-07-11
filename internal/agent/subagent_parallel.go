@@ -214,9 +214,19 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 
 	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· %d subagents in parallel (cap %d)", len(jobs), a.Cfg.MaxParallelSubagents)))
 	// All Start events BEFORE any worker spawns (Start-before-Chunk invariant).
+	// Resolve the display model once — all jobs in this batch share the same
+	// endpoint, so the model is identical. This runs in Phase A (main goroutine)
+	// before any worker spawns.
+	displayModel := a.resolvedSubagentDisplayModel()
 	for _, j := range jobs {
 		fmt.Fprintln(a.Out, Dim("· subagent: "+Truncate(j.Task, 60)))
-		a.sendEvent(SubagentStartMsg{Task: j.Task, ChatID: j.ChatID, Backend: backend})
+		a.sendEvent(SubagentStartMsg{
+			Task:       j.Task,
+			ChatID:     j.ChatID,
+			Backend:    backend,
+			Capability: j.Capability,
+			Model:      displayModel,
+		})
 	}
 
 	// ---- Phase B: concurrent dispatch ----

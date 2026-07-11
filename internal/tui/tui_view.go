@@ -725,6 +725,17 @@ func (m tuiModel) renderSidebar(vpH int) string {
 		Render(strings.Join(lines, "\n"))
 }
 
+// subTabModel returns the model display string for a subagent tab. The model
+// is known at Start time (resolved from the endpoint view, including any
+// /submodel override). Falls back to "…" when empty (edge case: Start
+// didn't carry a model — e.g. constructed directly in a test).
+func subTabModel(tab *subTab) string {
+	if tab.model != "" {
+		return tab.model
+	}
+	return "…"
+}
+
 // subSidebarLines builds the content lines for a subagent tab's sidebar view.
 func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 	keyW := 6
@@ -742,7 +753,7 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 		styleTitle.Render("wakīl"),
 		"",
 		row("proxy", hostOnly(m.app.Client.BaseURL)),
-		row("model", m.app.EffectiveModel()),
+		row("model", subTabModel(tab)),
 		row("exec", "docker"),
 		row("cwd", m.app.Exec.Cwd()),
 		row("chat", agent.ShortID(tab.chatID)),
@@ -780,12 +791,24 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 		statusStr,
 		"",
 		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("tools"),
+	)
+	// Build the tool list from the child's capability tier.
+	toolList := []string{
 		"  read_file",
 		"  read_file_full",
 		"  search_files",
 		"  find_files",
 		"  list_dir",
-	)
+	}
+	if tab.capability == tools.CapabilityEdit {
+		toolList = append(toolList,
+			"  write_file",
+			"  edit_file",
+			"  delete_file",
+			"  move_file",
+		)
+	}
+	lines = append(lines, toolList...)
 	if tab.done && tab.hardMaxBytes > 0 {
 		pct := 0
 		if tab.hardMaxBytes > 0 {

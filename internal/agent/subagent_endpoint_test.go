@@ -781,3 +781,25 @@ func TestSubmodelOverrideInheritNoOp(t *testing.T) {
 		t.Errorf("model = %q, want parent-model (inherit is a no-op)", view.model)
 	}
 }
+
+// TestResolvedSubagentDisplayModelWithOverride verifies that the /submodel
+// override is reflected in resolvedSubagentDisplayModel — the helper reads
+// view.model, which resolveSubagentEndpointView populates after calling
+// applyModelOverride.
+func TestResolvedSubagentDisplayModelWithOverride(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Client.Kind = proxy.KindOpenAI
+	app.Client.Model = "parent-model"
+	app.Client.ConfiguredModel = "parent-model"
+
+	// Without override: returns the parent model (inherited).
+	if got := app.resolvedSubagentDisplayModel(); got != "parent-model" {
+		t.Errorf("without override: got %q, want parent-model", got)
+	}
+
+	// With override: returns the overridden model.
+	app.SubagentModelOverride = "child-model"
+	if got := app.resolvedSubagentDisplayModel(); got != "child-model" {
+		t.Errorf("with override: got %q, want child-model", got)
+	}
+}

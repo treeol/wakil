@@ -376,6 +376,21 @@ func (a *App) resolvedSubagentEndpointKind() string {
 	return view.kind
 }
 
+// resolvedSubagentDisplayModel returns the model the next subagent dispatch
+// will target, without any network I/O — a pure, cheap lookup used to show
+// the child's model in the TUI sidebar from the moment its tab opens. Like
+// resolvedSubagentEndpointKind, this is safe to call on the main goroutine
+// before dispatchSubagent; the view resolution it shares with
+// dispatchSubagent is network-free.
+//
+// The /submodel override is already reflected: applyModelOverride is called
+// inside resolveSubagentEndpointView at both branches (inherit and named-
+// endpoint), so view.model includes the override by the time it is returned.
+func (a *App) resolvedSubagentDisplayModel() string {
+	view, _ := a.resolveSubagentEndpointView(resolveSubagentEndpointName(a))
+	return view.model
+}
+
 // resolveSubagentBackendForEndpoint computes the X-Ilm-Backend value for a
 // subagent dispatch, gated by the target endpoint's kind: ResolveSubagentBackend
 // (and subagent_backend) only apply when epKind is ilm-proxy. For kind openai,

@@ -2168,7 +2168,13 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if !a.ensureSubagentConsent(subBackend) {
 			return declinedSubagentSummary(args.Task, subBackend).Render()
 		}
-		a.sendEvent(SubagentStartMsg{Task: args.Task, ChatID: subChatID, Backend: subBackend})
+		a.sendEvent(SubagentStartMsg{
+			Task:       args.Task,
+			ChatID:     subChatID,
+			Backend:    subBackend,
+			Capability: capability,
+			Model:      a.resolvedSubagentDisplayModel(),
+		})
 		// Sequential path: the dispatch begins immediately, no queue wait.
 		a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
 		summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, subChatID)

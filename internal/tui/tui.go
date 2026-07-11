@@ -150,6 +150,8 @@ type subTab struct {
 	ctxSize      int
 	hardMaxBytes int
 	filesChanged []string // mechanical record of canonical paths touched (edit-tier only)
+	capability   string   // "discovery" or "edit" — drives the sidebar tool list (from Start)
+	model        string   // child's resolved model (from Start)
 	active       bool // worker acquired a parallelism slot (queued → running)
 	done         bool
 
@@ -422,11 +424,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.subSeq++
 		tab := &subTab{
-			n:       m.subSeq,
-			task:    msg.Task,
-			chatID:  msg.ChatID,
-			backend: msg.Backend,
-			buf:     new(strings.Builder),
+			n:          m.subSeq,
+			task:       msg.Task,
+			chatID:     msg.ChatID,
+			backend:    msg.Backend,
+			capability: msg.Capability,
+			model:      msg.Model,
+			buf:        new(strings.Builder),
 		}
 		m.subTabs = append(m.subTabs, tab)
 		// Never steal focus: the user stays on whatever view they are reading
