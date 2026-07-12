@@ -156,7 +156,13 @@ type subTab struct {
 	capability   string   // "discovery" or "edit" — drives the sidebar tool list (from Start)
 	model        string   // child's resolved model (from Start)
 	active       bool     // worker acquired a parallelism slot (queued → running)
-	done         bool
+	done         bool     // authoritative done (SubagentDoneMsg received)
+	finished     bool     // display-only early done (SubagentFinishedMsg received)
+	finishedAt   time.Time // when SubagentFinishedMsg arrived (for timestamped display)
+	finStatus    string   // status from SubagentFinishedMsg: "ok"/"incomplete"/"failed"/"declined"
+	finCostUSD   float64  // child's own total from SubagentFinishedMsg (display-only)
+	finFilesN    int      // count of files changed from SubagentFinishedMsg
+	finPreview   string   // summary preview from SubagentFinishedMsg
 
 	// Render cache for renderSubTabContent. Invalidated when buf grows or vpW changes.
 	cachedLines []string
@@ -169,6 +175,9 @@ type subTab struct {
 // tab (focusN) are always kept, so a long-lived session can't accumulate tabs
 // without bound nor lose a live stream or the one the user is watching. With
 // parallel dispatch several tabs may be running at once — all are protected.
+// A tab that is finished (display-only early event) but not yet done
+// (authoritative SubagentDoneMsg pending) is also protected: its authoritative
+// event is still in flight and pruning it would lose the finalization.
 func pruneSubTabs(tabs []*subTab, focusN, max int) []*subTab {
 	if len(tabs) <= max {
 		return tabs
@@ -181,6 +190,18 @@ func pruneSubTabs(tabs []*subTab, focusN, max int) []*subTab {
 			continue
 		}
 		kept = append(kept, t)
+	}
+	// If not enough done tabs were droppable, drop finished (but not done) tabs
+	// as the next priority — still protecting running and focused tabs.
+	if drop > 0 {
+		kept = kept[:0]
+		for _, t := range tabs {
+			if drop > 0 && t.finished && t.n != focusN {
+				drop--
+				continue
+			}
+			kept = append(kept, t)
+		}
 	}
 	return kept
 }
@@ -497,10 +518,33 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case agent.SubagentFinishedMsg:
+		// Display-only early completion: the worker just returned. Flip the tab
+		// to a visually-done state immediately — spinner stops, status glyph,
+		// cost, files count, summary preview — without waiting for the Phase C
+		// barrier. SubagentDoneMsg below is the authoritative finalization; it
+		// fills any remaining fields and must not regress a finished tab.
+		for _, t := range m.subTabs {
+			if t.chatID == msg.ChatID {
+				t.finished = true
+				t.finishedAt = msg.FinishedAt
+				t.finStatus = msg.Status
+				t.finCostUSD = msg.CostUSD
+				t.finFilesN = len(msg.FilesChanged)
+				t.finPreview = msg.SummaryPreview
+				break
+			}
+		}
+
 	case agent.SubagentDoneMsg:
+		// Authoritative finalization (Phase C). Fill fields the early event
+		// didn't carry (grounding, ctx size, hardMax, usedBackend) and mark the
+		// tab fully done. No visual regression: if the tab was already finished
+		// via SubagentFinishedMsg, it stays done — we only enrich it.
 		for _, t := range m.subTabs {
 			if t.chatID == msg.ChatID {
 				t.done = true
+				t.finished = true // done implies finished for rendering
 				t.grounding = msg.Grounding
 				t.ctxSize = msg.CtxSize
 				t.hardMaxBytes = msg.HardMaxBytes

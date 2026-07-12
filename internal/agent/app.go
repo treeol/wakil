@@ -2192,6 +2192,16 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		// Sequential path: the dispatch begins immediately, no queue wait.
 		a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
 		summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, subChatID)
+		// Early display-only completion event: emitted at child return, before
+		// the cost fold, keeping the parallel and sequential paths symmetric.
+		// SubagentDoneMsg below remains the authoritative event carrying the
+		// folded state; the TUI treats it as idempotent finalization of a tab
+		// that may already be visually done via this earlier event.
+		a.sendSubagentFinished(subChatID, subagentJobResult{
+			Summary:      summary,
+			CostRows:     costRows,
+			FilesChanged: filesChanged,
+		})
 		// Cost fold happens HERE — the caller's side of the goroutine boundary,
 		// where parent-state mutation is already safe — never inside
 		// dispatchSubagent. The child's fresh CostTracker never touches a.Costs

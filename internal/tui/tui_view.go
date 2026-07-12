@@ -628,9 +628,12 @@ var subTabPulseShades = []lipgloss.Color{"94", "172", "214", "220"}
 
 // subTabDotSpec returns the glyph and color for a subagent tab's status dot:
 //
-//	done   → green ✓
-//	active → yellow pulsing ● (worker holds a slot, request in flight)
-//	queued → gray static ● (dispatched, waiting for a slot under the cap)
+//	done     → green ✓ (authoritative: SubagentDoneMsg received)
+//	finished → dim green ✓ (display-only early done: SubagentFinishedMsg
+//	           received, SubagentDoneMsg not yet — child landed while siblings
+//	           still run; visually distinct from both running and all-done)
+//	active   → yellow pulsing ● (worker holds a slot, request in flight)
+//	queued   → gray static ● (dispatched, waiting for a slot under the cap)
 //
 // Split from rendering so the state→color mapping is testable in non-TTY
 // environments where lipgloss strips escape codes.
@@ -638,6 +641,8 @@ func subTabDotSpec(tab *subTab, phase int) (glyph string, color lipgloss.Color) 
 	switch {
 	case tab.done:
 		return "✓", "2"
+	case tab.finished:
+		return "✓", "242" // dim green: landed but not yet authoritatively done
 	case tab.active:
 		return "●", subTabPulseShades[phase%len(subTabPulseShades)]
 	default:
@@ -700,8 +705,9 @@ func (m tuiModel) renderMainTabBar() string {
 			labelPart = inactive.Render(label)
 		}
 		// Running tabs show a dim · instead of × — can't be closed mid-stream.
+		// Finished and done tabs show × (the child has completed).
 		var closeChar string
-		if tab.done {
+		if tab.done || tab.finished {
 			closeChar = xStyle.Render("×")
 		} else {
 			closeChar = lipgloss.NewStyle().Foreground(lipgloss.Color("237")).Render("·")
@@ -752,6 +758,15 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 	statusStr := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("running…")
 	if tab.done {
 		statusStr = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("done ✓")
+	} else if tab.finished {
+		// Early display-only done: child landed while siblings may still run.
+		// Show a timestamped "finished" status distinct from the authoritative
+		// "done ✓" that arrives with SubagentDoneMsg.
+		ts := ""
+		if !tab.finishedAt.IsZero() {
+			ts = " " + tab.finishedAt.Format("15:04:05")
+		}
+		statusStr = lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("✓ finished" + ts)
 	}
 	lines := []string{
 		styleTitle.Render("wakīl"),
@@ -782,13 +797,27 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 			lines = append(lines, row("backend", label))
 		}
 	}
-	// Cost display: only once the subagent is done and something was priced.
+	// Cost display: show once the subagent is done (authoritative) or finished
+	// (display-only early event). The authoritative cost (folded into the parent
+	// tracker) arrives in SubagentDoneMsg; the early event carries the child's
+	// own total (same arithmetic, display-only).
 	if tab.done && tab.costUSD > 0 {
 		lines = append(lines, row("cost", proxy.FmtUSDCompact(tab.costUSD)))
+	} else if tab.finished && !tab.done && tab.finCostUSD > 0 {
+		lines = append(lines, row("cost", proxy.FmtUSDCompact(tab.finCostUSD)))
 	}
 	// Files changed: show count when the subagent modified files (edit-tier).
+	// From the authoritative done event when available, else the early event.
 	if tab.done && len(tab.filesChanged) > 0 {
 		lines = append(lines, row("files", sprint("%d changed", len(tab.filesChanged))))
+	} else if tab.finished && !tab.done && tab.finFilesN > 0 {
+		lines = append(lines, row("files", sprint("%d changed", tab.finFilesN)))
+	}
+	// Summary preview: one-line "what landed" from the early event, shown only
+	// between finished and done (the authoritative sidebar doesn't show it —
+	// the full summary is in the tab's buffer).
+	if tab.finished && !tab.done && tab.finPreview != "" {
+		lines = append(lines, row("result", tab.finPreview))
 	}
 	lines = append(lines,
 		"",

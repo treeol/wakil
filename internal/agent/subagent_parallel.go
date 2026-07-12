@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
@@ -144,6 +145,14 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 				CostRows:     costRows,
 				FilesChanged: filesChanged,
 			}
+			// Early display-only completion event: emitted from the worker the
+			// moment the child returns, before the result enters the results
+			// slice and before Phase C's cost fold. The TUI uses this to flip
+			// the tab to done-state at actual completion time; SubagentDoneMsg
+			// in Phase C remains the authoritative event carrying the folded
+			// state. No parent-state mutation here — CostUSD is the child's own
+			// total (from its fresh CostTracker), display data only.
+			a.sendSubagentFinished(jobs[i].ChatID, results[i])
 		}(i)
 	}
 	wg.Wait()
@@ -264,4 +273,53 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		out[j.Index] = result
 	}
 	return out
+}
+
+// sendSubagentFinished emits the display-only early completion event from the
+// worker goroutine. It is called the moment dispatchSubagent returns — before
+// the result enters the results slice and before Phase C's cost fold. The
+// TUI uses this to flip the tab to done-state at actual completion time.
+//
+// Display data only: CostUSD is the child's own priced total (summed from its
+// fresh CostTracker's priced rows, known worker-side), FilesChanged is the
+// mechanical record, SummaryPreview is a short rendering. No parent-state
+// mutation happens here — the authoritative cost fold and all parent-state
+// bookkeeping stay in Phase C's SubagentDoneMsg.
+//
+// nil-safe: sendEvent is a no-op when EventSink is unset (tests, CLI).
+func (a *App) sendSubagentFinished(chatID string, r subagentJobResult) {
+	a.sendEvent(SubagentFinishedMsg{
+		ChatID:         chatID,
+		Status:         r.Summary.Status,
+		CostUSD:        sumPricedRows(r.CostRows),
+		FilesChanged:   r.FilesChanged,
+		SummaryPreview: summaryPreview(r.Summary),
+		FinishedAt:     time.Now(),
+	})
+}
+
+// sumPricedRows totals the priced USD across the child's own cost rows. This
+// mirrors the arithmetic foldSubagentCost performs in Phase C (sum of
+// r.Priced rows), but without touching the parent's CostTracker — display only.
+func sumPricedRows(rows []proxy.CostRow) float64 {
+	var total float64
+	for _, r := range rows {
+		if r.Priced {
+			total += r.CostUSD
+		}
+	}
+	return total
+}
+
+// summaryPreview extracts a short display string from the child's summary —
+// the objective line, truncated. Gives the user a one-line "what landed"
+// preview in the sidebar the moment the child finishes.
+func summaryPreview(s SubagentSummary) string {
+	if s.Objective != "" {
+		return Truncate(s.Objective, 80)
+	}
+	if len(s.Findings) > 0 && s.Findings[0].Summary != "" {
+		return Truncate(s.Findings[0].Summary, 80)
+	}
+	return ""
 }

@@ -74,7 +74,7 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 				lo := m.subTabSlotStart(slot)
 				hi := lo + tabSubW
 				if x >= lo && x < hi {
-					if x >= hi-2 && m.subTabs[k].done {
+					if x >= hi-2 && (m.subTabs[k].done || m.subTabs[k].finished) {
 						// × on a finished tab — close it.
 						m.subTabs = append(m.subTabs[:k], m.subTabs[k+1:]...)
 						if m.subCur >= k {

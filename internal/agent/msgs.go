@@ -1,6 +1,10 @@
 package agent
 
-import "github.com/treeol/wakil/internal/proxy"
+import (
+	"time"
+
+	"github.com/treeol/wakil/internal/proxy"
+)
 
 // StreamChunkMsg is an SSE content delta posted to the TUI event loop.
 type StreamChunkMsg struct{ Text string }
@@ -59,6 +63,31 @@ type SubagentActiveMsg struct{ ChatID string }
 type SubagentChunkMsg struct {
 	ChatID string
 	Text   string
+}
+
+// SubagentFinishedMsg is the display-only early completion event. It is emitted
+// from the worker goroutine the moment a child returns — before the result
+// enters the results slice and before Phase C's cost fold — so the TUI can
+// surface per-child completion at actual completion time rather than waiting
+// for the slowest sibling to finish (the SubagentDoneMsg barrier).
+//
+// Display data only: CostUSD is the child's own total (known worker-side from
+// the child's fresh CostTracker snapshot), FilesChanged is the mechanical
+// record, SummaryPreview is a short rendering for the sidebar. No parent-state
+// mutation happens on this event — the cost fold, grounding, ctx size, and all
+// authoritative finalization stay in SubagentDoneMsg (Phase C). The TUI treats
+// SubagentDoneMsg as idempotent finalization of a tab that may already be
+// visually done via this earlier event.
+//
+// Delivery is goroutine-safe (Program.Send, same as SubagentChunkMsg and
+// SubagentActiveMsg — see cmd/wakil/main.go's EventSink wiring).
+type SubagentFinishedMsg struct {
+	ChatID          string
+	Status          string // "ok" | "failed" | "incomplete" | "declined"
+	CostUSD         float64 // child's own priced total; display-only — the authoritative fold is in SubagentDoneMsg
+	FilesChanged    []string
+	SummaryPreview  string    // first line / short rendering of the summary
+	FinishedAt      time.Time // when the child returned (for timestamped display)
 }
 
 // SubagentDoneMsg marks the subagent identified by ChatID as finished.

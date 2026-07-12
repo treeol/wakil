@@ -337,7 +337,9 @@ a file "does not contain X" from a truncated view alone.
   parallelizes contiguous runs of them. Keep tasks truly independent: one
   subagent's task must not depend on another's findings. Edit-tier children
   are serialized among themselves by a writer lock; mix edit and discovery
-  children freely.
+  children freely. When tasks are dependent (one needs another's result),
+  use sequential dispatch_subagent calls instead — the tool-call contract
+  prohibits consuming partial results from a parallel batch mid-flight.
 
 ## Interaction & Output
 - Lead with the result, then the evidence. Do not restate tool output the
