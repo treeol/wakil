@@ -266,6 +266,7 @@ type Config struct {
 	Resume       bool   `json:"-"` // resume the most recent session
 	ResumeID     string `json:"-"` // resume a session by chat_id or unique prefix
 	ListSessions bool   `json:"-"` // list saved sessions and exit
+	AllSessions  bool   `json:"-"` // --all: ignore workspace scoping for --resume/--list-sessions
 	AutoApprove  bool   `json:"-"` // skip all confirmation prompts
 	Trace        bool   `json:"-"` // tracing enabled for this run (TraceSessions || --trace flag)
 
@@ -567,9 +568,10 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.BoolVar(&cfg.DockerSocket, "docker-sock", cfg.DockerSocket, "pass host docker socket into the sandbox so the agent can start host containers (default: on; use --docker-sock=false to disable)")
 	fs.StringVar(&cfg.SSHSigning, "ssh-signing", cfg.SSHSigning, "SSH commit signing in the sandbox: off|auto|<path to .pub> (auto reads the host git config; agent socket is passed through, the private key never enters the sandbox)")
 	fs.String("config", cfgPath, "path to config file")
-	fs.BoolVar(&cfg.Resume, "resume", false, "resume the most recent session")
-	fs.StringVar(&cfg.ResumeID, "resume-id", "", "resume a session by chat_id (or unique prefix)")
-	fs.BoolVar(&cfg.ListSessions, "list-sessions", false, "list saved sessions and exit")
+	fs.BoolVar(&cfg.Resume, "resume", false, "resume the most recent session in this workspace")
+	fs.StringVar(&cfg.ResumeID, "resume-id", "", "resume a session by chat_id (or unique prefix) — searches all workspaces")
+	fs.BoolVar(&cfg.ListSessions, "list-sessions", false, "list saved sessions for this workspace and exit")
+	fs.BoolVar(&cfg.AllSessions, "all", false, "with --resume/--list-sessions: ignore workspace scoping, use every folder")
 	fs.BoolVar(&cfg.AutoApprove, "auto", false, "auto-approve all tool calls without prompting")
 	var traceFlag bool
 	fs.BoolVar(&traceFlag, "trace", false, "enable rich JSONL trace capture for this session (overrides trace_sessions config)")

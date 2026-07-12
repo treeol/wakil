@@ -94,13 +94,13 @@ func TestSessionListTextMarksCurrent(t *testing.T) {
 		Conv: []proxy.Message{{Role: "user", Content: agent.StrPtr("hi")}}}); err != nil {
 		t.Fatal(err)
 	}
-	out := agent.SessionListText("cur12345")
+	out := agent.SessionListText("cur12345", agent.SessionScope{All: true})
 	if !strings.Contains(out, "★") {
 		t.Errorf("current session should be starred; got %q", out)
 	}
 	// Empty dir → friendly message.
 	t.Setenv("WAKIL_SESSIONS_DIR", t.TempDir())
-	if agent.SessionListText("x") != "no saved sessions yet" {
+	if agent.SessionListText("x", agent.SessionScope{All: true}) != "no saved sessions yet" {
 		t.Errorf("empty dir should report no sessions")
 	}
 }
@@ -109,7 +109,7 @@ func TestPrintSessionsEmptyAndPopulated(t *testing.T) {
 	empty := t.TempDir()
 	t.Setenv("WAKIL_SESSIONS_DIR", empty)
 	var buf bytes.Buffer
-	agent.PrintSessions(&buf)
+	agent.PrintSessions(&buf, "", true)
 	if !strings.Contains(buf.String(), "no saved sessions") {
 		t.Errorf("empty dir output: %q", buf.String())
 	}
@@ -118,7 +118,7 @@ func TestPrintSessionsEmptyAndPopulated(t *testing.T) {
 	_ = agent.WriteSession(&agent.Session{ChatID: "id123456", Updated: time.Now(),
 		Conv: []proxy.Message{{Role: "user", Content: agent.StrPtr("the task")}}})
 	buf.Reset()
-	agent.PrintSessions(&buf)
+	agent.PrintSessions(&buf, "", true)
 	if !strings.Contains(buf.String(), "id12345") || !strings.Contains(buf.String(), "the task") {
 		t.Errorf("populated output should list the session; got %q", buf.String())
 	}
@@ -149,14 +149,14 @@ func TestSessionLabel(t *testing.T) {
 	}
 
 	// Label appears in SessionListText output.
-	out := agent.SessionListText("")
+	out := agent.SessionListText("", agent.SessionScope{All: true})
 	if !strings.Contains(out, "my refactor") {
 		t.Errorf("SessionListText should show label; got %q", out)
 	}
 
 	// Label appears in PrintSessions output.
 	var buf bytes.Buffer
-	agent.PrintSessions(&buf)
+	agent.PrintSessions(&buf, "", true)
 	if !strings.Contains(buf.String(), "my refactor") {
 		t.Errorf("PrintSessions should show label; got %q", buf.String())
 	}

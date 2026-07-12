@@ -993,6 +993,26 @@ func ShellCmdFromDetail(detail string) string {
 	return strings.TrimSpace(line)
 }
 
+// ResumeSessionMsg applies a resumed session's state onto app (transcript,
+// chat_id, workflow) and builds the NewConvMsg the TUI uses to rebuild its
+// viewport. Shared by /resume's direct-id path and the resume picker's Enter
+// action (internal/tui) so both apply the exact same mutation.
+func ResumeSessionMsg(app *App, s *Session) tea.Msg {
+	app.Conv = s.Conv
+	app.Client.ChatID = s.ChatID
+	app.Session = s
+	app.Workflow = s.SavedWorkflow
+	msg := "resumed session " + ShortID(s.ChatID)
+	if s.Label != "" {
+		msg += " [" + s.Label + "]"
+	}
+	msg += fmt.Sprintf(" — %d messages", len(s.Conv))
+	if s.SavedWorkflow != nil {
+		msg += " · workflow restored: " + s.SavedWorkflow.PhaseName()
+	}
+	return NewConvMsg{Note: msg, RebuildConv: true}
+}
+
 // handleTUICommand processes slash commands locally without touching the agent.
 // Returns (handled, quit, cmd) where cmd is a tea.Cmd that produces the
 // response message. All messages are returned as Cmds — never via EventSink —
@@ -1088,31 +1108,41 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		}
 
 	case "/sessions":
-		return true, false, note(SessionListText(app.Client.ChatID))
+		// "/sessions all" shows every session regardless of workspace; bare
+		// "/sessions" is scoped to the current workspace (with a hidden-count
+		// hint when other-workspace sessions exist).
+		all := len(fields) > 1 && fields[1] == "all"
+		return true, false, note(SessionListText(app.Client.ChatID, SessionScope{Workspace: app.SessionWorkspace(), All: all}))
 
 	case "/resume":
-		prefix := ""
+		arg := ""
 		if len(fields) > 1 {
-			prefix = fields[1]
+			arg = fields[1]
+		}
+		scope := SessionScope{Workspace: app.SessionWorkspace()}
+		if arg == "all" {
+			scope.All = true
+			arg = ""
+		}
+		// Bare "/resume" (no id/prefix, no "all") opens the interactive picker
+		// instead of silently loading the most recent session — the deliberate
+		// UX change: browsing/selecting is now the default, not a fallback.
+		// An explicit id/prefix still resumes directly without the picker.
+		if arg == "" {
+			return true, false, func() tea.Msg {
+				sessions, hidden, err := ListSessionsScoped(scope)
+				if err != nil {
+					return SysNoteMsg{Text: "resume: " + err.Error()}
+				}
+				return OpenResumePickerMsg{Sessions: sessions, Scope: scope, Hidden: hidden}
+			}
 		}
 		return true, false, func() tea.Msg {
-			s, err := LoadSession(prefix)
+			s, err := LoadSession(arg)
 			if err != nil {
 				return SysNoteMsg{Text: "resume: " + err.Error()}
 			}
-			app.Conv = s.Conv
-			app.Client.ChatID = s.ChatID
-			app.Session = s
-			app.Workflow = s.SavedWorkflow
-			msg := "resumed session " + ShortID(s.ChatID)
-			if s.Label != "" {
-				msg += " [" + s.Label + "]"
-			}
-			msg += fmt.Sprintf(" — %d messages", len(s.Conv))
-			if s.SavedWorkflow != nil {
-				msg += " · workflow restored: " + s.SavedWorkflow.PhaseName()
-			}
-			return NewConvMsg{Note: msg, RebuildConv: true}
+			return ResumeSessionMsg(app, s)
 		}
 
 	case "/session":

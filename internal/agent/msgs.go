@@ -96,6 +96,16 @@ type NewConvMsg struct {
 	RebuildConv bool
 }
 
+// OpenResumePickerMsg tells the TUI to open the interactive session picker.
+// Sessions are pre-loaded (scoped per Scope) off the event loop so a large
+// session store never blocks a keystroke; Hidden is how many sessions were
+// filtered out by the scope, for the picker's "N hidden — press a" hint.
+type OpenResumePickerMsg struct {
+	Sessions []Session
+	Scope    SessionScope
+	Hidden   int
+}
+
 // MCPReconnectedMsg is sent after /mcp reconnect completes.
 type MCPReconnectedMsg struct {
 	Name  string

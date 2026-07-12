@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -64,19 +62,12 @@ func repoStateDir() string {
 // missing/racy path never breaks keying — both LoadRepoState and
 // updateRepoState route through this single function so they always agree.
 // Returns "" for an empty ws (callers treat that as "persistence disabled").
+//
+// Delegates to workspaceKey (workspace.go), the same canonicalization used
+// for session workspace-scoping, so repo-state and session filtering always
+// agree on what folder a path belongs to.
 func repoStateKey(ws string) string {
-	if ws == "" {
-		return ""
-	}
-	resolved := ws
-	if abs, err := filepath.Abs(ws); err == nil {
-		resolved = abs
-		if real, err := filepath.EvalSymlinks(abs); err == nil {
-			resolved = real
-		}
-	}
-	sum := sha256.Sum256([]byte(resolved))
-	return hex.EncodeToString(sum[:])
+	return workspaceKey(ws)
 }
 
 func repoStatePath(ws string) string {

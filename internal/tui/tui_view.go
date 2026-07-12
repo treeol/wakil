@@ -191,11 +191,15 @@ func (m tuiModel) View() string {
 		Width(m.width - 2).
 		Render(body)
 
-	// The "@" completion picker sits between the conversation and the input.
+	// The "@"/"/" completion picker or the resume picker sits between the
+	// conversation and the input — the two are mutually exclusive (opening
+	// the resume picker closes the completion picker; see openResumePicker).
 	// The tab bar (when sub tabs exist) sits at the bottom, below the input.
 	var sections []string
 	sections = append(sections, top)
-	if m.comp.active {
+	if m.resumePicker.active {
+		sections = append(sections, m.renderResumePicker())
+	} else if m.comp.active {
 		sections = append(sections, m.renderCompletion())
 	}
 	sections = append(sections, input)

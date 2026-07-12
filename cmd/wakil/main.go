@@ -37,12 +37,23 @@ func main() {
 	}
 
 	// --list-sessions short-circuits before config resolution so it works even
-	// without a configured proxy.
+	// without a configured proxy. Scoped to the launch cwd by default (no config
+	// has been loaded yet, so cwd is the only workspace identity available);
+	// --all lists every session regardless of folder.
+	listAll := false
+	wantList := false
 	for _, a := range os.Args[1:] {
-		if a == "--list-sessions" || a == "-list-sessions" {
-			agent.PrintSessions(os.Stdout)
-			return
+		switch a {
+		case "--list-sessions", "-list-sessions":
+			wantList = true
+		case "--all", "-all":
+			listAll = true
 		}
+	}
+	if wantList {
+		cwd, _ := os.Getwd()
+		agent.PrintSessions(os.Stdout, cwd, listAll)
+		return
 	}
 
 	cfg, err := config.LoadConfig(os.Args[1:])
@@ -72,9 +83,21 @@ func main() {
 
 	// Resume a saved session: reload its transcript and re-attach its chat_id so
 	// the proxy's server-side memory for that conversation continues.
+	//
+	// --resume-id (an explicit id/prefix) always searches globally — the same
+	// rule the TUI's /resume <id> follows — so a hint like "resume with <id>"
+	// works from any directory. Bare --resume (no id) defaults to the most
+	// recent session in the CURRENT workspace, resolved the same way
+	// App.SessionWorkspace() would (host path in docker mode, work dir in
+	// direct mode) — computed here directly since App doesn't exist yet.
+	// --all overrides this to search every folder.
 	var resumed *agent.Session
 	if cfg.Resume || cfg.ResumeID != "" {
-		s, err := agent.LoadSession(cfg.ResumeID)
+		ws := cfg.WorkDir
+		if cfg.ExecMode != "direct" {
+			ws = cfg.HostWorkDir
+		}
+		s, err := agent.LoadSessionScoped(cfg.ResumeID, agent.SessionScope{Workspace: ws, All: cfg.AllSessions})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "resume error:", err)
 			os.Exit(1)

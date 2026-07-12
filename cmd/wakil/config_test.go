@@ -148,6 +148,31 @@ func TestTraceConfig(t *testing.T) {
 	}
 }
 
+func TestResumeAndAllSessionsFlags(t *testing.T) {
+	isolateConfig(t)
+	cfg, err := config.LoadConfig([]string{"--base-url", "http://x:1", "--resume", "--all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Resume {
+		t.Error("--resume should set Resume=true")
+	}
+	if !cfg.AllSessions {
+		t.Error("--all should set AllSessions=true")
+	}
+
+	cfg, err = config.LoadConfig([]string{"--base-url", "http://x:1", "--resume-id", "abc123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ResumeID != "abc123" {
+		t.Errorf("ResumeID = %q, want abc123", cfg.ResumeID)
+	}
+	if cfg.AllSessions {
+		t.Error("AllSessions should default to false")
+	}
+}
+
 func TestDockerSocketDefault(t *testing.T) {
 	isolateConfig(t)
 	// Docker socket is on by default; image stays unchanged (no auto-switch).

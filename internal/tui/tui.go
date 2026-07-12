@@ -105,6 +105,9 @@ type tuiModel struct {
 	// "@" file-mention autocomplete picker (see complete.go).
 	comp completionState
 
+	// Interactive session browser opened by bare "/resume" (see resume_picker.go).
+	resumePicker resumePickerState
+
 	// Subagent tabs. subCur=-1 means the main sidebar tab is active.
 	// A tab is "running" iff !tab.done — multiple tabs may run concurrently
 	// (parallel subagent dispatch), so there is no single "running tab" field;
@@ -283,6 +286,30 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sel.active {
 			m.sel = selection{}
 			m.refreshViewport()
+		}
+
+		// The resume picker owns input while open — checked before the "@"/"/"
+		// completion picker since /resume closes that picker on open
+		// (openResumePicker), so the two are never simultaneously active.
+		// A handful of keys (ctrl+c/ctrl+d) are deliberately NOT consumed so
+		// quitting the program still works with the picker open.
+		if m.resumePicker.active {
+			prevActive := m.resumePicker.active
+			var rCmd tea.Cmd
+			var rConsumed bool
+			m, rCmd, rConsumed = m.handleResumePickerKey(msg)
+			if rConsumed {
+				if m.resumePicker.active != prevActive {
+					m = m.reflow()
+				}
+				if rCmd != nil {
+					cmds = append(cmds, rCmd)
+				}
+				var taCmd tea.Cmd
+				m.ta, taCmd = m.ta.Update(tea.Msg(nil))
+				return m, tea.Batch(append(cmds, taCmd)...)
+			}
+			// Not consumed (e.g. ctrl+c/ctrl+d) — fall through to normal handling.
 		}
 
 		// The "@" picker swallows navigation/accept keys while it's open.
@@ -537,6 +564,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		if msg.Note != "" {
 			m.addItem(iSys, dim2(msg.Note))
+		}
+
+	case agent.OpenResumePickerMsg:
+		prevH := m.resumePickerHeight()
+		m = m.openResumePicker(msg)
+		if m.resumePickerHeight() != prevH {
+			m = m.reflow()
 		}
 
 	case agent.MCPReconnectedMsg:
@@ -1040,7 +1074,7 @@ func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
 	if len(m.subTabs) > 0 {
 		tabH = 1
 	}
-	topOuterH := m.height - inputOuterH - m.completionHeight() - tabH
+	topOuterH := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - tabH
 	if topOuterH < 6 {
 		topOuterH = 6
 	}
