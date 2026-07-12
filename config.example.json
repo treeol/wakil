@@ -1,5 +1,5 @@
 {
-  "_comment": "Example Wakil config — copy to ~/.config/wakil/config.json. The endpoints block names each server Wakil can talk to; default_endpoint selects the active one. kind 'openai' is any plain OpenAI-compatible server (llama.cpp server, OpenRouter, vLLM); kind 'ilm-proxy' is the ilm proxy with memory/grounding. For kind 'openai', model is REQUIRED and is the literal string sent in requests. temperature/top_p/max_tokens are optional — when omitted the server's own defaults apply. Legacy configs without an endpoints block keep working unchanged (top-level base_url + model, treated as ilm-proxy).",
+  "_comment": "Wakil config — copy to ~/.config/wakil/config.json and edit. Precedence: defaults < config file < env < flags. Every field below is OPTIONAL unless marked '(required)'; unset fields use the built-in defaults shown in internal/config/config.go DefaultConfig().",
 
   "endpoints": {
     "llama": {
@@ -17,5 +17,104 @@
   "default_endpoint": "llama",
 
   "exec_mode": "docker",
-  "image": "wakil-dev"
+  "image": "wakil-dev",
+
+  "_comment_subagents": "Subagent dispatch: dispatch_subagent spawns a read-only discovery worker. dispatch_subagents fans out several in parallel. max_parallel_subagents bounds concurrency. subagent_endpoint / subagent_backend route children to a different endpoint or backend than the parent.",
+
+  "max_parallel_subagents": 2,
+  "subagent_endpoint": "",
+  "subagent_backend": "inherit",
+
+  "_comment_costs": "Per-source pricing for the cost-tracking sidebar. Unpriced sources show '—', not '$0.00'. inference is a single rate over local proxy tokens (compute estimate). inference_backends holds real per-token rates for external providers routed through the proxy. mashura is keyed by oracle model ID.",
+
+  "costs": {
+    "inference": {
+      "usd_per_1m_tokens": 0.0
+    },
+    "inference_backends": {
+      "openrouter/anthropic/claude-sonnet-4-6": {
+        "input_usd_per_1m": 3.0,
+        "output_usd_per_1m": 15.0
+      }
+    },
+    "mashura": {
+      "claude-sonnet-4-6": {
+        "input_usd_per_1m": 3.0,
+        "output_usd_per_1m": 15.0
+      }
+    },
+    "search": {
+      "usd_per_query": 0.0
+    }
+  },
+
+  "_comment_mashura": "Counsel: second opinions from external models. oracle_enabled gates the tools. mashura_panels defines named model groups; mashura_tool_panels maps each tool to a panel. Keys are read at call time from env vars, never stored here.",
+
+  "oracle_enabled": false,
+  "oracle_model": "claude-sonnet-4-6",
+  "oracle_api_key_env": "ANTHROPIC_API_KEY",
+
+  "mashura_panels": {
+    "default": {
+      "models": ["anthropic:claude-sonnet-4-6"],
+      "mode": "panel"
+    }
+  },
+
+  "_comment_lsp": "Language-server-backed code intelligence. Off by default. lsp_servers maps a language to a server; the sandbox Dockerfile ships gopls for Go.",
+
+  "lsp_enabled": false,
+  "lsp_servers": {
+    "go": {
+      "command": "gopls",
+      "args": ["serve"]
+    }
+  },
+
+  "_comment_mcp": "MCP tool servers. Each entry is a named server with stdio or http transport. Tools appear automatically when configured.",
+
+  "mcp_servers": [],
+
+  "_comment_search": "Native web search. SearXNG (self-hosted) or Google Custom Search. Both built-in — no external binaries.",
+
+  "searxng_url": "",
+  "google_api_key": "",
+  "google_cx": "",
+
+  "_comment_context": "Context window management. Absolute byte limits (fallback) and relative fractions (override when n_ctx is known). tool_result_cap limits per-result bytes kept in context; turn_tool_budget is the per-turn cumulative budget.",
+
+  "keep_bytes": 120000,
+  "summary_bytes": 20000,
+  "hard_max_bytes": 160000,
+  "compact_at": 145000,
+  "turn_tool_budget": 40000,
+  "tool_result_cap": 8000,
+  "tool_result_ttl": 3,
+  "max_tool_iterations": 0,
+
+  "compact_at_frac": 0.75,
+  "keep_bytes_frac": 0.60,
+  "hard_max_frac": 0.95,
+  "context_capacity_frac": 0.80,
+
+  "reasoning_budget_tokens": 4096,
+  "answer_margin_tokens": 4096,
+  "context_tokens_fallback": 131072,
+
+  "_comment_backend": "Proxy backend routing (ilm-proxy only). backend is the default X-Ilm-Backend. external_backends lists names known to route to external/cloud providers (used by the egress consent gate). aux_model pins the proxy's auxiliary model.",
+
+  "backend": "",
+  "external_backends": [],
+  "aux_model": "",
+
+  "_comment_trace": "Rich JSONL trace capture for every TUI session. trace_dir defaults to ~/.local/share/wakil/traces.",
+
+  "trace_sessions": false,
+  "trace_dir": "",
+
+  "_comment_misc": "agent_prompt_path defaults to agent.txt next to the config file. backend_max_retries caps automatic retries for transient backend failures in unattended runs. mention_base is the base directory for @ file mentions.",
+
+  "agent_prompt_path": "",
+  "backend_max_retries": 3,
+  "mention_base": ""
 }

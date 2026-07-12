@@ -167,6 +167,38 @@ endpoints), and `/model <name>` switches models — both re-resolve context
 limits. Note the key caveat: `auth_header` values live in plaintext in
 `config.json`; `chmod 600` it.
 
+### Config-only fields
+
+These have no flag or env var — set them in the JSON config file. The
+[`config.example.json`](config.example.json) in this repo is a fully commented
+reference covering every section below.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `max_parallel_subagents` | `2` | Max concurrent `dispatch_subagent` workers per turn |
+| `subagent_endpoint` | `""` (inherit) | Named endpoint for subagents (`""`/`"inherit"` = follow parent) |
+| `subagent_backend` | `"inherit"` | Backend for subagents (`"inherit"`/`"default"`/`"<name>"`) |
+| `costs` | — | Per-source pricing block (inference, mashura, search, external backends) |
+| `mashura_panels` | — | Named counsel model panels |
+| `mashura_tool_panels` | — | Maps each counsel tool to a named panel |
+| `oracle_enabled` | `false` | Gate for `mashura__*` counsel tools |
+| `oracle_model` | `"claude-sonnet-4-6"` | Model ID for counsel calls |
+| `oracle_api_key_env` | `"ANTHROPIC_API_KEY"` | Env var read at call time for the API key |
+| `lsp_enabled` | `false` | Gate for `lsp_*` code-intelligence tools |
+| `lsp_servers` | — | Maps language → server command |
+| `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
+| `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
+| `external_backends` | — | Backend names known to route to external providers |
+| `aux_model` | `""` | Pins `X-Ilm-Aux-Model` (empty = follow main) |
+| `trace_sessions` | `false` | Trace every TUI session as JSONL |
+| `trace_dir` | `~/.local/share/wakil/traces` | Directory for trace files |
+| `agent_prompt_path` | `agent.txt` next to config | System prompt file path |
+| `backend_max_retries` | `3` | Max retries for transient backend failures (unattended) |
+| `compact_at_frac` | `0.75` | Compact at 75% of effective context |
+| `keep_bytes_frac` | `0.60` | Keep 60% of effective context verbatim after compaction |
+| `hard_max_frac` | `0.95` | Hard ceiling at 95% of effective context |
+| `context_capacity_frac` | `0.80` | Use 80% of proxy's usable_ctx as working budget |
+
 ### Agent prompt
 
 The system prompt is loaded once at startup from `agent.txt` next to the
@@ -282,6 +314,33 @@ opens a picker to attach a file or folder for context.
 MCP tools *(stdio or HTTP)* append automatically when `mcp_servers` is
 configured. The host Docker socket passthrough (`--docker-sock`) is what lets
 `docker` / `docker compose` calls reach the host daemon.
+
+### Subagent tabs
+
+When `dispatch_subagent` or `dispatch_subagents` runs, a tab opens in the
+bottom tab bar for each child. The sidebar shows the child's endpoint, model,
+chat ID, and (when finished) cost, files changed, and context size. Tabs are
+routed by `chat_id`, so concurrent subagents stream to their own panes
+without cross-contamination.
+
+Tab dot states:
+
+| State | Dot | Meaning |
+|---|---|---|
+| Queued | `●` dim gray | Dispatched, waiting for a parallelism slot |
+| Running | `●` pulsing yellow | Worker acquired a slot, request in flight |
+| Finished | `✓` dim green | Child returned; display-only — authoritative `done` pending |
+| Done | `✓` solid green | Authoritative completion (cost folded, grounding attached) |
+
+A child that finishes while siblings are still running shows the dim green
+`✓` immediately — it doesn't wait for the slowest sibling. The sidebar
+displays a timestamped "✓ finished" status with cost and a one-line summary
+preview. When the authoritative `SubagentDoneMsg` arrives (after the cost
+fold in Phase C), the tab enriches to solid green with no visual regression.
+
+Click a finished or done tab's `×` to close it; running tabs show `·`
+instead. Tabs are pruned (oldest finished first) past `maxSubTabs` (12);
+running and focused tabs are never pruned.
 
 ## Optional features
 
