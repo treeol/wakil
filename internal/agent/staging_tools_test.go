@@ -17,7 +17,7 @@ import (
 // Returns the App (with staging client wired) and a cleanup func.
 func stagingTestServer(t *testing.T) (*App, func()) {
 	t.Helper()
-	bin := stagingTestBin()
+	bin := stagingTestBin(t)
 	if bin == "" {
 		t.Skip("kvr-server binary not found — skipping staging tool tests")
 	}
@@ -69,11 +69,16 @@ func stagingTestServer(t *testing.T) (*App, func()) {
 	return app, cleanup
 }
 
-func stagingTestBin() string {
+func stagingTestBin(t *testing.T) string {
+	t.Helper()
 	wd, _ := os.Getwd()
+	kvrustDir, _ := filepath.Abs(filepath.Join(wd, "..", "..", "kvrust"))
+	_, statErr := os.Stat(filepath.Join(kvrustDir, "Cargo.toml"))
+	kvrustPresent := statErr == nil
+
 	for _, candidate := range []string{
-		filepath.Join(wd, "..", "..", "kvrust", "target", "release", "server"),
-		filepath.Join(wd, "..", "..", "kvrust", "target", "debug", "server"),
+		filepath.Join(kvrustDir, "target", "release", "server"),
+		filepath.Join(kvrustDir, "target", "debug", "server"),
 		filepath.Join(wd, "..", "..", "kvr"),
 	} {
 		abs, _ := filepath.Abs(candidate)
@@ -81,6 +86,10 @@ func stagingTestBin() string {
 			return abs
 		}
 	}
+	if kvrustPresent {
+		t.Fatalf("kvrust/ is present but kvr-server binary not found — run 'cargo build --release' in kvrust/")
+	}
+	t.Skip("kvrust/ submodule not present — run 'git submodule update --init'")
 	return ""
 }
 

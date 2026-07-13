@@ -20,7 +20,7 @@ import (
 // separately by the executor's graceful teardown (docker stop -t 10);
 // this test exercises the kvr-level signal + snapshot + load path directly.
 func TestRestartSnapshotPersistence(t *testing.T) {
-	bin := kvrServerBin()
+	bin := kvrServerBin(t)
 	if bin == "" {
 		t.Skip("kvr-server binary not found — skipping (set KVR_SERVER_BIN or build kvrust)")
 	}

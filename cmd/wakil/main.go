@@ -328,12 +328,13 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 		// Staging dir: per-repo, host-side. Reuses workspaceKey via the
 		// exported agent.StagingPath helper (same identity as repo-state).
 		var stagingMount string
-		if cfg.KVREnabled {
+		kvrEnabled := !cfg.KVRDisabled
+		if kvrEnabled {
 			var err error
 			stagingMount, err = agent.EnsureStagingDir(cfg.HostWorkDir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "kvr: staging dir error (staging unavailable): %v\n", err)
-				cfg.KVREnabled = false
+				kvrEnabled = false
 			}
 		}
 
@@ -344,7 +345,7 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 			DockerSock:            cfg.DockerSocket,
 			Signing:               signing,
 			StagingMount:          stagingMount,
-			KVREnabled:            cfg.KVREnabled,
+			KVREnabled:            kvrEnabled,
 			KVRMaxEntries:         cfg.KVRMaxEntries,
 			KVRSweepIntervalSecs:  cfg.KVRSweepIntervalSecs,
 			KVRSnapshotIntervalSecs: cfg.KVRSnapshotIntervalSecs,

@@ -85,10 +85,10 @@ type Config struct {
 	SSHSigning     string `json:"ssh_signing,omitempty"`   // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
 
 	// kvr staging store (sandbox-local ephemeral KV).
-	// KVREnabled defaults to true (opt-out via kvr_disabled). When false, no
-	// kvr-server is started and staging tools report "staging unavailable".
-	KVREnabled             bool `json:"kvr_enabled,omitempty"`
-	KVRDisabled            bool `json:"kvr_disabled,omitempty"`            // convenience alias: if true, overrides KVREnabled
+	// KVRDisabled opts out of the staging store (default: false = enabled).
+	// When disabled, no kvr-server is started and staging tools report
+	// "staging unavailable". Also auto-disabled in direct mode.
+	KVRDisabled            bool `json:"kvr_disabled,omitempty"`
 	KVRMaxEntries          int  `json:"kvr_max_entries,omitempty"`         // default 100000
 	KVRSweepIntervalSecs   int  `json:"kvr_sweep_interval_secs,omitempty"` // default 30
 	KVRSnapshotIntervalSecs int `json:"kvr_snapshot_interval_secs,omitempty"` // default 300
@@ -474,7 +474,6 @@ func DefaultConfig() Config {
 		ExecMode:            "docker",
 		Image:               "wakil-dev",
 		DockerSocket:        true,
-		KVREnabled:          true,
 		KVRMaxEntries:       100000,
 		KVRSweepIntervalSecs:    30,
 		KVRSnapshotIntervalSecs: 300,
@@ -672,14 +671,13 @@ func LoadConfig(argv []string) (Config, error) {
 		return cfg, fmt.Errorf("invalid exec mode %q (want docker|direct)", cfg.ExecMode)
 	}
 
-	// Resolve kvr effective state: KVREnabled defaults true, but
-	// KVRDisabled (kvr_disabled / WAKIL_KVR_DISABLED) overrides to false.
+	// Resolve kvr effective state. KVRDisabled is the single opt-out
+	// (default: false = enabled). Also auto-disabled in direct mode
+	// (staging is docker-only in this ticket).
 	if cfg.KVRDisabled {
-		cfg.KVREnabled = false
-	}
-	// kvr is docker-mode only in this ticket.
-	if cfg.ExecMode != "docker" {
-		cfg.KVREnabled = false
+		// explicit opt-out
+	} else if cfg.ExecMode != "docker" {
+		cfg.KVRDisabled = true
 	}
 	if err := validateContextLimits(cfg); err != nil {
 		return cfg, err

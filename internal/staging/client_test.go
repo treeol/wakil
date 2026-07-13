@@ -19,19 +19,26 @@ import (
 // 4. ../../kvr (the pre-built binary in the repo root)
 //
 // Returns "" if no binary is found — tests that depend on it should skip.
-func kvrServerBin() string {
+func kvrServerBin(t *testing.T) string {
+	t.Helper()
+	// Check if the kvrust submodule is present at all.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	kvrustDir, _ := filepath.Abs(filepath.Join(wd, "..", "..", "kvrust"))
+	_, statErr := os.Stat(filepath.Join(kvrustDir, "Cargo.toml"))
+	kvrustPresent := statErr == nil
+
+	// Try to find the binary.
 	if p := os.Getenv("KVR_SERVER_BIN"); p != "" {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
 	for _, candidate := range []string{
-		filepath.Join(wd, "..", "..", "kvrust", "target", "release", "server"),
-		filepath.Join(wd, "..", "..", "kvrust", "target", "debug", "server"),
+		filepath.Join(kvrustDir, "target", "release", "server"),
+		filepath.Join(kvrustDir, "target", "debug", "server"),
 		filepath.Join(wd, "..", "..", "kvr"),
 	} {
 		abs, _ := filepath.Abs(candidate)
@@ -39,6 +46,15 @@ func kvrServerBin() string {
 			return abs
 		}
 	}
+
+	// If kvrust/ is present but the binary isn't built, this is a CI/build
+	// failure — fail, not skip. The A7 test is non-negotiable.
+	if kvrustPresent {
+		t.Fatalf("kvrust/ is present but kvr-server binary not found — run 'cargo build --release' in kvrust/ or set KVR_SERVER_BIN")
+	}
+	// kvrust/ itself is missing (submodule not initialized). Skip is
+	// acceptable here — the test can't run without the submodule.
+	t.Skip("kvrust/ submodule not present — run 'git submodule update --init'")
 	return ""
 }
 
@@ -60,7 +76,7 @@ func startKVR(t *testing.T) *kvrTestEnv {
 // startKVRCustom is like startKVR but accepts extra env vars.
 func startKVRCustom(t *testing.T, extraEnv ...string) *kvrTestEnv {
 	t.Helper()
-	bin := kvrServerBin()
+	bin := kvrServerBin(t)
 	if bin == "" {
 		t.Skip("kvr-server binary not found — skipping (set KVR_SERVER_BIN or build kvrust)")
 	}
