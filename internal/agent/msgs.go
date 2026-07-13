@@ -159,6 +159,13 @@ type BackendCtxLimitMsg struct {
 	Note  string // formatted limits line for the viewport; empty on probe failure
 }
 
+// ModelListUpdatedMsg carries a freshly-fetched model list for the current
+// endpoint. Delivered asynchronously from fetchModelListCmd so the HTTP call
+// doesn't block the TUI event loop. Applied to app.ModelList in Update().
+type ModelListUpdatedMsg struct {
+	Models []string
+}
+
 // ProgWriter is an io.Writer that sends StreamChunkMsgs into the event sink.
 type ProgWriter struct{ send func(StreamChunkMsg) }
 

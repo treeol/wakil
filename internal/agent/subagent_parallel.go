@@ -110,6 +110,11 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 	if maxPar < 1 {
 		maxPar = 1
 	}
+	// Clamp to job count: a huge config value (e.g. /maxpar 64 with 2 jobs)
+	// would allocate an oversized semaphore for no benefit.
+	if maxPar > len(jobs) {
+		maxPar = len(jobs)
+	}
 	sem := make(chan struct{}, maxPar)
 	var wg sync.WaitGroup
 	for i := range jobs {
@@ -221,7 +226,16 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		return out
 	}
 
-	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· %d subagents in parallel (cap %d)", len(jobs), a.Cfg.MaxParallelSubagents)))
+	// Display the effective cap, not the raw config value — runSubagentJobs
+	// clamps to len(jobs), so the user sees what actually bounded parallelism.
+	dispCap := a.Cfg.MaxParallelSubagents
+	if dispCap < 1 {
+		dispCap = 1
+	}
+	if dispCap > len(jobs) {
+		dispCap = len(jobs)
+	}
+	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· %d subagents in parallel (cap %d)", len(jobs), dispCap)))
 	// All Start events BEFORE any worker spawns (Start-before-Chunk invariant).
 	// Resolve the display model once — all jobs in this batch share the same
 	// endpoint, so the model is identical. This runs in Phase A (main goroutine)

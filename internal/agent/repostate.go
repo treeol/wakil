@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,11 @@ type RepoState struct {
 	SubagentEndpoint string `json:"subagent_endpoint,omitempty"`
 	SubagentModel    string `json:"subagent_model,omitempty"`
 	RawTools         bool   `json:"raw_tools,omitempty"`
+
+	// MaxParallelSubagents persists the /maxpar session override (0 = not set;
+	// the config default is used). Restored outside the endpointMatches guard
+	// because maxpar is endpoint-independent.
+	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`
 
 	// AutoApprove is restored in the TUI only. cmd/wakil/run.go never reads
 	// or writes this field — see RestoreRepoState's doc comment.
@@ -225,6 +231,13 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 		applied = append(applied, "submodel="+st.SubagentModel)
 	}
 
+	// MaxParallelSubagents: 0 = not persisted → keep the config default.
+	// Restored outside the endpointMatches guard — maxpar is endpoint-independent.
+	if st.MaxParallelSubagents > 0 {
+		app.Cfg.MaxParallelSubagents = st.MaxParallelSubagents
+		applied = append(applied, fmt.Sprintf("maxpar=%d", st.MaxParallelSubagents))
+	}
+
 	app.RawTools = st.RawTools // always applies; false is a valid restored value
 
 	if !app.Cfg.AutoExplicit {
@@ -294,6 +307,9 @@ func DescribeRepoState(app *App) string {
 	}
 	if st.SubagentModel != "" {
 		b.WriteString("  subagent model: " + st.SubagentModel + "\n")
+	}
+	if st.MaxParallelSubagents > 0 {
+		b.WriteString(fmt.Sprintf("  max parallel subagents: %d\n", st.MaxParallelSubagents))
 	}
 	if st.RawTools {
 		b.WriteString("  raw tools: on\n")

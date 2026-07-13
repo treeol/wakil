@@ -34,6 +34,11 @@ const sidebarWidth = 28
 // oldest finished tabs (never the running or currently-viewed one) are pruned.
 const maxSubTabs = 12
 
+// subTabAutoCloseDelay is how long after a subagent tab becomes done before it
+// is auto-closed (if the user is not currently viewing it). One-shot timer
+// armed in the SubagentDoneMsg handler.
+const subTabAutoCloseDelay = 30 * time.Second
+
 // itemKind tags each committed conversation entry for visual rendering.
 type itemKind int8
 
@@ -541,8 +546,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// didn't carry (grounding, ctx size, hardMax, usedBackend) and mark the
 		// tab fully done. No visual regression: if the tab was already finished
 		// via SubagentFinishedMsg, it stays done — we only enrich it.
+		found := false
 		for _, t := range m.subTabs {
 			if t.chatID == msg.ChatID {
+				found = true
 				t.done = true
 				t.finished = true // done implies finished for rendering
 				t.grounding = msg.Grounding
@@ -552,6 +559,41 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.costUSD = msg.CostUSD
 				t.filesChanged = msg.FilesChanged
 				break
+			}
+		}
+		// Arm a 30s auto-close timer for the done tab. Fire-and-validate: if
+		// the tab was already pruned, closed, or is focused when the timer
+		// fires, the handler is a no-op. One-shot — not re-armed.
+		if found {
+			chatID := msg.ChatID
+			cmds = append(cmds, tea.Tick(subTabAutoCloseDelay, func(time.Time) tea.Msg {
+				return subTabCloseMsg{ChatID: chatID}
+			}))
+		}
+
+	case subTabCloseMsg:
+		// Auto-close: remove the tab if it is done and not currently focused.
+		// If focused, skip (one-shot, no re-arm — the tab will be cleaned up
+		// by pruneSubTabs when new tabs arrive, or by manual close).
+		focusN := 0
+		if m.subCur >= 0 && m.subCur < len(m.subTabs) {
+			focusN = m.subTabs[m.subCur].n
+		}
+		oldLen := len(m.subTabs)
+		removed := false
+		for i, t := range m.subTabs {
+			if t.chatID == msg.ChatID && t.done && t.n != focusN {
+				m.subTabs = append(m.subTabs[:i], m.subTabs[i+1:]...)
+				removed = true
+				break
+			}
+		}
+		if removed {
+			m.subCur = tabIndexByN(m.subTabs, focusN)
+			// Symmetric with SubagentStartMsg's 0→1 reflow: when the last tab
+			// disappears the tab bar row is reclaimed by the viewport.
+			if oldLen > 0 && len(m.subTabs) == 0 {
+				m = m.reflow()
 			}
 		}
 
@@ -590,6 +632,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Note != "" {
 			m.addItem(iSys, dim2(msg.Note))
 		}
+
+	case agent.ModelListUpdatedMsg:
+		// Refresh the model list after an endpoint switch so /model and
+		// /submodel autocomplete reflects the new endpoint's models. Applied
+		// in the event loop — same safety as BackendCtxLimitMsg above.
+		m.app.ModelList = msg.Models
 
 	case copiedMsg:
 		m.flash = sprint("copied %d chars ✓", msg.n)

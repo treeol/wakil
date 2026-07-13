@@ -910,7 +910,7 @@ func handleEndpointSwitch(app *App, name string, note func(string) tea.Cmd) (han
 	app.defaultModel = ep.Model
 
 	msg := fmt.Sprintf("endpoint: switched to %q (kind %s, %s, model %s)", name, ep.Kind, ep.BaseURL, ep.Model)
-	return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, "", ep.Model))
+	return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, "", ep.Model), fetchModelListCmd(app))
 }
 
 // listEndpoints renders the configured endpoints with the active one marked.
@@ -972,6 +972,17 @@ func resolveBackendCtxCmd(app *App, backend, model string) tea.Cmd {
 		var buf strings.Builder
 		lim := ResolveContextLimitForBackendModel(context.Background(), app.Client.HTTP, app.Cfg, backend, model, &buf)
 		return BackendCtxLimitMsg{Limit: lim, Note: strings.TrimSpace(buf.String())}
+	}
+}
+
+// fetchModelListCmd returns a tea.Cmd that fetches the model list for the
+// current endpoint (after an endpoint switch) and delivers it as a
+// ModelListUpdatedMsg. Like resolveBackendCtxCmd, the HTTP call runs in a
+// goroutine and the result is applied to app.ModelList in the TUI event loop.
+func fetchModelListCmd(app *App) tea.Cmd {
+	return func() tea.Msg {
+		models := FetchModelListForEndpoint(context.Background(), app.Client.HTTP, app.Cfg)
+		return ModelListUpdatedMsg{Models: models}
 	}
 }
 
@@ -1345,6 +1356,33 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		}
 		return true, false, note("subagent model: " + cur)
 
+	case "/maxpar":
+		// /maxpar [<N>] — set or show the max concurrent dispatch_subagent
+		// workers. Values ≤ 1 mean sequential; default is 2. Capped at 64 to
+		// prevent huge semaphore allocation. Session-scoped, persisted to
+		// repo-state like /model and /submodel.
+		if len(fields) >= 2 {
+			n, err := strconv.Atoi(fields[1])
+			if err != nil || n < 1 {
+				return true, false, note("maxpar: must be a positive integer (1 = sequential)")
+			}
+			const maxParCap = 64
+			if n > maxParCap {
+				n = maxParCap
+			}
+			app.Cfg.MaxParallelSubagents = n
+			app.saveRepoState(func(s *RepoState) { s.MaxParallelSubagents = n })
+			if n == maxParCap {
+				return true, false, note(fmt.Sprintf("max parallel subagents: set to %d (capped at %d)", n, maxParCap))
+			}
+			return true, false, note(fmt.Sprintf("max parallel subagents: set to %d", n))
+		}
+		cur := app.Cfg.MaxParallelSubagents
+		if cur < 1 {
+			cur = 1
+		}
+		return true, false, note(fmt.Sprintf("max parallel subagents: %d", cur))
+
 	case "/counsel":
 		// /counsel [auto|suggest|off] — set or show the auto-counsel mode.
 		if len(fields) < 2 {
@@ -1662,6 +1700,8 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /submodel <name>     set the model for dispatch_subagent (overrides endpoint model)
 /submodel inherit    reset subagent model to the endpoint's configured model
 /submodel            show current subagent model
+/maxpar <N>          set max concurrent dispatch_subagent workers (1 = sequential, max 64)
+/maxpar              show current max parallel subagents
 /plan <task>         start a gather→plan→review→implement workflow for <task>
 /plan --oracle=MODE  set per-run oracle schedule (every-step|on-deviation|phases-only)
 /plan status         show current workflow phase and step

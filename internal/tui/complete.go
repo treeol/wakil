@@ -72,6 +72,7 @@ var allTUICommands = []candidate{
 	{name: "/help"},
 	{name: "/history"},
 	{name: "/learn"},
+	{name: "/maxpar", hasArgs: true},
 	{name: "/mcp", hasArgs: true},
 	{name: "/mode"},
 	{name: "/model", hasArgs: true},
