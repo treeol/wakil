@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1
 
+# Stage 1a: Build kvr-server from the vendored kvrust submodule.
+FROM rust:1-bookworm AS kvr-builder
+WORKDIR /build
+COPY kvrust/ .
+RUN cargo build --release --bin server
+
 # Borrow the Go toolchain from the official image (same Debian base = no glibc mismatch).
 FROM golang:1.26-bookworm AS go-toolchain
 
@@ -7,6 +13,9 @@ FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf8
 
 # Copy the Go toolchain into /usr/local/go (same location as the official image).
 COPY --from=go-toolchain /usr/local/go /usr/local/go
+
+# Copy the pre-built kvr-server binary.
+COPY --from=kvr-builder /build/target/release/server /usr/local/bin/kvr-server
 
 # Single apt layer: bootstrap curl/gnupg, add NodeSource 20 LTS repo, install
 # all dev tools, clean apt caches.
@@ -51,3 +60,9 @@ ENV PATH="/usr/local/go/bin:/usr/local/go-workspace/bin:/usr/local/cargo/bin:${P
 # gopls v0.22.0 internal/protocol (tsprotocol.go). A version bump here MUST be
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
 RUN go install golang.org/x/tools/gopls@v0.22.0
+
+# Entrypoint script: starts kvr-server in the background, then execs the main
+# command. Traps SIGTERM to gracefully stop kvr (shutdown snapshot) before
+# stopping the main process.
+COPY docker/entrypoint.sh /usr/local/bin/wakil-entrypoint.sh
+RUN chmod +x /usr/local/bin/wakil-entrypoint.sh

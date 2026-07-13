@@ -37,3 +37,7 @@ runs/
 # trace output
 *.trace
 *.jsonl.trace
+
+# kvrust build artifacts (submodule is tracked, these are not)
+kvrust/target/
+kvrust/.bin/

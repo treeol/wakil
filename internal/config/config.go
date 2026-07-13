@@ -83,6 +83,16 @@ type Config struct {
 	HostWorkDir    string `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
 	DockerSocket   bool   `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
 	SSHSigning     string `json:"ssh_signing,omitempty"`   // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
+
+	// kvr staging store (sandbox-local ephemeral KV).
+	// KVREnabled defaults to true (opt-out via kvr_disabled). When false, no
+	// kvr-server is started and staging tools report "staging unavailable".
+	KVREnabled             bool `json:"kvr_enabled,omitempty"`
+	KVRDisabled            bool `json:"kvr_disabled,omitempty"`            // convenience alias: if true, overrides KVREnabled
+	KVRMaxEntries          int  `json:"kvr_max_entries,omitempty"`         // default 100000
+	KVRSweepIntervalSecs   int  `json:"kvr_sweep_interval_secs,omitempty"` // default 30
+	KVRSnapshotIntervalSecs int `json:"kvr_snapshot_interval_secs,omitempty"` // default 300
+
 	KeepBytes      int    `json:"keep_bytes"`              // max bytes of verbatim turns kept after compaction; default 120000
 	SummaryBytes   int    `json:"summary_bytes"`           // cap on the running summary; re-summarize if exceeded; default 20000; 0=unlimited
 	HardMaxBytes   int    `json:"hard_max_bytes"`          // unconditional ctx ceiling; compact+drop oldest until under; 0=disabled; default 160000
@@ -464,6 +474,10 @@ func DefaultConfig() Config {
 		ExecMode:            "docker",
 		Image:               "wakil-dev",
 		DockerSocket:        true,
+		KVREnabled:          true,
+		KVRMaxEntries:       100000,
+		KVRSweepIntervalSecs:    30,
+		KVRSnapshotIntervalSecs: 300,
 		KeepBytes:           120000, // keep ~120k of recent verbatim turns after compaction
 		SummaryBytes:        20000,  // cap the running summary; re-condense if it grows past this
 		HardMaxBytes:        160000, // unconditional ceiling; compact then drop until under
@@ -559,6 +573,10 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.HostWorkDir, "ILM_HOST_WORKDIR")
 	envBool(&cfg.DockerSocket, "ILM_DOCKER_SOCKET")
 	envStr(&cfg.SSHSigning, "ILM_SSH_SIGNING")
+	envBool(&cfg.KVRDisabled, "WAKIL_KVR_DISABLED")
+	envInt(&cfg.KVRMaxEntries, "WAKIL_KVR_MAX_ENTRIES")
+	envInt(&cfg.KVRSweepIntervalSecs, "WAKIL_KVR_SWEEP_INTERVAL_SECS")
+	envInt(&cfg.KVRSnapshotIntervalSecs, "WAKIL_KVR_SNAPSHOT_INTERVAL_SECS")
 	envBool(&cfg.TraceSessions, "WAKIL_TRACE_SESSIONS")
 	envStr(&cfg.TraceDir, "WAKIL_TRACE_DIR")
 
@@ -652,6 +670,16 @@ func LoadConfig(argv []string) (Config, error) {
 	}
 	if cfg.ExecMode != "docker" && cfg.ExecMode != "direct" {
 		return cfg, fmt.Errorf("invalid exec mode %q (want docker|direct)", cfg.ExecMode)
+	}
+
+	// Resolve kvr effective state: KVREnabled defaults true, but
+	// KVRDisabled (kvr_disabled / WAKIL_KVR_DISABLED) overrides to false.
+	if cfg.KVRDisabled {
+		cfg.KVREnabled = false
+	}
+	// kvr is docker-mode only in this ticket.
+	if cfg.ExecMode != "docker" {
+		cfg.KVREnabled = false
 	}
 	if err := validateContextLimits(cfg); err != nil {
 		return cfg, err

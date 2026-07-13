@@ -2,13 +2,16 @@ package exec
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Executor abstracts where tool_calls actually run. Commands always execute
@@ -82,6 +85,14 @@ type Executor interface {
 	// restarted (e.g. container recreated). Background process entries from an
 	// older generation are stale.
 	Generation() int
+
+	// KVRSocketPath returns the host-side path to the kvr UDS socket, or ""
+	// if kvr is not available (disabled, direct mode, or failed to start).
+	// The Go staging client connects to this path directly.
+	KVRSocketPath() string
+	// KVRAvailable reports whether the kvr staging store started successfully
+	// and is ready to serve requests.
+	KVRAvailable() bool
 }
 
 // runFromRoot starts a shell command from root (the workspace root).
@@ -111,6 +122,10 @@ type DockerExecutor struct {
 	sandboxTools  string    // cached probe result (empty = not yet probed or probe failed)
 	toolsOnce     sync.Once // guards the probe: executor is shared with concurrent subagents
 	generation    int    // increments on container restart; 1 for initial container
+	// kvr staging store
+	stagingMount string // host path of the staging mount; empty = no kvr
+	kvrSocket    string // host-side path to the kvr UDS socket; empty if unavailable
+	kvrAvailable bool   // kvr started and PING succeeded
 }
 
 // dockerSocketPath is the host docker socket bind-mounted into the sandbox when
@@ -127,6 +142,66 @@ type DockerOpts struct {
 	// Signing carries the host-resolved SSH commit-signing setup (agent
 	// socket + literal public key). Zero value = signing disabled.
 	Signing SigningSetup
+	// StagingMount is the host path mounted at /run/kvr-staging inside the
+	// container. The kvr UDS socket and snapshot file both live on this
+	// mount so the host-side Go client can reach the socket. Empty = no
+	// kvr staging store.
+	StagingMount string
+	// KVREnabled controls whether kvr-server is started. When false, no
+	// staging mount is added, no entrypoint is used, and KVRSocketPath()
+	// returns "".
+	KVREnabled bool
+	// KVR config (read from Wakil config, passed as env vars to the container).
+	KVRMaxEntries          int
+	KVRSweepIntervalSecs   int
+	KVRSnapshotIntervalSecs int
+}
+
+// waitForKVR polls the kvr UDS socket with PING until it responds or the
+// timeout elapses. PING frame: 4B BE length (1) + opcode 0x03 (PING).
+// Expected response: 4B BE length (1) + 0x10 (RESP_OK).
+func waitForKVR(socketPath string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	pingFrame := []byte{0x00, 0x00, 0x00, 0x01, 0x03} // len=1, PING
+
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		if _, err := conn.Write(pingFrame); err != nil {
+			conn.Close()
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		// Read response: 4B length + payload.
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+			conn.Close()
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		respLen := binary.BigEndian.Uint32(lenBuf[:])
+		if respLen == 0 || respLen > 1<<20 {
+			conn.Close()
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		resp := make([]byte, respLen)
+		if _, err := io.ReadFull(conn, resp); err != nil {
+			conn.Close()
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		conn.Close()
+		if len(resp) >= 1 && resp[0] == 0x10 { // RESP_OK
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("kvr did not become ready within %s", timeout)
 }
 
 func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
@@ -160,6 +235,28 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// through the agent socket. See internal/exec/signing.go.
 	args = append(args, signingEnv(opts.Signing)...)
 
+	// kvr staging mount + env vars. The staging mount is host-side at
+	// opts.StagingMount, in-container at /run/kvr-staging. Both the UDS
+	// socket and the snapshot file live on this mount so the host-side
+	// Go client can reach the socket and the snapshot persists across
+	// container restarts.
+	kvrEnabled := opts.KVREnabled && opts.StagingMount != ""
+	const stagingContainerPath = "/run/kvr-staging"
+	if kvrEnabled {
+		if err := os.MkdirAll(opts.StagingMount, 0o700); err != nil {
+			return nil, fmt.Errorf("creating staging dir %s: %w", opts.StagingMount, err)
+		}
+		args = append(args, "-v", opts.StagingMount+":"+stagingContainerPath)
+		args = append(args,
+			"-e", "KVR_SOCKET_PATH="+stagingContainerPath+"/kvr.sock",
+			"-e", "KVR_SNAPSHOT_PATH="+stagingContainerPath+"/staging.kvr",
+			"-e", "KVR_SNAPSHOT_ON_SHUTDOWN=true",
+			"-e", fmt.Sprintf("KVR_MAX_ENTRIES=%d", opts.KVRMaxEntries),
+			"-e", fmt.Sprintf("KVR_SWEEP_INTERVAL_SECS=%d", opts.KVRSweepIntervalSecs),
+			"-e", fmt.Sprintf("KVR_SNAPSHOT_INTERVAL_SECS=%d", opts.KVRSnapshotIntervalSecs),
+		)
+	}
+
 	// Run as the current host user so files written to the mounted workspace
 	// are owned correctly. A persistent directory on the host serves as HOME
 	// so Go/Cargo module caches survive across sessions.
@@ -184,13 +281,25 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		}
 	}
 
-	args = append(args, image, "sleep", "infinity")
+	// Container command: when kvr is enabled, use the entrypoint script
+	// (which starts kvr-server in the background, then runs the main command
+	// and traps SIGTERM for graceful kvr shutdown). Otherwise, use the
+	// plain "sleep infinity" as before.
+	if kvrEnabled {
+		args = append(args, image, "/usr/local/bin/wakil-entrypoint.sh", "sleep", "infinity")
+	} else {
+		args = append(args, image, "sleep", "infinity")
+	}
 
 	out, err := exec.Command("docker", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("docker run failed: %s", strings.TrimSpace(string(out)))
 	}
-	d := &DockerExecutor{container: name, image: image, workspaceRoot: workdir, hostMount: hostMount, dockerSock: dockerSock, signing: opts.Signing.Enabled, generation: 1}
+	d := &DockerExecutor{
+		container: name, image: image, workspaceRoot: workdir, hostMount: hostMount,
+		dockerSock: dockerSock, signing: opts.Signing.Enabled, generation: 1,
+		stagingMount: opts.StagingMount,
+	}
 	if hostMount == "" {
 		_, _ = d.exec(false, "sh", "-c", "mkdir -p "+shQuote(workdir))
 	}
@@ -200,6 +309,22 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	if dockerSock {
 		ensureDockerCLI(name)
 	}
+
+	// Host-side kvr readiness check: PING the UDS socket. On success, wire
+	// the socket path. On failure, warn and continue (kvr is an enhancement,
+	// not a hard dependency — staging tools report "staging unavailable").
+	if kvrEnabled {
+		kvrSocket := filepath.Join(opts.StagingMount, "kvr.sock")
+		d.kvrSocket = kvrSocket
+		if err := waitForKVR(kvrSocket, 5*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "kvr: staging store not ready (staging unavailable): %v\n", err)
+			d.kvrSocket = ""
+			d.kvrAvailable = false
+		} else {
+			d.kvrAvailable = true
+		}
+	}
+
 	return d, nil
 }
 
@@ -291,6 +416,8 @@ func (d *DockerExecutor) WriteFile(path, content string) (string, error) {
 func (d *DockerExecutor) Cwd() string           { return d.workspaceRoot }
 func (d *DockerExecutor) WorkspaceRoot() string { return d.workspaceRoot }
 func (d *DockerExecutor) Generation() int       { return d.generation }
+func (d *DockerExecutor) KVRSocketPath() string { return d.kvrSocket }
+func (d *DockerExecutor) KVRAvailable() bool   { return d.kvrAvailable }
 func (d *DockerExecutor) Describe() string {
 	sock := ""
 	if d.dockerSock {
@@ -299,12 +426,24 @@ func (d *DockerExecutor) Describe() string {
 	if d.signing {
 		sock += " +sign"
 	}
+	if d.kvrAvailable {
+		sock += " +kvr"
+	} else if d.stagingMount != "" {
+		sock += " +kvr(off)"
+	}
 	if d.hostMount != "" {
 		return fmt.Sprintf("docker[%s → %s]%s", d.image, d.hostMount, sock)
 	}
 	return fmt.Sprintf("docker[%s]%s", d.image, sock)
 }
 func (d *DockerExecutor) Close() error {
+	// Graceful teardown: docker stop sends SIGTERM to PID 1 (the entrypoint),
+	// which traps it and signals kvr-server for shutdown (snapshot save).
+	// -t 10 gives kvr up to 10s to finish the snapshot before SIGKILL.
+	// Always run stop (even if kvr readiness failed) because the entrypoint
+	// may have started kvr-server regardless — the graceful window is a
+	// ceiling, docker stop returns when PID 1 exits.
+	_ = exec.Command("docker", "stop", "-t", "10", d.container).Run()
 	return exec.Command("docker", "rm", "-f", d.container).Run()
 }
 
@@ -480,6 +619,8 @@ func (e *DirectExecutor) WriteFile(path, content string) (string, error) {
 func (e *DirectExecutor) Cwd() string           { return e.root }
 func (e *DirectExecutor) WorkspaceRoot() string { return e.root }
 func (e *DirectExecutor) Generation() int       { return e.generation }
+func (e *DirectExecutor) KVRSocketPath() string { return "" }
+func (e *DirectExecutor) KVRAvailable() bool   { return false }
 func (e *DirectExecutor) Describe() string      { return "direct[" + e.root + "]" }
 func (e *DirectExecutor) Close() error          { return nil }
 

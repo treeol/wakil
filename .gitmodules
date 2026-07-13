@@ -1,0 +1,3 @@
+[submodule "kvrust"]
+	path = kvrust
+	url = /home/user/.local/share/wakil/kvrust.git

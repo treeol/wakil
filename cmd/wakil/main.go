@@ -299,12 +299,30 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 			fmt.Fprintf(os.Stderr, "ssh signing: active (agent %s, key %.24s…, autosign=%v)\n",
 				signing.AgentSock, signing.PublicKey, signing.AutoSign)
 		}
+
+		// Staging dir: per-repo, host-side. Reuses workspaceKey via the
+		// exported agent.StagingPath helper (same identity as repo-state).
+		var stagingMount string
+		if cfg.KVREnabled {
+			var err error
+			stagingMount, err = agent.EnsureStagingDir(cfg.HostWorkDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "kvr: staging dir error (staging unavailable): %v\n", err)
+				cfg.KVREnabled = false
+			}
+		}
+
 		return exec.NewDockerExecutor(exec.DockerOpts{
-			Image:      cfg.Image,
-			Workdir:    cfg.WorkDir,
-			HostMount:  cfg.HostWorkDir,
-			DockerSock: cfg.DockerSocket,
-			Signing:    signing,
+			Image:                 cfg.Image,
+			Workdir:               cfg.WorkDir,
+			HostMount:             cfg.HostWorkDir,
+			DockerSock:            cfg.DockerSocket,
+			Signing:               signing,
+			StagingMount:          stagingMount,
+			KVREnabled:            cfg.KVREnabled,
+			KVRMaxEntries:         cfg.KVRMaxEntries,
+			KVRSweepIntervalSecs:  cfg.KVRSweepIntervalSecs,
+			KVRSnapshotIntervalSecs: cfg.KVRSnapshotIntervalSecs,
 		})
 	}
 }

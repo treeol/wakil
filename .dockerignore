@@ -1,0 +1,37 @@
+# Prevent build artifacts from entering the Docker context.
+kvrust/target/
+kvrust/.bin/
+kvrust/.git/
+kvrust/kvr
+
+# Wakil binary (host-built, not needed in image)
+wakil
+wakil-old
+wakil-*
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor/OS noise
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local config / secrets
+config.json
+.config/
+
+# IDE
+.idea/
+.vscode/
+.claude/
+
+# Runtime artifacts
+.wakil/
+.tmp/
+runs/
+*.trace
+*.jsonl.trace
