@@ -133,8 +133,60 @@ func TestSubSidebarModelEmpty(t *testing.T) {
 	}
 }
 
-// TestSubagentStartMsgPopulatesTab verifies that the SubagentStartMsg handler
-// stores capability and model on the subTab.
+// TestSubSidebarToolsToolsTier verifies that a tools-tier subagent shows the
+// tools from tab.toolNames (passed from the parent via SubagentStartMsg),
+// not the hardcoded discovery/edit list.
+func TestSubSidebarToolsToolsTier(t *testing.T) {
+	m := newTabModel()
+	tab := &subTab{
+		chatID:     "chat-a",
+		capability: tools.CapabilityTools,
+		toolNames: []string{
+			"read_file",
+			"search_files",
+			"lsp_definition",
+			"trello__get_cards",
+			"context7__resolve-library-id",
+		},
+		buf: new(strings.Builder),
+	}
+	lines := m.subSidebarLines(tab, 24)
+	idx := findToolsHeader(lines)
+	if idx < 0 {
+		t.Fatal("tools header not found in sidebar")
+	}
+	count := countToolLines(lines, idx)
+	if count != 5 {
+		t.Errorf("tools tier: %d tool lines, want 5", count)
+	}
+	joined := strings.Join(lines, "\n")
+	for _, name := range []string{"trello__get_cards", "context7__resolve-library-id", "lsp_definition"} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("tool %q not found in sidebar", name)
+		}
+	}
+}
+
+// TestSubSidebarToolsTierEmptyToolNames falls back to discovery list when
+// toolNames is nil (e.g. parent didn't populate it).
+func TestSubSidebarToolsTierEmptyToolNames(t *testing.T) {
+	m := newTabModel()
+	tab := &subTab{
+		chatID:     "chat-a",
+		capability: tools.CapabilityTools,
+		toolNames:  nil, // no tool names passed
+		buf:        new(strings.Builder),
+	}
+	lines := m.subSidebarLines(tab, 24)
+	idx := findToolsHeader(lines)
+	if idx < 0 {
+		t.Fatal("tools header not found in sidebar")
+	}
+	count := countToolLines(lines, idx)
+	if count != 5 {
+		t.Errorf("tools tier with nil toolNames: %d tool lines, want 5 (discovery fallback)", count)
+	}
+}
 func TestSubagentStartMsgPopulatesTab(t *testing.T) {
 	m := newTabModel()
 	m = step(m, agent.SubagentStartMsg{

@@ -37,12 +37,14 @@ func DefaultTools(cwd string) []proxy.Tool {
 				"capability \"discovery\" (default) is read-only: navigate and read code, return a structured " +
 				"JSON summary (findings with file:line locations, checked/skipped files, uncertainty). " +
 				"capability \"edit\" adds write_file, edit_file, delete_file, and move_file for delegated " +
-				"bounded implementation; requires session write consent (/auto or --auto). Multiple " +
-				"independent dispatch_subagent calls emitted in the same turn run in parallel (bounded); " +
+				"bounded implementation; requires session write consent (/auto or --auto). " +
+				"capability \"tools\" adds MCP tools (from configured allowlist), LSP tools, and web search " +
+				"for research and external tool access; requires /auto or --auto. " +
+				"Multiple independent dispatch_subagent calls emitted in the same turn run in parallel (bounded); " +
 				"for several related tasks prefer dispatch_subagents (plural) which runs them concurrently by design.",
 			Parameters: obj(map[string]interface{}{
 				"task":       strProp("Specific discovery objective, e.g. 'find where ToolResultCap is configured across the repo'."),
-				"capability": strProp("Capability tier: \"discovery\" (default, read-only) or \"edit\" (adds file mutation tools; requires /auto or --auto)."),
+				"capability": strProp("Capability tier: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto)."),
 			}, "task"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
@@ -57,7 +59,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 					"items":       strProp("One discovery objective."),
 					"description": "Independent objectives (1–8), each handled by its own subagent.",
 				},
-				"capability": strProp("Capability tier for all tasks: \"discovery\" (default, read-only) or \"edit\" (adds file mutation tools; requires /auto or --auto)."),
+				"capability": strProp("Capability tier for all tasks: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto)."),
 			}, "tasks"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
@@ -299,10 +301,20 @@ const CapabilityDiscovery = "discovery"
 // only, and child bgProcs would orphan on child completion.
 const CapabilityEdit = "edit"
 
+// CapabilityTools adds MCP tools (from an explicit allowlist), LSP tools, and web
+// search to the discovery set. Designed for headless/trusted operation: the user
+// configures which MCP servers are exposed (SubagentMCPServers), and a toolsConfirmer
+// auto-approves everything in the tier. Mutating MCP calls are serialized via a
+// per-server mutex to prevent parallel children from racing on the same API.
+// Still excludes run_shell, run_background, kill_process, dispatch_subagent(s),
+// open_url, and mashura__* — those stay parent-only.
+const CapabilityTools = "tools"
+
 // validCapabilities is the exhaustive set of accepted capability values.
 var validCapabilities = map[string]bool{
 	CapabilityDiscovery: true,
 	CapabilityEdit:      true,
+	CapabilityTools:     true,
 }
 
 // ValidCapability reports whether capability is a recognized value.

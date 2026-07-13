@@ -158,8 +158,9 @@ type subTab struct {
 	ctxSize      int
 	hardMaxBytes int
 	filesChanged []string // mechanical record of canonical paths touched (edit-tier only)
-	capability   string   // "discovery" or "edit" — drives the sidebar tool list (from Start)
+	capability   string   // "discovery", "edit", or "tools" — drives the sidebar tool list (from Start)
 	model        string   // child's resolved model (from Start)
+	toolNames    []string // tool names for the sidebar (tools-tier only; nil for discovery/edit — hardcoded)
 	active       bool     // worker acquired a parallelism slot (queued → running)
 	done         bool     // authoritative done (SubagentDoneMsg received)
 	finished     bool     // display-only early done (SubagentFinishedMsg received)
@@ -488,6 +489,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			backend:    msg.Backend,
 			capability: msg.Capability,
 			model:      msg.Model,
+			toolNames:  msg.ToolNames,
 			buf:        new(strings.Builder),
 		}
 		m.subTabs = append(m.subTabs, tab)

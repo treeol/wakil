@@ -40,12 +40,12 @@ type subagentJob struct {
 
 // subagentJobResult carries one worker's outcome back to the main goroutine.
 type subagentJobResult struct {
-	Summary     SubagentSummary
-	Grounding   []proxy.GroundingEntry
-	CtxSize     int
-	UsedBackend string
-	CostRows    []proxy.CostRow // child's own priced rows; folded into a.Costs in Phase C only
-	FilesChanged []string       // mechanical record of canonical paths touched (edit-tier only)
+	Summary        SubagentSummary
+	Grounding      []proxy.GroundingEntry
+	CtxSize        int
+	UsedBackend    string
+	CostRows       []proxy.CostRow  // child's own priced rows; folded into a.Costs in Phase C only
+	FilesChanged   []string          // mechanical record of canonical paths touched (edit-tier only)
 }
 
 // cancelledJobResult is the truthful summary for a job that never ran (or was
@@ -194,8 +194,8 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 			capability = wtools.CapabilityDiscovery
 		}
 		if !wtools.ValidCapability(capability) {
-			out[i] = fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q",
-				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit)
+			out[i] = fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q, %q",
+				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit, wtools.CapabilityTools)
 			continue
 		}
 		// Consent gate (same as sequential path at app.go — the two must move
@@ -203,9 +203,12 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		// write predicate for edit-category tools is AutoApprove alone (see the
 		// verbatim trace in the comment at app.go's dispatch_subagent case).
 		// INVARIANT: child may write iff parent may write.
-		if capability == wtools.CapabilityEdit && !a.AutoApprove {
-			out[i] = "ERROR: edit capability requires /auto or --auto (session write consent). " +
-				"Re-dispatch with capability \"discovery\" (the default) for read-only research."
+		// Tools capability also requires AutoApprove (session consent for
+		// external tool access — same gate, different rationale).
+		if (capability == wtools.CapabilityEdit || capability == wtools.CapabilityTools) && !a.AutoApprove {
+			out[i] = fmt.Sprintf("ERROR: %s capability requires /auto or --auto (session consent). " +
+				"Re-dispatch with capability \"discovery\" (the default) for read-only research.",
+				capability)
 			continue
 		}
 		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability})
@@ -241,6 +244,10 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 	// endpoint, so the model is identical. This runs in Phase A (main goroutine)
 	// before any worker spawns.
 	displayModel := a.resolvedSubagentDisplayModel()
+	// Resolve the tool names once — all jobs in this batch share the same
+	// capability, so the tool list is identical. This runs in Phase A (main
+	// goroutine) before any worker spawns.
+	toolNames := a.subagentToolNames(jobs[0].Capability)
 	for _, j := range jobs {
 		fmt.Fprintln(a.Out, Dim("· subagent: "+Truncate(j.Task, 60)))
 		a.sendEvent(SubagentStartMsg{
@@ -249,6 +256,7 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 			Backend:    backend,
 			Capability: j.Capability,
 			Model:      displayModel,
+			ToolNames:  toolNames,
 		})
 	}
 

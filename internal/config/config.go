@@ -232,6 +232,17 @@ type Config struct {
 	// when the backend serves concurrent requests.
 	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`
 
+	// SubagentMCPServers is the allowlist of MCP server names that the "tools"
+	// capability tier may expose to subagents. An empty/absent list means no MCP
+	// tools are available to subagents (default-deny). Only servers listed here
+	// have their tools included in the tools-tier subagent's toolset; the model
+	// cannot call an MCP tool from a server not in this list.
+	//
+	// This is the consent surface for subagent MCP access: the user explicitly
+	// opts in each server by name. IsMCPReadTool (the keyword blacklist) is NOT
+	// used as a security input for subagents — it stays for parent UX only.
+	SubagentMCPServers []string `json:"subagent_mcp_servers,omitempty"`
+
 	// AgentPromptPath is the file loaded once at startup to supply the agent
 	// operating instructions (system message). Default: agent.txt next to the
 	// config file. If missing, the built-in fallback prompt is used.

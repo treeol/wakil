@@ -93,6 +93,13 @@ type App struct {
 	// files_changed list on the done message.
 	filesChanged *filesChangedRecorder
 
+	// externalActions is the recorder for tools-tier subagents: tracks every
+	// MCP tool call the child makes (server, tool, status). nil for the parent
+	// and discovery/edit-tier children. Populated by ExecuteToolCall when it
+	// routes an MCP tool call; read by dispatchSubagent after Send returns to
+	// fold the mechanical external_calls list into the summary.
+	externalActions *externalActionsRecorder
+
 	// confinementTripped is set by Send when the path-confinement circuit
 	// breaker fires: confinementBreakerThreshold consecutive ConfinePath
 	// rejections within the turn. ConfinePath failures are a deterministic
@@ -1225,6 +1232,62 @@ func (a *App) recordFileChanged(canonical string) {
 	}
 }
 
+// recordExternalAction appends one MCP tool call to the externalActions recorder
+// when the App has one (tools-tier subagents). No-op for the parent and
+// discovery/edit-tier children (externalActions is nil). Called after an MCP
+// tool call completes, whether success or error.
+func (a *App) recordExternalAction(server, tool, status string) {
+	if a.externalActions != nil {
+		a.externalActions.record(server, tool, status)
+	}
+}
+
+// buildSubagentTools assembles the toolset for a tools-tier subagent: discovery
+// tools (the shared prefix for cache stability) + web search + LSP + filtered
+// MCP tools (only servers in the SubagentMCPServers allowlist). Never includes
+// run_shell, dispatch_subagent, run_background, kill_process, open_url, or
+// mashura__* — those stay parent-only. Called only when capability == "tools".
+func (a *App) buildSubagentTools() []proxy.Tool {
+	cwd := a.Exec.Cwd()
+	t := wtools.DiscoveryTools(cwd)
+	// Web search — only if the parent has it configured.
+	if a.Cfg.SearXngURL != "" {
+		t = append(t, wtools.SearxngTools()...)
+	}
+	if a.Cfg.GoogleAPIKey != "" && a.Cfg.GoogleCX != "" {
+		t = append(t, wtools.GoogleTools()...)
+	}
+	// LSP — only if the parent has it enabled.
+	if a.Cfg.LSPEnabled {
+		t = append(t, lsp.LSPTools(cwd)...)
+	}
+	// MCP — only servers in the allowlist.
+	if a.MCP != nil && len(a.Cfg.SubagentMCPServers) > 0 {
+		allowed := make(map[string]bool, len(a.Cfg.SubagentMCPServers))
+		for _, s := range a.Cfg.SubagentMCPServers {
+			allowed[s] = true
+		}
+		t = append(t, a.MCP.OpenAIToolsForServers(allowed)...)
+	}
+	return t
+}
+
+// subagentToolNames returns the tool name list for the sidebar display.
+// Returns nil for discovery and edit tiers (the TUI hardcodes those lists);
+// returns the actual tool names for the "tools" tier (which is dynamic —
+// depends on MCP server config, LSP, search).
+func (a *App) subagentToolNames(capability string) []string {
+	if capability != wtools.CapabilityTools {
+		return nil
+	}
+	tools := a.buildSubagentTools()
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		names = append(names, t.Function.Name)
+	}
+	return names
+}
+
 func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) string {
 	name := tc.Function.Name
 
@@ -2145,8 +2208,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			capability = wtools.CapabilityDiscovery
 		}
 		if !wtools.ValidCapability(capability) {
-			return fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q",
-				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit)
+			return fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q, %q",
+				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit, wtools.CapabilityTools)
 		}
 		// Consent gate: edit capability requires the session to have write consent.
 		// This deliberately mirrors the parent's own write predicate: in /auto
@@ -2169,6 +2232,16 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			return "ERROR: edit capability requires /auto or --auto (session write consent). " +
 				"Re-dispatch with capability \"discovery\" (the default) for read-only research."
 		}
+		// Consent gate: tools capability also requires /auto or --auto. The tools
+		// tier exposes MCP/LSP/web search to unattended children with no per-call
+		// confirm gate. The user's config (SubagentMCPServers allowlist) is the
+		// consent surface for which servers are exposed; /auto is the session-level
+		// trust that the agent may call them without prompting. This mirrors the
+		// edit tier pattern: consent at dispatch, not per-call.
+		if capability == wtools.CapabilityTools && !a.AutoApprove {
+			return "ERROR: tools capability requires /auto or --auto (session consent for external tool access). " +
+				"Re-dispatch with capability \"discovery\" (the default) for read-only research."
+		}
 		fmt.Fprintln(a.Out, Dim("· subagent: "+Truncate(args.Task, 60)))
 		subChatID := NewChatID()
 		// Backend resolution only applies when the child's resolved endpoint is
@@ -2188,6 +2261,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			Backend:    subBackend,
 			Capability: capability,
 			Model:      a.resolvedSubagentDisplayModel(),
+			ToolNames:  a.subagentToolNames(capability),
 		})
 		// Sequential path: the dispatch begins immediately, no queue wait.
 		a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
@@ -2271,12 +2345,17 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			capability = wtools.CapabilityDiscovery
 		}
 		if !wtools.ValidCapability(capability) {
-			return fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q",
-				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit)
+			return fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q, %q",
+				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit, wtools.CapabilityTools)
 		}
 		// Consent gate (same as sequential path).
 		if capability == wtools.CapabilityEdit && !a.AutoApprove {
 			return "ERROR: edit capability requires /auto or --auto (session write consent). " +
+				"Re-dispatch with capability \"discovery\" (the default) for read-only research."
+		}
+		// Consent gate: tools capability also requires /auto (same as edit).
+		if capability == wtools.CapabilityTools && !a.AutoApprove {
+			return "ERROR: tools capability requires /auto or --auto (session consent for external tool access). " +
 				"Re-dispatch with capability \"discovery\" (the default) for read-only research."
 		}
 		// Reuse the block runner: build synthetic single-task calls so Phase
@@ -2318,7 +2397,25 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		// URL extraction from arbitrary MCP result payloads would require a fragile
 		// scraper; emit one opaque provenance entry per successful call instead.
 		if a.MCP != nil && strings.Contains(name, mcpNS) {
+			serverName, toolName, _ := strings.Cut(name, mcpNS)
+			// Serialize mutating MCP calls across parallel children: acquire
+			// subagentMCPMu when the tool looks mutating (not classified as read
+			// by IsMCPReadTool). This is defense-in-depth against parallel races
+			// on external APIs (e.g. two children creating duplicate cards).
+			// IsMCPReadTool is a hint here, not a security boundary — the
+			// allowlist (SubagentMCPServers) is the security boundary.
+			if !IsMCPReadTool(toolName) {
+				subagentMCPMu.Lock()
+				defer subagentMCPMu.Unlock()
+			}
 			result := a.MCP.CallTool(ctx, name, tc.Function.Arguments, a.Confirm, a.AllowReads)
+			// Record the external action for audit (tools-tier children only;
+			// nil-safe for the parent and other tiers).
+			status := "ok"
+			if strings.HasPrefix(result, "ERROR:") || result == "[declined by user]" {
+				status = "error"
+			}
+			a.recordExternalAction(serverName, toolName, status)
 			if !strings.HasPrefix(result, "ERROR:") && result != "[declined by user]" {
 				label := Truncate(name+" result", 79)
 				a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})

@@ -48,8 +48,9 @@ type SubagentStartMsg struct {
 	Task       string
 	ChatID     string
 	Backend    string // resolved backend for this dispatch (empty = proxy default)
-	Capability string // "discovery" (default) or "edit" — drives the sidebar tool list
+	Capability string // "discovery" (default), "edit", or "tools" — drives the sidebar tool list
 	Model      string // child's resolved model (view.model), shown in the sidebar
+	ToolNames  []string // tool names for the sidebar; nil for discovery/edit (hardcoded in TUI), populated for "tools"
 }
 
 // SubagentActiveMsg marks the moment a dispatched subagent actually starts

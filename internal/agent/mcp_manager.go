@@ -133,6 +133,32 @@ func (m *MCPManager) OpenAITools() []proxy.Tool {
 	return tools
 }
 
+// OpenAIToolsForServers returns MCP tools only from servers in the allowlist,
+// converted to OpenAI function-tool format. Servers not in the allowlist are
+// excluded entirely — the model never sees their tools. This is the security
+// boundary for subagent MCP access: the user explicitly opts in each server
+// by name via SubagentMCPServers in config. An empty allowlist yields no tools.
+func (m *MCPManager) OpenAIToolsForServers(allowed map[string]bool) []proxy.Tool {
+	if len(allowed) == 0 {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var tools []proxy.Tool
+	for _, srv := range m.servers {
+		if srv.Status != "connected" {
+			continue
+		}
+		if !allowed[srv.Cfg.Name] {
+			continue
+		}
+		for _, t := range srv.Tools {
+			tools = append(tools, MCPToolToOpenAI(srv.Cfg.Name, t))
+		}
+	}
+	return tools
+}
+
 // mcpWriteKeywords are substrings that indicate a mutating MCP tool. Any tool
 // whose name does NOT contain one of these is treated as read-only.
 var mcpWriteKeywords = []string{

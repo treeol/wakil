@@ -826,20 +826,31 @@ func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
 		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("tools"),
 	)
 	// Build the tool list from the child's capability tier.
-	toolList := []string{
-		"  read_file",
-		"  read_file_full",
-		"  search_files",
-		"  find_files",
-		"  list_dir",
-	}
-	if tab.capability == tools.CapabilityEdit {
-		toolList = append(toolList,
-			"  write_file",
-			"  edit_file",
-			"  delete_file",
-			"  move_file",
-		)
+	// For discovery and edit tiers, the list is hardcoded (byte-identical across
+	// dispatches — no config-dependent tools). For the tools tier, the list is
+	// dynamic (depends on MCP server allowlist, LSP, search config) and is
+	// passed from the parent via SubagentStartMsg.ToolNames.
+	var toolList []string
+	if len(tab.toolNames) > 0 {
+		for _, name := range tab.toolNames {
+			toolList = append(toolList, "  "+name)
+		}
+	} else {
+		toolList = []string{
+			"  read_file",
+			"  read_file_full",
+			"  search_files",
+			"  find_files",
+			"  list_dir",
+		}
+		if tab.capability == tools.CapabilityEdit {
+			toolList = append(toolList,
+				"  write_file",
+				"  edit_file",
+				"  delete_file",
+				"  move_file",
+			)
+		}
 	}
 	lines = append(lines, toolList...)
 	if tab.done && tab.hardMaxBytes > 0 {
