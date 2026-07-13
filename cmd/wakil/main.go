@@ -223,6 +223,24 @@ func main() {
 		}
 	}
 
+	// Check if kvr restored entries from a snapshot. A non-empty SCAN with
+	// limit=1 means the snapshot was loaded and had live entries. This is a
+	// heuristic — it detects "store is non-empty at startup" which in practice
+	// means "snapshot was loaded." Runs after RestoreRepoState so the staging
+	// note composes with (rather than overwrites) the repo-state note.
+	if app.StagingClient != nil {
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if result, err := app.StagingClient.Scan(scanCtx, "", 1, ""); err == nil && len(result.Keys) > 0 {
+			note := "staging: entries restored"
+			if app.StartupNote != "" {
+				app.StartupNote += " | " + note
+			} else {
+				app.StartupNote = note
+			}
+		}
+		scanCancel()
+	}
+
 	// Open the P38 trace store when tracing is enabled (trace_sessions:true or
 	// --trace flag). Non-fatal: a failure prints a warning and continues without
 	// tracing so a misconfigured trace_dir never prevents a session from starting.
