@@ -15,6 +15,7 @@ import (
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/staging"
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
 	"github.com/treeol/wakil/internal/workflow"
@@ -76,6 +77,18 @@ type App struct {
 	// IsSubagent marks dispatch_subagent child Apps. Distinct from ToolCache,
 	// which exists for deduplication and is not a reliable presence signal.
 	IsSubagent bool
+
+	// AgentPrefix is the staging key prefix for this agent ("main" or "sub-<id>").
+	// The staging tool layer unconditionally prepends this to the agent-supplied
+	// key on staging_put and staging_delete. Set by the main agent ("main") and
+	// by dispatchSubagent ("sub-" + first 8 chars of the child's ChatID).
+	AgentPrefix string
+
+	// StagingClient is the kvr wire protocol client, or nil if kvr is
+	// unavailable (disabled, direct mode, or failed readiness). When nil,
+	// all staging_* tools return "staging unavailable". Set by the host
+	// startup code after the executor is ready.
+	StagingClient *staging.Client
 
 	// exhausted is set by Send when the subagent hit MaxToolIterations
 	// (forceFinish) or enforceHardMax dropped content during the turn. It is
@@ -2391,6 +2404,18 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			return "[lsp: LSP is not enabled. Configure lsp_enabled in config.]"
 		}
 		return a.LSP.HandleLSPReadOnly(ctx, name, tc.Function.Arguments)
+
+	// Staging tools (ungated by design — the gate lives at promotion).
+	case "staging_put":
+		return a.handleStagingPut(ctx, tc)
+	case "staging_get":
+		return a.handleStagingGet(ctx, tc)
+	case "staging_delete":
+		return a.handleStagingDelete(ctx, tc)
+	case "staging_list":
+		return a.handleStagingList(ctx, tc)
+	case "staging_get_many":
+		return a.handleStagingGetMany(ctx, tc)
 
 	default:
 		// MCP tool — namespaced as "{server}__{tool}".

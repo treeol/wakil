@@ -15,6 +15,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
 	"github.com/treeol/wakil/internal/workflow"
@@ -481,6 +482,7 @@ func RunHeadless(cfg config.Config, args []string) int {
 		BackendList:     backendList,
 		ModelList:       modelList,
 		SelectedBackend: cfg.Backend,
+		AgentPrefix:     "main",
 		Out:             os.Stderr,
 		Confirm:         func(_, _, _ string, _ bool) bool { return false },
 		InjectDate:      true,
@@ -493,6 +495,11 @@ func RunHeadless(cfg config.Config, args []string) int {
 			Model:     client.Model,
 			Workspace: exe.WorkspaceRoot(),
 		},
+	}
+
+	// Initialize staging client if kvr is available.
+	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
+		app.StagingClient = staging.NewClient(kvrSocket)
 	}
 
 	// Open the P38 trace store when cfg.Trace is true (trace_sessions:true or

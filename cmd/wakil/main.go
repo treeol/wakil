@@ -14,6 +14,7 @@ import (
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/trace"
 	"github.com/treeol/wakil/internal/tui"
 
@@ -178,12 +179,18 @@ func main() {
 		SelectedBackend: cfg.Backend,
 		CounselMode:     counselMode,
 		MaxCounsel:      counselMax,
+		AgentPrefix:     "main",
 		// Out and Confirm are injected per-turn by runTurn.
 		Out:         os.Stderr,
 		Confirm:     func(_, _, _ string, _ bool) bool { return false },
 		InjectDate:  true,
 		AutoApprove: cfg.AutoApprove,
 		Costs:       proxy.NewCostTracker(),
+	}
+
+	// Initialize staging client if kvr is available.
+	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
+		app.StagingClient = staging.NewClient(kvrSocket)
 	}
 
 	if resumed != nil {

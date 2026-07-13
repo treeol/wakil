@@ -30,7 +30,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 		b, _ := json.Marshal(m)
 		return b
 	}
-	return []proxy.Tool{
+	tools := []proxy.Tool{
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "dispatch_subagent",
 			Description: "Dispatch a subagent for a bounded, single-objective task. " +
@@ -196,6 +196,8 @@ func DefaultTools(cwd string) []proxy.Tool {
 			}, "id"),
 		}},
 	}
+	// Staging tools are appended to every tier (ungated by design).
+	return append(tools, StagingTools()...)
 }
 
 // GatedTool reports whether a tool requires human confirmation before running.
@@ -239,7 +241,7 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 		b, _ := json.Marshal(m)
 		return b
 	}
-	return []proxy.Tool{
+	tools := []proxy.Tool{
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "read_file",
 			Description: "Read a file and return its contents with line numbers. Reads the whole file by default; " +
@@ -289,6 +291,8 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 			}),
 		}},
 	}
+	// Staging tools are appended to every tier (ungated by design).
+	return append(tools, StagingTools()...)
 }
 
 // CapabilityDiscovery is the default read-only subagent capability.
@@ -345,7 +349,7 @@ func EditTools(cwd string) []proxy.Tool {
 		b, _ := json.Marshal(m)
 		return b
 	}
-	return []proxy.Tool{
+	tools := []proxy.Tool{
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "read_file",
 			Description: "Read a file and return its contents with line numbers. Reads the whole file by default; " +
@@ -435,6 +439,8 @@ func EditTools(cwd string) []proxy.Tool {
 			}, "src", "dst"),
 		}},
 	}
+	// Staging tools are appended to every tier (ungated by design).
+	return append(tools, StagingTools()...)
 }
 
 // IsEditTool reports whether name is one of the edit-category tools that mutate

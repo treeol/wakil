@@ -803,6 +803,8 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		Session:           nil,
 		ToolCache:         map[string]bool{},
 		IsSubagent:        true,
+		AgentPrefix:       "sub-" + ShortID(subChatID),
+		StagingClient:     a.StagingClient, // shared — kvr client is thread-safe
 		pinUserMessage:    true, // pin the task instruction so it survives compaction
 		SelectedBackend:   backend,
 		BackendList:       a.BackendList,
