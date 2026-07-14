@@ -28,7 +28,7 @@ navigation is backed by an actual language server (`lsp_definition` /
 - [Requirements](#requirements) · [Status](#status) · [Quickstart](#quickstart)
 - [Security and the confirmation gate](#security-and-the-confirmation-gate)
 - [Configuration](#configuration) · [The TUI](#the-tui) · [Tools](#tools)
-- [Optional features](#optional-features) · [How state works](#how-state-works)
+- [Optional features](#optional-features) · [Memory and staging](#memory-and-staging) · [How state works](#how-state-works)
 - [Testing](#testing) · [Project layout](#project-layout) · [Contributing](#contributing) · [License](#license)
 
 ## Requirements
@@ -197,6 +197,9 @@ reference covering every section below.
 | `aux_model` | `""` | Pins `X-Ilm-Aux-Model` (empty = follow main) |
 | `trace_sessions` | `false` | Trace every TUI session as JSONL |
 | `trace_dir` | `~/.local/share/wakil/traces` | Directory for trace files |
+| `kvr_disabled` | `false` | Disable the staging KV store *(auto-disabled in direct mode)* |
+| `kvr_max_entries` | `100000` | Max entries in the staging store |
+| `kvr_snapshot_interval_secs` | `300` | Staging snapshot frequency *(survives sandbox restarts)* |
 | `agent_prompt_path` | `agent.txt` next to config | System prompt file path |
 | `backend_max_retries` | `3` | Max retries for transient backend failures (unattended) |
 | `compact_at_frac` | `0.75` | Compact at 75% of effective context |
@@ -314,6 +317,18 @@ opens a picker to attach a file or folder for context.
 | `dispatch_subagent` | no | Spawn a read-only discovery subagent for a bounded task *(contiguous same-turn calls run in parallel)* |
 | `dispatch_subagents` | no | Spawn several discovery subagents concurrently, one per task *(bounded by `max_parallel_subagents`, default 2)* |
 | `read_process_log` | no | Read the tail of a background process's log |
+| `staging_put` | no | Store a value in the ephemeral in-sandbox KV store *(key auto-prefixed with agent identity)* |
+| `staging_get` / `staging_get_many` | no | Retrieve values by key *(cross-prefix reads allowed — enables subagent handoffs)* |
+| `staging_list` | no | List staging keys, optionally filtered by prefix |
+| `staging_delete` | no | Delete a key under your prefix |
+| `memory_put` | no | Write to durable memory: TTL present → mid-tier active; absent → durable proposed |
+| `memory_get` | no | Retrieve the active entry for a key *(with provenance + staleness flags)* |
+| `memory_search` | no | FTS5 full-text search over memory entries |
+| `memory_list` | no | List entries by prefix, tier, or status |
+| `memory_promote` | no | Promote a proposed durable entry to active *(main agent only)* |
+| `memory_reject` | no | Reject a proposed durable entry *(main agent only)* |
+| `memory_forget` | no | Supersede an active entry with a tombstone *(main agent only)* |
+| `memory_promote_from_staging` | no | Bridge a staging value into durable memory as proposed *(main agent only)* |
 | `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` | no | Language-server-backed code intelligence *(off by default — see below)* |
 
 MCP tools *(stdio or HTTP)* append automatically when `mcp_servers` is
@@ -425,6 +440,38 @@ MCP config.
 Per-source token and cost accounting. Rates live under `costs`; unpriced
 sources show `—`, not a misleading `$0.00`.
 
+### Memory and staging
+
+Wakil has a two-tier memory architecture. Both are built-in — no external
+services required.
+
+| Tier | Store | Lifetime | Location | Gating |
+|---|---|---|---|---|
+| **T1 staging** | [kvr](https://github.com/treeol/kvrust) (Rust KV) | Ephemeral *(snapshot survives restarts)* | In-sandbox | Ungated — any agent |
+| **T2 mid** | SQLite (pure Go) | 1h–7d TTL, auto-expires | Host-side | Direct active writes |
+| **T2 durable** | SQLite (pure Go) | Permanent | Host-side | PROPOSED on write; main agent promotes |
+
+**Staging (T1)** is a fast in-sandbox KV store for scratch space and
+subagent handoffs. Keys are auto-prefixed with the writer's agent identity
+(`main/` or `sub-<id>/`); cross-prefix reads are allowed so a parent can
+read a child's findings. Staging survives sandbox restarts via periodic
+snapshots. Ungated — staging writes touch no workspace state.
+
+**Durable memory (T2)** is a host-side SQLite store that persists across
+sessions. Mid-tier entries auto-expire (1h–7d TTL); durable entries are
+permanent and go through a propose→promote review flow. Subagents can
+propose durable entries but only the main agent can promote them. Every
+entry carries provenance (writer, taint signal, anchor staleness). A
+memory digest is injected into the system prompt at session start.
+
+**The bridge:** `memory_promote_from_staging` reads an untrusted staging
+value and writes it to durable memory as a PROPOSED entry — the main
+agent reviews and promotes it. The staging key's prefix is preserved as
+provenance.
+
+Full design docs: [`docs/staging.md`](docs/staging.md) ·
+[`docs/memory.md`](docs/memory.md).
+
 ### Backend-truth context sizing
 
 At startup (and on every `/backend` / `/model` switch) wakil resolves the
@@ -445,6 +492,12 @@ result → resend → final answer. wakil keeps a **bounded client-side
 transcript**, compacting older turns into a running summary *(last N turns
 verbatim + summary)*. There is no server-side memory; `/learn` refuses
 client-side rather than letting a bare model fake a memory ack.
+
+Client-side **durable memory** (T2) works on all endpoints — the SQLite
+store is host-side and endpoint-independent. `memory_put`,
+`memory_search`, and the propose→promote flow operate regardless of
+whether the backend is an ilm proxy or a plain OpenAI server. See
+[Memory and staging](#memory-and-staging) above.
 
 **On `ilm-proxy` endpoints** the proxy additionally routes by **message
 content**; statefulness differs by path.
@@ -490,8 +543,10 @@ internal/
   counsel/         mashūra — external-model counsel (review/debug/decide/check)
   exec/            executor backends (docker, direct) + cwd tracking
   lsp/             language-server client — manager, JSON-RPC transport, tools
+  memory/          durable memory store — SQLite, two tiers, FTS5, provenance
   orregistry/      OpenRouter model registry fetch + cache (context lengths)
   proxy/           chat endpoint HTTP client (openai + ilm-proxy kinds)
+  staging/         kvr client — in-sandbox ephemeral KV store (UDS wire protocol)
   tools/           the tool set (run_shell, read_file, edit_file, …)
   trace/           execution tracing
   tui/             terminal UI
