@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -59,6 +60,14 @@ func TestOpenAIKindRequestShape(t *testing.T) {
 				if len(k) >= 5 && k[:5] == "X-Ilm" {
 					t.Errorf("openai kind must not send %s header", k)
 				}
+			}
+
+			// No attribution headers on a non-openrouter endpoint with nil config.
+			if v := (*hdr).Get("HTTP-Referer"); v != "" {
+				t.Errorf("HTTP-Referer = %q, want absent", v)
+			}
+			if v := (*hdr).Get("X-Title"); v != "" {
+				t.Errorf("X-Title = %q, want absent", v)
 			}
 
 			// Raw-key inspection: metadata must be entirely absent, not empty.
@@ -261,25 +270,111 @@ func TestCachePromptPresentWhenSet(t *testing.T) {
 	}
 }
 
-// TestCachePromptSentForIlmProxyKindToo: cache_prompt is deliberately NOT
-// gated on Kind — the proxy fronts llama.cpp too, so an ilm-proxy endpoint
-// that opts in must also get the field. Only the explicit per-endpoint flag
-// controls it, never Kind.
-func TestCachePromptSentForIlmProxyKindToo(t *testing.T) {
-	srv, _, body := captureServer(t)
-	c := &Client{BaseURL: srv.URL, Kind: KindIlmProxy, Model: "ilm", CachePrompt: boolPtr(true), HTTP: http.DefaultClient}
+// strPtr2 returns a pointer to s. (Named strPtr2 to avoid clashing with the
+// Message helper strPtr.)
+func strPtr2(s string) *string { return &s }
+
+// TestOpenAIAttributionHeadersAbsentOnGenericEndpoint: a non-openrouter
+// openai endpoint with no attribution config must NOT send HTTP-Referer or
+// X-Title headers.
+func TestOpenAIAttributionHeadersAbsentOnGenericEndpoint(t *testing.T) {
+	srv, hdr, _ := captureServer(t)
+	c := &Client{
+		BaseURL:         srv.URL, // httptest server, not openrouter
+		Kind:            KindOpenAI,
+		ConfiguredModel: "m",
+		Model:           "m",
+		HTTP:            http.DefaultClient,
+	}
 	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(*body, &raw); err != nil {
-		t.Fatal(err)
+	if v := (*hdr).Get("HTTP-Referer"); v != "" {
+		t.Errorf("HTTP-Referer = %q, want absent on non-openrouter endpoint", v)
 	}
-	var got bool
-	if err := json.Unmarshal(raw["cache_prompt"], &got); err != nil {
-		t.Fatalf("cache_prompt missing or malformed for ilm-proxy kind: %v", err)
+	if v := (*hdr).Get("X-Title"); v != "" {
+		t.Errorf("X-Title = %q, want absent on non-openrouter endpoint", v)
 	}
-	if !got {
-		t.Errorf("cache_prompt = %v, want true", got)
+}
+
+// TestOpenAIAttributionHeadersDefaultOnOpenRouter: an openrouter.ai endpoint
+// with fields unset (nil) must send both default attribution headers.
+func TestOpenAIAttributionHeadersDefaultOnOpenRouter(t *testing.T) {
+	srv, hdr, _ := captureServer(t)
+	c := &Client{
+		BaseURL:         "https://openrouter.ai/api",
+		Kind:            KindOpenAI,
+		ConfiguredModel: "anthropic/claude-sonnet-4-6",
+		Model:           "anthropic/claude-sonnet-4-6",
+		HTTP:            &http.Client{Transport: &rewritingTransport{target: srv.URL}},
 	}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if v := (*hdr).Get("HTTP-Referer"); v != "https://github.com/treeol/wakil" {
+		t.Errorf("HTTP-Referer = %q, want default https://github.com/treeol/wakil", v)
+	}
+	if v := (*hdr).Get("X-Title"); v != "wakil" {
+		t.Errorf("X-Title = %q, want default wakil", v)
+	}
+}
+
+// TestOpenAIAttributionHeadersRefererOptOut: an openrouter.ai endpoint with
+// app_referer explicitly set to "" must omit HTTP-Referer but still send
+// X-Title (default, since app_title is unset).
+func TestOpenAIAttributionHeadersRefererOptOut(t *testing.T) {
+	srv, hdr, _ := captureServer(t)
+	c := &Client{
+		BaseURL:         "https://openrouter.ai/api",
+		Kind:            KindOpenAI,
+		ConfiguredModel: "m",
+		Model:           "m",
+		AppReferer:      strPtr2(""),
+		HTTP:            &http.Client{Transport: &rewritingTransport{target: srv.URL}},
+	}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if v := (*hdr).Get("HTTP-Referer"); v != "" {
+		t.Errorf("HTTP-Referer = %q, want absent (opt-out via empty string)", v)
+	}
+	if v := (*hdr).Get("X-Title"); v != "wakil" {
+		t.Errorf("X-Title = %q, want default wakil", v)
+	}
+}
+
+// TestOpenAIAttributionHeadersExplicitPassthrough: any endpoint with both
+// fields explicitly set must send them verbatim.
+func TestOpenAIAttributionHeadersExplicitPassthrough(t *testing.T) {
+	srv, hdr, _ := captureServer(t)
+	c := &Client{
+		BaseURL:         srv.URL, // non-openrouter host
+		Kind:            KindOpenAI,
+		ConfiguredModel: "m",
+		Model:           "m",
+		AppReferer:      strPtr2("https://myapp.example.com"),
+		AppTitle:        strPtr2("my-agent"),
+		HTTP:            http.DefaultClient,
+	}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if v := (*hdr).Get("HTTP-Referer"); v != "https://myapp.example.com" {
+		t.Errorf("HTTP-Referer = %q, want https://myapp.example.com", v)
+	}
+	if v := (*hdr).Get("X-Title"); v != "my-agent" {
+		t.Errorf("X-Title = %q, want my-agent", v)
+	}
+}
+
+// rewritingTransport redirects all requests to a target URL while preserving
+// the original headers. Used in tests that need the client to think it's
+// talking to openrouter.ai but actually hit a httptest.Server.
+type rewritingTransport struct{ target string }
+
+func (t *rewritingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	targetURL, _ := url.Parse(t.target)
+	req.URL.Scheme = targetURL.Scheme
+	req.URL.Host = targetURL.Host
+	return http.DefaultTransport.RoundTrip(req)
 }

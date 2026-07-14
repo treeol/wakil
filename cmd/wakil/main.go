@@ -77,6 +77,8 @@ func main() {
 		MaxTokens:       ep.MaxTokens,
 		CachePrompt:     ep.CachePrompt,
 		CacheControl:    ep.CacheControl,
+		AppReferer:      ep.AppReferer,
+		AppTitle:        ep.AppTitle,
 		ChatID:          agent.NewChatID(),
 		AuthHeader:      cfg.AuthHeader(),
 		HTTP:            newHTTPClient(),

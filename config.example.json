@@ -8,9 +8,17 @@
       "model": "qwen3.6-35b",
       "auth_header": ""
     },
+    "or": {
+      "kind": "openai",
+      "base_url": "https://openrouter.ai/api",
+      "model": "anthropic/claude-sonnet-4-6",
+      "auth_header": "Bearer sk-or-...",
+      "app_referer": "https://github.com/yourorg/yourrepo",
+      "app_title": "your-app"
+    },
     "ilm": {
       "kind": "ilm-proxy",
-      "base_url": "http://llama-host:11400",
+      "base_url": "http://proxy-host:11400",
       "model": "ilm"
     }
   },

@@ -316,3 +316,65 @@ func TestEndpointAuthHeaderWinsOverAPIKey(t *testing.T) {
 		t.Errorf("AuthHeader fallback = %q, want Bearer legacy-key", got)
 	}
 }
+
+// TestAppAttributionFieldsParse: app_referer and app_title parse from JSON,
+// and unset (omitted) vs empty string ("") is distinguishable.
+func TestAppAttributionFieldsParse(t *testing.T) {
+	clearIlmEnv(t)
+	p := writeCfg(t, `{
+		"endpoints": {
+			"with-attr": {
+				"kind": "openai",
+				"base_url": "https://openrouter.ai/api",
+				"model": "m",
+				"app_referer": "https://my.app",
+				"app_title": "my-agent"
+			},
+			"with-empty": {
+				"kind": "openai",
+				"base_url": "https://openrouter.ai/api",
+				"model": "m",
+				"app_referer": "",
+				"app_title": ""
+			},
+			"without-attr": {
+				"kind": "openai",
+				"base_url": "https://openrouter.ai/api",
+				"model": "m"
+			}
+		},
+		"default_endpoint": "with-attr"
+	}`)
+
+	cfg, err := LoadConfig([]string{"--config", p, "--exec", "direct"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	// with-attr: both fields explicitly set.
+	ep := cfg.Endpoints["with-attr"]
+	if ep.AppReferer == nil || *ep.AppReferer != "https://my.app" {
+		t.Errorf("with-attr AppReferer = %v, want %q", ep.AppReferer, "https://my.app")
+	}
+	if ep.AppTitle == nil || *ep.AppTitle != "my-agent" {
+		t.Errorf("with-attr AppTitle = %v, want %q", ep.AppTitle, "my-agent")
+	}
+
+	// with-empty: both fields explicitly empty string (opt-out).
+	ep2 := cfg.Endpoints["with-empty"]
+	if ep2.AppReferer == nil || *ep2.AppReferer != "" {
+		t.Errorf("with-empty AppReferer = %v, want non-nil empty string", ep2.AppReferer)
+	}
+	if ep2.AppTitle == nil || *ep2.AppTitle != "" {
+		t.Errorf("with-empty AppTitle = %v, want non-nil empty string", ep2.AppTitle)
+	}
+
+	// without-attr: both fields unset (nil).
+	ep3 := cfg.Endpoints["without-attr"]
+	if ep3.AppReferer != nil {
+		t.Errorf("without-attr AppReferer = %v, want nil", ep3.AppReferer)
+	}
+	if ep3.AppTitle != nil {
+		t.Errorf("without-attr AppTitle = %v, want nil", ep3.AppTitle)
+	}
+}

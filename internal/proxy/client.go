@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -300,6 +301,45 @@ const (
 	KindIlmProxy = "ilm-proxy"
 )
 
+const (
+	defaultAppReferer = "https://github.com/treeol/wakil"
+	defaultAppTitle   = "wakil"
+)
+
+// appAttributionHeaders resolves the OpenRouter attribution headers for this
+// client. nil fields default to known values when the endpoint host is
+// openrouter.ai (or a subdomain); non-nil fields are used verbatim, including
+// empty string to opt out of the header entirely. For non-openrouter hosts
+// with nil fields, no header is sent.
+func (c *Client) appAttributionHeaders() (referer, title string) {
+	isOR := isOpenRouterHost(c.BaseURL)
+
+	if c.AppReferer != nil {
+		referer = *c.AppReferer
+	} else if isOR {
+		referer = defaultAppReferer
+	}
+
+	if c.AppTitle != nil {
+		title = *c.AppTitle
+	} else if isOR {
+		title = defaultAppTitle
+	}
+
+	return referer, title
+}
+
+// isOpenRouterHost reports whether the base URL's host is openrouter.ai or a
+// subdomain of it.
+func isOpenRouterHost(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	h := u.Hostname()
+	return h == "openrouter.ai" || strings.HasSuffix(h, ".openrouter.ai")
+}
+
 // Client is a thin HTTP client of an OpenAI-compatible chat endpoint —
 // either the remote ilm proxy (Kind "ilm-proxy") or a plain server
 // (Kind "openai": llama.cpp server, OpenRouter, vLLM…).
@@ -342,6 +382,13 @@ type Client struct {
 	// endpoints that explicitly opt in. The stored transcript is never
 	// modified — breakpoints are computed per-request from the message slice.
 	CacheControl *bool
+
+	// AppReferer and AppTitle are OpenRouter app attribution headers sent
+	// as "HTTP-Referer" and "X-Title" on chat completion requests. nil =
+	// apply defaults for openrouter.ai hosts; non-nil = use verbatim
+	// (empty string opts the header out). Only sent for KindOpenAI.
+	AppReferer *string
+	AppTitle   *string
 
 	// Backend is the requested backend name sent as X-Ilm-Backend. Empty = don't
 	// send the header (proxy uses its own default). Set by App.Send before each
@@ -675,6 +722,19 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		}
 		if c.AuxModel != "" {
 			req.Header.Set("X-Ilm-Aux-Model", c.AuxModel)
+		}
+	}
+
+	// OpenRouter app attribution headers (openai-kind endpoints only).
+	// nil = apply defaults for openrouter.ai hosts; non-nil = verbatim
+	// (empty string opts the header out entirely).
+	if !proxyShape {
+		referer, title := c.appAttributionHeaders()
+		if referer != "" {
+			req.Header.Set("HTTP-Referer", referer)
+		}
+		if title != "" {
+			req.Header.Set("X-Title", title)
 		}
 	}
 

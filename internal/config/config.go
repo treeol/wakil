@@ -50,6 +50,14 @@ type EndpointConfig struct {
 	// is transient and per-request. Independent of CachePrompt (different
 	// mechanisms, different providers); both may be set on the same endpoint.
 	CacheControl *bool `json:"cache_control,omitempty"`
+
+	// AppReferer and AppTitle are OpenRouter app attribution headers
+	// (HTTP-Referer and X-Title). Pointer-typed: nil = apply defaults for
+	// openrouter.ai hosts, non-nil = use verbatim (including empty string
+	// to opt out of the header entirely). Only sent for kind=openai
+	// endpoints; ilm-proxy is untouched.
+	AppReferer *string `json:"app_referer,omitempty"`
+	AppTitle   *string `json:"app_title,omitempty"`
 }
 
 // Config is resolved with precedence: defaults < config file < env < flags.
