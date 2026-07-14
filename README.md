@@ -78,10 +78,17 @@ run bare-metal on the host instead.
 it runs, no exceptions carved out.
 
 **Ungated** — `read_file`, `read_file_full`, `list_dir`, `search_files`,
-`find_files`, `dispatch_subagent`, `read_process_log`, and the `lsp_*`
-code-intelligence tools. All structured, argument-constrained calls: they read
-file contents, listings, and symbol data, but none of them can execute
-arbitrary commands.
+`find_files`, `dispatch_subagent`, `dispatch_subagents`, `read_process_log`,
+and the `lsp_*` code-intelligence tools. All structured, argument-constrained
+calls: they read file contents, listings, and symbol data, but none of them
+can execute arbitrary commands.
+
+Subagents have two capability tiers: **discovery** (default, read-only) and
+**edit** (can `edit_file` / `write_file` / `delete_file` / `move_file`,
+gated on `/auto` consent, serialized by a writer lock — at most one edit
+child at a time). `dispatch_subagent` / `dispatch_subagents` are ungated
+because they spawn bounded workers with their own tool restrictions; the
+edit tier inherits session-level consent and never prompts interactively.
 
 `run_shell` is gated even for pure reads — `cat ~/.ssh/id_rsa` or `env` hits
 the same `y/n` wall as anything else. `a` at a prompt auto-approves read-only
@@ -89,29 +96,44 @@ tools for the rest of the session; gated tools keep prompting unless you flip
 full auto-approve with `/auto` (status bar shows `AUTO`). Destructive commands
 and counsel calls gate even in auto mode — no override.
 
-Default `docker` mode bind-mounts the **host Docker socket**
-(`--docker-sock=true`) — that's host-root, functionally. It buys the agent the
-ability to run `docker` / `docker compose` against your real daemon. Powerful,
-and exactly as dangerous as it sounds. Run untrusted tasks with the gate on,
-against an endpoint and model you actually trust, and reach for
-`--docker-sock=false` or `--exec direct` in a disposable VM when you don't
-need host-Docker control.
+Default `docker` mode does **not** bind-mount the host Docker socket —
+`--docker-sock` defaults to `false`. Pass `--docker-sock=true` to give the
+agent `docker` / `docker compose` access to your real daemon. That's
+host-root, functionally — powerful, and exactly as dangerous as it sounds.
+Run untrusted tasks with the gate on, against an endpoint and model you
+actually trust, and reach for a disposable VM when you don't need
+host-Docker control.
+
+**Memory as an injection channel.** `memory_put` is ungated — any tool
+result can cause the model to write an entry. Mid-tier entries (TTL 1h–7d)
+are directly active without review, and the memory digest is injected into
+the system prompt at session start. A poisoned tool result (malicious repo
+content, web page) could get the model to write an instruction-shaped
+entry that rides into future sessions' prompts. Durable entries go through
+propose→promote review, but mid-tier bypasses that gate. The taint signal
+marks entries from sessions that touched external content (`tainted`), but
+it is informational — nothing currently refuses tainted mid-tier writes.
+Treat this with the same caution as the Docker socket: run untrusted tasks
+with the gate on, and audit memory entries (`memory_list`) if you've been
+operating on untrusted content.
 
 ## Configuration
 
 Precedence: **defaults < config file < env < flags**. Config file is JSON at
 `~/.config/wakil/config.json`, overridable via `WAKIL_CONFIG` / `--config`.
+Env vars use `WAKIL_*` (preferred) or `ILM_*` (legacy aliases, same
+precedence).
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--base-url` | `ILM_BASE_URL` | — *(required unless `endpoints` is set)* | endpoint base URL; overrides the selected endpoint's `base_url` |
-| `--api-key` | `ILM_API_KEY` | — | sent as `Authorization: Bearer <key>` *(endpoint-level `auth_header` wins)* |
-| `--model` | `ILM_MODEL` | `ilm` | model name; overrides the selected endpoint's `model` |
-| `--exec` | `ILM_EXEC_MODE` | `docker` | `docker` \| `direct` |
-| `--image` | `ILM_CONTAINER_IMAGE` | `wakil-dev` | sandbox image *(build from `Dockerfile`)* |
-| `--workdir` | `ILM_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
-| `--host-workdir` | `ILM_HOST_WORKDIR` | cwd *(auto-detected)* | host path bind-mounted into the container |
-| `--docker-sock` | `ILM_DOCKER_SOCKET` | `true` | pass host Docker socket into the sandbox |
+| `--base-url` | `ILM_BASE_URL` / `WAKIL_BASE_URL` | — *(required unless `endpoints` is set)* | endpoint base URL; overrides the selected endpoint's `base_url` |
+| `--api-key` | `ILM_API_KEY` / `WAKIL_API_KEY` | — | sent as `Authorization: Bearer <key>` *(endpoint-level `auth_header` wins)* |
+| `--model` | `ILM_MODEL` / `WAKIL_MODEL` | `ilm` | model name; overrides the selected endpoint's `model` |
+| `--exec` | `ILM_EXEC_MODE` / `WAKIL_EXEC_MODE` | `docker` | `docker` \| `direct` |
+| `--image` | `ILM_CONTAINER_IMAGE` / `WAKIL_IMAGE` | `wakil-dev` | sandbox image *(build from `Dockerfile`)* |
+| `--workdir` | `ILM_WORKDIR` / `WAKIL_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
+| `--host-workdir` | `ILM_HOST_WORKDIR` / `WAKIL_HOST_WORKDIR` | cwd *(auto-detected)* | host path bind-mounted into the container |
+| `--docker-sock` | `ILM_DOCKER_SOCKET` / `WAKIL_DOCKER_SOCKET` | `false` | pass host Docker socket into the sandbox |
 | `--resume` | — | — | resume the most recent session |
 | `--resume-id` | — | — | resume a session by chat_id *(or unique prefix)* |
 | `--auto` | — | — | auto-approve all tool calls without prompting |
@@ -313,8 +335,8 @@ opens a picker to attach a file or folder for context.
 | `search_files` | no | Grep file contents for a pattern |
 | `find_files` | no | Find files by name glob recursively |
 | `open_url` | yes | Open a URL in the host browser *(always runs on the host, not the sandbox)* |
-| `dispatch_subagent` | no | Spawn a read-only discovery subagent for a bounded task *(contiguous same-turn calls run in parallel)* |
-| `dispatch_subagents` | no | Spawn several discovery subagents concurrently, one per task *(bounded by `max_parallel_subagents`, default 2)* |
+| `dispatch_subagent` | no | Spawn a subagent for a bounded task — discovery (read-only) or edit tier *(contiguous same-turn calls run in parallel)* |
+| `dispatch_subagents` | no | Spawn several subagents concurrently, one per task *(bounded by `max_parallel_subagents`, default 2)* |
 | `read_process_log` | no | Read the tail of a background process's log |
 | `staging_put` | no | Store a value in the ephemeral in-sandbox KV store *(key auto-prefixed with agent identity)* |
 | `staging_get` / `staging_get_many` | no | Retrieve values by key *(cross-prefix reads allowed — enables subagent handoffs)* |

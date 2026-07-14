@@ -473,7 +473,7 @@ func DefaultConfig() Config {
 		Model:                   "ilm",
 		ExecMode:                "docker",
 		Image:                   "wakil-dev",
-		DockerSocket:            true,
+		DockerSocket:            false,
 		KVRMaxEntries:           100000,
 		KVRSweepIntervalSecs:    30,
 		KVRSnapshotIntervalSecs: 300,
@@ -561,17 +561,30 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.GoogleAPIKey, "GOOGLE_API_KEY")
 	envStr(&cfg.GoogleCX, "GOOGLE_CX")
 	envStr(&cfg.MentionBase, "WAKIL_MENTION_BASE")
+	// ILM_* env vars are legacy aliases. WAKIL_* is the preferred namespace.
+	// ILM_* takes precedence (checked first) for backward compatibility.
 	envStr(&cfg.BaseURL, "ILM_BASE_URL")
+	envStr(&cfg.BaseURL, "WAKIL_BASE_URL")
 	envStr(&cfg.Host, "ILM_HOST")
+	envStr(&cfg.Host, "WAKIL_HOST")
 	envInt(&cfg.Port, "ILM_PORT")
+	envInt(&cfg.Port, "WAKIL_PORT")
 	envStr(&cfg.APIKey, "ILM_API_KEY")
+	envStr(&cfg.APIKey, "WAKIL_API_KEY")
 	envStr(&cfg.Model, "ILM_MODEL")
+	envStr(&cfg.Model, "WAKIL_MODEL")
 	envStr(&cfg.ExecMode, "ILM_EXEC_MODE")
+	envStr(&cfg.ExecMode, "WAKIL_EXEC_MODE")
 	envStr(&cfg.Image, "ILM_CONTAINER_IMAGE")
+	envStr(&cfg.Image, "WAKIL_IMAGE")
 	envStr(&cfg.WorkDir, "ILM_WORKDIR")
+	envStr(&cfg.WorkDir, "WAKIL_WORKDIR")
 	envStr(&cfg.HostWorkDir, "ILM_HOST_WORKDIR")
+	envStr(&cfg.HostWorkDir, "WAKIL_HOST_WORKDIR")
 	envBool(&cfg.DockerSocket, "ILM_DOCKER_SOCKET")
+	envBool(&cfg.DockerSocket, "WAKIL_DOCKER_SOCKET")
 	envStr(&cfg.SSHSigning, "ILM_SSH_SIGNING")
+	envStr(&cfg.SSHSigning, "WAKIL_SSH_SIGNING")
 	envBool(&cfg.KVRDisabled, "WAKIL_KVR_DISABLED")
 	envInt(&cfg.KVRMaxEntries, "WAKIL_KVR_MAX_ENTRIES")
 	envInt(&cfg.KVRSweepIntervalSecs, "WAKIL_KVR_SWEEP_INTERVAL_SECS")
@@ -593,7 +606,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "container image (docker mode)")
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "working directory inside the container")
 	fs.StringVar(&cfg.HostWorkDir, "host-workdir", cfg.HostWorkDir, "host path bind-mounted into container (files appear here locally)")
-	fs.BoolVar(&cfg.DockerSocket, "docker-sock", cfg.DockerSocket, "pass host docker socket into the sandbox so the agent can start host containers (default: on; use --docker-sock=false to disable)")
+	fs.BoolVar(&cfg.DockerSocket, "docker-sock", cfg.DockerSocket, "pass host docker socket into the sandbox so the agent can start host containers (default: off; use --docker-sock=true to enable)")
 	fs.StringVar(&cfg.SSHSigning, "ssh-signing", cfg.SSHSigning, "SSH commit signing in the sandbox: off|auto|<path to .pub> (auto reads the host git config; agent socket is passed through, the private key never enters the sandbox)")
 	fs.String("config", cfgPath, "path to config file")
 	fs.BoolVar(&cfg.Resume, "resume", false, "resume the most recent session in this workspace")

@@ -175,25 +175,25 @@ func TestResumeAndAllSessionsFlags(t *testing.T) {
 
 func TestDockerSocketDefault(t *testing.T) {
 	isolateConfig(t)
-	// Docker socket is on by default; image stays unchanged (no auto-switch).
+	// Docker socket is off by default; image stays unchanged (no auto-switch).
 	cfg, err := config.LoadConfig([]string{"--base-url", "http://x:1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.DockerSocket {
-		t.Fatal("DockerSocket should be true by default")
+	if cfg.DockerSocket {
+		t.Fatal("DockerSocket should be false by default")
 	}
 	if cfg.Image != "wakil-dev" {
 		t.Fatalf("Image = %q, want wakil-dev", cfg.Image)
 	}
 
-	// --docker-sock=false disables passthrough.
-	cfg, err = config.LoadConfig([]string{"--base-url", "http://x:1", "--docker-sock=false"})
+	// --docker-sock=true enables passthrough.
+	cfg, err = config.LoadConfig([]string{"--base-url", "http://x:1", "--docker-sock=true"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DockerSocket {
-		t.Fatal("--docker-sock=false should disable socket passthrough")
+	if !cfg.DockerSocket {
+		t.Fatal("--docker-sock=true should enable socket passthrough")
 	}
 
 	// Explicit image is always respected.
