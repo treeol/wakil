@@ -404,9 +404,18 @@ func (s *Store) PutActive(ctx context.Context, key, value, kind, tier, writer, s
 
 	// Find existing active entry for this key.
 	var oldID sql.NullInt64
+	var oldTier string
 	if err := tx.QueryRowContext(ctx,
-		"SELECT id FROM entries WHERE key = ? AND status = 'active'", key).Scan(&oldID); err != nil && err != sql.ErrNoRows {
+		"SELECT id, tier FROM entries WHERE key = ? AND status = 'active'", key).Scan(&oldID, &oldTier); err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("memory: find active: %w", err)
+	}
+	// Cross-tier protection: a mid-tier write cannot supersede a durable
+	// active entry. This prevents a subagent from displacing a promoted
+	// durable entry by writing a mid-tier entry to the same key — when
+	// the mid entry expires, the key would have no active entry and the
+	// durable entry stays superseded. Gate strictness scales with lifetime.
+	if oldID.Valid && oldTier == TierDurable && tier == TierMid {
+		return nil, fmt.Errorf("memory: cannot supersede durable active entry with mid-tier write (key=%s) — use memory_put without TTL to propose, then promote", key)
 	}
 	// The partial unique index (idx_one_active_per_key) prevents two active
 	// entries for the same key — if we INSERT before superseding, the index

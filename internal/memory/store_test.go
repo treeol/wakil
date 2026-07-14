@@ -635,15 +635,16 @@ func TestDanglingSupersedes(t *testing.T) {
 
 	c := ctx(t)
 
-	// Write a durable active entry A.
-	a, err := s.PutActive(c, "chain/x", "original", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, "")
+	// Write a mid-tier active entry A with a 2-hour TTL.
+	expiresA := now + 2*int64(time.Hour.Milliseconds())
+	a, err := s.PutActive(c, "chain/x", "original", "note", TierMid, "main", "s1", TaintUnknown, &expiresA, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Supersede A with a mid-tier entry B that has a 1-hour TTL.
-	expires := now + int64(time.Hour.Milliseconds())
-	b, err := s.PutActive(c, "chain/x", "replacement", "note", TierMid, "main", "s1", TaintUnknown, &expires, nil, "")
+	expiresB := now + int64(time.Hour.Milliseconds())
+	b, err := s.PutActive(c, "chain/x", "replacement", "note", TierMid, "main", "s1", TaintUnknown, &expiresB, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

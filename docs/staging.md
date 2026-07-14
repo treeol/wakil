@@ -17,7 +17,8 @@ inside the sandbox container.
   shutdown and periodically (default every 300s), so staging data
   persists across sandbox teardown/restart cycles within a session.
 - **NOT durable memory.** Staging data is ephemeral — it is not the
-  durable host-side store (a separate, later ticket). Staging data can
+  durable host-side store. See [docs/memory.md](memory.md) for the durable
+  memory system (Tier 2). Staging data can
   disappear (sandbox crash without snapshot, manual cleanup, TTL expiry).
   Never rely on staging for data that must survive.
 
@@ -115,15 +116,20 @@ The discovery tier cannot write files, run shell commands, or mutate
 workspace state — staging is the only write capability it has, and it
 writes to an isolated, untrusted store.
 
-## Relationship to the future durable store
+## Relationship to durable memory
 
-Staging is the **ephemeral layer**. The durable host-side store (next
-ticket) will be the **trusted layer** — but only after content is
-promoted through a review/acceptance flow. The promote flow will:
+Staging is the **ephemeral layer** (Tier 1). The durable host-side store
+(Tier 2) is the **trusted layer** — content is promoted through a review
+flow. See [docs/memory.md](memory.md) for the full durable memory system.
+
+The staging→durable bridge (`memory_promote_from_staging`) implements this
+flow:
 
 1. Read from staging (untrusted input).
-2. Validate/sanitize as needed.
-3. Write to the durable store with provenance metadata.
+2. Write to the durable store as a PROPOSED entry with provenance metadata
+   (writer = staging key's prefix, taint = unknown, promoted_by = main agent).
+3. The main agent reviews and promotes the proposed entry to active via
+   `memory_promote`.
 
-Until the durable store exists, staging is the only in-sandbox memory.
-Nothing in staging is trusted, promoted, or durable by default.
+The staging key is NOT deleted by the bridge — the caller can `staging_delete`
+if desired. Nothing in staging is trusted, promoted, or durable by default.

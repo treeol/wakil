@@ -69,8 +69,8 @@ func (a *App) handleMemoryPut(ctx context.Context, tc proxy.ToolCall) string {
 		if err != nil {
 			return fmt.Sprintf("ERROR: memory put: %v", err)
 		}
-		return fmt.Sprintf("stored (mid-tier, expires in %ds): %s\n%s",
-			*args.TTLSeconds, renderProvenance(entry), entry.Value)
+		return fmt.Sprintf("stored (mid-tier, expires in %ds): %s [id: %d]\n%s",
+			*args.TTLSeconds, args.Key, entry.ID, renderProvenance(entry))
 	}
 
 	// Durable-tier: always proposed, for everyone.
@@ -79,8 +79,8 @@ func (a *App) handleMemoryPut(ctx context.Context, tc proxy.ToolCall) string {
 	if err != nil {
 		return fmt.Sprintf("ERROR: memory put: %v", err)
 	}
-	return fmt.Sprintf("proposed (durable, awaiting promotion): %s\n%s",
-		renderProvenance(entry), entry.Value)
+	return fmt.Sprintf("proposed (durable, awaiting promotion): %s [id: %d]\n%s",
+		entry.Key, entry.ID, renderProvenance(entry))
 }
 
 // handleMemoryPromote handles memory_promote: main-agent-only.
@@ -154,7 +154,8 @@ func (a *App) handleMemoryGet(ctx context.Context, tc proxy.ToolCall) string {
 	if err != nil {
 		return fmt.Sprintf("ERROR: memory get: %v", err)
 	}
-	return fmt.Sprintf("%s\n%s\n%s", args.Key, renderProvenance(entry), entry.Value)
+	history := renderSupersedesHistory(ctx, s, entry)
+	return fmt.Sprintf("%s [id: %d]\n%s%s\n%s", args.Key, entry.ID, renderProvenance(entry), history, entry.Value)
 }
 
 // handleMemorySearch handles memory_search: available to all tiers.
@@ -196,7 +197,7 @@ func (a *App) handleMemorySearch(ctx context.Context, tc proxy.ToolCall) string 
 		if i > 0 {
 			b.WriteString("\n---\n")
 		}
-		fmt.Fprintf(&b, "%s\n%s\n%s", e.Key, renderProvenance(e), e.Value)
+		fmt.Fprintf(&b, "%s [id: %d]\n%s\n%s", e.Key, e.ID, renderProvenance(e), e.Value)
 	}
 	if len(entries) >= 20 {
 		// Only show truncation marker if we might have more results.
@@ -230,11 +231,7 @@ func (a *App) handleMemoryList(ctx context.Context, tc proxy.ToolCall) string {
 
 	var b strings.Builder
 	for _, e := range entries {
-		staleStr := ""
-		if e.StaleAnchors > 0 {
-			staleStr = fmt.Sprintf(" | anchors: %d stale of %d", e.StaleAnchors, e.TotalAnchors)
-		}
-		fmt.Fprintf(&b, "[%s] %s (%s, %s, by %s%s)\n", e.Status, e.Key, e.Tier, e.Kind, e.Writer, staleStr)
+		fmt.Fprintf(&b, "[id: %d] %s %s\n", e.ID, e.Key, renderProvenance(e))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -319,6 +316,25 @@ func (a *App) handleMemoryPromoteFromStaging(ctx context.Context, tc proxy.ToolC
 }
 
 // ─── Rendering ─────────────────────────────────────────────────────────────
+
+// renderSupersedesHistory follows the supersedes chain and renders a brief
+// history line. Handles dangling references gracefully ("history unavailable"
+// when a referenced entry has been hard-deleted past the auditability window).
+func renderSupersedesHistory(ctx context.Context, s *memory.Store, e *memory.Entry) string {
+	if e.Supersedes == nil {
+		return ""
+	}
+	prev, err := s.GetByID(ctx, *e.Supersedes)
+	if err == memory.ErrNotFound {
+		return "\n  supersedes: entry #" + fmt.Sprintf("%d", *e.Supersedes) + " (history unavailable — hard-deleted past audit window)"
+	}
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("\n  supersedes: #%d (%s, by %s, %s)",
+		prev.ID, prev.Status, prev.Writer,
+		time.UnixMilli(prev.CreatedAt).UTC().Format("2006-01-02"))
+}
 
 // renderProvenance renders the one-line provenance header for an entry.
 // Compact, always present, shows: tier, writer, created date, expiry,

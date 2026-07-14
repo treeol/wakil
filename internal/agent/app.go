@@ -1082,7 +1082,7 @@ func (a *App) buildPreamble(today string) string {
 		statsCtx, statsCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		stats, err := a.MemoryStore.Stats(statsCtx, 5)
 		statsCancel()
-		if err == nil && (stats.ActiveDurable > 0 || stats.PendingProposed > 0) {
+		if err == nil && (stats.ActiveDurable > 0 || stats.ActiveMid > 0 || stats.PendingProposed > 0) {
 			var memParts []string
 			memParts = append(memParts, fmt.Sprintf("Memory: %d active durable entries", stats.ActiveDurable))
 			if stats.ActiveMid > 0 {
