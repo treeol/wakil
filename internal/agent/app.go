@@ -1729,7 +1729,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if !strings.HasPrefix(result, "ERROR:") {
 			label := args.URL
 			label = Truncate(label, 79)
-			a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})
+			a.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: label})
 		}
 		return result
 
@@ -2004,7 +2004,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			}
 			label := u
 			label = Truncate(label, 79)
-			a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})
+			a.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: label})
 		}
 		return result
 
@@ -2019,7 +2019,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if !strings.HasPrefix(result, "ERROR:") {
 			label := args.URL
 			label = Truncate(label, 79)
-			a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})
+			a.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: label})
 		}
 		return result
 
@@ -2041,7 +2041,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 				break
 			}
 			label := Truncate(u, 79)
-			a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})
+			a.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: label})
 		}
 		return result
 
@@ -2056,7 +2056,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		result := wtools.GoogleFetchURL(args.URL, args.MaxChars)
 		if !strings.HasPrefix(result, "ERROR:") {
 			label := Truncate(args.URL, 79)
-			a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})
+			a.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: label})
 		}
 		return result
 
@@ -2501,7 +2501,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			a.recordExternalAction(serverName, toolName, status)
 			if !strings.HasPrefix(result, "ERROR:") && result != "[declined by user]" {
 				label := Truncate(name+" result", 79)
-				a.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: label})
+				a.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: label})
 			}
 			return result
 		}

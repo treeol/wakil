@@ -470,7 +470,7 @@ func runWFPanel(ctx context.Context, app *App, headline, question, briefing, pan
 	for _, r := range results {
 		if r.Err == nil {
 			app.RecordOracleCostFor(r.Model, r.Usage)
-			app.Client.AddGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
+			app.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}
 	}
 	formatted := counsel.FormatPanelResult(results)

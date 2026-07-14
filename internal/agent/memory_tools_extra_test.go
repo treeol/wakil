@@ -47,8 +47,8 @@ func TestTaintViaGrounding(t *testing.T) {
 		t.Fatalf("before grounding should be taint-unknown, got: %s", result)
 	}
 
-	// Simulate a web search tool call adding grounding.
-	app.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: "example.com"})
+	// Simulate a web search tool call adding grounding (eagerly sets sticky flag).
+	app.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: "example.com"})
 
 	// After grounding: tainted (sticky).
 	result = app.ExecuteToolCall(ctx, memToolCall("memory_put",
@@ -60,7 +60,7 @@ func TestTaintViaGrounding(t *testing.T) {
 	// Simulate oracle grounding.
 	app2, _ := memoryTestApp(t, false)
 	app2.Client = &proxy.Client{}
-	app2.Client.AddGrounding(proxy.GroundingEntry{Type: "oracle", Label: "gpt-5"})
+	app2.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: "gpt-5"})
 	result = app2.ExecuteToolCall(ctx, memToolCall("memory_put",
 		`{"key":"test/oracle","value":"oracle-derived","kind":"note"}`))
 	if !strings.Contains(result, "tainted") {
@@ -76,7 +76,7 @@ func TestTaintStickyNeverReset(t *testing.T) {
 	app.Client = &proxy.Client{}
 
 	// Touch external content.
-	app.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: "x"})
+	app.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: "x"})
 
 	// First put: tainted.
 	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",

@@ -208,7 +208,7 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 	for _, r := range results {
 		if r.Err == nil {
 			a.RecordOracleCostFor(r.Model, r.Usage)
-			a.Client.AddGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
+			a.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}
 	}
 	return counsel.FormatPanelResult(results)

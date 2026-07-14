@@ -392,18 +392,32 @@ func renderProvenance(e *memory.Entry) string {
 
 // ─── Taint signal ──────────────────────────────────────────────────────────
 
+// addExternalGrounding is the single entry point for recording external
+// content exposure. It calls Client.AddGrounding AND eagerly sets the sticky
+// taint flag (A1: session-cumulative). This must be used instead of
+// Client.AddGrounding directly for any web/oracle/MCP grounding, so the
+// flag latches at exposure time — not lazily at memory_put time.
+//
+// The flag is never reset for the App's lifetime. ResetGrounding clears the
+// Client's per-turn grounding slice but does NOT clear this sticky flag.
+// Subagent Apps start fresh (their own exposure only); the main App latches
+// for the session.
+func (a *App) addExternalGrounding(e proxy.GroundingEntry) {
+	if a.Client != nil {
+		a.Client.AddGrounding(e)
+	}
+	if e.Type == "web" || e.Type == "oracle" {
+		a.touchedExternal = true
+	}
+}
+
 // computeTainted returns the taint value for a memory write based on the
-// current App's session-cumulative external exposure (A1).
+// App's session-cumulative external exposure (A1).
 //
-// The signal is a sticky per-App boolean (touchedExternal), set whenever
-// the agent's grounding records web/oracle content, never reset for the
-// App's lifetime. Per-agent-lifetime is the natural granularity:
-//   - Subagents are short-lived, so their flag is tight.
-//   - The main agent's flag going sticky for a long session slightly
-//     overcounts, which is the correct direction to err for a trust flag.
-//
-// MCP tool calls are recorded as Type: "web" in the grounding (see
-// ExecuteToolCall's default case), so scanning for "web" captures MCP.
+// The flag is set eagerly by addExternalGrounding at exposure time, not
+// scanned here. This means that if the agent fetched web content in turn 1,
+// and ResetGrounding cleared the per-turn grounding slice at the start of
+// turn 2, the flag is still set when memory_put is called in turn 2.
 //
 // Returns:
 //   - memory.TaintTrue (1) if the agent has touched external content this session
@@ -411,32 +425,8 @@ func renderProvenance(e *memory.Entry) string {
 //     doesn't prove no untrusted content was touched — file-read injection
 //     is not captured by this signal)
 func (a *App) computeTainted() int {
-	// Check grounding for external content and set the sticky flag if found.
-	// This is called at memory_put time, so the flag reflects all external
-	// exposure up to this point in the session.
-	a.touchFromGrounding()
 	if a.touchedExternal {
 		return memory.TaintTrue
 	}
 	return memory.TaintUnknown
-}
-
-// recordExternalExposure marks the App as having touched untrusted external
-// content. Once set, the flag is never cleared for the App's lifetime (A1).
-func (a *App) recordExternalExposure() {
-	a.touchedExternal = true
-}
-
-// touchFromGrounding checks the client's grounding entries for external
-// content and sets the sticky taint flag.
-func (a *App) touchFromGrounding() {
-	if a.Client == nil {
-		return
-	}
-	for _, g := range a.Client.Grounding() {
-		if g.Type == "web" || g.Type == "oracle" {
-			a.recordExternalExposure()
-			return
-		}
-	}
 }

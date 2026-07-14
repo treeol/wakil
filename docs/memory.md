@@ -138,10 +138,21 @@ external content carries `tainted=true`.
 
 ### Mechanism
 
-A sticky per-App boolean (`touchedExternal`) is set whenever the agent's
-grounding records `web` or `oracle` entries (web search, URL fetch, MCP tool
-calls, mashūra oracle). Once set, it is never reset for the App's lifetime.
-Taint at write time = `touchedExternal ? true : unknown`.
+A sticky per-App boolean (`touchedExternal`) is set **eagerly at grounding-record
+time** — not lazily at `memory_put` time. All 8 `AddGrounding` call sites for
+web/oracle/MCP content in `ExecuteToolCall`, `handleMashura`, and the workflow
+oracle path route through `a.addExternalGrounding()`, which calls
+`Client.AddGrounding` AND sets `a.touchedExternal = true` in the same call.
+Once set, the flag is never reset for the App's lifetime — `ResetGrounding`
+(called at each turn start) clears the Client's per-turn grounding slice but
+does NOT clear the sticky flag. Taint at write time = `touchedExternal ? true
+: unknown`.
+
+This means: if the agent fetched web content in turn 1, and `ResetGrounding`
+cleared the grounding slice at the start of turn 2, the flag is still set
+when `memory_put` is called in turn 2 — the entry is correctly tainted.
+
+Verified by `TestTaintSurvivesGroundingResetAcrossTurns`.
 
 - **Per-agent-lifetime** is the natural granularity: subagents are short-lived
   so their flag is tight; the main agent's flag going sticky for a long session

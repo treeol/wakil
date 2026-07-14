@@ -171,8 +171,8 @@ func TestTaintDoesNotResetAcrossPuts(t *testing.T) {
 	app.Client = &proxy.Client{}
 	ctx := memCtx(t)
 
-	// Simulate web exposure.
-	app.Client.AddGrounding(proxy.GroundingEntry{Type: "web", Label: "example.com"})
+	// Simulate web exposure (eagerly sets sticky flag via addExternalGrounding).
+	app.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: "example.com"})
 
 	// Multiple puts — all should be tainted.
 	for i := 0; i < 3; i++ {
@@ -184,5 +184,70 @@ func TestTaintDoesNotResetAcrossPuts(t *testing.T) {
 		if strings.Contains(result, "taint-unknown") {
 			t.Fatalf("put %d should not be taint-unknown, got: %s", i, result)
 		}
+	}
+}
+
+// TestTaintSurvivesGroundingResetAcrossTurns is the genuine A1 cross-turn test.
+//
+// Scenario: agent fetches web content in turn 1 (AddGrounding sets the sticky
+// flag eagerly). Turn 2 starts: ResetGrounding clears the Client's per-turn
+// grounding slice. Agent calls memory_put in turn 2 — the sticky flag must
+// still be set, so the entry must be tainted=true, NOT taint-unknown.
+//
+// This test would FAIL under the old lazy-scan-at-put implementation because
+// touchFromGrounding() would see an empty grounding slice after the reset.
+func TestTaintSurvivesGroundingResetAcrossTurns(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	app.Client = &proxy.Client{}
+	ctx := memCtx(t)
+
+	// Turn 1: agent fetches a web page. addExternalGrounding eagerly sets
+	// a.touchedExternal = true AND adds the grounding entry.
+	app.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: "hostile-page.com"})
+
+	// Verify the flag was set eagerly (before any memory_put).
+	if !app.touchedExternal {
+		t.Fatal("touchedExternal should be set eagerly by addExternalGrounding")
+	}
+
+	// Turn 2 starts: ResetGrounding clears the per-turn grounding slice.
+	// This is what happens at agent_async.go:42 at the start of each turn.
+	app.Client.ResetGrounding()
+
+	// Verify grounding is now empty (the reset worked).
+	if len(app.Client.Grounding()) > 0 {
+		t.Fatalf("grounding should be empty after reset, got %d entries", len(app.Client.Grounding()))
+	}
+
+	// The sticky flag must survive the reset.
+	if !app.touchedExternal {
+		t.Fatal("touchedExternal should survive ResetGrounding (sticky, A1)")
+	}
+
+	// Turn 2: agent calls memory_put. The entry must be tainted=true,
+	// NOT taint-unknown — even though grounding is empty.
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/cross-turn","value":"conclusion from web research","kind":"decision"}`))
+	if !strings.Contains(result, "tainted") {
+		t.Fatalf("entry after cross-turn exposure should be tainted, got: %s", result)
+	}
+	if strings.Contains(result, "taint-unknown") {
+		t.Fatalf("entry should NOT be taint-unknown after cross-turn exposure, got: %s", result)
+	}
+}
+
+// TestTaintCleanAgentStaysUnknown verifies that an agent that never touches
+// external content writes taint-unknown (not false — absence of signal is
+// not proof of cleanliness).
+func TestTaintCleanAgentStaysUnknown(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	app.Client = &proxy.Client{}
+	ctx := memCtx(t)
+
+	// No external exposure at all.
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/clean","value":"local only","kind":"note"}`))
+	if !strings.Contains(result, "taint-unknown") {
+		t.Fatalf("clean agent should produce taint-unknown, got: %s", result)
 	}
 }
