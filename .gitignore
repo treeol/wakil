@@ -38,6 +38,6 @@ runs/
 *.trace
 *.jsonl.trace
 
-# kvrust build artifacts (submodule is tracked, these are not)
-kvrust/target/
-kvrust/.bin/
+# kvrust is no longer a submodule — it's cloned at build time in the Dockerfile.
+# If cloned locally for testing, ignore it so it doesn't pollute git status.
+/kvrust/

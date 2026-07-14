@@ -1,8 +1,5 @@
 # Prevent build artifacts from entering the Docker context.
-kvrust/target/
-kvrust/.bin/
-kvrust/.git/
-kvrust/kvr
+# (kvrust is now cloned in the Dockerfile, not part of the build context.)
 
 # Wakil binary (host-built, not needed in image)
 wakil

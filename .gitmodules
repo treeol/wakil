@@ -1,3 +1,0 @@
-[submodule "kvrust"]
-	path = kvrust
-	url = git@github.com:treeol/kvrust.git

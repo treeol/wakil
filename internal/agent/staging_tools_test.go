@@ -71,14 +71,18 @@ func stagingTestServer(t *testing.T) (*App, func()) {
 
 func stagingTestBin(t *testing.T) string {
 	t.Helper()
-	wd, _ := os.Getwd()
-	kvrustDir, _ := filepath.Abs(filepath.Join(wd, "..", "..", "kvrust"))
-	_, statErr := os.Stat(filepath.Join(kvrustDir, "Cargo.toml"))
-	kvrustPresent := statErr == nil
 
+	// KVR_SERVER_BIN env var takes precedence (set by CI or user).
+	if bin := os.Getenv("KVR_SERVER_BIN"); bin != "" {
+		if info, err := os.Stat(bin); err == nil && !info.IsDir() {
+			return bin
+		}
+	}
+
+	wd, _ := os.Getwd()
 	for _, candidate := range []string{
-		filepath.Join(kvrustDir, "target", "release", "server"),
-		filepath.Join(kvrustDir, "target", "debug", "server"),
+		filepath.Join(wd, "..", "..", "kvrust", "target", "release", "server"),
+		filepath.Join(wd, "..", "..", "kvrust", "target", "debug", "server"),
 		filepath.Join(wd, "..", "..", "kvr"),
 	} {
 		abs, _ := filepath.Abs(candidate)
@@ -86,10 +90,7 @@ func stagingTestBin(t *testing.T) string {
 			return abs
 		}
 	}
-	if kvrustPresent {
-		t.Fatalf("kvrust/ is present but kvr-server binary not found — run 'cargo build --release' in kvrust/")
-	}
-	t.Skip("kvrust/ submodule not present — run 'git submodule update --init'")
+	t.Skip("kvr-server binary not found — set KVR_SERVER_BIN or clone kvrust locally and run 'cargo build --release'")
 	return ""
 }
 

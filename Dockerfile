@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
-# Stage 1a: Build kvr-server from the vendored kvrust submodule.
+# Stage 1a: Build kvr-server from the kvrust repository (cloned at build time).
 FROM rust:1-bookworm AS kvr-builder
 WORKDIR /build
-COPY kvrust/ .
+RUN git clone --depth 1 https://github.com/treeol/kvrust.git .
 RUN cargo build --release --bin server
 
 # Borrow the Go toolchain from the official image (same Debian base = no glibc mismatch).

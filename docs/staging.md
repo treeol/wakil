@@ -2,7 +2,7 @@
 
 Wakil's staging store is a fast, ephemeral, in-sandbox key-value store
 that agents use for scratch space and subagent handoffs. It is backed by
-[kvr](../kvrust/), a Rust UDS KV server running as a background process
+[kvr](https://github.com/treeol/kvrust), a Rust UDS KV server running as a background process
 inside the sandbox container.
 
 ## What staging is
