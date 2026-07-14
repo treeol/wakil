@@ -82,6 +82,25 @@ func StagingSocketPath(ws string) string {
 	return filepath.Join(sp, "kvr.sock")
 }
 
+// MemoryDBPath returns the host-side path to the durable memory SQLite
+// database for the given workspace. Reuses the same workspace-key derivation
+// as StagingPath (16 hex chars of the SHA-256 of the canonical workspace path).
+// Path: <wakil-data-dir>/memory/<short-key>/memory.db
+//
+// Returns "" if the data directory cannot be determined or the workspace
+// key is empty. The directory is NOT created here — memory.Open creates it.
+func MemoryDBPath(ws string) string {
+	key := stagingKey(ws)
+	if key == "" {
+		return ""
+	}
+	dataDir := stagingDataRoot()
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "memory", key, "memory.db")
+}
+
 // EnsureStagingDir creates the staging directory for ws with 0o700
 // permissions, owned by the current user. Returns the path. If the
 // directory already exists with looser permissions, they are tightened

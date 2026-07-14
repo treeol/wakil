@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/lsp"
+	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/tools"
@@ -500,6 +502,23 @@ func RunHeadless(cfg config.Config, args []string) int {
 	// Initialize staging client if kvr is available.
 	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
 		app.StagingClient = staging.NewClient(kvrSocket)
+	}
+
+	// Initialize durable memory store (same pattern as main.go).
+	memDBPath := agent.MemoryDBPath(app.SessionWorkspace())
+	if memDBPath != "" {
+		memStore, err := memory.Open(memDBPath, app.SessionWorkspace())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
+		} else {
+			sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := memStore.Sweep(sweepCtx); err != nil {
+				fmt.Fprintln(os.Stderr, "memory: sweep warning:", err)
+			}
+			sweepCancel()
+			app.MemoryStore = memStore
+			defer memStore.Close()
+		}
 	}
 
 	// Open the P38 trace store when cfg.Trace is true (trace_sessions:true or

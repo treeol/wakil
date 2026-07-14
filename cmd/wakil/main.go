@@ -13,6 +13,7 @@ import (
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
+	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/trace"
@@ -241,6 +242,40 @@ func main() {
 		scanCancel()
 	}
 
+	// Initialize durable memory store. Fail-open: a warning is printed but
+	// the session continues without memory (all memory_* tools return
+	// "memory unavailable"). Same pattern as staging — the store is
+	// independent of kvr and lives on the host filesystem.
+	memDBPath := agent.MemoryDBPath(app.SessionWorkspace())
+	if memDBPath != "" {
+		memStore, err := memory.Open(memDBPath, app.SessionWorkspace())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
+		} else {
+			// Expiry sweep before anything reads the store.
+			sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := memStore.Sweep(sweepCtx); err != nil {
+				fmt.Fprintln(os.Stderr, "memory: sweep warning:", err)
+			}
+			sweepCancel()
+
+			// Compose pending-proposals note alongside the existing notes.
+			statsCtx, statsCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			stats, _ := memStore.Stats(statsCtx, 5)
+			statsCancel()
+			if stats != nil && stats.PendingProposed > 0 {
+				note := fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
+				if app.StartupNote != "" {
+					app.StartupNote += " | " + note
+				} else {
+					app.StartupNote = note
+				}
+			}
+
+			app.MemoryStore = memStore
+		}
+	}
+
 	// Open the P38 trace store when tracing is enabled (trace_sessions:true or
 	// --trace flag). Non-fatal: a failure prints a warning and continues without
 	// tracing so a misconfigured trace_dir never prevents a session from starting.
@@ -265,6 +300,9 @@ func main() {
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
 		app.StopAllBackgroundProcs()
+		if app.MemoryStore != nil {
+			app.MemoryStore.Close()
+		}
 		exe.Close()
 		if mcpMgr != nil {
 			mcpMgr.Close()
@@ -273,6 +311,9 @@ func main() {
 	}
 
 	app.StopAllBackgroundProcs()
+	if app.MemoryStore != nil {
+		app.MemoryStore.Close()
+	}
 	exe.Close()
 	if mcpMgr != nil {
 		mcpMgr.Close()

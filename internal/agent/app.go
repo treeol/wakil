@@ -1073,6 +1073,32 @@ func (a *App) buildPreamble(today string) string {
 			"+ symbol name — the client resolves the position. Prefer these over search_files for "+
 			"symbol-level navigation (definition lookup, finding callers).")
 	}
+	// Memory digest: compact session-start snapshot. NOT live — entries
+	// written mid-session won't appear until the next day rollover or
+	// session start. The agent uses memory_search for live data. This is
+	// a heads-up, not a source of truth. Invalidating the preamble on
+	// every memory mutation would destroy prompt-cache prefix stability.
+	if a.MemoryStore != nil {
+		statsCtx, statsCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stats, err := a.MemoryStore.Stats(statsCtx, 5)
+		statsCancel()
+		if err == nil && (stats.ActiveDurable > 0 || stats.PendingProposed > 0) {
+			var memParts []string
+			memParts = append(memParts, fmt.Sprintf("Memory: %d active durable entries", stats.ActiveDurable))
+			if stats.ActiveMid > 0 {
+				memParts = append(memParts, fmt.Sprintf("%d mid-tier", stats.ActiveMid))
+			}
+			if stats.PendingProposed > 0 {
+				memParts = append(memParts, fmt.Sprintf("%d pending proposals", stats.PendingProposed))
+			}
+			memLine := strings.Join(memParts, ", ") + "."
+			if len(stats.RecentKeys) > 0 {
+				memLine += " Recent: " + strings.Join(stats.RecentKeys, ", ") + "."
+			}
+			memLine += " Use memory_search or memory_get to retrieve entries."
+			parts = append(parts, memLine)
+		}
+	}
 	return strings.Join(parts, "\n")
 }
 
