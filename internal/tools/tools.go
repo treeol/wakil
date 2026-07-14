@@ -196,8 +196,9 @@ func DefaultTools(cwd string) []proxy.Tool {
 			}, "id"),
 		}},
 	}
-	// Staging tools are appended to every tier (ungated by design).
-	return append(tools, StagingTools()...)
+	// Staging and memory tools are appended to every tier.
+	// Staging is ungated by design; memory tier-gating is at dispatch time.
+	return append(append(tools, StagingTools()...), MemoryTools()...)
 }
 
 // GatedTool reports whether a tool requires human confirmation before running.
@@ -291,8 +292,8 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 			}),
 		}},
 	}
-	// Staging tools are appended to every tier (ungated by design).
-	return append(tools, StagingTools()...)
+	// Staging and memory tools are appended to every tier.
+	return append(append(tools, StagingTools()...), MemoryTools()...)
 }
 
 // CapabilityDiscovery is the default read-only subagent capability.
@@ -439,8 +440,8 @@ func EditTools(cwd string) []proxy.Tool {
 			}, "src", "dst"),
 		}},
 	}
-	// Staging tools are appended to every tier (ungated by design).
-	return append(tools, StagingTools()...)
+	// Staging and memory tools are appended to every tier.
+	return append(append(tools, StagingTools()...), MemoryTools()...)
 }
 
 // IsEditTool reports whether name is one of the edit-category tools that mutate

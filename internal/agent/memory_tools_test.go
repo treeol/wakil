@@ -1,0 +1,417 @@
+package agent
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/treeol/wakil/internal/memory"
+	"github.com/treeol/wakil/internal/proxy"
+)
+
+// memoryTestApp creates an App with a real memory store for testing.
+func memoryTestApp(t *testing.T, isSubagent bool) (*App, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	wsRoot := filepath.Join(dir, "workspace")
+	dbPath := filepath.Join(dir, "memory", "test.db")
+
+	store, err := memory.Open(dbPath, wsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prefix := "main"
+	if isSubagent {
+		prefix = "sub-abc12345"
+	}
+
+	app := &App{
+		MemoryStore: store,
+		AgentPrefix: prefix,
+		IsSubagent:  isSubagent,
+	}
+
+	cleanup := func() { store.Close() }
+	t.Cleanup(cleanup)
+	return app, cleanup
+}
+
+func memCtx(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 10e9)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func memToolCall(name, args string) proxy.ToolCall {
+	return proxy.ToolCall{
+		ID:       "test-tc",
+		Function: proxy.FunctionCall{Name: name, Arguments: args},
+	}
+}
+
+// ─── Tier-gating tests ─────────────────────────────────────────────────────
+
+func TestSubagentMemoryPromoteRejected(t *testing.T) {
+	app, _ := memoryTestApp(t, true)
+	ctx := memCtx(t)
+
+	// First, put a proposed entry as the subagent.
+	putResult := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/promote","value":"data","kind":"note"}`))
+	if !strings.Contains(putResult, "proposed") {
+		t.Fatalf("subagent put should produce proposed, got: %s", putResult)
+	}
+
+	// Try to promote — should be rejected.
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_promote",
+		`{"id":1}`))
+	if !strings.Contains(result, "main-agent only") {
+		t.Fatalf("subagent promote should be rejected, got: %s", result)
+	}
+}
+
+func TestSubagentMemoryRejectRejected(t *testing.T) {
+	app, _ := memoryTestApp(t, true)
+	ctx := memCtx(t)
+
+	app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/reject","value":"data","kind":"note"}`))
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_reject",
+		`{"id":1}`))
+	if !strings.Contains(result, "main-agent only") {
+		t.Fatalf("subagent reject should be rejected, got: %s", result)
+	}
+}
+
+func TestSubagentMemoryForgetRejected(t *testing.T) {
+	app, _ := memoryTestApp(t, true)
+	ctx := memCtx(t)
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_forget",
+		`{"key":"test/forget"}`))
+	if !strings.Contains(result, "main-agent only") {
+		t.Fatalf("subagent forget should be rejected, got: %s", result)
+	}
+}
+
+func TestSubagentMemoryPromoteFromStagingRejected(t *testing.T) {
+	app, _ := memoryTestApp(t, true)
+	ctx := memCtx(t)
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_promote_from_staging",
+		`{"staging_key":"sub-abc/data","key":"test/bridge","kind":"note"}`))
+	if !strings.Contains(result, "main-agent only") {
+		t.Fatalf("subagent promote_from_staging should be rejected, got: %s", result)
+	}
+}
+
+func TestSubagentMemoryPutWithoutTTLIsProposed(t *testing.T) {
+	app, _ := memoryTestApp(t, true)
+	ctx := memCtx(t)
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/sub-proposed","value":"subagent data","kind":"note"}`))
+	if !strings.Contains(result, "proposed") {
+		t.Fatalf("subagent put without TTL should be proposed, got: %s", result)
+	}
+	if !strings.Contains(result, "durable") {
+		t.Fatalf("subagent put without TTL should be durable tier, got: %s", result)
+	}
+}
+
+func TestSubagentMemoryPutWithTTLIsActive(t *testing.T) {
+	app, _ := memoryTestApp(t, true)
+	ctx := memCtx(t)
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/sub-ttl","value":"subagent data","kind":"note","ttl_seconds":3600}`))
+	if !strings.Contains(result, "mid-tier") {
+		t.Fatalf("subagent put with TTL should be mid-tier, got: %s", result)
+	}
+	if !strings.Contains(result, "expires") {
+		t.Fatalf("subagent put with TTL should show expiry, got: %s", result)
+	}
+}
+
+// ─── TTL bounds ────────────────────────────────────────────────────────────
+
+func TestTTLBoundsEnforced(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	ctx := memCtx(t)
+
+	// Below minimum (3600).
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/ttl-low","value":"data","kind":"note","ttl_seconds":1800}`))
+	if !strings.Contains(result, "ERROR") || !strings.Contains(result, "3600") {
+		t.Fatalf("TTL below minimum should error, got: %s", result)
+	}
+
+	// Above maximum (604800).
+	result = app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/ttl-high","value":"data","kind":"note","ttl_seconds":700000}`))
+	if !strings.Contains(result, "ERROR") || !strings.Contains(result, "604800") {
+		t.Fatalf("TTL above maximum should error, got: %s", result)
+	}
+
+	// Valid TTL.
+	result = app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/ttl-ok","value":"data","kind":"note","ttl_seconds":86400}`))
+	if strings.Contains(result, "ERROR") {
+		t.Fatalf("valid TTL should succeed, got: %s", result)
+	}
+}
+
+// ─── Main agent promote of tainted entry ───────────────────────────────────
+
+func TestMainAgentPromoteTaintedEntry(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	ctx := memCtx(t)
+
+	// Simulate that the agent touched external content.
+	app.touchedExternal = true
+
+	// Put a proposed entry — should be tainted.
+	putResult := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/tainted","value":"web-derived conclusion","kind":"decision"}`))
+	if !strings.Contains(putResult, "tainted") {
+		t.Fatalf("proposed entry from tainted agent should show taint, got: %s", putResult)
+	}
+
+	// Promote it — should succeed (main agent can promote tainted entries).
+	promoteResult := app.ExecuteToolCall(ctx, memToolCall("memory_promote",
+		`{"id":1}`))
+	if strings.Contains(promoteResult, "ERROR") {
+		t.Fatalf("main agent promote of tainted entry should succeed, got: %s", promoteResult)
+	}
+	// The promoted entry should still carry the taint flag.
+	if !strings.Contains(promoteResult, "tainted") {
+		t.Fatalf("promoted tainted entry should still show taint, got: %s", promoteResult)
+	}
+}
+
+// ─── Nil-store behavior ────────────────────────────────────────────────────
+
+func TestNilStoreBehavior(t *testing.T) {
+	app := &App{
+		MemoryStore: nil,
+		AgentPrefix: "main",
+	}
+	ctx := memCtx(t)
+
+	for _, tool := range []string{"memory_put", "memory_get", "memory_search", "memory_list"} {
+		result := app.ExecuteToolCall(ctx, memToolCall(tool, `{"key":"x","query":"x","value":"v","kind":"n"}`))
+		if !strings.Contains(result, "memory unavailable") {
+			t.Fatalf("%s with nil store should return 'memory unavailable', got: %s", tool, result)
+		}
+	}
+}
+
+// ─── Rendering golden tests ────────────────────────────────────────────────
+
+func TestRenderProvenance(t *testing.T) {
+	tests := []struct {
+		name     string
+		entry    *memory.Entry
+		contains []string
+	}{
+		{
+			name: "mid-tier active with expiry and taint",
+			entry: &memory.Entry{
+				Tier:      "mid",
+				Status:    "active",
+				Writer:    "sub-4f2a91c3",
+				CreatedAt: 1720915200000, // 2024-07-14
+				ExpiresAt: int64Ptr(1721088000000), // 2024-07-16
+				Tainted:   memory.TaintTrue,
+			},
+			contains: []string{"mid-tier", "sub-4f2a91c3", "expires", "tainted"},
+		},
+		{
+			name: "durable active promoted",
+			entry: &memory.Entry{
+				Tier:       "durable",
+				Status:     "active",
+				Writer:     "main",
+				CreatedAt:  1720915200000,
+				PromotedBy: "main",
+				Tainted:    memory.TaintUnknown,
+			},
+			contains: []string{"durable-tier", "main", "promoted", "taint-unknown"},
+		},
+		{
+			name: "durable proposed",
+			entry: &memory.Entry{
+				Tier:      "durable",
+				Status:    "proposed",
+				Writer:    "sub-abc12345",
+				CreatedAt: 1720915200000,
+				Tainted:   memory.TaintUnknown,
+			},
+			contains: []string{"durable-tier", "sub-abc12345", "proposed", "taint-unknown"},
+		},
+		{
+			name: "stale anchors",
+			entry: &memory.Entry{
+				Tier:        "durable",
+				Status:      "active",
+				Writer:      "main",
+				CreatedAt:   1720915200000,
+				Tainted:     memory.TaintUnknown,
+				StaleAnchors: 1,
+				TotalAnchors: 2,
+			},
+			contains: []string{"anchors: 1 stale of 2"},
+		},
+		{
+			name: "no taint flag for false",
+			entry: &memory.Entry{
+				Tier:      "durable",
+				Status:    "active",
+				Writer:    "main",
+				CreatedAt: 1720915200000,
+				Tainted:   memory.TaintFalse,
+			},
+			contains: []string{"durable-tier", "main"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := renderProvenance(tt.entry)
+			for _, s := range tt.contains {
+				if !strings.Contains(result, s) {
+					t.Errorf("expected %q in provenance %q", s, result)
+				}
+			}
+			// Must always be bracketed.
+			if !strings.HasPrefix(result, "[") || !strings.HasSuffix(result, "]") {
+				t.Errorf("provenance must be bracketed, got: %s", result)
+			}
+		})
+	}
+}
+
+// ─── End-to-end put → get ──────────────────────────────────────────────────
+
+func TestMemoryPutGetEndToEnd(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	ctx := memCtx(t)
+
+	// Put with TTL.
+	putResult := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"arch/flow","value":"auth uses JWT","kind":"note","ttl_seconds":86400}`))
+	if strings.Contains(putResult, "ERROR") {
+		t.Fatalf("put failed: %s", putResult)
+	}
+
+	// Get it back.
+	getResult := app.ExecuteToolCall(ctx, memToolCall("memory_get",
+		`{"key":"arch/flow"}`))
+	if !strings.Contains(getResult, "auth uses JWT") {
+		t.Fatalf("get should return value, got: %s", getResult)
+	}
+	if !strings.Contains(getResult, "mid-tier") {
+		t.Fatalf("get should show mid-tier in provenance, got: %s", getResult)
+	}
+	if !strings.Contains(getResult, "main") {
+		t.Fatalf("get should show writer 'main' in provenance, got: %s", getResult)
+	}
+}
+
+func TestMemoryPutProposedPromoteEndToEnd(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	ctx := memCtx(t)
+
+	// Put without TTL → proposed.
+	putResult := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"decision/db","value":"use sqlite","kind":"decision"}`))
+	if !strings.Contains(putResult, "proposed") {
+		t.Fatalf("put without TTL should be proposed, got: %s", putResult)
+	}
+
+	// Promote.
+	promoteResult := app.ExecuteToolCall(ctx, memToolCall("memory_promote",
+		`{"id":1}`))
+	if strings.Contains(promoteResult, "ERROR") {
+		t.Fatalf("promote failed: %s", promoteResult)
+	}
+	if !strings.Contains(promoteResult, "active") {
+		t.Fatalf("promote should show active, got: %s", promoteResult)
+	}
+
+	// Get should return the promoted entry.
+	getResult := app.ExecuteToolCall(ctx, memToolCall("memory_get",
+		`{"key":"decision/db"}`))
+	if !strings.Contains(getResult, "use sqlite") {
+		t.Fatalf("get should return promoted value, got: %s", getResult)
+	}
+	if !strings.Contains(getResult, "durable-tier") {
+		t.Fatalf("get should show durable-tier, got: %s", getResult)
+	}
+}
+
+// ─── Search ────────────────────────────────────────────────────────────────
+
+func TestMemorySearch(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	ctx := memCtx(t)
+
+	app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"arch/auth","value":"auth uses JWT tokens","kind":"note","ttl_seconds":86400}`))
+	app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"arch/session","value":"session stored in redis","kind":"note","ttl_seconds":86400}`))
+
+	// Search for "auth".
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_search",
+		`{"query":"auth"}`))
+	if !strings.Contains(result, "auth uses JWT") {
+		t.Fatalf("search should find auth entry, got: %s", result)
+	}
+
+	// Search for "redis".
+	result = app.ExecuteToolCall(ctx, memToolCall("memory_search",
+		`{"query":"redis"}`))
+	if !strings.Contains(result, "session stored in redis") {
+		t.Fatalf("search should find redis entry, got: %s", result)
+	}
+
+	// Search for nonexistent.
+	result = app.ExecuteToolCall(ctx, memToolCall("memory_search",
+		`{"query":"nonexistent"}`))
+	if !strings.Contains(result, "no matches") {
+		t.Fatalf("search for nonexistent should return no matches, got: %s", result)
+	}
+}
+
+// ─── Taint signal: session-cumulative (A1) ─────────────────────────────────
+
+func TestTaintSessionCumulative(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	ctx := memCtx(t)
+
+	// First put: no external exposure → taint-unknown.
+	result1 := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/clean","value":"clean note","kind":"note"}`))
+	if !strings.Contains(result1, "taint-unknown") {
+		t.Fatalf("first put should be taint-unknown, got: %s", result1)
+	}
+
+	// Simulate the agent touching external content (e.g. web search in a
+	// previous tool call this session).
+	app.touchedExternal = true
+
+	// Second put: now tainted (sticky — once set, never cleared).
+	result2 := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/tainted","value":"after web search","kind":"note"}`))
+	if !strings.Contains(result2, "tainted") {
+		t.Fatalf("second put after external exposure should be tainted, got: %s", result2)
+	}
+	if strings.Contains(result2, "taint-unknown") {
+		t.Fatalf("second put should NOT be taint-unknown, got: %s", result2)
+	}
+}
+
+func int64Ptr(v int64) *int64 { return &v }

@@ -14,6 +14,7 @@ import (
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
+	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/staging"
 	wtools "github.com/treeol/wakil/internal/tools"
@@ -89,6 +90,19 @@ type App struct {
 	// all staging_* tools return "staging unavailable". Set by the host
 	// startup code after the executor is ready.
 	StagingClient *staging.Client
+
+	// MemoryStore is the durable host-side memory store, or nil if
+	// unavailable (init failed, no workspace). When nil, all memory_*
+	// tools return "memory unavailable". Shared between parent and
+	// subagents (thread-safe via internal mutex). Set by the host startup
+	// code after the workspace is resolved.
+	MemoryStore *memory.Store
+
+	// touchedExternal is a sticky per-App flag set when the agent's
+	// grounding records web/oracle content. Used for the session-cumulative
+	// taint signal (A1): once the agent touches untrusted external content,
+	// all subsequent memory writes are tainted=true. Never reset.
+	touchedExternal bool
 
 	// exhausted is set by Send when the subagent hit MaxToolIterations
 	// (forceFinish) or enforceHardMax dropped content during the turn. It is
@@ -2416,6 +2430,24 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		return a.handleStagingList(ctx, tc)
 	case "staging_get_many":
 		return a.handleStagingGetMany(ctx, tc)
+
+	// Memory tools (tier-gating at dispatch time via a.IsSubagent).
+	case "memory_put":
+		return a.handleMemoryPut(ctx, tc)
+	case "memory_promote":
+		return a.handleMemoryPromote(ctx, tc)
+	case "memory_reject":
+		return a.handleMemoryReject(ctx, tc)
+	case "memory_get":
+		return a.handleMemoryGet(ctx, tc)
+	case "memory_search":
+		return a.handleMemorySearch(ctx, tc)
+	case "memory_list":
+		return a.handleMemoryList(ctx, tc)
+	case "memory_forget":
+		return a.handleMemoryForget(ctx, tc)
+	case "memory_promote_from_staging":
+		return a.handleMemoryPromoteFromStaging(ctx, tc)
 
 	default:
 		// MCP tool — namespaced as "{server}__{tool}".
