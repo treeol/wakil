@@ -85,10 +85,6 @@ func newMockServer(t *testing.T, handlers map[string]func(json.RawMessage) (any,
 	return s
 }
 
-func (s *mockServer) sendToClient(data []byte) {
-	// unused placeholder — injection is done via injectServerMessage
-}
-
 // injectServerMessage writes a raw framed message to the client's stdout pipe.
 // Used to simulate server→client notifications/requests.
 func (s *mockServer) injectServerMessage(data []byte) error {

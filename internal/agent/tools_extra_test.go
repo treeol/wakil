@@ -215,10 +215,6 @@ func TestContextPreambleWithTools(t *testing.T) {
 
 func TestDeleteFileConfinement(t *testing.T) {
 	exec := newFakeExecutor()
-	// Override ConfinePath to return error on traversal attempt.
-	type confiner interface {
-		setConfineFn(func(string) (string, error))
-	}
 	app := &App{
 		Exec:    exec,
 		Out:     io.Discard,
@@ -261,8 +257,6 @@ func TestBgCapEnforced(t *testing.T) {
 	}
 	// IsProcessAlive returns false on fakeExecutor, so "live" count stays 0.
 	// Override to simulate live processes.
-	type aliver interface{ setAlive(bool) }
-
 	// Run 5 successful starts to fill the cap.
 	for i := 0; i < 5; i++ {
 		app.bgCounter++
@@ -272,19 +266,6 @@ func TestBgCapEnforced(t *testing.T) {
 		id := "bg" + strings.Repeat("x", i) // unique IDs
 		app.bgProcs[id] = &bgEntry{id: id, pid: 100 + i, generation: 1}
 	}
-
-	// Now patch IsProcessAlive to report them alive by using a custom executor.
-	type aliveExec struct{ *fakeExecutor }
-	aliveExec2 := &struct {
-		*fakeExecutor
-	}{exec}
-	_ = aliveExec2
-
-	// We can't easily override IsProcessAlive on fakeExecutor without a new type,
-	// so instead directly verify the cap check logic: inject 5 entries with
-	// generation==exec.Generation() and count them live via a custom executor.
-	type aliveExecutor struct{ *fakeExecutor }
-	type aliveExecutorT = struct{ *fakeExecutor }
 
 	// Simplest approach: verify the 6th call returns the cap error when there are
 	// already 5 live entries. Since fakeExecutor.IsProcessAlive returns false,

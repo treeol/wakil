@@ -149,13 +149,3 @@ func sseServer(t *testing.T, framesPerCall ...[]string) *httptest.Server {
 func contentChunk(s string) string {
 	return fmt.Sprintf(`{"choices":[{"delta":{"content":%q},"finish_reason":null}]}`, s)
 }
-
-func toolCallFrames(id, name string, argParts ...string) []string {
-	frames := []string{
-		fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":%q,"type":"function","function":{"name":%q,"arguments":""}}]},"finish_reason":null}]}`, id, name),
-	}
-	for _, p := range argParts {
-		frames = append(frames, fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":%q}}]},"finish_reason":null}]}`, p))
-	}
-	return append(frames, `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)
-}

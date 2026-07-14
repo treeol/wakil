@@ -274,9 +274,6 @@ func (s *Server) initialize(ctx context.Context) error {
 		},
 		InitializationOptions: s.initOpts,
 	}
-	if s.env != nil {
-		// env is set on the process, not in initialize params
-	}
 
 	result, err := s.conn.call(ctx, "initialize", params)
 	if err != nil {

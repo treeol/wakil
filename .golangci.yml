@@ -1,0 +1,25 @@
+version: "2"
+
+# Minimal lint config for a repo going public. Focuses on high-signal checks:
+# real bugs (staticcheck SA*), dead code (unused), and ineffectual assignments.
+# Style checks (ST*, QF*) and errcheck are disabled — they produce mostly
+# noise on a codebase that was never linted before. Ramp up incrementally.
+linters:
+  default: none
+  enable:
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -QF*
+        - -ST*
+        - -S1038
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck

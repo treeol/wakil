@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-const historyMaxLines = 5000
-
 // historyPath returns the path to the shared input history file:
 // $WAKIL_HISTORY_FILE, else $XDG_DATA_HOME/wakil/input_history, else
 // ~/.local/share/wakil/input_history.

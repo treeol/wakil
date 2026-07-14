@@ -45,11 +45,6 @@ func http500(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "backend temporarily unavailable", http.StatusInternalServerError)
 }
 
-// http400 writes a 400 Bad Request.
-func http400(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "invalid request: context too large", http.StatusBadRequest)
-}
-
 // noDelay is used as app.retryDelay in all retry tests to skip the backoff.
 func noDelay(_ int) time.Duration { return 0 }
 

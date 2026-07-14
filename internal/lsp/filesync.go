@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/treeol/wakil/internal/exec"
 )
@@ -31,7 +30,6 @@ import (
 type fileSyncState struct {
 	version    int32
 	content    string // last-synced content (for didChange full sync)
-	mtime      time.Time
 	size       int64
 	languageID string
 }
@@ -147,8 +145,7 @@ func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri stri
 		return false, nil
 	}
 
-	doc, ok := f.docs[uri]
-	if !ok {
+	if _, ok := f.docs[uri]; !ok {
 		// File was deleted from our tracking — clear dirty and skip.
 		delete(f.dirty, uri)
 		f.mu.Unlock()
@@ -179,7 +176,7 @@ func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	doc, ok = f.docs[uri]
+	doc, ok := f.docs[uri]
 	if !ok {
 		delete(f.dirty, uri)
 		return false, nil

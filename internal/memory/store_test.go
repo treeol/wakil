@@ -681,11 +681,11 @@ func TestDanglingSupersedes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading A with dangling superseded_by should succeed, got %v", err)
 	}
-	if aReload.SupersededBy != nil && *aReload.SupersededBy == b.ID {
-		// The reference is still set in the DB (we don't null it on hard-delete),
-		// but GetByID for that ID returns ErrNotFound. The tool layer's rendering
-		// function must handle this gracefully ("history unavailable") — tested
-		// at the tool layer (M2).
+	if aReload.SupersededBy == nil {
+		t.Fatal("expected superseded_by to be set, got nil")
+	}
+	if *aReload.SupersededBy != b.ID {
+		t.Errorf("expected superseded_by=%d, got %d", b.ID, *aReload.SupersededBy)
 	}
 }
 

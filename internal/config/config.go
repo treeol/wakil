@@ -782,9 +782,7 @@ func envBool(dst *bool, key string) {
 
 func envInt(dst *int, key string) {
 	if v := os.Getenv(key); v != "" {
-		if n, err := fmt.Sscanf(v, "%d", dst); n != 1 || err != nil {
-			// ignore malformed value
-		}
+		_, _ = fmt.Sscanf(v, "%d", dst)
 	}
 }
 

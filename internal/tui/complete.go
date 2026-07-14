@@ -453,7 +453,7 @@ func (m tuiModel) renderCompletion() string {
 			if cs[i].isDir {
 				name += "/"
 			}
-			row := "  " + name
+			var row string
 			switch {
 			case i == m.comp.sel:
 				row = lipgloss.NewStyle().Reverse(true).Render(" " + name + " ")
