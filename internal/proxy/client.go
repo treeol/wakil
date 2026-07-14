@@ -466,6 +466,13 @@ func (c *Client) SetGrounding(attempted bool, maxScore float64, entries []Ground
 
 // AddGrounding appends a client-sourced grounding entry (web, oracle). Identical
 // entries (same type+label) are silently dropped. Safe to call concurrently.
+//
+// IMPORTANT: production code in internal/agent/ MUST go through
+// App.addExternalGrounding() instead of calling this directly. The wrapper
+// eagerly sets the sticky taint flag (a.touchedExternal) at exposure time.
+// Calling AddGrounding directly bypasses the latch and causes taint to
+// undercount — a trust-model violation (A1). A lint-style test
+// (TestNoDirectAddGroundingInProductionCode) enforces this convention.
 func (c *Client) AddGrounding(e GroundingEntry) {
 	c.groundingMu.Lock()
 	defer c.groundingMu.Unlock()

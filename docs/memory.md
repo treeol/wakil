@@ -162,9 +162,20 @@ Verified by `TestTaintSurvivesGroundingResetAcrossTurns`.
 - **`false`** is reserved for future use — the absence of web/oracle grounding
   doesn't prove no untrusted content was touched (file-read injection is not
   captured), so the conservative answer is `unknown`, not `false`.
+- **Subagent→main transitive latch**: when a dispatched subagent returns with
+  `touchedExternal=true`, the parent's flag latches at the dispatch return
+  path (subagent.go, end of `dispatchSubagent`). This means: if a subagent
+  touched the web and the main agent consumes its summary, a subsequent
+  main-agent `memory_put` derived from that summary is correctly tainted.
+  Errs toward overcounting, which is the correct direction for a trust flag.
 - **Staging bridge**: staging-promoted entries are always `taint=unknown`.
   Staging values are bare strings with no taint metadata; the original writer's
   grounding state is lost in kvr.
+- **Convention enforcement**: a lint-style test
+  (`TestNoDirectAddGroundingInProductionCode`) greps the agent package for
+  direct `Client.AddGrounding` calls outside the wrapper and fails if it finds
+  any. This makes the `addExternalGrounding` convention self-enforcing — the
+  next feature that calls `AddGrounding` directly will break the test.
 
 ## Anchor staleness (A2: flag-not-filter)
 

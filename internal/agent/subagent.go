@@ -947,5 +947,15 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// any model self-report. The mechanical record is ground truth — the model
 	// may forget calls after compaction or misreport them.
 	summary.ExternalCalls = extRecorder.snapshot()
+	// Transitive taint latch (A1): if the child touched external content during
+	// its run, the parent has now transitively consumed that content via the
+	// summary. Latch the parent's flag so a subsequent main-agent memory_put
+	// derived from the subagent's findings is correctly tainted, not
+	// taint-unknown. The child's flag is its own (fresh per dispatch); the
+	// parent latches here, on the caller's side of the goroutine boundary
+	// where parent-state mutation is safe.
+	if sub.touchedExternal {
+		a.touchedExternal = true
+	}
 	return summary, grounding, ctxSize, usedBackend, costRows, fileRecorder.snapshot()
 }
