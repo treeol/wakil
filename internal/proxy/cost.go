@@ -47,14 +47,14 @@ const (
 
 // costEntry accumulates one source's calls, tokens, and modeled spend.
 type costEntry struct {
-	Calls      int
-	InputTok   int64
-	OutputTok  int64
-	CachedTok  int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
+	Calls         int
+	InputTok      int64
+	OutputTok     int64
+	CachedTok     int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
 	CacheWriteTok int64 // tokens written to the cache this turn; 0 when never reported
-	CostUSD    float64
-	Priced     bool   // false → render "—" rather than a fake "$0.00"
-	Confidence string // ConfExact | ConfModeled | ConfApprox (weakest seen wins)
+	CostUSD       float64
+	Priced        bool   // false → render "—" rather than a fake "$0.00"
+	Confidence    string // ConfExact | ConfModeled | ConfApprox (weakest seen wins)
 }
 
 // CostTracker accumulates per-source cost estimates for one session. It lives on
@@ -109,15 +109,15 @@ func (t *CostTracker) Record(source string, inTok, outTok int64, costUSD float64
 
 // CostRow is one source's snapshot for rendering.
 type CostRow struct {
-	Source     string
-	Calls      int
-	InputTok   int64
-	OutputTok  int64
-	CachedTok  int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
+	Source        string
+	Calls         int
+	InputTok      int64
+	OutputTok     int64
+	CachedTok     int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
 	CacheWriteTok int64 // tokens written to the cache; 0 when never reported
-	CostUSD    float64
-	Priced     bool
-	Confidence string
+	CostUSD       float64
+	Priced        bool
+	Confidence    string
 }
 
 // Snapshot returns the session total (sum of priced sources only — an unpriced
@@ -131,15 +131,15 @@ func (t *CostTracker) Snapshot() (total float64, rows []CostRow) {
 	defer t.mu.Unlock()
 	for name, e := range t.src {
 		rows = append(rows, CostRow{
-			Source:     name,
-			Calls:      e.Calls,
-			InputTok:   e.InputTok,
-			OutputTok:  e.OutputTok,
-			CachedTok:  e.CachedTok,
+			Source:        name,
+			Calls:         e.Calls,
+			InputTok:      e.InputTok,
+			OutputTok:     e.OutputTok,
+			CachedTok:     e.CachedTok,
 			CacheWriteTok: e.CacheWriteTok,
-			CostUSD:    e.CostUSD,
-			Priced:     e.Priced,
-			Confidence: e.Confidence,
+			CostUSD:       e.CostUSD,
+			Priced:        e.Priced,
+			Confidence:    e.Confidence,
 		})
 		if e.Priced {
 			total += e.CostUSD
@@ -169,15 +169,15 @@ func (t *CostTracker) SnapshotSplit() (billedTotal, estimatedTotal float64, anyB
 	defer t.mu.Unlock()
 	for name, e := range t.src {
 		rows = append(rows, CostRow{
-			Source:     name,
-			Calls:      e.Calls,
-			InputTok:   e.InputTok,
-			OutputTok:  e.OutputTok,
-			CachedTok:  e.CachedTok,
+			Source:        name,
+			Calls:         e.Calls,
+			InputTok:      e.InputTok,
+			OutputTok:     e.OutputTok,
+			CachedTok:     e.CachedTok,
 			CacheWriteTok: e.CacheWriteTok,
-			CostUSD:    e.CostUSD,
-			Priced:     e.Priced,
-			Confidence: e.Confidence,
+			CostUSD:       e.CostUSD,
+			Priced:        e.Priced,
+			Confidence:    e.Confidence,
 		})
 		if e.Confidence == ConfExact {
 			anyBilled = true

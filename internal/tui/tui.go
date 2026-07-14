@@ -157,18 +157,18 @@ type subTab struct {
 	grounding    []proxy.GroundingEntry
 	ctxSize      int
 	hardMaxBytes int
-	filesChanged []string // mechanical record of canonical paths touched (edit-tier only)
-	capability   string   // "discovery", "edit", or "tools" — drives the sidebar tool list (from Start)
-	model        string   // child's resolved model (from Start)
-	toolNames    []string // tool names for the sidebar (tools-tier only; nil for discovery/edit — hardcoded)
-	active       bool     // worker acquired a parallelism slot (queued → running)
-	done         bool     // authoritative done (SubagentDoneMsg received)
-	finished     bool     // display-only early done (SubagentFinishedMsg received)
+	filesChanged []string  // mechanical record of canonical paths touched (edit-tier only)
+	capability   string    // "discovery", "edit", or "tools" — drives the sidebar tool list (from Start)
+	model        string    // child's resolved model (from Start)
+	toolNames    []string  // tool names for the sidebar (tools-tier only; nil for discovery/edit — hardcoded)
+	active       bool      // worker acquired a parallelism slot (queued → running)
+	done         bool      // authoritative done (SubagentDoneMsg received)
+	finished     bool      // display-only early done (SubagentFinishedMsg received)
 	finishedAt   time.Time // when SubagentFinishedMsg arrived (for timestamped display)
-	finStatus    string   // status from SubagentFinishedMsg: "ok"/"incomplete"/"failed"/"declined"
-	finCostUSD   float64  // child's own total from SubagentFinishedMsg (display-only)
-	finFilesN    int      // count of files changed from SubagentFinishedMsg
-	finPreview   string   // summary preview from SubagentFinishedMsg
+	finStatus    string    // status from SubagentFinishedMsg: "ok"/"incomplete"/"failed"/"declined"
+	finCostUSD   float64   // child's own total from SubagentFinishedMsg (display-only)
+	finFilesN    int       // count of files changed from SubagentFinishedMsg
+	finPreview   string    // summary preview from SubagentFinishedMsg
 
 	// Render cache for renderSubTabContent. Invalidated when buf grows or vpW changes.
 	cachedLines []string

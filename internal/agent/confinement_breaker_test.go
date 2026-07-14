@@ -148,7 +148,7 @@ func TestConfinementBreakerToleratesOneRetry(t *testing.T) {
 	summaryText := "Found it in the workspace file."
 	srv := sseServer(t,
 		toolCallFrames("c1", "read_file", `{"path":"/mnt/lims3/foo.go"}`), // fails
-		toolCallFrames("c2", "read_file", `{"path":"good.go"}`),          // succeeds — different path
+		toolCallFrames("c2", "read_file", `{"path":"good.go"}`),           // succeeds — different path
 		[]string{contentChunk(summaryText)},
 	)
 	defer srv.Close()

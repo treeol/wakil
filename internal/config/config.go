@@ -75,30 +75,30 @@ type Config struct {
 	Endpoint     EndpointConfig `json:"-"`
 	EndpointName string         `json:"-"`
 
-	APIKey         string `json:"api_key"` // sent as "Authorization: Bearer <key>"
-	Model          string `json:"model"`
-	ExecMode       string `json:"exec_mode"`               // "docker" (default) | "direct"
-	Image          string `json:"image"`                   // container image for docker mode
-	WorkDir        string `json:"work_dir"`                // working dir inside the container
-	HostWorkDir    string `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
-	DockerSocket   bool   `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
-	SSHSigning     string `json:"ssh_signing,omitempty"`   // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
+	APIKey       string `json:"api_key"` // sent as "Authorization: Bearer <key>"
+	Model        string `json:"model"`
+	ExecMode     string `json:"exec_mode"`               // "docker" (default) | "direct"
+	Image        string `json:"image"`                   // container image for docker mode
+	WorkDir      string `json:"work_dir"`                // working dir inside the container
+	HostWorkDir  string `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
+	DockerSocket bool   `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
+	SSHSigning   string `json:"ssh_signing,omitempty"`   // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
 
 	// kvr staging store (sandbox-local ephemeral KV).
 	// KVRDisabled opts out of the staging store (default: false = enabled).
 	// When disabled, no kvr-server is started and staging tools report
 	// "staging unavailable". Also auto-disabled in direct mode.
-	KVRDisabled            bool `json:"kvr_disabled,omitempty"`
-	KVRMaxEntries          int  `json:"kvr_max_entries,omitempty"`         // default 100000
-	KVRSweepIntervalSecs   int  `json:"kvr_sweep_interval_secs,omitempty"` // default 30
-	KVRSnapshotIntervalSecs int `json:"kvr_snapshot_interval_secs,omitempty"` // default 300
+	KVRDisabled             bool `json:"kvr_disabled,omitempty"`
+	KVRMaxEntries           int  `json:"kvr_max_entries,omitempty"`            // default 100000
+	KVRSweepIntervalSecs    int  `json:"kvr_sweep_interval_secs,omitempty"`    // default 30
+	KVRSnapshotIntervalSecs int  `json:"kvr_snapshot_interval_secs,omitempty"` // default 300
 
-	KeepBytes      int    `json:"keep_bytes"`              // max bytes of verbatim turns kept after compaction; default 120000
-	SummaryBytes   int    `json:"summary_bytes"`           // cap on the running summary; re-summarize if exceeded; default 20000; 0=unlimited
-	HardMaxBytes   int    `json:"hard_max_bytes"`          // unconditional ctx ceiling; compact+drop oldest until under; 0=disabled; default 160000
-	TurnToolBudget int    `json:"turn_tool_budget"`        // per-turn cumulative tool output budget; reduced slice once exceeded; default 40000
-	MaxChars       int    `json:"max_chars"`               // transcript-byte display ceiling for the hist line / compaction fallback
-	CompactAt      int    `json:"compact_at"`              // trigger compaction at this size; 0 → use max_chars
+	KeepBytes      int `json:"keep_bytes"`       // max bytes of verbatim turns kept after compaction; default 120000
+	SummaryBytes   int `json:"summary_bytes"`    // cap on the running summary; re-summarize if exceeded; default 20000; 0=unlimited
+	HardMaxBytes   int `json:"hard_max_bytes"`   // unconditional ctx ceiling; compact+drop oldest until under; 0=disabled; default 160000
+	TurnToolBudget int `json:"turn_tool_budget"` // per-turn cumulative tool output budget; reduced slice once exceeded; default 40000
+	MaxChars       int `json:"max_chars"`        // transcript-byte display ceiling for the hist line / compaction fallback
+	CompactAt      int `json:"compact_at"`       // trigger compaction at this size; 0 → use max_chars
 
 	// Relative context guards — computed as fractions of the live backend's
 	// usable context window (ContextLimit.Usable() × 4 chars/token). When n_ctx
@@ -470,23 +470,23 @@ type LSPServer struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Model:               "ilm",
-		ExecMode:            "docker",
-		Image:               "wakil-dev",
-		DockerSocket:        true,
-		KVRMaxEntries:       100000,
+		Model:                   "ilm",
+		ExecMode:                "docker",
+		Image:                   "wakil-dev",
+		DockerSocket:            true,
+		KVRMaxEntries:           100000,
 		KVRSweepIntervalSecs:    30,
 		KVRSnapshotIntervalSecs: 300,
-		KeepBytes:           120000, // keep ~120k of recent verbatim turns after compaction
-		SummaryBytes:        20000,  // cap the running summary; re-condense if it grows past this
-		HardMaxBytes:        160000, // unconditional ceiling; compact then drop until under
-		TurnToolBudget:      40000,  // per-turn tool output budget; reduced slice once exceeded
-		MaxChars:            512000, // transcript-byte ceiling (hist line + compaction fallback)
-		CompactAt:           145000, // fire before reaching hard max (post-compact target ~140k)
-		CompactAtFrac:       0.75,   // compact at 75% of effective context
-		KeepBytesFrac:       0.60,   // keep 60% of effective context verbatim after compaction
-		HardMaxFrac:         0.95,   // hard ceiling at 95% of effective context
-		ContextCapacityFrac: 0.80,   // use 80% of proxy's usable_ctx as the working budget
+		KeepBytes:               120000, // keep ~120k of recent verbatim turns after compaction
+		SummaryBytes:            20000,  // cap the running summary; re-condense if it grows past this
+		HardMaxBytes:            160000, // unconditional ceiling; compact then drop until under
+		TurnToolBudget:          40000,  // per-turn tool output budget; reduced slice once exceeded
+		MaxChars:                512000, // transcript-byte ceiling (hist line + compaction fallback)
+		CompactAt:               145000, // fire before reaching hard max (post-compact target ~140k)
+		CompactAtFrac:           0.75,   // compact at 75% of effective context
+		KeepBytesFrac:           0.60,   // keep 60% of effective context verbatim after compaction
+		HardMaxFrac:             0.95,   // hard ceiling at 95% of effective context
+		ContextCapacityFrac:     0.80,   // use 80% of proxy's usable_ctx as the working budget
 
 		ReasoningBudgetTokens: 4096,      // headroom for extended thinking
 		AnswerMarginTokens:    4096,      // headroom for the final answer

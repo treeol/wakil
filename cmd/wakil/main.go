@@ -380,15 +380,15 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 		}
 
 		return exec.NewDockerExecutor(exec.DockerOpts{
-			Image:                 cfg.Image,
-			Workdir:               cfg.WorkDir,
-			HostMount:             cfg.HostWorkDir,
-			DockerSock:            cfg.DockerSocket,
-			Signing:               signing,
-			StagingMount:          stagingMount,
-			KVREnabled:            kvrEnabled,
-			KVRMaxEntries:         cfg.KVRMaxEntries,
-			KVRSweepIntervalSecs:  cfg.KVRSweepIntervalSecs,
+			Image:                   cfg.Image,
+			Workdir:                 cfg.WorkDir,
+			HostMount:               cfg.HostWorkDir,
+			DockerSock:              cfg.DockerSocket,
+			Signing:                 signing,
+			StagingMount:            stagingMount,
+			KVREnabled:              kvrEnabled,
+			KVRMaxEntries:           cfg.KVRMaxEntries,
+			KVRSweepIntervalSecs:    cfg.KVRSweepIntervalSecs,
 			KVRSnapshotIntervalSecs: cfg.KVRSnapshotIntervalSecs,
 		})
 	}

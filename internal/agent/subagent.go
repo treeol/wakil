@@ -29,15 +29,15 @@ const (
 // SubagentSummary is the structured return value of dispatchSubagent.
 // The parent acts on this blind to raw content, so every gap must be visible.
 type SubagentSummary struct {
-	Objective      string           `json:"objective"`
-	Status         string           `json:"status,omitempty"` // "incomplete" when the subagent hit a budget/iteration wall; empty = complete
-	Findings       []Finding        `json:"findings,omitempty"`
-	Checked        []CheckedItem    `json:"checked,omitempty"`
-	Skipped        []SkippedItem    `json:"skipped,omitempty"`
-	Uncertainty    []string         `json:"uncertainty,omitempty"`
-	SpillRefs      []SpillRef       `json:"spill_refs,omitempty"`
-	FilesChanged   []string         `json:"files_changed,omitempty"`        // model self-report for edit-tier; mechanical record is ground truth
-	ExternalCalls  []ExternalAction `json:"external_calls,omitempty"`       // mechanical record of MCP tool calls (tools-tier)
+	Objective     string           `json:"objective"`
+	Status        string           `json:"status,omitempty"` // "incomplete" when the subagent hit a budget/iteration wall; empty = complete
+	Findings      []Finding        `json:"findings,omitempty"`
+	Checked       []CheckedItem    `json:"checked,omitempty"`
+	Skipped       []SkippedItem    `json:"skipped,omitempty"`
+	Uncertainty   []string         `json:"uncertainty,omitempty"`
+	SpillRefs     []SpillRef       `json:"spill_refs,omitempty"`
+	FilesChanged  []string         `json:"files_changed,omitempty"`  // model self-report for edit-tier; mechanical record is ground truth
+	ExternalCalls []ExternalAction `json:"external_calls,omitempty"` // mechanical record of MCP tool calls (tools-tier)
 }
 
 // Finding is one discrete result the parent should consider acting on.
@@ -620,7 +620,7 @@ func foldSubagentCost(tracker *proxy.CostTracker, rows []proxy.CostRow) float64 
 	var total float64
 	for _, r := range rows {
 		tracker.Record(r.Source, r.InputTok, r.OutputTok, r.CostUSD, r.Priced, r.Confidence, config.TokenDetail{
-			CachedTok:    r.CachedTok,
+			CachedTok:     r.CachedTok,
 			CacheWriteTok: r.CacheWriteTok,
 		})
 		if r.Priced {
@@ -806,7 +806,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		AgentPrefix:       "sub-" + ShortID(subChatID),
 		StagingClient:     a.StagingClient, // shared — kvr client is thread-safe
 		MemoryStore:       a.MemoryStore,   // shared — store is thread-safe (internal mutex)
-		pinUserMessage:    true, // pin the task instruction so it survives compaction
+		pinUserMessage:    true,            // pin the task instruction so it survives compaction
 		SelectedBackend:   backend,
 		BackendList:       a.BackendList,
 		consentedBackends: consentSnapshot,

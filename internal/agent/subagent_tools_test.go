@@ -95,11 +95,11 @@ func TestToolsConfirmer(t *testing.T) {
 
 func TestToolsTierExcludesDangerousTools(t *testing.T) {
 	parent := &App{
-		Cfg:    config.DefaultConfig(),
+		Cfg:     config.DefaultConfig(),
 		Client:  newTestClient("http://unused"),
-		Exec:   newFakeExecutor(),
-		Tools:  wtools.DefaultTools("/work"),
-		Out:    io.Discard,
+		Exec:    newFakeExecutor(),
+		Tools:   wtools.DefaultTools("/work"),
+		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 	}
 	tools := parent.buildSubagentTools()
@@ -137,9 +137,9 @@ func TestToolsTierMCPAllowlist(t *testing.T) {
 			SubagentMCPServers: []string{"context7"},
 		},
 		Client:  newTestClient("http://unused"),
-		Exec:   newFakeExecutor(),
-		Tools:  wtools.DefaultTools("/work"),
-		Out:    io.Discard,
+		Exec:    newFakeExecutor(),
+		Tools:   wtools.DefaultTools("/work"),
+		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 	}
 	// MCP is nil → no MCP tools in the toolset, even with an allowlist.

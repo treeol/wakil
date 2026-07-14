@@ -223,7 +223,7 @@ func TestRenderProvenance(t *testing.T) {
 				Tier:      "mid",
 				Status:    "active",
 				Writer:    "sub-4f2a91c3",
-				CreatedAt: 1720915200000, // 2024-07-14
+				CreatedAt: 1720915200000,           // 2024-07-14
 				ExpiresAt: int64Ptr(1721088000000), // 2024-07-16
 				Tainted:   memory.TaintTrue,
 			},
@@ -255,11 +255,11 @@ func TestRenderProvenance(t *testing.T) {
 		{
 			name: "stale anchors",
 			entry: &memory.Entry{
-				Tier:        "durable",
-				Status:      "active",
-				Writer:      "main",
-				CreatedAt:   1720915200000,
-				Tainted:     memory.TaintUnknown,
+				Tier:         "durable",
+				Status:       "active",
+				Writer:       "main",
+				CreatedAt:    1720915200000,
+				Tainted:      memory.TaintUnknown,
 				StaleAnchors: 1,
 				TotalAnchors: 2,
 			},

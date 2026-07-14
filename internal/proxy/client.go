@@ -116,8 +116,8 @@ type wireMessage struct {
 // contentPart is one element of the parts-shaped content array used for
 // cache_control decoration.
 type contentPart struct {
-	Type         string `json:"type"`
-	Text         string `json:"text"`
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text"`
 	CacheControl *cacheControlDirective `json:"cache_control,omitempty"`
 }
 
@@ -133,7 +133,7 @@ type cacheControlDirective struct {
 func marshalWireMessages(messages []Message, marked map[int]bool) ([]wireMessage, error) {
 	out := make([]wireMessage, len(messages))
 	for i, m := range messages {
-	 wm := wireMessage{
+		wm := wireMessage{
 			Role:       m.Role,
 			ToolCalls:  m.ToolCalls,
 			ToolCallID: m.ToolCallID,
@@ -280,7 +280,7 @@ type UsageStat struct {
 	// CacheWriteTok is the count of tokens written to the cache this turn
 	// (cache_creation_input_tokens). Zero when absent — never estimated.
 	CacheWriteTok int64
-	Exact     bool
+	Exact         bool
 }
 
 // GroundingEntry is one provenance record attached to a turn. Proxy-sourced

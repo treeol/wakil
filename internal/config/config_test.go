@@ -102,7 +102,7 @@ func TestExternalInferenceCostCacheWriteTokens(t *testing.T) {
 	// = 600k/1e6*10 + 400k/1e6*2 + 200k/1e6*12.5 + 100k/1e6*30
 	// = 6 + 0.8 + 2.5 + 3 = 12.3
 	usd, priced := c.ExternalInferenceCost("openrouter/x/y", 1_000_000, 100_000, TokenDetail{
-		CachedTok:    400_000,
+		CachedTok:     400_000,
 		CacheWriteTok: 200_000,
 	})
 	if !priced {

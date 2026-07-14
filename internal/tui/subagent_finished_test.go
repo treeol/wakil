@@ -80,9 +80,9 @@ func TestDoneDoesNotRegressFinished(t *testing.T) {
 
 	// SubagentDoneMsg arrives (Phase C). Should enrich, not regress.
 	m = step(m, agent.SubagentDoneMsg{
-		ChatID:    "chat-a",
-		CostUSD:   0.015,
-		CtxSize:   5000,
+		ChatID:      "chat-a",
+		CostUSD:     0.015,
+		CtxSize:     5000,
 		UsedBackend: "llama",
 	})
 
@@ -177,10 +177,10 @@ func TestPruneProtectsFinishedNotDone(t *testing.T) {
 	}
 	// 4 tabs: 2 done, 1 finished (not done), 1 running. Cap 2, focus on the running one.
 	tabs := []*subTab{
-		mk(1, true, true),        // done — droppable
-		mk(2, false, true),       // finished not done — must be protected
-		mk(3, true, true),        // done — droppable
-		mk(4, false, false),      // running — protected (also focused)
+		mk(1, true, true),   // done — droppable
+		mk(2, false, true),  // finished not done — must be protected
+		mk(3, true, true),   // done — droppable
+		mk(4, false, false), // running — protected (also focused)
 	}
 	got := pruneSubTabs(tabs, 4, 2)
 	has := map[int]bool{}

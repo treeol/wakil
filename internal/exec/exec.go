@@ -115,13 +115,13 @@ func shQuote(s string) string {
 type DockerExecutor struct {
 	container     string
 	image         string
-	workspaceRoot string // project root; immutable; all commands and file ops start here
-	hostMount     string // host path mounted at workspaceRoot, empty = no mount
-	dockerSock    bool   // host docker socket bind-mounted in
-	signing       bool   // SSH signing passthrough active (agent socket mounted)
+	workspaceRoot string    // project root; immutable; all commands and file ops start here
+	hostMount     string    // host path mounted at workspaceRoot, empty = no mount
+	dockerSock    bool      // host docker socket bind-mounted in
+	signing       bool      // SSH signing passthrough active (agent socket mounted)
 	sandboxTools  string    // cached probe result (empty = not yet probed or probe failed)
 	toolsOnce     sync.Once // guards the probe: executor is shared with concurrent subagents
-	generation    int    // increments on container restart; 1 for initial container
+	generation    int       // increments on container restart; 1 for initial container
 	// kvr staging store
 	stagingMount string // host path of the staging mount; empty = no kvr
 	kvrSocket    string // host-side path to the kvr UDS socket; empty if unavailable
@@ -152,8 +152,8 @@ type DockerOpts struct {
 	// returns "".
 	KVREnabled bool
 	// KVR config (read from Wakil config, passed as env vars to the container).
-	KVRMaxEntries          int
-	KVRSweepIntervalSecs   int
+	KVRMaxEntries           int
+	KVRSweepIntervalSecs    int
 	KVRSnapshotIntervalSecs int
 }
 
@@ -417,7 +417,7 @@ func (d *DockerExecutor) Cwd() string           { return d.workspaceRoot }
 func (d *DockerExecutor) WorkspaceRoot() string { return d.workspaceRoot }
 func (d *DockerExecutor) Generation() int       { return d.generation }
 func (d *DockerExecutor) KVRSocketPath() string { return d.kvrSocket }
-func (d *DockerExecutor) KVRAvailable() bool   { return d.kvrAvailable }
+func (d *DockerExecutor) KVRAvailable() bool    { return d.kvrAvailable }
 func (d *DockerExecutor) Describe() string {
 	sock := ""
 	if d.dockerSock {
@@ -620,7 +620,7 @@ func (e *DirectExecutor) Cwd() string           { return e.root }
 func (e *DirectExecutor) WorkspaceRoot() string { return e.root }
 func (e *DirectExecutor) Generation() int       { return e.generation }
 func (e *DirectExecutor) KVRSocketPath() string { return "" }
-func (e *DirectExecutor) KVRAvailable() bool   { return false }
+func (e *DirectExecutor) KVRAvailable() bool    { return false }
 func (e *DirectExecutor) Describe() string      { return "direct[" + e.root + "]" }
 func (e *DirectExecutor) Close() error          { return nil }
 

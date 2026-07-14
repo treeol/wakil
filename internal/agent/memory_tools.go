@@ -17,8 +17,8 @@ const memoryUnavailable = "memory unavailable (could not open store)"
 
 // TTL bounds: mid-tier requires 1h–7d.
 const (
-	memoryTTMin = 3600     // 1 hour
-	memoryTTMax = 604800   // 7 days
+	memoryTTMin = 3600   // 1 hour
+	memoryTTMax = 604800 // 7 days
 )
 
 // getMemoryStore returns the memory store, or nil if unavailable.
@@ -93,7 +93,7 @@ func (a *App) handleMemoryPromote(ctx context.Context, tc proxy.ToolCall) string
 		return memoryUnavailable
 	}
 	var args struct {
-		ID          int64  `json:"id"`
+		ID          int64   `json:"id"`
 		EditedValue *string `json:"edited_value,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
@@ -341,9 +341,10 @@ func renderSupersedesHistory(ctx context.Context, s *memory.Store, e *memory.Ent
 // taint status, anchor staleness, promotion info.
 //
 // Examples:
-//   [mid-tier | sub-4f2a91c3 | 2026-07-14 | expires 2026-07-16 | tainted]
-//   [durable | main | promoted 2026-07-10 | anchors: 1 stale of 2]
-//   [durable | sub-abc12345 | proposed | taint-unknown]
+//
+//	[mid-tier | sub-4f2a91c3 | 2026-07-14 | expires 2026-07-16 | tainted]
+//	[durable | main | promoted 2026-07-10 | anchors: 1 stale of 2]
+//	[durable | sub-abc12345 | proposed | taint-unknown]
 func renderProvenance(e *memory.Entry) string {
 	var parts []string
 

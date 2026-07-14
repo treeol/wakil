@@ -47,9 +47,9 @@ type CompactedMsg struct{}
 type SubagentStartMsg struct {
 	Task       string
 	ChatID     string
-	Backend    string // resolved backend for this dispatch (empty = proxy default)
-	Capability string // "discovery" (default), "edit", or "tools" — drives the sidebar tool list
-	Model      string // child's resolved model (view.model), shown in the sidebar
+	Backend    string   // resolved backend for this dispatch (empty = proxy default)
+	Capability string   // "discovery" (default), "edit", or "tools" — drives the sidebar tool list
+	Model      string   // child's resolved model (view.model), shown in the sidebar
 	ToolNames  []string // tool names for the sidebar; nil for discovery/edit (hardcoded in TUI), populated for "tools"
 }
 
@@ -83,12 +83,12 @@ type SubagentChunkMsg struct {
 // Delivery is goroutine-safe (Program.Send, same as SubagentChunkMsg and
 // SubagentActiveMsg — see cmd/wakil/main.go's EventSink wiring).
 type SubagentFinishedMsg struct {
-	ChatID          string
-	Status          string // "ok" | "failed" | "incomplete" | "declined"
-	CostUSD         float64 // child's own priced total; display-only — the authoritative fold is in SubagentDoneMsg
-	FilesChanged    []string
-	SummaryPreview  string    // first line / short rendering of the summary
-	FinishedAt      time.Time // when the child returned (for timestamped display)
+	ChatID         string
+	Status         string  // "ok" | "failed" | "incomplete" | "declined"
+	CostUSD        float64 // child's own priced total; display-only — the authoritative fold is in SubagentDoneMsg
+	FilesChanged   []string
+	SummaryPreview string    // first line / short rendering of the summary
+	FinishedAt     time.Time // when the child returned (for timestamped display)
 }
 
 // SubagentDoneMsg marks the subagent identified by ChatID as finished.

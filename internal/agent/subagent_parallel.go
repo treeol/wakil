@@ -40,12 +40,12 @@ type subagentJob struct {
 
 // subagentJobResult carries one worker's outcome back to the main goroutine.
 type subagentJobResult struct {
-	Summary        SubagentSummary
-	Grounding      []proxy.GroundingEntry
-	CtxSize        int
-	UsedBackend    string
-	CostRows       []proxy.CostRow  // child's own priced rows; folded into a.Costs in Phase C only
-	FilesChanged   []string          // mechanical record of canonical paths touched (edit-tier only)
+	Summary      SubagentSummary
+	Grounding    []proxy.GroundingEntry
+	CtxSize      int
+	UsedBackend  string
+	CostRows     []proxy.CostRow // child's own priced rows; folded into a.Costs in Phase C only
+	FilesChanged []string        // mechanical record of canonical paths touched (edit-tier only)
 }
 
 // cancelledJobResult is the truthful summary for a job that never ran (or was
@@ -206,7 +206,7 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		// Tools capability also requires AutoApprove (session consent for
 		// external tool access — same gate, different rationale).
 		if (capability == wtools.CapabilityEdit || capability == wtools.CapabilityTools) && !a.AutoApprove {
-			out[i] = fmt.Sprintf("ERROR: %s capability requires /auto or --auto (session consent). " +
+			out[i] = fmt.Sprintf("ERROR: %s capability requires /auto or --auto (session consent). "+
 				"Re-dispatch with capability \"discovery\" (the default) for read-only research.",
 				capability)
 			continue

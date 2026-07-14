@@ -216,9 +216,9 @@ func TestStagingUnavailable(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name     string
-		handler  func(context.Context, proxy.ToolCall) string
-		args     string
+		name    string
+		handler func(context.Context, proxy.ToolCall) string
+		args    string
 	}{
 		{"put", app.handleStagingPut, `{"key":"k","value":"v"}`},
 		{"get", app.handleStagingGet, `{"key":"k"}`},
