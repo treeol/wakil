@@ -1,5 +1,10 @@
 # wakīl
 
+[![CI](https://github.com/treeol/wakil/actions/workflows/ci.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/treeol/wakil)](https://goreportcard.com/report/github.com/treeol/wakil)
+[![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+
 A terminal-native coding agent. Go binary, thin HTTP client, zero framework
 overhead — talks to any OpenAI-compatible Chat Completions endpoint directly
 (llama.cpp server, OpenRouter, vLLM…), or through a remote *ilm* proxy that
