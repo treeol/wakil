@@ -23,22 +23,22 @@ import (
 // practice — see the SubagentMaxToolIter / SubagentTurnToolBudget config keys
 // for tunability.
 const (
-	subagentHardMaxBytes   = 70_000 // fallback floor; fraction path overrides when NCtx known
-	subagentCompactAt      = 55_000
-	subagentKeepBytes      = 45_000
-	subagentSummaryBytes   = 8_000
-	subagentToolResultCap  = 12_000 // per-file view — unchanged
-	subagentTurnToolBudget = 120_000 // RAISED from 50k: allows ~10 full reads before stubbing; clamped to 35% of active hardMax at dispatch
-	subagentTurnToolBudgetFloor = 50_000 // floor for the clamp: never cut below the previous default (regression guard)
-	subagentToolResultTTL  = -1     // never evict; ephemeral ctx is a license to keep
-	subagentMaxToolIter    = 30     // RAISED from 16: more room for nav + search + reads
+	subagentHardMaxBytes        = 70_000 // fallback floor; fraction path overrides when NCtx known
+	subagentCompactAt           = 55_000
+	subagentKeepBytes           = 45_000
+	subagentSummaryBytes        = 8_000
+	subagentToolResultCap       = 12_000  // per-file view — unchanged
+	subagentTurnToolBudget      = 120_000 // RAISED from 50k: allows ~10 full reads before stubbing; clamped to 35% of active hardMax at dispatch
+	subagentTurnToolBudgetFloor = 50_000  // floor for the clamp: never cut below the previous default (regression guard)
+	subagentToolResultTTL       = -1      // never evict; ephemeral ctx is a license to keep
+	subagentMaxToolIter         = 30      // RAISED from 16: more room for nav + search + reads
 )
 
 // SubagentSummary is the structured return value of dispatchSubagent.
 // The parent acts on this blind to raw content, so every gap must be visible.
 type SubagentSummary struct {
 	Objective     string           `json:"objective"`
-	Status        string           `json:"status,omitempty"` // "incomplete" when the subagent hit a budget/iteration wall; empty = complete
+	Status        string           `json:"status,omitempty"`      // "incomplete" when the subagent hit a budget/iteration wall; empty = complete
 	StopReason    string           `json:"stop_reason,omitempty"` // "iteration_limit" | "turn_budget_exhausted" | "hard_max_shed" | "confinement_breaker" | ""; mechanically set by dispatchSubagent
 	Findings      []Finding        `json:"findings,omitempty"`
 	Checked       []CheckedItem    `json:"checked,omitempty"`

@@ -130,12 +130,12 @@ type Config struct {
 	// (n_ctx, in tokens) is fetched from the backend at startup (see ctxlimit.go);
 	// these are the headroom reservations and the fallback used only when that
 	// fetch fails. All token-valued.
-	ReasoningBudgetTokens int               `json:"reasoning_budget_tokens,omitempty"` // tokens reserved for extended thinking; default 4096
-	AnswerMarginTokens    int               `json:"answer_margin_tokens,omitempty"`    // tokens reserved for the final answer; default 4096
-	ContextTokensFallback int               `json:"context_tokens_fallback,omitempty"` // n_ctx assumed when the backend fetch fails; default 131072
-	ToolResultCap         int               `json:"tool_result_cap"`                   // max chars kept in ctx per tool result; 0 = unlimited; default 8000
-	ToolResultTTL         int               `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 1
-	MaxToolIterations     int               `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
+	ReasoningBudgetTokens int `json:"reasoning_budget_tokens,omitempty"` // tokens reserved for extended thinking; default 4096
+	AnswerMarginTokens    int `json:"answer_margin_tokens,omitempty"`    // tokens reserved for the final answer; default 4096
+	ContextTokensFallback int `json:"context_tokens_fallback,omitempty"` // n_ctx assumed when the backend fetch fails; default 131072
+	ToolResultCap         int `json:"tool_result_cap"`                   // max chars kept in ctx per tool result; 0 = unlimited; default 8000
+	ToolResultTTL         int `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 1
+	MaxToolIterations     int `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
 
 	// SubagentMaxToolIter caps tool round-trips per subagent dispatch. 0 = use
 	// the built-in default (30). Unlike the parent's MaxToolIterations (0 =
@@ -153,14 +153,14 @@ type Config struct {
 	// 0 = use the built-in default (12,000).
 	SubagentToolResultCap int `json:"subagent_tool_result_cap,omitempty"`
 
-	ReadFileSizeLimit     int               `json:"read_file_size_limit,omitempty"`    // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
-	MaxFullReadBytes      int               `json:"max_full_read_bytes,omitempty"`     // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
-	MaxRequestBytes       int               `json:"max_request_bytes,omitempty"`       // pre-send byte guard: trim largest tool results if request exceeds this; default 8388608 (8 MB); 0 = disabled
-	SearXngURL            string            `json:"searxng_url,omitempty"`             // native searxng_search tool if set
-	GoogleAPIKey          string            `json:"google_api_key,omitempty"`          // Google Custom Search API key (enables native google_search tool)
-	GoogleCX              string            `json:"google_cx,omitempty"`               // Google Programmable Search Engine ID
-	MentionBase           string            `json:"mention_base,omitempty"`            // base dir for "@" file mentions (default: launch cwd)
-	MCPServers            []MCPServerConfig `json:"mcp_servers,omitempty"`
+	ReadFileSizeLimit int               `json:"read_file_size_limit,omitempty"` // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
+	MaxFullReadBytes  int               `json:"max_full_read_bytes,omitempty"`  // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
+	MaxRequestBytes   int               `json:"max_request_bytes,omitempty"`    // pre-send byte guard: trim largest tool results if request exceeds this; default 8388608 (8 MB); 0 = disabled
+	SearXngURL        string            `json:"searxng_url,omitempty"`          // native searxng_search tool if set
+	GoogleAPIKey      string            `json:"google_api_key,omitempty"`       // Google Custom Search API key (enables native google_search tool)
+	GoogleCX          string            `json:"google_cx,omitempty"`            // Google Programmable Search Engine ID
+	MentionBase       string            `json:"mention_base,omitempty"`         // base dir for "@" file mentions (default: launch cwd)
+	MCPServers        []MCPServerConfig `json:"mcp_servers,omitempty"`
 
 	// Mashūra: counsel tool that calls an external AI API for a second opinion.
 	// The API key is read from OracleAPIKeyEnv at call time — never stored here or
