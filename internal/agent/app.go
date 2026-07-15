@@ -112,6 +112,20 @@ type App struct {
 	// fired. Only meaningful for subagents; the parent ignores it.
 	exhausted bool
 
+	// stopReason records why the subagent stopped, set at the exact site where
+	// exhaustion occurs. Values: "iteration_limit", "hard_max_shed",
+	// "confinement_breaker". Empty = no stop reason (normal completion).
+	// Captured before the retry Send (which resets it) and ORed across both
+	// Sends, exactly like exhausted. Only meaningful for subagents.
+	stopReason string
+
+	// turnBudgetStubbed is a sticky per-App flag set inside CapOrStub when the
+	// per-turn tool budget is exhausted and a result is stubbed to a spill
+	// pointer. Used by dispatchSubagent to set StopReason="turn_budget_exhausted"
+	// when no other stop reason fired (the model may stop naturally after being
+	// starved of content, without hitting the iteration cap).
+	turnBudgetStubbed bool
+
 	// filesChanged is the recorder for edit-tier subagents: tracks canonical
 	// paths touched by successful edit-category tool calls during the child's
 	// Send loop. nil for the parent and discovery-tier children. Populated by
@@ -486,6 +500,8 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 	// the retry, then ORs it with the retry's value, so resetting here
 	// doesn't mask first-Send exhaustion.
 	a.exhausted = false
+	a.stopReason = ""
+	a.turnBudgetStubbed = false
 	// Reset per-turn confinement-breaker flags, same rationale as exhausted
 	// above: dispatchSubagent captures the first-Send value before the retry.
 	a.confinementTripped = false
@@ -623,8 +639,10 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 				// rather than a bare "budget-exhausted".
 				a.confinementTripped = true
 				a.confinementPathsHit = confinementPaths
+				a.stopReason = "confinement_breaker"
 				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(confinementBreakerPrompt(confinementPaths))})
 			} else {
+				a.stopReason = "iteration_limit"
 				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(ToolLimitPrompt)})
 			}
 		}
@@ -1203,6 +1221,7 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 		return result
 	}
 	if a.Cfg.TurnToolBudget > 0 && turnToolBytesSoFar >= a.Cfg.TurnToolBudget {
+		a.turnBudgetStubbed = true
 		return wtools.StubToolResult(result, toolName, a.chatID())
 	}
 	// read_file_full: return full content (size already checked at the tool layer

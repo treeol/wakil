@@ -100,6 +100,11 @@
   "tool_result_ttl": 3,
   "max_tool_iterations": 0,
 
+  "_comment_subagent_budget": "Subagent tool-loop budgets. 0 = use built-in defaults. subagent_max_tool_iterations caps tool round-trips per dispatch (default 30). subagent_turn_tool_budget caps cumulative tool output per dispatch (default 120000, auto-clamped to 35% of active hardMax). subagent_tool_result_cap limits per-result chars (default 12000).",
+  "subagent_max_tool_iterations": 0,
+  "subagent_turn_tool_budget": 0,
+  "subagent_tool_result_cap": 0,
+
   "compact_at_frac": 0.75,
   "keep_bytes_frac": 0.60,
   "hard_max_frac": 0.95,

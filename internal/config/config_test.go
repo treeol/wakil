@@ -352,6 +352,9 @@ func TestValidateContextLimitsRejects(t *testing.T) {
 			c.HardMaxFrac = 0.5
 		}, "hard_max_frac"},
 		{"capacity frac out of range", func(c *Config) { c.ContextCapacityFrac = 1.2 }, "context_capacity_frac"},
+		{"subagent_max_tool_iter negative", func(c *Config) { c.SubagentMaxToolIter = -1 }, "subagent_max_tool_iterations"},
+		{"subagent_turn_tool_budget negative", func(c *Config) { c.SubagentTurnToolBudget = -1 }, "subagent_turn_tool_budget"},
+		{"subagent_tool_result_cap negative", func(c *Config) { c.SubagentToolResultCap = -1 }, "subagent_tool_result_cap"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -493,6 +493,26 @@ func TestExtractJSON(t *testing.T) {
 	}
 }
 
+func TestMergeStopReason(t *testing.T) {
+	cases := []struct{ name, first, retry, want string }{
+		{"both empty", "", "", ""},
+		{"first only", "iteration_limit", "", "iteration_limit"},
+		{"retry only", "", "hard_max_shed", "hard_max_shed"},
+		{"same reason", "iteration_limit", "iteration_limit", "iteration_limit"},
+		{"first hard_max retry iteration", "hard_max_shed", "iteration_limit", "hard_max_shed"},
+		{"first iteration retry hard_max", "iteration_limit", "hard_max_shed", "hard_max_shed"},
+		{"both hard_max", "hard_max_shed", "hard_max_shed", "hard_max_shed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeStopReason(tc.first, tc.retry)
+			if got != tc.want {
+				t.Errorf("mergeStopReason(%q, %q) = %q, want %q", tc.first, tc.retry, got, tc.want)
+			}
+		})
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

@@ -13,17 +13,25 @@ import (
 	wtools "github.com/treeol/wakil/internal/tools"
 )
 
-// Subagent context budget constants. Conservative for a 32k-token backend;
-// raise HardMaxBytes after checking --ctx-size on the proxy machine.
+// Subagent context budget constants. These are FALLBACK FLOOR values — they
+// only apply when the child has no probed CtxLimit (NCtx == 0), which is rare
+// on the inherit path (the parent always has a probed limit). When NCtx is
+// known, activeThresholds() computes fraction-based thresholds from the
+// actual context window, which are typically much larger (e.g., ~373k chars
+// for a 128k-token backend vs the 70k floor here). The iteration cap
+// (subagentMaxToolIter) and TurnToolBudget are the binding constraints in
+// practice — see the SubagentMaxToolIter / SubagentTurnToolBudget config keys
+// for tunability.
 const (
-	subagentHardMaxBytes   = 70_000 // ~23k tokens @ 3 chars/tok; safe floor for 32k backend
+	subagentHardMaxBytes   = 70_000 // fallback floor; fraction path overrides when NCtx known
 	subagentCompactAt      = 55_000
 	subagentKeepBytes      = 45_000
 	subagentSummaryBytes   = 8_000
-	subagentToolResultCap  = 12_000 // larger per-file view than parent's 8k
-	subagentTurnToolBudget = 50_000 // generous: HardMax is the real ceiling
+	subagentToolResultCap  = 12_000 // per-file view — unchanged
+	subagentTurnToolBudget = 120_000 // RAISED from 50k: allows ~10 full reads before stubbing; clamped to 35% of active hardMax at dispatch
+	subagentTurnToolBudgetFloor = 50_000 // floor for the clamp: never cut below the previous default (regression guard)
 	subagentToolResultTTL  = -1     // never evict; ephemeral ctx is a license to keep
-	subagentMaxToolIter    = 16     // hard loop backstop: force a summary after this many tool round-trips
+	subagentMaxToolIter    = 30     // RAISED from 16: more room for nav + search + reads
 )
 
 // SubagentSummary is the structured return value of dispatchSubagent.
@@ -31,6 +39,7 @@ const (
 type SubagentSummary struct {
 	Objective     string           `json:"objective"`
 	Status        string           `json:"status,omitempty"` // "incomplete" when the subagent hit a budget/iteration wall; empty = complete
+	StopReason    string           `json:"stop_reason,omitempty"` // "iteration_limit" | "turn_budget_exhausted" | "hard_max_shed" | "confinement_breaker" | ""; mechanically set by dispatchSubagent
 	Findings      []Finding        `json:"findings,omitempty"`
 	Checked       []CheckedItem    `json:"checked,omitempty"`
 	Skipped       []SkippedItem    `json:"skipped,omitempty"`
@@ -154,6 +163,29 @@ Rules:
 - Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.`
 
 // extractJSON strips markdown fences and extracts the outermost {...} object from s.
+
+// mergeStopReason picks the highest-priority stop reason from two Send runs
+// (first Send + retry Send). Precedence: hard_max_shed > iteration_limit.
+// Confinement is handled separately by the caller (it always wins). Empty
+// strings are ignored. When both are the same or one is empty, the non-empty
+// one wins. When they differ, hard_max_shed takes priority — it means content
+// was lost, which is strictly worse than merely running out of iterations.
+func mergeStopReason(first, retry string) string {
+	if first == retry {
+		return first // same or both empty
+	}
+	if first == "" {
+		return retry
+	}
+	if retry == "" {
+		return first
+	}
+	// Differ and both non-empty: hard_max_shed > iteration_limit.
+	if first == "hard_max_shed" || retry == "hard_max_shed" {
+		return "hard_max_shed"
+	}
+	return first // fallback: first-wins for any future reason pair
+}
 func extractJSON(s string) string {
 	s = strings.TrimSpace(s)
 	for _, fence := range []string{"```json", "```"} {
@@ -733,10 +765,28 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	cfg.CompactAt = subagentCompactAt
 	cfg.KeepBytes = subagentKeepBytes
 	cfg.SummaryBytes = subagentSummaryBytes
+
+	// Per-result cap: config override > hardcoded default
 	cfg.ToolResultCap = subagentToolResultCap
+	if a.Cfg.SubagentToolResultCap > 0 {
+		cfg.ToolResultCap = a.Cfg.SubagentToolResultCap
+	}
+
+	// Turn tool budget: config override > hardcoded default.
+	// Clamped to 35% of the active hardMax after the child App is constructed
+	// (when CtxLimit is known) — see below.
 	cfg.TurnToolBudget = subagentTurnToolBudget
+	if a.Cfg.SubagentTurnToolBudget > 0 {
+		cfg.TurnToolBudget = a.Cfg.SubagentTurnToolBudget
+	}
+
 	cfg.ToolResultTTL = subagentToolResultTTL
+
+	// Iteration cap: session override > config > built-in default
 	cfg.MaxToolIterations = subagentMaxToolIter
+	if a.Cfg.SubagentMaxToolIter > 0 {
+		cfg.MaxToolIterations = a.Cfg.SubagentMaxToolIter
+	}
 	if a.subMaxToolIter > 0 {
 		cfg.MaxToolIterations = a.subMaxToolIter
 	}
@@ -835,6 +885,22 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(childPrompt), Pinned: true}}
 
+	// Clamp TurnToolBudget to a safe fraction of the active hardMax. This
+	// prevents the budget from exceeding the context ceiling on small-context
+	// backends (e.g., 32k tokens → ~78k hardMax → clamp to ~27k). The 35%
+	// fraction leaves room for the system prompt, conversation history, and
+	// model output. Must run AFTER sub is constructed (when CtxLimit is known).
+	// Floor at subagentTurnToolBudgetFloor so the clamp never cuts below the
+	// previous 50k default — a cut would be a regression on fallback paths.
+	_, _, activeHardMax := sub.activeThresholds()
+	clampedBudget := activeHardMax * 35 / 100
+	if clampedBudget < subagentTurnToolBudgetFloor {
+		clampedBudget = subagentTurnToolBudgetFloor
+	}
+	if activeHardMax > 0 && sub.Cfg.TurnToolBudget > clampedBudget {
+		sub.Cfg.TurnToolBudget = clampedBudget
+	}
+
 	// Edit-tier children are serialized by the writer lock: at most one edit
 	// child executing at a time. Discovery children are unaffected. The lock
 	// is held for the duration of the child's run (around its Send loop), not
@@ -859,12 +925,11 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// with whatever the retry produces — otherwise a first-Send exhaustion
 	// is silently masked by a clean retry.
 	exhaustedFirstSend := sub.exhausted
-	// Same capture-before-retry pattern for the path-confinement breaker: the
-	// retry Send does not reset confinementTripped (only Send's exhausted
-	// reset is inside Send itself — confinementTripped is set once per turn
-	// and never cleared, so this is belt-and-suspenders, not strictly needed,
-	// but keeps the two flags symmetric and equally safe against future
-	// changes to either reset path).
+	stopReasonFirstSend := sub.stopReason
+	turnBudgetStubbedFirstSend := sub.turnBudgetStubbed
+	// Same capture-before-retry pattern for the path-confinement breaker: Send
+	// resets confinementTripped at its start (alongside exhausted), so we must
+	// capture before the retry to avoid masking a first-Send confinement trip.
 	confinementFirstSend := sub.confinementTripped
 	confinementPathsFirstSend := sub.confinementPathsHit
 
@@ -914,6 +979,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// gap or dispatch against a different, reachable path/repo.
 	if confinementFirstSend || sub.confinementTripped {
 		summary.Status = "incomplete"
+		summary.StopReason = "confinement_breaker"
 		paths := confinementPathsFirstSend
 		if len(sub.confinementPathsHit) > 0 {
 			paths = sub.confinementPathsHit
@@ -938,12 +1004,23 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// can re-dispatch narrower or take over, rather than trusting
 		// potentially-incomplete findings.
 		summary.Status = "incomplete"
+		// Determine the stop reason with explicit precedence across both Sends:
+		// confinement (handled above) > hard_max_shed > iteration_limit.
+		// First-Send-wins would let iteration_limit mask a retry hard_max_shed.
+		summary.StopReason = mergeStopReason(stopReasonFirstSend, sub.stopReason)
 		summary.Skipped = append(summary.Skipped, SkippedItem{
 			Reason: "budget-exhausted",
 		})
 		if len(summary.Uncertainty) == 0 || summary.Uncertainty[len(summary.Uncertainty)-1] != "subagent hit budget/iteration limit — findings may be incomplete" {
 			summary.Uncertainty = append(summary.Uncertainty, "subagent hit budget/iteration limit — findings may be incomplete")
 		}
+	} else if turnBudgetStubbedFirstSend || sub.turnBudgetStubbed {
+		// The subagent didn't hit the iteration cap or hard-max, but the
+		// per-turn tool budget was exhausted — some tool results were stubbed
+		// to spill pointers. The model may have stopped naturally after being
+		// starved of content, producing a complete-looking but potentially
+		// incomplete summary. Surface this so the parent can judge.
+		summary.StopReason = "turn_budget_exhausted"
 	}
 
 	// Snapshot AFTER the retry Send (if any) so a retry's RecordInferenceCost

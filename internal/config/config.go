@@ -136,6 +136,23 @@ type Config struct {
 	ToolResultCap         int               `json:"tool_result_cap"`                   // max chars kept in ctx per tool result; 0 = unlimited; default 8000
 	ToolResultTTL         int               `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 1
 	MaxToolIterations     int               `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
+
+	// SubagentMaxToolIter caps tool round-trips per subagent dispatch. 0 = use
+	// the built-in default (30). Unlike the parent's MaxToolIterations (0 =
+	// unlimited), subagents always get a finite cap — they're autonomous workers
+	// with no human gate.
+	SubagentMaxToolIter int `json:"subagent_max_tool_iterations,omitempty"`
+
+	// SubagentTurnToolBudget overrides the per-turn cumulative tool output
+	// budget for subagents. 0 = use the built-in default. Automatically clamped
+	// to 35% of the active hardMax at dispatch time, so it's safe to set high
+	// even on small-context backends.
+	SubagentTurnToolBudget int `json:"subagent_turn_tool_budget,omitempty"`
+
+	// SubagentToolResultCap overrides the per-result char cap for subagents.
+	// 0 = use the built-in default (12,000).
+	SubagentToolResultCap int `json:"subagent_tool_result_cap,omitempty"`
+
 	ReadFileSizeLimit     int               `json:"read_file_size_limit,omitempty"`    // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
 	MaxFullReadBytes      int               `json:"max_full_read_bytes,omitempty"`     // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
 	MaxRequestBytes       int               `json:"max_request_bytes,omitempty"`       // pre-send byte guard: trim largest tool results if request exceeds this; default 8388608 (8 MB); 0 = disabled
@@ -1028,6 +1045,16 @@ func validateContextLimits(cfg Config) error {
 	// Valid range is [0, 1.0]; 0 = use default (DefaultConfig supplies 0.80).
 	if cfg.ContextCapacityFrac < 0 || cfg.ContextCapacityFrac > 1.0 {
 		return fmt.Errorf("context_capacity_frac must be in [0, 1.0], got %g (0 = use default)", cfg.ContextCapacityFrac)
+	}
+	// Subagent budget overrides — reject negative values. Zero means "use default".
+	if cfg.SubagentMaxToolIter < 0 {
+		return fmt.Errorf("subagent_max_tool_iterations must be >= 0 (got %d; 0 = use default)", cfg.SubagentMaxToolIter)
+	}
+	if cfg.SubagentTurnToolBudget < 0 {
+		return fmt.Errorf("subagent_turn_tool_budget must be >= 0 (got %d; 0 = use default)", cfg.SubagentTurnToolBudget)
+	}
+	if cfg.SubagentToolResultCap < 0 {
+		return fmt.Errorf("subagent_tool_result_cap must be >= 0 (got %d; 0 = use default)", cfg.SubagentToolResultCap)
 	}
 	return nil
 }

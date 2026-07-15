@@ -115,9 +115,12 @@ func Truncate(s string, n int) string {
 // effective_ctx = Usable() × cfg.ContextCapacityFrac × charsPerToken
 // Then CompactAtFrac, KeepBytesFrac, HardMaxFrac are applied on top.
 //
-// When the limit is unknown (startup before the probe, subagents, tests that
-// leave CtxLimit zero) the absolute config values are the fallback — always
-// kept valid by validateContextLimits.
+// When the limit is unknown (startup before the probe, override-path probe
+// failure, tests that leave CtxLimit zero) the absolute config values are the
+// fallback — always kept valid by validateContextLimits. Note: inherited
+// subagents DO get a probed CtxLimit (the parent's), so the fraction path
+// fires for them. Only override-path probe failures and unprobed startup
+// fall through to absolute values.
 func (a *App) activeThresholds() (compactAt, keepBytes, hardMax int) {
 	// Use the raw NCtx field, not a.ContextLimit(), which synthesises a fallback
 	// with a non-zero NCtx even when the backend has never been probed. We want
@@ -500,6 +503,9 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	// on incomplete context — dispatchSubagent uses this to produce a truthful
 	// Status:"incomplete" summary instead of a misleading parse-error.
 	a.exhausted = true
+	if a.stopReason == "" {
+		a.stopReason = "hard_max_shed"
+	}
 
 	// Build the warning shown in the conversation viewport.
 	userTurnsLeft := 0
