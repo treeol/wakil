@@ -6,7 +6,11 @@ WORKDIR /build
 RUN git clone --depth 1 https://github.com/treeol/kvrust.git .
 RUN cargo build --release --bin server
 
-# Borrow the Go toolchain from the official image (same Debian base = no glibc mismatch).
+# Sandbox runtime Go toolchain. go.mod (minimum 1.25.0) governs building
+# wakil on the host/CI; this image provides the Go toolchain used inside the
+# sandbox container by the agent (building user projects, gopls, etc.). It may
+# be newer than the go.mod minimum — the Go toolchain is forward-compatible.
+# See README "Requirements".
 FROM golang:1.26-bookworm AS go-toolchain
 
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716
