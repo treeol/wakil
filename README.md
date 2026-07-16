@@ -47,6 +47,43 @@ you haven't fully audited.
 
 ## Quickstart
 
+### Option A: Standalone (OpenAI-compatible endpoint)
+
+No proxy required — point wakil at any OpenAI-compatible server (llama.cpp,
+Ollama, OpenRouter, vLLM…).
+
+```sh
+# 1. Build
+go build -o wakil ./cmd/wakil
+
+# 2. Configure — minimal config with a named endpoint
+mkdir -p ~/.config/wakil
+cat > ~/.config/wakil/config.json <<'EOF'
+{
+  "endpoints": {
+    "local": {
+      "kind": "openai",
+      "base_url": "http://localhost:8080",
+      "model": "qwen3.6-35b"
+    }
+  },
+  "default_endpoint": "local"
+}
+EOF
+
+# 3. Run in direct mode (no Docker needed for a quick test)
+./wakil --exec direct ~/projects/myapp
+```
+
+For OpenRouter, use `https://openrouter.ai/api` as `base_url` and set
+`auth_header` to `"Bearer sk-or-..."`. For Ollama, `http://localhost:11434`
+with model `llama3`.
+
+See [`config.example.json`](config.example.json) for a fully commented
+reference covering all options.
+
+### Option B: With sandbox + ilm proxy
+
 ```sh
 # 1. Build — single static binary, no runtime deps
 go build -o wakil ./cmd/wakil
