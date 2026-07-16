@@ -60,7 +60,7 @@ func (f *fileSyncManager) ensureOpen(ctx context.Context, srv *Server, hostPath,
 	doc, ok := f.docs[uri]
 	if !ok {
 		// Read file content via the executor (same filesystem gopls sees).
-		content, err := srv.mgr.exec.ReadFile(hostPath)
+		content, err := srv.mgr.exec.ReadFile(ctx, hostPath)
 		if err != nil {
 			f.mu.Unlock()
 			return "", fmt.Errorf("reading file for didOpen: %w", err)
@@ -72,7 +72,7 @@ func (f *fileSyncManager) ensureOpen(ctx context.Context, srv *Server, hostPath,
 			languageID: languageID,
 		}
 		// Stat for mtime+size (for the dirty-flag mtime guard).
-		if size, err := srv.mgr.exec.StatFile(hostPath); err == nil {
+		if size, err := srv.mgr.exec.StatFile(ctx, hostPath); err == nil {
 			doc.size = size
 		}
 		f.docs[uri] = doc
@@ -107,7 +107,7 @@ func (f *fileSyncManager) notifyChange(ctx context.Context, srv *Server, hostPat
 	}
 
 	// Read the current disk content (same bytes gopls will see).
-	content, err := srv.mgr.exec.ReadFile(hostPath)
+	content, err := srv.mgr.exec.ReadFile(ctx, hostPath)
 	if err != nil {
 		f.mu.Unlock()
 		return fmt.Errorf("reading file for didChange: %w", err)
@@ -115,7 +115,7 @@ func (f *fileSyncManager) notifyChange(ctx context.Context, srv *Server, hostPat
 
 	doc.version++
 	doc.content = content
-	if size, err := srv.mgr.exec.StatFile(hostPath); err == nil {
+	if size, err := srv.mgr.exec.StatFile(ctx, hostPath); err == nil {
 		doc.size = size
 	}
 	// Clear dirty flag — we're syncing now.
@@ -163,7 +163,7 @@ func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri stri
 	f.mu.Unlock()
 
 	// Stat the file on disk.
-	size, err := srv.mgr.exec.StatFile(hostPath)
+	size, err := srv.mgr.exec.StatFile(ctx, hostPath)
 	if err != nil {
 		// File may have been deleted — clear dirty, skip.
 		f.mu.Lock()
@@ -189,7 +189,7 @@ func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri stri
 	}
 
 	// File changed — re-read and didChange.
-	content, err := srv.mgr.exec.ReadFile(hostPath)
+	content, err := srv.mgr.exec.ReadFile(ctx, hostPath)
 	if err != nil {
 		return false, fmt.Errorf("reading file for dirty resync: %w", err)
 	}
@@ -274,7 +274,7 @@ func (m *Manager) resolveToPosition(ctx context.Context, srv *Server, hostPath s
 	}
 
 	// Read the file content to get the line.
-	content, err := m.exec.ReadFile(hostPath)
+	content, err := m.exec.ReadFile(ctx, hostPath)
 	if err != nil {
 		return Position{}, nil, err
 	}

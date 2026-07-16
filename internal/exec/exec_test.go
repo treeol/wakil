@@ -15,10 +15,11 @@ func TestDirectExecutorRoundtrip(t *testing.T) {
 	}
 	defer ex.Close()
 
-	if _, err := ex.WriteFile("foo.txt", "hi"); err != nil {
+	ctx := context.Background()
+	if _, err := ex.WriteFile(ctx, "foo.txt", "hi"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ex.ReadFile("foo.txt")
+	got, err := ex.ReadFile(ctx, "foo.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,11 +81,11 @@ func TestRelativeWriteAfterCdCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Relative write_file should resolve against project root, not /sub.
-	if _, err := ex.WriteFile("out.txt", "content"); err != nil {
+	if _, err := ex.WriteFile(ctx, "out.txt", "content"); err != nil {
 		t.Fatal(err)
 	}
 	// File must be at project root, not inside sub/.
-	content, err := ex.ReadFile("out.txt")
+	content, err := ex.ReadFile(ctx, "out.txt")
 	if err != nil {
 		t.Fatalf("expected out.txt at project root: %v", err)
 	}

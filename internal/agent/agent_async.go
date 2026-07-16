@@ -136,7 +136,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 			// PlanFormatInvalid retry: any completed turn re-checks whether the
 			// model has reformatted ## Plan into parseable N. steps.
 			if wf.PlanFormatInvalid && app.Exec != nil {
-				if content, err := app.Exec.ReadFile(wf.PlanPath); err == nil {
+				if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err == nil {
 					if n := workflow.CountPlanSteps(content); n > 0 {
 						wf.StepCount = n
 						wf.PlanFormatInvalid = false
@@ -154,7 +154,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 		// Read plan and check for the format contract before advancing.
 		content := ""
 		if app.Exec != nil {
-			content, _ = app.Exec.ReadFile(wf.PlanPath)
+			content, _ = app.Exec.ReadFile(ctx, wf.PlanPath)
 		}
 		n := workflow.CountPlanSteps(content)
 		if n == 0 {
@@ -218,7 +218,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 
 			// Verify the step log now has exactly completedStep entries.
 			if app.Exec != nil {
-				if content, err := app.Exec.ReadFile(wf.PlanPath); err == nil {
+				if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err == nil {
 					if got := workflow.CountStepLogEntries(content); got != completedStep {
 						wfProgNote(app, fmt.Sprintf("⚠ step log count: expected %d entries, found %d", completedStep, got))
 					}
@@ -498,7 +498,7 @@ func doWFOracle(ctx context.Context, app *App, question string) (string, bool) {
 	if app.Exec == nil {
 		return "briefing incomplete: no executor", false
 	}
-	planContent, err := app.Exec.ReadFile(app.Workflow.PlanPath)
+	planContent, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
 		return "briefing incomplete: plan file unreadable", false
 	}
@@ -517,11 +517,11 @@ func wfAppendStepLogEntry(app *App, entry string) {
 	if app.Exec == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
-	_, _ = app.Exec.WriteFile(app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
 }
 
 // handleFinalReview runs the closing oracle check after the last IMPLEMENT step.
@@ -555,7 +555,7 @@ func HandleFinalReview(ctx context.Context, app *App) {
 		wfProgNote(app, "· type /plan approve to force-close, or fix oracle config and retry")
 		return
 	}
-	planContent, err := app.Exec.ReadFile(app.Workflow.PlanPath)
+	planContent, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
 		wfProgNote(app, "⚠ FINAL REVIEW: oracle unavailable — briefing incomplete: plan file unreadable")
 		wfWriteFinalLog(app, "FINAL REVIEW skipped: briefing incomplete (plan file unreadable) — /plan approve required to close.")
@@ -637,11 +637,11 @@ func wfWriteFinalLog(app *App, entry string) {
 	if app.Exec == nil || app.Workflow == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
-	_, _ = app.Exec.WriteFile(app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
 }
 
 // handleReviewOracle runs the mandatory oracle plan review (WFReview phase).
@@ -675,7 +675,7 @@ func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 
 	// Fingerprint the ## Plan section so a later edit can be detected at approve time.
 	if app.Exec != nil {
-		if content, err := app.Exec.ReadFile(wf.PlanPath); err == nil {
+		if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err == nil {
 			wf.ReviewPlanHash = workflow.HashPlanSection(content)
 		}
 	}
@@ -708,12 +708,12 @@ func wfWriteReviewSkip(app *App, reason string) {
 	if app.Exec == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
 	entry := "REVIEW skipped: oracle unavailable (" + reason + ") — /plan approve required to proceed."
-	_, _ = app.Exec.WriteFile(app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
 }
 
 // wfAppendRemediationEvidence records one remediation turn's evidence in plan.md.
@@ -752,12 +752,12 @@ func WFWriteReviewSkipForce(app *App, reason string) {
 	if app.Exec == nil || app.Workflow == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
 	entry := "REVIEW skipped with reason: " + reason + " (/plan approve used to force-skip)"
-	_, _ = app.Exec.WriteFile(app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
 }
 
 // wfWritePlanFormatError appends a format-error log entry to plan.md. Best-effort.
@@ -765,12 +765,12 @@ func wfWritePlanFormatError(app *App) {
 	if app.Exec == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
 	entry := "PLAN FORMAT ERROR: ## Plan is non-empty but contains no numbered steps — model must reformat."
-	_, _ = app.Exec.WriteFile(app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
 }
 
 // tuiConfirmer pauses the agent goroutine and posts a ConfirmReqMsg into the
@@ -1542,7 +1542,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.C
 				}
 				// Check for plan modification since last review.
 				if wf.ReviewPlanHash != "" && app.Exec != nil {
-					if content, err := app.Exec.ReadFile(wf.PlanPath); err == nil {
+					if content, err := app.Exec.ReadFile(context.Background(), wf.PlanPath); err == nil {
 						if workflow.HashPlanSection(content) != wf.ReviewPlanHash && !wf.ReviewStaleWarned {
 							wf.ReviewStaleWarned = true
 							return SysNoteMsg{Text: "⚠ plan modified since last review — " +
@@ -1628,7 +1628,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.C
 				if _, err := app.Exec.RunShell(context.Background(), "mkdir -p .wakil"); err != nil {
 					return SysNoteMsg{Text: "workflow: could not create .wakil dir: " + err.Error()}
 				}
-				if _, err := app.Exec.WriteFile(planPath, content); err != nil {
+				if _, err := app.Exec.WriteFile(context.Background(), planPath, content); err != nil {
 					return SysNoteMsg{Text: "workflow: could not write plan.md: " + err.Error()}
 				}
 			}

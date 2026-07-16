@@ -307,7 +307,7 @@ func runWorkflowHeadless(ctx context.Context, app *agent.App, task string, flags
 		emitEvent(out, map[string]any{"type": "error", "message": "cannot create .wakil: " + err.Error()})
 		return ExitError
 	}
-	if _, err := app.Exec.WriteFile(planPath, workflow.WFInitPlanContent(task)); err != nil {
+	if _, err := app.Exec.WriteFile(ctx, planPath, workflow.WFInitPlanContent(task)); err != nil {
 		emitEvent(out, map[string]any{"type": "error", "message": "cannot write plan.md: " + err.Error()})
 		return ExitError
 	}

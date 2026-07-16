@@ -199,7 +199,7 @@ func TestDirectExecutorListDirAndMeta(t *testing.T) {
 	if _, err := ex.RunShell(ctx, "mkdir d && touch d/x f.txt"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := ex.ListDir("")
+	out, err := ex.ListDir(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,9 +19,9 @@ import (
 // only that command. Closing tears the backend down.
 type Executor interface {
 	RunShell(ctx context.Context, command string) (string, error)
-	ReadFile(path string) (string, error)
-	ListDir(path string) (string, error)
-	WriteFile(path, content string) (string, error)
+	ReadFile(ctx context.Context, path string) (string, error)
+	ListDir(ctx context.Context, path string) (string, error)
+	WriteFile(ctx context.Context, path, content string) (string, error)
 	Cwd() string
 	Describe() string
 	Close() error
@@ -80,7 +80,7 @@ type Executor interface {
 	ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error)
 	// StatFile returns the byte size of the file at path without reading it.
 	// Returns an error if the path does not exist or is not accessible.
-	StatFile(path string) (int64, error)
+	StatFile(ctx context.Context, path string) (int64, error)
 	// Generation returns a counter that increments when the executor backend is
 	// restarted (e.g. container recreated). Background process entries from an
 	// older generation are stale.
@@ -301,7 +301,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		stagingMount: opts.StagingMount,
 	}
 	if hostMount == "" {
-		_, _ = d.exec(false, "sh", "-c", "mkdir -p "+shQuote(workdir))
+		_, _ = d.execCtx(context.Background(), false, "sh", "-c", "mkdir -p "+shQuote(workdir))
 	}
 	if uid := os.Getuid(); uid > 0 {
 		ensurePasswdEntry(name, uid, os.Getgid())
@@ -356,9 +356,16 @@ func ensureDockerCLI(container string) {
 	_ = exec.Command("docker", "cp", hostBin, container+":/usr/local/bin/docker").Run()
 }
 
-func (d *DockerExecutor) exec(interactive bool, args ...string) (string, error) {
-	full := append([]string{"exec"}, append(map[bool][]string{true: {"-i"}, false: nil}[interactive], append([]string{d.container}, args...)...)...)
-	cmd := exec.Command("docker", full...)
+// execCtx runs docker exec with the given args, using CommandContext so the
+// call is cancelled when ctx is. All DockerExecutor methods that shell into
+// the container go through this helper.
+func (d *DockerExecutor) execCtx(ctx context.Context, interactive bool, args ...string) (string, error) {
+	prefix := []string{"exec"}
+	if interactive {
+		prefix = append(prefix, "-i")
+	}
+	full := append(prefix, append([]string{d.container}, args...)...)
+	cmd := exec.CommandContext(ctx, "docker", full...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -369,17 +376,17 @@ func (d *DockerExecutor) RunShell(ctx context.Context, command string) (string, 
 	return strings.TrimRight(string(out), "\r\n"), err
 }
 
-func (d *DockerExecutor) ReadFile(path string) (string, error) {
+func (d *DockerExecutor) ReadFile(ctx context.Context, path string) (string, error) {
 	// cd into workspaceRoot first so relative paths resolve from the project root.
-	out, err := d.exec(false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && cat -- "$1"`, "sh", path)
+	out, err := d.execCtx(ctx, false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && cat -- "$1"`, "sh", path)
 	if err != nil {
 		return "", fmt.Errorf("%s", strings.TrimSpace(out))
 	}
 	return out, nil
 }
 
-func (d *DockerExecutor) StatFile(path string) (int64, error) {
-	out, err := d.exec(false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && stat -c %s -- "$1"`, "sh", path)
+func (d *DockerExecutor) StatFile(ctx context.Context, path string) (int64, error) {
+	out, err := d.execCtx(ctx, false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && stat -c %s -- "$1"`, "sh", path)
 	if err != nil {
 		return 0, fmt.Errorf("%s", strings.TrimSpace(out))
 	}
@@ -390,20 +397,20 @@ func (d *DockerExecutor) StatFile(path string) (int64, error) {
 	return size, nil
 }
 
-func (d *DockerExecutor) ListDir(path string) (string, error) {
+func (d *DockerExecutor) ListDir(ctx context.Context, path string) (string, error) {
 	if path == "" {
 		path = "."
 	}
 	// ls -Ap: all entries except . and .., with a trailing / on directories.
-	out, err := d.exec(false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && ls -Ap -- "$1"`, "sh", path)
+	out, err := d.execCtx(ctx, false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && ls -Ap -- "$1"`, "sh", path)
 	if err != nil {
 		return "", fmt.Errorf("%s", strings.TrimSpace(out))
 	}
 	return out, nil
 }
 
-func (d *DockerExecutor) WriteFile(path, content string) (string, error) {
-	cmd := exec.Command("docker", "exec", "-i", d.container, "sh", "-c",
+func (d *DockerExecutor) WriteFile(ctx context.Context, path, content string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", d.container, "sh", "-c",
 		"cd "+shQuote(d.workspaceRoot)+` && mkdir -p "$(dirname -- "$1")" && cat > "$1"`, "sh", path)
 	cmd.Stdin = strings.NewReader(content)
 	out, err := cmd.CombinedOutput()
@@ -569,7 +576,7 @@ func (e *DirectExecutor) resolve(path string) string {
 	return filepath.Join(e.root, path)
 }
 
-func (e *DirectExecutor) StatFile(path string) (int64, error) {
+func (e *DirectExecutor) StatFile(_ context.Context, path string) (int64, error) {
 	info, err := os.Stat(e.resolve(path))
 	if err != nil {
 		return 0, err
@@ -577,7 +584,7 @@ func (e *DirectExecutor) StatFile(path string) (int64, error) {
 	return info.Size(), nil
 }
 
-func (e *DirectExecutor) ReadFile(path string) (string, error) {
+func (e *DirectExecutor) ReadFile(_ context.Context, path string) (string, error) {
 	b, err := os.ReadFile(e.resolve(path))
 	if err != nil {
 		return "", err
@@ -585,7 +592,7 @@ func (e *DirectExecutor) ReadFile(path string) (string, error) {
 	return string(b), nil
 }
 
-func (e *DirectExecutor) ListDir(path string) (string, error) {
+func (e *DirectExecutor) ListDir(_ context.Context, path string) (string, error) {
 	if path == "" {
 		path = "."
 	}
@@ -605,7 +612,7 @@ func (e *DirectExecutor) ListDir(path string) (string, error) {
 	return b.String(), nil
 }
 
-func (e *DirectExecutor) WriteFile(path, content string) (string, error) {
+func (e *DirectExecutor) WriteFile(_ context.Context, path, content string) (string, error) {
 	full := e.resolve(path)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "", err

@@ -192,7 +192,7 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 	}
 
 	// Log read receipts now that the user approved (pre-panel, post-gate).
-	a.mashuraLogReceipts(receipts)
+	a.mashuraLogReceipts(ctx, receipts)
 
 	// Run panel; for fusion mode this is a single OpenRouter call.
 	ccfg := counsel.PanelCallConfig{
@@ -304,7 +304,7 @@ func (a *App) mashuraPanelKeys(panel config.MashuraPanelConfig) (map[string]stri
 // WorkflowState (never model-edited text), the working directory, and the recent
 // step log read by Wakil from plan.md. Empty sections are omitted; outside a
 // workflow only the working directory is present.
-func (a *App) mashuraCore() string {
+func (a *App) mashuraCore(ctx context.Context) string {
 	var sb strings.Builder
 	if a.Workflow != nil {
 		if t := strings.TrimSpace(a.Workflow.Task); t != "" {
@@ -318,7 +318,7 @@ func (a *App) mashuraCore() string {
 			fmt.Fprintf(&sb, "## Working directory\n\n%s\n\n", cwd)
 		}
 	}
-	if entries := a.mashuraRecentStepLog(); len(entries) > 0 {
+	if entries := a.mashuraRecentStepLog(ctx); len(entries) > 0 {
 		sb.WriteString("## Step log (recent)\n\n")
 		sb.WriteString(strings.Join(entries, "\n\n"))
 		sb.WriteString("\n\n")
@@ -328,11 +328,11 @@ func (a *App) mashuraCore() string {
 
 // mashuraRecentStepLog reads the recent step-log entries from plan.md (Wakil's
 // record), or nil when there is no workflow / executor / readable plan.
-func (a *App) mashuraRecentStepLog() []string {
+func (a *App) mashuraRecentStepLog(ctx context.Context) []string {
 	if a.Workflow == nil || a.Exec == nil {
 		return nil
 	}
-	content, err := a.Exec.ReadFile(a.Workflow.PlanPath)
+	content, err := a.Exec.ReadFile(ctx, a.Workflow.PlanPath)
 	if err != nil {
 		return nil
 	}
@@ -341,11 +341,11 @@ func (a *App) mashuraRecentStepLog() []string {
 
 // mashuraPlanSections returns the ## Findings and ## Plan section bodies from
 // plan.md (empty when unavailable).
-func (a *App) mashuraPlanSections() (findings, plan string) {
+func (a *App) mashuraPlanSections(ctx context.Context) (findings, plan string) {
 	if a.Workflow == nil || a.Exec == nil {
 		return "", ""
 	}
-	content, err := a.Exec.ReadFile(a.Workflow.PlanPath)
+	content, err := a.Exec.ReadFile(ctx, a.Workflow.PlanPath)
 	if err != nil {
 		return "", ""
 	}
@@ -377,7 +377,7 @@ func (a *App) mashuraReview(ctx context.Context, tc proxy.ToolCall) (question, b
 	if focus == "" {
 		focus = strings.TrimSpace(args.Question)
 	}
-	findings, plan := a.mashuraPlanSections()
+	findings, plan := a.mashuraPlanSections(ctx)
 	if focus == "" && plan == "" && len(args.Paths) == 0 && len(args.PathRanges) == 0 {
 		return "", "", nil, fmt.Errorf("nothing to review: provide a focus, paths, or run inside a workflow with a plan")
 	}
@@ -388,7 +388,7 @@ func (a *App) mashuraReview(ctx context.Context, tc proxy.ToolCall) (question, b
 	}
 
 	var sb strings.Builder
-	sb.WriteString(a.mashuraCore())
+	sb.WriteString(a.mashuraCore(ctx))
 	if findings != "" {
 		fmt.Fprintf(&sb, "## Findings\n\n%s\n\n", workflow.CapFindings(findings))
 	}
@@ -429,7 +429,7 @@ func (a *App) mashuraDebug(ctx context.Context, tc proxy.ToolCall) (question, br
 	}
 
 	var sb strings.Builder
-	sb.WriteString(a.mashuraCore())
+	sb.WriteString(a.mashuraCore(ctx))
 	fmt.Fprintf(&sb, "## Symptom\n\n%s\n\n", symptom)
 	if tr := a.mashuraDebugTraces(); tr != "" {
 		fmt.Fprintf(&sb, "## Recent tool calls\n\n%s\n\n", tr)
@@ -517,7 +517,7 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 	total := 0
 
 	for _, e := range entries {
-		body, readErr := a.Exec.ReadFile(e.path)
+		body, readErr := a.Exec.ReadFile(ctx, e.path)
 		if readErr != nil {
 			return "", nil, fmt.Errorf("path %q: %v", e.path, readErr)
 		}
@@ -588,11 +588,11 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 //   - If it's a directory: returns the expanded source file list.
 //   - If it's neither: returns a pre-API error.
 func (a *App) mashuraExpandPath(ctx context.Context, path string) (files []string, isDir bool, err error) {
-	_, readErr := a.Exec.ReadFile(path)
+	_, readErr := a.Exec.ReadFile(ctx, path)
 	if readErr == nil {
 		return nil, false, nil // readable file
 	}
-	_, listErr := a.Exec.ListDir(path)
+	_, listErr := a.Exec.ListDir(ctx, path)
 	if listErr != nil {
 		return nil, false, fmt.Errorf("not found")
 	}
@@ -652,7 +652,7 @@ func (a *App) mashuraExpandDir(ctx context.Context, dirPath string) ([]string, e
 
 // mashuraLogReceipts emits read receipts to the step log (if in a workflow) and
 // to a.Out as a dim status line. Called after the user approves the gate.
-func (a *App) mashuraLogReceipts(receipts []mashuraSourceMeta) {
+func (a *App) mashuraLogReceipts(ctx context.Context, receipts []mashuraSourceMeta) {
 	if len(receipts) == 0 {
 		return
 	}
@@ -670,8 +670,8 @@ func (a *App) mashuraLogReceipts(receipts []mashuraSourceMeta) {
 	msg := "[mashura] sent: " + strings.Join(parts, ", ")
 	fmt.Fprintln(a.Out, Dim("· "+msg))
 	if a.Workflow != nil && a.Exec != nil {
-		if content, e := a.Exec.ReadFile(a.Workflow.PlanPath); e == nil {
-			_, _ = a.Exec.WriteFile(a.Workflow.PlanPath, workflow.WFAppendToStepLog(content, msg))
+		if content, e := a.Exec.ReadFile(ctx, a.Workflow.PlanPath); e == nil {
+			_, _ = a.Exec.WriteFile(ctx, a.Workflow.PlanPath, workflow.WFAppendToStepLog(content, msg))
 		}
 	}
 }
@@ -702,9 +702,9 @@ func (a *App) mashuraDecide(ctx context.Context, tc proxy.ToolCall) (question, b
 		return "", "", nil, srcErr
 	}
 
-	findings, _ := a.mashuraPlanSections()
+	findings, _ := a.mashuraPlanSections(ctx)
 	var sb strings.Builder
-	sb.WriteString(a.mashuraCore())
+	sb.WriteString(a.mashuraCore(ctx))
 	if findings != "" {
 		fmt.Fprintf(&sb, "## Findings\n\n%s\n\n", workflow.CapFindings(findings))
 	}
@@ -740,7 +740,7 @@ func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, br
 	}
 
 	var sb strings.Builder
-	sb.WriteString(a.mashuraCore())
+	sb.WriteString(a.mashuraCore(ctx))
 	fmt.Fprintf(&sb, "## Claim\n\n%s\n\n", claim)
 	if sourceSec != "" {
 		sb.WriteString(sourceSec)

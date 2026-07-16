@@ -1800,13 +1800,13 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			sizeLimit = 1 << 20 // 1 MB safety net when config is zero
 		}
 		if args.Limit == 0 {
-			if fileSize, serr := a.Exec.StatFile(canonical); serr == nil && fileSize > sizeLimit {
+			if fileSize, serr := a.Exec.StatFile(ctx, canonical); serr == nil && fileSize > sizeLimit {
 				return fmt.Sprintf(
 					"ERROR: file is %.2f MB, exceeds read limit of %.2f MB — specify a line/byte range or use search_files.",
 					float64(fileSize)/(1<<20), float64(sizeLimit)/(1<<20))
 			}
 		}
-		out, err := a.Exec.ReadFile(canonical)
+		out, err := a.Exec.ReadFile(ctx, canonical)
 		// Redirect a directory read to the right tool instead of returning a raw
 		// errno the model tends to retry against (a known subagent loop trigger).
 		if err != nil && strings.Contains(strings.ToLower(err.Error()), "is a directory") {
@@ -1857,12 +1857,12 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if fullLimit <= 0 {
 			fullLimit = 256 << 10 // 256 KB safety net when config is zero
 		}
-		if fileSize, serr := a.Exec.StatFile(canonical); serr == nil && fileSize > fullLimit {
+		if fileSize, serr := a.Exec.StatFile(ctx, canonical); serr == nil && fileSize > fullLimit {
 			return fmt.Sprintf(
 				"ERROR: file is %.2f MB, exceeds full-read limit of %.2f MB — use read_file with an offset/limit range instead.",
 				float64(fileSize)/(1<<20), float64(fullLimit)/(1<<20))
 		}
-		out, err := a.Exec.ReadFile(canonical)
+		out, err := a.Exec.ReadFile(ctx, canonical)
 		// Redirect a directory read to the right tool (same as read_file).
 		if err != nil && strings.Contains(strings.ToLower(err.Error()), "is a directory") {
 			return fmt.Sprintf("ERROR: %q is a directory, not a file — use list_dir to see its contents or search_files to search within it.", args.Path)
@@ -1898,7 +1898,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err != nil {
 			return "ERROR: " + err.Error()
 		}
-		out, err := a.Exec.ListDir(canonical)
+		out, err := a.Exec.ListDir(ctx, canonical)
 		return formatResult(out, err)
 
 	case "find_files":
@@ -1937,7 +1937,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		return formatResult(out, err)
 
 	case "edit_file":
-		return a.handleEditFile(tc)
+		return a.handleEditFile(ctx, tc)
 
 	case "search_files":
 		var args struct {
@@ -1996,7 +1996,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if !a.Confirm("write_file", "Write file?", detail, false) {
 			return "[declined by user]"
 		}
-		out, err := a.Exec.WriteFile(canonical, args.Content)
+		out, err := a.Exec.WriteFile(ctx, canonical, args.Content)
 		if err == nil && a.LSP != nil {
 			a.LSP.NotifyChange(context.Background(), canonical)
 		}
@@ -2686,7 +2686,7 @@ func formatFileView(content string, offset, limit int) string {
 // handleEditFile applies an exact-substring replacement to a file, gated behind a
 // confirmation that shows a -/+ diff preview. old_string must be present (and
 // unique unless replace_all) or a corrective error is returned for the model.
-func (a *App) handleEditFile(tc proxy.ToolCall) string {
+func (a *App) handleEditFile(ctx context.Context, tc proxy.ToolCall) string {
 	var args struct {
 		Path       string `json:"path"`
 		OldString  string `json:"old_string"`
@@ -2707,7 +2707,7 @@ func (a *App) handleEditFile(tc proxy.ToolCall) string {
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
-	cur, err := a.Exec.ReadFile(canonical)
+	cur, err := a.Exec.ReadFile(ctx, canonical)
 	if err != nil {
 		return "ERROR: could not read " + args.Path + ": " + err.Error()
 	}
@@ -2728,7 +2728,7 @@ func (a *App) handleEditFile(tc proxy.ToolCall) string {
 	if !a.Confirm("edit_file", "Apply edit?", editDiffPreview(args.Path, args.OldString, args.NewString, count, args.ReplaceAll, a.Exec.Describe()), false) {
 		return "[declined by user]"
 	}
-	out, err := a.Exec.WriteFile(canonical, updated)
+	out, err := a.Exec.WriteFile(ctx, canonical, updated)
 	if err != nil {
 		return formatResult(out, err)
 	}

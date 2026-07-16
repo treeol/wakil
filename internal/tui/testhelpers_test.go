@@ -56,13 +56,13 @@ func (f *fakeExecutor) RunShell(_ context.Context, c string) (string, error) {
 	f.shellCalls = append(f.shellCalls, c)
 	return "ran: " + c, nil
 }
-func (f *fakeExecutor) StatFile(p string) (int64, error) {
+func (f *fakeExecutor) StatFile(_ context.Context, p string) (int64, error) {
 	if v, ok := f.files[p]; ok {
 		return int64(len(v)), nil
 	}
 	return 0, fmt.Errorf("no such file: %s", p)
 }
-func (f *fakeExecutor) ReadFile(p string) (string, error) {
+func (f *fakeExecutor) ReadFile(_ context.Context, p string) (string, error) {
 	if f.dirs[p] {
 		return "", fmt.Errorf("read %s: is a directory", p)
 	}
@@ -71,7 +71,7 @@ func (f *fakeExecutor) ReadFile(p string) (string, error) {
 	}
 	return "", fmt.Errorf("no such file: %s", p)
 }
-func (f *fakeExecutor) ListDir(p string) (string, error) {
+func (f *fakeExecutor) ListDir(_ context.Context, p string) (string, error) {
 	var names []string
 	for k := range f.files {
 		names = append(names, k)
@@ -79,7 +79,7 @@ func (f *fakeExecutor) ListDir(p string) (string, error) {
 	sort.Strings(names)
 	return strings.Join(names, "\n"), nil
 }
-func (f *fakeExecutor) WriteFile(p, c string) (string, error) {
+func (f *fakeExecutor) WriteFile(_ context.Context, p, c string) (string, error) {
 	f.writeCalls[p] = c
 	f.files[p] = c
 	return fmt.Sprintf("wrote %d bytes to %s", len(c), p), nil

@@ -84,7 +84,7 @@ func probeTools(run func(string) string) string {
 func (d *DockerExecutor) SandboxTools() string {
 	d.toolsOnce.Do(func() {
 		d.sandboxTools = probeTools(func(script string) string {
-			out, _ := d.exec(false, "sh", "-c", script)
+			out, _ := d.execCtx(context.Background(), false, "sh", "-c", script)
 			return out
 		})
 	})
@@ -110,13 +110,13 @@ func isInsideWorkspace(p, root string) bool {
 	return p == root || strings.HasPrefix(p, root+"/")
 }
 
-func (d *DockerExecutor) ConfinePath(_ context.Context, path string) (string, error) {
+func (d *DockerExecutor) ConfinePath(ctx context.Context, path string) (string, error) {
 	if !strings.HasPrefix(path, "/") {
 		path = d.workspaceRoot + "/" + path
 	}
 	// readlink -f canonicalises the path and resolves symlinks; on GNU coreutils
 	// it also works for non-existent paths by resolving existing components.
-	out, err := d.exec(false, "sh", "-c", "readlink -f "+shQuote(path)+" 2>&1")
+	out, err := d.execCtx(ctx, false, "sh", "-c", "readlink -f "+shQuote(path)+" 2>&1")
 	if err != nil {
 		return "", fmt.Errorf("resolving path %q: %s", path, strings.TrimSpace(out))
 	}
@@ -147,12 +147,12 @@ func (e *DirectExecutor) ConfinePath(_ context.Context, path string) (string, er
 
 // ── B1: delete ────────────────────────────────────────────────────────────────
 
-func (d *DockerExecutor) DeletePath(_ context.Context, path string) error {
+func (d *DockerExecutor) DeletePath(ctx context.Context, path string) error {
 	// For directories use rmdir (fails on non-empty); for files/symlinks use rm.
 	script := fmt.Sprintf(
 		`if [ -d %[1]s ] && [ ! -L %[1]s ]; then rmdir -- %[1]s 2>&1; else rm -- %[1]s 2>&1; fi`,
 		shQuote(path))
-	out, err := d.exec(false, "sh", "-c", script)
+	out, err := d.execCtx(ctx, false, "sh", "-c", script)
 	if err != nil {
 		msg := strings.TrimSpace(out)
 		if strings.Contains(msg, "not empty") || strings.Contains(strings.ToLower(msg), "directory not empty") {
@@ -179,14 +179,14 @@ func (e *DirectExecutor) DeletePath(_ context.Context, path string) error {
 
 // ── B2: move/rename ───────────────────────────────────────────────────────────
 
-func (d *DockerExecutor) MovePath(_ context.Context, src, dst string) error {
+func (d *DockerExecutor) MovePath(ctx context.Context, src, dst string) error {
 	// Explicit existence check before mv so the error message is actionable.
-	checkOut, checkErr := d.exec(false, "sh", "-c",
+	checkOut, checkErr := d.execCtx(ctx, false, "sh", "-c",
 		fmt.Sprintf(`[ ! -e %[1]s ] && [ ! -L %[1]s ] && echo ok || echo exists`, shQuote(dst)))
 	if checkErr == nil && strings.TrimSpace(checkOut) == "exists" {
 		return fmt.Errorf("destination already exists: %s — delete it first if you intended to overwrite", dst)
 	}
-	out, err := d.exec(false, "sh", "-c",
+	out, err := d.execCtx(ctx, false, "sh", "-c",
 		fmt.Sprintf("mv -n -- %s %s 2>&1", shQuote(src), shQuote(dst)))
 	if err != nil {
 		return fmt.Errorf("%s", strings.TrimSpace(out))
@@ -237,13 +237,13 @@ func crossDeviceCopy(src, dst string) error {
 
 // ── B3: background processes ──────────────────────────────────────────────────
 
-func (d *DockerExecutor) StartBackground(_ context.Context, command, logPath string) (pid, pgid int, err error) {
+func (d *DockerExecutor) StartBackground(ctx context.Context, command, logPath string) (pid, pgid int, err error) {
 	// setsid creates a new session so PGID == PID of the setsid process.
 	// The & sends it to the background; echo $! captures its PID.
 	script := fmt.Sprintf(
 		`setsid nohup sh -c %s > %s 2>&1 & echo $!`,
 		shQuote(command), shQuote(logPath))
-	out, execErr := d.exec(false, "sh", "-c", script)
+	out, execErr := d.execCtx(ctx, false, "sh", "-c", script)
 	if execErr != nil {
 		return 0, 0, fmt.Errorf("starting background process: %s", strings.TrimSpace(out))
 	}
@@ -273,10 +273,10 @@ func (e *DirectExecutor) StartBackground(_ context.Context, command, logPath str
 	return pid, pid, nil // Setpgid: PGID == PID
 }
 
-func (d *DockerExecutor) KillPgid(_ context.Context, pgid, sig int) error {
+func (d *DockerExecutor) KillPgid(ctx context.Context, pgid, sig int) error {
 	// Use "kill -SIG -PGID" (no --); dash's kill builtin rejects "-- -N".
 	script := fmt.Sprintf("kill -%d -%d 2>/dev/null; exit 0", sig, pgid)
-	_, err := d.exec(false, "sh", "-c", script)
+	_, err := d.execCtx(ctx, false, "sh", "-c", script)
 	return err
 }
 
@@ -288,10 +288,10 @@ func (e *DirectExecutor) KillPgid(_ context.Context, pgid, sig int) error {
 	return err
 }
 
-func (d *DockerExecutor) IsProcessAlive(_ context.Context, pid int) bool {
+func (d *DockerExecutor) IsProcessAlive(ctx context.Context, pid int) bool {
 	// kill -0 returns 0 for zombies too, so check /proc state directly.
 	// A zombie (state Z) has exited — treat as not alive.
-	out, err := d.exec(false, "sh", "-c",
+	out, err := d.execCtx(ctx, false, "sh", "-c",
 		fmt.Sprintf("ps -o stat= -p %d 2>/dev/null", pid))
 	if err != nil {
 		return false // docker exec failed (container may be gone)
@@ -304,8 +304,8 @@ func (e *DirectExecutor) IsProcessAlive(_ context.Context, pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-func (d *DockerExecutor) ReadFileTail(_ context.Context, path string, maxBytes int64) (string, error) {
-	out, err := d.exec(false, "sh", "-c",
+func (d *DockerExecutor) ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error) {
+	out, err := d.execCtx(ctx, false, "sh", "-c",
 		fmt.Sprintf("tail -c %d %s 2>&1", maxBytes, shQuote(path)))
 	if err != nil {
 		return "", fmt.Errorf("reading log: %s", strings.TrimSpace(out))
