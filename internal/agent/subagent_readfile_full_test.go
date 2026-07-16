@@ -67,18 +67,18 @@ func TestSubagentReadFileFullSmallFile(t *testing.T) {
 		Name: "read_file_full", Arguments: `{"path":"small.go"}`,
 	}})
 
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("expected full content, got error: %q", res)
+	if !res.ok {
+		t.Fatalf("expected full content, got error: %q", res.text)
 	}
 	// Must contain all lines.
-	if !strings.Contains(res, "func main() {}") {
-		t.Fatalf("file content missing from result:\n%s", res)
+	if !strings.Contains(res.text, "func main() {}") {
+		t.Fatalf("file content missing from result:\n%s", res.text)
 	}
 	// Must NOT have a window header.
-	if strings.Contains(res, "[lines ") {
-		t.Fatalf("read_file_full must not window inside a subagent: %q", res)
+	if strings.Contains(res.text, "[lines ") {
+		t.Fatalf("read_file_full must not window inside a subagent: %q", res.text)
 	}
-	t.Logf("OK: subagent read_file_full returned full content (%d bytes), no window header", len(res))
+	t.Logf("OK: subagent read_file_full returned full content (%d bytes), no window header", len(res.text))
 }
 
 // --- Test 2: ~256KB file spills to disk with a REAL path under the subagent's chatID ---
@@ -101,7 +101,7 @@ func TestSubagentReadFileFullSpillPath(t *testing.T) {
 		Name: "read_file_full", Arguments: `{"path":"big.go"}`,
 	}})
 
-	result := app.CapOrStub(raw, "read_file_full", 0)
+	result := app.CapOrStub(raw.text, "read_file_full", 0)
 
 	// The result MUST carry the [full content at: PATH] marker.
 	if !strings.Contains(result, "[full content at:") {
@@ -158,13 +158,13 @@ func TestSubagentReadFileFullBinaryRefusal(t *testing.T) {
 		Name: "read_file_full", Arguments: `{"path":"wakil_bin"}`,
 	}})
 
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("expected binary-guard error, got: %q", res)
+	if res.ok {
+		t.Fatalf("expected binary-guard error, got: %q", res.text)
 	}
-	if !strings.Contains(res, "binary file") {
-		t.Fatalf("expected 'binary file' in error, got: %q", res)
+	if !strings.Contains(res.text, "binary file") {
+		t.Fatalf("expected 'binary file' in error, got: %q", res.text)
 	}
-	t.Logf("OK: subagent binary sniff refused: %q", res)
+	t.Logf("OK: subagent binary sniff refused: %q", res.text)
 }
 
 // --- Test 4: two dispatches resolve DIFFERENT chatIDs ---

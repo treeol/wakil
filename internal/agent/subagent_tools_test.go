@@ -32,17 +32,17 @@ func TestCapabilityToolsWithoutConsent(t *testing.T) {
 	tc := makeEditToolCall("dispatch_subagent", `{"task":"use tools","capability":"tools"}`)
 	result := parent.ExecuteToolCall(context.Background(), tc)
 
-	if !strings.Contains(result, "ERROR: tools capability requires") {
-		t.Errorf("expected consent error, got: %s", result)
+	if !strings.Contains(result.text, "ERROR: tools capability requires") {
+		t.Errorf("expected consent error, got: %s", result.text)
 	}
-	if !strings.Contains(result, "/auto") {
-		t.Errorf("error should mention /auto, got: %s", result)
+	if !strings.Contains(result.text, "/auto") {
+		t.Errorf("error should mention /auto, got: %s", result.text)
 	}
 	if requestCount != 0 {
 		t.Errorf("no child should be dispatched without consent; got %d requests", requestCount)
 	}
-	if !strings.Contains(result, "discovery") {
-		t.Errorf("error should suggest discovery as alternative, got: %s", result)
+	if !strings.Contains(result.text, "discovery") {
+		t.Errorf("error should suggest discovery as alternative, got: %s", result.text)
 	}
 }
 
@@ -273,11 +273,11 @@ func TestCapabilityValidationNamesTools(t *testing.T) {
 	tc := makeEditToolCall("dispatch_subagent", `{"task":"test","capability":"exec"}`)
 	result := parent.ExecuteToolCall(context.Background(), tc)
 
-	if !strings.Contains(result, "ERROR: unknown capability") {
-		t.Errorf("expected unknown capability error, got: %s", result)
+	if !strings.Contains(result.text, "ERROR: unknown capability") {
+		t.Errorf("expected unknown capability error, got: %s", result.text)
 	}
-	if !strings.Contains(result, "tools") {
-		t.Errorf("error should name 'tools' as a valid value, got: %s", result)
+	if !strings.Contains(result.text, "tools") {
+		t.Errorf("error should name 'tools' as a valid value, got: %s", result.text)
 	}
 }
 

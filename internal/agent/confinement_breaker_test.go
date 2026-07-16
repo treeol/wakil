@@ -47,7 +47,7 @@ func TestIsConfinementError(t *testing.T) {
 		{"not an error at all", `package main\n\nfunc main() {}`, false},
 	}
 	for _, c := range cases {
-		got := isConfinementError(c.in)
+		got := isConfinementError(stringToToolResult(c.in))
 		if got != c.want {
 			t.Errorf("%s: isConfinementError(%q) = %v, want %v", c.name, c.in, got, c.want)
 		}

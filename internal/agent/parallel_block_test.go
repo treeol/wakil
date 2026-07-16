@@ -314,8 +314,8 @@ func TestBatchToolAggregatesInOrder(t *testing.T) {
 	result := app.ExecuteToolCall(context.Background(), tc)
 
 	var arr []string
-	if err := json.Unmarshal([]byte(result), &arr); err != nil {
-		t.Fatalf("batch result is not a JSON array: %v\n%s", err, result)
+	if err := json.Unmarshal([]byte(result.text), &arr); err != nil {
+		t.Fatalf("batch result is not a JSON array: %v\n%s", err, result.text)
 	}
 	if len(arr) != 2 {
 		t.Fatalf("want 2 aggregated results, got %d", len(arr))
@@ -342,8 +342,8 @@ func TestBatchToolValidation(t *testing.T) {
 	for _, c := range cases {
 		tc := proxy.ToolCall{ID: "b", Function: proxy.FunctionCall{Name: "dispatch_subagents", Arguments: c.args}}
 		got := app.ExecuteToolCall(context.Background(), tc)
-		if !strings.Contains(got, c.want) {
-			t.Errorf("args %q: got %q, want substring %q", c.args, got, c.want)
+		if !strings.Contains(got.text, c.want) {
+			t.Errorf("args %q: got %q, want substring %q", c.args, got.text, c.want)
 		}
 	}
 }

@@ -55,15 +55,15 @@ func TestLiveReadFileFullRealBinary(t *testing.T) {
 
 	// The size guard must NOT fire (file is under ceiling). The binary sniff
 	// must refuse it.
-	if strings.Contains(res, "exceeds full-read limit") {
-		t.Fatalf("size guard must not fire for small binary — the binary sniff should catch it. Got: %q", res)
+	if strings.Contains(res.text, "exceeds full-read limit") {
+		t.Fatalf("size guard must not fire for small binary — the binary sniff should catch it. Got: %q", res.text)
 	}
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("expected binary-guard error for real ELF, got result of length %d", len(res))
+	if res.ok {
+		t.Fatalf("expected binary-guard error for real ELF, got result of length %d", len(res.text))
 	}
-	if !strings.Contains(res, "binary file") {
-		t.Fatalf("expected 'binary file' in error, got: %q", res)
+	if !strings.Contains(res.text, "binary file") {
+		t.Fatalf("expected 'binary file' in error, got: %q", res.text)
 	}
 
-	t.Logf("OK: real ELF binary (%d bytes) refused by binary sniff: %q", info.Size(), res)
+	t.Logf("OK: real ELF binary (%d bytes) refused by binary sniff: %q", info.Size(), res.text)
 }

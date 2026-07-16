@@ -2,9 +2,8 @@ package agent
 
 // Characterization tests for ExecuteToolCall and shared gates.
 //
-// These tests assert `string` return values from ExecuteToolCall.
-// When WP-6.8 changes the return type to `toolResult`, these tests must be
-// updated. See implementation-plan.md WP-5.4 for details.
+// These tests assert toolResult return values from ExecuteToolCall (WP-6.8).
+// Success/failure is checked via res.ok; content is checked via res.text.
 
 import (
 	"context"
@@ -25,8 +24,8 @@ func TestExecuteToolCall_ReadFile(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"test.txt"}`,
 	}})
-	if !strings.Contains(res, "line1") {
-		t.Errorf("read_file result missing content: %s", res)
+	if !strings.Contains(res.text, "line1") {
+		t.Errorf("read_file result missing content: %s", res.text)
 	}
 }
 
@@ -40,8 +39,8 @@ func TestExecuteToolCall_ListDir(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "list_dir", Arguments: `{"path":"."}`,
 	}})
-	if !strings.Contains(res, "a.txt") || !strings.Contains(res, "b.go") {
-		t.Errorf("list_dir result missing entries: %s", res)
+	if !strings.Contains(res.text, "a.txt") || !strings.Contains(res.text, "b.go") {
+		t.Errorf("list_dir result missing entries: %s", res.text)
 	}
 }
 
@@ -54,8 +53,8 @@ func TestExecuteToolCall_SearchFiles(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "search_files", Arguments: `{"pattern":"hello","path":"test.txt"}`,
 	}})
-	if !strings.Contains(res, "hello") {
-		t.Errorf("search_files result missing match: %s", res)
+	if !strings.Contains(res.text, "hello") {
+		t.Errorf("search_files result missing match: %s", res.text)
 	}
 }
 
@@ -70,8 +69,8 @@ func TestExecuteToolCall_FindFiles(t *testing.T) {
 	}})
 	// find_files uses RunShell under the hood; fake executor returns "ran: <cmd>"
 	// The important thing is it doesn't error.
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("find_files returned error: %s", res)
+	if !res.ok {
+		t.Errorf("find_files returned error: %s", res.text)
 	}
 }
 
@@ -83,8 +82,8 @@ func TestExecuteToolCall_WriteFile(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "write_file", Arguments: `{"path":"out.txt","content":"hello"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("write_file returned error: %s", res)
+	if !res.ok {
+		t.Errorf("write_file returned error: %s", res.text)
 	}
 	if fe.writeCalls["out.txt"] != "hello" {
 		t.Errorf("write_file did not write expected content; got %q", fe.writeCalls["out.txt"])
@@ -100,8 +99,8 @@ func TestExecuteToolCall_EditFile(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "edit_file", Arguments: `{"path":"test.txt","old_string":"old","new_string":"new"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("edit_file returned error: %s", res)
+	if !res.ok {
+		t.Errorf("edit_file returned error: %s", res.text)
 	}
 	if !strings.Contains(fe.files["test.txt"], "new content") {
 		t.Errorf("edit_file did not modify content; got %q", fe.files["test.txt"])
@@ -117,8 +116,8 @@ func TestExecuteToolCall_DeleteFile(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "delete_file", Arguments: `{"path":"doomed.txt"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("delete_file returned error: %s", res)
+	if !res.ok {
+		t.Errorf("delete_file returned error: %s", res.text)
 	}
 }
 
@@ -131,13 +130,13 @@ func TestExecuteToolCall_MoveFile(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "move_file", Arguments: `{"src":"src.txt","dst":"dst.txt"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("move_file returned error: %s", res)
+	if !res.ok {
+		t.Errorf("move_file returned error: %s", res.text)
 	}
 }
 
 // TestExecuteToolCall_DeclinedGate verifies that a declined confirm gate
-// returns "[declined by user]".
+// returns "[declined by user]" and is classified as !ok.
 func TestExecuteToolCall_DeclinedGate(t *testing.T) {
 	fe := newFakeExecutor()
 	app := newTestApp("", fe, func(_, _, _ string, _ bool) bool { return false })
@@ -145,8 +144,11 @@ func TestExecuteToolCall_DeclinedGate(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "write_file", Arguments: `{"path":"out.txt","content":"hello"}`,
 	}})
-	if !strings.Contains(res, "declined") {
-		t.Errorf("declined write_file should say 'declined': %s", res)
+	if res.ok {
+		t.Errorf("declined write_file should be !ok: %s", res.text)
+	}
+	if !strings.Contains(res.text, "declined") {
+		t.Errorf("declined write_file should say 'declined': %s", res.text)
 	}
 }
 
@@ -159,8 +161,8 @@ func TestExecuteToolCall_InvalidArgs(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{invalid json}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("invalid args should return ERROR: %s", res)
+	if res.ok {
+		t.Errorf("invalid args should return ERROR: %s", res.text)
 	}
 }
 
@@ -173,8 +175,8 @@ func TestExecuteToolCall_UnknownTool(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "nonexistent_tool", Arguments: `{}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("unknown tool should return ERROR: %s", res)
+	if res.ok {
+		t.Errorf("unknown tool should return ERROR: %s", res.text)
 	}
 }
 
@@ -186,8 +188,8 @@ func TestExecuteToolCall_RunShell(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_shell", Arguments: `{"command":"echo hello"}`,
 	}})
-	if !strings.Contains(res, "ran:") {
-		t.Errorf("run_shell result unexpected: %s", res)
+	if !strings.Contains(res.text, "ran:") {
+		t.Errorf("run_shell result unexpected: %s", res.text)
 	}
 }
 
@@ -199,8 +201,8 @@ func TestExecuteToolCall_StagingPut(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "staging_put", Arguments: `{"key":"test","value":"hello"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("staging_put returned error: %s", res)
+	if !res.ok {
+		t.Errorf("staging_put returned error: %s", res.text)
 	}
 }
 
@@ -212,13 +214,14 @@ func TestExecuteToolCall_MemoryPut(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "memory_put", Arguments: `{"key":"test/char","value":"hello","kind":"note"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("memory_put returned error: %s", res)
+	if !res.ok {
+		t.Errorf("memory_put returned error: %s", res.text)
 	}
 }
 
-// TestExecuteToolCall_ErrorFormat verifies that errors use the "ERROR:" prefix.
-// This is the string protocol that WP-6.8 will replace with typed toolResult.
+// TestExecuteToolCall_ErrorFormat verifies that errors are classified as !ok
+// in the typed toolResult (WP-6.8). The text still carries the "ERROR:" prefix
+// for the transcript boundary.
 func TestExecuteToolCall_ErrorFormat(t *testing.T) {
 	fe := newFakeExecutor()
 	app := newTestApp("", fe, func(_, _, _ string, _ bool) bool { return true })
@@ -227,8 +230,8 @@ func TestExecuteToolCall_ErrorFormat(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"nonexistent.xyz"}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("error result should start with 'ERROR:': %s", res)
+	if res.ok {
+		t.Errorf("error result should be !ok: %s", res.text)
 	}
 }
 
@@ -244,8 +247,8 @@ func TestExecuteToolCall_MissingRequiredArg(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_shell", Arguments: `{}`,
 	}})
-	// Must not panic and must return a string.
-	if res == "" {
+	// Must not panic and must return a non-empty string.
+	if res.text == "" {
 		t.Error("missing required arg should still return a non-empty string")
 	}
 }
@@ -268,7 +271,42 @@ func TestExecuteToolCall_ReadProcessLog(t *testing.T) {
 		Name: "read_process_log", Arguments: `{"id":"bg1"}`,
 	}})
 	// fakeExecutor reports IsProcessAlive=false, so status should be "exited".
-	if !strings.Contains(res, "exited") {
-		t.Errorf("read_process_log should report 'exited' for dead process: %s", res)
+	if !strings.Contains(res.text, "exited") {
+		t.Errorf("read_process_log should report 'exited' for dead process: %s", res.text)
+	}
+}
+
+// TestToolResult_TypedBoundaryEnablesCorrectClassification documents that the
+// typed toolResult boundary makes correct classification *possible*: a handler
+// that knows its output may legitimately start with "ERROR:" can return
+// okResult(text) directly, bypassing the stringToToolResult bridge. Under the
+// old string protocol, downstream HasPrefix checks would misclassify such
+// output regardless of what the handler intended.
+//
+// Note: the current handler layer still returns string and goes through
+// stringToToolResult, which conservatively classifies "ERROR:" text as !ok.
+// The full fix (handlers returning toolResult natively) is a future pass.
+// This test locks down the typed boundary's correctness so that future
+// migration is safe.
+func TestToolResult_TypedBoundaryEnablesCorrectClassification(t *testing.T) {
+	// A handler that explicitly returns okResult with ERROR:-prefixed text.
+	tr := okResult("ERROR: no issues found in 42 files")
+	if !tr.ok {
+		t.Error("okResult should produce ok=true even if text starts with ERROR:")
+	}
+	if tr.text != "ERROR: no issues found in 42 files" {
+		t.Errorf("text should be preserved: got %q", tr.text)
+	}
+
+	// The summary should NOT show the error flag for an ok result.
+	summary := resultSummary(tr)
+	if strings.Contains(summary, "✗") {
+		t.Errorf("ok result should not show error marker in summary: %s", summary)
+	}
+
+	// MakeTraceEntry should NOT set ExitErr for an ok result.
+	e := MakeTraceEntry(proxy.ToolCall{Function: proxy.FunctionCall{Name: "run_shell"}}, tr)
+	if e.ExitErr {
+		t.Error("ok result should not set ExitErr in trace entry")
 	}
 }

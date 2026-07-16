@@ -1608,8 +1608,8 @@ func TestWFAllPhasesBlockPlanRewrite(t *testing.T) {
 		app := wfTestApp(phase)
 		result := app.ExecuteToolCall(context.Background(), makeToolCall(
 			"write_file", `{"path":".wakil/plan.md","content":"WIPED"}`))
-		if !strings.Contains(result, "write_file on plan.md is not permitted") {
-			t.Errorf("phase %d: expected plan.md write rejection, got: %q", phase, result)
+		if !strings.Contains(result.String(), "write_file on plan.md is not permitted") {
+			t.Errorf("phase %d: expected plan.md write rejection, got: %q", phase, result.String())
 		}
 	}
 }
@@ -1624,8 +1624,8 @@ func TestWFEditFileToPlanAllowedInGather(t *testing.T) {
 	result := app.ExecuteToolCall(context.Background(), makeToolCall(
 		"edit_file", `{"path":".wakil/plan.md","old_string":"(pending)","new_string":"found stuff"}`))
 
-	if strings.Contains(result, "workflow") && strings.Contains(result, "not permitted") {
-		t.Errorf("edit_file on plan.md should be allowed in GATHER, got: %q", result)
+	if strings.Contains(result.String(), "workflow") && strings.Contains(result.String(), "not permitted") {
+		t.Errorf("edit_file on plan.md should be allowed in GATHER, got: %q", result.String())
 	}
 }
 
@@ -1912,7 +1912,7 @@ func TestMakeTraceEntry(t *testing.T) {
 	}
 	// Error result from formatResult(out, err).
 	errResult := "FAIL\twakil\nERROR: exit status 1"
-	e := agent.MakeTraceEntry(tc, errResult)
+	e := agent.MakeTraceEntry(tc, agent.StringToToolResult(errResult))
 	if !e.ExitErr {
 		t.Error("makeTraceEntry should detect exitErr from 'ERROR:' in result")
 	}
@@ -1925,14 +1925,14 @@ func TestMakeTraceEntry(t *testing.T) {
 
 	// Non-error result.
 	okResult := "ok\twakil"
-	e2 := agent.MakeTraceEntry(tc, okResult)
+	e2 := agent.MakeTraceEntry(tc, agent.StringToToolResult(okResult))
 	if e2.ExitErr {
 		t.Error("should not detect exitErr for clean output")
 	}
 
 	// 4-line tail: run_shell captures up to the last 4 non-empty distinct lines.
 	multiResult := "--- RUN TestA\n--- PASS: TestA\nBenchmarkFoo-8\t1234 ns/op\nPASS\nok\twakil\t0.014s"
-	e3 := agent.MakeTraceEntry(tc, multiResult)
+	e3 := agent.MakeTraceEntry(tc, agent.StringToToolResult(multiResult))
 	// firstLine is "--- RUN TestA"; tail is the last 4 distinct lines in order.
 	if e3.FirstLine != "--- RUN TestA" {
 		t.Errorf("FirstLine: got %q", e3.FirstLine)
@@ -3131,8 +3131,8 @@ func TestWFPhaseBlocksProjectWrite(t *testing.T) {
 	result := app.ExecuteToolCall(context.Background(), makeToolCall(
 		"write_file", `{"path":"compact.go","content":"oops"}`))
 
-	if !strings.Contains(result, "workflow phase gather") {
-		t.Errorf("expected phase-gather error, got: %q", result)
+	if !strings.Contains(result.String(), "workflow phase gather") {
+		t.Errorf("expected phase-gather error, got: %q", result.String())
 	}
 	if _, ok := exec.files["compact.go"]; ok {
 		t.Error("compact.go must not be created when phase blocks the write")
@@ -3147,8 +3147,8 @@ func TestWFPhaseAllowsNonPlanWakilWrite(t *testing.T) {
 	result := app.ExecuteToolCall(context.Background(), makeToolCall(
 		"write_file", `{"path":".wakil/notes.md","content":"some notes"}`))
 
-	if strings.Contains(result, "workflow") {
-		t.Errorf("should allow .wakil/ (non-plan) write, got: %q", result)
+	if strings.Contains(result.String(), "workflow") {
+		t.Errorf("should allow .wakil/ (non-plan) write, got: %q", result.String())
 	}
 }
 
@@ -3162,8 +3162,8 @@ func TestWFPhaseBlocksEditOutsideWakil(t *testing.T) {
 	result := app.ExecuteToolCall(context.Background(), makeToolCall(
 		"edit_file", `{"path":"app.go","old_string":"package main","new_string":"// oops"}`))
 
-	if !strings.Contains(result, "workflow phase plan") {
-		t.Errorf("expected phase-plan error, got: %q", result)
+	if !strings.Contains(result.String(), "workflow phase plan") {
+		t.Errorf("expected phase-plan error, got: %q", result.String())
 	}
 	if exec.files["app.go"] != "package main\n" {
 		t.Error("app.go content was modified despite phase block")
@@ -3178,8 +3178,8 @@ func TestWFPhaseBlocksRunBackground(t *testing.T) {
 	result := app.ExecuteToolCall(context.Background(), makeToolCall(
 		"run_background", `{"command":"server","label":"dev"}`))
 
-	if !strings.Contains(result, "workflow phase present") {
-		t.Errorf("expected phase-present error, got: %q", result)
+	if !strings.Contains(result.String(), "workflow phase present") {
+		t.Errorf("expected phase-present error, got: %q", result.String())
 	}
 }
 
@@ -3193,8 +3193,8 @@ func TestWFImplementBlocksPlanRewrite(t *testing.T) {
 	result := app.ExecuteToolCall(context.Background(), makeToolCall(
 		"write_file", `{"path":".wakil/plan.md","content":"WIPED"}`))
 
-	if !strings.Contains(result, "write_file on plan.md is not permitted") {
-		t.Errorf("expected plan.md write rejection, got: %q", result)
+	if !strings.Contains(result.String(), "write_file on plan.md is not permitted") {
+		t.Errorf("expected plan.md write rejection, got: %q", result.String())
 	}
 	if exec.files[".wakil/plan.md"] != original {
 		t.Error("plan.md was overwritten despite phase block")
@@ -3212,8 +3212,8 @@ func TestWFImplementAllowsEditFileToPlan(t *testing.T) {
 	result := app.ExecuteToolCall(context.Background(), makeToolCall(
 		"edit_file", `{"path":".wakil/plan.md","old_string":"NONEXISTENT","new_string":"x"}`))
 
-	if strings.Contains(result, "workflow phase") {
-		t.Errorf("edit_file on plan.md must not be phase-blocked during IMPLEMENT, got: %q", result)
+	if strings.Contains(result.String(), "workflow phase") {
+		t.Errorf("edit_file on plan.md must not be phase-blocked during IMPLEMENT, got: %q", result.String())
 	}
 }
 
@@ -3228,8 +3228,8 @@ func TestWFPhaseAllowsWriteAfterImplement(t *testing.T) {
 		"write_file", `{"path":"app.go","content":"package main\n// fixed"}`))
 
 	// Must not produce a phase error.
-	if strings.Contains(result, "workflow phase") {
-		t.Errorf("IMPLEMENT should permit project writes, got: %q", result)
+	if strings.Contains(result.String(), "workflow phase") {
+		t.Errorf("IMPLEMENT should permit project writes, got: %q", result.String())
 	}
 }
 

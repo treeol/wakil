@@ -103,7 +103,7 @@ func TestMashuraDebugIncludesFullErrorTail(t *testing.T) {
 	for i := 1; i <= 20; i++ {
 		fmt.Fprintf(&out, "ERRLINE-%02d\n", i)
 	}
-	app.recordRecentTrace(tcArgs("run_shell", `{"command":"go build ./..."}`), out.String())
+	app.recordRecentTrace(tcArgs("run_shell", `{"command":"go build ./..."}`), stringToToolResult(out.String()))
 
 	ctx := context.Background()
 	_, briefing, _, err := app.mashuraDebug(ctx, tcArgs("mashura__debug", `{"symptom":"build keeps failing"}`))

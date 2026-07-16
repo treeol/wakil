@@ -432,15 +432,15 @@ func TestExecuteToolCall_ToolCache_Dedup(t *testing.T) {
 	r1 := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"a.go"}`,
 	}})
-	if strings.Contains(r1, "already called") {
-		t.Fatalf("first call should execute: %s", r1)
+	if strings.Contains(r1.text, "already called") {
+		t.Fatalf("first call should execute: %s", r1.text)
 	}
 
 	r2 := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"./a.go"}`,
 	}})
-	if !strings.Contains(r2, "already called") {
-		t.Errorf("equivalent path should be deduped: %s", r2)
+	if !strings.Contains(r2.text, "already called") {
+		t.Errorf("equivalent path should be deduped: %s", r2.text)
 	}
 }
 
@@ -464,8 +464,8 @@ func TestExecuteToolCall_ConfirmAccepted(t *testing.T) {
 	if !confirmed {
 		t.Error("confirm gate should have been called for run_shell")
 	}
-	if strings.Contains(res, "declined") {
-		t.Errorf("accepted tool should execute: %s", res)
+	if strings.Contains(res.text, "declined") {
+		t.Errorf("accepted tool should execute: %s", res.text)
 	}
 }
 
@@ -480,8 +480,8 @@ func TestExecuteToolCall_ReadFileFull(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file_full", Arguments: `{"path":"full.txt"}`,
 	}})
-	if !strings.Contains(res, "full content") {
-		t.Errorf("read_file_full result missing content: %s", res)
+	if !strings.Contains(res.text, "full content") {
+		t.Errorf("read_file_full result missing content: %s", res.text)
 	}
 }
 
@@ -497,7 +497,7 @@ func TestExecuteToolCall_OpenURL(t *testing.T) {
 	}})
 	// The tool will likely error in the sandbox (no xdg-open), but it must
 	// return a string without panicking.
-	if res == "" {
+	if res.text == "" {
 		t.Error("open_url should return a non-empty string")
 	}
 }
@@ -511,8 +511,8 @@ func TestExecuteToolCall_RunBackground(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_background", Arguments: `{"command":"sleep 10","label":"test"}`,
 	}})
-	if !strings.Contains(res, "id:") {
-		t.Errorf("run_background should return an id: %s", res)
+	if !strings.Contains(res.text, "id:") {
+		t.Errorf("run_background should return an id: %s", res.text)
 	}
 }
 
@@ -538,8 +538,8 @@ func TestExecuteToolCall_RunBackground_CapEnforced(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_background", Arguments: `{"command":"sleep 10","label":"test"}`,
 	}})
-	if !strings.Contains(res, "maximum of 5") {
-		t.Errorf("6th background process should be rejected: %s", res)
+	if !strings.Contains(res.text, "maximum of 5") {
+		t.Errorf("6th background process should be rejected: %s", res.text)
 	}
 }
 
@@ -555,7 +555,7 @@ func TestExecuteToolCall_StagingGet(t *testing.T) {
 		Name: "staging_get", Arguments: `{"key":"test-key"}`,
 	}})
 	// Must return a non-empty string (either the value or an "unavailable" message).
-	if res == "" {
+	if res.text == "" {
 		t.Error("staging_get should return a non-empty string")
 	}
 }
@@ -570,7 +570,7 @@ func TestExecuteToolCall_MemoryGet(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "memory_get", Arguments: `{"key":"test/mem"}`,
 	}})
-	if res == "" {
+	if res.text == "" {
 		t.Error("memory_get should return a non-empty string")
 	}
 }
@@ -584,7 +584,7 @@ func TestExecuteToolCall_StagingDelete(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "staging_delete", Arguments: `{"key":"del-key"}`,
 	}})
-	if res == "" {
+	if res.text == "" {
 		t.Error("staging_delete should return a non-empty string")
 	}
 }
@@ -598,7 +598,7 @@ func TestExecuteToolCall_StagingList(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "staging_list", Arguments: `{}`,
 	}})
-	if res == "" {
+	if res.text == "" {
 		t.Error("staging_list should return a non-empty string")
 	}
 }

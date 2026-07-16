@@ -36,11 +36,11 @@ func TestStagingToDurableBridgeIntegration(t *testing.T) {
 
 	stagingPutResult := stagingApp.ExecuteToolCall(ctx, memToolCall("staging_put",
 		`{"key":"research-findings","value":"The auth module uses JWT with refresh tokens. Token expiry is 15min, refresh is 7d."}`))
-	if strings.Contains(stagingPutResult, "ERROR") {
-		t.Fatalf("subagent staging_put failed: %s", stagingPutResult)
+	if strings.Contains(stagingPutResult.text, "ERROR") {
+		t.Fatalf("subagent staging_put failed: %s", stagingPutResult.text)
 	}
-	if !strings.Contains(stagingPutResult, "sub-abc12345/research-findings") {
-		t.Fatalf("staging put should show prefixed key, got: %s", stagingPutResult)
+	if !strings.Contains(stagingPutResult.text, "sub-abc12345/research-findings") {
+		t.Fatalf("staging put should show prefixed key, got: %s", stagingPutResult.text)
 	}
 
 	// Phase 2: Main agent bridges from staging to durable (proposed).
@@ -50,76 +50,76 @@ func TestStagingToDurableBridgeIntegration(t *testing.T) {
 
 	bridgeResult := stagingApp.ExecuteToolCall(ctx, memToolCall("memory_promote_from_staging",
 		`{"staging_key":"sub-abc12345/research-findings","key":"arch/auth-flow","kind":"summary"}`))
-	if strings.Contains(bridgeResult, "ERROR") {
-		t.Fatalf("memory_promote_from_staging failed: %s", bridgeResult)
+	if strings.Contains(bridgeResult.text, "ERROR") {
+		t.Fatalf("memory_promote_from_staging failed: %s", bridgeResult.text)
 	}
 
 	// Verify writer=sub-abc12345 (provenance flows through from staging prefix).
-	if !strings.Contains(bridgeResult, "writer=sub-abc12345") {
-		t.Fatalf("bridge should show writer=sub-abc12345, got: %s", bridgeResult)
+	if !strings.Contains(bridgeResult.text, "writer=sub-abc12345") {
+		t.Fatalf("bridge should show writer=sub-abc12345, got: %s", bridgeResult.text)
 	}
 
 	// Verify promoted_by=main.
-	if !strings.Contains(bridgeResult, "promoted_by=main") {
-		t.Fatalf("bridge should show promoted_by=main, got: %s", bridgeResult)
+	if !strings.Contains(bridgeResult.text, "promoted_by=main") {
+		t.Fatalf("bridge should show promoted_by=main, got: %s", bridgeResult.text)
 	}
 
 	// Verify taint is unknown (staging values carry no taint metadata).
-	if !strings.Contains(bridgeResult, "taint-unknown") {
-		t.Fatalf("bridge should show taint-unknown, got: %s", bridgeResult)
+	if !strings.Contains(bridgeResult.text, "taint-unknown") {
+		t.Fatalf("bridge should show taint-unknown, got: %s", bridgeResult.text)
 	}
 
 	// Verify the value is present.
-	if !strings.Contains(bridgeResult, "JWT with refresh tokens") {
-		t.Fatalf("bridge should show staging value, got: %s", bridgeResult)
+	if !strings.Contains(bridgeResult.text, "JWT with refresh tokens") {
+		t.Fatalf("bridge should show staging value, got: %s", bridgeResult.text)
 	}
 
 	// Phase 3: The entry should be proposed (not active) — memory_get won't find it.
 	getResult := stagingApp.ExecuteToolCall(ctx, memToolCall("memory_get",
 		`{"key":"arch/auth-flow"}`))
-	if !strings.Contains(getResult, "not found") {
-		t.Fatalf("proposed entry should not be found by memory_get, got: %s", getResult)
+	if !strings.Contains(getResult.text, "not found") {
+		t.Fatalf("proposed entry should not be found by memory_get, got: %s", getResult.text)
 	}
 
 	// Phase 4: List proposed entries to find the ID.
 	listResult := stagingApp.ExecuteToolCall(ctx, memToolCall("memory_list",
 		`{"status":"proposed"}`))
-	if !strings.Contains(listResult, "arch/auth-flow") {
-		t.Fatalf("proposed entry should be listable, got: %s", listResult)
+	if !strings.Contains(listResult.text, "arch/auth-flow") {
+		t.Fatalf("proposed entry should be listable, got: %s", listResult.text)
 	}
 
 	// Phase 5: Promote to active.
 	// The entry ID should be 1 (first entry in a fresh store).
 	promoteResult := stagingApp.ExecuteToolCall(ctx, memToolCall("memory_promote",
 		`{"id":1}`))
-	if strings.Contains(promoteResult, "ERROR") {
-		t.Fatalf("memory_promote failed: %s", promoteResult)
+	if strings.Contains(promoteResult.text, "ERROR") {
+		t.Fatalf("memory_promote failed: %s", promoteResult.text)
 	}
-	if !strings.Contains(promoteResult, "active") {
-		t.Fatalf("promoted entry should be active, got: %s", promoteResult)
+	if !strings.Contains(promoteResult.text, "active") {
+		t.Fatalf("promoted entry should be active, got: %s", promoteResult.text)
 	}
 
 	// Phase 6: memory_get should now return the active entry with full provenance.
 	finalGet := stagingApp.ExecuteToolCall(ctx, memToolCall("memory_get",
 		`{"key":"arch/auth-flow"}`))
-	if !strings.Contains(finalGet, "JWT with refresh tokens") {
-		t.Fatalf("get should return the value, got: %s", finalGet)
+	if !strings.Contains(finalGet.text, "JWT with refresh tokens") {
+		t.Fatalf("get should return the value, got: %s", finalGet.text)
 	}
-	if !strings.Contains(finalGet, "durable-tier") {
-		t.Fatalf("get should show durable-tier, got: %s", finalGet)
+	if !strings.Contains(finalGet.text, "durable-tier") {
+		t.Fatalf("get should show durable-tier, got: %s", finalGet.text)
 	}
-	if !strings.Contains(finalGet, "sub-abc12345") {
-		t.Fatalf("get should show original writer sub-abc12345, got: %s", finalGet)
+	if !strings.Contains(finalGet.text, "sub-abc12345") {
+		t.Fatalf("get should show original writer sub-abc12345, got: %s", finalGet.text)
 	}
-	if !strings.Contains(finalGet, "promoted by main") {
-		t.Fatalf("get should show promoted by main, got: %s", finalGet)
+	if !strings.Contains(finalGet.text, "promoted by main") {
+		t.Fatalf("get should show promoted by main, got: %s", finalGet.text)
 	}
 
 	// Phase 7: Staging key should NOT have been deleted (bridge does not delete).
 	stagingGetResult := stagingApp.ExecuteToolCall(ctx, memToolCall("staging_get",
 		`{"key":"sub-abc12345/research-findings"}`))
-	if strings.Contains(stagingGetResult, "not found") {
-		t.Fatalf("staging key should still exist after bridge, got: %s", stagingGetResult)
+	if strings.Contains(stagingGetResult.text, "not found") {
+		t.Fatalf("staging key should still exist after bridge, got: %s", stagingGetResult.text)
 	}
 }
 
@@ -178,11 +178,11 @@ func TestTaintDoesNotResetAcrossPuts(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
 			`{"key":"test/sticky-`+string(rune('a'+i))+`","value":"v","kind":"note"}`))
-		if !strings.Contains(result, "tainted") {
-			t.Fatalf("put %d should be tainted (sticky), got: %s", i, result)
+		if !strings.Contains(result.text, "tainted") {
+			t.Fatalf("put %d should be tainted (sticky), got: %s", i, result.text)
 		}
-		if strings.Contains(result, "taint-unknown") {
-			t.Fatalf("put %d should not be taint-unknown, got: %s", i, result)
+		if strings.Contains(result.text, "taint-unknown") {
+			t.Fatalf("put %d should not be taint-unknown, got: %s", i, result.text)
 		}
 	}
 }
@@ -228,11 +228,11 @@ func TestTaintSurvivesGroundingResetAcrossTurns(t *testing.T) {
 	// NOT taint-unknown — even though grounding is empty.
 	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
 		`{"key":"test/cross-turn","value":"conclusion from web research","kind":"decision"}`))
-	if !strings.Contains(result, "tainted") {
-		t.Fatalf("entry after cross-turn exposure should be tainted, got: %s", result)
+	if !strings.Contains(result.text, "tainted") {
+		t.Fatalf("entry after cross-turn exposure should be tainted, got: %s", result.text)
 	}
-	if strings.Contains(result, "taint-unknown") {
-		t.Fatalf("entry should NOT be taint-unknown after cross-turn exposure, got: %s", result)
+	if strings.Contains(result.text, "taint-unknown") {
+		t.Fatalf("entry should NOT be taint-unknown after cross-turn exposure, got: %s", result.text)
 	}
 }
 
@@ -247,7 +247,7 @@ func TestTaintCleanAgentStaysUnknown(t *testing.T) {
 	// No external exposure at all.
 	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
 		`{"key":"test/clean","value":"local only","kind":"note"}`))
-	if !strings.Contains(result, "taint-unknown") {
-		t.Fatalf("clean agent should produce taint-unknown, got: %s", result)
+	if !strings.Contains(result.text, "taint-unknown") {
+		t.Fatalf("clean agent should produce taint-unknown, got: %s", result.text)
 	}
 }

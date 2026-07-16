@@ -44,25 +44,25 @@ func TestLiveReadFileFullSmallFile(t *testing.T) {
 	}})
 
 	// Must not be an error.
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("expected full content, got error: %q", res)
+	if !res.ok {
+		t.Fatalf("expected full content, got error: %q", res.text)
 	}
 
 	// Must contain all lines of the file.
 	fileBytes, _ := os.ReadFile(path)
 	fileLines := strings.Split(strings.TrimRight(string(fileBytes), "\n"), "\n")
 	for i, line := range fileLines {
-		if !strings.Contains(res, line) {
-			t.Fatalf("line %d (%q) missing from result — full content not returned.\nResult: %q", i+1, line, res)
+		if !strings.Contains(res.text, line) {
+			t.Fatalf("line %d (%q) missing from result — full content not returned.\nResult: %q", i+1, line, res.text)
 		}
 	}
 
 	// Must NOT have a window header.
-	if strings.Contains(res, "[lines ") {
-		t.Fatalf("read_file_full must not window: %q", res)
+	if strings.Contains(res.text, "[lines ") {
+		t.Fatalf("read_file_full must not window: %q", res.text)
 	}
 
-	t.Logf("OK: full content returned (%d bytes), all %d file lines present", len(res), len(fileLines))
+	t.Logf("OK: full content returned (%d bytes), all %d file lines present", len(res.text), len(fileLines))
 }
 
 func TestLiveReadFileFullOversizedRefusal(t *testing.T) {
@@ -89,24 +89,24 @@ func TestLiveReadFileFullOversizedRefusal(t *testing.T) {
 	}})
 
 	// Must be a clean refusal.
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("expected error for oversized file, got: %q", res)
+	if res.ok {
+		t.Fatalf("expected error for oversized file, got: %q", res.text)
 	}
-	if !strings.Contains(res, "exceeds full-read limit") {
-		t.Fatalf("expected 'exceeds full-read limit' in error, got: %q", res)
+	if !strings.Contains(res.text, "exceeds full-read limit") {
+		t.Fatalf("expected 'exceeds full-read limit' in error, got: %q", res.text)
 	}
 	// Must suggest read_file with offset/limit.
-	if !strings.Contains(res, "read_file") {
-		t.Fatalf("error must suggest read_file, got: %q", res)
+	if !strings.Contains(res.text, "read_file") {
+		t.Fatalf("error must suggest read_file, got: %q", res.text)
 	}
 	// Must NOT contain file content (the file was not read).
-	if strings.Contains(res, strings.Repeat("x", 100)) {
+	if strings.Contains(res.text, strings.Repeat("x", 100)) {
 		t.Fatalf("oversized file content must not be in result (was read despite refusal)")
 	}
 
 	// The result is a normal string — no proxy 400 possible (it's just a tool
 	// result string, not an HTTP error).
-	t.Logf("OK: clean refusal, no content loaded, result is a string (no proxy 400): %q", res)
+	t.Logf("OK: clean refusal, no content loaded, result is a string (no proxy 400): %q", res.text)
 }
 
 func TestLiveReadFileFullBinaryRefusal(t *testing.T) {
@@ -137,12 +137,12 @@ func TestLiveReadFileFullBinaryRefusal(t *testing.T) {
 	}})
 
 	// Must be refused by binary sniff.
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("expected binary-guard error, got: %q", res)
+	if res.ok {
+		t.Fatalf("expected binary-guard error, got: %q", res.text)
 	}
-	if !strings.Contains(res, "binary file") {
-		t.Fatalf("expected 'binary file' in error, got: %q", res)
+	if !strings.Contains(res.text, "binary file") {
+		t.Fatalf("expected 'binary file' in error, got: %q", res.text)
 	}
 
-	t.Logf("OK: binary file refused: %q", res)
+	t.Logf("OK: binary file refused: %q", res.text)
 }

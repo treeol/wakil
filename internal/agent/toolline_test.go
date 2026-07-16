@@ -15,7 +15,7 @@ func TestToolLineCollapsesLargeOutput(t *testing.T) {
 	for i := 0; i < 412; i++ {
 		big += "some line of file content here\n"
 	}
-	got := toolLine(tcall("read_file", `{"path":"main.go"}`), big)
+	got := toolLine(tcall("read_file", `{"path":"main.go"}`), okResult(big))
 	want := "· read_file main.go → 412 lines · 12.5KB"
 	if got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
@@ -23,7 +23,7 @@ func TestToolLineCollapsesLargeOutput(t *testing.T) {
 }
 
 func TestToolLineShortScalarShownVerbatim(t *testing.T) {
-	got := toolLine(tcall("run_shell", `{"command":"pwd"}`), "/root\n")
+	got := toolLine(tcall("run_shell", `{"command":"pwd"}`), okResult("/root\n"))
 	if want := "· run_shell pwd → /root"; got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -38,7 +38,7 @@ func TestResultSummaryEdges(t *testing.T) {
 		{"one line only", "one line only"},
 	}
 	for _, c := range cases {
-		if got := resultSummary(c.in); got != c.want {
+		if got := resultSummary(stringToToolResult(c.in)); got != c.want {
 			t.Errorf("resultSummary(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
@@ -86,7 +86,7 @@ func TestToolAbbrev(t *testing.T) {
 }
 
 func TestMakeTraceEntryMoveFile(t *testing.T) {
-	e := MakeTraceEntry(tcall("move_file", `{"src":"old.go","dst":"new.go"}`), "ok")
+	e := MakeTraceEntry(tcall("move_file", `{"src":"old.go","dst":"new.go"}`), okResult("ok"))
 	if e.Abbrev != "move" {
 		t.Errorf("Abbrev = %q, want \"move\"", e.Abbrev)
 	}
@@ -97,7 +97,7 @@ func TestMakeTraceEntryMoveFile(t *testing.T) {
 
 func TestMakeTraceEntryMoveFileMalformedArgs(t *testing.T) {
 	// Empty src and dst should produce empty Command, not " → ".
-	e := MakeTraceEntry(tcall("move_file", `{"src":"","dst":""}`), "ok")
+	e := MakeTraceEntry(tcall("move_file", `{"src":"","dst":""}`), okResult("ok"))
 	if e.Command != "" {
 		t.Errorf("Command = %q, want \"\" for empty args", e.Command)
 	}
@@ -105,7 +105,7 @@ func TestMakeTraceEntryMoveFileMalformedArgs(t *testing.T) {
 
 func TestMakeTraceEntryDeleteFile(t *testing.T) {
 	// delete_file uses "path" as its param name — the default branch extracts it.
-	e := MakeTraceEntry(tcall("delete_file", `{"path":"old.go"}`), "ok")
+	e := MakeTraceEntry(tcall("delete_file", `{"path":"old.go"}`), okResult("ok"))
 	if e.Abbrev != "delete" {
 		t.Errorf("Abbrev = %q, want \"delete\"", e.Abbrev)
 	}

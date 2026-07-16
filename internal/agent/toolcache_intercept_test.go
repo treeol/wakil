@@ -112,11 +112,11 @@ func TestReadFileFullServesToolCacheSpillPath(t *testing.T) {
 		Arguments: mustJSON(map[string]string{"path": spillPath}),
 	}})
 
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("read_file_full on a toolcache spill path failed (this is exactly the Bug A regression): %q", Truncate(res, 300))
+	if !res.ok {
+		t.Fatalf("read_file_full on a toolcache spill path failed (this is exactly the Bug A regression): %q", Truncate(res.text, 300))
 	}
-	if !strings.Contains(res, "ORIGINAL-CONTENT-LINE") {
-		t.Errorf("read_file_full did not return the spilled content; got: %q", Truncate(res, 300))
+	if !strings.Contains(res.text, "ORIGINAL-CONTENT-LINE") {
+		t.Errorf("read_file_full did not return the spilled content; got: %q", Truncate(res.text, 300))
 	}
 }
 
@@ -148,14 +148,14 @@ func TestReadFileServesToolCacheSpillPathWindowed(t *testing.T) {
 		Arguments: mustJSON(map[string]interface{}{"path": spillPath, "offset": 10, "limit": 5}),
 	}})
 
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("read_file on a toolcache spill path failed: %q", Truncate(res, 300))
+	if !res.ok {
+		t.Fatalf("read_file on a toolcache spill path failed: %q", Truncate(res.text, 300))
 	}
-	if !strings.Contains(res, "line-10") || !strings.Contains(res, "line-14") {
-		t.Errorf("windowed read did not return the expected line range; got: %q", res)
+	if !strings.Contains(res.text, "line-10") || !strings.Contains(res.text, "line-14") {
+		t.Errorf("windowed read did not return the expected line range; got: %q", res.text)
 	}
-	if strings.Contains(res, "line-20") {
-		t.Errorf("windowed read returned lines outside the requested limit; got: %q", res)
+	if strings.Contains(res.text, "line-20") {
+		t.Errorf("windowed read returned lines outside the requested limit; got: %q", res.text)
 	}
 }
 
@@ -180,8 +180,8 @@ func TestReadFileFullToolCacheSpillPathBinaryGuard(t *testing.T) {
 		Arguments: mustJSON(map[string]string{"path": spillPath}),
 	}})
 
-	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "binary file") {
-		t.Errorf("expected binary-file refusal for a spilled binary artifact; got: %q", res)
+	if res.ok || !strings.Contains(res.text, "binary file") {
+		t.Errorf("expected binary-file refusal for a spilled binary artifact; got: %q", res.text)
 	}
 }
 
@@ -206,8 +206,8 @@ func TestReadFileFullToolCacheSpillPathSizeGuard(t *testing.T) {
 		Arguments: mustJSON(map[string]string{"path": spillPath}),
 	}})
 
-	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "exceeds full-read limit") {
-		t.Errorf("expected size-guard refusal for an oversized spilled artifact; got: %q", res)
+	if res.ok || !strings.Contains(res.text, "exceeds full-read limit") {
+		t.Errorf("expected size-guard refusal for an oversized spilled artifact; got: %q", res.text)
 	}
 }
 
@@ -235,8 +235,8 @@ func TestReadFileFullNonToolCachePathStillConfined(t *testing.T) {
 	if !rejected {
 		t.Error("expected ConfinePath to be invoked (and reject) for a non-toolcache path")
 	}
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Errorf("expected a ConfinePath rejection error, got: %q", res)
+	if res.ok {
+		t.Errorf("expected a ConfinePath rejection error, got: %q", res.text)
 	}
 }
 

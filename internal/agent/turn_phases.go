@@ -177,11 +177,11 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// form) signal a doomed loop rather than progress, not a transient
 		// failure worth spending the rest of MaxToolIterations on. Trips after
 		// confinementBreakerThreshold distinct hits on one path.
-		trackConfinement := func(result string) {
+		trackConfinement := func(result toolResult) {
 			if !isConfinementError(result) {
 				return
 			}
-			p := confinementPathQuoted(result)
+			p := confinementPathQuoted(result.text)
 			if confinementFailures[p] == 0 {
 				confinementPaths = append(confinementPaths, p)
 			}
@@ -194,7 +194,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// finalizeToolResult runs the shared per-result bookkeeping on the main
 		// goroutine: progress line, breaker check, cap/stub, trace, budget, Conv
 		// append.
-		finalizeToolResult := func(tc proxy.ToolCall, result string) {
+		finalizeToolResult := func(tc proxy.ToolCall, result toolResult) {
 			// Show a one-line summary (path/command + a result digest). The full
 			// result still goes into the transcript below for the model to read.
 			fmt.Fprintln(a.Out, Dim(toolLine(tc, result)))
@@ -206,20 +206,21 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 
 			// Capture pre-cap size before CapOrStub so the trace reflects actual
 			// tool output, not the truncated version the model sees.
-			preCapBytes := len(result)
+			text := result.text
+			preCapBytes := len(text)
 			if !a.RawTools {
-				result = a.CapOrStub(result, tc.Function.Name, turnToolBytes)
+				text = a.CapOrStub(text, tc.Function.Name, turnToolBytes)
 			}
 			if a.Trace != nil {
 				*traceToolCalls = append(*traceToolCalls, trace.ToolTrace{
 					Name:         tc.Function.Name,
 					PreCapBytes:  preCapBytes,
-					PostCapBytes: len(result),
-					Capped:       len(result) != preCapBytes,
+					PostCapBytes: len(text),
+					Capped:       len(text) != preCapBytes,
 				})
 			}
 
-			turnToolBytes += len(result)
+			turnToolBytes += len(text)
 			// dispatch_subagent(s) results carry durable on-disk summary paths.
 			// Pin the tool message so the parent's compaction never dissolves
 			// the breadcrumb — the model must always be able to read_file the
@@ -229,7 +230,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				Role:       "tool",
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
-				Content:    StrPtr(result),
+				Content:    StrPtr(text),
 				Pinned:     pinned,
 			})
 		}
@@ -251,9 +252,10 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				block := msg.ToolCalls[ti:tj]
 				blockResults := a.runParallelSubagentBlock(ctx, block)
 				for bi, btc := range block {
-					a.captureToolTrace(btc, blockResults[bi])
-					a.recordRecentTrace(btc, blockResults[bi])
-					finalizeToolResult(btc, blockResults[bi])
+					br := stringToToolResult(blockResults[bi])
+					a.captureToolTrace(btc, br)
+					a.recordRecentTrace(btc, br)
+					finalizeToolResult(btc, br)
 				}
 				ti = tj
 				continue

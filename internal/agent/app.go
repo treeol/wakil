@@ -692,14 +692,14 @@ var confinementErrorMarkers = []string{
 	"could not resolve path", // Docker: readlink -f produced empty output
 }
 
-// isConfinementError reports whether a tool result string is a path-confinement
+// isConfinementError reports whether a tool result is a path-confinement
 // rejection from Executor.ConfinePath, as opposed to any other tool error.
-func isConfinementError(result string) bool {
-	if !strings.HasPrefix(result, "ERROR:") {
+func isConfinementError(result toolResult) bool {
+	if result.ok {
 		return false
 	}
 	for _, m := range confinementErrorMarkers {
-		if strings.Contains(result, m) {
+		if strings.Contains(result.text, m) {
 			return true
 		}
 	}
@@ -1148,7 +1148,7 @@ func (a *App) subagentToolNames(capability string) []string {
 	return names
 }
 
-func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) string {
+func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult {
 	name := tc.Function.Name
 
 	// Dedup: if an equivalent (tool, args) pair has been called before in this
@@ -1162,7 +1162,7 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) string {
 	if a.ToolCache != nil {
 		cacheKey = a.toolDedupKey(name, tc.Function.Arguments)
 		if a.ToolCache[cacheKey] {
-			return fmt.Sprintf("[already called %s with equivalent arguments — that result is already above. Do not repeat it: use what you have, try a different path/pattern, or produce your final answer.]", name)
+			return errResult(fmt.Sprintf("[already called %s with equivalent arguments — that result is already above. Do not repeat it: use what you have, try a different path/pattern, or produce your final answer.]", name))
 		}
 	}
 
@@ -1174,9 +1174,7 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) string {
 	a.captureToolTrace(tc, result)
 	a.recordRecentTrace(tc, result)
 
-	if cacheKey != "" &&
-		!strings.HasPrefix(result, "[declined by user]") &&
-		!strings.HasPrefix(result, "ERROR:") {
+	if cacheKey != "" && result.ok {
 		a.ToolCache[cacheKey] = true
 	}
 	return result
@@ -1184,19 +1182,18 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) string {
 
 // captureToolTrace appends a trace entry to WorkflowStepTrace when an IMPLEMENT
 // step is in progress. No-op outside IMPLEMENT turns.
-func (a *App) captureToolTrace(tc proxy.ToolCall, result string) {
+func (a *App) captureToolTrace(tc proxy.ToolCall, result toolResult) {
 	if a.Workflow == nil || a.Workflow.Phase != workflow.WFImplement {
 		return
 	}
 	a.WorkflowStepTrace = append(a.WorkflowStepTrace, MakeTraceEntry(tc, result))
 }
 
-func MakeTraceEntry(tc proxy.ToolCall, result string) ToolTraceEntry {
+func MakeTraceEntry(tc proxy.ToolCall, result toolResult) ToolTraceEntry {
 	e := ToolTraceEntry{
 		Abbrev:    toolAbbrev(tc.Function.Name),
-		OutputLen: len(result),
-		ExitErr: strings.HasPrefix(result, "ERROR:") ||
-			strings.Contains(result, "\nERROR:"),
+		OutputLen: len(result.text),
+		ExitErr:   !result.ok,
 	}
 	// Extract the primary identifier (command or path).
 	switch tc.Function.Name {
@@ -1235,7 +1232,7 @@ func MakeTraceEntry(tc proxy.ToolCall, result string) ToolTraceEntry {
 		}
 	}
 	// Extract first output line and a tail of output lines.
-	lines := strings.Split(strings.TrimSpace(result), "\n")
+	lines := strings.Split(strings.TrimSpace(result.text), "\n")
 	for _, l := range lines {
 		if l = strings.TrimSpace(l); l != "" {
 			e.FirstLine = Truncate(l, 80)
@@ -1293,7 +1290,7 @@ const mashuraRecentTraceCap = 24
 
 // recordRecentTrace appends a trace entry to the rolling buffer (all tools, all
 // phases), trimming to the most recent mashuraRecentTraceCap entries.
-func (a *App) recordRecentTrace(tc proxy.ToolCall, result string) {
+func (a *App) recordRecentTrace(tc proxy.ToolCall, result toolResult) {
 	// Don't record mashura calls themselves — they are not part of the work the
 	// model is debugging, and counting them would pollute the struggle signal.
 	if wtools.IsMashuraTool(tc.Function.Name) {
@@ -1474,8 +1471,11 @@ func (a *App) wfPhaseBlock(toolName, argsJSON string) string {
 // handleMashura, handleStaging*, handleMemory*). This function runs the shared
 // pre-dispatch gate (workflow phase enforcement), then routes to the handler.
 //
-// Returns string (not toolResult — WP-6.8 will change this).
-func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
+// Returns toolResult (WP-6.8): the typed boundary replaces the former string
+// protocol. Handlers still return string and are wrapped via stringToToolResult
+// at this dispatch boundary. Callers classify success/failure via result.ok,
+// never by prefix-sniffing "ERROR:".
+func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult {
 	name := tc.Function.Name
 
 	// Phase enforcement: reject tool calls that violate the workflow write-containment
@@ -1483,90 +1483,90 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 	// self-correct within the same turn.
 	if a.Workflow != nil {
 		if msg := a.wfPhaseBlock(name, tc.Function.Arguments); msg != "" {
-			return msg
+			return errResult(msg)
 		}
 	}
 
 	switch name {
 	case "run_shell":
-		return a.handleRunShell(ctx, tc)
+		return stringToToolResult(a.handleRunShell(ctx, tc))
 	case "open_url":
-		return a.handleOpenURL(ctx, tc)
+		return stringToToolResult(a.handleOpenURL(ctx, tc))
 	case "read_file":
-		return a.handleReadFile(ctx, tc)
+		return stringToToolResult(a.handleReadFile(ctx, tc))
 	case "read_file_full":
-		return a.handleReadFileFull(ctx, tc)
+		return stringToToolResult(a.handleReadFileFull(ctx, tc))
 	case "list_dir":
-		return a.handleListDir(ctx, tc)
+		return stringToToolResult(a.handleListDir(ctx, tc))
 	case "find_files":
-		return a.handleFindFiles(ctx, tc)
+		return stringToToolResult(a.handleFindFiles(ctx, tc))
 	case "search_files":
-		return a.handleSearchFiles(ctx, tc)
+		return stringToToolResult(a.handleSearchFiles(ctx, tc))
 	case "write_file":
-		return a.handleWriteFile(ctx, tc)
+		return stringToToolResult(a.handleWriteFile(ctx, tc))
 	case "edit_file":
-		return a.handleEditFile(ctx, tc)
+		return stringToToolResult(a.handleEditFile(ctx, tc))
 	case "delete_file":
-		return a.handleDeleteFile(ctx, tc)
+		return stringToToolResult(a.handleDeleteFile(ctx, tc))
 	case "move_file":
-		return a.handleMoveFile(ctx, tc)
+		return stringToToolResult(a.handleMoveFile(ctx, tc))
 	case "searxng_search":
-		return a.handleSearxngSearch(ctx, tc)
+		return stringToToolResult(a.handleSearxngSearch(ctx, tc))
 	case "searxng_url_read":
-		return a.handleSearxngURLRead(ctx, tc)
+		return stringToToolResult(a.handleSearxngURLRead(ctx, tc))
 	case "google_search":
-		return a.handleGoogleSearch(ctx, tc)
+		return stringToToolResult(a.handleGoogleSearch(ctx, tc))
 	case "google_fetch_url":
-		return a.handleGoogleFetchURL(ctx, tc)
+		return stringToToolResult(a.handleGoogleFetchURL(ctx, tc))
 	case "run_background":
-		return a.handleRunBackground(ctx, tc)
+		return stringToToolResult(a.handleRunBackground(ctx, tc))
 	case "kill_process":
-		return a.handleKillProcess(ctx, tc)
+		return stringToToolResult(a.handleKillProcess(ctx, tc))
 	case "read_process_log":
-		return a.handleReadProcessLog(ctx, tc)
+		return stringToToolResult(a.handleReadProcessLog(ctx, tc))
 	case "dispatch_subagent":
-		return a.handleDispatchSubagent(ctx, tc)
+		return stringToToolResult(a.handleDispatchSubagent(ctx, tc))
 	case "dispatch_subagents":
-		return a.handleDispatchSubagents(ctx, tc)
+		return stringToToolResult(a.handleDispatchSubagents(ctx, tc))
 	// The mashura__* counsel family (and the legacy oracle__ask alias) all route
 	// through one handler: the model supplies intent, Wakil deterministically
 	// assembles the briefing. Each is gated through the normal confirm flow
 	// (auto-approved in /auto mode with a visible ⚡ auto note).
 	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask":
-		return a.handleMashura(ctx, name, tc)
+		return stringToToolResult(a.handleMashura(ctx, name, tc))
 	// LSP code-intelligence tools (read-only, no confirmation needed).
 	case "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols":
-		return a.handleLSPReadOnly(ctx, tc)
+		return stringToToolResult(a.handleLSPReadOnly(ctx, tc))
 	// Staging tools (ungated by design — the gate lives at promotion).
 	case "staging_put":
-		return a.handleStagingPut(ctx, tc)
+		return stringToToolResult(a.handleStagingPut(ctx, tc))
 	case "staging_get":
-		return a.handleStagingGet(ctx, tc)
+		return stringToToolResult(a.handleStagingGet(ctx, tc))
 	case "staging_delete":
-		return a.handleStagingDelete(ctx, tc)
+		return stringToToolResult(a.handleStagingDelete(ctx, tc))
 	case "staging_list":
-		return a.handleStagingList(ctx, tc)
+		return stringToToolResult(a.handleStagingList(ctx, tc))
 	case "staging_get_many":
-		return a.handleStagingGetMany(ctx, tc)
+		return stringToToolResult(a.handleStagingGetMany(ctx, tc))
 	// Memory tools (tier-gating at dispatch time via a.IsSubagent).
 	case "memory_put":
-		return a.handleMemoryPut(ctx, tc)
+		return stringToToolResult(a.handleMemoryPut(ctx, tc))
 	case "memory_promote":
-		return a.handleMemoryPromote(ctx, tc)
+		return stringToToolResult(a.handleMemoryPromote(ctx, tc))
 	case "memory_reject":
-		return a.handleMemoryReject(ctx, tc)
+		return stringToToolResult(a.handleMemoryReject(ctx, tc))
 	case "memory_get":
-		return a.handleMemoryGet(ctx, tc)
+		return stringToToolResult(a.handleMemoryGet(ctx, tc))
 	case "memory_search":
-		return a.handleMemorySearch(ctx, tc)
+		return stringToToolResult(a.handleMemorySearch(ctx, tc))
 	case "memory_list":
-		return a.handleMemoryList(ctx, tc)
+		return stringToToolResult(a.handleMemoryList(ctx, tc))
 	case "memory_forget":
-		return a.handleMemoryForget(ctx, tc)
+		return stringToToolResult(a.handleMemoryForget(ctx, tc))
 	case "memory_promote_from_staging":
-		return a.handleMemoryPromoteFromStaging(ctx, tc)
+		return stringToToolResult(a.handleMemoryPromoteFromStaging(ctx, tc))
 	default:
-		return a.handleMCPTool(ctx, tc)
+		return stringToToolResult(a.handleMCPTool(ctx, tc))
 	}
 }
 
@@ -1863,7 +1863,7 @@ func editDiffPreview(path, oldS, newS string, count int, all bool, execDesc stri
 // The full result is still recorded in the transcript for the model; this only
 // governs what the user sees, so large outputs (file reads, log tails, command
 // output) collapse to one line instead of flooding the conversation.
-func toolLine(tc proxy.ToolCall, result string) string {
+func toolLine(tc proxy.ToolCall, result toolResult) string {
 	head := tc.Function.Name
 	if arg := toolPrimaryArg(tc); arg != "" {
 		head += " " + arg
@@ -1890,14 +1890,17 @@ func toolPrimaryArg(tc proxy.ToolCall) string {
 // resultSummary digests a tool result for the one-line view: a short single-line
 // result is shown verbatim; anything larger collapses to a line/size count.
 // Declines and errors are flagged rather than dumped.
-func resultSummary(result string) string {
-	r := strings.TrimRight(result, "\n")
+func resultSummary(result toolResult) string {
+	r := strings.TrimRight(result.text, "\n")
 	switch {
 	case r == "[declined by user]":
 		return "declined"
 	case r == "" || r == "(no output)":
 		return "ok"
-	case strings.HasPrefix(r, "ERROR:"):
+	case !result.ok && !strings.Contains(r, "\n"):
+		// Single-line error: strip the "ERROR:" prefix and show the message.
+		// A !ok single-line result is always "ERROR: …" (stringToToolResult
+		// guarantees it), so the prefix is always present.
 		return "✗ " + Truncate(firstLine(strings.TrimSpace(r[len("ERROR:"):])), 60)
 	}
 	lines := strings.Count(r, "\n") + 1
@@ -1908,8 +1911,8 @@ func resultSummary(result string) string {
 	if lines == 1 {
 		unit = "line"
 	}
-	summary := fmt.Sprintf("%d %s · %s", lines, unit, humanBytes(len(result)))
-	if strings.Contains(r, "\nERROR:") {
+	summary := fmt.Sprintf("%d %s · %s", lines, unit, humanBytes(len(result.text)))
+	if !result.ok {
 		summary += " ✗"
 	}
 	return summary

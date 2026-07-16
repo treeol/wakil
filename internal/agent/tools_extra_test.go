@@ -51,12 +51,12 @@ func TestReadFileRangedViaHandler(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"a.go","offset":2,"limit":2}`,
 	}})
-	if !strings.Contains(res, "[lines 2-3 of 5]") {
-		t.Fatalf("ranged read header wrong: %q", res)
+	if !strings.Contains(res.text, "[lines 2-3 of 5]") {
+		t.Fatalf("ranged read header wrong: %q", res.text)
 	}
-	if !strings.Contains(res, "l2") || !strings.Contains(res, "l3") ||
-		strings.Contains(res, "l1") || strings.Contains(res, "l4") {
-		t.Fatalf("ranged read slice wrong: %q", res)
+	if !strings.Contains(res.text, "l2") || !strings.Contains(res.text, "l3") ||
+		strings.Contains(res.text, "l1") || strings.Contains(res.text, "l4") {
+		t.Fatalf("ranged read slice wrong: %q", res.text)
 	}
 }
 
@@ -77,8 +77,8 @@ func TestFindFilesBuildsConstrainedCommand(t *testing.T) {
 
 	if res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "find_files", Arguments: `{}`,
-	}}); !strings.Contains(res, "pattern is required") {
-		t.Errorf("missing pattern should error, got %q", res)
+	}}); !strings.Contains(res.text, "pattern is required") {
+		t.Errorf("missing pattern should error, got %q", res.text)
 	}
 }
 
@@ -90,8 +90,8 @@ func TestEditFileReplacesUnique(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "edit_file", Arguments: `{"path":"a.go","old_string":"func foo() {}","new_string":"func bar() {}"}`,
 	}})
-	if !strings.Contains(res, "edited a.go") {
-		t.Fatalf("unexpected result: %q", res)
+	if !strings.Contains(res.text, "edited a.go") {
+		t.Fatalf("unexpected result: %q", res.text)
 	}
 	if exec.files["a.go"] != "package main\n\nfunc bar() {}\n" {
 		t.Fatalf("file not edited correctly: %q", exec.files["a.go"])
@@ -106,8 +106,8 @@ func TestEditFileAmbiguousAndMissing(t *testing.T) {
 	// Non-unique without replace_all → corrective error, no write.
 	if res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "edit_file", Arguments: `{"path":"a.go","old_string":"x","new_string":"y"}`,
-	}}); !strings.Contains(res, "appears 2 times") {
-		t.Errorf("ambiguous edit should error, got %q", res)
+	}}); !strings.Contains(res.text, "appears 2 times") {
+		t.Errorf("ambiguous edit should error, got %q", res.text)
 	}
 	if exec.files["a.go"] != "x\nx\n" {
 		t.Errorf("ambiguous edit must not write: %q", exec.files["a.go"])
@@ -116,8 +116,8 @@ func TestEditFileAmbiguousAndMissing(t *testing.T) {
 	// replace_all rewrites every occurrence.
 	if res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "edit_file", Arguments: `{"path":"a.go","old_string":"x","new_string":"y","replace_all":true}`,
-	}}); !strings.Contains(res, "2 replacement") {
-		t.Errorf("replace_all result = %q", res)
+	}}); !strings.Contains(res.text, "2 replacement") {
+		t.Errorf("replace_all result = %q", res.text)
 	}
 	if exec.files["a.go"] != "y\ny\n" {
 		t.Errorf("replace_all wrong: %q", exec.files["a.go"])
@@ -126,8 +126,8 @@ func TestEditFileAmbiguousAndMissing(t *testing.T) {
 	// old_string not present → corrective error.
 	if res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "edit_file", Arguments: `{"path":"a.go","old_string":"zzz","new_string":"q"}`,
-	}}); !strings.Contains(res, "not found") {
-		t.Errorf("missing old_string should error, got %q", res)
+	}}); !strings.Contains(res.text, "not found") {
+		t.Errorf("missing old_string should error, got %q", res.text)
 	}
 }
 
@@ -139,8 +139,8 @@ func TestEditFileDeclined(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "edit_file", Arguments: `{"path":"a.go","old_string":"keep me","new_string":"changed"}`,
 	}})
-	if res != "[declined by user]" {
-		t.Fatalf("declined edit result = %q", res)
+	if res.text != "[declined by user]" {
+		t.Fatalf("declined edit result = %q", res.text)
 	}
 	if exec.files["a.go"] != "keep me\n" {
 		t.Fatalf("declined edit must not write: %q", exec.files["a.go"])
@@ -227,8 +227,8 @@ func TestDeleteFileConfinement(t *testing.T) {
 		Name: "delete_file", Arguments: `{"path":"/work/file.go"}`,
 	}})
 	// fakeExecutor.DeletePath returns nil → success
-	if !strings.Contains(res, "deleted:") {
-		t.Errorf("unexpected delete result: %q", res)
+	if !strings.Contains(res.text, "deleted:") {
+		t.Errorf("unexpected delete result: %q", res.text)
 	}
 }
 
@@ -242,8 +242,8 @@ func TestMoveFileDeclined(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "move_file", Arguments: `{"src":"/work/a.go","dst":"/work/b.go"}`,
 	}})
-	if res != "[declined by user]" {
-		t.Errorf("declined move result = %q", res)
+	if res.text != "[declined by user]" {
+		t.Errorf("declined move result = %q", res.text)
 	}
 }
 
@@ -289,8 +289,8 @@ func TestBgCapEnforced(t *testing.T) {
 	res := app2.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_background", Arguments: `{"command":"sleep 99","label":"test"}`,
 	}})
-	if !strings.Contains(res, "maximum of 5") {
-		t.Errorf("6th background process should be rejected: %q", res)
+	if !strings.Contains(res.text, "maximum of 5") {
+		t.Errorf("6th background process should be rejected: %q", res.text)
 	}
 }
 
@@ -337,8 +337,8 @@ func TestGenerationStaleness(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_process_log", Arguments: `{"id":"bg1"}`,
 	}})
-	if !strings.Contains(res, "process lost") {
-		t.Errorf("stale entry should say 'process lost': %q", res)
+	if !strings.Contains(res.text, "process lost") {
+		t.Errorf("stale entry should say 'process lost': %q", res.text)
 	}
 	// kill_process on stale entry should also report "process lost"
 	app.bgProcs["bg1"] = &bgEntry{id: "bg1", pid: 999, generation: 0}
@@ -353,8 +353,8 @@ func TestGenerationStaleness(t *testing.T) {
 	res2 := app2.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "kill_process", Arguments: `{"id":"bg1"}`,
 	}})
-	if !strings.Contains(res2, "process lost") {
-		t.Errorf("stale kill should say 'process lost': %q", res2)
+	if !strings.Contains(res2.text, "process lost") {
+		t.Errorf("stale kill should say 'process lost': %q", res2.text)
 	}
 }
 
@@ -387,20 +387,20 @@ func TestReadProcessLogCapEnforced(t *testing.T) {
 	}})
 
 	const maxTotal = 8*1024 + 256
-	if len(result) > maxTotal {
-		t.Errorf("result len=%d exceeds hard cap %d", len(result), maxTotal)
+	if len(result.text) > maxTotal {
+		t.Errorf("result len=%d exceeds hard cap %d", len(result.text), maxTotal)
 	}
 	// Status-line prefix must be present.
 	wantPrefix := "[bg1 srv] exited pid=42\n"
-	if !strings.HasPrefix(result, wantPrefix) {
-		t.Errorf("missing status-line prefix; got prefix %q", result[:min(len(wantPrefix)+10, len(result))])
+	if !strings.HasPrefix(result.text, wantPrefix) {
+		t.Errorf("missing status-line prefix; got prefix %q", result.text[:min(len(wantPrefix)+10, len(result.text))])
 	}
 	// Tail content must be present (ReadFileTail returns last N bytes).
-	if !strings.Contains(result, logTail) {
+	if !strings.Contains(result.text, logTail) {
 		t.Error("result must contain tail content")
 	}
 	// Head content must NOT be present — we read from the end, not the start.
-	if strings.Contains(result, logHead) {
+	if strings.Contains(result.text, logHead) {
 		t.Error("result must NOT contain head content — ReadFileTail should return the tail")
 	}
 }
@@ -436,18 +436,18 @@ func TestSIGKILLEscalation(t *testing.T) {
 		Arguments: `{"command":"trap '' TERM; sleep 300","label":"sigterm-immune"}`,
 	}})
 	time.Sleep(100 * time.Millisecond)
-	if strings.HasPrefix(startRes, "ERROR:") {
-		t.Fatalf("run_background failed: %s", startRes)
+	if strings.HasPrefix(startRes.text, "ERROR:") {
+		t.Fatalf("run_background failed: %s", startRes.text)
 	}
 	bgID := ""
-	for _, line := range strings.Split(startRes, "\n") {
+	for _, line := range strings.Split(startRes.text, "\n") {
 		if strings.HasPrefix(line, "id: ") {
 			bgID = strings.TrimPrefix(line, "id: ")
 			break
 		}
 	}
 	if bgID == "" {
-		t.Fatalf("could not parse bg id from: %s", startRes)
+		t.Fatalf("could not parse bg id from: %s", startRes.text)
 	}
 
 	start := time.Now()
@@ -457,10 +457,10 @@ func TestSIGKILLEscalation(t *testing.T) {
 	}})
 	elapsed := time.Since(start)
 
-	t.Logf("kill_process result: %q  elapsed: %s", killRes, elapsed)
+	t.Logf("kill_process result: %q  elapsed: %s", killRes.text, elapsed)
 
-	if !strings.Contains(killRes, "SIGKILL") {
-		t.Errorf("expected SIGKILL escalation in result, got: %q", killRes)
+	if !strings.Contains(killRes.text, "SIGKILL") {
+		t.Errorf("expected SIGKILL escalation in result, got: %q", killRes.text)
 	}
 	// Should have waited ~5s for TERM; 4-8 s is a safe window.
 	if elapsed < 4*time.Second || elapsed > 8*time.Second {
@@ -472,7 +472,7 @@ func TestSIGKILLEscalation(t *testing.T) {
 	}
 	// Verify the process group is truly gone via the executor.
 	pid := 0
-	fmt.Sscanf(startRes, "id: %*s\npid: %d", &pid)
+	fmt.Sscanf(startRes.text, "id: %*s\npid: %d", &pid)
 	if pid > 0 && exe.IsProcessAlive(context.Background(), pid) {
 		t.Errorf("process pid=%d still alive after SIGKILL", pid)
 	}
@@ -507,11 +507,11 @@ func TestBgCapDeadEntriesDontCount(t *testing.T) {
 		Name: "run_background", Arguments: `{"command":"sleep 1","label":"test"}`,
 	}})
 	// Live count == 3 < 5, so the 6th call must succeed.
-	if strings.Contains(res, "maximum of 5") {
-		t.Errorf("dead entries must not count toward cap; 6th process should succeed: %s", res)
+	if strings.Contains(res.text, "maximum of 5") {
+		t.Errorf("dead entries must not count toward cap; 6th process should succeed: %s", res.text)
 	}
-	if !strings.Contains(res, "id:") {
-		t.Errorf("expected successful run_background result, got: %s", res)
+	if !strings.Contains(res.text, "id:") {
+		t.Errorf("expected successful run_background result, got: %s", res.text)
 	}
 }
 
@@ -537,8 +537,8 @@ func TestStopAllBackgroundProcs_FastExit(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_background", Arguments: `{"command":"sleep 1","label":"fast"}`,
 	}})
-	if !strings.Contains(res, "id:") {
-		t.Fatalf("run_background failed: %s", res)
+	if !strings.Contains(res.text, "id:") {
+		t.Fatalf("run_background failed: %s", res.text)
 	}
 
 	// Wait for the process to exit on its own, then call StopAllBackgroundProcs.
@@ -601,8 +601,8 @@ func TestRunBackground_SetsDoneChannel(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_background", Arguments: `{"command":"true","label":"quick"}`,
 	}})
-	if !strings.Contains(res, "id:") {
-		t.Fatalf("run_background failed: %s", res)
+	if !strings.Contains(res.text, "id:") {
+		t.Fatalf("run_background failed: %s", res.text)
 	}
 
 	// The entry must have a non-nil done channel.
@@ -651,18 +651,18 @@ func TestStopAllBackgroundProcs_SIGKILLTimeout(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_background", Arguments: `{"command":"trap '' TERM; while true; do sleep 1; done","label":"stubborn"}`,
 	}})
-	if !strings.Contains(res, "id:") {
-		t.Fatalf("run_background failed: %s", res)
+	if !strings.Contains(res.text, "id:") {
+		t.Fatalf("run_background failed: %s", res.text)
 	}
 	// Extract the pid from the result.
 	var pid int
-	for _, line := range strings.Split(res, "\n") {
+	for _, line := range strings.Split(res.text, "\n") {
 		if n, _ := fmt.Sscanf(strings.TrimSpace(line), "pid: %d", &pid); n == 1 {
 			break
 		}
 	}
 	if pid == 0 {
-		t.Fatalf("could not parse pid from result: %s", res)
+		t.Fatalf("could not parse pid from result: %s", res.text)
 	}
 	// Give the process time to fully start before we try to stop it.
 	time.Sleep(100 * time.Millisecond)
@@ -711,8 +711,8 @@ func TestReadFileSizeGuardRefuses(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"big.txt"}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "exceeds read limit") {
-		t.Fatalf("expected size-guard error, got: %q", res)
+	if !strings.HasPrefix(res.text, "ERROR:") || !strings.Contains(res.text, "exceeds read limit") {
+		t.Fatalf("expected size-guard error, got: %q", res.text)
 	}
 }
 
@@ -728,11 +728,11 @@ func TestReadFileSizeGuardAllowsSmall(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"small.txt"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("small file should not be refused; got: %q", res)
+	if strings.HasPrefix(res.text, "ERROR:") {
+		t.Fatalf("small file should not be refused; got: %q", res.text)
 	}
-	if !strings.Contains(res, "hello") {
-		t.Fatalf("expected file content in result, got: %q", res)
+	if !strings.Contains(res.text, "hello") {
+		t.Fatalf("expected file content in result, got: %q", res.text)
 	}
 }
 
@@ -751,11 +751,11 @@ func TestReadFileSizeGuardAllowsRangedReadOnLargeFile(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"big.txt","offset":1,"limit":5}`,
 	}})
-	if strings.Contains(res, "exceeds read limit") {
-		t.Fatalf("ranged read on a large file must not be blocked by size guard; got: %q", res)
+	if strings.Contains(res.text, "exceeds read limit") {
+		t.Fatalf("ranged read on a large file must not be blocked by size guard; got: %q", res.text)
 	}
-	if !strings.Contains(res, "line") {
-		t.Fatalf("expected file content in ranged result, got: %q", res)
+	if !strings.Contains(res.text, "line") {
+		t.Fatalf("expected file content in ranged result, got: %q", res.text)
 	}
 }
 
@@ -772,8 +772,8 @@ func TestReadFileBinaryGuardRefuses(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"a.bin"}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "binary file") {
-		t.Fatalf("expected binary-guard error, got: %q", res)
+	if !strings.HasPrefix(res.text, "ERROR:") || !strings.Contains(res.text, "binary file") {
+		t.Fatalf("expected binary-guard error, got: %q", res.text)
 	}
 }
 
@@ -790,13 +790,13 @@ func TestReadFileSizeGuardMissingFileProceedsToReadFile(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file", Arguments: `{"path":"nonexistent.txt"}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("missing file should still return an error, got: %q", res)
+	if !strings.HasPrefix(res.text, "ERROR:") {
+		t.Fatalf("missing file should still return an error, got: %q", res.text)
 	}
 	// Must NOT say "exceeds read limit" — that would mean the size guard fired
 	// on a missing file, which it must not.
-	if strings.Contains(res, "exceeds read limit") {
-		t.Fatalf("size guard must not fire on missing file: %q", res)
+	if strings.Contains(res.text, "exceeds read limit") {
+		t.Fatalf("size guard must not fire on missing file: %q", res.text)
 	}
 }
 
@@ -814,15 +814,15 @@ func TestReadFileFullReturnsCompleteContent(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file_full", Arguments: `{"path":"small.go"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("small file should not be refused; got: %q", res)
+	if strings.HasPrefix(res.text, "ERROR:") {
+		t.Fatalf("small file should not be refused; got: %q", res.text)
 	}
 	// Must contain ALL lines — no [lines X-Y of Z] window header.
-	if strings.Contains(res, "[lines ") {
-		t.Fatalf("read_file_full must not window; got: %q", res)
+	if strings.Contains(res.text, "[lines ") {
+		t.Fatalf("read_file_full must not window; got: %q", res.text)
 	}
-	if !strings.Contains(res, "package main") || !strings.Contains(res, "func main") {
-		t.Fatalf("expected full file content, got: %q", res)
+	if !strings.Contains(res.text, "package main") || !strings.Contains(res.text, "func main") {
+		t.Fatalf("expected full file content, got: %q", res.text)
 	}
 }
 
@@ -839,12 +839,12 @@ func TestReadFileFullRefusesOversized(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file_full", Arguments: `{"path":"big.txt"}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "exceeds full-read limit") {
-		t.Fatalf("expected full-read size-guard error, got: %q", res)
+	if !strings.HasPrefix(res.text, "ERROR:") || !strings.Contains(res.text, "exceeds full-read limit") {
+		t.Fatalf("expected full-read size-guard error, got: %q", res.text)
 	}
 	// Must suggest read_file with offset/limit.
-	if !strings.Contains(res, "read_file") {
-		t.Fatalf("error must suggest read_file with offset/limit, got: %q", res)
+	if !strings.Contains(res.text, "read_file") {
+		t.Fatalf("error must suggest read_file with offset/limit, got: %q", res.text)
 	}
 }
 
@@ -861,8 +861,8 @@ func TestReadFileFullBinaryGuardRefuses(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file_full", Arguments: `{"path":"a.bin"}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") || !strings.Contains(res, "binary file") {
-		t.Fatalf("expected binary-guard error, got: %q", res)
+	if !strings.HasPrefix(res.text, "ERROR:") || !strings.Contains(res.text, "binary file") {
+		t.Fatalf("expected binary-guard error, got: %q", res.text)
 	}
 }
 
@@ -880,11 +880,11 @@ func TestReadFileFullMissingFileProceedsToReadFile(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file_full", Arguments: `{"path":"nonexistent.txt"}`,
 	}})
-	if !strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("missing file should still return an error, got: %q", res)
+	if !strings.HasPrefix(res.text, "ERROR:") {
+		t.Fatalf("missing file should still return an error, got: %q", res.text)
 	}
-	if strings.Contains(res, "exceeds full-read limit") {
-		t.Fatalf("size guard must not fire on missing file: %q", res)
+	if strings.Contains(res.text, "exceeds full-read limit") {
+		t.Fatalf("size guard must not fire on missing file: %q", res.text)
 	}
 }
 
@@ -905,15 +905,15 @@ func TestReadFileFullBoundarySize(t *testing.T) {
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file_full", Arguments: `{"path":"exact.txt"}`,
 	}})
-	if strings.HasPrefix(res, "ERROR:") {
-		t.Fatalf("file at exact ceiling must not be refused: %q", res)
+	if strings.HasPrefix(res.text, "ERROR:") {
+		t.Fatalf("file at exact ceiling must not be refused: %q", res.text)
 	}
 	// One byte over — must refuse.
 	res = app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "read_file_full", Arguments: `{"path":"over.txt"}`,
 	}})
-	if !strings.Contains(res, "exceeds full-read limit") {
-		t.Fatalf("file one byte over ceiling must be refused: %q", res)
+	if !strings.Contains(res.text, "exceeds full-read limit") {
+		t.Fatalf("file one byte over ceiling must be refused: %q", res.text)
 	}
 }
 
@@ -935,12 +935,12 @@ func TestReadFileFullCapOrStubExemption(t *testing.T) {
 		Name: "read_file_full", Arguments: `{"path":"medium.go"}`,
 	}})
 	// Must not be capped — no "chars omitted" marker from CapToolResult.
-	if strings.Contains(res, "chars omitted") {
-		t.Fatalf("read_file_full result must not be capped by ToolResultCap: got %q (len=%d)", res[:100], len(res))
+	if strings.Contains(res.text, "chars omitted") {
+		t.Fatalf("read_file_full result must not be capped by ToolResultCap: got %q (len=%d)", res.text[:100], len(res.text))
 	}
 	// Must contain the full content (or at least a substantial portion).
-	if len(res) < len(content)/2 {
-		t.Fatalf("read_file_full result too short: %d vs content %d — likely capped", len(res), len(content))
+	if len(res.text) < len(content)/2 {
+		t.Fatalf("read_file_full result too short: %d vs content %d — likely capped", len(res.text), len(content))
 	}
 }
 

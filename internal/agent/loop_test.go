@@ -136,12 +136,12 @@ func TestToolDedupHitOnEquivalentPath(t *testing.T) {
 	app := &App{Exec: exec, ToolCache: map[string]bool{}, Out: io.Discard}
 
 	r1 := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}})
-	if strings.Contains(r1, "already called") {
-		t.Fatalf("first call should execute, got %q", r1)
+	if strings.Contains(r1.text, "already called") {
+		t.Fatalf("first call should execute, got %q", r1.text)
 	}
 	r2 := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"./a.go"}`}})
-	if !strings.Contains(r2, "already called") {
-		t.Fatalf("equivalent path should be deduped, got %q", r2)
+	if !strings.Contains(r2.text, "already called") {
+		t.Fatalf("equivalent path should be deduped, got %q", r2.text)
 	}
 }
 
