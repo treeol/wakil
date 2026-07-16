@@ -515,6 +515,175 @@ func TestBgCapDeadEntriesDontCount(t *testing.T) {
 	}
 }
 
+// ── WP-4.1: StopAllBackgroundProcs done-channel wait ─────────────────────────
+
+// TestStopAllBackgroundProcs_FastExit verifies that StopAllBackgroundProcs
+// returns quickly (well under the 2s ceiling) when all processes exit promptly
+// after SIGTERM. This is the core improvement over the old fixed 2s sleep.
+func TestStopAllBackgroundProcs_FastExit(t *testing.T) {
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     config.DefaultConfig(),
+	}
+	// Start a short-lived process. It will exit on its own after 1s.
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "run_background", Arguments: `{"command":"sleep 1","label":"fast"}`,
+	}})
+	if !strings.Contains(res, "id:") {
+		t.Fatalf("run_background failed: %s", res)
+	}
+
+	// Wait for the process to exit on its own, then call StopAllBackgroundProcs.
+	// With done-channels, this should return near-instantly since the process
+	// is already dead.
+	time.Sleep(1500 * time.Millisecond) // let sleep 1 finish
+
+	start := time.Now()
+	app.StopAllBackgroundProcs()
+	elapsed := time.Since(start)
+
+	// Should return in well under 2s — give generous 500ms margin.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("StopAllBackgroundProcs took %s with already-dead process; expected <500ms", elapsed)
+	}
+}
+
+// TestStopAllBackgroundProcs_NoDoneChannel_NilSafe verifies that entries
+// without a done channel (constructed by test code) don't cause panics.
+// Entries with nil done channels are skipped during the wait phase — they
+// represent test fixtures or entries from older code paths, not real processes
+// with reaper goroutines.
+func TestStopAllBackgroundProcs_NoDoneChannel_NilSafe(t *testing.T) {
+	// Use a fake executor that reports all processes as alive.
+	exe := &aliveExecutorImpl{fakeExecutor: newFakeExecutor()}
+	app := &App{
+		Exec: exe,
+		Out:  io.Discard,
+		Cfg:  config.DefaultConfig(),
+		bgProcs: map[string]*bgEntry{
+			"bg1": {id: "bg1", pid: 100, pgid: 100, generation: 1}, // no done channel
+		},
+	}
+	// Should not panic and should return quickly since nil done channels
+	// are skipped in the wait loop.
+	start := time.Now()
+	app.StopAllBackgroundProcs()
+	elapsed := time.Since(start)
+
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("StopAllBackgroundProcs with nil-done entries took %s; expected <100ms", elapsed)
+	}
+}
+
+// TestRunBackground_SetsDoneChannel verifies that run_background creates a
+// non-nil done channel on the bgEntry, and that it closes when the process exits.
+func TestRunBackground_SetsDoneChannel(t *testing.T) {
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     config.DefaultConfig(),
+	}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "run_background", Arguments: `{"command":"true","label":"quick"}`,
+	}})
+	if !strings.Contains(res, "id:") {
+		t.Fatalf("run_background failed: %s", res)
+	}
+
+	// The entry must have a non-nil done channel.
+	app.bgMu.RLock()
+	entry, ok := app.bgProcs["bg1"]
+	app.bgMu.RUnlock()
+	if !ok {
+		t.Fatal("bg1 entry not found in bgProcs")
+	}
+	if entry.done == nil {
+		t.Fatal("done channel must be non-nil for run_background-created entries")
+	}
+
+	// Wait for the process to exit and done to close (with a timeout).
+	select {
+	case <-entry.done:
+		// done channel closed — reaper detected process exit
+	case <-time.After(3 * time.Second):
+		t.Fatal("done channel was not closed within 3s; reaper goroutine may be broken")
+	}
+}
+
+// TestStopAllBackgroundProcs_SIGKILLTimeout verifies that when a process
+// ignores SIGTERM, StopAllBackgroundProcs waits 2s then force-kills it.
+func TestStopAllBackgroundProcs_SIGKILLTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("~2s SIGKILL timeout test; run without -short")
+	}
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     config.DefaultConfig(),
+	}
+	// Start a process that ignores SIGTERM at the shell level.
+	// Using "trap '' TERM; exec sleep 300" makes the shell exec into sleep,
+	// so there's only one process. But sleep itself doesn't trap TERM.
+	// Instead, use a subshell that traps TERM and waits — the subshell
+	// process is what we signal, and it ignores TERM.
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "run_background", Arguments: `{"command":"trap '' TERM; while true; do sleep 1; done","label":"stubborn"}`,
+	}})
+	if !strings.Contains(res, "id:") {
+		t.Fatalf("run_background failed: %s", res)
+	}
+	// Extract the pid from the result.
+	var pid int
+	for _, line := range strings.Split(res, "\n") {
+		if n, _ := fmt.Sscanf(strings.TrimSpace(line), "pid: %d", &pid); n == 1 {
+			break
+		}
+	}
+	if pid == 0 {
+		t.Fatalf("could not parse pid from result: %s", res)
+	}
+	// Give the process time to fully start before we try to stop it.
+	time.Sleep(100 * time.Millisecond)
+
+	start := time.Now()
+	app.StopAllBackgroundProcs()
+	elapsed := time.Since(start)
+
+	// Should take ~2s (the deadline) since the process ignores SIGTERM.
+	if elapsed < 1500*time.Millisecond {
+		t.Errorf("expected ~2s wait for SIGTERM-ignoring process, got %s", elapsed)
+	}
+	if elapsed > 3500*time.Millisecond {
+		t.Errorf("took too long: %s, expected ~2s", elapsed)
+	}
+	// Process must be dead after SIGKILL.
+	if exe.IsProcessAlive(context.Background(), pid) {
+		t.Errorf("process pid=%d still alive after StopAllBackgroundProcs", pid)
+	}
+}
+
 // Verify os and fmt imports used by SIGKILL test.
 var _ = os.TempDir
 var _ = fmt.Sprintf

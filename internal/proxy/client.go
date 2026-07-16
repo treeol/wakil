@@ -33,16 +33,19 @@ func wrapStreamErr(cause error) error {
 	return fmt.Errorf("%w: %v", ErrBackendStream, cause)
 }
 
-// isFatalStatus classifies a non-200 status as fatal (never retry). 4xx are
+// isFatalStatus classifies a non-200 status as fatal (never retry). 3xx
+// redirects are fatal: the Go HTTP client follows redirects by default, so a
+// 3xx reaching this function means either a non-GET redirect, a redirect loop,
+// or max-redirects exceeded — retrying the same URL is pointless. 4xx are
 // fatal except the transient trio: 429 (rate limited), 408 (request timeout),
-// and 529 (site overloaded — Anthropic/OpenRouter convention; already outside
-// 4xx but listed for clarity). Everything not fatal is retryable.
+// and 529 (site overloaded — Anthropic/OpenRouter convention). Everything not
+// fatal is retryable.
 func isFatalStatus(code int) bool {
 	switch code {
 	case http.StatusTooManyRequests, http.StatusRequestTimeout, 529:
 		return false
 	}
-	return code >= 400 && code < 500
+	return code >= 300 && code < 500
 }
 
 // --- OpenAI-compatible wire types ---
@@ -464,18 +467,20 @@ func (c *Client) SetLastUsedBackend(s string) {
 }
 
 // Grounding returns the accumulated grounding entries for the current turn.
+// A copy is returned so callers cannot mutate the internal slice.
 func (c *Client) Grounding() []GroundingEntry {
 	c.groundingMu.Lock()
 	defer c.groundingMu.Unlock()
-	return c.grounding
+	return append([]GroundingEntry(nil), c.grounding...)
 }
 
 // GroundingState returns whether retrieval was attempted, the max proxy chunk
 // score, and the accumulated grounding entries from the current turn.
+// A copy of the entries slice is returned so callers cannot mutate internal state.
 func (c *Client) GroundingState() (attempted bool, maxScore float64, entries []GroundingEntry) {
 	c.groundingMu.Lock()
 	defer c.groundingMu.Unlock()
-	return c.groundingAttempted, c.groundingMaxScore, c.grounding
+	return c.groundingAttempted, c.groundingMaxScore, append([]GroundingEntry(nil), c.grounding...)
 }
 
 // isProxyGroundingType reports whether t is a proxy-sourced grounding type

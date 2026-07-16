@@ -357,6 +357,83 @@ func TestUsageWithoutPromptTokensDetailsCachedTokZero(t *testing.T) {
 	}
 }
 
+// TestIsFatalStatus verifies the status code classification:
+//   - 3xx redirects are fatal (Go follows redirects; a 3xx reaching here is terminal)
+//   - 4xx are fatal except 429, 408, 529
+//   - 5xx are retryable (not fatal)
+//   - 2xx and 1xx are not fatal
+func TestIsFatalStatus(t *testing.T) {
+	cases := []struct {
+		code int
+		want bool
+	}{
+		{200, false},
+		{204, false},
+		{301, true},
+		{302, true},
+		{303, true},
+		{307, true},
+		{308, true},
+		{400, true},
+		{401, true},
+		{403, true},
+		{404, true},
+		{408, false}, // request timeout — retryable
+		{422, true},
+		{429, false}, // rate limited — retryable
+		{500, false},
+		{502, false},
+		{503, false},
+		{529, false}, // site overloaded — retryable
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%d", tc.code), func(t *testing.T) {
+			got := isFatalStatus(tc.code)
+			if got != tc.want {
+				t.Errorf("isFatalStatus(%d) = %v, want %v", tc.code, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGrounding_ReturnsCopy verifies that Grounding() returns a copy of the
+// internal slice — mutating the returned slice must not affect internal state.
+func TestGrounding_ReturnsCopy(t *testing.T) {
+	c := &Client{grounding: []GroundingEntry{{Type: "corpus", Label: "a", Score: 0.9}}}
+	g := c.Grounding()
+	if len(g) != 1 || g[0].Label != "a" {
+		t.Fatalf("Grounding() = %v, want one entry with label 'a'", g)
+	}
+	// Mutate the returned slice.
+	g[0].Label = "mutated"
+	// Internal state must be unchanged.
+	got := c.Grounding()
+	if got[0].Label != "a" {
+		t.Errorf("internal grounding was mutated via returned slice: got label %q, want %q", got[0].Label, "a")
+	}
+}
+
+// TestGroundingState_ReturnsCopy verifies that GroundingState() returns a copy
+// of the entries slice.
+func TestGroundingState_ReturnsCopy(t *testing.T) {
+	c := &Client{
+		grounding:          []GroundingEntry{{Type: "web", Label: "orig", Score: 0.5}},
+		groundingAttempted: true,
+		groundingMaxScore:  0.5,
+	}
+	_, _, entries := c.GroundingState()
+	if len(entries) != 1 || entries[0].Label != "orig" {
+		t.Fatalf("GroundingState() entries = %v, want one entry with label 'orig'", entries)
+	}
+	// Mutate the returned slice.
+	entries[0].Label = "mutated"
+	// Internal state must be unchanged.
+	_, _, got := c.GroundingState()
+	if got[0].Label != "orig" {
+		t.Errorf("internal grounding was mutated via returned slice: got label %q, want %q", got[0].Label, "orig")
+	}
+}
+
 // TestSSEReader_RejectsOversizedLine verifies that a malformed SSE stream
 // sending a line larger than the scanner's max buffer is rejected with an
 // error instead of causing unbounded memory growth.

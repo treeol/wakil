@@ -407,6 +407,11 @@ type bgEntry struct {
 	logPath    string
 	startedAt  time.Time
 	generation int // executor generation at time of creation
+
+	// done is closed by a reaper goroutine when the process exits. Used by
+	// StopAllBackgroundProcs to wait for clean shutdown without a fixed sleep.
+	// nil when the entry was constructed by test code (not via run_background).
+	done chan struct{}
 }
 
 // CounselCallsCount returns how many auto-counsel calls have fired this session.
@@ -2202,8 +2207,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			a.bgMu.Unlock()
 			return "ERROR: " + err.Error()
 		}
-		a.bgMu.Lock()
-		a.bgProcs[bgID] = &bgEntry{
+		done := make(chan struct{})
+		entry := &bgEntry{
 			id:         bgID,
 			pid:        pid,
 			pgid:       pgid,
@@ -2211,8 +2216,25 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			logPath:    logPath,
 			startedAt:  time.Now(),
 			generation: a.Exec.Generation(),
+			done:       done,
 		}
+		a.bgMu.Lock()
+		a.bgProcs[bgID] = entry
 		a.bgMu.Unlock()
+		// Reaper goroutine: poll IsProcessAlive and close done when the process
+		// exits. This lets StopAllBackgroundProcs wait for clean shutdown without
+		// a fixed sleep. Uses a background context — the process may outlive the
+		// turn context that started it.
+		go func() {
+			bgCtx := context.Background()
+			for {
+				if !a.Exec.IsProcessAlive(bgCtx, pid) {
+					close(done)
+					return
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}()
 		return fmt.Sprintf("id: %s\npid: %d\nlog: %s\nlabel: %s", bgID, pid, logPath, args.Label)
 
 	case "kill_process":
@@ -2570,9 +2592,9 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 }
 
 // stopAllBackgroundProcs sends SIGTERM to all live background process groups and
-// waits up to 2 seconds as a grace period before returning. Called on shutdown.
-// In docker mode the container removal (Close) will kill everything anyway;
-// this is primarily meaningful for direct mode.
+// waits for them to exit, with a 2-second grace period ceiling before returning.
+// Called on shutdown. In docker mode the container removal (Close) will kill
+// everything anyway; this is primarily meaningful for direct mode.
 func (a *App) StopAllBackgroundProcs() {
 	a.bgMu.RLock()
 	if len(a.bgProcs) == 0 {
@@ -2588,18 +2610,47 @@ func (a *App) StopAllBackgroundProcs() {
 	a.bgMu.RUnlock()
 
 	bg := context.Background()
-	any := false
+	type liveProc struct {
+		entry *bgEntry
+		done  chan struct{}
+	}
+	var live []liveProc
 	for _, entry := range entries {
 		if entry.generation != a.Exec.Generation() {
 			continue
 		}
 		if a.Exec.IsProcessAlive(bg, entry.pid) {
-			_ = a.Exec.KillPgid(bg, entry.pgid, 15)
-			any = true
+			_ = a.Exec.KillPgid(bg, entry.pgid, 15) // SIGTERM
+			live = append(live, liveProc{entry: entry, done: entry.done})
 		}
 	}
-	if any {
-		time.Sleep(2 * time.Second)
+	if len(live) > 0 {
+		// Wait for all processes to exit, with a 2s ceiling. If the timeout
+		// expires, SIGKILL the remaining processes.
+		deadline := time.After(2 * time.Second)
+		timedOut := false
+		for _, p := range live {
+			if p.done == nil {
+				continue // no reaper (test-constructed entry) — skip wait
+			}
+			select {
+			case <-p.done:
+				// process exited cleanly
+			case <-deadline:
+				timedOut = true
+			}
+			if timedOut {
+				break // stop waiting once the deadline has passed
+			}
+		}
+		if timedOut {
+			// Force-kill any processes that are still alive.
+			for _, p := range live {
+				if a.Exec.IsProcessAlive(bg, p.entry.pid) {
+					_ = a.Exec.KillPgid(bg, p.entry.pgid, 9) // SIGKILL
+				}
+			}
+		}
 	}
 	// Clean up the per-session bg log directory.
 	if a.bgLogDir != "" {
