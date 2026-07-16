@@ -2,10 +2,13 @@ package exec
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,11 +103,19 @@ type Executor interface {
 // A trailing newline after the command body prevents a trailing # comment from
 // swallowing the closing brace.
 func runFromRoot(root, command string) string {
-	return fmt.Sprintf("cd %s 2>/dev/null && { %s\n}", shQuote(root), command)
+	return fmt.Sprintf("cd %s && { %s\n}", shQuote(root), command)
 }
 
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// randSuffix returns n hex characters of randomness for unique-naming purposes
+// (container names, etc.). Uses crypto/rand so the result is not predictable.
+func randSuffix(n int) string {
+	b := make([]byte, n)
+	_, _ = crand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // ---------------- Docker executor (default) ----------------
@@ -243,7 +254,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	if workdir == "" {
 		workdir = "/work"
 	}
-	name := "wakil-session-" + fmt.Sprint(os.Getpid())
+	name := "wakil-session-" + fmt.Sprint(os.Getpid()) + "-" + randSuffix(6)
 	// Best-effort remove a stale container from a previous crashed run.
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
@@ -713,18 +724,21 @@ func (e *DirectExecutor) URIToHostPath(uri string) (string, error) {
 	return uriToPath(uri)
 }
 
-// pathToURI converts a filesystem path to a file:// URI with proper encoding.
+// pathToURI converts a filesystem path to a file:// URI with proper percent-encoding.
 func pathToURI(path string) string {
-	encoded := strings.ReplaceAll(path, " ", "%20")
-	return "file://" + encoded
+	u := url.URL{Scheme: "file", Path: path}
+	return u.String()
 }
 
-// uriToPath extracts the filesystem path from a file:// URI.
+// uriToPath extracts the filesystem path from a file:// URI, decoding
+// percent-encoding.
 func uriToPath(uri string) (string, error) {
-	if !strings.HasPrefix(uri, "file://") {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return "", fmt.Errorf("parsing URI %q: %w", uri, err)
+	}
+	if u.Scheme != "file" {
 		return "", fmt.Errorf("not a file:// URI: %q", uri)
 	}
-	path := uri[len("file://"):]
-	path = strings.ReplaceAll(path, "%20", " ")
-	return path, nil
+	return u.Path, nil
 }

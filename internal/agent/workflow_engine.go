@@ -265,16 +265,25 @@ func doWFOracle(ctx context.Context, app *App, question string) (string, bool) {
 }
 
 // wfAppendStepLogEntry appends a step-log entry extracted from the model's output
-// to plan.md. Best-effort; errors are swallowed.
+// to plan.md. Best-effort; errors are warned once per session.
 func wfAppendStepLogEntry(app *App, entry string) {
 	if app.Exec == nil {
 		return
 	}
 	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
 	if err != nil {
+		if !app.planWriteFailed {
+			app.planWriteFailed = true
+			fmt.Fprintln(app.Out, Yellow("⚠ failed to read plan.md for step log: "+err.Error()))
+		}
 		return
 	}
-	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+		if !app.planWriteFailed {
+			app.planWriteFailed = true
+			fmt.Fprintln(app.Out, Yellow("⚠ failed to write plan.md step log: "+err.Error()))
+		}
+	}
 }
 
 // handleFinalReview runs the closing oracle check after the last IMPLEMENT step.

@@ -44,7 +44,10 @@ func HandleEmptyResponse(ctx context.Context, app *App) {
 	app.WorkflowStepTrace = nil
 	const retryHint = "The previous response was empty — likely hit the token limit. " +
 		"Please resume and complete the current implementation step."
-	_, _ = app.Send(ctx, retryHint)
+	_, err := app.Send(ctx, retryHint)
+	if err != nil {
+		wfProgNote(app, "⚠ retry failed: "+err.Error())
+	}
 
 	if IsEmptyTurn(app.Conv) {
 		// Retry also empty — surface without advancing state.

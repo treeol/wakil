@@ -105,6 +105,15 @@ type App struct {
 	// all subsequent memory writes are tainted=true. Never reset.
 	touchedExternal bool
 
+	// compactFailed is a sticky per-App flag for once-per-session warning
+	// on compaction failure. Set when the first compaction error occurs;
+	// prevents spamming the operator on every turn.
+	compactFailed bool
+
+	// planWriteFailed is a sticky per-App flag for once-per-session warning
+	// on plan.md write failures. Prevents repeated warnings on every step.
+	planWriteFailed bool
+
 	// exhausted is set by Send when the subagent hit MaxToolIterations
 	// (forceFinish) or enforceHardMax dropped content during the turn. It is
 	// read by dispatchSubagent after Send returns to produce a truthful
@@ -1820,7 +1829,7 @@ func (a *App) handleEditFile(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	// LSP file-sync: notify gopls of the change (didChange).
 	if a.LSP != nil {
-		a.LSP.NotifyChange(context.Background(), canonical)
+		a.LSP.NotifyChange(ctx, canonical)
 	}
 	a.recordFileChanged(canonical)
 	n := 1

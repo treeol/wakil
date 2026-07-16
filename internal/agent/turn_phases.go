@@ -275,7 +275,15 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 // finalizeTurn runs post-loop cleanup: compaction, hard-max enforcement, and
 // context pressure warning. Called after the stream loop completes successfully.
 func (a *App) finalizeTurn(ctx context.Context) {
-	if ok, err := a.Compact(ctx, a.summarizeFn(), false); err == nil && ok {
+	ok, err := a.Compact(ctx, a.summarizeFn(), false)
+	if err != nil {
+		// Warn once per session on compaction failure — the hot path falls
+		// to lossy enforceHardMax, but the operator should know.
+		if !a.compactFailed {
+			a.compactFailed = true
+			fmt.Fprintln(a.Out, Yellow("⚠ compaction failed: "+err.Error()+" — falling to hard-max enforcement"))
+		}
+	} else if ok {
 		fmt.Fprintln(a.Out, Dim("· compacted earlier turns into a summary"))
 	}
 	_, _, hm := a.activeThresholds()

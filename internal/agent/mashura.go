@@ -817,12 +817,21 @@ func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
 //	"auto"    — fire the call directly up to MaxCounsel times per turn, then
 //	            fall back to suggest; each fire announced before the call
 //
+// mashuraAvailable reports whether mashura counsel tools are available
+// (oracle enabled AND at least one API key is set). WP-7.10d: single predicate.
+func (a *App) mashuraAvailable() bool {
+	if !a.Cfg.OracleEnabled {
+		return false
+	}
+	return os.Getenv(a.Cfg.OracleAPIKeyEnv) != "" || os.Getenv(a.Cfg.OpenRouterAPIKeyEnv) != ""
+}
+
 // Mode resolution: CounselMode (TUI, set by /counsel) takes precedence; falls
 // back to AutoCounsel bool for the headless benchmark path.
 // Each distinct symptom is deduplicated (struggleSuggested); that map is reset
 // at the start of each Send() when CounselMode is set (per-turn cap in TUI).
 func (a *App) maybeSuggestDebug(ctx context.Context) {
-	if !a.Cfg.OracleEnabled || os.Getenv(a.Cfg.OracleAPIKeyEnv) == "" {
+	if !a.mashuraAvailable() {
 		return // no mashūra available
 	}
 	symptom, ok := DetectStruggle(a.recentTraces)

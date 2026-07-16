@@ -98,12 +98,17 @@ func TestOpenRouterRequestShape(t *testing.T) {
 
 // TestRunPanelModeCollectsAll verifies that panel mode queries all members and
 // collects every result — including errors from failing members — without stopping.
+// With WP-7.7 parallelization, members run concurrently; the test server
+// dispatches based on the request body's model field, not call order.
 func TestRunPanelModeCollectsAll(t *testing.T) {
-	callN := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callN++
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		json.Unmarshal(body, &req)
 		w.Header().Set("Content-Type", "application/json")
-		if callN == 1 {
+		if req.Model == "model-a" {
 			// First member: success.
 			w.Write([]byte(`{"content":[{"type":"text","text":"first answer"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
 		} else {
@@ -137,9 +142,6 @@ func TestRunPanelModeCollectsAll(t *testing.T) {
 	}
 	if results[1].Answer != "" {
 		t.Error("second member: answer must be empty when error")
-	}
-	if callN != 2 {
-		t.Errorf("panel mode: expected 2 calls, got %d", callN)
 	}
 }
 

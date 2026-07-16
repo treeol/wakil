@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -301,22 +302,49 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 		}}
 	}
 
-	results := make([]PanelMemberResult, 0, len(models))
-	for _, pm := range models {
-		prov, model := ParseModelPrefix(pm)
-		answer, usage, err := callMember(ctx, prov, model, question, briefing, ccfg, apiKeys)
-		results = append(results, PanelMemberResult{
-			PrefixedModel: pm,
-			Model:         model,
-			Answer:        answer,
-			Usage:         usage,
-			Err:           err,
-		})
-		if mode == "fallback" && err == nil {
-			// Fallback: stop on first success; remaining members not tried.
-			break
+	// Fallback mode: sequential, stop on first success.
+	if mode == "fallback" {
+		results := make([]PanelMemberResult, 0, len(models))
+		for _, pm := range models {
+			prov, model := ParseModelPrefix(pm)
+			answer, usage, err := callMember(ctx, prov, model, question, briefing, ccfg, apiKeys)
+			results = append(results, PanelMemberResult{
+				PrefixedModel: pm,
+				Model:         model,
+				Answer:        answer,
+				Usage:         usage,
+				Err:           err,
+			})
+			if err == nil {
+				break
+			}
 		}
+		return results
 	}
+
+	// Panel mode: parallelize per-slot goroutines (WP-7.7). Each slot writes
+	// to its own index — no shared mutation, no mutex needed. Uses WaitGroup,
+	// NOT errgroup.WithContext (that cancels siblings on first error; panels
+	// want partial results from surviving models — see decision log).
+	results := make([]PanelMemberResult, len(models))
+	var wg sync.WaitGroup
+	for i, pm := range models {
+		i, pm := i, pm
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prov, model := ParseModelPrefix(pm)
+			answer, usage, err := callMember(ctx, prov, model, question, briefing, ccfg, apiKeys)
+			results[i] = PanelMemberResult{
+				PrefixedModel: pm,
+				Model:         model,
+				Answer:        answer,
+				Usage:         usage,
+				Err:           err,
+			}
+		}()
+	}
+	wg.Wait()
 	return results
 }
 

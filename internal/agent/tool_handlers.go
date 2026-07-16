@@ -62,7 +62,7 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 	// stat it and didChange if mtime+size changed.
 	if err == nil && a.LSP != nil && !readAction {
 		a.LSP.MarkOpenFilesDirty()
-		a.LSP.BatchNotifyWatchedFiles(context.Background())
+		a.LSP.BatchNotifyWatchedFiles(ctx)
 	}
 	return formatResult(out, err)
 }
@@ -347,7 +347,7 @@ func (a *App) handleWriteFile(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	out, err := a.Exec.WriteFile(ctx, canonical, args.Content)
 	if err == nil && a.LSP != nil {
-		a.LSP.NotifyChange(context.Background(), canonical)
+		a.LSP.NotifyChange(ctx, canonical)
 	}
 	if err == nil {
 		a.recordFileChanged(canonical)

@@ -757,7 +757,15 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// when the trailing usage chunk lands. Exact=false marks it an estimate;
 	// the authoritative figure overwrites it at stream end (SetUsage below).
 	// Output fields are zeroed: this call's output is genuinely unknown yet.
-	c.SetUsage(UsageStat{InputTok: ApproxTokens(len(raw))})
+	//
+	// WP-7.10e: the tools schema is a fixed overhead that doesn't grow per-turn.
+	// We estimate its size separately and subtract it from the prompt token count
+	// so the ctx meter reflects the conversation size, not the tool definitions.
+	promptTok := ApproxTokens(len(raw))
+	if toolsBytes := estimateToolsBytes(tools); toolsBytes > 0 {
+		promptTok -= ApproxTokens(toolsBytes)
+	}
+	c.SetUsage(UsageStat{InputTok: promptTok})
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -945,6 +953,24 @@ func trimToolResults(msgs []Message, currentSize, maxBytes int) []Message {
 		cur -= e.size - len(stub)
 	}
 	return out
+}
+
+// estimateToolsBytes returns a rough byte size of the tools schema when
+// serialised to JSON, so it can be subtracted from the provisional prompt
+// token estimate (WP-7.10e: tools schema is fixed overhead, not prompt).
+func estimateToolsBytes(tools []Tool) int {
+	if len(tools) == 0 {
+		return 0
+	}
+	// Marshal once to get the exact size; this is cheap relative to the
+	// network call that follows.
+	b, err := json.Marshal(struct {
+		Tools []Tool `json:"tools,omitempty"`
+	}{Tools: tools})
+	if err != nil {
+		return 0
+	}
+	return len(b)
 }
 
 // extractSpillPath returns the disk path embedded in a tool result's trailing

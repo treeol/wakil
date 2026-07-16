@@ -77,13 +77,14 @@ type Server struct {
 	env      map[string]string
 	initOpts map[string]interface{}
 
-	mu       sync.Mutex
-	state    ServerState
-	conn     *rpcConn
-	stderr   io.ReadCloser
-	pid      int
-	caps     ServerCapabilities
-	encoding PositionEncodingKind // negotiated, stored per-instance; nil→utf-16 handled at access
+	mu        sync.Mutex
+	state     ServerState
+	conn      *rpcConn
+	stderr    io.ReadCloser
+	stderrBuf []byte // last 4 KB of stderr for crash diagnostics
+	pid       int
+	caps      ServerCapabilities
+	encoding  PositionEncodingKind // negotiated, stored per-instance; nil→utf-16 handled at access
 
 	// Readiness gate: closed when Ready, re-created on each spawn.
 	// Waiters select on readyCh and deadCh.
@@ -187,7 +188,12 @@ func (s *Server) spawn(ctx context.Context) error {
 	}
 
 	// Build the command. Use 'exec' so sh doesn't linger as a separate parent.
-	cmdStr := "exec " + s.cmd
+	// Prepend configured env vars (WP-7.6: env was never applied — a dead config field).
+	cmdStr := "exec"
+	for k, v := range s.env {
+		cmdStr += " " + k + "=" + shellQuote(v)
+	}
+	cmdStr += " " + s.cmd
 	for _, a := range s.args {
 		cmdStr += " " + shellQuote(a)
 	}
@@ -363,13 +369,19 @@ func (s *Server) markDead(err error) {
 	s.mu.Unlock()
 
 	// Shutdown the connection (best-effort graceful, then stdin close).
+	// Skip the 5s graceful shutdown RPC for idle-reaping — just kill.
 	if conn != nil {
-		// Best-effort: send shutdown, then exit, then close.
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, _ = conn.call(shutdownCtx, "shutdown", nil)
-		cancel()
-		_ = conn.notify("exit", nil)
-		conn.Close()
+		if err != nil && err.Error() == "idle timeout" {
+			// Idle reaping: skip the RPC, just close the connection.
+			conn.Close()
+		} else {
+			// Best-effort: send shutdown, then exit, then close.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, _ = conn.call(shutdownCtx, "shutdown", nil)
+			cancel()
+			_ = conn.notify("exit", nil)
+			conn.Close()
+		}
 	}
 }
 
@@ -516,7 +528,7 @@ func (s *Server) resetIdleTimer() {
 	})
 }
 
-// drainStderr reads stderr (crash traces for error classification).
+// drainStderr reads stderr and keeps a 4 KB ring buffer for crash diagnostics.
 func (s *Server) drainStderr() {
 	if s.stderr == nil {
 		return
@@ -525,8 +537,13 @@ func (s *Server) drainStderr() {
 	for {
 		n, err := s.stderr.Read(buf)
 		if n > 0 {
-			// Could log or store for crash classification; for now, discard.
-			_ = buf[:n]
+			// Append to the ring buffer, dropping oldest data if needed.
+			s.mu.Lock()
+			s.stderrBuf = append(s.stderrBuf, buf[:n]...)
+			if len(s.stderrBuf) > 4096 {
+				s.stderrBuf = s.stderrBuf[len(s.stderrBuf)-4096:]
+			}
+			s.mu.Unlock()
 		}
 		if err != nil {
 			return

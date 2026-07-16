@@ -1266,6 +1266,7 @@ func leadingAnsiCodes(s string) string {
 
 // wrapPoint returns the byte index at which to break s at visual column width,
 // preferring a space boundary. Skips ANSI escape sequences when counting.
+// Uses lipgloss.Width for display-width correctness on CJK/emoji.
 func wrapPoint(s string, width int) int {
 	visual := 0
 	inEsc := false
@@ -1284,7 +1285,7 @@ func wrapPoint(s string, width int) int {
 		if r == ' ' {
 			lastSpace = i
 		}
-		visual++
+		visual += lipgloss.Width(string(r))
 		if visual >= width {
 			if lastSpace > 0 {
 				return lastSpace + 1

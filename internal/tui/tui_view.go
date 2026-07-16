@@ -456,18 +456,26 @@ func (m tuiModel) searchPrompt() string {
 	return prefix + preview
 }
 
-// truncateForDisplay trims s to maxRunes runes, appending "…" if truncated.
-// Handles multi-byte runes correctly. Returns s unchanged if maxRunes <= 0
-// and s fits.
+// truncateForDisplay trims s to maxRunes display columns (using lipgloss.Width
+// for CJK/emoji correctness), appending "…" if truncated.
+// Returns s unchanged if maxRunes <= 0 and s fits.
 func truncateForDisplay(s string, maxRunes int) string {
 	if maxRunes <= 0 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= maxRunes {
+	if lipgloss.Width(s) <= maxRunes {
 		return s
 	}
-	return string(r[:maxRunes-1]) + "…"
+	// Walk runes accumulating display width until we reach the budget.
+	visual := 0
+	for i, r := range s {
+		w := lipgloss.Width(string(r))
+		if visual+w > maxRunes-1 { // -1 for the ellipsis
+			return s[:i] + "…"
+		}
+		visual += w
+	}
+	return s
 }
 
 // ctxGap is the column gap between the textarea and the hist/ctx block.
@@ -678,7 +686,7 @@ func (m tuiModel) renderMainTabBar() string {
 	start, count := m.visibleSubTabs()
 	if start > 0 {
 		more := ansi.Truncate(sprint("‹%d", start), tabMoreW-1, "")
-		more += strings.Repeat(" ", tabMoreW-len([]rune(more)))
+		more += strings.Repeat(" ", tabMoreW-lipgloss.Width(more))
 		bar += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(more)
 	}
 
@@ -695,7 +703,7 @@ func (m tuiModel) renderMainTabBar() string {
 		taskMax := tabSubW - 8 // 8 fixed chars + taskMax = tabSubW exactly
 		taskStr := ansi.Truncate(tab.task, taskMax, "…")
 		// Pad task to taskMax so the × stays in a fixed column.
-		taskStr = taskStr + strings.Repeat(" ", taskMax-len([]rune(ansi.Strip(taskStr))))
+		taskStr = taskStr + strings.Repeat(" ", taskMax-lipgloss.Width(ansi.Strip(taskStr)))
 		xStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 		var labelPart string
