@@ -18,14 +18,18 @@ commands, file writes, and background processes.
 
 ### Sandbox classification
 
-- **Convenience-grade** (default): the Docker sandbox isolates the workspace
-  and provides a clean toolchain environment, but is **not** adversarial-hardened
-  by default. The confirmation gate is the primary defense.
-- **Hardened** (with WP-2.1 flags): `--cap-drop=ALL`, `--security-opt=no-new-privileges`,
-  `--read-only` rootfs, `--pids-limit`, `--memory` limits, and `/tmp` tmpfs.
-  Configurable via `docker_caps`, `docker_memory`, `docker_pids_limit` in config.
-  Even hardened, the sandbox is **not** a substitute for the confirmation gate
-  when running untrusted tasks.
+- **Default Docker mode** applies basic hardening: `--cap-drop=ALL`,
+  `--security-opt=no-new-privileges`, `--read-only` rootfs, resource limits,
+  and writable tmpfs for `/tmp` and `/etc`. This is convenience-grade
+  isolation — it prevents accidental damage and raises the bar for casual
+  escapes, but is **not** adversarial-grade. Seccomp/AppArmor profiles are
+  not applied. Optional host integrations (Docker socket, SSH signing socket)
+  materially weaken isolation when enabled.
+- **Direct mode** (`--exec direct`) runs on the host with no container
+  isolation. The confirmation gate is the only defense.
+
+Even hardened, the sandbox is **not** a substitute for the confirmation gate
+when running untrusted tasks.
 
 ### Docker socket
 
@@ -44,13 +48,34 @@ container-escape syscalls is planned future work. The current hardening
 (`--cap-drop=ALL`, `--read-only`, `--security-opt=no-new-privileges`)
 provides defense-in-depth but is not a complete container isolation solution.
 
+### Hardening flags
+
+The following flags are always applied in Docker mode:
+
+| Flag | Purpose |
+|---|---|
+| `--cap-drop=ALL` | Drop all Linux capabilities |
+| `--security-opt=no-new-privileges` | Prevent privilege escalation |
+| `--read-only` | Read-only root filesystem |
+| `--tmpfs=/tmp` | Writable temp directory (100 MB) |
+| `--tmpfs=/etc` | Writable /etc for passwd entries (1 MB) |
+
+Configurable via `config.json`:
+
+| Field | Default | Purpose |
+|---|---|---|
+| `docker_caps` | `[]` (none) | Capabilities to re-add after cap-drop (e.g. `["CHOWN"]` if `go build` fails) |
+| `docker_memory` | `"2g"` | Container memory limit |
+| `docker_pids_limit` | `512` | Max processes in the container |
+
 ## Disclosure
 
 If you discover a security vulnerability in wakil, please report it
 responsibly:
 
 1. **Do not** open a public GitHub issue.
-2. Email the maintainer directly.
+2. Open a [GitHub Private Security Advisory](https://github.com/treeol/wakil/security/advisories/new),
+   or email `security@treeol.dev`.
 3. Include a proof of concept and affected versions.
 4. Allow reasonable time for a fix before public disclosure.
 
