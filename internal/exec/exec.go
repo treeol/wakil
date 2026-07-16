@@ -155,6 +155,10 @@ type DockerOpts struct {
 	KVRMaxEntries           int
 	KVRSweepIntervalSecs    int
 	KVRSnapshotIntervalSecs int
+	// Docker hardening flags (defense-in-depth). See Config.DockerCaps etc.
+	DockerCaps      []string
+	DockerMemory    string
+	DockerPidsLimit int
 }
 
 // waitForKVR polls the kvr UDS socket with PING until it responds or the
@@ -204,6 +208,36 @@ func waitForKVR(socketPath string, timeout time.Duration) error {
 	return fmt.Errorf("kvr did not become ready within %s", timeout)
 }
 
+// dockerHardeningArgs returns the sandbox hardening flags appended to every
+// docker run command. Core flags (--cap-drop, --read-only, etc.) are always
+// applied; resource limits and cap re-additions are configurable via DockerOpts.
+//
+// The workspace mount (-v hostMount:workdir, added separately) is RW so the
+// agent can write files. /tmp gets a writable tmpfs. The sandbox-home mount
+// (added separately) is also RW for Go/Cargo caches. /etc gets a writable
+// tmpfs overlay so ensurePasswdEntry can append the mapped uid (needed for
+// ssh-keygen, whoami, git commit signing) under the read-only rootfs.
+func dockerHardeningArgs(opts DockerOpts) []string {
+	args := []string{
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges",
+		"--read-only",
+		"--tmpfs=/tmp:rw,nosuid,nodev,size=100m",
+		"--tmpfs=/etc:rw,nosuid,nodev,size=1m",
+	}
+	// Re-add specific capabilities if configured (e.g. CHOWN for go build).
+	for _, cap := range opts.DockerCaps {
+		args = append(args, "--cap-add="+cap)
+	}
+	if opts.DockerMemory != "" {
+		args = append(args, "--memory="+opts.DockerMemory)
+	}
+	if opts.DockerPidsLimit > 0 {
+		args = append(args, fmt.Sprintf("--pids-limit=%d", opts.DockerPidsLimit))
+	}
+	return args
+}
+
 func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	image, workdir, hostMount, dockerSock := opts.Image, opts.Workdir, opts.HostMount, opts.DockerSock
 	if workdir == "" {
@@ -214,6 +248,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
 	args := []string{"run", "-d", "--name", name, "-w", workdir}
+	args = append(args, dockerHardeningArgs(opts)...)
 	if hostMount != "" {
 		if err := os.MkdirAll(hostMount, 0o755); err != nil {
 			return nil, fmt.Errorf("creating host workdir %s: %w", hostMount, err)

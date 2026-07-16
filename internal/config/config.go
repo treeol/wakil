@@ -90,7 +90,15 @@ type Config struct {
 	WorkDir      string `json:"work_dir"`                // working dir inside the container
 	HostWorkDir  string `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
 	DockerSocket bool   `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
-	SSHSigning   string `json:"ssh_signing,omitempty"`   // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
+	// Docker hardening (defense-in-depth for the sandbox container).
+	// DockerCaps re-adds specific capabilities after --cap-drop=ALL.
+	// Empty = no caps re-added (strictest). Add "CHOWN" if go build fails.
+	DockerCaps []string `json:"docker_caps,omitempty"`
+	// DockerMemory limits container memory (e.g. "2g"). Empty = no limit.
+	DockerMemory string `json:"docker_memory,omitempty"`
+	// DockerPidsLimit caps the number of processes. 0 = no limit.
+	DockerPidsLimit int    `json:"docker_pids_limit,omitempty"`
+	SSHSigning      string `json:"ssh_signing,omitempty"` // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
 
 	// kvr staging store (sandbox-local ephemeral KV).
 	// KVRDisabled opts out of the staging store (default: false = enabled).
@@ -499,6 +507,8 @@ func DefaultConfig() Config {
 		ExecMode:                "docker",
 		Image:                   "wakil-dev",
 		DockerSocket:            false,
+		DockerMemory:            "2g",
+		DockerPidsLimit:         512,
 		KVRMaxEntries:           100000,
 		KVRSweepIntervalSecs:    30,
 		KVRSnapshotIntervalSecs: 300,

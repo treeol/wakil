@@ -392,6 +392,9 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 			KVRMaxEntries:           cfg.KVRMaxEntries,
 			KVRSweepIntervalSecs:    cfg.KVRSweepIntervalSecs,
 			KVRSnapshotIntervalSecs: cfg.KVRSnapshotIntervalSecs,
+			DockerCaps:              cfg.DockerCaps,
+			DockerMemory:            cfg.DockerMemory,
+			DockerPidsLimit:         cfg.DockerPidsLimit,
 		})
 	}
 }
