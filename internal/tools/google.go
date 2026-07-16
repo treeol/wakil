@@ -16,35 +16,24 @@ import (
 // GoogleTools returns the google_search and google_fetch_url tool definitions.
 // Only called when a Google API key and CX are configured.
 func GoogleTools() []proxy.Tool {
-	strProp := func(desc string) map[string]interface{} {
-		return map[string]interface{}{"type": "string", "description": desc}
-	}
-	intProp := func(desc string) map[string]interface{} {
-		return map[string]interface{}{"type": "integer", "description": desc}
-	}
-	obj := func(props map[string]interface{}, required ...string) json.RawMessage {
-		b, _ := json.Marshal(map[string]interface{}{"type": "object", "properties": props, "required": required})
-		return b
-	}
-
 	return []proxy.Tool{
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "google_search",
 			Description: "Search Google using the Custom Search JSON API. Returns ranked results as metadata only (title, url, snippet); it does not fetch the pages. Use google_fetch_url to read a result's full content.",
-			Parameters: obj(map[string]interface{}{
-				"query":  strProp("The search query"),
-				"num":    intProp("Number of results to return (1-10, default 5)"),
-				"start":  intProp("Pagination offset (1-based, default 1)"),
-				"after":  strProp("Restrict results to pages published on or after this date. Accepts YYYY, YYYY-MM, or YYYY-MM-DD."),
-				"before": strProp("Restrict results to pages published on or before this date. Same format as 'after'."),
+			Parameters: SchemaObj(map[string]interface{}{
+				"query":  StrProp("The search query"),
+				"num":    IntProp("Number of results to return (1-10, default 5)"),
+				"start":  IntProp("Pagination offset (1-based, default 1)"),
+				"after":  StrProp("Restrict results to pages published on or after this date. Accepts YYYY, YYYY-MM, or YYYY-MM-DD."),
+				"before": StrProp("Restrict results to pages published on or before this date. Same format as 'after'."),
 			}, "query"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "google_fetch_url",
 			Description: "Fetch a URL and return its readable text content with HTML stripped. Use this to read the full content of a page found via google_search.",
-			Parameters: obj(map[string]interface{}{
-				"url":       strProp("The page URL to fetch (must be http:// or https://)"),
-				"max_chars": intProp("Maximum characters of text to return (default 5000)"),
+			Parameters: SchemaObj(map[string]interface{}{
+				"url":       StrProp("The page URL to fetch (must be http:// or https://)"),
+				"max_chars": IntProp("Maximum characters of text to return (default 5000)"),
 			}, "url"),
 		}},
 	}

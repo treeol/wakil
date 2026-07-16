@@ -15,21 +15,6 @@ import (
 // SearxngTools returns the searxng_search and searxng_url_read tool definitions.
 // Only called when a SearXNG URL is configured.
 func SearxngTools() []proxy.Tool {
-	strProp := func(desc string) map[string]interface{} {
-		return map[string]interface{}{"type": "string", "description": desc}
-	}
-	enumProp := func(desc string, values ...string) map[string]interface{} {
-		return map[string]interface{}{
-			"type":        "string",
-			"description": desc,
-			"enum":        values,
-		}
-	}
-	obj := func(props map[string]interface{}, required ...string) json.RawMessage {
-		b, _ := json.Marshal(map[string]interface{}{"type": "object", "properties": props, "required": required})
-		return b
-	}
-
 	return []proxy.Tool{
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "searxng_search",
@@ -40,22 +25,22 @@ func SearxngTools() []proxy.Tool {
 				"'science' (arxiv, pubmed, google scholar…), " +
 				"'general' (wikipedia, brave…). " +
 				"Default category is 'it'.",
-			Parameters: obj(map[string]interface{}{
-				"query": strProp("Search query"),
-				"categories": enumProp(
+			Parameters: SchemaObj(map[string]interface{}{
+				"query": StrProp("Search query"),
+				"categories": EnumProp(
 					"Search category — controls which engines are used",
 					"it", "news", "science", "general", "images", "videos",
 					"music", "files", "social media", "map",
 				),
-				"time_range": enumProp("Limit results by age", "day", "month", "year"),
-				"engines":    strProp("Comma-separated engine names to force (e.g. 'github,stackoverflow'). Overrides categories."),
+				"time_range": EnumProp("Limit results by age", "day", "month", "year"),
+				"engines":    StrProp("Comma-separated engine names to force (e.g. 'github,stackoverflow'). Overrides categories."),
 			}, "query"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "searxng_url_read",
 			Description: "Fetch and return the plain-text content of a URL.",
-			Parameters: obj(map[string]interface{}{
-				"url": strProp("URL to fetch"),
+			Parameters: SchemaObj(map[string]interface{}{
+				"url": StrProp("URL to fetch"),
 			}, "url"),
 		}},
 	}
