@@ -626,7 +626,7 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("kill_process cancelled: %w", ctx.Err()).Error()
+			return "ERROR: kill_process cancelled: " + ctx.Err().Error()
 		case <-time.After(200 * time.Millisecond):
 		}
 		if !a.Exec.IsProcessAlive(ctx, entry.pid) {
@@ -709,9 +709,9 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// auto-approve via SuspendAuto (they are not classified as "destructive"
 	// by IsDestructiveShell, which only covers run_shell/run_background).
 	// AllowDestructive and AllowReads are NOT consulted for these tools —
-	// the parent's write gate is AutoApprove alone (see tuiConfirmer at
-	// agent_async.go:827-858, headlessConfirmer at run.go:178-212, and
-	// SuspendAuto at agent_async.go:791-819 which returns "" for all four
+	// the parent's write gate is AutoApprove alone (see tuiConfirmer in
+	// commands.go, headlessConfirmer at run.go, and SuspendAuto in commands.go
+	// which returns "" for all four
 	// edit-category tools). Without AutoApprove the parent's confirmer
 	// would prompt for each write; a child cannot prompt, so edit dispatch
 	// is rejected. Do not silently downgrade to discovery — a silent
