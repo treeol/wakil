@@ -618,6 +618,9 @@ Dockerfile         sandbox image — Go, Node, Rust, Python toolchains, gopls
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test instructions and PR
+checklist. For security concerns, see [SECURITY.md](SECURITY.md).
+
 ```sh
 go build -o wakil ./cmd/wakil
 go test ./...
