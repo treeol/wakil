@@ -34,6 +34,9 @@ jobs:
       - name: test
         run: go test ./...
 
+      - name: race detector
+        run: go test -race ./internal/agent/... ./internal/proxy/... ./internal/tui/... ./internal/counsel/...
+
   lint:
     runs-on: ubuntu-latest
     steps:

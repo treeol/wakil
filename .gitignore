@@ -7,6 +7,9 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# orphaned adapter (stale, no source — only __pycache__ remains)
+tb_adapter/
 *.egg-info/
 
 # local config that may hold secrets

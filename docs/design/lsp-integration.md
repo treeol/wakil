@@ -394,8 +394,8 @@ eval is a within-repo LSP-vs-grep comparison. Task set spans easy (declarations,
 W1–W5) and hard (locals/params, W6–W7) — the locals/params case is the entire
 justification for the hybrid schema's line-anchoring (R4).
 
-Z1–Z5 (ZDB) are kept as a pre-registered seed for the generalization gate
-(Phase 5, Valon's call) — **not part of MVP eval** (see "ZDB deferred" below).
+Z1–Z5 (external project) are kept as a pre-registered seed for the generalization gate
+(Phase 5, project owner's call) — **not part of MVP eval** (see "external project deferred" below).
 
 **Task W1 — Find the definition of `ExecuteToolCall`**
 - Task: "Find where `ExecuteToolCall` is defined."
@@ -476,19 +476,20 @@ declaration outline, excludes locals/params), and grep returns same-name noise.
   `type Sink` to find the type at `proxy/client.go:346`, (6) read it. Five
   hops for what LSP `hover` answers in one.
 
-#### ZDB repo tasks (DEFERRED — not part of MVP eval)
+#### External repo tasks (DEFERRED — not part of MVP eval)
 
-> **ZDB deferred (Amendment C):** Do NOT clone or mount ZDB. The eval's validity
-> comes from the task set spanning easy (declarations) and hard (locals/params),
-> which the 7 wakil tasks now do. Mounting ZDB means standing up its full Go
-> toolchain + module cache so gopls can index it: real setup risk and a confound
-> (cold/partially-indexed gopls on an unfamiliar repo is a different measurement
-> than warm-on-wakil). Z1–Z5 are kept as the pre-registered seed for the
-> **generalization gate** (Phase 5, Valon's call) — they earn their setup cost
-> only if the gopls-on-wakil slice wins.
+> **External project deferred (Amendment C):** Do NOT clone or mount the
+> external repo. The eval's validity comes from the task set spanning easy
+> (declarations) and hard (locals/params), which the 7 wakil tasks now do.
+> Mounting an external repo means standing up its full Go toolchain + module
+> cache so gopls can index it: real setup risk and a confound (cold/partially-
+> indexed gopls on an unfamiliar repo is a different measurement than
+> warm-on-wakil). Z1–Z5 are kept as the pre-registered seed for the
+> **generalization gate** (Phase 5, project owner's call) — they earn their
+> setup cost only if the gopls-on-wakil slice wins.
 
-**Task Z1 — Find the definition of the ZDB `get` command handler**
-- Task: "Find where the `get` command is implemented in ZDB."
+**Task Z1 — Find the definition of the external project's `get` command handler**
+- Task: "Find where the `get` command is implemented in the external project."
 - Success criterion: the function handling `zdb get <key>`, printing
   `"Value: <value>"` or `"Key not found."`
 - Grep challenge: "get" is a common substring; agent must navigate to the
@@ -549,7 +550,7 @@ counts (~4 chars/token). The agent must grep, read matches, and disambiguate.
 - **W1/W4/W5 are definition lookups:** grep returns definitions and calls mixed;
   agent must read to disambiguate. LSP `definition` returns only the definition.
 
-**ZDB baselines:** not measured — ZDB repo not on this host (see OPEN ITEM
+**External repo baselines:** not measured — external repo not on this host (see OPEN ITEM
 above). Will be measured in Phase 5 when the repo is available, or the eval
 runs on 5 wakil tasks only.
 
@@ -573,7 +574,7 @@ strictly lower than the grep baseline AND zero correctness regressions.
 - 7 frozen tasks with success criteria ✓
 - Measured grep baseline (wakil) ✓
 - Commit: "docs(lsp): lock proposal v3 — resolutions, serialization, frozen baseline"
-- **>>> HARD STOP.** Wait for Valon's approval before writing any implementation code.
+- **>>> HARD STOP.** Wait for project owner's approval before writing any implementation code.
 
 ### Phase 1 — Transport + protocol types (after approval)
 - 30-min go-sdk inspection per R2.
@@ -622,4 +623,4 @@ strictly lower than the grep baseline AND zero correctness regressions.
   regressions and ties, state per-task deltas. Fail-closed on any task where
   LSP did worse.
 - Commit: "test(lsp): MVP eval vs grep baseline — <summary>"
-- **>>> STOP.** Present comparison. Generalization gate is Valon's to call.
+- **>>> STOP.** Present comparison. Generalization gate is the project owner's to call.

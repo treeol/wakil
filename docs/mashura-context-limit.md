@@ -102,9 +102,13 @@ type ContextFit struct {
 }
 ```
 
-## Integration plan (not yet wired into oracle.go)
+## Integration (wired)
 
-The three call sites in `internal/counsel/oracle.go` need to be updated:
+The three call sites in `internal/counsel/oracle.go` are wired:
+`callAnthropic`, `callOpenRouter`, and `callOpenAICompat` each call
+`ResolveContextLength` + `FitToContext` before building the request body.
+The `ContextFit.Note` is surfaced out-of-band when fitting adjusts the
+briefing or max_tokens.
 
 ### callOpenRouter (line ~357)
 ```go
@@ -142,20 +146,10 @@ fit, rebuild, use `fit.MaxTokens`.
 
 ### Surfacing the Note
 
-The `ContextFit.Note` should be surfaced to the user out-of-band (e.g., printed
-to stderr or a status line in the TUI), not injected into the LLM input. The
-briefing's `[briefing truncated]` marker already signals the model. The `Note`
-is for the operator — "your briefing was truncated to fit X's context window."
-
-One approach: add an optional `*ContextFit` field to `PanelMemberResult` so the
-caller (`handleMashura` in `internal/agent/mashura.go`) can print it:
-
-```go
-type PanelMemberResult struct {
-    // ... existing fields ...
-    Fit *ContextFit // non-nil when context fitting was applied
-}
-```
+The `ContextFit.Note` is surfaced out-of-band (printed to the status line),
+not injected into the LLM input. The briefing's `[briefing truncated]`
+marker already signals the model. The `Note` is for the operator — "your
+briefing was truncated to fit X's context window."
 
 ## Testing
 

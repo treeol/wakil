@@ -176,6 +176,14 @@ precedence).
 | `--auto` | — | — | auto-approve all tool calls without prompting |
 | `--searxng-url` | `SEARXNG_URL` | — | enable the SearXNG native search tool |
 | `--google-cx` | `GOOGLE_CX` | — | Google Programmable Search Engine ID *(pair with `GOOGLE_API_KEY`)* |
+| `--mention-base` | — | current directory | base directory for `@` file mentions |
+| `--host` | `ILM_HOST` / `WAKIL_HOST` | — | ilm proxy host *(alternative to `--base-url`)* |
+| `--port` | `ILM_PORT` / `WAKIL_PORT` | `11400` | ilm proxy port *(used with `--host`)* |
+| `--trace` | `WAKIL_TRACE_SESSIONS` | `false` | enable JSONL trace capture for this session |
+| `--trace-dir` | `WAKIL_TRACE_DIR` | `~/.local/share/wakil/traces` | directory for trace files |
+| `--list-sessions` | — | — | list saved sessions for this workspace and exit |
+| `--all` | — | — | with `--resume`/`--list-sessions`: search all workspaces |
+| `--ssh-signing` | — | `off` | SSH commit signing in the sandbox: `off`\|`auto`\|`<path>` |
 | `--config` | `WAKIL_CONFIG` | `~/.config/wakil/config.json` | JSON config file path |
 
 `lsp_enabled` is config-file only, no flag — see
@@ -257,8 +265,6 @@ reference covering every section below.
 | `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
 | `external_backends` | — | Backend names known to route to external providers |
 | `aux_model` | `""` | Pins `X-Ilm-Aux-Model` (empty = follow main) |
-| `trace_sessions` | `false` | Trace every TUI session as JSONL |
-| `trace_dir` | `~/.local/share/wakil/traces` | Directory for trace files |
 | `kvr_disabled` | `false` | Disable the staging KV store *(auto-disabled in direct mode)* |
 | `kvr_max_entries` | `100000` | Max entries in the staging store |
 | `kvr_snapshot_interval_secs` | `300` | Staging snapshot frequency *(survives sandbox restarts)* |
