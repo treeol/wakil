@@ -181,6 +181,7 @@ func FitToContext(systemPrompt, question, briefing string, maxTokens, contextLen
 
 	adjusted := false
 	reducedMax := false
+	truncatedBriefing := false
 	var notes []string
 
 	if adjustedMax < maxTokens {
@@ -224,6 +225,7 @@ func FitToContext(systemPrompt, question, briefing string, maxTokens, contextLen
 			}
 			briefing = truncated + marker
 			adjusted = true
+			truncatedBriefing = true
 			notes = append(notes, fmt.Sprintf("truncated briefing to fit context window (%d tokens)", contextLength))
 			inputEstimate = approxTokens(len(systemPrompt) + len(question) + len(joiner) + len(briefing))
 		}
@@ -243,7 +245,7 @@ func FitToContext(systemPrompt, question, briefing string, maxTokens, contextLen
 		Briefing:          briefing,
 		Adjusted:          adjusted,
 		ReducedMaxTokens:  reducedMax,
-		TruncatedBriefing: briefing != "" && strings.Contains(briefing, "[briefing truncated"),
+		TruncatedBriefing: truncatedBriefing,
 		CannotFit:         cannotFit,
 		Note:              strings.Join(notes, "; "),
 	}
