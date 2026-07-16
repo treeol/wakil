@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -163,29 +162,11 @@ func GoogleFetchURL(rawURL string, maxChars int) string {
 		return "ERROR reading: " + err.Error()
 	}
 
-	text := googleStripHTML(string(body))
+	text := stripHTML(string(body))
 	if len(text) > maxChars {
 		text = strings.TrimRight(text[:maxChars], " \t\n") + "…"
 	}
 	return text
-}
-
-// googleStripHTML removes HTML tags and returns readable text. Uses a simple
-// regex-based approach consistent with the searxng stripHTML helper.
-func googleStripHTML(s string) string {
-	// Remove block elements whose content is never readable text.
-	for _, tag := range []string{"script", "style", "noscript", "head"} {
-		s = removeHTMLBlock(s, tag)
-	}
-	// Strip remaining tags.
-	tagRe := regexp.MustCompile(`<[^>]+>`)
-	s = tagRe.ReplaceAllString(s, " ")
-	// Decode common HTML entities.
-	s = strings.NewReplacer(
-		"&amp;", "&", "&lt;", "<", "&gt;", ">",
-		"&quot;", `"`, "&#39;", "'", "&nbsp;", " ",
-	).Replace(s)
-	return strings.Join(strings.Fields(s), " ")
 }
 
 // parseGoogleDate converts a flexible date string to YYYYMMDD for the Google
