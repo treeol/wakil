@@ -678,9 +678,17 @@ func TestStopAllBackgroundProcs_SIGKILLTimeout(t *testing.T) {
 	if elapsed > 3500*time.Millisecond {
 		t.Errorf("took too long: %s, expected ~2s", elapsed)
 	}
-	// Process must be dead after SIGKILL.
+	// Process must be dead after SIGKILL. SIGKILL delivery/reaping is
+	// asynchronous in the kernel — IsProcessAlive (kill(pid,0)==nil) still
+	// reports true for a zombie not yet reaped by the cmd.Wait() goroutine.
+	// Poll briefly instead of asserting instantaneously, so CI scheduler
+	// jitter doesn't produce a false failure on an otherwise-correct kill.
+	deadline := time.Now().Add(2 * time.Second)
+	for exe.IsProcessAlive(context.Background(), pid) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 	if exe.IsProcessAlive(context.Background(), pid) {
-		t.Errorf("process pid=%d still alive after StopAllBackgroundProcs", pid)
+		t.Errorf("process pid=%d still alive 2s after StopAllBackgroundProcs (SIGKILL)", pid)
 	}
 }
 
