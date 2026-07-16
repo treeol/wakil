@@ -12,11 +12,6 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/exec"
-	"github.com/treeol/wakil/internal/lsp"
-	"github.com/treeol/wakil/internal/memory"
-	"github.com/treeol/wakil/internal/proxy"
-	"github.com/treeol/wakil/internal/staging"
-	"github.com/treeol/wakil/internal/trace"
 	"github.com/treeol/wakil/internal/tui"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -66,25 +61,6 @@ func main() {
 	fmt.Fprintf(os.Stderr, "ctx limits: compactAt=%d hardMax=%d keep=%d summary=%d\n",
 		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
 
-	ep := cfg.ActiveEndpoint()
-	client := &proxy.Client{
-		BaseURL:         strings.TrimRight(ep.BaseURL, "/"),
-		Model:           ep.Model,
-		Kind:            ep.Kind,
-		ConfiguredModel: ep.Model,
-		Temperature:     ep.Temperature,
-		TopP:            ep.TopP,
-		MaxTokens:       ep.MaxTokens,
-		CachePrompt:     ep.CachePrompt,
-		CacheControl:    ep.CacheControl,
-		AppReferer:      ep.AppReferer,
-		AppTitle:        ep.AppTitle,
-		ChatID:          agent.NewChatID(),
-		AuthHeader:      cfg.AuthHeader(),
-		HTTP:            newHTTPClient(),
-		MaxRequestBytes: cfg.MaxRequestBytes,
-	}
-
 	// Resume a saved session: reload its transcript and re-attach its chat_id so
 	// the proxy's server-side memory for that conversation continues.
 	//
@@ -107,7 +83,6 @@ func main() {
 			os.Exit(1)
 		}
 		resumed = s
-		client.ChatID = s.ChatID
 	}
 
 	exe, err := newExecutor(cfg)
@@ -116,28 +91,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Connect MCP servers before starting the TUI so tools are ready immediately.
-	var mcpMgr *agent.MCPManager
-	if len(cfg.MCPServers) > 0 {
-		mcpMgr = agent.NewMCPManager(context.Background(), cfg.MCPServers)
+	app, res := buildApp(cfg, exe, buildAppOpts{})
+
+	// Override the client ChatID if resuming a session.
+	if resumed != nil {
+		app.Client.ChatID = resumed.ChatID
 	}
-
-	tools := agent.BuildTools(cfg, exe.Cwd(), mcpMgr)
-
-	// Initialize the LSP manager when enabled. The manager owns language server
-	// processes (gopls) for code-intelligence tools. nil when LSPEnabled is false.
-	var lspMgr *lsp.Manager
-	if cfg.LSPEnabled {
-		rootURI := "file://" + exe.Cwd()
-		lspMgr = lsp.NewManager(exe, cfg, rootURI)
-	}
-
-	agentPrompt := loadAgentPrompt(cfg)
-
-	// Backend-truth context sizing: ask the backend (through the proxy) for its
-	// real per-slot n_ctx and cache it for the process. On failure this prints a
-	// loud fallback note to stderr.
-	ctxLimit := agent.ResolveContextLimit(context.Background(), client.HTTP, cfg, os.Stderr)
 
 	// Prime the OpenRouter model-context cache in the background when any
 	// mashura panel routes through OpenRouter. ResolveContextLength never
@@ -157,13 +116,6 @@ func main() {
 		}()
 	}
 
-	// Backend list: fetch /v1/ilm/backends; fall back to config external_backends.
-	backendList := agent.FetchBackendListWithFallback(context.Background(), client.HTTP, cfg, os.Stderr)
-
-	// Model list for /model completion: /v1/ilm/models (proxy) or /v1/models
-	// (openai kind); silently empty on failure.
-	modelList := agent.FetchModelListForEndpoint(context.Background(), client.HTTP, cfg)
-
 	counselMode := cfg.AutoCounsel
 	if counselMode == "" {
 		counselMode = "suggest"
@@ -172,34 +124,8 @@ func main() {
 	if counselMode == "auto" && counselMax == 0 {
 		counselMax = 3
 	}
-
-	app := &agent.App{
-		Cfg:             cfg,
-		Client:          client,
-		Exec:            exe,
-		MCP:             mcpMgr,
-		LSP:             lspMgr,
-		Tools:           tools,
-		CtxLimit:        ctxLimit,
-		AgentPrompt:     agentPrompt,
-		BackendList:     backendList,
-		ModelList:       modelList,
-		SelectedBackend: cfg.Backend,
-		CounselMode:     counselMode,
-		MaxCounsel:      counselMax,
-		AgentPrefix:     "main",
-		// Out and Confirm are injected per-turn by runTurn.
-		Out:         os.Stderr,
-		Confirm:     func(_, _, _ string, _ bool) bool { return false },
-		InjectDate:  true,
-		AutoApprove: cfg.AutoApprove,
-		Costs:       proxy.NewCostTracker(),
-	}
-
-	// Initialize staging client if kvr is available.
-	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
-		app.StagingClient = staging.NewClient(kvrSocket)
-	}
+	app.CounselMode = counselMode
+	app.MaxCounsel = counselMax
 
 	if resumed != nil {
 		app.Conv = resumed.Conv
@@ -207,8 +133,8 @@ func main() {
 		app.Workflow = resumed.SavedWorkflow
 	} else {
 		app.Session = &agent.Session{
-			ChatID:    client.ChatID,
-			Model:     client.Model,
+			ChatID:    app.Client.ChatID,
+			Model:     app.Client.Model,
 			Created:   time.Now(),
 			Workspace: app.SessionWorkspace(),
 		}
@@ -226,8 +152,7 @@ func main() {
 		// empty-SelectedModel trap ApplyModelOverride leaves for openai-kind
 		// endpoints (reading app.SelectedModel back here would be wrong).
 		if result.Model != "" || result.Backend != "" {
-			ctxLimit = agent.ResolveContextLimitForBackendModel(context.Background(), client.HTTP, cfg, result.Backend, result.Model, os.Stderr)
-			app.CtxLimit = ctxLimit
+			app.CtxLimit = agent.ResolveContextLimitForBackendModel(context.Background(), app.Client.HTTP, cfg, result.Backend, result.Model, os.Stderr)
 		}
 	}
 
@@ -249,51 +174,24 @@ func main() {
 		scanCancel()
 	}
 
-	// Initialize durable memory store. Fail-open: a warning is printed but
-	// the session continues without memory (all memory_* tools return
-	// "memory unavailable"). Same pattern as staging — the store is
-	// independent of kvr and lives on the host filesystem.
-	memDBPath := agent.MemoryDBPath(app.SessionWorkspace())
-	if memDBPath != "" {
-		memStore, err := memory.Open(memDBPath, app.SessionWorkspace())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
-		} else {
-			// Expiry sweep before anything reads the store.
-			sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := memStore.Sweep(sweepCtx); err != nil {
-				fmt.Fprintln(os.Stderr, "memory: sweep warning:", err)
+	// Compose pending-proposals note alongside the existing notes.
+	if app.MemoryStore != nil {
+		statsCtx, statsCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stats, _ := app.MemoryStore.Stats(statsCtx, 5)
+		statsCancel()
+		if stats != nil && stats.PendingProposed > 0 {
+			note := fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
+			if app.StartupNote != "" {
+				app.StartupNote += " | " + note
+			} else {
+				app.StartupNote = note
 			}
-			sweepCancel()
-
-			// Compose pending-proposals note alongside the existing notes.
-			statsCtx, statsCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			stats, _ := memStore.Stats(statsCtx, 5)
-			statsCancel()
-			if stats != nil && stats.PendingProposed > 0 {
-				note := fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
-				if app.StartupNote != "" {
-					app.StartupNote += " | " + note
-				} else {
-					app.StartupNote = note
-				}
-			}
-
-			app.MemoryStore = memStore
 		}
 	}
 
-	// Open the P38 trace store when tracing is enabled (trace_sessions:true or
-	// --trace flag). Non-fatal: a failure prints a warning and continues without
-	// tracing so a misconfigured trace_dir never prevents a session from starting.
-	if cfg.Trace {
-		ts, err := trace.Open(cfg.TraceDir, client.ChatID, client.Model, app.SessionWorkspace())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "trace: failed to open store:", err)
-		} else {
-			app.Trace = ts
-			defer ts.Close()
-		}
+	// Close trace store on exit.
+	if res.traceStore != nil {
+		defer res.traceStore.Close()
 	}
 
 	model := tui.NewTUIModel(app)
@@ -307,26 +205,26 @@ func main() {
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
 		app.StopAllBackgroundProcs()
-		if app.MemoryStore != nil {
-			app.MemoryStore.Close()
+		if res.memStore != nil {
+			res.memStore.Close()
 		}
 		exe.Close()
-		if mcpMgr != nil {
-			mcpMgr.Close()
+		if res.mcpMgr != nil {
+			res.mcpMgr.Close()
 		}
 		os.Exit(1)
 	}
 
 	app.StopAllBackgroundProcs()
-	if app.MemoryStore != nil {
-		app.MemoryStore.Close()
+	if res.memStore != nil {
+		res.memStore.Close()
 	}
 	exe.Close()
-	if mcpMgr != nil {
-		mcpMgr.Close()
+	if res.mcpMgr != nil {
+		res.mcpMgr.Close()
 	}
-	if lspMgr != nil {
-		lspMgr.Shutdown()
+	if res.lspMgr != nil {
+		res.lspMgr.Shutdown()
 	}
 }
 

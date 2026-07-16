@@ -10,16 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
-	"github.com/treeol/wakil/internal/lsp"
-	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
-	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/tools"
-	"github.com/treeol/wakil/internal/trace"
 	"github.com/treeol/wakil/internal/workflow"
 
 	"github.com/charmbracelet/x/ansi"
@@ -430,109 +425,31 @@ func RunHeadless(cfg config.Config, args []string) int {
 	}
 	defer exe.Close()
 
-	ep := cfg.ActiveEndpoint()
-	client := &proxy.Client{
-		BaseURL:         strings.TrimRight(ep.BaseURL, "/"),
-		Model:           ep.Model,
-		Kind:            ep.Kind,
-		ConfiguredModel: ep.Model,
-		Temperature:     ep.Temperature,
-		TopP:            ep.TopP,
-		MaxTokens:       ep.MaxTokens,
-		CachePrompt:     ep.CachePrompt,
-		CacheControl:    ep.CacheControl,
-		AppReferer:      ep.AppReferer,
-		AppTitle:        ep.AppTitle,
-		ChatID:          agent.NewChatID(),
-		AuthHeader:      cfg.AuthHeader(),
-		HTTP:            newHTTPClient(),
-		MaxRequestBytes: cfg.MaxRequestBytes,
+	app, res := buildApp(cfg, exe, buildAppOpts{
+		IsHeadless:  true,
+		AutoCounsel: flags.AutoCounsel,
+		MaxCounsel:  flags.MaxCounsel,
+	})
+
+	// Headless session: construct inline (no resume support in headless mode).
+	app.Session = &agent.Session{
+		ChatID:    app.Client.ChatID,
+		Model:     app.Client.Model,
+		Workspace: exe.WorkspaceRoot(),
 	}
 
-	var mcpMgr *agent.MCPManager
-	if len(cfg.MCPServers) > 0 {
-		mcpMgr = agent.NewMCPManager(context.Background(), cfg.MCPServers)
-		defer mcpMgr.Close()
+	// Defer resource cleanup.
+	if res.mcpMgr != nil {
+		defer res.mcpMgr.Close()
 	}
-
-	// Initialize the LSP manager when enabled.
-	var lspMgr *lsp.Manager
-	if cfg.LSPEnabled {
-		rootURI := "file://" + exe.Cwd()
-		lspMgr = lsp.NewManager(exe, cfg, rootURI)
-		defer lspMgr.Shutdown()
+	if res.lspMgr != nil {
+		defer res.lspMgr.Shutdown()
 	}
-
-	// Backend-truth context sizing: resolve the real per-slot n_ctx (loud
-	// fallback note to stderr if the backend is unreachable).
-	ctxLimit := agent.ResolveContextLimit(context.Background(), client.HTTP, cfg, os.Stderr)
-
-	// Backend list: fetch /v1/ilm/backends; fall back to config external_backends.
-	backendList := agent.FetchBackendListWithFallback(context.Background(), client.HTTP, cfg, os.Stderr)
-
-	// Model list for /model completion: /v1/ilm/models (proxy) or /v1/models
-	// (openai kind); silently empty on failure.
-	modelList := agent.FetchModelListForEndpoint(context.Background(), client.HTTP, cfg)
-
-	app := &agent.App{
-		Cfg:             cfg,
-		Client:          client,
-		Exec:            exe,
-		MCP:             mcpMgr,
-		LSP:             lspMgr,
-		Tools:           agent.BuildTools(cfg, exe.Cwd(), mcpMgr),
-		CtxLimit:        ctxLimit,
-		AgentPrompt:     loadAgentPrompt(cfg),
-		BackendList:     backendList,
-		ModelList:       modelList,
-		SelectedBackend: cfg.Backend,
-		AgentPrefix:     "main",
-		Out:             os.Stderr,
-		Confirm:         func(_, _, _ string, _ bool) bool { return false },
-		InjectDate:      true,
-		IsHeadless:      true,
-		Costs:           proxy.NewCostTracker(), // required: RecordInferenceCost and the tokens event both nil-check this
-		AutoCounsel:     flags.AutoCounsel,
-		MaxCounsel:      flags.MaxCounsel,
-		Session: &agent.Session{
-			ChatID:    client.ChatID,
-			Model:     client.Model,
-			Workspace: exe.WorkspaceRoot(),
-		},
+	if res.traceStore != nil {
+		defer res.traceStore.Close()
 	}
-
-	// Initialize staging client if kvr is available.
-	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
-		app.StagingClient = staging.NewClient(kvrSocket)
-	}
-
-	// Initialize durable memory store (same pattern as main.go).
-	memDBPath := agent.MemoryDBPath(app.SessionWorkspace())
-	if memDBPath != "" {
-		memStore, err := memory.Open(memDBPath, app.SessionWorkspace())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
-		} else {
-			sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := memStore.Sweep(sweepCtx); err != nil {
-				fmt.Fprintln(os.Stderr, "memory: sweep warning:", err)
-			}
-			sweepCancel()
-			app.MemoryStore = memStore
-			defer memStore.Close()
-		}
-	}
-
-	// Open the P38 trace store when cfg.Trace is true (trace_sessions:true or
-	// --trace flag). Non-fatal: failure prints a warning but does not abort the run.
-	if cfg.Trace {
-		ts, err := trace.Open(cfg.TraceDir, client.ChatID, client.Model, app.Exec.WorkspaceRoot())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "trace: failed to open store:", err)
-		} else {
-			app.Trace = ts
-			defer ts.Close()
-		}
+	if res.memStore != nil {
+		defer res.memStore.Close()
 	}
 
 	out := io.Writer(os.Stdout)
