@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -15,6 +16,44 @@ import (
 )
 
 const oracleEndpoint = "https://api.anthropic.com/v1/messages"
+
+// counselClient is a shared HTTP client with transport-level timeouts. The
+// request context carries the primary deadline (context.WithTimeout), but
+// the transport adds dial, TLS-handshake, and response-header deadlines so
+// a hung connection is caught even if the context timeout is removed.
+var counselClient = func() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+	tr.TLSHandshakeTimeout = 10 * time.Second
+	tr.ResponseHeaderTimeout = 30 * time.Second
+	return &http.Client{Transport: tr}
+}()
+
+// doJSONPost sends a POST request with the given body and headers, reads
+// the response (capped at 4 MB), and returns the raw bytes, status code,
+// and error. The response body is always closed.
+func doJSONPost(ctx context.Context, endpoint string, headers map[string]string, body []byte) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := counselClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+	return raw, resp.StatusCode, nil
+}
 
 const oracleSystemPrompt = "You are consulted for a second opinion by a local agent. Be direct and concise. Distinguish explicitly between (a) what the provided context shows and (b) what you recall from training. Never state a version-dependent or environment-dependent claim as confirmed — name what file or output would confirm it. Flag uncertainty plainly."
 
@@ -95,38 +134,27 @@ func CallOracleURL(ctx context.Context, cfg config.Config, apiKey, question, ora
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(tctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", OracleUsage{}, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := (&http.Client{}).Do(req)
+	raw, status, err := doJSONPost(tctx, endpoint, map[string]string{
+		"x-api-key":         apiKey,
+		"anthropic-version": "2023-06-01",
+	}, body)
 	if err != nil {
 		return "", OracleUsage{}, err
 	}
-	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return "", OracleUsage{}, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		var apiErr oracleResp
 		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error != nil {
 			msg := apiErr.Error.Message
 			// Anthropic rejects non-streaming requests whose response would exceed
 			// an internal size threshold. Streaming the oracle call is the proper
 			// long-term fix; for now surface a clear hint rather than a raw 400.
-			if resp.StatusCode == 400 && strings.Contains(msg, "max_tokens") {
+			if status == 400 && strings.Contains(msg, "max_tokens") {
 				msg += " (API rejected large non-streaming request; reduce oracle_max_tokens or stream the call)"
 			}
-			return "", OracleUsage{}, fmt.Errorf("%s: %s", resp.Status, msg)
+			return "", OracleUsage{}, fmt.Errorf("anthropic: HTTP %d: %s", status, msg)
 		}
-		return "", OracleUsage{}, fmt.Errorf("%s", resp.Status)
+		return "", OracleUsage{}, fmt.Errorf("anthropic: HTTP %d", status)
 	}
 
 	var result oracleResp
@@ -396,30 +424,19 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(tctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", OracleUsage{}, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := (&http.Client{}).Do(req)
+	raw, status, err := doJSONPost(tctx, endpoint, map[string]string{
+		"Authorization": "Bearer " + apiKey,
+	}, body)
 	if err != nil {
 		return "", OracleUsage{}, err
 	}
-	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return "", OracleUsage{}, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		var apiErr orResp
 		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error != nil {
-			return "", OracleUsage{}, fmt.Errorf("%s: %s", resp.Status, apiErr.Error.Message)
+			return "", OracleUsage{}, fmt.Errorf("%d: %s", status, apiErr.Error.Message)
 		}
-		return "", OracleUsage{}, fmt.Errorf("%s", resp.Status)
+		return "", OracleUsage{}, fmt.Errorf("openrouter: HTTP %d", status)
 	}
 
 	var result orResp
@@ -496,29 +513,18 @@ func callFusion(ctx context.Context, analysisModels []string, apiKey, question, 
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(tctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", OracleUsage{}, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := (&http.Client{}).Do(req)
+	raw, status, err := doJSONPost(tctx, endpoint, map[string]string{
+		"Authorization": "Bearer " + apiKey,
+	}, body)
 	if err != nil {
 		return "", OracleUsage{}, err
 	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return "", OracleUsage{}, fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		var apiErr orResp
 		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error != nil {
-			return "", OracleUsage{}, fmt.Errorf("%s: %s", resp.Status, apiErr.Error.Message)
+			return "", OracleUsage{}, fmt.Errorf("fusion: HTTP %d: %s", status, apiErr.Error.Message)
 		}
-		return "", OracleUsage{}, fmt.Errorf("%s", resp.Status)
+		return "", OracleUsage{}, fmt.Errorf("fusion: HTTP %d", status)
 	}
 
 	var result orResp

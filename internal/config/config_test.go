@@ -370,3 +370,60 @@ func TestValidateContextLimitsRejects(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateEnums_InvalidAutoCounsel(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.AutoCounsel = "bogus"
+	err := validateEnums(cfg)
+	if err == nil || !strings.Contains(err.Error(), "auto_counsel") {
+		t.Fatalf("expected auto_counsel error, got: %v", err)
+	}
+}
+
+func TestValidateEnums_ValidAutoCounsel(t *testing.T) {
+	for _, v := range []string{"", "suggest", "auto", "off"} {
+		cfg := DefaultConfig()
+		cfg.AutoCounsel = v
+		if err := validateEnums(cfg); err != nil {
+			t.Errorf("auto_counsel=%q: unexpected error: %v", v, err)
+		}
+	}
+}
+
+func TestValidateEnums_InvalidWFOracleMode(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WFOracleMode = "never"
+	err := validateEnums(cfg)
+	if err == nil || !strings.Contains(err.Error(), "wf_oracle_mode") {
+		t.Fatalf("expected wf_oracle_mode error, got: %v", err)
+	}
+}
+
+func TestValidateTimeouts_NegativeOracle(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.OracleTimeoutSeconds = -1
+	err := validateTimeouts(cfg)
+	if err == nil || !strings.Contains(err.Error(), "oracle_timeout_seconds") {
+		t.Fatalf("expected oracle_timeout_seconds error, got: %v", err)
+	}
+}
+
+func TestEnvInt_HalfParse(t *testing.T) {
+	// "12abc" should NOT parse — envInt must use strconv.Atoi which rejects it.
+	// The value should remain unchanged.
+	t.Setenv("WAKIL_TEST_INT", "12abc")
+	var dst int
+	envInt(&dst, "WAKIL_TEST_INT")
+	if dst != 0 {
+		t.Errorf("envInt with half-parseable value should leave dst unchanged, got %d", dst)
+	}
+}
+
+func TestEnvInt_ValidParse(t *testing.T) {
+	t.Setenv("WAKIL_TEST_INT", "42")
+	var dst int
+	envInt(&dst, "WAKIL_TEST_INT")
+	if dst != 42 {
+		t.Errorf("envInt should parse 42, got %d", dst)
+	}
+}

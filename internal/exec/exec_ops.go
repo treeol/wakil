@@ -257,7 +257,7 @@ func (d *DockerExecutor) StartBackground(ctx context.Context, command, logPath s
 func (e *DirectExecutor) StartBackground(_ context.Context, command, logPath string) (pid, pgid int, err error) {
 	cmd := exec.Command("sh", "-c", command)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	logFile, err := os.Create(logPath)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return 0, 0, fmt.Errorf("creating log file: %w", err)
 	}

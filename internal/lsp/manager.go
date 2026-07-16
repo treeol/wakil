@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -646,7 +647,14 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-// shellQuote single-quotes a string for shell safety.
+// shellQuote single-quotes a string for shell safety, escaping embedded
+// single quotes using the standard '\” pattern (matching exec.shQuote).
+//
+// Trust boundary: LSP server args originate from the user's local config
+// file (~/.config/wakil/config.json), NOT from workspace content. The
+// config file is user-controlled and workspace-inaccessible. However, the
+// escaping is applied defensively regardless — a misconfigured args string
+// with an embedded single quote must not break shell parsing.
 func shellQuote(s string) string {
-	return "'" + s + "'"
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

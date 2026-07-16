@@ -356,3 +356,27 @@ func TestUsageWithoutPromptTokensDetailsCachedTokZero(t *testing.T) {
 		t.Errorf("CachedTok = %d, want 0 when prompt_tokens_details absent", u.CachedTok)
 	}
 }
+
+// TestSSEReader_RejectsOversizedLine verifies that a malformed SSE stream
+// sending a line larger than the scanner's max buffer is rejected with an
+// error instead of causing unbounded memory growth.
+func TestSSEReader_RejectsOversizedLine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Send a "data:" line that exceeds the 10 MB cap.
+		w.Write([]byte("data: "))
+		huge := strings.Repeat("x", 11*1024*1024) // 11 MB > 10 MB cap
+		w.Write([]byte(huge))
+		w.Write([]byte("\n\n"))
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Kind: KindOpenAI, ConfiguredModel: "m", Model: "m", HTTP: http.DefaultClient}
+	_, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for oversized SSE line, got nil")
+	}
+	if !errors.Is(err, ErrBackendStream) {
+		t.Errorf("expected ErrBackendStream for oversized line, got: %v", err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -226,8 +227,14 @@ type App struct {
 	learnNudgedQueries map[string]bool
 
 	// B3: background process registry.
+	// bgMu protects bgProcs and bgCounter. Written in turn handlers (run_background,
+	// kill_process, read_process_log), read in shutdown (StopAllBackgroundProcs).
+	// Do NOT hold the lock while waiting on process exit — copy references under
+	// lock, then signal/wait outside.
+	bgMu      sync.RWMutex
 	bgProcs   map[string]*bgEntry
 	bgCounter int
+	bgLogDir  string // per-session temp dir for bg process logs; cleaned up in StopAllBackgroundProcs
 
 	// Workflow is set while a /plan workflow is active. Nil when no workflow is
 	// running. Cleared when the workflow reaches WFDone or the user aborts it.
@@ -2151,6 +2158,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if args.Label == "" {
 			args.Label = "bg"
 		}
+		a.bgMu.Lock()
 		if a.bgProcs == nil {
 			a.bgProcs = make(map[string]*bgEntry)
 		}
@@ -2162,26 +2170,39 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			}
 		}
 		if live >= 5 {
+			a.bgMu.Unlock()
 			return "ERROR: maximum of 5 concurrent background processes reached — kill one first"
 		}
 		a.bgCounter++
 		n := a.bgCounter
-		logPath := fmt.Sprintf("/tmp/wakil-bg-%d.log", n)
-		if a.Cfg.ExecMode == "direct" {
-			logPath = filepath.Join(os.TempDir(), fmt.Sprintf("wakil-bg-%d.log", n))
+		a.bgMu.Unlock()
+		// Per-session temp dir for bg logs — unpredictable path prevents
+		// symlink attacks; cleaned up in StopAllBackgroundProcs.
+		if a.bgLogDir == "" {
+			dir, err := os.MkdirTemp("", "wakil-bg-*")
+			if err != nil {
+				return fmt.Sprintf("ERROR: bg log dir: %v", err)
+			}
+			a.bgLogDir = dir
 		}
+		logPath := filepath.Join(a.bgLogDir, fmt.Sprintf("%d.log", n))
 		bgID := fmt.Sprintf("bg%d", n)
 		detail := fmt.Sprintf("$ %s (background)\n  label=%s, log=%s\n  (%s)",
 			args.Command, args.Label, logPath, a.Exec.Describe())
 		if !a.Confirm("run_background", "Start background process?", detail, false) {
+			a.bgMu.Lock()
 			a.bgCounter-- // reclaim the counter slot on decline
+			a.bgMu.Unlock()
 			return "[declined by user]"
 		}
 		pid, pgid, err := a.Exec.StartBackground(ctx, args.Command, logPath)
 		if err != nil {
+			a.bgMu.Lock()
 			a.bgCounter--
+			a.bgMu.Unlock()
 			return "ERROR: " + err.Error()
 		}
+		a.bgMu.Lock()
 		a.bgProcs[bgID] = &bgEntry{
 			id:         bgID,
 			pid:        pid,
@@ -2191,6 +2212,7 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			startedAt:  time.Now(),
 			generation: a.Exec.Generation(),
 		}
+		a.bgMu.Unlock()
 		return fmt.Sprintf("id: %s\npid: %d\nlog: %s\nlabel: %s", bgID, pid, logPath, args.Label)
 
 	case "kill_process":
@@ -2200,12 +2222,16 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
+		a.bgMu.RLock()
 		entry, ok := a.bgProcs[args.ID]
+		a.bgMu.RUnlock()
 		if !ok {
 			return fmt.Sprintf("ERROR: no background process with id %q", args.ID)
 		}
 		if entry.generation != a.Exec.Generation() {
+			a.bgMu.Lock()
 			delete(a.bgProcs, args.ID)
+			a.bgMu.Unlock()
 			return fmt.Sprintf("[%s] process lost (container restarted)", args.ID)
 		}
 		detail := fmt.Sprintf("kill_process %s (%s) pgid=%d\n  (%s)", args.ID, entry.label, entry.pgid, a.Exec.Describe())
@@ -2213,21 +2239,32 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 			return "[declined by user]"
 		}
 		if !a.Exec.IsProcessAlive(ctx, entry.pid) {
+			a.bgMu.Lock()
 			delete(a.bgProcs, args.ID)
+			a.bgMu.Unlock()
 			return fmt.Sprintf("[%s] already exited", args.ID)
 		}
 		_ = a.Exec.KillPgid(ctx, entry.pgid, 15) // SIGTERM
 		// Wait up to 5s for the group to exit, then SIGKILL.
+		// The lock is NOT held during this wait — see bgMu comment.
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("kill_process cancelled: %w", ctx.Err()).Error()
+			case <-time.After(200 * time.Millisecond):
+			}
 			if !a.Exec.IsProcessAlive(ctx, entry.pid) {
+				a.bgMu.Lock()
 				delete(a.bgProcs, args.ID)
+				a.bgMu.Unlock()
 				return fmt.Sprintf("[%s] terminated (SIGTERM)", args.ID)
 			}
 		}
 		_ = a.Exec.KillPgid(ctx, entry.pgid, 9) // SIGKILL
+		a.bgMu.Lock()
 		delete(a.bgProcs, args.ID)
+		a.bgMu.Unlock()
 		return fmt.Sprintf("[%s] killed (SIGKILL after 5s timeout)", args.ID)
 
 	case "read_process_log":
@@ -2237,12 +2274,16 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 		}
+		a.bgMu.RLock()
 		entry, ok := a.bgProcs[args.ID]
+		a.bgMu.RUnlock()
 		if !ok {
 			return fmt.Sprintf("ERROR: no background process with id %q", args.ID)
 		}
 		if entry.generation != a.Exec.Generation() {
+			a.bgMu.Lock()
 			delete(a.bgProcs, args.ID)
+			a.bgMu.Unlock()
 			return fmt.Sprintf("[%s] process lost (container restarted)", args.ID)
 		}
 		alive := a.Exec.IsProcessAlive(ctx, entry.pid)
@@ -2533,12 +2574,22 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) string {
 // In docker mode the container removal (Close) will kill everything anyway;
 // this is primarily meaningful for direct mode.
 func (a *App) StopAllBackgroundProcs() {
+	a.bgMu.RLock()
 	if len(a.bgProcs) == 0 {
+		a.bgMu.RUnlock()
 		return
 	}
+	// Copy entries under lock, then operate outside lock to avoid
+	// holding the lock during KillPgid/IsProcessAlive/wait.
+	entries := make([]*bgEntry, 0, len(a.bgProcs))
+	for _, entry := range a.bgProcs {
+		entries = append(entries, entry)
+	}
+	a.bgMu.RUnlock()
+
 	bg := context.Background()
 	any := false
-	for _, entry := range a.bgProcs {
+	for _, entry := range entries {
 		if entry.generation != a.Exec.Generation() {
 			continue
 		}
@@ -2549,6 +2600,11 @@ func (a *App) StopAllBackgroundProcs() {
 	}
 	if any {
 		time.Sleep(2 * time.Second)
+	}
+	// Clean up the per-session bg log directory.
+	if a.bgLogDir != "" {
+		os.RemoveAll(a.bgLogDir)
+		a.bgLogDir = ""
 	}
 }
 

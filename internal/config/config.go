@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -182,6 +184,10 @@ type Config struct {
 	OracleAPIKeyEnv      string `json:"oracle_api_key_env"`               // env var that holds the API key
 	OracleEndpoint       string `json:"oracle_endpoint,omitempty"`        // override API endpoint (tests / proxies; empty = Anthropic)
 	OracleTimeoutSeconds int    `json:"oracle_timeout_seconds,omitempty"` // HTTP timeout for mashūra calls; 0 = use default (300s)
+	// OpenRouterAPIKeyEnv is the env var name for the OpenRouter API key.
+	// Defaults to "OPENROUTER_API_KEY". Used by mashura panel calls that route
+	// through OpenRouter (provider prefix "openrouter:") and by Fusion mode.
+	OpenRouterAPIKeyEnv string `json:"openrouter_api_key_env,omitempty"` // env var that holds the OpenRouter API key
 
 	// Canonical mashura_* aliases. Empty/zero means "unset, fall back to oracle_*".
 	// Merged into the Oracle* fields in LoadConfig so the rest of the code reads
@@ -536,6 +542,7 @@ func DefaultConfig() Config {
 		OracleModel:           "claude-sonnet-4-6",
 		OracleMaxTokens:       4096,
 		OracleAPIKeyEnv:       "ANTHROPIC_API_KEY",
+		OpenRouterAPIKeyEnv:   "OPENROUTER_API_KEY",
 		OracleTimeoutSeconds:  300,
 		WFFinalReview:         true,
 	}
@@ -793,6 +800,13 @@ func LoadConfig(argv []string) (Config, error) {
 		cfg.AgentPromptPath = filepath.Join(filepath.Dir(cfgPath), "agent.txt")
 	}
 
+	if err := validateEnums(cfg); err != nil {
+		return cfg, err
+	}
+	if err := validateTimeouts(cfg); err != nil {
+		return cfg, err
+	}
+
 	return cfg, nil
 }
 
@@ -830,7 +844,12 @@ func envBool(dst *bool, key string) {
 
 func envInt(dst *int, key string) {
 	if v := os.Getenv(key); v != "" {
-		_, _ = fmt.Sscanf(v, "%d", dst)
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			log.Printf("config: invalid %s=%q: %v (ignored)", key, v, err)
+			return
+		}
+		*dst = n
 	}
 }
 
@@ -1065,6 +1084,47 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.SubagentToolResultCap < 0 {
 		return fmt.Errorf("subagent_tool_result_cap must be >= 0 (got %d; 0 = use default)", cfg.SubagentToolResultCap)
+	}
+	return nil
+}
+
+// validateEnums checks that string-enum config fields have valid values.
+// Unknown values are startup errors, not silent degradation.
+func validateEnums(cfg Config) error {
+	switch cfg.AutoCounsel {
+	case "", "suggest", "auto", "off":
+	default:
+		return fmt.Errorf("auto_counsel must be one of: suggest, auto, off (got %q)", cfg.AutoCounsel)
+	}
+	switch cfg.WFOracleMode {
+	case "", "every-step", "on-deviation", "phases-only":
+	default:
+		return fmt.Errorf("wf_oracle_mode must be one of: every-step, on-deviation, phases-only (got %q)", cfg.WFOracleMode)
+	}
+	switch cfg.SubagentBackend {
+	case "", "inherit", "default":
+	default:
+		// Any other value is treated as a pinned backend name — valid if it
+		// matches a known endpoint, but we don't verify that here (endpoints
+		// are resolved later). Just reject obviously invalid patterns.
+		if strings.ContainsAny(cfg.SubagentBackend, " \t\n") {
+			return fmt.Errorf("subagent_backend must not contain whitespace (got %q)", cfg.SubagentBackend)
+		}
+	}
+	return nil
+}
+
+// validateTimeouts rejects negative timeout values that would cause
+// immediate failures or undefined behavior.
+func validateTimeouts(cfg Config) error {
+	if cfg.OracleTimeoutSeconds < 0 {
+		return fmt.Errorf("oracle_timeout_seconds must be >= 0 (got %d; 0 = use default 300s)", cfg.OracleTimeoutSeconds)
+	}
+	if cfg.LSPIdleTimeoutSeconds < 0 {
+		return fmt.Errorf("lsp_idle_timeout_seconds must be >= 0 (got %d)", cfg.LSPIdleTimeoutSeconds)
+	}
+	if cfg.LSPIndexTimeoutSeconds < 0 {
+		return fmt.Errorf("lsp_index_timeout_seconds must be >= 0 (got %d)", cfg.LSPIndexTimeoutSeconds)
 	}
 	return nil
 }

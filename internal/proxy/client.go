@@ -10,10 +10,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrBackendStream marks a retryable transport failure: connection reset,
@@ -427,6 +429,11 @@ type Client struct {
 	// serialised request exceeds this limit, the largest tool-role messages are
 	// stubbed to fit before sending. 0 = disabled.
 	MaxRequestBytes int
+
+	// droppedChunks counts SSE chunks that failed to parse as JSON during
+	// streaming. Logged every 100th drop to avoid flooding the log.
+	// Atomic — written from the stream loop, readable for diagnostics.
+	droppedChunks int64
 }
 
 // LastUsage returns the token usage recorded by the most recent Stream call.
@@ -786,75 +793,83 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	var usage UsageStat
 	var reasoningChars int
 
-	reader := bufio.NewReader(resp.Body)
-	for {
-		line, rerr := reader.ReadString('\n')
-		if s := strings.TrimRight(line, "\r\n"); strings.HasPrefix(s, "data:") {
-			data := strings.TrimSpace(s[len("data:"):])
-			if data == "[DONE]" {
-				break
+	// Bounded SSE line reader: a malformed/malicious stream sending a line
+	// larger than maxSSELineSize is rejected with an error instead of
+	// causing unbounded memory growth.
+	const maxSSELineSize = 10 * 1024 * 1024 // 10 MB
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
+	for scanner.Scan() {
+		s := strings.TrimRight(scanner.Text(), "\r")
+		if !strings.HasPrefix(s, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(s[len("data:"):])
+		if data == "[DONE]" {
+			break
+		}
+		var chunk streamChunk
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			n := atomic.AddInt64(&c.droppedChunks, 1)
+			if n%100 == 0 {
+				fmt.Fprintf(os.Stderr, "proxy: %d SSE chunks dropped (malformed JSON)\n", n)
 			}
-			var chunk streamChunk
-			if json.Unmarshal([]byte(data), &chunk) == nil {
-				// Usage may arrive on a trailing chunk whose Choices is empty, so
-				// it is read independently of the delta below.
-				if chunk.Usage != nil {
-					usageSeen = true
-					usage.InputTok = chunk.Usage.PromptTokens
-					usage.OutputTok = chunk.Usage.CompletionTokens
-					if d := chunk.Usage.CompletionTokensDetails; d != nil {
-						usage.ReasoningTok = d.ReasoningTokens
-					}
-					if d := chunk.Usage.PromptTokensDetails; d != nil {
-						usage.CachedTok = d.CachedTokens
-					}
-					usage.CacheWriteTok = chunk.Usage.CacheCreationInputTokens
-				}
-				if len(chunk.Choices) > 0 {
-					d := chunk.Choices[0].Delta
-					if d.ReasoningContent != "" {
-						reasoningChars += len(d.ReasoningContent)
-						if reasoningSink != nil {
-							reasoningSink(d.ReasoningContent)
-							// Reasoning is intentionally NOT written to content — it
-							// must never appear in the Message or the Conv history.
-						}
-					}
-					if d.Content != "" {
-						content.WriteString(d.Content)
-						if sink != nil {
-							sink(d.Content)
-						}
-					}
-					for _, tc := range d.ToolCalls {
-						e, ok := acc[tc.Index]
-						if !ok {
-							e = &ToolCall{Type: "function"}
-							acc[tc.Index] = e
-							order = append(order, tc.Index)
-						}
-						if tc.ID != "" {
-							e.ID = tc.ID
-						}
-						if tc.Type != "" {
-							e.Type = tc.Type
-						}
-						if tc.Function.Name != "" {
-							e.Function.Name = tc.Function.Name
-						}
-						e.Function.Arguments += tc.Function.Arguments
-					}
+			continue
+		}
+		// Usage may arrive on a trailing chunk whose Choices is empty, so
+		// it is read independently of the delta below.
+		if chunk.Usage != nil {
+			usageSeen = true
+			usage.InputTok = chunk.Usage.PromptTokens
+			usage.OutputTok = chunk.Usage.CompletionTokens
+			if d := chunk.Usage.CompletionTokensDetails; d != nil {
+				usage.ReasoningTok = d.ReasoningTokens
+			}
+			if d := chunk.Usage.PromptTokensDetails; d != nil {
+				usage.CachedTok = d.CachedTokens
+			}
+			usage.CacheWriteTok = chunk.Usage.CacheCreationInputTokens
+		}
+		if len(chunk.Choices) > 0 {
+			d := chunk.Choices[0].Delta
+			if d.ReasoningContent != "" {
+				reasoningChars += len(d.ReasoningContent)
+				if reasoningSink != nil {
+					reasoningSink(d.ReasoningContent)
+					// Reasoning is intentionally NOT written to content — it
+					// must never appear in the Message or the Conv history.
 				}
 			}
-		}
-		if rerr != nil {
-			if rerr == io.EOF {
-				break
+			if d.Content != "" {
+				content.WriteString(d.Content)
+				if sink != nil {
+					sink(d.Content)
+				}
 			}
-			// Any non-EOF read failure mid-stream is a backend stream error
-			// (truncated SSE, reset, transport drop).
-			return Message{}, wrapStreamErr(rerr)
+			for _, tc := range d.ToolCalls {
+				e, ok := acc[tc.Index]
+				if !ok {
+					e = &ToolCall{Type: "function"}
+					acc[tc.Index] = e
+					order = append(order, tc.Index)
+				}
+				if tc.ID != "" {
+					e.ID = tc.ID
+				}
+				if tc.Type != "" {
+					e.Type = tc.Type
+				}
+				if tc.Function.Name != "" {
+					e.Function.Name = tc.Function.Name
+				}
+				e.Function.Arguments += tc.Function.Arguments
+			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		// bufio.ErrTooLong means a line exceeded maxSSELineSize — abort
+		// the stream rather than allowing unbounded memory growth.
+		return Message{}, wrapStreamErr(fmt.Errorf("SSE stream: %w", err))
 	}
 
 	// Resolve usage: exact when the proxy reported a usage chunk, otherwise a

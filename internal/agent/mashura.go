@@ -265,13 +265,13 @@ func (a *App) defaultPanel() (string, config.MashuraPanelConfig) {
 // mashuraPanelKeys collects the API key for each provider referenced by the
 // panel, checking that every required key is present before the gate fires.
 // anthropic → OracleAPIKeyEnv (default: ANTHROPIC_API_KEY)
-// openrouter → OPENROUTER_API_KEY (hardcoded; rubin-side only like Anthropic key)
-// fusion  → only OPENROUTER_API_KEY (all analysis models route through OpenRouter)
+// openrouter → OpenRouterAPIKeyEnv (default: OPENROUTER_API_KEY)
+// fusion  → only OpenRouterAPIKeyEnv (all analysis models route through OpenRouter)
 func (a *App) mashuraPanelKeys(panel config.MashuraPanelConfig) (map[string]string, error) {
 	if panel.Mode == "fusion" {
-		key := os.Getenv("OPENROUTER_API_KEY")
+		key := os.Getenv(a.Cfg.OpenRouterAPIKeyEnv)
 		if key == "" {
-			return nil, fmt.Errorf("mashūra API key not set (OPENROUTER_API_KEY) for fusion mode")
+			return nil, fmt.Errorf("mashūra API key not set (%s) for fusion mode", a.Cfg.OpenRouterAPIKeyEnv)
 		}
 		return map[string]string{"openrouter": key}, nil
 	}
@@ -286,7 +286,7 @@ func (a *App) mashuraPanelKeys(panel config.MashuraPanelConfig) (map[string]stri
 		case "anthropic":
 			envVar = a.Cfg.OracleAPIKeyEnv
 		case "openrouter":
-			envVar = "OPENROUTER_API_KEY"
+			envVar = a.Cfg.OpenRouterAPIKeyEnv
 		default:
 			return nil, fmt.Errorf("unknown provider %q in model %q", prov, model)
 		}

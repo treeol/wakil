@@ -220,3 +220,24 @@ func TestServer_ReSpawn_CreatesFreshServer(t *testing.T) {
 		t.Error("fresh server shares the same deadCh as the dead server — not a fresh channel")
 	}
 }
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"simple", "'simple'"},
+		{"foo'bar", "'foo'\\''bar'"},
+		{"", "''"},
+		{"no special chars", "'no special chars'"},
+		{"path/to/file", "'path/to/file'"},
+		{"it's a test", "'it'\\''s a test'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			got := shellQuote(tc.in)
+			if got != tc.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

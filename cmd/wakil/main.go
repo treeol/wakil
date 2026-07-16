@@ -146,6 +146,11 @@ func main() {
 	// conservative fallback context length. Best-effort; errors are ignored.
 	if panelsUseOpenRouter(cfg) {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "cache priming panic (non-fatal): %v\n", r)
+				}
+			}()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			_, _ = counsel.FetchModelContextLimits(ctx)

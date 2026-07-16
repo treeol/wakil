@@ -336,7 +336,7 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	if mcp != nil {
 		t = append(t, mcp.OpenAITools()...)
 	}
-	if cfg.OracleEnabled && (os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv("OPENROUTER_API_KEY") != "") {
+	if cfg.OracleEnabled && (os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv(cfg.OpenRouterAPIKeyEnv) != "") {
 		t = append(t, mashuraToolDefs()...)
 	}
 	if cfg.LSPEnabled {

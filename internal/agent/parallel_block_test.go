@@ -429,9 +429,16 @@ func TestWorkerPanicIsolated(t *testing.T) {
 
 	// Poison one worker: a progress writer that panics exercises the recover
 	// path inside the worker goroutine. We call runSubagentJobs with a job
-	// whose dispatch panics via a nil-Exec App copy.
-	poisoned := *app
-	poisoned.Exec = nil // dispatchSubagent calls a.Exec.Cwd() → nil deref panic
+	// whose dispatch panics via a nil-Exec App. Use a pointer to avoid
+	// copying the mutex (Go vet: lock copy).
+	poisoned := &App{
+		Cfg:     app.Cfg,
+		Client:  app.Client,
+		Exec:    nil, // dispatchSubagent calls a.Exec.Cwd() → nil deref panic
+		Tools:   app.Tools,
+		Out:     app.Out,
+		Confirm: app.Confirm,
+	}
 
 	jobs := []subagentJob{{Index: 0, Task: "TASK-A", ChatID: NewChatID()}}
 	results := poisoned.runSubagentJobs(context.Background(), jobs, "")
