@@ -228,6 +228,12 @@ func waitForKVR(socketPath string, timeout time.Duration) error {
 // (added separately) is also RW for Go/Cargo caches. /etc gets a writable
 // tmpfs overlay so ensurePasswdEntry can append the mapped uid (needed for
 // ssh-keygen, whoami, git commit signing) under the read-only rootfs.
+//
+// The /etc tmpfs replaces the ENTIRE directory with an empty filesystem,
+// which also wipes /etc/ssl/certs/ca-certificates.crt (baked in at image
+// build time). ensureCACerts (called right after container start, alongside
+// ensurePasswdEntry) restores the CA bundle from a build-time backup outside
+// /etc — otherwise every TLS client in the container fails cert verification.
 func dockerHardeningArgs(opts DockerOpts) []string {
 	args := []string{
 		"--cap-drop=ALL",
@@ -352,6 +358,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	if uid := os.Getuid(); uid > 0 {
 		ensurePasswdEntry(name, uid, os.Getgid())
 	}
+	ensureCACerts(name)
 	if dockerSock {
 		ensureDockerCLI(name)
 	}
@@ -383,6 +390,40 @@ func ensurePasswdEntry(container string, uid, gid int) {
 	script := fmt.Sprintf(
 		"getent passwd %d >/dev/null 2>&1 || echo 'user:x:%d:%d:sandbox user:/home/user:/bin/sh' >> /etc/passwd",
 		uid, uid, gid)
+	_ = exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).Run()
+}
+
+// ensureCACerts restores files that the --tmpfs=/etc mount (dockerHardeningArgs)
+// wipes when it replaces the entire directory with an empty filesystem. The
+// tmpfs is needed for a writable /etc/passwd (see ensurePasswdEntry), but it
+// also silently erases everything apt installed under /etc at image-build
+// time:
+//
+//   - /etc/ssl/certs/ca-certificates.crt: every TLS client in the container
+//     (curl, git, the headless browser) fails certificate verification
+//     post-start — curl reports "error setting certificate file" (exit 77),
+//     chromedp reports "context canceled" on navigation.
+//   - /etc/chromium.d/*: the chromium launcher script sources every file in
+//     this directory; on an empty tmpfs the glob doesn't expand and the
+//     literal string is passed to `.` (source), which fails and aborts the
+//     launcher before Chromium even starts.
+//
+// The Dockerfile backs up both to /usr/local/share/wakil-etc-backup (outside
+// /etc, so they survive the tmpfs mount) at build time. This function copies
+// them back into the fresh tmpfs after the container starts. Runs as root
+// via docker exec -u 0; best-effort — if the backup paths don't exist (e.g.
+// a custom image without this Dockerfile), this is a silent no-op and the
+// affected tools just won't work, same as before this fix existed.
+func ensureCACerts(container string) {
+	script := "" +
+		"if [ -f /usr/local/share/wakil-etc-backup/ssl-certs/ca-certificates.crt ]; then " +
+		"  mkdir -p /etc/ssl/certs && " +
+		"  cp /usr/local/share/wakil-etc-backup/ssl-certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt; " +
+		"fi; " +
+		"if [ -d /usr/local/share/wakil-etc-backup/chromium.d ]; then " +
+		"  mkdir -p /etc/chromium.d && " +
+		"  cp -a /usr/local/share/wakil-etc-backup/chromium.d/. /etc/chromium.d/; " +
+		"fi"
 	_ = exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).Run()
 }
 

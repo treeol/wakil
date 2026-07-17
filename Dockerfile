@@ -68,6 +68,27 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Backup copy of files needed post-tmpfs-mount, kept outside /etc. The
+# sandbox hardening mounts --tmpfs=/etc at container start (see
+# internal/exec/exec.go dockerHardeningArgs) for a writable /etc/passwd —
+# but a tmpfs mount replaces the ENTIRE /etc directory with an empty
+# filesystem, silently wiping everything apt installed there at build time:
+#   - /etc/ssl/certs/ca-certificates.crt (apt-get install ca-certificates):
+#     every TLS client (curl, git, the headless browser) fails cert
+#     verification post-start — curl "error setting certificate file",
+#     chromedp "context canceled" on navigation.
+#   - /etc/chromium.d/* (apt-get install chromium): the chromium launcher
+#     script sources every file in this directory; on an empty tmpfs the
+#     glob doesn't expand and `.` (source) fails on the literal string,
+#     aborting the launcher before Chromium even starts.
+# These backups are restored into the fresh tmpfs by ensureCACerts
+# (host-side, right after container start) — same pattern as
+# ensurePasswdEntry for /etc/passwd.
+RUN mkdir -p /usr/local/share/wakil-etc-backup/ssl-certs \
+             /usr/local/share/wakil-etc-backup/chromium.d \
+    && cp /etc/ssl/certs/ca-certificates.crt /usr/local/share/wakil-etc-backup/ssl-certs/ \
+    && cp -a /etc/chromium.d/. /usr/local/share/wakil-etc-backup/chromium.d/
+
 # Rust: install rustup and the stable toolchain into /usr/local so the
 # binaries are never shadowed by a workspace volume mount on /root.
 ENV RUSTUP_HOME=/usr/local/rustup \

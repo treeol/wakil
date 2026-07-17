@@ -50,6 +50,11 @@ type Manager struct {
 	// tab/target this context represents.
 	ctx       context.Context
 	ctxCancel context.CancelFunc
+
+	// userDataDir is the writable temp directory passed to Chromium via
+	// --user-data-dir. Required on a --read-only sandbox rootfs (see
+	// NewManager). Removed on Close.
+	userDataDir string
 }
 
 // NewManager creates a new browser Manager and eagerly launches the Chromium
@@ -57,22 +62,50 @@ type Manager struct {
 // container that drops all capabilities) and --disable-gpu. Call Close when
 // the session ends to release the process.
 //
-// Eager launch is critical: if the first chromedp.Run happens inside a
-// per-operation context (which has a timeout and gets canceled after the
-// op), chromedp ties the browser process lifecycle to that context. When the
-// per-op context is canceled, the browser dies and m.ctx is permanently
-// canceled — every subsequent op fails with "context canceled". By launching
-// with the long-lived m.ctx here, the browser process survives across ops.
+// Eager launch is critical, and HOW it launches matters just as much as WHEN:
+// chromedp ties the browser process's lifetime to whichever context is used
+// for the FIRST chromedp.Run call — not just the allocator context passed to
+// NewExecAllocator. If that first call uses a context derived with
+// context.WithTimeout/WithCancel (even one derived FROM the long-lived m.ctx),
+// canceling that derived context later kills the browser process outright,
+// and every subsequent operation on m.ctx then fails with "context
+// canceled" — permanently, because the browser is dead. This was empirically
+// verified: calling chromedp.Run(derivedCtx) then canceling derivedCtx kills
+// the browser even though m.ctx itself was never touched.
+//
+// The fix: the eager launch call below uses m.ctx DIRECTLY, with no derived
+// timeout/cancel wrapping it. Only SUBSEQUENT per-operation calls (in opCtx)
+// may safely use derived contexts, because by then the browser process is
+// already tied to m.ctx and canceling a later derived child does not tear
+// down the browser — only that one operation's RPC in flight.
+//
+// A writable user-data-dir + HOME are required on a --read-only sandbox
+// rootfs: Chromium's crashpad crash-handler needs a writable directory for
+// its database regardless of --no-sandbox / --disable-crash-reporter, and
+// separately reads $HOME for its own state. Without both, Chromium's helper
+// process crashes with "chrome_crashpad_handler: --database is required"
+// even though the main process appears to start — this was empirically
+// verified against the sandbox's exact hardening flags (--read-only,
+// --cap-drop=ALL, --security-opt=no-new-privileges, --tmpfs=/tmp,
+// --tmpfs=/etc). /tmp is writable (tmpfs) in the sandbox, so both point
+// there.
 //
 // Returns an error if Chromium cannot start (missing binary, missing shared
 // libraries, etc.) so the caller can log a clear message at startup instead
 // of masking the failure as "context canceled" on every tool call.
 func NewManager() (*Manager, error) {
+	userDataDir, err := os.MkdirTemp("", "wakil-chrome-profile-")
+	if err != nil {
+		return nil, fmt.Errorf("browser: create user-data-dir: %w", err)
+	}
+
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", "new"),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.UserDataDir(userDataDir),
+		chromedp.Env("HOME="+os.TempDir()),
 	)
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
@@ -83,23 +116,35 @@ func NewManager() (*Manager, error) {
 		allocCancel: allocCancel,
 		ctx:         ctx,
 		ctxCancel:   ctxCancel,
+		userDataDir: userDataDir,
 	}
 
 	// Eager launch: run a no-op action to start the browser process now,
-	// tied to the long-lived m.ctx (not a per-op context). This surfaces
-	// launch failures (missing binary, missing libs) immediately with a
-	// real error instead of "context canceled" on every subsequent call.
-	launchCtx, launchCancel := context.WithTimeout(ctx, 15*time.Second)
-	defer launchCancel()
-	if err := chromedp.Run(launchCtx); err != nil {
+	// using m.ctx DIRECTLY (see the doc comment above — this is the critical
+	// part, not just "eager"). The 15s timeout is enforced by racing against
+	// a timer in a goroutine, NOT by deriving a cancelable context from ctx,
+	// because canceling any context used for chromedp's first Run call kills
+	// the browser process. On timeout or launch error, m.Close() tears down
+	// the (failed or hung) allocator — that is a deliberate full abort, not
+	// a mid-session op cancellation, so canceling ctx there is correct.
+	launchDone := make(chan error, 1)
+	go func() { launchDone <- chromedp.Run(ctx) }()
+	select {
+	case err := <-launchDone:
+		if err != nil {
+			m.Close()
+			return nil, fmt.Errorf("browser: failed to launch Chromium (check that chromium is installed with all shared libraries, and that /tmp is writable for the crash-handler database — try 'chromium --headless=new --no-sandbox --user-data-dir=/tmp/probe --dump-dom about:blank' in the container): %w", err)
+		}
+	case <-time.After(15 * time.Second):
 		m.Close()
-		return nil, fmt.Errorf("browser: failed to launch Chromium (check that chromium is installed and has all shared libraries — try 'chromium --headless=new --no-sandbox --dump-dom about:blank' in the container): %w", err)
+		return nil, fmt.Errorf("browser: timed out launching Chromium after 15s (check that chromium is installed and can start — try 'chromium --headless=new --no-sandbox --user-data-dir=/tmp/probe --dump-dom about:blank' in the container)")
 	}
 
 	return m, nil
 }
 
-// Close shuts down the browser process and releases all resources.
+// Close shuts down the browser process, releases all resources, and removes
+// the temporary user-data-dir.
 func (m *Manager) Close() error {
 	if m == nil {
 		return nil
@@ -109,6 +154,9 @@ func (m *Manager) Close() error {
 	}
 	if m.allocCancel != nil {
 		m.allocCancel()
+	}
+	if m.userDataDir != "" {
+		os.RemoveAll(m.userDataDir)
 	}
 	return nil
 }
