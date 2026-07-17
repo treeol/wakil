@@ -172,6 +172,12 @@ type Config struct {
 	MentionBase       string            `json:"mention_base,omitempty"`         // base dir for "@" file mentions (default: launch cwd)
 	MCPServers        []MCPServerConfig `json:"mcp_servers,omitempty"`
 
+	// AttachImage is the path to an image file to attach to the first user
+	// message at startup. Set via --attach-image flag. The image is loaded
+	// and encoded as an OpenAI-compatible image_url content block. Multiple
+	// paths can be comma-separated; empty = no image attached.
+	AttachImage string `json:"-"`
+
 	// Mashūra: counsel tool that calls an external AI API for a second opinion.
 	// The API key is read from OracleAPIKeyEnv at call time — never stored here or
 	// in session files. "mashura_*" is the canonical config spelling; the legacy
@@ -651,6 +657,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "execution mode: docker|direct")
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "container image (docker mode)")
+	fs.StringVar(&cfg.AttachImage, "attach-image", cfg.AttachImage, "path to an image file to attach to the first message (png, jpeg, gif, webp; comma-separate for multiple)")
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "working directory inside the container")
 	fs.StringVar(&cfg.HostWorkDir, "host-workdir", cfg.HostWorkDir, "host path bind-mounted into container (files appear here locally)")
 	fs.BoolVar(&cfg.DockerSocket, "docker-sock", cfg.DockerSocket, "pass host docker socket into the sandbox so the agent can start host containers (default: off; use --docker-sock=true to enable)")

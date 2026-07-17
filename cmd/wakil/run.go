@@ -58,12 +58,17 @@ type RunFlags struct {
 	// MaxCounsel caps auto-counsel calls per task. Default 3 when --auto-counsel
 	// is set without an explicit --max-counsel. 0 disables auto-counsel entirely.
 	MaxCounsel int
+
+	// AttachImage is the path to an image file to attach to the first user
+	// message. Set via --attach-image. Multiple paths can be comma-separated.
+	AttachImage string
 }
 
 // parseRunArgs parses the args that follow "run":
 //
 //	[--plan] [--auto] [--allow-destructive] [--allow-external]
-//	[--auto-counsel] [--max-counsel N] [--no-oracle] [--transcript <file>] "<task>"
+//	[--auto-counsel] [--max-counsel N] [--no-oracle] [--transcript <file>]
+//	[--attach-image <path>] "<task>"
 func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -93,6 +98,12 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 				return "", false, flags, fmt.Errorf("--transcript requires a file path")
 			}
 			flags.TranscriptFile = args[i]
+		case "--attach-image":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--attach-image requires a file path")
+			}
+			flags.AttachImage = args[i]
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return "", false, flags, fmt.Errorf("unknown flag: %s", args[i])
@@ -105,7 +116,7 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 	}
 	if task == "" {
 		return "", false, flags, fmt.Errorf(
-			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] \"<task>\"")
+			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] \"<task>\"")
 	}
 	// Default cap: 3 auto-counsel calls when --auto-counsel is set without --max-counsel.
 	if flags.AutoCounsel && flags.MaxCounsel == 0 {
@@ -436,6 +447,22 @@ func RunHeadless(cfg config.Config, args []string) int {
 		ChatID:    app.Client.ChatID,
 		Model:     app.Client.Model,
 		Workspace: exe.WorkspaceRoot(),
+	}
+
+	// Load --attach-image(s) into PendingImages so the first Send attaches them.
+	if flags.AttachImage != "" {
+		for _, p := range strings.Split(flags.AttachImage, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			img, err := proxy.LoadImage(p)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "attach-image:", err)
+				return ExitError
+			}
+			app.PendingImages = append(app.PendingImages, img)
+		}
 	}
 
 	// Defer resource cleanup.

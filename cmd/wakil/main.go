@@ -12,6 +12,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tui"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -92,6 +93,23 @@ func main() {
 	}
 
 	app, res := buildApp(cfg, exe, buildAppOpts{})
+
+	// Load --attach-image flag into PendingImages so the first user message
+	// carries the image(s). Multiple paths can be comma-separated.
+	if cfg.AttachImage != "" {
+		for _, p := range strings.Split(cfg.AttachImage, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			img, err := proxy.LoadImage(p)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "attach-image:", err)
+				os.Exit(1)
+			}
+			app.PendingImages = append(app.PendingImages, img)
+		}
+	}
 
 	// Override the client ChatID if resuming a session.
 	if resumed != nil {

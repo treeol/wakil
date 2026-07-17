@@ -927,6 +927,12 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		if len(refs) > 0 {
 			m.addItem(iSys, tools.ChipsLine(refs))
 		}
+		// Show image placeholders when images are attached to this turn.
+		if len(m.app.PendingImages) > 0 {
+			for _, img := range m.app.PendingImages {
+				m.addItem(iSys, img.Placeholder())
+			}
+		}
 		m.vp.GotoBottom() // re-pin: a sent turn always scrolls into view
 
 		ctx, cancel := context.WithCancel(context.Background())

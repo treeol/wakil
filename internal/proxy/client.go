@@ -61,6 +61,15 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
 
+	// Images holds images attached to this message (vision input). They are
+	// serialized at wire-encoding time as OpenAI-compatible image_url content
+	// parts alongside the text content. This field is deliberately NOT
+	// serialized directly (no json tag) — marshalWireMessages converts it to
+	// the wire shape when building the request body. When nil/empty, the
+	// message serializes exactly as before (string or null content), preserving
+	// the golden no-op guarantee for text-only traffic.
+	Images []ImagePart `json:"-"`
+
 	// Pinned marks a message as exempt from compaction summarization and
 	// hard-max dropping. Pinned messages are never folded into the lossy prose
 	// summary that Compact produces, and never removed by enforceHardMax's
@@ -120,11 +129,21 @@ type wireMessage struct {
 }
 
 // contentPart is one element of the parts-shaped content array used for
-// cache_control decoration.
+// cache_control decoration and image_url content blocks. Each part is either
+// a text block (Type "text") or an image_url block (Type "image_url").
 type contentPart struct {
 	Type         string                 `json:"type"`
-	Text         string                 `json:"text"`
+	Text         string                 `json:"text,omitempty"`
 	CacheControl *cacheControlDirective `json:"cache_control,omitempty"`
+	// ImageURL is set when Type == "image_url". The URL is a data URI
+	// (data:image/png;base64,...) — the standard OpenAI Chat Completions
+	// format for inline image input.
+	ImageURL *imageURLPart `json:"image_url,omitempty"`
+}
+
+// imageURLPart is the inner object of an image_url content part.
+type imageURLPart struct {
+	URL string `json:"url"`
 }
 
 // cacheControlDirective is the Anthropic ephemeral cache breakpoint.
@@ -133,9 +152,10 @@ type cacheControlDirective struct {
 }
 
 // marshalWireMessages builds a []wireMessage from messages, decorating marked
-// indices with cache_control content parts. Unmarked messages get content as a
-// plain JSON string (or null) — byte-identical to json.Marshal of []Message.
-// The input slice is never mutated.
+// indices with cache_control content parts and appending image_url parts for
+// messages with attached images. Unmarked messages without images get content
+// as a plain JSON string (or null) — byte-identical to json.Marshal of
+// []Message. The input slice is never mutated.
 func marshalWireMessages(messages []Message, marked map[int]bool) ([]wireMessage, error) {
 	out := make([]wireMessage, len(messages))
 	for i, m := range messages {
@@ -145,7 +165,35 @@ func marshalWireMessages(messages []Message, marked map[int]bool) ([]wireMessage
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
-		if marked[i] && m.Content != nil {
+		hasImages := len(m.Images) > 0
+		if hasImages {
+			// Images present: always emit a parts-shaped content array with
+			// text (if any) followed by image_url parts. When marked for
+			// cache_control, the text part gets the ephemeral breakpoint.
+			var parts []contentPart
+			if m.Content != nil && *m.Content != "" {
+				p := contentPart{
+					Type:         "text",
+					Text:         *m.Content,
+					CacheControl: nil,
+				}
+				if marked[i] {
+					p.CacheControl = &cacheControlDirective{Type: "ephemeral"}
+				}
+				parts = append(parts, p)
+			}
+			for _, img := range m.Images {
+				parts = append(parts, contentPart{
+					Type:     "image_url",
+					ImageURL: &imageURLPart{URL: img.DataURL},
+				})
+			}
+			b, err := json.Marshal(parts)
+			if err != nil {
+				return nil, err
+			}
+			wm.Content = b
+		} else if marked[i] && m.Content != nil {
 			// Marked message with non-null content: emit parts-shaped content
 			// with an ephemeral cache_control breakpoint.
 			part := contentPart{

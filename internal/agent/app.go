@@ -72,6 +72,13 @@ type App struct {
 	// gate is NOT covered — that always prompts.
 	AllowDestructive bool
 
+	// PendingImages holds images that will be attached to the next user
+	// message sent via Send. Populated by --attach-image at startup or by
+	// the /image TUI command. Consumed (cleared) by Send when it appends the
+	// user message to Conv. Each ImagePart carries a data URI ready for the
+	// wire; the TUI displays a placeholder instead of dumping base64.
+	PendingImages []proxy.ImagePart
+
 	// IsHeadless marks wakil-run sessions where no human is present to re-send a
 	// failed turn. Backend stream errors are retried automatically regardless of
 	// workflow phase. Set by RunHeadless before the first Send call.
@@ -555,7 +562,17 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 	// before appending the user message so we never deliver an over-window Conv.
 	a.fitConvToWindow(ctx)
 
-	a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(stored), Pinned: a.pinUserMessage})
+	// Attach pending images (from --attach-image flag or /image command) to
+	// the user message. Consumed here — subsequent turns are text-only unless
+	// the user attaches more images. Images are carried on the Message via
+	// Images []ImagePart (not serialized directly; marshalWireMessages converts
+	// them to image_url content parts at wire-encoding time).
+	userMsg := proxy.Message{Role: "user", Content: StrPtr(stored), Pinned: a.pinUserMessage}
+	if len(a.PendingImages) > 0 {
+		userMsg.Images = a.PendingImages
+		a.PendingImages = nil // consume
+	}
+	a.Conv = append(a.Conv, userMsg)
 
 	// P38 trace: accumulate per-turn state written to the JSONL store on exit.
 	// retErr is captured by the defer closure — it reflects whichever error path

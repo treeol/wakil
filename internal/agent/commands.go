@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
 )
@@ -365,6 +366,36 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return true, false, note("session labeled: " + label)
 		}
 		return true, false, note(`usage: /session name "<label>"`)
+
+	case "/image":
+		if len(fields) < 2 {
+			if len(app.PendingImages) > 0 {
+				labels := make([]string, len(app.PendingImages))
+				for i, img := range app.PendingImages {
+					labels[i] = img.Placeholder()
+				}
+				return true, false, note(fmt.Sprintf("%d image(s) queued:\n  %s", len(app.PendingImages), strings.Join(labels, "\n  ")))
+			}
+			return true, false, note("usage: /image <path> [path2 ...] — attach image(s) to your next message")
+		}
+		// Load all requested paths; collect errors so one bad path doesn't
+		// leave earlier valid images queued while later ones are skipped.
+		var errs []string
+		attached := 0
+		for _, p := range fields[1:] {
+			img, err := proxy.LoadImage(p)
+			if err != nil {
+				errs = append(errs, err.Error())
+				continue
+			}
+			app.PendingImages = append(app.PendingImages, img)
+			attached++
+		}
+		msg := fmt.Sprintf("attached %d image(s) — will be sent with your next message", attached)
+		if len(errs) > 0 {
+			msg += "\n  errors: " + strings.Join(errs, "; ")
+		}
+		return true, false, note(msg)
 
 	case "/mcp":
 		args := fields[1:]
