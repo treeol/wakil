@@ -313,7 +313,7 @@ type App struct {
 	// as a SysNoteMsg on the very first update — used by RestoreRepoState
 	// (repostate.go) to surface "restored from last session in this folder"
 	// through the normal message pipeline instead of stderr, which would be
-	// invisible once tea.WithAltScreen() engages. Consumed (cleared) by
+	// invisible once the TUI's alt-screen engages. Consumed (cleared) by
 	// tuiModel.Init() so it never re-fires. Unused headless.
 	StartupNote string
 

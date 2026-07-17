@@ -612,7 +612,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateStreaming
 			m.turnStart = time.Now()
 			m.tps = 0
-			cmds = append(cmds, agent.RunTurn(m.app, ctx, learnText), startDotTick())
+			cmds = append(cmds, AdaptCmd(agent.RunTurn(m.app, ctx, learnText)), startDotTick())
 		}
 
 	case dotTickMsg:
@@ -690,7 +690,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateStreaming
 			m.turnStart = time.Now()
 			m.tps = 0
-			cmds = append(cmds, agent.RunFinalReview(m.app, ctx), startDotTick())
+			cmds = append(cmds, AdaptCmd(agent.RunFinalReview(m.app, ctx)), startDotTick())
 		}
 
 	case agent.WFStartTurnMsg:
@@ -712,7 +712,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateStreaming
 		m.turnStart = time.Now()
 		m.tps = 0
-		cmds = append(cmds, agent.RunTurn(m.app, ctx, msg.UserText), startDotTick())
+		cmds = append(cmds, AdaptCmd(agent.RunTurn(m.app, ctx, msg.UserText)), startDotTick())
 	}
 
 	var taCmd, vpCmd tea.Cmd
@@ -915,7 +915,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				return m, []tea.Cmd{tea.Quit}, true
 			}
 			if cmd != nil {
-				return m, []tea.Cmd{cmd}, true
+				return m, []tea.Cmd{AdaptCmd(cmd)}, true
 			}
 			return m, nil, true
 		}
@@ -934,7 +934,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		m.state = stateStreaming
 		m.turnStart = time.Now()
 		m.tps = 0
-		return m, []tea.Cmd{agent.RunTurn(m.app, ctx, outgoing), startDotTick()}, true
+		return m, []tea.Cmd{AdaptCmd(agent.RunTurn(m.app, ctx, outgoing)), startDotTick()}, true
 	}
 
 	// --- Reverse-search content intercept ---

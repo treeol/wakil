@@ -97,7 +97,7 @@ func (m tuiModel) handleResumePickerKey(msg tea.KeyMsg) (tuiModel, tea.Cmd, bool
 		s := m.resumePicker.sessions[m.resumePicker.sel]
 		m = m.closeResumePicker()
 		app := m.app
-		return m, func() tea.Msg { return agent.ResumeSessionMsg(app, &s) }, true
+		return m, AdaptCmd(func() agent.Msg { return agent.ResumeSessionMsg(app, &s) }), true
 	case "esc":
 		m = m.closeResumePicker()
 		return m, nil, true

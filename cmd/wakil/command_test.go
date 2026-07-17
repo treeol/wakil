@@ -8,8 +8,6 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/workflow"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // cmdApp builds a minimal App suitable for exercising handleTUICommand without
@@ -23,8 +21,8 @@ func cmdApp() *agent.App {
 	}
 }
 
-// runCmd invokes the returned tea.Cmd (if any) and returns the produced message.
-func runCmd(cmd tea.Cmd) tea.Msg {
+// runCmd invokes the returned agent.Cmd (if any) and returns the produced message.
+func runCmd(cmd agent.Cmd) agent.Msg {
 	if cmd == nil {
 		return nil
 	}
@@ -32,9 +30,9 @@ func runCmd(cmd tea.Cmd) tea.Msg {
 }
 
 // firstSysNote executes cmd and returns the first SysNoteMsg it finds,
-// expanding tea.BatchMsg one level deep. Used for /backend tests that now
+// expanding agent.BatchMsg one level deep. Used for /backend tests that now
 // return Batch(note, resolveBackendCtxCmd).
-func firstSysNote(cmd tea.Cmd) agent.SysNoteMsg {
+func firstSysNote(cmd agent.Cmd) agent.SysNoteMsg {
 	if cmd == nil {
 		return agent.SysNoteMsg{}
 	}
@@ -42,8 +40,8 @@ func firstSysNote(cmd tea.Cmd) agent.SysNoteMsg {
 	switch m := msg.(type) {
 	case agent.SysNoteMsg:
 		return m
-	case tea.BatchMsg:
-		for _, sub := range m {
+	case agent.BatchMsg:
+		for _, sub := range m.Cmds {
 			if sub == nil {
 				continue
 			}

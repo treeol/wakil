@@ -11,8 +11,6 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // tuiConfirmer pauses the agent goroutine and posts a ConfirmReqMsg into the
@@ -104,7 +102,7 @@ func tuiConfirmer(app *App) Confirmer {
 // auth, sampling) and re-resolves context limits. Subagent clients are built
 // from the live parent Client fields at dispatch time, so they inherit the
 // new endpoint automatically — nothing is snapshotted at startup.
-func handleEndpointSwitch(app *App, name string, note func(string) tea.Cmd) (handled, quit bool, cmd tea.Cmd) {
+func handleEndpointSwitch(app *App, name string, note func(string) Cmd) (handled, quit bool, cmd Cmd) {
 	ep, ok := app.Cfg.Endpoints[name]
 	if !ok {
 		return true, false, note(fmt.Sprintf("endpoint %q not found — %s", name, listEndpoints(app)))
@@ -152,7 +150,7 @@ func handleEndpointSwitch(app *App, name string, note func(string) tea.Cmd) (han
 	app.defaultModel = ep.Model
 
 	msg := fmt.Sprintf("endpoint: switched to %q (kind %s, %s, model %s)", name, ep.Kind, ep.BaseURL, ep.Model)
-	return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, "", ep.Model), fetchModelListCmd(app))
+	return true, false, Batch(note(msg), resolveBackendCtxCmd(app, "", ep.Model), fetchModelListCmd(app))
 }
 
 // listEndpoints renders the configured endpoints with the active one marked.
@@ -224,26 +222,26 @@ func ShellCmdFromDetail(detail string) string {
 }
 
 // handleTUICommand processes slash commands locally without touching the agent.
-// Returns (handled, quit, cmd) where cmd is a tea.Cmd that produces the
+// Returns (handled, quit, cmd) where cmd is a Cmd that produces the
 // response message. All messages are returned as Cmds — never via EventSink —
 // because this function is called from within Update, and calling Send from
 // inside the event loop risks a deadlock.
-func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
+func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, "/") {
 		return false, false, nil
 	}
 	fields := strings.Fields(line)
 
-	note := func(text string) tea.Cmd {
-		return func() tea.Msg { return SysNoteMsg{Text: text} }
+	note := func(text string) Cmd {
+		return NoteCmd(text)
 	}
 
 	switch fields[0] {
 	case "/new", "/reset":
 		app.NewConversation(NewChatID())
 		chatID := ShortID(app.Client.ChatID)
-		return true, false, func() tea.Msg {
+		return true, false, func() Msg {
 			return NewConvMsg{Note: "fresh conversation: " + chatID}
 		}
 
@@ -305,7 +303,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		return true, false, note(fmt.Sprintf("raw tool results: OFF — results capped at %d chars", cap))
 
 	case "/compact":
-		return true, false, func() tea.Msg {
+		return true, false, func() Msg {
 			ok, err := app.Compact(context.Background(), app.summarizeFn(), true)
 			if err != nil {
 				return SysNoteMsg{Text: "compact: " + err.Error()}
@@ -339,7 +337,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		// UX change: browsing/selecting is now the default, not a fallback.
 		// An explicit id/prefix still resumes directly without the picker.
 		if arg == "" {
-			return true, false, func() tea.Msg {
+			return true, false, func() Msg {
 				sessions, hidden, err := ListSessionsScoped(scope)
 				if err != nil {
 					return SysNoteMsg{Text: "resume: " + err.Error()}
@@ -347,7 +345,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 				return OpenResumePickerMsg{Sessions: sessions, Scope: scope, Hidden: hidden}
 			}
 		}
-		return true, false, func() tea.Msg {
+		return true, false, func() Msg {
 			s, err := LoadSession(arg)
 			if err != nil {
 				return SysNoteMsg{Text: "resume: " + err.Error()}
@@ -373,7 +371,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 		// /mcp reconnect NAME — blocking network call; run in the Cmd goroutine.
 		if len(args) >= 2 && args[0] == "reconnect" {
 			name := strings.Join(args[1:], " ")
-			return true, false, func() tea.Msg {
+			return true, false, func() Msg {
 				if app.MCP == nil {
 					return SysNoteMsg{Text: "no MCP servers configured"}
 				}
@@ -430,7 +428,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 			// Re-probe context limits for the new backend so dynamic thresholds
 			// (compact_at_frac etc.) scale to the new window. The result arrives
 			// as BackendCtxLimitMsg and is applied safely in the TUI event loop.
-			return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, selected, app.SelectedModel))
+			return true, false, Batch(note(msg), resolveBackendCtxCmd(app, selected, app.SelectedModel))
 		}
 		// No arg: report current selection and last-used.
 		cur := app.SelectedBackend
@@ -476,11 +474,11 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 			})
 			if isOpenAI {
 				msg := "model: set to " + model + " (endpoint " + app.Cfg.EndpointName + ")"
-				return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, "", model))
+				return true, false, Batch(note(msg), resolveBackendCtxCmd(app, "", model))
 			}
 			msg := "model: set to " + model
 			// Re-resolve limits for the selected backend + new model.
-			return true, false, tea.Batch(note(msg), resolveBackendCtxCmd(app, app.SelectedBackend, model))
+			return true, false, Batch(note(msg), resolveBackendCtxCmd(app, app.SelectedBackend, model))
 		}
 		cur := app.SelectedModel
 		if cur == "" {
@@ -634,7 +632,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 				"/learn requires an ilm-proxy endpoint — current endpoint %q is kind %q (nothing was sent; no memory exists to write to)",
 				epName, config.EndpointKindOpenAI))
 		}
-		return true, false, func() tea.Msg { return LearnTurnMsg{} }
+		return true, false, func() Msg { return LearnTurnMsg{} }
 
 	case "/repostate":
 		// /repostate [clear] — show or clear the per-folder terminal settings
@@ -660,9 +658,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd tea.Cmd) {
 }
 
 // handlePlanCommand processes all /plan subcommands. Called from handleTUICommand.
-func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.Cmd) {
-	note := func(text string) tea.Cmd {
-		return func() tea.Msg { return SysNoteMsg{Text: text} }
+func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) {
+	note := func(text string) Cmd {
+		return NoteCmd(text)
 	}
 
 	if len(fields) < 2 {
@@ -686,12 +684,12 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.C
 			app.Workflow.StepIdx <= app.Workflow.StepCount {
 			return true, false, note("no active workflow in verify state (/plan verify is for after all steps complete)")
 		}
-		return true, false, func() tea.Msg { return WFFinalReviewMsg{} }
+		return true, false, func() Msg { return WFFinalReviewMsg{} }
 
 	case "review":
 		// Phase acknowledgments (/plan approve, /plan review) are ONLY ever
 		// user-typed commands — handlePlanCommand is only called from handleKey
-		// which requires a physical tea.KeyMsg. Auto mode never invokes these
+		// which requires a physical tea.KeyMsg (from the TUI layer). Auto mode never invokes these
 		// commands; its only workflow shortcut is in HandleReviewOracle, which
 		// auto-advances PAST a review only when that review ran successfully
 		// (a failed/unavailable review always parks and waits for the user).
@@ -704,7 +702,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.C
 		// the turn completes. For WFReview this is a no-op; for WFPresent it
 		// enables the voluntary re-review that refreshes ReviewPlanHash.
 		app.Workflow.Phase = workflow.WFReview
-		return true, false, func() tea.Msg {
+		return true, false, func() Msg {
 			return WFStartTurnMsg{Note: "running oracle plan review", UserText: "continue"}
 		}
 
@@ -734,7 +732,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.C
 			// warn and require a second approve. Phase acknowledgments are user-only
 			// (see /plan review comment above) so this gate cannot be auto-bypassed.
 			stepLabel := strconv.Itoa(app.Workflow.StepCount)
-			return true, false, func() tea.Msg {
+			return true, false, func() Msg {
 				wf := app.Workflow
 				if wf == nil {
 					return SysNoteMsg{Text: "no active workflow"}
@@ -773,13 +771,13 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.C
 			if wf.StepIdx > wf.StepCount {
 				// The paused step was the last — run the final review now.
 				if app.Cfg.WFFinalReview {
-					return true, false, func() tea.Msg { return WFFinalReviewMsg{} }
+					return true, false, func() Msg { return WFFinalReviewMsg{} }
 				}
 				app.Workflow = nil
 				return true, false, note("· workflow complete — all steps done")
 			}
 			stepLabel := strconv.Itoa(wf.StepCount)
-			return true, false, func() tea.Msg {
+			return true, false, func() Msg {
 				return WFStartTurnMsg{
 					Note:     fmt.Sprintf("oracle critique acknowledged — step %d/%s", wf.StepIdx, stepLabel),
 					UserText: "continue",
@@ -816,7 +814,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd tea.C
 		}
 		task := strings.Join(taskParts, " ")
 		capturedOracleMode := oracleMode
-		return true, false, func() tea.Msg {
+		return true, false, func() Msg {
 			content := workflow.WFInitPlanContent(task)
 			// Resolve the plan path to absolute once, using the executor's cwd at
 			// workflow start. All subsequent readers use this absolute path so that

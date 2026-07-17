@@ -7,15 +7,15 @@ import (
 	"strings"
 
 	"github.com/treeol/wakil/internal/proxy"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
-// runTurn launches the agent turn in a goroutine and returns a no-op tea.Cmd.
-// All progress is posted into the TUI via EventSink — safe because it runs in
-// its own goroutine, outside the Bubble Tea event loop.
-func RunTurn(app *App, ctx context.Context, userText string) tea.Cmd {
-	return func() tea.Msg {
+// RunTurn returns a Cmd that runs the agent turn. When the TUI executes it
+// (via AdaptCmd → tea.Cmd), the body runs off the event loop — all progress
+// is posted into the TUI via EventSink (sendEvent), and the Cmd itself
+// returns nil (no message). Safe because it runs outside the Bubble Tea
+// event loop.
+func RunTurn(app *App, ctx context.Context, userText string) Cmd {
+	return func() Msg {
 		app.Out = NewProgWriter(func(m StreamChunkMsg) { app.sendEvent(m) })
 		app.Confirm = tuiConfirmer(app)
 		app.OnTokRate = func(tps float64) { app.sendEvent(TokRateMsg{Tps: tps}) }
@@ -105,8 +105,8 @@ func RunTurn(app *App, ctx context.Context, userText string) tea.Cmd {
 // runFinalReview is the Cmd that the TUI fires when WFFinalReviewMsg arrives.
 // It sets up the oracle/confirm infrastructure, runs handleFinalReview, then
 // signals completion via AgentDoneMsg.
-func RunFinalReview(app *App, ctx context.Context) tea.Cmd {
-	return func() tea.Msg {
+func RunFinalReview(app *App, ctx context.Context) Cmd {
+	return func() Msg {
 		app.Out = NewProgWriter(func(m StreamChunkMsg) { app.sendEvent(m) })
 		app.Confirm = tuiConfirmer(app)
 		app.Client.ResetGrounding()
@@ -116,24 +116,24 @@ func RunFinalReview(app *App, ctx context.Context) tea.Cmd {
 	}
 }
 
-// resolveBackendCtxCmd returns a tea.Cmd that probes the new backend+model's
+// resolveBackendCtxCmd returns a Cmd that probes the new backend+model's
 // context window in a goroutine and delivers the result as a BackendCtxLimitMsg.
 // The TUI event loop applies the update to app.CtxLimit when the msg is handled,
 // keeping it out of the goroutine to avoid races with concurrent agent turns.
-func resolveBackendCtxCmd(app *App, backend, model string) tea.Cmd {
-	return func() tea.Msg {
+func resolveBackendCtxCmd(app *App, backend, model string) Cmd {
+	return func() Msg {
 		var buf strings.Builder
 		lim := ResolveContextLimitForBackendModel(context.Background(), app.Client.HTTP, app.Cfg, backend, model, &buf)
 		return BackendCtxLimitMsg{Limit: lim, Note: strings.TrimSpace(buf.String())}
 	}
 }
 
-// fetchModelListCmd returns a tea.Cmd that fetches the model list for the
+// fetchModelListCmd returns a Cmd that fetches the model list for the
 // current endpoint (after an endpoint switch) and delivers it as a
 // ModelListUpdatedMsg. Like resolveBackendCtxCmd, the HTTP call runs in a
 // goroutine and the result is applied to app.ModelList in the TUI event loop.
-func fetchModelListCmd(app *App) tea.Cmd {
-	return func() tea.Msg {
+func fetchModelListCmd(app *App) Cmd {
+	return func() Msg {
 		models := FetchModelListForEndpoint(context.Background(), app.Client.HTTP, app.Cfg)
 		return ModelListUpdatedMsg{Models: models}
 	}
@@ -143,7 +143,7 @@ func fetchModelListCmd(app *App) tea.Cmd {
 // chat_id, workflow) and builds the NewConvMsg the TUI uses to rebuild its
 // viewport. Shared by /resume's direct-id path and the resume picker's Enter
 // action (internal/tui) so both apply the exact same mutation.
-func ResumeSessionMsg(app *App, s *Session) tea.Msg {
+func ResumeSessionMsg(app *App, s *Session) Msg {
 	app.Conv = s.Conv
 	app.Client.ChatID = s.ChatID
 	app.Session = s

@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/orregistry"
 	"github.com/treeol/wakil/internal/proxy"
@@ -57,20 +56,23 @@ func proxyCfg(baseURL string) config.Config {
 	return cfg
 }
 
-// runCmd executes a tea.Cmd and flattens tea.BatchMsg into its member msgs.
-func runCmd(cmd tea.Cmd) []tea.Msg {
+// runCmd executes a Cmd and flattens BatchMsg into its member msgs.
+func runCmd(cmd Cmd) []Msg {
 	if cmd == nil {
 		return nil
 	}
 	msg := cmd()
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		var out []tea.Msg
-		for _, c := range batch {
+	if batch, ok := msg.(BatchMsg); ok {
+		var out []Msg
+		for _, c := range batch.Cmds {
 			out = append(out, runCmd(c)...)
 		}
 		return out
 	}
-	return []tea.Msg{msg}
+	if msg == nil {
+		return nil
+	}
+	return []Msg{msg}
 }
 
 // --- 1. Limits resolution ---
