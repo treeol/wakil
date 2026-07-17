@@ -173,6 +173,10 @@ func Open(dbPath, workspaceRoot string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &Store{
 		db:            db,
@@ -248,6 +252,127 @@ func createSchema(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// migrationColumns maps each column that may be missing on databases created
+// with an older schema to the ALTER TABLE statement that adds it. The CREATE
+// TABLE IF NOT EXISTS in schemaStatements is a no-op on pre-existing tables,
+// so columns added in later versions never appear on old DBs without this step.
+//
+// Each column is added with the same type/constraints as the current CREATE
+// TABLE definition. The DEFAULT clause makes the column safe for existing
+// rows: NOT NULL columns get a default that satisfies the constraint.
+//
+// SQLite ALTER TABLE ADD COLUMN does not support REFERENCES (foreign key)
+// inline, so supersedes/superseded_by are added as plain INTEGER — the
+// foreign-key pragma is OFF by design (see Open), and the render path handles
+// dangling references gracefully.
+var migrationColumns = []struct {
+	name string
+	sql  string
+}{
+	{"tainted", "ALTER TABLE entries ADD COLUMN tainted INTEGER NOT NULL DEFAULT 2"},
+	{"session_id", "ALTER TABLE entries ADD COLUMN session_id TEXT NOT NULL DEFAULT ''"},
+	{"anchors", "ALTER TABLE entries ADD COLUMN anchors TEXT"},
+	{"note", "ALTER TABLE entries ADD COLUMN note TEXT"},
+	{"supersedes", "ALTER TABLE entries ADD COLUMN supersedes INTEGER"},
+	{"superseded_by", "ALTER TABLE entries ADD COLUMN superseded_by INTEGER"},
+	{"promoted_by", "ALTER TABLE entries ADD COLUMN promoted_by TEXT"},
+}
+
+// migrateSchema adds columns that are present in the current schema but may
+// be absent on databases created with an older version. createSchema uses
+// CREATE TABLE IF NOT EXISTS, which is a no-op on existing tables — so new
+// columns never get added without an explicit ALTER TABLE pass.
+//
+// Each potential migration is guarded by a table_info check so it is a no-op
+// on current-schema databases. This is idempotent and safe to run on every
+// Open. The meta.schema_version value is written by createSchema but not
+// read here — column-existence checks are more robust than version numbers
+// because they handle DBs that were partially migrated or created outside
+// the normal createSchema path.
+//
+// The entire migration (column adds + FTS rebuild) runs inside BEGIN
+// IMMEDIATE, which acquires the SQLite write lock before reading table_info.
+// This serializes concurrent opens: if two processes open the same old DB,
+// the second waits on the write lock until the first commits, then sees all
+// columns present and skips the ALTERs.
+func migrateSchema(db *sql.DB) error {
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("memory: migrate: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	existing := make(map[string]bool)
+	rows, err := tx.Query("PRAGMA table_info(entries)")
+	if err != nil {
+		return fmt.Errorf("memory: migrate: table_info: %w", err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("memory: migrate: scan table_info: %w", err)
+		}
+		existing[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("memory: migrate: table_info rows: %w", err)
+	}
+
+	added := 0
+	for _, col := range migrationColumns {
+		if existing[col.name] {
+			continue
+		}
+		if _, err := tx.Exec(col.sql); err != nil {
+			return fmt.Errorf("memory: migrate: add column %s: %w", col.name, err)
+		}
+		added++
+	}
+
+	// Rebuild the FTS5 index when out of sync. This covers three cases:
+	//  1. Columns were just added — triggers may not have existed when old
+	//     rows were written, so the index is missing them.
+	//  2. createSchema just created the FTS virtual table (CREATE VIRTUAL
+	//     TABLE IF NOT EXISTS) on a non-empty entries table — the triggers
+	//     only fire on future writes, so existing rows are missing.
+	//  3. A previous migration crashed after adding columns but before the
+	//     rebuild completed — added would be 0 on retry.
+	//
+	// We use a persistent meta flag (fts_rebuilt) that is only set after the
+	// rebuild succeeds. If the flag is missing or '0', we rebuild and set
+	// it. This is self-correcting: a crashed rebuild leaves the flag unset,
+	// so the next Open retries. Once the rebuild succeeds and the flag is
+	// set, subsequent Opens skip it.
+	//
+	// FTS5 COUNT(*) is unreliable for emptiness checks (it reports b-tree
+	// size, not logical rows), so we don't compare row counts — the flag is
+	// the source of truth.
+	var entryCount int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM entries").Scan(&entryCount); err != nil {
+		return fmt.Errorf("memory: migrate: count entries: %w", err)
+	}
+	var ftsFlag sql.NullString
+	if err := tx.QueryRow("SELECT value FROM meta WHERE key = 'fts_rebuilt'").Scan(&ftsFlag); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("memory: migrate: read fts_rebuilt flag: %w", err)
+	}
+	needsRebuild := added > 0 || entryCount > 0 && (!ftsFlag.Valid || ftsFlag.String != "1")
+	if needsRebuild {
+		if _, err := tx.Exec("INSERT INTO entries_fts(entries_fts) VALUES ('rebuild')"); err != nil {
+			return fmt.Errorf("memory: migrate: rebuild FTS index: %w", err)
+		}
+		if _, err := tx.Exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_rebuilt', '1')"); err != nil {
+			return fmt.Errorf("memory: migrate: set fts_rebuilt flag: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // ─── Validation ────────────────────────────────────────────────────────────

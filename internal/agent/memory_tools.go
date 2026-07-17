@@ -149,7 +149,7 @@ func (a *App) handleMemoryGet(ctx context.Context, tc proxy.ToolCall) string {
 
 	entry, err := s.Get(ctx, args.Key)
 	if err == memory.ErrNotFound {
-		return "not found: " + args.Key
+		return "not found: " + args.Key + " (memory is scoped to the current workspace — entries from other workspaces are not visible here)"
 	}
 	if err != nil {
 		return fmt.Sprintf("ERROR: memory get: %v", err)
@@ -189,7 +189,7 @@ func (a *App) handleMemorySearch(ctx context.Context, tc proxy.ToolCall) string 
 		return fmt.Sprintf("ERROR: memory search: %v", err)
 	}
 	if len(entries) == 0 {
-		return "(no matches)"
+		return "(no matches — memory is scoped to the current workspace; entries from other workspaces are not visible here)"
 	}
 
 	var b strings.Builder
@@ -226,7 +226,7 @@ func (a *App) handleMemoryList(ctx context.Context, tc proxy.ToolCall) string {
 		return fmt.Sprintf("ERROR: memory list: %v", err)
 	}
 	if len(entries) == 0 {
-		return "(no entries found)"
+		return "(no entries found — memory is scoped to the current workspace; entries from other workspaces are not visible here)"
 	}
 
 	var b strings.Builder

@@ -526,7 +526,11 @@ read a child's findings. Staging survives sandbox restarts via periodic
 snapshots. Ungated — staging writes touch no workspace state.
 
 **Durable memory (T2)** is a host-side SQLite store that persists across
-sessions. Mid-tier entries auto-expire (1h–7d TTL); durable entries are
+sessions **within a workspace**. Each workspace has its own isolated memory
+DB at `<wakil-data>/memory/<workspace-key>/memory.db` — entries stored in
+one workspace are **not** visible in another. This is deliberate isolation
+(anchors are workspace-relative; cross-workspace memory would break that
+model). Mid-tier entries auto-expire (1h–7d TTL); durable entries are
 permanent and go through a propose→promote review flow. Subagents can
 propose durable entries but only the main agent can promote them. Every
 entry carries provenance (writer, taint signal, anchor staleness). A

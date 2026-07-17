@@ -6,7 +6,9 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
-const memoryDesc = `Durable, trusted, host-side memory store. Survives across sessions. ` +
+const memoryDesc = `Durable, trusted, host-side memory store scoped to the current workspace. ` +
+	`Survives across sessions in this workspace, but entries are NOT shared across ` +
+	`different workspaces — each workspace has its own isolated memory DB. ` +
 	`Two tiers: mid (TTL 1h–7d, direct active writes) and durable (no TTL, writes ` +
 	`land as PROPOSED — promotion to ACTIVE requires the main agent via memory_promote). ` +
 	`Every entry carries provenance (writer, tier, taint, staleness). ` +
@@ -70,14 +72,14 @@ func MemoryTools() []proxy.Tool {
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "memory_get",
-			Description: "Get the active entry for a key. Returns the entry with provenance and staleness info. Available to all agent tiers.",
+			Description: "Get the active entry for a key. Returns the entry with provenance and staleness info. Memory is scoped to the current workspace — entries from other workspaces are not visible. Available to all agent tiers.",
 			Parameters: obj(map[string]interface{}{
 				"key": strProp("Key to look up."),
 			}, "key"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "memory_search",
-			Description: "Full-text search over memory entries. Returns up to 20 entries with provenance. By default only active entries; pass include_proposed=true to include proposed. Available to all agent tiers.",
+			Description: "Full-text search over memory entries. Returns up to 20 entries with provenance. By default only active entries; pass include_proposed=true to include proposed. Memory is scoped to the current workspace — entries from other workspaces are not visible. Available to all agent tiers.",
 			Parameters: obj(map[string]interface{}{
 				"query":            strProp("FTS5 search query."),
 				"tier":             strProp("Optional tier filter: 'mid' or 'durable'."),
@@ -86,7 +88,7 @@ func MemoryTools() []proxy.Tool {
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "memory_list",
-			Description: "List memory entries by prefix, tier, and/or status. Returns keys + metadata (up to 200). Available to all agent tiers.",
+			Description: "List memory entries by prefix, tier, and/or status. Returns keys + metadata (up to 200). Memory is scoped to the current workspace — entries from other workspaces are not visible. Available to all agent tiers.",
 			Parameters: obj(map[string]interface{}{
 				"prefix": strProp("Optional key prefix to filter by."),
 				"tier":   strProp("Optional tier filter: 'mid' or 'durable'."),
