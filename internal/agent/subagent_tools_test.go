@@ -89,6 +89,12 @@ func TestToolsConfirmer(t *testing.T) {
 	if !conf("lsp_definition", "", "", false) {
 		t.Error("toolsConfirmer should approve LSP")
 	}
+	if !conf("browser_navigate", "", "", false) {
+		t.Error("toolsConfirmer should approve browser tools")
+	}
+	if !conf("browser_screenshot", "", "", false) {
+		t.Error("toolsConfirmer should approve browser tools")
+	}
 }
 
 // --- Test: tools tier does NOT include dangerous tools ---

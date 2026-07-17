@@ -445,6 +445,9 @@ func RunHeadless(cfg config.Config, args []string) int {
 	if res.lspMgr != nil {
 		defer res.lspMgr.Shutdown()
 	}
+	if res.browserMgr != nil {
+		defer res.browserMgr.Close()
+	}
 	if res.traceStore != nil {
 		defer res.traceStore.Close()
 	}

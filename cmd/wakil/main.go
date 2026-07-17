@@ -212,6 +212,12 @@ func main() {
 		if res.mcpMgr != nil {
 			res.mcpMgr.Close()
 		}
+		if res.lspMgr != nil {
+			res.lspMgr.Shutdown()
+		}
+		if res.browserMgr != nil {
+			res.browserMgr.Close()
+		}
 		os.Exit(1)
 	}
 
@@ -225,6 +231,9 @@ func main() {
 	}
 	if res.lspMgr != nil {
 		res.lspMgr.Shutdown()
+	}
+	if res.browserMgr != nil {
+		res.browserMgr.Close()
 	}
 }
 

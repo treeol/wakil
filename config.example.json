@@ -85,6 +85,10 @@
     }
   },
 
+  "_comment_browser": "Headless-browser tools (chromedp + Chromium) for visual verification, DOM inspection, interaction testing. Off by default. Requires chromium in the sandbox image (included in the default Dockerfile).",
+
+  "browser_enabled": false,
+
   "_comment_mcp": "MCP tool servers. Each entry is a named server with stdio or http transport. Tools appear automatically when configured.",
 
   "mcp_servers": [],

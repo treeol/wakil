@@ -322,6 +322,11 @@ type Config struct {
 	LSPIdleTimeoutSeconds  int                  `json:"lsp_idle_timeout_seconds,omitempty"`  // default 1800 (30 min)
 	LSPIndexTimeoutSeconds int                  `json:"lsp_index_timeout_seconds,omitempty"` // default 30
 
+	// Browser: native headless-browser-backed tools (chromedp + Chromium) for
+	// visual verification, DOM inspection, interaction testing. Off by default.
+	// When enabled, chromium must be installed in the sandbox image.
+	BrowserEnabled bool `json:"browser_enabled,omitempty"`
+
 	// Runtime-only flags (never read from / written to the JSON config file).
 	Resume       bool   `json:"-"` // resume the most recent session
 	ResumeID     string `json:"-"` // resume a session by chat_id or unique prefix

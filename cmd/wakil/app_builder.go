@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
@@ -43,6 +44,7 @@ type buildAppOpts struct {
 type appResources struct {
 	mcpMgr     *agent.MCPManager
 	lspMgr     *lsp.Manager
+	browserMgr *browser.Manager
 	traceStore *trace.Store
 	memStore   *memory.Store
 }
@@ -105,6 +107,13 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 	}
 	res.lspMgr = lspMgr
 
+	// Browser manager
+	var browserMgr *browser.Manager
+	if cfg.BrowserEnabled {
+		browserMgr = browser.NewManager()
+	}
+	res.browserMgr = browserMgr
+
 	// Context limit resolution
 	ctxLimit := agent.ResolveContextLimit(context.Background(), client.HTTP, cfg, os.Stderr)
 
@@ -120,6 +129,7 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 		Exec:            exe,
 		MCP:             mcpMgr,
 		LSP:             lspMgr,
+		Browser:         browserMgr,
 		Tools:           agent.BuildTools(cfg, exe.Cwd(), mcpMgr),
 		CtxLimit:        ctxLimit,
 		AgentPrompt:     loadAgentPrompt(cfg),

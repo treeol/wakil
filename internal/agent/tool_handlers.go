@@ -882,6 +882,16 @@ func (a *App) handleLSPReadOnly(ctx context.Context, tc proxy.ToolCall) string {
 	return a.LSP.HandleLSPReadOnly(ctx, tc.Function.Name, tc.Function.Arguments)
 }
 
+// handleBrowserTool dispatches headless browser tools (navigate, screenshot,
+// viewport, click, eval, text, html, reduced_motion). Read-only/interactive —
+// no confirmation needed (the browser runs inside the sandbox).
+func (a *App) handleBrowserTool(ctx context.Context, tc proxy.ToolCall) string {
+	if a.Browser == nil {
+		return "[browser: browser tools are not enabled. Configure browser_enabled in config.]"
+	}
+	return a.Browser.HandleToolCall(ctx, tc.Function.Name, tc.Function.Arguments)
+}
+
 // handleMCPTool routes an MCP namespaced tool call through the MCP manager.
 func (a *App) handleMCPTool(ctx context.Context, tc proxy.ToolCall) string {
 	name := tc.Function.Name

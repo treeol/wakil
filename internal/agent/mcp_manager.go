@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/proxy"
@@ -341,6 +342,9 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	}
 	if cfg.LSPEnabled {
 		t = append(t, lsp.LSPTools(cwd)...)
+	}
+	if cfg.BrowserEnabled {
+		t = append(t, browser.BrowserTools()...)
 	}
 	return t
 }

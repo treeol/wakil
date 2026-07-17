@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/treeol/wakil/actions/workflows/ci.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
 A terminal-native coding agent. Go binary, thin HTTP client, zero framework
 overhead — talks to any OpenAI-compatible Chat Completions endpoint directly
@@ -34,7 +34,7 @@ navigation is backed by an actual language server (`lsp_definition` /
 
 | | |
 |---|---|
-| **Go 1.25+** | to build from source *(see `go.mod`)* |
+| **Go 1.26+** | to build from source *(see `go.mod`)* |
 | **Docker** | for the default `docker` exec mode *(skip with `--exec direct`)* |
 | **An OpenAI-compatible endpoint** | a llama.cpp server, OpenRouter, or an ilm proxy — wakil is a client, not a standalone brain |
 
@@ -261,6 +261,7 @@ reference covering every section below.
 | `oracle_api_key_env` | `"ANTHROPIC_API_KEY"` | Env var read at call time for the API key |
 | `lsp_enabled` | `false` | Gate for `lsp_*` code-intelligence tools |
 | `lsp_servers` | — | Maps language → server command |
+| `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium) |
 | `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
 | `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
 | `external_backends` | — | Backend names known to route to external providers |
@@ -398,6 +399,7 @@ opens a picker to attach a file or folder for context.
 | `memory_forget` | no | Supersede an active entry with a tombstone *(main agent only)* |
 | `memory_promote_from_staging` | no | Bridge a staging value into durable memory as proposed *(main agent only)* |
 | `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` | no | Language-server-backed code intelligence *(off by default — see below)* |
+| `browser_navigate` / `browser_screenshot` / `browser_viewport` / `browser_click` / `browser_eval` / `browser_text` / `browser_html` / `browser_reduced_motion` | no | Headless-browser tools — visual verification, DOM inspection, interaction testing *(off by default — see below)* |
 
 MCP tools *(stdio or HTTP)* append automatically when `mcp_servers` is
 configured. The host Docker socket passthrough (`--docker-sock`) is what lets
@@ -463,6 +465,40 @@ Calls are line-anchored: `(path, line, symbol)`. The line number is exactly
 what `read_file` already prints, so there's no extra lookup round-trip.
 Unsupported operations return an explicit failure message, never a silent
 empty result.
+
+### Headless browser
+
+`browser_enabled: true` turns on `browser_navigate`, `browser_screenshot`,
+`browser_viewport`, `browser_click`, `browser_eval`, `browser_text`,
+`browser_html`, `browser_reduced_motion` — a headless Chromium instance
+(via [chromedp](https://github.com/chromedp/chromedp)) for visual verification,
+DOM inspection, interaction testing, and responsive layout checks.
+
+The browser runs inside the sandbox container — `chromium` is installed in the
+`Dockerfile` image. It uses `--no-sandbox` (required inside the container's
+capability-dropped environment) and `--disable-gpu`. All navigation targets
+localhost or `file://` URLs; the sandbox's network namespace controls egress.
+
+```json
+{
+  "browser_enabled": true
+}
+```
+
+Common workflows:
+
+- **Visual verification:** `browser_navigate` → `browser_screenshot` to capture
+  a rendered page.
+- **Responsive checks:** `browser_viewport` (e.g. 375×812 for mobile) →
+  `browser_screenshot` → `browser_eval` to inspect computed styles.
+- **Interaction testing:** `browser_navigate` → `browser_click` →
+  `browser_text` to verify state changes.
+- **`prefers-reduced-motion`:** `browser_reduced_motion` (emulate=true) →
+  `browser_eval` to verify transitions are actually disabled at runtime, not
+  just branched-on in code.
+
+No confirmation needed — the browser runs inside the sandbox and cannot write
+to the filesystem or execute arbitrary commands.
 
 ### `/plan` workflow
 

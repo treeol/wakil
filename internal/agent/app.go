@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/exec"
@@ -390,6 +391,10 @@ type App struct {
 	// LSP is the language server manager for code-intelligence tools.
 	// nil when LSPEnabled is false.
 	LSP *lsp.Manager
+
+	// Browser is the headless browser manager for visual verification tools.
+	// nil when BrowserEnabled is false.
+	Browser *browser.Manager
 }
 
 // ToolTraceEntry is one tool call's compact evidence record for the step log.
@@ -888,6 +893,14 @@ func (a *App) buildPreamble(today string) string {
 			"+ symbol name — the client resolves the position. Prefer these over search_files for "+
 			"symbol-level navigation (definition lookup, finding callers).")
 	}
+	// Browser tools inventory.
+	if a.Browser != nil {
+		parts = append(parts, "Headless browser available: browser_navigate, browser_screenshot, "+
+			"browser_viewport, browser_click, browser_eval, browser_text, browser_html, "+
+			"browser_reduced_motion. Use for visual verification, DOM inspection, responsive "+
+			"layout checks (set viewport to 375x812 for mobile), interaction testing, and "+
+			"prefers-reduced-motion emulation.")
+	}
 	// Memory digest: compact session-start snapshot. NOT live — entries
 	// written mid-session won't appear until the next day rollover or
 	// session start. The agent uses memory_search for live data. This is
@@ -1129,6 +1142,10 @@ func (a *App) buildSubagentTools() []proxy.Tool {
 	// LSP — only if the parent has it enabled.
 	if a.Cfg.LSPEnabled {
 		t = append(t, lsp.LSPTools(cwd)...)
+	}
+	// Browser — only if the parent has it enabled.
+	if a.Cfg.BrowserEnabled {
+		t = append(t, browser.BrowserTools()...)
 	}
 	// MCP — only servers in the allowlist.
 	if a.MCP != nil && len(a.Cfg.SubagentMCPServers) > 0 {
@@ -1546,6 +1563,12 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 	// LSP code-intelligence tools (read-only, no confirmation needed).
 	case "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols":
 		return stringToToolResult(a.handleLSPReadOnly(ctx, tc))
+	// Browser tools (read-only/interactive, no confirmation needed — run
+	// inside the sandbox browser, cannot write to filesystem or exec).
+	case "browser_navigate", "browser_screenshot", "browser_viewport",
+		"browser_click", "browser_eval", "browser_text", "browser_html",
+		"browser_reduced_motion":
+		return stringToToolResult(a.handleBrowserTool(ctx, tc))
 	// Staging tools (ungated by design — the gate lives at promotion).
 	case "staging_put":
 		return stringToToolResult(a.handleStagingPut(ctx, tc))

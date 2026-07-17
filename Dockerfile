@@ -45,6 +45,7 @@ RUN apt-get update \
            nodejs \
            openssh-client \
            procps \
+           chromium \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
