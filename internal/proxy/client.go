@@ -655,6 +655,19 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		CachePrompt   *bool             `json:"cache_prompt,omitempty"`
 	}
 
+	// MaxTokens: use the configured value if set; otherwise apply a default
+	// for OpenAI-compatible endpoints so the server doesn't apply its own
+	// (often too-low) default. This is critical for reasoning models (e.g.
+	// kimi-k3) where reasoning tokens count against the budget — without
+	// max_tokens, the model exhausts a tiny server default on thinking and
+	// produces no content. The ilm-proxy path manages its own limits and
+	// does not need this default.
+	maxTokens := c.MaxTokens
+	if maxTokens == nil && c.Kind == KindOpenAI {
+		defaultMax := 8192
+		maxTokens = &defaultMax
+	}
+
 	body := wireBody{
 		Model:         model,
 		Stream:        true,
@@ -663,7 +676,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		Tools:         tools,
 		Temperature:   c.Temperature,
 		TopP:          c.TopP,
-		MaxTokens:     c.MaxTokens,
+		MaxTokens:     maxTokens,
 		CachePrompt:   c.CachePrompt,
 	}
 	if proxyShape {
@@ -806,6 +819,12 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	var usage UsageStat
 	var reasoningChars int
 
+	// Track finish_reason from the last chunk that carries it. Reasoning models
+	// (e.g. kimi-k3) that exhaust their token budget on thinking send
+	// finish_reason="length" with empty content — without this check, the model
+	// appears to produce an empty response and the error is misdiagnosed.
+	var finishReason string
+
 	// Bounded SSE line reader: a malformed/malicious stream sending a line
 	// larger than maxSSELineSize is rejected with an error instead of
 	// causing unbounded memory growth.
@@ -844,7 +863,11 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 			usage.CacheWriteTok = chunk.Usage.CacheCreationInputTokens
 		}
 		if len(chunk.Choices) > 0 {
-			d := chunk.Choices[0].Delta
+			choice := chunk.Choices[0]
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
+			}
+			d := choice.Delta
 			if d.ReasoningContent != "" {
 				reasoningChars += len(d.ReasoningContent)
 				if reasoningSink != nil {
@@ -883,6 +906,15 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		// bufio.ErrTooLong means a line exceeded maxSSELineSize — abort
 		// the stream rather than allowing unbounded memory growth.
 		return Message{}, wrapStreamErr(fmt.Errorf("SSE stream: %w", err))
+	}
+
+	// Check finish_reason: if the model hit the token limit ("length") and
+	// produced no content (typical for reasoning models that exhaust the budget
+	// on thinking), surface a clear, actionable error instead of returning an
+	// empty message that triggers a generic "empty response" path downstream.
+	if finishReason == "length" && content.Len() == 0 && len(order) == 0 {
+		return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) — increase max_tokens in your endpoint config or set it via /model",
+			ErrBackendFatal)
 	}
 
 	// Resolve usage: exact when the proxy reported a usage chunk, otherwise a

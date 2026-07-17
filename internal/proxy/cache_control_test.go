@@ -69,16 +69,19 @@ func TestCacheControlUnsetExactGolden(t *testing.T) {
 	}
 
 	// Build the expected body with the same shape the old chatRequest would
-	// have produced (now via wireMessage with no marks).
+	// have produced (now via wireMessage with no marks). max_tokens gets a
+	// default of 8192 for KindOpenAI when unset (reasoning-model fix).
 	wireMsgs, _ := marshalWireMessages(msgs, nil)
+	defaultMax := 8192
 	expected, _ := json.Marshal(struct {
 		Model         string         `json:"model"`
 		Stream        bool           `json:"stream"`
 		StreamOptions *streamOptions `json:"stream_options,omitempty"`
 		Messages      []wireMessage  `json:"messages"`
+		MaxTokens     *int           `json:"max_tokens,omitempty"`
 	}{
 		Model: "m", Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
-		Messages: wireMsgs,
+		Messages: wireMsgs, MaxTokens: &defaultMax,
 	})
 
 	if string(*body) != string(expected) {

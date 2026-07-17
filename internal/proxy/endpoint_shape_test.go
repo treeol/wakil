@@ -85,11 +85,23 @@ func TestOpenAIKindRequestShape(t *testing.T) {
 			if model != "qwen3.6-35b" {
 				t.Errorf("model = %q, want configured qwen3.6-35b (session state %q must not leak)", model, sessionModel)
 			}
-			// No sampling fields configured → none present.
-			for _, k := range []string{"temperature", "top_p", "max_tokens"} {
+			// No sampling fields configured → temperature and top_p absent.
+			// max_tokens gets a default of 8192 for KindOpenAI (reasoning-model fix).
+			for _, k := range []string{"temperature", "top_p"} {
 				if _, ok := raw[k]; ok {
 					t.Errorf("unset sampling field %q must be absent from body", k)
 				}
+			}
+			if mt, ok := raw["max_tokens"]; ok {
+				var v int
+				if err := json.Unmarshal(mt, &v); err != nil {
+					t.Fatalf("unmarshal max_tokens: %v", err)
+				}
+				if v != 8192 {
+					t.Errorf("default max_tokens = %d, want 8192", v)
+				}
+			} else {
+				t.Error("KindOpenAI must send a default max_tokens=8192 when unset")
 			}
 		})
 	}
