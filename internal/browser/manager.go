@@ -52,12 +52,22 @@ type Manager struct {
 	ctxCancel context.CancelFunc
 }
 
-// NewManager creates a new browser Manager. The Chromium process is launched
-// lazily by chromedp on the first operation — NewManager itself does not
-// start the browser. The browser runs with --no-sandbox (required inside a
-// Docker container that drops all capabilities) and --disable-gpu. Call Close
-// when the session ends to release the process.
-func NewManager() *Manager {
+// NewManager creates a new browser Manager and eagerly launches the Chromium
+// process. The browser runs with --no-sandbox (required inside a Docker
+// container that drops all capabilities) and --disable-gpu. Call Close when
+// the session ends to release the process.
+//
+// Eager launch is critical: if the first chromedp.Run happens inside a
+// per-operation context (which has a timeout and gets canceled after the
+// op), chromedp ties the browser process lifecycle to that context. When the
+// per-op context is canceled, the browser dies and m.ctx is permanently
+// canceled — every subsequent op fails with "context canceled". By launching
+// with the long-lived m.ctx here, the browser process survives across ops.
+//
+// Returns an error if Chromium cannot start (missing binary, missing shared
+// libraries, etc.) so the caller can log a clear message at startup instead
+// of masking the failure as "context canceled" on every tool call.
+func NewManager() (*Manager, error) {
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", "new"),
 		chromedp.Flag("no-sandbox", true),
@@ -68,12 +78,25 @@ func NewManager() *Manager {
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 
-	return &Manager{
+	m := &Manager{
 		allocCtx:    allocCtx,
 		allocCancel: allocCancel,
 		ctx:         ctx,
 		ctxCancel:   ctxCancel,
 	}
+
+	// Eager launch: run a no-op action to start the browser process now,
+	// tied to the long-lived m.ctx (not a per-op context). This surfaces
+	// launch failures (missing binary, missing libs) immediately with a
+	// real error instead of "context canceled" on every subsequent call.
+	launchCtx, launchCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer launchCancel()
+	if err := chromedp.Run(launchCtx); err != nil {
+		m.Close()
+		return nil, fmt.Errorf("browser: failed to launch Chromium (check that chromium is installed and has all shared libraries — try 'chromium --headless=new --no-sandbox --dump-dom about:blank' in the container): %w", err)
+	}
+
+	return m, nil
 }
 
 // Close shuts down the browser process and releases all resources.
@@ -95,27 +118,34 @@ func (m *Manager) Close() error {
 // cancels the turn); the timeout prevents indefinite hangs on slow pages or
 // missing elements. The browser ctx is the parent so chromedp can track the
 // operation against the right browser target.
+//
+// The returned cancel function cancels BOTH the timeout and the merged
+// context, ensuring the goroutine that bridges caller cancellation exits
+// cleanly (no leak).
 func (m *Manager) opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	// Use the manager's browser ctx as the parent so chromedp operations
-	// are tracked against the browser target. Derive a timeout from the
-	// caller's ctx if it has a deadline, otherwise use defaultTimeout.
 	parent := m.ctx
-	if ctx != nil {
-		// Merge: use caller ctx for cancellation, but run in the browser
-		// target. chromedp.Run uses the context to find the browser target
-		// (via m.ctx), so we must use m.ctx as parent. The caller's
-		// cancellation is honored via a goroutine that cancels on ctx.Done.
-		merged, cancel := context.WithCancel(parent)
-		go func() {
-			select {
-			case <-ctx.Done():
-				cancel()
-			case <-merged.Done():
-			}
-		}()
-		return context.WithTimeout(merged, defaultTimeout)
+	if ctx == nil {
+		// No caller ctx — just use a timeout on the browser ctx.
+		return context.WithTimeout(parent, defaultTimeout)
 	}
-	return context.WithTimeout(parent, defaultTimeout)
+	// Merge: use the browser ctx as parent (so chromedp targets the right
+	// browser), but cancel when the caller's ctx is done. The goroutine
+	// bridges caller cancellation into the merged context.
+	merged, mergedCancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-ctx.Done():
+			mergedCancel()
+		case <-merged.Done():
+		}
+	}()
+	// Derive a timeout from merged. The returned cancel cancels both so
+	// the goroutine exits and no resources leak.
+	tctx, tcancel := context.WithTimeout(merged, defaultTimeout)
+	return tctx, func() {
+		tcancel()
+		mergedCancel()
+	}
 }
 
 // Navigate opens a URL in the browser and waits for the page to load.

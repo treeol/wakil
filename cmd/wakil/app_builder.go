@@ -110,7 +110,12 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 	// Browser manager
 	var browserMgr *browser.Manager
 	if cfg.BrowserEnabled {
-		browserMgr = browser.NewManager()
+		mgr, err := browser.NewManager()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "browser:", err)
+		} else {
+			browserMgr = mgr
+		}
 	}
 	res.browserMgr = browserMgr
 

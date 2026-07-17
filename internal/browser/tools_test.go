@@ -71,7 +71,8 @@ func TestHandleToolCallNilManager(t *testing.T) {
 
 // TestHandleToolCallUnknownTool verifies an unknown tool name returns an error.
 func TestHandleToolCallUnknownTool(t *testing.T) {
-	m := &Manager{}
+	// Use a nil manager — HandleToolCall guards against nil.
+	var m *Manager
 	result := m.HandleToolCall(nil, "browser_bogus", "{}")
 	if result == "" {
 		t.Fatal("expected non-empty result for unknown tool")

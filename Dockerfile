@@ -46,6 +46,25 @@ RUN apt-get update \
            openssh-client \
            procps \
            chromium \
+           fonts-liberation \
+           libasound2 \
+           libatk-bridge2.0-0 \
+           libatk1.0-0 \
+           libatspi2.0-0 \
+           libcups2 \
+           libdbus-1-3 \
+           libdrm2 \
+           libgbm1 \
+           libgtk-3-0 \
+           libnss3 \
+           libpango-1.0-0 \
+           libx11-6 \
+           libxcomposite1 \
+           libxdamage1 \
+           libxext6 \
+           libxfixes3 \
+           libxrandr2 \
+           libxkbcommon0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
