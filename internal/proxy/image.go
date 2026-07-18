@@ -51,6 +51,13 @@ func humanSize(n int) string {
 	}
 }
 
+// DetectMIME sniffs the image format from magic bytes. Returns the MIME type
+// and true if recognized; ("", false) otherwise. Exported so the TUI's
+// clipboard reader can pre-validate clipboard data before loading.
+func DetectMIME(data []byte) (string, bool) {
+	return detectMIMEByContent(data)
+}
+
 // detectMIMEByContent sniffs the image format from magic bytes. Returns the
 // MIME type and true if recognized; ("", false) otherwise.
 func detectMIMEByContent(data []byte) (string, bool) {
@@ -116,6 +123,27 @@ func LoadImage(path string) (ImagePart, error) {
 	return ImagePart{
 		Path:    path,
 		DataURL: dataURL,
+		MIME:    mime,
+		Size:    len(data),
+	}, nil
+}
+
+// LoadImageFromBytes creates an ImagePart from raw image bytes, using the
+// provided label as the display path. It applies the same MIME sniffing and
+// size limit as LoadImage but reads from memory instead of disk. Used by the
+// TUI's clipboard-paste path to attach images without a temp file.
+func LoadImageFromBytes(data []byte, label string) (ImagePart, error) {
+	if len(data) > maxImageBytes {
+		return ImagePart{}, fmt.Errorf("image is %s (limit %s)", humanSize(len(data)), humanSize(maxImageBytes))
+	}
+	mime, ok := detectMIMEByContent(data)
+	if !ok {
+		return ImagePart{}, fmt.Errorf("unsupported image format (expected png, jpeg, gif, or webp)")
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return ImagePart{
+		Path:    label,
+		DataURL: "data:" + mime + ";base64," + encoded,
 		MIME:    mime,
 		Size:    len(data),
 	}, nil

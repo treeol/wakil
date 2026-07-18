@@ -56,3 +56,19 @@ func NoteCmd(text string) Cmd {
 		return SysNoteMsg{Text: text}
 	}
 }
+
+// clipboardImageRequest is a sentinel Msg returned by clipboardImageCmd. The
+// TUI adapter (AdaptCmd) recognizes it and replaces it with the TUI's own
+// clipboard-reading tea.Cmd (readClipboardCmd). This indirection exists
+// because the agent package has no clipboard access — only the TUI layer can
+// run host clipboard commands.
+type clipboardImageRequest struct{}
+
+// ClipboardImageRequest is the sentinel value checked by the TUI adapter.
+var ClipboardImageRequest = clipboardImageRequest{}
+
+// clipboardImageCmd returns a Cmd that produces the clipboardImageRequest
+// sentinel. Used by the /image clipboard command; the TUI intercepts it.
+func clipboardImageCmd() Cmd {
+	return func() Msg { return ClipboardImageRequest }
+}

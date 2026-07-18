@@ -39,6 +39,13 @@ const maxSubTabs = 12
 // armed in the SubagentDoneMsg handler.
 const subTabAutoCloseDelay = 30 * time.Second
 
+// pasteSuppressWindow is how long key events are swallowed after a binary
+// paste is detected mid-stream. Fragments of one paste arrive within
+// microseconds of each other; 150ms is far beyond any inter-fragment gap
+// while short enough that real typing resumes almost immediately. Each
+// swallowed event extends the window, so a long paste tail stays covered.
+const pasteSuppressWindow = 150 * time.Millisecond
+
 // itemKind tags each committed conversation entry for visual rendering.
 type itemKind int8
 
@@ -98,6 +105,30 @@ type tuiModel struct {
 	sel        selection
 	plainLines []string // ANSI-stripped view content, kept in sync by refreshViewport
 	flash      string   // transient status shown in the input border (e.g. "copied ✓")
+
+	// imageChips tracks the placeholder strings (e.g. "[image: clipboard:png
+	// · 1.8 MB]") inserted into the text input for clipboard-attached images.
+	// At send time, chips still present in the input are stripped from the
+	// outgoing text; chips the user deleted detach the corresponding pending
+	// image. Cleared on send and on /new. Pointer to slice for the same
+	// Bubble Tea value-copy reason as items.
+	imageChips *[]string
+
+	// pasteSuppressUntil, when in the future, swallows ALL key events (except
+	// ctrl+c) — set right after a binary paste is detected mid-stream. A
+	// fragmented binary paste keeps delivering KeyMsg events after detection:
+	// printable runs arrive as KeyRunes bursts and stray control bytes are
+	// decoded as control keys (0x0D becomes "enter", which would SEND the
+	// garbage). Each swallowed event extends the deadline, so the window
+	// covers the whole tail of the paste regardless of its length.
+	pasteSuppressUntil time.Time
+
+	// pasteCutStash holds the text that was cut from the input when a binary
+	// paste was detected. If the clipboard read then FAILS (false positive:
+	// the "garbage" was real text, e.g. a pasted hexdump analysis), the cut
+	// text is restored to the input instead of being lost. Cleared when the
+	// clipboard read succeeds.
+	pasteCutStash string
 
 	// Prefix cache: the rendered + stripped committed items (everything except the
 	// live streaming tail). Rebuilt only when items change or the viewport resizes,
@@ -267,6 +298,7 @@ func NewTUIModel(app *agent.App) tuiModel {
 		items:        &items,
 		streaming:    &strings.Builder{},
 		reasoning:    &strings.Builder{},
+		imageChips:   &[]string{},
 		subCur:       -1,
 		histIdx:      -1,
 		inputHistory: loadHistory(),
@@ -308,6 +340,21 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// Binary-paste suppression window: after a mid-stream binary paste is
+		// detected (below), the remaining fragments of the same paste keep
+		// arriving as key events — printable runs as KeyRunes bursts, stray
+		// control bytes as control keys (a 0x0D decodes as "enter" and would
+		// SEND the garbage). Swallow everything except ctrl+c while the
+		// window is open; each swallowed event extends it, so the window
+		// tracks the paste tail regardless of length.
+		if !m.pasteSuppressUntil.IsZero() && msg.String() != "ctrl+c" {
+			if time.Now().Before(m.pasteSuppressUntil) {
+				m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
+				return m, tea.Batch(cmds...)
+			}
+			m.pasteSuppressUntil = time.Time{}
+		}
+
 		// Any keystroke dismisses an active selection and its highlight.
 		m.flash = ""
 		if m.sel.active {
@@ -353,6 +400,24 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(append(cmds, taCmd)...)
 		}
 
+		// Bracketed-paste interception: a bracketed paste arrives COMPLETE in
+		// one KeyRunes event with Paste=true, so the whole-paste anchored
+		// check applies. On match, stash the runes (restored if the clipboard
+		// has no image) and read the real image.
+		//
+		// Deliberately Paste=true ONLY: non-bracketed pastes arrive as many
+		// fragments, and intercepting a single matching fragment here would
+		// swallow the signature-carrying piece while the rest of the garbage
+		// flows into the textarea with nothing left for the accumulated scan
+		// to recognize — the exact "garbage stays until Enter" failure mode.
+		// Fragmented pastes are handled by the post-insert scan below.
+		if msg.Paste && msg.Type == tea.KeyRunes && containsBinary(msg.Runes) {
+			m.pasteCutStash = string(msg.Runes)
+			m.addItem(iSys, dim2("· binary paste detected: reading image from clipboard…"))
+			m.refreshViewport()
+			return m, tea.Batch(append(cmds, readClipboardCmd())...)
+		}
+
 		// Track before handleKey: Enter with the /command picker open falls
 		// through here (not consumed by handleCompletionKey) and handleKey closes
 		// the picker via m.comp = completionState{} — the reflow guard below
@@ -384,6 +449,31 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// new input so it tracks what's being typed after "@" or "/".
 		var taCmd, vpCmd tea.Cmd
 		m.ta, taCmd = m.ta.Update(msg)
+
+		// Post-insert scan: catch binary pastes however they arrive — one
+		// bracketed event, multi-rune bursts, or rapid single-rune events.
+		// This runs after EVERY key event that reached the textarea, not
+		// just KeyRunes: paste fragments also land as KeySpace and other
+		// event types, and gating on event type is exactly what previously
+		// left garbage sitting in the input until Enter re-ran the same
+		// detector. Content-based confirmation (NUL, PNG chunk train, or a
+		// ≥96-rune tail that is symbol-dense OR space-starved) keeps hand-
+		// typed prose safe — typed text never satisfies those conditions.
+		// On detection, collapse immediately: keep the user's text before
+		// the garbage, stash the cut (restored if the clipboard read finds
+		// no image), open the suppression window for the paste tail, and
+		// read the real image — the chip lands via clipboardImageMsg.
+		if idx := binaryPasteStart(m.ta.Value()); idx >= 0 {
+			all := []rune(m.ta.Value())
+			keep := strings.TrimRight(string(all[:idx]), " ")
+			m.pasteCutStash = string(all[idx:]) // restored if clipboard read fails
+			m.ta.SetValue(keep)
+			m.ta.CursorEnd()
+			m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
+			m.comp = computeCompletion(m.ta, compSrcFromApp(m.app))
+			return m, tea.Batch(append(cmds, taCmd, readClipboardCmd())...)
+		}
+
 		prevComp := m.comp.active
 		m.comp = computeCompletion(m.ta, compSrcFromApp(m.app))
 		// Picker opened or closed: reflow so the viewport height tracks the change.
@@ -644,6 +734,35 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copiedMsg:
 		m.flash = sprint("copied %d chars ✓", msg.n)
 
+	case clipboardImageMsg:
+		// A clipboard read completed (triggered by paste-detection or
+		// /image clipboard). On success, queue the image for the next
+		// message AND insert its placeholder chip into the text input at
+		// the cursor — the compact "[image: clipboard:png · 1.8 MB]" stands
+		// in for the pasted image, keeping the input clean. At send time
+		// the chip is stripped from the outgoing text (the image travels
+		// via PendingImages); deleting the chip un-attaches the image.
+		//
+		// On failure with a cut stash pending, the detection was likely a
+		// false positive (the "garbage" was real text with no image on the
+		// clipboard) — restore the cut text so nothing is lost.
+		if msg.Err != "" {
+			if m.pasteCutStash != "" {
+				m.ta.InsertString(m.pasteCutStash)
+				m.pasteCutStash = ""
+				m.addItem(iSys, dim2("· no image on clipboard — restored the pasted text"))
+			} else {
+				m.addItem(iSys, styleErr("clipboard: "+msg.Err))
+			}
+		} else {
+			m.pasteCutStash = "" // real image confirmed; the cut garbage stays gone
+			m.app.PendingImages = append(m.app.PendingImages, msg.Img)
+			chip := msg.Img.Placeholder()
+			*m.imageChips = append(*m.imageChips, chip)
+			m.ta.InsertString(chip + " ")
+		}
+		m.refreshViewport()
+
 	case agent.NewConvMsg:
 		// Clear viewport items so the new conversation starts fresh.
 		*m.items = (*m.items)[:0]
@@ -651,6 +770,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reasoning.Reset()
 		m.reasoningDone = false
 		m.reasoningExpanded = false
+		// Chip tracking belongs to the old conversation's draft; the pending
+		// images themselves are owned by the App and survive /new on purpose
+		// (same as /image <path> queuing before a fresh chat).
+		*m.imageChips = (*m.imageChips)[:0]
 		if msg.RebuildConv && len(m.app.Conv) > 0 {
 			*m.items = convItemsFrom(m.app.Conv)
 		}
@@ -900,6 +1023,21 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		if input == "" {
 			return m, nil, true
 		}
+		// Send-time safety net: if mangled binary-image content still made it
+		// into the textarea (a paste path the live interception didn't see),
+		// refuse to send it to the model and read the clipboard instead. The
+		// scan is position-independent, so "look at this: <garbage>" is
+		// caught too — the typed prefix is kept, only the garbage goes.
+		if idx := binaryPasteStart(input); idx >= 0 {
+			all := []rune(input)
+			keep := strings.TrimRight(string(all[:idx]), " ")
+			m.pasteCutStash = string(all[idx:]) // restored if clipboard read fails
+			m.ta.SetValue(keep)
+			m.ta.CursorEnd()
+			m.comp = completionState{}
+			m.addItem(iSys, dim2("· input contained a pasted image, not text — reading image from clipboard…"))
+			return m, []tea.Cmd{readClipboardCmd()}, true
+		}
 		// Add to history (skip duplicate of most-recent entry).
 		if len(m.inputHistory) == 0 || m.inputHistory[0] != input {
 			m.inputHistory = append([]string{input}, m.inputHistory...)
@@ -914,15 +1052,37 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			if quit {
 				return m, []tea.Cmd{tea.Quit}, true
 			}
+			// A slash command consumed the input, but image chips (and their
+			// pending images) belong to the next real message — re-insert the
+			// chips into the now-empty textarea so they survive the command.
+			// Without this, running e.g. "/image" to check the queue would
+			// wipe the chips and the next send would detach the images.
+			for _, chip := range *m.imageChips {
+				if strings.Contains(input, chip) {
+					m.ta.InsertString(chip + " ")
+				}
+			}
 			if cmd != nil {
 				return m, []tea.Cmd{AdaptCmd(cmd)}, true
 			}
 			return m, nil, true
 		}
 
+		// Reconcile image chips: strip surviving chips from the outgoing text
+		// (the image travels via PendingImages, not as text); detach the
+		// pending image for any chip the user deleted from the input.
+		var msgText string
+		msgText, m.app.PendingImages = reconcileImageChips(input, *m.imageChips, m.app.PendingImages)
+		*m.imageChips = (*m.imageChips)[:0]
+		// A chip-only input yields empty text but a queued image — that is a
+		// legitimate image-only message. Empty text AND no images = nothing.
+		if msgText == "" && len(m.app.PendingImages) == 0 {
+			return m, nil, true
+		}
+
 		// Resolve "@" mentions: the user sees their typed text plus chips; the
 		// proxy receives the text with file/folder content injected.
-		outgoing, refs := tools.ResolveMentions(input, m.app.Cfg.MentionBase)
+		outgoing, refs := tools.ResolveMentions(msgText, m.app.Cfg.MentionBase)
 		m.addItem(iUser, input)
 		if len(refs) > 0 {
 			m.addItem(iSys, tools.ChipsLine(refs))

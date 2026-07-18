@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // dotTickMsg fires every ~200 ms while the agent is busy.
@@ -18,6 +19,13 @@ type subTabCloseMsg struct{ ChatID string }
 
 // copiedMsg reports that a text selection was copied to the system clipboard.
 type copiedMsg struct{ n int }
+
+// clipboardImageMsg carries an image read from the system clipboard. If Err is
+// non-empty, the handler shows it and does not attach anything.
+type clipboardImageMsg struct {
+	Img proxy.ImagePart
+	Err string
+}
 
 // fmtConfirmBlock builds the confirm-prompt display string.
 func fmtConfirmBlock(headline, detail string, readAction bool) string {

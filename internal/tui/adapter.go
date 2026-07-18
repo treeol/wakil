@@ -39,6 +39,12 @@ func AdaptCmd(cmd agent.Cmd) tea.Cmd {
 		if msg == nil {
 			return nil
 		}
+		// Clipboard sentinel: the agent package's /image clipboard command
+		// can't read the clipboard itself, so it returns this sentinel and
+		// we substitute the TUI's own clipboard-reading command here.
+		if msg == agent.ClipboardImageRequest {
+			return readClipboardCmd()
+		}
 		if batch, ok := msg.(agent.BatchMsg); ok {
 			teaCmds := make([]tea.Cmd, 0, len(batch.Cmds))
 			for _, c := range batch.Cmds {

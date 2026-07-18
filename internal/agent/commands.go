@@ -376,7 +376,13 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				}
 				return true, false, note(fmt.Sprintf("%d image(s) queued:\n  %s", len(app.PendingImages), strings.Join(labels, "\n  ")))
 			}
-			return true, false, note("usage: /image <path> [path2 ...] — attach image(s) to your next message")
+			return true, false, note("usage: /image <path> [path2 ...] | /image clipboard — attach image(s) to your next message")
+		}
+		// /image clipboard — delegate to the TUI's clipboard reader (the agent
+		// package has no clipboard access; it returns a sentinel Cmd that the
+		// TUI recognizes and replaces with its own clipboard-reading command).
+		if fields[1] == "clipboard" {
+			return true, false, clipboardImageCmd()
 		}
 		// Load all requested paths; collect errors so one bad path doesn't
 		// leave earlier valid images queued while later ones are skipped.
@@ -965,6 +971,8 @@ or switch sessions mid-run with /resume inside the TUI
 
 @path                attach a file/folder for context (picker pops up after "@")
                      reads host files for context; editing them needs --exec direct
+                     paste an image directly into the terminal to attach it
+                     /image clipboard reads the system clipboard image
 
 scroll the conversation with the mouse wheel or PgUp/PgDn
 drag with the mouse to select text — it's copied to the clipboard on release`

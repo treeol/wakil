@@ -340,6 +340,51 @@ func TestLoadImage_NotFound(t *testing.T) {
 	}
 }
 
+// TestLoadImageFromBytes verifies loading an image from raw bytes (the
+// clipboard path) produces the same result as loading from a file.
+func TestLoadImageFromBytes(t *testing.T) {
+	pngData := makePNG()
+
+	img, err := LoadImageFromBytes(pngData, "clipboard:png")
+	if err != nil {
+		t.Fatalf("LoadImageFromBytes: %v", err)
+	}
+	if img.MIME != "image/png" {
+		t.Errorf("MIME=%q, want image/png", img.MIME)
+	}
+	if img.Size != len(pngData) {
+		t.Errorf("Size=%d, want %d", img.Size, len(pngData))
+	}
+	expectedB64 := base64.StdEncoding.EncodeToString(pngData)
+	expectedURL := "data:image/png;base64," + expectedB64
+	if img.DataURL != expectedURL {
+		t.Errorf("DataURL mismatch:\ngot:  %s\nwant: %s", img.DataURL, expectedURL)
+	}
+	if img.Path != "clipboard:png" {
+		t.Errorf("Path=%q, want clipboard:png", img.Path)
+	}
+}
+
+// TestLoadImageFromBytes_RejectsNonImage verifies that non-image bytes are
+// rejected by the in-memory loader (same content-authoritative check as the
+// file-based loader).
+func TestLoadImageFromBytes_RejectsNonImage(t *testing.T) {
+	_, err := LoadImageFromBytes([]byte("this is plain text, not an image"), "clipboard:txt")
+	if err == nil {
+		t.Fatal("expected error for non-image bytes, got nil")
+	}
+}
+
+// TestLoadImageFromBytes_TooLarge verifies the size limit applies to the
+// in-memory loader too.
+func TestLoadImageFromBytes_TooLarge(t *testing.T) {
+	bigData := make([]byte, maxImageBytes+1)
+	_, err := LoadImageFromBytes(bigData, "clipboard:png")
+	if err == nil {
+		t.Fatal("expected error for oversized image bytes, got nil")
+	}
+}
+
 // TestImagePartPlaceholder verifies the placeholder text format.
 func TestImagePartPlaceholder(t *testing.T) {
 	img := ImagePart{Path: "/tmp/screenshots/foo.png", Size: 15360}

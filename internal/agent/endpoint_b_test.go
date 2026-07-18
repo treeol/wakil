@@ -308,6 +308,48 @@ func TestLearnGateLegacyConfig(t *testing.T) {
 	}
 }
 
+// TestImageClipboardCmd verifies that /image clipboard returns a Cmd that
+// produces the ClipboardImageRequest sentinel — the TUI adapter intercepts it
+// and substitutes the clipboard-reading command. No image is loaded in the
+// agent package itself.
+func TestImageClipboardCmd(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+
+	handled, quit, cmd := HandleTUICommand("/image clipboard", app)
+	if !handled || quit {
+		t.Fatalf("handled=%v quit=%v", handled, quit)
+	}
+	msgs := runCmd(cmd)
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 msg (sentinel), got %d", len(msgs))
+	}
+	if msgs[0] != ClipboardImageRequest {
+		t.Errorf("want ClipboardImageRequest sentinel, got %T: %v", msgs[0], msgs[0])
+	}
+}
+
+// TestImageClipboardUsage verifies that bare /image (no args) shows the
+// clipboard option in the usage text.
+func TestImageClipboardUsage(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+
+	handled, quit, cmd := HandleTUICommand("/image", app)
+	if !handled || quit {
+		t.Fatalf("handled=%v quit=%v", handled, quit)
+	}
+	msgs := runCmd(cmd)
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 msg, got %d", len(msgs))
+	}
+	sn, ok := msgs[0].(SysNoteMsg)
+	if !ok {
+		t.Fatalf("want SysNoteMsg, got %T", msgs[0])
+	}
+	if !strings.Contains(sn.Text, "clipboard") {
+		t.Errorf("usage should mention clipboard option, got: %q", sn.Text)
+	}
+}
+
 // --- /model direct semantics ---
 
 // TestModelCommandOpenAI: /model <name> in openai mode → next chat request
