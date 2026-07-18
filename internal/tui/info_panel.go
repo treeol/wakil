@@ -288,10 +288,7 @@ func (m tuiModel) infoGroundingLines(w int) []string {
 	// Flow the grounding entries across the width on as few rows as needed.
 	flow := strings.Join(entries, dim.Render("  ·  "))
 	head := dim.Render("grounded on ")
-	var lines []string
-	for _, ln := range strings.Split(wrapAnsi(head+flow, w), "\n") {
-		lines = append(lines, ln)
-	}
+	lines := strings.Split(wrapAnsi(head+flow, w), "\n")
 	return lines
 }
 

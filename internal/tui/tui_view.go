@@ -72,7 +72,6 @@ var (
 	styleInputBorder = lipgloss.NewStyle().
 				Border(lipgloss.HiddenBorder())
 
-	styleTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 	styleState = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
