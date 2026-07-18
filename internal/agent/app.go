@@ -295,20 +295,16 @@ type App struct {
 	// AutoCounsel=true. Typical benchmark value: 3.
 	MaxCounsel int
 
-	// counselCalls counts auto-counsel calls fired this turn (TUI path) or
-	// this session (headless path). Reset at the start of each Send() when
-	// CounselMode is set.
-	counselCalls int
-
 	// CounselMode is the TUI session counsel mode: "suggest" | "auto" | "off".
 	// When empty, the effective mode is derived from AutoCounsel (headless path).
 	// Set by /counsel command; initialized from cfg.AutoCounsel at startup.
 	CounselMode string
 
-	// autoCounselSkipGate, when true, tells the next handleMashura call to
-	// bypass the a.Confirm gate. Set immediately before an auto-counsel fire
-	// when AutoApprove=true; consumed (cleared) by handleMashura.
-	autoCounselSkipGate bool
+	// Unexported auto-counsel bookkeeping (counselCalls, autoCounselSkipGate).
+	// Extracted to counsel_state.go (WP-6.3); embedded here so selector access
+	// is unchanged. The exported counsel fields above stay flat because they are
+	// set by cross-package composite literals.
+	counselState
 
 	// StartupNote, when non-empty, is a message the TUI's Init() should emit
 	// as a SysNoteMsg on the very first update — used by RestoreRepoState
