@@ -695,12 +695,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			const learnText = "learn this for next time"
 			m.addItem(iUser, learnText)
 			m.vp.GotoBottom()
-			ctx, cancel := context.WithCancel(context.Background())
-			m.cancel = cancel
-			m.state = stateStreaming
-			m.turnStart = time.Now()
-			m.tps = 0
-			cmds = append(cmds, AdaptCmd(agent.RunTurn(m.app, ctx, learnText)), startDotTick())
+			var pair []tea.Cmd
+			m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+				return AdaptCmd(agent.RunTurn(m.app, ctx, learnText))
+			})
+			cmds = append(cmds, pair...)
 		}
 
 	case dotTickMsg:
@@ -806,12 +805,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addItem(iSys, dim2("· running final oracle review"))
 		m.vp.GotoBottom()
 		{
-			ctx, cancel := context.WithCancel(context.Background())
-			m.cancel = cancel
-			m.state = stateStreaming
-			m.turnStart = time.Now()
-			m.tps = 0
-			cmds = append(cmds, AdaptCmd(agent.RunFinalReview(m.app, ctx)), startDotTick())
+			var pair []tea.Cmd
+			m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+				return AdaptCmd(agent.RunFinalReview(m.app, ctx))
+			})
+			cmds = append(cmds, pair...)
 		}
 
 	case agent.WFStartTurnMsg:
@@ -828,12 +826,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.addItem(iSys, dim2("· "+msg.Note))
 		m.vp.GotoBottom()
-		ctx, cancel := context.WithCancel(context.Background())
-		m.cancel = cancel
-		m.state = stateStreaming
-		m.turnStart = time.Now()
-		m.tps = 0
-		cmds = append(cmds, AdaptCmd(agent.RunTurn(m.app, ctx, msg.UserText)), startDotTick())
+		var pair []tea.Cmd
+		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+			return AdaptCmd(agent.RunTurn(m.app, ctx, msg.UserText))
+		})
+		cmds = append(cmds, pair...)
 	}
 
 	var taCmd, vpCmd tea.Cmd
@@ -1093,12 +1090,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		}
 		m.vp.GotoBottom() // re-pin: a sent turn always scrolls into view
 
-		ctx, cancel := context.WithCancel(context.Background())
-		m.cancel = cancel
-		m.state = stateStreaming
-		m.turnStart = time.Now()
-		m.tps = 0
-		return m, []tea.Cmd{AdaptCmd(agent.RunTurn(m.app, ctx, outgoing)), startDotTick()}, true
+		var pair []tea.Cmd
+		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+			return AdaptCmd(agent.RunTurn(m.app, ctx, outgoing))
+		})
+		return m, pair, true
 	}
 
 	// --- Reverse-search content intercept ---
@@ -1173,6 +1169,21 @@ func (m *tuiModel) cancelTurn() {
 		// Do NOT nil m.cancel here — keep it so agent.AgentDoneMsg can clean up
 		// and so we can detect a cancel is in-flight (m.cancelling).
 	}
+}
+
+// startTurn sets up cancel/state/turnStart/tps for a new agent turn and returns
+// the updated model plus the turn's commands. run builds the agent command from
+// the fresh ctx (RunTurn vs RunFinalReview differs per call site). The helper owns
+// context.WithCancel so the four kickoff sites don't each duplicate the
+// ctx/cancel/state/turnStart boilerplate. Returns []tea.Cmd (not a pre-batched
+// tea.Cmd) so callers append the pair exactly as the original inline code did.
+func (m tuiModel) startTurn(run func(ctx context.Context) tea.Cmd) (tuiModel, []tea.Cmd) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.state = stateStreaming
+	m.turnStart = time.Now()
+	m.tps = 0
+	return m, []tea.Cmd{run(ctx), startDotTick()}
 }
 
 func (m *tuiModel) addItem(k itemKind, text string) {
