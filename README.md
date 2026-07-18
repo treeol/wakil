@@ -659,7 +659,7 @@ internal/
   trace/           execution tracing
   tui/             terminal UI
   workflow/        /plan gather→plan→review→implement state machine
-Dockerfile         sandbox image — Go, Node, Rust, Python toolchains, gopls
+Dockerfile         sandbox image — Go, Node, Rust, Python toolchains, gopls, docker CLI + compose
 ```
 
 ## Contributing

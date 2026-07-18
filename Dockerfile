@@ -21,8 +21,9 @@ COPY --from=go-toolchain /usr/local/go /usr/local/go
 # Copy the pre-built kvr-server binary.
 COPY --from=kvr-builder /build/target/release/server /usr/local/bin/kvr-server
 
-# Single apt layer: bootstrap curl/gnupg, add NodeSource 20 LTS repo, install
-# all dev tools, clean apt caches.
+# Single apt layer: bootstrap curl/gnupg, add NodeSource 20 LTS repo and the
+# Docker apt repo (docker-cli + compose plugin), install all dev tools, clean
+# apt caches.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
            ca-certificates \
@@ -33,6 +34,10 @@ RUN apt-get update \
        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
        > /etc/apt/sources.list.d/nodesource.list \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
+       > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
            git \
@@ -43,6 +48,8 @@ RUN apt-get update \
            python3-pip \
            python3-venv \
            nodejs \
+           docker-ce-cli \
+           docker-compose-plugin \
            openssh-client \
            procps \
            chromium \
