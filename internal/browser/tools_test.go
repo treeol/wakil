@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"testing"
 )
 
@@ -60,7 +61,7 @@ func TestIsBrowserTool(t *testing.T) {
 // helpful message instead of panicking.
 func TestHandleToolCallNilManager(t *testing.T) {
 	var m *Manager
-	result := m.HandleToolCall(nil, "browser_navigate", `{"url":"http://localhost"}`)
+	result := m.HandleToolCall(context.Background(), "browser_navigate", `{"url":"http://localhost"}`)
 	if result == "" {
 		t.Fatal("expected non-empty result for nil manager")
 	}
@@ -73,7 +74,7 @@ func TestHandleToolCallNilManager(t *testing.T) {
 func TestHandleToolCallUnknownTool(t *testing.T) {
 	// Use a nil manager — HandleToolCall guards against nil.
 	var m *Manager
-	result := m.HandleToolCall(nil, "browser_bogus", "{}")
+	result := m.HandleToolCall(context.Background(), "browser_bogus", "{}")
 	if result == "" {
 		t.Fatal("expected non-empty result for unknown tool")
 	}
