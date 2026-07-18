@@ -35,7 +35,13 @@ type EndpointConfig struct {
 	AuthHeader  string   `json:"auth_header,omitempty"` // verbatim Authorization value; empty = fall back to api_key
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
-	MaxTokens   *int     `json:"max_tokens,omitempty"`
+	// MaxTokens is unset by default; kind=openai then falls back to a
+	// client-side default (see proxy.Client.Stream) sized for reasoning
+	// models. Set explicitly for models that need more (extended-thinking
+	// hosted models can exhaust a low budget on thinking alone and return
+	// finish_reason="length" with no content) or less (a small-context
+	// local server).
+	MaxTokens *int `json:"max_tokens,omitempty"`
 
 	// CachePrompt is llama.cpp's non-standard "cache_prompt" hint, sent
 	// verbatim when set. Not gated on Kind — kind=openai also covers

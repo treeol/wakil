@@ -706,13 +706,17 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// MaxTokens: use the configured value if set; otherwise apply a default
 	// for OpenAI-compatible endpoints so the server doesn't apply its own
 	// (often too-low) default. This is critical for reasoning models (e.g.
-	// kimi-k3) where reasoning tokens count against the budget — without
-	// max_tokens, the model exhausts a tiny server default on thinking and
-	// produces no content. The ilm-proxy path manages its own limits and
-	// does not need this default.
+	// kimi-k3, or Claude via OpenRouter with extended thinking) where
+	// reasoning tokens count against the budget — without enough max_tokens,
+	// the model exhausts the budget on thinking and produces no content.
+	// 32768 leaves headroom for both a local reasoning model's thinking pass
+	// and a hosted model's extended-thinking + response; endpoints that need
+	// more (or less, e.g. a small-context local server) should set max_tokens
+	// explicitly. The ilm-proxy path manages its own limits and does not need
+	// this default.
 	maxTokens := c.MaxTokens
 	if maxTokens == nil && c.Kind == KindOpenAI {
-		defaultMax := 8192
+		defaultMax := 32768
 		maxTokens = &defaultMax
 	}
 
@@ -961,7 +965,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// on thinking), surface a clear, actionable error instead of returning an
 	// empty message that triggers a generic "empty response" path downstream.
 	if finishReason == "length" && content.Len() == 0 && len(order) == 0 {
-		return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) — increase max_tokens in your endpoint config or set it via /model",
+		return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) — increase max_tokens for this endpoint in config.json (endpoints.<name>.max_tokens); /model only changes the model name, not the token budget",
 			ErrBackendFatal)
 	}
 

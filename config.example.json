@@ -14,7 +14,8 @@
       "model": "anthropic/claude-sonnet-4-6",
       "auth_header": "Bearer sk-or-...",
       "app_referer": "https://github.com/yourorg/yourrepo",
-      "app_title": "your-app"
+      "app_title": "your-app",
+      "max_tokens": 65536
     },
     "ilm": {
       "kind": "ilm-proxy",
