@@ -164,12 +164,9 @@ type tuiModel struct {
 	// Extracted to history_model.go (WP-6.6); embedded so selector access is unchanged.
 	historyModel
 
-	// Reverse-incremental search (Ctrl+R). searchActive=false = normal input.
-	searchActive bool
-	searchQuery  string // the query string typed so far
-	searchIdx    int    // index into inputHistory of current match (-1 = no match)
-	searchSaved  string // original textarea content saved on entering search mode
-	searchFailed bool   // true when the last search found no match
+	// Reverse-incremental search (Ctrl+R) state. Extracted to search_model.go
+	// (WP-6.6); embedded so selector access is unchanged.
+	searchModel
 }
 
 // subTab holds the state of one dispatched subagent, used to render its

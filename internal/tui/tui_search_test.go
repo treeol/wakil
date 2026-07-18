@@ -9,9 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// searchModel returns a tuiModel in stateIdle with the given history entries
+// searchTestModel returns a tuiModel in stateIdle with the given history entries
 // loaded (most-recent-first is the internal order; the slice is used as-is).
-func searchModel(t *testing.T, history ...string) tuiModel {
+// (Named searchTestModel to avoid colliding with the searchModel struct, WP-6.6.)
+func searchTestModel(t *testing.T, history ...string) tuiModel {
 	t.Helper()
 	m := keyModel(t)
 	m.inputHistory = history
@@ -52,7 +53,7 @@ func TestSearchHistory(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_EntersSearch(t *testing.T) {
-	m := searchModel(t, "git commit", "go build")
+	m := searchTestModel(t, "git commit", "go build")
 	m.ta.SetValue("draft text")
 
 	m2, _, consumed := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
@@ -85,7 +86,7 @@ func TestHandleKeyCtrlR_EntersSearch(t *testing.T) {
 
 func TestHandleKeyCtrlR_RepeatFindsOlder(t *testing.T) {
 	h := []string{"git commit", "git push", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if m1.searchIdx != 0 || m1.ta.Value() != "git commit" {
@@ -100,7 +101,7 @@ func TestHandleKeyCtrlR_RepeatFindsOlder(t *testing.T) {
 
 func TestHandleKeyCtrlR_PastTheEnd(t *testing.T) {
 	h := []string{"git commit", "git push"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})  // idx=0
 	m2, _, _ := m1.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR}) // idx=1
@@ -120,7 +121,7 @@ func TestHandleKeyCtrlR_PastTheEnd(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_EscAborts(t *testing.T) {
-	m := searchModel(t, "git commit")
+	m := searchTestModel(t, "git commit")
 	m.ta.SetValue("original draft")
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
@@ -141,7 +142,7 @@ func TestHandleKeyCtrlR_EscAborts(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_CtrlCAborts(t *testing.T) {
-	m := searchModel(t, "git commit")
+	m := searchTestModel(t, "git commit")
 	m.ta.SetValue("original draft")
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
@@ -165,7 +166,7 @@ func TestHandleKeyCtrlR_CtrlCAborts(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_CtrlGAborts(t *testing.T) {
-	m := searchModel(t, "git commit")
+	m := searchTestModel(t, "git commit")
 	m.ta.SetValue("original draft")
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
@@ -182,7 +183,7 @@ func TestHandleKeyCtrlR_CtrlGAborts(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_EnterExecutesMatch(t *testing.T) {
-	m := searchModel(t, "git commit", "go build")
+	m := searchTestModel(t, "git commit", "go build")
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	if m1.ta.Value() != "git commit" {
 		t.Fatalf("expected match in textarea, got %q", m1.ta.Value())
@@ -203,7 +204,7 @@ func TestHandleKeyCtrlR_EnterExecutesMatch(t *testing.T) {
 
 func TestHandleKeyCtrlR_TypeSearches(t *testing.T) {
 	h := []string{"git commit", "git push", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	m2, _, _ := m1.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
@@ -229,7 +230,7 @@ func TestHandleKeyCtrlR_TypeSearches(t *testing.T) {
 
 func TestHandleKeyCtrlR_SpaceInQuery(t *testing.T) {
 	h := []string{"git push origin", "git commit", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	m2, _, _ := m1.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
@@ -248,7 +249,7 @@ func TestHandleKeyCtrlR_SpaceInQuery(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_AltKeyIgnored(t *testing.T) {
-	m := searchModel(t, "git commit")
+	m := searchTestModel(t, "git commit")
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 
 	// Alt+a should not insert 'a' into the query; it exits search and forwards.
@@ -266,7 +267,7 @@ func TestHandleKeyCtrlR_AltKeyIgnored(t *testing.T) {
 
 func TestHandleKeyCtrlR_BackspaceRemovesQuery(t *testing.T) {
 	h := []string{"git commit", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	m2, _, _ := m1.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
@@ -291,7 +292,7 @@ func TestHandleKeyCtrlR_BackspaceVariant(t *testing.T) {
 		{Type: tea.KeyCtrlH},
 	} {
 		t.Run(key.String(), func(t *testing.T) {
-			m := searchModel(t, "git commit")
+			m := searchTestModel(t, "git commit")
 			m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 			m2, _, _ := m1.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
 			if m2.searchQuery != "g" {
@@ -309,7 +310,7 @@ func TestHandleKeyCtrlR_BackspaceVariant(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_NotDuringStreaming(t *testing.T) {
-	m := searchModel(t, "git commit")
+	m := searchTestModel(t, "git commit")
 	m.state = stateStreaming
 
 	m2, _, consumed := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
@@ -324,7 +325,7 @@ func TestHandleKeyCtrlR_NotDuringStreaming(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_NotDuringConfirm(t *testing.T) {
-	m := searchModel(t, "git commit")
+	m := searchTestModel(t, "git commit")
 	m.state = stateConfirm
 	m.pendConf = &agent.ConfirmReqMsg{
 		RespCh: make(chan agent.ConfirmChoice, 1),
@@ -341,7 +342,7 @@ func TestHandleKeyCtrlR_NotDuringConfirm(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_PickerOpenCloses(t *testing.T) {
-	m := searchModel(t, "git commit")
+	m := searchTestModel(t, "git commit")
 	m.comp = completionState{active: true}
 
 	m2, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
@@ -355,7 +356,7 @@ func TestHandleKeyCtrlR_PickerOpenCloses(t *testing.T) {
 
 func TestHandleKeyCtrlR_ArrowsExitSearch(t *testing.T) {
 	h := []string{"git commit", "git push", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 
 	// Enter search, type "git" → matches index 0 (git commit).
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
@@ -385,7 +386,7 @@ func TestHandleKeyCtrlR_ArrowsExitSearch(t *testing.T) {
 
 func TestHandleKeyCtrlR_DownToBottomRestoresDraft(t *testing.T) {
 	h := []string{"git commit", "git push", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 	m.ta.SetValue("original draft")
 
 	// Enter search → matches index 0.
@@ -413,7 +414,7 @@ func TestHandleKeyCtrlR_DownToBottomRestoresDraft(t *testing.T) {
 
 func TestHandleKeyCtrlR_UpDownRoundTrip(t *testing.T) {
 	h := []string{"git commit", "git push", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 	m.ta.SetValue("original draft")
 
 	// Enter search → idx=0 (git commit). UP → idx=1 (git push).
@@ -438,7 +439,7 @@ func TestHandleKeyCtrlR_UpDownRoundTrip(t *testing.T) {
 
 func TestHandleKeyCtrlR_EmptyQueryRepeat(t *testing.T) {
 	h := []string{"git commit", "git push", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR}) // idx=0
 	if m1.ta.Value() != "git commit" {
@@ -457,7 +458,7 @@ func TestHandleKeyCtrlR_EmptyQueryRepeat(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_EmptyHistory(t *testing.T) {
-	m := searchModel(t) // no history
+	m := searchTestModel(t) // no history
 	m.ta.SetValue("draft")
 
 	m2, _, consumed := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
@@ -483,7 +484,7 @@ func TestHandleKeyCtrlR_EmptyHistory(t *testing.T) {
 
 func TestHandleKeyCtrlR_NoMatchSetsFailed(t *testing.T) {
 	h := []string{"git commit", "go build"}
-	m := searchModel(t, h...)
+	m := searchTestModel(t, h...)
 
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	m2, _, _ := m1.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
@@ -506,7 +507,7 @@ func TestHandleKeyCtrlR_NoMatchSetsFailed(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_SearchPromptShows(t *testing.T) {
-	m := searchModel(t, "git commit")
+	m := searchTestModel(t, "git commit")
 	m1, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 
 	prompt := m1.searchPrompt()
