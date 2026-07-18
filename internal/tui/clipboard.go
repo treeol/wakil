@@ -32,7 +32,7 @@ func readClipboardImageBytes() ([]byte, error) {
 
 // clipboardBackend is one clipboard provider command + its arguments.
 type clipboardBackend struct {
-	cmd string
+	cmd  string
 	args []string
 }
 
@@ -89,7 +89,7 @@ func readClipboardCmd() tea.Cmd {
 //  2. Intact magic bytes at the start (terminals that pass everything).
 //  3. Mangled signature remnants near the start:
 //     - "PNG" within the first 2 runes AND "IHDR" within the first 64
-//       (a PNG's IHDR chunk always sits within ~30 bytes of the header)
+//     (a PNG's IHDR chunk always sits within ~30 bytes of the header)
 //     - "JFIF" or "Exif" within the first 16 runes
 //     - "GIF87a" or "GIF89a" at position 0
 //     - "RIFF" at position 0 AND "WEBP" within the first 16 runes
