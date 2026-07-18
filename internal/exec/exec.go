@@ -427,9 +427,13 @@ func ensureCACerts(container string) {
 	_ = exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).Run()
 }
 
-// ensureDockerCLI copies the host docker binary into the container if the
-// container doesn't already have one. Copying from the host is instant, needs
-// no network, and is version-matched to the running daemon.
+// ensureDockerCLI is a fallback for images that don't ship a docker binary:
+// it copies the host docker binary into the container. The wakil-dev image
+// (Dockerfile) ships docker-cli from the official Docker apt repo, so this is
+// normally a no-op — it exists so older or custom images without a baked-in
+// CLI still get a working `docker` when the socket is mounted. Copying from
+// the host is instant, needs no network, and is version-matched to the
+// running daemon.
 func ensureDockerCLI(container string) {
 	hostBin, err := exec.LookPath("docker")
 	if err != nil {

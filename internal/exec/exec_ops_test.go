@@ -275,18 +275,37 @@ func TestProbeToolsParsing(t *testing.T) {
 		"npm:10.8.2",
 		"go:go version go1.26.0 linux/amd64",
 		"rustc:rustc 1.85.0 (4d91de4e4 2025-02-17)",
+		"docker:28.1.1",
+		"docker-daemon:up",
 	}, "\n")
 	result := probeTools(func(_ string) string { return fakeOutput })
 	if !strings.HasPrefix(result, "Sandbox tools:") {
 		t.Fatalf("expected 'Sandbox tools:' prefix, got: %q", result)
 	}
-	for _, want := range []string{"git 2.39.5", "curl 7.88.1", "jq 1.6", "python3 3.11.2", "node 20.20.2", "go 1.26.0", "rustc 1.85.0"} {
+	for _, want := range []string{"git 2.39.5", "curl 7.88.1", "jq 1.6", "python3 3.11.2", "node 20.20.2", "go 1.26.0", "rustc 1.85.0", "docker 28.1.1"} {
 		if !strings.Contains(result, want) {
 			t.Errorf("probe result missing %q: %s", want, result)
 		}
 	}
 	if strings.Contains(result, "unavailable") {
 		t.Errorf("no tools should be absent here: %s", result)
+	}
+}
+
+// When the docker CLI is present but the daemon is unreachable (socket not
+// mounted or daemon down), docker must be reported as unavailable so the
+// agent doesn't assume it can drive the host daemon.
+func TestProbeToolsDockerDaemonDown(t *testing.T) {
+	fakeOutput := "git:git version 2.39.5\ndocker:28.1.1\ndocker-daemon:down"
+	result := probeTools(func(_ string) string { return fakeOutput })
+	if !strings.Contains(result, "git 2.39.5") {
+		t.Errorf("expected git present: %s", result)
+	}
+	if strings.Contains(result, "docker 28") {
+		t.Errorf("docker should not be listed as present when daemon is down: %s", result)
+	}
+	if !strings.Contains(result, "unavailable: ") || !strings.Contains(result, "docker") {
+		t.Errorf("docker should be listed as unavailable when daemon is down: %s", result)
 	}
 }
 

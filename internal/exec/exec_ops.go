@@ -18,20 +18,26 @@ import (
 var versionRe = regexp.MustCompile(`\d+\.\d+[\d.]*`)
 
 // probeScript checks each tool with `command -v`, then captures the first line
-// of version output. `go` uses `go version` (not --version); all others use
-// --version. Absent tools produce no output for that iteration.
+// of version output. `go` uses `go version` (not --version); `docker` reports
+// the CLI version but is also pinged against the daemon so it only shows when
+// the host socket is actually mounted and reachable. Absent tools produce no
+// output for that iteration.
 const probeScript = `_ver() {
   case "$1" in
     go) "$1" version 2>&1 | head -1 ;;
+    docker) "$1" version --format '{{.Client.Version}}' 2>&1 | head -1 ;;
     *)  "$1" --version 2>&1 | head -1 ;;
   esac
 }
-for t in git curl jq make gcc python3 node npm go rustc; do
+for t in git curl jq make gcc python3 node npm go rustc docker; do
   if command -v "$t" > /dev/null 2>&1; then
     v=$(_ver "$t")
     echo "$t:$v"
   fi
-done`
+done
+if command -v docker > /dev/null 2>&1; then
+  if docker info > /dev/null 2>&1; then echo "docker-daemon:up"; else echo "docker-daemon:down"; fi
+fi`
 
 // probeTools runs the probe via the supplied runner and returns the formatted
 // "Sandbox tools: …" line, or empty string on failure / all absent.
@@ -41,8 +47,9 @@ func probeTools(run func(string) string) string {
 		return ""
 	}
 
-	order := []string{"git", "curl", "jq", "make", "gcc", "python3", "node", "npm", "go", "rustc"}
+	order := []string{"git", "curl", "jq", "make", "gcc", "python3", "node", "npm", "go", "rustc", "docker"}
 	versions := make(map[string]string, len(order))
+	daemonDown := false
 
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -52,12 +59,21 @@ func probeTools(run func(string) string) string {
 		}
 		tool := strings.TrimSpace(line[:idx])
 		rest := strings.TrimSpace(line[idx+1:])
+		if tool == "docker-daemon" {
+			// docker CLI present but daemon unreachable (socket not mounted
+			// or daemon down) — report the CLI as unavailable.
+			daemonDown = rest != "up"
+			continue
+		}
 		m := versionRe.FindString(rest)
 		if m != "" {
 			versions[tool] = m
 		} else {
 			versions[tool] = "?" // present but version unparseable
 		}
+	}
+	if daemonDown {
+		delete(versions, "docker")
 	}
 
 	var present, absent []string
