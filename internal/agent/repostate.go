@@ -41,6 +41,10 @@ type RepoState struct {
 	// AutoApprove is restored in the TUI only. cmd/wakil/run.go never reads
 	// or writes this field — see RestoreRepoState's doc comment.
 	AutoApprove bool `json:"auto_approve,omitempty"`
+
+	// InfoPanelOpen persists the TUI info panel's open/closed state (WP-9.1).
+	// TUI-only, like AutoApprove — headless run.go never reads it.
+	InfoPanelOpen bool `json:"info_panel_open,omitempty"`
 }
 
 const repoStateSchemaVersion = 1
@@ -247,6 +251,11 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 		}
 	}
 
+	// Info panel visibility is TUI-only state; restore unconditionally (it's
+	// endpoint-independent, like MaxParallelSubagents). No note — it's a quiet
+	// UI preference, not a settings change the user needs surfaced.
+	app.InfoPanelOpen = st.InfoPanelOpen
+
 	if len(applied) > 0 {
 		result.Note = "repo-state: restored " + strings.Join(applied, ", ") +
 			" (folder: " + ws + ") — /repostate to inspect or clear"
@@ -316,6 +325,9 @@ func DescribeRepoState(app *App) string {
 	}
 	if st.AutoApprove {
 		b.WriteString("  auto: on\n")
+	}
+	if st.InfoPanelOpen {
+		b.WriteString("  info panel: open\n")
 	}
 	b.WriteString("(/repostate clear to delete this file)")
 	return b.String()

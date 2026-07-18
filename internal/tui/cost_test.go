@@ -272,7 +272,7 @@ func TestCostLinesLayout(t *testing.T) {
 	app.Costs.Record(proxy.CostSourceInference, 100, 50, 0.12, true, proxy.ConfModeled)
 	app.Costs.Record(proxy.CostSourceSearch, 0, 0, 0, false, proxy.ConfModeled) // unpriced
 
-	const innerW = sidebarWidth - 4 // 24, matches mainSidebarLines
+	const innerW = 24 // 24, matches mainSidebarLines
 	m := tuiModel{app: app}
 	lines := m.costLines(innerW)
 	if len(lines) == 0 {
@@ -307,7 +307,7 @@ func TestCostLinesUnpricedTotal(t *testing.T) {
 	app.Costs.Record(proxy.CostSourceInference, 100, 50, 0, false, proxy.ConfModeled)
 
 	m := tuiModel{app: app}
-	lines := m.costLines(sidebarWidth - 4)
+	lines := m.costLines(24)
 	joined := strings.Join(lines, "\n")
 	if strings.Contains(joined, "$0.00") {
 		t.Errorf("unpriced total should not render $0.00:\n%s", joined)
@@ -487,7 +487,7 @@ func TestCostLinesBilledAndEstSubtotals(t *testing.T) {
 	app.Costs.Record("inference·local", 2000, 1000, 0, false, proxy.ConfModeled)
 
 	m := tuiModel{app: app}
-	lines := m.costLines(sidebarWidth - 4)
+	lines := m.costLines(24)
 	joined := strings.Join(lines, "\n")
 
 	if !strings.Contains(joined, "billed") {
@@ -513,7 +513,7 @@ func TestCostLinesOnlyBilled(t *testing.T) {
 	app.Costs.Record("mashura·claude-opus", 10, 20, 0.50, true, proxy.ConfExact)
 
 	m := tuiModel{app: app}
-	joined := strings.Join(m.costLines(sidebarWidth-4), "\n")
+	joined := strings.Join(m.costLines(24), "\n")
 	if !strings.Contains(joined, "billed") {
 		t.Errorf("missing billed subtotal; got:\n%s", joined)
 	}
@@ -528,7 +528,7 @@ func TestCostLinesOnlyEstimated(t *testing.T) {
 	app.Costs.Record("inference", 100, 50, 0.01, true, proxy.ConfModeled)
 
 	m := tuiModel{app: app}
-	joined := strings.Join(m.costLines(sidebarWidth-4), "\n")
+	joined := strings.Join(m.costLines(24), "\n")
 	if strings.Contains(joined, "billed") {
 		t.Errorf("billed subtotal should be absent when no exact rows; got:\n%s", joined)
 	}

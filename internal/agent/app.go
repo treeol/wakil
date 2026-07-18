@@ -71,6 +71,12 @@ type App struct {
 	// gate is NOT covered — that always prompts.
 	AllowDestructive bool
 
+	// InfoPanelOpen mirrors the TUI info panel's visibility (WP-9.1). The TUI is
+	// the source of truth during a session; it is restored from and persisted to
+	// repo-state so the open/closed state is remembered per session, like
+	// AutoApprove (also a TUI-only repo-state field).
+	InfoPanelOpen bool
+
 	// PendingImages holds images that will be attached to the next user
 	// message sent via Send. Populated by --attach-image at startup or by
 	// the /image TUI command. Consumed (cleared) by Send when it appends the
@@ -429,6 +435,20 @@ type bgEntry struct {
 // CounselCallsCount returns how many auto-counsel calls have fired this session.
 // Exported so benchmark tests in cmd/wakil can assert the cap is enforced.
 func (a *App) CounselCallsCount() int { return a.counselCalls }
+
+// SetInfoPanelOpen sets InfoPanelOpen and persists it to repo-state. Called by
+// the TUI when the user toggles the info panel.
+func (a *App) SetInfoPanelOpen(open bool) {
+	a.InfoPanelOpen = open
+	a.saveRepoState(func(s *RepoState) { s.InfoPanelOpen = open })
+}
+
+// EffectiveSubagentModel returns the model dispatch_subagent will use:
+// SubagentModelOverride if set, otherwise the resolved endpoint's model.
+// Exported for the TUI status line (WP-9.1).
+func (a *App) EffectiveSubagentModel() string {
+	return a.resolvedSubagentDisplayModel()
+}
 
 // EffectiveModel returns the model that will be sent in the next request:
 // SelectedModel if set, otherwise Client.Model.

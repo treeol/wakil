@@ -963,6 +963,8 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /session name "..."  label the current session (shown in /sessions listing)
 /mcp                 list tool servers and tools
 /mcp reconnect NAME  reconnect a named MCP server
+/info                toggle the info panel (proxy/model/exec/cwd/costs/grounding)
+                     also toggled by ctrl+o or F2; open state remembered per folder
 /help                this help
 /quit, /exit         leave (ctrl+c in idle also quits)
 

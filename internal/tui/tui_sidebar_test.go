@@ -1,7 +1,9 @@
 package tui
 
-// Tests for the dynamic sidebar rendering driven by the subagent's
-// capability tier and resolved model.
+// Tests for the subagent info content shown in the on-demand info panel
+// (WP-9.1), driven by the subagent's capability tier and resolved model.
+// These replace the old subSidebarLines tests after the right sidebar was
+// removed in favor of the full-width info panel.
 
 import (
 	"strings"
@@ -11,182 +13,113 @@ import (
 	"github.com/treeol/wakil/internal/tools"
 )
 
-// countToolLines counts how many lines under the "tools" header match the
-// "  <name>" pattern (two-space indent), stopping at the next non-indented
-// or empty line.
-func countToolLines(lines []string, toolsHeaderIdx int) int {
-	count := 0
-	for i := toolsHeaderIdx + 1; i < len(lines); i++ {
-		l := lines[i]
-		if l == "" || !strings.HasPrefix(l, "  ") {
-			break
-		}
-		count++
-	}
-	return count
+// toolRowText joins the rendered sub-tool rows and strips the "tools" key so
+// tests can assert on the tool names present.
+func toolRowText(lines []string) string {
+	return strings.Join(lines, "\n")
 }
 
-func findToolsHeader(lines []string) int {
-	for i, l := range lines {
-		if plain(l) == "tools" {
-			return i
-		}
-	}
-	return -1
-}
-
-// TestSubSidebarToolsDiscoveryTier verifies that a discovery-tier subagent
-// shows exactly 5 read-only tools.
-func TestSubSidebarToolsDiscoveryTier(t *testing.T) {
-	m := newTabModel()
-	tab := &subTab{
-		chatID:     "chat-a",
-		capability: tools.CapabilityDiscovery,
-		buf:        new(strings.Builder),
-	}
-	lines := m.subSidebarLines(tab, 24)
-	idx := findToolsHeader(lines)
-	if idx < 0 {
-		t.Fatal("tools header not found in sidebar")
-	}
-	count := countToolLines(lines, idx)
-	if count != 5 {
-		t.Errorf("discovery tier: %d tool lines, want 5", count)
-	}
-}
-
-// TestSubSidebarToolsEditTier verifies that an edit-tier subagent shows all
-// 9 tools (5 read + 4 edit).
-func TestSubSidebarToolsEditTier(t *testing.T) {
-	m := newTabModel()
-	tab := &subTab{
-		chatID:     "chat-a",
-		capability: tools.CapabilityEdit,
-		buf:        new(strings.Builder),
-	}
-	lines := m.subSidebarLines(tab, 24)
-	idx := findToolsHeader(lines)
-	if idx < 0 {
-		t.Fatal("tools header not found in sidebar")
-	}
-	count := countToolLines(lines, idx)
-	if count != 9 {
-		t.Errorf("edit tier: %d tool lines, want 9", count)
-	}
-	// Verify the edit tools are present.
-	joined := strings.Join(lines, "\n")
-	for _, name := range []string{"write_file", "edit_file", "delete_file", "move_file"} {
+// TestSubPanelToolsDiscoveryTier verifies that a discovery-tier subagent shows
+// exactly the 5 read-only tools.
+func TestSubPanelToolsDiscoveryTier(t *testing.T) {
+	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityDiscovery, buf: new(strings.Builder)}
+	joined := toolRowText(subToolListLine(tab, 80))
+	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
 		if !strings.Contains(joined, name) {
-			t.Errorf("edit tool %q not found in sidebar", name)
+			t.Errorf("discovery tool %q not found in panel tools row: %s", name, joined)
+		}
+	}
+	// No edit tools for discovery.
+	for _, name := range []string{"write_file", "edit_file", "delete_file", "move_file"} {
+		if strings.Contains(joined, name) {
+			t.Errorf("discovery tier should not show edit tool %q: %s", name, joined)
 		}
 	}
 }
 
-// TestSubSidebarToolsEmptyCapability verifies that an empty capability
-// (the default when none is specified) renders the 5 discovery tools.
-func TestSubSidebarToolsEmptyCapability(t *testing.T) {
-	m := newTabModel()
-	tab := &subTab{
-		chatID:     "chat-a",
-		capability: "",
-		buf:        new(strings.Builder),
-	}
-	lines := m.subSidebarLines(tab, 24)
-	idx := findToolsHeader(lines)
-	if idx < 0 {
-		t.Fatal("tools header not found in sidebar")
-	}
-	count := countToolLines(lines, idx)
-	if count != 5 {
-		t.Errorf("empty capability: %d tool lines, want 5 (discovery default)", count)
+// TestSubPanelToolsEditTier verifies that an edit-tier subagent shows all 9
+// tools (5 read + 4 edit).
+func TestSubPanelToolsEditTier(t *testing.T) {
+	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityEdit, buf: new(strings.Builder)}
+	joined := toolRowText(subToolListLine(tab, 80))
+	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir",
+		"write_file", "edit_file", "delete_file", "move_file"} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("edit tool %q not found in panel tools row: %s", name, joined)
+		}
 	}
 }
 
-// TestSubSidebarModelDisplay verifies that the model from SubagentStartMsg
-// is rendered in the sidebar.
-func TestSubSidebarModelDisplay(t *testing.T) {
-	m := newTabModel()
+// TestSubPanelToolsEmptyCapability verifies that an empty capability renders the
+// 5 discovery tools (the default).
+func TestSubPanelToolsEmptyCapability(t *testing.T) {
+	tab := &subTab{chatID: "chat-a", capability: "", buf: new(strings.Builder)}
+	joined := toolRowText(subToolListLine(tab, 80))
+	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("empty capability: discovery tool %q not found: %s", name, joined)
+		}
+	}
+	if strings.Contains(joined, "write_file") {
+		t.Errorf("empty capability should default to discovery (no edit tools): %s", joined)
+	}
+}
+
+// TestSubPanelToolsToolsTier verifies that a tools-tier subagent shows the tools
+// from tab.toolNames (passed via SubagentStartMsg), not the hardcoded list.
+func TestSubPanelToolsToolsTier(t *testing.T) {
 	tab := &subTab{
 		chatID:     "chat-a",
-		capability: tools.CapabilityDiscovery,
-		model:      "child-model-x",
-		buf:        new(strings.Builder),
+		capability: tools.CapabilityTools,
+		toolNames: []string{
+			"read_file", "search_files", "lsp_definition",
+			"trello__get_cards", "context7__resolve-library-id",
+		},
+		buf: new(strings.Builder),
 	}
-	lines := m.subSidebarLines(tab, 24)
-	joined := strings.Join(lines, "\n")
+	joined := toolRowText(subToolListLine(tab, 120))
+	for _, name := range []string{"trello__get_cards", "context7__resolve-library-id", "lsp_definition"} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("tools-tier tool %q not found in panel tools row: %s", name, joined)
+		}
+	}
+	// Should NOT show the hardcoded edit tools.
+	if strings.Contains(joined, "write_file") {
+		t.Errorf("tools tier should not show hardcoded edit tools: %s", joined)
+	}
+}
+
+// TestSubPanelToolsTierEmptyToolNames falls back to the discovery list when
+// toolNames is nil (e.g. parent didn't populate it).
+func TestSubPanelToolsTierEmptyToolNames(t *testing.T) {
+	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityTools, toolNames: nil, buf: new(strings.Builder)}
+	joined := toolRowText(subToolListLine(tab, 80))
+	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("nil toolNames: discovery fallback tool %q not found: %s", name, joined)
+		}
+	}
+}
+
+// TestSubPanelModelDisplay verifies that the model from SubagentStartMsg is
+// rendered in the subagent info panel.
+func TestSubPanelModelDisplay(t *testing.T) {
+	m := newTabModel()
+	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityDiscovery, model: "child-model-x", buf: new(strings.Builder)}
+	joined := strings.Join(m.infoSubLines(tab, 120), "\n")
 	if !strings.Contains(joined, "child-model-x") {
-		t.Errorf("model \"child-model-x\" not found in sidebar output:\n%s", joined)
+		t.Errorf("model \"child-model-x\" not found in subagent info panel:\n%s", joined)
 	}
 }
 
-// TestSubSidebarModelEmpty shows fallback ellipsis when model is empty.
-func TestSubSidebarModelEmpty(t *testing.T) {
-	tab := &subTab{
-		chatID:     "chat-a",
-		capability: tools.CapabilityDiscovery,
-		model:      "",
-		buf:        new(strings.Builder),
-	}
-	// subTabModel returns "…" for empty model.
+// TestSubPanelModelEmpty shows fallback ellipsis when model is empty.
+func TestSubPanelModelEmpty(t *testing.T) {
+	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityDiscovery, model: "", buf: new(strings.Builder)}
 	if got := subTabModel(tab); got != "…" {
 		t.Errorf("subTabModel(empty) = %q, want …", got)
 	}
 }
 
-// TestSubSidebarToolsToolsTier verifies that a tools-tier subagent shows the
-// tools from tab.toolNames (passed from the parent via SubagentStartMsg),
-// not the hardcoded discovery/edit list.
-func TestSubSidebarToolsToolsTier(t *testing.T) {
-	m := newTabModel()
-	tab := &subTab{
-		chatID:     "chat-a",
-		capability: tools.CapabilityTools,
-		toolNames: []string{
-			"read_file",
-			"search_files",
-			"lsp_definition",
-			"trello__get_cards",
-			"context7__resolve-library-id",
-		},
-		buf: new(strings.Builder),
-	}
-	lines := m.subSidebarLines(tab, 24)
-	idx := findToolsHeader(lines)
-	if idx < 0 {
-		t.Fatal("tools header not found in sidebar")
-	}
-	count := countToolLines(lines, idx)
-	if count != 5 {
-		t.Errorf("tools tier: %d tool lines, want 5", count)
-	}
-	joined := strings.Join(lines, "\n")
-	for _, name := range []string{"trello__get_cards", "context7__resolve-library-id", "lsp_definition"} {
-		if !strings.Contains(joined, name) {
-			t.Errorf("tool %q not found in sidebar", name)
-		}
-	}
-}
-
-// TestSubSidebarToolsTierEmptyToolNames falls back to discovery list when
-// toolNames is nil (e.g. parent didn't populate it).
-func TestSubSidebarToolsTierEmptyToolNames(t *testing.T) {
-	m := newTabModel()
-	tab := &subTab{
-		chatID:     "chat-a",
-		capability: tools.CapabilityTools,
-		toolNames:  nil, // no tool names passed
-		buf:        new(strings.Builder),
-	}
-	lines := m.subSidebarLines(tab, 24)
-	idx := findToolsHeader(lines)
-	if idx < 0 {
-		t.Fatal("tools header not found in sidebar")
-	}
-	count := countToolLines(lines, idx)
-	if count != 5 {
-		t.Errorf("tools tier with nil toolNames: %d tool lines, want 5 (discovery fallback)", count)
-	}
-}
 func TestSubagentStartMsgPopulatesTab(t *testing.T) {
 	m := newTabModel()
 	m = step(m, agent.SubagentStartMsg{

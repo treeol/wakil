@@ -2,13 +2,11 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
-	"github.com/treeol/wakil/internal/tools"
 
 	"github.com/charmbracelet/glamour"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
@@ -68,10 +66,6 @@ var (
 	// occupies the same 2 cols / 2 rows as a drawn one, so every layout
 	// calculation that assumes a 1-cell frame stays correct — the panes keep
 	// their positions and spacing, just without the visible lines.
-	styleSidebarBorder = lipgloss.NewStyle().
-				Border(lipgloss.HiddenBorder()).
-				Padding(0, 1)
-
 	styleConvBorder = lipgloss.NewStyle().
 			Border(lipgloss.HiddenBorder())
 
@@ -162,13 +156,9 @@ func (m tuiModel) View() string {
 		Height(vpH).
 		Render(convContent)
 
-	// --- right sidebar ---
-	// In Lip Gloss, .Width() is the content+padding block; the border is added
-	// outside it. So Width(sidebarWidth-borderW) + border(borderW) = sidebarWidth outer.
-	// Combined with conv (m.width-sidebarWidth) = m.width ✓
-	sb := m.renderSidebar(vpH)
-
-	top := lipgloss.JoinHorizontal(lipgloss.Top, conv, sb)
+	// The right sidebar was removed (WP-9.1): the conversation pane is the full
+	// top row. Its former content now lives in the on-demand info panel below.
+	top := conv
 
 	// Input spans the full terminal width.
 	// styleInputBorder border = borderW cols; inner = m.width-borderW.
@@ -194,9 +184,13 @@ func (m tuiModel) View() string {
 	// The "@"/"/" completion picker or the resume picker sits between the
 	// conversation and the input — the two are mutually exclusive (opening
 	// the resume picker closes the completion picker; see openResumePicker).
-	// The tab bar (when sub tabs exist) sits at the bottom, below the input.
+	// The info panel (when open) sits above the picker. The tab bar (when sub
+	// tabs exist) sits at the bottom, below the input.
 	var sections []string
 	sections = append(sections, top)
+	if m.infoPanelVisible() {
+		sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(strings.Join(m.renderInfoPanel(), "\n")))
+	}
 	if m.resumePicker.active {
 		sections = append(sections, m.renderResumePicker())
 	} else if m.comp.active {
@@ -281,6 +275,11 @@ type statusLineInput struct {
 	backendUsed      string
 	backendRequested string
 	backendDefault   string
+	// model and submodel are the effective main and subagent models (WP-9.1),
+	// shown so the most-glanceable former-sidebar fields survive without opening
+	// the info panel. Empty = omitted.
+	model    string
+	submodel string
 	// Reverse-search prompt. When non-empty, buildStatusLine shows ONLY this
 	// (suppressing all other segments) so the search prompt owns the status row.
 	searchPrompt string
@@ -354,6 +353,15 @@ func buildStatusLine(in statusLineInput) string {
 	if in.workflowLabel != "" {
 		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("plan "+in.workflowLabel))
 	}
+	// Model + submodel (WP-9.1): the glanceable former-sidebar fields, shown dim
+	// so they don't compete with the activity state. Submodel only when it
+	// differs from the main model (otherwise redundant).
+	if in.model != "" {
+		parts = append(parts, dim2(in.model))
+	}
+	if in.submodel != "" && in.submodel != in.model {
+		parts = append(parts, dim2("sub:"+in.submodel))
+	}
 
 	// (c) Activity state.
 	switch in.state {
@@ -388,7 +396,8 @@ func buildStatusLine(in statusLineInput) string {
 }
 
 // statusLine delegates to buildStatusLine after assembling the current model
-// state. The "wakīl" name is intentionally absent (it still heads the sidebar).
+// state. The "wakīl" name is intentionally absent from the status line (it
+// heads the info panel instead).
 // Both View() and sizes() derive the input-box height from this; because the
 // dot is always present, the status row is always reserved.
 func (m tuiModel) statusLine() string {
@@ -397,12 +406,15 @@ func (m tuiModel) statusLine() string {
 		workflowLabel = m.app.Workflow.SidebarLabel()
 	}
 	backendUsed, backendRequested, backendDefault := "", "", ""
+	model, submodel := "", ""
 	if m.app != nil {
 		if m.app.Client != nil {
 			backendUsed = m.app.Client.LastUsedBackend()
 		}
 		backendRequested = m.app.SelectedBackend
 		backendDefault = m.app.Cfg.Backend
+		model = m.app.EffectiveModel()
+		submodel = m.app.EffectiveSubagentModel()
 	}
 	return buildStatusLine(statusLineInput{
 		state:            m.state,
@@ -418,6 +430,8 @@ func (m tuiModel) statusLine() string {
 		backendUsed:      backendUsed,
 		backendRequested: backendRequested,
 		backendDefault:   backendDefault,
+		model:            model,
+		submodel:         submodel,
 		searchPrompt:     m.searchPrompt(),
 	})
 }
@@ -726,23 +740,6 @@ func (m tuiModel) renderMainTabBar() string {
 	return lipgloss.NewStyle().Width(m.width).Render(bar)
 }
 
-// renderSidebar returns the right sidebar rendered to exactly sidebarWidth cols
-// and vpH+2 rows (matching the conversation pane outer height). When a sub tab
-// is active it shows that subagent's info instead of the main agent's.
-func (m tuiModel) renderSidebar(vpH int) string {
-	innerW := sidebarWidth - sidebarFrameW
-	var lines []string
-	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
-		lines = m.subSidebarLines(m.subTabs[m.subCur], innerW)
-	} else {
-		lines = m.mainSidebarLines(innerW)
-	}
-	return styleSidebarBorder.
-		Width(sidebarWidth - borderW).
-		Height(vpH).
-		Render(strings.Join(lines, "\n"))
-}
-
 // subTabModel returns the model display string for a subagent tab. The model
 // is known at Start time (resolved from the endpoint view, including any
 // /submodel override). Falls back to "…" when empty (edge case: Start
@@ -752,255 +749,6 @@ func subTabModel(tab *subTab) string {
 		return tab.model
 	}
 	return "…"
-}
-
-// subSidebarLines builds the content lines for a subagent tab's sidebar view.
-func (m tuiModel) subSidebarLines(tab *subTab, innerW int) []string {
-	keyW := 6
-	valW := innerW - keyW - 1
-	row := func(k, v string) string {
-		v = ansi.Truncate(v, valW, "…")
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Width(keyW).Render(k) + " " +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Width(valW).MaxWidth(valW).Render(v)
-	}
-	statusStr := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("running…")
-	if tab.done {
-		statusStr = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("done ✓")
-	} else if tab.finished {
-		// Early display-only done: child landed while siblings may still run.
-		// Show a timestamped "finished" status distinct from the authoritative
-		// "done ✓" that arrives with SubagentDoneMsg.
-		ts := ""
-		if !tab.finishedAt.IsZero() {
-			ts = " " + tab.finishedAt.Format("15:04:05")
-		}
-		statusStr = lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("✓ finished" + ts)
-	}
-	lines := []string{
-		styleTitle.Render("wakīl"),
-		"",
-		row("proxy", hostOnly(m.app.Client.BaseURL)),
-		row("model", subTabModel(tab)),
-		row("exec", "docker"),
-		row("cwd", m.app.Exec.Cwd()),
-		row("chat", agent.ShortID(tab.chatID)),
-	}
-	// Backend display: show when a backend was used or requested for this subagent.
-	// usedBackend takes precedence; fall back to the resolved backend.
-	// Append "!" when the proxy routed to a different backend than requested.
-	subBackendDisplay := tab.usedBackend
-	if subBackendDisplay == "" {
-		subBackendDisplay = tab.backend
-	}
-	if subBackendDisplay != "" {
-		mainDefault := m.app.Cfg.Backend
-		isDefault := subBackendDisplay == mainDefault
-		isOverridden := tab.backend != "" && tab.usedBackend != "" && tab.backend != tab.usedBackend
-		// Show when non-default or overridden (same logic as main status line).
-		if !isDefault || isOverridden {
-			label := subBackendDisplay
-			if isOverridden {
-				label += "!"
-			}
-			lines = append(lines, row("backend", label))
-		}
-	}
-	// Cost display: show once the subagent is done (authoritative) or finished
-	// (display-only early event). The authoritative cost (folded into the parent
-	// tracker) arrives in SubagentDoneMsg; the early event carries the child's
-	// own total (same arithmetic, display-only).
-	if tab.done && tab.costUSD > 0 {
-		lines = append(lines, row("cost", proxy.FmtUSDCompact(tab.costUSD)))
-	} else if tab.finished && !tab.done && tab.finCostUSD > 0 {
-		lines = append(lines, row("cost", proxy.FmtUSDCompact(tab.finCostUSD)))
-	}
-	// Files changed: show count when the subagent modified files (edit-tier).
-	// From the authoritative done event when available, else the early event.
-	if tab.done && len(tab.filesChanged) > 0 {
-		lines = append(lines, row("files", sprint("%d changed", len(tab.filesChanged))))
-	} else if tab.finished && !tab.done && tab.finFilesN > 0 {
-		lines = append(lines, row("files", sprint("%d changed", tab.finFilesN)))
-	}
-	// Summary preview: one-line "what landed" from the early event, shown only
-	// between finished and done (the authoritative sidebar doesn't show it —
-	// the full summary is in the tab's buffer).
-	if tab.finished && !tab.done && tab.finPreview != "" {
-		lines = append(lines, row("result", tab.finPreview))
-	}
-	lines = append(lines,
-		"",
-		statusStr,
-		"",
-		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("tools"),
-	)
-	// Build the tool list from the child's capability tier.
-	// For discovery and edit tiers, the list is hardcoded (byte-identical across
-	// dispatches — no config-dependent tools). For the tools tier, the list is
-	// dynamic (depends on MCP server allowlist, LSP, search config) and is
-	// passed from the parent via SubagentStartMsg.ToolNames.
-	var toolList []string
-	if len(tab.toolNames) > 0 {
-		for _, name := range tab.toolNames {
-			toolList = append(toolList, "  "+name)
-		}
-	} else {
-		toolList = []string{
-			"  read_file",
-			"  read_file_full",
-			"  search_files",
-			"  find_files",
-			"  list_dir",
-		}
-		if tab.capability == tools.CapabilityEdit {
-			toolList = append(toolList,
-				"  write_file",
-				"  edit_file",
-				"  delete_file",
-				"  move_file",
-			)
-		}
-	}
-	lines = append(lines, toolList...)
-	if tab.done && tab.hardMaxBytes > 0 {
-		pct := 0
-		if tab.hardMaxBytes > 0 {
-			pct = tab.ctxSize * 100 / tab.hardMaxBytes
-		}
-		lines = append(lines, "",
-			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("ctx"),
-			sprint("  %dk / %dk  %d%%", tab.ctxSize/1000, tab.hardMaxBytes/1000, pct),
-		)
-	}
-	lines = append(lines, "", lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("grounded on"))
-	if len(tab.grounding) == 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  —"))
-	} else {
-		tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-		valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-		for _, e := range tab.grounding {
-			tag := groundingTypeTag(e.Type)
-			label := ansi.Truncate(e.Label, innerW-8, "…")
-			lines = append(lines, "  "+tagStyle.Render(tag)+" "+valStyle.Render(label))
-		}
-	}
-	return lines
-}
-
-// mainSidebarLines builds the content lines for the "main" sidebar tab:
-// proxy/model/exec info, tools, and grounding.
-func (m tuiModel) mainSidebarLines(innerW int) []string {
-	keyW := 6
-	valW := innerW - keyW - 1
-	row := func(k, v string) string {
-		v = ansi.Truncate(v, valW, "…")
-		kk := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
-			Width(keyW).
-			Render(k)
-		vv := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
-			Width(valW).
-			MaxWidth(valW).
-			Render(v)
-		return kk + " " + vv
-	}
-
-	isDirect := strings.HasPrefix(m.app.Exec.Describe(), "direct")
-	mode := "docker"
-	if isDirect {
-		mode = "direct"
-	}
-
-	imgVal := m.app.Cfg.Image
-	if i := strings.LastIndex(imgVal, "/"); i >= 0 {
-		imgVal = imgVal[i+1:]
-	}
-
-	lines := []string{
-		styleTitle.Render("wakīl"),
-		"",
-		row("proxy", hostOnly(m.app.Client.BaseURL)),
-		row("model", m.app.EffectiveModel()),
-		row("exec", mode),
-	}
-	if !isDirect {
-		lines = append(lines, row("img", imgVal))
-	}
-	lines = append(lines,
-		row("cwd", m.app.Exec.Cwd()),
-		row("chat", agent.ShortID(m.app.Client.ChatID)),
-	)
-	if m.app.Workflow != nil {
-		lines = append(lines,
-			row("wf", m.app.Workflow.SidebarLabel()),
-		)
-	}
-	if m.app.Cfg.OracleEnabled {
-		anthropicOk := os.Getenv(m.app.Cfg.OracleAPIKeyEnv) != ""
-		openrouterOk := os.Getenv("OPENROUTER_API_KEY") != ""
-		if anthropicOk || openrouterOk {
-			lines = append(lines,
-				lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("mashūra")+" "+
-					lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(mashuraPanelLabel(m.app.Cfg)))
-		} else {
-			lines = append(lines,
-				lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("mashūra")+" "+
-					lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render("no key"))
-		}
-	}
-
-	type toolEntry struct{ name, label, status string }
-	var entries []toolEntry
-	if m.app.MCP != nil {
-		for _, srv := range m.app.MCP.Servers() {
-			label := sprint("%d tools", len(srv.Tools))
-			if srv.Status == "failed" {
-				label = "failed"
-			} else if srv.Status == "connecting" {
-				label = "…"
-			}
-			entries = append(entries, toolEntry{srv.Cfg.Name, label, srv.Status})
-		}
-	}
-	if m.app.Cfg.SearXngURL != "" {
-		entries = append(entries, toolEntry{"searxng", sprint("%d tools", len(tools.SearxngTools())), "connected"})
-	}
-	// mashūra is now shown in the info section above, not in tools
-	if len(entries) > 0 {
-		lines = append(lines, "", lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("tools"))
-		for _, e := range entries {
-			icon, color := "✓", lipgloss.Color("2")
-			if e.status == "failed" {
-				icon, color = "✗", lipgloss.Color("1")
-			} else if e.status == "connecting" {
-				icon, color = "…", lipgloss.Color("214")
-			}
-			statusIcon := lipgloss.NewStyle().Foreground(color).Render(icon)
-			namePart := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).
-				Width(innerW - 14).MaxWidth(innerW - 14).Render(e.name)
-			countPart := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
-				Render(e.label)
-			lines = append(lines, "  "+statusIcon+" "+namePart+" "+countPart)
-		}
-	}
-
-	lines = append(lines, m.costLines(innerW)...)
-
-	lines = append(lines, "", lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("grounded on"))
-	grounding := m.app.Client.Grounding()
-	if len(grounding) == 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  —"))
-	} else {
-		tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-		valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-		for _, e := range grounding {
-			tag := groundingTypeTag(e.Type)
-			// tag is 5 chars; " " = 1; "  " indent = 2 → 8 fixed, rest for label
-			label := ansi.Truncate(e.Label, innerW-8, "…")
-			lines = append(lines, "  "+tagStyle.Render(tag)+" "+valStyle.Render(label))
-		}
-	}
-	return lines
 }
 
 // costLines builds the "costs" sidebar block with two subtotals — billed (exact,

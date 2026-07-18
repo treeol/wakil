@@ -27,13 +27,11 @@ const (
 	stateCompacting
 )
 
-const sidebarWidth = 28
-
 // Layout metrics shared by sizes() and View(). In Lip Gloss a border adds 2 to
 // each dimension (1 per side), so a bordered box's outer size = inner + 2*border.
 const (
 	// borderW is the horizontal cost of a 1-cell border (2 cols: left+right).
-	// Used for the input box and sidebar (View) and the conversation viewport (sizes).
+	// Used for the input box (View) and the conversation viewport (sizes).
 	borderW = 2
 	// borderH is the vertical cost of a 1-cell border (2 rows: top+bottom),
 	// applied to the input box and the conversation viewport.
@@ -44,18 +42,10 @@ const (
 	// viewport never collapses to nothing on short terminals. Derived so it can't
 	// drift from minVpH + the viewport's border.
 	minTopOuterH = minVpH + borderH
-	// minVpW is the minimum inner viewport width before the sidebar is dropped
-	// and the conversation pane takes the full width.
-	minVpW = 20
 )
 
 // Chrome widths: horizontal pixels consumed by border + padding around content.
 const (
-	// sidebarPadW is the sidebar's horizontal padding (Padding(0,1) = 1 left + 1 right).
-	sidebarPadW = 2
-	// sidebarFrameW is the total horizontal chrome of the sidebar: border + padding.
-	// innerW = sidebarWidth - sidebarFrameW (renderSidebar).
-	sidebarFrameW = borderW + sidebarPadW
 	// textareaChromeW is the horizontal chrome around the textarea: input border
 	// (borderW) + Bubbles' built-in side padding (2). textarea width = m.width - textareaChromeW.
 	textareaChromeW = borderW + 2
@@ -194,10 +184,15 @@ type tuiModel struct {
 	// Reverse-incremental search (Ctrl+R) state. Extracted to search_model.go
 	// (WP-6.6); embedded so selector access is unchanged.
 	searchModel
+
+	// On-demand info panel (replaces the removed right sidebar, WP-9.1). Named
+	// field (not embedded) because its only field, active, is too generic to
+	// promote safely alongside the other embedded models. See info_panel.go.
+	infoPanel infoPanelModel
 }
 
 // subTab holds the state of one dispatched subagent, used to render its
-// tab in the main pane and its info in the sidebar.
+// tab in the main pane and its info in the info panel.
 type subTab struct {
 	n            int
 	task         string
@@ -330,6 +325,10 @@ func NewTUIModel(app *agent.App) tuiModel {
 		historyModel: historyModel{
 			histIdx:      -1,
 			inputHistory: loadHistory(),
+		},
+		infoPanel: infoPanelModel{
+			// Restore the remembered open/closed state (WP-9.1, per-session).
+			active: app != nil && app.InfoPanelOpen,
 		},
 	}
 }
@@ -606,6 +605,19 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.cancelTurn()
 			return m, nil, true
 		}
+		// Idle: close the info panel if it's open (it sits below pickers/search
+		// in Esc precedence — those are consumed earlier). Otherwise fall through.
+		if m.infoPanel.active {
+			m = m.toggleInfoPanel()
+			return m, nil, true
+		}
+
+	case "ctrl+o", "f2":
+		// Toggle the on-demand info panel (WP-9.1). Works in idle/streaming — the
+		// panel is display-only and doesn't own input. (Not in the confirm gate:
+		// that consumes every key before this switch.) Reflow cedes/reclaims rows.
+		m = m.toggleInfoPanel()
+		return m, nil, true
 
 	case "ctrl+d":
 		if m.state == stateIdle {
@@ -733,6 +745,14 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		m.histSaved = ""
 		m.ta.Reset()
 		m.comp = completionState{} // input cleared; close the picker
+
+		// /info is TUI-local: it toggles the info panel (a tuiModel field the
+		// agent can't reach), so it must be handled before agent.HandleTUICommand
+		// (WP-9.1). Consumed here; never reaches the agent.
+		if strings.TrimSpace(input) == "/info" {
+			m = m.toggleInfoPanel()
+			return m, nil, true
+		}
 
 		if handled, quit, cmd := agent.HandleTUICommand(input, m.app); handled {
 			if quit {
@@ -1034,7 +1054,7 @@ func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
 	if len(m.subTabs) > 0 {
 		tabH = 1
 	}
-	topOuterH := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - tabH
+	topOuterH := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - m.infoPanelHeight() - tabH
 	if topOuterH < minTopOuterH {
 		topOuterH = minTopOuterH
 	}
@@ -1042,9 +1062,11 @@ func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
 	if vpH < minVpH {
 		vpH = minVpH
 	}
-	vpW = m.width - sidebarWidth - borderW
-	if vpW < minVpW {
-		vpW = m.width - borderW
+	// Full width: the right sidebar was removed (WP-9.1), so the conversation
+	// pane spans the whole terminal. Clamp to ≥1 for degenerate narrow terminals.
+	vpW = m.width - borderW
+	if vpW < 1 {
+		vpW = 1
 	}
 	return
 }

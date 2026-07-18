@@ -10,7 +10,7 @@ package tui
 // pruneSubTabs and tabIndexByN already take the slice as a parameter, so
 // embedding doesn't change their call sites.
 type subAgentModel struct {
-	// Subagent tabs. subCur=-1 means the main sidebar tab is active.
+	// Subagent tabs. subCur=-1 means the main agent view is active (no sub tab selected).
 	// A tab is "running" iff !tab.done — multiple tabs may run concurrently
 	// (parallel subagent dispatch), so there is no single "running tab" field;
 	// chunk/done messages are routed by ChatID.
