@@ -163,9 +163,8 @@ type tuiModel struct {
 	hadTurn bool
 
 	// Input history for UP/DOWN navigation (most-recent entry first).
-	inputHistory []string
-	histIdx      int    // -1 = editing current input (not browsing history)
-	histSaved    string // current input saved when the user starts navigating
+	// Extracted to history_model.go (WP-6.6); embedded so selector access is unchanged.
+	historyModel
 
 	// Reverse-incremental search (Ctrl+R). searchActive=false = normal input.
 	searchActive bool
@@ -291,17 +290,19 @@ func NewTUIModel(app *agent.App) tuiModel {
 		items = append(items, convItem{kind: iSys, text: dim2(resumeNote)})
 	}
 	return tuiModel{
-		app:          app,
-		vp:           vp,
-		ta:           ta,
-		state:        stateIdle,
-		items:        &items,
-		streaming:    &strings.Builder{},
-		reasoning:    &strings.Builder{},
-		imageChips:   &[]string{},
-		subCur:       -1,
-		histIdx:      -1,
-		inputHistory: loadHistory(),
+		app:        app,
+		vp:         vp,
+		ta:         ta,
+		state:      stateIdle,
+		items:      &items,
+		streaming:  &strings.Builder{},
+		reasoning:  &strings.Builder{},
+		imageChips: &[]string{},
+		subCur:     -1,
+		historyModel: historyModel{
+			histIdx:      -1,
+			inputHistory: loadHistory(),
+		},
 	}
 }
 
