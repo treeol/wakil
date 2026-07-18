@@ -29,6 +29,38 @@ const (
 
 const sidebarWidth = 28
 
+// Layout metrics shared by sizes() and View(). In Lip Gloss a border adds 2 to
+// each dimension (1 per side), so a bordered box's outer size = inner + 2*border.
+const (
+	// borderW is the horizontal cost of a 1-cell border (2 cols: left+right).
+	// Used for the input box and sidebar (View) and the conversation viewport (sizes).
+	borderW = 2
+	// borderH is the vertical cost of a 1-cell border (2 rows: top+bottom),
+	// applied to the input box and the conversation viewport.
+	borderH = 2
+	// minVpH is the minimum inner viewport height (below this the pane is unreadable).
+	minVpH = 4
+	// minTopOuterH is the minimum outer height of the conversation pane so the
+	// viewport never collapses to nothing on short terminals. Derived so it can't
+	// drift from minVpH + the viewport's border.
+	minTopOuterH = minVpH + borderH
+	// minVpW is the minimum inner viewport width before the sidebar is dropped
+	// and the conversation pane takes the full width.
+	minVpW = 20
+)
+
+// Chrome widths: horizontal pixels consumed by border + padding around content.
+const (
+	// sidebarPadW is the sidebar's horizontal padding (Padding(0,1) = 1 left + 1 right).
+	sidebarPadW = 2
+	// sidebarFrameW is the total horizontal chrome of the sidebar: border + padding.
+	// innerW = sidebarWidth - sidebarFrameW (renderSidebar).
+	sidebarFrameW = borderW + sidebarPadW
+	// textareaChromeW is the horizontal chrome around the textarea: input border
+	// (borderW) + Bubbles' built-in side padding (2). textarea width = m.width - textareaChromeW.
+	textareaChromeW = borderW + 2
+)
+
 // maxSubTabs bounds how many subagent tabs are retained; once exceeded, the
 // oldest finished tabs (never the running or currently-viewed one) are pruned.
 const maxSubTabs = 12
@@ -992,9 +1024,9 @@ func renderReasoning(text string, w int, expanded bool) string {
 }
 
 func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
-	// Input box = border (2) + textarea, plus one row for the status line only
+	// Input box = border (borderH) + textarea, plus one row for the status line only
 	// when there is one to show (must mirror View()).
-	inputOuterH = m.ta.Height() + 2
+	inputOuterH = m.ta.Height() + borderH
 	if m.statusLine() != "" {
 		inputOuterH++
 	}
@@ -1003,16 +1035,16 @@ func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
 		tabH = 1
 	}
 	topOuterH := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - tabH
-	if topOuterH < 6 {
-		topOuterH = 6
+	if topOuterH < minTopOuterH {
+		topOuterH = minTopOuterH
 	}
-	vpH = topOuterH - 2
-	if vpH < 4 {
-		vpH = 4
+	vpH = topOuterH - borderH
+	if vpH < minVpH {
+		vpH = minVpH
 	}
-	vpW = m.width - sidebarWidth - 2
-	if vpW < 20 {
-		vpW = m.width - 2
+	vpW = m.width - sidebarWidth - borderW
+	if vpW < minVpW {
+		vpW = m.width - borderW
 	}
 	return
 }

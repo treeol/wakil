@@ -164,15 +164,15 @@ func (m tuiModel) View() string {
 
 	// --- right sidebar ---
 	// In Lip Gloss, .Width() is the content+padding block; the border is added
-	// outside it. So Width(sidebarWidth-2) + border(2) = sidebarWidth outer.
+	// outside it. So Width(sidebarWidth-borderW) + border(borderW) = sidebarWidth outer.
 	// Combined with conv (m.width-sidebarWidth) = m.width ✓
 	sb := m.renderSidebar(vpH)
 
 	top := lipgloss.JoinHorizontal(lipgloss.Top, conv, sb)
 
 	// Input spans the full terminal width.
-	// styleInputBorder border = 2 cols; inner = m.width-2.
-	// Textarea was set to m.width-4 (border 2 + Bubbles side padding 2).
+	// styleInputBorder border = borderW cols; inner = m.width-borderW.
+	// Textarea was set to m.width-4 (border borderW + Bubbles side padding 2).
 	// The hist/ctx block sits at the bottom-right, beside the textarea (both are
 	// 3 rows tall). On a narrow terminal the block is dropped and the textarea
 	// reclaims the full width — reflow()/sizes() use the same helper so widths agree.
@@ -188,7 +188,7 @@ func (m tuiModel) View() string {
 		body = status + "\n" + body
 	}
 	input := styleInputBorder.
-		Width(m.width - 2).
+		Width(m.width - borderW).
 		Render(body)
 
 	// The "@"/"/" completion picker or the resume picker sits between the
@@ -505,7 +505,7 @@ func (m tuiModel) contextBlockWidth() int {
 // should take, and whether the block is shown. On a narrow terminal it hides the
 // block and gives the textarea the full width.
 func (m tuiModel) inputContextBlock() (block string, taW int, show bool) {
-	full := m.width - 4 // matches the original textarea width
+	full := m.width - textareaChromeW // matches the original textarea width
 	bw := m.contextBlockWidth()
 	taW = full - ctxGap - bw
 	if taW < 24 {
@@ -730,7 +730,7 @@ func (m tuiModel) renderMainTabBar() string {
 // and vpH+2 rows (matching the conversation pane outer height). When a sub tab
 // is active it shows that subagent's info instead of the main agent's.
 func (m tuiModel) renderSidebar(vpH int) string {
-	innerW := sidebarWidth - 4
+	innerW := sidebarWidth - sidebarFrameW
 	var lines []string
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
 		lines = m.subSidebarLines(m.subTabs[m.subCur], innerW)
@@ -738,7 +738,7 @@ func (m tuiModel) renderSidebar(vpH int) string {
 		lines = m.mainSidebarLines(innerW)
 	}
 	return styleSidebarBorder.
-		Width(sidebarWidth - 2).
+		Width(sidebarWidth - borderW).
 		Height(vpH).
 		Render(strings.Join(lines, "\n"))
 }
