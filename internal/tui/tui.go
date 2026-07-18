@@ -36,12 +36,6 @@ const (
 	// borderH is the vertical cost of a 1-cell border (2 rows: top+bottom),
 	// applied to the input box and the conversation viewport.
 	borderH = 2
-	// minVpH is the minimum inner viewport height (below this the pane is unreadable).
-	minVpH = 4
-	// minTopOuterH is the minimum outer height of the conversation pane so the
-	// viewport never collapses to nothing on short terminals. Derived so it can't
-	// drift from minVpH + the viewport's border.
-	minTopOuterH = minVpH + borderH
 )
 
 // Chrome widths: horizontal pixels consumed by border + padding around content.
@@ -1076,7 +1070,7 @@ func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
 		tabH = 1
 	}
 	// The pane gets what the terminal leaves after the fixed chrome — clamped
-	// to a one-row floor. The readable-minimum (minTopOuterH) is NOT a floor
+	// to a one-row floor. There is deliberately NO readable-minimum floor
 	// here: on terminals shorter than the chrome itself, a taller reservation
 	// would overflow the AltScreen (sizes() and View() must always agree, and
 	// lipgloss crops over-height renders rather than shrinking them).
