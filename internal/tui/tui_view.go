@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	agent "github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
-	"github.com/treeol/wakil/internal/proxy"
 
 	"github.com/charmbracelet/glamour"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
@@ -171,14 +169,12 @@ func (m tuiModel) View() string {
 	// The "@"/"/" completion picker or the resume picker sits between the
 	// conversation and the input — the two are mutually exclusive (opening
 	// the resume picker closes the completion picker; see openResumePicker).
-	// The info panel (when open) sits above the picker. The status line
-	// (1–2 rows, statusRows() is the single source of truth) sits directly
-	// above the input; the tab bar (when sub tabs exist) is below it.
+	// The status line (statusRows() is the single source of truth for its
+	// height) sits directly above the input; the tab bar (when sub tabs
+	// exist) is below it. The former info panel is now extra segments inside
+	// the status line (F2 / ctrl+o), not a separate region.
 	var sections []string
 	sections = append(sections, top)
-	if m.infoPanelVisible() {
-		sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(strings.Join(m.renderInfoPanel(), "\n")))
-	}
 	if m.resumePicker.active {
 		sections = append(sections, m.renderResumePicker())
 	} else if m.comp.active {
@@ -247,14 +243,21 @@ func bottomAlignViewport(view string, vpH int) string {
 
 // statusRows computes how many rows the status line occupies. It uses the
 // same flowSegments packing as the renderer, over the same segment list, so
-// sizes()/infoPanelVisible() reserve exactly what View() renders.
+// sizes() reserves exactly what View() renders.
 func (m tuiModel) statusRows() int {
 	return len(m.statusLines())
 }
 
+// statusMaxRows is the status zone's row cap when the info expansion is
+// toggled on (F2 / ctrl+o). Collapsed it's always ≤ 2; expanded it may grow
+// to this many rows so the former banner fields (proxy/exec/cwd/chat/tools/
+// costs/grounding/…) are preserved in-line rather than dropped.
+const statusMaxRows = 4
+
 // statusLines renders the status zone above the input: identity + gauge on
-// one line when it fits, wrapped onto two when it doesn't. Reverse search
-// owns the row exclusively (one line) while active.
+// one line when it fits, wrapped onto more rows when it doesn't. Reverse
+// search owns the row exclusively (one line) while active. When the info
+// expansion is on, the former-banner segments join the same flow.
 func (m tuiModel) statusLines() []string {
 	w := m.width - borderW
 	if w < 1 {
@@ -272,7 +275,12 @@ func (m tuiModel) statusLines() []string {
 	if m.app != nil {
 		segments = append(segments, m.ctxSegment())
 	}
-	return flowSegments(segments, w)
+	maxRows := 2
+	if m.infoPanel.active {
+		maxRows = statusMaxRows
+		segments = append(segments, m.infoExtraSegments()...)
+	}
+	return flowSegmentsN(segments, w, maxRows)
 }
 
 // statusSegments builds the ordered identity segment list: dot glued to
@@ -381,15 +389,19 @@ func (m tuiModel) ctxSegment() string {
 }
 
 // flowSegments packs segments left-to-right with " · " separators onto as
-// few rows as needed (max 2 — the status zone never grows beyond that; on
-// pathologically narrow terminals the rightmost segments are dropped with a
-// trailing ellipsis, still reachable via F2). A segment never splits across
-// rows: when it doesn't fit the current row it moves wholesale to the next.
-// Returns at least one row.
+// few rows as needed, capped at 2 (the collapsed status zone's limit).
 func flowSegments(segs []string, w int) []string {
+	return flowSegmentsN(segs, w, 2)
+}
+
+// flowSegmentsN is flowSegments with an explicit row cap. A segment never
+// splits across rows: when it doesn't fit the current row it moves wholesale
+// to the next. Past the cap the rightmost suffix is dropped with a trailing
+// ellipsis (still reachable when the info expansion is on). Returns at least
+// one row.
+func flowSegmentsN(segs []string, w, maxRows int) []string {
 	const sep = " · "
 	sepW := lipgloss.Width(sep)
-	const maxRows = 2
 
 	var rows []string
 	cur := ""
@@ -743,157 +755,4 @@ func subTabModel(tab *subTab) string {
 		return tab.model
 	}
 	return "…"
-}
-
-// costLines builds the "costs" sidebar block with two subtotals — billed (exact,
-// what you owe external providers) and est (modeled/approx, compute estimate) —
-// followed by per-source rows sorted by cost descending. The two subtotals are
-// kept visually distinct so a real bill and a compute-cost guess can never be
-// confused. Returns nil when no costs have been recorded.
-func (m tuiModel) costLines(innerW int) []string {
-	billedTotal, estimatedTotal, anyBilled, anyEstimated, rows :=
-		m.app.Costs.SnapshotSplit()
-	if len(rows) == 0 {
-		return nil
-	}
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	lines := []string{"", dimStyle.Render("costs")}
-
-	// Subtotal rows sit in the same column grid as the source rows below them:
-	// 4-char indent (matching "  glyph ") + 9-char label + 1 space + 5-char cost.
-	subtotalLine := func(label, cell, colorStr string) string {
-		return "    " +
-			dimStyle.Width(9).MaxWidth(9).Render(label) + " " +
-			lipgloss.NewStyle().Foreground(lipgloss.Color(colorStr)).Width(5).MaxWidth(5).Render(cell)
-	}
-
-	// "billed" — sum of exact+priced rows (solid green = real charge).
-	if anyBilled {
-		cell, color := "—", "240"
-		if billedTotal > 0 {
-			cell = proxy.FmtUSDCompact(billedTotal)
-			color = "2" // solid green: exact, billed-grade
-		}
-		lines = append(lines, subtotalLine("billed", cell, color))
-	}
-
-	// "est" — sum of modeled/approx+priced rows (amber = estimate, not a bill).
-	if anyEstimated {
-		cell, color := "—", "240"
-		if estimatedTotal > 0 {
-			cell = proxy.FmtUSDCompact(estimatedTotal)
-			color = "214" // amber: estimated, not billed
-		}
-		lines = append(lines, subtotalLine("est", cell, color))
-	}
-
-	// Per-source rows. Source names are compacted to ≤9 chars for the sidebar.
-	for _, r := range rows {
-		glyph, color := proxy.CostGlyphStyle(r.Confidence)
-		g := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(glyph)
-		displayName := shortSourceName(r.Source)
-		name := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).
-			Width(9).MaxWidth(9).Render(displayName)
-		costColor := "252"
-		if !r.Priced {
-			costColor = "240"
-		}
-		costSeg := lipgloss.NewStyle().Foreground(lipgloss.Color(costColor)).
-			Width(5).MaxWidth(5).Render(proxy.CostCell(r))
-		callsSeg := dimStyle.Render(sprint("·%d", r.Calls))
-		lines = append(lines, "  "+g+" "+name+" "+costSeg+" "+callsSeg)
-	}
-	return lines
-}
-
-// shortSourceName derives a compact ≤9 visual-char display label for a source
-// key. Per-backend inference keys ("inference·<backend>") and per-model mashura
-// keys ("mashura·<model>") are abbreviated so they fit the narrow sidebar column.
-func shortSourceName(s string) string {
-	if strings.HasPrefix(s, proxy.CostSourceInfPrefix) {
-		// "inference·<backend>" or "inference·<backend>/<model>" → "inf·<abbrev>"
-		tail := s[len(proxy.CostSourceInfPrefix):]
-		if i := strings.IndexByte(tail, '/'); i >= 0 {
-			tail = tail[:i] // keep only the backend name for display
-		}
-		return ansi.Truncate("inf·"+tail, 9, "…")
-	}
-	if strings.HasPrefix(s, proxy.CostSourceMashuraPrefix) {
-		// "mashura·<provider:model>" → "m·<shortmodel>"
-		model := s[len(proxy.CostSourceMashuraPrefix):]
-		// strip provider prefix: "anthropic:claude-opus" → "claude-opus"
-		if i := strings.IndexByte(model, ':'); i >= 0 {
-			model = model[i+1:]
-		}
-		// strip path prefix: "google/gemini-2.5-pro" → "gemini-2.5-pro"
-		if i := strings.LastIndexByte(model, '/'); i >= 0 {
-			model = model[i+1:]
-		}
-		// trim "claude-" from Anthropic model IDs for extra compactness
-		model = strings.TrimPrefix(model, "claude-")
-		return ansi.Truncate("m·"+model, 9, "…")
-	}
-	return ansi.Truncate(s, 9, "…")
-}
-
-// groundingTypeTag returns the short bracketed tag shown before a grounding
-// entry label in the sidebar. Unknown types fall back to the raw type string.
-func groundingTypeTag(t string) string {
-	switch t {
-	case "corpus":
-		return "[ilm]"
-	case "zdb":
-		return "[zdb]"
-	case "learned":
-		return "[lrn]"
-	case "memory":
-		return "[mem]"
-	case "web":
-		return "[web]"
-	case "oracle":
-		return "[orc]"
-	default:
-		return "[" + t + "]"
-	}
-}
-
-func hostOnly(url string) string {
-	s := strings.TrimPrefix(url, "http://")
-	s = strings.TrimPrefix(s, "https://")
-	return s
-}
-
-// mashuraPanelLabel returns a short display string for the active mashura panel,
-// reading the panel config that the "review" tool would resolve to.
-func mashuraPanelLabel(cfg config.Config) string {
-	name := "default"
-	if cfg.MashuraToolPanels != nil {
-		if p := cfg.MashuraToolPanels["review"]; p != "" {
-			name = p
-		}
-	}
-	if cfg.MashuraPanels != nil {
-		if p, ok := cfg.MashuraPanels[name]; ok && len(p.Models) > 0 {
-			switch p.Mode {
-			case "fusion":
-				return fmt.Sprintf("fusion (%d models)", len(p.Models))
-			case "fallback":
-				return fmt.Sprintf("%s +fallback", mashuraShortModel(p.Models[0]))
-			default:
-				if len(p.Models) == 1 {
-					return mashuraShortModel(p.Models[0])
-				}
-				return fmt.Sprintf("%d models", len(p.Models))
-			}
-		}
-	}
-	return cfg.OracleModel
-}
-
-// mashuraShortModel strips the "provider:" prefix for compact display.
-func mashuraShortModel(s string) string {
-	if i := strings.IndexByte(s, ':'); i >= 0 {
-		return s[i+1:]
-	}
-	return s
 }

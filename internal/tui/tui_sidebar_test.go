@@ -13,17 +13,17 @@ import (
 	"github.com/treeol/wakil/internal/tools"
 )
 
-// toolRowText joins the rendered sub-tool rows and strips the "tools" key so
-// tests can assert on the tool names present.
-func toolRowText(lines []string) string {
-	return strings.Join(lines, "\n")
+// toolRowText flattens the rendered tools segment so tests can assert on the
+// tool names present.
+func toolRowText(seg string) string {
+	return seg
 }
 
 // TestSubPanelToolsDiscoveryTier verifies that a discovery-tier subagent shows
 // exactly the 5 read-only tools.
 func TestSubPanelToolsDiscoveryTier(t *testing.T) {
 	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityDiscovery, buf: new(strings.Builder)}
-	joined := toolRowText(subToolListLine(tab, 80))
+	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
 		if !strings.Contains(joined, name) {
 			t.Errorf("discovery tool %q not found in panel tools row: %s", name, joined)
@@ -41,7 +41,7 @@ func TestSubPanelToolsDiscoveryTier(t *testing.T) {
 // tools (5 read + 4 edit).
 func TestSubPanelToolsEditTier(t *testing.T) {
 	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityEdit, buf: new(strings.Builder)}
-	joined := toolRowText(subToolListLine(tab, 80))
+	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir",
 		"write_file", "edit_file", "delete_file", "move_file"} {
 		if !strings.Contains(joined, name) {
@@ -54,7 +54,7 @@ func TestSubPanelToolsEditTier(t *testing.T) {
 // 5 discovery tools (the default).
 func TestSubPanelToolsEmptyCapability(t *testing.T) {
 	tab := &subTab{chatID: "chat-a", capability: "", buf: new(strings.Builder)}
-	joined := toolRowText(subToolListLine(tab, 80))
+	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
 		if !strings.Contains(joined, name) {
 			t.Errorf("empty capability: discovery tool %q not found: %s", name, joined)
@@ -77,7 +77,7 @@ func TestSubPanelToolsToolsTier(t *testing.T) {
 		},
 		buf: new(strings.Builder),
 	}
-	joined := toolRowText(subToolListLine(tab, 120))
+	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"trello__get_cards", "context7__resolve-library-id", "lsp_definition"} {
 		if !strings.Contains(joined, name) {
 			t.Errorf("tools-tier tool %q not found in panel tools row: %s", name, joined)
@@ -93,7 +93,7 @@ func TestSubPanelToolsToolsTier(t *testing.T) {
 // toolNames is nil (e.g. parent didn't populate it).
 func TestSubPanelToolsTierEmptyToolNames(t *testing.T) {
 	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityTools, toolNames: nil, buf: new(strings.Builder)}
-	joined := toolRowText(subToolListLine(tab, 80))
+	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
 		if !strings.Contains(joined, name) {
 			t.Errorf("nil toolNames: discovery fallback tool %q not found: %s", name, joined)
@@ -106,7 +106,7 @@ func TestSubPanelToolsTierEmptyToolNames(t *testing.T) {
 func TestSubPanelModelDisplay(t *testing.T) {
 	m := newTabModel()
 	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityDiscovery, model: "child-model-x", buf: new(strings.Builder)}
-	joined := strings.Join(m.infoSubLines(tab, 120), "\n")
+	joined := strings.Join(m.infoSubSegments(tab), "\n")
 	if !strings.Contains(joined, "child-model-x") {
 		t.Errorf("model \"child-model-x\" not found in subagent info panel:\n%s", joined)
 	}

@@ -1080,7 +1080,7 @@ func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
 	// here: on terminals shorter than the chrome itself, a taller reservation
 	// would overflow the AltScreen (sizes() and View() must always agree, and
 	// lipgloss crops over-height renders rather than shrinking them).
-	topOuterH := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - m.infoPanelHeight() - tabH
+	topOuterH := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - tabH
 	if topOuterH < 1 {
 		topOuterH = 1
 	}

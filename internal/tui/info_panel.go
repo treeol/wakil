@@ -1,22 +1,24 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 )
 
-// infoPanelModel holds the on-demand info panel's visibility state (WP-9.1).
-// It is a NAMED field on tuiModel (m.infoPanel), NOT embedded — its only field,
-// active, is too generic to promote safely alongside the other embedded models
-// (subTab.active, resumePicker.active, comp.active). The panel replaces the
-// removed right sidebar: it surfaces the sidebar's content (proxy/model/exec/
-// cwd/chat/wf/mashūra/tools/costs/grounding) in the lower area on demand.
+// infoPanelModel holds the info EXPANSION's toggle state. There is no longer
+// a separate panel region — the state only controls whether statusLines()
+// appends the former-banner segments (proxy/exec/cwd/chat/mashūra/tools/
+// costs/grounding/…) into the status zone above the input. It is a NAMED
+// field on tuiModel (m.infoPanel), NOT embedded — its only field, active, is
+// too generic to promote safely alongside the other embedded models
+// (subTab.active, resumePicker.active, comp.active).
 //
 // active is mirrored to App.InfoPanelOpen (and persisted to repo-state) by the
 // toggle path; the TUI is the source of truth during a session.
@@ -24,47 +26,10 @@ type infoPanelModel struct {
 	active bool
 }
 
-// infoPanelCapH is the fixed height (rows) the panel occupies when open. A
-// deterministic height shared by sizes() and View() is what keeps the viewport
-// from overflowing / the cursor drifting — the same discipline as
-// completionHeight()/resumePickerHeight(). Overflow content is truncated.
-const infoPanelCapH = 10
-
-// infoPanelHeight returns the rows the panel occupies in the layout. It is the
-// SINGLE source of truth used by both sizes() (to reserve height) and View()
-// (to render), so the two can never disagree. Returns 0 when closed.
-func (m tuiModel) infoPanelHeight() int {
-	if !m.infoPanelVisible() {
-		return 0
-	}
-	return infoPanelCapH
-}
-
-// infoPanelVisible reports whether the panel is actually shown, accounting for
-// both the toggle state AND short-terminal suppression. sizes() and View() must
-// BOTH use this (never m.infoPanel.active directly) so they stay in agreement:
-// if sizes() reserves 0 rows because the terminal is too short, View() must not
-// render the panel either (otherwise the layout overflows / cursor drifts).
-func (m tuiModel) infoPanelVisible() bool {
-	if !m.infoPanel.active {
-		return false
-	}
-	// Suppress the panel when reserving it would push the conversation pane below
-	// its minimum height. This mirrors the suppression in sizes(): pickers and
-	// input win over the on-demand panel.
-	inputOuterH := m.ta.Height() + borderH + m.statusRows()
-	tabH := 0
-	if len(m.subTabs) > 0 {
-		tabH = 1
-	}
-	withPanel := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - infoPanelCapH - tabH
-	return withPanel >= minTopOuterH
-}
-
-// toggleInfoPanel flips the info panel's visibility and returns the updated
-// model with a reflow applied (so the conversation pane cedes/reclaims the
-// panel rows). It mirrors the new state to App.InfoPanelOpen and persists it to
-// repo-state, so the open/closed state is remembered per session (WP-9.1).
+// toggleInfoPanel flips the info expansion and reflows (the extra segments
+// change statusRows(), so the conversation pane cedes/reclaims those rows).
+// It mirrors the new state to App.InfoPanelOpen and persists it to
+// repo-state, so the expanded/collapsed state is remembered per session.
 func (m tuiModel) toggleInfoPanel() tuiModel {
 	m.infoPanel.active = !m.infoPanel.active
 	if m.app != nil {
@@ -73,43 +38,28 @@ func (m tuiModel) toggleInfoPanel() tuiModel {
 	return m.reflow()
 }
 
-// renderInfoPanel renders the former-sidebar content laid out for full width,
-// padded/truncated to exactly infoPanelCapH rows (matching infoPanelHeight).
-// When a sub tab is active it shows that subagent's info (parity with the old
-// subSidebarLines); otherwise the main session info.
-func (m tuiModel) renderInfoPanel() []string {
-	w := m.width - borderW // inner width available inside the input-border column
-	if w < 1 {
-		w = 1
-	}
-	var lines []string
+// infoExtraSegments renders the former banner / info-panel content as status
+// segments, appended to the status flow only while the expansion is on. Each
+// entry is one " · "-joinable segment (key dim, value bright — same palette
+// as the old panel). Fields that duplicate the always-on status line (model,
+// sub) are omitted; everything else is preserved here.
+func (m tuiModel) infoExtraSegments() []string {
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
-		lines = m.infoSubLines(m.subTabs[m.subCur], w)
-	} else {
-		lines = m.infoMainLines(w)
+		return m.infoSubSegments(m.subTabs[m.subCur])
 	}
-	// Fit to the fixed panel height: truncate overflow, pad short.
-	if len(lines) > infoPanelCapH {
-		lines = lines[:infoPanelCapH]
-	}
-	for len(lines) < infoPanelCapH {
-		lines = append(lines, "")
-	}
-	// Hard-clamp every line to the available width (display width, ANSI-aware).
-	for i, ln := range lines {
-		if lipgloss.Width(ln) > w {
-			lines[i] = ansi.Truncate(ln, w, "…")
-		}
-	}
-	return lines
+	return m.infoMainSegments()
 }
 
-// kv is one label:value row in the panel's info section.
+// kv is one label:value pair; kvg renders it as a dim-key/bright-value segment.
 type kv struct{ k, v string }
 
-// infoMainLines gathers the main-session info (was mainSidebarLines) and lays
-// it out for full width: a primary kv row group, then tools, costs, grounding.
-func (m tuiModel) infoMainLines(w int) []string {
+func kvg(p kv) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(p.k) + " " +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(p.v)
+}
+
+// infoMainSegments gathers the main-session expansion segments.
+func (m tuiModel) infoMainSegments() []string {
 	a := m.app
 	mode := "docker"
 	cwd := ""
@@ -130,31 +80,23 @@ func (m tuiModel) infoMainLines(w int) []string {
 		chatID = agent.ShortID(a.Client.ChatID)
 	}
 
-	info := []kv{
-		{"proxy", baseURL},
-		{"model", a.EffectiveModel()},
-		{"exec", mode},
-	}
+	// model is already in the always-on status line — not repeated here.
+	var segs []string
+	segs = append(segs, kvg(kv{"proxy", baseURL}), kvg(kv{"exec", mode}))
 	if mode == "docker" {
-		info = append(info, kv{"img", imgVal})
+		segs = append(segs, kvg(kv{"img", imgVal}))
 	}
-	// The prompt source used to be a startup banner line; with the banner gone
-	// this panel is its home. Only shown when a file path was configured —
-	// the built-in fallback note is noise at a glance.
+	// The prompt source used to be a startup banner line; only shown when a
+	// file path was configured — the built-in fallback note is noise.
 	if note := a.AgentPromptNote(); !strings.Contains(note, "built-in fallback") {
 		if i := strings.Index(note, ": "); i >= 0 {
-			info = append(info, kv{"prompt", note[i+2:]})
+			segs = append(segs, kvg(kv{"prompt", note[i+2:]}))
 		}
 	}
-	info = append(info, kv{"cwd", cwd}, kv{"chat", chatID})
+	segs = append(segs, kvg(kv{"cwd", cwd}), kvg(kv{"chat", chatID}))
 	if a.Workflow != nil {
-		info = append(info, kv{"wf", a.Workflow.SidebarLabel()})
+		segs = append(segs, kvg(kv{"wf", a.Workflow.SidebarLabel()}))
 	}
-
-	var lines []string
-	lines = append(lines, renderKVRow(info, w)...)
-
-	// mashūra panel availability.
 	if a.Cfg.OracleEnabled {
 		anthropicOk := os.Getenv(a.Cfg.OracleAPIKeyEnv) != ""
 		openrouterOk := os.Getenv("OPENROUTER_API_KEY") != ""
@@ -162,17 +104,16 @@ func (m tuiModel) infoMainLines(w int) []string {
 		if !anthropicOk && !openrouterOk {
 			label = "no key"
 		}
-		lines = append(lines, renderKVRow([]kv{{"mashūra", label}}, w)...)
+		segs = append(segs, kvg(kv{"mashūra", label}))
 	}
-
-	lines = append(lines, m.infoToolsLines(w)...)
-	lines = append(lines, m.costLines(w)...)
-	lines = append(lines, m.infoGroundingLines(w)...)
-	return lines
+	segs = append(segs, m.infoToolsSegments()...)
+	segs = append(segs, m.costSegments()...)
+	segs = append(segs, m.infoGroundingSegments()...)
+	return segs
 }
 
-// infoSubLines gathers the active subagent's info (was subSidebarLines) for the panel.
-func (m tuiModel) infoSubLines(tab *subTab, w int) []string {
+// infoSubSegments gathers the active subagent's expansion segments.
+func (m tuiModel) infoSubSegments(tab *subTab) []string {
 	a := m.app
 	statusStr := "running…"
 	if tab.done {
@@ -193,13 +134,13 @@ func (m tuiModel) infoSubLines(tab *subTab, w int) []string {
 		cwd = a.Exec.Cwd()
 	}
 
-	info := []kv{
-		{"status", statusStr},
-		{"proxy", baseURL},
-		{"model", subTabModel(tab)},
-		{"exec", "docker"},
-		{"cwd", cwd},
-		{"chat", agent.ShortID(tab.chatID)},
+	segs := []string{
+		kvg(kv{"status", statusStr}),
+		kvg(kv{"proxy", baseURL}),
+		kvg(kv{"model", subTabModel(tab)}),
+		kvg(kv{"exec", "docker"}),
+		kvg(kv{"cwd", cwd}),
+		kvg(kv{"chat", agent.ShortID(tab.chatID)}),
 	}
 	subBackend := tab.usedBackend
 	if subBackend == "" {
@@ -213,32 +154,30 @@ func (m tuiModel) infoSubLines(tab *subTab, w int) []string {
 			if isOverridden {
 				label += "!"
 			}
-			info = append(info, kv{"backend", label})
+			segs = append(segs, kvg(kv{"backend", label}))
 		}
 	}
 	if tab.done && tab.costUSD > 0 {
-		info = append(info, kv{"cost", proxy.FmtUSDCompact(tab.costUSD)})
+		segs = append(segs, kvg(kv{"cost", proxy.FmtUSDCompact(tab.costUSD)}))
 	} else if tab.finished && !tab.done && tab.finCostUSD > 0 {
-		info = append(info, kv{"cost", proxy.FmtUSDCompact(tab.finCostUSD)})
+		segs = append(segs, kvg(kv{"cost", proxy.FmtUSDCompact(tab.finCostUSD)}))
 	}
 	if tab.done && len(tab.filesChanged) > 0 {
-		info = append(info, kv{"files", sprint("%d changed", len(tab.filesChanged))})
+		segs = append(segs, kvg(kv{"files", sprint("%d changed", len(tab.filesChanged))}))
 	} else if tab.finished && !tab.done && tab.finFilesN > 0 {
-		info = append(info, kv{"files", sprint("%d changed", tab.finFilesN)})
+		segs = append(segs, kvg(kv{"files", sprint("%d changed", tab.finFilesN)}))
 	}
-
-	lines := renderKVRow(info, w)
-	lines = append(lines, m.infoToolsLines(w)...)
-	lines = append(lines, subToolListLine(tab, w)...)
-	lines = append(lines, m.infoGroundingLines(w)...)
-	return lines
+	segs = append(segs, m.infoToolsSegments()...)
+	segs = append(segs, subToolListSegment(tab))
+	segs = append(segs, m.infoGroundingSegments()...)
+	return segs
 }
 
-// subToolListLine renders the subagent's tool list (by capability tier) as a
-// flowed full-width row. Discovery/edit tiers use a hardcoded list (byte-identical
+// subToolListSegment renders the subagent's tool list (by capability tier) as
+// one segment. Discovery/edit tiers use a hardcoded list (byte-identical
 // across dispatches); the tools tier uses the dynamic list passed via
-// SubagentStartMsg.ToolNames. Ported from the removed subSidebarLines (WP-9.1).
-func subToolListLine(tab *subTab, w int) []string {
+// SubagentStartMsg.ToolNames.
+func subToolListSegment(tab *subTab) string {
 	var names []string
 	if len(tab.toolNames) > 0 {
 		names = append(names, tab.toolNames...)
@@ -248,11 +187,11 @@ func subToolListLine(tab *subTab, w int) []string {
 			names = append(names, "write_file", "edit_file", "delete_file", "move_file")
 		}
 	}
-	return renderKVRow([]kv{{"tools", strings.Join(names, " ")}}, w)
+	return kvg(kv{"tools", strings.Join(names, " ")})
 }
 
-// infoToolsLines renders the MCP/searxng tool status as one wrapped row.
-func (m tuiModel) infoToolsLines(w int) []string {
+// infoToolsSegments renders the MCP/searxng tool status as one segment.
+func (m tuiModel) infoToolsSegments() []string {
 	a := m.app
 	var parts []string
 	if a.MCP != nil {
@@ -273,11 +212,12 @@ func (m tuiModel) infoToolsLines(w int) []string {
 	if len(parts) == 0 {
 		return nil
 	}
-	return renderKVRow([]kv{{"tools", strings.Join(parts, "  ")}}, w)
+	return []string{kvg(kv{"tools", strings.Join(parts, "  ")})}
 }
 
-// infoGroundingLines renders the grounding list (was the "grounded on" block).
-func (m tuiModel) infoGroundingLines(w int) []string {
+// infoGroundingSegments renders the grounding list as one segment (was the
+// "grounded on" block).
+func (m tuiModel) infoGroundingSegments() []string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	if m.app.Client == nil {
 		return []string{dim.Render("grounded on —")}
@@ -290,47 +230,142 @@ func (m tuiModel) infoGroundingLines(w int) []string {
 	for _, e := range grounding {
 		entries = append(entries, groundingTypeTag(e.Type)+" "+e.Label)
 	}
-	// Flow the grounding entries across the width on as few rows as needed.
-	flow := strings.Join(entries, dim.Render("  ·  "))
-	head := dim.Render("grounded on ")
-	lines := strings.Split(wrapAnsi(head+flow, w), "\n")
-	return lines
+	return []string{dim.Render("grounded on ") + strings.Join(entries, dim.Render("  ·  "))}
 }
 
-// renderKVRow lays out kv pairs left-to-right, wrapping to multiple rows when
-// they exceed w. Keys are dim, values bright — same palette as the old sidebar.
-func renderKVRow(pairs []kv, w int) []string {
-	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	sep := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  ·  ")
+// costSegments renders the costs block as segments: a "costs" label, the
+// billed/est subtotals, and one segment per source. Returns nil when no costs
+// have been recorded.
+func (m tuiModel) costSegments() []string {
+	billedTotal, estimatedTotal, anyBilled, anyEstimated, rows :=
+		m.app.Costs.SnapshotSplit()
+	if len(rows) == 0 {
+		return nil
+	}
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	segs := []string{dimStyle.Render("costs")}
+	if anyBilled {
+		cell, color := "—", "240"
+		if billedTotal > 0 {
+			cell = proxy.FmtUSDCompact(billedTotal)
+			color = "2"
+		}
+		segs = append(segs, dimStyle.Render("billed")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(cell))
+	}
+	if anyEstimated {
+		cell, color := "—", "240"
+		if estimatedTotal > 0 {
+			cell = proxy.FmtUSDCompact(estimatedTotal)
+			color = "214"
+		}
+		segs = append(segs, dimStyle.Render("est")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(cell))
+	}
+	for _, r := range rows {
+		glyph, color := proxy.CostGlyphStyle(r.Confidence)
+		g := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(glyph)
+		displayName := shortSourceName(r.Source)
+		name := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(displayName)
+		costColor := "252"
+		if !r.Priced {
+			costColor = "240"
+		}
+		costSeg := lipgloss.NewStyle().Foreground(lipgloss.Color(costColor)).Render(proxy.CostCell(r))
+		segs = append(segs, g+" "+name+" "+costSeg+dimStyle.Render(sprint("·%d", r.Calls)))
+	}
+	return segs
+}
 
-	var lines []string
-	var cur strings.Builder
-	curW := 0
-	flush := func() {
-		if cur.Len() > 0 {
-			lines = append(lines, cur.String())
-			cur.Reset()
-			curW = 0
+// shortSourceName derives a compact ≤9 visual-char display label for a source
+// key. Per-backend inference keys ("inference·<backend>") and per-model mashura
+// keys ("mashura·<model>") are abbreviated so they fit the narrow column.
+func shortSourceName(s string) string {
+	if strings.HasPrefix(s, proxy.CostSourceInfPrefix) {
+		tail := s[len(proxy.CostSourceInfPrefix):]
+		if i := strings.IndexByte(tail, '/'); i >= 0 {
+			tail = tail[:i]
+		}
+		return ansiTruncate("inf·"+tail, 9)
+	}
+	if strings.HasPrefix(s, proxy.CostSourceMashuraPrefix) {
+		model := s[len(proxy.CostSourceMashuraPrefix):]
+		if i := strings.IndexByte(model, ':'); i >= 0 {
+			model = model[i+1:]
+		}
+		if i := strings.LastIndexByte(model, '/'); i >= 0 {
+			model = model[i+1:]
+		}
+		model = strings.TrimPrefix(model, "claude-")
+		return ansiTruncate("m·"+model, 9)
+	}
+	return ansiTruncate(s, 9)
+}
+
+// ansiTruncate trims s to n display columns with an ellipsis tail.
+func ansiTruncate(s string, n int) string {
+	if lipgloss.Width(s) <= n {
+		return s
+	}
+	return truncateForDisplay(s, n)
+}
+
+// groundingTypeTag returns the short bracketed tag shown before a grounding
+// entry label. Unknown types fall back to the raw type string.
+func groundingTypeTag(t string) string {
+	switch t {
+	case "corpus":
+		return "[ilm]"
+	case "zdb":
+		return "[zdb]"
+	case "learned":
+		return "[lrn]"
+	case "memory":
+		return "[mem]"
+	case "web":
+		return "[web]"
+	case "oracle":
+		return "[orc]"
+	default:
+		return "[" + t + "]"
+	}
+}
+
+func hostOnly(url string) string {
+	s := strings.TrimPrefix(url, "http://")
+	s = strings.TrimPrefix(s, "https://")
+	return s
+}
+
+// mashuraPanelLabel returns a short display string for the active mashura panel,
+// reading the panel config that the "review" tool would resolve to.
+func mashuraPanelLabel(cfg config.Config) string {
+	name := "default"
+	if cfg.MashuraToolPanels != nil {
+		if p := cfg.MashuraToolPanels["review"]; p != "" {
+			name = p
 		}
 	}
-	for _, p := range pairs {
-		seg := keyStyle.Render(p.k) + " " + valStyle.Render(p.v)
-		segW := lipgloss.Width(seg)
-		addW := segW
-		if curW > 0 {
-			addW += lipgloss.Width(sep)
+	if cfg.MashuraPanels != nil {
+		if p, ok := cfg.MashuraPanels[name]; ok && len(p.Models) > 0 {
+			switch p.Mode {
+			case "fusion":
+				return fmt.Sprintf("fusion (%d models)", len(p.Models))
+			case "fallback":
+				return fmt.Sprintf("%s +fallback", mashuraShortModel(p.Models[0]))
+			default:
+				if len(p.Models) == 1 {
+					return mashuraShortModel(p.Models[0])
+				}
+				return fmt.Sprintf("%d models", len(p.Models))
+			}
 		}
-		if curW > 0 && curW+addW > w {
-			flush()
-			addW = segW
-		}
-		if curW > 0 {
-			cur.WriteString(sep)
-		}
-		cur.WriteString(seg)
-		curW += addW
 	}
-	flush()
-	return lines
+	return cfg.OracleModel
+}
+
+// mashuraShortModel strips the "provider:" prefix for compact display.
+func mashuraShortModel(s string) string {
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }

@@ -70,32 +70,38 @@ func TestTwoZoneNarrowTerminalWidthFloor(t *testing.T) {
 	}
 }
 
-// TestTwoZonePanelHiddenByDefault asserts the info panel reserves no height
-// and renders no section when closed.
+// TestTwoZonePanelHiddenByDefault asserts the info expansion is off: the
+// status line carries only the default segments, no banner fields.
 func TestTwoZonePanelHiddenByDefault(t *testing.T) {
 	m := twoZoneModel(120, 40)
-	if got := m.infoPanelHeight(); got != 0 {
-		t.Errorf("infoPanelHeight() = %d when closed, want 0", got)
-	}
-	if strings.Contains(m.View(), "grounded on") {
-		t.Error("closed panel should not render info content")
+	if strings.Contains(plain(strings.Join(m.statusLines(), "\n")), "grounded on") {
+		t.Error("collapsed status line should not render info-expansion content")
 	}
 }
 
-// TestTwoZonePanelToggleReservesHeight asserts opening the panel reserves
-// exactly infoPanelCapH rows and shrinks the conversation viewport by the same.
+// TestTwoZonePanelToggleReservesHeight asserts turning the expansion on grows
+// the status zone (more segments → more rows) and shrinks the conversation
+// viewport by the same amount, capped at statusMaxRows.
 func TestTwoZonePanelToggleReservesHeight(t *testing.T) {
-	m := twoZoneModel(120, 40)
+	// Narrow width + a streaming state so even the collapsed line is near
+	// capacity; the expansion then clearly adds rows.
+	m := twoZoneModel(48, 40)
+	m.state = stateStreaming
+	m.tps = 87
+	closedRows := m.statusRows()
 	_, vpHClosed, _ := m.sizes()
 
 	m.infoPanel.active = true
-	if got := m.infoPanelHeight(); got != infoPanelCapH {
-		t.Errorf("infoPanelHeight() = %d when open, want %d", got, infoPanelCapH)
+	openRows := m.statusRows()
+	if openRows <= closedRows {
+		t.Errorf("expansion should add status rows: closed=%d open=%d", closedRows, openRows)
+	}
+	if openRows > statusMaxRows {
+		t.Errorf("expansion rows %d exceed statusMaxRows %d", openRows, statusMaxRows)
 	}
 	_, vpHOpen, _ := m.sizes()
-	// Open panel cedes exactly infoPanelCapH rows of conversation height.
-	if vpHOpen != vpHClosed-infoPanelCapH {
-		t.Errorf("vpH open = %d, want %d (closed %d - panel %d)", vpHOpen, vpHClosed-infoPanelCapH, vpHClosed, infoPanelCapH)
+	if vpHOpen != vpHClosed-(openRows-closedRows) {
+		t.Errorf("vpH open = %d, want %d (ceded %d rows)", vpHOpen, vpHClosed-(openRows-closedRows), openRows-closedRows)
 	}
 }
 
@@ -117,53 +123,41 @@ func TestTwoZoneViewFitsBounds(t *testing.T) {
 	}
 }
 
-// TestTwoZonePanelRendersContent asserts the open panel renders former-sidebar
-// fields (model, proxy, exec) at full width.
+// TestTwoZonePanelRendersContent asserts the expansion adds the former-banner
+// fields (proxy, exec, cwd) as status segments.
 func TestTwoZonePanelRendersContent(t *testing.T) {
 	m := twoZoneModel(120, 40)
 	m.infoPanel.active = true
-	lines := m.renderInfoPanel()
-	if len(lines) != infoPanelCapH {
-		t.Errorf("renderInfoPanel returned %d lines, want exactly %d (fixed height)", len(lines), infoPanelCapH)
-	}
-	joined := ansi.Strip(strings.Join(lines, "\n"))
-	if !strings.Contains(joined, "model") {
-		t.Errorf("panel should render the model field:\n%s", joined)
-	}
-	if !strings.Contains(joined, "proxy") {
-		t.Errorf("panel should render the proxy field:\n%s", joined)
+	joined := plain(strings.Join(m.statusLines(), "\n"))
+	for _, want := range []string{"proxy", "exec", "cwd", "grounded on"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expanded status line should contain %q:\n%s", want, joined)
+		}
 	}
 }
 
-// TestTwoZoneShortTerminalSuppressesPanel asserts that on a terminal too short
-// to fit the panel + min conversation height, sizes() reserves 0 panel rows AND
-// View() does not render the panel — they stay in agreement (no overflow).
-func TestTwoZoneShortTerminalSuppressesPanel(t *testing.T) {
-	// Height too small for: input + status + panel(10) + minTopOuterH.
+// TestTwoZoneShortTerminalExpansionNoOverflow asserts that with the expansion
+// on a short terminal, sizes() and View() stay in agreement — the status zone
+// grows (capped at statusMaxRows) and the conversation cedes rows, but the
+// rendered stack never exceeds the terminal height.
+func TestTwoZoneShortTerminalExpansionNoOverflow(t *testing.T) {
 	m := twoZoneModel(120, 16)
 	m.infoPanel.active = true
-	if m.infoPanelVisible() {
-		t.Fatal("panel should be suppressed on a short terminal")
-	}
-	if got := m.infoPanelHeight(); got != 0 {
-		t.Errorf("infoPanelHeight() = %d on short terminal, want 0 (suppressed)", got)
-	}
 	v := m.View()
 	if got := lipgloss.Height(v); got > 16 {
-		t.Errorf("View height %d exceeds terminal 16 (panel rendered despite suppression)", got)
+		t.Errorf("View height %d exceeds terminal 16 with expansion on", got)
 	}
 }
 
-// TestTwoZoneSizesAndViewAgreeOnPanel asserts sizes() and View() use the same
-// visibility predicate across a height sweep.
-func TestTwoZoneSizesAndViewAgreeOnPanel(t *testing.T) {
+// TestTwoZoneSizesAndViewAgreeOnExpansion asserts that across a height sweep
+// with the expansion on, the status zone never overflows the terminal and
+// statusRows() matches the rendered statusLines() row count.
+func TestTwoZoneSizesAndViewAgreeOnExpansion(t *testing.T) {
 	for h := 12; h <= 44; h += 2 {
 		m := twoZoneModel(120, h)
 		m.infoPanel.active = true
-		reserved := m.infoPanelHeight()
-		rendered := strings.Contains(m.View(), "proxy") || strings.Contains(m.View(), "grounded on")
-		if (reserved > 0) != rendered {
-			t.Errorf("h=%d: sizes() reserved %d rows but View rendered=%v — disagreement", h, reserved, rendered)
+		if got, want := m.statusRows(), len(m.statusLines()); got != want {
+			t.Errorf("h=%d: statusRows()=%d but statusLines()=%d rows", h, got, want)
 		}
 		if got := lipgloss.Height(m.View()); got > h {
 			t.Errorf("h=%d: View height %d exceeds terminal", h, got)

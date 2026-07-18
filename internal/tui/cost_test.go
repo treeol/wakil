@@ -11,8 +11,6 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/proxy"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 func rowBySource(rows []proxy.CostRow, source string) (proxy.CostRow, bool) {
@@ -272,9 +270,8 @@ func TestCostLinesLayout(t *testing.T) {
 	app.Costs.Record(proxy.CostSourceInference, 100, 50, 0.12, true, proxy.ConfModeled)
 	app.Costs.Record(proxy.CostSourceSearch, 0, 0, 0, false, proxy.ConfModeled) // unpriced
 
-	const innerW = 24 // 24, matches mainSidebarLines
 	m := tuiModel{app: app}
-	lines := m.costLines(innerW)
+	lines := m.costSegments()
 	if len(lines) == 0 {
 		t.Fatal("no cost lines rendered")
 	}
@@ -294,11 +291,6 @@ func TestCostLinesLayout(t *testing.T) {
 	if !strings.Contains(joined, "inference") {
 		t.Error("inference source name truncated or missing")
 	}
-	for i, ln := range lines {
-		if w := lipgloss.Width(ln); w > innerW {
-			t.Errorf("line %d width %d exceeds innerW %d: %q", i, w, innerW, ln)
-		}
-	}
 }
 
 // When no source is priced the total shows "—" rather than a misleading "$0.00".
@@ -307,7 +299,7 @@ func TestCostLinesUnpricedTotal(t *testing.T) {
 	app.Costs.Record(proxy.CostSourceInference, 100, 50, 0, false, proxy.ConfModeled)
 
 	m := tuiModel{app: app}
-	lines := m.costLines(24)
+	lines := m.costSegments()
 	joined := strings.Join(lines, "\n")
 	if strings.Contains(joined, "$0.00") {
 		t.Errorf("unpriced total should not render $0.00:\n%s", joined)
@@ -487,7 +479,7 @@ func TestCostLinesBilledAndEstSubtotals(t *testing.T) {
 	app.Costs.Record("inference·local", 2000, 1000, 0, false, proxy.ConfModeled)
 
 	m := tuiModel{app: app}
-	lines := m.costLines(24)
+	lines := m.costSegments()
 	joined := strings.Join(lines, "\n")
 
 	if !strings.Contains(joined, "billed") {
@@ -513,7 +505,7 @@ func TestCostLinesOnlyBilled(t *testing.T) {
 	app.Costs.Record("mashura·claude-opus", 10, 20, 0.50, true, proxy.ConfExact)
 
 	m := tuiModel{app: app}
-	joined := strings.Join(m.costLines(24), "\n")
+	joined := strings.Join(m.costSegments(), "\n")
 	if !strings.Contains(joined, "billed") {
 		t.Errorf("missing billed subtotal; got:\n%s", joined)
 	}
@@ -528,7 +520,7 @@ func TestCostLinesOnlyEstimated(t *testing.T) {
 	app.Costs.Record("inference", 100, 50, 0.01, true, proxy.ConfModeled)
 
 	m := tuiModel{app: app}
-	joined := strings.Join(m.costLines(24), "\n")
+	joined := strings.Join(m.costSegments(), "\n")
 	if strings.Contains(joined, "billed") {
 		t.Errorf("billed subtotal should be absent when no exact rows; got:\n%s", joined)
 	}
