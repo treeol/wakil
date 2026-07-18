@@ -94,12 +94,10 @@ type tuiModel struct {
 	// In-flight SSE content; committed to items on turn end or confirm gate.
 	streaming *strings.Builder
 
-	// reasoning accumulates extended-thinking deltas while the model is thinking.
-	// On the first content delta it is replaced with a single collapsed summary
-	// line and committed as an iSys item. Never written to Conv history.
-	reasoning         *strings.Builder
-	reasoningDone     bool // true once reasoning has been collapsed
-	reasoningExpanded bool // expand live reasoning beyond the collapsed cap
+	// reasoning accumulation state (reasoning, reasoningDone, reasoningExpanded).
+	// Extracted to reasoning_model.go (WP-6.6); embedded so selector access is
+	// unchanged. reasoning stays *strings.Builder — see file for the copy invariant.
+	reasoningModel
 
 	// Mouse text selection over the conversation pane (see tui_select.go).
 	sel        selection
@@ -296,9 +294,11 @@ func NewTUIModel(app *agent.App) tuiModel {
 		state:      stateIdle,
 		items:      &items,
 		streaming:  &strings.Builder{},
-		reasoning:  &strings.Builder{},
 		imageChips: &[]string{},
 		subCur:     -1,
+		reasoningModel: reasoningModel{
+			reasoning: &strings.Builder{},
+		},
 		historyModel: historyModel{
 			histIdx:      -1,
 			inputHistory: loadHistory(),
