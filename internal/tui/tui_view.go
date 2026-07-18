@@ -161,30 +161,19 @@ func (m tuiModel) View() string {
 
 	// Input spans the full terminal width.
 	// styleInputBorder border = borderW cols; inner = m.width-borderW.
-	// Textarea was set to m.width-4 (border borderW + Bubbles side padding 2).
-	// The hist/ctx block sits at the bottom-right, beside the textarea (both are
-	// 3 rows tall). On a narrow terminal the block is dropped and the textarea
-	// reclaims the full width — reflow()/sizes() use the same helper so widths agree.
-	row := m.ta.View()
-	if block, _, show := m.inputContextBlock(); show {
-		row = lipgloss.JoinHorizontal(lipgloss.Top, m.ta.View(), strings.Repeat(" ", ctxGap), block)
-	}
-	// The status line is only rendered when non-empty, so an idle input box sits
-	// flush against the conversation pane (no wasted blank row). sizes() reserves
-	// the matching height via the same statusLine() helper.
-	body := row
-	if status := m.statusLine(); status != "" {
-		body = status + "\n" + body
-	}
+	// Textarea is the full inner width — the hist/ctx gauge and the status
+	// line moved to the status zone directly above this box, so the input box
+	// is just the textarea + border.
 	input := styleInputBorder.
 		Width(m.width - borderW).
-		Render(body)
+		Render(m.ta.View())
 
 	// The "@"/"/" completion picker or the resume picker sits between the
 	// conversation and the input — the two are mutually exclusive (opening
 	// the resume picker closes the completion picker; see openResumePicker).
-	// The info panel (when open) sits above the picker. The tab bar (when sub
-	// tabs exist) sits at the bottom, below the input.
+	// The info panel (when open) sits above the picker. The status line
+	// (1–2 rows, statusRows() is the single source of truth) sits directly
+	// above the input; the tab bar (when sub tabs exist) is below it.
 	var sections []string
 	sections = append(sections, top)
 	if m.infoPanelVisible() {
@@ -195,6 +184,7 @@ func (m tuiModel) View() string {
 	} else if m.comp.active {
 		sections = append(sections, m.renderCompletion())
 	}
+	sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(strings.Join(m.statusLines(), "\n")))
 	sections = append(sections, input)
 	if len(m.subTabs) > 0 {
 		sections = append(sections, m.renderMainTabBar())
@@ -255,8 +245,244 @@ func bottomAlignViewport(view string, vpH int) string {
 	return strings.Join(append(blank, content...), "\n")
 }
 
-// statusLineInput carries all the state needed by buildStatusLine. It is a
+// statusRows computes how many rows the status line occupies. It uses the
+// same flowSegments packing as the renderer, over the same segment list, so
+// sizes()/infoPanelVisible() reserve exactly what View() renders.
+func (m tuiModel) statusRows() int {
+	return len(m.statusLines())
+}
+
+// statusLines renders the status zone above the input: identity + gauge on
+// one line when it fits, wrapped onto two when it doesn't. Reverse search
+// owns the row exclusively (one line) while active.
+func (m tuiModel) statusLines() []string {
+	w := m.width - borderW
+	if w < 1 {
+		w = 1
+	}
+	if sp := m.searchPrompt(); sp != "" {
+		l := renderStatusDot(m.state, m.dotPhase) + " " + sp
+		if lipgloss.Width(l) > w {
+			l = ansi.Truncate(l, w, "")
+		}
+		return []string{l}
+	}
+	in := m.headerStatusInput()
+	segments := statusSegments(in)
+	if m.app != nil {
+		segments = append(segments, m.ctxSegment())
+	}
+	return flowSegments(segments, w)
+}
+
+// statusSegments builds the ordered identity segment list: dot glued to
+// AUTO/state first (fixed slots 1+2), then least → most volatile:
+// model, sub, plan, raw, backend, t/s, flash.
+func statusSegments(in statusLineInput) []string {
+	head := []string{renderStatusDot(in.state, in.dotPhase)}
+	if in.autoApprove {
+		label := "AUTO"
+		if in.allowDestructive {
+			label = "AUTO!"
+		}
+		head = append(head, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(label))
+	}
+	var stateSeg string
+	switch in.state {
+	case stateStreaming:
+		if in.reasoning {
+			stateSeg = styleState.Render("reasoning")
+		} else {
+			stateSeg = styleState.Render("streaming")
+		}
+	case stateConfirm:
+		stateSeg = styleState.Render("confirming")
+	case stateCompacting:
+		stateSeg = styleState.Render("compacting")
+	case stateIdle:
+		if in.hadTurn {
+			stateSeg = dim2("awaiting input")
+		}
+	}
+	if stateSeg != "" {
+		head = append(head, stateSeg)
+	}
+	segs := []string{strings.Join(head, " ")}
+	if in.model != "" {
+		segs = append(segs, dim2(in.model))
+	}
+	if in.submodel != "" && in.submodel != in.model {
+		segs = append(segs, dim2("sub:"+in.submodel))
+	}
+	if in.workflowLabel != "" {
+		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("plan "+in.workflowLabel))
+	}
+	if in.rawTools {
+		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("raw"))
+	}
+	if in.backendUsed != "" {
+		isDefault := in.backendUsed == in.backendDefault
+		isOverridden := in.backendRequested != "" && in.backendUsed != in.backendRequested
+		if !isDefault || isOverridden {
+			label := in.backendUsed
+			if isOverridden {
+				label += "!"
+			}
+			segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(label))
+		}
+	}
+	if in.tps > 0 && in.state == stateStreaming {
+		segs = append(segs, dim2(sprint("%.0f t/s", in.tps)))
+	}
+	if in.flash != "" {
+		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(in.flash))
+	}
+	return segs
+}
+
+// ctxSegment renders the ctx/hist gauge as ONE status segment (it joins the
+// same flow as the identity segments):
+//
+//	ctx ⣿⣀⣀⣀⣀⣀┊⣀⣀⣀⣀⣀⣀ 48k / 1.0M 24% · hist 13 22k
+//
+// Colors match the retired bottom-right block: green → amber (past the
+// usable budget) → red (≥90% of n_ctx); the "ctx" key is amber when the
+// ceiling came from the config fallback or the model was unresolved.
+func (m tuiModel) ctxSegment() string {
+	lim := m.app.ContextLimit()
+	used := m.app.ContextTokensUsed()
+	total := lim.NCtx
+	pct := 0
+	if total > 0 {
+		pct = used * 100 / total
+	}
+	color := lipgloss.Color("2")
+	if used >= total*90/100 {
+		color = lipgloss.Color("1")
+	} else if used >= lim.Usable() {
+		color = lipgloss.Color("214")
+	}
+	ctxKey := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("ctx")
+	if !lim.FromBackend() || lim.ModelUnresolved {
+		ctxKey = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("ctx")
+	}
+	totalStr := fmt.Sprintf("%dk", total/1000)
+	if total >= 1000000 {
+		totalStr = fmt.Sprintf("%.1fM", float64(total)/1e6)
+	}
+	usedStr := fmt.Sprintf("%dk", used/1000)
+	if used >= 1000000 {
+		usedStr = fmt.Sprintf("%.1fM", float64(used)/1e6)
+	}
+	return ctxKey + " " + brailleMeter(used, total, color, 6) + " " +
+		dim2(sprint("%s / %s", usedStr, totalStr)) + " " +
+		lipgloss.NewStyle().Foreground(color).Render(sprint("%d%%", pct)) +
+		dim2(sprint(" · hist %d %dk", len(m.app.Conv), agent.TranscriptSize(m.app.Conv)/1000))
+}
+
+// flowSegments packs segments left-to-right with " · " separators onto as
+// few rows as needed (max 2 — the status zone never grows beyond that; on
+// pathologically narrow terminals the rightmost segments are dropped with a
+// trailing ellipsis, still reachable via F2). A segment never splits across
+// rows: when it doesn't fit the current row it moves wholesale to the next.
+// Returns at least one row.
+func flowSegments(segs []string, w int) []string {
+	const sep = " · "
+	sepW := lipgloss.Width(sep)
+	const maxRows = 2
+
+	var rows []string
+	cur := ""
+	curW := 0
+	dropped := false
+	flush := func() {
+		rows = append(rows, cur)
+		cur, curW = "", 0
+	}
+	for _, seg := range segs {
+		segW := lipgloss.Width(seg)
+		addW := segW
+		if curW > 0 {
+			addW += sepW
+		}
+		if curW > 0 && curW+addW > w {
+			if len(rows) == maxRows-1 {
+				// Last row is full: drop this segment AND everything after it
+				// (strict rightmost suffix — never omit a middle segment and
+				// keep a later one, which would reorder semantic importance).
+				dropped = true
+				break
+			}
+			flush()
+			addW = segW
+		}
+		if curW == 0 && segW > w {
+			// Single segment wider than the row: truncate it in place.
+			seg = ansi.Truncate(seg, w, "…")
+			segW = lipgloss.Width(seg)
+			addW = segW
+			if curW > 0 {
+				addW += sepW
+			}
+		}
+		if curW > 0 {
+			cur += sep
+		}
+		cur += seg
+		curW += addW
+	}
+	flush()
+	if dropped {
+		last := rows[len(rows)-1]
+		if lipgloss.Width(last)+1 > w {
+			last = ansi.Truncate(last, w-1, "")
+		}
+		rows[len(rows)-1] = last + dim2("…")
+	}
+	return rows
+}
+
+// headerStatusInput assembles the statusLineInput for the status line from
+// model state.
+func (m tuiModel) headerStatusInput() statusLineInput {
+	var workflowLabel string
+	if m.app != nil && m.app.Workflow != nil {
+		workflowLabel = m.app.Workflow.SidebarLabel()
+	}
+	backendUsed, backendRequested, backendDefault := "", "", ""
+	model, submodel := "", ""
+	if m.app != nil {
+		if m.app.Client != nil {
+			backendUsed = m.app.Client.LastUsedBackend()
+		}
+		backendRequested = m.app.SelectedBackend
+		backendDefault = m.app.Cfg.Backend
+		model = m.app.EffectiveModel()
+		submodel = m.app.EffectiveSubagentModel()
+	}
+	return statusLineInput{
+		state:            m.state,
+		autoApprove:      m.app != nil && m.app.AutoApprove,
+		allowDestructive: m.app != nil && m.app.AllowDestructive,
+		rawTools:         m.app != nil && m.app.RawTools,
+		reasoning:        m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
+		tps:              m.tps,
+		workflowLabel:    workflowLabel,
+		flash:            m.flash,
+		dotPhase:         m.dotPhase,
+		hadTurn:          m.hadTurn,
+		backendUsed:      backendUsed,
+		backendRequested: backendRequested,
+		backendDefault:   backendDefault,
+		model:            model,
+		submodel:         submodel,
+	}
+}
+
+// statusLineInput carries all the state needed by statusSegments. It is a
 // plain struct so the builder is a pure function and can be unit-tested.
+// (Reverse search is handled before this is built — statusLines() checks
+// m.searchPrompt() first — so there is no search field here.)
 type statusLineInput struct {
 	state            agentState
 	autoApprove      bool
@@ -279,9 +505,6 @@ type statusLineInput struct {
 	// the info panel. Empty = omitted.
 	model    string
 	submodel string
-	// Reverse-search prompt. When non-empty, buildStatusLine shows ONLY this
-	// (suppressing all other segments) so the search prompt owns the status row.
-	searchPrompt string
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.
@@ -303,138 +526,6 @@ func renderStatusDot(state agentState, phase int) string {
 	}
 }
 
-// buildStatusLine constructs the status line string from left to right by
-// persistence:
-//
-//	(a) activity dot   — always present
-//	(b) static modes   — AUTO, raw, workflow phase+step
-//	(c) activity state — streaming / reasoning / confirming / compacting /
-//	                     awaiting input (idle after ≥1 turn)
-//	(d) transient      — t/s rate, flash
-//
-// Segments are joined with " · ". Returns at minimum the dot.
-func buildStatusLine(in statusLineInput) string {
-	const sep = " · "
-
-	dot := renderStatusDot(in.state, in.dotPhase)
-
-	// Reverse-search prompt: when active, owns the status row exclusively.
-	if in.searchPrompt != "" {
-		return dot + sep + in.searchPrompt
-	}
-
-	var parts []string
-
-	// (b) Static modes — persistent, always left of activity.
-	// Backend segment: shown when the last turn used a non-default backend, or
-	// when the proxy overrode the requested backend (misroute marker).
-	if in.backendUsed != "" {
-		isDefault := in.backendUsed == in.backendDefault
-		isOverridden := in.backendRequested != "" && in.backendUsed != in.backendRequested
-		if !isDefault || isOverridden {
-			label := in.backendUsed
-			if isOverridden {
-				label += "!"
-			}
-			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(label))
-		}
-	}
-	if in.autoApprove {
-		label := "AUTO"
-		if in.allowDestructive {
-			label = "AUTO!" // destructive grant active — louder marker
-		}
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(label))
-	}
-	if in.rawTools {
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("raw"))
-	}
-	if in.workflowLabel != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("plan "+in.workflowLabel))
-	}
-	// Model + submodel (WP-9.1): the glanceable former-sidebar fields, shown dim
-	// so they don't compete with the activity state. Submodel only when it
-	// differs from the main model (otherwise redundant).
-	if in.model != "" {
-		parts = append(parts, dim2(in.model))
-	}
-	if in.submodel != "" && in.submodel != in.model {
-		parts = append(parts, dim2("sub:"+in.submodel))
-	}
-
-	// (c) Activity state.
-	switch in.state {
-	case stateStreaming:
-		if in.reasoning {
-			parts = append(parts, styleState.Render("reasoning"))
-		} else {
-			parts = append(parts, styleState.Render("streaming"))
-		}
-	case stateConfirm:
-		parts = append(parts, styleState.Render("confirming"))
-	case stateCompacting:
-		parts = append(parts, styleState.Render("compacting"))
-	case stateIdle:
-		if in.hadTurn {
-			parts = append(parts, dim2("awaiting input"))
-		}
-	}
-
-	// (d) Transient metrics — only meaningful during streaming.
-	if in.tps > 0 && in.state == stateStreaming {
-		parts = append(parts, dim2(sprint("%.0f t/s", in.tps)))
-	}
-	if in.flash != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(in.flash))
-	}
-
-	if len(parts) == 0 {
-		return dot
-	}
-	return dot + sep + strings.Join(parts, sep)
-}
-
-// statusLine delegates to buildStatusLine after assembling the current model
-// state. The "wakīl" name is intentionally absent from the status line (it
-// heads the info panel instead).
-// Both View() and sizes() derive the input-box height from this; because the
-// dot is always present, the status row is always reserved.
-func (m tuiModel) statusLine() string {
-	var workflowLabel string
-	if m.app != nil && m.app.Workflow != nil {
-		workflowLabel = m.app.Workflow.SidebarLabel()
-	}
-	backendUsed, backendRequested, backendDefault := "", "", ""
-	model, submodel := "", ""
-	if m.app != nil {
-		if m.app.Client != nil {
-			backendUsed = m.app.Client.LastUsedBackend()
-		}
-		backendRequested = m.app.SelectedBackend
-		backendDefault = m.app.Cfg.Backend
-		model = m.app.EffectiveModel()
-		submodel = m.app.EffectiveSubagentModel()
-	}
-	return buildStatusLine(statusLineInput{
-		state:            m.state,
-		autoApprove:      m.app != nil && m.app.AutoApprove,
-		allowDestructive: m.app != nil && m.app.AllowDestructive,
-		rawTools:         m.app != nil && m.app.RawTools,
-		reasoning:        m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
-		tps:              m.tps,
-		workflowLabel:    workflowLabel,
-		flash:            m.flash,
-		dotPhase:         m.dotPhase,
-		hadTurn:          m.hadTurn,
-		backendUsed:      backendUsed,
-		backendRequested: backendRequested,
-		backendDefault:   backendDefault,
-		model:            model,
-		submodel:         submodel,
-		searchPrompt:     m.searchPrompt(),
-	})
-}
-
 // searchPrompt builds the reverse-search prompt string for the status line.
 // Returns "" when search is not active. On match:
 //
@@ -454,10 +545,10 @@ func (m tuiModel) searchPrompt() string {
 		tag = "failed reverse-i-search"
 	}
 	prefix := "(" + tag + ")`" + m.searchQuery + "': "
-	// Reserve room for the prefix + dot + separator (4 chars: " · ").
+	// Reserve room for the prefix + dot + glued space (2 chars: "• ").
 	// Use lipgloss.Width (display columns) not byte length, so multibyte
 	// queries (CJK, accented chars) reserve the correct width.
-	maxPreview := m.width - lipgloss.Width(prefix) - 4
+	maxPreview := m.width - lipgloss.Width(prefix) - 2
 	if maxPreview < 0 {
 		maxPreview = 0
 	}
@@ -489,102 +580,6 @@ func truncateForDisplay(s string, maxRunes int) string {
 		visual += w
 	}
 	return s
-}
-
-// ctxGap is the column gap between the textarea and the hist/ctx block.
-const ctxGap = 2
-
-// contextBlockWidth is the fixed column width reserved for the hist/ctx block in
-// the input box. It depends only on the resolved n_ctx (constant for a session),
-// never on current usage, so reflow() and View() always reserve the same width.
-func (m tuiModel) contextBlockWidth() int {
-	maxK := m.app.ContextLimit().NCtx / 1000
-	// Estimate caption width: for ≥1000k use "%.1fM / %.1fM" format (~13 chars),
-	// otherwise use "%dk / %dk" format.
-	var capW int
-	if maxK >= 1000 {
-		capW = 5 + len(sprint("%.1fM / %.1fM  100%%", 1.0, 1.0))
-	} else {
-		capW = 5 + len(sprint("%dk / %dk  100%%", maxK, maxK))
-	}
-	meterW := 5 + 13 // key(5) + 12 cells + divider
-	if capW > meterW {
-		return capW
-	}
-	return meterW
-}
-
-// inputContextBlock returns the rendered hist/ctx block, the width the textarea
-// should take, and whether the block is shown. On a narrow terminal it hides the
-// block and gives the textarea the full width.
-func (m tuiModel) inputContextBlock() (block string, taW int, show bool) {
-	full := m.width - textareaChromeW // matches the original textarea width
-	bw := m.contextBlockWidth()
-	taW = full - ctxGap - bw
-	if taW < 24 {
-		return "", full, false
-	}
-	return m.renderContextBlock(bw), taW, true
-}
-
-// renderContextBlock renders the three-line hist/ctx panel padded to bw columns:
-//
-//	hist  13  22k
-//	ctx   ⣿⣀⣀⣀⣀⣀┊⣀⣀⣀⣀⣀⣀
-//	      48k / 1.0M  24%
-//
-// hist is the stored transcript size in bytes (turns + KB). ctx is the real
-// token occupancy of the window — the backend's last reported prompt_tokens —
-// measured against the authoritative per-slot n_ctx (resolved from the proxy).
-// The caption color shifts green→amber→red: amber once usage crosses the usable
-// budget (n_ctx minus headroom), red near the ceiling. When n_ctx came from the
-// config fallback rather than the backend, the "ctx" key is amber as a standing
-// cue that the ceiling is unverified. Large windows (≥1000k) use "M" suffix.
-func (m tuiModel) renderContextBlock(bw int) string {
-	turns := len(m.app.Conv)
-	histBytes := agent.TranscriptSize(m.app.Conv)
-
-	lim := m.app.ContextLimit()
-	used := m.app.ContextTokensUsed()
-	total := lim.NCtx
-	usable := lim.Usable()
-	pct := 0
-	if total > 0 {
-		pct = used * 100 / total
-	}
-	color := lipgloss.Color("2")
-	if used >= total*90/100 {
-		color = lipgloss.Color("1")
-	} else if used >= usable {
-		color = lipgloss.Color("214")
-	}
-	key := func(s string) string {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Width(5).Render(s)
-	}
-	// The "ctx" key turns amber when the ceiling is an unverified fallback, or
-	// when the proxy flagged the model as unresolved (the limits belong to a
-	// different, fallback model — see ContextLimit.ModelUnresolved).
-	ctxKey := key("ctx")
-	if !lim.FromBackend() || lim.ModelUnresolved {
-		ctxKey = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Width(5).Render("ctx")
-	}
-	cell := func(s string) string {
-		return lipgloss.NewStyle().Width(bw).MaxWidth(bw).Render(s)
-	}
-	// Format total: use "k" for <1000k, "M" for ≥1000k.
-	totalStr := fmt.Sprintf("%dk", total/1000)
-	if total >= 1000000 {
-		totalStr = fmt.Sprintf("%.1fM", float64(total)/1e6)
-	}
-	usedStr := fmt.Sprintf("%dk", used/1000)
-	if used >= 1000000 {
-		usedStr = fmt.Sprintf("%.1fM", float64(used)/1e6)
-	}
-	hist := key("hist") + lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(sprint("%d  %dk", turns, histBytes/1000))
-	meter := ctxKey + brailleMeter(used, total, color, 6)
-	caption := key("") + dim2(sprint("%s / %s", usedStr, totalStr)) + "  " +
-		lipgloss.NewStyle().Foreground(color).Render(sprint("%d%%", pct))
-	return strings.Join([]string{cell(hist), cell(meter), cell(caption)}, "\n")
 }
 
 // Tab bar visual widths (no ANSI — used for both rendering and hit testing).

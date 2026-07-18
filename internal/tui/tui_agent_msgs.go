@@ -46,9 +46,12 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.refreshViewport()
 
 	case agent.TokRateMsg:
+		before := m.statusRows()
 		m.tps = msg.Tps
+		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.ConfirmReqMsg:
+		before := m.statusRows()
 		// If the user has reverse-search open when a confirm arrives, abort it
 		// so the search prompt doesn't persist into the non-idle state.
 		if m.searchActive {
@@ -58,11 +61,13 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.pendConf = &msg
 		m.flushStreaming()
 		m.addItem(iSys, fmtConfirmBlock(msg.Headline, msg.Detail, msg.ReadAction))
+		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.ToolResultMsg:
 		m.addItem(iSys, dim2("· "+msg.Name+"\n"+agent.Indent(agent.Truncate(msg.Result, 800))))
 
 	case agent.AgentDoneMsg:
+		before := m.statusRows()
 		m.flushStreaming()
 		// Edge case: turn ended during/after reasoning but before any content
 		// (e.g. tool call only, cancellation). Show the collapsed thought if any.
@@ -102,6 +107,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.hadTurn = true
 		m.cancel = nil
 		m.cancelling = false
+		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.CompactedMsg:
 		m.addItem(iSys, dim2("· compacted earlier turns"))
@@ -260,11 +266,13 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// Apply the newly-resolved context limit in the event loop — safe because
 		// /backend is only available in stateIdle (no concurrent RunTurn goroutine).
 		// Reset the pressure warning so it re-evaluates against the new window.
+		before := m.statusRows()
 		m.app.CtxLimit = msg.Limit
 		m.app.CtxPressureWarned = false
 		if msg.Note != "" {
 			m.addItem(iSys, dim2(msg.Note))
 		}
+		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.ModelListUpdatedMsg:
 		// Refresh the model list after an endpoint switch so /model and
@@ -273,7 +281,9 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.app.ModelList = msg.Models
 
 	case copiedMsg:
+		before := m.statusRows()
 		m.flash = sprint("copied %d chars ✓", msg.n)
+		m = m.reflowIfStatusHeightChanged(before)
 
 	case clipboardImageMsg:
 		// A clipboard read completed (triggered by paste-detection or
@@ -305,6 +315,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.refreshViewport()
 
 	case agent.NewConvMsg:
+		before := m.statusRows()
 		// Clear viewport items so the new conversation starts fresh.
 		*m.items = (*m.items)[:0]
 		m.streaming.Reset()
@@ -323,6 +334,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		if msg.Note != "" {
 			m.addItem(iSys, dim2(msg.Note))
 		}
+		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.OpenResumePickerMsg:
 		prevH := m.resumePickerHeight()

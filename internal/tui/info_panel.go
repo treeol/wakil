@@ -52,10 +52,7 @@ func (m tuiModel) infoPanelVisible() bool {
 	// Suppress the panel when reserving it would push the conversation pane below
 	// its minimum height. This mirrors the suppression in sizes(): pickers and
 	// input win over the on-demand panel.
-	inputOuterH := m.ta.Height() + borderH
-	if m.statusLine() != "" {
-		inputOuterH++
-	}
+	inputOuterH := m.ta.Height() + borderH + m.statusRows()
 	tabH := 0
 	if len(m.subTabs) > 0 {
 		tabH = 1
@@ -140,6 +137,14 @@ func (m tuiModel) infoMainLines(w int) []string {
 	}
 	if mode == "docker" {
 		info = append(info, kv{"img", imgVal})
+	}
+	// The prompt source used to be a startup banner line; with the banner gone
+	// this panel is its home. Only shown when a file path was configured —
+	// the built-in fallback note is noise at a glance.
+	if note := a.AgentPromptNote(); !strings.Contains(note, "built-in fallback") {
+		if i := strings.Index(note, ": "); i >= 0 {
+			info = append(info, kv{"prompt", note[i+2:]})
+		}
 	}
 	info = append(info, kv{"cwd", cwd}, kv{"chat", chatID})
 	if a.Workflow != nil {

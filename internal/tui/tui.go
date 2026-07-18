@@ -295,10 +295,8 @@ func NewTUIModel(app *agent.App) tuiModel {
 		Down:     key.NewBinding(key.WithKeys("down")),
 	}
 	items := make([]convItem, 0, 64)
-	// Show agent prompt source so the user can confirm which file was loaded.
-	if app != nil {
-		items = append(items, convItem{kind: iSys, text: dim2(app.AgentPromptNote())})
-	}
+	// The agent-prompt source note no longer occupies a conversation row — it
+	// lives in the on-demand info panel (F2 / ctrl+o) as "prompt <path>".
 	// Resumed session: rebuild the conversation view from the loaded transcript.
 	if len(app.Conv) > 0 {
 		items = convItemsFrom(app.Conv)
@@ -384,6 +382,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Any keystroke dismisses an active selection and its highlight.
+		before := m.statusRows()
 		m.flash = ""
 		if m.sel.active {
 			m.sel = selection{}
@@ -423,6 +422,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.comp.active != prevActive {
 				m = m.reflow()
 			}
+			m = m.reflowIfStatusHeightChanged(before)
 			var taCmd tea.Cmd
 			m.ta, taCmd = m.ta.Update(tea.Msg(nil)) // keep blink; don't feed the key
 			return m, tea.Batch(append(cmds, taCmd)...)
@@ -443,6 +443,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pasteCutStash = string(msg.Runes)
 			m.addItem(iSys, dim2("· binary paste detected: reading image from clipboard…"))
 			m.refreshViewport()
+			m = m.reflowIfStatusHeightChanged(before)
 			return m, tea.Batch(append(cmds, readClipboardCmd())...)
 		}
 
@@ -464,6 +465,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.comp.active != prevKeyComp {
 				m = m.reflow()
 			}
+			// The flash segment was cleared at the top of this KeyMsg; if that
+			// shrank the status zone, reflow now so no consumed-key path (confirm
+			// gate, history nav, ctrl+e, …) leaks a stale viewport height.
+			m = m.reflowIfStatusHeightChanged(before)
 			// Don't forward UP/DOWN to the viewport when consumed for history
 			// navigation — otherwise the conversation would scroll in sync.
 			k := msg.String()
@@ -510,6 +515,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.comp.active != prevComp {
 			m = m.reflow()
 		}
+		m = m.reflowIfStatusHeightChanged(before)
 		m.vp, vpCmd = m.vp.Update(msg)
 		cmds = append(cmds, taCmd, vpCmd)
 		return m, tea.Batch(cmds...)
@@ -540,10 +546,12 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		// goroutine (buffered channel, never blocks), and resume streaming.
 		answer := func(c agent.ConfirmChoice, note string) {
 			ch := m.pendConf.RespCh
+			before := m.statusRows()
 			m.pendConf = nil
 			m.state = stateStreaming
 			m.addItem(iSys, note)
 			ch <- c
+			m = m.reflowIfStatusHeightChanged(before)
 		}
 		switch msg.String() {
 		case "y", "Y":
@@ -579,6 +587,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			// Abort: restore the original draft, exit search mode.
 			// (Ctrl+C does NOT quit — it only aborts the search.)
 			m.searchExit(false)
+			m = m.reflow()
 			return m, nil, true
 		}
 		// All other keys fall through to the main switch / intercept below.
@@ -636,6 +645,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.searchRun(m.searchIdx + 1)
 			return m, nil, true
 		}
+		before := m.statusRows()
 		if len(m.inputHistory) == 0 {
 			// No history: enter search anyway so the prompt shows, but there
 			// will never be a match.
@@ -646,6 +656,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.searchFailed = true
 			m.comp = completionState{} // close picker
 			m.ta.Reset()
+			m = m.reflowIfStatusHeightChanged(before)
 			return m, nil, true
 		}
 		m.searchActive = true
@@ -657,6 +668,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		m.ta.Reset()
 		// Show the most recent entry immediately (empty query matches all).
 		m.searchRun(0)
+		m = m.reflowIfStatusHeightChanged(before)
 		return m, nil, true
 
 	case "ctrl+e":
@@ -676,6 +688,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.histSaved = m.searchSaved
 			m.histIdx = m.searchIdx // reconcile: continue from the matched entry
 			m.searchExit(true)
+			m = m.reflow()
 			// Fall through to the normal UP handler below.
 		}
 		if m.state == stateIdle && len(m.inputHistory) > 0 {
@@ -694,6 +707,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.histSaved = m.searchSaved
 			m.histIdx = m.searchIdx
 			m.searchExit(true)
+			m = m.reflow()
 		}
 		if m.state == stateIdle && m.histIdx >= 0 {
 			if m.histIdx > 0 {
@@ -712,10 +726,12 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		if m.state != stateIdle {
 			return m, nil, true
 		}
+		before := m.statusRows()
 		// If reverse-search is active, exit it keeping the matched entry, then
 		// fall through to the normal send logic (which reads ta.Value()).
 		if m.searchActive {
 			m.searchExit(true)
+			m = m.reflow()
 		}
 		input := strings.TrimSpace(m.ta.Value())
 		if input == "" {
@@ -768,6 +784,9 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 					m.ta.InsertString(chip + " ")
 				}
 			}
+			// Slash commands mutate status segments (/model, /auto, /raw,
+			// /backend, /plan, …) — reflow if the status zone height flipped.
+			m = m.reflowIfStatusHeightChanged(before)
 			if cmd != nil {
 				return m, []tea.Cmd{AdaptCmd(cmd)}, true
 			}
@@ -818,6 +837,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			if msg.Alt {
 				// Alt+rune: exit search, let the key go to the textarea.
 				m.searchExit(true)
+				m = m.reflow()
 				return m, nil, false
 			}
 			m.searchQuery += string(msg.Runes)
@@ -839,6 +859,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			// Any other key (arrows, Ctrl+A, etc.): exit search keeping the
 			// match, then let the key flow to the textarea naturally.
 			m.searchExit(true)
+			m = m.reflow()
 			return m, nil, false
 		}
 	}
@@ -891,9 +912,11 @@ func (m *tuiModel) cancelTurn() {
 func (m tuiModel) startTurn(run func(ctx context.Context) tea.Cmd) (tuiModel, []tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
+	before := m.statusRows()
 	m.state = stateStreaming
 	m.turnStart = time.Now()
 	m.tps = 0
+	m = m.reflowIfStatusHeightChanged(before)
 	return m, []tea.Cmd{run(ctx), startDotTick()}
 }
 
@@ -1044,23 +1067,28 @@ func renderReasoning(text string, w int, expanded bool) string {
 }
 
 func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
-	// Input box = border (borderH) + textarea, plus one row for the status line only
-	// when there is one to show (must mirror View()).
-	inputOuterH = m.ta.Height() + borderH
-	if m.statusLine() != "" {
-		inputOuterH++
-	}
+	// Input box = border (borderH) + textarea; the status line sits directly
+	// above it (1–2 rows, content-dependent — statusRows() is the single
+	// source of truth shared with View()).
+	inputOuterH = m.ta.Height() + borderH + m.statusRows()
 	tabH := 0
 	if len(m.subTabs) > 0 {
 		tabH = 1
 	}
+	// The pane gets what the terminal leaves after the fixed chrome — clamped
+	// to a one-row floor. The readable-minimum (minTopOuterH) is NOT a floor
+	// here: on terminals shorter than the chrome itself, a taller reservation
+	// would overflow the AltScreen (sizes() and View() must always agree, and
+	// lipgloss crops over-height renders rather than shrinking them).
 	topOuterH := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - m.infoPanelHeight() - tabH
-	if topOuterH < minTopOuterH {
-		topOuterH = minTopOuterH
+	if topOuterH < 1 {
+		topOuterH = 1
 	}
 	vpH = topOuterH - borderH
-	if vpH < minVpH {
-		vpH = minVpH
+	// The inner viewport can be negative when the outer pane is ≤ the border;
+	// floor at one row — the pane style crops the surplus either way.
+	if vpH < 1 {
+		vpH = 1
 	}
 	// Full width: the right sidebar was removed (WP-9.1), so the conversation
 	// pane spans the whole terminal. Clamp to ≥1 for degenerate narrow terminals.
@@ -1075,12 +1103,24 @@ func (m tuiModel) reflow() tuiModel {
 	vpW, vpH, _ := m.sizes()
 	m.vp.Width = vpW
 	m.vp.Height = vpH
-	// Narrow the textarea to leave room for the hist/ctx block (same helper as
-	// View, so the widths always agree); full width when the block is hidden.
-	_, taW, _ := m.inputContextBlock()
-	m.ta.SetWidth(taW)
+	// Textarea always takes the full inner width — the hist/ctx gauge lives
+	// in the status line now.
+	m.ta.SetWidth(m.width - textareaChromeW)
 	m.prefixDirty = true // width changed — committed items must be re-wrapped
 	m.refreshViewport()
+	return m
+}
+
+// reflowIfStatusHeightChanged reflows only when the status zone's row count
+// flipped (1↔2). The status line height is content-dependent, so every
+// mutation that can add/remove/widen a segment — state transitions, t/s
+// updates, flash set/clear, model switches, search enter/exit — must be
+// followed by this guard or the viewport reservation and the render drift
+// apart by a row (the AltScreen overflow bug class).
+func (m tuiModel) reflowIfStatusHeightChanged(before int) tuiModel {
+	if m.statusRows() != before {
+		return m.reflow()
+	}
 	return m
 }
 

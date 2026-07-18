@@ -162,45 +162,41 @@ func TestResolveContextLimitResolvedFieldAbsent(t *testing.T) {
 	}
 }
 
-// TestSidebarAmberOnUnresolvedModel: the ctx key uses the amber style when the
-// proxy flagged the model as unresolved, matching the fallback-source cue.
-func TestSidebarAmberOnUnresolvedModel(t *testing.T) {
+// TestHeaderCtxAmberOnUnresolvedModel: the ctx key in the status gauge segment
+// uses the amber style when the proxy flagged the model as unresolved,
+// matching the fallback-source cue.
+func TestHeaderCtxAmberOnUnresolvedModel(t *testing.T) {
 	app := &agent.App{
 		Cfg: config.DefaultConfig(),
 		CtxLimit: agent.ContextLimit{NCtx: 131072, Source: "backend",
 			ModelUnresolved: true, ReasoningBudget: 4096, AnswerMargin: 4096},
 	}
-	m := tuiModel{app: app, width: 120}
-	block := m.renderContextBlock(m.contextBlockWidth())
-	if !strings.Contains(block, "ctx") {
-		t.Fatalf("ctx block missing key; got %q", block)
+	strip := tuiModel{app: app, width: 120}.ctxSegment()
+	if !strings.Contains(plain(strip), "ctx") {
+		t.Fatalf("ctx strip missing key; got %q", plain(strip))
 	}
 	// The amber style is color 214 — assert on the escape sequence the same way
-	// a fallback-source block renders it.
+	// a fallback-source strip renders it.
 	fbApp := &agent.App{
 		Cfg:      config.DefaultConfig(),
 		CtxLimit: agent.ContextLimit{NCtx: 131072, Source: "fallback", ReasoningBudget: 4096, AnswerMargin: 4096},
 	}
-	fbBlock := tuiModel{app: fbApp, width: 120}.renderContextBlock(m.contextBlockWidth())
-	// Compare only the first line region containing the styled key: both must
-	// carry identical styling bytes for "ctx".
-	if keyStyling(block) != keyStyling(fbBlock) {
-		t.Errorf("unresolved-model ctx key styling %q != fallback styling %q", keyStyling(block), keyStyling(fbBlock))
+	fbStrip := tuiModel{app: fbApp, width: 120}.ctxSegment()
+	// Compare only the region containing the styled key: both must carry
+	// identical styling bytes for "ctx".
+	if keyStyling(strip) != keyStyling(fbStrip) {
+		t.Errorf("unresolved-model ctx key styling %q != fallback styling %q", keyStyling(strip), keyStyling(fbStrip))
 	}
 }
 
-// keyStyling extracts the meter line (2nd line) up to the end of the "ctx" key
-// so styling bytes can be compared between two rendered blocks.
-func keyStyling(block string) string {
-	lines := strings.Split(block, "\n")
-	if len(lines) < 2 {
-		return ""
-	}
-	i := strings.Index(lines[1], "ctx")
+// keyStyling extracts the strip up to the end of the "ctx" key so styling
+// bytes can be compared between two rendered strips.
+func keyStyling(strip string) string {
+	i := strings.Index(strip, "ctx")
 	if i < 0 {
-		return lines[1]
+		return strip
 	}
-	return lines[1][:i+3]
+	return strip[:i+3]
 }
 
 // TestContextLimitUsable: the usable prompt budget subtracts the reasoning and
@@ -243,9 +239,9 @@ func TestParseContextLimitJSON(t *testing.T) {
 	}
 }
 
-// TestSidebarReadsBackendNCtx: the hist/ctx panel denominator reflects the
-// fetched n_ctx (~196k), not the old hardcoded 512k.
-func TestSidebarReadsBackendNCtx(t *testing.T) {
+// TestHeaderCtxReadsBackendNCtx: the status gauge segment's denominator reflects
+// the fetched n_ctx (~196k), not the old hardcoded 512k.
+func TestHeaderCtxReadsBackendNCtx(t *testing.T) {
 	app := &agent.App{
 		Cfg:      config.DefaultConfig(),
 		Client:   newTestClient(""),
@@ -254,16 +250,19 @@ func TestSidebarReadsBackendNCtx(t *testing.T) {
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 48000, Exact: true})
 
-	m := tuiModel{app: app}
-	block := plain(m.renderContextBlock(m.contextBlockWidth()))
-	if !strings.Contains(block, "196k") {
-		t.Errorf("ctx panel must show 196k denominator; got: %q", block)
+	m := tuiModel{app: app, width: 120}
+	strip := plain(m.ctxSegment())
+	if !strings.Contains(strip, "196k") {
+		t.Errorf("ctx strip must show 196k denominator; got: %q", strip)
 	}
-	if strings.Contains(block, "512k") {
-		t.Errorf("ctx panel must not show the old 512k ceiling; got: %q", block)
+	if strings.Contains(strip, "512k") {
+		t.Errorf("ctx strip must not show the old 512k ceiling; got: %q", strip)
 	}
-	if !strings.Contains(block, "48k") {
-		t.Errorf("ctx panel should show 48k used (from prompt_tokens); got: %q", block)
+	if !strings.Contains(strip, "48k") {
+		t.Errorf("ctx strip should show 48k used (from prompt_tokens); got: %q", strip)
+	}
+	if !strings.Contains(strip, "hist 1") {
+		t.Errorf("ctx strip should show the hist counters; got: %q", strip)
 	}
 }
 

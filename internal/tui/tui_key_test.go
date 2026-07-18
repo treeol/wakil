@@ -98,6 +98,7 @@ func TestMouseToContentBounds(t *testing.T) {
 
 	// A click inside the pane maps to content coords with the y-offset applied.
 	// (YOffset is whatever the viewport clamps to given current content.)
+	// The pane's own row 0 is its top border.
 	row, col, in := m.mouseToContent(5, 4)
 	if !in {
 		t.Fatal("click inside pane should be 'in'")
@@ -106,7 +107,7 @@ func TestMouseToContentBounds(t *testing.T) {
 		t.Errorf("col = %d, want 4", col)
 	}
 	if want := (4 - 1 - 0) + m.vp.YOffset; row != want {
-		t.Errorf("row = %d, want %d (screen y minus border plus offset)", row, want)
+		t.Errorf("row = %d, want %d (screen y minus header and border plus offset)", row, want)
 	}
 
 	// x=0 is the border column → outside.

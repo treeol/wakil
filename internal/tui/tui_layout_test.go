@@ -18,7 +18,8 @@ func layoutModel(w, h int) tuiModel {
 
 // heightInvariant checks that viewport + border(2) + completionHeight + inputOuter
 // equals the terminal height exactly. It is the sum that Bubble Tea renders
-// into an AltScreen, so any mismatch drifts the cursor tracker.
+// into an AltScreen, so any mismatch drifts the cursor tracker. inputOuterH
+// already includes the status rows (sizes() adds statusRows()).
 func heightInvariant(m tuiModel) (total, want int) {
 	_, _, inputOuterH := m.sizes()
 	tabH := 0
@@ -30,8 +31,8 @@ func heightInvariant(m tuiModel) (total, want int) {
 }
 
 // TestLayoutFillsHeightNoGap asserts the conversation pane and the input box
-// stack to exactly the terminal height with no blank gap. The activity dot is
-// always present so the status row is always reserved regardless of state.
+// stack to exactly the terminal height with no blank gap. The status line sits
+// above the textarea; its rows are included in inputOuterH via statusRows().
 func TestLayoutFillsHeightNoGap(t *testing.T) {
 	const w, h = 120, 40
 
@@ -42,10 +43,11 @@ func TestLayoutFillsHeightNoGap(t *testing.T) {
 		t.Fatalf("idle layout leaves a gap: top=%d input=%d sum=%d want %d",
 			topOuterH, inputOuterH, topOuterH+inputOuterH, h)
 	}
-	// The activity dot is always present → status row always reserved:
-	// border (2) + textarea (3) + status (1).
-	if inputOuterH != idle.ta.Height()+2+1 {
-		t.Fatalf("idle input height = %d, want %d (dot always visible)", inputOuterH, idle.ta.Height()+3)
+	// Input = border (2) + textarea (3) + status rows (1 for the bare model —
+	// no app → dot only).
+	if inputOuterH != idle.ta.Height()+2+idle.statusRows() {
+		t.Fatalf("idle input height = %d, want %d (textarea+border+status)",
+			inputOuterH, idle.ta.Height()+2+idle.statusRows())
 	}
 
 	streaming := layoutModel(w, h)
@@ -53,11 +55,6 @@ func TestLayoutFillsHeightNoGap(t *testing.T) {
 	_, vpH2, inputOuterH2 := streaming.sizes()
 	if (vpH2+2)+inputOuterH2 != h {
 		t.Fatalf("streaming layout leaves a gap: sum=%d want %d", (vpH2+2)+inputOuterH2, h)
-	}
-	// Idle and streaming both have the same status-row height (dot always shown).
-	if inputOuterH2 != inputOuterH {
-		t.Fatalf("idle and streaming input heights should be equal (dot always shown): idle=%d streaming=%d",
-			inputOuterH, inputOuterH2)
 	}
 }
 

@@ -518,10 +518,13 @@ func TestHandleKeyCtrlR_SearchPromptShows(t *testing.T) {
 		t.Errorf("searchPrompt = %q, should contain the matched entry", prompt)
 	}
 
-	// Full status line should contain the prompt.
-	status := m1.statusLine()
-	if !strings.Contains(status, "reverse-i-search") {
-		t.Errorf("statusLine = %q, should contain search prompt", status)
+	// The status line should be owned by the search prompt while searching.
+	lines := m1.statusLines()
+	if len(lines) != 1 {
+		t.Fatalf("statusLines = %d rows during search, want 1", len(lines))
+	}
+	if !strings.Contains(plain(lines[0]), "reverse-i-search") {
+		t.Errorf("status line = %q, should contain search prompt", plain(lines[0]))
 	}
 }
 

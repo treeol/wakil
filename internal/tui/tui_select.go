@@ -114,7 +114,9 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 			}
 			return m, false, nil
 		}
+		before := m.statusRows()
 		m.flash = ""
+		m = m.reflowIfStatusHeightChanged(before)
 		m.sel = selection{active: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col}
 		m.renderSelection()
 		return m, true, nil
@@ -162,7 +164,7 @@ func (m *tuiModel) renderSelection() {
 // landed inside the conversation pane's inner area and on a content line.
 func (m tuiModel) mouseToContent(x, y int) (row, col int, in bool) {
 	vpW, vpH, _ := m.sizes()
-	// The tab bar is at the bottom, so the conv pane occupies rows 1..vpH
+	// The conv pane is the topmost section, so it occupies rows 1..vpH
 	// (row 0 is the top border, rows 1..vpH are content, row vpH+1 is the
 	// bottom border) without any top offset.
 	if x < 1 || x > vpW || y < 1 || y > vpH {

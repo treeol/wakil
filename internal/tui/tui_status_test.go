@@ -3,216 +3,323 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // plain strips ANSI codes so we can check segment content as plain text.
 
-func TestBuildStatusLineIdleInitial(t *testing.T) {
-	// Brand new session: dot only, no "awaiting input".
-	s := buildStatusLine(statusLineInput{state: stateIdle, hadTurn: false})
-	p := plain(s)
-	if !strings.Contains(p, "•") {
-		t.Error("dot must always be present")
+// statusSegTexts returns the plain-text identity segments (no ctx gauge —
+// that needs an app), so tests can assert ordering without styling noise.
+func statusSegTexts(in statusLineInput) []string {
+	segs := statusSegments(in)
+	out := make([]string, len(segs))
+	for i, s := range segs {
+		out[i] = plain(s)
 	}
-	if strings.Contains(p, "awaiting") {
-		t.Error("should not show 'awaiting input' before any turn")
+	return out
+}
+
+func TestStatusSegmentsIdleInitial(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{state: stateIdle, hadTurn: false})
+	if len(segs) != 1 || segs[0] != "•" {
+		t.Errorf("fresh idle = dot only; got: %v", segs)
 	}
 }
 
-func TestBuildStatusLineIdleAfterTurn(t *testing.T) {
-	s := buildStatusLine(statusLineInput{state: stateIdle, hadTurn: true})
-	p := plain(s)
-	if !strings.Contains(p, "awaiting input") {
-		t.Errorf("should show 'awaiting input' after a completed turn; got: %q", p)
+func TestStatusSegmentsIdleAfterTurn(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{state: stateIdle, hadTurn: true})
+	if len(segs) != 1 || segs[0] != "• awaiting input" {
+		t.Errorf("dot should glue to 'awaiting input' when AUTO is off; got: %v", segs)
 	}
 }
 
-func TestBuildStatusLineStreaming(t *testing.T) {
-	s := buildStatusLine(statusLineInput{state: stateStreaming, tps: 45})
-	p := plain(s)
-	if !strings.Contains(p, "streaming") {
-		t.Error("streaming state must say 'streaming'")
+func TestStatusSegmentsStreaming(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{state: stateStreaming, tps: 45})
+	if segs[0] != "• streaming" {
+		t.Errorf("head = %q, want '• streaming'", segs[0])
 	}
-	if !strings.Contains(p, "45") {
-		t.Errorf("t/s rate must appear; got: %q", p)
-	}
-}
-
-func TestBuildStatusLineReasoning(t *testing.T) {
-	s := buildStatusLine(statusLineInput{state: stateStreaming, reasoning: true})
-	p := plain(s)
-	if !strings.Contains(p, "reasoning") {
-		t.Errorf("reasoning mode must say 'reasoning'; got: %q", p)
-	}
-	if strings.Contains(p, "streaming") {
-		t.Error("should not say 'streaming' while reasoning")
+	if len(segs) != 2 || segs[1] != "45 t/s" {
+		t.Errorf("t/s must be its own segment; got: %v", segs)
 	}
 }
 
-func TestBuildStatusLineConfirm(t *testing.T) {
-	s := buildStatusLine(statusLineInput{state: stateConfirm})
-	p := plain(s)
-	if !strings.Contains(p, "confirming") {
-		t.Errorf("confirm state must say 'confirming'; got: %q", p)
+func TestStatusSegmentsReasoning(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{state: stateStreaming, reasoning: true})
+	if segs[0] != "• reasoning" {
+		t.Errorf("reasoning head = %q, want '• reasoning'", segs[0])
 	}
 }
 
-func TestBuildStatusLineAutoMode(t *testing.T) {
-	s := buildStatusLine(statusLineInput{state: stateIdle, autoApprove: true, hadTurn: true})
-	p := plain(s)
-	if !strings.Contains(p, "AUTO") {
-		t.Errorf("AUTO must appear when autoApprove; got: %q", p)
-	}
-	// AUTO must come before "awaiting input" (static modes before activity).
-	autoIdx := strings.Index(p, "AUTO")
-	awaitIdx := strings.Index(p, "awaiting")
-	if autoIdx > awaitIdx {
-		t.Errorf("AUTO should appear before 'awaiting input'; got: %q", p)
+func TestStatusSegmentsConfirm(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{state: stateConfirm})
+	if segs[0] != "• confirming" {
+		t.Errorf("confirm head = %q, want '• confirming'", segs[0])
 	}
 }
 
-func TestBuildStatusLineAutoDestructive(t *testing.T) {
-	s := buildStatusLine(statusLineInput{state: stateIdle, autoApprove: true, allowDestructive: true, hadTurn: true})
-	p := plain(s)
-	if !strings.Contains(p, "AUTO!") {
-		t.Errorf("AUTO! must appear when allowDestructive; got: %q", p)
-	}
-	// Without autoApprove the destructive flag alone renders nothing.
-	s = buildStatusLine(statusLineInput{state: stateIdle, allowDestructive: true, hadTurn: true})
-	if p := plain(s); strings.Contains(p, "AUTO") {
-		t.Errorf("no AUTO segment without autoApprove; got: %q", p)
+func TestStatusSegmentsAutoGlued(t *testing.T) {
+	// Dot glued to AUTO by a plain space; the state label glued on behind it —
+	// fixed slots 1+2, one head segment.
+	segs := statusSegTexts(statusLineInput{state: stateIdle, autoApprove: true, hadTurn: true})
+	if len(segs) != 1 || segs[0] != "• AUTO awaiting input" {
+		t.Errorf("head must be 'dot AUTO state' glued in fixed order; got: %v", segs)
 	}
 }
 
-func TestBuildStatusLineWorkflowLabel(t *testing.T) {
-	s := buildStatusLine(statusLineInput{
-		state:         stateStreaming,
-		workflowLabel: "implement 3/6",
+func TestStatusSegmentsAutoDestructive(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{state: stateIdle, autoApprove: true, allowDestructive: true, hadTurn: true})
+	if !strings.Contains(segs[0], "AUTO!") {
+		t.Errorf("AUTO! must appear when allowDestructive; got: %v", segs)
+	}
+	segs = statusSegTexts(statusLineInput{state: stateIdle, allowDestructive: true, hadTurn: true})
+	if strings.Contains(segs[0], "AUTO") {
+		t.Errorf("no AUTO segment without autoApprove; got: %v", segs)
+	}
+}
+
+func TestStatusSegmentsWorkflowLabel(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{state: stateStreaming, workflowLabel: "implement 3/6"})
+	if len(segs) != 2 || segs[1] != "plan implement 3/6" {
+		t.Errorf("workflow label must be 'plan <label>' segment; got: %v", segs)
+	}
+}
+
+func TestStatusSegmentsVolatileRight(t *testing.T) {
+	// Volatile segments (t/s, flash) must sit rightmost so they never shift
+	// the stable identity segments under the user's eyes.
+	segs := statusSegTexts(statusLineInput{
+		state: stateStreaming, model: "moonshotai/kimi-k3", tps: 45, flash: "copied 12",
 	})
-	p := plain(s)
-	if !strings.Contains(p, "plan implement 3/6") {
-		t.Errorf("workflow label must appear as 'plan <label>'; got: %q", p)
-	}
-	// Workflow label (static) must appear before activity (streaming).
-	planIdx := strings.Index(p, "plan")
-	streamIdx := strings.Index(p, "streaming")
-	if planIdx > streamIdx {
-		t.Errorf("workflow label should come before activity; got: %q", p)
-	}
-}
-
-func TestBuildStatusLineFullExample(t *testing.T) {
-	// • AUTO · plan 3/6 · streaming · 45 t/s
-	s := buildStatusLine(statusLineInput{
-		state:         stateStreaming,
-		autoApprove:   true,
-		workflowLabel: "3/6",
-		tps:           45,
-	})
-	p := plain(s)
-	for _, want := range []string{"•", "AUTO", "plan 3/6", "streaming", "45"} {
-		if !strings.Contains(p, want) {
-			t.Errorf("full example missing %q; got: %q", want, p)
+	mi, ti, fi := -1, -1, -1
+	for i, seg := range segs {
+		switch {
+		case strings.Contains(seg, "kimi"):
+			mi = i
+		case strings.Contains(seg, "t/s"):
+			ti = i
+		case strings.Contains(seg, "copied"):
+			fi = i
 		}
 	}
-}
-
-func TestBuildStatusLineTpsOnlyDuringStreaming(t *testing.T) {
-	// t/s should not appear when idle even if a value is set.
-	s := buildStatusLine(statusLineInput{state: stateIdle, tps: 45, hadTurn: true})
-	p := plain(s)
-	if strings.Contains(p, "45") {
-		t.Errorf("t/s must not appear when idle; got: %q", p)
+	if mi < 0 || ti < 0 || fi < 0 {
+		t.Fatalf("missing segments; got: %v", segs)
+	}
+	if !(mi < ti && ti < fi) {
+		t.Errorf("want model < t/s < flash (volatile right); got: %v", segs)
 	}
 }
 
-func TestBuildStatusLineDotAlwaysPresent(t *testing.T) {
+func TestStatusSegmentsDotAlwaysPresent(t *testing.T) {
 	for _, state := range []agentState{stateIdle, stateStreaming, stateConfirm, stateCompacting} {
-		s := buildStatusLine(statusLineInput{state: state})
-		if !strings.Contains(plain(s), "•") {
-			t.Errorf("dot missing in state %d", state)
+		segs := statusSegTexts(statusLineInput{state: state})
+		if !strings.HasPrefix(segs[0], "•") {
+			t.Errorf("dot missing in state %d: %v", state, segs)
 		}
 	}
 }
 
 // --- Backend segment (P29) ---
 
-func TestBuildStatusLineBackendOmittedWhenDefault(t *testing.T) {
-	// When backendUsed == backendDefault, the backend is not shown (reduce noise).
-	s := buildStatusLine(statusLineInput{
-		state:          stateIdle,
-		hadTurn:        true,
-		backendUsed:    "local",
-		backendDefault: "local",
+func TestStatusSegmentsBackendOmittedWhenDefault(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{
+		state: stateIdle, hadTurn: true, backendUsed: "local", backendDefault: "local",
 	})
-	p := plain(s)
-	if strings.Contains(p, "local") {
-		t.Errorf("default backend should be omitted from status line; got %q", p)
-	}
-	if !strings.Contains(p, "awaiting") {
-		t.Error("awaiting input should still appear")
+	for _, s := range segs {
+		if strings.Contains(s, "local") {
+			t.Errorf("default backend should be omitted; got %v", segs)
+		}
 	}
 }
 
-func TestBuildStatusLineBackendShownWhenNonDefault(t *testing.T) {
-	// backendUsed != backendDefault: show at normal brightness.
-	s := buildStatusLine(statusLineInput{
-		state:          stateIdle,
-		hadTurn:        true,
-		backendUsed:    "openrouter",
-		backendDefault: "local",
+func TestStatusSegmentsBackendShownWhenNonDefault(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{
+		state: stateIdle, hadTurn: true, backendUsed: "openrouter", backendDefault: "local",
 	})
-	p := plain(s)
-	if !strings.Contains(p, "openrouter") {
-		t.Errorf("non-default backend should appear in status line; got %q", p)
+	found := false
+	for _, s := range segs {
+		if s == "openrouter" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("non-default backend should appear; got %v", segs)
 	}
 }
 
-func TestBuildStatusLineBackendOverrideMarker(t *testing.T) {
-	// backendRequested != backendUsed: proxy overrode — show with "!" marker.
-	s := buildStatusLine(statusLineInput{
-		state:            stateIdle,
-		hadTurn:          true,
-		backendUsed:      "openrouter",
-		backendRequested: "together",
-		backendDefault:   "",
+func TestStatusSegmentsBackendOverrideMarker(t *testing.T) {
+	segs := statusSegTexts(statusLineInput{
+		state: stateIdle, hadTurn: true,
+		backendUsed: "openrouter", backendRequested: "together", backendDefault: "",
 	})
-	p := plain(s)
-	if !strings.Contains(p, "openrouter!") {
-		t.Errorf("override marker expected; got %q", p)
+	found := false
+	for _, s := range segs {
+		if s == "openrouter!" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("override marker expected; got %v", segs)
 	}
 }
 
-func TestBuildStatusLineBackendOmittedWhenEmpty(t *testing.T) {
-	// No backendUsed header: nothing backend-related shown.
-	s := buildStatusLine(statusLineInput{
-		state:   stateIdle,
-		hadTurn: true,
-	})
-	p := plain(s)
-	// Should not contain "!" or any backend label.
-	if strings.Contains(p, "!") {
-		t.Errorf("no backend header means no override marker; got %q", p)
+// --- flowSegments (status line packing) ---
+
+func TestFlowSegmentsOneLineWhenFits(t *testing.T) {
+	rows := flowSegments([]string{"• AUTO", "model", "ctx ⣿ 0k"}, 120)
+	if len(rows) != 1 {
+		t.Fatalf("should fit on one row; got %d: %v", len(rows), rows)
+	}
+	if plain(rows[0]) != "• AUTO · model · ctx ⣿ 0k" {
+		t.Errorf("joined with separators; got %q", plain(rows[0]))
 	}
 }
 
-func TestBuildStatusLineBackendBeforeAuto(t *testing.T) {
-	// Backend segment (static) must appear before AUTO.
-	s := buildStatusLine(statusLineInput{
-		state:          stateIdle,
-		autoApprove:    true,
-		hadTurn:        true,
-		backendUsed:    "openrouter",
-		backendDefault: "local",
-	})
-	p := plain(s)
-	backendIdx := strings.Index(p, "openrouter")
-	autoIdx := strings.Index(p, "AUTO")
-	if backendIdx < 0 || autoIdx < 0 {
-		t.Fatalf("both backend and AUTO must appear; got %q", p)
+func TestFlowSegmentsWrapsToTwo(t *testing.T) {
+	// Each segment ~10 wide; w=25 fits two per row → 2 rows for 3 segments.
+	rows := flowSegments([]string{"aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"}, 25)
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows; got %d: %v", len(rows), rows)
 	}
-	if backendIdx > autoIdx {
-		t.Errorf("backend segment should come before AUTO; got %q", p)
+	if plain(rows[0]) != "aaaaaaaaaa · bbbbbbbbbb" {
+		t.Errorf("row 1 packs until full; got %q", plain(rows[0]))
+	}
+	if plain(rows[1]) != "cccccccccc" {
+		t.Errorf("overflow segment moves wholesale to row 2; got %q", plain(rows[1]))
+	}
+}
+
+func TestFlowSegmentsNeverExceedsTwoRows(t *testing.T) {
+	var segs []string
+	for i := 0; i < 12; i++ {
+		segs = append(segs, strings.Repeat(string(rune('a'+i)), 10))
+	}
+	rows := flowSegments(segs, 30)
+	if len(rows) != 2 {
+		t.Fatalf("status zone caps at 2 rows; got %d", len(rows))
+	}
+	// Dropped segments leave an ellipsis on the last row.
+	if !strings.Contains(plain(rows[1]), "…") {
+		t.Errorf("dropped segments should leave an ellipsis; got %q", plain(rows[1]))
+	}
+	for i, r := range rows {
+		if w := lipgloss.Width(plain(r)); w > 30 {
+			t.Errorf("row %d exceeds width: %d > 30 (%q)", i, w, plain(r))
+		}
+	}
+}
+
+func TestFlowSegmentsOversizedSingleSegment(t *testing.T) {
+	rows := flowSegments([]string{strings.Repeat("x", 50)}, 20)
+	if len(rows) != 1 {
+		t.Fatalf("one row; got %d", len(rows))
+	}
+	if w := lipgloss.Width(plain(rows[0])); w > 20 {
+		t.Errorf("oversized segment must be truncated in place: %d cols", w)
+	}
+}
+
+func TestFlowSegmentsDropsRightmostSuffixNotMiddle(t *testing.T) {
+	// Row 2 fits "small2" but NOT "wide…": the wide segment and everything
+	// after it must be dropped — a later smaller segment must never leapfrog
+	// a dropped middle one.
+	segs := []string{"aaa", "bbb", "small2", "widewidewidewide", "ccc"}
+	rows := flowSegments(segs, 16) // row1: "aaa · bbb · small2"=18>16 → row1 "aaa · bbb", row2 "small2" then wide drops
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows; got %d: %v", len(rows), rows)
+	}
+	r2 := plain(rows[1])
+	if strings.Contains(r2, "ccc") {
+		t.Errorf("later segment must not survive a dropped middle one; row2=%q", r2)
+	}
+	if strings.Contains(r2, "widewide") {
+		t.Errorf("dropped wide segment should not appear; row2=%q", r2)
+	}
+	if !strings.Contains(r2, "small2") {
+		t.Errorf("fitting segment keeps its place; row2=%q", r2)
+	}
+	if !strings.Contains(r2, "…") {
+		t.Errorf("ellipsis marks the drop; row2=%q", r2)
+	}
+}
+
+func TestFlowSegmentsAnsiStyledSegments(t *testing.T) {
+	// Colored segments: packing must be ANSI-aware (lipgloss.Width) and never
+	// leak a partial escape sequence into the visible width math.
+	red := lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("REDRED")
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("dimdim")
+	rows := flowSegments([]string{red, dim, "plain"}, 14)
+	for i, r := range rows {
+		if w := lipgloss.Width(r); w > 14 {
+			t.Errorf("row %d styled width %d > 14", i, w)
+		}
+	}
+}
+
+func TestFlowSegmentsPathologicalWidths(t *testing.T) {
+	segs := []string{"• AUTO", "model", "ctx ⣿ 0k", "hist 1 2k"}
+	for _, w := range []int{1, 2, 3, 5, 8} {
+		rows := flowSegments(segs, w)
+		if len(rows) == 0 || len(rows) > 2 {
+			t.Errorf("w=%d: rows=%d, want 1..2", w, len(rows))
+		}
+		for i, r := range rows {
+			if got := lipgloss.Width(r); got > w+1 { // +1 slack for the ellipsis cell
+				t.Errorf("w=%d row %d = %d cols %q", w, i, got, plain(r))
+			}
+		}
+	}
+}
+
+func TestFlowSegmentsSingleSegmentPerRowWhenForced(t *testing.T) {
+	// Width fits exactly one segment per row: head on row 1, next on row 2,
+	// the rest dropped with ellipsis.
+	rows := flowSegments([]string{"aaaa", "bbbb", "cccc"}, 4)
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows; got %d: %v", len(rows), rows)
+	}
+	if plain(rows[0]) != "aaaa" {
+		t.Errorf("row1 = %q, want head only", plain(rows[0]))
+	}
+	// Row 2: "bbbb" doesn't fit with the drop ellipsis, so it truncates to
+	// "bbb…" — the ellipsis cell is reserved out of the width budget.
+	if !strings.Contains(plain(rows[1]), "bbb") || !strings.Contains(plain(rows[1]), "…") {
+		t.Errorf("row2 = truncated second segment + ellipsis; got %q", plain(rows[1]))
+	}
+	if w := lipgloss.Width(plain(rows[1])); w > 4 {
+		t.Errorf("row2 width %d exceeds 4", w)
+	}
+}
+
+// --- statusLines integration (model → rows) ---
+
+func TestStatusLinesSearchOwnsRow(t *testing.T) {
+	m := layoutModel(100, 40)
+	m.searchActive = true
+	m.searchQuery = "git"
+	m.inputHistory = []string{"git commit"}
+	m.searchIdx = 0
+	lines := m.statusLines()
+	if len(lines) != 1 {
+		t.Fatalf("search = 1 row; got %d", len(lines))
+	}
+	if !strings.Contains(plain(lines[0]), "reverse-i-search") {
+		t.Errorf("search prompt should own the status row; got %q", plain(lines[0]))
+	}
+	if m.statusRows() != 1 {
+		t.Errorf("statusRows() = %d during search, want 1", m.statusRows())
+	}
+}
+
+func TestStatusRowsAgreesWithStatusLines(t *testing.T) {
+	// The layout path must reserve exactly what the renderer produces across
+	// widths and content mixes.
+	for _, w := range []int{24, 40, 60, 80, 120, 200} {
+		m := layoutModel(w, 40)
+		m.app = nil // dot-only path
+		if got, want := m.statusRows(), len(m.statusLines()); got != want {
+			t.Errorf("w=%d nil-app: statusRows()=%d, len(statusLines())=%d", w, got, want)
+		}
 	}
 }
 
