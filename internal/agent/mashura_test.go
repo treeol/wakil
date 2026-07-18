@@ -285,6 +285,12 @@ func TestDetectStruggle(t *testing.T) {
 	if s, d := DetectStruggle([]ToolTraceEntry{w, ok, w, ok, w}); !d || !strings.Contains(s, "rewrote") {
 		t.Errorf("three rewrites should trigger; got %q, %v", s, d)
 	}
+	// Empty Abbrev (tool-call name lost to stream corruption) must be called
+	// out as such, not rendered as a misleading `shell ""`.
+	lost := ToolTraceEntry{Abbrev: "", Command: "", ExitErr: true, FirstLine: "ERROR: could not parse arguments"}
+	if s, d := DetectStruggle([]ToolTraceEntry{lost, lost}); !d || !strings.Contains(s, "name lost") {
+		t.Errorf("empty tool name should be flagged as stream corruption; got %q, %v", s, d)
+	}
 }
 
 func ok2() ToolTraceEntry { return ToolTraceEntry{Abbrev: "list", Command: "."} }

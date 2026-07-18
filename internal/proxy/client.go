@@ -317,6 +317,13 @@ type streamChunk struct {
 		// models. Zero when absent (non-Anthropic models, older servers).
 		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
+	// Error is OpenRouter's mid-stream error shape: a chunk carrying
+	// {"error": {...}} instead of choices. Surfacing it beats letting the
+	// stream end without [DONE] and reporting a generic truncation.
+	Error *struct {
+		Message string `json:"message"`
+		Code    any    `json:"code"` // int or string depending on provider
+	} `json:"error"`
 }
 
 // UsageStat is the token usage for the most recent Stream call. Exact is true
@@ -481,10 +488,12 @@ type Client struct {
 	// stubbed to fit before sending. 0 = disabled.
 	MaxRequestBytes int
 
-	// droppedChunks counts SSE chunks that failed to parse as JSON during
-	// streaming. Logged every 100th drop to avoid flooding the log.
-	// Atomic — written from the stream loop, readable for diagnostics.
-	droppedChunks int64
+	// malformedChunks counts SSE data chunks that failed to parse as JSON.
+	// Each one aborts its stream as ErrBackendStream and is logged to stderr
+	// with its byte offset (fail-fast — a lost chunk corrupts the accumulated
+	// tool-call arguments). Atomic — written from the stream loop, readable
+	// for diagnostics.
+	malformedChunks int64
 }
 
 // LastUsage returns the token usage recorded by the most recent Stream call.
@@ -877,28 +886,50 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// appears to produce an empty response and the error is misdiagnosed.
 	var finishReason string
 
+	// sawDone records whether the stream's terminal [DONE] marker arrived.
+	// Without it, a connection that closes cleanly mid-stream (EOF without a
+	// transport error) is indistinguishable from a completed stream — the
+	// truncated partial message would be returned as success.
+	var sawDone bool
+
 	// Bounded SSE line reader: a malformed/malicious stream sending a line
 	// larger than maxSSELineSize is rejected with an error instead of
 	// causing unbounded memory growth.
 	const maxSSELineSize = 10 * 1024 * 1024 // 10 MB
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
+	var bytesRead int // approximate SSE bytes consumed, for error offsets
 	for scanner.Scan() {
 		s := strings.TrimRight(scanner.Text(), "\r")
+		bytesRead += len(s) + 1 // +1 for the consumed newline
 		if !strings.HasPrefix(s, "data:") {
 			continue
 		}
 		data := strings.TrimSpace(s[len("data:"):])
 		if data == "[DONE]" {
+			sawDone = true
 			break
 		}
 		var chunk streamChunk
-		if json.Unmarshal([]byte(data), &chunk) != nil {
-			n := atomic.AddInt64(&c.droppedChunks, 1)
-			if n%100 == 0 {
-				fmt.Fprintf(os.Stderr, "proxy: %d SSE chunks dropped (malformed JSON)\n", n)
-			}
-			continue
+		if jerr := json.Unmarshal([]byte(data), &chunk); jerr != nil {
+			// A malformed data chunk means the accumulated message is
+			// incomplete: tool-call arguments arrive fragmented across chunks
+			// and are concatenated — a lost fragment leaves a hole in the JSON
+			// (or loses the tool name, which travels only in the first chunk
+			// per index). Abort as retryable instead of returning corrupted
+			// tool calls as success. Safe to fail unconditionally: only data:
+			// lines reach this point (comments/keepalives/event lines are
+			// skipped above) and [DONE] is handled before the parse.
+			atomic.AddInt64(&c.malformedChunks, 1)
+			fmt.Fprintf(os.Stderr, "proxy: malformed SSE chunk at byte %d: %v — aborting stream\n", bytesRead, jerr)
+			return Message{}, wrapStreamErr(fmt.Errorf("malformed SSE chunk at byte %d: %v", bytesRead, jerr))
+		}
+		// OpenRouter-style mid-stream error chunk: {"error": {...}}. Surface
+		// its message instead of letting the stream fizzle into a generic
+		// "ended without [DONE]" truncation error. Retryable: these are
+		// typically provider-rate-limit or upstream failures.
+		if chunk.Error != nil {
+			return Message{}, wrapStreamErr(fmt.Errorf("backend sent mid-stream error: %s (code %v)", chunk.Error.Message, chunk.Error.Code))
 		}
 		// Usage may arrive on a trailing chunk whose Choices is empty, so
 		// it is read independently of the delta below.
@@ -960,10 +991,21 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		return Message{}, wrapStreamErr(fmt.Errorf("SSE stream: %w", err))
 	}
 
+	// A stream that ends without [DONE] was truncated: the connection closed
+	// cleanly mid-generation (no transport error), so the loop above exited
+	// normally with a partial message. Returning it as success would hand
+	// corrupted tool-call arguments (or truncated content) to the caller —
+	// fail as retryable instead. All OpenAI-compatible servers terminate
+	// streams with data: [DONE].
+	if !sawDone {
+		return Message{}, wrapStreamErr(fmt.Errorf("SSE stream ended without [DONE] marker — response truncated after ~%d bytes", bytesRead))
+	}
+
 	// Check finish_reason: if the model hit the token limit ("length") and
 	// produced no content (typical for reasoning models that exhaust the budget
 	// on thinking), surface a clear, actionable error instead of returning an
 	// empty message that triggers a generic "empty response" path downstream.
+	// NOT retryable: resending the same request hits the same budget.
 	if finishReason == "length" && content.Len() == 0 && len(order) == 0 {
 		return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) — increase max_tokens for this endpoint in config.json (endpoints.<name>.max_tokens); /model only changes the model name, not the token budget",
 			ErrBackendFatal)
@@ -992,7 +1034,64 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	for _, i := range order {
 		msg.ToolCalls = append(msg.ToolCalls, *acc[i])
 	}
+
+	// Token-budget exhaustion while tool calls were streaming: if any
+	// accumulated arguments are incomplete, the cause is the budget — surface
+	// the actionable fatal message (retrying identically hits the same limit),
+	// not the generic integrity error. Complete-valid calls fall through to
+	// the normal integrity check and post-check handling.
+	if finishReason == "length" {
+		for i := range msg.ToolCalls {
+			tc := &msg.ToolCalls[i]
+			if !argsAreValidObject(tc.Function.Arguments) {
+				return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) while streaming tool call %q — arguments are truncated; increase max_tokens for this endpoint in config.json (endpoints.<name>.max_tokens)",
+					ErrBackendFatal, tc.Function.Name)
+			}
+		}
+	}
+
+	// Final integrity check: defense in depth against any corruption path the
+	// guards above missed (e.g. a provider that omits [DONE] after a complete
+	// message, or backend-side generation glitches). Every tool call must have
+	// a name (it travels only in the first chunk per index — its loss means a
+	// lost chunk) and object-shaped JSON arguments (empty string is tolerated:
+	// some models emit it for zero-argument tools). Note the explicit opening
+	// brace: json.Unmarshal of "null" into a map SUCCEEDS (nil map), so a
+	// bare Unmarshal check would wave through a truncated-to-"null" payload.
+	// Tool handlers unmarshal arguments downstream, so anything invalid here
+	// would surface there as a confusing per-tool error; failing the stream
+	// lets the retry machinery resend the whole turn instead.
+	for i := range msg.ToolCalls {
+		tc := &msg.ToolCalls[i]
+		if tc.Function.Name == "" {
+			return Message{}, wrapStreamErr(fmt.Errorf("tool call %d arrived without a function name (lost stream chunk?)", i))
+		}
+		if !argsAreValidObject(tc.Function.Arguments) {
+			return Message{}, wrapStreamErr(fmt.Errorf("tool call %q has invalid or non-object JSON arguments", tc.Function.Name))
+		}
+	}
+
+	// Budget exhaustion AFTER complete-valid tool calls (the model finished
+	// the call, then died on trailing content): the turn is still incomplete.
+	if finishReason == "length" && len(msg.ToolCalls) > 0 {
+		return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) after streaming tool call %q — the turn is incomplete; increase max_tokens for this endpoint in config.json (endpoints.<name>.max_tokens)",
+			ErrBackendFatal, msg.ToolCalls[0].Function.Name)
+	}
 	return msg, nil
+}
+
+// argsAreValidObject reports whether s is empty (tolerated: some models emit
+// it for zero-argument tools) or a valid JSON object.
+func argsAreValidObject(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	if !strings.HasPrefix(s, "{") {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	return json.Unmarshal([]byte(s), &obj) == nil
 }
 
 // trimToolResults replaces the content of the largest tool-role messages with

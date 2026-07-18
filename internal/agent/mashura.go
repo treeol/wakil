@@ -771,6 +771,17 @@ func (a *App) mashuraMaxTokensFor(name string) int {
 	return base
 }
 
+// displayAbbrev renders a trace entry's tool abbreviation for symptoms. An
+// empty Abbrev means the tool-call name was lost in transit (stream chunk
+// dropped before the name fragment arrived) — say so instead of printing a
+// misleading `shell ""` / `subagent ""`.
+func displayAbbrev(abbrev string) string {
+	if abbrev == "" {
+		return "tool (name lost — stream corruption?)"
+	}
+	return abbrev
+}
+
 // detectStruggle scans recent tool traces for a deterministic struggle signal and,
 // when found, returns a prefilled symptom string for mashura__debug. Signals: a
 // streak of two consecutive failures; the same command run twice in a row; or the
@@ -786,7 +797,7 @@ func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
 
 	// EXIT≠0 streak: the two most recent calls both failed.
 	if last.ExitErr && prev.ExitErr {
-		s := fmt.Sprintf("repeated failures: %s %q keeps exiting non-zero", last.Abbrev, last.Command)
+		s := fmt.Sprintf("repeated failures: %s %q keeps exiting non-zero", displayAbbrev(last.Abbrev), last.Command)
 		if last.FirstLine != "" {
 			s += " — " + last.FirstLine
 		}
@@ -794,7 +805,7 @@ func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
 	}
 	// Same command twice in a row with no intervening progress.
 	if last.Command != "" && last.Command == prev.Command && last.Abbrev == prev.Abbrev {
-		return fmt.Sprintf("ran %s %q twice with no progress", last.Abbrev, last.Command), true
+		return fmt.Sprintf("ran %s %q twice with no progress", displayAbbrev(last.Abbrev), last.Command), true
 	}
 	// Repeated rewrites of the same file across the window.
 	counts := map[string]int{}
