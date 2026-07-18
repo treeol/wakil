@@ -525,14 +525,13 @@ func TestExecuteToolCall_RunBackground_CapEnforced(t *testing.T) {
 		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 		Cfg:     config.DefaultConfig(),
-		bgProcs: map[string]*bgEntry{
+		bgRegistry: bgRegistry{bgProcs: map[string]*bgEntry{
 			"bg1": {pid: 101, generation: 1},
 			"bg2": {pid: 102, generation: 1},
 			"bg3": {pid: 103, generation: 1},
 			"bg4": {pid: 104, generation: 1},
 			"bg5": {pid: 105, generation: 1},
-		},
-		bgCounter: 5,
+		}, bgCounter: 5},
 	}
 
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{

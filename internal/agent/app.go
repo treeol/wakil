@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/browser"
@@ -243,15 +242,9 @@ type App struct {
 	// which the end-of-turn nudge has already been shown — prevents repeats.
 	learnNudgedQueries map[string]bool
 
-	// B3: background process registry.
-	// bgMu protects bgProcs and bgCounter. Written in turn handlers (run_background,
-	// kill_process, read_process_log), read in shutdown (StopAllBackgroundProcs).
-	// Do NOT hold the lock while waiting on process exit — copy references under
-	// lock, then signal/wait outside.
-	bgMu      sync.RWMutex
-	bgProcs   map[string]*bgEntry
-	bgCounter int
-	bgLogDir  string // per-session temp dir for bg process logs; cleaned up in StopAllBackgroundProcs
+	// B3: background process registry. Extracted to bg_registry.go (WP-6.3);
+	// embedded here so selector access (a.bgProcs, a.bgMu, ...) is unchanged.
+	bgRegistry
 
 	// Workflow is set while a /plan workflow is active. Nil when no workflow is
 	// running. Cleared when the workflow reaches WFDone or the user aborts it.
@@ -358,7 +351,9 @@ type App struct {
 	// probes against overridden subagent endpoints: concurrent dispatch_subagent
 	// workers targeting the same endpoint+backend fire at most one /props or
 	// /v1/ilm/limits request. A pointer field (not an embedded mutex value)
-	// keeps App itself safe to copy by value, as some tests do.
+	// avoids adding another lock to App's memory layout. Note: App already
+	// contains a mutex (bgRegistry.bgMu), so App must not be copied by value
+	// after use — no test does so.
 	//
 	// MAIN GOROUTINE ONLY to set: ensureSubagentLimitsCache() populates it
 	// before any worker goroutine spawns (Phase A of runParallelSubagentBlock,

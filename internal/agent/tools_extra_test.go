@@ -277,14 +277,13 @@ func TestBgCapEnforced(t *testing.T) {
 		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 		Cfg:     config.DefaultConfig(),
-		bgProcs: map[string]*bgEntry{
+		bgRegistry: bgRegistry{bgProcs: map[string]*bgEntry{
 			"bg1": {pid: 101, generation: 1},
 			"bg2": {pid: 102, generation: 1},
 			"bg3": {pid: 103, generation: 1},
 			"bg4": {pid: 104, generation: 1},
 			"bg5": {pid: 105, generation: 1},
-		},
-		bgCounter: 5,
+		}, bgCounter: 5},
 	}
 	res := app2.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "run_background", Arguments: `{"command":"sleep 99","label":"test"}`,
@@ -329,9 +328,9 @@ func TestGenerationStaleness(t *testing.T) {
 	app := &App{
 		Exec: exec,
 		Out:  io.Discard,
-		bgProcs: map[string]*bgEntry{
+		bgRegistry: bgRegistry{bgProcs: map[string]*bgEntry{
 			"bg1": {id: "bg1", pid: 999, generation: 0}, // old generation
-		},
+		}},
 	}
 	// read_process_log on stale entry should report "process lost"
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
@@ -346,9 +345,9 @@ func TestGenerationStaleness(t *testing.T) {
 		Exec:    exec,
 		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
-		bgProcs: map[string]*bgEntry{
+		bgRegistry: bgRegistry{bgProcs: map[string]*bgEntry{
 			"bg1": {id: "bg1", pid: 999, generation: 0},
-		},
+		}},
 	}
 	res2 := app2.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "kill_process", Arguments: `{"id":"bg1"}`,
@@ -377,9 +376,9 @@ func TestReadProcessLogCapEnforced(t *testing.T) {
 	app := &App{
 		Exec: exe,
 		Out:  io.Discard,
-		bgProcs: map[string]*bgEntry{
+		bgRegistry: bgRegistry{bgProcs: map[string]*bgEntry{
 			"bg1": {id: "bg1", pid: 42, label: "srv", logPath: "/tmp/bg.log", generation: 1},
-		},
+		}},
 	}
 
 	result := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
@@ -493,14 +492,13 @@ func TestBgCapDeadEntriesDontCount(t *testing.T) {
 		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 		Cfg:     config.DefaultConfig(),
-		bgProcs: map[string]*bgEntry{
+		bgRegistry: bgRegistry{bgProcs: map[string]*bgEntry{
 			"bg1": {pid: 101, generation: 1},
 			"bg2": {pid: 102, generation: 1},
 			"bg3": {pid: 103, generation: 1},
 			"bg4": {pid: 104, generation: 1}, // dead
 			"bg5": {pid: 105, generation: 1}, // dead
-		},
-		bgCounter: 5,
+		}, bgCounter: 5},
 	}
 
 	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
@@ -568,9 +566,9 @@ func TestStopAllBackgroundProcs_NoDoneChannel_NilSafe(t *testing.T) {
 		Exec: exe,
 		Out:  io.Discard,
 		Cfg:  config.DefaultConfig(),
-		bgProcs: map[string]*bgEntry{
+		bgRegistry: bgRegistry{bgProcs: map[string]*bgEntry{
 			"bg1": {id: "bg1", pid: 100, pgid: 100, generation: 1}, // no done channel
-		},
+		}},
 	}
 	// Should not panic and should return quickly since nil done channels
 	// are skipped in the wait loop.

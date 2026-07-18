@@ -262,9 +262,9 @@ func TestExecuteToolCall_ReadProcessLog(t *testing.T) {
 		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 		Cfg:     config.DefaultConfig(),
-		bgProcs: map[string]*bgEntry{
+		bgRegistry: bgRegistry{bgProcs: map[string]*bgEntry{
 			"bg1": {id: "bg1", pid: 42, label: "srv", logPath: "/tmp/bg.log", generation: 1},
-		},
+		}},
 	}
 
 	res := app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
