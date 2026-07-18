@@ -142,13 +142,9 @@ type tuiModel struct {
 	// Interactive session browser opened by bare "/resume" (see resume_picker.go).
 	resumePicker resumePickerState
 
-	// Subagent tabs. subCur=-1 means the main sidebar tab is active.
-	// A tab is "running" iff !tab.done — multiple tabs may run concurrently
-	// (parallel subagent dispatch), so there is no single "running tab" field;
-	// chunk/done messages are routed by ChatID.
-	subTabs []*subTab
-	subCur  int // -1 = main, 0..n-1 = subTabs index
-	subSeq  int // auto-increment for label generation (s1, s2, …)
+	// Subagent tab state (subTabs, subCur, subSeq). Extracted to subagent_model.go
+	// (WP-6.6); embedded so selector access is unchanged.
+	subAgentModel
 
 	width, height int
 	ready         bool
@@ -207,8 +203,10 @@ type subTab struct {
 // without bound nor lose a live stream or the one the user is watching. With
 // parallel dispatch several tabs may be running at once — all are protected.
 // A tab that is finished (display-only early event) but not yet done
-// (authoritative SubagentDoneMsg pending) is also protected: its authoritative
-// event is still in flight and pruning it would lose the finalization.
+// (authoritative SubagentDoneMsg pending) is protected in the FIRST pass (only
+// done tabs are dropped). But if there aren't enough done tabs to reach the cap,
+// a second pass may drop finished-but-not-done tabs as a last resort (still
+// never running or focused tabs) — see the fallback loop below.
 func pruneSubTabs(tabs []*subTab, focusN, max int) []*subTab {
 	if len(tabs) <= max {
 		return tabs
@@ -292,7 +290,9 @@ func NewTUIModel(app *agent.App) tuiModel {
 		items:      &items,
 		streaming:  &strings.Builder{},
 		imageChips: &[]string{},
-		subCur:     -1,
+		subAgentModel: subAgentModel{
+			subCur: -1,
+		},
 		reasoningModel: reasoningModel{
 			reasoning: &strings.Builder{},
 		},
