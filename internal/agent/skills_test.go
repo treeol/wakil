@@ -51,7 +51,7 @@ func TestSkillsProfile_SaveAndGet(t *testing.T) {
 	sp := openTestSkillProfile(t)
 	ctx := context.Background()
 
-	e, err := sp.putActiveSkill(ctx, "commit-conventions", "Use conventional commits.", "main", "sess1", memory.TaintFalse, "")
+	e, err := sp.putActiveSkill(ctx, "commit-conventions", "Use conventional commits.", "main", "sess1", memory.TaintFalse, false, "")
 	if err != nil {
 		t.Fatalf("putActiveSkill: %v", err)
 	}
@@ -81,10 +81,10 @@ func TestSkillsProfile_UpdateSupersedes(t *testing.T) {
 	sp := openTestSkillProfile(t)
 	ctx := context.Background()
 
-	if _, err := sp.putActiveSkill(ctx, "k", "v1", "main", "s", memory.TaintFalse, ""); err != nil {
+	if _, err := sp.putActiveSkill(ctx, "k", "v1", "main", "s", memory.TaintFalse, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	e2, err := sp.putActiveSkill(ctx, "k", "v2", "main", "s", memory.TaintFalse, "")
+	e2, err := sp.putActiveSkill(ctx, "k", "v2", "main", "s", memory.TaintFalse, true, "")
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -117,13 +117,13 @@ func TestSkillsProfile_ValueCap(t *testing.T) {
 
 	// Over 64 KiB but under 256 KiB succeeds (skills raise the memory cap).
 	big := strings.Repeat("x", 100*1024)
-	if _, err := sp.putActiveSkill(ctx, "big", big, "main", "s", memory.TaintFalse, ""); err != nil {
+	if _, err := sp.putActiveSkill(ctx, "big", big, "main", "s", memory.TaintFalse, false, ""); err != nil {
 		t.Errorf("100 KiB skill should succeed: %v", err)
 	}
 
 	// Over 256 KiB fails.
 	huge := strings.Repeat("x", skillValueMaxBytes+1)
-	if _, err := sp.putActiveSkill(ctx, "huge", huge, "main", "s", memory.TaintFalse, ""); err == nil {
+	if _, err := sp.putActiveSkill(ctx, "huge", huge, "main", "s", memory.TaintFalse, false, ""); err == nil {
 		t.Error(">256 KiB skill should fail")
 	}
 }
@@ -133,7 +133,7 @@ func TestSkillsProfile_KeyValidation(t *testing.T) {
 	ctx := context.Background()
 
 	for _, bad := range []string{"", "a/b", "a\\b"} {
-		if _, err := sp.putActiveSkill(ctx, bad, "v", "main", "s", memory.TaintFalse, ""); err == nil {
+		if _, err := sp.putActiveSkill(ctx, bad, "v", "main", "s", memory.TaintFalse, false, ""); err == nil {
 			t.Errorf("key %q should be rejected", bad)
 		}
 	}
@@ -143,7 +143,7 @@ func TestSkillsProfile_ForgetTombstones(t *testing.T) {
 	sp := openTestSkillProfile(t)
 	ctx := context.Background()
 
-	if _, err := sp.putActiveSkill(ctx, "gone", "v", "main", "s", memory.TaintFalse, ""); err != nil {
+	if _, err := sp.putActiveSkill(ctx, "gone", "v", "main", "s", memory.TaintFalse, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := sp.forgetSkill(ctx, "gone"); err != nil {
@@ -172,10 +172,10 @@ func TestSkillsProfile_ListAndSearch(t *testing.T) {
 	sp := openTestSkillProfile(t)
 	ctx := context.Background()
 
-	if _, err := sp.putActiveSkill(ctx, "git-flow", "How we use git.", "main", "s", memory.TaintFalse, ""); err != nil {
+	if _, err := sp.putActiveSkill(ctx, "git-flow", "How we use git.", "main", "s", memory.TaintFalse, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sp.putActiveSkill(ctx, "code-style", "Formatting rules.", "main", "s", memory.TaintFalse, ""); err != nil {
+	if _, err := sp.putActiveSkill(ctx, "code-style", "Formatting rules.", "main", "s", memory.TaintFalse, false, ""); err != nil {
 		t.Fatal(err)
 	}
 

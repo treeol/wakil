@@ -9,37 +9,63 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
-// PutSkillActive writes an immediately-active DURABLE entry, superseding any
-// existing active entry for the same key. It differs from PutActive in two
-// ways, both deliberate:
+// skillStoreValueMaxBytes is the per-skill content cap enforced at the STORE
+// boundary by PutSkillActive. It matches the agent-side skillsProfile cap
+// (256 KiB) so the ceiling holds even if a caller bypasses the wrapper. The
+// memory store's own 64 KiB maxValueLen invariant is untouched — this is a
+// skill-specific ceiling for the global reference-doc store.
+const skillStoreValueMaxBytes = 256 * 1024
+
+// ErrSkillExists is returned by PutSkillActive with expectExists=false when an
+// active skill already exists for the key (create-only violated).
+var ErrSkillExists = errors.New("memory: skill already exists")
+
+// ErrSkillNotFound is returned by PutSkillActive with expectExists=true when no
+// active skill exists for the key (update-requires-existing violated), and by
+// ForgetSkill when the expected active row is gone.
+var ErrSkillNotFound = errors.New("memory: skill not found")
+
+// PutSkillActive writes an immediately-active DURABLE entry, enforcing the
+// create/update invariant ATOMICALLY inside the transaction.
 //
-//  1. No 64 KiB value cap. Skills are reference docs (templates, runbooks,
-//     specs) — larger than remembered facts. The 256 KiB skill cap is
-//     enforced by the caller (skillsProfile), so this method intentionally
-//     skips validateValue. The store's own validateValue / maxValueLen
-//     invariant for memory entries is untouched.
+// expectExists selects the mode:
+//   - false (create): the transaction FAILS with ErrSkillExists if an active
+//     row already exists for the key. This makes save_skill's create-only
+//     guarantee race-safe — a concurrent save in another process cannot turn
+//     this write into a silent supersede, because the existence check happens
+//     in the same transaction as the insert, not in a handler pre-check.
+//   - true (update): the transaction FAILS with ErrSkillNotFound if no active
+//     row exists. This makes update_skill's requires-existing guarantee
+//     race-safe — a concurrent forget cannot turn this write into a fresh
+//     create with a broken supersedes chain.
+//
+// It differs from PutActive in these ways, all deliberate:
+//
+//  1. No 64 KiB value cap, but a 256 KiB skill cap enforced HERE at the store
+//     boundary (skillValueMaxBytes below) so the ceiling holds even if a future
+//     caller bypasses the agent-side skillsProfile wrapper. The memory store's
+//     own 64 KiB validateValue invariant is untouched.
 //  2. No anchors, no expiry. Global skills have no stable workspace root to
 //     anchor against, and they never expire (durable, no TTL).
 //
-// The kind is set by the caller (e.g. "skill"). The supersede ordering
-// discipline matches PutActive: supersede the old active entry FIRST, then
-// INSERT, then set superseded_by — the partial unique index
-// (idx_one_active_per_key) aborts the transaction if two active rows for the
-// same key ever coexist.
-func (s *Store) PutSkillActive(ctx context.Context, key, value, kind, writer, sessionID string, tainted int, note string) (*Entry, error) {
+// The supersede ordering discipline matches PutActive: supersede the old
+// active entry FIRST, then INSERT, then set superseded_by — the partial unique
+// index (idx_one_active_per_key) aborts the transaction if two active rows for
+// the same key ever coexist.
+func (s *Store) PutSkillActive(ctx context.Context, key, value, kind, writer, sessionID string, tainted int, expectExists bool, note string) (*Entry, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
-	// NOTE: validateValue (64 KiB cap) deliberately NOT called — see doc comment.
-	// Non-emptiness IS enforced here at the store boundary so the invariant
-	// holds even if a future caller bypasses the skillsProfile wrapper. The
-	// 256 KiB ceiling stays wrapper-level (store_skills policy), but an empty
-	// skill is meaningless in all cases.
+	// Enforce the skill value cap at the store boundary (see doc comment).
 	if value == "" {
 		return nil, fmt.Errorf("memory: skill value is required")
+	}
+	if len(value) > skillStoreValueMaxBytes {
+		return nil, fmt.Errorf("memory: skill value exceeds %d bytes (got %d)", skillStoreValueMaxBytes, len(value))
 	}
 
 	s.mu.Lock()
@@ -58,6 +84,15 @@ func (s *Store) PutSkillActive(ctx context.Context, key, value, kind, writer, se
 	if err := tx.QueryRowContext(ctx,
 		"SELECT id FROM entries WHERE key = ? AND status = 'active'", key).Scan(&oldID); err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("memory: skill put: find active: %w", err)
+	}
+
+	// Enforce the create/update invariant INSIDE the transaction — this is the
+	// compare-and-swap that makes the handler's pre-check race-safe.
+	if !expectExists && oldID.Valid {
+		return nil, ErrSkillExists
+	}
+	if expectExists && !oldID.Valid {
+		return nil, ErrSkillNotFound
 	}
 
 	// Supersede the old active entry first (partial unique index safety).

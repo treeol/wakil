@@ -69,24 +69,24 @@ func validateSkillValue(value string) error {
 	return nil
 }
 
-// putActiveSkill writes an immediately-active durable skill, superseding any
-// existing active entry for the same key. Used by save_skill (new key, no
-// prior active) and update_skill (supersede existing active). Anchors are
-// always nil — global skills have no stable workspace root.
+// putActiveSkill writes an immediately-active durable skill, enforcing the
+// create/update invariant atomically in the store transaction. expectExists:
+// false for save_skill (create-only — fails with memory.ErrSkillExists if an
+// active skill already exists), true for update_skill (requires-existing —
+// fails with memory.ErrSkillNotFound if none). Anchors are always nil —
+// global skills have no stable workspace root.
 //
-// The underlying store enforces its own 64 KiB value cap via validateValue
-// for memory entries. Skills need 256 KiB, so putActiveSkill routes through
-// Store.PutSkillActive (internal/memory/store_skills.go), which skips the
-// 64 KiB validation deliberately — the 256 KiB skill cap is enforced above
-// in validateSkillValue.
-func (p *skillsProfile) putActiveSkill(ctx context.Context, key, value, writer, sessionID string, tainted int, note string) (*memory.Entry, error) {
+// The store enforces the 256 KiB skill cap at its boundary (see
+// Store.PutSkillActive); validateSkillValue above is the wrapper-level
+// pre-check that produces a clean error before the confirm prompt.
+func (p *skillsProfile) putActiveSkill(ctx context.Context, key, value, writer, sessionID string, tainted int, expectExists bool, note string) (*memory.Entry, error) {
 	if err := validateSkillKey(key); err != nil {
 		return nil, err
 	}
 	if err := validateSkillValue(value); err != nil {
 		return nil, err
 	}
-	return p.store.PutSkillActive(ctx, key, value, "skill", writer, sessionID, tainted, note)
+	return p.store.PutSkillActive(ctx, key, value, "skill", writer, sessionID, tainted, expectExists, note)
 }
 
 // getActiveSkill returns the active skill for key, or memory.ErrNotFound.

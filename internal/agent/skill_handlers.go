@@ -179,7 +179,12 @@ func (a *App) handleSaveSkill(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Confirm("save_skill", "Save new skill to the global store?", args.Key, false) {
 		return "[declined by user]"
 	}
-	e, err := s.putActiveSkill(ctx, args.Key, value, a.AgentPrefix, a.chatID(), a.computeTainted(), "")
+	e, err := s.putActiveSkill(ctx, args.Key, value, a.AgentPrefix, a.chatID(), a.computeTainted(), false, "")
+	if err == memory.ErrSkillExists {
+		// Race-safe backstop: a concurrent save won between our pre-check and
+		// the write transaction. The store enforced create-only atomically.
+		return "ERROR: skill already exists: " + args.Key + " — use update_skill to change it"
+	}
 	if err != nil {
 		return fmt.Sprintf("ERROR: save skill: %v", err)
 	}
@@ -223,7 +228,12 @@ func (a *App) handleUpdateSkill(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Confirm("update_skill", "Update skill in the global store (old version kept in history)?", args.Key, false) {
 		return "[declined by user]"
 	}
-	e, err := s.putActiveSkill(ctx, args.Key, value, a.AgentPrefix, a.chatID(), a.computeTainted(), "")
+	e, err := s.putActiveSkill(ctx, args.Key, value, a.AgentPrefix, a.chatID(), a.computeTainted(), true, "")
+	if err == memory.ErrSkillNotFound {
+		// Race-safe backstop: a concurrent forget won between our pre-check and
+		// the write transaction. The store enforced requires-existing atomically.
+		return "ERROR: skill not found: " + args.Key + " — use save_skill to create it"
+	}
 	if err != nil {
 		return fmt.Sprintf("ERROR: update skill: %v", err)
 	}
