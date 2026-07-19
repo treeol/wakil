@@ -35,6 +35,31 @@ go vet ./...
 
 All of the above must pass before you send a patch.
 
+## Sandboxed environments with a tiny `/tmp`
+
+Some sandboxes (including the wakil dev sandbox itself) mount `/tmp` as a
+small tmpfs (e.g. 100 MB). Go's build cache, cgo temp files, `go run` of
+heavy tools (golangci-lint), and even `git commit` (SSH signing writes its
+key to `/tmp`) will fail with `no space left on device` or
+`permission denied` on the test binary.
+
+Fix: point the Go toolchain and the system temp dir at the workspace disk:
+
+```sh
+mkdir -p .tmp-gocache
+export TMPDIR=$PWD/.tmp-gocache \
+       GOTMPDIR=$PWD/.tmp-gocache \
+       GOCACHE=$PWD/.tmp-gocache
+```
+
+- `TMPDIR` — cgo temp files, `git` SSH signing keys, everything that honors
+  the POSIX temp-dir variable
+- `GOTMPDIR` — Go's own work directory (`go run`, `go test` binaries)
+- `GOCACHE` — the build cache (the big one)
+
+`.tmp-gocache/` is already in `.gitignore`. Set these once per shell session
+(or add to your shell rc / direnv) and the full gate above works.
+
 ## Code Style
 
 - `gofmt` is authoritative — no unformatted code is merged.
