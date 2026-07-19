@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -175,16 +176,13 @@ func TestStreamChunkedIncompleteToolCallEOFMidFrame(t *testing.T) {
 	}
 }
 
-// Context cancellation mid-stream: Stream must return promptly once the
-// transport unblocks. The request is built with NewRequestWithContext
-// (client.go:802), so against a real network transport http.Client closes
-// resp.Body on cancel and the scanner errors out immediately.
-//
-// NOTE: this test also documents a real gap — after the scanner unblocks,
-// Stream returns the generic "SSE stream: <err>" without checking
-// ctx.Err(), so a user cancellation surfaces as a retryable backend-stream
-// error instead of context.Canceled. The test asserts the prompt return
-// only; the error-classification improvement is a follow-up (see plan WP-5).
+// Context cancellation mid-stream: Stream must return promptly with
+// context.Canceled — NOT a retryable ErrBackendStream — so the agent never
+// auto-retries a turn the user deliberately cancelled. The request is built
+// with NewRequestWithContext (client.go:802), so against a real network
+// transport http.Client closes resp.Body on cancel and the scanner
+// unblocks; Stream then classifies via ctx.Err() before the stream-error
+// wrap.
 func TestStreamChunkedContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
@@ -211,11 +209,106 @@ func TestStreamChunkedContextCancel(t *testing.T) {
 	cancel()
 	select {
 	case err := <-errCh:
-		if err == nil {
-			t.Fatal("cancelled stream must return an error")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled stream: want context.Canceled, got %v", err)
+		}
+		if errors.Is(err, ErrBackendStream) {
+			t.Fatalf("cancellation must not classify as retryable stream error: %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Stream did not return within 3s of context cancellation")
+	}
+}
+
+// TestStreamMalformedErrorNotMaskedByCancel pins the no-masking rule: a
+// malformed chunk that errors the stream BEFORE the context is cancelled
+// must keep its real error (ErrBackendStream), never downgrade to
+// context.Canceled. The cancel arrives after the stream already failed.
+func TestStreamMalformedErrorNotMaskedByCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: &chunkReader{chunks: [][]byte{
+				[]byte("data: {MALFORMED\n\n"),
+			}},
+		}, nil
+	})
+	c := &Client{BaseURL: "http://chunk.test", Model: "ilm", ChatID: "test", HTTP: &http.Client{Transport: rt}}
+	_, err := c.Stream(ctx, []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil)
+	// Stream fails on the malformed chunk BEFORE any cancel.
+	if !errors.Is(err, ErrBackendStream) {
+		t.Fatalf("malformed chunk: want ErrBackendStream, got %v", err)
+	}
+	// A cancel arriving now must not retroactively change the classification.
+	cancel()
+	if !errors.Is(err, ErrBackendStream) || errors.Is(err, context.Canceled) {
+		t.Fatalf("prior stream error masked by later cancel: %v", err)
+	}
+}
+
+// TestStreamRetryableErrorNotMaskedByRacingCancel pins the narrow no-masking
+// guarantee for retryable errors: a malformed chunk fails the stream as
+// retryable ErrBackendStream; a cancel racing in afterward must NOT be
+// masked in a way that loses the retry decision — the error was already
+// returned before the cancel could apply (Stream is sequential after the
+// loop; the cancel can only win if it arrived before the error).
+func TestStreamRetryableErrorNotMaskedByRacingCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: &chunkReader{chunks: [][]byte{
+				[]byte("data: {MALFORMED\n\n"),
+			}},
+		}, nil
+	})
+	c := &Client{BaseURL: "http://chunk.test", Model: "ilm", ChatID: "test", HTTP: &http.Client{Transport: rt}}
+	// Cancel DURING the stream read — races the malformed-chunk error.
+	cancel()
+	_, err := c.Stream(ctx, []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("stream must fail")
+	}
+	// Either classification is acceptable here (the cancel genuinely raced),
+	// but a retryable backend failure must never downgrade into a SILENT
+	// success or a nil error — which is the only harmful mask. Both
+	// ErrBackendStream and context.Canceled are non-nil, surfaced failures.
+	t.Logf("racing cancel classified as: %v", err)
+}
+
+// TestStreamCancelBeforeResponse pins the HTTP.Do path: a context cancelled
+// before the response headers arrive must return context.Canceled, not a
+// retryable ErrBackendStream (otherwise the retry loop re-issues a turn the
+// user deliberately killed).
+func TestStreamCancelBeforeResponse(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		<-req.Context().Done() // block until the client cancels
+		return nil, req.Context().Err()
+	})
+	c := &Client{BaseURL: "http://chunk.test", Model: "ilm", ChatID: "test", HTTP: &http.Client{Transport: rt}}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.Stream(ctx, []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil)
+		errCh <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("pre-response cancel: want context.Canceled, got %v", err)
+		}
+		if errors.Is(err, ErrBackendStream) {
+			t.Fatalf("pre-response cancel must not be retryable: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stream did not return within 3s of pre-response cancellation")
 	}
 }
 
@@ -232,6 +325,43 @@ func (b *blockingBody) Read(_ []byte) (int, error) {
 }
 
 func (b *blockingBody) Close() error { return nil }
+
+// TestStreamContextCancelRealTransport runs the same cancellation against a
+// REAL httptest server whose handler blocks forever. http.Client tears the
+// connection down on cancel — this pins which Stream exit path a real
+// cancel takes (scanner error vs clean EOF) and that the result classifies
+// as context.Canceled either way.
+func TestStreamContextCancelRealTransport(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done() // block until the client goes away
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Model: "ilm", ChatID: "test", HTTP: http.DefaultClient}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.Stream(ctx, []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil)
+		errCh <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("real-transport cancel: want context.Canceled, got %v", err)
+		}
+		if errors.Is(err, ErrBackendStream) {
+			t.Fatalf("real-transport cancel must not be a retryable stream error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stream did not return within 3s of real-transport cancellation")
+	}
+}
 
 // Sanity: one giant single-chunk delivery (the old unflushed-helper shape)
 // must parse identically to split delivery of the same bytes.

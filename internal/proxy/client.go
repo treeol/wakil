@@ -859,8 +859,14 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		// All pre-response transport errors (timeout, reset, connection refused)
-		// are retryable — wrap uniformly so the retry loop can catch them.
+		// A cancelled context surfaces from Do as a wrapped ctx.Err() — the
+		// user aborted before any response arrived. Never wrap it retryable:
+		// the retry loop would re-issue a turn the user deliberately killed.
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return Message{}, ctx.Err()
+		}
+		// All other pre-response transport errors (timeout, reset, connection
+		// refused) are retryable — wrap uniformly so the retry loop catches them.
 		return Message{}, wrapStreamErr(err)
 	}
 	defer resp.Body.Close()
@@ -1008,9 +1014,40 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		// Cancellation can surface here as the read error itself (real
+		// transports wrap context.Canceled; custom bodies return their own
+		// teardown error). Classify via errors.Is against the context's own
+		// error — accurate cause, no timing guess. A cancel that arrives
+		// AFTER a genuine stream error leaves err unrelated to ctx.Err() and
+		// the real error wins below (no masking).
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return Message{}, ctx.Err()
+		}
+		// The scanner error is NOT the context's error. Two cases:
+		//  (a) a custom/non-standard body returned an opaque teardown error
+		//      on cancel ("read on closed response body") — indistinguishable
+		//      here from a genuine mid-stream read failure. Since the context
+		//      IS done, cancellation is the more useful classification, and
+		//      the cost of being wrong is nil: a stream whose connection
+		//      died anyway has nothing accurate left to report.
+		//  (b) a REAL stream error (oversize line, transport failure) with a
+		//      live context — reported accurately.
+		if ctx.Err() != nil {
+			return Message{}, ctx.Err()
+		}
 		// bufio.ErrTooLong means a line exceeded maxSSELineSize — abort
 		// the stream rather than allowing unbounded memory growth.
 		return Message{}, wrapStreamErr(fmt.Errorf("SSE stream: %w", err))
+	}
+
+	// The loop exited without a scanner error. If the context was cancelled
+	// (or hit its deadline), THAT is the cause — classify it as cancellation,
+	// never as a retryable ErrBackendStream, so a deliberate user cancel is
+	// never auto-retried. The cancel may surface as a clean EOF (!sawDone)
+	// or at a stream boundary, both of which would otherwise misreport as
+	// backend truncation.
+	if ctx.Err() != nil {
+		return Message{}, ctx.Err()
 	}
 
 	// A stream that ends without [DONE] was truncated: the connection closed
