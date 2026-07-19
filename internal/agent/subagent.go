@@ -402,6 +402,7 @@ type subagentEndpointView struct {
 	cacheControl    *bool
 	appReferer      *string
 	appTitle        *string
+	appCategories   *string
 }
 
 // applyModelOverride patches in a /submodel model override, mirroring /model's
@@ -467,6 +468,7 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 			cacheControl:    a.Client.CacheControl,
 			appReferer:      a.Client.AppReferer,
 			appTitle:        a.Client.AppTitle,
+			appCategories:   a.Client.AppCategories,
 		}
 		v.applyModelOverride(a.SubagentModelOverride)
 		return v, true
@@ -495,6 +497,7 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 		cacheControl:    ep.CacheControl,
 		appReferer:      ep.AppReferer,
 		appTitle:        ep.AppTitle,
+		appCategories:   ep.AppCategories,
 	}
 	v.applyModelOverride(a.SubagentModelOverride)
 	return v, false
@@ -752,6 +755,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		CacheControl:    view.cacheControl,
 		AppReferer:      view.appReferer,
 		AppTitle:        view.appTitle,
+		AppCategories:   view.appCategories,
 		ChatID:          subChatID,
 		AuthHeader:      view.authHeader,
 		NoMemoryWrite:   true,

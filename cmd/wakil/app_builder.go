@@ -87,6 +87,7 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 		CacheControl:    ep.CacheControl,
 		AppReferer:      ep.AppReferer,
 		AppTitle:        ep.AppTitle,
+		AppCategories:   ep.AppCategories,
 		ChatID:          agent.NewChatID(),
 		AuthHeader:      cfg.AuthHeader(),
 		HTTP:            newHTTPClient(),

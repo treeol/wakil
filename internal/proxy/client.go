@@ -362,8 +362,9 @@ const (
 )
 
 const (
-	defaultAppReferer = "https://github.com/treeol/wakil"
-	defaultAppTitle   = "wakil"
+	defaultAppReferer    = "https://github.com/treeol/wakil"
+	defaultAppTitle      = "wakil"
+	defaultAppCategories = "cli-agent"
 )
 
 // appAttributionHeaders resolves the OpenRouter attribution headers for this
@@ -371,7 +372,7 @@ const (
 // openrouter.ai (or a subdomain); non-nil fields are used verbatim, including
 // empty string to opt out of the header entirely. For non-openrouter hosts
 // with nil fields, no header is sent.
-func (c *Client) appAttributionHeaders() (referer, title string) {
+func (c *Client) appAttributionHeaders() (referer, title, categories string) {
 	isOR := isOpenRouterHost(c.BaseURL)
 
 	if c.AppReferer != nil {
@@ -386,7 +387,13 @@ func (c *Client) appAttributionHeaders() (referer, title string) {
 		title = defaultAppTitle
 	}
 
-	return referer, title
+	if c.AppCategories != nil {
+		categories = *c.AppCategories
+	} else if isOR {
+		categories = defaultAppCategories
+	}
+
+	return referer, title, categories
 }
 
 // isOpenRouterHost reports whether the base URL's host is openrouter.ai or a
@@ -443,12 +450,14 @@ type Client struct {
 	// modified — breakpoints are computed per-request from the message slice.
 	CacheControl *bool
 
-	// AppReferer and AppTitle are OpenRouter app attribution headers sent
-	// as "HTTP-Referer" and "X-Title" on chat completion requests. nil =
-	// apply defaults for openrouter.ai hosts; non-nil = use verbatim
-	// (empty string opts the header out). Only sent for KindOpenAI.
-	AppReferer *string
-	AppTitle   *string
+	// AppReferer, AppTitle, and AppCategories are OpenRouter app attribution
+	// headers sent as "HTTP-Referer", "X-Title" (plus its prefixed alias
+	// "X-OpenRouter-Title"), and "X-OpenRouter-Categories" on chat completion
+	// requests. nil = apply defaults for openrouter.ai hosts; non-nil = use
+	// verbatim (empty string opts the header out). Only sent for KindOpenAI.
+	AppReferer    *string
+	AppTitle      *string
+	AppCategories *string
 
 	// Backend is the requested backend name sent as X-Ilm-Backend. Empty = don't
 	// send the header (proxy uses its own default). Set by App.Send before each
@@ -815,12 +824,19 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// nil = apply defaults for openrouter.ai hosts; non-nil = verbatim
 	// (empty string opts the header out entirely).
 	if !proxyShape {
-		referer, title := c.appAttributionHeaders()
+		referer, title, categories := c.appAttributionHeaders()
 		if referer != "" {
 			req.Header.Set("HTTP-Referer", referer)
 		}
 		if title != "" {
 			req.Header.Set("X-Title", title)
+			// Newer prefixed form of the display-name header; carries the
+			// same resolved value as X-Title so both conventions attribute
+			// the app identically.
+			req.Header.Set("X-OpenRouter-Title", title)
+		}
+		if categories != "" {
+			req.Header.Set("X-OpenRouter-Categories", categories)
 		}
 	}
 
