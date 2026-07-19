@@ -926,6 +926,12 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 			sawDone = true
 			break
 		}
+		if data == "" {
+			// Empty data: frames are keepalives (some proxies send them to
+			// hold the connection open during long generations). They carry
+			// no payload — skip instead of failing JSON parsing.
+			continue
+		}
 		var chunk streamChunk
 		if jerr := json.Unmarshal([]byte(data), &chunk); jerr != nil {
 			// A malformed data chunk means the accumulated message is
