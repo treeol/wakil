@@ -61,6 +61,21 @@ const subTabAutoCloseDelay = 30 * time.Second
 // swallowed event extends the window, so a long paste tail stays covered.
 const pasteSuppressWindow = 150 * time.Millisecond
 
+// armWindow is how long a quit/cancel confirmation arm stays live after the
+// first press of a destructive key. A second confirming press within the window
+// performs the armed action; any other key, or the window elapsing, dismisses
+// it. Long enough to confirm deliberately, short enough to feel transient.
+const armWindow = 2500 * time.Millisecond
+
+// armKind identifies which destructive action is armed for confirmation.
+type armKind int8
+
+const (
+	armNone   armKind = iota // no arm active
+	armQuit                  // a quit (idle ctrl+c / ctrl+d) is awaiting a 2nd press
+	armCancel                // a turn-cancel (esc / ctrl+c) is awaiting a 2nd press
+)
+
 // itemKind tags each committed conversation entry for visual rendering.
 type itemKind int8
 
@@ -118,6 +133,18 @@ type tuiModel struct {
 	sel        selection
 	plainLines []string // ANSI-stripped view content, kept in sync by refreshViewport
 	flash      string   // transient status shown in the input border (e.g. "copied ✓")
+
+	// Double-press gate for destructive keys (quit / turn-cancel). The first
+	// press of ctrl+c/ctrl+d (idle) or esc/ctrl+c (streaming) arms the action
+	// and shows a banner; a second confirming press within armWindow performs
+	// it. armKey records which key armed it (quit = same-key confirm; cancel =
+	// esc or ctrl+c confirms). armSeq is a generation counter so a stale
+	// armTickMsg from a superseded arm can't clear a newer one. armUntil zero
+	// means no arm is active.
+	armKind  armKind
+	armKey   string
+	armUntil time.Time
+	armSeq   int
 
 	// imageChips tracks the placeholder strings (e.g. "[image: clipboard:png
 	// · 1.8 MB]") inserted into the text input for clipboard-attached images.
@@ -364,10 +391,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// detected (below), the remaining fragments of the same paste keep
 		// arriving as key events — printable runs as KeyRunes bursts, stray
 		// control bytes as control keys (a 0x0D decodes as "enter" and would
-		// SEND the garbage). Swallow everything except ctrl+c while the
-		// window is open; each swallowed event extends it, so the window
-		// tracks the paste tail regardless of length.
-		if !m.pasteSuppressUntil.IsZero() && msg.String() != "ctrl+c" {
+		// SEND the garbage). Swallow EVERYTHING while the window is open —
+		// including ctrl+c, whose old passthrough let a paste tail carrying two
+		// 0x03 bytes arm+confirm a quit inside the double-press window. The
+		// double-press arm is the escape hatch now; the window is 150ms and
+		// self-extending, so swallowing ctrl+c here is safe. Each swallowed
+		// event extends the window, so it tracks the paste tail regardless of
+		// length.
+		if !m.pasteSuppressUntil.IsZero() {
 			if time.Now().Before(m.pasteSuppressUntil) {
 				m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
 				return m, tea.Batch(cmds...)
@@ -381,6 +412,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sel.active {
 			m.sel = selection{}
 			m.refreshViewport()
+		}
+
+		// Double-press gate: any key that can't confirm the live arm dismisses
+		// it. This runs BEFORE the picker branches below so picker-consumed keys
+		// (arrows, tab, esc, …) also clear the arm — otherwise an arm could
+		// survive intervening picker navigation and confirm later. Confirming
+		// keys are left alone here and evaluated in handleKey.
+		if m.armActive() && !m.armConfirms(msg.String()) {
+			m.clearArm()
+			m = m.reflowIfStatusHeightChanged(before)
 		}
 
 		// The resume picker owns input while open — checked before the "@"/"/"
@@ -559,6 +600,9 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			answer(agent.ChoiceDecline, dim2("  [declined]"))
 		case "ctrl+c":
 			answer(agent.ChoiceDecline, dim2("  [declined + cancelled]"))
+			// Mark cancelling so a follow-up ctrl+c force-quits a hung cancel in
+			// 3 total presses instead of arming a fresh cancel (4 presses).
+			m.cancelling = true
 			m.cancelTurn()
 		}
 		// Every key is consumed by the confirm gate.
@@ -590,23 +634,53 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 	switch msg.String() {
 	case "ctrl+c":
 		if m.state == stateIdle {
-			return m, []tea.Cmd{tea.Quit}, true
+			// Double-press gate: first press arms quit, second (same key,
+			// within the window) quits. Any other key dismissed the arm earlier.
+			if m.armConfirms("ctrl+c") {
+				return m, []tea.Cmd{tea.Quit}, true
+			}
+			before := m.statusRows()
+			tick := m.setArm(armQuit, "ctrl+c")
+			m = m.reflowIfStatusHeightChanged(before)
+			return m, []tea.Cmd{tick}, true
 		}
-		// First Ctrl+C: request cancellation. Second Ctrl+C (cancel already
-		// sent but goroutine hasn't acknowledged yet): force-quit immediately.
+		// Cancel already sent but the goroutine hasn't acknowledged yet: force-quit
+		// immediately. Checked BEFORE arming so a hung turn is always 3 presses
+		// (arm → cancel → force-quit) and never re-arms.
 		if m.cancelling {
 			return m, []tea.Cmd{tea.Quit}, true
 		}
-		m.cancelling = true
-		m.cancelTurn()
-		return m, nil, true
-
-	case "esc":
-		// Stop the in-flight turn. When idle there's nothing to stop, so let it
-		// fall through to the textarea. (In the confirm gate above, esc declines.)
-		if m.state != stateIdle {
+		// First press arms the cancel; a second cancel key (esc or ctrl+c)
+		// confirms. cancelConfirms lets a panicking user mix keys and still
+		// confirm on press 2 (avoids the mixed-key 4-press trap).
+		if m.armConfirms("ctrl+c") {
+			m.clearArm()
+			m.cancelling = true
 			m.cancelTurn()
 			return m, nil, true
+		}
+		before := m.statusRows()
+		tick := m.setArm(armCancel, "ctrl+c")
+		m = m.reflowIfStatusHeightChanged(before)
+		return m, []tea.Cmd{tick}, true
+
+	case "esc":
+		// Stop the in-flight turn — armed, like ctrl+c. When idle there's nothing
+		// to stop, so let it fall through to the textarea / info panel. (In the
+		// confirm gate above, esc declines.)
+		if m.state != stateIdle {
+			// A confirmed cancel (esc armed, or ctrl+c armed and esc confirms)
+			// performs the cancel and sets cancelling so press-3 force-quit works.
+			if m.armConfirms("esc") {
+				m.clearArm()
+				m.cancelling = true
+				m.cancelTurn()
+				return m, nil, true
+			}
+			before := m.statusRows()
+			tick := m.setArm(armCancel, "esc")
+			m = m.reflowIfStatusHeightChanged(before)
+			return m, []tea.Cmd{tick}, true
 		}
 		// Idle: close the info panel if it's open (it sits below pickers/search
 		// in Esc precedence — those are consumed earlier). Otherwise fall through.
@@ -624,7 +698,14 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 
 	case "ctrl+d":
 		if m.state == stateIdle {
-			return m, []tea.Cmd{tea.Quit}, true
+			// Double-press gate, same as idle ctrl+c but with its own key.
+			if m.armConfirms("ctrl+d") {
+				return m, []tea.Cmd{tea.Quit}, true
+			}
+			before := m.statusRows()
+			tick := m.setArm(armQuit, "ctrl+d")
+			m = m.reflowIfStatusHeightChanged(before)
+			return m, []tea.Cmd{tick}, true
 		}
 
 	case "ctrl+r":
@@ -895,6 +976,60 @@ func (m *tuiModel) cancelTurn() {
 		// Do NOT nil m.cancel here — keep it so agent.AgentDoneMsg can clean up
 		// and so we can detect a cancel is in-flight (m.cancelling).
 	}
+}
+
+// --- Double-press arm (quit/cancel confirmation gate) ---
+
+// armActive reports whether an arm is live right now, treating an elapsed
+// armUntil as inactive even if the clearing tick hasn't arrived yet.
+func (m tuiModel) armActive() bool {
+	return m.armKind != armNone && !m.armUntil.IsZero() && time.Now().Before(m.armUntil)
+}
+
+// armConfirms reports whether key confirms the currently-armed action. Quit
+// requires the same key that armed it; cancel accepts either cancel key (esc
+// or ctrl+c) so a panicking user mixing the two still confirms on press 2.
+func (m tuiModel) armConfirms(key string) bool {
+	if !m.armActive() {
+		return false
+	}
+	if m.armKind == armCancel {
+		return key == "esc" || key == "ctrl+c"
+	}
+	return key == m.armKey
+}
+
+// setArm activates an arm for the given action/key and returns the tick command
+// that clears it after armWindow. The caller appends the command and wraps the
+// state change in reflowIfStatusHeightChanged so the banner row reflows cleanly.
+func (m *tuiModel) setArm(kind armKind, key string) tea.Cmd {
+	m.armKind = kind
+	m.armKey = key
+	m.armUntil = time.Now().Add(armWindow)
+	m.armSeq++
+	seq := m.armSeq
+	return tea.Tick(armWindow, func(time.Time) tea.Msg { return armTickMsg{seq: seq} })
+}
+
+// clearArm deactivates any live arm (no command; the pending tick becomes stale).
+func (m *tuiModel) clearArm() {
+	m.armKind = armNone
+	m.armKey = ""
+	m.armUntil = time.Time{}
+}
+
+// armNotice renders the transient banner segment for the live arm, "" when
+// inactive. Shown in the status line (NOT m.flash, which is cleared on every
+// keypress — including the confirming one).
+func (m tuiModel) armNotice() string {
+	if !m.armActive() {
+		return ""
+	}
+	action := "quit"
+	if m.armKind == armCancel {
+		action = "cancel this turn"
+	}
+	return sprint("⚠ press %s again to %s", m.armKey, action)
 }
 
 // startTurn sets up cancel/state/turnStart/tps for a new agent turn and returns

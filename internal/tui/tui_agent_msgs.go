@@ -107,6 +107,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.hadTurn = true
 		m.cancel = nil
 		m.cancelling = false
+		m.clearArm() // a pending cancel arm must not fire into the now-idle state
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.CompactedMsg:
@@ -257,6 +258,15 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		if m.state != stateIdle {
 			m.dotPhase = (m.dotPhase + 1) % len(dotPulseShades)
 			cmds = append(cmds, startDotTick())
+		}
+
+	case armTickMsg:
+		// Clear the arm only if this tick belongs to the current arm (stale ticks
+		// from a superseded arm are ignored) and the deadline has actually passed.
+		if msg.seq == m.armSeq && !m.armUntil.IsZero() && !time.Now().Before(m.armUntil) {
+			before := m.statusRows()
+			m.clearArm()
+			m = m.reflowIfStatusHeightChanged(before)
 		}
 
 	case agent.SysNoteMsg:

@@ -10,6 +10,11 @@ import (
 // dotTickMsg fires every ~200 ms while the agent is busy.
 type dotTickMsg struct{}
 
+// armTickMsg fires armWindow after a quit/cancel arm is set, to clear it. seq
+// is the arm's generation counter: the handler only clears if seq still matches
+// m.armSeq, so a stale tick from a superseded arm can't clear a newer one.
+type armTickMsg struct{ seq int }
+
 // subTabCloseMsg is fired 30s after a subagent tab becomes done (via
 // SubagentDoneMsg), to auto-close it if the user is not currently viewing it.
 // Fire-and-validate: if the tab was already pruned, manually closed, or is

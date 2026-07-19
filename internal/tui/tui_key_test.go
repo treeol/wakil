@@ -79,12 +79,24 @@ func TestHandleKeyEnterEmptyNoop(t *testing.T) {
 	}
 }
 
-func TestHandleKeyCtrlCIdleQuits(t *testing.T) {
+func TestHandleKeyCtrlCIdleArmsThenQuits(t *testing.T) {
 	m := keyModel(t)
 	m.state = stateIdle
-	_, cmds, consumed := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if !consumed || len(cmds) != 1 {
-		t.Errorf("ctrl+c when idle should quit (one cmd); consumed=%v cmds=%d", consumed, len(cmds))
+	// First press: no quit — it arms and shows the banner.
+	m2, cmds, consumed := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !consumed {
+		t.Fatalf("ctrl+c should be consumed")
+	}
+	if quits(cmds) {
+		t.Errorf("first idle ctrl+c must NOT quit (double-press gate)")
+	}
+	if m2.armKind != armQuit {
+		t.Errorf("first idle ctrl+c should arm quit; armKind=%v", m2.armKind)
+	}
+	// Second press (same key, within window): quits.
+	_, cmds2, _ := m2.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !quits(cmds2) {
+		t.Errorf("second idle ctrl+c should quit")
 	}
 }
 

@@ -316,6 +316,12 @@ func statusSegments(in statusLineInput) []string {
 		head = append(head, stateSeg)
 	}
 	segs := []string{strings.Join(head, " ")}
+	// The double-press arm notice goes first among the volatile segments so it's
+	// never pushed off by flowSegmentsN's cap — it's the one thing the user must
+	// see to know a destructive key is awaiting confirmation.
+	if in.arm != "" {
+		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(in.arm))
+	}
 	if in.model != "" {
 		segs = append(segs, dim2(in.model))
 	}
@@ -488,6 +494,7 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		backendDefault:   backendDefault,
 		model:            model,
 		submodel:         submodel,
+		arm:              m.armNotice(),
 	}
 }
 
@@ -517,6 +524,9 @@ type statusLineInput struct {
 	// the info panel. Empty = omitted.
 	model    string
 	submodel string
+	// arm is the rendered double-press confirmation notice (quit/cancel), "" when
+	// no arm is active. Rendered from arm state (not m.flash, which clears on key).
+	arm string
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.
