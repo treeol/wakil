@@ -53,6 +53,13 @@ func StagingPath(ws string) string {
 // stagingDataRoot returns the wakil data directory that is the parent of
 // repoStateDir(): $WAKIL_REPO_STATE_DIR/.. , $XDG_DATA_HOME/wakil/ , or
 // ~/.local/share/wakil/.
+//
+// Behavior: always returns filepath.Dir(repoStateDir()) — the parent of the
+// repo-state directory. repoStateDir resolves to <data-root>/repo-state under
+// the default/XDG layouts, so its parent is the data root. When
+// WAKIL_REPO_STATE_DIR points at a custom path, its parent is used as the
+// data root (callers placing global files under the data root should be aware
+// the root then lives wherever the env var's parent is).
 func stagingDataRoot() string {
 	// repoStateDir already resolves the precedence; its parent is the
 	// wakil data root.
@@ -60,16 +67,7 @@ func stagingDataRoot() string {
 	if rsd == "" {
 		return ""
 	}
-	// repoStateDir is .../wakil/repo-state; parent is .../wakil.
-	// But if WAKIL_REPO_STATE_DIR points somewhere unusual, use its
-	// parent only when it ends in /repo-state; otherwise use the dir
-	// itself as the data root.
-	parent := filepath.Dir(rsd)
-	if filepath.Base(rsd) == "repo-state" && filepath.Base(parent) == "wakil" {
-		return parent
-	}
-	// Custom WAKIL_REPO_STATE_DIR: use its parent as the data root.
-	return parent
+	return filepath.Dir(rsd)
 }
 
 // StagingSocketPath returns the host-side path to the kvr UDS socket for
@@ -99,6 +97,23 @@ func MemoryDBPath(ws string) string {
 		return ""
 	}
 	return filepath.Join(dataDir, "memory", key, "memory.db")
+}
+
+// SkillDBPath returns the host-side path to the global skills SQLite
+// database. Unlike MemoryDBPath it is NOT workspace-keyed — skills are
+// global reference docs shared across every session and every project.
+// Path: <wakil-data-dir>/skills/skills.db
+//
+// Uses the same stagingDataRoot() precedence as memory (XDG_DATA_HOME /
+// WAKIL_REPO_STATE_DIR / ~/.local/share default), NOT a hardcoded home path.
+// Returns "" if the data directory cannot be determined. The directory is
+// NOT created here — memory.Open creates it.
+func SkillDBPath() string {
+	dataDir := stagingDataRoot()
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "skills", "skills.db")
 }
 
 // EnsureStagingDir creates the staging directory for ws with 0o700

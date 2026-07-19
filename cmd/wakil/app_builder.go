@@ -47,6 +47,7 @@ type appResources struct {
 	browserMgr *browser.Manager
 	traceStore *trace.Store
 	memStore   *memory.Store
+	skillStore *memory.Store
 }
 
 // buildApp constructs a *agent.App from config, executor, and entry-point
@@ -67,7 +68,7 @@ type appResources struct {
 //   - Counsel mode defaults (main.go only)
 //   - OpenRouter cache priming (main.go only)
 //   - Setting Out/Confirm/EventSink (done per-turn or at run time)
-//   - Closing resources (exe, mcpMgr, lspMgr, traceStore, memStore)
+//   - Closing resources (exe, mcpMgr, lspMgr, browserMgr, traceStore, memStore, skillStore)
 //
 // Returns the App and an appResources struct holding the closable resources.
 func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.App, appResources) {
@@ -171,6 +172,23 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 			sweepCancel()
 			app.MemoryStore = memStore
 			res.memStore = memStore
+		}
+	}
+
+	// Skill store — GLOBAL (not workspace-keyed). Same memory.Store engine
+	// opened at a shared path so skills are available across every session
+	// and every project. No Sweep call: skills are always durable (no TTL),
+	// so sweep is a no-op and would only churn. Anchors are disabled for
+	// skills — there is no stable workspace root to anchor against, so we
+	// pass "" as the workspace root.
+	skillDBPath := agent.SkillDBPath()
+	if skillDBPath != "" {
+		skillStore, err := memory.Open(skillDBPath, "")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "skills: failed to open store:", err)
+		} else {
+			app.SkillStore = agent.NewSkillsProfile(skillStore)
+			res.skillStore = skillStore
 		}
 	}
 

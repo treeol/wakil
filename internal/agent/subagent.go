@@ -864,6 +864,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		AgentPrefix:       "sub-" + ShortID(subChatID),
 		StagingClient:     a.StagingClient, // shared — kvr client is thread-safe
 		MemoryStore:       a.MemoryStore,   // shared — store is thread-safe (internal mutex)
+		SkillStore:        a.SkillStore,    // shared — store is thread-safe (internal mutex)
 		pinUserMessage:    true,            // pin the task instruction so it survives compaction
 		SelectedBackend:   backend,
 		BackendList:       a.BackendList,

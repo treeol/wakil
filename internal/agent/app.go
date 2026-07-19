@@ -112,6 +112,19 @@ type App struct {
 	// code after the workspace is resolved.
 	MemoryStore *memory.Store
 
+	// SkillStore is the durable host-side skills profile, or nil if
+	// unavailable (init failed). When nil, all *_skill(s) tools return
+	// "skills unavailable". Unlike MemoryStore it is GLOBAL (not
+	// workspace-keyed): the same skills.db is shared across every session
+	// and every project. Shared between parent and subagents (thread-safe
+	// via internal mutex). Set by the host startup code.
+	//
+	// It is a *skillsProfile — NOT a raw *memory.Store — so the skills
+	// policy (durable-only, no anchors, 256 KiB cap) is enforced by the
+	// type, not by caller convention. The underlying store is opened with
+	// workspaceRoot="" (no stable workspace root to anchor against).
+	SkillStore *skillsProfile
+
 	// touchedExternal is a sticky per-App flag set when the agent's
 	// grounding records web/oracle content. Used for the session-cumulative
 	// taint signal (A1): once the agent touches untrusted external content,

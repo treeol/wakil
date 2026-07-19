@@ -226,6 +226,9 @@ func main() {
 		if res.memStore != nil {
 			res.memStore.Close()
 		}
+		if res.skillStore != nil {
+			res.skillStore.Close()
+		}
 		exe.Close()
 		if res.mcpMgr != nil {
 			res.mcpMgr.Close()
@@ -242,6 +245,9 @@ func main() {
 	app.StopAllBackgroundProcs()
 	if res.memStore != nil {
 		res.memStore.Close()
+	}
+	if res.skillStore != nil {
+		res.skillStore.Close()
 	}
 	exe.Close()
 	if res.mcpMgr != nil {

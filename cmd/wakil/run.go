@@ -481,6 +481,9 @@ func RunHeadless(cfg config.Config, args []string) int {
 	if res.memStore != nil {
 		defer res.memStore.Close()
 	}
+	if res.skillStore != nil {
+		defer res.skillStore.Close()
+	}
 
 	out := io.Writer(os.Stdout)
 	if flags.TranscriptFile != "" {
