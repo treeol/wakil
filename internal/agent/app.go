@@ -1273,6 +1273,25 @@ func MakeTraceEntry(tc proxy.ToolCall, result toolResult) ToolTraceEntry {
 				e.Command = a.Dst
 			}
 		}
+	case "search_files", "find_files":
+		// Identity must be (pattern, path), not path alone: two searches of the
+		// same directory with different patterns are distinct work, but the
+		// struggle detector keys on Command equality and would otherwise read
+		// them as a no-progress re-run.
+		var a struct {
+			Path    string `json:"path"`
+			Pattern string `json:"pattern"`
+		}
+		if json.Unmarshal([]byte(tc.Function.Arguments), &a) == nil {
+			switch {
+			case a.Pattern != "" && a.Path != "":
+				e.Command = a.Pattern + " @ " + a.Path
+			case a.Pattern != "":
+				e.Command = a.Pattern
+			default:
+				e.Command = a.Path
+			}
+		}
 	default:
 		var a struct {
 			Path    string `json:"path"`

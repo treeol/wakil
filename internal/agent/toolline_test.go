@@ -113,3 +113,27 @@ func TestMakeTraceEntryDeleteFile(t *testing.T) {
 		t.Errorf("Command = %q, want \"old.go\"", e.Command)
 	}
 }
+
+// Two searches of the same directory with different patterns must NOT collapse to
+// the same identity — the struggle detector keys on Command equality and would
+// otherwise flag them as a no-progress re-run (false positive).
+func TestMakeTraceEntrySearchIdentityIncludesPattern(t *testing.T) {
+	a := MakeTraceEntry(tcall("search_files", `{"pattern":"struggle detected","path":"internal/tui"}`), okResult("x"))
+	b := MakeTraceEntry(tcall("search_files", `{"pattern":"no progress","path":"internal/tui"}`), okResult("y"))
+	if a.Command == b.Command {
+		t.Errorf("different patterns in same dir must differ; both = %q", a.Command)
+	}
+	if a.Command != "struggle detected @ internal/tui" {
+		t.Errorf("Command = %q, want pattern @ path", a.Command)
+	}
+	// Identical re-run (same pattern AND path) must still match so the detector fires.
+	c := MakeTraceEntry(tcall("search_files", `{"pattern":"struggle detected","path":"internal/tui"}`), okResult("z"))
+	if a.Command != c.Command {
+		t.Errorf("identical re-run should match: %q vs %q", a.Command, c.Command)
+	}
+	// find_files gets the same treatment.
+	f := MakeTraceEntry(tcall("find_files", `{"pattern":"*.go","path":"internal"}`), okResult("z"))
+	if f.Command != "*.go @ internal" {
+		t.Errorf("find_files Command = %q, want \"*.go @ internal\"", f.Command)
+	}
+}
