@@ -24,10 +24,21 @@ import (
 // name field: "{server}__{tool}". Double underscore is unlikely in real names.
 const mcpNS = "__"
 
+// mcpSession is the subset of *gosdkmcp.ClientSession that MCPManager uses.
+// It exists so tests can inject fake sessions without spawning real MCP
+// server processes. The concrete SDK type satisfies it (compile-time assert
+// below); production behavior is unchanged.
+type mcpSession interface {
+	CallTool(ctx context.Context, params *gosdkmcp.CallToolParams) (*gosdkmcp.CallToolResult, error)
+	Close() error
+}
+
+var _ mcpSession = (*gosdkmcp.ClientSession)(nil)
+
 // MCPServer is one connected (or failed) MCP server.
 type MCPServer struct {
 	Cfg     config.MCPServerConfig
-	Session *gosdkmcp.ClientSession
+	Session mcpSession
 	Tools   []*gosdkmcp.Tool // tools listed at connect time
 	Status  string           // "connecting" | "connected" | "failed"
 	Err     error
@@ -37,17 +48,31 @@ type MCPServer struct {
 type MCPManager struct {
 	mu      sync.RWMutex
 	servers []*MCPServer
+	// connectFn performs the actual connect+ListTools for a server. Defaults
+	// to m.connect; tests override it to inject fake sessions. Reconnect and
+	// NewMCPManager both route through it. Nil-safe: falls back to m.connect
+	// so hand-constructed managers (tests) don't nil-panic.
+	connectFn func(ctx context.Context, srv *MCPServer) error
+}
+
+// connectOrDefault returns m.connectFn, defaulting to m.connect when unset.
+func (m *MCPManager) connectOrDefault() func(ctx context.Context, srv *MCPServer) error {
+	if m.connectFn != nil {
+		return m.connectFn
+	}
+	return m.connect
 }
 
 // NewMCPManager connects to every configured MCP server. Failures are
 // recorded per-server; they never crash wakil.
 func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManager {
 	m := &MCPManager{}
+	m.connectFn = m.connect
 	for _, cfg := range cfgs {
 		srv := &MCPServer{Cfg: cfg, Status: "connecting"}
 		m.servers = append(m.servers, srv)
 		// Connect synchronously so tools are available before first user turn.
-		if err := m.connect(ctx, srv); err != nil {
+		if err := m.connectOrDefault()(ctx, srv); err != nil {
 			srv.Status = "failed"
 			srv.Err = err
 		}
@@ -162,6 +187,14 @@ func (m *MCPManager) OpenAIToolsForServers(allowed map[string]bool) []proxy.Tool
 
 // mcpWriteKeywords are substrings that indicate a mutating MCP tool. Any tool
 // whose name does NOT contain one of these is treated as read-only.
+//
+// THREAT-MODEL NOTE (L2): this is a blacklist that defaults unknown tools to
+// READ — names like "drop_database", "run_script", or "execute_command"
+// contain none of these substrings and are therefore classified read-only,
+// skipping the confirmation prompt when App.AllowReads is on. This is pinned
+// deliberately in TestIsMCPReadTool_DocumentsDefaultReadRisk (WP-3); whether
+// to flip the default to write-until-proven-read is an open policy decision
+// tracked as a follow-up card. Do not "fix" the test without deciding here.
 var mcpWriteKeywords = []string{
 	"write", "create", "update", "delete", "remove", "insert",
 	"put", "post", "set", "edit", "modify", "push", "send", "publish",
@@ -193,7 +226,7 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 	// concurrently (status/session/err are written by Reconnect under a write lock).
 	m.mu.RLock()
 	var status, srvErrStr string
-	var session *gosdkmcp.ClientSession
+	var session mcpSession
 	found := false
 	for _, s := range m.servers {
 		if s.Cfg.Name == serverName {
@@ -263,7 +296,7 @@ func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
 	srv.Err = nil
 	srv.Tools = nil
 	srv.Session = nil
-	if err := m.connect(ctx, srv); err != nil {
+	if err := m.connectOrDefault()(ctx, srv); err != nil {
 		srv.Status = "failed"
 		srv.Err = err
 		return err
