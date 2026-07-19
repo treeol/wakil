@@ -1081,7 +1081,11 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 	// (the 8K windowing that causes re-read churn) but NOT from TurnToolBudget —
 	// when the per-turn budget is exhausted, the result is stubbed to prevent
 	// context overflow. MaxRequestBytes remains the final backstop.
-	if toolName == "read_file_full" {
+	//
+	// load_skill gets the same treatment: a skill is a reference doc the agent
+	// needs intact — capping it to 8K defeats the purpose. Size is already
+	// checked at the tool layer against the 256 KiB skill cap.
+	if toolName == "read_file_full" || toolName == "load_skill" {
 		return wtools.SpillFullResult(result, toolName, a.chatID())
 	}
 	return wtools.CapToolResult(result, toolName, a.chatID(), a.Cfg.ToolResultCap)
@@ -1657,6 +1661,22 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleMemoryForget(ctx, tc))
 	case "memory_promote_from_staging":
 		return stringToToolResult(a.handleMemoryPromoteFromStaging(ctx, tc))
+	// Skill tools (global store). Read tools ungated; write tools are
+	// main-agent-only (a.IsSubagent checked inside the handler, before Confirm).
+	case "list_skills":
+		return stringToToolResult(a.handleListSkills(ctx, tc))
+	case "load_skill":
+		return stringToToolResult(a.handleLoadSkill(ctx, tc))
+	case "skill_search":
+		return stringToToolResult(a.handleSkillSearch(ctx, tc))
+	case "skill_history":
+		return stringToToolResult(a.handleSkillHistory(ctx, tc))
+	case "save_skill":
+		return stringToToolResult(a.handleSaveSkill(ctx, tc))
+	case "update_skill":
+		return stringToToolResult(a.handleUpdateSkill(ctx, tc))
+	case "forget_skill":
+		return stringToToolResult(a.handleForgetSkill(ctx, tc))
 	default:
 		return stringToToolResult(a.handleMCPTool(ctx, tc))
 	}

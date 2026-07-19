@@ -176,16 +176,17 @@ func DefaultTools(cwd string) []proxy.Tool {
 			}, "id"),
 		}},
 	}
-	// Staging and memory tools are appended to every tier.
-	// Staging is ungated by design; memory tier-gating is at dispatch time.
-	return append(append(tools, StagingTools()...), MemoryTools()...)
+	// Staging, memory, and skill tools are appended to every tier.
+	// Staging is ungated by design; memory and skill tier-gating is at dispatch time.
+	return append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
 }
 
 // GatedTool reports whether a tool requires human confirmation before running.
 func GatedTool(name string) bool {
 	switch name {
 	case "run_shell", "write_file", "edit_file",
-		"delete_file", "move_file", "run_background", "kill_process":
+		"delete_file", "move_file", "run_background", "kill_process",
+		"save_skill", "update_skill", "forget_skill":
 		return true
 	default:
 		return false
@@ -255,8 +256,8 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 			}),
 		}},
 	}
-	// Staging and memory tools are appended to every tier.
-	return append(append(tools, StagingTools()...), MemoryTools()...)
+	// Staging, memory, and skill tools are appended to every tier.
+	return append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
 }
 
 // CapabilityDiscovery is the default read-only subagent capability.
@@ -386,8 +387,8 @@ func EditTools(cwd string) []proxy.Tool {
 			}, "src", "dst"),
 		}},
 	}
-	// Staging and memory tools are appended to every tier.
-	return append(append(tools, StagingTools()...), MemoryTools()...)
+	// Staging, memory, and skill tools are appended to every tier.
+	return append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
 }
 
 // IsEditTool reports whether name is one of the edit-category tools that mutate
