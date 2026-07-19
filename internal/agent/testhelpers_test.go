@@ -137,10 +137,22 @@ func sseServer(t *testing.T, framesPerCall ...[]string) *httptest.Server {
 		}
 		call++
 		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Errorf("sseServer: ResponseWriter does not implement http.Flusher — cannot deliver frames incrementally")
+			return
+		}
+		// Flush after every frame so the client parses the stream
+		// incrementally, as it would against a real backend. Without this the
+		// response body is buffered and arrives as a single chunk, silently
+		// defeating split-frame/incremental-delivery test scenarios.
+		flusher.Flush() // deliver headers before the first frame
 		for _, f := range frames {
 			fmt.Fprintf(w, "data: %s\n\n", f)
+			flusher.Flush()
 		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
 	}))
 }
 

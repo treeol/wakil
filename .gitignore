@@ -44,3 +44,6 @@ runs/
 # kvrust is no longer a submodule — it's cloned at build time in the Dockerfile.
 # If cloned locally for testing, ignore it so it doesn't pollute git status.
 /kvrust/
+
+# go build cache (sandbox /tmp is tiny)
+.tmp-gocache/
