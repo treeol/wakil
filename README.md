@@ -628,6 +628,17 @@ recall; memory lives server-side, keyed by `metadata.chat_id`.
 go test ./...
 ```
 
+In a sandbox with a tiny `/tmp` tmpfs (Go builds/tests fail with
+`no space left on device`), point the toolchain at the workspace disk first:
+
+```sh
+mkdir -p .tmp-gocache
+export TMPDIR=$PWD/.tmp-gocache GOTMPDIR=$PWD/.tmp-gocache GOCACHE=$PWD/.tmp-gocache
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#sandboxed-environments-with-a-tiny-tmp)
+for details.
+
 Coverage in `cmd/wakil/*_test.go` and `internal/`: streamed tool_call assembly
 from incremental arg fragments, the plain-text *(no-tool_calls)* branch, the
 full agent loop, the confirm gate *(accept/decline)*, executor read/write +

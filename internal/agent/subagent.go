@@ -236,10 +236,12 @@ var subagentWriterMu sync.Mutex
 // still parallelize freely. The lock is held around the session.CallTool call
 // only, not the entire child run.
 //
-// IsMCPReadTool is used here as a HINT, not a security boundary — the worst
-// case is a mutation that doesn't trigger the lock (parallel race on a
-// misclassified write), not a read that does (unnecessary serialization).
-// The security boundary is the allowlist (SubagentMCPServers); the mutex is
+// IsMCPReadTool is used here as a HINT, not a security boundary — with the
+// read-allowlist (fail-safe default), a misclassified READ tool merely takes
+// the lock unnecessarily (harmless serialization), while a misclassified
+// WRITE tool with a read-looking name can still miss the lock (parallel race)
+// — the same residual risk as before, now with the opposite bias. The
+// security boundary is the allowlist (SubagentMCPServers); the mutex is
 // defense-in-depth against the most common mutation patterns.
 var subagentMCPMu sync.Mutex
 

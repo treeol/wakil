@@ -185,32 +185,57 @@ func (m *MCPManager) OpenAIToolsForServers(allowed map[string]bool) []proxy.Tool
 	return tools
 }
 
-// mcpWriteKeywords are substrings that indicate a mutating MCP tool. Any tool
-// whose name does NOT contain one of these is treated as read-only.
+// MCP tool gating — read-allowlist with write-veto (policy decision
+// 2026-07-19, Trello nAoZenva). History: the original write-keyword
+// blacklist defaulted UNKNOWN tools to READ, so "drop_database" or
+// "execute_command" auto-executed under AllowReads — a mutating call riding
+// a consent the user gave for reads (L2). Under the allowlist, a
+// misclassified READ tool costs one prompt; a misclassified WRITE tool can
+// no longer auto-execute. Name heuristics remain friction, not a security
+// boundary — but now they fail safe.
 //
-// THREAT-MODEL NOTE (L2): this is a blacklist that defaults unknown tools to
-// READ — names like "drop_database", "run_script", or "execute_command"
-// contain none of these substrings and are therefore classified read-only,
-// skipping the confirmation prompt when App.AllowReads is on. This is pinned
-// deliberately in TestIsMCPReadTool_DocumentsDefaultReadRisk (WP-3); whether
-// to flip the default to write-until-proven-read is an open policy decision
-// tracked as a follow-up card. Do not "fix" the test without deciding here.
+// mcpReadKeywords / mcpWriteKeywords are matched against WHOLE name segments
+// (see IsMCPReadTool). A write segment vetoes a read segment, so
+// "get_and_delete" confirms while "get_user" skips.
+var mcpReadKeywords = []string{
+	"search", "list", "get", "fetch", "query", "read", "resolve",
+	"find", "show", "describe", "lookup", "check", "view", "inspect",
+}
+
 var mcpWriteKeywords = []string{
 	"write", "create", "update", "delete", "remove", "insert",
 	"put", "post", "set", "edit", "modify", "push", "send", "publish",
+	"drop", "run", "execute", "truncate", "kill", "format", "apply",
+	"submit", "upsert", "disable", "enable", "forget", "reset",
 }
 
-// isMCPReadTool returns true when a tool name looks like a read-only operation
-// (search, fetch, query, list, resolve …). Uses a write-keyword blacklist so
-// unknown tools default to read rather than silently skipping the [a] option.
+// isMCPReadTool returns true when a tool name looks read-only. Matching is
+// word-boundary based: the name is lowercased and split on non-alphanumerics
+// (underscores, hyphens, dots); any WRITE segment vetoes, otherwise one READ
+// segment suffices — so "read_file" and "get-user" match, but
+// "readonly_mode_disable", "get_and_delete", "checkpoint_create", and
+// "spreadsheet_update" do not. Unknown names default to WRITE (confirm) —
+// the AllowReads consent means reads, so a name must earn the skip, not
+// inherit it.
 func IsMCPReadTool(name string) bool {
 	lower := strings.ToLower(name)
-	for _, kw := range mcpWriteKeywords {
-		if strings.Contains(lower, kw) {
-			return false
+	segs := strings.FieldsFunc(lower, func(r rune) bool {
+		return r < 'a' || r > 'z'
+	})
+	isRead := false
+	for _, s := range segs {
+		for _, kw := range mcpWriteKeywords {
+			if s == kw {
+				return false // write segment vetoes immediately
+			}
+		}
+		for _, kw := range mcpReadKeywords {
+			if s == kw {
+				isRead = true
+			}
 		}
 	}
-	return true
+	return isRead
 }
 
 // CallTool routes a namespaced tool call to the owning server, gates it,

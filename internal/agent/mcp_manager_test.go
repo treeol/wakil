@@ -105,12 +105,30 @@ func connectedServer(name string, session *fakeMCPSession, toolNames ...string) 
 
 // ── IsMCPReadTool ────────────────────────────────────────────────────────────
 
-// TestIsMCPReadTool_DocumentsDefaultReadRisk pins the current write-keyword
-// blacklist INCLUDING its known evasions. The evasion cases are a documented
-// liability (L2): unknown tools default to READ and skip confirmation when
-// AllowReads is on. Flipping the default is a policy decision (WP-5 card);
-// until then these tests fail loudly if the behavior changes silently.
-func TestIsMCPReadTool_DocumentsDefaultReadRisk(t *testing.T) {
+// TestIsMCPReadTool_ReadAllowlistFailSafe pins the read-keyword ALLOWLIST
+// (policy decision 2026-07-19, Trello nAoZenva): a tool skips confirmation
+// under AllowReads only when its name contains a read keyword. Unknown and
+// write-like names default to WRITE (confirm) — the AllowReads consent means
+// reads, so a name must earn the skip.
+//
+// History: this test was TestIsMCPReadTool_DocumentsDefaultReadRisk (WP-3),
+// which pinned the OLD write-blacklist behavior where unknown tools defaulted
+// to READ and the evasions below auto-executed. The flip was decided after a
+// Mashūra 3-panel review (unanimous): default-read is fail-open, default-
+// write is fail-safe — a misclassified read costs one prompt, a
+// misclassified write can no longer auto-execute.
+func TestIsMCPReadTool_ReadAllowlistFailSafe(t *testing.T) {
+	readLike := []string{
+		"search", "list", "fetch", "query", "get", "resolve", "read_file",
+		"find_files", "show_status", "describe_table", "lookup_user",
+		"check_health", "view_log", "inspect_state",
+	}
+	for _, name := range readLike {
+		if !IsMCPReadTool(name) {
+			t.Errorf("IsMCPReadTool(%q) = false — read-keyword tool must skip prompt under AllowReads", name)
+		}
+	}
+
 	writeLike := []string{
 		"write_file", "create", "UPDATE", "delete", "send", "push",
 		"edit_file", "modify_config", "insert_row", "remove_user",
@@ -118,31 +136,40 @@ func TestIsMCPReadTool_DocumentsDefaultReadRisk(t *testing.T) {
 	}
 	for _, name := range writeLike {
 		if IsMCPReadTool(name) {
-			t.Errorf("IsMCPReadTool(%q) = true — write-keyword tool must gate", name)
+			t.Errorf("IsMCPReadTool(%q) = true — write tool must confirm", name)
 		}
 	}
 
-	readLike := []string{
-		"search", "list", "fetch", "query", "get", "resolve", "read_file",
-	}
-	for _, name := range readLike {
-		if !IsMCPReadTool(name) {
-			t.Errorf("IsMCPReadTool(%q) = false — read tool must stay prompt-free under AllowReads", name)
-		}
-	}
-
-	// pinning: KNOWN EVASIONS — these are mutating operations whose names
-	// contain no write-keyword substring, so they classify READ and skip
-	// confirmation under AllowReads. This is the L2 default-read risk. If any
-	// of these flips to false, the classifier improved — update this test and
-	// the threat-model note at mcpWriteKeywords together.
+	// REGRESSION (the L2 evasions): under the old blacklist these classified
+	// READ and auto-executed under AllowReads. They must now confirm.
 	evasions := []string{
 		"drop_database", "run_script", "execute_command", "truncate_table",
 		"kill_process", "format_disk", "apply", "submit", "upsert",
 	}
 	for _, name := range evasions {
-		if !IsMCPReadTool(name) {
-			t.Errorf("IsMCPReadTool(%q) = false — known evasion fixed? update threat-model note", name)
+		if IsMCPReadTool(name) {
+			t.Errorf("IsMCPReadTool(%q) = true — REGRESSION: known evasion auto-executes again", name)
+		}
+	}
+
+	// Word-boundary evasions: substrings that LOOK read-ish inside mutating
+	// names must not match (segment-exact matching).
+	wordBoundaryEvasions := []string{
+		"readonly_mode_disable", "unread_marker", "checkpoint_create",
+		"checkout_branch", "recheck_and_fix", "spreadsheet_update",
+		"get_and_delete", "forget_user",
+	}
+	for _, name := range wordBoundaryEvasions {
+		if IsMCPReadTool(name) {
+			t.Errorf("IsMCPReadTool(%q) = true — substring evasion: segment-exact matching must reject", name)
+		}
+	}
+
+	// Unknown/ambiguous names confirm — fail-safe for anything not invented yet.
+	unknown := []string{"sync_state", "ping", "noop", "handle_event", "process"}
+	for _, name := range unknown {
+		if IsMCPReadTool(name) {
+			t.Errorf("IsMCPReadTool(%q) = true — unknown names must default to confirm", name)
 		}
 	}
 }

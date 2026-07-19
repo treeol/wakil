@@ -301,8 +301,9 @@ type Config struct {
 	// cannot call an MCP tool from a server not in this list.
 	//
 	// This is the consent surface for subagent MCP access: the user explicitly
-	// opts in each server by name. IsMCPReadTool (the keyword blacklist) is NOT
-	// used as a security input for subagents — it stays for parent UX only.
+	// opts in each server by name. IsMCPReadTool (the read-keyword allowlist)
+	// is NOT used as a security input for subagents — it stays for parent
+	// UX only.
 	SubagentMCPServers []string `json:"subagent_mcp_servers,omitempty"`
 
 	// AgentPromptPath is the file loaded once at startup to supply the agent
