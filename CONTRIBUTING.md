@@ -16,14 +16,18 @@ for getting a patch ready for review.
 # Build the binary
 go build -o wakil ./cmd/wakil
 
-# Run all tests
-go test ./...
+# Run all tests (with coverage, like CI)
+go test -count=1 -cover ./...
 
-# Run the race detector on concurrent packages
-go test -race ./internal/agent/... ./internal/proxy/... ./internal/tui/... ./internal/counsel/...
+# Check coverage floors on damage-critical packages
+go test -count=1 -cover ./... | scripts/check_coverage.sh
 
-# Check formatting
-gofmt -l cmd/ internal/
+# Run the race detector (all packages except internal/lsp, which has a known
+# pre-existing race — see .github/workflows/ci.yml)
+go test -race -count=1 $(go list ./... | grep -v /internal/lsp)
+
+# Check formatting (whole tree, like CI)
+gofmt -l .
 
 # Vet
 go vet ./...
@@ -42,10 +46,10 @@ All of the above must pass before you send a patch.
 Before opening a PR, verify each item:
 
 - [ ] `go build ./...` passes
-- [ ] `go test ./...` passes
-- [ ] `go test -race ./internal/agent/... ./internal/proxy/... ./internal/tui/... ./internal/counsel/...` passes
+- [ ] `go test -count=1 -cover ./...` passes and `scripts/check_coverage.sh` is green
+- [ ] `go test -race -count=1 $(go list ./... | grep -v /internal/lsp)` passes
 - [ ] `go vet ./...` passes
-- [ ] `gofmt -l cmd/ internal/` returns nothing
+- [ ] `gofmt -l .` returns nothing
 - [ ] Commit messages are descriptive and reference the relevant WP/issue if applicable
 - [ ] No secrets, API keys, or credentials in the diff
 - [ ] No new unconfirmed write/execute paths — every destructive action goes
