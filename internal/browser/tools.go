@@ -131,35 +131,59 @@ func IsBrowserTool(name string) bool {
 	return false
 }
 
+// browserOps is the interface that *Manager satisfies. It covers only the
+// operations dispatched by tool handlers — Close is lifecycle, not a tool op.
+// This seam allows testing dispatch + argument validation with a fake,
+// without launching Chrome.
+type browserOps interface {
+	Navigate(ctx context.Context, url string) (title, finalURL string, err error)
+	Screenshot(ctx context.Context, fullPage bool) (string, error)
+	SetViewport(ctx context.Context, width, height int) error
+	EmulateReducedMotion(ctx context.Context, enable bool) error
+	Click(ctx context.Context, selector string) error
+	EvalJS(ctx context.Context, expr string) (string, error)
+	GetText(ctx context.Context, selector string) (string, error)
+	GetHTML(ctx context.Context, selector string) (string, error)
+}
+
+// Compile-time assertion that *Manager satisfies browserOps.
+var _ browserOps = (*Manager)(nil)
+
 // HandleToolCall dispatches a browser_* tool call to the appropriate manager
 // method. Returns the result string for the model.
 func (m *Manager) HandleToolCall(ctx context.Context, toolName string, argsJSON string) string {
 	if m == nil {
 		return "[browser: browser tools are not enabled. Configure browser_enabled in config.]"
 	}
+	return dispatchToolCall(m, ctx, toolName, argsJSON)
+}
 
+// dispatchToolCall is the testable dispatch seam: it parses args, validates,
+// calls the appropriate browserOps method, and formats the result string.
+// Called by (*Manager).HandleToolCall; also used directly in tests with a fake.
+func dispatchToolCall(ops browserOps, ctx context.Context, toolName string, argsJSON string) string {
 	switch toolName {
 	case "browser_navigate":
-		return m.handleNavigate(ctx, argsJSON)
+		return handleNavigate(ops, ctx, argsJSON)
 	case "browser_screenshot":
-		return m.handleScreenshot(ctx, argsJSON)
+		return handleScreenshot(ops, ctx, argsJSON)
 	case "browser_viewport":
-		return m.handleViewport(ctx, argsJSON)
+		return handleViewport(ops, ctx, argsJSON)
 	case "browser_click":
-		return m.handleClick(ctx, argsJSON)
+		return handleClick(ops, ctx, argsJSON)
 	case "browser_eval":
-		return m.handleEval(ctx, argsJSON)
+		return handleEval(ops, ctx, argsJSON)
 	case "browser_text":
-		return m.handleText(ctx, argsJSON)
+		return handleText(ops, ctx, argsJSON)
 	case "browser_html":
-		return m.handleHTML(ctx, argsJSON)
+		return handleHTML(ops, ctx, argsJSON)
 	case "browser_reduced_motion":
-		return m.handleReducedMotion(ctx, argsJSON)
+		return handleReducedMotion(ops, ctx, argsJSON)
 	}
 	return fmt.Sprintf("[browser: unknown tool %q]", toolName)
 }
 
-func (m *Manager) handleNavigate(ctx context.Context, argsJSON string) string {
+func handleNavigate(ops browserOps, ctx context.Context, argsJSON string) string {
 	var args struct {
 		URL string `json:"url"`
 	}
@@ -169,19 +193,19 @@ func (m *Manager) handleNavigate(ctx context.Context, argsJSON string) string {
 	if args.URL == "" {
 		return "ERROR: url is required"
 	}
-	title, finalURL, err := m.Navigate(ctx, args.URL)
+	title, finalURL, err := ops.Navigate(ctx, args.URL)
 	if err != nil {
 		return fmt.Sprintf("[browser: navigate failed: %v]", err)
 	}
 	return fmt.Sprintf("navigated to: %s\ntitle: %s\nfinal URL: %s", args.URL, title, finalURL)
 }
 
-func (m *Manager) handleScreenshot(ctx context.Context, argsJSON string) string {
+func handleScreenshot(ops browserOps, ctx context.Context, argsJSON string) string {
 	var args struct {
 		FullPage bool `json:"full_page"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &args) // full_page is optional
-	path, err := m.Screenshot(ctx, args.FullPage)
+	path, err := ops.Screenshot(ctx, args.FullPage)
 	if err != nil {
 		return fmt.Sprintf("[browser: screenshot failed: %v]", err)
 	}
@@ -193,7 +217,7 @@ func (m *Manager) handleScreenshot(ctx context.Context, argsJSON string) string 
 	}())
 }
 
-func (m *Manager) handleViewport(ctx context.Context, argsJSON string) string {
+func handleViewport(ops browserOps, ctx context.Context, argsJSON string) string {
 	var args struct {
 		Width  int `json:"width"`
 		Height int `json:"height"`
@@ -204,13 +228,13 @@ func (m *Manager) handleViewport(ctx context.Context, argsJSON string) string {
 	if args.Width <= 0 || args.Height <= 0 {
 		return "ERROR: width and height must be positive integers"
 	}
-	if err := m.SetViewport(ctx, args.Width, args.Height); err != nil {
+	if err := ops.SetViewport(ctx, args.Width, args.Height); err != nil {
 		return fmt.Sprintf("[browser: set viewport failed: %v]", err)
 	}
 	return fmt.Sprintf("viewport set to %dx%d", args.Width, args.Height)
 }
 
-func (m *Manager) handleClick(ctx context.Context, argsJSON string) string {
+func handleClick(ops browserOps, ctx context.Context, argsJSON string) string {
 	var args struct {
 		Selector string `json:"selector"`
 	}
@@ -220,13 +244,13 @@ func (m *Manager) handleClick(ctx context.Context, argsJSON string) string {
 	if args.Selector == "" {
 		return "ERROR: selector is required"
 	}
-	if err := m.Click(ctx, args.Selector); err != nil {
+	if err := ops.Click(ctx, args.Selector); err != nil {
 		return fmt.Sprintf("[browser: click %q failed: %v]", args.Selector, err)
 	}
 	return fmt.Sprintf("clicked: %s", args.Selector)
 }
 
-func (m *Manager) handleEval(ctx context.Context, argsJSON string) string {
+func handleEval(ops browserOps, ctx context.Context, argsJSON string) string {
 	var args struct {
 		Expression string `json:"expression"`
 	}
@@ -236,7 +260,7 @@ func (m *Manager) handleEval(ctx context.Context, argsJSON string) string {
 	if args.Expression == "" {
 		return "ERROR: expression is required"
 	}
-	result, err := m.EvalJS(ctx, args.Expression)
+	result, err := ops.EvalJS(ctx, args.Expression)
 	if err != nil {
 		return fmt.Sprintf("[browser: eval failed: %v]", err)
 	}
@@ -246,7 +270,7 @@ func (m *Manager) handleEval(ctx context.Context, argsJSON string) string {
 	return strings.TrimSpace(result)
 }
 
-func (m *Manager) handleText(ctx context.Context, argsJSON string) string {
+func handleText(ops browserOps, ctx context.Context, argsJSON string) string {
 	var args struct {
 		Selector string `json:"selector"`
 	}
@@ -256,33 +280,33 @@ func (m *Manager) handleText(ctx context.Context, argsJSON string) string {
 	if args.Selector == "" {
 		return "ERROR: selector is required"
 	}
-	text, err := m.GetText(ctx, args.Selector)
+	text, err := ops.GetText(ctx, args.Selector)
 	if err != nil {
 		return fmt.Sprintf("[browser: get text %q failed: %v]", args.Selector, err)
 	}
 	return text
 }
 
-func (m *Manager) handleHTML(ctx context.Context, argsJSON string) string {
+func handleHTML(ops browserOps, ctx context.Context, argsJSON string) string {
 	var args struct {
 		Selector string `json:"selector"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &args) // selector is optional
-	html, err := m.GetHTML(ctx, args.Selector)
+	html, err := ops.GetHTML(ctx, args.Selector)
 	if err != nil {
 		return fmt.Sprintf("[browser: get HTML failed: %v]", err)
 	}
 	return html
 }
 
-func (m *Manager) handleReducedMotion(ctx context.Context, argsJSON string) string {
+func handleReducedMotion(ops browserOps, ctx context.Context, argsJSON string) string {
 	var args struct {
 		Emulate bool `json:"emulate"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
-	if err := m.EmulateReducedMotion(ctx, args.Emulate); err != nil {
+	if err := ops.EmulateReducedMotion(ctx, args.Emulate); err != nil {
 		return fmt.Sprintf("[browser: emulate reduced motion failed: %v]", err)
 	}
 	state := "no-preference"
