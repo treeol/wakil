@@ -120,12 +120,15 @@ and the `lsp_*` code-intelligence tools. All structured, argument-constrained
 calls: they read file contents, listings, and symbol data, but none of them
 can execute arbitrary commands.
 
-Subagents have two capability tiers: **discovery** (default, read-only) and
+Subagents have three capability tiers: **discovery** (default, read-only),
 **edit** (can `edit_file` / `write_file` / `delete_file` / `move_file`,
 gated on `/auto` consent, serialized by a writer lock — at most one edit
-child at a time). `dispatch_subagent` / `dispatch_subagents` are ungated
-because they spawn bounded workers with their own tool restrictions; the
-edit tier inherits session-level consent and never prompts interactively.
+child at a time), and **tools** (adds MCP tools from a configured allowlist,
+LSP, and web search to the discovery set — also gated on `/auto`; mutating
+MCP calls are serialized per-server). `dispatch_subagent` /
+`dispatch_subagents` are ungated because they spawn bounded workers with
+their own tool restrictions; the edit and tools tiers inherit session-level
+consent and never prompt interactively.
 
 `run_shell` is gated even for pure reads — `cat ~/.ssh/id_rsa` or `env` hits
 the same `y/n` wall as anything else. `a` at a prompt auto-approves read-only
@@ -140,6 +143,15 @@ host-root, functionally — powerful, and exactly as dangerous as it sounds.
 Run untrusted tasks with the gate on, against an endpoint and model you
 actually trust, and reach for a disposable VM when you don't need
 host-Docker control.
+
+In Docker mode the sandbox is also hardened: `--cap-drop=ALL`,
+`--read-only`, and `--security-opt=no-new-privileges` are always applied.
+A writable `/tmp` tmpfs and a minimal `/etc` tmpfs are mounted so the
+container can function under the read-only rootfs. The `docker_caps`,
+`docker_memory`, `docker_pids_limit`, and `docker_tmpfs_size` config
+fields adjust the resource limits (see the config table above). Note that
+`docker_tmpfs_size` counts against the container memory cgroup — setting
+it equal to or larger than `docker_memory` can still cause OOM under load.
 
 **Memory as an injection channel.** `memory_put` is ungated — any tool
 result can cause the model to write an entry. Mid-tier entries (TTL 1h–7d)
@@ -269,6 +281,10 @@ reference covering every section below.
 | `kvr_disabled` | `false` | Disable the staging KV store *(auto-disabled in direct mode)* |
 | `kvr_max_entries` | `100000` | Max entries in the staging store |
 | `kvr_snapshot_interval_secs` | `300` | Staging snapshot frequency *(survives sandbox restarts)* |
+| `docker_caps` | `[]` | Linux capabilities to re-add after `--cap-drop=ALL` *(e.g. `["CHOWN"]` if go build fails)* |
+| `docker_memory` | `"4g"` | Container memory limit; must be ≥ `docker_tmpfs_size` *(tmpfs counts against the cgroup)* |
+| `docker_pids_limit` | `512` | Max processes in the sandbox container *(0 = no limit)* |
+| `docker_tmpfs_size` | `"4g"` | Size of the sandbox `/tmp` tmpfs |
 | `agent_prompt_path` | `agent.txt` next to config | System prompt file path |
 | `backend_max_retries` | `3` | Max retries for transient backend failures (unattended) |
 | `compact_at_frac` | `0.75` | Compact at 75% of effective context |
@@ -383,7 +399,7 @@ opens a picker to attach a file or folder for context.
 | `search_files` | no | Grep file contents for a pattern |
 | `find_files` | no | Find files by name glob recursively |
 | `open_url` | yes | Open a URL in the host browser *(always runs on the host, not the sandbox)* |
-| `dispatch_subagent` | no | Spawn a subagent for a bounded task — discovery (read-only) or edit tier *(contiguous same-turn calls run in parallel)* |
+| `dispatch_subagent` | no | Spawn a subagent for a bounded task — discovery (read-only), edit (file mutation, needs `/auto`), or tools (MCP/LSP/web search, needs `/auto`) *(contiguous same-turn calls run in parallel)* |
 | `dispatch_subagents` | no | Spawn several subagents concurrently, one per task *(bounded by `max_parallel_subagents`, default 2)* |
 | `read_process_log` | no | Read the tail of a background process's log |
 | `staging_put` | no | Store a value in the ephemeral in-sandbox KV store *(key auto-prefixed with agent identity)* |
@@ -628,8 +644,10 @@ recall; memory lives server-side, keyed by `metadata.chat_id`.
 go test ./...
 ```
 
-In a sandbox with a tiny `/tmp` tmpfs (Go builds/tests fail with
-`no space left on device`), point the toolchain at the workspace disk first:
+New sandbox containers default to a 4 GB `/tmp` tmpfs. If you're running
+in an older container or one with a smaller `docker_tmpfs_size`, Go
+builds/tests may fail with `no space left on device`. Point the toolchain
+at the workspace disk first:
 
 ```sh
 mkdir -p .tmp-gocache

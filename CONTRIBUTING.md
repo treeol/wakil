@@ -5,7 +5,7 @@ for getting a patch ready for review.
 
 ## Prerequisites
 
-- **Go 1.25+** (see `go.mod` for the canonical minimum; the Dockerfile may use
+- **Go 1.26+** (see `go.mod` for the canonical minimum; the Dockerfile may use
   a newer builder toolchain)
 - A working `docker` setup if you want to test the sandbox mode (optional —
   `direct` mode works without Docker)
@@ -35,13 +35,13 @@ go vet ./...
 
 All of the above must pass before you send a patch.
 
-## Sandboxed environments with a tiny `/tmp`
+## Sandboxed environments with a small `/tmp`
 
-Some sandboxes (including the wakil dev sandbox itself) mount `/tmp` as a
-small tmpfs (e.g. 100 MB). Go's build cache, cgo temp files, `go run` of
-heavy tools (golangci-lint), and even `git commit` (SSH signing writes its
-key to `/tmp`) will fail with `no space left on device` or
-`permission denied` on the test binary.
+New sandbox containers default to a 4 GB `/tmp` tmpfs, but older containers
+or a custom `docker_tmpfs_size` may still be too small. Go's build cache,
+cgo temp files, `go run` of heavy tools (golangci-lint), and even
+`git commit` (SSH signing writes its key to `/tmp`) will fail with
+`no space left on device` or `permission denied` on the test binary.
 
 Fix: point the Go toolchain and the system temp dir at the workspace disk:
 
