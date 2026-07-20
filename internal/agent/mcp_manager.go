@@ -40,8 +40,18 @@ type MCPServer struct {
 	Cfg     config.MCPServerConfig
 	Session mcpSession
 	Tools   []*gosdkmcp.Tool // tools listed at connect time
-	Status  string           // "connecting" | "connected" | "failed"
+	Status  string           // "connecting" | "connected" | "failed" | "closed"
 	Err     error
+
+	// sessionMu serializes CallTool (RLock) against Reconnect/Close (Lock)
+	// on the same session. CallTool holds RLock for the duration of
+	// session.CallTool; Reconnect/Close hold Lock while closing the old
+	// session, which drains in-flight calls before Close is called.
+	sessionMu sync.RWMutex
+
+	// reconnectMu serializes concurrent Reconnect calls for the same server,
+	// preventing overlapping connect attempts that would leak sessions.
+	reconnectMu sync.Mutex
 }
 
 // MCPManager owns all MCP server connections for the process lifetime.
@@ -246,18 +256,16 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 	if !ok {
 		return fmt.Sprintf("ERROR: not an MCP tool name %q", name)
 	}
+	isRead := IsMCPReadTool(toolName)
 
-	// Copy the fields we need under the lock so Reconnect can't mutate them
-	// concurrently (status/session/err are written by Reconnect under a write lock).
+	// Phase 1: brief read lock to check server exists and is connected.
+	// We don't hold the session lock yet — the confirm prompt may block
+	// indefinitely on user input, and we don't want to block Reconnect.
 	m.mu.RLock()
 	var status, srvErrStr string
-	var session mcpSession
-	found := false
 	for _, s := range m.servers {
 		if s.Cfg.Name == serverName {
-			found = true
 			status = s.Status
-			session = s.Session
 			if s.Err != nil {
 				srvErrStr = s.Err.Error()
 			}
@@ -266,14 +274,15 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 	}
 	m.mu.RUnlock()
 
-	if !found {
+	if status == "" {
 		return fmt.Sprintf("ERROR: no MCP server named %q", serverName)
 	}
 	if status != "connected" {
 		return fmt.Sprintf("ERROR: MCP server %q is %s: %s", serverName, status, srvErrStr)
 	}
 
-	isRead := IsMCPReadTool(toolName)
+	// Confirmation gate — no locks held, so Reconnect can proceed while
+	// the user is at the prompt.
 	if !(isRead && allowReads) {
 		detail := fmt.Sprintf("server: %s\ntool:   %s\nargs:   %s", serverName, toolName, PrettyArgs(argsJSON))
 		if !confirm(name, fmt.Sprintf("Call MCP tool %s?", toolName), detail, isRead) {
@@ -288,6 +297,39 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 		}
 	}
 
+	// Phase 2: re-acquire under both locks. m.mu.RLock finds the server and
+	// re-checks status (may have changed during the confirm prompt). While
+	// still under m.mu.RLock, acquire sessionMu.RLock — this prevents
+	// Reconnect from closing the session until CallTool finishes. Then
+	// release m.mu.RLock and call session.CallTool with sessionMu.RLock held.
+	m.mu.RLock()
+	var srv *MCPServer
+	found := false
+	for _, s := range m.servers {
+		if s.Cfg.Name == serverName {
+			found = true
+			srv = s
+			status = s.Status
+			if s.Err != nil {
+				srvErrStr = s.Err.Error()
+			}
+			break
+		}
+	}
+	if !found || srv.Status != "connected" || srv.Session == nil {
+		m.mu.RUnlock()
+		if !found {
+			return fmt.Sprintf("ERROR: no MCP server named %q", serverName)
+		}
+		return fmt.Sprintf("ERROR: MCP server %q is %s: %s", serverName, status, srvErrStr)
+	}
+	// Acquire the session lock while still under m.mu.RLock so Reconnect
+	// can't swap/close the session between our RUnlock and RLock.
+	srv.sessionMu.RLock()
+	session := srv.Session
+	m.mu.RUnlock()
+	defer srv.sessionMu.RUnlock()
+
 	res, err := session.CallTool(ctx, &gosdkmcp.CallToolParams{
 		Name:      toolName,
 		Arguments: arguments,
@@ -299,11 +341,15 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 }
 
 // Reconnect closes and re-connects a named server. Used by /mcp reconnect.
-// Holds the write lock for the entire operation so no reader can observe a
-// half-torn-down or half-rebuilt server state.
+// The connect runs outside the manager lock so readers (OpenAITools, CallTool,
+// Servers) are not blocked for up to 30s. In-flight CallTool calls on the old
+// session are drained (via sessionMu) before the old session is closed.
+// Concurrent Reconnect calls for the same server are serialized via
+// reconnectMu to prevent overlapping connect attempts that would leak sessions.
+// Returns an error if the server is closed (manager shutdown).
 func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Phase 1: find server and acquire reconnectMu — short read lock + per-server lock.
+	m.mu.RLock()
 	var srv *MCPServer
 	for _, s := range m.servers {
 		if s.Cfg.Name == name {
@@ -311,32 +357,97 @@ func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
 			break
 		}
 	}
+	m.mu.RUnlock()
 	if srv == nil {
 		return fmt.Errorf("no MCP server named %q", name)
 	}
-	if srv.Session != nil {
-		srv.Session.Close()
+
+	srv.reconnectMu.Lock()
+	defer srv.reconnectMu.Unlock()
+
+	// Phase 2: detach old session, mark "connecting" — short write lock.
+	// Bail out if the server/manager was closed.
+	m.mu.Lock()
+	if srv.Status == "closed" {
+		m.mu.Unlock()
+		return fmt.Errorf("MCP server %q is closed", name)
 	}
+	oldSession := srv.Session
 	srv.Status = "connecting"
 	srv.Err = nil
 	srv.Tools = nil
 	srv.Session = nil
-	if err := m.connectOrDefault()(ctx, srv); err != nil {
+	m.mu.Unlock()
+
+	// Phase 3: drain in-flight calls and close old session — outside m.mu.
+	// sessionMu.Lock blocks until all CallTool RLock holders release, then
+	// prevents new CallTool from acquiring RLock on this session while we
+	// close it. After this, no one can use oldSession.
+	if oldSession != nil {
+		srv.sessionMu.Lock()
+		_ = oldSession.Close()
+		srv.sessionMu.Unlock()
+	}
+
+	// Phase 4: build the new session into a temp MCPServer — outside m.mu.
+	// connectFn mutates the *MCPServer it's given, so we use a temp to avoid
+	// racing with readers that access the live srv.
+	tmp := &MCPServer{Cfg: srv.Cfg, Status: "connecting"}
+	if err := m.connectOrDefault()(ctx, tmp); err != nil {
+		m.mu.Lock()
 		srv.Status = "failed"
 		srv.Err = err
+		m.mu.Unlock()
 		return err
 	}
+
+	// Phase 5: publish the new session under a short write lock.
+	// Re-check for closed: if Close() ran while we were connecting, don't
+	// resurrect the server — close the new session instead.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if srv.Status == "closed" {
+		_ = tmp.Session.Close()
+		return fmt.Errorf("MCP server %q is closed", name)
+	}
+	srv.Session = tmp.Session
+	srv.Tools = tmp.Tools
+	srv.Status = tmp.Status
+	if srv.Status == "" {
+		srv.Status = "connected"
+	}
+	srv.Err = nil
 	return nil
 }
 
-// Close shuts down all MCP server connections.
+// Close shuts down all MCP server connections. Drains in-flight CallTool
+// calls before closing each session (same drain pattern as Reconnect).
+// After Close, the manager is permanently shut down — Reconnect will refuse
+// to resurrect closed servers.
 func (m *MCPManager) Close() {
+	// Snapshot sessions under the lock and mark all as closed.
+	// Nilling Session prevents Close from double-closing and prevents
+	// Reconnect's publish phase from installing a live session.
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	type srvSession struct {
+		srv     *MCPServer
+		session mcpSession
+	}
+	var targets []srvSession
 	for _, srv := range m.servers {
+		srv.Status = "closed"
 		if srv.Session != nil {
-			srv.Session.Close()
+			targets = append(targets, srvSession{srv: srv, session: srv.Session})
+			srv.Session = nil
 		}
+	}
+	m.mu.Unlock()
+
+	// Drain in-flight calls and close sessions — outside m.mu.
+	for _, t := range targets {
+		t.srv.sessionMu.Lock()
+		_ = t.session.Close()
+		t.srv.sessionMu.Unlock()
 	}
 }
 

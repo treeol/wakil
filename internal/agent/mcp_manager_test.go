@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
@@ -503,11 +505,11 @@ func TestMCPClose_ClosesAllSessions(t *testing.T) {
 	if s1.closeCount() != 1 || s2.closeCount() != 1 {
 		t.Fatalf("Close must close every session: %d, %d", s1.closeCount(), s2.closeCount())
 	}
-	// Close is idempotent per session-tracking: a second Close closes again
-	// (sessions are not nilled). Pin current behavior.
+	// Second Close is a no-op: sessions are nilled after the first Close,
+	// so they are not closed again.
 	m.Close()
-	if s1.closeCount() != 2 {
-		t.Fatalf("pinning: second Close closes again (no nil-out), got %d", s1.closeCount())
+	if s1.closeCount() != 1 {
+		t.Fatalf("second Close must not re-close nilled sessions, got %d", s1.closeCount())
 	}
 }
 
@@ -546,5 +548,155 @@ func TestMCPServer_TypedNilSessionIsNonNil(t *testing.T) {
 	srv := &MCPServer{Session: typedNil}
 	if srv.Session == nil {
 		t.Fatal("typed-nil interface compares non-nil — do not assign typed-nil fakes in tests")
+	}
+}
+
+// ── Concurrency: CallTool vs Reconnect drain ────────────────────────────────
+
+// blockingSession is a fake mcpSession whose CallTool blocks until a release
+// channel is closed. Used to prove that Reconnect drains in-flight calls
+// (waits for CallTool to finish) before closing the old session.
+type blockingSession struct {
+	callEntered chan struct{}
+	release     chan struct{}
+	closeCount  atomic.Int32
+}
+
+func newBlockingSession() *blockingSession {
+	return &blockingSession{
+		callEntered: make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (s *blockingSession) CallTool(_ context.Context, _ *gosdkmcp.CallToolParams) (*gosdkmcp.CallToolResult, error) {
+	close(s.callEntered)
+	<-s.release
+	return &gosdkmcp.CallToolResult{
+		Content: []gosdkmcp.Content{&gosdkmcp.TextContent{Text: "old-result"}},
+	}, nil
+}
+
+func (s *blockingSession) Close() error {
+	s.closeCount.Add(1)
+	return nil
+}
+
+// TestMCPReconnect_DrainsInFlightCallBeforeClosingOldSession proves the fix
+// for the CallTool/Reconnect use-after-close race: when CallTool is in-flight
+// on the old session, Reconnect must NOT close that session until CallTool
+// finishes. The old session's Close() is deferred until the RLock is released.
+func TestMCPReconnect_DrainsInFlightCallBeforeClosingOldSession(t *testing.T) {
+	old := newBlockingSession()
+	fresh := &fakeMCPSession{}
+	m := newFakeMCPManager(&MCPServer{
+		Cfg:     config.MCPServerConfig{Name: "srv", Transport: "stdio", Command: "fake"},
+		Session: old,
+		Tools:   []*gosdkmcp.Tool{{Name: "search", Description: "search", InputSchema: map[string]any{"type": "object"}}},
+		Status:  "connected",
+	})
+	m.connectFn = func(_ context.Context, srv *MCPServer) error {
+		srv.Session = fresh
+		srv.Status = "connected"
+		return nil
+	}
+
+	// Start CallTool in a goroutine — it will block inside old.CallTool.
+	callDone := make(chan string, 1)
+	go func() {
+		callDone <- m.CallTool(context.Background(), "srv__search", `{}`, nil, true)
+	}()
+
+	// Wait until CallTool has entered the old session.
+	<-old.callEntered
+
+	// Start Reconnect in a goroutine — it should block trying to close old
+	// (because CallTool holds sessionMu.RLock).
+	reconnectDone := make(chan error, 1)
+	go func() {
+		reconnectDone <- m.Reconnect(context.Background(), "srv")
+	}()
+
+	// Give Reconnect a moment to reach the sessionMu.Lock() call.
+	// The old session must NOT be closed while CallTool is in-flight.
+	time.Sleep(50 * time.Millisecond)
+	if got := old.closeCount.Load(); got != 0 {
+		t.Fatalf("old session closed while CallTool in-flight (closeCount=%d) — drain not working", got)
+	}
+
+	// Release CallTool — it should complete with the old session's result.
+	close(old.release)
+	if got := <-callDone; got != "old-result" {
+		t.Fatalf("CallTool result = %q, want old-result", got)
+	}
+
+	// Now Reconnect can proceed: close old, connect fresh, publish.
+	if err := <-reconnectDone; err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+
+	// Old session must be closed exactly once after drain.
+	if got := old.closeCount.Load(); got != 1 {
+		t.Fatalf("old session closeCount = %d, want 1", got)
+	}
+
+	// New session installed and connected.
+	for _, srv := range m.Servers() {
+		if srv.Cfg.Name == "srv" {
+			if srv.Session != fresh {
+				t.Fatal("new session not installed")
+			}
+			if srv.Status != "connected" {
+				t.Fatalf("status = %q, want connected", srv.Status)
+			}
+		}
+	}
+}
+
+// TestMCPReconnect_ReadersNotBlockedDuringConnect proves the fix for ISSUE 1:
+// Reconnect no longer holds the manager write lock during the 30s connect.
+// Readers (OpenAITools, Servers) must return promptly while connect is blocked.
+func TestMCPReconnect_ReadersNotBlockedDuringConnect(t *testing.T) {
+	old := &fakeMCPSession{}
+	m := newFakeMCPManager(connectedServer("srv", old, "search"))
+
+	connectStarted := make(chan struct{})
+	releaseConnect := make(chan struct{})
+	m.connectFn = func(_ context.Context, srv *MCPServer) error {
+		close(connectStarted)
+		<-releaseConnect
+		srv.Session = &fakeMCPSession{}
+		srv.Status = "connected"
+		return nil
+	}
+
+	// Start Reconnect in a goroutine — connectFn will block.
+	reconnectDone := make(chan error, 1)
+	go func() {
+		reconnectDone <- m.Reconnect(context.Background(), "srv")
+	}()
+
+	// Wait for connect to start (old session already closed+drained at this point).
+	<-connectStarted
+
+	// While connect is blocked, OpenAITools must return promptly (not blocked).
+	// The server is in "connecting" state, so it yields no tools — but it
+	// returns immediately rather than hanging.
+	done := make(chan struct{})
+	go func() {
+		_ = m.OpenAITools()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Good — readers are not blocked.
+	case <-time.After(time.Second):
+		t.Fatal("OpenAITools blocked during Reconnect connect — write lock held too long")
+	}
+
+	// Let Reconnect finish.
+	close(releaseConnect)
+	if err := <-reconnectDone; err != nil {
+		t.Fatalf("Reconnect: %v", err)
 	}
 }
