@@ -173,8 +173,39 @@ func defaultLSPServer(lang string) config.LSPServer {
 	switch lang {
 	case "go":
 		return config.LSPServer{Command: "gopls", Args: []string{"serve"}}
+	case "rust":
+		return config.LSPServer{Command: "rust-analyzer"}
+	case "python":
+		return config.LSPServer{Command: "pyright-langserver", Args: []string{"--stdio"}}
+	case "typescript", "javascript":
+		return config.LSPServer{Command: "typescript-language-server", Args: []string{"--stdio"}}
+	case "c", "cpp":
+		return config.LSPServer{Command: "clangd"}
 	}
 	return config.LSPServer{Command: lang + "-language-server"}
+}
+
+// knownDefaultLanguages lists language IDs that have a built-in default server
+// command in defaultLSPServer. It is a subset of detectLanguage's output —
+// java is detected by extension but has no reliable default binary.
+var knownDefaultLanguages = map[string]bool{
+	"go": true, "rust": true, "python": true,
+	"typescript": true, "javascript": true,
+	"c": true, "cpp": true,
+}
+
+// allowedLSPToolLanguage reports whether lang is safe to pass to EnsureServer.
+// It accepts built-in default languages and any key the user explicitly
+// configured in lsp_servers. This prevents command injection via the language
+// tool argument (which flows into defaultLSPServer → unquoted s.cmd in spawn).
+func (m *Manager) allowedLSPToolLanguage(lang string) bool {
+	if knownDefaultLanguages[lang] {
+		return true
+	}
+	if _, ok := m.cfg.LSPServers[lang]; ok {
+		return true
+	}
+	return false
 }
 
 // spawn starts the server process, performs the initialize handshake, and

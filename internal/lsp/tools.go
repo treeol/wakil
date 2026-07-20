@@ -66,9 +66,12 @@ func LSPTools(cwd string) []proxy.Tool {
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "lsp_symbols",
 			Description: "Search for symbols across the entire workspace by name. Returns matching symbols " +
-				"with file, kind, and line. Read-only. " + cwdNote,
+				"with file, kind, and line. Read-only. " + cwdNote + "\n" +
+				"Pass \"language\" to select the language server (e.g. \"go\", \"rust\", \"python\", " +
+				"\"typescript\", \"javascript\", \"c\", \"cpp\"). Defaults to \"go\".",
 			Parameters: obj(map[string]interface{}{
-				"query": strProp("Symbol name or partial name to search for"),
+				"query":    strProp("Symbol name or partial name to search for"),
+				"language": strProp("Optional LSP language ID (go, rust, python, typescript, javascript, c, cpp). Defaults to go."),
 			}, "query"),
 		}},
 	}
@@ -109,10 +112,11 @@ func CapabilityForTool(toolName string) string {
 // hover, symbols). Returns the result string for the model.
 func (m *Manager) HandleLSPReadOnly(ctx context.Context, toolName string, argsJSON string) string {
 	var args struct {
-		Path   string `json:"path"`
-		Line   int    `json:"line"`
-		Symbol string `json:"symbol"`
-		Query  string `json:"query"`
+		Path     string `json:"path"`
+		Line     int    `json:"line"`
+		Symbol   string `json:"symbol"`
+		Query    string `json:"query"`
+		Language string `json:"language"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -120,7 +124,7 @@ func (m *Manager) HandleLSPReadOnly(ctx context.Context, toolName string, argsJS
 
 	// lsp_symbols is workspace-wide — no file/line/symbol needed.
 	if toolName == "lsp_symbols" {
-		return m.handleSymbols(ctx, args.Query)
+		return m.handleSymbols(ctx, args.Query, args.Language)
 	}
 
 	// Positional tools: need path + line + symbol.
@@ -240,26 +244,38 @@ func (m *Manager) handleHover(ctx context.Context, srv *Server, params TextDocum
 	return RenderHover(&hover)
 }
 
-func (m *Manager) handleSymbols(ctx context.Context, query string) string {
+func (m *Manager) handleSymbols(ctx context.Context, query, language string) string {
 	if query == "" {
 		return "[lsp: query is required for lsp_symbols.]"
 	}
 
-	// lsp_symbols needs a server — use "go" as the default (the only configured
-	// language for the MVP). In the future, the model could specify a language.
-	srv, err := m.EnsureServer(ctx, "go")
+	lang := strings.TrimSpace(language)
+	if lang == "" {
+		lang = "go"
+	}
+
+	// Validate language: only allow built-in default language IDs and
+	// user-configured lsp_servers keys. This prevents command injection via
+	// the language arg (which flows into defaultLSPServer → unquoted cmd in
+	// spawn). The model provides this value — it is not internal-only like
+	// detectLanguage's output.
+	if !m.allowedLSPToolLanguage(lang) {
+		return fmt.Sprintf("[lsp: unsupported language %q for lsp_symbols. Use one of: go, rust, python, typescript, javascript, c, cpp, or configure lsp_servers for a custom language. Fell back to text search: no]", lang)
+	}
+
+	srv, err := m.EnsureServer(ctx, lang)
 	if err != nil {
-		return m.failureContract("lsp_symbols", "go", err, "")
+		return m.failureContract("lsp_symbols", lang, err, "")
 	}
 
 	if !srv.CapabilitySupported("workspaceSymbolProvider") {
-		return fmt.Sprintf("[lsp: %q does not support lsp_symbols. Fell back to text search: no]", "go")
+		return fmt.Sprintf("[lsp: %q does not support lsp_symbols. Fell back to text search: no]", lang)
 	}
 
 	params := WorkspaceSymbolParams{Query: query}
 	raw, err := srv.Call(ctx, "workspace/symbol", params)
 	if err != nil {
-		return m.failureContract("lsp_symbols", "go", err, "call")
+		return m.failureContract("lsp_symbols", lang, err, "call")
 	}
 
 	// Decode defensively: workspace/symbol can return SymbolInformation[] or

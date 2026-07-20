@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,6 +238,165 @@ func TestShellQuote(t *testing.T) {
 			got := shellQuote(tc.in)
 			if got != tc.want {
 				t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDefaultLSPServer verifies the built-in default server mappings for each
+// language that has one, and the fallback for unknown languages.
+func TestDefaultLSPServer(t *testing.T) {
+	tests := []struct {
+		lang    string
+		cmd     string
+		args    []string
+		hasArgs bool // false = nil args slice
+	}{
+		{"go", "gopls", []string{"serve"}, true},
+		{"rust", "rust-analyzer", nil, false},
+		{"python", "pyright-langserver", []string{"--stdio"}, true},
+		{"typescript", "typescript-language-server", []string{"--stdio"}, true},
+		{"javascript", "typescript-language-server", []string{"--stdio"}, true},
+		{"c", "clangd", nil, false},
+		{"cpp", "clangd", nil, false},
+		{"java", "java-language-server", nil, false}, // fallback, no built-in default
+		{"unknown", "unknown-language-server", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.lang, func(t *testing.T) {
+			got := defaultLSPServer(tc.lang)
+			if got.Command != tc.cmd {
+				t.Errorf("defaultLSPServer(%q).Command = %q, want %q", tc.lang, got.Command, tc.cmd)
+			}
+			if tc.hasArgs {
+				if len(got.Args) != len(tc.args) || got.Args[0] != tc.args[0] {
+					t.Errorf("defaultLSPServer(%q).Args = %v, want %v", tc.lang, got.Args, tc.args)
+				}
+			} else if len(got.Args) > 0 {
+				t.Errorf("defaultLSPServer(%q).Args = %v, want nil/empty", tc.lang, got.Args)
+			}
+		})
+	}
+}
+
+// TestAllowedLSPToolLanguage verifies the language allowlist that prevents
+// command injection via the lsp_symbols language argument.
+func TestAllowedLSPToolLanguage(t *testing.T) {
+	cfg := config.DefaultConfig()
+	mgr := NewManager(nil, cfg, "file:///test")
+
+	// Built-in default languages are allowed.
+	for _, lang := range []string{"go", "rust", "python", "typescript", "javascript", "c", "cpp"} {
+		if !mgr.allowedLSPToolLanguage(lang) {
+			t.Errorf("allowedLSPToolLanguage(%q) = false, want true (built-in default)", lang)
+		}
+	}
+
+	// java is NOT in knownDefaultLanguages (no reliable default binary).
+	if mgr.allowedLSPToolLanguage("java") {
+		t.Errorf("allowedLSPToolLanguage(\"java\") = true, want false (no built-in default)")
+	}
+
+	// Injection attempts are rejected.
+	for _, evil := range []string{"x;echo pwned", "go rm -rf /", "", " ", "GO"} {
+		if mgr.allowedLSPToolLanguage(evil) {
+			t.Errorf("allowedLSPToolLanguage(%q) = true, want false (injection/invalid)", evil)
+		}
+	}
+
+	// User-configured lsp_servers keys are allowed.
+	cfg2 := config.DefaultConfig()
+	cfg2.LSPServers = map[string]config.LSPServer{
+		"java": {Command: "jdtls"},
+	}
+	mgr2 := NewManager(nil, cfg2, "file:///test")
+	if !mgr2.allowedLSPToolLanguage("java") {
+		t.Errorf("allowedLSPToolLanguage(\"java\") = false, want true (user-configured)")
+	}
+}
+
+// TestKnownDefaultLanguagesMatchesSwitch verifies that every language with a
+// non-fallback default in defaultLSPServer is present in knownDefaultLanguages.
+// This prevents drift between the two sources of truth.
+func TestKnownDefaultLanguagesMatchesSwitch(t *testing.T) {
+	// Languages that get a real default (not the {lang}-language-server fallback).
+	// Keep in sync with defaultLSPServer's switch cases.
+	realDefaults := []string{"go", "rust", "python", "typescript", "javascript", "c", "cpp"}
+	for _, lang := range realDefaults {
+		if !knownDefaultLanguages[lang] {
+			t.Errorf("knownDefaultLanguages missing %q — defaultLSPServer has a real default for it", lang)
+		}
+	}
+
+	// Verify that languages NOT in knownDefaultLanguages actually get the fallback
+	// (i.e., there's no hidden real default that's missing from the allowlist).
+	// Use "java" as the canonical example: detected by extension but no real default.
+	if knownDefaultLanguages["java"] {
+		t.Errorf("knownDefaultLanguages has \"java\" — should not (no real default binary)")
+	}
+	srv := defaultLSPServer("java")
+	if srv.Command != "java-language-server" {
+		t.Errorf("defaultLSPServer(\"java\") = %q, expected fallback \"java-language-server\"", srv.Command)
+	}
+}
+
+// TestHandleSymbolsLanguageValidation tests the handler-level language
+// validation path: empty→go default, valid→accepted, invalid→rejected before
+// EnsureServer. Uses a nil-executor Manager (spawn will fail, but validation
+// happens before spawn).
+func TestHandleSymbolsLanguageValidation(t *testing.T) {
+	cfg := config.DefaultConfig()
+	mgr := NewManager(nil, cfg, "file:///test")
+
+	tests := []struct {
+		name     string
+		query    string
+		language string
+		wantSub  string // substring expected in the result
+	}{
+		{
+			name:     "empty language defaults to go",
+			query:    "Foo",
+			language: "",
+			wantSub:  "go", // failure contract will mention "go" (spawn fails on nil exec)
+		},
+		{
+			name:     "whitespace language defaults to go",
+			query:    "Foo",
+			language: "  ",
+			wantSub:  "go",
+		},
+		{
+			name:     "valid rust language accepted (reaches spawn)",
+			query:    "Foo",
+			language: "rust",
+			wantSub:  "rust", // failure contract mentions "rust"
+		},
+		{
+			name:     "injection attempt rejected before spawn",
+			query:    "Foo",
+			language: "x;echo pwned",
+			wantSub:  "unsupported language",
+		},
+		{
+			name:     "uppercase rejected",
+			query:    "Foo",
+			language: "Go",
+			wantSub:  "unsupported language",
+		},
+		{
+			name:     "empty query rejected",
+			query:    "",
+			language: "go",
+			wantSub:  "query is required",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := mgr.handleSymbols(context.Background(), tc.query, tc.language)
+			if !strings.Contains(result, tc.wantSub) {
+				t.Errorf("handleSymbols(query=%q, language=%q) = %q, want substring %q",
+					tc.query, tc.language, result, tc.wantSub)
 			}
 		})
 	}

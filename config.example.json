@@ -77,7 +77,7 @@
     }
   },
 
-  "_comment_lsp": "Language-server-backed code intelligence. Off by default. lsp_servers maps a language to a server; the sandbox Dockerfile ships gopls for Go.",
+  "_comment_lsp": "Language-server-backed code intelligence. Off by default. lsp_servers maps a language to a server; defaults exist for go (gopls), rust (rust-analyzer), python (pyright-langserver), typescript/javascript (typescript-language-server), and c/cpp (clangd), but only gopls ships in the default sandbox image — install others in the image or use --exec direct.",
 
   "lsp_enabled": false,
   "lsp_servers": {
