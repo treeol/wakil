@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/policy"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
@@ -67,6 +68,37 @@ func ShouldGateEvenWithAutoApprove(toolName string, app *App, detail string) boo
 
 func tuiConfirmer(app *App) Confirmer {
 	return func(toolName, headline, detail string, readAction bool) bool {
+		// ── Policy evaluation (before legacy consent path) ────────────────
+		// If a policy is active, evaluate it first. Policy allow behaves like
+		// AutoApprove — but SuspendAuto carve-outs (egress, destructive) still
+		// fire on top, so "allow" never bypasses hard safety gates. Policy deny
+		// blocks the call with a reason. Policy ask falls through to the
+		// existing confirm path (prompt or AutoApprove).
+		if pol := app.Policy(); pol != nil {
+			input := buildPolicyInput(toolName, detail, readAction)
+			result := pol.Evaluate(input)
+			switch result.Decision {
+			case policy.Deny:
+				app.sendEvent(SysNoteMsg{Text: "🚫 blocked by policy: " + result.Reason +
+					" (rule: " + result.RuleName + ")"})
+				return false
+			case policy.Allow:
+				// SuspendAuto still fires on top — egress gate, destructive gate.
+				// If SuspendAuto returns "", the allow proceeds without prompt.
+				reason := SuspendAuto(toolName, app, detail)
+				if reason == "" {
+					app.sendEvent(SysNoteMsg{Text: "⚡ policy allow: " + headline + "\n" + Indent(detail)})
+					return true
+				}
+				// Auto suspended — the policy said allow, but a hard safety gate
+				// requires confirmation. Fall through to the interactive prompt.
+				headline = "⚡ auto suspended: " + reason + " — " + headline
+			case policy.Ask:
+				// Policy says ask — fall through to the existing confirm path.
+				// If AutoApprove is on, the existing SuspendAuto logic decides.
+			}
+		}
+
 		if app.Consent().AutoApprove {
 			reason := SuspendAuto(toolName, app, detail)
 			if reason == "" {

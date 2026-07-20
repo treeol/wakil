@@ -14,6 +14,7 @@ import (
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/policy"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/workflow"
 )
@@ -2066,7 +2067,7 @@ func TestRunHeadlessDefaultInvokesOracle(t *testing.T) {
 		PlanPath:  ".wakil/plan.md",
 		StepCount: 1,
 	}
-	app.Confirm = headlessConfirmer(RunFlags{Auto: true}, new(string))
+	app.Confirm = headlessConfirmer(app, RunFlags{Auto: true}, new(string))
 	app.Out = io.Discard
 
 	var buf strings.Builder
@@ -2118,7 +2119,7 @@ func TestRunHeadlessNoOracleFlag(t *testing.T) {
 		PlanPath:  ".wakil/plan.md",
 		StepCount: 1,
 	}
-	app.Confirm = headlessConfirmer(flags, new(string))
+	app.Confirm = headlessConfirmer(app, flags, new(string))
 	app.Out = io.Discard
 
 	var buf strings.Builder
@@ -2158,9 +2159,10 @@ func TestHeadlessConfirmerPolicy(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.desc, func(t *testing.T) {
+			app := &agent.App{}
 			var reason string
 			flags := RunFlags{Auto: tc.auto, AllowDestructive: tc.allowD}
-			conf := headlessConfirmer(flags, &reason)
+			conf := headlessConfirmer(app, flags, &reason)
 			got := conf(tc.tool, "headline", tc.detail, false)
 			if got != tc.wantOK {
 				t.Errorf("got %v, want %v", got, tc.wantOK)
@@ -2210,9 +2212,10 @@ func TestParseRunArgsAllowExternal(t *testing.T) {
 // whereas with --allow-external it approves.
 func TestHeadlessExternalBackendGate(t *testing.T) {
 	var reason string
+	app := &agent.App{}
 
 	// Without --allow-external: must decline and set reason.
-	noExt := headlessConfirmer(RunFlags{Auto: true, AllowExternal: false}, &reason)
+	noExt := headlessConfirmer(app, RunFlags{Auto: true, AllowExternal: false}, &reason)
 	ok := noExt("external_backend", "headline", "detail", false)
 	if ok {
 		t.Error("external_backend should be declined without --allow-external")
@@ -2226,7 +2229,7 @@ func TestHeadlessExternalBackendGate(t *testing.T) {
 
 	// With --allow-external: must approve.
 	reason = ""
-	withExt := headlessConfirmer(RunFlags{Auto: true, AllowExternal: true}, &reason)
+	withExt := headlessConfirmer(app, RunFlags{Auto: true, AllowExternal: true}, &reason)
 	ok = withExt("external_backend", "headline", "detail", false)
 	if !ok {
 		t.Error("external_backend should be approved with --allow-external")
@@ -2236,7 +2239,105 @@ func TestHeadlessExternalBackendGate(t *testing.T) {
 	}
 }
 
-// TestHeadlessTokenEvent verifies that runHeadlessApp emits a
+// TestHeadlessConfirmerWithPolicy tests the policy integration in headless mode:
+// deny blocks, allow proceeds (subject to SuspendAuto), ask declines (no human).
+func TestHeadlessConfirmerWithPolicy(t *testing.T) {
+	// ci profile: allows everything except external backends.
+	app := &agent.App{}
+	app.SetPolicy(policy.Profile("ci"))
+
+	var reason string
+	conf := headlessConfirmer(app, RunFlags{}, &reason)
+
+	// Write file: allowed by ci profile, no SuspendAuto trigger.
+	reason = ""
+	if !conf("write_file", "Write file?", "write app.go", false) {
+		t.Errorf("ci policy should allow write_file, got decline: %s", reason)
+	}
+	if reason != "" {
+		t.Errorf("no reason expected on allow, got %q", reason)
+	}
+
+	// External backend: denied by ci policy.
+	reason = ""
+	if conf("external_backend", "Send to external?", "detail", false) {
+		t.Error("ci policy should deny external_backend")
+	}
+	if !strings.Contains(reason, "blocked by policy") {
+		t.Errorf("reason should mention 'blocked by policy', got %q", reason)
+	}
+
+	// Destructive shell: ci policy says allow, but SuspendAuto fires for
+	// destructive commands. In headless without --allow-destructive, this
+	// should be blocked by the safety gate.
+	reason = ""
+	if conf("run_shell", "Run shell?", "$ rm -rf /\n  (exec)", false) {
+		t.Error("ci policy allows but SuspendAuto should block destructive shell without --allow-destructive")
+	}
+	if !strings.Contains(reason, "safety gate") {
+		t.Errorf("reason should mention 'safety gate', got %q", reason)
+	}
+
+	// With --allow-destructive: ci allows + SuspendAuto passes.
+	app2 := &agent.App{}
+	app2.SetPolicy(policy.Profile("ci"))
+	conf2 := headlessConfirmer(app2, RunFlags{AllowDestructive: true}, &reason)
+	reason = ""
+	if !conf2("run_shell", "Run shell?", "$ rm -rf /\n  (exec)", false) {
+		t.Errorf("ci + --allow-destructive should allow destructive shell, got decline: %s", reason)
+	}
+}
+
+// TestHeadlessConfirmerAskDeclines tests that policy "ask" decision in headless
+// mode is treated as a decline (no human present to answer the prompt).
+func TestHeadlessConfirmerAskDeclines(t *testing.T) {
+	// read-only profile: default is "ask" for anything not explicitly allowed.
+	app := &agent.App{}
+	app.SetPolicy(policy.Profile("read-only"))
+
+	var reason string
+	conf := headlessConfirmer(app, RunFlags{}, &reason)
+
+	// write_file: no rule matches in read-only profile → default "ask" → decline.
+	reason = ""
+	if conf("write_file", "Write file?", "write app.go", false) {
+		t.Error("read-only policy ask should decline write_file in headless")
+	}
+	if !strings.Contains(reason, "policy requires confirmation") {
+		t.Errorf("reason should mention 'policy requires confirmation', got %q", reason)
+	}
+}
+
+// TestParseRunArgsPolicyProfile tests --policy and --profile flag parsing.
+func TestParseRunArgsPolicyProfile(t *testing.T) {
+	// --profile
+	_, _, flags, err := parseRunArgs([]string{"--profile", "ci", "task"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flags.ProfileName != "ci" {
+		t.Errorf("ProfileName = %q, want ci", flags.ProfileName)
+	}
+
+	// --policy
+	_, _, flags, err = parseRunArgs([]string{"--policy", "/path/to/policy.json", "task"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flags.PolicyPath != "/path/to/policy.json" {
+		t.Errorf("PolicyPath = %q, want /path/to/policy.json", flags.PolicyPath)
+	}
+
+	// Both together — allowed (policy file takes precedence in loading).
+	_, _, flags, err = parseRunArgs([]string{"--profile", "ci", "--policy", "/p.json", "task"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flags.ProfileName != "ci" || flags.PolicyPath != "/p.json" {
+		t.Errorf("flags = %+v", flags)
+	}
+}
+
 // {"type":"tokens",...} event after the done event.
 func TestHeadlessTokenEvent(t *testing.T) {
 	srv := sseServer(t,

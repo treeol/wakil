@@ -13,6 +13,7 @@ import (
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/policy"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
@@ -62,13 +63,21 @@ type RunFlags struct {
 	// AttachImage is the path to an image file to attach to the first user
 	// message. Set via --attach-image. Multiple paths can be comma-separated.
 	AttachImage string
+
+	// PolicyPath is the path to a JSON policy file (--policy flag).
+	// When set, the policy is loaded and applied to all confirm gates.
+	PolicyPath string
+
+	// ProfileName selects a built-in named profile (--profile flag).
+	// One of: read-only, auto-safe, auto-destructive, ci.
+	ProfileName string
 }
 
 // parseRunArgs parses the args that follow "run":
 //
 //	[--plan] [--auto] [--allow-destructive] [--allow-external]
 //	[--auto-counsel] [--max-counsel N] [--no-oracle] [--transcript <file>]
-//	[--attach-image <path>] "<task>"
+//	[--attach-image <path>] [--policy <path>] [--profile <name>] "<task>"
 func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -104,6 +113,18 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 				return "", false, flags, fmt.Errorf("--attach-image requires a file path")
 			}
 			flags.AttachImage = args[i]
+		case "--policy":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--policy requires a file path")
+			}
+			flags.PolicyPath = args[i]
+		case "--profile":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--profile requires a name")
+			}
+			flags.ProfileName = args[i]
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return "", false, flags, fmt.Errorf("unknown flag: %s", args[i])
@@ -116,7 +137,7 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 	}
 	if task == "" {
 		return "", false, flags, fmt.Errorf(
-			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] \"<task>\"")
+			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] \"<task>\"")
 	}
 	// Default cap: 3 auto-counsel calls when --auto-counsel is set without --max-counsel.
 	if flags.AutoCounsel && flags.MaxCounsel == 0 {
@@ -182,10 +203,46 @@ func (h *headlessWriter) flush() {
 //     declined unless --allow-destructive is set.
 //   - no --auto: decline every confirmation-required call.
 //
+// When a policy is active on app, it is evaluated first (same precedence as TUI:
+// deny → SuspendAuto → allow → ask → legacy). Policy ask in headless mode is
+// treated as a decline (no human present to answer the prompt).
+//
 // When a call is declined, *declinedReason is set with a human-readable explanation
 // that is included in the final exit event.
-func headlessConfirmer(flags RunFlags, declinedReason *string) agent.Confirmer {
+func headlessConfirmer(app *agent.App, flags RunFlags, declinedReason *string) agent.Confirmer {
 	return func(toolName, headline, detail string, readAction bool) bool {
+		// ── Policy evaluation (before legacy consent path) ────────────────
+		if pol := app.Policy(); pol != nil {
+			input := agent.BuildPolicyInput(toolName, detail, readAction)
+			result := pol.Evaluate(input)
+			switch result.Decision {
+			case policy.Deny:
+				*declinedReason = "blocked by policy: " + result.Reason +
+					" (rule: " + result.RuleName + ")"
+				return false
+			case policy.Allow:
+				// SuspendAuto carve-outs still fire — egress, destructive.
+				// These are hard safety gates that even policy allow cannot bypass.
+				// In headless, check the same flags the legacy path uses.
+				if reason := agent.SuspendAuto(toolName, app, detail); reason != "" {
+					switch {
+					case reason == "destructive command" && flags.AllowDestructive:
+						// Destructive shell allowed by --allow-destructive.
+					case reason == "external backend egress (privacy gate)" && flags.AllowExternal:
+						// External backend allowed by --allow-external.
+					default:
+						*declinedReason = "policy allowed but safety gate triggered: " + reason
+						return false
+					}
+				}
+				return true
+			case policy.Ask:
+				// No human present — treat as decline.
+				*declinedReason = "policy requires confirmation (ask): " + result.Reason
+				return false
+			}
+		}
+
 		if !flags.Auto {
 			*declinedReason = "confirmation required (rerun with --auto)"
 			return false
@@ -241,7 +298,7 @@ func runHeadlessApp(ctx context.Context, app *agent.App, task string, planMode b
 
 	var declinedReason string
 	app.Out = hw
-	app.Confirm = headlessConfirmer(flags, &declinedReason)
+	app.Confirm = headlessConfirmer(app, flags, &declinedReason)
 	app.Client.ResetGrounding()
 
 	var code int
@@ -463,6 +520,24 @@ func RunHeadless(cfg config.Config, args []string) int {
 			}
 			app.PendingImages = append(app.PendingImages, img)
 		}
+	}
+
+	// Load --policy file or --profile built-in, and install on the app.
+	if flags.PolicyPath != "" {
+		p, err := policy.LoadFile(flags.PolicyPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "policy:", err)
+			return ExitError
+		}
+		app.SetPolicy(p)
+	} else if flags.ProfileName != "" {
+		p := policy.Profile(flags.ProfileName)
+		if p == nil {
+			fmt.Fprintf(os.Stderr, "policy: unknown profile %q — available: %v\n",
+				flags.ProfileName, policy.ProfileNames())
+			return ExitError
+		}
+		app.SetPolicy(p)
 	}
 
 	// Defer resource cleanup.

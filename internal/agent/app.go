@@ -66,6 +66,14 @@ type App struct {
 	// mid-turn /auto feature (Phase B).
 	consent atomic.Value // stores ConsentSnapshot
 
+	// policy stores an optional *policy.Policy for declarative consent
+	// profiles (--policy/--profile flags, /profile TUI command). Same
+	// atomic.Value pattern as consent: /profile writes on the TUI goroutine
+	// while the agent goroutine reads it at every confirmation gate.
+	// nil (zero value) means no policy is active — the confirmer falls
+	// through to the legacy AutoApprove/SuspendAuto path.
+	policy atomic.Value // stores *policy.Policy
+
 	// InfoPanelOpen mirrors the TUI info panel's visibility (WP-9.1). The TUI is
 	// the source of truth during a session; it is restored from and persisted to
 	// repo-state so the open/closed state is remembered per session, like

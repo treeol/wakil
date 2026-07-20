@@ -3,6 +3,8 @@ package agent
 import (
 	"sync"
 	"testing"
+
+	"github.com/treeol/wakil/internal/policy"
 )
 
 // TestConsentSnapshot_DefaultZero verifies a fresh App with no SetConsent call
@@ -239,5 +241,30 @@ func TestConsentSnapshot_NoLostUpdate_SetAllowReadsVsRevokeAuto(t *testing.T) {
 	// been lost by the concurrent RevokeAuto calls.
 	if !c.AllowReads {
 		t.Error("AllowReads grant was lost — CAS retry loop failed to preserve it")
+	}
+}
+
+// TestPolicy_SetNil_Deactivates verifies that SetPolicy(nil) does not panic
+// (atomic.Value.Store panics on nil interface) and that Policy() returns nil
+// after deactivation.
+func TestPolicy_SetNil_Deactivates(t *testing.T) {
+	a := &App{}
+	a.SetPolicy(nil)
+	if a.Policy() != nil {
+		t.Error("Policy() should return nil after SetPolicy(nil)")
+	}
+}
+
+// TestPolicy_SetAndGet verifies the round-trip through SetPolicy/Policy.
+func TestPolicy_SetAndGet(t *testing.T) {
+	a := &App{}
+	p := policy.Profile("ci")
+	a.SetPolicy(p)
+	got := a.Policy()
+	if got == nil {
+		t.Fatal("Policy() returned nil after SetPolicy")
+	}
+	if got.Name != "ci" {
+		t.Errorf("Policy name = %q, want ci", got.Name)
 	}
 }

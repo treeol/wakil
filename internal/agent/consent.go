@@ -1,5 +1,7 @@
 package agent
 
+import "github.com/treeol/wakil/internal/policy"
+
 // ConsentSnapshot is the atomic consent state for the session, replacing the
 // former plain-bool fields AutoApprove, AllowDestructive, and AllowReads on
 // App. One Consent() load returns a consistent view of all three bools — no
@@ -126,4 +128,75 @@ func (a *App) RevokeAuto() {
 		s.AllowDestructive = false
 		return s
 	})
+}
+
+// ── Policy storage ─────────────────────────────────────────────────────────
+
+// Policy returns the active consent policy, or nil if none is set.
+// Safe to call from any goroutine (atomic load).
+func (a *App) Policy() *policy.Policy {
+	v := a.policy.Load()
+	if v == nil {
+		return nil
+	}
+	p, ok := v.(*policy.Policy)
+	if !ok {
+		return nil
+	}
+	// Check for the sentinel used by SetPolicy(nil) to deactivate.
+	// The sentinel has an empty Name and empty Default.
+	if p.Default == "" && p.Name == "" && len(p.Rules) == 0 {
+		return nil
+	}
+	return p
+}
+
+// SetPolicy atomically sets the consent policy. Pass nil to deactivate.
+// Safe to call from any goroutine (atomic store).
+//
+// Note: atomic.Value.Store panics on a nil interface, so we use a sentinel
+// empty policy to represent "no policy" rather than storing nil directly.
+// Policy() checks for the sentinel and returns nil.
+var noPolicy = &policy.Policy{}
+
+func (a *App) SetPolicy(p *policy.Policy) {
+	if p == nil {
+		a.policy.Store(noPolicy)
+		return
+	}
+	a.policy.Store(p)
+}
+
+// BuildPolicyInput constructs a policy.EvalInput from the confirmer args.
+// Exported so cmd/wakil's headlessConfirmer can build the same input.
+// It derives the destructive flag and shell command from the detail string
+// using the same classifiers the confirmer already uses (IsDestructiveShell,
+// ShellCmdFromDetail). This keeps the Confirmer signature unchanged — no
+// call-site migration needed.
+func BuildPolicyInput(toolName, detail string, readAction bool) policy.EvalInput {
+	return buildPolicyInput(toolName, detail, readAction)
+}
+
+// buildPolicyInput constructs a policy.EvalInput from the confirmer args.
+// It derives the destructive flag and shell command from the detail string
+// using the same classifiers the confirmer already uses (IsDestructiveShell,
+// ShellCmdFromDetail). This keeps the Confirmer signature unchanged — no
+// call-site migration needed.
+func buildPolicyInput(toolName, detail string, readAction bool) policy.EvalInput {
+	input := policy.EvalInput{
+		ToolName:        toolName,
+		ReadAction:      readAction,
+		ExternalBackend: toolName == "external_backend",
+	}
+	// Derive destructive + command for shell tools.
+	if toolName == "run_shell" || toolName == "run_background" {
+		cmd := ShellCmdFromDetail(detail)
+		input.Command = cmd
+		input.Destructive = IsDestructiveShell(cmd)
+	}
+	// Classify file-mutation tools as destructive.
+	if toolName == "delete_file" || toolName == "move_file" {
+		input.Destructive = true
+	}
+	return input
 }
