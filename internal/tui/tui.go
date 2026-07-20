@@ -104,6 +104,12 @@ type tuiModel struct {
 	cancel     context.CancelFunc
 	cancelling bool // true after first Ctrl+C, until agent.AgentDoneMsg
 
+	// queuedPrompts is a FIFO of plain-text prompts submitted mid-turn. Flushes
+	// as the next user turn(s) when the model is truly idle (no workflow
+	// auto-continuation, no error/cancel). Pure TUI-side — no agent-goroutine
+	// shared state.
+	queuedPrompts []string
+
 	vp       viewport.Model
 	ta       textarea.Model
 	state    agentState
@@ -799,6 +805,40 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		// Enter is ours (send); never let it reach the textarea as a newline.
 		// Shift+Enter, handled by the textarea below, inserts newlines instead.
 		if m.state != stateIdle {
+			// Mid-turn: apply the slash/text taxonomy.
+			input := strings.TrimSpace(m.ta.Value())
+			if input == "" {
+				return m, nil, true
+			}
+			if strings.HasPrefix(input, "/") {
+				fields := strings.Fields(input)
+				switch fields[0] {
+				case "/auto":
+					// Phase B — for now: reject with explicit notice.
+					m.addItem(iSys, dim2("· /auto mid-turn: not available yet (coming in Phase B)"))
+					m.ta.Reset()
+					m.comp = completionState{}
+					return m, nil, true
+				case "/info":
+					// TUI-local safe — immediate.
+					m = m.toggleInfoPanel()
+					m.ta.Reset()
+					m.comp = completionState{}
+					return m, nil, true
+				default:
+					// Hard-reject: notice, no queue, no execution.
+					m.addItem(iSys, dim2("· "+fields[0]+" not available mid-turn — wait for idle"))
+					m.ta.Reset()
+					m.comp = completionState{}
+					return m, nil, true
+				}
+			}
+			// Plain text → queue.
+			m.queuedPrompts = append(m.queuedPrompts, input)
+			m.addItem(iSys, dim2(sprint("· queued (queue: %d)", len(m.queuedPrompts))))
+			m.ta.Reset()
+			m.comp = completionState{}
+			m = m.reflow()
 			return m, nil, true
 		}
 		before := m.statusRows()
@@ -1047,6 +1087,50 @@ func (m tuiModel) startTurn(run func(ctx context.Context) tea.Cmd) (tuiModel, []
 	m.tps = 0
 	m = m.reflowIfStatusHeightChanged(before)
 	return m, []tea.Cmd{run(ctx), startDotTick()}
+}
+
+// flushQueuedPrompt sends a queued prompt as a new user turn. It mirrors the
+// idle Enter send path (history, image-chip reconciliation, mention resolution,
+// startTurn) but reads from the queued string instead of the textarea — so the
+// user's current draft is preserved untouched. Only plain text reaches here
+// (slash commands are never queued; they're hard-rejected mid-turn).
+func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
+	// Add to history (skip duplicate of most-recent entry).
+	if len(m.inputHistory) == 0 || m.inputHistory[0] != input {
+		m.inputHistory = append([]string{input}, m.inputHistory...)
+		appendHistory(input)
+	}
+	m.histIdx = -1
+	m.histSaved = ""
+
+	// Reconcile image chips: strip surviving chips from the outgoing text;
+	// detach pending images for chips the user deleted. (Chips apply to the
+	// next real send — a queued prompt may carry chips if the user attached
+	// images before queueing.)
+	var msgText string
+	msgText, m.app.PendingImages = reconcileImageChips(input, *m.imageChips, m.app.PendingImages)
+	*m.imageChips = (*m.imageChips)[:0]
+	if msgText == "" && len(m.app.PendingImages) == 0 {
+		return m, nil
+	}
+
+	outgoing, refs := tools.ResolveMentions(msgText, m.app.Cfg.MentionBase)
+	m.addItem(iUser, input)
+	if len(refs) > 0 {
+		m.addItem(iSys, tools.ChipsLine(refs))
+	}
+	if len(m.app.PendingImages) > 0 {
+		for _, img := range m.app.PendingImages {
+			m.addItem(iSys, img.Placeholder())
+		}
+	}
+	m.vp.GotoBottom()
+
+	var pair []tea.Cmd
+	m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+		return AdaptCmd(agent.RunTurn(m.app, ctx, outgoing))
+	})
+	return m, pair
 }
 
 func (m *tuiModel) addItem(k itemKind, text string) {

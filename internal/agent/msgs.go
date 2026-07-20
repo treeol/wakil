@@ -29,9 +29,10 @@ type ToolResultMsg struct {
 
 // AgentDoneMsg signals that the current turn finished.
 type AgentDoneMsg struct {
-	Err        error
-	LearnNudge string
-	Warn       string
+	Err                  error
+	LearnNudge           string
+	Warn                 string
+	WorkflowWillContinue bool // true if a WFStartTurnMsg will follow (queue flush should hold)
 }
 
 // LearnTurnMsg tells the Update loop to start a /learn turn.

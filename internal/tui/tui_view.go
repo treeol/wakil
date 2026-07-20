@@ -322,6 +322,9 @@ func statusSegments(in statusLineInput) []string {
 	if in.arm != "" {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(in.arm))
 	}
+	if in.queueLen > 0 {
+		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(sprint("queue: %d", in.queueLen)))
+	}
 	if in.model != "" {
 		segs = append(segs, dim2(in.model))
 	}
@@ -495,6 +498,7 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		model:            model,
 		submodel:         submodel,
 		arm:              m.armNotice(),
+		queueLen:         len(m.queuedPrompts),
 	}
 }
 
@@ -527,6 +531,9 @@ type statusLineInput struct {
 	// arm is the rendered double-press confirmation notice (quit/cancel), "" when
 	// no arm is active. Rendered from arm state (not m.flash, which clears on key).
 	arm string
+	// queueLen is the number of queued mid-turn prompts. Renders "queue: N" in
+	// the status segment when > 0.
+	queueLen int
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.

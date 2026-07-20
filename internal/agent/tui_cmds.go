@@ -94,7 +94,7 @@ func RunTurn(app *App, ctx context.Context, userText string) Cmd {
 		if streamWarn != "" {
 			doneErr = nil
 		}
-		app.sendEvent(AgentDoneMsg{Err: doneErr, LearnNudge: nudge, Warn: streamWarn})
+		app.sendEvent(AgentDoneMsg{Err: doneErr, LearnNudge: nudge, Warn: streamWarn, WorkflowWillContinue: wfNext != nil})
 		if wfNext != nil {
 			app.sendEvent(*wfNext)
 		}

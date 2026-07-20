@@ -108,6 +108,18 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.cancel = nil
 		m.cancelling = false
 		m.clearArm() // a pending cancel arm must not fire into the now-idle state
+
+		// Flush queued prompts: only when the turn ended cleanly (no error/cancel,
+		// no warning, no workflow auto-continuation pending). The queue survives
+		// across cancel, backend warnings, and workflow auto-continuation — it
+		// flushes on the next true idle (clean AgentDoneMsg).
+		if len(m.queuedPrompts) > 0 && msg.Err == nil && msg.Warn == "" && !msg.WorkflowWillContinue {
+			next := m.queuedPrompts[0]
+			m.queuedPrompts = m.queuedPrompts[1:]
+			var flushCmds []tea.Cmd
+			m, flushCmds = m.flushQueuedPrompt(next)
+			cmds = append(cmds, flushCmds...)
+		}
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.CompactedMsg:
@@ -332,6 +344,8 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.reasoning.Reset()
 		m.reasoningDone = false
 		m.reasoningExpanded = false
+		// Clear queued prompts — they belong to the old conversation.
+		m.queuedPrompts = nil
 		// Chip tracking belongs to the old conversation's draft; the pending
 		// images themselves are owned by the App and survive /new on purpose
 		// (same as /image <path> queuing before a fresh chat).
