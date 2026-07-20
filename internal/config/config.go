@@ -103,10 +103,18 @@ type Config struct {
 	// DockerCaps re-adds specific capabilities after --cap-drop=ALL.
 	// Empty = no caps re-added (strictest). Add "CHOWN" if go build fails.
 	DockerCaps []string `json:"docker_caps,omitempty"`
-	// DockerMemory limits container memory (e.g. "2g"). Empty = no limit.
+	// DockerMemory limits container memory (e.g. "4g"). Empty = no limit.
+	// Must be >= DockerTmpfsSize in practice — tmpfs pages count against the
+	// container memory cgroup, so a tmpfs larger than the memory limit will
+	// OOM before filling.
 	DockerMemory string `json:"docker_memory,omitempty"`
 	// DockerPidsLimit caps the number of processes. 0 = no limit.
 	DockerPidsLimit int    `json:"docker_pids_limit,omitempty"`
+	// DockerTmpfsSize sets the /tmp tmpfs size (e.g. "4g"). Empty = use the
+	// built-in default (currently "4g" — see defaultDockerTmpfsSize in
+	// internal/exec). /tmp must stay writable under --read-only, so the flag
+	// is always emitted — empty never means "omit".
+	DockerTmpfsSize string `json:"docker_tmpfs_size,omitempty"`
 	SSHSigning      string `json:"ssh_signing,omitempty"` // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
 
 	// kvr staging store (sandbox-local ephemeral KV).
@@ -532,7 +540,7 @@ func DefaultConfig() Config {
 		ExecMode:                "docker",
 		Image:                   "wakil-dev",
 		DockerSocket:            false,
-		DockerMemory:            "2g",
+		DockerMemory:            "4g",
 		DockerPidsLimit:         512,
 		KVRMaxEntries:           100000,
 		KVRSweepIntervalSecs:    30,

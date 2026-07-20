@@ -331,6 +331,7 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 			DockerCaps:              cfg.DockerCaps,
 			DockerMemory:            cfg.DockerMemory,
 			DockerPidsLimit:         cfg.DockerPidsLimit,
+			DockerTmpfsSize:         cfg.DockerTmpfsSize,
 		})
 	}
 }

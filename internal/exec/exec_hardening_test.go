@@ -10,7 +10,7 @@ import (
 // hardening flag when configured with defaults.
 func TestDockerHardeningArgs_AllFlagsPresent(t *testing.T) {
 	opts := DockerOpts{
-		DockerMemory:    "2g",
+		DockerMemory:    "4g",
 		DockerPidsLimit: 512,
 		DockerCaps:      []string{"CHOWN"},
 	}
@@ -21,8 +21,8 @@ func TestDockerHardeningArgs_AllFlagsPresent(t *testing.T) {
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
 		"--read-only",
-		"--tmpfs=/tmp:rw,nosuid,nodev,size=100m",
-		"--memory=2g",
+		"--tmpfs=/tmp:rw,nosuid,nodev,size=4g",
+		"--memory=4g",
 		"--pids-limit=512",
 		"--cap-add=CHOWN",
 	}
@@ -74,12 +74,34 @@ func TestDockerHardeningArgs_CoreFlagsAlwaysPresent(t *testing.T) {
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
 		"--read-only",
-		"--tmpfs=/tmp:rw,nosuid,nodev,size=100m",
+		"--tmpfs=/tmp:rw,nosuid,nodev,size=4g",
 		"--tmpfs=/etc:rw,nosuid,nodev,size=1m",
 	}
 	for _, flag := range core {
 		if !strings.Contains(joined, flag) {
 			t.Errorf("core hardening flag missing with zero-value opts: %q\ngot: %s", flag, joined)
 		}
+	}
+}
+
+// TestDockerHardeningArgs_TmpfsSizeOverride verifies that a custom
+// DockerTmpfsSize is passed through verbatim, and an explicit override
+// does not fall back to the default.
+func TestDockerHardeningArgs_TmpfsSizeOverride(t *testing.T) {
+	opts := DockerOpts{
+		DockerTmpfsSize: "4096m",
+	}
+	args := dockerHardeningArgs(opts)
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "--tmpfs=/tmp:rw,nosuid,nodev,size=4096m") {
+		t.Errorf("expected /tmp tmpfs size=4096m, got: %s", joined)
+	}
+	if strings.Contains(joined, "size=4g") {
+		t.Errorf("default size=4g should not appear when override is set, got: %s", joined)
+	}
+	// /etc tmpfs must remain unaffected by the /tmp size config.
+	if !strings.Contains(joined, "--tmpfs=/etc:rw,nosuid,nodev,size=1m") {
+		t.Errorf("expected /etc tmpfs size=1m (unchanged), got: %s", joined)
 	}
 }

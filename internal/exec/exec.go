@@ -167,9 +167,10 @@ type DockerOpts struct {
 	KVRSweepIntervalSecs    int
 	KVRSnapshotIntervalSecs int
 	// Docker hardening flags (defense-in-depth). See Config.DockerCaps etc.
-	DockerCaps      []string
-	DockerMemory    string
-	DockerPidsLimit int
+	DockerCaps       []string
+	DockerMemory     string
+	DockerPidsLimit  int
+	DockerTmpfsSize  string // /tmp tmpfs size (e.g. "4g"); empty → defaultDockerTmpfsSize
 }
 
 // waitForKVR polls the kvr UDS socket with PING until it responds or the
@@ -219,6 +220,12 @@ func waitForKVR(socketPath string, timeout time.Duration) error {
 	return fmt.Errorf("kvr did not become ready within %s", timeout)
 }
 
+// defaultDockerTmpfsSize is the /tmp tmpfs size used when DockerTmpfsSize is
+// unset. /tmp must stay writable under --read-only, so the flag is always
+// emitted — empty never means "omit". Must be coherent with DockerMemory
+// (tmpfs pages count against the container memory cgroup).
+const defaultDockerTmpfsSize = "4g"
+
 // dockerHardeningArgs returns the sandbox hardening flags appended to every
 // docker run command. Core flags (--cap-drop, --read-only, etc.) are always
 // applied; resource limits and cap re-additions are configurable via DockerOpts.
@@ -235,11 +242,15 @@ func waitForKVR(socketPath string, timeout time.Duration) error {
 // ensurePasswdEntry) restores the CA bundle from a build-time backup outside
 // /etc — otherwise every TLS client in the container fails cert verification.
 func dockerHardeningArgs(opts DockerOpts) []string {
+	tmpSize := opts.DockerTmpfsSize
+	if tmpSize == "" {
+		tmpSize = defaultDockerTmpfsSize
+	}
 	args := []string{
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
 		"--read-only",
-		"--tmpfs=/tmp:rw,nosuid,nodev,size=100m",
+		"--tmpfs=/tmp:rw,nosuid,nodev,size=" + tmpSize,
 		"--tmpfs=/etc:rw,nosuid,nodev,size=1m",
 	}
 	// Re-add specific capabilities if configured (e.g. CHOWN for go build).

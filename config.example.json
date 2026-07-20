@@ -28,10 +28,11 @@
   "exec_mode": "docker",
   "image": "wakil-dev",
 
-  "_comment_docker": "Docker sandbox hardening. --cap-drop=ALL + --read-only + --security-opt=no-new-privileges are always applied. docker_caps re-adds specific caps if the toolchain needs them (e.g. [\"CHOWN\"] if go build fails). docker_memory and docker_pids_limit set resource ceilings.",
+  "_comment_docker": "Docker sandbox hardening. --cap-drop=ALL + --read-only + --security-opt=no-new-privileges are always applied. docker_caps re-adds specific caps if the toolchain needs them (e.g. [\"CHOWN\"] if go build fails). docker_memory and docker_pids_limit set resource ceilings. docker_tmpfs_size sets the /tmp tmpfs size — must be coherent with docker_memory (tmpfs pages count against the container memory cgroup).",
   "docker_caps": [],
-  "docker_memory": "2g",
+  "docker_memory": "4g",
   "docker_pids_limit": 512,
+  "docker_tmpfs_size": "4g",
 
   "_comment_subagents": "Subagent dispatch: dispatch_subagent spawns a read-only discovery worker. dispatch_subagents fans out several in parallel. max_parallel_subagents bounds concurrency. subagent_endpoint / subagent_backend route children to a different endpoint or backend than the parent.",
 
