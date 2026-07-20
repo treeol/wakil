@@ -72,6 +72,7 @@ RUN apt-get update \
            libxfixes3 \
            libxrandr2 \
            libxkbcommon0 \
+           clangd \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -101,7 +102,8 @@ RUN mkdir -p /usr/local/share/wakil-etc-backup/ssl-certs \
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+    | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path \
+    && /usr/local/cargo/bin/rustup component add rust-analyzer
 
 # Go workspace also lives outside /root for the same reason.
 ENV GOPATH=/usr/local/go-workspace
@@ -112,6 +114,12 @@ ENV PATH="/usr/local/go/bin:/usr/local/go-workspace/bin:/usr/local/cargo/bin:${P
 # gopls v0.22.0 internal/protocol (tsprotocol.go). A version bump here MUST be
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
 RUN go install golang.org/x/tools/gopls@v0.22.0
+
+# Language servers for LSP code intelligence (match defaultLSPServer mappings):
+#   - pyright-langserver: Python type checker + LSP server (npm package)
+#   - typescript-language-server: TypeScript/JavaScript LSP wrapper (npm package)
+# Both require TypeScript for semantic analysis.
+RUN npm install -g pyright typescript-language-server typescript
 
 # Entrypoint script: starts kvr-server in the background, then execs the main
 # command. Traps SIGTERM to gracefully stop kvr (shutdown snapshot) before
