@@ -35,12 +35,7 @@ func newDockerExec(t *testing.T) (*DockerExecutor, string) {
 	// resolve on the Docker daemon's host filesystem, and /tmp inside this
 	// sandbox is a separate tmpfs not visible to the daemon. /mnt/wakil IS
 	// visible to both.
-	hostMount, err := os.MkdirTemp("/mnt/wakil/.tmp", "wakil-docker-test-")
-	if err != nil {
-		requireDocker(t)
-		t.Fatalf("create temp dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(hostMount) })
+	hostMount := t.TempDir()
 	ex, err := NewDockerExecutor(DockerOpts{
 		Image:      "wakil-dev:latest",
 		Workdir:    "/work",
