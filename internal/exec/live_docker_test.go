@@ -42,10 +42,10 @@ func newDockerExec(t *testing.T) (*DockerExecutor, string) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(hostMount) })
 	ex, err := NewDockerExecutor(DockerOpts{
-		Image:       "wakil-dev:latest",
-		Workdir:     "/work",
-		HostMount:   hostMount,
-		DockerCaps:  []string{"CHOWN"}, // needed to chown /work to the container user
+		Image:      "wakil-dev:latest",
+		Workdir:    "/work",
+		HostMount:  hostMount,
+		DockerCaps: []string{"CHOWN"}, // needed to chown /work to the container user
 	})
 	if err != nil {
 		// If the image is missing, skip rather than fail — the test
