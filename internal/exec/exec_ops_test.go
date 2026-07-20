@@ -193,6 +193,49 @@ func TestReadFileTailCap(t *testing.T) {
 	}
 }
 
+func TestDirectExecutorStatFile(t *testing.T) {
+	ex, root := newDirectExec(t)
+	ctx := context.Background()
+
+	// Write a file with known content and stat it.
+	p := filepath.Join(root, "data.txt")
+	if err := os.WriteFile(p, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	size, err := ex.StatFile(ctx, "data.txt")
+	if err != nil {
+		t.Fatalf("StatFile: %v", err)
+	}
+	if size != 11 {
+		t.Errorf("StatFile size = %d, want 11", size)
+	}
+
+	// Missing file → error.
+	if _, err := ex.StatFile(ctx, "nonexistent.txt"); err == nil {
+		t.Error("StatFile on missing file should return error")
+	}
+}
+
+func TestDirectExecutorRunShellContextCancel(t *testing.T) {
+	ex, _ := newDirectExec(t)
+
+	// Use a short timeout and a long sleep. 'exec sleep' replaces the shell
+	// process so CommandContext kills the sleeper directly (no orphan shell).
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := ex.RunShell(ctx, "echo started; exec sleep 30")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from cancelled RunShell, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("RunShell did not return promptly after cancel; elapsed %s", elapsed)
+	}
+}
+
 func TestDirectExecutorListDirAndMeta(t *testing.T) {
 	ex, root := newDirectExec(t)
 	ctx := context.Background()
