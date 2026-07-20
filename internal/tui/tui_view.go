@@ -499,25 +499,25 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		consent = m.app.Consent()
 	}
 	return statusLineInput{
-		state:                 m.state,
-		autoApprove:           consent.AutoApprove,
-		allowDestructive:      consent.AllowDestructive,
-		pendingAutoGrant:      m.pendingAutoGrant,
+		state:                   m.state,
+		autoApprove:             consent.AutoApprove,
+		allowDestructive:        consent.AllowDestructive,
+		pendingAutoGrant:        m.pendingAutoGrant,
 		pendingDestructiveGrant: m.pendingDestructiveGrant,
-		rawTools:              m.app != nil && m.app.RawTools,
-		reasoning:        m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
-		tps:              m.tps,
-		workflowLabel:    workflowLabel,
-		flash:            m.flash,
-		dotPhase:         m.dotPhase,
-		hadTurn:          m.hadTurn,
-		backendUsed:      backendUsed,
-		backendRequested: backendRequested,
-		backendDefault:   backendDefault,
-		model:            model,
-		submodel:         submodel,
-		arm:              m.armNotice(),
-		queueLen:         len(m.queuedPrompts),
+		rawTools:                m.app != nil && m.app.RawTools,
+		reasoning:               m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
+		tps:                     m.tps,
+		workflowLabel:           workflowLabel,
+		flash:                   m.flash,
+		dotPhase:                m.dotPhase,
+		hadTurn:                 m.hadTurn,
+		backendUsed:             backendUsed,
+		backendRequested:        backendRequested,
+		backendDefault:          backendDefault,
+		model:                   model,
+		submodel:                submodel,
+		arm:                     m.armNotice(),
+		queueLen:                len(m.queuedPrompts),
 	}
 }
 
@@ -526,18 +526,18 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 // (Reverse search is handled before this is built — statusLines() checks
 // m.searchPrompt() first — so there is no search field here.)
 type statusLineInput struct {
-	state                 agentState
-	autoApprove           bool
-	allowDestructive      bool // /auto destructive grant active (renders AUTO!)
-	pendingAutoGrant      bool // deferred /auto grant requested mid-turn (renders AUTO*)
+	state                   agentState
+	autoApprove             bool
+	allowDestructive        bool // /auto destructive grant active (renders AUTO!)
+	pendingAutoGrant        bool // deferred /auto grant requested mid-turn (renders AUTO*)
 	pendingDestructiveGrant bool // deferred destructive grant (renders AUTO!*)
-	rawTools              bool
-	reasoning        bool    // extended-thinking in progress
-	tps              float64 // decode speed; 0 = not measured yet
-	workflowLabel    string  // e.g. "implement 3/6" or "" when no workflow
-	flash            string  // transient copied/error message
-	dotPhase         int     // 0-3, cycles while busy for the pulsing dot
-	hadTurn          bool    // at least one completed turn in this session
+	rawTools                bool
+	reasoning               bool    // extended-thinking in progress
+	tps                     float64 // decode speed; 0 = not measured yet
+	workflowLabel           string  // e.g. "implement 3/6" or "" when no workflow
+	flash                   string  // transient copied/error message
+	dotPhase                int     // 0-3, cycles while busy for the pulsing dot
+	hadTurn                 bool    // at least one completed turn in this session
 	// Backend display (P29). backendUsed is the X-Ilm-Backend-Used response
 	// header from the most recent turn; backendRequested is what was requested
 	// (App.SelectedBackend); backendDefault is the configured default (Cfg.Backend).

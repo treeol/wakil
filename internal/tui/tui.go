@@ -116,7 +116,7 @@ type tuiModel struct {
 	// deferred to the next true idle (AgentDoneMsg, no workflow continuation,
 	// no error), where it is applied before flushing queued prompts. A second
 	// /auto mid-turn cancels a pending grant (toggle parity). Pure TUI-side.
-	pendingAutoGrant      bool
+	pendingAutoGrant        bool
 	pendingDestructiveGrant bool
 
 	vp       viewport.Model

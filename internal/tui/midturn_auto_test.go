@@ -94,11 +94,6 @@ func TestMidTurnAuto_Grant_AppliedAtIdle(t *testing.T) {
 	// Turn ends cleanly → grant should apply.
 	m = step(m, agent.AgentDoneMsg{})
 
-	if m.app.Consent().AutoApprove {
-		// Note: SaveRepoState is best-effort and may not persist in tests
-		// (no real workspace), but SetAutoApprove should have run.
-		// Check the in-memory state.
-	}
 	if !m.app.Consent().AutoApprove {
 		t.Error("deferred grant should apply at clean idle")
 	}
