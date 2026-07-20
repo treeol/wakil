@@ -25,11 +25,11 @@ func TestBuildSetFrame(t *testing.T) {
 	// Literal bytes (not client constants) to prevent tautology.
 	frame := buildSetFrame("key", "val")
 	want := []byte{
-		0x00,                                // opSet
-		0x00, 0x03,                           // keyLen = 3
-		'k', 'e', 'y',                        // "key"
-		0x00, 0x00, 0x00, 0x03,               // valLen = 3
-		'v', 'a', 'l',                        // "val"
+		0x00,       // opSet
+		0x00, 0x03, // keyLen = 3
+		'k', 'e', 'y', // "key"
+		0x00, 0x00, 0x00, 0x03, // valLen = 3
+		'v', 'a', 'l', // "val"
 	}
 	if !bytesEqual(frame, want) {
 		t.Fatalf("buildSetFrame: got % x, want % x", frame, want)
@@ -40,7 +40,7 @@ func TestBuildSetFrameEmptyValue(t *testing.T) {
 	// SET "k" = ""
 	frame := buildSetFrame("k", "")
 	want := []byte{
-		0x00,                                // opSet
+		0x00, // opSet
 		0x00, 0x01, 'k',
 		0x00, 0x00, 0x00, 0x00, // valLen = 0
 	}
@@ -54,8 +54,8 @@ func TestBuildSetxFrame(t *testing.T) {
 	// Expected: op(0x05) + keyLen(2) + key + valLen(4) + val + ttlMs(8)
 	frame := buildSetxFrame("key", "val", 1000)
 	want := []byte{
-		0x05,                                // opSetx
-		0x00, 0x03, 'k', 'e', 'y',             // key
+		0x05,                      // opSetx
+		0x00, 0x03, 'k', 'e', 'y', // key
 		0x00, 0x00, 0x00, 0x03, 'v', 'a', 'l', // value
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xE8, // ttlMs = 1000
 	}
@@ -69,9 +69,9 @@ func TestBuildKeyFrameGet(t *testing.T) {
 	// Expected: op(0x01) + keyLen(0x0003) + "abc"
 	frame := buildKeyFrame(opGet, "abc")
 	want := []byte{
-		0x01,               // opGet
-		0x00, 0x03,          // keyLen = 3
-		'a', 'b', 'c',       // "abc"
+		0x01,       // opGet
+		0x00, 0x03, // keyLen = 3
+		'a', 'b', 'c', // "abc"
 	}
 	if !bytesEqual(frame, want) {
 		t.Fatalf("buildKeyFrame GET: got % x, want % x", frame, want)
@@ -101,10 +101,10 @@ func TestBuildScanFrame(t *testing.T) {
 	// Layout: op(0x06) + prefixLen(2) + prefix + limit(2) + cursorLen(2) + cursor
 	frame := buildScanFrame("p/", 5, "")
 	want := []byte{
-		0x06,                          // opScan
-		0x00, 0x02, 'p', '/',            // prefix
-		0x00, 0x05,                      // limit = 5
-		0x00, 0x00,                      // cursorLen = 0
+		0x06,                 // opScan
+		0x00, 0x02, 'p', '/', // prefix
+		0x00, 0x05, // limit = 5
+		0x00, 0x00, // cursorLen = 0
 	}
 	if !bytesEqual(frame, want) {
 		t.Fatalf("buildScanFrame: got % x, want % x", frame, want)
@@ -129,10 +129,10 @@ func TestBuildMGetFrame(t *testing.T) {
 	// Layout: op(0x07) + count(2) + [keyLen(2) + key]...
 	frame := buildMGetFrame([]string{"a", "bb"})
 	want := []byte{
-		0x07,                  // opMget
-		0x00, 0x02,              // count = 2
-		0x00, 0x01, 'a',         // key "a"
-		0x00, 0x02, 'b', 'b',    // key "bb"
+		0x07,       // opMget
+		0x00, 0x02, // count = 2
+		0x00, 0x01, 'a', // key "a"
+		0x00, 0x02, 'b', 'b', // key "bb"
 	}
 	if !bytesEqual(frame, want) {
 		t.Fatalf("buildMGetFrame: got % x, want % x", frame, want)
@@ -153,10 +153,10 @@ func TestParseScanResponseGolden(t *testing.T) {
 	// OK + count(2) + keys + moreFlag(1)
 	// Keys: "a", "b", more=false
 	body := []byte{
-		0x00, 0x02,                   // count = 2
-		0x00, 0x01, 'a',              // key "a"
-		0x00, 0x01, 'b',              // key "b"
-		0x00,                         // more = false
+		0x00, 0x02, // count = 2
+		0x00, 0x01, 'a', // key "a"
+		0x00, 0x01, 'b', // key "b"
+		0x00, // more = false
 	}
 	result, err := parseScanResponse(body)
 	if err != nil {
@@ -176,9 +176,9 @@ func TestParseScanResponseGolden(t *testing.T) {
 func TestParseScanResponseTruncated(t *testing.T) {
 	// count=2 but only 1 key present
 	body := []byte{
-		0x00, 0x02,        // count = 2
-		0x00, 0x01, 'a',   // only 1 key
-		0x00,              // missing: key 2 + more flag
+		0x00, 0x02, // count = 2
+		0x00, 0x01, 'a', // only 1 key
+		0x00, // missing: key 2 + more flag
 	}
 	_, err := parseScanResponse(body)
 	if err == nil {
@@ -192,7 +192,7 @@ func TestParseScanResponseTruncated(t *testing.T) {
 func TestParseScanResponseInvalidMoreFlag(t *testing.T) {
 	body := []byte{
 		0x00, 0x00, // count = 0
-		0x02,       // invalid more flag
+		0x02, // invalid more flag
 	}
 	_, err := parseScanResponse(body)
 	if err == nil {
@@ -206,8 +206,8 @@ func TestParseScanResponseInvalidMoreFlag(t *testing.T) {
 func TestParseScanResponseTrailingBytes(t *testing.T) {
 	body := []byte{
 		0x00, 0x01, 'a', // count=1, key="a"
-		0x00,             // more=false
-		0xFF,             // trailing byte
+		0x00, // more=false
+		0xFF, // trailing byte
 	}
 	_, err := parseScanResponse(body)
 	if err == nil {

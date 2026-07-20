@@ -121,9 +121,9 @@ func (s *fakeServer) stop() {
 // normal protocol dispatch is bypassed — the handler receives raw payloads
 // and returns raw responses.
 func (s *fakeServer) setHandler(h fakeHandler) {
-		s.mu.Lock()
-		s.handler = h
-		s.mu.Unlock()
+	s.mu.Lock()
+	s.handler = h
+	s.mu.Unlock()
 }
 
 // setMaxEntries simulates the server's entry limit.

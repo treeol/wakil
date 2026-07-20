@@ -167,10 +167,10 @@ type DockerOpts struct {
 	KVRSweepIntervalSecs    int
 	KVRSnapshotIntervalSecs int
 	// Docker hardening flags (defense-in-depth). See Config.DockerCaps etc.
-	DockerCaps       []string
-	DockerMemory     string
-	DockerPidsLimit  int
-	DockerTmpfsSize  string // /tmp tmpfs size (e.g. "4g"); empty → defaultDockerTmpfsSize
+	DockerCaps      []string
+	DockerMemory    string
+	DockerPidsLimit int
+	DockerTmpfsSize string // /tmp tmpfs size (e.g. "4g"); empty → defaultDockerTmpfsSize
 }
 
 // waitForKVR polls the kvr UDS socket with PING until it responds or the

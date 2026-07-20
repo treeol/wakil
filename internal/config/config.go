@@ -109,7 +109,7 @@ type Config struct {
 	// OOM before filling.
 	DockerMemory string `json:"docker_memory,omitempty"`
 	// DockerPidsLimit caps the number of processes. 0 = no limit.
-	DockerPidsLimit int    `json:"docker_pids_limit,omitempty"`
+	DockerPidsLimit int `json:"docker_pids_limit,omitempty"`
 	// DockerTmpfsSize sets the /tmp tmpfs size (e.g. "4g"). Empty = use the
 	// built-in default (currently "4g" — see defaultDockerTmpfsSize in
 	// internal/exec). /tmp must stay writable under --read-only, so the flag
