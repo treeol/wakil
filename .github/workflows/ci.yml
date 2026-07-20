@@ -45,12 +45,9 @@ jobs:
           retention-days: 14
 
       # Full-repo race: measured ~40s on this codebase (2026-07-19), so the
-      # former 4-package scope was widened. internal/lsp has a known
-      # PRE-EXISTING race (TestRPCConn_ServerToClientRequest,
-      # TestRPCConn_ProgressNotification) — excluded until fixed (follow-up
-      # card); do not interpret its exclusion as coverage of that package.
-      - name: race detector (all but lsp — known pre-existing race)
-        run: go test -race -count=1 $(go list ./... | grep -v /internal/lsp)
+      # former 4-package scope was widened.
+      - name: race detector
+        run: go test -race -count=1 ./...
 
   lint:
     runs-on: ubuntu-latest

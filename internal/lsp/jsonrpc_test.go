@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,21 @@ type mockServer struct {
 	clientW      io.WriteCloser // client writes to server's stdin
 	clientR      io.ReadCloser  // client reads server's stdout
 	serverStdout io.WriteCloser // for injecting server→client messages
+	writeMu      sync.Mutex     // serializes framed writes to serverStdout
+}
+
+// writeServerMessage writes a framed JSON-RPC message to the client's read
+// pipe. Both the mock goroutine and injectServerMessage use this so header+body
+// are never interleaved across concurrent writers.
+func (s *mockServer) writeServerMessage(data []byte) error {
+	header := "Content-Length: " + strconv.Itoa(len(data)) + "\r\n\r\n"
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if _, err := s.serverStdout.Write([]byte(header)); err != nil {
+		return err
+	}
+	_, err := s.serverStdout.Write(data)
+	return err
 }
 
 func newMockServer(t *testing.T, handlers map[string]func(json.RawMessage) (any, *rpcError)) *mockServer {
@@ -51,6 +67,11 @@ func newMockServer(t *testing.T, handlers map[string]func(json.RawMessage) (any,
 			if err := json.Unmarshal(msg, &req); err != nil {
 				continue
 			}
+			// Skip responses (empty Method) — the mock only handles requests.
+			if req.Method == "" {
+				continue
+			}
+
 			s.mu.Lock()
 			s.received = append(s.received, req)
 			s.mu.Unlock()
@@ -75,9 +96,7 @@ func newMockServer(t *testing.T, handlers map[string]func(json.RawMessage) (any,
 					Error:   rpcErr,
 				}
 				data, _ := json.Marshal(resp)
-				header := "Content-Length: " + strconv.Itoa(len(data)) + "\r\n\r\n"
-				stdoutW.Write([]byte(header))
-				stdoutW.Write(data)
+				s.writeServerMessage(data)
 			}
 		}
 	}()
@@ -88,12 +107,7 @@ func newMockServer(t *testing.T, handlers map[string]func(json.RawMessage) (any,
 // injectServerMessage writes a raw framed message to the client's stdout pipe.
 // Used to simulate server→client notifications/requests.
 func (s *mockServer) injectServerMessage(data []byte) error {
-	header := "Content-Length: " + strconv.Itoa(len(data)) + "\r\n\r\n"
-	if _, err := s.serverStdout.Write([]byte(header)); err != nil {
-		return err
-	}
-	_, err := s.serverStdout.Write(data)
-	return err
+	return s.writeServerMessage(data)
 }
 
 func TestRPCConn_CallAndNotify(t *testing.T) {
@@ -145,14 +159,21 @@ func TestRPCConn_CallAndNotify(t *testing.T) {
 	if err := conn.notify("test/notify", map[string]string{"data": "x"}); err != nil {
 		t.Fatalf("notify failed: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
 
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
+	// Poll for the notification instead of sleeping.
+	deadline := time.Now().Add(2 * time.Second)
 	found := false
-	for _, r := range srv.received {
-		if r.Method == "test/notify" {
-			found = true
+	for time.Now().Before(deadline) && !found {
+		srv.mu.Lock()
+		for _, r := range srv.received {
+			if r.Method == "test/notify" {
+				found = true
+				break
+			}
+		}
+		srv.mu.Unlock()
+		if !found {
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 	if !found {
@@ -164,7 +185,7 @@ func TestReadMessage_Framing(t *testing.T) {
 	// Verify Content-Length framing handles multi-byte UTF-8 bodies.
 	body := `{"jsonrpc":"2.0","method":"test","params":{"name":"وَكِيل"}}`
 	header := "Content-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n"
-	r := bufio.NewReader(stringsReader(header + body))
+	r := bufio.NewReader(strings.NewReader(header + body))
 
 	msg, err := readMessage(r)
 	if err != nil {
@@ -179,10 +200,13 @@ func TestRPCConn_ServerToClientRequest(t *testing.T) {
 	handlers := map[string]func(json.RawMessage) (any, *rpcError){}
 	srv := newMockServer(t, handlers)
 
-	handlerCalled := false
+	handlerDone := make(chan struct{}, 1)
 	handler := func(method string, params json.RawMessage, isRequest bool) (any, error) {
 		if method == "window/workDoneProgress/create" && isRequest {
-			handlerCalled = true
+			select {
+			case handlerDone <- struct{}{}:
+			default:
+			}
 			return nil, nil // void success — result: null
 		}
 		return nil, nil
@@ -203,15 +227,11 @@ func TestRPCConn_ServerToClientRequest(t *testing.T) {
 		t.Fatalf("inject: %v", err)
 	}
 
-	waitFor(t, 200*time.Millisecond, func() bool { return handlerCalled })
-	if !handlerCalled {
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
 		t.Fatal("client did not handle server→client request")
 	}
-}
-
-func TestRPCConn_VoidResponseContainsResultNull(t *testing.T) {
-	// Verify that a void success response emits result: null (JSON-RPC 2.0 §5).
-	// This is tested via the unit test of respondToServer below.
 }
 
 func TestRespondToServer_VoidSuccessHasResultNull(t *testing.T) {
@@ -231,10 +251,10 @@ func TestRespondToServer_VoidSuccessHasResultNull(t *testing.T) {
 	conn.respondToServer(42, nil, nil)
 
 	written := cap.String()
-	if !contains(written, `"result":null`) {
+	if !strings.Contains(written, `"result":null`) {
 		t.Errorf("void response must contain result:null, got: %s", written)
 	}
-	if contains(written, `"error"`) {
+	if strings.Contains(written, `"error"`) {
 		t.Errorf("void response must not contain error, got: %s", written)
 	}
 }
@@ -243,13 +263,16 @@ func TestRPCConn_ProgressNotification(t *testing.T) {
 	handlers := map[string]func(json.RawMessage) (any, *rpcError){}
 	srv := newMockServer(t, handlers)
 
-	progressReceived := ""
+	progressReceived := make(chan string, 1)
 	handler := func(method string, params json.RawMessage, isRequest bool) (any, error) {
 		if method == "$/progress" && !isRequest {
 			var p ProgressParams
 			json.Unmarshal(params, &p)
 			raw, _ := json.Marshal(p.Value)
-			progressReceived = string(raw)
+			select {
+			case progressReceived <- string(raw):
+			default:
+			}
 		}
 		return nil, nil
 	}
@@ -267,48 +290,14 @@ func TestRPCConn_ProgressNotification(t *testing.T) {
 		t.Fatalf("inject: %v", err)
 	}
 
-	waitFor(t, 200*time.Millisecond, func() bool { return progressReceived != "" })
-	if progressReceived == "" {
-		t.Error("client did not receive $/progress notification")
-	}
-	if !contains(progressReceived, "done") {
-		t.Errorf("progress value = %q, want to contain 'done'", progressReceived)
-	}
-}
-
-func waitFor(t *testing.T, max time.Duration, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(max)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
+	select {
+	case got := <-progressReceived:
+		if !strings.Contains(got, "done") {
+			t.Errorf("progress value = %q, want to contain 'done'", got)
 		}
-		time.Sleep(5 * time.Millisecond)
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not receive $/progress notification")
 	}
 }
 
 func int64Ptr(i int64) *int64 { return &i }
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && indexOf(s, substr) >= 0
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}
-
-// stringsReader implements io.Reader over a string.
-type stringsReader string
-
-func (s stringsReader) Read(p []byte) (int, error) {
-	if len(s) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, s)
-	return n, nil
-}
