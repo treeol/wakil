@@ -22,7 +22,7 @@ func TestHandleStreamError_429RetriedInUnattendedMode(t *testing.T) {
 	defer srv.Close()
 
 	app := newResilienceApp(srv.URL)
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.Cfg.BackendMaxRetries = 3
 
 	_, err := app.Send(context.Background(), "task")

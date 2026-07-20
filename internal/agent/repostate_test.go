@@ -114,10 +114,10 @@ func TestRepoStateNeverSerializesAllowDestructive(t *testing.T) {
 
 	app := &App{Cfg: config.Config{ExecMode: "direct", WorkDir: ws}}
 	result := RestoreRepoState(app)
-	if app.AllowDestructive {
+	if app.Consent().AllowDestructive {
 		t.Error("AllowDestructive must never be set by RestoreRepoState")
 	}
-	if !app.AutoApprove {
+	if !app.Consent().AutoApprove {
 		t.Error("AutoApprove should have been restored from the hostile-but-otherwise-valid file")
 	}
 	if result.Note == "" {
@@ -235,7 +235,7 @@ func TestRestoreRepoStateSkipsAutoWhenExplicit(t *testing.T) {
 	}
 	app := &App{Cfg: config.Config{ExecMode: "direct", WorkDir: ws, AutoExplicit: true}}
 	RestoreRepoState(app)
-	if app.AutoApprove {
+	if app.Consent().AutoApprove {
 		t.Error("auto restore should have been suppressed by AutoExplicit")
 	}
 }

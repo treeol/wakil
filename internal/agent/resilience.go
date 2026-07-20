@@ -89,7 +89,7 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 		return err
 	}
 	// Interactive non-auto: surface immediately; a human is present to re-send.
-	if !app.AutoApprove && !app.IsHeadless {
+	if !app.Consent().AutoApprove && !app.IsHeadless {
 		return err
 	}
 

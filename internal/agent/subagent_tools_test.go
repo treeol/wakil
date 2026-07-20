@@ -56,7 +56,7 @@ func TestCapabilityToolsWithAutoApprove(t *testing.T) {
 
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true // session consent
+	parent.SetAutoApprove(true) // session consent
 
 	summary, _, _, _, _, _ := parent.dispatchSubagent(
 		context.Background(), "use tools task", io.Discard, "", wtools.CapabilityTools)
@@ -176,7 +176,7 @@ func TestExternalCallsRecordedMechanically(t *testing.T) {
 
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true
+	parent.SetAutoApprove(true)
 
 	// Without an MCP manager, the MCP tool call will hit the default case but
 	// a.MCP is nil → "ERROR: unknown tool". The external action recording happens
@@ -213,7 +213,7 @@ func TestExternalCallsFoldedIntoSummary(t *testing.T) {
 
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true
+	parent.SetAutoApprove(true)
 
 	// dispatchSubagent folds extRecorder.snapshot() into the summary.
 	// Since there's no real MCPManager, extRecorder is empty, so the model's

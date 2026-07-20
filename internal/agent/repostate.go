@@ -245,9 +245,11 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 	app.RawTools = st.RawTools // always applies; false is a valid restored value
 
 	if !app.Cfg.AutoExplicit {
-		app.AutoApprove = st.AutoApprove
 		if st.AutoApprove {
+			app.SetAutoApprove(true)
 			applied = append(applied, "auto=on")
+		} else {
+			app.SetAutoApprove(false)
 		}
 	}
 
@@ -267,8 +269,17 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 // need to patch one or two fields. Prefer calling updateRepoState directly
 // when a command needs to set multiple related fields atomically (e.g.
 // /backend setting both Backend and Model in one write).
-func (a *App) saveRepoState(mutate func(*RepoState)) {
+//
+// Exported so the TUI can persist the deferred /auto grant at apply time
+// (Phase B: mid-turn /auto). The mutate callback receives the RepoState and
+// patches the relevant fields; the write is best-effort (errors swallowed).
+func (a *App) SaveRepoState(mutate func(*RepoState)) {
 	_ = updateRepoState(a.SessionWorkspace(), mutate)
+}
+
+// saveRepoState is the unexported alias for in-package callers.
+func (a *App) saveRepoState(mutate func(*RepoState)) {
+	a.SaveRepoState(mutate)
 }
 
 // ClearRepoState deletes the stored settings for app's workspace, if any.

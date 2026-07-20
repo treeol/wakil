@@ -888,7 +888,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	if isTools {
 		sub.MCP = a.MCP
 		sub.LSP = a.LSP
-		sub.AllowReads = true // auto-approve read-classified MCP calls (no prompt)
+		sub.SetAllowReads(true) // auto-approve read-classified MCP calls (no prompt)
 	}
 	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(childPrompt), Pinned: true}}
 

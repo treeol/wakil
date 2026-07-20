@@ -43,7 +43,7 @@ func SuspendAuto(toolName string, app *App, detail string) string {
 		// AllowDestructive (/auto destructive) is the TUI counterpart of the
 		// headless --allow-destructive flag: an explicit second opt-in that
 		// covers destructive shell commands. Never covers the egress gate.
-		if IsDestructiveShell(cmd) && !app.AllowDestructive {
+		if IsDestructiveShell(cmd) && !app.Consent().AllowDestructive {
 			return "destructive command"
 		}
 		// Pre-implementation phases gate only commands that could write: the
@@ -67,7 +67,7 @@ func ShouldGateEvenWithAutoApprove(toolName string, app *App, detail string) boo
 
 func tuiConfirmer(app *App) Confirmer {
 	return func(toolName, headline, detail string, readAction bool) bool {
-		if app.AutoApprove {
+		if app.Consent().AutoApprove {
 			reason := SuspendAuto(toolName, app, detail)
 			if reason == "" {
 				app.sendEvent(SysNoteMsg{Text: "⚡ auto: " + headline + "\n" + Indent(detail)})
@@ -88,7 +88,7 @@ func tuiConfirmer(app *App) Confirmer {
 		})
 		switch <-ch {
 		case ChoiceAllowReads:
-			app.AllowReads = true
+			app.SetAllowReads(true)
 			return true
 		case ChoiceApprove:
 			return true
@@ -265,30 +265,33 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			if fields[1] != "destructive" {
 				return true, false, note("usage: /auto | /auto destructive")
 			}
-			if !app.AutoApprove {
+			if !app.Consent().AutoApprove {
 				return true, false, note("auto mode is OFF — enable /auto first, then /auto destructive")
 			}
-			app.AllowDestructive = !app.AllowDestructive
-			if app.AllowDestructive {
+			cur := app.Consent().AllowDestructive
+			app.SetAllowDestructive(!cur)
+			if !cur {
 				return true, false, note("⚠ destructive auto-approve: ON — rm, mv, git reset, … run without prompting\n" +
 					"  still confirmed: external-backend egress; /auto destructive again to revoke")
 			}
 			return true, false, note("destructive auto-approve: OFF — destructive commands require confirmation again")
 		}
-		app.AutoApprove = !app.AutoApprove
+		newAuto := !app.Consent().AutoApprove
 		// Persist the toggle (TUI-only: HandleTUICommand is never invoked from
 		// the headless "wakil run" path — see repostate.go's RestoreRepoState
 		// doc comment for why AutoApprove restore must stay TUI-only).
 		// Deliberately NOT reached from the /auto destructive branch above,
 		// and RepoState has no field for AllowDestructive regardless — that
 		// grant can never be written to disk from here.
-		app.saveRepoState(func(s *RepoState) { s.AutoApprove = app.AutoApprove })
-		if app.AutoApprove {
+		app.saveRepoState(func(s *RepoState) { s.AutoApprove = newAuto })
+		if newAuto {
+			app.SetAutoApprove(true)
 			return true, false, note("auto mode: ON — tool calls approved without prompting\n" +
 				"  still confirmed: destructive shell commands (opt in with /auto destructive), external-backend egress")
 		}
-		// The destructive grant never outlives the auto session it was given for.
-		app.AllowDestructive = false
+		// OFF: clear both AutoApprove and AllowDestructive atomically (pair
+		// invariant — the destructive grant never outlives the auto session).
+		app.RevokeAuto()
 		return true, false, note("auto mode: OFF — tool calls require confirmation")
 
 	case "/rawtools":

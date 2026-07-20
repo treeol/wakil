@@ -109,6 +109,36 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.cancelling = false
 		m.clearArm() // a pending cancel arm must not fire into the now-idle state
 
+		// Apply deferred /auto grants: a mid-turn OFF→ON toggle was deferred
+		// (pendingAutoGrant) because granting mid-turn would auto-approve tools
+		// the user hadn't seen. Now that the turn is truly idle (clean
+		// AgentDoneMsg, no workflow continuation, no error), apply the grant.
+		// This runs BEFORE flushing queued prompts so the first queued prompt's
+		// turn runs under the new consent state. Persist at apply time, not at
+		// queue time — a pending grant that was cancelled (second /auto mid-turn)
+		// never reaches here because the flag was cleared.
+		//
+		// pendingDestructiveGrant can be set independently (auto already ON,
+		// destructive deferred) — it must apply even without pendingAutoGrant.
+		if msg.Err == nil && msg.Warn == "" && !msg.WorkflowWillContinue {
+			if m.pendingAutoGrant {
+				m.app.SetAutoApprove(true)
+				m.app.SaveRepoState(func(s *agent.RepoState) { s.AutoApprove = true })
+				m.pendingAutoGrant = false
+				m.addItem(iSys, dim2("· auto: granted (pending from mid-turn)"))
+			}
+			if m.pendingDestructiveGrant {
+				// Only meaningful when auto is ON (checked at mid-turn entry,
+				// but re-check here in case state changed). AllowDestructive is
+				// never persisted to repo-state — it's a session-only grant.
+				if m.app.Consent().AutoApprove {
+					m.app.SetAllowDestructive(true)
+					m.addItem(iSys, dim2("· auto: destructive granted (pending from mid-turn)"))
+				}
+				m.pendingDestructiveGrant = false
+			}
+		}
+
 		// Flush queued prompts: only when the turn ended cleanly (no error/cancel,
 		// no warning, no workflow auto-continuation pending). The queue survives
 		// across cancel, backend warnings, and workflow auto-continuation — it
@@ -346,6 +376,10 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.reasoningExpanded = false
 		// Clear queued prompts — they belong to the old conversation.
 		m.queuedPrompts = nil
+		// Clear deferred /auto grants — a pending grant belongs to the old
+		// conversation's turn cycle; it must not carry into the new one.
+		m.pendingAutoGrant = false
+		m.pendingDestructiveGrant = false
 		// Chip tracking belongs to the old conversation's draft; the pending
 		// images themselves are owned by the App and survive /new on purpose
 		// (same as /image <path> queuing before a fresh chat).

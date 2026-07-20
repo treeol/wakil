@@ -51,7 +51,7 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 		detail = fmt.Sprintf("⚠ workflow phase: %s (read-only expected — is this command investigative?)\n%s",
 			a.Workflow.PhaseName(), detail)
 	}
-	if preImpl || !(readAction && a.AllowReads) {
+	if preImpl || !(readAction && a.Consent().AllowReads) {
 		if !a.Confirm("run_shell", "Run shell command?", detail, readAction) {
 			return "[declined by user]"
 		}
@@ -720,7 +720,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// INVARIANT: child may write iff parent may write. If the parent's write
 	// predicate ever changes (e.g. a new consent bool is added), this gate
 	// MUST be updated to match — the two must move together.
-	if capability == wtools.CapabilityEdit && !a.AutoApprove {
+	if capability == wtools.CapabilityEdit && !a.Consent().AutoApprove {
 		return "ERROR: edit capability requires /auto or --auto (session write consent). " +
 			"Re-dispatch with capability \"discovery\" (the default) for read-only research."
 	}
@@ -730,7 +730,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// consent surface for which servers are exposed; /auto is the session-level
 	// trust that the agent may call them without prompting. This mirrors the
 	// edit tier pattern: consent at dispatch, not per-call.
-	if capability == wtools.CapabilityTools && !a.AutoApprove {
+	if capability == wtools.CapabilityTools && !a.Consent().AutoApprove {
 		return "ERROR: tools capability requires /auto or --auto (session consent for external tool access). " +
 			"Re-dispatch with capability \"discovery\" (the default) for read-only research."
 	}
@@ -844,12 +844,12 @@ func (a *App) handleDispatchSubagents(ctx context.Context, tc proxy.ToolCall) st
 			args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit, wtools.CapabilityTools)
 	}
 	// Consent gate (same as sequential path).
-	if capability == wtools.CapabilityEdit && !a.AutoApprove {
+	if capability == wtools.CapabilityEdit && !a.Consent().AutoApprove {
 		return "ERROR: edit capability requires /auto or --auto (session write consent). " +
 			"Re-dispatch with capability \"discovery\" (the default) for read-only research."
 	}
 	// Consent gate: tools capability also requires /auto (same as edit).
-	if capability == wtools.CapabilityTools && !a.AutoApprove {
+	if capability == wtools.CapabilityTools && !a.Consent().AutoApprove {
 		return "ERROR: tools capability requires /auto or --auto (session consent for external tool access). " +
 			"Re-dispatch with capability \"discovery\" (the default) for read-only research."
 	}
@@ -910,7 +910,7 @@ func (a *App) handleMCPTool(ctx context.Context, tc proxy.ToolCall) string {
 			subagentMCPMu.Lock()
 			defer subagentMCPMu.Unlock()
 		}
-		result := a.MCP.CallTool(ctx, name, tc.Function.Arguments, a.Confirm, a.AllowReads)
+		result := a.MCP.CallTool(ctx, name, tc.Function.Arguments, a.Confirm, a.Consent().AllowReads)
 		// Record the external action for audit (tools-tier children only;
 		// nil-safe for the parent and other tiers).
 		status := "ok"

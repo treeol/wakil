@@ -436,7 +436,7 @@ func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 	// the stale-plan check the manual /plan approve performs cannot trip here.
 	// StepCount==0 (empty plan section) never auto-advances — that state needs
 	// a human decision.
-	if app.AutoApprove && wf.StepCount > 0 {
+	if app.Consent().AutoApprove && wf.StepCount > 0 {
 		wf.Phase = workflow.WFImplement
 		wf.StepIdx = 1
 		wfProgNote(app, fmt.Sprintf("⚡ auto: plan approved after successful review (%d steps) — starting implementation", wf.StepCount))

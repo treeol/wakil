@@ -127,7 +127,7 @@ func TestCapabilityEditWithAutoApprove(t *testing.T) {
 
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true // session write consent
+	parent.SetAutoApprove(true) // session write consent
 
 	summary, _, _, _, _, _ := parent.dispatchSubagent(
 		context.Background(), "edit task", io.Discard, "", wtools.CapabilityEdit)
@@ -150,7 +150,7 @@ func TestCapabilityEditConstruction(t *testing.T) {
 
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true // session write consent
+	parent.SetAutoApprove(true) // session write consent
 
 	summary, _, _, _, _, filesChanged := parent.dispatchSubagent(
 		context.Background(), "edit task", io.Discard, "", wtools.CapabilityEdit)
@@ -289,7 +289,7 @@ func TestWriterLockSerializesEditChildren(t *testing.T) {
 
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true
+	parent.SetAutoApprove(true)
 	parent.Cfg.MaxParallelSubagents = 4
 
 	// Two edit-tier children in parallel.
@@ -376,7 +376,7 @@ func TestWriterLockEditPlusDiscoveryConcurrent(t *testing.T) {
 
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true
+	parent.SetAutoApprove(true)
 	parent.Cfg.MaxParallelSubagents = 4
 
 	// One edit + one discovery in parallel.
@@ -438,7 +438,7 @@ func TestFilesChangedMechanicalRecord(t *testing.T) {
 	exec.files["d.go"] = "to be moved"
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true
+	parent.SetAutoApprove(true)
 
 	summary, _, _, _, _, filesChanged := parent.dispatchSubagent(
 		context.Background(), "make edits", io.Discard, "", wtools.CapabilityEdit)
@@ -492,7 +492,7 @@ func TestFilesChangedFailedWriteNotRecorded(t *testing.T) {
 	}
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true
+	parent.SetAutoApprove(true)
 
 	_, _, _, _, _, filesChanged := parent.dispatchSubagent(
 		context.Background(), "try writes", io.Discard, "", wtools.CapabilityEdit)
@@ -520,7 +520,7 @@ func TestFilesChangedDiscrepancy(t *testing.T) {
 
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true
+	parent.SetAutoApprove(true)
 
 	summary, _, _, _, _, filesChanged := parent.dispatchSubagent(
 		context.Background(), "write", io.Discard, "", wtools.CapabilityEdit)
@@ -567,7 +567,7 @@ func TestEditChildConfinementRegression(t *testing.T) {
 	}
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	parent.AutoApprove = true
+	parent.SetAutoApprove(true)
 
 	_, _, _, _, _, filesChanged := parent.dispatchSubagent(
 		context.Background(), "try escape", io.Discard, "", wtools.CapabilityEdit)

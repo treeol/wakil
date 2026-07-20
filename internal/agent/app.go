@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/treeol/wakil/internal/browser"
@@ -54,22 +55,16 @@ type App struct {
 	// sidebar and pressure checks always have a positive ceiling (tests, subagents).
 	CtxLimit ContextLimit
 
-	// AllowReads, once the user picks "allow all reads" at a confirm prompt,
-	// auto-approves read-only shell commands for the rest of the session.
-	AllowReads bool
-
-	// AutoApprove skips all confirmation prompts for the session, approving every
-	// tool call automatically. Toggled by /auto or set via --auto flag.
-	AutoApprove bool
-
-	// AllowDestructive, when true alongside AutoApprove, auto-approves
-	// destructive shell commands (rm, mv, git reset, …) instead of suspending
-	// auto mode for them. Toggled by /auto destructive — a separate explicit
-	// opt-in, mirroring headless --allow-destructive. Cleared whenever /auto
-	// is switched off so the grant never outlives the auto session it was
-	// given for. Has no effect outside auto mode. The external-backend egress
-	// gate is NOT covered — that always prompts.
-	AllowDestructive bool
+	// Consent state (AutoApprove, AllowDestructive, AllowReads) is stored
+	// atomically as a single ConsentSnapshot via a.consent (see consent.go).
+	// Read with Consent(); mutate with SetAutoApprove/SetAllowDestructive/
+	// SetAllowReads/SetConsent. One atomic load yields a consistent view of
+	// all three — no tearing and no data race across goroutines (the TUI
+	// goroutine toggles /auto while the agent goroutine reads them at each
+	// approval gate; AllowReads is written by tuiConfirmer from the agent
+	// goroutine). Formerly three independent plain bools — replaced for the
+	// mid-turn /auto feature (Phase B).
+	consent atomic.Value // stores ConsentSnapshot
 
 	// InfoPanelOpen mirrors the TUI info panel's visibility (WP-9.1). The TUI is
 	// the source of truth during a session; it is restored from and persisted to

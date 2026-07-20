@@ -110,6 +110,15 @@ type tuiModel struct {
 	// shared state.
 	queuedPrompts []string
 
+	// pendingAutoGrant / pendingDestructiveGrant track a deferred /auto grant
+	// requested mid-turn (OFF→ON). A mid-turn grant is NOT applied immediately
+	// — it would auto-approve tools the user hasn't seen yet. Instead it is
+	// deferred to the next true idle (AgentDoneMsg, no workflow continuation,
+	// no error), where it is applied before flushing queued prompts. A second
+	// /auto mid-turn cancels a pending grant (toggle parity). Pure TUI-side.
+	pendingAutoGrant      bool
+	pendingDestructiveGrant bool
+
 	vp       viewport.Model
 	ta       textarea.Model
 	state    agentState
@@ -814,8 +823,80 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				fields := strings.Fields(input)
 				switch fields[0] {
 				case "/auto":
-					// Phase B — for now: reject with explicit notice.
-					m.addItem(iSys, dim2("· /auto mid-turn: not available yet (coming in Phase B)"))
+					// Phase B: mid-turn /auto toggle.
+					//
+					// ON→OFF (revoke): applied immediately. A revoke only affects
+					// not-yet-approved decisions — it cannot undo a running tool or
+					// alter an already-displayed confirm gate. Immediate revoke is the
+					// high-value case: the user sees the agent drifting risky and can
+					// stop unattended approvals right now, mid-turn. The atomic
+					// consent snapshot (B.1) makes the store race-free.
+					//
+					// OFF→ON (grant): deferred. A mid-turn grant would auto-approve
+					// tools the user has not seen — too risky to apply immediately.
+					// Instead, set pendingAutoGrant and apply it at the next true idle
+					// (AgentDoneMsg, no workflow continuation, no error), before
+					// flushing queued prompts. A second /auto mid-turn cancels the
+					// pending grant (toggle parity).
+					//
+					// /auto destructive mid-turn: same revoke-only logic. The
+					// destructive grant can be revoked mid-turn (immediate); granting
+					// it mid-turn is deferred alongside the auto grant.
+					isDestructive := len(fields) > 1 && fields[1] == "destructive"
+					// Reject unknown /auto subcommands mid-turn, matching the idle
+					// handler's "usage: /auto | /auto destructive" behavior.
+					if len(fields) > 1 && !isDestructive {
+						m.addItem(iSys, dim2("· /auto mid-turn: usage is /auto or /auto destructive"))
+						m.ta.Reset()
+						m.comp = completionState{}
+						return m, nil, true
+					}
+					consent := m.app.Consent()
+					if isDestructive {
+						if !consent.AutoApprove {
+							m.addItem(iSys, dim2("· /auto destructive mid-turn: auto is OFF — enable /auto first"))
+							m.ta.Reset()
+							m.comp = completionState{}
+							return m, nil, true
+						}
+						// Coalesce: if a destructive grant is already pending, a
+						// second /auto destructive cancels it (toggle parity).
+						if m.pendingDestructiveGrant {
+							m.pendingDestructiveGrant = false
+							m.addItem(iSys, dim2("· auto: pending destructive grant cancelled"))
+						} else if consent.AllowDestructive {
+							// Revoke destructive immediately.
+							m.app.SetAllowDestructive(false)
+							m.addItem(iSys, dim2("· auto: destructive revoked mid-turn"))
+						} else {
+							// Defer the destructive grant.
+							m.pendingDestructiveGrant = true
+							m.addItem(iSys, dim2("· auto: destructive pending grant next turn"))
+						}
+					} else {
+						// Coalesce: if a grant is already pending, a second /auto
+						// cancels it (toggle parity — the user undoing the deferred
+						// grant before it applies). This check comes BEFORE the
+						// AutoApprove check because the consent is still OFF while
+						// a grant is pending.
+						if m.pendingAutoGrant {
+							m.pendingAutoGrant = false
+							m.pendingDestructiveGrant = false
+							m.addItem(iSys, dim2("· auto: pending grant cancelled"))
+						} else if consent.AutoApprove {
+							// ON→OFF: immediate revoke. Clear both AutoApprove and
+							// AllowDestructive atomically (pair invariant — the
+							// destructive grant never outlives the auto session).
+							m.app.RevokeAuto()
+							m.pendingAutoGrant = false
+							m.pendingDestructiveGrant = false
+							m.addItem(iSys, dim2("· auto: revoked mid-turn"))
+						} else {
+							// OFF→ON: defer the grant.
+							m.pendingAutoGrant = true
+							m.addItem(iSys, dim2("· auto: pending grant next turn"))
+						}
+					}
 					m.ta.Reset()
 					m.comp = completionState{}
 					return m, nil, true

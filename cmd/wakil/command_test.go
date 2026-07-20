@@ -81,7 +81,7 @@ func TestHandleTUICommandAutoToggle(t *testing.T) {
 	app := cmdApp()
 	// First /auto turns it ON.
 	_, _, cmd := agent.HandleTUICommand("/auto", app)
-	if !app.AutoApprove {
+	if !app.Consent().AutoApprove {
 		t.Fatal("/auto should enable AutoApprove")
 	}
 	if msg, ok := runCmd(cmd).(agent.SysNoteMsg); !ok || !strings.Contains(msg.Text, "ON") {
@@ -89,7 +89,7 @@ func TestHandleTUICommandAutoToggle(t *testing.T) {
 	}
 	// Second /auto turns it OFF.
 	_, _, cmd = agent.HandleTUICommand("/auto", app)
-	if app.AutoApprove {
+	if app.Consent().AutoApprove {
 		t.Fatal("second /auto should disable AutoApprove")
 	}
 	if msg, ok := runCmd(cmd).(agent.SysNoteMsg); !ok || !strings.Contains(msg.Text, "OFF") {
@@ -102,7 +102,7 @@ func TestHandleTUICommandAutoDestructive(t *testing.T) {
 
 	// /auto destructive with auto OFF: refused, flag stays false.
 	_, _, cmd := agent.HandleTUICommand("/auto destructive", app)
-	if app.AllowDestructive {
+	if app.Consent().AllowDestructive {
 		t.Fatal("/auto destructive must be refused while auto mode is OFF")
 	}
 	if msg, ok := runCmd(cmd).(agent.SysNoteMsg); !ok || !strings.Contains(msg.Text, "enable /auto first") {
@@ -112,7 +112,7 @@ func TestHandleTUICommandAutoDestructive(t *testing.T) {
 	// Enable auto, then grant destructive.
 	agent.HandleTUICommand("/auto", app)
 	_, _, cmd = agent.HandleTUICommand("/auto destructive", app)
-	if !app.AllowDestructive {
+	if !app.Consent().AllowDestructive {
 		t.Fatal("/auto destructive should enable AllowDestructive when auto is ON")
 	}
 	if msg, ok := runCmd(cmd).(agent.SysNoteMsg); !ok || !strings.Contains(msg.Text, "ON") {
@@ -121,20 +121,20 @@ func TestHandleTUICommandAutoDestructive(t *testing.T) {
 
 	// Second /auto destructive revokes.
 	agent.HandleTUICommand("/auto destructive", app)
-	if app.AllowDestructive {
+	if app.Consent().AllowDestructive {
 		t.Fatal("second /auto destructive should revoke the grant")
 	}
 
 	// Grant again, then switch auto OFF: grant must be cleared with it.
 	agent.HandleTUICommand("/auto destructive", app)
-	if !app.AllowDestructive {
+	if !app.Consent().AllowDestructive {
 		t.Fatal("setup: grant should be ON again")
 	}
 	agent.HandleTUICommand("/auto", app)
-	if app.AutoApprove {
+	if app.Consent().AutoApprove {
 		t.Fatal("setup: auto should be OFF")
 	}
-	if app.AllowDestructive {
+	if app.Consent().AllowDestructive {
 		t.Error("switching /auto OFF must clear the destructive grant")
 	}
 
@@ -143,7 +143,7 @@ func TestHandleTUICommandAutoDestructive(t *testing.T) {
 	if msg, ok := runCmd(cmd).(agent.SysNoteMsg); !ok || !strings.Contains(msg.Text, "usage:") {
 		t.Errorf("unknown /auto subcommand should show usage; got %+v", msg)
 	}
-	if app.AutoApprove || app.AllowDestructive {
+	if app.Consent().AutoApprove || app.Consent().AllowDestructive {
 		t.Error("unknown subcommand must not change state")
 	}
 }

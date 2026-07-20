@@ -293,7 +293,20 @@ func statusSegments(in statusLineInput) []string {
 		if in.allowDestructive {
 			label = "AUTO!"
 		}
+		if in.pendingDestructiveGrant {
+			label = "AUTO!*"
+		} else if in.pendingAutoGrant {
+			label = "AUTO*"
+		}
 		head = append(head, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(label))
+	} else if in.pendingAutoGrant {
+		// Auto is OFF but a grant is pending (deferred from mid-turn). Show a
+		// dim indicator so the user knows the grant will apply at next idle.
+		label := "AUTO*"
+		if in.pendingDestructiveGrant {
+			label = "AUTO!*"
+		}
+		head = append(head, dim2(label))
 	}
 	var stateSeg string
 	switch in.state {
@@ -481,11 +494,17 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		model = m.app.EffectiveModel()
 		submodel = m.app.EffectiveSubagentModel()
 	}
+	var consent agent.ConsentSnapshot
+	if m.app != nil {
+		consent = m.app.Consent()
+	}
 	return statusLineInput{
-		state:            m.state,
-		autoApprove:      m.app != nil && m.app.AutoApprove,
-		allowDestructive: m.app != nil && m.app.AllowDestructive,
-		rawTools:         m.app != nil && m.app.RawTools,
+		state:                 m.state,
+		autoApprove:           consent.AutoApprove,
+		allowDestructive:      consent.AllowDestructive,
+		pendingAutoGrant:      m.pendingAutoGrant,
+		pendingDestructiveGrant: m.pendingDestructiveGrant,
+		rawTools:              m.app != nil && m.app.RawTools,
 		reasoning:        m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
 		tps:              m.tps,
 		workflowLabel:    workflowLabel,
@@ -507,10 +526,12 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 // (Reverse search is handled before this is built — statusLines() checks
 // m.searchPrompt() first — so there is no search field here.)
 type statusLineInput struct {
-	state            agentState
-	autoApprove      bool
-	allowDestructive bool // /auto destructive grant active (renders AUTO!)
-	rawTools         bool
+	state                 agentState
+	autoApprove           bool
+	allowDestructive      bool // /auto destructive grant active (renders AUTO!)
+	pendingAutoGrant      bool // deferred /auto grant requested mid-turn (renders AUTO*)
+	pendingDestructiveGrant bool // deferred destructive grant (renders AUTO!*)
+	rawTools              bool
 	reasoning        bool    // extended-thinking in progress
 	tps              float64 // decode speed; 0 = not measured yet
 	workflowLabel    string  // e.g. "implement 3/6" or "" when no workflow

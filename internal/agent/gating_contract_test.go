@@ -84,7 +84,7 @@ func TestGateRunShell_MutatingAlwaysPrompts(t *testing.T) {
 			exec := newRecordingExecutor()
 			spy := &confirmSpy{answer: true}
 			app := newGatingApp(exec, spy)
-			app.AllowReads = allowReads
+			app.SetAllowReads(allowReads)
 
 			res := app.ExecuteToolCall(context.Background(), tc("run_shell", `{"command":"touch x.go"}`))
 			if !res.ok {
@@ -124,7 +124,7 @@ func TestGateRunShell_ReadOnlySkipsPromptWithAllowReads(t *testing.T) {
 	exec := newRecordingExecutor()
 	spy := &confirmSpy{answer: true}
 	app := newGatingApp(exec, spy)
-	app.AllowReads = true
+	app.SetAllowReads(true)
 
 	res := app.ExecuteToolCall(context.Background(), tc("run_shell", `{"command":"ls -la"}`))
 	if !res.ok {

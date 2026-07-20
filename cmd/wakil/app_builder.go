@@ -147,12 +147,19 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 		Out:             os.Stderr,
 		Confirm:         func(_, _, _ string, _ bool) bool { return false },
 		InjectDate:      true,
-		AutoApprove:     cfg.AutoApprove,
 		IsHeadless:      opts.IsHeadless,
 		AutoCounsel:     opts.AutoCounsel,
 		MaxCounsel:      opts.MaxCounsel,
 		Costs:           proxy.NewCostTracker(),
 	}
+
+	// Initialize consent state from the --auto flag. RestoreRepoState may
+	// override this later (TUI path only); that uses SetAutoApprove too.
+	// AllowDestructive and AllowReads start false — AllowDestructive is a
+	// separate explicit opt-in (/auto destructive) and AllowReads is granted
+	// mid-session via a confirm choice. Kept unexported: cmd/wakil cannot
+	// set it directly, so the bridge is this exported setter.
+	app.SetConsent(agent.ConsentSnapshot{AutoApprove: cfg.AutoApprove})
 
 	// Staging client
 	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {

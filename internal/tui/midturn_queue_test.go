@@ -68,15 +68,22 @@ func TestQueuePrompt_SlashCommand_RejectedWithNotice(t *testing.T) {
 	}
 }
 
-func TestQueuePrompt_AutoCommand_RejectedWithNotice(t *testing.T) {
+func TestQueuePrompt_AutoCommand_DeferGrantMidTurn(t *testing.T) {
 	m := newTestTUI(t)
 	m = midTurnEnter(m, "/auto", stateStreaming)
 	if len(m.queuedPrompts) != 0 {
-		t.Fatalf("/auto should NOT be queued in Phase A, got %d", len(m.queuedPrompts))
+		t.Fatalf("/auto should NOT be queued, got %d", len(m.queuedPrompts))
+	}
+	// /auto mid-turn (OFF→ON) defers the grant — it does not apply immediately.
+	if !m.pendingAutoGrant {
+		t.Error("OFF→ON /auto mid-turn should set pendingAutoGrant")
+	}
+	if m.app.Consent().AutoApprove {
+		t.Error("deferred grant must NOT apply immediately — auto should still be OFF")
 	}
 	last := lastItemText(m)
-	if !strings.Contains(last, "not available") {
-		t.Errorf("expected /auto reject notice, got: %q", last)
+	if !strings.Contains(last, "pending grant") {
+		t.Errorf("expected pending-grant notice, got: %q", last)
 	}
 }
 

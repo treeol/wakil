@@ -175,7 +175,8 @@ func TestMashuraCheckStaysUnderTokenCap(t *testing.T) {
 // same way headless --auto does. Outside auto mode they still hit the gate
 // (covered by TestMashuraGateDeclineShortCircuits).
 func TestMashuraToolsAutoApproveInAutoMode(t *testing.T) {
-	app := &App{AutoApprove: true}
+	app := &App{}
+	app.SetAutoApprove(true)
 	for _, name := range []string{"mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask"} {
 		if reason := SuspendAuto(name, app, "detail"); reason != "" {
 			t.Errorf("%s: suspendAuto returned %q — mashūra must auto-approve in /auto mode", name, reason)
@@ -930,8 +931,8 @@ func TestCounselCapSurvivesAutoApprove(t *testing.T) {
 		Confirm:     func(_, _, _ string, _ bool) bool { return true },
 		CounselMode: "auto",
 		MaxCounsel:  1,
-		AutoApprove: true, // /auto is on — cap must still hold
 	}
+	app.SetAutoApprove(true) // /auto is on — cap must still hold
 
 	for i := 0; i < 3; i++ {
 		app.struggleSuggested = nil

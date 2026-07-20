@@ -834,7 +834,7 @@ func TestAutoModeGatesDestructiveShell(t *testing.T) {
 		}
 		return false // decline
 	})
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 
 	ctx := context.Background()
 	if _, err := app.Send(ctx, "do it"); err != nil {
@@ -1409,7 +1409,8 @@ func TestFailedPlanReadRoutesUnavailable(t *testing.T) {
 // TestAutoGateReasons: suspendAuto returns the right reason string for each carve-out;
 // each reason must contain the spec-mandated phrase so confirm prompts are labelled.
 func TestAutoGateReasons(t *testing.T) {
-	app := &agent.App{AutoApprove: true}
+	app := &agent.App{}
+	app.SetAutoApprove(true)
 
 	// mashura__review (and the legacy oracle__ask alias) auto-approve in /auto —
 	// same trust level as headless --auto.
@@ -1464,7 +1465,8 @@ func TestAutoGateReasons(t *testing.T) {
 // TestAllowDestructiveGrant: the /auto destructive grant auto-approves
 // destructive shell (and background) commands, but never the egress gate.
 func TestAllowDestructiveGrant(t *testing.T) {
-	app := &agent.App{AutoApprove: true, AllowDestructive: true}
+	app := &agent.App{}
+	app.SetConsent(agent.ConsentSnapshot{AutoApprove: true, AllowDestructive: true})
 
 	if r := agent.SuspendAuto("run_shell", app, "$ rm -rf /tmp/x\n  (exec)"); r != "" {
 		t.Errorf("destructive shell should auto-approve with AllowDestructive, got %q", r)
@@ -1479,7 +1481,7 @@ func TestAllowDestructiveGrant(t *testing.T) {
 
 	// Without the grant, destructive background commands gate (parity with
 	// headlessConfirmer, which checks run_shell AND run_background).
-	app.AllowDestructive = false
+	app.SetAllowDestructive(false)
 	if r := agent.SuspendAuto("run_background", app, "$ rm -rf /tmp/x (background)\n  label=x\n  (exec)"); !strings.Contains(r, "destructive") {
 		t.Errorf("destructive background without grant: reason=%q, want 'destructive'", r)
 	}
@@ -1491,7 +1493,8 @@ func TestAllowDestructiveGrant(t *testing.T) {
 
 // TestShouldGateEvenWithAutoApprove: the boolean wrapper is consistent with suspendAuto.
 func TestShouldGateEvenWithAutoApprove(t *testing.T) {
-	app := &agent.App{AutoApprove: true}
+	app := &agent.App{}
+	app.SetAutoApprove(true)
 	if agent.ShouldGateEvenWithAutoApprove("oracle__ask", app, "detail") {
 		t.Error("oracle__ask should auto-approve in auto mode (same trust as headless --auto)")
 	}
@@ -2756,7 +2759,7 @@ func TestAutoModeAdvancesPastSuccessfulReview(t *testing.T) {
 	defer srv.Close()
 
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
@@ -2797,7 +2800,7 @@ func TestAutoModeDoesNotSkipFailedReview(t *testing.T) {
 	defer srv.Close()
 
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.Cfg.OracleEnabled = false // oracle unavailable
 
 	app.Workflow = &workflow.WorkflowState{
@@ -2830,7 +2833,7 @@ func TestAutoModeStopsAtZeroStepPlan(t *testing.T) {
 	defer srv.Close()
 
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
@@ -3524,16 +3527,17 @@ func TestPlanFormatContractProceedsAfterReformat(t *testing.T) {
 // triggered by explicit user input.
 func TestApproveIsUserOnlyInvariant(t *testing.T) {
 	makeApp := func(autoApprove bool) *agent.App {
-		return &agent.App{
-			Cfg:         config.DefaultConfig(),
-			Session:     &agent.Session{},
-			AutoApprove: autoApprove,
+		a := &agent.App{
+			Cfg:     config.DefaultConfig(),
+			Session: &agent.Session{},
 			Workflow: &workflow.WorkflowState{
 				Phase:     workflow.WFPresent,
 				StepCount: 2,
 				PlanPath:  ".wakil/plan.md",
 			},
 		}
+		a.SetAutoApprove(autoApprove)
+		return a
 	}
 
 	// Execute the Cmd returned by handlePlanCommand — the phase change now

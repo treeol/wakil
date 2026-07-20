@@ -82,7 +82,7 @@ func TestHandleStreamError_FatalImmediateNoRetry(t *testing.T) {
 	defer srv.Close()
 
 	app := newResilienceApp(srv.URL)
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 
 	_, err := app.Send(context.Background(), "test task")
 	if !errors.Is(err, proxy.ErrBackendFatal) {
@@ -112,7 +112,7 @@ func TestHandleStreamError_InteractiveNoRetry(t *testing.T) {
 	defer srv.Close()
 
 	app := newResilienceApp(srv.URL)
-	app.AutoApprove = false
+	app.SetAutoApprove(false)
 	app.IsHeadless = false
 
 	_, err := app.Send(context.Background(), "hi")
@@ -137,7 +137,7 @@ func TestHandleStreamError_AutoRetryRecovers(t *testing.T) {
 	defer srv.Close()
 
 	app := newResilienceApp(srv.URL)
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.Cfg.BackendMaxRetries = 3
 
 	_, err := app.Send(context.Background(), "first task")
@@ -161,7 +161,7 @@ func TestHandleStreamError_HeadlessRetryRecovers(t *testing.T) {
 	defer srv.Close()
 
 	app := newResilienceApp(srv.URL)
-	app.AutoApprove = false
+	app.SetAutoApprove(false)
 	app.IsHeadless = true
 	app.Cfg.BackendMaxRetries = 3
 
@@ -180,7 +180,7 @@ func TestHandleStreamError_ExhaustedRetries(t *testing.T) {
 	defer srv.Close()
 
 	app := newResilienceApp(srv.URL)
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.Cfg.BackendMaxRetries = 3
 
 	_, err := app.Send(context.Background(), "task")
@@ -201,7 +201,7 @@ func TestHandleStreamError_PersistentResetNote(t *testing.T) {
 
 	var out strings.Builder
 	app := newResilienceApp(srv.URL)
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.Cfg.BackendMaxRetries = 2
 	app.Out = &writerAdapter{&out}
 
@@ -226,7 +226,7 @@ func TestHandleStreamError_SessionSavedOnExhaustion(t *testing.T) {
 	app := newResilienceApp(srv.URL)
 	app.Client.ChatID = chatID
 	app.Session = &Session{ChatID: chatID, Model: "ilm"}
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.Cfg.BackendMaxRetries = 2
 	// Give the session a Conv entry so SaveSession actually writes.
 	app.Conv = []proxy.Message{{Role: "user", Content: StrPtr("prior turn")}}

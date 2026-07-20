@@ -880,7 +880,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			fmt.Fprintln(a.Out, fmt.Sprintf("⚡ auto-counsel %d/%d · mashura__debug · %s",
 				a.counselCalls, a.MaxCounsel, symptom))
 			// Bypass the confirm gate when the session is also in /auto mode.
-			a.autoCounselSkipGate = a.AutoApprove
+			a.autoCounselSkipGate = a.Consent().AutoApprove
 			fakeTC := proxy.ToolCall{
 				ID:   fmt.Sprintf("auto-counsel-%d", a.counselCalls),
 				Type: "function",

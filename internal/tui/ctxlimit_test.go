@@ -365,7 +365,7 @@ func TestHandleStreamErrorRetriesInAutoMode(t *testing.T) {
 	defer srv.Close()
 
 	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
-	app.AutoApprove = true
+	app.SetAutoApprove(true)
 	app.RetryDelay = func(_ int) time.Duration { return 0 } // no backoff in tests
 
 	_, err := app.Send(context.Background(), "go")

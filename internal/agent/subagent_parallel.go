@@ -205,7 +205,7 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		// INVARIANT: child may write iff parent may write.
 		// Tools capability also requires AutoApprove (session consent for
 		// external tool access — same gate, different rationale).
-		if (capability == wtools.CapabilityEdit || capability == wtools.CapabilityTools) && !a.AutoApprove {
+		if (capability == wtools.CapabilityEdit || capability == wtools.CapabilityTools) && !a.Consent().AutoApprove {
 			out[i] = fmt.Sprintf("ERROR: %s capability requires /auto or --auto (session consent). "+
 				"Re-dispatch with capability \"discovery\" (the default) for read-only research.",
 				capability)
