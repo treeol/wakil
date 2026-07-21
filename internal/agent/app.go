@@ -218,6 +218,13 @@ type App struct {
 	// Toggled by the /rawtools command.
 	RawTools bool
 
+	// VerifyEnabled gates the workflow verification runner. When true, the
+	// final review runs deterministic verification commands (from config.Verify
+	// or auto-detected from project manifests) before the oracle review. Set
+	// by the headless --verify flag; in TUI, /verify runs verification on
+	// demand. When false AND config.Verify is empty, verification is skipped.
+	VerifyEnabled bool
+
 	// ToolCache, when non-nil, deduplicates tool calls within the session.
 	// A repeated (name, args) pair returns a short notice instead of re-executing.
 	// Enabled for subagents (which should never need to read the same file twice).

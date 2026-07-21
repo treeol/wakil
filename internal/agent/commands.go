@@ -351,6 +351,21 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return CompactedMsg{}
 		}
 
+	case "/verify":
+		// /verify runs deterministic verification commands (tests, lint, build)
+		// via the consent gate. Commands come from config.Verify or auto-detection
+		// from project manifests. Results are appended to the step log when a
+		// workflow is active, and always shown in the transcript.
+		return true, false, func() Msg {
+			cmds := ResolveVerifyCommands(app)
+			if len(cmds) == 0 {
+				return SysNoteMsg{Text: "verify: no commands configured or detected\n" +
+					"  add \"verify\": [\"go test ./...\"] to config, or ensure a manifest (go.mod, package.json, …) exists"}
+			}
+			outcome := RunVerification(context.Background(), app, cmds)
+			return SysNoteMsg{Text: outcome.Summarize()}
+		}
+
 	case "/sessions":
 		// "/sessions all" shows every session regardless of workspace; bare
 		// "/sessions" is scoped to the current workspace (with a hidden-count

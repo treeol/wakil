@@ -71,13 +71,19 @@ type RunFlags struct {
 	// ProfileName selects a built-in named profile (--profile flag).
 	// One of: read-only, auto-safe, auto-destructive, ci.
 	ProfileName string
+
+	// Verify enables the workflow verification runner (--verify flag).
+	// When set with --plan, deterministic verification commands (from config
+	// or auto-detected) run before the final oracle review. A non-zero exit
+	// fails verification → ExitGaps (verification failure IS an acceptance gap).
+	Verify bool
 }
 
 // parseRunArgs parses the args that follow "run":
 //
 //	[--plan] [--auto] [--allow-destructive] [--allow-external]
 //	[--auto-counsel] [--max-counsel N] [--no-oracle] [--transcript <file>]
-//	[--attach-image <path>] [--policy <path>] [--profile <name>] "<task>"
+//	[--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] "<task>"
 func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -125,6 +131,8 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 				return "", false, flags, fmt.Errorf("--profile requires a name")
 			}
 			flags.ProfileName = args[i]
+		case "--verify":
+			flags.Verify = true
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return "", false, flags, fmt.Errorf("unknown flag: %s", args[i])
@@ -137,7 +145,7 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 	}
 	if task == "" {
 		return "", false, flags, fmt.Errorf(
-			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] \"<task>\"")
+			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] \"<task>\"")
 	}
 	// Default cap: 3 auto-counsel calls when --auto-counsel is set without --max-counsel.
 	if flags.AutoCounsel && flags.MaxCounsel == 0 {
@@ -446,10 +454,29 @@ func runWorkflowLoop(ctx context.Context, app *agent.App, flags RunFlags, out io
 
 		case workflow.WFImplement:
 			if app.Workflow.StepIdx > app.Workflow.StepCount {
-				// Final review flagged gaps (or oracle unavailable) — exit nonzero.
+				// A declined verification command is a consent refusal, not a
+				// gap — report it as ExitDeclined with the reason.
+				if app.Workflow.VerifyDeclined || *declinedReason != "" {
+					reason := *declinedReason
+					if reason == "" {
+						reason = "verification command declined by consent gate"
+					}
+					emitEvent(out, map[string]any{
+						"type": "done", "outcome": "declined", "reason": reason,
+					})
+					return ExitDeclined
+				}
+				// Verification failure or oracle gaps — both map to ExitGaps.
+				// The outcome field distinguishes the cause for consumers.
+				outcome := "gaps"
+				msg := "final review flagged unresolved gaps"
+				if app.Workflow.VerifyFailed {
+					outcome = "verify_failed"
+					msg = "verification failed (see step log for details)"
+				}
 				emitEvent(out, map[string]any{
-					"type": "done", "outcome": "gaps",
-					"message": "final review flagged unresolved gaps",
+					"type": "done", "outcome": outcome,
+					"message": msg,
 				})
 				return ExitGaps
 			}
@@ -459,7 +486,25 @@ func runWorkflowLoop(ctx context.Context, app *agent.App, flags RunFlags, out io
 				// Last step was paused; run final review now.
 				agent.HandleFinalReview(ctx, app)
 				if app.Workflow != nil {
-					emitEvent(out, map[string]any{"type": "done", "outcome": "gaps"})
+					// Final review left the workflow open — same disambiguation
+					// as the main WFImplement waiting-state path above.
+					if app.Workflow.VerifyDeclined || *declinedReason != "" {
+						reason := *declinedReason
+						if reason == "" {
+							reason = "verification command declined by consent gate"
+						}
+						emitEvent(out, map[string]any{
+							"type": "done", "outcome": "declined", "reason": reason,
+						})
+						return ExitDeclined
+					}
+					outcome := "gaps"
+					msg := "final review flagged unresolved gaps"
+					if app.Workflow.VerifyFailed {
+						outcome = "verify_failed"
+						msg = "verification failed (see step log for details)"
+					}
+					emitEvent(out, map[string]any{"type": "done", "outcome": outcome, "message": msg})
 					return ExitGaps
 				}
 			}
@@ -498,6 +543,13 @@ func RunHeadless(cfg config.Config, args []string) int {
 		AutoCounsel: flags.AutoCounsel,
 		MaxCounsel:  flags.MaxCounsel,
 	})
+
+	// --verify enables the workflow verification runner on top of any config
+	// setting. buildApp already set VerifyEnabled when cfg.Verify is non-empty;
+	// here we also enable it for the --verify flag (headless-only).
+	if flags.Verify {
+		app.VerifyEnabled = true
+	}
 
 	// Headless session: construct inline (no resume support in headless mode).
 	app.Session = &agent.Session{

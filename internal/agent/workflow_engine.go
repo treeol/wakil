@@ -306,6 +306,36 @@ func HandleFinalReview(ctx context.Context, app *App) {
 		return
 	}
 
+	// Run deterministic verification BEFORE the oracle review. Verification
+	// results are appended to the step log (by RunVerification) so they
+	// feed into the final-review briefing as machine evidence. If verification
+	// fails, the workflow stays open (StepIdx > StepCount) — same state as
+	// oracle gaps — so the user can remediate. Verification failure takes
+	// precedence: even if the oracle says PASS, a failed test keeps the
+	// workflow open (fail-closed: deterministic gate is authoritative).
+	//
+	// The outcome is recorded on WorkflowState (VerifyFailed/VerifyDeclined)
+	// so the headless exit path can report the correct JSON outcome without
+	// re-deriving the cause.
+	app.Workflow.VerifyFailed = false
+	app.Workflow.VerifyDeclined = false
+	if app.VerifyEnabled {
+		verifyOutcome := runFinalVerification(ctx, app)
+		if verifyOutcome.HasFailures() {
+			app.Workflow.VerifyFailed = true
+			wfProgNote(app, "⚠ verification failed — workflow remains open")
+			wfProgNote(app, "· fix the failing tests or type /plan approve to force-close")
+			// Stay in WFImplement with StepIdx > StepCount (same as oracle gaps).
+			return
+		}
+		if verifyOutcome.AnyDeclined() {
+			app.Workflow.VerifyDeclined = true
+			wfProgNote(app, "⚠ verification command declined — workflow remains open")
+			wfProgNote(app, "· approve the verification command or type /plan approve to force-close")
+			return
+		}
+	}
+
 	wfProgNote(app, "· all steps complete — running final oracle review")
 	reviewQ := "Does the step log demonstrate that every acceptance criterion was met? " +
 		"List any criterion not verifiably satisfied and any deviation that was logged but not resolved. " +

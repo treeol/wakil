@@ -56,6 +56,16 @@ type WorkflowState struct {
 	PlanFormatInvalid bool   // ## Plan is non-empty but has no parseable numbered steps
 	ReviewPlanHash    string // FNV-64a of ## Plan section at last successful REVIEW
 	ReviewStaleWarned bool   // true after the first approve warned about a stale plan
+
+	// VerifyFailed is set when deterministic verification (the verify runner)
+	// failed during the final review. Distinguishes verification failure from
+	// oracle gaps in the headless exit path so the JSON outcome is accurate.
+	// Reset to false at the start of each final review.
+	VerifyFailed bool
+	// VerifyDeclined is set when a verification command was declined by the
+	// consent gate (policy deny or user decline). In headless mode this maps
+	// to ExitDeclined rather than ExitGaps.
+	VerifyDeclined bool
 }
 
 // EffectiveOracleMode resolves the oracle consultation schedule in priority order:

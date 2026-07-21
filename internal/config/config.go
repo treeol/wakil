@@ -254,6 +254,15 @@ type Config struct {
 	WFFinalReview      bool   `json:"wf_final_review"`                 // run closing oracle check after the last step (default true)
 	WFBriefingMaxBytes int    `json:"wf_briefing_max_bytes,omitempty"` // max bytes for final-review briefing; 0 = 16384
 
+	// Verify holds explicit verification commands for the workflow verification
+	// runner. When non-empty, these commands are used instead of auto-detection.
+	// When empty (default), the runner detects commands from project manifests
+	// (go.mod, package.json, Cargo.toml, pyproject.toml). Commands run after
+	// all implementation steps complete, before the final oracle review; a
+	// non-zero exit fails verification and keeps the workflow open (exit code
+	// ExitGaps in headless mode). See internal/verify/ for detection details.
+	Verify []string `json:"verify,omitempty"`
+
 	// Proxy backend selection. Backend is the default backend name attached as
 	// X-Ilm-Backend on every chat request. Empty = let the proxy choose its default
 	// (no header sent). ExternalBackends lists backend names known to route to

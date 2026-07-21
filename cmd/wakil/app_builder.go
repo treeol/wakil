@@ -151,6 +151,11 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 		AutoCounsel:     opts.AutoCounsel,
 		MaxCounsel:      opts.MaxCounsel,
 		Costs:           proxy.NewCostTracker(),
+
+		// VerifyEnabled: auto-enable when config has explicit verify commands.
+		// The --verify flag (headless only) can also set this in RunHeadless;
+		// this covers the TUI case where the user configured verify in config.
+		VerifyEnabled: len(cfg.Verify) > 0,
 	}
 
 	// Initialize consent state from the --auto flag. RestoreRepoState may
