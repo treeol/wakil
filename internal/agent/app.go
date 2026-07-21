@@ -579,6 +579,17 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 		}
 	}
 
+	// Turn-entry memory/skill retrieval: search memory and skills for entries
+	// relevant to the user's query and fold the results into the user message
+	// content (same pattern as workflow directives). This preserves the
+	// prompt-cache prefix (Conv[0] is never touched) and avoids accumulating
+	// stale system messages across turns. The block is clearly marked as
+	// untrusted data to mitigate prompt-injection from tainted entries.
+	// Retrieval failures are non-fatal — an empty string means no injection.
+	if memCtx := a.retrieveMemoryContext(ctx, userText); memCtx != "" {
+		stored = memCtx + "\n" + stored
+	}
+
 	// Keep Conv[0]'s day-stable preamble current before anything below reads
 	// or resizes Conv. Once per turn, not per tool-loop iteration — see
 	// ensurePreamble.
