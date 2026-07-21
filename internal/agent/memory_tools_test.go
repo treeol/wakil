@@ -415,3 +415,109 @@ func TestTaintSessionCumulative(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+// ── Mid-tier write gate tests ──────────────────────────────────────────────
+
+// TestMemoryPutSubagentMidTierQuarantined verifies that a subagent's mid-tier
+// write is quarantined (proposed, not active) and requires promotion.
+func TestMemoryPutSubagentMidTierQuarantined(t *testing.T) {
+	app, _ := memoryTestApp(t, true) // isSubagent=true
+	ctx := memCtx(t)
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/sub-quarantine","value":"secret","kind":"note","ttl_seconds":3600}`))
+
+	if strings.Contains(result.text, "ERROR") {
+		t.Fatalf("unexpected error: %s", result.text)
+	}
+	if !strings.Contains(result.text, "quarantined") {
+		t.Errorf("subagent mid-tier write should be quarantined, got: %s", result.text)
+	}
+	if !strings.Contains(result.text, "subagent write") {
+		t.Errorf("should mention 'subagent write' reason, got: %s", result.text)
+	}
+
+	// The entry should NOT be retrievable via memory_get (only active entries).
+	getResult := app.ExecuteToolCall(ctx, memToolCall("memory_get",
+		`{"key":"test/sub-quarantine"}`))
+	if !strings.Contains(getResult.text, "not found") {
+		t.Errorf("quarantined entry should not be retrievable via memory_get, got: %s", getResult.text)
+	}
+
+	// The entry SHOULD appear in memory_list status=quarantined.
+	listResult := app.ExecuteToolCall(ctx, memToolCall("memory_list",
+		`{"status":"quarantined"}`))
+	if !strings.Contains(listResult.text, "test/sub-quarantine") {
+		t.Errorf("quarantined entry should appear in list status=quarantined, got: %s", listResult.text)
+	}
+}
+
+// TestMemoryPutTaintedMidTierQuarantined verifies that a tainted main-agent
+// mid-tier write is quarantined.
+func TestMemoryPutTaintedMidTierQuarantined(t *testing.T) {
+	app, _ := memoryTestApp(t, false) // main agent
+	ctx := memCtx(t)
+
+	// Simulate external content exposure (sets touchedExternal → TaintTrue).
+	app.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: "https://example.com"})
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/tainted-quarantine","value":"data","kind":"note","ttl_seconds":3600}`))
+
+	if strings.Contains(result.text, "ERROR") {
+		t.Fatalf("unexpected error: %s", result.text)
+	}
+	if !strings.Contains(result.text, "quarantined") {
+		t.Errorf("tainted mid-tier write should be quarantined, got: %s", result.text)
+	}
+	if !strings.Contains(result.text, "tainted session") {
+		t.Errorf("should mention 'tainted session' reason, got: %s", result.text)
+	}
+}
+
+// TestMemoryPutUntaintedMainMidTierActive verifies that an untainted main-agent
+// mid-tier write still goes active (unchanged behavior).
+func TestMemoryPutUntaintedMainMidTierActive(t *testing.T) {
+	app, _ := memoryTestApp(t, false) // main agent, no external exposure
+	ctx := memCtx(t)
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/normal-mid","value":"data","kind":"note","ttl_seconds":3600}`))
+
+	if strings.Contains(result.text, "ERROR") {
+		t.Fatalf("unexpected error: %s", result.text)
+	}
+	if !strings.Contains(result.text, "stored (mid-tier") {
+		t.Errorf("untainted main mid-tier write should be stored active, got: %s", result.text)
+	}
+	if strings.Contains(result.text, "quarantined") {
+		t.Errorf("should NOT be quarantined, got: %s", result.text)
+	}
+
+	// Should be retrievable via memory_get.
+	getResult := app.ExecuteToolCall(ctx, memToolCall("memory_get",
+		`{"key":"test/normal-mid"}`))
+	if strings.Contains(getResult.text, "not found") {
+		t.Errorf("active mid-tier entry should be retrievable, got: %s", getResult.text)
+	}
+}
+
+// TestMemoryPutDurableUnchanged verifies that durable writes (no TTL) are
+// unaffected by the quarantine gate — they always go to proposed.
+func TestMemoryPutDurableUnchanged(t *testing.T) {
+	app, _ := memoryTestApp(t, true) // subagent
+	ctx := memCtx(t)
+
+	result := app.ExecuteToolCall(ctx, memToolCall("memory_put",
+		`{"key":"test/sub-durable","value":"data","kind":"note"}`))
+
+	if strings.Contains(result.text, "ERROR") {
+		t.Fatalf("unexpected error: %s", result.text)
+	}
+	if !strings.Contains(result.text, "proposed (durable") {
+		t.Errorf("durable write should still be proposed, got: %s", result.text)
+	}
+	if strings.Contains(result.text, "quarantined") {
+		t.Errorf("durable write should NOT say 'quarantined', got: %s", result.text)
+	}
+}

@@ -647,6 +647,58 @@ func (s *Store) PutProposed(ctx context.Context, key, value, kind, writer, sessi
 	}, nil
 }
 
+// PutProposedMid writes a proposed mid-tier entry with an expiry timestamp.
+// Used for quarantined mid-tier writes (subagent or tainted) that require
+// promotion before becoming active. The entry preserves the mid-tier TTL
+// through the promotion lifecycle: in-place promotion keeps tier=mid and the
+// original expires_at; edited-value promotion creates a new durable entry
+// (the editor explicitly chose to rewrite).
+func (s *Store) PutProposedMid(ctx context.Context, key, value, kind, writer, sessionID string, tainted int, expiresAt *int64, anchorPaths []string, note string) (*Entry, error) {
+	if err := validateKey(key); err != nil {
+		return nil, err
+	}
+	if err := validateValue(value); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	anchors := computeAnchorHashes(s.workspaceRoot, anchorPaths)
+	anchorsJSON := anchorsToJSON(anchors)
+	now := s.now()
+
+	var expiresVal interface{}
+	if expiresAt != nil {
+		expiresVal = *expiresAt
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO entries (key, value, kind, tier, status, writer, session_id, tainted, created_at, expires_at, anchors, note)
+		VALUES (?, ?, ?, 'mid', 'proposed', ?, ?, ?, ?, ?, ?, ?)`,
+		key, value, kind, writer, sessionID, tainted, now, expiresVal, anchorsJSON, note)
+	if err != nil {
+		return nil, fmt.Errorf("memory: insert proposed mid: %w", err)
+	}
+	id, _ := result.LastInsertId()
+
+	return &Entry{
+		ID:        id,
+		Key:       key,
+		Value:     value,
+		Kind:      kind,
+		Tier:      TierMid,
+		Status:    StatusProposed,
+		Writer:    writer,
+		SessionID: sessionID,
+		Tainted:   tainted,
+		CreatedAt: now,
+		ExpiresAt: expiresAt,
+		Anchors:   anchors,
+		Note:      note,
+	}, nil
+}
+
 // Promote promotes a proposed entry to active. If editedValue is non-nil,
 // a new active entry is written with the edited value; the proposed entry
 // is superseded and its original value preserved. If editedValue is nil,
@@ -672,6 +724,30 @@ func (s *Store) Promote(ctx context.Context, id int64, editedValue *string, prom
 	}
 
 	now := s.now()
+
+	// Cross-tier protection (mirrors PutActive's guard): a mid-tier proposed
+	// entry cannot be promoted in-place over a durable active entry. When the
+	// mid entry expires, the key would have no active entry and the durable
+	// entry stays superseded. The edited-value path is safe (creates a new
+	// durable entry), so this guard only applies to in-place promotion.
+	// Expired mid-tier proposed entries cannot be promoted at all — they would
+	// become active-but-invisible zombies (Get filters by expires_at >= now).
+	if e.Tier == TierMid {
+		if e.ExpiresAt != nil && *e.ExpiresAt < now {
+			return nil, fmt.Errorf("memory: cannot promote expired mid-tier entry (expired at %s) — reject it instead",
+				time.UnixMilli(*e.ExpiresAt).UTC().Format("2006-01-02 15:04 UTC"))
+		}
+		// Cross-tier guard for in-place promotion only.
+		if editedValue == nil {
+			var existingTier string
+			if err := tx.QueryRowContext(ctx,
+				"SELECT tier FROM entries WHERE key = ? AND status = 'active'", e.Key).Scan(&existingTier); err == nil {
+				if existingTier == TierDurable {
+					return nil, fmt.Errorf("memory: cannot promote mid-tier entry over durable active entry (key=%s) — use memory_promote with edited_value to create a new durable entry, or choose a different key", e.Key)
+				}
+			}
+		}
+	}
 
 	// Find existing active entry for this key.
 	var oldID sql.NullInt64

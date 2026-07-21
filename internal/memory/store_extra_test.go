@@ -3,6 +3,7 @@ package memory
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -252,3 +253,129 @@ func TestPutActiveNoteRoundTrip(t *testing.T) {
 		t.Fatalf("expected 'custom note', got %q", got.Note)
 	}
 }
+
+// TestPutProposedMid creates a proposed mid-tier entry and verifies tier,
+// status, expiry, and that it is NOT returned by Get (only active entries).
+func TestPutProposedMid(t *testing.T) {
+	s, _ := newTestStore(t)
+	c := ctx(t)
+
+	expiresAt := time.Now().Add(1 * time.Hour).UnixMilli()
+	entry, err := s.PutProposedMid(c, "test/quarantined", "value", "note",
+		"sub-abc", "s1", TaintTrue, &expiresAt, nil, "quarantined: subagent write")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if entry.Tier != TierMid {
+		t.Errorf("tier = %q, want mid", entry.Tier)
+	}
+	if entry.Status != StatusProposed {
+		t.Errorf("status = %q, want proposed", entry.Status)
+	}
+	if entry.ExpiresAt == nil || *entry.ExpiresAt != expiresAt {
+		t.Errorf("expiresAt = %v, want %d", entry.ExpiresAt, expiresAt)
+	}
+	if entry.Tainted != TaintTrue {
+		t.Errorf("tainted = %d, want %d (TaintTrue)", entry.Tainted, TaintTrue)
+	}
+	if entry.Note != "quarantined: subagent write" {
+		t.Errorf("note = %q", entry.Note)
+	}
+
+	// Get must NOT return proposed entries — only active.
+	_, err = s.Get(c, "test/quarantined")
+	if err != ErrNotFound {
+		t.Errorf("Get should return ErrNotFound for proposed entry, got err=%v", err)
+	}
+
+	// Promote in-place: should become active mid-tier with original expiry.
+	promoted, err := s.Promote(c, entry.ID, nil, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.Status != StatusActive {
+		t.Errorf("promoted status = %q, want active", promoted.Status)
+	}
+	if promoted.Tier != TierMid {
+		t.Errorf("promoted tier = %q, want mid", promoted.Tier)
+	}
+
+	// Now Get should return the promoted entry.
+	got, err := s.Get(c, "test/quarantined")
+	if err != nil {
+		t.Fatalf("Get after promote: %v", err)
+	}
+	if got.Value != "value" {
+		t.Errorf("value = %q", got.Value)
+	}
+}
+
+// TestPutProposedMid_ListByQuarantined verifies that proposed mid-tier entries
+// show up in List with status=proposed.
+func TestPutProposedMid_ListByProposed(t *testing.T) {
+	s, _ := newTestStore(t)
+	c := ctx(t)
+
+	expiresAt := time.Now().Add(1 * time.Hour).UnixMilli()
+	_, err := s.PutProposedMid(c, "test/q1", "value1", "note",
+		"sub-abc", "s1", TaintTrue, &expiresAt, nil, "quarantined")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// List with status=proposed should include it.
+	entries, err := s.List(c, "test/", "", StatusProposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 proposed entry, got %d", len(entries))
+	}
+	if entries[0].Tier != TierMid {
+		t.Errorf("tier = %q, want mid", entries[0].Tier)
+	}
+}
+
+// TestPromoteMidOverDurable_Rejects verifies the cross-tier protection in
+// Promote: a mid-tier proposed entry cannot be promoted in-place over a
+// durable active entry.
+func TestPromoteMidOverDurable_Rejects(t *testing.T) {
+	s, _ := newTestStore(t)
+	c := ctx(t)
+
+	// Create a durable active entry.
+	_, err := s.PutActive(c, "key/protected", "durable value", "note",
+		TierDurable, "main", "s1", TaintUnknown, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a mid-tier proposed (quarantined) entry for the same key.
+	expiresAt := time.Now().Add(1 * time.Hour).UnixMilli()
+	proposed, err := s.PutProposedMid(c, "key/protected", "mid value", "note",
+		"sub-abc", "s1", TaintTrue, &expiresAt, nil, "quarantined")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// In-place promotion should fail — cannot displace durable with mid.
+	_, err = s.Promote(c, proposed.ID, nil, "main")
+	if err == nil {
+		t.Fatal("expected error promoting mid-tier over durable, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot promote mid-tier entry over durable") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Edited-value promotion should succeed (creates new durable entry).
+	promoted, err := s.Promote(c, proposed.ID, stringPtr("edited value"), "main")
+	if err != nil {
+		t.Fatalf("edited promotion should succeed: %v", err)
+	}
+	if promoted.Tier != TierDurable {
+		t.Errorf("edited promotion should be durable, got %s", promoted.Tier)
+	}
+}
+
+func stringPtr(s string) *string { return &s }

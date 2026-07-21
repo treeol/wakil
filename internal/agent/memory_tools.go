@@ -64,6 +64,35 @@ func (a *App) handleMemoryPut(ctx context.Context, tc proxy.ToolCall) string {
 			return fmt.Sprintf("ERROR: ttl_seconds must be between %d and %d (1h–7d)", memoryTTMin, memoryTTMax)
 		}
 		expiresAt := time.Now().Add(time.Duration(*args.TTLSeconds) * time.Second).UnixMilli()
+
+		// Mid-tier write gate: subagent or tainted sessions cannot write active
+		// mid-tier memory. Their writes are quarantined as proposed mid-tier
+		// entries that require main-agent promotion before becoming active.
+		// This closes the prompt-injection channel where a subagent or tainted
+		// session could silently inject active memory that influences future
+		// turns via memory_get/memory_search results.
+		//
+		// This gate is UNCONDITIONAL (not gated on policy presence) because it is
+		// a P0 security control. A future policy field could loosen it, but the
+		// default must be fail-safe.
+		quarantineReason := ""
+		if a.IsSubagent {
+			quarantineReason = "subagent write"
+		} else if tainted == memory.TaintTrue {
+			quarantineReason = "tainted session (external content exposure)"
+		}
+
+		if quarantineReason != "" {
+			entry, err := s.PutProposedMid(ctx, args.Key, args.Value, args.Kind,
+				a.AgentPrefix, a.chatID(), tainted, &expiresAt, args.Anchors,
+				"quarantined: "+quarantineReason)
+			if err != nil {
+				return fmt.Sprintf("ERROR: memory put: %v", err)
+			}
+			return fmt.Sprintf("quarantined (mid-tier, awaiting promotion — %s): %s [id: %d]\n%s",
+				quarantineReason, args.Key, entry.ID, renderProvenance(entry))
+		}
+
 		entry, err := s.PutActive(ctx, args.Key, args.Value, args.Kind, memory.TierMid,
 			a.AgentPrefix, a.chatID(), tainted, &expiresAt, args.Anchors, "")
 		if err != nil {
@@ -221,6 +250,12 @@ func (a *App) handleMemoryList(ctx context.Context, tc proxy.ToolCall) string {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
 
+	// "quarantined" is an alias for proposed (mid-tier proposed entries are
+	// displayed as "quarantined" in provenance). Map it for discoverability.
+	if strings.EqualFold(args.Status, "quarantined") {
+		args.Status = memory.StatusProposed
+	}
+
 	entries, err := s.List(ctx, args.Prefix, args.Tier, args.Status)
 	if err != nil {
 		return fmt.Sprintf("ERROR: memory list: %v", err)
@@ -303,8 +338,15 @@ func (a *App) handleMemoryPromoteFromStaging(ctx context.Context, tc proxy.ToolC
 		writer = args.StagingKey[:idx]
 	}
 
-	// Staging-promoted entries are always tainted=unknown (staging values
-	// carry no taint metadata — the original writer's grounding state is lost).
+	// Staging-promoted entries are always tainted=unknown. Staging values carry
+	// no taint metadata — the original writer's grounding state at staging-write
+	// time is lost. Even if the current main agent's computeTainted() returns
+	// TaintTrue, the staged value may have been written before the session touched
+	// external content (or by a different session entirely). TaintUnknown is the
+	// only honest classification.
+	//
+	// The proper fix (carrying taint metadata in staging entries at staging_put
+	// time) is deferred — it requires a staging protocol change.
 	entry, err := s.PutProposed(ctx, args.Key, value, args.Kind,
 		writer, a.chatID(), memory.TaintUnknown, args.Anchors,
 		fmt.Sprintf("promoted from staging key %s by %s", args.StagingKey, a.AgentPrefix))
@@ -358,7 +400,13 @@ func renderProvenance(e *memory.Entry) string {
 
 	// Status (show non-active statuses explicitly).
 	if e.Status != memory.StatusActive {
-		parts = append(parts, e.Status)
+		// Mid-tier proposed entries are "quarantined" — they require promotion
+		// before becoming active. Durable proposed entries are just "proposed".
+		if e.Tier == memory.TierMid && e.Status == memory.StatusProposed {
+			parts = append(parts, "quarantined")
+		} else {
+			parts = append(parts, e.Status)
+		}
 	}
 
 	// Expiry (mid-tier only).
