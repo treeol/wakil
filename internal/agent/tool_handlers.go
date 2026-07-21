@@ -345,6 +345,8 @@ func (a *App) handleWriteFile(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Confirm("write_file", "Write file?", detail, false) {
 		return "[declined by user]"
 	}
+	// Snapshot pre-edit state for restore (copy-on-first-write, edit-tier only).
+	a.captureFileOriginal(ctx, canonical)
 	out, err := a.Exec.WriteFile(ctx, canonical, args.Content)
 	if err == nil && a.LSP != nil {
 		a.LSP.NotifyChange(ctx, canonical)
@@ -457,6 +459,8 @@ func (a *App) handleDeleteFile(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Confirm("delete_file", "Delete file?", detail, false) {
 		return "[declined by user]"
 	}
+	// Snapshot pre-edit state for restore (copy-on-first-write, edit-tier only).
+	a.captureFileOriginal(ctx, canonical)
 	if err := a.Exec.DeletePath(ctx, canonical); err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -491,6 +495,9 @@ func (a *App) handleMoveFile(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Confirm("move_file", "Move file?", detail, false) {
 		return "[declined by user]"
 	}
+	// Snapshot pre-edit state for restore (both source and destination).
+	a.captureFileOriginal(ctx, canonSrc)
+	a.captureFileOriginal(ctx, canonDst)
 	if err := a.Exec.MovePath(ctx, canonSrc, canonDst); err != nil {
 		return "ERROR: " + err.Error()
 	}

@@ -173,6 +173,12 @@ type App struct {
 	// files_changed list on the done message.
 	filesChanged *filesChangedRecorder
 
+	// pendingRestore holds the fileRecorder from a failed edit-tier subagent
+	// dispatch, for /restore to use. Set by dispatchSubagent when the child
+	// returns incomplete/exhausted. Cleared on successful /restore or on the
+	// next edit-tier dispatch. TUI-only — headless auto-restores immediately.
+	pendingRestore *filesChangedRecorder
+
 	// externalActions is the recorder for tools-tier subagents: tracks every
 	// MCP tool call the child makes (server, tool, status). nil for the parent
 	// and discovery/edit-tier children. Populated by ExecuteToolCall when it
@@ -1173,6 +1179,24 @@ func (a *App) recordFileChanged(canonical string) {
 	}
 }
 
+// captureFileOriginal snapshots the pre-edit state of a file for restore.
+// Called by edit tool handlers BEFORE the mutation — copy-on-first-write:
+// only the first capture for a path is stored. No-op for the parent and
+// discovery-tier children (filesChanged is nil).
+func (a *App) captureFileOriginal(ctx context.Context, canonical string) {
+	if a.filesChanged == nil {
+		return
+	}
+	// Try to read the current (pre-edit) content.
+	content, err := a.Exec.ReadFile(ctx, canonical)
+	if err != nil {
+		// File doesn't exist or can't be read — record as non-existent.
+		a.filesChanged.captureOriginal(canonical, false, "")
+		return
+	}
+	a.filesChanged.captureOriginal(canonical, true, content)
+}
+
 // recordExternalAction appends one MCP tool call to the externalActions recorder
 // when the App has one (tools-tier subagents). No-op for the parent and
 // discovery/edit-tier children (externalActions is nil). Called after an MCP
@@ -1940,6 +1964,10 @@ func (a *App) handleEditFile(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Confirm("edit_file", "Apply edit?", editDiffPreview(args.Path, args.OldString, args.NewString, count, args.ReplaceAll, a.Exec.Describe()), false) {
 		return "[declined by user]"
 	}
+	// Snapshot pre-edit state for restore (copy-on-first-write, edit-tier only).
+	// The file content hasn't been mutated yet (WriteFile is below), so this
+	// captures the pre-edit state correctly.
+	a.captureFileOriginal(ctx, canonical)
 	out, err := a.Exec.WriteFile(ctx, canonical, updated)
 	if err != nil {
 		return formatResult(out, err)

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
 )
@@ -281,12 +282,37 @@ func toolsConfirmer() Confirmer {
 // tool-execution loop. Deduplicated, order-preserving. move_file records both
 // src and dst. Failed calls (ERROR: or [declined by user]) are not recorded.
 type filesChangedRecorder struct {
-	paths map[string]bool // dedup set
-	list  []string        // order-preserving
+	paths     map[string]bool         // dedup set
+	list      []string                // order-preserving
+	originals map[string]fileSnapshot // path → pre-edit state (copy-on-first-write)
+}
+
+// fileSnapshot captures the pre-edit state of a file for restore.
+// Existed=false means the file did not exist before the edit (created by
+// the subagent) — restore should delete it.
+type fileSnapshot struct {
+	Existed bool
+	Content string
 }
 
 func newFilesChangedRecorder() *filesChangedRecorder {
-	return &filesChangedRecorder{paths: map[string]bool{}}
+	return &filesChangedRecorder{
+		paths:     map[string]bool{},
+		originals: map[string]fileSnapshot{},
+	}
+}
+
+// captureOriginal reads and stores the pre-edit content of a file.
+// Copy-on-first-write: if the path is already captured, this is a no-op.
+// Must be called BEFORE the edit mutation, not after. Nil-safe.
+func (r *filesChangedRecorder) captureOriginal(path string, existed bool, content string) {
+	if r == nil || path == "" {
+		return
+	}
+	if _, ok := r.originals[path]; ok {
+		return // already captured — copy-on-first-write
+	}
+	r.originals[path] = fileSnapshot{Existed: existed, Content: content}
 }
 
 // record appends path if it is not already recorded. Called only for successful
@@ -307,6 +333,42 @@ func (r *filesChangedRecorder) snapshot() []string {
 		return nil
 	}
 	return r.list
+}
+
+// restore writes back original content for all captured paths. Files that
+// didn't exist before are deleted. Returns the list of restored paths and
+// any errors encountered (partial restore is possible). Nil-safe.
+func (r *filesChangedRecorder) restore(ctx context.Context, exec exec.Executor) ([]string, []string) {
+	if r == nil || len(r.originals) == 0 {
+		return nil, nil
+	}
+	var restored, errors []string
+	for path, snap := range r.originals {
+		if snap.Existed {
+			if _, err := exec.WriteFile(ctx, path, snap.Content); err != nil {
+				errors = append(errors, fmt.Sprintf("restore %s: %v", path, err))
+			} else {
+				restored = append(restored, path)
+			}
+		} else {
+			// File was created by the subagent — delete on restore.
+			if err := exec.DeletePath(ctx, path); err != nil {
+				// Best-effort: file may already be gone.
+				restored = append(restored, path)
+			} else {
+				restored = append(restored, path)
+			}
+		}
+	}
+	return restored, errors
+}
+
+// hasSnapshots reports whether any pre-edit snapshots were captured.
+func (r *filesChangedRecorder) hasSnapshots() bool {
+	if r == nil {
+		return false
+	}
+	return len(r.originals) > 0
 }
 
 // externalActionsRecorder tracks every MCP tool call a tools-tier child makes.
@@ -1049,5 +1111,32 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	if sub.touchedExternal {
 		a.touchedExternal = true
 	}
+
+	// Auto snapshot/restore for failed edit-tier dispatch: if the child was an
+	// edit-tier subagent that returned incomplete (exhaustion, confinement, or
+	// turn budget), and it made at least one edit, offer or auto-restore the
+	// original file contents.
+	if isEdit && fileRecorder.hasSnapshots() && summary.Status == "incomplete" {
+		if a.IsHeadless {
+			// Headless: auto-restore immediately (no human to decide).
+			restored, errs := fileRecorder.restore(ctx, a.Exec)
+			if len(restored) > 0 {
+				fmt.Fprintf(a.Out, "⚠ edit-tier incomplete — auto-restored %d file(s) to pre-dispatch state\n", len(restored))
+			}
+			for _, e := range errs {
+				fmt.Fprintf(a.Out, "⚠ restore error: %s\n", e)
+			}
+			// Add a note to the summary so the parent model knows files were reverted.
+			summary.Uncertainty = append(summary.Uncertainty,
+				fmt.Sprintf("edit-tier auto-restored %d file(s) after incomplete dispatch", len(restored)))
+		} else {
+			// TUI: store for /restore. Clear any previous pending restore
+			// (only the last failed dispatch is restorable).
+			a.pendingRestore = fileRecorder
+			fmt.Fprintf(a.Out, "⚠ edit-tier incomplete — %d file(s) may be partially modified. /restore to revert\n",
+				len(fileRecorder.originals))
+		}
+	}
+
 	return summary, grounding, ctxSize, usedBackend, costRows, fileRecorder.snapshot()
 }
