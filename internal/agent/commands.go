@@ -710,13 +710,21 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// OpenAI endpoint has no such machinery and a bare model would
 		// improvise "understood, I'll remember that": a fabricated success.
 		// Hard-fail client-side; the request must never reach the model.
+		//
+		// Note: the host-side memory tools (memory_put, memory_search) work
+		// on ALL endpoints and are the alternative for OpenAI-kind sessions.
+		// /learn and memory_put are intentionally separate: /learn uses the
+		// proxy's conversation-scoped, auto-synthesized memory; memory_put
+		// uses the host-side, workspace-scoped, manually-curated store.
 		if app.Cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI {
 			epName := app.Cfg.EndpointName
 			if epName == "" {
 				epName = "(unnamed)"
 			}
 			return true, false, note(fmt.Sprintf(
-				"/learn requires an ilm-proxy endpoint — current endpoint %q is kind %q (nothing was sent; no memory exists to write to)",
+				"/learn requires an ilm-proxy endpoint — current endpoint %q is kind %q.\n"+
+					"  The proxy memory (conversation-scoped, auto-synthesized) is not available.\n"+
+					"  Use the memory_put tool instead (workspace-scoped, works on all endpoints).",
 				epName, config.EndpointKindOpenAI))
 		}
 		return true, false, func() Msg { return LearnTurnMsg{} }
@@ -994,7 +1002,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /plan verify         re-run the final oracle review (in verify state after gaps flagged)
 /plan abort          cancel the active workflow
 /compact             summarize older turns now (frees context, improves performance)
-/learn               send "learn this for next time" — proxy synthesises a fact to save
+/learn               send "learn this for next time" — proxy synthesises a fact to save (ilm-proxy only; use memory_put on OpenAI endpoints)
 /counsel auto|suggest|off  auto-counsel mode: auto=fire mashura__debug on struggle, suggest=hint, off=silent
 /counsel                   show current counsel mode and per-turn cap
 /auto                toggle: auto-approve tool calls without prompting (shown as AUTO in status)
