@@ -237,10 +237,12 @@ const defaultDockerTmpfsSize = "4g"
 // ssh-keygen, whoami, git commit signing) under the read-only rootfs.
 //
 // The /etc tmpfs replaces the ENTIRE directory with an empty filesystem,
-// which also wipes /etc/ssl/certs/ca-certificates.crt (baked in at image
-// build time). ensureCACerts (called right after container start, alongside
-// ensurePasswdEntry) restores the CA bundle from a build-time backup outside
-// /etc — otherwise every TLS client in the container fails cert verification.
+// which also wipes /etc/ssl/certs/ca-certificates.crt, /etc/chromium.d/*,
+// and /etc/alternatives/* (all baked in at image build time).
+// restoreEtcBackups (called right after container start, alongside
+// ensurePasswdEntry) restores these from build-time backups outside /etc —
+// otherwise TLS clients fail cert verification, Chromium's launcher aborts,
+// and /usr/bin/cc, c++, awk (etc.) dangle as broken symlinks.
 func dockerHardeningArgs(opts DockerOpts) []string {
 	tmpSize := opts.DockerTmpfsSize
 	if tmpSize == "" {
@@ -369,7 +371,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	if uid := os.Getuid(); uid > 0 {
 		ensurePasswdEntry(name, uid, os.Getgid())
 	}
-	ensureCACerts(name)
+	restoreEtcBackups(name)
 	if dockerSock {
 		ensureDockerCLI(name)
 	}
@@ -404,11 +406,11 @@ func ensurePasswdEntry(container string, uid, gid int) {
 	_ = exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).Run()
 }
 
-// ensureCACerts restores files that the --tmpfs=/etc mount (dockerHardeningArgs)
-// wipes when it replaces the entire directory with an empty filesystem. The
-// tmpfs is needed for a writable /etc/passwd (see ensurePasswdEntry), but it
-// also silently erases everything apt installed under /etc at image-build
-// time:
+// restoreEtcBackups restores files that the --tmpfs=/etc mount
+// (dockerHardeningArgs) wipes when it replaces the entire directory with an
+// empty filesystem. The tmpfs is needed for a writable /etc/passwd (see
+// ensurePasswdEntry), but it also silently erases everything apt installed
+// under /etc at image-build time:
 //
 //   - /etc/ssl/certs/ca-certificates.crt: every TLS client in the container
 //     (curl, git, the headless browser) fails certificate verification
@@ -418,14 +420,22 @@ func ensurePasswdEntry(container string, uid, gid int) {
 //     this directory; on an empty tmpfs the glob doesn't expand and the
 //     literal string is passed to `.` (source), which fails and aborts the
 //     launcher before Chromium even starts.
+//   - /etc/alternatives/*: Debian manages compiler/utility symlinks
+//     (/usr/bin/cc, /usr/bin/c++, /usr/bin/awk, c89, c99) via
+//     /usr/bin/<name> -> /etc/alternatives/<name> -> real binary. On an
+//     empty tmpfs these all dangle, breaking cc/c++/awk and any build
+//     system (cargo, node-gyp, configure) that defaults to cc. cp -a
+//     preserves the symlinks (plain cp would dereference and copy the
+//     multi-megabyte binaries into the 1m tmpfs).
 //
-// The Dockerfile backs up both to /usr/local/share/wakil-etc-backup (outside
-// /etc, so they survive the tmpfs mount) at build time. This function copies
-// them back into the fresh tmpfs after the container starts. Runs as root
-// via docker exec -u 0; best-effort — if the backup paths don't exist (e.g.
-// a custom image without this Dockerfile), this is a silent no-op and the
-// affected tools just won't work, same as before this fix existed.
-func ensureCACerts(container string) {
+// The Dockerfile backs up all three to /usr/local/share/wakil-etc-backup
+// (outside /etc, so they survive the tmpfs mount) at build time. This
+// function copies them back into the fresh tmpfs after the container starts.
+// Runs as root via docker exec -u 0; best-effort — if the backup paths don't
+// exist (e.g. a custom image without this Dockerfile), this is a silent
+// no-op and the affected tools just won't work, same as before this fix
+// existed.
+func restoreEtcBackups(container string) {
 	script := "" +
 		"if [ -f /usr/local/share/wakil-etc-backup/ssl-certs/ca-certificates.crt ]; then " +
 		"  mkdir -p /etc/ssl/certs && " +
@@ -434,6 +444,10 @@ func ensureCACerts(container string) {
 		"if [ -d /usr/local/share/wakil-etc-backup/chromium.d ]; then " +
 		"  mkdir -p /etc/chromium.d && " +
 		"  cp -a /usr/local/share/wakil-etc-backup/chromium.d/. /etc/chromium.d/; " +
+		"fi; " +
+		"if [ -d /usr/local/share/wakil-etc-backup/alternatives ]; then " +
+		"  mkdir -p /etc/alternatives && " +
+		"  cp -a /usr/local/share/wakil-etc-backup/alternatives/. /etc/alternatives/; " +
 		"fi"
 	_ = exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).Run()
 }

@@ -55,7 +55,7 @@ func newDockerExec(t *testing.T) (*DockerExecutor, string) {
 	// The mount point inside the container is created by Docker as root.
 	// When running as a non-root user (--user uid:gid), the workspace is
 	// not writable. Chown it to the container user via a root exec.
-	// This mirrors the production ensurePasswdEntry/ensureCACerts pattern.
+	// This mirrors the production ensurePasswdEntry/restoreEtcBackups pattern.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	uid := os.Getuid()

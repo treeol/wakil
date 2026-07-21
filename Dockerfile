@@ -89,13 +89,20 @@ RUN apt-get update \
 #     script sources every file in this directory; on an empty tmpfs the
 #     glob doesn't expand and `.` (source) fails on the literal string,
 #     aborting the launcher before Chromium even starts.
-# These backups are restored into the fresh tmpfs by ensureCACerts
+#   - /etc/alternatives/* (dpkg alternatives): Debian manages compiler and
+#     utility symlinks (/usr/bin/cc, /usr/bin/c++, /usr/bin/awk, c89, c99)
+#     via /usr/bin/<name> -> /etc/alternatives/<name> -> real binary. On an
+#     empty tmpfs these all dangle, breaking cc/c++/awk and any build system
+#     (cargo, node-gyp, configure) that defaults to cc.
+# These backups are restored into the fresh tmpfs by restoreEtcBackups
 # (host-side, right after container start) — same pattern as
 # ensurePasswdEntry for /etc/passwd.
 RUN mkdir -p /usr/local/share/wakil-etc-backup/ssl-certs \
              /usr/local/share/wakil-etc-backup/chromium.d \
+             /usr/local/share/wakil-etc-backup/alternatives \
     && cp /etc/ssl/certs/ca-certificates.crt /usr/local/share/wakil-etc-backup/ssl-certs/ \
-    && cp -a /etc/chromium.d/. /usr/local/share/wakil-etc-backup/chromium.d/
+    && cp -a /etc/chromium.d/. /usr/local/share/wakil-etc-backup/chromium.d/ \
+    && cp -a /etc/alternatives/. /usr/local/share/wakil-etc-backup/alternatives/
 
 # Rust: install rustup and the stable toolchain into /usr/local so the
 # binaries are never shadowed by a workspace volume mount on /root.
