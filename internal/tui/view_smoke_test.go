@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	agent "github.com/treeol/wakil/internal/agent"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -59,7 +61,7 @@ func TestViewSmokeNarrowWrapsToTwo(t *testing.T) {
 	// copiedMsg handler — both go through the reflow guard.
 	m.state = stateStreaming // startTurn equivalent; reflow happens below
 	m = m.reflow()
-	m.tps = 87
+	m = step(m, agent.TokRateMsg{Tps: 87})
 	m = step(m, copiedMsg{n: 42})
 	if got, want := m.statusRows(), len(m.statusLines()); got != want {
 		t.Fatalf("statusRows()=%d disagrees with statusLines()=%d", got, want)

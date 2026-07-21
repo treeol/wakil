@@ -84,11 +84,17 @@ func dim2(s string) string {
 }
 func sprint(f string, a ...interface{}) string { return fmt.Sprintf(f, a...) }
 
-// brailleMeter renders a horizontal fill gauge out of braille cells. The bar is
-// split into two equal zones (half cells each) separated by a thin divider, to
-// reflect that the context window runs as two 256k halves of one budget. Filled
-// cells take `color`; the unfilled track is dim.
-func brailleMeter(used, total int, color lipgloss.Color, half int) string {
+// brailleMeter renders a horizontal fill gauge out of braille cells with the
+// used and total labels embedded centered inside each half. The bar is split
+// into two equal zones (half cells each) separated by a thin divider, to
+// reflect that the context window runs as two 256k halves of one budget.
+//
+// The gauge fills bottom-up (⣀→⣿) left-to-right proportional to used/total;
+// the columns covered by a label show the label's character instead of a
+// braille cell, so the numbers sit inside the gauge. leftLabel (the live usage)
+// is rendered in `color` so it reflects pressure; rightLabel (the static
+// ceiling) is dim. The unfilled track is dim.
+func brailleMeter(used, total int, color lipgloss.Color, half int, leftLabel, rightLabel string) string {
 	cells := half * 2
 	if total <= 0 {
 		total = 1
@@ -108,20 +114,45 @@ func brailleMeter(used, total int, color lipgloss.Color, half int) string {
 	track := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
 	div := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("┊")
 
+	// Place each label centered within its half. Labels are the formatted
+	// used/total strings (ASCII: digits, k, M, .), so one rune == one column.
+	// Labels wider than the half are clamped so they never cross the divider.
+	clamp := func(s string) string {
+		if lipgloss.Width(s) > half {
+			return ansi.Truncate(s, half, "")
+		}
+		return s
+	}
+	leftLabel = clamp(leftLabel)
+	rightLabel = clamp(rightLabel)
+	leftW := lipgloss.Width(leftLabel)
+	rightW := lipgloss.Width(rightLabel)
+	leftStart := (half - leftW) / 2
+	rightStart := (half - rightW) / 2
+	leftRunes := []rune(leftLabel)
+	rightRunes := []rune(rightLabel)
+
 	var b strings.Builder
 	for i := 0; i < cells; i++ {
-		cf := filled - float64(i) // this cell's fill amount, in [0,1] when partial
 		switch {
-		case cf >= 1:
-			b.WriteString(fill.Render(string(levels[3])))
-		case cf <= 0:
-			b.WriteString(track.Render(string(levels[0])))
+		case i < half && i >= leftStart && i < leftStart+leftW:
+			b.WriteString(fill.Render(string(leftRunes[i-leftStart])))
+		case i >= half && i >= half+rightStart && i < half+rightStart+rightW:
+			b.WriteString(dim2(string(rightRunes[i-half-rightStart])))
 		default:
-			lvl := int(cf*3) + 1 // any nonzero fill shows at least one step
-			if lvl > 3 {
-				lvl = 3
+			cf := filled - float64(i) // this cell's fill amount, in [0,1] when partial
+			switch {
+			case cf >= 1:
+				b.WriteString(fill.Render(string(levels[3])))
+			case cf <= 0:
+				b.WriteString(track.Render(string(levels[0])))
+			default:
+				lvl := int(cf*3) + 1 // any nonzero fill shows at least one step
+				if lvl > 3 {
+					lvl = 3
+				}
+				b.WriteString(fill.Render(string(levels[lvl])))
 			}
-			b.WriteString(fill.Render(string(levels[lvl])))
 		}
 		if i == half-1 {
 			b.WriteString(div)
@@ -404,8 +435,7 @@ func (m tuiModel) ctxSegment() string {
 	if used >= 1000000 {
 		usedStr = fmt.Sprintf("%.1fM", float64(used)/1e6)
 	}
-	return ctxKey + " " + brailleMeter(used, total, color, 6) + " " +
-		dim2(sprint("%s / %s", usedStr, totalStr)) + " " +
+	return ctxKey + " " + brailleMeter(used, total, color, 6, usedStr, totalStr) + " " +
 		lipgloss.NewStyle().Foreground(color).Render(sprint("%d%%", pct)) +
 		dim2(sprint(" · hist %d %dk", len(m.app.Conv), agent.TranscriptSize(m.app.Conv)/1000))
 }
