@@ -147,16 +147,17 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 		Out:             os.Stderr,
 		Confirm:         func(_, _, _ string, _ bool) bool { return false },
 		InjectDate:      true,
-		IsHeadless:      opts.IsHeadless,
-		AutoCounsel:     opts.AutoCounsel,
-		MaxCounsel:      opts.MaxCounsel,
-		Costs:           proxy.NewCostTracker(),
-
-		// VerifyEnabled: auto-enable when config has explicit verify commands.
-		// The --verify flag (headless only) can also set this in RunHeadless;
-		// this covers the TUI case where the user configured verify in config.
-		VerifyEnabled: len(cfg.Verify) > 0,
 	}
+	// Deferred fields (slated for sub-struct extraction) are set via options,
+	// not composite-literal keys — this is the WP-6.3-followup construction API.
+	// Once all cross-package construction goes through options/setters, these
+	// fields can be unexported into costState/turnState without breaking callers.
+	app.ApplyOptions(
+		agent.WithHeadless(opts.IsHeadless),
+		agent.WithAutoCounsel(opts.AutoCounsel, opts.MaxCounsel),
+		agent.WithCosts(proxy.NewCostTracker()),
+		agent.WithVerifyEnabled(len(cfg.Verify) > 0),
+	)
 
 	// Initialize consent state from the --auto flag. RestoreRepoState may
 	// override this later (TUI path only); that uses SetAutoApprove too.

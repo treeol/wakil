@@ -36,7 +36,8 @@ func TestMashuraRecordsExactCostFromConfig(t *testing.T) {
 			},
 		},
 	}
-	app := &agent.App{Cfg: cfg, Costs: proxy.NewCostTracker()}
+	app := &agent.App{Cfg: cfg}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	app.RecordOracleCost(counsel.OracleUsage{InputTokens: 1_000_000, OutputTokens: 2_000_000})
 
 	total, rows := app.Costs.Snapshot()
@@ -71,7 +72,8 @@ func TestMashuraRecordsExactCostFromConfig(t *testing.T) {
 func TestInferenceAccumulatesMainPlusAux(t *testing.T) {
 	cfg := config.Config{Costs: config.CostsConfig{Inference: config.InferenceRate{USDPer1MTokens: 2.0}}}
 	client := &proxy.Client{}
-	app := &agent.App{Cfg: cfg, Client: client, Costs: proxy.NewCostTracker()}
+	app := &agent.App{Cfg: cfg, Client: client}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 
 	client.SetUsage(proxy.UsageStat{InputTok: 100, OutputTok: 50, Exact: true}) // main
 	app.RecordInferenceCost()
@@ -102,7 +104,8 @@ func TestInferenceAccumulatesMainPlusAux(t *testing.T) {
 func TestInferenceEstimatedIsApprox(t *testing.T) {
 	cfg := config.Config{Costs: config.CostsConfig{Inference: config.InferenceRate{USDPer1MTokens: 2.0}}}
 	client := &proxy.Client{}
-	app := &agent.App{Cfg: cfg, Client: client, Costs: proxy.NewCostTracker()}
+	app := &agent.App{Cfg: cfg, Client: client}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 
 	client.SetUsage(proxy.UsageStat{InputTok: 40, OutputTok: 60, Exact: false})
 	app.RecordInferenceCost()
@@ -134,7 +137,8 @@ func TestUnpricedSourceRendersDash(t *testing.T) {
 // unpriced — token counts accrue but the cell shows "—".
 func TestUnpricedInferenceEndToEnd(t *testing.T) {
 	client := &proxy.Client{}
-	app := &agent.App{Cfg: config.Config{}, Client: client, Costs: proxy.NewCostTracker()} // no [costs] rates
+	app := &agent.App{Cfg: config.Config{}, Client: client} // no [costs] rates
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	client.SetUsage(proxy.UsageStat{InputTok: 100, OutputTok: 100, Exact: true})
 	app.RecordInferenceCost()
 
@@ -265,7 +269,8 @@ func TestStreamEstimatesUsageWhenAbsent(t *testing.T) {
 // The rendered block fits the sidebar column, leads with billed/est subtotals,
 // and shows source names (possibly compacted) without overflow.
 func TestCostLinesLayout(t *testing.T) {
-	app := &agent.App{Costs: proxy.NewCostTracker()}
+	app := &agent.App{}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	app.Costs.Record(proxy.CostSourceMashura, 10, 20, 0.30, true, proxy.ConfExact)
 	app.Costs.Record(proxy.CostSourceInference, 100, 50, 0.12, true, proxy.ConfModeled)
 	app.Costs.Record(proxy.CostSourceSearch, 0, 0, 0, false, proxy.ConfModeled) // unpriced
@@ -295,7 +300,8 @@ func TestCostLinesLayout(t *testing.T) {
 
 // When no source is priced the total shows "—" rather than a misleading "$0.00".
 func TestCostLinesUnpricedTotal(t *testing.T) {
-	app := &agent.App{Costs: proxy.NewCostTracker()}
+	app := &agent.App{}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	app.Costs.Record(proxy.CostSourceInference, 100, 50, 0, false, proxy.ConfModeled)
 
 	m := tuiModel{app: app}
@@ -379,11 +385,11 @@ func TestMixedSessionDistinctRows(t *testing.T) {
 			},
 		},
 		Client: &proxy.Client{Model: "openai/gpt-4o"},
-		Costs:  proxy.NewCostTracker(),
 		BackendList: []agent.BackendInfo{
 			{Name: "openrouter", External: true},
 		},
 	}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 
 	// Local turn: no backend used.
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 200, OutputTok: 100, Exact: true})
@@ -441,7 +447,8 @@ func TestMashuraPerModelRows(t *testing.T) {
 			},
 		},
 	}
-	app := &agent.App{Cfg: cfg, Costs: proxy.NewCostTracker()}
+	app := &agent.App{Cfg: cfg}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	app.RecordOracleCostFor(modelA, counsel.OracleUsage{InputTokens: 100_000, OutputTokens: 50_000})
 	app.RecordOracleCostFor(modelB, counsel.OracleUsage{InputTokens: 200_000, OutputTokens: 80_000})
 
@@ -474,7 +481,8 @@ func TestMashuraPerModelRows(t *testing.T) {
 // TestCostLinesBilledAndEstSubtotals verifies both subtotals appear when a
 // session has both exact (external) and modeled (local) inference sources.
 func TestCostLinesBilledAndEstSubtotals(t *testing.T) {
-	app := &agent.App{Costs: proxy.NewCostTracker()}
+	app := &agent.App{}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	app.Costs.Record("inference·openrouter/gpt-4o", 500, 200, 0.40, true, proxy.ConfExact)
 	app.Costs.Record("inference·local", 2000, 1000, 0, false, proxy.ConfModeled)
 
@@ -501,7 +509,8 @@ func TestCostLinesBilledAndEstSubtotals(t *testing.T) {
 
 // TestCostLinesOnlyBilled: when all rows are exact, only "billed" shows.
 func TestCostLinesOnlyBilled(t *testing.T) {
-	app := &agent.App{Costs: proxy.NewCostTracker()}
+	app := &agent.App{}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	app.Costs.Record("mashura·claude-opus", 10, 20, 0.50, true, proxy.ConfExact)
 
 	m := tuiModel{app: app}
@@ -516,7 +525,8 @@ func TestCostLinesOnlyBilled(t *testing.T) {
 
 // TestCostLinesOnlyEstimated: when all rows are modeled, only "est" shows.
 func TestCostLinesOnlyEstimated(t *testing.T) {
-	app := &agent.App{Costs: proxy.NewCostTracker()}
+	app := &agent.App{}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	app.Costs.Record("inference", 100, 50, 0.01, true, proxy.ConfModeled)
 
 	m := tuiModel{app: app}

@@ -382,11 +382,11 @@ func runWorkflowHeadless(ctx context.Context, app *agent.App, task string, flags
 		emitEvent(out, map[string]any{"type": "error", "message": "cannot write plan.md: " + err.Error()})
 		return ExitError
 	}
-	app.Workflow = &workflow.WorkflowState{
+	app.SetWorkflow(&workflow.WorkflowState{
 		Task:     task,
 		Phase:    workflow.WFGather,
 		PlanPath: planPath,
-	}
+	})
 	return runWorkflowLoop(ctx, app, flags, out, declinedReason)
 }
 

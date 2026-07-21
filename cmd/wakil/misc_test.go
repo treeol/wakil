@@ -29,7 +29,8 @@ func TestSearchCostPricing(t *testing.T) {
 }
 
 func TestRecordSearchCost(t *testing.T) {
-	app := &agent.App{Cfg: config.DefaultConfig(), Costs: proxy.NewCostTracker()}
+	app := &agent.App{Cfg: config.DefaultConfig()}
+	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
 	app.Cfg.Costs.Search = config.SearchRate{USDPerQuery: 0.01}
 	app.RecordSearchCost()
 	app.RecordSearchCost()

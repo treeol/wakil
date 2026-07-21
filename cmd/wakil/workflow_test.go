@@ -376,13 +376,13 @@ func TestReviewOracleUnavailable(t *testing.T) {
 func TestReviewApproveAdvancesToPresent(t *testing.T) {
 	app := &agent.App{
 		Cfg: config.DefaultConfig(),
-		Workflow: &workflow.WorkflowState{
-			Task:      "t",
-			Phase:     workflow.WFReview,
-			StepCount: 3,
-			PlanPath:  ".wakil/plan.md",
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Task:      "t",
+		Phase:     workflow.WFReview,
+		StepCount: 3,
+		PlanPath:  ".wakil/plan.md",
+	})
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "approve"}, app)
 	if app.Workflow.Phase != workflow.WFPresent {
 		t.Errorf("want workflow.WFPresent after approve on workflow.WFReview, got %v", app.Workflow.Phase)
@@ -1207,12 +1207,12 @@ func TestPlanVerifyCommand(t *testing.T) {
 	app := &agent.App{
 		Cfg:     config.DefaultConfig(),
 		Session: &agent.Session{},
-		Workflow: &workflow.WorkflowState{
-			Phase:     workflow.WFImplement,
-			StepIdx:   3, // > StepCount
-			StepCount: 2,
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Phase:     workflow.WFImplement,
+		StepIdx:   3, // > StepCount
+		StepCount: 2,
+	})
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "verify"}, app)
 	if cmd == nil {
 		t.Fatal("expected a cmd from /plan verify")
@@ -1228,12 +1228,12 @@ func TestPlanVerifyNotInVerifyState(t *testing.T) {
 	app := &agent.App{
 		Cfg:     config.DefaultConfig(),
 		Session: &agent.Session{},
-		Workflow: &workflow.WorkflowState{
-			Phase:     workflow.WFImplement,
-			StepIdx:   1,
-			StepCount: 3, // StepIdx <= StepCount: not in verify state
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Phase:     workflow.WFImplement,
+		StepIdx:   1,
+		StepCount: 3, // StepIdx <= StepCount: not in verify state
+	})
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "verify"}, app)
 	if cmd == nil {
 		t.Fatal("expected cmd")
@@ -1255,13 +1255,13 @@ func TestApproveLogsUnresolvedFlags(t *testing.T) {
 		Exec:    exec,
 		Out:     io.Discard,
 		Session: &agent.Session{ChatID: "test"},
-		Workflow: &workflow.WorkflowState{
-			Phase:     workflow.WFImplement,
-			StepIdx:   3, // > StepCount
-			StepCount: 2,
-			PlanPath:  ".wakil/plan.md",
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Phase:     workflow.WFImplement,
+		StepIdx:   3, // > StepCount
+		StepCount: 2,
+		PlanPath:  ".wakil/plan.md",
+	})
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "approve"}, app)
 	if cmd == nil {
 		t.Fatal("expected cmd")
@@ -1381,14 +1381,14 @@ func TestFailedPlanReadRoutesUnavailable(t *testing.T) {
 		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 		Session: &agent.Session{ChatID: "test"},
-		Workflow: &workflow.WorkflowState{
-			Task:      "t",
-			Phase:     workflow.WFImplement,
-			PlanPath:  "/work/.wakil/missing.md", // not in files
-			StepCount: 1,
-			StepIdx:   2, // past last step — verify state
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Task:      "t",
+		Phase:     workflow.WFImplement,
+		PlanPath:  "/work/.wakil/missing.md", // not in files
+		StepCount: 1,
+		StepIdx:   2, // past last step — verify state
+	})
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
@@ -2722,13 +2722,13 @@ func TestStaleReviewWarnsOnFirstApprove(t *testing.T) {
 		Exec:    exec,
 		Out:     io.Discard,
 		Session: &agent.Session{},
-		Workflow: &workflow.WorkflowState{
-			Phase:          workflow.WFPresent,
-			StepCount:      1,
-			PlanPath:       ".wakil/plan.md",
-			ReviewPlanHash: workflow.HashPlanSection(originalPlan), // hash of the reviewed plan
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Phase:          workflow.WFPresent,
+		StepCount:      1,
+		PlanPath:       ".wakil/plan.md",
+		ReviewPlanHash: workflow.HashPlanSection(originalPlan), // hash of the reviewed plan
+	})
 
 	// Simulate a plan edit after review.
 	editedPlan := "## Task\n\nt\n\n## Plan\n\n1. modified step\n"
@@ -2782,13 +2782,13 @@ func TestMatchingHashApprovesImmediately(t *testing.T) {
 		Exec:    exec,
 		Out:     io.Discard,
 		Session: &agent.Session{},
-		Workflow: &workflow.WorkflowState{
-			Phase:          workflow.WFPresent,
-			StepCount:      1,
-			PlanPath:       ".wakil/plan.md",
-			ReviewPlanHash: workflow.HashPlanSection(plan), // same hash — no edit
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Phase:          workflow.WFPresent,
+		StepCount:      1,
+		PlanPath:       ".wakil/plan.md",
+		ReviewPlanHash: workflow.HashPlanSection(plan), // same hash — no edit
+	})
 
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "approve"}, app)
 	msg := cmd()
@@ -3031,10 +3031,10 @@ func TestPlanReviewFromPresent(t *testing.T) {
 // TestPlanReviewFromPresentGuard: /plan review from an unexpected phase returns an error.
 func TestPlanReviewFromPresentGuard(t *testing.T) {
 	app := &agent.App{
-		Cfg:      config.DefaultConfig(),
-		Session:  &agent.Session{},
-		Workflow: &workflow.WorkflowState{Phase: workflow.WFGather},
+		Cfg:     config.DefaultConfig(),
+		Session: &agent.Session{},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{Phase: workflow.WFGather})
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "review"}, app)
 	if cmd == nil {
 		t.Fatal("expected cmd")
@@ -3210,20 +3210,21 @@ func makeToolCall(name, args string) proxy.ToolCall {
 func wfTestApp(phase workflow.WorkflowPhase) *agent.App {
 	exec := newFakeExecutor()
 	exec.files[".wakil/plan.md"] = planContent2Steps
-	return &agent.App{
+	app := &agent.App{
 		Cfg:     config.DefaultConfig(),
 		Exec:    exec,
 		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 		Session: &agent.Session{ChatID: "test"},
-		Workflow: &workflow.WorkflowState{
-			Task:      "test task",
-			Phase:     phase,
-			PlanPath:  ".wakil/plan.md",
-			StepCount: 2,
-			StepIdx:   1,
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Task:      "test task",
+		Phase:     phase,
+		PlanPath:  ".wakil/plan.md",
+		StepCount: 2,
+		StepIdx:   1,
+	})
+	return app
 }
 
 // TestWFPhaseBlocksProjectWrite: write_file to a project path during GATHER
@@ -3482,10 +3483,10 @@ func TestReviewRetryOnTurnCompletion(t *testing.T) {
 // TestPlanReviewCommand: /plan review in workflow.WFReview state triggers a agent.WFStartTurnMsg.
 func TestPlanReviewCommand(t *testing.T) {
 	app := &agent.App{
-		Cfg:      config.DefaultConfig(),
-		Session:  &agent.Session{},
-		Workflow: &workflow.WorkflowState{Phase: workflow.WFReview, StepCount: 2},
+		Cfg:     config.DefaultConfig(),
+		Session: &agent.Session{},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{Phase: workflow.WFReview, StepCount: 2})
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "review"}, app)
 	if cmd == nil {
 		t.Fatal("expected cmd")
@@ -3500,10 +3501,10 @@ func TestPlanReviewCommand(t *testing.T) {
 func TestPlanReviewCommandNotInReview(t *testing.T) {
 	// workflow.WFGather is not a valid phase for /plan review.
 	app := &agent.App{
-		Cfg:      config.DefaultConfig(),
-		Session:  &agent.Session{},
-		Workflow: &workflow.WorkflowState{Phase: workflow.WFGather},
+		Cfg:     config.DefaultConfig(),
+		Session: &agent.Session{},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{Phase: workflow.WFGather})
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "review"}, app)
 	if cmd == nil {
 		t.Fatal("expected cmd")
@@ -3525,13 +3526,13 @@ func TestApproveOnReviewLogsReason(t *testing.T) {
 		Exec:    exec,
 		Out:     io.Discard,
 		Session: &agent.Session{ChatID: "test"},
-		Workflow: &workflow.WorkflowState{
-			Phase:            workflow.WFReview,
-			StepCount:        1,
-			PlanPath:         ".wakil/plan.md",
-			ReviewSkipReason: "oracle not configured",
-		},
 	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Phase:            workflow.WFReview,
+		StepCount:        1,
+		PlanPath:         ".wakil/plan.md",
+		ReviewSkipReason: "oracle not configured",
+	})
 	_, _, cmd := agent.HandlePlanCommand([]string{"/plan", "approve"}, app)
 	if cmd != nil {
 		cmd()
@@ -3631,12 +3632,12 @@ func TestApproveIsUserOnlyInvariant(t *testing.T) {
 		a := &agent.App{
 			Cfg:     config.DefaultConfig(),
 			Session: &agent.Session{},
-			Workflow: &workflow.WorkflowState{
-				Phase:     workflow.WFPresent,
-				StepCount: 2,
-				PlanPath:  ".wakil/plan.md",
-			},
 		}
+		a.SetWorkflow(&workflow.WorkflowState{
+			Phase:     workflow.WFPresent,
+			StepCount: 2,
+			PlanPath:  ".wakil/plan.md",
+		})
 		a.SetAutoApprove(autoApprove)
 		return a
 	}

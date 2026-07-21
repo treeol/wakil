@@ -142,13 +142,13 @@ func main() {
 	if counselMode == "auto" && counselMax == 0 {
 		counselMax = 3
 	}
-	app.CounselMode = counselMode
+	app.SetCounselMode(counselMode)
 	app.MaxCounsel = counselMax
 
 	if resumed != nil {
 		app.Conv = resumed.Conv
 		app.Session = resumed
-		app.Workflow = resumed.SavedWorkflow
+		app.SetWorkflow(resumed.SavedWorkflow)
 	} else {
 		app.Session = &agent.Session{
 			ChatID:    app.Client.ChatID,
