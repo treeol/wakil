@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/treeol/wakil/internal/orregistry"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // Context-limit awareness for counsel (mashūra) calls.
@@ -251,13 +252,13 @@ func FitToContext(systemPrompt, question, briefing string, maxTokens, contextLen
 	}
 }
 
-// approxTokens estimates a token count from a character count at ~4 chars/token.
-// Consistent with proxy.ApproxTokens but local to avoid an import cycle.
+// approxTokens delegates to proxy.ApproxTokens — the single source of truth for
+// the char→token estimation. The previous local copy was duplicated "to avoid
+// an import cycle" (per the old comment), but counsel does not import proxy
+// and proxy does not import counsel, so no cycle exists. Returns int for
+// local call-site convenience (proxy.ApproxTokens returns int64).
 func approxTokens(chars int) int {
-	if chars <= 0 {
-		return 0
-	}
-	return (chars + charsPerToken - 1) / charsPerToken
+	return int(proxy.ApproxTokens(chars))
 }
 
 // ResetModelCache clears the shared model metadata cache. For testing only.
