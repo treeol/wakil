@@ -22,6 +22,13 @@ import "strings"
 // (sort -o, uniq out, tee, dd, sed -i, awk 'print>') are deliberately excluded —
 // misclassifying a write as a read is the dangerous direction, so when in doubt
 // the command falls through to a normal confirm prompt rather than auto-approve.
+//
+// git is included because its read-only subcommands (diff, status, log, show,
+// blame, etc.) are common investigative operations the agent runs before edits.
+// The mutating subcommands (reset, clean, checkout --, push --force, stash drop,
+// branch -D) are caught by IsDestructiveShell; readFlagsOK gates the remaining
+// git subcommands to a read-only allowlist so non-recognized subcommands (e.g.
+// "git add", "git commit") are NOT auto-approved.
 var readOnlyCmds = map[string]bool{
 	"cat": true, "bat": true, "tac": true, "nl": true, "head": true, "tail": true,
 	"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true,
@@ -34,6 +41,7 @@ var readOnlyCmds = map[string]bool{
 	"od": true, "xxd": true, "hexdump": true, "strings": true, "ps": true,
 	"less": true, "more": true, "seq": true, "true": true, "false": true,
 	"test": true, "jq": true, "yq": true,
+	"git": true,
 }
 
 // destructiveCmds is the set of shell binaries whose first-token presence makes
@@ -236,6 +244,46 @@ func splitShellSegments(c string) []string {
 // readFlagsOK rejects flags that turn an otherwise-read command into a writer.
 func readFlagsOK(bin string, args []string) bool {
 	switch bin {
+	case "git":
+		// Only recognized read-only subcommands are auto-approved. Any
+		// subcommand not in this list (e.g. "add", "commit", "push" without
+		// --force, "stash" without list, "merge", "rebase") falls through
+		// to return false → normal confirm prompt. Mutating subcommands that
+		// are also destructive (reset, clean, checkout --, push --force, stash
+		// drop/clear, branch -D) are caught earlier by IsDestructiveShell,
+		// so they never reach readFlagsOK.
+		if len(args) == 0 {
+			return false // bare "git" is not a read — gate it
+		}
+		switch args[0] {
+		case "diff", "status", "log", "show", "blame", "shortlog",
+			"ls-files", "ls-tree", "rev-parse", "describe", "name-rev",
+			"reflog", "diff-tree", "cat-file", "ls-remote", "for-each-ref",
+			"rev-list", "grep", "range-diff", "merge-base", "cherry":
+			return true
+		case "branch":
+			// "git branch" (list) and "git branch -v" are reads; "git branch -D"
+			// is destructive (caught by IsDestructiveShell). Allow unless a
+			// mutating flag is present.
+			for _, a := range args[1:] {
+				if a == "-D" || a == "-d" || a == "--delete" {
+					return false
+				}
+			}
+			return true
+		case "stash":
+			// Only "stash list" is read-only; push/pop/apply/drop/clear are not.
+			return len(args) >= 2 && args[1] == "list"
+		case "config":
+			// Only "config --get" is read-only; "config --set" writes.
+			for _, a := range args[1:] {
+				if a == "--get" || a == "--get-all" || a == "--list" || a == "-l" {
+					return true
+				}
+			}
+			return false
+		}
+		return false // unrecognized subcommand → gate it
 	case "find", "fd":
 		for _, a := range args {
 			switch a {

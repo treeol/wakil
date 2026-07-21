@@ -623,18 +623,46 @@ func TestIsReadOnlyShell_Adversarial(t *testing.T) {
 		}
 	}
 
-	// pinning: git/go/npm/docker are deliberately NOT in the read-only
+	// pinning: go/npm/docker are deliberately NOT in the read-only
 	// allowlist (readonly.go:25-37) — they have too many write-capable
 	// subcommands for first-token analysis, so they always prompt even though
-	// common invocations (git status, go build) only read. Conservative by
-	// design: misclassifying a write as a read is the dangerous direction.
+	// common invocations (go build) only read. Conservative by design:
+	// misclassifying a write as a read is the dangerous direction.
+	//
+	// git IS now in the read-only allowlist: its read-only subcommands
+	// (diff, status, log, show, etc.) are common investigative operations.
+	// The mutating subcommands (reset, clean, checkout --, push --force,
+	// stash drop, branch -D) are caught by IsDestructiveShell, and
+	// readFlagsOK gates non-recognized subcommands (add, commit, merge, etc.)
+	// to a normal confirm prompt. See readonly.go readFlagsOK case "git".
 	conservativePrompt := []string{
-		`git status`, `git log --oneline -5`, `git diff`, `git status && git diff`,
 		`go vet ./...`, `go build ./...`, `docker ps`, `npm ls`,
 	}
 	for _, cmd := range conservativePrompt {
 		if IsReadOnlyShell(cmd) {
 			t.Errorf("IsReadOnlyShell(%q) = true — was conservative-prompt before; allowlist grew?", cmd)
+		}
+	}
+
+	// git read-only subcommands are now auto-approved (readFlagsOK case "git").
+	gitReadOnly := []string{
+		`git status`, `git log --oneline -5`, `git diff`, `git status && git diff`,
+		`git show HEAD`, `git blame file.go`, `git diff --stat`,
+	}
+	for _, cmd := range gitReadOnly {
+		if !IsReadOnlyShell(cmd) {
+			t.Errorf("IsReadOnlyShell(%q) = false — git read-only subcommands should be auto-approved (readFlagsOK)", cmd)
+		}
+	}
+
+	// git mutating subcommands are NOT read-only — they must still prompt.
+	gitMutating := []string{
+		`git add .`, `git commit -m msg`, `git stash`, `git stash pop`,
+		`git merge main`, `git rebase main`, `git checkout main`,
+	}
+	for _, cmd := range gitMutating {
+		if IsReadOnlyShell(cmd) {
+			t.Errorf("IsReadOnlyShell(%q) = true — git mutating subcommands must not be auto-approved", cmd)
 		}
 	}
 }
