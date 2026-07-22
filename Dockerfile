@@ -25,9 +25,9 @@ COPY --from=go-toolchain /usr/local/go /usr/local/go
 # Copy the pre-built kvr-server binary.
 COPY --from=kvr-builder /build/target/release/server /usr/local/bin/kvr-server
 
-# Single apt layer: bootstrap curl/gnupg, add NodeSource 20 LTS repo and the
-# Docker apt repo (docker-cli + compose plugin), install all dev tools, clean
-# apt caches.
+# Single apt layer: bootstrap curl/gnupg, add NodeSource 20 LTS repo, the
+# Docker apt repo (docker-cli + compose plugin), and the GitHub CLI apt repo,
+# then install all dev tools, clean apt caches.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
            ca-certificates \
@@ -42,6 +42,11 @@ RUN apt-get update \
        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
     && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
        > /etc/apt/sources.list.d/docker.list \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
            git \
@@ -77,6 +82,7 @@ RUN apt-get update \
            libxrandr2 \
            libxkbcommon0 \
            clangd \
+           gh \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
