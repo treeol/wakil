@@ -414,6 +414,19 @@ func (s *Server) markDead(err error) {
 			conn.Close()
 		}
 	}
+
+	// Process kill guard: if the LSP server process (pid > 0) is still alive
+	// 3 seconds after stdin close, kill it via the executor. This prevents a
+	// hung server from leaking as a zombie process. The PID is the host-side
+	// process (docker exec or direct) — KillPgid targets the process group.
+	if s.pid > 0 && s.mgr.exec != nil {
+		go func(pid int) {
+			time.Sleep(3 * time.Second)
+			if s.mgr.exec.IsProcessAlive(context.Background(), pid) {
+				_ = s.mgr.exec.KillPgid(context.Background(), pid, 9) // SIGKILL
+			}
+		}(s.pid)
+	}
 }
 
 // handleNotification is called by rpcConn's readLoop — BUT via a single drain
