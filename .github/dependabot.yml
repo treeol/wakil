@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Go modules — weekly version-update PRs. Security-update PRs are a separate
+  # repo setting (Settings → Code security and analysis → Dependabot alerts +
+  # security updates); this config does not enable them.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+
+  # GitHub Actions — weekly check for action version updates. Dependabot
+  # updates SHA-pinned actions to the latest release SHA.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"

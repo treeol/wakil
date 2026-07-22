@@ -1,18 +1,29 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
+  # Weekly re-scan: a dependency that was clean at merge time can become
+  # vulnerable later with no code change. govulncheck and the race suite run
+  # on this schedule even without a PR.
+  schedule:
+    - cron: "0 6 * * 1"
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -33,13 +44,15 @@ jobs:
         run: go build ./...
 
       - name: test (with coverage)
-        run: go test -count=1 -cover ./... | tee cover.txt
+        run: |
+          set -euo pipefail
+          go test -count=1 -cover ./... | tee cover.txt
 
       - name: coverage floors (agent/tools/exec/proxy)
         run: scripts/check_coverage.sh cover.txt
 
       - name: coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage
           path: cover.txt
@@ -50,16 +63,26 @@ jobs:
       - name: race detector
         run: go test -race -count=1 ./...
 
+      # Vulnerability scan — reports known Go vulnerabilities in code reachable
+      # from this module (symbol-level analysis, not "any CVE in any dep").
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
           version: v2.10.0
