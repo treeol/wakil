@@ -310,7 +310,7 @@ func copyToClipboard(text string) tea.Cmd {
 		}
 		// Fallback: OSC 52 is self-contained and cursor-neutral, so writing it
 		// straight to stdout alongside Bubble Tea's renderer is safe.
-		os.Stdout.WriteString(ansi.SetSystemClipboard(text))
+		_, _ = os.Stdout.WriteString(ansi.SetSystemClipboard(text))
 		return copiedMsg{n: len([]rune(text))}
 	}
 }

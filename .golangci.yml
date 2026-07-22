@@ -1,12 +1,19 @@
 version: "2"
 
-# Minimal lint config for a repo going public. Focuses on high-signal checks:
-# real bugs (staticcheck SA*), dead code (unused), and ineffectual assignments.
-# Style checks (ST*, QF*) and errcheck are disabled — they produce mostly
-# noise on a codebase that was never linted before. Ramp up incrementally.
+# Lint config: high-signal checks (real bugs, dead code, ineffectual
+# assignments) plus bodyclose (HTTP response body leaks) and errcheck
+# (unchecked errors). errcheck is enabled with exclusions for known
+# intentional ignore patterns and test files.
+#
+# Strategy: bodyclose is narrow and catches real leaks — no exclusions needed.
+# errcheck has broad applicability but many findings are in test files and
+# cleanup paths. Test files and common cleanup patterns are excluded; the
+# remaining non-test findings are fixed incrementally.
 linters:
   default: none
   enable:
+    - bodyclose
+    - errcheck
     - ineffassign
     - staticcheck
     - unused
@@ -17,3 +24,101 @@ linters:
         - -QF*
         - -ST*
         - -S1038
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+      check-type-assertions: false
+      check-blank: false
+  exclusions:
+    presets:
+      - common-false-positives
+    rules:
+      # ── Test files: exclude errcheck entirely ──────────────────────────
+      # Test code routinely ignores errors (os.Setenv, json.Unmarshal in
+      # helpers, w.Write in mock servers, Close in cleanup).
+      - path: _test\.go
+        linters: [errcheck]
+
+      # ── Cleanup/defer patterns ──────────────────────────────────────────
+      # defer .Close() on shutdown/cleanup — errors during teardown are not
+      # actionable. Covers: exe.Close, memStore.Close, skillStore.Close,
+      # browserMgr.Close, conn.Close, f.Close, db.Close, rows.Close, etc.
+      - linters: [errcheck]
+        text: "Close.*is not checked"
+
+      # resp.Body.Close() in defer — response consumed or request failed.
+      - linters: [errcheck]
+        text: "resp.Body.Close.*is not checked"
+
+      # os.RemoveAll in cleanup — best-effort temp dir removal.
+      - linters: [errcheck]
+        text: "os.RemoveAll"
+
+      # ── Known intentional ignores (documented in source) ───────────────
+      # Workflow step log writes — best-effort audit trail (card #4).
+      - path: internal/agent/(workflow_engine|mashura)\.go
+        linters: [errcheck]
+        text: "WriteFile"
+
+      # Docker setup/cleanup commands in exec.go (card #20).
+      - path: internal/exec/exec\.go
+        linters: [errcheck]
+        text: "exec.Command"
+
+      # cmd.Wait() reapers — zombie reaping, error is irrelevant.
+      - linters: [errcheck]
+        text: "cmd.Wait"
+
+      # LSP shutdown/exit — sent during cleanup, not actionable.
+      - path: internal/lsp/(manager|jsonrpc|filesync)\.go
+        linters: [errcheck]
+        text: "(conn.call|conn.notify|c.write|notifyChange|batchNotifyWatchedFiles)"
+
+      # MCP session Close during cleanup.
+      - path: internal/agent/mcp_manager\.go
+        linters: [errcheck]
+        text: "Close"
+
+      # Session save on shutdown — best-effort.
+      - path: internal/agent/app\.go
+        linters: [errcheck]
+        text: "WriteSession"
+
+      # Repo state save — best-effort persist.
+      - path: internal/agent/repostate\.go
+        linters: [errcheck]
+        text: "updateRepoState"
+
+      # TUI Update calls — tea.Model contract, errors non-actionable.
+      - path: internal/tui/
+        linters: [errcheck]
+        text: "Update"
+
+      # Sound playback — non-critical.
+      - path: internal/tui/sound\.go
+        linters: [errcheck]
+        text: "cmd.Run"
+
+      # Model context limits fetch on startup — best-effort.
+      - path: cmd/wakil/main\.go
+        linters: [errcheck]
+        text: "FetchModelContextLimits"
+
+      # crypto/rand.Read never errors on supported platforms.
+      - path: internal/(agent/helpers|exec/exec)\.go
+        linters: [errcheck]
+        text: "(rand|crand).Read"
+
+      # DB Close/Rollback in defer — cleanup, not actionable.
+      - linters: [errcheck]
+        text: "(db|rows|tx|staleDB|v0DB)\\.(Close|Rollback)"
+
+      # os.MkdirAll for temp dirs — next operation will fail more specifically.
+      - linters: [errcheck]
+        text: "os.MkdirAll"
+
+      # os.WriteFile in non-critical paths.
+      - linters: [errcheck]
+        text: "os.WriteFile"

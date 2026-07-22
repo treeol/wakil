@@ -216,7 +216,7 @@ func spillToDisk(cacheDir, toolName, content string) string {
 	_, werr := f.WriteString(content)
 	f.Close()
 	if werr != nil {
-		os.Remove(f.Name())
+		_ = os.Remove(f.Name())
 		return ""
 	}
 	return f.Name()

@@ -428,8 +428,7 @@ func (s *Server) handleNotification(method string, params json.RawMessage, isReq
 		// Server is creating a progress token. Accept it (result: null).
 		// Register the token so we expect Begin/End for it.
 		var p WorkDoneProgressCreateParams
-		json.Unmarshal(params, &p)
-		_ = p // token registered on Begin; nothing to store here
+		_ = json.Unmarshal(params, &p) //nolint:errcheck // token registered on Begin; nothing to store here
 		return nil, nil
 	case "window/showMessage":
 		// Log and ignore for now.

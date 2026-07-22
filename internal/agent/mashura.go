@@ -220,7 +220,7 @@ func mashuraPanelArg(tc proxy.ToolCall) string {
 	var args struct {
 		Panel string `json:"panel"`
 	}
-	json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck — optional field
+	_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) // optional field
 	return strings.TrimSpace(args.Panel)
 }
 

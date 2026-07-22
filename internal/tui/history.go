@@ -83,5 +83,5 @@ func appendHistory(entry string) {
 		return
 	}
 	defer f.Close()
-	f.WriteString(entry + "\n")
+	_, _ = f.WriteString(entry + "\n")
 }

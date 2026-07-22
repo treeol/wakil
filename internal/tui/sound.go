@@ -31,7 +31,7 @@ func playFinishSound() tea.Cmd {
 				return nil
 			}
 		}
-		os.Stdout.WriteString("\a")
+		_, _ = os.Stdout.WriteString("\a")
 		return nil
 	}
 }

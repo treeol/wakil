@@ -242,7 +242,7 @@ func (m *Manager) Screenshot(ctx context.Context, fullPage bool) (string, error)
 	}
 	if _, err := tmpFile.Write(buf); err != nil {
 		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		_ = os.Remove(tmpFile.Name())
 		return "", fmt.Errorf("browser: write screenshot file: %w", err)
 	}
 	tmpFile.Close()

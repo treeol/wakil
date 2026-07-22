@@ -128,8 +128,8 @@ func (s *Store) drainTo(f *os.File) {
 	defer f.Close()
 	bw := bufio.NewWriterSize(f, 64*1024)
 	for b := range s.ch {
-		bw.Write(b)
-		bw.WriteByte('\n')
+		_, _ = bw.Write(b)
+		_ = bw.WriteByte('\n')
 	}
-	bw.Flush()
+	_ = bw.Flush()
 }

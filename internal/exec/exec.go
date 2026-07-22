@@ -186,7 +186,7 @@ func waitForKVR(socketPath string, timeout time.Duration) error {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 		if _, err := conn.Write(pingFrame); err != nil {
 			conn.Close()
 			time.Sleep(100 * time.Millisecond)
