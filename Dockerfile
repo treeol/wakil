@@ -1,9 +1,13 @@
 # syntax=docker/dockerfile:1
 
-# Stage 1a: Build kvr-server from the kvrust repository (cloned at build time).
-FROM rust:1-bookworm AS kvr-builder
+# Stage 1a: Build kvr-server from the kvrust repository (pinned to a specific
+# commit for supply-chain integrity — a compromised upstream repo would be
+# built into every image. Bump the commit when updating kvr-server).
+# Last verified: 2026-07-22, commit 72059cdb78b71a4408e5ef57aec2d30d1e12de8a
+FROM rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS kvr-builder
 WORKDIR /build
-RUN git clone --depth 1 https://github.com/treeol/kvrust.git .
+RUN git clone https://github.com/treeol/kvrust.git . \
+    && git checkout 72059cdb78b71a4408e5ef57aec2d30d1e12de8a
 RUN cargo build --release --bin server
 
 # Sandbox runtime Go toolchain. go.mod (minimum 1.25.0) governs building
@@ -11,7 +15,7 @@ RUN cargo build --release --bin server
 # sandbox container by the agent (building user projects, gopls, etc.). It may
 # be newer than the go.mod minimum — the Go toolchain is forward-compatible.
 # See README "Requirements".
-FROM golang:1.26-bookworm AS go-toolchain
+FROM golang:1.26-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS go-toolchain
 
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716
 
@@ -106,6 +110,17 @@ RUN mkdir -p /usr/local/share/wakil-etc-backup/ssl-certs \
 
 # Rust: install rustup and the stable toolchain into /usr/local so the
 # binaries are never shadowed by a workspace volume mount on /root.
+#
+# Supply-chain note: rustup is installed via the standard `curl | sh` method
+# from https://sh.rustup.rs. This is the officially recommended installation
+# method (https://rustup.rs/) and uses HTTPS with TLS 1.2+. The script is not
+# checksum-verified at install time — this is a known supply-chain risk shared
+# by all rustup users, mitigated by the HTTPS transport and the fact that
+# the rustup project is maintained by the Rust Foundation. A more paranoid
+# approach would download a pinned rustup-init binary with a verified
+# checksum, but this adds maintenance burden for marginal security gain over
+# HTTPS. If this becomes a concern, switch to a pinned rust:bookworm base
+# image that already has rustup installed.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -128,8 +143,27 @@ RUN go install golang.org/x/tools/gopls@v0.22.0
 # Both require TypeScript for semantic analysis.
 RUN npm install -g pyright typescript-language-server typescript
 
-# Entrypoint script: starts kvr-server in the background, then execs the main
+# Entrypoint script: starts kvr-server in the background, then runs the main
 # command. Traps SIGTERM to gracefully stop kvr (shutdown snapshot) before
 # stopping the main process.
+#
+# Root rationale: the sandbox runs as root by design. The sandbox must:
+#   - Create /etc/passwd entries for workspace users (ensurePasswdEntry)
+#   - Manage Docker containers (docker exec, docker cp)
+#   - Write to /usr/local/bin and /usr/local/share
+#   - Kill processes by PGID (KillPgid)
+# A non-root user would require granting specific Linux capabilities
+# (CAP_SYS_ADMIN, CAP_KILL, CAP_SETUID) that are effectively equivalent to
+# root for this use case. The sandbox is isolated via Docker's own security
+# mechanisms (--tmpfs=/etc, read-only mounts, dropped capabilities on child
+# containers) — the root user inside the sandbox cannot escalate to the host.
+# See SECURITY.md for the full threat model.
+#
+# Signal handling: entrypoint.sh uses a trap-based approach instead of exec
+# because it must run kvr-server in the background AND clean it up on exit.
+# The trap catches SIGTERM, signals kvr for graceful shutdown, waits, then
+# stops the main process. This is a standard pattern for multi-process
+# containers without an init system. If signal forwarding issues arise,
+# consider adding tini as PID 1.
 COPY docker/entrypoint.sh /usr/local/bin/wakil-entrypoint.sh
 RUN chmod +x /usr/local/bin/wakil-entrypoint.sh
