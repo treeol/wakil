@@ -24,7 +24,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 				"for several related tasks prefer dispatch_subagents (plural) which runs them concurrently by design.",
 			Parameters: SchemaObj(map[string]interface{}{
 				"task":       StrProp("Specific discovery objective, e.g. 'find where ToolResultCap is configured across the repo'."),
-				"capability": StrProp("Capability tier: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto)."),
+				"capability": EnumProp("Capability tier: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto).", CapabilityDiscovery, CapabilityEdit, CapabilityTools),
 			}, "task"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
@@ -39,7 +39,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 					"items":       StrProp("One discovery objective."),
 					"description": "Independent objectives (1–8), each handled by its own subagent.",
 				},
-				"capability": StrProp("Capability tier for all tasks: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto)."),
+				"capability": EnumProp("Capability tier for all tasks: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto).", CapabilityDiscovery, CapabilityEdit, CapabilityTools),
 			}, "tasks"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{

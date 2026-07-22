@@ -2,7 +2,6 @@ package tools
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/treeol/wakil/internal/proxy"
 )
@@ -38,7 +37,6 @@ func StagingTools() []proxy.Tool {
 		b, _ := json.Marshal(m)
 		return b
 	}
-	_ = fmt.Sprintf // keep import if no fmt usage
 	return []proxy.Tool{
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "staging_put",
