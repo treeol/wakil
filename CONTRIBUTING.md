@@ -31,6 +31,9 @@ gofmt -l .
 
 # Vet
 go vet ./...
+
+# Lint (matches CI — same golangci-lint v2.10.0, same .golangci.yml config)
+golangci-lint run
 ```
 
 All of the above must pass before you send a patch.
@@ -64,7 +67,9 @@ export TMPDIR=$PWD/.tmp-gocache \
 
 - `gofmt` is authoritative — no unformatted code is merged.
 - Follow standard Go conventions: effective Go, package naming, etc.
-- Linting uses `golangci-lint` (see `.golangci.yml`); CI runs it automatically.
+- Linting uses `golangci-lint` v2.10.0 (see `.golangci.yml`); CI runs it
+  automatically, and the same binary is installed in the sandbox for local
+  pre-push runs: `golangci-lint run`.
 
 ## Pull Request Checklist
 
@@ -74,6 +79,7 @@ Before opening a PR, verify each item:
 - [ ] `go test -count=1 -cover ./...` passes and `scripts/check_coverage.sh` is green
 - [ ] `go test -race -count=1 $(go list ./... | grep -v /internal/lsp)` passes
 - [ ] `go vet ./...` passes
+- [ ] `golangci-lint run` passes (see `.golangci.yml`; CI runs the same)
 - [ ] `gofmt -l .` returns nothing
 - [ ] Commit messages are descriptive and reference the relevant WP/issue if applicable
 - [ ] No secrets, API keys, or credentials in the diff

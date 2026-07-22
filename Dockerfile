@@ -132,6 +132,14 @@ ENV GOPATH=/usr/local/go-workspace
 
 ENV PATH="/usr/local/go/bin:/usr/local/go-workspace/bin:/usr/local/cargo/bin:${PATH}"
 
+# golangci-lint — pinned to v2.10.0, matching CI (.github/workflows/ci.yml).
+# Installed via digest-pinned multi-stage COPY from the official image rather
+# than curl|sh: this matches the Dockerfile's supply-chain posture (base images
+# are digest-pinned, kvrust is commit-pinned) and avoids executing a remote
+# script at build time. The version MUST match CI to keep local pre-push lint
+# parity — bump both together.
+COPY --from=golangci/golangci-lint:v2.10.0@sha256:bdd784f3b55fc235da94a2afe8d37f14932f7d6d3a8b7e418588aeb4240ef58d /usr/bin/golangci-lint /usr/local/bin/golangci-lint
+
 # gopls — pinned to v0.22.0. protocol.go in internal/lsp/ is transcribed from
 # gopls v0.22.0 internal/protocol (tsprotocol.go). A version bump here MUST be
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
