@@ -293,7 +293,15 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 	var arguments any
 	if argsJSON != "" && argsJSON != "{}" {
 		if err := json.Unmarshal([]byte(argsJSON), &arguments); err != nil {
-			arguments = argsJSON // fall back to raw string
+			// Reject invalid args instead of falling back to a raw string.
+			// A raw string bypasses schema validation and may cause the MCP
+			// server to interpret the input unpredictably.
+			return fmt.Sprintf("ERROR: MCP tool %q: invalid arguments JSON: %v", toolName, err)
+		}
+		// MCP tool arguments must be a JSON object (map). A bare string,
+		// number, or array is not a valid tool call — reject it.
+		if _, ok := arguments.(map[string]interface{}); !ok {
+			return fmt.Sprintf("ERROR: MCP tool %q: arguments must be a JSON object, got %T", toolName, arguments)
 		}
 	}
 

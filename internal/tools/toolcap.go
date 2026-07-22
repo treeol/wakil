@@ -240,7 +240,10 @@ func StubToolResult(result, toolName, chatID string) string {
 	if path := spillToDisk(toolCacheDir(chatID), toolName, result); path != "" {
 		return fmt.Sprintf("[budget — %d chars at: %s]", n, path)
 	}
-	return fmt.Sprintf("[budget — %d chars]", n)
+	// Spill failed — the full content is lost (not recoverable via read_file).
+	// The explicit marker tells the model NOT to attempt a read — there is no
+	// spill file. The content is gone.
+	return fmt.Sprintf("[budget — %d chars — SPILL FAILED (content unrecoverable)]", n)
 }
 
 // rangedTools are tools whose output can be re-read with offset/limit

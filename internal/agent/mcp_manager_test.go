@@ -399,16 +399,29 @@ func TestMCPCallTool_DeclineNeverTouchesSession(t *testing.T) {
 	}
 }
 
-func TestMCPCallTool_InvalidArgsJSONFallsBack(t *testing.T) {
+func TestMCPCallTool_InvalidArgsJSONRejected(t *testing.T) {
 	sess := &fakeMCPSession{}
 	m := newFakeMCPManager(connectedServer("srv", sess, "search"))
 	got := m.CallTool(context.Background(), "srv__search", `{broken`, nil, true)
-	if got != "mcp-result" {
-		t.Fatalf("invalid args JSON should fall back to raw string, got %q", got)
+	if !strings.HasPrefix(got, "ERROR:") {
+		t.Fatalf("invalid args JSON should be rejected with an error, got %q", got)
 	}
-	// The raw string is passed as-is.
-	if s, ok := sess.lastArgs.(string); !ok || s != "{broken" {
-		t.Fatalf("fallback should pass raw string args, got %#v", sess.lastArgs)
+	// The call should NOT reach the session.
+	if sess.calls() != 0 {
+		t.Fatalf("invalid args JSON should not reach the MCP session: %d calls", sess.calls())
+	}
+}
+
+func TestMCPCallTool_NonObjectArgsRejected(t *testing.T) {
+	sess := &fakeMCPSession{}
+	m := newFakeMCPManager(connectedServer("srv", sess, "search"))
+	// Valid JSON but not an object — a bare string.
+	got := m.CallTool(context.Background(), "srv__search", `"just a string"`, nil, true)
+	if !strings.HasPrefix(got, "ERROR:") {
+		t.Fatalf("non-object args should be rejected with an error, got %q", got)
+	}
+	if sess.calls() != 0 {
+		t.Fatalf("non-object args should not reach the MCP session: %d calls", sess.calls())
 	}
 }
 
