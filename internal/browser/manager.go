@@ -24,6 +24,7 @@ import (
 
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/chromedp"
+	"github.com/treeol/wakil/internal/safe"
 )
 
 // defaultTimeout is the per-operation timeout for browser actions. Without
@@ -128,7 +129,7 @@ func NewManager() (*Manager, error) {
 	// the (failed or hung) allocator — that is a deliberate full abort, not
 	// a mid-session op cancellation, so canceling ctx there is correct.
 	launchDone := make(chan error, 1)
-	go func() { launchDone <- chromedp.Run(ctx) }()
+	safe.Go("browser-launch", func() { launchDone <- chromedp.Run(ctx) })
 	select {
 	case err := <-launchDone:
 		if err != nil {
@@ -180,13 +181,13 @@ func (m *Manager) opCtx(ctx context.Context) (context.Context, context.CancelFun
 	// browser), but cancel when the caller's ctx is done. The goroutine
 	// bridges caller cancellation into the merged context.
 	merged, mergedCancel := context.WithCancel(parent)
-	go func() {
+	safe.Go("browser-ctx-bridge", func() {
 		select {
 		case <-ctx.Done():
 			mergedCancel()
 		case <-merged.Done():
 		}
-	}()
+	})
 	// Derive a timeout from merged. The returned cancel cancels both so
 	// the goroutine exits and no resources leak.
 	tctx, tcancel := context.WithTimeout(merged, defaultTimeout)

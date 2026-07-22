@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/safe"
 )
 
 const oracleEndpoint = "https://api.anthropic.com/v1/messages"
@@ -331,7 +332,7 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 	for i, pm := range models {
 		i, pm := i, pm
 		wg.Add(1)
-		go func() {
+		safe.Go("oracle-panel", func() {
 			defer wg.Done()
 			prov, model := ParseModelPrefix(pm)
 			answer, usage, err := callMember(ctx, prov, model, question, briefing, ccfg, apiKeys)
@@ -342,7 +343,7 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 				Usage:         usage,
 				Err:           err,
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	return results

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/safe"
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
 )
@@ -583,7 +584,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 	// exits. This lets StopAllBackgroundProcs wait for clean shutdown without
 	// a fixed sleep. Uses a background context — the process may outlive the
 	// turn context that started it.
-	go func() {
+	safe.Go("bg-reaper", func() {
 		bgCtx := context.Background()
 		for {
 			if !a.Exec.IsProcessAlive(bgCtx, pid) {
@@ -592,7 +593,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
-	}()
+	})
 	return fmt.Sprintf("id: %s\npid: %d\nlog: %s\nlabel: %s", bgID, pid, logPath, args.Label)
 }
 
