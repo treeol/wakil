@@ -419,7 +419,9 @@ func wfWriteFinalLog(app *App, entry string) {
 	if err != nil {
 		return
 	}
-	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+		wfProgNote(app, "⚠ step log write failed: "+err.Error())
+	}
 }
 
 // handleReviewOracle runs the mandatory oracle plan review (WFReview phase).
@@ -491,7 +493,9 @@ func wfWriteReviewSkip(app *App, reason string) {
 		return
 	}
 	entry := "REVIEW skipped: oracle unavailable (" + reason + ") — /plan approve required to proceed."
-	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+		wfProgNote(app, "⚠ step log write failed: "+err.Error())
+	}
 }
 
 // wfAppendRemediationEvidence records one remediation turn's evidence in plan.md.
@@ -535,7 +539,9 @@ func WFWriteReviewSkipForce(app *App, reason string) {
 		return
 	}
 	entry := "REVIEW skipped with reason: " + reason + " (/plan approve used to force-skip)"
-	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+		wfProgNote(app, "⚠ step log write failed: "+err.Error())
+	}
 }
 
 // wfWritePlanFormatError appends a format-error log entry to plan.md. Best-effort.
@@ -548,5 +554,7 @@ func wfWritePlanFormatError(app *App) {
 		return
 	}
 	entry := "PLAN FORMAT ERROR: ## Plan is non-empty but contains no numbered steps — model must reformat."
-	_, _ = app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry))
+	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+		wfProgNote(app, "⚠ step log write failed: "+err.Error())
+	}
 }

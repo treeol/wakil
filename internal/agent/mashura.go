@@ -671,7 +671,9 @@ func (a *App) mashuraLogReceipts(ctx context.Context, receipts []mashuraSourceMe
 	fmt.Fprintln(a.Out, Dim("· "+msg))
 	if a.Workflow != nil && a.Exec != nil {
 		if content, e := a.Exec.ReadFile(ctx, a.Workflow.PlanPath); e == nil {
-			_, _ = a.Exec.WriteFile(ctx, a.Workflow.PlanPath, workflow.WFAppendToStepLog(content, msg))
+			if _, err := a.Exec.WriteFile(ctx, a.Workflow.PlanPath, workflow.WFAppendToStepLog(content, msg)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: step log write failed: %v\n", err)
+			}
 		}
 	}
 }
