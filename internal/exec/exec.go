@@ -274,7 +274,13 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		workdir = "/work"
 	}
 	name := "wakil-session-" + fmt.Sprint(os.Getpid()) + "-" + randSuffix(6)
-	// Best-effort remove a stale container from a previous crashed run.
+	// Best-effort remove a stale container from a previous crashed run. The
+	// container name embeds os.Getpid() + 6 random hex chars, so a name
+	// collision with a prior run is essentially impossible — this command
+	// fails with "No such container" on virtually every run, which is the
+	// expected case. If a stale container truly existed, docker run --name
+	// would fail immediately with a name-conflict error, so ignoring the
+	// error here is safe.
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
 	args := []string{"run", "-d", "--name", name, "-w", workdir}
@@ -366,14 +372,32 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		stagingMount: opts.StagingMount,
 	}
 	if hostMount == "" {
-		_, _ = d.execCtx(context.Background(), false, "sh", "-c", "mkdir -p "+shQuote(workdir))
+		// Docker auto-creates the -w workdir at container start even under
+		// --read-only, so this mkdir is a safety net that detects a missing
+		// workdir. It can't remediate (rootfs is read-only), but the warning
+		// surfaces the problem early — every subsequent command would fail
+		// with a cd error anyway.
+		out, err := d.execCtx(context.Background(), false, "sh", "-c", "mkdir -p "+shQuote(workdir))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: mkdir workdir %s: %s: %v\n", workdir, strings.TrimSpace(out), err)
+		}
 	}
 	if uid := os.Getuid(); uid > 0 {
-		ensurePasswdEntry(name, uid, os.Getgid())
+		if err := ensurePasswdEntry(name, uid, os.Getgid()); err != nil {
+			if opts.Signing.Enabled {
+				_ = exec.Command("docker", "rm", "-f", name).Run()
+				return nil, fmt.Errorf("passwd entry setup for signing: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
 	}
-	restoreEtcBackups(name)
+	if err := restoreEtcBackups(name); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
 	if dockerSock {
-		ensureDockerCLI(name)
+		if err := ensureDockerCLI(name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v (docker socket mounted but CLI unavailable)\n", err)
+		}
 	}
 
 	// Host-side kvr readiness check: PING the UDS socket. On success, wire
@@ -398,12 +422,17 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 // none exists. Images have no user for arbitrary --user uids; tools that
 // resolve the current user (ssh-keygen -Y sign, whoami, git commit signing)
 // fail with "No user exists for uid N" otherwise. Runs as root via docker
-// exec -u 0; best-effort.
-func ensurePasswdEntry(container string, uid, gid int) {
+// exec -u 0. Returns an error if the docker exec fails so the caller can
+// decide whether it's fatal (signing enabled) or a warning.
+func ensurePasswdEntry(container string, uid, gid int) error {
 	script := fmt.Sprintf(
 		"getent passwd %d >/dev/null 2>&1 || echo 'user:x:%d:%d:sandbox user:/home/user:/bin/sh' >> /etc/passwd",
 		uid, uid, gid)
-	_ = exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).Run()
+	out, err := exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ensurePasswdEntry: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 // restoreEtcBackups restores files that the --tmpfs=/etc mount
@@ -431,12 +460,12 @@ func ensurePasswdEntry(container string, uid, gid int) {
 // The Dockerfile backs up all three to /usr/local/share/wakil-etc-backup
 // (outside /etc, so they survive the tmpfs mount) at build time. This
 // function copies them back into the fresh tmpfs after the container starts.
-// Runs as root via docker exec -u 0; best-effort — if the backup paths don't
-// exist (e.g. a custom image without this Dockerfile), this is a silent
-// no-op and the affected tools just won't work, same as before this fix
-// existed.
-func restoreEtcBackups(container string) {
-	script := "" +
+// Runs as root via docker exec -u 0. Returns an error if docker exec fails
+// or if any copy step fails (the script uses set -e for partial-failure
+// detection). A missing backup directory is a silent no-op (custom images
+// without this Dockerfile) — the if-guards prevent set -e from aborting.
+func restoreEtcBackups(container string) error {
+	script := "set -e; " +
 		"if [ -f /usr/local/share/wakil-etc-backup/ssl-certs/ca-certificates.crt ]; then " +
 		"  mkdir -p /etc/ssl/certs && " +
 		"  cp /usr/local/share/wakil-etc-backup/ssl-certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt; " +
@@ -449,7 +478,11 @@ func restoreEtcBackups(container string) {
 		"  mkdir -p /etc/alternatives && " +
 		"  cp -a /usr/local/share/wakil-etc-backup/alternatives/. /etc/alternatives/; " +
 		"fi"
-	_ = exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).Run()
+	out, err := exec.Command("docker", "exec", "-u", "0", container, "sh", "-c", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("restoreEtcBackups: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 // ensureDockerCLI is a fallback for images that don't ship a docker binary:
@@ -458,18 +491,33 @@ func restoreEtcBackups(container string) {
 // normally a no-op — it exists so older or custom images without a baked-in
 // CLI still get a working `docker` when the socket is mounted. Copying from
 // the host is instant, needs no network, and is version-matched to the
-// running daemon.
-func ensureDockerCLI(container string) {
+// running daemon. Returns an error if the docker cp fails; the caller logs
+// a warning (docker CLI is a convenience, not a hard dependency — the socket
+// mount itself succeeds regardless).
+//
+// Note: the container rootfs is --read-only, so docker cp to /usr/local/bin
+// may fail on images where /usr/local/bin is not on a writable layer. The
+// wakil-dev image has docker-cli pre-installed from apt, so this fallback
+// path is rarely exercised and the warning is the right response.
+func ensureDockerCLI(container string) error {
 	hostBin, err := exec.LookPath("docker")
 	if err != nil {
-		return
+		return fmt.Errorf("ensureDockerCLI: host docker binary not found: %w", err)
 	}
+	// Check if the container already has a docker binary. On exec failure the
+	// output won't be "yes", so we fall through to docker cp below — the
+	// error from the existence check itself is intentionally ignored because
+	// the fall-through path handles it.
 	out, _ := exec.Command("docker", "exec", container, "sh", "-c",
 		"command -v docker >/dev/null 2>&1 && echo yes").Output()
 	if strings.TrimSpace(string(out)) == "yes" {
-		return
+		return nil
 	}
-	_ = exec.Command("docker", "cp", hostBin, container+":/usr/local/bin/docker").Run()
+	out, err = exec.Command("docker", "cp", hostBin, container+":/usr/local/bin/docker").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ensureDockerCLI: docker cp: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 // execCtx runs docker exec with the given args, using CommandContext so the
@@ -565,7 +613,9 @@ func (d *DockerExecutor) Close() error {
 	// -t 10 gives kvr up to 10s to finish the snapshot before SIGKILL.
 	// Always run stop (even if kvr readiness failed) because the entrypoint
 	// may have started kvr-server regardless — the graceful window is a
-	// ceiling, docker stop returns when PID 1 exits.
+	// ceiling, docker stop returns when PID 1 exits. If stop fails (e.g.
+	// container already exited), the kvr graceful snapshot window is lost,
+	// but rm -f below is still attempted to clean up the container.
 	_ = exec.Command("docker", "stop", "-t", "10", d.container).Run()
 	return exec.Command("docker", "rm", "-f", d.container).Run()
 }

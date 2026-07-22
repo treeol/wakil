@@ -62,11 +62,6 @@ linters:
         linters: [errcheck]
         text: "WriteFile"
 
-      # Docker setup/cleanup commands in exec.go (card #20).
-      - path: internal/exec/exec\.go
-        linters: [errcheck]
-        text: "exec.Command"
-
       # cmd.Wait() reapers — zombie reaping, error is irrelevant.
       - linters: [errcheck]
         text: "cmd.Wait"
