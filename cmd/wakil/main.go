@@ -347,12 +347,15 @@ func loadAgentPrompt(cfg config.Config) string {
 	embedded := strings.TrimRight(prompts.EmbeddedAgentPrompt, "\n")
 	path := cfg.AgentPromptPath
 	if path == "" {
-		fmt.Fprintln(os.Stderr, "agent prompt: no path configured, using embedded prompt")
 		return embedded
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using embedded prompt\n", path, err)
+		// Not-found is the normal case (file is optional — embedded prompt is
+		// the default). Only warn on real errors (permissions, I/O, etc.).
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using embedded prompt\n", path, err)
+		}
 		return embedded
 	}
 	if len(strings.TrimSpace(string(b))) == 0 {
