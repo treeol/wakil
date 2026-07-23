@@ -143,6 +143,21 @@ type MCPReconnectedMsg struct {
 	Tools []proxy.Tool
 }
 
+// HandoffMsg signals that a session handoff summary was generated and stored.
+// The TUI handler rotates the conversation to NewChatID, clears the viewport,
+// and starts a continuation turn with ContinuationPrompt.
+//
+// If Err is non-nil, the handoff failed — the TUI shows the error and does
+// NOT rotate the conversation. Note: the old session may still have been
+// saved to disk before the failure, depending on which step failed.
+type HandoffMsg struct {
+	ContinuationPrompt string // the prompt to seed the new session's first turn
+	Note               string // short human-readable status (old ID, warnings)
+	OldChatID          string // the previous session's chat_id (for /resume)
+	NewChatID          string // the new session's chat_id (preallocated)
+	Err                error  // non-nil = handoff failed, do not rotate
+}
+
 // WFFinalReviewMsg triggers the closing oracle check.
 type WFFinalReviewMsg struct{}
 

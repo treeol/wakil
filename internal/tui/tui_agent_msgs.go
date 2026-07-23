@@ -394,6 +394,89 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 		m = m.reflowIfStatusHeightChanged(before)
 
+	case agent.HandoffMsg:
+		// Handoff: the Cmd closure generated a summary, stored it in memory,
+		// and saved the old session. Now we rotate to a new conversation and
+		// start the continuation turn — all on the event loop to avoid races.
+		//
+		// Guard against the race where a turn started while summarization was
+		// in flight (e.g., a queued prompt flushed after AgentDoneMsg). Same
+		// guard as WFStartTurnMsg: only rotate from idle.
+		if m.state != stateIdle {
+			// A turn is active — abort the handoff rather than rotating
+			// out from under a live turn. The old session is already saved
+			// and the summary is in memory; the user can /resume the old
+			// session or retry /handoff when idle.
+			if msg.Err != nil {
+				m.addItem(iSys, dim2("⚠ handoff failed: "+msg.Err.Error()))
+			} else {
+				m.addItem(iSys, dim2("⚠ handoff aborted — a turn is in progress; retry when idle"))
+			}
+			break
+		}
+
+		before := m.statusRows()
+
+		// If the handoff failed, show the error and do NOT rotate.
+		if msg.Err != nil {
+			m.addItem(iSys, dim2("⚠ handoff failed: "+msg.Err.Error()))
+			m = m.reflowIfStatusHeightChanged(before)
+			break
+		}
+
+		// Close reverse-search if active (same as WFStartTurnMsg).
+		if m.searchActive {
+			m.searchExit(false)
+		}
+
+		// Revoke all session consent before rotating — the new session starts
+		// clean. RevokeAuto clears AutoApprove + AllowDestructive (pair
+		// invariant); AllowReads is cleared separately. Persist AutoApprove=
+		// false so repo-state doesn't restore it.
+		m.app.RevokeAuto()
+		m.app.SetAllowReads(false)
+		m.app.SaveRepoState(func(s *agent.RepoState) { s.AutoApprove = false })
+
+		// Clear pending images — they belong to the old session.
+		m.app.PendingImages = nil
+
+		// Clear workflow — handoff starts a fresh workflow-free session.
+		// The summary captures workflow state as text; the new session does
+		// not inherit the in-memory workflow engine.
+		m.app.Workflow = nil
+
+		// Rotate to a new conversation (use the preallocated chat ID).
+		m.app.NewConversation(msg.NewChatID)
+
+		// Clear viewport items (same as NewConvMsg).
+		*m.items = (*m.items)[:0]
+		m.streaming.Reset()
+		m.reasoning.Reset()
+		m.reasoningDone = false
+		m.reasoningExpanded = false
+		m.queuedPrompts = nil
+		m.pendingAutoGrant = false
+		m.pendingDestructiveGrant = false
+		*m.imageChips = (*m.imageChips)[:0]
+		m.prefixDirty = true
+		m.refreshViewport()
+
+		// Show the handoff note (old → new session IDs).
+		if msg.Note != "" {
+			m.addItem(iSys, dim2(msg.Note))
+		}
+		m.addItem(iSys, dim2(sprint("· new session: %s — /resume %s to return to the old one",
+			agent.ShortID(msg.NewChatID), agent.ShortID(msg.OldChatID))))
+		m.vp.GotoBottom()
+
+		// Start the continuation turn (same pattern as WFStartTurnMsg).
+		var pair []tea.Cmd
+		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+			return AdaptCmd(agent.RunTurn(m.app, ctx, msg.ContinuationPrompt))
+		})
+		cmds = append(cmds, pair...)
+		m = m.reflowIfStatusHeightChanged(before)
+
 	case agent.OpenResumePickerMsg:
 		prevH := m.resumePickerHeight()
 		m = m.openResumePicker(msg)

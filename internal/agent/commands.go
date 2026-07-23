@@ -351,6 +351,17 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return CompactedMsg{}
 		}
 
+	case "/handoff":
+		// /handoff summarizes the current session, stores the summary in
+		// durable memory, saves the old session, and starts a new session
+		// with a continuation prompt. The summarization runs in the Cmd
+		// closure (off the event loop, same as /compact); the conversation
+		// rotation happens in the TUI's HandoffMsg handler on the event loop
+		// to avoid races with concurrent user input.
+		return true, false, func() Msg {
+			return performHandoff(context.Background(), app)
+		}
+
 	case "/verify":
 		// /verify runs deterministic verification commands (tests, lint, build)
 		// via the consent gate. Commands come from config.Verify or auto-detection
@@ -1002,6 +1013,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /plan verify         re-run the final oracle review (in verify state after gaps flagged)
 /plan abort          cancel the active workflow
 /compact             summarize older turns now (frees context, improves performance)
+/handoff             summarize this session → store in memory → start fresh session with continuation prompt
 /learn               send "learn this for next time" — proxy synthesises a fact to save (ilm-proxy only; use memory_put on OpenAI endpoints)
 /counsel auto|suggest|off  auto-counsel mode: auto=fire mashura__debug on struggle, suggest=hint, off=silent
 /counsel                   show current counsel mode and per-turn cap
