@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,14 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/proxy"
+)
+
+// Package-level seams for testability. In production these hold the real
+// defaults; tests override them to inject deterministic HTTP behavior.
+var (
+	googleSearchClient = &http.Client{Timeout: 10 * time.Second}
+	googleFetchClient = &http.Client{Timeout: 15 * time.Second}
+	googleBaseURL     = "https://www.googleapis.com/customsearch/v1"
 )
 
 // GoogleTools returns the google_search and google_fetch_url tool definitions.
@@ -85,23 +94,48 @@ func CallGoogle(apiKey, cx, query string, num, start int, after, before string) 
 		params.Set("dateRestrict", "m3")
 	}
 
-	reqURL := "https://www.googleapis.com/customsearch/v1?" + params.Encode()
+	reqURL := googleBaseURL + "?" + params.Encode()
 
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
-		return "ERROR: " + err.Error(), nil
+		return "ERROR: failed to build request", nil
 	}
 	req.Header.Set("User-Agent", "GoogleSearchMCP/1.0")
 
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := googleSearchClient.Do(req)
 	if err != nil {
-		return "ERROR: " + err.Error(), nil
+		// Sanitize: http.Client.Do wraps errors in *url.Error which
+		// includes the full request URL — and the URL contains the API
+		// key as a query parameter. Extract only the innermost error
+		// (unwrapping nested url.Errors), then redact the key as a
+		// final safety net.
+		msg := err.Error()
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr.Err != nil {
+			// Unwrap nested *url.Error (http.Client.Do wraps
+			// RoundTripper url.Error in another url.Error).
+			inner := urlErr
+			for {
+				var nested *url.Error
+				if errors.As(inner.Err, &nested) && nested.Err != nil {
+					inner = nested
+				} else {
+					break
+				}
+			}
+			msg = inner.Err.Error()
+		}
+		msg = strings.ReplaceAll(msg, apiKey, "REDACTED")
+		return "ERROR: Google API request failed: " + msg, nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Sprintf("ERROR: Google API error (%d): %s", resp.StatusCode, string(body)), nil
+		// Redact the API key from the response body — a proxy, gateway,
+		// or future API change could echo the request URL back.
+		bodyStr := strings.ReplaceAll(string(body), apiKey, "REDACTED")
+		return fmt.Sprintf("ERROR: Google API error (%d): %s", resp.StatusCode, bodyStr), nil
 	}
 
 	var apiResp struct {
@@ -151,9 +185,16 @@ func GoogleFetchURL(rawURL string, maxChars int) string {
 	}
 	req.Header.Set("User-Agent", "GoogleSearchMCP/1.0")
 
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := googleFetchClient.Do(req)
 	if err != nil {
-		return "ERROR: " + err.Error()
+		// No API key in this URL, but strip the URL from url.Error for
+		// consistency — user-supplied URLs may contain userinfo or
+		// signed-URL params that shouldn't reach the transcript.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr.Err != nil {
+			return "ERROR: fetch failed: " + urlErr.Err.Error()
+		}
+		return "ERROR: fetch failed"
 	}
 	defer resp.Body.Close()
 
