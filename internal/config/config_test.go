@@ -427,3 +427,262 @@ func TestEnvInt_ValidParse(t *testing.T) {
 		t.Errorf("envInt should parse 42, got %d", dst)
 	}
 }
+
+// ---------------- Docker config validation ----------------
+
+func TestValidateDockerConfig_DefaultPasses(t *testing.T) {
+	cfg := DefaultConfig()
+	if err := validateDockerConfig(cfg); err != nil {
+		t.Fatalf("DefaultConfig should pass Docker validation: %v", err)
+	}
+}
+
+func TestValidateDockerConfig_EmptyFieldsPass(t *testing.T) {
+	cfg := Config{} // all empty
+	if err := validateDockerConfig(cfg); err != nil {
+		t.Fatalf("empty config should pass: %v", err)
+	}
+}
+
+func TestValidateDockerConfig_DockerMemory(t *testing.T) {
+	valid := []string{"4g", "512m", "1024", "4G", "512M", "1.5g", "2.0G", "1073741824b"}
+	for _, mem := range valid {
+		cfg := DefaultConfig()
+		cfg.DockerMemory = mem
+		if err := validateDockerConfig(cfg); err != nil {
+			t.Errorf("docker_memory=%q: unexpected error: %v", mem, err)
+		}
+	}
+	invalid := []string{"4gb", "abc", "4x", "-4g", "0x10", "4g3", ""}
+	for _, mem := range invalid {
+		if mem == "" {
+			continue // empty is valid (no limit)
+		}
+		cfg := DefaultConfig()
+		cfg.DockerMemory = mem
+		if err := validateDockerConfig(cfg); err == nil {
+			t.Errorf("docker_memory=%q: expected error, got nil", mem)
+		}
+	}
+}
+
+func TestValidateDockerConfig_DockerTmpfsSize(t *testing.T) {
+	valid := []string{"4g", "512m", "1024", "4G"}
+	for _, s := range valid {
+		cfg := DefaultConfig()
+		cfg.DockerTmpfsSize = s
+		if err := validateDockerConfig(cfg); err != nil {
+			t.Errorf("docker_tmpfs_size=%q: unexpected error: %v", s, err)
+		}
+	}
+	invalid := []string{"4gb", "abc", "-1"}
+	for _, s := range invalid {
+		cfg := DefaultConfig()
+		cfg.DockerTmpfsSize = s
+		if err := validateDockerConfig(cfg); err == nil {
+			t.Errorf("docker_tmpfs_size=%q: expected error, got nil", s)
+		}
+	}
+}
+
+func TestValidateDockerConfig_DockerCaps(t *testing.T) {
+	// Valid caps — various forms are normalized.
+	cfg := DefaultConfig()
+	cfg.DockerCaps = []string{"CHOWN", "cap_net_bind_service", "  SYS_PTRACE  ", "NET_ADMIN"}
+	if err := validateDockerConfig(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Check normalization.
+	want := []string{"CHOWN", "NET_BIND_SERVICE", "SYS_PTRACE", "NET_ADMIN"}
+	for i, w := range want {
+		if cfg.DockerCaps[i] != w {
+			t.Errorf("docker_caps[%d] = %q, want %q", i, cfg.DockerCaps[i], w)
+		}
+	}
+
+	// Empty cap name.
+	cfg = DefaultConfig()
+	cfg.DockerCaps = []string{"CHOWN", ""}
+	if err := validateDockerConfig(cfg); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty cap error, got: %v", err)
+	}
+
+	// Invalid characters.
+	cfg = DefaultConfig()
+	cfg.DockerCaps = []string{"CHOWN-EXEC"}
+	if err := validateDockerConfig(cfg); err == nil || !strings.Contains(err.Error(), "invalid capability") {
+		t.Fatalf("expected invalid cap error, got: %v", err)
+	}
+}
+
+// ---------------- URL validation ----------------
+
+func TestValidateURLs_DefaultPasses(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Endpoint = cfg.ActiveEndpoint()
+	if err := validateURLs(cfg); err != nil {
+		t.Fatalf("DefaultConfig should pass URL validation: %v", err)
+	}
+}
+
+func TestValidateURLs_ValidURLs(t *testing.T) {
+	valid := []string{
+		"http://localhost:11400",
+		"http://127.0.0.1:8080",
+		"https://api.example.com/v1",
+		"http://[::1]:8080",
+	}
+	for _, u := range valid {
+		cfg := DefaultConfig()
+		cfg.Endpoint = EndpointConfig{Kind: "openai", BaseURL: u, Model: "test"}
+		if err := validateURLs(cfg); err != nil {
+			t.Errorf("base_url=%q: unexpected error: %v", u, err)
+		}
+	}
+}
+
+func TestValidateURLs_InvalidURLs(t *testing.T) {
+	invalid := []string{
+		"localhost:11400",     // no scheme
+		"ftp://example.com",   // wrong scheme
+		"ws://example.com",    // wrong scheme
+		"http://",             // no host
+		"not a url",           // garbage
+	}
+	for _, u := range invalid {
+		cfg := DefaultConfig()
+		cfg.Endpoint = EndpointConfig{Kind: "openai", BaseURL: u, Model: "test"}
+		if err := validateURLs(cfg); err == nil {
+			t.Errorf("base_url=%q: expected error, got nil", u)
+		} else if !strings.Contains(err.Error(), "base_url") {
+			t.Errorf("base_url=%q: error should name field 'base_url', got: %v", u, err)
+		}
+	}
+}
+
+func TestValidateURLs_EmptySkips(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Endpoint = EndpointConfig{}
+	cfg.SearXngURL = ""
+	if err := validateURLs(cfg); err != nil {
+		t.Fatalf("empty URLs should skip validation: %v", err)
+	}
+}
+
+func TestValidateURLs_SearXngURL(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Endpoint = EndpointConfig{}
+	cfg.SearXngURL = "not-a-url"
+	if err := validateURLs(cfg); err == nil || !strings.Contains(err.Error(), "searxng_url") {
+		t.Fatalf("expected searxng_url error, got: %v", err)
+	}
+
+	cfg.SearXngURL = "http://localhost:8080"
+	if err := validateURLs(cfg); err != nil {
+		t.Fatalf("valid searxng_url should pass: %v", err)
+	}
+}
+
+func TestValidateURLs_MCPHTTPURL(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Endpoint = EndpointConfig{}
+	cfg.MCPServers = []MCPServerConfig{
+		{Name: "test", Transport: "http", URL: "not-a-url"},
+	}
+	if err := validateURLs(cfg); err == nil || !strings.Contains(err.Error(), "mcp_servers[test].url") {
+		t.Fatalf("expected MCP URL error, got: %v", err)
+	}
+
+	cfg.MCPServers[0].URL = "http://localhost:3000"
+	if err := validateURLs(cfg); err != nil {
+		t.Fatalf("valid MCP URL should pass: %v", err)
+	}
+}
+
+// ---------------- External command validation ----------------
+
+func TestValidateExternalCommands_DefaultPasses(t *testing.T) {
+	cfg := DefaultConfig()
+	if err := validateExternalCommands(cfg); err != nil {
+		t.Fatalf("DefaultConfig should pass: %v", err)
+	}
+}
+
+func TestValidateExternalCommands_MCPStdioRequiresCommand(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MCPServers = []MCPServerConfig{
+		{Name: "test", Transport: "stdio", Command: ""},
+	}
+	if err := validateExternalCommands(cfg); err == nil ||
+		!strings.Contains(err.Error(), "command is required") ||
+		!strings.Contains(err.Error(), "test") {
+		t.Fatalf("expected command-required error naming 'test', got: %v", err)
+	}
+}
+
+func TestValidateExternalCommands_MCPStdioWithCommand(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MCPServers = []MCPServerConfig{
+		{Name: "test", Transport: "stdio", Command: "npx"},
+	}
+	if err := validateExternalCommands(cfg); err != nil {
+		t.Fatalf("stdio with command should pass: %v", err)
+	}
+}
+
+func TestValidateExternalCommands_MCPHTTPRequiresURL(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MCPServers = []MCPServerConfig{
+		{Name: "test", Transport: "http", URL: ""},
+	}
+	if err := validateExternalCommands(cfg); err == nil ||
+		!strings.Contains(err.Error(), "url is required") {
+		t.Fatalf("expected url-required error, got: %v", err)
+	}
+}
+
+func TestValidateExternalCommands_MCPUnknownTransport(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MCPServers = []MCPServerConfig{
+		{Name: "test", Transport: "grpc"},
+	}
+	if err := validateExternalCommands(cfg); err == nil ||
+		!strings.Contains(err.Error(), "unknown transport") {
+		t.Fatalf("expected unknown transport error, got: %v", err)
+	}
+}
+
+func TestValidateExternalCommands_LSPRequiresCommandWhenEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.LSPEnabled = true
+	cfg.LSPServers = map[string]LSPServer{
+		"gopls": {Command: ""},
+	}
+	if err := validateExternalCommands(cfg); err == nil ||
+		!strings.Contains(err.Error(), "gopls") ||
+		!strings.Contains(err.Error(), "command is required") {
+		t.Fatalf("expected LSP command error, got: %v", err)
+	}
+}
+
+func TestValidateExternalCommands_LSPSkippedWhenDisabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.LSPEnabled = false
+	cfg.LSPServers = map[string]LSPServer{
+		"gopls": {Command: ""},
+	}
+	if err := validateExternalCommands(cfg); err != nil {
+		t.Fatalf("LSP validation should skip when disabled: %v", err)
+	}
+}
+
+func TestValidateExternalCommands_LSPWithCommand(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.LSPEnabled = true
+	cfg.LSPServers = map[string]LSPServer{
+		"gopls": {Command: "gopls"},
+	}
+	if err := validateExternalCommands(cfg); err != nil {
+		t.Fatalf("LSP with command should pass: %v", err)
+	}
+}

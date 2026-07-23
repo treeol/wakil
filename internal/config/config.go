@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -843,6 +845,15 @@ func LoadConfig(argv []string) (Config, error) {
 	if err := validateTimeouts(cfg); err != nil {
 		return cfg, err
 	}
+	if err := validateDockerConfig(cfg); err != nil {
+		return cfg, err
+	}
+	if err := validateURLs(cfg); err != nil {
+		return cfg, err
+	}
+	if err := validateExternalCommands(cfg); err != nil {
+		return cfg, err
+	}
 
 	return cfg, nil
 }
@@ -1148,6 +1159,129 @@ func validateEnums(cfg Config) error {
 			return fmt.Errorf("subagent_backend must not contain whitespace (got %q)", cfg.SubagentBackend)
 		}
 	}
+	return nil
+}
+
+// validateDockerConfig checks Docker-related fields for syntactic validity.
+// Only validates non-empty fields — empty means "use default" or "no limit".
+func validateDockerConfig(cfg Config) error {
+	// DockerCaps: normalize to uppercase, strip optional CAP_ prefix.
+	// Syntactic check only — we don't maintain an allowlist because
+	// kernel/Docker versions add new capabilities over time.
+	for i, cap := range cfg.DockerCaps {
+		cap = strings.TrimSpace(cap)
+		if cap == "" {
+			return fmt.Errorf("docker_caps[%d]: empty capability name", i)
+		}
+		cap = strings.ToUpper(cap)
+		cap = strings.TrimPrefix(cap, "CAP_")
+		if !regexp.MustCompile(`^[A-Z_]+$`).MatchString(cap) {
+			return fmt.Errorf("docker_caps[%d]: invalid capability name %q (must be alphanumeric + underscore)", i, cfg.DockerCaps[i])
+		}
+		cfg.DockerCaps[i] = cap
+	}
+
+	// Docker memory size: digits with optional decimal and unit (b/k/m/g).
+	// Case-insensitive — Docker accepts both "4g" and "4G".
+	dockerSizeRe := regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[bBkKmMgG]?$`)
+	if cfg.DockerMemory != "" {
+		mem := strings.TrimSpace(cfg.DockerMemory)
+		if !dockerSizeRe.MatchString(mem) {
+			return fmt.Errorf("docker_memory: invalid size %q (expected e.g. \"4g\", \"512m\", \"1024\")", cfg.DockerMemory)
+		}
+	}
+	if cfg.DockerTmpfsSize != "" {
+		tmpfs := strings.TrimSpace(cfg.DockerTmpfsSize)
+		if !dockerSizeRe.MatchString(tmpfs) {
+			return fmt.Errorf("docker_tmpfs_size: invalid size %q (expected e.g. \"4g\", \"512m\", \"1024\")", cfg.DockerTmpfsSize)
+		}
+	}
+	return nil
+}
+
+// validateURLs checks that non-empty URL fields are absolute HTTP(S) URLs
+// with a non-empty host. Only validates the active resolved endpoint,
+// not inactive entries in the endpoints block.
+func validateURLs(cfg Config) error {
+	// Active endpoint BaseURL.
+	if cfg.Endpoint.BaseURL != "" {
+		if err := validateHTTPURL(cfg.Endpoint.BaseURL, "base_url"); err != nil {
+			return err
+		}
+	}
+
+	// SearXngURL.
+	if cfg.SearXngURL != "" {
+		if err := validateHTTPURL(cfg.SearXngURL, "searxng_url"); err != nil {
+			return err
+		}
+	}
+
+	// MCP HTTP server URLs.
+	for _, srv := range cfg.MCPServers {
+		if srv.Transport == "http" && srv.URL != "" {
+			field := fmt.Sprintf("mcp_servers[%s].url", srv.Name)
+			if err := validateHTTPURL(srv.URL, field); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateHTTPURL checks that a URL is an absolute HTTP(S) URL with a host.
+func validateHTTPURL(raw, fieldName string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("%s: invalid URL %q: %v", fieldName, raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s: must be http or https URL (got %q)", fieldName, raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s: URL must have a host (got %q)", fieldName, raw)
+	}
+	return nil
+}
+
+// validateExternalCommands checks that MCP and LSP server configs have
+// the required fields for their transport type. Only validates when servers
+// are configured.
+func validateExternalCommands(cfg Config) error {
+	// MCP servers: stdio requires Command, http requires URL.
+	for _, srv := range cfg.MCPServers {
+		srvName := srv.Name
+		if srvName == "" {
+			srvName = "(unnamed)"
+		}
+		transport := srv.Transport
+		if transport == "" {
+			transport = "stdio" // default
+		}
+		switch transport {
+		case "stdio":
+			if strings.TrimSpace(srv.Command) == "" {
+				return fmt.Errorf("mcp_servers[%s]: command is required for stdio transport", srvName)
+			}
+		case "http":
+			if strings.TrimSpace(srv.URL) == "" {
+				return fmt.Errorf("mcp_servers[%s]: url is required for http transport", srvName)
+			}
+		default:
+			return fmt.Errorf("mcp_servers[%s]: unknown transport %q (want stdio or http)", srvName, transport)
+		}
+	}
+
+	// LSP servers: validate only when LSP is enabled.
+	if cfg.LSPEnabled {
+		for name, srv := range cfg.LSPServers {
+			if strings.TrimSpace(srv.Command) == "" {
+				return fmt.Errorf("lsp_servers[%s]: command is required when lsp_enabled is true", name)
+			}
+		}
+	}
+
 	return nil
 }
 
