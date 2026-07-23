@@ -168,9 +168,15 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 		time.Sleep(200 * time.Millisecond)
 	}
 	if !cdpReady(cdpURL) {
-		// Chromium didn't start — fetch its logs to help diagnose.
+		// Chromium didn't start — gather diagnostics: logs, listener state,
+		// and the exact chromium process command line.
 		logOut, _ := exe.RunShell(context.Background(), "tail -20 "+logFile)
-		return nil, fmt.Errorf("Chromium did not start in container %s (port %d not responding after 15s). Logs:\n%s", container, cdpContainerPort, strings.TrimSpace(logOut))
+		listenerOut, _ := exe.RunShell(context.Background(), "grep -i 1F96 /proc/net/tcp /proc/net/tcp6 2>/dev/null; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\" {print $2}' 2>/dev/null; true")
+		chromiumCmdline, _ := exe.RunShell(context.Background(), "cat /proc/*/cmdline 2>/dev/null | tr '\\0' ' ' | grep chromium 2>/dev/null | head -3; true")
+		return nil, fmt.Errorf("Chromium did not start in container %s (port %d not responding after 15s).\n"+
+			"Logs:\n%s\n\nListeners on port %d:\n%s\n\nChromium processes:\n%s",
+			container, cdpContainerPort,
+			strings.TrimSpace(logOut), cdpContainerPort, strings.TrimSpace(listenerOut), strings.TrimSpace(chromiumCmdline))
 	}
 
 	// Connect via chromedp.NewRemoteAllocator.
