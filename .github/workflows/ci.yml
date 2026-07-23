@@ -43,6 +43,17 @@ jobs:
       - name: build
         run: go build ./...
 
+      # Pull the wakil-dev sandbox image from Docker Hub so the Docker-
+      # dependent integration tests (internal/exec/live_docker_test.go)
+      # can run in CI. Retag as wakil-dev:latest to match what the test
+      # code expects. Skip gracefully if the pull fails — the tests
+      # self-skip when the image is unavailable.
+      - name: pull sandbox image
+        run: |
+          docker pull valonmamu/wakil-dev:latest \
+            && docker tag valonmamu/wakil-dev:latest wakil-dev:latest \
+            || echo "⚠ wakil-dev image pull failed — Docker integration tests will skip"
+
       - name: test (with coverage)
         run: |
           set -euo pipefail
