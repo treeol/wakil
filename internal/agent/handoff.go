@@ -75,6 +75,10 @@ func performHandoff(ctx context.Context, app *App) Msg {
 	newChatID := NewChatID()
 	workspace := app.SessionWorkspace()
 
+	// Emit progress feedback so the user sees something is happening during
+	// the multi-second summarization (same channel as streaming chunks).
+	app.sendEvent(SysNoteMsg{Text: "· handoff: saving session…"})
+
 	// 1. Save the old session with full transcript before anything else.
 	//    SaveSession is best-effort (swallows errors); we also WriteSession
 	//    directly to surface failures.
@@ -93,7 +97,12 @@ func performHandoff(ctx context.Context, app *App) Msg {
 
 	// 2. Generate the handoff summary via the summarizer (calls the proxy,
 	//    same as /compact). This is the slow step — it runs off the event loop.
-	summary, err := generateHandoffSummary(ctx, app)
+	//    Add a timeout so a hanging backend can't block the handoff forever.
+	app.sendEvent(SysNoteMsg{Text: "· handoff: generating summary…"})
+
+	sumCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	summary, err := generateHandoffSummary(sumCtx, app)
 	if err != nil {
 		return HandoffMsg{
 			OldChatID: oldChatID,
@@ -106,6 +115,7 @@ func performHandoff(ctx context.Context, app *App) Msg {
 
 	// 4. Store the handoff record in durable memory (best-effort) + sidecar
 	//    JSON (always, as audit artifact).
+	app.sendEvent(SysNoteMsg{Text: "· handoff: storing record…"})
 	warnings := storeHandoffRecord(ctx, app, summary, continuationPrompt, oldChatID, newChatID, workspace)
 
 	note := fmt.Sprintf("handoff: %s → summary stored", ShortID(oldChatID))

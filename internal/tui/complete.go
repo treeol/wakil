@@ -68,6 +68,7 @@ var allTUICommands = []candidate{
 	{name: "/compact"},
 	{name: "/counsel", hasArgs: true},
 	{name: "/cwd"},
+	{name: "/handoff"},
 	{name: "/exit"},
 	{name: "/help"},
 	{name: "/history"},
