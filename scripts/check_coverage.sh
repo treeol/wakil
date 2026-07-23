@@ -11,6 +11,9 @@
 # (test-hardening branch, 2026-07-19): agent 68.3, tools 45.5, exec 38.5,
 # proxy 80.2. Raise them (never lower) as coverage improves.
 #
+# Updated 2026-07-23: tools jumped to 60.3% (google_test.go), exec
+# ratcheted to 53.6%, agent to 68.3%. Ratcheted to current−1pt.
+#
 # Usage:
 #   go test -count=1 -cover ./... 2>&1 | scripts/check_coverage.sh
 #   go test -count=1 -cover ./... > cover.txt 2>&1; scripts/check_coverage.sh cover.txt
@@ -51,9 +54,9 @@ check() {
 	fi
 }
 
-check "internal/agent" "67.3"
-check "internal/tools" "44.5"
-check "internal/exec" "37.5"
+check "internal/agent" "68.3"
+check "internal/tools" "59.3"
+check "internal/exec" "53.6"
 check "internal/proxy" "79.2"
 
 if [ "$fail" -ne 0 ]; then
