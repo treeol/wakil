@@ -139,9 +139,13 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 		return nil, fmt.Errorf("chromium binary %q not found in container %s — set browser_enabled:false or install chromium in the image", chromiumBin, container)
 	}
 
-	// Start chromium inside the container. Redirect stdout+stderr to a log file
-	// so RunShell doesn't block on the pipe. Use --remote-debugging-port=9222
-	// which is the in-container port published to the host.
+	// Chromium in --headless=new mode ignores --remote-debugging-address=0.0.0.0
+	// and binds to 127.0.0.1 only (confirmed empirically on Debian Chromium 150).
+	// Docker's -p port forwarding enters via the bridge interface, so it cannot
+	// reach a loopback-only listener. We need a TCP relay inside the container:
+	// listen on 0.0.0.0:9223 (bridge-facing) and forward to 127.0.0.1:9222.
+	// The container has python3 (installed in the Dockerfile).
+	const cdpRelayPort = 9223
 	const cdpContainerPort = 9222
 	const profileDir = "/tmp/wakil-chrome-profile"
 	const logFile = "/tmp/wakil-chrome.log"
@@ -149,11 +153,35 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 	startCmd := fmt.Sprintf(
 		"HOME=/tmp %s --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage"+
-			" --remote-debugging-port=%d --remote-debugging-address=0.0.0.0"+
+			" --remote-debugging-port=%d"+
 			" --user-data-dir=%s >%s 2>&1 &",
 		quote(chromiumBin), cdpContainerPort, profileDir, logFile)
 	if _, err := exe.RunShell(context.Background(), startCmd); err != nil {
 		return nil, fmt.Errorf("cannot start Chromium in container %s (%w) — set browser_enabled:false or install chromium in the image", container, err)
+	}
+
+	// Start the TCP relay inside the container. It listens on 0.0.0.0:9223
+	// (accessible via the Docker bridge) and forwards to 127.0.0.1:9222
+	// (where chromium is actually listening). Using python3 because it's
+	// guaranteed to be in the image (unlike socat or ncat).
+	relayCmd := fmt.Sprintf(
+		`python3 -c '
+import socket,threading,os
+ls=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+ls.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+ls.bind(("0.0.0.0",%d))
+ls.listen(5)
+while True:
+  c,_=ls.accept()
+  try:
+    t=socket.create_connection(("127.0.0.1",%d))
+    for s,d in ((c,t),(t,c)):
+      threading.Thread(target=lambda a,b:__import__("shutil").copyfileobj(a.makefile("rb"),b.makefile("wb")),args=(s,d),daemon=True).start()
+  except: c.close()
+' &`,
+		cdpRelayPort, cdpContainerPort)
+	if _, err := exe.RunShell(context.Background(), relayCmd); err != nil {
+		return nil, fmt.Errorf("cannot start CDP relay in container %s (%w)", container, err)
 	}
 
 	// Connect via the published host port (127.0.0.1:<hostPort>). Poll the
@@ -171,12 +199,12 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 		// Chromium didn't start — gather diagnostics: logs, listener state,
 		// and the exact chromium process command line.
 		logOut, _ := exe.RunShell(context.Background(), "tail -20 "+logFile)
-		listenerOut, _ := exe.RunShell(context.Background(), "grep -i 1F96 /proc/net/tcp /proc/net/tcp6 2>/dev/null; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\" {print $2}' 2>/dev/null; true")
+		listenerOut, _ := exe.RunShell(context.Background(), "grep -E '2406|2407' /proc/net/tcp /proc/net/tcp6 2>/dev/null; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\" {print $2}' 2>/dev/null; true")
 		chromiumCmdline, _ := exe.RunShell(context.Background(), "cat /proc/*/cmdline 2>/dev/null | tr '\\0' ' ' | grep chromium 2>/dev/null | head -3; true")
 		return nil, fmt.Errorf("Chromium did not start in container %s (port %d not responding after 15s).\n"+
-			"Logs:\n%s\n\nListeners on port %d:\n%s\n\nChromium processes:\n%s",
-			container, cdpContainerPort,
-			strings.TrimSpace(logOut), cdpContainerPort, strings.TrimSpace(listenerOut), strings.TrimSpace(chromiumCmdline))
+			"Logs:\n%s\n\nListeners:\n%s\n\nChromium processes:\n%s",
+			container, cdpRelayPort,
+			strings.TrimSpace(logOut), strings.TrimSpace(listenerOut), strings.TrimSpace(chromiumCmdline))
 	}
 
 	// Connect via chromedp.NewRemoteAllocator.

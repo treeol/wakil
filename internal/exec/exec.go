@@ -458,7 +458,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// via chromedp.NewRemoteAllocator. The actual host port is resolved via
 	// docker port after the container starts.
 	if opts.BrowserEnabled {
-		args = append(args, "-p", "127.0.0.1::9222")
+		args = append(args, "-p", "127.0.0.1::9223")
 	}
 
 	// Run as the current host user so files written to the mounted workspace
@@ -613,7 +613,7 @@ func getContainerLogs(name string, lines int) string {
 // container's published CDP port (9222). Returns 0 if the port couldn't be
 // resolved.
 func resolveCDPPort(container string) int {
-	out, err := exec.Command("docker", "port", container, "9222").CombinedOutput()
+	out, err := exec.Command("docker", "port", container, "9223").CombinedOutput()
 	if err != nil {
 		return 0
 	}
