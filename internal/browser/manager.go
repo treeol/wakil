@@ -149,7 +149,7 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 	startCmd := fmt.Sprintf(
 		"HOME=/tmp %s --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage"+
-			" --remote-debugging-port=%d"+
+			" --remote-debugging-port=%d --remote-debugging-address=0.0.0.0"+
 			" --user-data-dir=%s >%s 2>&1 &",
 		quote(chromiumBin), cdpContainerPort, profileDir, logFile)
 	if _, err := exe.RunShell(context.Background(), startCmd); err != nil {

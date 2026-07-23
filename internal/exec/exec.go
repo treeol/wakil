@@ -441,7 +441,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		if err := os.MkdirAll(opts.StagingMount, 0o700); err != nil {
 			return nil, fmt.Errorf("creating staging dir %s: %w", opts.StagingMount, err)
 		}
-		args = append(args, "-v", opts.StagingMount+":"+stagingContainerPath)
+		args = append(args, "-v", opts.StagingMount+":"+stagingContainerPath+":z")
 		args = append(args,
 			"-e", "KVR_SOCKET_PATH="+stagingContainerPath+"/kvr.sock",
 			"-e", "KVR_SNAPSHOT_PATH="+stagingContainerPath+"/staging.kvr",
