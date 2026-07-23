@@ -60,6 +60,7 @@ func (f *fakeLSPExec) Generation() int       { return 1 }
 func (f *fakeLSPExec) KVRSocketPath() string { return "" }
 func (f *fakeLSPExec) KVRAvailable() bool    { return false }
 func (f *fakeLSPExec) ContainerName() string { return "" }
+func (f *fakeLSPExec) CDPPort() int          { return 0 }
 func (f *fakeLSPExec) StartInteractive(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, io.ReadCloser, int, error) {
 	return nil, nil, nil, 0, fmt.Errorf("not implemented in fake executor")
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -102,6 +103,11 @@ type Executor interface {
 	// decide whether to launch Chromium inside the container (docker mode)
 	// or on the host (direct mode).
 	ContainerName() string
+
+	// CDPPort returns the host-side port published for the container's CDP
+	// endpoint (chromium remote debugging), or 0 if not published. The browser
+	// manager uses this to connect via chromedp.NewRemoteAllocator.
+	CDPPort() int
 }
 
 // runFromRoot starts a shell command from root (the workspace root).
@@ -143,6 +149,9 @@ type DockerExecutor struct {
 	stagingMount string // host path of the staging mount; empty = no kvr
 	kvrSocket    string // host-side path to the kvr UDS socket; empty if unavailable
 	kvrAvailable bool   // kvr started and PING succeeded
+	// cdpPort is the host-side port published for chromium's CDP endpoint,
+	// or 0 if not published.
+	cdpPort int
 }
 
 // dockerSocketPath is the host docker socket bind-mounted into the sandbox when
@@ -177,6 +186,10 @@ type DockerOpts struct {
 	DockerMemory    string
 	DockerPidsLimit int
 	DockerTmpfsSize string // /tmp tmpfs size (e.g. "4g"); empty → defaultDockerTmpfsSize
+	// BrowserEnabled controls whether the container publishes a CDP port
+	// (127.0.0.1::9222) for the host-side browser manager to connect to
+	// chromium running inside the container. When false, no port is published.
+	BrowserEnabled bool
 }
 
 // waitForKVR polls the kvr UDS socket with PING until it responds or the
@@ -439,6 +452,15 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		)
 	}
 
+	// Publish the CDP port for the browser manager when browser is enabled.
+	// We publish to 127.0.0.1 with an ephemeral host port (::9222) so the
+	// host-side browser manager can connect to chromium inside the container
+	// via chromedp.NewRemoteAllocator. The actual host port is resolved via
+	// docker port after the container starts.
+	if opts.BrowserEnabled {
+		args = append(args, "-p", "127.0.0.1::9222")
+	}
+
 	// Run as the current host user so files written to the mounted workspace
 	// are owned correctly. A persistent directory on the host serves as HOME
 	// so Go/Cargo module caches survive across sessions.
@@ -495,6 +517,11 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		_ = exec.Command("docker", "rm", "-f", name).Run()
 		return nil, fmt.Errorf("container exited immediately after startup. Logs:\n%s", logs)
 	}
+
+	// Resolve the published CDP port (ephemeral host port → actual port number).
+	if opts.BrowserEnabled {
+		d.cdpPort = resolveCDPPort(name)
+	}
 	if hostMount == "" {
 		// Docker auto-creates the -w workdir at container start even under
 		// --read-only, so this mkdir is a safety net that detects a missing
@@ -532,7 +559,15 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		d.kvrSocket = kvrSocket
 		const kvrTimeout = 5 * time.Second
 		if err := waitForKVR(kvrSocket, kvrTimeout); err != nil {
-			fmt.Fprintf(os.Stderr, "kvr: staging store not ready after %s — staging tools disabled. KVR requires the wakil Docker image with entrypoint.sh and kvr-server. Set kvr_disabled:true or exec_mode:\"direct\" if running outside Docker. Error: %v\n", kvrTimeout, err)
+			// Fetch container logs to help diagnose why kvr-server didn't
+			// start — the entrypoint.sh has no error checking, so a crash
+			// is only visible in docker logs.
+			logs := getContainerLogs(name, 20)
+			msg := fmt.Sprintf("kvr: staging store not ready after %s — staging tools disabled. KVR requires the wakil Docker image with entrypoint.sh and kvr-server. Set kvr_disabled:true or exec_mode:\"direct\" if running outside Docker. Error: %v", kvrTimeout, err)
+			if logs != "" {
+				msg += "\nContainer logs (last 20 lines):\n" + logs
+			}
+			fmt.Fprintf(os.Stderr, "%s\n", msg)
 			d.kvrSocket = ""
 			d.kvrAvailable = false
 		} else {
@@ -561,6 +596,39 @@ func checkContainerExited(name string) (exited bool, logs string) {
 	// Container has exited — fetch logs to help diagnose.
 	logOut, _ := exec.Command("docker", "logs", "--tail", "20", name).CombinedOutput()
 	return true, strings.TrimSpace(string(logOut))
+}
+
+// getContainerLogs returns the last `lines` lines from the container's stdout/
+// stderr. Used for diagnostics when kvr-server or other container processes
+// fail to start.
+func getContainerLogs(name string, lines int) string {
+	out, err := exec.Command("docker", "logs", "--tail", fmt.Sprint(lines), name).CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// resolveCDPPort resolves the ephemeral host port Docker assigned to the
+// container's published CDP port (9222). Returns 0 if the port couldn't be
+// resolved.
+func resolveCDPPort(container string) int {
+	out, err := exec.Command("docker", "port", container, "9222").CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	// Output format: "0.0.0.0:32768\n" or "127.0.0.1:32768\n"
+	s := strings.TrimSpace(string(out))
+	// Extract the port number after the last colon.
+	idx := strings.LastIndex(s, ":")
+	if idx < 0 || idx == len(s)-1 {
+		return 0
+	}
+	port, err := strconv.Atoi(s[idx+1:])
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 // ensurePasswdEntry appends an /etc/passwd entry for the mapped host uid if
@@ -735,6 +803,7 @@ func (d *DockerExecutor) Generation() int       { return d.generation }
 func (d *DockerExecutor) KVRSocketPath() string { return d.kvrSocket }
 func (d *DockerExecutor) KVRAvailable() bool    { return d.kvrAvailable }
 func (d *DockerExecutor) ContainerName() string { return d.container }
+func (d *DockerExecutor) CDPPort() int          { return d.cdpPort }
 func (d *DockerExecutor) Describe() string {
 	sock := ""
 	if d.dockerSock {
@@ -941,6 +1010,7 @@ func (e *DirectExecutor) Generation() int       { return e.generation }
 func (e *DirectExecutor) KVRSocketPath() string { return "" }
 func (e *DirectExecutor) KVRAvailable() bool    { return false }
 func (e *DirectExecutor) ContainerName() string { return "" }
+func (e *DirectExecutor) CDPPort() int          { return 0 }
 func (e *DirectExecutor) Describe() string      { return "direct[" + e.root + "]" }
 func (e *DirectExecutor) Close() error          { return nil }
 

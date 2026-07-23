@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -36,12 +35,14 @@ import (
 
 // SandboxExecutor is the minimal subset of exec.Executor that the browser
 // manager needs. Defined here (not imported from internal/exec) to avoid a
-// circular dependency. In docker mode, RunShell executes inside the container
-// and ContainerName returns the container name. In direct mode, ContainerName
-// returns "".
+// circular dependency. In docker mode, RunShell executes inside the container,
+// ContainerName returns the container name, and CDPPort returns the host-side
+// port published for the container's CDP endpoint. In direct mode,
+// ContainerName returns "" and CDPPort returns 0.
 type SandboxExecutor interface {
 	RunShell(ctx context.Context, command string) (string, error)
 	ContainerName() string
+	CDPPort() int
 }
 
 // defaultTimeout is the per-operation timeout for browser actions. Without
@@ -114,9 +115,18 @@ func cdpReady(cdpURL string) bool {
 }
 
 // newDockerManager launches Chromium inside the Docker container and connects
-// to it via chromedp.NewRemoteAllocator (CDP over WebSocket).
+// to it via chromedp.NewRemoteAllocator (CDP over WebSocket). The container
+// publishes port 9222 to an ephemeral host port (via -p 127.0.0.1::9222 at
+// container creation), which the host-side browser manager connects to via
+// localhost. This avoids container-IP routing issues (Docker Desktop, rootless
+// Docker, firewalls) and works regardless of whether chromium honors
+// --remote-debugging-address=0.0.0.0.
 func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error) {
 	container := exe.ContainerName()
+	hostPort := exe.CDPPort()
+	if hostPort == 0 {
+		return nil, fmt.Errorf("container %s did not publish CDP port 9222 — ensure BrowserEnabled is true in DockerOpts", container)
+	}
 	chromiumBin := browserPath
 	if chromiumBin == "" {
 		chromiumBin = "chromium"
@@ -129,40 +139,27 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 		return nil, fmt.Errorf("chromium binary %q not found in container %s — set browser_enabled:false or install chromium in the image", chromiumBin, container)
 	}
 
-	// Start chromium inside the container with remote debugging.
-	// Redirect both stdout and stderr to a log file so RunShell doesn't block
-	// on the pipe (backgrounding with & alone keeps stdout open). Use a unique
-	// profile dir to avoid lock collisions with previous launches.
-	const cdpPort = 9222
+	// Start chromium inside the container. Redirect stdout+stderr to a log file
+	// so RunShell doesn't block on the pipe. Use --remote-debugging-port=9222
+	// which is the in-container port published to the host.
+	const cdpContainerPort = 9222
 	const profileDir = "/tmp/wakil-chrome-profile"
 	const logFile = "/tmp/wakil-chrome.log"
 	// shellQuote escapes a string for safe use as a single shell argument.
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 	startCmd := fmt.Sprintf(
 		"HOME=/tmp %s --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage"+
-			" --remote-debugging-port=%d --remote-debugging-address=0.0.0.0"+
+			" --remote-debugging-port=%d"+
 			" --user-data-dir=%s >%s 2>&1 &",
-		quote(chromiumBin), cdpPort, profileDir, logFile)
+		quote(chromiumBin), cdpContainerPort, profileDir, logFile)
 	if _, err := exe.RunShell(context.Background(), startCmd); err != nil {
 		return nil, fmt.Errorf("cannot start Chromium in container %s (%w) — set browser_enabled:false or install chromium in the image", container, err)
 	}
 
-	// Get the container's IP address from the host. Take the first network
-	// IP if multiple are present (concatenated by the range format).
-	ipOut, err := exec.Command("docker", "inspect",
-		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", container).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("cannot get container IP for browser CDP connection: %w", err)
-	}
-	ips := strings.Fields(strings.TrimSpace(string(ipOut)))
-	containerIP := "127.0.0.1"
-	if len(ips) > 0 {
-		containerIP = ips[0]
-	}
-
-	// Poll the CDP endpoint until it responds (chromium needs a moment to start).
-	// This is a real retry loop — chromedp.Run fails fast on connection refused.
-	cdpURL := fmt.Sprintf("http://%s:%d", containerIP, cdpPort)
+	// Connect via the published host port (127.0.0.1:<hostPort>). Poll the
+	// CDP /json/version endpoint until it responds — chromium needs a moment
+	// to start, and chromedp.Run fails fast on connection refused.
+	cdpURL := fmt.Sprintf("http://127.0.0.1:%d", hostPort)
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if cdpReady(cdpURL) {
@@ -173,7 +170,7 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 	if !cdpReady(cdpURL) {
 		// Chromium didn't start — fetch its logs to help diagnose.
 		logOut, _ := exe.RunShell(context.Background(), "tail -20 "+logFile)
-		return nil, fmt.Errorf("Chromium did not start in container %s (port %d not responding after 15s). Logs:\n%s", container, cdpPort, strings.TrimSpace(logOut))
+		return nil, fmt.Errorf("Chromium did not start in container %s (port %d not responding after 15s). Logs:\n%s", container, cdpContainerPort, strings.TrimSpace(logOut))
 	}
 
 	// Connect via chromedp.NewRemoteAllocator.

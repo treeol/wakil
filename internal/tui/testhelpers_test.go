@@ -93,6 +93,7 @@ func (f *fakeExecutor) Generation() int       { return 1 }
 func (f *fakeExecutor) KVRSocketPath() string { return "" }
 func (f *fakeExecutor) KVRAvailable() bool    { return false }
 func (f *fakeExecutor) ContainerName() string { return "" }
+func (f *fakeExecutor) CDPPort() int          { return 0 }
 func (f *fakeExecutor) ConfinePath(_ context.Context, path string) (string, error) {
 	return path, nil
 }

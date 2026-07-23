@@ -333,6 +333,7 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 			DockerMemory:            cfg.DockerMemory,
 			DockerPidsLimit:         cfg.DockerPidsLimit,
 			DockerTmpfsSize:         cfg.DockerTmpfsSize,
+			BrowserEnabled:          cfg.BrowserEnabled,
 		})
 	}
 }
