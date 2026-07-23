@@ -32,20 +32,20 @@ func (f *fakeLSPExec) ListDir(_ context.Context, _ string) (string, error) { ret
 func (f *fakeLSPExec) WriteFile(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }
-func (f *fakeLSPExec) Cwd() string             { return "/work" }
-func (f *fakeLSPExec) Describe() string         { return "fake-lsp" }
-func (f *fakeLSPExec) Close() error             { return nil }
-func (f *fakeLSPExec) SandboxTools() string     { return "" }
-func (f *fakeLSPExec) WorkspaceRoot() string    { return "/work" }
+func (f *fakeLSPExec) Cwd() string           { return "/work" }
+func (f *fakeLSPExec) Describe() string      { return "fake-lsp" }
+func (f *fakeLSPExec) Close() error          { return nil }
+func (f *fakeLSPExec) SandboxTools() string  { return "" }
+func (f *fakeLSPExec) WorkspaceRoot() string { return "/work" }
 func (f *fakeLSPExec) ConfinePath(_ context.Context, p string) (string, error) {
 	return p, nil
 }
-func (f *fakeLSPExec) DeletePath(_ context.Context, _ string) error   { return nil }
+func (f *fakeLSPExec) DeletePath(_ context.Context, _ string) error  { return nil }
 func (f *fakeLSPExec) MovePath(_ context.Context, _, _ string) error { return nil }
 func (f *fakeLSPExec) StartBackground(_ context.Context, _, _ string) (int, int, error) {
 	return 0, 0, nil
 }
-func (f *fakeLSPExec) KillPgid(_ context.Context, _, _ int) error    { return nil }
+func (f *fakeLSPExec) KillPgid(_ context.Context, _, _ int) error   { return nil }
 func (f *fakeLSPExec) IsProcessAlive(_ context.Context, _ int) bool { return false }
 func (f *fakeLSPExec) ReadFileTail(_ context.Context, _ string, _ int64) (string, error) {
 	return "", nil

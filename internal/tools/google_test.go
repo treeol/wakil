@@ -202,10 +202,10 @@ func TestParseGoogleDate(t *testing.T) {
 		{"2024/06", true, "20240630", false},
 		// Invalid
 		{"abc", false, "", true},
-		{"2024-13", false, "", true},    // invalid month
-		{"2024-00", false, "", true},    // invalid month
-		{"2024-06-32", false, "", true}, // invalid day
-		{"2024-06-00", false, "", true}, // invalid day
+		{"2024-13", false, "", true},          // invalid month
+		{"2024-00", false, "", true},          // invalid month
+		{"2024-06-32", false, "", true},       // invalid day
+		{"2024-06-00", false, "", true},       // invalid day
 		{"2024-06-15-extra", false, "", true}, // too many parts
 	}
 

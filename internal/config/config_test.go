@@ -543,11 +543,11 @@ func TestValidateURLs_ValidURLs(t *testing.T) {
 
 func TestValidateURLs_InvalidURLs(t *testing.T) {
 	invalid := []string{
-		"localhost:11400",     // no scheme
-		"ftp://example.com",   // wrong scheme
-		"ws://example.com",    // wrong scheme
-		"http://",             // no host
-		"not a url",           // garbage
+		"localhost:11400",   // no scheme
+		"ftp://example.com", // wrong scheme
+		"ws://example.com",  // wrong scheme
+		"http://",           // no host
+		"not a url",         // garbage
 	}
 	for _, u := range invalid {
 		cfg := DefaultConfig()

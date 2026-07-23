@@ -17,8 +17,8 @@ import (
 // defaults; tests override them to inject deterministic HTTP behavior.
 var (
 	googleSearchClient = &http.Client{Timeout: 10 * time.Second}
-	googleFetchClient = &http.Client{Timeout: 15 * time.Second}
-	googleBaseURL     = "https://www.googleapis.com/customsearch/v1"
+	googleFetchClient  = &http.Client{Timeout: 15 * time.Second}
+	googleBaseURL      = "https://www.googleapis.com/customsearch/v1"
 )
 
 // GoogleTools returns the google_search and google_fetch_url tool definitions.
