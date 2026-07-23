@@ -47,64 +47,83 @@ you haven't fully audited.
 
 ## Quickstart
 
-### Option A: Standalone (OpenAI-compatible endpoint)
+### Option A: Sandbox + OpenAI-compatible endpoint
 
-No proxy required — point wakil at any OpenAI-compatible server (llama.cpp,
-Ollama, OpenRouter, vLLM…).
+The default Docker sandbox mode with any OpenAI-compatible server (llama.cpp,
+Ollama, OpenRouter, vLLM…). No proxy required.
 
 ```sh
-# 1. Build
+# 1. Build — single static binary, no runtime deps
 go build -o wakil ./cmd/wakil
 
-# 2. Run — wakil auto-creates ~/.config/wakil/config.json on first run
+# 2. Build the sandbox image (Go, Node, Rust, Python toolchains + gopls, baked in)
+docker build -t wakil-dev .
+
+# 3. Run — wakil auto-creates ~/.config/wakil/config.json on first run
 #    with a minimal template. Edit it to add your endpoint, then re-run.
-./wakil --exec direct ~/projects/myapp
+./wakil ~/projects/myapp
 ```
 
-The auto-created config contains `_comment` keys explaining what to set —
-add an `endpoints` block or set `ILM_BASE_URL`. For a quick start against
-a local server, skip the config file entirely and use an env var:
+The auto-created config contains `_comment` keys explaining what to set — add
+an `endpoints` block or set `ILM_BASE_URL`. For a quick start against a local
+server, skip the config file entirely and use an env var:
 
 ```sh
-ILM_BASE_URL=http://localhost:8080 ILM_MODEL=qwen3.6-35b ./wakil --exec direct
+ILM_BASE_URL=http://localhost:8080 ILM_MODEL=qwen3.6-35b ./wakil ~/projects/myapp
 ```
 
 For OpenRouter, use `https://openrouter.ai/api` as `base_url` and set
 `auth_header` to `"Bearer sk-or-..."`. For Ollama, `http://localhost:11434`
 with model `llama3`.
 
+If Docker or the `wakil-dev` image is missing, wakil prints a clear message
+with build instructions instead of a confusing Docker error — pass
+`--exec direct` to skip Docker entirely (see Option B).
+
 See [`config.example.json`](config.example.json) for a fully commented
 reference covering all options.
 
-### Option B: With sandbox + ilm proxy
+### Option B: No sandbox (direct mode)
+
+Bare-metal execution — no Docker needed. Useful for a quick test or when the
+sandbox image isn't available.
 
 ```sh
-# 1. Build — single static binary, no runtime deps
+# 1. Build
 go build -o wakil ./cmd/wakil
 
-# 2. Build the sandbox image for the default docker exec mode
-#    (Go, Node, Rust, Python toolchains + gopls, baked in)
+# 2. Run in direct mode — workspace arg is optional, defaults to cwd
+ILM_BASE_URL=http://localhost:8080 ILM_MODEL=qwen3.6-35b ./wakil --exec direct ~/projects/myapp
+```
+
+Without Docker, tool calls execute directly on the host. The confirmation gate
+is still on — every write/execute call prompts `y/n` before it runs.
+
+### Option C: Sandbox + ilm proxy
+
+The ilm proxy adds server-side memory and grounding on top of the sandbox.
+Use this when you want the proxy's session persistence and metadata routing.
+
+```sh
+# 1. Build
+go build -o wakil ./cmd/wakil
+
+# 2. Build the sandbox image
 docker build -t wakil-dev .
 
-# 3. Point it at an endpoint and go — workspace arg is optional
-export ILM_BASE_URL='http://proxy-host:11400'   # ilm proxy (legacy shape)
+# 3. Point it at the proxy and go — workspace arg is optional
+export ILM_BASE_URL='http://proxy-host:11400'   # ilm proxy
 ./wakil ~/projects/myapp        # explicit path
 # no argument → auto-mounts the current directory
 cd ~/projects/myapp && ./wakil
 ```
 
-If Docker or the `wakil-dev` image is missing, wakil prints a clear message
-with build instructions instead of a confusing Docker error — pass
-`--exec direct` to skip Docker entirely.
-
-For direct mode against a plain OpenAI-compatible server, declare named
-endpoints in the config file instead (see
-[Endpoints](#endpoints)) — `config.example.json` in this repo is a working
-starting point.
+For the proxy variant, `model` defaults to `ilm` (the proxy's alias routing).
+Declare named endpoints in the config file to switch between proxy and
+direct OpenAI-compatible servers (see [Endpoints](#endpoints)).
 
 Default `docker` mode: one persistent container for the process lifetime,
-every tool call executes inside it. Skip step 2 and pass `--exec direct` to
-run bare-metal on the host instead.
+every tool call executes inside it.
 
 ## Security and the confirmation gate
 
