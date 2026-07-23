@@ -161,23 +161,46 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 	}
 
 	// Start the TCP relay inside the container. It listens on 0.0.0.0:9223
-	// (accessible via the Docker bridge) and forwards to 127.0.0.1:9222
-	// (where chromium is actually listening). Using python3 because it's
-	// guaranteed to be in the image (unlike socat or ncat).
+	// (accessible via the Docker bridge) and forwards bidirectionally to
+	// 127.0.0.1:9222 (where chromium is actually listening). Using python3
+	// because it's guaranteed to be in the image (unlike socat or ncat).
+	// select-based single-threaded loop — handles multiple connections.
 	relayCmd := fmt.Sprintf(
 		`python3 -c '
-import socket,threading,os
+import socket,select,os
 ls=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 ls.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
 ls.bind(("0.0.0.0",%d))
 ls.listen(5)
+pairs={}
+socks=[ls]
 while True:
-  c,_=ls.accept()
-  try:
-    t=socket.create_connection(("127.0.0.1",%d))
-    for s,d in ((c,t),(t,c)):
-      threading.Thread(target=lambda a,b:__import__("shutil").copyfileobj(a.makefile("rb"),b.makefile("wb")),args=(s,d),daemon=True).start()
-  except: c.close()
+  r,_,_=select.select(socks,[],[],1)
+  for s in r:
+    if s is ls:
+      c,_=ls.accept()
+      t=socket.create_connection(("127.0.0.1",%d))
+      t.setblocking(False)
+      c.setblocking(False)
+      pairs[c]=t
+      pairs[t]=c
+      socks.extend([c,t])
+    else:
+      d=pairs.get(s)
+      if not d: continue
+      try:
+        data=s.recv(65536)
+      except:
+        data=b""
+      if not data:
+        if s in socks: socks.remove(s)
+        if d in socks: socks.remove(d)
+        del pairs[s]
+        del pairs[d]
+        s.close()
+        d.close()
+      else:
+        d.sendall(data)
 ' &`,
 		cdpRelayPort, cdpContainerPort)
 	if _, err := exe.RunShell(context.Background(), relayCmd); err != nil {
