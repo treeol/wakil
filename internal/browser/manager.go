@@ -3,15 +3,18 @@
 //
 // It mirrors the lsp_enabled pattern: off by default, gated behind
 // browser_enabled in config.json. When enabled, the browser manager creates
-// a headless Chromium context (launched eagerly at startup by chromedp) and
-// exposes browser_* tools to the agent.
+// a headless Chromium context (launched eagerly at startup) and exposes
+// browser_* tools to the agent.
 //
-// The browser is launched as a child process of the wakil binary itself — it
-// runs in whatever environment wakil runs in (inside the Docker sandbox when
-// using docker exec mode, or directly on the host in direct mode). Navigation
-// is unrestricted — the browser can reach any URL the process's network
-// namespace allows (localhost dev servers, file:// paths, or external URLs if
-// egress is not blocked). The agent is responsible for navigating to
+// In docker exec mode, Chromium is launched INSIDE the sandbox container (via
+// docker exec) and controlled from the host via chromedp.NewRemoteAllocator
+// (CDP over WebSocket). This reuses the chromium installed in the Docker image.
+// In direct mode, Chromium is launched as a child of the wakil process on the
+// host via chromedp.NewExecAllocator.
+//
+// Navigation is unrestricted — the browser can reach any URL accessible from
+// its network namespace (localhost dev servers, file:// paths, or external URLs
+// if egress is not blocked). The agent is responsible for navigating to
 // appropriate URLs; no localhost-only allowlist is enforced.
 package browser
 
@@ -19,14 +22,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/chromedp"
 	"github.com/treeol/wakil/internal/safe"
 )
+
+// SandboxExecutor is the minimal subset of exec.Executor that the browser
+// manager needs. Defined here (not imported from internal/exec) to avoid a
+// circular dependency. In docker mode, RunShell executes inside the container
+// and ContainerName returns the container name. In direct mode, ContainerName
+// returns "".
+type SandboxExecutor interface {
+	RunShell(ctx context.Context, command string) (string, error)
+	ContainerName() string
+}
 
 // defaultTimeout is the per-operation timeout for browser actions. Without
 // this, a navigation to a slow/dead server or a WaitVisible on a missing
@@ -58,50 +74,157 @@ type Manager struct {
 	// --user-data-dir. Required on a --read-only sandbox rootfs (see
 	// NewManager). Removed on Close.
 	userDataDir string
+
+	// dockerExe and dockerContainer are set when the browser runs inside a
+	// Docker container. Close() uses them to kill the container-side chromium
+	// process (NewRemoteAllocator does not own the process lifecycle).
+	dockerExe       SandboxExecutor
+	dockerContainer string
 }
 
-// NewManager creates a new browser Manager and eagerly launches the Chromium
-// process. The browser runs with --no-sandbox (required inside a Docker
-// container that drops all capabilities) and --disable-gpu. Call Close when
-// the session ends to release the process.
-//
-// Eager launch is critical, and HOW it launches matters just as much as WHEN:
-// chromedp ties the browser process's lifetime to whichever context is used
-// for the FIRST chromedp.Run call — not just the allocator context passed to
-// NewExecAllocator. If that first call uses a context derived with
-// context.WithTimeout/WithCancel (even one derived FROM the long-lived m.ctx),
-// canceling that derived context later kills the browser process outright,
-// and every subsequent operation on m.ctx then fails with "context
-// canceled" — permanently, because the browser is dead. This was empirically
-// verified: calling chromedp.Run(derivedCtx) then canceling derivedCtx kills
-// the browser even though m.ctx itself was never touched.
-//
-// The fix: the eager launch call below uses m.ctx DIRECTLY, with no derived
-// timeout/cancel wrapping it. Only SUBSEQUENT per-operation calls (in opCtx)
-// may safely use derived contexts, because by then the browser process is
-// already tied to m.ctx and canceling a later derived child does not tear
-// down the browser — only that one operation's RPC in flight.
-//
-// A writable user-data-dir + HOME are required on a --read-only sandbox
-// rootfs: Chromium's crashpad crash-handler needs a writable directory for
-// its database regardless of --no-sandbox / --disable-crash-reporter, and
-// separately reads $HOME for its own state. Without both, Chromium's helper
-// process crashes with "chrome_crashpad_handler: --database is required"
-// even though the main process appears to start — this was empirically
-// verified against the sandbox's exact hardening flags (--read-only,
-// --cap-drop=ALL, --security-opt=no-new-privileges, --tmpfs=/tmp,
-// --tmpfs=/etc). /tmp is writable (tmpfs) in the sandbox, so both point
-// there.
-//
 // NewManager creates a browser Manager and eagerly launches a headless Chromium
-// instance. The browserPath argument, when non-empty, overrides the Chromium
-// binary location (passed to chromedp.ExecPath). When empty, chromedp searches
-// PATH for google-chrome, chromium, etc.
+// instance. In docker mode (exe.ContainerName() != ""), Chromium is launched
+// INSIDE the container via docker exec, using the image's installed chromium.
+// In direct mode (ContainerName() == ""), Chromium is launched as a child of
+// the wakil process on the host.
+//
+// The browserPath argument, when non-empty, overrides the Chromium binary
+// location. In docker mode this is passed to the container's chromium invocation.
+// In direct mode it is passed to chromedp.ExecPath.
 //
 // Returns an error if Chromium cannot start (missing binary, missing shared
 // libraries, etc.) so the caller can log a clear message at startup instead
 // of masking the failure as "context canceled" on every tool call.
-func NewManager(browserPath string) (*Manager, error) {
+func NewManager(exe SandboxExecutor, browserPath string) (*Manager, error) {
+	if exe != nil && exe.ContainerName() != "" {
+		return newDockerManager(exe, browserPath)
+	}
+	return newLocalManager(browserPath)
+}
+
+// cdpReady checks if the CDP HTTP endpoint responds at the given URL.
+func cdpReady(cdpURL string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(cdpURL + "/json/version")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
+// newDockerManager launches Chromium inside the Docker container and connects
+// to it via chromedp.NewRemoteAllocator (CDP over WebSocket).
+func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error) {
+	container := exe.ContainerName()
+	chromiumBin := browserPath
+	if chromiumBin == "" {
+		chromiumBin = "chromium"
+	}
+
+	// Preflight: verify the chromium binary exists inside the container.
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer checkCancel()
+	if _, err := exe.RunShell(checkCtx, fmt.Sprintf("command -v %s", chromiumBin)); err != nil {
+		return nil, fmt.Errorf("chromium binary %q not found in container %s — set browser_enabled:false or install chromium in the image", chromiumBin, container)
+	}
+
+	// Start chromium inside the container with remote debugging.
+	// Redirect both stdout and stderr to a log file so RunShell doesn't block
+	// on the pipe (backgrounding with & alone keeps stdout open). Use a unique
+	// profile dir to avoid lock collisions with previous launches.
+	const cdpPort = 9222
+	const profileDir = "/tmp/wakil-chrome-profile"
+	const logFile = "/tmp/wakil-chrome.log"
+	// shellQuote escapes a string for safe use as a single shell argument.
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+	startCmd := fmt.Sprintf(
+		"HOME=/tmp %s --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage"+
+			" --remote-debugging-port=%d --remote-debugging-address=0.0.0.0"+
+			" --user-data-dir=%s >%s 2>&1 &",
+		quote(chromiumBin), cdpPort, profileDir, logFile)
+	if _, err := exe.RunShell(context.Background(), startCmd); err != nil {
+		return nil, fmt.Errorf("cannot start Chromium in container %s (%w) — set browser_enabled:false or install chromium in the image", container, err)
+	}
+
+	// Get the container's IP address from the host. Take the first network
+	// IP if multiple are present (concatenated by the range format).
+	ipOut, err := exec.Command("docker", "inspect",
+		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", container).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("cannot get container IP for browser CDP connection: %w", err)
+	}
+	ips := strings.Fields(strings.TrimSpace(string(ipOut)))
+	containerIP := "127.0.0.1"
+	if len(ips) > 0 {
+		containerIP = ips[0]
+	}
+
+	// Poll the CDP endpoint until it responds (chromium needs a moment to start).
+	// This is a real retry loop — chromedp.Run fails fast on connection refused.
+	cdpURL := fmt.Sprintf("http://%s:%d", containerIP, cdpPort)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if cdpReady(cdpURL) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !cdpReady(cdpURL) {
+		// Chromium didn't start — fetch its logs to help diagnose.
+		logOut, _ := exe.RunShell(context.Background(), "tail -20 "+logFile)
+		return nil, fmt.Errorf("Chromium did not start in container %s (port %d not responding after 15s). Logs:\n%s", container, cdpPort, strings.TrimSpace(logOut))
+	}
+
+	// Connect via chromedp.NewRemoteAllocator.
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), cdpURL)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+
+	m := &Manager{
+		allocCtx:    allocCtx,
+		allocCancel: allocCancel,
+		ctx:         browserCtx,
+		ctxCancel:   browserCancel,
+		// Store the executor + container name so Close() can kill the
+		// container-side chromium process.
+		dockerExe:       exe,
+		dockerContainer: container,
+	}
+
+	// Verify the CDP connection works by running a no-op action.
+	launchDone := make(chan error, 1)
+	safe.Go("browser-launch", func() { launchDone <- chromedp.Run(browserCtx) })
+	select {
+	case err := <-launchDone:
+		if err != nil {
+			m.Close()
+			return nil, fmt.Errorf("cannot connect to Chromium in container %s at %s (%w) — ensure chromium is installed in the image", container, cdpURL, err)
+		}
+	case <-time.After(15 * time.Second):
+		m.Close()
+		return nil, fmt.Errorf("timed out connecting to Chromium in container %s at %s after 15s", container, cdpURL)
+	}
+
+	return m, nil
+}
+
+// newLocalManager launches Chromium as a child of the wakil process (host-side)
+// using chromedp.NewExecAllocator. Used in direct mode or when no executor
+// is available.
+//
+// Eager launch is critical: chromedp ties the browser process's lifetime to
+// whichever context is used for the FIRST chromedp.Run call. If that first call
+// uses a context derived with context.WithTimeout/WithCancel, canceling that
+// derived context later kills the browser process outright. The eager launch
+// below uses m.ctx DIRECTLY, with no derived timeout/cancel wrapping it.
+//
+// A writable user-data-dir + HOME are required on a --read-only sandbox rootfs:
+// Chromium's crashpad crash-handler needs a writable directory for its database,
+// and it reads $HOME for its own state. /tmp is writable (tmpfs) in the sandbox,
+// so both point there. This was empirically verified against the sandbox's exact
+// hardening flags (--read-only, --cap-drop=ALL, --security-opt=no-new-privileges,
+// --tmpfs=/tmp, --tmpfs=/etc).
+func newLocalManager(browserPath string) (*Manager, error) {
 	userDataDir, err := os.MkdirTemp("", "wakil-chrome-profile-")
 	if err != nil {
 		return nil, fmt.Errorf("create user-data-dir: %w", err)
@@ -161,7 +284,10 @@ func NewManager(browserPath string) (*Manager, error) {
 }
 
 // Close shuts down the browser process, releases all resources, and removes
-// the temporary user-data-dir.
+// the temporary user-data-dir. For docker-mode managers, also kills the
+// container-side chromium process (NewRemoteAllocator does not own the process
+// lifecycle, so canceling the chromedp context only closes the WebSocket —
+// the chromium process would otherwise leak until the container is destroyed).
 func (m *Manager) Close() error {
 	if m == nil {
 		return nil
@@ -174,6 +300,12 @@ func (m *Manager) Close() error {
 	}
 	if m.userDataDir != "" {
 		os.RemoveAll(m.userDataDir)
+	}
+	// Docker mode: kill the chromium process inside the container.
+	if m.dockerExe != nil && m.dockerContainer != "" {
+		killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer killCancel()
+		_, _ = m.dockerExe.RunShell(killCtx, "pkill -f 'remote-debugging-port=9222' 2>/dev/null; rm -rf /tmp/wakil-chrome-profile /tmp/wakil-chrome.log")
 	}
 	return nil
 }

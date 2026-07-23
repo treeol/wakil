@@ -293,6 +293,7 @@ func (e *erroringExecutor) SandboxTools() string  { return e.base.SandboxTools()
 func (e *erroringExecutor) Generation() int       { return e.base.Generation() }
 func (e *erroringExecutor) KVRSocketPath() string { return e.base.KVRSocketPath() }
 func (e *erroringExecutor) KVRAvailable() bool    { return e.base.KVRAvailable() }
+func (e *erroringExecutor) ContainerName() string { return e.base.ContainerName() }
 func (e *erroringExecutor) ConfinePath(ctx context.Context, p string) (string, error) {
 	return e.base.ConfinePath(ctx, p)
 }

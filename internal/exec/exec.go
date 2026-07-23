@@ -96,6 +96,12 @@ type Executor interface {
 	// KVRAvailable reports whether the kvr staging store started successfully
 	// and is ready to serve requests.
 	KVRAvailable() bool
+
+	// ContainerName returns the Docker container name for docker exec mode,
+	// or "" for direct mode (no container). Used by the browser manager to
+	// decide whether to launch Chromium inside the container (docker mode)
+	// or on the host (direct mode).
+	ContainerName() string
 }
 
 // runFromRoot starts a shell command from root (the workspace root).
@@ -480,6 +486,15 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		dockerSock: dockerSock, signing: opts.Signing.Enabled, generation: 1,
 		stagingMount: opts.StagingMount,
 	}
+
+	// Container health check: docker run -d returns success even if the
+	// container exits immediately (entrypoint not found, binary crash). If
+	// the container has already exited, surface the logs and return an error
+	// — every subsequent command would fail against a dead container.
+	if exited, logs := checkContainerExited(name); exited {
+		_ = exec.Command("docker", "rm", "-f", name).Run()
+		return nil, fmt.Errorf("container exited immediately after startup. Logs:\n%s", logs)
+	}
 	if hostMount == "" {
 		// Docker auto-creates the -w workdir at container start even under
 		// --read-only, so this mkdir is a safety net that detects a missing
@@ -526,6 +541,26 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	}
 
 	return d, nil
+}
+
+// checkContainerExited checks whether the container has already exited (which
+// docker run -d does NOT report as an error). If it has exited, returns true
+// and the container's logs (up to 2KB) to help diagnose why. The container may
+// exit immediately if the entrypoint script is missing, kvr-server crashes, or
+// the image is broken.
+func checkContainerExited(name string) (exited bool, logs string) {
+	out, err := exec.Command("docker", "inspect",
+		"--format", "{{.State.Status}}", name).CombinedOutput()
+	if err != nil {
+		return false, "" // inspect failed — can't determine state, proceed
+	}
+	status := strings.TrimSpace(string(out))
+	if status != "exited" && status != "dead" {
+		return false, ""
+	}
+	// Container has exited — fetch logs to help diagnose.
+	logOut, _ := exec.Command("docker", "logs", "--tail", "20", name).CombinedOutput()
+	return true, strings.TrimSpace(string(logOut))
 }
 
 // ensurePasswdEntry appends an /etc/passwd entry for the mapped host uid if
@@ -699,6 +734,7 @@ func (d *DockerExecutor) WorkspaceRoot() string { return d.workspaceRoot }
 func (d *DockerExecutor) Generation() int       { return d.generation }
 func (d *DockerExecutor) KVRSocketPath() string { return d.kvrSocket }
 func (d *DockerExecutor) KVRAvailable() bool    { return d.kvrAvailable }
+func (d *DockerExecutor) ContainerName() string { return d.container }
 func (d *DockerExecutor) Describe() string {
 	sock := ""
 	if d.dockerSock {
@@ -904,6 +940,7 @@ func (e *DirectExecutor) WorkspaceRoot() string { return e.root }
 func (e *DirectExecutor) Generation() int       { return e.generation }
 func (e *DirectExecutor) KVRSocketPath() string { return "" }
 func (e *DirectExecutor) KVRAvailable() bool    { return false }
+func (e *DirectExecutor) ContainerName() string { return "" }
 func (e *DirectExecutor) Describe() string      { return "direct[" + e.root + "]" }
 func (e *DirectExecutor) Close() error          { return nil }
 

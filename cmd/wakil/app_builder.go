@@ -112,7 +112,7 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 	// Browser manager
 	var browserMgr *browser.Manager
 	if cfg.BrowserEnabled {
-		mgr, err := browser.NewManager(cfg.BrowserPath)
+		mgr, err := browser.NewManager(exe, cfg.BrowserPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "browser:", err)
 			// Disable browser tools so BuildTools doesn't advertise them

@@ -84,6 +84,7 @@ func (f *fakeExecutor) SandboxTools() string  { return "" }
 func (f *fakeExecutor) Generation() int       { return 1 }
 func (f *fakeExecutor) KVRSocketPath() string { return "" }
 func (f *fakeExecutor) KVRAvailable() bool    { return false }
+func (f *fakeExecutor) ContainerName() string { return "" }
 func (f *fakeExecutor) ConfinePath(_ context.Context, path string) (string, error) {
 	if f.confineErrFn != nil {
 		if err := f.confineErrFn(path); err != nil {
