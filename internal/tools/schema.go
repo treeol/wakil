@@ -23,6 +23,11 @@ func BoolProp(desc string) map[string]interface{} {
 	return map[string]interface{}{"type": "boolean", "description": desc}
 }
 
+// ArrProp returns a JSON schema property map for an array of strings with a description.
+func ArrProp(desc string) map[string]interface{} {
+	return map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": desc}
+}
+
 // EnumProp returns a JSON schema property map for a string enum type with a
 // description and the allowed values.
 func EnumProp(desc string, values ...string) map[string]interface{} {
