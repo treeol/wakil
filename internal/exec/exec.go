@@ -413,7 +413,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		if err := os.MkdirAll(hostMount, 0o755); err != nil {
 			return nil, fmt.Errorf("creating host workdir %s: %w", hostMount, err)
 		}
-		args = append(args, "-v", hostMount+":"+workdir)
+		args = append(args, "-v", hostMount+":"+workdir+":z")
 	}
 	if dockerSock {
 		args = append(args, "-v", dockerSocketPath+":"+dockerSocketPath)
@@ -475,7 +475,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 					":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 				args = append(args,
 					"--user", fmt.Sprintf("%d:%d", uid, os.Getgid()),
-					"-v", sandboxHome+":/home/user",
+					"-v", sandboxHome+":/home/user:z",
 					"-e", "HOME=/home/user",
 					"-e", "GOPATH=/home/user/go",
 					"-e", "CARGO_HOME=/home/user/.cargo",
