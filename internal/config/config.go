@@ -153,6 +153,16 @@ type Config struct {
 	// full ceiling with no additional headroom.
 	ContextCapacityFrac float64 `json:"context_capacity_frac,omitempty"`
 
+	// EffectiveCtxMaxChars is an absolute cap (in chars) on the effective context
+	// used to compute compaction thresholds. When the backend reports a large
+	// context window (e.g. 1M tokens → ~3.2M chars effective), models often
+	// become unreliable past ~200k chars regardless of their theoretical limit.
+	// This cap is applied as min(computed_effective_chars, cap) inside
+	// activeThresholds(), before the fractions — so the keepBytes < compactAt <
+	// hardMax hierarchy is preserved automatically. 0 = disabled (use full
+	// backend-reported context). Can be overridden at runtime via /maxctx.
+	EffectiveCtxMaxChars int `json:"effective_ctx_max_chars,omitempty"`
+
 	// Backend-truth context sizing. The authoritative per-slot context window
 	// (n_ctx, in tokens) is fetched from the backend at startup (see ctxlimit.go);
 	// these are the headroom reservations and the fallback used only when that
@@ -1180,6 +1190,11 @@ func validateContextLimits(cfg Config) error {
 	// Valid range is [0, 1.0]; 0 = use default (DefaultConfig supplies 0.80).
 	if cfg.ContextCapacityFrac < 0 || cfg.ContextCapacityFrac > 1.0 {
 		return fmt.Errorf("context_capacity_frac must be in [0, 1.0], got %g (0 = use default)", cfg.ContextCapacityFrac)
+	}
+	// effective_ctx_max_chars: absolute cap on effective context. Negative is
+	// invalid; 0 = disabled (use full backend-reported context).
+	if cfg.EffectiveCtxMaxChars < 0 {
+		return fmt.Errorf("effective_ctx_max_chars must be >= 0 (got %d; 0 = disabled)", cfg.EffectiveCtxMaxChars)
 	}
 	// Subagent budget overrides — reject negative values. Zero means "use default".
 	if cfg.SubagentMaxToolIter < 0 {

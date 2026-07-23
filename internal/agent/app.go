@@ -218,6 +218,12 @@ type App struct {
 	// Toggled by the /rawtools command.
 	RawTools bool
 
+	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
+	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly
+	// disabled (no cap); >0 = cap at this many chars. Applied live in
+	// activeThresholds(), so it survives /backend and /model switches.
+	EffectiveCtxMaxCharsOverride int
+
 	// VerifyEnabled gates the workflow verification runner. When true, the
 	// final review runs deterministic verification commands (from config.Verify
 	// or auto-detected from project manifests) before the oracle review. Set

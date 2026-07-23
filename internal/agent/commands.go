@@ -678,6 +678,35 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		return true, false, note(fmt.Sprintf("max parallel subagents: %d", cur))
 
+	case "/maxctx":
+		// /maxctx [<chars>] — cap the effective context window for models
+		// with large claimed contexts (e.g. 1M tokens) that become unreliable
+		// past ~200k chars. Applied as min(computed_effective, cap) before
+		// compaction fractions. 0 = disabled (use full model context).
+		// Session-scoped, persisted to repo-state.
+		if len(fields) >= 2 {
+			n, err := strconv.Atoi(fields[1])
+			if err != nil || n < 0 {
+				return true, false, note("maxctx: must be a non-negative integer (0 = disabled)")
+			}
+			app.EffectiveCtxMaxCharsOverride = n
+			app.saveRepoState(func(s *RepoState) { s.EffectiveCtxMaxChars = &n })
+			if n == 0 {
+				return true, false, note("effective context cap: disabled (using full model context)")
+			}
+			// Show the resulting thresholds so the user knows what they get.
+			compactAt, _, hardMax := app.activeThresholds()
+			return true, false, note(fmt.Sprintf("effective context cap: %d chars (compact at ~%dk, hard max ~%dk)",
+				n, compactAt/1000, hardMax/1000))
+		}
+		cap := app.effectiveCtxCap()
+		if cap <= 0 {
+			return true, false, note("effective context cap: disabled (using full model context)")
+		}
+		compactAt, _, hardMax := app.activeThresholds()
+		return true, false, note(fmt.Sprintf("effective context cap: %d chars (compact at ~%dk, hard max ~%dk)",
+			cap, compactAt/1000, hardMax/1000))
+
 	case "/counsel":
 		// /counsel [auto|suggest|off] — set or show the auto-counsel mode.
 		if len(fields) < 2 {
@@ -1005,6 +1034,8 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /submodel            show current subagent model
 /maxpar <N>          set max concurrent dispatch_subagent workers (1 = sequential, max 64)
 /maxpar              show current max parallel subagents
+/maxctx <chars>      cap effective context for large models (e.g. 200000 = ~200k chars; 0 = disabled)
+/maxctx              show current effective context cap and resulting thresholds
 /plan <task>         start a gather→plan→review→implement workflow for <task>
 /plan --oracle=MODE  set per-run oracle schedule (every-step|on-deviation|phases-only)
 /plan status         show current workflow phase and step

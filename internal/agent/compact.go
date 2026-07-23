@@ -134,6 +134,15 @@ func (a *App) activeThresholds() (compactAt, keepBytes, hardMax int) {
 		}
 		effectiveChars := int(float64(usable) * capacityFrac * float64(charsPerToken))
 
+		// Apply the effective context cap (config field or /maxctx runtime
+		// override). Large-context models (1M tokens) become unreliable past
+		// ~200k chars; this caps the effective budget before fractions are
+		// applied, preserving the keepBytes < compactAt < hardMax hierarchy.
+		cap := a.effectiveCtxCap()
+		if cap > 0 && effectiveChars > cap {
+			effectiveChars = cap
+		}
+
 		ca := int(a.Cfg.CompactAtFrac * float64(effectiveChars))
 		kb := int(a.Cfg.KeepBytesFrac * float64(effectiveChars))
 		hm := int(a.Cfg.HardMaxFrac * float64(effectiveChars))
@@ -152,6 +161,15 @@ func (a *App) activeThresholds() (compactAt, keepBytes, hardMax int) {
 		ca = a.Cfg.MaxChars
 	}
 	return ca, a.Cfg.KeepBytes, a.Cfg.HardMaxBytes
+}
+
+// effectiveCtxCap returns the active effective-context cap in chars: the /maxctx
+// runtime override if set, otherwise the config field. 0 = no cap.
+func (a *App) effectiveCtxCap() int {
+	if a.EffectiveCtxMaxCharsOverride != -1 {
+		return a.EffectiveCtxMaxCharsOverride
+	}
+	return a.Cfg.EffectiveCtxMaxChars
 }
 
 // fitConvToWindow is the downshift guard: if /backend switched to a backend

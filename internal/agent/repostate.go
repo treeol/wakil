@@ -45,6 +45,13 @@ type RepoState struct {
 	// InfoPanelOpen persists the TUI info panel's open/closed state (WP-9.1).
 	// TUI-only, like AutoApprove — headless run.go never reads it.
 	InfoPanelOpen bool `json:"info_panel_open,omitempty"`
+
+	// EffectiveCtxMaxChars persists the /maxctx session override. nil = not set
+	// (use config default); pointer to 0 = explicitly disabled (no cap); >0 =
+	// cap at this many chars. Pointer is needed because 0 is a valid value
+	// (disabled) and must be distinguishable from "not set". Restored outside
+	// the endpointMatches guard — it's endpoint-independent.
+	EffectiveCtxMaxChars *int `json:"effective_ctx_max_chars,omitempty"`
 }
 
 const repoStateSchemaVersion = 1
@@ -257,6 +264,13 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 	// endpoint-independent, like MaxParallelSubagents). No note — it's a quiet
 	// UI preference, not a settings change the user needs surfaced.
 	app.InfoPanelOpen = st.InfoPanelOpen
+
+	// /maxctx override: nil = not persisted → keep the config default.
+	// Restored outside the endpointMatches guard — it's endpoint-independent.
+	if st.EffectiveCtxMaxChars != nil {
+		app.EffectiveCtxMaxCharsOverride = *st.EffectiveCtxMaxChars
+		applied = append(applied, fmt.Sprintf("maxctx=%d", *st.EffectiveCtxMaxChars))
+	}
 
 	if len(applied) > 0 {
 		result.Note = "repo-state: restored " + strings.Join(applied, ", ") +
