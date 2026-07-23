@@ -268,11 +268,106 @@ func dockerHardeningArgs(opts DockerOpts) []string {
 	return args
 }
 
+// dockerPreflight checks that the Docker CLI binary exists and the daemon is
+// reachable. Returns a clear, actionable error for each failure mode instead
+// of letting the first docker command fail with a confusing message.
+//
+// Layer 1: exec.LookPath("docker") — binary not installed.
+// Layer 2: docker info with a 5s timeout — daemon not running, permission
+// denied, or DOCKER_HOST unreachable.
+func dockerPreflight() error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("docker not found — install Docker or use --exec direct for bare-metal execution")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "info").CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		// Distinguish "daemon not running" from "permission denied" by checking
+		// the output. Docker's error messages include these substrings on the
+		// respective failure modes. We don't parse the output structure — just
+		// check for known substrings and fall back to a generic message.
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("docker daemon not responding (timed out after 5s) — is the Docker daemon running?")
+		}
+		if strings.Contains(msg, "Cannot connect to the Docker daemon") || strings.Contains(msg, "Is the docker daemon running") {
+			return fmt.Errorf("docker daemon is not running — start it (e.g. systemctl start docker) or use --exec direct")
+		}
+		if strings.Contains(msg, "permission denied") || strings.Contains(msg, "Got permission denied") {
+			return fmt.Errorf("docker permission denied — add your user to the docker group (sudo usermod -aG docker $USER) or use --exec direct")
+		}
+		if msg == "" {
+			return fmt.Errorf("docker info failed: %w (is the Docker daemon running?)", err)
+		}
+		return fmt.Errorf("docker info failed: %s: %w", msg, err)
+	}
+	return nil
+}
+
+// checkDockerImage verifies that the named image exists locally. A missing
+// image normally triggers a registry pull attempt by docker run, which for a
+// locally-built image like "wakil-dev" produces a confusing "pull access
+// denied" error. This check surfaces a clear message with build instructions.
+//
+// Uses `docker image inspect` (exit status only, output discarded) rather than
+// parsing `docker images` — simpler and more reliable across Docker versions.
+//
+// For images that look like registry references (contain "/" — e.g.
+// "ghcr.io/org/img:tag" or "ubuntu:24.04"), the error message suggests pulling
+// instead of building, since those are meant to be fetched from a registry.
+func checkDockerImage(image string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", image).CombinedOutput()
+	if err == nil {
+		return nil // image exists
+	}
+	// Distinguish timeout from actual "image not found".
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("docker image inspect timed out for %q — is the Docker daemon responding?", image)
+	}
+	// Check the Docker output for "No such image" to distinguish a genuinely
+	// missing image from other failures (daemon crash, permission, etc.).
+	dockerOut := strings.TrimSpace(string(out))
+	if dockerOut != "" && !strings.Contains(dockerOut, "No such image") && !strings.Contains(dockerOut, "no such image") {
+		// The failure is NOT "image not found" — could be daemon, permission, etc.
+		return fmt.Errorf("docker image inspect failed for %q: %s", image, dockerOut)
+	}
+	// Image is genuinely not present locally. Tailor the message based on
+	// whether this looks like a registry image or a locally-built one.
+	if strings.Contains(image, "/") {
+		return fmt.Errorf("docker image %q not found locally — pull it with:\n"+
+			"    docker pull %s\n"+
+			"Alternatively, use --exec direct for bare-metal execution (no Docker needed).", image, image)
+	}
+	return fmt.Errorf("docker image %q not found locally — build it with:\n"+
+		"    docker build -t %s .\n"+
+		"Run from the wakil repository root where the Dockerfile lives.\n"+
+		"Alternatively, use --exec direct for bare-metal execution (no Docker needed).", image, image)
+}
+
 func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	image, workdir, hostMount, dockerSock := opts.Image, opts.Workdir, opts.HostMount, opts.DockerSock
 	if workdir == "" {
 		workdir = "/work"
 	}
+
+	// Preflight: check Docker CLI is installed and the daemon is reachable
+	// before attempting any docker commands. This produces a clear, actionable
+	// error instead of a confusing "docker run failed:" with an empty or
+	// binary-not-found message.
+	if err := dockerPreflight(); err != nil {
+		return nil, err
+	}
+
+	// Preflight: check the image exists locally. A missing image produces a
+	// confusing "pull access denied" error from docker run (it tries to pull
+	// from a registry). Surface a clear message with build instructions.
+	if err := checkDockerImage(image); err != nil {
+		return nil, err
+	}
+
 	name := "wakil-session-" + fmt.Sprint(os.Getpid()) + "-" + randSuffix(6)
 	// Best-effort remove a stale container from a previous crashed run. The
 	// container name embeds os.Getpid() + 6 random hex chars, so a name
@@ -364,7 +459,11 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 
 	out, err := exec.Command("docker", args...).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("docker run failed: %s", strings.TrimSpace(string(out)))
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return nil, fmt.Errorf("docker run failed: %w", err)
+		}
+		return nil, fmt.Errorf("docker run failed: %s: %w", msg, err)
 	}
 	d := &DockerExecutor{
 		container: name, image: image, workspaceRoot: workdir, hostMount: hostMount,

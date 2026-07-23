@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -684,5 +685,177 @@ func TestValidateExternalCommands_LSPWithCommand(t *testing.T) {
 	}
 	if err := validateExternalCommands(cfg); err != nil {
 		t.Fatalf("LSP with command should pass: %v", err)
+	}
+}
+
+// ---------------- config auto-create on first run ----------------
+
+// TestMaybeCreateDefaultConfig_CreatesFile verifies that a missing config file
+// is created with the default template content and correct permissions.
+func TestMaybeCreateDefaultConfig_CreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	maybeCreateDefaultConfig(cfgPath)
+
+	// File should exist.
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("config file not created: %v", err)
+	}
+
+	// Content should be the default template (contains _comment keys, no endpoints).
+	content := string(b)
+	if !strings.Contains(content, "_comment") {
+		t.Error("created config should contain _comment keys")
+	}
+	if strings.Contains(content, "\"endpoints\"") {
+		t.Error("created config should NOT contain an endpoints block — let the user add their own")
+	}
+
+	// File permissions should be 0600.
+	info, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config file permissions = %o, want 0600", perm)
+	}
+
+	// Dir permissions: t.TempDir() creates the top-level dir with 0755, so
+	// only check permissions on a subdir that maybeCreateDefaultConfig creates
+	// itself. Use a nested path for this.
+	nestedDir := filepath.Join(dir, "nested", "config.json")
+	maybeCreateDefaultConfig(nestedDir)
+	nestedParent := filepath.Dir(nestedDir)
+	dirInfo, err := os.Stat(nestedParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("config dir permissions = %o, want 0700", perm)
+	}
+
+	// The created file should be valid JSON (parses without error).
+	var cfg Config
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("created config is not valid JSON: %v", err)
+	}
+}
+
+// TestMaybeCreateDefaultConfig_NoOverwrite verifies that an existing config
+// file is never overwritten.
+func TestMaybeCreateDefaultConfig_NoOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// Write an existing config.
+	existing := `{"base_url":"http://my-endpoint:11400"}`
+	if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	maybeCreateDefaultConfig(cfgPath)
+
+	// Content should be unchanged.
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != existing {
+		t.Error("maybeCreateDefaultConfig overwrote an existing config file")
+	}
+}
+
+// TestMaybeCreateDefaultConfig_CreatesParentDir verifies that parent directories
+// are created when they don't exist.
+func TestMaybeCreateDefaultConfig_CreatesParentDir(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "subdir", "deeper", "config.json")
+
+	maybeCreateDefaultConfig(cfgPath)
+
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("config file not created in nested dir: %v", err)
+	}
+}
+
+// TestMaybeCreateDefaultConfig_TemplateParsesAsConfig verifies the generated
+// template parses as a valid Config and does not set any endpoint (so defaults
+// stay authoritative).
+func TestMaybeCreateDefaultConfig_TemplateParsesAsConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	maybeCreateDefaultConfig(cfgPath)
+
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("template does not parse as Config: %v", err)
+	}
+	// No endpoints should be set — the user must fill them in.
+	if len(cfg.Endpoints) != 0 {
+		t.Errorf("template should not set endpoints, got %d entries", len(cfg.Endpoints))
+	}
+	// base_url should be empty — so resolveEndpoint will produce the "proxy
+	// address required" error (same as before, but now the user has a file to edit).
+	if cfg.BaseURL != "" {
+		t.Errorf("template should not set base_url, got %q", cfg.BaseURL)
+	}
+}
+
+// TestLoadConfig_FirstRunCreatesConfig verifies the full integration: LoadConfig
+// with a missing config file creates it and fails with the expected endpoint
+// error (since the template has no endpoints).
+func TestLoadConfig_FirstRunCreatesConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	t.Setenv("WAKIL_CONFIG", cfgPath)
+	// Clear endpoint-related env vars so the test is deterministic.
+	t.Setenv("ILM_BASE_URL", "")
+	t.Setenv("WAKIL_BASE_URL", "")
+	t.Setenv("ILM_HOST", "")
+	t.Setenv("WAKIL_HOST", "")
+	t.Setenv("ILM_MODEL", "")
+	t.Setenv("WAKIL_MODEL", "")
+
+	// LoadConfig will find the file missing, create it, then proceed to
+	// resolveEndpoint which should fail with "proxy address required" since
+	// the template has no endpoints or base_url.
+	_, err := LoadConfig(nil)
+	if err == nil {
+		t.Fatal("expected 'proxy address required' error, got nil")
+	}
+	if !strings.Contains(err.Error(), "proxy address required") {
+		t.Fatalf("expected 'proxy address required' error, got: %v", err)
+	}
+
+	// The config file should now exist.
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("config file was not created by LoadConfig: %v", err)
+	}
+}
+
+// TestLoadConfig_ExplicitConfigMissingDoesNotCreate verifies that a missing
+// --config path does NOT trigger auto-creation (the path might be a typo).
+func TestLoadConfig_ExplicitConfigMissingDoesNotCreate(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "typo.json")
+
+	// Pass --config explicitly pointing at a missing path.
+	_, err := LoadConfig([]string{"--config", cfgPath, "--exec", "direct"})
+	if err == nil {
+		t.Fatal("expected error for missing explicit --config, got nil")
+	}
+	// The error should NOT be about proxy address — it should be from later
+	// validation (the config wasn't created, so defaults were used).
+
+	// The file should NOT exist (we don't auto-create for explicit --config).
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Errorf("config file should NOT be created for explicit --config; err=%v", err)
 	}
 }

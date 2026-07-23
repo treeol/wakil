@@ -597,20 +597,67 @@ func defaultConfigPath() string {
 	return filepath.Join(home, ".config", "wakil", "config.json")
 }
 
+// defaultConfigTemplate is the minimal config written on first run. It contains
+// only _comment keys so built-in defaults stay authoritative until the user edits
+// it. No placeholder endpoints or fake secrets — the user fills in their own.
+// Without an "endpoints" block, resolveEndpoint falls back to the legacy path
+// (base_url/model top-level fields or ILM_BASE_URL env var), so the user can
+// either add an endpoints block or set ILM_BASE_URL — whichever they prefer.
+const defaultConfigTemplate = `{
+  "_comment": "Wakil config — edit this file to set your endpoint. You MUST provide at least one endpoint (see below); other fields are optional and use built-in defaults when unset. Precedence: defaults < this file < env < flags. See config.example.json in the repo for a fully commented reference.",
+
+  "_comment_endpoints": "REQUIRED: set at least one endpoint. Either add an \"endpoints\" block here (see config.example.json) or set the ILM_BASE_URL env var. Example: \"endpoints\": {\"local\": {\"kind\": \"openai\", \"base_url\": \"http://localhost:8080\", \"model\": \"qwen3.6-35b\"}}, \"default_endpoint\": \"local\"",
+
+  "_comment_exec": "exec_mode: \"docker\" (default, needs the wakil-dev image — build with: docker build -t wakil-dev .) or \"direct\" (bare-metal, no Docker)."
+}
+`
+
+// maybeCreateDefaultConfig writes a minimal default config file to cfgPath when
+// the file doesn't exist. It creates parent directories with 0o700 and the
+// file with 0o600 (config can hold API keys). Uses O_CREATE|O_EXCL to avoid a
+// race between concurrent first runs. Errors are printed to stderr and swallowed
+// — the caller proceeds with built-in defaults regardless.
+func maybeCreateDefaultConfig(cfgPath string) {
+	dir := filepath.Dir(cfgPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "config: cannot create config dir %s: %v\n", dir, err)
+		return
+	}
+	f, err := os.OpenFile(cfgPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		// Race: another process created it, or it appeared between the
+		// IsNotExist check and here. Either way, not our file to write.
+		if !os.IsExist(err) {
+			fmt.Fprintf(os.Stderr, "config: cannot create default config %s: %v\n", cfgPath, err)
+		}
+		return
+	}
+	defer f.Close()
+	if _, err := f.WriteString(defaultConfigTemplate); err != nil {
+		fmt.Fprintf(os.Stderr, "config: cannot write default config %s: %v\n", cfgPath, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "config: created default config at %s — edit it to set your endpoint, then re-run.\n", cfgPath)
+}
+
 // LoadConfig resolves configuration from all sources.
 func LoadConfig(argv []string) (Config, error) {
 	cfg := DefaultConfig()
 
 	// 1) config file (explicit --config handled by pre-scan; else default path)
 	cfgPath := defaultConfigPath()
+	cfgPathExplicit := false // true when --config flag was used
 	for i := 0; i < len(argv); i++ {
 		switch {
 		case (argv[i] == "--config" || argv[i] == "-config") && i+1 < len(argv):
 			cfgPath = argv[i+1]
+			cfgPathExplicit = true
 		case strings.HasPrefix(argv[i], "--config="):
 			cfgPath = argv[i][len("--config="):]
+			cfgPathExplicit = true
 		case strings.HasPrefix(argv[i], "-config="):
 			cfgPath = argv[i][len("-config="):]
+			cfgPathExplicit = true
 		}
 	}
 	if cfgPath != "" {
@@ -618,6 +665,17 @@ func LoadConfig(argv []string) (Config, error) {
 		if err != nil {
 			if !os.IsNotExist(err) {
 				return cfg, fmt.Errorf("reading %s: %w", cfgPath, err)
+			}
+			// First run: the default config file doesn't exist. Create a minimal
+			// default so the user has a starting point to edit. The file contains
+			// only _comment keys — built-in defaults from DefaultConfig() remain
+			// authoritative until the user edits it.
+			//
+			// Only auto-create for the default config path. If the user passed
+			// --config explicitly, the path might be a typo — erroring is better
+			// than silently creating a file at the wrong location.
+			if !cfgPathExplicit {
+				maybeCreateDefaultConfig(cfgPath)
 			}
 		} else if err := json.Unmarshal(b, &cfg); err != nil {
 			return cfg, fmt.Errorf("parsing %s: %w", cfgPath, err)
