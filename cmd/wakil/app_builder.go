@@ -112,9 +112,13 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 	// Browser manager
 	var browserMgr *browser.Manager
 	if cfg.BrowserEnabled {
-		mgr, err := browser.NewManager()
+		mgr, err := browser.NewManager(cfg.BrowserPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "browser:", err)
+			// Disable browser tools so BuildTools doesn't advertise them
+			// when the manager failed to init — otherwise the model sees
+			// browser tools but every call returns an error.
+			cfg.BrowserEnabled = false
 		} else {
 			browserMgr = mgr
 		}

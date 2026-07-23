@@ -370,6 +370,12 @@ type Config struct {
 	// When enabled, chromium must be installed in the sandbox image.
 	BrowserEnabled bool `json:"browser_enabled,omitempty"`
 
+	// BrowserPath overrides the Chromium/Chrome binary path. When empty,
+	// chromedp searches PATH for google-chrome, chromium, etc. Set this to
+	// point to a specific binary (e.g. "/usr/bin/chromium") when the browser
+	// is installed at a non-standard location or not in PATH.
+	BrowserPath string `json:"browser_path,omitempty"`
+
 	// Runtime-only flags (never read from / written to the JSON config file).
 	Resume       bool   `json:"-"` // resume the most recent session
 	ResumeID     string `json:"-"` // resume a session by chat_id or unique prefix

@@ -892,7 +892,7 @@ func (a *App) handleLSPReadOnly(ctx context.Context, tc proxy.ToolCall) string {
 
 // handleBrowserTool dispatches headless browser tools (navigate, screenshot,
 // viewport, click, eval, text, html, reduced_motion). Read-only/interactive —
-// no confirmation needed (the browser runs inside the sandbox).
+// no confirmation needed (the browser runs as a child of the wakil process).
 func (a *App) handleBrowserTool(ctx context.Context, tc proxy.ToolCall) string {
 	if a.Browser == nil {
 		return "[browser: browser tools are not enabled. Configure browser_enabled in config.]"

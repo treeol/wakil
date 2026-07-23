@@ -3,15 +3,16 @@
 //
 // It mirrors the lsp_enabled pattern: off by default, gated behind
 // browser_enabled in config.json. When enabled, the browser manager creates
-// a headless Chromium context (launched lazily on first use by chromedp) and
+// a headless Chromium context (launched eagerly at startup by chromedp) and
 // exposes browser_* tools to the agent.
 //
-// The browser runs inside the sandbox container (chromium is installed in the
-// Dockerfile image). Navigation is unrestricted — the browser can reach any
-// URL the container's network namespace allows (localhost dev servers,
-// file:// paths, or external URLs if egress is not blocked). The agent is
-// responsible for navigating to appropriate URLs; no localhost-only allowlist
-// is enforced.
+// The browser is launched as a child process of the wakil binary itself — it
+// runs in whatever environment wakil runs in (inside the Docker sandbox when
+// using docker exec mode, or directly on the host in direct mode). Navigation
+// is unrestricted — the browser can reach any URL the process's network
+// namespace allows (localhost dev servers, file:// paths, or external URLs if
+// egress is not blocked). The agent is responsible for navigating to
+// appropriate URLs; no localhost-only allowlist is enforced.
 package browser
 
 import (
@@ -34,11 +35,12 @@ import (
 const defaultTimeout = 30 * time.Second
 
 // Manager owns a headless Chromium browser context and provides the tool
-// handlers for browser_* operations. It is nil when BrowserEnabled is false.
+// handlers for browser_* operations. It is nil when BrowserEnabled is false
+// or when browser launch failed at startup.
 //
-// The manager creates a single browser context (lazily — chromedp starts the
-// Chromium process on the first chromedp.Run call, not at construction).
-// All operations reuse the default tab; the agent can set viewport, emulate
+// The manager eagerly launches Chromium in NewManager (see the doc comment
+// there for why the first chromedp.Run must use m.ctx directly). All
+// operations reuse the default tab; the agent can set viewport, emulate
 // media features, click, evaluate JS, extract text/HTML, and capture
 // screenshots.
 type Manager struct {
@@ -91,13 +93,18 @@ type Manager struct {
 // --tmpfs=/etc). /tmp is writable (tmpfs) in the sandbox, so both point
 // there.
 //
+// NewManager creates a browser Manager and eagerly launches a headless Chromium
+// instance. The browserPath argument, when non-empty, overrides the Chromium
+// binary location (passed to chromedp.ExecPath). When empty, chromedp searches
+// PATH for google-chrome, chromium, etc.
+//
 // Returns an error if Chromium cannot start (missing binary, missing shared
 // libraries, etc.) so the caller can log a clear message at startup instead
 // of masking the failure as "context canceled" on every tool call.
-func NewManager() (*Manager, error) {
+func NewManager(browserPath string) (*Manager, error) {
 	userDataDir, err := os.MkdirTemp("", "wakil-chrome-profile-")
 	if err != nil {
-		return nil, fmt.Errorf("browser: create user-data-dir: %w", err)
+		return nil, fmt.Errorf("create user-data-dir: %w", err)
 	}
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -108,6 +115,9 @@ func NewManager() (*Manager, error) {
 		chromedp.UserDataDir(userDataDir),
 		chromedp.Env("HOME="+os.TempDir()),
 	)
+	if browserPath != "" {
+		allocOpts = append(allocOpts, chromedp.ExecPath(browserPath))
+	}
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
@@ -118,6 +128,12 @@ func NewManager() (*Manager, error) {
 		ctx:         ctx,
 		ctxCancel:   ctxCancel,
 		userDataDir: userDataDir,
+	}
+
+	// triedMsg returns a human-readable description of what binary was attempted.
+	triedMsg := "PATH search (google-chrome, chromium, etc.)"
+	if browserPath != "" {
+		triedMsg = fmt.Sprintf("browser_path=%q", browserPath)
 	}
 
 	// Eager launch: run a no-op action to start the browser process now,
@@ -134,11 +150,11 @@ func NewManager() (*Manager, error) {
 	case err := <-launchDone:
 		if err != nil {
 			m.Close()
-			return nil, fmt.Errorf("browser: failed to launch Chromium (check that chromium is installed with all shared libraries, and that /tmp is writable for the crash-handler database — try 'chromium --headless=new --no-sandbox --user-data-dir=/tmp/probe --dump-dom about:blank' in the container): %w", err)
+			return nil, fmt.Errorf("cannot start Chromium, tried %s (%w) — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg, err)
 		}
 	case <-time.After(15 * time.Second):
 		m.Close()
-		return nil, fmt.Errorf("browser: timed out launching Chromium after 15s (check that chromium is installed and can start — try 'chromium --headless=new --no-sandbox --user-data-dir=/tmp/probe --dump-dom about:blank' in the container)")
+		return nil, fmt.Errorf("timed out launching Chromium after 15s, tried %s — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg)
 	}
 
 	return m, nil

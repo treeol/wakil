@@ -179,15 +179,18 @@ type DockerOpts struct {
 func waitForKVR(socketPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	pingFrame := []byte{0x00, 0x00, 0x00, 0x01, 0x03} // len=1, PING
+	var lastErr error
 
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
 		if err != nil {
+			lastErr = err
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 		if _, err := conn.Write(pingFrame); err != nil {
+			lastErr = err
 			conn.Close()
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -195,18 +198,21 @@ func waitForKVR(socketPath string, timeout time.Duration) error {
 		// Read response: 4B length + payload.
 		var lenBuf [4]byte
 		if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+			lastErr = err
 			conn.Close()
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		respLen := binary.BigEndian.Uint32(lenBuf[:])
 		if respLen == 0 || respLen > 1<<20 {
+			lastErr = fmt.Errorf("invalid response length %d", respLen)
 			conn.Close()
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		resp := make([]byte, respLen)
 		if _, err := io.ReadFull(conn, resp); err != nil {
+			lastErr = err
 			conn.Close()
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -215,7 +221,11 @@ func waitForKVR(socketPath string, timeout time.Duration) error {
 		if len(resp) >= 1 && resp[0] == 0x10 { // RESP_OK
 			return nil
 		}
+		lastErr = fmt.Errorf("unexpected response opcode 0x%02x", resp[0])
 		time.Sleep(100 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("kvr did not become ready within %s (last error: %v)", timeout, lastErr)
 	}
 	return fmt.Errorf("kvr did not become ready within %s", timeout)
 }
@@ -505,8 +515,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	if kvrEnabled {
 		kvrSocket := filepath.Join(opts.StagingMount, "kvr.sock")
 		d.kvrSocket = kvrSocket
-		if err := waitForKVR(kvrSocket, 5*time.Second); err != nil {
-			fmt.Fprintf(os.Stderr, "kvr: staging store not ready (staging unavailable): %v\n", err)
+		const kvrTimeout = 5 * time.Second
+		if err := waitForKVR(kvrSocket, kvrTimeout); err != nil {
+			fmt.Fprintf(os.Stderr, "kvr: staging store not ready after %s — staging tools disabled. KVR requires the wakil Docker image with entrypoint.sh and kvr-server. Set kvr_disabled:true or exec_mode:\"direct\" if running outside Docker. Error: %v\n", kvrTimeout, err)
 			d.kvrSocket = ""
 			d.kvrAvailable = false
 		} else {

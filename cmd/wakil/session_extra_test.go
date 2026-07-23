@@ -12,6 +12,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/workflow"
+	"github.com/treeol/wakil/prompts"
 
 	gosdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -276,15 +277,24 @@ func TestPrettyArgs(t *testing.T) {
 // --- main helpers ---
 
 func TestLoadAgentPromptFallbackAndFile(t *testing.T) {
-	// Missing path → built-in fallback.
-	if got := loadAgentPrompt(config.Config{AgentPromptPath: ""}); got != defaultAgentPrompt {
-		t.Errorf("empty path should yield the built-in fallback")
+	// Missing path → embedded prompt.
+	embedded := strings.TrimRight(prompts.EmbeddedAgentPrompt, "\n")
+	if got := loadAgentPrompt(config.Config{AgentPromptPath: ""}); got != embedded {
+		t.Errorf("empty path should yield the embedded prompt")
 	}
-	if got := loadAgentPrompt(config.Config{AgentPromptPath: "/no/such/file.txt"}); got != defaultAgentPrompt {
-		t.Errorf("unreadable path should yield the built-in fallback")
+	if got := loadAgentPrompt(config.Config{AgentPromptPath: "/no/such/file.txt"}); got != embedded {
+		t.Errorf("unreadable path should yield the embedded prompt")
+	}
+	// Empty file → embedded prompt (not an empty system prompt).
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(emptyPath, []byte("   \n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadAgentPrompt(config.Config{AgentPromptPath: emptyPath}); got != embedded {
+		t.Errorf("empty file should yield the embedded prompt, got len=%d", len(got))
 	}
 	// Real file → its contents (trailing newline trimmed).
-	dir := t.TempDir()
 	p := filepath.Join(dir, "agent.txt")
 	if err := os.WriteFile(p, []byte("custom instructions\n"), 0o644); err != nil {
 		t.Fatal(err)

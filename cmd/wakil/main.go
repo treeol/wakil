@@ -14,6 +14,7 @@ import (
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tui"
+	"github.com/treeol/wakil/prompts"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -336,25 +337,26 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 	}
 }
 
-// defaultAgentPrompt is the built-in fallback used when agent_prompt_path is
-// missing or unreadable. Intentionally minimal — the real instructions live in
-// the agent.txt file shipped alongside the config.
-const defaultAgentPrompt = "You are Wakil, a terminal coding agent. Complete the stated task with the fewest correct actions, then report what you actually did. You are not done until the result is verified."
-
 // loadAgentPrompt reads the agent operating instructions from cfg.AgentPromptPath.
-// On success it logs the byte count and returns the content. On any failure it
-// logs a warning and returns the built-in fallback so the process always has a
-// usable system prompt.
+// On success it logs the byte count and returns the content. On any failure
+// (missing file, read error, empty file, or no path configured) it logs a
+// warning and returns the full embedded prompt from prompts/agent.txt so the
+// process always has a complete system prompt — the bare binary is self-contained.
 func loadAgentPrompt(cfg config.Config) string {
+	embedded := strings.TrimRight(prompts.EmbeddedAgentPrompt, "\n")
 	path := cfg.AgentPromptPath
 	if path == "" {
-		fmt.Fprintln(os.Stderr, "agent prompt: no path configured, using built-in fallback")
-		return defaultAgentPrompt
+		fmt.Fprintln(os.Stderr, "agent prompt: no path configured, using embedded prompt")
+		return embedded
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using built-in fallback\n", path, err)
-		return defaultAgentPrompt
+		fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using embedded prompt\n", path, err)
+		return embedded
+	}
+	if len(strings.TrimSpace(string(b))) == 0 {
+		fmt.Fprintf(os.Stderr, "agent prompt: warning: %s is empty — using embedded prompt\n", path)
+		return embedded
 	}
 	prompt := strings.TrimRight(string(b), "\n")
 	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)

@@ -313,10 +313,17 @@ reference covering every section below.
 
 ### Agent prompt
 
-The system prompt is loaded once at startup from `agent.txt` next to the
-config file (override with `agent_prompt_path`). The source of truth is
-tracked in this repo at [`prompts/agent.txt`](prompts/agent.txt) — copy or
-symlink it into your config directory:
+The system prompt is loaded once at startup. Precedence:
+
+1. **`agent_prompt_path`** in config (or `agent.txt` next to the config file by
+   default) — if the file is readable, it is used.
+2. **Embedded prompt** — the full `prompts/agent.txt` is baked into the binary
+   via `go:embed`. If no file is found or the file is unreadable, the embedded
+   full prompt is used automatically. The bare binary is self-contained — no
+   symlink or copy is needed for the default experience.
+
+To customize the prompt, copy or symlink the source file into your config
+directory:
 
 ```sh
 ln -sf "$(pwd)/prompts/agent.txt" ~/.config/wakil/agent.txt
