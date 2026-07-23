@@ -56,23 +56,17 @@ Ollama, OpenRouter, vLLM…).
 # 1. Build
 go build -o wakil ./cmd/wakil
 
-# 2. Configure — minimal config with a named endpoint
-mkdir -p ~/.config/wakil
-cat > ~/.config/wakil/config.json <<'EOF'
-{
-  "endpoints": {
-    "local": {
-      "kind": "openai",
-      "base_url": "http://localhost:8080",
-      "model": "qwen3.6-35b"
-    }
-  },
-  "default_endpoint": "local"
-}
-EOF
-
-# 3. Run in direct mode (no Docker needed for a quick test)
+# 2. Run — wakil auto-creates ~/.config/wakil/config.json on first run
+#    with a minimal template. Edit it to add your endpoint, then re-run.
 ./wakil --exec direct ~/projects/myapp
+```
+
+The auto-created config contains `_comment` keys explaining what to set —
+add an `endpoints` block or set `ILM_BASE_URL`. For a quick start against
+a local server, skip the config file entirely and use an env var:
+
+```sh
+ILM_BASE_URL=http://localhost:8080 ILM_MODEL=qwen3.6-35b ./wakil --exec direct
 ```
 
 For OpenRouter, use `https://openrouter.ai/api` as `base_url` and set
@@ -98,6 +92,10 @@ export ILM_BASE_URL='http://proxy-host:11400'   # ilm proxy (legacy shape)
 # no argument → auto-mounts the current directory
 cd ~/projects/myapp && ./wakil
 ```
+
+If Docker or the `wakil-dev` image is missing, wakil prints a clear message
+with build instructions instead of a confusing Docker error — pass
+`--exec direct` to skip Docker entirely.
 
 For direct mode against a plain OpenAI-compatible server, declare named
 endpoints in the config file instead (see
@@ -169,9 +167,10 @@ operating on untrusted content.
 ## Configuration
 
 Precedence: **defaults < config file < env < flags**. Config file is JSON at
-`~/.config/wakil/config.json`, overridable via `WAKIL_CONFIG` / `--config`.
-Env vars use `WAKIL_*` (preferred) or `ILM_*` (legacy aliases, same
-precedence).
+`~/.config/wakil/config.json`, overridable via `WAKIL_CONFIG` / `--config`. On
+first run, wakil auto-creates this file with a minimal template if it doesn't
+exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
+`ILM_*` (legacy aliases, same precedence).
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
