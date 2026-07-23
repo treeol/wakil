@@ -3,10 +3,7 @@ package lsp
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
-
-	"github.com/treeol/wakil/internal/exec"
 )
 
 // ─── File synchronization (Decision 3, R3) ────────────────────────────────────
@@ -16,8 +13,9 @@ import (
 //   - didChange (full sync) after every edit_file/write_file.
 //   - run_shell lazy invalidation (R3): after a non-read-only shell command,
 //     mark all open files dirty (a flag, no I/O). On the NEXT query touching a
-//     dirty file, stat it; if mtime+size changed since last sync, didChange
-//     from disk before issuing the request. If unchanged, clear the flag.
+//     dirty file, read it and compare against the last-synced content. If
+//     different, send didChange from disk before issuing the request. If
+//     identical, clear the flag.
 //   - For unopened files the shell created/deleted: one batched
 //     workspace/didChangeWatchedFiles after the non-read-only shell.
 //
@@ -30,7 +28,6 @@ import (
 type fileSyncState struct {
 	version    int32
 	content    string // last-synced content (for didChange full sync)
-	size       int64
 	languageID string
 }
 
@@ -70,10 +67,6 @@ func (f *fileSyncManager) ensureOpen(ctx context.Context, srv *Server, hostPath,
 			version:    version,
 			content:    content,
 			languageID: languageID,
-		}
-		// Stat for mtime+size (for the dirty-flag mtime guard).
-		if size, err := srv.mgr.exec.StatFile(ctx, hostPath); err == nil {
-			doc.size = size
 		}
 		f.docs[uri] = doc
 		f.mu.Unlock()
@@ -115,9 +108,6 @@ func (f *fileSyncManager) notifyChange(ctx context.Context, srv *Server, hostPat
 
 	doc.version++
 	doc.content = content
-	if size, err := srv.mgr.exec.StatFile(ctx, hostPath); err == nil {
-		doc.size = size
-	}
 	// Clear dirty flag — we're syncing now.
 	delete(f.dirty, uri)
 	f.mu.Unlock()
@@ -135,8 +125,9 @@ func (f *fileSyncManager) markDirty() {
 	}
 }
 
-// syncIfDirty checks if a file is dirty and re-syncs it if mtime+size changed.
-// Called before issuing a query on that file. Returns true if a resync happened.
+// syncIfDirty checks if a file is dirty and re-syncs it if the content
+// changed since the last sync. Called before issuing a query on that file.
+// Returns true if a resync happened.
 func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri string) (bool, error) {
 	f.mu.Lock()
 	dirty := f.dirty[uri]
@@ -152,7 +143,7 @@ func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri stri
 		return false, nil
 	}
 
-	// Translate URI back to host path to stat.
+	// Translate URI back to host path to read the file.
 	hostPath, err := srv.mgr.exec.URIToHostPath(uri)
 	if err != nil {
 		// Can't translate (e.g. GOROOT path) — clear dirty, skip.
@@ -160,10 +151,14 @@ func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri stri
 		f.mu.Unlock()
 		return false, nil
 	}
+
+	// Capture version for concurrent-write guard.
+	version := f.docs[uri].version
 	f.mu.Unlock()
 
-	// Stat the file on disk.
-	size, err := srv.mgr.exec.StatFile(ctx, hostPath)
+	// Read the file on disk (outside the mutex — I/O in Docker mode is a
+	// docker exec round-trip and must not serialize file sync).
+	content, err := srv.mgr.exec.ReadFile(ctx, hostPath)
 	if err != nil {
 		// File may have been deleted — clear dirty, skip.
 		f.mu.Lock()
@@ -172,7 +167,8 @@ func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri stri
 		return false, nil
 	}
 
-	// Compare against last-synced state (NOT mark-time state — R3 cumulative).
+	// Re-check state under the lock: a concurrent notifyChange or another
+	// syncIfDirty may have already synced this file.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -182,21 +178,22 @@ func (f *fileSyncManager) syncIfDirty(ctx context.Context, srv *Server, uri stri
 		return false, nil
 	}
 
-	if size == doc.size {
+	// Version guard: if another sync already updated the content,
+	// our read is stale — skip to avoid regressing content.
+	if doc.version != version {
+		delete(f.dirty, uri)
+		return false, nil
+	}
+
+	if content == doc.content {
 		// File unchanged since last sync — clear dirty, skip.
 		delete(f.dirty, uri)
 		return false, nil
 	}
 
-	// File changed — re-read and didChange.
-	content, err := srv.mgr.exec.ReadFile(ctx, hostPath)
-	if err != nil {
-		return false, fmt.Errorf("reading file for dirty resync: %w", err)
-	}
-
+	// File changed — update state, then send didChange (outside lock).
 	doc.version++
 	doc.content = content
-	doc.size = size
 	delete(f.dirty, uri)
 
 	return true, srv.DidChange(ctx, uri, content)
@@ -380,12 +377,6 @@ func (m *Manager) BatchNotifyWatchedFiles(ctx context.Context) {
 // ─── Server fileSync field ──────────────────────────────────────────────────
 //
 // The fileSync manager is per-server. We initialize it lazily in newServerLocked.
-
-// Ensure the Server struct has a fileSync field. This is added to manager.go's
-// Server struct — we access it via srv.fileSync() which lazy-initializes.
-
-var _ = os.Stat
-var _ exec.Executor
 
 // fileSync returns the server's file-sync manager, initializing it lazily.
 func (s *Server) fileSync() *fileSyncManager {
