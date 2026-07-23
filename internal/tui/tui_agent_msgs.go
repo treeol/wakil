@@ -429,13 +429,13 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.searchExit(false)
 		}
 
-		// Revoke all session consent before rotating — the new session starts
-		// clean. RevokeAuto clears AutoApprove + AllowDestructive (pair
-		// invariant); AllowReads is cleared separately. Persist AutoApprove=
-		// false so repo-state doesn't restore it.
-		m.app.RevokeAuto()
-		m.app.SetAllowReads(false)
-		m.app.SaveRepoState(func(s *agent.RepoState) { s.AutoApprove = false })
+		// Consent policy: auto mode survives handoff (same as /new — the user
+		// is continuing the same work in the same workspace). Only pending
+		// grants are cleared (below, same as NewConvMsg) — a deferred /auto
+		// grant belongs to the old conversation's turn cycle.
+		// This is deliberately different from the original Mashūra plan, which
+		// revoked all consent. The user's intent is seamless continuation, not
+		// a security reset — revoking auto breaks overnight unattended work.
 
 		// Clear pending images — they belong to the old session.
 		m.app.PendingImages = nil
