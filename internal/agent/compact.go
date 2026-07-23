@@ -138,7 +138,7 @@ func (a *App) activeThresholds() (compactAt, keepBytes, hardMax int) {
 		// override). Large-context models (1M tokens) become unreliable past
 		// ~200k chars; this caps the effective budget before fractions are
 		// applied, preserving the keepBytes < compactAt < hardMax hierarchy.
-		cap := a.effectiveCtxCap()
+		cap := a.EffectiveCtxCap()
 		if cap > 0 && effectiveChars > cap {
 			effectiveChars = cap
 		}
@@ -163,9 +163,9 @@ func (a *App) activeThresholds() (compactAt, keepBytes, hardMax int) {
 	return ca, a.Cfg.KeepBytes, a.Cfg.HardMaxBytes
 }
 
-// effectiveCtxCap returns the active effective-context cap in chars: the /maxctx
+// EffectiveCtxCap returns the active effective-context cap in chars: the /maxctx
 // runtime override if set, otherwise the config field. 0 = no cap.
-func (a *App) effectiveCtxCap() int {
+func (a *App) EffectiveCtxCap() int {
 	if a.EffectiveCtxMaxCharsOverride != -1 {
 		return a.EffectiveCtxMaxCharsOverride
 	}

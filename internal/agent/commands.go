@@ -699,7 +699,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return true, false, note(fmt.Sprintf("effective context cap: %d chars (compact at ~%dk, hard max ~%dk)",
 				n, compactAt/1000, hardMax/1000))
 		}
-		cap := app.effectiveCtxCap()
+		cap := app.EffectiveCtxCap()
 		if cap <= 0 {
 			return true, false, note("effective context cap: disabled (using full model context)")
 		}
