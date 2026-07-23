@@ -106,14 +106,14 @@ func TestActiveThresholdsAppliesCap(t *testing.T) {
 	app.Cfg.SummaryBytes = 20000
 
 	// Without cap: effectiveChars = 1M * 0.80 * 4 = 3.2M → compactAt ~2.4M
-	compactAt, _, hardMax := app.activeThresholds()
+	compactAt, _, _ := app.activeThresholds()
 	if compactAt < 2000000 {
 		t.Errorf("without cap, compactAt should be ~2.4M; got %d", compactAt)
 	}
 
 	// With cap at 200k: effectiveChars = min(3.2M, 200k) = 200k → compactAt ~150k
 	app.EffectiveCtxMaxCharsOverride = 200000
-	compactAt, _, hardMax = app.activeThresholds()
+	compactAt, _, hardMax := app.activeThresholds()
 	if compactAt > 200000 {
 		t.Errorf("with cap=200k, compactAt should be ~150k; got %d", compactAt)
 	}
