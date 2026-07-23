@@ -50,8 +50,8 @@ jobs:
       # self-skip when the image is unavailable.
       - name: pull sandbox image
         run: |
-          docker pull valonmamu/wakil-dev:latest \
-            && docker tag valonmamu/wakil-dev:latest wakil-dev:latest \
+          docker pull vmamudi/wakil-dev:latest \
+            && docker tag vmamudi/wakil-dev:latest wakil-dev:latest \
             || echo "⚠ wakil-dev image pull failed — Docker integration tests will skip"
 
       - name: test (with coverage)
