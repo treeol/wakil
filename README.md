@@ -309,6 +309,7 @@ reference covering every section below.
 | `keep_bytes_frac` | `0.60` | Keep 60% of effective context verbatim after compaction |
 | `hard_max_frac` | `0.95` | Hard ceiling at 95% of effective context |
 | `context_capacity_frac` | `0.80` | Use 80% of proxy's usable_ctx as working budget |
+| `effective_ctx_max_chars` | `0` (disabled) | Absolute cap (chars) on effective context for large models. Models with 1M token context become unreliable past ~200k chars; set to `200000` to cap. Applied before fractions. Override at runtime with `/maxctx` |
 
 ### Agent prompt
 
@@ -333,6 +334,11 @@ runs on the host instead, no container.
 Saved automatically, no flag required. `wakil --resume` picks up the most
 recent one; `wakil --resume-id <prefix>` targets a specific `chat_id`.
 
+`/handoff` summarizes the current session, stores the summary in durable
+memory, and starts a fresh session with a continuation prompt — so you can
+rotate sessions without losing context. The old session remains on disk;
+`/resume <id>` returns to it.
+
 ## The TUI
 
 Anything typed that isn't a slash command goes to the agent as a task. `@`
@@ -344,6 +350,7 @@ opens a picker to attach a file or folder for context.
 
 ```
 /new, /reset         fresh conversation (new chat_id, clears viewport)
+/handoff             summarize session → store in memory → start fresh session with continuation prompt
 /compact             summarize older turns now (frees context)
 /sessions            list saved sessions (★ = current)
 /history             transcript size
@@ -386,6 +393,8 @@ opens a picker to attach a file or folder for context.
                      refuses client-side on openai endpoints instead of faking success)
 /auto                toggle auto-approve (shown as AUTO in status bar)
 /rawtools            toggle full tool output in context (default: capped at 8k chars)
+/maxctx <chars>      cap effective context for large models (e.g. 200000 = ~200k chars; 0 = disabled)
+/maxctx              show current effective context cap and resulting compaction thresholds
 /help                full command list
 ```
 
