@@ -27,6 +27,9 @@ type fakeExecutor struct {
 	files       map[string]string
 	dirs        map[string]bool
 
+	// sandboxTools, when non-empty, is returned by SandboxTools() instead of "".
+	sandboxTools string
+
 	// confineErrFn, when set, lets tests simulate ConfinePath rejections (e.g.
 	// the real "outside workspace" error DockerExecutor/DirectExecutor return)
 	// without needing a real sandboxed executor. Return "" error to allow.
@@ -80,7 +83,7 @@ func (f *fakeExecutor) Cwd() string           { return "/work" }
 func (f *fakeExecutor) WorkspaceRoot() string { return "/work" }
 func (f *fakeExecutor) Describe() string      { return "fake" }
 func (f *fakeExecutor) Close() error          { return nil }
-func (f *fakeExecutor) SandboxTools() string  { return "" }
+func (f *fakeExecutor) SandboxTools() string  { return f.sandboxTools }
 func (f *fakeExecutor) Generation() int       { return 1 }
 func (f *fakeExecutor) KVRSocketPath() string { return "" }
 func (f *fakeExecutor) KVRAvailable() bool    { return false }
