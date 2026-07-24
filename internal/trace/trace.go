@@ -60,8 +60,10 @@ type ToolTrace struct {
 // records to a buffered channel; a background goroutine drains the channel
 // to disk. Close flushes and waits for the goroutine to exit.
 type Store struct {
-	ch chan []byte
-	wg sync.WaitGroup
+	ch     chan []byte
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
 }
 
 // Open creates (or appends to) the per-session JSONL file under dir and
@@ -95,31 +97,50 @@ func Open(dir, sessionID, model, workspace string) (*Store, error) {
 }
 
 // Write enqueues r for async disk write. Non-blocking: if the channel is
-// full (store closed or disk stalled) the record is silently dropped so
-// a slow disk never adds latency to a turn. sft_eligible is forced false.
+// full or the store is closed, the record is silently dropped so a slow disk
+// or a racing Close never adds latency to a turn. sft_eligible is forced
+// false. Safe for concurrent use.
 func (s *Store) Write(r Record) {
 	if s == nil {
 		return
 	}
 	r.SftEligible = false
 	r.Ts = time.Now().UTC().Format(time.RFC3339Nano)
+	// Marshal outside the lock — it is the expensive part and needs no
+	// mutual exclusion.
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	// The send must stay non-blocking while the mutex is held: a blocking
+	// send here could deadlock against Close.
 	select {
 	case s.ch <- b:
 	default: // channel full → drop silently
 	}
 }
 
-// Close flushes all queued records to disk and closes the file. Blocks until
-// the background writer goroutine exits. Safe to call on a nil Store.
+// Close stops accepting new records, flushes records already queued to disk,
+// and closes the file. Blocks until the background writer goroutine exits.
+// Idempotent and safe for concurrent use; concurrent calls all wait for the
+// same flush. Safe to call on a nil Store.
 func (s *Store) Close() {
 	if s == nil {
 		return
 	}
-	close(s.ch)
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		close(s.ch)
+	}
+	s.mu.Unlock()
+	// Wait outside the lock: the drain goroutine never takes the mutex, and
+	// concurrent closers must all block until the same flush completes.
 	s.wg.Wait()
 }
 

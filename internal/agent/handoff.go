@@ -185,8 +185,8 @@ func storeHandoffRecord(ctx context.Context, app *App, summary, continuationProm
 		key := "handoff/" + oldChatID
 		value := fmt.Sprintf("Session handoff summary for %s\n\n%s", oldChatID, summary)
 		_, err := app.MemoryStore.PutActive(ctx, key, value, "handoff", memory.TierMid,
-			"main", oldChatID, memory.TaintUnknown, ptr(time.Now().Add(7*24*time.Hour).Unix()),
-			[]string{workspace}, "session handoff")
+			"main", oldChatID, memory.TaintUnknown, ptr(time.Now().Add(7*24*time.Hour).UnixMilli()),
+			nil, "session handoff")
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("memory store: %v (sidecar written)", err))
 		}

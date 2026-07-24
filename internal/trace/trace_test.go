@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -141,7 +142,10 @@ func TestTrace_WriteForcesSftEligibleFalse(t *testing.T) {
 	s.Close()
 
 	path := filepath.Join(dir, "sft-test.jsonl")
-	raw, _ := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace file: %v", err)
+	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	for _, line := range lines {
 		var rec Record
@@ -151,5 +155,93 @@ func TestTrace_WriteForcesSftEligibleFalse(t *testing.T) {
 		if rec.SftEligible {
 			t.Error("sft_eligible must be forced to false by Write")
 		}
+	}
+}
+
+// TestTrace_WriteAfterCloseDoesNotPanic verifies that a Write racing with or
+// following Close is silently dropped instead of panicking on a send to a
+// closed channel. Regression test for the write-after-close panic.
+func TestTrace_WriteAfterCloseDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, "sess", "m", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// Must not panic; the record is dropped silently.
+	s.Write(Record{Type: "turn", SessionID: "sess"})
+
+	// The file must contain only the store_header — the post-close write
+	// was dropped, not written.
+	raw, err := os.ReadFile(filepath.Join(dir, "sess.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 record (header only), got %d", len(lines))
+	}
+}
+
+// TestTrace_DoubleCloseDoesNotPanic verifies Close is idempotent.
+func TestTrace_DoubleCloseDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, "sess", "m", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s.Close() // must not panic on close-of-closed channel
+}
+
+// TestTrace_ConcurrentWriteAndClose exercises the write/close race under
+// -race. Many writers loop while several closers call Close concurrently; no
+// panic and no data race may occur, and every closer must return only after
+// the file is fully flushed.
+func TestTrace_ConcurrentWriteAndClose(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, "sess", "m", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+					s.Write(Record{Type: "turn", SessionID: "sess", TurnIndex: i})
+				}
+			}
+		}()
+	}
+
+	// Multiple concurrent closers must all block until the flush completes.
+	var closeWg sync.WaitGroup
+	for c := 0; c < 3; c++ {
+		closeWg.Add(1)
+		go func() {
+			defer closeWg.Done()
+			s.Close()
+		}()
+	}
+	closeWg.Wait()
+	close(stop)
+	wg.Wait()
+
+	// After all closers returned, the file must be complete and readable.
+	raw, err := os.ReadFile(filepath.Join(dir, "sess.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		t.Fatal("expected at least the header record after concurrent close")
 	}
 }

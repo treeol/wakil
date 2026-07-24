@@ -2,10 +2,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -119,5 +124,94 @@ func TestActiveThresholdsAppliesCap(t *testing.T) {
 	}
 	if hardMax > 250000 {
 		t.Errorf("with cap=200k, hardMax should be ~190k; got %d", hardMax)
+	}
+}
+
+// TestStoreHandoffRecordRetrievable is a regression test for two bugs in
+// storeHandoffRecord:
+//
+//  1. TTL units: the record was written with expiresAt in Unix seconds while
+//     the memory store clock is Unix milliseconds, so the 7-day record was
+//     filtered as already-expired the instant it was written.
+//  2. Stale anchor: the workspace directory was passed as an anchor, and
+//     computeAnchorHashes os.ReadFile's each anchor — a directory fails, so
+//     the record carried a permanently-stale anchor.
+func TestStoreHandoffRecordRetrievable(t *testing.T) {
+	// Isolate the sidecar JSON that storeHandoffRecord always writes.
+	t.Setenv("WAKIL_SESSIONS_DIR", t.TempDir())
+
+	// Real memory store rooted at a temp workspace.
+	dir := t.TempDir()
+	wsRoot := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(wsRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.Open(filepath.Join(dir, "memory", "test.db"), wsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	app := testHandoffApp()
+	app.Client.Model = "test-model"
+	app.MemoryStore = store
+
+	oldChatID := "chat-old-123"
+	newChatID := "chat-new-456"
+	warnings := storeHandoffRecord(context.Background(), app,
+		"summary text", "continuation prompt", oldChatID, newChatID, wsRoot)
+	for _, w := range warnings {
+		t.Errorf("unexpected warning: %s", w)
+	}
+
+	// The record must be retrievable immediately — before the fix, the
+	// seconds-vs-ms TTL bug made Get filter it as already expired.
+	got, err := store.Get(context.Background(), "handoff/"+oldChatID)
+	if err != nil {
+		t.Fatalf("handoff record not retrievable immediately after write (expired instantly?): %v", err)
+	}
+	if got.ExpiresAt == nil {
+		t.Fatal("expected a 7-day expiresAt to be set")
+	}
+	// The expiry must be ~7 days out in milliseconds, not a 1970-era seconds
+	// value: now(ms) < expiresAt <= now(ms)+7d.
+	nowMs := time.Now().UnixMilli()
+	if *got.ExpiresAt <= nowMs {
+		t.Fatalf("expiresAt %d is in the past (now %d) — TTL unit bug", *got.ExpiresAt, nowMs)
+	}
+	sevenDaysMs := int64(7 * 24 * time.Hour / time.Millisecond)
+	if *got.ExpiresAt > nowMs+sevenDaysMs+int64(time.Minute/time.Millisecond) {
+		t.Fatalf("expiresAt %d is beyond 7 days (now %d)", *got.ExpiresAt, nowMs)
+	}
+
+	// The record must carry no anchor at all (a workspace directory is not a
+	// content anchor) — and therefore no stale anchor. Handoff records are
+	// write-only audit artifacts (nothing reads them back via anchor-scoped
+	// recall), so nil anchors is correct.
+	if got.TotalAnchors != 0 {
+		t.Fatalf("expected 0 anchors, got %d", got.TotalAnchors)
+	}
+	if got.StaleAnchors != 0 {
+		t.Fatalf("expected 0 stale anchors, got %d of %d", got.StaleAnchors, got.TotalAnchors)
+	}
+
+	// The sidecar JSON is the always-written audit artifact — assert it exists
+	// and round-trips the handoff fields.
+	sidecar, err := os.ReadFile(filepath.Join(os.Getenv("WAKIL_SESSIONS_DIR"), oldChatID+".handoff.json"))
+	if err != nil {
+		t.Fatalf("sidecar not written: %v", err)
+	}
+	var rec handoffRecord
+	if err := json.Unmarshal(sidecar, &rec); err != nil {
+		t.Fatalf("sidecar not valid JSON: %v", err)
+	}
+	if rec.OldChatID != oldChatID || rec.NewChatID != newChatID {
+		t.Errorf("sidecar chat IDs = %q→%q, want %q→%q", rec.OldChatID, rec.NewChatID, oldChatID, newChatID)
+	}
+	if rec.Summary != "summary text" || rec.Prompt != "continuation prompt" {
+		t.Errorf("sidecar summary/prompt mismatch: %+v", rec)
+	}
+	if rec.Model != "test-model" {
+		t.Errorf("sidecar model = %q, want test-model", rec.Model)
 	}
 }
