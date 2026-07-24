@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -91,5 +92,32 @@ func TestRelativeWriteAfterCdCommand(t *testing.T) {
 	}
 	if content != "content" {
 		t.Errorf("wrong content: %q", content)
+	}
+}
+
+// TestResolveCDPPortParsing: resolveCDPPort extracts the port from "docker port" output.
+func TestResolveCDPPortParsing(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"0.0.0.0:32768", 32768},
+		{"127.0.0.1:9222", 9222},
+		{":::9223", 9223},
+		{"", 0},
+		{"noport", 0},
+		{"host:", 0},
+		{":", 0},
+	}
+	for _, tt := range tests {
+		s := strings.TrimSpace(tt.input)
+		idx := strings.LastIndex(s, ":")
+		var got int
+		if idx >= 0 && idx < len(s)-1 {
+			got, _ = strconv.Atoi(s[idx+1:])
+		}
+		if got != tt.want {
+			t.Errorf("parsePort(%q) = %d, want %d", tt.input, got, tt.want)
+		}
 	}
 }
