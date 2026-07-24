@@ -90,8 +90,8 @@ func TestBuildPreamble_NoCwdWhenNoExecNoWorkDir(t *testing.T) {
 
 func TestBuildPreamble_DockerMountSuffix(t *testing.T) {
 	app := preambleTestApp()
-	app.Exec = &fakeExecutor{}                // Cwd = /work
-	app.Cfg.ExecMode = "docker"              // enable docker mode
+	app.Exec = &fakeExecutor{}                 // Cwd = /work
+	app.Cfg.ExecMode = "docker"                // enable docker mode
 	app.Cfg.HostWorkDir = "/home/user/project" // different from /work
 	got := app.buildPreamble("Monday, 1 January 2026")
 	if !strings.Contains(got, "Working directory: /work (mounted from host: /home/user/project)") {
@@ -101,7 +101,7 @@ func TestBuildPreamble_DockerMountSuffix(t *testing.T) {
 
 func TestBuildPreamble_DockerNoMountSuffixWhenSamePath(t *testing.T) {
 	app := preambleTestApp()
-	app.Exec = &fakeExecutor{}      // Cwd = /work
+	app.Exec = &fakeExecutor{} // Cwd = /work
 	app.Cfg.ExecMode = "docker"
 	app.Cfg.HostWorkDir = "/work" // same as Cwd → no mount suffix
 	got := app.buildPreamble("Monday, 1 January 2026")
@@ -283,8 +283,8 @@ func TestBuildPreamble_KitchenSink(t *testing.T) {
 
 	// Verify all sections present and in order.
 	checks := []struct {
-		name    string
-		substr  string
+		name   string
+		substr string
 	}{
 		{"agent_prompt", "You are Wakil."},
 		{"date", "Current date: Monday, 1 January 2026"},
