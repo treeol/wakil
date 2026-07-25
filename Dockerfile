@@ -117,21 +117,28 @@ RUN mkdir -p /usr/local/share/wakil-etc-backup/ssl-certs \
 # Rust: install rustup and the stable toolchain into /usr/local so the
 # binaries are never shadowed by a workspace volume mount on /root.
 #
-# Supply-chain note: rustup is installed via the standard `curl | sh` method
-# from https://sh.rustup.rs. This is the officially recommended installation
-# method (https://rustup.rs/) and uses HTTPS with TLS 1.2+. The script is not
-# checksum-verified at install time — this is a known supply-chain risk shared
-# by all rustup users, mitigated by the HTTPS transport and the fact that
-# the rustup project is maintained by the Rust Foundation. A more paranoid
-# approach would download a pinned rustup-init binary with a verified
-# checksum, but this adds maintenance burden for marginal security gain over
-# HTTPS. If this becomes a concern, switch to a pinned rust:bookworm base
-# image that already has rustup installed.
+# Supply-chain hardening: rustup is pinned to v1.29.0 and verified against
+# its published SHA-256 checksum. The binary is downloaded from
+# static.rust-lang.org (the same CDN that serves Rust releases) rather than
+# the sh.rustup.rs installer script — this eliminates the "curl | sh" blind-
+# execute pattern. The checksum is published alongside the binary at the
+# .sha256 sibling URL. Bump the version + checksum together when updating.
+#
+# Previous approach (curl | sh from sh.rustup.rs) is documented as a known
+# supply-chain risk by the rustup project itself; this pinned approach is
+# the paranoid alternative.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path \
-    && /usr/local/cargo/bin/rustup component add rust-analyzer
+RUN ARCH=x86_64-unknown-linux-gnu \
+    && RUSTUP_VERSION=1.29.0 \
+    && RUSTUP_SHA256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10 \
+    && curl -fsSL -o /tmp/rustup-init \
+       "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ARCH}/rustup-init" \
+    && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --default-toolchain stable --profile minimal --no-modify-path \
+    && /usr/local/cargo/bin/rustup component add rust-analyzer \
+    && rm /tmp/rustup-init
 
 # Go workspace also lives outside /root for the same reason.
 ENV GOPATH=/usr/local/go-workspace

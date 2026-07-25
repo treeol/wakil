@@ -40,6 +40,31 @@ Only enable when you need the agent to run `docker` / `docker compose`
 commands against your real daemon, and treat it with the same caution as
 root access.
 
+### Root in the sandbox
+
+The sandbox container runs as **root by design**. This is an intentional
+tradeoff, not an oversight:
+
+- **`/etc/passwd` management**: wakil creates entries for workspace users
+  (`ensurePasswdEntry`) so file ownership maps correctly across the host ↔
+  container boundary. This requires write access to `/etc/passwd`.
+- **Docker-in-Docker**: the sandbox runs `docker exec` / `docker cp` against
+  child containers for shell execution, file I/O, and LSP servers. The Docker
+  CLI requires root (or the `docker` group, which is root-equivalent on most
+  systems).
+- **Process management**: wakil kills background processes by process-group ID
+  (`KillPgid`), which requires `CAP_KILL`.
+- **System tool installation**: the sandbox installs gopls, language servers,
+  and other tools into `/usr/local/bin` at build time.
+
+A non-root user would require granting `CAP_SYS_ADMIN`, `CAP_KILL`,
+`CAP_SETUID`, and `CAP_SETGID` — capabilities that are effectively
+root-equivalent for this use case. Instead, the sandbox relies on Docker's own
+isolation (`--cap-drop=ALL` on child containers, `--read-only` rootfs,
+`--tmpfs=/etc`) to prevent escalation from the sandbox to the host. The root
+user inside the sandbox cannot escalate to the host root because the sandbox
+container itself runs with `--cap-drop=ALL` and `--security-opt=no-new-privileges`.
+
 ### Seccomp / AppArmor
 
 Seccomp and AppArmor profiles are **not** currently applied. Adding a
