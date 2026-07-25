@@ -410,7 +410,7 @@ func shouldSkipIndexEntry(name string) bool {
 func buildFileIndexWalk(base string) []indexEntry {
 	var entries []indexEntry
 	const maxDepth = 12
-	filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return filepath.SkipDir
 		}

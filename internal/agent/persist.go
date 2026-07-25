@@ -69,7 +69,7 @@ func atomicWriteJSON(path string, v interface{}) error {
 	tmpName := tmp.Name()
 	cleanup := func() {
 		tmp.Close()
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 	}
 	// os.CreateTemp creates files with mode 0600; explicitly set 0644 to
 	// match the previous os.WriteFile(tmp, b, 0o644) behavior so the
@@ -88,14 +88,14 @@ func atomicWriteJSON(path string, v interface{}) error {
 		return fmt.Errorf("sync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("close temp file: %w", err)
 	}
 	// Rename the temp file over the target. On POSIX this is an atomic
 	// operation: the target is either the old file or the new file, never
 	// a mix.
 	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 	// Best-effort: fsync the parent directory so the rename is durable.
