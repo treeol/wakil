@@ -23,7 +23,19 @@ type armTickMsg struct{ seq int }
 type subTabCloseMsg struct{ ChatID string }
 
 // copiedMsg reports that a text selection was copied to the system clipboard.
-type copiedMsg struct{ n int }
+// via is copyViaNative when a local clipboard command (wl-copy/xclip/etc.)
+// wrote it, or copyViaOSC52 when the OSC 52 terminal escape was the fallback
+// (e.g. a bare SSH shell with no clipboard daemon). The handler uses this to
+// hint the user when the terminal may silently ignore OSC 52.
+type copiedMsg struct {
+	n   int
+	via string
+}
+
+const (
+	copyViaNative = "native"
+	copyViaOSC52  = "osc52"
+)
 
 // clipboardImageMsg carries an image read from the system clipboard. If Err is
 // non-empty, the handler shows it and does not attach anything.

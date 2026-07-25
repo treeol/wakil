@@ -334,7 +334,11 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 
 	case copiedMsg:
 		before := m.statusRows()
-		m.flash = sprint("copied %d chars ✓", msg.n)
+		if msg.via == copyViaOSC52 {
+			m.flash = sprint("sent %d chars via OSC 52 — if paste is empty, enable terminal/tmux clipboard", msg.n)
+		} else {
+			m.flash = sprint("copied %d chars ✓", msg.n)
+		}
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case clipboardImageMsg:

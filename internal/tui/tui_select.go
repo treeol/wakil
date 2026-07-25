@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -290,10 +291,19 @@ func nativeClipboardWriter() []string {
 	return nil
 }
 
+// clipboardOut is where OSC 52 escape sequences are written. It defaults to
+// os.Stdout but is a package-level var so tests can redirect it to a buffer
+// instead of polluting real stdout (and potentially the developer's clipboard).
+var clipboardOut io.Writer = os.Stdout
+
 // copyToClipboard writes the selection to the system clipboard. It prefers a
 // native clipboard command (wl-copy/xclip/xsel/pbcopy/clip.exe) since many
 // terminals silently ignore OSC 52 clipboard writes, and falls back to OSC 52
 // when no command is available (e.g. a bare remote shell over SSH).
+//
+// The returned copiedMsg carries via=copyViaNative or via=copyViaOSC52 so the
+// handler can hint the user when the copy relied on OSC 52 (which many
+// terminals block by default).
 func copyToClipboard(text string) tea.Cmd {
 	return func() tea.Msg {
 		if strings.TrimSpace(text) == "" {
@@ -305,13 +315,15 @@ func copyToClipboard(text string) tea.Cmd {
 			// Leave Stdout/Stderr nil → /dev/null, so a daemonizing writer
 			// (wl-copy forks to serve the selection) can't scribble on the TUI.
 			if err := cmd.Run(); err == nil {
-				return copiedMsg{n: len([]rune(text))}
+				return copiedMsg{n: len([]rune(text)), via: copyViaNative}
 			}
+			// Native command failed (e.g. xclip without DISPLAY) — fall through
+			// to OSC 52 so SSH users still get a best-effort copy.
 		}
 		// Fallback: OSC 52 is self-contained and cursor-neutral, so writing it
 		// straight to stdout alongside Bubble Tea's renderer is safe.
-		_, _ = os.Stdout.WriteString(ansi.SetSystemClipboard(text))
-		return copiedMsg{n: len([]rune(text))}
+		_, _ = clipboardOut.Write([]byte(ansi.SetSystemClipboard(text)))
+		return copiedMsg{n: len([]rune(text)), via: copyViaOSC52}
 	}
 }
 

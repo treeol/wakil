@@ -420,6 +420,42 @@ opens a picker to attach a file or folder for context.
 | `a` | Allow all read-only calls for this session |
 | `@` | Attach a file or folder |
 
+### Copying text over SSH
+
+Mouse-drag to select text in the conversation pane, then release — wakil copies
+the selection to the clipboard. On a **remote host over SSH** (no local
+clipboard daemon), it falls back to the **OSC 52** terminal escape sequence,
+which forwards the text through the terminal to your *local* clipboard.
+
+If copy-over-SSH doesn't work, the flash message will say
+`sent N chars via OSC 52 — if paste is empty, enable terminal/tmux clipboard`.
+That means OSC 52 was used but your terminal or tmux is blocking it. Enable it:
+
+**tmux** (local or remote): add to `~/.tmux.conf`:
+
+```
+set -g set-clipboard on
+```
+
+Depending on your tmux version, `set -g set-clipboard external` may be needed
+instead — check `man tmux` for your installed version. Nested tmux (local +
+remote) requires the setting on **both**.
+
+**Terminal emulators** — OSC 52 clipboard writes are disabled by default in some
+terminals. Check your terminal's documentation for how to enable it:
+
+| Terminal | OSC 52 support |
+|---|---|
+| iTerm2, Alacritty, Kitty, WezTerm | enabled by default |
+| xterm | requires `allowWindowOps` or enabling Set/GetSelection in `disallowedWindowOps` — see `man xterm` |
+| GNOME Terminal / VTE | recent versions enable it; older VTE blocked it entirely |
+| Konsole | check Konsole settings (OSC 52 support was added in a recent release) |
+
+Native clipboard commands (`wl-copy`, `xclip`, `xsel`, `pbcopy`) copy to the
+environment where wakil is running. In SSH sessions, OSC 52 is what targets
+your local terminal's clipboard — if a native command is found on the remote but
+fails (e.g. `xclip` without `DISPLAY`), wakil falls back to OSC 52.
+
 ## Tools
 
 | Tool | Gated | Description |
