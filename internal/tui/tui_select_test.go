@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
@@ -69,26 +68,15 @@ func TestEmptySelectionCopiesNothing(t *testing.T) {
 	}
 }
 
-// withClipboardOut swaps clipboardOut for the duration of the test and restores
-// it on cleanup. Returns a bytes.Buffer the caller can inspect.
-func withClipboardOut(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	buf := new(bytes.Buffer)
-	orig := clipboardOut
-	clipboardOut = buf
-	t.Cleanup(func() { clipboardOut = orig })
-	return buf
-}
-
 // TestCopyToClipboardOSCFallback verifies that when no native clipboard writer
 // is available (the common SSH scenario), copyToClipboard falls back to OSC 52
-// and reports via=copyViaOSC52 so the UI can hint the user.
+// and reports via=copyViaOSC52 so the UI can hint the user. The escape bytes
+// are carried in msg.escape (not written to os.Stdout) so View() can emit them
+// through the renderer's synchronized output.
 func TestCopyToClipboardOSCFallback(t *testing.T) {
 	orig := clipboardCmds
 	clipboardCmds = nil
 	defer func() { clipboardCmds = orig }()
-
-	buf := withClipboardOut(t)
 
 	cmd := copyToClipboard("hello")
 	if cmd == nil {
@@ -104,9 +92,13 @@ func TestCopyToClipboardOSCFallback(t *testing.T) {
 	if msg.via != copyViaOSC52 {
 		t.Errorf("via=%q want %q", msg.via, copyViaOSC52)
 	}
-	// The OSC 52 escape sequence must have been written to the injected writer.
-	if !strings.Contains(buf.String(), "\x1b]52;c;") {
-		t.Errorf("expected OSC 52 escape in output, got %q", buf.String())
+	// The OSC 52 escape sequence must be carried in msg.escape for View() to emit.
+	if !strings.Contains(string(msg.escape), "\x1b]52;c;") {
+		t.Errorf("expected OSC 52 escape in msg.escape, got %q", string(msg.escape))
+	}
+	// The escape must contain the base64-encoded "hello".
+	if !strings.Contains(string(msg.escape), "aGVsbG8=") {
+		t.Errorf("expected base64('hello') in escape, got %q", string(msg.escape))
 	}
 }
 
@@ -116,8 +108,6 @@ func TestCopyToClipboardUnicode(t *testing.T) {
 	clipboardCmds = nil
 	defer func() { clipboardCmds = orig }()
 
-	withClipboardOut(t)
-
 	cmd := copyToClipboard("å🙂")
 	msg, ok := cmd().(copiedMsg)
 	if !ok {
@@ -125,6 +115,38 @@ func TestCopyToClipboardUnicode(t *testing.T) {
 	}
 	if msg.n != 2 {
 		t.Errorf("n=%d want 2 (runes), got %d", msg.n, msg.n)
+	}
+}
+
+// TestCopiedMsgOSCEscapeEmission verifies that the OSC 52 escape is stored on
+// the model as pendingEscape when the copiedMsg arrives, emitted through
+// View(), and persists across View() calls (NOT one-shot) so the standard
+// renderer's frame coalescing can't drop it. The escape is cleared by a
+// KeyMsg, not by View().
+func TestCopiedMsgOSCEscapeEmission(t *testing.T) {
+	m := newTestTUI(t)
+	m.ready = true
+	m.width = 80
+	m.height = 24
+	esc := []byte("\x1b]52;c;aGVsbG8=\x07")
+	m = step(m, copiedMsg{n: 5, via: copyViaOSC52, escape: esc})
+
+	if string(m.pendingEscape) != string(esc) {
+		t.Fatalf("pendingEscape=%q want %q", m.pendingEscape, string(esc))
+	}
+
+	// View() must emit the escape prepended to the frame.
+	view := m.View()
+	if !strings.HasPrefix(view, "\x1b]52;c;") {
+		t.Errorf("View() should emit the OSC 52 escape first; got %q...\"", view[:min(40, len(view))])
+	}
+
+	// The escape must PERSIST across View() calls — the standard renderer
+	// coalesces frames at 60fps, so View() may be called multiple times before
+	// a frame is actually written. Clearing in View() would drop the escape.
+	view2 := m.View()
+	if !strings.HasPrefix(view2, "\x1b]52;c;") {
+		t.Errorf("View() should still emit the escape on second call; the renderer may not have flushed the first frame yet")
 	}
 }
 

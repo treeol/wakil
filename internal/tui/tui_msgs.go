@@ -27,9 +27,18 @@ type subTabCloseMsg struct{ ChatID string }
 // wrote it, or copyViaOSC52 when the OSC 52 terminal escape was the fallback
 // (e.g. a bare SSH shell with no clipboard daemon). The handler uses this to
 // hint the user when the terminal may silently ignore OSC 52.
+//
+// When via is copyViaOSC52, escape holds the raw OSC 52 terminal escape bytes.
+// The handler stores them on the model as pendingEscape so View() can emit
+// them through the renderer's synchronized output — writing them directly to
+// os.Stdout from the Cmd goroutine would race with the renderer in alt-screen
+// mode and garble the display. pendingEscape persists across View() calls
+// (NOT cleared in View()) so the standard renderer's frame coalescing can't
+// drop it; a KeyMsg clears it (alongside flash) as the lifecycle boundary.
 type copiedMsg struct {
-	n   int
-	via string
+	n      int
+	via    string
+	escape []byte
 }
 
 const (

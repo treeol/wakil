@@ -149,6 +149,18 @@ type tuiModel struct {
 	plainLines []string // ANSI-stripped view content, kept in sync by refreshViewport
 	flash      string   // transient status shown in the input border (e.g. "copied ✓")
 
+	// pendingEscape holds a raw terminal escape sequence prepended to every
+	// View() frame until a KeyMsg clears it. Used for OSC 52 clipboard writes:
+	// the escape must go through the renderer's synchronized output, not a
+	// direct os.Stdout write from a Cmd goroutine (which races with the renderer
+	// in alt-screen mode). Kept persistent across renders — NOT cleared in
+	// View() — because the standard renderer coalesces frames at 60fps: if
+	// View() cleared it, a subsequent View() (from a dotTick, stream chunk, or
+	// textarea blink) could replace the escape-bearing frame in the renderer's
+	// buffer before the flush tick writes it, silently dropping the escape.
+	// The keypress clear (alongside flash) is the lifecycle boundary.
+	pendingEscape []byte
+
 	// Double-press gate for destructive keys (quit / turn-cancel). The first
 	// press of ctrl+c/ctrl+d (idle) or esc/ctrl+c (streaming) arms the action
 	// and shows a banner; a second confirming press within armWindow performs
@@ -424,6 +436,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Any keystroke dismisses an active selection and its highlight.
 		before := m.statusRows()
 		m.flash = ""
+		m.pendingEscape = nil
 		if m.sel.active {
 			m.sel = selection{}
 			m.refreshViewport()

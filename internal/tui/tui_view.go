@@ -216,7 +216,20 @@ func (m tuiModel) View() string {
 	if len(m.subTabs) > 0 {
 		sections = append(sections, m.renderMainTabBar())
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+	out := lipgloss.JoinVertical(lipgloss.Left, sections...)
+	// Prepend the pending OSC 52 escape to every frame while it's set. The
+	// escape persists across renders (NOT cleared here) because the standard
+	// renderer coalesces frames at 60fps: if we cleared it, a subsequent
+	// View() (dotTick, stream chunk, textarea blink) could replace the
+	// escape-bearing frame in the renderer's buffer before the flush tick
+	// writes it, silently dropping the escape. The escape is cleared by a
+	// KeyMsg (alongside flash) — that's the lifecycle boundary. The escape
+	// is zero-width (ansi.StringWidth correctly treats OSC sequences as 0),
+	// so the renderer's line truncation won't mangle it.
+	if len(m.pendingEscape) > 0 {
+		out = string(m.pendingEscape) + out
+	}
+	return out
 }
 
 // renderSubTabContent renders the subagent's tool-call output and final

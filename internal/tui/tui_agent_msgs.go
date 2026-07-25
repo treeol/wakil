@@ -336,6 +336,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		before := m.statusRows()
 		if msg.via == copyViaOSC52 {
 			m.flash = sprint("sent %d chars via OSC 52 — if paste is empty, enable terminal/tmux clipboard", msg.n)
+			m.pendingEscape = msg.escape
 		} else {
 			m.flash = sprint("copied %d chars ✓", msg.n)
 		}

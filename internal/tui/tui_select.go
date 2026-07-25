@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"io"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -291,11 +289,6 @@ func nativeClipboardWriter() []string {
 	return nil
 }
 
-// clipboardOut is where OSC 52 escape sequences are written. It defaults to
-// os.Stdout but is a package-level var so tests can redirect it to a buffer
-// instead of polluting real stdout (and potentially the developer's clipboard).
-var clipboardOut io.Writer = os.Stdout
-
 // copyToClipboard writes the selection to the system clipboard. It prefers a
 // native clipboard command (wl-copy/xclip/xsel/pbcopy/clip.exe) since many
 // terminals silently ignore OSC 52 clipboard writes, and falls back to OSC 52
@@ -303,7 +296,11 @@ var clipboardOut io.Writer = os.Stdout
 //
 // The returned copiedMsg carries via=copyViaNative or via=copyViaOSC52 so the
 // handler can hint the user when the copy relied on OSC 52 (which many
-// terminals block by default).
+// terminals block by default). When via is copyViaOSC52, escape holds the raw
+// OSC 52 bytes — the handler routes them through View() so they're emitted on
+// the renderer's synchronized output, NOT written to os.Stdout from this
+// goroutine (which would race with the renderer in alt-screen mode and garble
+// the display).
 func copyToClipboard(text string) tea.Cmd {
 	return func() tea.Msg {
 		if strings.TrimSpace(text) == "" {
@@ -320,10 +317,12 @@ func copyToClipboard(text string) tea.Cmd {
 			// Native command failed (e.g. xclip without DISPLAY) — fall through
 			// to OSC 52 so SSH users still get a best-effort copy.
 		}
-		// Fallback: OSC 52 is self-contained and cursor-neutral, so writing it
-		// straight to stdout alongside Bubble Tea's renderer is safe.
-		_, _ = clipboardOut.Write([]byte(ansi.SetSystemClipboard(text)))
-		return copiedMsg{n: len([]rune(text)), via: copyViaOSC52}
+		// Fallback: OSC 52. Return the escape bytes in the msg instead of
+		// writing them to os.Stdout here — the renderer owns stdout in
+		// alt-screen mode, and a direct write from this goroutine would
+		// interleave with frame data and garble the display.
+		esc := []byte(ansi.SetSystemClipboard(text))
+		return copiedMsg{n: len([]rune(text)), via: copyViaOSC52, escape: esc}
 	}
 }
 
