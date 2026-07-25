@@ -60,17 +60,7 @@ const repoStateSchemaVersion = 1
 // $WAKIL_REPO_STATE_DIR, else $XDG_DATA_HOME/wakil/repo-state, else
 // ~/.local/share/wakil/repo-state. Mirrors sessionsDir()'s resolution order.
 func repoStateDir() string {
-	if x := os.Getenv("WAKIL_REPO_STATE_DIR"); x != "" {
-		return x
-	}
-	if x := os.Getenv("XDG_DATA_HOME"); x != "" {
-		return filepath.Join(x, "wakil", "repo-state")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share", "wakil", "repo-state")
+	return resolveDataDir("WAKIL_REPO_STATE_DIR", "repo-state")
 }
 
 // repoStateKey resolves ws to a stable, absolute, symlink-evaluated form and
@@ -92,7 +82,11 @@ func repoStatePath(ws string) string {
 	if key == "" {
 		return ""
 	}
-	return filepath.Join(repoStateDir(), key+".json")
+	dir := repoStateDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, key+".json")
 }
 
 // LoadRepoState returns the stored settings for workspace ws, or (nil, nil)
@@ -124,13 +118,13 @@ func LoadRepoState(ws string) (*RepoState, error) {
 
 // updateRepoState loads the existing repo-state for ws (or starts a fresh
 // one), applies mutate to change only the field(s) the caller just set, and
-// writes the result back atomically (temp file + rename, same pattern as
-// WriteSession). mutate must set fields from values already in the caller's
-// scope — never by reading them back from other App state — so an unrelated
-// setting is never accidentally re-snapshotted (see repo-state-plan.md fix
-// #1). No-ops silently when ws is empty. Best-effort: errors are returned
-// for callers that want to know, but callers in the TUI command path ignore
-// them (a failed save must never interrupt the session).
+// writes the result back using a crash-durable atomic write (temp file + fsync
+// + rename, same pattern as WriteSession). mutate must set fields from values
+// already in the caller's scope — never by reading them back from other App
+// state — so an unrelated setting is never accidentally re-snapshotted (see
+// repo-state-plan.md fix #1). No-ops silently when ws is empty. Best-effort:
+// errors are returned for callers that want to know, but callers in the TUI
+// command path ignore them (a failed save must never interrupt the session).
 func updateRepoState(ws string, mutate func(*RepoState)) error {
 	if ws == "" {
 		return nil
@@ -154,16 +148,7 @@ func updateRepoState(ws string, mutate func(*RepoState)) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := repoStatePath(ws)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicWriteJSON(repoStatePath(ws), st)
 }
 
 // RestoreRepoStateResult carries the literal values RestoreRepoState applied

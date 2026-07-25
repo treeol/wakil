@@ -32,25 +32,19 @@ type Session struct {
 // sessionsDir is where transcripts live: $WAKIL_SESSIONS_DIR, else
 // $XDG_DATA_HOME/wakil/sessions, else ~/.local/share/wakil/sessions.
 func sessionsDir() string {
-	if x := os.Getenv("WAKIL_SESSIONS_DIR"); x != "" {
-		return x
-	}
-	if x := os.Getenv("XDG_DATA_HOME"); x != "" {
-		return filepath.Join(x, "wakil", "sessions")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share", "wakil", "sessions")
+	return resolveDataDir("WAKIL_SESSIONS_DIR", "sessions")
 }
 
 func sessionPath(chatID string) string {
-	return filepath.Join(sessionsDir(), chatID+".json")
+	dir := sessionsDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, chatID+".json")
 }
 
-// writeSession persists s atomically (temp file + rename) so a crash mid-write
-// can't corrupt an existing transcript.
+// writeSession persists s using a crash-durable atomic write (temp file +
+// fsync + rename) so a crash mid-write can't corrupt an existing transcript.
 func WriteSession(s *Session) error {
 	dir := sessionsDir()
 	if dir == "" {
@@ -59,16 +53,7 @@ func WriteSession(s *Session) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := sessionPath(s.ChatID)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicWriteJSON(sessionPath(s.ChatID), s)
 }
 
 // ListSessions returns all saved sessions, most-recently-updated first.
