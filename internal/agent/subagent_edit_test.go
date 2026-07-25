@@ -186,6 +186,9 @@ func TestEditConfirmer(t *testing.T) {
 	if !conf("move_file", "", "", false) {
 		t.Error("editConfirmer should approve move_file")
 	}
+	if !conf("write_binary_file", "", "", false) {
+		t.Error("editConfirmer should approve write_binary_file")
+	}
 	if conf("run_shell", "", "", false) {
 		t.Error("editConfirmer should decline run_shell")
 	}

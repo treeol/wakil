@@ -16,12 +16,15 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/safe"
@@ -351,6 +354,88 @@ func (a *App) handleWriteFile(ctx context.Context, tc proxy.ToolCall) string {
 	out, err := a.Exec.WriteFile(ctx, canonical, args.Content)
 	if err == nil && a.LSP != nil {
 		a.LSP.NotifyChange(ctx, canonical)
+	}
+	if err == nil {
+		a.recordFileChanged(canonical)
+	}
+	return formatResult(out, err)
+}
+
+// handleWriteBinaryFile decodes a base64-encoded string to raw bytes and writes
+// them to a file. Used for binary data (images, PDFs, xlsx, executables) that
+// cannot be represented as a JSON string for write_file.
+//
+// Sequence: parse → validate → ConfinePath → size pre-check → decode → size
+// backstop → Confirm → snapshot → WriteFileBytes → LSP notify → record.
+// Decoding happens BEFORE confirm so invalid base64 fails fast without a prompt
+// and the confirm detail shows the true decoded byte count.
+func (a *App) handleWriteBinaryFile(ctx context.Context, tc proxy.ToolCall) string {
+	var args struct {
+		Path          string `json:"path"`
+		ContentBase64 string `json:"content_base64"`
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+	}
+	if args.Path == "" {
+		return "ERROR: path is required"
+	}
+	if args.ContentBase64 == "" {
+		return "ERROR: content_base64 is required"
+	}
+	// Confine the path to the workspace (P0-3: path confinement).
+	canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+	if err != nil {
+		return "ERROR: " + err.Error()
+	}
+	// Size limit: pre-check encoded length before allocating decoded buffer.
+	// base64 expands by ~4/3, so encoded_len * 3/4 is the upper bound on decoded size.
+	limit := int64(a.Cfg.MaxBinaryWriteBytes)
+	if limit <= 0 {
+		limit = 10 << 20 // 10 MB default safety net
+	}
+	// Strip whitespace/newlines that models often insert, then validate.
+	cleaned := strings.Join(strings.Fields(args.ContentBase64), "")
+	if cleaned == "" {
+		return "ERROR: content_base64 is empty after stripping whitespace"
+	}
+	encodedLen := int64(len(cleaned))
+	// Pre-check: encoded length * 3/4 must not exceed limit (upper bound on decoded).
+	if encodedLen*3/4 > limit {
+		return fmt.Sprintf(
+			"ERROR: decoded content would exceed binary write limit of %.2f MB — content_base64 is %d chars (~%.2f MB decoded).",
+			float64(limit)/(1<<20), encodedLen, float64(encodedLen*3/4)/(1<<20))
+	}
+	// Decode base64 (standard padded encoding).
+	data, err := base64.StdEncoding.DecodeString(cleaned)
+	if err != nil {
+		return "ERROR: invalid base64 content_base64: " + err.Error()
+	}
+	// Backstop: verify exact decoded length against limit.
+	if int64(len(data)) > limit {
+		return fmt.Sprintf(
+			"ERROR: decoded content (%d bytes) exceeds binary write limit of %.2f MB.",
+			len(data), float64(limit)/(1<<20))
+	}
+	// Confirm with decoded size + sha256 (raw bytes are not useful to display).
+	sum := sha256.Sum256(data)
+	detail := fmt.Sprintf("write_binary_file %s (%d decoded bytes, sha256:%x) in %s",
+		args.Path, len(data), sum, a.Exec.Describe())
+	if !a.Confirm("write_binary_file", "Write binary file?", detail, false) {
+		return "[declined by user]"
+	}
+	// Snapshot pre-edit state for restore (copy-on-first-write, edit-tier only).
+	a.captureFileOriginal(ctx, canonical)
+	out, err := a.Exec.WriteFileBytes(ctx, canonical, data)
+	if err == nil && a.LSP != nil {
+		// Only notify LSP for valid UTF-8 content. Binary files (non-UTF-8)
+		// are not text documents and would corrupt LSP state if sent as
+		// didChange text content. detectLanguage also filters non-code
+		// extensions, but this is an extra guard for code-extension paths
+		// that happen to contain binary data.
+		if utf8.Valid(data) {
+			a.LSP.NotifyChange(ctx, canonical)
+		}
 	}
 	if err == nil {
 		a.recordFileChanged(canonical)

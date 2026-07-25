@@ -1453,6 +1453,8 @@ func toolAbbrev(name string) string {
 		return "rfull"
 	case "write_file":
 		return "write"
+	case "write_binary_file":
+		return "wbin"
 	case "edit_file":
 		return "edit"
 	case "find_files":
@@ -1591,7 +1593,7 @@ func (a *App) wfPhaseBlock(toolName, argsJSON string) string {
 	const writeRejected = ": implementation writes are not permitted before plan approval; finish this phase and emit %%PHASE_DONE%%"
 	if workflow.IsPreImplementPhase(wf.Phase) {
 		switch toolName {
-		case "write_file", "edit_file":
+		case "write_file", "write_binary_file", "edit_file":
 			var args struct {
 				Path string `json:"path"`
 			}
@@ -1645,6 +1647,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleSearchFiles(ctx, tc))
 	case "write_file":
 		return stringToToolResult(a.handleWriteFile(ctx, tc))
+	case "write_binary_file":
+		return stringToToolResult(a.handleWriteBinaryFile(ctx, tc))
 	case "edit_file":
 		return stringToToolResult(a.handleEditFile(ctx, tc))
 	case "delete_file":

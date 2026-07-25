@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -154,7 +155,7 @@ func TestParentToolsetComplete(t *testing.T) {
 	}
 	for _, want := range []string{
 		"read_file", "search_files", "find_files", "list_dir",
-		"edit_file", "write_file",
+		"edit_file", "write_file", "write_binary_file",
 		"delete_file", "move_file",
 		"run_background", "kill_process", "read_process_log",
 	} {
@@ -1192,5 +1193,251 @@ func TestSpillFullResultUnavailableNoFalsePositive(t *testing.T) {
 	path := tools.ExtractSpillPath(result)
 	if path == "/etc/wakil/config.json" {
 		t.Fatalf("ExtractSpillPath returned a bogus path from file body: %q", path)
+	}
+}
+
+// ── write_binary_file tests ──────────────────────────────────────────────────
+
+// TestWriteBinaryFileSuccess verifies base64-decoded bytes are written exactly,
+// including NUL, 0xFF, and non-UTF-8 sequences.
+func TestWriteBinaryFileSuccess(t *testing.T) {
+	exe := newFakeExecutor()
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     config.DefaultConfig(),
+	}
+	// Binary payload: NUL, 0xFF, newline, non-UTF-8 byte sequence.
+	raw := []byte{0x00, 0xFF, 0x0A, 0xFE, 0xED, 0x00, 0x42}
+	encoded := base64.StdEncoding.EncodeToString(raw)
+
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: fmt.Sprintf(`{"path":"data.bin","content_base64":%q}`, encoded),
+	}})
+	if strings.HasPrefix(res.text, "ERROR:") {
+		t.Fatalf("expected success, got: %q", res.text)
+	}
+	if !strings.Contains(res.text, "wrote") {
+		t.Fatalf("expected 'wrote' in result, got: %q", res.text)
+	}
+	// Verify the exact bytes were stored.
+	got, ok := exe.files["data.bin"]
+	if !ok {
+		t.Fatal("file not written to fakeExecutor")
+	}
+	if got != string(raw) {
+		t.Fatalf("byte mismatch: got %v (%d bytes), want %v (%d bytes)", []byte(got), len(got), raw, len(raw))
+	}
+}
+
+// TestWriteBinaryFileDeclined verifies a declined confirm produces no write.
+func TestWriteBinaryFileDeclined(t *testing.T) {
+	exe := newFakeExecutor()
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return false },
+		Cfg:     config.DefaultConfig(),
+	}
+	raw := []byte{0x00, 0x01, 0x02}
+	encoded := base64.StdEncoding.EncodeToString(raw)
+
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: fmt.Sprintf(`{"path":"data.bin","content_base64":%q}`, encoded),
+	}})
+	if res.text != "[declined by user]" {
+		t.Fatalf("declined result = %q", res.text)
+	}
+	if len(exe.files) != 0 {
+		t.Fatalf("declined write must not write, but files = %v", exe.files)
+	}
+}
+
+// TestWriteBinaryFileInvalidBase64 verifies invalid base64 errors without prompting.
+func TestWriteBinaryFileInvalidBase64(t *testing.T) {
+	confirmCalled := false
+	exe := newFakeExecutor()
+	app := &App{
+		Exec: exe,
+		Out:  io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool {
+			confirmCalled = true
+			return true
+		},
+		Cfg: config.DefaultConfig(),
+	}
+
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: `{"path":"data.bin","content_base64":"!!!invalid base64!!!"}`,
+	}})
+	if !strings.HasPrefix(res.text, "ERROR:") || !strings.Contains(res.text, "invalid base64") {
+		t.Fatalf("expected invalid base64 error, got: %q", res.text)
+	}
+	if confirmCalled {
+		t.Error("confirm must not be called for invalid base64")
+	}
+	if len(exe.files) != 0 {
+		t.Fatal("invalid base64 must not write any files")
+	}
+}
+
+// TestWriteBinaryFileMissingArgs verifies missing path/content_base64 errors.
+func TestWriteBinaryFileMissingArgs(t *testing.T) {
+	exe := newFakeExecutor()
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     config.DefaultConfig(),
+	}
+	// Missing path.
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: `{"content_base64":"dGVzdA=="}`,
+	}})
+	if !strings.Contains(res.text, "path is required") {
+		t.Fatalf("missing path should error, got: %q", res.text)
+	}
+	// Missing content_base64.
+	res = app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: `{"path":"data.bin"}`,
+	}})
+	if !strings.Contains(res.text, "content_base64 is required") {
+		t.Fatalf("missing content_base64 should error, got: %q", res.text)
+	}
+}
+
+// TestWriteBinaryFileConfinementFailure verifies path confinement rejects
+// outside-workspace paths.
+func TestWriteBinaryFileConfinementFailure(t *testing.T) {
+	exe := newFakeExecutor()
+	exe.confineErrFn = func(path string) error {
+		return fmt.Errorf("path %q is outside workspace", path)
+	}
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     config.DefaultConfig(),
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("test"))
+
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: fmt.Sprintf(`{"path":"../../../etc/passwd","content_base64":%q}`, encoded),
+	}})
+	if !strings.HasPrefix(res.text, "ERROR:") || !strings.Contains(res.text, "outside workspace") {
+		t.Fatalf("expected confinement error, got: %q", res.text)
+	}
+}
+
+// TestWriteBinaryFileSizeLimit verifies the size limit rejects oversized content
+// before writing.
+func TestWriteBinaryFileSizeLimit(t *testing.T) {
+	exe := newFakeExecutor()
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:    config.Config{MaxBinaryWriteBytes: 100}, // 100 byte limit
+	}
+	// 200 bytes of data → over the 100 byte limit.
+	raw := strings.Repeat("x", 200)
+	encoded := base64.StdEncoding.EncodeToString([]byte(raw))
+
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: fmt.Sprintf(`{"path":"big.bin","content_base64":%q}`, encoded),
+	}})
+	if !strings.HasPrefix(res.text, "ERROR:") || !strings.Contains(res.text, "exceed") || !strings.Contains(res.text, "binary write limit") {
+		t.Fatalf("expected size limit error, got: %q", res.text)
+	}
+	if len(exe.files) != 0 {
+		t.Fatal("oversized content must not write any files")
+	}
+}
+
+// TestWriteBinaryFileOversizeDecodedBackstop verifies the post-decode backstop
+// catches a payload that passes the encoded pre-check but exceeds the limit
+// after decoding.
+func TestWriteBinaryFileOversizeDecodedBackstop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates 10 MB+ for the backstop test")
+	}
+	exe := newFakeExecutor()
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     config.Config{MaxBinaryWriteBytes: 10 << 20}, // 10 MB
+	}
+	// Create a large payload that exceeds the 10 MB limit.
+	raw := strings.Repeat("A", (10<<20)+100)
+	encoded := base64.StdEncoding.EncodeToString([]byte(raw))
+
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: fmt.Sprintf(`{"path":"big.bin","content_base64":%q}`, encoded),
+	}})
+	if !strings.HasPrefix(res.text, "ERROR:") {
+		t.Fatalf("expected error for oversized content, got: %q", res.text)
+	}
+	if len(exe.files) != 0 {
+		t.Fatal("oversized content must not write any files")
+	}
+}
+
+// TestWriteBinaryFileWhitespaceStripped verifies that whitespace/newlines in the
+// base64 string are stripped before decoding (models often line-wrap base64).
+func TestWriteBinaryFileWhitespaceStripped(t *testing.T) {
+	exe := newFakeExecutor()
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     config.DefaultConfig(),
+	}
+	raw := []byte("Hello, binary world!")
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	// Insert newlines every 10 chars (models do this).
+	var wrapped strings.Builder
+	for i, ch := range encoded {
+		if i > 0 && i%10 == 0 {
+			wrapped.WriteByte('\n')
+		}
+		wrapped.WriteRune(ch)
+	}
+
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_binary_file", Arguments: fmt.Sprintf(`{"path":"text.bin","content_base64":%q}`, wrapped.String()),
+	}})
+	if strings.HasPrefix(res.text, "ERROR:") {
+		t.Fatalf("line-wrapped base64 should decode fine, got: %q", res.text)
+	}
+	got, ok := exe.files["text.bin"]
+	if !ok {
+		t.Fatal("file not written")
+	}
+	if got != string(raw) {
+		t.Fatalf("byte mismatch after whitespace strip: got %q, want %q", got, string(raw))
+	}
+}
+
+// TestWriteBinaryFileNotInDiscovery verifies the tool is NOT in DiscoveryTools.
+func TestWriteBinaryFileNotInDiscovery(t *testing.T) {
+	names := map[string]bool{}
+	for _, tl := range tools.DiscoveryTools("/work") {
+		names[tl.Function.Name] = true
+	}
+	if names["write_binary_file"] {
+		t.Fatal("write_binary_file must NOT be in DiscoveryTools (read-only tier)")
+	}
+}
+
+// TestWriteBinaryFileInEditTools verifies the tool IS in EditTools.
+func TestWriteBinaryFileInEditTools(t *testing.T) {
+	names := map[string]bool{}
+	for _, tl := range tools.EditTools("/work") {
+		names[tl.Function.Name] = true
+	}
+	if !names["write_binary_file"] {
+		t.Fatal("write_binary_file must be in EditTools")
 	}
 }

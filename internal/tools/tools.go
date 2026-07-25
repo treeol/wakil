@@ -16,7 +16,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 			Description: "Dispatch a subagent for a bounded, single-objective task. " +
 				"capability \"discovery\" (default) is read-only: navigate and read code, return a structured " +
 				"JSON summary (findings with file:line locations, checked/skipped files, uncertainty). " +
-				"capability \"edit\" adds write_file, edit_file, delete_file, and move_file for delegated " +
+				"capability \"edit\" adds write_file, write_binary_file, edit_file, delete_file, and move_file for delegated " +
 				"bounded implementation; requires session write consent (/auto or --auto). " +
 				"capability \"tools\" adds MCP tools (from configured allowlist), LSP tools, and web search " +
 				"for research and external tool access; requires /auto or --auto. " +
@@ -125,6 +125,18 @@ func DefaultTools(cwd string) []proxy.Tool {
 			}, "path", "content"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
+			Name: "write_binary_file",
+			Description: "Decode a base64-encoded string to raw bytes and write them to a file. " +
+				"Use this for binary data (images, PDFs, .xlsx, executables) that cannot be written via write_file. " +
+				"The base64 string is the standard padded encoding (whitespace/newlines are stripped automatically). " +
+				"To make a file executable, follow with run_shell 'chmod +x <path>'. " +
+				"Requires user confirmation. " + cwdNote,
+			Parameters: SchemaObj(map[string]interface{}{
+				"path":            StrProp("Path to the file to write (relative paths resolve from the working directory)"),
+				"content_base64":  StrProp("Base64-encoded content to decode and write as raw bytes."),
+			}, "path", "content_base64"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
 			Name: "delete_file",
 			Description: "Delete a file or empty directory. " +
 				"Does NOT delete non-empty directories — use run_shell rm -r explicitly for that. " +
@@ -184,7 +196,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 // GatedTool reports whether a tool requires human confirmation before running.
 func GatedTool(name string) bool {
 	switch name {
-	case "run_shell", "write_file", "edit_file",
+	case "run_shell", "write_file", "write_binary_file", "edit_file",
 		"delete_file", "move_file", "run_background", "kill_process",
 		"save_skill", "update_skill", "forget_skill":
 		return true
@@ -263,8 +275,8 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 // CapabilityDiscovery is the default read-only subagent capability.
 const CapabilityDiscovery = "discovery"
 
-// CapabilityEdit adds file mutation tools (write_file, edit_file, delete_file,
-// move_file) to the discovery set. Requires session write consent at dispatch time.
+// CapabilityEdit adds file mutation tools (write_file, write_binary_file, edit_file,
+// delete_file, move_file) to the discovery set. Requires session write consent at dispatch time.
 // exec tools (run_shell, run_background, kill_process) are deliberately excluded:
 // run_shell has no path confinement by design, the shared Executor is read-safe
 // only, and child bgProcs would orphan on child completion.
@@ -292,7 +304,7 @@ func ValidCapability(capability string) bool {
 }
 
 // EditTools returns the edit-tier tool set: DiscoveryTools' 5 read-only tools
-// plus the 4 edit tools (write_file, edit_file, delete_file, move_file). Same
+// plus the 5 edit tools (write_file, write_binary_file, edit_file, delete_file, move_file). Same
 // deterministic-schema construction as DiscoveryTools — no interpolation, so
 // all edit-tier dispatches share a byte-identical tool-schema prefix.
 func EditTools(cwd string) []proxy.Tool {
@@ -368,6 +380,16 @@ func EditTools(cwd string) []proxy.Tool {
 			}, "path", "content"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
+			Name: "write_binary_file",
+			Description: "Decode a base64-encoded string to raw bytes and write them to a file. " +
+				"Use this for binary data (images, PDFs, .xlsx, executables). " +
+				"The base64 string is the standard padded encoding (whitespace is stripped). " + cwdNote,
+			Parameters: SchemaObj(map[string]interface{}{
+				"path":           StrProp("Path to the file to write."),
+				"content_base64": StrProp("Base64-encoded content to decode and write as raw bytes."),
+			}, "path", "content_base64"),
+		}},
+		{Type: "function", Function: proxy.ToolFunction{
 			Name: "delete_file",
 			Description: "Delete a file or empty directory. " +
 				"Does NOT delete non-empty directories — path must be inside the workspace. " +
@@ -392,11 +414,11 @@ func EditTools(cwd string) []proxy.Tool {
 }
 
 // IsEditTool reports whether name is one of the edit-category tools that mutate
-// files (write_file, edit_file, delete_file, move_file). Used by the files_changed
+// files (write_file, write_binary_file, edit_file, delete_file, move_file). Used by the files_changed
 // recorder to decide which tool calls to track.
 func IsEditTool(name string) bool {
 	switch name {
-	case "write_file", "edit_file", "delete_file", "move_file":
+	case "write_file", "write_binary_file", "edit_file", "delete_file", "move_file":
 		return true
 	}
 	return false

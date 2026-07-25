@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
@@ -26,6 +27,10 @@ type Executor interface {
 	ReadFile(ctx context.Context, path string) (string, error)
 	ListDir(ctx context.Context, path string) (string, error)
 	WriteFile(ctx context.Context, path, content string) (string, error)
+	// WriteFileBytes writes raw bytes to path. Used by write_binary_file for
+	// binary data that cannot be represented as a JSON string (base64-decoded
+	// attachments, executables, images, etc.). Creates parent directories.
+	WriteFileBytes(ctx context.Context, path string, content []byte) (string, error)
 	Cwd() string
 	Describe() string
 	Close() error
@@ -908,6 +913,20 @@ func (d *DockerExecutor) WriteFile(ctx context.Context, path, content string) (s
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }
 
+// WriteFileBytes writes raw bytes to a file inside the container via stdin pipe.
+// Binary-safe: the bytes are streamed through docker exec -i, not interpolated
+// into a shell command. Creates parent directories.
+func (d *DockerExecutor) WriteFileBytes(ctx context.Context, path string, content []byte) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", d.container, "sh", "-c",
+		"cd "+shQuote(d.workspaceRoot)+` && mkdir -p "$(dirname -- "$1")" && cat > "$1"`, "sh", path)
+	cmd.Stdin = bytes.NewReader(content)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+}
+
 func (d *DockerExecutor) Cwd() string           { return d.workspaceRoot }
 func (d *DockerExecutor) WorkspaceRoot() string { return d.workspaceRoot }
 func (d *DockerExecutor) Generation() int       { return d.generation }
@@ -1110,6 +1129,19 @@ func (e *DirectExecutor) WriteFile(_ context.Context, path, content string) (str
 		return "", err
 	}
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+}
+
+// WriteFileBytes writes raw bytes to a file on the host filesystem.
+// Binary-safe: uses os.WriteFile directly, no string conversion.
+func (e *DirectExecutor) WriteFileBytes(_ context.Context, path string, content []byte) (string, error) {
+	full := e.resolve(path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil

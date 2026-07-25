@@ -79,6 +79,11 @@ func (f *fakeExecutor) WriteFile(_ context.Context, p, c string) (string, error)
 	f.files[p] = c
 	return fmt.Sprintf("wrote %d bytes to %s", len(c), p), nil
 }
+func (f *fakeExecutor) WriteFileBytes(_ context.Context, p string, c []byte) (string, error) {
+	f.writeCalls[p] = string(c)
+	f.files[p] = string(c)
+	return fmt.Sprintf("wrote %d bytes to %s", len(c), p), nil
+}
 func (f *fakeExecutor) Cwd() string           { return "/work" }
 func (f *fakeExecutor) WorkspaceRoot() string { return "/work" }
 func (f *fakeExecutor) Describe() string      { return "fake" }

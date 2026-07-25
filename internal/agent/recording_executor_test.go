@@ -112,6 +112,14 @@ func (r *recordingExecutor) WriteFile(ctx context.Context, path, content string)
 	return r.fakeExecutor.WriteFile(ctx, path, content)
 }
 
+func (r *recordingExecutor) WriteFileBytes(ctx context.Context, path string, content []byte) (string, error) {
+	r.record("WriteFileBytes", path)
+	if r.writeFileErr != nil {
+		return "", r.writeFileErr
+	}
+	return r.fakeExecutor.WriteFileBytes(ctx, path, content)
+}
+
 func (r *recordingExecutor) DeletePath(ctx context.Context, path string) error {
 	r.record("DeletePath", path)
 	if r.deletePathErr != nil {

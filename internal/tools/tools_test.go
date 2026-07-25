@@ -20,7 +20,7 @@ func TestDefaultTools(t *testing.T) {
 		"dispatch_subagent", "dispatch_subagents",
 		"run_shell", "read_file", "read_file_full",
 		"search_files", "find_files", "list_dir",
-		"edit_file", "open_url", "write_file",
+		"edit_file", "open_url", "write_file", "write_binary_file",
 		"delete_file", "move_file",
 		"run_background", "kill_process", "read_process_log",
 	}
@@ -76,7 +76,7 @@ func TestDefaultTools_CwdInDescription(t *testing.T) {
 
 // TestGatedTool verifies which tools require human confirmation.
 func TestGatedTool(t *testing.T) {
-	gated := []string{"run_shell", "write_file", "edit_file", "delete_file", "move_file", "run_background", "kill_process"}
+	gated := []string{"run_shell", "write_file", "write_binary_file", "edit_file", "delete_file", "move_file", "run_background", "kill_process"}
 	for _, name := range gated {
 		if !GatedTool(name) {
 			t.Errorf("GatedTool(%q) = false, want true", name)
@@ -108,7 +108,7 @@ func TestValidCapability(t *testing.T) {
 
 // TestIsEditTool verifies edit-tool classification.
 func TestIsEditTool(t *testing.T) {
-	editTools := []string{"write_file", "edit_file", "delete_file", "move_file"}
+	editTools := []string{"write_file", "write_binary_file", "edit_file", "delete_file", "move_file"}
 	for _, name := range editTools {
 		if !IsEditTool(name) {
 			t.Errorf("IsEditTool(%q) = false, want true", name)
@@ -164,7 +164,7 @@ func TestDiscoveryTools(t *testing.T) {
 		}
 	}
 	// Must NOT have mutation tools.
-	forbidden := []string{"run_shell", "write_file", "edit_file", "delete_file", "move_file", "run_background", "kill_process"}
+	forbidden := []string{"run_shell", "write_file", "write_binary_file", "edit_file", "delete_file", "move_file", "run_background", "kill_process"}
 	for _, name := range forbidden {
 		if _, ok := names[name]; ok {
 			t.Errorf("DiscoveryTools must NOT include %q", name)
@@ -184,7 +184,7 @@ func TestEditTools(t *testing.T) {
 		}
 	}
 	// Must have edit tools.
-	for _, name := range []string{"write_file", "edit_file", "delete_file", "move_file"} {
+	for _, name := range []string{"write_file", "write_binary_file", "edit_file", "delete_file", "move_file"} {
 		if _, ok := names[name]; !ok {
 			t.Errorf("EditTools missing %q", name)
 		}

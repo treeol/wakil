@@ -285,6 +285,9 @@ func (e *erroringExecutor) ListDir(ctx context.Context, p string) (string, error
 func (e *erroringExecutor) WriteFile(ctx context.Context, p, c string) (string, error) {
 	return e.base.WriteFile(ctx, p, c)
 }
+func (e *erroringExecutor) WriteFileBytes(ctx context.Context, p string, c []byte) (string, error) {
+	return e.base.WriteFileBytes(ctx, p, c)
+}
 func (e *erroringExecutor) Cwd() string           { return e.base.Cwd() }
 func (e *erroringExecutor) WorkspaceRoot() string { return e.base.WorkspaceRoot() }
 func (e *erroringExecutor) Describe() string      { return e.base.Describe() }
