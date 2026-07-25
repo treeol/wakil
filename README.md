@@ -29,6 +29,7 @@ navigation is backed by an actual language server (`lsp_definition` /
 - [Configuration](#configuration) · [The TUI](#the-tui) · [Tools](#tools)
 - [Optional features](#optional-features) · [Memory and staging](#memory-and-staging) · [How state works](#how-state-works)
 - [Testing](#testing) · [Project layout](#project-layout) · [Contributing](#contributing) · [License](#license)
+- [Remote provisioning](#remote-provisioning) — bringing up wakil on a fresh host
 
 ## Requirements
 
@@ -773,6 +774,12 @@ go test ./...
 
 Both green before you send a patch. Keep the confirmation gate honest — no
 ungated write/execute paths, ever.
+
+## Remote provisioning
+
+Bringing up wakil on a fresh remote host (config, Mashūra API key env, Docker
+image, SELinux, MCP paths) — see
+[`docs/remote-provisioning.md`](docs/remote-provisioning.md).
 
 ## License
 
