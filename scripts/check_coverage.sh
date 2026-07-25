@@ -14,6 +14,9 @@
 # Updated 2026-07-23: tools jumped to 60.3% (google_test.go), exec
 # ratcheted to 53.6%, agent to 68.3%. Ratcheted to current−1pt.
 #
+# Added 2026-07-25: counsel coverage floor at 90.0% (oracle_test.go added,
+# first tests for the package — panel selection, fallback loop, error surfaces).
+#
 # Usage:
 #   go test -count=1 -cover ./... 2>&1 | scripts/check_coverage.sh
 #   go test -count=1 -cover ./... > cover.txt 2>&1; scripts/check_coverage.sh cover.txt
@@ -62,6 +65,7 @@ check "internal/tools" "59.3"
 # floor was ratcheted at 2026-07-23 when the image became available in CI.
 check "internal/exec" "53.6"
 check "internal/proxy" "79.2"
+check "internal/counsel" "90.0"
 
 if [ "$fail" -ne 0 ]; then
 	echo "check_coverage: coverage floor violated — see above"
