@@ -9,11 +9,14 @@ import (
 
 // finishSoundCmds lists the players tried to chime when a turn finishes, in
 // preference order. canberra-gtk-play plays a named freedesktop event sound;
-// paplay/pw-play play the sound file directly. The first one found wins.
+// paplay/pw-play play the sound file directly; afplay is the macOS fallback.
+// The first one found wins.
 var finishSoundCmds = [][]string{
 	{"canberra-gtk-play", "-i", "complete"},
 	{"paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga"},
 	{"pw-play", "/usr/share/sounds/freedesktop/stereo/complete.oga"},
+	// macOS: use the built-in Glass sound (System/Library/Sounds).
+	{"afplay", "/System/Library/Sounds/Glass.aiff"},
 }
 
 // playFinishSound returns a command that plays a short completion chime via the
