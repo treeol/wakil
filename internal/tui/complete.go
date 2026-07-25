@@ -71,7 +71,7 @@ var allTUICommands = []candidate{
 	{name: "/compact"},
 	{name: "/counsel", hasArgs: true},
 	{name: "/cwd"},
-	{name: "/handoff"},
+	{name: "/handoff", hasArgs: true},
 	{name: "/exit"},
 	{name: "/help"},
 	{name: "/history"},
@@ -210,9 +210,9 @@ func computeAtCompletion(ta textarea.Model, base string) completionState {
 //     inserts the chosen "/command" name in one step.
 //
 //   - Space before cursor ("/backend op"): argument picker for the command
-//     before the space. Only /auto, /backend, /model, /resume, /subagent, and
-//     /submodel have argument completion; other commands are not completed
-//     past the space.
+//     before the space. Only /auto, /backend, /model, /resume, /subagent,
+//     /submodel, /repostate, and /handoff have argument completion; other
+//     commands are not completed past the space.
 func computeSlashCompletion(ta textarea.Model, src compSources) completionState {
 	lines := strings.Split(ta.Value(), "\n")
 	row := ta.Line()
@@ -267,6 +267,8 @@ func computeSlashCompletion(ta textarea.Model, src compSources) completionState 
 		cands = listNameCandidates(argLeaf, src.endpoints)
 	case "/submodel":
 		cands = listNameCandidates(argLeaf, src.models)
+	case "/handoff":
+		cands = listNameCandidates(argLeaf, []string{"proceed", "stop"})
 	default:
 		return completionState{} // no argument completion for other commands
 	}

@@ -47,3 +47,4 @@ runs/
 
 # go build cache (sandbox /tmp is tiny)
 .tmp-gocache/
+.tmp-gobuild/

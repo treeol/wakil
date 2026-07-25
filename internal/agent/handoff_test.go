@@ -25,7 +25,7 @@ func testHandoffApp() *App {
 
 func TestPerformHandoffEmptyConv(t *testing.T) {
 	app := testHandoffApp()
-	msg := performHandoff(context.Background(), app)
+	msg := performHandoff(context.Background(), app, false)
 	hm, ok := msg.(HandoffMsg)
 	if !ok {
 		t.Fatalf("expected HandoffMsg, got %T", msg)
@@ -40,7 +40,7 @@ func TestPerformHandoffNoUserMessages(t *testing.T) {
 	app.Conv = []proxy.Message{
 		{Role: "system", Content: StrPtr("preamble")},
 	}
-	msg := performHandoff(context.Background(), app)
+	msg := performHandoff(context.Background(), app, false)
 	hm, ok := msg.(HandoffMsg)
 	if !ok {
 		t.Fatalf("expected HandoffMsg, got %T", msg)
@@ -63,6 +63,29 @@ func TestBuildContinuationPromptContains(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "untrusted") {
 		t.Error("should delimit as untrusted")
+	}
+}
+
+func TestBuildHandoffContextContains(t *testing.T) {
+	ctx := BuildHandoffContext("test summary", "abc12345-aaaa", "/workspace")
+	if !strings.Contains(ctx, "abc12345") {
+		t.Error("should contain short chat ID")
+	}
+	if !strings.Contains(ctx, "/workspace") {
+		t.Error("should contain workspace")
+	}
+	if !strings.Contains(ctx, "test summary") {
+		t.Error("should contain summary")
+	}
+	if !strings.Contains(ctx, "untrusted") {
+		t.Error("should delimit as untrusted")
+	}
+	// Stop mode must NOT instruct the model to proceed — the user drives.
+	if strings.Contains(ctx, "proceed with the next action") {
+		t.Error("stop-mode context should NOT contain 'proceed with the next action'")
+	}
+	if strings.Contains(ctx, "Continue where the previous session left off") {
+		t.Error("stop-mode context should NOT instruct continuation")
 	}
 }
 

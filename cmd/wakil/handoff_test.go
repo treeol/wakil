@@ -93,6 +93,66 @@ func TestHandleTUICommandHandoffNoUserMessages(t *testing.T) {
 	}
 }
 
+func TestHandleTUICommandHandoffStopDefault(t *testing.T) {
+	app := cmdApp()
+	_, _, cmd := agent.HandleTUICommand("/handoff", app)
+	msg, ok := cmd().(agent.HandoffMsg)
+	if !ok {
+		t.Fatalf("/handoff should emit HandoffMsg; got %T", cmd())
+	}
+	if msg.Proceed {
+		t.Error("bare /handoff should default to Proceed=false (stop mode)")
+	}
+}
+
+func TestHandleTUICommandHandoffStopExplicit(t *testing.T) {
+	app := cmdApp()
+	_, _, cmd := agent.HandleTUICommand("/handoff stop", app)
+	msg, ok := cmd().(agent.HandoffMsg)
+	if !ok {
+		t.Fatalf("/handoff stop should emit HandoffMsg; got %T", cmd())
+	}
+	if msg.Proceed {
+		t.Error("/handoff stop should set Proceed=false")
+	}
+}
+
+func TestHandleTUICommandHandoffProceed(t *testing.T) {
+	app := cmdApp()
+	_, _, cmd := agent.HandleTUICommand("/handoff proceed", app)
+	msg, ok := cmd().(agent.HandoffMsg)
+	if !ok {
+		t.Fatalf("/handoff proceed should emit HandoffMsg; got %T", cmd())
+	}
+	if !msg.Proceed {
+		t.Error("/handoff proceed should set Proceed=true")
+	}
+}
+
+func TestHandleTUICommandHandoffInvalidArg(t *testing.T) {
+	app := cmdApp()
+	_, _, cmd := agent.HandleTUICommand("/handoff banana", app)
+	msg, ok := cmd().(agent.SysNoteMsg)
+	if !ok {
+		t.Fatalf("/handoff banana should emit SysNoteMsg (usage); got %T", cmd())
+	}
+	if !strings.Contains(msg.Text, "usage") {
+		t.Errorf("/handoff banana should show usage; got %q", msg.Text)
+	}
+}
+
+func TestHandleTUICommandHandoffTooManyArgs(t *testing.T) {
+	app := cmdApp()
+	_, _, cmd := agent.HandleTUICommand("/handoff proceed stop", app)
+	msg, ok := cmd().(agent.SysNoteMsg)
+	if !ok {
+		t.Fatalf("/handoff with too many args should emit SysNoteMsg (usage); got %T", cmd())
+	}
+	if !strings.Contains(msg.Text, "usage") {
+		t.Errorf("/handoff proceed stop should show usage; got %q", msg.Text)
+	}
+}
+
 func TestBuildContinuationPrompt(t *testing.T) {
 	prompt := agent.BuildContinuationPrompt("test summary", "abc12345-aaaa-bbbb-cccc-dddddddddddd", "/workspace")
 	if !strings.Contains(prompt, "abc12345") {

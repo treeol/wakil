@@ -145,13 +145,16 @@ type MCPReconnectedMsg struct {
 
 // HandoffMsg signals that a session handoff summary was generated and stored.
 // The TUI handler rotates the conversation to NewChatID, clears the viewport,
-// and starts a continuation turn with ContinuationPrompt.
+// and either starts a continuation turn (Proceed=true) or displays the summary
+// and waits for input (Proceed=false, the default).
 //
 // If Err is non-nil, the handoff failed — the TUI shows the error and does
 // NOT rotate the conversation. Note: the old session may still have been
 // saved to disk before the failure, depending on which step failed.
 type HandoffMsg struct {
-	ContinuationPrompt string // the prompt to seed the new session's first turn
+	ContinuationPrompt string // the prompt to seed the new session's first turn (proceed mode)
+	Summary            string // the raw handoff summary (displayed + injected in stop mode)
+	Proceed            bool   // true = auto-start continuation turn; false = stop and wait
 	Note               string // short human-readable status (old ID, warnings)
 	OldChatID          string // the previous session's chat_id (for /resume)
 	NewChatID          string // the new session's chat_id (preallocated)

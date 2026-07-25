@@ -353,13 +353,36 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 
 	case "/handoff":
 		// /handoff summarizes the current session, stores the summary in
-		// durable memory, saves the old session, and starts a new session
-		// with a continuation prompt. The summarization runs in the Cmd
-		// closure (off the event loop, same as /compact); the conversation
-		// rotation happens in the TUI's HandoffMsg handler on the event loop
-		// to avoid races with concurrent user input.
+		// durable memory, saves the old session, and starts a new session.
+		// The summarization runs in the Cmd closure (off the event loop, same
+		// as /compact); the conversation rotation happens in the TUI's
+		// HandoffMsg handler on the event loop to avoid races.
+		//
+		// Args: "proceed" = auto-start continuation turn (original behavior);
+		// "stop" or no arg = display summary and wait for input (default).
+		proceed := false
+		if len(fields) > 2 {
+			return true, false, note("usage: /handoff [proceed|stop]")
+		}
+		if len(fields) == 2 {
+			switch fields[1] {
+			case "proceed":
+				proceed = true
+			case "stop":
+				proceed = false
+			default:
+				return true, false, note("usage: /handoff [proceed|stop]")
+			}
+		}
 		return true, false, func() Msg {
-			return performHandoff(context.Background(), app)
+			msg := performHandoff(context.Background(), app, proceed)
+			// Stamp Proceed on error returns too — performHandoff returns early
+			// HandoffMsg{Err:...} without setting Proceed (zero-value=false).
+			if hm, ok := msg.(HandoffMsg); ok {
+				hm.Proceed = proceed
+				return hm
+			}
+			return msg
 		}
 
 	case "/verify":
@@ -1044,7 +1067,9 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /plan verify         re-run the final oracle review (in verify state after gaps flagged)
 /plan abort          cancel the active workflow
 /compact             summarize older turns now (frees context, improves performance)
-/handoff             summarize this session → store in memory → start fresh session with continuation prompt
+/handoff [proceed|stop] summarize session → store in memory → start fresh session
+                     default (or stop): display summary and wait for input
+                     proceed: auto-start continuation turn (original behavior)
 /learn               send "learn this for next time" — proxy synthesises a fact to save (ilm-proxy only; use memory_put on OpenAI endpoints)
 /counsel auto|suggest|off  auto-counsel mode: auto=fire mashura__debug on struggle, suggest=hint, off=silent
 /counsel                   show current counsel mode and per-turn cap

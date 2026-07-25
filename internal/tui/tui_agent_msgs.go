@@ -474,12 +474,35 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			agent.ShortID(msg.NewChatID), agent.ShortID(msg.OldChatID))))
 		m.vp.GotoBottom()
 
-		// Start the continuation turn (same pattern as WFStartTurnMsg).
-		var pair []tea.Cmd
-		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
-			return AdaptCmd(agent.RunTurn(m.app, ctx, msg.ContinuationPrompt))
-		})
-		cmds = append(cmds, pair...)
+		if msg.Proceed {
+			// Start the continuation turn (same pattern as WFStartTurnMsg).
+			var pair []tea.Cmd
+			m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+				return AdaptCmd(agent.RunTurn(m.app, ctx, msg.ContinuationPrompt))
+			})
+			cmds = append(cmds, pair...)
+		} else {
+			// Stop mode: display the summary, inject it as untrusted context
+			// into the new conversation so the next user turn has the handoff
+			// context, and persist the new session so it survives a quit.
+			if msg.Summary != "" {
+				m.addItem(iSys, dim2("· handoff summary:\n"+msg.Summary))
+			}
+			m.addItem(iSys, dim2("· handoff complete — ready for input"))
+			// Inject the summary as a pinned system message wrapped in the
+			// untrusted-delimiter framing (same mitigation as proceed mode)
+			// so the next user turn has the handoff context without
+			// auto-starting a turn. Guard against empty summaries.
+			if strings.TrimSpace(msg.Summary) != "" {
+				handoffCtx := agent.BuildHandoffContext(msg.Summary, msg.OldChatID, m.app.SessionWorkspace())
+				m.app.Conv = append(m.app.Conv, proxy.Message{
+					Role:    "system",
+					Content: agent.StrPtr(handoffCtx),
+					Pinned:  true,
+				})
+			}
+			m.app.SaveSession()
+		}
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.OpenResumePickerMsg:
