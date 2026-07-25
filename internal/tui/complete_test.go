@@ -24,9 +24,18 @@ func compTree(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(base, "models"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// models/ needs a non-dotfile for git-based indexing to synthesize the
+	// parent dir entry (git does not track empty directories). This matches
+	// real-world usage where directories contain at least one file.
+	if err := os.WriteFile(filepath.Join(base, "models", "data.json"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(base, ".hidden"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Reset the global file index cache so each test builds a fresh index
+	// for its own temp dir, avoiding cross-test cache contamination.
+	globalFileIndex = repoFileIndex{}
 	return base
 }
 
@@ -48,8 +57,9 @@ func TestComputeCompletionActiveToken(t *testing.T) {
 	if st.leafLen != 1 {
 		t.Fatalf("leafLen = %d, want 1", st.leafLen)
 	}
-	// "m" matches main.go, mainframe.txt, models/ — dirs first, prefix-ranked.
-	if len(st.cands) != 3 {
+	// "m" matches models/ (dir), main.go, mainframe.txt, and models/data.json
+	// (relPath contains "m" in "models"). Dirs first, prefix-ranked.
+	if len(st.cands) != 4 {
 		t.Fatalf("cands = %+v", st.cands)
 	}
 	if !st.cands[0].isDir || st.cands[0].name != "models" {
