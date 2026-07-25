@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	agent "github.com/treeol/wakil/internal/agent"
 
@@ -136,9 +139,12 @@ func computeCompletion(ta textarea.Model, src compSources) completionState {
 	return computeSlashCompletion(ta, src)
 }
 
-// computeAtCompletion handles "@token" file-mention completion (unchanged from
-// the original single-context implementation). The cursor must be inside a
-// whitespace-bounded @token for this to activate.
+// computeAtCompletion handles "@token" file-mention completion. When the query
+// has no "/" (bare leaf like "@store"), it uses recursive repo-wide matching to
+// surface files in subdirectories. When the query contains a "/" (like
+// "@src/app"), it drills into the specified subdirectory with the original
+// single-level behavior. The cursor must be inside a whitespace-bounded
+// @token for this to activate.
 func computeAtCompletion(ta textarea.Model, base string) completionState {
 	lines := strings.Split(ta.Value(), "\n")
 	row := ta.Line()
@@ -174,15 +180,24 @@ func computeAtCompletion(ta textarea.Model, base string) completionState {
 
 	query := string(runes[start+1 : col])
 	dirPrefix, leaf := SplitMentionQuery(query)
-	dir := dirPrefix
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(base, dirPrefix)
+	var cands []candidate
+	if dirPrefix == "" {
+		// No explicit directory prefix → recursive repo-wide fuzzy match so
+		// typing "@store" surfaces internal/memory/store.go without drilling.
+		cands = listCandidatesRecursive(base, leaf)
+	} else {
+		// User typed a "/" → drill into the specified subdirectory (existing behavior).
+		dir := dirPrefix
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(base, dirPrefix)
+		}
+		cands = listCandidates(dir, leaf)
 	}
 	return completionState{
 		active:  true,
 		kind:    compKindFile,
 		leafLen: len([]rune(leaf)),
-		cands:   listCandidates(dir, leaf),
+		cands:   cands,
 	}
 }
 
@@ -269,6 +284,232 @@ func SplitMentionQuery(q string) (dirPrefix, leaf string) {
 		return q[:i+1], q[i+1:]
 	}
 	return "", q
+}
+
+// skipDirs are directories never descended into during recursive file indexing.
+var skipDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	".tmp-gocache": true,
+	"vendor":       true,
+	".cache":       true,
+	"__pycache__":  true,
+	".idea":        true,
+	".vscode":      true,
+	"dist":         true,
+	"build":        true,
+	"target":       true,
+	".next":        true,
+	".turbo":       true,
+}
+
+// repoFileIndex caches the list of repo-relative file paths to avoid re-walking
+// the filesystem on every keystroke. The index is per-mentionBase and expires
+// after fileIndexTTL. A zero-value fileIndex is ready to use.
+type repoFileIndex struct {
+	entries []indexEntry
+	base    string
+	expires time.Time
+}
+
+type indexEntry struct {
+	relPath  string // workspace-relative path (e.g. "internal/memory/store.go")
+	baseName string // last path component (e.g. "store.go")
+	isDir    bool
+}
+
+const fileIndexTTL = 30 * time.Second
+
+// globalFileIndex is the shared cache for the recursive file index. It is
+// per-mentionBase; switching workspaces (different mentionBase) triggers a
+// rebuild. Safe for concurrent reads (computeCompletion runs on the TUI
+// goroutine; the index is not accessed from subagents).
+var globalFileIndex repoFileIndex
+
+// buildFileIndex walks the base directory and returns a sorted list of
+// workspace-relative paths. Skips skipDirs entries, dotfiles, and respects a
+// max depth of 12 to bound traversal. Uses git ls-files when available (faster,
+// respects .gitignore, includes untracked files), falls back to filepath.WalkDir.
+func buildFileIndex(base string) []indexEntry {
+	// Try git ls-files first — it respects .gitignore and is much faster than
+	// a full tree walk on large repos. We run it with a 2s timeout so it
+	// doesn't block the TUI on slow/network filesystems.
+	if entries := buildFileIndexGit(base); entries != nil {
+		return entries
+	}
+	return buildFileIndexWalk(base)
+}
+
+// buildFileIndexGit uses `git ls-files --cached --others --exclude-standard -z`
+// to list tracked + untracked (non-ignored) files. Falls back to walk on any
+// error. Also synthesizes parent directories from the file paths so the
+// recursive picker can match directory names. Returns nil if git is unavailable
+// or fails.
+//
+// -z uses NUL-separated output to handle filenames with spaces, newlines, and
+// non-ASCII characters correctly (avoids core.quotepath C-quoting).
+// --cached includes tracked files; --others adds untracked files;
+// --exclude-standard applies .gitignore rules.
+func buildFileIndexGit(base string) []indexEntry {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", base, "ls-files",
+		"--cached", "--others", "--exclude-standard", "-z")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var entries []indexEntry
+	seenDirs := make(map[string]bool)
+	// -z output is NUL-separated; split on \x00, not newline.
+	for _, line := range strings.Split(string(out), "\x00") {
+		if line == "" {
+			continue
+		}
+		// Apply the same filtering as the walk fallback: skip dotfiles and
+		// skipDirs so the git path and walk path are consistent.
+		name := filepath.Base(line)
+		if shouldSkipIndexEntry(name) {
+			continue
+		}
+		entry := indexEntry{
+			relPath:  line,
+			baseName: name,
+		}
+		entries = append(entries, entry)
+		// Track parent dirs so the recursive picker can also match directory names.
+		dir := filepath.Dir(line)
+		for dir != "." && dir != "/" && dir != "" {
+			dirName := filepath.Base(dir)
+			if !seenDirs[dir] && !shouldSkipIndexEntry(dirName) {
+				seenDirs[dir] = true
+				entries = append(entries, indexEntry{
+					relPath:  dir + "/",
+					baseName: dirName,
+					isDir:    true,
+				})
+			}
+			dir = filepath.Dir(dir)
+		}
+	}
+	return entries
+}
+
+// shouldSkipIndexEntry returns true if a file/directory name should be excluded
+// from the recursive index. Applies the same rules as the walk fallback: skip
+// dotfiles (unless the user explicitly types a dot prefix — handled by the
+// caller's leaf filtering) and skipDirs entries.
+func shouldSkipIndexEntry(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	return skipDirs[name]
+}
+
+// buildFileIndexWalk is the fallback filesystem walker when git is not available.
+func buildFileIndexWalk(base string) []indexEntry {
+	var entries []indexEntry
+	const maxDepth = 12
+	filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return filepath.SkipDir
+		}
+		rel, _ := filepath.Rel(base, path)
+		if rel == "." {
+			return nil
+		}
+		name := d.Name()
+		// Skip hidden dirs/files and skipDirs.
+		if strings.HasPrefix(name, ".") || skipDirs[name] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Depth check.
+		depth := strings.Count(rel, string(filepath.Separator))
+		if depth > maxDepth {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		entry := indexEntry{
+			relPath:  rel,
+			baseName: name,
+			isDir:    d.IsDir(),
+		}
+		if entry.isDir {
+			entry.relPath = rel + "/"
+		}
+		entries = append(entries, entry)
+		return nil
+	})
+	return entries
+}
+
+// getFileIndex returns a cached file index for base, rebuilding if the cache
+// is stale or for a different base.
+func getFileIndex(base string) []indexEntry {
+	now := time.Now()
+	if globalFileIndex.base == base && now.Before(globalFileIndex.expires) {
+		return globalFileIndex.entries
+	}
+	entries := buildFileIndex(base)
+	globalFileIndex = repoFileIndex{
+		entries: entries,
+		base:    base,
+		expires: now.Add(fileIndexTTL),
+	}
+	return entries
+}
+
+// listCandidatesRecursive lists files/dirs across the entire repo whose basename
+// or path contains leaf (case-insensitive). Ranked: basename-prefix first,
+// then path-substring, then alphabetical. When a candidate is a file in a
+// subdirectory, the candidate name is the workspace-relative path (e.g.
+// "internal/memory/store.go") so the user can disambiguate. On accept, the
+// full relative path is inserted.
+//
+// The candidate.isDir flag is preserved so accepting a directory still drills
+// in with "/" appended.
+func listCandidatesRecursive(base, leaf string) []candidate {
+	entries := getFileIndex(base)
+	leafLower := strings.ToLower(leaf)
+	var cands []candidate
+	for _, e := range entries {
+		if leaf != "" {
+			// Match against both basename and full relative path.
+			if !strings.Contains(strings.ToLower(e.baseName), leafLower) &&
+				!strings.Contains(strings.ToLower(e.relPath), leafLower) {
+				continue
+			}
+		}
+		cands = append(cands, candidate{name: strings.TrimSuffix(e.relPath, "/"), isDir: e.isDir})
+	}
+	// Rank: basename-prefix first, then dirs-first, then shorter path
+	// (shallower = more relevant), then alphabetical.
+	sort.SliceStable(cands, func(i, j int) bool {
+		ci, cj := cands[i], cands[j]
+		bi := strings.HasPrefix(strings.ToLower(filepath.Base(ci.name)), leafLower)
+		bj := strings.HasPrefix(strings.ToLower(filepath.Base(cj.name)), leafLower)
+		if bi != bj {
+			return bi
+		}
+		// Within same basename-prefix tier, dirs first.
+		if ci.isDir != cj.isDir {
+			return ci.isDir
+		}
+		// Shorter paths first (shallower = more relevant).
+		if len(ci.name) != len(cj.name) {
+			return len(ci.name) < len(cj.name)
+		}
+		return ci.name < cj.name
+	})
+	if len(cands) > compMaxCandidates {
+		cands = cands[:compMaxCandidates]
+	}
+	return cands
 }
 
 // listCandidates lists entries in dir matching leaf (case-insensitive
