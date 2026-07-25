@@ -297,6 +297,75 @@ func dockerHardeningArgs(opts DockerOpts) []string {
 	return args
 }
 
+// selinuxEnforceFile is the kernel-provided file that reports the current
+// SELinux mode: "1" = Enforcing, "0" = Permissive. Absent on non-SELinux
+// kernels. Overridable in tests via selinuxEnforceReader.
+const selinuxEnforceFile = "/sys/fs/selinux/enforce"
+
+// selinuxEnforceReader is the function used to read the SELinux enforce
+// state. Overridable in tests; defaults to reading selinuxEnforceFile.
+var selinuxEnforceReader = defaultSelinuxEnforceReader
+
+// defaultSelinuxEnforceReader reads /sys/fs/selinux/enforce and returns true
+// when SELinux is in Enforcing mode. Returns false (not an error) when the
+// file doesn't exist — this is the normal state on non-SELinux kernels
+// (Debian/Ubuntu, Arch, etc.).
+func defaultSelinuxEnforceReader() bool {
+	b, err := os.ReadFile(selinuxEnforceFile)
+	if err != nil {
+		return false // no SELinux, or no read permission → not Enforcing
+	}
+	return strings.TrimSpace(string(b)) == "1"
+}
+
+// selinuxDockerHint returns a suffix for docker "permission denied" error
+// messages. When SELinux is Enforcing, it appends a note suggesting the user
+// check SELinux audit logs, since the denial may be a host MAC policy issue
+// rather than (or in addition to) a DAC group/permissions problem.
+//
+// Returns an empty string on non-SELinux hosts so existing error messages are
+// unchanged.
+//
+// This generic hint is used on the host-side preflight path (dockerPreflight),
+// where the failure is typically DAC (docker group). The more specific
+// container_t → container_runtime_t hint is emitted by
+// checkInContainerDockerSocket, which runs after the container starts and can
+// detect the actual SELinux socket-connect denial.
+func selinuxDockerHint() string {
+	if !selinuxEnforceReader() {
+		return "" // not Enforcing → no SELinux hint
+	}
+	return "\n\nSELinux is Enforcing — if Docker group membership is correct, " +
+		"check audit logs for an AVC denial:\n" +
+		"  sudo ausearch -m avc -ts recent"
+}
+
+// selinuxDockerSocketHint returns the specific, actionable guidance for the
+// in-container docker socket SELinux denial (container_t → container_runtime_t
+// connectto). This is the denial that occurs when a process inside the sandbox
+// container tries to connect to the bind-mounted host docker socket and SELinux
+// MAC policy denies the connectto operation.
+//
+// Returns an empty string on non-SELinux hosts.
+//
+// The fix is a host-side policy module (not a wakil docker-args change):
+//
+//	sudo ausearch -m avc -ts recent | grep connectto | audit2allow -M wakil_dockersock
+//	sudo semodule -i wakil_dockersock.pp
+//
+// Or run wakil with --exec direct on SELinux hosts.
+func selinuxDockerSocketHint() string {
+	if !selinuxEnforceReader() {
+		return "" // not Enforcing → no SELinux hint
+	}
+	return "SELinux is Enforcing — this is likely a host MAC policy denial " +
+		"(container_t → container_runtime_t connectto), not a permissions/`:z` issue. " +
+		"Fix on host:\n" +
+		"  sudo ausearch -m avc -ts recent | grep connectto | audit2allow -M wakil_dockersock\n" +
+		"  sudo semodule -i wakil_dockersock.pp\n" +
+		"Or run wakil with --exec direct on SELinux hosts."
+}
+
 // dockerPreflight checks that the Docker CLI binary exists and the daemon is
 // reachable. Returns a clear, actionable error for each failure mode instead
 // of letting the first docker command fail with a confusing message.
@@ -324,7 +393,7 @@ func dockerPreflight() error {
 			return fmt.Errorf("docker daemon is not running — start it (e.g. systemctl start docker) or use --exec direct")
 		}
 		if strings.Contains(msg, "permission denied") || strings.Contains(msg, "Got permission denied") {
-			return fmt.Errorf("docker permission denied — add your user to the docker group (sudo usermod -aG docker $USER) or use --exec direct")
+			return fmt.Errorf("docker permission denied — add your user to the docker group (sudo usermod -aG docker $USER) or use --exec direct%s", selinuxDockerHint())
 		}
 		if msg == "" {
 			return fmt.Errorf("docker info failed: %w (is the Docker daemon running?)", err)
@@ -549,6 +618,15 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		if err := ensureDockerCLI(name); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v (docker socket mounted but CLI unavailable)\n", err)
 		}
+		// Check that the in-container docker CLI can actually reach the host
+		// daemon via the bind-mounted socket. On SELinux-Enforcing hosts, the
+		// socket connectto may be denied by MAC policy (container_t →
+		// container_runtime_t) even though DAC (group-add) is correct. This
+		// surfaces the denial as an actionable warning instead of a silent
+		// failure when the agent first tries to use docker.
+		if warn := checkInContainerDockerSocket(name); warn != "" {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", warn)
+		}
 	}
 
 	// Host-side kvr readiness check: PING the UDS socket. On success, wire
@@ -733,7 +811,40 @@ func ensureDockerCLI(container string) error {
 	return nil
 }
 
-// execCtx runs docker exec with the given args, using CommandContext so the
+// checkInContainerDockerSocket verifies that the in-container docker CLI can
+// reach the host daemon through the bind-mounted /var/run/docker.sock. On
+// SELinux-Enforcing hosts, this connection may be denied by MAC policy
+// (container_t → container_runtime_t connectto) even though DAC permissions
+// (group-add) are correct. When that happens, this function returns the
+// specific, actionable SELinux guidance. On non-SELinux hosts, a permission
+// denial here is unexpected (group-add should have handled it), so the generic
+// docker-group message is returned instead. Returns an empty string when the
+// socket is reachable (no problem to report).
+func checkInContainerDockerSocket(container string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "exec", container,
+		"docker", "info").CombinedOutput()
+	if err == nil {
+		return "" // socket reachable, no problem
+	}
+	msg := strings.TrimSpace(string(out))
+	if !strings.Contains(msg, "permission denied") && !strings.Contains(msg, "Permission denied") {
+		// Not a permission denial — could be daemon not running, socket missing, etc.
+		// Don't emit a SELinux hint for unrelated failures.
+		return ""
+	}
+	hint := selinuxDockerSocketHint()
+	if hint == "" {
+		// Non-SELinux host: permission denied is unexpected after group-add.
+		// Fall back to the standard group-membership guidance.
+		return "in-container docker socket access denied — " +
+			"add your user to the docker group (sudo usermod -aG docker $USER) " +
+			"or use --exec direct"
+	}
+	return "in-container docker socket access denied — " + hint
+}
+
 // call is cancelled when ctx is. All DockerExecutor methods that shell into
 // the container go through this helper.
 func (d *DockerExecutor) execCtx(ctx context.Context, interactive bool, args ...string) (string, error) {

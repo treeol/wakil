@@ -203,3 +203,157 @@ exit 1
 		t.Errorf("error should mention 'docker info failed', got: %v", err)
 	}
 }
+
+// TestDockerPreflight_SELinuxEnforcing appends a generic SELinux audit-log
+// hint to the permission-denied error when SELinux is Enforcing. The host-side
+// preflight runs before any container exists, so the hint is generic (check
+// audit logs), not the specific container_t guidance.
+func TestDockerPreflight_SELinuxEnforcing(t *testing.T) {
+	fakeDir := t.TempDir()
+	fakeDocker := filepath.Join(fakeDir, "docker")
+	const fakeScript = `#!/bin/sh
+echo "docker: Got permission denied while trying to connect to the Docker daemon socket"
+exit 1
+`
+	if err := os.WriteFile(fakeDocker, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeDir)
+
+	// Override SELinux reader to report Enforcing.
+	origReader := selinuxEnforceReader
+	selinuxEnforceReader = func() bool { return true }
+	defer func() { selinuxEnforceReader = origReader }()
+
+	err := dockerPreflight()
+	if err == nil {
+		t.Fatal("expected error for permission denied with SELinux Enforcing")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "permission denied") {
+		t.Errorf("error should mention 'permission denied', got: %v", err)
+	}
+	if !strings.Contains(msg, "SELinux") {
+		t.Errorf("error should mention SELinux when Enforcing, got: %v", err)
+	}
+	if !strings.Contains(msg, "ausearch") {
+		t.Errorf("error should suggest checking audit logs with ausearch, got: %v", err)
+	}
+	if !strings.Contains(msg, "--exec direct") {
+		t.Errorf("error should suggest --exec direct, got: %v", err)
+	}
+	// Host-side preflight should NOT emit the specific container_t hint —
+	// the container doesn't exist yet at this point.
+	if strings.Contains(msg, "container_t") {
+		t.Errorf("host-side preflight should NOT mention container_t, got: %v", err)
+	}
+}
+
+// TestDockerPreflight_SELinuxPermissive does NOT add SELinux guidance when
+// SELinux is Permissive (not Enforcing). The permission-denied error should
+// be the standard group-membership message.
+func TestDockerPreflight_SELinuxPermissive(t *testing.T) {
+	fakeDir := t.TempDir()
+	fakeDocker := filepath.Join(fakeDir, "docker")
+	const fakeScript = `#!/bin/sh
+echo "docker: Got permission denied while trying to connect to the Docker daemon socket"
+exit 1
+`
+	if err := os.WriteFile(fakeDocker, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeDir)
+
+	// Override SELinux reader to report Permissive (not Enforcing).
+	origReader := selinuxEnforceReader
+	selinuxEnforceReader = func() bool { return false }
+	defer func() { selinuxEnforceReader = origReader }()
+
+	err := dockerPreflight()
+	if err == nil {
+		t.Fatal("expected error for permission denied")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "permission denied") {
+		t.Errorf("error should mention 'permission denied', got: %v", err)
+	}
+	if strings.Contains(msg, "SELinux") {
+		t.Errorf("error should NOT mention SELinux when not Enforcing, got: %v", err)
+	}
+}
+
+// TestSELinuxDockerHint_NonSELinux verifies that selinuxDockerHint returns
+// an empty string on non-SELinux hosts.
+func TestSELinuxDockerHint_NonSELinux(t *testing.T) {
+	origReader := selinuxEnforceReader
+	selinuxEnforceReader = func() bool { return false }
+	defer func() { selinuxEnforceReader = origReader }()
+
+	hint := selinuxDockerHint()
+	if hint != "" {
+		t.Errorf("selinuxDockerHint should be empty on non-SELinux hosts, got: %q", hint)
+	}
+}
+
+// TestSELinuxDockerHint_Enforcing verifies that selinuxDockerHint returns
+// the generic audit-log guidance (not the specific container_t hint) when
+// SELinux is Enforcing. This hint is for the host-side preflight path.
+func TestSELinuxDockerHint_Enforcing(t *testing.T) {
+	origReader := selinuxEnforceReader
+	selinuxEnforceReader = func() bool { return true }
+	defer func() { selinuxEnforceReader = origReader }()
+
+	hint := selinuxDockerHint()
+	if !strings.Contains(hint, "SELinux") {
+		t.Errorf("hint should mention SELinux, got: %q", hint)
+	}
+	if !strings.Contains(hint, "ausearch") {
+		t.Errorf("hint should suggest ausearch, got: %q", hint)
+	}
+	// The generic hint should NOT contain the specific container_t guidance.
+	if strings.Contains(hint, "container_t") {
+		t.Errorf("generic hint should NOT mention container_t, got: %q", hint)
+	}
+}
+
+// TestSELinuxDockerSocketHint_Enforcing verifies that selinuxDockerSocketHint
+// returns the specific, actionable container_t → container_runtime_t guidance
+// when SELinux is Enforcing. This hint is for the in-container socket check.
+func TestSELinuxDockerSocketHint_Enforcing(t *testing.T) {
+	origReader := selinuxEnforceReader
+	selinuxEnforceReader = func() bool { return true }
+	defer func() { selinuxEnforceReader = origReader }()
+
+	hint := selinuxDockerSocketHint()
+	if !strings.Contains(hint, "SELinux") {
+		t.Errorf("hint should mention SELinux, got: %q", hint)
+	}
+	if !strings.Contains(hint, "container_t") {
+		t.Errorf("hint should mention container_t, got: %q", hint)
+	}
+	if !strings.Contains(hint, "container_runtime_t") {
+		t.Errorf("hint should mention container_runtime_t, got: %q", hint)
+	}
+	if !strings.Contains(hint, "audit2allow") {
+		t.Errorf("hint should suggest audit2allow, got: %q", hint)
+	}
+	if !strings.Contains(hint, "wakil_dockersock") {
+		t.Errorf("hint should name wakil_dockersock module, got: %q", hint)
+	}
+	if !strings.Contains(hint, "--exec direct") {
+		t.Errorf("hint should suggest --exec direct, got: %q", hint)
+	}
+}
+
+// TestSELinuxDockerSocketHint_NonSELinux verifies that selinuxDockerSocketHint
+// returns an empty string on non-SELinux hosts.
+func TestSELinuxDockerSocketHint_NonSELinux(t *testing.T) {
+	origReader := selinuxEnforceReader
+	selinuxEnforceReader = func() bool { return false }
+	defer func() { selinuxEnforceReader = origReader }()
+
+	hint := selinuxDockerSocketHint()
+	if hint != "" {
+		t.Errorf("selinuxDockerSocketHint should be empty on non-SELinux hosts, got: %q", hint)
+	}
+}
