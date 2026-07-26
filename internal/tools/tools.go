@@ -132,8 +132,8 @@ func DefaultTools(cwd string) []proxy.Tool {
 				"To make a file executable, follow with run_shell 'chmod +x <path>'. " +
 				"Requires user confirmation. " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
-				"path":            StrProp("Path to the file to write (relative paths resolve from the working directory)"),
-				"content_base64":  StrProp("Base64-encoded content to decode and write as raw bytes."),
+				"path":           StrProp("Path to the file to write (relative paths resolve from the working directory)"),
+				"content_base64": StrProp("Base64-encoded content to decode and write as raw bytes."),
 			}, "path", "content_base64"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{

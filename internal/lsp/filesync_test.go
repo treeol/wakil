@@ -32,6 +32,9 @@ func (f *fakeLSPExec) ListDir(_ context.Context, _ string) (string, error) { ret
 func (f *fakeLSPExec) WriteFile(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }
+func (f *fakeLSPExec) WriteFileBytes(_ context.Context, _ string, _ []byte) (string, error) {
+	return "", nil
+}
 func (f *fakeLSPExec) Cwd() string           { return "/work" }
 func (f *fakeLSPExec) Describe() string      { return "fake-lsp" }
 func (f *fakeLSPExec) Close() error          { return nil }

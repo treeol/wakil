@@ -190,15 +190,15 @@ type Config struct {
 	// 0 = use the built-in default (12,000).
 	SubagentToolResultCap int `json:"subagent_tool_result_cap,omitempty"`
 
-	ReadFileSizeLimit int               `json:"read_file_size_limit,omitempty"` // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
-	MaxFullReadBytes  int               `json:"max_full_read_bytes,omitempty"`  // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
-	MaxBinaryWriteBytes int             `json:"max_binary_write_bytes,omitempty"` // max decoded bytes write_binary_file accepts; default 10485760 (10 MB); 0 = use default
-	MaxRequestBytes   int               `json:"max_request_bytes,omitempty"`    // pre-send byte guard: trim largest tool results if request exceeds this; default 8388608 (8 MB); 0 = disabled
-	SearXngURL        string            `json:"searxng_url,omitempty"`          // native searxng_search tool if set
-	GoogleAPIKey      string            `json:"google_api_key,omitempty"`       // Google Custom Search API key (enables native google_search tool)
-	GoogleCX          string            `json:"google_cx,omitempty"`            // Google Programmable Search Engine ID
-	MentionBase       string            `json:"mention_base,omitempty"`         // base dir for "@" file mentions (default: launch cwd)
-	MCPServers        []MCPServerConfig `json:"mcp_servers,omitempty"`
+	ReadFileSizeLimit   int               `json:"read_file_size_limit,omitempty"`   // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
+	MaxFullReadBytes    int               `json:"max_full_read_bytes,omitempty"`    // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
+	MaxBinaryWriteBytes int               `json:"max_binary_write_bytes,omitempty"` // max decoded bytes write_binary_file accepts; default 10485760 (10 MB); 0 = use default
+	MaxRequestBytes     int               `json:"max_request_bytes,omitempty"`      // pre-send byte guard: trim largest tool results if request exceeds this; default 8388608 (8 MB); 0 = disabled
+	SearXngURL          string            `json:"searxng_url,omitempty"`            // native searxng_search tool if set
+	GoogleAPIKey        string            `json:"google_api_key,omitempty"`         // Google Custom Search API key (enables native google_search tool)
+	GoogleCX            string            `json:"google_cx,omitempty"`              // Google Programmable Search Engine ID
+	MentionBase         string            `json:"mention_base,omitempty"`           // base dir for "@" file mentions (default: launch cwd)
+	MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
 
 	// AttachImage is the path to an image file to attach to the first user
 	// message at startup. Set via --attach-image flag. The image is loaded

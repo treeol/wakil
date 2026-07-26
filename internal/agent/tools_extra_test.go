@@ -1338,7 +1338,7 @@ func TestWriteBinaryFileSizeLimit(t *testing.T) {
 		Exec:    exe,
 		Out:     io.Discard,
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
-		Cfg:    config.Config{MaxBinaryWriteBytes: 100}, // 100 byte limit
+		Cfg:     config.Config{MaxBinaryWriteBytes: 100}, // 100 byte limit
 	}
 	// 200 bytes of data → over the 100 byte limit.
 	raw := strings.Repeat("x", 200)
