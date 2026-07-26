@@ -292,6 +292,9 @@ func panelsUseOpenRouter(cfg config.Config) bool {
 func newExecutor(cfg config.Config) (exec.Executor, error) {
 	switch cfg.ExecMode {
 	case "direct":
+		if cfg.DockerIOUring {
+			fmt.Fprintln(os.Stderr, "warning: docker_io_uring is set but exec_mode is direct — io_uring setting has no effect in direct mode")
+		}
 		return exec.NewDirectExecutor(cfg.WorkDir)
 	default:
 		// Resolve SSH commit signing on the host before the container starts.
@@ -333,6 +336,7 @@ func newExecutor(cfg config.Config) (exec.Executor, error) {
 			DockerMemory:            cfg.DockerMemory,
 			DockerPidsLimit:         cfg.DockerPidsLimit,
 			DockerTmpfsSize:         cfg.DockerTmpfsSize,
+			DockerIOUring:           cfg.DockerIOUring,
 			BrowserEnabled:          cfg.BrowserEnabled,
 		})
 	}

@@ -157,6 +157,12 @@ type DockerExecutor struct {
 	// cdpPort is the host-side port published for chromium's CDP endpoint,
 	// or 0 if not published.
 	cdpPort int
+	// iouring tracks whether the custom seccomp profile allowing io_uring
+	// was applied to this container.
+	iouring bool
+	// seccompProfilePath is the host path to the temporary seccomp profile
+	// file, if one was created. Cleaned up in Close().
+	seccompProfilePath string
 }
 
 // dockerSocketPath is the host docker socket bind-mounted into the sandbox when
@@ -191,6 +197,16 @@ type DockerOpts struct {
 	DockerMemory    string
 	DockerPidsLimit int
 	DockerTmpfsSize string // /tmp tmpfs size (e.g. "4g"); empty → defaultDockerTmpfsSize
+	// DockerIOUring enables io_uring in the sandbox via a custom seccomp
+	// profile. When true, NewDockerExecutor materializes the profile to a temp
+	// file and sets IOUringProfilePath. Docker-only; ignored in direct mode.
+	DockerIOUring bool
+	// IOUringProfilePath is the host path to a custom seccomp profile that
+	// allows io_uring. When non-empty, dockerHardeningArgs emits
+	// --security-opt=seccomp=<path>. Set by NewDockerExecutor when
+	// Config.DockerIOUring is true; the temp file is stored on
+	// DockerExecutor and cleaned up in Close().
+	IOUringProfilePath string
 	// BrowserEnabled controls whether the container publishes a CDP port
 	// (127.0.0.1::9222) for the host-side browser manager to connect to
 	// chromium running inside the container. When false, no port is published.
@@ -298,6 +314,13 @@ func dockerHardeningArgs(opts DockerOpts) []string {
 	}
 	if opts.DockerPidsLimit > 0 {
 		args = append(args, fmt.Sprintf("--pids-limit=%d", opts.DockerPidsLimit))
+	}
+	// Custom seccomp profile for io_uring support. The profile is a full
+	// replacement for Docker's default (Docker has no incremental allow flag).
+	// It is Docker's default + io_uring_setup/enter/register — all other
+	// baseline denials (keyctl, bpf, mount, etc.) remain in effect.
+	if opts.IOUringProfilePath != "" {
+		args = append(args, "--security-opt=seccomp="+opts.IOUringProfilePath)
 	}
 	return args
 }
@@ -481,10 +504,45 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// error here is safe.
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
+	// io_uring: if enabled, materialize the custom seccomp profile to a temp
+	// file and set IOUringProfilePath so dockerHardeningArgs emits it. Docker
+	// CLI reads and inlines the profile at container-create time (verified via
+	// docker inspect — the full JSON blob appears in HostConfig.SecurityOpt).
+	// The temp file is stored on DockerExecutor and cleaned up in Close().
+	if opts.DockerIOUring {
+		tf, err := os.CreateTemp("", "wakil-seccomp-iouring-*.json")
+		if err != nil {
+			return nil, fmt.Errorf("docker_io_uring: failed to create seccomp profile temp file: %w", err)
+		}
+		if _, err := tf.Write(seccompIOUringProfile); err != nil {
+			tf.Close()
+			os.Remove(tf.Name())
+			return nil, fmt.Errorf("docker_io_uring: failed to write seccomp profile: %w", err)
+		}
+		if err := tf.Close(); err != nil {
+			os.Remove(tf.Name())
+			return nil, fmt.Errorf("docker_io_uring: failed to close seccomp profile: %w", err)
+		}
+		opts.IOUringProfilePath = tf.Name()
+		fmt.Fprintf(os.Stderr, "warning: docker_io_uring: io_uring enabled in sandbox seccomp profile — increases host-kernel attack surface\n")
+	}
+
+	// cleanupProfile removes the seccomp profile temp file on constructor
+	// failure. On success, the path is transferred to DockerExecutor (which
+	// owns cleanup via Close()), and the closure is nilled.
+	var cleanupProfile func()
+	if opts.IOUringProfilePath != "" {
+		path := opts.IOUringProfilePath
+		cleanupProfile = func() { os.Remove(path) }
+	}
+
 	args := []string{"run", "-d", "--name", name, "-w", workdir}
 	args = append(args, dockerHardeningArgs(opts)...)
 	if hostMount != "" {
 		if err := os.MkdirAll(hostMount, 0o755); err != nil {
+			if cleanupProfile != nil {
+				cleanupProfile()
+			}
 			return nil, fmt.Errorf("creating host workdir %s: %w", hostMount, err)
 		}
 		args = append(args, "-v", hostMount+":"+workdir+":z")
@@ -513,6 +571,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	const stagingContainerPath = "/run/kvr-staging"
 	if kvrEnabled {
 		if err := os.MkdirAll(opts.StagingMount, 0o700); err != nil {
+			if cleanupProfile != nil {
+				cleanupProfile()
+			}
 			return nil, fmt.Errorf("creating staging dir %s: %w", opts.StagingMount, err)
 		}
 		args = append(args, "-v", opts.StagingMount+":"+stagingContainerPath+":z")
@@ -571,6 +632,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 
 	out, err := exec.Command("docker", args...).CombinedOutput()
 	if err != nil {
+		if cleanupProfile != nil {
+			cleanupProfile()
+		}
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
 			return nil, fmt.Errorf("docker run failed: %w", err)
@@ -580,8 +644,11 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	d := &DockerExecutor{
 		container: name, image: image, workspaceRoot: workdir, hostMount: hostMount,
 		dockerSock: dockerSock, signing: opts.Signing.Enabled, generation: 1,
-		stagingMount: opts.StagingMount,
+		stagingMount: opts.StagingMount, iouring: opts.DockerIOUring,
+		seccompProfilePath: opts.IOUringProfilePath,
 	}
+	// Transfer ownership of the temp file to DockerExecutor.Close().
+	cleanupProfile = nil
 
 	// Container health check: docker run -d returns success even if the
 	// container exits immediately (entrypoint not found, binary crash). If
@@ -589,6 +656,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// — every subsequent command would fail against a dead container.
 	if exited, logs := checkContainerExited(name); exited {
 		_ = exec.Command("docker", "rm", "-f", name).Run()
+		if cleanupProfile != nil {
+			cleanupProfile()
+		}
 		return nil, fmt.Errorf("container exited immediately after startup. Logs:\n%s", logs)
 	}
 
@@ -947,6 +1017,9 @@ func (d *DockerExecutor) Describe() string {
 	} else if d.stagingMount != "" {
 		sock += " +kvr(off)"
 	}
+	if d.seccompProfilePath != "" {
+		sock += " +iouring"
+	}
 	if d.hostMount != "" {
 		return fmt.Sprintf("docker[%s → %s]%s", d.image, d.hostMount, sock)
 	}
@@ -962,7 +1035,12 @@ func (d *DockerExecutor) Close() error {
 	// container already exited), the kvr graceful snapshot window is lost,
 	// but rm -f below is still attempted to clean up the container.
 	_ = exec.Command("docker", "stop", "-t", "10", d.container).Run()
-	return exec.Command("docker", "rm", "-f", d.container).Run()
+	err := exec.Command("docker", "rm", "-f", d.container).Run()
+	// Clean up the seccomp profile temp file if one was created.
+	if d.seccompProfilePath != "" {
+		_ = os.Remove(d.seccompProfilePath)
+	}
+	return err
 }
 
 // StartInteractive spawns a long-running process inside the container with

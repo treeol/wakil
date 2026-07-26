@@ -20,10 +20,11 @@ commands, file writes, and background processes.
 
 - **Default Docker mode** applies basic hardening: `--cap-drop=ALL`,
   `--security-opt=no-new-privileges`, `--read-only` rootfs, resource limits,
-  and writable tmpfs for `/tmp` and `/etc`. This is convenience-grade
-  isolation — it prevents accidental damage and raises the bar for casual
-  escapes, but is **not** adversarial-grade. Seccomp/AppArmor profiles are
-  not applied. Optional host integrations (Docker socket, SSH signing socket)
+  and writable tmpfs for `/tmp` and `/etc`. Docker's default seccomp profile
+  is applied by the daemon (blocks `io_uring_setup`, `keyctl`, `bpf`, etc.).
+  This is convenience-grade isolation — it prevents accidental damage and
+  raises the bar for casual escapes, but is **not** adversarial-grade.
+  Optional host integrations (Docker socket, SSH signing socket, io_uring)
   materially weaken isolation when enabled.
 - **Direct mode** (`--exec direct`) runs on the host with no container
   isolation. The confirmation gate is the only defense.
@@ -65,13 +66,39 @@ isolation (`--cap-drop=ALL` on child containers, `--read-only` rootfs,
 user inside the sandbox cannot escalate to the host root because the sandbox
 container itself runs with `--cap-drop=ALL` and `--security-opt=no-new-privileges`.
 
-### Seccomp / AppArmor
+### Seccomp
 
-Seccomp and AppArmor profiles are **not** currently applied. Adding a
-seccomp profile that blocks `mount`, `pivot_root`, `reboot`, and other
-container-escape syscalls is planned future work. The current hardening
-(`--cap-drop=ALL`, `--read-only`, `--security-opt=no-new-privileges`)
-provides defense-in-depth but is not a complete container isolation solution.
+Docker's **default seccomp profile** is applied by the daemon in Docker mode.
+It blocks `io_uring_setup`/`io_uring_enter`/`io_uring_register`, `keyctl`,
+`bpf`, `mount`, `pivot_root`, `reboot`, and other container-escape syscalls.
+
+The `docker_io_uring` config option (default: `false`, Docker-only) replaces
+the default profile with a custom one derived from moby's default
+([profiles/seccomp/default.json](https://github.com/moby/moby/blob/v28.0.0/profiles/seccomp/default.json),
+pinned at moby v28.0.0) with the three io_uring syscalls added to the allow
+list. All other baseline denials remain in effect. `seccomp=unconfined` is
+**never** used by this feature.
+
+**Security implications of `docker_io_uring: true`:**
+- io_uring is a large kernel subsystem with a history of CVEs (Google,
+  ChromeOS, and GKE disable it by default).
+- Operations submitted through the ring bypass seccomp per-op filtering —
+  `openat`, `read`, `write`, `connect`, etc. executed via SQEs are not
+  individually mediated by the filter.
+- `--cap-drop=ALL` does not mitigate io_uring's kernel attack surface.
+- The opt-in is container-wide: everything the agent runs via `docker exec`
+  inherits the relaxed profile.
+- SQPOLL rings require `CAP_SYS_NICE` (dropped by `--cap-drop=ALL`), so
+  this feature guarantees non-SQPOLL io_uring only.
+- Success depends on the host kernel, Docker runtime, and
+  `kernel.io_uring_disabled` sysctl (0 = allowed; 1 = CAP_SYS_ADMIN only;
+  2 = fully disabled).
+
+A `+iouring` badge appears in `Describe()` and a warning is printed to stderr
+at startup when enabled.
+
+AppArmor is not explicitly configured by wakil; its application depends on
+the host's Docker/AppArmor setup.
 
 ### Hardening flags
 
@@ -82,7 +109,7 @@ The following flags are always applied in Docker mode:
 | `--cap-drop=ALL` | Drop all Linux capabilities |
 | `--security-opt=no-new-privileges` | Prevent privilege escalation |
 | `--read-only` | Read-only root filesystem |
-| `--tmpfs=/tmp` | Writable temp directory (100 MB) |
+| `--tmpfs=/tmp` | Writable temp directory (default 4g, configurable via `docker_tmpfs_size`) |
 | `--tmpfs=/etc` | Writable /etc for passwd entries (1 MB) |
 
 Configurable via `config.json`:
@@ -90,8 +117,10 @@ Configurable via `config.json`:
 | Field | Default | Purpose |
 |---|---|---|
 | `docker_caps` | `[]` (none) | Capabilities to re-add after cap-drop (e.g. `["CHOWN"]` if `go build` fails) |
-| `docker_memory` | `"2g"` | Container memory limit |
+| `docker_memory` | `"4g"` | Container memory limit |
 | `docker_pids_limit` | `512` | Max processes in the container |
+| `docker_tmpfs_size` | `""` (→ 4g) | /tmp tmpfs size override |
+| `docker_io_uring` | `false` | Enable io_uring via custom seccomp profile (increases kernel attack surface; see [Seccomp](#seccomp)) |
 
 ## Disclosure
 

@@ -117,7 +117,14 @@ type Config struct {
 	// internal/exec). /tmp must stay writable under --read-only, so the flag
 	// is always emitted — empty never means "omit".
 	DockerTmpfsSize string `json:"docker_tmpfs_size,omitempty"`
-	SSHSigning      string `json:"ssh_signing,omitempty"` // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
+	// DockerIOUring enables io_uring in the sandbox by applying a custom seccomp
+	// profile (Docker's default + io_uring_setup/io_uring_enter/io_uring_register).
+	// Default: false (Docker's default seccomp blocks io_uring). Security: io_uring
+	// increases host-kernel attack surface and bypasses seccomp for ring ops.
+	// Docker-only; ignored in direct mode. No CLI flag or env var (config-file only,
+	// matching DockerCaps/DockerMemory/DockerPidsLimit/DockerTmpfsSize).
+	DockerIOUring bool   `json:"docker_io_uring,omitempty"`
+	SSHSigning    string `json:"ssh_signing,omitempty"` // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
 
 	// kvr staging store (sandbox-local ephemeral KV).
 	// KVRDisabled opts out of the staging store (default: false = enabled).
