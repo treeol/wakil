@@ -126,6 +126,13 @@ type Config struct {
 	DockerIOUring bool   `json:"docker_io_uring,omitempty"`
 	SSHSigning    string `json:"ssh_signing,omitempty"` // SSH commit signing in the sandbox: "off" (default) | "auto" (detect from host git config) | path to a .pub key
 
+	// ShellTimeoutSec is the soft deadline in seconds after which a blocking
+	// run_shell command is auto-backgrounded. Under the deadline: blocking,
+	// full output, exit code (same as today). Over: returns "still running
+	// as bgN — poll read_process_log". 0 = always blocking (never auto-
+	// background, current behavior). Default: 10.
+	ShellTimeoutSec int `json:"shell_timeout_sec,omitempty"`
+
 	// kvr staging store (sandbox-local ephemeral KV).
 	// KVRDisabled opts out of the staging store (default: false = enabled).
 	// When disabled, no kvr-server is started and staging tools report
@@ -577,6 +584,7 @@ func DefaultConfig() Config {
 		DockerSocket:            false,
 		DockerMemory:            "4g",
 		DockerPidsLimit:         512,
+		ShellTimeoutSec:         10,
 		KVRMaxEntries:           100000,
 		KVRSweepIntervalSecs:    30,
 		KVRSnapshotIntervalSecs: 300,

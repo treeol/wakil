@@ -60,6 +60,14 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 			return "[declined by user]"
 		}
 	}
+
+	// Auto-background path: if ShellTimeoutSec > 0, run with a soft deadline.
+	// Under the deadline: blocking, full output (same as today). Over: auto-
+	// background and return a pointer for read_process_log polling.
+	if a.Cfg.ShellTimeoutSec > 0 {
+		return a.runShellWithDeadline(ctx, args.Command, readAction)
+	}
+
 	out, err := a.Exec.RunShell(ctx, args.Command)
 	// LSP file-sync: after a non-read-only run_shell, mark open files dirty
 	// for lazy resync (R3). The next LSP query touching a dirty file will
@@ -69,6 +77,124 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 		a.LSP.BatchNotifyWatchedFiles(ctx)
 	}
 	return formatResult(out, err)
+}
+
+// runShellWithDeadline runs a shell command with a soft deadline. If the
+// command finishes before the deadline, it returns the full output (same as
+// blocking RunShell). If the deadline is reached, the command is left running
+// as a background process and a pointer is returned for read_process_log
+// polling. This unblocks the agent goroutine so the tool loop can continue.
+func (a *App) runShellWithDeadline(ctx context.Context, command string, readAction bool) string {
+	deadline := time.Duration(a.Cfg.ShellTimeoutSec) * time.Second
+
+	// Reuse the existing bg machinery: log dir, registry, 5-proc limit.
+	a.bgMu.Lock()
+	if a.bgProcs == nil {
+		a.bgProcs = make(map[string]*bgEntry)
+	}
+	live := 0
+	for _, e := range a.bgProcs {
+		if e.generation == a.Exec.Generation() && a.Exec.IsProcessAlive(ctx, e.pid) {
+			live++
+		}
+	}
+	if live >= 5 {
+		a.bgMu.Unlock()
+		// Fall back to blocking — don't fail just because the bg limit is reached.
+		out, err := a.Exec.RunShell(ctx, command)
+		if err == nil && a.LSP != nil && !readAction {
+			a.LSP.MarkOpenFilesDirty()
+			a.LSP.BatchNotifyWatchedFiles(ctx)
+		}
+		return formatResult(out, err)
+	}
+	a.bgCounter++
+	n := a.bgCounter
+	a.bgMu.Unlock()
+
+	if a.bgLogDir == "" {
+		dir, err := os.MkdirTemp("", "wakil-bg-*")
+		if err != nil {
+			a.bgMu.Lock()
+			a.bgCounter--
+			a.bgMu.Unlock()
+			return fmt.Sprintf("ERROR: bg log dir: %v", err)
+		}
+		a.bgLogDir = dir
+	}
+	logPath := filepath.Join(a.bgLogDir, fmt.Sprintf("%d.log", n))
+	bgID := fmt.Sprintf("bg%d", n)
+
+	pid, pgid, err := a.Exec.StartBackground(ctx, command, logPath)
+	if err != nil {
+		a.bgMu.Lock()
+		a.bgCounter--
+		a.bgMu.Unlock()
+		// Start failed — fall back to blocking so the model gets a real error.
+		out, runErr := a.Exec.RunShell(ctx, command)
+		if runErr == nil && a.LSP != nil && !readAction {
+			a.LSP.MarkOpenFilesDirty()
+			a.LSP.BatchNotifyWatchedFiles(ctx)
+		}
+		return formatResult(out, runErr)
+	}
+
+	done := make(chan struct{})
+	entry := &bgEntry{
+		id:         bgID,
+		pid:        pid,
+		pgid:       pgid,
+		label:      "auto-bg",
+		logPath:    logPath,
+		startedAt:  time.Now(),
+		generation: a.Exec.Generation(),
+		done:       done,
+	}
+	a.bgMu.Lock()
+	a.bgProcs[bgID] = entry
+	a.bgMu.Unlock()
+
+	// Reaper goroutine: polls IsProcessAlive, closes done when the process
+	// exits. Uses a background context — the process may outlive the turn.
+	safe.Go("auto-bg-reaper", func() {
+		bgCtx := context.Background()
+		for {
+			if !a.Exec.IsProcessAlive(bgCtx, pid) {
+				close(done)
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
+
+	// Wait for completion or deadline.
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	select {
+	case <-done:
+		// Process finished within the deadline — read the full log.
+		out, readErr := a.Exec.ReadFile(ctx, logPath)
+		if readErr != nil {
+			out = "(output unreadable: " + readErr.Error() + ")"
+		}
+		// LSP file-sync for non-read-only commands that modify files.
+		if a.LSP != nil && !readAction {
+			a.LSP.MarkOpenFilesDirty()
+			a.LSP.BatchNotifyWatchedFiles(ctx)
+		}
+		// Clean up the bg entry — the process is done.
+		a.bgMu.Lock()
+		delete(a.bgProcs, bgID)
+		a.bgMu.Unlock()
+		return formatResult(out, nil)
+	case <-timer.C:
+		// Deadline reached — the process is still running. Leave it
+		// registered for read_process_log polling.
+		return fmt.Sprintf("command still running as %s — use read_process_log(%s) to poll for output, kill_process(%s) to stop", bgID, bgID, bgID)
+	case <-ctx.Done():
+		// Turn cancelled — leave the process running for the user to inspect.
+		return fmt.Sprintf("command still running as %s (turn cancelled) — use read_process_log(%s) to poll for output", bgID, bgID)
+	}
 }
 
 // handleOpenURL opens a URL on the host desktop after confirmation.

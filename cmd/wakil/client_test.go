@@ -143,8 +143,10 @@ func (f *fakeExecutor) URIToHostPath(uri string) (string, error) {
 }
 
 func newTestApp(url string, executor exec.Executor, confirm agent.Confirmer) *agent.App {
+	cfg := config.DefaultConfig()
+	cfg.ShellTimeoutSec = 0 // tests expect blocking RunShell (no auto-background)
 	return &agent.App{
-		Cfg:     config.DefaultConfig(),
+		Cfg:     cfg,
 		Client:  newTestClient(url),
 		Exec:    executor,
 		Tools:   tools.DefaultTools("/work"),
