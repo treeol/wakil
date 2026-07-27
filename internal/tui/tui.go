@@ -141,7 +141,6 @@ type tuiModel struct {
 	// nil when no side question is active. The cancel function aborts the
 	// stream when the user hits Esc or the main turn ends.
 	sideQuestion       *sideQuestionState
-	sideQuestionBuf    *strings.Builder // accumulated output for display
 	sideQuestionCancel context.CancelFunc
 
 	// pendingAutoGrant / pendingDestructiveGrant track a deferred /auto grant
@@ -1048,6 +1047,19 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			if qh {
 				return m, nil, true
 			}
+		}
+
+		// /ask is TUI-local: starts a concurrent side-question stream.
+		// Available both mid-turn and at idle — the side question runs on a
+		// separate goroutine and doesn't interfere with the main turn.
+		if strings.HasPrefix(input, "/ask ") || input == "/ask" {
+			question := strings.TrimSpace(strings.TrimPrefix(input, "/ask"))
+			if question == "" {
+				m.addItem(iSys, dim2("· /ask requires a question — try: /ask what files were changed?"))
+			} else {
+				m = m.startSideQuestion(question)
+			}
+			return m, nil, true
 		}
 
 		if handled, quit, cmd := agent.HandleTUICommand(input, m.app); handled {

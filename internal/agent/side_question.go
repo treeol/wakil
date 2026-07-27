@@ -86,12 +86,24 @@ func (a *App) cloneClientForSideQuestion() *proxy.Client {
 		return nil
 	}
 	return &proxy.Client{
-		BaseURL:    a.Client.BaseURL,
-		HTTP:       a.Client.HTTP,
-		Model:      a.Client.Model,
-		AuthHeader: a.Client.AuthHeader,
-		Backend:    a.Client.Backend,
-		Kind:       a.Client.Kind,
-		ChatID:     NewChatID(),
+		BaseURL:         a.Client.BaseURL,
+		HTTP:            a.Client.HTTP,
+		Model:           a.Client.Model,
+		AuthHeader:      a.Client.AuthHeader,
+		Backend:         a.Client.Backend,
+		Kind:            a.Client.Kind,
+		ConfiguredModel: a.Client.ConfiguredModel,
+		AuxModel:        a.Client.AuxModel,
+		Temperature:     a.Client.Temperature,
+		TopP:            a.Client.TopP,
+		MaxTokens:       a.Client.MaxTokens,
+		CachePrompt:     a.Client.CachePrompt,
+		CacheControl:    a.Client.CacheControl,
+		AppReferer:      a.Client.AppReferer,
+		AppTitle:        a.Client.AppTitle,
+		AppCategories:   a.Client.AppCategories,
+		NoMemoryWrite:   true,
+		MaxRequestBytes: a.Client.MaxRequestBytes,
+		ChatID:          NewChatID(),
 	}
 }
