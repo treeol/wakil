@@ -199,6 +199,16 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// result still goes into the transcript below for the model to read.
 			fmt.Fprintln(a.Out, Dim(toolLine(tc, result)))
 
+			// Emit a tool-result event to clear the TUI's running-tool indicator.
+			// Truncate the result at emission — the full result is already rendered
+			// via a.Out (ProgWriter → StreamChunkMsg); the event only needs enough
+			// text for the indicator-clear match, not the full payload.
+			a.sendEvent(ToolResultMsg{
+				ToolCallID: tc.ID,
+				Name:       tc.Function.Name,
+				Result:     Truncate(result.text, 2000),
+			})
+
 			// Check the RAW result (before CapOrStub can touch it) against the
 			// path-confinement breaker — ConfinePath error text is short and
 			// never capped, so this ordering is only for clarity/robustness.

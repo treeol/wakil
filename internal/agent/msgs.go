@@ -21,10 +21,23 @@ type ConfirmReqMsg struct {
 	RespCh     chan ConfirmChoice
 }
 
-// ToolResultMsg is shown after a tool executes.
+// ToolStartMsg is emitted before a tool executes (after dedup, before dispatch).
+// The TUI renders "tool: name cmd" in the status line so the user can see what
+// the agent is doing — a prerequisite for asking about it without aborting.
+type ToolStartMsg struct {
+	ToolCallID string // matches the proxy.ToolCall.ID for result matching
+	Name       string // tool name: "run_shell", "read_file", etc.
+	Command    string // primary arg (command, path, query) — truncated for display
+}
+
+// ToolResultMsg clears the TUI's running-tool indicator (matched by ToolCallID).
+// The full tool result is already rendered via a.Out (ProgWriter → StreamChunkMsg)
+// in finalizeToolResult's toolLine call; this event only signals completion. The
+// Result field is truncated at emission for event-loop efficiency.
 type ToolResultMsg struct {
-	Name   string
-	Result string
+	ToolCallID string // matches the ToolStartMsg for clearing the running indicator
+	Name       string
+	Result     string // truncated to 2 KiB at emission; full result goes via a.Out
 }
 
 // AgentDoneMsg signals that the current turn finished.

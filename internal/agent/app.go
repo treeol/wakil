@@ -1288,6 +1288,16 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 		}
 	}
 
+	// Emit a tool-start event so the TUI can show what's running. Fires after the
+	// dedup check (skipped dedup calls don't start anything) and before dispatch.
+	// Parallel subagent blocks bypass handleToolCall — they emit SubagentStartMsg
+	// directly, so this covers the sequential non-subagent path only.
+	a.sendEvent(ToolStartMsg{
+		ToolCallID: tc.ID,
+		Name:       name,
+		Command:    toolPrimaryArg(tc),
+	})
+
 	result := a.ExecuteToolCall(ctx, tc)
 
 	// Capture tool-call evidence for the IMPLEMENT step trace and the rolling

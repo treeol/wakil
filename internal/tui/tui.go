@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,21 @@ const (
 	stateConfirm
 	stateCompacting
 )
+
+// queuedPrompt is a single mid-turn queued prompt. Text-only for now; the struct
+// is future-proof (can add images field later).
+type queuedPrompt struct {
+	text       string
+	enqueuedAt time.Time
+}
+
+// runningToolState tracks the currently-executing tool for the status line.
+// Set by ToolStartMsg, cleared by ToolResultMsg (matched by ToolCallID).
+type runningToolState struct {
+	toolCallID string
+	name       string
+	command    string
+}
 
 // Layout metrics shared by sizes() and View(). In Lip Gloss a border adds 2 to
 // each dimension (1 per side), so a bordered box's outer size = inner + 2*border.
@@ -108,7 +124,12 @@ type tuiModel struct {
 	// as the next user turn(s) when the model is truly idle (no workflow
 	// auto-continuation, no error/cancel). Pure TUI-side — no agent-goroutine
 	// shared state.
-	queuedPrompts []string
+	queuedPrompts []queuedPrompt
+
+	// runningTool tracks the currently-executing tool for the status line.
+	// Set by ToolStartMsg, cleared by ToolResultMsg (matched by ToolCallID) or
+	// AgentDoneMsg. Pure TUI-side.
+	runningTool *runningToolState
 
 	// pendingAutoGrant / pendingDestructiveGrant track a deferred /auto grant
 	// requested mid-turn (OFF→ON). A mid-turn grant is NOT applied immediately
@@ -919,6 +940,12 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 					m.ta.Reset()
 					m.comp = completionState{}
 					return m, nil, true
+				case "/queue":
+					// TUI-local safe — manage the queue mid-turn.
+					m, _ = m.handleQueueCommand(input)
+					m.ta.Reset()
+					m.comp = completionState{}
+					return m, nil, true
 				default:
 					// Hard-reject: notice, no queue, no execution.
 					m.addItem(iSys, dim2("· "+fields[0]+" not available mid-turn — wait for idle"))
@@ -928,8 +955,16 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				}
 			}
 			// Plain text → queue.
-			m.queuedPrompts = append(m.queuedPrompts, input)
-			m.addItem(iSys, dim2(sprint("· queued (queue: %d)", len(m.queuedPrompts))))
+			m.queuedPrompts = append(m.queuedPrompts, queuedPrompt{
+				text:       input,
+				enqueuedAt: time.Now(),
+			})
+			n := len(m.queuedPrompts)
+			if n == 1 {
+				m.addItem(iSys, dim2(sprint("· queued (queue: %d) — Esc cancels turn, /queue to manage", n)))
+			} else {
+				m.addItem(iSys, dim2(sprint("· queued (queue: %d)", n)))
+			}
 			m.ta.Reset()
 			m.comp = completionState{}
 			m = m.reflow()
@@ -977,6 +1012,16 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		if strings.TrimSpace(input) == "/info" {
 			m = m.toggleInfoPanel()
 			return m, nil, true
+		}
+
+		// /queue is TUI-local: manages the mid-turn prompt queue. Handled before
+		// agent.HandleTUICommand for the same reason as /info.
+		if strings.HasPrefix(input, "/queue") {
+			var qh bool
+			m, qh = m.handleQueueCommand(input)
+			if qh {
+				return m, nil, true
+			}
 		}
 
 		if handled, quit, cmd := agent.HandleTUICommand(input, m.app); handled {
@@ -1225,6 +1270,56 @@ func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
 		return AdaptCmd(agent.RunTurn(m.app, ctx, outgoing))
 	})
 	return m, pair
+}
+
+// handleQueueCommand processes /queue subcommands: list, clear, drop N.
+// Returns (model, true) when the command was recognized and handled.
+// /queue flush is intentionally NOT supported — starting a new turn while
+// the current turn may still be active risks concurrent mutation of App
+// and Conv.
+func (m tuiModel) handleQueueCommand(input string) (tuiModel, bool) {
+	fields := strings.Fields(input)
+	if len(fields) == 0 || fields[0] != "/queue" {
+		return m, false
+	}
+	switch {
+	case len(fields) == 1:
+		// /queue — list queued prompts.
+		if len(m.queuedPrompts) == 0 {
+			m.addItem(iSys, dim2("· queue: empty"))
+		} else {
+			var b strings.Builder
+			fmt.Fprintf(&b, "· queue (%d):", len(m.queuedPrompts))
+			for i, qp := range m.queuedPrompts {
+				fmt.Fprintf(&b, "\n  %d. %s", i+1, agent.Truncate(qp.text, 60))
+			}
+			m.addItem(iSys, dim2(b.String()))
+		}
+	case len(fields) >= 2 && fields[1] == "clear":
+		n := len(m.queuedPrompts)
+		m.queuedPrompts = nil
+		if n > 0 {
+			m.addItem(iSys, dim2(sprint("· queue cleared (%d prompts dropped)", n)))
+		} else {
+			m.addItem(iSys, dim2("· queue: empty — nothing to clear"))
+		}
+	case len(fields) >= 2 && fields[1] == "drop":
+		if len(fields) < 3 {
+			m.addItem(iSys, dim2("· /queue drop N — specify a 1-indexed position"))
+			break
+		}
+		n, err := strconv.Atoi(fields[2])
+		if err != nil || n < 1 || n > len(m.queuedPrompts) {
+			m.addItem(iSys, dim2(sprint("· /queue drop: invalid position %q (valid: 1-%d)", fields[2], len(m.queuedPrompts))))
+			break
+		}
+		dropped := m.queuedPrompts[n-1]
+		m.queuedPrompts = append(m.queuedPrompts[:n-1], m.queuedPrompts[n:]...)
+		m.addItem(iSys, dim2(sprint("· dropped: %s", agent.Truncate(dropped.text, 60))))
+	default:
+		m.addItem(iSys, dim2("· /queue: usage is /queue [list|clear|drop N]"))
+	}
+	return m, true
 }
 
 func (m *tuiModel) addItem(k itemKind, text string) {

@@ -382,6 +382,9 @@ func statusSegments(in statusLineInput) []string {
 	if in.queueLen > 0 {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(sprint("queue: %d", in.queueLen)))
 	}
+	if in.runningTool != "" {
+		segs = append(segs, dim2(in.runningTool))
+	}
 	if in.model != "" {
 		segs = append(segs, dim2(in.model))
 	}
@@ -541,6 +544,13 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 	if m.app != nil {
 		consent = m.app.Consent()
 	}
+	runningTool := ""
+	if m.runningTool != nil {
+		runningTool = "tool: " + m.runningTool.name
+		if m.runningTool.command != "" {
+			runningTool += " " + agent.Truncate(m.runningTool.command, 40)
+		}
+	}
 	return statusLineInput{
 		state:                   m.state,
 		autoApprove:             consent.AutoApprove,
@@ -561,6 +571,7 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		submodel:                submodel,
 		arm:                     m.armNotice(),
 		queueLen:                len(m.queuedPrompts),
+		runningTool:             runningTool,
 	}
 }
 
@@ -598,6 +609,9 @@ type statusLineInput struct {
 	// queueLen is the number of queued mid-turn prompts. Renders "queue: N" in
 	// the status segment when > 0.
 	queueLen int
+	// runningTool is the formatted "tool: name cmd" string for the status line
+	// when a tool is executing. Empty when no tool is active.
+	runningTool string
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.

@@ -64,7 +64,25 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.ToolResultMsg:
-		m.addItem(iSys, dim2("· "+msg.Name+"\n"+agent.Indent(agent.Truncate(msg.Result, 800))))
+		// Clear the running-tool indicator (matched by ToolCallID). The tool
+		// result itself is already rendered via a.Out (ProgWriter →
+		// StreamChunkMsg) in finalizeToolResult's toolLine call — do NOT
+		// add a duplicate iSys item here.
+		if m.runningTool != nil && m.runningTool.toolCallID == msg.ToolCallID {
+			before := m.statusRows()
+			m.runningTool = nil
+			m = m.reflowIfStatusHeightChanged(before)
+		}
+
+	case agent.ToolStartMsg:
+		// Set the running-tool indicator for the status line.
+		before := m.statusRows()
+		m.runningTool = &runningToolState{
+			toolCallID: msg.ToolCallID,
+			name:       msg.Name,
+			command:    msg.Command,
+		}
+		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.AgentDoneMsg:
 		before := m.statusRows()
@@ -102,6 +120,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 		m.turnStart = time.Time{}
 		m.tps = 0
+		m.runningTool = nil // safety net: clear any uncleared tool indicator
 		m.state = stateIdle
 		m.dotPhase = 0 // return dot to static dim; tick self-terminates (no re-arm at idle)
 		m.hadTurn = true
@@ -147,7 +166,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			next := m.queuedPrompts[0]
 			m.queuedPrompts = m.queuedPrompts[1:]
 			var flushCmds []tea.Cmd
-			m, flushCmds = m.flushQueuedPrompt(next)
+			m, flushCmds = m.flushQueuedPrompt(next.text)
 			cmds = append(cmds, flushCmds...)
 		}
 		m = m.reflowIfStatusHeightChanged(before)
@@ -380,7 +399,11 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.reasoningDone = false
 		m.reasoningExpanded = false
 		// Clear queued prompts — they belong to the old conversation.
+		if len(m.queuedPrompts) > 0 {
+			m.addItem(iSys, dim2(sprint("· queue cleared (%d prompts dropped)", len(m.queuedPrompts))))
+		}
 		m.queuedPrompts = nil
+		m.runningTool = nil // defensive: clear any stale tool indicator
 		// Clear deferred /auto grants — a pending grant belongs to the old
 		// conversation's turn cycle; it must not carry into the new one.
 		m.pendingAutoGrant = false
@@ -459,7 +482,11 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.reasoning.Reset()
 		m.reasoningDone = false
 		m.reasoningExpanded = false
+		if len(m.queuedPrompts) > 0 {
+			m.addItem(iSys, dim2(sprint("· queue cleared (%d prompts dropped)", len(m.queuedPrompts))))
+		}
 		m.queuedPrompts = nil
+		m.runningTool = nil // defensive: clear any stale tool indicator
 		m.pendingAutoGrant = false
 		m.pendingDestructiveGrant = false
 		*m.imageChips = (*m.imageChips)[:0]
