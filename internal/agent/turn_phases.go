@@ -129,16 +129,22 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				a.confinementTripped = true
 				a.confinementPathsHit = confinementPaths
 				a.stopReason = "confinement_breaker"
+				a.convMu.Lock()
 				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(confinementBreakerPrompt(confinementPaths))})
+				a.convMu.Unlock()
 			} else {
 				a.stopReason = "iteration_limit"
+				a.convMu.Lock()
 				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(ToolLimitPrompt)})
+				a.convMu.Unlock()
 			}
 		}
 
 		// Conv[0] already carries the day-stable preamble (ensurePreamble, run
 		// once at Send entry) when InjectDate is on — no per-iteration rebuild.
+		a.convMu.RLock()
 		msgs := a.Conv
+		a.convMu.RUnlock()
 
 		sink := a.streamSink()
 		msg, err := a.Client.Stream(ctx, msgs, tools, sink, rsink)
@@ -164,7 +170,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// no dangling tool_calls (without responses) are left in the transcript.
 			msg.ToolCalls = nil
 		}
+		a.convMu.Lock()
 		a.Conv = append(a.Conv, msg)
+		a.convMu.Unlock()
 		final = DerefStr(msg.Content)
 
 		if len(msg.ToolCalls) == 0 || forceFinish {
@@ -236,6 +244,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// the breadcrumb — the model must always be able to read_file the
 			// full structured findings from the path marker in the content.
 			pinned := wtools.IsSubagentResult(tc.Function.Name)
+			a.convMu.Lock()
 			a.Conv = append(a.Conv, proxy.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -243,6 +252,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				Content:    StrPtr(text),
 				Pinned:     pinned,
 			})
+			a.convMu.Unlock()
 		}
 
 		// Walk tool calls in order. A maximal contiguous run of ≥2

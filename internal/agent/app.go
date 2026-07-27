@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,12 +41,17 @@ const (
 
 // App owns the single continuous conversation, the executor, and the agent loop.
 type App struct {
-	Cfg     config.Config
-	Client  *proxy.Client
-	Exec    exec.Executor
-	MCP     *MCPManager // nil if no MCP servers configured
-	Tools   []proxy.Tool
-	Conv    []proxy.Message
+	Cfg    config.Config
+	Client *proxy.Client
+	Exec   exec.Executor
+	MCP    *MCPManager // nil if no MCP servers configured
+	Tools  []proxy.Tool
+	Conv   []proxy.Message
+	// convMu guards Conv for concurrent reads from side-question goroutines.
+	// The main goroutine writes Conv inside Send/streamTurn; side-question
+	// goroutines take a read-lock snapshot. All Conv access must go through
+	// ConvSnapshot (read) or the lock directly (write).
+	convMu  sync.RWMutex
 	Confirm Confirmer
 	Out     io.Writer // assistant text + status sink
 
@@ -508,6 +514,65 @@ func (a *App) sendEvent(msg interface{}) {
 	}
 }
 
+// ConvSnapshot returns a copy of the current Conv sanitized to the last complete
+// protocol boundary. This is safe for concurrent access (holds convMu read lock).
+// A "complete boundary" means the Conv does not end with an assistant message
+// containing tool calls without matching tool results — the wire format requires
+// tool_calls to be immediately followed by tool results.
+func (a *App) ConvSnapshot() []proxy.Message {
+	a.convMu.RLock()
+	defer a.convMu.RUnlock()
+	return sanitizeConvForSideQuestion(a.Conv)
+}
+
+// sanitizeConvForSideQuestion trims the conversation to the last complete
+// protocol boundary. If the last message is an assistant message with tool calls
+// (and not all tool results are present), the trailing tool-call block is
+// removed. This ensures the side-question stream sends a valid message sequence.
+func sanitizeConvForSideQuestion(conv []proxy.Message) []proxy.Message {
+	if len(conv) == 0 {
+		return nil
+	}
+	// Walk backwards: if the last message is an assistant message with tool calls,
+	// find the start of that tool-call block and trim everything from there.
+	// Also trim any partial tool results that follow (if any).
+	last := conv[len(conv)-1]
+	if last.Role == "assistant" && len(last.ToolCalls) > 0 {
+		// The assistant message has tool calls — check if all results are present.
+		// If this is the last message, the results haven't been appended yet.
+		// Trim from this assistant message onwards.
+		return findLastCompleteBoundary(conv)
+	}
+	// Shallow copy is safe for reading — proxy.Message fields are not mutated
+	// after creation (except preamble, which is on the main goroutine only).
+	result := make([]proxy.Message, len(conv))
+	copy(result, conv)
+	return result
+}
+
+// findLastCompleteBoundary walks backwards from the end of conv to find the
+// last position where the message sequence is complete (no dangling tool calls).
+// Returns a copy of conv up to (but not including) the incomplete block.
+func findLastCompleteBoundary(conv []proxy.Message) []proxy.Message {
+	// Walk backwards past any trailing tool results and the assistant message
+	// that issued them, to the message before that assistant message.
+	i := len(conv) - 1
+	// Skip trailing assistant message with tool calls.
+	if i >= 0 && conv[i].Role == "assistant" && len(conv[i].ToolCalls) > 0 {
+		i-- // skip the assistant message itself
+		// Skip any trailing tool results (they belong to the incomplete block).
+		for i >= 0 && conv[i].Role == "tool" {
+			i--
+		}
+	}
+	if i < 0 {
+		return nil
+	}
+	result := make([]proxy.Message, i+1)
+	copy(result, conv[:i+1])
+	return result
+}
+
 // sessionWorkspace is the host directory associated with this session: the bind
 // mount in docker mode, or the working directory in direct mode.
 func (a *App) SessionWorkspace() string {
@@ -537,10 +602,15 @@ func (a *App) chatID() string {
 // saveSession persists the current transcript. Best-effort: persistence failures
 // must never interrupt a turn, so errors are swallowed.
 func (a *App) SaveSession() {
-	if a.Session == nil || len(a.Conv) == 0 {
+	if a.Session == nil {
 		return
 	}
+	a.convMu.RLock()
 	a.Session.Conv = a.Conv
+	a.convMu.RUnlock()
+	if len(a.Session.Conv) == 0 {
+		return
+	}
 	a.Session.Updated = time.Now()
 	if a.Session.Workspace == "" {
 		a.Session.Workspace = a.SessionWorkspace()
@@ -559,7 +629,9 @@ func (a *App) summarizeFn() summarizer {
 // NewConversation resets the running transcript and rotates the chat_id, starting
 // a fresh persisted session.
 func (a *App) NewConversation(chatID string) {
+	a.convMu.Lock()
 	a.Conv = nil
+	a.convMu.Unlock()
 	// Force ensurePreamble to re-insert Conv[0] on the next Send — otherwise
 	// a same-day preambleDay would read as "already up to date" against the
 	// now-empty Conv and silently leave the new conversation with no preamble.
@@ -636,7 +708,9 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 		userMsg.Images = a.PendingImages
 		a.PendingImages = nil // consume
 	}
+	a.convMu.Lock()
 	a.Conv = append(a.Conv, userMsg)
+	a.convMu.Unlock()
 
 	// P38 trace: accumulate per-turn state written to the JSONL store on exit.
 	// retErr is captured by the defer closure — it reflects whichever error path
@@ -1034,6 +1108,8 @@ func (a *App) ensurePreamble() {
 		return
 	}
 	text := a.buildPreamble(today)
+	a.convMu.Lock()
+	defer a.convMu.Unlock()
 	if a.preambleDay != "" && len(a.Conv) > 0 && a.Conv[0].Role == "system" {
 		// Same session, day rolled over — refresh the existing slot in place.
 		a.Conv[0].Content = StrPtr(text)
@@ -1145,6 +1221,8 @@ func (a *App) evictStaleToolResults() {
 	if ttl < 0 || cap <= 0 {
 		return
 	}
+	a.convMu.Lock()
+	defer a.convMu.Unlock()
 	// Keep the most recent (ttl+1) user turns verbatim; evict tool results
 	// in anything older. boundary==0 means not enough turns yet.
 	boundary := turnBoundary(a.Conv, ttl+1)

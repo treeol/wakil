@@ -84,6 +84,29 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 		m = m.reflowIfStatusHeightChanged(before)
 
+	case agent.SideQuestionChunkMsg:
+		// Accumulate side-question output for display.
+		if m.sideQuestion != nil {
+			m.sideQuestion.buf.WriteString(msg.Text)
+		}
+
+	case agent.SideQuestionDoneMsg:
+		// Side question completed — render the output.
+		if m.sideQuestion != nil {
+			output := m.sideQuestion.buf.String()
+			if msg.Err != nil {
+				m.addItem(iSys, dim2("≫ side question error: "+msg.Err.Error()))
+			} else if output != "" {
+				m.addItem(iSys, dim2("≫ "+output))
+			} else {
+				m.addItem(iSys, dim2("≫ (side question returned no output)"))
+			}
+			m.sideQuestion = nil
+		}
+		if m.sideQuestionCancel != nil {
+			m.sideQuestionCancel = nil
+		}
+
 	case agent.AgentDoneMsg:
 		before := m.statusRows()
 		m.flushStreaming()
@@ -121,6 +144,15 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.turnStart = time.Time{}
 		m.tps = 0
 		m.runningTool = nil // safety net: clear any uncleared tool indicator
+		// Cancel any running side question — the main turn is done, the user
+		// can ask properly now.
+		if m.sideQuestionCancel != nil {
+			m.sideQuestionCancel()
+			m.sideQuestionCancel = nil
+		}
+		if m.sideQuestion != nil {
+			m.sideQuestion = nil
+		}
 		m.state = stateIdle
 		m.dotPhase = 0 // return dot to static dim; tick self-terminates (no re-arm at idle)
 		m.hadTurn = true

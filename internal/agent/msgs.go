@@ -150,6 +150,20 @@ type OpenResumePickerMsg struct {
 	Hidden   int
 }
 
+// SideQuestionChunkMsg delivers a chunk of the side-question stream to the TUI.
+// ID identifies which side question produced it (for routing and cancellation).
+type SideQuestionChunkMsg struct {
+	ID   SideQuestionID
+	Text string
+}
+
+// SideQuestionDoneMsg signals that the side-question stream completed (or erred).
+// ID matches the SideQuestionChunkMsg that preceded it.
+type SideQuestionDoneMsg struct {
+	ID  SideQuestionID
+	Err error
+}
+
 // MCPReconnectedMsg is sent after /mcp reconnect completes.
 type MCPReconnectedMsg struct {
 	Name  string

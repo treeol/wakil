@@ -43,6 +43,12 @@ type runningToolState struct {
 	command    string
 }
 
+// sideQuestionState tracks a running side-question stream for the TUI.
+type sideQuestionState struct {
+	id  agent.SideQuestionID
+	buf *strings.Builder
+}
+
 // Layout metrics shared by sizes() and View(). In Lip Gloss a border adds 2 to
 // each dimension (1 per side), so a bordered box's outer size = inner + 2*border.
 const (
@@ -130,6 +136,13 @@ type tuiModel struct {
 	// Set by ToolStartMsg, cleared by ToolResultMsg (matched by ToolCallID) or
 	// AgentDoneMsg. Pure TUI-side.
 	runningTool *runningToolState
+
+	// sideQuestion tracks a running side-question stream (/ask command).
+	// nil when no side question is active. The cancel function aborts the
+	// stream when the user hits Esc or the main turn ends.
+	sideQuestion       *sideQuestionState
+	sideQuestionBuf    *strings.Builder // accumulated output for display
+	sideQuestionCancel context.CancelFunc
 
 	// pendingAutoGrant / pendingDestructiveGrant track a deferred /auto grant
 	// requested mid-turn (OFF→ON). A mid-turn grant is NOT applied immediately
@@ -946,6 +959,19 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 					m.ta.Reset()
 					m.comp = completionState{}
 					return m, nil, true
+				case "/ask":
+					// Start a concurrent side-question stream. The question
+					// runs on a cloned client — it doesn't block the main turn
+					// and doesn't modify Conv. Only the text after /ask is used.
+					question := strings.TrimSpace(strings.TrimPrefix(input, "/ask"))
+					if question == "" {
+						m.addItem(iSys, dim2("· /ask requires a question — try: /ask what files were changed?"))
+					} else {
+						m = m.startSideQuestion(question)
+					}
+					m.ta.Reset()
+					m.comp = completionState{}
+					return m, nil, true
 				default:
 					// Hard-reject: notice, no queue, no execution.
 					m.addItem(iSys, dim2("· "+fields[0]+" not available mid-turn — wait for idle"))
@@ -1320,6 +1346,24 @@ func (m tuiModel) handleQueueCommand(input string) (tuiModel, bool) {
 		m.addItem(iSys, dim2("· /queue: usage is /queue [list|clear|drop N]"))
 	}
 	return m, true
+}
+
+// startSideQuestion starts a concurrent side-question stream via the agent's
+// StartSideQuestion method. The stream runs on a cloned client and does not
+// block the main turn. Output is rendered as dimmed iSys items prefixed with "≫".
+func (m tuiModel) startSideQuestion(question string) tuiModel {
+	m.addItem(iUser, "/ask "+question)
+	m.addItem(iSys, dim2("≫ side question streaming…"))
+	if m.sideQuestionCancel != nil {
+		m.sideQuestionCancel() // cancel any previous side question
+	}
+	buf := &strings.Builder{}
+	m.sideQuestion = &sideQuestionState{
+		id:  "", // will be set by the first chunk
+		buf: buf,
+	}
+	m.sideQuestionCancel = m.app.StartSideQuestion(context.Background(), question)
+	return m
 }
 
 func (m *tuiModel) addItem(k itemKind, text string) {
