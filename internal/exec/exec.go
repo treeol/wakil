@@ -515,12 +515,12 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 			return nil, fmt.Errorf("docker_io_uring: failed to create seccomp profile temp file: %w", err)
 		}
 		if _, err := tf.Write(seccompIOUringProfile); err != nil {
-			tf.Close()
-			os.Remove(tf.Name())
+			_ = tf.Close()
+			_ = os.Remove(tf.Name())
 			return nil, fmt.Errorf("docker_io_uring: failed to write seccomp profile: %w", err)
 		}
 		if err := tf.Close(); err != nil {
-			os.Remove(tf.Name())
+			_ = os.Remove(tf.Name())
 			return nil, fmt.Errorf("docker_io_uring: failed to close seccomp profile: %w", err)
 		}
 		opts.IOUringProfilePath = tf.Name()
@@ -533,7 +533,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	var cleanupProfile func()
 	if opts.IOUringProfilePath != "" {
 		path := opts.IOUringProfilePath
-		cleanupProfile = func() { os.Remove(path) }
+		cleanupProfile = func() { _ = os.Remove(path) }
 	}
 
 	args := []string{"run", "-d", "--name", name, "-w", workdir}
