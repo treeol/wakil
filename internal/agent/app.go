@@ -533,14 +533,11 @@ func sanitizeConvForSideQuestion(conv []proxy.Message) []proxy.Message {
 	if len(conv) == 0 {
 		return nil
 	}
-	// Walk backwards: if the last message is an assistant message with tool calls,
-	// find the start of that tool-call block and trim everything from there.
-	// Also trim any partial tool results that follow (if any).
+	// Walk backwards: if the last message is an assistant message with tool
+	// calls, or a tool result (partial — results not all present yet), trim
+	// back to the last complete boundary.
 	last := conv[len(conv)-1]
-	if last.Role == "assistant" && len(last.ToolCalls) > 0 {
-		// The assistant message has tool calls — check if all results are present.
-		// If this is the last message, the results haven't been appended yet.
-		// Trim from this assistant message onwards.
+	if (last.Role == "assistant" && len(last.ToolCalls) > 0) || last.Role == "tool" {
 		return findLastCompleteBoundary(conv)
 	}
 	// Shallow copy is safe for reading — proxy.Message fields are not mutated
@@ -554,16 +551,16 @@ func sanitizeConvForSideQuestion(conv []proxy.Message) []proxy.Message {
 // last position where the message sequence is complete (no dangling tool calls).
 // Returns a copy of conv up to (but not including) the incomplete block.
 func findLastCompleteBoundary(conv []proxy.Message) []proxy.Message {
-	// Walk backwards past any trailing tool results and the assistant message
-	// that issued them, to the message before that assistant message.
+	// Walk backwards past any trailing tool results, then past the assistant
+	// message that issued them, to the message before that assistant message.
 	i := len(conv) - 1
-	// Skip trailing assistant message with tool calls.
+	// Skip trailing tool results (they belong to the incomplete block).
+	for i >= 0 && conv[i].Role == "tool" {
+		i--
+	}
+	// Skip the assistant message that issued the tool calls.
 	if i >= 0 && conv[i].Role == "assistant" && len(conv[i].ToolCalls) > 0 {
-		i-- // skip the assistant message itself
-		// Skip any trailing tool results (they belong to the incomplete block).
-		for i >= 0 && conv[i].Role == "tool" {
-			i--
-		}
+		i--
 	}
 	if i < 0 {
 		return nil
