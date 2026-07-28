@@ -471,13 +471,6 @@ type bgEntry struct {
 	// StopAllBackgroundProcs to wait for clean shutdown without a fixed sleep.
 	// nil when the entry was constructed by test code (not via run_background).
 	done chan struct{}
-
-	// exitCode is the process exit code, populated by the reaper before done is
-	// closed. exitCodeKnown is true once the reaper has set exitCode. For
-	// DockerExecutor, the exit code is not available (the process is orphaned
-	// inside the container), so exitCodeKnown stays false.
-	exitCode      int
-	exitCodeKnown bool
 }
 
 // CounselCallsCount returns how many auto-counsel calls have fired this session.
