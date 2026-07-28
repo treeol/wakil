@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/treeol/wakil/internal/safe"
 )
 
 // Executor abstracts where tool_calls actually run. Commands always execute
@@ -647,8 +649,6 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		stagingMount: opts.StagingMount, iouring: opts.DockerIOUring,
 		seccompProfilePath: opts.IOUringProfilePath,
 	}
-	// Transfer ownership of the temp file to DockerExecutor.Close().
-	cleanupProfile = nil
 
 	// Container health check: docker run -d returns success even if the
 	// container exits immediately (entrypoint not found, binary crash). If
@@ -661,6 +661,11 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		}
 		return nil, fmt.Errorf("container exited immediately after startup. Logs:\n%s", logs)
 	}
+	// Transfer ownership of the temp file to DockerExecutor.Close(). This must
+	// happen AFTER the checkContainerExited block — otherwise the early-exit
+	// path can't clean up the seccomp profile temp file (the nil check above
+	// would be dead code).
+	cleanupProfile = nil
 
 	// Resolve the published CDP port (ephemeral host port → actual port number).
 	if opts.BrowserEnabled {
@@ -1080,7 +1085,7 @@ func (d *DockerExecutor) StartInteractive(_ context.Context, command string) (
 		return nil, nil, nil, 0, fmt.Errorf("starting interactive process: %w", err)
 	}
 	// Reap the child when it exits so it doesn't become a zombie.
-	go func() { _ = cmd.Wait() }()
+	safe.Go("docker-exec-reaper", func() { _ = cmd.Wait() })
 	return stdin, stdout, stderr, cmd.Process.Pid, nil
 }
 
@@ -1264,7 +1269,7 @@ func (e *DirectExecutor) StartInteractive(_ context.Context, command string) (
 		stderr.Close()
 		return nil, nil, nil, 0, fmt.Errorf("starting interactive process: %w", err)
 	}
-	go func() { _ = cmd.Wait() }()
+	safe.Go("docker-direct-reaper", func() { _ = cmd.Wait() })
 	return stdin, stdout, stderr, cmd.Process.Pid, nil
 }
 
