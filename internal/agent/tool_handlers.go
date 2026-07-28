@@ -20,7 +20,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -112,17 +111,13 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	n := a.bgCounter
 	a.bgMu.Unlock()
 
-	if a.bgLogDir == "" {
-		dir, err := os.MkdirTemp("", "wakil-bg-*")
-		if err != nil {
-			a.bgMu.Lock()
-			a.bgCounter--
-			a.bgMu.Unlock()
-			return fmt.Sprintf("ERROR: bg log dir: %v", err)
-		}
-		a.bgLogDir = dir
-	}
-	logPath := filepath.Join(a.bgLogDir, fmt.Sprintf("%d.log", n))
+	// Use a flat path in /tmp (no subdirectory) for the log file. In Docker
+	// mode the container's /tmp is a writable tmpfs, and the shell redirect
+	// creates the file directly — no directory creation needed. In Direct
+	// mode /tmp is also writable. A host-side os.MkdirTemp would create a
+	// directory that doesn't exist inside the container, causing the
+	// redirect to fail.
+	logPath := fmt.Sprintf("/tmp/wakil-bg-%d.log", n)
 	bgID := fmt.Sprintf("bg%d", n)
 
 	pid, pgid, err := a.Exec.StartBackground(ctx, command, logPath)
@@ -751,16 +746,12 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 	a.bgCounter++
 	n := a.bgCounter
 	a.bgMu.Unlock()
-	// Per-session temp dir for bg logs — unpredictable path prevents
-	// symlink attacks; cleaned up in StopAllBackgroundProcs.
-	if a.bgLogDir == "" {
-		dir, err := os.MkdirTemp("", "wakil-bg-*")
-		if err != nil {
-			return fmt.Sprintf("ERROR: bg log dir: %v", err)
-		}
-		a.bgLogDir = dir
-	}
-	logPath := filepath.Join(a.bgLogDir, fmt.Sprintf("%d.log", n))
+	// Use a flat path in /tmp (no subdirectory) for the log file. In Docker
+	// mode the container's /tmp is a writable tmpfs, and the shell redirect
+	// creates the file directly — no directory creation needed. A host-side
+	// os.MkdirTemp would create a directory that doesn't exist inside the
+	// container, causing the redirect to fail silently.
+	logPath := fmt.Sprintf("/tmp/wakil-bg-%d.log", n)
 	bgID := fmt.Sprintf("bg%d", n)
 	detail := fmt.Sprintf("$ %s (background)\n  label=%s, log=%s\n  (%s)",
 		args.Command, args.Label, logPath, a.Exec.Describe())
