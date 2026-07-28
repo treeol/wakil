@@ -145,13 +145,16 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.tps = 0
 		m.runningTool = nil // safety net: clear any uncleared tool indicator
 		// Cancel any running side question — the main turn is done, the user
-		// can ask properly now.
+		// can ask properly now. Only cancel the context; do NOT nil
+		// m.sideQuestion here. The side-question goroutine may still be
+		// draining — it will send SideQuestionDoneMsg after Stream returns,
+		// and that handler renders the output and does the cleanup. Nilling
+		// sideQuestion here would cause SideQuestionDoneMsg to be silently
+		// dropped (the handler checks m.sideQuestion != nil), losing the
+		// side question's final output or error.
 		if m.sideQuestionCancel != nil {
 			m.sideQuestionCancel()
 			m.sideQuestionCancel = nil
-		}
-		if m.sideQuestion != nil {
-			m.sideQuestion = nil
 		}
 		m.state = stateIdle
 		m.dotPhase = 0 // return dot to static dim; tick self-terminates (no re-arm at idle)
