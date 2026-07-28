@@ -208,10 +208,10 @@ func TestIOUringSeccompProfileCleanupOnClose(t *testing.T) {
 	// harmlessly — Close() logs the error from docker stop but still proceeds
 	// to os.Remove the temp file.
 	d := &DockerExecutor{
-		container:           "nonexistent-test-container-" + randSuffix(8),
-		image:               "test-image",
-		workspaceRoot:       "/work",
-		seccompProfilePath:  profilePath,
+		container:          "nonexistent-test-container-" + randSuffix(8),
+		image:              "test-image",
+		workspaceRoot:      "/work",
+		seccompProfilePath: profilePath,
 	}
 	_ = d.Close()
 
@@ -229,11 +229,11 @@ func TestIOUringSeccompNoProfileWhenDisabled(t *testing.T) {
 	// A DockerExecutor created with iouring=false should have an empty
 	// seccompProfilePath. We verify this by constructing one directly.
 	d := &DockerExecutor{
-		container:           "test-container",
-		image:               "test-image",
-		workspaceRoot:       "/work",
-		iouring:             false,
-		seccompProfilePath:  "",
+		container:          "test-container",
+		image:              "test-image",
+		workspaceRoot:      "/work",
+		iouring:            false,
+		seccompProfilePath: "",
 	}
 	if d.seccompProfilePath != "" {
 		t.Errorf("seccompProfilePath should be empty when iouring=false, got %q", d.seccompProfilePath)

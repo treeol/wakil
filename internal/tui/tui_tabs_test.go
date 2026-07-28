@@ -50,12 +50,12 @@ func TestPruneSubTabsPass2DropsFinishedNotDone(t *testing.T) {
 	//   n=6: running, focused — protected (never dropped)
 	// Expected: 3 tabs (n=4, n=5, n=6)
 	tabs := []*subTab{
-		mk(1, true, true),    // done — pass-1 drop
-		mk(2, true, true),    // done — pass-1 drop
-		mk(3, false, true),   // finished, not done — pass-2 drop
-		mk(4, false, true),   // finished, not done — kept
-		mk(5, false, false),  // running — protected
-		mk(6, false, false),  // running, focused — protected
+		mk(1, true, true),   // done — pass-1 drop
+		mk(2, true, true),   // done — pass-1 drop
+		mk(3, false, true),  // finished, not done — pass-2 drop
+		mk(4, false, true),  // finished, not done — kept
+		mk(5, false, false), // running — protected
+		mk(6, false, false), // running, focused — protected
 	}
 	got := pruneSubTabs(tabs, 6, 3)
 	if len(got) != 3 {
