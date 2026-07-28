@@ -666,11 +666,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		}
 		return nil, fmt.Errorf("container exited immediately after startup. Logs:\n%s", logs)
 	}
-	// Transfer ownership of the temp file to DockerExecutor.Close(). This must
-	// happen AFTER the checkContainerExited block — otherwise the early-exit
-	// path can't clean up the seccomp profile temp file (the nil check above
-	// would be dead code).
-	cleanupProfile = nil
+	// cleanupProfile ownership has been transferred: either it was called in
+	// the early-exit path above, or the container is alive and DockerExecutor.Close()
+	// will call it. No assignment needed here — the variable is not read again.
 
 	// Resolve the published CDP port (ephemeral host port → actual port number).
 	if opts.BrowserEnabled {

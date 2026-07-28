@@ -30,7 +30,7 @@ func TestSideQuestionChunkAccumulates(t *testing.T) {
 func TestSideQuestionChunkNilSideQuestion(t *testing.T) {
 	m := newTestTUI(t)
 	// m.sideQuestion is nil by default — this should not panic.
-	m = step(m, agent.SideQuestionChunkMsg{ID: "sq-1", Text: "hello"})
+	step(m, agent.SideQuestionChunkMsg{ID: "sq-1", Text: "hello"})
 	// No assertion needed beyond not panicking.
 }
 
