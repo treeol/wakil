@@ -31,6 +31,61 @@ func TestPruneSubTabsNoOpUnderCap(t *testing.T) {
 	}
 }
 
+// TestPruneSubTabsPass2DropsFinishedNotDone tests the second pass of
+// pruneSubTabs: when there aren't enough done tabs to reach the cap,
+// finished-but-not-done tabs are dropped. The pass-2 iteration must
+// operate on the survivors from pass 1, not the original tabs —
+// re-iterating the original slice re-encounters done tabs already
+// dropped, wasting drop slots and re-adding them (exceeding max).
+func TestPruneSubTabsPass2DropsFinishedNotDone(t *testing.T) {
+	mk := func(n int, done, finished bool) *subTab {
+		return &subTab{n: n, done: done, finished: finished}
+	}
+	// 6 tabs, max=3, focus on running tab (n=6):
+	//   n=1: done — dropped in pass 1 (drop 3→2)
+	//   n=2: done — dropped in pass 1 (drop 2→1)
+	//   n=3: finished, not done — dropped in pass 2 (drop 1→0)
+	//   n=4: finished, not done — kept (drop exhausted)
+	//   n=5: running — protected (never dropped)
+	//   n=6: running, focused — protected (never dropped)
+	// Expected: 3 tabs (n=4, n=5, n=6)
+	tabs := []*subTab{
+		mk(1, true, true),    // done — pass-1 drop
+		mk(2, true, true),    // done — pass-1 drop
+		mk(3, false, true),   // finished, not done — pass-2 drop
+		mk(4, false, true),   // finished, not done — kept
+		mk(5, false, false),  // running — protected
+		mk(6, false, false),  // running, focused — protected
+	}
+	got := pruneSubTabs(tabs, 6, 3)
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3 (max), got tabs: %v", len(got), tabNs(got))
+	}
+	has := map[int]bool{}
+	for _, x := range got {
+		has[x.n] = true
+	}
+	for _, n := range []int{4, 5, 6} {
+		if !has[n] {
+			t.Errorf("tab n=%d should be retained, got tabs: %v", n, tabNs(got))
+		}
+	}
+	for _, n := range []int{1, 2, 3} {
+		if has[n] {
+			t.Errorf("tab n=%d should have been pruned", n)
+		}
+	}
+}
+
+// tabNs returns the n-values of a slice of subTabs for debug output.
+func tabNs(tabs []*subTab) []int {
+	ns := make([]int, len(tabs))
+	for i, t := range tabs {
+		ns[i] = t.n
+	}
+	return ns
+}
+
 func TestTabIndexByN(t *testing.T) {
 	tabs := []*subTab{{n: 3}, {n: 7}, {n: 9}}
 	if i := tabIndexByN(tabs, 7); i != 1 {

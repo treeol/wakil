@@ -329,15 +329,19 @@ func pruneSubTabs(tabs []*subTab, focusN, max int) []*subTab {
 	}
 	// If not enough done tabs were droppable, drop finished (but not done) tabs
 	// as the next priority — still protecting running and focused tabs.
+	// Iterate the survivors from pass 1 (kept), NOT the original tabs —
+	// re-iterating tabs would re-encounter done tabs already dropped in pass 1,
+	// wasting drop slots and re-adding them to the result (exceeding max).
 	if drop > 0 {
-		kept = kept[:0]
-		for _, t := range tabs {
-			if drop > 0 && t.finished && t.n != focusN {
+		filtered := kept[:0]
+		for _, t := range kept {
+			if drop > 0 && t.finished && !t.done && t.n != focusN {
 				drop--
 				continue
 			}
-			kept = append(kept, t)
+			filtered = append(filtered, t)
 		}
+		kept = filtered
 	}
 	return kept
 }
