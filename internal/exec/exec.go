@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -504,7 +505,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// expected case. If a stale container truly existed, docker run --name
 	// would fail immediately with a name-conflict error, so ignoring the
 	// error here is safe.
-	_ = exec.Command("docker", "rm", "-f", name).Run()
+	if err := exec.Command("docker", "rm", "-f", name).Run(); err != nil {
+		log.Printf("docker rm -f %s (pre-create cleanup): %v", name, err)
+	}
 
 	// io_uring: if enabled, materialize the custom seccomp profile to a temp
 	// file and set IOUringProfilePath so dockerHardeningArgs emits it. Docker
@@ -655,7 +658,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// the container has already exited, surface the logs and return an error
 	// — every subsequent command would fail against a dead container.
 	if exited, logs := checkContainerExited(name); exited {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
+		if err := exec.Command("docker", "rm", "-f", name).Run(); err != nil {
+			log.Printf("docker rm -f %s (after early exit): %v", name, err)
+		}
 		if cleanupProfile != nil {
 			cleanupProfile()
 		}
@@ -685,7 +690,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	if uid := os.Getuid(); uid > 0 {
 		if err := ensurePasswdEntry(name, uid, os.Getgid()); err != nil {
 			if opts.Signing.Enabled {
-				_ = exec.Command("docker", "rm", "-f", name).Run()
+				if err := exec.Command("docker", "rm", "-f", name).Run(); err != nil {
+					log.Printf("docker rm -f %s (passwd setup fail): %v", name, err)
+				}
 				return nil, fmt.Errorf("passwd entry setup for signing: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
@@ -1039,7 +1046,9 @@ func (d *DockerExecutor) Close() error {
 	// ceiling, docker stop returns when PID 1 exits. If stop fails (e.g.
 	// container already exited), the kvr graceful snapshot window is lost,
 	// but rm -f below is still attempted to clean up the container.
-	_ = exec.Command("docker", "stop", "-t", "10", d.container).Run()
+	if err := exec.Command("docker", "stop", "-t", "10", d.container).Run(); err != nil {
+		log.Printf("docker stop %s (Close): %v", d.container, err)
+	}
 	err := exec.Command("docker", "rm", "-f", d.container).Run()
 	// Clean up the seccomp profile temp file if one was created.
 	if d.seccompProfilePath != "" {
