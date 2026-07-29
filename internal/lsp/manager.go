@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -375,6 +376,10 @@ func (s *Server) waitForReady(ctx context.Context) error {
 	}
 }
 
+// errIdleTimeout is a sentinel used to skip the graceful shutdown RPC
+// and stderr enrichment for idle-reaping (the server is healthy, just idle).
+var errIdleTimeout = errors.New("idle timeout")
+
 // markDead transitions the server to Dead and fans out to all waiters.
 func (s *Server) markDead(err error) {
 	s.mu.Lock()
@@ -383,10 +388,6 @@ func (s *Server) markDead(err error) {
 		return
 	}
 	s.state = StateDead
-	s.deadErr = err
-	// Fan out: close deadCh (unblocks waitForReady waiters).
-	// readyCh is left open-on-dead; waitForReady selects on deadCh first.
-	close(s.deadCh)
 	// Cancel the progress watchdog.
 	if s.progressTimer != nil {
 		s.progressTimer.Stop()
@@ -397,22 +398,16 @@ func (s *Server) markDead(err error) {
 		s.idleTimer = nil
 	}
 	conn := s.conn
-	// Snapshot stderr for crash diagnostics (best-effort, under lock).
-	stderrTail := s.stderrBuf
+	pid := s.pid
+	gen := s.generation
+	stderr := s.stderr
+	s.stderr = nil
 	s.mu.Unlock()
-
-	// Enrich the error with stderr if available and not an idle timeout.
-	if err != nil && err.Error() != "idle timeout" && len(stderrTail) > 0 {
-		enriched := fmt.Errorf("%w\n--- LSP stderr (last %d bytes) ---\n%s", err, len(stderrTail), stderrTail)
-		s.mu.Lock()
-		s.deadErr = enriched
-		s.mu.Unlock()
-	}
 
 	// Shutdown the connection (best-effort graceful, then stdin close).
 	// Skip the 5s graceful shutdown RPC for idle-reaping — just kill.
 	if conn != nil {
-		if err != nil && err.Error() == "idle timeout" {
+		if errors.Is(err, errIdleTimeout) {
 			// Idle reaping: skip the RPC, just close the connection.
 			conn.Close()
 		} else {
@@ -425,13 +420,44 @@ func (s *Server) markDead(err error) {
 		}
 	}
 
+	// Close stderr to unblock the drainStderr goroutine (if still running).
+	// This prevents the goroutine from leaking if the process hangs with the
+	// stderr pipe open. Best-effort — Close may already have been called.
+	if stderr != nil {
+		_ = stderr.Close()
+	}
+
+	// Snapshot stderr for crash diagnostics (best-effort). Clone the slice
+	// under lock to avoid aliasing — drainStderr may still be appending.
+	isIdle := errors.Is(err, errIdleTimeout)
+	var stderrTail []byte
+	if !isIdle {
+		s.mu.Lock()
+		stderrTail = append([]byte(nil), s.stderrBuf...)
+		s.mu.Unlock()
+	}
+
+	// Build the final error (enriched with stderr if available) before
+	// publishing via deadCh so all waiters see the same error.
+	finalErr := err
+	if !isIdle && len(stderrTail) > 0 {
+		finalErr = fmt.Errorf("%w\n--- LSP stderr (last %d bytes) ---\n%s", err, len(stderrTail), stderrTail)
+	}
+
+	s.mu.Lock()
+	s.deadErr = finalErr
+	s.mu.Unlock()
+	// Fan out: close deadCh (unblocks waitForReady waiters).
+	// All fields are final before this point so waiters see the enriched error.
+	close(s.deadCh)
+
 	// Process kill guard: if the LSP server process (pid > 0) is still alive
 	// 3 seconds after stdin close, kill it via the executor. This prevents a
 	// hung server from leaking as a zombie process. The PID is the host-side
 	// process (docker exec or direct) — KillPgid targets the process group.
 	// Uses a bounded context so the IsProcessAlive/KillPgid calls don't hang
 	// indefinitely if the executor is unresponsive.
-	if s.pid > 0 && s.mgr.exec != nil {
+	if pid > 0 && s.mgr.exec != nil {
 		go func(pid int, gen int) {
 			time.Sleep(3 * time.Second)
 			// Skip if the server was respawned (new generation) — the PID
@@ -447,7 +473,7 @@ func (s *Server) markDead(err error) {
 			if s.mgr.exec.IsProcessAlive(killCtx, pid) {
 				_ = s.mgr.exec.KillPgid(killCtx, pid, 9) // SIGKILL
 			}
-		}(s.pid, s.generation)
+		}(pid, gen)
 	}
 }
 
@@ -589,18 +615,21 @@ func (s *Server) resetIdleTimer() {
 		s.state = StateDraining
 		s.mu.Unlock()
 		// Graceful shutdown.
-		s.markDead(fmt.Errorf("idle timeout"))
+		s.markDead(errIdleTimeout)
 	})
 }
 
 // drainStderr reads stderr and keeps a 4 KB ring buffer for crash diagnostics.
 func (s *Server) drainStderr() {
-	if s.stderr == nil {
+	s.mu.Lock()
+	stderr := s.stderr
+	s.mu.Unlock()
+	if stderr == nil {
 		return
 	}
 	buf := make([]byte, 4096)
 	for {
-		n, err := s.stderr.Read(buf)
+		n, err := stderr.Read(buf)
 		if n > 0 {
 			// Append to the ring buffer, dropping oldest data if needed.
 			s.mu.Lock()
