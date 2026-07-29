@@ -186,7 +186,7 @@ func (e *logWritingExec) StartBackground(_ context.Context, command, logPath str
 	_ = os.WriteFile(logPath, []byte(e.content), 0600)
 	// Also store in fakeExecutor's files map so ReadFile finds it.
 	e.fakeExecutor.files[logPath] = e.content
-	return e.fakeExecutor.StartBackground(context.TODO(), command, logPath)
+	return e.fakeExecutor.StartBackground(context.Background(), command, logPath)
 }
 
 // TestRunShellWithDeadline_Disabled falls back to blocking when

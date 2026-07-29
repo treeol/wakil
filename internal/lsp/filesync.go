@@ -54,7 +54,7 @@ func (f *fileSyncManager) ensureOpen(ctx context.Context, srv *Server, hostPath,
 	}
 
 	f.mu.Lock()
-	doc, ok := f.docs[uri]
+	_, ok := f.docs[uri]
 	if !ok {
 		// Read file content via the executor (same filesystem gopls sees).
 		content, err := srv.mgr.exec.ReadFile(ctx, hostPath)
@@ -63,7 +63,7 @@ func (f *fileSyncManager) ensureOpen(ctx context.Context, srv *Server, hostPath,
 			return "", fmt.Errorf("reading file for didOpen: %w", err)
 		}
 		version := int32(1)
-		doc = &fileSyncState{
+		doc := &fileSyncState{
 			version:    version,
 			content:    content,
 			languageID: languageID,
@@ -78,7 +78,6 @@ func (f *fileSyncManager) ensureOpen(ctx context.Context, srv *Server, hostPath,
 	} else {
 		f.mu.Unlock()
 	}
-	_ = doc
 	return uri, nil
 }
 

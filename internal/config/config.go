@@ -185,7 +185,7 @@ type Config struct {
 	AnswerMarginTokens    int `json:"answer_margin_tokens,omitempty"`    // tokens reserved for the final answer; default 4096
 	ContextTokensFallback int `json:"context_tokens_fallback,omitempty"` // n_ctx assumed when the backend fetch fails; default 131072
 	ToolResultCap         int `json:"tool_result_cap"`                   // max chars kept in ctx per tool result; 0 = unlimited; default 8000
-	ToolResultTTL         int `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 1
+	ToolResultTTL         int `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 3
 	MaxToolIterations     int `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
 
 	// SubagentMaxToolIter caps tool round-trips per subagent dispatch. 0 = use

@@ -287,7 +287,7 @@ func (e *DirectExecutor) StartBackground(_ context.Context, command, logPath str
 	}
 	pid = cmd.Process.Pid
 	// Reap the child when it exits so it doesn't become a zombie.
-	safe.Go("docker-startbg-reaper", func() { _ = cmd.Wait() })
+	safe.Go("docker/reaper:startbg", func() { _ = cmd.Wait() })
 	return pid, pid, nil // Setpgid: PGID == PID
 }
 

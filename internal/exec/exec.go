@@ -1092,7 +1092,7 @@ func (d *DockerExecutor) StartInteractive(_ context.Context, command string) (
 		return nil, nil, nil, 0, fmt.Errorf("starting interactive process: %w", err)
 	}
 	// Reap the child when it exits so it doesn't become a zombie.
-	safe.Go("docker-exec-reaper", func() { _ = cmd.Wait() })
+	safe.Go("docker/reaper:exec", func() { _ = cmd.Wait() })
 	return stdin, stdout, stderr, cmd.Process.Pid, nil
 }
 
@@ -1276,7 +1276,7 @@ func (e *DirectExecutor) StartInteractive(_ context.Context, command string) (
 		stderr.Close()
 		return nil, nil, nil, 0, fmt.Errorf("starting interactive process: %w", err)
 	}
-	safe.Go("docker-direct-reaper", func() { _ = cmd.Wait() })
+	safe.Go("docker/reaper:direct", func() { _ = cmd.Wait() })
 	return stdin, stdout, stderr, cmd.Process.Pid, nil
 }
 

@@ -95,7 +95,7 @@ func TestManager_opCtx_NilCallerCtx(t *testing.T) {
 	m := &Manager{
 		ctx: context.Background(),
 	}
-	octx, cancel := m.opCtx(context.TODO())
+	octx, cancel := m.opCtx(context.Background())
 	defer cancel()
 	if octx == nil {
 		t.Fatal("opCtx returned nil context")

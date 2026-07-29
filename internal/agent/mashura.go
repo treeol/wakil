@@ -594,7 +594,7 @@ func (a *App) mashuraExpandPath(ctx context.Context, path string) (files []strin
 	}
 	_, listErr := a.Exec.ListDir(ctx, path)
 	if listErr != nil {
-		return nil, false, fmt.Errorf("not found")
+		return nil, false, fmt.Errorf("path %q not found (read: %v, list: %v)", path, readErr, listErr)
 	}
 	// It's a directory.
 	expanded, expErr := a.mashuraExpandDir(ctx, path)
