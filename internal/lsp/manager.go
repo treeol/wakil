@@ -397,7 +397,17 @@ func (s *Server) markDead(err error) {
 		s.idleTimer = nil
 	}
 	conn := s.conn
+	// Snapshot stderr for crash diagnostics (best-effort, under lock).
+	stderrTail := s.stderrBuf
 	s.mu.Unlock()
+
+	// Enrich the error with stderr if available and not an idle timeout.
+	if err != nil && err.Error() != "idle timeout" && len(stderrTail) > 0 {
+		enriched := fmt.Errorf("%w\n--- LSP stderr (last %d bytes) ---\n%s", err, len(stderrTail), stderrTail)
+		s.mu.Lock()
+		s.deadErr = enriched
+		s.mu.Unlock()
+	}
 
 	// Shutdown the connection (best-effort graceful, then stdin close).
 	// Skip the 5s graceful shutdown RPC for idle-reaping — just kill.
@@ -419,13 +429,25 @@ func (s *Server) markDead(err error) {
 	// 3 seconds after stdin close, kill it via the executor. This prevents a
 	// hung server from leaking as a zombie process. The PID is the host-side
 	// process (docker exec or direct) — KillPgid targets the process group.
+	// Uses a bounded context so the IsProcessAlive/KillPgid calls don't hang
+	// indefinitely if the executor is unresponsive.
 	if s.pid > 0 && s.mgr.exec != nil {
-		go func(pid int) {
+		go func(pid int, gen int) {
 			time.Sleep(3 * time.Second)
-			if s.mgr.exec.IsProcessAlive(context.Background(), pid) {
-				_ = s.mgr.exec.KillPgid(context.Background(), pid, 9) // SIGKILL
+			// Skip if the server was respawned (new generation) — the PID
+			// may belong to a different process.
+			s.mu.Lock()
+			current := s.generation
+			s.mu.Unlock()
+			if current != gen {
+				return
 			}
-		}(s.pid)
+			killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if s.mgr.exec.IsProcessAlive(killCtx, pid) {
+				_ = s.mgr.exec.KillPgid(killCtx, pid, 9) // SIGKILL
+			}
+		}(s.pid, s.generation)
 	}
 }
 

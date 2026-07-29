@@ -972,11 +972,16 @@ func envStr(dst *string, key string) {
 }
 
 func envBool(dst *bool, key string) {
-	switch strings.ToLower(os.Getenv(key)) {
+	v := os.Getenv(key)
+	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
 		*dst = true
 	case "0", "false", "no", "off":
 		*dst = false
+	case "":
+		// unset — keep default
+	default:
+		log.Printf("config: invalid %s=%q (expected true/false/1/0/yes/no/on/off — ignored)", key, v)
 	}
 }
 
