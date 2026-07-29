@@ -278,7 +278,7 @@ type PanelMemberResult struct {
 
 // RunPanel executes the panel according to its mode.
 //
-// panel mode: queries all members sequentially, collects all results.
+// panel mode: queries all members in parallel, collects all results.
 // fallback mode: queries in order, stops on first success.
 // fusion mode: sends ONE OpenRouter Fusion request (models → analysis_models);
 //
@@ -287,9 +287,9 @@ type PanelMemberResult struct {
 //
 // Each member in panel/fallback receives an identical briefing — independent
 // opinions, never chained.
-// TODO(parallel): fan-out here — replace the panel/fallback loop with a goroutine
-// pool that writes into the results slice; the slice shape and all call sites
-// are unchanged, so parallelism is a localized swap.
+// Panel mode is parallelized: per-slot goroutines write to their own index in
+// the results slice (no shared mutation, no mutex). Fallback mode stays
+// sequential (stops on first success).
 func RunPanel(ctx context.Context, models []string, mode, question, briefing string, ccfg PanelCallConfig, apiKeys map[string]string) []PanelMemberResult {
 	if mode == "fusion" {
 		// Single OpenRouter Fusion call; models become the analysis panel.
