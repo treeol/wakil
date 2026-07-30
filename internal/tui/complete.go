@@ -77,6 +77,7 @@ var allTUICommands = []candidate{
 	{name: "/history"},
 	{name: "/info"},
 	{name: "/learn"},
+	{name: "/mashura", hasArgs: true},
 	{name: "/maxpar", hasArgs: true},
 	{name: "/maxctx", hasArgs: true},
 	{name: "/mcp", hasArgs: true},
@@ -269,6 +270,10 @@ func computeSlashCompletion(ta textarea.Model, src compSources) completionState 
 		cands = listNameCandidates(argLeaf, src.models)
 	case "/handoff":
 		cands = listNameCandidates(argLeaf, []string{"proceed", "stop"})
+	case "/counsel":
+		cands = listNameCandidates(argLeaf, []string{"auto", "suggest", "off"})
+	case "/mashura":
+		cands = listNameCandidates(argLeaf, []string{"panel", "map", "model", "maxtokens", "timeout"})
 	default:
 		return completionState{} // no argument completion for other commands
 	}

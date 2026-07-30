@@ -103,7 +103,7 @@ func TestCallOracleURL_MaxTokensTruncation(t *testing.T) {
 	defer srv.Close()
 
 	cfg := config.Config{OracleModel: "m", OracleMaxTokens: 256, OracleTimeoutSeconds: 5}
-	_, _, err := CallOracleURL(context.Background(), cfg, "key", "q", "", srv.URL)
+	_, usage, err := CallOracleURL(context.Background(), cfg, "key", "q", "", srv.URL)
 	if err == nil {
 		t.Fatal("expected max_tokens truncation error")
 	}
@@ -112,6 +112,10 @@ func TestCallOracleURL_MaxTokensTruncation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "raise oracle_max_tokens") {
 		t.Errorf("error should mention raising oracle_max_tokens, got: %v", err)
+	}
+	// Truncated calls are billed — usage must be returned even on error.
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
+		t.Errorf("truncation usage = %+v, want {Input:10, Output:5}", usage)
 	}
 }
 

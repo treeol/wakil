@@ -96,6 +96,77 @@ func TestOpenRouterRequestShape(t *testing.T) {
 	}
 }
 
+// TestOpenRouterTruncationReturnsUsage verifies that a length-truncated
+// OpenRouter response returns actual usage (the call was billed), and that
+// the truncation check runs before the empty-content check so a truncated
+// response with empty content still returns usage.
+func TestOpenRouterTruncationReturnsUsage(t *testing.T) {
+	// Truncated response with non-empty content.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}],"usage":{"prompt_tokens":15,"completion_tokens":8}}`))
+	}))
+	defer srv.Close()
+
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	if err == nil {
+		t.Fatal("expected truncation error")
+	}
+	if !strings.Contains(err.Error(), "truncated at max_tokens") {
+		t.Errorf("error = %v, want truncation message", err)
+	}
+	if usage.InputTokens != 15 || usage.OutputTokens != 8 {
+		t.Errorf("truncation usage = %+v, want {15, 8}", usage)
+	}
+}
+
+// TestOpenRouterTruncationEmptyContentReturnsUsage verifies that a
+// length-truncated response with EMPTY content still returns usage.
+// This is the ordering bug Mashūra caught: the empty-text check must not
+// run before the finish_reason check.
+func TestOpenRouterTruncationEmptyContentReturnsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":15,"completion_tokens":8}}`))
+	}))
+	defer srv.Close()
+
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	if err == nil {
+		t.Fatal("expected truncation error")
+	}
+	if !strings.Contains(err.Error(), "truncated at max_tokens") {
+		t.Errorf("error = %v, want truncation message (not empty-content)", err)
+	}
+	if usage.InputTokens != 15 || usage.OutputTokens != 8 {
+		t.Errorf("truncation usage = %+v, want {15, 8}", usage)
+	}
+}
+
+// TestFusionTruncationReturnsUsage verifies that a length-truncated fusion
+// response returns actual usage.
+func TestFusionTruncationReturnsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":20,"completion_tokens":10}}`))
+	}))
+	defer srv.Close()
+
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	_, usage, err := callFusion(context.Background(), []string{"~anthropic/claude"}, "key", "q", "ctx", ccfg)
+	if err == nil {
+		t.Fatal("expected truncation error")
+	}
+	if !strings.Contains(err.Error(), "truncated at max_tokens") {
+		t.Errorf("error = %v, want truncation message", err)
+	}
+	if usage.InputTokens != 20 || usage.OutputTokens != 10 {
+		t.Errorf("truncation usage = %+v, want {20, 10}", usage)
+	}
+}
+
 // TestRunPanelModeCollectsAll verifies that panel mode queries all members and
 // collects every result — including errors from failing members — without stopping.
 // With WP-7.7 parallelization, members run concurrently; the test server
@@ -361,5 +432,257 @@ func TestFormatPanelResultMulti(t *testing.T) {
 	}
 	if !strings.Contains(out, "model b says no") {
 		t.Error("missing second model's answer")
+	}
+}
+
+// ── Debate mode tests ────────────────────────────────────────────────────────
+
+// TestRunPanelDebateBasic verifies that debate mode executes two rounds:
+// round 1 (independent) then round 2 (critique). Each member should be
+// called twice — once per round.
+func TestRunPanelDebateBasic(t *testing.T) {
+	callCount := 0
+	// Track which round each call belongs to by counting calls per model.
+	modelCalls := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		json.Unmarshal(body, &req)
+		modelCalls[req.Model]++
+		w.Header().Set("Content-Type", "application/json")
+		// First call per model = round 1, second call = round 2.
+		if modelCalls[req.Model] == 1 {
+			w.Write([]byte(`{"content":[{"type":"text","text":"round1 answer from ` + req.Model + `"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+		} else {
+			w.Write([]byte(`{"content":[{"type":"text","text":"round2 refined answer from ` + req.Model + `"}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":8}}`))
+		}
+	}))
+	defer srv.Close()
+
+	models := []string{"anthropic:model-a", "anthropic:model-b"}
+	apiKeys := map[string]string{"anthropic": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+
+	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
+
+	if len(results) != 2 {
+		t.Fatalf("debate mode: want 2 results, got %d", len(results))
+	}
+	// Each model should be called twice (round 1 + round 2).
+	if modelCalls["model-a"] != 2 {
+		t.Errorf("model-a: expected 2 calls, got %d", modelCalls["model-a"])
+	}
+	if modelCalls["model-b"] != 2 {
+		t.Errorf("model-b: expected 2 calls, got %d", modelCalls["model-b"])
+	}
+	// Results should contain round-2 answers.
+	for i, r := range results {
+		if r.Err != nil {
+			t.Errorf("result %d: unexpected error: %v", i, r.Err)
+		}
+		if !strings.Contains(r.Answer, "round2 refined") {
+			t.Errorf("result %d: answer = %q, want round2 refined answer", i, r.Answer)
+		}
+		// Usage should be accumulated from both rounds (10+20 input, 5+8 output).
+		if r.Usage.InputTokens != 30 {
+			t.Errorf("result %d: input tokens = %d, want 30", i, r.Usage.InputTokens)
+		}
+		if r.Usage.OutputTokens != 13 {
+			t.Errorf("result %d: output tokens = %d, want 13", i, r.Usage.OutputTokens)
+		}
+	}
+}
+
+// TestRunPanelDebateRound1FailureDropsMember verifies that a member that
+// fails in round 1 drops out of round 2 (is not called again).
+func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
+	modelCalls := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		json.Unmarshal(body, &req)
+		modelCalls[req.Model]++
+		w.Header().Set("Content-Type", "application/json")
+		if req.Model == "model-a" {
+			// model-a always fails.
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":{"type":"server_error","message":"simulated failure"}}`))
+		} else {
+			// model-b succeeds in both rounds.
+			w.Write([]byte(`{"content":[{"type":"text","text":"answer from model-b"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+		}
+	}))
+	defer srv.Close()
+
+	models := []string{"anthropic:model-a", "anthropic:model-b"}
+	apiKeys := map[string]string{"anthropic": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+
+	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
+
+	// model-a should be called only once (round 1 — it failed, so it drops out).
+	if modelCalls["model-a"] != 1 {
+		t.Errorf("model-a: expected 1 call (round 1 only, failed), got %d", modelCalls["model-a"])
+	}
+	// model-b should be called twice (round 1 + round 2).
+	if modelCalls["model-b"] != 2 {
+		t.Errorf("model-b: expected 2 calls, got %d", modelCalls["model-b"])
+	}
+	// Result 0 (model-a) should have an error.
+	if results[0].Err == nil {
+		t.Error("model-a: expected an error from round 1 failure")
+	}
+	// Result 1 (model-b) should have a round-2 answer.
+	if results[1].Err != nil {
+		t.Errorf("model-b: unexpected error: %v", results[1].Err)
+	}
+	if !strings.Contains(results[1].Answer, "answer from model-b") {
+		t.Errorf("model-b: answer = %q", results[1].Answer)
+	}
+}
+
+// TestRunPanelDebateAllFailRound1 verifies that when all members fail in
+// round 1, no round 2 calls are made and all errors are returned.
+func TestRunPanelDebateAllFailRound1(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"error":{"type":"gateway_error","message":"all down"}}`))
+	}))
+	defer srv.Close()
+
+	models := []string{"anthropic:model-a", "anthropic:model-b"}
+	apiKeys := map[string]string{"anthropic": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+
+	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
+
+	// Only round 1 calls should have been made (2 calls, no round 2).
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (round 1 only), got %d", callCount)
+	}
+	for i, r := range results {
+		if r.Err == nil {
+			t.Errorf("result %d: expected error, got nil", i)
+		}
+	}
+}
+
+// TestRunPanelDebateMaxParticipants verifies that exceeding the max
+// participants returns an error without making any HTTP calls.
+func TestRunPanelDebateMaxParticipants(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no HTTP calls should be made when max participants exceeded")
+	}))
+	defer srv.Close()
+
+	// Create maxDebateParticipants + 1 models.
+	models := make([]string, maxDebateParticipants+1)
+	for i := range models {
+		models[i] = "anthropic:model-" + string(rune('a'+i))
+	}
+	apiKeys := map[string]string{"anthropic": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+
+	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
+
+	for i, r := range results {
+		if r.Err == nil {
+			t.Errorf("result %d: expected error for exceeding max participants", i)
+		}
+		if !strings.Contains(r.Err.Error(), "exceeds max") {
+			t.Errorf("result %d: error = %q, want 'exceeds max'", i, r.Err.Error())
+		}
+	}
+}
+
+// TestRunPanelDebateSingleMember verifies that debate mode works with a
+// single member (round 2 still runs, the member critiques itself).
+func TestRunPanelDebateSingleMember(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			w.Write([]byte(`{"content":[{"type":"text","text":"initial answer"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+		} else {
+			w.Write([]byte(`{"content":[{"type":"text","text":"refined answer"}],"stop_reason":"end_turn","usage":{"input_tokens":15,"output_tokens":7}}`))
+		}
+	}))
+	defer srv.Close()
+
+	models := []string{"anthropic:single-model"}
+	apiKeys := map[string]string{"anthropic": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+
+	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
+
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (round 1 + round 2), got %d", callCount)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].Err != nil {
+		t.Errorf("unexpected error: %v", results[0].Err)
+	}
+	if results[0].Answer != "refined answer" {
+		t.Errorf("answer = %q, want 'refined answer'", results[0].Answer)
+	}
+}
+
+// ── Unknown mode validation test ─────────────────────────────────────────────
+
+// TestRunPanelUnknownModeFailsClosed verifies that an unrecognized mode
+// produces per-member errors without making any HTTP calls.
+func TestRunPanelUnknownModeFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no HTTP calls should be made for unknown mode")
+	}))
+	defer srv.Close()
+
+	models := []string{"anthropic:model-a", "anthropic:model-b"}
+	apiKeys := map[string]string{"anthropic": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+
+	results := RunPanel(context.Background(), models, "debtae", "question?", "briefing", ccfg, apiKeys)
+
+	if len(results) != 2 {
+		t.Fatalf("want 2 results, got %d", len(results))
+	}
+	for i, r := range results {
+		if r.Err == nil {
+			t.Errorf("result %d: expected error for unknown mode", i)
+		}
+		if !strings.Contains(r.Err.Error(), "unknown panel mode") {
+			t.Errorf("result %d: error = %q, want 'unknown panel mode'", i, r.Err.Error())
+		}
+	}
+}
+
+// ── PanelDetail debate mode test ─────────────────────────────────────────────
+
+// TestPanelDetailDebateMode verifies the gate detail for debate panels
+// includes the debate metadata and cross-provider sharing disclosure.
+func TestPanelDetailDebateMode(t *testing.T) {
+	models := []string{"anthropic:claude-opus-4-8", "openrouter:google/gemini-2.5-pro"}
+	detail := PanelDetail("review-panel", models, "debate", "the question", "briefing ctx")
+	if !strings.Contains(detail, "debate") {
+		t.Error("debate detail should mention debate mode")
+	}
+	if !strings.Contains(detail, "2 rounds") {
+		t.Error("debate detail should mention 2 rounds")
+	}
+	if !strings.Contains(detail, "shared across providers") {
+		t.Error("debate detail should disclose cross-provider sharing")
+	}
+	if !strings.Contains(detail, "the question") {
+		t.Error("debate detail should include the question")
 	}
 }
