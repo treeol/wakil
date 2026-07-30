@@ -202,11 +202,16 @@ func CallOracleURL(ctx context.Context, cfg config.Config, apiKey, question, ora
 		if hasThinking {
 			remediation = "; raise oracle_max_tokens or use a non-thinking model"
 		}
+		// Return actual usage even on truncation — the API call was billed.
+		truncUsage := OracleUsage{
+			InputTokens:  int64(result.Usage.InputTokens),
+			OutputTokens: int64(result.Usage.OutputTokens),
+		}
 		if len(textParts) == 0 {
-			return "", OracleUsage{}, fmt.Errorf("oracle hit max_tokens before emitting any text%s", remediation)
+			return "", truncUsage, fmt.Errorf("oracle hit max_tokens before emitting any text%s", remediation)
 		}
 		joined := strings.Join(textParts, "\n")
-		return "", OracleUsage{}, fmt.Errorf("oracle response truncated at max_tokens (%d chars received)%s", len(joined), remediation)
+		return "", truncUsage, fmt.Errorf("oracle response truncated at max_tokens (%d chars received)%s", len(joined), remediation)
 	}
 
 	// Reject empty or whitespace-only text (stop_reason is not max_tokens here).
@@ -291,6 +296,21 @@ type PanelMemberResult struct {
 // the results slice (no shared mutation, no mutex). Fallback mode stays
 // sequential (stops on first success).
 func RunPanel(ctx context.Context, models []string, mode, question, briefing string, ccfg PanelCallConfig, apiKeys map[string]string) []PanelMemberResult {
+	// Validate mode — fail closed instead of silently treating unknown modes
+	// as panel mode (a typo like "debtae" should not run a silent panel call).
+	switch mode {
+	case "fusion", "fallback", "panel", "":
+		// valid
+	default:
+		err := fmt.Errorf("unknown panel mode %q (expected panel, fallback, or fusion)", mode)
+		results := make([]PanelMemberResult, len(models))
+		for i, pm := range models {
+			_, model := ParseModelPrefix(pm)
+			results[i] = PanelMemberResult{PrefixedModel: pm, Model: model, Err: err}
+		}
+		return results
+	}
+
 	if mode == "fusion" {
 		// Single OpenRouter Fusion call; models become the analysis panel.
 		answer, usage, err := callFusion(ctx, models, apiKeys["openrouter"], question, briefing, ccfg)
@@ -475,12 +495,20 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 	if len(result.Choices) == 0 {
 		return "", OracleUsage{}, fmt.Errorf("openrouter: no choices in response")
 	}
+	// Check truncation before empty-text: a length-truncated response may
+	// have empty content (e.g. budget consumed by reasoning), but the call
+	// was still billed — return usage so cost is recorded.
+	if result.Choices[0].FinishReason == "length" {
+		truncUsage := OracleUsage{}
+		if result.Usage != nil {
+			truncUsage.InputTokens = int64(result.Usage.PromptTokens)
+			truncUsage.OutputTokens = int64(result.Usage.CompletionTokens)
+		}
+		return "", truncUsage, fmt.Errorf("openrouter: response truncated at max_tokens; raise max_tokens to avoid truncation")
+	}
 	text := strings.TrimSpace(result.Choices[0].Message.Content)
 	if text == "" {
 		return "", OracleUsage{}, fmt.Errorf("openrouter: empty response content")
-	}
-	if result.Choices[0].FinishReason == "length" {
-		return "", OracleUsage{}, fmt.Errorf("openrouter: response truncated at max_tokens; raise max_tokens to avoid truncation")
 	}
 
 	var usage OracleUsage
@@ -562,6 +590,16 @@ func callFusion(ctx context.Context, analysisModels []string, apiKey, question, 
 	}
 	if len(result.Choices) == 0 {
 		return "", OracleUsage{}, fmt.Errorf("openrouter/fusion: no choices in response")
+	}
+	// Check truncation before empty-text: a length-truncated response may
+	// have empty content, but the call was still billed.
+	if result.Choices[0].FinishReason == "length" {
+		truncUsage := OracleUsage{}
+		if result.Usage != nil {
+			truncUsage.InputTokens = int64(result.Usage.PromptTokens)
+			truncUsage.OutputTokens = int64(result.Usage.CompletionTokens)
+		}
+		return "", truncUsage, fmt.Errorf("openrouter/fusion: response truncated at max_tokens; raise max_tokens to avoid truncation")
 	}
 	text := strings.TrimSpace(result.Choices[0].Message.Content)
 	if text == "" {

@@ -205,9 +205,12 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 	results := counsel.RunPanel(ctx, panel.Models, panel.Mode, question, briefing, ccfg, apiKeys)
 
 	// Record cost per model; add grounding entry per successful member.
+	// Record usage even on error — providers bill for truncated/failed calls.
 	for _, r := range results {
-		if r.Err == nil {
+		if r.Usage.InputTokens > 0 || r.Usage.OutputTokens > 0 {
 			a.RecordOracleCostFor(r.Model, r.Usage)
+		}
+		if r.Err == nil {
 			a.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}
 	}
@@ -486,6 +489,7 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 		end   int // 0 = file end
 	}
 	var entries []entry
+	var dirMarkers []string
 
 	for _, p := range paths {
 		p = strings.TrimSpace(p)
@@ -498,6 +502,13 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 		}
 		if isDir {
 			for _, fp := range expanded {
+				// Skip the cap-omission marker — it's informational text
+				// appended by mashuraExpandDir, not a real file path.
+				// We'll include it in the briefing output later.
+				if strings.HasPrefix(fp, "[+") {
+					dirMarkers = append(dirMarkers, fp)
+					continue
+				}
 				entries = append(entries, entry{path: fp})
 			}
 		} else {
@@ -514,6 +525,11 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 
 	var sb strings.Builder
 	sb.WriteString("## Sources (read by Wakil)\n\n")
+	// Include any directory-expansion omission markers so the oracle knows
+	// that some files were not read.
+	for _, m := range dirMarkers {
+		fmt.Fprintf(&sb, "%s\n\n", m)
+	}
 	total := 0
 
 	for _, e := range entries {
@@ -536,6 +552,9 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 		if start > totalLines {
 			start = totalLines
 		}
+		if end < start {
+			end = start
+		}
 		shownLines := allLines[start:end]
 		shownBody := strings.Join(shownLines, "\n")
 
@@ -550,7 +569,7 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 			}
 			clippedCount := strings.Count(clipped_body, "\n") + 1
 			shownBody = clipped_body + fmt.Sprintf("\n[%s: truncated, %d of %d lines shown]", e.path, clippedCount, totalLines)
-			shownLines = allLines[:clippedCount]
+			shownLines = allLines[start : start+clippedCount]
 		}
 
 		// Total budget: drop whole file if it won't fit.
