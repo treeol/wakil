@@ -46,6 +46,22 @@ type RepoState struct {
 	// TUI-only, like AutoApprove — headless run.go never reads it.
 	InfoPanelOpen bool `json:"info_panel_open,omitempty"`
 
+	// MashuraPanels persists the /mashura panel configuration (TUI-only, not
+// restored in headless). Each entry mirrors config.MashuraPanelConfig.
+	MashuraPanels map[string]config.MashuraPanelConfig `json:"mashura_panels,omitempty"`
+
+	// MashuraToolPanels persists the tool→panel mappings.
+	MashuraToolPanels map[string]string `json:"mashura_tool_panels,omitempty"`
+
+	// MashuraDefaultModel persists the /mashura model setting.
+	MashuraDefaultModel string `json:"mashura_default_model,omitempty"`
+
+	// MashuraMaxTokens persists the /mashura maxtokens setting.
+	MashuraMaxTokens int `json:"mashura_max_tokens,omitempty"`
+
+	// MashuraTimeoutSeconds persists the /mashura timeout setting.
+	MashuraTimeoutSeconds int `json:"mashura_timeout_seconds,omitempty"`
+
 	// EffectiveCtxMaxChars persists the /maxctx session override. nil = not set
 	// (use config default); pointer to 0 = explicitly disabled (no cap); >0 =
 	// cap at this many chars. Pointer is needed because 0 is a valid value
@@ -255,6 +271,38 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 	if st.EffectiveCtxMaxChars != nil {
 		app.EffectiveCtxMaxCharsOverride = *st.EffectiveCtxMaxChars
 		applied = append(applied, fmt.Sprintf("maxctx=%d", *st.EffectiveCtxMaxChars))
+	}
+
+	// Mashūra settings (TUI-only, endpoint-independent).
+	if len(st.MashuraPanels) > 0 {
+		if app.Cfg.MashuraPanels == nil {
+			app.Cfg.MashuraPanels = make(map[string]config.MashuraPanelConfig)
+		}
+		for name, panel := range st.MashuraPanels {
+			app.Cfg.MashuraPanels[name] = panel
+		}
+		applied = append(applied, fmt.Sprintf("mashura-panels=%d", len(st.MashuraPanels)))
+	}
+	if len(st.MashuraToolPanels) > 0 {
+		if app.Cfg.MashuraToolPanels == nil {
+			app.Cfg.MashuraToolPanels = make(map[string]string)
+		}
+		for tool, panel := range st.MashuraToolPanels {
+			app.Cfg.MashuraToolPanels[tool] = panel
+		}
+		applied = append(applied, "mashura-mappings")
+	}
+	if st.MashuraDefaultModel != "" {
+		app.Cfg.OracleModel = st.MashuraDefaultModel
+		applied = append(applied, "mashura-model="+st.MashuraDefaultModel)
+	}
+	if st.MashuraMaxTokens > 0 {
+		app.Cfg.OracleMaxTokens = st.MashuraMaxTokens
+		applied = append(applied, fmt.Sprintf("mashura-maxtokens=%d", st.MashuraMaxTokens))
+	}
+	if st.MashuraTimeoutSeconds > 0 {
+		app.Cfg.OracleTimeoutSeconds = st.MashuraTimeoutSeconds
+		applied = append(applied, fmt.Sprintf("mashura-timeout=%d", st.MashuraTimeoutSeconds))
 	}
 
 	if len(applied) > 0 {

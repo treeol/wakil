@@ -765,6 +765,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return true, false, note("usage: /counsel auto|suggest|off")
 		}
 
+	case "/mashura":
+		return handleMashuraCommand(fields, app)
+
 	case "/plan":
 		return HandlePlanCommand(fields, app)
 
@@ -1073,6 +1076,14 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /learn               send "learn this for next time" — proxy synthesises a fact to save (ilm-proxy only; use memory_put on OpenAI endpoints)
 /counsel auto|suggest|off  auto-counsel mode: auto=fire mashura__debug on struggle, suggest=hint, off=silent
 /counsel                   show current counsel mode and per-turn cap
+/mashura                   show mashura panel/model/limit status
+/mashura panel add <name> <models> [--mode panel|fallback|fusion|debate]  create a panel
+/mashura panel rm <name>   remove a panel
+/mashura panel <name> [--mode <mode>]  show or set panel mode
+/mashura map <tool> <panel>  map a counsel tool (review|debug|decide|check) to a panel
+/mashura model <model-id>  set the default mashura model
+/mashura maxtokens <N>     set max tokens for mashura responses
+/mashura timeout <seconds> set timeout for mashura calls
 /auto                toggle: auto-approve tool calls without prompting (shown as AUTO in status)
                      still confirmed: destructive shell commands, external-backend egress
                      in /plan: a successful review auto-approves the plan and starts implementation
