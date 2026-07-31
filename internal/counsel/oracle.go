@@ -297,7 +297,7 @@ type PanelMemberResult struct {
 // sequential (stops on first success).
 func RunPanel(ctx context.Context, models []string, mode, question, briefing string, ccfg PanelCallConfig, apiKeys map[string]string) []PanelMemberResult {
 	// Validate mode — fail closed instead of silently treating unknown modes
-// as panel mode (a typo like "debtae" should not run a silent panel call).
+	// as panel mode (a typo like "debtae" should not run a silent panel call).
 	switch mode {
 	case "fusion", "fallback", "panel", "debate", "":
 		// valid

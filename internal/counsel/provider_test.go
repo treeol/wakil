@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -219,11 +220,15 @@ func TestRunPanelModeCollectsAll(t *testing.T) {
 // TestRunPanelFallbackStopsOnSuccess verifies that fallback mode stops querying
 // after the first successful response, and records prior failures in the result.
 func TestRunPanelFallbackStopsOnSuccess(t *testing.T) {
+	var mu sync.Mutex
 	callN := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		callN++
+		n := callN
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		if callN == 1 {
+		if n == 1 {
 			// First member: API error.
 			w.WriteHeader(http.StatusBadGateway)
 			w.Write([]byte(`{"error":{"type":"gateway_error","message":"upstream down"}}`))
@@ -241,8 +246,11 @@ func TestRunPanelFallbackStopsOnSuccess(t *testing.T) {
 	results := RunPanel(context.Background(), models, "fallback", "question?", "briefing", ccfg, apiKeys)
 
 	// Only 2 calls: first failed, second succeeded, third never tried.
-	if callN != 2 {
-		t.Errorf("fallback: expected 2 calls (stop on first success), got %d", callN)
+	mu.Lock()
+	got := callN
+	mu.Unlock()
+	if got != 2 {
+		t.Errorf("fallback: expected 2 calls (stop on first success), got %d", got)
 	}
 	if len(results) != 2 {
 		t.Fatalf("fallback: want 2 results (1 fail + 1 success), got %d", len(results))
@@ -346,9 +354,12 @@ func TestFusionRequestShape(t *testing.T) {
 // TestRunPanelFusionMode verifies that RunPanel with mode="fusion" makes exactly
 // one call and returns a single result labeled "openrouter/fusion".
 func TestRunPanelFusionMode(t *testing.T) {
+	var mu sync.Mutex
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		callCount++
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"synthesized"},"finish_reason":"stop"}]}`))
 	}))
@@ -360,8 +371,11 @@ func TestRunPanelFusionMode(t *testing.T) {
 
 	results := RunPanel(context.Background(), models, "fusion", "question?", "briefing", ccfg, apiKeys)
 
-	if callCount != 1 {
-		t.Errorf("fusion mode: expected exactly 1 HTTP call, got %d", callCount)
+	mu.Lock()
+	got := callCount
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("fusion mode: expected exactly 1 HTTP call, got %d", got)
 	}
 	if len(results) != 1 {
 		t.Fatalf("fusion mode: expected 1 result, got %d", len(results))
@@ -441,20 +455,24 @@ func TestFormatPanelResultMulti(t *testing.T) {
 // round 1 (independent) then round 2 (critique). Each member should be
 // called twice — once per round.
 func TestRunPanelDebateBasic(t *testing.T) {
+	var mu sync.Mutex
 	callCount := 0
 	// Track which round each call belongs to by counting calls per model.
 	modelCalls := map[string]int{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
 			Model string `json:"model"`
 		}
 		json.Unmarshal(body, &req)
+		mu.Lock()
+		callCount++
 		modelCalls[req.Model]++
+		n := modelCalls[req.Model]
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		// First call per model = round 1, second call = round 2.
-		if modelCalls[req.Model] == 1 {
+		if n == 1 {
 			w.Write([]byte(`{"content":[{"type":"text","text":"round1 answer from ` + req.Model + `"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
 		} else {
 			w.Write([]byte(`{"content":[{"type":"text","text":"round2 refined answer from ` + req.Model + `"}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":8}}`))
@@ -472,11 +490,15 @@ func TestRunPanelDebateBasic(t *testing.T) {
 		t.Fatalf("debate mode: want 2 results, got %d", len(results))
 	}
 	// Each model should be called twice (round 1 + round 2).
-	if modelCalls["model-a"] != 2 {
-		t.Errorf("model-a: expected 2 calls, got %d", modelCalls["model-a"])
+	mu.Lock()
+	callsA := modelCalls["model-a"]
+	callsB := modelCalls["model-b"]
+	mu.Unlock()
+	if callsA != 2 {
+		t.Errorf("model-a: expected 2 calls, got %d", callsA)
 	}
-	if modelCalls["model-b"] != 2 {
-		t.Errorf("model-b: expected 2 calls, got %d", modelCalls["model-b"])
+	if callsB != 2 {
+		t.Errorf("model-b: expected 2 calls, got %d", callsB)
 	}
 	// Results should contain round-2 answers.
 	for i, r := range results {
@@ -499,6 +521,7 @@ func TestRunPanelDebateBasic(t *testing.T) {
 // TestRunPanelDebateRound1FailureDropsMember verifies that a member that
 // fails in round 1 drops out of round 2 (is not called again).
 func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
+	var mu sync.Mutex
 	modelCalls := map[string]int{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -506,7 +529,9 @@ func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
 			Model string `json:"model"`
 		}
 		json.Unmarshal(body, &req)
+		mu.Lock()
 		modelCalls[req.Model]++
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if req.Model == "model-a" {
 			// model-a always fails.
@@ -525,13 +550,20 @@ func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
 
 	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
 
+	if len(results) != 2 {
+		t.Fatalf("debate round1-failure: want 2 results, got %d", len(results))
+	}
 	// model-a should be called only once (round 1 — it failed, so it drops out).
-	if modelCalls["model-a"] != 1 {
-		t.Errorf("model-a: expected 1 call (round 1 only, failed), got %d", modelCalls["model-a"])
+	mu.Lock()
+	callsA := modelCalls["model-a"]
+	callsB := modelCalls["model-b"]
+	mu.Unlock()
+	if callsA != 1 {
+		t.Errorf("model-a: expected 1 call (round 1 only, failed), got %d", callsA)
 	}
 	// model-b should be called twice (round 1 + round 2).
-	if modelCalls["model-b"] != 2 {
-		t.Errorf("model-b: expected 2 calls, got %d", modelCalls["model-b"])
+	if callsB != 2 {
+		t.Errorf("model-b: expected 2 calls, got %d", callsB)
 	}
 	// Result 0 (model-a) should have an error.
 	if results[0].Err == nil {
@@ -549,9 +581,12 @@ func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
 // TestRunPanelDebateAllFailRound1 verifies that when all members fail in
 // round 1, no round 2 calls are made and all errors are returned.
 func TestRunPanelDebateAllFailRound1(t *testing.T) {
+	var mu sync.Mutex
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		callCount++
+		mu.Unlock()
 		w.WriteHeader(http.StatusBadGateway)
 		w.Write([]byte(`{"error":{"type":"gateway_error","message":"all down"}}`))
 	}))
@@ -563,9 +598,15 @@ func TestRunPanelDebateAllFailRound1(t *testing.T) {
 
 	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
 
+	if len(results) != 2 {
+		t.Fatalf("debate all-fail: want 2 results, got %d", len(results))
+	}
 	// Only round 1 calls should have been made (2 calls, no round 2).
-	if callCount != 2 {
-		t.Errorf("expected 2 calls (round 1 only), got %d", callCount)
+	mu.Lock()
+	got := callCount
+	mu.Unlock()
+	if got != 2 {
+		t.Errorf("expected 2 calls (round 1 only), got %d", got)
 	}
 	for i, r := range results {
 		if r.Err == nil {
@@ -605,11 +646,15 @@ func TestRunPanelDebateMaxParticipants(t *testing.T) {
 // TestRunPanelDebateSingleMember verifies that debate mode works with a
 // single member (round 2 still runs, the member critiques itself).
 func TestRunPanelDebateSingleMember(t *testing.T) {
+	var mu sync.Mutex
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		callCount++
+		n := callCount
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		if callCount == 1 {
+		if n == 1 {
 			w.Write([]byte(`{"content":[{"type":"text","text":"initial answer"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
 		} else {
 			w.Write([]byte(`{"content":[{"type":"text","text":"refined answer"}],"stop_reason":"end_turn","usage":{"input_tokens":15,"output_tokens":7}}`))
@@ -623,8 +668,11 @@ func TestRunPanelDebateSingleMember(t *testing.T) {
 
 	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
 
-	if callCount != 2 {
-		t.Errorf("expected 2 calls (round 1 + round 2), got %d", callCount)
+	mu.Lock()
+	got := callCount
+	mu.Unlock()
+	if got != 2 {
+		t.Errorf("expected 2 calls (round 1 + round 2), got %d", got)
 	}
 	if len(results) != 1 {
 		t.Fatalf("want 1 result, got %d", len(results))

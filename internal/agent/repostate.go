@@ -47,7 +47,7 @@ type RepoState struct {
 	InfoPanelOpen bool `json:"info_panel_open,omitempty"`
 
 	// MashuraPanels persists the /mashura panel configuration (TUI-only, not
-// restored in headless). Each entry mirrors config.MashuraPanelConfig.
+	// restored in headless). Each entry mirrors config.MashuraPanelConfig.
 	MashuraPanels map[string]config.MashuraPanelConfig `json:"mashura_panels,omitempty"`
 
 	// MashuraToolPanels persists the tool→panel mappings.
