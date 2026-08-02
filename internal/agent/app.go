@@ -19,6 +19,7 @@ import (
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/sessionhistory"
 	"github.com/treeol/wakil/internal/staging"
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
@@ -133,6 +134,13 @@ type App struct {
 	// type, not by caller convention. The underlying store is opened with
 	// workspaceRoot="" (no stable workspace root to anchor against).
 	SkillStore *skillsProfile
+
+	// SessionHistory is the workspace-scoped index of prior session
+	// transcripts, or nil if unavailable (init failed, no workspace). It is
+	// a DERIVED, disposable index over the on-disk session JSON files — not
+	// a journal of record. Set by the host startup code after the workspace
+	// is resolved. Thread-safe via its internal mutex.
+	SessionHistory *sessionhistory.Store
 
 	// touchedExternal is a sticky per-App flag set when the agent's
 	// grounding records web/oracle content. Used for the session-cumulative

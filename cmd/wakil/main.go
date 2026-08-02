@@ -230,6 +230,9 @@ func main() {
 		if res.skillStore != nil {
 			res.skillStore.Close()
 		}
+		if res.sessionHistStore != nil {
+			res.sessionHistStore.Close()
+		}
 		exe.Close()
 		if res.mcpMgr != nil {
 			res.mcpMgr.Close()
@@ -249,6 +252,9 @@ func main() {
 	}
 	if res.skillStore != nil {
 		res.skillStore.Close()
+	}
+	if res.sessionHistStore != nil {
+		res.sessionHistStore.Close()
 	}
 	exe.Close()
 	if res.mcpMgr != nil {

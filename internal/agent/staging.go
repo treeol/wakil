@@ -116,6 +116,25 @@ func SkillDBPath() string {
 	return filepath.Join(dataDir, "skills", "skills.db")
 }
 
+// SessionHistoryDBPath returns the host-side path to the session-history index
+// SQLite database for the given workspace. Like MemoryDBPath it is
+// workspace-keyed (same SHA-256-derived short key). Path:
+// <wakil-data-dir>/sessionhistory/<short-key>/sessions.db
+//
+// Returns "" if the data directory cannot be determined or the workspace key
+// is empty. The directory is NOT created here — sessionhistory.Open creates it.
+func SessionHistoryDBPath(ws string) string {
+	key := stagingKey(ws)
+	if key == "" {
+		return ""
+	}
+	dataDir := stagingDataRoot()
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "sessionhistory", key, "sessions.db")
+}
+
 // EnsureStagingDir creates the staging directory for ws with 0o700
 // permissions, owned by the current user. Returns the path. If the
 // directory already exists with looser permissions, they are tightened

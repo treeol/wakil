@@ -99,6 +99,11 @@ func performHandoff(ctx context.Context, app *App, proceed bool) Msg {
 		}
 	}
 
+	// 1b. (No ingest here — the finalized session with its generated summary is
+	// stored in step 2b below, a single index write. Ingesting now would be a
+	// redundant whole-session replace that then gets overwritten, and would
+	// clobber any prior generated summary if step 2b failed.)
+
 	// 2. Generate the handoff summary via the summarizer (calls the proxy,
 	//    same as /compact). This is the slow step — it runs off the event loop.
 	//    Add a timeout so a hanging backend can't block the handoff forever.
@@ -111,6 +116,21 @@ func performHandoff(ctx context.Context, app *App, proceed bool) Msg {
 		return HandoffMsg{
 			OldChatID: oldChatID,
 			Err:       fmt.Errorf("summary generation failed: %w", err),
+		}
+	}
+
+	// 2b. Store the finalized session AND its generated handoff summary in the
+	// session-history index (a single index write, no extra inference — the
+	// summary was just produced above). On failure, still index the session
+	// without the generated summary so its turns are searchable.
+	if app.SessionHistory != nil {
+		in := sessionToIndexInput(*app.Session)
+		in.Summary = strings.TrimSpace(summary)
+		in.SummaryGenerated = true
+		in.SourceHash = sourceHash(*app.Session)
+		if err := app.SessionHistory.Index(ctx, in); err != nil {
+			fmt.Fprintf(app.Out, "session history: store handoff summary: %v\n", err)
+			_ = app.indexSession(ctx, *app.Session, false) // fallback: index without summary
 		}
 	}
 
@@ -149,11 +169,13 @@ func generateHandoffSummary(ctx context.Context, app *App) (string, error) {
 
 	sum := app.summarizeFn()
 	if sum == nil {
-		// No summarizer available — fall back to a raw transcript dump.
-		return renderTranscript(conv), nil
+		// No summarizer available — fall back to a raw dump of the same
+		// indexable content (user + assistant text), never tool output, so the
+		// handoff summary honors the index's secret-hygiene boundary.
+		return renderIndexableTranscript(conv), nil
 	}
 
-	text := handoffSummaryPrompt + renderTranscript(conv)
+	text := handoffSummaryPrompt + renderIndexableTranscript(conv)
 	summary, err := sum(ctx, text)
 	if err != nil {
 		return "", err

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/policy"
@@ -272,9 +273,27 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 
 	switch fields[0] {
 	case "/new", "/reset":
+		// Snapshot the old session BEFORE rotation so finalization (index ingest
+		// + end-of-session summary) can run on it in the Cmd closure. The old
+		// transcript was already persisted by the previous turn's deferred
+		// SaveSession; we ingest from the in-memory session for immediacy. The
+		// closure runs off the event loop (same pattern as /compact and
+		// /handoff), so the summarizer's blocking network call is safe.
+		var oldSession Session
+		hasOld := false
+		if app.Session != nil {
+			oldSession = *app.Session
+			hasOld = oldSession.ChatID != ""
+		}
 		app.NewConversation(NewChatID())
 		chatID := ShortID(app.Client.ChatID)
+		isSub := app.IsSubagent
 		return true, false, func() Msg {
+			if !isSub && app.SessionHistory != nil && hasOld {
+				finalizeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				app.finalizeSessionHistory(finalizeCtx, oldSession)
+			}
 			return NewConvMsg{Note: "fresh conversation: " + chatID}
 		}
 
@@ -406,6 +425,23 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// hint when other-workspace sessions exist).
 		all := len(fields) > 1 && fields[1] == "all"
 		return true, false, note(SessionListText(app.Client.ChatID, SessionScope{Workspace: app.SessionWorkspace(), All: all}))
+
+	case "/remember":
+		// /remember <query> searches prior session transcripts in the current
+		// workspace (current session excluded) and returns a display-only block
+		// of matching sessions with cited snippets. It runs in a Cmd closure
+		// because the first call lazily backfills the search index (I/O); the
+		// result is a note, never folded into Conv (cache-neutral).
+		query := strings.Join(fields[1:], " ")
+		return true, false, func() Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			out, err := app.RememberSearch(ctx, query)
+			if err != nil {
+				return SysNoteMsg{Text: "remember: " + err.Error()}
+			}
+			return SysNoteMsg{Text: out}
+		}
 
 	case "/resume":
 		arg := ""

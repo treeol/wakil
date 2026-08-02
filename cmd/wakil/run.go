@@ -611,6 +611,9 @@ func RunHeadless(cfg config.Config, args []string) int {
 	if res.skillStore != nil {
 		defer res.skillStore.Close()
 	}
+	if res.sessionHistStore != nil {
+		defer res.sessionHistStore.Close()
+	}
 
 	out := io.Writer(os.Stdout)
 	if flags.TranscriptFile != "" {

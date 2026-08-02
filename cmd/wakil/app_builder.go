@@ -26,6 +26,7 @@ import (
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/sessionhistory"
 	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/trace"
 )
@@ -42,12 +43,13 @@ type buildAppOpts struct {
 // defer-close after buildApp returns. The App itself holds references to
 // these resources but does not own their lifecycle — the caller does.
 type appResources struct {
-	mcpMgr     *agent.MCPManager
-	lspMgr     *lsp.Manager
-	browserMgr *browser.Manager
-	traceStore *trace.Store
-	memStore   *memory.Store
-	skillStore *memory.Store
+	mcpMgr           *agent.MCPManager
+	lspMgr           *lsp.Manager
+	browserMgr       *browser.Manager
+	traceStore       *trace.Store
+	memStore         *memory.Store
+	skillStore       *memory.Store
+	sessionHistStore *sessionhistory.Store
 }
 
 // buildApp constructs a *agent.App from config, executor, and entry-point
@@ -208,6 +210,20 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 		} else {
 			app.SkillStore = agent.NewSkillsProfile(skillStore)
 			res.skillStore = skillStore
+		}
+	}
+
+	// Session-history index — WORKSPACE-KEYED, host-side, disposable (derived
+	// from the session JSON files). Best-effort: a failure means recall and
+	// indexing are unavailable, never that the session breaks.
+	sessionHistPath := agent.SessionHistoryDBPath(app.SessionWorkspace())
+	if sessionHistPath != "" {
+		shStore, err := sessionhistory.Open(sessionHistPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "session history: failed to open store:", err)
+		} else {
+			app.SessionHistory = shStore
+			res.sessionHistStore = shStore
 		}
 	}
 
