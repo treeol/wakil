@@ -349,6 +349,59 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			cmds = append(cmds, pair...)
 		}
 
+	case agent.RememberTurnMsg:
+		// /remember fold-into-conversation: start a model turn seeded with the
+		// recalled session envelope. Two guards must run BEFORE any rendering:
+		//  (1) origin check — a result that arrives after /new, /resume, or
+		//      /handoff folded into a switched session would leak stale recall
+		//      into the wrong conversation, so validate the invocation-time
+		//      chat ID and workspace against the current session FIRST;
+		//  (2) idle-state — a completed search arriving mid-turn must not start
+		//      a concurrent RunTurn.
+		stale := (msg.OriginChatID != "" && msg.OriginChatID != m.app.Client.ChatID) ||
+			(msg.OriginWorkspace != "" && msg.OriginWorkspace != m.app.SessionWorkspace())
+		if stale {
+			// Discard with a generic note — never render the stale recalled note
+			// (prior-session IDs/labels) into the switched session.
+			m.addItem(iSys, dim2("· /remember result discarded — session changed while searching"))
+			m.vp.GotoBottom()
+			break
+		}
+		if m.state != stateIdle {
+			// Degrade to a display note rather than silently dropping the result
+			// or starting a concurrent turn.
+			m.addItem(iSys, dim2(msg.RecalledNote))
+			m.vp.GotoBottom()
+			break
+		}
+		// Re-check workflow active at handling time (event-loop-safe, closes the
+		// TOCTOU where a workflow starts between search completion and this
+		// handler): the fold must not proceed under an active workflow, or
+		// app.Send will interleave the directive and defeat the strip.
+		if m.app.Workflow != nil {
+			m.addItem(iSys, dim2("· /remember: display only (workflow active)"))
+			if msg.RecalledNote != "" {
+				m.addItem(iSys, dim2(msg.RecalledNote))
+			}
+			m.vp.GotoBottom()
+			break
+		}
+		if m.searchActive {
+			m.searchExit(false)
+		}
+		// Show the visible user query (never the raw envelope) then a dim citation
+		// note, then start the turn.
+		m.addItem(iUser, "/remember "+msg.Query)
+		if msg.RecalledNote != "" {
+			m.addItem(iSys, dim2(msg.RecalledNote))
+		}
+		m.vp.GotoBottom()
+		var pair []tea.Cmd
+		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+			return AdaptCmd(agent.RunTurn(m.app, ctx, msg.UserText))
+		})
+		cmds = append(cmds, pair...)
+
 	case dotTickMsg:
 		// Re-arm only while busy; the tick self-terminates when the model is idle.
 		if m.state != stateIdle {

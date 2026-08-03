@@ -51,6 +51,22 @@ type AgentDoneMsg struct {
 // LearnTurnMsg tells the Update loop to start a /learn turn.
 type LearnTurnMsg struct{}
 
+// RememberTurnMsg tells the Update loop to start a /remember turn: fold the
+// recalled session-history envelope (UserText) into the model conversation and
+// trigger a conversational response. Query is the user's original search term
+// (shown as the visible user item); RecalledNote is a short, trusted, locally
+// generated summary of which sessions matched (rendered dim, never the raw
+// envelope). OriginChatID/OriginWorkspace are captured at search time so a
+// delayed result arriving after /new, /resume, or /handoff can be rejected
+// rather than folded into a switched session.
+type RememberTurnMsg struct {
+	Query           string
+	RecalledNote    string
+	UserText        string
+	OriginChatID    string
+	OriginWorkspace string
+}
+
 // TokRateMsg carries the live token/sec decode estimate.
 type TokRateMsg struct{ Tps float64 }
 

@@ -682,7 +682,10 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 	// stale system messages across turns. The block is clearly marked as
 	// untrusted data to mitigate prompt-injection from tainted entries.
 	// Retrieval failures are non-fatal — an empty string means no injection.
-	if memCtx := a.retrieveMemoryContext(ctx, userText); memCtx != "" {
+	// The search query is the envelope-stripped text: for a /remember turn this
+	// keeps memory retrieval keyed on the original query rather than the folded
+	// session-history envelope.
+	if memCtx := a.retrieveMemoryContext(ctx, stripRetrievalBlock(userText)); memCtx != "" {
 		stored = memCtx + "\n" + stored
 	}
 

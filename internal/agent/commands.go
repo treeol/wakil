@@ -428,19 +428,61 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 
 	case "/remember":
 		// /remember <query> searches prior session transcripts in the current
-		// workspace (current session excluded) and returns a display-only block
-		// of matching sessions with cited snippets. It runs in a Cmd closure
-		// because the first call lazily backfills the search index (I/O); the
-		// result is a note, never folded into Conv (cache-neutral).
+		// workspace (current session excluded). On a match it folds the recalled
+		// context into the model conversation and starts a turn (RememberTurnMsg),
+		// so wakil can respond conversationally — "gathered context… sure, we did
+		// this and that." With no match it returns a display-only note. It runs in
+		// a Cmd closure because the first call lazily backfills the search index
+		// (I/O).
 		query := strings.Join(fields[1:], " ")
+		// Snapshot session identity at INVOCATION time (on the event loop), NOT
+		// inside the async Cmd: if the user runs /new, /resume, or /handoff while
+		// the (up to 30s) search runs, Client.ChatID/SessionWorkspace mutate. The
+		// TUI guard must compare against these invocation-time values to reject a
+		// stale result that would otherwise fold into a switched session.
+		originChatID := app.Client.ChatID
+		originWorkspace := app.SessionWorkspace()
+		// Snapshot workflow-active state too: under an active workflow app.Send
+		// interleaves the directive between envelopes, defeating the strip; and
+		// reading app.Workflow from the async goroutine would race the event loop.
+		workflowActive := app.Workflow != nil
 		return true, false, func() Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			out, err := app.RememberSearch(ctx, query)
+			if strings.TrimSpace(query) == "" {
+				return SysNoteMsg{Text: "usage: /remember <query>"}
+			}
+			// Under an active workflow, app.Send interleaves the workflow directive
+			// between the memory envelope and the folded session envelope
+			// ([memory][directive][session][query]), which would defeat the
+			// contiguous feedback-loop strip and leave recalled content indexable.
+			// Degrade to the display-only path in that case (recall stays available
+			// without the risky fold). Uses the raw search so no live mutable App
+			// state (Client.ChatID / SessionWorkspace) is read from this goroutine.
+			if workflowActive {
+				results, err := app.rememberSearchRaw(ctx, query, originWorkspace, originChatID)
+				if err != nil {
+					return SysNoteMsg{Text: "remember: " + err.Error()}
+				}
+				if len(results) == 0 {
+					return SysNoteMsg{Text: fmt.Sprintf("no prior sessions matched %q (indexed sessions are searchable once their transcript is saved)", query)}
+				}
+				return SysNoteMsg{Text: formatRememberResults(results)}
+			}
+			results, err := app.rememberSearchRaw(ctx, query, originWorkspace, originChatID)
 			if err != nil {
 				return SysNoteMsg{Text: "remember: " + err.Error()}
 			}
-			return SysNoteMsg{Text: out}
+			if len(results) == 0 {
+				return SysNoteMsg{Text: fmt.Sprintf("no prior sessions matched %q (indexed sessions are searchable once their transcript is saved)", query)}
+			}
+			return RememberTurnMsg{
+				Query:           query,
+				RecalledNote:    formatRememberNote(results),
+				UserText:        buildRememberUserText(query, results),
+				OriginChatID:    originChatID,
+				OriginWorkspace: originWorkspace,
+			}
 		}
 
 	case "/resume":
