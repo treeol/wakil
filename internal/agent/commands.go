@@ -485,6 +485,76 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			}
 		}
 
+	case "/recall":
+		// /recall <chatID> [ordinal|start-end] fetches specific verbatim indexed
+		// turns from a user-named prior session and folds them into the
+		// conversation as an untrusted envelope (user-gated retrieval). Unlike
+		// /remember, it is invoked BY session ID (full or unique ShortID prefix),
+		// and the current session MAY be recalled (explicit target). Range is
+		// optional: bare ordinal, "start-end" (inclusive), or omitted for the whole
+		// session. It runs in a Cmd closure (lazy backfill + GetTurns I/O).
+		if len(fields) < 2 {
+			return true, false, note("usage: /recall <session-id> [ordinal|start-end]")
+		}
+		if len(fields) > 3 {
+			return true, false, note("usage: /recall <session-id> [ordinal|start-end]")
+		}
+		idArg := fields[1]
+		rangeArg := ""
+		if len(fields) >= 3 {
+			rangeArg = fields[2]
+		}
+		// Parse the range up front (cheap, deterministic) so malformed ranges fail
+		// immediately rather than after I/O.
+		from, to, err := parseRecallRange(rangeArg)
+		if err != nil {
+			return true, false, note("recall: " + err.Error())
+		}
+		// Invocation-time snapshot (event-loop safe) — do not read mutable App
+		// state from the async goroutine.
+		originChatID := app.Client.ChatID
+		originWorkspace := app.SessionWorkspace()
+		workflowActive := app.Workflow != nil
+		return true, false, func() Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			// Under an active workflow the fold is unsafe (Send interleaves the
+			// directive between envelopes, defeating the strip) — degrade to a
+			// display note.
+			if workflowActive {
+				chatID, err := app.recallResolveChatID(ctx, originWorkspace, idArg)
+				if err != nil {
+					return SysNoteMsg{Text: "recall: " + err.Error()}
+				}
+				turns, err := app.recallFetchTurns(ctx, chatID, originWorkspace, from, to)
+				if err != nil {
+					return SysNoteMsg{Text: "recall: " + err.Error()}
+				}
+				if len(turns) == 0 {
+					return SysNoteMsg{Text: "recall: no indexed turns for session " + ShortID(chatID) + " in that range"}
+				}
+				return SysNoteMsg{Text: formatRecallNote(chatID, turns, true) + "\n" + formatRecallTurns(turns)}
+			}
+			chatID, err := app.recallResolveChatID(ctx, originWorkspace, idArg)
+			if err != nil {
+				return SysNoteMsg{Text: "recall: " + err.Error()}
+			}
+			turns, err := app.recallFetchTurns(ctx, chatID, originWorkspace, from, to)
+			if err != nil {
+				return SysNoteMsg{Text: "recall: " + err.Error()}
+			}
+			if len(turns) == 0 {
+				return SysNoteMsg{Text: "recall: no indexed turns for session " + ShortID(chatID) + " in that range"}
+			}
+			return RecallTurnMsg{
+				ChatID:          chatID,
+				RecalledNote:    formatRecallNote(chatID, turns, true),
+				UserText:        buildRecallUserText(chatID, idArg, rangeArg, turns),
+				OriginChatID:    originChatID,
+				OriginWorkspace: originWorkspace,
+			}
+		}
+
 	case "/resume":
 		arg := ""
 		if len(fields) > 1 {

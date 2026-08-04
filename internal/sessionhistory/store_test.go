@@ -2,6 +2,7 @@ package sessionhistory
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -319,6 +320,141 @@ func TestSanitizeQuerySingleChar(t *testing.T) {
 	// Single-char tokens are dropped (noise), so a query of only "a b" is empty.
 	if got := sanitizeQuery("a b"); got != "" {
 		t.Errorf("expected empty for single-char tokens, got %q", got)
+	}
+}
+
+func TestGetTurnsRange(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	err := s.Index(ctx, input("abc", "/ws/a", []Turn{
+		{Ordinal: 0, Role: "user", Text: "request 0"},
+		{Ordinal: 0, Role: "assistant", Text: "answer 0"},
+		{Ordinal: 1, Role: "user", Text: "request 1"},
+		{Ordinal: 1, Role: "assistant", Text: "answer 1"},
+		{Ordinal: 2, Role: "user", Text: "request 2"},
+		{Ordinal: 2, Role: "assistant", Text: "answer 2"},
+	}))
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+
+	// Single ordinal.
+	turns, err := s.GetTurns(ctx, "abc", "/ws/a", 1, 1)
+	if err != nil {
+		t.Fatalf("get turns: %v", err)
+	}
+	if len(turns) != 2 || turns[0].Ordinal != 1 {
+		t.Errorf("single range 1..1 should return both turns of ordinal 1; got %+v", turns)
+	}
+
+	// Open-ended (whole session).
+	turns, err = s.GetTurns(ctx, "abc", "/ws/a", -1, -1)
+	if err != nil {
+		t.Fatalf("whole session: %v", err)
+	}
+	if len(turns) != 6 {
+		t.Errorf("whole session should return 6 turns; got %d", len(turns))
+	}
+	if turns[0].Ordinal != 0 || turns[len(turns)-1].Ordinal != 2 {
+		t.Errorf("deterministic order expected; got first=%d last=%d", turns[0].Ordinal, turns[len(turns)-1].Ordinal)
+	}
+}
+
+func TestGetTurnsWorkspaceScoped(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Index(ctx, input("s1", "/ws/a", []Turn{{Ordinal: 0, Role: "user", Text: "a-request"}})); err != nil {
+		t.Fatal(err)
+	}
+	// Different workspace must not see it (indistinguishable from missing).
+	turns, err := s.GetTurns(ctx, "s1", "/ws/b", -1, -1)
+	if err != nil {
+		t.Fatalf("wrong-workspace get: %v", err)
+	}
+	if len(turns) != 0 {
+		t.Errorf("wrong workspace must return no turns; got %d", len(turns))
+	}
+	// Empty workspace is fail-closed.
+	turns, err = s.GetTurns(ctx, "s1", "", -1, -1)
+	if err != nil || len(turns) != 0 {
+		t.Errorf("empty workspace should return nil, no error; got err=%v n=%d", err, len(turns))
+	}
+}
+
+func TestGetTurnsInvalidRange(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Index(ctx, input("s1", "/ws/a", []Turn{{Ordinal: 0, Role: "user", Text: "r"}})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetTurns(ctx, "s1", "/ws/a", 2, 1); err == nil {
+		t.Error("reversed range should return an error (invalid input)")
+	} else if !errors.Is(err, ErrInvalidRange) {
+		t.Errorf("expected ErrInvalidRange, got %v", err)
+	}
+}
+
+func TestGetTurnsOrderingMatchesInsertion(t *testing.T) {
+	// GetTurns ORDER BY t.id (insertion order). Index inserts turns in the order
+	// of the provided slice, so a slice with out-of-ordinal order must still
+	// round-trip in insertion order.
+	s := newTestStore(t)
+	ctx := context.Background()
+	// Deliberately non-ascending ordinals to prove the output follows insertion
+	// (id) order, not ordinal sort.
+	err := s.Index(ctx, input("s1", "/ws/a", []Turn{
+		{Ordinal: 2, Role: "user", Text: "third"},
+		{Ordinal: 0, Role: "user", Text: "first"},
+		{Ordinal: 1, Role: "user", Text: "second"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := s.GetTurns(ctx, "s1", "/ws/a", -1, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 3 {
+		t.Fatalf("want 3 turns, got %d", len(turns))
+	}
+	want := []string{"third", "first", "second"}
+	for i, w := range want {
+		if turns[i].Text != w {
+			t.Errorf("turns[%d] = %q, want %q (insertion order)", i, turns[i].Text, w)
+		}
+	}
+}
+
+func TestGetTurnsPartialOpenRanges(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Index(ctx, input("s1", "/ws/a", []Turn{
+		{Ordinal: 0, Role: "user", Text: "req0"},
+		{Ordinal: 1, Role: "user", Text: "req1"},
+		{Ordinal: 2, Role: "user", Text: "req2"},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	// Open upper bound.
+	turns, err := s.GetTurns(ctx, "s1", "/ws/a", 1, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 || turns[0].Ordinal != 1 {
+		t.Errorf("open upper (1,..) should return ordinals 1+ ; got %+v", turns)
+	}
+	// Open lower bound.
+	turns, err = s.GetTurns(ctx, "s1", "/ws/a", -1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 || turns[0].Ordinal != 0 {
+		t.Errorf("open lower (..,1) should return ordinals 0-1 ; got %+v", turns)
+	}
+	// Out-of-range request returns empty (not error).
+	turns, err = s.GetTurns(ctx, "s1", "/ws/a", 10, 20)
+	if err != nil || len(turns) != 0 {
+		t.Errorf("out-of-range ordinals should return empty, no error; got err=%v n=%d", err, len(turns))
 	}
 }
 

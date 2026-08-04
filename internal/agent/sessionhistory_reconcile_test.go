@@ -26,7 +26,7 @@ func TestReconcilePurgesDeletedSessions(t *testing.T) {
 	if err := os.Remove(sessionPath(s.ChatID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.reconcileHistory(context.Background()); err != nil {
+	if err := app.reconcileHistory(context.Background(), ws); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,7 +57,7 @@ func TestReconcileKeepsMalformedFileRow(t *testing.T) {
 	if err := os.WriteFile(sessionPath(s.ChatID), []byte("{ not valid json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.reconcileHistory(context.Background()); err != nil {
+	if err := app.reconcileHistory(context.Background(), ws); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,7 +129,7 @@ func TestReconcileIndexesNewSession(t *testing.T) {
 	}}
 	writeSessionFile(t, &s)
 
-	if err := app.reconcileHistory(context.Background()); err != nil {
+	if err := app.reconcileHistory(context.Background(), ws); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,7 +156,7 @@ func TestReconcileSkipsUnchanged(t *testing.T) {
 	}
 
 	// Second reconcile with identical hash must not error / churn.
-	if err := app.reconcileHistory(context.Background()); err != nil {
+	if err := app.reconcileHistory(context.Background(), ws); err != nil {
 		t.Fatal(err)
 	}
 	// Row still present and searchable.

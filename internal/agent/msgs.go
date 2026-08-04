@@ -67,6 +67,20 @@ type RememberTurnMsg struct {
 	OriginWorkspace string
 }
 
+// RecallTurnMsg tells the Update loop to fold a /recall turn into the
+// conversation: specific verbatim indexed turns from a user-named prior session,
+// framed as an untrusted envelope (UserText). The user invoked it by session ID,
+// so unlike /remember it is NOT display-only. OriginChatID/OriginWorkspace are
+// captured at invocation time so a delayed result arriving after /new, /resume,
+// or /handoff is rejected rather than folded into a switched session.
+type RecallTurnMsg struct {
+	ChatID          string // the full resolved chat_id of the recalled session
+	RecalledNote    string // short, trusted local note (rendered dim)
+	UserText        string // the folded untrusted envelope + query
+	OriginChatID    string
+	OriginWorkspace string
+}
+
 // TokRateMsg carries the live token/sec decode estimate.
 type TokRateMsg struct{ Tps float64 }
 

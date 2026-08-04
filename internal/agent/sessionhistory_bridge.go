@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -79,6 +80,7 @@ type SessionHistoryOpenable interface {
 	ListMeta(ctx context.Context, workspace string) ([]sessionhistory.IndexedMeta, error)
 	GetSummary(ctx context.Context, chatID string) (string, bool, error)
 	Search(ctx context.Context, query, workspace, excludeChatID string, limit int) ([]sessionhistory.Result, error)
+	GetTurns(ctx context.Context, chatID, workspace string, fromOrdinal, toOrdinal int) ([]sessionhistory.Turn, error)
 	Close() error
 }
 
@@ -235,11 +237,19 @@ func (a *App) indexSession(ctx context.Context, s Session, preserveGenerated boo
 // has a different source hash are re-ingested whole; sessions whose files have
 // been deleted are purged. Runs at recall time (bounded by the caller's
 // context — the /remember command supplies a timeout).
-func (a *App) reconcileHistory(ctx context.Context) error {
+//
+// ws is threaded explicitly (NOT derived from a.SessionWorkspace()) so callers
+// running in an async Cmd goroutine honor the invocation-time workspace snapshot
+// rather than whatever the event loop may have switched to mid-flight. Pass "" to
+// retain the old behavior of deriving from SessionWorkspace() (used by
+// synchronous callers on the event loop).
+func (a *App) reconcileHistory(ctx context.Context, ws string) error {
 	if a.SessionHistory == nil {
 		return errors.New("session history unavailable")
 	}
-	ws := a.SessionWorkspace()
+	if ws == "" {
+		ws = a.SessionWorkspace()
+	}
 	if ws == "" {
 		return nil // fail-closed: nothing to do without a workspace
 	}
@@ -312,7 +322,9 @@ func (a *App) rememberSearchRaw(ctx context.Context, query, ws, excludeChatID st
 		return nil, errors.New("no workspace — nothing to search")
 	}
 	// Lazy backfill/reconcile before searching (first recall builds the index).
-	if err := a.reconcileHistory(ctx); err != nil {
+	// Thread the invocation-time ws so a mid-flight workspace switch can't make
+	// the goroutine reconcile a different workspace.
+	if err := a.reconcileHistory(ctx, ws); err != nil {
 		// Non-fatal: still try the search with whatever is indexed.
 		fmt.Fprintf(a.Out, "session history: reconcile warning: %v\n", err)
 	}
@@ -518,6 +530,204 @@ func formatRememberResults(results []sessionhistory.Result) string {
 				break
 			}
 		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// recallByteCapRecall bounds the /recall fold envelope injected into context.
+// Reuses recallByteCap (the display-only block cap) as the fold bound — the
+// /recall path is user-gated and injects specific turns, so it is bounded the
+// same as a recall display to keep context growth conservative.
+const recallFoldByteCap = recallByteCap
+
+// recallResolveChatID resolves a user-supplied chat ID (full or unique ShortID
+// prefix) against the INDEXED sessions in the workspace. It returns the full
+// chat_id, or an error for no-match / ambiguous prefix. Reconciles lazily first
+// so sessions not yet indexed are candidates. Case-SENSITIVE (chat IDs are
+// lowercase hex UUIDs; an uppercase full ID is treated as a non-match in the
+// prefix branch too).
+func (a *App) recallResolveChatID(ctx context.Context, ws, id string) (string, error) {
+	if ws == "" {
+		return "", errors.New("no workspace — session history unavailable")
+	}
+	if id == "" {
+		return "", errors.New("missing session ID")
+	}
+	if a.SessionHistory == nil {
+		return "", errors.New("session history is unavailable (no workspace, or index open failed)")
+	}
+	// Lazy backfill/reconcile so the target session is indexed. Thread the
+	// invocation-time ws (async-goroutine discipline).
+	if err := a.reconcileHistory(ctx, ws); err != nil {
+		fmt.Fprintf(a.Out, "session history: reconcile warning: %v\n", err)
+	}
+	meta, err := a.SessionHistory.ListMeta(ctx, ws)
+	if err != nil {
+		return "", fmt.Errorf("list sessions: %w", err)
+	}
+	var matches []string
+	for _, m := range meta {
+		if m.ChatID == id {
+			return m.ChatID, nil // exact full match (case-sensitive)
+		}
+		if len(id) <= len(m.ChatID) && strings.HasPrefix(m.ChatID, id) {
+			matches = append(matches, m.ChatID)
+		}
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no indexed session matches %q", id)
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("session ID %q is ambiguous (%d matches); use a longer prefix or the full ID", id, len(matches))
+	}
+	return matches[0], nil
+}
+
+// recallFetchTurns fetches a concrete turn range from the index by full chat_id,
+// workspace-scoped (fail-closed). from/to follow GetTurns semantics (inclusive,
+// <0 = open). Returns the ordered turns.
+func (a *App) recallFetchTurns(ctx context.Context, chatID, ws string, from, to int) ([]sessionhistory.Turn, error) {
+	if a.SessionHistory == nil {
+		return nil, errors.New("session history is unavailable (no workspace, or index open failed)")
+	}
+	if ws == "" {
+		return nil, errors.New("no workspace — session history unavailable")
+	}
+	return a.SessionHistory.GetTurns(ctx, chatID, ws, from, to)
+}
+
+// buildRecallUserText folds recalled turns into a single untrusted envelope for
+// the /recall fold, framed with distinct markers and byte-capped. The trailing
+// instruction (a locally generated, trusted query naming the recalled session
+// and range) is placed at the END (context-then-question), matching the memory
+// and /remember conventions, so the leading-anchored stripRetrievalBlock strips
+// the envelope and leaves the instruction at index time.
+func buildRecallUserText(chatID, idArg, rangeArg string, turns []sessionhistory.Turn) string {
+	header := sessionRetrievalBlockHeader
+	marker := sessionRetrievalBlockEnd + "\n"
+	intro := "Recalled from session " + ShortID(chatID) + " (verbatim indexed turns):\n"
+
+	query := "Use the recalled context from session " + ShortID(chatID)
+	if rangeArg != "" {
+		query += " (turns " + rangeArg + ")"
+	}
+	query += " to inform your response. Summarize or act on it as relevant."
+
+	var b strings.Builder
+	b.WriteString(header)
+
+	h := len(header)
+	m := len(marker)
+	i := len(intro)
+	if h+m+i >= recallFoldByteCap-1 {
+		// Cap too small for header+intro+marker (should never happen) — return
+		// header+intro+marker alone rather than exceed the bound.
+		b.WriteString(intro)
+		b.WriteString(marker)
+		return b.String()
+	}
+	b.WriteString(intro)
+
+	remaining := recallFoldByteCap - h - m - i
+	query = truncateUTF8(query, remaining)
+	q := len(query)
+	bodyEnd := recallFoldByteCap - h - m - i - q
+
+	written := 0
+	for _, t := range turns {
+		role := "user"
+		switch t.Role {
+		case "assistant":
+			role = "a"
+		case "summary":
+			role = "summary"
+		}
+		text := neutralizeSessionMarker(stripControl(t.Text))
+		text = strings.ReplaceAll(text, "\n", " ")
+		prefix := fmt.Sprintf("  [#%d %s] ", t.Ordinal, role)
+		// Truncate the turn text so this line exactly fits the remaining body
+		// budget; this guarantees an oversized first turn still contributes a
+		// prefix (and the envelope never exceeds the cap).
+		text = truncateUTF8(text, bodyEnd-written-len(prefix)-1) // -1 for "\n"
+		b.WriteString(prefix)
+		b.WriteString(text)
+		b.WriteString("\n")
+		written += len(prefix) + len(text) + 1
+		if written >= bodyEnd {
+			break
+		}
+	}
+	b.WriteString(marker)
+	b.WriteString(query)
+	return b.String()
+}
+
+// formatRecallNote builds a short, trusted, locally-generated note naming the
+// recalled session + turn count (rendered dim; never the envelope content).
+func formatRecallNote(chatID string, turns []sessionhistory.Turn, full bool) string {
+	n := len(turns)
+	if n == 0 {
+		return "· recalled session " + ShortID(chatID) + " (no turns in range)"
+	}
+	rng := fmt.Sprintf("#%d", turns[0].Ordinal)
+	if n > 1 {
+		rng += "-#" + fmt.Sprintf("%d", turns[n-1].Ordinal)
+	}
+	if full {
+		return fmt.Sprintf("· recalled session %s, turns %s (%d turns)", ShortID(chatID), rng, n)
+	}
+	return fmt.Sprintf("· recalled session %s, turns %s", ShortID(chatID), rng)
+}
+
+// parseRecallRange parses a /recall range argument into an inclusive [from,to]
+// pair of turn ordinals. Empty arg -> whole session (open both ends, -1).
+// "N" -> single ordinal N..N. "A-B" -> inclusive A..B. Out-of-range/non-numeric
+// args are rejected. Negative ordinals are invalid (ordinals are >= 0 in the
+// index).
+func parseRecallRange(arg string) (from, to int, err error) {
+	if strings.TrimSpace(arg) == "" {
+		return -1, -1, nil // whole session
+	}
+	if strings.Contains(arg, "-") {
+		parts := strings.SplitN(arg, "-", 2)
+		f, ferr := strconv.Atoi(strings.TrimSpace(parts[0]))
+		t, terr := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if ferr != nil || terr != nil || f < 0 || t < 0 {
+			return 0, 0, fmt.Errorf("invalid range %q (use ordinal or start-end)", arg)
+		}
+		if t < f {
+			return 0, 0, fmt.Errorf("invalid range %q (end < start)", arg)
+		}
+		return f, t, nil
+	}
+	n, nerr := strconv.Atoi(strings.TrimSpace(arg))
+	if nerr != nil || n < 0 {
+		return 0, 0, fmt.Errorf("invalid ordinal %q", arg)
+	}
+	return n, n, nil
+}
+
+// formatRecallTurns renders recalled turns as a display-only block (used in the
+// workflow-degraded path where no fold happens). Control-stripped, marker-
+// neutralized, bounded to recallByteCap.
+func formatRecallTurns(turns []sessionhistory.Turn) string {
+	var b strings.Builder
+	for _, t := range turns {
+		role := "user"
+		switch t.Role {
+		case "assistant":
+			role = "a"
+		case "summary":
+			role = "summary"
+		}
+		text := neutralizeSessionMarker(stripControl(t.Text))
+		text = strings.ReplaceAll(text, "\n", " ")
+		line := fmt.Sprintf("  [#%d %s] %s\n", t.Ordinal, role, text)
+		if b.Len()+len(line) >= recallByteCap {
+			b.WriteString("  …")
+			break
+		}
+		b.WriteString(line)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

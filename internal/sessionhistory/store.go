@@ -351,6 +351,54 @@ func (s *Store) ListMeta(ctx context.Context, workspace string) ([]IndexedMeta, 
 	return out, rows.Err()
 }
 
+// GetTurns returns the indexed turns of one session in the given workspace whose
+// ordinals fall in the inclusive range [fromOrdinal, toOrdinal], in deterministic
+// insertion order (ORDER BY turns.id).
+//
+// Range semantics: fromOrdinal < 0 means open at the start (0); toOrdinal < 0
+// means open at the end (no upper bound). A reversed range (both bounds
+// nonnegative and from > to) returns ErrInvalidRange. The JOIN on sessions
+// enforces workspace fail-closed scoping, so a wrong-workspace chatID is
+// indistinguishable from a missing one (returns empty, not an error). Empty
+// workspace returns nil (fail-closed).
+func (s *Store) GetTurns(ctx context.Context, chatID, workspace string, fromOrdinal, toOrdinal int) ([]Turn, error) {
+	if workspace == "" {
+		return nil, nil // fail-closed: empty workspace is never global
+	}
+	if toOrdinal >= 0 && fromOrdinal >= 0 && toOrdinal < fromOrdinal {
+		return nil, ErrInvalidRange
+	}
+
+	query := `SELECT t.ordinal, t.role, t.text
+	          FROM turns t
+	          JOIN sessions sess ON sess.chat_id = t.chat_id
+	          WHERE t.chat_id = ? AND sess.workspace = ?
+	            AND (? < 0 OR t.ordinal >= ?)
+	            AND (? < 0 OR t.ordinal <= ?)
+	          ORDER BY t.id`
+
+	rows, err := s.db.QueryContext(ctx, query, chatID, workspace,
+		fromOrdinal, fromOrdinal, toOrdinal, toOrdinal)
+	if err != nil {
+		return nil, fmt.Errorf("sessionhistory: get turns: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Turn
+	for rows.Next() {
+		var t Turn
+		if err := rows.Scan(&t.Ordinal, &t.Role, &t.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ErrInvalidRange is returned by GetTurns when a requested turn range is
+// malformed (reversed), distinguishing invalid input from a missing session.
+var ErrInvalidRange = errors.New("sessionhistory: invalid turn range")
+
 // ─── Search ────────────────────────────────────────────────────────────────
 
 // Search returns up to limit sessions from the given workspace whose indexed

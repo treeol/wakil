@@ -402,6 +402,44 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		})
 		cmds = append(cmds, pair...)
 
+	case agent.RecallTurnMsg:
+		// /recall fold-into-conversation: user-gated verbatim prior-session turn
+		// retrieval. Mirrors RememberTurnMsg's guards (origin + idle-state) so a
+		// delayed result is not folded into a switched session or concurrent turn.
+		stale := (msg.OriginChatID != "" && msg.OriginChatID != m.app.Client.ChatID) ||
+			(msg.OriginWorkspace != "" && msg.OriginWorkspace != m.app.SessionWorkspace())
+		if stale {
+			m.addItem(iSys, dim2("· /recall result discarded — session changed while searching"))
+			m.vp.GotoBottom()
+			break
+		}
+		if m.state != stateIdle {
+			m.addItem(iSys, dim2("· /recall: busy — display only"))
+			if msg.RecalledNote != "" {
+				m.addItem(iSys, dim2(msg.RecalledNote))
+			}
+			m.vp.GotoBottom()
+			break
+		}
+		if m.app.Workflow != nil {
+			m.addItem(iSys, dim2("· /recall: display only (workflow active)"))
+			if msg.RecalledNote != "" {
+				m.addItem(iSys, dim2(msg.RecalledNote))
+			}
+			m.vp.GotoBottom()
+			break
+		}
+		if m.searchActive {
+			m.searchExit(false)
+		}
+		m.addItem(iSys, dim2(msg.RecalledNote))
+		m.vp.GotoBottom()
+		var pair []tea.Cmd
+		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
+			return AdaptCmd(agent.RunTurn(m.app, ctx, msg.UserText))
+		})
+		cmds = append(cmds, pair...)
+
 	case dotTickMsg:
 		// Re-arm only while busy; the tick self-terminates when the model is idle.
 		if m.state != stateIdle {
