@@ -71,6 +71,30 @@ type EndpointConfig struct {
 	AppCategories *string `json:"app_categories,omitempty"`
 }
 
+// OutputMode is the typed TUI verbosity mode. A named type (not a raw string)
+// keeps validation, rendering signatures, and JSON parsing consistent and avoids
+// scattered literals.
+type OutputMode string
+
+const (
+	// OutputModeDebug shows every conversation item, including transient
+	// diagnostic notes and the live reasoning body. Default.
+	OutputModeDebug OutputMode = "debug"
+	// OutputModeSimple hides transient diagnostic notes and the live reasoning
+	// body so only the most important info is shown (user prompts, final
+	// answers, errors, confirmations, and other actionable/system notes).
+	OutputModeSimple OutputMode = "simple"
+)
+
+// OutputModeIsValid reports whether v is a known output mode.
+func OutputModeIsValid(v OutputMode) bool {
+	switch v {
+	case OutputModeDebug, OutputModeSimple:
+		return true
+	}
+	return false
+}
+
 // Config is resolved with precedence: defaults < config file < env < flags.
 // base_url takes precedence over host+port; if only host (and optionally port)
 // are set, the URL is constructed as http://{host}:{port}.
@@ -97,6 +121,11 @@ type Config struct {
 	APIKey       string `json:"api_key"` // sent as "Authorization: Bearer <key>"
 	Model        string `json:"model"`
 	ExecMode     string `json:"exec_mode"`               // "docker" (default) | "direct"
+	// OutputMode selects TUI verbosity: "debug" (default) shows all conversation
+	// items including diagnostic notes; "simple" hides transient diagnostic notes
+	// and the live reasoning body so only the most important info is shown.
+	// Headless (`wakil run`) never consults this field.
+	OutputMode OutputMode `json:"output_mode,omitempty"`
 	Image        string `json:"image"`                   // container image for docker mode
 	WorkDir      string `json:"work_dir"`                // working dir inside the container
 	HostWorkDir  string `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
@@ -580,6 +609,7 @@ func DefaultConfig() Config {
 	return Config{
 		Model:                   "ilm",
 		ExecMode:                "docker",
+		OutputMode:              OutputModeDebug,
 		Image:                   "wakil-dev",
 		DockerSocket:            false,
 		DockerMemory:            "4g",
@@ -745,6 +775,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.Model, "WAKIL_MODEL")
 	envStr(&cfg.ExecMode, "ILM_EXEC_MODE")
 	envStr(&cfg.ExecMode, "WAKIL_EXEC_MODE")
+	envStr((*string)(&cfg.OutputMode), "WAKIL_OUTPUT_MODE")
 	envStr(&cfg.Image, "ILM_CONTAINER_IMAGE")
 	envStr(&cfg.Image, "WAKIL_IMAGE")
 	envStr(&cfg.WorkDir, "ILM_WORKDIR")
@@ -773,6 +804,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key (sent as Bearer token)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "execution mode: docker|direct")
+	fs.StringVar((*string)(&cfg.OutputMode), "output-mode", string(cfg.OutputMode), "TUI output mode: debug|simple")
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "container image (docker mode)")
 	fs.StringVar(&cfg.AttachImage, "attach-image", cfg.AttachImage, "path to an image file to attach to the first message (png, jpeg, gif, webp; comma-separate for multiple)")
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "working directory inside the container")
@@ -927,6 +959,12 @@ func LoadConfig(argv []string) (Config, error) {
 	// supplied via the config file, env, or flags.
 	if cfg.AgentPromptPath == "" && cfgPath != "" {
 		cfg.AgentPromptPath = filepath.Join(filepath.Dir(cfgPath), "agent.txt")
+	}
+
+	// Normalize an explicitly-empty output_mode to the debug default (e.g. a
+	// config file writing ""). Guarded by OutputModeIsValid in validateEnums.
+	if cfg.OutputMode == "" {
+		cfg.OutputMode = OutputModeDebug
 	}
 
 	if err := validateEnums(cfg); err != nil {
@@ -1248,6 +1286,11 @@ func validateEnums(cfg Config) error {
 	case "", "every-step", "on-deviation", "phases-only":
 	default:
 		return fmt.Errorf("wf_oracle_mode must be one of: every-step, on-deviation, phases-only (got %q)", cfg.WFOracleMode)
+	}
+	switch cfg.OutputMode {
+	case OutputModeDebug, OutputModeSimple:
+	default:
+		return fmt.Errorf("output_mode must be one of: debug, simple (got %q)", cfg.OutputMode)
 	}
 	switch cfg.SubagentBackend {
 	case "", "inherit", "default":

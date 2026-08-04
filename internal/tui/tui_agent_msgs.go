@@ -34,13 +34,13 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 
 	case agent.StreamChunkMsg:
 		// First content delta after reasoning: collapse the thinking block to a
-		// single committed iSys line and clear the live reasoning buffer.
+		// single committed iDiag line and clear the live reasoning buffer.
 		if m.reasoning.Len() > 0 && !m.reasoningDone {
 			toks := m.reasoning.Len() / 4
 			m.reasoning.Reset()
 			m.reasoningDone = true
 			m.reasoningExpanded = false
-			m.addItem(iSys, dim2(sprint("· thought (~%d tokens)", toks)))
+			m.addItem(iDiag, dim2(sprint("· thought (~%d tokens)", toks)))
 		}
 		m.streaming.WriteString(msg.Text)
 		m.refreshViewport()
@@ -114,7 +114,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// (e.g. tool call only, cancellation). Show the collapsed thought if any.
 		if m.reasoning.Len() > 0 {
 			toks := m.reasoning.Len() / 4
-			m.addItem(iSys, dim2(sprint("· thought (~%d tokens)", toks)))
+			m.addItem(iDiag, dim2(sprint("· thought (~%d tokens)", toks)))
 			m.reasoning.Reset()
 		}
 		m.reasoningDone = false
@@ -207,7 +207,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.CompactedMsg:
-		m.addItem(iSys, dim2("· compacted earlier turns"))
+		m.addItem(iDiag, dim2("· compacted earlier turns"))
 
 	case agent.SubagentStartMsg:
 		// Which tab is the user currently viewing? 0 = main. Tracked by n so it

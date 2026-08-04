@@ -8,6 +8,7 @@ import (
 	"time"
 
 	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 
@@ -104,7 +105,8 @@ type itemKind int8
 const (
 	iUser itemKind = iota // user turn
 	iAsst                 // assistant response (may include tool result lines)
-	iSys                  // system notes, confirm prompts, approve/decline
+	iSys                  // actionable system notes: errors, confirms, warnings, consent, workflow state
+	iDiag                 // transient diagnostic notes: collapsed-thought lines, compaction telemetry
 )
 
 // convItem is one committed (non-streaming) conversation entry.
@@ -125,6 +127,11 @@ type tuiModel struct {
 	app        *agent.App
 	cancel     context.CancelFunc
 	cancelling bool // true after first Ctrl+C, until agent.AgentDoneMsg
+
+	// outputMode is snapshotted once at construction (startup-only). It is
+	// immutable for the life of the model — see NewTUIModel. Kept immutable so
+	// the prefix/convItem render caches need not be mode-keyed.
+	outputMode config.OutputMode
 
 	// queuedPrompts is a FIFO of plain-text prompts submitted mid-turn. Flushes
 	// as the next user turn(s) when the model is truly idle (no workflow
@@ -360,6 +367,17 @@ func tabIndexByN(tabs []*subTab, n int) int {
 	return -1
 }
 
+// resolveOutputMode reads the startup output mode from the app config, guarding
+// against a nil app or an unset/zero OutputMode (hand-built configs bypass
+// LoadConfig's normalization). The mode is snapshotted once at construction and
+// never changes for the life of the model.
+func resolveOutputMode(app *agent.App) config.OutputMode {
+	if app != nil && config.OutputModeIsValid(app.Cfg.OutputMode) {
+		return app.Cfg.OutputMode
+	}
+	return config.OutputModeDebug
+}
+
 func NewTUIModel(app *agent.App) tuiModel {
 	ta := textarea.New()
 	ta.Placeholder = "type a task… (Enter=send, Shift+Enter=newline, /help)"
@@ -393,6 +411,7 @@ func NewTUIModel(app *agent.App) tuiModel {
 	}
 	return tuiModel{
 		app:        app,
+		outputMode: resolveOutputMode(app),
 		vp:         vp,
 		ta:         ta,
 		state:      stateIdle,
@@ -1412,10 +1431,21 @@ func (m *tuiModel) refreshViewport() {
 
 	// --- committed prefix ---
 	if m.prefixDirty || m.prefixW != w {
+		hideDiag := m.outputMode == config.OutputModeSimple
 		var sb strings.Builder
+		wroteVisible := false
 		for i := range *m.items {
 			item := &(*m.items)[i]
-			if i > 0 && item.kind == iUser {
+			// Simple mode omits transient diagnostic notes at render time. Items
+			// are still retained in *m.items so the transcript stays complete and
+			// a future runtime toggle can reveal them losslessly (Phase 2).
+			if hideDiag && item.kind == iDiag {
+				continue
+			}
+			// The separator precedes a user item only when something was already
+			// rendered above it — use a rendered-index flag, not the storage index,
+			// so leading hidden diagnostics don't leave a dangling separator.
+			if wroteVisible && item.kind == iUser {
 				sb.WriteString(dim2(strings.Repeat("─", w)) + "\n")
 			}
 			if item.cache == "" || item.cacheW != w {
@@ -1424,6 +1454,7 @@ func (m *tuiModel) refreshViewport() {
 			}
 			sb.WriteString(item.cache)
 			sb.WriteByte('\n')
+			wroteVisible = true
 		}
 		m.prefixStyled = sb.String()
 		m.prefixPlain = strings.Split(ansi.Strip(m.prefixStyled), "\n")
@@ -1434,13 +1465,17 @@ func (m *tuiModel) refreshViewport() {
 	// --- streaming tail ---
 	// During extended thinking: render live reasoning (dim/italic) above any
 	// in-flight content. Once reasoningDone is set the reasoning has already been
-	// committed as an iSys item; only content remains in m.streaming.
+	// committed as an iSys item; only content remains in m.streaming. In simple
+	// mode the live reasoning BODY is suppressed (only the status line shows
+	// "reasoning"); the committed collapsed "· thought" line is an iDiag item and
+	// is hidden by the prefix filter. The answer streaming tail always shows.
 	var tailStyled string
 	var tailPlain []string
-	liveReasoning := m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone
-	if liveReasoning || m.streaming.Len() > 0 {
+	showLiveReasoning := m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone &&
+		m.outputMode != config.OutputModeSimple
+	if showLiveReasoning || m.streaming.Len() > 0 {
 		var sb strings.Builder
-		if liveReasoning {
+		if showLiveReasoning {
 			sb.WriteString(renderReasoning(m.reasoning.String(), w, m.reasoningExpanded))
 		}
 		if m.streaming.Len() > 0 {
@@ -1495,7 +1530,7 @@ func renderItem(item convItem, w int) string {
 		// code blocks). glamour handles wrapping to w itself.
 		return renderMarkdown(item.text, w)
 
-	default: // iSys
+	default: // iSys (actionable notes) and iDiag (diagnostic notes, pre-styled)
 		return wrapAnsi(item.text, w)
 	}
 }
