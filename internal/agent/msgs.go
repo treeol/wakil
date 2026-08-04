@@ -195,13 +195,14 @@ type MCPReconnectedMsg struct {
 // NOT rotate the conversation. Note: the old session may still have been
 // saved to disk before the failure, depending on which step failed.
 type HandoffMsg struct {
-	ContinuationPrompt string // the prompt to seed the new session's first turn (proceed mode)
-	Summary            string // the raw handoff summary (displayed + injected in stop mode)
-	Proceed            bool   // true = auto-start continuation turn; false = stop and wait
-	Note               string // short human-readable status (old ID, warnings)
-	OldChatID          string // the previous session's chat_id (for /resume)
-	NewChatID          string // the new session's chat_id (preallocated)
-	Err                error  // non-nil = handoff failed, do not rotate
+	ContinuationPrompt string         // the prompt to seed the new session's first turn (proceed mode)
+	Summary            string         // coarse handoff summary (displayed in stop mode)
+	Payload            HandoffPayload // full recency-split payload (coarse + tail) for stop-mode context
+	Proceed            bool           // true = auto-start continuation turn; false = stop and wait
+	Note               string         // short human-readable status (old ID, warnings)
+	OldChatID          string         // the previous session's chat_id (for /resume)
+	NewChatID          string         // the new session's chat_id (preallocated)
+	Err                error          // non-nil = handoff failed, do not rotate
 }
 
 // WFFinalReviewMsg triggers the closing oracle check.

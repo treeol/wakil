@@ -607,9 +607,11 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			// Inject the summary as a pinned system message wrapped in the
 			// untrusted-delimiter framing (same mitigation as proceed mode)
 			// so the next user turn has the handoff context without
-			// auto-starting a turn. Guard against empty summaries.
-			if strings.TrimSpace(msg.Summary) != "" {
-				handoffCtx := agent.BuildHandoffContext(msg.Summary, msg.OldChatID, m.app.SessionWorkspace())
+			// auto-starting a turn. Uses the full payload (coarse + tail) so
+			// stop mode carries the same recency-faithful context as proceed
+			// mode. Guard against empty payloads.
+			if msg.Payload.CoarseSummary != "" || msg.Payload.RecentTail != "" {
+				handoffCtx := agent.BuildHandoffContext(msg.Payload, msg.OldChatID, m.app.SessionWorkspace())
 				m.app.Conv = append(m.app.Conv, proxy.Message{
 					Role:    "system",
 					Content: agent.StrPtr(handoffCtx),
