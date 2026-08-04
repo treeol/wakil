@@ -784,5 +784,3 @@ image, SELinux, MCP paths) — see
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
-
-Support development at <https://rete-it.ch/donation.html>.
