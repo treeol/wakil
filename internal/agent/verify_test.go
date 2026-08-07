@@ -316,6 +316,9 @@ func (e *erroringExecutor) KillPgid(ctx context.Context, pgid, sig int) error {
 func (e *erroringExecutor) IsProcessAlive(ctx context.Context, pid int) bool {
 	return e.base.IsProcessAlive(ctx, pid)
 }
+func (e *erroringExecutor) IsProcessGroupAlive(ctx context.Context, pgid int) bool {
+	return e.base.IsProcessGroupAlive(ctx, pgid)
+}
 func (e *erroringExecutor) ReadFileTail(ctx context.Context, p string, m int64) (string, error) {
 	return e.base.ReadFileTail(ctx, p, m)
 }

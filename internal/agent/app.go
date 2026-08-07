@@ -1887,7 +1887,7 @@ func (a *App) StopAllBackgroundProcs() {
 		if entry.generation != a.Exec.Generation() {
 			continue
 		}
-		if a.Exec.IsProcessAlive(bg, entry.pid) {
+		if a.Exec.IsProcessGroupAlive(bg, entry.pgid) {
 			_ = a.Exec.KillPgid(bg, entry.pgid, 15) // SIGTERM
 			live = append(live, liveProc{entry: entry, done: entry.done})
 		}
@@ -1914,7 +1914,7 @@ func (a *App) StopAllBackgroundProcs() {
 		if timedOut {
 			// Force-kill any processes that are still alive.
 			for _, p := range live {
-				if a.Exec.IsProcessAlive(bg, p.entry.pid) {
+				if a.Exec.IsProcessGroupAlive(bg, p.entry.pgid) {
 					_ = a.Exec.KillPgid(bg, p.entry.pgid, 9) // SIGKILL
 				}
 			}

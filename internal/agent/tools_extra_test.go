@@ -298,6 +298,9 @@ func TestBgCapEnforced(t *testing.T) {
 type aliveExecutorImpl struct{ *fakeExecutor }
 
 func (a *aliveExecutorImpl) IsProcessAlive(_ context.Context, pid int) bool { return true }
+func (a *aliveExecutorImpl) IsProcessGroupAlive(_ context.Context, pgid int) bool {
+	return a.IsProcessAlive(context.Background(), pgid)
+}
 
 // selectiveAliveExec reports alive only for PIDs in the set.
 type selectiveAliveExec struct {
@@ -307,6 +310,9 @@ type selectiveAliveExec struct {
 
 func (s *selectiveAliveExec) IsProcessAlive(_ context.Context, pid int) bool {
 	return s.alivePids[pid]
+}
+func (s *selectiveAliveExec) IsProcessGroupAlive(_ context.Context, pgid int) bool {
+	return s.alivePids[pgid]
 }
 
 // logTailExec returns a fixed string from ReadFileTail, simulating a log file.
@@ -360,7 +366,9 @@ func TestGenerationStaleness(t *testing.T) {
 
 // ── Item 1: read_process_log 8 KB hard cap ────────────────────────────────────
 
-// TestReadProcessLogCapEnforced verifies:
+// TestReadProcessLogCapEnforced updates for card #121 follow-up: exited
+// processes now report exit status in the header — "exited (code unknown)"
+// for logs without the wrapper marker (fake executor logs have none). verifies:
 //   - total returned payload never exceeds 8 KB + 256-byte header overhead
 //   - the status-line prefix is present
 //   - content is taken from the tail of the log, not the head
@@ -390,8 +398,10 @@ func TestReadProcessLogCapEnforced(t *testing.T) {
 	if len(result.text) > maxTotal {
 		t.Errorf("result len=%d exceeds hard cap %d", len(result.text), maxTotal)
 	}
-	// Status-line prefix must be present.
-	wantPrefix := "[bg1 srv] exited pid=42\n"
+	// Status-line prefix must be present. Card #121 follow-up: exited
+	// processes carry the exit status in the header; the fake log has no
+	// wrapper marker, so the honest status is "code unknown".
+	wantPrefix := "[bg1 srv] exited (code unknown) pid=42\n"
 	if !strings.HasPrefix(result.text, wantPrefix) {
 		t.Errorf("missing status-line prefix; got prefix %q", result.text[:min(len(wantPrefix)+10, len(result.text))])
 	}

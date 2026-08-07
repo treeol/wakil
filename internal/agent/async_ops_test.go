@@ -188,12 +188,17 @@ func TestAsyncEnvelopeOpCap(t *testing.T) {
 }
 
 // Total-envelope overflow: ops that don't fit are re-enqueued and delivered on
-// the NEXT drain — nothing is lost, effects committed exactly once.
+// LATER drains — nothing is lost, effects committed exactly once. Drains run
+// until quiescence (bounded) instead of a hardcoded count: each ~8KB op fills
+// the 16KB envelope alone, so N ops need N drains regardless of the random
+// inbox order produced by racing workers (previously a flaky fixed-3-drain
+// assertion).
 func TestAsyncEnvelopeTotalCapRequeues(t *testing.T) {
 	a := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	a.Costs = proxy.NewCostTracker()
-	// Four ops of ~5k each: the first few fit the 16k envelope, the rest wait.
-	for i := 0; i < 4; i++ {
+	const nOps = 4
+	// Four ops of ~8k each: one fits per 16k envelope, the rest wait.
+	for i := 0; i < nOps; i++ {
 		n := i
 		usage := []counselUsageRec{{Model: fmt.Sprintf("m-%d", n), Usage: counsel.OracleUsage{InputTokens: 1, OutputTokens: 1}}}
 		if _, reason := a.enqueueAsyncOp("mashura__review", fmt.Sprintf("big-%d", n), func() (string, []counselUsageRec, []string, error) {
@@ -203,22 +208,35 @@ func TestAsyncEnvelopeTotalCapRequeues(t *testing.T) {
 		}
 	}
 	waitAsyncOps(t, a)
-	env1 := a.drainAsyncInbox()
-	env2 := a.drainAsyncInbox()
-	env3 := a.drainAsyncInbox()
-	total := env1 + env2 + env3
-	for i := 0; i < 4; i++ {
-		if !strings.Contains(total, fmt.Sprintf("op-%d", i)) {
-			t.Fatalf("op-%d lost across drains", i)
+
+	var total strings.Builder
+	drains := 0
+	for drains < nOps+2 { // bounded: enough drains for one-op-per-envelope plus slack
+		env := a.drainAsyncInbox()
+		if env == "" {
+			break
+		}
+		if drains == 0 {
+			if !strings.Contains(env, "Async task results") {
+				t.Fatalf("first drain not an envelope: %q", env[:80])
+			}
+		}
+		total.WriteString(env)
+		drains++
+	}
+	got := total.String()
+	for i := 0; i < nOps; i++ {
+		if !strings.Contains(got, fmt.Sprintf("op-%d", i)) {
+			t.Fatalf("op-%d lost across %d drains", i, drains)
 		}
 	}
-	if env1 == "" {
-		t.Fatal("first drain empty despite pending completions")
+	if drains < 2 {
+		t.Fatalf("expected multi-drain delivery (one ~8KB op per 16KB envelope), got %d drain(s)", drains)
 	}
-	// Cost rows: 4 models, exactly one call each.
+	// Cost rows: 4 models, exactly one call each (committed even before delivery).
 	_, rows := a.Costs.Snapshot()
-	if len(rows) != 4 {
-		t.Fatalf("expected 4 cost rows, got %d", len(rows))
+	if len(rows) != nOps {
+		t.Fatalf("expected %d cost rows, got %d", nOps, len(rows))
 	}
 	for _, r := range rows {
 		if r.Calls != 1 {

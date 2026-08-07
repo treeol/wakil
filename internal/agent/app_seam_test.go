@@ -636,6 +636,9 @@ type killTrackingExec struct {
 func (k *killTrackingExec) IsProcessAlive(_ context.Context, pid int) bool {
 	return k.alivePids[pid]
 }
+func (k *killTrackingExec) IsProcessGroupAlive(_ context.Context, pgid int) bool {
+	return k.alivePids[pgid]
+}
 
 func (k *killTrackingExec) KillPgid(_ context.Context, pgid, sig int) error {
 	if k.killedPids == nil {

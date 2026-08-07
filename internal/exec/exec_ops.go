@@ -307,10 +307,13 @@ func (e *DirectExecutor) KillPgid(_ context.Context, pgid, sig int) error {
 }
 
 func (d *DockerExecutor) IsProcessAlive(ctx context.Context, pid int) bool {
-	// kill -0 returns 0 for zombies too, so check /proc state directly.
-	// A zombie (state Z) has exited — treat as not alive.
-	out, err := d.execCtx(ctx, false, "sh", "-c",
-		fmt.Sprintf("ps -o stat= -p %d 2>/dev/null", pid))
+	// Read /proc/<pid>/stat directly instead of `ps -o stat=` — busybox ps
+	// does not reliably support -o and would make live processes look dead
+	// (same hazard class the group probe avoids). Strip comm (${s##*) }),
+	// then $1 is the state. A zombie (state Z) has exited — treat as not
+	// alive, matching the pre-existing ps-based semantics.
+	script := fmt.Sprintf(`s=$(cat /proc/%d/stat 2>/dev/null) || exit 1; rest=${s##*) }; set -f; set -- $rest; set +f; [ "$#" -ge 1 ] || exit 1; printf '%%s' "$1"`, pid)
+	out, err := d.execCtx(ctx, false, "sh", "-c", script)
 	if err != nil {
 		return false // docker exec failed (container may be gone)
 	}
@@ -320,6 +323,54 @@ func (d *DockerExecutor) IsProcessAlive(ctx context.Context, pid int) bool {
 
 func (e *DirectExecutor) IsProcessAlive(_ context.Context, pid int) bool {
 	return syscall.Kill(pid, 0) == nil
+}
+
+// IsProcessGroupAlive reports whether any process in the group is alive
+// (kill -0 on the negated pgid). See the Executor interface doc for why
+// kill_process/shutdown must check the GROUP, not the leader pid.
+func (e *DirectExecutor) IsProcessGroupAlive(_ context.Context, pgid int) bool {
+	return syscall.Kill(-pgid, 0) == nil
+}
+
+// IsProcessGroupAlive for the container: scans /proc directly — no ps or awk
+// dependency (busybox `ps -o` support is build-dependent and `stat` is not a
+// POSIX column; a ps-based probe would FAIL OPEN on alpine-style images and
+// make every live process look dead). For each /proc/<pid>/stat: strip the
+// comm field (everything up to the last ")" — comm may contain spaces/parens),
+// then field 3 of the remainder is pgrp and field 1 is state. A non-zombie
+// member of the group counts as alive. Zombies are excluded (consistent with
+// IsProcessAlive) — nobody inside the container reaps them, so counting them
+// would keep finished groups "alive" forever and the reaper would never fire.
+// A docker-exec failure returns false (parity with IsProcessAlive — the
+// container being gone means the processes are gone too).
+// procGroupAliveScript builds the POSIX-sh probe that reports "yes" iff the
+// process group pgid has a live (non-zombie) member. Exported-shape for a
+// host-side test: it is the EXACT script the docker executor runs, and it is
+// also valid on any Linux host with /proc.
+//
+// Hardening (review): `set -f` around `set --` disables pathname expansion of
+// the parsed fields (post-comm fields are numeric/state chars today, but the
+// guard is explicit); `[ "$#" -ge 3 ]` rejects truncated reads instead of
+// comparing an empty $3. Glob expansion in the for-header happens before the
+// body's `set -f`, so the /proc scan itself still works.
+func procGroupAliveScript(pgid int) string {
+	return fmt.Sprintf(`for f in /proc/[0-9]*/stat; do s=$(cat "$f" 2>/dev/null) || continue; rest=${s##*) }; set -f; set -- $rest; set +f; [ "$#" -ge 3 ] || continue; [ "$3" = "%d" ] || continue; case "$1" in Z) ;; *) echo yes; exit 0;; esac; done`, pgid)
+}
+
+// IsProcessGroupAlive for the container: scans /proc directly — no ps or awk
+// dependency (busybox `ps -o` support is build-dependent and `stat` is not a
+// POSIX column; a ps-based probe would FAIL OPEN on alpine-style images and
+// make every live process look dead). For each /proc/<pid>/stat: strip the
+// comm field (${s##*) } cuts through the LAST ") " — comm is the only string
+// field; later fields are numeric/single-char), then $1=state, $3=pgrp. A
+// non-zombie member of the group counts as alive. Zombies are excluded
+// (consistent with IsProcessAlive) — inside many containers nothing reaps
+// them, so counting them would keep finished groups "alive" forever and the
+// reaper would never fire. A docker-exec failure returns false (parity with
+// IsProcessAlive — the container being gone means the processes are gone too).
+func (d *DockerExecutor) IsProcessGroupAlive(ctx context.Context, pgid int) bool {
+	out, err := d.execCtx(ctx, false, "sh", "-c", procGroupAliveScript(pgid))
+	return err == nil && strings.TrimSpace(out) == "yes"
 }
 
 func (d *DockerExecutor) ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error) {
