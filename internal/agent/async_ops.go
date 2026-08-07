@@ -10,6 +10,7 @@ import (
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/safe"
+	wtools "github.com/treeol/wakil/internal/tools"
 )
 
 // ─── Async operation registry (card #121: non-blocking execution) ──────────
@@ -350,11 +351,25 @@ func (a *App) commitAsyncEffects(op *asyncOp) {
 }
 
 // renderAsyncLine renders one op's completion text (success or failure),
-// marker-neutralized and byte-capped. Returns the rendered line and whether
-// the text was truncated (the op must then stay retrievable via check_pending).
-// Untrusted external output must never be able to spoof the envelope's
-// structural end marker.
-func renderAsyncLine(op *asyncOp, result string, opErr error) (string, bool) {
+// marker-neutralized. Any result over asyncEnvelopeOpCap is SPILLED to a
+// durable host-side toolcache file (wtools.SpillToCache); the envelope then
+// carries a bounded in-context excerpt PLUS a "[full content at: PATH]"
+// pointer the model reads directly via read_file — one hop to the full
+// result, no dead check_pending pointer, no retention-cap lifetime coupling,
+// and the in-context envelope stays within its byte cap.
+//
+// UNIVERSAL overflow handling (user request): every async result class —
+// mashūra council, detached shell output, subagent summaries — gets the same
+// spill-to-disk treatment when it exceeds the per-op cap; none is silently
+// dropped from the model's reach. (Subagent summaries already spill via their
+// own path at subagent_parallel.go; this covers the async envelope uniformly.)
+//
+// Returns (renderedLine, truncated). truncated=true only in the spill-
+// unavailable fallback, where a bounded in-context truncation + check_pending
+// pointer keeps the result reachable. On a successful spill the durable file
+// is the recovery path, so truncated=false (op is delivered; no retention
+// dependency).
+func (a *App) renderAsyncLine(op *asyncOp, result string, opErr error) (string, bool) {
 	var line strings.Builder
 	fmt.Fprintf(&line, "- %s %s: ", op.id, op.toolName)
 	var text string
@@ -370,14 +385,27 @@ func renderAsyncLine(op *asyncOp, result string, opErr error) (string, bool) {
 		text = result
 	}
 	text = neutralizeAsyncMarker(text)
-	truncated := false
 	if len(text) > asyncEnvelopeOpCap {
+		// Oversized: spill the FULL content to a durable host-side file and
+		// keep a bounded excerpt + path in the envelope.
+		if spillPath := wtools.SpillToCache(a.chatID(), op.toolName, text); spillPath != "" {
+			excerpt := text
+			if len(excerpt) > asyncEnvelopeOpCap-len(fmt.Sprintf("\n[full content at: %s]", spillPath))-64 {
+				excerpt = truncateUTF8(excerpt, asyncEnvelopeOpCap-len(fmt.Sprintf("\n[full content at: %s]", spillPath))-64)
+			}
+			line.WriteString(excerpt)
+			line.WriteString(fmt.Sprintf("\n[full content at: %s]", spillPath))
+			return line.String(), false
+		}
+		// Spill unavailable (no chatID / write failure) — fall back to a
+		// bounded in-context truncation + check_pending pointer (best effort).
 		text = truncateUTF8(text, asyncEnvelopeOpCap-len(asyncBlockEnd)-64) +
 			fmt.Sprintf("\n…[truncated — use check_pending(%q) for the full result]", op.id)
-		truncated = true
+		line.WriteString(text)
+		return line.String(), true
 	}
 	line.WriteString(text)
-	return line.String(), truncated
+	return line.String(), false
 }
 
 // drainAsyncInbox renders all terminal completions into ONE bounded user
@@ -422,7 +450,7 @@ func (a *App) drainAsyncInbox() string {
 		if !terminal {
 			continue // defensive: inbox only ever holds terminal ops
 		}
-		line, truncated := renderAsyncLine(op, result, err)
+		line, truncated := a.renderAsyncLine(op, result, err)
 		// Total-envelope guard: if this op would overflow the cap, re-enqueue
 		// it and all remaining ops for a later drain and stop. Their effects
 		// were already committed at the top of this iteration (exactly-once

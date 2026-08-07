@@ -165,25 +165,79 @@ func TestAsyncEnvelopeMarkerNeutralized(t *testing.T) {
 	}
 }
 
-func TestAsyncEnvelopeOpCap(t *testing.T) {
+// An oversized async result (mashura, shell, subagent) is SPILLED to a
+// durable host-side file; the envelope carries a bounded excerpt + a
+// "[full content at: PATH]" pointer the model reads directly. This replaces
+// the old dead-check_pending-pointer truncation.
+func TestAsyncEnvelopeOpCapSpills(t *testing.T) {
+	// Point the spill cache at a temp dir so SpillToCache deterministically
+	// writes and we can verify the full-content file.
+	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Cleanup(func() { os.Setenv("XDG_DATA_HOME", oldXDG) })
+
 	a := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	a.Client.ChatID = "testchat" // provide a chatID so toolCacheDir is non-empty
 	big := strings.Repeat("x", asyncEnvelopeOpCap*2)
-	var op *asyncOp
-	op = enqueueAndWait(t, a, func() (string, []counselUsageRec, []string, error) {
+	op := enqueueAndWait(t, a, func() (string, []counselUsageRec, []string, error) {
 		return big, nil, nil, nil
 	})
 	env := a.drainAsyncInbox()
 	if len(env) > asyncEnvelopeTotalCap {
 		t.Fatalf("envelope exceeds total cap: %d", len(env))
 	}
-	if !strings.Contains(env, "truncated") {
-		t.Fatalf("missing truncation note")
+	// The envelope must carry a spill path pointer (not a dead check_pending
+	// pointer, not a bare "truncated").
+	if !strings.Contains(env, "[full content at:") {
+		t.Fatalf("envelope missing spill pointer: %q", env)
 	}
-	// The advertised recovery path must actually work: check_pending serves
-	// the FULL result for a truncated envelope.
+	if strings.Contains(env, "— check_pending(") {
+		t.Fatalf("envelope still references check_pending for oversized result: %q", env)
+	}
+	// Extract and verify the spill file actually contains the FULL result.
+	start := strings.Index(env, "[full content at: ")
+	if start < 0 {
+		t.Fatal("no spill marker")
+	}
+	rest := env[start+len("[full content at: "):]
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		t.Fatalf("unterminated spill marker in envelope: %q", env)
+	}
+	path := rest[:end]
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("spill file unreadable: %v", err)
+	}
+	if string(data) != big {
+		t.Fatalf("spill file missing full content (len=%d, want %d)", len(data), len(big))
+	}
+	// The op is delivered; check_pending still serves the retained result.
 	got := a.handleCheckPending(tcArgs("check_pending", fmt.Sprintf(`{"id":%q}`, op.id)))
 	if got != big {
-		t.Fatalf("check_pending must serve the full result after truncation (len=%d, want %d)", len(got), len(big))
+		t.Fatalf("check_pending must serve the full result (len=%d, want %d)", len(got), len(big))
+	}
+}
+
+// When spill is unavailable (no writable session dir), the async result falls
+// back to a bounded in-context truncation + check_pending pointer — best
+// effort, result stays reachable via check_pending.
+func TestAsyncEnvelopeOpCapSpillUnavailable(t *testing.T) {
+	a := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	// Force spill to be unavailable: empty chatID → toolCacheDir("") returns ""
+	// → SpillToCache returns "" → renderAsyncLine falls back to truncation.
+	a.Client.ChatID = ""
+	big := strings.Repeat("x", asyncEnvelopeOpCap*2)
+	op := enqueueAndWait(t, a, func() (string, []counselUsageRec, []string, error) {
+		return big, nil, nil, nil
+	})
+	env := a.drainAsyncInbox()
+	if !strings.Contains(env, "truncated") {
+		t.Fatalf("expected truncation fallback note when spill unavailable: %q", env)
+	}
+	got := a.handleCheckPending(tcArgs("check_pending", fmt.Sprintf(`{"id":%q}`, op.id)))
+	if got != big {
+		t.Fatalf("check_pending must serve the full result in fallback (len=%d, want %d)", len(got), len(big))
 	}
 }
 
