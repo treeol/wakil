@@ -303,6 +303,10 @@ func runHeadlessApp(ctx context.Context, app *agent.App, task string, planMode b
 		defer app.SaveSession()
 	}
 	defer hw.flush()
+	// Card #121: drain the async registry at exit — committed costs land in
+	// app.Costs before SaveSession persists them (LIFO: this runs first), and
+	// undelivered results are reported honestly instead of silently dropped.
+	defer app.StopAllAsyncOps()
 
 	var declinedReason string
 	app.Out = hw

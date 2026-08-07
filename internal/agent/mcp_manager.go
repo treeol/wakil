@@ -502,9 +502,34 @@ func PrettyArgs(raw string) string {
 	return string(b)
 }
 
+// checkPendingToolDef returns the check_pending tool definition (card #121):
+// the read-only retrieval surface for async operation results.
+func checkPendingToolDef() proxy.Tool {
+	params, _ := json.Marshal(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"id": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional operation id (e.g. \"op-3\") to get the status/result of one async op. Omit to list all pending/completed ops.",
+			},
+		},
+	})
+	return proxy.Tool{Type: "function", Function: proxy.ToolFunction{
+		Name: "check_pending",
+		Description: "Check on async operations that are running in the background (Mashūra counsel calls, long shell commands). " +
+			"Without arguments: list all ops with their state. With an id: get the status, or the full result once the op completed. " +
+			"Read-only and cheap — but don't poll in a tight loop; async results are also injected into context automatically before the next model request.",
+		Parameters: params,
+	}}
+}
+
 // BuildTools assembles the full tool list: built-ins → searxng → google → MCP → oracle → LSP.
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	t := wtools.DefaultTools(cwd)
+	// Card #121: check_pending is always available — it is the read-only
+	// retrieval surface for async results (mashūra panels, detached shell
+	// jobs). Cheap, ungated, and excluded from subagent toolsets.
+	t = append(t, checkPendingToolDef())
 	if cfg.SearXngURL != "" {
 		t = append(t, wtools.SearxngTools()...)
 	}

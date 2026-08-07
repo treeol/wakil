@@ -113,6 +113,16 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 	var confinementPaths []string
 	confinementTrip := false
 	for iter := 0; ; iter++ {
+		// Card #121: drain completed async operations (mashūra panels, detached
+		// shell jobs) into the conversation BEFORE the model request, so the
+		// model sees them as a ping. Turn goroutine only; Conv mutated under
+		// convMu. Empty inbox → no message, no cost.
+		if envelope := a.drainAsyncInbox(); envelope != "" {
+			a.convMu.Lock()
+			a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(envelope)})
+			a.convMu.Unlock()
+			fmt.Fprintln(a.Out, Dim("· async results delivered"))
+		}
 		// Hard backstop against runaway tool loops: on the final allowed iteration
 		// drop the tools and force the model to answer from what it already has.
 		// 0 = unlimited (the parent's default; a human gates each tool there).

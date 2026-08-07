@@ -301,6 +301,10 @@ type App struct {
 	// embedded here so selector access (a.bgProcs, a.bgMu, ...) is unchanged.
 	bgRegistry
 
+	// Card #121: async operation registry (non-blocking mashūra/shell).
+	// Embedded like bgRegistry; see async_ops.go for the invariants.
+	asyncRegistry
+
 	// Workflow is set while a /plan workflow is active. Nil when no workflow is
 	// running. Cleared when the workflow reaches WFDone or the user aborts it.
 	Workflow *workflow.WorkflowState
@@ -474,6 +478,17 @@ type bgEntry struct {
 	logPath    string
 	startedAt  time.Time
 	generation int // executor generation at time of creation
+
+	// Card #121: detached-job push notification. notifyOnExit is set ONLY when
+	// run_shell auto-backgrounds a command at its deadline (the detached case);
+	// explicit run_background jobs are poll-by-design and don't notify. The
+	// reaper pushes a completion notice into the async inbox exactly once
+	// (notifyOnExit && !notified, guarded by bgMu). kill_process and shutdown
+	// clear notifyOnExit so intentional terminations stay silent.
+	notifyOnExit bool
+	notified     bool
+	cmdDigest    string // short command label for the completion notice
+	readOnly     bool   // whether the command was classified read-only
 
 	// done is closed by a reaper goroutine when the process exits. Used by
 	// StopAllBackgroundProcs to wait for clean shutdown without a fixed sleep.
@@ -1185,7 +1200,11 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 	// dispatch_subagent results are already a ≤4k structured JSON digest of dozens
 	// of internal tool iterations — re-truncating or stubbing a digest discards
 	// the work. Same exemption rationale.
-	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) {
+	//
+	// check_pending (card #121) serves async results — most often full mashūra
+	// answers — so it shares the mashūra exemption; capping it would defeat the
+	// "retrieve the full result on demand" contract.
+	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) || toolName == "check_pending" {
 		return result
 	}
 	if a.Cfg.TurnToolBudget > 0 && turnToolBytesSoFar >= a.Cfg.TurnToolBudget {
@@ -1761,6 +1780,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleGoogleFetchURL(ctx, tc))
 	case "run_background":
 		return stringToToolResult(a.handleRunBackground(ctx, tc))
+	case "check_pending":
+		return stringToToolResult(a.handleCheckPending(tc))
 	case "kill_process":
 		return stringToToolResult(a.handleKillProcess(ctx, tc))
 	case "read_process_log":
@@ -1839,17 +1860,22 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 // everything anyway; this is primarily meaningful for direct mode.
 func (a *App) StopAllBackgroundProcs() {
 	a.bgMu.RLock()
-	if len(a.bgProcs) == 0 {
-		a.bgMu.RUnlock()
+	empty := len(a.bgProcs) == 0
+	a.bgMu.RUnlock()
+	if empty {
 		return
 	}
 	// Copy entries under lock, then operate outside lock to avoid
 	// holding the lock during KillPgid/IsProcessAlive/wait.
+	a.bgMu.Lock()
 	entries := make([]*bgEntry, 0, len(a.bgProcs))
 	for _, entry := range a.bgProcs {
+		// Card #121: shutdown kills are intentional — disarm detached-job
+		// notifications so reapers don't enqueue pings during teardown.
+		entry.notifyOnExit = false
 		entries = append(entries, entry)
 	}
-	a.bgMu.RUnlock()
+	a.bgMu.Unlock()
 
 	bg := context.Background()
 	type liveProc struct {

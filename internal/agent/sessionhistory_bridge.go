@@ -57,6 +57,14 @@ const (
 	handoffBlockEnd    = "\n--END PRIOR-SESSION HANDOFF CONTEXT--"
 )
 
+// asyncBlockHeader/End delimit async task completions drained into the
+// conversation by the non-blocking execution funnel (card #121). Like the other
+// envelopes, the content is untrusted external output and is stripped at index
+// time via stripRetrievalBlock — the feedback-loop guard. The header MUST be
+// the leading bytes of the user message (drainAsyncInbox builds the message as
+// header + entries + end marker only).
+// (Constants live in async_ops.go; this comment documents the contract.)
+
 // retrievalEnvelope pairs a recognized injected-context begin marker with its
 // structural end marker. stripRetrievalBlock consumes leading well-formed
 // envelopes from this list repeatedly, so stacked envelopes (memory then
@@ -70,6 +78,7 @@ var retrievalEnvelopes = []retrievalEnvelope{
 	{header: retrievalBlockHeader, end: retrievalBlockEnd},
 	{header: sessionRetrievalBlockHeader, end: sessionRetrievalBlockEnd},
 	{header: handoffBlockHeader, end: handoffBlockEnd},
+	{header: asyncBlockHeader, end: asyncBlockEnd},
 }
 
 // SessionHistoryOpenable lets App carry the sessionhistory store without an

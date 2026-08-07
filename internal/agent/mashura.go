@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
@@ -148,10 +149,28 @@ func mashuraToolDefs() []proxy.Tool {
 
 // handleMashura dispatches a mashura__* tool call: it parses the tool-specific
 // args, resolves the target panel (from config + optional per-call override),
-// gates the entire panel with a single confirm prompt, runs all members
-// sequentially, records cost per model, and returns the formatted result.
-// The legacy oracle__ask alias is handled as a review.
+// gates the entire panel with a single confirm prompt, and returns a PLACEHOLDER
+// immediately — the panel runs on a worker goroutine (card #121) and its result
+// is injected into the conversation before the next model request, or can be
+// retrieved early via check_pending. Cost/grounding are committed at terminal
+// completion (drain/shutdown), never twice. The legacy oracle__ask alias is
+// handled as a review.
+//
+// Fallbacks that keep the call synchronous (loudly): the async registry is full
+// (asyncMaxActive reached) or stopping. Auto-counsel (maybeSuggestDebug) uses
+// runMashuraCore directly with sync=true — its assistant+tool-pair injection
+// and cap semantics are unchanged.
 func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall) string {
+	// Subagents keep today's synchronous behavior — they have no turn loop to
+	// deliver async completions into.
+	return a.runMashuraCore(ctx, name, tc, a.IsSubagent)
+}
+
+// runMashuraCore is the shared mashūra execution path. sync=true runs the
+// panel inline and returns the formatted result (auto-counsel, registry-full
+// fallback, subagents); sync=false enqueues the panel on the async registry
+// and returns a placeholder pointing at the op id.
+func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall, sync bool) string {
 	// Extract the optional per-call panel override before tool-specific parsing.
 	panelOverride := mashuraPanelArg(tc)
 
@@ -195,6 +214,9 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 	a.mashuraLogReceipts(ctx, receipts)
 
 	// Run panel; for fusion mode this is a single OpenRouter call.
+	// Keys, briefing snapshot, and config are captured NOW (issue time) — the
+	// worker sends exactly what was approved (TOCTOU bound by the pre-gate
+	// briefing build).
 	ccfg := counsel.PanelCallConfig{
 		MaxTokens:          maxTokens,
 		TimeoutSeconds:     a.Cfg.OracleTimeoutSeconds,
@@ -202,8 +224,73 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 		FusionJudge:        panel.FusionJudge,
 		FusionMaxToolCalls: panel.FusionMaxToolCalls,
 	}
-	results := counsel.RunPanel(ctx, panel.Models, panel.Mode, question, briefing, ccfg, apiKeys)
+	models, mode := panel.Models, panel.Mode
 
+	if sync {
+		results := counsel.RunPanel(ctx, models, mode, question, briefing, ccfg, apiKeys)
+		a.recordMashuraResults(results)
+		return counsel.FormatPanelResult(results)
+	}
+
+	op, reason := a.enqueueAsyncOp(name, panelName, func() (string, []counselUsageRec, []string, error) {
+		// Detached from the turn context on purpose: the paid call was approved
+		// and should complete even if the turn is cancelled (card #121 D-4;
+		// cancellation support is a follow-up). Layer the provider timeout.
+		var callCtx context.Context
+		if ccfg.TimeoutSeconds > 0 {
+			var cancel context.CancelFunc
+			callCtx, cancel = context.WithTimeout(context.Background(), time.Duration(ccfg.TimeoutSeconds)*time.Second)
+			defer cancel()
+		} else {
+			callCtx = context.Background()
+		}
+		results := counsel.RunPanel(callCtx, models, mode, question, briefing, ccfg, apiKeys)
+		recs := make([]counselUsageRec, 0, len(results))
+		var okModels []string
+		allErr := true
+		for _, r := range results {
+			if r.Usage.InputTokens > 0 || r.Usage.OutputTokens > 0 {
+				recs = append(recs, counselUsageRec{Model: r.Model, Usage: r.Usage})
+			}
+			if r.Err == nil {
+				okModels = append(okModels, r.Model)
+				allErr = false
+			}
+		}
+		if allErr && len(results) > 0 {
+			return counsel.FormatPanelResult(results), recs, okModels, fmt.Errorf("all panel members failed (see check_pending result for details)")
+		}
+		return counsel.FormatPanelResult(results), recs, okModels, nil
+	})
+	if reason != "" {
+		// Registry full or stopping — LOUD synchronous fallback (never
+		// silent). Detached context: an approved paid call completes even if
+		// the turn is cancelled, consistent with the async worker path.
+		why := "async registry full"
+		if reason == "stopping" {
+			why = "session shutting down"
+		}
+		fmt.Fprintln(a.Out, Dim("· "+why+" — running mashūra synchronously"))
+		fbCtx := ctx
+		if ccfg.TimeoutSeconds > 0 {
+			var cancel context.CancelFunc
+			fbCtx, cancel = context.WithTimeout(context.Background(), time.Duration(ccfg.TimeoutSeconds)*time.Second)
+			defer cancel()
+		} else {
+			fbCtx = context.Background()
+		}
+		results := counsel.RunPanel(fbCtx, models, mode, question, briefing, ccfg, apiKeys)
+		a.recordMashuraResults(results)
+		return counsel.FormatPanelResult(results)
+	}
+	return fmt.Sprintf("queued as %s (%s, panel %s) — the panel is running now; once it completes, its result will be injected into context at the next model request while this turn continues. Keep working; call check_pending(%q) any time to retrieve it early.",
+		op.id, name, panelName, op.id)
+}
+
+// recordMashuraResults commits cost + grounding for a synchronously-run panel
+// (auto-counsel, registry-full fallback, subagents). Exactly mirrors the
+// async drain path's commitAsyncEffects.
+func (a *App) recordMashuraResults(results []counsel.PanelMemberResult) {
 	// Record cost per model; add grounding entry per successful member.
 	// Record usage even on error — providers bill for truncated/failed calls.
 	for _, r := range results {
@@ -214,7 +301,6 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 			a.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}
 	}
-	return counsel.FormatPanelResult(results)
 }
 
 // mashuraPanelArg extracts the optional "panel" field from a tool call's JSON
@@ -910,7 +996,10 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 					Arguments: fmt.Sprintf(`{"symptom":%q}`, "auto-counsel: "+symptom),
 				},
 			}
-			result := a.handleMashura(ctx, "mashura__debug", fakeTC)
+			// Card #121: auto-counsel stays SYNCHRONOUS — its diagnosis must be
+			// injected immediately as the assistant+tool pair below (cap/dedup
+			// semantics depend on the result being in hand right now).
+			result := a.runMashuraCore(ctx, "mashura__debug", fakeTC, true)
 			a.autoCounselSkipGate = false // ensure cleared even on early return
 			// Inject as assistant+tool pair so the model sees the diagnosis.
 			a.Conv = append(a.Conv,
