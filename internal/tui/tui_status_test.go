@@ -51,6 +51,29 @@ func TestStatusSegmentsReasoning(t *testing.T) {
 	}
 }
 
+func TestStatusSegmentsExecuting(t *testing.T) {
+	// A tool is running → the state label should say "executing", not "streaming".
+	segs := statusSegTexts(statusLineInput{state: stateStreaming, runningTool: "tool: run_shell ls -la"})
+	if segs[0] != "• executing" {
+		t.Errorf("executing head = %q, want '• executing'", segs[0])
+	}
+	// The tool detail is carried as its own segment.
+	found := false
+	for _, s := range segs {
+		if strings.Contains(s, "run_shell") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("tool detail segment missing; got %v", segs)
+	}
+	// reasoning takes precedence over executing (thinking before any tool).
+	segs = statusSegTexts(statusLineInput{state: stateStreaming, reasoning: true, runningTool: "tool: read_file x"})
+	if segs[0] != "• reasoning" {
+		t.Errorf("reasoning should beat executing; got %q", segs[0])
+	}
+}
+
 func TestStatusSegmentsConfirm(t *testing.T) {
 	segs := statusSegTexts(statusLineInput{state: stateConfirm})
 	if segs[0] != "• confirming" {

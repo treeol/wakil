@@ -355,9 +355,15 @@ func statusSegments(in statusLineInput) []string {
 	var stateSeg string
 	switch in.state {
 	case stateStreaming:
-		if in.reasoning {
+		switch {
+		case in.reasoning:
+			// extended thinking is actively streaming
 			stateSeg = styleState.Render("reasoning")
-		} else {
+		case in.runningTool != "":
+			// a tool is currently executing (e.g. "run_shell ls -la")
+			stateSeg = styleState.Render("executing")
+		default:
+			// generating the textual answer
 			stateSeg = styleState.Render("streaming")
 		}
 	case stateConfirm:
