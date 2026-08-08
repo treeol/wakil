@@ -233,6 +233,15 @@ type Config struct {
 	// 0 = use the built-in default (12,000).
 	SubagentToolResultCap int `json:"subagent_tool_result_cap,omitempty"`
 
+	// SubagentTimeoutSeconds bounds how long an async discovery subagent batch
+	// may run before the agent-layer watchdog force-terminalizes it. This is the
+	// safety net for hung children (network stall, rate-limit, non-cooperative
+	// blocking). The timeout context requests cooperative cancellation first;
+	// the watchdog guarantees the registry makes progress even if a goroutine
+	// ignores cancellation. 0 = use the built-in default (120s). Negative is
+	// rejected by validation.
+	SubagentTimeoutSeconds int `json:"subagent_timeout_seconds,omitempty"`
+
 	ReadFileSizeLimit   int               `json:"read_file_size_limit,omitempty"`   // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
 	MaxFullReadBytes    int               `json:"max_full_read_bytes,omitempty"`    // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
 	MaxBinaryWriteBytes int               `json:"max_binary_write_bytes,omitempty"` // max decoded bytes write_binary_file accepts; default 10485760 (10 MB); 0 = use default
@@ -639,6 +648,7 @@ func DefaultConfig() Config {
 		MaxRequestBytes:       8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:     3,
 		MaxParallelSubagents:  2,
+		SubagentTimeoutSeconds: 120, // 2 min watchdog for hung async discovery subagents
 		OracleModel:           "claude-sonnet-4-6",
 		OracleMaxTokens:       4096,
 		OracleAPIKeyEnv:       "ANTHROPIC_API_KEY",
@@ -1270,6 +1280,9 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.SubagentToolResultCap < 0 {
 		return fmt.Errorf("subagent_tool_result_cap must be >= 0 (got %d; 0 = use default)", cfg.SubagentToolResultCap)
+	}
+	if cfg.SubagentTimeoutSeconds < 0 {
+		return fmt.Errorf("subagent_timeout_seconds must be >= 0 (got %d; 0 = use default 120s)", cfg.SubagentTimeoutSeconds)
 	}
 	return nil
 }

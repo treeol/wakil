@@ -309,6 +309,7 @@ type subTab struct {
 	finCostUSD   float64   // child's own total from SubagentFinishedMsg (display-only)
 	finFilesN    int       // count of files changed from SubagentFinishedMsg
 	finPreview   string    // summary preview from SubagentFinishedMsg
+	finErr       string    // non-empty if the subagent failed (timeout, panic, refusal) — from SubagentDoneMsg
 
 	// Render cache for renderSubTabContent. Invalidated when buf grows or vpW changes.
 	cachedLines []string

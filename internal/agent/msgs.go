@@ -157,6 +157,12 @@ type SubagentDoneMsg struct {
 	// src and dst. Failed tool calls are not recorded. This is ground truth —
 	// the model's self-reported files_changed in SubagentSummary is a claim.
 	FilesChanged []string
+
+	// Err is non-empty when the subagent failed (timeout, panic, transport
+	// error, registry refusal). The TUI renders a red ✗ instead of green ✓
+	// so the user can distinguish failure from success. Empty on normal
+	// completion.
+	Err string
 }
 
 // SysNoteMsg delivers a status line into the viewport.

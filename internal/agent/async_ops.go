@@ -106,6 +106,14 @@ type asyncOp struct {
 	// without the registry lock.
 	subagents []asyncSubagentResult
 
+	// childChatIDs and childTasks are set at registration time so the watchdog
+	// can synthesize per-child SubagentDoneMsg events when the worker doesn't
+	// return within the timeout. Without these, a stuck batch would leave
+	// TUI tabs spinning forever (SubagentStartMsg was already sent, but no
+	// SubagentDoneMsg would ever fire).
+	childChatIDs []string
+	childTasks   []string
+
 	// shellLSPDirty marks a detached shell completion whose command was
 	// non-read-only; drainAsyncInbox fires LSP dirty-marking on delivery.
 	shellLSPDirty bool
@@ -131,6 +139,15 @@ type asyncOp struct {
 	// published marks that the op was published to the inbox exactly once
 	// (guarded by mu) — makes finishAsyncOp idempotent.
 	published bool
+
+	// watchdog is the timeout timer armed at registration. It fires if the
+	// worker doesn't terminalize within the configured timeout + grace period.
+	// Cancelled by the worker's defer cancelWatchdog at normal completion. The
+	// watchdog NEVER closes op.done — only the worker does that (avoiding
+	// double-close panic). The watchdog only sets op.terminal, populates
+	// synthetic subagent results, marks subagentEffectsCommitted, commits
+	// cost, and calls publishAsyncOp to release the slot and wake the waiter.
+	watchdog *time.Timer
 
 	done chan struct{} // closed exactly once at terminal completion
 }
@@ -184,6 +201,9 @@ type asyncRegistry struct {
 	// asyncShutdownWait bounds StopAllAsyncOps' wait for running workers.
 	// A field (not a const) so tests can shorten it.
 	asyncShutdownWait time.Duration
+	// watchdogGrace overrides the watchdog grace period for tests.
+	// 0 = use the default (15s).
+	watchdogGrace time.Duration
 }
 
 // ensureWake initializes the coalescing wake channel once (idempotent).
@@ -216,6 +236,120 @@ func (a *App) asyncShutdownTimeout() time.Duration {
 		return a.asyncShutdownWait
 	}
 	return 3 * time.Second
+}
+
+// subagentTimeout returns the configured async subagent timeout duration.
+// Returns 0 if timeouts are disabled (config value 0 or negative after
+// validation, though validation rejects negatives). The default is 120s
+// (set in DefaultConfig).
+func (a *App) subagentTimeout() time.Duration {
+	if a.Cfg.SubagentTimeoutSeconds > 0 {
+		return time.Duration(a.Cfg.SubagentTimeoutSeconds) * time.Second
+	}
+	return 120 * time.Second
+}
+
+// watchdogGracePeriod is the extra time the watchdog waits beyond the
+// timeout context's deadline before force-terminalizing. This gives the
+// worker time to observe ctx cancellation, return from its HTTP stream,
+// and terminalize normally — the watchdog is the safety net, not the
+// primary mechanism. Overridable via the asyncShutdownWait field for tests
+// (same pattern as asyncShutdownTimeout).
+func (a *App) watchdogGracePeriod() time.Duration {
+	if a.watchdogGrace > 0 {
+		return a.watchdogGrace
+	}
+	return 15 * time.Second
+}
+
+// armSubagentWatchdog arms a timeout watchdog for an async discovery
+// subagent op. If the worker doesn't terminalize within the configured
+// timeout + grace period, the watchdog force-terminalizes the op with
+// synthetic timeout results for every child, commits cost (no-op since
+// the worker never populated subagent results), and calls publishAsyncOp
+// to release the slot and wake any waiter.
+//
+// The watchdog NEVER closes op.done (the worker's defer close(op.done)
+// would panic). It only sets op.terminal and publishes. When the worker
+// eventually returns (if ever), it finds op.terminal == true, skips its
+// own publish, and its deferred close(op.done) fires cleanly.
+//
+// Per-child SubagentDoneMsg events are sent from the watchdog for every
+// childChatID, so TUI tabs don't spin forever.
+func (a *App) armSubagentWatchdog(op *asyncOp, timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	op.watchdog = time.AfterFunc(timeout+a.watchdogGracePeriod(), func() {
+		op.mu.Lock()
+		if op.terminal && op.published {
+			// Worker already terminalized AND published — nothing to do.
+			// Checking published too covers the liveness gap where the worker
+			// set terminal but blocked before calling publishAsyncOp.
+			op.mu.Unlock()
+			return
+		}
+		if op.terminal && !op.published {
+			// Worker set terminal but didn't publish (blocked or deadlocked
+			// between terminal and publish). Publish for it — idempotent via
+			// op.published guard in publishAsyncOp.
+			op.mu.Unlock()
+			a.commitAsyncCost(op)
+			a.publishAsyncOp(op)
+			return
+		}
+		op.terminal = true
+		op.err = fmt.Errorf("async discovery subagent batch timed out after %s", timeout)
+		// Synthesize per-child timeout results so TUI tabs and the model
+		// both see the failure. The worker never populated op.subagents
+		// (it's still stuck), so we build synthetic results from the
+		// ChatIDs/tasks stored at registration time.
+		subs := make([]asyncSubagentResult, 0, len(op.childChatIDs))
+		for i, cid := range op.childChatIDs {
+			task := ""
+			if i < len(op.childTasks) {
+				task = op.childTasks[i]
+			}
+			subs = append(subs, asyncSubagentResult{
+				ChatID: cid,
+				Task:   task,
+				Err:    "timed out",
+			})
+		}
+		op.subagents = subs
+		op.mu.Unlock()
+
+		// Send per-child SubagentDoneMsg with Err so the TUI flips tabs to
+		// a failed state. sendEvent is goroutine-safe (Program.Send).
+		// Mark subagentEffectsCommitted so drain-time commitAsyncSubagentEffects
+		// doesn't re-send (avoids double-fire of SubagentDoneMsg).
+		for _, s := range subs {
+			a.sendEvent(SubagentDoneMsg{
+				ChatID: s.ChatID,
+				Err:    "subagent timed out",
+			})
+		}
+		op.subagentEffectsCommitted = true
+
+		// Commit cost (no-op: subagents have no CostRows since the worker
+		// never populated them). This is the accepted trade-off: a stuck
+		// subagent hasn't done billable work yet.
+		a.commitAsyncCost(op)
+		// Release the slot + publish to inbox (wakes WaitForAsyncCompletion).
+		a.publishAsyncOp(op)
+	})
+}
+
+// cancelWatchdog safely stops the watchdog timer. Called by the worker
+// at terminal completion to cancel the watchdog before it fires.
+func (a *App) cancelWatchdog(op *asyncOp) {
+	op.mu.Lock()
+	w := op.watchdog
+	op.watchdog = nil
+	op.mu.Unlock()
+	if w != nil {
+		w.Stop()
+	}
 }
 
 // countActiveAsyncOps returns the number of currently-running (non-terminal)
@@ -508,12 +642,21 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 			HardMaxBytes: subagentHardMaxBytes,
 			UsedBackend:  s.UsedBackend,
 			FilesChanged: s.FilesChanged,
+			Err:          s.Err,
 		})
 		if s.Err != "" {
-			// Loud, parity with the synchronous path's warnSubagentIncomplete
-			// (which runs on the turn goroutine — same here at drain).
-			fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(s.Task, 80)))
-			fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
+			// Distinguish error types for accurate warnings.
+			switch {
+			case strings.Contains(s.Err, "timed out"):
+				fmt.Fprintln(a.Out, Yellow("⚠ subagent timed out on task: "+Truncate(s.Task, 80)))
+				fmt.Fprintln(a.Out, Yellow("  the child did not return within the configured timeout — consider re-dispatching or taking over"))
+			case strings.Contains(s.Err, "panicked"):
+				fmt.Fprintln(a.Out, Yellow("⚠ subagent panicked on task: "+Truncate(s.Task, 80)))
+				fmt.Fprintln(a.Out, Yellow("  the child worker crashed — consider re-dispatching or taking over"))
+			default:
+				fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(s.Task, 80)))
+				fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
+			}
 		}
 	}
 	if anyLSPDirty && a.LSP != nil {
@@ -770,6 +913,16 @@ func (a *App) StopAllAsyncOps() {
 	for _, op := range ops {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
+			if !op.deliveredSnapshot() {
+				dropped++
+			}
+			continue
+		}
+		// If the watchdog already terminalized this op (stuck worker that
+		// was force-finished), don't wait on op.done — the worker goroutine
+		// may still be running and could burn the entire shutdown budget.
+		// The op is already published; just account for the dropped result.
+		if t, _, _ := op.terminalSnapshot(); t {
 			if !op.deliveredSnapshot() {
 				dropped++
 			}

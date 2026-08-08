@@ -789,6 +789,9 @@ var subTabPulseShades = []lipgloss.Color{"94", "172", "214", "220"}
 func subTabDotSpec(tab *subTab, phase int) (glyph string, color lipgloss.Color) {
 	switch {
 	case tab.done:
+		if tab.finErr != "" {
+			return "✗", "1" // red: failed (timeout, panic, refusal)
+		}
 		return "✓", "2"
 	case tab.finished:
 		return "✓", "242" // dim green: landed but not yet authoritatively done

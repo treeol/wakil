@@ -287,12 +287,18 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// didn't carry (grounding, ctx size, hardMax, usedBackend) and mark the
 		// tab fully done. No visual regression: if the tab was already finished
 		// via SubagentFinishedMsg, it stays done — we only enrich it.
+		// Defense-in-depth: don't overwrite a non-empty finErr with empty
+		// (e.g. if watchdog sent Err first, a later drain-time Done without
+		// Err must not clear the error display).
 		found := false
 		for _, t := range m.subTabs {
 			if t.chatID == msg.ChatID {
 				found = true
 				t.done = true
 				t.finished = true // done implies finished for rendering
+				if msg.Err != "" || t.finErr == "" {
+					t.finErr = msg.Err
+				}
 				t.grounding = msg.Grounding
 				t.ctxSize = msg.CtxSize
 				t.hardMaxBytes = msg.HardMaxBytes

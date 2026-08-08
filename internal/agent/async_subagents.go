@@ -62,6 +62,8 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 	op, reason := a.registerAsyncOp("dispatch_subagents", fmt.Sprintf("%d discovery subagents", len(jobs)))
 	if reason != "" {
 		// Refused — return a clear rejection, never a silent sync fallback.
+		// Also send SubagentDoneMsg with Err for every child so TUI tabs
+		// don't spin forever (SubagentStartMsg was already sent in Phase A).
 		out := make([]string, len(block))
 		why := "async registry full"
 		if reason == "stopping" {
@@ -70,11 +72,32 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 		for i, tc := range block {
 			out[i] = fmt.Sprintf("ERROR: async %s %q rejected (%s) — re-run when capacity frees", tc.Function.Name, tc.ID, why)
 		}
+		for _, j := range jobs {
+			a.sendEvent(SubagentDoneMsg{
+				ChatID: j.ChatID,
+				Err:    "async registry refused: " + why,
+			})
+		}
 		return out, false
 	}
 
+	// Store child ChatIDs + tasks on the op so the watchdog can synthesize
+	// per-child SubagentDoneMsg events if the worker doesn't return.
+	op.childChatIDs = make([]string, len(jobs))
+	op.childTasks = make([]string, len(jobs))
+	for i, j := range jobs {
+		op.childChatIDs[i] = j.ChatID
+		op.childTasks[i] = j.Task
+	}
+
+	// Arm the watchdog BEFORE starting the worker so there's no window
+	// where a stuck worker has no timeout protection.
+	timeout := a.subagentTimeout()
+	a.armSubagentWatchdog(op, timeout)
+
 	safe.Go("async-subagent-block", func() {
 		defer close(op.done)
+		defer a.cancelWatchdog(op) // cancel the watchdog if the worker returns normally
 		// Finalizer: if ANYTHING in the body panics after the children ran
 		// (rendering, cost fold, indexing), still terminalize as an error and
 		// publish — so the registered active slot is never leaked and the
@@ -86,7 +109,33 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 				if !op.terminal {
 					op.terminal = true
 					op.err = fmt.Errorf("async discovery worker panic: %v", r)
+					// Synthesize per-child error results so tabs don't spin.
+					subs := make([]asyncSubagentResult, 0, len(op.childChatIDs))
+					for i, cid := range op.childChatIDs {
+						task := ""
+						if i < len(op.childTasks) {
+							task = op.childTasks[i]
+						}
+						subs = append(subs, asyncSubagentResult{
+							ChatID: cid,
+							Task:   task,
+							Err:    "worker panicked",
+						})
+					}
+					op.subagents = subs
 				}
+				op.mu.Unlock()
+				// Send per-child SubagentDoneMsg with Err for every child so TUI
+				// tabs don't spin. Mark subagentEffectsCommitted so drain
+				// doesn't re-send (avoids double-fire).
+				for _, cid := range op.childChatIDs {
+					a.sendEvent(SubagentDoneMsg{
+						ChatID: cid,
+						Err:    "subagent worker panicked",
+					})
+				}
+				op.mu.Lock()
+				op.subagentEffectsCommitted = true
 				op.mu.Unlock()
 				a.commitAsyncCost(op)
 				a.publishAsyncOp(op)
@@ -94,7 +143,18 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 		}()
 		// Detached from the turn context: discovery children are read-only and
 		// should complete even if the turn is cancelled (card #121 D-4 pattern).
-		workCtx := context.Background()
+		// But bounded by a timeout: if the child's HTTP stream hangs (network
+		// stall, rate-limit), ctx cancellation kills the request and the worker
+		// returns normally. The watchdog is the safety net for non-cooperative
+		// blocking paths.
+		var workCtx context.Context
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			workCtx, cancel = context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+		} else {
+			workCtx = context.Background()
+		}
 
 		// Phase B runs on this worker. runSubagentJobs is safe off the turn
 		// goroutine (see its concurrency audit); it resolves the child's own
