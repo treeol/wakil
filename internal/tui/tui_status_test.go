@@ -21,9 +21,10 @@ func statusSegTexts(in statusLineInput) []string {
 }
 
 func TestStatusSegmentsIdleInitial(t *testing.T) {
+	// Fresh idle (no turn yet): always shows "idle" (never disappears).
 	segs := statusSegTexts(statusLineInput{state: stateIdle, hadTurn: false})
-	if len(segs) != 1 || segs[0] != "•" {
-		t.Errorf("fresh idle = dot only; got: %v", segs)
+	if len(segs) != 1 || segs[0] != "• idle" {
+		t.Errorf("fresh idle = 'dot idle'; got: %v", segs)
 	}
 }
 
@@ -66,32 +67,29 @@ func TestStatusSegmentsExecuting(t *testing.T) {
 	}
 }
 
-func TestToolActivityRow(t *testing.T) {
-	m := newTestTUI(t)
-	m.width = 80
-	// No tool running → row is empty, height contribution is 0.
-	if row := m.toolActivityRow(); row != "" {
-		t.Errorf("tool row should be empty when no tool running; got %q", row)
+func TestStatusSegmentsLastTool(t *testing.T) {
+	// The last tool's text persists in the status line after the tool completes
+	// (sourced from lastTool, not runningTool). Shown as a dimmed segment.
+	segs := statusSegTexts(statusLineInput{state: stateStreaming, lastToolText: "run_shell ls -la"})
+	found := false
+	for _, s := range segs {
+		if strings.Contains(s, "run_shell") {
+			found = true
+		}
 	}
-	if got := m.toolActivityRows(); got != 0 {
-		t.Errorf("toolActivityRows() = %d, want 0 when no tool", got)
+	if !found {
+		t.Errorf("last tool text should appear as a status segment; got %v", segs)
 	}
-	// Tool running → row shows the tool name + command, height is 1.
-	m.state = stateStreaming
-	m.runningTool = &runningToolState{toolCallID: "tc1", name: "run_shell", command: "ls -la"}
-	row := m.toolActivityRow()
-	// Strip ANSI for content check (the row is color-styled).
-	plain := lipgloss.Style{}.Render(row)
-	plain = strings.ReplaceAll(plain, "\x1b[0m", "")
-	if !strings.Contains(row, "run_shell") || !strings.Contains(row, "ls -la") {
-		t.Errorf("tool row should contain tool name + command; got %q", row)
+	// At idle with lastToolText, the segment still shows.
+	segs = statusSegTexts(statusLineInput{state: stateIdle, hadTurn: true, lastToolText: "read_file config.go"})
+	found = false
+	for _, s := range segs {
+		if strings.Contains(s, "read_file") {
+			found = true
+		}
 	}
-	if got := m.toolActivityRows(); got != 1 {
-		t.Errorf("toolActivityRows() = %d, want 1 when tool running", got)
-	}
-	// statusRows includes the tool row.
-	if got := m.statusRows(); got != len(m.statusLines())+1 {
-		t.Errorf("statusRows() = %d, want len(statusLines())+1 = %d", got, len(m.statusLines())+1)
+	if !found {
+		t.Errorf("last tool text should persist at idle; got %v", segs)
 	}
 }
 

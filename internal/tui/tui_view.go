@@ -206,12 +206,6 @@ func (m tuiModel) View() string {
 	// the status line (F2 / ctrl+o), not a separate region.
 	var sections []string
 	sections = append(sections, top)
-	// Tool-activity row: a dedicated line above the status line showing the
-	// currently-executing tool. Appears only while a tool runs (runningTool !=
-	// nil); hidden otherwise. Height is accounted in statusRows().
-	if row := m.toolActivityRow(); row != "" {
-		sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(row))
-	}
 	if m.resumePicker.active {
 		sections = append(sections, m.renderResumePicker())
 	} else if m.comp.active {
@@ -291,45 +285,11 @@ func bottomAlignViewport(view string, vpH int) string {
 	return strings.Join(append(blank, content...), "\n")
 }
 
-// statusRows computes how many rows the status zone (status line + the
-// dedicated tool-activity row) occupies. It uses the same flowSegments packing
-// as the renderer for the status line, plus the tool-activity row when a tool
-// is running, so sizes() reserves exactly what View() renders.
+// statusRows computes how many rows the status line occupies. It uses the
+// same flowSegments packing as the renderer, over the same segment list, so
+// sizes() reserves exactly what View() renders.
 func (m tuiModel) statusRows() int {
-	return len(m.statusLines()) + m.toolActivityRows()
-}
-
-// toolActivityRows returns 1 when a tool is currently executing (the dedicated
-// tool-activity row is shown), 0 otherwise. Included in statusRows() so the
-// existing reflow guards (reflowIfStatusHeightChanged) automatically reflow the
-// conversation pane when a tool starts/stops and the row appears/disappears.
-func (m tuiModel) toolActivityRows() int {
-	if m.runningTool != nil {
-		return 1
-	}
-	return 0
-}
-
-// toolActivityRow renders the dedicated tool-activity line shown directly above
-// the status line (and above the input box) while a tool is executing. It
-// displays the tool name and its primary argument (command/path/query), keeping
-// the latest tool text visible at all times — unlike the cramped status-line
-// segment, this row is always on its own line, updating live as tools change.
-// Returns "" when no tool is running (the row is hidden).
-func (m tuiModel) toolActivityRow() string {
-	if m.runningTool == nil {
-		return ""
-	}
-	w := m.width - borderW
-	if w < 1 {
-		w = 1
-	}
-	label := "▶ " + m.runningTool.name
-	if m.runningTool.command != "" {
-		label += " " + m.runningTool.command
-	}
-	label = agent.Truncate(label, w)
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(label)
+	return len(m.statusLines())
 }
 
 // statusMaxRows is the status zone's row cap when the info expansion is
@@ -411,8 +371,12 @@ func statusSegments(in statusLineInput) []string {
 	case stateCompacting:
 		stateSeg = styleState.Render("compacting")
 	case stateIdle:
+		// Always show a state label at idle — "awaiting input" after the first
+		// turn, "idle" before it. Never disappears.
 		if in.hadTurn {
 			stateSeg = dim2("awaiting input")
+		} else {
+			stateSeg = dim2("idle")
 		}
 	}
 	if stateSeg != "" {
@@ -428,8 +392,11 @@ func statusSegments(in statusLineInput) []string {
 	if in.queueLen > 0 {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(sprint("queue: %d", in.queueLen)))
 	}
-	// The running-tool detail now has its own dedicated row above the status
-	// line (toolActivityRow), so it's no longer duplicated here.
+	// Last tool text: persists after the tool completes (until turn end) so the
+	// user always sees what the agent last did, right in the status line.
+	if in.lastToolText != "" {
+		segs = append(segs, dim2(in.lastToolText))
+	}
 	if in.model != "" {
 		segs = append(segs, dim2(in.model))
 	}
@@ -596,6 +563,15 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 			runningTool += " " + agent.Truncate(m.runningTool.command, 40)
 		}
 	}
+	// lastToolText persists the last tool's text after it completes (until the
+	// turn ends) so the status line always shows what the agent last did.
+	lastToolText := ""
+	if m.lastTool != nil {
+		lastToolText = m.lastTool.name
+		if m.lastTool.command != "" {
+			lastToolText += " " + agent.Truncate(m.lastTool.command, 40)
+		}
+	}
 	return statusLineInput{
 		state:                   m.state,
 		autoApprove:             consent.AutoApprove,
@@ -617,6 +593,7 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		arm:                     m.armNotice(),
 		queueLen:                len(m.queuedPrompts),
 		runningTool:             runningTool,
+		lastToolText:            lastToolText,
 	}
 }
 
@@ -657,6 +634,10 @@ type statusLineInput struct {
 	// runningTool is the formatted "tool: name cmd" string for the status line
 	// when a tool is executing. Empty when no tool is active.
 	runningTool string
+	// lastToolText is the formatted text of the most recent tool (persists after
+	// the tool completes, until the turn ends). Shown as a segment in the status
+	// line after the state label so the user always sees what the agent last did.
+	lastToolText string
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.

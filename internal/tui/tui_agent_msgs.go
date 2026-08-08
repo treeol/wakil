@@ -75,13 +75,16 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 
 	case agent.ToolStartMsg:
-		// Set the running-tool indicator for the status line.
+		// Set the running-tool indicator for the status line + the lastTool
+		// for the dedicated tool-activity row (persists after the tool completes).
 		before := m.statusRows()
-		m.runningTool = &runningToolState{
+		tool := &runningToolState{
 			toolCallID: msg.ToolCallID,
 			name:       msg.Name,
 			command:    msg.Command,
 		}
+		m.runningTool = tool
+		m.lastTool = tool
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.SideQuestionChunkMsg:
@@ -144,6 +147,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.turnStart = time.Time{}
 		m.tps = 0
 		m.runningTool = nil // safety net: clear any uncleared tool indicator
+		m.lastTool = nil    // clear the dedicated tool-activity row at turn end
 		// Cancel any running side question — the main turn is done, the user
 		// can ask properly now. Only cancel the context; do NOT nil
 		// m.sideQuestion here. The side-question goroutine may still be

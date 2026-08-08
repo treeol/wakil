@@ -143,6 +143,11 @@ type tuiModel struct {
 	// Set by ToolStartMsg, cleared by ToolResultMsg (matched by ToolCallID) or
 	// AgentDoneMsg. Pure TUI-side.
 	runningTool *runningToolState
+	// lastTool persists the most recent tool's info so the dedicated tool-activity
+	// row stays visible with the last tool's text between tool calls (after a
+	// result arrives but before the next tool starts). Cleared on AgentDoneMsg
+	// (turn end). Set alongside runningTool on ToolStartMsg.
+	lastTool *runningToolState
 
 	// sideQuestion tracks a running side-question stream (/ask command).
 	// nil when no side question is active. The cancel function aborts the
