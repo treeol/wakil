@@ -206,6 +206,12 @@ func (m tuiModel) View() string {
 	// the status line (F2 / ctrl+o), not a separate region.
 	var sections []string
 	sections = append(sections, top)
+	// Tool-activity row: a dedicated line above the status line showing the
+	// currently-executing tool. Appears only while a tool runs (runningTool !=
+	// nil); hidden otherwise. Height is accounted in statusRows().
+	if row := m.toolActivityRow(); row != "" {
+		sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(row))
+	}
 	if m.resumePicker.active {
 		sections = append(sections, m.renderResumePicker())
 	} else if m.comp.active {
@@ -285,11 +291,45 @@ func bottomAlignViewport(view string, vpH int) string {
 	return strings.Join(append(blank, content...), "\n")
 }
 
-// statusRows computes how many rows the status line occupies. It uses the
-// same flowSegments packing as the renderer, over the same segment list, so
-// sizes() reserves exactly what View() renders.
+// statusRows computes how many rows the status zone (status line + the
+// dedicated tool-activity row) occupies. It uses the same flowSegments packing
+// as the renderer for the status line, plus the tool-activity row when a tool
+// is running, so sizes() reserves exactly what View() renders.
 func (m tuiModel) statusRows() int {
-	return len(m.statusLines())
+	return len(m.statusLines()) + m.toolActivityRows()
+}
+
+// toolActivityRows returns 1 when a tool is currently executing (the dedicated
+// tool-activity row is shown), 0 otherwise. Included in statusRows() so the
+// existing reflow guards (reflowIfStatusHeightChanged) automatically reflow the
+// conversation pane when a tool starts/stops and the row appears/disappears.
+func (m tuiModel) toolActivityRows() int {
+	if m.runningTool != nil {
+		return 1
+	}
+	return 0
+}
+
+// toolActivityRow renders the dedicated tool-activity line shown directly above
+// the status line (and above the input box) while a tool is executing. It
+// displays the tool name and its primary argument (command/path/query), keeping
+// the latest tool text visible at all times — unlike the cramped status-line
+// segment, this row is always on its own line, updating live as tools change.
+// Returns "" when no tool is running (the row is hidden).
+func (m tuiModel) toolActivityRow() string {
+	if m.runningTool == nil {
+		return ""
+	}
+	w := m.width - borderW
+	if w < 1 {
+		w = 1
+	}
+	label := "▶ " + m.runningTool.name
+	if m.runningTool.command != "" {
+		label += " " + m.runningTool.command
+	}
+	label = agent.Truncate(label, w)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(label)
 }
 
 // statusMaxRows is the status zone's row cap when the info expansion is
@@ -388,9 +428,8 @@ func statusSegments(in statusLineInput) []string {
 	if in.queueLen > 0 {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(sprint("queue: %d", in.queueLen)))
 	}
-	if in.runningTool != "" {
-		segs = append(segs, dim2(in.runningTool))
-	}
+	// The running-tool detail now has its own dedicated row above the status
+	// line (toolActivityRow), so it's no longer duplicated here.
 	if in.model != "" {
 		segs = append(segs, dim2(in.model))
 	}

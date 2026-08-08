@@ -53,24 +53,45 @@ func TestStatusSegmentsReasoning(t *testing.T) {
 
 func TestStatusSegmentsExecuting(t *testing.T) {
 	// A tool is running → the state label should say "executing", not "streaming".
+	// (The tool DETAIL now has its own dedicated row above the status line via
+	// toolActivityRow, not a status-line segment.)
 	segs := statusSegTexts(statusLineInput{state: stateStreaming, runningTool: "tool: run_shell ls -la"})
 	if segs[0] != "• executing" {
 		t.Errorf("executing head = %q, want '• executing'", segs[0])
-	}
-	// The tool detail is carried as its own segment.
-	found := false
-	for _, s := range segs {
-		if strings.Contains(s, "run_shell") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("tool detail segment missing; got %v", segs)
 	}
 	// reasoning takes precedence over executing (thinking before any tool).
 	segs = statusSegTexts(statusLineInput{state: stateStreaming, reasoning: true, runningTool: "tool: read_file x"})
 	if segs[0] != "• reasoning" {
 		t.Errorf("reasoning should beat executing; got %q", segs[0])
+	}
+}
+
+func TestToolActivityRow(t *testing.T) {
+	m := newTestTUI(t)
+	m.width = 80
+	// No tool running → row is empty, height contribution is 0.
+	if row := m.toolActivityRow(); row != "" {
+		t.Errorf("tool row should be empty when no tool running; got %q", row)
+	}
+	if got := m.toolActivityRows(); got != 0 {
+		t.Errorf("toolActivityRows() = %d, want 0 when no tool", got)
+	}
+	// Tool running → row shows the tool name + command, height is 1.
+	m.state = stateStreaming
+	m.runningTool = &runningToolState{toolCallID: "tc1", name: "run_shell", command: "ls -la"}
+	row := m.toolActivityRow()
+	// Strip ANSI for content check (the row is color-styled).
+	plain := lipgloss.Style{}.Render(row)
+	plain = strings.ReplaceAll(plain, "\x1b[0m", "")
+	if !strings.Contains(row, "run_shell") || !strings.Contains(row, "ls -la") {
+		t.Errorf("tool row should contain tool name + command; got %q", row)
+	}
+	if got := m.toolActivityRows(); got != 1 {
+		t.Errorf("toolActivityRows() = %d, want 1 when tool running", got)
+	}
+	// statusRows includes the tool row.
+	if got := m.statusRows(); got != len(m.statusLines())+1 {
+		t.Errorf("statusRows() = %d, want len(statusLines())+1 = %d", got, len(m.statusLines())+1)
 	}
 }
 
