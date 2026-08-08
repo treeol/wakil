@@ -66,6 +66,23 @@ type counselUsageRec struct {
 	Usage counsel.OracleUsage
 }
 
+// asyncSubagentResult carries ONE discovery subagent's terminal outcome as part
+// of a batch async op. A batch op holds one of these per child so per-child
+// effects (grounding, cost rows, files changed, events) are committed/delivered
+// independently. Discovery subagents are read-only; edit/tools-capable dispatch
+// stays synchronous (see card #122 Phase 1 security invariant).
+type asyncSubagentResult struct {
+	ChatID       string
+	Task         string // child's objective (for drain-time incomplete warnings)
+	Result       string // rendered summary JSON, capped ≤4k (may carry spill marker)
+	Grounding    []proxy.GroundingEntry
+	CostRows     []proxy.CostRow
+	FilesChanged []string
+	CtxSize      int
+	UsedBackend  string
+	Err          string // error text if the child failed; "" on success
+}
+
 // asyncOp tracks one in-flight or terminal async operation.
 type asyncOp struct {
 	id        string // "op-1" (or "job-bgN" for detached shell)
@@ -81,6 +98,13 @@ type asyncOp struct {
 	// Mashūra completion bookkeeping (nil for non-counsel ops).
 	usage    []counselUsageRec
 	okModels []string // members with Err == nil (grounding entries)
+
+	// subagents holds per-child terminal outcomes for a DISCOVERY-subagent
+	// batch op (toolName dispatch_subagent / dispatch_subagents). Nil for
+	// mashura/shell ops. Slices are frozen at terminal publication (never
+	// mutated after the worker publishes them), so drain may read them
+	// without the registry lock.
+	subagents []asyncSubagentResult
 
 	// shellLSPDirty marks a detached shell completion whose command was
 	// non-read-only; drainAsyncInbox fires LSP dirty-marking on delivery.
@@ -98,9 +122,15 @@ type asyncOp struct {
 	// groundingCommitted: grounding entries — committed on the turn goroutine
 	// at delivery (drain/check_pending) since grounding only matters when the
 	// result actually reaches the model.
-	costCommitted      bool
-	groundingCommitted bool
-	envelopeDelivered  bool // result rendered into Conv or consumed by check_pending
+	// subagentEffectsCommitted: per-child cost+grounding+delivery bookkeeping
+	// for subagent ops — committed on the turn goroutine at delivery.
+	costCommitted            bool
+	groundingCommitted       bool
+	subagentEffectsCommitted bool
+	envelopeDelivered        bool // result rendered into Conv or consumed by check_pending
+	// published marks that the op was published to the inbox exactly once
+	// (guarded by mu) — makes finishAsyncOp idempotent.
+	published bool
 
 	done chan struct{} // closed exactly once at terminal completion
 }
@@ -129,14 +159,56 @@ func (o *asyncOp) deliveredSnapshotRetrievable() bool {
 
 // asyncRegistry is embedded in App (same pattern as bgRegistry).
 type asyncRegistry struct {
-	asyncMu       sync.Mutex
-	asyncOps      map[string]*asyncOp
-	asyncInbox    []*asyncOp // terminal, not yet drained into Conv
-	asyncCounter  int
+	asyncMu      sync.Mutex
+	asyncOps     map[string]*asyncOp
+	asyncInbox   []*asyncOp // terminal, not yet drained into Conv
+	asyncCounter int
+	// asyncActive is the count of currently RUNNING (non-terminal) ops,
+	// maintained under asyncMu: reserved atomically at registration, decremented
+	// exactly once at terminal completion. This is the atomic admission counter
+	// (fixes the racy snapshot admission) and gives Phase 2's idle predicate a
+	// reliable pending count — unlike snapshot map scans.
+	asyncActive   int
 	asyncStopping bool
+	// wake is a COALESCING completion signal for Phase 2 (Idle/Wake). It is a
+	// buffered-1 channel touched only under asyncMu in finishAsyncOp/StopAllAsyncOps;
+	// a non-blocking send means "something completed" — multiple near-simultaneous
+	// completions collapse into ONE signal (no buffering of more than one), so
+	// exactly one resumed request is scheduled. A waiter first checks the inbox
+	// under asyncMu (no lost wake), then blocks on this channel.
+	wake chan struct{}
+	// wakeReady is set true on the first warnable registration so waiters don't
+	// block forever on a nil channel.
+	wakeMu    sync.Mutex
+	wakeReady bool
 	// asyncShutdownWait bounds StopAllAsyncOps' wait for running workers.
 	// A field (not a const) so tests can shorten it.
 	asyncShutdownWait time.Duration
+}
+
+// ensureWake initializes the coalescing wake channel once (idempotent).
+func (r *asyncRegistry) ensureWake() {
+	r.wakeMu.Lock()
+	defer r.wakeMu.Unlock()
+	if !r.wakeReady {
+		r.wake = make(chan struct{}, 1)
+		r.wakeReady = true
+	}
+}
+
+// signalWake performs a non-blocking send on the wake channel: if a signal is
+// already pending, another buffered send is skipped — that IS the coalescing.
+// Caller holds asyncMu (or equivalent exclusion).
+func (a *App) signalWake() {
+	if a.wake == nil {
+		return
+	}
+	select {
+	case a.wake <- struct{}{}:
+	default:
+		// A wake is already pending — coalesce (near-simultaneous completions
+		// collapse into one resume).
+	}
 }
 
 func (a *App) asyncShutdownTimeout() time.Duration {
@@ -146,61 +218,34 @@ func (a *App) asyncShutdownTimeout() time.Duration {
 	return 3 * time.Second
 }
 
-// countActiveAsyncOps counts non-terminal ops WITHOUT holding asyncMu across
-// op.mu acquisition (lock-order rule). Callers must not hold asyncMu.
+// countActiveAsyncOps returns the number of currently-running (non-terminal)
+// ops. Backed by the atomic asyncActive counter maintained under asyncMu — NOT
+// a racy map scan — so it is safe to use for admission and for Phase 2's idle
+// predicate. Callers must not hold asyncMu.
 func (a *App) countActiveAsyncOps() int {
 	a.asyncMu.Lock()
-	ops := make([]*asyncOp, 0, len(a.asyncOps))
-	for _, o := range a.asyncOps {
-		ops = append(ops, o)
-	}
-	a.asyncMu.Unlock()
-	active := 0
-	for _, o := range ops {
-		if t, _, _ := o.terminalSnapshot(); !t {
-			active++
-		}
-	}
-	return active
+	defer a.asyncMu.Unlock()
+	return a.asyncActive
 }
 
-// enqueueAsyncOp registers a new operation and starts its worker. Returns the
-// op and an empty reason on success; on refusal reason is "full" or "stopping"
-// and callers must fall back LOUDLY to synchronous execution.
-//
-// fn runs on a worker goroutine under a detached (non-turn) context; it must
-// return the final result text, per-model usage records, the list of successful
-// models, and an error. fn must be self-contained (capture everything it needs;
-// keys/snapshots captured at issue time).
-func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
+// registerAsyncOp reserves an active slot and registers a new operation. It
+// does NOT start the worker. Returns the op and empty reason on success; on
+// refusal reason is "full" or "stopping". The active slot is reserved
+// ATOMICALLY under asyncMu, so concurrent enqueues cannot over-subscribe the
+// cap (unlike the previous snapshot-then-reacquire admission). The caller must
+// call finishAsyncOp exactly once when its worker reaches terminal completion
+// to release the slot.
+func (a *App) registerAsyncOp(toolName, label string) (*asyncOp, string) {
 	a.asyncMu.Lock()
+	defer a.asyncMu.Unlock()
+	a.ensureWake()
 	if a.asyncStopping {
-		a.asyncMu.Unlock()
 		return nil, "stopping"
 	}
-	// Active-count snapshot WITHOUT nesting op.mu under asyncMu (copy pointers
-	// and count outside the lock; a racing completion can only make the count
-	// stale-low, which is harmless for a soft cap).
-	ops := make([]*asyncOp, 0, len(a.asyncOps))
-	for _, o := range a.asyncOps {
-		ops = append(ops, o)
-	}
-	a.asyncMu.Unlock()
-	active := 0
-	for _, o := range ops {
-		if t, _, _ := o.terminalSnapshot(); !t {
-			active++
-		}
-	}
-	if active >= asyncMaxActive {
+	if a.asyncActive >= asyncMaxActive {
 		return nil, "full"
 	}
-
-	a.asyncMu.Lock()
-	if a.asyncStopping { // re-check after the unlocked window
-		a.asyncMu.Unlock()
-		return nil, "stopping"
-	}
+	a.asyncActive++
 	a.asyncCounter++
 	op := &asyncOp{
 		id:        fmt.Sprintf("op-%d", a.asyncCounter),
@@ -213,7 +258,64 @@ func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, u
 		a.asyncOps = make(map[string]*asyncOp)
 	}
 	a.asyncOps[op.id] = op
+	return op, ""
+}
+
+// finishAsyncOp releases the active slot and publishes a terminal outcome to
+// the inbox. The slot is decremented exactly once (guarded by op.mu.terminal,
+// so the "exactly once" holds even if a racing worker double-calls it). Called
+// by the worker at terminal completion, just like the closed `done` channel.
+// publishAsyncOp performs exactly-once publication of a TERMINAL op to the
+// inbox, and releases its active admission slot exactly once (idempotent via
+// op.published, guarded by op.mu — so a racing/double call cannot underflow
+// asyncActive or enqueue twice). When the session is stopping, the slot is
+// still released but no inbox record is added (no model turn remains to read
+// it). Returns true if published to the inbox. Called by every async worker
+// (enqueueAsyncOp and queueAsyncDiscoveryBlock) as the shared finalizer.
+func (a *App) publishAsyncOp(op *asyncOp) bool {
+	op.mu.Lock()
+	if op.published {
+		op.mu.Unlock()
+		return false
+	}
+	op.published = true
+	op.mu.Unlock()
+
+	a.asyncMu.Lock()
+	a.asyncActive--
+	stopping := a.asyncStopping
+	if !stopping {
+		a.asyncInbox = append(a.asyncInbox, op)
+		a.evictOldestTerminalLocked()
+		// Coalescing wake: a completion is available; pending waiters wake and one
+		// resumed request is scheduled. Non-blocking send under asyncMu (signalWake).
+		a.ensureWake()
+		a.signalWake()
+	}
 	a.asyncMu.Unlock()
+	return !stopping
+}
+
+// finishAsyncOp is the outward publication call (compat/alias) used by tests and
+// the sync-path helpers. It is idempotent.
+func (a *App) finishAsyncOp(op *asyncOp) {
+	a.publishAsyncOp(op)
+}
+
+// enqueueAsyncOp registers a new operation and starts its worker. Returns the
+// op and an empty reason on success; on refusal reason is "full" or "stopping"
+// and callers must handle the fallback (mashura: loud synchronous fallback;
+// subagents: reject — never silent sync).
+//
+// fn runs on a worker goroutine under a detached (non-turn) context; it must
+// return the final result text, per-model usage records, the list of successful
+// models, and an error. fn must be self-contained (capture everything it needs;
+// keys/snapshots captured at issue time).
+func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
+	op, reason := a.registerAsyncOp(toolName, label)
+	if reason != "" {
+		return nil, reason
+	}
 
 	safe.Go("async-op", func() {
 		// close(done) even if fn panics — safe.Go recovers, but without this
@@ -245,51 +347,38 @@ func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, u
 		// Grounding is deferred to delivery (it only matters once the result
 		// actually reaches the model).
 		a.commitAsyncCost(op)
-
-		a.asyncMu.Lock()
-		stopping := a.asyncStopping
-		a.asyncMu.Unlock()
-
-		if stopping {
-			// Shutdown already gave up waiting: delivery is suppressed (no
-			// model turn left). Cost is committed above; nothing else to do.
-			return
-		}
-
-		a.asyncMu.Lock()
-		a.evictOldestTerminalLocked()
-		a.asyncInbox = append(a.asyncInbox, op)
-		a.asyncMu.Unlock()
+		// Release the slot + publish (or suppress on shutdown), exactly once.
+		a.publishAsyncOp(op)
 	})
 	return op, ""
 }
 
 // evictOldestTerminalLocked drops TERMINAL ops from the registry when the
-// retention cap is exceeded. Cost is already committed at terminal completion
-// (by the worker), so eviction never loses paid usage — it only drops the
-// result payload. Running ops are never evicted. Non-retrievable terminal ops
-// (result already fully delivered, or never truncated) are evicted first;
-// retrievable ones (truncated envelope — check_pending pointer still
-// advertised) are dropped only as a last resort. Caller holds asyncMu.
+// retention cap (asyncMaxRetained) is exceeded. Cost is already committed at
+// terminal completion (by the worker), so eviction never loses paid usage — it
+// only drops the result payload. Running ops are never evicted. The victim is
+// the OLDEST (by createdAt) terminal op, preferring ones already delivered (not
+// pending in the inbox) so an undelivered result is kept as long as possible:
+//
+//	Pass 1: oldest terminal + already delivered (envelopeDelivered) + not retrievable.
+//	Pass 2: oldest terminal + already delivered.
+//	Pass 3: oldest terminal (may be inbox-pending — last resort).
+//
+// Idempotent per-call: only evicts while over the cap. Caller holds asyncMu.
 func (a *App) evictOldestTerminalLocked() {
-	terminal := func(o *asyncOp) bool { t, _, _ := o.terminalSnapshot(); return t }
+	// inbox-pending (undelivered) set, to keep them longer.
+	pendingInbox := map[string]bool{}
+	for _, o := range a.asyncInbox {
+		pendingInbox[o.id] = true
+	}
 	for len(a.asyncOps) > asyncMaxRetained {
-		var victim *asyncOp
-		// Pass 1: oldest terminal, non-retrievable (delivered or never shown).
-		for _, o := range a.asyncOps {
-			if terminal(o) && !o.deliveredSnapshotRetrievable() {
-				victim = o
-				break
-			}
-		}
-		// Pass 2: oldest terminal, retrievable.
+		// Prefer dropping delivered/non-retrievable before inbox-pending results.
+		victim := a.oldestTerminalLocked(pendingInbox, 2) // delivered + not retrievable
 		if victim == nil {
-			for _, o := range a.asyncOps {
-				if terminal(o) {
-					victim = o
-					break
-				}
-			}
+			victim = a.oldestTerminalLocked(pendingInbox, 1) // delivered
+		}
+		if victim == nil {
+			victim = a.oldestTerminalLocked(pendingInbox, 0) // any terminal (last resort)
 		}
 		if victim == nil {
 			return // only running ops left — nothing to evict
@@ -304,10 +393,38 @@ func (a *App) evictOldestTerminalLocked() {
 	}
 }
 
+// oldestTerminalLocked finds the oldest (by createdAt) terminal op matching a
+// preference level; returns nil if none. mode 0 = any terminal, 1 = delivered
+// only, 2 = delivered + not-retrievable. Helper for eviction ordering.
+func (a *App) oldestTerminalLocked(pendingInbox map[string]bool, mode int) *asyncOp {
+	var best *asyncOp
+	for _, o := range a.asyncOps {
+		t, _, _ := o.terminalSnapshot()
+		if !t {
+			continue
+		}
+		switch mode {
+		case 1:
+			if pendingInbox[o.id] {
+				continue // prefers delivered ops
+			}
+		case 2:
+			if pendingInbox[o.id] || o.deliveredSnapshotRetrievable() {
+				continue
+			}
+		}
+		if best == nil || o.createdAt.Before(best.createdAt) {
+			best = o
+		}
+	}
+	return best
+}
+
 // commitAsyncCost records billed usage for a terminal op exactly once. Safe
 // from any goroutine (CostTracker is internally synchronized; Cfg is treated
 // read-only). Called by the worker at terminal completion — cost accounting
-// must never depend on delivery or retention.
+// must never depend on delivery or retention. For subagent batch ops, the
+// per-child cost rows are folded here (mutex-safe tracker) exactly once too.
 func (a *App) commitAsyncCost(op *asyncOp) {
 	op.mu.Lock()
 	if op.costCommitted {
@@ -316,11 +433,20 @@ func (a *App) commitAsyncCost(op *asyncOp) {
 	}
 	op.costCommitted = true
 	usage := op.usage
+	subs := op.subagents
 	op.mu.Unlock()
 
 	for _, u := range usage {
 		if u.Usage.InputTokens > 0 || u.Usage.OutputTokens > 0 {
 			a.RecordOracleCostFor(u.Model, u.Usage)
+		}
+	}
+	for _, s := range subs {
+		if len(s.CostRows) > 0 && a.Costs != nil {
+			// foldSubagentCost writes through a.Costs.Record (mutex-guarded);
+			// safe from the worker like RecordOracleCostFor above. The returned
+			// total is unused here — accounting only.
+			foldSubagentCost(a.Costs, s.CostRows)
 		}
 	}
 }
@@ -348,6 +474,51 @@ func (a *App) commitAsyncGrounding(op *asyncOp) {
 func (a *App) commitAsyncEffects(op *asyncOp) {
 	a.commitAsyncCost(op)
 	a.commitAsyncGrounding(op)
+}
+
+// commitAsyncSubagentEffects runs on the turn goroutine at delivery (drain or
+// check_pending) for a DISCOVERY-subagent batch op. It performs the model-visible
+// delivery bookkeeping that cost is correctly NOT tied to: grounding per child
+// (addExternalGrounding touches Client + sticky taint — turn goroutine only),
+// LSP dirty-marking for children that changed files (discovery children don't,
+// but kept for symmetry/future), and a per-child SubagentDoneMsg event for the
+// TUI. Idempotent via subagentEffectsCommitted. Workers never call this.
+func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
+	op.mu.Lock()
+	if op.subagentEffectsCommitted {
+		op.mu.Unlock()
+		return
+	}
+	op.subagentEffectsCommitted = true
+	subs := op.subagents
+	op.mu.Unlock()
+
+	anyLSPDirty := false
+	for _, s := range subs {
+		if len(s.FilesChanged) > 0 {
+			anyLSPDirty = true
+		}
+		for _, g := range s.Grounding {
+			a.addExternalGrounding(g)
+		}
+		a.sendEvent(SubagentDoneMsg{
+			ChatID:       s.ChatID,
+			Grounding:    s.Grounding,
+			CtxSize:      s.CtxSize,
+			HardMaxBytes: subagentHardMaxBytes,
+			UsedBackend:  s.UsedBackend,
+			FilesChanged: s.FilesChanged,
+		})
+		if s.Err != "" {
+			// Loud, parity with the synchronous path's warnSubagentIncomplete
+			// (which runs on the turn goroutine — same here at drain).
+			fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(s.Task, 80)))
+			fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
+		}
+	}
+	if anyLSPDirty && a.LSP != nil {
+		a.LSP.MarkOpenFilesDirty()
+	}
 }
 
 // renderAsyncLine renders one op's completion text (success or failure),
@@ -436,6 +607,10 @@ func (a *App) drainAsyncInbox() string {
 			continue
 		}
 		a.commitAsyncEffects(op)
+		// Discovery-subagent batch ops: additional per-child delivery bookkeeping
+		// (grounding, LSP, SubagentDoneMsg) on the turn goroutine — the cost was
+		// already folded at terminal by the worker.
+		a.commitAsyncSubagentEffects(op)
 		// Card #121: a completed MODIFYING detached shell command makes open
 		// files dirty for LSP resync. Fired here (turn goroutine) because the
 		// reaper that observes the exit is not allowed to touch LSP state.
@@ -480,6 +655,23 @@ func (a *App) drainAsyncInbox() string {
 // as neutralizeSessionMarker).
 func neutralizeAsyncMarker(s string) string {
 	return strings.ReplaceAll(s, "--END ASYNC TASK RESULTS--", "--END ASYNC TASK RESULTS (neutralized)--")
+}
+
+// waitForCompletionResult is the token returned by the wait_for_completion tool
+// when async work is pending. The turn loop recognizes this exact sentinel and
+// translates it into a Suspended outcome (the caller awaits a real completion
+// and resumes) rather than continuing the tool loop.
+const waitForCompletionToken = "[wait_for_completion: wait — I'm suspending until an async completion arrives; no need to poll]"
+
+// handleWaitForCompletion implements the card #122 Phase 2 wait_for_completion
+// tool. When async work is pending, it returns the idle token so the turn loop
+// suspends the turn (the model is asking to hand control back). When nothing is
+// running it returns immediately indicating no wait is needed.
+func (a *App) handleWaitForCompletion() string {
+	if a.countActiveAsyncOps() == 0 {
+		return "no async operations pending — nothing to wait for"
+	}
+	return waitForCompletionToken
 }
 
 // handleCheckPending serves check_pending: list live ops, or retrieve one op's
@@ -532,6 +724,7 @@ func (a *App) handleCheckPending(tc proxy.ToolCall) string {
 			op.id, op.label, time.Since(op.createdAt).Round(time.Second), op.id)
 	}
 	a.commitAsyncEffects(op)
+	a.commitAsyncSubagentEffects(op)
 	// Consume: mark delivered so the inbox drain does not render it again.
 	// The op stays in the registry (still retrievable) until retention
 	// eviction; the inbox entry is dropped.

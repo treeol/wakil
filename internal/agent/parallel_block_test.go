@@ -67,10 +67,14 @@ func writeSSE(w http.ResponseWriter, frames ...string) {
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
-// TestParallelBlockRunsConcurrently proves two dispatches in one assistant
-// turn actually overlap: the server holds each subagent response on a barrier
-// that only opens once BOTH subagent requests have arrived. Sequential
-// execution would deadlock (guarded by the test timeout below).
+// TestParallelBlockRunsConcurrently proves two pure-discovery dispatches in
+// one assistant turn actually OVERLAP at the worker layer: the server holds
+// each subagent response on a barrier that only opens once BOTH subagent
+// requests have arrived (sequential execution would deadlock, guarded by the
+// test timeout below). Card #122 Phase 1 makes pure-discovery blocks ASYNC, so
+// the tool results are placeholders and the structured summaries arrive via the
+// async envelope — this test asserts BOTH: protocol closure (placeholders) and
+// concurrency at the detached-worker layer + envelope delivery of both tasks.
 func TestParallelBlockRunsConcurrently(t *testing.T) {
 	var parentCalls atomic.Int32
 	var subArrived atomic.Int32
@@ -117,7 +121,7 @@ func TestParallelBlockRunsConcurrently(t *testing.T) {
 		t.Fatal("Send did not finish — subagents likely ran sequentially and deadlocked on the barrier")
 	}
 
-	// Order preservation: tool results answer d1 then d2, with matching content.
+	// Protocol closure: both tool_call_ids answered, in order, with placeholders.
 	var toolMsgs []proxy.Message
 	for _, m := range app.Conv {
 		if m.Role == "tool" && m.Name == "dispatch_subagent" {
@@ -131,39 +135,70 @@ func TestParallelBlockRunsConcurrently(t *testing.T) {
 		t.Errorf("tool results out of order: got IDs %q, %q — want d1, d2",
 			toolMsgs[0].ToolCallID, toolMsgs[1].ToolCallID)
 	}
-	if !strings.Contains(DerefStr(toolMsgs[0].Content), "TASK-A") {
-		t.Errorf("result for d1 should carry TASK-A; got %q", DerefStr(toolMsgs[0].Content))
-	}
-	if !strings.Contains(DerefStr(toolMsgs[1].Content), "TASK-B") {
-		t.Errorf("result for d2 should carry TASK-B; got %q", DerefStr(toolMsgs[1].Content))
-	}
 	for i, m := range toolMsgs {
+		if !strings.Contains(DerefStr(m.Content), "queued as op-") {
+			t.Errorf("async placeholder expected for tool result %d; got %q", i, DerefStr(m.Content))
+		}
 		if !m.Pinned {
 			t.Errorf("tool result %d not pinned", i)
 		}
 	}
+
+	// Envelope carries BOTH structured summaries (delivered next turn); the
+	// barrier above already proved the two workers overlapped.
+	waitAsyncOps(t, app)
+	env := app.drainAsyncInbox()
+	if !strings.Contains(env, "TASK-A") || !strings.Contains(env, "TASK-B") {
+		t.Errorf("async envelope missing both tasks: %q", env)
+	}
 }
 
 // TestParallelBlockCancellationStubs verifies that cancelling ctx mid-dispatch
-// still yields a tool response for every dispatched tool_call_id.
+// still yields a tool response (placeholder) for every dispatched tool_call_id.
+// Card #122 Phase 1: discovery subagents run on DETACHED workers, so they
+// complete even if the parent's context is cancelled (card #121 D-4 semantics) —
+// this test asserts (a) no hang before cancel, and (b) both tool_call_ids still
+// carry a placeholder tool result in Conv. It must NOT hold the server on a
+// blocking ctx.Done() for the detached child (that would hang).
 func TestParallelBlockCancellationStubs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	var parentCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if isSubagentRequest(body) {
-			cancel() // cancel while subagents are in flight
-			<-r.Context().Done()
+			// Detached child: serve a normal summary promptly — it must NOT be
+			// coupled to the parent's ctx.Done() (async discovery completes even
+			// after cancellation).
+			writeSSE(w, contentChunk(summaryFor(taskFromBody(body))))
 			return
 		}
-		writeSSE(w, twoDispatchFrames("TASK-A", "TASK-B")...)
+		switch parentCalls.Add(1) {
+		case 1:
+			writeSSE(w, twoDispatchFrames("TASK-A", "TASK-B")...)
+		default:
+			writeSSE(w, contentChunk("done"))
+		}
 	}))
 	defer srv.Close()
 
 	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
-	_, _ = app.Send(ctx, "go") // error expected (parent's follow-up stream is cancelled too)
 
-	// Every dispatched tool_call_id must have a tool response in Conv.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = app.Send(ctx, "go")
+	}()
+	// Cancel shortly after the parent turn begins; Send should return regardless.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Send hung after ctx cancellation")
+	}
+
+	// Every dispatched tool_call_id must have a (placeholder) tool response.
 	var gotIDs []string
 	for _, m := range app.Conv {
 		if m.Role == "tool" && m.Name == "dispatch_subagent" {
@@ -246,28 +281,39 @@ func TestParallelBlockConsentDeclineAnswersAll(t *testing.T) {
 	}
 }
 
-// TestParallelBlockExhaustionSurfaced verifies that an exhausted subagent in a
-// parallel block yields Status:"incomplete" in its slot and the loud ⚠ warning
-// is printed once per exhausted child during Phase C.
+// TestParallelBlockExhaustionSurfaced verifies that an exhausted subagent in
+// an async discovery block yields Status:"incomplete" in the delivered envelope
+// and the loud ⚠ warning is printed once per exhausted child at drain (the
+// turn-goroutine finalize point for the async path).
 func TestParallelBlockExhaustionSurfaced(t *testing.T) {
 	var mu sync.Mutex
 	subCalls := map[string]int{} // per-task call counter
+	var parentCalls atomic.Int32
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		task := taskFromBody(body)
-		mu.Lock()
-		subCalls[task]++
-		n := subCalls[task]
-		mu.Unlock()
-		if n == 1 {
-			// First call per subagent: emit a read_file tool call so the
-			// iteration counter advances to the forceFinish backstop.
-			writeSSE(w, toolCallFrames("r1", "read_file", `{"path":"a.go"}`)...)
+		if isSubagentRequest(body) {
+			task := taskFromBody(body)
+			mu.Lock()
+			subCalls[task]++
+			n := subCalls[task]
+			mu.Unlock()
+			if n == 1 {
+				// First call per subagent: emit a read_file tool call so the
+				// iteration counter advances to the forceFinish backstop.
+				writeSSE(w, toolCallFrames("r1", "read_file", `{"path":"a.go"}`)...)
+				return
+			}
+			// forceFinish turn: valid JSON despite exhaustion.
+			writeSSE(w, contentChunk(summaryFor(task)))
 			return
 		}
-		// forceFinish turn: valid JSON despite exhaustion.
-		writeSSE(w, contentChunk(summaryFor(task)))
+		switch parentCalls.Add(1) {
+		case 1:
+			writeSSE(w, twoDispatchFrames("TASK-A", "TASK-B")...)
+		default:
+			writeSSE(w, contentChunk("done"))
+		}
 	}))
 	defer srv.Close()
 
@@ -279,16 +325,25 @@ func TestParallelBlockExhaustionSurfaced(t *testing.T) {
 	app.Out = &outBuf
 	app.subMaxToolIter = 1 // force exhaustion in every child
 
-	block := []proxy.ToolCall{
-		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
-		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-B"}`}},
-	}
-	out := app.runParallelSubagentBlock(context.Background(), block)
-
-	for i, r := range out {
-		if !strings.Contains(r, `"status":"incomplete"`) {
-			t.Errorf("result %d should carry incomplete status; got %q", i, r)
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.Send(context.Background(), "go")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
 		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Send did not finish")
+	}
+
+	// Async delivery: the envelope carries each child's structured summary.
+	waitAsyncOps(t, app)
+	env := app.drainAsyncInbox()
+	if !strings.Contains(env, `"status":"incomplete"`) {
+		t.Errorf("async envelope should carry incomplete status; got %q", env)
 	}
 	warnings := strings.Count(outBuf.String(), "ran out of budget")
 	if warnings != 2 {
@@ -297,7 +352,8 @@ func TestParallelBlockExhaustionSurfaced(t *testing.T) {
 }
 
 // TestBatchToolAggregatesInOrder verifies the dispatch_subagents batch tool:
-// one tool_call_id, a JSON array of summaries in task order.
+// one tool_call_id returns a placeholder (async discovery routing), then the
+// delivered envelope carries BOTH summaries in task order.
 func TestBatchToolAggregatesInOrder(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -313,15 +369,20 @@ func TestBatchToolAggregatesInOrder(t *testing.T) {
 	}
 	result := app.ExecuteToolCall(context.Background(), tc)
 
-	var arr []string
-	if err := json.Unmarshal([]byte(result.text), &arr); err != nil {
-		t.Fatalf("batch result is not a JSON array: %v\n%s", err, result.text)
+	// Protocol closure: the batch tool returns a single placeholder (one op),
+	// never a synchronous aggregate array (async discovery routing).
+	if !strings.Contains(result.text, "queued as op-") {
+		t.Fatalf("async placeholder expected for batch tool; got %q", result.text)
 	}
-	if len(arr) != 2 {
-		t.Fatalf("want 2 aggregated results, got %d", len(arr))
+
+	// The delivered envelope carries both children's summaries, in aggregate.
+	waitAsyncOps(t, app)
+	env := app.drainAsyncInbox()
+	if !strings.Contains(env, "TASK-A") || !strings.Contains(env, "TASK-B") {
+		t.Errorf("async envelope missing both tasks in order: %q", env)
 	}
-	if !strings.Contains(arr[0], "TASK-A") || !strings.Contains(arr[1], "TASK-B") {
-		t.Errorf("aggregated results out of order: [0]=%q [1]=%q", arr[0], arr[1])
+	if strings.Index(env, "TASK-A") > strings.Index(env, "TASK-B") {
+		t.Errorf("aggregated results out of order in envelope: %q", env)
 	}
 }
 

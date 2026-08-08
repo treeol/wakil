@@ -337,8 +337,14 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 		a.asyncOps = make(map[string]*asyncOp)
 	}
 	a.asyncOps[op.id] = op
-	a.evictOldestTerminalLocked()
+	// Append BEFORE eviction so the freshly-completed op is never the eviction
+	// victim (it is inbox-pending/undelivered and should be kept longest).
 	a.asyncInbox = append(a.asyncInbox, op)
+	a.evictOldestTerminalLocked()
+	// Card #122 Phase 2: a detached-shell completion must wake any pending
+	// wait_for_completion waiter (idle). Coalescing, buffered-1, under asyncMu.
+	a.ensureWake()
+	a.signalWake()
 }
 
 // handleOpenURL opens a URL on the host desktop after confirmation.
@@ -1130,6 +1136,20 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		Model:      a.resolvedSubagentDisplayModel(),
 		ToolNames:  a.subagentToolNames(capability),
 	})
+	if capability == wtools.CapabilityDiscovery {
+		// Card #122 Phase 1: a single DISCOVERY dispatch goes async. Reserve the
+		// slot on the turn goroutine; the child runs on a detached worker; the
+		// summary is injected into context at the next drain. This keeps the
+		// sequential read-only path non-blocking like the batch path.
+		block := []proxy.ToolCall{tc}
+		jobs := []subagentJob{{Index: 0, Task: args.Task, ChatID: subChatID, Capability: capability}}
+		results, ok := a.queueAsyncDiscoveryBlock(block, jobs, subBackend)
+		if ok {
+			return results[0]
+		}
+		// Refused — explicit rejection, never silent sync fallback.
+		return results[0]
+	}
 	// Sequential path: the dispatch begins immediately, no queue wait.
 	a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
 	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, subChatID)

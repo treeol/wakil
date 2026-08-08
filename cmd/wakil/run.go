@@ -348,14 +348,17 @@ func emitBackendFailure(app *agent.App, out io.Writer, err error) {
 
 func runSingleTaskHeadless(ctx context.Context, app *agent.App, task string, out io.Writer, declinedReason *string) int {
 	app.WorkflowStepTrace = nil
-	_, err := app.Send(ctx, task)
-	if err = agent.HandleStreamError(ctx, app, err); err != nil {
-		if errors.Is(err, proxy.ErrBackendStream) {
-			emitBackendFailure(app, out, err)
-			return ExitBackendFailure
+	if err := driveHeadlessTurn(ctx, app, task); err != nil {
+		// HandleStreamError retries transient backend failures (500 etc.);
+		// on recovery it returns nil and we fall through to the success path.
+		if err = agent.HandleStreamError(ctx, app, err); err != nil {
+			if errors.Is(err, proxy.ErrBackendStream) {
+				emitBackendFailure(app, out, err)
+				return ExitBackendFailure
+			}
+			emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
+			return ExitError
 		}
-		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
-		return ExitError
 	}
 	agent.HandleEmptyResponse(ctx, app)
 
@@ -367,6 +370,32 @@ func runSingleTaskHeadless(ctx context.Context, app *agent.App, task string, out
 	}
 	emitEvent(out, map[string]any{"type": "done", "outcome": "pass"})
 	return ExitOK
+}
+
+// driveHeadlessTurn runs one user turn to its FINAL outcome, transparently
+// handling card #122 Phase 2 suspension: when the turn suspends on pending async
+// work, it awaits a completion (WaitForAsyncCompletion) and resumes until the
+// turn reaches a Final outcome. Returns the first Send/Resume error (raw — the
+// caller classifies with HandleStreamError).
+func driveHeadlessTurn(ctx context.Context, app *agent.App, task string) error {
+	out, err := app.SendOutcome(ctx, task)
+	if err != nil {
+		return err
+	}
+	for out.Kind == agent.TurnSuspended {
+		ok, werr := app.WaitForAsyncCompletion(ctx)
+		if werr != nil {
+			return werr
+		}
+		if !ok {
+			return nil // nothing left pending → treat as final
+		}
+		out, err = app.Resume(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func runWorkflowHeadless(ctx context.Context, app *agent.App, task string, flags RunFlags, out io.Writer, declinedReason *string) int {

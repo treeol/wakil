@@ -338,7 +338,7 @@ func TestStreamTurn_NoToolCalls(t *testing.T) {
 	app.Cfg.MaxToolIterations = 0 // unlimited
 
 	var traceToolCalls []trace.ToolTrace
-	final, err := app.streamTurn(context.Background(), "hi", nil, &traceToolCalls)
+	final, _, err := app.streamTurn(context.Background(), "hi", nil, &traceToolCalls)
 	if err != nil {
 		t.Fatalf("streamTurn error: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestStreamTurn_StreamError(t *testing.T) {
 	app.Cfg.MaxToolIterations = 0
 
 	var traceToolCalls []trace.ToolTrace
-	_, err := app.streamTurn(context.Background(), "hi", nil, &traceToolCalls)
+	_, _, err := app.streamTurn(context.Background(), "hi", nil, &traceToolCalls)
 	if err == nil {
 		t.Fatal("expected stream error, got nil")
 	}
@@ -381,7 +381,7 @@ func TestStreamTurn_ToolCallThenFinal(t *testing.T) {
 	app.Cfg.MaxToolIterations = 0
 
 	var traceToolCalls []trace.ToolTrace
-	final, err := app.streamTurn(context.Background(), "go", nil, &traceToolCalls)
+	final, _, err := app.streamTurn(context.Background(), "go", nil, &traceToolCalls)
 	if err != nil {
 		t.Fatalf("streamTurn error: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestStreamTurn_MaxIterationsForcesFinish(t *testing.T) {
 	app.Cfg.MaxToolIterations = 2
 
 	var traceToolCalls []trace.ToolTrace
-	final, err := app.streamTurn(context.Background(), "go", nil, &traceToolCalls)
+	final, _, err := app.streamTurn(context.Background(), "go", nil, &traceToolCalls)
 	if err != nil {
 		t.Fatalf("streamTurn error: %v", err)
 	}
