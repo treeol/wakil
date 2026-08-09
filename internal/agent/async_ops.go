@@ -51,6 +51,13 @@ const (
 	// asyncShellNotifyTail is how many trailing log lines ride along in a
 	// detached-shell completion notification.
 	asyncShellNotifyTail = 2
+
+	// defaultSubagentTimeoutSeconds is the fallback async subagent timeout
+	// when SubagentTimeoutSeconds is 0 (or unset). config.DefaultConfig sets
+	// the same value (120) — they must agree. Defined as a named constant
+	// here so the runtime fallback is self-documenting; config cannot import
+	// it (agent depends on config, not vice versa).
+	defaultSubagentTimeoutSeconds = 120
 )
 
 const (
@@ -130,8 +137,10 @@ type asyncOp struct {
 	// groundingCommitted: grounding entries — committed on the turn goroutine
 	// at delivery (drain/check_pending) since grounding only matters when the
 	// result actually reaches the model.
-	// subagentEffectsCommitted: per-child cost+grounding+delivery bookkeeping
-	// for subagent ops — committed on the turn goroutine at delivery.
+	// subagentEffectsCommitted: per-child SubagentDoneMsg events + grounding +
+	// LSP-dirty bookkeeping for subagent ops. Claimed atomically under op.mu by
+	// whichever path wins terminalization: the worker (normal), the watchdog
+	// (timeout), or panic recovery — so exactly one path sends Done events.
 	costCommitted            bool
 	groundingCommitted       bool
 	subagentEffectsCommitted bool
@@ -239,21 +248,20 @@ func (a *App) asyncShutdownTimeout() time.Duration {
 }
 
 // subagentTimeout returns the configured async subagent timeout duration.
-// Returns 0 if timeouts are disabled (config value 0 or negative after
-// validation, though validation rejects negatives). The default is 120s
-// (set in DefaultConfig).
+// 0 (or unset) means use the built-in default (defaultSubagentTimeoutSeconds).
+// The default is also set in config.DefaultConfig so both paths agree.
 func (a *App) subagentTimeout() time.Duration {
 	if a.Cfg.SubagentTimeoutSeconds > 0 {
 		return time.Duration(a.Cfg.SubagentTimeoutSeconds) * time.Second
 	}
-	return 120 * time.Second
+	return time.Duration(defaultSubagentTimeoutSeconds) * time.Second
 }
 
 // watchdogGracePeriod is the extra time the watchdog waits beyond the
 // timeout context's deadline before force-terminalizing. This gives the
 // worker time to observe ctx cancellation, return from its HTTP stream,
 // and terminalize normally — the watchdog is the safety net, not the
-// primary mechanism. Overridable via the asyncShutdownWait field for tests
+// primary mechanism. Overridable via the watchdogGrace field for tests
 // (same pattern as asyncShutdownTimeout).
 func (a *App) watchdogGracePeriod() time.Duration {
 	if a.watchdogGrace > 0 {
@@ -317,19 +325,22 @@ func (a *App) armSubagentWatchdog(op *asyncOp, timeout time.Duration) {
 			})
 		}
 		op.subagents = subs
+		op.subagentEffectsCommitted = true
 		op.mu.Unlock()
 
 		// Send per-child SubagentDoneMsg with Err so the TUI flips tabs to
 		// a failed state. sendEvent is goroutine-safe (Program.Send).
-		// Mark subagentEffectsCommitted so drain-time commitAsyncSubagentEffects
-		// doesn't re-send (avoids double-fire of SubagentDoneMsg).
+		// subagentEffectsCommitted was set under the lock above so drain-time
+		// commitAsyncSubagentEffects won't re-send (avoids double-fire).
 		for _, s := range subs {
 			a.sendEvent(SubagentDoneMsg{
 				ChatID: s.ChatID,
 				Err:    "subagent timed out",
 			})
+			// User-facing warning (parity with drain-time warnings).
+			fmt.Fprintln(a.Out, Yellow("⚠ subagent timed out on task: "+Truncate(s.Task, 80)))
+			fmt.Fprintln(a.Out, Yellow("  the child did not return within the configured timeout — consider re-dispatching or taking over"))
 		}
-		op.subagentEffectsCommitted = true
 
 		// Commit cost (no-op: subagents have no CostRows since the worker
 		// never populated them). This is the accepted trade-off: a stuck
@@ -641,6 +652,7 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 			CtxSize:      s.CtxSize,
 			HardMaxBytes: subagentHardMaxBytes,
 			UsedBackend:  s.UsedBackend,
+			CostUSD:      sumPricedRows(s.CostRows),
 			FilesChanged: s.FilesChanged,
 			Err:          s.Err,
 		})
@@ -653,9 +665,12 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 			case strings.Contains(s.Err, "panicked"):
 				fmt.Fprintln(a.Out, Yellow("⚠ subagent panicked on task: "+Truncate(s.Task, 80)))
 				fmt.Fprintln(a.Out, Yellow("  the child worker crashed — consider re-dispatching or taking over"))
+			case strings.Contains(s.Err, "incomplete"):
+				fmt.Fprintln(a.Out, Yellow("⚠ subagent incomplete on task: "+Truncate(s.Task, 80)))
+				fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — consider re-dispatching narrower or taking over"))
 			default:
-				fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
+				fmt.Fprintln(a.Out, Yellow("⚠ subagent failed on task: "+Truncate(s.Task, 80)))
+				fmt.Fprintln(a.Out, Yellow("  error: "+s.Err+" — consider re-dispatching or taking over"))
 			}
 		}
 	}

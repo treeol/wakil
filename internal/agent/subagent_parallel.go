@@ -309,6 +309,10 @@ func (a *App) finalizeSubagentBlock(jobs []subagentJob, results []subagentJobRes
 	for k, j := range jobs {
 		r := results[k]
 		subagentCostUSD := foldSubagentCost(a.Costs, r.CostRows)
+		doneErr := ""
+		if r.Summary.Status == "incomplete" {
+			doneErr = "subagent incomplete (budget/cancelled)"
+		}
 		a.sendEvent(SubagentDoneMsg{
 			ChatID:       j.ChatID,
 			Grounding:    r.Grounding,
@@ -317,6 +321,7 @@ func (a *App) finalizeSubagentBlock(jobs []subagentJob, results []subagentJobRes
 			UsedBackend:  r.UsedBackend,
 			CostUSD:      subagentCostUSD,
 			FilesChanged: r.FilesChanged,
+			Err:          doneErr,
 		})
 		warnSubagentIncomplete(a, j.Task, r.Summary)
 		out[j.Index] = renderSubagentResult(a, j.Task, r.Summary, r.FilesChanged)
@@ -341,14 +346,14 @@ func renderSubagentResult(a *App, task string, summary SubagentSummary, filesCha
 	return result
 }
 
-// warnSubagentIncomplete prints the loud budget-exhaustion warning. MAIN
+// warnSubagentIncomplete prints the loud incomplete warning. MAIN
 // GOROUTINE ONLY (writes a.Out — must not run on a worker).
 func warnSubagentIncomplete(a *App, task string, summary SubagentSummary) {
 	if summary.Status != "incomplete" {
 		return
 	}
-	fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(task, 80)))
-	fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
+	fmt.Fprintln(a.Out, Yellow("⚠ subagent incomplete on task: "+Truncate(task, 80)))
+	fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — consider re-dispatching narrower or taking over"))
 }
 
 // sendSubagentFinished emits the display-only early completion event from the

@@ -648,7 +648,7 @@ func DefaultConfig() Config {
 		MaxRequestBytes:       8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:     3,
 		MaxParallelSubagents:  2,
-		SubagentTimeoutSeconds: 120, // 2 min watchdog for hung async discovery subagents
+		SubagentTimeoutSeconds: 120, // must match agent.defaultSubagentTimeoutSeconds
 		OracleModel:           "claude-sonnet-4-6",
 		OracleMaxTokens:       4096,
 		OracleAPIKeyEnv:       "ANTHROPIC_API_KEY",

@@ -106,6 +106,7 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 		defer func() {
 			if r := recover(); r != nil {
 				op.mu.Lock()
+				shouldSend := false
 				if !op.terminal {
 					op.terminal = true
 					op.err = fmt.Errorf("async discovery worker panic: %v", r)
@@ -123,20 +124,29 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 						})
 					}
 					op.subagents = subs
+					// Atomically claim event ownership under the lock so the
+					// watchdog can't publish and trigger drain-time sends
+					// in the gap between unlock and our send loop.
+					op.subagentEffectsCommitted = true
+					shouldSend = true
 				}
 				op.mu.Unlock()
+				if !shouldSend {
+					// Watchdog (or a prior panic) already claimed effects.
+					// Don't double-fire; just ensure we publish (idempotent).
+					a.commitAsyncCost(op)
+					a.publishAsyncOp(op)
+					return
+				}
 				// Send per-child SubagentDoneMsg with Err for every child so TUI
-				// tabs don't spin. Mark subagentEffectsCommitted so drain
-				// doesn't re-send (avoids double-fire).
+				// tabs don't spin. subagentEffectsCommitted was already set
+				// under the lock above so drain won't re-send.
 				for _, cid := range op.childChatIDs {
 					a.sendEvent(SubagentDoneMsg{
 						ChatID: cid,
 						Err:    "subagent worker panicked",
 					})
 				}
-				op.mu.Lock()
-				op.subagentEffectsCommitted = true
-				op.mu.Unlock()
 				a.commitAsyncCost(op)
 				a.publishAsyncOp(op)
 			}

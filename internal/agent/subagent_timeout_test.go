@@ -56,7 +56,8 @@ func TestAsyncSubagentCooperativeTimeout(t *testing.T) {
 	defer srv.Close()
 
 	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
-	app.Cfg.SubagentTimeoutSeconds = 2 // short timeout for test speed
+	app.Cfg.SubagentTimeoutSeconds = 2  // short timeout for test speed
+	app.watchdogGrace = 1 * time.Second // shorten grace so watchdog safety net fires within the test's 15s context
 
 	// Drive the turn. The subagent will be dispatched async, the model will
 	// produce final text ("done"), and the turn should suspend. Then the

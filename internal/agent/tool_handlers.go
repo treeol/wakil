@@ -1168,6 +1168,10 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// dispatchSubagent. The child's fresh CostTracker never touches a.Costs
 	// directly; this is the only place its rows are merged in.
 	subagentCostUSD := foldSubagentCost(a.Costs, costRows)
+	doneErr := ""
+	if summary.Status == "incomplete" {
+		doneErr = "subagent incomplete (budget/cancelled)"
+	}
 	a.sendEvent(SubagentDoneMsg{
 		ChatID:       subChatID,
 		Grounding:    grounding,
@@ -1176,6 +1180,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		UsedBackend:  usedBackend,
 		CostUSD:      subagentCostUSD,
 		FilesChanged: filesChanged,
+		Err:          doneErr,
 	})
 
 	// Part C: durable summary persistence. Write the full structured summary
