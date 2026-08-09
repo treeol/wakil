@@ -293,6 +293,9 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 // model can act without an extra poll; full output stays in read_process_log.
 // Called from the reaper goroutine — never touches Conv (funnel drains it).
 func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
+	// Capture the observed exit time BEFORE log reads — slow log retrieval
+	// must not inflate the reported runtime.
+	observedExit := time.Now()
 	tail := ""
 	statusLine := exec.ExitStatusLine(0, false)
 	// Read only the TAIL of the log: the marker sits at EOF and the notice
@@ -319,10 +322,12 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 		toolName:  "run_shell",
 		label:     e.cmdDigest,
 		createdAt: e.startedAt,
+		startedAt: e.startedAt,
 		done:      make(chan struct{}),
 	}
 	op.mu.Lock()
 	op.terminal = true
+	op.finishedAt = observedExit
 	op.result = msg
 	op.shellLSPDirty = !e.readOnly
 	op.mu.Unlock()

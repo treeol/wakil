@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -92,10 +93,12 @@ type asyncSubagentResult struct {
 
 // asyncOp tracks one in-flight or terminal async operation.
 type asyncOp struct {
-	id        string // "op-1" (or "job-bgN" for detached shell)
-	toolName  string // originating tool (mashura__review, run_shell, ...)
-	label     string // short human description
-	createdAt time.Time
+	id         string    // "op-1" (or "job-bgN" for detached shell)
+	toolName   string    // originating tool (mashura__review, run_shell, ...)
+	label      string    // short human description
+	createdAt  time.Time // registration/admission time (used for eviction ordering)
+	startedAt  time.Time // when the worker goroutine began executing (set at worker entry)
+	finishedAt time.Time // when the op terminalized (set under mu at every terminalization site)
 
 	mu       sync.Mutex // guards the fields below
 	terminal bool
@@ -166,6 +169,14 @@ func (o *asyncOp) terminalSnapshot() (terminal bool, result string, err error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.terminal, o.result, o.err
+}
+
+// timingSnapshot returns the op's timing fields under a single lock acquisition.
+// terminal, startedAt, finishedAt, and envelopeDelivered are read atomically.
+func (o *asyncOp) timingSnapshot() (terminal bool, startedAt, finishedAt time.Time, delivered bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.terminal, o.startedAt, o.finishedAt, o.envelopeDelivered
 }
 
 // deliveredSnapshot reports envelopeDelivered under lock.
@@ -307,6 +318,7 @@ func (a *App) armSubagentWatchdog(op *asyncOp, timeout time.Duration) {
 			return
 		}
 		op.terminal = true
+		op.finishedAt = time.Now()
 		op.err = fmt.Errorf("async discovery subagent batch timed out after %s", timeout)
 		// Synthesize per-child timeout results so TUI tabs and the model
 		// both see the failure. The worker never populated op.subagents
@@ -463,6 +475,13 @@ func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, u
 	}
 
 	safe.Go("async-op", func() {
+		// Set startedAt under lock — but only if not already terminalized
+		// (watchdog could fire before the goroutine starts in extreme cases).
+		op.mu.Lock()
+		if !op.terminal && op.startedAt.IsZero() {
+			op.startedAt = time.Now()
+		}
+		op.mu.Unlock()
 		// close(done) even if fn panics — safe.Go recovers, but without this
 		// the op would never terminalize and shutdown would hang.
 		defer close(op.done)
@@ -480,6 +499,7 @@ func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, u
 			return
 		}
 		op.terminal = true
+		op.finishedAt = time.Now()
 		op.result = result
 		op.err = err
 		op.usage = usage
@@ -849,23 +869,60 @@ func (a *App) handleCheckPending(tc proxy.ToolCall) string {
 			ops = append(ops, o)
 		}
 		a.asyncMu.Unlock()
-		if len(ops) == 0 {
+		// Filter: only show running ops and terminal-but-undelivered ops.
+		// Already-delivered terminal ops are history, not "pending."
+		visible := make([]*asyncOp, 0, len(ops))
+		for _, o := range ops {
+			terminal, _, _, delivered := o.timingSnapshot()
+			if !terminal || !delivered {
+				visible = append(visible, o)
+			}
+		}
+		if len(visible) == 0 {
 			return "no async operations pending"
 		}
+		// Sort by createdAt for deterministic output (tie-break by id).
+		slices.SortFunc(visible, func(x, y *asyncOp) int {
+			if c := x.createdAt.Compare(y.createdAt); c != 0 {
+				return c
+			}
+			return strings.Compare(x.id, y.id)
+		})
+		now := time.Now()
 		var sb strings.Builder
 		sb.WriteString("async operations:\n")
-		for _, o := range ops {
-			terminal, _, err := o.terminalSnapshot()
-			state := "running"
-			if terminal {
+		for _, o := range visible {
+			terminal, startedAt, finishedAt, _ := o.timingSnapshot()
+			if !terminal {
+				// Running: show elapsed since work started (or since registration
+				// if the worker hasn't entered yet — startedAt is zero).
+				elapsed := now.Sub(o.createdAt)
+				if !startedAt.IsZero() {
+					elapsed = now.Sub(startedAt)
+				}
+				if elapsed < 0 {
+					elapsed = 0 // clock skew or worker set startedAt after now was captured
+				}
+				fmt.Fprintf(&sb, "- %s %s (running) — %s, running for %s\n",
+					o.id, o.toolName, o.label, elapsed.Round(time.Second))
+			} else {
+				state := "completed"
+				_, _, err := o.terminalSnapshot()
 				if err != nil {
 					state = "failed"
-				} else {
-					state = "completed"
 				}
+				// Terminal: show completion age and run duration.
+				runDur := finishedAt.Sub(startedAt)
+				if startedAt.IsZero() || runDur < 0 {
+					runDur = 0 // watchdog fired before worker started, or clock skew
+				}
+				completedAgo := now.Sub(finishedAt)
+				if completedAgo < 0 {
+					completedAgo = 0
+				}
+				fmt.Fprintf(&sb, "- %s %s (%s) — %s, completed %s ago (ran for %s)\n",
+					o.id, o.toolName, state, o.label, completedAgo.Round(time.Second), runDur.Round(time.Second))
 			}
-			fmt.Fprintf(&sb, "- %s %s (%s) — %s, started %s ago\n",
-				o.id, o.toolName, state, o.label, time.Since(o.createdAt).Round(time.Second))
 		}
 		return sb.String()
 	}
@@ -878,8 +935,13 @@ func (a *App) handleCheckPending(tc proxy.ToolCall) string {
 	}
 	terminal, result, err := op.terminalSnapshot()
 	if !terminal {
+		_, startedAt, _, _ := op.timingSnapshot()
+		elapsed := time.Since(op.createdAt)
+		if !startedAt.IsZero() {
+			elapsed = time.Since(startedAt)
+		}
 		return fmt.Sprintf("%s still running (%s, %s elapsed) — its result will be injected into context when it completes and the turn continues; call check_pending(%q) again later",
-			op.id, op.label, time.Since(op.createdAt).Round(time.Second), op.id)
+			op.id, op.label, elapsed.Round(time.Second), op.id)
 	}
 	a.commitAsyncEffects(op)
 	a.commitAsyncSubagentEffects(op)

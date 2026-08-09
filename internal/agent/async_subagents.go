@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/safe"
@@ -96,6 +97,13 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 	a.armSubagentWatchdog(op, timeout)
 
 	safe.Go("async-subagent-block", func() {
+		// Set startedAt under lock — but only if not already terminalized
+		// (watchdog could fire before the goroutine starts).
+		op.mu.Lock()
+		if !op.terminal && op.startedAt.IsZero() {
+			op.startedAt = time.Now()
+		}
+		op.mu.Unlock()
 		defer close(op.done)
 		defer a.cancelWatchdog(op) // cancel the watchdog if the worker returns normally
 		// Finalizer: if ANYTHING in the body panics after the children ran
@@ -109,6 +117,7 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 				shouldSend := false
 				if !op.terminal {
 					op.terminal = true
+					op.finishedAt = time.Now()
 					op.err = fmt.Errorf("async discovery worker panic: %v", r)
 					// Synthesize per-child error results so tabs don't spin.
 					subs := make([]asyncSubagentResult, 0, len(op.childChatIDs))
@@ -215,6 +224,7 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 			return
 		}
 		op.terminal = true
+		op.finishedAt = time.Now()
 		op.result = merged.String()
 		op.err = opErr
 		op.subagents = subs // published frozen; workers never mutate after this
