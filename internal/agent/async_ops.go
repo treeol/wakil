@@ -170,10 +170,11 @@ type asyncOp struct {
 	// emits an AsyncJobDoneMsg.
 	uiJob bool
 
-	// originChatID is the chat session that issued the op (metadata only, read
-	// by nothing in the delivery path). Stamped at registration so the
-	// separately-filed cross-session async-delivery issue can be resolved later
-	// without a registry migration.
+	// originChatID is the chat session that issued the op. Stamped at
+	// registration and IMMUTABLE thereafter (write-before-publish, so it can be
+	// read without op.mu). Card #129 reads it in the delivery path
+	// (opIsCrossSession) to tag cross-session results and suppress their
+	// grounding into the current session.
 	originChatID string
 
 	// retrievable marks a delivered op whose envelope rendering was
@@ -911,9 +912,35 @@ func (a *App) commitAsyncGrounding(op *asyncOp) {
 	okModels := op.okModels
 	op.mu.Unlock()
 
+	// Card #129: if the op originated in a DIFFERENT session than the current
+	// one (the conversation was rotated via /new, /resume, or handoff while it
+	// was in flight), do NOT add its oracle grounding to the NEW session.
+	// Grounding is provenance ("the model relied on this oracle answer here"),
+	// and an old-session answer does not belong to the new conversation. The
+	// result is still delivered (with a provenance tag) and cost is still
+	// committed separately at worker terminal. We still mark touchedExternal —
+	// the (untrusted) oracle content IS being delivered into and consumed by
+	// the new session, so memory writes based on it must be tainted — but we do
+	// not attribute the grounding entry to the new session.
+	if a.opIsCrossSession(op) {
+		if len(okModels) > 0 {
+			a.touchedExternal = true
+		}
+		return
+	}
 	for _, m := range okModels {
 		a.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: m})
 	}
+}
+
+// opIsCrossSession reports whether an async op originated in a conversation
+// other than the current one. originChatID is stamped at registration
+// (registerAsyncOp) and is metadata until now — this is the delivery-path read
+// card #126 prepared for. Empty originChatID is treated as in-session (behaves
+// exactly as before the fix) so legacy/registered-without-origin ops don't
+// change delivery or grounding.
+func (a *App) opIsCrossSession(op *asyncOp) bool {
+	return op.originChatID != "" && op.originChatID != a.chatID()
 }
 
 // commitAsyncEffects is the combined commit used by delivery paths and tests.
@@ -940,12 +967,23 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 	op.mu.Unlock()
 
 	anyLSPDirty := false
+	cross := a.opIsCrossSession(op)
 	for _, s := range subs {
 		if len(s.FilesChanged) > 0 {
 			anyLSPDirty = true
 		}
-		for _, g := range s.Grounding {
-			a.addExternalGrounding(g)
+		if cross {
+			// Card #129: a cross-session discovery-subagent batch must NOT ground
+			// its per-child entries into the NEW session (wrong provenance), but
+			// the untrusted child content is still delivered into / consumed by
+			// the new session, so the taint signal is still set.
+			if len(s.Grounding) > 0 {
+				a.touchedExternal = true
+			}
+		} else {
+			for _, g := range s.Grounding {
+				a.addExternalGrounding(g)
+			}
 		}
 		a.sendEvent(SubagentDoneMsg{
 			ChatID:       s.ChatID,
@@ -1001,6 +1039,13 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 // dependency).
 func (a *App) renderAsyncLine(op *asyncOp, result string, opErr error) (string, bool) {
 	var line strings.Builder
+	// Card #129: a result originating in a PRIOR session (conversation rotated
+	// while it was in flight) is still delivered, but tagged so the model and
+	// user know it belongs to the earlier conversation — not the current one.
+	// Grounding for it is suppressed separately in commitAsyncGrounding.
+	if a.opIsCrossSession(op) {
+		line.WriteString("> prior-session result ")
+	}
 	fmt.Fprintf(&line, "- %s %s: ", op.id, op.toolName)
 	var text string
 	if opErr != nil {
