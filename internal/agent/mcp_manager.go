@@ -502,9 +502,58 @@ func PrettyArgs(raw string) string {
 	return string(b)
 }
 
+// checkPendingToolDef returns the check_pending tool definition (card #121):
+// the read-only retrieval surface for async operation results.
+func checkPendingToolDef() proxy.Tool {
+	params, _ := json.Marshal(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"id": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional operation id (e.g. \"op-3\") to get the status/result of one async op. Omit to list all pending/completed ops.",
+			},
+		},
+	})
+	return proxy.Tool{Type: "function", Function: proxy.ToolFunction{
+		Name: "check_pending",
+		Description: "Check on async operations that are running in the background (Mashūra counsel calls, long shell commands). " +
+			"Without arguments: list all ops with their state. With an id: get the status, or the full result once the op completed. " +
+			"Read-only and cheap — but don't poll in a tight loop; async results are also injected into context automatically before the next model request.",
+		Parameters: params,
+	}}
+}
+
+// waitForCompletionToolDef is the card #122 Phase 2 tool: it lets the model
+// hand control back and suspend the turn until an async completion arrives,
+// removing the check_pending spin loop as the only option. Returns immediately
+// with a token; the turn loop translates it into a Suspended outcome (the
+// caller awaits a real completion via WaitForAsyncCompletion and resumes).
+func waitForCompletionToolDef() proxy.Tool {
+	params, _ := json.Marshal(map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{},
+	})
+	return proxy.Tool{Type: "function", Function: proxy.ToolFunction{
+		Name: "wait_for_completion",
+		Description: "Blockingly await the next async completion (Mashūra panel, detached shell job, discovery subagent) " +
+			"instead of polling check_pending. If async work is pending, the turn suspends and is automatically resumed " +
+			"when a completion arrives; if nothing is pending, returns immediately. Prefer this over looping check_pending.",
+		Parameters: params,
+	}}
+}
+
 // BuildTools assembles the full tool list: built-ins → searxng → google → MCP → oracle → LSP.
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	t := wtools.DefaultTools(cwd)
+	// Card #121: check_pending is always available — it is the read-only
+	// retrieval surface for async results (mashūra panels, detached shell
+	// jobs). Cheap, ungated, and excluded from subagent toolsets.
+	t = append(t, checkPendingToolDef())
+	// Card #122 Phase 2: wait_for_completion lets the model explicitly hand
+	// control and suspend the turn until an async completion arrives, removing
+	// the check_pending spin loop as the only option. Ungated and always
+	// available (like check_pending).
+	t = append(t, waitForCompletionToolDef())
 	if cfg.SearXngURL != "" {
 		t = append(t, wtools.SearxngTools()...)
 	}

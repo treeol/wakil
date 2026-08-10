@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
@@ -591,12 +592,50 @@ func TestPanelSingleGateForWholePanel(t *testing.T) {
 	if confirmCount != 1 {
 		t.Errorf("confirm count = %d, want 1 (single gate for panel)", confirmCount)
 	}
-	// Multi-model result includes per-model section labels.
-	if !strings.Contains(got, "── claude-opus-4-8 ──") {
-		t.Errorf("result missing model section label; got: %q", got)
+	// Card #121: the tool call now returns a placeholder immediately; the
+	// panel result arrives via the async funnel (drain into Conv).
+	if !strings.Contains(got, "queued as op-") {
+		t.Fatalf("expected async placeholder, got: %q", got)
 	}
-	if !strings.Contains(got, "── claude-fable-5 ──") {
-		t.Errorf("result missing second model label; got: %q", got)
+	// Wait for the panel to finish, then drain the inbox.
+	waitAsyncOps(t, app)
+	env := app.drainAsyncInbox()
+	// Multi-model result includes per-model section labels in the envelope.
+	if !strings.Contains(env, "── claude-opus-4-8 ──") {
+		t.Errorf("envelope missing model section label; got: %q", env)
+	}
+	if !strings.Contains(env, "── claude-fable-5 ──") {
+		t.Errorf("envelope missing second model label; got: %q", env)
+	}
+}
+
+// waitAsyncOps blocks until every registered async op reaches its terminal
+// state (test helper for the async funnel).
+func waitAsyncOps(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		app.asyncMu.Lock()
+		pending := make([]*asyncOp, 0, len(app.asyncOps))
+		for _, o := range app.asyncOps {
+			pending = append(pending, o)
+		}
+		app.asyncMu.Unlock()
+		allDone := true
+		for _, o := range pending {
+			select {
+			case <-o.done:
+			default:
+				allDone = false
+			}
+		}
+		if allDone {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("async ops did not finish within 10s")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -626,6 +665,11 @@ func TestPanelCostPerModel(t *testing.T) {
 
 	app.handleMashura(context.Background(), "mashura__review",
 		tcArgs("mashura__review", `{"focus":"x"}`))
+
+	// Card #121: cost is committed at terminal completion via the funnel, not
+	// inside the tool call. Wait for the panel, then drain (which commits).
+	waitAsyncOps(t, app)
+	app.drainAsyncInbox()
 
 	_, rows := app.Costs.Snapshot()
 

@@ -171,3 +171,6 @@ func (r *recordingExecutor) IsProcessAlive(_ context.Context, pid int) bool {
 	}
 	return pid >= 4100 && pid < r.nextPID
 }
+func (r *recordingExecutor) IsProcessGroupAlive(ctx context.Context, pgid int) bool {
+	return r.IsProcessAlive(ctx, pgid)
+}

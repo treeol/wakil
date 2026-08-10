@@ -301,6 +301,18 @@ type App struct {
 	// embedded here so selector access (a.bgProcs, a.bgMu, ...) is unchanged.
 	bgRegistry
 
+	// Card #121: async operation registry (non-blocking mashūra/shell).
+	// Embedded like bgRegistry; see async_ops.go for the invariants.
+	asyncRegistry
+
+	// Card #122 Phase 1: GLOBAL subagent concurrency cap across ALL overlapping
+	// batches (synchronous + async discovery). Sized lazily by MaxParallelSubagents;
+	// bounded by a wire in runSubagentJobs so total concurrent children never
+	// exceeds /maxpar even when async batches detach and overlap. nil until first use.
+	subagentGlobalSem chan struct{}
+	// subagentSemMu guards lazy (re)size of subagentGlobalSem.
+	subagentSemMu sync.Mutex
+
 	// Workflow is set while a /plan workflow is active. Nil when no workflow is
 	// running. Cleared when the workflow reaches WFDone or the user aborts it.
 	Workflow *workflow.WorkflowState
@@ -474,6 +486,28 @@ type bgEntry struct {
 	logPath    string
 	startedAt  time.Time
 	generation int // executor generation at time of creation
+
+	// Card #121: detached-job push notification. notifyOnExit is set ONLY when
+	// run_shell auto-backgrounds a command at its deadline (the detached case);
+	// explicit run_background jobs are poll-by-design and don't notify. The
+	// reaper pushes a completion notice into the async inbox exactly once
+	// (notifyOnExit && !notified, guarded by bgMu). kill_process and shutdown
+	// clear notifyOnExit so intentional terminations stay silent.
+	notifyOnExit bool
+	notified     bool
+	cmdDigest    string // short command label for the completion notice
+	readOnly     bool   // whether the command was classified read-only
+
+	// Card #128: detached-shell TUI tabs. tabStarted/tabDoneSent are display
+	// exactly-once guards (independent of the inbox-level `notified`), all under
+	// bgMu. originChatID is captured ONCE at creation (the reaper/exit paths run
+	// async, so they must never read the current ChatID) and carried in both the
+	// Start and Done tab events for the post-rotation guard. toolName reflects
+	// the originating tool (run_shell for auto-bg, run_background for explicit).
+	tabStarted   bool
+	tabDoneSent  bool
+	originChatID string
+	toolName     string
 
 	// done is closed by a reaper goroutine when the process exits. Used by
 	// StopAllBackgroundProcs to wait for clean shutdown without a fixed sleep.
@@ -655,55 +689,43 @@ func (a *App) NewConversation(chatID string) {
 // selection), checkEgressConsent (external backend gate), streamTurn (stream +
 // tool loop), finalizeTurn (compaction + hard-max + pressure warning).
 func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error) {
+	// Card #122 Phase 2: Send is the backward-compatible wrapper — it returns
+	// the turn's text and does not distinguish Final from Suspended. Callers
+	// that need to detect suspension (TUI, headless idle/wake) use SendOutcome.
+	out, err := a.SendOutcome(ctx, userText)
+	if err != nil {
+		return "", err
+	}
+	return out.Text, nil
+}
+
+// SendOutcome is like Send but returns a TurnOutcome so the caller can detect a
+// SUSPENDED turn (card #122 Phase 2: the model produced final text while async
+// work is pending and it has no further independent tool work). A suspended
+// caller retains the continuation, awaits a completion via
+// WaitForAsyncCompletion, then resumes. Send(ctx, text) is equivalent to
+// out := SendOutcome(ctx, text); out.Text and never distinguishes suspension.
+func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, retErr error) {
 	a.prepareTurn()
 
 	if !a.checkEgressConsent() {
-		return "", nil
+		return TurnOutcome{Kind: TurnFinal}, nil
 	}
 
-	// Persist on every exit path (success, stream error, or cancellation) so a
-	// completed turn — and at minimum the user's message — is never lost.
 	defer a.SaveSession()
 
-	// Prepend the workflow phase directive so the model knows its current
-	// obligation. The combined text is stored in Conv so it participates in
-	// caching and compaction normally.
 	stored := userText
 	if a.Workflow != nil {
 		if d := a.Workflow.Directive(); d != "" {
 			stored = d + "\n\n" + userText
 		}
 	}
-
-	// Turn-entry memory/skill retrieval: search memory and skills for entries
-	// relevant to the user's query and fold the results into the user message
-	// content (same pattern as workflow directives). This preserves the
-	// prompt-cache prefix (Conv[0] is never touched) and avoids accumulating
-	// stale system messages across turns. The block is clearly marked as
-	// untrusted data to mitigate prompt-injection from tainted entries.
-	// Retrieval failures are non-fatal — an empty string means no injection.
-	// The search query is the envelope-stripped text: for a /remember turn this
-	// keeps memory retrieval keyed on the original query rather than the folded
-	// session-history envelope.
 	if memCtx := a.retrieveMemoryContext(ctx, stripRetrievalBlock(userText)); memCtx != "" {
 		stored = memCtx + "\n" + stored
 	}
-
-	// Keep Conv[0]'s day-stable preamble current before anything below reads
-	// or resizes Conv. Once per turn, not per tool-loop iteration — see
-	// ensurePreamble.
 	a.ensurePreamble()
-
-	// P36 downshift guard: if /backend switched to a smaller-context model since
-	// the last turn, Conv may already exceed the new hard ceiling. Compact+drop
-	// before appending the user message so we never deliver an over-window Conv.
 	a.fitConvToWindow(ctx)
 
-	// Attach pending images (from --attach-image flag or /image command) to
-	// the user message. Consumed here — subsequent turns are text-only unless
-	// the user attaches more images. Images are carried on the Message via
-	// Images []ImagePart (not serialized directly; marshalWireMessages converts
-	// them to image_url content parts at wire-encoding time).
 	userMsg := proxy.Message{Role: "user", Content: StrPtr(stored), Pinned: a.pinUserMessage}
 	if len(a.PendingImages) > 0 {
 		userMsg.Images = a.PendingImages
@@ -713,9 +735,6 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 	a.Conv = append(a.Conv, userMsg)
 	a.convMu.Unlock()
 
-	// P38 trace: accumulate per-turn state written to the JSONL store on exit.
-	// retErr is captured by the defer closure — it reflects whichever error path
-	// (or nil on success) the function returns through.
 	var (
 		traceReasoningChars int
 		traceToolCalls      []trace.ToolTrace
@@ -732,18 +751,17 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 		}()
 	}
 
-	// Build a reasoning sink that always accumulates chars for the trace and
-	// also forwards to OnReasoning when set (TUI path). Created once so the
-	// counter is shared across all iterations of the tool loop.
 	rsink := a.traceReasoningSink(&traceReasoningChars)
-
-	final, err := a.streamTurn(ctx, userText, rsink, &traceToolCalls)
+	final, suspended, err := a.streamTurn(ctx, userText, rsink, &traceToolCalls)
 	if err != nil {
-		return "", err
+		return TurnOutcome{}, err
 	}
-
 	a.finalizeTurn(ctx)
-	return final, nil
+	kind := TurnFinal
+	if suspended {
+		kind = TurnSuspended
+	}
+	return TurnOutcome{Kind: kind, Text: final}, nil
 }
 
 // traceReasoningSink returns a Sink that accumulates reasoning_content chars
@@ -1185,7 +1203,11 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 	// dispatch_subagent results are already a ≤4k structured JSON digest of dozens
 	// of internal tool iterations — re-truncating or stubbing a digest discards
 	// the work. Same exemption rationale.
-	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) {
+	//
+	// check_pending (card #121) serves async results — most often full mashūra
+	// answers — so it shares the mashūra exemption; capping it would defeat the
+	// "retrieve the full result on demand" contract.
+	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) || toolName == "check_pending" || toolName == "wait_for_completion" {
 		return result
 	}
 	if a.Cfg.TurnToolBudget > 0 && turnToolBytesSoFar >= a.Cfg.TurnToolBudget {
@@ -1761,6 +1783,10 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleGoogleFetchURL(ctx, tc))
 	case "run_background":
 		return stringToToolResult(a.handleRunBackground(ctx, tc))
+	case "check_pending":
+		return stringToToolResult(a.handleCheckPending(tc))
+	case "wait_for_completion":
+		return stringToToolResult(a.handleWaitForCompletion())
 	case "kill_process":
 		return stringToToolResult(a.handleKillProcess(ctx, tc))
 	case "read_process_log":
@@ -1839,17 +1865,22 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 // everything anyway; this is primarily meaningful for direct mode.
 func (a *App) StopAllBackgroundProcs() {
 	a.bgMu.RLock()
-	if len(a.bgProcs) == 0 {
-		a.bgMu.RUnlock()
+	empty := len(a.bgProcs) == 0
+	a.bgMu.RUnlock()
+	if empty {
 		return
 	}
 	// Copy entries under lock, then operate outside lock to avoid
 	// holding the lock during KillPgid/IsProcessAlive/wait.
+	a.bgMu.Lock()
 	entries := make([]*bgEntry, 0, len(a.bgProcs))
 	for _, entry := range a.bgProcs {
+		// Card #121: shutdown kills are intentional — disarm detached-job
+		// notifications so reapers don't enqueue pings during teardown.
+		entry.notifyOnExit = false
 		entries = append(entries, entry)
 	}
-	a.bgMu.RUnlock()
+	a.bgMu.Unlock()
 
 	bg := context.Background()
 	type liveProc struct {
@@ -1861,7 +1892,7 @@ func (a *App) StopAllBackgroundProcs() {
 		if entry.generation != a.Exec.Generation() {
 			continue
 		}
-		if a.Exec.IsProcessAlive(bg, entry.pid) {
+		if a.Exec.IsProcessGroupAlive(bg, entry.pgid) {
 			_ = a.Exec.KillPgid(bg, entry.pgid, 15) // SIGTERM
 			live = append(live, liveProc{entry: entry, done: entry.done})
 		}
@@ -1888,7 +1919,7 @@ func (a *App) StopAllBackgroundProcs() {
 		if timedOut {
 			// Force-kill any processes that are still alive.
 			for _, p := range live {
-				if a.Exec.IsProcessAlive(bg, p.entry.pid) {
+				if a.Exec.IsProcessGroupAlive(bg, p.entry.pgid) {
 					_ = a.Exec.KillPgid(bg, p.entry.pgid, 9) // SIGKILL
 				}
 			}

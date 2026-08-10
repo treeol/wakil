@@ -223,6 +223,7 @@ func main() {
 
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
+		app.StopAllAsyncOps()
 		app.StopAllBackgroundProcs()
 		if res.memStore != nil {
 			res.memStore.Close()
@@ -246,6 +247,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	app.StopAllAsyncOps()
 	app.StopAllBackgroundProcs()
 	if res.memStore != nil {
 		res.memStore.Close()

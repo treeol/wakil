@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/safe"
 	"github.com/treeol/wakil/internal/workflow"
 )
 
@@ -148,10 +150,28 @@ func mashuraToolDefs() []proxy.Tool {
 
 // handleMashura dispatches a mashura__* tool call: it parses the tool-specific
 // args, resolves the target panel (from config + optional per-call override),
-// gates the entire panel with a single confirm prompt, runs all members
-// sequentially, records cost per model, and returns the formatted result.
-// The legacy oracle__ask alias is handled as a review.
+// gates the entire panel with a single confirm prompt, and returns a PLACEHOLDER
+// immediately — the panel runs on a worker goroutine (card #121) and its result
+// is injected into the conversation before the next model request, or can be
+// retrieved early via check_pending. Cost is committed at worker terminal
+// completion; grounding is committed at delivery (drain/check_pending) — both
+// exactly once. The legacy oracle__ask alias is handled as a review.
+//
+// Fallbacks that keep the call synchronous (loudly): the async registry is full
+// (asyncMaxActive reached) or stopping. Auto-counsel (maybeSuggestDebug) uses
+// runMashuraCore directly with sync=true — its assistant+tool-pair injection
+// and cap semantics are unchanged.
 func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall) string {
+	// Subagents keep today's synchronous behavior — they have no turn loop to
+	// deliver async completions into.
+	return a.runMashuraCore(ctx, name, tc, a.IsSubagent)
+}
+
+// runMashuraCore is the shared mashūra execution path. sync=true runs the
+// panel inline and returns the formatted result (auto-counsel, registry-full
+// fallback, subagents); sync=false enqueues the panel on the async registry
+// and returns a placeholder pointing at the op id.
+func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall, sync bool) string {
 	// Extract the optional per-call panel override before tool-specific parsing.
 	panelOverride := mashuraPanelArg(tc)
 
@@ -195,6 +215,9 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 	a.mashuraLogReceipts(ctx, receipts)
 
 	// Run panel; for fusion mode this is a single OpenRouter call.
+	// Keys, briefing snapshot, and config are captured NOW (issue time) — the
+	// worker sends exactly what was approved (TOCTOU bound by the pre-gate
+	// briefing build).
 	ccfg := counsel.PanelCallConfig{
 		MaxTokens:          maxTokens,
 		TimeoutSeconds:     a.Cfg.OracleTimeoutSeconds,
@@ -202,8 +225,135 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 		FusionJudge:        panel.FusionJudge,
 		FusionMaxToolCalls: panel.FusionMaxToolCalls,
 	}
-	results := counsel.RunPanel(ctx, panel.Models, panel.Mode, question, briefing, ccfg, apiKeys)
+	models, mode := panel.Models, panel.Mode
 
+	if sync {
+		results := counsel.RunPanel(ctx, models, mode, question, briefing, ccfg, apiKeys)
+		a.recordMashuraResults(results)
+		return counsel.FormatPanelResult(results)
+	}
+
+	op, reason := a.enqueueAsyncOpJob(name, panelName, a.mashuraCallTimeout(mode), func(opID, originChatID string) (string, []counselUsageRec, []string, error) {
+		// Detached from the turn context on purpose: the paid call was approved
+		// and should complete even if the turn is cancelled (card #121 D-4;
+		// cancellation support is a follow-up). Layer the provider timeout using
+		// the SAME authoritative value the watchdog uses (mashuraTimeout), so a
+		// "0 = no timeout" config still yields the bounded default — a hung panel
+		// can never run unbounded (card #130). Debate mode gets 2× up front so
+		// runDebate's derived 2× wall-time deadline isn't clipped to 1× (card #131).
+		callCtx, cancel := context.WithTimeout(context.Background(), a.mashuraCallTimeout(mode))
+		defer cancel()
+
+		// Live progress: a bounded, drop-on-full status channel + a SINGLE
+		// forwarder goroutine drain it to sendEvent. This decouples the paid
+		// panel call from a blocked/stalled Bubble Tea sink: a member goroutine
+		// does a non-blocking channel push, so it can never block wg.Wait /
+		// terminalization / slot release (mirrors the Phase 1 publishAsyncOp
+		// "UI must not stall the async slot" invariant). The single forwarder
+		// preserves per-op FIFO.
+		//
+		// After RunPanel returns we close the channel and WAIT for the forwarder
+		// under a bound (asyncJobChunkDrainMax). In the normal case all Chunk
+		// sends complete before terminalization (before publishAsyncOp's Done).
+		// If the sink is wedged (Program.Send blocks past the bound), we abandon
+		// the remaining drain and terminalize anyway — the TUI's t.done guard
+		// already discards any Chunk that arrives after Done, so this satisfies
+		// "UI can never stall terminalization" while preserving Chunk-before-Done
+		// ordering for every Chunk the sink actually accepted.
+		type statusMsg struct {
+			round int
+			model string
+			kind  counsel.PanelMemberEventKind
+		}
+		const statusCap = 256
+		chunks := make(chan statusMsg, statusCap)
+		fwdClosed := make(chan struct{})
+		safe.Go("mashura-chunk-fwd", func() {
+			defer close(fwdClosed)
+			for sm := range chunks {
+				line := renderAsyncJobChunkText(counsel.PanelMemberEvent{Round: sm.round, Model: sm.model, Kind: sm.kind})
+				if line == "" {
+					continue // unknown/reserved kind — skip, no garbage status line
+				}
+				a.sendEvent(AsyncJobChunkMsg{OpID: opID, OriginChatID: originChatID, Text: line})
+			}
+		})
+		// Ensure cleanup on ANY path (including a panic in RunPanel/assembly):
+		// close the channel, then wait for the forwarder ONLY under a bound.
+		// If the sink is wedged (Program.Send blocks) we do NOT wait further —
+		// abandoning here guarantees a stuck UI can never stall terminalization
+		// or the async slot. The forwarder goroutine may remain blocked in the
+		// sink (expendable UI telemetry); any Chunk it eventually delivers is
+		// dropped by the TUI's done guard. There is deliberately NO
+		// fwdDone.Wait() after the timeout — that would reintroduce the stall.
+		defer func() {
+			close(chunks)
+			select {
+			case <-fwdClosed:
+				// Forwarder drained; every accepted Chunk was sent before Done.
+			case <-time.After(asyncJobChunkDrainMax):
+				// Sink wedged — abandon remaining chunks without waiting.
+			}
+		}()
+		// Set the observer on a COPY of ccfg (never mutates the caller's ccfg,
+		// so the synchronous fallback below reusing ccfg emits NO chunks).
+		liveCfg := ccfg
+		liveCfg.OnMemberEvent = func(ev counsel.PanelMemberEvent) {
+			// Non-blocking push; drop on full (chunks are ephemeral telemetry).
+			sm := statusMsg{round: ev.Round, model: ev.Model, kind: ev.Kind}
+			select {
+			case chunks <- sm:
+			default:
+			}
+		}
+
+		results := counsel.RunPanel(callCtx, models, mode, question, briefing, liveCfg, apiKeys)
+		// Deferred cleanup (close + bounded drain) runs here on the way out,
+		// guaranteeing all accepted Chunk sends happen-before terminalization.
+
+		recs := make([]counselUsageRec, 0, len(results))
+		var okModels []string
+		allErr := true
+		for _, r := range results {
+			if r.Usage.InputTokens > 0 || r.Usage.OutputTokens > 0 {
+				recs = append(recs, counselUsageRec{Model: r.Model, Usage: r.Usage})
+			}
+			if r.Err == nil {
+				okModels = append(okModels, r.Model)
+				allErr = false
+			}
+		}
+		if allErr && len(results) > 0 {
+			return counsel.FormatPanelResult(results), recs, okModels, fmt.Errorf("all panel members failed (see check_pending result for details)")
+		}
+		return counsel.FormatPanelResult(results), recs, okModels, nil
+	})
+	if reason != "" {
+		// Registry full or stopping — LOUD synchronous fallback (never
+		// silent). Detached context: an approved paid call completes even if
+		// the turn is cancelled, consistent with the async worker path.
+		why := "async registry full"
+		if reason == "stopping" {
+			why = "session shutting down"
+		}
+		fmt.Fprintln(a.Out, Dim("· "+why+" — running mashūra synchronously"))
+		// Same bounded provider timeout as the async worker path (mashuraTimeout
+		// never returns 0 — card #130), with the debate 2× up-front so runDebate's
+		// derived 2× wall-time deadline isn't clipped to 1× (card #131).
+		fbCtx, cancel := context.WithTimeout(context.Background(), a.mashuraCallTimeout(mode))
+		defer cancel()
+		results := counsel.RunPanel(fbCtx, models, mode, question, briefing, ccfg, apiKeys)
+		a.recordMashuraResults(results)
+		return counsel.FormatPanelResult(results)
+	}
+	return fmt.Sprintf("queued as %s (%s, panel %s) — the panel is running now; once it completes, its result will be injected into context at the next model request while this turn continues. Keep working; call check_pending(%q) any time to retrieve it early.",
+		op.id, name, panelName, op.id)
+}
+
+// recordMashuraResults commits cost + grounding for a synchronously-run panel
+// (auto-counsel, registry-full fallback, subagents). Exactly mirrors the
+// async drain path's commitAsyncEffects.
+func (a *App) recordMashuraResults(results []counsel.PanelMemberResult) {
 	// Record cost per model; add grounding entry per successful member.
 	// Record usage even on error — providers bill for truncated/failed calls.
 	for _, r := range results {
@@ -214,7 +364,6 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 			a.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}
 	}
-	return counsel.FormatPanelResult(results)
 }
 
 // mashuraPanelArg extracts the optional "panel" field from a tool call's JSON
@@ -910,7 +1059,10 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 					Arguments: fmt.Sprintf(`{"symptom":%q}`, "auto-counsel: "+symptom),
 				},
 			}
-			result := a.handleMashura(ctx, "mashura__debug", fakeTC)
+			// Card #121: auto-counsel stays SYNCHRONOUS — its diagnosis must be
+			// injected immediately as the assistant+tool pair below (cap/dedup
+			// semantics depend on the result being in hand right now).
+			result := a.runMashuraCore(ctx, "mashura__debug", fakeTC, true)
 			a.autoCounselSkipGate = false // ensure cleared even on early return
 			// Inject as assistant+tool pair so the model sees the diagnosis.
 			a.Conv = append(a.Conv,

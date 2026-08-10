@@ -98,8 +98,10 @@ func (a *App) checkEgressConsent() bool {
 // tool calls, feed results back, repeat until a final text answer or
 // force-finish. Returns the final assistant text and any stream error.
 // traceToolCalls is appended to for the deferred trace flush in the caller.
-func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink, traceToolCalls *[]trace.ToolTrace) (string, error) {
+func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink, traceToolCalls *[]trace.ToolTrace) (string, bool, error) {
 	var final string
+	var suspended bool    // card #122 Phase 2: true when the turn idled with async work pending
+	var wantsSuspend bool // wait_for_completion requested a suspension this round
 	var turnToolBytes int
 	firstStream := true
 	// Path-confinement circuit breaker state (see confinementBreakerThreshold):
@@ -113,6 +115,17 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 	var confinementPaths []string
 	confinementTrip := false
 	for iter := 0; ; iter++ {
+		wantsSuspend = false // one wait_for_completion per round
+		// Card #121: drain completed async operations (mashūra panels, detached
+		// shell jobs) into the conversation BEFORE the model request, so the
+		// model sees them as a ping. Turn goroutine only; Conv mutated under
+		// convMu. Empty inbox → no message, no cost.
+		if envelope := a.drainAsyncInbox(); envelope != "" {
+			a.convMu.Lock()
+			a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(envelope)})
+			a.convMu.Unlock()
+			fmt.Fprintln(a.Out, Dim("· async results delivered"))
+		}
 		// Hard backstop against runaway tool loops: on the final allowed iteration
 		// drop the tools and force the model to answer from what it already has.
 		// 0 = unlimited (the parent's default; a human gates each tool there).
@@ -149,7 +162,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		sink := a.streamSink()
 		msg, err := a.Client.Stream(ctx, msgs, tools, sink, rsink)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		a.RecordInferenceCost() // main inference for this iteration
 		if firstStream {
@@ -176,6 +189,12 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		final = DerefStr(msg.Content)
 
 		if len(msg.ToolCalls) == 0 || forceFinish {
+			// Card #122 Phase 2: a genuine idle point is when the model produced
+			// final text with NO tool calls AND async work is still pending. NOT a
+			// suspension when forceFinish stripped tools (limit/breaker backstop —
+			// that is a definitive stop, not an idle). Return suspended so the
+			// caller can wake on the next completion instead of ending the turn.
+			suspended = !forceFinish && a.isIdle(len(msg.ToolCalls) == 0)
 			break
 		}
 		// Circuit breaker (checked pre-cap, on the raw tool result): a
@@ -270,6 +289,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			}
 			if tj-ti >= 2 {
 				block := msg.ToolCalls[ti:tj]
+				// Card #122 Phase 1: runParallelSubagentBlock routes pure-discovery
+				// blocks through the async funnel and runs mixed/non-discovery blocks
+				// synchronously. Returns one result per call in block order.
 				blockResults := a.runParallelSubagentBlock(ctx, block)
 				for bi, btc := range block {
 					br := stringToToolResult(blockResults[bi])
@@ -281,15 +303,25 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				continue
 			}
 			result := a.handleToolCall(ctx, tc)
+			if result.text == waitForCompletionToken {
+				wantsSuspend = true
+			}
 			finalizeToolResult(tc, result)
 			ti++
+		}
+		// Card #122 Phase 2: wait_for_completion hands control back. If the model
+		// explicitly requested a wait and async work is pending, suspend so the
+		// caller awaits a completion and resumes (instead of ending or spinning).
+		if wantsSuspend && a.countActiveAsyncOps() > 0 {
+			suspended = true
+			break
 		}
 		// After a round of tool calls, offer mashura__debug if the rolling trace
 		// shows a struggle signal. In auto-counsel mode this fires the call
 		// directly (up to MaxCounsel times); otherwise it only prints a hint.
 		a.maybeSuggestDebug(ctx)
 	}
-	return final, nil
+	return final, suspended, nil
 }
 
 // finalizeTurn runs post-loop cleanup: compaction, hard-max enforcement, and

@@ -21,9 +21,10 @@ func statusSegTexts(in statusLineInput) []string {
 }
 
 func TestStatusSegmentsIdleInitial(t *testing.T) {
+	// Fresh idle (no turn yet): always shows "idle" (never disappears).
 	segs := statusSegTexts(statusLineInput{state: stateIdle, hadTurn: false})
-	if len(segs) != 1 || segs[0] != "•" {
-		t.Errorf("fresh idle = dot only; got: %v", segs)
+	if len(segs) != 1 || segs[0] != "• idle" {
+		t.Errorf("fresh idle = 'dot idle'; got: %v", segs)
 	}
 }
 
@@ -48,6 +49,47 @@ func TestStatusSegmentsReasoning(t *testing.T) {
 	segs := statusSegTexts(statusLineInput{state: stateStreaming, reasoning: true})
 	if segs[0] != "• reasoning" {
 		t.Errorf("reasoning head = %q, want '• reasoning'", segs[0])
+	}
+}
+
+func TestStatusSegmentsExecuting(t *testing.T) {
+	// A tool is running → the state label should say "executing", not "streaming".
+	// (The tool DETAIL now has its own dedicated row above the status line via
+	// toolActivityRow, not a status-line segment.)
+	segs := statusSegTexts(statusLineInput{state: stateStreaming, runningTool: "tool: run_shell ls -la"})
+	if segs[0] != "• executing" {
+		t.Errorf("executing head = %q, want '• executing'", segs[0])
+	}
+	// reasoning takes precedence over executing (thinking before any tool).
+	segs = statusSegTexts(statusLineInput{state: stateStreaming, reasoning: true, runningTool: "tool: read_file x"})
+	if segs[0] != "• reasoning" {
+		t.Errorf("reasoning should beat executing; got %q", segs[0])
+	}
+}
+
+func TestStatusSegmentsLastTool(t *testing.T) {
+	// The last tool's text persists in the status line after the tool completes
+	// (sourced from lastTool, not runningTool). Shown as a dimmed segment.
+	segs := statusSegTexts(statusLineInput{state: stateStreaming, lastToolText: "run_shell ls -la"})
+	found := false
+	for _, s := range segs {
+		if strings.Contains(s, "run_shell") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("last tool text should appear as a status segment; got %v", segs)
+	}
+	// At idle with lastToolText, the segment still shows.
+	segs = statusSegTexts(statusLineInput{state: stateIdle, hadTurn: true, lastToolText: "read_file config.go"})
+	found = false
+	for _, s := range segs {
+		if strings.Contains(s, "read_file") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("last tool text should persist at idle; got %v", segs)
 	}
 }
 

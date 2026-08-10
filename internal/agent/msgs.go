@@ -157,6 +157,56 @@ type SubagentDoneMsg struct {
 	// src and dst. Failed tool calls are not recorded. This is ground truth —
 	// the model's self-reported files_changed in SubagentSummary is a claim.
 	FilesChanged []string
+
+	// Err is non-empty when the subagent failed (timeout, panic, transport
+	// error, registry refusal). The TUI renders a red ✗ instead of green ✓
+	// so the user can distinguish failure from success. Empty on normal
+	// completion.
+	Err string
+}
+
+// AsyncJobStartMsg opens a generic async-job tab in the TUI for a non-subagent
+// async operation. Currently: Mashūra counsel panels (OpID = async-registry
+// identity "op-N") and detached shells (OpID = "job-<bgID>", card #128). OpID is
+// an opaque display identity — the TUI routes purely on this string and never
+// dereferences the async registry. OriginChatID mirrors the issuing session for
+// post-rotation provenance; the TUI uses it to reject starts/completions from a
+// prior session.
+type AsyncJobStartMsg struct {
+	OpID         string
+	Label        string // human label (panel name / shell command or label)
+	ToolName     string // originating tool (mashura__review, run_shell, run_background, ...)
+	OriginChatID string
+}
+
+// AsyncJobDoneMsg terminalizes an async-job tab. Result is a bounded, marker-
+// neutralized preview (≤ asyncJobTabPreviewMaxBytes); it is shown whether or not
+// Err is set — on failure providers/parents may return useful diagnostics in
+// Result alongside the error. Display-only: the authoritative delivery to the
+// model happens via drainAsyncInbox/check_pending (exactly-once, unchanged).
+// OriginChatID mirrors AsyncJobStartMsg so the TUI can reject a completion from
+// a prior session after rotation (post-rotation resurrection guard).
+type AsyncJobDoneMsg struct {
+	OpID         string
+	Label        string
+	ToolName     string
+	Result       string
+	Err          string
+	OriginChatID string
+}
+
+// AsyncJobChunkMsg delivers a live progress/status line for an async-job tab
+// (Mashūra panel member status: member started/completed/failed). OpID routes
+// to the tab; OriginChatID matches Start/Done for the post-rotation guard.
+// Display-only, single-line, control-sanitized, marker-neutralized, bounded
+// (≤ asyncJobChunkMaxBytes). It is never written to the registry or delivered
+// to the model — the authoritative result remains the AsyncJobDoneMsg + drain
+// inbox. Ordering among parallel members is unspecified; each member's own
+// start→terminal order is preserved, and every Chunk precedes the Done message.
+type AsyncJobChunkMsg struct {
+	OpID         string
+	OriginChatID string
+	Text         string
 }
 
 // SysNoteMsg delivers a status line into the viewport.

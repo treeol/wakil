@@ -32,9 +32,10 @@ func RunTurn(app *App, ctx context.Context, userText string) Cmd {
 		// (web/oracle) accumulate during tool execution.
 		app.Client.ResetGrounding()
 
-		_, err := app.Send(ctx, userText)
-
-		// Retry transient backend failures in auto mode; surface fatal errors and
+		// Card #122 Phase 2: run the turn to its FINAL outcome, transparently
+		// resuming through suspensions (pending async work) so the TUI doesn't end
+		// the turn / fire AgentDoneMsg while background work is still running.
+		err := runTurnToFinal(ctx, app, userText) // Retry transient backend failures in auto mode; surface fatal errors and
 		// exhausted-retry state as tidy ⚠ lines rather than raw error traces.
 		err = HandleStreamError(ctx, app, err)
 		streamWarn := ""
@@ -100,6 +101,32 @@ func RunTurn(app *App, ctx context.Context, userText string) Cmd {
 		}
 		return nil
 	}
+}
+
+// runTurnToFinal drives one user turn to its FINAL outcome, transparently
+// handling card #122 Phase 2 suspension: when the turn suspends on pending
+// async work, it awaits a completion (WaitForAsyncCompletion) and resumes until
+// the turn reaches a Final outcome. Used by both the TUI (RunTurn) and headless
+// (cmd/wakil/run.go, which has its own equivalent in package main).
+func runTurnToFinal(ctx context.Context, app *App, userText string) error {
+	out, err := app.SendOutcome(ctx, userText)
+	if err != nil {
+		return err
+	}
+	for out.Kind == TurnSuspended {
+		ok, werr := app.WaitForAsyncCompletion(ctx)
+		if werr != nil {
+			return werr
+		}
+		if !ok {
+			return nil // nothing left pending → treat as final
+		}
+		out, err = app.Resume(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runFinalReview is the Cmd that the TUI fires when WFFinalReviewMsg arrives.
