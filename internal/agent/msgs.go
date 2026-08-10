@@ -194,6 +194,20 @@ type AsyncJobDoneMsg struct {
 	OriginChatID string
 }
 
+// AsyncJobChunkMsg delivers a live progress/status line for an async-job tab
+// (Mashūra panel member status: member started/completed/failed). OpID routes
+// to the tab; OriginChatID matches Start/Done for the post-rotation guard.
+// Display-only, single-line, control-sanitized, marker-neutralized, bounded
+// (≤ asyncJobChunkMaxBytes). It is never written to the registry or delivered
+// to the model — the authoritative result remains the AsyncJobDoneMsg + drain
+// inbox. Ordering among parallel members is unspecified; each member's own
+// start→terminal order is preserved, and every Chunk precedes the Done message.
+type AsyncJobChunkMsg struct {
+	OpID         string
+	OriginChatID string
+	Text         string
+}
+
 // SysNoteMsg delivers a status line into the viewport.
 type SysNoteMsg struct{ Text string }
 

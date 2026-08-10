@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,24 @@ const (
 	// it lives in the registry / check_pending(op-N) / spill files. The tab is a
 	// lightweight display surface, so keep the copied preview modest.
 	asyncJobTabPreviewMaxBytes = 8000
+
+	// asyncJobChunkMaxBytes is the byte cap for one AsyncJobChunkMsg status line.
+	asyncJobChunkMaxBytes = 256
+
+	// asyncJobStatusLinesMax caps the number of live status lines appended to an
+	// async-job tab, bounding the tab buffer independently of panel size/mode.
+	// Approx counts: panel ≈ 2N, fallback ≤ 2N, debate ≈ 4N. This generous cap
+	// covers a large panel while still bounding memory; excess is dropped.
+	asyncJobStatusLinesMax = 64
+
+	// asyncJobChunkDrainMax bounds how long the Mashūra worker waits for the
+	// chunk forwarder to drain into the event sink after RunPanel returns. In
+	// the normal case the forwarder finishes well within this window, so every
+	// accepted Chunk still precedes the Done message. If the event sink is
+	// wedged (Program.Send blocks), abandoning beyond this bound guarantees a
+	// stuck UI can never stall terminalization or the async slot — late
+	// stragglers are dropped by the TUI's done guard.
+	asyncJobChunkDrainMax = 2 * time.Second
 
 	// defaultSubagentTimeoutSeconds is the fallback async subagent timeout
 	// when SubagentTimeoutSeconds is 0 (or unset). config.DefaultConfig sets
@@ -520,17 +539,44 @@ func (a *App) boundAsyncJobDone(raw *AsyncJobDoneMsg) AsyncJobDoneMsg {
 	return msg
 }
 
+// renderAsyncJobChunkText renders a single-line, control-sanitized,
+// marker-neutralized, UTF-8-safe status line (≤ asyncJobChunkMaxBytes) from a
+// panel member event. Model names come from config and may contain control
+// byte/ANSI; error/status text may carry arbitrary provider strings — normalize
+// to one display line before bounding.
+func renderAsyncJobChunkText(ev counsel.PanelMemberEvent) string {
+	verb, known := map[counsel.PanelMemberEventKind]string{
+		counsel.PanelMemberStart: "calling",
+		counsel.PanelMemberDone:  "done",
+		counsel.PanelMemberError: "failed",
+	}[ev.Kind]
+	if !known {
+		// Reserved/unknown kinds (e.g. PanelMemberDelta) produce no status line —
+		// the forwarder skips them rather than emitting a garbage " model" line.
+		return ""
+	}
+	round := ""
+	if ev.Round > 0 {
+		round = " (round " + strconv.Itoa(ev.Round) + ")"
+	}
+	line := verb + " " + ev.Model + round
+	// Enforce one display line: replace newlines/CR with space, then strip
+	// terminal control bytes, then neutralize markers, then bound UTF-8-safe.
+	line = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(line)
+	line = stripControl(line)
+	line = neutralizeAsyncMarker(line)
+	if len(line) > asyncJobChunkMaxBytes {
+		line = truncateUTF8(line, asyncJobChunkMaxBytes)
+	}
+	return line
+}
+
 // finishAsyncOp is the outward publication call (compat/alias) used by tests and
 // the sync-path helpers. It is idempotent.
 func (a *App) finishAsyncOp(op *asyncOp) {
 	a.publishAsyncOp(op)
 }
 
-// enqueueAsyncOp registers a new operation and starts its worker. Returns the
-// op and an empty reason on success; on refusal reason is "full" or "stopping"
-// and callers must handle the fallback (mashura: loud synchronous fallback;
-// subagents: reject — never silent sync).
-//
 // enqueueAsyncOp registers a new operation and starts its worker. Returns the
 // op and an empty reason on success; on refusal reason is "full" or "stopping"
 // and callers must handle the fallback (mashura: loud synchronous fallback;
@@ -544,7 +590,11 @@ func (a *App) finishAsyncOp(op *asyncOp) {
 // This plain form does NOT surface a TUI async-job tab. Use enqueueAsyncOpJob
 // for Mashūra ops that should appear as an async-job tab.
 func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
-	return a.enqueueAsyncOpInternal(toolName, label, false, fn)
+	// 0-arg form: wrap to ignore opID/origin (keeps existing async_ops_test.go
+	// call sites unchanged).
+	return a.enqueueAsyncOpInternal(toolName, label, false, func(_ string, _ string) (string, []counselUsageRec, []string, error) {
+		return fn()
+	})
 }
 
 // enqueueAsyncOpJob is like enqueueAsyncOp but marks the op as a Mashūra "job"
@@ -552,13 +602,21 @@ func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, u
 // (so the tab exists before any completion — the Done-before-Start race is
 // structurally prevented) and publishAsyncOp emits an AsyncJobDoneMsg when it
 // terminalizes. Non-Mashūra callers must use enqueueAsyncOp (no async-job tab).
-func (a *App) enqueueAsyncOpJob(toolName, label string, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
+//
+// fn receives the registered op id (opID) and its originating chat id
+// (originChatID) so the worker can route live AsyncJobChunkMsg events to the
+// correct tab AND assign the correct session provenance WITHOUT closing over the
+// returned *asyncOp (which would race / nil-deref, since the worker launches
+// before enqueueAsyncOpJob returns) and without re-reading a.chatID() at worker
+// time (which could have rotated since registration /new /handoff).
+func (a *App) enqueueAsyncOpJob(toolName, label string, fn func(opID, originChatID string) (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
 	return a.enqueueAsyncOpInternal(toolName, label, true, fn)
 }
 
 // enqueueAsyncOpInternal is the shared implementation. uiJob=true surfaces the
-// op as an async-job TUI tab.
-func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
+// op as an async-job TUI tab. fn receives op.id and op.originChatID so workers
+// can route events without capturing the returned op.
+func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func(opID, originChatID string) (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
 	op, reason := a.registerAsyncOp(toolName, label)
 	if reason != "" {
 		return nil, reason
@@ -595,7 +653,7 @@ func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func
 					e = fmt.Errorf("async worker panic: %v", r)
 				}
 			}()
-			return fn()
+			return fn(op.id, op.originChatID)
 		}()
 		op.mu.Lock()
 		if op.terminal { // exactly-once guard

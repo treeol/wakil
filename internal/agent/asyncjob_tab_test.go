@@ -20,7 +20,7 @@ func TestAsyncJobStartEmittedBeforeWorkerDone(t *testing.T) {
 	col := &collectEvents{}
 	a.EventSink = col.sink
 
-	op, reason := a.enqueueAsyncOpJob("mashura__review", "panel Review", func() (string, []counselUsageRec, []string, error) {
+	op, reason := a.enqueueAsyncOpJob("mashura__review", "panel Review", func(_ string, _ string) (string, []counselUsageRec, []string, error) {
 		return "answer", nil, []string{"m1"}, nil
 	})
 	if reason != "" {
@@ -71,7 +71,7 @@ func TestAsyncJobDoneEmittedExactlyOnce(t *testing.T) {
 	col := &collectEvents{}
 	a.EventSink = col.sink
 
-	op, reason := a.enqueueAsyncOpJob("mashura__review", "panel Review", func() (string, []counselUsageRec, []string, error) {
+	op, reason := a.enqueueAsyncOpJob("mashura__review", "panel Review", func(_ string, _ string) (string, []counselUsageRec, []string, error) {
 		return "the panel answer", nil, []string{"m1"}, nil
 	})
 	if reason != "" {
@@ -110,7 +110,7 @@ func TestAsyncJobDoneBoundsResult(t *testing.T) {
 	big := strings.Repeat("x", asyncJobTabPreviewMaxBytes+100)
 	// Sprinkle the async end marker so neutralization is exercised.
 	big = "--END ASYNC TASK RESULTS--" + big
-	op, reason := a.enqueueAsyncOpJob("mashura__review", "panel Review", func() (string, []counselUsageRec, []string, error) {
+	op, reason := a.enqueueAsyncOpJob("mashura__review", "panel Review", func(_ string, _ string) (string, []counselUsageRec, []string, error) {
 		return big, nil, []string{"m1"}, nil
 	})
 	if reason != "" {
@@ -153,7 +153,7 @@ func TestAsyncJobDoneOnErrorCarriesResult(t *testing.T) {
 	col := &collectEvents{}
 	a.EventSink = col.sink
 
-	op, reason := a.enqueueAsyncOpJob("mashura__review", "panel Review", func() (string, []counselUsageRec, []string, error) {
+	op, reason := a.enqueueAsyncOpJob("mashura__review", "panel Review", func(_ string, _ string) (string, []counselUsageRec, []string, error) {
 		return "member diagnostics", nil, nil, errMashuraAllFailed
 	})
 	if reason != "" {

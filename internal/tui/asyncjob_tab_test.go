@@ -321,7 +321,7 @@ func TestAsyncJobDoneFallbackPrunes(t *testing.T) {
 	m = step(m, agent.SubagentStartMsg{Task: "sub A", ChatID: "chat-a"})
 	// Fire many orphan Dones (no Start) so the fallback creates terminal tabs.
 	for i := 0; i < maxSubTabs+5; i++ {
-		m = step(m, agent.AsyncJobDoneMsg{OpID: string(rune('a'+i)), Label: "panel", Result: "x"})
+		m = step(m, agent.AsyncJobDoneMsg{OpID: string(rune('a' + i)), Label: "panel", Result: "x"})
 	}
 	if len(m.subTabs) > maxSubTabs+1 {
 		t.Errorf("fallback grew past cap: %d tabs, maxSubTabs+1=%d", len(m.subTabs), maxSubTabs+1)
@@ -339,4 +339,92 @@ func findSubTab(m tuiModel, chatID string) *subTab {
 		}
 	}
 	return nil
+}
+
+// TestAsyncJobChunkAppendsStatus verifies a Chunk appends a status line to the
+// matching async-job tab, one line per event with no leading blank line.
+func TestAsyncJobChunkAppendsStatus(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "calling claude-x"})
+	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "done claude-x"})
+
+	tab := findJobTab(m, "op-1")
+	if tab == nil {
+		t.Fatal("tab missing")
+	}
+	got := tab.buf.String()
+	want := "calling claude-x\ndone claude-x"
+	if got != want {
+		t.Errorf("buf = %q, want %q", got, want)
+	}
+	if strings.HasPrefix(got, "\n") {
+		t.Error("buf has a leading blank line")
+	}
+}
+
+// TestAsyncJobChunkNoResurrectOnMissingTab verifies a Chunk with no matching
+// tab (post-rotation / orphan) is a safe no-op and does NOT create a tab.
+func TestAsyncJobChunkNoResurrectOnMissingTab(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-9", Text: "status"})
+	if len(m.subTabs) != 0 {
+		t.Errorf("Chunk resurrected a tab: %d tabs, want 0", len(m.subTabs))
+	}
+}
+
+// TestAsyncJobChunkIgnoredWhenDone verifies a Chunk arriving after Done (late /
+// watchdog-forced) does not append after the final answer.
+func TestAsyncJobChunkIgnoredWhenDone(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "FINAL"})
+	// Late chunk after Done.
+	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "late status"})
+
+	tab := findJobTab(m, "op-1")
+	if tab == nil {
+		t.Fatal("tab missing")
+	}
+	if got := tab.buf.String(); got != "FINAL" {
+		t.Errorf("late chunk appended after final answer: buf = %q", got)
+	}
+}
+
+// TestAsyncJobChunkStaleSessionRejected verifies a Chunk whose OriginChatID
+// differs from the current session is ignored.
+func TestAsyncJobChunkStaleSessionRejected(t *testing.T) {
+	m := newTabModel()
+	m.app.Client.ChatID = "newchat"
+	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "old", OriginChatID: "test"})
+	if len(m.subTabs) != 0 {
+		t.Errorf("stale-session chunk created a tab")
+	}
+}
+
+// TestAsyncJobStatusCap verifies async-job status lines are capped.
+func TestAsyncJobStatusCap(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	for i := 0; i < asyncJobStatusLinesMax+20; i++ {
+		m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "s"})
+	}
+	tab := findJobTab(m, "op-1")
+	if tab.statusLines != asyncJobStatusLinesMax {
+		t.Errorf("statusLines = %d, want cap %d", tab.statusLines, asyncJobStatusLinesMax)
+	}
+}
+
+// TestAsyncJobDoneSeparatesFromStatus verifies the final answer is separated
+// from live status lines by a blank line.
+func TestAsyncJobDoneSeparatesFromStatus(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "calling claude-x"})
+	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "FINAL ANSWER"})
+
+	tab := findJobTab(m, "op-1")
+	got := tab.buf.String()
+	if got != "calling claude-x\n\nFINAL ANSWER" {
+		t.Errorf("buf = %q, want status + blank line + final answer", got)
+	}
 }

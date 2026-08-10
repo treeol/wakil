@@ -362,6 +362,24 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			}
 		}
 
+	case agent.AsyncJobChunkMsg:
+		// Live status line for an async-job tab (Mashūra panel member progress).
+		// Display-only: appends to the tab buffer but never changes done/dot/
+		// auto-close state, and never resurrects a tab. Stale-session chunks
+		// (OriginChatID mismatch) and chunks for a done tab (late after a forced/
+		// watchdog Done) are ignored.
+		if msg.OriginChatID != "" && m.app.Client.ChatID != "" && msg.OriginChatID != m.app.Client.ChatID {
+			break
+		}
+		for _, t := range m.subTabs {
+			if t.kind == subTabAsyncJob && t.opID == msg.OpID {
+				if !t.done {
+					appendAsyncJobStatus(t, msg.Text)
+				}
+				break
+			}
+		}
+
 	case agent.AsyncJobDoneMsg:
 		// Terminalize an async-job tab: mark done, show the bounded result (and
 		// error diagnostics on failure — do not discard Result when Err is set),
@@ -388,6 +406,10 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 						t.finErr = msg.Err
 					}
 					if msg.Result != "" {
+						// Separate the final answer from any live status lines.
+						if t.buf.Len() > 0 && t.statusLines > 0 {
+							t.buf.WriteString("\n\n")
+						}
 						t.buf.WriteString(msg.Result)
 					}
 				}

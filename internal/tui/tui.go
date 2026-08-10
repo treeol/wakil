@@ -303,11 +303,11 @@ const (
 // subTab holds the state of one dispatched subagent or async job, used to render
 // its tab in the main pane and its info in the info panel.
 type subTab struct {
-	kind  subTabKind // subagent (default) or async job
-	n     int
-	task  string
-	chatID       string // identity for subagent tabs
-	opID         string // identity for async-job tabs (op-N)
+	kind         subTabKind // subagent (default) or async job
+	n            int
+	task         string
+	chatID       string           // identity for subagent tabs
+	opID         string           // identity for async-job tabs (op-N)
 	backend      string           // resolved backend (from SubagentStartMsg.Backend)
 	usedBackend  string           // actual backend from last response (SubagentDoneMsg.UsedBackend)
 	costUSD      float64          // child's priced cost, folded into the parent tracker (SubagentDoneMsg.CostUSD)
@@ -328,6 +328,10 @@ type subTab struct {
 	finFilesN    int       // count of files changed from SubagentFinishedMsg
 	finPreview   string    // summary preview from SubagentFinishedMsg
 	finErr       string    // non-empty if the subagent/job failed (timeout, panic, refusal) — from Done
+
+	// statusLines counts live status lines appended to buf by AsyncJobChunkMsg
+	// (async-job tabs only). Bounds the tab buffer independently of panel size.
+	statusLines int
 
 	// Render cache for renderSubTabContent. Invalidated when buf grows or vpW changes.
 	cachedLines []string
@@ -401,6 +405,24 @@ func (m tuiModel) hasActiveJobTab() bool {
 		}
 	}
 	return false
+}
+
+// asyncJobStatusLinesMax caps live status lines appended to an async-job tab via
+// AsyncJobChunkMsg, bounding the tab buffer independently of panel size/mode.
+const asyncJobStatusLinesMax = 64
+
+// appendAsyncJobStatus appends one status line to an async-job tab, enforcing the
+// per-tab status-line cap (excess lines are dropped). The line must already be
+// single-line, sanitized and bounded (agent renders it).
+func appendAsyncJobStatus(t *subTab, text string) {
+	if t.statusLines >= asyncJobStatusLinesMax || text == "" {
+		return
+	}
+	if t.buf.Len() > 0 {
+		t.buf.WriteByte('\n')
+	}
+	t.buf.WriteString(text)
+	t.statusLines++
 }
 
 // resolveOutputMode reads the startup output mode from the app config, guarding

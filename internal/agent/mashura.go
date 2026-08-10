@@ -12,6 +12,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/safe"
 	"github.com/treeol/wakil/internal/workflow"
 )
 
@@ -232,7 +233,7 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		return counsel.FormatPanelResult(results)
 	}
 
-	op, reason := a.enqueueAsyncOpJob(name, panelName, func() (string, []counselUsageRec, []string, error) {
+	op, reason := a.enqueueAsyncOpJob(name, panelName, func(opID, originChatID string) (string, []counselUsageRec, []string, error) {
 		// Detached from the turn context on purpose: the paid call was approved
 		// and should complete even if the turn is cancelled (card #121 D-4;
 		// cancellation support is a follow-up). Layer the provider timeout.
@@ -244,7 +245,74 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		} else {
 			callCtx = context.Background()
 		}
-		results := counsel.RunPanel(callCtx, models, mode, question, briefing, ccfg, apiKeys)
+
+		// Live progress: a bounded, drop-on-full status channel + a SINGLE
+		// forwarder goroutine drain it to sendEvent. This decouples the paid
+		// panel call from a blocked/stalled Bubble Tea sink: a member goroutine
+		// does a non-blocking channel push, so it can never block wg.Wait /
+		// terminalization / slot release (mirrors the Phase 1 publishAsyncOp
+		// "UI must not stall the async slot" invariant). The single forwarder
+		// preserves per-op FIFO.
+		//
+		// After RunPanel returns we close the channel and WAIT for the forwarder
+		// under a bound (asyncJobChunkDrainMax). In the normal case all Chunk
+		// sends complete before terminalization (before publishAsyncOp's Done).
+		// If the sink is wedged (Program.Send blocks past the bound), we abandon
+		// the remaining drain and terminalize anyway — the TUI's t.done guard
+		// already discards any Chunk that arrives after Done, so this satisfies
+		// "UI can never stall terminalization" while preserving Chunk-before-Done
+		// ordering for every Chunk the sink actually accepted.
+		type statusMsg struct {
+			round int
+			model string
+			kind  counsel.PanelMemberEventKind
+		}
+		const statusCap = 256
+		chunks := make(chan statusMsg, statusCap)
+		fwdClosed := make(chan struct{})
+		safe.Go("mashura-chunk-fwd", func() {
+			defer close(fwdClosed)
+			for sm := range chunks {
+				line := renderAsyncJobChunkText(counsel.PanelMemberEvent{Round: sm.round, Model: sm.model, Kind: sm.kind})
+				if line == "" {
+					continue // unknown/reserved kind — skip, no garbage status line
+				}
+				a.sendEvent(AsyncJobChunkMsg{OpID: opID, OriginChatID: originChatID, Text: line})
+			}
+		})
+		// Ensure cleanup on ANY path (including a panic in RunPanel/assembly):
+		// close the channel, then wait for the forwarder ONLY under a bound.
+		// If the sink is wedged (Program.Send blocks) we do NOT wait further —
+		// abandoning here guarantees a stuck UI can never stall terminalization
+		// or the async slot. The forwarder goroutine may remain blocked in the
+		// sink (expendable UI telemetry); any Chunk it eventually delivers is
+		// dropped by the TUI's done guard. There is deliberately NO
+		// fwdDone.Wait() after the timeout — that would reintroduce the stall.
+		defer func() {
+			close(chunks)
+			select {
+			case <-fwdClosed:
+				// Forwarder drained; every accepted Chunk was sent before Done.
+			case <-time.After(asyncJobChunkDrainMax):
+				// Sink wedged — abandon remaining chunks without waiting.
+			}
+		}()
+		// Set the observer on a COPY of ccfg (never mutates the caller's ccfg,
+		// so the synchronous fallback below reusing ccfg emits NO chunks).
+		liveCfg := ccfg
+		liveCfg.OnMemberEvent = func(ev counsel.PanelMemberEvent) {
+			// Non-blocking push; drop on full (chunks are ephemeral telemetry).
+			sm := statusMsg{round: ev.Round, model: ev.Model, kind: ev.Kind}
+			select {
+			case chunks <- sm:
+			default:
+			}
+		}
+
+		results := counsel.RunPanel(callCtx, models, mode, question, briefing, liveCfg, apiKeys)
+		// Deferred cleanup (close + bounded drain) runs here on the way out,
+		// guaranteeing all accepted Chunk sends happen-before terminalization.
+
 		recs := make([]counselUsageRec, 0, len(results))
 		var okModels []string
 		allErr := true
