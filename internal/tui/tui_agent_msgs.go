@@ -161,7 +161,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.sideQuestionCancel = nil
 		}
 		m.state = stateIdle
-		m.dotPhase = 0 // return dot to static dim; tick self-terminates (no re-arm at idle)
+		m.dotPhase = 0 // return dot to static dim; tick self-terminates unless an async-job tab keeps it alive (re-arm at idle only when hasActiveJobTab())
 		m.hadTurn = true
 		m.cancel = nil
 		m.cancelling = false
@@ -318,6 +318,125 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			}))
 		}
 
+	case agent.AsyncJobStartMsg:
+		// A Mashūra async job opened. Create/upsert an async-job tab (idempotent
+		// by opID — a duplicate/replayed Start is ignored). Active immediately so
+		// the dot pulses until Done; the main agent may be idle (detached job), so
+		// AsyncJobStartMsg also (re)starts the pulse tick if it isn't running.
+		focusN := 0
+		if m.subCur >= 0 && m.subCur < len(m.subTabs) {
+			focusN = m.subTabs[m.subCur].n
+		}
+		idx := -1
+		for i, t := range m.subTabs {
+			if t.kind == subTabAsyncJob && t.opID == msg.OpID {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			m.subSeq++
+			tab := &subTab{
+				kind:   subTabAsyncJob,
+				n:      m.subSeq,
+				task:   msg.Label,
+				opID:   msg.OpID,
+				active: true,
+				buf:    new(strings.Builder),
+			}
+			m.subTabs = append(m.subTabs, tab)
+			m.subTabs = pruneSubTabs(m.subTabs, focusN, maxSubTabs)
+			m.subCur = tabIndexByN(m.subTabs, focusN)
+			if len(m.subTabs) == 1 {
+				m = m.reflow()
+			}
+		}
+		// (Re)arm the pulse tick if any async-job tab is active (running) while
+		// the main agent is idle — a detached job must pulse until it completes.
+		// Guarded against duplicate chains by startDotTickIfUnarmed.
+		if m.hasActiveJobTab() && m.state == stateIdle {
+			var dotCmd tea.Cmd
+			m, dotCmd = m.startDotTickIfUnarmed()
+			if dotCmd != nil {
+				cmds = append(cmds, dotCmd)
+			}
+		}
+
+	case agent.AsyncJobDoneMsg:
+		// Terminalize an async-job tab: mark done, show the bounded result (and
+		// error diagnostics on failure — do not discard Result when Err is set),
+		// and arm the 30s auto-close.
+		//
+		// Post-rotation guard: a completion from a PRIOR session (its OriginChatID
+		// differs from the current conversation) must not resurrect a tab that was
+		// cleared on /new or handoff. This keeps "clear tabs on rotation" durable —
+		// an old job completing after rotation produces no stray tab in the new
+		// conversation (matching subagent behavior, where a late Done for a cleared
+		// tab is ignored). If OriginChatID is empty (defensive), we accept.
+		if msg.OriginChatID != "" && m.app.Client.ChatID != "" && msg.OriginChatID != m.app.Client.ChatID {
+			break
+		}
+		found := false
+		for _, t := range m.subTabs {
+			if t.kind == subTabAsyncJob && t.opID == msg.OpID {
+				// Idempotency: a replayed Done must not append Result again or
+				// re-arm the close timer. Only the first (done=false) applies.
+				if !t.done {
+					t.done = true
+					t.finished = true
+					if msg.Err != "" {
+						t.finErr = msg.Err
+					}
+					if msg.Result != "" {
+						t.buf.WriteString(msg.Result)
+					}
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Done-before-Start safety: surface the result in a fresh terminal
+			// tab rather than dropping it. (Post-rotation resurrection is already
+			// prevented above; this handles the genuine Start/Done ordering edge.)
+			tab := &subTab{
+				kind:     subTabAsyncJob,
+				n:        m.subSeq + 1,
+				task:     msg.Label,
+				opID:     msg.OpID,
+				active:   false,
+				done:     true,
+				finished: true,
+				buf:      new(strings.Builder),
+			}
+			if msg.Err != "" {
+				tab.finErr = msg.Err
+			}
+			if msg.Result != "" {
+				tab.buf.WriteString(msg.Result)
+			}
+			focusN := 0
+			if m.subCur >= 0 && m.subCur < len(m.subTabs) {
+				focusN = m.subTabs[m.subCur].n
+			}
+			m.subSeq++
+			m.subTabs = append(m.subTabs, tab)
+			// Prune so a long series of orphan terminals can't exceed the cap.
+			m.subTabs = pruneSubTabs(m.subTabs, focusN, maxSubTabs)
+			m.subCur = tabIndexByN(m.subTabs, focusN)
+			if len(m.subTabs) == 1 {
+				m = m.reflow()
+			}
+		}
+		// Arm 30s auto-close (same skip-if-focused one-shot semantics as
+		// subagents). One-shot, not re-armed.
+		{
+			opID := msg.OpID
+			cmds = append(cmds, tea.Tick(subTabAutoCloseDelay, func(time.Time) tea.Msg {
+				return subTabCloseMsg{OpID: opID}
+			}))
+		}
+
 	case subTabCloseMsg:
 		// Auto-close: remove the tab if it is done and not currently focused.
 		// If focused, skip (one-shot, no re-arm — the tab will be cleaned up
@@ -329,7 +448,9 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		oldLen := len(m.subTabs)
 		removed := false
 		for i, t := range m.subTabs {
-			if t.chatID == msg.ChatID && t.done && t.n != focusN {
+			match := (msg.ChatID != "" && t.kind == subTabSubagent && t.chatID == msg.ChatID) ||
+				(msg.OpID != "" && t.kind == subTabAsyncJob && t.opID == msg.OpID)
+			if match && t.done && t.n != focusN {
 				m.subTabs = append(m.subTabs[:i], m.subTabs[i+1:]...)
 				removed = true
 				break
@@ -451,10 +572,20 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		cmds = append(cmds, pair...)
 
 	case dotTickMsg:
-		// Re-arm only while busy; the tick self-terminates when the model is idle.
-		if m.state != stateIdle {
+		// Re-arm only while busy OR an async-job tab is still running (active,
+		// not done). A detached Mashūra job may continue after the main turn is
+		// idle, and its dot must keep pulsing until completion; the tick stops
+		// only when neither the agent is busy nor any job tab is active. The
+		// dotArmed flag keeps exactly one recurring tick chain alive (prevents
+		// duplicate loops from concurrent job starts / a startTurn overlap).
+		if m.state != stateIdle || m.hasActiveJobTab() {
 			m.dotPhase = (m.dotPhase + 1) % len(dotPulseShades)
-			cmds = append(cmds, startDotTick())
+			if !m.dotArmed {
+				m.dotArmed = true
+				cmds = append(cmds, startDotTick())
+			}
+		} else {
+			m.dotArmed = false
 		}
 
 	case armTickMsg:
@@ -548,6 +679,13 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// images themselves are owned by the App and survive /new on purpose
 		// (same as /image <path> queuing before a fresh chat).
 		*m.imageChips = (*m.imageChips)[:0]
+		// Clear subagent/async-job tabs — they belong to the old conversation.
+		// (Card #126 option a: display-only; async delivery is unchanged.)
+		if len(m.subTabs) > 0 {
+			m.subTabs = nil
+			m.subCur = -1
+			m = m.reflow()
+		}
 		if msg.RebuildConv && len(m.app.Conv) > 0 {
 			*m.items = convItemsFrom(m.app.Conv)
 		}
@@ -626,6 +764,12 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.pendingAutoGrant = false
 		m.pendingDestructiveGrant = false
 		*m.imageChips = (*m.imageChips)[:0]
+		// Clear subagent/async-job tabs on handoff rotation (card #126 option a).
+		if len(m.subTabs) > 0 {
+			m.subTabs = nil
+			m.subCur = -1
+			m = m.reflow()
+		}
 		m.prefixDirty = true
 		m.refreshViewport()
 

@@ -152,9 +152,9 @@ func mashuraToolDefs() []proxy.Tool {
 // gates the entire panel with a single confirm prompt, and returns a PLACEHOLDER
 // immediately — the panel runs on a worker goroutine (card #121) and its result
 // is injected into the conversation before the next model request, or can be
-// retrieved early via check_pending. Cost/grounding are committed at terminal
-// completion (drain/shutdown), never twice. The legacy oracle__ask alias is
-// handled as a review.
+// retrieved early via check_pending. Cost is committed at worker terminal
+// completion; grounding is committed at delivery (drain/check_pending) — both
+// exactly once. The legacy oracle__ask alias is handled as a review.
 //
 // Fallbacks that keep the call synchronous (loudly): the async registry is full
 // (asyncMaxActive reached) or stopping. Auto-counsel (maybeSuggestDebug) uses
@@ -232,7 +232,7 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		return counsel.FormatPanelResult(results)
 	}
 
-	op, reason := a.enqueueAsyncOp(name, panelName, func() (string, []counselUsageRec, []string, error) {
+	op, reason := a.enqueueAsyncOpJob(name, panelName, func() (string, []counselUsageRec, []string, error) {
 		// Detached from the turn context on purpose: the paid call was approved
 		// and should complete even if the turn is cancelled (card #121 D-4;
 		// cancellation support is a follow-up). Layer the provider timeout.

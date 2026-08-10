@@ -53,6 +53,13 @@ const (
 	// detached-shell completion notification.
 	asyncShellNotifyTail = 2
 
+	// asyncJobTabPreviewMaxBytes is the byte cap for the Result preview carried
+	// in AsyncJobDoneMsg and rendered in the async-job tab. UTF-8-safe truncation
+	// is applied (existing truncateUTF8); the full result is never truncated —
+	// it lives in the registry / check_pending(op-N) / spill files. The tab is a
+	// lightweight display surface, so keep the copied preview modest.
+	asyncJobTabPreviewMaxBytes = 8000
+
 	// defaultSubagentTimeoutSeconds is the fallback async subagent timeout
 	// when SubagentTimeoutSeconds is 0 (or unset). config.DefaultConfig sets
 	// the same value (120) — they must agree. Defined as a named constant
@@ -127,6 +134,21 @@ type asyncOp struct {
 	// shellLSPDirty marks a detached shell completion whose command was
 	// non-read-only; drainAsyncInbox fires LSP dirty-marking on delivery.
 	shellLSPDirty bool
+
+	// uiJob marks an async operation that should surface as a generic "job" TUI
+	// tab (AsyncJobStartMsg/AsyncJobDoneMsg). Set true ONLY by the Mashūra async
+	// path (explicit registration intent, NOT inferred from toolName prefix, so
+	// legacy aliases/renames don't silently flip it). Detached-shell reaper ops
+	// and discovery-subagent batch ops keep uiJob=false — shells bypass
+	// publishAsyncOp entirely and subagent batches use per-child tabs, so neither
+	// emits an AsyncJobDoneMsg.
+	uiJob bool
+
+	// originChatID is the chat session that issued the op (metadata only, read
+	// by nothing in the delivery path). Stamped at registration so the
+	// separately-filed cross-session async-delivery issue can be resolved later
+	// without a registry migration.
+	originChatID string
 
 	// retrievable marks a delivered op whose envelope rendering was
 	// TRUNCATED — the "use check_pending(op-N)" pointer must stay valid, so
@@ -410,6 +432,9 @@ func (a *App) registerAsyncOp(toolName, label string) (*asyncOp, string) {
 		label:     label,
 		createdAt: time.Now(),
 		done:      make(chan struct{}),
+		// Stamp the issuing session (metadata only, read by no delivery path) so
+		// a later cross-session async-delivery fix can distinguish origins.
+		originChatID: a.chatID(),
 	}
 	if a.asyncOps == nil {
 		a.asyncOps = make(map[string]*asyncOp)
@@ -430,14 +455,39 @@ func (a *App) registerAsyncOp(toolName, label string) (*asyncOp, string) {
 // it). Returns true if published to the inbox. Called by every async worker
 // (enqueueAsyncOp and queueAsyncDiscoveryBlock) as the shared finalizer.
 func (a *App) publishAsyncOp(op *asyncOp) bool {
+	// Capture the UI-job completion fields (if any) while claiming published,
+	// under op.mu, so exactly-once publication also means exactly-once Done event.
+	// We snapshot raw immutable strings here and do the (cheap) bounding/
+	// neutralization AFTER unlocking (never format under lock).
+	var jobRaw *AsyncJobDoneMsg
 	op.mu.Lock()
 	if op.published {
 		op.mu.Unlock()
 		return false
 	}
 	op.published = true
+	if op.uiJob {
+		errStr := ""
+		if op.err != nil {
+			errStr = op.err.Error()
+		}
+		jobRaw = &AsyncJobDoneMsg{
+			OpID:         op.id,
+			Label:        op.label,
+			ToolName:     op.toolName,
+			Result:       op.result,
+			Err:          errStr,
+			OriginChatID: op.originChatID,
+		}
+	}
 	op.mu.Unlock()
 
+	// Finish REGISTRY publication FIRST (slot release + inbox append + wake),
+	// ahead of the UI event. Registry publication (and thus admission capacity
+	// and any wait_for_completion waiter) must never be delayed by a slow or
+	// blocked event sink — a hung UI must not terminate a wait_for_completion
+	// waiter or hold the async slot. The AsyncJobDoneMsg is sent after this,
+	// still off-lock, from the exactly-once published winner.
 	a.asyncMu.Lock()
 	a.asyncActive--
 	stopping := a.asyncStopping
@@ -450,7 +500,24 @@ func (a *App) publishAsyncOp(op *asyncOp) bool {
 		a.signalWake()
 	}
 	a.asyncMu.Unlock()
+
+	if jobRaw != nil {
+		a.sendEvent(a.boundAsyncJobDone(jobRaw))
+	}
 	return !stopping
+}
+
+// boundAsyncJobDone builds the final AsyncJobDoneMsg from a raw snapshot with a
+// bounded, marker-neutralized Result preview (≤ asyncJobTabPreviewMaxBytes, UTF-8
+// safe). Called off-lock. The full result is never truncated at the source — it
+// stays reachable in the registry / check_pending(op-N) / spill files.
+func (a *App) boundAsyncJobDone(raw *AsyncJobDoneMsg) AsyncJobDoneMsg {
+	msg := *raw
+	msg.Result = neutralizeAsyncMarker(msg.Result)
+	if len(msg.Result) > asyncJobTabPreviewMaxBytes {
+		msg.Result = truncateUTF8(msg.Result, asyncJobTabPreviewMaxBytes)
+	}
+	return msg
 }
 
 // finishAsyncOp is the outward publication call (compat/alias) used by tests and
@@ -464,14 +531,51 @@ func (a *App) finishAsyncOp(op *asyncOp) {
 // and callers must handle the fallback (mashura: loud synchronous fallback;
 // subagents: reject — never silent sync).
 //
+// enqueueAsyncOp registers a new operation and starts its worker. Returns the
+// op and an empty reason on success; on refusal reason is "full" or "stopping"
+// and callers must handle the fallback (mashura: loud synchronous fallback;
+// subagents: reject — never silent sync).
+//
 // fn runs on a worker goroutine under a detached (non-turn) context; it must
 // return the final result text, per-model usage records, the list of successful
 // models, and an error. fn must be self-contained (capture everything it needs;
 // keys/snapshots captured at issue time).
+//
+// This plain form does NOT surface a TUI async-job tab. Use enqueueAsyncOpJob
+// for Mashūra ops that should appear as an async-job tab.
 func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
+	return a.enqueueAsyncOpInternal(toolName, label, false, fn)
+}
+
+// enqueueAsyncOpJob is like enqueueAsyncOp but marks the op as a Mashūra "job"
+// TUI tab: an AsyncJobStartMsg is emitted BEFORE the worker goroutine launches
+// (so the tab exists before any completion — the Done-before-Start race is
+// structurally prevented) and publishAsyncOp emits an AsyncJobDoneMsg when it
+// terminalizes. Non-Mashūra callers must use enqueueAsyncOp (no async-job tab).
+func (a *App) enqueueAsyncOpJob(toolName, label string, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
+	return a.enqueueAsyncOpInternal(toolName, label, true, fn)
+}
+
+// enqueueAsyncOpInternal is the shared implementation. uiJob=true surfaces the
+// op as an async-job TUI tab.
+func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
 	op, reason := a.registerAsyncOp(toolName, label)
 	if reason != "" {
 		return nil, reason
+	}
+	op.mu.Lock()
+	op.uiJob = uiJob
+	op.mu.Unlock()
+
+	// Emit the Start event BEFORE launching the worker so the TUI tab always
+	// exists before any completion can arrive (Start-before-Done, structural).
+	if uiJob {
+		a.sendEvent(AsyncJobStartMsg{
+			OpID:         op.id,
+			Label:        label,
+			ToolName:     toolName,
+			OriginChatID: op.originChatID,
+		})
 	}
 
 	safe.Go("async-op", func() {

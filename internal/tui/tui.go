@@ -266,6 +266,12 @@ type tuiModel struct {
 	// dotPhase cycles 0-3 while the agent is busy, driving the pulsing dot.
 	// Reset to 0 when idle; the tick self-terminates (no re-arm when idle).
 	dotPhase int
+	// dotArmed guards the activity-dot tick against duplicate chains. Set true
+	// whenever a tick is armed (AgentDone/turn start or a detached async-job
+	// tab), cleared when a dotTickMsg does NOT re-arm. Prevents N concurrent
+	// AsyncJobStartMsg handlers or a startTurn overlapping a live tick from
+	// launching N recurring tick loops (card #126 review finding).
+	dotArmed bool
 	// hadTurn is set after the first agent.AgentDoneMsg so the status line can show
 	// "awaiting input" instead of silent idle.
 	hadTurn bool
@@ -284,16 +290,28 @@ type tuiModel struct {
 	infoPanel infoPanelModel
 }
 
-// subTab holds the state of one dispatched subagent, used to render its
-// tab in the main pane and its info in the info panel.
+// subTabKind discriminates the two tab types sharing the subTabs slice.
+// Identity is disjoint: subagent tabs route/close by chatID; async-job tabs by
+// opID. A tab has exactly one kind and one identity key.
+type subTabKind uint8
+
+const (
+	subTabSubagent subTabKind = iota
+	subTabAsyncJob
+)
+
+// subTab holds the state of one dispatched subagent or async job, used to render
+// its tab in the main pane and its info in the info panel.
 type subTab struct {
-	n            int
-	task         string
-	chatID       string
+	kind  subTabKind // subagent (default) or async job
+	n     int
+	task  string
+	chatID       string // identity for subagent tabs
+	opID         string // identity for async-job tabs (op-N)
 	backend      string           // resolved backend (from SubagentStartMsg.Backend)
 	usedBackend  string           // actual backend from last response (SubagentDoneMsg.UsedBackend)
 	costUSD      float64          // child's priced cost, folded into the parent tracker (SubagentDoneMsg.CostUSD)
-	buf          *strings.Builder // tool-call lines + final JSON output
+	buf          *strings.Builder // tool-call lines + final JSON output (subagent) or job result preview (async job)
 	grounding    []proxy.GroundingEntry
 	ctxSize      int
 	hardMaxBytes int
@@ -301,15 +319,15 @@ type subTab struct {
 	capability   string    // "discovery", "edit", or "tools" — drives the sidebar tool list (from Start)
 	model        string    // child's resolved model (from Start)
 	toolNames    []string  // tool names for the sidebar (tools-tier only; nil for discovery/edit — hardcoded)
-	active       bool      // worker acquired a parallelism slot (queued → running)
-	done         bool      // authoritative done (SubagentDoneMsg received)
+	active       bool      // worker acquired a parallelism slot (queued → running); async jobs start active
+	done         bool      // authoritative done (SubagentDoneMsg / AsyncJobDoneMsg received)
 	finished     bool      // display-only early done (SubagentFinishedMsg received)
 	finishedAt   time.Time // when SubagentFinishedMsg arrived (for timestamped display)
 	finStatus    string    // status from SubagentFinishedMsg: "ok"/"incomplete"/"failed"/"declined"
 	finCostUSD   float64   // child's own total from SubagentFinishedMsg (display-only)
 	finFilesN    int       // count of files changed from SubagentFinishedMsg
 	finPreview   string    // summary preview from SubagentFinishedMsg
-	finErr       string    // non-empty if the subagent failed (timeout, panic, refusal) — from SubagentDoneMsg
+	finErr       string    // non-empty if the subagent/job failed (timeout, panic, refusal) — from Done
 
 	// Render cache for renderSubTabContent. Invalidated when buf grows or vpW changes.
 	cachedLines []string
@@ -371,6 +389,18 @@ func tabIndexByN(tabs []*subTab, n int) int {
 		}
 	}
 	return -1
+}
+
+// hasActiveJobTab reports whether any async-job tab is still running (not done).
+// Used to keep the pulse tick alive while a detached Mashūra job runs after the
+// main agent has gone idle.
+func (m tuiModel) hasActiveJobTab() bool {
+	for _, t := range m.subTabs {
+		if t.kind == subTabAsyncJob && !t.done {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveOutputMode reads the startup output mode from the app config, guarding
@@ -1292,7 +1322,13 @@ func (m tuiModel) startTurn(run func(ctx context.Context) tea.Cmd) (tuiModel, []
 	m.turnStart = time.Now()
 	m.tps = 0
 	m = m.reflowIfStatusHeightChanged(before)
-	return m, []tea.Cmd{run(ctx), startDotTick()}
+	cmds := []tea.Cmd{run(ctx)}
+	var dotCmd tea.Cmd
+	m, dotCmd = m.startDotTickIfUnarmed()
+	if dotCmd != nil {
+		cmds = append(cmds, dotCmd)
+	}
+	return m, cmds
 }
 
 // flushQueuedPrompt sends a queued prompt as a new user turn. It mirrors the
@@ -1631,6 +1667,18 @@ func (m tuiModel) reflowIfStatusHeightChanged(before int) tuiModel {
 // The tick self-terminates: the dotTickMsg handler only re-arms when busy.
 func startDotTick() tea.Cmd {
 	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return dotTickMsg{} })
+}
+
+// startDotTickIfUnarmed returns a startDotTick command only if no tick is
+// currently armed (m.dotArmed == false), and sets dotArmed. This prevents
+// duplicate recurring tick chains when multiple sources (turn start, detached
+// async-job tabs) would otherwise each arm their own loop (card #126 review).
+func (m tuiModel) startDotTickIfUnarmed() (tuiModel, tea.Cmd) {
+	if m.dotArmed {
+		return m, nil
+	}
+	m.dotArmed = true
+	return m, startDotTick()
 }
 
 // wrapAnsi word-wraps s to at most width visible columns per line,

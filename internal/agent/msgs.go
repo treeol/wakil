@@ -165,6 +165,35 @@ type SubagentDoneMsg struct {
 	Err string
 }
 
+// AsyncJobStartMsg opens a generic async-job tab in the TUI for a non-subagent
+// async operation (currently: Mashūra counsel panels; detached-shell ops are a
+// separate follow-up, as they bypass publishAsyncOp). OpID is the
+// async-registry identity (op-N) — NOT a chatID; async ops have no chatID.
+// OriginChatID mirrors the issuing session for post-rotation provenance; the TUI
+// uses it to reject completions from a prior session.
+type AsyncJobStartMsg struct {
+	OpID         string
+	Label        string // human label (panel name) — the tab's task text
+	ToolName     string // originating tool (mashura__review, ...)
+	OriginChatID string
+}
+
+// AsyncJobDoneMsg terminalizes an async-job tab. Result is a bounded, marker-
+// neutralized preview (≤ asyncJobTabPreviewMaxBytes); it is shown whether or not
+// Err is set — on failure providers/parents may return useful diagnostics in
+// Result alongside the error. Display-only: the authoritative delivery to the
+// model happens via drainAsyncInbox/check_pending (exactly-once, unchanged).
+// OriginChatID mirrors AsyncJobStartMsg so the TUI can reject a completion from
+// a prior session after rotation (post-rotation resurrection guard).
+type AsyncJobDoneMsg struct {
+	OpID         string
+	Label        string
+	ToolName     string
+	Result       string
+	Err          string
+	OriginChatID string
+}
+
 // SysNoteMsg delivers a status line into the viewport.
 type SysNoteMsg struct{ Text string }
 

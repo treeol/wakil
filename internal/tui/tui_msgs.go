@@ -15,12 +15,17 @@ type dotTickMsg struct{}
 // m.armSeq, so a stale tick from a superseded arm can't clear a newer one.
 type armTickMsg struct{ seq int }
 
-// subTabCloseMsg is fired 30s after a subagent tab becomes done (via
-// SubagentDoneMsg), to auto-close it if the user is not currently viewing it.
+// subTabCloseMsg is fired 30s after a tab becomes done (via SubagentDoneMsg or
+// AsyncJobDoneMsg), to auto-close it if the user is not currently viewing it.
 // Fire-and-validate: if the tab was already pruned, manually closed, or is
 // focused at fire time, the handler is a no-op. The timer is a one-shot tea.Cmd
 // and cannot be cancelled — staleness is handled idempotently in the handler.
-type subTabCloseMsg struct{ ChatID string }
+// Exactly one of ChatID (subagent) or OpID (async job) is set; the handler
+// matches the tab by whichever identity its kind uses.
+type subTabCloseMsg struct {
+	ChatID string
+	OpID   string
+}
 
 // copiedMsg reports that a text selection was copied to the system clipboard.
 // via is copyViaNative when a local clipboard command (wl-copy/xclip/etc.)
