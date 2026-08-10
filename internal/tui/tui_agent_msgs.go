@@ -319,10 +319,21 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 
 	case agent.AsyncJobStartMsg:
-		// A Mashūra async job opened. Create/upsert an async-job tab (idempotent
-		// by opID — a duplicate/replayed Start is ignored). Active immediately so
-		// the dot pulses until Done; the main agent may be idle (detached job), so
-		// AsyncJobStartMsg also (re)starts the pulse tick if it isn't running.
+		// A Mashūra async job / detached shell opened. Create/upsert an async-job
+		// tab (idempotent by opID — a duplicate/replayed Start is ignored). Active
+		// immediately so the dot pulses until Done; the main agent may be idle
+		// (detached job), so AsyncJobStartMsg also (re)starts the pulse tick if it
+		// isn't running.
+		//
+		// Post-rotation guard (card #128/#129): a delayed Start from a PRIOR
+		// session (conversation rotated while the job was in flight) must not
+		// recreate an active tab in the new conversation — its later Done would be
+		// rejected by the Done handler's origin guard, leaving a permanent pulsing
+		// tab. Matches the guard on the Done/Chunk handlers. Empty OriginChatID
+		// (defensive) or empty current ChatID is accepted (legacy behavior).
+		if msg.OriginChatID != "" && m.app.Client.ChatID != "" && msg.OriginChatID != m.app.Client.ChatID {
+			break
+		}
 		focusN := 0
 		if m.subCur >= 0 && m.subCur < len(m.subTabs) {
 			focusN = m.subTabs[m.subCur].n

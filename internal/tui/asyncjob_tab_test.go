@@ -290,6 +290,39 @@ func TestAsyncJobDoneSameSessionAccepted(t *testing.T) {
 	}
 }
 
+// TestAsyncJobStartRejectedAfterRotation verifies a Start from a prior session
+// (OriginChatID differs from the current conversation) does NOT create a tab in
+// the new conversation after rotation — otherwise its later (origin-guarded) Done
+// would be rejected, leaving a permanent pulsing tab (card #128/#129).
+func TestAsyncJobStartRejectedAfterRotation(t *testing.T) {
+	m := newTabModel()
+	// newTestClient sets Client.ChatID = "test"; simulate rotation to a new chat.
+	m.app.Client.ChatID = "newchat"
+	m = step(m, agent.NewConvMsg{}) // clears tabs
+
+	// Old-session Start arrives after rotation.
+	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A", OriginChatID: "test"})
+
+	if len(m.subTabs) != 0 {
+		t.Errorf("post-rotation Start created a tab: %d tabs, want 0", len(m.subTabs))
+	}
+}
+
+// TestAsyncJobStartSameSessionAccepted verifies a Start whose OriginChatID
+// matches the current session creates the active tab.
+func TestAsyncJobStartSameSessionAccepted(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A", OriginChatID: "test"})
+
+	tab := findJobTab(m, "op-1")
+	if tab == nil {
+		t.Fatal("same-session Start should create a tab")
+	}
+	if !tab.active {
+		t.Error("tab should be active at start")
+	}
+}
+
 // TestAsyncJobDotTickArmedNoDuplicate verifies that starting multiple async jobs
 // while idle does not arm multiple recurring tick chains (dotArmed guard).
 func TestAsyncJobDotTickArmedNoDuplicate(t *testing.T) {

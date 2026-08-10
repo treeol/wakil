@@ -53,16 +53,27 @@ func TestMashuraWatchdogForceTerminalizes(t *testing.T) {
 		t.Errorf("expected 0 active ops after watchdog, got %d", n)
 	}
 
-	// Exactly one AsyncJobDoneMsg with a timeout error.
+	// Exactly one AsyncJobDoneMsg with a timeout error. WaitForAsyncCompletion
+	// returns on the registry wake, but publishAsyncOp sends the Done event to
+	// the sink AFTER the registry publication — so poll for it (bounded) rather
+	// than snapshotting immediately, to avoid a wake-vs-event timing race.
 	var doneCount int
 	var gotErr bool
-	for _, e := range col.snapshot() {
-		if m, ok := e.(AsyncJobDoneMsg); ok && m.OpID == op.id {
-			doneCount++
-			if m.Err != "" {
-				gotErr = true
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		doneCount, gotErr = 0, false
+		for _, e := range col.snapshot() {
+			if m, ok := e.(AsyncJobDoneMsg); ok && m.OpID == op.id {
+				doneCount++
+				if m.Err != "" {
+					gotErr = true
+				}
 			}
 		}
+		if doneCount == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if doneCount != 1 {
 		t.Errorf("AsyncJobDoneMsg emitted %d times, want exactly 1", doneCount)

@@ -166,15 +166,16 @@ type SubagentDoneMsg struct {
 }
 
 // AsyncJobStartMsg opens a generic async-job tab in the TUI for a non-subagent
-// async operation (currently: Mashūra counsel panels; detached-shell ops are a
-// separate follow-up, as they bypass publishAsyncOp). OpID is the
-// async-registry identity (op-N) — NOT a chatID; async ops have no chatID.
-// OriginChatID mirrors the issuing session for post-rotation provenance; the TUI
-// uses it to reject completions from a prior session.
+// async operation. Currently: Mashūra counsel panels (OpID = async-registry
+// identity "op-N") and detached shells (OpID = "job-<bgID>", card #128). OpID is
+// an opaque display identity — the TUI routes purely on this string and never
+// dereferences the async registry. OriginChatID mirrors the issuing session for
+// post-rotation provenance; the TUI uses it to reject starts/completions from a
+// prior session.
 type AsyncJobStartMsg struct {
 	OpID         string
-	Label        string // human label (panel name) — the tab's task text
-	ToolName     string // originating tool (mashura__review, ...)
+	Label        string // human label (panel name / shell command or label)
+	ToolName     string // originating tool (mashura__review, run_shell, run_background, ...)
 	OriginChatID string
 }
 

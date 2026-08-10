@@ -142,16 +142,18 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 
 	done := make(chan struct{})
 	entry := &bgEntry{
-		id:         bgID,
-		pid:        pid,
-		pgid:       pgid,
-		label:      "auto-bg",
-		logPath:    logPath,
-		startedAt:  time.Now(),
-		generation: a.Exec.Generation(),
-		readOnly:   readAction,
-		cmdDigest:  Truncate(command, 80),
-		done:       done,
+		id:           bgID,
+		pid:          pid,
+		pgid:         pgid,
+		label:        "auto-bg",
+		logPath:      logPath,
+		startedAt:    time.Now(),
+		generation:   a.Exec.Generation(),
+		readOnly:     readAction,
+		cmdDigest:    Truncate(command, 80),
+		done:         done,
+		toolName:     "run_shell",
+		originChatID: a.chatID(),
 	}
 	a.bgMu.Lock()
 	a.bgProcs[bgID] = entry
@@ -243,8 +245,10 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		a.bgMu.Lock()
 		notifySelf := false
 		var notifyEntry *bgEntry
+		var detachEntry *bgEntry
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
+			detachEntry = e
 			select {
 			case <-done: // already exited — reaper saw notifyOnExit==false
 				if !e.notified {
@@ -256,6 +260,11 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			}
 		}
 		a.bgMu.Unlock()
+		// Card #128: a detached shell surfaces as a TUI tab. Emit Start (after the
+		// lock; sendEvent may block) so the user can track it until Done.
+		if detachEntry != nil {
+			a.announceShellStart(bgID, detachEntry)
+		}
 		if notifySelf {
 			a.notifyDetachedShellExit(bgID, notifyEntry)
 		}
@@ -267,8 +276,10 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		a.bgMu.Lock()
 		notifySelf := false
 		var notifyEntry *bgEntry
+		var detachEntry *bgEntry
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
+			detachEntry = e
 			select {
 			case <-done:
 				if !e.notified {
@@ -280,11 +291,72 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			}
 		}
 		a.bgMu.Unlock()
+		if detachEntry != nil {
+			a.announceShellStart(bgID, detachEntry)
+		}
 		if notifySelf {
 			a.notifyDetachedShellExit(bgID, notifyEntry)
 		}
 		return fmt.Sprintf("command still running as %s (turn cancelled) — you will be notified when it finishes; use read_process_log(%s) to poll for output", bgID, bgID)
 	}
+}
+
+// announceShellStart emits the AsyncJobStartMsg for a detached-shell TUI tab
+// exactly once (guarded by e.tabStarted under bgMu). Callers must NOT hold bgMu
+// when invoking it (sendEvent may block on the event sink). The originChatID
+// was captured at entry creation, so both Start and Done carry the same origin.
+func (a *App) announceShellStart(bgID string, e *bgEntry) {
+	a.bgMu.Lock()
+	if e.tabStarted {
+		a.bgMu.Unlock()
+		return
+	}
+	e.tabStarted = true
+	origin := e.originChatID
+	tool := e.toolName
+	label := e.label
+	if label == "" {
+		label = e.cmdDigest
+	}
+	a.bgMu.Unlock()
+	a.sendEvent(AsyncJobStartMsg{
+		OpID:         "job-" + bgID,
+		Label:        label,
+		ToolName:     tool,
+		OriginChatID: origin,
+	})
+}
+
+// announceShellDone emits the AsyncJobDoneMsg for a detached-shell TUI tab
+// exactly once (guarded by e.tabDoneSent under bgMu). Display-only: the
+// authoritative model delivery (drainAsyncInbox / check_pending) is unchanged.
+// result/errStr are already bounded; this applies marker-neutralization.
+func (a *App) announceShellDone(bgID string, e *bgEntry, result, errStr string) {
+	a.bgMu.Lock()
+	if e.tabDoneSent {
+		a.bgMu.Unlock()
+		return
+	}
+	e.tabDoneSent = true
+	origin := e.originChatID
+	tool := e.toolName
+	label := e.label
+	if label == "" {
+		label = e.cmdDigest
+	}
+	a.bgMu.Unlock()
+	result = neutralizeAsyncMarker(result)
+	if len(result) > asyncJobTabPreviewMaxBytes {
+		result = truncateUTF8(result, asyncJobTabPreviewMaxBytes)
+	}
+	a.sendEvent(AsyncJobDoneMsg{
+		OpID:         "job-" + bgID,
+		Label:        label,
+		ToolName:     tool,
+		Result:       result,
+		Err:          errStr,
+		OriginChatID: origin,
+	})
 }
 
 // notifyDetachedShellExit builds the completion notice for a detached
@@ -332,6 +404,10 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 	op.shellLSPDirty = !e.readOnly
 	op.mu.Unlock()
 	close(op.done)
+
+	// Card #128: emit the TUI tab Done (display-only; the model delivery below
+	// via asyncInbox is unchanged and exactly-once). shows status + tail preview.
+	a.announceShellDone(bgID, e, statusLine+"\n"+tail, "")
 
 	a.asyncMu.Lock()
 	defer a.asyncMu.Unlock()
@@ -926,27 +1002,46 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 	}
 	done := make(chan struct{})
 	entry := &bgEntry{
-		id:         bgID,
-		pid:        pid,
-		pgid:       pgid,
-		label:      args.Label,
-		logPath:    logPath,
-		startedAt:  time.Now(),
-		generation: a.Exec.Generation(),
-		done:       done,
+		id:           bgID,
+		pid:          pid,
+		pgid:         pgid,
+		label:        args.Label,
+		logPath:      logPath,
+		startedAt:    time.Now(),
+		generation:   a.Exec.Generation(),
+		done:         done,
+		toolName:     "run_background",
+		cmdDigest:    Truncate(args.Command, 80),
+		originChatID: a.chatID(),
 	}
 	a.bgMu.Lock()
 	a.bgProcs[bgID] = entry
 	a.bgMu.Unlock()
+	// Card #128: a run_background job surfaces as a TUI tab (display-only;
+	// explicit background jobs remain poll-by-design — no model inbox notice).
+	a.announceShellStart(bgID, entry)
 	// Reaper goroutine: poll GROUP liveness and close done when the group
 	// exits. This lets StopAllBackgroundProcs wait for clean shutdown without
 	// a fixed sleep. Uses a background context — the process may outlive the
-	// turn context that started it.
+	// turn context that started it. On exit, emit the tab Done (display-only).
 	safe.Go("bg-reaper", func() {
 		bgCtx := context.Background()
 		for {
 			if !a.Exec.IsProcessGroupAlive(bgCtx, pgid) {
 				close(done)
+				// Read only the TAIL of the log (multi-GB safe); emit tab Done.
+				statusLine := exec.ExitStatusLine(0, false)
+				tail := ""
+				if out, err := a.Exec.ReadFileTail(bgCtx, logPath, 8*1024); err == nil {
+					cleaned, code, known := exec.ParseExitMarker(out)
+					statusLine = exec.ExitStatusLine(code, known)
+					lines := strings.Split(strings.TrimRight(cleaned, "\n"), "\n")
+					if n := len(lines); n > asyncShellNotifyTail {
+						lines = lines[n-asyncShellNotifyTail:]
+					}
+					tail = strings.Join(lines, "\n")
+				}
+				a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 				return
 			}
 			time.Sleep(200 * time.Millisecond)

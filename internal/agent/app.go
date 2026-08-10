@@ -498,6 +498,17 @@ type bgEntry struct {
 	cmdDigest    string // short command label for the completion notice
 	readOnly     bool   // whether the command was classified read-only
 
+	// Card #128: detached-shell TUI tabs. tabStarted/tabDoneSent are display
+	// exactly-once guards (independent of the inbox-level `notified`), all under
+	// bgMu. originChatID is captured ONCE at creation (the reaper/exit paths run
+	// async, so they must never read the current ChatID) and carried in both the
+	// Start and Done tab events for the post-rotation guard. toolName reflects
+	// the originating tool (run_shell for auto-bg, run_background for explicit).
+	tabStarted   bool
+	tabDoneSent  bool
+	originChatID string
+	toolName     string
+
 	// done is closed by a reaper goroutine when the process exits. Used by
 	// StopAllBackgroundProcs to wait for clean shutdown without a fixed sleep.
 	// nil when the entry was constructed by test code (not via run_background).
