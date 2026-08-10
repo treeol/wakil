@@ -49,3 +49,4 @@ runs/
 .tmp-gocache/
 .tmp-gobuild/
 .gotmp/
+.gocache/
