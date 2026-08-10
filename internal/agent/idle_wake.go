@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	"github.com/treeol/wakil/internal/trace"
 )
@@ -133,31 +131,4 @@ func (a *App) Resume(ctx context.Context) (TurnOutcome, error) {
 		kind = TurnSuspended
 	}
 	return TurnOutcome{Kind: kind, Text: final}, nil
-}
-
-// pendingAsyncLabel returns a short human-readable list of pending async ops for
-// the idle token shown to the model (card #122: "no need to poll" message).
-func (a *App) pendingAsyncLabel() string {
-	a.asyncMu.Lock()
-	ops := make([]*asyncOp, 0, len(a.asyncOps))
-	for _, o := range a.asyncOps {
-		ops = append(ops, o)
-	}
-	a.asyncMu.Unlock()
-	var b strings.Builder
-	n := 0
-	for _, o := range ops {
-		if t, _, _ := o.terminalSnapshot(); t {
-			continue // only running ops are "work remains"
-		}
-		if n > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%s (%s)", o.id, o.label)
-		n++
-	}
-	if n == 0 {
-		return ""
-	}
-	return "Task work remains: " + b.String()
 }

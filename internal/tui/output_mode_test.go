@@ -40,9 +40,9 @@ func TestOutputModeSimpleHidesDiagnostics(t *testing.T) {
 	m := NewTUIModel(appWithOutputMode(config.OutputModeSimple))
 	m = step(m, tea.WindowSizeMsg{Width: 200, Height: 50})
 	// Add an actionable iSys note first (must stay), then a diagnostic iDiag.
-	m = step(m, agent.CompactedMsg{})                 // iDiag
-	m.addItem(iSys, "error: something went wrong")    // actionable — must stay
-	m.addItem(iSys, "▶ user prompt")                  // iUser-ish content stays
+	m = step(m, agent.CompactedMsg{})              // iDiag
+	m.addItem(iSys, "error: something went wrong") // actionable — must stay
+	m.addItem(iSys, "▶ user prompt")               // iUser-ish content stays
 	m.refreshViewport()
 	view := plain(m.View())
 	if strings.Contains(view, "compacted earlier turns") {

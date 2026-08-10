@@ -64,12 +64,6 @@ const (
 	// asyncJobChunkMaxBytes is the byte cap for one AsyncJobChunkMsg status line.
 	asyncJobChunkMaxBytes = 256
 
-	// asyncJobStatusLinesMax caps the number of live status lines appended to an
-	// async-job tab, bounding the tab buffer independently of panel size/mode.
-	// Approx counts: panel ≈ 2N, fallback ≤ 2N, debate ≈ 4N. This generous cap
-	// covers a large panel while still bounding memory; excess is dropped.
-	asyncJobStatusLinesMax = 64
-
 	// asyncJobChunkDrainMax bounds how long the Mashūra worker waits for the
 	// chunk forwarder to drain into the event sink after RunPanel returns. In
 	// the normal case the forwarder finishes well within this window, so every

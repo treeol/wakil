@@ -118,18 +118,18 @@ type Config struct {
 	Endpoint     EndpointConfig `json:"-"`
 	EndpointName string         `json:"-"`
 
-	APIKey       string `json:"api_key"` // sent as "Authorization: Bearer <key>"
-	Model        string `json:"model"`
-	ExecMode     string `json:"exec_mode"`               // "docker" (default) | "direct"
+	APIKey   string `json:"api_key"` // sent as "Authorization: Bearer <key>"
+	Model    string `json:"model"`
+	ExecMode string `json:"exec_mode"` // "docker" (default) | "direct"
 	// OutputMode selects TUI verbosity: "debug" (default) shows all conversation
 	// items including diagnostic notes; "simple" hides transient diagnostic notes
 	// and the live reasoning body so only the most important info is shown.
 	// Headless (`wakil run`) never consults this field.
-	OutputMode OutputMode `json:"output_mode,omitempty"`
-	Image        string `json:"image"`                   // container image for docker mode
-	WorkDir      string `json:"work_dir"`                // working dir inside the container
-	HostWorkDir  string `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
-	DockerSocket bool   `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
+	OutputMode   OutputMode `json:"output_mode,omitempty"`
+	Image        string     `json:"image"`                   // container image for docker mode
+	WorkDir      string     `json:"work_dir"`                // working dir inside the container
+	HostWorkDir  string     `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
+	DockerSocket bool       `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
 	// Docker hardening (defense-in-depth for the sandbox container).
 	// DockerCaps re-adds specific capabilities after --cap-drop=ALL.
 	// Empty = no caps re-added (strictest). Add "CHOWN" if go build fails.
@@ -638,23 +638,23 @@ func DefaultConfig() Config {
 		HardMaxFrac:             0.95,   // hard ceiling at 95% of effective context
 		ContextCapacityFrac:     0.80,   // use 80% of proxy's usable_ctx as the working budget
 
-		ReasoningBudgetTokens: 4096,      // headroom for extended thinking
-		AnswerMarginTokens:    4096,      // headroom for the final answer
-		ContextTokensFallback: 131072,    // assumed n_ctx when the backend is unreachable
-		ToolResultCap:         8000,      // keep first 8k chars in ctx; spill the rest to disk
-		ToolResultTTL:         3,         // evict after 3 completed turns (longer window before re-reads are needed)
-		ReadFileSizeLimit:     1 << 20,   // 1 MB: refuse larger reads at the tool layer
-		MaxFullReadBytes:      256 << 10, // 256 KB: full-read ceiling (higher than ToolResultCap 8K, under MaxRequestBytes 8MB)
-		MaxRequestBytes:       8 << 20,   // 8 MB: trim tool results before sending if over
-		BackendMaxRetries:     3,
-		MaxParallelSubagents:  2,
+		ReasoningBudgetTokens:  4096,      // headroom for extended thinking
+		AnswerMarginTokens:     4096,      // headroom for the final answer
+		ContextTokensFallback:  131072,    // assumed n_ctx when the backend is unreachable
+		ToolResultCap:          8000,      // keep first 8k chars in ctx; spill the rest to disk
+		ToolResultTTL:          3,         // evict after 3 completed turns (longer window before re-reads are needed)
+		ReadFileSizeLimit:      1 << 20,   // 1 MB: refuse larger reads at the tool layer
+		MaxFullReadBytes:       256 << 10, // 256 KB: full-read ceiling (higher than ToolResultCap 8K, under MaxRequestBytes 8MB)
+		MaxRequestBytes:        8 << 20,   // 8 MB: trim tool results before sending if over
+		BackendMaxRetries:      3,
+		MaxParallelSubagents:   2,
 		SubagentTimeoutSeconds: 120, // must match agent.defaultSubagentTimeoutSeconds
-		OracleModel:           "claude-sonnet-4-6",
-		OracleMaxTokens:       4096,
-		OracleAPIKeyEnv:       "ANTHROPIC_API_KEY",
-		OpenRouterAPIKeyEnv:   "OPENROUTER_API_KEY",
-		OracleTimeoutSeconds:  300,
-		WFFinalReview:         true,
+		OracleModel:            "claude-sonnet-4-6",
+		OracleMaxTokens:        4096,
+		OracleAPIKeyEnv:        "ANTHROPIC_API_KEY",
+		OpenRouterAPIKeyEnv:    "OPENROUTER_API_KEY",
+		OracleTimeoutSeconds:   300,
+		WFFinalReview:          true,
 	}
 }
 
