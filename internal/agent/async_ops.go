@@ -85,6 +85,13 @@ const (
 	// here so the runtime fallback is self-documenting; config cannot import
 	// it (agent depends on config, not vice versa).
 	defaultSubagentTimeoutSeconds = 120
+
+	// defaultMashuraTimeoutSeconds is the fallback Mashūra async-op timeout
+	// when OracleTimeoutSeconds is 0 (or unset). config.DefaultConfig sets
+	// the same value (300) — they must agree. The watchdog and the worker's
+	// cooperative context both read mashuraTimeout(), so 0 can never mean
+	// "no deadline" (that would let a hung panel spin the tab + leak the slot).
+	defaultMashuraTimeoutSeconds = 300
 )
 
 const (
@@ -309,6 +316,22 @@ func (a *App) subagentTimeout() time.Duration {
 	return time.Duration(defaultSubagentTimeoutSeconds) * time.Second
 }
 
+// mashuraTimeout returns the effective Mashūra async-op timeout. This is the
+// SINGLE authoritative value shared by:
+//  1. the worker's cooperative context deadline (context.WithTimeout), and
+//  2. the watchdog's force-terminalization deadline (mashuraTimeout + grace).
+//
+// It never returns 0: when OracleTimeoutSeconds is 0 or unset it falls back to
+// defaultMashuraTimeoutSeconds (300), so a "0 = no timeout" config cannot
+// disable both the context deadline AND the watchdog — a hung panel would
+// otherwise spin the async-job tab forever and leak the admission slot.
+func (a *App) mashuraTimeout() time.Duration {
+	if a.Cfg.OracleTimeoutSeconds > 0 {
+		return time.Duration(a.Cfg.OracleTimeoutSeconds) * time.Second
+	}
+	return time.Duration(defaultMashuraTimeoutSeconds) * time.Second
+}
+
 // watchdogGracePeriod is the extra time the watchdog waits beyond the
 // timeout context's deadline before force-terminalizing. This gives the
 // worker time to observe ctx cancellation, return from its HTTP stream,
@@ -414,6 +437,55 @@ func (a *App) cancelWatchdog(op *asyncOp) {
 	if w != nil {
 		w.Stop()
 	}
+}
+
+// armMashuraWatchdog arms a timeout watchdog for an async Mashūra (uiJob) op.
+// If the worker doesn't terminalize within the effective Mashūra timeout +
+// grace period, the watchdog force-terminalizes the op so the async-job tab
+// doesn't spin forever and the admission slot is released.
+//
+// Unlike armSubagentWatchdog, it does NOT synthesize subagent results or send
+// SubagentDoneMsg — a Mashūra op's terminal outcome is driven entirely by
+// publishAsyncOp's uiJob branch, which emits exactly one AsyncJobDoneMsg.
+// The watchdog NEVER closes op.done (the worker's defer close(op.done) would
+// panic) and NEVER commits cost here: the stuck worker holds any billed usage,
+// which is reconciled (exactly once) when/if the worker eventually returns
+// (see enqueueAsyncOpInternal's late-usage handling). The late worker's result
+// is discarded — the timeout outcome remains authoritative.
+func (a *App) armMashuraWatchdog(op *asyncOp, timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	// Assign the timer under op.mu so cancelWatchdog (which also locks op.mu)
+	// can never race an in-progress arm — a data race if both ran unlocked.
+	op.mu.Lock()
+	op.watchdog = time.AfterFunc(timeout+a.watchdogGracePeriod(), func() {
+		op.mu.Lock()
+		if op.terminal && op.published {
+			// Worker already terminalized AND published — nothing to do. Checking
+			// published too covers the liveness gap where the worker set terminal
+			// but blocked before calling publishAsyncOp.
+			op.mu.Unlock()
+			return
+		}
+		if op.terminal && !op.published {
+			// Worker set terminal but didn't publish (blocked/deadlocked between
+			// terminal and publish). Publish for it — idempotent via op.published
+			// guard in publishAsyncOp.
+			op.mu.Unlock()
+			a.publishAsyncOp(op)
+			return
+		}
+		op.terminal = true
+		op.finishedAt = time.Now()
+		op.err = fmt.Errorf("Mashūra panel call timed out after %s", timeout)
+		op.result = "Mashūra panel call timed out: the provider did not return within the configured timeout."
+		op.mu.Unlock()
+		// Single registry publication → emits exactly one AsyncJobDoneMsg (uiJob
+		// branch) and releases the slot + wakes any waiter.
+		a.publishAsyncOp(op)
+	})
+	op.mu.Unlock()
 }
 
 // countActiveAsyncOps returns the number of currently-running (non-terminal)
@@ -634,6 +706,11 @@ func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func
 			ToolName:     toolName,
 			OriginChatID: op.originChatID,
 		})
+		// Arm the timeout watchdog AFTER Start (so the op's tab exists before any
+		// completion) and BEFORE launching the worker (so a stuck worker has no
+		// window without a backstop). Only uiJob (Mashūra) ops arm here — plain
+		// async ops and discovery-subagent batches use their own paths.
+		a.armMashuraWatchdog(op, a.mashuraTimeout())
 	}
 
 	safe.Go("async-op", func() {
@@ -645,8 +722,14 @@ func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func
 		}
 		op.mu.Unlock()
 		// close(done) even if fn panics — safe.Go recovers, but without this
-		// the op would never terminalize and shutdown would hang.
+		// the op would never terminalize and shutdown would hang. The watchdog
+		// never closes op.done; only this worker's defer does.
 		defer close(op.done)
+		// Cancel the watchdog on ANY normal worker exit (including panic) so a
+		// slow-but-successful completion doesn't spuriously fire it. Stop() may
+		// race an already-started callback, but the callback re-checks
+		// op.terminal/op.published under op.mu, so it no-ops safely.
+		defer a.cancelWatchdog(op)
 		result, usage, okModels, err := func() (res string, us []counselUsageRec, oks []string, e error) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -655,15 +738,24 @@ func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func
 			}()
 			return fn(op.id, op.originChatID)
 		}()
+		// Terminalization + late-usage reconciliation.
+		//
+		// If the watchdog already won (op.terminal is true), we do NOT return
+		// early before storing usage: a provider that actually billed (a
+		// slow-but-completed panel) must still have its tokens committed, exactly
+		// once, so paid usage is never lost (Mashūra review op-2, finding #3).
+		// We store the worker's usage/okModels even when terminal is already set,
+		// then call commitAsyncCost (idempotent via op.costCommitted). The
+		// already-published timeout result/err must NOT be overwritten.
 		op.mu.Lock()
-		if op.terminal { // exactly-once guard
-			op.mu.Unlock()
-			return
+		if !op.terminal {
+			op.terminal = true
+			op.finishedAt = time.Now()
+			op.result = result
+			op.err = err
 		}
-		op.terminal = true
-		op.finishedAt = time.Now()
-		op.result = result
-		op.err = err
+		// Always reconcile late usage (may be the normal first-population or a
+		// late return after a watchdog timeout). Idempotent commit below.
 		op.usage = usage
 		op.okModels = okModels
 		op.mu.Unlock()
@@ -672,9 +764,12 @@ func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func
 		// depend on whether the result is later delivered or retained. Cost
 		// tracking is mutex-guarded, so this is safe from the worker goroutine.
 		// Grounding is deferred to delivery (it only matters once the result
-		// actually reaches the model).
+		// actually reaches the model). commitAsyncCost is idempotent, so the
+		// late-return path safely reconciles usage the watchdog couldn't see.
 		a.commitAsyncCost(op)
 		// Release the slot + publish (or suppress on shutdown), exactly once.
+		// publishAsyncOp is idempotent via op.published, so if the watchdog
+		// already published the timeout outcome, this is a no-op.
 		a.publishAsyncOp(op)
 	})
 	return op, ""

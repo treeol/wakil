@@ -236,15 +236,12 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 	op, reason := a.enqueueAsyncOpJob(name, panelName, func(opID, originChatID string) (string, []counselUsageRec, []string, error) {
 		// Detached from the turn context on purpose: the paid call was approved
 		// and should complete even if the turn is cancelled (card #121 D-4;
-		// cancellation support is a follow-up). Layer the provider timeout.
-		var callCtx context.Context
-		if ccfg.TimeoutSeconds > 0 {
-			var cancel context.CancelFunc
-			callCtx, cancel = context.WithTimeout(context.Background(), time.Duration(ccfg.TimeoutSeconds)*time.Second)
-			defer cancel()
-		} else {
-			callCtx = context.Background()
-		}
+		// cancellation support is a follow-up). Layer the provider timeout using
+		// the SAME authoritative value the watchdog uses (mashuraTimeout), so a
+		// "0 = no timeout" config still yields the bounded default — a hung panel
+		// can never run unbounded (card #130).
+		callCtx, cancel := context.WithTimeout(context.Background(), a.mashuraTimeout())
+		defer cancel()
 
 		// Live progress: a bounded, drop-on-full status channel + a SINGLE
 		// forwarder goroutine drain it to sendEvent. This decouples the paid
@@ -339,14 +336,12 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 			why = "session shutting down"
 		}
 		fmt.Fprintln(a.Out, Dim("· "+why+" — running mashūra synchronously"))
-		fbCtx := ctx
-		if ccfg.TimeoutSeconds > 0 {
-			var cancel context.CancelFunc
-			fbCtx, cancel = context.WithTimeout(context.Background(), time.Duration(ccfg.TimeoutSeconds)*time.Second)
-			defer cancel()
-		} else {
-			fbCtx = context.Background()
-		}
+		// Same bounded provider timeout as the async worker path (mashuraTimeout
+		// never returns 0, so a hung provider can't hang the whole turn when the
+		// registry is full / shutting down — card #130 closes the 0=unbounded
+		// hole on ALL Mashūra paths, not just the admitted-async one).
+		fbCtx, cancel := context.WithTimeout(context.Background(), a.mashuraTimeout())
+		defer cancel()
 		results := counsel.RunPanel(fbCtx, models, mode, question, briefing, ccfg, apiKeys)
 		a.recordMashuraResults(results)
 		return counsel.FormatPanelResult(results)
