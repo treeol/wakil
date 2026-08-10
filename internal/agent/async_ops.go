@@ -332,6 +332,20 @@ func (a *App) mashuraTimeout() time.Duration {
 	return time.Duration(defaultMashuraTimeoutSeconds) * time.Second
 }
 
+// mashuraCallTimeout returns the outer provider-call deadline for a Mashūra
+// panel given its mode. Debate mode derives a 2× wall-time deadline from the
+// passed ctx (runDebate: debateCtx = WithTimeout(parent, 2*perCall)), so the
+// outer deadline must be 2× too — otherwise context.WithTimeout takes the
+// EARLIER of parent and new timeout and clips debate to 1×, prematurely
+// cancelling round 2 (card #131). All other modes use 1×.
+func (a *App) mashuraCallTimeout(mode string) time.Duration {
+	t := a.mashuraTimeout()
+	if mode == "debate" {
+		return 2 * t
+	}
+	return t
+}
+
 // watchdogGracePeriod is the extra time the watchdog waits beyond the
 // timeout context's deadline before force-terminalizing. This gives the
 // worker time to observe ctx cancellation, return from its HTTP stream,
@@ -663,8 +677,8 @@ func (a *App) finishAsyncOp(op *asyncOp) {
 // for Mashūra ops that should appear as an async-job tab.
 func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
 	// 0-arg form: wrap to ignore opID/origin (keeps existing async_ops_test.go
-	// call sites unchanged).
-	return a.enqueueAsyncOpInternal(toolName, label, false, func(_ string, _ string) (string, []counselUsageRec, []string, error) {
+	// call sites unchanged). callTimeout=0 (uiJob=false arms no watchdog).
+	return a.enqueueAsyncOpInternal(toolName, label, false, 0, func(_ string, _ string) (string, []counselUsageRec, []string, error) {
 		return fn()
 	})
 }
@@ -681,14 +695,22 @@ func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, u
 // returned *asyncOp (which would race / nil-deref, since the worker launches
 // before enqueueAsyncOpJob returns) and without re-reading a.chatID() at worker
 // time (which could have rotated since registration /new /handoff).
-func (a *App) enqueueAsyncOpJob(toolName, label string, fn func(opID, originChatID string) (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
-	return a.enqueueAsyncOpInternal(toolName, label, true, fn)
+//
+// callTimeout is the effective provider-call deadline (mashuraCallTimeout(mode))
+// used to arm the watchdog so it matches the worker's execution budget. In
+// particular, debate mode is 2× — arming the watchdog with the mode-blind 1×
+// would force-terminalize a legit 2-round debate before its round 2 finishes
+// (card #131). Pass 0 for non-job (uiJob=false) ops, which arm no watchdog.
+func (a *App) enqueueAsyncOpJob(toolName, label string, callTimeout time.Duration, fn func(opID, originChatID string) (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
+	return a.enqueueAsyncOpInternal(toolName, label, true, callTimeout, fn)
 }
 
 // enqueueAsyncOpInternal is the shared implementation. uiJob=true surfaces the
-// op as an async-job TUI tab. fn receives op.id and op.originChatID so workers
-// can route events without capturing the returned op.
-func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func(opID, originChatID string) (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
+// op as an async-job TUI tab. callTimeout is the watchdog arming timeout (used
+// only when uiJob=true; otherwise the watchdog is not armed and callTimeout is
+// ignored). fn receives op.id and op.originChatID so workers can route events
+// without capturing the returned op.
+func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, callTimeout time.Duration, fn func(opID, originChatID string) (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
 	op, reason := a.registerAsyncOp(toolName, label)
 	if reason != "" {
 		return nil, reason
@@ -709,8 +731,10 @@ func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, fn func
 		// Arm the timeout watchdog AFTER Start (so the op's tab exists before any
 		// completion) and BEFORE launching the worker (so a stuck worker has no
 		// window without a backstop). Only uiJob (Mashūra) ops arm here — plain
-		// async ops and discovery-subagent batches use their own paths.
-		a.armMashuraWatchdog(op, a.mashuraTimeout())
+		// async ops and discovery-subagent batches use their own paths. The
+		// timeout matches the worker's effective budget (mashuraCallTimeout(mode)):
+		// debate is 2× so the watchdog fires no earlier than the debate deadline.
+		a.armMashuraWatchdog(op, callTimeout)
 	}
 
 	safe.Go("async-op", func() {

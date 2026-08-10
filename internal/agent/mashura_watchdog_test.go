@@ -102,7 +102,7 @@ func TestMashuraWatchdogCancelledOnNormalCompletion(t *testing.T) {
 	col := &collectEvents{}
 	a.EventSink = col.sink
 
-	op, reason := a.enqueueAsyncOpJob("mashura__review", "quick panel", func(_ string, _ string) (string, []counselUsageRec, []string, error) {
+	op, reason := a.enqueueAsyncOpJob("mashura__review", "quick panel", a.mashuraTimeout(), func(_ string, _ string) (string, []counselUsageRec, []string, error) {
 		return "answer", nil, []string{"m1"}, nil
 	})
 	if reason != "" {
@@ -159,7 +159,7 @@ func TestMashuraWatchdogLateCostReconciled(t *testing.T) {
 	usage := []counselUsageRec{{Model: "late-model", Usage: counsel.OracleUsage{InputTokens: 3, OutputTokens: 2}}}
 	var finished atomic.Bool
 
-	op, reason := a.enqueueAsyncOpJob("mashura__review", "slow panel", func(_ string, _ string) (string, []counselUsageRec, []string, error) {
+	op, reason := a.enqueueAsyncOpJob("mashura__review", "slow panel", a.mashuraTimeout(), func(_ string, _ string) (string, []counselUsageRec, []string, error) {
 		close(started)
 		<-proceed // block past watchdog
 		finished.Store(true)
@@ -316,5 +316,82 @@ func TestMashuraTimeoutNeverZero(t *testing.T) {
 	a.Cfg.OracleTimeoutSeconds = 45
 	if d := a.mashuraTimeout(); d != 45*time.Second {
 		t.Errorf("mashuraTimeout() with 45 config = %v, want 45s", d)
+	}
+}
+
+// TestMashuraCallTimeoutDebate verifies debate mode gets 2× the provider
+// timeout up front (so runDebate's derived 2× wall-time deadline isn't clipped
+// to 1× — card #131), while non-debate modes use 1×.
+func TestMashuraCallTimeoutDebate(t *testing.T) {
+	a := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	a.Cfg.OracleTimeoutSeconds = 30
+	if d := a.mashuraCallTimeout("debate"); d != 2*30*time.Second {
+		t.Errorf("mashuraCallTimeout(debate) = %v, want 60s (2×)", d)
+	}
+	for _, mode := range []string{"panel", "fallback", "fusion", ""} {
+		if d := a.mashuraCallTimeout(mode); d != 30*time.Second {
+			t.Errorf("mashuraCallTimeout(%q) = %v, want 30s (1×)", mode, d)
+		}
+	}
+}
+
+// TestMashuraDebateWatchdogNotClippedTo1x verifies the card #131 + watchdog
+// fix: a debate op's watchdog is armed with the 2× call timeout (threaded via
+// enqueueAsyncOpJob), NOT the mode-blind 1×. The worker is held blocked; the
+// watchdog must NOT fire at the 1×+grace point (which it would if wrongly armed
+// at 1×) and instead fires at 2×+grace.
+func TestMashuraDebateWatchdogNotClippedTo1x(t *testing.T) {
+	a := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	col := &collectEvents{}
+	a.EventSink = col.sink
+	a.Cfg.OracleTimeoutSeconds = 1 // debate → 2s effective
+	a.watchdogGrace = 300 * time.Millisecond
+
+	blocked := make(chan struct{})
+	op, reason := a.enqueueAsyncOpJob("mashura__review", "debate op", a.mashuraCallTimeout("debate"), func(_ string, _ string) (string, []counselUsageRec, []string, error) {
+		<-blocked
+		return "debate answer", nil, []string{"m1"}, nil
+	})
+	if reason != "" {
+		t.Fatalf("enqueue refused: %s", reason)
+	}
+
+	// The 1×+grace clipping point is ~1.3s (1s + 300ms). Past it, the debate op
+	// must STILL be running (watchdog armed at 2×, so it fires ~2.3s).
+	time.Sleep(1400 * time.Millisecond)
+	if terminal, _, _ := op.terminalSnapshot(); terminal {
+		t.Fatal("debate worker was force-terminalized at the 1× point — the watchdog must be armed at 2× (card #131)")
+	}
+
+	// Now wait past the 2×+grace point (~2.3s) and confirm the watchdog DOES
+	// fire (release the slot + emit one timeout Done), with the worker still
+	// blocked — proving the watchdog's deadline is 2×, not 1×.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if ok, err := a.WaitForAsyncCompletion(ctx); err != nil || !ok {
+		t.Fatalf("watchdog did not fire at 2×: ok=%v err=%v", ok, err)
+	}
+	terminal, _, perr := op.terminalSnapshot()
+	if !terminal {
+		t.Fatal("op should be terminal after the 2× watchdog fires")
+	}
+	if perr == nil || !strings.Contains(perr.Error(), "timed out") {
+		t.Errorf("op.err = %v, want 2× timeout error", perr)
+	}
+	var timeoutDone int
+	for _, e := range col.snapshot() {
+		if m, ok := e.(AsyncJobDoneMsg); ok && m.OpID == op.id && m.Err != "" {
+			timeoutDone++
+		}
+	}
+	if timeoutDone != 1 {
+		t.Errorf("timeout AsyncJobDoneMsg emitted %d times, want exactly 1", timeoutDone)
+	}
+	// Let the blocked worker unwind so it doesn't linger.
+	close(blocked)
+	select {
+	case <-op.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked worker did not unwind after release")
 	}
 }
