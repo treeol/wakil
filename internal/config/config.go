@@ -71,6 +71,30 @@ type EndpointConfig struct {
 	AppCategories *string `json:"app_categories,omitempty"`
 }
 
+// OutputMode is the typed TUI verbosity mode. A named type (not a raw string)
+// keeps validation, rendering signatures, and JSON parsing consistent and avoids
+// scattered literals.
+type OutputMode string
+
+const (
+	// OutputModeDebug shows every conversation item, including transient
+	// diagnostic notes and the live reasoning body. Default.
+	OutputModeDebug OutputMode = "debug"
+	// OutputModeSimple hides transient diagnostic notes and the live reasoning
+	// body so only the most important info is shown (user prompts, final
+	// answers, errors, confirmations, and other actionable/system notes).
+	OutputModeSimple OutputMode = "simple"
+)
+
+// OutputModeIsValid reports whether v is a known output mode.
+func OutputModeIsValid(v OutputMode) bool {
+	switch v {
+	case OutputModeDebug, OutputModeSimple:
+		return true
+	}
+	return false
+}
+
 // Config is resolved with precedence: defaults < config file < env < flags.
 // base_url takes precedence over host+port; if only host (and optionally port)
 // are set, the URL is constructed as http://{host}:{port}.
@@ -94,13 +118,18 @@ type Config struct {
 	Endpoint     EndpointConfig `json:"-"`
 	EndpointName string         `json:"-"`
 
-	APIKey       string `json:"api_key"` // sent as "Authorization: Bearer <key>"
-	Model        string `json:"model"`
-	ExecMode     string `json:"exec_mode"`               // "docker" (default) | "direct"
-	Image        string `json:"image"`                   // container image for docker mode
-	WorkDir      string `json:"work_dir"`                // working dir inside the container
-	HostWorkDir  string `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
-	DockerSocket bool   `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
+	APIKey   string `json:"api_key"` // sent as "Authorization: Bearer <key>"
+	Model    string `json:"model"`
+	ExecMode string `json:"exec_mode"` // "docker" (default) | "direct"
+	// OutputMode selects TUI verbosity: "debug" (default) shows all conversation
+	// items including diagnostic notes; "simple" hides transient diagnostic notes
+	// and the live reasoning body so only the most important info is shown.
+	// Headless (`wakil run`) never consults this field.
+	OutputMode   OutputMode `json:"output_mode,omitempty"`
+	Image        string     `json:"image"`                   // container image for docker mode
+	WorkDir      string     `json:"work_dir"`                // working dir inside the container
+	HostWorkDir  string     `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
+	DockerSocket bool       `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
 	// Docker hardening (defense-in-depth for the sandbox container).
 	// DockerCaps re-adds specific capabilities after --cap-drop=ALL.
 	// Empty = no caps re-added (strictest). Add "CHOWN" if go build fails.
@@ -203,6 +232,15 @@ type Config struct {
 	// SubagentToolResultCap overrides the per-result char cap for subagents.
 	// 0 = use the built-in default (12,000).
 	SubagentToolResultCap int `json:"subagent_tool_result_cap,omitempty"`
+
+	// SubagentTimeoutSeconds bounds how long an async discovery subagent batch
+	// may run before the agent-layer watchdog force-terminalizes it. This is the
+	// safety net for hung children (network stall, rate-limit, non-cooperative
+	// blocking). The timeout context requests cooperative cancellation first;
+	// the watchdog guarantees the registry makes progress even if a goroutine
+	// ignores cancellation. 0 = use the built-in default (120s). Negative is
+	// rejected by validation.
+	SubagentTimeoutSeconds int `json:"subagent_timeout_seconds,omitempty"`
 
 	ReadFileSizeLimit   int               `json:"read_file_size_limit,omitempty"`   // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
 	MaxFullReadBytes    int               `json:"max_full_read_bytes,omitempty"`    // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
@@ -580,6 +618,7 @@ func DefaultConfig() Config {
 	return Config{
 		Model:                   "ilm",
 		ExecMode:                "docker",
+		OutputMode:              OutputModeDebug,
 		Image:                   "wakil-dev",
 		DockerSocket:            false,
 		DockerMemory:            "4g",
@@ -599,22 +638,23 @@ func DefaultConfig() Config {
 		HardMaxFrac:             0.95,   // hard ceiling at 95% of effective context
 		ContextCapacityFrac:     0.80,   // use 80% of proxy's usable_ctx as the working budget
 
-		ReasoningBudgetTokens: 4096,      // headroom for extended thinking
-		AnswerMarginTokens:    4096,      // headroom for the final answer
-		ContextTokensFallback: 131072,    // assumed n_ctx when the backend is unreachable
-		ToolResultCap:         8000,      // keep first 8k chars in ctx; spill the rest to disk
-		ToolResultTTL:         3,         // evict after 3 completed turns (longer window before re-reads are needed)
-		ReadFileSizeLimit:     1 << 20,   // 1 MB: refuse larger reads at the tool layer
-		MaxFullReadBytes:      256 << 10, // 256 KB: full-read ceiling (higher than ToolResultCap 8K, under MaxRequestBytes 8MB)
-		MaxRequestBytes:       8 << 20,   // 8 MB: trim tool results before sending if over
-		BackendMaxRetries:     3,
-		MaxParallelSubagents:  2,
-		OracleModel:           "claude-sonnet-4-6",
-		OracleMaxTokens:       4096,
-		OracleAPIKeyEnv:       "ANTHROPIC_API_KEY",
-		OpenRouterAPIKeyEnv:   "OPENROUTER_API_KEY",
-		OracleTimeoutSeconds:  300,
-		WFFinalReview:         true,
+		ReasoningBudgetTokens:  4096,      // headroom for extended thinking
+		AnswerMarginTokens:     4096,      // headroom for the final answer
+		ContextTokensFallback:  131072,    // assumed n_ctx when the backend is unreachable
+		ToolResultCap:          8000,      // keep first 8k chars in ctx; spill the rest to disk
+		ToolResultTTL:          3,         // evict after 3 completed turns (longer window before re-reads are needed)
+		ReadFileSizeLimit:      1 << 20,   // 1 MB: refuse larger reads at the tool layer
+		MaxFullReadBytes:       256 << 10, // 256 KB: full-read ceiling (higher than ToolResultCap 8K, under MaxRequestBytes 8MB)
+		MaxRequestBytes:        8 << 20,   // 8 MB: trim tool results before sending if over
+		BackendMaxRetries:      3,
+		MaxParallelSubagents:   2,
+		SubagentTimeoutSeconds: 120, // must match agent.defaultSubagentTimeoutSeconds
+		OracleModel:            "claude-sonnet-4-6",
+		OracleMaxTokens:        4096,
+		OracleAPIKeyEnv:        "ANTHROPIC_API_KEY",
+		OpenRouterAPIKeyEnv:    "OPENROUTER_API_KEY",
+		OracleTimeoutSeconds:   300,
+		WFFinalReview:          true,
 	}
 }
 
@@ -745,6 +785,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.Model, "WAKIL_MODEL")
 	envStr(&cfg.ExecMode, "ILM_EXEC_MODE")
 	envStr(&cfg.ExecMode, "WAKIL_EXEC_MODE")
+	envStr((*string)(&cfg.OutputMode), "WAKIL_OUTPUT_MODE")
 	envStr(&cfg.Image, "ILM_CONTAINER_IMAGE")
 	envStr(&cfg.Image, "WAKIL_IMAGE")
 	envStr(&cfg.WorkDir, "ILM_WORKDIR")
@@ -773,6 +814,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key (sent as Bearer token)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "execution mode: docker|direct")
+	fs.StringVar((*string)(&cfg.OutputMode), "output-mode", string(cfg.OutputMode), "TUI output mode: debug|simple")
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "container image (docker mode)")
 	fs.StringVar(&cfg.AttachImage, "attach-image", cfg.AttachImage, "path to an image file to attach to the first message (png, jpeg, gif, webp; comma-separate for multiple)")
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "working directory inside the container")
@@ -927,6 +969,12 @@ func LoadConfig(argv []string) (Config, error) {
 	// supplied via the config file, env, or flags.
 	if cfg.AgentPromptPath == "" && cfgPath != "" {
 		cfg.AgentPromptPath = filepath.Join(filepath.Dir(cfgPath), "agent.txt")
+	}
+
+	// Normalize an explicitly-empty output_mode to the debug default (e.g. a
+	// config file writing ""). Guarded by OutputModeIsValid in validateEnums.
+	if cfg.OutputMode == "" {
+		cfg.OutputMode = OutputModeDebug
 	}
 
 	if err := validateEnums(cfg); err != nil {
@@ -1233,6 +1281,9 @@ func validateContextLimits(cfg Config) error {
 	if cfg.SubagentToolResultCap < 0 {
 		return fmt.Errorf("subagent_tool_result_cap must be >= 0 (got %d; 0 = use default)", cfg.SubagentToolResultCap)
 	}
+	if cfg.SubagentTimeoutSeconds < 0 {
+		return fmt.Errorf("subagent_timeout_seconds must be >= 0 (got %d; 0 = use default 120s)", cfg.SubagentTimeoutSeconds)
+	}
 	return nil
 }
 
@@ -1248,6 +1299,11 @@ func validateEnums(cfg Config) error {
 	case "", "every-step", "on-deviation", "phases-only":
 	default:
 		return fmt.Errorf("wf_oracle_mode must be one of: every-step, on-deviation, phases-only (got %q)", cfg.WFOracleMode)
+	}
+	switch cfg.OutputMode {
+	case OutputModeDebug, OutputModeSimple:
+	default:
+		return fmt.Errorf("output_mode must be one of: debug, simple (got %q)", cfg.OutputMode)
 	}
 	switch cfg.SubagentBackend {
 	case "", "inherit", "default":

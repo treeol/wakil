@@ -259,6 +259,53 @@ type PanelCallConfig struct {
 	OpenRouterEndpoint string // "" = "https://openrouter.ai/api/v1/chat/completions"
 	FusionJudge        string // fusion mode: judge model; "" = OpenRouter default
 	FusionMaxToolCalls int    // fusion mode: tool-call steps per model (1–16); 0 = default (8)
+
+	// OnMemberEvent is an optional observer invoked as panel members progress
+	// (start/done/error). It may be called CONCURRENTLY from panel/debate member
+	// goroutines and MUST be fast — it runs on the paid-call path. It is invoked
+	// nil-safely through a panic-recovering helper so UI telemetry can never
+	// corrupt panel results or accounting. nil at synchronous call sites
+	// (subagents, registry-full fallback, auto-counsel) → structurally unchanged.
+	//
+	// Warning: adding a func field makes PanelCallConfig non-comparable. All
+	// existing uses are keyed literals only (verified); no `==` or map-key uses
+	// exist, so this is safe. Do not start comparing entire configs.
+	OnMemberEvent func(PanelMemberEvent)
+}
+
+// PanelMemberEventKind discriminates async-job progress events.
+type PanelMemberEventKind string
+
+const (
+	PanelMemberStart PanelMemberEventKind = "start"
+	PanelMemberDone  PanelMemberEventKind = "done"
+	PanelMemberError PanelMemberEventKind = "error"
+	// PanelMemberDelta is reserved for future token streaming (card #126 option c).
+	PanelMemberDelta PanelMemberEventKind = "delta"
+)
+
+// PanelMemberEvent is an optional observer event fired as panel members progress.
+// Round is 0 for panel/fallback/fusion, 1 or 2 for debate (debate reuses slot
+// indices across rounds; round disambiguates a member's two calls). Model is the
+// "provider:model" prefix string (or "openrouter:openrouter/fusion" for fusion).
+// Text is currently empty and reserved for future delta/detail payloads.
+type PanelMemberEvent struct {
+	Slot  int
+	Round int
+	Model string
+	Kind  PanelMemberEventKind
+	Text  string
+}
+
+// notifyMemberEvent invokes ccfg.OnMemberEvent nil-safely and recovers panics,
+// so UI telemetry can never alter a paid panel result or accounting. Callers
+// must not hold any counsel lock. May be called concurrently.
+func notifyMemberEvent(ccfg PanelCallConfig, ev PanelMemberEvent) {
+	if ccfg.OnMemberEvent == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	ccfg.OnMemberEvent(ev)
 }
 
 const openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
@@ -313,7 +360,13 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 
 	if mode == "fusion" {
 		// Single OpenRouter Fusion call; models become the analysis panel.
+		notifyMemberEvent(ccfg, PanelMemberEvent{Slot: 0, Model: "openrouter:openrouter/fusion", Kind: PanelMemberStart})
 		answer, usage, err := callFusion(ctx, models, apiKeys["openrouter"], question, briefing, ccfg)
+		kind := PanelMemberDone
+		if err != nil {
+			kind = PanelMemberError
+		}
+		notifyMemberEvent(ccfg, PanelMemberEvent{Slot: 0, Model: "openrouter:openrouter/fusion", Kind: kind})
 		return []PanelMemberResult{{
 			PrefixedModel: "openrouter:openrouter/fusion",
 			Model:         "openrouter/fusion",
@@ -331,9 +384,15 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 	// Fallback mode: sequential, stop on first success.
 	if mode == "fallback" {
 		results := make([]PanelMemberResult, 0, len(models))
-		for _, pm := range models {
+		for slot, pm := range models {
 			prov, model := ParseModelPrefix(pm)
+			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: slot, Model: pm, Kind: PanelMemberStart})
 			answer, usage, err := callMember(ctx, prov, model, question, briefing, ccfg, apiKeys)
+			kind := PanelMemberDone
+			if err != nil {
+				kind = PanelMemberError
+			}
+			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: slot, Model: pm, Kind: kind})
 			results = append(results, PanelMemberResult{
 				PrefixedModel: pm,
 				Model:         model,
@@ -360,7 +419,13 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 		safe.Go("oracle-panel", func() {
 			defer wg.Done()
 			prov, model := ParseModelPrefix(pm)
+			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: i, Model: pm, Kind: PanelMemberStart})
 			answer, usage, err := callMember(ctx, prov, model, question, briefing, ccfg, apiKeys)
+			kind := PanelMemberDone
+			if err != nil {
+				kind = PanelMemberError
+			}
+			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: i, Model: pm, Kind: kind})
 			results[i] = PanelMemberResult{
 				PrefixedModel: pm,
 				Model:         model,
@@ -426,7 +491,13 @@ func runDebate(ctx context.Context, models []string, question, briefing string, 
 		safe.Go("oracle-debate-r1", func() {
 			defer wg.Done()
 			prov, model := ParseModelPrefix(pm)
+			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: i, Round: 1, Model: pm, Kind: PanelMemberStart})
 			answer, usage, err := callMember(debateCtx, prov, model, question, briefing, ccfg, apiKeys)
+			kind := PanelMemberDone
+			if err != nil {
+				kind = PanelMemberError
+			}
+			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: i, Round: 1, Model: pm, Kind: kind})
 			r1Results[i] = PanelMemberResult{
 				PrefixedModel: pm,
 				Model:         model,
@@ -466,7 +537,13 @@ func runDebate(ctx context.Context, models []string, question, briefing string, 
 		safe.Go("oracle-debate-r2", func() {
 			defer wg2.Done()
 			prov, model := ParseModelPrefix(models[s.index])
+			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: s.index, Round: 2, Model: models[s.index], Kind: PanelMemberStart})
 			answer, usage, err := callMember(debateCtx, prov, model, question, r2Briefing, ccfg, apiKeys)
+			kind := PanelMemberDone
+			if err != nil {
+				kind = PanelMemberError
+			}
+			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: s.index, Round: 2, Model: models[s.index], Kind: kind})
 			// Accumulate usage from both rounds.
 			totalUsage := r1Results[s.index].Usage
 			totalUsage.InputTokens += usage.InputTokens

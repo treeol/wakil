@@ -189,12 +189,15 @@ func (e *logWritingExec) StartBackground(_ context.Context, command, logPath str
 	return e.fakeExecutor.StartBackground(context.Background(), command, logPath)
 }
 
-// TestRunShellWithDeadline_Disabled falls back to blocking when
-// ShellTimeoutSec is 0 (tested via handleRunShell integration).
-func TestRunShellWithDeadline_BgLimitFallback(t *testing.T) {
+// TestRunShellWithDeadline_BgLimitFailsClosed (card #121): when the bg process
+// limit is reached, run_shell FAILS CLOSED with an actionable error instead of
+// silently falling back to blocking execution (invariant 6: never silently
+// fall back to sync; run_background shares the same limit, so blocking would
+// also defeat the purpose).
+func TestRunShellWithDeadline_BgLimitFailsClosed(t *testing.T) {
 	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.ShellTimeoutSec = 5
-	// Fill up the bg registry to trigger the fallback path.
+	// Fill up the bg registry to trigger the limit path.
 	app.bgMu.Lock()
 	app.bgProcs = make(map[string]*bgEntry)
 	for i := 0; i < 5; i++ {
@@ -209,10 +212,13 @@ func TestRunShellWithDeadline_BgLimitFallback(t *testing.T) {
 	// fakeExecutor.IsProcessAlive returns false, so live count is 0.
 	// We need alivePids to return true — use aliveExecutorImpl.
 	app.Exec = &aliveExecutorImpl{fakeExecutor: newFakeExecutor()}
-	// Now all 5 are "alive" → the 6th should fall back to blocking.
+	// Now all 5 are "alive" → the 6th must fail closed.
 	result := app.runShellWithDeadline(context.Background(), "echo fallback", true)
-	if !strings.Contains(result, "ran: echo fallback") {
-		t.Errorf("expected fallback to blocking, got: %q", result)
+	if !strings.Contains(result, "ERROR: background process limit reached") {
+		t.Errorf("expected fail-closed error, got: %q", result)
+	}
+	if strings.Contains(result, "ran: echo fallback") {
+		t.Errorf("command must NOT have executed synchronously, got: %q", result)
 	}
 }
 

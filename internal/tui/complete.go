@@ -88,6 +88,7 @@ var allTUICommands = []candidate{
 	{name: "/quit"},
 	{name: "/rawtools"},
 	{name: "/repostate", hasArgs: true},
+	{name: "/remember", hasArgs: true},
 	{name: "/reset"},
 	{name: "/resume", hasArgs: true},
 	{name: "/session", hasArgs: true},

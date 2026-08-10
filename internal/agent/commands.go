@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/policy"
@@ -272,9 +273,27 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 
 	switch fields[0] {
 	case "/new", "/reset":
+		// Snapshot the old session BEFORE rotation so finalization (index ingest
+		// + end-of-session summary) can run on it in the Cmd closure. The old
+		// transcript was already persisted by the previous turn's deferred
+		// SaveSession; we ingest from the in-memory session for immediacy. The
+		// closure runs off the event loop (same pattern as /compact and
+		// /handoff), so the summarizer's blocking network call is safe.
+		var oldSession Session
+		hasOld := false
+		if app.Session != nil {
+			oldSession = *app.Session
+			hasOld = oldSession.ChatID != ""
+		}
 		app.NewConversation(NewChatID())
 		chatID := ShortID(app.Client.ChatID)
+		isSub := app.IsSubagent
 		return true, false, func() Msg {
+			if !isSub && app.SessionHistory != nil && hasOld {
+				finalizeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				app.finalizeSessionHistory(finalizeCtx, oldSession)
+			}
 			return NewConvMsg{Note: "fresh conversation: " + chatID}
 		}
 
@@ -406,6 +425,135 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// hint when other-workspace sessions exist).
 		all := len(fields) > 1 && fields[1] == "all"
 		return true, false, note(SessionListText(app.Client.ChatID, SessionScope{Workspace: app.SessionWorkspace(), All: all}))
+
+	case "/remember":
+		// /remember <query> searches prior session transcripts in the current
+		// workspace (current session excluded). On a match it folds the recalled
+		// context into the model conversation and starts a turn (RememberTurnMsg),
+		// so wakil can respond conversationally — "gathered context… sure, we did
+		// this and that." With no match it returns a display-only note. It runs in
+		// a Cmd closure because the first call lazily backfills the search index
+		// (I/O).
+		query := strings.Join(fields[1:], " ")
+		// Snapshot session identity at INVOCATION time (on the event loop), NOT
+		// inside the async Cmd: if the user runs /new, /resume, or /handoff while
+		// the (up to 30s) search runs, Client.ChatID/SessionWorkspace mutate. The
+		// TUI guard must compare against these invocation-time values to reject a
+		// stale result that would otherwise fold into a switched session.
+		originChatID := app.Client.ChatID
+		originWorkspace := app.SessionWorkspace()
+		// Snapshot workflow-active state too: under an active workflow app.Send
+		// interleaves the directive between envelopes, defeating the strip; and
+		// reading app.Workflow from the async goroutine would race the event loop.
+		workflowActive := app.Workflow != nil
+		return true, false, func() Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if strings.TrimSpace(query) == "" {
+				return SysNoteMsg{Text: "usage: /remember <query>"}
+			}
+			// Under an active workflow, app.Send interleaves the workflow directive
+			// between the memory envelope and the folded session envelope
+			// ([memory][directive][session][query]), which would defeat the
+			// contiguous feedback-loop strip and leave recalled content indexable.
+			// Degrade to the display-only path in that case (recall stays available
+			// without the risky fold). Uses the raw search so no live mutable App
+			// state (Client.ChatID / SessionWorkspace) is read from this goroutine.
+			if workflowActive {
+				results, err := app.rememberSearchRaw(ctx, query, originWorkspace, originChatID)
+				if err != nil {
+					return SysNoteMsg{Text: "remember: " + err.Error()}
+				}
+				if len(results) == 0 {
+					return SysNoteMsg{Text: fmt.Sprintf("no prior sessions matched %q (indexed sessions are searchable once their transcript is saved)", query)}
+				}
+				return SysNoteMsg{Text: formatRememberResults(results)}
+			}
+			results, err := app.rememberSearchRaw(ctx, query, originWorkspace, originChatID)
+			if err != nil {
+				return SysNoteMsg{Text: "remember: " + err.Error()}
+			}
+			if len(results) == 0 {
+				return SysNoteMsg{Text: fmt.Sprintf("no prior sessions matched %q (indexed sessions are searchable once their transcript is saved)", query)}
+			}
+			return RememberTurnMsg{
+				Query:           query,
+				RecalledNote:    formatRememberNote(results),
+				UserText:        buildRememberUserText(query, results),
+				OriginChatID:    originChatID,
+				OriginWorkspace: originWorkspace,
+			}
+		}
+
+	case "/recall":
+		// /recall <chatID> [ordinal|start-end] fetches specific verbatim indexed
+		// turns from a user-named prior session and folds them into the
+		// conversation as an untrusted envelope (user-gated retrieval). Unlike
+		// /remember, it is invoked BY session ID (full or unique ShortID prefix),
+		// and the current session MAY be recalled (explicit target). Range is
+		// optional: bare ordinal, "start-end" (inclusive), or omitted for the whole
+		// session. It runs in a Cmd closure (lazy backfill + GetTurns I/O).
+		if len(fields) < 2 {
+			return true, false, note("usage: /recall <session-id> [ordinal|start-end]")
+		}
+		if len(fields) > 3 {
+			return true, false, note("usage: /recall <session-id> [ordinal|start-end]")
+		}
+		idArg := fields[1]
+		rangeArg := ""
+		if len(fields) >= 3 {
+			rangeArg = fields[2]
+		}
+		// Parse the range up front (cheap, deterministic) so malformed ranges fail
+		// immediately rather than after I/O.
+		from, to, err := parseRecallRange(rangeArg)
+		if err != nil {
+			return true, false, note("recall: " + err.Error())
+		}
+		// Invocation-time snapshot (event-loop safe) — do not read mutable App
+		// state from the async goroutine.
+		originChatID := app.Client.ChatID
+		originWorkspace := app.SessionWorkspace()
+		workflowActive := app.Workflow != nil
+		return true, false, func() Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			// Under an active workflow the fold is unsafe (Send interleaves the
+			// directive between envelopes, defeating the strip) — degrade to a
+			// display note.
+			if workflowActive {
+				chatID, err := app.recallResolveChatID(ctx, originWorkspace, idArg)
+				if err != nil {
+					return SysNoteMsg{Text: "recall: " + err.Error()}
+				}
+				turns, err := app.recallFetchTurns(ctx, chatID, originWorkspace, from, to)
+				if err != nil {
+					return SysNoteMsg{Text: "recall: " + err.Error()}
+				}
+				if len(turns) == 0 {
+					return SysNoteMsg{Text: "recall: no indexed turns for session " + ShortID(chatID) + " in that range"}
+				}
+				return SysNoteMsg{Text: formatRecallNote(chatID, turns, true) + "\n" + formatRecallTurns(turns)}
+			}
+			chatID, err := app.recallResolveChatID(ctx, originWorkspace, idArg)
+			if err != nil {
+				return SysNoteMsg{Text: "recall: " + err.Error()}
+			}
+			turns, err := app.recallFetchTurns(ctx, chatID, originWorkspace, from, to)
+			if err != nil {
+				return SysNoteMsg{Text: "recall: " + err.Error()}
+			}
+			if len(turns) == 0 {
+				return SysNoteMsg{Text: "recall: no indexed turns for session " + ShortID(chatID) + " in that range"}
+			}
+			return RecallTurnMsg{
+				ChatID:          chatID,
+				RecalledNote:    formatRecallNote(chatID, turns, true),
+				UserText:        buildRecallUserText(chatID, idArg, rangeArg, turns),
+				OriginChatID:    originChatID,
+				OriginWorkspace: originWorkspace,
+			}
+		}
 
 	case "/resume":
 		arg := ""

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/treeol/wakil/internal/config"
@@ -23,16 +24,28 @@ func TestDispatchSubagentParentCtxIsolated(t *testing.T) {
 
 	summaryJSON := `{"objective":"find ToolResultCap","findings":[{"summary":"ToolResultCap set in config.go line 55","location":"config.go:55","kind":"match","weight":"high"}],"checked":[{"path":"config.go","size_k":9,"status":"full"}]}`
 
-	srv := sseServer(t,
-		// call 0 — parent: returns dispatch_subagent tool call
-		toolCallFrames("d1", "dispatch_subagent", `{"task":"find where ToolResultCap is configured"}`),
-		// call 1 — subagent: returns read_file tool call
-		toolCallFrames("r1", "read_file", `{"path":"config.go"}`),
-		// call 2 — subagent: returns JSON summary (no tool calls → loop exits)
-		[]string{contentChunk(summaryJSON)},
-		// call 3 — parent: returns final text after receiving summary
-		[]string{contentChunk("Found it in config.go:55.")},
-	)
+	var parentCalls atomic.Int32
+	var subCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if isSubagentRequest(body) {
+			switch subCalls.Add(1) {
+			case 1:
+				// subagent call 0: returns read_file tool call
+				writeSSE(w, toolCallFrames("r1", "read_file", `{"path":"config.go"}`)...)
+			default:
+				// subagent call 1: JSON summary (no tool calls → loop exits)
+				writeSSE(w, contentChunk(summaryJSON))
+			}
+			return
+		}
+		switch parentCalls.Add(1) {
+		case 1:
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"find where ToolResultCap is configured"}`)...)
+		default:
+			writeSSE(w, contentChunk("Found it in config.go:55."))
+		}
+	}))
 	defer srv.Close()
 
 	exec := newFakeExecutor()
@@ -47,25 +60,24 @@ func TestDispatchSubagentParentCtxIsolated(t *testing.T) {
 		t.Errorf("unexpected final: %q", final)
 	}
 
-	// Parent Conv must NOT contain raw file content.
+	// Async discovery routing: the placeholder is the tool result; the real
+	// summary arrives via the async envelope. Await the worker + drain.
+	waitAsyncOps(t, app)
+	env := app.drainAsyncInbox()
+
+	// Parent Conv must NOT contain raw file content (context isolation held).
 	for _, m := range app.Conv {
 		if strings.Contains(DerefStr(m.Content), "LARGE-RAW-XQ7Z-") {
 			t.Errorf("raw file content leaked into parent Conv (role=%q)", m.Role)
 		}
 	}
 
-	// The tool result in parent Conv must be the ≤4k summary.
-	found := false
-	for _, m := range app.Conv {
-		if m.Role == "tool" && strings.Contains(DerefStr(m.Content), "config.go:55") {
-			found = true
-			if len(DerefStr(m.Content)) > 4000 {
-				t.Errorf("summary in parent Conv is %d chars, want ≤4000", len(DerefStr(m.Content)))
-			}
-		}
+	// The structured summary (≤4k) arrives via the async envelope.
+	if !strings.Contains(env, "config.go:55") {
+		t.Errorf("summary not delivered in async envelope; got %q", env)
 	}
-	if !found {
-		t.Error("summary not found as tool result in parent Conv")
+	if len(env) > 4000+len(asyncBlockHeader)+len(asyncBlockEnd)+256 {
+		t.Errorf("envelope unexpectedly large (%d chars); summary should stay ~≤4k", len(env))
 	}
 }
 

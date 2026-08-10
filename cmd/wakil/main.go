@@ -223,12 +223,16 @@ func main() {
 
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
+		app.StopAllAsyncOps()
 		app.StopAllBackgroundProcs()
 		if res.memStore != nil {
 			res.memStore.Close()
 		}
 		if res.skillStore != nil {
 			res.skillStore.Close()
+		}
+		if res.sessionHistStore != nil {
+			res.sessionHistStore.Close()
 		}
 		exe.Close()
 		if res.mcpMgr != nil {
@@ -243,12 +247,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	app.StopAllAsyncOps()
 	app.StopAllBackgroundProcs()
 	if res.memStore != nil {
 		res.memStore.Close()
 	}
 	if res.skillStore != nil {
 		res.skillStore.Close()
+	}
+	if res.sessionHistStore != nil {
+		res.sessionHistStore.Close()
 	}
 	exe.Close()
 	if res.mcpMgr != nil {

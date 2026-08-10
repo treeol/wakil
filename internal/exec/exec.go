@@ -88,6 +88,15 @@ type Executor interface {
 	KillPgid(ctx context.Context, pgid, sig int) error
 	// IsProcessAlive returns true if pid is still running (kill -0 check).
 	IsProcessAlive(ctx context.Context, pid int) bool
+	// IsProcessGroupAlive returns true if ANY live process in the group exists
+	// (direct mode: kill -0 on -pgid, zombies count; docker mode: ps scan
+	// excluding Z-state, consistent with IsProcessAlive). Required for correct
+	// kill_process/shutdown/reaper semantics after card #121's exit-marker
+	// wrapping: the group leader is the wrapper shell, which can die to
+	// SIGTERM while a signal-ignoring child (e.g. `trap '' TERM; sleep 300`)
+	// survives — polling only the leader pid would then report a successful
+	// SIGTERM kill.
+	IsProcessGroupAlive(ctx context.Context, pgid int) bool
 	// ReadFileTail returns the last maxBytes of path; enforces the cap internally.
 	ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error)
 	// StatFile returns the byte size of the file at path without reading it.

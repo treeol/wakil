@@ -25,6 +25,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/safe"
 	wtools "github.com/treeol/wakil/internal/tools"
@@ -83,6 +84,11 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 // blocking RunShell). If the deadline is reached, the command is left running
 // as a background process and a pointer is returned for read_process_log
 // polling. This unblocks the agent goroutine so the tool loop can continue.
+//
+// Exit-code capture: the command is wrapped so its exit code lands in the log
+// as a parseable marker (wrapExitMarker). Without it, a backgrounded command
+// that finished within the deadline — or one announced by the completion
+// notice — could fail with a non-zero exit code completely invisibly.
 func (a *App) runShellWithDeadline(ctx context.Context, command string, readAction bool) string {
 	deadline := time.Duration(a.Cfg.ShellTimeoutSec) * time.Second
 
@@ -93,19 +99,16 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	}
 	live := 0
 	for _, e := range a.bgProcs {
-		if e.generation == a.Exec.Generation() && a.Exec.IsProcessAlive(ctx, e.pid) {
+		if e.generation == a.Exec.Generation() && a.Exec.IsProcessGroupAlive(ctx, e.pgid) {
 			live++
 		}
 	}
 	if live >= 5 {
 		a.bgMu.Unlock()
-		// Fall back to blocking — don't fail just because the bg limit is reached.
-		out, err := a.Exec.RunShell(ctx, command)
-		if err == nil && a.LSP != nil && !readAction {
-			a.LSP.MarkOpenFilesDirty()
-			a.LSP.BatchNotifyWatchedFiles(ctx)
-		}
-		return formatResult(out, err)
+		// Card #121: fail closed instead of silently blocking. run_background
+		// shares this same 5-proc limit, so the honest remediation is to free a
+		// slot (kill_process) or wait — not to block the turn.
+		return "ERROR: background process limit reached (5 live) — free a slot with kill_process(bgN) or wait for a running process to finish; auto-backgrounding is unavailable until then"
 	}
 	a.bgCounter++
 	n := a.bgCounter
@@ -120,12 +123,15 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	logPath := fmt.Sprintf("/tmp/wakil-bg-%d.log", n)
 	bgID := fmt.Sprintf("bg%d", n)
 
-	pid, pgid, err := a.Exec.StartBackground(ctx, command, logPath)
+	pid, pgid, err := a.Exec.StartBackground(ctx, exec.WrapExitMarker(command, logPath), logPath)
 	if err != nil {
-		a.bgMu.Lock()
-		a.bgCounter--
-		a.bgMu.Unlock()
-		// Start failed — fall back to blocking so the model gets a real error.
+		// NOTE: the counter slot is deliberately NOT rolled back — IDs stay
+		// monotonic so a failed start can never cause a future bgN collision
+		// (pre-existing rollback bug, card #121 review).
+		// Card #121: StartBackground failure is usually environmental (executor
+		// or container quirk); erroring here would make EVERY shell command
+		// unrunnable. Loud blocking fallback instead — never silent.
+		fmt.Fprintln(a.Out, Yellow("⚠ auto-background unavailable ("+err.Error()+") — running synchronously"))
 		out, runErr := a.Exec.RunShell(ctx, command)
 		if runErr == nil && a.LSP != nil && !readAction {
 			a.LSP.MarkOpenFilesDirty()
@@ -136,26 +142,48 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 
 	done := make(chan struct{})
 	entry := &bgEntry{
-		id:         bgID,
-		pid:        pid,
-		pgid:       pgid,
-		label:      "auto-bg",
-		logPath:    logPath,
-		startedAt:  time.Now(),
-		generation: a.Exec.Generation(),
-		done:       done,
+		id:           bgID,
+		pid:          pid,
+		pgid:         pgid,
+		label:        "auto-bg",
+		logPath:      logPath,
+		startedAt:    time.Now(),
+		generation:   a.Exec.Generation(),
+		readOnly:     readAction,
+		cmdDigest:    Truncate(command, 80),
+		done:         done,
+		toolName:     "run_shell",
+		originChatID: a.chatID(),
 	}
 	a.bgMu.Lock()
 	a.bgProcs[bgID] = entry
 	a.bgMu.Unlock()
 
-	// Reaper goroutine: polls IsProcessAlive, closes done when the process
-	// exits. Uses a background context — the process may outlive the turn.
+	// Reaper goroutine: polls GROUP liveness, closes done when the whole group
+	// is gone. Uses a background context — the process may outlive the turn.
+	// Group check (not the leader pid): since card #121 the leader is the
+	// exit-marker wrapper shell; a signal-ignoring child could outlive it and
+	// must still count as running. Card #121: when the command was DETACHED
+	// (deadline hit), the reaper also pushes a one-line completion notice into
+	// the async inbox — the "ping". Exactly once: notifyOnExit && !notified
+	// under bgMu; the sync waiter sets notifyOnExit=false when it returns
+	// output itself, so a fast command never yields both a synchronous result
+	// AND a notification.
 	safe.Go("auto-bg-reaper", func() {
 		bgCtx := context.Background()
 		for {
-			if !a.Exec.IsProcessAlive(bgCtx, pid) {
+			if !a.Exec.IsProcessGroupAlive(bgCtx, pgid) {
 				close(done)
+				a.bgMu.Lock()
+				e := a.bgProcs[bgID]
+				shouldNotify := e != nil && e.notifyOnExit && !e.notified
+				if shouldNotify {
+					e.notified = true
+				}
+				a.bgMu.Unlock()
+				if shouldNotify {
+					a.notifyDetachedShellExit(bgID, e)
+				}
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -168,11 +196,35 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	select {
 	case <-done:
 		// Process finished within the deadline — read the full log.
+		// notifyOnExit stays false: the reaper will NOT push a completion
+		// notice, so the model sees exactly one result (this one).
 		out, readErr := a.Exec.ReadFile(ctx, logPath)
 		if readErr != nil {
 			out = "(output unreadable: " + readErr.Error() + ")"
 		}
-		// LSP file-sync for non-read-only commands that modify files.
+		// Exit-code recovery (card #121 follow-up): the wrapper wrote a
+		// sentinel marker; parse it and surface non-zero exits as ERROR so a
+		// failing backgrounded command can never masquerade as "(no output)".
+		// The "exit status N" wording deliberately mirrors exec.ExitError so
+		// string-matching callers see identical text on both shell paths.
+		// FAIL CLOSED: a completed process with no parseable marker (killed
+		// before the write, shell syntax error, unreadable log) must never
+		// look like success.
+		var runErr error
+		if readErr != nil {
+			runErr = fmt.Errorf("exit code unknown (log unreadable)")
+		} else if cleaned, code, ok := exec.ParseExitMarker(out); ok {
+			out = cleaned
+			if code != 0 {
+				runErr = fmt.Errorf("exit status %d", code)
+			}
+		} else {
+			runErr = fmt.Errorf("exit code unknown (completion marker missing — killed, shell syntax error, or marker displaced)")
+		}
+		// LSP file-sync for non-read-only commands that modify files. Marking
+		// happens regardless of exit code: a command that ran but exited
+		// non-zero may still have partially modified files (unlike the
+		// blocking path's launch-failure case).
 		if a.LSP != nil && !readAction {
 			a.LSP.MarkOpenFilesDirty()
 			a.LSP.BatchNotifyWatchedFiles(ctx)
@@ -181,15 +233,199 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		a.bgMu.Lock()
 		delete(a.bgProcs, bgID)
 		a.bgMu.Unlock()
-		return formatResult(out, nil)
+		return formatResult(out, runErr)
 	case <-timer.C:
 		// Deadline reached — the process is still running. Leave it
-		// registered for read_process_log polling.
-		return fmt.Sprintf("command still running as %s — use read_process_log(%s) to poll for output, kill_process(%s) to stop", bgID, bgID, bgID)
+		// registered for read_process_log polling, and arm the push
+		// notification: the reaper will announce the exit (card #121).
+		// Race guard: the process may have exited between the reaper's
+		// notify check and this arm (select picked timer.C while done was
+		// also ready) — then the reaper already left without notifying, so
+		// we notify here ourselves. The notified flag dedupes both paths.
+		a.bgMu.Lock()
+		notifySelf := false
+		var notifyEntry *bgEntry
+		var detachEntry *bgEntry
+		if e := a.bgProcs[bgID]; e != nil {
+			e.notifyOnExit = true
+			detachEntry = e
+			select {
+			case <-done: // already exited — reaper saw notifyOnExit==false
+				if !e.notified {
+					e.notified = true
+					notifySelf = true
+					notifyEntry = e
+				}
+			default:
+			}
+		}
+		a.bgMu.Unlock()
+		// Card #128: a detached shell surfaces as a TUI tab. Emit Start (after the
+		// lock; sendEvent may block) so the user can track it until Done.
+		if detachEntry != nil {
+			a.announceShellStart(bgID, detachEntry)
+		}
+		if notifySelf {
+			a.notifyDetachedShellExit(bgID, notifyEntry)
+		}
+		return fmt.Sprintf("command still running as %s — you will be notified when it finishes; use read_process_log(%s) to poll for output, kill_process(%s) to stop", bgID, bgID, bgID)
 	case <-ctx.Done():
-		// Turn cancelled — leave the process running for the user to inspect.
-		return fmt.Sprintf("command still running as %s (turn cancelled) — use read_process_log(%s) to poll for output", bgID, bgID)
+		// Turn cancelled — leave the process running for the user to inspect;
+		// arm the notification the same way (the exit still matters). Same
+		// race guard as the timer branch.
+		a.bgMu.Lock()
+		notifySelf := false
+		var notifyEntry *bgEntry
+		var detachEntry *bgEntry
+		if e := a.bgProcs[bgID]; e != nil {
+			e.notifyOnExit = true
+			detachEntry = e
+			select {
+			case <-done:
+				if !e.notified {
+					e.notified = true
+					notifySelf = true
+					notifyEntry = e
+				}
+			default:
+			}
+		}
+		a.bgMu.Unlock()
+		if detachEntry != nil {
+			a.announceShellStart(bgID, detachEntry)
+		}
+		if notifySelf {
+			a.notifyDetachedShellExit(bgID, notifyEntry)
+		}
+		return fmt.Sprintf("command still running as %s (turn cancelled) — you will be notified when it finishes; use read_process_log(%s) to poll for output", bgID, bgID)
 	}
+}
+
+// announceShellStart emits the AsyncJobStartMsg for a detached-shell TUI tab
+// exactly once (guarded by e.tabStarted under bgMu). Callers must NOT hold bgMu
+// when invoking it (sendEvent may block on the event sink). The originChatID
+// was captured at entry creation, so both Start and Done carry the same origin.
+func (a *App) announceShellStart(bgID string, e *bgEntry) {
+	a.bgMu.Lock()
+	if e.tabStarted {
+		a.bgMu.Unlock()
+		return
+	}
+	e.tabStarted = true
+	origin := e.originChatID
+	tool := e.toolName
+	label := e.label
+	if label == "" {
+		label = e.cmdDigest
+	}
+	a.bgMu.Unlock()
+	a.sendEvent(AsyncJobStartMsg{
+		OpID:         "job-" + bgID,
+		Label:        label,
+		ToolName:     tool,
+		OriginChatID: origin,
+	})
+}
+
+// announceShellDone emits the AsyncJobDoneMsg for a detached-shell TUI tab
+// exactly once (guarded by e.tabDoneSent under bgMu). Display-only: the
+// authoritative model delivery (drainAsyncInbox / check_pending) is unchanged.
+// result/errStr are already bounded; this applies marker-neutralization.
+func (a *App) announceShellDone(bgID string, e *bgEntry, result, errStr string) {
+	a.bgMu.Lock()
+	if e.tabDoneSent {
+		a.bgMu.Unlock()
+		return
+	}
+	e.tabDoneSent = true
+	origin := e.originChatID
+	tool := e.toolName
+	label := e.label
+	if label == "" {
+		label = e.cmdDigest
+	}
+	a.bgMu.Unlock()
+	result = neutralizeAsyncMarker(result)
+	if len(result) > asyncJobTabPreviewMaxBytes {
+		result = truncateUTF8(result, asyncJobTabPreviewMaxBytes)
+	}
+	a.sendEvent(AsyncJobDoneMsg{
+		OpID:         "job-" + bgID,
+		Label:        label,
+		ToolName:     tool,
+		Result:       result,
+		Err:          errStr,
+		OriginChatID: origin,
+	})
+}
+
+// notifyDetachedShellExit builds the completion notice for a detached
+// (auto-backgrounded at deadline) shell command and enqueues it into the async
+// inbox as a shell-typed asyncOp record. The record carries the log tail so the
+// model can act without an extra poll; full output stays in read_process_log.
+// Called from the reaper goroutine — never touches Conv (funnel drains it).
+func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
+	// Capture the observed exit time BEFORE log reads — slow log retrieval
+	// must not inflate the reported runtime.
+	observedExit := time.Now()
+	tail := ""
+	statusLine := exec.ExitStatusLine(0, false)
+	// Read only the TAIL of the log: the marker sits at EOF and the notice
+	// shows the last lines only — a multi-GB log must not be loaded in full
+	// just to extract them (was ReadFile; review finding).
+	if out, err := a.Exec.ReadFileTail(context.Background(), e.logPath, 8*1024); err == nil {
+		// Parse the wrapper's exit marker (card #121 follow-up) so the notice
+		// reports the actual exit status, not just "exited". The marker is
+		// stripped from the tail shown to the model. A self-backgrounded
+		// child writing after the marker can push it out of the window or
+		// break end-anchoring → known=false → honest "code unknown".
+		cleaned, code, known := exec.ParseExitMarker(out)
+		statusLine = exec.ExitStatusLine(code, known)
+		lines := strings.Split(strings.TrimRight(cleaned, "\n"), "\n")
+		if n := len(lines); n > asyncShellNotifyTail {
+			lines = lines[n-asyncShellNotifyTail:]
+		}
+		tail = strings.Join(lines, "\n")
+	}
+	msg := fmt.Sprintf("%s (\"%s\") %s — last output:\n%s\nuse read_process_log(%q) for the full output", bgID, e.cmdDigest, statusLine, tail, bgID)
+
+	op := &asyncOp{
+		id:        "job-" + bgID,
+		toolName:  "run_shell",
+		label:     e.cmdDigest,
+		createdAt: e.startedAt,
+		startedAt: e.startedAt,
+		done:      make(chan struct{}),
+	}
+	op.mu.Lock()
+	op.terminal = true
+	op.finishedAt = observedExit
+	op.result = msg
+	op.shellLSPDirty = !e.readOnly
+	op.mu.Unlock()
+	close(op.done)
+
+	// Card #128: emit the TUI tab Done (display-only; the model delivery below
+	// via asyncInbox is unchanged and exactly-once). shows status + tail preview.
+	a.announceShellDone(bgID, e, statusLine+"\n"+tail, "")
+
+	a.asyncMu.Lock()
+	defer a.asyncMu.Unlock()
+	if a.asyncStopping {
+		return
+	}
+	if a.asyncOps == nil {
+		a.asyncOps = make(map[string]*asyncOp)
+	}
+	a.asyncOps[op.id] = op
+	// Append BEFORE eviction so the freshly-completed op is never the eviction
+	// victim (it is inbox-pending/undelivered and should be kept longest).
+	a.asyncInbox = append(a.asyncInbox, op)
+	a.evictOldestTerminalLocked()
+	// Card #122 Phase 2: a detached-shell completion must wake any pending
+	// wait_for_completion waiter (idle). Coalescing, buffered-1, under asyncMu.
+	a.ensureWake()
+	a.signalWake()
 }
 
 // handleOpenURL opens a URL on the host desktop after confirmation.
@@ -735,7 +971,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 	// Count live processes (those matching the current generation).
 	live := 0
 	for _, e := range a.bgProcs {
-		if e.generation == a.Exec.Generation() && a.Exec.IsProcessAlive(ctx, e.pid) {
+		if e.generation == a.Exec.Generation() && a.Exec.IsProcessGroupAlive(ctx, e.pgid) {
 			live++
 		}
 	}
@@ -756,41 +992,56 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 	detail := fmt.Sprintf("$ %s (background)\n  label=%s, log=%s\n  (%s)",
 		args.Command, args.Label, logPath, a.Exec.Describe())
 	if !a.Confirm("run_background", "Start background process?", detail, false) {
-		a.bgMu.Lock()
-		a.bgCounter-- // reclaim the counter slot on decline
-		a.bgMu.Unlock()
+		// No counter rollback: IDs stay monotonic (no future bgN collision).
 		return "[declined by user]"
 	}
-	pid, pgid, err := a.Exec.StartBackground(ctx, args.Command, logPath)
+	pid, pgid, err := a.Exec.StartBackground(ctx, exec.WrapExitMarker(args.Command, logPath), logPath)
 	if err != nil {
-		a.bgMu.Lock()
-		a.bgCounter--
-		a.bgMu.Unlock()
+		// No counter rollback: IDs stay monotonic (no future bgN collision).
 		return "ERROR: " + err.Error()
 	}
 	done := make(chan struct{})
 	entry := &bgEntry{
-		id:         bgID,
-		pid:        pid,
-		pgid:       pgid,
-		label:      args.Label,
-		logPath:    logPath,
-		startedAt:  time.Now(),
-		generation: a.Exec.Generation(),
-		done:       done,
+		id:           bgID,
+		pid:          pid,
+		pgid:         pgid,
+		label:        args.Label,
+		logPath:      logPath,
+		startedAt:    time.Now(),
+		generation:   a.Exec.Generation(),
+		done:         done,
+		toolName:     "run_background",
+		cmdDigest:    Truncate(args.Command, 80),
+		originChatID: a.chatID(),
 	}
 	a.bgMu.Lock()
 	a.bgProcs[bgID] = entry
 	a.bgMu.Unlock()
-	// Reaper goroutine: poll IsProcessAlive and close done when the process
+	// Card #128: a run_background job surfaces as a TUI tab (display-only;
+	// explicit background jobs remain poll-by-design — no model inbox notice).
+	a.announceShellStart(bgID, entry)
+	// Reaper goroutine: poll GROUP liveness and close done when the group
 	// exits. This lets StopAllBackgroundProcs wait for clean shutdown without
 	// a fixed sleep. Uses a background context — the process may outlive the
-	// turn context that started it.
+	// turn context that started it. On exit, emit the tab Done (display-only).
 	safe.Go("bg-reaper", func() {
 		bgCtx := context.Background()
 		for {
-			if !a.Exec.IsProcessAlive(bgCtx, pid) {
+			if !a.Exec.IsProcessGroupAlive(bgCtx, pgid) {
 				close(done)
+				// Read only the TAIL of the log (multi-GB safe); emit tab Done.
+				statusLine := exec.ExitStatusLine(0, false)
+				tail := ""
+				if out, err := a.Exec.ReadFileTail(bgCtx, logPath, 8*1024); err == nil {
+					cleaned, code, known := exec.ParseExitMarker(out)
+					statusLine = exec.ExitStatusLine(code, known)
+					lines := strings.Split(strings.TrimRight(cleaned, "\n"), "\n")
+					if n := len(lines); n > asyncShellNotifyTail {
+						lines = lines[n-asyncShellNotifyTail:]
+					}
+					tail = strings.Join(lines, "\n")
+				}
+				a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -823,14 +1074,22 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Confirm("kill_process", "Kill background process?", detail, false) {
 		return "[declined by user]"
 	}
-	if !a.Exec.IsProcessAlive(ctx, entry.pid) {
+	if !a.Exec.IsProcessGroupAlive(ctx, entry.pgid) {
 		a.bgMu.Lock()
 		delete(a.bgProcs, args.ID)
 		a.bgMu.Unlock()
 		return fmt.Sprintf("[%s] already exited", args.ID)
 	}
+	// Card #121: an intentional kill must not produce a completion notice —
+	// disarm before signalling so the reaper (which races this path) stays
+	// silent even if it observes the exit first.
+	a.bgMu.Lock()
+	entry.notifyOnExit = false
+	a.bgMu.Unlock()
 	_ = a.Exec.KillPgid(ctx, entry.pgid, 15) // SIGTERM
-	// Wait up to 5s for the group to exit, then SIGKILL.
+	// Wait up to 5s for the GROUP to exit, then SIGKILL. Group check (not the
+	// leader pid): since card #121 the leader is the exit-marker wrapper shell,
+	// which can die to SIGTERM while a signal-ignoring child survives.
 	// The lock is NOT held during this wait — see bgMu comment.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -839,7 +1098,7 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 			return "ERROR: kill_process cancelled: " + ctx.Err().Error()
 		case <-time.After(200 * time.Millisecond):
 		}
-		if !a.Exec.IsProcessAlive(ctx, entry.pid) {
+		if !a.Exec.IsProcessGroupAlive(ctx, entry.pgid) {
 			a.bgMu.Lock()
 			delete(a.bgProcs, args.ID)
 			a.bgMu.Unlock()
@@ -873,17 +1132,29 @@ func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) strin
 		a.bgMu.Unlock()
 		return fmt.Sprintf("[%s] process lost (container restarted)", args.ID)
 	}
-	alive := a.Exec.IsProcessAlive(ctx, entry.pid)
+	alive := a.Exec.IsProcessGroupAlive(ctx, entry.pgid)
 	status := "running"
 	if !alive {
 		status = "exited"
 	}
-	header := fmt.Sprintf("[%s %s] %s pid=%d\n", args.ID, entry.label, status, entry.pid)
 	const maxLogBytes = 8 * 1024
 	tail, err := a.Exec.ReadFileTail(ctx, entry.logPath, maxLogBytes)
 	if err != nil {
+		header := fmt.Sprintf("[%s %s] %s pid=%d\n", args.ID, entry.label, status, entry.pid)
 		return header + "(log not yet available)"
 	}
+	// Exit-code recovery (card #121 follow-up): exited processes carry the
+	// wrapper's marker at the end of the log — parse it, strip it from the
+	// shown tail, and surface the code in the status line.
+	if !alive {
+		if cleaned, code, known := exec.ParseExitMarker(tail); known {
+			tail = cleaned
+			status = fmt.Sprintf("exited (code %d)", code)
+		} else {
+			status = "exited (code unknown)"
+		}
+	}
+	header := fmt.Sprintf("[%s %s] %s pid=%d\n", args.ID, entry.label, status, entry.pid)
 	// Enforce hard cap: header + tail must not exceed 8KB + small overhead.
 	result := header + tail
 	if len(result) > maxLogBytes+256 {
@@ -965,6 +1236,20 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		Model:      a.resolvedSubagentDisplayModel(),
 		ToolNames:  a.subagentToolNames(capability),
 	})
+	if capability == wtools.CapabilityDiscovery {
+		// Card #122 Phase 1: a single DISCOVERY dispatch goes async. Reserve the
+		// slot on the turn goroutine; the child runs on a detached worker; the
+		// summary is injected into context at the next drain. This keeps the
+		// sequential read-only path non-blocking like the batch path.
+		block := []proxy.ToolCall{tc}
+		jobs := []subagentJob{{Index: 0, Task: args.Task, ChatID: subChatID, Capability: capability}}
+		results, ok := a.queueAsyncDiscoveryBlock(block, jobs, subBackend)
+		if ok {
+			return results[0]
+		}
+		// Refused — explicit rejection, never silent sync fallback.
+		return results[0]
+	}
 	// Sequential path: the dispatch begins immediately, no queue wait.
 	a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
 	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, subChatID)
@@ -983,6 +1268,10 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// dispatchSubagent. The child's fresh CostTracker never touches a.Costs
 	// directly; this is the only place its rows are merged in.
 	subagentCostUSD := foldSubagentCost(a.Costs, costRows)
+	doneErr := ""
+	if summary.Status == "incomplete" {
+		doneErr = "subagent incomplete (budget/cancelled)"
+	}
 	a.sendEvent(SubagentDoneMsg{
 		ChatID:       subChatID,
 		Grounding:    grounding,
@@ -991,6 +1280,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		UsedBackend:  usedBackend,
 		CostUSD:      subagentCostUSD,
 		FilesChanged: filesChanged,
+		Err:          doneErr,
 	})
 
 	// Part C: durable summary persistence. Write the full structured summary

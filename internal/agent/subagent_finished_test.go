@@ -59,8 +59,8 @@ func eventOrder(events []interface{}, chatID string) []string {
 
 // TestWorkerEmitsFinishedBeforeDone verifies that the parallel worker emits
 // SubagentFinishedMsg at actual completion time, and that SubagentDoneMsg
-// (Phase C) follows for the same child. Order is asserted: finished before
-// done.
+// (Phase C, committed from the async drain at delivery) follows for the same
+// child. Order is asserted: finished before done.
 func TestWorkerEmitsFinishedBeforeDone(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -75,10 +75,12 @@ func TestWorkerEmitsFinishedBeforeDone(t *testing.T) {
 	block := []proxy.ToolCall{
 		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
 	}
-	// runParallelSubagentBlock runs all three phases: Start (A), workers (B),
-	// and Done (C). SubagentFinishedMsg fires in Phase B; SubagentDoneMsg in C.
-	// We need to find the ChatID from the Start event.
+	// Pure-discovery block routes ASYNC (card #122 Phase 1): returns placeholders
+	// immediately; Start (A) on this goroutine, Finished (B) on a worker, Done (C)
+	// committed at drain. Await terminal workers, then drain to emit Done events.
 	app.runParallelSubagentBlock(context.Background(), block)
+	waitAsyncOps(t, app)
+	app.drainAsyncInbox()
 
 	// Find the ChatID from the Start event.
 	var chatID string
@@ -118,6 +120,8 @@ func TestFinishedCarriesDisplayData(t *testing.T) {
 		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
 	}
 	app.runParallelSubagentBlock(context.Background(), block)
+	waitAsyncOps(t, app)
+	app.drainAsyncInbox() // commit Done events + deliver let the worker's Finished land
 
 	var finMsg *SubagentFinishedMsg
 	for _, e := range collector.snapshot() {
@@ -142,8 +146,10 @@ func TestFinishedCarriesDisplayData(t *testing.T) {
 
 // TestFastChildFinishedWhileSlowRuns verifies that with two children (fast and
 // slow), the fast child's SubagentFinishedMsg arrives while the slow child is
-// still running. Uses synchronized mocks (a release channel), not sleeps —
-// per the lock-test hardening pattern.
+// still running. The block is dispatched ASYNC (discovery routing), so it
+// returns immediately; the detached worker runs both children (fast completes
+// while slow is held on a release channel). Uses synchronized mocks (a release
+// channel), not sleeps.
 func TestFastChildFinishedWhileSlowRuns(t *testing.T) {
 	releaseSlow := make(chan struct{})
 	var slowArrived atomic.Int32
@@ -168,10 +174,6 @@ func TestFastChildFinishedWhileSlowRuns(t *testing.T) {
 	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.EventSink = func(msg interface{}) {
 		if _, ok := msg.(SubagentFinishedMsg); ok {
-			// The fast child (TASK-A) is the one that finishes first. We can't
-			// know the ChatID ahead of time (runParallelSubagentBlock mints it
-			// in Phase A), so we track by checking if the slow child has
-			// finished yet. If not, this must be the fast child.
 			fastFinished.Add(1)
 		}
 		collector.sink(msg)
@@ -181,15 +183,10 @@ func TestFastChildFinishedWhileSlowRuns(t *testing.T) {
 		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
 		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-B"}`}},
 	}
-	done := make(chan struct{})
-	go func() {
-		app.runParallelSubagentBlock(context.Background(), block)
-		close(done)
-	}()
+	app.runParallelSubagentBlock(context.Background(), block) // async: returns immediately
 
 	// Wait for the slow child to arrive and be blocked, and the fast child to
-	// have finished. We poll: the fast child's SubagentFinishedMsg should
-	// arrive while the slow child is still running (before releaseSlow is closed).
+	// have finished — both happen on the detached worker while Send is long gone.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if slowArrived.Load() > 0 && fastFinished.Load() > 0 {
@@ -205,13 +202,10 @@ func TestFastChildFinishedWhileSlowRuns(t *testing.T) {
 		t.Error("fast child's SubagentFinishedMsg should have arrived while slow child is still running")
 	}
 
-	// Release the slow child so the test can finish.
+	// Release the slow child, then await the whole batch and commit Done events.
 	close(releaseSlow)
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("block did not finish after releasing slow child")
-	}
+	waitAsyncOps(t, app)
+	app.drainAsyncInbox()
 
 	// Both children should have [finished, done] in order. Find their ChatIDs
 	// from the Start events.
@@ -258,6 +252,9 @@ func TestSequentialPathEmitsFinishedBeforeDone(t *testing.T) {
 		Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`},
 	}
 	app.ExecuteToolCall(context.Background(), tc)
+	// Async discovery routing: await the worker + commit Done events at drain.
+	waitAsyncOps(t, app)
+	app.drainAsyncInbox()
 
 	// Find the ChatID from the Start event.
 	var chatID string

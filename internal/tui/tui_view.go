@@ -355,9 +355,15 @@ func statusSegments(in statusLineInput) []string {
 	var stateSeg string
 	switch in.state {
 	case stateStreaming:
-		if in.reasoning {
+		switch {
+		case in.reasoning:
+			// extended thinking is actively streaming
 			stateSeg = styleState.Render("reasoning")
-		} else {
+		case in.runningTool != "":
+			// a tool is currently executing (e.g. "run_shell ls -la")
+			stateSeg = styleState.Render("executing")
+		default:
+			// generating the textual answer
 			stateSeg = styleState.Render("streaming")
 		}
 	case stateConfirm:
@@ -365,8 +371,12 @@ func statusSegments(in statusLineInput) []string {
 	case stateCompacting:
 		stateSeg = styleState.Render("compacting")
 	case stateIdle:
+		// Always show a state label at idle — "awaiting input" after the first
+		// turn, "idle" before it. Never disappears.
 		if in.hadTurn {
 			stateSeg = dim2("awaiting input")
+		} else {
+			stateSeg = dim2("idle")
 		}
 	}
 	if stateSeg != "" {
@@ -382,8 +392,10 @@ func statusSegments(in statusLineInput) []string {
 	if in.queueLen > 0 {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(sprint("queue: %d", in.queueLen)))
 	}
-	if in.runningTool != "" {
-		segs = append(segs, dim2(in.runningTool))
+	// Last tool text: persists after the tool completes (until turn end) so the
+	// user always sees what the agent last did, right in the status line.
+	if in.lastToolText != "" {
+		segs = append(segs, dim2(in.lastToolText))
 	}
 	if in.model != "" {
 		segs = append(segs, dim2(in.model))
@@ -551,6 +563,15 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 			runningTool += " " + agent.Truncate(m.runningTool.command, 40)
 		}
 	}
+	// lastToolText persists the last tool's text after it completes (until the
+	// turn ends) so the status line always shows what the agent last did.
+	lastToolText := ""
+	if m.lastTool != nil {
+		lastToolText = m.lastTool.name
+		if m.lastTool.command != "" {
+			lastToolText += " " + agent.Truncate(m.lastTool.command, 40)
+		}
+	}
 	return statusLineInput{
 		state:                   m.state,
 		autoApprove:             consent.AutoApprove,
@@ -572,6 +593,7 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		arm:                     m.armNotice(),
 		queueLen:                len(m.queuedPrompts),
 		runningTool:             runningTool,
+		lastToolText:            lastToolText,
 	}
 }
 
@@ -612,6 +634,10 @@ type statusLineInput struct {
 	// runningTool is the formatted "tool: name cmd" string for the status line
 	// when a tool is executing. Empty when no tool is active.
 	runningTool string
+	// lastToolText is the formatted text of the most recent tool (persists after
+	// the tool completes, until the turn ends). Shown as a segment in the status
+	// line after the state label so the user always sees what the agent last did.
+	lastToolText string
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.
@@ -763,6 +789,9 @@ var subTabPulseShades = []lipgloss.Color{"94", "172", "214", "220"}
 func subTabDotSpec(tab *subTab, phase int) (glyph string, color lipgloss.Color) {
 	switch {
 	case tab.done:
+		if tab.finErr != "" {
+			return "✗", "1" // red: failed (timeout, panic, refusal)
+		}
 		return "✓", "2"
 	case tab.finished:
 		return "✓", "242" // dim green: landed but not yet authoritatively done

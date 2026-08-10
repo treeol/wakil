@@ -859,3 +859,76 @@ func TestLoadConfig_ExplicitConfigMissingDoesNotCreate(t *testing.T) {
 		t.Errorf("config file should NOT be created for explicit --config; err=%v", err)
 	}
 }
+
+func TestOutputMode_DefaultIsDebug(t *testing.T) {
+	if got := DefaultConfig().OutputMode; got != OutputModeDebug {
+		t.Errorf("default OutputMode = %q, want %q", got, OutputModeDebug)
+	}
+}
+
+func TestOutputMode_ValidateValid(t *testing.T) {
+	for _, v := range []OutputMode{OutputModeDebug, OutputModeSimple} {
+		cfg := DefaultConfig()
+		cfg.OutputMode = v
+		if err := validateEnums(cfg); err != nil {
+			t.Errorf("output_mode=%q: unexpected error: %v", v, err)
+		}
+	}
+}
+
+func TestOutputMode_ValidateInvalid(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.OutputMode = "bogus"
+	err := validateEnums(cfg)
+	if err == nil || !strings.Contains(err.Error(), "output_mode") {
+		t.Fatalf("expected output_mode error, got: %v", err)
+	}
+}
+
+func TestOutputMode_FlagPrecedence(t *testing.T) {
+	// --output-mode simple must win over the default (debug).
+	cfg, err := LoadConfig([]string{"--output-mode", "simple", "--exec", "direct", "--base-url", "http://proxy:11400"})
+	if err != nil {
+		t.Fatalf("LoadConfig with --output-mode simple: %v", err)
+	}
+	if cfg.OutputMode != OutputModeSimple {
+		t.Errorf("flag output_mode = %q, want %q", cfg.OutputMode, OutputModeSimple)
+	}
+}
+
+func TestOutputMode_InvalidFlagRejected(t *testing.T) {
+	_, err := LoadConfig([]string{"--output-mode", "bogus", "--exec", "direct", "--base-url", "http://proxy:11400"})
+	if err == nil || !strings.Contains(err.Error(), "output_mode") {
+		t.Fatalf("expected output_mode error for invalid flag, got: %v", err)
+	}
+}
+
+func TestOutputMode_EnvPrecedence(t *testing.T) {
+	t.Setenv("WAKIL_OUTPUT_MODE", "simple")
+	cfg, err := LoadConfig([]string{"--exec", "direct", "--base-url", "http://proxy:11400"})
+	if err != nil {
+		t.Fatalf("LoadConfig with env WAKIL_OUTPUT_MODE=simple: %v", err)
+	}
+	if cfg.OutputMode != OutputModeSimple {
+		t.Errorf("env output_mode = %q, want %q", cfg.OutputMode, OutputModeSimple)
+	}
+}
+
+func TestOutputMode_FlagBeatsEnv(t *testing.T) {
+	t.Setenv("WAKIL_OUTPUT_MODE", "simple")
+	cfg, err := LoadConfig([]string{"--output-mode", "debug", "--exec", "direct", "--base-url", "http://proxy:11400"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.OutputMode != OutputModeDebug {
+		t.Errorf("flag should beat env: output_mode = %q, want %q", cfg.OutputMode, OutputModeDebug)
+	}
+}
+
+func TestOutputMode_InvalidEnvRejected(t *testing.T) {
+	t.Setenv("WAKIL_OUTPUT_MODE", "bogus")
+	_, err := LoadConfig([]string{"--exec", "direct", "--base-url", "http://proxy:11400"})
+	if err == nil || !strings.Contains(err.Error(), "output_mode") {
+		t.Fatalf("expected output_mode error for invalid env, got: %v", err)
+	}
+}

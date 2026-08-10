@@ -4,11 +4,11 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
-A terminal-native coding agent. Go binary, thin HTTP client, zero framework
-overhead — talks to any OpenAI-compatible Chat Completions endpoint directly
-(llama.cpp server, OpenRouter, vLLM…), or through a remote *ilm* proxy that
-adds memory and grounding. Endpoints are named in config and switchable
-mid-session. wakil owns the TUI, tool execution, and session persistence.
+A terminal-native coding agent. A Go binary that sends HTTP requests directly to
+any OpenAI-compatible Chat Completions endpoint (llama.cpp server, OpenRouter,
+vLLM…), or to a remote *ilm* proxy that adds memory and grounding. Endpoints are
+named in config and switchable mid-session. wakil provides the TUI, tool
+execution, and session persistence.
 
 ```
 you ── wakil (TUI · tool exec · sessions) ──┬── OpenAI-compatible endpoint ── model
@@ -17,10 +17,10 @@ you ── wakil (TUI · tool exec · sessions) ──┬── OpenAI-compatibl
 ```
 
 Every write/execute call is gated behind explicit `y/n` confirmation before it
-touches your filesystem, shell, or Docker daemon. Every tool result comes from
-real local execution — nothing the model reports is fabricated. Code
-navigation is backed by an actual language server (`lsp_definition` /
-`lsp_references` / `lsp_hover` / `lsp_symbols` via gopls), not grep-and-guess.
+touches your filesystem, shell, or Docker daemon. Tool-result messages are
+populated from real local execution. Code navigation is backed by a language
+server (`lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` via
+gopls).
 
 ## Contents
 
@@ -37,14 +37,14 @@ navigation is backed by an actual language server (`lsp_definition` /
 |---|---|
 | **Go 1.26+** | to build from source *(see `go.mod`)* |
 | **Docker** | for the default `docker` exec mode *(skip with `--exec direct`)* |
-| **An OpenAI-compatible endpoint** | a llama.cpp server, OpenRouter, or an ilm proxy — wakil is a client, not a standalone brain |
+| **An OpenAI-compatible endpoint** | a llama.cpp server, OpenRouter, or an ilm proxy — wakil is a client, so an external inference endpoint is required |
 
 ## Status
 
-Early-stage. Config keys, session format, and the tool set will move between
-commits. The confirmation gate is on by default for one reason: this agent
-runs shell and Docker commands against your machine. Leave it on for anything
-you haven't fully audited.
+Early-stage. Config keys, session format, and the tool set may change between
+commits. The confirmation gate is on by default because the agent runs shell and
+Docker commands on the host. Keep it enabled for anything you have not fully
+audited.
 
 ## Quickstart
 
@@ -77,17 +77,17 @@ For OpenRouter, use `https://openrouter.ai/api` as `base_url` and set
 `auth_header` to `"Bearer sk-or-..."`. For Ollama, `http://localhost:11434`
 with model `llama3`.
 
-If Docker or the `wakil-dev` image is missing, wakil prints a clear message
-with build instructions instead of a confusing Docker error — pass
-`--exec direct` to skip Docker entirely (see Option B).
+If Docker or the `wakil-dev` image is missing, wakil prints an error with image
+build instructions instead of the raw Docker error — pass `--exec direct` to skip
+Docker entirely (see Option B).
 
 See [`config.example.json`](config.example.json) for a fully commented
 reference covering all options.
 
 ### Option B: No sandbox (direct mode)
 
-Bare-metal execution — no Docker needed. Useful for a quick test or when the
-sandbox image isn't available.
+Execution on the host without Docker. Used when the sandbox image is not
+available.
 
 ```sh
 # 1. Build
@@ -112,7 +112,7 @@ go build -o wakil ./cmd/wakil
 # 2. Build the sandbox image
 docker build -t wakil-dev .
 
-# 3. Point it at the proxy and go — workspace arg is optional
+# 3. Set the proxy URL and start — workspace arg is optional
 export ILM_BASE_URL='http://proxy-host:11400'   # ilm proxy
 ./wakil ~/projects/myapp        # explicit path
 # no argument → auto-mounts the current directory
@@ -129,8 +129,8 @@ every tool call executes inside it.
 ## Security and the confirmation gate
 
 **Gated** — `run_shell`, `write_file`, `edit_file`, `delete_file`, `move_file`,
-`run_background`, `kill_process`, `open_url`. Every call prompts `y/n` before
-it runs, no exceptions carved out.
+`run_background`, `kill_process`, `open_url`. By default each call prompts `y/n`
+before it runs; `/auto` changes this (see below).
 
 **Ungated** — `read_file`, `read_file_full`, `list_dir`, `search_files`,
 `find_files`, `dispatch_subagent`, `dispatch_subagents`, `read_process_log`,
@@ -148,26 +148,25 @@ MCP calls are serialized per-server). `dispatch_subagent` /
 their own tool restrictions; the edit and tools tiers inherit session-level
 consent and never prompt interactively.
 
-`run_shell` is gated even for pure reads — `cat ~/.ssh/id_rsa` or `env` hits
-the same `y/n` wall as anything else. `a` at a prompt auto-approves read-only
+`run_shell` is gated even for pure reads — `cat ~/.ssh/id_rsa` or `env` is
+gated the same as any other call. `a` at a prompt auto-approves read-only
 tools for the rest of the session; gated tools keep prompting unless you flip
 full auto-approve with `/auto` (status bar shows `AUTO`). Destructive commands
 and counsel calls gate even in auto mode — no override.
 
 Default `docker` mode does **not** bind-mount the host Docker socket —
 `--docker-sock` defaults to `false`. Pass `--docker-sock=true` to give the
-agent `docker` / `docker compose` access to your real daemon. That's
-host-root, functionally — powerful, and exactly as dangerous as it sounds.
-Run untrusted tasks with the gate on, against an endpoint and model you
-actually trust, and reach for a disposable VM when you don't need
-host-Docker control.
+agent `docker` / `docker compose` access to your real daemon. This grants
+root-equivalent access to the host through the Docker daemon. Run untrusted
+tasks with the gate on, against a trusted endpoint and model, and use a
+disposable VM when host-Docker control is not needed.
 
-In Docker mode the sandbox is also hardened: `--cap-drop=ALL`,
+In Docker mode the sandbox is hardened: `--cap-drop=ALL`,
 `--read-only`, and `--security-opt=no-new-privileges` are always applied.
 A writable `/tmp` tmpfs and a minimal `/etc` tmpfs are mounted so the
 container can function under the read-only rootfs. The `docker_caps`,
 `docker_memory`, `docker_pids_limit`, and `docker_tmpfs_size` config
-fields adjust the resource limits (see the config table above). Note that
+fields adjust the resource limits (see the config table below). Note that
 `docker_tmpfs_size` counts against the container memory cgroup — setting
 it equal to or larger than `docker_memory` can still cause OOM under load.
 
@@ -310,7 +309,7 @@ reference covering every section below.
 | `keep_bytes_frac` | `0.60` | Keep 60% of effective context verbatim after compaction |
 | `hard_max_frac` | `0.95` | Hard ceiling at 95% of effective context |
 | `context_capacity_frac` | `0.80` | Use 80% of proxy's usable_ctx as working budget |
-| `effective_ctx_max_chars` | `0` (disabled) | Absolute cap (chars) on effective context for large models. Models with 1M token context become unreliable past ~200k chars; set to `200000` to cap. Applied before fractions. Override at runtime with `/maxctx` |
+| `effective_ctx_max_chars` | `0` (disabled) | Absolute cap (chars) on effective context for large models. Apply to keep context within a working budget (e.g. `200000`); models with very large advertised context may degrade in practice below their nominal limit. Applied before fractions. Override at runtime with `/maxctx` |
 
 ### Agent prompt
 
@@ -320,8 +319,8 @@ The system prompt is loaded once at startup. Precedence:
    default) — if the file is readable, it is used.
 2. **Embedded prompt** — the full `prompts/agent.txt` is baked into the binary
    via `go:embed`. If no file is found or the file is unreadable, the embedded
-   full prompt is used automatically. The bare binary is self-contained — no
-   symlink or copy is needed for the default experience.
+   full prompt is used automatically. No symlink or copy is needed for the
+   default experience.
 
 To customize the prompt, copy or symlink the source file into your config
 directory:
@@ -527,17 +526,17 @@ vars above.
 ### LSP code intelligence
 
 `lsp_enabled: true` turns on `lsp_definition`, `lsp_references`, `lsp_hover`,
-`lsp_symbols` — real language-server lookups, semantically scoped, instead of
-grepping for identifier text across unrelated code.
+`lsp_symbols` — lookups that use a configured language server rather than text
+search.
 
 `lsp_definition` / `lsp_references` / `lsp_hover` detect language from the
 file extension and route to whichever server is configured for it under
 `lsp_servers` — nothing Go-specific in the config shape itself. `lsp_symbols`
 is workspace-wide with no file to key off, so it defaults to the `go` entry.
-The sandbox `Dockerfile` currently ships exactly one server — `gopls`, pinned
-to v0.22.0 — so Go is the only language proven end-to-end today. Wiring in
+The sandbox `Dockerfile` currently ships one server — `gopls`, pinned
+to v0.22.0 — so Go is the only language covered by the test setup. Wiring in
 `rust-analyzer`, `pyright`, or anything else under `lsp_servers` should route
-the same way; that path just hasn't been exercised yet.
+the same way; that path is not part of the test setup.
 
 ```json
 {
@@ -629,7 +628,7 @@ MCP config.
 ### Cost sidebar
 
 Per-source token and cost accounting. Rates live under `costs`; unpriced
-sources show `—`, not a misleading `$0.00`.
+sources are shown as `—` rather than `$0.00`.
 
 ### Memory and staging
 
@@ -651,10 +650,9 @@ snapshots. Ungated — staging writes touch no workspace state.
 **Durable memory (T2)** is a host-side SQLite store that persists across
 sessions **within a workspace**. Each workspace has its own isolated memory
 DB at `<wakil-data>/memory/<workspace-key>/memory.db` — entries stored in
-one workspace are **not** visible in another. This is deliberate isolation
-(anchors are workspace-relative; cross-workspace memory would break that
-model). Mid-tier entries auto-expire (1h–7d TTL); durable entries are
-permanent and go through a propose→promote review flow. Subagents can
+one workspace are **not** visible in another because anchors are
+workspace-relative. Mid-tier entries auto-expire (1h–7d TTL); durable entries
+are permanent and go through a propose→promote review flow. Subagents can
 propose durable entries but only the main agent can promote them. Every
 entry carries provenance (writer, taint signal, anchor staleness). A
 memory digest is injected into the system prompt at session start.
@@ -686,7 +684,7 @@ against a stateless server — assistant `tool_calls` → execute → `role:"too
 result → resend → final answer. wakil keeps a **bounded client-side
 transcript**, compacting older turns into a running summary *(last N turns
 verbatim + summary)*. There is no server-side memory; `/learn` refuses
-client-side rather than letting a bare model fake a memory ack.
+client-side because an `openai` endpoint cannot persist the fact.
 
 Client-side **durable memory** (T2) works on all endpoints — the SQLite
 store is host-side and endpoint-independent. `memory_put`,
@@ -772,8 +770,8 @@ go build -o wakil ./cmd/wakil
 go test ./...
 ```
 
-Both green before you send a patch. Keep the confirmation gate honest — no
-ungated write/execute paths, ever.
+Both must pass before you send a patch. Keep every write/execute path
+gated — do not add an ungated write or execute path.
 
 ## Remote provisioning
 
@@ -784,5 +782,3 @@ image, SELinux, MCP paths) — see
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
-
-Support development at <https://rete-it.ch/donation.html>.

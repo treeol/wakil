@@ -48,8 +48,9 @@ func (f *fakeLSPExec) MovePath(_ context.Context, _, _ string) error { return ni
 func (f *fakeLSPExec) StartBackground(_ context.Context, _, _ string) (int, int, error) {
 	return 0, 0, nil
 }
-func (f *fakeLSPExec) KillPgid(_ context.Context, _, _ int) error   { return nil }
-func (f *fakeLSPExec) IsProcessAlive(_ context.Context, _ int) bool { return false }
+func (f *fakeLSPExec) KillPgid(_ context.Context, _, _ int) error        { return nil }
+func (f *fakeLSPExec) IsProcessAlive(_ context.Context, _ int) bool      { return false }
+func (f *fakeLSPExec) IsProcessGroupAlive(_ context.Context, _ int) bool { return false }
 func (f *fakeLSPExec) ReadFileTail(_ context.Context, _ string, _ int64) (string, error) {
 	return "", nil
 }

@@ -154,7 +154,8 @@ func TestHandleTUICommandHandoffTooManyArgs(t *testing.T) {
 }
 
 func TestBuildContinuationPrompt(t *testing.T) {
-	prompt := agent.BuildContinuationPrompt("test summary", "abc12345-aaaa-bbbb-cccc-dddddddddddd", "/workspace")
+	payload := agent.HandoffPayload{CoarseSummary: "test summary", RecentTail: "recent tail"}
+	prompt := agent.BuildContinuationPrompt(payload, "abc12345-aaaa-bbbb-cccc-dddddddddddd", "/workspace")
 	if !strings.Contains(prompt, "abc12345") {
 		t.Error("prompt should contain short old chat ID")
 	}
@@ -163,6 +164,9 @@ func TestBuildContinuationPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "test summary") {
 		t.Error("prompt should contain the summary")
+	}
+	if !strings.Contains(prompt, "recent tail") {
+		t.Error("prompt should contain the recent tail")
 	}
 	if !strings.Contains(prompt, "untrusted") {
 		t.Error("prompt should delimit summary as untrusted")

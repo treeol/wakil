@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestParseModelPrefix verifies that the provider prefix is correctly split from
@@ -732,5 +733,71 @@ func TestPanelDetailDebateMode(t *testing.T) {
 	}
 	if !strings.Contains(detail, "the question") {
 		t.Error("debate detail should include the question")
+	}
+}
+
+// TestRunPanelDebateRound2SurvivesWith2xDeadline verifies the card #131 fix:
+// debate gets 2× total wall-time (round 1 + round 2), not 1×. Each round's
+// individual HTTP call is separately capped at perCall (CallOracle's
+// WithTimeout), so the meaningful effect of the fix is on the OVERALL budget:
+// when round 1's call consumes ~perCall, round 2 must still get its own perCall
+// budget. With a 1× outer deadline (the pre-fix clip) round 2 is cancelled;
+// with a 2× outer deadline (what mashuraCallTimeout("debate") now provides)
+// round 2 survives.
+func TestRunPanelDebateRound2SurvivesWith2xDeadline(t *testing.T) {
+	const perCall = 1 // seconds
+	runScenario := func(outerDeadline time.Duration) (answer string, err error) {
+		var mu sync.Mutex
+		modelCalls := map[string]int{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				Model string `json:"model"`
+			}
+			json.Unmarshal(body, &req)
+			mu.Lock()
+			modelCalls[req.Model]++
+			n := modelCalls[req.Model]
+			mu.Unlock()
+			if n == 1 {
+				// Round 1: consume nearly the full perCall budget (~950ms of 1s),
+				// leaving only ~50ms in the pre-fix 1× outer deadline.
+				time.Sleep(950 * time.Millisecond)
+			} else {
+				// Round 2: a real call (~500ms). Well under perCall (1s) so it
+				// survives with a 2× outer deadline (~1.05s left), but far beyond
+				// the ~50ms that remain under the pre-fix 1× clip.
+				time.Sleep(500 * time.Millisecond)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"content":[{"type":"text","text":"answer"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`))
+		}))
+		defer srv.Close()
+
+		models := []string{"anthropic:model-a"}
+		apiKeys := map[string]string{"anthropic": "test-key"}
+		ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: perCall, AnthropicEndpoint: srv.URL + "/v1/messages"}
+
+		parent, cancel := context.WithTimeout(context.Background(), outerDeadline)
+		defer cancel()
+		results := RunPanel(parent, models, "debate", "question?", "briefing", ccfg, apiKeys)
+		if len(results) != 1 {
+			t.Fatalf("want 1 result, got %d", len(results))
+		}
+		return results[0].Answer, results[0].Err
+	}
+
+	// Pre-fix behavior (outer deadline clipped to 1×): round 2 is cancelled.
+	if _, err := runScenario(1 * time.Duration(perCall) * time.Second); err == nil {
+		t.Error("1× outer deadline: expected round-2 cancellation (the pre-fix clip), but it succeeded")
+	}
+
+	// Fixed behavior (2× outer deadline): round 2 survives with ~1× budget left.
+	ans, err := runScenario(2 * time.Duration(perCall) * time.Second)
+	if err != nil {
+		t.Errorf("2× outer deadline: round-2 was cancelled (err=%v) — should survive with ~1× budget left", err)
+	}
+	if !strings.Contains(ans, "answer") {
+		t.Errorf("expected round-2 answer, got %q", ans)
 	}
 }

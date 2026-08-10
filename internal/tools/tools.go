@@ -46,7 +46,8 @@ func DefaultTools(cwd string) []proxy.Tool {
 			Name: "run_shell",
 			Description: "Run a shell command in the working directory and return combined stdout/stderr. Requires user confirmation. " +
 				"Long-running commands (exceeding shell_timeout_sec, default 10s) are automatically backgrounded — " +
-				"the tool returns 'still running as bgN' and you can poll read_process_log(bgN) for output. " + cwdNote,
+				"the tool returns 'still running as bgN' and you get a notification injected into context when the command " +
+				"finishes; you can also poll read_process_log(bgN) for output at any time. " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"command": StrProp("The shell command to run"),
 			}, "command"),

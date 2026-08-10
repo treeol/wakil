@@ -115,7 +115,11 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 	if maxPar > len(jobs) {
 		maxPar = len(jobs)
 	}
-	sem := make(chan struct{}, maxPar)
+	// Card #122 Phase 1: the GLOBAL semaphore bounds total concurrent subagent
+	// children ACROSS all overlapping batches (incl. detached async discovery),
+	// not just within this invocation — so async batches cannot balloon
+	// parallelism beyond /maxpar. Sized once by maxPar.
+	sem := a.ensureSubagentGlobalSem(maxPar)
 	var wg sync.WaitGroup
 	for i := range jobs {
 		wg.Add(1)
@@ -171,11 +175,45 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 // Observability: prints a one-line concurrency note so it is visible when the
 // model actually batched dispatches (parallelism is model-dependent and can
 // silently degrade to sequential — this line is the receipt that it fired).
+//
+// This is the SYNCHRONOUS path (edit/tools-capable blocks, and blocks that
+// fail the pure-discovery fast path). Pure-discovery blocks may instead be
+// dispatched asynchronously via queueAsyncDiscoveryBlock — see that function.
 func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCall) []string {
-	out := make([]string, len(block))
+	// ---- Phase A: prepare (main goroutine) — resolve jobs, collect per-call
+	// immediate results (parse/consent errors). Also determines whether the
+	// block is pure discovery (async-capable).
+	jobs, out, backend, pureDiscovery, prepared := a.prepareSubagentBlock(block)
+	if !prepared {
+		return out
+	}
+	a.announceSubagentBlock(jobs, backend)
+	if pureDiscovery {
+		// Card #122 Phase 1: route pure-discovery blocks through the async
+		// funnel. queueAsyncDiscoveryBlock returns per-call placeholders on
+		// success, or explicit per-call rejections on refusal (never silent sync).
+		results, ok := a.queueAsyncDiscoveryBlock(block, jobs, backend)
+		if ok || results != nil {
+			return results
+		}
+	}
+	// Mixed / non-discovery / refused: synchronous path (child-vs-parent mutation
+	// invariant preserved; no silent async downgrade on refusal — refusal above
+	// returns explicit rejections already).
+	syncResults := a.runPreparedSubagents(ctx, jobs, backend)
+	return a.finalizeSubagentBlock(jobs, syncResults, out)
+}
 
-	// ---- Phase A: prepare (main goroutine) ----
+// prepareSubagentBlock is Phase A (MAIN GOROUTINE): parse args, run the egress
+// consent gate once, mint all ChatIDs, and send ALL SubagentStartMsg events
+// before any worker spawns. Returns the prepared jobs, per-call immediate
+// results (for parse/consent/validation failures), the resolved backend, and
+// pureDiscovery (true if EVERY job is discovery-capable — the only capability
+// safe to detach asynchronously).
+func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []string, string, bool, bool) {
+	out := make([]string, len(block))
 	jobs := make([]subagentJob, 0, len(block))
+	pureDiscovery := true
 	for i, tc := range block {
 		var args struct {
 			Task       string `json:"task"`
@@ -183,10 +221,12 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		}
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			out[i] = fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+			pureDiscovery = false
 			continue
 		}
 		if args.Task == "" {
 			out[i] = "ERROR: task is required"
+			pureDiscovery = false
 			continue
 		}
 		capability := args.Capability
@@ -196,41 +236,42 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		if !wtools.ValidCapability(capability) {
 			out[i] = fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q, %q",
 				args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit, wtools.CapabilityTools)
+			pureDiscovery = false
 			continue
 		}
-		// Consent gate (same as sequential path at app.go — the two must move
-		// together): edit capability requires session write consent. The parent's
-		// write predicate for edit-category tools is AutoApprove alone (see the
-		// verbatim trace in the comment at app.go's dispatch_subagent case).
-		// INVARIANT: child may write iff parent may write.
-		// Tools capability also requires AutoApprove (session consent for
-		// external tool access — same gate, different rationale).
+		// Consent gate: edit/tools capability requires session write consent (the
+		// parent's own write predicate). INVARIANT: child may write iff parent may.
 		if (capability == wtools.CapabilityEdit || capability == wtools.CapabilityTools) && !a.Consent().AutoApprove {
 			out[i] = fmt.Sprintf("ERROR: %s capability requires /auto or --auto (session consent). "+
 				"Re-dispatch with capability \"discovery\" (the default) for read-only research.",
 				capability)
+			pureDiscovery = false
 			continue
+		}
+		if capability != wtools.CapabilityDiscovery {
+			pureDiscovery = false
 		}
 		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability})
 	}
 	if len(jobs) == 0 {
-		return out
+		return nil, out, "", pureDiscovery, false
 	}
-
-	// Backend resolution only applies when the child's resolved endpoint is
-	// kind ilm-proxy; for kind openai there is no backend-routing concept, so
-	// skip resolution entirely rather than compute an inert value.
+	// Backend/toolset/consent infra is resolved once for the whole block.
 	backend := a.resolveSubagentBackendForEndpoint(a.resolvedSubagentEndpointKind())
 	a.ensureSubagentLimitsCache()
 	if !a.ensureSubagentConsent(backend) {
 		for _, j := range jobs {
 			out[j.Index] = declinedSubagentSummary(j.Task, backend).Render()
 		}
-		return out
+		return nil, out, backend, false, false
 	}
+	return jobs, out, backend, len(jobs) > 0 && pureDiscovery, true
+}
 
-	// Display the effective cap, not the raw config value — runSubagentJobs
-	// clamps to len(jobs), so the user sees what actually bounded parallelism.
+// announceSubagentBlock prints the one-line concurrency receipt and sends all
+// SubagentStartMsg events (Start-before-Chunk invariant). MAIN GOROUTINE ONLY,
+// before any worker spawns.
+func (a *App) announceSubagentBlock(jobs []subagentJob, backend string) {
 	dispCap := a.Cfg.MaxParallelSubagents
 	if dispCap < 1 {
 		dispCap = 1
@@ -239,14 +280,7 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 		dispCap = len(jobs)
 	}
 	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· %d subagents in parallel (cap %d)", len(jobs), dispCap)))
-	// All Start events BEFORE any worker spawns (Start-before-Chunk invariant).
-	// Resolve the display model once — all jobs in this batch share the same
-	// endpoint, so the model is identical. This runs in Phase A (main goroutine)
-	// before any worker spawns.
 	displayModel := a.resolvedSubagentDisplayModel()
-	// Resolve the tool names once — all jobs in this batch share the same
-	// capability, so the tool list is identical. This runs in Phase A (main
-	// goroutine) before any worker spawns.
 	toolNames := a.subagentToolNames(jobs[0].Capability)
 	for _, j := range jobs {
 		fmt.Fprintln(a.Out, Dim("· subagent: "+Truncate(j.Task, 60)))
@@ -259,17 +293,26 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 			ToolNames:  toolNames,
 		})
 	}
+}
 
-	// ---- Phase B: concurrent dispatch ----
-	results := a.runSubagentJobs(ctx, jobs, backend)
+// runPreparedSubagents is Phase B: run the prepared jobs concurrently (bounded
+// by MaxParallelSubagents). Safe to call from a worker goroutine (see the
+// concurrency audit on runSubagentJobs). Returns results indexed like jobs.
+func (a *App) runPreparedSubagents(ctx context.Context, jobs []subagentJob, backend string) []subagentJobResult {
+	return a.runSubagentJobs(ctx, jobs, backend)
+}
 
-	// ---- Phase C: finalize in original order (main goroutine) ----
-	// Cost fold happens HERE, after wg.Wait() in Phase B has fully joined every
-	// worker — parent-state mutation (a.Costs) is safe only on this side of the
-	// goroutine boundary. No worker ever calls foldSubagentCost itself.
+// finalizeSubagentBlock is Phase C (MAIN GOROUTINE): fold costs, emit Done
+// events, spill, and assemble per-call result strings in original order.
+// Returns result strings indexed by job.Index's orig-position (in out).
+func (a *App) finalizeSubagentBlock(jobs []subagentJob, results []subagentJobResult, out []string) []string {
 	for k, j := range jobs {
 		r := results[k]
 		subagentCostUSD := foldSubagentCost(a.Costs, r.CostRows)
+		doneErr := ""
+		if r.Summary.Status == "incomplete" {
+			doneErr = "subagent incomplete (budget/cancelled)"
+		}
 		a.sendEvent(SubagentDoneMsg{
 			ChatID:       j.ChatID,
 			Grounding:    r.Grounding,
@@ -278,23 +321,39 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 			UsedBackend:  r.UsedBackend,
 			CostUSD:      subagentCostUSD,
 			FilesChanged: r.FilesChanged,
+			Err:          doneErr,
 		})
-		fullJSON := r.Summary.Render()
-		result := fullJSON
-		if spillPath := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); spillPath != "" {
-			result = fullJSON + fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
-		}
-		// Append the mechanical files_changed list (ground truth) for edit-tier.
-		if len(r.FilesChanged) > 0 {
-			result += renderFilesChanged(r.Summary.FilesChanged, r.FilesChanged)
-		}
-		if r.Summary.Status == "incomplete" {
-			fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(j.Task, 80)))
-			fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
-		}
-		out[j.Index] = result
+		warnSubagentIncomplete(a, j.Task, r.Summary)
+		out[j.Index] = renderSubagentResult(a, j.Task, r.Summary, r.FilesChanged)
 	}
 	return out
+}
+
+// renderSubagentResult assembles a single child's result string: the ≤4k JSON
+// summary + spill marker + files_changed list. PURE (no a.Out writes) so it is
+// safe to call from a worker goroutine (async discovery path). Callers emit the
+// incomplete-summary warning themselves (they know whether they're on the turn
+// goroutine).
+func renderSubagentResult(a *App, task string, summary SubagentSummary, filesChanged []string) string {
+	fullJSON := summary.Render()
+	result := fullJSON
+	if spillPath := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); spillPath != "" {
+		result = fullJSON + fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
+	}
+	if len(filesChanged) > 0 {
+		result += renderFilesChanged(summary.FilesChanged, filesChanged)
+	}
+	return result
+}
+
+// warnSubagentIncomplete prints the loud incomplete warning. MAIN
+// GOROUTINE ONLY (writes a.Out — must not run on a worker).
+func warnSubagentIncomplete(a *App, task string, summary SubagentSummary) {
+	if summary.Status != "incomplete" {
+		return
+	}
+	fmt.Fprintln(a.Out, Yellow("⚠ subagent incomplete on task: "+Truncate(task, 80)))
+	fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — consider re-dispatching narrower or taking over"))
 }
 
 // sendSubagentFinished emits the display-only early completion event from the
