@@ -290,10 +290,15 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// Defense-in-depth: don't overwrite a non-empty finErr with empty
 		// (e.g. if watchdog sent Err first, a later drain-time Done without
 		// Err must not clear the error display).
-		found := false
+		becameDone := false
 		for _, t := range m.subTabs {
 			if t.chatID == msg.ChatID {
-				found = true
+				if !t.done {
+					// Card #133: only the transition !done→done on THIS message
+					// arms the auto-close timer. A duplicate/replayed Done for an
+					// already-done tab must not arm an additional 30s close timer.
+					becameDone = true
+				}
 				t.done = true
 				t.finished = true // done implies finished for rendering
 				if msg.Err != "" || t.finErr == "" {
@@ -308,10 +313,11 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 				break
 			}
 		}
-		// Arm a 30s auto-close timer for the done tab. Fire-and-validate: if
-		// the tab was already pruned, closed, or is focused when the timer
-		// fires, the handler is a no-op. One-shot — not re-armed.
-		if found {
+		// Arm a 30s auto-close timer for a tab that JUST became done on this
+		// message. Fire-and-validate: if the tab was already pruned, closed, or is
+		// focused when the timer fires, the handler is a no-op. One-shot — not
+		// re-armed. A replayed Done (already done) arms nothing (card #133).
+		if becameDone {
 			chatID := msg.ChatID
 			cmds = append(cmds, tea.Tick(subTabAutoCloseDelay, func(time.Time) tea.Msg {
 				return subTabCloseMsg{ChatID: chatID}
@@ -406,13 +412,18 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			break
 		}
 		found := false
+		becameDone := false
 		for _, t := range m.subTabs {
 			if t.kind == subTabAsyncJob && t.opID == msg.OpID {
 				// Idempotency: a replayed Done must not append Result again or
 				// re-arm the close timer. Only the first (done=false) applies.
 				if !t.done {
+					// Card #133: only the transition !done→done on THIS message
+					// arms the auto-close timer (below). A duplicate Done for an
+					// already-done tab arms nothing.
 					t.done = true
 					t.finished = true
+					becameDone = true
 					if msg.Err != "" {
 						t.finErr = msg.Err
 					}
@@ -454,6 +465,9 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			}
 			m.subSeq++
 			m.subTabs = append(m.subTabs, tab)
+			// The orphan fallback always produces a freshly-done tab: arm the
+			// auto-close timer (a Done-before-Start tab must still self-clean).
+			becameDone = true
 			// Prune so a long series of orphan terminals can't exceed the cap.
 			m.subTabs = pruneSubTabs(m.subTabs, focusN, maxSubTabs)
 			m.subCur = tabIndexByN(m.subTabs, focusN)
@@ -461,9 +475,11 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 				m = m.reflow()
 			}
 		}
-		// Arm 30s auto-close (same skip-if-focused one-shot semantics as
-		// subagents). One-shot, not re-armed.
-		{
+		// Arm the 30s auto-close ONLY when the tab transitioned to done on THIS
+		// message (first Done or orphan-fallback). A duplicate/replayed Done for
+		// an already-done tab arms nothing (card #133). Same skip-if-focused
+		// one-shot semantics as subagents — one-shot, not re-armed.
+		if becameDone {
 			opID := msg.OpID
 			cmds = append(cmds, tea.Tick(subTabAutoCloseDelay, func(time.Time) tea.Msg {
 				return subTabCloseMsg{OpID: opID}

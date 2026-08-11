@@ -461,3 +461,28 @@ func TestAsyncJobDoneSeparatesFromStatus(t *testing.T) {
 		t.Errorf("buf = %q, want status + blank line + final answer", got)
 	}
 }
+
+// TestAsyncJobDoneArmsExactlyOneCloseTimer verifies card #133: only the first
+// Done for an opID arms the 30s auto-close timer. A duplicate/replayed Done for
+// an already-done tab must NOT arm an additional timer (which would leak a timer
+// and fire a redundant subTabCloseMsg). We assert that the first Done returns a
+// close-timer command and the duplicate returns nil. (We do NOT execute the
+// tea.Tick command here — it blocks ~30s waiting for the timer to fire.)
+func TestAsyncJobDoneArmsExactlyOneCloseTimer(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+
+	// First Done → should arm one auto-close timer (non-nil command).
+	mu, cmd1 := m.Update(agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "first"})
+	m = mu.(tuiModel)
+	// Duplicate Done → must NOT arm another timer (nil command).
+	mu, cmd2 := m.Update(agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "first"})
+	m = mu.(tuiModel)
+
+	if cmd1 == nil {
+		t.Error("first Done did not arm an auto-close timer")
+	}
+	if cmd2 != nil {
+		t.Error("duplicate Done armed an additional auto-close timer (card #133 regression)")
+	}
+}
