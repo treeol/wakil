@@ -174,15 +174,31 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		for {
 			if !a.Exec.IsProcessGroupAlive(bgCtx, pgid) {
 				close(done)
+				// Card #132: decouple the TUI tab lifecycle from the model-notify
+				// flag. The reaper captures the bgEntry pointer (not a fresh map
+				// lookup), so kill_process / read_process_log / generation loss
+				// that delete the entry can no longer strand an opened tab. The
+				// tab Done is emitted whenever a tab was started (tabStarted),
+				// independent of notifyOnExit. notifyOnExit gates ONLY the model
+				// inbox completion notice ("the ping"). Flags are read under bgMu;
+				// the emit happens after the unlock (announce* take bgMu).
 				a.bgMu.Lock()
-				e := a.bgProcs[bgID]
-				shouldNotify := e != nil && e.notifyOnExit && !e.notified
-				if shouldNotify {
-					e.notified = true
+				notify := entry.notifyOnExit && !entry.notified
+				if notify {
+					entry.notified = true
 				}
+				tabStarted := entry.tabStarted
 				a.bgMu.Unlock()
-				if shouldNotify {
-					a.notifyDetachedShellExit(bgID, e)
+				if notify {
+					// notifyDetachedShellExit emits the tab Done (via
+					// announceShellDone) AND models the inbox completion notice.
+					a.notifyDetachedShellExit(bgID, entry)
+				} else if tabStarted {
+					// Detached shell tab was opened but model notification was
+					// suppressed (kill/shutdown). Still terminalize the tab so it
+					// doesn't strand yellow & unclosable (card #132).
+					statusLine, tail := a.shellTailPreview(entry)
+					a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 				}
 				return
 			}
@@ -305,9 +321,16 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 // exactly once (guarded by e.tabStarted under bgMu). Callers must NOT hold bgMu
 // when invoking it (sendEvent may block on the event sink). The originChatID
 // was captured at entry creation, so both Start and Done carry the same origin.
+//
+// Card #132: also no-ops if the tab was already finalized (tabDoneSent). The
+// reaper always finalizes a started tab on group exit, which can race a late
+// Start emission here (the reaper observes tabStarted=true and emits Done while
+// this goroutine is between the unlock and sendEvent). Suppressing a Done-after
+// Start keeps Start-before-Done ordering; a Done-before-Start is handled by the
+// TUI's orphan-Done fallback (terminal tab) and no late Start resurrects it.
 func (a *App) announceShellStart(bgID string, e *bgEntry) {
 	a.bgMu.Lock()
-	if e.tabStarted {
+	if e.tabStarted || e.tabDoneSent {
 		a.bgMu.Unlock()
 		return
 	}
@@ -364,21 +387,17 @@ func (a *App) announceShellDone(bgID string, e *bgEntry, result, errStr string) 
 // inbox as a shell-typed asyncOp record. The record carries the log tail so the
 // model can act without an extra poll; full output stays in read_process_log.
 // Called from the reaper goroutine — never touches Conv (funnel drains it).
-func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
-	// Capture the observed exit time BEFORE log reads — slow log retrieval
-	// must not inflate the reported runtime.
-	observedExit := time.Now()
-	tail := ""
-	statusLine := exec.ExitStatusLine(0, false)
-	// Read only the TAIL of the log: the marker sits at EOF and the notice
-	// shows the last lines only — a multi-GB log must not be loaded in full
-	// just to extract them (was ReadFile; review finding).
+// shellTailPreview reads the TAIL of a detached shell's log (multi-GB safe —
+// never loads the whole file) and returns the exit-status line plus the bounded
+// tail preview. Shared by the tab-Done path and the model inbox notice so both
+// report the same exit status. The wrapper's exit marker is parsed and stripped
+// (card #121 follow-up); a self-backgrounded child writing after the marker can
+// push it out of the window or break end-anchoring → known=false → honest
+// "code unknown". context.Background: the reaper/notice runs async and must not
+// be cancelled by a turn ending.
+func (a *App) shellTailPreview(e *bgEntry) (statusLine, tail string) {
+	statusLine = exec.ExitStatusLine(0, false)
 	if out, err := a.Exec.ReadFileTail(context.Background(), e.logPath, 8*1024); err == nil {
-		// Parse the wrapper's exit marker (card #121 follow-up) so the notice
-		// reports the actual exit status, not just "exited". The marker is
-		// stripped from the tail shown to the model. A self-backgrounded
-		// child writing after the marker can push it out of the window or
-		// break end-anchoring → known=false → honest "code unknown".
 		cleaned, code, known := exec.ParseExitMarker(out)
 		statusLine = exec.ExitStatusLine(code, known)
 		lines := strings.Split(strings.TrimRight(cleaned, "\n"), "\n")
@@ -387,6 +406,14 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 		}
 		tail = strings.Join(lines, "\n")
 	}
+	return statusLine, tail
+}
+
+func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
+	// Capture the observed exit time BEFORE log reads — slow log retrieval
+	// must not inflate the reported runtime.
+	observedExit := time.Now()
+	statusLine, tail := a.shellTailPreview(e)
 	msg := fmt.Sprintf("%s (\"%s\") %s — last output:\n%s\nuse read_process_log(%q) for the full output", bgID, e.cmdDigest, statusLine, tail, bgID)
 
 	op := &asyncOp{
