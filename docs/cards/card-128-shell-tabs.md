@@ -2,59 +2,71 @@
 
 Trello: https://trello.com/c/7g3R7W9X (feature).
 
-## Problem (verified 2026-08-10 at HEAD)
-Detached shells (auto-backgrounded at deadline via runShellWithDeadline, or explicit
-`run_background` via handleRunBackground) do NOT surface as selectable TUI tabs.
-- `notifyDetachedShellExit` (tool_handlers.go:295) builds a `job-<bgID>` asyncOp and appends it
-  DIRECTLY to asyncInbox (line 347) — no registerAsyncOp/publishAsyncOp → no AsyncJobStartMsg/
-  DoneMsg. Card #126's publishAsyncOp uiJob hook fires only for Mashūra ops.
-- The TUI's generic async-job tab machinery (kind `subTabAsyncJob`, keyed by OpID) already exists
-  and routes generically — so shells could ride it keyed by `job-<bgID>`.
+Status: **DELIVERED** (this note reflects the shipped source at HEAD, updated
+2026-08-11 for cards #132/#133/#134). Earlier versions of this doc described the
+pre-implementation proposal; that content is superseded.
 
-## Two detached-shell start paths (tool_handlers.go)
-1. **Auto-bg** (runShellWithDeadline): at deadline hit (line 235 case) it arms
-   `notifyOnExit=true`; the reaper closes `done` and calls `notifyDetachedShellExit` on exit →
-   the op lands in asyncInbox.  Currently NO Start/Done events.
-2. **Explicit `run_background`** (handleRunBackground): starts at line 922, entry at 938. Its
-   reaper (945) closes `done` but does NOT notify → no inbox entry, no events at all.
+## What ships
 
-## Design
-Emit tab events via the existing generic event family (keyed by `job-<bgID>` as OpID); keep shells
-OUT of the registry admission path (they have no worker goroutine and deliberately bypass
-registerAsyncOp/publishAsyncOp — no admission slot to reserve or release). Route via the event
-sink only, matching how notifyDetachedShellExit already delivers into the inbox.
+Detached shells (auto-backgrounded `run_shell` at deadline/turn-cancel, and
+explicit `run_background`) surface as selectable TUI async-job tabs, keyed by
+OpID `job-<bgID>`, reusing the generic `subTabAsyncJob` machinery
+(`AsyncJobStartMsg`/`AsyncJobDoneMsg`). The tab shows live status, a bounded
+tail-preview on completion, with 30s display-only auto-close, prune/nav/dot, and
+manual close — all inherited from the generic async-job tab machinery.
 
-- **Start (auto-bg):** in runShellWithDeadline, when the deadline is hit and the shell detaches
-  (before returning the "still running as bgN" message, line ~262), emit
-  `AsyncJobStartMsg{OpID:"job-"+bgID, Label: cmdDigest, ToolName:"run_shell"}`.
-- **Start (explicit run_background):** in handleRunBackground, after a successful StartBackground,
-  emit the same Start (Label=args.Label or cmd digest).
-- **Done (both):** in notifyDetachedShellExit, emit `AsyncJobDoneMsg{OpID:"job-"+bgID,
-  Label, ToolName:"run_shell", Result:<bounded tail preview>, OriginChatID}`. For explicit
-  run_background (which doesn't call notifyDetachedShellExit today), add a Done emission from its
-  reaper OR route it through a small shared helper.
+## Start / Done lifecycle (tool_handlers.go, internal/agent)
 
-Common helper: `a.announceShellStart(bgID, label, cmdDigest)` and
-`a.announceShellDone(opIDOrBGID, label, tail, originChatID)` shield both paths.
+| Path | Start | Terminal condition | Done | OpID | origin |
+|---|---|---|---|---|---|
+| auto-bg `run_shell` deadline | `announceShellStart` | process group dead | `notifyDetachedShellExit` → `announceShellDone` | `job-<bgID>` | captured at creation |
+| auto-bg `run_shell` turn-cancel | `announceShellStart` | process group dead | same as above | `job-<bgID>` | captured |
+| explicit `run_background` | `announceShellStart` | process group dead | reaper → `announceShellDone` | `job-<bgID>` | captured |
+| kill_process / generation loss | — (reaper captures entry pointer) | SIGTERM/SIGKILL | reaper `announceShellDone` | `job-<bgID>` | captured |
 
-## Constraints
-- Do NOT break read_process_log / kill_process / bgRegistry.
-- Tab cleanup display-only; process continues regardless.
-- LSP dirty-marking at drain (shellLSPDirty) unaffected.
-- Live output: only the bounded tail preview in Done (never read whole multi-GB logs).
-- Route by OpID `job-<bgID>` like Mashūra, 30s display-only auto-close, prune/nav/dot reuse — all
-  inherited from the generic subTabAsyncJob machinery (no TUI changes needed).
+- `announceShellStart` (:331) and `announceShellDone` (:357) are guarded
+  exactly-once under `bgMu` by `tabStarted` / `tabDoneSent`.
+- `shellTailPreview` (:398) reads only the log TAIL (multi-GB safe) and returns
+  the exit-status line + bounded tail; shared by the tab-Done and model-notice
+  paths so both report the same exit status.
+- `notifyDetachedShellExit` (:412) emits the tab Done **and** models the inbox
+  completion notice.
+- TUI Start/Done handlers live in `internal/tui/tui_agent_msgs.go` (AsyncJobStart~
+  /AsyncJobDone~). These also apply card #133 (duplicate Done arms exactly one
+  auto-close timer) and card #134 (`subTab.active` cleared on Done).
 
-## Open decision (Mashūra)
-- Should explicit `run_background` ops also get a Done tab (currently they produce no inbox entry)?
-  Consistency suggests yes; the card names run_background explicitly.
+## Cards applied on top of this feature
+
+- **Card #132 (d6db6bc)** — stranded-tab fix. The auto-bg reaper previously did a
+  fresh `a.bgProcs[bgID]` lookup and gated the tab Done behind `notifyOnExit`;
+  kill_process / read_process_log / generation loss deleted the entry (and
+  kill/shutdown disarmed `notifyOnExit`), so an opened tab never received its
+  matching Done → stranded yellow & unclosable. Fix: the reaper captures the
+  `bgEntry` pointer and terminalizes a started tab on group exit independent of
+  `notifyOnExit`; `notifyOnExit` now gates only the model inbox notice.
+  `announceShellStart` no-ops when the tab is already finalized (`tabDoneSent`),
+  closing the Done-before-Start ordering race.
+- **Card #133 (d5b5ed5)** — duplicate `AsyncJobDoneMsg`/`SubagentDoneMsg` re-armed
+  the 30s auto-close timer; now armed only on the `!done→done` transition.
+- **Card #134 (d32c23a)** — `subTab.active` cleared on Done (semantic cleanup).
+
+## Known open considerations (not bugs of this feature)
+
+- A **signal-ignoring, never-exiting** child keeps its tab active (by design — the
+  reaper polls *group* liveness, so the tab stays until the whole group dies).
+  A killed-but-unreaped descendant can therefore keep a tab pulsing; this is
+  intended group-lifecycle semantics, not a strand.
+- Strict **Start-before-Done sink ordering** is not guaranteed under concurrent
+  emission (the reaper can finish a tab while the Start sender is between unlock
+  and `sendEvent`). This produces no stranded/unclosable tab in either order: the
+  TUI's orphan-Done fallback creates a terminal tab, and a late Start neither
+  resurrects nor leaves it running (verified against the TUI handlers).
 
 ## Files
-- `internal/agent/tool_handlers.go` — Start hooks + Done emission (shared helpers).
-- Possibly `internal/agent/msgs.go` — no new message types needed (reuse AsyncJobStartMsg/DoneMsg).
 
-## Test requirements
-- Auto-bg: shell detaches → Start emitted; on exit → Done emitted with tail preview; tab lifecycle
-  (30s auto-close, prune) inherited (existing TUI async-job tests).
-- Explicit run_background: Start on start, Done on exit.
-- No regression to read_process_log/kill_process/bgRegistry.
+- `internal/agent/tool_handlers.go` — Start/Done emission, reapers, helpers.
+- `internal/agent/async_ops.go` — `publishAsyncOp` (Mashūra jobs, uiJob).
+- `internal/agent/msgs.go` — `AsyncJobStartMsg`/`AsyncJobDoneMsg`/`AsyncJobChunkMsg`.
+- `internal/tui/tui_agent_msgs.go` — TUI handlers.
+- Tests: `internal/agent/shell_tab_test.go`, `internal/tui/asyncjob_tab_test.go`,
+  `internal/tui/subtab_autoclose_test.go`.
