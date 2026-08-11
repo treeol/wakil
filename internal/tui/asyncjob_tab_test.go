@@ -19,6 +19,27 @@ func findJobTab(m tuiModel, opID string) *subTab {
 	return nil
 }
 
+// TestAsyncJobDoneClearsActive verifies card #134: a done async-job tab is no
+// longer active (the active flag is cleared), so a future reader keying on
+// active before done won't see a stale "running" tab.
+func TestAsyncJobDoneClearsActive(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	tab := findJobTab(m, "op-1")
+	if !tab.active {
+		t.Fatal("precondition: tab should be active after Start")
+	}
+
+	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "x"})
+	tab = findJobTab(m, "op-1")
+	if tab.active {
+		t.Error("done async-job tab still active=true (card #134)")
+	}
+	if !tab.done || !tab.finished {
+		t.Errorf("tab done=%v finished=%v, want both true", tab.done, tab.finished)
+	}
+}
+
 // TestAsyncJobStartCreatesTab verifies AsyncJobStartMsg opens an async-job tab,
 // active and labeled with the panel name.
 func TestAsyncJobStartCreatesTab(t *testing.T) {

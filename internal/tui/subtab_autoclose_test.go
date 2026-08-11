@@ -8,6 +8,33 @@ import (
 	agent "github.com/treeol/wakil/internal/agent"
 )
 
+// TestSubagentDoneClearsActive verifies card #134: a done subagent tab is no
+// longer active (the active flag is cleared).
+func TestSubagentDoneClearsActive(t *testing.T) {
+	m := newTabModel()
+	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
+	m = step(m, agent.SubagentActiveMsg{ChatID: "chat-a"}) // queued → running
+	tab := findSubTab(m, "chat-a")
+	if tab == nil {
+		t.Fatal("subagent tab not created")
+	}
+	if !tab.active {
+		t.Fatal("precondition: tab should be active after SubagentActiveMsg")
+	}
+
+	m = step(m, agent.SubagentDoneMsg{ChatID: "chat-a"})
+	tab = findSubTab(m, "chat-a")
+	if tab == nil {
+		t.Fatal("tab missing after Done")
+	}
+	if tab.active {
+		t.Error("done subagent tab still active=true (card #134)")
+	}
+	if !tab.done || !tab.finished {
+		t.Errorf("tab done=%v finished=%v, want both true", tab.done, tab.finished)
+	}
+}
+
 // TestSubTabCloseMsgRemovesDoneUnfocusedTab verifies that a subTabCloseMsg
 // removes a done tab when the user is not focused on it.
 func TestSubTabCloseMsgRemovesDoneUnfocusedTab(t *testing.T) {

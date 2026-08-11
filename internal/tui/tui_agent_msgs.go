@@ -298,6 +298,9 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 					// arms the auto-close timer. A duplicate/replayed Done for an
 					// already-done tab must not arm an additional 30s close timer.
 					becameDone = true
+					// Card #134: a done tab is no longer "running" — clear the
+					// active flag (semantic; renderer/close key on done/finished).
+					t.active = false
 				}
 				t.done = true
 				t.finished = true // done implies finished for rendering
@@ -423,6 +426,10 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 					// already-done tab arms nothing.
 					t.done = true
 					t.finished = true
+					// Card #134: a done tab is no longer "running" — clear the
+					// active flag so it doesn't read active forever. Purely
+					// semantic: renderer/close already key on done/finished.
+					t.active = false
 					becameDone = true
 					if msg.Err != "" {
 						t.finErr = msg.Err
