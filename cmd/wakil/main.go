@@ -106,6 +106,8 @@ func main() {
 			img, err := proxy.LoadImage(p)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "attach-image:", err)
+				closeResources(app, res)
+				exe.Close()
 				os.Exit(1)
 			}
 			app.PendingImages = append(app.PendingImages, img)
@@ -223,30 +225,8 @@ func main() {
 
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
-		app.StopAllAsyncOps()
-		app.StopAllBackgroundProcs()
-		if res.traceStore != nil {
-			res.traceStore.Close()
-		}
-		if res.memStore != nil {
-			res.memStore.Close()
-		}
-		if res.skillStore != nil {
-			res.skillStore.Close()
-		}
-		if res.sessionHistStore != nil {
-			res.sessionHistStore.Close()
-		}
+		closeResources(app, res)
 		exe.Close()
-		if res.mcpMgr != nil {
-			res.mcpMgr.Close()
-		}
-		if res.lspMgr != nil {
-			res.lspMgr.Shutdown()
-		}
-		if res.browserMgr != nil {
-			res.browserMgr.Close()
-		}
 		os.Exit(1)
 	}
 

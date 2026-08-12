@@ -240,3 +240,41 @@ func buildApp(cfg config.Config, exe exec.Executor, opts buildAppOpts) (*agent.A
 
 	return app, res
 }
+
+// closeResources drains async work and closes all appResources. It is used on
+// main.go's os.Exit error paths, where Go defers cannot fire (os.Exit skips
+// them), so every resource built by buildApp is released before the process
+// exits. It does NOT close the executor — the caller owns exe and closes it
+// after this call so that lspMgr/browserMgr (which hold exe) are shut down
+// first. It is safe on a freshly built App with no async ops or background
+// processes (both Stop methods early-return on an empty registry).
+//
+// NOTE: this helper is intentionally only used before os.Exit. The success
+// paths and RunHeadless keep their defer-based cleanup, so closeResources is
+// never followed by a normal return that would fire resource defers again —
+// avoiding any double-close.
+func closeResources(app *agent.App, res appResources) {
+	app.StopAllAsyncOps()
+	app.StopAllBackgroundProcs()
+	if res.memStore != nil {
+		res.memStore.Close()
+	}
+	if res.skillStore != nil {
+		res.skillStore.Close()
+	}
+	if res.sessionHistStore != nil {
+		res.sessionHistStore.Close()
+	}
+	if res.mcpMgr != nil {
+		res.mcpMgr.Close()
+	}
+	if res.lspMgr != nil {
+		res.lspMgr.Shutdown()
+	}
+	if res.browserMgr != nil {
+		res.browserMgr.Close()
+	}
+	if res.traceStore != nil {
+		res.traceStore.Close()
+	}
+}

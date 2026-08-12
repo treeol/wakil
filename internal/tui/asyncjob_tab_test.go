@@ -82,15 +82,14 @@ func TestAsyncJobStartUpsertsDuplicates(t *testing.T) {
 	}
 }
 
-// TestAsyncJobDoneTerminalizesTab verifies AsyncJobDoneMsg marks the tab done,
-// appends the bounded result, and arms (returns) a 30s close command.
+// TestAsyncJobDoneTerminalizesTab verifies AsyncJobDoneMsg marks the tab done
+// and appends the bounded result. (The 30s auto-close command arming is covered
+// by TestAsyncJobDoneArmsExactlyOneCloseTimer.)
 func TestAsyncJobDoneTerminalizesTab(t *testing.T) {
 	m := newTabModel()
 	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel Review"})
 
-	var gotCmds interface{}
 	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel Review", Result: "the answer"})
-	_ = gotCmds
 
 	tab := findJobTab(m, "op-1")
 	if tab == nil {

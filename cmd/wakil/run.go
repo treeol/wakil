@@ -576,6 +576,40 @@ func RunHeadless(cfg config.Config, args []string) int {
 		AutoCounsel: flags.AutoCounsel,
 		MaxCounsel:  flags.MaxCounsel,
 	})
+	// Register resource cleanup immediately after buildApp so every error path
+	// below (invalid --attach-image, --policy failure, unknown --profile) is
+	// covered — the previous placement after those checks would leak the
+	// resources on early returns. LIFO: resources close before exe (lspMgr and
+	// browserMgr hold exe). StopAllAsyncOps is NOT called here — it is deferred
+	// separately inside runHeadlessApp so its SaveSession ordering is preserved
+	// (card #121); that defer runs when runHeadlessApp returns, which is before
+	// this defer. StopAllBackgroundProcs IS needed here: nothing else in the
+	// headless path stops background processes (run_background/auto-bg can be
+	// used headless), so skip would leak them until executor/container teardown.
+	defer func() {
+		app.StopAllBackgroundProcs()
+		if res.mcpMgr != nil {
+			res.mcpMgr.Close()
+		}
+		if res.lspMgr != nil {
+			res.lspMgr.Shutdown()
+		}
+		if res.browserMgr != nil {
+			res.browserMgr.Close()
+		}
+		if res.traceStore != nil {
+			res.traceStore.Close()
+		}
+		if res.memStore != nil {
+			res.memStore.Close()
+		}
+		if res.skillStore != nil {
+			res.skillStore.Close()
+		}
+		if res.sessionHistStore != nil {
+			res.sessionHistStore.Close()
+		}
+	}()
 
 	// --verify enables the workflow verification runner on top of any config
 	// setting. buildApp already set VerifyEnabled when cfg.Verify is non-empty;
@@ -623,29 +657,6 @@ func RunHeadless(cfg config.Config, args []string) int {
 			return ExitError
 		}
 		app.SetPolicy(p)
-	}
-
-	// Defer resource cleanup.
-	if res.mcpMgr != nil {
-		defer res.mcpMgr.Close()
-	}
-	if res.lspMgr != nil {
-		defer res.lspMgr.Shutdown()
-	}
-	if res.browserMgr != nil {
-		defer res.browserMgr.Close()
-	}
-	if res.traceStore != nil {
-		defer res.traceStore.Close()
-	}
-	if res.memStore != nil {
-		defer res.memStore.Close()
-	}
-	if res.skillStore != nil {
-		defer res.skillStore.Close()
-	}
-	if res.sessionHistStore != nil {
-		defer res.sessionHistStore.Close()
 	}
 
 	out := io.Writer(os.Stdout)
