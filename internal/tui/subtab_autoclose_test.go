@@ -182,8 +182,7 @@ func TestSubagentDoneArmsExactlyOneCloseTimer(t *testing.T) {
 	mu, cmd1 := m.Update(agent.SubagentDoneMsg{ChatID: "chat-a"})
 	m = mu.(tuiModel)
 	// Duplicate Done → must NOT arm another (nil command).
-	mu, cmd2 := m.Update(agent.SubagentDoneMsg{ChatID: "chat-a"})
-	m = mu.(tuiModel)
+	_, cmd2 := m.Update(agent.SubagentDoneMsg{ChatID: "chat-a"})
 
 	if cmd1 == nil {
 		t.Error("first Done did not arm an auto-close timer")

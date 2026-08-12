@@ -497,8 +497,7 @@ func TestAsyncJobDoneArmsExactlyOneCloseTimer(t *testing.T) {
 	mu, cmd1 := m.Update(agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "first"})
 	m = mu.(tuiModel)
 	// Duplicate Done → must NOT arm another timer (nil command).
-	mu, cmd2 := m.Update(agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "first"})
-	m = mu.(tuiModel)
+	_, cmd2 := m.Update(agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "first"})
 
 	if cmd1 == nil {
 		t.Error("first Done did not arm an auto-close timer")

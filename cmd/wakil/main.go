@@ -225,6 +225,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
 		app.StopAllAsyncOps()
 		app.StopAllBackgroundProcs()
+		if res.traceStore != nil {
+			res.traceStore.Close()
+		}
 		if res.memStore != nil {
 			res.memStore.Close()
 		}
