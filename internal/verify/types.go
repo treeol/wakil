@@ -39,12 +39,35 @@ type Command struct {
 	Source string
 }
 
+// Failure is a single parsed test failure. The struct is deliberately minimal:
+// v1 records only the top-level test identifier (the name `go test -run`
+// targets). Subtest failures roll up to their top-level parent, because
+// `-run '^Parent$'` reruns the whole parent including its subtests.
+//
+// File/line association is intentionally absent: go test output does not
+// reliably pair test names with locations under -v/parallel/panic output, and
+// adding a stateful association pass is a v2 concern (the known upgrade path
+// is `go test -json`).
+type Failure struct {
+	Test string // top-level test function name, e.g. "TestFailingOne"
+}
+
 // Result is the outcome of running a single Command.
 type Result struct {
 	Command Command
 	Status  Status
 	// Output is the combined stdout+stderr, truncated to OutputCap bytes.
+	// CapOutput keeps the HEAD of the output (the first OutputCap bytes); the
+	// tail is dropped. Failure summaries commonly appear near the end, which
+	// is why Failures is parsed from the raw output before this cap is applied.
 	Output string
+	// Failures is the structured list of parsed test failures. Empty (nil) for
+	// pass/declined/error-with-no-output, and for runners whose output the
+	// parser does not understand. Populated from the RAW output before it is
+	// capped, so truncation never loses a failure line. Non-nil only for
+	// StatusFail (a timed-out command may print partial failures, but rerun
+	// semantics for timeouts are undefined — see ParseFailures).
+	Failures []Failure
 	// DurationMs is the wall-clock time the command took.
 	DurationMs int64
 	// ExitCode is the process exit code (meaningful for StatusFail).

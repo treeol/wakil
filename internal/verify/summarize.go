@@ -9,8 +9,9 @@ import (
 // OutputCap is the maximum bytes of command output retained per result.
 // Verification output feeds into the oracle final-review briefing (capped at
 // ~16 KB by WFBriefingMaxBytes), so unbounded output would evict the step
-// log. This per-command cap keeps each result's output to a reasonable size;
-// Summarize further truncates when composing the full log entry.
+// log. This per-command cap keeps each result's output to a reasonable size.
+// Note: Summarize itself does NOT truncate further — it relies on this cap
+// plus the parser's maxFailures/byte bounds to stay within budget.
 const OutputCap = 4 * 1024 // 4 KB per command
 
 // CapOutput truncates output to at most n bytes, appending a marker when
@@ -63,6 +64,21 @@ func (o Outcome) Summarize() string {
 			sb.WriteString(" — " + r.Reason)
 		}
 		sb.WriteString("\n")
+		// Structured failures first, so they survive later briefing truncation
+		// (the raw output tail below is the first thing evicted under the
+		// ~16 KB briefing cap). Bounded to maxFailures by the parser.
+		if r.Status == StatusFail && len(r.Failures) > 0 {
+			sb.WriteString("  failed: ")
+			names := make([]string, 0, len(r.Failures))
+			for _, f := range r.Failures {
+				names = append(names, f.Test)
+			}
+			sb.WriteString(strings.Join(names, ", "))
+			sb.WriteString("\n")
+			if rerun, ok := RerunCommand(r.Command, r.Failures); ok {
+				sb.WriteString("  rerun:  " + rerun + "\n")
+			}
+		}
 		// Include output tail for failures (and errors/timeouts).
 		if r.Status != StatusPass && r.Output != "" {
 			for _, line := range strings.Split(strings.TrimSpace(r.Output), "\n") {

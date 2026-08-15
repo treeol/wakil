@@ -156,6 +156,17 @@ func runOneVerifyCommand(ctx context.Context, app *App, cmd verify.Command) veri
 	out, err := app.Exec.RunShell(runCtx, cmd.Cmd)
 	duration := time.Since(start)
 
+	// Parse failures from the RAW output BEFORE it is capped. CapOutput keeps
+	// the head of the output, but go test prints failure summaries interleaved
+	// throughout (and package summaries near the end) — parsing the capped
+	// output could lose parseable failure lines. Failures is populated only
+	// for a genuine StatusFail; timeouts and errors may carry partial output
+	// whose failure semantics are undefined for a targeted rerun.
+	var failures []verify.Failure
+	if err != nil && runCtx.Err() == nil {
+		failures = verify.ParseFailures(cmd.Cmd, out)
+	}
+
 	// Context deadline = timeout.
 	if runCtx.Err() == context.DeadlineExceeded {
 		return verify.Result{
@@ -189,6 +200,7 @@ func runOneVerifyCommand(ctx context.Context, app *App, cmd verify.Command) veri
 			Output:     verify.CapOutput(out, verify.OutputCap),
 			DurationMs: duration.Milliseconds(),
 			ExitCode:   1,
+			Failures:   failures,
 			Reason:     err.Error(),
 		}
 	}
