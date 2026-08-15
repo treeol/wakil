@@ -439,7 +439,7 @@ func statusSegments(in statusLineInput) []string {
 // ceiling came from the config fallback or the model was unresolved.
 func (m tuiModel) ctxSegment() string {
 	lim := m.app.ContextLimit()
-	used := m.app.ContextTokensUsed()
+	used, exact := m.app.ContextUsage()
 	total := lim.NCtx
 	pct := 0
 	if total > 0 {
@@ -462,6 +462,12 @@ func (m tuiModel) ctxSegment() string {
 	usedStr := fmt.Sprintf("%dk", used/1000)
 	if used >= 1000000 {
 		usedStr = fmt.Sprintf("%.1fM", float64(used)/1e6)
+	}
+	if !exact {
+		// Provisional estimate (pre-send payload ratio or transcript-length
+		// fallback) — mark it approximate so a later authoritative jump from
+		// "~400k" to "700k" reads as an estimate being corrected, not a leak.
+		usedStr = "~" + usedStr
 	}
 	return ctxKey + " " + brailleMeter(used, total, color, 6, usedStr, totalStr) + " " +
 		lipgloss.NewStyle().Foreground(color).Render(sprint("%d%%", pct)) +

@@ -486,6 +486,22 @@ type Client struct {
 	usageMu   sync.Mutex
 	lastUsage UsageStat
 
+	// lastExactInputTok retains the most recent authoritative prompt-token count
+	// (Exact usage with a positive count). Unlike lastUsage — which the
+	// provisional pre-send estimate overwrites at the start of every stream —
+	// this keeps the last REAL measurement so diagnostics that must not cry wolf
+	// on a guess (near-limit stream-error annotations) can still fire after a
+	// failed stream clobbers the provisional slot. 0 = none reported yet.
+	lastExactInputTok int64
+
+	// Calibration for the provisional prompt-token estimate (see
+	// estimatePromptTokens / learnCalibration), keyed by effective endpoint
+	// identity so a /model or /backend switch never reuses another tokenizer's
+	// learned ratio. Written by the agent goroutine after each authoritative
+	// usage chunk, read at the next request build → mutex-guarded.
+	calibMu     sync.Mutex
+	calibration map[string]*usageCalibration
+
 	// lastUsedBackend stores the X-Ilm-Backend-Used response header from the most
 	// recent Stream call. Written by the agent goroutine, read by the TUI render
 	// loop → mutex-guarded.
@@ -516,6 +532,19 @@ func (c *Client) SetUsage(u UsageStat) {
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
 	c.lastUsage = u
+	if u.Exact && u.InputTok > 0 {
+		c.lastExactInputTok = u.InputTok
+	}
+}
+
+// LastExactInputTokens returns the most recent authoritative prompt-token count
+// (positive InputTok with Exact=true), or 0 if none has been reported yet. This
+// survives the provisional-estimate overwrite of LastUsage, so a caller can
+// still reference the last real measurement after a stream failed mid-turn.
+func (c *Client) LastExactInputTokens() int64 {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	return c.lastExactInputTok
 }
 
 // LastUsedBackend returns the X-Ilm-Backend-Used header value from the most
@@ -771,7 +800,9 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 
 	// Pre-send byte guard: trim the largest tool results to fit within MaxRequestBytes
 	// rather than letting an oversized request reach the proxy and get a 400.
+	trimmedRequest := false
 	if c.MaxRequestBytes > 0 && len(raw) > c.MaxRequestBytes {
+		trimmedRequest = true
 		trimmed := trimToolResults(messages, len(raw), c.MaxRequestBytes)
 		if trimmed == nil {
 			return Message{}, fmt.Errorf("%w: request %d B exceeds byte limit %d B and no large tool results to trim",
@@ -848,13 +879,13 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// the authoritative figure overwrites it at stream end (SetUsage below).
 	// Output fields are zeroed: this call's output is genuinely unknown yet.
 	//
-	// WP-7.10e: the tools schema is a fixed overhead that doesn't grow per-turn.
-	// We estimate its size separately and subtract it from the prompt token count
-	// so the ctx meter reflects the conversation size, not the tool definitions.
-	promptTok := ApproxTokens(len(raw))
-	if toolsBytes := estimateToolsBytes(tools); toolsBytes > 0 {
-		promptTok -= ApproxTokens(toolsBytes)
-	}
+	// The estimate uses a learned tokens-per-byte ratio over the FULL payload
+	// (including tool schemas — the backend's prompt_tokens counts them too),
+	// falling back to ~4 bytes/token until an authoritative sample is learned
+	// for this endpoint identity. Image turns never use the learned ratio:
+	// vision tokens are counted by the provider under a completely different
+	// accounting than base64 payload bytes, so either basis would be wrong.
+	promptTok := estimatePromptTokens(len(raw), hasImages(messages), c.calibratedTokensPerByte())
 	c.SetUsage(UsageStat{InputTok: promptTok})
 
 	resp, err := c.HTTP.Do(req)
@@ -1083,6 +1114,13 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	}
 	c.SetUsage(usage)
 
+	// Learn the tokens-per-byte calibration from authoritative usage so the
+	// NEXT turn's provisional estimate converges on the real prompt_tokens
+	// instead of the flat ~4 bytes/token guess. Only text-only, untrimmed,
+	// reported-usage turns are eligible (images and trimmed payloads would
+	// poison the ratio; estimates teach nothing).
+	c.learnCalibration(usage, len(raw), messages, trimmedRequest)
+
 	msg := Message{Role: "assistant"}
 	if content.Len() > 0 {
 		s := content.String()
@@ -1197,22 +1235,112 @@ func trimToolResults(msgs []Message, currentSize, maxBytes int) []Message {
 	return out
 }
 
-// estimateToolsBytes returns a rough byte size of the tools schema when
-// serialised to JSON, so it can be subtracted from the provisional prompt
-// token estimate (WP-7.10e: tools schema is fixed overhead, not prompt).
-func estimateToolsBytes(tools []Tool) int {
-	if len(tools) == 0 {
+// estimatePromptTokens converts a request payload byte count into a provisional
+// prompt-token estimate. When the caller has learned a tokens-per-byte ratio
+// for this endpoint identity, that ratio is used (it absorbs the systematic
+// difference between JSON payload bytes and the backend's real prompt_tokens,
+// including tool schemas, the chat template, and proxy-side injections). Before
+// any sample is learned, falls back to ~4 bytes/token (ApproxTokens). Image
+// turns always use the fallback: vision tokens follow provider image-token
+// accounting, not a byte/char ratio, so a learned text ratio would be wrong.
+func estimatePromptTokens(payloadBytes int, hasImages bool, learnedTokensPerByte float64) int64 {
+	if payloadBytes <= 0 {
 		return 0
 	}
-	// Marshal once to get the exact size; this is cheap relative to the
-	// network call that follows.
-	b, err := json.Marshal(struct {
-		Tools []Tool `json:"tools,omitempty"`
-	}{Tools: tools})
-	if err != nil {
+	if hasImages || learnedTokensPerByte <= 0 {
+		return ApproxTokens(payloadBytes)
+	}
+	tok := int64(float64(payloadBytes) * learnedTokensPerByte)
+	if tok < 1 {
+		return 1
+	}
+	return tok
+}
+
+// hasImages reports whether any message carries a vision image (the wire body
+// then inlines base64 data URIs, whose bytes must not feed the text-token ratio).
+func hasImages(messages []Message) bool {
+	for _, m := range messages {
+		if len(m.Images) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// usageCalibration accumulates tokens-per-byte evidence for one endpoint
+// identity. The ratio is totalTokens/totalBytes — a cumulative mean, so a
+// single small or atypical turn cannot dominate (it only shifts the mean
+// proportionally to its size). Sampling guards reject images, trimmed
+// payloads, and unreported usage before any accumulation happens.
+type usageCalibration struct {
+	TotalBytes  int64
+	TotalTokens int64
+}
+
+// calibrationKey identities an effective endpoint/tokenizer. BaseURL captures
+// the server, Kind the request shape, and Model+Backend the tokenizer in use —
+// changing any of them (via /model, /backend, or an endpoint switch) yields a
+// fresh key, so a ratio learned under one tokenizer is never reused for another.
+func calibrationKey(baseURL, kind, model, backend string) string {
+	return kind + "\x00" + baseURL + "\x00" + model + "\x00" + backend
+}
+
+// calibrationKeyFor derives the calibration key from the client's current
+// effective identity, mirroring Stream's model selection: OpenAI-kind endpoints
+// send ConfiguredModel on the wire (c.Model is ignored), while the proxy kind
+// sends c.Model. Both the estimate and the learn paths must use this same
+// canonical identity so a ratio is filed and read under the tokenizer actually
+// in use.
+func (c *Client) calibrationKeyFor() string {
+	model := c.Model
+	if c.Kind == KindOpenAI && c.ConfiguredModel != "" {
+		model = c.ConfiguredModel
+	}
+	return calibrationKey(c.BaseURL, c.Kind, model, c.Backend)
+}
+
+// calibratedTokensPerByte returns the learned tokens-per-byte ratio for the
+// client's current effective endpoint identity, or 0 when no sample is stored
+// (callers fall back to the ~4 bytes/token default).
+func (c *Client) calibratedTokensPerByte() float64 {
+	key := c.calibrationKeyFor()
+	c.calibMu.Lock()
+	defer c.calibMu.Unlock()
+	if c.calibration == nil {
 		return 0
 	}
-	return len(b)
+	cal := c.calibration[key]
+	if cal == nil || cal.TotalBytes <= 0 || cal.TotalTokens <= 0 {
+		return 0
+	}
+	return float64(cal.TotalTokens) / float64(cal.TotalBytes)
+}
+
+// learnCalibration folds one authoritative usage sample into the calibration
+// store. It is deliberately conservative: only Exact usage with a positive
+// prompt count is evidence, and image-bearing or pre-send-trimmed requests are
+// skipped because their payload bytes are not representative of prompt tokens.
+func (c *Client) learnCalibration(u UsageStat, payloadBytes int, messages []Message, trimmed bool) {
+	if !u.Exact || u.InputTok <= 0 || payloadBytes <= 0 {
+		return
+	}
+	if hasImages(messages) || trimmed {
+		return
+	}
+	key := c.calibrationKeyFor()
+	c.calibMu.Lock()
+	defer c.calibMu.Unlock()
+	if c.calibration == nil {
+		c.calibration = make(map[string]*usageCalibration)
+	}
+	cal := c.calibration[key]
+	if cal == nil {
+		cal = &usageCalibration{}
+		c.calibration[key] = cal
+	}
+	cal.TotalBytes += int64(payloadBytes)
+	cal.TotalTokens += u.InputTok
 }
 
 // extractSpillPath returns the disk path embedded in a tool result's trailing

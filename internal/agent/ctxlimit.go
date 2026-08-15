@@ -395,30 +395,55 @@ func (a *App) ContextLimit() ContextLimit {
 }
 
 // contextTokensUsed estimates how many prompt tokens the current context
-// occupies. The proxy's last reported prompt_tokens is authoritative — it counts
-// the system prompt, tool schemas, and any injected retrieval that a byte-count
-// of the stored transcript would miss — so it is preferred. Before the first
-// completion (or against a client that reports no usage) it falls back to a
-// ~4-chars/token estimate over the transcript.
+// occupies. The client's last usage is preferred: it is the backend's real
+// prompt_tokens when a usage chunk arrived (Exact), or a provisional pre-send
+// payload estimate published so the meter moves mid-turn (not Exact). Before
+// the first completion (or against a client that reports no usage) it falls
+// back to a ~4-chars/token estimate over the transcript.
 func (a *App) ContextTokensUsed() int {
+	tokens, _ := a.ContextUsage()
+	return tokens
+}
+
+// ContextUsage returns the current context occupancy plus whether that number
+// is authoritative (the backend's real prompt_tokens) or only an estimate
+// (provisional pre-send payload estimate, or the transcript-length fallback).
+// The ctx gauge consumes this to render the "~" prefix; diagnostics that must
+// never cry wolf on a guess use NearContextLimit, which keys off the retained
+// authoritative count instead.
+func (a *App) ContextUsage() (tokens int, exact bool) {
 	if a.Client != nil {
 		if u := a.Client.LastUsage(); u.InputTok > 0 {
-			return int(u.InputTok)
+			return int(u.InputTok), u.Exact
 		}
 	}
-	return int(proxy.ApproxTokens(TranscriptSize(a.Conv)))
+	return int(proxy.ApproxTokens(TranscriptSize(a.Conv))), false
 }
 
 // nearContextLimit reports whether the current context occupancy is within ~10%
 // of the usable budget — the regime where a turn that also thinks and answers
 // can spill past n_ctx and trip a mid-stream reset. Used to annotate the
 // backend-stream-error warning when the reset correlates with context pressure.
+//
+// It keys off the last AUTHORITATIVE prompt count (LastExactInputTokens), not
+// ContextUsage: a stream that fails mid-turn typically never delivers its usage
+// chunk, so lastUsage holds only the provisional pre-send estimate at that
+// point. Using the retained real measurement keeps the "try /compact" diagnosis
+// firing exactly in the context-overflow scenario it exists for, while a guess
+// can still never trip it.
 func (a *App) NearContextLimit() bool {
 	usable := a.ContextLimit().Usable()
 	if usable <= 0 {
 		return false
 	}
-	return a.ContextTokensUsed() >= usable*9/10
+	if a.Client == nil {
+		return false
+	}
+	used := a.Client.LastExactInputTokens()
+	if used <= 0 {
+		return false
+	}
+	return used >= int64(usable)*9/10
 }
 
 // intField reads a JSON number field as an int, tolerating both integer and

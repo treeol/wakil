@@ -266,6 +266,92 @@ func TestHeaderCtxReadsBackendNCtx(t *testing.T) {
 	}
 }
 
+// TestHeaderCtxTildeOnEstimate: an estimated occupancy (provisional pre-send
+// estimate or transcript fallback) renders with a "~" prefix on the used-count,
+// while an authoritative backend value does not — so a later correction reads
+// as an estimate being refined, not a leak.
+func TestHeaderCtxTildeOnEstimate(t *testing.T) {
+	app := &agent.App{
+		Cfg:      config.DefaultConfig(),
+		Client:   newTestClient(""),
+		CtxLimit: agent.ContextLimit{NCtx: 196608, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096},
+		Conv:     []proxy.Message{{Role: "user", Content: strPtr("hi")}},
+	}
+
+	// Estimated (Exact=false) → "~48k".
+	app.Client.SetUsage(proxy.UsageStat{InputTok: 48000, Exact: false})
+	strip := plain(tuiModel{app: app, width: 120}.ctxSegment())
+	if !strings.Contains(strip, "~48k") {
+		t.Errorf("estimated usage must render '~48k'; got: %q", strip)
+	}
+
+	// Authoritative (Exact=true) → "48k" with no tilde.
+	app.Client.SetUsage(proxy.UsageStat{InputTok: 48000, Exact: true})
+	strip = plain(tuiModel{app: app, width: 120}.ctxSegment())
+	if !strings.Contains(strip, "48k") {
+		t.Errorf("exact usage must render '48k'; got: %q", strip)
+	}
+	if strings.Contains(strip, "~48k") {
+		t.Errorf("exact usage must not carry a tilde; got: %q", strip)
+	}
+}
+
+// TestHeaderCtxTildeOnFallback: with no usage reported at all, the
+// transcript-length fallback is an estimate and renders with "~".
+func TestHeaderCtxTildeOnFallback(t *testing.T) {
+	app := &agent.App{
+		Cfg:      config.DefaultConfig(),
+		Client:   newTestClient(""),
+		CtxLimit: agent.ContextLimit{NCtx: 196608, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096},
+		Conv:     []proxy.Message{{Role: "user", Content: strPtr(strings.Repeat("x", 4000))}},
+	}
+	strip := plain(tuiModel{app: app, width: 120}.ctxSegment())
+	// 4000 chars / 4 = 1000 tokens → "~1k".
+	if !strings.Contains(strip, "~1k") {
+		t.Errorf("fallback estimate must render '~1k'; got: %q", strip)
+	}
+}
+
+// TestNearContextLimitUsesLastExact: the near-limit diagnostic keys off the last
+// AUTHORITATIVE prompt count, which survives the provisional-estimate overwrite.
+// A provisional estimate alone (no prior exact measurement) must not trip it;
+// a prior exact measurement near the limit must — even after a later stream
+// clobbers lastUsage with an estimate (the exact mid-turn failure scenario).
+func TestNearContextLimitUsesLastExact(t *testing.T) {
+	app := &agent.App{
+		Cfg:      config.DefaultConfig(),
+		Client:   newTestClient(""),
+		CtxLimit: agent.ContextLimit{NCtx: 196608, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096},
+	}
+	usable := app.CtxLimit.Usable() // 188416
+	near := int64(usable * 95 / 100) // ~179k, ≥ 90% of usable
+
+	// No exact measurement yet → must not trip.
+	app.Client.SetUsage(proxy.UsageStat{InputTok: near, Exact: false})
+	if app.NearContextLimit() {
+		t.Error("provisional estimate with no prior exact measurement must not trip NearContextLimit")
+	}
+
+	// Authoritative measurement near the limit → trips.
+	app.Client.SetUsage(proxy.UsageStat{InputTok: near, Exact: true})
+	if !app.NearContextLimit() {
+		t.Error("authoritative occupancy near the limit must trip NearContextLimit")
+	}
+
+	// A later failed stream clobbers lastUsage with an estimate — the retained
+	// exact count must keep the diagnostic firing.
+	app.Client.SetUsage(proxy.UsageStat{InputTok: 1234, Exact: false})
+	if !app.NearContextLimit() {
+		t.Error("NearContextLimit must retain the last exact measurement across a provisional overwrite")
+	}
+
+	// A new authoritative measurement below the threshold re-arms the false path.
+	app.Client.SetUsage(proxy.UsageStat{InputTok: 1000, Exact: true})
+	if app.NearContextLimit() {
+		t.Error("authoritative occupancy below the limit must not trip NearContextLimit")
+	}
+}
+
 // TestWarnContextPressure: a measured occupancy above the usable budget emits a
 // single warning keyed off the usable number (not raw n_ctx), re-arming only
 // after occupancy drops back under the budget.
