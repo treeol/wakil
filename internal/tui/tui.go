@@ -169,6 +169,15 @@ type tuiModel struct {
 	state    agentState
 	pendConf *agent.ConfirmReqMsg
 
+	// followBottom tracks whether the viewport should auto-follow new content
+	// to the bottom. It is a persistent user-intent latch, NOT recomputed from
+	// geometry each render (the old `AtBottom()`-before-SetContent check was
+	// fragile: content growth changed maxYOffset between the check and the
+	// render). Set true initially; disengaged when the user scrolls up; re-engaged
+	// when they scroll back to the bottom or start a new turn. See
+	// updateViewport (the scroll-latch helper) and refreshViewport.
+	followBottom bool
+
 	// When the in-flight turn started; used to chime only on turns long enough
 	// to be worth notifying about. Zero between turns.
 	turnStart time.Time
@@ -468,12 +477,13 @@ func NewTUIModel(app *agent.App) tuiModel {
 		items = append(items, convItem{kind: iSys, text: dim2(resumeNote)})
 	}
 	return tuiModel{
-		app:        app,
-		outputMode: resolveOutputMode(app),
-		vp:         vp,
-		ta:         ta,
-		state:      stateIdle,
-		items:      &items,
+		app:          app,
+		outputMode:   resolveOutputMode(app),
+		vp:           vp,
+		ta:           ta,
+		state:        stateIdle,
+		followBottom: true,
+		items:        &items,
 		streaming:  &strings.Builder{},
 		imageChips: &[]string{},
 		subAgentModel: subAgentModel{
@@ -650,7 +660,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// navigation — otherwise the conversation would scroll in sync.
 			k := msg.String()
 			if k != "up" && k != "down" {
-				m.vp, _ = m.vp.Update(msg)
+				m, _ = m.updateViewport(msg)
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -693,7 +703,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.reflow()
 		}
 		m = m.reflowIfStatusHeightChanged(before)
-		m.vp, vpCmd = m.vp.Update(msg)
+		m, vpCmd = m.updateViewport(msg)
 		cmds = append(cmds, taCmd, vpCmd)
 		return m, tea.Batch(cmds...)
 
@@ -708,7 +718,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var taCmd, vpCmd tea.Cmd
 	m.ta, taCmd = m.ta.Update(msg)
-	m.vp, vpCmd = m.vp.Update(msg)
+	m, vpCmd = m.updateViewport(msg)
 	cmds = append(cmds, taCmd, vpCmd)
 	return m, tea.Batch(cmds...)
 }
@@ -1191,7 +1201,8 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				m.addItem(iSys, img.Placeholder())
 			}
 		}
-		m.vp.GotoBottom() // re-pin: a sent turn always scrolls into view
+		m.followBottom = true // re-pin: a sent turn always scrolls into view
+		m.vp.GotoBottom()
 
 		var pair []tea.Cmd
 		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
@@ -1343,6 +1354,11 @@ func (m tuiModel) startTurn(run func(ctx context.Context) tea.Cmd) (tuiModel, []
 	m.state = stateStreaming
 	m.turnStart = time.Now()
 	m.tps = 0
+	// Every locally-initiated turn re-engages follow: the user just asked for
+	// something, so the transcript should scroll to the new content regardless
+	// of where they were reading. Centralized here so no future startTurn call
+	// site can forget the reset (display-only paths don't go through startTurn).
+	m.followBottom = true
 	m = m.reflowIfStatusHeightChanged(before)
 	cmds := []tea.Cmd{run(ctx)}
 	var dotCmd tea.Cmd
@@ -1388,6 +1404,7 @@ func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
 			m.addItem(iSys, img.Placeholder())
 		}
 	}
+	m.followBottom = true
 	m.vp.GotoBottom()
 
 	var pair []tea.Cmd
@@ -1480,6 +1497,55 @@ func (m *tuiModel) flushStreaming() {
 	m.addItem(iAsst, text)
 }
 
+// updateViewport forwards a message to the viewport and latches followBottom
+// from scroll intent. It is the single funnel for every viewport.Update, so the
+// latch sees exactly the messages that can scroll: viewport KeyMap keys
+// (up/down/pgup/pgdown/half-page) and mouse-wheel events.
+//
+// Latch rules (event-driven, per the Mashūra plan review — NOT a geometry poll):
+//   - Upward scroll that actually moved the offset → disengage follow.
+//   - Downward scroll that lands at the bottom → re-engage follow.
+//   - Downward input while already at bottom (no offset delta) → re-engage.
+//   - Any other message (stream chunks, tool results, resize, unrelated keys)
+//     does NOT change the latch — only explicit user scroll intent does.
+func (m tuiModel) updateViewport(msg tea.Msg) (tuiModel, tea.Cmd) {
+	before := m.vp.YOffset
+	var cmd tea.Cmd
+	m.vp, cmd = m.vp.Update(msg)
+	after := m.vp.YOffset
+
+	if after < before {
+		// Scrolled up — the user is reading history, stop auto-following.
+		m.followBottom = false
+		return m, cmd
+	}
+	if after > before && m.vp.AtBottom() {
+		// Scrolled down and reached the bottom — resume following.
+		m.followBottom = true
+		return m, cmd
+	}
+	// Downward input while already at bottom produces no offset delta but is
+	// still explicit user intent to follow.
+	if isDownwardScroll(msg) && m.vp.AtBottom() {
+		m.followBottom = true
+	}
+	return m, cmd
+}
+
+// isDownwardScroll reports whether msg is a viewport down-scroll input: a
+// down/pgdown/half-page key, or a mouse wheel-down.
+func isDownwardScroll(msg tea.Msg) bool {
+	switch m := msg.(type) {
+	case tea.KeyMsg:
+		return key.Matches(m, viewport.DefaultKeyMap().Down) ||
+			key.Matches(m, viewport.DefaultKeyMap().PageDown) ||
+			key.Matches(m, viewport.DefaultKeyMap().HalfPageDown)
+	case tea.MouseMsg:
+		return m.Button == tea.MouseButtonWheelDown && m.Action == tea.MouseActionPress
+	}
+	return false
+}
+
 // refreshViewport re-renders the viewport. It separates committed items from the
 // live streaming tail so that per-chunk updates only re-render the tail —
 // O(chunk) rather than O(full transcript). The committed prefix is rebuilt only
@@ -1489,9 +1555,6 @@ func (m *tuiModel) refreshViewport() {
 	if w <= 0 {
 		return
 	}
-
-	// Only auto-follow new content if the reader is already pinned to the bottom.
-	stick := m.vp.AtBottom()
 
 	// --- committed prefix ---
 	if m.prefixDirty || m.prefixW != w {
@@ -1561,14 +1624,34 @@ func (m *tuiModel) refreshViewport() {
 		m.plainLines = m.prefixPlain
 	}
 
+	// Capture the pre-swap offset so a paused reader's position survives the
+	// SetContent below (which may change maxYOffset via rewrap).
+	oldOffset := m.vp.YOffset
+
 	styled := m.prefixStyled + tailStyled
 	if m.sel.active {
 		m.vp.SetContent(m.highlightedContent())
 	} else {
 		m.vp.SetContent(styled)
 	}
-	if stick {
+	// Follow or preserve position after the content swap. SetContent self-clamps
+	// only on shrink (YOffset > len-1); on growth it leaves the offset where it
+	// was, which is exactly the "follows a few lines then cut off" symptom. The
+	// persistent followBottom latch decides, instead of a pre-SetContent
+	// AtBottom() snapshot that maxYOffset growth invalidates.
+	//
+	// While a selection is active, never auto-follow (suppress, don't clear the
+	// latch): renderSelection pins the offset explicitly and a mid-drag
+	// GotoBottom would yank the view out from under the mouse.
+	if m.followBottom && !m.sel.active {
 		m.vp.GotoBottom()
+	} else {
+		// Preserve the reading position across rewrap; SetYOffset clamps to the
+		// new geometry for free. Applied even while a selection is active: it
+		// restores the same offset when still valid and clamps when the content
+		// shrank or the viewport grew — an out-of-range offset mid-drag would
+		// corrupt renderSelection's content-space hit-testing.
+		m.vp.SetYOffset(oldOffset)
 	}
 }
 

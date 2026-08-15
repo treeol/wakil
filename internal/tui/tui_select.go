@@ -63,6 +63,8 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		case x < tabMainW:
 			// Main tab clicked.
 			m.subCur = -1
+			m.followBottom = true
+			m.vp.GotoBottom()
 			return m, true, nil
 		default:
 			// Find which visible sub tab was clicked (windowed to terminal width,
@@ -91,6 +93,10 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 					} else {
 						// Switch to this tab (running tabs ignore the × area).
 						m.subCur = k
+						// A sub-tab renders its own bottom-anchored content, but the
+						// main viewport's follow latch resets so returning to main
+						// shows the latest (not a stale scrolled-up position).
+						m.followBottom = true
 					}
 					return m, true, nil
 				}

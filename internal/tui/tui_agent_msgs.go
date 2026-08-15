@@ -16,7 +16,8 @@ import (
 // Update's giant switch (WP-6.6 part 3) to keep Update a thin dispatcher.
 //
 // FORWARDING CONTRACT: these cases do NOT early-return — after they run, Update
-// still forwards msg to m.ta.Update(msg) and m.vp.Update(msg). handled reports
+// still forwards msg to m.ta.Update(msg) and m.updateViewport(msg) (the
+// follow-latch wrapper around vp.Update). handled reports
 // whether the message matched a case here; when false, Update falls through to
 // that same trailing forward (which is what an unmatched message got before the
 // extraction). handled is informational only — Update ignores it and forwards
@@ -528,6 +529,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			}
 			const learnText = "learn this for next time"
 			m.addItem(iUser, learnText)
+			m.followBottom = true
 			m.vp.GotoBottom()
 			var pair []tea.Cmd
 			m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
@@ -551,14 +553,18 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			// Discard with a generic note — never render the stale recalled note
 			// (prior-session IDs/labels) into the switched session.
 			m.addItem(iSys, dim2("· /remember result discarded — session changed while searching"))
-			m.vp.GotoBottom()
+			if m.followBottom {
+				m.vp.GotoBottom()
+			}
 			break
 		}
 		if m.state != stateIdle {
 			// Degrade to a display note rather than silently dropping the result
 			// or starting a concurrent turn.
 			m.addItem(iSys, dim2(msg.RecalledNote))
-			m.vp.GotoBottom()
+			if m.followBottom {
+				m.vp.GotoBottom()
+			}
 			break
 		}
 		// Re-check workflow active at handling time (event-loop-safe, closes the
@@ -570,7 +576,9 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			if msg.RecalledNote != "" {
 				m.addItem(iSys, dim2(msg.RecalledNote))
 			}
-			m.vp.GotoBottom()
+			if m.followBottom {
+				m.vp.GotoBottom()
+			}
 			break
 		}
 		if m.searchActive {
@@ -582,6 +590,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		if msg.RecalledNote != "" {
 			m.addItem(iSys, dim2(msg.RecalledNote))
 		}
+		m.followBottom = true
 		m.vp.GotoBottom()
 		var pair []tea.Cmd
 		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
@@ -597,7 +606,9 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			(msg.OriginWorkspace != "" && msg.OriginWorkspace != m.app.SessionWorkspace())
 		if stale {
 			m.addItem(iSys, dim2("· /recall result discarded — session changed while searching"))
-			m.vp.GotoBottom()
+			if m.followBottom {
+				m.vp.GotoBottom()
+			}
 			break
 		}
 		if m.state != stateIdle {
@@ -605,7 +616,9 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			if msg.RecalledNote != "" {
 				m.addItem(iSys, dim2(msg.RecalledNote))
 			}
-			m.vp.GotoBottom()
+			if m.followBottom {
+				m.vp.GotoBottom()
+			}
 			break
 		}
 		if m.app.Workflow != nil {
@@ -613,13 +626,16 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			if msg.RecalledNote != "" {
 				m.addItem(iSys, dim2(msg.RecalledNote))
 			}
-			m.vp.GotoBottom()
+			if m.followBottom {
+				m.vp.GotoBottom()
+			}
 			break
 		}
 		if m.searchActive {
 			m.searchExit(false)
 		}
 		m.addItem(iSys, dim2(msg.RecalledNote))
+		m.followBottom = true
 		m.vp.GotoBottom()
 		var pair []tea.Cmd
 		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
@@ -721,6 +737,9 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.reasoning.Reset()
 		m.reasoningDone = false
 		m.reasoningExpanded = false
+		// A fresh conversation opens at the bottom; a stale followBottom=false
+		// from a prior scrolled-up session must not carry into it.
+		m.followBottom = true
 		// Clear queued prompts — they belong to the old conversation.
 		if len(m.queuedPrompts) > 0 {
 			m.addItem(iSys, dim2(sprint("· queue cleared (%d prompts dropped)", len(m.queuedPrompts))))
@@ -835,6 +854,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 		m.addItem(iSys, dim2(sprint("· new session: %s — /resume %s to return to the old one",
 			agent.ShortID(msg.NewChatID), agent.ShortID(msg.OldChatID))))
+		m.followBottom = true
 		m.vp.GotoBottom()
 
 		if msg.Proceed {
@@ -893,6 +913,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.searchExit(false)
 		}
 		m.addItem(iSys, dim2("· running final oracle review"))
+		m.followBottom = true
 		m.vp.GotoBottom()
 		{
 			var pair []tea.Cmd
@@ -915,6 +936,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.searchExit(false)
 		}
 		m.addItem(iSys, dim2("· "+msg.Note))
+		m.followBottom = true
 		m.vp.GotoBottom()
 		var pair []tea.Cmd
 		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
