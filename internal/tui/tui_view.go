@@ -323,6 +323,11 @@ func (m tuiModel) statusLines() []string {
 	if m.infoPanel.active {
 		maxRows = statusMaxRows
 		segments = append(segments, m.infoExtraSegments()...)
+	} else if bs := m.billedSegment(); bs != "" {
+		// Collapsed: the billed subtotal joins the always-on fixed group so
+		// the real billed spend is visible without opening the expansion.
+		// When the expansion is on, costSegments() carries it instead (no dup).
+		segments = append(segments, bs)
 	}
 	return flowSegmentsN(segments, w, maxRows)
 }

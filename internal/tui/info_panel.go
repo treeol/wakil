@@ -245,12 +245,7 @@ func (m tuiModel) costSegments() []string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	segs := []string{dimStyle.Render("costs")}
 	if anyBilled {
-		cell, color := "—", "240"
-		if billedTotal > 0 {
-			cell = proxy.FmtUSDCompact(billedTotal)
-			color = "2"
-		}
-		segs = append(segs, dimStyle.Render("billed")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(cell))
+		segs = append(segs, billedCell(billedTotal))
 	}
 	if anyEstimated {
 		cell, color := "—", "240"
@@ -273,6 +268,36 @@ func (m tuiModel) costSegments() []string {
 		segs = append(segs, g+" "+name+" "+costSeg+dimStyle.Render(sprint("·%d", r.Calls)))
 	}
 	return segs
+}
+
+// billedCell renders the "billed" subtotal segment: a dim key and a value that
+// is green when a real billed total exists, dim "—" when billed sources are
+// present but contribute no priced total.
+func billedCell(billedTotal float64) string {
+	cell, color := "—", "240"
+	if billedTotal > 0 {
+		cell = proxy.FmtUSDCompact(billedTotal)
+		color = "2"
+	}
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	return dimStyle.Render("billed") + " " + lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(cell)
+}
+
+// billedSegment returns the always-on "billed $X" status segment — the real
+// billed spend — or "" when no billed source has been recorded. It is rendered
+// in the COLLAPSED status line (the fixed group that never scrolls away), so
+// the actual billed cost is visible without opening the info expansion. When
+// the expansion is on, the full cost block (costSegments) carries it instead,
+// so the segment is not duplicated.
+func (m tuiModel) billedSegment() string {
+	if m.app == nil || m.app.Costs == nil {
+		return ""
+	}
+	billedTotal, _, anyBilled, _, _ := m.app.Costs.SnapshotSplit()
+	if !anyBilled {
+		return ""
+	}
+	return billedCell(billedTotal)
 }
 
 // shortSourceName derives a compact ≤9 visual-char display label for a source

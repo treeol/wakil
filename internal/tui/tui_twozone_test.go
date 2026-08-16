@@ -79,6 +79,45 @@ func TestTwoZonePanelHiddenByDefault(t *testing.T) {
 	}
 }
 
+// TestTwoZoneBilledSegmentCollapsed asserts the billed subtotal is in the
+// COLLAPSED (always-on) status line when a billed source exists — it must not
+// require opening the info expansion. And when the expansion IS open, the
+// billed figure appears only once (not duplicated by the always-on segment).
+func TestTwoZoneBilledSegmentCollapsed(t *testing.T) {
+	m := twoZoneModel(120, 40)
+	m.app.Costs = proxy.NewCostTracker()
+	m.app.Costs.Record("inference·openrouter/gpt-4o", 500, 200, 0.40, true, proxy.ConfExact)
+
+	// Collapsed: billed present in the always-on group.
+	joined := plain(strings.Join(m.statusLines(), "\n"))
+	if !strings.Contains(joined, "billed") {
+		t.Errorf("collapsed status line must show 'billed'; got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "$0.40") {
+		t.Errorf("collapsed status line must show the billed total; got:\n%s", joined)
+	}
+
+	// Expanded: billed still present, but exactly once (costSegments carries it).
+	m.infoPanel.active = true
+	joined = plain(strings.Join(m.statusLines(), "\n"))
+	if got := strings.Count(joined, "billed"); got != 1 {
+		t.Errorf("expanded status line must show 'billed' exactly once; got %d:\n%s", got, joined)
+	}
+}
+
+// TestTwoZoneBilledSegmentAbsentWhenNoBilled asserts no billed segment appears
+// in the collapsed line when there are no exact (billed) sources.
+func TestTwoZoneBilledSegmentAbsentWhenNoBilled(t *testing.T) {
+	m := twoZoneModel(120, 40)
+	m.app.Costs = proxy.NewCostTracker()
+	m.app.Costs.Record("inference", 100, 50, 0.01, true, proxy.ConfModeled)
+
+	joined := plain(strings.Join(m.statusLines(), "\n"))
+	if strings.Contains(joined, "billed") {
+		t.Errorf("collapsed status line must not show 'billed' with no exact sources; got:\n%s", joined)
+	}
+}
+
 // TestTwoZonePanelToggleReservesHeight asserts turning the expansion on grows
 // the status zone (more segments → more rows) and shrinks the conversation
 // viewport by the same amount, capped at statusMaxRows.
