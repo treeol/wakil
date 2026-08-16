@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -40,7 +41,7 @@ const (
 type SubagentSummary struct {
 	Objective     string           `json:"objective"`
 	Status        string           `json:"status,omitempty"`      // "incomplete" when the subagent hit a budget/iteration wall; empty = complete
-	StopReason    string           `json:"stop_reason,omitempty"` // "iteration_limit" | "turn_budget_exhausted" | "hard_max_shed" | "confinement_breaker" | ""; mechanically set by dispatchSubagent
+	StopReason    string           `json:"stop_reason,omitempty"` // "iteration_limit" | "turn_budget_exhausted" | "hard_max_shed" | "confinement_breaker" | "error" | ""; mechanically set by dispatchSubagent
 	Findings      []Finding        `json:"findings,omitempty"`
 	Checked       []CheckedItem    `json:"checked,omitempty"`
 	Skipped       []SkippedItem    `json:"skipped,omitempty"`
@@ -205,6 +206,154 @@ func extractJSON(s string) string {
 		return s
 	}
 	return s[start : end+1]
+}
+
+// subagentTranscriptCap is the per-tool-result char budget when salvaging a
+// failed child's transcript to a spill file. Large enough to be useful, small
+// enough that a transcript of many reads stays a sane size on disk.
+const subagentTranscriptCap = 8000
+
+// subagentTranscriptTotalCap is the overall byte budget for a salvaged
+// transcript. When exceeded, the EARLIEST entries are dropped (keeping the
+// most recent tool traffic — the work closest to the failure — which is the
+// most valuable for a re-dispatch). Prevents a 30-iteration child with
+// max-sized reads from writing an unbounded spill.
+const subagentTranscriptTotalCap = 64_000
+
+// subagentTranscriptArgCap is the per-tool-call-argument char budget. Bounded
+// because arguments (unlike results) are never truncated elsewhere: an
+// edit-tier write_file argument can carry an entire file body.
+const subagentTranscriptArgCap = 1000
+
+// sensitiveArgValuePattern matches a JSON `"key": "value"` pair whose key is
+// sensitive (case-insensitive), so the value can be replaced with [REDACTED]
+// without a full JSON parse of arbitrary tool arguments.
+var sensitiveArgValuePattern = regexp.MustCompile(
+	`(?i)("[^"]*(?:password|passwd|token|secret|api[_-]?key|authorization|auth|cookie|credential|private[_-]?key)[^"]*"\s*:\s*)"((?:[^"\\]|\\.)*)"`)
+
+// subagentTranscript renders a failed child's in-memory work into readable
+// text for a spill file. It captures the tool traffic still present in the
+// child's conversation at the time of the error, subject to the per-item and
+// total caps above — this is NOT a guarantee of "every" call/result: earlier
+// entries may have been compacted/shed, and caps truncate the rest.
+//
+// Redaction: tool arguments are scrubbed of sensitive key/value pairs
+// (credentials, tokens), capped, and — for tools whose arguments carry file
+// bodies or shell commands — omitted entirely (the result, which carries the
+// actual findings, is still kept). MCP tool calls (`server__tool`) and their
+// results are omitted altogether: their arguments/results are the highest
+// leakage risk (external credentials, web content), and the mechanical audit
+// trail for them already lives in SubagentSummary.ExternalCalls.
+//
+// The pinned system prompt and task message are deliberately skipped — the
+// task is already in the summary's Objective and the prompt is static
+// boilerplate. Returns "" if the child made no salvageable tool work (avoids
+// writing an empty/header-only spill file).
+//
+// This is the card #146 salvage path: when sub.Send errors (context deadline,
+// stream failure, …) the structured summary never gets produced, but the child
+// usually gathered real findings first — those live only in sub.Conv. Flushing
+// this transcript to disk makes that work recoverable by the parent. Note the
+// write is a plain host-side os.* operation (wtools.SpillToCache) and does not
+// take a context, so a canceled/deadlined request context cannot prevent the
+// salvage attempt.
+func subagentTranscript(conv []proxy.Message) string {
+	var entries []string
+	var total int
+	for _, m := range conv {
+		switch m.Role {
+		case "assistant":
+			for _, tc := range m.ToolCalls {
+				if isMCPToolCall(tc.Function.Name) {
+					continue
+				}
+				args := scrubSensitiveArgs(tc.Function.Arguments)
+				if contentBearingTool(tc.Function.Name) {
+					args = "[arguments omitted — content-bearing tool]"
+				}
+				e := fmt.Sprintf("tool call: %s(%s)", tc.Function.Name, truncateUTF8(args, subagentTranscriptArgCap))
+				entries = append(entries, e)
+				total += len(e)
+			}
+		case "tool":
+			if isMCPToolCall(m.Name) {
+				continue
+			}
+			content := DerefStr(m.Content)
+			trunc := false
+			if len(content) > subagentTranscriptCap {
+				content = truncateUTF8(content, subagentTranscriptCap)
+				trunc = true
+			}
+			var b strings.Builder
+			fmt.Fprintf(&b, "tool result: %s\n", m.Name)
+			b.WriteString(content)
+			if trunc {
+				fmt.Fprintf(&b, "\n… [+%d chars truncated]", len(DerefStr(m.Content))-len(content))
+			}
+			entries = append(entries, b.String())
+			total += b.Len()
+		}
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	// Keep the tail when over budget: the most recent work is closest to the
+	// failure and most useful to a re-dispatch. Trim whole entries from the
+	// head so we never emit a half-entry.
+	for total > subagentTranscriptTotalCap && len(entries) > 1 {
+		total -= len(entries[0])
+		entries = entries[1:]
+	}
+	var out strings.Builder
+	if total > subagentTranscriptTotalCap {
+		fmt.Fprintf(&out, "… [earlier tool traffic dropped: transcript exceeded %d bytes]\n", subagentTranscriptTotalCap)
+	}
+	for _, e := range entries {
+		out.WriteString("\n")
+		out.WriteString(e)
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
+// isMCPToolCall reports whether name is an MCP server tool (`server__tool`
+// convention) — highest leakage risk, omitted from salvage.
+func isMCPToolCall(name string) bool {
+	return strings.Contains(name, "__")
+}
+
+// contentBearingTool reports whether a tool's ARGUMENTS embed content that is
+// either large (file bodies) or sensitive (shell commands), making verbatim
+// argument capture in a salvage spill undesirable. The result is still kept.
+func contentBearingTool(name string) bool {
+	switch name {
+	case "edit_file", "write_file", "write_binary_file", "run_shell", "run_background":
+		return true
+	}
+	return false
+}
+
+// scrubSensitiveArgs replaces the values of sensitive key/value pairs in a raw
+// JSON-ish argument string with [REDACTED]. It targets the structured
+// `"key":"value"` shape only; values are not truncated here (the caller caps).
+func scrubSensitiveArgs(args string) string {
+	if args == "" {
+		return args
+	}
+	replaced := false
+	out := sensitiveArgValuePattern.ReplaceAllStringFunc(args, func(m string) string {
+		sub := sensitiveArgValuePattern.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		replaced = true
+		return sub[1] + `"[REDACTED]"`
+	})
+	if !replaced {
+		return args
+	}
+	return out
 }
 
 // subagentProgressOut returns a writer that forwards subagent output to the
@@ -1006,8 +1155,27 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		_, costRows := sub.Costs.Snapshot()
 		errSummary := SubagentSummary{
 			Objective:   task,
+			Status:      "incomplete",
+			StopReason:  "error",
 			Findings:    []Finding{{Summary: Truncate("subagent error: "+err.Error(), 200), Kind: "error", Weight: "low"}},
 			Uncertainty: []string{"subagent failed with error"},
+		}
+		// Card #146: salvage the child's partial work before discarding it. The
+		// child's transcript (sub.Conv) holds the tool calls and tool results it
+		// accumulated before the error — on a context deadline that is often a
+		// full audit's worth of findings the model never got to summarize. Flush
+		// it to the tool cache under the PARENT's chatID (valid and readable via
+		// the existing host-cache path) and point the error finding at it, so a
+		// failed dispatch is recoverable rather than a total loss. When the
+		// child did no tool work there is nothing to salvage — keep the bare
+		// error (no empty spill file).
+		if transcript := subagentTranscript(sub.Conv); transcript != "" {
+			if spillPath := wtools.SpillToCache(a.chatID(), "dispatch_subagent_partial", transcript); spillPath != "" {
+				errSummary.Findings[0].Location = spillPath
+				errSummary.Findings[0].Summary = Truncate("subagent error: "+err.Error()+" — partial work flushed to "+spillPath, 200)
+				errSummary.Uncertainty = append(errSummary.Uncertainty,
+					"child did not complete its summary; partial work (tool calls + results) is recoverable from the transcript spill file")
+			}
 		}
 		// Fold mechanical external_calls into the summary even on error — the
 		// child may have made MCP calls before the error, and the parent must
