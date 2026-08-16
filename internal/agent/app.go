@@ -18,6 +18,7 @@ import (
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"
+	"github.com/treeol/wakil/internal/orregistry"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/sessionhistory"
 	"github.com/treeol/wakil/internal/staging"
@@ -944,6 +945,17 @@ func (a *App) RecordInferenceCost() {
 	usedBackend := a.Client.LastUsedBackend()
 	isExternal := usedBackend != "" && IsExternalBackend(a.BackendList, a.Cfg, usedBackend)
 
+	// Direct OpenRouter endpoints (kind=openai, base_url on openrouter.ai) have
+	// no proxy X-Ilm-Backend-Used header, so usedBackend is empty and the call
+	// would otherwise fall to the legacy local-compute aggregate. Detect the
+	// endpoint host and treat it as the external "openrouter" backend so it
+	// prices as external inference (real provider tokens × real provider rate).
+	directOR := usedBackend == "" && isOpenRouterHost(a.Cfg.ActiveEndpoint().BaseURL)
+	if directOR {
+		usedBackend = "openrouter"
+		isExternal = true
+	}
+
 	// When the model field already carries the backend prefix (e.g.
 	// "openrouter/anthropic/claude-opus-4-8"), strip it so the cost key is
 	// "openrouter/anthropic/claude-opus-4-8" rather than the doubled
@@ -966,10 +978,7 @@ func (a *App) RecordInferenceCost() {
 	var usd float64
 	var priced bool
 	if isExternal {
-		usd, priced = a.Cfg.Costs.ExternalInferenceCost(usedBackend+"/"+modelForCost, u.InputTok, u.OutputTok, config.TokenDetail{
-			CachedTok:     u.CachedTok,
-			CacheWriteTok: u.CacheWriteTok,
-		})
+		usd, priced = a.externalInferenceCost(usedBackend, modelForCost, u)
 	} else {
 		// Local/modeled tier has one flat combined rate (no separate input
 		// rate to split a cache discount against) — cached tokens stay folded
@@ -993,6 +1002,62 @@ func (a *App) RecordInferenceCost() {
 		CachedTok:     u.CachedTok,
 		CacheWriteTok: u.CacheWriteTok,
 	})
+}
+
+// externalInferenceCost resolves the cost of one external-inference call with
+// precedence: configured [costs].inference_backends override → OpenRouter
+// registry pricing (when the call was routed through OpenRouter) → unpriced
+// "—". The registry path uses ModelRateCost (no zero-rate sentinel) so a
+// genuinely free OpenRouter model renders $0.00; the config path keeps
+// ExternalInferenceCost's zero-rate-means-unpriced golden behavior.
+func (a *App) externalInferenceCost(usedBackend, modelForCost string, u proxy.UsageStat) (float64, bool) {
+	detail := config.TokenDetail{CachedTok: u.CachedTok, CacheWriteTok: u.CacheWriteTok}
+	configKey := usedBackend + "/" + modelForCost
+
+	// Config override always wins — the user's hand-typed rate is authoritative.
+	if usd, priced := a.Cfg.Costs.ExternalInferenceCost(configKey, u.InputTok, u.OutputTok, detail); priced {
+		return usd, true
+	}
+
+	// Fetched OpenRouter pricing, only when the call actually went through
+	// OpenRouter: a direct openrouter.ai endpoint (no backend name, but the
+	// active endpoint's host is OpenRouter) or a proxy backend literally
+	// named "openrouter".
+	if !a.isOpenRouterRoute(usedBackend) {
+		return 0, false
+	}
+	// Best-effort warm so the first OpenRouter turn of a proxy-routed session
+	// (whose context limits never touched the registry) still gets pricing.
+	// Warm is synchronous but skips when fresh, and fails silently — a cold or
+	// unreachable registry just yields "—" this turn. Bounded to a short
+	// deadline so a slow OpenRouter never stalls cost recording.
+	warmCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	orregistry.Warm(warmCtx)
+	cancel()
+	modelID := strings.TrimPrefix(modelForCost, "openrouter/")
+	p, ok := orregistry.LookupPricing(modelID)
+	if !ok {
+		return 0, false
+	}
+	rate := config.ModelRate{
+		InputUSDPer1M:        p.Prompt,
+		OutputUSDPer1M:       p.Completion,
+		CachedInputUSDPer1M:  p.CachedInput,
+		CacheWriteUSDPer1M:   p.CacheWrite,
+	}
+	return config.ModelRateCost(rate, u.InputTok, u.OutputTok, detail), true
+}
+
+// isOpenRouterRoute reports whether this call was routed through OpenRouter:
+// either the used backend is literally "openrouter", or (direct endpoint) the
+// active endpoint's base URL is an openrouter.ai host. The latter covers
+// kind=openai endpoints pointed straight at OpenRouter, where the proxy's
+// X-Ilm-Backend-Used header is absent and usedBackend is empty.
+func (a *App) isOpenRouterRoute(usedBackend string) bool {
+	if usedBackend == "openrouter" {
+		return true
+	}
+	return isOpenRouterHost(a.Cfg.ActiveEndpoint().BaseURL)
 }
 
 // RecordOracleCostFor records one panel member's exact token usage under the

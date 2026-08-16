@@ -554,6 +554,18 @@ func (c CostsConfig) ExternalInferenceCost(backendModel string, inTok, outTok in
 	if !ok || (r.InputUSDPer1M == 0 && r.OutputUSDPer1M == 0) {
 		return 0, false
 	}
+	return ModelRateCost(r, inTok, outTok, detail), true
+}
+
+// ModelRateCost is the pure cost arithmetic for a ModelRate with explicit
+// token counts, with NO priced sentinel — it returns the computed usd
+// regardless of whether the rate is zero (a genuinely free model returns
+// 0.0). This is the fetched-pricing path: OpenRouter's "0" rate means "free",
+// which must render $0.00, not "—". The config-lookup path (ExternalInferenceCost)
+// keeps its zero-rate-means-unpriced convention so a user's unset rate still
+// shows "—". Cache/write tokens bill at the base input rate when their
+// discounted rate is unset (0).
+func ModelRateCost(r ModelRate, inTok, outTok int64, detail TokenDetail) float64 {
 	cachedRate := r.CachedInputUSDPer1M
 	if cachedRate == 0 {
 		cachedRate = r.InputUSDPer1M
@@ -567,11 +579,10 @@ func (c CostsConfig) ExternalInferenceCost(backendModel string, inTok, outTok in
 	if uncached < 0 {
 		uncached = 0
 	}
-	usd = float64(uncached)/1e6*r.InputUSDPer1M +
+	return float64(uncached)/1e6*r.InputUSDPer1M +
 		float64(cached)/1e6*cachedRate +
 		float64(detail.CacheWriteTok)/1e6*writeRate +
 		float64(outTok)/1e6*r.OutputUSDPer1M
-	return usd, true
 }
 
 // searchCost returns the modeled cost of one search query. priced is false when
