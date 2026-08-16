@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/safe"
 )
 
@@ -174,9 +175,10 @@ func CallOracleURL(ctx context.Context, cfg config.Config, apiKey, question, ora
 		}
 	}
 
-	// Debug log: write raw response structure to stderr when WAKIL_DEBUG is set.
+	// Debug log: write raw response structure to the diagnostic sink when
+	// WAKIL_DEBUG is set.
 	if os.Getenv("WAKIL_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "[oracle debug] stop_reason=%q blocks=[%s] input=%d output=%d\n",
+		diag.Printf("[oracle debug] stop_reason=%q blocks=[%s] input=%d output=%d\n",
 			result.StopReason,
 			strings.Join(blockTypes, ","),
 			result.Usage.InputTokens,

@@ -10,12 +10,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/treeol/wakil/internal/diag"
 )
 
 // ErrBackendStream marks a retryable transport failure: connection reset,
@@ -980,7 +981,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 			// lines reach this point (comments/keepalives/event lines are
 			// skipped above) and [DONE] is handled before the parse.
 			atomic.AddInt64(&c.malformedChunks, 1)
-			fmt.Fprintf(os.Stderr, "proxy: malformed SSE chunk at byte %d: %v — aborting stream\n", bytesRead, jerr)
+			diag.Printf("proxy: malformed SSE chunk at byte %d: %v — aborting stream\n", bytesRead, jerr)
 			return Message{}, wrapStreamErr(fmt.Errorf("malformed SSE chunk at byte %d: %v", bytesRead, jerr))
 		}
 		// OpenRouter-style mid-stream error chunk: {"error": {...}}. Surface

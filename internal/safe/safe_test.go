@@ -2,16 +2,17 @@ package safe
 
 import (
 	"bytes"
-	"log"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/treeol/wakil/internal/diag"
 )
 
 // safeBuffer wraps bytes.Buffer with a mutex for concurrent read/write in tests.
-// log.Printf writes from the recovered goroutine while the test reads — without
-// synchronization this is a data race under -race.
+// diag.Printf writes from the recovered goroutine while the test reads —
+// without synchronization this is a data race under -race.
 type safeBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -33,8 +34,8 @@ func (sb *safeBuffer) String() string {
 // via safe.Go is recovered and logged, and the process continues running.
 func TestGo_PanicDoesNotCrashProcess(t *testing.T) {
 	var sb safeBuffer
-	log.SetOutput(&sb)
-	defer log.SetOutput(nil)
+	diag.Redirect(&sb)
+	defer diag.Redirect(nil)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -87,8 +88,8 @@ func TestGo_NormalExecution(t *testing.T) {
 // concurrently and only the panicking one is caught.
 func TestGo_MultipleGoroutines(t *testing.T) {
 	var sb safeBuffer
-	log.SetOutput(&sb)
-	defer log.SetOutput(nil)
+	diag.Redirect(&sb)
+	defer diag.Redirect(nil)
 
 	var wg sync.WaitGroup
 	const n = 5

@@ -11,6 +11,7 @@ import (
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/safe"
 	"github.com/treeol/wakil/internal/workflow"
@@ -840,7 +841,7 @@ func (a *App) mashuraLogReceipts(ctx context.Context, receipts []mashuraSourceMe
 	if a.Workflow != nil && a.Exec != nil {
 		if content, e := a.Exec.ReadFile(ctx, a.Workflow.PlanPath); e == nil {
 			if _, err := a.Exec.WriteFile(ctx, a.Workflow.PlanPath, workflow.WFAppendToStepLog(content, msg)); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: step log write failed: %v\n", err)
+				diag.Printf("warning: step log write failed: %v\n", err)
 			}
 		}
 	}

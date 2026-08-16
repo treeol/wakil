@@ -11,6 +11,7 @@ import (
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tui"
@@ -128,7 +129,7 @@ func main() {
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					fmt.Fprintf(os.Stderr, "cache priming panic (non-fatal): %v\n", r)
+					diag.Printf("cache priming panic (non-fatal): %v\n", r)
 				}
 			}()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -222,6 +223,22 @@ func main() {
 	)
 	globalProg = prog
 	app.EventSink = func(msg interface{}) { globalProg.Send(msg) }
+
+	// Redirect raw diagnostics to a session log file BEFORE prog.Run() so a
+	// diagnostic written while the alt-screen is active can never interleave
+	// with Bubble Tea's renderer and garble the terminal. Headless mode
+	// (wakil run) never reaches this point and keeps stderr. The path is
+	// surfaced to stderr now (the alt-screen isn't up yet) so the user can
+	// find diagnostics later.
+	if f := diag.OpenSessionLog(agent.ShortID(app.Client.ChatID)); f != nil {
+		// Register f.Close() FIRST so it runs LAST (defers are LIFO): the sink
+		// is restored to stderr before the file closes, so late cleanup writes
+		// never target a closed file.
+		defer f.Close()
+		defer diag.Redirect(nil)
+	} else if p := diag.LogPath(agent.ShortID(app.Client.ChatID)); p != "" {
+		fmt.Fprintf(os.Stderr, "diagnostics: cannot open log at %s — session diagnostics stay on stderr\n", p)
+	}
 
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
