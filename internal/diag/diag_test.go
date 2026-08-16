@@ -65,12 +65,12 @@ func TestConcurrentWrite(t *testing.T) {
 // TestSanitizeID verifies session IDs cannot escape the data directory.
 func TestSanitizeID(t *testing.T) {
 	cases := map[string]string{
-		"abc123":     "abc123",
-		"a/b":        "a_b",
-		"..":         "unknown",
-		".":          "unknown",
-		"":           "unknown",
-		"../../etc":  ".._.._etc",
+		"abc123":    "abc123",
+		"a/b":       "a_b",
+		"..":        "unknown",
+		".":         "unknown",
+		"":          "unknown",
+		"../../etc": ".._.._etc",
 	}
 	for in, want := range cases {
 		if got := sanitizeID(in); got != want {

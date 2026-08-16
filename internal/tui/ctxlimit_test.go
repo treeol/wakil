@@ -323,7 +323,7 @@ func TestNearContextLimitUsesLastExact(t *testing.T) {
 		Client:   newTestClient(""),
 		CtxLimit: agent.ContextLimit{NCtx: 196608, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096},
 	}
-	usable := app.CtxLimit.Usable() // 188416
+	usable := app.CtxLimit.Usable()  // 188416
 	near := int64(usable * 95 / 100) // ~179k, ≥ 90% of usable
 
 	// No exact measurement yet → must not trip.

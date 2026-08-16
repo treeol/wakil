@@ -76,12 +76,12 @@ type response struct {
 // cache holds context lengths and pricing fetched from OpenRouter, shared
 // process-wide. Entries expire after cacheTTL.
 type cache struct {
-	mu        sync.Mutex
-	entries   map[string]int     // model ID → context_length (tokens)
-	pricing   map[string]Pricing // model ID → resolved per-1M-token rates
-	fetched   time.Time
-	inflight  bool // singleflight: one goroutine fetches at a time
-	fetchErr  error
+	mu       sync.Mutex
+	entries  map[string]int     // model ID → context_length (tokens)
+	pricing  map[string]Pricing // model ID → resolved per-1M-token rates
+	fetched  time.Time
+	inflight bool // singleflight: one goroutine fetches at a time
+	fetchErr error
 }
 
 var shared = &cache{}

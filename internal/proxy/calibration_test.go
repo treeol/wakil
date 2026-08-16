@@ -11,11 +11,11 @@ import (
 
 func TestEstimatePromptTokens(t *testing.T) {
 	cases := []struct {
-		name          string
-		payloadBytes  int
-		hasImages     bool
-		learned       float64
-		want          int64
+		name         string
+		payloadBytes int
+		hasImages    bool
+		learned      float64
+		want         int64
 	}{
 		{"zero bytes", 0, false, 0.25, 0},
 		{"negative bytes", -5, false, 0.25, 0},
@@ -56,10 +56,10 @@ func TestCalibrationKeyIsolatesIdentity(t *testing.T) {
 		t.Fatalf("same identity produced different keys: %q vs %q", base, same)
 	}
 	for _, other := range []string{
-		calibrationKey("http://b", "openai", "m1", "b1"), // base URL
+		calibrationKey("http://b", "openai", "m1", "b1"),    // base URL
 		calibrationKey("http://a", "ilm-proxy", "m1", "b1"), // kind
-		calibrationKey("http://a", "openai", "m2", "b1"), // model
-		calibrationKey("http://a", "openai", "m1", "b2"), // backend
+		calibrationKey("http://a", "openai", "m2", "b1"),    // model
+		calibrationKey("http://a", "openai", "m1", "b2"),    // backend
 	} {
 		if other == base {
 			t.Errorf("distinct identity collided on key %q", base)

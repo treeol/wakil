@@ -484,8 +484,8 @@ func NewTUIModel(app *agent.App) tuiModel {
 		state:        stateIdle,
 		followBottom: true,
 		items:        &items,
-		streaming:  &strings.Builder{},
-		imageChips: &[]string{},
+		streaming:    &strings.Builder{},
+		imageChips:   &[]string{},
 		subAgentModel: subAgentModel{
 			subCur: -1,
 		},

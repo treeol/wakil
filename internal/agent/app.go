@@ -1040,10 +1040,10 @@ func (a *App) externalInferenceCost(usedBackend, modelForCost string, u proxy.Us
 		return 0, false
 	}
 	rate := config.ModelRate{
-		InputUSDPer1M:        p.Prompt,
-		OutputUSDPer1M:       p.Completion,
-		CachedInputUSDPer1M:  p.CachedInput,
-		CacheWriteUSDPer1M:   p.CacheWrite,
+		InputUSDPer1M:       p.Prompt,
+		OutputUSDPer1M:      p.Completion,
+		CachedInputUSDPer1M: p.CachedInput,
+		CacheWriteUSDPer1M:  p.CacheWrite,
 	}
 	return config.ModelRateCost(rate, u.InputTok, u.OutputTok, detail), true
 }
