@@ -23,6 +23,7 @@ func newTestClient(url string) *proxy.Client {
 type fakeExecutor struct {
 	shellCalls  []string
 	shellResult string // when non-empty, returned by RunShell instead of "ran: " + cmd
+	shellErr    error  // when non-nil, returned by RunShell as the error
 	writeCalls  map[string]string
 	files       map[string]string
 	dirs        map[string]bool
@@ -42,9 +43,9 @@ func newFakeExecutor() *fakeExecutor {
 func (f *fakeExecutor) RunShell(_ context.Context, c string) (string, error) {
 	f.shellCalls = append(f.shellCalls, c)
 	if f.shellResult != "" {
-		return f.shellResult, nil
+		return f.shellResult, f.shellErr
 	}
-	return "ran: " + c, nil
+	return "ran: " + c, f.shellErr
 }
 func (f *fakeExecutor) StatFile(_ context.Context, p string) (int64, error) {
 	if v, ok := f.files[p]; ok {

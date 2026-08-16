@@ -317,9 +317,9 @@ func TestDiscoveryEditTiersUnchangedByToolsTier(t *testing.T) {
 	if len(e1) != 30 {
 		t.Errorf("EditTools should have 30 tools, got %d", len(e1))
 	}
-	// Discovery tier has exactly 25 tools (5 read-only + 5 staging + 8 memory + 7 skill).
-	if len(d1) != 25 {
-		t.Errorf("DiscoveryTools should have 25 tools, got %d", len(d1))
+	// Discovery tier has exactly 30 tools (5 read-only + 5 git + 5 staging + 8 memory + 7 skill).
+	if len(d1) != 30 {
+		t.Errorf("DiscoveryTools should have 30 tools, got %d", len(d1))
 	}
 }
 

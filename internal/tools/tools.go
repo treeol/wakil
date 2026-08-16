@@ -193,7 +193,10 @@ func DefaultTools(cwd string) []proxy.Tool {
 	}
 	// Staging, memory, and skill tools are appended to every tier.
 	// Staging is ungated by design; memory and skill tier-gating is at dispatch time.
-	return append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
+	tools = append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
+	// Structured read-only git tools (card #137): parent + discovery tiers.
+	tools = append(tools, GitTools()...)
+	return tools
 }
 
 // GatedTool reports whether a tool requires human confirmation before running.
@@ -272,7 +275,11 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 		}},
 	}
 	// Staging, memory, and skill tools are appended to every tier.
-	return append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
+	tools = append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
+	// Structured read-only git tools (card #137): discovery subagents get
+	// structured git access without a raw run_shell escape hatch.
+	tools = append(tools, GitTools()...)
+	return tools
 }
 
 // CapabilityDiscovery is the default read-only subagent capability.

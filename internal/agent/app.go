@@ -1856,6 +1856,16 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleKillProcess(ctx, tc))
 	case "read_process_log":
 		return stringToToolResult(a.handleReadProcessLog(ctx, tc))
+	case "git_status":
+		return stringToToolResult(a.handleGitStatus(ctx, tc))
+	case "git_diff":
+		return stringToToolResult(a.handleGitDiff(ctx, tc))
+	case "git_log":
+		return stringToToolResult(a.handleGitLog(ctx, tc))
+	case "git_show":
+		return stringToToolResult(a.handleGitShow(ctx, tc))
+	case "git_blame":
+		return stringToToolResult(a.handleGitBlame(ctx, tc))
 	case "dispatch_subagent":
 		return stringToToolResult(a.handleDispatchSubagent(ctx, tc))
 	case "dispatch_subagents":
