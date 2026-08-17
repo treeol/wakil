@@ -3,11 +3,11 @@
 # Stage 1a: Build kvr-server from the kvrust repository (pinned to a specific
 # commit for supply-chain integrity — a compromised upstream repo would be
 # built into every image. Bump the commit when updating kvr-server).
-# Last verified: 2026-07-22, commit 72059cdb78b71a4408e5ef57aec2d30d1e12de8a
+# Last verified: 2026-08-16, commit 08c4b9130f442228004c6c6c5c4fbfcc9eeabe3b
 FROM rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS kvr-builder
 WORKDIR /build
 RUN git clone https://github.com/treeol/kvrust.git . \
-    && git checkout 72059cdb78b71a4408e5ef57aec2d30d1e12de8a
+    && git checkout 08c4b9130f442228004c6c6c5c4fbfcc9eeabe3b
 RUN cargo build --release --bin server
 
 # Sandbox runtime Go toolchain. go.mod (minimum 1.25.0) governs building
