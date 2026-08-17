@@ -19,8 +19,11 @@ package agent
 //     (diff/show/log never invoke external diff/textconv drivers), and
 //     `GIT_PAGER=cat GIT_TERMINAL_PROMPT=0` (no pager, no credential prompts).
 //     "Read-only" therefore means no network, no prompts, no external helpers.
-//   - Output is bounded in-command (git_log `-n`; diff/show/blame piped through
-//     `head -c`), not merely truncated after the fact.
+//   - Output is bounded (git_log `-n`; diff/show/blame byte-capped via a
+//     temp-file capture that preserves git's real exit status), and git
+//     failures are classified by exit code — never by matching output content
+//     (a successful command may legitimately emit the phrases the classifier
+//     once matched, e.g. the tools' own source).
 
 import (
 	"context"
@@ -70,28 +73,34 @@ func gitBaseArgs() string {
 	return "--no-pager -c core.fsmonitor=false -c core.pager=cat -c log.showSignature=false"
 }
 
-// gitFatal reports whether git output carries a fatal/error marker, used to
-// classify git failures from CONTENT (the pipeline in gitRunCapped masks the
-// exit status — see below — so content is the reliable signal in both paths).
-func gitFatal(msg string) bool {
-	return strings.Contains(msg, "fatal:") ||
-		strings.Contains(msg, "not a git repository") ||
-		strings.Contains(msg, "does not have any commits")
+// classifyGitError maps a git FAILURE to a stable, model-actionable message.
+// It is called ONLY when git already exited non-zero (err != nil) — never to
+// DETECT failure from the content of a successful command. Content matching on
+// success was the bug: git_show/git_diff/git_blame legitimately emit the repo
+// files being inspected, and those files now contain "fatal:"/"not a git
+// repository" as string literals, so the classifier saw its own source text
+// and concluded the repo was broken.
+func classifyGitError(out string, err error) string {
+	msg := strings.TrimSpace(out)
+	if strings.Contains(msg, "not a git repository") {
+		return "not a git repository"
+	}
+	if strings.Contains(msg, "does not have any commits") {
+		return "repository has no commits yet"
+	}
+	// Surface git's own first line (LC_ALL=C makes it locale-stable) — the
+	// model needs it for bad-object/ambiguous-ref/merge-base failures.
+	return firstLineOrEmpty(msg, err.Error())
 }
 
 // gitRun runs a git command (no output pipe) with the hardening prefix and
-// returns the raw output. Non-repo and other fatal errors are surfaced as a
-// stable, model-actionable error rather than raw git stderr. The exit status
-// here IS git's (no pipeline), so err is reliable.
+// returns the raw output. The exit status here IS git's (no pipeline), so err
+// is the reliable failure signal — success output is never content-matched.
 func (a *App) gitRun(ctx context.Context, cmd string) (string, error) {
 	full := gitBaseEnv() + "git " + cmd
 	out, err := a.Exec.RunShell(ctx, full)
-	msg := strings.TrimSpace(out)
-	if err != nil || gitFatal(msg) {
-		if gitFatal(msg) {
-			return "", fmt.Errorf("not a git repository (or no commits yet, or invalid revision)")
-		}
-		return "", fmt.Errorf("%s", firstLineOrEmpty(msg, err.Error()))
+	if err != nil {
+		return "", fmt.Errorf("%s", classifyGitError(out, err))
 	}
 	return out, nil
 }
@@ -169,7 +178,7 @@ func (a *App) handleGitDiff(ctx context.Context, tc proxy.ToolCall) string {
 		}
 		cmd += " -- " + shellQuote(canonical)
 	}
-	return a.gitRunCapped(ctx, cmd, "diff")
+	return a.gitRunCapped(ctx, cmd, "diff", gitDiffCapBytes)
 }
 
 // handleGitLog implements git_log.
@@ -231,7 +240,7 @@ func (a *App) handleGitShow(ctx context.Context, tc proxy.ToolCall) string {
 		rev = "HEAD"
 	}
 	cmd := fmt.Sprintf("%s show --no-ext-diff --no-textconv --stat --patch %s", gitBaseArgs(), shellQuote(rev))
-	return a.gitRunCapped(ctx, cmd, "show")
+	return a.gitRunCapped(ctx, cmd, "show", gitDiffCapBytes)
 }
 
 // handleGitBlame implements git_blame.
@@ -258,19 +267,11 @@ func (a *App) handleGitBlame(ctx context.Context, tc proxy.ToolCall) string {
 		cmd += " " + shellQuote(args.Rev)
 	}
 	cmd += " -- " + shellQuote(canonical)
-	// Cap the raw porcelain output (in-command) AND the parsed hunks, so a
-	// huge generated file cannot produce unbounded output or JSON.
-	full := gitBaseEnv() + "git " + cmd + fmt.Sprintf(" | head -c %d", gitBlameCapBytes)
-	out, err := a.Exec.RunShell(ctx, full)
-	msg := strings.TrimSpace(out)
-	if gitFatal(msg) {
-		return "ERROR: not a git repository (or no commits yet, or invalid revision)"
-	}
-	if err != nil && msg == "" {
-		return "ERROR: " + err.Error()
-	}
-	if strings.ContainsRune(out, 0) {
-		return "ERROR: binary file — blame is only meaningful for text files."
+	// Cap the raw porcelain output (temp-file + real exit status) AND the
+	// parsed hunks, so a huge generated file cannot produce unbounded output.
+	out := a.gitRunCapped(ctx, cmd, "blame", gitBlameCapBytes)
+	if strings.HasPrefix(out, "ERROR:") {
+		return out
 	}
 	hunks := wtools.ParseGitBlame(out)
 	if len(hunks) > gitBlameMaxHunks {
@@ -283,38 +284,38 @@ func (a *App) handleGitBlame(ctx context.Context, tc proxy.ToolCall) string {
 	return string(b)
 }
 
-// gitRunCapped runs a raw-text git command with an in-command byte cap (piped
-// through `head -c`), for diff/show whose output the model reads as text. The
-// cap is applied in the pipeline so a huge diff never transits the executor as
-// unbounded output.
+// gitRunCapped runs a raw-text git command, capturing its REAL exit status
+// (temp file + `exit $rc`) and then byte-capping the output in Go. The cap is
+// applied before the result reaches the transcript so a huge diff never floods
+// context.
 //
-// Exit-status caveat: under `sh -c` (no pipefail, see exec.runFromRoot) the
-// pipeline's exit status is `head`'s (0), so a git failure is NOT reflected in
-// the error return. We therefore classify git failures by CONTENT
-// (gitFatal), which CombinedOutput reliably merges. head closing early on
-// truncation causes git to SIGPIPE, but that is the intended truncation path
-// and head still exits 0 — so err is only meaningful for non-git failures
-// (shell/executor errors), and git errors are detected from msg.
-func (a *App) gitRunCapped(ctx context.Context, cmd, label string) string {
-	full := gitBaseEnv() + "git " + cmd + fmt.Sprintf(" | head -c %d", gitDiffCapBytes)
+// Why not `| head -c`: the executor's shell is dash (`sh`), which has no
+// `pipefail`, so a pipeline's exit status is the LAST command's — head's 0 —
+// and a git failure (bad ref, non-repo) was invisible. Worse, the old code
+// papered over that with CONTENT matching, which misfired the moment the repo
+// files under inspection contained "fatal:"/"not a git repository" as string
+// literals (the git-tools source itself) — git_show HEAD broke on this repo.
+// The temp-file pattern preserves git's exit code while still capping output.
+func (a *App) gitRunCapped(ctx context.Context, cmd, label string, capBytes int) string {
+	// temp=$(mktemp); git ... > "$temp" 2>&1; rc=$?; head -c <cap+1> "$temp";
+	// rm -f "$temp"; exit $rc
+	// head -c cap+1 lets us detect truncation: if we got cap+1 bytes, output
+	// exceeded the cap.
+	full := gitBaseEnv() + fmt.Sprintf(
+		`tmp=$(mktemp) && git %s > "$tmp" 2>&1; rc=$?; head -c %d "$tmp"; rm -f "$tmp"; exit $rc`,
+		cmd, capBytes+1)
 	out, err := a.Exec.RunShell(ctx, full)
-	msg := strings.TrimSpace(out)
-	if gitFatal(msg) {
-		return "ERROR: not a git repository (or no commits yet, or invalid revision)"
+	if err != nil {
+		// git failed; out holds git's stderr (trimmed to cap+1 bytes). Classify
+		// the FAILURE only (we already know it failed from err), never the
+		// content of a successful command.
+		return "ERROR: " + classifyGitError(out, err)
 	}
-	if err != nil && msg == "" {
-		// Executor-level failure (shell couldn't run), not a git error.
-		return "ERROR: " + err.Error()
-	}
-	// Detect truncation: head -c N emits exactly N bytes when the source is
-	// longer. We can't distinguish "exactly N bytes of output" from "truncated"
-	// reliably from length alone, so we mark truncation whenever the output
-	// reached the cap — conservative, since an exactly-cap-sized diff also gets
-	// the marker, which is the safe direction (tells the model to narrow rather
-	// than trust a possibly-cut diff).
-	if len(out) >= gitDiffCapBytes {
-		out = truncateUTF8(out, gitDiffCapBytes)
-		out += fmt.Sprintf("\n… [%s output truncated at %d bytes — narrow with path/rev]", label, gitDiffCapBytes)
+	truncated := len(out) > capBytes
+	if truncated {
+		out = out[:capBytes]
+		out = truncateUTF8(out, capBytes)
+		out += fmt.Sprintf("\n… [%s output truncated at %d bytes — narrow with path/rev]", label, capBytes)
 	}
 	if strings.ContainsRune(out, 0) {
 		return "ERROR: binary content — not readable as text."

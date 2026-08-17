@@ -191,6 +191,78 @@ func TestGitLogFormatSurvivesQuotesLive(t *testing.T) {
 	}
 }
 
+// TestGitShowHeadSucceedsDespiteTriggerPhrasesInContent is the regression test
+// for the reported bug: git_show HEAD / git_diff <rev> / git_blame legitimately
+// emit repo files whose text contains "fatal:"/"not a git repository" as string
+// literals (the git-tools source itself). The old content-matching classifier
+// misfired on exactly this — git_show HEAD (the default, most-used call) was
+// broken on this repo. These must all succeed now.
+func TestGitShowHeadSucceedsDespiteTriggerPhrasesInContent(t *testing.T) {
+	ex, err := newDirectExecutorCwd()
+	if err != nil {
+		t.Skipf("no git checkout: %v", err)
+	}
+	defer ex.Close()
+	app := &App{Cfg: config.DefaultConfig(), Exec: ex, Out: io.Discard}
+
+	// git_show HEAD — must NOT return an error even though the commit patch
+	// contains the trigger phrases.
+	show := app.handleGitShow(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{Name: "git_show", Arguments: "{}"}})
+	if strings.HasPrefix(show, "ERROR:") {
+		t.Fatalf("git_show HEAD failed with error: %s", show)
+	}
+	if !strings.Contains(show, "commit ") {
+		t.Errorf("git_show HEAD should contain the commit header")
+	}
+
+	// git_diff against the commit that introduced the tools — its diff contains
+	// the trigger phrases verbatim.
+	diff := app.handleGitDiff(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "git_diff", Arguments: `{"rev":"HEAD~1"}`,
+	}})
+	if strings.HasPrefix(diff, "ERROR:") {
+		t.Fatalf("git_diff HEAD~1 failed with error: %s", diff)
+	}
+
+	// git_blame on the tools file itself — its content has the trigger phrases.
+	blame := app.handleGitBlame(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "git_blame", Arguments: `{"path":"internal/agent/git_tools.go"}`,
+	}})
+	if strings.HasPrefix(blame, "ERROR:") {
+		t.Fatalf("git_blame git_tools.go failed with error: %s", blame)
+	}
+	var hunks []wtools.GitBlameHunk
+	if err := json.Unmarshal([]byte(blame), &hunks); err != nil {
+		t.Fatalf("git_blame not valid JSON: %v\n%s", err, blame)
+	}
+	if len(hunks) == 0 {
+		t.Errorf("git_blame returned no hunks")
+	}
+}
+
+// TestGitRunCappedRealExitStatus verifies a bad revision surfaces as an ERROR
+// (real exit status, not content matching) even though the error text may be
+// the only output.
+func TestGitRunCappedRealExitStatus(t *testing.T) {
+	ex, err := newDirectExecutorCwd()
+	if err != nil {
+		t.Skipf("no git checkout: %v", err)
+	}
+	defer ex.Close()
+	app := &App{Cfg: config.DefaultConfig(), Exec: ex, Out: io.Discard}
+
+	// A syntactically-valid-but-nonexistent rev: git exits non-zero.
+	show := app.handleGitShow(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "git_show", Arguments: `{"rev":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}`,
+	}})
+	if !strings.HasPrefix(show, "ERROR:") {
+		t.Fatalf("git_show with bad object must error, got: %s", show)
+	}
+	if !strings.Contains(show, "bad object") {
+		t.Errorf("error should name the bad object, got: %s", show)
+	}
+}
+
 // TestGitStatusNonRepoError verifies a non-repo is translated to a stable
 // structured error (not raw fatal stderr the model would retry).
 func TestGitStatusNonRepoError(t *testing.T) {
@@ -236,7 +308,9 @@ func TestGitToolsLiveIntegration(t *testing.T) {
 		t.Fatalf("git_status failed: %s", status)
 	}
 	var s struct {
-		Branch  struct{ Branch string `json:"branch"` } `json:"branch"`
+		Branch struct {
+			Branch string `json:"branch"`
+		} `json:"branch"`
 		Entries []wtools.GitStatusEntry `json:"entries"`
 	}
 	if err := json.Unmarshal([]byte(status), &s); err != nil {
@@ -273,10 +347,11 @@ func TestGitToolsLiveIntegration(t *testing.T) {
 		t.Errorf("git_blame returned no hunks")
 	}
 
-	// git_show HEAD: must return non-empty (capped text or an error is fine, but
-	// not a non-repo error).
+	// git_show HEAD: must return non-empty content (NOT an ERROR: result). Note
+	// we check for the "ERROR:" prefix, not substring "not a git repository" —
+	// the commit messages under inspection legitimately contain those words.
 	show := app.handleGitShow(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{Name: "git_show", Arguments: "{}"}})
-	if strings.Contains(show, "not a git repository") {
+	if strings.HasPrefix(show, "ERROR:") {
 		t.Errorf("git_show failed: %s", show)
 	}
 	if strings.TrimSpace(show) == "" {
@@ -285,7 +360,7 @@ func TestGitToolsLiveIntegration(t *testing.T) {
 
 	// git_diff on an empty change should not error as non-repo.
 	diff := app.handleGitDiff(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{Name: "git_diff", Arguments: "{}"}})
-	if strings.Contains(diff, "not a git repository") {
+	if strings.HasPrefix(diff, "ERROR:") {
 		t.Errorf("git_diff failed: %s", diff)
 	}
 }

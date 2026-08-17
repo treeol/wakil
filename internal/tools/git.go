@@ -224,12 +224,12 @@ func ParseGitLog(out string) []GitLogEntry {
 // per line. We collapse per-commit hunks to keep the result compact and
 // structured: one record per contiguous run of lines from the same commit.
 type GitBlameHunk struct {
-	Hash      string `json:"hash"`
-	Author    string `json:"author"`
+	Hash       string `json:"hash"`
+	Author     string `json:"author"`
 	AuthorTime string `json:"author_time,omitempty"`
-	Summary   string `json:"summary,omitempty"`
-	StartLine int    `json:"start_line"`
-	NumLines  int    `json:"num_lines"`
+	Summary    string `json:"summary,omitempty"`
+	StartLine  int    `json:"start_line"`
+	NumLines   int    `json:"num_lines"`
 }
 
 // ParseGitBlame parses `git blame --porcelain` output into compact hunks.
