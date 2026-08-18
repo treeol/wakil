@@ -144,7 +144,7 @@ docker info   # on the host — should succeed
 
 ## Related
 
-- [SSH copy via OSC 52](../README.md#copying-text-over-ssh) — clipboard
+- [SSH copy via OSC 52](tui.md#copying-text-over-ssh) — clipboard
   forwarding over SSH
-- [SELinux detection warning](https://trello.com/c/0RjbMB8G) — card to add
-  SELinux-aware error messages in wakil's preflight
+- SELinux detection — wakil's preflight should detect and surface
+  SELinux denials with actionable error messages

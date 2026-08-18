@@ -16,6 +16,56 @@ commands, file writes, and background processes.
 | **Docker socket** | Host-root-equivalent if mounted | Opt-in only (`docker_socket: true`, defaults to `false`) |
 | **Memory injection** | `memory_put` is ungated; poisoned tool results could write instruction-shaped entries | Taint signal on entries from sessions touching external content; mid-tier TTL auto-expires |
 
+### Tool gating
+
+Workspace file mutations and command execution require confirmation by
+default; destructive operations remain gated even in auto mode. Some
+non-workspace state tools are intentionally ungated.
+
+**Gated** (prompt `y/n` before each call; `/auto` auto-approves all except
+destructive commands and counsel calls, which gate even in auto mode):
+`run_shell`, `write_file`, `edit_file`, `delete_file`, `move_file`,
+`run_background`, `kill_process`, `open_url`.
+
+**Ungated** (structured, argument-constrained calls that cannot execute
+arbitrary commands): `read_file`, `read_file_full`, `list_dir`, `search_files`,
+`find_files`, `dispatch_subagent`, `dispatch_subagents`, `read_process_log`,
+and the `lsp_*` code-intelligence tools.
+
+`run_shell` is gated even for pure reads — `cat ~/.ssh/id_rsa` or `env` is
+gated the same as any other call. `a` at a prompt auto-approves read-only
+tools for the rest of the session; gated tools keep prompting unless you flip
+full auto-approve with `/auto` (status bar shows `AUTO`).
+
+### Subagent consent inheritance
+
+Subagents have three capability tiers: **discovery** (default, read-only),
+**edit** (can `edit_file` / `write_file` / `delete_file` / `move_file`,
+gated on `/auto` consent, serialized by a writer lock — at most one edit
+child at a time), and **tools** (adds MCP tools from a configured allowlist,
+LSP, and web search to the discovery set — also gated on `/auto`; mutating
+MCP calls are serialized per-server). `dispatch_subagent` /
+`dispatch_subagents` are ungated because they spawn bounded workers with
+their own tool restrictions; the edit and tools tiers inherit session-level
+consent and never prompt interactively.
+
+See [docs/tools.md](docs/tools.md) for the full tool reference.
+
+### Memory as an injection channel
+
+`memory_put` is ungated — any tool result can cause the model to write an
+entry. Mid-tier entries (TTL 1h–7d) are directly active without review, and
+the memory digest is injected into the system prompt at session start. A
+poisoned tool result (malicious repo content, web page) could get the model
+to write an instruction-shaped entry that rides into future sessions'
+prompts. Durable entries go through propose→promote review, but mid-tier
+bypasses that gate. The taint signal marks entries from sessions that
+touched external content (`tainted`), but it is informational — nothing
+currently refuses tainted mid-tier writes. Treat this with the same caution
+as the Docker socket: run untrusted tasks with the gate on, and audit
+memory entries (`memory_list`) if you've been operating on untrusted
+content. See [docs/memory.md](docs/memory.md) for the full memory design.
+
 ### Sandbox classification
 
 - **Default Docker mode** applies basic hardening: `--cap-drop=ALL`,
@@ -124,12 +174,36 @@ Configurable via `config.json`:
 
 ## Disclosure
 
+### Data egress
+
+Task content — prompts, attached code, and tool output — is sent to your
+configured inference endpoint and any optional external services:
+
+- **Inference endpoints** — your configured OpenAI-compatible server or ilm
+  proxy receives the full conversation (prompts, code, tool results).
+- **Counsel (Mashūra)** — when enabled, evidence files and review questions are
+  sent to the configured counsel provider (Anthropic, OpenRouter).
+- **Web search** — when enabled, search queries are sent to SearXNG or Google.
+- **MCP servers** — when configured, tool-call arguments are sent to the
+  configured MCP server (stdio or HTTP).
+- **`open_url`** — opens a URL or file on the **host** machine, not the
+  sandbox.
+
+Endpoint `auth_header` values are stored in plaintext in `config.json` —
+`chmod 600` it. Session transcripts and trace files (`~/.local/share/wakil/`)
+contain prompts and tool output; they are local to the host.
+
+wakil does not collect first-party usage telemetry. No analytics, tracking,
+or phone-home code is included.
+
+## Reporting a vulnerability
+
 If you discover a security vulnerability in wakil, please report it
 responsibly:
 
 1. **Do not** open a public GitHub issue.
 2. Open a [GitHub Private Security Advisory](https://github.com/treeol/wakil/security/advisories/new),
-   or email `security@treeol.dev`.
+   or email `hallo@rete-it.ch`.
 3. Include a proof of concept and affected versions.
 4. Allow reasonable time for a fix before public disclosure.
 

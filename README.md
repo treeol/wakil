@@ -4,32 +4,111 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
-A terminal-native coding agent. A Go binary that sends HTTP requests directly to
-any OpenAI-compatible Chat Completions endpoint (llama.cpp server, OpenRouter,
-vLLM…), or to a remote *ilm* proxy that adds memory and grounding. Endpoints are
-named in config and switchable mid-session. wakil provides the TUI, tool
-execution, and session persistence.
+A terminal-native coding agent. A Go binary that sends HTTP requests to any
+OpenAI-compatible Chat Completions endpoint (llama.cpp server, OpenRouter,
+vLLM…) or to an optional *ilm* proxy that adds server-side memory recall and
+routing. wakil provides the TUI, tool execution, session persistence, and
+built-in durable memory — no external services required.
 
 ```
-you ── wakil (TUI · tool exec · sessions) ──┬── OpenAI-compatible endpoint ── model
-                        ↑                   └── ilm proxy (memory · grounding) ── model
-                per-command confirm gate
+you → wakil → configured endpoint
+                ├─ OpenAI-compatible model server (llama.cpp, OpenRouter, vLLM, Ollama)
+                └─ optional ilm-proxy → routed backend/model
+                                     (server-side recall, /learn, backend routing)
 ```
 
-Every write/execute call is gated behind explicit `y/n` confirmation before it
-touches your filesystem, shell, or Docker daemon. Tool-result messages are
-populated from real local execution. Code navigation is backed by a language
-server (`lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` via
-gopls).
+## Why wakil?
 
-## Contents
+- **Docker sandbox isolation** — convenience-grade isolation with read-only
+  rootfs, dropped capabilities, and resource limits. The host Docker socket
+  is opt-in and off by default. (See [SECURITY.md](SECURITY.md) for the full
+  threat model.)
+- **Per-command confirmation gate** — workspace file mutations and command
+  execution require confirmation by default; destructive operations and
+  counsel calls remain gated even in auto mode. Structured read tools are
+  ungated. (See [SECURITY.md](SECURITY.md).)
+- **Model-agnostic** — works with OpenAI-compatible Chat Completions
+  endpoints tested with llama.cpp, OpenRouter, and vLLM. Ollama is also
+  expected to work via its OpenAI-compatible API. No vendor lock-in;
+  bring your own local or hosted model. The optional ilm proxy adds
+  server-side recall and routing but is not required.
+- **Cross-session, per-workspace memory** — built-in SQLite store with
+  propose→promote review, provenance tracking, and per-workspace isolation.
+  No external database required. (See [docs/memory.md](docs/memory.md).)
+- **In-sandbox staging (kvr)** — fast ephemeral KV store backed by a Rust
+  UDS server for scratch space and subagent handoffs. Snapshots survive
+  sandbox restarts. No external service. (See [docs/staging.md](docs/staging.md).)
+- **Subagent delegation** — three capability tiers (discovery / edit / tools)
+  with parallel dispatch and a writer lock for edit-tier serialization.
+  (See [docs/tools.md](docs/tools.md#subagents).)
+- **Multi-model counsel (Mashūra)** — on-demand second opinions from
+  external models. Panel, fallback, fusion, and debate modes. Keys read at
+  call time. (See [docs/features.md](docs/features.md#counsel-mashūra).)
+- **LSP-backed code intelligence** — semantic symbol navigation (definition,
+  references, hover, workspace symbols) via gopls, designed to support other
+  language servers. (See [docs/features.md](docs/features.md#lsp-code-intelligence).)
+- **Headless browser** — visual verification, DOM inspection, and
+  interaction testing inside the sandbox. Responsive layout checks,
+  `prefers-reduced-motion` emulation. (See [docs/features.md](docs/features.md#headless-browser).)
+- **MCP tool integration** — connect stdio or HTTP MCP servers; tools
+  appear automatically in the agent's toolset. (See [docs/configuration.md](docs/configuration.md#config-only-fields).)
+- **Session persistence and `/handoff`** — sessions save automatically and
+  can be resumed. `/handoff` summarizes the current session into durable
+  memory and starts a fresh one — rotate sessions without losing context.
+  (See [docs/configuration.md](docs/configuration.md#sessions).)
+- **Context management** — backend-truth context sizing, compaction
+  (`/compact`), and `/maxctx` for capping effective context on large models.
+  (See [docs/endpoints.md](docs/endpoints.md#backend-truth-context-sizing).)
+- **Per-source cost accounting** — token and cost tracking per inference,
+  counsel, and search source. (See [docs/features.md](docs/features.md#cost-sidebar).)
+- **SSH commit signing passthrough** — sign commits inside the sandbox
+  using the host's SSH agent; the private key never enters the sandbox.
+- **JSONL trace capture** — full session tracing for debugging, auditing,
+  and reproduction. (See [docs/features.md](docs/features.md#trace-capture).)
 
-- [Requirements](#requirements) · [Status](#status) · [Quickstart](#quickstart)
-- [Security and the confirmation gate](#security-and-the-confirmation-gate)
-- [Configuration](#configuration) · [The TUI](#the-tui) · [Tools](#tools)
-- [Optional features](#optional-features) · [Memory and staging](#memory-and-staging) · [How state works](#how-state-works)
-- [Testing](#testing) · [Project layout](#project-layout) · [Contributing](#contributing) · [License](#license)
-- [Remote provisioning](#remote-provisioning) — bringing up wakil on a fresh host
+## Quickstart
+
+```sh
+# 1. Build — single Go binary, no runtime deps
+go build -o wakil ./cmd/wakil
+
+# 2. Build the sandbox image (Go, Node, Rust, Python toolchains + gopls, baked in)
+docker build -t wakil-dev .
+
+# 3. Create a minimal config and edit it to add your endpoint
+mkdir -p ~/.config/wakil
+cat > ~/.config/wakil/config.json << 'EOF'
+{
+  "endpoints": {
+    "local": {
+      "kind": "openai",
+      "base_url": "http://localhost:8080",
+      "model": "qwen3.6-35b"
+    }
+  },
+  "default_endpoint": "local"
+}
+EOF
+
+# 4. Run — workspace arg is optional, defaults to cwd
+./wakil ~/projects/myapp
+```
+
+> **Why an explicit config block?** The legacy env-var-only path
+> (`ILM_BASE_URL=... ./wakil`) synthesizes an `ilm-proxy` kind endpoint,
+> sending proxy-shaped requests to non-proxy servers. Using an explicit
+> `endpoints` block with `"kind": "openai"` is the correct way to target a
+> plain OpenAI-compatible server. See [docs/endpoints.md](docs/endpoints.md).
+
+For OpenRouter, use `https://openrouter.ai/api` as `base_url` and set
+`auth_header` to `"Bearer sk-or-..."`. For Ollama, `http://localhost:11434`
+with model `llama3`.
+
+No Docker? Pass `--exec direct` to run on the host without a container — the
+confirmation gate is still on. See [docs/configuration.md](docs/configuration.md).
+
+See [`config.example.json`](config.example.json) for a fully commented
+reference covering all options.
 
 ## Requirements
 
@@ -42,702 +121,26 @@ gopls).
 ## Status
 
 Early-stage. Config keys, session format, and the tool set may change between
-commits. The confirmation gate is on by default because the agent runs shell and
-Docker commands on the host. Keep it enabled for anything you have not fully
+commits. The confirmation gate is on by default — the agent can run shell
+commands and write files, either inside the Docker sandbox (default) or on
+the host (direct mode). Keep it enabled for anything you have not fully
 audited.
 
-## Quickstart
+## Documentation
 
-### Option A: Sandbox + OpenAI-compatible endpoint
-
-The default Docker sandbox mode with any OpenAI-compatible server (llama.cpp,
-Ollama, OpenRouter, vLLM…). No proxy required.
-
-```sh
-# 1. Build — single static binary, no runtime deps
-go build -o wakil ./cmd/wakil
-
-# 2. Build the sandbox image (Go, Node, Rust, Python toolchains + gopls, baked in)
-docker build -t wakil-dev .
-
-# 3. Run — wakil auto-creates ~/.config/wakil/config.json on first run
-#    with a minimal template. Edit it to add your endpoint, then re-run.
-./wakil ~/projects/myapp
-```
-
-The auto-created config contains `_comment` keys explaining what to set — add
-an `endpoints` block or set `ILM_BASE_URL`. For a quick start against a local
-server, skip the config file entirely and use an env var:
-
-```sh
-ILM_BASE_URL=http://localhost:8080 ILM_MODEL=qwen3.6-35b ./wakil ~/projects/myapp
-```
-
-For OpenRouter, use `https://openrouter.ai/api` as `base_url` and set
-`auth_header` to `"Bearer sk-or-..."`. For Ollama, `http://localhost:11434`
-with model `llama3`.
-
-If Docker or the `wakil-dev` image is missing, wakil prints an error with image
-build instructions instead of the raw Docker error — pass `--exec direct` to skip
-Docker entirely (see Option B).
-
-See [`config.example.json`](config.example.json) for a fully commented
-reference covering all options.
-
-### Option B: No sandbox (direct mode)
-
-Execution on the host without Docker. Used when the sandbox image is not
-available.
-
-```sh
-# 1. Build
-go build -o wakil ./cmd/wakil
-
-# 2. Run in direct mode — workspace arg is optional, defaults to cwd
-ILM_BASE_URL=http://localhost:8080 ILM_MODEL=qwen3.6-35b ./wakil --exec direct ~/projects/myapp
-```
-
-Without Docker, tool calls execute directly on the host. The confirmation gate
-is still on — every write/execute call prompts `y/n` before it runs.
-
-### Option C: Sandbox + ilm proxy
-
-The ilm proxy adds server-side memory and grounding on top of the sandbox.
-Use this when you want the proxy's session persistence and metadata routing.
-
-```sh
-# 1. Build
-go build -o wakil ./cmd/wakil
-
-# 2. Build the sandbox image
-docker build -t wakil-dev .
-
-# 3. Set the proxy URL and start — workspace arg is optional
-export ILM_BASE_URL='http://proxy-host:11400'   # ilm proxy
-./wakil ~/projects/myapp        # explicit path
-# no argument → auto-mounts the current directory
-cd ~/projects/myapp && ./wakil
-```
-
-For the proxy variant, `model` defaults to `ilm` (the proxy's alias routing).
-Declare named endpoints in the config file to switch between proxy and
-direct OpenAI-compatible servers (see [Endpoints](#endpoints)).
-
-Default `docker` mode: one persistent container for the process lifetime,
-every tool call executes inside it.
-
-## Security and the confirmation gate
-
-**Gated** — `run_shell`, `write_file`, `edit_file`, `delete_file`, `move_file`,
-`run_background`, `kill_process`, `open_url`. By default each call prompts `y/n`
-before it runs; `/auto` changes this (see below).
-
-**Ungated** — `read_file`, `read_file_full`, `list_dir`, `search_files`,
-`find_files`, `dispatch_subagent`, `dispatch_subagents`, `read_process_log`,
-and the `lsp_*` code-intelligence tools. All structured, argument-constrained
-calls: they read file contents, listings, and symbol data, but none of them
-can execute arbitrary commands.
-
-Subagents have three capability tiers: **discovery** (default, read-only),
-**edit** (can `edit_file` / `write_file` / `delete_file` / `move_file`,
-gated on `/auto` consent, serialized by a writer lock — at most one edit
-child at a time), and **tools** (adds MCP tools from a configured allowlist,
-LSP, and web search to the discovery set — also gated on `/auto`; mutating
-MCP calls are serialized per-server). `dispatch_subagent` /
-`dispatch_subagents` are ungated because they spawn bounded workers with
-their own tool restrictions; the edit and tools tiers inherit session-level
-consent and never prompt interactively.
-
-`run_shell` is gated even for pure reads — `cat ~/.ssh/id_rsa` or `env` is
-gated the same as any other call. `a` at a prompt auto-approves read-only
-tools for the rest of the session; gated tools keep prompting unless you flip
-full auto-approve with `/auto` (status bar shows `AUTO`). Destructive commands
-and counsel calls gate even in auto mode — no override.
-
-Default `docker` mode does **not** bind-mount the host Docker socket —
-`--docker-sock` defaults to `false`. Pass `--docker-sock=true` to give the
-agent `docker` / `docker compose` access to your real daemon. This grants
-root-equivalent access to the host through the Docker daemon. Run untrusted
-tasks with the gate on, against a trusted endpoint and model, and use a
-disposable VM when host-Docker control is not needed.
-
-In Docker mode the sandbox is hardened: `--cap-drop=ALL`,
-`--read-only`, and `--security-opt=no-new-privileges` are always applied.
-A writable `/tmp` tmpfs and a minimal `/etc` tmpfs are mounted so the
-container can function under the read-only rootfs. The `docker_caps`,
-`docker_memory`, `docker_pids_limit`, and `docker_tmpfs_size` config
-fields adjust the resource limits (see the config table below). Note that
-`docker_tmpfs_size` counts against the container memory cgroup — setting
-it equal to or larger than `docker_memory` can still cause OOM under load.
-
-**Memory as an injection channel.** `memory_put` is ungated — any tool
-result can cause the model to write an entry. Mid-tier entries (TTL 1h–7d)
-are directly active without review, and the memory digest is injected into
-the system prompt at session start. A poisoned tool result (malicious repo
-content, web page) could get the model to write an instruction-shaped
-entry that rides into future sessions' prompts. Durable entries go through
-propose→promote review, but mid-tier bypasses that gate. The taint signal
-marks entries from sessions that touched external content (`tainted`), but
-it is informational — nothing currently refuses tainted mid-tier writes.
-Treat this with the same caution as the Docker socket: run untrusted tasks
-with the gate on, and audit memory entries (`memory_list`) if you've been
-operating on untrusted content.
-
-## Configuration
-
-Precedence: **defaults < config file < env < flags**. Config file is JSON at
-`~/.config/wakil/config.json`, overridable via `WAKIL_CONFIG` / `--config`. On
-first run, wakil auto-creates this file with a minimal template if it doesn't
-exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
-`ILM_*` (legacy aliases, same precedence).
-
-| Flag | Env | Default | Meaning |
-|---|---|---|---|
-| `--base-url` | `ILM_BASE_URL` / `WAKIL_BASE_URL` | — *(required unless `endpoints` is set)* | endpoint base URL; overrides the selected endpoint's `base_url` |
-| `--api-key` | `ILM_API_KEY` / `WAKIL_API_KEY` | — | sent as `Authorization: Bearer <key>` *(endpoint-level `auth_header` wins)* |
-| `--model` | `ILM_MODEL` / `WAKIL_MODEL` | `ilm` | model name; overrides the selected endpoint's `model` |
-| `--exec` | `ILM_EXEC_MODE` / `WAKIL_EXEC_MODE` | `docker` | `docker` \| `direct` |
-| `--image` | `ILM_CONTAINER_IMAGE` / `WAKIL_IMAGE` | `wakil-dev` | sandbox image *(build from `Dockerfile`)* |
-| `--workdir` | `ILM_WORKDIR` / `WAKIL_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
-| `--host-workdir` | `ILM_HOST_WORKDIR` / `WAKIL_HOST_WORKDIR` | cwd *(auto-detected)* | host path bind-mounted into the container |
-| `--docker-sock` | `ILM_DOCKER_SOCKET` / `WAKIL_DOCKER_SOCKET` | `false` | pass host Docker socket into the sandbox |
-| `--resume` | — | — | resume the most recent session |
-| `--resume-id` | — | — | resume a session by chat_id *(or unique prefix)* |
-| `--auto` | — | — | auto-approve all tool calls without prompting |
-| `--searxng-url` | `SEARXNG_URL` | — | enable the SearXNG native search tool |
-| `--google-cx` | `GOOGLE_CX` | — | Google Programmable Search Engine ID *(pair with `GOOGLE_API_KEY`)* |
-| `--mention-base` | — | current directory | base directory for `@` file mentions |
-| `--host` | `ILM_HOST` / `WAKIL_HOST` | — | ilm proxy host *(alternative to `--base-url`)* |
-| `--port` | `ILM_PORT` / `WAKIL_PORT` | `11400` | ilm proxy port *(used with `--host`)* |
-| `--trace` | `WAKIL_TRACE_SESSIONS` | `false` | enable JSONL trace capture for this session |
-| `--trace-dir` | `WAKIL_TRACE_DIR` | `~/.local/share/wakil/traces` | directory for trace files |
-| `--list-sessions` | — | — | list saved sessions for this workspace and exit |
-| `--all` | — | — | with `--resume`/`--list-sessions`: search all workspaces |
-| `--ssh-signing` | — | `off` | SSH commit signing in the sandbox: `off`\|`auto`\|`<path>` |
-| `--config` | `WAKIL_CONFIG` | `~/.config/wakil/config.json` | JSON config file path |
-
-`lsp_enabled` is config-file only, no flag — see
-[LSP code intelligence](#lsp-code-intelligence).
-
-### Endpoints
-
-The `endpoints` block names each server wakil can talk to;
-`default_endpoint` selects the active one at startup. Two kinds:
-
-- `openai` — any plain OpenAI-compatible Chat Completions server
-  (llama.cpp server, OpenRouter, vLLM…). `model` is **required** and is the
-  literal string sent in requests. No ilm-specific headers or body fields are
-  sent.
-- `ilm-proxy` — the ilm proxy with memory/grounding. `model` defaults to the
-  proxy alias `ilm`; backend prefix-routing and `X-Ilm-*` headers apply.
-
-```json
-{
-  "endpoints": {
-    "llama": {
-      "kind": "openai",
-      "base_url": "http://llama-host:8080",
-      "model": "qwen3.6-35b"
-    },
-    "or": {
-      "kind": "openai",
-      "base_url": "https://openrouter.ai/api",
-      "model": "anthropic/claude-sonnet-4-6",
-      "auth_header": "Bearer sk-or-..."
-    },
-    "ilm": {
-      "kind": "ilm-proxy",
-      "base_url": "http://proxy-host:11400"
-    }
-  },
-  "default_endpoint": "llama"
-}
-```
-
-Per-endpoint options: `auth_header` (verbatim `Authorization` value, beats
-the global `api_key`) and optional `temperature` / `top_p` / `max_tokens` —
-omitted from the request body entirely when unset, so server defaults stay
-authoritative. For `openai`-kind endpoints, `app_referer` and `app_title`
-set the OpenRouter attribution headers (`HTTP-Referer` and `X-Title`); when
-unset, they default to `https://github.com/treeol/wakil` and `wakil` for
-openrouter.ai hosts, and are omitted for any other host. Set to `""` to
-opt out of a header.
-
-**Backward compatibility:** configs without an `endpoints` block keep working
-unchanged — the top-level `base_url` (or `host`+`port`) synthesizes a single
-`ilm-proxy` endpoint with model `ilm`, byte-identical request shape to before.
-
-At runtime, `/backend <name>` switches endpoints (on `openai`-kind
-endpoints), and `/model <name>` switches models — both re-resolve context
-limits. Note the key caveat: `auth_header` values live in plaintext in
-`config.json`; `chmod 600` it.
-
-### Config-only fields
-
-These have no flag or env var — set them in the JSON config file. The
-[`config.example.json`](config.example.json) in this repo is a fully commented
-reference covering every section below.
-
-| Field | Default | Meaning |
-|---|---|---|
-| `max_parallel_subagents` | `2` | Max concurrent `dispatch_subagent` workers per turn |
-| `subagent_endpoint` | `""` (inherit) | Named endpoint for subagents (`""`/`"inherit"` = follow parent) |
-| `subagent_backend` | `"inherit"` | Backend for subagents (`"inherit"`/`"default"`/`"<name>"`) |
-| `costs` | — | Per-source pricing block (inference, mashura, search, external backends) |
-| `mashura_panels` | — | Named counsel model panels |
-| `mashura_tool_panels` | — | Maps each counsel tool to a named panel |
-| `oracle_enabled` | `false` | Gate for `mashura__*` counsel tools |
-| `oracle_model` | `"claude-sonnet-4-6"` | Model ID for counsel calls |
-| `oracle_api_key_env` | `"ANTHROPIC_API_KEY"` | Env var read at call time for the API key |
-| `lsp_enabled` | `false` | Gate for `lsp_*` code-intelligence tools |
-| `lsp_servers` | — | Maps language → server command |
-| `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium) |
-| `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
-| `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
-| `external_backends` | — | Backend names known to route to external providers |
-| `aux_model` | `""` | Pins `X-Ilm-Aux-Model` (empty = follow main) |
-| `kvr_disabled` | `false` | Disable the staging KV store *(auto-disabled in direct mode)* |
-| `kvr_max_entries` | `100000` | Max entries in the staging store |
-| `kvr_snapshot_interval_secs` | `300` | Staging snapshot frequency *(survives sandbox restarts)* |
-| `docker_caps` | `[]` | Linux capabilities to re-add after `--cap-drop=ALL` *(e.g. `["CHOWN"]` if go build fails)* |
-| `docker_memory` | `"4g"` | Container memory limit; must be ≥ `docker_tmpfs_size` *(tmpfs counts against the cgroup)* |
-| `docker_pids_limit` | `512` | Max processes in the sandbox container *(0 = no limit)* |
-| `docker_tmpfs_size` | `"4g"` | Size of the sandbox `/tmp` tmpfs |
-| `agent_prompt_path` | `agent.txt` next to config | System prompt file path |
-| `backend_max_retries` | `3` | Max retries for transient backend failures (unattended) |
-| `compact_at_frac` | `0.75` | Compact at 75% of effective context |
-| `keep_bytes_frac` | `0.60` | Keep 60% of effective context verbatim after compaction |
-| `hard_max_frac` | `0.95` | Hard ceiling at 95% of effective context |
-| `context_capacity_frac` | `0.80` | Use 80% of proxy's usable_ctx as working budget |
-| `effective_ctx_max_chars` | `0` (disabled) | Absolute cap (chars) on effective context for large models. Apply to keep context within a working budget (e.g. `200000`); models with very large advertised context may degrade in practice below their nominal limit. Applied before fractions. Override at runtime with `/maxctx` |
-
-### Agent prompt
-
-The system prompt is loaded once at startup. Precedence:
-
-1. **`agent_prompt_path`** in config (or `agent.txt` next to the config file by
-   default) — if the file is readable, it is used.
-2. **Embedded prompt** — the full `prompts/agent.txt` is baked into the binary
-   via `go:embed`. If no file is found or the file is unreadable, the embedded
-   full prompt is used automatically. No symlink or copy is needed for the
-   default experience.
-
-To customize the prompt, copy or symlink the source file into your config
-directory:
-
-```sh
-ln -sf "$(pwd)/prompts/agent.txt" ~/.config/wakil/agent.txt
-```
-
-### Execution modes
-
-Tool calls run inside one persistent Docker container for the process
-lifetime by default. The workspace directory — positional arg, or cwd if
-omitted — bind-mounts into the container at `/mnt/<dirname>`. `--exec direct`
-runs on the host instead, no container.
-
-### Sessions
-
-Saved automatically, no flag required. `wakil --resume` picks up the most
-recent one; `wakil --resume-id <prefix>` targets a specific `chat_id`.
-
-`/handoff` summarizes the current session, stores the summary in durable
-memory, and starts a fresh session with a continuation prompt — so you can
-rotate sessions without losing context. The old session remains on disk;
-`/resume <id>` returns to it.
-
-## The TUI
-
-Anything typed that isn't a slash command goes to the agent as a task. `@`
-opens a picker to attach a file or folder for context.
-
-### Commands
-
-**Session**
-
-```
-/new, /reset         fresh conversation (new chat_id, clears viewport)
-/handoff             summarize session → store in memory → start fresh session with continuation prompt
-/compact             summarize older turns now (frees context)
-/sessions            list saved sessions (★ = current)
-/history             transcript size
-/quit, /exit         leave (tears down the container)
-```
-
-**Workflow**
-
-```
-/plan <task>         start a gather→plan→review→implement workflow for <task>
-/plan --oracle=MODE  set per-run review schedule (every-step|on-deviation|phases-only)
-/plan status         show current workflow phase and step
-/plan approve        approve the plan; force-skip review (logged); advance past pauses
-/plan review         retry the counsel plan review (when review is pending/unavailable)
-/plan verify         re-run the final review (in verify state after gaps flagged)
-/plan abort          cancel the active workflow
-```
-
-**Executor and tools**
-
-```
-/cwd                 show executor working directory
-/mode                show execution backend
-/mcp                 list connected MCP servers and their tools
-/mcp reconnect NAME  reconnect a named MCP server
-```
-
-**Endpoint and model**
-
-```
-/backend             ilm-proxy: show backend selection · openai: list configured endpoints
-/backend <name>      ilm-proxy: set proxy backend · openai: switch to named endpoint
-/model <name>        switch model (re-resolves context limits); tab-completes from the server's model list
-```
-
-**Meta**
-
-```
-/learn               ask the proxy to synthesise a fact to remember (ilm-proxy endpoints only —
-                     refuses client-side on openai endpoints instead of faking success)
-/auto                toggle auto-approve (shown as AUTO in status bar)
-/rawtools            toggle full tool output in context (default: capped at 8k chars)
-/maxctx <chars>      cap effective context for large models (e.g. 200000 = ~200k chars; 0 = disabled)
-/maxctx              show current effective context cap and resulting compaction thresholds
-/help                full command list
-```
-
-### Keybindings
-
-| Key | Action |
+| Topic | Document |
 |---|---|
-| `Enter` | Send input *(Shift+Enter for newline)* |
-| `↑` / `↓` | Browse command history *(previous / next)* |
-| `Ctrl+R` | Reverse incremental search through command history |
-| `Ctrl+E` | Expand/collapse live reasoning while the model is thinking |
-| `Ctrl+C` | Cancel in-flight turn *(press twice to force-quit)* |
-| `Esc` | Cancel in-flight turn |
-| `Ctrl+D` | Quit *(when idle)* |
-| `y` / `n` | Approve / decline a pending tool call |
-| `a` | Allow all read-only calls for this session |
-| `@` | Attach a file or folder |
-
-### Copying text over SSH
-
-Mouse-drag to select text in the conversation pane, then release — wakil copies
-the selection to the clipboard. On a **remote host over SSH** (no local
-clipboard daemon), it falls back to the **OSC 52** terminal escape sequence,
-which forwards the text through the terminal to your *local* clipboard.
-
-If copy-over-SSH doesn't work, the flash message will say
-`sent N chars via OSC 52 — if paste is empty, enable terminal/tmux clipboard`.
-That means OSC 52 was used but your terminal or tmux is blocking it. Enable it:
-
-**tmux** (local or remote): add to `~/.tmux.conf`:
-
-```
-set -g set-clipboard on
-```
-
-Depending on your tmux version, `set -g set-clipboard external` may be needed
-instead — check `man tmux` for your installed version. Nested tmux (local +
-remote) requires the setting on **both**.
-
-**Terminal emulators** — OSC 52 clipboard writes are disabled by default in some
-terminals. Check your terminal's documentation for how to enable it:
-
-| Terminal | OSC 52 support |
-|---|---|
-| iTerm2, Alacritty, Kitty, WezTerm | enabled by default |
-| xterm | requires `allowWindowOps` or enabling Set/GetSelection in `disallowedWindowOps` — see `man xterm` |
-| GNOME Terminal / VTE | recent versions enable it; older VTE blocked it entirely |
-| Konsole | check Konsole settings (OSC 52 support was added in a recent release) |
-
-Native clipboard commands (`wl-copy`, `xclip`, `xsel`, `pbcopy`) copy to the
-environment where wakil is running. In SSH sessions, OSC 52 is what targets
-your local terminal's clipboard — if a native command is found on the remote but
-fails (e.g. `xclip` without `DISPLAY`), wakil falls back to OSC 52.
-
-## Tools
-
-| Tool | Gated | Description |
-|---|---|---|
-| `run_shell` | yes | Run a shell command; cwd persists across calls |
-| `read_file` | no | Read a file with line numbers; supports offset/limit |
-| `read_file_full` | no | Read an entire file (up to ~256 KB) in one call |
-| `write_file` | yes | Write/overwrite a file |
-| `edit_file` | yes | Replace an exact substring in a file *(shows diff preview)* |
-| `list_dir` | no | List directory entries |
-| `search_files` | no | Grep file contents for a pattern |
-| `find_files` | no | Find files by name glob recursively |
-| `open_url` | yes | Open a URL in the host browser *(always runs on the host, not the sandbox)* |
-| `dispatch_subagent` | no | Spawn a subagent for a bounded task — discovery (read-only), edit (file mutation, needs `/auto`), or tools (MCP/LSP/web search, needs `/auto`) *(contiguous same-turn calls run in parallel)* |
-| `dispatch_subagents` | no | Spawn several subagents concurrently, one per task *(bounded by `max_parallel_subagents`, default 2)* |
-| `read_process_log` | no | Read the tail of a background process's log |
-| `staging_put` | no | Store a value in the ephemeral in-sandbox KV store *(key auto-prefixed with agent identity)* |
-| `staging_get` / `staging_get_many` | no | Retrieve values by key *(cross-prefix reads allowed — enables subagent handoffs)* |
-| `staging_list` | no | List staging keys, optionally filtered by prefix |
-| `staging_delete` | no | Delete a key under your prefix |
-| `memory_put` | no | Write to durable memory: TTL present → mid-tier active; absent → durable proposed |
-| `memory_get` | no | Retrieve the active entry for a key *(with provenance + staleness flags)* |
-| `memory_search` | no | FTS5 full-text search over memory entries |
-| `memory_list` | no | List entries by prefix, tier, or status |
-| `memory_promote` | no | Promote a proposed durable entry to active *(main agent only)* |
-| `memory_reject` | no | Reject a proposed durable entry *(main agent only)* |
-| `memory_forget` | no | Supersede an active entry with a tombstone *(main agent only)* |
-| `memory_promote_from_staging` | no | Bridge a staging value into durable memory as proposed *(main agent only)* |
-| `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` | no | Language-server-backed code intelligence *(off by default — see below)* |
-| `browser_navigate` / `browser_screenshot` / `browser_viewport` / `browser_click` / `browser_eval` / `browser_text` / `browser_html` / `browser_reduced_motion` | no | Headless-browser tools — visual verification, DOM inspection, interaction testing *(off by default — see below)* |
-
-MCP tools *(stdio or HTTP)* append automatically when `mcp_servers` is
-configured. The host Docker socket passthrough (`--docker-sock`) is what lets
-`docker` / `docker compose` calls reach the host daemon.
-
-### Subagent tabs
-
-When `dispatch_subagent` or `dispatch_subagents` runs, a tab opens in the
-bottom tab bar for each child. The sidebar shows the child's endpoint, model,
-chat ID, and (when finished) cost, files changed, and context size. Tabs are
-routed by `chat_id`, so concurrent subagents stream to their own panes
-without cross-contamination.
-
-Tab dot states:
-
-| State | Dot | Meaning |
-|---|---|---|
-| Queued | `●` dim gray | Dispatched, waiting for a parallelism slot |
-| Running | `●` pulsing yellow | Worker acquired a slot, request in flight |
-| Finished | `✓` dim green | Child returned; display-only — authoritative `done` pending |
-| Done | `✓` solid green | Authoritative completion (cost folded, grounding attached) |
-
-A child that finishes while siblings are still running shows the dim green
-`✓` immediately — it doesn't wait for the slowest sibling. The sidebar
-displays a timestamped "✓ finished" status with cost and a one-line summary
-preview. When the authoritative `SubagentDoneMsg` arrives (after the cost
-fold in Phase C), the tab enriches to solid green with no visual regression.
-
-Click a finished or done tab's `×` to close it; running tabs show `·`
-instead. Tabs are pruned (oldest finished first) past `maxSubTabs` (12);
-running and focused tabs are never pruned.
-
-## Optional features
-
-Off by default. Flip on via the JSON config file or the matching flags/env
-vars above.
-
-### LSP code intelligence
-
-`lsp_enabled: true` turns on `lsp_definition`, `lsp_references`, `lsp_hover`,
-`lsp_symbols` — lookups that use a configured language server rather than text
-search.
-
-`lsp_definition` / `lsp_references` / `lsp_hover` detect language from the
-file extension and route to whichever server is configured for it under
-`lsp_servers` — nothing Go-specific in the config shape itself. `lsp_symbols`
-is workspace-wide with no file to key off, so it defaults to the `go` entry.
-The sandbox `Dockerfile` currently ships one server — `gopls`, pinned
-to v0.22.0 — so Go is the only language covered by the test setup. Wiring in
-`rust-analyzer`, `pyright`, or anything else under `lsp_servers` should route
-the same way; that path is not part of the test setup.
-
-```json
-{
-  "lsp_enabled": true,
-  "lsp_servers": {
-    "go": {"command": "gopls", "args": ["serve"]}
-  }
-}
-```
-
-Calls are line-anchored: `(path, line, symbol)`. The line number is exactly
-what `read_file` already prints, so there's no extra lookup round-trip.
-Unsupported operations return an explicit failure message, never a silent
-empty result.
-
-### Headless browser
-
-`browser_enabled: true` turns on `browser_navigate`, `browser_screenshot`,
-`browser_viewport`, `browser_click`, `browser_eval`, `browser_text`,
-`browser_html`, `browser_reduced_motion` — a headless Chromium instance
-(via [chromedp](https://github.com/chromedp/chromedp)) for visual verification,
-DOM inspection, interaction testing, and responsive layout checks.
-
-The browser runs inside the sandbox container — `chromium` is installed in the
-`Dockerfile` image. It uses `--no-sandbox` (required inside the container's
-capability-dropped environment) and `--disable-gpu`. All navigation targets
-localhost or `file://` URLs; the sandbox's network namespace controls egress.
-
-```json
-{
-  "browser_enabled": true
-}
-```
-
-Common workflows:
-
-- **Visual verification:** `browser_navigate` → `browser_screenshot` to capture
-  a rendered page.
-- **Responsive checks:** `browser_viewport` (e.g. 375×812 for mobile) →
-  `browser_screenshot` → `browser_eval` to inspect computed styles.
-- **Interaction testing:** `browser_navigate` → `browser_click` →
-  `browser_text` to verify state changes.
-- **`prefers-reduced-motion`:** `browser_reduced_motion` (emulate=true) →
-  `browser_eval` to verify transitions are actually disabled at runtime, not
-  just branched-on in code.
-
-No confirmation needed — the browser runs inside the sandbox and cannot write
-to the filesystem or execute arbitrary commands.
-
-### `/plan` workflow
-
-Gather → plan → review → implement, with an optional AI counsel checkpoint
-between phases. Commands under [Workflow](#commands) above.
-
-### Counsel — mashūra
-
-`mashura__review` / `__debug` / `__decide` / `__check` — second opinions from
-external models, on demand. Enable with `oracle_enabled: true`. Execution
-mode is set per named **panel** in `mashura_panels`:
-
-| Mode | Behaviour |
-|---|---|
-| `panel` | Query all models sequentially, return all answers in labeled sections |
-| `fallback` | Try in order, stop on first success |
-| `fusion` | Single [OpenRouter Fusion](https://openrouter.ai/docs/guides/features/plugins/fusion) call — models run in parallel internally, a judge synthesizes the result |
-
-Model strings are provider-prefixed: `anthropic:claude-opus-4-8`,
-`openrouter:google/gemini-2.5-pro`. Fusion mode uses OpenRouter's `~model`
-syntax (`~anthropic/claude-opus-latest`).
-
-Keys are read at call time, never stored: `ANTHROPIC_API_KEY` (or override via
-`oracle_api_key_env`) for Anthropic, `OPENROUTER_API_KEY` for OpenRouter and
-Fusion. `mashura_tool_panels` maps individual tools to panels.
-
-wakil reads evidence files from disk on the model's behalf — the model
-supplies **paths**, never content. Directory paths expand via `git ls-files`;
-`path_ranges` scopes to specific line spans.
-
-### Web search
-
-Two native options, both built directly into wakil — no external binaries, no
-MCP config.
-
-- **SearXNG** — set `searxng_url` *(or `--searxng-url`)* for `searxng_search`
-  + `searxng_url_read`.
-- **Google** — set `google_api_key` and `google_cx` *(or `GOOGLE_API_KEY` /
-  `GOOGLE_CX`)* for `google_search` + `google_fetch_url`.
-
-### Cost sidebar
-
-Per-source token and cost accounting. Rates live under `costs`; unpriced
-sources are shown as `—` rather than `$0.00`.
-
-### Memory and staging
-
-Wakil has a two-tier memory architecture. Both are built-in — no external
-services required.
-
-| Tier | Store | Lifetime | Location | Gating |
-|---|---|---|---|---|
-| **T1 staging** | [kvr](https://github.com/treeol/kvrust) (Rust KV) | Ephemeral *(snapshot survives restarts)* | In-sandbox | Ungated — any agent |
-| **T2 mid** | SQLite (pure Go) | 1h–7d TTL, auto-expires | Host-side | Direct active writes |
-| **T2 durable** | SQLite (pure Go) | Permanent | Host-side | PROPOSED on write; main agent promotes |
-
-**Staging (T1)** is a fast in-sandbox KV store for scratch space and
-subagent handoffs. Keys are auto-prefixed with the writer's agent identity
-(`main/` or `sub-<id>/`); cross-prefix reads are allowed so a parent can
-read a child's findings. Staging survives sandbox restarts via periodic
-snapshots. Ungated — staging writes touch no workspace state.
-
-**Durable memory (T2)** is a host-side SQLite store that persists across
-sessions **within a workspace**. Each workspace has its own isolated memory
-DB at `<wakil-data>/memory/<workspace-key>/memory.db` — entries stored in
-one workspace are **not** visible in another because anchors are
-workspace-relative. Mid-tier entries auto-expire (1h–7d TTL); durable entries
-are permanent and go through a propose→promote review flow. Subagents can
-propose durable entries but only the main agent can promote them. Every
-entry carries provenance (writer, taint signal, anchor staleness). A
-memory digest is injected into the system prompt at session start.
-
-**The bridge:** `memory_promote_from_staging` reads an untrusted staging
-value and writes it to durable memory as a PROPOSED entry — the main
-agent reviews and promotes it. The staging key's prefix is preserved as
-provenance.
-
-Full design docs: [`docs/staging.md`](docs/staging.md) ·
-[`docs/memory.md`](docs/memory.md).
-
-### Backend-truth context sizing
-
-At startup (and on every `/backend` / `/model` switch) wakil resolves the
-real per-slot context window (`n_ctx`) and sizes the context meter, pressure
-warnings, and compaction against it — with a loud fallback warning when
-nothing answers. Resolution depends on endpoint kind:
-
-- `ilm-proxy` — `/v1/ilm/limits` (includes the proxy's pre-computed
-  `usable_ctx`), then `/props`.
-- `openai` — `/props` for llama.cpp servers; for `openrouter.ai` the
-  configured model is resolved against OpenRouter's public model registry.
-
-## How state works
-
-**On `openai` endpoints** state is simple: the standard agent loop runs
-against a stateless server — assistant `tool_calls` → execute → `role:"tool"`
-result → resend → final answer. wakil keeps a **bounded client-side
-transcript**, compacting older turns into a running summary *(last N turns
-verbatim + summary)*. There is no server-side memory; `/learn` refuses
-client-side because an `openai` endpoint cannot persist the fact.
-
-Client-side **durable memory** (T2) works on all endpoints — the SQLite
-store is host-side and endpoint-independent. `memory_put`,
-`memory_search`, and the propose→promote flow operate regardless of
-whether the backend is an ilm proxy or a plain OpenAI server. See
-[Memory and staging](#memory-and-staging) above.
-
-**On `ilm-proxy` endpoints** the proxy additionally routes by **message
-content**; statefulness differs by path.
-
-**Task path** *(normal requests with `tools`)* — standard OpenAI passthrough
-to a llama.cpp Qwen backend. Same clean agent loop and bounded transcript as
-above.
-
-**Memory / meta path** *(`### learn this`, `remember`, `what have you
-learned`, `forget …`)* — short-circuits server-side, returns plain assistant
-text *(acks / lists)* regardless of `tools`. Resent history is ignored for
-recall; memory lives server-side, keyed by `metadata.chat_id`.
-
-> Memory recall is **eventually consistent** — a fact may not be recallable
-> immediately after `### learn this`. Proxy characteristic, not a wakil bug.
-
-## Testing
-
-```sh
-go test ./...
-```
-
-New sandbox containers default to a 4 GB `/tmp` tmpfs. If you're running
-in an older container or one with a smaller `docker_tmpfs_size`, Go
-builds/tests may fail with `no space left on device`. Point the toolchain
-at the workspace disk first:
-
-```sh
-mkdir -p .tmp-gocache
-export TMPDIR=$PWD/.tmp-gocache GOTMPDIR=$PWD/.tmp-gocache GOCACHE=$PWD/.tmp-gocache
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md#sandboxed-environments-with-a-tiny-tmp)
-for details.
-
-Coverage in `cmd/wakil/*_test.go` and `internal/`: streamed tool_call assembly
-from incremental arg fragments, the plain-text *(no-tool_calls)* branch, the
-full agent loop, the confirm gate *(accept/decline)*, executor read/write +
-cwd tracking, transcript compaction, config resolution, and the LSP
-protocol/serialization layer. Endpoint decoupling is golden-tested: request
-shape per kind *(no `metadata` / `X-Ilm-*` on `openai`; byte-identical proxy
-shape preserved)*, endpoint config validation and legacy synthesis,
-kind-aware limits resolution *(props / OpenRouter registry / proxy route,
-with request-log assertions that the wrong routes are never called)*,
-`/learn` gating *(zero requests on `openai`)*, `/model` and `/backend`
-switch semantics with subagent inheritance, and retry classification
-*(429/408/529 retryable, other 4xx fatal)*.
+| Configuration (flags, env, config-only fields, endpoints) | [docs/configuration.md](docs/configuration.md) |
+| Endpoint kinds, switching, state management, `/learn` | [docs/endpoints.md](docs/endpoints.md) |
+| Tools (tool reference, gating, subagents) | [docs/tools.md](docs/tools.md) |
+| TUI (commands, keybindings, SSH clipboard) | [docs/tui.md](docs/tui.md) |
+| `/plan` workflow (phases, oracle review) | [docs/workflows.md](docs/workflows.md) |
+| Features (LSP, browser, counsel, search, memory, tracing) | [docs/features.md](docs/features.md) |
+| Durable memory design | [docs/memory.md](docs/memory.md) |
+| Staging store design | [docs/staging.md](docs/staging.md) |
+| Remote provisioning | [docs/remote-provisioning.md](docs/remote-provisioning.md) |
+| Security policy and threat model | [SECURITY.md](SECURITY.md) |
+| Contributing and PR checklist | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ## Project layout
 
@@ -760,24 +163,23 @@ internal/
 Dockerfile         sandbox image — Go, Node, Rust, Python toolchains, gopls, docker CLI + compose, gh, golangci-lint
 ```
 
+## Security
+
+wakil executes shell commands and writes files. The confirmation gate is the
+primary defense — every workspace mutation and command execution prompts `y/n`
+before it runs. Docker mode provides convenience-grade isolation (read-only
+rootfs, dropped capabilities, resource limits) but is **not** adversarial-grade.
+Direct mode runs on the host with no container isolation.
+
+> **Running untrusted tasks?** Keep the gate on, do not enable
+> `docker_socket`, and audit memory entries (`memory_list`) after operating
+> on untrusted content. See [SECURITY.md](SECURITY.md) for the full threat
+> model, data-egress disclosure, and hardening checklist.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test instructions and PR
 checklist. For security concerns, see [SECURITY.md](SECURITY.md).
-
-```sh
-go build -o wakil ./cmd/wakil
-go test ./...
-```
-
-Both must pass before you send a patch. Keep every write/execute path
-gated — do not add an ungated write or execute path.
-
-## Remote provisioning
-
-Bringing up wakil on a fresh remote host (config, Mashūra API key env, Docker
-image, SELinux, MCP paths) — see
-[`docs/remote-provisioning.md`](docs/remote-provisioning.md).
 
 ## License
 

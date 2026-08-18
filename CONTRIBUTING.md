@@ -106,7 +106,7 @@ tui/          terminal UI
 workflow/     /plan gather→plan→review→implement state machine
 ```
 
-See `README.md` for the full project layout and feature documentation.
+See `README.md` for the project layout and `docs/features.md` for feature documentation.
 
 ## Security
 
