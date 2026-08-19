@@ -33,7 +33,7 @@ type infoPanelModel struct {
 func (m tuiModel) toggleInfoPanel() tuiModel {
 	m.infoPanel.active = !m.infoPanel.active
 	if m.app != nil {
-		m.app.SetInfoPanelOpen(m.infoPanel.active)
+		m.control.SetInfoPanelOpen(m.infoPanel.active)
 	}
 	return m.reflow()
 }

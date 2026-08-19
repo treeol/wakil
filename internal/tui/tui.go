@@ -125,6 +125,8 @@ type convItem struct {
 
 type tuiModel struct {
 	app        *agent.App
+	control    agent.Control    // mutation surface (chunk 6); bound to app in NewTUIModel
+	apply      agent.StateApply // round-trip state application (chunk 6); bound to app
 	cancel     context.CancelFunc
 	cancelling bool // true after first Ctrl+C, until agent.AgentDoneMsg
 
@@ -478,6 +480,8 @@ func NewTUIModel(app *agent.App) tuiModel {
 	}
 	return tuiModel{
 		app:          app,
+		control:      app, // single binding site for the mutation seams (chunk 6)
+		apply:        app,
 		outputMode:   resolveOutputMode(app),
 		vp:           vp,
 		ta:           ta,
@@ -505,8 +509,7 @@ func NewTUIModel(app *agent.App) tuiModel {
 
 func (m tuiModel) Init() tea.Cmd {
 	if m.app != nil && m.app.StartupNote != "" {
-		note := m.app.StartupNote
-		m.app.StartupNote = "" // consume once — Init() may run more than once in theory
+		note := m.control.ConsumeStartupNote()
 		return tea.Batch(textarea.Blink, func() tea.Msg { return agent.SysNoteMsg{Text: note} })
 	}
 	return textarea.Blink
@@ -1003,7 +1006,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 							m.addItem(iSys, dim2("· auto: pending destructive grant cancelled"))
 						} else if consent.AllowDestructive {
 							// Revoke destructive immediately.
-							m.app.SetAllowDestructive(false)
+							m.control.SetAllowDestructive(false)
 							m.addItem(iSys, dim2("· auto: destructive revoked mid-turn"))
 						} else {
 							// Defer the destructive grant.
@@ -1024,7 +1027,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 							// ON→OFF: immediate revoke. Clear both AutoApprove and
 							// AllowDestructive atomically (pair invariant — the
 							// destructive grant never outlives the auto session).
-							m.app.RevokeAuto()
+							m.control.RevokeAuto()
 							m.pendingAutoGrant = false
 							m.pendingDestructiveGrant = false
 							m.addItem(iSys, dim2("· auto: revoked mid-turn"))
@@ -1180,7 +1183,9 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		// (the image travels via PendingImages, not as text); detach the
 		// pending image for any chip the user deleted from the input.
 		var msgText string
-		msgText, m.app.PendingImages = reconcileImageChips(input, *m.imageChips, m.app.PendingImages)
+		var pending []proxy.ImagePart
+		msgText, pending = reconcileImageChips(input, *m.imageChips, m.app.PendingImages)
+		m.apply.ReplacePendingImages(pending)
 		*m.imageChips = (*m.imageChips)[:0]
 		// A chip-only input yields empty text but a queued image — that is a
 		// legitimate image-only message. Empty text AND no images = nothing.
@@ -1388,7 +1393,9 @@ func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
 	// next real send — a queued prompt may carry chips if the user attached
 	// images before queueing.)
 	var msgText string
-	msgText, m.app.PendingImages = reconcileImageChips(input, *m.imageChips, m.app.PendingImages)
+	var pending []proxy.ImagePart
+	msgText, pending = reconcileImageChips(input, *m.imageChips, m.app.PendingImages)
+	m.apply.ReplacePendingImages(pending)
 	*m.imageChips = (*m.imageChips)[:0]
 	if msgText == "" && len(m.app.PendingImages) == 0 {
 		return m, nil
@@ -1478,7 +1485,7 @@ func (m tuiModel) startSideQuestion(question string) tuiModel {
 		id:  "", // will be set by the first chunk
 		buf: buf,
 	}
-	m.sideQuestionCancel = m.app.StartSideQuestion(context.Background(), question)
+	m.sideQuestionCancel = m.control.StartSideQuestion(context.Background(), question)
 	return m
 }
 

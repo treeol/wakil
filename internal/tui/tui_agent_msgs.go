@@ -181,8 +181,8 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// destructive deferred) — it must apply even without pendingAutoGrant.
 		if msg.Err == nil && msg.Warn == "" && !msg.WorkflowWillContinue {
 			if m.pendingAutoGrant {
-				m.app.SetAutoApprove(true)
-				m.app.SaveRepoState(func(s *agent.RepoState) { s.AutoApprove = true })
+				m.control.SetAutoApprove(true)
+				m.control.SaveRepoState(func(s *agent.RepoState) { s.AutoApprove = true })
 				m.pendingAutoGrant = false
 				m.addItem(iSys, dim2("· auto: granted (pending from mid-turn)"))
 			}
@@ -191,7 +191,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 				// but re-check here in case state changed). AllowDestructive is
 				// never persisted to repo-state — it's a session-only grant.
 				if m.app.Consent().AutoApprove {
-					m.app.SetAllowDestructive(true)
+					m.control.SetAllowDestructive(true)
 					m.addItem(iSys, dim2("· auto: destructive granted (pending from mid-turn)"))
 				}
 				m.pendingDestructiveGrant = false
@@ -677,8 +677,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// /backend is only available in stateIdle (no concurrent RunTurn goroutine).
 		// Reset the pressure warning so it re-evaluates against the new window.
 		before := m.statusRows()
-		m.app.CtxLimit = msg.Limit
-		m.app.CtxPressureWarned = false
+		m.apply.SetCtxLimit(msg.Limit)
 		if msg.Note != "" {
 			m.addItem(iSys, dim2(msg.Note))
 		}
@@ -688,7 +687,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// Refresh the model list after an endpoint switch so /model and
 		// /submodel autocomplete reflects the new endpoint's models. Applied
 		// in the event loop — same safety as BackendCtxLimitMsg above.
-		m.app.ModelList = msg.Models
+		m.apply.SetModelList(msg.Models)
 
 	case copiedMsg:
 		before := m.statusRows()
@@ -722,7 +721,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			}
 		} else {
 			m.pasteCutStash = "" // real image confirmed; the cut garbage stays gone
-			m.app.PendingImages = append(m.app.PendingImages, msg.Img)
+			m.apply.AddPendingImage(msg.Img)
 			chip := msg.Img.Placeholder()
 			*m.imageChips = append(*m.imageChips, chip)
 			m.ta.InsertString(chip + " ")
@@ -815,15 +814,15 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// a security reset — revoking auto breaks overnight unattended work.
 
 		// Clear pending images — they belong to the old session.
-		m.app.PendingImages = nil
+		m.apply.ClearPendingImages()
 
 		// Clear workflow — handoff starts a fresh workflow-free session.
 		// The summary captures workflow state as text; the new session does
 		// not inherit the in-memory workflow engine.
-		m.app.Workflow = nil
+		m.control.SetWorkflow(nil)
 
 		// Rotate to a new conversation (use the preallocated chat ID).
-		m.app.NewConversation(msg.NewChatID)
+		m.control.NewConversation(msg.NewChatID)
 
 		// Clear viewport items (same as NewConvMsg).
 		*m.items = (*m.items)[:0]
@@ -880,13 +879,13 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			// mode. Guard against empty payloads.
 			if msg.Payload.CoarseSummary != "" || msg.Payload.RecentTail != "" {
 				handoffCtx := agent.BuildHandoffContext(msg.Payload, msg.OldChatID, m.app.SessionWorkspace())
-				m.app.Conv = append(m.app.Conv, proxy.Message{
+				m.control.AppendSystemMessage(proxy.Message{
 					Role:    "system",
 					Content: agent.StrPtr(handoffCtx),
 					Pinned:  true,
 				})
 			}
-			m.app.SaveSession()
+			m.control.SaveSession()
 		}
 		m = m.reflowIfStatusHeightChanged(before)
 
@@ -900,7 +899,7 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case agent.MCPReconnectedMsg:
 		// Apply the rebuilt tool list from the Update loop — not from the Cmd
 		// goroutine — so there is no race with the agent goroutine reading app.Tools.
-		m.app.Tools = msg.Tools
+		m.apply.SetTools(msg.Tools)
 		m.addItem(iSys, dim2(sprint("· reconnected %q (%d tools)", msg.Name, len(msg.Tools))))
 
 	case agent.WFFinalReviewMsg:

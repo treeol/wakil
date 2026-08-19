@@ -171,7 +171,9 @@ func fetchModelListCmd(app *App) Cmd {
 // viewport. Shared by /resume's direct-id path and the resume picker's Enter
 // action (internal/tui) so both apply the exact same mutation.
 func ResumeSessionMsg(app *App, s *Session) Msg {
+	app.convMu.Lock()
 	app.Conv = s.Conv
+	app.convMu.Unlock()
 	app.Client.ChatID = s.ChatID
 	app.Session = s
 	app.Workflow = s.SavedWorkflow
