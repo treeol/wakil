@@ -161,9 +161,7 @@ func parseBranchHeader(h string) GitStatusBranch {
 		b.Branch = rest
 	}
 	// Unborn branch shows as "No commits yet on <branch>".
-	if strings.HasPrefix(b.Branch, "No commits yet on ") {
-		b.Branch = strings.TrimPrefix(b.Branch, "No commits yet on ")
-	}
+	b.Branch = strings.TrimPrefix(b.Branch, "No commits yet on ")
 	return b
 }
 

@@ -216,7 +216,11 @@ func TestGitShowHeadSucceedsDespiteTriggerPhrasesInContent(t *testing.T) {
 	}
 
 	// git_diff against the commit that introduced the tools — its diff contains
-	// the trigger phrases verbatim.
+	// the trigger phrases verbatim. Skip on shallow clones (CI) where HEAD~1
+	// doesn't exist.
+	if _, err := ex.RunShell(context.Background(), "git rev-parse --verify HEAD~1"); err != nil {
+		t.Skipf("HEAD~1 not available (shallow clone?): %v", err)
+	}
 	diff := app.handleGitDiff(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name: "git_diff", Arguments: `{"rev":"HEAD~1"}`,
 	}})
