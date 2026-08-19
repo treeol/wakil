@@ -81,12 +81,13 @@ type TurnInput struct {
   `ValidateDraft` (already implemented) after its own class/allowlist check — it
   does **not** call `event.Validate` (which is `ValidateCommitted` and rejects
   seq-0 durable drafts).
-- **Fencing (panel #3).** The host builds one fresh emitter per turn and closes
-  it inside `finishTurn` (after the host emits `MessageCommitted`/`TurnCompleted`).
-  Chunk 5 routes only *synchronous* turn signals through the emitter (stream,
-  reasoning, approval — all on the executor goroutine), but a test asserts the
-  fence contract: a durable `Emit` after `TurnCompleted` is impossible by
-  construction; a concurrent worker's late `Emit` returns `ErrEmitterClosed`.
+- **Fencing (panel #3).** The host builds one fresh emitter per turn and fences
+  it at finalization: the fence linearizes BEFORE the terminal append (both the
+  fence check and the append run under the session's emission lock), so an
+  accepted emit either lands strictly before `TurnCompleted` or is rejected with
+  `ErrEmitterClosed`. A concurrent worker's late `Emit` returns
+  `ErrEmitterClosed`; a turn-emitted durable event can never be appended after
+  its turn's `TurnCompleted`.
 - **Ephemeral delivery.** New `notifyEphemeral`: build an ephemeral `Event`
   (Seq 0, `ValidateCommitted`), push to subscribers (drop-on-full, never
   disconnect). `Notify` checks `ctx`-cancellation is NOT applied — see §4.

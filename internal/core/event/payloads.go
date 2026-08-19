@@ -49,6 +49,11 @@ func (p TurnStarted) Validate() error {
 
 // MessageDelta is the ephemeral streaming-text payload (KindMessageDelta).
 // Not durable: a replay consumes MessageCommitted blocks instead.
+//
+// It is presentation streaming and is NOT guaranteed to concatenate to
+// MessageCommitted.Text: the stream may include tool/status rendering lines
+// that are not part of the authoritative assistant response. Consumers must
+// treat it as display-only; the durable MessageCommitted is the replay truth.
 type MessageDelta struct {
 	Text string
 }
@@ -151,8 +156,10 @@ type ApprovalResolved struct {
 	ApprovalID ApprovalID
 	// Outcome is one of "approved" | "declined" | "allowed_reads".
 	Outcome string
-	// Resolver is who resolved the approval. Identity from day one (D4); empty
-	// only in P0's shim where the sync Confirmer has no principal context yet.
+	// Resolver is who resolved the approval. Identity from day one (D4): the
+	// P0 shim records the submitter principal (TurnInput.UserID), so it is
+	// populated even in embedded mode. Empty only if no principal context
+	// exists (a programming error in the shim).
 	Resolver UserID
 }
 

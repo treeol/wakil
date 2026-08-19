@@ -86,6 +86,24 @@ var (
 	// caller must resubscribe from its last durable cursor (LastSeq of a
 	// SessionSnapshot, or ListEvents).
 	ErrSubscriptionGap = errors.New("sessionhost: subscription lagged; resubscribe from saved cursor")
+	// ErrEmitterClosed is returned by Emitter.Emit once the turn's emitter has
+	// been fenced at finalization. A durable event that would otherwise land
+	// after its turn's TurnCompleted is rejected instead (terminal ordering).
+	ErrEmitterClosed = errors.New("sessionhost: emitter closed")
+	// ErrInternal classifies a turn error as an INTERNAL (adapter/host
+	// infrastructure) failure rather than a backend failure. finishTurn tests
+	// errors.Is(turnErr, ErrInternal) to mark the SessionError reason
+	// "internal_error" vs "backend_failure". Adapters wrap this sentinel for
+	// faults that are not the model/backend's doing (emit/store failures,
+	// wiring misuse). ErrEmitFailed wraps it.
+	ErrInternal = errors.New("sessionhost: internal error")
+	// ErrEmitFailed wraps any failure to durably append a turn-emitted event.
+	// It distinguishes an infrastructure/adapter failure from a backend failure
+	// in finishTurn: a turn returning it parks the session in `error` with
+	// SessionError{reason:"internal_error"}, not {reason:"backend_failure"}. It
+	// also wraps ErrInternal, so callers test with errors.Is(err, ErrEmitFailed)
+	// (specific) or errors.Is(err, ErrInternal) (general) — never ==.
+	ErrEmitFailed = fmt.Errorf("%w: durable emit failed", ErrInternal)
 )
 
 // TurnFunc executes one turn for a session and returns the produced message
@@ -97,7 +115,9 @@ var (
 // promptly once ctx is done. Returning a non-nil error while ctx is NOT
 // cancelled signals a backend failure and moves the session to `error`
 // (SessionError{backend_failure}); returning an error while ctx IS cancelled
-// is treated as cancellation.
+// is treated as cancellation; returning an error that wraps ErrEmitFailed moves
+// the session to `error` with SessionError{internal_error} (an emit/store
+// failure is not a backend failure).
 type TurnFunc func(ctx context.Context, input TurnInput) (string, error)
 
 // TurnInput is what the executor hands to a TurnFunc for one turn.
@@ -107,6 +127,51 @@ type TurnInput struct {
 	TurnIndex  uint64
 	Text       string
 	ReadAction bool
+	// UserID is the submitter principal of the turn (identity from day one,
+	// D4). It is the correct resolver/requester for turn-emitted audit fields
+	// (e.g. ApprovalResolved.Resolver) rather than a hardcoded embedded
+	// principal. It is the caller's user even for a re-driven errored session.
+	UserID event.UserID
+	// Emit is the turn-scoped event publisher. It is non-nil for turns run by
+	// an executor; nil only in plain lifecycle tests that never call it. See
+	// Emitter.
+	Emit Emitter
+}
+
+// hostReservedKinds are the kinds the HOST owns (finalization and lifecycle):
+// emitDraft/finishTurn emit them, and a turn must never be able to mutate them
+// through Emitter.Emit — doing so would corrupt the durable projection (e.g. a
+// duplicate MessageCommitted or TurnCompleted). Emitter.Emit rejects them.
+var hostReservedKinds = map[event.Kind]bool{
+	event.KindSessionCreated:   true,
+	event.KindTurnStarted:      true,
+	event.KindMessageCommitted: true,
+	event.KindTurnCompleted:    true,
+	event.KindSessionError:     true,
+	event.KindSessionClosed:    true,
+}
+
+// Emitter lets a turn publish events while it runs. It is safe for concurrent
+// use (subagent/async worker goroutines may call it) and is turn-scoped: the
+// host fences it at finalization, after which Emit returns ErrEmitterClosed and
+// Notify silently drops.
+//
+// Durable events published through Emit are appended with a store-assigned
+// sequence and delivered to subscribers under the session's emission lock, so
+// concurrent producers are observed in exact increasing Seq order — never
+// reordered (the host's append→notify serialization guarantee). Ephemeral
+// notifications are best-effort: they may be dropped under backpressure, are
+// never persisted, and carry no sequence.
+type Emitter interface {
+	// Emit durably appends one event. The kind must be durable (not ClassEphemeral)
+	// and not host-reserved (see hostReservedKinds); otherwise a non-nil error is
+	// returned and nothing is appended. An append/store failure returns an error
+	// wrapping ErrEmitFailed (callers test with errors.Is, not ==).
+	Emit(kind event.Kind, payload any) error
+	// Notify streams one ephemeral notification live to subscribers. The kind
+	// must be ephemeral; other kinds are dropped. Best-effort by contract — it
+	// does not consult the turn's ctx (see the ctx-notification note in host.go).
+	Notify(kind event.Kind, payload any)
 }
 
 // Options configure the host. Use the functional Option values below; the zero
@@ -280,7 +345,7 @@ func (h *Host) SubmitInput(ctx context.Context, principal core.Principal, req co
 		s.setStateLocked(core.SessionRunning)
 	}
 	s.pending++
-	s.queue = append(s.queue, inputEnvelope{turnID: turnID, text: req.Text, readAction: req.ReadAction})
+	s.queue = append(s.queue, inputEnvelope{turnID: turnID, text: req.Text, readAction: req.ReadAction, userID: principal.UserID})
 	s.mu.Unlock()
 
 	s.signalKick()
@@ -639,12 +704,21 @@ type session struct {
 	// contend with turn state).
 	subsMu sync.Mutex
 	subs   map[*subscription]struct{}
+
+	// emitMu serializes durable append→notify across ALL producers of this
+	// session (the executor's own emitDraft AND turn-emitted events from worker
+	// goroutines). Held across store.Append AND subscriber notify so concurrent
+	// producers can never deliver a higher seq before a lower one (subscribers
+	// observe the durable stream in exact increasing Seq order). Ephemeral
+	// notifications do NOT take it (unordered/droppable by contract).
+	emitMu sync.Mutex
 }
 
 type inputEnvelope struct {
 	turnID     event.TurnID
 	text       string
 	readAction bool
+	userID     event.UserID
 }
 
 type turnHandle struct {
@@ -801,15 +875,21 @@ func (h *Host) handleInput(s *session, input inputEnvelope) bool {
 	// Durable: the turn began.
 	h.emitDraft(s, event.KindTurnStarted, event.TurnStarted{TurnID: input.turnID, TurnIndex: turnIdx})
 
+	// The turn-scoped emitter: built per turn and fenced at finalization so no
+	// turn-emitted durable event can outlive its TurnCompleted (terminal ordering).
+	em := newEmitter(h, s)
+
 	text, err := h.turn(turnCtx, TurnInput{
 		SessionID:  s.sid,
 		TurnID:     input.turnID,
 		TurnIndex:  turnIdx,
 		Text:       input.text,
 		ReadAction: input.readAction,
+		UserID:     input.userID,
+		Emit:       em,
 	})
 
-	return h.finishTurn(s, input.turnID, turnCtx, text, err)
+	return h.finishTurn(s, input.turnID, turnCtx, em, text, err)
 }
 
 // finishTurn is the single linearization point for a completed turn. It resolves
@@ -817,7 +897,13 @@ func (h *Host) handleInput(s *session, input inputEnvelope) bool {
 // (interrupt/close), or failed (backend error), emits the corresponding durable
 // events, and transitions the session state. It returns true if the session must
 // now close.
-func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Context, text string, turnErr error) bool {
+func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Context, em *hostEmitter, text string, turnErr error) bool {
+	// Fence the turn's emitter BEFORE taking s.mu and emitting the terminal
+	// events, so no turn-emitted durable event can be appended after this point
+	// (terminal ordering: nothing after its TurnCompleted). Late Emit calls get
+	// ErrEmitterClosed; late Notify calls drop.
+	em.close()
+
 	s.mu.Lock()
 	closing := s.closing != ""
 	cancelled := turnCtx.Err() != nil || s.interrupted
@@ -837,12 +923,18 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 		outcome = "complete"
 	}
 
+	// internal_error classification: an emit/store failure (adapter or host
+	// infrastructure) is not a backend failure. Same turn outcome
+	// (stream_error) and same error-state parking; only the SessionError
+	// reason differs, so the audit log does not lie about the cause.
+	internalErr := turnErr != nil && errors.Is(turnErr, ErrInternal)
+
 	terminal := closing
 	var abandoned []inputEnvelope
 	if !closing {
 		switch {
 		case outcome == "stream_error":
-			// Backend failure: park in error and abandon queued inputs (with an
+			// Turn failure: park in error and abandon queued inputs (with an
 			// explicit cancellation event for each acked turn).
 			s.setStateLocked(core.SessionError)
 			if len(s.queue) > 0 {
@@ -865,7 +957,11 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 	}
 	h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: turnID, Outcome: outcome})
 	if outcome == "stream_error" {
-		h.emitDraft(s, event.KindSessionError, event.SessionError{Reason: "backend_failure", Err: turnErr.Error()})
+		reason := "backend_failure"
+		if internalErr {
+			reason = "internal_error"
+		}
+		h.emitDraft(s, event.KindSessionError, event.SessionError{Reason: reason, Err: turnErr.Error()})
 		for _, q := range abandoned {
 			h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: q.turnID, Outcome: "cancelled"})
 		}
@@ -925,16 +1021,41 @@ func (h *Host) emitDraft(s *session, kind event.Kind, payload any) {
 		Kind:      kind,
 		Payload:   payload,
 	}
+
+	// Serialize append→notify across ALL producers (executor's own terminals AND
+	// concurrent turn-emitted events) so durable delivery order equals Seq order.
+	s.emitMu.Lock()
 	committed, err := h.store.Append(context.Background(), draft)
+	if err == nil {
+		h.notify(s, committed)
+	}
+	s.emitMu.Unlock()
+
 	if err != nil {
 		panic(fmt.Sprintf("sessionhost: durable append %s failed: %v", kind, err))
 	}
-	h.notify(s, committed)
 }
 
 // notify delivers a committed durable event to every live subscriber. It is
 // non-blocking: a lagging subscriber is disconnected (never blocks the executor).
+// Caller must hold s.emitMu (durable ordering) — the notify fan-out below is what
+// that lock protects.
 func (h *Host) notify(s *session, ev event.Event) {
+	h.deliver(s, ev, ev.Kind.Class() == event.ClassDurable)
+}
+
+// notifyEphemeral delivers one ephemeral notification to live subscribers,
+// dropping it when the live buffer is full (never disconnecting). Ephemeral
+// events are not ordered against each other or against durable events and do
+// not require emitMu.
+func (h *Host) notifyEphemeral(s *session, ev event.Event) {
+	h.deliver(s, ev, false)
+}
+
+// deliver fans an event out to every live subscriber. durable=true uses push's
+// durable path (buffer-full → disconnect/gap); durable=false uses the ephemeral
+// path (buffer-full → drop).
+func (h *Host) deliver(s *session, ev event.Event, durable bool) {
 	s.subsMu.Lock()
 	subs := make([]*subscription, 0, len(s.subs))
 	for sub := range s.subs {
@@ -942,8 +1063,84 @@ func (h *Host) notify(s *session, ev event.Event) {
 	}
 	s.subsMu.Unlock()
 	for _, sub := range subs {
-		sub.push(ev)
+		if durable {
+			sub.push(ev)
+		} else {
+			sub.pushEphemeral(ev)
+		}
 	}
+}
+
+// ---- hostEmitter: the turn-scoped Emitter implementation ----
+
+// hostEmitter implements Emitter, funneling turn-emitted events into the
+// session's durable log and live subscribers. It is safe for concurrent use:
+// durable Emit is serialized under s.emitMu; Notify is lock-free-ish (subscriber
+// fan-out only). It is fenced (closed) at turn finalization.
+type hostEmitter struct {
+	s      *session
+	host   *Host
+	closed atomic.Bool
+}
+
+func newEmitter(h *Host, s *session) *hostEmitter { return &hostEmitter{s: s, host: h} }
+
+// close fences the emitter: subsequent Emit returns ErrEmitterClosed and Notify
+// drops. Idempotent.
+func (e *hostEmitter) close() { e.closed.Store(true) }
+
+func (e *hostEmitter) Emit(kind event.Kind, payload any) error {
+	if kind.Class() == event.ClassEphemeral {
+		return fmt.Errorf("%w: %s is ephemeral (durable Emit only)", core.ErrInvalidInput, kind)
+	}
+	if hostReservedKinds[kind] {
+		return fmt.Errorf("%w: %s is host-owned", core.ErrInvalidInput, kind)
+	}
+	draft := event.Event{
+		TenantID:  e.s.tenant,
+		SessionID: e.s.sid,
+		Ts:        e.host.now(),
+		Kind:      kind,
+		Payload:   payload,
+	}
+
+	// The fence check and the append are atomic with the host's terminal
+	// emission (finishTurn's emitDraft holds the same lock), so a turn-emitted
+	// durable event can never be appended AFTER its turn's TurnCompleted: it
+	// either appends before the terminal event, or is rejected. finishTurn's
+	// em.close() is a lock-free atomic flag — the lock is what linearizes the
+	// append against the terminal event, not the flag read per se.
+	e.s.emitMu.Lock()
+	defer e.s.emitMu.Unlock()
+	if e.closed.Load() {
+		return ErrEmitterClosed
+	}
+	committed, err := e.host.store.Append(context.Background(), draft)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrEmitFailed, err)
+	}
+	e.host.notify(e.s, committed)
+	return nil
+}
+
+func (e *hostEmitter) Notify(kind event.Kind, payload any) {
+	if e.closed.Load() {
+		return
+	}
+	if kind.Class() != event.ClassEphemeral {
+		return // durable kinds are not notifications; dropped by contract
+	}
+	ev := event.Event{
+		TenantID:  e.s.tenant,
+		SessionID: e.s.sid,
+		Ts:        e.host.now(),
+		Kind:      kind,
+		Payload:   payload,
+	}
+	if err := ev.ValidateCommitted(); err != nil {
+		return // invalid ephemeral notification: drop (best-effort by contract)
+	}
+	e.host.notifyEphemeral(e.s, ev)
 }
 
 // ---- subscription ----
@@ -1027,6 +1224,27 @@ func (s *subscription) push(ev event.Event) {
 	select {
 	case s.in <- ev:
 	default:
+	}
+}
+
+// pushEphemeral delivers an ephemeral notification live-only. It is never held
+// for replay (ephemeral events are not durable) and never disconnects the
+// subscription on a full buffer — it drops (D2).
+func (s *subscription) pushEphemeral(ev event.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.phase == phaseReplaying {
+		return // ephemeral during replay: dropped (D2)
+	}
+	select {
+	case <-s.done:
+		return
+	default:
+	}
+	select {
+	case s.in <- ev:
+	default:
+		// dropped silently (D2)
 	}
 }
 

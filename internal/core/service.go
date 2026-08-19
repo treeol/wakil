@@ -218,8 +218,12 @@ type SubmitInputRequest struct {
 	// Text is the user's input for this turn.
 	Text string
 	// ReadAction marks the input as read-only, which may relax approval gates.
-	// It is carried through to the TurnStarted and ApprovalRequested payloads so
-	// the approver can decide on the basis of the event stream alone.
+	// In P0 the host records it on the input envelope and carries it into the
+	// TurnInput (and thus the approval gate); it is NOT a field on TurnStarted
+	// (the domain TurnStarted payload carries TurnID + TurnIndex only). It is
+	// carried through to the ApprovalRequested payload via the confirmer's
+	// readAction argument so the approver can decide on the basis of the event
+	// stream alone.
 	ReadAction bool
 	// RequestID is an optional client-supplied idempotency key, reserved now so
 	// P2's wire retries can deduplicate without a breaking change. It is NOT
