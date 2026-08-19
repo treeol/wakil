@@ -12,20 +12,22 @@
 //     TurnFunc is bound to the first session it serves: a second session
 //     reusing the same TurnFunc fails loudly (one App is one mutable
 //     conversation and cannot safely back two host sessions).
-//   - the adapter runs a turn via the exported SendOutcome →
-//     WaitForAsyncCompletion → Resume loop and returns the authoritative
-//     assistant text (TurnOutcome.Text) for the host's MessageCommitted,
+//   - the adapter runs a turn via the agent's resilience entrypoint
+//     (agent.DriveTurnWithResilience — chunk 7) and returns the authoritative
+//     assistant text (TurnOutcome.Text) for the host's MessageCommitted. Stream-
+//     error retry and empty-response recovery are applied INSIDE that entrypoint,
+//     so the host sees exactly one final turn (complete/stream_error/cancelled).
 //   - stream chunks become MessageDelta (ephemeral), reasoning becomes
 //     ReasoningDelta (ephemeral),
 //   - approvals go through a context-aware confirmer that emits
-//     ApprovalRequested → ApprovalResolved with full outcome fidelity (D5 shim).
+//     ApprovalRequested → ApprovalResolved with full outcome fidelity (D5 shim),
+//     and the resolver returns an ApprovalResolution{Choice, Reason} so a
+//     decline's rationale travels in the event (D18).
 //
 // Deferred (not hidden): tool-call/subagent durable events (the agent does not
 // yet emit them with valid domain IDs/digests/status), per-session App factory
-// (deliverable 5), and the async wire approval path (P2). Stream-error retry
-// (HandleStreamError) and workflow transitions are also not replicated here: a
-// turn failure surfaces as the adapter's error (→ SessionError), and empty → an
-// empty committed message.
+// (deliverable 5), the async wire approval path (P2), and workflow transitions
+// (a turn failure surfaces as the adapter's error → SessionError).
 package wiring
 
 import (
@@ -38,6 +40,7 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/id"
 	"github.com/treeol/wakil/internal/core/sessionhost"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // ApprovalRequest is the resolved request a resolver answers. It mirrors the
@@ -50,6 +53,14 @@ type ApprovalRequest struct {
 	ReadAction bool
 }
 
+// ApprovalResolution is a resolver's answer to one approval request: the choice
+// plus a human-readable reason. Reason is meaningful on ChoiceDecline (and the
+// adapter's forced declines) and empty for approved/allowed-reads resolutions.
+type ApprovalResolution struct {
+	Choice agent.ConfirmChoice
+	Reason string
+}
+
 // ApprovalResolver answers one approval request. It is invoked in its own
 // goroutine and its result is raced against ctx cancellation: a resolver that
 // ignores ctx cannot block the executor (the confirmer forces a decline). Its
@@ -57,7 +68,7 @@ type ApprovalRequest struct {
 // race; otherwise the confirmer resolves the approval as declined.
 //
 // nil means "decline everything" (the safe headless-without-approval default).
-type ApprovalResolver func(ctx context.Context, req ApprovalRequest) agent.ConfirmChoice
+type ApprovalResolver func(ctx context.Context, req ApprovalRequest) ApprovalResolution
 
 // adapterConfig holds HostTurnFunc options.
 type adapterConfig struct {
@@ -162,22 +173,18 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	app.WorkflowStepTrace = nil
 	app.Client.ResetGrounding()
 
-	out, err := app.SendOutcome(ctx, in.Text)
+	// Drive the turn through the agent's resilience entrypoint (retry transient
+	// stream errors, recover empty completions) and return the authoritative
+	// final text for the host's MessageCommitted.
+	out, err := agent.DriveTurnWithResilience(ctx, app, in.Text)
 	if err != nil {
+		// Classify fatal request errors (4xx) so the host distinguishes them
+		// from retryable backend failures (SessionError{request_error} vs
+		// {backend_failure}) without importing the proxy package (D12).
+		if errors.Is(err, proxy.ErrBackendFatal) {
+			return "", fmt.Errorf("%w: %v", sessionhost.ErrBackendFatal, err)
+		}
 		return "", err
-	}
-	for out.Kind == agent.TurnSuspended {
-		ok, werr := app.WaitForAsyncCompletion(ctx)
-		if werr != nil {
-			return "", werr
-		}
-		if !ok {
-			return out.Text, nil // nothing pending → treat as final
-		}
-		out, err = app.Resume(ctx)
-		if err != nil {
-			return "", err
-		}
 	}
 	// Surface any approval-emitter failure as an internal error (the agent loop
 	// itself succeeded; the durable audit append did not).
@@ -254,11 +261,11 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 		}
 
 		// Resolve, racing cancellation against the goroutine-isolated resolver.
-		choice := resolveApproval(ctx, resolver, req)
+		res := resolveApproval(ctx, resolver, req)
 
 		var outcome string
 		var proceed bool
-		switch choice {
+		switch res.Choice {
 		case agent.ChoiceAllowReads:
 			outcome, proceed = "allowed_reads", true
 			app.SetAllowReads(true)
@@ -267,10 +274,17 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 		default:
 			outcome, proceed = "declined", false
 		}
+		// Invariant (D18): a declined resolution from this adapter carries a
+		// non-empty Reason; approved/allowed-reads carry an empty Reason.
+		reason := res.Reason
+		if outcome == "declined" && reason == "" {
+			reason = "declined"
+		}
 
 		if err := in.Emit.Emit(event.KindApprovalResolved, event.ApprovalResolved{
 			ApprovalID: approvalID,
 			Outcome:    outcome,
+			Reason:     reason,
 			Resolver:   in.UserID,
 		}); err != nil {
 			emitErr.set(err)
@@ -284,26 +298,29 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 
 // resolveApproval runs the resolver (if any) in a goroutine and selects
 // between its result and ctx cancellation. Cancellation (or a nil resolver)
-// yields a decline. A resolver that returns after cancellation has won is
-// discarded.
-func resolveApproval(ctx context.Context, resolver ApprovalResolver, req ApprovalRequest) agent.ConfirmChoice {
+// yields a decline with a fixed reason. A resolver that returns after
+// cancellation has won is discarded.
+func resolveApproval(ctx context.Context, resolver ApprovalResolver, req ApprovalRequest) ApprovalResolution {
+	declined := func(reason string) ApprovalResolution {
+		return ApprovalResolution{Choice: agent.ChoiceDecline, Reason: reason}
+	}
 	if resolver == nil {
-		return agent.ChoiceDecline
+		return declined("no resolver configured")
 	}
 	if ctx.Err() != nil {
-		return agent.ChoiceDecline
+		return declined("cancelled")
 	}
-	ch := make(chan agent.ConfirmChoice, 1)
+	ch := make(chan ApprovalResolution, 1)
 	go func() {
 		ch <- resolver(ctx, req)
 	}()
 	select {
-	case c := <-ch:
+	case res := <-ch:
 		if ctx.Err() != nil {
-			return agent.ChoiceDecline // cancellation won while resolver ran
+			return declined("cancelled") // cancellation won while resolver ran
 		}
-		return c
+		return res
 	case <-ctx.Done():
-		return agent.ChoiceDecline
+		return declined("cancelled")
 	}
 }

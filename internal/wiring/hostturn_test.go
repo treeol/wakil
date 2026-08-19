@@ -269,11 +269,11 @@ func TestIntegrationApprovalEmitsRequestResolved(t *testing.T) {
 
 	var mu sync.Mutex
 	var approvals []ApprovalRequest
-	resolver := func(ctx context.Context, req ApprovalRequest) agent.ConfirmChoice {
+	resolver := func(ctx context.Context, req ApprovalRequest) ApprovalResolution {
 		mu.Lock()
 		approvals = append(approvals, req)
 		mu.Unlock()
-		return agent.ChoiceDecline
+		return ApprovalResolution{Choice: agent.ChoiceDecline, Reason: "declined by test resolver"}
 	}
 
 	turnFn, err := HostTurnFunc(app, WithResolver(resolver))
@@ -331,6 +331,9 @@ func TestIntegrationApprovalEmitsRequestResolved(t *testing.T) {
 	resOutcome := resEvent.Payload.(event.ApprovalResolved)
 	if resOutcome.Outcome != "declined" {
 		t.Fatalf("resolved outcome = %q, want declined", resOutcome.Outcome)
+	}
+	if resOutcome.Reason != "declined by test resolver" {
+		t.Fatalf("resolved reason = %q, want %q", resOutcome.Reason, "declined by test resolver")
 	}
 	if resOutcome.Resolver != "usr_owner" {
 		t.Fatalf("Resolver = %q, want usr_owner", resOutcome.Resolver)
@@ -445,10 +448,10 @@ func TestApprovalCancelWhileBlocked(t *testing.T) {
 
 	resolverEntered := make(chan struct{})
 	resolverRelease := make(chan struct{})
-	resolver := func(ctx context.Context, req ApprovalRequest) agent.ConfirmChoice {
+	resolver := func(ctx context.Context, req ApprovalRequest) ApprovalResolution {
 		close(resolverEntered)
 		<-resolverRelease // block: simulate a stuck resolver
-		return agent.ChoiceApprove
+		return ApprovalResolution{Choice: agent.ChoiceApprove}
 	}
 
 	turnFn, err := HostTurnFunc(app, WithResolver(resolver))
@@ -508,8 +511,8 @@ func TestApprovalAllowReads(t *testing.T) {
 	defer srv.Close()
 
 	app := fakeApp(srv.URL)
-	resolver := func(ctx context.Context, req ApprovalRequest) agent.ConfirmChoice {
-		return agent.ChoiceAllowReads
+	resolver := func(ctx context.Context, req ApprovalRequest) ApprovalResolution {
+		return ApprovalResolution{Choice: agent.ChoiceAllowReads}
 	}
 	turnFn, err := HostTurnFunc(app, WithResolver(resolver))
 	if err != nil {

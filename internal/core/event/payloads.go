@@ -156,6 +156,12 @@ type ApprovalResolved struct {
 	ApprovalID ApprovalID
 	// Outcome is one of "approved" | "declined" | "allowed_reads".
 	Outcome string
+	// Reason carries the resolver's human-readable rationale on a decline (e.g.
+	// "destructive command declined: rm -rf …", "blocked by policy: …"). Optional:
+	// empty for approved/allowed_reads resolutions. It is data (D6) — a decline
+	// reason must not be reconstructed by the consumer from ToolName, because the
+	// real reason is dynamic (command text, policy rule names, flag state).
+	Reason string
 	// Resolver is who resolved the approval. Identity from day one (D4): the
 	// P0 shim records the submitter principal (TurnInput.UserID), so it is
 	// populated even in embedded mode. Empty only if no principal context

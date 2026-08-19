@@ -23,6 +23,11 @@ func TestNoDirectStdWritesInProduction(t *testing.T) {
 		"config": true, // startup config-file creation (pre-TUI)
 		"exec":   true, // DockerExecutor constructor warnings (pre-TUI)
 		"diag":   true, // the seam itself
+		"wiring": true, // bootstrap package (chunk 7): BuildApp/NewExecutor
+		// warnings are pre-TUI (same class as config/exec), and RunHeadless is
+		// the headless CLI entry point — a separate process with no TUI loop, so
+		// its stderr error messages ("executor error:", "policy:", …) cannot
+		// garble an alt-screen. No wiring write can occur during prog.Run().
 	}
 
 	root := repoRoot(t)

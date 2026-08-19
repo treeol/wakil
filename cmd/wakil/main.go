@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -12,10 +11,9 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/diag"
-	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tui"
-	"github.com/treeol/wakil/prompts"
+	"github.com/treeol/wakil/internal/wiring"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -88,13 +86,13 @@ func main() {
 		resumed = s
 	}
 
-	exe, err := newExecutor(cfg)
+	exe, err := wiring.NewExecutor(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "executor error:", err)
 		os.Exit(1)
 	}
 
-	app, res := buildApp(cfg, exe, buildAppOpts{})
+	app, res := wiring.BuildApp(cfg, exe, wiring.BuildAppOpts{})
 
 	// Load --attach-image flag into PendingImages so the first user message
 	// carries the image(s). Multiple paths can be comma-separated.
@@ -107,7 +105,7 @@ func main() {
 			img, err := proxy.LoadImage(p)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "attach-image:", err)
-				closeResources(app, res)
+				wiring.CloseResources(app, res)
 				exe.Close()
 				os.Exit(1)
 			}
@@ -212,8 +210,8 @@ func main() {
 	}
 
 	// Close trace store on exit.
-	if res.traceStore != nil {
-		defer res.traceStore.Close()
+	if res.TraceStore != nil {
+		defer res.TraceStore.Close()
 	}
 
 	model := tui.NewTUIModel(app)
@@ -242,41 +240,32 @@ func main() {
 
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
-		closeResources(app, res)
+		wiring.CloseResources(app, res)
 		exe.Close()
 		os.Exit(1)
 	}
 
 	app.StopAllAsyncOps()
 	app.StopAllBackgroundProcs()
-	if res.memStore != nil {
-		res.memStore.Close()
+	if res.MemStore != nil {
+		res.MemStore.Close()
 	}
-	if res.skillStore != nil {
-		res.skillStore.Close()
+	if res.SkillStore != nil {
+		res.SkillStore.Close()
 	}
-	if res.sessionHistStore != nil {
-		res.sessionHistStore.Close()
+	if res.SessionHistStore != nil {
+		res.SessionHistStore.Close()
 	}
 	exe.Close()
-	if res.mcpMgr != nil {
-		res.mcpMgr.Close()
+	if res.MCPMgr != nil {
+		res.MCPMgr.Close()
 	}
-	if res.lspMgr != nil {
-		res.lspMgr.Shutdown()
+	if res.LSPMgr != nil {
+		res.LSPMgr.Shutdown()
 	}
-	if res.browserMgr != nil {
-		res.browserMgr.Close()
+	if res.BrowserMgr != nil {
+		res.BrowserMgr.Close()
 	}
-}
-
-// newHTTPClient returns an HTTP client suitable for SSE streaming. It sets only
-// ResponseHeaderTimeout so stalls before the first response byte are caught, but
-// a live stream can run as long as needed — the per-turn ctx handles cancellation.
-func newHTTPClient() *http.Client {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.ResponseHeaderTimeout = 30 * time.Second
-	return &http.Client{Transport: tr}
 }
 
 // panelsUseOpenRouter reports whether any configured mashura panel routes at
@@ -295,86 +284,4 @@ func panelsUseOpenRouter(cfg config.Config) bool {
 		}
 	}
 	return false
-}
-
-func newExecutor(cfg config.Config) (exec.Executor, error) {
-	switch cfg.ExecMode {
-	case "direct":
-		if cfg.DockerIOUring {
-			fmt.Fprintln(os.Stderr, "warning: docker_io_uring is set but exec_mode is direct — io_uring setting has no effect in direct mode")
-		}
-		return exec.NewDirectExecutor(cfg.WorkDir)
-	default:
-		// Resolve SSH commit signing on the host before the container starts.
-		// Best-effort: a skip reason is logged, never fatal.
-		signing, skip := exec.DetectSigning(cfg.SSHSigning, cfg.HostWorkDir)
-		if skip != "" {
-			fmt.Fprintln(os.Stderr, "signing disabled —", skip)
-		}
-		if signing.Enabled {
-			fmt.Fprintf(os.Stderr, "ssh signing: active (agent %s, key %.24s…, autosign=%v)\n",
-				signing.AgentSock, signing.PublicKey, signing.AutoSign)
-		}
-
-		// Staging dir: per-repo, host-side. Reuses workspaceKey via the
-		// exported agent.StagingPath helper (same identity as repo-state).
-		var stagingMount string
-		kvrEnabled := !cfg.KVRDisabled
-		if kvrEnabled {
-			var err error
-			stagingMount, err = agent.EnsureStagingDir(cfg.HostWorkDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "kvr: staging dir error (staging unavailable): %v\n", err)
-				kvrEnabled = false
-			}
-		}
-
-		return exec.NewDockerExecutor(exec.DockerOpts{
-			Image:                   cfg.Image,
-			Workdir:                 cfg.WorkDir,
-			HostMount:               cfg.HostWorkDir,
-			DockerSock:              cfg.DockerSocket,
-			Signing:                 signing,
-			StagingMount:            stagingMount,
-			KVREnabled:              kvrEnabled,
-			KVRMaxEntries:           cfg.KVRMaxEntries,
-			KVRSweepIntervalSecs:    cfg.KVRSweepIntervalSecs,
-			KVRSnapshotIntervalSecs: cfg.KVRSnapshotIntervalSecs,
-			DockerCaps:              cfg.DockerCaps,
-			DockerMemory:            cfg.DockerMemory,
-			DockerPidsLimit:         cfg.DockerPidsLimit,
-			DockerTmpfsSize:         cfg.DockerTmpfsSize,
-			DockerIOUring:           cfg.DockerIOUring,
-			BrowserEnabled:          cfg.BrowserEnabled,
-		})
-	}
-}
-
-// loadAgentPrompt reads the agent operating instructions from cfg.AgentPromptPath.
-// On success it logs the byte count and returns the content. On any failure
-// (missing file, read error, empty file, or no path configured) it logs a
-// warning and returns the full embedded prompt from prompts/agent.txt so the
-// process always has a complete system prompt — the bare binary is self-contained.
-func loadAgentPrompt(cfg config.Config) string {
-	embedded := strings.TrimRight(prompts.EmbeddedAgentPrompt, "\n")
-	path := cfg.AgentPromptPath
-	if path == "" {
-		return embedded
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		// Not-found is the normal case (file is optional — embedded prompt is
-		// the default). Only warn on real errors (permissions, I/O, etc.).
-		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using embedded prompt\n", path, err)
-		}
-		return embedded
-	}
-	if len(strings.TrimSpace(string(b))) == 0 {
-		fmt.Fprintf(os.Stderr, "agent prompt: warning: %s is empty — using embedded prompt\n", path)
-		return embedded
-	}
-	prompt := strings.TrimRight(string(b), "\n")
-	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)
-	return prompt
 }

@@ -1,82 +1,44 @@
 package main
 
+// run.go is the CLI shim for the "wakil run" subcommand (card #148 chunk 7,
+// plan D19). Argument parsing and stderr usage live here; all bootstrap/runtime
+// policy (App construction, session host, event projection, teardown) lives in
+// internal/wiring. This file must NOT import internal/agent or internal/tui.
+//
+// Exit codes are re-exported from wiring so existing tests keep compiling.
+
 import (
-	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 
-	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
-	"github.com/treeol/wakil/internal/policy"
-	"github.com/treeol/wakil/internal/proxy"
-	"github.com/treeol/wakil/internal/tools"
-	"github.com/treeol/wakil/internal/workflow"
-
-	"github.com/charmbracelet/x/ansi"
+	"github.com/treeol/wakil/internal/wiring"
 )
 
-// Exit codes for wakil run.
 const (
-	ExitOK             = 0 // task completed / VERDICT: PASS
-	ExitDeclined       = 1 // a tool call was declined by the headless confirmer
-	ExitGaps           = 2 // workflow final review flagged unresolved gaps
-	ExitError          = 3 // runtime error or fatal (4xx) request error
-	ExitBackendFailure = 4 // retryable backend error exhausted retries; session saved, resumable
+	ExitOK             = wiring.ExitOK
+	ExitDeclined       = wiring.ExitDeclined
+	ExitGaps           = wiring.ExitGaps
+	ExitError          = wiring.ExitError
+	ExitBackendFailure = wiring.ExitBackendFailure
 )
 
-// RunFlags holds the policy options for wakil run.
+// RunFlags is the parsed form of the run-subcommand flags. It is a local
+// mirror of wiring.HeadlessOptions, kept here so parseRunArgs (and its tests)
+// stay in package main without importing wiring's runtime policy types.
 type RunFlags struct {
-	Auto             bool   // approve non-destructive tool calls automatically
-	AllowDestructive bool   // allow destructive shell commands (rm, mv, etc.)
-	NoOracle         bool   // skip oracle review entirely; log "oracle disabled by flag"
-	TranscriptFile   string // write JSON-lines events here instead of stdout
-	// AllowExternal pre-authorises all external backends for the egress consent
-	// gate. Without this flag, a headless run that would route to an external
-	// backend aborts the task (failure_mode=declined) rather than silently sending
-	// session context to a cloud provider. Set only when the caller has already
-	// verified egress is acceptable for this run (e.g. a benchmark harness with
-	// explicit OR credentials).
-	AllowExternal bool
-
-	// AutoCounsel fires mashura__debug automatically when the struggle detector
-	// triggers, instead of printing a hint that no human is present to read.
-	// Requires --auto and oracle_enabled=true + an API key. Bounded by MaxCounsel.
-	//
-	// Benchmark usage:
-	//   --auto              bare-agent run (default; zero mashūra calls)
-	//   --auto --auto-counsel --max-counsel 3
-	//                       full-stack run (up to 3 diagnoses per task)
-	// The two modes produce different scores AND different costs — a full-stack
-	// run with OR models can easily be 5-10× more expensive per task.
-	AutoCounsel bool
-
-	// MaxCounsel caps auto-counsel calls per task. Default 3 when --auto-counsel
-	// is set without an explicit --max-counsel. 0 disables auto-counsel entirely.
-	MaxCounsel int
-
-	// AttachImage is the path to an image file to attach to the first user
-	// message. Set via --attach-image. Multiple paths can be comma-separated.
-	AttachImage string
-
-	// PolicyPath is the path to a JSON policy file (--policy flag).
-	// When set, the policy is loaded and applied to all confirm gates.
-	PolicyPath string
-
-	// ProfileName selects a built-in named profile (--profile flag).
-	// One of: read-only, auto-safe, auto-destructive, ci.
-	ProfileName string
-
-	// Verify enables the workflow verification runner (--verify flag).
-	// When set with --plan, deterministic verification commands (from config
-	// or auto-detected) run before the final oracle review. A non-zero exit
-	// fails verification → ExitGaps (verification failure IS an acceptance gap).
-	Verify bool
+	Auto             bool
+	AllowDestructive bool
+	NoOracle         bool
+	TranscriptFile   string
+	AllowExternal    bool
+	AutoCounsel      bool
+	MaxCounsel       int
+	AttachImage      string
+	PolicyPath       string
+	ProfileName      string
+	Verify           bool
 }
 
 // parseRunArgs parses the args that follow "run":
@@ -154,521 +116,26 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 	return task, planMode, flags, nil
 }
 
-// emitEvent writes one JSON-lines event to w. Errors are swallowed — output is
-// best-effort; a broken event stream must not mask the real exit code.
-func emitEvent(w io.Writer, event map[string]any) {
-	b, _ := json.Marshal(event)
-	fmt.Fprintf(w, "%s\n", b)
-}
-
-// headlessWriter adapts the free-form io.Writer interface (used by app.Out) to a
-// JSON-lines event stream. Text is accumulated until a newline, then flushed as
-// {"type":"output","line":"..."}. ANSI escape codes are stripped.
-type headlessWriter struct {
-	mu  sync.Mutex
-	buf strings.Builder
-	w   io.Writer
-}
-
-func (h *headlessWriter) Write(p []byte) (int, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	s := ansi.Strip(string(p))
-	h.buf.WriteString(s)
-	for {
-		idx := strings.IndexByte(h.buf.String(), '\n')
-		if idx < 0 {
-			break
-		}
-		line := h.buf.String()[:idx]
-		remaining := h.buf.String()[idx+1:]
-		h.buf.Reset()
-		h.buf.WriteString(remaining)
-		if strings.TrimSpace(line) != "" {
-			b, _ := json.Marshal(map[string]any{"type": "output", "line": line})
-			fmt.Fprintf(h.w, "%s\n", b)
-		}
-	}
-	return len(p), nil
-}
-
-// flush emits any partial (newline-free) buffered content. Called on exit.
-func (h *headlessWriter) flush() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if line := strings.TrimSpace(h.buf.String()); line != "" {
-		b, _ := json.Marshal(map[string]any{"type": "output", "line": line})
-		fmt.Fprintf(h.w, "%s\n", b)
-	}
-	h.buf.Reset()
-}
-
-// headlessConfirmer returns a agent.Confirmer that implements the headless run policy:
-//
-//   - --auto: approve most tool calls. Oracle is explicitly allowed — unlike TUI
-//     auto mode (which always gates oracle for user review), headless --auto has
-//     no user present so the opt-in is sufficient. Destructive shell commands are
-//     declined unless --allow-destructive is set.
-//   - no --auto: decline every confirmation-required call.
-//
-// When a policy is active on app, it is evaluated first (same precedence as TUI:
-// deny → SuspendAuto → allow → ask → legacy). Policy ask in headless mode is
-// treated as a decline (no human present to answer the prompt).
-//
-// When a call is declined, *declinedReason is set with a human-readable explanation
-// that is included in the final exit event.
-func headlessConfirmer(app *agent.App, flags RunFlags, declinedReason *string) agent.Confirmer {
-	return func(toolName, headline, detail string, readAction bool) bool {
-		// ── Policy evaluation (before legacy consent path) ────────────────
-		if pol := app.Policy(); pol != nil {
-			input := agent.BuildPolicyInput(toolName, detail, readAction)
-			result := pol.Evaluate(input)
-			switch result.Decision {
-			case policy.Deny:
-				*declinedReason = "blocked by policy: " + result.Reason +
-					" (rule: " + result.RuleName + ")"
-				return false
-			case policy.Allow:
-				// SuspendAuto carve-outs still fire — egress, destructive.
-				// These are hard safety gates that even policy allow cannot bypass.
-				// In headless, check the same flags the legacy path uses.
-				if reason := agent.SuspendAuto(toolName, app, detail); reason != "" {
-					switch {
-					case reason == "destructive command" && flags.AllowDestructive:
-						// Destructive shell allowed by --allow-destructive.
-					case reason == "external backend egress (privacy gate)" && flags.AllowExternal:
-						// External backend allowed by --allow-external.
-					default:
-						*declinedReason = "policy allowed but safety gate triggered: " + reason
-						return false
-					}
-				}
-				return true
-			case policy.Ask:
-				// No human present — treat as decline.
-				*declinedReason = "policy requires confirmation (ask): " + result.Reason
-				return false
-			}
-		}
-
-		if !flags.Auto {
-			*declinedReason = "confirmation required (rerun with --auto)"
-			return false
-		}
-		// Mashūra counsel (and the legacy oracle__ask alias) is allowed in headless
-		// --auto; the user opted in by passing the flag.
-		if tools.IsMashuraTool(toolName) {
-			return true
-		}
-		switch toolName {
-		case "external_backend":
-			// The P29 cloud-egress consent gate cannot prompt interactively in
-			// headless mode. --allow-external pre-authorises external backends;
-			// without it, the task is aborted with a clear failure reason rather
-			// than silently sending session context to a cloud provider.
-			if flags.AllowExternal {
-				return true
-			}
-			*declinedReason = "external backend requires --allow-external in headless mode"
-			return false
-		case "run_shell", "run_background":
-			if agent.IsDestructiveShell(agent.ShellCmdFromDetail(detail)) && !flags.AllowDestructive {
-				cmd := agent.Truncate(agent.ShellCmdFromDetail(detail), 80)
-				*declinedReason = "destructive command declined: " + cmd +
-					" (rerun with --allow-destructive)"
-				return false
-			}
-			return true
-		default:
-			return true
-		}
-	}
-}
-
-// runHeadlessApp is the core headless driver. It wires the headless confirmer and
-// output writer into a pre-built App and then runs either a single task or the
-// full /plan workflow. Returns one of the Exit* constants.
-//
-// A {"type":"tokens","input":N,"output":N} event is always emitted after the
-// done/error event so benchmark harnesses (e.g. Terminal-Bench) can record real
-// per-task token usage without instrumenting the proxy separately.
-//
-// Exported for tests; callers should use RunHeadless for the CLI entry point.
-func runHeadlessApp(ctx context.Context, app *agent.App, task string, planMode bool, flags RunFlags, out io.Writer) int {
-	hw := &headlessWriter{w: out}
-	// Session save: defer before hw.flush() so flush runs first (LIFO order).
-	// Only persist when --transcript is set: benchmark runs without tracing
-	// don't need entries in the session store.
-	if flags.TranscriptFile != "" {
-		defer app.SaveSession()
-	}
-	defer hw.flush()
-	// Card #121: drain the async registry at exit — committed costs land in
-	// app.Costs before SaveSession persists them (LIFO: this runs first), and
-	// undelivered results are reported honestly instead of silently dropped.
-	defer app.StopAllAsyncOps()
-
-	var declinedReason string
-	app.Out = hw
-	app.Confirm = headlessConfirmer(app, flags, &declinedReason)
-	app.Client.ResetGrounding()
-
-	var code int
-	if !planMode {
-		code = runSingleTaskHeadless(ctx, app, task, out, &declinedReason)
-	} else {
-		code = runWorkflowHeadless(ctx, app, task, flags, out, &declinedReason)
-	}
-
-	// Emit a token-summary event for adapters that need cost accounting.
-	// Summed across all sources so the adapter gets a single consolidated figure.
-	if app.Costs != nil {
-		_, rows := app.Costs.Snapshot()
-		var inTok, outTok int64
-		for _, r := range rows {
-			inTok += r.InputTok
-			outTok += r.OutputTok
-		}
-		emitEvent(out, map[string]any{"type": "tokens", "input": inTok, "output": outTok})
-	}
-
-	return code
-}
-
-// emitBackendFailure emits a backend_failure done event with the session ID so
-// a wrapper script can detect the exit code and resume automatically.
-func emitBackendFailure(app *agent.App, out io.Writer, err error) {
-	emitEvent(out, map[string]any{
-		"type":      "done",
-		"outcome":   "backend_failure",
-		"message":   err.Error(),
-		"resume_id": agent.ShortID(app.Client.ChatID),
-	})
-}
-
-func runSingleTaskHeadless(ctx context.Context, app *agent.App, task string, out io.Writer, declinedReason *string) int {
-	app.WorkflowStepTrace = nil
-	if err := driveHeadlessTurn(ctx, app, task); err != nil {
-		// HandleStreamError retries transient backend failures (500 etc.);
-		// on recovery it returns nil and we fall through to the success path.
-		if err = agent.HandleStreamError(ctx, app, err); err != nil {
-			if errors.Is(err, proxy.ErrBackendStream) {
-				emitBackendFailure(app, out, err)
-				return ExitBackendFailure
-			}
-			emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
-			return ExitError
-		}
-	}
-	agent.HandleEmptyResponse(ctx, app)
-
-	if *declinedReason != "" {
-		emitEvent(out, map[string]any{
-			"type": "done", "outcome": "declined", "reason": *declinedReason,
-		})
-		return ExitDeclined
-	}
-	emitEvent(out, map[string]any{"type": "done", "outcome": "pass"})
-	return ExitOK
-}
-
-// driveHeadlessTurn runs one user turn to its FINAL outcome, transparently
-// handling card #122 Phase 2 suspension: when the turn suspends on pending async
-// work, it awaits a completion (WaitForAsyncCompletion) and resumes until the
-// turn reaches a Final outcome. Returns the first Send/Resume error (raw — the
-// caller classifies with HandleStreamError).
-func driveHeadlessTurn(ctx context.Context, app *agent.App, task string) error {
-	out, err := app.SendOutcome(ctx, task)
-	if err != nil {
-		return err
-	}
-	for out.Kind == agent.TurnSuspended {
-		ok, werr := app.WaitForAsyncCompletion(ctx)
-		if werr != nil {
-			return werr
-		}
-		if !ok {
-			return nil // nothing left pending → treat as final
-		}
-		out, err = app.Resume(ctx)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func runWorkflowHeadless(ctx context.Context, app *agent.App, task string, flags RunFlags, out io.Writer, declinedReason *string) int {
-	// --no-oracle: disable before any oracle call can be issued, so handleReviewOracle
-	// returns "oracle not enabled" immediately and the WFReview switch case can log the
-	// correct "disabled by flag" reason rather than the generic "unavailable" one.
-	if flags.NoOracle {
-		app.Cfg.OracleEnabled = false
-	}
-
-	planPath := filepath.Join(app.Exec.Cwd(), ".wakil", "plan.md")
-	if _, err := app.Exec.RunShell(ctx, "mkdir -p .wakil"); err != nil {
-		emitEvent(out, map[string]any{"type": "error", "message": "cannot create .wakil: " + err.Error()})
-		return ExitError
-	}
-	if _, err := app.Exec.WriteFile(ctx, planPath, workflow.WFInitPlanContent(task)); err != nil {
-		emitEvent(out, map[string]any{"type": "error", "message": "cannot write plan.md: " + err.Error()})
-		return ExitError
-	}
-	app.SetWorkflow(&workflow.WorkflowState{
-		Task:     task,
-		Phase:    workflow.WFGather,
-		PlanPath: planPath,
-	})
-	return runWorkflowLoop(ctx, app, flags, out, declinedReason)
-}
-
-// runWorkflowLoop drives the plan workflow state machine on an already-initialized
-// app.Workflow. Separated from runWorkflowHeadless so tests can inject a pre-set
-// workflow without repeating the scaffold-write and phase-init.
-func runWorkflowLoop(ctx context.Context, app *agent.App, flags RunFlags, out io.Writer, declinedReason *string) int {
-	for app.Workflow != nil {
-		app.WorkflowStepTrace = nil
-		app.Client.ResetGrounding()
-
-		_, err := app.Send(ctx, "continue")
-		if err = agent.HandleStreamError(ctx, app, err); err != nil {
-			if errors.Is(err, proxy.ErrBackendStream) {
-				emitBackendFailure(app, out, err)
-				return ExitBackendFailure
-			}
-			emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
-			return ExitError
-		}
-		agent.HandleEmptyResponse(ctx, app)
-
-		if *declinedReason != "" {
-			emitEvent(out, map[string]any{
-				"type": "done", "outcome": "declined", "reason": *declinedReason,
-			})
-			return ExitDeclined
-		}
-		if app.Workflow == nil {
-			break
-		}
-
-		next := agent.HandleWorkflowTransition(ctx, app)
-		if app.Workflow == nil {
-			break // completed inside transition
-		}
-		if next != nil {
-			continue // auto-turn requested
-		}
-
-		// Waiting for user action — auto-handle based on phase.
-		switch app.Workflow.Phase {
-		case workflow.WFPresent:
-			// Auto-approve: skip stale-review check, advance to IMPLEMENT.
-			app.Workflow.Phase = workflow.WFImplement
-			app.Workflow.StepIdx = 1
-
-		case workflow.WFReview:
-			// handleReviewOracle already ran (inside handleWorkflowTransition) and the
-			// oracle was unavailable. This is the skip+warn fallback, not an initial skip.
-			// Distinguish two sub-cases so the transcript carries the right reason:
-			//   --no-oracle: oracle was deliberately disabled by the caller.
-			//   default:     oracle was tried (confirm gate auto-approved it) but failed.
-			var reason, logReason string
-			if flags.NoOracle {
-				reason = "oracle disabled by flag (--no-oracle)"
-				logReason = "oracle disabled by --no-oracle flag"
-			} else {
-				reason = "oracle review unavailable — " + app.Workflow.ReviewSkipReason
-				logReason = "headless: oracle unavailable"
-			}
-			emitEvent(out, map[string]any{"type": "warning", "message": reason})
-			agent.WFWriteReviewSkipForce(app, logReason)
-			app.Workflow.Phase = workflow.WFPresent
-
-		case workflow.WFImplement:
-			if app.Workflow.StepIdx > app.Workflow.StepCount {
-				// A declined verification command is a consent refusal, not a
-				// gap — report it as ExitDeclined with the reason.
-				if app.Workflow.VerifyDeclined || *declinedReason != "" {
-					reason := *declinedReason
-					if reason == "" {
-						reason = "verification command declined by consent gate"
-					}
-					emitEvent(out, map[string]any{
-						"type": "done", "outcome": "declined", "reason": reason,
-					})
-					return ExitDeclined
-				}
-				// Verification failure or oracle gaps — both map to ExitGaps.
-				// The outcome field distinguishes the cause for consumers.
-				outcome := "gaps"
-				msg := "final review flagged unresolved gaps"
-				if app.Workflow.VerifyFailed {
-					outcome = "verify_failed"
-					msg = "verification failed (see step log for details)"
-				}
-				emitEvent(out, map[string]any{
-					"type": "done", "outcome": outcome,
-					"message": msg,
-				})
-				return ExitGaps
-			}
-			// Paused by every-step oracle critique — auto-continue.
-			app.Workflow.StepIdx++
-			if app.Workflow.StepIdx > app.Workflow.StepCount {
-				// Last step was paused; run final review now.
-				agent.HandleFinalReview(ctx, app)
-				if app.Workflow != nil {
-					// Final review left the workflow open — same disambiguation
-					// as the main WFImplement waiting-state path above.
-					if app.Workflow.VerifyDeclined || *declinedReason != "" {
-						reason := *declinedReason
-						if reason == "" {
-							reason = "verification command declined by consent gate"
-						}
-						emitEvent(out, map[string]any{
-							"type": "done", "outcome": "declined", "reason": reason,
-						})
-						return ExitDeclined
-					}
-					outcome := "gaps"
-					msg := "final review flagged unresolved gaps"
-					if app.Workflow.VerifyFailed {
-						outcome = "verify_failed"
-						msg = "verification failed (see step log for details)"
-					}
-					emitEvent(out, map[string]any{"type": "done", "outcome": outcome, "message": msg})
-					return ExitGaps
-				}
-			}
-
-		default:
-			emitEvent(out, map[string]any{
-				"type":    "error",
-				"message": fmt.Sprintf("unexpected waiting state: %v", app.Workflow.PhaseName()),
-			})
-			return ExitError
-		}
-	}
-
-	emitEvent(out, map[string]any{"type": "done", "outcome": "pass"})
-	return ExitOK
-}
-
-// RunHeadless is the CLI entry point for "wakil run". It builds the App from cfg
-// and dispatches to runHeadlessApp. Returns the process exit code.
+// RunHeadless is the CLI entry point for "wakil run". It parses the flags and
+// delegates to wiring.RunHeadless. Returns the process exit code.
 func RunHeadless(cfg config.Config, args []string) int {
 	task, planMode, flags, err := parseRunArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return ExitError
 	}
-
-	exe, err := newExecutor(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "executor error:", err)
-		return ExitError
-	}
-	defer exe.Close()
-
-	app, res := buildApp(cfg, exe, buildAppOpts{
-		IsHeadless:  true,
-		AutoCounsel: flags.AutoCounsel,
-		MaxCounsel:  flags.MaxCounsel,
+	return wiring.RunHeadless(cfg, task, wiring.HeadlessOptions{
+		PlanMode:         planMode,
+		Auto:             flags.Auto,
+		AllowDestructive: flags.AllowDestructive,
+		AllowExternal:    flags.AllowExternal,
+		NoOracle:         flags.NoOracle,
+		AutoCounsel:      flags.AutoCounsel,
+		MaxCounsel:       flags.MaxCounsel,
+		AttachImage:      flags.AttachImage,
+		PolicyPath:       flags.PolicyPath,
+		ProfileName:      flags.ProfileName,
+		Verify:           flags.Verify,
+		TranscriptFile:   flags.TranscriptFile,
 	})
-	// Register resource cleanup immediately after buildApp so every error path
-	// below (invalid --attach-image, --policy failure, unknown --profile) is
-	// covered — the previous placement after those checks would leak the
-	// resources on early returns. LIFO: resources close before exe (lspMgr and
-	// browserMgr hold exe). StopAllAsyncOps is NOT called here — it is deferred
-	// separately inside runHeadlessApp so its SaveSession ordering is preserved
-	// (card #121); that defer runs when runHeadlessApp returns, which is before
-	// this defer. StopAllBackgroundProcs IS needed here: nothing else in the
-	// headless path stops background processes (run_background/auto-bg can be
-	// used headless), so skip would leak them until executor/container teardown.
-	defer func() {
-		app.StopAllBackgroundProcs()
-		if res.mcpMgr != nil {
-			res.mcpMgr.Close()
-		}
-		if res.lspMgr != nil {
-			res.lspMgr.Shutdown()
-		}
-		if res.browserMgr != nil {
-			res.browserMgr.Close()
-		}
-		if res.traceStore != nil {
-			res.traceStore.Close()
-		}
-		if res.memStore != nil {
-			res.memStore.Close()
-		}
-		if res.skillStore != nil {
-			res.skillStore.Close()
-		}
-		if res.sessionHistStore != nil {
-			res.sessionHistStore.Close()
-		}
-	}()
-
-	// --verify enables the workflow verification runner on top of any config
-	// setting. buildApp already set VerifyEnabled when cfg.Verify is non-empty;
-	// here we also enable it for the --verify flag (headless-only).
-	if flags.Verify {
-		app.VerifyEnabled = true
-	}
-
-	// Headless session: construct inline (no resume support in headless mode).
-	app.Session = &agent.Session{
-		ChatID:    app.Client.ChatID,
-		Model:     app.Client.Model,
-		Workspace: exe.WorkspaceRoot(),
-	}
-
-	// Load --attach-image(s) into PendingImages so the first Send attaches them.
-	if flags.AttachImage != "" {
-		for _, p := range strings.Split(flags.AttachImage, ",") {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			img, err := proxy.LoadImage(p)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "attach-image:", err)
-				return ExitError
-			}
-			app.PendingImages = append(app.PendingImages, img)
-		}
-	}
-
-	// Load --policy file or --profile built-in, and install on the app.
-	if flags.PolicyPath != "" {
-		p, err := policy.LoadFile(flags.PolicyPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "policy:", err)
-			return ExitError
-		}
-		app.SetPolicy(p)
-	} else if flags.ProfileName != "" {
-		p := policy.Profile(flags.ProfileName)
-		if p == nil {
-			fmt.Fprintf(os.Stderr, "policy: unknown profile %q — available: %v\n",
-				flags.ProfileName, policy.ProfileNames())
-			return ExitError
-		}
-		app.SetPolicy(p)
-	}
-
-	out := io.Writer(os.Stdout)
-	if flags.TranscriptFile != "" {
-		f, ferr := os.Create(flags.TranscriptFile)
-		if ferr != nil {
-			fmt.Fprintln(os.Stderr, "cannot create transcript:", ferr)
-			return ExitError
-		}
-		defer f.Close()
-		out = f
-	}
-
-	return runHeadlessApp(context.Background(), app, task, planMode, flags, out)
 }

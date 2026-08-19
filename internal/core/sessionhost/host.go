@@ -104,6 +104,15 @@ var (
 	// also wraps ErrInternal, so callers test with errors.Is(err, ErrEmitFailed)
 	// (specific) or errors.Is(err, ErrInternal) (general) — never ==.
 	ErrEmitFailed = fmt.Errorf("%w: durable emit failed", ErrInternal)
+	// ErrBackendFatal classifies a turn error as a fatal, non-retryable request
+	// error (e.g. a 4xx) rather than a transient backend failure. The wiring
+	// adapter wraps proxy-level fatal errors with this sentinel so the host can
+	// distinguish "retryable backend failure" (SessionError{reason:
+	// "backend_failure"}) from "request rejected" (SessionError{reason:
+	// "request_error"}) WITHOUT importing the proxy package (D12 — sessionhost
+	// stays agent/proxy-free). A driver then maps request_error to an exit-3
+	// ("error") outcome and backend_failure to the retryable exit-4 outcome.
+	ErrBackendFatal = errors.New("sessionhost: fatal backend request error")
 )
 
 // TurnFunc executes one turn for a session and returns the produced message
@@ -928,6 +937,11 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 	// (stream_error) and same error-state parking; only the SessionError
 	// reason differs, so the audit log does not lie about the cause.
 	internalErr := turnErr != nil && errors.Is(turnErr, ErrInternal)
+	// Fatal-request classification: a fatal 4xx (proxy.ErrBackendFatal, wrapped
+	// by the adapter as ErrBackendFatal) is a rejected request, not a retryable
+	// backend outage. Same stream_error outcome; SessionError reason
+	// "request_error" vs "backend_failure" lets the driver pick the exit code.
+	fatalReq := turnErr != nil && errors.Is(turnErr, ErrBackendFatal)
 
 	terminal := closing
 	var abandoned []inputEnvelope
@@ -960,6 +974,8 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 		reason := "backend_failure"
 		if internalErr {
 			reason = "internal_error"
+		} else if fatalReq {
+			reason = "request_error"
 		}
 		h.emitDraft(s, event.KindSessionError, event.SessionError{Reason: reason, Err: turnErr.Error()})
 		for _, q := range abandoned {
