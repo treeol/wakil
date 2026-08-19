@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/treeol/wakil/internal/config"
@@ -139,17 +140,20 @@ func newTestApp(url string, executor exec.Executor, confirm Confirmer) *App {
 
 func sseServer(t *testing.T, framesPerCall ...[]string) *httptest.Server {
 	t.Helper()
+	var mu sync.Mutex
 	call := 0
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
 			http.NotFound(w, r)
 			return
 		}
+		mu.Lock()
 		frames := framesPerCall[0]
 		if call < len(framesPerCall) {
 			frames = framesPerCall[call]
 		}
 		call++
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, ok := w.(http.Flusher)
 		if !ok {
