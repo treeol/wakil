@@ -58,12 +58,12 @@ func (f *fakeSessionEmitter) notifyList() []recordedEvent {
 
 func TestProjectNilEmitter(t *testing.T) {
 	// nil emitter must not panic.
-	projectAgentEvent(nil, agent.SysNoteMsg{Text: "hello"})
+	projectAgentEvent(nil, "", agent.SysNoteMsg{Text: "hello"})
 }
 
 func TestProjectSubagentStart(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SubagentStartMsg{
+	projectAgentEvent(emit, "", agent.SubagentStartMsg{
 		Task:       "find auth",
 		ChatID:     "abc-123",
 		Capability: "discovery",
@@ -89,7 +89,7 @@ func TestProjectSubagentStart(t *testing.T) {
 
 func TestProjectSubagentStartDefaultCapability(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SubagentStartMsg{
+	projectAgentEvent(emit, "", agent.SubagentStartMsg{
 		ChatID: "xyz",
 	})
 	p := emit.emitList()[0].payload.(event.SubagentSpawned)
@@ -100,7 +100,7 @@ func TestProjectSubagentStartDefaultCapability(t *testing.T) {
 
 func TestProjectSubagentActive(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SubagentActiveMsg{ChatID: "chat-1"})
+	projectAgentEvent(emit, "", agent.SubagentActiveMsg{ChatID: "chat-1"})
 	got := emit.notifyList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 notify, got %d", len(got))
@@ -112,7 +112,7 @@ func TestProjectSubagentActive(t *testing.T) {
 
 func TestProjectSubagentChunk(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SubagentChunkMsg{ChatID: "chat-1", Text: "found it"})
+	projectAgentEvent(emit, "", agent.SubagentChunkMsg{ChatID: "chat-1", Text: "found it"})
 	got := emit.notifyList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 notify, got %d", len(got))
@@ -128,7 +128,7 @@ func TestProjectSubagentChunk(t *testing.T) {
 
 func TestProjectSubagentFinished(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SubagentFinishedMsg{ChatID: "c1", Status: "ok"})
+	projectAgentEvent(emit, "", agent.SubagentFinishedMsg{ChatID: "c1", Status: "ok"})
 	got := emit.notifyList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 notify, got %d", len(got))
@@ -140,7 +140,7 @@ func TestProjectSubagentFinished(t *testing.T) {
 
 func TestProjectSubagentDone(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SubagentDoneMsg{ChatID: "c1"})
+	projectAgentEvent(emit, "", agent.SubagentDoneMsg{ChatID: "c1"})
 	got := emit.emitList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 emit, got %d", len(got))
@@ -159,7 +159,7 @@ func TestProjectSubagentDone(t *testing.T) {
 
 func TestProjectSubagentDoneFailed(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SubagentDoneMsg{ChatID: "c1", Err: "timeout"})
+	projectAgentEvent(emit, "", agent.SubagentDoneMsg{ChatID: "c1", Err: "timeout"})
 	p := emit.emitList()[0].payload.(event.SubagentCompleted)
 	if p.Status != "failed" {
 		t.Errorf("Status = %q, want %q", p.Status, "failed")
@@ -168,7 +168,7 @@ func TestProjectSubagentDoneFailed(t *testing.T) {
 
 func TestProjectAsyncJobStart(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	projectAgentEvent(emit, "", agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
 	got := emit.emitList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 emit, got %d", len(got))
@@ -187,7 +187,7 @@ func TestProjectAsyncJobStart(t *testing.T) {
 
 func TestProjectAsyncJobChunk(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "calling"})
+	projectAgentEvent(emit, "", agent.AsyncJobChunkMsg{OpID: "op-1", Text: "calling"})
 	got := emit.notifyList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 notify, got %d", len(got))
@@ -200,7 +200,7 @@ func TestProjectAsyncJobChunk(t *testing.T) {
 
 func TestProjectAsyncJobDone(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.AsyncJobDoneMsg{OpID: "op-1", Result: "the answer"})
+	projectAgentEvent(emit, "", agent.AsyncJobDoneMsg{OpID: "op-1", Result: "the answer"})
 	got := emit.emitList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 emit, got %d", len(got))
@@ -216,7 +216,7 @@ func TestProjectAsyncJobDone(t *testing.T) {
 
 func TestProjectAsyncJobDoneError(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.AsyncJobDoneMsg{OpID: "op-1", Err: "boom"})
+	projectAgentEvent(emit, "", agent.AsyncJobDoneMsg{OpID: "op-1", Err: "boom"})
 	p := emit.emitList()[0].payload.(event.AsyncJobCompleted)
 	if p.Status != "error" {
 		t.Errorf("Status = %q, want %q", p.Status, "error")
@@ -225,7 +225,7 @@ func TestProjectAsyncJobDoneError(t *testing.T) {
 
 func TestProjectSideQuestionChunk(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SideQuestionChunkMsg{ID: "sq-1", Text: "partial"})
+	projectAgentEvent(emit, "", agent.SideQuestionChunkMsg{ID: "sq-1", Text: "partial"})
 	got := emit.notifyList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 notify, got %d", len(got))
@@ -241,7 +241,7 @@ func TestProjectSideQuestionChunk(t *testing.T) {
 
 func TestProjectSideQuestionDone(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SideQuestionDoneMsg{ID: "sq-1"})
+	projectAgentEvent(emit, "", agent.SideQuestionDoneMsg{ID: "sq-1"})
 	got := emit.emitList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 emit, got %d", len(got))
@@ -254,7 +254,7 @@ func TestProjectSideQuestionDone(t *testing.T) {
 
 func TestProjectSideQuestionDoneError(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SideQuestionDoneMsg{ID: "sq-1", Err: errors.New("boom")})
+	projectAgentEvent(emit, "", agent.SideQuestionDoneMsg{ID: "sq-1", Err: errors.New("boom")})
 	p := emit.emitList()[0].payload.(event.SideQuestionCompleted)
 	if p.Status != "error" {
 		t.Errorf("Status = %q, want %q", p.Status, "error")
@@ -263,7 +263,7 @@ func TestProjectSideQuestionDoneError(t *testing.T) {
 
 func TestProjectAgentDoneLearnNudge(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.AgentDoneMsg{LearnNudge: "consider /learn"})
+	projectAgentEvent(emit, "", agent.AgentDoneMsg{LearnNudge: "consider /learn"})
 	got := emit.notifyList()
 	if len(got) != 1 {
 		t.Fatalf("want 1 notify, got %d", len(got))
@@ -279,7 +279,7 @@ func TestProjectAgentDoneLearnNudge(t *testing.T) {
 
 func TestProjectAgentDoneNoLearnNudge(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.AgentDoneMsg{})
+	projectAgentEvent(emit, "", agent.AgentDoneMsg{})
 	if len(emit.emitList()) != 0 {
 		t.Errorf("want 0 emits, got %d", len(emit.emitList()))
 	}
@@ -296,15 +296,41 @@ func TestProjectDroppedMessages(t *testing.T) {
 		agent.ModelListUpdatedMsg{},
 		agent.MCPReconnectedMsg{},
 		agent.TokRateMsg{Tps: 42.5},
-		agent.ToolStartMsg{},
-		agent.ToolResultMsg{},
 	}
 	for _, msg := range dropped {
 		emit := &fakeSessionEmitter{}
-		projectAgentEvent(emit, msg)
+		projectAgentEvent(emit, "", msg)
 		if len(emit.emitList()) != 0 || len(emit.notifyList()) != 0 {
 			t.Errorf("message %T should produce no events", msg)
 		}
+	}
+}
+
+func TestProjectToolEventsOnTurnEmitter(t *testing.T) {
+	// Tool events project onto the TURN emitter (routed by the hostTurn's
+	// EventSink closure); on the session emitter they would be rejected
+	// (turnScopedKinds). ToolStartMsg → tool_call_started (ArgDigest carries
+	// the primary arg), ToolResultMsg → tool_call_completed (Result preview).
+	start := &fakeSessionEmitter{}
+	projectAgentEvent(start, "trn_1", agent.ToolStartMsg{ToolCallID: "call_9", Name: "run_shell", Command: "ls -la"})
+	emitted := start.emitList()
+	if len(emitted) != 1 || emitted[0].kind != event.KindToolCallStarted {
+		t.Fatalf("want 1 tool_call_started, got %v", emitted)
+	}
+	started := emitted[0].payload.(event.ToolCallStarted)
+	if started.TurnID != "trn_1" || started.ToolCallID != "tcl_call_9" || started.Name != "run_shell" {
+		t.Errorf("ToolCallStarted = %+v", started)
+	}
+
+	done := &fakeSessionEmitter{}
+	projectAgentEvent(done, "trn_1", agent.ToolResultMsg{ToolCallID: "call_9", Name: "run_shell", Result: "file1\nfile2"})
+	emitted = done.emitList()
+	if len(emitted) != 1 || emitted[0].kind != event.KindToolCallCompleted {
+		t.Fatalf("want 1 tool_call_completed, got %v", emitted)
+	}
+	completed := emitted[0].payload.(event.ToolCallCompleted)
+	if completed.ToolCallID != "tcl_call_9" || completed.Status != "ok" || completed.ResultPreview != "file1\nfile2" {
+		t.Errorf("ToolCallCompleted = %+v", completed)
 	}
 }
 
@@ -313,7 +339,7 @@ func TestProjectSysNote(t *testing.T) {
 	// notices) projects to an ephemeral session_note so the wiring path shows
 	// the same status lines the old TUI saw.
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, agent.SysNoteMsg{Text: "· gather complete → plan phase"})
+	projectAgentEvent(emit, "", agent.SysNoteMsg{Text: "· gather complete → plan phase"})
 	notified := emit.notifyList()
 	if len(notified) != 1 {
 		t.Fatalf("want 1 notify, got %d", len(notified))
@@ -332,7 +358,7 @@ func TestProjectSysNote(t *testing.T) {
 
 func TestProjectUnknownMessage(t *testing.T) {
 	emit := &fakeSessionEmitter{}
-	projectAgentEvent(emit, "some unknown type")
+	projectAgentEvent(emit, "", "some unknown type")
 	if len(emit.emitList()) != 0 || len(emit.notifyList()) != 0 {
 		t.Error("unknown message should produce no events")
 	}
@@ -341,7 +367,7 @@ func TestProjectUnknownMessage(t *testing.T) {
 func TestProjectClosedEmitter(t *testing.T) {
 	emit := &fakeSessionEmitter{closed: true}
 	// Should not panic; Emit returns error, Notify drops.
-	projectAgentEvent(emit, agent.SubagentStartMsg{ChatID: "c1"})
+	projectAgentEvent(emit, "", agent.SubagentStartMsg{ChatID: "c1"})
 	if len(emit.emitList()) != 0 {
 		t.Error("closed emitter should not record emits")
 	}

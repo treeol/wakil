@@ -141,6 +141,14 @@ type hostTurn struct {
 	// session close."
 	sessionEmit sessionhost.SessionEmitter
 
+	// turnEmit is the CURRENT turn's turn-scoped emitter (7b3 m4). Set at the
+	// start of each turn and cleared when the turn ends; read by the
+	// EventSink closure to route tool-call messages (turn-scoped kinds —
+	// the session emitter rejects them by design, D24) to the live turn's
+	// emitter. nil between turns: tool calls only execute inside turns, so
+	// a nil turnEmit means there is nothing legal to emit.
+	turnEmit sessionhost.Emitter
+
 	mu         sync.Mutex
 	sessionID  event.SessionID // first session this turn served; zero until first use
 	turnActive bool           // true while the TurnFunc is executing a turn
@@ -292,7 +300,18 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 			ht.sessionEmit.Notify(event.KindTokRate, event.TokRate{Rate: rate})
 		}
 		app.EventSink = func(msg any) {
-			projectAgentEvent(ht.sessionEmit, msg)
+			// Tool-call messages are turn-scoped kinds (D24): the session
+			// emitter REJECTS them, so route them to the live turn's emitter
+			// when one exists. Everything else projects on the session
+			// surface (subagents, async jobs, notes, …).
+			switch msg.(type) {
+			case agent.ToolStartMsg, agent.ToolResultMsg:
+				if te := ht.turnEmit; te != nil {
+					projectAgentEvent(te, in.TurnID, msg)
+				}
+				return
+			}
+			projectAgentEvent(ht.sessionEmit, "", msg)
 		}
 	}
 
@@ -318,6 +337,18 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 		in.Emit.Notify(event.KindReasoningDelta, event.ReasoningDelta{Text: s})
 	}
 	app.Confirm = newHostConfirmer(ctx, app, in, ht.resolver, ht.asyncApproval, emitErr)
+
+	// Publish the turn-scoped emitter for the EventSink's tool-call routing
+	// (above) and clear it when the turn ends — the emitter is fenced at turn
+	// finalization anyway; keeping a stale reference would only mask that.
+	ht.mu.Lock()
+	ht.turnEmit = in.Emit
+	ht.mu.Unlock()
+	defer func() {
+		ht.mu.Lock()
+		ht.turnEmit = nil
+		ht.mu.Unlock()
+	}()
 
 	// Per-turn resets the TUI path performs before the turn (tui_cmds.go RunTurn).
 	app.ToolCache = nil

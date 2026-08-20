@@ -168,6 +168,76 @@ func TestWorkflowContinuationNotEnqueuedWithoutWorkflow(t *testing.T) {
 	}
 }
 
+// TestToolEventsFlowThroughTurn verifies tool-call events on the wiring path:
+// a backend tool call projects tool_call_started/tool_call_completed (durable,
+// turn-scoped) on the live turn's emitter, in order before TurnCompleted.
+// This is the display-parity proof for the TUI's running-tool status line.
+func TestToolEventsFlowThroughTurn(t *testing.T) {
+	first := toolCallFrames("call_1", "run_shell", `{"command":"echo hi"}`)
+	srv := sseServer(t, first, []string{contentChunk("done")})
+	defer srv.Close()
+
+	app := fakeApp(srv.URL)
+	turnFn, err := NewHostTurnHandle(app)
+	if err != nil {
+		t.Fatalf("NewHostTurnHandle: %v", err)
+	}
+	h := sessionhost.New(turnFn.Turn)
+	p := core.Principal{TenantID: "tnt_test", UserID: "usr_owner", Role: core.RoleOwner}
+	defer h.Close(context.Background())
+
+	s := createSessionT(t, h, p)
+	if _, err := h.SubmitInput(context.Background(), p, core.SubmitInputRequest{SessionID: s.ID, Text: "run echo"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+
+	waitUntil(t, func() bool {
+		g, _ := h.GetSession(context.Background(), p, s.ID)
+		return g.State == core.SessionIdle
+	})
+
+	events, err := h.ListEvents(context.Background(), p, s.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+
+	var toolStart, toolDone, turnDone *int
+	startSeq, doneSeq, turnSeq := -1, -1, -1
+	for i := range events {
+		switch events[i].Kind {
+		case event.KindToolCallStarted:
+			toolStart = &i
+			startSeq = int(events[i].Seq)
+		case event.KindToolCallCompleted:
+			toolDone = &i
+			doneSeq = int(events[i].Seq)
+		case event.KindTurnCompleted:
+			turnDone = &i
+			turnSeq = int(events[i].Seq)
+		}
+	}
+	if toolStart == nil {
+		t.Fatal("no tool_call_started emitted — running-tool indicator would be dead on the wiring path")
+	}
+	if toolDone == nil {
+		t.Fatal("no tool_call_completed emitted")
+	}
+	if turnDone == nil {
+		t.Fatal("no turn_completed")
+	}
+	if !(startSeq < doneSeq && doneSeq < turnSeq) {
+		t.Fatalf("tool event ordering violated: start=%d done=%d turnDone=%d", startSeq, doneSeq, turnSeq)
+	}
+
+	st := events[*toolStart].Payload.(event.ToolCallStarted)
+	if st.Name != "run_shell" {
+		t.Errorf("ToolCallStarted.Name = %q, want run_shell", st.Name)
+	}
+	if st.TurnID == "" {
+		t.Error("ToolCallStarted.TurnID empty — must stamp the turn")
+	}
+}
+
 // TestWorkflowNotesProjected verifies the in-turn workflow progress notes
 // (wfProgNote → SysNoteMsg via EventSink) reach subscribers as ephemeral
 // session_note events — the display parity for phase transitions.

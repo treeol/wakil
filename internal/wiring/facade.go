@@ -130,15 +130,43 @@ func (f *wiringFacade) CloseSession(ctx context.Context, principal core.Principa
 
 // ---- EventReader delegation ----
 
-func (f *wiringFacade) Subscribe(ctx context.Context, principal core.Principal, sessionID event.SessionID, after event.Seq) (core.EventSubscription, error) {
+// Subscribe returns a live event stream for the session and starts the
+// facade-owned event pump (7b3 m4): every event — durable and ephemeral — is
+// delivered to the given callback (typically tea.Program.Send). The pump is
+// stopped and the subscription closed by Close; rotation stops it via Stop.
+//
+// The subscription is also retained on the facade (f.subscription) for
+// callers that read it directly.
+func (f *wiringFacade) Subscribe(ctx context.Context, principal core.Principal, sessionID event.SessionID, after event.Seq, deliver func(event.Event)) (core.EventSubscription, error) {
+	f.mu.Lock()
+	closed := f.closed
+	f.mu.Unlock()
+	if closed {
+		return nil, fmt.Errorf("facade closed")
+	}
 	sub, err := f.host.Subscribe(ctx, principal, sessionID, after)
 	if err != nil {
 		return nil, err
 	}
+	pump := NewEventPump(sub, f.host, principal, sessionID, after, deliver)
 	f.mu.Lock()
 	f.subscription = sub
+	f.pump = pump
 	f.mu.Unlock()
 	return sub, nil
+}
+
+// StartEventPump runs the facade's event pump in a goroutine until it is
+// stopped (Close or rotation). No-op when no pump exists (Subscribe not
+// called). It is separate from Subscribe so the caller controls when
+// delivery begins (e.g. after the TUI program is constructed).
+func (f *wiringFacade) StartEventPump(ctx context.Context) {
+	f.mu.Lock()
+	pump := f.pump
+	f.mu.Unlock()
+	if pump != nil {
+		go pump.Run(ctx)
+	}
 }
 
 func (f *wiringFacade) ListEvents(ctx context.Context, principal core.Principal, sessionID event.SessionID, after event.Seq, limit int) ([]event.Event, error) {

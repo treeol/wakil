@@ -81,43 +81,51 @@ func toolCallIDFromString(tcID string) event.ToolCallID {
 // globalProg.Send is mapped here to an event.Event on the session-scoped
 // emitter.
 //
+// turnID is the current turn's ID; it stamps turn-scoped tool events
+// (ToolCallStarted.TurnID is a required field). Empty when the projection
+// runs in a detached context (no live turn) — tool events never fire there
+// (the EventSink closure routes them to the turn emitter only).
+//
 // Messages with no domain-event counterpart are silently dropped (they are
 // either client-local display signals or snapshot fields per D24).
 //
 // The projection is best-effort: a closed session emitter returns
 // ErrEmitterClosed from Emit, which is logged and ignored (the session is
 // closing; the event is lost by design). Ephemeral Notify calls drop silently.
-func projectAgentEvent(emit sessionhost.SessionEmitter, msg any) {
+func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg any) {
 	if emit == nil {
 		return
 	}
 	switch m := msg.(type) {
 
-	// ---- Tool events (turn-scoped durable via session emitter) ----
-	// NOTE: tool events are turn-scoped (turnScopedKinds), but the agent
-	// sends them through EventSink which is wired to the session emitter.
-	// The session emitter REJECTS turn-scoped kinds. This is by design:
-	// the wiring adapter handles tool events through the turn-scoped Emit
-	// (installed via app.Out and the confirmer), NOT through EventSink.
-	// ToolStartMsg and ToolResultMsg arriving through EventSink are a
-	// legacy path that should not fire in the wiring configuration.
-	// They are silently dropped here to avoid emitter errors.
+	// ---- Tool events (turn-scoped durable via the TURN emitter) ----
+	// NOTE: the session emitter REJECTS turn-scoped kinds (host.go's
+	// turnScopedKinds — a tool event must never land after its turn's
+	// TurnCompleted). The hostTurn's EventSink closure therefore routes
+	// ToolStartMsg/ToolResultMsg to the LIVE TURN's emitter, and this
+	// projection handles them there. When projectAgentEvent is called with
+	// the session emitter (detached contexts), these cases never fire — the
+	// closure filters them out first.
 
 	case agent.ToolStartMsg:
-		// Dropped: tool events go through the turn-scoped emitter path
-		// (hostturn.go installs app.Out for streaming; the confirmer
-		// handles approvals). The agent sends ToolStartMsg through
-		// sendEvent as a display signal for the old TUI path; the wiring
-		// adapter does not need it as a domain event because tool-call
-		// events are emitted by the host's own tool execution.
-		_ = m
+		// Durable (turn-scoped): tool_call_started.
+		emit.Emit(event.KindToolCallStarted, event.ToolCallStarted{
+			TurnID:     turnID,
+			ToolCallID: toolCallIDFromString(m.ToolCallID),
+			Name:       m.Name,
+			ArgDigest:  m.Command,
+		})
 
 	case agent.ToolResultMsg:
-		// Dropped: same as ToolStartMsg — the turn-scoped path handles
-		// tool completion. The result text goes through app.Out (ProgWriter
-		// → MessageDelta). The domain ToolCallCompleted is emitted by the
-		// host's tool execution layer, not projected from this message.
-		_ = m
+		// Durable (turn-scoped): tool_call_completed. The full result already
+		// streams via app.Out (ProgWriter → MessageDelta); the event carries
+		// the truncated Result as the preview.
+		emit.Emit(event.KindToolCallCompleted, event.ToolCallCompleted{
+			ToolCallID:    toolCallIDFromString(m.ToolCallID),
+			Name:          m.Name,
+			Status:        "ok",
+			ResultPreview: m.Result,
+		})
 
 	// ---- Subagent events ----
 

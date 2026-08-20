@@ -312,8 +312,14 @@ type Facade interface {
 	// CloseSession ends the session.
 	CloseSession(ctx context.Context, principal core.Principal, sessionID event.SessionID) error
 
-	// Subscribe returns a live event stream for the session.
-	Subscribe(ctx context.Context, principal core.Principal, sessionID event.SessionID, after event.Seq) (core.EventSubscription, error)
+	// Subscribe returns a live event stream for the session and starts the
+	// facade-owned event pump: every event is delivered to the given callback
+	// (the TUI's tea.Program.Send). StartEventPump begins delivery. Close
+	// stops the pump and closes the subscription.
+	Subscribe(ctx context.Context, principal core.Principal, sessionID event.SessionID, after event.Seq, deliver func(event.Event)) (core.EventSubscription, error)
+	// StartEventPump begins event delivery (the pump goroutine). Call after
+	// the consumer (TUI program) is constructed. No-op without Subscribe.
+	StartEventPump(ctx context.Context)
 	// ListEvents returns the durable history.
 	ListEvents(ctx context.Context, principal core.Principal, sessionID event.SessionID, after event.Seq, limit int) ([]event.Event, error)
 	// SessionSnapshot returns the session metadata + durable events.
