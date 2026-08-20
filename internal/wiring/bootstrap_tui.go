@@ -199,3 +199,33 @@ func (r *TUIRuntime) StartEventPump(ctx context.Context) {
 		wf.StartEventPump(ctx)
 	}
 }
+
+// SubscribeLive subscribes the runtime facade's event stream with the given
+// deliver callback (the tea.Program.Send) and leaves the pump armed for
+// StartEventPump. main.go calls this AFTER tea.NewProgram/SetProgramSend,
+// because BootstrapTUI cannot subscribe at construction time — prog.Send does
+// not exist yet. It mirrors the rotation path (applyRotation), which
+// subscribes lazily against programSend.
+//
+// Without this call on first boot the facade has NO subscription and therefore
+// NO pump (StartEventPump is a no-op when Subscribe was never called): the
+// host still runs every submitted turn — billing the request — but
+// TurnStarted/MessageDelta/TurnCompleted are never delivered to the TUI, so
+// the optimistic "streaming" state never clears and the answer never renders.
+func (r *TUIRuntime) SubscribeLive(ctx context.Context, deliver func(event.Event)) error {
+	if deliver == nil {
+		return nil
+	}
+	wf, ok := r.Facade.(*wiringFacade)
+	if !ok || wf == nil {
+		return fmt.Errorf("tui bootstrap: subscribe: facade is not a wiring facade")
+	}
+	head := event.Seq(0)
+	if snap, err := wf.SessionSnapshot(ctx, r.Principal, wf.sessionID); err == nil {
+		head = snap.LastSeq
+	}
+	if _, err := wf.Subscribe(ctx, r.Principal, wf.sessionID, head, deliver); err != nil {
+		return fmt.Errorf("tui bootstrap: subscribe: %w", err)
+	}
+	return nil
+}

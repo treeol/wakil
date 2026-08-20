@@ -74,3 +74,52 @@ func TestBootstrapTUIResumeMissing(t *testing.T) {
 		t.Fatal("resume of unknown session should fail")
 	}
 }
+
+// TestBootstrapTUISubscribeLive verifies the manual-subscribe path main.go
+// uses: BootstrapTUI with deliver=nil (prog.Send does not exist yet at
+// construction), then SubscribeLive(prog.Send) once the program exists. A
+// submitted turn must deliver its turn events through the callback — the
+// regression test for the "stuck streaming" bug where a nil-deliver bootstrap
+// left the facade with no subscription → no pump → turn events never reached
+// the TUI.
+func TestBootstrapTUISubscribeLive(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.ExecMode = "direct"
+
+	rt, cleanup, err := BootstrapTUI(cfg, fakeExec{}, "", nil, BootstrapTUIOpts{})
+	if err != nil {
+		t.Fatalf("BootstrapTUI: %v", err)
+	}
+	defer cleanup()
+
+	var mu sync.Mutex
+	var delivered []event.Event
+	if err := rt.SubscribeLive(context.Background(), func(ev event.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		delivered = append(delivered, ev)
+	}); err != nil {
+		t.Fatalf("SubscribeLive: %v", err)
+	}
+
+	rt.StartEventPump(context.Background())
+	snap := rt.Facade.Snapshot()
+	if _, err := rt.Facade.SubmitInput(context.Background(), rt.Principal, core.SubmitInputRequest{
+		SessionID: snap.SessionID,
+		Text:      "hello",
+	}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+
+	waitUntil(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, ev := range delivered {
+			if ev.Kind == event.KindTurnCompleted {
+				return true
+			}
+		}
+		return false
+	})
+}

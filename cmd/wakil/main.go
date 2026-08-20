@@ -9,6 +9,7 @@ import (
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/proxy"
@@ -160,6 +161,19 @@ func main() {
 		tea.WithMouseCellMotion(),
 	)
 	tui.SetProgramSend(prog.Send)
+	// Subscribe the facade's event stream now that prog.Send exists, then
+	// start delivery. BootstrapTUI could not subscribe at construction (prog
+	// did not exist yet), so the deliver callback is bound here. Without this
+	// the facade has no subscription → no pump → turns run server-side but
+	// their events never reach the TUI (the UI stays stuck on "streaming").
+	if err := rt.SubscribeLive(context.Background(), func(ev event.Event) {
+		prog.Send(ev)
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "subscribe error:", err)
+		cleanup()
+		exe.Close()
+		os.Exit(1)
+	}
 	rt.StartEventPump(context.Background())
 
 	// Redirect raw diagnostics to a session log file BEFORE prog.Run() so a
