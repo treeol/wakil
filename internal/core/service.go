@@ -322,6 +322,12 @@ type SessionService interface {
 	// and the SessionClosed event is delivered asynchronously — completion is
 	// observed via EventReader, not via this call's return (doc §5.6).
 	CloseSession(ctx context.Context, principal Principal, sessionID event.SessionID) error
+	// DeleteSession soft-deletes a session: it closes the session if still
+	// running, then marks it as deleted. Deleted sessions are excluded from
+	// GetSession and ListSessions (returning ErrSessionNotFound), but their
+	// events remain in the store for audit. A deleted session cannot be
+	// revived. Only RoleMember and above may delete (P2 command, service.go:70).
+	DeleteSession(ctx context.Context, principal Principal, sessionID event.SessionID) error
 }
 
 // EventReader is the observation surface (D7). It exposes both live streaming

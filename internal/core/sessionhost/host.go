@@ -562,6 +562,40 @@ func (h *Host) CloseSession(ctx context.Context, principal core.Principal, sessi
 	return nil
 }
 
+// ---- DeleteSession (P2) ----
+
+func (h *Host) DeleteSession(ctx context.Context, principal core.Principal, sessionID event.SessionID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := principal.Validate(); err != nil {
+		return err
+	}
+	if err := sessionID.Validate(); err != nil {
+		return core.ErrInvalidInput
+	}
+	s, err := h.lookup(principal, sessionID)
+	if err != nil {
+		return err
+	}
+	if !writerAllowed(principal.Role) {
+		return core.ErrNotAuthorized
+	}
+
+	// Close the session if it's still active (initiates cancellation, drains
+	// the turn). If already closed, requestClose is a no-op.
+	h.requestClose(s, "deleted")
+
+	// Wait for the run loop to finish if it's still running, then mark as
+	// deleted. We don't block here — the soft-delete takes effect immediately
+	// for query visibility; the drain happens asynchronously.
+	s.mu.Lock()
+	s.deleted = true
+	s.mu.Unlock()
+
+	return nil
+}
+
 // ---- SessionReader ----
 
 func (h *Host) GetSession(ctx context.Context, principal core.Principal, sessionID event.SessionID) (core.Session, error) {
@@ -599,6 +633,12 @@ func (h *Host) ListSessions(ctx context.Context, principal core.Principal) ([]co
 
 	out := make([]core.Session, 0, len(sessions))
 	for _, s := range sessions {
+		s.mu.Lock()
+		if s.deleted {
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
 		out = append(out, h.snapshot(s))
 	}
 	return out, nil
@@ -815,6 +855,7 @@ type session struct {
 	interrupted bool
 	closing     string // non-empty once close is requested; the SessionClosed reason
 	closedAt    time.Time
+	deleted     bool // soft-delete: excluded from GetSession/ListSessions; events remain
 
 	// pendingApproval tracks an async approval parked in awaiting_approval
 	// (7b2 D25). Non-nil only while a turn goroutine is blocked on a decision
@@ -925,6 +966,12 @@ func (h *Host) lookup(principal core.Principal, sid event.SessionID) (*session, 
 	s := h.sessions[sid]
 	h.mu.Unlock()
 	if s == nil || s.tenant != principal.TenantID {
+		return nil, core.ErrSessionNotFound
+	}
+	s.mu.Lock()
+	deleted := s.deleted
+	s.mu.Unlock()
+	if deleted {
 		return nil, core.ErrSessionNotFound
 	}
 	return s, nil
