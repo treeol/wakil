@@ -52,6 +52,10 @@ type InfoSnapshot struct {
 	// Workflow sidebar label ("" when no workflow is active).
 	WorkflowLabel string
 
+	// InfoPanelOpen reports the persisted info-panel toggle (restored
+	// per-session; the TUI seeds its toggle state from it).
+	InfoPanelOpen bool
+
 	// MCP servers: name → status string ("up", "down", …) plus tool count.
 	MCPServers []MCPServerInfo
 

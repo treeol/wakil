@@ -67,25 +67,33 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 			return nil, nil, fmt.Errorf("tui bootstrap: %w", err)
 		}
 	} else {
-		f, err = mgr.NewConversation(ctx, principal)
+		f, err = mgr.NewConversation(ctx, principal, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("tui bootstrap: %w", err)
 		}
 	}
 
 	// Subscribe the event stream and arm the pump (not started until the
-	// caller invokes StartEventPump). Subscription begins at seq 0 so the
-	// TUI sees the full session history — the resume path rebuilds its
-	// viewport from the snapshot's Conv, and live events replay from the
-	// start (the projection skips what it already rendered via Seq
-	// bookkeeping in a later refinement; for now the TUI is the only
-	// consumer and renders from the snapshot, ignoring replayed durable
-	// events it already folded).
-	wf, ok := f.(*wiringFacade)
-	if ok && deliver != nil {
-		if _, err := wf.Subscribe(ctx, principal, wf.sessionID, 0, deliver); err != nil {
-			_ = mgr.Close(f)
-			return nil, nil, fmt.Errorf("tui bootstrap: subscribe: %w", err)
+	// caller invokes StartEventPump). The subscription begins at the session's
+	// CURRENT durable head (not seq 0): the TUI hydrates its view from the
+	// facade snapshot (Snapshot().Conv for a resumed session), and replaying
+	// the durable history would re-open dead confirm gates (replayed
+	// ApprovalRequested), re-render committed messages, and re-arm
+	// auto-close timers. Live-only delivery: the pump carries everything
+	// emitted AFTER the TUI attached. The subscription's gap recovery is
+	// anchored at the same head (NewEventPump initialSeq), so a gap between
+	// subscribe and pump-start replays only the missed live tail, never the
+	// pre-attach history.
+	head := event.Seq(0)
+	if wf, ok := f.(*wiringFacade); ok {
+		if snap, err := wf.SessionSnapshot(ctx, principal, wf.sessionID); err == nil {
+			head = snap.LastSeq
+		}
+		if deliver != nil {
+			if _, err := wf.Subscribe(ctx, principal, wf.sessionID, head, deliver); err != nil {
+				_ = mgr.Close(f)
+				return nil, nil, fmt.Errorf("tui bootstrap: subscribe: %w", err)
+			}
 		}
 	}
 

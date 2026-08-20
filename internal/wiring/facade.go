@@ -20,6 +20,7 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -242,8 +243,6 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 		SubagentModel:   app.EffectiveSubagentModel(),
 		PromptNote:      app.AgentPromptNote(),
 		Image:           app.Cfg.Image,
-		OracleLabel:     mashuraPanelLabel(app.Cfg),
-		OracleOn:        app.Cfg.OracleEnabled,
 		SearXngURL:      app.Cfg.SearXngURL,
 		MentionBase:     app.Cfg.MentionBase,
 		ContextLimit:    toClientContextLimit(app.ContextLimit()),
@@ -256,6 +255,19 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 
 	if app.Workflow != nil {
 		info.WorkflowLabel = app.Workflow.SidebarLabel()
+	}
+	info.InfoPanelOpen = app.InfoPanelOpen
+
+	// Oracle label with the "no key" fallback the old TUI computed inline
+	// (env checks belong wiring-side, not in the render path).
+	if app.Cfg.OracleEnabled {
+		anthropicOk := os.Getenv(app.Cfg.OracleAPIKeyEnv) != ""
+		openrouterOk := os.Getenv("OPENROUTER_API_KEY") != ""
+		if anthropicOk || openrouterOk {
+			info.OracleLabel = mashuraPanelLabel(app.Cfg)
+		} else {
+			info.OracleLabel = "no key"
+		}
 	}
 
 	// Endpoint names for completion ("inherit" first, sorted rest).
@@ -340,22 +352,26 @@ func mashuraShortModel(s string) string {
 
 // ---- Client-initiated mutations ----
 
-// bumpVersion increments the snapshot revision counter. Called by every
-// facade-mediated mutation so a client can detect a stale snapshot by version.
+// bumpVersion increments the snapshot revision counter. Called AFTER every
+// facade-mediated mutation (mutate-then-bump, never bump-then-mutate: a
+// reader between the bump and the mutation would see a new version with
+// stale data, and the later fresh fetch would carry the SAME version — the
+// staleness check would miss it forever) so a client can detect a stale
+// snapshot by version.
 func (f *wiringFacade) bumpVersion() {
 	f.mu.Lock()
 	f.snapshotVersion++
 	f.mu.Unlock()
 }
 
-func (f *wiringFacade) SetAutoApprove(v bool)      { f.bumpVersion(); f.app.SetAutoApprove(v) }
-func (f *wiringFacade) SetAllowDestructive(v bool) { f.bumpVersion(); f.app.SetAllowDestructive(v) }
-func (f *wiringFacade) RevokeAuto()                { f.bumpVersion(); f.app.RevokeAuto() }
+func (f *wiringFacade) SetAutoApprove(v bool)      { f.app.SetAutoApprove(v); f.bumpVersion() }
+func (f *wiringFacade) SetAllowDestructive(v bool) { f.app.SetAllowDestructive(v); f.bumpVersion() }
+func (f *wiringFacade) RevokeAuto()                { f.app.RevokeAuto(); f.bumpVersion() }
 
 func (f *wiringFacade) SetWorkflow(wf *sessionclient.WorkflowSnapshot) {
-	f.bumpVersion()
 	if wf == nil {
 		f.app.SetWorkflow(nil)
+		f.bumpVersion()
 		return
 	}
 	f.app.SetWorkflow(&workflow.WorkflowState{
@@ -365,6 +381,7 @@ func (f *wiringFacade) SetWorkflow(wf *sessionclient.WorkflowSnapshot) {
 		StepIdx:   wf.StepIdx,
 		PlanPath:  wf.PlanPath,
 	})
+	f.bumpVersion()
 }
 
 // workflowPhaseFromName maps a WorkflowSnapshot phase name back to the
@@ -391,8 +408,8 @@ func workflowPhaseFromName(name string) workflow.WorkflowPhase {
 }
 
 func (f *wiringFacade) AppendSystemMessage(m proxy.Message) {
+	f.app.AppendSystemMessage(m)
 	f.bumpVersion()
-	f.app.Conv = append(f.app.Conv, m)
 }
 
 func (f *wiringFacade) SaveSession() { f.app.SaveSession() }
@@ -404,7 +421,6 @@ func (f *wiringFacade) ConsumeStartupNote() string {
 }
 
 func (f *wiringFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {
-	f.bumpVersion()
 	f.app.SaveRepoState(func(s *agent.RepoState) {
 		// Initialize the mutator from the current repo state so the caller
 		// only needs to set the fields it wants to change — unset fields
@@ -437,38 +453,39 @@ func (f *wiringFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator
 		s.AutoApprove = m.AutoApprove
 		s.InfoPanelOpen = m.InfoPanelOpen
 	})
+	f.bumpVersion()
 }
 
-func (f *wiringFacade) SetInfoPanelOpen(open bool) { f.bumpVersion(); f.app.SetInfoPanelOpen(open) }
+func (f *wiringFacade) SetInfoPanelOpen(open bool) { f.app.SetInfoPanelOpen(open); f.bumpVersion() }
 
 func (f *wiringFacade) SetCtxLimit(lim sessionclient.ContextLimit) {
-	f.bumpVersion()
 	f.app.CtxLimit = toAgentContextLimit(lim)
+	f.bumpVersion()
 }
 
 func (f *wiringFacade) SetModelList(models []string) {
-	f.bumpVersion()
 	f.app.ModelList = append([]string(nil), models...)
+	f.bumpVersion()
 }
 
 func (f *wiringFacade) SetTools(tools []proxy.Tool) {
-	f.bumpVersion()
 	f.app.Tools = append([]proxy.Tool(nil), tools...)
+	f.bumpVersion()
 }
 
 func (f *wiringFacade) ReplacePendingImages(imgs []proxy.ImagePart) {
-	f.bumpVersion()
 	f.app.PendingImages = append([]proxy.ImagePart(nil), imgs...)
+	f.bumpVersion()
 }
 
 func (f *wiringFacade) AddPendingImage(img proxy.ImagePart) {
-	f.bumpVersion()
 	f.app.PendingImages = append(f.app.PendingImages, img)
+	f.bumpVersion()
 }
 
 func (f *wiringFacade) ClearPendingImages() {
-	f.bumpVersion()
 	f.app.PendingImages = nil
+	f.bumpVersion()
 }
 
 // ---- Side questions ----
@@ -578,21 +595,200 @@ func (f *wiringFacade) LoadSession(idOrPrefix string) (*sessionclient.SessionSum
 // ConversationManager.HandoffConversation, which runs the pipeline exactly
 // once, asynchronously.
 func (f *wiringFacade) DispatchCommand(line string) sessionclient.CommandResult {
-	if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "/handoff" {
-		return f.dispatchHandoff(fields)
+	if fields := strings.Fields(line); len(fields) > 0 {
+		switch fields[0] {
+		case "/handoff":
+			return f.dispatchHandoff(fields)
+		case "/new", "/reset":
+			// Intercepted (m4b): agent.HandleTUICommand's /new & /reset call
+			// app.NewConversation + finalizeSessionHistory on the OLD App —
+			// wrong target on the wiring path. Rotation must build a fresh
+			// App/facade through the manager; session-history finalize runs
+			// there against the old session (it belongs with "old session is
+			// final"). Here we only classify.
+			return sessionclient.CommandResult{
+				Handled: true,
+				Rotate:  &sessionclient.RotateRequest{Type: "new"},
+				Rotating: true,
+			}
+		case "/resume":
+			return f.dispatchResume(fields)
+		}
 	}
 	handled, quit, cmd := agent.HandleTUICommand(line, f.app)
 	if !handled {
 		return sessionclient.CommandResult{}
 	}
-	// The agent returns a Cmd (func() Msg). We interpret it to produce a
-	// CommandResult. This is the transition point where agent.Cmd is
-	// translated to the agent-free CommandResult.
+	// Commands can mutate authoritative App state repo-side (/backend,
+	// /model, /mcp reconnect, /auto, …) with no corresponding event (D24:
+	// query-state). Bump the snapshot revision so the TUI's post-command
+	// re-fetch sees fresh state.
+	f.bumpVersion()
 	if cmd == nil {
 		return sessionclient.CommandResult{Handled: true, Quit: quit}
 	}
 	msg := cmd()
-	return interpretAgentMsg(msg, quit)
+	return f.interpretAgentMsg(msg, quit)
+}
+
+// dispatchResume classifies /resume (m4b): bare /resume opens the interactive
+// picker (TUI-local, session list via ListSessions); /resume <id> rotates to
+// that session through the manager. The agent's /resume Cmds either load the
+// session into the OLD App (ResumeSessionMsg — wrong target on the wiring
+// path) or open the picker; both are replaced here.
+func (f *wiringFacade) dispatchResume(fields []string) sessionclient.CommandResult {
+	if len(fields) == 1 || (len(fields) == 2 && fields[1] == "all") {
+		return sessionclient.CommandResult{Handled: true, ResumePicker: true}
+	}
+	return sessionclient.CommandResult{
+		Handled: true,
+		Rotate: &sessionclient.RotateRequest{
+			Type:    "resume",
+			Session: nil, // resolved by the manager from the id/prefix
+		},
+		Rotating: true,
+	}
+}
+
+// interpretAgentMsg translates an agent.Msg (returned by agent.HandleTUICommand)
+// into a sessionclient.CommandResult. It type-switches on the message type
+// and maps each to the corresponding CommandResult field.
+//
+// Batch recursion: commands like /backend return agent.BatchMsg{note, probe}.
+// Every sub-Cmd is executed and interpreted; side effects (ctx-limit probes,
+// model-list fetches) are applied to the App HERE, on the facade's side of
+// the boundary, because no event carries them (D24: query-state, not events)
+// and the TUI has no way to apply agent messages. First applicable action
+// (Submit/Rotate/…) wins; notices concatenate.
+func (f *wiringFacade) interpretAgentMsg(msg any, quit bool) sessionclient.CommandResult {
+	cr := sessionclient.CommandResult{Handled: true, Quit: quit}
+	if msg == nil {
+		return cr
+	}
+	if batch, ok := msg.(agent.BatchMsg); ok {
+		for _, c := range batch.Cmds {
+			if c == nil {
+				continue
+			}
+			sub := f.interpretAgentMsg(c(), false)
+			if sub.Quit {
+				cr.Quit = true
+			}
+			if sub.Notice != "" {
+				if cr.Notice != "" {
+					cr.Notice += "\n" + sub.Notice
+				} else {
+					cr.Notice = sub.Notice
+				}
+			}
+			if sub.Compacted {
+				cr.Compacted = true
+			}
+			if sub.ClipboardImage {
+				cr.ClipboardImage = true
+			}
+			if sub.Rotating {
+				cr.Rotating = true
+			}
+			// First action field wins (Batch carries note+probe, never two actions).
+			if sub.Submit != "" && cr.Submit == "" {
+				cr.Submit = sub.Submit
+			}
+			if sub.Rotate != nil && cr.Rotate == nil {
+				cr.Rotate = sub.Rotate
+			}
+			if sub.ResumePicker {
+				cr.ResumePicker = true
+			}
+		}
+		return cr
+	}
+	switch m := msg.(type) {
+	case agent.SysNoteMsg:
+		cr.Notice = m.Text
+	case agent.NewConvMsg:
+		cr.Rotate = &sessionclient.RotateRequest{Type: "new"}
+		if m.Note != "" {
+			cr.Notice = m.Note
+		}
+	case agent.HandoffMsg:
+		if m.Err != nil {
+			cr.Notice = "handoff failed: " + m.Err.Error()
+			return cr
+		}
+		cr.Rotate = &sessionclient.RotateRequest{
+			Type:           "handoff",
+			HandoffContext: m.ContinuationPrompt,
+			Proceed:        m.Proceed,
+		}
+	case agent.OpenResumePickerMsg:
+		// The picker itself is TUI-local display state; the TUI opens it from
+		// this flag and reads the session list through the facade (D6).
+		cr.ResumePicker = true
+	case agent.WFFinalReviewMsg:
+		// Workflow final review (from /plan verify, or /plan approve closing
+		// the last step). The old TUI ran RunFinalReview — a dedicated Cmd that
+		// drove HandleFinalReview with the turn goroutine's callbacks. On the
+		// wiring path the final review runs INSIDE HandleWorkflowTransition
+		// after each IMPLEMENT turn (and on remediation turns), so this
+		// message reaching DispatchCommand means a user-typed command wants
+		// the review NOW: submit a plain continuation turn, which the adapter
+		// runs; HandleWorkflowTransition at its end re-runs the review (the
+		// verify-state remediation path re-runs it on every completed turn).
+		cr.Submit = "continue"
+	case agent.WFStartTurnMsg:
+		cr.Submit = m.UserText
+		if cr.Submit == "" {
+			cr.Submit = "continue"
+		}
+	case agent.LearnTurnMsg:
+		// The old TUI's LearnTurnMsg handler started a RunTurn with this exact
+		// literal text (the proxy recognizes it as the learn trigger). NOT
+		// "/learn" — that would re-dispatch the command and loop.
+		cr.Submit = "learn this for next time"
+	case agent.RememberTurnMsg:
+		cr.Submit = m.UserText
+		if m.UserText == "" {
+			cr.Submit = m.Query
+		}
+	case agent.RecallTurnMsg:
+		cr.Submit = m.UserText
+	case agent.CompactedMsg:
+		cr.Compacted = true
+	case agent.MCPReconnectedMsg:
+		// Apply the rebuilt tool list HERE (the old TUI did m.apply.SetTools in
+		// its MCPReconnectedMsg handler). No event carries it — the TUI
+		// re-reads Snapshot() after every DispatchCommand and would otherwise
+		// see stale Tools.
+		f.bumpVersion()
+		f.app.SetTools(m.Tools)
+		cr.Notice = "mcp reconnected: " + m.Name
+	case agent.BackendCtxLimitMsg:
+		// D24 query-state: applied facade-side, no event. The TUI re-reads
+		// Snapshot() after the command completes.
+		f.bumpVersion()
+		f.app.SetCtxLimit(m.Limit)
+		if m.Note != "" {
+			cr.Notice = m.Note
+		}
+	case agent.ModelListUpdatedMsg:
+		f.bumpVersion()
+		f.app.SetModelList(m.Models)
+	default:
+		// Clipboard sentinel VALUE: agent.ClipboardImageRequest is a var of an
+		// unexported struct type, so a type switch cannot case on it — match
+		// by equality. The agent cannot read the clipboard; the TUI
+		// substitutes its own clipboard-reading command (readClipboardCmd).
+		if msg == any(agent.ClipboardImageRequest) {
+			cr.ClipboardImage = true
+			return cr
+		}
+		// Unknown message — best effort: if it's a string, use as notice.
+		if s, ok := msg.(fmt.Stringer); ok {
+			cr.Notice = s.String()
+		}
+	}
+	return cr
 }
 
 // dispatchHandoff classifies /handoff WITHOUT executing the pipeline: arg
@@ -639,74 +835,9 @@ func (f *wiringFacade) dispatchHandoff(fields []string) sessionclient.CommandRes
 	}
 }
 
-// interpretAgentMsg translates an agent.Msg (returned by agent.HandleTUICommand)
-// into a sessionclient.CommandResult. It type-switches on the message type
-// and maps each to the corresponding CommandResult field.
-func interpretAgentMsg(msg any, quit bool) sessionclient.CommandResult {
-	cr := sessionclient.CommandResult{Handled: true, Quit: quit}
-	if msg == nil {
-		return cr
-	}
-	switch m := msg.(type) {
-	case agent.SysNoteMsg:
-		cr.Notice = m.Text
-	case agent.NewConvMsg:
-		cr.Rotate = &sessionclient.RotateRequest{Type: "new"}
-		if m.Note != "" {
-			cr.Notice = m.Note
-		}
-	case agent.HandoffMsg:
-		if m.Err != nil {
-			cr.Notice = "handoff failed: " + m.Err.Error()
-			return cr
-		}
-		cr.Rotate = &sessionclient.RotateRequest{
-			Type:           "handoff",
-			HandoffContext: m.ContinuationPrompt,
-			Proceed:        m.Proceed,
-		}
-	case agent.OpenResumePickerMsg:
-		cr.Rotate = &sessionclient.RotateRequest{Type: "resume"}
-	case agent.WFFinalReviewMsg:
-		// Workflow final review (from /plan verify, or /plan approve closing
-		// the last step). The old TUI ran RunFinalReview — a dedicated Cmd that
-		// drove HandleFinalReview with the turn goroutine's callbacks. On the
-		// wiring path the final review runs INSIDE HandleWorkflowTransition
-		// after each IMPLEMENT turn (and on remediation turns), so this
-		// message reaching DispatchCommand means a user-typed command wants
-		// the review NOW: submit a plain continuation turn, which the adapter
-		// runs; HandleWorkflowTransition at its end re-runs the review (the
-		// verify-state remediation path re-runs it on every completed turn).
-		cr.Submit = "continue"
-	case agent.WFStartTurnMsg:
-		cr.Submit = m.UserText
-		if cr.Submit == "" {
-			cr.Submit = "continue"
-		}
-	case agent.LearnTurnMsg:
-		// The old TUI's LearnTurnMsg handler started a RunTurn with this exact
-		// literal text (the proxy recognizes it as the learn trigger). NOT
-		// "/learn" — that would re-dispatch the command and loop.
-		cr.Submit = "learn this for next time"
-	case agent.RememberTurnMsg:
-		cr.Submit = m.UserText
-		if m.UserText == "" {
-			cr.Submit = m.Query
-		}
-	case agent.RecallTurnMsg:
-		cr.Submit = m.UserText
-	case agent.CompactedMsg:
-		cr.Compacted = true
-	case agent.MCPReconnectedMsg:
-		cr.Notice = "mcp reconnected: " + m.Name
-	default:
-		// Unknown message — best effort: if it's a string, use as notice.
-		if s, ok := msg.(fmt.Stringer); ok {
-			cr.Notice = s.String()
-		}
-	}
-	return cr
-}
+// interpretAgentMsg's logic now lives on the facade (method) so Batch
+// recursion can apply side effects through f — see (*wiringFacade).
+// interpretAgentMsg above.
 
 // ---- Lifecycle ----
 
@@ -721,15 +852,32 @@ func (f *wiringFacade) Close() error {
 	sub := f.subscription
 	sideQuestions := f.sideQuestions
 	f.sideQuestions = nil
+	sessionID := f.sessionID
+	principal := f.principal
 	f.mu.Unlock()
 
-	// Stop the event pump first; it closes the subscription internally.
+	// Close the host session FIRST when one exists: requestClose cancels the
+	// in-flight turn ctx, which unblocks a Parked approval with a forced
+	// decline (m4b review finding — without this, a rotation while an
+	// approval was parked left the turn goroutine blocked forever: the TUI
+	// had swapped facades, so nobody could answer the old session's approval)
+	// and lets the executor emit TurnCompleted{cancelled} + SessionClosed.
+	// The 10s bound covers a turn that ignores cancellation.
+	if f.host != nil && sessionID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = f.host.CloseSession(ctx, principal, sessionID)
+		cancel()
+	}
+
+	// Stop the event pump and DRAIN it: a non-blocking probe lets events be
+	// delivered after Close returned (m4b review finding). The pump exits
+	// once the subscription Next fails (Close'd above) or Stop wins; Done
+	// is closed either way. Bounded wait so a wedged pump can't hang Close.
 	if pump != nil {
 		pump.Stop()
 		select {
 		case <-pump.Done():
-		default:
-			// Non-blocking; the pump will finish on its own.
+		case <-time.After(5 * time.Second):
 		}
 	} else if sub != nil {
 		_ = sub.Close()
@@ -746,9 +894,22 @@ func (f *wiringFacade) Close() error {
 	f.app.StopAllAsyncOps()
 	f.app.StopAllBackgroundProcs()
 
-	// Release the App ownership claim.
+	// Release the App ownership claim. The turn may still be winding down
+	// from the CloseSession cancellation above (the executor goroutine clears
+	// turnActive in its defer after finishTurn); retry briefly so a normal
+	// rotation doesn't leak the appOwners entry on a lost race. After the
+	// retries the App pointer stays claimed — harmless (rotation builds a
+	// fresh App; the claim only prevents THIS App from being re-hosted), but
+	// the map entry leaks, so log-worthy in principle. Best-effort.
 	if f.handle != nil {
-		_ = f.handle.Release()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := f.handle.Release()
+			if err == nil || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	return nil
 }

@@ -219,7 +219,7 @@ func TestConversationManagerInterface(t *testing.T) {
 
 type fakeConversationManager struct{}
 
-func (f *fakeConversationManager) NewConversation(ctx context.Context, p core.Principal) (Facade, error) {
+func (f *fakeConversationManager) NewConversation(ctx context.Context, p core.Principal, current Facade) (Facade, error) {
 	return nil, nil
 }
 func (f *fakeConversationManager) ResumeConversation(ctx context.Context, p core.Principal, id string) (Facade, error) {

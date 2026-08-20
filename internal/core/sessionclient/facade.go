@@ -218,6 +218,22 @@ type CommandResult struct {
 	SideQuestion string         // non-empty → start a side question
 	Compacted    bool
 	OpID         OpID           // non-empty → async op initiated; observe via events
+
+	// ClipboardImage: the command was /image clipboard — the agent layer
+	// cannot read the host clipboard, so the TUI runs its own clipboard-
+	// reading command (readClipboardCmd) and continues from clipboardImageMsg.
+	ClipboardImage bool
+
+	// ResumePicker: bare /resume — open the interactive session picker. The
+	// TUI loads the session list through the facade (ListSessions) and opens
+	// its picker state; this is NOT a rotation (no session chosen yet).
+	ResumePicker bool
+
+	// Rotating: the command initiates an asynchronous rotation (/new with
+	// pending session-history finalize, or any rotation whose pipeline runs
+	// on a worker goroutine). The TUI sets its rotating flag, disables
+	// send/commands, and swaps facades when the rotationMsg arrives.
+	Rotating bool
 }
 
 // RotateRequest tells the TUI to rotate the conversation (D27). The rotation
@@ -439,9 +455,13 @@ type RepoStateMutator struct {
 // is going away, so its detached jobs are cancelled rather than retained.
 // A future revision may support job migration to the new host.
 type ConversationManager interface {
-	// NewConversation creates a fresh session and returns its facade. The
-	// caller's current facade (if any) must be closed first via Close.
-	NewConversation(ctx context.Context, principal core.Principal) (Facade, error)
+	// NewConversation creates a fresh session and returns its facade. current
+	// is the facade being rotated away from (/new, /reset), or nil at first
+	// boot. When non-nil, the manager finalizes the old conversation's
+	// session-history entry (index ingest + end-of-session summary — the old
+	// path ran this in HandleTUICommand's /new Cmd) BEFORE building the new
+	// conversation; the old facade stays usable until the caller closes it.
+	NewConversation(ctx context.Context, principal core.Principal, current Facade) (Facade, error)
 
 	// ResumeConversation loads an existing session by ID or prefix and
 	// returns a facade backed by it. Returns an error if the session is

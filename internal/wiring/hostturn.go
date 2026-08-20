@@ -147,7 +147,17 @@ type hostTurn struct {
 	// the session emitter rejects them by design, D24) to the live turn's
 	// emitter. nil between turns: tool calls only execute inside turns, so
 	// a nil turnEmit means there is nothing legal to emit.
-	turnEmit sessionhost.Emitter
+	//
+	// turnEmitTurnID is the turn ID belonging to turnEmit. The session-
+	// scoped EventSink closure is installed ONCE (first turn) but must
+	// stamp tool events with the CURRENT turn's ID — without this field the
+	// closure would capture the first turn's in.TurnID forever and stamp
+	// every later turn's tool events with the wrong turn (m4b review
+	// finding). Both fields are written under mu at turn start/end and read
+	// under the same lock by the closure — EventSink can be invoked from
+	// tool-executing goroutines, so the unlocked read was a data race.
+	turnEmit       sessionhost.Emitter
+	turnEmitTurnID event.TurnID
 
 	mu         sync.Mutex
 	sessionID  event.SessionID // first session this turn served; zero until first use
@@ -303,11 +313,17 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 			// Tool-call messages are turn-scoped kinds (D24): the session
 			// emitter REJECTS them, so route them to the live turn's emitter
 			// when one exists. Everything else projects on the session
-			// surface (subagents, async jobs, notes, …).
+			// surface (subagents, async jobs, notes, …). The current turn's
+			// emitter AND its TurnID are read under ht.mu together — the
+			// sink can fire from tool goroutines concurrently with a turn
+			// boundary, and the pair must stay consistent.
 			switch msg.(type) {
 			case agent.ToolStartMsg, agent.ToolResultMsg:
-				if te := ht.turnEmit; te != nil {
-					projectAgentEvent(te, in.TurnID, msg)
+				ht.mu.Lock()
+				te, teTurn := ht.turnEmit, ht.turnEmitTurnID
+				ht.mu.Unlock()
+				if te != nil {
+					projectAgentEvent(te, teTurn, msg)
 				}
 				return
 			}
@@ -343,10 +359,12 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	// finalization anyway; keeping a stale reference would only mask that.
 	ht.mu.Lock()
 	ht.turnEmit = in.Emit
+	ht.turnEmitTurnID = in.TurnID
 	ht.mu.Unlock()
 	defer func() {
 		ht.mu.Lock()
 		ht.turnEmit = nil
+		ht.turnEmitTurnID = ""
 		ht.mu.Unlock()
 	}()
 

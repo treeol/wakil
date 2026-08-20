@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
@@ -60,7 +61,14 @@ func NewConversationManager(cfg config.Config, exe exec.Executor, principal core
 func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFacade, error) {
 	app, res := BuildApp(cm.cfg, cm.exe, BuildAppOpts{})
 
-	handle, err := NewHostTurnHandle(app, cm.adapterOpts...)
+	// WithAsyncApproval: the TUI session parks approvals in awaiting_approval
+	// (7b2 D25) so the turn goroutine blocks on RespondToApproval instead of an
+	// inline resolver. Without it the confirmer uses the sync path with a nil
+	// resolver, which declines everything — the interactive TUI would be unable
+	// to approve any tool. Test-injected adapter options (cm.adapterOpts)
+	// override this default.
+	adapterOpts := append([]AdapterOption{WithAsyncApproval()}, cm.adapterOpts...)
+	handle, err := NewHostTurnHandle(app, adapterOpts...)
 	if err != nil {
 		CloseResources(app, res)
 		return nil, fmt.Errorf("conversation manager: %w", err)
@@ -87,13 +95,38 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 	return facade, nil
 }
 
-// NewConversation creates a fresh session and returns its facade.
-func (cm *conversationManager) NewConversation(ctx context.Context, principal core.Principal) (sessionclient.Facade, error) {
+// NewConversation creates a fresh session and returns its facade. current is
+// the facade being rotated away from (/new, /reset), or nil at first boot;
+// when non-nil the manager finalizes the old conversation's session-history
+// entry first (m4b: replaces HandleTUICommand's /new-side finalize, which
+// mutated the old App).
+func (cm *conversationManager) NewConversation(ctx context.Context, principal core.Principal, current sessionclient.Facade) (sessionclient.Facade, error) {
+	if wf, ok := current.(*wiringFacade); ok && wf != nil && wf.app != nil {
+		cm.finalizeOldConversation(ctx, wf.app)
+	}
 	f, err := cm.newConversation(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return f, nil
+}
+
+// finalizeOldConversation ingests the just-finalized session into the
+// session-history index and records its end-of-session summary (m4b). It
+// mirrors the closure the old /new path ran inside HandleTUICommand: snapshot
+// the session BEFORE rotation so finalization can run on it while the old
+// App is still intact. Best-effort — failures never block rotation.
+func (cm *conversationManager) finalizeOldConversation(ctx context.Context, app *agent.App) {
+	if app == nil || app.SessionHistory == nil || app.Session == nil {
+		return
+	}
+	sess := *app.Session
+	if sess.ChatID == "" {
+		return
+	}
+	finCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	agent.FinalizeSessionHistory(finCtx, app, sess)
 }
 
 // ResumeConversation loads an existing session by ID or prefix and returns
