@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/treeol/wakil/internal/agent"
@@ -21,6 +22,7 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/core/sessionhost"
+	"github.com/treeol/wakil/internal/core/sessionhost/sqlstore"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 )
@@ -38,10 +40,14 @@ type conversationManager struct {
 	hostOpts []sessionhost.Option // optional host tuning (test injection)
 	adapterOpts []AdapterOption  // optional adapter tuning (test injection)
 	resources *AppResources      // the FIRST facade's resources; rotation closes them
+	store    sessionhost.Store    // P1: SQLite-backed event store (nil → MemLog fallback)
 }
 
 // NewConversationManager creates a ConversationManager from config, executor,
 // and principal. The manager creates fresh App instances for each conversation.
+// In P1 it opens a workspace-keyed SQLiteStore for the session-host event log
+// (card #148 D3); if the store cannot be opened it falls back to the in-memory
+// MemLog (best-effort — the session works, but events don't persist).
 func NewConversationManager(cfg config.Config, exe exec.Executor, principal core.Principal) (sessionclient.ConversationManager, error) {
 	if principal.UserID == "" {
 		principal = core.Principal{
@@ -50,11 +56,23 @@ func NewConversationManager(cfg config.Config, exe exec.Executor, principal core
 			Role:     core.RoleOwner,
 		}
 	}
-	return &conversationManager{
+	cm := &conversationManager{
 		cfg:      cfg,
 		exe:      exe,
 		principal: principal,
-	}, nil
+	}
+	// P1: open the workspace-keyed SQLite event store. Best-effort — a failure
+	// falls back to MemLog (the host works, events just don't persist).
+	ws := workspaceIDFromConfig(cfg)
+	if dbPath := agent.SessionHostDBPath(string(ws)); dbPath != "" {
+		store, err := sqlstore.NewSQLiteStore(context.Background(), dbPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sessionhost: failed to open SQLite store, using in-memory:", err)
+		} else {
+			cm.store = store
+		}
+	}
+	return cm, nil
 }
 
 // newConversation creates a fresh App + host + facade and creates a session.
@@ -74,7 +92,12 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 		return nil, fmt.Errorf("conversation manager: %w", err)
 	}
 
-	host := sessionhost.New(handle.Turn, cm.hostOpts...)
+	// P1: inject the SQLite store if available; else MemLog (host default).
+	hostOpts := cm.hostOpts
+	if cm.store != nil {
+		hostOpts = append([]sessionhost.Option{sessionhost.WithStore(cm.store)}, hostOpts...)
+	}
+	host := sessionhost.New(handle.Turn, hostOpts...)
 
 	sess, err := host.CreateSession(ctx, cm.principal, core.CreateSessionRequest{
 		Workspace: workspaceIDFromConfig(cm.cfg),

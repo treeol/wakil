@@ -135,6 +135,27 @@ func SessionHistoryDBPath(ws string) string {
 	return filepath.Join(dataDir, "sessionhistory", key, "sessions.db")
 }
 
+// SessionHostDBPath returns the host-side path to the session-host event-log
+// SQLite database for the given workspace. Like MemoryDBPath it is
+// workspace-keyed (same SHA-256-derived short key). Path:
+// <wakil-data-dir>/sessionhost/<short-key>/sessionhost.db
+//
+// This is the P1 SQLite-backed event store (card #148 D3). It replaces the P0
+// in-memory MemLog for production use. Returns "" if the data directory cannot
+// be determined or the workspace key is empty. The directory is NOT created
+// here — sqlstore.NewSQLiteStore creates it.
+func SessionHostDBPath(ws string) string {
+	key := stagingKey(ws)
+	if key == "" {
+		return ""
+	}
+	dataDir := stagingDataRoot()
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "sessionhost", key, "sessionhost.db")
+}
+
 // EnsureStagingDir creates the staging directory for ws with 0o700
 // permissions, owned by the current user. Returns the path. If the
 // directory already exists with looser permissions, they are tightened

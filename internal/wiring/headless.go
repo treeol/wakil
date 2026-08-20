@@ -23,6 +23,7 @@ import (
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionhost"
+	"github.com/treeol/wakil/internal/core/sessionhost/sqlstore"
 	"github.com/treeol/wakil/internal/policy"
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
@@ -309,7 +310,7 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
 		return ExitError
 	}
-	h := sessionhost.New(turnFn)
+	h := sessionhost.New(turnFn, headlessStoreOpts()...)
 	defer h.Close(ctx)
 	p := core.EmbeddedPrincipal()
 
@@ -434,7 +435,7 @@ func runPlanSession(ctx context.Context, app *agent.App, opts HeadlessOptions, o
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
 		return ExitError
 	}
-	h := sessionhost.New(turnFn)
+	h := sessionhost.New(turnFn, headlessStoreOpts()...)
 	defer h.Close(ctx)
 	p := core.EmbeddedPrincipal()
 
@@ -615,4 +616,22 @@ func consumeTurnEvents(ctx context.Context, sub core.EventSubscription, hw *Head
 			}
 		}
 	}
+}
+
+// headlessStoreOpts returns sessionhost options for the headless path: a
+// workspace-keyed SQLiteStore if the DB path can be derived, else nil (the
+// host falls back to MemLog). Best-effort — a failure to open is logged to
+// stderr and the run proceeds with in-memory storage.
+func headlessStoreOpts() []sessionhost.Option {
+	ws := event.WorkspaceID("wsp_local")
+	dbPath := agent.SessionHostDBPath(string(ws))
+	if dbPath == "" {
+		return nil
+	}
+	store, err := sqlstore.NewSQLiteStore(context.Background(), dbPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sessionhost: failed to open SQLite store for headless, using in-memory:", err)
+		return nil
+	}
+	return []sessionhost.Option{sessionhost.WithStore(store)}
 }
