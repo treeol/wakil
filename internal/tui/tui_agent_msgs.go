@@ -722,7 +722,11 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			}
 		} else {
 			m.pasteCutStash = "" // real image confirmed; the cut garbage stays gone
-			m.apply.AddPendingImage(msg.Img)
+			if m.facade != nil {
+				m.facade.AddPendingImage(msg.Img)
+			} else {
+				m.apply.AddPendingImage(msg.Img)
+			}
 			chip := msg.Img.Placeholder()
 			*m.imageChips = append(*m.imageChips, chip)
 			m.ta.InsertString(chip + " ")

@@ -10,6 +10,7 @@ import (
 	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
+	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
@@ -44,6 +45,17 @@ type runningToolState struct {
 	toolCallID string
 	name       string
 	command    string
+}
+
+// pendingApprovalState is the wiring-path confirm gate: the approval the TUI
+// is currently rendering, identified by its domain ApprovalID. Key answers
+// go through facade.RespondToApproval (data-only — no response channel).
+type pendingApprovalState struct {
+	approvalID string
+	toolName   string
+	headline   string
+	detail     string
+	readAction bool
 }
 
 // sideQuestionState tracks a running side-question stream for the TUI.
@@ -140,6 +152,15 @@ type tuiModel struct {
 	facade    sessionclient.Facade
 	manager   sessionclient.ConversationManager
 	principal core.Principal
+	// sessionID is the CURRENT facade's session ID, cached at attach and
+	// rotation time. It guards the event switch against stale pump deliveries
+	// from a prior conversation (never re-fetched per event — a Snapshot call
+	// copies the whole conversation).
+	sessionID event.SessionID
+	// rotating is true while a rotation Cmd is in flight: sends and commands
+	// are hard-rejected until the rotationMsg swaps the facade (set in Update,
+	// never from the Cmd goroutine — Bubble Tea models are not thread-safe).
+	rotating bool
 
 	// outputMode is snapshotted once at construction (startup-only). It is
 	// immutable for the life of the model — see NewTUIModel. Kept immutable so
@@ -181,6 +202,12 @@ type tuiModel struct {
 	ta       textarea.Model
 	state    agentState
 	pendConf *agent.ConfirmReqMsg
+
+	// pendApproval is the wiring-path confirm gate (m4b): the pending
+	// ApprovalRequested event, answered through facade.RespondToApproval.
+	// Exactly one of pendConf (legacy) / pendApproval (wiring) is non-nil
+	// while state == stateConfirm.
+	pendApproval *pendingApprovalState
 
 	// followBottom tracks whether the viewport should auto-follow new content
 	// to the bottom. It is a persistent user-intent latch, NOT recomputed from
@@ -555,6 +582,7 @@ func NewTUIModelWithFacade(f sessionclient.Facade, mgr sessionclient.Conversatio
 	m.principal = principal
 
 	snap := f.Snapshot()
+	m.sessionID = snap.SessionID
 	if len(snap.Conv) > 0 {
 		items := convItemsFrom(snap.Conv)
 		resumeNote := sprint("· resumed session %s — %d messages", formatShortID(snap.ChatID), len(snap.Conv))
@@ -603,6 +631,13 @@ func (m tuiModel) info() (sessionclient.InfoSnapshot, bool) {
 }
 
 func (m tuiModel) Init() tea.Cmd {
+	// Wiring path: the startup note is a local display message.
+	if m.facade != nil {
+		if note := m.facade.ConsumeStartupNote(); note != "" {
+			return tea.Batch(textarea.Blink, func() tea.Msg { return startupNoteMsg{text: note} })
+		}
+		return textarea.Blink
+	}
 	if m.app != nil && m.app.StartupNote != "" {
 		note := m.control.ConsumeStartupNote()
 		return tea.Batch(textarea.Blink, func() tea.Msg { return agent.SysNoteMsg{Text: note} })
@@ -806,11 +841,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	default:
-		// Agent-lifecycle and subagent messages (stream chunks, done, confirm,
-		// subagent tabs, workflow turns, …). Extracted to handleAgentMsg
-		// (tui_agent_msgs.go, WP-6.6 part 3). These fall through to the trailing
-		// textarea/viewport forward below, exactly as the original inline cases
-		// did; an unmatched message (handled=false) gets that same forward.
+		// Domain events (wiring path) take precedence: they arrive from the
+		// facade's event pump. Unmatched events fall through to the legacy
+		// agent-lifecycle switch below, exactly as before (m4b: both paths
+		// are live during the migration; a model is either facade-backed or
+		// App-backed, never both).
+		var handled bool
+		m, cmds, handled = m.handleEventMsg(msg, cmds)
+		if handled {
+			// Events must not leak into the textarea/viewport forward — they
+			// are not input events.
+			return m, tea.Batch(cmds...)
+		}
 		m, cmds, _ = m.handleAgentMsg(msg, cmds)
 	}
 
@@ -825,6 +867,55 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // whether the key was consumed; consumed keys must not also be forwarded to
 // the textarea (otherwise a sent Enter would insert a newline after Reset).
 func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
+	// Wiring-path confirm gate (m4b): the pending approval is answered
+	// through facade.RespondToApproval (data-only, no RespCh). Key answers
+	// are non-blocking (the host's decision channel is buffered(1)).
+	if m.state == stateConfirm && m.pendApproval != nil {
+		pa := m.pendApproval
+		readAction := pa.readAction
+		answer := func(choice sessionclient.ApprovalChoice, note string) {
+			outcome := core.ApprovalDeny
+			switch choice {
+			case sessionclient.ChoiceApprove:
+				outcome = core.ApprovalAllowOnce
+			case sessionclient.ChoiceAllowReads:
+				outcome = core.ApprovalAllowReadsOnce
+			}
+			before := m.statusRows()
+			m.pendApproval = nil
+			m.state = stateStreaming
+			m.addItem(iSys, note)
+			// RespondToApproval is non-blocking; an already-resolved approval
+			// (ctx-cancel race — cancellation forced a decline first) is
+			// tolerated silently: the turn is already unwinding.
+			_ = m.facade.RespondToApproval(context.Background(), m.principal, core.ApprovalDecision{
+				SessionID: m.sessionID,
+				ApprovalID: event.ApprovalID(pa.approvalID),
+				Outcome:    outcome,
+			})
+			m = m.reflowIfStatusHeightChanged(before)
+		}
+		switch msg.String() {
+		case "y", "Y":
+			answer(sessionclient.ChoiceApprove, styleOK("  [approved]"))
+		case "a", "A":
+			if readAction {
+				answer(sessionclient.ChoiceAllowReads, styleOK("  [reads allowed for this session]"))
+			}
+			// 'a' is meaningless for non-read actions — swallow it (consumed below).
+		case "n", "N", "esc":
+			answer(sessionclient.ChoiceDecline, dim2("  [declined]"))
+		case "ctrl+c":
+			answer(sessionclient.ChoiceDecline, dim2("  [declined + cancelled]"))
+			// Mark cancelling so a follow-up ctrl+c force-quits a hung cancel in
+			// 3 total presses instead of arming a fresh cancel (4 presses).
+			m.cancelling = true
+			m.cancelTurn()
+		}
+		// Every key is consumed by the confirm gate.
+		return m, nil, true
+	}
+
 	if m.state == stateConfirm && m.pendConf != nil {
 		readAction := m.pendConf.ReadAction
 		// answer resolves the gate: post a note, hand the choice to the agent
@@ -1086,7 +1177,12 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 						m.comp = completionState{}
 						return m, nil, true
 					}
-					consent := m.app.Consent()
+					var consent sessionclient.Consent
+					if m.facade != nil {
+						consent = m.facade.Consent()
+					} else {
+						consent = toClientConsent(m.app.Consent())
+					}
 					if isDestructive {
 						if !consent.AutoApprove {
 							m.addItem(iSys, dim2("· /auto destructive mid-turn: auto is OFF — enable /auto first"))
@@ -1101,7 +1197,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 							m.addItem(iSys, dim2("· auto: pending destructive grant cancelled"))
 						} else if consent.AllowDestructive {
 							// Revoke destructive immediately.
-							m.control.SetAllowDestructive(false)
+							if m.facade != nil {
+								m.facade.SetAllowDestructive(false)
+							} else {
+								m.control.SetAllowDestructive(false)
+							}
 							m.addItem(iSys, dim2("· auto: destructive revoked mid-turn"))
 						} else {
 							// Defer the destructive grant.
@@ -1122,7 +1222,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 							// ON→OFF: immediate revoke. Clear both AutoApprove and
 							// AllowDestructive atomically (pair invariant — the
 							// destructive grant never outlives the auto session).
-							m.control.RevokeAuto()
+							if m.facade != nil {
+								m.facade.RevokeAuto()
+							} else {
+								m.control.RevokeAuto()
+							}
 							m.pendingAutoGrant = false
 							m.pendingDestructiveGrant = false
 							m.addItem(iSys, dim2("· auto: revoked mid-turn"))
@@ -1251,6 +1355,24 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			return m, nil, true
 		}
 
+		// Dispatch slash commands through the facade on the wiring path
+		// (m4b): DispatchCommand runs in a Cmd goroutine (slow commands —
+		// /handoff summarizes, /remember searches 30s) and delivers a
+		// commandResultMsg the event loop applies. The facade applies
+		// state side effects itself (D24); the TUI re-fetches the snapshot
+		// on result delivery. Slash-prefixed input only — plain text flows
+		// to the send path below.
+		if m.facade != nil && strings.HasPrefix(input, "/") {
+			if m.rotating {
+				m.addItem(iSys, dim2("· rotation in progress — command ignored"))
+				return m, nil, true
+			}
+			facade, line := m.facade, input
+			return m, []tea.Cmd{func() tea.Msg {
+				return commandResultMsg{result: facade.DispatchCommand(line)}
+			}}, true
+		}
+
 		if handled, quit, cmd := agent.HandleTUICommand(input, m.app); handled {
 			if quit {
 				return m, []tea.Cmd{tea.Quit}, true
@@ -1272,6 +1394,57 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				return m, []tea.Cmd{AdaptCmd(cmd)}, true
 			}
 			return m, nil, true
+		}
+
+		// Wiring path (m4b): chips reconcile against the snapshot's pending
+		// images; the turn is submitted through the host (SubmitInput), and
+		// the display state flips on the TurnStarted/TurnCompleted events.
+		if m.facade != nil {
+			if m.rotating {
+				return m, nil, true
+			}
+			snap := m.facade.Snapshot()
+			var msgText string
+			var pending []proxy.ImagePart
+			msgText, pending = reconcileImageChips(input, *m.imageChips, snap.PendingImages)
+			if msgText == "" && len(pending) == 0 && len(snap.PendingImages) == 0 {
+				return m, nil, true
+			}
+			m.facade.ReplacePendingImages(pending)
+			*m.imageChips = (*m.imageChips)[:0]
+
+			outgoing, refs := tools.ResolveMentions(msgText, m.mentionBase())
+			m.addItem(iUser, input)
+			if len(refs) > 0 {
+				m.addItem(iSys, tools.ChipsLine(refs))
+			}
+			for _, img := range pending {
+				m.addItem(iSys, img.Placeholder())
+			}
+			m.followBottom = true
+			m.vp.GotoBottom()
+
+			before := m.statusRows()
+			m.state = stateStreaming // optimistic; TurnStarted confirms
+			m.turnStart = time.Now()
+			m.tps = 0
+			m = m.reflowIfStatusHeightChanged(before)
+			var pair []tea.Cmd
+			var dotCmd tea.Cmd
+			m, dotCmd = m.startDotTickIfUnarmed()
+			if dotCmd != nil {
+				pair = append(pair, dotCmd)
+			}
+			if _, err := m.facade.SubmitInput(context.Background(), m.principal, core.SubmitInputRequest{
+				SessionID: m.sessionID,
+				Text:      outgoing,
+			}); err != nil {
+				// Rejected (busy/closed): revert to idle and surface the error.
+				m.addItem(iSys, styleErr("submit failed: "+err.Error()))
+				m.state = stateIdle
+				m.turnStart = time.Time{}
+			}
+			return m, pair, true
 		}
 
 		// Reconcile image chips: strip surviving chips from the outgoing text
@@ -1380,6 +1553,13 @@ func (m *tuiModel) searchRun(startIdx int) {
 }
 
 func (m *tuiModel) cancelTurn() {
+	if m.facade != nil {
+		// Wiring path: the host owns the turn; Interrupt cancels it
+		// (non-blocking — the executor sees the cancellation and finalizes
+		// the turn with TurnCompleted{cancelled}).
+		_ = m.facade.Interrupt(context.Background(), m.principal, m.sessionID)
+		return
+	}
 	if m.cancel != nil {
 		m.cancel()
 		// Do NOT nil m.cancel here — keep it so agent.AgentDoneMsg can clean up
@@ -1483,6 +1663,50 @@ func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
 	m.histIdx = -1
 	m.histSaved = ""
 
+	// Wiring path (m4b): chips reconcile against the snapshot; the host
+	// drives the turn.
+	if m.facade != nil {
+		snap := m.facade.Snapshot()
+		var msgText string
+		var pending []proxy.ImagePart
+		msgText, pending = reconcileImageChips(input, *m.imageChips, snap.PendingImages)
+		if msgText == "" && len(pending) == 0 && len(snap.PendingImages) == 0 {
+			return m, nil
+		}
+		m.facade.ReplacePendingImages(pending)
+		*m.imageChips = (*m.imageChips)[:0]
+		outgoing, refs := tools.ResolveMentions(msgText, m.mentionBase())
+		m.addItem(iUser, input)
+		if len(refs) > 0 {
+			m.addItem(iSys, tools.ChipsLine(refs))
+		}
+		for _, img := range pending {
+			m.addItem(iSys, img.Placeholder())
+		}
+		m.followBottom = true
+		m.vp.GotoBottom()
+		before := m.statusRows()
+		m.state = stateStreaming
+		m.turnStart = time.Now()
+		m.tps = 0
+		m = m.reflowIfStatusHeightChanged(before)
+		var pair []tea.Cmd
+		var dotCmd tea.Cmd
+		m, dotCmd = m.startDotTickIfUnarmed()
+		if dotCmd != nil {
+			pair = append(pair, dotCmd)
+		}
+		if _, err := m.facade.SubmitInput(context.Background(), m.principal, core.SubmitInputRequest{
+			SessionID: m.sessionID,
+			Text:      outgoing,
+		}); err != nil {
+			m.addItem(iSys, styleErr("submit failed: "+err.Error()))
+			m.state = stateIdle
+			m.turnStart = time.Time{}
+		}
+		return m, pair
+	}
+
 	// Reconcile image chips: strip surviving chips from the outgoing text;
 	// detach pending images for chips the user deleted. (Chips apply to the
 	// next real send — a queued prompt may carry chips if the user attached
@@ -1566,9 +1790,9 @@ func (m tuiModel) handleQueueCommand(input string) (tuiModel, bool) {
 	return m, true
 }
 
-// startSideQuestion starts a concurrent side-question stream via the agent's
-// StartSideQuestion method. The stream runs on a cloned client and does not
-// block the main turn. Output is rendered as dimmed iSys items prefixed with "≫".
+// startSideQuestion starts a concurrent side-question stream. Wiring path:
+// through the facade (registry + cancel); legacy: the agent's control seam.
+// Output is rendered as dimmed iSys items prefixed with "≫".
 func (m tuiModel) startSideQuestion(question string) tuiModel {
 	m.addItem(iUser, "/ask "+question)
 	m.addItem(iSys, dim2("≫ side question streaming…"))
@@ -1577,8 +1801,13 @@ func (m tuiModel) startSideQuestion(question string) tuiModel {
 	}
 	buf := &strings.Builder{}
 	m.sideQuestion = &sideQuestionState{
-		id:  "", // will be set by the first chunk
+		id:  "", // correlated by "the active side question", not OpID
 		buf: buf,
+	}
+	if m.facade != nil {
+		_, cancel := m.facade.StartSideQuestion(context.Background(), question)
+		m.sideQuestionCancel = cancel
+		return m
 	}
 	m.sideQuestionCancel = m.control.StartSideQuestion(context.Background(), question)
 	return m
