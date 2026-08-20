@@ -87,6 +87,99 @@ type handoffRecord struct {
 	TranscriptN int       `json:"transcript_msgs"`
 }
 
+// RunHandoffPipeline executes the read-only-plus-persistence half of a handoff
+// (7b3 m4): validation, old-session save, summary generation, session-history
+// indexing, and the durable handoff record. It does NOT create or mutate the
+// new conversation — the caller (wiring's ConversationManager) builds the new
+// facade and seeds it from the returned result.
+//
+// This is the exported seam over performHandoff's steps 1–4 so the wiring
+// package (which cannot call the unexported performHandoff internals) runs the
+// exact same pipeline the old TUI's /handoff Cmd ran. Proceed-continuation is
+// the caller's job: ContinuationPrompt is returned for the caller to enqueue.
+func RunHandoffPipeline(ctx context.Context, app *App) (HandoffResult, error) {
+	if len(app.Conv) == 0 {
+		return HandoffResult{}, fmt.Errorf("nothing to hand off (empty conversation)")
+	}
+	hasUser := false
+	for _, m := range app.Conv {
+		if m.Role == "user" {
+			hasUser = true
+			break
+		}
+	}
+	if !hasUser {
+		return HandoffResult{}, fmt.Errorf("nothing to hand off (no user messages in conversation)")
+	}
+
+	oldChatID := app.Client.ChatID
+	newChatID := NewChatID()
+	workspace := app.SessionWorkspace()
+
+	// 1. Save the old session with full transcript + workflow.
+	app.Session.Conv = app.Conv
+	app.Session.Updated = time.Now()
+	if app.Session.Workspace == "" {
+		app.Session.Workspace = workspace
+	}
+	app.Session.SavedWorkflow = app.Workflow
+	if err := WriteSession(app.Session); err != nil {
+		return HandoffResult{}, fmt.Errorf("could not save old session: %w", err)
+	}
+
+	// 2. Generate the recency-split payload (slow step — summarizer call).
+	payload, err := generateHandoffPayload(ctx, app)
+	if err != nil {
+		return HandoffResult{}, fmt.Errorf("summary generation failed: %w", err)
+	}
+
+	// 3. Index the finalized session with its generated summary (best-effort,
+	// with performHandoff's fallback chain: on a summary-store failure, still
+	// index the session preserving any existing summary).
+	if app.SessionHistory != nil {
+		in := sessionToIndexInput(*app.Session)
+		if cs := strings.TrimSpace(payload.CoarseSummary); cs != "" {
+			in.Summary = cs
+			in.SummaryGenerated = true
+		}
+		in.SourceHash = sourceHash(*app.Session)
+		if err := app.SessionHistory.Index(ctx, in); err != nil {
+			fmt.Fprintf(app.Out, "session history: store handoff summary: %v\n", err)
+			_ = app.indexSession(ctx, *app.Session, true) // fallback: preserve existing summary
+		}
+	}
+
+	// 4. Store the handoff record (durable memory + sidecar; best-effort).
+	continuationPrompt := BuildContinuationPrompt(payload, oldChatID, workspace)
+	warnings := storeHandoffRecord(ctx, app, payload, continuationPrompt, oldChatID, newChatID, workspace)
+
+	note := fmt.Sprintf("handoff: %s → context stored", ShortID(oldChatID))
+	if len(warnings) > 0 {
+		note += " | " + strings.Join(warnings, "; ")
+	}
+
+	return HandoffResult{
+		ContinuationPrompt: continuationPrompt,
+		Summary:            payload.CoarseSummary,
+		Payload:            payload,
+		Note:               note,
+		OldChatID:          oldChatID,
+		NewChatID:          newChatID,
+	}, nil
+}
+
+// HandoffResult is the structured outcome of RunHandoffPipeline — the fields
+// of HandoffMsg that a handoff-driving caller (wiring's ConversationManager)
+// needs to seed the new conversation and display the rotation.
+type HandoffResult struct {
+	ContinuationPrompt string
+	Summary            string
+	Payload            HandoffPayload
+	Note               string
+	OldChatID          string
+	NewChatID          string
+}
+
 // performHandoff is the Cmd-closure body for /handoff. It does read-only work
 // plus persistence: generates the summary, stores it in durable memory (with
 // sidecar fallback), and returns a HandoffMsg for the TUI to act on.

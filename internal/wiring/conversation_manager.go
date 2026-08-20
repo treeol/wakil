@@ -10,6 +10,8 @@ package wiring
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/treeol/wakil/internal/agent"
@@ -19,6 +21,7 @@ import (
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // Compile-time proof that conversationManager satisfies the interface.
@@ -119,27 +122,70 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 }
 
 // HandoffConversation folds the current conversation into a summary and creates
-// a new session that carries the folded context.
+// a new session that carries the folded context (7b3 m4: real implementation —
+// the m3 stub computed an empty context and dropped it).
+//
+// The flow mirrors performHandoff + the old TUI's HandoffMsg handler:
+//  1. RunHandoffPipeline (agent): validation, old-session save, summary
+//     generation, session-history indexing, durable handoff record.
+//  2. Create the new conversation (fresh App/host/facade).
+//  3. Seed the new conversation: clear pending images (they belong to the old
+//     session), and inject the handoff context as a pinned system message so
+//     the next user turn (or the continuation turn) has the context.
+//  4. When proceed is true, enqueue the continuation prompt as the new
+//     session's first turn — the host drives it, the TUI is passive (same
+//     "host enqueues" policy as workflow continuation).
+//
+// The old facade is NOT closed here — the caller (the TUI) closes it after
+// receiving the new facade, so a failure in this function never strands the
+// user without a live conversation.
 func (cm *conversationManager) HandoffConversation(ctx context.Context, principal core.Principal, current sessionclient.Facade, proceed bool) (sessionclient.Facade, error) {
 	wf, ok := current.(*wiringFacade)
 	if !ok {
 		return nil, fmt.Errorf("handoff: not a wiring facade")
 	}
 
-	// Generate the handoff context from the old App.
-	handoffCtx := agent.BuildHandoffContext(agent.HandoffPayload{}, wf.app.Client.ChatID, wf.app.SessionWorkspace())
+	// 1. Run the handoff pipeline against the old App (save + summarize +
+	// index + record). Errors fail the rotation — the old conversation stays
+	// live, which is the safe outcome.
+	result, err := agent.RunHandoffPipeline(ctx, wf.app)
+	if err != nil {
+		return nil, fmt.Errorf("handoff: %w", err)
+	}
 
-	// Create the new conversation.
+	// 2. Create the new conversation.
 	f, err := cm.newConversation(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// If proceeding, seed the new session with the handoff context.
-	if proceed && handoffCtx != "" {
-		f.app.PendingImages = nil
+	// 3. Seed: pending images belong to the old session; the handoff context
+	// travels as a pinned system message (untrusted-delimiter framing, same
+	// mitigation as the old TUI's stop-mode injection).
+	f.app.PendingImages = nil
+	handoffCtx := agent.BuildHandoffContext(result.Payload, result.OldChatID, wf.app.SessionWorkspace())
+	if handoffCtx != "" {
+		f.app.Conv = append(f.app.Conv, proxy.Message{
+			Role:    "system",
+			Content: agent.StrPtr(handoffCtx),
+			Pinned:  true,
+		})
 	}
 
+	// 4. Proceed: enqueue the continuation prompt as the new session's first
+	// turn. The host drives it; the facade returns immediately.
+	if proceed && result.ContinuationPrompt != "" {
+		if _, err := f.host.SubmitInput(ctx, principal, core.SubmitInputRequest{
+			SessionID: f.sessionID,
+			Text:      result.ContinuationPrompt,
+		}); err != nil {
+			// The continuation could not start (queue full or closing). The
+			// handoff itself still succeeded — the new session exists and
+			// carries the context as a pinned message. The user can send the
+			// prompt themselves; surface the miss via the startup note.
+			f.app.StartupNote = "· handoff complete — continuation could not auto-start (" + err.Error() + "); the context is pinned, send your next message"
+		}
+	}
 	return f, nil
 }
 
@@ -152,14 +198,19 @@ func (cm *conversationManager) Close(f sessionclient.Facade) error {
 	return wf.Close()
 }
 
-// workspaceIDFromConfig derives a WorkspaceID from the config's working directory.
+// workspaceIDFromConfig derives a WorkspaceID from the config's working
+// directory (7b3 m4: real derivation — the m3 stub used the raw path, which
+// fails ID validation for an empty workdir and produces unwieldy IDs for long
+// paths). The ID is "wsp_" + the first 16 hex chars of the SHA-256 of the
+// effective workdir: stable for a given workspace (resumes and rotations
+// derive the same ID), collision-safe for practical purposes, and independent
+// of path length. An empty effective workdir (a hand-built test config)
+// derives the zero-value hash of "" — still a valid, stable ID.
 func workspaceIDFromConfig(cfg config.Config) event.WorkspaceID {
 	ws := cfg.WorkDir
 	if cfg.ExecMode != "direct" {
 		ws = cfg.HostWorkDir
 	}
-	// WorkspaceID requires the wsp_ prefix. Use the path as-is for now;
-	// the host validates and may reject. In production this should use a
-	// proper workspace ID generator.
-	return event.WorkspaceID("wsp_" + ws)
+	sum := sha256.Sum256([]byte(ws))
+	return event.WorkspaceID("wsp_" + hex.EncodeToString(sum[:8]))
 }
