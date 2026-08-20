@@ -122,6 +122,15 @@ func (g *Generator) SubagentID() (event.SubagentID, error) {
 	return event.NewSubagentID(raw)
 }
 
+// OpID returns a fresh "op_<uuidv7>" detached-operation id.
+func (g *Generator) OpID() (event.OpID, error) {
+	raw, err := g.raw("op_")
+	if err != nil {
+		return "", err
+	}
+	return event.NewOpID(raw)
+}
+
 // defaultGenerator backs the package-level New*ID helpers with crypto/rand.
 var defaultGenerator = New()
 
@@ -148,3 +157,6 @@ func NewApprovalID() (event.ApprovalID, error) { return defaultGenerator.Approva
 
 // NewSubagentID returns a fresh prefixed UUIDv7 subagent id.
 func NewSubagentID() (event.SubagentID, error) { return defaultGenerator.SubagentID() }
+
+// NewOpID returns a fresh prefixed UUIDv7 detached-operation id.
+func NewOpID() (event.OpID, error) { return defaultGenerator.OpID() }

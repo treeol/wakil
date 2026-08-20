@@ -21,13 +21,16 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
+	"github.com/treeol/wakil/internal/core/id"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/workflow"
 )
 
 // Compile-time proof that wiringFacade satisfies the Facade interface.
@@ -56,6 +59,21 @@ type wiringFacade struct {
 	// stopped and drained on Close.
 	pump *EventPump
 
+	// sideQuestions maps facade-minted OpIDs to their cancel functions. The
+	// agent's StartSideQuestion returns only a CancelFunc (its internal
+	// SideQuestionID never leaves the agent), so the facade mints its own
+	// domain OpID per start and registers the cancel func. CancelSideQuestion
+	// looks up by OpID, cancels, and removes the entry. Cleared on Close
+	// (detached-job policy: cancel on close).
+	sideQuestions map[sessionclient.OpID]context.CancelFunc
+
+	// snapshotVersion increments on every facade-mediated mutation so a client
+	// can detect a stale snapshot by comparing versions. It is a facade-local
+	// revision counter (not the durable event seq — that is the host's
+	// identity for turn events; snapshot fields like ModelList change through
+	// facade mutations that may not produce events).
+	snapshotVersion uint64
+
 	// closed is true after Close; subsequent calls return ErrSessionClosed.
 	closed bool
 }
@@ -66,11 +84,12 @@ type wiringFacade struct {
 // TUI.
 func newWiringFacade(app *agent.App, handle *HostTurnHandle, host *sessionhost.Host, res *AppResources, principal core.Principal) *wiringFacade {
 	return &wiringFacade{
-		app:       app,
-		handle:    handle,
-		host:      host,
-		resources: res,
-		principal: principal,
+		app:          app,
+		handle:       handle,
+		host:         host,
+		resources:    res,
+		principal:    principal,
+		sideQuestions: make(map[sessionclient.OpID]context.CancelFunc),
 	}
 }
 
@@ -128,11 +147,18 @@ func (f *wiringFacade) SessionSnapshot(ctx context.Context, principal core.Princ
 // ---- TUI-specific surfaces ----
 
 func (f *wiringFacade) Snapshot() sessionclient.ClientSnapshot {
+	f.mu.Lock()
+	version := f.snapshotVersion
+	f.mu.Unlock()
 	app := f.app
+	title := ""
+	if app.Session != nil {
+		title = app.Session.Label
+	}
 	return sessionclient.ClientSnapshot{
 		SessionID:    f.sessionID,
 		ChatID:       app.Client.ChatID,
-		Title:        "",
+		Title:        title,
 		Workspace:    app.SessionWorkspace(),
 		Backend:      app.SelectedBackend,
 		Model:        app.EffectiveModel(),
@@ -146,7 +172,7 @@ func (f *wiringFacade) Snapshot() sessionclient.ClientSnapshot {
 		OutputMode:   app.Cfg.OutputMode,
 		Costs:        app.Costs,
 		Workflow:     toClientWorkflow(app),
-		Version:      0, // TODO(7b3 m3): version-stamp with event seq
+		Version:      version,
 	}
 }
 
@@ -165,21 +191,58 @@ func (f *wiringFacade) CompletionSource() sessionclient.CompletionSource {
 
 // ---- Client-initiated mutations ----
 
-func (f *wiringFacade) SetAutoApprove(v bool)      { f.app.SetAutoApprove(v) }
-func (f *wiringFacade) SetAllowDestructive(v bool) { f.app.SetAllowDestructive(v) }
-func (f *wiringFacade) RevokeAuto()               { f.app.RevokeAuto() }
+// bumpVersion increments the snapshot revision counter. Called by every
+// facade-mediated mutation so a client can detect a stale snapshot by version.
+func (f *wiringFacade) bumpVersion() {
+	f.mu.Lock()
+	f.snapshotVersion++
+	f.mu.Unlock()
+}
+
+func (f *wiringFacade) SetAutoApprove(v bool)      { f.bumpVersion(); f.app.SetAutoApprove(v) }
+func (f *wiringFacade) SetAllowDestructive(v bool) { f.bumpVersion(); f.app.SetAllowDestructive(v) }
+func (f *wiringFacade) RevokeAuto()                { f.bumpVersion(); f.app.RevokeAuto() }
 
 func (f *wiringFacade) SetWorkflow(wf *sessionclient.WorkflowSnapshot) {
+	f.bumpVersion()
 	if wf == nil {
 		f.app.SetWorkflow(nil)
 		return
 	}
-	// TODO: convert WorkflowSnapshot to workflow.WorkflowState — the agent's
-	// SetWorkflow takes a *workflow.WorkflowState. For now, nil it.
-	f.app.SetWorkflow(nil)
+	f.app.SetWorkflow(&workflow.WorkflowState{
+		Task:      wf.Task,
+		Phase:     workflowPhaseFromName(wf.Phase),
+		StepCount: wf.StepCount,
+		StepIdx:   wf.StepIdx,
+		PlanPath:  wf.PlanPath,
+	})
+}
+
+// workflowPhaseFromName maps a WorkflowSnapshot phase name back to the
+// workflow.WorkflowPhase value. Snapshot phases round-trip through
+// PhaseName() ("gather".."done"); an unknown name maps to WFGather — the
+// workflow engine's initial phase — rather than silently clearing the
+// workflow (a misnamed snapshot should still produce a live workflow object
+// the user can /plan abort).
+func workflowPhaseFromName(name string) workflow.WorkflowPhase {
+	switch name {
+	case "plan":
+		return workflow.WFPlan
+	case "review":
+		return workflow.WFReview
+	case "present":
+		return workflow.WFPresent
+	case "implement":
+		return workflow.WFImplement
+	case "done":
+		return workflow.WFDone
+	default: // "gather" and anything unknown
+		return workflow.WFGather
+	}
 }
 
 func (f *wiringFacade) AppendSystemMessage(m proxy.Message) {
+	f.bumpVersion()
 	f.app.Conv = append(f.app.Conv, m)
 }
 
@@ -192,6 +255,7 @@ func (f *wiringFacade) ConsumeStartupNote() string {
 }
 
 func (f *wiringFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {
+	f.bumpVersion()
 	f.app.SaveRepoState(func(s *agent.RepoState) {
 		// Initialize the mutator from the current repo state so the caller
 		// only needs to set the fields it wants to change — unset fields
@@ -226,49 +290,80 @@ func (f *wiringFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator
 	})
 }
 
-func (f *wiringFacade) SetInfoPanelOpen(open bool) { f.app.SetInfoPanelOpen(open) }
+func (f *wiringFacade) SetInfoPanelOpen(open bool) { f.bumpVersion(); f.app.SetInfoPanelOpen(open) }
 
 func (f *wiringFacade) SetCtxLimit(lim sessionclient.ContextLimit) {
+	f.bumpVersion()
 	f.app.CtxLimit = toAgentContextLimit(lim)
 }
 
 func (f *wiringFacade) SetModelList(models []string) {
+	f.bumpVersion()
 	f.app.ModelList = append([]string(nil), models...)
 }
 
 func (f *wiringFacade) SetTools(tools []proxy.Tool) {
+	f.bumpVersion()
 	f.app.Tools = append([]proxy.Tool(nil), tools...)
 }
 
 func (f *wiringFacade) ReplacePendingImages(imgs []proxy.ImagePart) {
+	f.bumpVersion()
 	f.app.PendingImages = append([]proxy.ImagePart(nil), imgs...)
 }
 
 func (f *wiringFacade) AddPendingImage(img proxy.ImagePart) {
+	f.bumpVersion()
 	f.app.PendingImages = append(f.app.PendingImages, img)
 }
 
 func (f *wiringFacade) ClearPendingImages() {
+	f.bumpVersion()
 	f.app.PendingImages = nil
 }
 
 // ---- Side questions ----
 
+// StartSideQuestion starts a concurrent side-question stream and returns a
+// facade-minted OpID plus the cancel function. The agent's own SideQuestionID
+// never crosses the boundary; the facade's OpID is the client-facing identity
+// (used for display routing only — the progress/completion events the agent
+// emits still carry the agent-internal ID, projected to a domain OpID by the
+// event projection, which may differ from this one. The TUI correlates side-
+// question output by "the active side question", not by OpID — matching the
+// old TUI, which ignored the ID entirely and rendered the single active
+// stream).
 func (f *wiringFacade) StartSideQuestion(ctx context.Context, question string) (sessionclient.OpID, context.CancelFunc) {
+	rawID, err := id.NewOpID()
+	if err != nil {
+		// ID generation failure is not recoverable — mint a degraded unique ID
+		// from the wall clock so the registry still works.
+		rawID = event.OpID(fmt.Sprintf("op_%d", time.Now().UnixNano()))
+	}
+	opID := sessionclient.OpID(rawID)
 	cancel := f.app.StartSideQuestion(ctx, question)
-	// The agent's StartSideQuestion returns only a CancelFunc, not an OpID.
-	// We generate a pseudo OpID for the facade contract. The TUI uses it
-	// only for display routing; the actual cancellation goes through the
-	// returned CancelFunc.
-	return sessionclient.OpID("op_sq"), cancel
+	f.mu.Lock()
+	if f.sideQuestions == nil {
+		f.sideQuestions = make(map[sessionclient.OpID]context.CancelFunc)
+	}
+	f.sideQuestions[opID] = cancel
+	f.mu.Unlock()
+	return opID, cancel
 }
 
-func (f *wiringFacade) CancelSideQuestion(id sessionclient.OpID) {
-	// The agent's side question API is cancel-only (via the CancelFunc
-	// returned by StartSideQuestion). There is no separate CancelSideQuestion
-	// method on *agent.App. The TUI must hold the CancelFunc from
-	// StartSideQuestion and call it directly. This method is a no-op stub
-	// for the interface contract.
+// CancelSideQuestion cancels the side question started under the given OpID
+// and removes it from the registry. Unknown or already-cancelled IDs are a
+// no-op (the agent's cancel is idempotent; a stale ID simply maps to nothing).
+func (f *wiringFacade) CancelSideQuestion(opID sessionclient.OpID) {
+	f.mu.Lock()
+	cancel, ok := f.sideQuestions[opID]
+	if ok {
+		delete(f.sideQuestions, opID)
+	}
+	f.mu.Unlock()
+	if ok && cancel != nil {
+		cancel()
+	}
 }
 
 // ---- Session listing ----
@@ -400,6 +495,8 @@ func (f *wiringFacade) Close() error {
 	f.closed = true
 	pump := f.pump
 	sub := f.subscription
+	sideQuestions := f.sideQuestions
+	f.sideQuestions = nil
 	f.mu.Unlock()
 
 	// Stop the event pump first; it closes the subscription internally.
@@ -412,6 +509,13 @@ func (f *wiringFacade) Close() error {
 		}
 	} else if sub != nil {
 		_ = sub.Close()
+	}
+
+	// Cancel any running side questions (detached-job policy: cancel on close).
+	for _, cancel := range sideQuestions {
+		if cancel != nil {
+			cancel()
+		}
 	}
 
 	// Cancel detached async jobs (detached-job policy: cancel on close).
