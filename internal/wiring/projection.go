@@ -132,6 +132,9 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, msg any) {
 			SubagentID: subID,
 			Task:       m.Task,
 			Capability: capability,
+			Backend:    m.Backend,
+			Model:      m.Model,
+			ToolNames:  append([]string(nil), m.ToolNames...),
 		})
 
 	case agent.SubagentActiveMsg:
@@ -155,11 +158,17 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, msg any) {
 	case agent.SubagentFinishedMsg:
 		// Display-only early completion. No durable event — the authoritative
 		// completion is SubagentDoneMsg → subagent_completed. The TUI can
-		// update the tab's visual state from this ephemeral signal.
+		// update the tab's visual state from this ephemeral signal: the
+		// structured Finished fields carry what the old SubagentFinishedMsg
+		// handler set on the tab (status, cost, files count, preview).
 		subID := subagentIDFromChatID(m.ChatID)
 		emit.Notify(event.KindSubagentProgress, event.SubagentProgress{
-			SubagentID: subID,
-			Text:       "[finished:" + m.Status + "]",
+			SubagentID:      subID,
+			Text:            m.SummaryPreview,
+			Finished:        true,
+			FinishedStatus:  m.Status,
+			FinishedCostUSD: m.CostUSD,
+			FinishedFilesN:  len(m.FilesChanged),
 		})
 
 	case agent.SubagentDoneMsg:
@@ -169,10 +178,21 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, msg any) {
 		if m.Err != "" {
 			status = "failed"
 		}
+		groundingLabels := make([]string, 0, len(m.Grounding))
+		for _, g := range m.Grounding {
+			groundingLabels = append(groundingLabels, g.Label)
+		}
 		emit.Emit(event.KindSubagentCompleted, event.SubagentCompleted{
-			SubagentID:      subID,
-			Status:          status,
-			SummaryPreview:  "",
+			SubagentID:     subID,
+			Status:         status,
+			SummaryPreview: "",
+			Err:            m.Err,
+			CostUSD:        m.CostUSD,
+			FilesChanged:   append([]string(nil), m.FilesChanged...),
+			Grounding:      groundingLabels,
+			CtxSize:        m.CtxSize,
+			HardMaxBytes:   m.HardMaxBytes,
+			UsedBackend:    m.UsedBackend,
 		})
 
 	// ---- Async job events ----
@@ -203,7 +223,8 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, msg any) {
 		emit.Emit(event.KindAsyncJobCompleted, event.AsyncJobCompleted{
 			OpID:           opID,
 			Status:         status,
-			SummaryPreview:  m.Result,
+			SummaryPreview: m.Result,
+			Err:            m.Err,
 		})
 
 	// ---- Side question events ----

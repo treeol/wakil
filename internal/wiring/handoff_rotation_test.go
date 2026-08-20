@@ -93,5 +93,37 @@ func TestHandoffConversationRejectsEmpty(t *testing.T) {
 	}
 }
 
+// TestFacadeInfoSnapshot verifies the Info() surface carries the deep-state
+// fields the info panel and status line render (context gauge, workflow label,
+// endpoint, model selection) — the reads the old TUI made on *agent.App.
+func TestFacadeInfoSnapshot(t *testing.T) {
+	f := newTestFacade(t)
+
+	f.SetWorkflow(&sessionclient.WorkflowSnapshot{
+		Task:  "info test",
+		Phase: "gather",
+	})
+
+	info := f.Info()
+	if info.WorkflowLabel == "" {
+		t.Error("Info().WorkflowLabel empty with an active workflow")
+	}
+	if info.EffectiveModel == "" {
+		t.Error("Info().EffectiveModel empty")
+	}
+	if info.ChatID != f.app.Client.ChatID {
+		t.Errorf("Info().ChatID = %q, want %q", info.ChatID, f.app.Client.ChatID)
+	}
+	// MentionBase and endpoints are present (completion source parity).
+	if len(info.Endpoints) == 0 || info.Endpoints[0] != "inherit" {
+		t.Errorf("Info().Endpoints = %v, want inherit-first", info.Endpoints)
+	}
+	// InfoSnapshot is a plain copy: mutating it must not affect the facade.
+	info.WorkflowLabel = ""
+	if f.Info().WorkflowLabel == "" {
+		t.Error("Info() result aliases live state — expected a copy")
+	}
+}
+
 // Compile-time interface check (mirrors facade_test's, scoped to this file).
 var _ sessionclient.ConversationManager = (*conversationManager)(nil)

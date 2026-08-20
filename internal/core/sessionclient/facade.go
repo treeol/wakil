@@ -85,6 +85,24 @@ type SessionSummary struct {
 	Conv      []proxy.Message
 }
 
+// Turns counts the user turns in the session and returns the first user
+// message text (the resume picker's "N turns · <first message>" row). Mirrors
+// agent.SessionTurns without the agent import.
+func (s SessionSummary) Turns() (int, string) {
+	turns, first := 0, ""
+	for _, m := range s.Conv {
+		if m.Role == "user" {
+			turns++
+			if first == "" {
+				if m.Content != nil {
+					first = *m.Content
+				}
+			}
+		}
+	}
+	return turns, first
+}
+
 // SessionScope narrows a session listing to one workspace, or everything.
 // Mirrors agent.SessionScope.
 type SessionScope struct {
@@ -317,6 +335,13 @@ type Facade interface {
 	// the snapshot. Staleness is bounded by one keystroke (acceptable — the
 	// old path read App fields directly with the same staleness).
 	CompletionSource() CompletionSource
+
+	// Info returns the deep-state view the info panel and status line render
+	// (endpoint, cwd, context gauge, workflow label, MCP servers, grounding,
+	// costs). Fetched on demand; NOT part of Snapshot — the fields are cheap
+	// but numerous, and Snapshot is re-fetched on every event batch. All
+	// slices are defensive copies.
+	Info() InfoSnapshot
 
 	// ---- Client-initiated mutations (D26, from grounding #11) ----
 	// These map onto the agent.Control + agent.StateApply methods the TUI

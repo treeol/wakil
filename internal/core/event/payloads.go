@@ -188,6 +188,11 @@ type SubagentSpawned struct {
 	SubagentID SubagentID
 	Task       string
 	Capability string // "discovery" | "edit" | "tools"
+	// Display fields (7b3 m4): the client's subagent tab renders these from
+	// the spawn event. Optional — zero values render as absent.
+	Backend   string   // resolved backend (from the dispatch)
+	Model     string   // child's resolved model
+	ToolNames []string // tools-tier tool names (nil for discovery/edit)
 }
 
 func (p SubagentSpawned) Validate() error {
@@ -206,6 +211,14 @@ func (p SubagentSpawned) Validate() error {
 type SubagentProgress struct {
 	SubagentID SubagentID
 	Text       string
+	// Early-completion display fields (7b3 m4): set only on the display-only
+	// "finished" signal that precedes the authoritative SubagentCompleted (the
+	// client flips its tab to a visually-done state before the Phase C barrier).
+	// Zero on ordinary stream chunks.
+	Finished        bool    // true on the early-finished signal
+	FinishedStatus  string  // "ok"/"incomplete"/"failed"/"declined" (Finished only)
+	FinishedCostUSD float64 // child's own total at finish (Finished only)
+	FinishedFilesN  int     // files changed count at finish (Finished only)
 }
 
 // SubagentCompleted is the payload for KindSubagentCompleted.
@@ -216,6 +229,15 @@ type SubagentCompleted struct {
 	// SummaryPreview is a short rendering for the sidebar; the full summary is
 	// delivered out-of-band.
 	SummaryPreview string
+	// Display fields (7b3 m4): the client's tab/info-panel parity with the old
+	// SubagentDoneMsg. Optional — zero values render as absent.
+	Err         string             // non-empty failure text (timeout, panic, refusal)
+	CostUSD     float64            // child's priced cost
+	FilesChanged []string          // canonical paths touched (edit-tier only)
+	Grounding   []string           // grounding-entry labels (display)
+	CtxSize     int                // context size the child consumed
+	HardMaxBytes int               // hard output cap applied to the child
+	UsedBackend string             // actual backend from last response
 }
 
 func (p SubagentCompleted) Validate() error {
@@ -378,6 +400,9 @@ type AsyncJobCompleted struct {
 	Status string // "ok" | "error" | "cancelled"
 	// SummaryPreview is a bounded display summary.
 	SummaryPreview string
+	// Err is the failure diagnostics on error (display; 7b3 m4 parity with the
+	// old AsyncJobDoneMsg.Err). Empty on ok/cancelled.
+	Err string
 }
 
 func (p AsyncJobCompleted) Validate() error {

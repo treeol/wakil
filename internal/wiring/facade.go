@@ -20,16 +20,21 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
+	"github.com/treeol/wakil/internal/core/format"
 	"github.com/treeol/wakil/internal/core/id"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/proxy"
+	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
 )
 
@@ -187,6 +192,122 @@ func (f *wiringFacade) Consent() sessionclient.Consent {
 
 func (f *wiringFacade) CompletionSource() sessionclient.CompletionSource {
 	return &facadeCompletionSource{f: f}
+}
+
+// Info returns the deep-state view for the TUI's info panel and status line
+// (7b3 m4). All slices are defensive copies. Mirrors the reads the old TUI
+// made directly on *agent.App (tui_view.go ctxSegment/headerStatusInput,
+// info_panel.go info*Segments).
+func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
+	app := f.app
+	used, exact := app.ContextUsage()
+
+	info := sessionclient.InfoSnapshot{
+		ChatID:         app.Client.ChatID,
+		BaseURL:        app.Client.BaseURL,
+		LastBackend:    app.Client.LastUsedBackend(),
+		Cwd:            app.Exec.Cwd(),
+		ExecMode:       app.Exec.Describe(),
+		SelectedBackend: app.SelectedBackend,
+		ConfigBackend:   app.Cfg.Backend,
+		EffectiveModel:  app.EffectiveModel(),
+		SubagentModel:   app.EffectiveSubagentModel(),
+		PromptNote:      app.AgentPromptNote(),
+		Image:           app.Cfg.Image,
+		OracleLabel:     mashuraPanelLabel(app.Cfg),
+		OracleOn:        app.Cfg.OracleEnabled,
+		SearXngURL:      app.Cfg.SearXngURL,
+		MentionBase:     app.Cfg.MentionBase,
+		ContextLimit:    toClientContextLimit(app.ContextLimit()),
+		ContextUsed:     used,
+		ContextExact:    exact,
+		ConvLen:         len(app.Conv),
+		TranscriptSize:  format.TranscriptSize(app.Conv),
+		Costs:           app.Costs,
+	}
+
+	if app.Workflow != nil {
+		info.WorkflowLabel = app.Workflow.SidebarLabel()
+	}
+
+	// Endpoint names for completion ("inherit" first, sorted rest).
+	endpoints := make([]string, 0, len(app.Cfg.Endpoints)+1)
+	endpoints = append(endpoints, "inherit")
+	for name := range app.Cfg.Endpoints {
+		endpoints = append(endpoints, name)
+	}
+	sort.Strings(endpoints[1:])
+	info.Endpoints = endpoints
+
+	// MCP servers.
+	if app.MCP != nil {
+		servers := app.MCP.Servers()
+		mcpInfo := make([]sessionclient.MCPServerInfo, 0, len(servers))
+		for _, srv := range servers {
+			mcpInfo = append(mcpInfo, sessionclient.MCPServerInfo{
+				Name:   srv.Cfg.Name,
+				Status: srv.Status,
+				ToolN:  len(srv.Tools),
+			})
+		}
+		info.MCPServers = mcpInfo
+	}
+
+	// SearXNG tools (names only — the panel shows tool availability).
+	if app.Cfg.SearXngURL != "" {
+		tools := wtools.SearxngTools()
+		names := make([]string, 0, len(tools))
+		for _, t := range tools {
+			names = append(names, t.Function.Name)
+		}
+		info.SearxngTools = names
+	}
+
+	// Grounding entries.
+	for _, g := range app.Client.Grounding() {
+		info.Grounding = append(info.Grounding, sessionclient.GroundingEntry{
+			Type:  g.Type,
+			Label: g.Label,
+		})
+	}
+
+	return info
+}
+
+// mashuraPanelLabel returns a short display string for the active mashura
+// panel — moved from the TUI (info_panel.go) so the info snapshot can carry
+// it without the TUI reading config internals.
+func mashuraPanelLabel(cfg config.Config) string {
+	name := "default"
+	if cfg.MashuraToolPanels != nil {
+		if p := cfg.MashuraToolPanels["review"]; p != "" {
+			name = p
+		}
+	}
+	if cfg.MashuraPanels != nil {
+		if p, ok := cfg.MashuraPanels[name]; ok && len(p.Models) > 0 {
+			switch p.Mode {
+			case "fusion":
+				return fmt.Sprintf("fusion (%d models)", len(p.Models))
+			case "fallback":
+				return fmt.Sprintf("%s +fallback", mashuraShortModel(p.Models[0]))
+			default:
+				if len(p.Models) == 1 {
+					return mashuraShortModel(p.Models[0])
+				}
+				return fmt.Sprintf("%d models", len(p.Models))
+			}
+		}
+	}
+	return cfg.OracleModel
+}
+
+// mashuraShortModel strips the "provider:" prefix for compact display.
+func mashuraShortModel(s string) string {
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }
 
 // ---- Client-initiated mutations ----
