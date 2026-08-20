@@ -2,8 +2,8 @@
 // `wakil run "<task>"` path through the session host + adapter, projecting
 // domain events onto the existing JSON-lines transcript and exit codes.
 //
-// The `--plan` workflow loop is NOT re-routed here (chunk 7c); it lives in
-// workflow_legacy.go and drives App directly through the shared bootstrap.
+// Chunk 7c: `wakil run --plan` is re-routed here too (runPlanTask) — the
+// legacy direct-App workflow loop is gone.
 package wiring
 
 import (
@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/treeol/wakil/internal/policy"
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
+	"github.com/treeol/wakil/internal/workflow"
 )
 
 // Exit codes for wakil run.
@@ -134,6 +136,14 @@ func headlessResolver(app *agent.App, opts HeadlessOptions) ApprovalResolver {
 // headlessDecision is the single headless approval decision function (D19/D18).
 // It returns the choice and, on decline, a human-readable reason. It reads
 // App.Policy() and agent.SuspendAuto, so it needs the App — fine, wiring holds it.
+// HeadlessDecision is the exported headless approval policy (7c): one
+// decision function shared by the single-task resolver, the plan path, and
+// test-facing confirmer wrappers. Exposed so cmd/wakil test bridges can build
+// confirmers with identical policy without duplicating the carve-outs.
+func HeadlessDecision(app *agent.App, opts HeadlessOptions, req ApprovalRequest) (agent.ConfirmChoice, string) {
+	return headlessDecision(app, opts, req)
+}
+
 func headlessDecision(app *agent.App, opts HeadlessOptions, req ApprovalRequest) (agent.ConfirmChoice, string) {
 	if pol := app.Policy(); pol != nil {
 		input := agent.BuildPolicyInput(req.ToolName, req.Detail, req.ReadAction)
@@ -265,18 +275,18 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	if !opts.PlanMode {
 		return runSingleTask(ctx, app, task, opts, out)
 	}
-	return runWorkflowLegacy(ctx, app, task, opts, out)
+	return runPlanTask(ctx, app, task, opts, out)
 }
 
 // RunHeadlessApp drives a pre-built *agent.App through either the single-task
-// host path (no --plan) or the legacy workflow path (--plan). It is the
+// host path (no --plan) or the plan-mode host path (--plan). It is the
 // test-friendly entry point equivalent of cmd/wakil's old runHeadlessApp: the
 // caller owns App construction. Returns the exit code.
 func RunHeadlessApp(ctx context.Context, app *agent.App, task string, planMode bool, opts HeadlessOptions, out io.Writer) int {
 	if !planMode {
 		return runSingleTask(ctx, app, task, opts, out)
 	}
-	return runWorkflowLegacy(ctx, app, task, opts, out)
+	return runPlanTask(ctx, app, task, opts, out)
 }
 
 // runSingleTask drives one task through the session host (D20). Returns the
@@ -358,6 +368,192 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 		emitEvent(out, map[string]any{"type": "tokens", "input": inTok, "output": outTok})
 	}
 	return code
+}
+
+// runPlanTask drives the plan workflow through the session host (7c). Pre-host
+// setup (plan.md, SetWorkflow, writer/teardown) mirrors the legacy driver
+// verbatim; the multi-turn workflow loop becomes host turns with the adapter's
+// plan-auto-advance resolver (see resolveAfterTurn) driving phase transitions.
+// Byte parity with the legacy driver: first submitted text is "continue" (the
+// task text lives in .wakil/plan.md, exactly as legacy), terminal records and
+// exit codes are produced by consumeWorkflowEvents from durable events only —
+// the consumer never reads app state directly.
+func runPlanTask(ctx context.Context, app *agent.App, task string, opts HeadlessOptions, out io.Writer) int {
+	hw := NewHeadlessWriter(out)
+	if opts.TranscriptFile != "" {
+		defer app.SaveSession()
+	}
+	defer hw.Flush()
+	defer app.StopAllAsyncOps()
+
+	app.Out = hw
+	app.Client.ResetGrounding()
+
+	if opts.NoOracle {
+		app.Cfg.OracleEnabled = false
+	}
+
+	planPath := filepath.Join(app.Exec.Cwd(), ".wakil", "plan.md")
+	if _, err := app.Exec.RunShell(ctx, "mkdir -p .wakil"); err != nil {
+		emitEvent(out, map[string]any{"type": "error", "message": "cannot create .wakil: " + err.Error()})
+		return ExitError
+	}
+	if _, err := app.Exec.WriteFile(ctx, planPath, workflow.WFInitPlanContent(task)); err != nil {
+		emitEvent(out, map[string]any{"type": "error", "message": "cannot write plan.md: " + err.Error()})
+		return ExitError
+	}
+	app.SetWorkflow(&workflow.WorkflowState{
+		Task:     task,
+		Phase:    workflow.WFGather,
+		PlanPath: planPath,
+	})
+	return runPlanSession(ctx, app, opts, out, hw)
+}
+
+// RunPlanLoop drives the host-path plan loop over an ALREADY-INITIALIZED
+// app.Workflow (7c test entry — the old RunWorkflowLoopLegacy equivalent).
+// The caller owns plan.md and WorkflowState setup; this runs the host session
+// to a workflow terminal and emits the terminal record.
+func RunPlanLoop(ctx context.Context, app *agent.App, opts HeadlessOptions, out io.Writer) int {
+	hw := NewHeadlessWriter(out)
+	if opts.TranscriptFile != "" {
+		defer app.SaveSession()
+	}
+	defer hw.Flush()
+	defer app.StopAllAsyncOps()
+
+	app.Out = hw
+	return runPlanSession(ctx, app, opts, out, hw)
+}
+
+// runPlanSession builds the host session for a plan run and consumes it to a
+// workflow terminal.
+func runPlanSession(ctx context.Context, app *agent.App, opts HeadlessOptions, out io.Writer, hw *HeadlessWriter) int {
+	turnFn, err := HostTurnFunc(app, WithResolver(headlessResolver(app, opts)), WithPlanAutoAdvance(opts.NoOracle))
+	if err != nil {
+		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
+		return ExitError
+	}
+	h := sessionhost.New(turnFn)
+	defer h.Close(ctx)
+	p := core.EmbeddedPrincipal()
+
+	sess, err := h.CreateSession(ctx, p, core.CreateSessionRequest{
+		Workspace: event.WorkspaceID("wsp_local"),
+		Title:     "headless-plan",
+	})
+	if err != nil {
+		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
+		return ExitError
+	}
+
+	sub, err := h.Subscribe(ctx, p, sess.ID, 0)
+	if err != nil {
+		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
+		return ExitError
+	}
+	defer sub.Close()
+
+	// Legacy parity: the loop sent "continue" for every step including the
+	// first; the task text lives in plan.md.
+	if _, err := h.SubmitInput(ctx, p, core.SubmitInputRequest{SessionID: sess.ID, Text: "continue"}); err != nil {
+		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
+		return ExitError
+	}
+
+	code, msg := consumeWorkflowEvents(ctx, sub, hw, out)
+
+	// Terminal record — byte parity with the legacy records.
+	switch code {
+	case ExitBackendFailure:
+		emitEvent(out, map[string]any{
+			"type":      "done",
+			"outcome":   "backend_failure",
+			"message":   msg,
+			"resume_id": agent.ShortID(app.Client.ChatID),
+		})
+	case ExitError:
+		emitEvent(out, map[string]any{"type": "error", "message": msg})
+	case ExitDeclined:
+		emitEvent(out, map[string]any{"type": "done", "outcome": "declined", "reason": msg})
+	case ExitGaps:
+		emitEvent(out, map[string]any{"type": "done", "outcome": msg, "message": gapsMessage(msg)})
+	default:
+		emitEvent(out, map[string]any{"type": "done", "outcome": "pass"})
+	}
+
+	// No tokens record in plan mode — legacy parity.
+	return code
+}
+
+// gapsMessage renders the terminal message for gaps/verify_failed outcomes.
+// msg carries the outcome ("gaps" | "verify_failed"); the message text matches
+// the legacy strings exactly.
+func gapsMessage(outcome string) string {
+	if outcome == "verify_failed" {
+		return "verification failed (see step log for details)"
+	}
+	return "final review flagged unresolved gaps"
+}
+
+// consumeWorkflowEvents drains the subscription until a WORKFLOW-level
+// terminal: the durable WorkflowOutcome event (declined/verify_failed/gaps),
+// a SessionError (backend/request/internal), a cancelled turn, or the final
+// turn completing with WorkflowWillContinue=false (pass). Deltas stream to hw
+// (the JSON-lines HeadlessWriter); WorkflowWarning renders the legacy warning
+// record on the RAW writer (a standalone JSON line, never interleaved into an
+// output chunk). Returns (exit code, message): for ExitDeclined the decline
+// reason; for ExitGaps the outcome string ("gaps"|"verify_failed"); for
+// errors the error text.
+func consumeWorkflowEvents(ctx context.Context, sub core.EventSubscription, hw *HeadlessWriter, rawOut io.Writer) (int, string) {
+	for {
+		ev, err := sub.Next(ctx)
+		if err != nil {
+			return ExitError, err.Error()
+		}
+		switch ev.Kind {
+		case event.KindMessageDelta:
+			hw.Write([]byte(ev.Payload.(event.MessageDelta).Text))
+		case event.KindWorkflowWarning:
+			emitEvent(rawOut, map[string]any{
+				"type":    "warning",
+				"message": ev.Payload.(event.WorkflowWarning).Message,
+			})
+		case event.KindWorkflowOutcome:
+			wo := ev.Payload.(event.WorkflowOutcome)
+			switch wo.Outcome {
+			case "declined":
+				return ExitDeclined, wo.Reason
+			case "verify_failed":
+				return ExitGaps, "verify_failed"
+			default:
+				return ExitGaps, "gaps"
+			}
+		case event.KindSessionError:
+			se := ev.Payload.(event.SessionError)
+			switch se.Reason {
+			case "backend_failure":
+				return ExitBackendFailure, se.Err
+			case "request_error":
+				return ExitError, strings.TrimPrefix(se.Err, "sessionhost: fatal backend request error: ")
+			default:
+				return ExitError, se.Err
+			}
+		case event.KindTurnCompleted:
+			tc := ev.Payload.(event.TurnCompleted)
+			switch tc.Outcome {
+			case "cancelled":
+				return ExitError, "turn cancelled"
+			case "complete", "empty":
+				if !tc.WorkflowWillContinue {
+					// Workflow done, final turn completed normally → pass.
+					return ExitOK, ""
+				}
+			case "stream_error":
+				// SessionError follows; keep consuming.
+			}
+		}
+	}
 }
 
 // consumeTurnEvents drains the subscription until the session reaches a terminal

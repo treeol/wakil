@@ -51,6 +51,8 @@ func durablePayloads() map[Kind]any {
 		KindAsyncJobStarted:        AsyncJobStarted{OpID: "op_1", Label: "bg job"},
 		KindAsyncJobCompleted:      AsyncJobCompleted{OpID: "op_1", Status: "ok"},
 		KindSideQuestionCompleted:  SideQuestionCompleted{OpID: "op_1", Status: "ok"},
+		// 7c additions
+		KindWorkflowOutcome:        WorkflowOutcome{TurnID: "trn_1", Outcome: "gaps"},
 	}
 }
 
@@ -71,6 +73,8 @@ func TestRegistryCompleteness(t *testing.T) {
 		KindSideQuestionCompleted,
 		KindTokRate, KindAsyncJobProgress, KindSideQuestionProgress,
 		KindLearnNudge, KindSessionNote,
+		// 7c additions
+		KindWorkflowOutcome, KindWorkflowWarning,
 	}
 	seen := map[Kind]bool{}
 	for _, k := range allKinds {
@@ -112,6 +116,7 @@ func TestValidateAcceptsEphemeralKinds(t *testing.T) {
 		KindSideQuestionProgress: SideQuestionProgress{OpID: "op_1", Text: "p"},
 		KindLearnNudge:           LearnNudge{Text: "learn this"},
 		KindSessionNote:          SessionNote{Text: "status line"},
+		KindWorkflowWarning:      WorkflowWarning{Message: "oracle unavailable"},
 	}
 	for kind, payload := range ephemeral {
 		if err := validDraft(kind, payload).ValidateDraft(); err != nil {

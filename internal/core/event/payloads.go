@@ -472,3 +472,43 @@ type LearnNudge struct {
 type SessionNote struct {
 	Text string
 }
+
+// ---- 7c workflow-outcome payloads ----
+
+// WorkflowOutcome is the durable workflow-terminal payload (KindWorkflowOutcome,
+// 7c). A headless plan run terminates in exactly one of these when the workflow
+// ends in a NON-pass state; a pass flow terminates via the final turn's
+// TurnCompleted{complete, WorkflowWillContinue=false} with no outcome event.
+// The event is emitted on the session emitter before the turn returns, so it
+// precedes the turn's TurnCompleted in the durable order (emitDraft
+// sequencing). Consumers map Outcome to exit codes byte-parity with the legacy
+// --plan driver; Reason carries the decline reason (declined) or message.
+type WorkflowOutcome struct {
+	TurnID TurnID
+	// Outcome is one of "declined" | "verify_failed" | "gaps".
+	Outcome string
+	// Reason is the decline reason (Outcome="declined"); bounded, possibly
+	// empty for verify_failed/gaps (message comes from the consumer's
+	// parity strings).
+	Reason string
+}
+
+func (p WorkflowOutcome) Validate() error {
+	if err := p.TurnID.Validate(); err != nil {
+		return err
+	}
+	switch p.Outcome {
+	case "declined", "verify_failed", "gaps":
+	default:
+		return fmt.Errorf("WorkflowOutcome: invalid outcome %q", p.Outcome)
+	}
+	return nil
+}
+
+// WorkflowWarning is the ephemeral workflow warning payload
+// (KindWorkflowWarning, 7c). It carries the exact legacy warning text (e.g.
+// the oracle-unavailable review skip) so a headless consumer can render the
+// byte-identical {"type":"warning"} record. Display-only.
+type WorkflowWarning struct {
+	Message string
+}

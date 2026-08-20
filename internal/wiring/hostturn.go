@@ -41,6 +41,7 @@ import (
 	"github.com/treeol/wakil/internal/core/id"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/workflow"
 )
 
 // ApprovalRequest is the resolved request a resolver answers. It mirrors the
@@ -72,12 +73,23 @@ type ApprovalResolver func(ctx context.Context, req ApprovalRequest) ApprovalRes
 
 // adapterConfig holds HostTurnFunc options.
 type adapterConfig struct {
-	resolver      ApprovalResolver
+	resolver ApprovalResolver
 	// asyncApproval enables the async approval path (7b2 D25). When true,
 	// the confirmer parks the session in awaiting_approval and blocks on
 	// RespondToApproval instead of using the inline resolver. The TUI session
 	// uses this; the headless path does not (keeps sync inline resolution).
 	asyncApproval bool
+	// planAutoAdvance enables the headless --plan after-turn resolver (7c):
+	// when HandleWorkflowTransition pauses the workflow waiting for a user
+	// action, the adapter applies the legacy headless auto-advance policy
+	// (present→implement, review-skip, step advance / final review) instead
+	// of leaving the session idle. It also makes enqueue rejection terminal
+	// (an error) instead of a silent drop: a headless run has no user to
+	// resume a silently-paused workflow.
+	planAutoAdvance bool
+	// noOracle mirrors HeadlessOptions.NoOracle for the review-skip reason
+	// (legacy parity: "oracle disabled by flag (--no-oracle)").
+	noOracle bool
 }
 
 // AdapterOption configures the HostTurnFunc adapter.
@@ -95,6 +107,16 @@ func WithResolver(r ApprovalResolver) AdapterOption {
 // headless path does not (keeps sync inline resolution for parity).
 func WithAsyncApproval() AdapterOption {
 	return func(c *adapterConfig) { c.asyncApproval = true }
+}
+
+// WithPlanAutoAdvance enables the headless --plan after-turn resolver (7c).
+// Only the plan-mode headless driver sets it. noOracle feeds the legacy
+// review-skip reason string.
+func WithPlanAutoAdvance(noOracle bool) AdapterOption {
+	return func(c *adapterConfig) {
+		c.planAutoAdvance = true
+		c.noOracle = noOracle
+	}
 }
 
 // appOwners tracks which *agent.App instances are claimed by a HostTurnFunc, so
@@ -130,9 +152,22 @@ var ErrTurnActive = errors.New("wiring: cannot release App while a turn is activ
 
 // hostTurn is the runtime binding of an App to its one host session.
 type hostTurn struct {
-	app           *agent.App
-	resolver      ApprovalResolver
-	asyncApproval bool // 7b2: use ParkApproval instead of inline resolver
+	app             *agent.App
+	resolver        ApprovalResolver
+	asyncApproval   bool // 7b2: use ParkApproval instead of inline resolver
+	planAutoAdvance bool // 7c: headless --plan after-turn resolver
+	noOracle        bool // 7c: legacy review-skip reason parity
+
+	// declineLatch captures the reason of the first declined approval
+	// resolution this session (7c). It is the CONTROL function the legacy
+	// *declinedReason pointer provided: the after-turn resolver checks it
+	// before running any workflow transition, so a declined approval (tool
+	// OR oracle confirm) terminates the workflow exactly like legacy checked
+	// declinedReason post-Send. Mutex-protected: the confirmer runs on the
+	// turn goroutine or a worker racing the turn loop.
+	declineMu       sync.Mutex
+	declineReason   string
+	declineOccurred bool
 
 	// sessionEmit is the session-scoped emitter, captured on the first turn.
 	// It persists across turns so detached work (async jobs, side questions)
@@ -161,8 +196,27 @@ type hostTurn struct {
 
 	mu         sync.Mutex
 	sessionID  event.SessionID // first session this turn served; zero until first use
-	turnActive bool           // true while the TurnFunc is executing a turn
-	released   bool           // true after Release; prevents re-entry
+	turnActive bool            // true while the TurnFunc is executing a turn
+	released   bool            // true after Release; prevents re-entry
+}
+
+// recordDecline latches a declined approval reason (7c control latch).
+// LAST-wins: legacy overwrote *declinedReason on every decline
+// (workflow_legacy.go headlessConfirmer) and checked it post-turn — parity.
+// Mutex-protected: the confirmer can run on worker goroutines racing the
+// turn loop.
+func (ht *hostTurn) recordDecline(reason string) {
+	ht.declineMu.Lock()
+	ht.declineOccurred = true
+	ht.declineReason = reason
+	ht.declineMu.Unlock()
+}
+
+// takeDecline returns the latched decline (reason, true), or ("", false).
+func (ht *hostTurn) takeDecline() (string, bool) {
+	ht.declineMu.Lock()
+	defer ht.declineMu.Unlock()
+	return ht.declineReason, ht.declineOccurred
 }
 
 // HostTurnHandle bundles a TurnFunc with its Release method (7b1). The factory
@@ -170,9 +224,9 @@ type hostTurn struct {
 // a conversation rotates (/new, /resume, /handoff), so a fresh App can be claimed
 // for the new conversation.
 type HostTurnHandle struct {
-	Turn   sessionhost.TurnFunc
-	app    *agent.App
-	ht     *hostTurn
+	Turn sessionhost.TurnFunc
+	app  *agent.App
+	ht   *hostTurn
 }
 
 // Release frees the App ownership claim so the wiring facade can tear down the
@@ -223,7 +277,7 @@ func NewHostTurnHandle(app *agent.App, opts ...AdapterOption) (*HostTurnHandle, 
 	for _, o := range opts {
 		o(&c)
 	}
-	ht := &hostTurn{app: app, resolver: c.resolver, asyncApproval: c.asyncApproval}
+	ht := &hostTurn{app: app, resolver: c.resolver, asyncApproval: c.asyncApproval, planAutoAdvance: c.planAutoAdvance, noOracle: c.noOracle}
 
 	appOwnersMu.Lock()
 	if _, claimed := appOwners[app]; claimed {
@@ -352,7 +406,7 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	app.OnReasoning = func(s string) {
 		in.Emit.Notify(event.KindReasoningDelta, event.ReasoningDelta{Text: s})
 	}
-	app.Confirm = newHostConfirmer(ctx, app, in, ht.resolver, ht.asyncApproval, emitErr)
+	app.Confirm = newHostConfirmer(ctx, app, in, ht.resolver, ht.asyncApproval, emitErr, ht)
 
 	// Publish the turn-scoped emitter for the EventSink's tool-call routing
 	// (above) and clear it when the turn ends — the emitter is fenced at turn
@@ -400,11 +454,12 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	// RunTurn computation (and clears the pending state) in one call.
 	nudge := app.TakeLearnNudge()
 
-	// Workflow continuation (7b3 m4, plan decision "host enqueues"): the old
-	// TUI path ran HandleWorkflowTransition inside the RunTurn Cmd and the TUI
-	// answered WFStartTurnMsg by starting the next turn. Here the adapter runs
-	// the transition after the turn and, when the engine wants a follow-up,
-	// emits the durable audit marker and enqueues the continuation through the
+	// Workflow continuation (7b3 m4, plan decision "host enqueues"; 7c adds
+	// the headless-plan waiting-state resolver and makes enqueue rejection
+	// terminal in plan mode): the old TUI path ran HandleWorkflowTransition
+	// inside the RunTurn Cmd and the TUI answered WFStartTurnMsg by starting
+	// the next turn. Here the adapter runs the transition after the turn and,
+	// when the engine wants a follow-up, enqueues the continuation through the
 	// host — the TUI is passive. The host emits this turn's TurnCompleted with
 	// WorkflowWillContinue=true (it sees the queued input) and the executor
 	// starts the continuation without an idle gap.
@@ -414,22 +469,13 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	// may run HandleFinalReview inline for verify-state remediation — matching
 	// the old RunTurn semantics where it ran in the same goroutine before the
 	// done signal.
-	if app.Workflow != nil && in.EnqueueInput != nil {
-		if wfNext := agent.HandleWorkflowTransition(ctx, app); wfNext != nil {
-			// Enqueue first, emit the audit marker only on success: a durable
-			// workflow_turn_started without a queued continuation would lie to
-			// a replaying client. An enqueue rejection (session closing or
-			// queue full) drops the continuation silently — the completed turn
-			// stands, the workflow pauses at its current phase, and the user
-			// can drive it with /plan or a plain message. Rare by construction
-			// (requires a full queue mid-workflow or a concurrent close).
-			if err := in.EnqueueInput(wfNext.UserText); err == nil {
-				_ = in.SessionEmit.Emit(event.KindWorkflowTurnStarted, event.WorkflowTurnStarted{
-					TurnID:   in.TurnID,
-					UserText: wfNext.UserText,
-				})
-			}
-		}
+	//
+	// resolvePlanAfterTurn implements the 7c invariant (Mashura op-34): every
+	// completed plan-mode turn yields exactly ONE of {terminal WorkflowOutcome
+	// event, one queued continuation, error}. A live workflow never becomes
+	// silently idle. In non-plan mode the behavior is unchanged from 7b3 m4.
+	if err := ht.resolveAfterTurn(ctx, app, in); err != nil {
+		return "", err
 	}
 
 	// Emit the learn nudge (if any) as an ephemeral event. Runs after the
@@ -494,11 +540,15 @@ func (l *errorLatch) load() error {
 // A durable Append failure is recorded on emitErr — surfaced as the turn's
 // error → internal_error by the turn loop — so an unresolved or orphaned
 // approval is never silently half-committed.
-func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnInput, resolver ApprovalResolver, asyncApproval bool, emitErr *errorLatch) agent.Confirmer {
+func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnInput, resolver ApprovalResolver, asyncApproval bool, emitErr *errorLatch, ht *hostTurn) agent.Confirmer {
 	return func(toolName, headline, detail string, readAction bool) bool {
 		approvalID, err := id.NewApprovalID()
 		if err != nil {
-			return false // cannot mint a valid ID: fail closed, no events
+			// Cannot mint a valid ID: fail closed AND record it — an approval
+			// that produced no durable audit trail must surface as an internal
+			// error, not silently look like a benign decline (op-35 finding).
+			emitErr.set(fmt.Errorf("%w: approval ID generation failed: %v", sessionhost.ErrInternal, err))
+			return false
 		}
 		req := ApprovalRequest{ToolName: toolName, Headline: headline, Detail: detail, ReadAction: readAction}
 
@@ -576,8 +626,218 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 		if res.Choice == agent.ChoiceAllowReads {
 			app.SetAllowReads(true)
 		}
+		// 7c control latch: record the first explicit decline so the after-turn
+		// workflow resolver terminates the workflow instead of continuing
+		// (parity with the legacy *declinedReason check post-Send). Cancellation
+		// declines ("cancelled") are NOT latched as user declines — a cancelled
+		// turn terminates through the cancelled outcome, not a decline.
+		if outcome == "declined" && reason != "cancelled" && ht != nil {
+			ht.recordDecline(reason)
+		}
 		return proceed
 	}
+}
+
+// resolveAfterTurn is the 7c after-turn workflow region. It subsumes the 7b3
+// continuation block and adds the headless-plan waiting-state resolver.
+//
+// Non-plan mode (planAutoAdvance=false): behavior is IDENTICAL to the 7b3 m4
+// block — transition-returned continuations are enqueued with an audit
+// marker; enqueue rejection silently drops (the interactive user can drive
+// the workflow with /plan or a message).
+//
+// Plan mode (planAutoAdvance=true, headless --plan only): additionally
+// resolves waiting states (transition returned nil with a live workflow) by
+// applying the legacy headless auto-advance policy, and makes every path
+// terminal-or-continuing — a live workflow never becomes silently idle, and
+// enqueue rejection is an error, not a silent drop (no user exists to resume).
+func (ht *hostTurn) resolveAfterTurn(ctx context.Context, app *agent.App, in sessionhost.TurnInput) error {
+	if app.Workflow == nil {
+		return nil // no workflow: nothing to do (single-task path)
+	}
+
+	// Plan-mode decline check BEFORE any transition (legacy checked
+	// declinedReason post-Send pre-transition). A declined approval — tool or
+	// oracle confirm — terminates the workflow here.
+	if ht.planAutoAdvance {
+		if reason, declined := ht.takeDecline(); declined {
+			return ht.emitOutcome(in, "declined", reason)
+		}
+	}
+
+	if in.EnqueueInput == nil {
+		// Lifecycle-only tests: continuation impossible. In plan mode this
+		// must not silently idle (invariant), but there is also no way to
+		// continue — surface as internal error. Non-plan mode: no-op.
+		if ht.planAutoAdvance {
+			return fmt.Errorf("%w: plan-mode turn has no EnqueueInput hook", sessionhost.ErrInternal)
+		}
+		return nil
+	}
+
+	wfNext := agent.HandleWorkflowTransition(ctx, app)
+
+	// Final review passed inside the transition: workflow cleared → the turn
+	// completes normally and the consumer's TurnCompleted terminal (D4.4)
+	// yields pass. The final-review marker is emitted for the audit trail.
+	// PLAN-MODE ONLY: the 7b3 TUI path never emitted this marker; emitting it
+	// unconditionally would change the TUI's durable event stream (op-35
+	// review finding).
+	if app.Workflow == nil {
+		if ht.planAutoAdvance {
+			return ht.emitFinalReviewMarker(in)
+		}
+		return nil
+	}
+
+	if wfNext != nil {
+		// A decline latched DURING the transition (e.g. the oracle confirm the
+		// transition drove was declined) must terminate the workflow NOW —
+		// enqueueing the continuation would burn one extra LLM turn before the
+		// next turn's pre-transition check fires (op-35 finding).
+		if ht.planAutoAdvance {
+			if reason, declined := ht.takeDecline(); declined {
+				return ht.emitOutcome(in, "declined", reason)
+			}
+		}
+		// Engine-requested continuation: enqueue + audit marker on success.
+		if err := in.EnqueueInput(wfNext.UserText); err != nil {
+			if ht.planAutoAdvance {
+				return fmt.Errorf("%w: workflow continuation enqueue failed: %v", sessionhost.ErrInternal, err)
+			}
+			return nil // legacy 7b3 drop semantics (interactive user resumes)
+		}
+		_ = in.SessionEmit.Emit(event.KindWorkflowTurnStarted, event.WorkflowTurnStarted{
+			TurnID:   in.TurnID,
+			UserText: wfNext.UserText,
+		})
+		return nil
+	}
+
+	// wfNext == nil, workflow alive: a waiting state. Non-plan mode leaves it
+	// to the interactive user (TUI shows /plan gates) — unchanged from 7b3.
+	if !ht.planAutoAdvance {
+		return nil
+	}
+	return ht.resolveWaitingState(ctx, app, in)
+}
+
+// resolveWaitingState applies the legacy headless auto-advance policy
+// (workflow_legacy.go:143-217) to a paused workflow. Exactly one of:
+// enqueue a continuation, emit a terminal WorkflowOutcome, or error.
+func (ht *hostTurn) resolveWaitingState(ctx context.Context, app *agent.App, in sessionhost.TurnInput) error {
+	wf := app.Workflow
+
+	// A decline may also have been latched by an oracle confirm DURING the
+	// transition (the transition drove the oracle; the confirm gate declined;
+	// the engine treated it as oracle-unavailable and paused).
+	if reason, declined := ht.takeDecline(); declined {
+		return ht.emitOutcome(in, "declined", reason)
+	}
+
+	switch wf.Phase {
+	case workflow.WFPresent:
+		// Legacy 145-147: auto-approve — advance to implementation step 1.
+		wf.Phase = workflow.WFImplement
+		wf.StepIdx = 1
+		return ht.enqueueContinue(in)
+
+	case workflow.WFReview:
+		// Legacy 149-160: force-skip the review with a logged reason.
+		var reason, logReason string
+		if ht.noOracle {
+			reason = "oracle disabled by flag (--no-oracle)"
+			logReason = "oracle disabled by --no-oracle flag"
+		} else {
+			reason = "oracle review unavailable — " + wf.ReviewSkipReason
+			logReason = "headless: oracle unavailable"
+		}
+		if ht.sessionEmit != nil {
+			ht.sessionEmit.Notify(event.KindWorkflowWarning, event.WorkflowWarning{Message: reason})
+		}
+		agent.WFWriteReviewSkipForce(app, logReason)
+		wf.Phase = workflow.WFPresent
+		return ht.enqueueContinue(in)
+
+	case workflow.WFImplement:
+		if wf.StepIdx > wf.StepCount {
+			// Final review already ran inside the transition (engine:88-95
+			// remediation / 150-154 last-step paths) and left the workflow
+			// open: map its outcome. Legacy 163-185.
+			return ht.mapFinalReviewOutcome(in, wf)
+		}
+		// Legacy 186: advance to the next step.
+		wf.StepIdx++
+		if wf.StepIdx > wf.StepCount {
+			// Legacy 186-209 (the no-marker crossing): the resolver itself
+			// runs the final review once and maps its outcome.
+			agent.HandleFinalReview(ctx, app)
+			if app.Workflow == nil {
+				// Review passed/cleared → workflow done → pass terminal.
+				return ht.emitFinalReviewMarker(in)
+			}
+			return ht.mapFinalReviewOutcome(in, wf)
+		}
+		return ht.enqueueContinue(in)
+
+	default:
+		// WFPlan format-retry pauses are handled INSIDE the transition (the
+		// engine re-drives the format directive on the next turn) — reaching
+		// here in WFPlan/WFGather means an unexpected state; legacy 211-216
+		// errored loudly. Keep that.
+		return fmt.Errorf("%w: unexpected waiting state: %v", sessionhost.ErrInternal, wf.PhaseName())
+	}
+}
+
+// enqueueContinue enqueues the legacy "continue" input with the audit marker.
+func (ht *hostTurn) enqueueContinue(in sessionhost.TurnInput) error {
+	if err := in.EnqueueInput("continue"); err != nil {
+		return fmt.Errorf("%w: workflow continuation enqueue failed: %v", sessionhost.ErrInternal, err)
+	}
+	_ = in.SessionEmit.Emit(event.KindWorkflowTurnStarted, event.WorkflowTurnStarted{
+		TurnID:   in.TurnID,
+		UserText: "continue",
+	})
+	return nil
+}
+
+// mapFinalReviewOutcome maps the post-final-review workflow state to the
+// legacy terminal outcomes (workflow_legacy.go:163-209). The workflow is
+// still open (nil Workflow means pass — handled by callers).
+func (ht *hostTurn) mapFinalReviewOutcome(in sessionhost.TurnInput, wf *workflow.WorkflowState) error {
+	if err := ht.emitFinalReviewMarker(in); err != nil {
+		return err
+	}
+	if reason, declined := ht.takeDecline(); declined || wf.VerifyDeclined {
+		r := reason
+		if !declined || r == "" {
+			r = "verification command declined by consent gate"
+		}
+		return ht.emitOutcome(in, "declined", r)
+	}
+	if wf.VerifyFailed {
+		return ht.emitOutcome(in, "verify_failed", "")
+	}
+	return ht.emitOutcome(in, "gaps", "")
+}
+
+// emitOutcome emits the durable terminal WorkflowOutcome. The consumer keys
+// off this event; a failed append must therefore fail the turn (internal
+// error), never pass silently.
+func (ht *hostTurn) emitOutcome(in sessionhost.TurnInput, outcome, reason string) error {
+	return in.SessionEmit.Emit(event.KindWorkflowOutcome, event.WorkflowOutcome{
+		TurnID:  in.TurnID,
+		Outcome: outcome,
+		Reason:  reason,
+	})
+}
+
+// emitFinalReviewMarker emits the durable final-review audit marker. A failed
+// append is an internal error (audit markers are load-bearing for replay).
+func (ht *hostTurn) emitFinalReviewMarker(in sessionhost.TurnInput) error {
+	return in.SessionEmit.Emit(event.KindWorkflowFinalReview, event.WorkflowFinalReview{
+		TurnID: in.TurnID,
+	})
 }
 
 // resolveApproval runs the resolver (if any) in a goroutine and selects

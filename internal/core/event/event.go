@@ -99,6 +99,8 @@ const (
 	KindSideQuestionProgress   Kind = "side_question_progress"    // ephemeral: side-question progress
 	KindLearnNudge             Kind = "learn_nudge"               // ephemeral: learn suggestion
 	KindSessionNote            Kind = "session_note"              // ephemeral: progress/status note (7b3 m4)
+	KindWorkflowOutcome        Kind = "workflow_outcome"          // durable: workflow terminal outcome (7c)
+	KindWorkflowWarning        Kind = "workflow_warning"          // ephemeral: workflow skip/force warning (7c)
 )
 
 // Class returns the durability class of k.
@@ -106,7 +108,7 @@ func (k Kind) Class() Class {
 	switch k {
 	case KindMessageDelta, KindReasoningDelta, KindSubagentProgress,
 		KindTokRate, KindAsyncJobProgress, KindSideQuestionProgress,
-		KindLearnNudge, KindSessionNote:
+		KindLearnNudge, KindSessionNote, KindWorkflowWarning:
 		return ClassEphemeral
 	default:
 		return ClassDurable

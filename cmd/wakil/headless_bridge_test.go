@@ -22,14 +22,30 @@ func runHeadlessApp(ctx context.Context, app *agent.App, task string, planMode b
 }
 
 // runWorkflowLoop is the old test entry for the --plan loop over a pre-set
-// workflow state.
+// workflow state. 7c: the loop is host-driven now — RunPlanLoop drives the
+// session host over the caller-initialized app.Workflow.
 func runWorkflowLoop(ctx context.Context, app *agent.App, flags RunFlags, out io.Writer, declinedReason *string) int {
-	return wiring.RunWorkflowLoopLegacy(ctx, app, headlessOpts(flags), out, declinedReason)
+	return wiring.RunPlanLoop(ctx, app, headlessOpts(flags), out)
 }
 
-// headlessConfirmer is the old test entry for the legacy confirmer.
+// headlessConfirmer is the old test entry for the headless confirmer. 7c: the
+// legacy wrapper is gone; the decision policy is headlessDecision (same for
+// both paths), so the test entry builds an inline confirmer from it. The
+// declinedReason latch keeps the old signature for the policy tests.
 func headlessConfirmer(app *agent.App, flags RunFlags, declinedReason *string) agent.Confirmer {
-	return wiring.HeadlessConfirmer(app, headlessOpts(flags), declinedReason)
+	return func(toolName, headline, detail string, readAction bool) bool {
+		choice, reason := wiring.HeadlessDecision(app, headlessOpts(flags), wiring.ApprovalRequest{
+			ToolName:   toolName,
+			Headline:   headline,
+			Detail:     detail,
+			ReadAction: readAction,
+		})
+		if choice == agent.ChoiceDecline {
+			*declinedReason = reason
+			return false
+		}
+		return true
+	}
 }
 
 // closeResources is the old test entry for the resource cleanup path.
