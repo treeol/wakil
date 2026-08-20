@@ -232,10 +232,14 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, msg any) {
 	// ---- Other agent messages (client-local, no domain event) ----
 
 	case agent.SysNoteMsg:
-		// Client-local display signal (D24). No domain event — the TUI renders
-		// it as a dimmed iSys item. In the event-stream model, these become
-		// CommandResult.Notice strings, not events.
-		_ = m
+		// Ephemeral session note (7b3 m4): status/progress lines that occur
+		// during a turn — workflow progress (wfProgNote), handoff progress
+		// ("saving session…"), policy auto-approve notices. Display-only; the
+		// TUI renders them as dimmed iSys items. Command-driven notes
+		// (HandleTUICommand returning SysNoteMsg) never reach the EventSink —
+		// DispatchCommand translates them to CommandResult.Notice — so this
+		// case fires only for in-turn notes.
+		emit.Notify(event.KindSessionNote, event.SessionNote{Text: m.Text})
 
 	case agent.CompactedMsg:
 		// Durable: conversation_compacted. The TurnID is not available from

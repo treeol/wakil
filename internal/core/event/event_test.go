@@ -70,7 +70,7 @@ func TestRegistryCompleteness(t *testing.T) {
 		KindAsyncJobStarted, KindAsyncJobCompleted,
 		KindSideQuestionCompleted,
 		KindTokRate, KindAsyncJobProgress, KindSideQuestionProgress,
-		KindLearnNudge,
+		KindLearnNudge, KindSessionNote,
 	}
 	seen := map[Kind]bool{}
 	for _, k := range allKinds {
@@ -111,6 +111,7 @@ func TestValidateAcceptsEphemeralKinds(t *testing.T) {
 		KindAsyncJobProgress:     AsyncJobProgress{OpID: "op_1", Text: "p"},
 		KindSideQuestionProgress: SideQuestionProgress{OpID: "op_1", Text: "p"},
 		KindLearnNudge:           LearnNudge{Text: "learn this"},
+		KindSessionNote:          SessionNote{Text: "status line"},
 	}
 	for kind, payload := range ephemeral {
 		if err := validDraft(kind, payload).ValidateDraft(); err != nil {
@@ -233,7 +234,7 @@ func TestKindClass(t *testing.T) {
 	for _, k := range []Kind{
 		KindMessageDelta, KindReasoningDelta, KindSubagentProgress,
 		KindTokRate, KindAsyncJobProgress, KindSideQuestionProgress,
-		KindLearnNudge,
+		KindLearnNudge, KindSessionNote,
 	} {
 		if k.Class() != ClassEphemeral {
 			t.Errorf("kind %q should be ephemeral", k)

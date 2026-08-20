@@ -291,7 +291,6 @@ func TestProjectAgentDoneNoLearnNudge(t *testing.T) {
 func TestProjectDroppedMessages(t *testing.T) {
 	// These message types produce no events.
 	dropped := []any{
-		agent.SysNoteMsg{Text: "hello"},
 		agent.CompactedMsg{},
 		agent.BackendCtxLimitMsg{},
 		agent.ModelListUpdatedMsg{},
@@ -306,6 +305,28 @@ func TestProjectDroppedMessages(t *testing.T) {
 		if len(emit.emitList()) != 0 || len(emit.notifyList()) != 0 {
 			t.Errorf("message %T should produce no events", msg)
 		}
+	}
+}
+
+func TestProjectSysNote(t *testing.T) {
+	// 7b3 m4: in-turn SysNoteMsg (workflow progress, handoff progress, policy
+	// notices) projects to an ephemeral session_note so the wiring path shows
+	// the same status lines the old TUI saw.
+	emit := &fakeSessionEmitter{}
+	projectAgentEvent(emit, agent.SysNoteMsg{Text: "· gather complete → plan phase"})
+	notified := emit.notifyList()
+	if len(notified) != 1 {
+		t.Fatalf("want 1 notify, got %d", len(notified))
+	}
+	if notified[0].kind != event.KindSessionNote {
+		t.Errorf("kind = %s, want %s", notified[0].kind, event.KindSessionNote)
+	}
+	p := notified[0].payload.(event.SessionNote)
+	if p.Text != "· gather complete → plan phase" {
+		t.Errorf("Text = %q, want the note text", p.Text)
+	}
+	if len(emit.emitList()) != 0 {
+		t.Error("session_note is ephemeral; no durable emit expected")
 	}
 }
 

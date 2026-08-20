@@ -50,6 +50,7 @@ var payloadTypes = map[Kind]reflect.Type{
 	KindAsyncJobProgress:         reflect.TypeOf(AsyncJobProgress{}),
 	KindSideQuestionProgress:     reflect.TypeOf(SideQuestionProgress{}),
 	KindLearnNudge:               reflect.TypeOf(LearnNudge{}),
+	KindSessionNote:              reflect.TypeOf(SessionNote{}),
 }
 
 // payloadType returns the concrete Go type of p's payload, canonicalized to a

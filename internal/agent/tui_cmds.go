@@ -9,6 +9,39 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
+// TakeLearnNudge computes and clears the end-of-turn learn nudge (7b3 m4).
+//
+// It replicates exactly the nudge block the old TUI's RunTurn Cmd ran after
+// each turn (tui_cmds.go): a nudge fires when (a) the learn-candidate log
+// fired this turn (learnNudgePending is set), (b) at least one web or oracle
+// grounding entry was added client-side during the turn, and (c) this query
+// hasn't been nudged already this session. Calling it clears the pending
+// query (always — same as RunTurn) and records a shown nudge (when fired).
+//
+// The wiring adapter calls it after DriveTurnWithResilience so the wiring path
+// produces the same nudge the TUI path did, delivered as an ephemeral
+// learn_nudge event instead of an AgentDoneMsg field.
+func (a *App) TakeLearnNudge() string {
+	pendingQuery := a.learnNudgePending
+	a.learnNudgePending = "" // always clear
+	if pendingQuery == "" {
+		return ""
+	}
+	for _, e := range a.Client.Grounding() {
+		if e.Type == "web" || e.Type == "oracle" {
+			if a.learnNudgedQueries == nil {
+				a.learnNudgedQueries = make(map[string]bool)
+			}
+			if !a.learnNudgedQueries[pendingQuery] {
+				a.learnNudgedQueries[pendingQuery] = true
+				return "· low grounding + external sources used — /learn to save this for next time"
+			}
+			break
+		}
+	}
+	return ""
+}
+
 // RunTurn returns a Cmd that runs the agent turn. When the TUI executes it
 // (via AdaptCmd → tea.Cmd), the body runs off the event loop — all progress
 // is posted into the TUI via EventSink (sendEvent), and the Cmd itself

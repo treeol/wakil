@@ -436,3 +436,14 @@ type SideQuestionProgress struct {
 type LearnNudge struct {
 	Text string
 }
+
+// SessionNote is the ephemeral progress/status note payload (7b3 m4). It
+// replaces agent.SysNoteMsg on the wiring path: workflow progress lines
+// (wfProgNote), handoff progress ("saving session…", "generating summary…"),
+// policy auto-approve notices, and similar human-facing status text that
+// occurs DURING a turn or between commands. It is display-only — never folded
+// into the durable stream (replay reconstructs state from durable events, not
+// from notes) and carries no identity beyond the session.
+type SessionNote struct {
+	Text string
+}

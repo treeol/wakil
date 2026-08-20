@@ -158,6 +158,22 @@ type TurnInput struct {
 	// for lifecycle-only tests and the headless sync path (which uses the
 	// inline resolver, not async parking).
 	ParkApproval ApprovalParkFunc
+	// EnqueueInput is the workflow-continuation hook (7b3 m4, plan decision
+	// "host enqueues"). The adapter calls it AFTER a successful turn when the
+	// workflow engine wants a follow-up turn (HandleWorkflowTransition returned
+	// a continuation). It routes through the same acceptance/queueing semantics
+	// as SubmitInput — appending to the session queue under s.mu and signaling
+	// kick — so the executor serializes the continuation like any other input
+	// and the session never goes idle between workflow steps.
+	//
+	// The enqueue is rejected (ErrSessionClosed or ErrSessionBusy) when the
+	// session is closing or the queue is full; the adapter treats that as
+	// "workflow continuation dropped" and returns normally — the turn's own
+	// outcome stands.
+	//
+	// Nil only in lifecycle-only tests; adapters that never drive workflows
+	// may ignore it.
+	EnqueueInput func(text string) error
 }
 
 // ApprovalParkFunc parks an async approval and blocks until a decision is
@@ -921,6 +937,35 @@ func (s *session) signalKick() {
 	}
 }
 
+// enqueueTurn appends one input envelope to the session queue and signals kick
+// (7b3 m4: the workflow-continuation enqueue hook). The caller must hold s.mu.
+// It mirrors SubmitInput's queue bookkeeping (s.pending, s.queue) but skips the
+// public path's state transitions — the session is running while a turn
+// executes, and the executor picks the queued input up after the current turn
+// finalizes. Returns ErrSessionClosed or ErrSessionBusy under the same
+// conditions as SubmitInput.
+func (h *Host) enqueueTurn(s *session, text string, userID event.UserID) (event.TurnID, error) {
+	turnID, err := h.ids.TurnID()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	switch {
+	case s.state == core.SessionClosed || s.closing != "":
+		s.mu.Unlock()
+		return "", core.ErrSessionClosed
+	case s.pending >= h.queueDepth:
+		s.mu.Unlock()
+		return "", core.ErrSessionBusy
+	}
+	s.pending++
+	s.queue = append(s.queue, inputEnvelope{turnID: turnID, text: text, userID: userID})
+	s.mu.Unlock()
+
+	s.signalKick()
+	return turnID, nil
+}
+
 func (s *session) detach(sub *subscription) {
 	s.subsMu.Lock()
 	delete(s.subs, sub)
@@ -1031,6 +1076,17 @@ func (h *Host) handleInput(s *session, input inputEnvelope) bool {
 		return h.parkApproval(s, ctx, approvalID)
 	}
 
+	// The workflow-continuation enqueue hook (7b3 m4): the adapter calls it
+	// after a successful turn when the workflow engine produced a follow-up
+	// input. Routed through enqueueTurn so acceptance semantics match
+	// SubmitInput (closed/busy rejection). The enqueued input carries the
+	// submitting user's identity — the continuation is system-initiated on
+	// behalf of the user whose turn triggered it (D4).
+	enqueue := func(text string) error {
+		_, err := h.enqueueTurn(s, text, input.userID)
+		return err
+	}
+
 	text, err := h.turn(turnCtx, TurnInput{
 		SessionID:   s.sid,
 		TurnID:      input.turnID,
@@ -1041,6 +1097,7 @@ func (h *Host) handleInput(s *session, input inputEnvelope) bool {
 		Emit:        em,
 		SessionEmit: s.sessionEmit,
 		ParkApproval: park,
+		EnqueueInput: enqueue,
 	})
 
 	return h.finishTurn(s, input.turnID, turnCtx, em, text, err)
@@ -1106,6 +1163,13 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 		}
 		// else: queue non-empty and no error — stay running for the next turn.
 	}
+	// WorkflowWillContinue (D28): a completed (non-error, non-cancelled) turn
+	// with queued work following it — typically a workflow continuation the
+	// adapter enqueued via TurnInput.EnqueueInput, but any queued input counts
+	// (the flag is informational: "another turn starts immediately"). The TUI's
+	// queue-flush/deferred-grant gate keys off it, so it must be computed from
+	// the queue state at this linearization point.
+	wfWillContinue := outcome == "complete" && len(s.queue) > 0
 	// If closing, state stays running until finalizeClose; the queued inputs are
 	// abandoned there.
 	s.mu.Unlock()
@@ -1114,7 +1178,7 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 	if outcome == "complete" {
 		h.emitDraft(s, event.KindMessageCommitted, event.MessageCommitted{TurnID: turnID, Text: text})
 	}
-	h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: turnID, Outcome: outcome})
+	h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: turnID, Outcome: outcome, WorkflowWillContinue: wfWillContinue})
 	if outcome == "stream_error" {
 		reason := "backend_failure"
 		if internalErr {

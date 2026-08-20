@@ -342,6 +342,53 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	if err := emitErr.load(); err != nil {
 		return "", err
 	}
+
+	// Learn-nudge parity (7b3 m4): the old RunTurn Cmd computed the end-of-turn
+	// nudge here — (a) the learn-candidate log fired this turn, (b) at least one
+	// web/oracle grounding entry was added client-side, (c) this query wasn't
+	// nudged already this session. The nudge is an ephemeral event; the TUI
+	// renders it as a transient dimmed note. TakeLearnNudge replicates the old
+	// RunTurn computation (and clears the pending state) in one call.
+	nudge := app.TakeLearnNudge()
+
+	// Workflow continuation (7b3 m4, plan decision "host enqueues"): the old
+	// TUI path ran HandleWorkflowTransition inside the RunTurn Cmd and the TUI
+	// answered WFStartTurnMsg by starting the next turn. Here the adapter runs
+	// the transition after the turn and, when the engine wants a follow-up,
+	// emits the durable audit marker and enqueues the continuation through the
+	// host — the TUI is passive. The host emits this turn's TurnCompleted with
+	// WorkflowWillContinue=true (it sees the queued input) and the executor
+	// starts the continuation without an idle gap.
+	//
+	// HandleWorkflowTransition may itself drive oracle calls through the confirm
+	// gate (app.Confirm is the turn-scoped hostConfirmer installed above) and
+	// may run HandleFinalReview inline for verify-state remediation — matching
+	// the old RunTurn semantics where it ran in the same goroutine before the
+	// done signal.
+	if app.Workflow != nil && in.EnqueueInput != nil {
+		if wfNext := agent.HandleWorkflowTransition(ctx, app); wfNext != nil {
+			// Enqueue first, emit the audit marker only on success: a durable
+			// workflow_turn_started without a queued continuation would lie to
+			// a replaying client. An enqueue rejection (session closing or
+			// queue full) drops the continuation silently — the completed turn
+			// stands, the workflow pauses at its current phase, and the user
+			// can drive it with /plan or a plain message. Rare by construction
+			// (requires a full queue mid-workflow or a concurrent close).
+			if err := in.EnqueueInput(wfNext.UserText); err == nil {
+				_ = in.SessionEmit.Emit(event.KindWorkflowTurnStarted, event.WorkflowTurnStarted{
+					TurnID:   in.TurnID,
+					UserText: wfNext.UserText,
+				})
+			}
+		}
+	}
+
+	// Emit the learn nudge (if any) as an ephemeral event. Runs after the
+	// workflow continuation so ordering matches the old RunTurn, which sent
+	// the nudge inside AgentDoneMsg before any WFStartTurnMsg.
+	if nudge != "" && ht.sessionEmit != nil {
+		ht.sessionEmit.Notify(event.KindLearnNudge, event.LearnNudge{Text: nudge})
+	}
 	return out.Text, nil
 }
 
