@@ -546,8 +546,12 @@ func TestApprovalAllowReads(t *testing.T) {
 	}
 }
 
-// TestCallbackRestore verifies the adapter restores all callback fields after a
-// successful turn (exit criterion #9).
+// TestCallbackRestore verifies the adapter restores turn-scoped callback fields
+// (Out, Confirm, OnReasoning) after a successful turn. Session-scoped callbacks
+// (OnTokRate, EventSink) are installed permanently on the first turn and NOT
+// restored — they must persist for the session lifetime so detached work
+// (async jobs, side questions) emitting between turns reaches the session-
+// scoped emitter (D24, 7b3 fix).
 func TestCallbackRestore(t *testing.T) {
 	srv := sseServer(t, []string{contentChunk("ok")})
 	defer srv.Close()
@@ -556,11 +560,7 @@ func TestCallbackRestore(t *testing.T) {
 	origOut := app.Out
 	origConfirm := app.Confirm
 	origReasoning := func(s string) {}
-	origTokRate := func(f float64) {}
-	origSink := func(a any) {}
 	app.OnReasoning = origReasoning
-	app.OnTokRate = origTokRate
-	app.EventSink = origSink
 
 	turnFn, err := HostTurnFunc(app)
 	if err != nil {
@@ -579,23 +579,23 @@ func TestCallbackRestore(t *testing.T) {
 		return g.State == core.SessionIdle
 	})
 
-	// All callback fields must be restored to their original identity.
+	// Turn-scoped callbacks must be restored to their original identity.
 	if app.Out != origOut {
 		t.Error("app.Out not restored")
 	}
-	// Function values can't be compared directly; compare pointer identity via
-	// fmt of the func values (reflect would be equivalent). Compare against the
-	// captured originals.
 	if fmt.Sprintf("%p", app.Confirm) != fmt.Sprintf("%p", origConfirm) {
 		t.Error("app.Confirm not restored")
 	}
 	if fmt.Sprintf("%p", app.OnReasoning) != fmt.Sprintf("%p", origReasoning) {
 		t.Error("app.OnReasoning not restored")
 	}
-	if fmt.Sprintf("%p", app.OnTokRate) != fmt.Sprintf("%p", origTokRate) {
-		t.Error("app.OnTokRate not restored")
+	// Session-scoped callbacks (OnTokRate, EventSink) are NOT restored — they
+	// are installed permanently on the first turn. They should be non-nil and
+	// NOT the original (pre-turn) values.
+	if app.OnTokRate == nil {
+		t.Error("app.OnTokRate is nil — should be the session-scoped callback")
 	}
-	if fmt.Sprintf("%p", app.EventSink) != fmt.Sprintf("%p", origSink) {
-		t.Error("app.EventSink not restored")
+	if app.EventSink == nil {
+		t.Error("app.EventSink is nil — should be the session-scoped callback")
 	}
 }

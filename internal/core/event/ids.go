@@ -186,3 +186,9 @@ const EmbeddedTenantID TenantID = "tnt_local"
 
 // EmbeddedUserID is the constant user for embedded/local single-user mode (D4).
 const EmbeddedUserID UserID = "usr_local"
+
+// SystemUserID is the synthetic principal used for system-initiated actions:
+// forced declines on cancel/interrupt, host-initiated close, etc. It is NOT a
+// real user — it records that a decision was forced by the system, not by any
+// human responder (D25: cancel-during-approval records the interrupt principal).
+const SystemUserID UserID = "usr_system"

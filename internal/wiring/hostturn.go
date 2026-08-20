@@ -134,6 +134,13 @@ type hostTurn struct {
 	resolver      ApprovalResolver
 	asyncApproval bool // 7b2: use ParkApproval instead of inline resolver
 
+	// sessionEmit is the session-scoped emitter, captured on the first turn.
+	// It persists across turns so detached work (async jobs, side questions)
+	// emitting between turns reaches the session-scoped surface, not the
+	// stale main.go-installed sink. D24: "out-of-turn events are legal until
+	// session close."
+	sessionEmit sessionhost.SessionEmitter
+
 	mu         sync.Mutex
 	sessionID  event.SessionID // first session this turn served; zero until first use
 	turnActive bool           // true while the TurnFunc is executing a turn
@@ -270,13 +277,32 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 
 	app := ht.app
 
-	// Snapshot and restore every callback field the adapter owns. Panic-safe
-	// via defer (an agent panic must not leave the App in a host-owned state).
-	oldOut, oldConfirm := app.Out, app.Confirm
-	oldOnReasoning, oldOnTokRate, oldEventSink := app.OnReasoning, app.OnTokRate, app.EventSink
+	// Capture the session-scoped emitter on the first turn. It persists for
+	// the session lifetime so detached work (async jobs, side questions)
+	// emitting between turns reaches the session-scoped surface, not the
+	// stale main.go-installed sink. D24: "out-of-turn events are legal until
+	// session close." Session-scoped callbacks (EventSink, OnTokRate) are
+	// installed once and NOT restored per-turn — the per-turn restore was a
+	// 7b2 bug that broke detached event delivery between turns.
+	if ht.sessionEmit == nil && in.SessionEmit != nil {
+		ht.sessionEmit = in.SessionEmit
+		// Install session-scoped callbacks permanently. These use the
+		// session-scoped emitter, not the turn-scoped in.Emit.
+		app.OnTokRate = func(rate float64) {
+			ht.sessionEmit.Notify(event.KindTokRate, event.TokRate{Rate: rate})
+		}
+		app.EventSink = func(msg any) {
+			projectAgentEvent(ht.sessionEmit, msg)
+		}
+	}
+
+	// Only Out, Confirm, and OnReasoning are turn-scoped — they use the
+	// turn-scoped in.Emit, which is fenced at turn completion. Snapshot and
+	// restore these per-turn. Session-scoped callbacks (EventSink, OnTokRate)
+	// are NOT restored — they persist for the session lifetime (above).
+	oldOut, oldConfirm, oldOnReasoning := app.Out, app.Confirm, app.OnReasoning
 	defer func() {
-		app.Out, app.Confirm = oldOut, oldConfirm
-		app.OnReasoning, app.OnTokRate, app.EventSink = oldOnReasoning, oldOnTokRate, oldEventSink
+		app.Out, app.Confirm, app.OnReasoning = oldOut, oldConfirm, oldOnReasoning
 	}()
 
 	// Shared emit-failure latch: the confirmer (often on a worker goroutine)
@@ -284,32 +310,12 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	// the turn's error → SessionError{internal_error}.
 	emitErr := &errorLatch{}
 
-	// Install the host-path callbacks.
+	// Install turn-scoped callbacks.
 	app.Out = agent.NewProgWriter(func(m agent.StreamChunkMsg) {
 		in.Emit.Notify(event.KindMessageDelta, event.MessageDelta{Text: m.Text})
 	})
 	app.OnReasoning = func(s string) {
 		in.Emit.Notify(event.KindReasoningDelta, event.ReasoningDelta{Text: s})
-	}
-	// TokRate is a TUI-local display signal (D24: ephemeral, not durable). The
-	// session-scoped emitter delivers it as an ephemeral event so subscribers
-	// that want it (the TUI) can render it; the host path no longer drops it
-	// (7b2 D24: app.EventSink/OnTokRate wired to the session-scoped surface).
-	app.OnTokRate = func(rate float64) {
-		in.SessionEmit.Notify(event.KindTokRate, event.TokRate{Rate: rate})
-	}
-	// EventSink carries subagent/async-job/tool-status/side-question signals
-	// that outlive the turn. Wire it to the session-scoped emitter (7b2 D24)
-	// instead of collecting it away. The agent emits various message types
-	// through EventSink; the adapter projects them to domain events.
-	// TODO(7b3): map agent.EventSink payloads to domain events (subagent,
-	// async-job, side-question). For now the sink is wired but the projection
-	// is a no-op pass-through — the TUI-mode TurnFunc (7b3) replaces it.
-	app.EventSink = func(msg any) {
-		// In 7b2 the session-scoped emitter is available; the actual projection
-		// from agent message types to domain events lands in 7b3 when the TUI
-		// consumes the event stream. For now this is the legal emit path.
-		_ = msg
 	}
 	app.Confirm = newHostConfirmer(ctx, app, in, ht.resolver, ht.asyncApproval, emitErr)
 
@@ -420,7 +426,10 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 			outcome, reason, rid := in.ParkApproval(ctx, approvalID)
 			resolverID = rid
 			if resolverID == "" {
-				resolverID = in.UserID // forced decline: record submitter as fallback
+				// Forced decline (ctx cancellation or no responder): record the
+				// system principal, NOT the submitter (D25: cancel-during-approval
+				// records the interrupt principal, not the user who submitted).
+				resolverID = event.SystemUserID
 			}
 			switch outcome {
 			case "approved":
@@ -441,7 +450,6 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 		switch res.Choice {
 		case agent.ChoiceAllowReads:
 			outcome, proceed = "allowed_reads", true
-			app.SetAllowReads(true)
 		case agent.ChoiceApprove:
 			outcome, proceed = "approved", true
 		default:
@@ -464,6 +472,13 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 			// Fail closed: a failed durable resolution audit must not permit
 			// tool execution. The turn will fail with internal_error.
 			return false
+		}
+		// Apply consent mutations ONLY after the durable audit succeeds — if the
+		// emit fails, consent is not mutated (avoids a partial state where the
+		// turn fails but AllowReads was already granted). The durable record is
+		// the authoritative audit; consent mutation follows it, not precedes it.
+		if res.Choice == agent.ChoiceAllowReads {
+			app.SetAllowReads(true)
 		}
 		return proceed
 	}
