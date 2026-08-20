@@ -15,12 +15,16 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"os"
+	"time"
 
+	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // TUIRuntime bundles what the TUI bootstrap needs from wiring. The TUI holds
@@ -30,6 +34,25 @@ type TUIRuntime struct {
 	Manager   sessionclient.ConversationManager
 	Facade    sessionclient.Facade
 	Principal core.Principal
+}
+
+// BootstrapTUIOpts carries the TUI-entry-point-specific bootstrap steps that
+// differ from a bare conversation (m4c — mirrors what main.go did inline).
+// All optional; zero value = plain bootstrap.
+type BootstrapTUIOpts struct {
+	// AttachImages are pre-loaded images (--attach-image) queued into the
+	// first conversation's pending images.
+	AttachImages []proxy.ImagePart
+	// RestoreRepoState runs the per-workspace terminal-settings restore on a
+	// FRESH conversation (never on resume — a resumed session's model/backend
+	// must not be silently changed) and composes its note.
+	RestoreRepoState bool
+	// CounselMode/CounselMax configure the counsel engine (TUI defaults).
+	CounselMode string
+	CounselMax  int
+	// ComposeStartupNotes adds the staging/memory pending-proposal notes to
+	// whatever startup note the conversation already has.
+	ComposeStartupNotes bool
 }
 
 // BootstrapTUI builds the ConversationManager and the first conversation.
@@ -44,10 +67,14 @@ type TUIRuntime struct {
 // delivery when the caller is ready). nil deliver means the caller subscribes
 // later (tests).
 //
+// opts runs the TUI-specific post-construction steps (repo-state restore,
+// counsel, attach-images, startup-note composition) — the pieces main.go
+// used to do inline before the cut.
+//
 // The returned cleanup function must be deferred by the caller: it closes the
 // facade (stopping the pump, cancelling detached jobs) and releases the
 // manager's resources.
-func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver func(event.Event)) (*TUIRuntime, func(), error) {
+func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver func(event.Event), opts BootstrapTUIOpts) (*TUIRuntime, func(), error) {
 	principal := core.Principal{
 		TenantID: event.EmbeddedTenantID,
 		UserID:   event.EmbeddedUserID,
@@ -70,6 +97,62 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		f, err = mgr.NewConversation(ctx, principal, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("tui bootstrap: %w", err)
+		}
+	}
+
+	// TUI-specific post-construction steps (m4c — what main.go did inline).
+	if wf, ok := f.(*wiringFacade); ok {
+		app := wf.app
+		// Attach images (--attach-image): queued into the first turn.
+		if len(opts.AttachImages) > 0 {
+			app.PendingImages = append(app.PendingImages, opts.AttachImages...)
+		}
+		// Fresh conversation only: per-repo terminal settings restore
+		// (a resumed session's model/backend is never silently changed).
+		if opts.RestoreRepoState && resumeID == "" {
+			result := agent.RestoreRepoState(app)
+			if result.Note != "" {
+				app.StartupNote = result.Note
+			}
+			// Re-resolve context limits using the literal restored strings —
+			// mirrors resolveBackendCtxCmd's calling convention (reading
+			// app.SelectedModel back would be wrong for openai-kind endpoints).
+			if result.Model != "" || result.Backend != "" {
+				app.CtxLimit = agent.ResolveContextLimitForBackendModel(ctx, app.Client.HTTP, cfg, result.Backend, result.Model, os.Stderr)
+			}
+		}
+		// Counsel mode (TUI defaults).
+		if opts.CounselMode != "" {
+			app.SetCounselMode(opts.CounselMode)
+			app.MaxCounsel = opts.CounselMax
+		}
+		// Compose staging/memory notes onto whatever exists.
+		if opts.ComposeStartupNotes {
+			if app.StagingClient != nil {
+				scanCtx, scanCancel := context.WithTimeout(ctx, 3*time.Second)
+				if res, err := app.StagingClient.Scan(scanCtx, "", 1, ""); err == nil && len(res.Keys) > 0 {
+					note := "staging: entries restored"
+					if app.StartupNote != "" {
+						app.StartupNote += " | " + note
+					} else {
+						app.StartupNote = note
+					}
+				}
+				scanCancel()
+			}
+			if app.MemoryStore != nil {
+				statsCtx, statsCancel := context.WithTimeout(ctx, 3*time.Second)
+				stats, _ := app.MemoryStore.Stats(statsCtx, 5)
+				statsCancel()
+				if stats != nil && stats.PendingProposed > 0 {
+					note := fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
+					if app.StartupNote != "" {
+						app.StartupNote += " | " + note
+					} else {
+						app.StartupNote = note
+					}
+				}
+			}
 		}
 	}
 

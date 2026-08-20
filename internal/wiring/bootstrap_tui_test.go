@@ -26,7 +26,7 @@ func TestBootstrapTUIFresh(t *testing.T) {
 		delivered = append(delivered, ev)
 	}
 
-	rt, cleanup, err := BootstrapTUI(cfg, fakeExec{}, "", deliver)
+	rt, cleanup, err := BootstrapTUI(cfg, fakeExec{}, "", deliver, BootstrapTUIOpts{})
 	if err != nil {
 		t.Fatalf("BootstrapTUI: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestBootstrapTUIResumeMissing(t *testing.T) {
 	cfg.ExecMode = "direct"
 	t.Setenv("WAKIL_SESSIONS_DIR", t.TempDir())
 
-	_, _, err := BootstrapTUI(cfg, fakeExec{}, "no-such-session", nil)
+	_, _, err := BootstrapTUI(cfg, fakeExec{}, "no-such-session", nil, BootstrapTUIOpts{})
 	if err == nil {
 		t.Fatal("resume of unknown session should fail")
 	}
