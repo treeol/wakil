@@ -1,13 +1,9 @@
 package tui
 
 import (
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	agent "github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 )
@@ -33,11 +29,7 @@ type infoPanelModel struct {
 // expanded/collapsed state is remembered per session.
 func (m tuiModel) toggleInfoPanel() tuiModel {
 	m.infoPanel.active = !m.infoPanel.active
-	if m.facade != nil {
-		m.facade.SetInfoPanelOpen(m.infoPanel.active)
-	} else if m.app != nil {
-		m.control.SetInfoPanelOpen(m.infoPanel.active)
-	}
+	m.facade.SetInfoPanelOpen(m.infoPanel.active)
 	return m.reflow()
 }
 
@@ -61,93 +53,37 @@ func kvg(p kv) string {
 		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(p.v)
 }
 
-// infoMainSegments gathers the main-session expansion segments. On the wiring
-// path (m4b) every field comes from the facade's InfoSnapshot — no App reads.
+// infoMainSegments gathers the main-session expansion segments from the
+// facade's InfoSnapshot (m4b — no App reads).
 func (m tuiModel) infoMainSegments() []string {
-	// Wiring path: InfoSnapshot carries every field the old code read off the
-	// App (exec describe/cwd, image, endpoint, prompt note, workflow label,
-	// oracle label incl. the "no key" fallback).
-	if info, ok := m.info(); ok {
-		mode := "docker"
-		if strings.HasPrefix(info.ExecMode, "direct") {
-			mode = "direct"
-		}
-		imgVal := info.Image
-		if i := strings.LastIndex(imgVal, "/"); i >= 0 {
-			imgVal = imgVal[i+1:]
-		}
-
-		var segs []string
-		segs = append(segs, kvg(kv{"proxy", hostOnly(info.BaseURL)}), kvg(kv{"exec", mode}))
-		if mode == "docker" {
-			segs = append(segs, kvg(kv{"img", imgVal}))
-		}
-		// The prompt source used to be a startup banner line; only shown when a
-		// file path was configured — the built-in fallback note is noise.
-		if note := info.PromptNote; !strings.Contains(note, "built-in fallback") {
-			if i := strings.Index(note, ": "); i >= 0 {
-				segs = append(segs, kvg(kv{"prompt", note[i+2:]}))
-			}
-		}
-		segs = append(segs, kvg(kv{"cwd", info.Cwd}), kvg(kv{"chat", formatShortID(info.ChatID)}))
-		if info.WorkflowLabel != "" {
-			segs = append(segs, kvg(kv{"wf", info.WorkflowLabel}))
-		}
-		if info.OracleOn {
-			segs = append(segs, kvg(kv{"mashūra", info.OracleLabel}))
-		}
-		segs = append(segs, m.infoToolsSegments()...)
-		segs = append(segs, m.costSegments()...)
-		segs = append(segs, m.infoGroundingSegments()...)
-		return segs
-	}
-
-	// Legacy path (App-backed tests / pre-migration bootstrap).
-	a := m.app
+	info := m.facade.Info()
 	mode := "docker"
-	cwd := ""
-	if a.Exec != nil {
-		if strings.HasPrefix(a.Exec.Describe(), "direct") {
-			mode = "direct"
-		}
-		cwd = a.Exec.Cwd()
+	if strings.HasPrefix(info.ExecMode, "direct") {
+		mode = "direct"
 	}
-	imgVal := a.Cfg.Image
+	imgVal := info.Image
 	if i := strings.LastIndex(imgVal, "/"); i >= 0 {
 		imgVal = imgVal[i+1:]
 	}
 
-	baseURL, chatID := "", ""
-	if a.Client != nil {
-		baseURL = hostOnly(a.Client.BaseURL)
-		chatID = agent.ShortID(a.Client.ChatID)
-	}
-
-	// model is already in the always-on status line — not repeated here.
 	var segs []string
-	segs = append(segs, kvg(kv{"proxy", baseURL}), kvg(kv{"exec", mode}))
+	segs = append(segs, kvg(kv{"proxy", hostOnly(info.BaseURL)}), kvg(kv{"exec", mode}))
 	if mode == "docker" {
 		segs = append(segs, kvg(kv{"img", imgVal}))
 	}
 	// The prompt source used to be a startup banner line; only shown when a
 	// file path was configured — the built-in fallback note is noise.
-	if note := a.AgentPromptNote(); !strings.Contains(note, "built-in fallback") {
+	if note := info.PromptNote; !strings.Contains(note, "built-in fallback") {
 		if i := strings.Index(note, ": "); i >= 0 {
 			segs = append(segs, kvg(kv{"prompt", note[i+2:]}))
 		}
 	}
-	segs = append(segs, kvg(kv{"cwd", cwd}), kvg(kv{"chat", chatID}))
-	if a.Workflow != nil {
-		segs = append(segs, kvg(kv{"wf", a.Workflow.SidebarLabel()}))
+	segs = append(segs, kvg(kv{"cwd", info.Cwd}), kvg(kv{"chat", formatShortID(info.ChatID)}))
+	if info.WorkflowLabel != "" {
+		segs = append(segs, kvg(kv{"wf", info.WorkflowLabel}))
 	}
-	if a.Cfg.OracleEnabled {
-		anthropicOk := os.Getenv(a.Cfg.OracleAPIKeyEnv) != ""
-		openrouterOk := os.Getenv("OPENROUTER_API_KEY") != ""
-		label := mashuraPanelLabel(a.Cfg)
-		if !anthropicOk && !openrouterOk {
-			label = "no key"
-		}
-		segs = append(segs, kvg(kv{"mashūra", label}))
+	if info.OracleOn {
+		segs = append(segs, kvg(kv{"mashūra", info.OracleLabel}))
 	}
 	segs = append(segs, m.infoToolsSegments()...)
 	segs = append(segs, m.costSegments()...)
@@ -157,7 +93,7 @@ func (m tuiModel) infoMainSegments() []string {
 
 // infoSubSegments gathers the active subagent's expansion segments. The
 // subagent tab's own fields (status/model/cost/files/backend) are TUI-local
-// (populated from events); only proxy/cwd come from Info() on the wiring path.
+// (populated from events); proxy/cwd come from Info().
 func (m tuiModel) infoSubSegments(tab *subTab) []string {
 	statusStr := "running…"
 	if tab.done {
@@ -170,26 +106,13 @@ func (m tuiModel) infoSubSegments(tab *subTab) []string {
 		statusStr = "✓ finished" + ts
 	}
 
-	baseURL, cwd := "", ""
-	if info, ok := m.info(); ok {
-		baseURL = hostOnly(info.BaseURL)
-		cwd = info.Cwd
-	} else {
-		a := m.app
-		if a.Client != nil {
-			baseURL = hostOnly(a.Client.BaseURL)
-		}
-		if a.Exec != nil {
-			cwd = a.Exec.Cwd()
-		}
-	}
-
+	info := m.facade.Info()
 	segs := []string{
 		kvg(kv{"status", statusStr}),
-		kvg(kv{"proxy", baseURL}),
+		kvg(kv{"proxy", hostOnly(info.BaseURL)}),
 		kvg(kv{"model", subTabModel(tab)}),
 		kvg(kv{"exec", "docker"}),
-		kvg(kv{"cwd", cwd}),
+		kvg(kv{"cwd", info.Cwd}),
 		kvg(kv{"chat", formatShortID(tab.chatID)}),
 	}
 	subBackend := tab.usedBackend
@@ -197,13 +120,7 @@ func (m tuiModel) infoSubSegments(tab *subTab) []string {
 		subBackend = tab.backend
 	}
 	if subBackend != "" {
-		defaultBackend := ""
-		if info, ok := m.info(); ok {
-			defaultBackend = info.ConfigBackend
-		} else if m.app != nil {
-			defaultBackend = m.app.Cfg.Backend
-		}
-		isDefault := subBackend == defaultBackend
+		isDefault := subBackend == info.ConfigBackend
 		isOverridden := tab.backend != "" && tab.usedBackend != "" && tab.backend != tab.usedBackend
 		if !isDefault || isOverridden {
 			label := subBackend
@@ -246,46 +163,23 @@ func subToolListSegment(tab *subTab) string {
 	return kvg(kv{"tools", strings.Join(names, " ")})
 }
 
-// infoToolsSegments renders the MCP/searxng tool status as one segment.
-// Wiring path: from InfoSnapshot (MCPServers + SearxngTools). Legacy: App.
+// infoToolsSegments renders the MCP/searxng tool status as one segment,
+// from InfoSnapshot (MCPServers + SearxngTools).
 func (m tuiModel) infoToolsSegments() []string {
-	if info, ok := m.info(); ok {
-		var parts []string
-		for _, srv := range info.MCPServers {
-			icon := "✓"
-			label := sprint("%d", srv.ToolN)
-			if srv.Status == "failed" {
-				icon, label = "✗", "failed"
-			} else if srv.Status == "connecting" {
-				icon, label = "…", "…"
-			}
-			parts = append(parts, icon+" "+srv.Name+" "+label)
-		}
-		if info.SearXngURL != "" {
-			parts = append(parts, "✓ searxng "+sprint("%d", len(info.SearxngTools)))
-		}
-		if len(parts) == 0 {
-			return nil
-		}
-		return []string{kvg(kv{"tools", strings.Join(parts, "  ")})}
-	}
-
-	a := m.app
+	info := m.facade.Info()
 	var parts []string
-	if a.MCP != nil {
-		for _, srv := range a.MCP.Servers() {
-			icon := "✓"
-			label := sprint("%d", len(srv.Tools))
-			if srv.Status == "failed" {
-				icon, label = "✗", "failed"
-			} else if srv.Status == "connecting" {
-				icon, label = "…", "…"
-			}
-			parts = append(parts, icon+" "+srv.Cfg.Name+" "+label)
+	for _, srv := range info.MCPServers {
+		icon := "✓"
+		label := sprint("%d", srv.ToolN)
+		if srv.Status == "failed" {
+			icon, label = "✗", "failed"
+		} else if srv.Status == "connecting" {
+			icon, label = "…", "…"
 		}
+		parts = append(parts, icon+" "+srv.Name+" "+label)
 	}
-	if a.Cfg.SearXngURL != "" {
-		parts = append(parts, "✓ searxng "+sprint("%d", len(tools.SearxngTools())))
+	if info.SearXngURL != "" {
+		parts = append(parts, "✓ searxng "+sprint("%d", len(info.SearxngTools)))
 	}
 	if len(parts) == 0 {
 		return nil
@@ -294,23 +188,10 @@ func (m tuiModel) infoToolsSegments() []string {
 }
 
 // infoGroundingSegments renders the grounding list as one segment (was the
-// "grounded on" block). Wiring path: InfoSnapshot.Grounding.
+// "grounded on" block), from InfoSnapshot.Grounding.
 func (m tuiModel) infoGroundingSegments() []string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	if info, ok := m.info(); ok {
-		if len(info.Grounding) == 0 {
-			return []string{dim.Render("grounded on —")}
-		}
-		var entries []string
-		for _, e := range info.Grounding {
-			entries = append(entries, groundingTypeTag(e.Type)+" "+e.Label)
-		}
-		return []string{dim.Render("grounded on ") + strings.Join(entries, dim.Render("  ·  "))}
-	}
-	if m.app.Client == nil {
-		return []string{dim.Render("grounded on —")}
-	}
-	grounding := m.app.Client.Grounding()
+	grounding := m.facade.Info().Grounding
 	if len(grounding) == 0 {
 		return []string{dim.Render("grounded on —")}
 	}
@@ -326,12 +207,7 @@ func (m tuiModel) infoGroundingSegments() []string {
 // have been recorded. The tracker pointer comes from Info()/Snapshot() (the
 // same synchronized object the App held).
 func (m tuiModel) costSegments() []string {
-	var costs *proxy.CostTracker
-	if info, ok := m.info(); ok {
-		costs = info.Costs
-	} else {
-		costs = m.app.Costs
-	}
+	costs := m.facade.Info().Costs
 	if costs == nil {
 		return nil
 	}
@@ -387,12 +263,7 @@ func billedCell(billedTotal float64) string {
 // the expansion is on, the full cost block (costSegments) carries it instead,
 // so the segment is not duplicated.
 func (m tuiModel) billedSegment() string {
-	var costs *proxy.CostTracker
-	if info, ok := m.info(); ok {
-		costs = info.Costs
-	} else if m.app != nil {
-		costs = m.app.Costs
-	}
+	costs := m.facade.Info().Costs
 	if costs == nil {
 		return ""
 	}
@@ -463,37 +334,4 @@ func hostOnly(url string) string {
 	return s
 }
 
-// mashuraPanelLabel returns a short display string for the active mashura panel,
-// reading the panel config that the "review" tool would resolve to.
-func mashuraPanelLabel(cfg config.Config) string {
-	name := "default"
-	if cfg.MashuraToolPanels != nil {
-		if p := cfg.MashuraToolPanels["review"]; p != "" {
-			name = p
-		}
-	}
-	if cfg.MashuraPanels != nil {
-		if p, ok := cfg.MashuraPanels[name]; ok && len(p.Models) > 0 {
-			switch p.Mode {
-			case "fusion":
-				return fmt.Sprintf("fusion (%d models)", len(p.Models))
-			case "fallback":
-				return fmt.Sprintf("%s +fallback", mashuraShortModel(p.Models[0]))
-			default:
-				if len(p.Models) == 1 {
-					return mashuraShortModel(p.Models[0])
-				}
-				return fmt.Sprintf("%d models", len(p.Models))
-			}
-		}
-	}
-	return cfg.OracleModel
-}
 
-// mashuraShortModel strips the "provider:" prefix for compact display.
-func mashuraShortModel(s string) string {
-	if i := strings.IndexByte(s, ':'); i >= 0 {
-		return s[i+1:]
-	}
-	return s
-}

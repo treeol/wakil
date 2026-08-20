@@ -4,16 +4,15 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
 func TestConvItemsFromRoundTrip(t *testing.T) {
 	conv := []proxy.Message{
-		{Role: "system", Content: agent.StrPtr("[Summary of earlier conversation]\n…")},
-		{Role: "user", Content: agent.StrPtr("hi")},
-		{Role: "assistant", Content: agent.StrPtr("hello"), ToolCalls: []proxy.ToolCall{{Function: proxy.FunctionCall{Name: "run_shell"}}}},
-		{Role: "tool", Name: "run_shell", Content: agent.StrPtr("output")},
+		{Role: "system", Content: strPtr("[Summary of earlier conversation]\n…")},
+		{Role: "user", Content: strPtr("hi")},
+		{Role: "assistant", Content: strPtr("hello"), ToolCalls: []proxy.ToolCall{{Function: proxy.FunctionCall{Name: "run_shell"}}}},
+		{Role: "tool", Name: "run_shell", Content: strPtr("output")},
 	}
 	items := convItemsFrom(conv)
 	kinds := []itemKind{iSys, iUser, iAsst, iSys}
@@ -29,11 +28,11 @@ func TestConvItemsFromRoundTrip(t *testing.T) {
 
 func TestConvItemsFrom(t *testing.T) {
 	conv := []proxy.Message{
-		{Role: "user", Content: agent.StrPtr("do it")},
-		{Role: "assistant", Content: agent.StrPtr("working")},
+		{Role: "user", Content: strPtr("do it")},
+		{Role: "assistant", Content: strPtr("working")},
 		{Role: "assistant", Content: nil}, // tool-call-only turn: no visible item
-		{Role: "tool", Name: "read_file", Content: agent.StrPtr("file body")},
-		{Role: "system", Content: agent.StrPtr("[Summary]")},
+		{Role: "tool", Name: "read_file", Content: strPtr("file body")},
+		{Role: "system", Content: strPtr("[Summary]")},
 	}
 	items := convItemsFrom(conv)
 	// user + assistant(text) + tool + system = 4 (the nil-content assistant is skipped)

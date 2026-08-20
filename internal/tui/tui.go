@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
@@ -60,7 +59,6 @@ type pendingApprovalState struct {
 
 // sideQuestionState tracks a running side-question stream for the TUI.
 type sideQuestionState struct {
-	id  agent.SideQuestionID
 	buf *strings.Builder
 }
 
@@ -138,11 +136,8 @@ type convItem struct {
 }
 
 type tuiModel struct {
-	app        *agent.App
-	control    agent.Control    // mutation surface (chunk 6); bound to app in NewTUIModel
-	apply      agent.StateApply // round-trip state application (chunk 6); bound to app
 	cancel     context.CancelFunc
-	cancelling bool // true after first Ctrl+C, until agent.AgentDoneMsg
+	cancelling bool // true after first Ctrl+C, until the turn completes
 
 	// facade/manager/principal (m4b): the agent-free conversation surfaces.
 	// During the staged migration the facade is authoritative for reads that
@@ -201,12 +196,10 @@ type tuiModel struct {
 	vp       viewport.Model
 	ta       textarea.Model
 	state    agentState
-	pendConf *agent.ConfirmReqMsg
 
-	// pendApproval is the wiring-path confirm gate (m4b): the pending
-	// ApprovalRequested event, answered through facade.RespondToApproval.
-	// Exactly one of pendConf (legacy) / pendApproval (wiring) is non-nil
-	// while state == stateConfirm.
+	// pendApproval is the confirm gate (m4b): the pending ApprovalRequested
+	// event, answered through facade.RespondToApproval. Non-nil while
+	// state == stateConfirm.
 	pendApproval *pendingApprovalState
 
 	// followBottom tracks whether the viewport should auto-follow new content
@@ -474,18 +467,10 @@ func appendAsyncJobStatus(t *subTab, text string) {
 	t.statusLines++
 }
 
-// resolveOutputMode reads the startup output mode from the app config, guarding
-// against a nil app or an unset/zero OutputMode (hand-built configs bypass
-// LoadConfig's normalization). The mode is snapshotted once at construction and
-// never changes for the life of the model.
-func resolveOutputMode(app *agent.App) config.OutputMode {
-	if app != nil && config.OutputModeIsValid(app.Cfg.OutputMode) {
-		return app.Cfg.OutputMode
-	}
-	return config.OutputModeDebug
-}
-
-func NewTUIModel(app *agent.App) tuiModel {
+// newBaseModel builds the shell model (textarea, viewport, embedded state
+// models). NewTUIModelWithFacade fills in the conversation surfaces and
+// hydrates the view.
+func newBaseModel() tuiModel {
 	ta := textarea.New()
 	ta.Placeholder = "type a task… (Enter=send, Shift+Enter=newline, /help)"
 	ta.ShowLineNumbers = false
@@ -505,48 +490,8 @@ func NewTUIModel(app *agent.App) tuiModel {
 		Down:     key.NewBinding(key.WithKeys("down")),
 	}
 	items := make([]convItem, 0, 64)
-	// The agent-prompt source note no longer occupies a conversation row — it
-	// lives in the on-demand info panel (F2 / ctrl+o) as "prompt <path>".
-	// Resumed session: rebuild the conversation view from the loaded transcript.
-	// A nil app is legal on the wiring path (NewTUIModelWithFacade builds the
-	// model this way and hydrates from the facade snapshot instead).
-	if app != nil && len(app.Conv) > 0 {
-		items = convItemsFrom(app.Conv)
-		resumeNote := sprint("· resumed session %s — %d messages", agent.ShortID(app.Client.ChatID), len(app.Conv))
-		if app.Workflow != nil {
-			resumeNote += " · workflow restored: " + app.Workflow.PhaseName()
-		}
-		items = append(items, convItem{kind: iSys, text: dim2(resumeNote)})
-	}
-	if app == nil {
-		// Wiring-path base (m4b): control/apply/app stay nil — the facade owns
-		// all mutation on that path; the send path migrates in stage 3.
-		return tuiModel{
-			outputMode:   config.OutputModeDebug,
-			vp:           vp,
-			ta:           ta,
-			state:        stateIdle,
-			followBottom: true,
-			items:        &items,
-			streaming:    &strings.Builder{},
-			imageChips:   &[]string{},
-			subAgentModel: subAgentModel{
-				subCur: -1,
-			},
-			reasoningModel: reasoningModel{
-				reasoning: &strings.Builder{},
-			},
-			historyModel: historyModel{
-				histIdx:      -1,
-				inputHistory: loadHistory(),
-			},
-		}
-	}
 	return tuiModel{
-		app:          app,
-		control:      app, // single binding site for the mutation seams (chunk 6)
-		apply:        app,
-		outputMode:   resolveOutputMode(app),
+		outputMode:   config.OutputModeDebug,
 		vp:           vp,
 		ta:           ta,
 		state:        stateIdle,
@@ -564,10 +509,6 @@ func NewTUIModel(app *agent.App) tuiModel {
 			histIdx:      -1,
 			inputHistory: loadHistory(),
 		},
-		infoPanel: infoPanelModel{
-			// Restore the remembered open/closed state (WP-9.1, per-session).
-			active: app != nil && app.InfoPanelOpen,
-		},
 	}
 }
 
@@ -576,7 +517,7 @@ func NewTUIModel(app *agent.App) tuiModel {
 // reachable only through them. The initial view state hydrates from the
 // facade's snapshot (resume path included).
 func NewTUIModelWithFacade(f sessionclient.Facade, mgr sessionclient.ConversationManager, principal core.Principal) tuiModel {
-	m := NewTUIModel(nil)
+	m := newBaseModel()
 	m.facade = f
 	m.manager = mgr
 	m.principal = principal
@@ -631,16 +572,8 @@ func (m tuiModel) info() (sessionclient.InfoSnapshot, bool) {
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	// Wiring path: the startup note is a local display message.
-	if m.facade != nil {
-		if note := m.facade.ConsumeStartupNote(); note != "" {
-			return tea.Batch(textarea.Blink, func() tea.Msg { return startupNoteMsg{text: note} })
-		}
-		return textarea.Blink
-	}
-	if m.app != nil && m.app.StartupNote != "" {
-		note := m.control.ConsumeStartupNote()
-		return tea.Batch(textarea.Blink, func() tea.Msg { return agent.SysNoteMsg{Text: note} })
+	if note := m.facade.ConsumeStartupNote(); note != "" {
+		return tea.Batch(textarea.Blink, func() tea.Msg { return startupNoteMsg{text: note} })
 	}
 	return textarea.Blink
 }
@@ -841,19 +774,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	default:
-		// Domain events (wiring path) take precedence: they arrive from the
-		// facade's event pump. Unmatched events fall through to the legacy
-		// agent-lifecycle switch below, exactly as before (m4b: both paths
-		// are live during the migration; a model is either facade-backed or
-		// App-backed, never both).
+		// Local TUI messages and domain events (wiring path) — both handled in
+		// handleEventMsg. Unmatched messages fall through to the trailing
+		// textarea/viewport forward below, which is what an unknown message
+		// has always gotten.
 		var handled bool
 		m, cmds, handled = m.handleEventMsg(msg, cmds)
 		if handled {
-			// Events must not leak into the textarea/viewport forward — they
-			// are not input events.
+			// Events and control messages must not leak into the
+			// textarea/viewport forward — they are not input events.
 			return m, tea.Batch(cmds...)
 		}
-		m, cmds, _ = m.handleAgentMsg(msg, cmds)
 	}
 
 	var taCmd, vpCmd tea.Cmd
@@ -907,40 +838,6 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			answer(sessionclient.ChoiceDecline, dim2("  [declined]"))
 		case "ctrl+c":
 			answer(sessionclient.ChoiceDecline, dim2("  [declined + cancelled]"))
-			// Mark cancelling so a follow-up ctrl+c force-quits a hung cancel in
-			// 3 total presses instead of arming a fresh cancel (4 presses).
-			m.cancelling = true
-			m.cancelTurn()
-		}
-		// Every key is consumed by the confirm gate.
-		return m, nil, true
-	}
-
-	if m.state == stateConfirm && m.pendConf != nil {
-		readAction := m.pendConf.ReadAction
-		// answer resolves the gate: post a note, hand the choice to the agent
-		// goroutine (buffered channel, never blocks), and resume streaming.
-		answer := func(c agent.ConfirmChoice, note string) {
-			ch := m.pendConf.RespCh
-			before := m.statusRows()
-			m.pendConf = nil
-			m.state = stateStreaming
-			m.addItem(iSys, note)
-			ch <- c
-			m = m.reflowIfStatusHeightChanged(before)
-		}
-		switch msg.String() {
-		case "y", "Y":
-			answer(agent.ChoiceApprove, styleOK("  [approved]"))
-		case "a", "A":
-			if readAction {
-				answer(agent.ChoiceAllowReads, styleOK("  [reads allowed for this session]"))
-			}
-			// 'a' is meaningless for non-read actions — swallow it (consumed below).
-		case "n", "N", "esc":
-			answer(agent.ChoiceDecline, dim2("  [declined]"))
-		case "ctrl+c":
-			answer(agent.ChoiceDecline, dim2("  [declined + cancelled]"))
 			// Mark cancelling so a follow-up ctrl+c force-quits a hung cancel in
 			// 3 total presses instead of arming a fresh cancel (4 presses).
 			m.cancelling = true
@@ -1177,12 +1074,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 						m.comp = completionState{}
 						return m, nil, true
 					}
-					var consent sessionclient.Consent
-					if m.facade != nil {
-						consent = m.facade.Consent()
-					} else {
-						consent = toClientConsent(m.app.Consent())
-					}
+					consent := m.facade.Consent()
 					if isDestructive {
 						if !consent.AutoApprove {
 							m.addItem(iSys, dim2("· /auto destructive mid-turn: auto is OFF — enable /auto first"))
@@ -1197,11 +1089,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 							m.addItem(iSys, dim2("· auto: pending destructive grant cancelled"))
 						} else if consent.AllowDestructive {
 							// Revoke destructive immediately.
-							if m.facade != nil {
-								m.facade.SetAllowDestructive(false)
-							} else {
-								m.control.SetAllowDestructive(false)
-							}
+							m.facade.SetAllowDestructive(false)
 							m.addItem(iSys, dim2("· auto: destructive revoked mid-turn"))
 						} else {
 							// Defer the destructive grant.
@@ -1222,11 +1110,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 							// ON→OFF: immediate revoke. Clear both AutoApprove and
 							// AllowDestructive atomically (pair invariant — the
 							// destructive grant never outlives the auto session).
-							if m.facade != nil {
-								m.facade.RevokeAuto()
-							} else {
-								m.control.RevokeAuto()
-							}
+							m.facade.RevokeAuto()
 							m.pendingAutoGrant = false
 							m.pendingDestructiveGrant = false
 							m.addItem(iSys, dim2("· auto: revoked mid-turn"))
@@ -1299,6 +1183,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		if input == "" {
 			return m, nil, true
 		}
+		_ = before // reflow guard for the search-exit path above; consumed by the slash-dispatch path via statusRows re-check
 		// Send-time safety net: if mangled binary-image content still made it
 		// into the textarea (a paste path the live interception didn't see),
 		// refuse to send it to the model and read the clipboard instead. The
@@ -1355,14 +1240,13 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			return m, nil, true
 		}
 
-		// Dispatch slash commands through the facade on the wiring path
-		// (m4b): DispatchCommand runs in a Cmd goroutine (slow commands —
-		// /handoff summarizes, /remember searches 30s) and delivers a
-		// commandResultMsg the event loop applies. The facade applies
-		// state side effects itself (D24); the TUI re-fetches the snapshot
-		// on result delivery. Slash-prefixed input only — plain text flows
-		// to the send path below.
-		if m.facade != nil && strings.HasPrefix(input, "/") {
+		// Dispatch slash commands through the facade (m4b): DispatchCommand
+		// runs in a Cmd goroutine (slow commands — /handoff summarizes,
+		// /remember searches 30s) and delivers a commandResultMsg the event
+		// loop applies. The facade applies state side effects itself (D24);
+		// the TUI reads through Snapshot()/Info() on demand. Slash-prefixed
+		// input only — plain text flows to the send path below.
+		if strings.HasPrefix(input, "/") {
 			if m.rotating {
 				m.addItem(iSys, dim2("· rotation in progress — command ignored"))
 				return m, nil, true
@@ -1373,114 +1257,58 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			}}, true
 		}
 
-		if handled, quit, cmd := agent.HandleTUICommand(input, m.app); handled {
-			if quit {
-				return m, []tea.Cmd{tea.Quit}, true
-			}
-			// A slash command consumed the input, but image chips (and their
-			// pending images) belong to the next real message — re-insert the
-			// chips into the now-empty textarea so they survive the command.
-			// Without this, running e.g. "/image" to check the queue would
-			// wipe the chips and the next send would detach the images.
-			for _, chip := range *m.imageChips {
-				if strings.Contains(input, chip) {
-					m.ta.InsertString(chip + " ")
-				}
-			}
-			// Slash commands mutate status segments (/model, /auto, /raw,
-			// /backend, /plan, …) — reflow if the status zone height flipped.
-			m = m.reflowIfStatusHeightChanged(before)
-			if cmd != nil {
-				return m, []tea.Cmd{AdaptCmd(cmd)}, true
-			}
+		// Chips reconcile against the snapshot's pending images; the turn is
+		// submitted through the host (SubmitInput), and the display state
+		// flips on the TurnStarted/TurnCompleted events.
+		if m.rotating {
 			return m, nil, true
 		}
-
-		// Wiring path (m4b): chips reconcile against the snapshot's pending
-		// images; the turn is submitted through the host (SubmitInput), and
-		// the display state flips on the TurnStarted/TurnCompleted events.
-		if m.facade != nil {
-			if m.rotating {
-				return m, nil, true
-			}
-			snap := m.facade.Snapshot()
-			var msgText string
-			var pending []proxy.ImagePart
-			msgText, pending = reconcileImageChips(input, *m.imageChips, snap.PendingImages)
-			if msgText == "" && len(pending) == 0 && len(snap.PendingImages) == 0 {
-				return m, nil, true
-			}
-			m.facade.ReplacePendingImages(pending)
-			*m.imageChips = (*m.imageChips)[:0]
-
-			outgoing, refs := tools.ResolveMentions(msgText, m.mentionBase())
-			m.addItem(iUser, input)
-			if len(refs) > 0 {
-				m.addItem(iSys, tools.ChipsLine(refs))
-			}
-			for _, img := range pending {
-				m.addItem(iSys, img.Placeholder())
-			}
-			m.followBottom = true
-			m.vp.GotoBottom()
-
-			before := m.statusRows()
-			m.state = stateStreaming // optimistic; TurnStarted confirms
-			m.turnStart = time.Now()
-			m.tps = 0
-			m = m.reflowIfStatusHeightChanged(before)
-			var pair []tea.Cmd
-			var dotCmd tea.Cmd
-			m, dotCmd = m.startDotTickIfUnarmed()
-			if dotCmd != nil {
-				pair = append(pair, dotCmd)
-			}
-			if _, err := m.facade.SubmitInput(context.Background(), m.principal, core.SubmitInputRequest{
-				SessionID: m.sessionID,
-				Text:      outgoing,
-			}); err != nil {
-				// Rejected (busy/closed): revert to idle and surface the error.
-				m.addItem(iSys, styleErr("submit failed: "+err.Error()))
-				m.state = stateIdle
-				m.turnStart = time.Time{}
-			}
-			return m, pair, true
-		}
-
-		// Reconcile image chips: strip surviving chips from the outgoing text
-		// (the image travels via PendingImages, not as text); detach the
-		// pending image for any chip the user deleted from the input.
+		snap := m.facade.Snapshot()
 		var msgText string
 		var pending []proxy.ImagePart
-		msgText, pending = reconcileImageChips(input, *m.imageChips, m.app.PendingImages)
-		m.apply.ReplacePendingImages(pending)
-		*m.imageChips = (*m.imageChips)[:0]
+		msgText, pending = reconcileImageChips(input, *m.imageChips, snap.PendingImages)
 		// A chip-only input yields empty text but a queued image — that is a
 		// legitimate image-only message. Empty text AND no images = nothing.
-		if msgText == "" && len(m.app.PendingImages) == 0 {
+		if msgText == "" && len(pending) == 0 && len(snap.PendingImages) == 0 {
 			return m, nil, true
 		}
+		m.facade.ReplacePendingImages(pending)
+		*m.imageChips = (*m.imageChips)[:0]
 
 		// Resolve "@" mentions: the user sees their typed text plus chips; the
 		// proxy receives the text with file/folder content injected.
-		outgoing, refs := tools.ResolveMentions(msgText, m.app.Cfg.MentionBase)
+		outgoing, refs := tools.ResolveMentions(msgText, m.mentionBase())
 		m.addItem(iUser, input)
 		if len(refs) > 0 {
 			m.addItem(iSys, tools.ChipsLine(refs))
 		}
 		// Show image placeholders when images are attached to this turn.
-		if len(m.app.PendingImages) > 0 {
-			for _, img := range m.app.PendingImages {
-				m.addItem(iSys, img.Placeholder())
-			}
+		for _, img := range pending {
+			m.addItem(iSys, img.Placeholder())
 		}
 		m.followBottom = true // re-pin: a sent turn always scrolls into view
 		m.vp.GotoBottom()
 
+		sendBefore := m.statusRows()
+		m.state = stateStreaming // optimistic; TurnStarted confirms
+		m.turnStart = time.Now()
+		m.tps = 0
+		m = m.reflowIfStatusHeightChanged(sendBefore)
 		var pair []tea.Cmd
-		m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
-			return AdaptCmd(agent.RunTurn(m.app, ctx, outgoing))
-		})
+		var dotCmd tea.Cmd
+		m, dotCmd = m.startDotTickIfUnarmed()
+		if dotCmd != nil {
+			pair = append(pair, dotCmd)
+		}
+		if _, err := m.facade.SubmitInput(context.Background(), m.principal, core.SubmitInputRequest{
+			SessionID: m.sessionID,
+			Text:      outgoing,
+		}); err != nil {
+			// Rejected (busy/closed): revert to idle and surface the error.
+			m.addItem(iSys, styleErr("submit failed: "+err.Error()))
+			m.state = stateIdle
+			m.turnStart = time.Time{}
+		}
 		return m, pair, true
 	}
 
@@ -1553,18 +1381,10 @@ func (m *tuiModel) searchRun(startIdx int) {
 }
 
 func (m *tuiModel) cancelTurn() {
-	if m.facade != nil {
-		// Wiring path: the host owns the turn; Interrupt cancels it
-		// (non-blocking — the executor sees the cancellation and finalizes
-		// the turn with TurnCompleted{cancelled}).
-		_ = m.facade.Interrupt(context.Background(), m.principal, m.sessionID)
-		return
-	}
-	if m.cancel != nil {
-		m.cancel()
-		// Do NOT nil m.cancel here — keep it so agent.AgentDoneMsg can clean up
-		// and so we can detect a cancel is in-flight (m.cancelling).
-	}
+	// The host owns the turn: Interrupt cancels it (non-blocking — the
+	// executor sees the cancellation and finalizes with
+	// TurnCompleted{cancelled}).
+	_ = m.facade.Interrupt(context.Background(), m.principal, m.sessionID)
 }
 
 // --- Double-press arm (quit/cancel confirmation gate) ---
@@ -1621,39 +1441,12 @@ func (m tuiModel) armNotice() string {
 	return sprint("⚠ press %s again to %s", m.armKey, action)
 }
 
-// startTurn sets up cancel/state/turnStart/tps for a new agent turn and returns
-// the updated model plus the turn's commands. run builds the agent command from
-// the fresh ctx (RunTurn vs RunFinalReview differs per call site). The helper owns
-// context.WithCancel so the four kickoff sites don't each duplicate the
-// ctx/cancel/state/turnStart boilerplate. Returns []tea.Cmd (not a pre-batched
-// tea.Cmd) so callers append the pair exactly as the original inline code did.
-func (m tuiModel) startTurn(run func(ctx context.Context) tea.Cmd) (tuiModel, []tea.Cmd) {
-	ctx, cancel := context.WithCancel(context.Background())
-	m.cancel = cancel
-	before := m.statusRows()
-	m.state = stateStreaming
-	m.turnStart = time.Now()
-	m.tps = 0
-	// Every locally-initiated turn re-engages follow: the user just asked for
-	// something, so the transcript should scroll to the new content regardless
-	// of where they were reading. Centralized here so no future startTurn call
-	// site can forget the reset (display-only paths don't go through startTurn).
-	m.followBottom = true
-	m = m.reflowIfStatusHeightChanged(before)
-	cmds := []tea.Cmd{run(ctx)}
-	var dotCmd tea.Cmd
-	m, dotCmd = m.startDotTickIfUnarmed()
-	if dotCmd != nil {
-		cmds = append(cmds, dotCmd)
-	}
-	return m, cmds
-}
-
 // flushQueuedPrompt sends a queued prompt as a new user turn. It mirrors the
-// idle Enter send path (history, image-chip reconciliation, mention resolution,
-// startTurn) but reads from the queued string instead of the textarea — so the
-// user's current draft is preserved untouched. Only plain text reaches here
-// (slash commands are never queued; they're hard-rejected mid-turn).
+// idle Enter send path (history, image-chip reconciliation, mention
+// resolution, submit) but reads from the queued string instead of the
+// textarea — so the user's current draft is preserved untouched. Only plain
+// text reaches here (slash commands are never queued; they're hard-rejected
+// mid-turn).
 func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
 	// Add to history (skip duplicate of most-recent entry).
 	if len(m.inputHistory) == 0 || m.inputHistory[0] != input {
@@ -1663,80 +1456,44 @@ func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
 	m.histIdx = -1
 	m.histSaved = ""
 
-	// Wiring path (m4b): chips reconcile against the snapshot; the host
-	// drives the turn.
-	if m.facade != nil {
-		snap := m.facade.Snapshot()
-		var msgText string
-		var pending []proxy.ImagePart
-		msgText, pending = reconcileImageChips(input, *m.imageChips, snap.PendingImages)
-		if msgText == "" && len(pending) == 0 && len(snap.PendingImages) == 0 {
-			return m, nil
-		}
-		m.facade.ReplacePendingImages(pending)
-		*m.imageChips = (*m.imageChips)[:0]
-		outgoing, refs := tools.ResolveMentions(msgText, m.mentionBase())
-		m.addItem(iUser, input)
-		if len(refs) > 0 {
-			m.addItem(iSys, tools.ChipsLine(refs))
-		}
-		for _, img := range pending {
-			m.addItem(iSys, img.Placeholder())
-		}
-		m.followBottom = true
-		m.vp.GotoBottom()
-		before := m.statusRows()
-		m.state = stateStreaming
-		m.turnStart = time.Now()
-		m.tps = 0
-		m = m.reflowIfStatusHeightChanged(before)
-		var pair []tea.Cmd
-		var dotCmd tea.Cmd
-		m, dotCmd = m.startDotTickIfUnarmed()
-		if dotCmd != nil {
-			pair = append(pair, dotCmd)
-		}
-		if _, err := m.facade.SubmitInput(context.Background(), m.principal, core.SubmitInputRequest{
-			SessionID: m.sessionID,
-			Text:      outgoing,
-		}); err != nil {
-			m.addItem(iSys, styleErr("submit failed: "+err.Error()))
-			m.state = stateIdle
-			m.turnStart = time.Time{}
-		}
-		return m, pair
-	}
-
-	// Reconcile image chips: strip surviving chips from the outgoing text;
-	// detach pending images for chips the user deleted. (Chips apply to the
-	// next real send — a queued prompt may carry chips if the user attached
-	// images before queueing.)
+	snap := m.facade.Snapshot()
 	var msgText string
 	var pending []proxy.ImagePart
-	msgText, pending = reconcileImageChips(input, *m.imageChips, m.app.PendingImages)
-	m.apply.ReplacePendingImages(pending)
-	*m.imageChips = (*m.imageChips)[:0]
-	if msgText == "" && len(m.app.PendingImages) == 0 {
+	msgText, pending = reconcileImageChips(input, *m.imageChips, snap.PendingImages)
+	if msgText == "" && len(pending) == 0 && len(snap.PendingImages) == 0 {
 		return m, nil
 	}
-
-	outgoing, refs := tools.ResolveMentions(msgText, m.app.Cfg.MentionBase)
+	m.facade.ReplacePendingImages(pending)
+	*m.imageChips = (*m.imageChips)[:0]
+	outgoing, refs := tools.ResolveMentions(msgText, m.mentionBase())
 	m.addItem(iUser, input)
 	if len(refs) > 0 {
 		m.addItem(iSys, tools.ChipsLine(refs))
 	}
-	if len(m.app.PendingImages) > 0 {
-		for _, img := range m.app.PendingImages {
-			m.addItem(iSys, img.Placeholder())
-		}
+	for _, img := range pending {
+		m.addItem(iSys, img.Placeholder())
 	}
 	m.followBottom = true
 	m.vp.GotoBottom()
-
+	before := m.statusRows()
+	m.state = stateStreaming
+	m.turnStart = time.Now()
+	m.tps = 0
+	m = m.reflowIfStatusHeightChanged(before)
 	var pair []tea.Cmd
-	m, pair = m.startTurn(func(ctx context.Context) tea.Cmd {
-		return AdaptCmd(agent.RunTurn(m.app, ctx, outgoing))
-	})
+	var dotCmd tea.Cmd
+	m, dotCmd = m.startDotTickIfUnarmed()
+	if dotCmd != nil {
+		pair = append(pair, dotCmd)
+	}
+	if _, err := m.facade.SubmitInput(context.Background(), m.principal, core.SubmitInputRequest{
+		SessionID: m.sessionID,
+		Text:      outgoing,
+	}); err != nil {
+		m.addItem(iSys, styleErr("submit failed: "+err.Error()))
+		m.state = stateIdle
+		m.turnStart = time.Time{}
+	}
 	return m, pair
 }
 
@@ -1759,7 +1516,7 @@ func (m tuiModel) handleQueueCommand(input string) (tuiModel, bool) {
 			var b strings.Builder
 			fmt.Fprintf(&b, "· queue (%d):", len(m.queuedPrompts))
 			for i, qp := range m.queuedPrompts {
-				fmt.Fprintf(&b, "\n  %d. %s", i+1, agent.Truncate(qp.text, 60))
+				fmt.Fprintf(&b, "\n  %d. %s", i+1, formatTruncate(qp.text, 60))
 			}
 			m.addItem(iSys, dim2(b.String()))
 		}
@@ -1783,16 +1540,15 @@ func (m tuiModel) handleQueueCommand(input string) (tuiModel, bool) {
 		}
 		dropped := m.queuedPrompts[n-1]
 		m.queuedPrompts = append(m.queuedPrompts[:n-1], m.queuedPrompts[n:]...)
-		m.addItem(iSys, dim2(sprint("· dropped: %s", agent.Truncate(dropped.text, 60))))
+		m.addItem(iSys, dim2(sprint("· dropped: %s", formatTruncate(dropped.text, 60))))
 	default:
 		m.addItem(iSys, dim2("· /queue: usage is /queue [list|clear|drop N]"))
 	}
 	return m, true
 }
 
-// startSideQuestion starts a concurrent side-question stream. Wiring path:
-// through the facade (registry + cancel); legacy: the agent's control seam.
-// Output is rendered as dimmed iSys items prefixed with "≫".
+// startSideQuestion starts a concurrent side-question stream through the
+// facade. Output is rendered as dimmed iSys items prefixed with "≫".
 func (m tuiModel) startSideQuestion(question string) tuiModel {
 	m.addItem(iUser, "/ask "+question)
 	m.addItem(iSys, dim2("≫ side question streaming…"))
@@ -1800,16 +1556,9 @@ func (m tuiModel) startSideQuestion(question string) tuiModel {
 		m.sideQuestionCancel() // cancel any previous side question
 	}
 	buf := &strings.Builder{}
-	m.sideQuestion = &sideQuestionState{
-		id:  "", // correlated by "the active side question", not OpID
-		buf: buf,
-	}
-	if m.facade != nil {
-		_, cancel := m.facade.StartSideQuestion(context.Background(), question)
-		m.sideQuestionCancel = cancel
-		return m
-	}
-	m.sideQuestionCancel = m.control.StartSideQuestion(context.Background(), question)
+	m.sideQuestion = &sideQuestionState{buf: buf} // correlated by "the active side question", not OpID
+	_, cancel := m.facade.StartSideQuestion(context.Background(), question)
+	m.sideQuestionCancel = cancel
 	return m
 }
 

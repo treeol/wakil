@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -14,7 +13,7 @@ import (
 // (Named searchTestModel to avoid colliding with the searchModel struct, WP-6.6.)
 func searchTestModel(t *testing.T, history ...string) tuiModel {
 	t.Helper()
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	m.inputHistory = history
 	return m
 }
@@ -327,9 +326,7 @@ func TestHandleKeyCtrlR_NotDuringStreaming(t *testing.T) {
 func TestHandleKeyCtrlR_NotDuringConfirm(t *testing.T) {
 	m := searchTestModel(t, "git commit")
 	m.state = stateConfirm
-	m.pendConf = &agent.ConfirmReqMsg{
-		RespCh: make(chan agent.ConfirmChoice, 1),
-	}
+	m.pendApproval = &pendingApprovalState{approvalID: "apr_1", headline: "h"}
 
 	m2, _, consumed := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlR})
 	// Confirm gate consumes ALL keys before search logic.
@@ -529,7 +526,7 @@ func TestHandleKeyCtrlR_SearchPromptShows(t *testing.T) {
 }
 
 func TestHandleKeyCtrlR_SearchPromptTruncation(t *testing.T) {
-	m := keyModel(t) // width=100
+	m, _ := keyModel(t) // width=100
 	longEntry := strings.Repeat("a", 200)
 	m.inputHistory = []string{longEntry}
 

@@ -6,8 +6,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	agent "github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
 )
 
 // TestViewportBottomAlignShortContent verifies that short content is
@@ -17,8 +15,8 @@ import (
 // searches when only short tool-result items are in the viewport.
 func TestViewportBottomAlignShortContent(t *testing.T) {
 	const w, h = 120, 50
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	m := NewTUIModel(app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
 	m = step(m, tea.WindowSizeMsg{Width: w, Height: h})
 
 	// Simulate google-search state: short content (4 lines)
@@ -107,8 +105,8 @@ func TestViewportBottomAlignShortContent(t *testing.T) {
 // exceeds the viewport, bottomAlignViewport is a no-op (no blank lines moved).
 func TestViewportBottomAlignFullContent(t *testing.T) {
 	const w, h = 120, 50
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	m := NewTUIModel(app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
 	m = step(m, tea.WindowSizeMsg{Width: w, Height: h})
 
 	// Fill the viewport with content longer than vpH

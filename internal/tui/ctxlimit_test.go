@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
@@ -166,22 +167,21 @@ func TestResolveContextLimitResolvedFieldAbsent(t *testing.T) {
 // uses the amber style when the proxy flagged the model as unresolved,
 // matching the fallback-source cue.
 func TestHeaderCtxAmberOnUnresolvedModel(t *testing.T) {
-	app := &agent.App{
-		Cfg: config.DefaultConfig(),
-		CtxLimit: agent.ContextLimit{NCtx: 131072, Source: "backend",
-			ModelUnresolved: true, ReasoningBudget: 4096, AnswerMargin: 4096},
-	}
-	strip := tuiModel{app: app, width: 120}.ctxSegment()
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123", info: sessionclient.InfoSnapshot{
+		ContextLimit: sessionclient.ContextLimit{NCtx: 131072, Source: "backend", ModelUnresolved: true, ReasoningBudget: 4096, AnswerMargin: 4096},
+		ContextUsed:  0, ContextExact: false, ConvLen: 0, TranscriptSize: 0,
+	}}
+	strip := tuiModel{facade: f, width: 120}.ctxSegment()
 	if !strings.Contains(plain(strip), "ctx") {
 		t.Fatalf("ctx strip missing key; got %q", plain(strip))
 	}
 	// The amber style is color 214 — assert on the escape sequence the same way
 	// a fallback-source strip renders it.
-	fbApp := &agent.App{
-		Cfg:      config.DefaultConfig(),
-		CtxLimit: agent.ContextLimit{NCtx: 131072, Source: "fallback", ReasoningBudget: 4096, AnswerMargin: 4096},
-	}
-	fbStrip := tuiModel{app: fbApp, width: 120}.ctxSegment()
+	fbf := &fakeFacade{sid: "sess_tui_test", chatID: "chat123", info: sessionclient.InfoSnapshot{
+		ContextLimit: sessionclient.ContextLimit{NCtx: 131072, Source: "fallback", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
+		ContextUsed:  0, ContextExact: false, ConvLen: 0, TranscriptSize: 0,
+	}}
+	fbStrip := tuiModel{facade: fbf, width: 120}.ctxSegment()
 	// Compare only the region containing the styled key: both must carry
 	// identical styling bytes for "ctx".
 	if keyStyling(strip) != keyStyling(fbStrip) {
@@ -242,15 +242,11 @@ func TestParseContextLimitJSON(t *testing.T) {
 // TestHeaderCtxReadsBackendNCtx: the status gauge segment's denominator reflects
 // the fetched n_ctx (~196k), not the old hardcoded 512k.
 func TestHeaderCtxReadsBackendNCtx(t *testing.T) {
-	app := &agent.App{
-		Cfg:      config.DefaultConfig(),
-		Client:   newTestClient(""),
-		CtxLimit: agent.ContextLimit{NCtx: 196608, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096},
-		Conv:     []proxy.Message{{Role: "user", Content: strPtr("hi")}},
-	}
-	app.Client.SetUsage(proxy.UsageStat{InputTok: 48000, Exact: true})
-
-	m := tuiModel{app: app, width: 120}
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123", info: sessionclient.InfoSnapshot{
+		ContextLimit: sessionclient.ContextLimit{NCtx: 196608, Source: "backend", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
+		ContextUsed:  48000, ContextExact: true, ConvLen: 1, TranscriptSize: 2,
+	}}
+	m := tuiModel{facade: f, width: 120}
 	strip := plain(m.ctxSegment())
 	if !strings.Contains(strip, "196k") {
 		t.Errorf("ctx strip must show 196k denominator; got: %q", strip)
@@ -271,23 +267,22 @@ func TestHeaderCtxReadsBackendNCtx(t *testing.T) {
 // while an authoritative backend value does not — so a later correction reads
 // as an estimate being refined, not a leak.
 func TestHeaderCtxTildeOnEstimate(t *testing.T) {
-	app := &agent.App{
-		Cfg:      config.DefaultConfig(),
-		Client:   newTestClient(""),
-		CtxLimit: agent.ContextLimit{NCtx: 196608, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096},
-		Conv:     []proxy.Message{{Role: "user", Content: strPtr("hi")}},
-	}
-
 	// Estimated (Exact=false) → "~48k".
-	app.Client.SetUsage(proxy.UsageStat{InputTok: 48000, Exact: false})
-	strip := plain(tuiModel{app: app, width: 120}.ctxSegment())
+	est := &fakeFacade{sid: "sess_tui_test", chatID: "chat123", info: sessionclient.InfoSnapshot{
+		ContextLimit: sessionclient.ContextLimit{NCtx: 196608, Source: "backend", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
+		ContextUsed:  48000, ContextExact: false, ConvLen: 1, TranscriptSize: 2,
+	}}
+	strip := plain(tuiModel{facade: est, width: 120}.ctxSegment())
 	if !strings.Contains(strip, "~48k") {
 		t.Errorf("estimated usage must render '~48k'; got: %q", strip)
 	}
 
 	// Authoritative (Exact=true) → "48k" with no tilde.
-	app.Client.SetUsage(proxy.UsageStat{InputTok: 48000, Exact: true})
-	strip = plain(tuiModel{app: app, width: 120}.ctxSegment())
+	ex := &fakeFacade{sid: "sess_tui_test", chatID: "chat123", info: sessionclient.InfoSnapshot{
+		ContextLimit: sessionclient.ContextLimit{NCtx: 196608, Source: "backend", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
+		ContextUsed:  48000, ContextExact: true, ConvLen: 1, TranscriptSize: 2,
+	}}
+	strip = plain(tuiModel{facade: ex, width: 120}.ctxSegment())
 	if !strings.Contains(strip, "48k") {
 		t.Errorf("exact usage must render '48k'; got: %q", strip)
 	}
@@ -299,13 +294,11 @@ func TestHeaderCtxTildeOnEstimate(t *testing.T) {
 // TestHeaderCtxTildeOnFallback: with no usage reported at all, the
 // transcript-length fallback is an estimate and renders with "~".
 func TestHeaderCtxTildeOnFallback(t *testing.T) {
-	app := &agent.App{
-		Cfg:      config.DefaultConfig(),
-		Client:   newTestClient(""),
-		CtxLimit: agent.ContextLimit{NCtx: 196608, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096},
-		Conv:     []proxy.Message{{Role: "user", Content: strPtr(strings.Repeat("x", 4000))}},
-	}
-	strip := plain(tuiModel{app: app, width: 120}.ctxSegment())
+	fb := &fakeFacade{sid: "sess_tui_test", chatID: "chat123", info: sessionclient.InfoSnapshot{
+		ContextLimit: sessionclient.ContextLimit{NCtx: 196608, Source: "backend", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
+		ContextUsed:  1000, ContextExact: false, ConvLen: 1, TranscriptSize: 4000,
+	}}
+	strip := plain(tuiModel{facade: fb, width: 120}.ctxSegment())
 	// 4000 chars / 4 = 1000 tokens → "~1k".
 	if !strings.Contains(strip, "~1k") {
 		t.Errorf("fallback estimate must render '~1k'; got: %q", strip)

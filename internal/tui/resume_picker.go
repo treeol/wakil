@@ -3,7 +3,6 @@ package tui
 import (
 	"strings"
 
-	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -49,21 +48,13 @@ func (m tuiModel) closeResumePicker() tuiModel {
 }
 
 // reloadResumePicker toggles the picker's scope (current workspace ↔ all
-// repos) and re-reads the session store through the facade (wiring path) or
-// the agent store (legacy). Synchronous disk I/O — the session store is small
-// and local, and this only happens on an explicit keypress, not per-frame.
+// repos) and re-reads the session store through the facade. Synchronous disk
+// I/O — the session store is small and local, and this only happens on an
+// explicit keypress, not per-frame.
 func (m tuiModel) reloadResumePicker(all bool) tuiModel {
 	scope := m.resumePicker.scope
 	scope.All = all
-	var sessions []sessionclient.SessionSummary
-	var hidden int
-	var err error
-	if m.facade != nil {
-		sessions, hidden, err = m.facade.ListSessions(scope)
-	} else {
-		agentSessions, h, e := agent.ListSessionsScoped(agent.SessionScope{Workspace: scope.Workspace, All: scope.All})
-		sessions, hidden, err = toClientSessions(agentSessions), h, e
-	}
+	sessions, hidden, err := m.facade.ListSessions(scope)
 	if err != nil {
 		return m
 	}
@@ -74,23 +65,6 @@ func (m tuiModel) reloadResumePicker(all bool) tuiModel {
 		m.resumePicker.sel = 0
 	}
 	return m
-}
-
-// toClientSessions converts agent sessions to the neutral DTO (legacy path).
-func toClientSessions(sessions []agent.Session) []sessionclient.SessionSummary {
-	out := make([]sessionclient.SessionSummary, len(sessions))
-	for i, s := range sessions {
-		out[i] = sessionclient.SessionSummary{
-			ChatID:    s.ChatID,
-			Model:     s.Model,
-			Label:     s.Label,
-			Workspace: s.Workspace,
-			Created:   s.Created,
-			Updated:   s.Updated,
-			Conv:      s.Conv,
-		}
-	}
-	return out
 }
 
 // handleResumePickerKey processes navigation while the picker is open.
@@ -123,16 +97,10 @@ func (m tuiModel) handleResumePickerKey(msg tea.KeyMsg) (tuiModel, tea.Cmd, bool
 		}
 		s := m.resumePicker.sessions[m.resumePicker.sel]
 		m = m.closeResumePicker()
-		// Wiring path: rotation through the ConversationManager (async —
-		// ResumeConversation loads the session). Legacy path: the agent
-		// ResumeSessionMsg applies it to the in-place App.
-		if m.facade != nil && m.manager != nil {
-			id := s.ChatID
-			return m, m.beginRotation(rotationRequest{kind: rotateResume, sessionID: id}), true
-		}
-		app := m.app
-		sess := toAgentSession(&s)
-		return m, AdaptCmd(func() agent.Msg { return agent.ResumeSessionMsg(app, sess) }), true
+		// Rotation through the ConversationManager (async —
+		// ResumeConversation loads the session).
+		id := s.ChatID
+		return m, m.beginRotation(rotationRequest{kind: rotateResume, sessionID: id}), true
 	case "esc":
 		m = m.closeResumePicker()
 		return m, nil, true

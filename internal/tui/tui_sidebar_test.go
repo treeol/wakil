@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/tools"
 )
 
@@ -22,7 +22,7 @@ func toolRowText(seg string) string {
 // TestSubPanelToolsDiscoveryTier verifies that a discovery-tier subagent shows
 // exactly the 5 read-only tools.
 func TestSubPanelToolsDiscoveryTier(t *testing.T) {
-	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityDiscovery, buf: new(strings.Builder)}
+	tab := &subTab{chatID: "sub_chat-a", capability: tools.CapabilityDiscovery, buf: new(strings.Builder)}
 	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
 		if !strings.Contains(joined, name) {
@@ -40,7 +40,7 @@ func TestSubPanelToolsDiscoveryTier(t *testing.T) {
 // TestSubPanelToolsEditTier verifies that an edit-tier subagent shows all 9
 // tools (5 read + 4 edit).
 func TestSubPanelToolsEditTier(t *testing.T) {
-	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityEdit, buf: new(strings.Builder)}
+	tab := &subTab{chatID: "sub_chat-a", capability: tools.CapabilityEdit, buf: new(strings.Builder)}
 	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir",
 		"write_file", "edit_file", "delete_file", "move_file"} {
@@ -53,7 +53,7 @@ func TestSubPanelToolsEditTier(t *testing.T) {
 // TestSubPanelToolsEmptyCapability verifies that an empty capability renders the
 // 5 discovery tools (the default).
 func TestSubPanelToolsEmptyCapability(t *testing.T) {
-	tab := &subTab{chatID: "chat-a", capability: "", buf: new(strings.Builder)}
+	tab := &subTab{chatID: "sub_chat-a", capability: "", buf: new(strings.Builder)}
 	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
 		if !strings.Contains(joined, name) {
@@ -69,7 +69,7 @@ func TestSubPanelToolsEmptyCapability(t *testing.T) {
 // from tab.toolNames (passed via SubagentStartMsg), not the hardcoded list.
 func TestSubPanelToolsToolsTier(t *testing.T) {
 	tab := &subTab{
-		chatID:     "chat-a",
+		chatID:     "sub_chat-a",
 		capability: tools.CapabilityTools,
 		toolNames: []string{
 			"read_file", "search_files", "lsp_definition",
@@ -92,7 +92,7 @@ func TestSubPanelToolsToolsTier(t *testing.T) {
 // TestSubPanelToolsTierEmptyToolNames falls back to the discovery list when
 // toolNames is nil (e.g. parent didn't populate it).
 func TestSubPanelToolsTierEmptyToolNames(t *testing.T) {
-	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityTools, toolNames: nil, buf: new(strings.Builder)}
+	tab := &subTab{chatID: "sub_chat-a", capability: tools.CapabilityTools, toolNames: nil, buf: new(strings.Builder)}
 	joined := toolRowText(subToolListSegment(tab))
 	for _, name := range []string{"read_file", "read_file_full", "search_files", "find_files", "list_dir"} {
 		if !strings.Contains(joined, name) {
@@ -105,7 +105,7 @@ func TestSubPanelToolsTierEmptyToolNames(t *testing.T) {
 // rendered in the subagent info panel.
 func TestSubPanelModelDisplay(t *testing.T) {
 	m := newTabModel()
-	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityDiscovery, model: "child-model-x", buf: new(strings.Builder)}
+	tab := &subTab{chatID: "sub_chat-a", capability: tools.CapabilityDiscovery, model: "child-model-x", buf: new(strings.Builder)}
 	joined := strings.Join(m.infoSubSegments(tab), "\n")
 	if !strings.Contains(joined, "child-model-x") {
 		t.Errorf("model \"child-model-x\" not found in subagent info panel:\n%s", joined)
@@ -114,7 +114,7 @@ func TestSubPanelModelDisplay(t *testing.T) {
 
 // TestSubPanelModelEmpty shows fallback ellipsis when model is empty.
 func TestSubPanelModelEmpty(t *testing.T) {
-	tab := &subTab{chatID: "chat-a", capability: tools.CapabilityDiscovery, model: "", buf: new(strings.Builder)}
+	tab := &subTab{chatID: "sub_chat-a", capability: tools.CapabilityDiscovery, model: "", buf: new(strings.Builder)}
 	if got := subTabModel(tab); got != "…" {
 		t.Errorf("subTabModel(empty) = %q, want …", got)
 	}
@@ -122,12 +122,12 @@ func TestSubPanelModelEmpty(t *testing.T) {
 
 func TestSubagentStartMsgPopulatesTab(t *testing.T) {
 	m := newTabModel()
-	m = step(m, agent.SubagentStartMsg{
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{
+		SubagentID: "sub_chat-a",
 		Task:       "task A",
-		ChatID:     "chat-a",
 		Capability: tools.CapabilityEdit,
 		Model:      "child-model-x",
-	})
+	}, tabSID))
 	if len(m.subTabs) != 1 {
 		t.Fatalf("expected 1 tab, got %d", len(m.subTabs))
 	}

@@ -11,8 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	agent "github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -32,7 +30,6 @@ func keyMsg(name string) tea.KeyMsg {
 // twoZoneModel builds a ready tuiModel at the given geometry for layout tests.
 func twoZoneModel(w, h int) tuiModel {
 	m := layoutModel(w, h)
-	m.app = &agent.App{Cfg: config.DefaultConfig(), Client: &proxy.Client{}}
 	m.ready = true
 	m.infoPanel.active = false
 	return m
@@ -85,8 +82,10 @@ func TestTwoZonePanelHiddenByDefault(t *testing.T) {
 // billed figure appears only once (not duplicated by the always-on segment).
 func TestTwoZoneBilledSegmentCollapsed(t *testing.T) {
 	m := twoZoneModel(120, 40)
-	m.app.Costs = proxy.NewCostTracker()
-	m.app.Costs.Record("inference·openrouter/gpt-4o", 500, 200, 0.40, true, proxy.ConfExact)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.Costs = proxy.NewCostTracker()
+	f.info.Costs.Record("inference·openrouter/gpt-4o", 500, 200, 0.40, true, proxy.ConfExact)
+	m.facade = f
 
 	// Collapsed: billed present in the always-on group.
 	joined := plain(strings.Join(m.statusLines(), "\n"))
@@ -109,8 +108,10 @@ func TestTwoZoneBilledSegmentCollapsed(t *testing.T) {
 // in the collapsed line when there are no exact (billed) sources.
 func TestTwoZoneBilledSegmentAbsentWhenNoBilled(t *testing.T) {
 	m := twoZoneModel(120, 40)
-	m.app.Costs = proxy.NewCostTracker()
-	m.app.Costs.Record("inference", 100, 50, 0.01, true, proxy.ConfModeled)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.Costs = proxy.NewCostTracker()
+	f.info.Costs.Record("inference", 100, 50, 0.01, true, proxy.ConfModeled)
+	m.facade = f
 
 	joined := plain(strings.Join(m.statusLines(), "\n"))
 	if strings.Contains(joined, "billed") {
@@ -220,26 +221,28 @@ func TestTwoZoneInfoSlashCommand(t *testing.T) {
 
 // TestTwoZonePanelPersistsToRepoState asserts toggling writes InfoPanelOpen to
 // the app (the persistence entry point).
-func TestTwoZonePanelPersistsToRepoState(t *testing.T) {
-	m := newTabModel()
+func TestTwoZonePanelPersistsToFacade(t *testing.T) {
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.InfoPanelOpen = false
+	m := newWiringModel(f)
 	m.infoPanel.active = false
 	m = m.toggleInfoPanel()
-	if !m.app.InfoPanelOpen {
-		t.Error("toggleInfoPanel should set app.InfoPanelOpen = true")
+	if !f.info.InfoPanelOpen {
+		t.Error("toggleInfoPanel should set the facade's InfoPanelOpen = true")
 	}
 	m = m.toggleInfoPanel()
-	if m.app.InfoPanelOpen {
-		t.Error("second toggleInfoPanel should set app.InfoPanelOpen = false")
+	if f.info.InfoPanelOpen {
+		t.Error("second toggleInfoPanel should set InfoPanelOpen = false")
 	}
 }
 
 // TestTwoZoneRestoresPanelState asserts NewTUIModel seeds the panel from app state.
 func TestTwoZoneRestoresPanelState(t *testing.T) {
-	m := newTabModel()
-	m.app.InfoPanelOpen = true
-	m2 := NewTUIModel(m.app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.InfoPanelOpen = true
+	m2 := newWiringModel(f)
 	if !m2.infoPanel.active {
-		t.Error("NewTUIModel should restore infoPanel.active from app.InfoPanelOpen")
+		t.Error("NewTUIModelWithFacade should restore infoPanel.active from Info().InfoPanelOpen")
 	}
 }
 func TestTwoZoneEscClosesPanel(t *testing.T) {

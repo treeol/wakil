@@ -1,14 +1,41 @@
 package tui
 
-// Tests for card #126 Phase 1: Mashūra async-job tabs (AsyncJobStartMsg /
-// AsyncJobDoneMsg) reusing the subTab machinery.
+// Tests for card #126 Phase 1: Mashūra async-job tabs (AsyncJobStarted /
+// AsyncJobCompleted) reusing the subTab machinery. Event-driven (m4d):
+// tabs are keyed by domain OpIDs ("op_<id>").
 
 import (
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/event"
 )
+
+func jobStarted(opID, label string, sid event.SessionID) event.Event {
+	return evt(event.KindAsyncJobStarted, event.AsyncJobStarted{OpID: event.OpID(opID), Label: label}, sid)
+}
+
+func jobDone(opID, label, result, errText string, sid event.SessionID) event.Event {
+	status := "ok"
+	if errText != "" {
+		status = "error"
+	}
+	return evt(event.KindAsyncJobCompleted, event.AsyncJobCompleted{
+		OpID: event.OpID(opID), Status: status, SummaryPreview: result, Err: errText,
+	}, sid)
+}
+
+func jobChunk(opID, text string, sid event.SessionID) event.Event {
+	return evt(event.KindAsyncJobProgress, event.AsyncJobProgress{OpID: event.OpID(opID), Text: text}, sid)
+}
+
+const tabSID = event.SessionID("sess_tui_test")
+
+func newJobModel() (tuiModel, *fakeFacade) {
+	f := &fakeFacade{sid: tabSID, chatID: "chat_tabs"}
+	m := newWiringModel(f)
+	return m, f
+}
 
 func findJobTab(m tuiModel, opID string) *subTab {
 	for _, t := range m.subTabs {
@@ -23,15 +50,15 @@ func findJobTab(m tuiModel, opID string) *subTab {
 // longer active (the active flag is cleared), so a future reader keying on
 // active before done won't see a stale "running" tab.
 func TestAsyncJobDoneClearsActive(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
-	tab := findJobTab(m, "op-1")
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
+	tab := findJobTab(m, "op_op-1")
 	if !tab.active {
 		t.Fatal("precondition: tab should be active after Start")
 	}
 
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "x"})
-	tab = findJobTab(m, "op-1")
+	m = step(m, jobDone("op_op-1", "panel A", "x", "", tabSID))
+	tab = findJobTab(m, "op_op-1")
 	if tab.active {
 		t.Error("done async-job tab still active=true (card #134)")
 	}
@@ -40,15 +67,15 @@ func TestAsyncJobDoneClearsActive(t *testing.T) {
 	}
 }
 
-// TestAsyncJobStartCreatesTab verifies AsyncJobStartMsg opens an async-job tab,
-// active and labeled with the panel name.
+// TestAsyncJobStartCreatesTab verifies AsyncJobStarted opens an async-job
+// tab, active and labeled with the panel name.
 func TestAsyncJobStartCreatesTab(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel Review"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel Review", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
-		t.Fatal("async-job tab not created for op-1")
+		t.Fatal("async-job tab not created for op_op-1")
 	}
 	if tab.kind != subTabAsyncJob {
 		t.Errorf("kind = %v, want subTabAsyncJob", tab.kind)
@@ -64,34 +91,33 @@ func TestAsyncJobStartCreatesTab(t *testing.T) {
 	}
 }
 
-// TestAsyncJobStartUpsertsDuplicates verifies a duplicate/replayed Start for the
-// same opID does not create a second tab (idempotent upsert).
+// TestAsyncJobStartUpsertsDuplicates verifies a duplicate/replayed Start for
+// the same opID does not create a second tab (idempotent upsert).
 func TestAsyncJobStartUpsertsDuplicates(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
 
 	n := 0
 	for _, t := range m.subTabs {
-		if t.kind == subTabAsyncJob && t.opID == "op-1" {
+		if t.kind == subTabAsyncJob && t.opID == "op_op-1" {
 			n++
 		}
 	}
 	if n != 1 {
-		t.Errorf("duplicate Start made %d tabs for op-1, want 1", n)
+		t.Errorf("duplicate Start made %d tabs for op_op-1, want 1", n)
 	}
 }
 
-// TestAsyncJobDoneTerminalizesTab verifies AsyncJobDoneMsg marks the tab done
-// and appends the bounded result. (The 30s auto-close command arming is covered
-// by TestAsyncJobDoneArmsExactlyOneCloseTimer.)
+// TestAsyncJobDoneTerminalizesTab verifies AsyncJobCompleted marks the tab
+// done and appends the bounded result.
 func TestAsyncJobDoneTerminalizesTab(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel Review"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel Review", tabSID))
 
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel Review", Result: "the answer"})
+	m = step(m, jobDone("op_op-1", "panel Review", "the answer", "", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
 		t.Fatal("tab missing after Done")
 	}
@@ -106,12 +132,11 @@ func TestAsyncJobDoneTerminalizesTab(t *testing.T) {
 // TestAsyncJobDoneShowsErrAndResult verifies an errored job still surfaces the
 // diagnostic result (the tab shows both the error and the bounded result).
 func TestAsyncJobDoneShowsErrAndResult(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel Review"})
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel Review",
-		Result: "member diagnostics", Err: "all panel members failed"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel Review", tabSID))
+	m = step(m, jobDone("op_op-1", "panel Review", "member diagnostics", "all panel members failed", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
 		t.Fatal("tab missing after Done")
 	}
@@ -127,11 +152,11 @@ func TestAsyncJobDoneShowsErrAndResult(t *testing.T) {
 // safety: a Done with no matching tab creates a terminal tab (never a
 // permanently-running tab). This is the critical ordering-race guard.
 func TestAsyncJobDoneBeforeStartCreatesTerminalTab(t *testing.T) {
-	m := newTabModel()
+	m, _ := newJobModel()
 	// No Start received; Done arrives first (fast op or ordering edge).
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel Review", Result: "quick answer"})
+	m = step(m, jobDone("op_op-1", "panel Review", "quick answer", "", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
 		t.Fatal("Done-before-Start must create a terminal tab, but none exists")
 	}
@@ -146,17 +171,17 @@ func TestAsyncJobDoneBeforeStartCreatesTerminalTab(t *testing.T) {
 	}
 }
 
-// TestAsyncJobCloseByOpID verifies subTabCloseMsg with OpID removes an unfocused
-// done async-job tab (session identity via OpID, not ChatID).
+// TestAsyncJobCloseByOpID verifies subTabCloseMsg with OpID removes an
+// unfocused done async-job tab (session identity via OpID, not ChatID).
 func TestAsyncJobCloseByOpID(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "x"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
+	m = step(m, jobDone("op_op-1", "panel A", "x", "", tabSID))
 
 	if len(m.subTabs) != 1 {
 		t.Fatalf("precondition: %d tabs, want 1", len(m.subTabs))
 	}
-	m = step(m, subTabCloseMsg{OpID: "op-1"})
+	m = step(m, subTabCloseMsg{OpID: "op_op-1"})
 
 	if len(m.subTabs) != 0 {
 		t.Errorf("after close: %d tabs, want 0", len(m.subTabs))
@@ -166,15 +191,15 @@ func TestAsyncJobCloseByOpID(t *testing.T) {
 // TestAsyncJobCloseSkipsFocused verifies a focused async-job tab is not
 // auto-closed (same one-shot skip-if-focused semantics as subagents).
 func TestAsyncJobCloseSkipsFocused(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "x"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
+	m = step(m, jobDone("op_op-1", "panel A", "x", "", tabSID))
 
 	m.subCur = tabIndexByN(m.subTabs, 1) // focus the job tab
 	if m.subCur < 0 {
 		t.Fatal("could not focus job tab")
 	}
-	m = step(m, subTabCloseMsg{OpID: "op-1"})
+	m = step(m, subTabCloseMsg{OpID: "op_op-1"})
 
 	if len(m.subTabs) != 1 {
 		t.Errorf("focused job tab was closed: %d tabs, want 1", len(m.subTabs))
@@ -182,62 +207,63 @@ func TestAsyncJobCloseSkipsFocused(t *testing.T) {
 }
 
 // TestAsyncJobDotPulsesWhenIdleButActive verifies the pulse tick re-arms while
-// an async-job tab is active (running) even though the main agent is idle — a
-// detached job must keep pulsing until it completes. dummyDotTick applies the
-// same branch used by dotTickMsg without a real timer.
+// an async-job tab is active (running) even though the main agent is idle.
 func TestAsyncJobDotPulsesWhenIdleButActive(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
 	m.state = stateIdle // main agent idle, job still running
 
 	if !m.hasActiveJobTab() {
 		t.Fatal("hasActiveJobTab should be true while a job tab is active")
 	}
-	// Simulate the dotTick re-arm condition.
 	rearm := m.state != stateIdle || m.hasActiveJobTab()
 	if !rearm {
 		t.Error("dot tick should re-arm while a job tab is active and idle")
 	}
 
 	// Once the job completes, and main is idle, the tick must NOT re-arm.
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "done"})
+	m = step(m, jobDone("op_op-1", "panel A", "done", "", tabSID))
 	rearm = m.state != stateIdle || m.hasActiveJobTab()
 	if rearm {
 		t.Error("dot tick should stop after the job completes and main is idle")
 	}
 }
 
-// TestAsyncJobMixedWithSubagents verifies async-job and subagent tabs coexist and
-// prune/nav treat them uniformly (identity via kind).
+// TestAsyncJobMixedWithSubagents verifies async-job and subagent tabs coexist
+// and prune/nav treat them uniformly (identity via kind).
 func TestAsyncJobMixedWithSubagents(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
-	m = step(m, agent.SubagentStartMsg{Task: "sub task", ChatID: "chat-a"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{
+		SubagentID: "sub_chat-a", Task: "sub task", Capability: "discovery",
+	}, tabSID))
 
 	if len(m.subTabs) != 2 {
 		t.Fatalf("expected 2 tabs (job + subagent), got %d", len(m.subTabs))
 	}
-	if findJobTab(m, "op-1") == nil {
+	if findJobTab(m, "op_op-1") == nil {
 		t.Error("job tab missing in mixed model")
 	}
-	// subagent close still keyed by ChatID.
-	m = step(m, agent.SubagentDoneMsg{ChatID: "chat-a"})
-	m = step(m, subTabCloseMsg{ChatID: "chat-a"})
-	if len(m.subTabs) != 1 || findJobTab(m, "op-1") == nil {
+	// subagent close still keyed by its domain ID.
+	m = step(m, evt(event.KindSubagentCompleted, event.SubagentCompleted{
+		SubagentID: "sub_chat-a", Status: "ok",
+	}, tabSID))
+	m = step(m, subTabCloseMsg{ChatID: "sub_chat-a"})
+	if len(m.subTabs) != 1 || findJobTab(m, "op_op-1") == nil {
 		t.Errorf("subagent close removed the job tab: %d tabs, job present=%v",
-			len(m.subTabs), findJobTab(m, "op-1") != nil)
+			len(m.subTabs), findJobTab(m, "op_op-1") != nil)
 	}
 }
 
-// TestAsyncJobRenderTabBar verifies the tab bar renders a job tab with its label
-// (no panic, label present) — smoke rather than exact styling.
+// TestAsyncJobRenderTabBar verifies the tab bar renders a job tab with its
+// label (no panic, label present) — smoke rather than exact styling.
 func TestAsyncJobRenderTabBar(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel Review"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel Review", tabSID))
 	m.width, m.height = 200, 50
 	bar := m.renderMainTabBar()
-	// The label is truncated to fit the tab slot ("panel Rev…"), so assert on a
-	// prefix that survives truncation rather than the full label.
+	// The label is truncated to fit the tab slot ("panel Rev…"), so assert on
+	// a prefix that survives truncation rather than the full label.
 	if !strings.Contains(bar, "panel Rev") {
 		t.Errorf("tab bar missing job label prefix: %q", bar)
 	}
@@ -246,30 +272,34 @@ func TestAsyncJobRenderTabBar(t *testing.T) {
 	}
 }
 
-// TestNewConvClearsJobTabs verifies /new (NewConvMsg) clears async-job tabs.
-func TestNewConvClearsJobTabs(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+// TestRotationClearsJobTabs verifies rotation (applyRotation) clears
+// async-job tabs.
+func TestRotationClearsJobTabs(t *testing.T) {
+	m, f := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
 	if len(m.subTabs) != 1 {
 		t.Fatalf("precondition: 1 tab, got %d", len(m.subTabs))
 	}
-	m = step(m, agent.NewConvMsg{})
+	// Rotate to a fresh facade (same fake shape, new session).
+	f2 := rotatedFake()
+	m = step(m, rotationMsg{facade: f2})
 	if len(m.subTabs) != 0 {
-		t.Errorf("NewConvMsg should clear job tabs, got %d", len(m.subTabs))
+		t.Errorf("rotation should clear job tabs, got %d", len(m.subTabs))
 	}
 	if m.subCur != -1 {
 		t.Errorf("subCur should reset to -1 (main), got %d", m.subCur)
 	}
+	_ = f
 }
 
 // TestAsyncJobDoneIdempotent verifies a replayed Done does not re-append the
 // result buffer (defense-in-depth, mirrors the idempotent Start upsert).
 func TestAsyncJobDoneIdempotent(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "first"})
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "second"})
+	m, _ := newJobModel()
+	m = step(m, jobDone("op_op-1", "panel A", "first", "", tabSID))
+	m = step(m, jobDone("op_op-1", "panel A", "second", "", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
 		t.Fatal("tab missing")
 	}
@@ -279,29 +309,28 @@ func TestAsyncJobDoneIdempotent(t *testing.T) {
 }
 
 // TestAsyncJobDoneRejectedAfterRotation verifies a Done from a prior session
-// (OriginChatID differs from the current conversation) does NOT recreate a tab
-// cleared on rotation — the post-rotation resurrection guard.
+// (event SessionID differs from the current conversation) does NOT recreate a
+// tab cleared on rotation — the session guard replaces the old origin guard.
 func TestAsyncJobDoneRejectedAfterRotation(t *testing.T) {
-	m := newTabModel()
-	// newTestClient sets Client.ChatID = "test"; simulate rotation to a new chat.
-	m.app.Client.ChatID = "newchat"
-	m = step(m, agent.NewConvMsg{}) // clears tabs
+	m, _ := newJobModel()
+	f2 := rotatedFake()
+	m = step(m, rotationMsg{facade: f2}) // clears tabs, swaps session
 
 	// Old-session completion arrives after rotation.
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "old", OriginChatID: "test"})
+	m = step(m, jobDone("op_op-1", "panel A", "old", "", tabSID))
 
 	if len(m.subTabs) != 0 {
 		t.Errorf("post-rotation Done resurrected a tab: %d tabs, want 0", len(m.subTabs))
 	}
 }
 
-// TestAsyncJobDoneSameSessionAccepted verifies a Done whose OriginChatID matches
-// the current session still creates the terminal tab.
+// TestAsyncJobDoneSameSessionAccepted verifies a Done whose event SessionID
+// matches the current session still creates the terminal tab.
 func TestAsyncJobDoneSameSessionAccepted(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "now", OriginChatID: "test"})
+	m, _ := newJobModel()
+	m = step(m, jobDone("op_op-1", "panel A", "now", "", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
 		t.Fatal("same-session Done should create a tab")
 	}
@@ -310,55 +339,20 @@ func TestAsyncJobDoneSameSessionAccepted(t *testing.T) {
 	}
 }
 
-// TestAsyncJobStartRejectedAfterRotation verifies a Start from a prior session
-// (OriginChatID differs from the current conversation) does NOT create a tab in
-// the new conversation after rotation — otherwise its later (origin-guarded) Done
-// would be rejected, leaving a permanent pulsing tab (card #128/#129).
-func TestAsyncJobStartRejectedAfterRotation(t *testing.T) {
-	m := newTabModel()
-	// newTestClient sets Client.ChatID = "test"; simulate rotation to a new chat.
-	m.app.Client.ChatID = "newchat"
-	m = step(m, agent.NewConvMsg{}) // clears tabs
-
-	// Old-session Start arrives after rotation.
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A", OriginChatID: "test"})
-
-	if len(m.subTabs) != 0 {
-		t.Errorf("post-rotation Start created a tab: %d tabs, want 0", len(m.subTabs))
-	}
-}
-
-// TestAsyncJobStartSameSessionAccepted verifies a Start whose OriginChatID
-// matches the current session creates the active tab.
-func TestAsyncJobStartSameSessionAccepted(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A", OriginChatID: "test"})
-
-	tab := findJobTab(m, "op-1")
-	if tab == nil {
-		t.Fatal("same-session Start should create a tab")
-	}
-	if !tab.active {
-		t.Error("tab should be active at start")
-	}
-}
-
-// TestAsyncJobDotTickArmedNoDuplicate verifies that starting multiple async jobs
-// while idle does not arm multiple recurring tick chains (dotArmed guard).
+// TestAsyncJobDotTickArmedNoDuplicate verifies that starting multiple async
+// jobs while idle does not arm multiple recurring tick chains (dotArmed
+// guard).
 func TestAsyncJobDotTickArmedNoDuplicate(t *testing.T) {
-	m := newTabModel()
+	m, _ := newJobModel()
 	m.state = stateIdle
 	m, cmd1 := m.startDotTickIfUnarmed()
 	if cmd1 == nil {
 		t.Fatal("first arm should return a tick command")
 	}
-	// A second arm (e.g. another AsyncJobStartMsg) must NOT return another tick.
 	_, cmd2 := m.startDotTickIfUnarmed()
 	if cmd2 != nil {
 		t.Error("second arm returned a duplicate tick command (dotArmed not respected)")
 	}
-	// Once the tick chain terminates (dotTickMsg with no re-arm condition), a
-	// later arm is allowed again.
 	m.dotArmed = false
 	_, cmd3 := m.startDotTickIfUnarmed()
 	if cmd3 == nil {
@@ -366,21 +360,23 @@ func TestAsyncJobDotTickArmedNoDuplicate(t *testing.T) {
 	}
 }
 
-// TestAsyncJobDoneFallbackPrunes verifies the orphan-Done fallback prunes to the
-// cap rather than growing unboundedly, and that subagent tabs are preserved.
+// TestAsyncJobDoneFallbackPrunes verifies the orphan-Done fallback prunes to
+// the cap rather than growing unboundedly, and that subagent tabs are
+// preserved.
 func TestAsyncJobDoneFallbackPrunes(t *testing.T) {
-	m := newTabModel()
+	m, _ := newJobModel()
 	// Add a running subagent tab that must be preserved (protected by prune).
-	m = step(m, agent.SubagentStartMsg{Task: "sub A", ChatID: "chat-a"})
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{
+		SubagentID: "sub_chat-a", Task: "sub A", Capability: "discovery",
+	}, tabSID))
 	// Fire many orphan Dones (no Start) so the fallback creates terminal tabs.
 	for i := 0; i < maxSubTabs+5; i++ {
-		m = step(m, agent.AsyncJobDoneMsg{OpID: string(rune('a' + i)), Label: "panel", Result: "x"})
+		m = step(m, jobDone("op_"+string(rune('a'+i)), "panel", "x", "", tabSID))
 	}
 	if len(m.subTabs) > maxSubTabs+1 {
 		t.Errorf("fallback grew past cap: %d tabs, maxSubTabs+1=%d", len(m.subTabs), maxSubTabs+1)
 	}
-	// The running subagent tab must still be present (never pruned).
-	if findSubTab(m, "chat-a") == nil {
+	if findSubTab(m, "sub_chat-a") == nil {
 		t.Error("running subagent tab was pruned by orphan-job fallback")
 	}
 }
@@ -397,12 +393,12 @@ func findSubTab(m tuiModel, chatID string) *subTab {
 // TestAsyncJobChunkAppendsStatus verifies a Chunk appends a status line to the
 // matching async-job tab, one line per event with no leading blank line.
 func TestAsyncJobChunkAppendsStatus(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
-	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "calling claude-x"})
-	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "done claude-x"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
+	m = step(m, jobChunk("op_op-1", "calling claude-x", tabSID))
+	m = step(m, jobChunk("op_op-1", "done claude-x", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
 		t.Fatal("tab missing")
 	}
@@ -419,22 +415,22 @@ func TestAsyncJobChunkAppendsStatus(t *testing.T) {
 // TestAsyncJobChunkNoResurrectOnMissingTab verifies a Chunk with no matching
 // tab (post-rotation / orphan) is a safe no-op and does NOT create a tab.
 func TestAsyncJobChunkNoResurrectOnMissingTab(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-9", Text: "status"})
+	m, _ := newJobModel()
+	m = step(m, jobChunk("op_op-9", "status", tabSID))
 	if len(m.subTabs) != 0 {
 		t.Errorf("Chunk resurrected a tab: %d tabs, want 0", len(m.subTabs))
 	}
 }
 
-// TestAsyncJobChunkIgnoredWhenDone verifies a Chunk arriving after Done (late /
-// watchdog-forced) does not append after the final answer.
+// TestAsyncJobChunkIgnoredWhenDone verifies a Chunk arriving after Done
+// (late / watchdog-forced) does not append after the final answer.
 func TestAsyncJobChunkIgnoredWhenDone(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "FINAL"})
+	m, _ := newJobModel()
+	m = step(m, jobDone("op_op-1", "panel A", "FINAL", "", tabSID))
 	// Late chunk after Done.
-	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "late status"})
+	m = step(m, jobChunk("op_op-1", "late status", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
 		t.Fatal("tab missing")
 	}
@@ -443,25 +439,14 @@ func TestAsyncJobChunkIgnoredWhenDone(t *testing.T) {
 	}
 }
 
-// TestAsyncJobChunkStaleSessionRejected verifies a Chunk whose OriginChatID
-// differs from the current session is ignored.
-func TestAsyncJobChunkStaleSessionRejected(t *testing.T) {
-	m := newTabModel()
-	m.app.Client.ChatID = "newchat"
-	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "old", OriginChatID: "test"})
-	if len(m.subTabs) != 0 {
-		t.Errorf("stale-session chunk created a tab")
-	}
-}
-
 // TestAsyncJobStatusCap verifies async-job status lines are capped.
 func TestAsyncJobStatusCap(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
 	for i := 0; i < asyncJobStatusLinesMax+20; i++ {
-		m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "s"})
+		m = step(m, jobChunk("op_op-1", "s", tabSID))
 	}
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	if tab.statusLines != asyncJobStatusLinesMax {
 		t.Errorf("statusLines = %d, want cap %d", tab.statusLines, asyncJobStatusLinesMax)
 	}
@@ -470,12 +455,12 @@ func TestAsyncJobStatusCap(t *testing.T) {
 // TestAsyncJobDoneSeparatesFromStatus verifies the final answer is separated
 // from live status lines by a blank line.
 func TestAsyncJobDoneSeparatesFromStatus(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
-	m = step(m, agent.AsyncJobChunkMsg{OpID: "op-1", Text: "calling claude-x"})
-	m = step(m, agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "FINAL ANSWER"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
+	m = step(m, jobChunk("op_op-1", "calling claude-x", tabSID))
+	m = step(m, jobDone("op_op-1", "panel A", "FINAL ANSWER", "", tabSID))
 
-	tab := findJobTab(m, "op-1")
+	tab := findJobTab(m, "op_op-1")
 	got := tab.buf.String()
 	if got != "calling claude-x\n\nFINAL ANSWER" {
 		t.Errorf("buf = %q, want status + blank line + final answer", got)
@@ -483,20 +468,17 @@ func TestAsyncJobDoneSeparatesFromStatus(t *testing.T) {
 }
 
 // TestAsyncJobDoneArmsExactlyOneCloseTimer verifies card #133: only the first
-// Done for an opID arms the 30s auto-close timer. A duplicate/replayed Done for
-// an already-done tab must NOT arm an additional timer (which would leak a timer
-// and fire a redundant subTabCloseMsg). We assert that the first Done returns a
-// close-timer command and the duplicate returns nil. (We do NOT execute the
-// tea.Tick command here — it blocks ~30s waiting for the timer to fire.)
+// Done for an opID arms the 30s auto-close timer. A duplicate/replayed Done
+// for an already-done tab must NOT arm an additional timer.
 func TestAsyncJobDoneArmsExactlyOneCloseTimer(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.AsyncJobStartMsg{OpID: "op-1", Label: "panel A"})
+	m, _ := newJobModel()
+	m = step(m, jobStarted("op_op-1", "panel A", tabSID))
 
 	// First Done → should arm one auto-close timer (non-nil command).
-	mu, cmd1 := m.Update(agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "first"})
+	mu, cmd1 := m.Update(jobDone("op_op-1", "panel A", "first", "", tabSID))
 	m = mu.(tuiModel)
 	// Duplicate Done → must NOT arm another timer (nil command).
-	_, cmd2 := m.Update(agent.AsyncJobDoneMsg{OpID: "op-1", Label: "panel A", Result: "first"})
+	_, cmd2 := m.Update(jobDone("op_op-1", "panel A", "first", "", tabSID))
 
 	if cmd1 == nil {
 		t.Error("first Done did not arm an auto-close timer")

@@ -66,9 +66,13 @@ func (f *fakeFacade) ReplacePendingImages(imgs []proxy.ImagePart) {
 func (f *fakeFacade) SetAutoApprove(v bool)          { f.consent.AutoApprove = v }
 func (f *fakeFacade) SetAllowDestructive(v bool)     { f.consent.AllowDestructive = v }
 func (f *fakeFacade) RevokeAuto()                    { f.consent.AutoApprove, f.consent.AllowDestructive = false, false }
+func (f *fakeFacade) SetInfoPanelOpen(open bool)     { f.info.InfoPanelOpen = open }
 func (f *fakeFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {}
 func (f *fakeFacade) ListSessions(scope sessionclient.SessionScope) ([]sessionclient.SessionSummary, int, error) {
 	return nil, 0, nil
+}
+func (f *fakeFacade) StartSideQuestion(ctx context.Context, question string) (sessionclient.OpID, context.CancelFunc) {
+	return "op_sq_fake", func() {}
 }
 
 // newWiringModel builds a facade-backed model for event-switch tests.
@@ -83,7 +87,6 @@ func newWiringModel(f *fakeFacade) tuiModel {
 	m.width, m.height, m.ready = 100, 30, true
 	return m
 }
-
 // evt builds a committed-style event for direct Update feeding. Ephemeral
 // kinds carry Seq 0; durable kinds get an incrementing Seq (the guard only
 // checks SessionID, so Seq is cosmetic here).
@@ -113,6 +116,26 @@ func wiringKeyMsg(s string) tea.KeyMsg {
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
+}
+
+// wiringTestInfo builds an InfoSnapshot with a backend context limit — the
+// common shape render tests need.
+func wiringTestInfo(ncTx int) sessionclient.InfoSnapshot {
+	return sessionclient.InfoSnapshot{
+		ContextLimit: sessionclient.ContextLimit{
+			NCtx: ncTx, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096,
+		},
+		ContextExact: true,
+	}
+}
+
+// rotatedFake builds a fresh prepared facade for rotation tests (its snapshot
+// carries the new session ID, matching what the real wiring facade returns).
+func rotatedFake() *fakeFacade {
+	f := &fakeFacade{sid: "sess_rotated", chatID: "chat_new"}
+	f.snap.SessionID = f.sid
+	f.snap.ChatID = f.chatID
+	return f
 }
 
 // TestWiringTurnLifecycle drives a full turn through the event switch:

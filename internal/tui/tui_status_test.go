@@ -358,9 +358,8 @@ func TestStatusRowsAgreesWithStatusLines(t *testing.T) {
 	// widths and content mixes.
 	for _, w := range []int{24, 40, 60, 80, 120, 200} {
 		m := layoutModel(w, 40)
-		m.app = nil // dot-only path
 		if got, want := m.statusRows(), len(m.statusLines()); got != want {
-			t.Errorf("w=%d nil-app: statusRows()=%d, len(statusLines())=%d", w, got, want)
+			t.Errorf("w=%d: statusRows()=%d, len(statusLines())=%d", w, got, want)
 		}
 	}
 }

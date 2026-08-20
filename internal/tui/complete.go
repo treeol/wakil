@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -99,62 +98,27 @@ var allTUICommands = []candidate{
 	{name: "/submodel", hasArgs: true},
 }
 
-// compSrcFromApp builds a compSources from the model's conversation surface.
-// Wiring path (m4b): backends/models/endpoints come from the facade snapshot;
-// the legacy path reads the App. Sessions are left nil and fetched lazily
-// from disk only when the /resume picker is open.
+// compSources builds a compSources from the facade snapshot: backends/models
+// from Snapshot(), endpoints + mention base from Info(). Sessions are left
+// nil and fetched lazily only when the /resume picker is open.
 func (m tuiModel) compSources() compSources {
-	if m.facade != nil {
-		snap := m.facade.Snapshot()
-		backends := make([]string, len(snap.BackendList))
-		for i, b := range snap.BackendList {
-			backends[i] = b.Name
-		}
-		endpoints := make([]string, 0, len(snap.ModelList))
-		if info, ok := m.info(); ok {
-			endpoints = append(endpoints, info.Endpoints...)
-		} else {
-			endpoints = append(endpoints, "inherit")
-		}
-		return compSources{
-			mentionBase: m.mentionBase(),
-			backends:    backends,
-			models:      snap.ModelList,
-			endpoints:   endpoints,
-		}
-	}
-	app := m.app
-	if app == nil {
-		return compSources{}
-	}
-	backends := make([]string, len(app.BackendList))
-	for i, b := range app.BackendList {
+	snap := m.facade.Snapshot()
+	backends := make([]string, len(snap.BackendList))
+	for i, b := range snap.BackendList {
 		backends[i] = b.Name
 	}
-	endpoints := make([]string, 0, len(app.Cfg.Endpoints)+1)
-	endpoints = append(endpoints, "inherit")
-	for name := range app.Cfg.Endpoints {
-		endpoints = append(endpoints, name)
-	}
-	sort.Strings(endpoints[1:]) // keep "inherit" first, sort the rest
+	info := m.facade.Info()
 	return compSources{
-		mentionBase: app.Cfg.MentionBase,
+		mentionBase: info.MentionBase,
 		backends:    backends,
-		models:      app.ModelList,
-		endpoints:   endpoints,
+		models:      snap.ModelList,
+		endpoints:   info.Endpoints,
 	}
 }
 
-// mentionBase returns the @-mention root directory from Info() on the wiring
-// path, falling back to the App config (legacy).
+// mentionBase returns the @-mention root directory from Info().
 func (m tuiModel) mentionBase() string {
-	if info, ok := m.info(); ok {
-		return info.MentionBase
-	}
-	if m.app != nil {
-		return m.app.Cfg.MentionBase
-	}
-	return ""
+	return m.facade.Info().MentionBase
 }
 
 // Hidden border: keeps the picker's footprint (matches completionHeight's +2)
@@ -633,29 +597,17 @@ func listNameCandidates(leaf string, names []string) []candidate {
 	return cands
 }
 
-// fetchSessionShortIDs reads the local session store and returns short IDs for
-// all saved sessions, sorted most-recent first. Returns nil on failure.
-// Wiring path (m4b): through the facade (the TUI stops importing the agent's
-// session store). Legacy: direct agent call.
+// fetchSessionShortIDs reads the local session store through the facade and
+// returns short IDs for all saved sessions, most-recent first. Returns nil on
+// failure.
 func (m tuiModel) fetchSessionShortIDs() []string {
-	if m.facade != nil {
-		sessions, _, err := m.facade.ListSessions(sessionclient.SessionScope{All: true})
-		if err != nil || len(sessions) == 0 {
-			return nil
-		}
-		ids := make([]string, len(sessions))
-		for i, s := range sessions {
-			ids[i] = formatShortID(s.ChatID)
-		}
-		return ids
-	}
-	sessions, err := agent.ListSessions()
+	sessions, _, err := m.facade.ListSessions(sessionclient.SessionScope{All: true})
 	if err != nil || len(sessions) == 0 {
 		return nil
 	}
 	ids := make([]string, len(sessions))
 	for i, s := range sessions {
-		ids[i] = agent.ShortID(s.ChatID)
+		ids[i] = formatShortID(s.ChatID)
 	}
 	return ids
 }

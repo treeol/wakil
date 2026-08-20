@@ -269,13 +269,14 @@ func TestStreamEstimatesUsageWhenAbsent(t *testing.T) {
 // The rendered block fits the sidebar column, leads with billed/est subtotals,
 // and shows source names (possibly compacted) without overflow.
 func TestCostLinesLayout(t *testing.T) {
-	app := &agent.App{}
-	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
-	app.Costs.Record(proxy.CostSourceMashura, 10, 20, 0.30, true, proxy.ConfExact)
-	app.Costs.Record(proxy.CostSourceInference, 100, 50, 0.12, true, proxy.ConfModeled)
-	app.Costs.Record(proxy.CostSourceSearch, 0, 0, 0, false, proxy.ConfModeled) // unpriced
+	costs := proxy.NewCostTracker()
+	costs.Record(proxy.CostSourceMashura, 10, 20, 0.30, true, proxy.ConfExact)
+	costs.Record(proxy.CostSourceInference, 100, 50, 0.12, true, proxy.ConfModeled)
+	costs.Record(proxy.CostSourceSearch, 0, 0, 0, false, proxy.ConfModeled) // unpriced
 
-	m := tuiModel{app: app}
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.Costs = costs
+	m := tuiModel{facade: f}
 	lines := m.costSegments()
 	if len(lines) == 0 {
 		t.Fatal("no cost lines rendered")
@@ -300,11 +301,12 @@ func TestCostLinesLayout(t *testing.T) {
 
 // When no source is priced the total shows "—" rather than a misleading "$0.00".
 func TestCostLinesUnpricedTotal(t *testing.T) {
-	app := &agent.App{}
-	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
-	app.Costs.Record(proxy.CostSourceInference, 100, 50, 0, false, proxy.ConfModeled)
+	costs := proxy.NewCostTracker()
+	costs.Record(proxy.CostSourceInference, 100, 50, 0, false, proxy.ConfModeled)
 
-	m := tuiModel{app: app}
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.Costs = costs
+	m := tuiModel{facade: f}
 	lines := m.costSegments()
 	joined := strings.Join(lines, "\n")
 	if strings.Contains(joined, "$0.00") {
@@ -481,12 +483,13 @@ func TestMashuraPerModelRows(t *testing.T) {
 // TestCostLinesBilledAndEstSubtotals verifies both subtotals appear when a
 // session has both exact (external) and modeled (local) inference sources.
 func TestCostLinesBilledAndEstSubtotals(t *testing.T) {
-	app := &agent.App{}
-	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
-	app.Costs.Record("inference·openrouter/gpt-4o", 500, 200, 0.40, true, proxy.ConfExact)
-	app.Costs.Record("inference·local", 2000, 1000, 0, false, proxy.ConfModeled)
+	costs := proxy.NewCostTracker()
+	costs.Record("inference·openrouter/gpt-4o", 500, 200, 0.40, true, proxy.ConfExact)
+	costs.Record("inference·local", 2000, 1000, 0, false, proxy.ConfModeled)
 
-	m := tuiModel{app: app}
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.Costs = costs
+	m := tuiModel{facade: f}
 	lines := m.costSegments()
 	joined := strings.Join(lines, "\n")
 
@@ -509,11 +512,12 @@ func TestCostLinesBilledAndEstSubtotals(t *testing.T) {
 
 // TestCostLinesOnlyBilled: when all rows are exact, only "billed" shows.
 func TestCostLinesOnlyBilled(t *testing.T) {
-	app := &agent.App{}
-	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
-	app.Costs.Record("mashura·claude-opus", 10, 20, 0.50, true, proxy.ConfExact)
+	costs := proxy.NewCostTracker()
+	costs.Record("mashura·claude-opus", 10, 20, 0.50, true, proxy.ConfExact)
 
-	m := tuiModel{app: app}
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.Costs = costs
+	m := tuiModel{facade: f}
 	joined := strings.Join(m.costSegments(), "\n")
 	if !strings.Contains(joined, "billed") {
 		t.Errorf("missing billed subtotal; got:\n%s", joined)
@@ -525,11 +529,12 @@ func TestCostLinesOnlyBilled(t *testing.T) {
 
 // TestCostLinesOnlyEstimated: when all rows are modeled, only "est" shows.
 func TestCostLinesOnlyEstimated(t *testing.T) {
-	app := &agent.App{}
-	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
-	app.Costs.Record("inference", 100, 50, 0.01, true, proxy.ConfModeled)
+	costs := proxy.NewCostTracker()
+	costs.Record("inference", 100, 50, 0.01, true, proxy.ConfModeled)
 
-	m := tuiModel{app: app}
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.Costs = costs
+	m := tuiModel{facade: f}
 	joined := strings.Join(m.costSegments(), "\n")
 	if strings.Contains(joined, "billed") {
 		t.Errorf("billed subtotal should be absent when no exact rows; got:\n%s", joined)

@@ -6,9 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
-
-	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -55,8 +53,8 @@ func TestListCandidatesRankingAndFilter(t *testing.T) {
 
 func compModel(t *testing.T, cands []candidate) tuiModel {
 	t.Helper()
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	m := NewTUIModel(app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
 	m.comp = completionState{active: true, cands: cands}
 	return m
 }
@@ -268,12 +266,12 @@ func TestComputeSlashCompletionNoArgForOtherCommands(t *testing.T) {
 // slashModel builds a sized model with optional backend and model data.
 func slashModel(t *testing.T, backends []string, models []string) tuiModel {
 	t.Helper()
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
 	for _, name := range backends {
-		app.BackendList = append(app.BackendList, agent.BackendInfo{Name: name})
+		f.snap.BackendList = append(f.snap.BackendList, sessionclient.Backend{Name: name})
 	}
-	app.ModelList = models
-	m := NewTUIModel(app)
+	f.snap.ModelList = models
+	m := newWiringModel(f)
 	return step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
 }
 
@@ -379,11 +377,9 @@ func TestSlashPickerLiveModelFires(t *testing.T) {
 }
 
 func TestSlashPickerLiveSubagentFires(t *testing.T) {
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	app.Cfg.Endpoints = map[string]config.EndpointConfig{
-		"openai-a": {Kind: config.EndpointKindOpenAI, BaseURL: "http://x", Model: "m"},
-	}
-	m := NewTUIModel(app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.Endpoints = []string{"inherit", "openai-a"}
+	m := newWiringModel(f)
 	m = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = typeString(m, "/subagent ")
 

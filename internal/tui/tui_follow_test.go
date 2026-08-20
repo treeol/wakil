@@ -1,12 +1,9 @@
 package tui
 
 import (
-	"context"
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -17,8 +14,8 @@ import (
 // m.vp.SetContent would be overwritten by the next refresh.
 func followModel(t *testing.T) tuiModel {
 	t.Helper()
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	m := NewTUIModel(app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
 	m = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	// Enough committed content to fill and exceed the viewport.
 	for i := 0; i < 40; i++ {
@@ -32,8 +29,8 @@ func followModel(t *testing.T) tuiModel {
 func TestFollow_InitTrue(t *testing.T) {
 	// Construct the model directly — NOT via followModel, which overwrites the
 	// field. This asserts NewTUIModel's initial value specifically.
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	m := NewTUIModel(app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
 	if !m.followBottom {
 		t.Fatal("NewTUIModel should initialize followBottom to true")
 	}
@@ -113,7 +110,7 @@ func TestFollow_DownAtBottomReengagesWithoutMovement(t *testing.T) {
 func TestFollow_NewConversationResetsFollow(t *testing.T) {
 	m := followModel(t)
 	m.followBottom = false // simulate scrolled-up stale state
-	m = step(m, agent.NewConvMsg{Note: "fresh"})
+	m = step(m, rotationMsg{facade: rotatedFake()})
 	if !m.followBottom {
 		t.Error("NewConvMsg should reset followBottom to true")
 	}
@@ -211,13 +208,16 @@ func TestFollow_DownPartwayStaysPaused(t *testing.T) {
 	}
 }
 
-// TestFollow_TurnStartReengages verifies startTurn centralizes the re-engage.
-func TestFollow_TurnStartReengages(t *testing.T) {
-	m := followModel(t)
+// TestFollow_SendReengages verifies the send path re-engages follow (the
+// startTurn helper is gone; the wiring send path owns the reset).
+func TestFollow_SendReengages(t *testing.T) {
+	m, f := followModel(t), &fakeFacade{}
+	_ = f
 	m.followBottom = false // scrolled up
-	m, _ = m.startTurn(func(ctx context.Context) tea.Cmd { return nil })
+	m.ta.SetValue("hello")
+	m, _, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.followBottom {
-		t.Error("startTurn should re-engage followBottom")
+		t.Error("send should re-engage followBottom")
 	}
 }
 

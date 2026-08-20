@@ -1,45 +1,76 @@
 package tui
 
-// Tests for SubagentFinishedMsg — the display-only early completion event.
-// Verifies the TUI reaches done-state on SubagentFinishedMsg alone, and that a
-// subsequent SubagentDoneMsg causes no state regression.
+// Tests for the display-only early-completion signal (SubagentProgress with
+// Finished=true) and the authoritative SubagentCompleted. Verifies the TUI
+// reaches done-state on the early signal alone, and that a subsequent
+// SubagentCompleted causes no state regression.
 
 import (
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/event"
 )
 
-// TestFinishedReachesDoneState verifies that SubagentFinishedMsg alone flips
-// the tab to a visually-done state (finished=true, done=false) with the
-// display data populated.
-func TestFinishedReachesDoneState(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
+const finSID = event.SessionID("sess_tui_test")
 
-	m = step(m, agent.SubagentFinishedMsg{
-		ChatID:         "chat-a",
-		Status:         "ok",
-		CostUSD:        0.015,
-		FilesChanged:   []string{"foo.go"},
-		SummaryPreview: "found the bug",
-	})
+func finModel() (tuiModel, *fakeFacade) {
+	f := &fakeFacade{sid: finSID, chatID: "chat_tabs"}
+	return newWiringModel(f), f
+}
 
-	var tab *subTab
+func subSpawn(chatID, task string, sid event.SessionID) event.Event {
+	return evt(event.KindSubagentSpawned, event.SubagentSpawned{
+		SubagentID: event.SubagentID("sub_" + chatID), Task: task, Capability: "discovery",
+	}, sid)
+}
+
+func subActive(chatID string, sid event.SessionID) event.Event {
+	return evt(event.KindSubagentProgress, event.SubagentProgress{
+		SubagentID: event.SubagentID("sub_" + chatID), Text: "[active]",
+	}, sid)
+}
+
+func subFinished(chatID, status string, cost float64, filesN int, preview string, sid event.SessionID) event.Event {
+	return evt(event.KindSubagentProgress, event.SubagentProgress{
+		SubagentID: event.SubagentID("sub_" + chatID), Finished: true,
+		FinishedStatus: status, FinishedCostUSD: cost, FinishedFilesN: filesN, Text: preview,
+	}, sid)
+}
+
+func subCompleted(chatID, status string, cost float64, ctxSize int, backend string, sid event.SessionID) event.Event {
+	return evt(event.KindSubagentCompleted, event.SubagentCompleted{
+		SubagentID: event.SubagentID("sub_" + chatID), Status: status,
+		CostUSD: cost, CtxSize: ctxSize, UsedBackend: backend,
+	}, sid)
+}
+
+func findFinTab(m tuiModel, chatID string) *subTab {
 	for _, t := range m.subTabs {
-		if t.chatID == "chat-a" {
-			tab = t
-			break
+		if t.chatID == "sub_"+chatID {
+			return t
 		}
 	}
+	return nil
+}
+
+// TestFinishedReachesDoneState verifies the early signal alone flips the tab
+// to a visually-done state (finished=true, done=false) with display data.
+func TestFinishedReachesDoneState(t *testing.T) {
+	m, f := finModel()
+	m = step(m, subSpawn("chat-a", "task A", finSID))
+
+	m = step(m, subFinished("chat-a", "ok", 0.015, 1, "found the bug", finSID))
+	_ = f
+
+	tab := findFinTab(m, "chat-a")
 	if tab == nil {
 		t.Fatal("tab not found")
 	}
 	if !tab.finished {
-		t.Error("tab should be finished after SubagentFinishedMsg")
+		t.Error("tab should be finished after the early signal")
 	}
 	if tab.done {
-		t.Error("tab should NOT be done (authoritative) after SubagentFinishedMsg alone")
+		t.Error("tab should NOT be done (authoritative) after the early signal alone")
 	}
 	if tab.finCostUSD != 0.015 {
 		t.Errorf("finCostUSD = %v, want 0.015", tab.finCostUSD)
@@ -52,48 +83,26 @@ func TestFinishedReachesDoneState(t *testing.T) {
 	}
 }
 
-// TestDoneDoesNotRegressFinished verifies that a subsequent SubagentDoneMsg
-// for an already-finished tab enriches it (done=true, authoritative fields
-// filled) without any visual regression — the tab stays done, no flicker
-// back to active.
+// TestDoneDoesNotRegressFinished verifies a subsequent SubagentCompleted for
+// an already-finished tab enriches it without visual regression.
 func TestDoneDoesNotRegressFinished(t *testing.T) {
-	m := newTabModel()
-	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
-	m = step(m, agent.SubagentActiveMsg{ChatID: "chat-a"})
-	m = step(m, agent.SubagentFinishedMsg{
-		ChatID:         "chat-a",
-		Status:         "ok",
-		CostUSD:        0.015,
-		SummaryPreview: "found the bug",
-	})
+	m, _ := finModel()
+	m = step(m, subSpawn("chat-a", "task A", finSID))
+	m = step(m, subActive("chat-a", finSID))
+	m = step(m, subFinished("chat-a", "ok", 0.015, 0, "found the bug", finSID))
 
 	// Tab is now finished (display-only), not done.
-	var tab *subTab
-	for _, t := range m.subTabs {
-		if t.chatID == "chat-a" {
-			tab = t
-		}
-	}
+	tab := findFinTab(m, "chat-a")
 	if !tab.finished || tab.done {
 		t.Fatalf("precondition: finished=%v done=%v, want finished=true done=false", tab.finished, tab.done)
 	}
 
-	// SubagentDoneMsg arrives (Phase C). Should enrich, not regress.
-	m = step(m, agent.SubagentDoneMsg{
-		ChatID:      "chat-a",
-		CostUSD:     0.015,
-		CtxSize:     5000,
-		UsedBackend: "llama",
-	})
+	// SubagentCompleted arrives (Phase C). Should enrich, not regress.
+	m = step(m, subCompleted("chat-a", "ok", 0.015, 5000, "llama", finSID))
 
-	tab = nil
-	for _, t := range m.subTabs {
-		if t.chatID == "chat-a" {
-			tab = t
-		}
-	}
+	tab = findFinTab(m, "chat-a")
 	if !tab.done {
-		t.Error("tab should be done after SubagentDoneMsg")
+		t.Error("tab should be done after SubagentCompleted")
 	}
 	if !tab.finished {
 		t.Error("tab should still be finished (done implies finished)")
@@ -110,7 +119,7 @@ func TestDoneDoesNotRegressFinished(t *testing.T) {
 }
 
 // TestFinishedDotDistinctFromRunningAndDone verifies the three visual states
-// are distinct: running (active, not finished) ≠ finished (not done) ≠ done.
+// are distinct.
 func TestFinishedDotDistinctFromRunningAndDone(t *testing.T) {
 	running := &subTab{active: true}
 	finished := &subTab{active: true, finished: true}
@@ -130,7 +139,6 @@ func TestFinishedDotDistinctFromRunningAndDone(t *testing.T) {
 		t.Errorf("running and done dots are identical (%v), should be distinct", runColor)
 	}
 
-	// Glyph check: finished and done both use ✓, running uses ●.
 	runGlyph, _ := subTabDotSpec(running, 0)
 	finGlyph, _ := subTabDotSpec(finished, 0)
 	doneGlyph, _ := subTabDotSpec(done, 0)
@@ -152,8 +160,6 @@ func TestFinishedTabClosable(t *testing.T) {
 	done := &subTab{active: true, finished: true, done: true}
 	running := &subTab{active: true}
 
-	// The close-char logic: done||finished → ×, else ·.
-	// We test via the renderMainTabBar close-char condition.
 	checkClosable := func(tab *subTab) bool {
 		return tab.done || tab.finished
 	}
@@ -169,18 +175,16 @@ func TestFinishedTabClosable(t *testing.T) {
 }
 
 // TestPruneProtectsFinishedNotDone verifies pruneSubTabs does not drop a
-// finished (but not done) tab — its authoritative SubagentDoneMsg is still
-// in flight.
+// finished (but not done) tab.
 func TestPruneProtectsFinishedNotDone(t *testing.T) {
 	mk := func(n int, done, finished bool) *subTab {
 		return &subTab{n: n, done: done, finished: finished}
 	}
-	// 4 tabs: 2 done, 1 finished (not done), 1 running. Cap 2, focus on the running one.
 	tabs := []*subTab{
-		mk(1, true, true),   // done — droppable
-		mk(2, false, true),  // finished not done — must be protected
-		mk(3, true, true),   // done — droppable
-		mk(4, false, false), // running — protected (also focused)
+		mk(1, true, true),
+		mk(2, false, true),
+		mk(3, true, true),
+		mk(4, false, false),
 	}
 	got := pruneSubTabs(tabs, 4, 2)
 	has := map[int]bool{}

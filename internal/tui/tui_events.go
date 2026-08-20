@@ -44,6 +44,80 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case startupNoteMsg:
 		m.addItem(iSys, dim2(lm.text))
 		return m, cmds, true
+	case dotTickMsg:
+		// Re-arm only while busy OR an async-job tab is still running. The
+		// dotArmed flag keeps exactly one recurring tick chain alive.
+		if m.state != stateIdle || m.hasActiveJobTab() {
+			m.dotPhase = (m.dotPhase + 1) % len(dotPulseShades)
+			if !m.dotArmed {
+				m.dotArmed = true
+				cmds = append(cmds, startDotTick())
+			}
+		} else {
+			m.dotArmed = false
+		}
+		return m, cmds, true
+	case armTickMsg:
+		// Clear the arm only if this tick belongs to the current arm and the
+		// deadline has actually passed.
+		if lm.seq == m.armSeq && !m.armUntil.IsZero() && !time.Now().Before(m.armUntil) {
+			before := m.statusRows()
+			m.clearArm()
+			m = m.reflowIfStatusHeightChanged(before)
+		}
+		return m, cmds, true
+	case subTabCloseMsg:
+		focusN := 0
+		if m.subCur >= 0 && m.subCur < len(m.subTabs) {
+			focusN = m.subTabs[m.subCur].n
+		}
+		oldLen := len(m.subTabs)
+		removed := false
+		for i, t := range m.subTabs {
+			match := (lm.ChatID != "" && t.kind == subTabSubagent && t.chatID == lm.ChatID) ||
+				(lm.OpID != "" && t.kind == subTabAsyncJob && t.opID == lm.OpID)
+			if match && t.done && t.n != focusN {
+				m.subTabs = append(m.subTabs[:i], m.subTabs[i+1:]...)
+				removed = true
+				break
+			}
+		}
+		if removed {
+			m.subCur = tabIndexByN(m.subTabs, focusN)
+			if oldLen > 0 && len(m.subTabs) == 0 {
+				m = m.reflow()
+			}
+		}
+		return m, cmds, true
+	case copiedMsg:
+		before := m.statusRows()
+		if lm.via == copyViaOSC52 {
+			m.flash = sprint("sent %d chars via OSC 52 — if paste is empty, enable terminal/tmux clipboard", lm.n)
+			m.pendingEscape = lm.escape
+		} else {
+			m.flash = sprint("copied %d chars ✓", lm.n)
+		}
+		m = m.reflowIfStatusHeightChanged(before)
+		return m, cmds, true
+	case clipboardImageMsg:
+		// A clipboard read completed (paste-detection or /image clipboard).
+		if lm.Err != "" {
+			if m.pasteCutStash != "" {
+				m.ta.InsertString(m.pasteCutStash)
+				m.pasteCutStash = ""
+				m.addItem(iSys, dim2("· no image on clipboard — restored the pasted text"))
+			} else {
+				m.addItem(iSys, styleErr("clipboard: "+lm.Err))
+			}
+		} else {
+			m.pasteCutStash = "" // real image confirmed; the cut garbage stays gone
+			m.facade.AddPendingImage(lm.Img)
+			chip := lm.Img.Placeholder()
+			*m.imageChips = append(*m.imageChips, chip)
+			m.ta.InsertString(chip + " ")
+		}
+		m.refreshViewport()
+		return m, cmds, true
 	}
 
 	ev, ok := msg.(event.Event)

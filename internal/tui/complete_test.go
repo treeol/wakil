@@ -6,9 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
 
-	"github.com/treeol/wakil/internal/config"
 
 	"github.com/charmbracelet/bubbles/textarea"
 )
@@ -89,7 +87,9 @@ func TestComputeCompletionNoTokenWhenNoAt(t *testing.T) {
 
 func TestAcceptCompletionInsertsFile(t *testing.T) {
 	base := compTree(t)
-	m := tuiModel{app: &agent.App{Cfg: config.Config{MentionBase: base}}, ta: newTA("see @other")}
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.MentionBase = base
+	m := tuiModel{facade: f, ta: newTA("see @other")}
 	m.comp = computeCompletion(m.ta, compSources{mentionBase: base}, nil)
 	if len(m.comp.cands) != 1 {
 		t.Fatalf("expected exactly other.go, got %+v", m.comp.cands)
@@ -105,7 +105,9 @@ func TestAcceptCompletionInsertsFile(t *testing.T) {
 
 func TestAcceptCompletionDirDrillsIn(t *testing.T) {
 	base := compTree(t)
-	m := tuiModel{app: &agent.App{Cfg: config.Config{MentionBase: base}}, ta: newTA("@models")}
+	f2 := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f2.info.MentionBase = base
+	m := tuiModel{facade: f2, ta: newTA("@models")}
 	m.comp = computeCompletion(m.ta, compSources{mentionBase: base}, nil)
 	m = m.acceptCompletion()
 	if got := m.ta.Value(); got != "@models/" {

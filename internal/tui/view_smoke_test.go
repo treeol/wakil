@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/event"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -54,14 +54,15 @@ func TestViewSmokeStatusPlacement(t *testing.T) {
 // status zone must wrap to two rows, still directly above the textarea, and
 // sizes()/View() stay in agreement.
 func TestViewSmokeNarrowWrapsToTwo(t *testing.T) {
-	m := newTabModel()
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
 	m = step(m, tea.WindowSizeMsg{Width: 60, Height: 40})
 	// Drive the state change through the message path (a turn start flips the
 	// status to "streaming"), then simulate the t/s + flash segments via the
 	// copiedMsg handler — both go through the reflow guard.
 	m.state = stateStreaming // startTurn equivalent; reflow happens below
 	m = m.reflow()
-	m = step(m, agent.TokRateMsg{Tps: 87})
+	m = step(m, evt(event.KindTokRate, event.TokRate{Rate: 87}, f.sid))
 	m = step(m, copiedMsg{n: 42})
 	if got, want := m.statusRows(), len(m.statusLines()); got != want {
 		t.Fatalf("statusRows()=%d disagrees with statusLines()=%d", got, want)
