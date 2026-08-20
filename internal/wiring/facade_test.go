@@ -48,7 +48,7 @@ func TestEventPumpDeliversEvents(t *testing.T) {
 		mu.Unlock()
 	}
 
-	pump := NewEventPump(sub, host, principal, sess.ID, deliver)
+	pump := NewEventPump(sub, host, principal, sess.ID, 0, deliver)
 	ctx, cancel := context.WithCancel(context.Background())
 	go pump.Run(ctx)
 
@@ -111,7 +111,7 @@ func TestEventPumpStopIsIdempotent(t *testing.T) {
 	sess, _ := host.CreateSession(context.Background(), principal, core.CreateSessionRequest{Workspace: ws})
 	sub, _ := host.Subscribe(context.Background(), principal, sess.ID, 0)
 
-	pump := NewEventPump(sub, host, principal, sess.ID, func(event.Event) {})
+	pump := NewEventPump(sub, host, principal, sess.ID, 0, func(event.Event) {})
 	pump.Stop()
 	pump.Stop() // idempotent
 	pump.Stop() // still idempotent
@@ -136,7 +136,7 @@ func TestEventPumpCtxCancel(t *testing.T) {
 	sess, _ := host.CreateSession(context.Background(), principal, core.CreateSessionRequest{Workspace: ws})
 	sub, _ := host.Subscribe(context.Background(), principal, sess.ID, 0)
 
-	pump := NewEventPump(sub, host, principal, sess.ID, func(event.Event) {})
+	pump := NewEventPump(sub, host, principal, sess.ID, 0, func(event.Event) {})
 	ctx, cancel := context.WithCancel(context.Background())
 	go pump.Run(ctx)
 

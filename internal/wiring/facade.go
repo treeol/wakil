@@ -52,6 +52,10 @@ type wiringFacade struct {
 	// pump reads from it.
 	subscription core.EventSubscription
 
+	// pump is the event pump driving the subscription. Owned by the facade;
+	// stopped and drained on Close.
+	pump *EventPump
+
 	// closed is true after Close; subsequent calls return ErrSessionClosed.
 	closed bool
 }
@@ -189,7 +193,19 @@ func (f *wiringFacade) ConsumeStartupNote() string {
 
 func (f *wiringFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {
 	f.app.SaveRepoState(func(s *agent.RepoState) {
-		m := sessionclient.RepoStateMutator{}
+		// Initialize the mutator from the current repo state so the caller
+		// only needs to set the fields it wants to change — unset fields
+		// preserve the existing values (no accidental zeroing).
+		m := sessionclient.RepoStateMutator{
+			Model:                s.Model,
+			Backend:              s.Backend,
+			SubagentEndpoint:     s.SubagentEndpoint,
+			SubagentModel:        s.SubagentModel,
+			RawTools:             s.RawTools,
+			MaxParallelSubagents: s.MaxParallelSubagents,
+			AutoApprove:          s.AutoApprove,
+			InfoPanelOpen:        s.InfoPanelOpen,
+		}
 		mutate(&m)
 		if m.Model != "" {
 			s.Model = m.Model
@@ -382,12 +398,22 @@ func (f *wiringFacade) Close() error {
 		return nil
 	}
 	f.closed = true
+	pump := f.pump
 	sub := f.subscription
 	f.mu.Unlock()
 
-	if sub != nil {
+	// Stop the event pump first; it closes the subscription internally.
+	if pump != nil {
+		pump.Stop()
+		select {
+		case <-pump.Done():
+		default:
+			// Non-blocking; the pump will finish on its own.
+		}
+	} else if sub != nil {
 		_ = sub.Close()
 	}
+
 	// Cancel detached async jobs (detached-job policy: cancel on close).
 	f.app.StopAllAsyncOps()
 	f.app.StopAllBackgroundProcs()

@@ -16,6 +16,8 @@ package wiring
 
 import (
 	"context"
+	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 
@@ -47,13 +49,19 @@ type EventPump struct {
 // The host, principal, and sessionID are needed for gap recovery: if the
 // subscription falls behind (ErrSubscriptionGap), the pump resubscribes from
 // lastSeq and continues.
-func NewEventPump(sub core.EventSubscription, host *sessionhost.Host, principal core.Principal, sessionID event.SessionID, deliver func(event.Event)) *EventPump {
+//
+// initialSeq is the durable cursor the subscription was created with (the
+// `after` parameter passed to Subscribe). The pump uses it as the starting
+// point for gap recovery — without it, a gap before any event is delivered
+// would cause a resubscribe from zero, replaying the entire history.
+func NewEventPump(sub core.EventSubscription, host *sessionhost.Host, principal core.Principal, sessionID event.SessionID, initialSeq event.Seq, deliver func(event.Event)) *EventPump {
 	return &EventPump{
 		sub:       sub,
 		host:      host,
 		principal: principal,
 		sessionID: sessionID,
 		deliver:   deliver,
+		lastSeq:   initialSeq,
 		done:      make(chan struct{}),
 	}
 }
@@ -72,11 +80,11 @@ func (p *EventPump) Run(ctx context.Context) {
 			if p.stopped.Load() {
 				return
 			}
-			if err == context.Canceled || err == context.DeadlineExceeded {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return
 			}
 			// Subscription gap: resubscribe from lastSeq.
-			if err == sessionhost.ErrSubscriptionGap {
+			if errors.Is(err, sessionhost.ErrSubscriptionGap) {
 				newSub, subErr := p.host.Subscribe(ctx, p.principal, p.sessionID, p.lastSeq)
 				if subErr != nil {
 					return // can't recover; stop the pump
@@ -89,6 +97,10 @@ func (p *EventPump) Run(ctx context.Context) {
 				continue
 			}
 			// io.EOF or other terminal error: subscription closed.
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			// Unknown error: stop the pump rather than spinning.
 			return
 		}
 
