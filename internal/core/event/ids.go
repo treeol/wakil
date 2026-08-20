@@ -45,6 +45,10 @@ type ApprovalID string
 // SubagentID identifies a subagent dispatch. Prefix "sub_".
 type SubagentID string
 
+// OpID identifies a detached operation (side question, async job). Prefix "op_".
+// Used in event payloads for operations that outlive a single turn (D24/D29).
+type OpID string
+
 // idSpec is the validation contract for one ID type.
 type idSpec struct {
 	prefix string
@@ -64,6 +68,7 @@ var idSpecs = map[string]idSpec{
 	"toolcall":  {prefix: "tcl_", label: "tool call"},
 	"approval":  {prefix: "apr_", label: "approval"},
 	"subagent":  {prefix: "sub_", label: "subagent"},
+	"op":        {prefix: "op_", label: "operation"},
 }
 
 // checkID validates that raw carries the required prefix for the given kind and
@@ -99,6 +104,7 @@ func (id TurnID) Validate() error      { return checkID("turn", string(id)) }
 func (id ToolCallID) Validate() error  { return checkID("toolcall", string(id)) }
 func (id ApprovalID) Validate() error  { return checkID("approval", string(id)) }
 func (id SubagentID) Validate() error  { return checkID("subagent", string(id)) }
+func (id OpID) Validate() error       { return checkID("op", string(id)) }
 
 // NewTenantID validates a tenant ID string. Returns (TenantID, error).
 func NewTenantID(raw string) (TenantID, error) {
@@ -162,6 +168,14 @@ func NewSubagentID(raw string) (SubagentID, error) {
 		return "", err
 	}
 	return SubagentID(raw), nil
+}
+
+// NewOpID validates an operation ID string.
+func NewOpID(raw string) (OpID, error) {
+	if err := checkID("op", raw); err != nil {
+		return "", err
+	}
+	return OpID(raw), nil
 }
 
 // EmbeddedTenantID is the constant tenant for embedded/local single-user mode

@@ -253,6 +253,16 @@ type TurnCompleted struct {
 	TurnID TurnID
 	// Outcome is one of "complete" | "empty" | "stream_error" | "cancelled".
 	Outcome string
+	// Warn carries a non-fatal warning the user should see (D28 stream-warn
+	// parity): a retry-exhausted stream error that the user should be told
+	// about ("backend unreachable, /resume to continue") but that is not an
+	// error outcome. Empty when there is no warning. Added in 7b2.
+	Warn string
+	// WorkflowWillContinue is true when the workflow engine detected a
+	// transition and the TUI should auto-submit the next workflow step
+	// (D28). Replaces AgentDoneMsg.WorkflowWillContinue. The TUI's
+	// queue-flush/auto-grant gate keys off this field. Added in 7b2.
+	WorkflowWillContinue bool
 }
 
 func (p TurnCompleted) Validate() error {
@@ -290,4 +300,139 @@ func (p SessionClosed) Validate() error {
 		return fmt.Errorf("SessionClosed: reason is empty")
 	}
 	return nil
+}
+
+// ---- 7b2 event payloads (D24/D28/D29) ----
+
+// UserMessageCommitted is the durable user-side transcript event (D24 replay
+// truth). The host emits it on SubmitInput, carrying the TurnID and the
+// submitted Text. A replay reconstructs the full transcript from
+// UserMessageCommitted (user) + MessageCommitted (assistant) +
+// ConversationCompacted (compaction boundary).
+type UserMessageCommitted struct {
+	TurnID TurnID
+	Text   string
+}
+
+func (p UserMessageCommitted) Validate() error {
+	if err := p.TurnID.Validate(); err != nil {
+		return err
+	}
+	if p.Text == "" {
+		return fmt.Errorf("UserMessageCommitted: text is empty")
+	}
+	return nil
+}
+
+// ConversationCompacted is the durable compaction-boundary event (D24). It marks
+// where the transcript was compacted; a replay sees this as a boundary and
+// does not try to reconstruct the pre-compaction messages.
+type ConversationCompacted struct {
+	// TurnID is the turn during which compaction occurred.
+	TurnID TurnID
+}
+
+func (p ConversationCompacted) Validate() error {
+	return p.TurnID.Validate()
+}
+
+// WorkflowTurnStarted is the durable workflow-step-submit event (D28). The
+// adapter emits it when HandleWorkflowTransition fires a transition; the TUI
+// sees it and submits the next workflow step's input.
+type WorkflowTurnStarted struct {
+	TurnID TurnID
+	// UserText is the next step's input text (the workflow prompt).
+	UserText string
+}
+
+func (p WorkflowTurnStarted) Validate() error {
+	return p.TurnID.Validate()
+}
+
+// WorkflowFinalReview is the durable final-review-gate event (D28). The adapter
+// emits it when the workflow engine reaches the final-review phase; the TUI
+// submits a final-review input.
+type WorkflowFinalReview struct {
+	TurnID TurnID
+}
+
+func (p WorkflowFinalReview) Validate() error {
+	return p.TurnID.Validate()
+}
+
+// AsyncJobStarted is the durable detached-async-job start event (D29). It
+// carries the operation ID and a bounded description. Detached jobs outlive the
+// turn and emit through the session-scoped emitter.
+type AsyncJobStarted struct {
+	OpID  OpID
+	Label string
+}
+
+func (p AsyncJobStarted) Validate() error {
+	return p.OpID.Validate()
+}
+
+// AsyncJobCompleted is the durable detached-async-job completion event (D29).
+type AsyncJobCompleted struct {
+	OpID   OpID
+	Status string // "ok" | "error" | "cancelled"
+	// SummaryPreview is a bounded display summary.
+	SummaryPreview string
+}
+
+func (p AsyncJobCompleted) Validate() error {
+	if err := p.OpID.Validate(); err != nil {
+		return err
+	}
+	switch p.Status {
+	case "ok", "error", "cancelled":
+	default:
+		return fmt.Errorf("AsyncJobCompleted: invalid status %q", p.Status)
+	}
+	return nil
+}
+
+// SideQuestionCompleted is the durable side-question completion event (D29).
+type SideQuestionCompleted struct {
+	OpID   OpID
+	Status string // "ok" | "error" | "cancelled"
+	// AnswerPreview is a bounded display summary.
+	AnswerPreview string
+}
+
+func (p SideQuestionCompleted) Validate() error {
+	if err := p.OpID.Validate(); err != nil {
+		return err
+	}
+	switch p.Status {
+	case "ok", "error", "cancelled":
+	default:
+		return fmt.Errorf("SideQuestionCompleted: invalid status %q", p.Status)
+	}
+	return nil
+}
+
+// TokRate is the ephemeral token-rate display payload (D24). Display-only;
+// not part of the durable stream.
+type TokRate struct {
+	Rate float64
+}
+
+// AsyncJobProgress is the ephemeral detached-job progress payload (D29).
+type AsyncJobProgress struct {
+	OpID  OpID
+	Text  string
+}
+
+// SideQuestionProgress is the ephemeral side-question progress payload (D29).
+type SideQuestionProgress struct {
+	OpID OpID
+	Text string
+}
+
+// LearnNudge is the ephemeral learn-suggestion payload (D24). It is NOT folded
+// into turn_completed (host-reserved kind — illegal); it is an ephemeral
+// advisory the TUI renders as a transient notification.
+type LearnNudge struct {
+	Text string
 }

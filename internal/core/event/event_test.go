@@ -28,21 +28,29 @@ func committedDraft(kind Kind, payload any) Event {
 
 func durablePayloads() map[Kind]any {
 	return map[Kind]any{
-		KindSessionCreated:    SessionCreated{WorkspaceID: "wsp_1", CreatedBy: EmbeddedUserID},
-		KindTurnStarted:       TurnStarted{TurnID: "trn_1", TurnIndex: 1},
-		KindMessageCommitted:  MessageCommitted{TurnID: "trn_1", Text: "hi"},
-		KindToolCallStarted:   ToolCallStarted{TurnID: "trn_1", ToolCallID: "tcl_1", Name: "run_shell", ArgDigest: "abc"},
-		KindToolCallCompleted: ToolCallCompleted{ToolCallID: "tcl_1", Name: "run_shell", Status: "ok"},
-		KindApprovalRequested: ApprovalRequested{ApprovalID: "apr_1", ToolName: "run_shell", Headline: "h", Detail: "d"},
-		KindApprovalResolved:  ApprovalResolved{ApprovalID: "apr_1", Outcome: "approved"},
-		KindSubagentSpawned:   SubagentSpawned{SubagentID: "sub_1", Task: "t", Capability: "discovery"},
-		KindSubagentCompleted: SubagentCompleted{SubagentID: "sub_1", Status: "ok"},
-		KindMemoryProposed:    MemoryProposed{Key: "k", Kind: "note", Writer: "w"},
-		KindGuardTriggered:    GuardTriggered{Guard: "g", Message: "m"},
-		KindContextWarning:    ContextWarning{Message: "m"},
-		KindTurnCompleted:     TurnCompleted{TurnID: "trn_1", Outcome: "complete"},
-		KindSessionError:      SessionError{Reason: "daemon_restart", Err: "e"},
-		KindSessionClosed:     SessionClosed{Reason: "done"},
+		KindSessionCreated:         SessionCreated{WorkspaceID: "wsp_1", CreatedBy: EmbeddedUserID},
+		KindTurnStarted:            TurnStarted{TurnID: "trn_1", TurnIndex: 1},
+		KindMessageCommitted:       MessageCommitted{TurnID: "trn_1", Text: "hi"},
+		KindToolCallStarted:        ToolCallStarted{TurnID: "trn_1", ToolCallID: "tcl_1", Name: "run_shell", ArgDigest: "abc"},
+		KindToolCallCompleted:      ToolCallCompleted{ToolCallID: "tcl_1", Name: "run_shell", Status: "ok"},
+		KindApprovalRequested:      ApprovalRequested{ApprovalID: "apr_1", ToolName: "run_shell", Headline: "h", Detail: "d"},
+		KindApprovalResolved:       ApprovalResolved{ApprovalID: "apr_1", Outcome: "approved"},
+		KindSubagentSpawned:        SubagentSpawned{SubagentID: "sub_1", Task: "t", Capability: "discovery"},
+		KindSubagentCompleted:      SubagentCompleted{SubagentID: "sub_1", Status: "ok"},
+		KindMemoryProposed:         MemoryProposed{Key: "k", Kind: "note", Writer: "w"},
+		KindGuardTriggered:         GuardTriggered{Guard: "g", Message: "m"},
+		KindContextWarning:         ContextWarning{Message: "m"},
+		KindTurnCompleted:          TurnCompleted{TurnID: "trn_1", Outcome: "complete"},
+		KindSessionError:           SessionError{Reason: "daemon_restart", Err: "e"},
+		KindSessionClosed:          SessionClosed{Reason: "done"},
+		// 7b2 additions
+		KindUserMessageCommitted:   UserMessageCommitted{TurnID: "trn_1", Text: "user input"},
+		KindConversationCompacted:  ConversationCompacted{TurnID: "trn_1"},
+		KindWorkflowTurnStarted:    WorkflowTurnStarted{TurnID: "trn_1", UserText: "next step"},
+		KindWorkflowFinalReview:    WorkflowFinalReview{TurnID: "trn_1"},
+		KindAsyncJobStarted:        AsyncJobStarted{OpID: "op_1", Label: "bg job"},
+		KindAsyncJobCompleted:      AsyncJobCompleted{OpID: "op_1", Status: "ok"},
+		KindSideQuestionCompleted:  SideQuestionCompleted{OpID: "op_1", Status: "ok"},
 	}
 }
 
@@ -56,6 +64,13 @@ func TestRegistryCompleteness(t *testing.T) {
 		KindSubagentProgress, KindSubagentCompleted, KindMemoryProposed,
 		KindGuardTriggered, KindContextWarning, KindTurnCompleted, KindSessionError,
 		KindSessionClosed,
+		// 7b2 additions
+		KindUserMessageCommitted, KindConversationCompacted,
+		KindWorkflowTurnStarted, KindWorkflowFinalReview,
+		KindAsyncJobStarted, KindAsyncJobCompleted,
+		KindSideQuestionCompleted,
+		KindTokRate, KindAsyncJobProgress, KindSideQuestionProgress,
+		KindLearnNudge,
 	}
 	seen := map[Kind]bool{}
 	for _, k := range allKinds {
@@ -89,9 +104,13 @@ func TestValidateCommittedAcceptsEveryDurableKind(t *testing.T) {
 
 func TestValidateAcceptsEphemeralKinds(t *testing.T) {
 	ephemeral := map[Kind]any{
-		KindMessageDelta:     MessageDelta{Text: "tok"},
-		KindReasoningDelta:   ReasoningDelta{Text: "reasoning"},
-		KindSubagentProgress: SubagentProgress{SubagentID: "sub_1", Text: "p"},
+		KindMessageDelta:         MessageDelta{Text: "tok"},
+		KindReasoningDelta:       ReasoningDelta{Text: "reasoning"},
+		KindSubagentProgress:     SubagentProgress{SubagentID: "sub_1", Text: "p"},
+		KindTokRate:              TokRate{Rate: 42.5},
+		KindAsyncJobProgress:     AsyncJobProgress{OpID: "op_1", Text: "p"},
+		KindSideQuestionProgress: SideQuestionProgress{OpID: "op_1", Text: "p"},
+		KindLearnNudge:           LearnNudge{Text: "learn this"},
 	}
 	for kind, payload := range ephemeral {
 		if err := validDraft(kind, payload).ValidateDraft(); err != nil {
@@ -211,20 +230,25 @@ func TestZeroTsRejected(t *testing.T) {
 }
 
 func TestKindClass(t *testing.T) {
-	if KindMessageDelta.Class() != ClassEphemeral {
-		t.Error("message_delta should be ephemeral")
+	for _, k := range []Kind{
+		KindMessageDelta, KindReasoningDelta, KindSubagentProgress,
+		KindTokRate, KindAsyncJobProgress, KindSideQuestionProgress,
+		KindLearnNudge,
+	} {
+		if k.Class() != ClassEphemeral {
+			t.Errorf("kind %q should be ephemeral", k)
+		}
 	}
-	if KindReasoningDelta.Class() != ClassEphemeral {
-		t.Error("reasoning_delta should be ephemeral")
-	}
-	if KindSubagentProgress.Class() != ClassEphemeral {
-		t.Error("subagent_progress should be ephemeral")
-	}
-	if KindTurnStarted.Class() != ClassDurable {
-		t.Error("turn_started should be durable")
-	}
-	if KindMessageCommitted.Class() != ClassDurable {
-		t.Error("message_committed should be durable")
+	for _, k := range []Kind{
+		KindTurnStarted, KindMessageCommitted,
+		KindUserMessageCommitted, KindConversationCompacted,
+		KindWorkflowTurnStarted, KindWorkflowFinalReview,
+		KindAsyncJobStarted, KindAsyncJobCompleted,
+		KindSideQuestionCompleted,
+	} {
+		if k.Class() != ClassDurable {
+			t.Errorf("kind %q should be durable", k)
+		}
 	}
 }
 
@@ -273,5 +297,51 @@ func TestEmbeddedIDs(t *testing.T) {
 	}
 	if err := EmbeddedUserID.Validate(); err != nil {
 		t.Errorf("EmbeddedUserID invalid: %v", err)
+	}
+}
+
+func TestOpIDValidation(t *testing.T) {
+	if err := OpID("op_abc").Validate(); err != nil {
+		t.Errorf("valid op id rejected: %v", err)
+	}
+	if err := OpID("op_").Validate(); err == nil {
+		t.Error("empty body accepted for OpID")
+	}
+	if err := OpID("sub_abc").Validate(); err == nil {
+		t.Error("wrong prefix accepted for OpID")
+	}
+	if _, err := NewOpID("op_test"); err != nil {
+		t.Errorf("NewOpID rejected valid id: %v", err)
+	}
+	if _, err := NewOpID("bad"); err == nil {
+		t.Error("NewOpID accepted invalid id")
+	}
+}
+
+func TestNewPayloadValidation(t *testing.T) {
+	// UserMessageCommitted: empty text rejected
+	if err := validDraft(KindUserMessageCommitted, UserMessageCommitted{TurnID: "trn_1"}).ValidateDraft(); err == nil {
+		t.Fatal("UserMessageCommitted with empty text should be rejected")
+	}
+	// AsyncJobCompleted: invalid status rejected
+	if err := validDraft(KindAsyncJobCompleted, AsyncJobCompleted{OpID: "op_1", Status: "bogus"}).ValidateDraft(); err == nil {
+		t.Fatal("AsyncJobCompleted with bogus status should be rejected")
+	}
+	// SideQuestionCompleted: invalid status rejected
+	if err := validDraft(KindSideQuestionCompleted, SideQuestionCompleted{OpID: "op_1", Status: "bogus"}).ValidateDraft(); err == nil {
+		t.Fatal("SideQuestionCompleted with bogus status should be rejected")
+	}
+	// AsyncJobStarted: invalid OpID rejected
+	if err := validDraft(KindAsyncJobStarted, AsyncJobStarted{OpID: "bad"}).ValidateDraft(); err == nil {
+		t.Fatal("AsyncJobStarted with bad OpID should be rejected")
+	}
+	// ConversationCompacted: valid
+	if err := validDraft(KindConversationCompacted, ConversationCompacted{TurnID: "trn_1"}).ValidateDraft(); err != nil {
+		t.Fatalf("valid ConversationCompacted rejected: %v", err)
+	}
+	// TurnCompleted with Warn and WorkflowWillContinue
+	tc := TurnCompleted{TurnID: "trn_1", Outcome: "complete", Warn: "backend slow", WorkflowWillContinue: true}
+	if err := validDraft(KindTurnCompleted, tc).ValidateDraft(); err != nil {
+		t.Fatalf("TurnCompleted with Warn/WorkflowWillContinue rejected: %v", err)
 	}
 }

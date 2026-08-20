@@ -72,7 +72,12 @@ type ApprovalResolver func(ctx context.Context, req ApprovalRequest) ApprovalRes
 
 // adapterConfig holds HostTurnFunc options.
 type adapterConfig struct {
-	resolver ApprovalResolver
+	resolver      ApprovalResolver
+	// asyncApproval enables the async approval path (7b2 D25). When true,
+	// the confirmer parks the session in awaiting_approval and blocks on
+	// RespondToApproval instead of using the inline resolver. The TUI session
+	// uses this; the headless path does not (keeps sync inline resolution).
+	asyncApproval bool
 }
 
 // AdapterOption configures the HostTurnFunc adapter.
@@ -81,6 +86,15 @@ type AdapterOption func(*adapterConfig)
 // WithResolver sets the approval resolver. nil (default) declines everything.
 func WithResolver(r ApprovalResolver) AdapterOption {
 	return func(c *adapterConfig) { c.resolver = r }
+}
+
+// WithAsyncApproval enables the async approval path (7b2 D25). When enabled,
+// the confirmer emits ApprovalRequested, parks the session in
+// awaiting_approval via TurnInput.ParkApproval, and blocks until
+// RespondToApproval or ctx cancellation. The TUI session uses this; the
+// headless path does not (keeps sync inline resolution for parity).
+func WithAsyncApproval() AdapterOption {
+	return func(c *adapterConfig) { c.asyncApproval = true }
 }
 
 // appOwners tracks which *agent.App instances are claimed by a HostTurnFunc, so
@@ -116,8 +130,9 @@ var ErrTurnActive = errors.New("wiring: cannot release App while a turn is activ
 
 // hostTurn is the runtime binding of an App to its one host session.
 type hostTurn struct {
-	app      *agent.App
-	resolver ApprovalResolver
+	app           *agent.App
+	resolver      ApprovalResolver
+	asyncApproval bool // 7b2: use ParkApproval instead of inline resolver
 
 	mu         sync.Mutex
 	sessionID  event.SessionID // first session this turn served; zero until first use
@@ -183,7 +198,7 @@ func NewHostTurnHandle(app *agent.App, opts ...AdapterOption) (*HostTurnHandle, 
 	for _, o := range opts {
 		o(&c)
 	}
-	ht := &hostTurn{app: app, resolver: c.resolver}
+	ht := &hostTurn{app: app, resolver: c.resolver, asyncApproval: c.asyncApproval}
 
 	appOwnersMu.Lock()
 	if _, claimed := appOwners[app]; claimed {
@@ -276,11 +291,27 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	app.OnReasoning = func(s string) {
 		in.Emit.Notify(event.KindReasoningDelta, event.ReasoningDelta{Text: s})
 	}
-	// TokRate is a TUI-local display signal with no domain meaning yet; the host
-	// path has no sink for it, so it is collected away (see plan §6).
-	app.OnTokRate = func(float64) {}
-	app.EventSink = func(any) {}
-	app.Confirm = newHostConfirmer(ctx, app, in, ht.resolver, emitErr)
+	// TokRate is a TUI-local display signal (D24: ephemeral, not durable). The
+	// session-scoped emitter delivers it as an ephemeral event so subscribers
+	// that want it (the TUI) can render it; the host path no longer drops it
+	// (7b2 D24: app.EventSink/OnTokRate wired to the session-scoped surface).
+	app.OnTokRate = func(rate float64) {
+		in.SessionEmit.Notify(event.KindTokRate, event.TokRate{Rate: rate})
+	}
+	// EventSink carries subagent/async-job/tool-status/side-question signals
+	// that outlive the turn. Wire it to the session-scoped emitter (7b2 D24)
+	// instead of collecting it away. The agent emits various message types
+	// through EventSink; the adapter projects them to domain events.
+	// TODO(7b3): map agent.EventSink payloads to domain events (subagent,
+	// async-job, side-question). For now the sink is wired but the projection
+	// is a no-op pass-through — the TUI-mode TurnFunc (7b3) replaces it.
+	app.EventSink = func(msg any) {
+		// In 7b2 the session-scoped emitter is available; the actual projection
+		// from agent message types to domain events lands in 7b3 when the TUI
+		// consumes the event stream. For now this is the legal emit path.
+		_ = msg
+	}
+	app.Confirm = newHostConfirmer(ctx, app, in, ht.resolver, ht.asyncApproval, emitErr)
 
 	// Per-turn resets the TUI path performs before the turn (tui_cmds.go RunTurn).
 	app.ToolCache = nil
@@ -346,16 +377,22 @@ func (l *errorLatch) load() error {
 	return l.err
 }
 
-// newHostConfirmer is the D5 approval shim: a context-aware agent.Confirmer
+// newHostConfirmer is the D5/D25 approval shim: a context-aware agent.Confirmer
 // that emits ApprovalRequested (durable) before resolving and ApprovalResolved
 // (durable) after, with full approve/decline/allow-reads outcome fidelity.
 //
-// The resolver runs in a goroutine and is raced against ctx cancellation, so a
-// stuck resolver cannot hang the executor (a cancellation win forces a
-// decline). A durable Append failure is recorded on emitErr — surfaced as the
-// turn's error → internal_error by the turn loop — so an unresolved or
-// orphaned approval is never silently half-committed.
-func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnInput, resolver ApprovalResolver, emitErr *errorLatch) agent.Confirmer {
+// Two modes (7b2 D25):
+//   - Sync (headless, asyncApproval=false): the inline resolver runs in a
+//     goroutine and is raced against ctx cancellation. This is the chunk-5/7
+//     behavior — unchanged for headless parity.
+//   - Async (TUI, asyncApproval=true): the confirmer parks the session in
+//     awaiting_approval via in.ParkApproval and blocks until RespondToApproval
+//     or ctx cancellation. The TUI loop does NOT block.
+//
+// A durable Append failure is recorded on emitErr — surfaced as the turn's
+// error → internal_error by the turn loop — so an unresolved or orphaned
+// approval is never silently half-committed.
+func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnInput, resolver ApprovalResolver, asyncApproval bool, emitErr *errorLatch) agent.Confirmer {
 	return func(toolName, headline, detail string, readAction bool) bool {
 		approvalID, err := id.NewApprovalID()
 		if err != nil {
@@ -374,8 +411,30 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 			return false // no Requested → no Resolved; fail closed
 		}
 
-		// Resolve, racing cancellation against the goroutine-isolated resolver.
-		res := resolveApproval(ctx, resolver, req)
+		// Resolve: sync (inline resolver) or async (park + RespondToApproval).
+		var res ApprovalResolution
+		var resolverID event.UserID // who actually answered (D4 identity)
+		if asyncApproval && in.ParkApproval != nil {
+			// Async path (7b2 D25): park the session and block until
+			// RespondToApproval or ctx cancellation.
+			outcome, reason, rid := in.ParkApproval(ctx, approvalID)
+			resolverID = rid
+			if resolverID == "" {
+				resolverID = in.UserID // forced decline: record submitter as fallback
+			}
+			switch outcome {
+			case "approved":
+				res = ApprovalResolution{Choice: agent.ChoiceApprove}
+			case "allowed_reads":
+				res = ApprovalResolution{Choice: agent.ChoiceAllowReads}
+			default:
+				res = ApprovalResolution{Choice: agent.ChoiceDecline, Reason: reason}
+			}
+		} else {
+			// Sync path (headless parity): inline resolver raced against ctx.
+			res = resolveApproval(ctx, resolver, req)
+			resolverID = in.UserID // sync mode: submitter is the resolver
+		}
 
 		var outcome string
 		var proceed bool
@@ -399,12 +458,12 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 			ApprovalID: approvalID,
 			Outcome:    outcome,
 			Reason:     reason,
-			Resolver:   in.UserID,
+			Resolver:   resolverID,
 		}); err != nil {
 			emitErr.set(err)
-			// A failed Resolved leaves an unresolved durable Requested. Fail the
-			// turn so the audit stream reports internal_error rather than
-			// pretending the pairing held.
+			// Fail closed: a failed durable resolution audit must not permit
+			// tool execution. The turn will fail with internal_error.
+			return false
 		}
 		return proceed
 	}

@@ -863,13 +863,13 @@ func TestSubscribeReplayOverlap(t *testing.T) {
 	}
 
 	// Read every durable event and assert contiguous, strictly-increasing seq
-	// from 1 with NO gaps (SessionCreated=1, TurnStarted=2, MessageCommitted=3,
-	// TurnCompleted=4).
+	// from 1 with NO gaps (SessionCreated=1, UserMessageCommitted=2,
+	// TurnStarted=3, MessageCommitted=4, TurnCompleted=5).
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var seqs []event.Seq
 	want := map[event.Kind]bool{event.KindSessionCreated: true, event.KindTurnStarted: true, event.KindTurnCompleted: true, event.KindMessageCommitted: true}
-	for len(seqs) < 4 {
+	for len(want) > 0 {
 		ev, err := sub.Next(ctx)
 		if err != nil {
 			t.Fatalf("Next: %v (got %v)", err, seqs)

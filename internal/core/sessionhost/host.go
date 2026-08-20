@@ -145,19 +145,57 @@ type TurnInput struct {
 	// an executor; nil only in plain lifecycle tests that never call it. See
 	// Emitter.
 	Emit Emitter
+	// SessionEmit is the session-scoped event publisher (7b2 D24). Unlike the
+	// turn-scoped Emit, it remains legal after the turn completes and is
+	// fenced only at session close. Detached work (async jobs, side questions)
+	// and post-turn signals (tok_rate, learn_nudge, workflow transitions) use
+	// this surface. The adapter wires app.EventSink/app.OnTokRate to it.
+	// Nil only in lifecycle-only tests.
+	SessionEmit SessionEmitter
+	// ParkApproval is the async-approval hook (7b2 D25). The adapter's
+	// confirmer calls it to park the session in awaiting_approval and block
+	// the turn goroutine until a decision arrives (or ctx is cancelled). Nil
+	// for lifecycle-only tests and the headless sync path (which uses the
+	// inline resolver, not async parking).
+	ParkApproval ApprovalParkFunc
 }
+
+// ApprovalParkFunc parks an async approval and blocks until a decision is
+// made or ctx is cancelled (7b2 D25). The adapter's confirmer calls it after
+// emitting ApprovalRequested. The decision is received via RespondToApproval;
+// a ctx cancellation yields a forced decline. Returns the outcome
+// ("approved"/"declined"/"allowed_reads"), a reason (non-empty on decline),
+// and the resolver's UserID (who actually answered, D4 — may differ from the
+// turn submitter when a different authorized user responds).
+type ApprovalParkFunc func(ctx context.Context, approvalID event.ApprovalID) (outcome string, reason string, resolver event.UserID)
 
 // hostReservedKinds are the kinds the HOST owns (finalization and lifecycle):
 // emitDraft/finishTurn emit them, and a turn must never be able to mutate them
 // through Emitter.Emit — doing so would corrupt the durable projection (e.g. a
 // duplicate MessageCommitted or TurnCompleted). Emitter.Emit rejects them.
 var hostReservedKinds = map[event.Kind]bool{
-	event.KindSessionCreated:   true,
-	event.KindTurnStarted:      true,
-	event.KindMessageCommitted: true,
-	event.KindTurnCompleted:    true,
-	event.KindSessionError:     true,
-	event.KindSessionClosed:    true,
+	event.KindSessionCreated:       true,
+	event.KindTurnStarted:          true,
+	event.KindMessageCommitted:     true,
+	event.KindUserMessageCommitted: true, // 7b2: host-emitted replay truth
+	event.KindTurnCompleted:        true,
+	event.KindSessionError:          true,
+	event.KindSessionClosed:         true,
+}
+
+// turnScopedKinds are durable kinds that belong to the turn-scoped Emitter, not
+// the session-scoped SessionEmitter (7b2 D24). The session emitter rejects
+// them to preserve terminal turn ordering: an approval or tool-call event
+// must not be appended after its turn's TurnCompleted. The session emitter
+// is for detached work (async jobs, side questions) and post-turn signals
+// (tok_rate, learn_nudge, workflow transitions) only.
+var turnScopedKinds = map[event.Kind]bool{
+	event.KindApprovalRequested: true,
+	event.KindApprovalResolved:  true,
+	event.KindToolCallStarted:   true,
+	event.KindToolCallCompleted: true,
+	event.KindSubagentSpawned:   true,
+	event.KindSubagentCompleted: true,
 }
 
 // Emitter lets a turn publish events while it runs. It is safe for concurrent
@@ -180,6 +218,26 @@ type Emitter interface {
 	// Notify streams one ephemeral notification live to subscribers. The kind
 	// must be ephemeral; other kinds are dropped. Best-effort by contract — it
 	// does not consult the turn's ctx (see the ctx-notification note in host.go).
+	Notify(kind event.Kind, payload any)
+}
+
+// SessionEmitter is the session-scoped event publisher (7b2 D24). It has the
+// same shape as the turn-scoped Emitter but is fenced at session close, not
+// turn completion. This is the legal emit path for detached work (async jobs,
+// side questions) and post-turn signals (tok_rate, learn_nudge, workflow
+// transitions) that outlive the turn-scoped Emitter.
+//
+// The adapter wires app.EventSink and app.OnTokRate to this surface so that
+// signals produced by detached goroutines after the turn completes still
+// reach subscribers. The turn-scoped Emit remains the path for turn-scoped
+// durable events (approval, tool calls, subagent events).
+type SessionEmitter interface {
+	// Emit durably appends one event. Same contract as Emitter.Emit: durable
+	// kinds only, no host-reserved kinds. Returns ErrEmitterClosed after
+	// session close.
+	Emit(kind event.Kind, payload any) error
+	// Notify streams one ephemeral notification. Same contract as
+	// Emitter.Notify. Drops silently after session close.
 	Notify(kind event.Kind, payload any)
 }
 
@@ -378,14 +436,51 @@ func (h *Host) RespondToApproval(ctx context.Context, principal core.Principal, 
 	if !writerAllowed(principal.Role) {
 		return core.ErrNotAuthorized
 	}
-	// D5 shim: in P0 the synchronous Confirmer resolves approvals before a
-	// client can even observe ApprovalRequested, so there is never a pending
-	// approval to answer from outside. The host records no approval state; the
-	// authoritative async wire path lands in P2. Honest placeholder: the
-	// session's tenant was checked (no existence leak), and the answer is "no
-	// such pending approval".
-	_ = s
-	return core.ErrApprovalNotFound
+
+	// Map the wire ApprovalOutcome to the internal decision.
+	var outcome string
+	switch d.Outcome {
+	case core.ApprovalAllowOnce:
+		outcome = "approved"
+	case core.ApprovalAllowReadsOnce:
+		outcome = "allowed_reads"
+	case core.ApprovalDeny:
+		outcome = "declined"
+	}
+
+	s.mu.Lock()
+	pa := s.pendingApproval
+	if pa == nil {
+		s.mu.Unlock()
+		return core.ErrApprovalNotFound
+	}
+	if pa.approvalID != d.ApprovalID {
+		s.mu.Unlock()
+		return core.ErrApprovalNotFound
+	}
+	if pa.resolved {
+		// Idempotent: same outcome → no error; different → already resolved.
+		if pa.outcome == outcome {
+			s.mu.Unlock()
+			return nil
+		}
+		s.mu.Unlock()
+		return core.ErrApprovalAlreadyResolved
+	}
+	pa.resolved = true
+	pa.outcome = outcome
+	s.mu.Unlock()
+
+	// Send the decision to the blocked turn goroutine. Non-blocking: the
+	// channel is buffered(1) and the turn goroutine is waiting on it.
+	select {
+	case pa.decisionCh <- approvalDecision{outcome: outcome, reason: d.Reason, resolver: principal.UserID}:
+	default:
+		// The turn goroutine is no longer waiting (ctx cancelled or it
+		// already received a forced decline). The decision is lost — that's
+		// fine, the turn is already resolving via cancellation.
+	}
+	return nil
 }
 
 func (h *Host) Interrupt(ctx context.Context, principal core.Principal, sessionID event.SessionID) error {
@@ -705,6 +800,13 @@ type session struct {
 	closing     string // non-empty once close is requested; the SessionClosed reason
 	closedAt    time.Time
 
+	// pendingApproval tracks an async approval parked in awaiting_approval
+	// (7b2 D25). Non-nil only while a turn goroutine is blocked on a decision
+	// channel. Set by parkApproval under s.mu; resolved by RespondToApproval
+	// under s.mu. At most one pending approval at a time (the agent's single
+	// turn loop has at most one gate; if a second arises it queues FIFO).
+	pendingApproval *pendingApproval
+
 	// Run-loop coordination.
 	kick   chan struct{} // buffered(1); signaled when an input is enqueued or close is requested
 	doneCh chan struct{} // closed when the run loop exits
@@ -721,6 +823,10 @@ type session struct {
 	// observe the durable stream in exact increasing Seq order). Ephemeral
 	// notifications do NOT take it (unordered/droppable by contract).
 	emitMu sync.Mutex
+
+	// sessionEmit is the session-scoped emitter (7b2 D24). Fenced at session
+	// close, not turn close. Passed into every TurnInput.SessionEmit.
+	sessionEmit *sessionEmitter
 }
 
 type inputEnvelope struct {
@@ -734,11 +840,32 @@ type turnHandle struct {
 	cancel context.CancelFunc
 }
 
+// pendingApproval tracks one async approval parked in awaiting_approval (7b2 D25).
+// The turn goroutine blocks on the decision channel; RespondToApproval resolves it.
+type pendingApproval struct {
+	approvalID event.ApprovalID
+	// decisionCh is a one-shot channel: the turn goroutine blocks on it,
+	// RespondToApproval sends one value, then closes it.
+	decisionCh chan approvalDecision
+	// resolved is set under s.mu so a duplicate RespondToApproval can detect
+	// "already resolved" vs "unknown".
+	resolved bool
+	// outcome records the first resolution (for idempotent duplicate check).
+	outcome string
+}
+
+// approvalDecision is the internal representation of a client's answer.
+type approvalDecision struct {
+	outcome  string // "approved" | "declined" | "allowed_reads"
+	reason   string
+	resolver event.UserID // who actually answered (D4 identity)
+}
+
 func (h *Host) newSession(sid event.SessionID, tenant event.TenantID, workspace event.WorkspaceID, title string, createdBy event.UserID, createdAt time.Time) *session {
 	if createdAt.IsZero() {
 		createdAt = h.now()
 	}
-	return &session{
+	s := &session{
 		sid:       sid,
 		tenant:    tenant,
 		workspace: workspace,
@@ -750,6 +877,8 @@ func (h *Host) newSession(sid event.SessionID, tenant event.TenantID, workspace 
 		doneCh:    make(chan struct{}),
 		subs:      make(map[*subscription]struct{}),
 	}
+	s.sessionEmit = newSessionEmitter(h, s)
+	return s
 }
 
 // setStateLocked transitions the session state, asserting the transition table.
@@ -881,21 +1010,37 @@ func (h *Host) handleInput(s *session, input inputEnvelope) bool {
 		cancel()
 	}
 
-	// Durable: the turn began.
+	// Durable: the user message (replay truth, 7b2 D24) then the turn start.
+	// Emitted from the executor goroutine (not SubmitInput) so the ordering
+	// invariant holds: UserMessageCommitted(turn X) < TurnStarted(turn X),
+	// and concurrent submissions append in FIFO queue order.
+	h.emitDraft(s, event.KindUserMessageCommitted, event.UserMessageCommitted{
+		TurnID: input.turnID,
+		Text:   input.text,
+	})
 	h.emitDraft(s, event.KindTurnStarted, event.TurnStarted{TurnID: input.turnID, TurnIndex: turnIdx})
 
 	// The turn-scoped emitter: built per turn and fenced at finalization so no
 	// turn-emitted durable event can outlive its TurnCompleted (terminal ordering).
 	em := newEmitter(h, s)
 
+	// The async-approval park function: closures over the session, allowing
+	// the adapter's confirmer to park the session in awaiting_approval and
+	// block until RespondToApproval or ctx cancellation (7b2 D25).
+	park := func(ctx context.Context, approvalID event.ApprovalID) (string, string, event.UserID) {
+		return h.parkApproval(s, ctx, approvalID)
+	}
+
 	text, err := h.turn(turnCtx, TurnInput{
-		SessionID:  s.sid,
-		TurnID:     input.turnID,
-		TurnIndex:  turnIdx,
-		Text:       input.text,
-		ReadAction: input.readAction,
-		UserID:     input.userID,
-		Emit:       em,
+		SessionID:   s.sid,
+		TurnID:      input.turnID,
+		TurnIndex:   turnIdx,
+		Text:        input.text,
+		ReadAction:  input.readAction,
+		UserID:      input.userID,
+		Emit:        em,
+		SessionEmit: s.sessionEmit,
+		ParkApproval: park,
 	})
 
 	return h.finishTurn(s, input.turnID, turnCtx, em, text, err)
@@ -1002,6 +1147,10 @@ func (h *Host) finalizeClose(s *session) {
 		h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: q.turnID, Outcome: "cancelled"})
 	}
 	h.emitDraft(s, event.KindSessionClosed, event.SessionClosed{Reason: reason})
+
+	// Fence the session-scoped emitter AFTER all host-emitted events are
+	// appended, so no detached work can append after SessionClosed (7b2 D24).
+	s.sessionEmit.close()
 }
 
 // requestClose initiates session closure. It only sets a flag, cancels the
@@ -1020,6 +1169,62 @@ func (h *Host) requestClose(s *session, reason string) {
 		cur.cancel()
 	}
 	s.signalKick()
+}
+
+// parkApproval transitions the session to awaiting_approval, registers the
+// pending approval, and blocks the turn goroutine until a decision arrives
+// via RespondToApproval or ctx is cancelled (7b2 D25).
+//
+// Called from the adapter's async confirmer (via TurnInput.ParkApproval) after
+// ApprovalRequested is emitted. The turn goroutine blocks here; the Bubble
+// Tea loop and RespondToApproval do NOT block.
+//
+// On ctx cancellation (Interrupt/CloseSession), a forced decline is returned
+// so the turn goroutine can emit ApprovalResolved{declined, "cancelled"}
+// before the emitter is fenced.
+func (h *Host) parkApproval(s *session, ctx context.Context, approvalID event.ApprovalID) (string, string, event.UserID) {
+	pa := &pendingApproval{
+		approvalID: approvalID,
+		decisionCh: make(chan approvalDecision, 1),
+	}
+
+	s.mu.Lock()
+	// Transition running → awaiting_approval. If the session is closing or
+	// already cancelled, don't park — return a forced decline immediately.
+	if s.closing != "" || ctx.Err() != nil {
+		s.mu.Unlock()
+		return "declined", "cancelled", ""
+	}
+	s.setStateLocked(core.SessionAwaitingApproval)
+	s.pendingApproval = pa
+	s.mu.Unlock()
+
+	// Block the turn goroutine until a decision arrives or ctx is cancelled.
+	select {
+	case dec := <-pa.decisionCh:
+		// Transition back to running.
+		s.mu.Lock()
+		s.pendingApproval = nil
+		if s.state == core.SessionAwaitingApproval {
+			s.setStateLocked(core.SessionRunning)
+		}
+		s.mu.Unlock()
+		return dec.outcome, dec.reason, dec.resolver
+	case <-ctx.Done():
+		// Forced decline: Interrupt/CloseSession cancelled the turn ctx.
+		s.mu.Lock()
+		s.pendingApproval = nil
+		if s.state == core.SessionAwaitingApproval {
+			// Stay in awaiting_approval only if not closing; finishTurn
+			// will handle the state transition. If closing, let it go
+			// to closed via finalizeClose.
+			if s.closing == "" {
+				s.setStateLocked(core.SessionRunning)
+			}
+		}
+		s.mu.Unlock()
+		return "declined", "cancelled", ""
+	}
 }
 
 // emitDraft validates, appends, and delivers one durable event. It is the host's
@@ -1155,6 +1360,77 @@ func (e *hostEmitter) Notify(kind event.Kind, payload any) {
 	}
 	if err := ev.ValidateCommitted(); err != nil {
 		return // invalid ephemeral notification: drop (best-effort by contract)
+	}
+	e.host.notifyEphemeral(e.s, ev)
+}
+
+// ---- sessionEmitter: the session-scoped SessionEmitter implementation (7b2) ----
+
+// sessionEmitter implements SessionEmitter. It shares the same append→notify
+// path as hostEmitter but is fenced at session close (not turn close). A
+// session-scoped emitter is created once per session (in newSession) and
+// passed into every TurnInput.SessionEmit.
+type sessionEmitter struct {
+	s    *session
+	host *Host
+	// closed is set when the session closes (finalizeClose). After that,
+	// Emit returns ErrEmitterClosed and Notify drops.
+	closed atomic.Bool
+}
+
+func newSessionEmitter(h *Host, s *session) *sessionEmitter {
+	return &sessionEmitter{s: s, host: h}
+}
+
+// closeSessionEmitter fences the emitter at session close. Idempotent.
+func (e *sessionEmitter) close() { e.closed.Store(true) }
+
+func (e *sessionEmitter) Emit(kind event.Kind, payload any) error {
+	if kind.Class() == event.ClassEphemeral {
+		return fmt.Errorf("%w: %s is ephemeral (durable Emit only)", core.ErrInvalidInput, kind)
+	}
+	if hostReservedKinds[kind] {
+		return fmt.Errorf("%w: %s is host-owned", core.ErrInvalidInput, kind)
+	}
+	if turnScopedKinds[kind] {
+		return fmt.Errorf("%w: %s is turn-scoped (use the turn Emitter, not SessionEmitter)", core.ErrInvalidInput, kind)
+	}
+	draft := event.Event{
+		TenantID:  e.s.tenant,
+		SessionID: e.s.sid,
+		Ts:        e.host.now(),
+		Kind:      kind,
+		Payload:   payload,
+	}
+	e.s.emitMu.Lock()
+	defer e.s.emitMu.Unlock()
+	if e.closed.Load() {
+		return ErrEmitterClosed
+	}
+	committed, err := e.host.store.Append(context.Background(), draft)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrEmitFailed, err)
+	}
+	e.host.notify(e.s, committed)
+	return nil
+}
+
+func (e *sessionEmitter) Notify(kind event.Kind, payload any) {
+	if e.closed.Load() {
+		return
+	}
+	if kind.Class() != event.ClassEphemeral {
+		return
+	}
+	ev := event.Event{
+		TenantID:  e.s.tenant,
+		SessionID: e.s.sid,
+		Ts:        e.host.now(),
+		Kind:      kind,
+		Payload:   payload,
+	}
+	if err := ev.ValidateCommitted(); err != nil {
+		return
 	}
 	e.host.notifyEphemeral(e.s, ev)
 }
