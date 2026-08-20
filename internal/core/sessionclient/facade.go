@@ -148,7 +148,7 @@ type ClientSnapshot struct {
 	OutputMode config.OutputMode
 
 	// Costs.
-	Costs proxy.CostTracker
+	Costs *proxy.CostTracker
 
 	// Workflow.
 	Workflow *WorkflowSnapshot

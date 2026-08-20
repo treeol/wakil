@@ -178,6 +178,7 @@ func TestClientSnapshotSlicesAreClonable(t *testing.T) {
 		ModelList:     append([]string(nil), models...),
 		BackendList:   append([]Backend(nil), backends...),
 		PendingImages: append([]proxy.ImagePart(nil), imgs...),
+		Costs:         &proxy.CostTracker{},
 	}
 
 	// Mutate the snapshot's slices — the source slices must not change.
