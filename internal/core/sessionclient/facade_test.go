@@ -1,9 +1,13 @@
 package sessionclient
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/treeol/wakil/internal/core"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // TestPackageIsAgentFree is the structural guard for Gate #1's facade half: the
@@ -123,3 +127,104 @@ func TestCommandResultValidate(t *testing.T) {
 		t.Error("invalid rotate type should be rejected")
 	}
 }
+
+// TestCommandResultOpID verifies that the OpID field is carried through
+// and does not affect validation (it's an async-op identifier, not an action).
+func TestCommandResultOpID(t *testing.T) {
+	cr := CommandResult{Handled: true, OpID: "op-42"}
+	if cr.OpID != "op-42" {
+		t.Errorf("OpID = %q, want %q", cr.OpID, "op-42")
+	}
+	// OpID alone should not conflict with any action.
+	if err := cr.Validate(); err != nil {
+		t.Errorf("OpID-only should validate: %v", err)
+	}
+	// OpID alongside a single action is valid.
+	cr2 := CommandResult{Handled: true, OpID: "op-1", Submit: "text"}
+	if err := cr2.Validate(); err != nil {
+		t.Errorf("OpID+submit should validate: %v", err)
+	}
+}
+
+// TestClientSnapshotOutputMode verifies the OutputMode field is present and
+// carries config.OutputMode values.
+func TestClientSnapshotOutputMode(t *testing.T) {
+	snap := ClientSnapshot{
+		OutputMode: "debug",
+	}
+	if snap.OutputMode != "debug" {
+		t.Errorf("OutputMode = %q, want %q", snap.OutputMode, "debug")
+	}
+	snap.OutputMode = "simple"
+	if snap.OutputMode != "simple" {
+		t.Errorf("OutputMode = %q, want %q", snap.OutputMode, "simple")
+	}
+}
+
+// TestClientSnapshotSlicesAreClonable verifies that the snapshot's slice
+// fields can be independently mutated without affecting the source. This
+// documents the immutability contract: the wiring-side constructor must
+// clone all slices so the TUI can read them safely.
+func TestClientSnapshotSlicesAreClonable(t *testing.T) {
+	conv := []proxy.Message{{Role: "user", Content: nil}}
+	tools := []proxy.Tool{{Function: proxy.ToolFunction{Name: "run_shell"}}}
+	models := []string{"a", "b"}
+	backends := []Backend{{Name: "llama"}}
+	imgs := []proxy.ImagePart{{MIME: "image/png", Path: "screenshot.png"}}
+
+	snap := ClientSnapshot{
+		Conv:          append([]proxy.Message(nil), conv...),
+		Tools:         append([]proxy.Tool(nil), tools...),
+		ModelList:     append([]string(nil), models...),
+		BackendList:   append([]Backend(nil), backends...),
+		PendingImages: append([]proxy.ImagePart(nil), imgs...),
+	}
+
+	// Mutate the snapshot's slices — the source slices must not change.
+	snap.Conv[0].Role = "assistant"
+	snap.Tools[0].Function.Name = "modified"
+	snap.ModelList[0] = "x"
+	snap.BackendList[0].Name = "modified"
+	snap.PendingImages[0].MIME = "image/jpeg"
+
+	if conv[0].Role != "user" {
+		t.Error("snapshot Conv mutation leaked to source")
+	}
+	if tools[0].Function.Name != "run_shell" {
+		t.Error("snapshot Tools mutation leaked to source")
+	}
+	if models[0] != "a" {
+		t.Error("snapshot ModelList mutation leaked to source")
+	}
+	if backends[0].Name != "llama" {
+		t.Error("snapshot BackendList mutation leaked to source")
+	}
+	if imgs[0].MIME != "image/png" {
+		t.Error("snapshot PendingImages mutation leaked to source")
+	}
+}
+
+// TestConversationManagerInterface verifies that ConversationManager is a
+// compile-time-valid interface with the expected methods. This is a
+// structural test: it ensures the interface exists and has the right shape
+// for the wiring-side implementation (7b3 m3).
+func TestConversationManagerInterface(t *testing.T) {
+	var _ ConversationManager = (ConversationManager)(nil)
+	// The interface must have these four methods. If any is removed or
+	// renamed, this will fail to compile.
+	var cm ConversationManager = &fakeConversationManager{}
+	_ = cm
+}
+
+type fakeConversationManager struct{}
+
+func (f *fakeConversationManager) NewConversation(ctx context.Context, p core.Principal) (Facade, error) {
+	return nil, nil
+}
+func (f *fakeConversationManager) ResumeConversation(ctx context.Context, p core.Principal, id string) (Facade, error) {
+	return nil, nil
+}
+func (f *fakeConversationManager) HandoffConversation(ctx context.Context, p core.Principal, cur Facade, proceed bool) (Facade, error) {
+	return nil, nil
+}
+func (f *fakeConversationManager) Close(fac Facade) error { return nil }

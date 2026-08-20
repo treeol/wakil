@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/proxy"
@@ -143,6 +144,9 @@ type ClientSnapshot struct {
 	PendingImages []proxy.ImagePart
 	RawTools      bool
 
+	// Output mode (snapshotted once at session creation; never changes).
+	OutputMode config.OutputMode
+
 	// Costs.
 	Costs proxy.CostTracker
 
@@ -180,6 +184,10 @@ type WorkflowSnapshot struct {
 //   - Rotate: non-nil → the TUI rotates the conversation (D27).
 //   - SideQuestion: non-empty → the TUI starts a side question with this text.
 //   - Compacted: true → the TUI runs its compaction-completed handler.
+//   - OpID: non-empty → the command initiated an async operation (e.g.
+//     /handoff, /remember, /recall). The TUI observes progress via events
+//     keyed by this OpID. The command is not "done" until the corresponding
+//     completion event arrives.
 //
 // No field carries an agent.* type. The TUI never imports agent to interpret
 // this struct.
@@ -191,6 +199,7 @@ type CommandResult struct {
 	Rotate       *RotateRequest // non-nil → rotate the conversation
 	SideQuestion string         // non-empty → start a side question
 	Compacted    bool
+	OpID         OpID           // non-empty → async op initiated; observe via events
 }
 
 // RotateRequest tells the TUI to rotate the conversation (D27). The rotation
@@ -378,4 +387,44 @@ type RepoStateMutator struct {
 
 	AutoApprove   bool
 	InfoPanelOpen bool
+}
+
+// ---- ConversationManager (D27) ----
+
+// ConversationManager sits above the facade and handles conversation lifecycle
+// operations that create, resume, or fold entire sessions. The TUI calls these
+// when a CommandResult carries a RotateRequest (from /new, /resume, /handoff).
+//
+// The manager owns the facade lifecycle: each method returns a new Facade
+// (except Close, which releases the current one). The TUI never constructs
+// a facade directly — it goes through the manager.
+//
+// This interface is agent-free. The implementation lives in internal/wiring
+// (7b3 m3) and bridges to *agent.App internally.
+//
+// Detached-job policy (P0): rotation and close CANCEL any in-flight detached
+// async jobs (side questions, /handoff, /remember, /recall). The caller does
+// not need to drain them. This is the simplest correct policy: the old host
+// is going away, so its detached jobs are cancelled rather than retained.
+// A future revision may support job migration to the new host.
+type ConversationManager interface {
+	// NewConversation creates a fresh session and returns its facade. The
+	// caller's current facade (if any) must be closed first via Close.
+	NewConversation(ctx context.Context, principal core.Principal) (Facade, error)
+
+	// ResumeConversation loads an existing session by ID or prefix and
+	// returns a facade backed by it. Returns an error if the session is
+	// not found.
+	ResumeConversation(ctx context.Context, principal core.Principal, idOrPrefix string) (Facade, error)
+
+	// HandoffConversation folds the current conversation into a summary and
+	// creates a new session that carries the folded context. If proceed is
+	// true, the new session auto-starts a continuation turn with the
+	// handoff context. Returns the new facade.
+	HandoffConversation(ctx context.Context, principal core.Principal, current Facade, proceed bool) (Facade, error)
+
+	// Close releases the facade and all its resources (App, Host,
+	// subscription). Detached async jobs are cancelled. After Close, the
+	// facade is unusable.
+	Close(f Facade) error
 }
