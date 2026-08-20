@@ -1,18 +1,17 @@
 package main
 
 // headless_seam_test.go: the structural guard for the chunk-7 headless
-// re-route (docs/cards/card-148-chunk7-plan.md D19/D20, exit criterion 2).
+// re-route (docs/cards/card-148-chunk7-plan.md D19/D20, exit criterion 2)
+// and the Gate #1 cmd half (card-148-chunk7b-plan.md: main.go stops
+// importing internal/agent once the wiring wrappers exist).
 //
 // It is a source-level (AST) check, NOT go list (which is package-granular and
 // cannot distinguish the deferred TUI path from the headless path — both live in
-// package main). It asserts that NO cmd/wakil non-test file EXCEPT main.go (the
-// deferred TUI bootstrap, chunk 7b) imports internal/agent or internal/tui.
-// main.go is the enumerated exception; run.go (the headless shim) must be
-// agent-free and tui-free.
-//
-// Gate #1 (parent plan §3) stays red until 7b removes *agent.App from
-// internal/tui AND main.go stops importing it; this test enforces the HEADLESS
-// half and will flag any regression that re-introduces agent into run.go.
+// package main). It asserts that NO cmd/wakil non-test file imports
+// internal/agent — including main.go, which reaches the agent surface only
+// through internal/wiring wrappers (sessions.go). internal/tui remains allowed
+// in main.go alone (the deferred TUI bootstrap); run.go (the headless shim)
+// must be agent-free and tui-free.
 
 import (
 	"go/parser"
@@ -23,8 +22,9 @@ import (
 	"testing"
 )
 
-// headlessCleanFiles are the cmd/wakil non-test files that must NOT import
-// internal/agent or internal/tui. main.go is deliberately excluded (TUI path).
+// cmdNonTestFiles lists the cmd/wakil non-test Go files. internal/tui is
+// allowed in main.go alone (the deferred TUI bootstrap); every other file —
+// main.go included — must be free of internal/agent.
 func cmdNonTestFiles(t *testing.T) []string {
 	t.Helper()
 	ents, err := os.ReadDir(".")
@@ -37,16 +37,14 @@ func cmdNonTestFiles(t *testing.T) []string {
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if name == "main.go" {
-			continue // deferred TUI bootstrap exception (chunk 7b)
-		}
 		out = append(out, name)
 	}
 	return out
 }
 
-// TestHeadlessNoAgentImport asserts no non-test cmd/wakil file other than
-// main.go imports internal/agent or internal/tui.
+// TestHeadlessNoAgentImport asserts that no non-test cmd/wakil file imports
+// internal/agent (Gate #1, cmd half — closed by the wiring sessions wrappers),
+// and that internal/tui appears in main.go alone.
 func TestHeadlessNoAgentImport(t *testing.T) {
 	fset := token.NewFileSet()
 	var violations []string
@@ -57,15 +55,18 @@ func TestHeadlessNoAgentImport(t *testing.T) {
 		}
 		for _, imp := range node.Imports {
 			path := strings.Trim(imp.Path.Value, `"`)
-			if path == "github.com/treeol/wakil/internal/agent" ||
-				path == "github.com/treeol/wakil/internal/tui" {
+			if path == "github.com/treeol/wakil/internal/agent" {
 				violations = append(violations,
 					f+":"+fset.Position(imp.Pos()).String()+": imports "+path)
+			}
+			if path == "github.com/treeol/wakil/internal/tui" && f != "main.go" {
+				violations = append(violations,
+					f+":"+fset.Position(imp.Pos()).String()+": imports "+path+" (tui is main.go-only)")
 			}
 		}
 	}
 	if len(violations) > 0 {
-		t.Fatalf("headless cmd/wakil files must not import agent/tui (main.go is the TUI exception):\n  %s",
+		t.Fatalf("cmd/wakil non-test files must not import internal/agent (any file) or internal/tui (main.go is the only TUI exception):\n  %s",
 			strings.Join(violations, "\n  "))
 	}
 }

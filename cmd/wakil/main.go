@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/counsel"
@@ -46,7 +45,7 @@ func main() {
 	}
 	if wantList {
 		cwd, _ := os.Getwd()
-		agent.PrintSessions(os.Stdout, cwd, listAll)
+		wiring.PrintSessions(os.Stdout, cwd, listAll)
 		return
 	}
 
@@ -74,13 +73,13 @@ func main() {
 			if cfg.ExecMode != "direct" {
 				ws = cfg.HostWorkDir
 			}
-			s, err := agent.LoadSessionScoped("", agent.SessionScope{Workspace: ws, All: cfg.AllSessions})
+			resolved, err := wiring.ResolveRecentSession(ws, cfg.AllSessions)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "resume error:", err)
 				os.Exit(1)
 			}
-			if s != nil {
-				id = s.ChatID
+			if resolved != "" {
+				id = resolved
 			}
 		}
 		resumeID = id
@@ -183,13 +182,13 @@ func main() {
 	// surfaced to stderr now (the alt-screen isn't up yet) so the user can
 	// find diagnostics later.
 	if snap := rt.Facade.Snapshot(); snap.ChatID != "" {
-		if f := diag.OpenSessionLog(agent.ShortID(snap.ChatID)); f != nil {
+		if f := diag.OpenSessionLog(wiring.ShortID(snap.ChatID)); f != nil {
 			// Register f.Close() FIRST so it runs LAST (defers are LIFO): the
 			// sink is restored to stderr before the file closes, so late
 			// cleanup writes never target a closed file.
 			defer f.Close()
 			defer diag.Redirect(nil)
-		} else if p := diag.LogPath(agent.ShortID(snap.ChatID)); p != "" {
+		} else if p := diag.LogPath(wiring.ShortID(snap.ChatID)); p != "" {
 			fmt.Fprintf(os.Stderr, "diagnostics: cannot open log at %s — session diagnostics stay on stderr\n", p)
 		}
 	}
