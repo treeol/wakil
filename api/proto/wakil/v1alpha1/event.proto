@@ -52,9 +52,10 @@ message Event {
     // 7c additions
     WorkflowOutcomePayload         workflow_outcome         = 39;
     WorkflowWarningPayload         workflow_warning         = 40;
+    MessageCommittedPayload        message_committed        = 41;
   }
   // Reserved for future event kinds.
-  reserved 41 to 50;
+  reserved 42 to 50;
 }
 
 // --- Session lifecycle ---

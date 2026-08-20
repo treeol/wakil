@@ -67,6 +67,7 @@ type Event struct {
 	//	*Event_SessionNote
 	//	*Event_WorkflowOutcome
 	//	*Event_WorkflowWarning
+	//	*Event_MessageCommitted
 	Payload       isEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -423,6 +424,15 @@ func (x *Event) GetWorkflowWarning() *WorkflowWarningPayload {
 	return nil
 }
 
+func (x *Event) GetMessageCommitted() *MessageCommittedPayload {
+	if x != nil {
+		if x, ok := x.Payload.(*Event_MessageCommitted); ok {
+			return x.MessageCommitted
+		}
+	}
+	return nil
+}
+
 type isEvent_Payload interface {
 	isEvent_Payload()
 }
@@ -553,6 +563,10 @@ type Event_WorkflowWarning struct {
 	WorkflowWarning *WorkflowWarningPayload `protobuf:"bytes,40,opt,name=workflow_warning,json=workflowWarning,proto3,oneof"`
 }
 
+type Event_MessageCommitted struct {
+	MessageCommitted *MessageCommittedPayload `protobuf:"bytes,41,opt,name=message_committed,json=messageCommitted,proto3,oneof"`
+}
+
 func (*Event_SessionCreated) isEvent_Payload() {}
 
 func (*Event_TurnStarted) isEvent_Payload() {}
@@ -614,6 +628,8 @@ func (*Event_SessionNote) isEvent_Payload() {}
 func (*Event_WorkflowOutcome) isEvent_Payload() {}
 
 func (*Event_WorkflowWarning) isEvent_Payload() {}
+
+func (*Event_MessageCommitted) isEvent_Payload() {}
 
 type SessionCreatedPayload struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2475,7 +2491,7 @@ var File_wakil_v1alpha1_event_proto protoreflect.FileDescriptor
 
 const file_wakil_v1alpha1_event_proto_rawDesc = "" +
 	"\n" +
-	"\x1awakil/v1alpha1/event.proto\x12\x0ewakil.v1alpha1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8a\x16\n" +
+	"\x1awakil/v1alpha1/event.proto\x12\x0ewakil.v1alpha1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe2\x16\n" +
 	"\x05Event\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -2515,8 +2531,9 @@ const file_wakil_v1alpha1_event_proto_rawDesc = "" +
 	"learnNudge\x12G\n" +
 	"\fsession_note\x18& \x01(\v2\".wakil.v1alpha1.SessionNotePayloadH\x00R\vsessionNote\x12S\n" +
 	"\x10workflow_outcome\x18' \x01(\v2&.wakil.v1alpha1.WorkflowOutcomePayloadH\x00R\x0fworkflowOutcome\x12S\n" +
-	"\x10workflow_warning\x18( \x01(\v2&.wakil.v1alpha1.WorkflowWarningPayloadH\x00R\x0fworkflowWarningB\t\n" +
-	"\apayloadJ\x04\b)\x103\"x\n" +
+	"\x10workflow_warning\x18( \x01(\v2&.wakil.v1alpha1.WorkflowWarningPayloadH\x00R\x0fworkflowWarning\x12V\n" +
+	"\x11message_committed\x18) \x01(\v2'.wakil.v1alpha1.MessageCommittedPayloadH\x00R\x10messageCommittedB\t\n" +
+	"\apayloadJ\x04\b*\x103\"x\n" +
 	"\x15SessionCreatedPayload\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x1d\n" +
 	"\n" +
@@ -2739,11 +2756,12 @@ var file_wakil_v1alpha1_event_proto_depIdxs = []int32{
 	32, // 29: wakil.v1alpha1.Event.session_note:type_name -> wakil.v1alpha1.SessionNotePayload
 	23, // 30: wakil.v1alpha1.Event.workflow_outcome:type_name -> wakil.v1alpha1.WorkflowOutcomePayload
 	24, // 31: wakil.v1alpha1.Event.workflow_warning:type_name -> wakil.v1alpha1.WorkflowWarningPayload
-	32, // [32:32] is the sub-list for method output_type
-	32, // [32:32] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	7,  // 32: wakil.v1alpha1.Event.message_committed:type_name -> wakil.v1alpha1.MessageCommittedPayload
+	33, // [33:33] is the sub-list for method output_type
+	33, // [33:33] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_wakil_v1alpha1_event_proto_init() }
@@ -2783,6 +2801,7 @@ func file_wakil_v1alpha1_event_proto_init() {
 		(*Event_SessionNote)(nil),
 		(*Event_WorkflowOutcome)(nil),
 		(*Event_WorkflowWarning)(nil),
+		(*Event_MessageCommitted)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
