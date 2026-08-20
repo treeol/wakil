@@ -2,6 +2,7 @@
 /wakil
 /wakil-old
 /wakil-*
+/wakild
 
 # python artifacts
 __pycache__/
