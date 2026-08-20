@@ -531,7 +531,28 @@ func (f *wiringFacade) LoadSession(idOrPrefix string) (*sessionclient.SessionSum
 
 // ---- Slash-command dispatch ----
 
+// DispatchCommand classifies and executes a slash command (the agent-free
+// replacement for agent.HandleTUICommand + AdaptCmd).
+//
+// CALLING CONTRACT (7b3 m4, per review): some commands' work is slow —
+// /handoff runs a summarizer pipeline (up to 120s), /remember and /recall run
+// 30s memory searches, /compact runs a summarizer. The facade executes them
+// SYNCHRONOUSLY; the caller (the TUI) must invoke DispatchCommand from a
+// worker goroutine and deliver the CommandResult back through its event loop
+// (the same AdaptCmd pattern the old TUI used — a tea.Cmd goroutine). Fast
+// commands (arg parsing + state mutation) may also be called synchronously;
+// the old TUI ran HandleTUICommand's classification on the event loop and only
+// the returned Cmd async.
+//
+// /handoff is special: it does NOT execute the pipeline here (that would
+// duplicate the work HandoffConversation performs). It validates arguments
+// and returns Rotate{Type:"handoff"} — the caller drives the rotation through
+// ConversationManager.HandoffConversation, which runs the pipeline exactly
+// once, asynchronously.
 func (f *wiringFacade) DispatchCommand(line string) sessionclient.CommandResult {
+	if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "/handoff" {
+		return f.dispatchHandoff(fields)
+	}
 	handled, quit, cmd := agent.HandleTUICommand(line, f.app)
 	if !handled {
 		return sessionclient.CommandResult{}
@@ -544,6 +565,50 @@ func (f *wiringFacade) DispatchCommand(line string) sessionclient.CommandResult 
 	}
 	msg := cmd()
 	return interpretAgentMsg(msg, quit)
+}
+
+// dispatchHandoff classifies /handoff WITHOUT executing the pipeline: arg
+// validation + the quick-fail emptiness guards run here (fast), and the
+// rotation intent is returned for the caller to drive through
+// ConversationManager.HandoffConversation — which runs the real pipeline
+// (save, summarize, index, record) exactly once.
+func (f *wiringFacade) dispatchHandoff(fields []string) sessionclient.CommandResult {
+	proceed := false
+	if len(fields) > 2 {
+		return sessionclient.CommandResult{Handled: true, Notice: "usage: /handoff [proceed|stop]"}
+	}
+	if len(fields) == 2 {
+		switch fields[1] {
+		case "proceed":
+			proceed = true
+		case "stop":
+			proceed = false
+		default:
+			return sessionclient.CommandResult{Handled: true, Notice: "usage: /handoff [proceed|stop]"}
+		}
+	}
+	// Quick-fail guards identical to RunHandoffPipeline's, so a hopeless
+	// handoff errors immediately instead of after a rotation attempt.
+	if len(f.app.Conv) == 0 {
+		return sessionclient.CommandResult{Handled: true, Notice: "handoff failed: nothing to hand off (empty conversation)"}
+	}
+	hasUser := false
+	for _, m := range f.app.Conv {
+		if m.Role == "user" {
+			hasUser = true
+			break
+		}
+	}
+	if !hasUser {
+		return sessionclient.CommandResult{Handled: true, Notice: "handoff failed: nothing to hand off (no user messages in conversation)"}
+	}
+	return sessionclient.CommandResult{
+		Handled: true,
+		Rotate: &sessionclient.RotateRequest{
+			Type:    "handoff",
+			Proceed: proceed,
+		},
+	}
 }
 
 // interpretAgentMsg translates an agent.Msg (returned by agent.HandleTUICommand)
@@ -575,16 +640,26 @@ func interpretAgentMsg(msg any, quit bool) sessionclient.CommandResult {
 	case agent.OpenResumePickerMsg:
 		cr.Rotate = &sessionclient.RotateRequest{Type: "resume"}
 	case agent.WFFinalReviewMsg:
-		// Workflow final review — the TUI submits a final-review input.
-		// For now, map to Submit (the TUI submits a workflow continuation).
-		cr.Submit = "continue" // TODO: proper workflow continuation text
+		// Workflow final review (from /plan verify, or /plan approve closing
+		// the last step). The old TUI ran RunFinalReview — a dedicated Cmd that
+		// drove HandleFinalReview with the turn goroutine's callbacks. On the
+		// wiring path the final review runs INSIDE HandleWorkflowTransition
+		// after each IMPLEMENT turn (and on remediation turns), so this
+		// message reaching DispatchCommand means a user-typed command wants
+		// the review NOW: submit a plain continuation turn, which the adapter
+		// runs; HandleWorkflowTransition at its end re-runs the review (the
+		// verify-state remediation path re-runs it on every completed turn).
+		cr.Submit = "continue"
 	case agent.WFStartTurnMsg:
 		cr.Submit = m.UserText
 		if cr.Submit == "" {
 			cr.Submit = "continue"
 		}
 	case agent.LearnTurnMsg:
-		cr.Submit = "/learn"
+		// The old TUI's LearnTurnMsg handler started a RunTurn with this exact
+		// literal text (the proxy recognizes it as the learn trigger). NOT
+		// "/learn" — that would re-dispatch the command and loop.
+		cr.Submit = "learn this for next time"
 	case agent.RememberTurnMsg:
 		cr.Submit = m.UserText
 		if m.UserText == "" {
