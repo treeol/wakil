@@ -1,0 +1,15 @@
+version: v2
+modules:
+  - path: api/proto
+lint:
+  use:
+    - STANDARD
+    - PACKAGE_DIRECTORY_MATCH
+    - PACKAGE_VERSION_SUFFIX
+  except:
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - WIRE_JSON
+    - WIRE

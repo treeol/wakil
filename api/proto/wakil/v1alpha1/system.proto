@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "google/protobuf/timestamp.proto";
+
+// SystemService provides server info and health (design §3.2–§3.3).
+service SystemService {
+  // GetServerInfo returns the API version and supported capabilities.
+  // Clients degrade instead of crashing when a capability is missing.
+  rpc GetServerInfo(GetServerInfoRequest) returns (ServerInfo);
+  // Health returns the daemon's readiness status.
+  rpc Health(HealthRequest) returns (HealthStatus);
+}
+
+message GetServerInfoRequest {}
+
+message ServerInfo {
+  string api_version  = 1;  // e.g. "v1alpha1"
+  repeated string capabilities = 2;
+  bool   ephemeral    = 3;  // true = no durability (MemLog mode)
+  string auth_method  = 4;  // "embedded" (P2) | "local" (P4) | "oidc" (P4)
+}
+
+message HealthRequest {}
+
+message HealthStatus {
+  string status      = 1;  // "ready" | "draining" | "unhealthy"
+  google.protobuf.Timestamp started_at = 2;
+}

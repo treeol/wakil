@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "wakil/v1alpha1/event.proto";
+import "wakil/v1alpha1/session.proto";
+
+// EventService exposes the event stream and durable history (design §3.4).
+service EventService {
+  // StreamEvents delivers a live stream of events for a session. After
+  // replaying durable history from the cursor (seq > after), it delivers
+  // committed durable events and ephemeral notifications as they are produced.
+  // The replay/live boundary may deliver an event twice; the client
+  // deduplicates by seq. Ephemeral events (seq 0) may be dropped during replay.
+  rpc StreamEvents(StreamEventsRequest) returns (stream Event);
+
+  // ListEvents returns the durable history of a session with seq > after,
+  // ascending, up to limit entries. Cursor is exclusive: after=0 returns
+  // from seq 1. limit <= 0 means server default.
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+
+  // GetSessionSnapshot returns the session's metadata plus its durable
+  // event history — the replay bundle (D9).
+  rpc GetSessionSnapshot(GetSessionSnapshotRequest) returns (SessionSnapshot);
+}
+
+message StreamEventsRequest {
+  string session_id = 1;
+  uint64 after_seq  = 2;  // exclusive cursor — 0 = from start
+}
+
+message ListEventsRequest {
+  string session_id  = 1;
+  uint64 after_seq   = 2;  // exclusive cursor — 0 = from seq 1
+  int32  limit       = 3;  // 0 = server default; max enforced server-side
+  uint64 before_seq  = 4;  // optional upper bound (0 = no bound)
+}
+
+message ListEventsResponse {
+  repeated Event events = 1;
+}
+
+message GetSessionSnapshotRequest {
+  string session_id = 1;
+}
