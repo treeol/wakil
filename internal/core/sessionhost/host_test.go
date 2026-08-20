@@ -253,10 +253,16 @@ func TestCloseSessionEmitsSessionClosedAndIsIdempotent(t *testing.T) {
 	}
 
 	// Completion is observed via the event stream, not the call's return — wait
-	// for the async SessionClosed to be emitted by the executor.
+	// for the async SessionClosed to be emitted by the executor. State=closed
+	// can be observed BEFORE the SessionClosed event is appended (P0 residual
+	// window, host.go package doc), so ALSO wait for the event itself.
 	waitFor(t, func() bool {
 		g, _ := h.GetSession(context.Background(), p, s.ID)
 		return g.State == core.SessionClosed
+	})
+	waitFor(t, func() bool {
+		events, _ := h.ListEvents(context.Background(), p, s.ID, 0, 0)
+		return len(events) >= 2 && events[len(events)-1].Kind == event.KindSessionClosed
 	})
 	got, _ := h.GetSession(context.Background(), p, s.ID)
 	if got.State != core.SessionClosed {
