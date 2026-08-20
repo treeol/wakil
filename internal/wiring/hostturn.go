@@ -83,29 +83,73 @@ func WithResolver(r ApprovalResolver) AdapterOption {
 	return func(c *adapterConfig) { c.resolver = r }
 }
 
+// appOwners tracks which *agent.App instances are claimed by a HostTurnFunc, so
+// a second claim fails loudly. Package-global because the constraint is
+// process-wide.
+//
+// 7b1: the claim is now RELEASABLE. Rotation (/new, /resume, /handoff) builds
+// a FRESH *agent.App (a new pointer) for the new conversation — the fresh
+// pointer does not collide with the old one in this map. Release is still
+// needed: it signals "this App is no longer in use" so the wiring facade can
+// safely tear it down (stop async ops, close resources), and it makes the
+// claim lifecycle testable (claim → release → the map is empty). Without
+// Release, a leaked hostTurn would hold a stale App pointer in the map
+// forever, and the wiring layer would have no explicit "done" signal.
+//
+// Release is rejected while a turn is still active (turnActive) — the caller
+// must ensure the session is idle/closed before releasing.
+var (
+	appOwnersMu sync.Mutex
+	appOwners   = map[*agent.App]*hostTurn{}
+)
+
 // ErrAppInUse is returned when the same *agent.App is used to build more than
 // one HostTurnFunc (single-App constraint), and when one HostTurnFunc's TurnFunc
 // is used to drive more than one host session (single-session constraint).
 var ErrAppInUse = errors.New("wiring: agent.App already owned by another host session")
 
-// appOwners tracks which *agent.App instances are claimed by a HostTurnFunc, so
-// a second claim fails loudly. Package-global because the constraint is
-// process-wide. The claim is permanent for the process lifetime (there is no
-// release path in chunk 5; the adapter and host share a process in embedded
-// mode).
-var (
-	appOwnersMu sync.Mutex
-	appOwners   = map[*agent.App]struct{}{}
-)
+// ErrTurnActive is returned by Release when the hostTurn's TurnFunc is still
+// executing a turn. The caller must ensure the session is idle or closed
+// before releasing — releasing an in-flight turn would leave the agent loop
+// running against a freed App.
+var ErrTurnActive = errors.New("wiring: cannot release App while a turn is active")
 
 // hostTurn is the runtime binding of an App to its one host session.
 type hostTurn struct {
 	app      *agent.App
 	resolver ApprovalResolver
 
-	mu        sync.Mutex
-	sessionID event.SessionID // first session this turn served; zero until first use
+	mu         sync.Mutex
+	sessionID  event.SessionID // first session this turn served; zero until first use
+	turnActive bool           // true while the TurnFunc is executing a turn
+	released   bool           // true after Release; prevents re-entry
 }
+
+// HostTurnHandle bundles a TurnFunc with its Release method (7b1). The factory
+// (and eventually the facade) uses Release to free the App ownership claim when
+// a conversation rotates (/new, /resume, /handoff), so a fresh App can be claimed
+// for the new conversation.
+type HostTurnHandle struct {
+	Turn   sessionhost.TurnFunc
+	app    *agent.App
+	ht     *hostTurn
+}
+
+// Release frees the App ownership claim so the wiring facade can tear down the
+// old App (stop async ops, close resources) when a conversation rotates. Returns
+// ErrTurnActive if a turn is still in flight — the caller must ensure the session
+// is idle or closed first. Idempotent.
+//
+// Note: rotation builds a FRESH *agent.App (new pointer) for the new
+// conversation — the fresh pointer does not collide in appOwners. Release is
+// the explicit "this App is done" signal for the old one; it does NOT free the
+// App or close the host (that is the facade's job in 7b3). It only removes the
+// ownership claim so the wiring layer knows the App is no longer in use.
+func (h *HostTurnHandle) Release() error { return h.ht.Release() }
+
+// App returns the bound *agent.App. Used by the factory/facade to access the
+// App for snapshot construction and direct reads (until 7b3 removes those).
+func (h *HostTurnHandle) App() *agent.App { return h.app }
 
 // HostTurnFunc returns a sessionhost.TurnFunc that drives the real agent loop
 // through app. See the package doc for the single-session binding contract.
@@ -114,7 +158,24 @@ type hostTurn struct {
 // a second, distinct session returns an error wrapping sessionhost.ErrInternal
 // (so the session parks in error with internal_error, not backend_failure),
 // rather than running a second turn over the same mutable App.
+//
+// Note: this function does NOT return a Release handle — the App claim is
+// permanent for the process lifetime when called through this entry point.
+// Callers that need rotation (the TUI path) should use NewHostTurnHandle, which
+// returns a HostTurnHandle with a Release method.
 func HostTurnFunc(app *agent.App, opts ...AdapterOption) (sessionhost.TurnFunc, error) {
+	h, err := NewHostTurnHandle(app, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return h.Turn, nil
+}
+
+// NewHostTurnHandle builds a HostTurnHandle (7b1) — the TurnFunc plus a Release
+// method that frees the App ownership claim on rotation. The factory uses this;
+// the headless path continues to use HostTurnFunc (no release needed — the
+// process exits after one turn).
+func NewHostTurnHandle(app *agent.App, opts ...AdapterOption) (*HostTurnHandle, error) {
 	if app == nil {
 		return nil, fmt.Errorf("wiring: nil agent.App")
 	}
@@ -122,16 +183,44 @@ func HostTurnFunc(app *agent.App, opts ...AdapterOption) (sessionhost.TurnFunc, 
 	for _, o := range opts {
 		o(&c)
 	}
+	ht := &hostTurn{app: app, resolver: c.resolver}
+
 	appOwnersMu.Lock()
 	if _, claimed := appOwners[app]; claimed {
 		appOwnersMu.Unlock()
 		return nil, ErrAppInUse
 	}
-	appOwners[app] = struct{}{}
+	appOwners[app] = ht
 	appOwnersMu.Unlock()
 
-	ht := &hostTurn{app: app, resolver: c.resolver}
-	return ht.run, nil
+	return &HostTurnHandle{Turn: ht.run, app: app, ht: ht}, nil
+}
+
+// Release frees the App ownership claim so a fresh App can be built for a new
+// conversation (7b1: the appOwners release path). It returns ErrTurnActive if
+// the TurnFunc is currently executing a turn — the caller must ensure the
+// session is idle or closed first (e.g. by calling CloseSession and waiting
+// for the TurnCompleted event). After Release, the TurnFunc must not be used
+// again (the host session that owns it should be closed).
+//
+// Release is idempotent: calling it twice is safe (the second call is a no-op).
+func (ht *hostTurn) Release() error {
+	ht.mu.Lock()
+	if ht.released {
+		ht.mu.Unlock()
+		return nil
+	}
+	if ht.turnActive {
+		ht.mu.Unlock()
+		return ErrTurnActive
+	}
+	ht.released = true
+	ht.mu.Unlock()
+
+	appOwnersMu.Lock()
+	delete(appOwners, ht.app)
+	appOwnersMu.Unlock()
+	return nil
 }
 
 // run executes one turn on the bound App.
@@ -139,6 +228,31 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	if err := ht.claimSession(in.SessionID); err != nil {
 		return "", err
 	}
+
+	// Mark the turn as active so Release rejects a concurrent rotation (7b1).
+	// Also reject a second concurrent turn on the same hostTurn — the
+	// single-App-single-session constraint means at most one turn may execute
+	// at a time (the host's executor goroutine already serializes turns for
+	// one session, but this guard is defense-in-depth).
+	// Cleared by defer before run returns, so Release sees a quiet state once
+	// the turn goroutine has exited.
+	ht.mu.Lock()
+	if ht.released {
+		ht.mu.Unlock()
+		return "", fmt.Errorf("%w: agent.App released before turn completed", sessionhost.ErrInternal)
+	}
+	if ht.turnActive {
+		ht.mu.Unlock()
+		return "", fmt.Errorf("%w: hostTurn already has an active turn", sessionhost.ErrInternal)
+	}
+	ht.turnActive = true
+	ht.mu.Unlock()
+	defer func() {
+		ht.mu.Lock()
+		ht.turnActive = false
+		ht.mu.Unlock()
+	}()
+
 	app := ht.app
 
 	// Snapshot and restore every callback field the adapter owns. Panic-safe
