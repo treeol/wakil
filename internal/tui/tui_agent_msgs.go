@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -890,8 +891,11 @@ func (m tuiModel) handleAgentMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case agent.OpenResumePickerMsg:
+		// Legacy path: the agent message carries the loaded list. The wiring
+		// path opens the picker from DispatchCommand's ResumePicker result
+		// (stage 3 command dispatch).
 		prevH := m.resumePickerHeight()
-		m = m.openResumePicker(msg)
+		m = m.openResumePicker(toClientSessions(msg.Sessions), sessionclient.SessionScope{Workspace: msg.Scope.Workspace, All: msg.Scope.All}, msg.Hidden)
 		if m.resumePickerHeight() != prevH {
 			m = m.reflow()
 		}

@@ -1,13 +1,16 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	"github.com/charmbracelet/glamour"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -316,7 +319,7 @@ func (m tuiModel) statusLines() []string {
 	}
 	in := m.headerStatusInput()
 	segments := statusSegments(in)
-	if m.app != nil {
+	if m.app != nil || m.facade != nil {
 		segments = append(segments, m.ctxSegment())
 	}
 	maxRows := 2
@@ -442,9 +445,24 @@ func statusSegments(in statusLineInput) []string {
 // Colors match the retired bottom-right block: green → amber (past the
 // usable budget) → red (≥90% of n_ctx); the "ctx" key is amber when the
 // ceiling came from the config fallback or the model was unresolved.
+// Wiring path: all fields from Info() (limit + usage + transcript stats).
 func (m tuiModel) ctxSegment() string {
-	lim := m.app.ContextLimit()
-	used, exact := m.app.ContextUsage()
+	var lim sessionclient.ContextLimit
+	var used int
+	var exact bool
+	var convLen int
+	var transcriptKB int
+	if info, ok := m.info(); ok {
+		lim = info.ContextLimit
+		used, exact = info.ContextUsed, info.ContextExact
+		convLen = info.ConvLen
+		transcriptKB = info.TranscriptSize / 1000
+	} else {
+		lim = toClientLimit(m.app.ContextLimit())
+		used, exact = m.app.ContextUsage()
+		convLen = len(m.app.Conv)
+		transcriptKB = agent.TranscriptSize(m.app.Conv) / 1000
+	}
 	total := lim.NCtx
 	pct := 0
 	if total > 0 {
@@ -476,7 +494,23 @@ func (m tuiModel) ctxSegment() string {
 	}
 	return ctxKey + " " + brailleMeter(used, total, color, 6, usedStr, totalStr) + " " +
 		lipgloss.NewStyle().Foreground(color).Render(sprint("%d%%", pct)) +
-		dim2(sprint(" · hist %d %dk", len(m.app.Conv), agent.TranscriptSize(m.app.Conv)/1000))
+		dim2(sprint(" · hist %d %dk", convLen, transcriptKB))
+}
+
+// toClientLimit converts the agent ContextLimit to the neutral DTO shape so
+// the legacy path shares the rendering code. Wired paths receive the DTO from
+// Info() directly.
+func toClientLimit(l agent.ContextLimit) sessionclient.ContextLimit {
+	return sessionclient.ContextLimit{
+		NCtx:            l.NCtx,
+		NCtxTrain:       l.NCtxTrain,
+		Source:          l.Source,
+		ContextSource:   l.ContextSource,
+		UsableCtx:       l.UsableCtx,
+		ReasoningBudget: l.ReasoningBudget,
+		AnswerMargin:    l.AnswerMargin,
+		ModelUnresolved: l.ModelUnresolved,
+	}
 }
 
 // flowSegments packs segments left-to-right with " · " separators onto as
@@ -546,15 +580,29 @@ func flowSegmentsN(segs []string, w, maxRows int) []string {
 }
 
 // headerStatusInput assembles the statusLineInput for the status line from
-// model state.
+// model state. Wiring path: identity/model/backend fields come from Info();
+// consent from facade.Consent(); RawTools from Snapshot().
 func (m tuiModel) headerStatusInput() statusLineInput {
 	var workflowLabel string
-	if m.app != nil && m.app.Workflow != nil {
-		workflowLabel = m.app.Workflow.SidebarLabel()
-	}
-	backendUsed, backendRequested, backendDefault := "", "", ""
-	model, submodel := "", ""
-	if m.app != nil {
+	var backendUsed, backendRequested, backendDefault string
+	var model, submodel string
+	var consent sessionclient.Consent
+	var rawTools bool
+	if info, ok := m.info(); ok {
+		workflowLabel = info.WorkflowLabel
+		backendUsed = info.LastBackend
+		backendRequested = info.SelectedBackend
+		backendDefault = info.ConfigBackend
+		model = info.EffectiveModel
+		submodel = info.SubagentModel
+		consent = m.facade.Consent()
+		if snap, ok := m.snapshot(); ok {
+			rawTools = snap.RawTools
+		}
+	} else if m.app != nil {
+		if m.app.Workflow != nil {
+			workflowLabel = m.app.Workflow.SidebarLabel()
+		}
 		if m.app.Client != nil {
 			backendUsed = m.app.Client.LastUsedBackend()
 		}
@@ -562,16 +610,14 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		backendDefault = m.app.Cfg.Backend
 		model = m.app.EffectiveModel()
 		submodel = m.app.EffectiveSubagentModel()
-	}
-	var consent agent.ConsentSnapshot
-	if m.app != nil {
-		consent = m.app.Consent()
+		consent = toClientConsent(m.app.Consent())
+		rawTools = m.app.RawTools
 	}
 	runningTool := ""
 	if m.runningTool != nil {
 		runningTool = "tool: " + m.runningTool.name
 		if m.runningTool.command != "" {
-			runningTool += " " + agent.Truncate(m.runningTool.command, 40)
+			runningTool += " " + formatTruncate(m.runningTool.command, 40)
 		}
 	}
 	// lastToolText persists the last tool's text after it completes (until the
@@ -580,7 +626,7 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 	if m.lastTool != nil {
 		lastToolText = m.lastTool.name
 		if m.lastTool.command != "" {
-			lastToolText += " " + agent.Truncate(m.lastTool.command, 40)
+			lastToolText += " " + formatTruncate(m.lastTool.command, 40)
 		}
 	}
 	return statusLineInput{
@@ -589,7 +635,7 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		allowDestructive:        consent.AllowDestructive,
 		pendingAutoGrant:        m.pendingAutoGrant,
 		pendingDestructiveGrant: m.pendingDestructiveGrant,
-		rawTools:                m.app != nil && m.app.RawTools,
+		rawTools:                rawTools,
 		reasoning:               m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
 		tps:                     m.tps,
 		workflowLabel:           workflowLabel,
@@ -605,6 +651,105 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		queueLen:                len(m.queuedPrompts),
 		runningTool:             runningTool,
 		lastToolText:            lastToolText,
+	}
+}
+
+// formatTruncate mirrors agent.Truncate without the agent import (status-line
+// command previews).
+func formatTruncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// toAgentSession converts a SessionSummary back to an agent.Session for the
+// legacy (in-place App) resume path.
+func toAgentSession(s *sessionclient.SessionSummary) *agent.Session {
+	return &agent.Session{
+		ChatID:        s.ChatID,
+		Model:         s.Model,
+		Label:         s.Label,
+		Workspace:     s.Workspace,
+		Created:       s.Created,
+		Updated:       s.Updated,
+		Conv:          s.Conv,
+	}
+}
+
+// ---- Rotation (m4b stage 3 scaffolding) ----
+
+// rotateKind identifies which manager operation a rotation performs.
+type rotateKind int
+
+const (
+	rotateNew rotateKind = iota
+	rotateResume
+	rotateHandoff
+)
+
+// rotationRequest describes one conversation rotation. Built by the command
+// path (DispatchCommand results) and the resume picker; executed by
+// beginRotation through the ConversationManager.
+type rotationRequest struct {
+	kind      rotateKind
+	sessionID string // rotateResume: id or unique prefix
+	proceed   bool   // rotateHandoff: auto-start the continuation turn
+}
+
+// rotationMsg is delivered when a rotation completes (or fails). The new
+// facade is attached but its pump is NOT started — the model swaps refs and
+// state first, then starts delivery (review finding: events processed before
+// the swap would be dropped by the session guard).
+type rotationMsg struct {
+	facade  sessionclient.Facade
+	err     error
+	note    string // display note (e.g. "resumed session …")
+	failed  bool
+}
+
+// beginRotation returns a tea.Cmd that performs the rotation off the event
+// loop (HandoffConversation runs a summarizer pipeline — up to 120s). The
+// model's rotating flag must already be set by the caller; the Cmd swaps
+// nothing itself, it only delivers rotationMsg.
+//
+// The OLD facade is closed HERE (inside the Cmd, after the manager built the
+// replacement) — closing before would make HandoffConversation unable to read
+// the old conversation (review finding: build-new-first, then dispose old).
+func (m tuiModel) beginRotation(req rotationRequest) tea.Cmd {
+	mgr, principal, old := m.manager, m.principal, m.facade
+	return func() tea.Msg {
+		ctx := context.Background()
+		var (
+			f   sessionclient.Facade
+			err error
+		)
+		switch req.kind {
+		case rotateNew:
+			f, err = mgr.NewConversation(ctx, principal, old)
+		case rotateResume:
+			f, err = mgr.ResumeConversation(ctx, principal, req.sessionID)
+		case rotateHandoff:
+			f, err = mgr.HandoffConversation(ctx, principal, old, req.proceed)
+		}
+		if err != nil {
+			return rotationMsg{err: err, failed: true}
+		}
+		// Old facade teardown AFTER the replacement exists (build-new-first).
+		if old != nil {
+			_ = old.Close()
+		}
+		return rotationMsg{facade: f}
+	}
+}
+
+// toClientConsent converts the agent consent snapshot to the neutral DTO.
+func toClientConsent(c agent.ConsentSnapshot) sessionclient.Consent {
+	return sessionclient.Consent{
+		AutoApprove:      c.AutoApprove,
+		AllowDestructive: c.AllowDestructive,
+		AllowReads:       c.AllowReads,
 	}
 }
 

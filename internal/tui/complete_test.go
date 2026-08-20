@@ -50,7 +50,7 @@ func newTA(value string) textarea.Model {
 
 func TestComputeCompletionActiveToken(t *testing.T) {
 	base := compTree(t)
-	st := computeCompletion(newTA("see @m"), compSources{mentionBase: base})
+	st := computeCompletion(newTA("see @m"), compSources{mentionBase: base}, nil)
 	if !st.active {
 		t.Fatal("expected active picker")
 	}
@@ -69,7 +69,7 @@ func TestComputeCompletionActiveToken(t *testing.T) {
 
 func TestComputeCompletionHidesDotfiles(t *testing.T) {
 	base := compTree(t)
-	st := computeCompletion(newTA("@"), compSources{mentionBase: base})
+	st := computeCompletion(newTA("@"), compSources{mentionBase: base}, nil)
 	for _, c := range st.cands {
 		if c.name == ".hidden" {
 			t.Fatal("dotfiles should be hidden without a dot prefix")
@@ -79,10 +79,10 @@ func TestComputeCompletionHidesDotfiles(t *testing.T) {
 
 func TestComputeCompletionNoTokenWhenNoAt(t *testing.T) {
 	base := compTree(t)
-	if st := computeCompletion(newTA("just text"), compSources{mentionBase: base}); st.active {
+	if st := computeCompletion(newTA("just text"), compSources{mentionBase: base}, nil); st.active {
 		t.Fatal("no '@' → inactive")
 	}
-	if st := computeCompletion(newTA("mid a@b word"), compSources{mentionBase: base}); st.active {
+	if st := computeCompletion(newTA("mid a@b word"), compSources{mentionBase: base}, nil); st.active {
 		t.Fatal("mid-word '@' → inactive")
 	}
 }
@@ -90,7 +90,7 @@ func TestComputeCompletionNoTokenWhenNoAt(t *testing.T) {
 func TestAcceptCompletionInsertsFile(t *testing.T) {
 	base := compTree(t)
 	m := tuiModel{app: &agent.App{Cfg: config.Config{MentionBase: base}}, ta: newTA("see @other")}
-	m.comp = computeCompletion(m.ta, compSources{mentionBase: base})
+	m.comp = computeCompletion(m.ta, compSources{mentionBase: base}, nil)
 	if len(m.comp.cands) != 1 {
 		t.Fatalf("expected exactly other.go, got %+v", m.comp.cands)
 	}
@@ -106,7 +106,7 @@ func TestAcceptCompletionInsertsFile(t *testing.T) {
 func TestAcceptCompletionDirDrillsIn(t *testing.T) {
 	base := compTree(t)
 	m := tuiModel{app: &agent.App{Cfg: config.Config{MentionBase: base}}, ta: newTA("@models")}
-	m.comp = computeCompletion(m.ta, compSources{mentionBase: base})
+	m.comp = computeCompletion(m.ta, compSources{mentionBase: base}, nil)
 	m = m.acceptCompletion()
 	if got := m.ta.Value(); got != "@models/" {
 		t.Fatalf("dir accept value = %q, want %q", got, "@models/")

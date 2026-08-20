@@ -127,7 +127,7 @@ func TestCompletionHeightAndRender(t *testing.T) {
 
 func TestComputeSlashCompletionCommandPicker(t *testing.T) {
 	src := compSources{} // no data needed for command picker
-	st := computeSlashCompletion(newTA("/"), src)
+	st := computeSlashCompletion(newTA("/"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate for /")
 	}
@@ -148,7 +148,7 @@ func TestComputeSlashCompletionCommandPicker(t *testing.T) {
 
 func TestComputeSlashCompletionCommandNarrowing(t *testing.T) {
 	src := compSources{}
-	st := computeSlashCompletion(newTA("/ba"), src)
+	st := computeSlashCompletion(newTA("/ba"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate for /ba")
 	}
@@ -164,7 +164,7 @@ func TestComputeSlashCompletionCommandNarrowing(t *testing.T) {
 
 func TestComputeSlashCompletionBackendArg(t *testing.T) {
 	src := compSources{backends: []string{"llama", "openrouter", "together"}}
-	st := computeSlashCompletion(newTA("/backend op"), src)
+	st := computeSlashCompletion(newTA("/backend op"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate after /backend ")
 	}
@@ -178,7 +178,7 @@ func TestComputeSlashCompletionBackendArg(t *testing.T) {
 
 func TestComputeSlashCompletionModelArg(t *testing.T) {
 	src := compSources{models: []string{"claude-sonnet-4-6", "claude-opus-4-8", "gpt-4o"}}
-	st := computeSlashCompletion(newTA("/model claude"), src)
+	st := computeSlashCompletion(newTA("/model claude"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate after /model ")
 	}
@@ -190,7 +190,7 @@ func TestComputeSlashCompletionModelArg(t *testing.T) {
 
 func TestComputeSlashCompletionResumeArg(t *testing.T) {
 	src := compSources{sessions: []string{"abc12345", "abc99999", "def00000"}}
-	st := computeSlashCompletion(newTA("/resume abc"), src)
+	st := computeSlashCompletion(newTA("/resume abc"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate after /resume ")
 	}
@@ -201,7 +201,7 @@ func TestComputeSlashCompletionResumeArg(t *testing.T) {
 
 func TestComputeSlashCompletionSubagentNarrowing(t *testing.T) {
 	src := compSources{}
-	st := computeSlashCompletion(newTA("/su"), src)
+	st := computeSlashCompletion(newTA("/su"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate for /su")
 	}
@@ -214,7 +214,7 @@ func TestComputeSlashCompletionSubagentNarrowing(t *testing.T) {
 		t.Errorf("expected /subagent and /submodel; got %v", names)
 	}
 	// /sub narrows further to only /subagent.
-	st = computeSlashCompletion(newTA("/suba"), src)
+	st = computeSlashCompletion(newTA("/suba"), src, nil)
 	if len(st.cands) != 1 || st.cands[0].name != "/subagent" {
 		t.Errorf("expected only /subagent for /suba; got %+v", st.cands)
 	}
@@ -222,7 +222,7 @@ func TestComputeSlashCompletionSubagentNarrowing(t *testing.T) {
 
 func TestComputeSlashCompletionSubmodelNarrowing(t *testing.T) {
 	src := compSources{}
-	st := computeSlashCompletion(newTA("/subm"), src)
+	st := computeSlashCompletion(newTA("/subm"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate for /subm")
 	}
@@ -233,7 +233,7 @@ func TestComputeSlashCompletionSubmodelNarrowing(t *testing.T) {
 
 func TestComputeSlashCompletionSubmodelArg(t *testing.T) {
 	src := compSources{models: []string{"claude-sonnet-4-6", "claude-opus-4-8", "qwen3-8b"}}
-	st := computeSlashCompletion(newTA("/submodel claude"), src)
+	st := computeSlashCompletion(newTA("/submodel claude"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate after /submodel ")
 	}
@@ -245,7 +245,7 @@ func TestComputeSlashCompletionSubmodelArg(t *testing.T) {
 
 func TestComputeSlashCompletionSubagentArg(t *testing.T) {
 	src := compSources{endpoints: []string{"inherit", "openai-a", "proxy-b"}}
-	st := computeSlashCompletion(newTA("/subagent proxy"), src)
+	st := computeSlashCompletion(newTA("/subagent proxy"), src, nil)
 	if !st.active {
 		t.Fatal("picker should activate after /subagent ")
 	}
@@ -257,7 +257,7 @@ func TestComputeSlashCompletionSubagentArg(t *testing.T) {
 func TestComputeSlashCompletionNoArgForOtherCommands(t *testing.T) {
 	src := compSources{}
 	// /compact takes no argument — picker should be inactive after the space.
-	st := computeSlashCompletion(newTA("/compact "), src)
+	st := computeSlashCompletion(newTA("/compact "), src, nil)
 	if st.active {
 		t.Error("picker should not activate for commands without argument completion")
 	}

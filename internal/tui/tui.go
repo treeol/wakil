@@ -9,6 +9,8 @@ import (
 
 	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 
@@ -129,6 +131,15 @@ type tuiModel struct {
 	apply      agent.StateApply // round-trip state application (chunk 6); bound to app
 	cancel     context.CancelFunc
 	cancelling bool // true after first Ctrl+C, until agent.AgentDoneMsg
+
+	// facade/manager/principal (m4b): the agent-free conversation surfaces.
+	// During the staged migration the facade is authoritative for reads that
+	// have been migrated (Snapshot/Info); app remains for the un-migrated
+	// send/turn paths until stage 3 removes it. facade is nil in tests that
+	// construct the model directly with only an App (compat shim below).
+	facade    sessionclient.Facade
+	manager   sessionclient.ConversationManager
+	principal core.Principal
 
 	// outputMode is snapshotted once at construction (startup-only). It is
 	// immutable for the life of the model — see NewTUIModel. Kept immutable so
@@ -470,13 +481,39 @@ func NewTUIModel(app *agent.App) tuiModel {
 	// The agent-prompt source note no longer occupies a conversation row — it
 	// lives in the on-demand info panel (F2 / ctrl+o) as "prompt <path>".
 	// Resumed session: rebuild the conversation view from the loaded transcript.
-	if len(app.Conv) > 0 {
+	// A nil app is legal on the wiring path (NewTUIModelWithFacade builds the
+	// model this way and hydrates from the facade snapshot instead).
+	if app != nil && len(app.Conv) > 0 {
 		items = convItemsFrom(app.Conv)
 		resumeNote := sprint("· resumed session %s — %d messages", agent.ShortID(app.Client.ChatID), len(app.Conv))
 		if app.Workflow != nil {
 			resumeNote += " · workflow restored: " + app.Workflow.PhaseName()
 		}
 		items = append(items, convItem{kind: iSys, text: dim2(resumeNote)})
+	}
+	if app == nil {
+		// Wiring-path base (m4b): control/apply/app stay nil — the facade owns
+		// all mutation on that path; the send path migrates in stage 3.
+		return tuiModel{
+			outputMode:   config.OutputModeDebug,
+			vp:           vp,
+			ta:           ta,
+			state:        stateIdle,
+			followBottom: true,
+			items:        &items,
+			streaming:    &strings.Builder{},
+			imageChips:   &[]string{},
+			subAgentModel: subAgentModel{
+				subCur: -1,
+			},
+			reasoningModel: reasoningModel{
+				reasoning: &strings.Builder{},
+			},
+			historyModel: historyModel{
+				histIdx:      -1,
+				inputHistory: loadHistory(),
+			},
+		}
 	}
 	return tuiModel{
 		app:          app,
@@ -505,6 +542,64 @@ func NewTUIModel(app *agent.App) tuiModel {
 			active: app != nil && app.InfoPanelOpen,
 		},
 	}
+}
+
+// NewTUIModelWithFacade builds the model on the wiring path (m4b): the facade
+// is the conversation surface, the manager owns rotation, and the App is
+// reachable only through them. The initial view state hydrates from the
+// facade's snapshot (resume path included).
+func NewTUIModelWithFacade(f sessionclient.Facade, mgr sessionclient.ConversationManager, principal core.Principal) tuiModel {
+	m := NewTUIModel(nil)
+	m.facade = f
+	m.manager = mgr
+	m.principal = principal
+
+	snap := f.Snapshot()
+	if len(snap.Conv) > 0 {
+		items := convItemsFrom(snap.Conv)
+		resumeNote := sprint("· resumed session %s — %d messages", formatShortID(snap.ChatID), len(snap.Conv))
+		if snap.Workflow != nil {
+			resumeNote += " · workflow restored: " + snap.Workflow.Phase
+		}
+		items = append(items, convItem{kind: iSys, text: dim2(resumeNote)})
+		m.items = &items
+	}
+	if f != nil {
+		if info := f.Info(); info.InfoPanelOpen {
+			m.infoPanel.active = true
+		}
+	}
+	return m
+}
+
+// formatShortID mirrors agent.ShortID without the agent import.
+func formatShortID(s string) string {
+	if len(s) >= 8 {
+		return s[:8]
+	}
+	return s
+}
+
+// snapshot returns the facade's ClientSnapshot on the wiring path. On the
+// legacy path (facade nil — tests and the not-yet-migrated bootstrap) it
+// returns a zero snapshot and ok=false; callers fall back to the old reads.
+// ONE call site per read keeps the migration honest: no file reads App state
+// on the wiring path after its stage lands.
+func (m tuiModel) snapshot() (sessionclient.ClientSnapshot, bool) {
+	if m.facade == nil {
+		return sessionclient.ClientSnapshot{}, false
+	}
+	return m.facade.Snapshot(), true
+}
+
+// info returns the facade's InfoSnapshot on the wiring path (ok=false on the
+// legacy path). Info() is fetched on demand — the fields are cheap but
+// numerous, and Snapshot is re-fetched on every event batch.
+func (m tuiModel) info() (sessionclient.InfoSnapshot, bool) {
+	if m.facade == nil {
+		return sessionclient.InfoSnapshot{}, false
+	}
+	return m.facade.Info(), true
 }
 
 func (m tuiModel) Init() tea.Cmd {
@@ -693,12 +788,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ta.SetValue(keep)
 			m.ta.CursorEnd()
 			m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
-			m.comp = computeCompletion(m.ta, compSrcFromApp(m.app))
+			m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
 			return m, tea.Batch(append(cmds, taCmd, readClipboardCmd())...)
 		}
 
 		prevComp := m.comp.active
-		m.comp = computeCompletion(m.ta, compSrcFromApp(m.app))
+		m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
 		// Picker opened or closed: reflow so the viewport height tracks the change.
 		// Without this the stale viewport overflows View() and Bubble Tea's cursor
 		// tracker drifts (same issue as the subagent tab bar, fixed at line ~402).

@@ -7,13 +7,14 @@ import (
 
 	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/proxy"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func testSessions() []agent.Session {
-	return []agent.Session{
+func testSessions() []sessionclient.SessionSummary {
+	return []sessionclient.SessionSummary{
 		{ChatID: "newest01", Updated: time.Now(), Conv: []proxy.Message{{Role: "user", Content: strPtr("newest task")}}},
 		{ChatID: "middle02", Updated: time.Now().Add(-time.Hour), Conv: []proxy.Message{{Role: "user", Content: strPtr("middle task")}}},
 		{ChatID: "oldest03", Updated: time.Now().Add(-2 * time.Hour), Conv: []proxy.Message{{Role: "user", Content: strPtr("oldest task")}}},
@@ -26,14 +27,14 @@ func newPickerModel() tuiModel {
 		ta:    newTA(""),
 		width: 80, height: 24, ready: true,
 	}
-	m = m.openResumePicker(agent.OpenResumePickerMsg{Sessions: testSessions(), Scope: agent.SessionScope{Workspace: "/work"}})
+	m = m.openResumePicker(testSessions(), sessionclient.SessionScope{Workspace: "/work"}, 0)
 	return m
 }
 
 func TestOpenResumePicker_ActivatesAndClosesCompletion(t *testing.T) {
 	m := tuiModel{app: &agent.App{Cfg: config.DefaultConfig()}, ta: newTA("")}
 	m.comp = completionState{active: true}
-	m = m.openResumePicker(agent.OpenResumePickerMsg{Sessions: testSessions()})
+	m = m.openResumePicker(testSessions(), sessionclient.SessionScope{}, 0)
 	if !m.resumePicker.active {
 		t.Fatal("expected picker to be active")
 	}
@@ -131,7 +132,7 @@ func TestResumePickerCtrlC_NotConsumed(t *testing.T) {
 
 func TestResumePickerEmptyState(t *testing.T) {
 	m := tuiModel{app: &agent.App{Cfg: config.DefaultConfig()}, ta: newTA(""), width: 80, height: 24, ready: true}
-	m = m.openResumePicker(agent.OpenResumePickerMsg{Sessions: nil, Hidden: 2})
+	m = m.openResumePicker(nil, sessionclient.SessionScope{}, 2)
 	out := plain(m.renderResumePicker())
 	if !strings.Contains(out, "no sessions") {
 		t.Fatalf("expected 'no sessions' hint; got %q", out)

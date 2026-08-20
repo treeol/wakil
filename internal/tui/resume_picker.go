@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -21,20 +22,21 @@ const resumePickerMaxVisible = 12
 // typing anything.
 type resumePickerState struct {
 	active   bool
-	sessions []agent.Session
-	scope    agent.SessionScope
+	sessions []sessionclient.SessionSummary
+	scope    sessionclient.SessionScope
 	hidden   int // sessions filtered out by scope; shown as a hint
 	sel      int
 }
 
-// openResumePicker activates the picker from an OpenResumePickerMsg.
-func (m tuiModel) openResumePicker(msg agent.OpenResumePickerMsg) tuiModel {
+// openResumePicker activates the picker with a loaded session list (m4b: the
+// facade's ListSessions result, not an agent message).
+func (m tuiModel) openResumePicker(sessions []sessionclient.SessionSummary, scope sessionclient.SessionScope, hidden int) tuiModel {
 	m.comp = completionState{} // never both pickers open at once
 	m.resumePicker = resumePickerState{
 		active:   true,
-		sessions: msg.Sessions,
-		scope:    msg.Scope,
-		hidden:   msg.Hidden,
+		sessions: sessions,
+		scope:    scope,
+		hidden:   hidden,
 		sel:      0,
 	}
 	return m
@@ -47,13 +49,21 @@ func (m tuiModel) closeResumePicker() tuiModel {
 }
 
 // reloadResumePicker toggles the picker's scope (current workspace ↔ all
-// repos) and re-reads the session store. Synchronous disk I/O, same as
-// fetchSessionShortIDs — the session store is small and local, and this only
-// happens on an explicit keypress, not per-frame.
+// repos) and re-reads the session store through the facade (wiring path) or
+// the agent store (legacy). Synchronous disk I/O — the session store is small
+// and local, and this only happens on an explicit keypress, not per-frame.
 func (m tuiModel) reloadResumePicker(all bool) tuiModel {
 	scope := m.resumePicker.scope
 	scope.All = all
-	sessions, hidden, err := agent.ListSessionsScoped(scope)
+	var sessions []sessionclient.SessionSummary
+	var hidden int
+	var err error
+	if m.facade != nil {
+		sessions, hidden, err = m.facade.ListSessions(scope)
+	} else {
+		agentSessions, h, e := agent.ListSessionsScoped(agent.SessionScope{Workspace: scope.Workspace, All: scope.All})
+		sessions, hidden, err = toClientSessions(agentSessions), h, e
+	}
 	if err != nil {
 		return m
 	}
@@ -64,6 +74,23 @@ func (m tuiModel) reloadResumePicker(all bool) tuiModel {
 		m.resumePicker.sel = 0
 	}
 	return m
+}
+
+// toClientSessions converts agent sessions to the neutral DTO (legacy path).
+func toClientSessions(sessions []agent.Session) []sessionclient.SessionSummary {
+	out := make([]sessionclient.SessionSummary, len(sessions))
+	for i, s := range sessions {
+		out[i] = sessionclient.SessionSummary{
+			ChatID:    s.ChatID,
+			Model:     s.Model,
+			Label:     s.Label,
+			Workspace: s.Workspace,
+			Created:   s.Created,
+			Updated:   s.Updated,
+			Conv:      s.Conv,
+		}
+	}
+	return out
 }
 
 // handleResumePickerKey processes navigation while the picker is open.
@@ -96,8 +123,16 @@ func (m tuiModel) handleResumePickerKey(msg tea.KeyMsg) (tuiModel, tea.Cmd, bool
 		}
 		s := m.resumePicker.sessions[m.resumePicker.sel]
 		m = m.closeResumePicker()
+		// Wiring path: rotation through the ConversationManager (async —
+		// ResumeConversation loads the session). Legacy path: the agent
+		// ResumeSessionMsg applies it to the in-place App.
+		if m.facade != nil && m.manager != nil {
+			id := s.ChatID
+			return m, m.beginRotation(rotationRequest{kind: rotateResume, sessionID: id}), true
+		}
 		app := m.app
-		return m, AdaptCmd(func() agent.Msg { return agent.ResumeSessionMsg(app, &s) }), true
+		sess := toAgentSession(&s)
+		return m, AdaptCmd(func() agent.Msg { return agent.ResumeSessionMsg(app, sess) }), true
 	case "esc":
 		m = m.closeResumePicker()
 		return m, nil, true
@@ -155,12 +190,12 @@ func (m tuiModel) renderResumePicker() string {
 	}
 	for i := start; i < end; i++ {
 		s := sessions[i]
-		turns, first := agent.SessionTurns(s)
+		turns, first := s.Turns()
 		first = strings.ReplaceAll(first, "\n", " ")
 		if len(first) > 40 {
 			first = first[:40] + "…"
 		}
-		id := agent.ShortID(s.ChatID)
+		id := formatShortID(s.ChatID)
 		if s.Label != "" {
 			id += " [" + s.Label + "]"
 		}
