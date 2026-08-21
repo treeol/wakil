@@ -31,7 +31,7 @@ func TestHealthRPC(t *testing.T) {
 	// SystemService handler doesn't call into the host, so a nil TurnFunc
 	// (lifecycle-only) host is sufficient.
 	host := sessionhost.New(nil, sessionhost.WithAgentName("test"))
-	srv := connsvc.NewServer(host, true) // ephemeral=true
+	srv := connsvc.NewServer(host, true, connsvc.NewEmbeddedResolver()) // ephemeral=true
 
 	listener, err := listenUnix(socketPath)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestHealthRPC(t *testing.T) {
 	}
 	defer listener.Close()
 
-	httpSrv := &http.Server{Handler: srv.Handler()}
+	httpSrv := newTestServer(srv)
 	go httpSrv.Serve(listener)
 	defer httpSrv.Shutdown(context.Background())
 
@@ -63,7 +63,7 @@ func TestGetServerInfoRPC(t *testing.T) {
 	socketPath := filepath.Join(dir, "wakild.sock")
 
 	host := sessionhost.New(nil, sessionhost.WithAgentName("test"))
-	srv := connsvc.NewServer(host, true) // ephemeral=true
+	srv := connsvc.NewServer(host, true, connsvc.NewEmbeddedResolver()) // ephemeral=true
 
 	listener, err := listenUnix(socketPath)
 	if err != nil {
@@ -71,7 +71,7 @@ func TestGetServerInfoRPC(t *testing.T) {
 	}
 	defer listener.Close()
 
-	httpSrv := &http.Server{Handler: srv.Handler()}
+	httpSrv := newTestServer(srv)
 	go httpSrv.Serve(listener)
 	defer httpSrv.Shutdown(context.Background())
 
@@ -86,8 +86,8 @@ func TestGetServerInfoRPC(t *testing.T) {
 	if resp.Msg.ApiVersion != "v1alpha1" {
 		t.Errorf("expected api_version %q, got %q", "v1alpha1", resp.Msg.ApiVersion)
 	}
-	if resp.Msg.AuthMethod != "embedded" {
-		t.Errorf("expected auth_method %q, got %q", "embedded", resp.Msg.AuthMethod)
+	if resp.Msg.AuthMethod != "local" {
+		t.Errorf("expected auth_method %q, got %q", "local", resp.Msg.AuthMethod)
 	}
 }
 
@@ -97,7 +97,7 @@ func TestGetServerInfoNonEphemeral(t *testing.T) {
 	socketPath := filepath.Join(dir, "wakild.sock")
 
 	host := sessionhost.New(nil, sessionhost.WithAgentName("test"))
-	srv := connsvc.NewServer(host, false) // ephemeral=false
+	srv := connsvc.NewServer(host, false, connsvc.NewEmbeddedResolver()) // ephemeral=false
 
 	listener, err := listenUnix(socketPath)
 	if err != nil {
@@ -105,7 +105,7 @@ func TestGetServerInfoNonEphemeral(t *testing.T) {
 	}
 	defer listener.Close()
 
-	httpSrv := &http.Server{Handler: srv.Handler()}
+	httpSrv := newTestServer(srv)
 	go httpSrv.Serve(listener)
 	defer httpSrv.Shutdown(context.Background())
 

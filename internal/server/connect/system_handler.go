@@ -23,11 +23,15 @@ func NewSystemHandler(ephemeral bool) *SystemHandler {
 }
 
 func (h *SystemHandler) GetServerInfo(ctx context.Context, req *connect.Request[v1alpha1.GetServerInfoRequest]) (*connect.Response[v1alpha1.ServerInfo], error) {
+	// GetServerInfo and Health remain unauthenticated — they expose no
+	// session or tenant data and are needed before auth (e.g. health
+	// checks). The auth method reported here is the daemon's transport
+	// mode, not the caller's (which may vary per connection).
 	return connect.NewResponse(&v1alpha1.ServerInfo{
 		ApiVersion:   "v1alpha1",
 		Capabilities: []string{"session_service", "event_service", "delete_session"},
 		Ephemeral:    h.ephemeral,
-		AuthMethod:   "embedded",
+		AuthMethod:   "local",
 	}), nil
 }
 

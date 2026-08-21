@@ -14,7 +14,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -82,14 +81,14 @@ func startTestDaemon(t *testing.T, turn sessionhost.TurnFunc) (socketPath string
 	socketPath = filepath.Join(dir, "wakild.sock")
 
 	host = sessionhost.New(turn, sessionhost.WithAgentName("test"))
-	srv := connsvc.NewServer(host, true) // ephemeral=true
+	srv := connsvc.NewServer(host, true, connsvc.NewEmbeddedResolver()) // ephemeral=true
 
 	listener, err := listenUnix(socketPath)
 	if err != nil {
 		t.Fatalf("listenUnix: %v", err)
 	}
 
-	httpSrv := &http.Server{Handler: srv.Handler()}
+	httpSrv := newTestServer(srv)
 	go httpSrv.Serve(listener)
 
 	cleanup = func() {

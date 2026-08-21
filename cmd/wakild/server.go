@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 
 	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/auth"
+	"github.com/treeol/wakil/internal/auth/peercred"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionhost"
@@ -36,7 +38,7 @@ type daemonServer struct {
 	httpSrv   *http.Server // Unix-socket server (Connect RPC)
 	httpAddr  string       // TCP address for web UI ("" = disabled)
 	httpLnr   net.Listener // TCP listener for web UI
-	tcpSrv    *http.Server // TCP server (static files + Connect RPC)
+	tcpSrv    *http.Server // TCP server (static files only — no Connect RPC, P4b)
 	listener  net.Listener // Unix-socket listener
 	ephemeral bool
 	exe       exec.Executor
@@ -103,8 +105,12 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	}
 	host := sessionhost.New(handle.Turn, hostOpts...)
 
-	// 4. Connect server.
-	srv := connect.NewServer(host, ephemeral)
+	// 4. Connect server with the local principal resolver (P4b).
+	// The resolver maps Unix-socket peer UIDs (SO_PEERCRED) to the local
+	// owner principal. It is fail-closed: connections without valid peer
+	// credentials are rejected with CodeUnauthenticated.
+	resolver := auth.NewLocalResolver()
+	srv := connect.NewServer(host, ephemeral, resolver)
 
 	// 5. Unix socket listener.
 	listener, err := listenUnix(socketPath)
@@ -120,6 +126,26 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 
 	httpSrv := &http.Server{
 		Handler: srv.Handler(),
+		// ConnContext captures peer credentials (SO_PEERCRED) at
+		// connection-accept time and stores them in the context that every
+		// request on that connection inherits. The principal resolver reads
+		// them per-request to resolve the caller's identity (P4b).
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			creds, ok, err := peercred.FromConn(conn)
+			if err != nil {
+				// Log extraction failures — fail-closed but visible.
+				// A persistent failure on a Unix socket indicates a
+				// platform or configuration problem.
+				fmt.Fprintf(os.Stderr, "wakild: peercred extraction failed: %v\n", err)
+				return ctx
+			}
+			if ok {
+				return auth.WithPeerCredentials(ctx, creds)
+			}
+			// No credentials available: leave the context empty. The
+			// resolver will return ErrUnauthenticated — fail closed.
+			return ctx
+		},
 	}
 
 	ds := &daemonServer{
@@ -136,6 +162,14 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	}
 
 	// 6. Optional TCP listener for web UI.
+	// P4b: the TCP server serves ONLY static files. Connect RPC handlers
+	// are NOT mounted on TCP — that would expose the API without
+	// authentication (SO_PEERCRED is Unix-only). Hosted auth (P4c) will
+	// add token/OIDC-based auth for TCP; until then, the web UI can view
+	// static assets but cannot call the API over TCP. The browser UI
+	// will be fully functional again once P4c adds hosted auth or a
+	// Unix-socket-to-TCP proxy is introduced. This is an accepted
+	// trade-off for P4b: closing the authentication bypass takes priority.
 	if httpAddr != "" {
 		tcpLnr, err := net.Listen("tcp", httpAddr)
 		if err != nil {
@@ -148,14 +182,15 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			return nil, fmt.Errorf("wakild: listen tcp: %w", err)
 		}
 		ds.httpLnr = tcpLnr
-		ds.tcpSrv = &http.Server{Handler: webHandler(srv)}
+		ds.tcpSrv = &http.Server{Handler: webStaticHandler()}
 	}
 
 	return ds, nil
 }
 
 // serve starts the HTTP servers. Blocks until both servers stop.
-// The Unix-socket server error is returned; the TCP server error is logged.
+// The Unix-socket server error is returned; the TCP server error is logged
+// but does not stop the daemon (the Unix socket is the critical path).
 func (d *daemonServer) serve() error {
 	errCh := make(chan error, 2)
 
@@ -165,21 +200,27 @@ func (d *daemonServer) serve() error {
 
 	if d.tcpSrv != nil && d.httpLnr != nil {
 		go func() {
-			errCh <- d.tcpSrv.Serve(d.httpLnr)
+			err := d.tcpSrv.Serve(d.httpLnr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "wakild: tcp server stopped: %v\n", err)
+			}
+			// Don't send TCP errors to errCh — only the Unix-socket
+			// server error stops the daemon.
 		}()
 	}
 
-	// Return the first error (typically the Unix-socket server).
+	// Return the first error from the Unix-socket server only.
 	return <-errCh
 }
 
-// webHandler builds the HTTP handler for the web UI: static files served at
-// root paths, with the Connect API handlers mounted at their respective paths.
-// The Connect handler matches paths like /wakil.v1alpha1.SessionService/ListSessions;
-// everything else falls through to the static file server.
-func webHandler(srv *connect.Server) http.Handler {
+// webStaticHandler builds the HTTP handler for the web UI: static files only.
+// P4b: Connect RPC handlers are NOT mounted on TCP — the TCP listener has no
+// peer-credential authentication. The web UI loads static assets (HTML, CSS,
+// JS) from TCP and connects to the API over the Unix socket (or a future
+// hosted-auth path in P4c).
+func webStaticHandler() http.Handler {
 	staticFS, _ := fs.Sub(web.StaticFiles, ".")
-	return srv.HandlerWithStatic(http.FileServer(http.FS(staticFS)))
+	return http.FileServer(http.FS(staticFS))
 }
 
 // shutdown performs a graceful drain:
@@ -235,6 +276,11 @@ func (d *daemonServer) shutdown(ctx context.Context) error {
 // If a stale socket exists and no process is listening on it, it is unlinked
 // and rebound. If a process IS listening, the function returns an error
 // (refuses to steal the socket).
+//
+// P4b: 0600 is the first security layer (owner-only connect). SO_PEERCRED
+// (via ConnContext + LocalResolver) is the second layer: it verifies the
+// connecting process's UID matches the daemon owner even if the socket
+// permissions are misconfigured.
 func listenUnix(path string) (net.Listener, error) {
 	// Ensure the parent directory exists with 0700 permissions.
 	dir := filepath.Dir(path)
@@ -265,7 +311,9 @@ func listenUnix(path string) (net.Listener, error) {
 		return nil, fmt.Errorf("listen on %s: %w", path, err)
 	}
 
-	// 0600: owner-only — security boundary until P4 adds SO_PEERCRED.
+	// 0600: owner-only — first security layer. SO_PEERCRED (ConnContext +
+	// LocalResolver) is the second layer, defense-in-depth against misconfigured
+	// permissions.
 	if err := os.Chmod(path, 0o600); err != nil {
 		l.Close()
 		os.Remove(path)

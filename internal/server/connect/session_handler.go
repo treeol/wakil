@@ -15,19 +15,23 @@ import (
 // SessionHandler implements SessionServiceHandler by delegating to the core
 // SessionService + SessionReader interfaces (both implemented by *sessionhost.Host).
 type SessionHandler struct {
-	svc    core.SessionService
-	reader core.SessionReader
+	svc      core.SessionService
+	reader   core.SessionReader
+	resolver principalResolver
 }
 
 // Compile-time assertion.
 var _ wakilv1alpha1connect.SessionServiceHandler = (*SessionHandler)(nil)
 
-func NewSessionHandler(svc core.SessionService, reader core.SessionReader) *SessionHandler {
-	return &SessionHandler{svc: svc, reader: reader}
+func NewSessionHandler(svc core.SessionService, reader core.SessionReader, resolver principalResolver) *SessionHandler {
+	return &SessionHandler{svc: svc, reader: reader, resolver: resolver}
 }
 
 func (h *SessionHandler) CreateSession(ctx context.Context, req *connect.Request[v1alpha1.CreateSessionRequest]) (*connect.Response[v1alpha1.Session], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	s, err := h.svc.CreateSession(ctx, p, core.CreateSessionRequest{
 		Workspace: event.WorkspaceID(req.Msg.Workspace),
 		Title:     req.Msg.Title,
@@ -39,7 +43,10 @@ func (h *SessionHandler) CreateSession(ctx context.Context, req *connect.Request
 }
 
 func (h *SessionHandler) GetSession(ctx context.Context, req *connect.Request[v1alpha1.GetSessionRequest]) (*connect.Response[v1alpha1.Session], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	s, err := h.reader.GetSession(ctx, p, event.SessionID(req.Msg.SessionId))
 	if err != nil {
 		return nil, mapError(err)
@@ -48,7 +55,10 @@ func (h *SessionHandler) GetSession(ctx context.Context, req *connect.Request[v1
 }
 
 func (h *SessionHandler) ListSessions(ctx context.Context, req *connect.Request[v1alpha1.ListSessionsRequest]) (*connect.Response[v1alpha1.ListSessionsResponse], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	sessions, err := h.reader.ListSessions(ctx, p)
 	if err != nil {
 		return nil, mapError(err)
@@ -61,7 +71,10 @@ func (h *SessionHandler) ListSessions(ctx context.Context, req *connect.Request[
 }
 
 func (h *SessionHandler) DeleteSession(ctx context.Context, req *connect.Request[v1alpha1.DeleteSessionRequest]) (*connect.Response[v1alpha1.DeleteSessionResponse], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	if err := h.svc.DeleteSession(ctx, p, event.SessionID(req.Msg.SessionId)); err != nil {
 		return nil, mapError(err)
 	}
@@ -69,7 +82,10 @@ func (h *SessionHandler) DeleteSession(ctx context.Context, req *connect.Request
 }
 
 func (h *SessionHandler) SubmitInput(ctx context.Context, req *connect.Request[v1alpha1.SubmitInputRequest]) (*connect.Response[v1alpha1.SubmitAck], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	ack, err := h.svc.SubmitInput(ctx, p, core.SubmitInputRequest{
 		SessionID:  event.SessionID(req.Msg.SessionId),
 		Text:       req.Msg.Text,
@@ -86,7 +102,10 @@ func (h *SessionHandler) SubmitInput(ctx context.Context, req *connect.Request[v
 }
 
 func (h *SessionHandler) RespondToApproval(ctx context.Context, req *connect.Request[v1alpha1.RespondToApprovalRequest]) (*connect.Response[v1alpha1.RespondToApprovalResponse], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	var outcome core.ApprovalOutcome
 	switch req.Msg.Outcome {
 	case v1alpha1.ApprovalOutcome_APPROVAL_OUTCOME_DENY:
@@ -98,7 +117,7 @@ func (h *SessionHandler) RespondToApproval(ctx context.Context, req *connect.Req
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
-	err := h.svc.RespondToApproval(ctx, p, core.ApprovalDecision{
+	err = h.svc.RespondToApproval(ctx, p, core.ApprovalDecision{
 		SessionID:  event.SessionID(req.Msg.SessionId),
 		ApprovalID: event.ApprovalID(req.Msg.ApprovalId),
 		Outcome:    outcome,
@@ -111,7 +130,10 @@ func (h *SessionHandler) RespondToApproval(ctx context.Context, req *connect.Req
 }
 
 func (h *SessionHandler) Interrupt(ctx context.Context, req *connect.Request[v1alpha1.InterruptRequest]) (*connect.Response[v1alpha1.InterruptResponse], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	if err := h.svc.Interrupt(ctx, p, event.SessionID(req.Msg.SessionId)); err != nil {
 		return nil, mapError(err)
 	}
@@ -119,7 +141,10 @@ func (h *SessionHandler) Interrupt(ctx context.Context, req *connect.Request[v1a
 }
 
 func (h *SessionHandler) CloseSession(ctx context.Context, req *connect.Request[v1alpha1.CloseSessionRequest]) (*connect.Response[v1alpha1.CloseSessionResponse], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	if err := h.svc.CloseSession(ctx, p, event.SessionID(req.Msg.SessionId)); err != nil {
 		return nil, mapError(err)
 	}

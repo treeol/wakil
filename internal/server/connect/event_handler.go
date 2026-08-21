@@ -14,18 +14,22 @@ import (
 // EventHandler implements EventServiceHandler by delegating to the core
 // EventReader + SessionReader interfaces.
 type EventHandler struct {
-	reader core.EventReader
-	snap   core.SessionReader
+	reader   core.EventReader
+	snap     core.SessionReader
+	resolver principalResolver
 }
 
 var _ wakilv1alpha1connect.EventServiceHandler = (*EventHandler)(nil)
 
-func NewEventHandler(reader core.EventReader, snap core.SessionReader) *EventHandler {
-	return &EventHandler{reader: reader, snap: snap}
+func NewEventHandler(reader core.EventReader, snap core.SessionReader, resolver principalResolver) *EventHandler {
+	return &EventHandler{reader: reader, snap: snap, resolver: resolver}
 }
 
 func (h *EventHandler) StreamEvents(ctx context.Context, req *connect.Request[v1alpha1.StreamEventsRequest], stream *connect.ServerStream[v1alpha1.Event]) error {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return mapError(err)
+	}
 	sub, err := h.reader.Subscribe(ctx, p, event.SessionID(req.Msg.SessionId), event.Seq(req.Msg.AfterSeq))
 	if err != nil {
 		return mapError(err)
@@ -60,7 +64,10 @@ func (h *EventHandler) StreamEvents(ctx context.Context, req *connect.Request[v1
 }
 
 func (h *EventHandler) ListEvents(ctx context.Context, req *connect.Request[v1alpha1.ListEventsRequest]) (*connect.Response[v1alpha1.ListEventsResponse], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	events, err := h.reader.ListEvents(ctx, p, event.SessionID(req.Msg.SessionId), event.Seq(req.Msg.AfterSeq), int(req.Msg.Limit))
 	if err != nil {
 		return nil, mapError(err)
@@ -77,7 +84,10 @@ func (h *EventHandler) ListEvents(ctx context.Context, req *connect.Request[v1al
 }
 
 func (h *EventHandler) GetSessionSnapshot(ctx context.Context, req *connect.Request[v1alpha1.GetSessionSnapshotRequest]) (*connect.Response[v1alpha1.SessionSnapshot], error) {
-	p := localPrincipal()
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
 	snap, err := h.snap.SessionSnapshot(ctx, p, event.SessionID(req.Msg.SessionId))
 	if err != nil {
 		return nil, mapError(err)

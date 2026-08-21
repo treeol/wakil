@@ -13,6 +13,12 @@ func mapError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Authentication failures (no valid credentials) are mapped before
+	// the core sentinels — they are transport-level rejections, not
+	// service-layer authorization results.
+	if errors.Is(err, errUnauthenticated) {
+		return connect.NewError(connect.CodeUnauthenticated, err)
+	}
 	switch {
 	case errors.Is(err, core.ErrSessionNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
