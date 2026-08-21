@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/treeol/wakil/internal/auth/peercred"
 )
@@ -26,4 +27,24 @@ func WithPeerCredentials(ctx context.Context, creds peercred.Credentials) contex
 func PeerCredentialsFromContext(ctx context.Context) (peercred.Credentials, bool) {
 	creds, ok := ctx.Value(peerCredsKey{}).(peercred.Credentials)
 	return creds, ok
+}
+
+// httpHeadersKey is the context key for HTTP request headers. A middleware
+// interceptor injects the request's headers into the context before the
+// handler runs, so the token/cookie resolver can read Cookie and
+// Authorization headers without the PrincipalResolver interface changing.
+type httpHeadersKey struct{}
+
+// WithHTTPHeaders stores the HTTP request headers in the context. Called by
+// the auth interceptor middleware (which wraps the Connect handler) so the
+// token resolver can read Cookie and Authorization headers.
+func WithHTTPHeaders(ctx context.Context, h http.Header) context.Context {
+	return context.WithValue(ctx, httpHeadersKey{}, h)
+}
+
+// HTTPHeadersFromContext extracts HTTP request headers from the context.
+// Returns (header, true) if present, (nil, false) otherwise.
+func HTTPHeadersFromContext(ctx context.Context) (http.Header, bool) {
+	h, ok := ctx.Value(httpHeadersKey{}).(http.Header)
+	return h, ok
 }

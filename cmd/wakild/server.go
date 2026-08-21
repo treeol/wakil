@@ -17,7 +17,10 @@ import (
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/auth"
+	"github.com/treeol/wakil/internal/auth/jointoken"
 	"github.com/treeol/wakil/internal/auth/peercred"
+	"github.com/treeol/wakil/internal/auth/tokenresolver"
+	"github.com/treeol/wakil/internal/auth/tokenstore"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionhost"
@@ -32,18 +35,19 @@ import (
 // store, the session host, the Connect server, the HTTP server(s), and the
 // listener(s). The caller drives lifecycle via serve/shutdown.
 type daemonServer struct {
-	store     *sqlstore.SQLiteStore
-	host      *sessionhost.Host
-	srv       *connect.Server
-	httpSrv   *http.Server // Unix-socket server (Connect RPC)
-	httpAddr  string       // TCP address for web UI ("" = disabled)
-	httpLnr   net.Listener // TCP listener for web UI
-	tcpSrv    *http.Server // TCP server (static files only — no Connect RPC, P4b)
-	listener  net.Listener // Unix-socket listener
-	ephemeral bool
-	exe       exec.Executor
-	app       *agent.App
-	appRes    *wiring.AppResources
+	store      *sqlstore.SQLiteStore
+	tokenStore *tokenstore.Store
+	host       *sessionhost.Host
+	srv        *connect.Server
+	httpSrv    *http.Server // Unix-socket server (Connect RPC)
+	httpAddr   string       // TCP address for web UI ("" = disabled)
+	httpLnr    net.Listener // TCP listener for web UI
+	tcpSrv     *http.Server // TCP server (static files + auth RPC, P4c)
+	listener   net.Listener // Unix-socket listener
+	ephemeral  bool
+	exe        exec.Executor
+	app        *agent.App
+	appRes     *wiring.AppResources
 }
 
 // newDaemonServer constructs the daemon's server-side resources:
@@ -109,8 +113,25 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	// The resolver maps Unix-socket peer UIDs (SO_PEERCRED) to the local
 	// owner principal. It is fail-closed: connections without valid peer
 	// credentials are rejected with CodeUnauthenticated.
+	//
+	// P4c: if a token store is available (non-ephemeral mode), create an
+	// auth-enabled server with join token + web session support. The auth
+	// handler is mounted on both Unix and TCP listeners. The TCP listener
+	// gets a transport-aware resolver (web session cookie resolver) so the
+	// browser can call the API with cookie auth.
 	resolver := auth.NewLocalResolver()
-	srv := connect.NewServer(host, ephemeral, resolver)
+
+	var tokenStore *tokenstore.Store
+	var issuer *jointoken.Issuer
+	var srv *connect.Server
+	if store != nil {
+		// Create the token store (shares the same DB as the session store).
+		tokenStore = tokenstore.New(store.DB())
+		issuer = jointoken.New(tokenStore)
+		srv = connect.NewServerWithAuth(host, ephemeral, resolver, issuer, tokenStore)
+	} else {
+		srv = connect.NewServer(host, ephemeral, resolver)
+	}
 
 	// 5. Unix socket listener.
 	listener, err := listenUnix(socketPath)
@@ -149,27 +170,31 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	}
 
 	ds := &daemonServer{
-		store:     store,
-		host:      host,
-		srv:       srv,
-		httpSrv:   httpSrv,
-		listener:  listener,
-		ephemeral: ephemeral,
-		exe:       exe,
-		app:       app,
-		appRes:    res,
-		httpAddr:  httpAddr,
+		store:      store,
+		tokenStore: tokenStore,
+		host:       host,
+		srv:        srv,
+		httpSrv:    httpSrv,
+		listener:   listener,
+		ephemeral:  ephemeral,
+		exe:        exe,
+		app:        app,
+		appRes:     res,
+		httpAddr:   httpAddr,
 	}
 
-	// 6. Optional TCP listener for web UI.
-	// P4b: the TCP server serves ONLY static files. Connect RPC handlers
-	// are NOT mounted on TCP — that would expose the API without
-	// authentication (SO_PEERCRED is Unix-only). Hosted auth (P4c) will
-	// add token/OIDC-based auth for TCP; until then, the web UI can view
-	// static assets but cannot call the API over TCP. The browser UI
-	// will be fully functional again once P4c adds hosted auth or a
-	// Unix-socket-to-TCP proxy is introduced. This is an accepted
-	// trade-off for P4b: closing the authentication bypass takes priority.
+	// 6. Optional TCP listener for web UI + hosted auth (P4c).
+	// P4b restricted TCP to static files only because there was no auth
+	// mechanism for TCP. P4c adds web session cookie auth: the TCP server
+	// now serves both static files AND Connect RPCs (AuthService, plus
+	// Session/Event/System services) with the web session resolver.
+	//
+	// The TCP server uses a web session cookie resolver (not the local
+	// SO_PEERCRED resolver). ExchangeJoinToken is the only unauthenticated
+	// RPC — all others require a valid session cookie.
+	//
+	// Static files are served at "/" and Connect RPCs at their service
+	// paths ("/wakil.v1alpha1.*"). The mux routes by path prefix.
 	if httpAddr != "" {
 		tcpLnr, err := net.Listen("tcp", httpAddr)
 		if err != nil {
@@ -182,7 +207,26 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			return nil, fmt.Errorf("wakild: listen tcp: %w", err)
 		}
 		ds.httpLnr = tcpLnr
-		ds.tcpSrv = &http.Server{Handler: webStaticHandler()}
+
+		// Build the TCP handler: Connect RPCs with cookie auth + static files.
+		var tcpHandler http.Handler
+		if tokenStore != nil {
+			// Create a web session resolver for TCP.
+			webResolver := tokenresolver.New(tokenStore)
+			// Build a TCP-specific Connect server with the web session resolver.
+			tcpSrv := connect.NewServerWithAuth(host, ephemeral, webResolver, issuer, tokenStore)
+			tcpConnectHandler := tcpSrv.Handler()
+
+			// Compose: Connect RPCs at service paths, static files at "/".
+			mux := http.NewServeMux()
+			mux.Handle("/wakil.v1alpha1.", tcpConnectHandler)
+			mux.Handle("/", webStaticHandler())
+			tcpHandler = mux
+		} else {
+			// Ephemeral mode: no auth, static files only.
+			tcpHandler = webStaticHandler()
+		}
+		ds.tcpSrv = &http.Server{Handler: tcpHandler}
 	}
 
 	return ds, nil
@@ -213,11 +257,10 @@ func (d *daemonServer) serve() error {
 	return <-errCh
 }
 
-// webStaticHandler builds the HTTP handler for the web UI: static files only.
-// P4b: Connect RPC handlers are NOT mounted on TCP — the TCP listener has no
-// peer-credential authentication. The web UI loads static assets (HTML, CSS,
-// JS) from TCP and connects to the API over the Unix socket (or a future
-// hosted-auth path in P4c).
+// webStaticHandler builds the HTTP handler for the web UI: static files.
+// P4c: when a token store is available, the TCP server also mounts Connect
+// RPC handlers with web session cookie auth (see newDaemonServer). When no
+// token store is available (ephemeral mode), TCP serves static files only.
 func webStaticHandler() http.Handler {
 	staticFS, _ := fs.Sub(web.StaticFiles, ".")
 	return http.FileServer(http.FS(staticFS))

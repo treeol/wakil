@@ -26,6 +26,21 @@ import (
 // has no identity at all, not a wrong one.
 var ErrUnauthenticated = errors.New("auth: no valid credentials")
 
+// ErrCredentialAbsent is returned by a sub-resolver when no credential of
+// its type is present in the request (e.g. no Cookie header for the web
+// session resolver, no SO_PEERCRED for the local resolver). This is distinct
+// from ErrUnauthenticated: it means "I cannot resolve, try the next
+// resolver in the chain," not "the caller is rejected." Only the
+// transport-aware dispatch uses this; it is never returned directly to
+// handlers.
+var ErrCredentialAbsent = errors.New("auth: credential absent for this resolver")
+
+// ErrInvalidCredential is returned when a credential IS present but is
+// invalid (expired, revoked, malformed, not found). This is a hard fail:
+// the dispatch must NOT fall through to another resolver. A revoked session
+// cookie must not silently fall back to anonymous or another identity.
+var ErrInvalidCredential = errors.New("auth: invalid credential")
+
 // PrincipalResolver maps a connection's peer credentials to a core.Principal.
 // The Connect handlers receive an injected resolver (not a global function)
 // so tests can supply a fixed principal without a real Unix socket.

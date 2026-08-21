@@ -82,10 +82,17 @@ const (
 	// AuthEmbedded is the in-process single-user path (the default): no
 	// credentials, constant local tenant/user.
 	AuthEmbedded AuthMethod = "embedded"
-	// AuthLocal is Unix-socket peer-credentials.
+	// AuthLocal is Unix-socket peer-credentials (SO_PEERCRED).
 	AuthLocal AuthMethod = "local"
 	// AuthHosted is OIDC/API-token against the daemon.
 	AuthHosted AuthMethod = "hosted"
+	// AuthSession is browser session cookie authentication (P4c). The cookie
+	// is an opaque random token; the server looks up the session in the
+	// web_sessions table and resolves the current membership role.
+	AuthSession AuthMethod = "session"
+	// AuthAPIToken is API token authentication (P4d). A Bearer token is
+	// looked up in the api_tokens table by its SHA-256 hash.
+	AuthAPIToken AuthMethod = "api_token"
 )
 
 // Principal is the resolved caller of every service method (doc §6.1). The

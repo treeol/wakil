@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "wakil/v1alpha1/auth.proto";
+
+// AuthService provides authentication and token management (design §3.3, §6.2).
+//
+// RPC authentication policy:
+//   - CreateJoinToken, ListJoinTokens, RevokeJoinToken: authenticated (owner/admin)
+//   - ExchangeJoinToken: PUBLIC (unauthenticated, rate-limited)
+//   - WhoAmI, Logout: authenticated (any method)
+service AuthService {
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+  rpc ListJoinTokens(ListJoinTokensRequest) returns (ListJoinTokensResponse);
+  rpc RevokeJoinToken(RevokeJoinTokenRequest) returns (RevokeJoinTokenResponse);
+  rpc ExchangeJoinToken(ExchangeJoinTokenRequest) returns (ExchangeJoinTokenResponse);
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+}

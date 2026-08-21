@@ -83,6 +83,16 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying *sql.DB. Used by the token store (P4c) to share
+// the same database connection for auth queries (join_tokens, web_sessions).
+// The caller must not close the returned handle — it is owned by the store.
+func (s *SQLiteStore) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
 // Append implements core.EventAppender. It validates the draft, rejects
 // ephemeral drafts, and atomically assigns the next sequence and persists the
 // event. For KindSessionCreated, it also inserts the sessions row in the same

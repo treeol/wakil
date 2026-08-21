@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "google/protobuf/timestamp.proto";
+
+// Principal is the wire representation of the resolved caller identity.
+// Returned by WhoAmI and embedded in exchange responses (metadata only —
+// credentials are delivered via Set-Cookie, never in the response body).
+message Principal {
+  string tenant_id   = 1;
+  string user_id     = 2;
+  string role        = 3;  // owner | admin | member | viewer
+  string auth_method = 4;  // local | session | api_token | oidc
+}
+
+// JoinToken is the metadata view of a join token (no secrets).
+message JoinToken {
+  string id          = 1;
+  string tenant_id   = 2;
+  string user_id     = 3;  // empty = "create user on exchange"
+  string role        = 4;
+  string created_by  = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  google.protobuf.Timestamp used_at    = 8;  // empty = unused
+  google.protobuf.Timestamp revoked_at = 9;  // empty = not revoked
+}
+
+// --- AuthService RPCs ---
+
+message CreateJoinTokenRequest {
+  string tenant_id    = 1;
+  string role         = 2;  // owner | admin | member | viewer
+  string user_id      = 3;  // optional: bind to existing user; empty = create on exchange
+  string email        = 4;  // for create-on-exchange: new user's email
+  string display_name = 5;  // for create-on-exchange: new user's display name
+}
+
+message CreateJoinTokenResponse {
+  string token       = 1;  // plaintext join secret — shown ONCE, never again
+  string id          = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message ListJoinTokensRequest {
+  string tenant_id = 1;
+}
+
+message ListJoinTokensResponse {
+  repeated JoinToken tokens = 1;
+}
+
+message RevokeJoinTokenRequest {
+  string id = 1;
+}
+
+message RevokeJoinTokenResponse {}
+
+message ExchangeJoinTokenRequest {
+  string token = 1;  // plaintext join secret (jnt_...)
+  string email        = 2;  // for create-on-exchange: new user's email
+  string display_name = 3;  // for create-on-exchange: new user's display name
+}
+
+message ExchangeJoinTokenResponse {
+  Principal principal = 1;  // resolved identity (metadata only)
+  // The session cookie is delivered via Set-Cookie header, not here.
+}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  Principal principal = 1;
+}
+
+message LogoutRequest {}
+
+message LogoutResponse {}

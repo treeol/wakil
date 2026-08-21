@@ -1,0 +1,132 @@
+// Package tokenresolver implements the PrincipalResolver for web session
+// cookie authentication (P4c). It reads the Cookie header from the request
+// context (injected by the auth interceptor middleware), extracts the
+// wakild session cookie, hashes it, and looks up the web_sessions table.
+// The current membership role is read from the memberships table at
+// resolve time — role changes take effect immediately.
+//
+// This resolver is transport-aware: it only applies to TCP (hosted)
+// connections. It returns ErrCredentialAbsent when no cookie is present
+// (allowing the dispatch to try another resolver) and ErrInvalidCredential
+// when a cookie is present but invalid/expired/revoked (hard fail — no
+// fallthrough).
+package tokenresolver
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/treeol/wakil/internal/auth"
+	"github.com/treeol/wakil/internal/auth/jointoken"
+	"github.com/treeol/wakil/internal/auth/tokenstore"
+	"github.com/treeol/wakil/internal/core"
+	"github.com/treeol/wakil/internal/core/event"
+)
+
+// CookieName is the name of the wakild session cookie.
+const CookieName = "wakild_session"
+
+// WebSessionResolver resolves browser session cookies to principals.
+// It implements auth.PrincipalResolver.
+type WebSessionResolver struct {
+	store *tokenstore.Store
+}
+
+// New creates a web session resolver backed by the given store.
+func New(store *tokenstore.Store) *WebSessionResolver {
+	return &WebSessionResolver{store: store}
+}
+
+// Resolve implements auth.PrincipalResolver. It reads the Cookie header
+// from the context, extracts the session cookie, looks it up in the DB,
+// and resolves the principal with the current membership role.
+//
+// Returns:
+//   - (Principal, nil) on success
+//   - (_, ErrCredentialAbsent) if no cookie is present (try next resolver)
+//   - (_, ErrInvalidCredential) if a cookie is present but invalid (hard fail)
+//   - (_, other error) on DB failure (internal error)
+func (r *WebSessionResolver) Resolve(ctx context.Context) (core.Principal, error) {
+	headers, ok := auth.HTTPHeadersFromContext(ctx)
+	if !ok {
+		// No HTTP headers in context — this resolver doesn't apply.
+		return core.Principal{}, auth.ErrCredentialAbsent
+	}
+
+	cookieStr := readSessionCookie(headers)
+	if cookieStr == "" {
+		// No session cookie present — not our credential type.
+		return core.Principal{}, auth.ErrCredentialAbsent
+	}
+
+	// A cookie IS present — we must validate it. If invalid, hard fail.
+	// Do NOT fall through to another resolver on invalid cookie.
+	tokenHash := jointoken.HashToken(cookieStr)
+
+	now := time.Now().UnixNano()
+	session, err := r.store.LookupWebSession(ctx, tokenHash, now)
+	if err != nil {
+		if errors.Is(err, tokenstore.ErrSessionInvalid) {
+			return core.Principal{}, auth.ErrInvalidCredential
+		}
+		// DB failure — internal error, not authentication failure.
+		return core.Principal{}, err
+	}
+
+	// Read the current membership role (not cached in session).
+	role, err := r.store.LookupMembershipRole(ctx, session.TenantID, session.UserID)
+	if err != nil {
+		if errors.Is(err, tokenstore.ErrMembershipNotFound) {
+			// Membership was deleted — session is no longer valid.
+			return core.Principal{}, auth.ErrInvalidCredential
+		}
+		return core.Principal{}, err
+	}
+
+	// Verify user is still active.
+	if err := r.store.CheckUserActive(ctx, session.UserID); err != nil {
+		if errors.Is(err, tokenstore.ErrUserSuspended) || errors.Is(err, tokenstore.ErrUserNotFound) {
+			return core.Principal{}, auth.ErrInvalidCredential
+		}
+		return core.Principal{}, err
+	}
+
+	// Verify tenant is still active.
+	if err := r.store.CheckTenantActive(ctx, session.TenantID); err != nil {
+		if errors.Is(err, tokenstore.ErrTenantSuspended) || errors.Is(err, tokenstore.ErrTenantNotFound) {
+			return core.Principal{}, auth.ErrInvalidCredential
+		}
+		return core.Principal{}, err
+	}
+
+	// Touch the session (sliding window) — best-effort, not in the auth
+	// critical path. A failure here is logged but does not reject the
+	// request.
+	_ = r.store.TouchWebSession(ctx, session.ID, now, now+int64(24*60*60*1e9))
+
+	return core.Principal{
+		TenantID:   event.TenantID(session.TenantID),
+		UserID:     event.UserID(session.UserID),
+		Role:       core.Role(role),
+		AuthMethod: core.AuthSession,
+	}, nil
+}
+
+// readSessionCookie extracts the wakild_session cookie from the Cookie
+// header. Returns "" if not present.
+func readSessionCookie(h http.Header) string {
+	cookieHeader := h.Get("Cookie")
+	if cookieHeader == "" {
+		return ""
+	}
+	// Parse cookies from the header.
+	cookies := (&http.Request{Header: http.Header{"Cookie": []string{cookieHeader}}}).Cookies()
+	for _, c := range cookies {
+		if c.Name == CookieName && c.Value != "" {
+			return c.Value
+		}
+	}
+	return ""
+}
