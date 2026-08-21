@@ -30,8 +30,11 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/core/sessionhost/sqlstore"
+	"github.com/treeol/wakil/internal/crypto"
 	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/scrub"
 	connsvc "github.com/treeol/wakil/internal/server/connect"
+	"github.com/treeol/wakil/internal/store/backendstore"
 	"github.com/treeol/wakil/internal/wiring"
 	"github.com/treeol/wakil/web"
 )
@@ -63,7 +66,7 @@ type daemonServer struct {
 //  4. Build the Connect server
 //  5. Listen on the Unix socket
 //  6. Optionally listen on a TCP address for the web UI
-func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, workspaceID event.WorkspaceID, httpAddr string, tlsCertFile string, tlsKeyFile string, allowedOrigins string) (*daemonServer, error) {
+func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, workspaceID event.WorkspaceID, httpAddr string, tlsCertFile string, tlsKeyFile string, allowedOrigins string, masterKeyFile string, scrubLevel string) (*daemonServer, error) {
 	// 1. Store initialization (fail-closed unless --ephemeral).
 	var store *sqlstore.SQLiteStore
 	if !ephemeral {
@@ -75,6 +78,17 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 		if err != nil {
 			return nil, fmt.Errorf("wakild: failed to open SQLite store (fail-closed): %w", err)
 		}
+
+		// P4g: apply secret scrubbing to event payloads before persistence.
+		level, err := scrub.ParseLevel(scrubLevel)
+		if err != nil {
+			s.Close()
+			return nil, fmt.Errorf("wakild: %w", err)
+		}
+		if level != scrub.LevelOff {
+			s.WithScrubber(scrub.New(level))
+		}
+
 		store = s
 	}
 
@@ -131,12 +145,37 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	var issuer *jointoken.Issuer
 	var apiIssuer *apitoken.Issuer
 	var srv *connsvc.Server
+
+	// P4g: load master key for envelope encryption (optional).
+	var masterKey *crypto.MasterKey
+	if masterKeyFile != "" {
+		mk, err := crypto.LoadMasterKeyFromFile("v1", masterKeyFile)
+		if err != nil {
+			host.Close(context.Background())
+			wiring.CloseResources(app, res)
+			exe.Close()
+			if store != nil {
+				store.Close()
+			}
+			return nil, fmt.Errorf("wakild: load master key: %w", err)
+		}
+		masterKey = mk
+	}
+
 	if store != nil {
 		// Create the token store (shares the same DB as the session store).
 		tokenStore = tokenstore.New(store.DB())
 		issuer = jointoken.New(tokenStore)
 		apiIssuer = apitoken.New(tokenStore)
-		srv = connsvc.NewServerWithAuth(host, ephemeral, resolver, issuer, apiIssuer, tokenStore)
+
+		// P4g: create backend handler if master key is available.
+		var backendHandler *connsvc.BackendHandler
+		if masterKey != nil {
+			backendStore := backendstore.New(store.DB())
+			backendHandler = connsvc.NewBackendHandler(backendStore, masterKey, resolver)
+		}
+
+		srv = connsvc.NewServerWithAuthSecureCookiesAndBackends(host, ephemeral, resolver, issuer, apiIssuer, tokenStore, false, backendHandler)
 	} else {
 		srv = connsvc.NewServer(host, ephemeral, resolver)
 	}
@@ -264,7 +303,8 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			// Build a TCP-specific Connect server with the multi-resolver.
 			// P4f: pass secureCookies=tlsEnabled so session cookies get the
 			// Secure flag when TLS is active.
-			tcpSrv := connsvc.NewServerWithAuthAndSecureCookies(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore, tlsEnabled)
+			// P4g: pass the backend handler to the TCP server too.
+			tcpSrv := connsvc.NewServerWithAuthSecureCookiesAndBackends(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore, tlsEnabled, srv.Backend())
 			tcpConnectHandler := tcpSrv.Handler()
 
 			// Compose: Connect RPCs at service paths, static files at "/".

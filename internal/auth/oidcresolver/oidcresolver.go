@@ -133,9 +133,12 @@ func (r *Resolver) Resolve(ctx context.Context) (core.Principal, error) {
 	}
 
 	// A Bearer token IS present — we must validate it. If invalid, hard fail.
+	// The error message intentionally omits the raw token or validator error
+	// detail — a validator error could include the raw JWT, which must not
+	// propagate into logs or event payloads.
 	claims, err := r.validator.Validate(ctx, bearerToken)
 	if err != nil {
-		return core.Principal{}, fmt.Errorf("%w: oidc token validation: %v", auth.ErrInvalidCredential, err)
+		return core.Principal{}, fmt.Errorf("%w: oidc token validation failed", auth.ErrInvalidCredential)
 	}
 
 	if claims.Subject == "" {

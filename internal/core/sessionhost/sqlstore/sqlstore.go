@@ -24,6 +24,7 @@ import (
 
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
+	"github.com/treeol/wakil/internal/scrub"
 	"github.com/treeol/wakil/internal/store/migrations"
 
 	_ "modernc.org/sqlite"
@@ -31,8 +32,9 @@ import (
 
 // SQLiteStore implements sessionhost.Store backed by SQLite.
 type SQLiteStore struct {
-	db *sql.DB
-	mu sync.Mutex // serializes appends (defense-in-depth; SetMaxOpenConns(1) also serializes)
+	db       *sql.DB
+	mu       sync.Mutex     // serializes appends (defense-in-depth; SetMaxOpenConns(1) also serializes)
+	scrubber scrub.Scrubber // applies secret scrubbing to event payloads before persistence (P4g)
 }
 
 // NewSQLiteStore opens (or creates) a SQLite database at dbPath, applies
@@ -75,6 +77,17 @@ func NewSQLiteStore(ctx context.Context, dbPath string) (*SQLiteStore, error) {
 	return &SQLiteStore{db: db}, nil
 }
 
+// WithScrubber sets a scrubber to apply to event payloads before persistence.
+// If not called, no scrubbing is applied (the default for backward compatibility).
+func (s *SQLiteStore) WithScrubber(sc scrub.Scrubber) *SQLiteStore {
+	if sc == nil {
+		s.scrubber = scrub.NoOp()
+	} else {
+		s.scrubber = sc
+	}
+	return s
+}
+
 // Close releases the database handle.
 func (s *SQLiteStore) Close() error {
 	if s == nil || s.db == nil {
@@ -109,11 +122,17 @@ func (s *SQLiteStore) Append(ctx context.Context, draft event.Event) (event.Even
 		return event.Event{}, fmt.Errorf("sqlstore: append rejected ephemeral kind %q (durable log only)", draft.Kind)
 	}
 
-	// Marshal the payload before the transaction (validation is cheap and
-	// avoids a partial tx on encoding failure).
-	payloadBytes, err := event.MarshalPayload(draft.Kind, draft.Payload)
+	// Scrub the payload before marshaling (P4g). We marshal first, then
+	// scrub the JSON bytes, then store the scrubbed JSON. This is more
+	// comprehensive than field-by-field scrubbing — it catches secrets in
+	// any field, not just a cherry-picked list.
+	rawBytes, err := event.MarshalPayload(draft.Kind, draft.Payload)
 	if err != nil {
 		return event.Event{}, err
+	}
+	payloadBytes := rawBytes
+	if s.scrubber != nil {
+		payloadBytes = []byte(s.scrubber.Scrub(string(rawBytes)))
 	}
 
 	s.mu.Lock()

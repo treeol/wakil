@@ -18,6 +18,7 @@ type Server struct {
 	event      *EventHandler
 	system     *SystemHandler
 	auth       *AuthHandler
+	backend    *BackendHandler
 	resolver   principalResolver
 	authIssuer *jointoken.Issuer // nil if auth not configured
 	apiIssuer  *apitoken.Issuer  // nil if api token management not configured
@@ -83,6 +84,15 @@ func NewServerWithAuthAndSecureCookies(host *sessionhost.Host, ephemeral bool, r
 	return s
 }
 
+// NewServerWithAuthSecureCookiesAndBackends creates a Connect server with
+// auth, secure cookies, and backend management (P4g). The backendHandler
+// may be nil if backend management is not configured.
+func NewServerWithAuthSecureCookiesAndBackends(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, secureCookies bool, backendHandler *BackendHandler) *Server {
+	s := NewServerWithAuthAndSecureCookies(host, ephemeral, resolver, authIssuer, apiIssuer, tokenStore, secureCookies)
+	s.backend = backendHandler
+	return s
+}
+
 // NewServerWithAuthAndOIDC creates a Connect server with auth and OIDC support.
 // Same as NewServerWithAuth but with an OIDC-configured auth handler.
 func NewServerWithAuthAndOIDC(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, oidcCfg OIDCConfig) *Server {
@@ -113,6 +123,11 @@ func NewServerFromInterfaces(svc core.SessionService, reader core.EventReader, s
 		system:   NewSystemHandler(ephemeral),
 		resolver: resolver,
 	}
+}
+
+// Backend returns the BackendHandler if configured, or nil.
+func (s *Server) Backend() *BackendHandler {
+	return s.backend
 }
 
 // NewServerFromInterfacesWithAuth creates a Connect server with auth support
@@ -164,6 +179,10 @@ func (s *Server) Handler() http.Handler {
 	if s.auth != nil {
 		path4, handler4 := wakilv1alpha1connect.NewAuthServiceHandler(s.auth)
 		mux.Handle(path4, handler4)
+	}
+	if s.backend != nil {
+		path5, handler5 := wakilv1alpha1connect.NewBackendServiceHandler(s.backend)
+		mux.Handle(path5, handler5)
 	}
 	return headerInjector(mux)
 }
