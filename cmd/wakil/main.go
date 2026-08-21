@@ -91,6 +91,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.DaemonMode {
+		os.Exit(RunDaemonMode(cfg))
+	}
+
 	// --attach-image: load into pending images for the first message.
 	attach := []proxy.ImagePart{}
 	if cfg.AttachImage != "" {
