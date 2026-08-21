@@ -37,6 +37,9 @@ type daemonFlags struct {
 	ephemeral       bool
 	shutdownTimeout time.Duration
 	httpAddr        string // TCP address for web UI (e.g. "127.0.0.1:8791"; empty = disabled)
+	tlsCertFile     string // PEM-encoded TLS certificate file (enables TLS on TCP listener)
+	tlsKeyFile      string // PEM-encoded TLS private key file
+	allowedOrigins  string // comma-separated list of allowed Origin URLs for CSRF protection (production)
 }
 
 func parseFlags(args []string) (daemonFlags, error) {
@@ -70,6 +73,24 @@ func parseFlags(args []string) (daemonFlags, error) {
 				return f, fmt.Errorf("--http-addr requires an address")
 			}
 			f.httpAddr = args[i]
+		case "--tls-cert", "-tls-cert":
+			i++
+			if i >= len(args) {
+				return f, fmt.Errorf("--tls-cert requires a path")
+			}
+			f.tlsCertFile = args[i]
+		case "--tls-key", "-tls-key":
+			i++
+			if i >= len(args) {
+				return f, fmt.Errorf("--tls-key requires a path")
+			}
+			f.tlsKeyFile = args[i]
+		case "--allowed-origins", "-allowed-origins":
+			i++
+			if i >= len(args) {
+				return f, fmt.Errorf("--allowed-origins requires a value")
+			}
+			f.allowedOrigins = args[i]
 		case "--help", "-help", "-h":
 			fmt.Fprint(os.Stderr, usage)
 			os.Exit(0)
@@ -91,6 +112,9 @@ Usage:
 Flags:
   --socket <path>           Unix socket path (default: $XDG_RUNTIME_DIR/wakild.sock)
   --http-addr <addr>        TCP address for web UI (e.g. 127.0.0.1:8791; empty = disabled)
+  --tls-cert <path>         PEM TLS certificate file (enables HTTPS on TCP listener)
+  --tls-key <path>          PEM TLS private key file (requires --tls-cert)
+  --allowed-origins <urls>  Comma-separated allowed Origin URLs for CSRF protection (e.g. https://app.example.com)
   --ephemeral               Use in-memory store (no durability; GetServerInfo.ephemeral=true)
   --shutdown-timeout <dur>  Graceful drain deadline (default: 10s)
   --help                    Show this help
@@ -100,12 +124,28 @@ is derived from the config's working directory (same as the TUI).
 
 With --http-addr, the daemon also serves the web console on that TCP address.
 Connect RPCs are available at /wakil.v1alpha1.<Service>/<Method> (HTTP/JSON).
+
+With --tls-cert and --tls-key, the TCP listener uses TLS (HTTPS). Session
+cookies get the Secure flag. --allowed-origins sets the CSRF Origin allowlist
+(required for production/hosted mode).
 `
 
 func run() error {
 	flags, err := parseFlags(os.Args[1:])
 	if err != nil {
 		return err
+	}
+
+	// Validate TLS flag combinations.
+	if flags.tlsKeyFile != "" && flags.tlsCertFile == "" {
+		return fmt.Errorf("wakild: --tls-key requires --tls-cert")
+	}
+	if flags.tlsCertFile != "" && flags.tlsKeyFile == "" {
+		return fmt.Errorf("wakild: --tls-cert requires --tls-key")
+	}
+	// TLS without --http-addr is pointless (TLS only applies to the TCP listener).
+	if flags.tlsCertFile != "" && flags.httpAddr == "" {
+		return fmt.Errorf("wakild: --tls-cert requires --http-addr (TLS applies to the TCP listener)")
 	}
 
 	// Load the same config the TUI reads (wakil.yaml).
@@ -117,7 +157,7 @@ func run() error {
 	// Derive the workspace ID (same derivation as wiring.WorkspaceIDFromConfig).
 	wsID := wiring.WorkspaceIDFromConfig(cfg)
 
-	ds, err := newDaemonServer(cfg, flags.socketPath, flags.ephemeral, wsID, flags.httpAddr)
+	ds, err := newDaemonServer(cfg, flags.socketPath, flags.ephemeral, wsID, flags.httpAddr, flags.tlsCertFile, flags.tlsKeyFile, flags.allowedOrigins)
 	if err != nil {
 		return err
 	}
@@ -125,7 +165,11 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "wakild: listening on %s (ephemeral=%v, workspace=%s)\n",
 		flags.socketPath, flags.ephemeral, wsID)
 	if flags.httpAddr != "" {
-		fmt.Fprintf(os.Stderr, "wakild: web console at http://%s/\n", flags.httpAddr)
+		scheme := "http"
+		if flags.tlsCertFile != "" {
+			scheme = "https"
+		}
+		fmt.Fprintf(os.Stderr, "wakild: web console at %s://%s/\n", scheme, flags.httpAddr)
 	}
 
 	// Serve until signal.

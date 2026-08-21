@@ -62,6 +62,27 @@ func NewServerWithAuth(host *sessionhost.Host, ephemeral bool, resolver principa
 	return s
 }
 
+// NewServerWithAuthAndSecureCookies creates a Connect server with AuthService
+// support and the Secure flag on session cookies. When secureCookies is true,
+// session cookies issued by ExchangeJoinToken (and cleared by Logout) carry
+// the Secure attribute, preventing browsers from sending them over plaintext
+// HTTP. This should be true when the TCP listener uses TLS (P4f).
+func NewServerWithAuthAndSecureCookies(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, secureCookies bool) *Server {
+	if resolver == nil {
+		panic("connect: NewServerWithAuthAndSecureCookies requires a non-nil principal resolver")
+	}
+	s := &Server{
+		session:    NewSessionHandler(host, host, resolver),
+		event:      NewEventHandler(host, host, resolver),
+		system:     NewSystemHandler(ephemeral),
+		resolver:   resolver,
+		authIssuer: authIssuer,
+		apiIssuer:  apiIssuer,
+		auth:       NewAuthHandlerWithSecureCookies(authIssuer, apiIssuer, tokenStore, resolver, secureCookies),
+	}
+	return s
+}
+
 // NewServerWithAuthAndOIDC creates a Connect server with auth and OIDC support.
 // Same as NewServerWithAuth but with an OIDC-configured auth handler.
 func NewServerWithAuthAndOIDC(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, oidcCfg OIDCConfig) *Server {

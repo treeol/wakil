@@ -26,12 +26,13 @@ import (
 //   - ExchangeJoinToken: PUBLIC (unauthenticated).
 //   - WhoAmI, Logout: authenticated (any method).
 type AuthHandler struct {
-	issuer     *jointoken.Issuer
-	apiIssuer  *apitoken.Issuer
-	store      *tokenstore.Store
-	resolver   principalResolver
-	cookieName string // session cookie name (from tokenresolver.CookieName)
-	oidcCfg    OIDCConfig
+	issuer        *jointoken.Issuer
+	apiIssuer     *apitoken.Issuer
+	store         *tokenstore.Store
+	resolver      principalResolver
+	cookieName    string // session cookie name (from tokenresolver.CookieName)
+	oidcCfg       OIDCConfig
+	secureCookies bool // P4f: set Secure flag on session cookies (TLS mode)
 }
 
 // OIDCConfig holds the OIDC handler configuration. When Issuer is empty,
@@ -59,11 +60,28 @@ func NewAuthHandler(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store 
 	}
 }
 
+// NewAuthHandlerWithSecureCookies creates an auth handler that sets the Secure
+// flag on session cookies when secureCookies is true. Used when the TCP
+// listener is TLS-enabled (P4f).
+func NewAuthHandlerWithSecureCookies(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store *tokenstore.Store, resolver principalResolver, secureCookies bool) *AuthHandler {
+	h := NewAuthHandler(issuer, apiIssuer, store, resolver)
+	h.secureCookies = secureCookies
+	return h
+}
+
 // NewAuthHandlerWithOIDC creates an auth handler with OIDC support.
 // If oidcCfg.Issuer is empty, OIDC RPCs return Unimplemented.
 func NewAuthHandlerWithOIDC(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store *tokenstore.Store, resolver principalResolver, oidcCfg OIDCConfig) *AuthHandler {
 	h := NewAuthHandler(issuer, apiIssuer, store, resolver)
 	h.oidcCfg = oidcCfg
+	return h
+}
+
+// NewAuthHandlerWithOIDCAndSecureCookies creates an auth handler with OIDC
+// support and the Secure flag on session cookies when secureCookies is true.
+func NewAuthHandlerWithOIDCAndSecureCookies(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store *tokenstore.Store, resolver principalResolver, oidcCfg OIDCConfig, secureCookies bool) *AuthHandler {
+	h := NewAuthHandlerWithOIDC(issuer, apiIssuer, store, resolver, oidcCfg)
+	h.secureCookies = secureCookies
 	return h
 }
 
@@ -203,7 +221,7 @@ func (h *AuthHandler) ExchangeJoinToken(ctx context.Context, req *connect.Reques
 
 	// Set the cookie on the response. Connect's Response supports
 	// SetHeader via the response's trailer/header mechanism.
-	setSessionCookie(resp, h.cookieName, result.SessionCookie)
+	setSessionCookie(resp, h.cookieName, result.SessionCookie, h.secureCookies)
 
 	return resp, nil
 }
@@ -239,7 +257,7 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[v1alpha1.
 
 	resp := connect.NewResponse(&v1alpha1.LogoutResponse{})
 	// Clear the cookie.
-	clearSessionCookie(resp, h.cookieName)
+	clearSessionCookie(resp, h.cookieName, h.secureCookies)
 	return resp, nil
 }
 
@@ -440,26 +458,30 @@ func (h *AuthHandler) ExchangeOIDCCode(ctx context.Context, req *connect.Request
 // --- Helpers ---
 
 // setSessionCookie adds a Set-Cookie header to the Connect response.
-func setSessionCookie(resp *connect.Response[v1alpha1.ExchangeJoinTokenResponse], name, value string) {
+// When secure is true, the Secure flag is set so browsers never send the
+// cookie over plaintext HTTP (P4f: TLS mode).
+func setSessionCookie(resp *connect.Response[v1alpha1.ExchangeJoinTokenResponse], name, value string, secure bool) {
 	cookie := &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
+		Secure:   secure,
 		MaxAge:   7 * 24 * 60 * 60, // 7 days
 	}
 	resp.Header().Set("Set-Cookie", cookie.String())
 }
 
 // clearSessionCookie adds a Set-Cookie header that expires immediately.
-func clearSessionCookie(resp *connect.Response[v1alpha1.LogoutResponse], name string) {
+func clearSessionCookie(resp *connect.Response[v1alpha1.LogoutResponse], name string, secure bool) {
 	cookie := &http.Cookie{
 		Name:     name,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
+		Secure:   secure,
 		MaxAge:   -1, // delete
 	}
 	resp.Header().Set("Set-Cookie", cookie.String())

@@ -8,12 +8,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/auth"
@@ -28,7 +31,7 @@ import (
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/core/sessionhost/sqlstore"
 	"github.com/treeol/wakil/internal/exec"
-	"github.com/treeol/wakil/internal/server/connect"
+	connsvc "github.com/treeol/wakil/internal/server/connect"
 	"github.com/treeol/wakil/internal/wiring"
 	"github.com/treeol/wakil/web"
 )
@@ -40,10 +43,11 @@ type daemonServer struct {
 	store      *sqlstore.SQLiteStore
 	tokenStore *tokenstore.Store
 	host       *sessionhost.Host
-	srv        *connect.Server
+	srv        *connsvc.Server
 	httpSrv    *http.Server // Unix-socket server (Connect RPC)
 	httpAddr   string       // TCP address for web UI ("" = disabled)
 	httpLnr    net.Listener // TCP listener for web UI
+	tlsEnabled bool         // true when the TCP listener wraps TLS
 	tcpSrv     *http.Server // TCP server (static files + auth RPC, P4c)
 	listener   net.Listener // Unix-socket listener
 	ephemeral  bool
@@ -59,7 +63,7 @@ type daemonServer struct {
 //  4. Build the Connect server
 //  5. Listen on the Unix socket
 //  6. Optionally listen on a TCP address for the web UI
-func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, workspaceID event.WorkspaceID, httpAddr string) (*daemonServer, error) {
+func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, workspaceID event.WorkspaceID, httpAddr string, tlsCertFile string, tlsKeyFile string, allowedOrigins string) (*daemonServer, error) {
 	// 1. Store initialization (fail-closed unless --ephemeral).
 	var store *sqlstore.SQLiteStore
 	if !ephemeral {
@@ -126,15 +130,15 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	var tokenStore *tokenstore.Store
 	var issuer *jointoken.Issuer
 	var apiIssuer *apitoken.Issuer
-	var srv *connect.Server
+	var srv *connsvc.Server
 	if store != nil {
 		// Create the token store (shares the same DB as the session store).
 		tokenStore = tokenstore.New(store.DB())
 		issuer = jointoken.New(tokenStore)
 		apiIssuer = apitoken.New(tokenStore)
-		srv = connect.NewServerWithAuth(host, ephemeral, resolver, issuer, apiIssuer, tokenStore)
+		srv = connsvc.NewServerWithAuth(host, ephemeral, resolver, issuer, apiIssuer, tokenStore)
 	} else {
-		srv = connect.NewServer(host, ephemeral, resolver)
+		srv = connsvc.NewServer(host, ephemeral, resolver)
 	}
 
 	// 5. Unix socket listener.
@@ -193,6 +197,11 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	// now serves both static files AND Connect RPCs (AuthService, plus
 	// Session/Event/System services) with the web session resolver.
 	//
+	// P4f: when --tls-cert and --tls-key are provided, the TCP listener is
+	// wrapped with crypto/tls.NewListener. Session cookies get the Secure
+	// flag (so browsers never send them over plaintext HTTP). The origin
+	// validator is wired with the configured allowed origins (CSRF defense).
+	//
 	// The TCP server uses a web session cookie resolver (not the local
 	// SO_PEERCRED resolver). ExchangeJoinToken is the only unauthenticated
 	// RPC — all others require a valid session cookie.
@@ -202,6 +211,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	if httpAddr != "" {
 		tcpLnr, err := net.Listen("tcp", httpAddr)
 		if err != nil {
+			listener.Close() // close the already-open Unix listener
 			host.Close(context.Background())
 			wiring.CloseResources(app, res)
 			exe.Close()
@@ -210,7 +220,31 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			}
 			return nil, fmt.Errorf("wakild: listen tcp: %w", err)
 		}
+
+		// P4f: wrap with TLS if cert+key are configured.
+		tlsEnabled := false
+		if tlsCertFile != "" && tlsKeyFile != "" {
+			cert, err := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)
+			if err != nil {
+				tcpLnr.Close()
+				listener.Close() // close the already-open Unix listener
+				host.Close(context.Background())
+				wiring.CloseResources(app, res)
+				exe.Close()
+				if store != nil {
+					store.Close()
+				}
+				return nil, fmt.Errorf("wakild: load TLS keypair: %w", err)
+			}
+			tlsConfig := &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12, // TLS 1.2+ required (no SSLv3/TLS1.0/1.1)
+			}
+			tcpLnr = tls.NewListener(tcpLnr, tlsConfig)
+			tlsEnabled = true
+		}
 		ds.httpLnr = tcpLnr
+		ds.tlsEnabled = tlsEnabled
 
 		// Build the TCP handler: Connect RPCs with cookie auth + static files.
 		var tcpHandler http.Handler
@@ -228,19 +262,39 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			// credential in any resolver is a hard fail (no fallthrough).
 			multiResolver := auth.NewMultiResolver(webResolver, apiResolver, oidcResolver)
 			// Build a TCP-specific Connect server with the multi-resolver.
-			tcpSrv := connect.NewServerWithAuth(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore)
+			// P4f: pass secureCookies=tlsEnabled so session cookies get the
+			// Secure flag when TLS is active.
+			tcpSrv := connsvc.NewServerWithAuthAndSecureCookies(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore, tlsEnabled)
 			tcpConnectHandler := tcpSrv.Handler()
 
-			// Compose: Connect RPCs at service paths, static files at "/" .
-			mux := http.NewServeMux()
-			mux.Handle("/wakil.v1alpha1.", tcpConnectHandler)
-			mux.Handle("/", webStaticHandler())
-			tcpHandler = mux
+			// Compose: Connect RPCs at service paths, static files at "/".
+			// Go's ServeMux treats patterns not ending in "/" as exact matches,
+			// so "/wakil.v1alpha1." would only match that exact path — not
+			// "/wakil.v1alpha1.AuthService/Foo". Use a prefix-dispatching
+			// handler instead.
+			staticHandler := webStaticHandler()
+			tcpHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/wakil.v1alpha1.") {
+					tcpConnectHandler.ServeHTTP(w, r)
+					return
+				}
+				staticHandler.ServeHTTP(w, r)
+			})
 		} else {
 			// Ephemeral mode: no auth, static files only.
 			tcpHandler = webStaticHandler()
 		}
-		ds.tcpSrv = &http.Server{Handler: tcpHandler}
+
+		// P4f: wrap with origin validator for CSRF protection.
+		// In production (hosted mode), --allowed-origins must be set.
+		// Empty = dev mode (all origins allowed, SameSite=Strict still applies).
+		originsSet := parseAllowedOrigins(allowedOrigins)
+		tcpHandler = connsvc.OriginValidator(originsSet)(tcpHandler)
+
+		ds.tcpSrv = &http.Server{
+			Handler:           tcpHandler,
+			ReadHeaderTimeout: 10 * time.Second, // P4f: mitigate slowloris on public listener
+		}
 	}
 
 	return ds, nil
@@ -390,4 +444,25 @@ func defaultSocketPath() string {
 		return filepath.Join(home, ".local", "share", "wakil", "wakild.sock")
 	}
 	return "wakild.sock"
+}
+
+// parseAllowedOrigins parses a comma-separated list of origin URLs into a set.
+// Returns nil if the input is empty (dev mode — all origins allowed).
+func parseAllowedOrigins(s string) map[string]bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	m := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			m[p] = true
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
