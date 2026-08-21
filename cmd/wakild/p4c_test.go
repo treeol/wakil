@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	v1alpha1 "github.com/treeol/wakil/api/gen/wakil/v1alpha1"
 	wakilv1alpha1connect "github.com/treeol/wakil/api/gen/wakil/v1alpha1/wakilv1alpha1connect"
+	"github.com/treeol/wakil/internal/auth/apitoken"
 	"github.com/treeol/wakil/internal/auth/jointoken"
 	"github.com/treeol/wakil/internal/auth/tokenstore"
 	connsvc "github.com/treeol/wakil/internal/server/connect"
@@ -21,6 +22,7 @@ import (
 func TestP4cJoinTokenExchangeFlow(t *testing.T) {
 	store := newTestTokenStore(t)
 	issuer := jointoken.New(store)
+	apiIssuer := apitoken.New(store)
 
 	// Use the exported NewServerWithAuth with the embedded resolver (test-only).
 	srv := connsvc.NewServerWithAuth(
@@ -28,6 +30,7 @@ func TestP4cJoinTokenExchangeFlow(t *testing.T) {
 		true, // ephemeral
 		connsvc.NewEmbeddedResolver(),
 		issuer,
+		apiIssuer,
 		store,
 	)
 
@@ -101,12 +104,14 @@ func TestP4cJoinTokenExchangeFlow(t *testing.T) {
 func TestP4cListJoinTokens(t *testing.T) {
 	store := newTestTokenStore(t)
 	issuer := jointoken.New(store)
+	apiIssuer := apitoken.New(store)
 
 	srv := connsvc.NewServerWithAuth(
 		nil,
 		true,
 		connsvc.NewEmbeddedResolver(),
 		issuer,
+		apiIssuer,
 		store,
 	)
 

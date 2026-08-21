@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	wakilv1alpha1connect "github.com/treeol/wakil/api/gen/wakil/v1alpha1/wakilv1alpha1connect"
+	"github.com/treeol/wakil/internal/auth/apitoken"
 	"github.com/treeol/wakil/internal/auth/jointoken"
 	"github.com/treeol/wakil/internal/auth/tokenstore"
 	"github.com/treeol/wakil/internal/core"
@@ -19,6 +20,7 @@ type Server struct {
 	auth       *AuthHandler
 	resolver   principalResolver
 	authIssuer *jointoken.Issuer // nil if auth not configured
+	apiIssuer  *apitoken.Issuer  // nil if api token management not configured
 }
 
 // NewServer creates a Connect server backed by the given host.
@@ -42,8 +44,9 @@ func NewServer(host *sessionhost.Host, ephemeral bool, resolver principalResolve
 // NewServerWithAuth creates a Connect server with AuthService support.
 // The authIssuer provides join token management and exchange; the
 // tokenStore backs web session lookups. The resolver is the principal
-// resolver used by all service handlers.
-func NewServerWithAuth(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, tokenStore *tokenstore.Store) *Server {
+// resolver used by all service handlers. The apiIssuer provides API token
+// management (may be nil if API tokens are not configured).
+func NewServerWithAuth(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store) *Server {
 	if resolver == nil {
 		panic("connect: NewServerWithAuth requires a non-nil principal resolver")
 	}
@@ -53,7 +56,8 @@ func NewServerWithAuth(host *sessionhost.Host, ephemeral bool, resolver principa
 		system:     NewSystemHandler(ephemeral),
 		resolver:   resolver,
 		authIssuer: authIssuer,
-		auth:       NewAuthHandler(authIssuer, tokenStore, resolver),
+		apiIssuer:  apiIssuer,
+		auth:       NewAuthHandler(authIssuer, apiIssuer, tokenStore, resolver),
 	}
 	return s
 }
@@ -74,7 +78,7 @@ func NewServerFromInterfaces(svc core.SessionService, reader core.EventReader, s
 
 // NewServerFromInterfacesWithAuth creates a Connect server with auth support
 // from explicit interface implementations. Useful for testing with mocks.
-func NewServerFromInterfacesWithAuth(svc core.SessionService, reader core.EventReader, snap core.SessionReader, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, tokenStore *tokenstore.Store) *Server {
+func NewServerFromInterfacesWithAuth(svc core.SessionService, reader core.EventReader, snap core.SessionReader, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store) *Server {
 	if resolver == nil {
 		panic("connect: NewServerFromInterfacesWithAuth requires a non-nil principal resolver")
 	}
@@ -84,7 +88,8 @@ func NewServerFromInterfacesWithAuth(svc core.SessionService, reader core.EventR
 		system:     NewSystemHandler(ephemeral),
 		resolver:   resolver,
 		authIssuer: authIssuer,
-		auth:       NewAuthHandler(authIssuer, tokenStore, resolver),
+		apiIssuer:  apiIssuer,
+		auth:       NewAuthHandler(authIssuer, apiIssuer, tokenStore, resolver),
 	}
 }
 

@@ -92,6 +92,43 @@ func NewLocalResolverWithUID(uid uint32) *LocalResolver {
 	return &LocalResolver{ownerUID: uid}
 }
 
+// MultiResolver tries resolvers in order. The first resolver that returns a
+// principal wins. If a resolver returns ErrCredentialAbsent, the next
+// resolver is tried. If a resolver returns ErrInvalidCredential, the chain
+// hard-fails — it does NOT fall through to subsequent resolvers (a revoked
+// session cookie must not silently fall back to an API token or vice versa).
+// Other errors (DB failures) are returned as-is (internal error).
+//
+// If all resolvers return ErrCredentialAbsent, the multi-resolver returns
+// ErrUnauthenticated.
+type MultiResolver struct {
+	resolvers []PrincipalResolver
+}
+
+// NewMultiResolver creates a multi-resolver from the given resolvers in
+// priority order.
+func NewMultiResolver(resolvers ...PrincipalResolver) *MultiResolver {
+	return &MultiResolver{resolvers: resolvers}
+}
+
+// Resolve implements PrincipalResolver by trying each sub-resolver in order.
+func (r *MultiResolver) Resolve(ctx context.Context) (core.Principal, error) {
+	for _, sub := range r.resolvers {
+		p, err := sub.Resolve(ctx)
+		if err == nil {
+			return p, nil
+		}
+		if errors.Is(err, ErrCredentialAbsent) {
+			continue
+		}
+		// ErrInvalidCredential, ErrUnauthenticated, or internal error —
+		// hard fail, do not try next resolver.
+		return p, err
+	}
+	// All resolvers returned ErrCredentialAbsent.
+	return core.Principal{}, ErrUnauthenticated
+}
+
 // Resolve implements PrincipalResolver. It reads peer credentials from the
 // context (placed there by the ConnContext hook) and maps the UID to the
 // local owner principal.

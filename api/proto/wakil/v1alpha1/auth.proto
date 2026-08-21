@@ -79,3 +79,44 @@ message WhoAmIResponse {
 message LogoutRequest {}
 
 message LogoutResponse {}
+
+// --- API Token management (P4d) ---
+
+// APIToken is the metadata view of an API token (no secrets).
+message APIToken {
+  string id          = 1;
+  string tenant_id   = 2;
+  string user_id     = 3;
+  string name        = 4;
+  repeated string scopes = 5;  // e.g. ["sessions:read", "sessions:write"]
+  google.protobuf.Timestamp expires_at = 6;  // empty = no expiry
+  google.protobuf.Timestamp last_used_at = 7; // empty = never used
+  google.protobuf.Timestamp revoked_at = 8;   // empty = not revoked
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message CreateAPITokenRequest {
+  string name        = 1;  // human-readable label (e.g. "CI pipeline", "laptop")
+  repeated string scopes = 2;  // scope strings; empty = inherit role permissions
+  google.protobuf.Timestamp expires_at = 3;  // empty = no expiry
+}
+
+message CreateAPITokenResponse {
+  string token       = 1;  // plaintext API secret (tok_...) — shown ONCE, never again
+  string id          = 2;
+  google.protobuf.Timestamp expires_at = 3;  // echoes request expiry (or empty)
+}
+
+message ListAPITokensRequest {
+  string user_id = 1;  // optional: filter by user; empty = list own tokens
+}
+
+message ListAPITokensResponse {
+  repeated APIToken tokens = 1;
+}
+
+message RevokeAPITokenRequest {
+  string id = 1;
+}
+
+message RevokeAPITokenResponse {}

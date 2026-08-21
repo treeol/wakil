@@ -226,6 +226,151 @@ func (s *Store) RevokeWebSessionByHash(ctx context.Context, tokenHash string) er
 	return err
 }
 
+// --- API token queries (P4d) ---
+
+// APITokenRow is the metadata view of an API token. No secrets.
+type APITokenRow struct {
+	ID         string
+	TenantID   string
+	UserID     string
+	Name       string
+	ScopesJSON string // JSON array of scope strings
+	ExpiresAt  int64  // 0 = no expiry
+	LastUsedAt int64  // 0 = never used
+	RevokedAt  int64  // 0 = not revoked
+	CreatedAt  int64
+}
+
+// CreateAPIToken inserts a new API token. tokenHash is the SHA-256 hex of
+// the plaintext secret. The plaintext secret is NEVER stored. scopesJSON
+// is a JSON array string (e.g. `["sessions:read"]`); empty means "[]"
+// (inherit role permissions).
+func (s *Store) CreateAPIToken(ctx context.Context, id, tenantID, userID, name, tokenHash, scopesJSON string, expiresAt int64) error {
+	now := time.Now().UnixNano()
+	if scopesJSON == "" {
+		scopesJSON = "[]"
+	}
+	var expiresVal interface{}
+	if expiresAt != 0 {
+		expiresVal = expiresAt
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO api_tokens
+		(id, tenant_id, user_id, name, token_hash, scopes, expires_at, last_used_at, revoked_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+		id, tenantID, userID, name, tokenHash, scopesJSON, expiresVal, now)
+	if err != nil {
+		return fmt.Errorf("tokenstore: create api token: %w", err)
+	}
+	return nil
+}
+
+// ListAPITokens returns API tokens for a tenant, optionally filtered by
+// user_id. If userID is empty, returns all tokens for the tenant. Excludes
+// revoked tokens from the default view unless includeRevoked is true.
+func (s *Store) ListAPITokens(ctx context.Context, tenantID, userID string, includeRevoked bool) ([]APITokenRow, error) {
+	query := `SELECT id, tenant_id, user_id, name, scopes, COALESCE(expires_at, 0), COALESCE(last_used_at, 0), COALESCE(revoked_at, 0), created_at
+		FROM api_tokens WHERE tenant_id = ?`
+	args := []interface{}{tenantID}
+	if userID != "" {
+		query += " AND user_id = ?"
+		args = append(args, userID)
+	}
+	if !includeRevoked {
+		query += " AND revoked_at IS NULL"
+	}
+	query += " ORDER BY created_at DESC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("tokenstore: list api tokens: %w", err)
+	}
+	defer rows.Close()
+
+	var out []APITokenRow
+	for rows.Next() {
+		var r APITokenRow
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.ScopesJSON, &r.ExpiresAt, &r.LastUsedAt, &r.RevokedAt, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("tokenstore: scan api token: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RevokeAPIToken sets revoked_at on an API token within a specific tenant.
+// The tenant_id predicate prevents cross-tenant revocation (security:
+// token IDs are UUIDs but should not be an authorization boundary). Revoking
+// an already-revoked token is a no-op (idempotent). Returns
+// ErrAPITokenNotFound if the token does not exist in this tenant.
+func (s *Store) RevokeAPIToken(ctx context.Context, id, tenantID string) error {
+	now := time.Now().UnixNano()
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL",
+		now, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("tokenstore: revoke api token: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("tokenstore: rows affected: %w", err)
+	}
+	if affected == 0 {
+		var exists bool
+		err := s.db.QueryRowContext(ctx, "SELECT 1 FROM api_tokens WHERE id = ? AND tenant_id = ?", id, tenantID).Scan(&exists)
+		if err == sql.ErrNoRows {
+			return ErrAPITokenNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("tokenstore: check api token existence: %w", err)
+		}
+		// Already revoked — idempotent success.
+	}
+	return nil
+}
+
+// LookupAPIToken finds an active (non-revoked, non-expired) API token by
+// its token hash. Returns ErrAPITokenInvalid if the token is not found,
+// revoked, or expired. Used by the API token resolver.
+func (s *Store) LookupAPIToken(ctx context.Context, tokenHash string, now int64) (*APITokenRow, error) {
+	var r APITokenRow
+	var expiresAt sql.NullInt64
+	var lastUsedAt sql.NullInt64
+	var revokedAt sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, tenant_id, user_id, name, scopes, expires_at, last_used_at, revoked_at, created_at
+		 FROM api_tokens WHERE token_hash = ?`, tokenHash).
+		Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.ScopesJSON, &expiresAt, &lastUsedAt, &revokedAt, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrAPITokenInvalid
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tokenstore: lookup api token: %w", err)
+	}
+	if expiresAt.Valid {
+		r.ExpiresAt = expiresAt.Int64
+	}
+	if lastUsedAt.Valid {
+		r.LastUsedAt = lastUsedAt.Int64
+	}
+	if revokedAt.Valid {
+		r.RevokedAt = revokedAt.Int64
+	}
+	if r.RevokedAt != 0 || (r.ExpiresAt != 0 && r.ExpiresAt <= now) {
+		return nil, ErrAPITokenInvalid
+	}
+	return &r, nil
+}
+
+// TouchAPIToken updates last_used_at (best-effort, not in the auth
+// critical path). A failure is logged by the caller but does not reject
+// the request.
+func (s *Store) TouchAPIToken(ctx context.Context, id string, now int64) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE api_tokens SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL",
+		now, id)
+	return err
+}
+
 // --- User/Membership queries (for exchange) ---
 
 // CreateUser creates a new user with no password and no auth_subject.
@@ -319,6 +464,8 @@ var (
 	ErrJoinTokenNotFound  = errors.New("tokenstore: join token not found")
 	ErrJoinTokenInvalid   = errors.New("tokenstore: join token invalid, expired, or already used")
 	ErrSessionInvalid     = errors.New("tokenstore: session invalid, expired, or revoked")
+	ErrAPITokenNotFound   = errors.New("tokenstore: api token not found")
+	ErrAPITokenInvalid    = errors.New("tokenstore: api token invalid, expired, or revoked")
 	ErrMembershipNotFound = errors.New("tokenstore: membership not found")
 	ErrUserNotFound       = errors.New("tokenstore: user not found")
 	ErrUserSuspended      = errors.New("tokenstore: user suspended")

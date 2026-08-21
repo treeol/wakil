@@ -19,4 +19,11 @@ service AuthService {
   rpc ExchangeJoinToken(ExchangeJoinTokenRequest) returns (ExchangeJoinTokenResponse);
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
+  // API token management (P4d). All require authentication.
+  //   - CreateAPIToken, ListAPITokens, RevokeAPIToken: authenticated (any role),
+  //     scoped to the caller's tenant. Users manage their own tokens; admins
+  //     can list/revoke any user's tokens within the tenant.
+  rpc CreateAPIToken(CreateAPITokenRequest) returns (CreateAPITokenResponse);
+  rpc ListAPITokens(ListAPITokensRequest) returns (ListAPITokensResponse);
+  rpc RevokeAPIToken(RevokeAPITokenRequest) returns (RevokeAPITokenResponse);
 }

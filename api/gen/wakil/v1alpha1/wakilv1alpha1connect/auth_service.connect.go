@@ -49,6 +49,15 @@ const (
 	AuthServiceWhoAmIProcedure = "/wakil.v1alpha1.AuthService/WhoAmI"
 	// AuthServiceLogoutProcedure is the fully-qualified name of the AuthService's Logout RPC.
 	AuthServiceLogoutProcedure = "/wakil.v1alpha1.AuthService/Logout"
+	// AuthServiceCreateAPITokenProcedure is the fully-qualified name of the AuthService's
+	// CreateAPIToken RPC.
+	AuthServiceCreateAPITokenProcedure = "/wakil.v1alpha1.AuthService/CreateAPIToken"
+	// AuthServiceListAPITokensProcedure is the fully-qualified name of the AuthService's ListAPITokens
+	// RPC.
+	AuthServiceListAPITokensProcedure = "/wakil.v1alpha1.AuthService/ListAPITokens"
+	// AuthServiceRevokeAPITokenProcedure is the fully-qualified name of the AuthService's
+	// RevokeAPIToken RPC.
+	AuthServiceRevokeAPITokenProcedure = "/wakil.v1alpha1.AuthService/RevokeAPIToken"
 )
 
 // AuthServiceClient is a client for the wakil.v1alpha1.AuthService service.
@@ -59,6 +68,13 @@ type AuthServiceClient interface {
 	ExchangeJoinToken(context.Context, *connect.Request[v1alpha1.ExchangeJoinTokenRequest]) (*connect.Response[v1alpha1.ExchangeJoinTokenResponse], error)
 	WhoAmI(context.Context, *connect.Request[v1alpha1.WhoAmIRequest]) (*connect.Response[v1alpha1.WhoAmIResponse], error)
 	Logout(context.Context, *connect.Request[v1alpha1.LogoutRequest]) (*connect.Response[v1alpha1.LogoutResponse], error)
+	// API token management (P4d). All require authentication.
+	//   - CreateAPIToken, ListAPITokens, RevokeAPIToken: authenticated (any role),
+	//     scoped to the caller's tenant. Users manage their own tokens; admins
+	//     can list/revoke any user's tokens within the tenant.
+	CreateAPIToken(context.Context, *connect.Request[v1alpha1.CreateAPITokenRequest]) (*connect.Response[v1alpha1.CreateAPITokenResponse], error)
+	ListAPITokens(context.Context, *connect.Request[v1alpha1.ListAPITokensRequest]) (*connect.Response[v1alpha1.ListAPITokensResponse], error)
+	RevokeAPIToken(context.Context, *connect.Request[v1alpha1.RevokeAPITokenRequest]) (*connect.Response[v1alpha1.RevokeAPITokenResponse], error)
 }
 
 // NewAuthServiceClient constructs a client for the wakil.v1alpha1.AuthService service. By default,
@@ -108,6 +124,24 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("Logout")),
 			connect.WithClientOptions(opts...),
 		),
+		createAPIToken: connect.NewClient[v1alpha1.CreateAPITokenRequest, v1alpha1.CreateAPITokenResponse](
+			httpClient,
+			baseURL+AuthServiceCreateAPITokenProcedure,
+			connect.WithSchema(authServiceMethods.ByName("CreateAPIToken")),
+			connect.WithClientOptions(opts...),
+		),
+		listAPITokens: connect.NewClient[v1alpha1.ListAPITokensRequest, v1alpha1.ListAPITokensResponse](
+			httpClient,
+			baseURL+AuthServiceListAPITokensProcedure,
+			connect.WithSchema(authServiceMethods.ByName("ListAPITokens")),
+			connect.WithClientOptions(opts...),
+		),
+		revokeAPIToken: connect.NewClient[v1alpha1.RevokeAPITokenRequest, v1alpha1.RevokeAPITokenResponse](
+			httpClient,
+			baseURL+AuthServiceRevokeAPITokenProcedure,
+			connect.WithSchema(authServiceMethods.ByName("RevokeAPIToken")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -119,6 +153,9 @@ type authServiceClient struct {
 	exchangeJoinToken *connect.Client[v1alpha1.ExchangeJoinTokenRequest, v1alpha1.ExchangeJoinTokenResponse]
 	whoAmI            *connect.Client[v1alpha1.WhoAmIRequest, v1alpha1.WhoAmIResponse]
 	logout            *connect.Client[v1alpha1.LogoutRequest, v1alpha1.LogoutResponse]
+	createAPIToken    *connect.Client[v1alpha1.CreateAPITokenRequest, v1alpha1.CreateAPITokenResponse]
+	listAPITokens     *connect.Client[v1alpha1.ListAPITokensRequest, v1alpha1.ListAPITokensResponse]
+	revokeAPIToken    *connect.Client[v1alpha1.RevokeAPITokenRequest, v1alpha1.RevokeAPITokenResponse]
 }
 
 // CreateJoinToken calls wakil.v1alpha1.AuthService.CreateJoinToken.
@@ -151,6 +188,21 @@ func (c *authServiceClient) Logout(ctx context.Context, req *connect.Request[v1a
 	return c.logout.CallUnary(ctx, req)
 }
 
+// CreateAPIToken calls wakil.v1alpha1.AuthService.CreateAPIToken.
+func (c *authServiceClient) CreateAPIToken(ctx context.Context, req *connect.Request[v1alpha1.CreateAPITokenRequest]) (*connect.Response[v1alpha1.CreateAPITokenResponse], error) {
+	return c.createAPIToken.CallUnary(ctx, req)
+}
+
+// ListAPITokens calls wakil.v1alpha1.AuthService.ListAPITokens.
+func (c *authServiceClient) ListAPITokens(ctx context.Context, req *connect.Request[v1alpha1.ListAPITokensRequest]) (*connect.Response[v1alpha1.ListAPITokensResponse], error) {
+	return c.listAPITokens.CallUnary(ctx, req)
+}
+
+// RevokeAPIToken calls wakil.v1alpha1.AuthService.RevokeAPIToken.
+func (c *authServiceClient) RevokeAPIToken(ctx context.Context, req *connect.Request[v1alpha1.RevokeAPITokenRequest]) (*connect.Response[v1alpha1.RevokeAPITokenResponse], error) {
+	return c.revokeAPIToken.CallUnary(ctx, req)
+}
+
 // AuthServiceHandler is an implementation of the wakil.v1alpha1.AuthService service.
 type AuthServiceHandler interface {
 	CreateJoinToken(context.Context, *connect.Request[v1alpha1.CreateJoinTokenRequest]) (*connect.Response[v1alpha1.CreateJoinTokenResponse], error)
@@ -159,6 +211,13 @@ type AuthServiceHandler interface {
 	ExchangeJoinToken(context.Context, *connect.Request[v1alpha1.ExchangeJoinTokenRequest]) (*connect.Response[v1alpha1.ExchangeJoinTokenResponse], error)
 	WhoAmI(context.Context, *connect.Request[v1alpha1.WhoAmIRequest]) (*connect.Response[v1alpha1.WhoAmIResponse], error)
 	Logout(context.Context, *connect.Request[v1alpha1.LogoutRequest]) (*connect.Response[v1alpha1.LogoutResponse], error)
+	// API token management (P4d). All require authentication.
+	//   - CreateAPIToken, ListAPITokens, RevokeAPIToken: authenticated (any role),
+	//     scoped to the caller's tenant. Users manage their own tokens; admins
+	//     can list/revoke any user's tokens within the tenant.
+	CreateAPIToken(context.Context, *connect.Request[v1alpha1.CreateAPITokenRequest]) (*connect.Response[v1alpha1.CreateAPITokenResponse], error)
+	ListAPITokens(context.Context, *connect.Request[v1alpha1.ListAPITokensRequest]) (*connect.Response[v1alpha1.ListAPITokensResponse], error)
+	RevokeAPIToken(context.Context, *connect.Request[v1alpha1.RevokeAPITokenRequest]) (*connect.Response[v1alpha1.RevokeAPITokenResponse], error)
 }
 
 // NewAuthServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -204,6 +263,24 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("Logout")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceCreateAPITokenHandler := connect.NewUnaryHandler(
+		AuthServiceCreateAPITokenProcedure,
+		svc.CreateAPIToken,
+		connect.WithSchema(authServiceMethods.ByName("CreateAPIToken")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceListAPITokensHandler := connect.NewUnaryHandler(
+		AuthServiceListAPITokensProcedure,
+		svc.ListAPITokens,
+		connect.WithSchema(authServiceMethods.ByName("ListAPITokens")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceRevokeAPITokenHandler := connect.NewUnaryHandler(
+		AuthServiceRevokeAPITokenProcedure,
+		svc.RevokeAPIToken,
+		connect.WithSchema(authServiceMethods.ByName("RevokeAPIToken")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/wakil.v1alpha1.AuthService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AuthServiceCreateJoinTokenProcedure:
@@ -218,6 +295,12 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceWhoAmIHandler.ServeHTTP(w, r)
 		case AuthServiceLogoutProcedure:
 			authServiceLogoutHandler.ServeHTTP(w, r)
+		case AuthServiceCreateAPITokenProcedure:
+			authServiceCreateAPITokenHandler.ServeHTTP(w, r)
+		case AuthServiceListAPITokensProcedure:
+			authServiceListAPITokensHandler.ServeHTTP(w, r)
+		case AuthServiceRevokeAPITokenProcedure:
+			authServiceRevokeAPITokenHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -249,4 +332,16 @@ func (UnimplementedAuthServiceHandler) WhoAmI(context.Context, *connect.Request[
 
 func (UnimplementedAuthServiceHandler) Logout(context.Context, *connect.Request[v1alpha1.LogoutRequest]) (*connect.Response[v1alpha1.LogoutResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.AuthService.Logout is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) CreateAPIToken(context.Context, *connect.Request[v1alpha1.CreateAPITokenRequest]) (*connect.Response[v1alpha1.CreateAPITokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.AuthService.CreateAPIToken is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) ListAPITokens(context.Context, *connect.Request[v1alpha1.ListAPITokensRequest]) (*connect.Response[v1alpha1.ListAPITokensResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.AuthService.ListAPITokens is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) RevokeAPIToken(context.Context, *connect.Request[v1alpha1.RevokeAPITokenRequest]) (*connect.Response[v1alpha1.RevokeAPITokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.AuthService.RevokeAPIToken is not implemented"))
 }

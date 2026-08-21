@@ -17,6 +17,7 @@ import (
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/auth"
+	"github.com/treeol/wakil/internal/auth/apitoken"
 	"github.com/treeol/wakil/internal/auth/jointoken"
 	"github.com/treeol/wakil/internal/auth/peercred"
 	"github.com/treeol/wakil/internal/auth/tokenresolver"
@@ -123,12 +124,14 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 
 	var tokenStore *tokenstore.Store
 	var issuer *jointoken.Issuer
+	var apiIssuer *apitoken.Issuer
 	var srv *connect.Server
 	if store != nil {
 		// Create the token store (shares the same DB as the session store).
 		tokenStore = tokenstore.New(store.DB())
 		issuer = jointoken.New(tokenStore)
-		srv = connect.NewServerWithAuth(host, ephemeral, resolver, issuer, tokenStore)
+		apiIssuer = apitoken.New(tokenStore)
+		srv = connect.NewServerWithAuth(host, ephemeral, resolver, issuer, apiIssuer, tokenStore)
 	} else {
 		srv = connect.NewServer(host, ephemeral, resolver)
 	}
@@ -211,13 +214,19 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 		// Build the TCP handler: Connect RPCs with cookie auth + static files.
 		var tcpHandler http.Handler
 		if tokenStore != nil {
-			// Create a web session resolver for TCP.
+			// Create a web session resolver for TCP (cookie auth).
 			webResolver := tokenresolver.New(tokenStore)
-			// Build a TCP-specific Connect server with the web session resolver.
-			tcpSrv := connect.NewServerWithAuth(host, ephemeral, webResolver, issuer, tokenStore)
+			// Create an API token resolver for TCP (Bearer header auth).
+			apiResolver := tokenresolver.NewAPIResolver(tokenStore)
+			// The TCP multi-resolver tries web session first (browsers), then
+			// API token (CLI/CI). An invalid credential in either resolver is
+			// a hard fail (no fallthrough).
+			multiResolver := auth.NewMultiResolver(webResolver, apiResolver)
+			// Build a TCP-specific Connect server with the multi-resolver.
+			tcpSrv := connect.NewServerWithAuth(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore)
 			tcpConnectHandler := tcpSrv.Handler()
 
-			// Compose: Connect RPCs at service paths, static files at "/".
+			// Compose: Connect RPCs at service paths, static files at "/" .
 			mux := http.NewServeMux()
 			mux.Handle("/wakil.v1alpha1.", tcpConnectHandler)
 			mux.Handle("/", webStaticHandler())

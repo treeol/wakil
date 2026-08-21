@@ -10,6 +10,7 @@ import (
 	v1alpha1 "github.com/treeol/wakil/api/gen/wakil/v1alpha1"
 	wakilv1alpha1connect "github.com/treeol/wakil/api/gen/wakil/v1alpha1/wakilv1alpha1connect"
 	"github.com/treeol/wakil/internal/auth"
+	"github.com/treeol/wakil/internal/auth/apitoken"
 	"github.com/treeol/wakil/internal/auth/jointoken"
 	"github.com/treeol/wakil/internal/auth/tokenstore"
 	"github.com/treeol/wakil/internal/core"
@@ -26,6 +27,7 @@ import (
 //   - WhoAmI, Logout: authenticated (any method).
 type AuthHandler struct {
 	issuer     *jointoken.Issuer
+	apiIssuer  *apitoken.Issuer
 	store      *tokenstore.Store
 	resolver   principalResolver
 	cookieName string // session cookie name (from tokenresolver.CookieName)
@@ -35,9 +37,10 @@ type AuthHandler struct {
 var _ wakilv1alpha1connect.AuthServiceHandler = (*AuthHandler)(nil)
 
 // NewAuthHandler creates an auth handler.
-func NewAuthHandler(issuer *jointoken.Issuer, store *tokenstore.Store, resolver principalResolver) *AuthHandler {
+func NewAuthHandler(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store *tokenstore.Store, resolver principalResolver) *AuthHandler {
 	return &AuthHandler{
 		issuer:     issuer,
+		apiIssuer:  apiIssuer,
 		store:      store,
 		resolver:   resolver,
 		cookieName: "wakild_session",
@@ -220,6 +223,142 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[v1alpha1.
 	return resp, nil
 }
 
+// --- API Token management (P4d) ---
+
+// CreateAPIToken issues a new API token for the authenticated caller.
+// The plaintext token is shown ONCE; only its SHA-256 hash is stored.
+// Any authenticated role can create API tokens for their own user, but
+// API-token-authenticated callers CANNOT create API tokens (prevents
+// privilege escalation via delegated tokens). Only session and local
+// auth methods may manage API tokens.
+func (h *AuthHandler) CreateAPIToken(ctx context.Context, req *connect.Request[v1alpha1.CreateAPITokenRequest]) (*connect.Response[v1alpha1.CreateAPITokenResponse], error) {
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	if h.apiIssuer == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("api token management not configured"))
+	}
+
+	// API tokens cannot create API tokens — prevents privilege escalation
+	// (a scoped token minting a broader token). Only session and local auth
+	// (interactive/owner credentials) may manage API tokens.
+	if p.AuthMethod == core.AuthAPIToken {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("api tokens cannot manage api tokens; use session or local auth"))
+	}
+
+	// Only owners can request the wildcard "*" scope.
+	for _, s := range req.Msg.Scopes {
+		if s == "*" && p.Role != core.RoleOwner {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only owners can create wildcard-scope tokens"))
+		}
+	}
+
+	var expiresAt time.Time
+	if req.Msg.ExpiresAt != nil {
+		expiresAt = req.Msg.ExpiresAt.AsTime()
+	}
+
+	result, err := h.apiIssuer.Create(ctx, apitoken.CreateRequest{
+		TenantID:  string(p.TenantID),
+		UserID:    string(p.UserID),
+		Name:      req.Msg.Name,
+		Scopes:    req.Msg.Scopes,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		if errors.Is(err, apitoken.ErrMissingName) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		if errors.Is(err, apitoken.ErrMissingIdentity) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		}
+		if errors.Is(err, apitoken.ErrInvalidScope) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		return nil, mapError(err)
+	}
+
+	resp := connect.NewResponse(&v1alpha1.CreateAPITokenResponse{
+		Token: result.Token,
+		Id:    result.ID,
+	})
+	if !result.ExpiresAt.IsZero() {
+		resp.Msg.ExpiresAt = timestamppb.New(result.ExpiresAt)
+	}
+	return resp, nil
+}
+
+// ListAPITokens returns API tokens for the caller's tenant. If user_id is
+// empty, returns the caller's own tokens. Admins/owners can list any user's
+// tokens by specifying user_id. API-token-authenticated callers cannot list
+// tokens (prevents enumeration via delegated tokens).
+func (h *AuthHandler) ListAPITokens(ctx context.Context, req *connect.Request[v1alpha1.ListAPITokensRequest]) (*connect.Response[v1alpha1.ListAPITokensResponse], error) {
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	if h.apiIssuer == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("api token management not configured"))
+	}
+
+	// API tokens cannot manage API tokens.
+	if p.AuthMethod == core.AuthAPIToken {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("api tokens cannot manage api tokens; use session or local auth"))
+	}
+
+	// Authorization: non-admins can only list their own tokens.
+	targetUserID := req.Msg.UserId
+	if targetUserID == "" {
+		targetUserID = string(p.UserID)
+	}
+	if targetUserID != string(p.UserID) && p.Role != core.RoleOwner && p.Role != core.RoleAdmin {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("can only list your own tokens"))
+	}
+
+	tokens, err := h.apiIssuer.List(ctx, string(p.TenantID), targetUserID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	pbTokens := make([]*v1alpha1.APIToken, 0, len(tokens))
+	for _, t := range tokens {
+		pbTokens = append(pbTokens, apiTokenToProto(t))
+	}
+	return connect.NewResponse(&v1alpha1.ListAPITokensResponse{Tokens: pbTokens}), nil
+}
+
+// RevokeAPIToken revokes an API token by ID. Users can revoke their own
+// tokens; admins/owners can revoke any user's tokens within the tenant.
+// API-token-authenticated callers cannot revoke tokens.
+func (h *AuthHandler) RevokeAPIToken(ctx context.Context, req *connect.Request[v1alpha1.RevokeAPITokenRequest]) (*connect.Response[v1alpha1.RevokeAPITokenResponse], error) {
+	p, err := resolvePrincipal(ctx, h.resolver)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	if h.apiIssuer == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("api token management not configured"))
+	}
+
+	// API tokens cannot manage API tokens.
+	if p.AuthMethod == core.AuthAPIToken {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("api tokens cannot manage api tokens; use session or local auth"))
+	}
+
+	// Revoke is tenant-scoped: the store's RevokeAPITokenByTenant includes
+	// a tenant_id predicate to prevent cross-tenant revocation.
+	if err := h.apiIssuer.Revoke(ctx, req.Msg.Id, string(p.TenantID)); err != nil {
+		if errors.Is(err, tokenstore.ErrAPITokenNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		}
+		return nil, mapError(err)
+	}
+	return connect.NewResponse(&v1alpha1.RevokeAPITokenResponse{}), nil
+}
+
 // --- Helpers ---
 
 // setSessionCookie adds a Set-Cookie header to the Connect response.
@@ -290,4 +429,34 @@ func joinTokenToProto(t tokenstore.JoinTokenRow) *v1alpha1.JoinToken {
 // timeFromNanos converts a Unix nanosecond timestamp to a time.Time.
 func timeFromNanos(nanos int64) time.Time {
 	return time.Unix(0, nanos)
+}
+
+// apiTokenToProto converts a tokenstore.APITokenRow to a proto APIToken.
+func apiTokenToProto(t tokenstore.APITokenRow) *v1alpha1.APIToken {
+	pb := &v1alpha1.APIToken{
+		Id:       t.ID,
+		TenantId: t.TenantID,
+		UserId:   t.UserID,
+		Name:     t.Name,
+	}
+	scopes, err := apitoken.ScopesFromJSON(t.ScopesJSON)
+	if err != nil {
+		// Malformed scopes — leave empty (fail safe, don't show potentially
+		// corrupted scope data).
+		scopes = nil
+	}
+	pb.Scopes = scopes
+	if t.CreatedAt != 0 {
+		pb.CreatedAt = timestamppb.New(timeFromNanos(t.CreatedAt))
+	}
+	if t.ExpiresAt != 0 {
+		pb.ExpiresAt = timestamppb.New(timeFromNanos(t.ExpiresAt))
+	}
+	if t.LastUsedAt != 0 {
+		pb.LastUsedAt = timestamppb.New(timeFromNanos(t.LastUsedAt))
+	}
+	if t.RevokedAt != 0 {
+		pb.RevokedAt = timestamppb.New(timeFromNanos(t.RevokedAt))
+	}
+	return pb
 }

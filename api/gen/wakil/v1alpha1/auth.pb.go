@@ -762,6 +762,403 @@ func (*LogoutResponse) Descriptor() ([]byte, []int) {
 	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{13}
 }
 
+// APIToken is the metadata view of an API token (no secrets).
+type APIToken struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	UserId        string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	Scopes        []string               `protobuf:"bytes,5,rep,name=scopes,proto3" json:"scopes,omitempty"`                             // e.g. ["sessions:read", "sessions:write"]
+	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`      // empty = no expiry
+	LastUsedAt    *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=last_used_at,json=lastUsedAt,proto3" json:"last_used_at,omitempty"` // empty = never used
+	RevokedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`      // empty = not revoked
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *APIToken) Reset() {
+	*x = APIToken{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *APIToken) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*APIToken) ProtoMessage() {}
+
+func (x *APIToken) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use APIToken.ProtoReflect.Descriptor instead.
+func (*APIToken) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *APIToken) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *APIToken) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *APIToken) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *APIToken) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *APIToken) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+func (x *APIToken) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *APIToken) GetLastUsedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastUsedAt
+	}
+	return nil
+}
+
+func (x *APIToken) GetRevokedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RevokedAt
+	}
+	return nil
+}
+
+func (x *APIToken) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+type CreateAPITokenRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                            // human-readable label (e.g. "CI pipeline", "laptop")
+	Scopes        []string               `protobuf:"bytes,2,rep,name=scopes,proto3" json:"scopes,omitempty"`                        // scope strings; empty = inherit role permissions
+	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"` // empty = no expiry
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateAPITokenRequest) Reset() {
+	*x = CreateAPITokenRequest{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAPITokenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAPITokenRequest) ProtoMessage() {}
+
+func (x *CreateAPITokenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAPITokenRequest.ProtoReflect.Descriptor instead.
+func (*CreateAPITokenRequest) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *CreateAPITokenRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateAPITokenRequest) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+func (x *CreateAPITokenRequest) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+type CreateAPITokenResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"` // plaintext API secret (tok_...) — shown ONCE, never again
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"` // echoes request expiry (or empty)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateAPITokenResponse) Reset() {
+	*x = CreateAPITokenResponse{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAPITokenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAPITokenResponse) ProtoMessage() {}
+
+func (x *CreateAPITokenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAPITokenResponse.ProtoReflect.Descriptor instead.
+func (*CreateAPITokenResponse) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *CreateAPITokenResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *CreateAPITokenResponse) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *CreateAPITokenResponse) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+type ListAPITokensRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"` // optional: filter by user; empty = list own tokens
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAPITokensRequest) Reset() {
+	*x = ListAPITokensRequest{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAPITokensRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAPITokensRequest) ProtoMessage() {}
+
+func (x *ListAPITokensRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAPITokensRequest.ProtoReflect.Descriptor instead.
+func (*ListAPITokensRequest) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ListAPITokensRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+type ListAPITokensResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tokens        []*APIToken            `protobuf:"bytes,1,rep,name=tokens,proto3" json:"tokens,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAPITokensResponse) Reset() {
+	*x = ListAPITokensResponse{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAPITokensResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAPITokensResponse) ProtoMessage() {}
+
+func (x *ListAPITokensResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAPITokensResponse.ProtoReflect.Descriptor instead.
+func (*ListAPITokensResponse) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ListAPITokensResponse) GetTokens() []*APIToken {
+	if x != nil {
+		return x.Tokens
+	}
+	return nil
+}
+
+type RevokeAPITokenRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeAPITokenRequest) Reset() {
+	*x = RevokeAPITokenRequest{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeAPITokenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeAPITokenRequest) ProtoMessage() {}
+
+func (x *RevokeAPITokenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeAPITokenRequest.ProtoReflect.Descriptor instead.
+func (*RevokeAPITokenRequest) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *RevokeAPITokenRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type RevokeAPITokenResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeAPITokenResponse) Reset() {
+	*x = RevokeAPITokenResponse{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeAPITokenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeAPITokenResponse) ProtoMessage() {}
+
+func (x *RevokeAPITokenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeAPITokenResponse.ProtoReflect.Descriptor instead.
+func (*RevokeAPITokenResponse) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{20}
+}
+
 var File_wakil_v1alpha1_auth_proto protoreflect.FileDescriptor
 
 const file_wakil_v1alpha1_auth_proto_rawDesc = "" +
@@ -815,7 +1212,38 @@ const file_wakil_v1alpha1_auth_proto_rawDesc = "" +
 	"\x0eWhoAmIResponse\x127\n" +
 	"\tprincipal\x18\x01 \x01(\v2\x19.wakil.v1alpha1.PrincipalR\tprincipal\"\x0f\n" +
 	"\rLogoutRequest\"\x10\n" +
-	"\x0eLogoutResponseB\xb6\x01\n" +
+	"\x0eLogoutResponse\"\xeb\x02\n" +
+	"\bAPIToken\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\tR\x06userId\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\x12\x16\n" +
+	"\x06scopes\x18\x05 \x03(\tR\x06scopes\x129\n" +
+	"\n" +
+	"expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12<\n" +
+	"\flast_used_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"lastUsedAt\x129\n" +
+	"\n" +
+	"revoked_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x129\n" +
+	"\n" +
+	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"~\n" +
+	"\x15CreateAPITokenRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06scopes\x18\x02 \x03(\tR\x06scopes\x129\n" +
+	"\n" +
+	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"y\n" +
+	"\x16CreateAPITokenResponse\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x129\n" +
+	"\n" +
+	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"/\n" +
+	"\x14ListAPITokensRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\"I\n" +
+	"\x15ListAPITokensResponse\x120\n" +
+	"\x06tokens\x18\x01 \x03(\v2\x18.wakil.v1alpha1.APITokenR\x06tokens\"'\n" +
+	"\x15RevokeAPITokenRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x18\n" +
+	"\x16RevokeAPITokenResponseB\xb6\x01\n" +
 	"\x12com.wakil.v1alpha1B\tAuthProtoP\x01Z<github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1\xa2\x02\x03WXX\xaa\x02\x0eWakil.V1alpha1\xca\x02\x0eWakil\\V1alpha1\xe2\x02\x1aWakil\\V1alpha1\\GPBMetadata\xea\x02\x0fWakil::V1alpha1b\x06proto3"
 
 var (
@@ -830,7 +1258,7 @@ func file_wakil_v1alpha1_auth_proto_rawDescGZIP() []byte {
 	return file_wakil_v1alpha1_auth_proto_rawDescData
 }
 
-var file_wakil_v1alpha1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_wakil_v1alpha1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_wakil_v1alpha1_auth_proto_goTypes = []any{
 	(*Principal)(nil),                 // 0: wakil.v1alpha1.Principal
 	(*JoinToken)(nil),                 // 1: wakil.v1alpha1.JoinToken
@@ -846,22 +1274,36 @@ var file_wakil_v1alpha1_auth_proto_goTypes = []any{
 	(*WhoAmIResponse)(nil),            // 11: wakil.v1alpha1.WhoAmIResponse
 	(*LogoutRequest)(nil),             // 12: wakil.v1alpha1.LogoutRequest
 	(*LogoutResponse)(nil),            // 13: wakil.v1alpha1.LogoutResponse
-	(*timestamppb.Timestamp)(nil),     // 14: google.protobuf.Timestamp
+	(*APIToken)(nil),                  // 14: wakil.v1alpha1.APIToken
+	(*CreateAPITokenRequest)(nil),     // 15: wakil.v1alpha1.CreateAPITokenRequest
+	(*CreateAPITokenResponse)(nil),    // 16: wakil.v1alpha1.CreateAPITokenResponse
+	(*ListAPITokensRequest)(nil),      // 17: wakil.v1alpha1.ListAPITokensRequest
+	(*ListAPITokensResponse)(nil),     // 18: wakil.v1alpha1.ListAPITokensResponse
+	(*RevokeAPITokenRequest)(nil),     // 19: wakil.v1alpha1.RevokeAPITokenRequest
+	(*RevokeAPITokenResponse)(nil),    // 20: wakil.v1alpha1.RevokeAPITokenResponse
+	(*timestamppb.Timestamp)(nil),     // 21: google.protobuf.Timestamp
 }
 var file_wakil_v1alpha1_auth_proto_depIdxs = []int32{
-	14, // 0: wakil.v1alpha1.JoinToken.created_at:type_name -> google.protobuf.Timestamp
-	14, // 1: wakil.v1alpha1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
-	14, // 2: wakil.v1alpha1.JoinToken.used_at:type_name -> google.protobuf.Timestamp
-	14, // 3: wakil.v1alpha1.JoinToken.revoked_at:type_name -> google.protobuf.Timestamp
-	14, // 4: wakil.v1alpha1.CreateJoinTokenResponse.expires_at:type_name -> google.protobuf.Timestamp
+	21, // 0: wakil.v1alpha1.JoinToken.created_at:type_name -> google.protobuf.Timestamp
+	21, // 1: wakil.v1alpha1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
+	21, // 2: wakil.v1alpha1.JoinToken.used_at:type_name -> google.protobuf.Timestamp
+	21, // 3: wakil.v1alpha1.JoinToken.revoked_at:type_name -> google.protobuf.Timestamp
+	21, // 4: wakil.v1alpha1.CreateJoinTokenResponse.expires_at:type_name -> google.protobuf.Timestamp
 	1,  // 5: wakil.v1alpha1.ListJoinTokensResponse.tokens:type_name -> wakil.v1alpha1.JoinToken
 	0,  // 6: wakil.v1alpha1.ExchangeJoinTokenResponse.principal:type_name -> wakil.v1alpha1.Principal
 	0,  // 7: wakil.v1alpha1.WhoAmIResponse.principal:type_name -> wakil.v1alpha1.Principal
-	8,  // [8:8] is the sub-list for method output_type
-	8,  // [8:8] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	21, // 8: wakil.v1alpha1.APIToken.expires_at:type_name -> google.protobuf.Timestamp
+	21, // 9: wakil.v1alpha1.APIToken.last_used_at:type_name -> google.protobuf.Timestamp
+	21, // 10: wakil.v1alpha1.APIToken.revoked_at:type_name -> google.protobuf.Timestamp
+	21, // 11: wakil.v1alpha1.APIToken.created_at:type_name -> google.protobuf.Timestamp
+	21, // 12: wakil.v1alpha1.CreateAPITokenRequest.expires_at:type_name -> google.protobuf.Timestamp
+	21, // 13: wakil.v1alpha1.CreateAPITokenResponse.expires_at:type_name -> google.protobuf.Timestamp
+	14, // 14: wakil.v1alpha1.ListAPITokensResponse.tokens:type_name -> wakil.v1alpha1.APIToken
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_wakil_v1alpha1_auth_proto_init() }
@@ -875,7 +1317,7 @@ func file_wakil_v1alpha1_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wakil_v1alpha1_auth_proto_rawDesc), len(file_wakil_v1alpha1_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
