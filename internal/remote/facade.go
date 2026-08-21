@@ -10,24 +10,27 @@
 //
 // Key differences from wiringFacade:
 //   - No *agent.App: the agent loop lives in the daemon. The facade cannot
-//     read App fields directly. Instead, it builds ClientSnapshot from the
-//     session snapshot + live event stream.
+//     read App fields directly. Instead, it projects ClientSnapshot from the
+//     cached SessionState (GetSessionState RPC) plus the live event stream.
 //   - SessionService calls go through Connect RPCs (Session.CreateSession,
 //     SubmitInput, etc.) instead of direct host method calls.
 //   - EventReader calls go through Connect RPCs (Event.StreamEvents,
 //     ListEvents, GetSessionSnapshot).
-//   - TUI-specific surfaces (Snapshot, Consent, Info, etc.) are limited to
-//     what the daemon exposes. The daemon does NOT expose the full agent.App
-//     state over RPC — it exposes the session state and event stream. The
-//     remote facade projects the conversation from events rather than reading
-//     App.Conv directly. Consent is not available remotely (the daemon owns
-//     it); the remote facade returns zero-consent and the TUI's consent
-//     toggle is a no-op (or a future "remote consent" RPC).
+//   - TUI-specific surfaces (Snapshot, Consent, Info, CompletionSource) are
+//     projected from a SessionState snapshot fetched over the SessionStateService
+//     GetSessionState RPC (P6b). The daemon exposes the session-scoped App state
+//     via that RPC; the remote facade caches it (the methods are synchronous and
+//     cannot block on an RPC) and refreshes it on setSession and on turn-boundary
+//     events. Fields the daemon does not expose (full workflow state, MCP server
+//     lists, grounding, cost tracker, endpoint list, TranscriptSize) remain
+//     zero-valued. The conversation itself is still projected from the event
+//     stream rather than read from App.Conv.
 //   - Slash-command dispatch is limited: commands that mutate App state
 //     (/backend, /model, /auto) cannot run remotely without daemon-side
 //     support. DispatchCommand returns Handled=false for these, and the TUI
 //     treats them as regular input (submitted as a turn). This is the same
-//     behavior as the embedded path when a command is not recognized.
+//     behavior as the embedded path when a command is not recognized. (P6c
+//     will route these through SessionStateService mutation RPCs.)
 
 package remote
 
@@ -77,6 +80,13 @@ type RemoteFacade struct {
 	// snapshotVersion increments on every facade-mediated mutation.
 	snapshotVersion uint64
 
+	// state is the cached SessionState from the daemon, projected into
+	// Snapshot()/Consent()/Info()/CompletionSource(). Since those methods are
+	// synchronous (no ctx, no error), they cannot block on an RPC; the cache
+	// is refreshed asynchronously (on setSession and on turn-boundary events
+	// from the pump) and read under mu.
+	state *v1alpha1.SessionState
+
 	// closed is true after Close; subsequent calls return ErrSessionClosed.
 	closed bool
 }
@@ -93,10 +103,14 @@ func newRemoteFacade(clients *Clients, principal core.Principal, workspace event
 }
 
 // setSession records the session ID after CreateSession/ResumeConversation.
+// Once the session ID is known it kicks off an asynchronous GetSessionState
+// fetch so Snapshot()/Consent()/Info() report non-zero state on the first
+// render (they are synchronous and cannot block on an RPC).
 func (f *RemoteFacade) setSession(sid event.SessionID) {
 	f.mu.Lock()
 	f.sessionID = sid
 	f.mu.Unlock()
+	go f.refreshState(context.Background())
 }
 
 // ---- SessionService delegation (via Connect RPCs) ----
@@ -204,7 +218,21 @@ func (f *RemoteFacade) Subscribe(ctx context.Context, principal core.Principal, 
 		head = snap.LastSeq
 	}
 
-	pump := NewRemoteEventPump(f.clients, sessionID, head, deliver)
+	// Wrap deliver so the facade refreshes its cached daemon state on
+	// turn-boundary events (where consent/context/model can change) before
+	// forwarding to the TUI. State-change events that are not turn boundaries
+	// pass through unchanged.
+	refreshDeliver := func(ev event.Event) {
+		if ev.Seq > 0 && isStateRefreshEvent(ev.Kind) {
+			// Refresh asynchronously — do not block event delivery. The TUI
+			// re-reads Snapshot() after each event batch, so a refresh landing
+			// one batch later is acceptable (bounded staleness).
+			go f.refreshState(context.Background())
+		}
+		deliver(ev)
+	}
+
+	pump := NewRemoteEventPump(f.clients, sessionID, head, refreshDeliver)
 	f.mu.Lock()
 	f.pump = pump
 	f.mu.Unlock()
@@ -288,43 +316,200 @@ func (f *RemoteFacade) SessionSnapshot(ctx context.Context, principal core.Princ
 
 // ---- TUI-specific surfaces ----
 
+// refreshState fetches the daemon's SessionState and stores it under mu. It is
+// the single write path for the cached state read by Snapshot()/Consent()/
+// Info()/CompletionSource(). Safe to call from any goroutine; failures leave
+// the previous cache intact (stale-but-valid).
+func (f *RemoteFacade) refreshState(ctx context.Context) {
+	f.mu.Lock()
+	sid := f.sessionID
+	clients := f.clients
+	closed := f.closed
+	f.mu.Unlock()
+	if closed || clients == nil || clients.SessionState == nil {
+		return
+	}
+	if sid == "" {
+		return
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := clients.SessionState.GetSessionState(fetchCtx, connect.NewRequest(&v1alpha1.GetSessionStateRequest{
+		SessionId: string(sid),
+	}))
+	if err != nil {
+		return
+	}
+
+	f.mu.Lock()
+	f.state = resp.Msg
+	f.mu.Unlock()
+	f.bumpVersion()
+}
+
 // Snapshot returns the client-visible projection of the session state. The
-// remote facade builds this from the event stream rather than reading App
-// fields directly. Fields the daemon does not expose (ModelList, BackendList,
-// Tools, etc.) are zero-valued — the TUI renders what it can and the rest
-// stays empty. This is the P2e limitation; a future "session info" RPC could
-// populate these.
+// projection is built from the cached SessionState fetched via GetSessionState
+// (see refreshState) plus the locally-projected conversation. Since Snapshot is
+// called on the render path and cannot block, it reads the cache — if the
+// daemon's state hasn't arrived yet (first render), it returns zero values for
+// the daemon-backed fields with the local session ID/title/conv still present.
 func (f *RemoteFacade) Snapshot() sessionclient.ClientSnapshot {
 	f.mu.Lock()
 	version := f.snapshotVersion
 	sid := f.sessionID
 	title := f.title
 	conv := f.conv
+	st := f.state
 	f.mu.Unlock()
 
-	return sessionclient.ClientSnapshot{
+	snap := sessionclient.ClientSnapshot{
 		SessionID: sid,
 		Title:     title,
 		Conv:      append([]proxy.Message(nil), conv...),
 		Version:   version,
 	}
+	if st == nil {
+		// No daemon state yet: ChatID/Workspace default to empty. The session
+		// identity (SessionID) is still authoritative from the local create.
+		return snap
+	}
+
+	snap.ChatID = st.ChatId
+	snap.Workspace = st.Workspace
+	snap.Backend = st.SelectedBackend
+	snap.Model = st.SelectedModel
+	if snap.Model == "" {
+		snap.Model = st.EffectiveModel
+	}
+	snap.ContextLimit = contextLimitFromProto(st.ContextLimit)
+	snap.ModelList = append([]string(nil), st.ModelList...)
+	snap.BackendList = backendsFromProto(st.BackendList)
+	snap.RawTools = st.RawTools
+	// Workflow: the daemon exposes only the sidebar label (WorkflowLabel), not
+	// the full WorkflowState (Task/Phase/StepCount/StepIdx/PlanPath). Leave
+	// snap.Workflow nil rather than fabricate a partial snapshot — Info()
+	// surfaces WorkflowLabel for the sidebar.
+	// Title from the daemon is authoritative if the local title is unset.
+	if snap.Title == "" {
+		snap.Title = st.Title
+	}
+	return snap
 }
 
-// Consent returns the zero consent state. The daemon owns consent; the remote
-// facade cannot read it. The TUI's consent toggles are no-ops in daemon mode
-// (or a future "remote consent" RPC could expose them).
+// Consent returns the daemon-owned consent state from the cached SessionState.
+// Returns zero consent until the first GetSessionState lands (the daemon owns
+// consent; the remote facade cannot read it synchronously otherwise).
 func (f *RemoteFacade) Consent() sessionclient.Consent {
-	return sessionclient.Consent{}
+	f.mu.Lock()
+	st := f.state
+	f.mu.Unlock()
+	if st == nil {
+		return sessionclient.Consent{}
+	}
+	return sessionclient.Consent{
+		AutoApprove:      st.AutoApprove,
+		AllowDestructive: st.AllowDestructive,
+		AllowReads:       st.AllowReads,
+	}
 }
 
 func (f *RemoteFacade) CompletionSource() sessionclient.CompletionSource {
-	return &remoteCompletionSource{}
+	return &remoteCompletionSource{f: f}
 }
 
-// Info returns the limited info the remote facade has. Most fields are empty
-// because they require agent.App access.
+// Info returns the deep-state view the info panel and status line render,
+// projected from the cached SessionState. Fields the daemon does not expose
+// (Image, Oracle* labels, SearXngURL, MentionBase, Endpoints, MCPServers,
+// SearxngTools, Grounding, Costs, TranscriptSize) remain zero-valued — the
+// same P2e limitation, now narrowed: the state the daemon DOES expose is
+// populated instead of everything being empty.
 func (f *RemoteFacade) Info() sessionclient.InfoSnapshot {
-	return sessionclient.InfoSnapshot{}
+	f.mu.Lock()
+	st := f.state
+	convLen := len(f.conv)
+	f.mu.Unlock()
+	if st == nil {
+		return sessionclient.InfoSnapshot{}
+	}
+
+	info := sessionclient.InfoSnapshot{
+		ChatID:          st.ChatId,
+		BaseURL:         st.BaseUrl,
+		LastBackend:     st.LastBackend,
+		Cwd:             st.Cwd,
+		ExecMode:        st.ExecMode,
+		SelectedBackend: st.SelectedBackend,
+		ConfigBackend:   st.ConfigBackend,
+		EffectiveModel:  st.EffectiveModel,
+		SubagentModel:   st.EffectiveSubagentModel,
+		PromptNote:      st.PromptNote,
+		ContextLimit:    contextLimitFromProto(st.ContextLimit),
+		ContextUsed:     int(st.ContextUsed),
+		ContextExact:    st.ContextExact,
+		ConvLen:         convLen,
+		WorkflowLabel:   st.WorkflowLabel,
+		InfoPanelOpen:   st.InfoPanelOpen,
+	}
+
+	return info
+}
+
+// ---- proto → sessionclient conversion helpers ----
+
+// isStateRefreshEvent reports whether an event kind can change daemon-side
+// state that Snapshot()/Consent()/Info() project (consent, context, model list,
+// workflow, conversation size). It returns true on turn boundaries and other
+// authoritative-state events so the facade refreshes its cache at the right
+// moments without hammering GetSessionState on every streaming delta.
+func isStateRefreshEvent(k event.Kind) bool {
+	switch k {
+	case event.KindTurnStarted,
+		event.KindTurnCompleted,
+		event.KindConversationCompacted,
+		event.KindApprovalResolved,
+		event.KindUserMessageCommitted,
+		event.KindSessionCreated,
+		event.KindSubagentCompleted,
+		event.KindWorkflowOutcome:
+		return true
+	default:
+		return false
+	}
+}
+
+func contextLimitFromProto(cl *v1alpha1.ContextLimit) sessionclient.ContextLimit {
+	if cl == nil {
+		return sessionclient.ContextLimit{}
+	}
+	return sessionclient.ContextLimit{
+		NCtx:            int(cl.NCtx),
+		NCtxTrain:       int(cl.NCtxTrain),
+		Source:          cl.Source,
+		ContextSource:   cl.ContextSource,
+		UsableCtx:       int(cl.UsableCtx),
+		ReasoningBudget: int(cl.ReasoningBudget),
+		AnswerMargin:    int(cl.AnswerMargin),
+		ModelUnresolved: cl.ModelUnresolved,
+	}
+}
+
+func backendsFromProto(list []*v1alpha1.BackendInfo) []sessionclient.Backend {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]sessionclient.Backend, 0, len(list))
+	for _, b := range list {
+		if b == nil {
+			continue
+		}
+		out = append(out, sessionclient.Backend{
+			Name:     b.Name,
+			External: b.External,
+			Caps:     append([]string(nil), b.Caps...),
+		})
+	}
+	return out
 }
 
 // ---- Client-initiated mutations ----
@@ -471,10 +656,33 @@ func (f *RemoteFacade) Close() error {
 
 // ---- CompletionSource ----
 
-type remoteCompletionSource struct{}
+type remoteCompletionSource struct {
+	f *RemoteFacade
+}
 
-func (c *remoteCompletionSource) Models() []string                  { return nil }
-func (c *remoteCompletionSource) Backends() []sessionclient.Backend { return nil }
+// Models returns the daemon's model list from the cached state. Empty until
+// the first GetSessionState lands — completion is best-effort and degrades
+// gracefully to no candidates.
+func (c *remoteCompletionSource) Models() []string {
+	c.f.mu.Lock()
+	st := c.f.state
+	c.f.mu.Unlock()
+	if st == nil {
+		return nil
+	}
+	return append([]string(nil), st.ModelList...)
+}
+
+func (c *remoteCompletionSource) Backends() []sessionclient.Backend {
+	c.f.mu.Lock()
+	st := c.f.state
+	c.f.mu.Unlock()
+	if st == nil {
+		return nil
+	}
+	return backendsFromProto(st.BackendList)
+}
+
 func (c *remoteCompletionSource) Sessions() []sessionclient.SessionSummary {
 	return nil
 }

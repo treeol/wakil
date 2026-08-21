@@ -43,7 +43,9 @@ func Dial(socketPath string) (*Clients, error) {
 	}
 	// Verify the socket exists and is connectable before building the client.
 	// This gives a clear error at startup rather than a confusing HTTP error
-	// on the first RPC.
+	// on the first RPC. For daemon-mode clients that predate SessionStateService
+	// (older wakild builds), this check passes but GetSessionState will fail at
+	// call time — the RemoteFacade degrades to cached-zero state in that case.
 	if _, err := os.Stat(socketPath); err != nil {
 		return nil, fmt.Errorf("remote: socket %s not found — is wakild running?: %w", socketPath, err)
 	}
@@ -72,19 +74,23 @@ func Dial(socketPath string) (*Clients, error) {
 	const baseURL = "http://unix"
 
 	return &Clients{
-		Session: wakilv1alpha1connect.NewSessionServiceClient(httpClient, baseURL),
-		Event:   wakilv1alpha1connect.NewEventServiceClient(httpClient, baseURL),
-		System:  wakilv1alpha1connect.NewSystemServiceClient(httpClient, baseURL),
-		http:    httpClient,
+		Session:      wakilv1alpha1connect.NewSessionServiceClient(httpClient, baseURL),
+		Event:        wakilv1alpha1connect.NewEventServiceClient(httpClient, baseURL),
+		System:       wakilv1alpha1connect.NewSystemServiceClient(httpClient, baseURL),
+		SessionState: wakilv1alpha1connect.NewSessionStateServiceClient(httpClient, baseURL),
+		http:         httpClient,
 	}, nil
 }
 
-// Clients holds the three Connect service clients for the daemon.
+// Clients holds the Connect service clients for the daemon. SessionState may
+// be nil when constructed by tests that only need Session/Event/System (and is
+// safe to nil-check before use).
 type Clients struct {
-	Session wakilv1alpha1connect.SessionServiceClient
-	Event   wakilv1alpha1connect.EventServiceClient
-	System  wakilv1alpha1connect.SystemServiceClient
-	http    *http.Client
+	Session      wakilv1alpha1connect.SessionServiceClient
+	Event        wakilv1alpha1connect.EventServiceClient
+	System       wakilv1alpha1connect.SystemServiceClient
+	SessionState wakilv1alpha1connect.SessionStateServiceClient
+	http         *http.Client
 }
 
 // Close releases the HTTP client's resources (idle connections).
