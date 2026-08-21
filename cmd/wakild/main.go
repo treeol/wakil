@@ -15,15 +15,13 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
-	"github.com/treeol/wakil/internal/core/event"
+	"github.com/treeol/wakil/internal/wiring"
 )
 
 func main() {
@@ -105,8 +103,8 @@ func run() error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	// Derive the workspace ID (same derivation as wiring.workspaceIDFromConfig).
-	wsID := workspaceIDFromConfig(cfg)
+	// Derive the workspace ID (same derivation as wiring.WorkspaceIDFromConfig).
+	wsID := wiring.WorkspaceIDFromConfig(cfg)
 
 	ds, err := newDaemonServer(cfg, flags.socketPath, flags.ephemeral, wsID)
 	if err != nil {
@@ -145,15 +143,4 @@ func run() error {
 
 	fmt.Fprintln(os.Stderr, "wakild: stopped")
 	return nil
-}
-
-// workspaceIDFromConfig mirrors wiring.workspaceIDFromConfig: "wsp_" + the
-// first 16 hex chars of the SHA-256 of the effective workdir.
-func workspaceIDFromConfig(cfg config.Config) event.WorkspaceID {
-	ws := cfg.WorkDir
-	if cfg.ExecMode != "direct" {
-		ws = cfg.HostWorkDir
-	}
-	sum := sha256.Sum256([]byte(ws))
-	return event.WorkspaceID("wsp_" + hex.EncodeToString(sum[:8]))
 }

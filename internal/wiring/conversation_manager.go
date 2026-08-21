@@ -34,13 +34,13 @@ var _ sessionclient.ConversationManager = (*conversationManager)(nil)
 // fresh *agent.App instances, wires them to the session host, and returns
 // facades the TUI consumes.
 type conversationManager struct {
-	cfg      config.Config
-	exe      exec.Executor
-	principal core.Principal
-	hostOpts []sessionhost.Option // optional host tuning (test injection)
-	adapterOpts []AdapterOption  // optional adapter tuning (test injection)
-	resources *AppResources      // the FIRST facade's resources; rotation closes them
-	store    sessionhost.Store    // P1: SQLite-backed event store (nil → MemLog fallback)
+	cfg         config.Config
+	exe         exec.Executor
+	principal   core.Principal
+	hostOpts    []sessionhost.Option // optional host tuning (test injection)
+	adapterOpts []AdapterOption      // optional adapter tuning (test injection)
+	resources   *AppResources        // the FIRST facade's resources; rotation closes them
+	store       sessionhost.Store    // P1: SQLite-backed event store (nil → MemLog fallback)
 }
 
 // NewConversationManager creates a ConversationManager from config, executor,
@@ -57,13 +57,13 @@ func NewConversationManager(cfg config.Config, exe exec.Executor, principal core
 		}
 	}
 	cm := &conversationManager{
-		cfg:      cfg,
-		exe:      exe,
+		cfg:       cfg,
+		exe:       exe,
 		principal: principal,
 	}
 	// P1: open the workspace-keyed SQLite event store. Best-effort — a failure
 	// falls back to MemLog (the host works, events just don't persist).
-	ws := workspaceIDFromConfig(cfg)
+	ws := WorkspaceIDFromConfig(cfg)
 	if dbPath := agent.SessionHostDBPath(string(ws)); dbPath != "" {
 		store, err := sqlstore.NewSQLiteStore(context.Background(), dbPath)
 		if err != nil {
@@ -100,7 +100,7 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 	host := sessionhost.New(handle.Turn, hostOpts...)
 
 	sess, err := host.CreateSession(ctx, cm.principal, core.CreateSessionRequest{
-		Workspace: workspaceIDFromConfig(cm.cfg),
+		Workspace: WorkspaceIDFromConfig(cm.cfg),
 	})
 	if err != nil {
 		CloseResources(app, res)
@@ -254,7 +254,7 @@ func (cm *conversationManager) Close(f sessionclient.Facade) error {
 	return wf.Close()
 }
 
-// workspaceIDFromConfig derives a WorkspaceID from the config's working
+// WorkspaceIDFromConfig derives a WorkspaceID from the config's working
 // directory (7b3 m4: real derivation — the m3 stub used the raw path, which
 // fails ID validation for an empty workdir and produces unwieldy IDs for long
 // paths). The ID is "wsp_" + the first 16 hex chars of the SHA-256 of the
@@ -262,7 +262,7 @@ func (cm *conversationManager) Close(f sessionclient.Facade) error {
 // derive the same ID), collision-safe for practical purposes, and independent
 // of path length. An empty effective workdir (a hand-built test config)
 // derives the zero-value hash of "" — still a valid, stable ID.
-func workspaceIDFromConfig(cfg config.Config) event.WorkspaceID {
+func WorkspaceIDFromConfig(cfg config.Config) event.WorkspaceID {
 	ws := cfg.WorkDir
 	if cfg.ExecMode != "direct" {
 		ws = cfg.HostWorkDir

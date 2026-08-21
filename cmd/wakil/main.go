@@ -222,13 +222,8 @@ func runDaemonMode(cfg config.Config) int {
 		socketPath = remote.DefaultSocketPath()
 	}
 
-	// Derive the workspace ID from the config's work dir (the same logic
-	// the daemon uses).
-	ws := event.WorkspaceID(cfg.WorkDir)
-	if ws == "" {
-		cwd, _ := os.Getwd()
-		ws = event.WorkspaceID(cwd)
-	}
+	// Derive the workspace ID from the config (same derivation as the daemon).
+	ws := wiring.WorkspaceIDFromConfig(cfg)
 
 	ctx := context.Background()
 	rt, cleanup, err := remote.BootstrapRemote(ctx, socketPath, ws, "", nil)
