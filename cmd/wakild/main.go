@@ -36,6 +36,7 @@ type daemonFlags struct {
 	socketPath      string
 	ephemeral       bool
 	shutdownTimeout time.Duration
+	httpAddr        string // TCP address for web UI (e.g. "127.0.0.1:8791"; empty = disabled)
 }
 
 func parseFlags(args []string) (daemonFlags, error) {
@@ -63,6 +64,12 @@ func parseFlags(args []string) (daemonFlags, error) {
 				return f, fmt.Errorf("--shutdown-timeout: %w", err)
 			}
 			f.shutdownTimeout = d
+		case "--http-addr", "-http-addr":
+			i++
+			if i >= len(args) {
+				return f, fmt.Errorf("--http-addr requires an address")
+			}
+			f.httpAddr = args[i]
 		case "--help", "-help", "-h":
 			fmt.Fprint(os.Stderr, usage)
 			os.Exit(0)
@@ -83,12 +90,16 @@ Usage:
 
 Flags:
   --socket <path>           Unix socket path (default: $XDG_RUNTIME_DIR/wakild.sock)
+  --http-addr <addr>        TCP address for web UI (e.g. 127.0.0.1:8791; empty = disabled)
   --ephemeral               Use in-memory store (no durability; GetServerInfo.ephemeral=true)
-  --shutdown-timeout <dur>   Graceful drain deadline (default: 10s)
+  --shutdown-timeout <dur>  Graceful drain deadline (default: 10s)
   --help                    Show this help
 
 The daemon reads wakil.yaml for backend/model credentials. The workspace ID
 is derived from the config's working directory (same as the TUI).
+
+With --http-addr, the daemon also serves the web console on that TCP address.
+Connect RPCs are available at /wakil.v1alpha1.<Service>/<Method> (HTTP/JSON).
 `
 
 func run() error {
@@ -106,13 +117,16 @@ func run() error {
 	// Derive the workspace ID (same derivation as wiring.WorkspaceIDFromConfig).
 	wsID := wiring.WorkspaceIDFromConfig(cfg)
 
-	ds, err := newDaemonServer(cfg, flags.socketPath, flags.ephemeral, wsID)
+	ds, err := newDaemonServer(cfg, flags.socketPath, flags.ephemeral, wsID, flags.httpAddr)
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "wakild: listening on %s (ephemeral=%v, workspace=%s)\n",
 		flags.socketPath, flags.ephemeral, wsID)
+	if flags.httpAddr != "" {
+		fmt.Fprintf(os.Stderr, "wakild: web console at http://%s/\n", flags.httpAddr)
+	}
 
 	// Serve until signal.
 	ctx := waitForSignal(context.Background())

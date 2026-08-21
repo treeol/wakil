@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -22,17 +23,21 @@ import (
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/server/connect"
 	"github.com/treeol/wakil/internal/wiring"
+	"github.com/treeol/wakil/web"
 )
 
 // daemonServer bundles the long-lived resources the daemon owns: the event
-// store, the session host, the Connect server, the HTTP server, and the
-// listener. The caller drives lifecycle via serve/shutdown.
+// store, the session host, the Connect server, the HTTP server(s), and the
+// listener(s). The caller drives lifecycle via serve/shutdown.
 type daemonServer struct {
 	store     *sqlstore.SQLiteStore
 	host      *sessionhost.Host
 	srv       *connect.Server
-	httpSrv   *http.Server
-	listener  net.Listener
+	httpSrv   *http.Server // Unix-socket server (Connect RPC)
+	httpAddr  string       // TCP address for web UI ("" = disabled)
+	httpLnr   net.Listener // TCP listener for web UI
+	tcpSrv    *http.Server // TCP server (static files + Connect RPC)
+	listener  net.Listener // Unix-socket listener
 	ephemeral bool
 	exe       exec.Executor
 	app       *agent.App
@@ -45,7 +50,8 @@ type daemonServer struct {
 //  3. Create the session host with the store
 //  4. Build the Connect server
 //  5. Listen on the Unix socket
-func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, workspaceID event.WorkspaceID) (*daemonServer, error) {
+//  6. Optionally listen on a TCP address for the web UI
+func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, workspaceID event.WorkspaceID, httpAddr string) (*daemonServer, error) {
 	// 1. Store initialization (fail-closed unless --ephemeral).
 	var store *sqlstore.SQLiteStore
 	if !ephemeral {
@@ -116,7 +122,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 		Handler: srv.Handler(),
 	}
 
-	return &daemonServer{
+	ds := &daemonServer{
 		store:     store,
 		host:      host,
 		srv:       srv,
@@ -126,17 +132,58 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 		exe:       exe,
 		app:       app,
 		appRes:    res,
-	}, nil
+		httpAddr:  httpAddr,
+	}
+
+	// 6. Optional TCP listener for web UI.
+	if httpAddr != "" {
+		tcpLnr, err := net.Listen("tcp", httpAddr)
+		if err != nil {
+			host.Close(context.Background())
+			wiring.CloseResources(app, res)
+			exe.Close()
+			if store != nil {
+				store.Close()
+			}
+			return nil, fmt.Errorf("wakild: listen tcp: %w", err)
+		}
+		ds.httpLnr = tcpLnr
+		ds.tcpSrv = &http.Server{Handler: webHandler(srv)}
+	}
+
+	return ds, nil
 }
 
-// serve starts the HTTP server on the Unix socket. Blocks until the server
-// stops (via Shutdown or an error). Returns the serve error.
+// serve starts the HTTP servers. Blocks until both servers stop.
+// The Unix-socket server error is returned; the TCP server error is logged.
 func (d *daemonServer) serve() error {
-	return d.httpSrv.Serve(d.listener)
+	errCh := make(chan error, 2)
+
+	go func() {
+		errCh <- d.httpSrv.Serve(d.listener)
+	}()
+
+	if d.tcpSrv != nil && d.httpLnr != nil {
+		go func() {
+			errCh <- d.tcpSrv.Serve(d.httpLnr)
+		}()
+	}
+
+	// Return the first error (typically the Unix-socket server).
+	return <-errCh
+}
+
+// webHandler builds the HTTP handler for the web UI: static files served at
+// root paths, with the Connect API handlers mounted at their respective paths.
+// The Connect handler matches paths like /wakil.v1alpha1.SessionService/ListSessions;
+// everything else falls through to the static file server.
+func webHandler(srv *connect.Server) http.Handler {
+	staticFS, _ := fs.Sub(web.StaticFiles, ".")
+	return srv.HandlerWithStatic(http.FileServer(http.FS(staticFS)))
 }
 
 // shutdown performs a graceful drain:
-//  1. Stop accepting new connections (http.Server.Shutdown)
+//  1. Stop accepting new connections (both Unix + TCP)
 //  2. Drain running turns up to the timeout (host.Close)
 //  3. Close the store, executor, and App resources
 func (d *daemonServer) shutdown(ctx context.Context) error {
@@ -145,6 +192,11 @@ func (d *daemonServer) shutdown(ctx context.Context) error {
 	if d.httpSrv != nil {
 		if err := d.httpSrv.Shutdown(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "wakild: http shutdown: %v\n", err)
+		}
+	}
+	if d.tcpSrv != nil {
+		if err := d.tcpSrv.Shutdown(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "wakild: tcp shutdown: %v\n", err)
 		}
 	}
 

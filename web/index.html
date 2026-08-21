@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wakild — web console</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>wakild</h1>
+    <div id="server-info"></div>
+  </header>
+  <nav id="view-tabs">
+    <button class="tab active" data-view="sessions">Sessions</button>
+    <button class="tab" data-view="viewer">Live Viewer</button>
+  </nav>
+  <main id="view-sessions" class="view active">
+    <div id="session-list"></div>
+  </main>
+  <main id="view-viewer" class="view">
+    <div id="viewer-controls">
+      <input id="viewer-session-id" placeholder="session ID (ses_…)" />
+      <button id="viewer-connect">Connect</button>
+      <span id="viewer-status"></span>
+    </div>
+    <div id="event-timeline"></div>
+  </main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

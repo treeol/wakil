@@ -30,7 +30,7 @@ func (h *SessionHandler) CreateSession(ctx context.Context, req *connect.Request
 	p := localPrincipal()
 	s, err := h.svc.CreateSession(ctx, p, core.CreateSessionRequest{
 		Workspace: event.WorkspaceID(req.Msg.Workspace),
-		Title:    req.Msg.Title,
+		Title:     req.Msg.Title,
 	})
 	if err != nil {
 		return nil, mapError(err)
