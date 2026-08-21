@@ -12,6 +12,7 @@ import (
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/remote"
 	"github.com/treeol/wakil/internal/tui"
 	"github.com/treeol/wakil/internal/wiring"
 
@@ -92,7 +93,7 @@ func main() {
 	}
 
 	if cfg.DaemonMode {
-		os.Exit(RunDaemonMode(cfg))
+		os.Exit(runDaemonMode(cfg))
 	}
 
 	// --attach-image: load into pending images for the first message.
@@ -208,6 +209,62 @@ func main() {
 	// the executor-owned resources.
 	cleanup()
 	exe.Close()
+}
+
+// runDaemonMode dials the wakild daemon and runs the TUI in remote mode
+// (card #148 P2e). When the user runs `wakil --daemon`, the TUI dials the
+// daemon over its Unix socket and drives the session remotely instead of
+// embedding the agent loop. This mirrors main.go's embedded bootstrap path
+// but uses the remote package.
+func runDaemonMode(cfg config.Config) int {
+	socketPath := cfg.DaemonSocket
+	if socketPath == "" {
+		socketPath = remote.DefaultSocketPath()
+	}
+
+	// Derive the workspace ID from the config's work dir (the same logic
+	// the daemon uses).
+	ws := event.WorkspaceID(cfg.WorkDir)
+	if ws == "" {
+		cwd, _ := os.Getwd()
+		ws = event.WorkspaceID(cwd)
+	}
+
+	ctx := context.Background()
+	rt, cleanup, err := remote.BootstrapRemote(ctx, socketPath, ws, "", nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "daemon error:", err)
+		return ExitError
+	}
+	defer cleanup()
+
+	model := tui.NewTUIModelWithFacade(rt.Facade, rt.Manager, rt.Principal)
+	prog := tea.NewProgram(model,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+	tui.SetProgramSend(prog.Send)
+	if err := rt.SubscribeLive(ctx, func(ev event.Event) {
+		prog.Send(ev)
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "subscribe error:", err)
+		return ExitError
+	}
+	rt.StartEventPump(ctx)
+
+	// Redirect raw diagnostics to a session log file (mirrors the embedded path).
+	if snap := rt.Facade.Snapshot(); snap.ChatID != "" {
+		if f := diag.OpenSessionLog(snap.ChatID); f != nil {
+			defer f.Close()
+			defer diag.Redirect(nil)
+		}
+	}
+
+	if _, err := prog.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "tui error:", err)
+		return ExitError
+	}
+	return ExitOK
 }
 
 // panelsUseOpenRouter reports whether any configured mashura panel routes
