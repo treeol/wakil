@@ -26,4 +26,9 @@ service AuthService {
   rpc CreateAPIToken(CreateAPITokenRequest) returns (CreateAPITokenResponse);
   rpc ListAPITokens(ListAPITokensRequest) returns (ListAPITokensResponse);
   rpc RevokeAPIToken(RevokeAPITokenRequest) returns (RevokeAPITokenResponse);
+  // OIDC (P4e). GetOIDCAuthURL is PUBLIC (returns the IdP redirect URL).
+  // ExchangeOIDCCode is PUBLIC (exchanges the IdP callback code for a
+  // session cookie). Both return Unimplemented when OIDC is not configured.
+  rpc GetOIDCAuthURL(GetOIDCAuthURLRequest) returns (GetOIDCAuthURLResponse);
+  rpc ExchangeOIDCCode(ExchangeOIDCCodeRequest) returns (ExchangeOIDCCodeResponse);
 }

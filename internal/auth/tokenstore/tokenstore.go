@@ -453,6 +453,67 @@ func (s *Store) BeginTx(ctx context.Context) (*sql.Tx, error) {
 	return s.db.BeginTx(ctx, nil)
 }
 
+// --- OIDC queries (P4e) ---
+
+// LookupUserByAuthSubject finds a user by their OIDC `sub` claim
+// (users.auth_subject). Returns ErrUserNotFound if no user has this
+// auth_subject. Used by the OIDC resolver to map a validated JWT's `sub`
+// claim to a local user.
+func (s *Store) LookupUserByAuthSubject(ctx context.Context, authSubject string) (*UserRow, error) {
+	var r UserRow
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, email, display_name, auth_subject, status, created_at
+		 FROM users WHERE auth_subject = ?`, authSubject).
+		Scan(&r.ID, &r.Email, &r.DisplayName, &r.AuthSubject, &r.Status, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tokenstore: lookup user by auth_subject: %w", err)
+	}
+	return &r, nil
+}
+
+// CreateUserWithAuthSubject creates a new user with an OIDC auth_subject
+// and a default membership. This is the auto-provisioning path for first-time
+// OIDC login: the `sub` claim becomes auth_subject, and the user is created
+// with `member` role in the specified tenant.
+//
+// If a user with the same auth_subject already exists, ErrDuplicateAuthSubject
+// is returned (the caller should use LookupUserByAuthSubject instead).
+func (s *Store) CreateUserWithAuthSubject(ctx context.Context, tx *sql.Tx, id, email, displayName, authSubject, tenantID, role string) error {
+	now := time.Now().UnixNano()
+	_, err := tx.ExecContext(ctx, `INSERT INTO users (id, email, display_name, auth_subject, password_hash, status, created_at)
+		VALUES (?, ?, ?, ?, NULL, 'active', ?)`,
+		id, email, displayName, authSubject, now)
+	if err != nil {
+		return fmt.Errorf("tokenstore: create user with auth_subject: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO memberships (tenant_id, user_id, role, created_at)
+		VALUES (?, ?, ?, ?)`,
+		tenantID, id, role, now)
+	if err != nil {
+		return fmt.Errorf("tokenstore: create membership for oidc user: %w", err)
+	}
+	return nil
+}
+
+// --- OIDC errors ---
+
+var (
+	ErrDuplicateAuthSubject = errors.New("tokenstore: auth_subject already exists")
+)
+
+// UserRow is the user view for OIDC resolution (metadata only, no secrets).
+type UserRow struct {
+	ID          string
+	Email       string
+	DisplayName string
+	AuthSubject string // OIDC sub; empty for local accounts
+	Status      string
+	CreatedAt   int64
+}
+
 // DB returns the underlying *sql.DB (for the daemon to share the handle).
 func (s *Store) DB() *sql.DB {
 	return s.db

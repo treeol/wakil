@@ -156,13 +156,16 @@ func NewAPIResolver(store *tokenstore.Store) *APITokenResolver {
 }
 
 // Resolve implements auth.PrincipalResolver. It reads the Authorization
-// header from the context, extracts the Bearer token, looks it up in the
-// DB, and resolves the principal with the current membership role.
+// header from the context, extracts the Bearer token, and only claims it
+// if it matches the API token format (tok_ prefix). Non-tok_ Bearer tokens
+// (e.g. OIDC JWTs) are left for other resolvers.
 //
 // Returns:
 //   - (Principal, nil) on success
-//   - (_, ErrCredentialAbsent) if no Bearer token is present (try next resolver)
-//   - (_, ErrInvalidCredential) if a Bearer token is present but invalid (hard fail)
+//   - (_, ErrCredentialAbsent) if no Bearer token is present or the token
+//     doesn't match the tok_ format (try next resolver)
+//   - (_, ErrInvalidCredential) if a tok_ token is present but invalid
+//     (hard fail — no fallthrough)
 //   - (_, other error) on DB failure (internal error)
 func (r *APITokenResolver) Resolve(ctx context.Context) (core.Principal, error) {
 	headers, ok := auth.HTTPHeadersFromContext(ctx)
@@ -237,7 +240,10 @@ func (r *APITokenResolver) Resolve(ctx context.Context) (core.Principal, error) 
 }
 
 // readBearerToken extracts the Bearer token from the Authorization header.
-// Returns "" if not present or not a Bearer token.
+// Returns "" if not present, not a Bearer token, or not an API token
+// (doesn't match the tok_ prefix). Non-tok_ Bearer tokens (e.g. OIDC JWTs)
+// are left for other resolvers to claim — this is credential-type
+// disambiguation, not validation.
 func readBearerToken(h http.Header) string {
 	authHeader := h.Get("Authorization")
 	if authHeader == "" {
@@ -252,5 +258,12 @@ func readBearerToken(h http.Header) string {
 	if token == "" {
 		return ""
 	}
-	return strings.TrimSpace(token)
+	token = strings.TrimSpace(token)
+	// Only claim API tokens (tok_ prefix). Non-tok_ Bearer tokens (e.g.
+	// OIDC JWTs) are not our credential type — return empty so the
+	// MultiResolver can try the next resolver (OIDC).
+	if !apitoken.ValidateTokenFormat(token) {
+		return ""
+	}
+	return token
 }

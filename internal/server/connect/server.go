@@ -62,6 +62,24 @@ func NewServerWithAuth(host *sessionhost.Host, ephemeral bool, resolver principa
 	return s
 }
 
+// NewServerWithAuthAndOIDC creates a Connect server with auth and OIDC support.
+// Same as NewServerWithAuth but with an OIDC-configured auth handler.
+func NewServerWithAuthAndOIDC(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, oidcCfg OIDCConfig) *Server {
+	if resolver == nil {
+		panic("connect: NewServerWithAuthAndOIDC requires a non-nil principal resolver")
+	}
+	s := &Server{
+		session:    NewSessionHandler(host, host, resolver),
+		event:      NewEventHandler(host, host, resolver),
+		system:     NewSystemHandler(ephemeral),
+		resolver:   resolver,
+		authIssuer: authIssuer,
+		apiIssuer:  apiIssuer,
+		auth:       NewAuthHandlerWithOIDC(authIssuer, apiIssuer, tokenStore, resolver, oidcCfg),
+	}
+	return s
+}
+
 // NewServerFromInterfaces creates a Connect server from explicit interface
 // implementations. Useful for testing with mocks.
 func NewServerFromInterfaces(svc core.SessionService, reader core.EventReader, snap core.SessionReader, ephemeral bool, resolver principalResolver) *Server {
@@ -90,6 +108,24 @@ func NewServerFromInterfacesWithAuth(svc core.SessionService, reader core.EventR
 		authIssuer: authIssuer,
 		apiIssuer:  apiIssuer,
 		auth:       NewAuthHandler(authIssuer, apiIssuer, tokenStore, resolver),
+	}
+}
+
+// NewServerFromInterfacesWithAuthAndOIDC creates a Connect server with auth
+// and OIDC support from explicit interface implementations. Useful for
+// testing with mocks.
+func NewServerFromInterfacesWithAuthAndOIDC(svc core.SessionService, reader core.EventReader, snap core.SessionReader, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, oidcCfg OIDCConfig) *Server {
+	if resolver == nil {
+		panic("connect: NewServerFromInterfacesWithAuthAndOIDC requires a non-nil principal resolver")
+	}
+	return &Server{
+		session:    NewSessionHandler(svc, snap, resolver),
+		event:      NewEventHandler(reader, snap, resolver),
+		system:     NewSystemHandler(ephemeral),
+		resolver:   resolver,
+		authIssuer: authIssuer,
+		apiIssuer:  apiIssuer,
+		auth:       NewAuthHandlerWithOIDC(authIssuer, apiIssuer, tokenStore, resolver, oidcCfg),
 	}
 }
 

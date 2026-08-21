@@ -93,6 +93,11 @@ const (
 	// AuthAPIToken is API token authentication (P4d). A Bearer token is
 	// looked up in the api_tokens table by its SHA-256 hash.
 	AuthAPIToken AuthMethod = "api_token"
+	// AuthOIDC is OpenID Connect authentication (P4e). An OIDC JWT Bearer
+	// token is validated by a pluggable TokenValidator; the `sub` claim is
+	// mapped to users.auth_subject. When no IdP is configured, the OIDC
+	// resolver returns ErrCredentialAbsent (disabled, not an error).
+	AuthOIDC AuthMethod = "oidc"
 )
 
 // Principal is the resolved caller of every service method (doc §6.1). The

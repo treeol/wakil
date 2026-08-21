@@ -19,6 +19,7 @@ import (
 	"github.com/treeol/wakil/internal/auth"
 	"github.com/treeol/wakil/internal/auth/apitoken"
 	"github.com/treeol/wakil/internal/auth/jointoken"
+	"github.com/treeol/wakil/internal/auth/oidcresolver"
 	"github.com/treeol/wakil/internal/auth/peercred"
 	"github.com/treeol/wakil/internal/auth/tokenresolver"
 	"github.com/treeol/wakil/internal/auth/tokenstore"
@@ -218,10 +219,14 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			webResolver := tokenresolver.New(tokenStore)
 			// Create an API token resolver for TCP (Bearer header auth).
 			apiResolver := tokenresolver.NewAPIResolver(tokenStore)
+			// Create an OIDC resolver for TCP (Bearer JWT auth). When no
+			// validator is configured, it returns ErrCredentialAbsent
+			// (disabled) and the MultiResolver chain skips it.
+			oidcResolver := oidcresolver.New(tokenStore, nil, oidcresolver.Config{})
 			// The TCP multi-resolver tries web session first (browsers), then
-			// API token (CLI/CI). An invalid credential in either resolver is
-			// a hard fail (no fallthrough).
-			multiResolver := auth.NewMultiResolver(webResolver, apiResolver)
+			// API token (CLI/CI), then OIDC (external IdP). An invalid
+			// credential in any resolver is a hard fail (no fallthrough).
+			multiResolver := auth.NewMultiResolver(webResolver, apiResolver, oidcResolver)
 			// Build a TCP-specific Connect server with the multi-resolver.
 			tcpSrv := connect.NewServerWithAuth(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore)
 			tcpConnectHandler := tcpSrv.Handler()

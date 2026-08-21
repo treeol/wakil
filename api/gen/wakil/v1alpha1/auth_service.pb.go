@@ -24,7 +24,7 @@ var File_wakil_v1alpha1_auth_service_proto protoreflect.FileDescriptor
 
 const file_wakil_v1alpha1_auth_service_proto_rawDesc = "" +
 	"\n" +
-	"!wakil/v1alpha1/auth_service.proto\x12\x0ewakil.v1alpha1\x1a\x19wakil/v1alpha1/auth.proto2\xd2\x06\n" +
+	"!wakil/v1alpha1/auth_service.proto\x12\x0ewakil.v1alpha1\x1a\x19wakil/v1alpha1/auth.proto2\x9a\b\n" +
 	"\vAuthService\x12b\n" +
 	"\x0fCreateJoinToken\x12&.wakil.v1alpha1.CreateJoinTokenRequest\x1a'.wakil.v1alpha1.CreateJoinTokenResponse\x12_\n" +
 	"\x0eListJoinTokens\x12%.wakil.v1alpha1.ListJoinTokensRequest\x1a&.wakil.v1alpha1.ListJoinTokensResponse\x12b\n" +
@@ -34,7 +34,9 @@ const file_wakil_v1alpha1_auth_service_proto_rawDesc = "" +
 	"\x06Logout\x12\x1d.wakil.v1alpha1.LogoutRequest\x1a\x1e.wakil.v1alpha1.LogoutResponse\x12_\n" +
 	"\x0eCreateAPIToken\x12%.wakil.v1alpha1.CreateAPITokenRequest\x1a&.wakil.v1alpha1.CreateAPITokenResponse\x12\\\n" +
 	"\rListAPITokens\x12$.wakil.v1alpha1.ListAPITokensRequest\x1a%.wakil.v1alpha1.ListAPITokensResponse\x12_\n" +
-	"\x0eRevokeAPIToken\x12%.wakil.v1alpha1.RevokeAPITokenRequest\x1a&.wakil.v1alpha1.RevokeAPITokenResponseB\xbd\x01\n" +
+	"\x0eRevokeAPIToken\x12%.wakil.v1alpha1.RevokeAPITokenRequest\x1a&.wakil.v1alpha1.RevokeAPITokenResponse\x12_\n" +
+	"\x0eGetOIDCAuthURL\x12%.wakil.v1alpha1.GetOIDCAuthURLRequest\x1a&.wakil.v1alpha1.GetOIDCAuthURLResponse\x12e\n" +
+	"\x10ExchangeOIDCCode\x12'.wakil.v1alpha1.ExchangeOIDCCodeRequest\x1a(.wakil.v1alpha1.ExchangeOIDCCodeResponseB\xbd\x01\n" +
 	"\x12com.wakil.v1alpha1B\x10AuthServiceProtoP\x01Z<github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1\xa2\x02\x03WXX\xaa\x02\x0eWakil.V1alpha1\xca\x02\x0eWakil\\V1alpha1\xe2\x02\x1aWakil\\V1alpha1\\GPBMetadata\xea\x02\x0fWakil::V1alpha1b\x06proto3"
 
 var file_wakil_v1alpha1_auth_service_proto_goTypes = []any{
@@ -47,15 +49,19 @@ var file_wakil_v1alpha1_auth_service_proto_goTypes = []any{
 	(*CreateAPITokenRequest)(nil),     // 6: wakil.v1alpha1.CreateAPITokenRequest
 	(*ListAPITokensRequest)(nil),      // 7: wakil.v1alpha1.ListAPITokensRequest
 	(*RevokeAPITokenRequest)(nil),     // 8: wakil.v1alpha1.RevokeAPITokenRequest
-	(*CreateJoinTokenResponse)(nil),   // 9: wakil.v1alpha1.CreateJoinTokenResponse
-	(*ListJoinTokensResponse)(nil),    // 10: wakil.v1alpha1.ListJoinTokensResponse
-	(*RevokeJoinTokenResponse)(nil),   // 11: wakil.v1alpha1.RevokeJoinTokenResponse
-	(*ExchangeJoinTokenResponse)(nil), // 12: wakil.v1alpha1.ExchangeJoinTokenResponse
-	(*WhoAmIResponse)(nil),            // 13: wakil.v1alpha1.WhoAmIResponse
-	(*LogoutResponse)(nil),            // 14: wakil.v1alpha1.LogoutResponse
-	(*CreateAPITokenResponse)(nil),    // 15: wakil.v1alpha1.CreateAPITokenResponse
-	(*ListAPITokensResponse)(nil),     // 16: wakil.v1alpha1.ListAPITokensResponse
-	(*RevokeAPITokenResponse)(nil),    // 17: wakil.v1alpha1.RevokeAPITokenResponse
+	(*GetOIDCAuthURLRequest)(nil),     // 9: wakil.v1alpha1.GetOIDCAuthURLRequest
+	(*ExchangeOIDCCodeRequest)(nil),   // 10: wakil.v1alpha1.ExchangeOIDCCodeRequest
+	(*CreateJoinTokenResponse)(nil),   // 11: wakil.v1alpha1.CreateJoinTokenResponse
+	(*ListJoinTokensResponse)(nil),    // 12: wakil.v1alpha1.ListJoinTokensResponse
+	(*RevokeJoinTokenResponse)(nil),   // 13: wakil.v1alpha1.RevokeJoinTokenResponse
+	(*ExchangeJoinTokenResponse)(nil), // 14: wakil.v1alpha1.ExchangeJoinTokenResponse
+	(*WhoAmIResponse)(nil),            // 15: wakil.v1alpha1.WhoAmIResponse
+	(*LogoutResponse)(nil),            // 16: wakil.v1alpha1.LogoutResponse
+	(*CreateAPITokenResponse)(nil),    // 17: wakil.v1alpha1.CreateAPITokenResponse
+	(*ListAPITokensResponse)(nil),     // 18: wakil.v1alpha1.ListAPITokensResponse
+	(*RevokeAPITokenResponse)(nil),    // 19: wakil.v1alpha1.RevokeAPITokenResponse
+	(*GetOIDCAuthURLResponse)(nil),    // 20: wakil.v1alpha1.GetOIDCAuthURLResponse
+	(*ExchangeOIDCCodeResponse)(nil),  // 21: wakil.v1alpha1.ExchangeOIDCCodeResponse
 }
 var file_wakil_v1alpha1_auth_service_proto_depIdxs = []int32{
 	0,  // 0: wakil.v1alpha1.AuthService.CreateJoinToken:input_type -> wakil.v1alpha1.CreateJoinTokenRequest
@@ -67,17 +73,21 @@ var file_wakil_v1alpha1_auth_service_proto_depIdxs = []int32{
 	6,  // 6: wakil.v1alpha1.AuthService.CreateAPIToken:input_type -> wakil.v1alpha1.CreateAPITokenRequest
 	7,  // 7: wakil.v1alpha1.AuthService.ListAPITokens:input_type -> wakil.v1alpha1.ListAPITokensRequest
 	8,  // 8: wakil.v1alpha1.AuthService.RevokeAPIToken:input_type -> wakil.v1alpha1.RevokeAPITokenRequest
-	9,  // 9: wakil.v1alpha1.AuthService.CreateJoinToken:output_type -> wakil.v1alpha1.CreateJoinTokenResponse
-	10, // 10: wakil.v1alpha1.AuthService.ListJoinTokens:output_type -> wakil.v1alpha1.ListJoinTokensResponse
-	11, // 11: wakil.v1alpha1.AuthService.RevokeJoinToken:output_type -> wakil.v1alpha1.RevokeJoinTokenResponse
-	12, // 12: wakil.v1alpha1.AuthService.ExchangeJoinToken:output_type -> wakil.v1alpha1.ExchangeJoinTokenResponse
-	13, // 13: wakil.v1alpha1.AuthService.WhoAmI:output_type -> wakil.v1alpha1.WhoAmIResponse
-	14, // 14: wakil.v1alpha1.AuthService.Logout:output_type -> wakil.v1alpha1.LogoutResponse
-	15, // 15: wakil.v1alpha1.AuthService.CreateAPIToken:output_type -> wakil.v1alpha1.CreateAPITokenResponse
-	16, // 16: wakil.v1alpha1.AuthService.ListAPITokens:output_type -> wakil.v1alpha1.ListAPITokensResponse
-	17, // 17: wakil.v1alpha1.AuthService.RevokeAPIToken:output_type -> wakil.v1alpha1.RevokeAPITokenResponse
-	9,  // [9:18] is the sub-list for method output_type
-	0,  // [0:9] is the sub-list for method input_type
+	9,  // 9: wakil.v1alpha1.AuthService.GetOIDCAuthURL:input_type -> wakil.v1alpha1.GetOIDCAuthURLRequest
+	10, // 10: wakil.v1alpha1.AuthService.ExchangeOIDCCode:input_type -> wakil.v1alpha1.ExchangeOIDCCodeRequest
+	11, // 11: wakil.v1alpha1.AuthService.CreateJoinToken:output_type -> wakil.v1alpha1.CreateJoinTokenResponse
+	12, // 12: wakil.v1alpha1.AuthService.ListJoinTokens:output_type -> wakil.v1alpha1.ListJoinTokensResponse
+	13, // 13: wakil.v1alpha1.AuthService.RevokeJoinToken:output_type -> wakil.v1alpha1.RevokeJoinTokenResponse
+	14, // 14: wakil.v1alpha1.AuthService.ExchangeJoinToken:output_type -> wakil.v1alpha1.ExchangeJoinTokenResponse
+	15, // 15: wakil.v1alpha1.AuthService.WhoAmI:output_type -> wakil.v1alpha1.WhoAmIResponse
+	16, // 16: wakil.v1alpha1.AuthService.Logout:output_type -> wakil.v1alpha1.LogoutResponse
+	17, // 17: wakil.v1alpha1.AuthService.CreateAPIToken:output_type -> wakil.v1alpha1.CreateAPITokenResponse
+	18, // 18: wakil.v1alpha1.AuthService.ListAPITokens:output_type -> wakil.v1alpha1.ListAPITokensResponse
+	19, // 19: wakil.v1alpha1.AuthService.RevokeAPIToken:output_type -> wakil.v1alpha1.RevokeAPITokenResponse
+	20, // 20: wakil.v1alpha1.AuthService.GetOIDCAuthURL:output_type -> wakil.v1alpha1.GetOIDCAuthURLResponse
+	21, // 21: wakil.v1alpha1.AuthService.ExchangeOIDCCode:output_type -> wakil.v1alpha1.ExchangeOIDCCodeResponse
+	11, // [11:22] is the sub-list for method output_type
+	0,  // [0:11] is the sub-list for method input_type
 	0,  // [0:0] is the sub-list for extension type_name
 	0,  // [0:0] is the sub-list for extension extendee
 	0,  // [0:0] is the sub-list for field type_name

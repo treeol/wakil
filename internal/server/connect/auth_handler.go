@@ -31,6 +31,18 @@ type AuthHandler struct {
 	store      *tokenstore.Store
 	resolver   principalResolver
 	cookieName string // session cookie name (from tokenresolver.CookieName)
+	oidcCfg    OIDCConfig
+}
+
+// OIDCConfig holds the OIDC handler configuration. When Issuer is empty,
+// OIDC RPCs return Unimplemented.
+type OIDCConfig struct {
+	Issuer      string
+	ClientID    string
+	RedirectURI string
+	// AuthURLBuilder is the function that builds the IdP authorization URL.
+	// If nil, GetOIDCAuthURL returns Unimplemented.
+	AuthURLBuilder func(redirectURI string) (string, error)
 }
 
 // Compile-time assertion.
@@ -45,6 +57,14 @@ func NewAuthHandler(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store 
 		resolver:   resolver,
 		cookieName: "wakild_session",
 	}
+}
+
+// NewAuthHandlerWithOIDC creates an auth handler with OIDC support.
+// If oidcCfg.Issuer is empty, OIDC RPCs return Unimplemented.
+func NewAuthHandlerWithOIDC(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store *tokenstore.Store, resolver principalResolver, oidcCfg OIDCConfig) *AuthHandler {
+	h := NewAuthHandler(issuer, apiIssuer, store, resolver)
+	h.oidcCfg = oidcCfg
+	return h
 }
 
 // CreateJoinToken issues a new join token. Owner/admin only.
@@ -241,10 +261,11 @@ func (h *AuthHandler) CreateAPIToken(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("api token management not configured"))
 	}
 
-	// API tokens cannot create API tokens — prevents privilege escalation
-	// (a scoped token minting a broader token). Only session and local auth
-	// (interactive/owner credentials) may manage API tokens.
-	if p.AuthMethod == core.AuthAPIToken {
+	// API tokens and OIDC tokens cannot create API tokens — prevents
+	// privilege escalation (a scoped token or external IdP user minting a
+	// broader token). Only session and local auth (interactive/owner
+	// credentials) may manage API tokens.
+	if p.AuthMethod == core.AuthAPIToken || p.AuthMethod == core.AuthOIDC {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("api tokens cannot manage api tokens; use session or local auth"))
 	}
 
@@ -304,8 +325,8 @@ func (h *AuthHandler) ListAPITokens(ctx context.Context, req *connect.Request[v1
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("api token management not configured"))
 	}
 
-	// API tokens cannot manage API tokens.
-	if p.AuthMethod == core.AuthAPIToken {
+	// API tokens and OIDC tokens cannot manage API tokens.
+	if p.AuthMethod == core.AuthAPIToken || p.AuthMethod == core.AuthOIDC {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("api tokens cannot manage api tokens; use session or local auth"))
 	}
 
@@ -343,8 +364,8 @@ func (h *AuthHandler) RevokeAPIToken(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("api token management not configured"))
 	}
 
-	// API tokens cannot manage API tokens.
-	if p.AuthMethod == core.AuthAPIToken {
+	// API tokens and OIDC tokens cannot manage API tokens.
+	if p.AuthMethod == core.AuthAPIToken || p.AuthMethod == core.AuthOIDC {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("api tokens cannot manage api tokens; use session or local auth"))
 	}
 
@@ -357,6 +378,63 @@ func (h *AuthHandler) RevokeAPIToken(ctx context.Context, req *connect.Request[v
 		return nil, mapError(err)
 	}
 	return connect.NewResponse(&v1alpha1.RevokeAPITokenResponse{}), nil
+}
+
+// --- OIDC (P4e) ---
+
+// GetOIDCAuthURL returns the OIDC authorization redirect URL. The caller's
+// browser is redirected to this URL to begin the OIDC flow.
+//
+// This RPC is PUBLIC (unauthenticated) — the caller hasn't authenticated yet.
+// Returns Unimplemented when OIDC is not configured.
+func (h *AuthHandler) GetOIDCAuthURL(ctx context.Context, req *connect.Request[v1alpha1.GetOIDCAuthURLRequest]) (*connect.Response[v1alpha1.GetOIDCAuthURLResponse], error) {
+	if h.oidcCfg.Issuer == "" {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("oidc not configured"))
+	}
+
+	redirectURI := req.Msg.RedirectUri
+	if redirectURI == "" {
+		redirectURI = h.oidcCfg.RedirectURI
+	}
+
+	var authURL string
+	if h.oidcCfg.AuthURLBuilder != nil {
+		u, err := h.oidcCfg.AuthURLBuilder(redirectURI)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		authURL = u
+	} else {
+		// Without a builder, return Unimplemented — the IdP integration
+		// is not wired yet.
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("oidc auth url builder not configured"))
+	}
+
+	return connect.NewResponse(&v1alpha1.GetOIDCAuthURLResponse{
+		AuthUrl: authURL,
+	}), nil
+}
+
+// ExchangeOIDCCode exchanges an OIDC authorization code for a session cookie.
+// The code is received at the redirect_uri after the user authenticates at
+// the IdP.
+//
+// This RPC is PUBLIC (unauthenticated) — the caller exchanges an IdP code,
+// not a wakild credential.
+// Returns Unimplemented when OIDC is not configured.
+func (h *AuthHandler) ExchangeOIDCCode(ctx context.Context, req *connect.Request[v1alpha1.ExchangeOIDCCodeRequest]) (*connect.Response[v1alpha1.ExchangeOIDCCodeResponse], error) {
+	if h.oidcCfg.Issuer == "" {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("oidc not configured"))
+	}
+
+	// Without an IdP integration, we cannot exchange the code.
+	// When an IdP is configured, this would:
+	// 1. Exchange the code for an ID token at the IdP token endpoint
+	// 2. Validate the ID token (signature, issuer, audience, expiry)
+	// 3. Extract the `sub` claim
+	// 4. Look up or provision the user by auth_subject
+	// 5. Create a web session and set the cookie
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("oidc code exchange not implemented — configure an IdP"))
 }
 
 // --- Helpers ---

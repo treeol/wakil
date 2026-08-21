@@ -58,6 +58,12 @@ const (
 	// AuthServiceRevokeAPITokenProcedure is the fully-qualified name of the AuthService's
 	// RevokeAPIToken RPC.
 	AuthServiceRevokeAPITokenProcedure = "/wakil.v1alpha1.AuthService/RevokeAPIToken"
+	// AuthServiceGetOIDCAuthURLProcedure is the fully-qualified name of the AuthService's
+	// GetOIDCAuthURL RPC.
+	AuthServiceGetOIDCAuthURLProcedure = "/wakil.v1alpha1.AuthService/GetOIDCAuthURL"
+	// AuthServiceExchangeOIDCCodeProcedure is the fully-qualified name of the AuthService's
+	// ExchangeOIDCCode RPC.
+	AuthServiceExchangeOIDCCodeProcedure = "/wakil.v1alpha1.AuthService/ExchangeOIDCCode"
 )
 
 // AuthServiceClient is a client for the wakil.v1alpha1.AuthService service.
@@ -75,6 +81,11 @@ type AuthServiceClient interface {
 	CreateAPIToken(context.Context, *connect.Request[v1alpha1.CreateAPITokenRequest]) (*connect.Response[v1alpha1.CreateAPITokenResponse], error)
 	ListAPITokens(context.Context, *connect.Request[v1alpha1.ListAPITokensRequest]) (*connect.Response[v1alpha1.ListAPITokensResponse], error)
 	RevokeAPIToken(context.Context, *connect.Request[v1alpha1.RevokeAPITokenRequest]) (*connect.Response[v1alpha1.RevokeAPITokenResponse], error)
+	// OIDC (P4e). GetOIDCAuthURL is PUBLIC (returns the IdP redirect URL).
+	// ExchangeOIDCCode is PUBLIC (exchanges the IdP callback code for a
+	// session cookie). Both return Unimplemented when OIDC is not configured.
+	GetOIDCAuthURL(context.Context, *connect.Request[v1alpha1.GetOIDCAuthURLRequest]) (*connect.Response[v1alpha1.GetOIDCAuthURLResponse], error)
+	ExchangeOIDCCode(context.Context, *connect.Request[v1alpha1.ExchangeOIDCCodeRequest]) (*connect.Response[v1alpha1.ExchangeOIDCCodeResponse], error)
 }
 
 // NewAuthServiceClient constructs a client for the wakil.v1alpha1.AuthService service. By default,
@@ -142,6 +153,18 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("RevokeAPIToken")),
 			connect.WithClientOptions(opts...),
 		),
+		getOIDCAuthURL: connect.NewClient[v1alpha1.GetOIDCAuthURLRequest, v1alpha1.GetOIDCAuthURLResponse](
+			httpClient,
+			baseURL+AuthServiceGetOIDCAuthURLProcedure,
+			connect.WithSchema(authServiceMethods.ByName("GetOIDCAuthURL")),
+			connect.WithClientOptions(opts...),
+		),
+		exchangeOIDCCode: connect.NewClient[v1alpha1.ExchangeOIDCCodeRequest, v1alpha1.ExchangeOIDCCodeResponse](
+			httpClient,
+			baseURL+AuthServiceExchangeOIDCCodeProcedure,
+			connect.WithSchema(authServiceMethods.ByName("ExchangeOIDCCode")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -156,6 +179,8 @@ type authServiceClient struct {
 	createAPIToken    *connect.Client[v1alpha1.CreateAPITokenRequest, v1alpha1.CreateAPITokenResponse]
 	listAPITokens     *connect.Client[v1alpha1.ListAPITokensRequest, v1alpha1.ListAPITokensResponse]
 	revokeAPIToken    *connect.Client[v1alpha1.RevokeAPITokenRequest, v1alpha1.RevokeAPITokenResponse]
+	getOIDCAuthURL    *connect.Client[v1alpha1.GetOIDCAuthURLRequest, v1alpha1.GetOIDCAuthURLResponse]
+	exchangeOIDCCode  *connect.Client[v1alpha1.ExchangeOIDCCodeRequest, v1alpha1.ExchangeOIDCCodeResponse]
 }
 
 // CreateJoinToken calls wakil.v1alpha1.AuthService.CreateJoinToken.
@@ -203,6 +228,16 @@ func (c *authServiceClient) RevokeAPIToken(ctx context.Context, req *connect.Req
 	return c.revokeAPIToken.CallUnary(ctx, req)
 }
 
+// GetOIDCAuthURL calls wakil.v1alpha1.AuthService.GetOIDCAuthURL.
+func (c *authServiceClient) GetOIDCAuthURL(ctx context.Context, req *connect.Request[v1alpha1.GetOIDCAuthURLRequest]) (*connect.Response[v1alpha1.GetOIDCAuthURLResponse], error) {
+	return c.getOIDCAuthURL.CallUnary(ctx, req)
+}
+
+// ExchangeOIDCCode calls wakil.v1alpha1.AuthService.ExchangeOIDCCode.
+func (c *authServiceClient) ExchangeOIDCCode(ctx context.Context, req *connect.Request[v1alpha1.ExchangeOIDCCodeRequest]) (*connect.Response[v1alpha1.ExchangeOIDCCodeResponse], error) {
+	return c.exchangeOIDCCode.CallUnary(ctx, req)
+}
+
 // AuthServiceHandler is an implementation of the wakil.v1alpha1.AuthService service.
 type AuthServiceHandler interface {
 	CreateJoinToken(context.Context, *connect.Request[v1alpha1.CreateJoinTokenRequest]) (*connect.Response[v1alpha1.CreateJoinTokenResponse], error)
@@ -218,6 +253,11 @@ type AuthServiceHandler interface {
 	CreateAPIToken(context.Context, *connect.Request[v1alpha1.CreateAPITokenRequest]) (*connect.Response[v1alpha1.CreateAPITokenResponse], error)
 	ListAPITokens(context.Context, *connect.Request[v1alpha1.ListAPITokensRequest]) (*connect.Response[v1alpha1.ListAPITokensResponse], error)
 	RevokeAPIToken(context.Context, *connect.Request[v1alpha1.RevokeAPITokenRequest]) (*connect.Response[v1alpha1.RevokeAPITokenResponse], error)
+	// OIDC (P4e). GetOIDCAuthURL is PUBLIC (returns the IdP redirect URL).
+	// ExchangeOIDCCode is PUBLIC (exchanges the IdP callback code for a
+	// session cookie). Both return Unimplemented when OIDC is not configured.
+	GetOIDCAuthURL(context.Context, *connect.Request[v1alpha1.GetOIDCAuthURLRequest]) (*connect.Response[v1alpha1.GetOIDCAuthURLResponse], error)
+	ExchangeOIDCCode(context.Context, *connect.Request[v1alpha1.ExchangeOIDCCodeRequest]) (*connect.Response[v1alpha1.ExchangeOIDCCodeResponse], error)
 }
 
 // NewAuthServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -281,6 +321,18 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("RevokeAPIToken")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceGetOIDCAuthURLHandler := connect.NewUnaryHandler(
+		AuthServiceGetOIDCAuthURLProcedure,
+		svc.GetOIDCAuthURL,
+		connect.WithSchema(authServiceMethods.ByName("GetOIDCAuthURL")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceExchangeOIDCCodeHandler := connect.NewUnaryHandler(
+		AuthServiceExchangeOIDCCodeProcedure,
+		svc.ExchangeOIDCCode,
+		connect.WithSchema(authServiceMethods.ByName("ExchangeOIDCCode")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/wakil.v1alpha1.AuthService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AuthServiceCreateJoinTokenProcedure:
@@ -301,6 +353,10 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceListAPITokensHandler.ServeHTTP(w, r)
 		case AuthServiceRevokeAPITokenProcedure:
 			authServiceRevokeAPITokenHandler.ServeHTTP(w, r)
+		case AuthServiceGetOIDCAuthURLProcedure:
+			authServiceGetOIDCAuthURLHandler.ServeHTTP(w, r)
+		case AuthServiceExchangeOIDCCodeProcedure:
+			authServiceExchangeOIDCCodeHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -344,4 +400,12 @@ func (UnimplementedAuthServiceHandler) ListAPITokens(context.Context, *connect.R
 
 func (UnimplementedAuthServiceHandler) RevokeAPIToken(context.Context, *connect.Request[v1alpha1.RevokeAPITokenRequest]) (*connect.Response[v1alpha1.RevokeAPITokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.AuthService.RevokeAPIToken is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) GetOIDCAuthURL(context.Context, *connect.Request[v1alpha1.GetOIDCAuthURLRequest]) (*connect.Response[v1alpha1.GetOIDCAuthURLResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.AuthService.GetOIDCAuthURL is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) ExchangeOIDCCode(context.Context, *connect.Request[v1alpha1.ExchangeOIDCCodeRequest]) (*connect.Response[v1alpha1.ExchangeOIDCCodeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.AuthService.ExchangeOIDCCode is not implemented"))
 }

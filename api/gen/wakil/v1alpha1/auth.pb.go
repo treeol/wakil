@@ -1159,6 +1159,195 @@ func (*RevokeAPITokenResponse) Descriptor() ([]byte, []int) {
 	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{20}
 }
 
+// GetOIDCAuthURLRequest requests the OIDC authorization redirect URL.
+// The caller's browser is redirected to this URL to begin the OIDC flow.
+type GetOIDCAuthURLRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RedirectUri   string                 `protobuf:"bytes,1,opt,name=redirect_uri,json=redirectUri,proto3" json:"redirect_uri,omitempty"` // optional: override configured redirect URI
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOIDCAuthURLRequest) Reset() {
+	*x = GetOIDCAuthURLRequest{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOIDCAuthURLRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOIDCAuthURLRequest) ProtoMessage() {}
+
+func (x *GetOIDCAuthURLRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOIDCAuthURLRequest.ProtoReflect.Descriptor instead.
+func (*GetOIDCAuthURLRequest) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *GetOIDCAuthURLRequest) GetRedirectUri() string {
+	if x != nil {
+		return x.RedirectUri
+	}
+	return ""
+}
+
+type GetOIDCAuthURLResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AuthUrl       string                 `protobuf:"bytes,1,opt,name=auth_url,json=authUrl,proto3" json:"auth_url,omitempty"` // authorization endpoint URL at the IdP
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOIDCAuthURLResponse) Reset() {
+	*x = GetOIDCAuthURLResponse{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOIDCAuthURLResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOIDCAuthURLResponse) ProtoMessage() {}
+
+func (x *GetOIDCAuthURLResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOIDCAuthURLResponse.ProtoReflect.Descriptor instead.
+func (*GetOIDCAuthURLResponse) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *GetOIDCAuthURLResponse) GetAuthUrl() string {
+	if x != nil {
+		return x.AuthUrl
+	}
+	return ""
+}
+
+// ExchangeOIDCCodeRequest exchanges an OIDC authorization code for a
+// session cookie. The code is received at the redirect_uri after the user
+// authenticates at the IdP.
+type ExchangeOIDCCodeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`                                  // authorization code from the IdP callback
+	RedirectUri   string                 `protobuf:"bytes,2,opt,name=redirect_uri,json=redirectUri,proto3" json:"redirect_uri,omitempty"` // must match the one used in GetOIDCAuthURL
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExchangeOIDCCodeRequest) Reset() {
+	*x = ExchangeOIDCCodeRequest{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExchangeOIDCCodeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExchangeOIDCCodeRequest) ProtoMessage() {}
+
+func (x *ExchangeOIDCCodeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExchangeOIDCCodeRequest.ProtoReflect.Descriptor instead.
+func (*ExchangeOIDCCodeRequest) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ExchangeOIDCCodeRequest) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *ExchangeOIDCCodeRequest) GetRedirectUri() string {
+	if x != nil {
+		return x.RedirectUri
+	}
+	return ""
+}
+
+type ExchangeOIDCCodeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Principal     *Principal             `protobuf:"bytes,1,opt,name=principal,proto3" json:"principal,omitempty"` // resolved identity (metadata only)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExchangeOIDCCodeResponse) Reset() {
+	*x = ExchangeOIDCCodeResponse{}
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExchangeOIDCCodeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExchangeOIDCCodeResponse) ProtoMessage() {}
+
+func (x *ExchangeOIDCCodeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_auth_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExchangeOIDCCodeResponse.ProtoReflect.Descriptor instead.
+func (*ExchangeOIDCCodeResponse) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_auth_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ExchangeOIDCCodeResponse) GetPrincipal() *Principal {
+	if x != nil {
+		return x.Principal
+	}
+	return nil
+}
+
 var File_wakil_v1alpha1_auth_proto protoreflect.FileDescriptor
 
 const file_wakil_v1alpha1_auth_proto_rawDesc = "" +
@@ -1243,7 +1432,16 @@ const file_wakil_v1alpha1_auth_proto_rawDesc = "" +
 	"\x06tokens\x18\x01 \x03(\v2\x18.wakil.v1alpha1.APITokenR\x06tokens\"'\n" +
 	"\x15RevokeAPITokenRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x18\n" +
-	"\x16RevokeAPITokenResponseB\xb6\x01\n" +
+	"\x16RevokeAPITokenResponse\":\n" +
+	"\x15GetOIDCAuthURLRequest\x12!\n" +
+	"\fredirect_uri\x18\x01 \x01(\tR\vredirectUri\"3\n" +
+	"\x16GetOIDCAuthURLResponse\x12\x19\n" +
+	"\bauth_url\x18\x01 \x01(\tR\aauthUrl\"P\n" +
+	"\x17ExchangeOIDCCodeRequest\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12!\n" +
+	"\fredirect_uri\x18\x02 \x01(\tR\vredirectUri\"S\n" +
+	"\x18ExchangeOIDCCodeResponse\x127\n" +
+	"\tprincipal\x18\x01 \x01(\v2\x19.wakil.v1alpha1.PrincipalR\tprincipalB\xb6\x01\n" +
 	"\x12com.wakil.v1alpha1B\tAuthProtoP\x01Z<github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1\xa2\x02\x03WXX\xaa\x02\x0eWakil.V1alpha1\xca\x02\x0eWakil\\V1alpha1\xe2\x02\x1aWakil\\V1alpha1\\GPBMetadata\xea\x02\x0fWakil::V1alpha1b\x06proto3"
 
 var (
@@ -1258,7 +1456,7 @@ func file_wakil_v1alpha1_auth_proto_rawDescGZIP() []byte {
 	return file_wakil_v1alpha1_auth_proto_rawDescData
 }
 
-var file_wakil_v1alpha1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_wakil_v1alpha1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_wakil_v1alpha1_auth_proto_goTypes = []any{
 	(*Principal)(nil),                 // 0: wakil.v1alpha1.Principal
 	(*JoinToken)(nil),                 // 1: wakil.v1alpha1.JoinToken
@@ -1281,29 +1479,34 @@ var file_wakil_v1alpha1_auth_proto_goTypes = []any{
 	(*ListAPITokensResponse)(nil),     // 18: wakil.v1alpha1.ListAPITokensResponse
 	(*RevokeAPITokenRequest)(nil),     // 19: wakil.v1alpha1.RevokeAPITokenRequest
 	(*RevokeAPITokenResponse)(nil),    // 20: wakil.v1alpha1.RevokeAPITokenResponse
-	(*timestamppb.Timestamp)(nil),     // 21: google.protobuf.Timestamp
+	(*GetOIDCAuthURLRequest)(nil),     // 21: wakil.v1alpha1.GetOIDCAuthURLRequest
+	(*GetOIDCAuthURLResponse)(nil),    // 22: wakil.v1alpha1.GetOIDCAuthURLResponse
+	(*ExchangeOIDCCodeRequest)(nil),   // 23: wakil.v1alpha1.ExchangeOIDCCodeRequest
+	(*ExchangeOIDCCodeResponse)(nil),  // 24: wakil.v1alpha1.ExchangeOIDCCodeResponse
+	(*timestamppb.Timestamp)(nil),     // 25: google.protobuf.Timestamp
 }
 var file_wakil_v1alpha1_auth_proto_depIdxs = []int32{
-	21, // 0: wakil.v1alpha1.JoinToken.created_at:type_name -> google.protobuf.Timestamp
-	21, // 1: wakil.v1alpha1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
-	21, // 2: wakil.v1alpha1.JoinToken.used_at:type_name -> google.protobuf.Timestamp
-	21, // 3: wakil.v1alpha1.JoinToken.revoked_at:type_name -> google.protobuf.Timestamp
-	21, // 4: wakil.v1alpha1.CreateJoinTokenResponse.expires_at:type_name -> google.protobuf.Timestamp
+	25, // 0: wakil.v1alpha1.JoinToken.created_at:type_name -> google.protobuf.Timestamp
+	25, // 1: wakil.v1alpha1.JoinToken.expires_at:type_name -> google.protobuf.Timestamp
+	25, // 2: wakil.v1alpha1.JoinToken.used_at:type_name -> google.protobuf.Timestamp
+	25, // 3: wakil.v1alpha1.JoinToken.revoked_at:type_name -> google.protobuf.Timestamp
+	25, // 4: wakil.v1alpha1.CreateJoinTokenResponse.expires_at:type_name -> google.protobuf.Timestamp
 	1,  // 5: wakil.v1alpha1.ListJoinTokensResponse.tokens:type_name -> wakil.v1alpha1.JoinToken
 	0,  // 6: wakil.v1alpha1.ExchangeJoinTokenResponse.principal:type_name -> wakil.v1alpha1.Principal
 	0,  // 7: wakil.v1alpha1.WhoAmIResponse.principal:type_name -> wakil.v1alpha1.Principal
-	21, // 8: wakil.v1alpha1.APIToken.expires_at:type_name -> google.protobuf.Timestamp
-	21, // 9: wakil.v1alpha1.APIToken.last_used_at:type_name -> google.protobuf.Timestamp
-	21, // 10: wakil.v1alpha1.APIToken.revoked_at:type_name -> google.protobuf.Timestamp
-	21, // 11: wakil.v1alpha1.APIToken.created_at:type_name -> google.protobuf.Timestamp
-	21, // 12: wakil.v1alpha1.CreateAPITokenRequest.expires_at:type_name -> google.protobuf.Timestamp
-	21, // 13: wakil.v1alpha1.CreateAPITokenResponse.expires_at:type_name -> google.protobuf.Timestamp
+	25, // 8: wakil.v1alpha1.APIToken.expires_at:type_name -> google.protobuf.Timestamp
+	25, // 9: wakil.v1alpha1.APIToken.last_used_at:type_name -> google.protobuf.Timestamp
+	25, // 10: wakil.v1alpha1.APIToken.revoked_at:type_name -> google.protobuf.Timestamp
+	25, // 11: wakil.v1alpha1.APIToken.created_at:type_name -> google.protobuf.Timestamp
+	25, // 12: wakil.v1alpha1.CreateAPITokenRequest.expires_at:type_name -> google.protobuf.Timestamp
+	25, // 13: wakil.v1alpha1.CreateAPITokenResponse.expires_at:type_name -> google.protobuf.Timestamp
 	14, // 14: wakil.v1alpha1.ListAPITokensResponse.tokens:type_name -> wakil.v1alpha1.APIToken
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	0,  // 15: wakil.v1alpha1.ExchangeOIDCCodeResponse.principal:type_name -> wakil.v1alpha1.Principal
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_wakil_v1alpha1_auth_proto_init() }
@@ -1317,7 +1520,7 @@ func file_wakil_v1alpha1_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wakil_v1alpha1_auth_proto_rawDesc), len(file_wakil_v1alpha1_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

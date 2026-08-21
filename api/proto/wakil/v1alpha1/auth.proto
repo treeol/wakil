@@ -120,3 +120,28 @@ message RevokeAPITokenRequest {
 }
 
 message RevokeAPITokenResponse {}
+
+// --- OIDC (P4e) ---
+
+// GetOIDCAuthURLRequest requests the OIDC authorization redirect URL.
+// The caller's browser is redirected to this URL to begin the OIDC flow.
+message GetOIDCAuthURLRequest {
+  string redirect_uri = 1;  // optional: override configured redirect URI
+}
+
+message GetOIDCAuthURLResponse {
+  string auth_url = 1;  // authorization endpoint URL at the IdP
+}
+
+// ExchangeOIDCCodeRequest exchanges an OIDC authorization code for a
+// session cookie. The code is received at the redirect_uri after the user
+// authenticates at the IdP.
+message ExchangeOIDCCodeRequest {
+  string code         = 1;  // authorization code from the IdP callback
+  string redirect_uri = 2;  // must match the one used in GetOIDCAuthURL
+}
+
+message ExchangeOIDCCodeResponse {
+  Principal principal = 1;  // resolved identity (metadata only)
+  // The session cookie is delivered via Set-Cookie header, not here.
+}
