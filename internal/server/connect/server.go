@@ -14,16 +14,17 @@ import (
 // Server bundles the Connect service handlers and provides an
 // http.Handler that mounts all of them.
 type Server struct {
-	session    *SessionHandler
-	event      *EventHandler
-	system     *SystemHandler
-	auth       *AuthHandler
-	backend    *BackendHandler
-	workspace  *WorkspaceHandler
-	agent      *AgentHandler
-	resolver   principalResolver
-	authIssuer *jointoken.Issuer // nil if auth not configured
-	apiIssuer  *apitoken.Issuer  // nil if api token management not configured
+	session      *SessionHandler
+	event        *EventHandler
+	system       *SystemHandler
+	auth         *AuthHandler
+	backend      *BackendHandler
+	workspace    *WorkspaceHandler
+	agent        *AgentHandler
+	sessionState *SessionStateHandler
+	resolver     principalResolver
+	authIssuer   *jointoken.Issuer // nil if auth not configured
+	apiIssuer    *apitoken.Issuer  // nil if api token management not configured
 }
 
 // NewServer creates a Connect server backed by the given host.
@@ -161,6 +162,19 @@ func (s *Server) Agent() *AgentHandler {
 	return s.agent
 }
 
+// SessionState returns the SessionStateHandler if configured, or nil.
+func (s *Server) SessionState() *SessionStateHandler {
+	return s.sessionState
+}
+
+// WithSessionState attaches a SessionStateHandler to the server. The handler
+// is created by the daemon (which owns the *agent.App) and set on both the
+// Unix-socket and TCP Connect servers.
+func (s *Server) WithSessionState(h *SessionStateHandler) *Server {
+	s.sessionState = h
+	return s
+}
+
 // NewServerFromInterfacesWithAuth creates a Connect server with auth support
 // from explicit interface implementations. Useful for testing with mocks.
 func NewServerFromInterfacesWithAuth(svc core.SessionService, reader core.EventReader, snap core.SessionReader, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store) *Server {
@@ -222,6 +236,10 @@ func (s *Server) Handler() http.Handler {
 	if s.agent != nil {
 		path7, handler7 := wakilv1alpha1connect.NewAgentServiceHandler(s.agent)
 		mux.Handle(path7, handler7)
+	}
+	if s.sessionState != nil {
+		path8, handler8 := wakilv1alpha1connect.NewSessionStateServiceHandler(s.sessionState)
+		mux.Handle(path8, handler8)
 	}
 	return headerInjector(mux)
 }

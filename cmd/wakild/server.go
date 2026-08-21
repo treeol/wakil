@@ -186,6 +186,8 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 		agentHandler := connsvc.NewAgentHandler(agentStore, resolver)
 
 		srv = connsvc.NewServerWithAuthSecureCookiesBackendsWorkspacesAndAgents(host, ephemeral, resolver, issuer, apiIssuer, tokenStore, false, backendHandler, workspaceHandler, agentHandler)
+		// P6a: attach the SessionStateHandler (the daemon owns the *agent.App).
+		srv = srv.WithSessionState(connsvc.NewSessionStateHandler(app, resolver))
 	} else {
 		srv = connsvc.NewServer(host, ephemeral, resolver)
 	}
@@ -317,6 +319,8 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			// P5b: pass the workspace handler to the TCP server too.
 			// P5c: pass the agent handler to the TCP server too.
 			tcpSrv := connsvc.NewServerWithAuthSecureCookiesBackendsWorkspacesAndAgents(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore, tlsEnabled, srv.Backend(), srv.Workspace(), srv.Agent())
+			// P6a: attach the SessionStateHandler to the TCP server too.
+			tcpSrv = tcpSrv.WithSessionState(connsvc.NewSessionStateHandler(app, multiResolver))
 			tcpConnectHandler := tcpSrv.Handler()
 
 			// Compose: Connect RPCs at service paths, static files at "/".

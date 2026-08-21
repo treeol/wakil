@@ -652,11 +652,19 @@ func (a *App) SaveSession() {
 	_ = WriteSession(a.Session)
 }
 
-func (a *App) summarizeFn() summarizer {
+// SummarizeFn returns the active summarizer for the session: the injected
+// Summarize if non-nil, otherwise the proxy summarizer. Exported so the
+// daemon's SessionStateHandler can call Compact with the correct summarizer
+// (P6a) without duplicating the fallback logic.
+func (a *App) SummarizeFn() summarizer {
 	if a.Summarize != nil {
 		return a.Summarize
 	}
 	return a.proxySummarizer
+}
+
+func (a *App) summarizeFn() summarizer {
+	return a.SummarizeFn()
 }
 
 // NewConversation resets the running transcript and rotates the chat_id, starting

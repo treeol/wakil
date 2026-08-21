@@ -352,5 +352,14 @@ func (f *fakeResolver) Resolve(ctx context.Context) (core.Principal, error) {
 	return f.principal, nil
 }
 
+// fakeErrResolver always returns an error, for testing error mapping.
+type fakeErrResolver struct {
+	err error
+}
+
+func (f *fakeErrResolver) Resolve(ctx context.Context) (core.Principal, error) {
+	return core.Principal{}, f.err
+}
+
 // Suppress unused import warning.
 var _ = fmt.Sprintf
