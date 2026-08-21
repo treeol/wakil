@@ -172,7 +172,7 @@ func (h *AuthHandler) RevokeJoinToken(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only owners and admins can revoke join tokens"))
 	}
 
-	if err := h.issuer.Revoke(ctx, req.Msg.Id); err != nil {
+	if err := h.issuer.Revoke(ctx, req.Msg.Id, string(p.TenantID)); err != nil {
 		if errors.Is(err, tokenstore.ErrJoinTokenNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, err)
 		}

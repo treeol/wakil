@@ -142,7 +142,7 @@ func TestRevokedTokenRejected(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := issuer.Revoke(ctx, result.ID); err != nil {
+	if err := issuer.Revoke(ctx, result.ID, "tnt_local"); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
@@ -303,10 +303,10 @@ func TestRevokeIdempotent(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := issuer.Revoke(ctx, result.ID); err != nil {
+	if err := issuer.Revoke(ctx, result.ID, "tnt_local"); err != nil {
 		t.Fatalf("first revoke: %v", err)
 	}
-	if err := issuer.Revoke(ctx, result.ID); err != nil {
+	if err := issuer.Revoke(ctx, result.ID, "tnt_local"); err != nil {
 		t.Fatalf("second revoke (idempotent): %v", err)
 	}
 }
@@ -319,7 +319,7 @@ func TestRevokeNotFound(t *testing.T) {
 	issuer := New(store)
 	ctx := context.Background()
 
-	err := issuer.Revoke(ctx, "jnt_nonexistent")
+	err := issuer.Revoke(ctx, "jnt_nonexistent", "tnt_local")
 	if err == nil {
 		t.Fatal("revoke non-existent token should fail")
 	}

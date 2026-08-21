@@ -80,12 +80,15 @@ func (s *Store) ListJoinTokens(ctx context.Context, tenantID string) ([]JoinToke
 }
 
 // RevokeJoinToken sets revoked_at on an unused or used token. Revoking an
-// already-revoked token is a no-op (idempotent).
-func (s *Store) RevokeJoinToken(ctx context.Context, id string) error {
+// already-revoked token is a no-op (idempotent). The tenantID parameter
+// scopes the operation to the caller's tenant — a token from another
+// tenant is treated as "not found" (no existence leak, no cross-tenant
+// revocation).
+func (s *Store) RevokeJoinToken(ctx context.Context, id string, tenantID string) error {
 	now := time.Now().UnixNano()
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE join_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-		now, id)
+		"UPDATE join_tokens SET revoked_at = ? WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL",
+		now, id, tenantID)
 	if err != nil {
 		return fmt.Errorf("tokenstore: revoke join token: %w", err)
 	}
@@ -94,9 +97,11 @@ func (s *Store) RevokeJoinToken(ctx context.Context, id string) error {
 		return fmt.Errorf("tokenstore: rows affected: %w", err)
 	}
 	if affected == 0 {
-		// Either doesn't exist or already revoked. Check existence.
+		// Either doesn't exist, already revoked, or belongs to a different
+		// tenant. Check existence within the caller's tenant only.
 		var exists bool
-		err := s.db.QueryRowContext(ctx, "SELECT 1 FROM join_tokens WHERE id = ?", id).Scan(&exists)
+		err := s.db.QueryRowContext(ctx,
+			"SELECT 1 FROM join_tokens WHERE id = ? AND tenant_id = ?", id, tenantID).Scan(&exists)
 		if err == sql.ErrNoRows {
 			return ErrJoinTokenNotFound
 		}

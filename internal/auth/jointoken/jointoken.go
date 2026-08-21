@@ -270,9 +270,11 @@ func (i *Issuer) Exchange(ctx context.Context, req ExchangeRequest) (*ExchangeRe
 	}, nil
 }
 
-// Revoke revokes an unused join token by ID.
-func (i *Issuer) Revoke(ctx context.Context, id string) error {
-	return i.store.RevokeJoinToken(ctx, id)
+// Revoke revokes an unused join token by ID. The tenantID parameter scopes
+// the revocation to the caller's tenant — a token belonging to another
+// tenant is treated as not found (no cross-tenant revocation).
+func (i *Issuer) Revoke(ctx context.Context, id string, tenantID string) error {
+	return i.store.RevokeJoinToken(ctx, id, tenantID)
 }
 
 // List returns all join tokens for a tenant (metadata only).
