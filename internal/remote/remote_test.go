@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,9 +92,26 @@ func TestDefaultSocketPath(t *testing.T) {
 
 // testSessionStateHandler is a minimal SessionStateService handler that
 // returns a fixed SessionState. Used to test the facade's projection without
-// a full daemon.
+// a full daemon. Optional recording fields capture mutation RPC calls so
+// DispatchCommand tests can assert the right RPC was invoked.
 type testSessionStateHandler struct {
 	state *v1alpha1.SessionState
+
+	mu         sync.Mutex
+	setModel    []string
+	setBackend   []string
+	autoApprove  *bool
+	destructive  *bool
+	revoked      bool
+	rawTools     *bool
+	counselMode  string
+	subagentEp   string
+	subagentModel string
+	maxPar       int32
+	maxCtx       int32
+	repoclear    bool
+	sessionLabel string
+	compacted    bool
 }
 
 func (h *testSessionStateHandler) GetSessionState(ctx context.Context, req *connect.Request[v1alpha1.GetSessionStateRequest]) (*connect.Response[v1alpha1.SessionState], error) {
@@ -104,47 +123,92 @@ func (h *testSessionStateHandler) GetSessionState(ctx context.Context, req *conn
 	return connect.NewResponse(s), nil
 }
 
-func (h *testSessionStateHandler) SetModel(context.Context, *connect.Request[v1alpha1.SetModelRequest]) (*connect.Response[v1alpha1.SetModelResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetModelResponse{}), nil
+func (h *testSessionStateHandler) SetModel(ctx context.Context, req *connect.Request[v1alpha1.SetModelRequest]) (*connect.Response[v1alpha1.SetModelResponse], error) {
+	h.mu.Lock()
+	h.setModel = append(h.setModel, req.Msg.Model)
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetModelResponse{Notice: "model: set to " + req.Msg.Model}), nil
 }
-func (h *testSessionStateHandler) SetBackend(context.Context, *connect.Request[v1alpha1.SetBackendRequest]) (*connect.Response[v1alpha1.SetBackendResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetBackendResponse{}), nil
+func (h *testSessionStateHandler) SetBackend(ctx context.Context, req *connect.Request[v1alpha1.SetBackendRequest]) (*connect.Response[v1alpha1.SetBackendResponse], error) {
+	h.mu.Lock()
+	h.setBackend = append(h.setBackend, req.Msg.Backend)
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetBackendResponse{Notice: "backend: set to " + req.Msg.Backend}), nil
 }
-func (h *testSessionStateHandler) SetAutoApprove(context.Context, *connect.Request[v1alpha1.SetAutoApproveRequest]) (*connect.Response[v1alpha1.SetAutoApproveResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetAutoApproveResponse{}), nil
+func (h *testSessionStateHandler) SetAutoApprove(ctx context.Context, req *connect.Request[v1alpha1.SetAutoApproveRequest]) (*connect.Response[v1alpha1.SetAutoApproveResponse], error) {
+	h.mu.Lock()
+	v := req.Msg.Value
+	h.autoApprove = &v
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetAutoApproveResponse{Notice: "auto mode: ON"}), nil
 }
-func (h *testSessionStateHandler) SetAllowDestructive(context.Context, *connect.Request[v1alpha1.SetAllowDestructiveRequest]) (*connect.Response[v1alpha1.SetAllowDestructiveResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetAllowDestructiveResponse{}), nil
+func (h *testSessionStateHandler) SetAllowDestructive(ctx context.Context, req *connect.Request[v1alpha1.SetAllowDestructiveRequest]) (*connect.Response[v1alpha1.SetAllowDestructiveResponse], error) {
+	h.mu.Lock()
+	v := req.Msg.Value
+	h.destructive = &v
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetAllowDestructiveResponse{Notice: "destructive ON"}), nil
 }
-func (h *testSessionStateHandler) RevokeAuto(context.Context, *connect.Request[v1alpha1.RevokeAutoRequest]) (*connect.Response[v1alpha1.RevokeAutoResponse], error) {
-	return connect.NewResponse(&v1alpha1.RevokeAutoResponse{}), nil
+func (h *testSessionStateHandler) RevokeAuto(ctx context.Context, req *connect.Request[v1alpha1.RevokeAutoRequest]) (*connect.Response[v1alpha1.RevokeAutoResponse], error) {
+	h.mu.Lock()
+	h.revoked = true
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.RevokeAutoResponse{Notice: "auto mode: OFF"}), nil
 }
-func (h *testSessionStateHandler) SetSubagentEndpoint(context.Context, *connect.Request[v1alpha1.SetSubagentEndpointRequest]) (*connect.Response[v1alpha1.SetSubagentEndpointResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetSubagentEndpointResponse{}), nil
+func (h *testSessionStateHandler) SetSubagentEndpoint(ctx context.Context, req *connect.Request[v1alpha1.SetSubagentEndpointRequest]) (*connect.Response[v1alpha1.SetSubagentEndpointResponse], error) {
+	h.mu.Lock()
+	h.subagentEp = req.Msg.Endpoint
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetSubagentEndpointResponse{Notice: "subagent endpoint: set"}), nil
 }
-func (h *testSessionStateHandler) SetSubagentModel(context.Context, *connect.Request[v1alpha1.SetSubagentModelRequest]) (*connect.Response[v1alpha1.SetSubagentModelResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetSubagentModelResponse{}), nil
+func (h *testSessionStateHandler) SetSubagentModel(ctx context.Context, req *connect.Request[v1alpha1.SetSubagentModelRequest]) (*connect.Response[v1alpha1.SetSubagentModelResponse], error) {
+	h.mu.Lock()
+	h.subagentModel = req.Msg.Model
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetSubagentModelResponse{Notice: "subagent model: set"}), nil
 }
-func (h *testSessionStateHandler) SetMaxParallelSubagents(context.Context, *connect.Request[v1alpha1.SetMaxParallelSubagentsRequest]) (*connect.Response[v1alpha1.SetMaxParallelSubagentsResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetMaxParallelSubagentsResponse{}), nil
+func (h *testSessionStateHandler) SetMaxParallelSubagents(ctx context.Context, req *connect.Request[v1alpha1.SetMaxParallelSubagentsRequest]) (*connect.Response[v1alpha1.SetMaxParallelSubagentsResponse], error) {
+	h.mu.Lock()
+	h.maxPar = req.Msg.Value
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetMaxParallelSubagentsResponse{Notice: "maxpar set"}), nil
 }
-func (h *testSessionStateHandler) SetEffectiveCtxMax(context.Context, *connect.Request[v1alpha1.SetEffectiveCtxMaxRequest]) (*connect.Response[v1alpha1.SetEffectiveCtxMaxResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetEffectiveCtxMaxResponse{}), nil
+func (h *testSessionStateHandler) SetEffectiveCtxMax(ctx context.Context, req *connect.Request[v1alpha1.SetEffectiveCtxMaxRequest]) (*connect.Response[v1alpha1.SetEffectiveCtxMaxResponse], error) {
+	h.mu.Lock()
+	h.maxCtx = req.Msg.Value
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetEffectiveCtxMaxResponse{Notice: "maxctx set"}), nil
 }
-func (h *testSessionStateHandler) SetRawTools(context.Context, *connect.Request[v1alpha1.SetRawToolsRequest]) (*connect.Response[v1alpha1.SetRawToolsResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetRawToolsResponse{}), nil
+func (h *testSessionStateHandler) SetRawTools(ctx context.Context, req *connect.Request[v1alpha1.SetRawToolsRequest]) (*connect.Response[v1alpha1.SetRawToolsResponse], error) {
+	h.mu.Lock()
+	v := req.Msg.Value
+	h.rawTools = &v
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetRawToolsResponse{Notice: "rawtools set"}), nil
 }
-func (h *testSessionStateHandler) SetCounselMode(context.Context, *connect.Request[v1alpha1.SetCounselModeRequest]) (*connect.Response[v1alpha1.SetCounselModeResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetCounselModeResponse{}), nil
+func (h *testSessionStateHandler) SetCounselMode(ctx context.Context, req *connect.Request[v1alpha1.SetCounselModeRequest]) (*connect.Response[v1alpha1.SetCounselModeResponse], error) {
+	h.mu.Lock()
+	h.counselMode = req.Msg.Mode
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetCounselModeResponse{Notice: "counsel mode: " + req.Msg.Mode}), nil
 }
-func (h *testSessionStateHandler) Compact(context.Context, *connect.Request[v1alpha1.CompactRequest]) (*connect.Response[v1alpha1.CompactResponse], error) {
-	return connect.NewResponse(&v1alpha1.CompactResponse{}), nil
+func (h *testSessionStateHandler) Compact(ctx context.Context, req *connect.Request[v1alpha1.CompactRequest]) (*connect.Response[v1alpha1.CompactResponse], error) {
+	h.mu.Lock()
+	h.compacted = true
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.CompactResponse{Compacted: true, Notice: "context compacted"}), nil
 }
-func (h *testSessionStateHandler) SaveRepoState(context.Context, *connect.Request[v1alpha1.SaveRepoStateRequest]) (*connect.Response[v1alpha1.SaveRepoStateResponse], error) {
-	return connect.NewResponse(&v1alpha1.SaveRepoStateResponse{}), nil
+func (h *testSessionStateHandler) SaveRepoState(ctx context.Context, req *connect.Request[v1alpha1.SaveRepoStateRequest]) (*connect.Response[v1alpha1.SaveRepoStateResponse], error) {
+	h.mu.Lock()
+	h.repoclear = req.Msg.Clear
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SaveRepoStateResponse{Notice: "repostate: clear"}), nil
 }
-func (h *testSessionStateHandler) SetSessionLabel(context.Context, *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error) {
-	return connect.NewResponse(&v1alpha1.SetSessionLabelResponse{}), nil
+func (h *testSessionStateHandler) SetSessionLabel(ctx context.Context, req *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error) {
+	h.mu.Lock()
+	h.sessionLabel = req.Msg.Label
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.SetSessionLabelResponse{Notice: "session labeled"}), nil
 }
 
 // TestRemoteFacadeStateProjection verifies Snapshot()/Consent()/Info()/
@@ -403,5 +467,119 @@ func TestRemoteFacadeDispatchCommand(t *testing.T) {
 	r = f.DispatchCommand("hello world")
 	if r.Handled {
 		t.Error("unknown command should not be handled")
+	}
+}
+
+// TestRemoteFacadeDispatchCommandRPC verifies that state-mutating slash
+// commands route through the SessionStateService RPCs and that read-only
+// /show forms project from the cached state. Runs against a real Unix-socket
+// Connect server with a recording handler.
+func TestRemoteFacadeDispatchCommandRPC(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "dispatch.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	handler := &testSessionStateHandler{
+		state: &v1alpha1.SessionState{
+			SelectedModel:           "m0",
+			EffectiveModel:          "m0",
+			SelectedBackend:         "b0",
+			EffectiveCtxMax:         0,
+			MaxParallelSubagents:    2,
+			CounselMode:             "suggest",
+			MaxCounsel:              3,
+			SubagentEndpoint:        "",
+			EffectiveSubagentModel:  "sub-m",
+			ModelList:               []string{"m0", "m1"},
+		},
+	}
+	mux := http.NewServeMux()
+	mux.Handle(wakilv1alpha1connect.NewSessionStateServiceHandler(handler))
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln)
+	defer srv.Shutdown(context.Background())
+
+	clients, err := Dial(sock)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer clients.Close()
+
+	f := newRemoteFacade(clients, core.Principal{}, "ws")
+	f.setSession("sess-dispatch")
+
+	// /model m9 → SetModel RPC
+	r := f.DispatchCommand("/model m9")
+	if !r.Handled {
+		t.Fatalf("/model m9 not handled")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		handler.mu.Lock()
+		got := len(handler.setModel)
+		handler.mu.Unlock()
+		if got >= 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(r.Notice) == 0 {
+		t.Errorf("/model m9: expected a Notice, got %q", r.Notice)
+	}
+
+	// /maxpar 4 → SetMaxParallelSubagents RPC
+	r = f.DispatchCommand("/maxpar 4")
+	if !r.Handled {
+		t.Fatalf("/maxpar 4 not handled")
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		handler.mu.Lock()
+		got := handler.maxPar
+		handler.mu.Unlock()
+		if got == 4 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(r.Notice) == 0 {
+		t.Errorf("/maxpar 4: expected a Notice, got %q", r.Notice)
+	}
+
+	// /maxctx (show) → projects from cache (no SetEffectiveCtxMax call).
+	r = f.DispatchCommand("/maxctx")
+	if !r.Handled || r.Notice == "" {
+		t.Errorf("/maxctx: Handled=%v Notice=%q", r.Handled, r.Notice)
+	}
+
+	// /maxpar (show) → projects from cache.
+	r = f.DispatchCommand("/maxpar")
+	if !r.Handled || r.Notice == "" {
+		t.Errorf("/maxpar: Handled=%v Notice=%q", r.Handled, r.Notice)
+	}
+
+	// /counsel auto → SetCounselMode RPC.
+	r = f.DispatchCommand("/counsel auto")
+	if !r.Handled || r.Notice == "" {
+		t.Errorf("/counsel auto: Handled=%v Notice=%q", r.Handled, r.Notice)
+	}
+
+	// /handoff → recognized but not available remotely.
+	r = f.DispatchCommand("/handoff")
+	if !r.Handled || r.Notice == "" {
+		t.Errorf("/handoff: Handled=%v Notice=%q", r.Handled, r.Notice)
+	}
+	if !strings.Contains(r.Notice, "not available") {
+		t.Errorf("/handoff: Notice=%q, want 'not available remotely'", r.Notice)
+	}
+
+	// /help → returns help text.
+	r = f.DispatchCommand("/help")
+	if !r.Handled || !strings.Contains(r.Notice, "/model") {
+		t.Errorf("/help: Handled=%v, want help text containing /model", r.Handled)
 	}
 }
