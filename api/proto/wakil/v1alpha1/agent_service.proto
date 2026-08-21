@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "wakil/v1alpha1/agent.proto";
+
+// AgentService manages agent configurations and their immutable revisions
+// (design §3.3, §7).
+//
+// Agent revisions are immutable and content-addressed: a session pins a
+// revision ID at creation time, so configuration changes cannot disrupt
+// running sessions. ValidateAgentRevision (design §7) is deferred to a
+// future phase; for now the spec is stored as-is.
+//
+// RPC authentication policy:
+//   - All RPCs: authenticated (owner/admin role within the caller's tenant).
+//   - All queries are tenant-scoped: the caller's tenant_id filters every
+//     operation.
+service AgentService {
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  rpc GetAgent(GetAgentRequest) returns (GetAgentResponse);
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  rpc CreateAgentRevision(CreateAgentRevisionRequest) returns (CreateAgentRevisionResponse);
+  rpc ListAgentRevisions(ListAgentRevisionsRequest) returns (ListAgentRevisionsResponse);
+  rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
+}

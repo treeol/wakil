@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "google/protobuf/timestamp.proto";
+
+// Agent is a named, tenant-scoped agent configuration (design §4.3, §7).
+// An agent has one or more immutable revisions; a session pins a specific
+// revision at creation time.
+message Agent {
+  string id            = 1;  // "agt_<uuid>"
+  string tenant_id     = 2;
+  string name          = 3;  // human-facing, unique per tenant
+  string head_rev_id   = 4;  // current revision ID (empty if none)
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// AgentRevision is an immutable, content-addressed agent configuration
+// (design §7). A session pins a revision ID so configuration changes cannot
+// break running sessions.
+message AgentRevision {
+  string id           = 1;  // "rev_<uuid>"
+  string tenant_id    = 2;
+  string agent_id     = 3;
+  int32  rev_number   = 4;  // monotonic per agent
+  string spec         = 5;  // JSON: prompt, tools, limits, subagent policy
+  string spec_hash    = 6;  // content-addressed hash of spec
+  string created_by   = 7;  // user ID
+  google.protobuf.Timestamp created_at = 8;
+}
+
+// --- AgentService RPCs ---
+
+message CreateAgentRequest {
+  string name = 1;  // human-facing name, unique per tenant
+}
+
+message CreateAgentResponse {
+  Agent agent = 1;
+}
+
+message GetAgentRequest {
+  string id = 1;
+}
+
+message GetAgentResponse {
+  Agent agent = 1;
+}
+
+message ListAgentsRequest {}
+
+message ListAgentsResponse {
+  repeated Agent agents = 1;
+}
+
+message CreateAgentRevisionRequest {
+  string agent_id = 1;
+  string spec      = 2;  // JSON: prompt, tools, limits, subagent policy
+}
+
+message CreateAgentRevisionResponse {
+  AgentRevision revision = 1;
+}
+
+message ListAgentRevisionsRequest {
+  string agent_id = 1;
+}
+
+message ListAgentRevisionsResponse {
+  repeated AgentRevision revisions = 1;
+}
+
+message DeleteAgentRequest {
+  string id = 1;
+}
+
+message DeleteAgentResponse {}

@@ -34,7 +34,9 @@ import (
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/scrub"
 	connsvc "github.com/treeol/wakil/internal/server/connect"
+	"github.com/treeol/wakil/internal/store/agentstore"
 	"github.com/treeol/wakil/internal/store/backendstore"
+	"github.com/treeol/wakil/internal/store/workspacestore"
 	"github.com/treeol/wakil/internal/wiring"
 	"github.com/treeol/wakil/web"
 )
@@ -175,7 +177,15 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			backendHandler = connsvc.NewBackendHandler(backendStore, masterKey, resolver)
 		}
 
-		srv = connsvc.NewServerWithAuthSecureCookiesAndBackends(host, ephemeral, resolver, issuer, apiIssuer, tokenStore, false, backendHandler)
+		// P5b: create workspace handler.
+		workspaceStore := workspacestore.New(store.DB())
+		workspaceHandler := connsvc.NewWorkspaceHandler(workspaceStore, resolver)
+
+		// P5c: create agent handler.
+		agentStore := agentstore.New(store.DB())
+		agentHandler := connsvc.NewAgentHandler(agentStore, resolver)
+
+		srv = connsvc.NewServerWithAuthSecureCookiesBackendsWorkspacesAndAgents(host, ephemeral, resolver, issuer, apiIssuer, tokenStore, false, backendHandler, workspaceHandler, agentHandler)
 	} else {
 		srv = connsvc.NewServer(host, ephemeral, resolver)
 	}
@@ -304,7 +314,9 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			// P4f: pass secureCookies=tlsEnabled so session cookies get the
 			// Secure flag when TLS is active.
 			// P4g: pass the backend handler to the TCP server too.
-			tcpSrv := connsvc.NewServerWithAuthSecureCookiesAndBackends(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore, tlsEnabled, srv.Backend())
+			// P5b: pass the workspace handler to the TCP server too.
+			// P5c: pass the agent handler to the TCP server too.
+			tcpSrv := connsvc.NewServerWithAuthSecureCookiesBackendsWorkspacesAndAgents(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore, tlsEnabled, srv.Backend(), srv.Workspace(), srv.Agent())
 			tcpConnectHandler := tcpSrv.Handler()
 
 			// Compose: Connect RPCs at service paths, static files at "/".

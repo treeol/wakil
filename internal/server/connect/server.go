@@ -19,6 +19,8 @@ type Server struct {
 	system     *SystemHandler
 	auth       *AuthHandler
 	backend    *BackendHandler
+	workspace  *WorkspaceHandler
+	agent      *AgentHandler
 	resolver   principalResolver
 	authIssuer *jointoken.Issuer // nil if auth not configured
 	apiIssuer  *apitoken.Issuer  // nil if api token management not configured
@@ -93,6 +95,25 @@ func NewServerWithAuthSecureCookiesAndBackends(host *sessionhost.Host, ephemeral
 	return s
 }
 
+// NewServerWithAuthSecureCookiesBackendsAndWorkspaces creates a Connect server
+// with auth, secure cookies, backend management (P4g), and workspace management
+// (P5b). The workspaceHandler may be nil if workspace management is not configured.
+func NewServerWithAuthSecureCookiesBackendsAndWorkspaces(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, secureCookies bool, backendHandler *BackendHandler, workspaceHandler *WorkspaceHandler) *Server {
+	s := NewServerWithAuthSecureCookiesAndBackends(host, ephemeral, resolver, authIssuer, apiIssuer, tokenStore, secureCookies, backendHandler)
+	s.workspace = workspaceHandler
+	return s
+}
+
+// NewServerWithAuthSecureCookiesBackendsWorkspacesAndAgents creates a Connect
+// server with auth, secure cookies, backend management (P4g), workspace
+// management (P5b), and agent management (P5c). The agentHandler may be nil
+// if agent management is not configured.
+func NewServerWithAuthSecureCookiesBackendsWorkspacesAndAgents(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, secureCookies bool, backendHandler *BackendHandler, workspaceHandler *WorkspaceHandler, agentHandler *AgentHandler) *Server {
+	s := NewServerWithAuthSecureCookiesBackendsAndWorkspaces(host, ephemeral, resolver, authIssuer, apiIssuer, tokenStore, secureCookies, backendHandler, workspaceHandler)
+	s.agent = agentHandler
+	return s
+}
+
 // NewServerWithAuthAndOIDC creates a Connect server with auth and OIDC support.
 // Same as NewServerWithAuth but with an OIDC-configured auth handler.
 func NewServerWithAuthAndOIDC(host *sessionhost.Host, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, oidcCfg OIDCConfig) *Server {
@@ -128,6 +149,16 @@ func NewServerFromInterfaces(svc core.SessionService, reader core.EventReader, s
 // Backend returns the BackendHandler if configured, or nil.
 func (s *Server) Backend() *BackendHandler {
 	return s.backend
+}
+
+// Workspace returns the WorkspaceHandler if configured, or nil.
+func (s *Server) Workspace() *WorkspaceHandler {
+	return s.workspace
+}
+
+// Agent returns the AgentHandler if configured, or nil.
+func (s *Server) Agent() *AgentHandler {
+	return s.agent
 }
 
 // NewServerFromInterfacesWithAuth creates a Connect server with auth support
@@ -183,6 +214,14 @@ func (s *Server) Handler() http.Handler {
 	if s.backend != nil {
 		path5, handler5 := wakilv1alpha1connect.NewBackendServiceHandler(s.backend)
 		mux.Handle(path5, handler5)
+	}
+	if s.workspace != nil {
+		path6, handler6 := wakilv1alpha1connect.NewWorkspaceServiceHandler(s.workspace)
+		mux.Handle(path6, handler6)
+	}
+	if s.agent != nil {
+		path7, handler7 := wakilv1alpha1connect.NewAgentServiceHandler(s.agent)
+		mux.Handle(path7, handler7)
 	}
 	return headerInjector(mux)
 }
