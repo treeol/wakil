@@ -245,6 +245,12 @@ func (h *HostTurnHandle) Release() error { return h.ht.Release() }
 // App for snapshot construction and direct reads (until 7b3 removes those).
 func (h *HostTurnHandle) App() *agent.App { return h.app }
 
+// ResetSessionBinding clears the session binding so the same App can serve
+// a new session after the previous one closes. Used by the daemon path where
+// one agent.App serves multiple sequential sessions across TUI reconnections.
+// Safe to call only when no turn is active.
+func (h *HostTurnHandle) ResetSessionBinding() { h.ht.ResetSessionBinding() }
+
 // HostTurnFunc returns a sessionhost.TurnFunc that drives the real agent loop
 // through app. See the package doc for the single-session binding contract.
 //
@@ -488,6 +494,8 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 }
 
 // claimSession binds the App to a single session ID and rejects a second.
+// For the daemon path, ResetSessionBinding clears the binding so the same
+// App can serve a new session after the old one closes (card #149).
 func (ht *hostTurn) claimSession(sid event.SessionID) error {
 	ht.mu.Lock()
 	defer ht.mu.Unlock()
@@ -499,6 +507,16 @@ func (ht *hostTurn) claimSession(sid event.SessionID) error {
 		return fmt.Errorf("%w: agent.App session %s reused for %s", sessionhost.ErrInternal, ht.sessionID, sid)
 	}
 	return nil
+}
+
+// ResetSessionBinding clears the session binding so the same App can serve
+// a new session after the previous one closes. This is used by the daemon
+// path where one agent.App serves multiple sequential sessions across TUI
+// reconnections. It is safe to call only when no turn is active.
+func (ht *hostTurn) ResetSessionBinding() {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	ht.sessionID = ""
 }
 
 // errorLatch is a thread-safe first-error latch shared between the confirmer

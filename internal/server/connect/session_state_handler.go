@@ -43,6 +43,12 @@ type SessionStateHandler struct {
 	app      *agent.App
 	resolver principalResolver
 
+	// resetSessionBinding, when non-nil, is called before InitNewSession and
+	// LoadSession to clear the hostTurn's session binding so the single App
+	// can serve a new session after the previous one closes. The daemon path
+	// sets this; the test path leaves it nil.
+	resetSessionBinding func()
+
 	// restoreMu guards restoreDone: RestoreRepoState applies at most once per
 	// daemon App lifetime. The single-App daemon cannot distinguish "fresh boot"
 	// from "resume" from App state alone (a resumed session does not reload the
@@ -60,6 +66,14 @@ var _ wakilv1alpha1connect.SessionStateServiceHandler = (*SessionStateHandler)(n
 // SessionHandler, EventHandler, etc.).
 func NewSessionStateHandler(app *agent.App, resolver principalResolver) *SessionStateHandler {
 	return &SessionStateHandler{app: app, resolver: resolver}
+}
+
+// SetResetSessionBinding sets the callback used to clear the hostTurn's
+// session binding before a new session is initialized. Used by the daemon
+// path so the single agent.App can serve multiple sequential sessions across
+// TUI reconnections.
+func (h *SessionStateHandler) SetResetSessionBinding(fn func()) {
+	h.resetSessionBinding = fn
 }
 
 // App returns the handler's bound *agent.App. Used by callers that need
@@ -529,6 +543,11 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
 		return nil, mapError(err)
 	}
+	// Clear the hostTurn's session binding so the single App can serve this
+	// resumed session (the previous session's binding would reject it).
+	if h.resetSessionBinding != nil {
+		h.resetSessionBinding()
+	}
 	app := h.app
 
 	// Load the session from disk (same path as embedded ResumeConversation).
@@ -616,6 +635,11 @@ func (h *SessionStateHandler) ListSavedSessions(ctx context.Context, req *connec
 func (h *SessionStateHandler) InitNewSession(ctx context.Context, req *connect.Request[v1alpha1.InitNewSessionRequest]) (*connect.Response[v1alpha1.InitNewSessionResponse], error) {
 	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
 		return nil, mapError(err)
+	}
+	// Clear the hostTurn's session binding so the single App can serve this
+	// new session (the previous session's binding would reject the new one).
+	if h.resetSessionBinding != nil {
+		h.resetSessionBinding()
 	}
 	app := h.app
 	chatID := agent.NewChatID()

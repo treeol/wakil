@@ -188,7 +188,11 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 
 		srv = connsvc.NewServerWithAuthSecureCookiesBackendsWorkspacesAndAgents(host, ephemeral, resolver, issuer, apiIssuer, tokenStore, false, backendHandler, workspaceHandler, agentHandler)
 		// P6a: attach the SessionStateHandler (the daemon owns the *agent.App).
-		srv = srv.WithSessionState(connsvc.NewSessionStateHandler(app, resolver))
+		// Card #149: wire ResetSessionBinding so the single App can serve
+		// multiple sequential sessions across TUI reconnections.
+		ssh := connsvc.NewSessionStateHandler(app, resolver)
+		ssh.SetResetSessionBinding(handle.ResetSessionBinding)
+		srv = srv.WithSessionState(ssh)
 	} else {
 		srv = connsvc.NewServer(host, ephemeral, resolver)
 	}
@@ -321,7 +325,10 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			// P5c: pass the agent handler to the TCP server too.
 			tcpSrv := connsvc.NewServerWithAuthSecureCookiesBackendsWorkspacesAndAgents(host, ephemeral, multiResolver, issuer, apiIssuer, tokenStore, tlsEnabled, srv.Backend(), srv.Workspace(), srv.Agent())
 			// P6a: attach the SessionStateHandler to the TCP server too.
-			tcpSrv = tcpSrv.WithSessionState(connsvc.NewSessionStateHandler(app, multiResolver))
+			// Card #149: wire ResetSessionBinding here too.
+			tcpSsh := connsvc.NewSessionStateHandler(app, multiResolver)
+			tcpSsh.SetResetSessionBinding(handle.ResetSessionBinding)
+			tcpSrv = tcpSrv.WithSessionState(tcpSsh)
 			tcpConnectHandler := tcpSrv.Handler()
 
 			// Compose: Connect RPCs at service paths, static files at "/".
