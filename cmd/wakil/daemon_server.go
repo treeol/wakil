@@ -493,7 +493,7 @@ func listenUnix(path string) (net.Listener, error) {
 
 // defaultSocketPath returns the default Unix socket path, mirroring
 // remote.DefaultSocketPath() (card #149: deduplicated — was previously
-// duplicated in cmd/wakild/server.go and internal/remote/dialer.go).
+// duplicated in the old cmd/wakild binary and internal/remote/dialer.go).
 func defaultSocketPath() string {
 	return remote.DefaultSocketPath()
 }

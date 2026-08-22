@@ -10,7 +10,7 @@ import (
 // peerCredsKey is the context key for peer credentials extracted at
 // connection-accept time. It is unexported to prevent accidental misuse.
 // WithPeerCredentials is exported because the ConnContext hook (in
-// cmd/wakild) needs to call it; remote clients cannot inject credentials
+// cmd/wakil/daemon_server.go) needs to call it; remote clients cannot inject credentials
 // through the context — they arrive only via SO_PEERCRED at the transport
 // layer.
 type peerCredsKey struct{}

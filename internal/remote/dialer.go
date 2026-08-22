@@ -47,7 +47,7 @@ func Dial(socketPath string) (*Clients, error) {
 	// (older wakild builds), this check passes but GetSessionState will fail at
 	// call time — the RemoteFacade degrades to cached-zero state in that case.
 	if _, err := os.Stat(socketPath); err != nil {
-		return nil, fmt.Errorf("remote: socket %s not found — is wakild running?: %w", socketPath, err)
+		return nil, fmt.Errorf("remote: socket %s not found — is `wakil daemon` running?: %w", socketPath, err)
 	}
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {

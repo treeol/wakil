@@ -9,7 +9,7 @@ import (
 // embeddedResolver is a test-only resolver that always returns the embedded
 // principal. It bypasses peer-credential resolution and is fail-open.
 //
-// It lives in this non-test file because test files in cmd/wakild (package
+// It lives in this non-test file because test files in cmd/wakil (package
 // main) need to reference it, and Go's internal package visibility rules
 // prevent _test.go files from being imported by other packages. The comment
 // and naming convention make the test-only intent explicit.

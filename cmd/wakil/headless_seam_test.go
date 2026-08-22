@@ -47,7 +47,7 @@ func cmdNonTestFiles(t *testing.T) []string {
 // and that internal/tui appears in main.go alone.
 //
 // daemon_server.go is excepted from the internal/agent rule: it is the daemon
-// server's server-side code (previously cmd/wakild/server.go) and genuinely
+// server's server-side code (previously a separate cmd/wakild binary) and genuinely
 // needs agent.App and agent.SessionHostDBPath. The headless shim (run.go) and
 // the TUI entry (main.go) remain agent-free.
 func TestHeadlessNoAgentImport(t *testing.T) {
