@@ -32,6 +32,7 @@ import (
 	"github.com/treeol/wakil/internal/core/sessionhost/sqlstore"
 	"github.com/treeol/wakil/internal/crypto"
 	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/remote"
 	"github.com/treeol/wakil/internal/scrub"
 	connsvc "github.com/treeol/wakil/internal/server/connect"
 	"github.com/treeol/wakil/internal/store/agentstore"
@@ -74,18 +75,18 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 	if !ephemeral {
 		dbPath := agent.SessionHostDBPath(string(workspaceID))
 		if dbPath == "" {
-			return nil, fmt.Errorf("wakild: cannot derive session-host DB path for workspace %q (no data directory?)", workspaceID)
+			return nil, fmt.Errorf("wakil daemon: cannot derive session-host DB path for workspace %q (no data directory?)", workspaceID)
 		}
 		s, err := sqlstore.NewSQLiteStore(context.Background(), dbPath)
 		if err != nil {
-			return nil, fmt.Errorf("wakild: failed to open SQLite store (fail-closed): %w", err)
+			return nil, fmt.Errorf("wakil daemon: failed to open SQLite store (fail-closed): %w", err)
 		}
 
 		// P4g: apply secret scrubbing to event payloads before persistence.
 		level, err := scrub.ParseLevel(scrubLevel)
 		if err != nil {
 			s.Close()
-			return nil, fmt.Errorf("wakild: %w", err)
+			return nil, fmt.Errorf("wakil daemon: %w", err)
 		}
 		if level != scrub.LevelOff {
 			s.WithScrubber(scrub.New(level))
@@ -106,7 +107,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 		if store != nil {
 			store.Close()
 		}
-		return nil, fmt.Errorf("wakild: executor: %w", err)
+		return nil, fmt.Errorf("wakil daemon: executor: %w", err)
 	}
 
 	app, res := wiring.BuildApp(cfg, exe, wiring.BuildAppOpts{
@@ -119,7 +120,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 		if store != nil {
 			store.Close()
 		}
-		return nil, fmt.Errorf("wakild: host turn handle: %w", err)
+		return nil, fmt.Errorf("wakil daemon: host turn handle: %w", err)
 	}
 
 	// 3. Host with store.
@@ -159,7 +160,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			if store != nil {
 				store.Close()
 			}
-			return nil, fmt.Errorf("wakild: load master key: %w", err)
+			return nil, fmt.Errorf("wakil daemon: load master key: %w", err)
 		}
 		masterKey = mk
 	}
@@ -201,7 +202,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 		if store != nil {
 			store.Close()
 		}
-		return nil, fmt.Errorf("wakild: listen: %w", err)
+		return nil, fmt.Errorf("wakil daemon: listen: %w", err)
 	}
 
 	httpSrv := &http.Server{
@@ -216,7 +217,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 				// Log extraction failures — fail-closed but visible.
 				// A persistent failure on a Unix socket indicates a
 				// platform or configuration problem.
-				fmt.Fprintf(os.Stderr, "wakild: peercred extraction failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "wakil daemon: peercred extraction failed: %v\n", err)
 				return ctx
 			}
 			if ok {
@@ -269,7 +270,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 			if store != nil {
 				store.Close()
 			}
-			return nil, fmt.Errorf("wakild: listen tcp: %w", err)
+			return nil, fmt.Errorf("wakil daemon: listen tcp: %w", err)
 		}
 
 		// P4f: wrap with TLS if cert+key are configured.
@@ -285,7 +286,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, works
 				if store != nil {
 					store.Close()
 				}
-				return nil, fmt.Errorf("wakild: load TLS keypair: %w", err)
+				return nil, fmt.Errorf("wakil daemon: load TLS keypair: %w", err)
 			}
 			tlsConfig := &tls.Config{
 				Certificates: []tls.Certificate{cert},
@@ -370,7 +371,7 @@ func (d *daemonServer) serve() error {
 		go func() {
 			err := d.tcpSrv.Serve(d.httpLnr)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "wakild: tcp server stopped: %v\n", err)
+				fmt.Fprintf(os.Stderr, "wakil daemon: tcp server stopped: %v\n", err)
 			}
 			// Don't send TCP errors to errCh — only the Unix-socket
 			// server error stops the daemon.
@@ -399,12 +400,12 @@ func (d *daemonServer) shutdown(ctx context.Context) error {
 	// until they finish or ctx is cancelled.
 	if d.httpSrv != nil {
 		if err := d.httpSrv.Shutdown(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "wakild: http shutdown: %v\n", err)
+			fmt.Fprintf(os.Stderr, "wakil daemon: http shutdown: %v\n", err)
 		}
 	}
 	if d.tcpSrv != nil {
 		if err := d.tcpSrv.Shutdown(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "wakild: tcp shutdown: %v\n", err)
+			fmt.Fprintf(os.Stderr, "wakil daemon: tcp shutdown: %v\n", err)
 		}
 	}
 
@@ -413,7 +414,7 @@ func (d *daemonServer) shutdown(ctx context.Context) error {
 	// behavior on ctx cancellation).
 	if d.host != nil {
 		if err := d.host.Close(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "wakild: host close: %v\n", err)
+			fmt.Fprintf(os.Stderr, "wakil daemon: host close: %v\n", err)
 		}
 	}
 
@@ -427,7 +428,7 @@ func (d *daemonServer) shutdown(ctx context.Context) error {
 	// Close the store.
 	if d.store != nil {
 		if err := d.store.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "wakild: store close: %v\n", err)
+			fmt.Fprintf(os.Stderr, "wakil daemon: store close: %v\n", err)
 		}
 	}
 
@@ -490,16 +491,11 @@ func listenUnix(path string) (net.Listener, error) {
 	return l, nil
 }
 
-// socketPath returns the default Unix socket path:
-// $XDG_RUNTIME_DIR/wakild.sock, or $HOME/.local/share/wakil/wakild.sock.
+// defaultSocketPath returns the default Unix socket path, mirroring
+// remote.DefaultSocketPath() (card #149: deduplicated — was previously
+// duplicated in cmd/wakild/server.go and internal/remote/dialer.go).
 func defaultSocketPath() string {
-	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
-		return filepath.Join(xdg, "wakild.sock")
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".local", "share", "wakil", "wakild.sock")
-	}
-	return "wakild.sock"
+	return remote.DefaultSocketPath()
 }
 
 // parseAllowedOrigins parses a comma-separated list of origin URLs into a set.

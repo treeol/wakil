@@ -125,9 +125,9 @@ func TestDefaultSocketPath(t *testing.T) {
 
 // TestParseFlags_Defaults verifies default flag values.
 func TestParseFlags_Defaults(t *testing.T) {
-	f, err := parseFlags(nil)
+	f, err := parseDaemonFlags(nil)
 	if err != nil {
-		t.Fatalf("parseFlags: %v", err)
+		t.Fatalf("parseDaemonFlags: %v", err)
 	}
 	if f.ephemeral != false {
 		t.Errorf("expected ephemeral=false, got true")
@@ -135,16 +135,18 @@ func TestParseFlags_Defaults(t *testing.T) {
 	if f.shutdownTimeout != 10*time.Second {
 		t.Errorf("expected 10s shutdown timeout, got %v", f.shutdownTimeout)
 	}
-	if f.socketPath == "" {
-		t.Error("expected non-empty default socket path")
+	// socketPath is empty by default — the default is applied in execDaemon,
+	// not in parseDaemonFlags (the old parseFlags set it via defaultSocketPath()).
+	if f.socketPath != "" {
+		t.Errorf("expected empty socket path (default applied later), got %q", f.socketPath)
 	}
 }
 
 // TestParseFlags_Ephemeral verifies --ephemeral flag.
 func TestParseFlags_Ephemeral(t *testing.T) {
-	f, err := parseFlags([]string{"--ephemeral"})
+	f, err := parseDaemonFlags([]string{"--ephemeral"})
 	if err != nil {
-		t.Fatalf("parseFlags: %v", err)
+		t.Fatalf("parseDaemonFlags: %v", err)
 	}
 	if !f.ephemeral {
 		t.Error("expected ephemeral=true")
@@ -153,9 +155,9 @@ func TestParseFlags_Ephemeral(t *testing.T) {
 
 // TestParseFlags_SocketPath verifies --socket flag.
 func TestParseFlags_SocketPath(t *testing.T) {
-	f, err := parseFlags([]string{"--socket", "/tmp/test.sock"})
+	f, err := parseDaemonFlags([]string{"--socket", "/tmp/test.sock"})
 	if err != nil {
-		t.Fatalf("parseFlags: %v", err)
+		t.Fatalf("parseDaemonFlags: %v", err)
 	}
 	if f.socketPath != "/tmp/test.sock" {
 		t.Errorf("expected /tmp/test.sock, got %q", f.socketPath)
@@ -164,9 +166,9 @@ func TestParseFlags_SocketPath(t *testing.T) {
 
 // TestParseFlags_ShutdownTimeout verifies --shutdown-timeout flag.
 func TestParseFlags_ShutdownTimeout(t *testing.T) {
-	f, err := parseFlags([]string{"--shutdown-timeout", "30s"})
+	f, err := parseDaemonFlags([]string{"--shutdown-timeout", "30s"})
 	if err != nil {
-		t.Fatalf("parseFlags: %v", err)
+		t.Fatalf("parseDaemonFlags: %v", err)
 	}
 	if f.shutdownTimeout != 30*time.Second {
 		t.Errorf("expected 30s, got %v", f.shutdownTimeout)
@@ -175,7 +177,7 @@ func TestParseFlags_ShutdownTimeout(t *testing.T) {
 
 // TestParseFlags_UnknownFlag verifies unknown flags error.
 func TestParseFlags_UnknownFlag(t *testing.T) {
-	_, err := parseFlags([]string{"--bogus"})
+	_, err := parseDaemonFlags([]string{"--bogus"})
 	if err == nil {
 		t.Fatal("expected error for unknown flag")
 	}
@@ -183,7 +185,7 @@ func TestParseFlags_UnknownFlag(t *testing.T) {
 
 // TestParseFlags_UnexpectedArg verifies positional args error.
 func TestParseFlags_UnexpectedArg(t *testing.T) {
-	_, err := parseFlags([]string{"position"})
+	_, err := parseDaemonFlags([]string{"position"})
 	if err == nil {
 		t.Fatal("expected error for positional arg")
 	}

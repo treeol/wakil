@@ -1,17 +1,21 @@
 package main
 
-// cmd/wakild/main.go: the wakild daemon entry point (card #148 P2d).
+// daemon.go: the `wakil daemon` subcommand entry point (card #149).
 //
-// wakild runs the Connect server over a Unix socket. It opens a fail-closed
-// SQLite event store (or --ephemeral for in-memory), builds the session host,
-// and serves RPCs until SIGTERM/SIGINT. The TUI connects via --daemon.
+// `wakil daemon` runs the Connect server over a Unix socket. It opens a
+// fail-closed SQLite event store (or --ephemeral for in-memory), builds the
+// session host, and serves RPCs until SIGTERM/SIGINT. The TUI connects via
+// `wakil --daemon`.
 //
 // Usage:
 //
-//	wakild [--socket <path>] [--ephemeral] [--shutdown-timeout <dur>]
+//	wakil daemon [--socket <path>] [--ephemeral] [--shutdown-timeout <dur>]
 //
 // The daemon reads the same wakil.yaml config as the TUI for backend/model
 // credentials. It derives the workspace ID from the config's working directory.
+//
+// This was previously a separate binary (`wakild`); card #149 merged it into
+// the single `wakil` binary as a subcommand.
 
 import (
 	"context"
@@ -26,14 +30,7 @@ import (
 	"github.com/treeol/wakil/internal/wiring"
 )
 
-func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "wakild:", err)
-		os.Exit(1)
-	}
-}
-
-// daemonFlags holds the parsed command-line flags.
+// daemonFlags holds the parsed command-line flags for `wakil daemon`.
 type daemonFlags struct {
 	socketPath        string
 	ephemeral         bool
@@ -47,9 +44,9 @@ type daemonFlags struct {
 	scrubLevel        string // scrubbing level: off|standard|aggressive (default: standard)
 }
 
-func parseFlags(args []string) (daemonFlags, error) {
+// parseDaemonFlags parses the command-line flags for `wakil daemon`.
+func parseDaemonFlags(args []string) (daemonFlags, error) {
 	f := daemonFlags{
-		socketPath:      defaultSocketPath(),
 		shutdownTimeout: 10 * time.Second,
 	}
 	for i := 0; i < len(args); i++ {
@@ -115,22 +112,22 @@ func parseFlags(args []string) (daemonFlags, error) {
 			}
 			f.scrubLevel = args[i]
 		case "--help", "-help", "-h":
-			fmt.Fprint(os.Stderr, usage)
+			fmt.Fprint(os.Stderr, daemonUsage)
 			os.Exit(0)
 		default:
 			if len(args[i]) > 0 && args[i][0] == '-' {
 				return f, fmt.Errorf("unknown flag: %s", args[i])
 			}
-			return f, fmt.Errorf("unexpected argument: %s (wakild takes flags only)", args[i])
+			return f, fmt.Errorf("unexpected argument: %s (wakil daemon takes flags only)", args[i])
 		}
 	}
 	return f, nil
 }
 
-const usage = `wakild — wakil daemon (card #148 P2d)
+const daemonUsage = `wakil daemon — run the wakil daemon (card #149)
 
 Usage:
-  wakild [flags]
+  wakil daemon [flags]
 
 Flags:
   --socket <path>            Unix socket path (default: $XDG_RUNTIME_DIR/wakild.sock)
@@ -164,34 +161,48 @@ Standard (default) redacts known API key patterns; aggressive adds generic
 high-entropy detection; off disables scrubbing.
 `
 
-func run() error {
-	flags, err := parseFlags(os.Args[1:])
+// runDaemon is the entry point for `wakil daemon`. It parses flags, loads
+// config, constructs the daemon server, and serves until signal.
+func runDaemon() int {
+	flags, err := parseDaemonFlags(os.Args[2:])
 	if err != nil {
-		return err
+		fmt.Fprintln(os.Stderr, "wakil daemon:", err)
+		return ExitError
 	}
 
+	if err := execDaemon(flags); err != nil {
+		fmt.Fprintln(os.Stderr, "wakil daemon:", err)
+		return ExitError
+	}
+	return ExitOK
+}
+
+// execDaemon implements the daemon subcommand's logic. It is separated from
+// runDaemon so tests can call it with a constructed daemonFlags without
+// touching os.Args.
+func execDaemon(flags daemonFlags) error {
 	// Handle --generate-master-key: generate and exit.
 	if flags.generateMasterKey != "" {
 		key, err := crypto.GenerateMasterKey()
 		if err != nil {
-			return fmt.Errorf("wakild: generate master key: %w", err)
+			return fmt.Errorf("generate master key: %w", err)
 		}
 		if err := crypto.WriteMasterKeyFile(flags.generateMasterKey, key); err != nil {
-			return fmt.Errorf("wakild: write master key: %w", err)
+			return fmt.Errorf("write master key: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "wakild: master key written to %s (permissions 0600)\n", flags.generateMasterKey)
+		fmt.Fprintf(os.Stderr, "wakil daemon: master key written to %s (permissions 0600)\n", flags.generateMasterKey)
 		return nil
 	}
 
 	// Validate TLS flag combinations.
 	if flags.tlsKeyFile != "" && flags.tlsCertFile == "" {
-		return fmt.Errorf("wakild: --tls-key requires --tls-cert")
+		return fmt.Errorf("--tls-key requires --tls-cert")
 	}
 	if flags.tlsCertFile != "" && flags.tlsKeyFile == "" {
-		return fmt.Errorf("wakild: --tls-cert requires --tls-key")
+		return fmt.Errorf("--tls-cert requires --tls-key")
 	}
 	if flags.tlsCertFile != "" && flags.httpAddr == "" {
-		return fmt.Errorf("wakild: --tls-cert requires --http-addr (TLS applies to the TCP listener)")
+		return fmt.Errorf("--tls-cert requires --http-addr (TLS applies to the TCP listener)")
 	}
 
 	// Validate scrub level.
@@ -211,19 +222,24 @@ func run() error {
 
 	wsID := wiring.WorkspaceIDFromConfig(cfg)
 
-	ds, err := newDaemonServer(cfg, flags.socketPath, flags.ephemeral, wsID, flags.httpAddr, flags.tlsCertFile, flags.tlsKeyFile, flags.allowedOrigins, flags.masterKeyFile, scrubLevel)
+	socketPath := flags.socketPath
+	if socketPath == "" {
+		socketPath = defaultSocketPath()
+	}
+
+	ds, err := newDaemonServer(cfg, socketPath, flags.ephemeral, wsID, flags.httpAddr, flags.tlsCertFile, flags.tlsKeyFile, flags.allowedOrigins, flags.masterKeyFile, scrubLevel)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "wakild: listening on %s (ephemeral=%v, workspace=%s)\n",
-		flags.socketPath, flags.ephemeral, wsID)
+	fmt.Fprintf(os.Stderr, "wakil daemon: listening on %s (ephemeral=%v, workspace=%s)\n",
+		socketPath, flags.ephemeral, wsID)
 	if flags.httpAddr != "" {
 		scheme := "http"
 		if flags.tlsCertFile != "" {
 			scheme = "https"
 		}
-		fmt.Fprintf(os.Stderr, "wakild: web console at %s://%s/\n", scheme, flags.httpAddr)
+		fmt.Fprintf(os.Stderr, "wakil daemon: web console at %s://%s/\n", scheme, flags.httpAddr)
 	}
 
 	// Serve until signal.
@@ -237,10 +253,10 @@ func run() error {
 	case err := <-serveErr:
 		// Serve exited (error or clean stop).
 		if err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "wakild: serve error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "wakil daemon: serve error: %v\n", err)
 		}
 	case <-ctx.Done():
-		fmt.Fprintln(os.Stderr, "wakild: shutting down...")
+		fmt.Fprintln(os.Stderr, "wakil daemon: shutting down...")
 	}
 
 	// Graceful shutdown with deadline.
@@ -249,10 +265,10 @@ func run() error {
 	ds.shutdown(shutdownCtx)
 
 	// Remove the socket file if it still exists.
-	if err := os.Remove(flags.socketPath); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "wakild: remove socket: %v\n", err)
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "wakil daemon: remove socket: %v\n", err)
 	}
 
-	fmt.Fprintln(os.Stderr, "wakild: stopped")
+	fmt.Fprintln(os.Stderr, "wakil daemon: stopped")
 	return nil
 }

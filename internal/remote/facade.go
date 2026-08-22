@@ -602,7 +602,7 @@ func (f *RemoteFacade) AppendSystemMessage(m proxy.Message) {
 	f.mu.Unlock()
 	f.bumpVersion()
 }
-func (f *RemoteFacade) SaveSession()                                               {}
+func (f *RemoteFacade) SaveSession() {}
 func (f *RemoteFacade) ConsumeStartupNote() string {
 	f.mu.Lock()
 	note := f.startupNote
@@ -662,12 +662,12 @@ func (f *RemoteFacade) RestoreRepoState() {
 	f.mu.Unlock()
 	f.refreshStateSync()
 }
-func (f *RemoteFacade) SetCtxLimit(lim sessionclient.ContextLimit)                 { f.bumpVersion() }
-func (f *RemoteFacade) SetModelList(models []string)                               { f.bumpVersion() }
-func (f *RemoteFacade) SetTools(tools []proxy.Tool)                                { f.bumpVersion() }
-func (f *RemoteFacade) ReplacePendingImages(imgs []proxy.ImagePart)                { f.bumpVersion() }
-func (f *RemoteFacade) AddPendingImage(img proxy.ImagePart)                        { f.bumpVersion() }
-func (f *RemoteFacade) ClearPendingImages()                                        { f.bumpVersion() }
+func (f *RemoteFacade) SetCtxLimit(lim sessionclient.ContextLimit)  { f.bumpVersion() }
+func (f *RemoteFacade) SetModelList(models []string)                { f.bumpVersion() }
+func (f *RemoteFacade) SetTools(tools []proxy.Tool)                 { f.bumpVersion() }
+func (f *RemoteFacade) ReplacePendingImages(imgs []proxy.ImagePart) { f.bumpVersion() }
+func (f *RemoteFacade) AddPendingImage(img proxy.ImagePart)         { f.bumpVersion() }
+func (f *RemoteFacade) ClearPendingImages()                         { f.bumpVersion() }
 
 // ---- Side questions ----
 // Side questions require daemon-side support. In P2e they are not available
@@ -688,22 +688,56 @@ func (f *RemoteFacade) ListSessions(scope sessionclient.SessionScope) ([]session
 		All:       scope.All,
 	}))
 	if err != nil {
+		// Fall back to the SessionService's ListSessions for older daemons
+		// that don't implement SessionStateService. The session host's
+		// ListSessions returns live session IDs (ses_...); ListSavedSessions
+		// returns saved chat IDs (chat_...). This fallback is a graceful
+		// degradation — saved sessions won't appear, but live ones will.
+		if connectCodeOf(err) == connect.CodeUnimplemented {
+			return f.listSessionsFallback(ctx, scope)
+		}
 		return nil, 0, fmt.Errorf("remote: ListSavedSessions: %w", err)
 	}
 	out := make([]sessionclient.SessionSummary, 0, len(resp.Msg.Sessions))
 	for _, s := range resp.Msg.Sessions {
 		out = append(out, sessionclient.SessionSummary{
-			ChatID:      s.ChatId,
-			Model:       s.Model,
-			Label:       s.Label,
-			Workspace:   s.Workspace,
-			Created:     time.Unix(s.Created, 0),
-			Updated:     time.Unix(s.Updated, 0),
-			TurnCount:   int(s.Turns),
+			ChatID:       s.ChatId,
+			Model:        s.Model,
+			Label:        s.Label,
+			Workspace:    s.Workspace,
+			Created:      time.Unix(s.Created, 0),
+			Updated:      time.Unix(s.Updated, 0),
+			TurnCount:    int(s.Turns),
 			FirstMessage: s.FirstMessage,
 		})
 	}
 	return out, int(resp.Msg.Hidden), nil
+}
+
+// listSessionsFallback calls the SessionService's ListSessions RPC (the
+// pre-SessionStateService path). Used when the daemon doesn't implement
+// SessionStateService (older builds). The SessionService's ListSessions
+// has no workspace/all filtering — it returns all live sessions.
+func (f *RemoteFacade) listSessionsFallback(ctx context.Context, _ sessionclient.SessionScope) ([]sessionclient.SessionSummary, int, error) {
+	resp, err := f.clients.Session.ListSessions(ctx, connect.NewRequest(&v1alpha1.ListSessionsRequest{}))
+	if err != nil {
+		return nil, 0, fmt.Errorf("remote: ListSessions: %w", err)
+	}
+	out := make([]sessionclient.SessionSummary, 0, len(resp.Msg.Sessions))
+	for _, s := range resp.Msg.Sessions {
+		summary := sessionclient.SessionSummary{
+			ChatID: s.Id,
+			Label:  s.Title,
+		}
+		if s.CreatedAt != nil {
+			summary.Created = s.CreatedAt.AsTime()
+		}
+		if s.ClosedAt != nil {
+			summary.Updated = s.ClosedAt.AsTime()
+		}
+		out = append(out, summary)
+	}
+	return out, 0, nil
 }
 
 func (f *RemoteFacade) LoadSession(idOrPrefix string) (*sessionclient.SessionSummary, error) {
@@ -907,7 +941,7 @@ func (f *RemoteFacade) dispatchBackend(fields []string) sessionclient.CommandRes
 		notice, err := f.callStateRPC("SetBackend", func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) (string, error) {
 			resp, err := c.SetBackend(ctx, connect.NewRequest(&v1alpha1.SetBackendRequest{
 				SessionId: string(sid),
-				Backend:    arg,
+				Backend:   arg,
 			}))
 			if err != nil {
 				return "", err
@@ -1019,7 +1053,7 @@ func (f *RemoteFacade) dispatchSubagentEndpoint(fields []string) sessionclient.C
 		notice, err := f.callStateRPC("SetSubagentEndpoint", func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) (string, error) {
 			resp, err := c.SetSubagentEndpoint(ctx, connect.NewRequest(&v1alpha1.SetSubagentEndpointRequest{
 				SessionId: string(sid),
-				Endpoint:   name,
+				Endpoint:  name,
 			}))
 			if err != nil {
 				return "", err

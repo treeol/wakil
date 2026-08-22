@@ -606,13 +606,13 @@ func TestP4fFlagValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// We can't call run() (it would start the daemon), so we test
-			// parseFlags + the validation logic inline.
-			flags, err := parseFlags(tt.args)
+			// We can't call execDaemon() (it would start the daemon), so we test
+			// parseDaemonFlags + the validation logic inline.
+			flags, err := parseDaemonFlags(tt.args)
 			if err != nil {
-				t.Fatalf("parseFlags: %v", err)
+				t.Fatalf("parseDaemonFlags: %v", err)
 			}
-			// Replicate the validation from run().
+			// Replicate the validation from execDaemon().
 			err = validateTLSFlags(flags)
 			if tt.wantErr && err == nil {
 				t.Errorf("expected error, got nil")
@@ -626,13 +626,13 @@ func TestP4fFlagValidation(t *testing.T) {
 
 func validateTLSFlags(f daemonFlags) error {
 	if f.tlsKeyFile != "" && f.tlsCertFile == "" {
-		return fmt.Errorf("wakild: --tls-key requires --tls-cert")
+		return fmt.Errorf("wakil daemon: --tls-key requires --tls-cert")
 	}
 	if f.tlsCertFile != "" && f.tlsKeyFile == "" {
-		return fmt.Errorf("wakild: --tls-cert requires --tls-key")
+		return fmt.Errorf("wakil daemon: --tls-cert requires --tls-key")
 	}
 	if f.tlsCertFile != "" && f.httpAddr == "" {
-		return fmt.Errorf("wakild: --tls-cert requires --http-addr (TLS applies to the TCP listener)")
+		return fmt.Errorf("wakil daemon: --tls-cert requires --http-addr (TLS applies to the TCP listener)")
 	}
 	return nil
 }

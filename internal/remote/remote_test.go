@@ -97,22 +97,22 @@ func TestDefaultSocketPath(t *testing.T) {
 type testSessionStateHandler struct {
 	state *v1alpha1.SessionState
 
-	mu         sync.Mutex
-	setModel    []string
-	setBackend   []string
-	autoApprove  *bool
-	destructive  *bool
-	revoked      bool
-	rawTools     *bool
-	counselMode  string
-	subagentEp   string
+	mu            sync.Mutex
+	setModel      []string
+	setBackend    []string
+	autoApprove   *bool
+	destructive   *bool
+	revoked       bool
+	rawTools      *bool
+	counselMode   string
+	subagentEp    string
 	subagentModel string
-	maxPar       int32
-	maxCtx       int32
-	repoclear    bool
-	sessionLabel string
-	compacted    bool
-	restored     bool
+	maxPar        int32
+	maxCtx        int32
+	repoclear     bool
+	sessionLabel  string
+	compacted     bool
+	restored      bool
 }
 
 func (h *testSessionStateHandler) GetSessionState(ctx context.Context, req *connect.Request[v1alpha1.GetSessionStateRequest]) (*connect.Response[v1alpha1.SessionState], error) {
@@ -253,29 +253,29 @@ func TestRemoteFacadeStateProjection(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(wakilv1alpha1connect.NewSessionStateServiceHandler(&testSessionStateHandler{
 		state: &v1alpha1.SessionState{
-			ChatId:          "chat-proj",
-			Title:           "Proj Session",
-			Workspace:       "/ws",
-			SelectedBackend: "b1",
-			SelectedModel:   "m1",
-			EffectiveModel:  "m1",
-			ModelList:       []string{"m1", "m2"},
-			BackendList:     []*v1alpha1.BackendInfo{{Name: "b1", External: true, Caps: []string{"a"}}},
-			ConfigBackend:   "b0",
-			AutoApprove:     true,
-			AllowDestructive: false,
-			AllowReads:      true,
-			RawTools:        true,
-			WorkflowLabel:   "wf",
-			BaseUrl:         "http://x",
-			LastBackend:     "b1",
-			Cwd:             "/cwd",
-			ExecMode:        "direct",
-			PromptNote:      "note",
+			ChatId:                 "chat-proj",
+			Title:                  "Proj Session",
+			Workspace:              "/ws",
+			SelectedBackend:        "b1",
+			SelectedModel:          "m1",
+			EffectiveModel:         "m1",
+			ModelList:              []string{"m1", "m2"},
+			BackendList:            []*v1alpha1.BackendInfo{{Name: "b1", External: true, Caps: []string{"a"}}},
+			ConfigBackend:          "b0",
+			AutoApprove:            true,
+			AllowDestructive:       false,
+			AllowReads:             true,
+			RawTools:               true,
+			WorkflowLabel:          "wf",
+			BaseUrl:                "http://x",
+			LastBackend:            "b1",
+			Cwd:                    "/cwd",
+			ExecMode:               "direct",
+			PromptNote:             "note",
 			EffectiveSubagentModel: "sm",
-			ContextUsed:     123,
-			ContextExact:    true,
-			ContextLimit:    &v1alpha1.ContextLimit{NCtx: 100, UsableCtx: 88},
+			ContextUsed:            123,
+			ContextExact:           true,
+			ContextLimit:           &v1alpha1.ContextLimit{NCtx: 100, UsableCtx: 88},
 		},
 	}))
 	srv := &http.Server{Handler: mux}
@@ -512,16 +512,16 @@ func TestRemoteFacadeDispatchCommandRPC(t *testing.T) {
 
 	handler := &testSessionStateHandler{
 		state: &v1alpha1.SessionState{
-			SelectedModel:           "m0",
-			EffectiveModel:          "m0",
-			SelectedBackend:         "b0",
-			EffectiveCtxMax:         0,
-			MaxParallelSubagents:    2,
-			CounselMode:             "suggest",
-			MaxCounsel:              3,
-			SubagentEndpoint:        "",
-			EffectiveSubagentModel:  "sub-m",
-			ModelList:               []string{"m0", "m1"},
+			SelectedModel:          "m0",
+			EffectiveModel:         "m0",
+			SelectedBackend:        "b0",
+			EffectiveCtxMax:        0,
+			MaxParallelSubagents:   2,
+			CounselMode:            "suggest",
+			MaxCounsel:             3,
+			SubagentEndpoint:       "",
+			EffectiveSubagentModel: "sub-m",
+			ModelList:              []string{"m0", "m1"},
 		},
 	}
 	mux := http.NewServeMux()

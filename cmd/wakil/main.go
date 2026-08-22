@@ -30,6 +30,13 @@ func main() {
 		os.Exit(RunHeadless(cfg, os.Args[2:]))
 	}
 
+	// "wakil daemon" subcommand: run the daemon server (card #149). Listens on
+	// a Unix socket, serves Connect RPCs, and optionally a web UI on TCP.
+	// Previously a separate `wakild` binary; merged into `wakil` for simplicity.
+	if len(os.Args) >= 2 && os.Args[1] == "daemon" {
+		os.Exit(runDaemon())
+	}
+
 	// --list-sessions short-circuits before config resolution so it works even
 	// without a configured proxy. Scoped to the launch cwd by default (no config
 	// has been loaded yet, so cwd is the only workspace identity available);

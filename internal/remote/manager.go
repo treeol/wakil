@@ -75,10 +75,16 @@ func (m *RemoteConversationManager) NewConversation(ctx context.Context, princip
 	// Initialize the daemon's App for a new conversation — sets app.Session and
 	// app.Client.ChatID so SaveSession persists the transcript to disk. Without
 	// this, the daemon's app.Session stays nil and sessions are never saved.
+	// Best-effort: older daemons (without SessionStateService) return
+	// unimplemented; the conversation still works, just without persistence.
 	if _, err := m.clients.SessionState.InitNewSession(ctx, connect.NewRequest(&v1alpha1.InitNewSessionRequest{
 		SessionId: s.ID,
 	})); err != nil {
-		return nil, fmt.Errorf("remote: NewConversation: InitNewSession: %w", err)
+		if connectCodeOf(err) == connect.CodeUnimplemented {
+			// Daemon doesn't support SessionStateService — degrade gracefully.
+		} else {
+			return nil, fmt.Errorf("remote: NewConversation: InitNewSession: %w", err)
+		}
 	}
 
 	return f, nil
@@ -88,6 +94,10 @@ func (m *RemoteConversationManager) NewConversation(ctx context.Context, princip
 // facade backed by it. The daemon's App is restored from disk (Conv, ChatID,
 // Session, Workflow) via the LoadSession RPC, and the conversation transcript
 // is projected into the facade for TUI display.
+//
+// When the daemon doesn't support SessionStateService (older builds), this
+// falls back to creating a new session — the resume ID is ignored and the
+// conversation starts fresh. This is the pre-P6 behavior.
 func (m *RemoteConversationManager) ResumeConversation(ctx context.Context, principal core.Principal, idOrPrefix string) (sessionclient.Facade, error) {
 	f := newRemoteFacade(m.clients, principal, m.workspace)
 
@@ -101,6 +111,11 @@ func (m *RemoteConversationManager) ResumeConversation(ctx context.Context, prin
 		IdOrPrefix: idOrPrefix,
 	}))
 	if err != nil {
+		if connectCodeOf(err) == connect.CodeUnimplemented {
+			// Daemon doesn't support SessionStateService — fall back to
+			// creating a new session (the pre-P6 behavior).
+			return m.NewConversation(ctx, principal, nil)
+		}
 		return nil, fmt.Errorf("remote: ResumeConversation: LoadSession: %w", err)
 	}
 
@@ -158,4 +173,13 @@ func (m *RemoteConversationManager) Close(f sessionclient.Facade) error {
 		_ = rf.CloseSession(ctx, m.principal, rf.sessionID)
 	}
 	return f.Close()
+}
+
+// connectCodeOf extracts the connect.Code from an error. Returns
+// CodeUnknown if the error is not a connect error.
+func connectCodeOf(err error) connect.Code {
+	if ce, ok := err.(*connect.Error); ok {
+		return ce.Code()
+	}
+	return connect.CodeUnknown
 }

@@ -45,6 +45,11 @@ func cmdNonTestFiles(t *testing.T) []string {
 // TestHeadlessNoAgentImport asserts that no non-test cmd/wakil file imports
 // internal/agent (Gate #1, cmd half — closed by the wiring sessions wrappers),
 // and that internal/tui appears in main.go alone.
+//
+// daemon_server.go is excepted from the internal/agent rule: it is the daemon
+// server's server-side code (previously cmd/wakild/server.go) and genuinely
+// needs agent.App and agent.SessionHostDBPath. The headless shim (run.go) and
+// the TUI entry (main.go) remain agent-free.
 func TestHeadlessNoAgentImport(t *testing.T) {
 	fset := token.NewFileSet()
 	var violations []string
@@ -55,7 +60,7 @@ func TestHeadlessNoAgentImport(t *testing.T) {
 		}
 		for _, imp := range node.Imports {
 			path := strings.Trim(imp.Path.Value, `"`)
-			if path == "github.com/treeol/wakil/internal/agent" {
+			if path == "github.com/treeol/wakil/internal/agent" && f != "daemon_server.go" {
 				violations = append(violations,
 					f+":"+fset.Position(imp.Pos()).String()+": imports "+path)
 			}
