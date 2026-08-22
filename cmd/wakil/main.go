@@ -93,7 +93,7 @@ func main() {
 	}
 
 	if cfg.DaemonMode {
-		os.Exit(runDaemonMode(cfg))
+		os.Exit(runDaemonMode(cfg, resumeID))
 	}
 
 	// --attach-image: load into pending images for the first message.
@@ -216,7 +216,7 @@ func main() {
 // daemon over its Unix socket and drives the session remotely instead of
 // embedding the agent loop. This mirrors main.go's embedded bootstrap path
 // but uses the remote package.
-func runDaemonMode(cfg config.Config) int {
+func runDaemonMode(cfg config.Config, resumeID string) int {
 	socketPath := cfg.DaemonSocket
 	if socketPath == "" {
 		socketPath = remote.DefaultSocketPath()
@@ -226,7 +226,7 @@ func runDaemonMode(cfg config.Config) int {
 	ws := wiring.WorkspaceIDFromConfig(cfg)
 
 	ctx := context.Background()
-	rt, cleanup, err := remote.BootstrapRemote(ctx, socketPath, ws, "", nil)
+	rt, cleanup, err := remote.BootstrapRemote(ctx, socketPath, ws, resumeID, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "daemon error:", err)
 		return ExitError

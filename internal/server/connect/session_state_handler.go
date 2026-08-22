@@ -523,6 +523,57 @@ func (h *SessionStateHandler) RestoreRepoState(ctx context.Context, req *connect
 	}), nil
 }
 
+// ---- LoadSession (P6f fix: session resume) ----
+
+func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error) {
+	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
+		return nil, mapError(err)
+	}
+	app := h.app
+
+	// Load the session from disk (same path as embedded ResumeConversation).
+	idOrPrefix := req.Msg.IdOrPrefix
+	if idOrPrefix == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("load_session: id_or_prefix must not be empty"))
+	}
+	s, err := agent.LoadSessionScoped(idOrPrefix, agent.SessionScope{All: true})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("load_session: %w", err))
+	}
+	if s == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("load_session: session %q not found", idOrPrefix))
+	}
+
+	// Restore the loaded session's state into the App — mirroring the embedded
+	// ResumeConversation path (conversation_manager.go:172-176).
+	if app.Client != nil {
+		app.Client.ChatID = s.ChatID
+	}
+	app.SetConv(s.Conv)
+	app.Session = s
+	app.SetWorkflow(s.SavedWorkflow)
+
+	// Build the display-only conv projection for the TUI.
+	conv := make([]*v1alpha1.ConvMessage, 0, len(s.Conv))
+	for _, m := range s.Conv {
+		cm := &v1alpha1.ConvMessage{Role: m.Role, Name: m.Name}
+		if m.Content != nil {
+			cm.Content = m.Content
+		}
+		conv = append(conv, cm)
+	}
+
+	resp := &v1alpha1.LoadSessionResponse{
+		ChatId:  s.ChatID,
+		Title:   s.Label,
+		Conv:    conv,
+	}
+	if s.SavedWorkflow != nil {
+		resp.WorkflowLabel = s.SavedWorkflow.PhaseName()
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // ---- Helpers ----
 // These wrap App field reads that may be nil (Client, Exec, Session) in
 // early-init or test paths. They are the same nil-safety the wiringFacade

@@ -81,6 +81,9 @@ const (
 	// SessionStateServiceSetSessionLabelProcedure is the fully-qualified name of the
 	// SessionStateService's SetSessionLabel RPC.
 	SessionStateServiceSetSessionLabelProcedure = "/wakil.v1alpha1.SessionStateService/SetSessionLabel"
+	// SessionStateServiceLoadSessionProcedure is the fully-qualified name of the SessionStateService's
+	// LoadSession RPC.
+	SessionStateServiceLoadSessionProcedure = "/wakil.v1alpha1.SessionStateService/LoadSession"
 )
 
 // SessionStateServiceClient is a client for the wakil.v1alpha1.SessionStateService service.
@@ -123,6 +126,12 @@ type SessionStateServiceClient interface {
 	RestoreRepoState(context.Context, *connect.Request[v1alpha1.RestoreRepoStateRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResponse], error)
 	// SetSessionLabel sets the session label (/session name "<label>").
 	SetSessionLabel(context.Context, *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error)
+	// LoadSession loads a saved session from disk into the daemon's App and
+	// returns the conversation transcript for TUI display (P6f fix). The daemon
+	// restores app.Conv, app.Client.ChatID, app.Session, and app.Workflow from
+	// the loaded session — mirroring the embedded ResumeConversation path.
+	// The TUI populates its facade's conv from the returned messages.
+	LoadSession(context.Context, *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error)
 }
 
 // NewSessionStateServiceClient constructs a client for the wakil.v1alpha1.SessionStateService
@@ -232,6 +241,12 @@ func NewSessionStateServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(sessionStateServiceMethods.ByName("SetSessionLabel")),
 			connect.WithClientOptions(opts...),
 		),
+		loadSession: connect.NewClient[v1alpha1.LoadSessionRequest, v1alpha1.LoadSessionResponse](
+			httpClient,
+			baseURL+SessionStateServiceLoadSessionProcedure,
+			connect.WithSchema(sessionStateServiceMethods.ByName("LoadSession")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -253,6 +268,7 @@ type sessionStateServiceClient struct {
 	saveRepoState           *connect.Client[v1alpha1.SaveRepoStateRequest, v1alpha1.SaveRepoStateResponse]
 	restoreRepoState        *connect.Client[v1alpha1.RestoreRepoStateRequest, v1alpha1.RestoreRepoStateResponse]
 	setSessionLabel         *connect.Client[v1alpha1.SetSessionLabelRequest, v1alpha1.SetSessionLabelResponse]
+	loadSession             *connect.Client[v1alpha1.LoadSessionRequest, v1alpha1.LoadSessionResponse]
 }
 
 // GetSessionState calls wakil.v1alpha1.SessionStateService.GetSessionState.
@@ -335,6 +351,11 @@ func (c *sessionStateServiceClient) SetSessionLabel(ctx context.Context, req *co
 	return c.setSessionLabel.CallUnary(ctx, req)
 }
 
+// LoadSession calls wakil.v1alpha1.SessionStateService.LoadSession.
+func (c *sessionStateServiceClient) LoadSession(ctx context.Context, req *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error) {
+	return c.loadSession.CallUnary(ctx, req)
+}
+
 // SessionStateServiceHandler is an implementation of the wakil.v1alpha1.SessionStateService
 // service.
 type SessionStateServiceHandler interface {
@@ -376,6 +397,12 @@ type SessionStateServiceHandler interface {
 	RestoreRepoState(context.Context, *connect.Request[v1alpha1.RestoreRepoStateRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResponse], error)
 	// SetSessionLabel sets the session label (/session name "<label>").
 	SetSessionLabel(context.Context, *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error)
+	// LoadSession loads a saved session from disk into the daemon's App and
+	// returns the conversation transcript for TUI display (P6f fix). The daemon
+	// restores app.Conv, app.Client.ChatID, app.Session, and app.Workflow from
+	// the loaded session — mirroring the embedded ResumeConversation path.
+	// The TUI populates its facade's conv from the returned messages.
+	LoadSession(context.Context, *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error)
 }
 
 // NewSessionStateServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -481,6 +508,12 @@ func NewSessionStateServiceHandler(svc SessionStateServiceHandler, opts ...conne
 		connect.WithSchema(sessionStateServiceMethods.ByName("SetSessionLabel")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionStateServiceLoadSessionHandler := connect.NewUnaryHandler(
+		SessionStateServiceLoadSessionProcedure,
+		svc.LoadSession,
+		connect.WithSchema(sessionStateServiceMethods.ByName("LoadSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/wakil.v1alpha1.SessionStateService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SessionStateServiceGetSessionStateProcedure:
@@ -515,6 +548,8 @@ func NewSessionStateServiceHandler(svc SessionStateServiceHandler, opts ...conne
 			sessionStateServiceRestoreRepoStateHandler.ServeHTTP(w, r)
 		case SessionStateServiceSetSessionLabelProcedure:
 			sessionStateServiceSetSessionLabelHandler.ServeHTTP(w, r)
+		case SessionStateServiceLoadSessionProcedure:
+			sessionStateServiceLoadSessionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -586,4 +621,8 @@ func (UnimplementedSessionStateServiceHandler) RestoreRepoState(context.Context,
 
 func (UnimplementedSessionStateServiceHandler) SetSessionLabel(context.Context, *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.SessionStateService.SetSessionLabel is not implemented"))
+}
+
+func (UnimplementedSessionStateServiceHandler) LoadSession(context.Context, *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.SessionStateService.LoadSession is not implemented"))
 }

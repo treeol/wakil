@@ -217,6 +217,16 @@ func (h *testSessionStateHandler) SetSessionLabel(ctx context.Context, req *conn
 	h.mu.Unlock()
 	return connect.NewResponse(&v1alpha1.SetSessionLabelResponse{Notice: "session labeled"}), nil
 }
+func (h *testSessionStateHandler) LoadSession(ctx context.Context, req *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error) {
+	return connect.NewResponse(&v1alpha1.LoadSessionResponse{
+		ChatId: "chat-resumed",
+		Title:  "Resumed",
+		Conv: []*v1alpha1.ConvMessage{
+			{Role: "user", Content: proto.String("hello")},
+			{Role: "assistant", Content: proto.String("hi there")},
+		},
+	}), nil
+}
 
 // TestRemoteFacadeStateProjection verifies Snapshot()/Consent()/Info()/
 // CompletionSource() project the daemon's SessionState fetched via

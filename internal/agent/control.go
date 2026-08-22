@@ -88,6 +88,16 @@ func (a *App) AppendSystemMessage(m proxy.Message) {
 	a.convMu.Unlock()
 }
 
+// SetConv replaces the conversation transcript under convMu. Used by the
+// daemon-side LoadSession handler to restore a resumed session's conversation
+// (mirrors the embedded ResumeConversation's `f.app.Conv = s.Conv` assignment,
+// but under the lock since the daemon handler is not on the turn goroutine).
+func (a *App) SetConv(conv []proxy.Message) {
+	a.convMu.Lock()
+	a.Conv = append([]proxy.Message(nil), conv...)
+	a.convMu.Unlock()
+}
+
 // ConsumeStartupNote returns the pending startup note and clears it. It is
 // single-goroutine by lifecycle (written once at startup before the TUI runs,
 // consumed once by tuiModel.Init before any turn starts), NOT atomic — do not

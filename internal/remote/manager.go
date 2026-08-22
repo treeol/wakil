@@ -20,6 +20,7 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/protoconv"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // Compile-time proof that RemoteConversationManager satisfies the interface.
@@ -74,28 +75,54 @@ func (m *RemoteConversationManager) NewConversation(ctx context.Context, princip
 }
 
 // ResumeConversation loads an existing session by ID or prefix and returns a
-// facade backed by it.
+// facade backed by it. The daemon's App is restored from disk (Conv, ChatID,
+// Session, Workflow) via the LoadSession RPC, and the conversation transcript
+// is projected into the facade for TUI display.
 func (m *RemoteConversationManager) ResumeConversation(ctx context.Context, principal core.Principal, idOrPrefix string) (sessionclient.Facade, error) {
 	f := newRemoteFacade(m.clients, principal, m.workspace)
 
-	// Resolve the prefix to a full session ID via ListSessions.
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	rpcCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := m.clients.Session.ListSessions(ctx, connect.NewRequest(&v1alpha1.ListSessionsRequest{}))
+
+	// 1. Load the session from disk on the daemon side — restores app.Conv,
+	//    app.Client.ChatID, app.Session, app.Workflow. Returns the display
+	//    transcript for the TUI.
+	loadResp, err := m.clients.SessionState.LoadSession(rpcCtx, connect.NewRequest(&v1alpha1.LoadSessionRequest{
+		IdOrPrefix: idOrPrefix,
+	}))
 	if err != nil {
-		return nil, fmt.Errorf("remote: ResumeConversation: ListSessions: %w", err)
+		return nil, fmt.Errorf("remote: ResumeConversation: LoadSession: %w", err)
 	}
-	var sid string
-	for _, s := range resp.Msg.Sessions {
-		if s.Id == idOrPrefix || (len(s.Id) >= len(idOrPrefix) && s.Id[:len(idOrPrefix)] == idOrPrefix) {
-			sid = s.Id
-			break
+
+	// 2. Create a new session on the daemon for event subscription (the loaded
+	//    session's events are historical; the TUI subscribes live-only at the
+	//    new session's head, same as the embedded rotation path).
+	createResp, err := m.clients.Session.CreateSession(rpcCtx, connect.NewRequest(&v1alpha1.CreateSessionRequest{
+		Workspace: string(m.workspace),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("remote: ResumeConversation: CreateSession: %w", err)
+	}
+	s := protoconv.SessionFromProto(createResp.Msg)
+	f.setSession(event.SessionID(s.ID))
+
+	// 3. Populate the facade's conversation from the loaded transcript.
+	if loadResp.Msg.Title != "" {
+		f.SetTitle(loadResp.Msg.Title)
+	}
+	conv := make([]proxy.Message, 0, len(loadResp.Msg.Conv))
+	for _, cm := range loadResp.Msg.Conv {
+		msg := proxy.Message{Role: cm.Role, Name: cm.Name}
+		if cm.Content != nil {
+			content := cm.GetContent()
+			msg.Content = &content
 		}
+		conv = append(conv, msg)
 	}
-	if sid == "" {
-		return nil, fmt.Errorf("remote: session %q not found", idOrPrefix)
+	if len(conv) > 0 {
+		f.SetConv(conv)
 	}
-	f.setSession(event.SessionID(sid))
+
 	return f, nil
 }
 

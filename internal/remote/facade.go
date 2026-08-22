@@ -23,8 +23,9 @@
 //     cannot block on an RPC) and refreshes it on setSession and on turn-boundary
 //     events. Fields the daemon does not expose (full workflow state, MCP server
 //     lists, grounding, cost tracker, endpoint list, TranscriptSize) remain
-//     zero-valued. The conversation itself is still projected from the event
-//     stream rather than read from App.Conv.
+//     zero-valued. The conversation is populated on resume via the LoadSession
+//     RPC (which returns the transcript from disk) and on live turns via the
+//     event stream (AppendConv).
 //   - Slash-command dispatch (P6c) routes state-mutating commands through the
 //     SessionStateService mutation RPCs (SetModel, SetBackend, SetAutoApprove,
 //     …). Client-side commands (/quit, /new, /resume) are classified locally;

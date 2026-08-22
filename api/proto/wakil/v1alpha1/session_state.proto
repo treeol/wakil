@@ -68,6 +68,13 @@ service SessionStateService {
 
   // SetSessionLabel sets the session label (/session name "<label>").
   rpc SetSessionLabel(SetSessionLabelRequest) returns (SetSessionLabelResponse);
+
+  // LoadSession loads a saved session from disk into the daemon's App and
+  // returns the conversation transcript for TUI display (P6f fix). The daemon
+  // restores app.Conv, app.Client.ChatID, app.Session, and app.Workflow from
+  // the loaded session — mirroring the embedded ResumeConversation path.
+  // The TUI populates its facade's conv from the returned messages.
+  rpc LoadSession(LoadSessionRequest) returns (LoadSessionResponse);
 }
 
 // ---- GetSessionState ----
@@ -293,4 +300,28 @@ message SetSessionLabelRequest {
 }
 message SetSessionLabelResponse {
   string notice = 1;
+}
+
+// ---- LoadSession ----
+
+message LoadSessionRequest {
+  string session_id    = 1;  // the daemon session ID (for principal resolution)
+  string id_or_prefix  = 2;  // chat ID or prefix to resolve on disk
+}
+
+// ConvMessage is a display-only projection of proxy.Message — just the fields
+// the TUI needs to render the conversation view. The daemon restores the full
+// proxy.Message slice (with ToolCalls, ToolCallID, etc.) into app.Conv from
+// disk; the TUI gets this simplified projection for display.
+message ConvMessage {
+  string role         = 1;
+  optional string content = 2;
+  string name         = 3;
+}
+
+message LoadSessionResponse {
+  string chat_id              = 1;
+  string title                = 2;
+  repeated ConvMessage conv   = 3;
+  string workflow_label       = 4;
 }

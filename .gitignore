@@ -51,3 +51,4 @@ runs/
 .tmp-gobuild/
 .gotmp/
 .gocache/
+master.key
