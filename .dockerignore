@@ -1,34 +1,37 @@
-# Prevent build artifacts from entering the Docker context.
-# (kvrust is now cloned in the Dockerfile, not part of the build context.)
+# Exclude everything not needed for the build to keep the build context small.
+# The Dockerfile.daemon only needs the Go source tree, go.mod, and go.sum.
 
-# Wakil binary (host-built, not needed in image)
-wakil
-wakil-old
-wakil-*
+# Build artifacts and caches
+runs/
+.tmp/
+.gotmp/
+*.test
+*.out
 
-# Python artifacts
-__pycache__/
-*.pyc
-*.pyo
+# Git
+.git/
 
-# Editor/OS noise
+# Docker (avoid recursive build context)
+Dockerfile
+docker-compose.yml
+
+# IDE and editor files
+.vscode/
+.idea/
 *.swp
 *.swo
 *~
+
+# OS files
 .DS_Store
+Thumbs.db
 
-# Local config / secrets
-config.json
-.config/
+# Logs and traces (if under repo root)
+*.log
+traces/
 
-# IDE
-.idea/
-.vscode/
-.claude/
+# Node modules (if any frontend tooling exists)
+node_modules/
 
-# Runtime artifacts
-.wakil/
-.tmp/
-runs/
-*.trace
-*.jsonl.trace
+# Data directories (should never be in the image)
+data/

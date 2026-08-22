@@ -1,0 +1,107 @@
+# docker-compose.yml — `wakil daemon` as a Docker service (card #150).
+#
+# Usage:
+#   WAKIL_WORKSPACE_PATH=/home/user/myproject docker compose up -d
+#
+# The daemon's state (sessions, memory, skills, repo-state, session-host)
+# is stored on the host under ~/.local/share/wakil/ and mounted into the
+# container at /data/wakil. Config is mounted at /config/wakil/config.json.
+# The Unix socket is exposed at /run/wakil/wakild.sock (mountable for the
+# TUI to connect from the host, or use the HTTP listener for network
+# access).
+#
+# Workspace identity:
+#   WAKIL_WORKSPACE_PATH pins the workspace identity across container/host
+#   boundaries. Set it to the host path of your workspace (the directory you
+#   would normally run `wakil` from). The daemon hashes this path to derive
+#   the workspace ID (wsp_<16hex>) and storage keys, so it must match the
+#   path the TUI would use on the host. If not set, the daemon falls back
+#   to its working directory (/workspace), which is only useful for
+#   ephemeral/testing setups.
+#
+# Network access:
+#   By default the HTTP listener is disabled (no --http-addr). To enable
+#   the web UI, uncomment the http-addr port mapping and set --http-addr.
+#   For production, use --tls-cert/--tls-key and --allowed-origins.
+
+services:
+  wakil-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    image: wakil-daemon:latest
+    container_name: wakil-daemon
+
+    # Run as the distroless nonroot user (UID 65532). The host directories
+    # mounted at /data and /config must be writable by UID 65532.
+    user: "65532:65532"
+
+    # Direct exec mode — the daemon runs commands inside this container.
+    # For docker exec mode (daemon spawns sandbox containers), the daemon
+    # needs access to the Docker socket — add a volume mount for
+    # /var/run/docker.sock and change WAKIL_EXEC_MODE to docker.
+    environment:
+      # Pin the workspace identity to the host path. MUST be set to the
+      # real host path of your workspace for storage keys to match the TUI.
+      WAKIL_WORKSPACE_PATH: ${WAKIL_WORKSPACE_PATH:-/workspace}
+
+      # Data and config paths (match Dockerfile.daemon defaults).
+      # XDG_DATA_HOME=/data      → /data/wakil/sessions, /data/wakil/memory, ...
+      # WAKIL_CONFIG=/config/wakil/config.json
+      # XDG_RUNTIME_DIR=/run/wakil → socket at /run/wakil/wakild.sock
+
+      # Exec mode: direct (commands run in-container).
+      # Override to "docker" for Docker-in-Docker sandbox mode.
+      WAKIL_EXEC_MODE: ${WAKIL_EXEC_MODE:-direct}
+
+    volumes:
+      # Data directory: sessions, memory, skills, repo-state, session-host.
+      # Mount the host's ~/.local/share/wakil here.
+      - ${HOME}/.local/share/wakil:/data/wakil
+
+      # Config directory: config.json.
+      # Mount the host's ~/.config/wakil here.
+      - ${HOME}/.config/wakil:/config/wakil
+
+      # Socket directory: exposed to the host so the TUI can connect.
+      # The daemon creates wakild.sock inside /run/wakil (XDG_RUNTIME_DIR).
+      # On the host, point the TUI at this socket via --socket or
+      # WAKIL_DAEMON_SOCKET environment variable.
+      - ${XDG_RUNTIME_DIR:-/tmp}/wakil-daemon:/run/wakil
+
+      # Workspace mount: the project directory the daemon operates on.
+      # In direct exec mode, the daemon runs commands against this path.
+      # WAKIL_WORKSPACE_PATH should match the HOST path for identity, but
+      # the container sees it at /workspace.
+      - ${WAKIL_WORKSPACE_PATH:-.}:/workspace
+
+    # Working directory inside the container — the daemon's cwd.
+    # When WAKIL_WORKSPACE_PATH is set, the daemon uses it for identity
+    # (hashing) regardless of cwd. The actual file operations happen
+    # against /workspace (the mount point).
+    working_dir: /workspace
+
+    # Daemon flags passed via CMD (appended to ENTRYPOINT).
+    # The socket path defaults to $XDG_RUNTIME_DIR/wakild.sock.
+    # Uncomment --http-addr to enable the web UI listener.
+    command: []
+      # - --http-addr=0.0.0.0:8791
+      # - --allowed-origins=http://localhost:8791
+      # - --tls-cert=/config/wakil/cert.pem
+      # - --tls-key=/config/wakil/key.pem
+
+    # Ports — only needed if --http-addr is enabled.
+    # ports:
+    #   - "8791:8791"
+
+    # Restart policy: the daemon is stateful and should stay running.
+    restart: unless-stopped
+
+    # Resource limits (adjust as needed).
+    # The daemon is lightweight (Go binary + pure-Go SQLite); 512MB memory
+    # and 1 CPU is a reasonable default for a single-workspace setup.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
