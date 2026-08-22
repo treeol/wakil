@@ -894,6 +894,12 @@ func (f *wiringFacade) Close() error {
 	f.app.StopAllAsyncOps()
 	f.app.StopAllBackgroundProcs()
 
+	// Persist the session transcript on close — belt-and-suspenders for state
+	// mutated after the last turn's defer SaveSession (e.g. /label, /model,
+	// repo-state). SaveSession is a no-op when app.Session is nil (no
+	// conversation was started) or when Conv is empty (nothing to save).
+	f.app.SaveSession()
+
 	// Release the App ownership claim. The turn may still be winding down
 	// from the CloseSession cancellation above (the executor goroutine clears
 	// turnActive in its defer after finishTurn); retry briefly so a normal

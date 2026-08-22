@@ -110,6 +110,15 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 		return nil, fmt.Errorf("conversation manager: %w", err)
 	}
 
+	// Initialize app.Session so SaveSession persists the transcript. Without
+	// this, app.Session stays nil (BuildApp does not set it) and SaveSession
+	// is a no-op — sessions are never written to disk (the same bug the daemon
+	// path fixed via the InitNewSession RPC in commit 89b3acb, but the embedded
+	// path was missed). Use the chat ID from the proxy client (BuildApp mints
+	// one via NewChatID); app.NewConversation sets Session.ChatID, Model,
+	// Created, and Workspace from the app's config.
+	app.NewConversation(app.Client.ChatID)
+
 	facade := newWiringFacade(app, handle, host, res, cm.principal)
 	facade.setSession(sess.ID)
 
