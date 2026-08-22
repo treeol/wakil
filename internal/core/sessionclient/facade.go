@@ -83,12 +83,23 @@ type SessionSummary struct {
 	Created   time.Time
 	Updated   time.Time
 	Conv      []proxy.Message
+
+	// TurnCount and FirstMessage are pre-computed fields for the resume picker
+	// when the full Conv is not available (remote/daemon mode where sending the
+	// full transcript for every session in the list would be too expensive).
+	// When non-zero, Turns() prefers these over scanning Conv.
+	TurnCount   int
+	FirstMessage string
 }
 
 // Turns counts the user turns in the session and returns the first user
 // message text (the resume picker's "N turns · <first message>" row). Mirrors
-// agent.SessionTurns without the agent import.
+// agent.SessionTurns without the agent import. When TurnCount > 0, uses the
+// pre-computed fields (remote mode where Conv is not populated).
 func (s SessionSummary) Turns() (int, string) {
+	if s.TurnCount > 0 || s.Conv == nil {
+		return s.TurnCount, s.FirstMessage
+	}
 	turns, first := 0, ""
 	for _, m := range s.Conv {
 		if m.Role == "user" {

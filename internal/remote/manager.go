@@ -71,6 +71,16 @@ func (m *RemoteConversationManager) NewConversation(ctx context.Context, princip
 	s := protoconv.SessionFromProto(resp.Msg)
 	f.setSession(event.SessionID(s.ID))
 	f.SetTitle(s.Title)
+
+	// Initialize the daemon's App for a new conversation — sets app.Session and
+	// app.Client.ChatID so SaveSession persists the transcript to disk. Without
+	// this, the daemon's app.Session stays nil and sessions are never saved.
+	if _, err := m.clients.SessionState.InitNewSession(ctx, connect.NewRequest(&v1alpha1.InitNewSessionRequest{
+		SessionId: s.ID,
+	})); err != nil {
+		return nil, fmt.Errorf("remote: NewConversation: InitNewSession: %w", err)
+	}
+
 	return f, nil
 }
 

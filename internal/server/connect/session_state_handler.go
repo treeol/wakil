@@ -574,6 +574,57 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(resp), nil
 }
 
+// ---- ListSavedSessions ----
+
+func (h *SessionStateHandler) ListSavedSessions(ctx context.Context, req *connect.Request[v1alpha1.ListSavedSessionsRequest]) (*connect.Response[v1alpha1.ListSavedSessionsResponse], error) {
+	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
+		return nil, mapError(err)
+	}
+	scope := agent.SessionScope{
+		Workspace: req.Msg.Workspace,
+		All:       req.Msg.All,
+	}
+	sessions, hidden, err := agent.ListSessionsScoped(scope)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list_saved_sessions: %w", err))
+	}
+	out := make([]*v1alpha1.SavedSession, 0, len(sessions))
+	for _, s := range sessions {
+		turns, first := agent.SessionTurns(s)
+		if len(first) > 40 {
+			first = first[:40] + "…"
+		}
+		out = append(out, &v1alpha1.SavedSession{
+			ChatId:       s.ChatID,
+			Model:        s.Model,
+			Label:        s.Label,
+			Workspace:   s.Workspace,
+			Created:      s.Created.Unix(),
+			Updated:      s.Updated.Unix(),
+			Turns:        int32(turns),
+			FirstMessage: first,
+		})
+	}
+	return connect.NewResponse(&v1alpha1.ListSavedSessionsResponse{
+		Sessions: out,
+		Hidden:   int32(hidden),
+	}), nil
+}
+
+// ---- InitNewSession ----
+
+func (h *SessionStateHandler) InitNewSession(ctx context.Context, req *connect.Request[v1alpha1.InitNewSessionRequest]) (*connect.Response[v1alpha1.InitNewSessionResponse], error) {
+	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
+		return nil, mapError(err)
+	}
+	app := h.app
+	chatID := agent.NewChatID()
+	app.NewConversation(chatID)
+	return connect.NewResponse(&v1alpha1.InitNewSessionResponse{
+		ChatId: chatID,
+	}), nil
+}
+
 // ---- Helpers ----
 // These wrap App field reads that may be nil (Client, Exec, Session) in
 // early-init or test paths. They are the same nil-safety the wiringFacade

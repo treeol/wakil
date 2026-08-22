@@ -84,6 +84,12 @@ const (
 	// SessionStateServiceLoadSessionProcedure is the fully-qualified name of the SessionStateService's
 	// LoadSession RPC.
 	SessionStateServiceLoadSessionProcedure = "/wakil.v1alpha1.SessionStateService/LoadSession"
+	// SessionStateServiceListSavedSessionsProcedure is the fully-qualified name of the
+	// SessionStateService's ListSavedSessions RPC.
+	SessionStateServiceListSavedSessionsProcedure = "/wakil.v1alpha1.SessionStateService/ListSavedSessions"
+	// SessionStateServiceInitNewSessionProcedure is the fully-qualified name of the
+	// SessionStateService's InitNewSession RPC.
+	SessionStateServiceInitNewSessionProcedure = "/wakil.v1alpha1.SessionStateService/InitNewSession"
 )
 
 // SessionStateServiceClient is a client for the wakil.v1alpha1.SessionStateService service.
@@ -132,6 +138,17 @@ type SessionStateServiceClient interface {
 	// the loaded session — mirroring the embedded ResumeConversation path.
 	// The TUI populates its facade's conv from the returned messages.
 	LoadSession(context.Context, *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error)
+	// ListSavedSessions lists saved sessions from disk (agent session store),
+	// scoped by workspace. This returns chat IDs, labels, models, timestamps —
+	// the metadata the TUI's resume picker needs. Distinct from the session
+	// host's ListSessions, which returns live session IDs (ses_...).
+	ListSavedSessions(context.Context, *connect.Request[v1alpha1.ListSavedSessionsRequest]) (*connect.Response[v1alpha1.ListSavedSessionsResponse], error)
+	// InitNewSession initializes the daemon's App for a new conversation —
+	// calls app.NewConversation(chatID) to set app.Session and app.Client.ChatID
+	// so SaveSession persists the transcript to disk. Called by the remote
+	// manager after CreateSession. Without this, the daemon's app.Session stays
+	// nil and sessions are never saved.
+	InitNewSession(context.Context, *connect.Request[v1alpha1.InitNewSessionRequest]) (*connect.Response[v1alpha1.InitNewSessionResponse], error)
 }
 
 // NewSessionStateServiceClient constructs a client for the wakil.v1alpha1.SessionStateService
@@ -247,6 +264,18 @@ func NewSessionStateServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(sessionStateServiceMethods.ByName("LoadSession")),
 			connect.WithClientOptions(opts...),
 		),
+		listSavedSessions: connect.NewClient[v1alpha1.ListSavedSessionsRequest, v1alpha1.ListSavedSessionsResponse](
+			httpClient,
+			baseURL+SessionStateServiceListSavedSessionsProcedure,
+			connect.WithSchema(sessionStateServiceMethods.ByName("ListSavedSessions")),
+			connect.WithClientOptions(opts...),
+		),
+		initNewSession: connect.NewClient[v1alpha1.InitNewSessionRequest, v1alpha1.InitNewSessionResponse](
+			httpClient,
+			baseURL+SessionStateServiceInitNewSessionProcedure,
+			connect.WithSchema(sessionStateServiceMethods.ByName("InitNewSession")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -269,6 +298,8 @@ type sessionStateServiceClient struct {
 	restoreRepoState        *connect.Client[v1alpha1.RestoreRepoStateRequest, v1alpha1.RestoreRepoStateResponse]
 	setSessionLabel         *connect.Client[v1alpha1.SetSessionLabelRequest, v1alpha1.SetSessionLabelResponse]
 	loadSession             *connect.Client[v1alpha1.LoadSessionRequest, v1alpha1.LoadSessionResponse]
+	listSavedSessions       *connect.Client[v1alpha1.ListSavedSessionsRequest, v1alpha1.ListSavedSessionsResponse]
+	initNewSession          *connect.Client[v1alpha1.InitNewSessionRequest, v1alpha1.InitNewSessionResponse]
 }
 
 // GetSessionState calls wakil.v1alpha1.SessionStateService.GetSessionState.
@@ -356,6 +387,16 @@ func (c *sessionStateServiceClient) LoadSession(ctx context.Context, req *connec
 	return c.loadSession.CallUnary(ctx, req)
 }
 
+// ListSavedSessions calls wakil.v1alpha1.SessionStateService.ListSavedSessions.
+func (c *sessionStateServiceClient) ListSavedSessions(ctx context.Context, req *connect.Request[v1alpha1.ListSavedSessionsRequest]) (*connect.Response[v1alpha1.ListSavedSessionsResponse], error) {
+	return c.listSavedSessions.CallUnary(ctx, req)
+}
+
+// InitNewSession calls wakil.v1alpha1.SessionStateService.InitNewSession.
+func (c *sessionStateServiceClient) InitNewSession(ctx context.Context, req *connect.Request[v1alpha1.InitNewSessionRequest]) (*connect.Response[v1alpha1.InitNewSessionResponse], error) {
+	return c.initNewSession.CallUnary(ctx, req)
+}
+
 // SessionStateServiceHandler is an implementation of the wakil.v1alpha1.SessionStateService
 // service.
 type SessionStateServiceHandler interface {
@@ -403,6 +444,17 @@ type SessionStateServiceHandler interface {
 	// the loaded session — mirroring the embedded ResumeConversation path.
 	// The TUI populates its facade's conv from the returned messages.
 	LoadSession(context.Context, *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error)
+	// ListSavedSessions lists saved sessions from disk (agent session store),
+	// scoped by workspace. This returns chat IDs, labels, models, timestamps —
+	// the metadata the TUI's resume picker needs. Distinct from the session
+	// host's ListSessions, which returns live session IDs (ses_...).
+	ListSavedSessions(context.Context, *connect.Request[v1alpha1.ListSavedSessionsRequest]) (*connect.Response[v1alpha1.ListSavedSessionsResponse], error)
+	// InitNewSession initializes the daemon's App for a new conversation —
+	// calls app.NewConversation(chatID) to set app.Session and app.Client.ChatID
+	// so SaveSession persists the transcript to disk. Called by the remote
+	// manager after CreateSession. Without this, the daemon's app.Session stays
+	// nil and sessions are never saved.
+	InitNewSession(context.Context, *connect.Request[v1alpha1.InitNewSessionRequest]) (*connect.Response[v1alpha1.InitNewSessionResponse], error)
 }
 
 // NewSessionStateServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -514,6 +566,18 @@ func NewSessionStateServiceHandler(svc SessionStateServiceHandler, opts ...conne
 		connect.WithSchema(sessionStateServiceMethods.ByName("LoadSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionStateServiceListSavedSessionsHandler := connect.NewUnaryHandler(
+		SessionStateServiceListSavedSessionsProcedure,
+		svc.ListSavedSessions,
+		connect.WithSchema(sessionStateServiceMethods.ByName("ListSavedSessions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionStateServiceInitNewSessionHandler := connect.NewUnaryHandler(
+		SessionStateServiceInitNewSessionProcedure,
+		svc.InitNewSession,
+		connect.WithSchema(sessionStateServiceMethods.ByName("InitNewSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/wakil.v1alpha1.SessionStateService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SessionStateServiceGetSessionStateProcedure:
@@ -550,6 +614,10 @@ func NewSessionStateServiceHandler(svc SessionStateServiceHandler, opts ...conne
 			sessionStateServiceSetSessionLabelHandler.ServeHTTP(w, r)
 		case SessionStateServiceLoadSessionProcedure:
 			sessionStateServiceLoadSessionHandler.ServeHTTP(w, r)
+		case SessionStateServiceListSavedSessionsProcedure:
+			sessionStateServiceListSavedSessionsHandler.ServeHTTP(w, r)
+		case SessionStateServiceInitNewSessionProcedure:
+			sessionStateServiceInitNewSessionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -625,4 +693,12 @@ func (UnimplementedSessionStateServiceHandler) SetSessionLabel(context.Context, 
 
 func (UnimplementedSessionStateServiceHandler) LoadSession(context.Context, *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.SessionStateService.LoadSession is not implemented"))
+}
+
+func (UnimplementedSessionStateServiceHandler) ListSavedSessions(context.Context, *connect.Request[v1alpha1.ListSavedSessionsRequest]) (*connect.Response[v1alpha1.ListSavedSessionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.SessionStateService.ListSavedSessions is not implemented"))
+}
+
+func (UnimplementedSessionStateServiceHandler) InitNewSession(context.Context, *connect.Request[v1alpha1.InitNewSessionRequest]) (*connect.Response[v1alpha1.InitNewSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.SessionStateService.InitNewSession is not implemented"))
 }

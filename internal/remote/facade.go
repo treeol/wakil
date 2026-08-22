@@ -683,20 +683,27 @@ func (f *RemoteFacade) CancelSideQuestion(opID sessionclient.OpID) {}
 func (f *RemoteFacade) ListSessions(scope sessionclient.SessionScope) ([]sessionclient.SessionSummary, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
-	resp, err := f.clients.Session.ListSessions(ctx, connect.NewRequest(&v1alpha1.ListSessionsRequest{}))
+	resp, err := f.clients.SessionState.ListSavedSessions(ctx, connect.NewRequest(&v1alpha1.ListSavedSessionsRequest{
+		Workspace: scope.Workspace,
+		All:       scope.All,
+	}))
 	if err != nil {
-		return nil, 0, fmt.Errorf("remote: ListSessions: %w", err)
+		return nil, 0, fmt.Errorf("remote: ListSavedSessions: %w", err)
 	}
 	out := make([]sessionclient.SessionSummary, 0, len(resp.Msg.Sessions))
 	for _, s := range resp.Msg.Sessions {
 		out = append(out, sessionclient.SessionSummary{
-			ChatID:    s.Id,
-			Model:     "",
-			Label:     s.Title,
-			Workspace: s.Workspace,
+			ChatID:      s.ChatId,
+			Model:       s.Model,
+			Label:       s.Label,
+			Workspace:   s.Workspace,
+			Created:     time.Unix(s.Created, 0),
+			Updated:     time.Unix(s.Updated, 0),
+			TurnCount:   int(s.Turns),
+			FirstMessage: s.FirstMessage,
 		})
 	}
-	return out, 0, nil
+	return out, int(resp.Msg.Hidden), nil
 }
 
 func (f *RemoteFacade) LoadSession(idOrPrefix string) (*sessionclient.SessionSummary, error) {

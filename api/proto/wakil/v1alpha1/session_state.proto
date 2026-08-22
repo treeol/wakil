@@ -75,6 +75,19 @@ service SessionStateService {
   // the loaded session — mirroring the embedded ResumeConversation path.
   // The TUI populates its facade's conv from the returned messages.
   rpc LoadSession(LoadSessionRequest) returns (LoadSessionResponse);
+
+  // ListSavedSessions lists saved sessions from disk (agent session store),
+  // scoped by workspace. This returns chat IDs, labels, models, timestamps —
+  // the metadata the TUI's resume picker needs. Distinct from the session
+  // host's ListSessions, which returns live session IDs (ses_...).
+  rpc ListSavedSessions(ListSavedSessionsRequest) returns (ListSavedSessionsResponse);
+
+  // InitNewSession initializes the daemon's App for a new conversation —
+  // calls app.NewConversation(chatID) to set app.Session and app.Client.ChatID
+  // so SaveSession persists the transcript to disk. Called by the remote
+  // manager after CreateSession. Without this, the daemon's app.Session stays
+  // nil and sessions are never saved.
+  rpc InitNewSession(InitNewSessionRequest) returns (InitNewSessionResponse);
 }
 
 // ---- GetSessionState ----
@@ -324,4 +337,37 @@ message LoadSessionResponse {
   string title                = 2;
   repeated ConvMessage conv   = 3;
   string workflow_label       = 4;
+}
+
+// ---- ListSavedSessions ----
+
+message ListSavedSessionsRequest {
+  string workspace = 1;  // canonical workspace path; "" = all sessions
+  bool   all        = 2;  // true = ignore workspace, return every session
+}
+
+message SavedSession {
+  string chat_id    = 1;
+  string model      = 2;
+  string label      = 3;
+  string workspace  = 4;
+  int64  created    = 5;  // unix seconds
+  int64  updated    = 6;  // unix seconds
+  int32  turns      = 7;  // user turn count
+  string first_message = 8;  // first user message text (truncated for display)
+}
+
+message ListSavedSessionsResponse {
+  repeated SavedSession sessions = 1;
+  int32 hidden                   = 2;  // sessions filtered out by scope
+}
+
+// ---- InitNewSession ----
+
+message InitNewSessionRequest {
+  string session_id = 1;  // the daemon session ID (for principal resolution)
+}
+
+message InitNewSessionResponse {
+  string chat_id = 1;  // the newly minted chat ID
 }

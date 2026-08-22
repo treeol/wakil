@@ -227,6 +227,16 @@ func (h *testSessionStateHandler) LoadSession(ctx context.Context, req *connect.
 		},
 	}), nil
 }
+func (h *testSessionStateHandler) ListSavedSessions(ctx context.Context, req *connect.Request[v1alpha1.ListSavedSessionsRequest]) (*connect.Response[v1alpha1.ListSavedSessionsResponse], error) {
+	return connect.NewResponse(&v1alpha1.ListSavedSessionsResponse{
+		Sessions: []*v1alpha1.SavedSession{
+			{ChatId: "chat-abc123", Label: "Test", Turns: 2, FirstMessage: "hello"},
+		},
+	}), nil
+}
+func (h *testSessionStateHandler) InitNewSession(ctx context.Context, req *connect.Request[v1alpha1.InitNewSessionRequest]) (*connect.Response[v1alpha1.InitNewSessionResponse], error) {
+	return connect.NewResponse(&v1alpha1.InitNewSessionResponse{ChatId: "chat-new123"}), nil
+}
 
 // TestRemoteFacadeStateProjection verifies Snapshot()/Consent()/Info()/
 // CompletionSource() project the daemon's SessionState fetched via
