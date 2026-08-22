@@ -542,6 +542,33 @@ func (l *errorLatch) load() error {
 // approval is never silently half-committed.
 func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnInput, resolver ApprovalResolver, asyncApproval bool, emitErr *errorLatch, ht *hostTurn) agent.Confirmer {
 	return func(toolName, headline, detail string, readAction bool) bool {
+		// ── AutoApprove short-circuit (parity with tuiConfirmer) ──────────
+		// When /auto is on and SuspendAuto does not carve out this tool,
+		// auto-approve without parking. The daemon's hostConfirmer was
+		// originally written for the async wire path and never had this
+		// short-circuit — so in daemon mode every tool call prompted even
+		// with /auto enabled. This mirrors tuiConfirmer (commands.go:103)
+		// exactly: AutoApprove → SuspendAuto → ⚡ auto note → return true.
+		if app.Consent().AutoApprove {
+			reason := agent.SuspendAuto(toolName, app, detail)
+			if reason == "" {
+				// Emit the ⚡ auto note through the session-scoped EventSink
+				// (same path as tuiConfirmer's sendEvent — the adapter's
+				// EventSink projects SysNoteMsg to KindSessionNote). No
+				// ApprovalRequested/ApprovalResolved — the call is
+				// auto-approved, not user-approved.
+				if app.EventSink != nil {
+					app.EventSink(agent.SysNoteMsg{
+						Text: "⚡ auto: " + headline + "\n" + agent.Indent(detail),
+					})
+				}
+				return true
+			}
+			// Auto suspended — prefix the headline so the approval prompt
+			// states the cause (same convention as tuiConfirmer).
+			headline = "⚡ auto suspended: " + reason + " — " + headline
+		}
+
 		approvalID, err := id.NewApprovalID()
 		if err != nil {
 			// Cannot mint a valid ID: fail closed AND record it — an approval
