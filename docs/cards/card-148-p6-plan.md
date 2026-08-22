@@ -149,10 +149,14 @@ DONE (commit pending):
 - `CancelSideQuestion` → cancel daemon async op
 - This is the lowest priority and may be deferred
 
-### P6f — Verification
-- `go build`, `go vet`, `go test -race`
-- `buf lint`, `buf breaking`
-- Manual: start daemon, connect TUI with `--daemon`, test every slash command
+### P6f — Verification ✅
+- `go build ./...` ✅
+- `go vet ./...` ✅
+- `go test -race -count=1` on remote, wiring, connect, agent ✅
+- `go test -count=1 ./...` full suite (42 packages) ✅
+- `buf lint` ✅
+- `buf breaking --against` pre-P6 baseline (`c6cd06d`) ✅
+- Manual: start daemon, connect TUI with `--daemon`, test every slash command — **pending user**
 
 ---
 
