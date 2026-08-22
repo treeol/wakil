@@ -134,6 +134,16 @@ These are purely display or TUI-local actions. They don't need daemon state. The
 - Daemon-side handler calls `app.SaveRepoState`
 - Repo-state restore on session resume
 
+DONE (commit pending):
+- Added `RestoreRepoState` RPC (`restore` applies persisted per-workspace settings
+  once per daemon App lifetime; the daemon re-resolves context limits server-side
+  and returns the summary). Client-invoked from `BootstrapRemote` on the
+  fresh-conversation path only (never resume), mirroring embedded `BootstrapTUI`.
+- The remote facade's `SaveRepoState` no-op now forwards an `AutoApprove=true`
+  mutator to `SetAutoApprove` (idempotent; the daemon's own RPCs already persist
+  each field). `ConsumeStartupNote` surfaces the restore summary. `RevokeAuto`
+  handler now persists `AutoApprove=false` (parity with `SetAutoApprove`).
+
 ### P6e — Side questions
 - `StartSideQuestion` → wire to daemon async ops (already exist for Mashura; reuse the pattern)
 - `CancelSideQuestion` → cancel daemon async op

@@ -92,6 +92,11 @@ type RemoteFacade struct {
 	// from the pump) and read under mu.
 	state *v1alpha1.SessionState
 
+	// startupNote is the pending one-shot startup note (e.g. the repo-state
+	// restore summary) surfaced to the TUI via ConsumeStartupNote, mirroring the
+	// embedded App.StartupNote. Set by RestoreRepoState (fresh-boot path).
+	startupNote string
+
 	// closed is true after Close; subsequent calls return ErrSessionClosed.
 	closed bool
 }
@@ -597,9 +602,65 @@ func (f *RemoteFacade) AppendSystemMessage(m proxy.Message) {
 	f.bumpVersion()
 }
 func (f *RemoteFacade) SaveSession()                                               {}
-func (f *RemoteFacade) ConsumeStartupNote() string                                 { return "" }
-func (f *RemoteFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {}
-func (f *RemoteFacade) SetInfoPanelOpen(open bool)                                 { f.bumpVersion() }
+func (f *RemoteFacade) ConsumeStartupNote() string {
+	f.mu.Lock()
+	note := f.startupNote
+	f.startupNote = ""
+	f.mu.Unlock()
+	return note
+}
+
+// SaveRepoState projects the mutator onto the daemon's repo-state. The daemon's
+// mutation RPCs (SetAutoApprove, SetModel, SetBackend, …) each persist their own
+// field to repo-state server-side, and the remote TUI reaches state exclusively
+// through those RPCs. The only mutator field the remote TUI sets here directly
+// is AutoApprove (the deferred mid-turn /auto grant); SetAutoApprove already
+// persists it, but forwarding it here again is idempotent and keeps the shim
+// robust against callers that don't pair SaveRepoState with a prior RPC.
+func (f *RemoteFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {
+	m := &sessionclient.RepoStateMutator{}
+	mutate(m)
+	if m.AutoApprove {
+		f.goMutation(func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
+			_, err := c.SetAutoApprove(ctx, connect.NewRequest(&v1alpha1.SetAutoApproveRequest{
+				SessionId: string(sid),
+				Value:     true,
+			}))
+			return err
+		})
+	}
+	// InfoPanelOpen and the other mutator fields have no remote wire path:
+	// InfoPanelOpen is TUI-local presentation state, and the rest are already
+	// persisted by the daemon's own command/session RPC handlers. No-op here.
+}
+
+// SetInfoPanelOpen keeps the TUI's info-panel toggle local. There is no
+// daemon-side widget to sync and no SetInfoPanelOpen RPC; the persisted
+// InfoPanelOpen field is a TUI-only convenience with no remote wire path.
+func (f *RemoteFacade) SetInfoPanelOpen(open bool) { f.bumpVersion() }
+
+// RestoreRepoState applies the daemon's persisted per-workspace terminal
+// settings to the active session (fresh-boot only) and surfaces the summary as
+// the next ConsumeStartupNote. No-op when there is no session/client yet (the
+// caller invokes it only after a fresh conversation exists).
+func (f *RemoteFacade) RestoreRepoState() {
+	ok, sid, client := f.getRPCTargets()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+	resp, err := client.RestoreRepoState(ctx, connect.NewRequest(&v1alpha1.RestoreRepoStateRequest{
+		SessionId: string(sid),
+	}))
+	if err != nil {
+		return
+	}
+	f.mu.Lock()
+	f.startupNote = resp.Msg.Notice
+	f.mu.Unlock()
+	f.refreshStateSync()
+}
 func (f *RemoteFacade) SetCtxLimit(lim sessionclient.ContextLimit)                 { f.bumpVersion() }
 func (f *RemoteFacade) SetModelList(models []string)                               { f.bumpVersion() }
 func (f *RemoteFacade) SetTools(tools []proxy.Tool)                                { f.bumpVersion() }

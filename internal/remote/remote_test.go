@@ -112,6 +112,7 @@ type testSessionStateHandler struct {
 	repoclear    bool
 	sessionLabel string
 	compacted    bool
+	restored     bool
 }
 
 func (h *testSessionStateHandler) GetSessionState(ctx context.Context, req *connect.Request[v1alpha1.GetSessionStateRequest]) (*connect.Response[v1alpha1.SessionState], error) {
@@ -203,6 +204,12 @@ func (h *testSessionStateHandler) SaveRepoState(ctx context.Context, req *connec
 	h.repoclear = req.Msg.Clear
 	h.mu.Unlock()
 	return connect.NewResponse(&v1alpha1.SaveRepoStateResponse{Notice: "repostate: clear"}), nil
+}
+func (h *testSessionStateHandler) RestoreRepoState(ctx context.Context, req *connect.Request[v1alpha1.RestoreRepoStateRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResponse], error) {
+	h.mu.Lock()
+	h.restored = true
+	h.mu.Unlock()
+	return connect.NewResponse(&v1alpha1.RestoreRepoStateResponse{Notice: "repo-state: restored model=m1"}), nil
 }
 func (h *testSessionStateHandler) SetSessionLabel(ctx context.Context, req *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error) {
 	h.mu.Lock()
@@ -581,5 +588,72 @@ func TestRemoteFacadeDispatchCommandRPC(t *testing.T) {
 	r = f.DispatchCommand("/help")
 	if !r.Handled || !strings.Contains(r.Notice, "/model") {
 		t.Errorf("/help: Handled=%v, want help text containing /model", r.Handled)
+	}
+}
+
+// TestRemoteFacadeRestoreRepoState verifies the fresh-boot restore path:
+// RestoreRepoState fires the daemon's RestoreRepoState RPC and surfaces the
+// summary through ConsumeStartupNote (exactly once, mirroring embedded
+// StartupNote semantics), and refreshes the cached state.
+func TestRemoteFacadeRestoreRepoState(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "restore.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	handler := &testSessionStateHandler{state: &v1alpha1.SessionState{SelectedModel: "m0"}}
+	mux := http.NewServeMux()
+	mux.Handle(wakilv1alpha1connect.NewSessionStateServiceHandler(handler))
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln)
+	defer srv.Shutdown(context.Background())
+
+	clients, err := Dial(sock)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer clients.Close()
+
+	f := newRemoteFacade(clients, core.Principal{}, "ws")
+	f.setSession("sess-restore")
+
+	// Wait for the initial async refreshState (so RestoreRepoState's sync refresh
+	// is meaningful, not the only one).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.mu.Lock()
+		ready := f.state != nil
+		f.mu.Unlock()
+		if ready || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// No note yet.
+	if note := f.ConsumeStartupNote(); note != "" {
+		t.Fatalf("ConsumeStartupNote before restore = %q, want empty", note)
+	}
+
+	f.RestoreRepoState()
+
+	// The handler must have seen the RPC.
+	handler.mu.Lock()
+	restored := handler.restored
+	handler.mu.Unlock()
+	if !restored {
+		t.Fatal("RestoreRepoState did not hit the daemon handler")
+	}
+
+	// The note surfaces exactly once.
+	note := f.ConsumeStartupNote()
+	if !strings.Contains(note, "repo-state: restored") {
+		t.Errorf("ConsumeStartupNote = %q, want it to contain the restore summary", note)
+	}
+	if again := f.ConsumeStartupNote(); again != "" {
+		t.Errorf("second ConsumeStartupNote = %q, want empty (one-shot)", again)
 	}
 }

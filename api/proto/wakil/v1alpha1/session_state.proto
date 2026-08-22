@@ -59,6 +59,13 @@ service SessionStateService {
   // SaveRepoState persists or clears the per-workspace repo state (/repostate clear).
   rpc SaveRepoState(SaveRepoStateRequest) returns (SaveRepoStateResponse);
 
+  // RestoreRepoState applies the persisted per-workspace terminal settings to
+  // the daemon's App (P6d). The remote TUI invokes this once on a FRESH
+  // conversation (never on resume — a resumed session's model/backend must not
+  // be silently changed). The daemon re-resolves context limits server-side and
+  // returns the human-readable restore summary as a startup note.
+  rpc RestoreRepoState(RestoreRepoStateRequest) returns (RestoreRepoStateResponse);
+
   // SetSessionLabel sets the session label (/session name "<label>").
   rpc SetSessionLabel(SetSessionLabelRequest) returns (SetSessionLabelResponse);
 }
@@ -265,6 +272,16 @@ message SaveRepoStateRequest {
   bool   clear      = 2;  // true = /repostate clear; false = describe only
 }
 message SaveRepoStateResponse {
+  string notice = 1;
+}
+
+// ---- RestoreRepoState ----
+
+message RestoreRepoStateRequest {
+  string session_id = 1;
+}
+message RestoreRepoStateResponse {
+  // notice is the human-readable restore summary ("" when nothing applied).
   string notice = 1;
 }
 

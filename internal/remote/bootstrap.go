@@ -59,6 +59,16 @@ func BootstrapRemote(ctx context.Context, socketPath string, workspace event.Wor
 		f, err = mgr.ResumeConversation(ctx, principal, resumeID)
 	} else {
 		f, err = mgr.NewConversation(ctx, principal, nil)
+		if err == nil {
+			// Fresh conversation only: apply the daemon's persisted per-workspace
+			// terminal settings (repo-state restore). Mirrors embedded BootstrapTUI's
+			// RestoreRepoState:true && resumeID=="" — a resumed session's
+			// model/backend is never silently changed. The restore summary surfaces
+			// via ConsumeStartupNote → the TUI's Init startup-note banner.
+			if rf, ok := f.(*RemoteFacade); ok {
+				rf.RestoreRepoState()
+			}
+		}
 	}
 	if err != nil {
 		_ = mgr.CloseManager()

@@ -26,7 +26,9 @@ package connect
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 
 	"connectrpc.com/connect"
 	v1alpha1 "github.com/treeol/wakil/api/gen/wakil/v1alpha1"
@@ -40,6 +42,14 @@ import (
 type SessionStateHandler struct {
 	app      *agent.App
 	resolver principalResolver
+
+	// restoreMu guards restoreDone: RestoreRepoState applies at most once per
+	// daemon App lifetime. The single-App daemon cannot distinguish "fresh boot"
+	// from "resume" from App state alone (a resumed session does not reload the
+	// App's transcript), so the client drives the call (fresh boot only) AND this
+	// guard makes it idempotent — matching embedded restore-once-per-process.
+	restoreMu   sync.Mutex
+	restoreDone bool
 }
 
 // Compile-time assertion.
@@ -237,7 +247,11 @@ func (h *SessionStateHandler) RevokeAuto(ctx context.Context, req *connect.Reque
 	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
 		return nil, mapError(err)
 	}
-	h.app.RevokeAuto()
+	app := h.app
+	// Persist the OFF toggle so /auto never silently resurrects on a later
+	// fresh-conversation restore (parity with SaveRepoState in SetAutoApprove).
+	app.SaveRepoState(func(s *agent.RepoState) { s.AutoApprove = false })
+	app.RevokeAuto()
 	return connect.NewResponse(&v1alpha1.RevokeAutoResponse{
 		Notice: "auto mode: OFF — tool calls require confirmation",
 	}), nil
@@ -472,6 +486,40 @@ func (h *SessionStateHandler) SetSessionLabel(ctx context.Context, req *connect.
 	app.SaveSession()
 	return connect.NewResponse(&v1alpha1.SetSessionLabelResponse{
 		Notice: "session labeled: " + label,
+	}), nil
+}
+
+// ---- RestoreRepoState (P6d) ----
+
+func (h *SessionStateHandler) RestoreRepoState(ctx context.Context, req *connect.Request[v1alpha1.RestoreRepoStateRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResponse], error) {
+	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
+		return nil, mapError(err)
+	}
+	app := h.app
+
+	// One-shot per App lifetime (guard + idempotence, not the trigger): the
+	// single-App daemon cannot itself distinguish fresh-boot from resume, so the
+	// remote TUI drives this call on a fresh conversation only. This guard makes
+	// a duplicate/racing call a no-op that still reports the live state safely.
+	h.restoreMu.Lock()
+	if h.restoreDone {
+		h.restoreMu.Unlock()
+		return connect.NewResponse(&v1alpha1.RestoreRepoStateResponse{}), nil
+	}
+	h.restoreDone = true
+	h.restoreMu.Unlock()
+
+	result := agent.RestoreRepoState(app)
+
+	// Re-resolve context limits server-side (the daemon owns app.Client.HTTP and
+	// app.Cfg; the remote TUI does not). Uses the literal restored strings, not
+	// post-restore App fields, mirroring BootstrapTUI's convention exactly.
+	if (result.Model != "" || result.Backend != "") && app.Client != nil && app.Client.HTTP != nil {
+		app.CtxLimit = agent.ResolveContextLimitForBackendModel(ctx, app.Client.HTTP, app.Cfg, result.Backend, result.Model, io.Discard)
+	}
+
+	return connect.NewResponse(&v1alpha1.RestoreRepoStateResponse{
+		Notice: result.Note,
 	}), nil
 }
 

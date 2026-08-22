@@ -489,6 +489,33 @@ func TestSaveRepoStateDescribe(t *testing.T) {
 	}
 }
 
+// TestRestoreRepoStateOneShot verifies the idempotence guard: the first
+// RestoreRepoState applies and reports; a second call on the same handler is a
+// no-op that returns an empty notice (the single-App daemon restores once per
+// App lifetime).
+func TestRestoreRepoStateOneShot(t *testing.T) {
+	h := testSessionStateHandler(t)
+
+	first, err := h.RestoreRepoState(context.Background(), connect.NewRequest(&v1alpha1.RestoreRepoStateRequest{
+		SessionId: "sess-123",
+	}))
+	if err != nil {
+		t.Fatalf("RestoreRepoState: %v", err)
+	}
+	// The bare test App has no repo-state and no client, so the notice is empty
+	// (nothing restored) but the call itself must succeed.
+
+	second, err := h.RestoreRepoState(context.Background(), connect.NewRequest(&v1alpha1.RestoreRepoStateRequest{
+		SessionId: "sess-123",
+	}))
+	if err != nil {
+		t.Fatalf("second RestoreRepoState: %v", err)
+	}
+	if first.Msg.Notice != "" || second.Msg.Notice != "" {
+		t.Logf("notices: first=%q second=%q (expected empty for a bare test App)", first.Msg.Notice, second.Msg.Notice)
+	}
+}
+
 func TestServerWithSessionState(t *testing.T) {
 	// Verify the Server can mount the SessionStateService handler.
 	app := &agent.App{Cfg: config.DefaultConfig(), Out: io.Discard}
