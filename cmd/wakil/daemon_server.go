@@ -27,7 +27,6 @@ import (
 	"github.com/treeol/wakil/internal/auth/tokenresolver"
 	"github.com/treeol/wakil/internal/auth/tokenstore"
 	"github.com/treeol/wakil/internal/config"
-	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/core/sessionhost/sqlstore"
 	"github.com/treeol/wakil/internal/crypto"
@@ -69,13 +68,17 @@ type daemonServer struct {
 //  4. Build the Connect server
 //  5. Listen on the Unix socket
 //  6. Optionally listen on a TCP address for the web UI
-func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, workspaceID event.WorkspaceID, httpAddr string, tlsCertFile string, tlsKeyFile string, allowedOrigins string, masterKeyFile string, scrubLevel string) (*daemonServer, error) {
+func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, httpAddr string, tlsCertFile string, tlsKeyFile string, allowedOrigins string, masterKeyFile string, scrubLevel string) (*daemonServer, error) {
 	// 1. Store initialization (fail-closed unless --ephemeral).
+	// Pass the raw workspace PATH (not the wsp_ ID) to SessionHostDBPath —
+	// the storage functions hash the path internally via workspaceKey, so
+	// passing the wsp_ ID would double-hash and produce a cwd-dependent key
+	// (the bug fixed in this commit).
 	var store *sqlstore.SQLiteStore
 	if !ephemeral {
-		dbPath := agent.SessionHostDBPath(string(workspaceID))
+		dbPath := agent.SessionHostDBPath(cfg.WorkspacePath())
 		if dbPath == "" {
-			return nil, fmt.Errorf("wakil daemon: cannot derive session-host DB path for workspace %q (no data directory?)", workspaceID)
+			return nil, fmt.Errorf("wakil daemon: cannot derive session-host DB path for workspace %q (no data directory?)", cfg.WorkspacePath())
 		}
 		s, err := sqlstore.NewSQLiteStore(context.Background(), dbPath)
 		if err != nil {

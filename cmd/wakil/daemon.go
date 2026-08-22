@@ -227,13 +227,13 @@ func execDaemon(flags daemonFlags) error {
 		socketPath = defaultSocketPath()
 	}
 
-	ds, err := newDaemonServer(cfg, socketPath, flags.ephemeral, wsID, flags.httpAddr, flags.tlsCertFile, flags.tlsKeyFile, flags.allowedOrigins, flags.masterKeyFile, scrubLevel)
+	ds, err := newDaemonServer(cfg, socketPath, flags.ephemeral, flags.httpAddr, flags.tlsCertFile, flags.tlsKeyFile, flags.allowedOrigins, flags.masterKeyFile, scrubLevel)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "wakil daemon: listening on %s (ephemeral=%v, workspace=%s)\n",
-		socketPath, flags.ephemeral, wsID)
+	fmt.Fprintf(os.Stderr, "wakil daemon: listening on %s (ephemeral=%v, workspace=%s, path=%s)\n",
+		socketPath, flags.ephemeral, wsID, cfg.WorkspacePath())
 	if flags.httpAddr != "" {
 		scheme := "http"
 		if flags.tlsCertFile != "" {

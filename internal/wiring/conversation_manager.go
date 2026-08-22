@@ -63,8 +63,11 @@ func NewConversationManager(cfg config.Config, exe exec.Executor, principal core
 	}
 	// P1: open the workspace-keyed SQLite event store. Best-effort — a failure
 	// falls back to MemLog (the host works, events just don't persist).
-	ws := WorkspaceIDFromConfig(cfg)
-	if dbPath := agent.SessionHostDBPath(string(ws)); dbPath != "" {
+	// Pass the raw workspace PATH (not the wsp_ ID) to SessionHostDBPath —
+	// the storage functions hash the path internally, so passing the ID
+	// would double-hash and produce a cwd-dependent key.
+	wsPath := cfg.WorkspacePath()
+	if dbPath := agent.SessionHostDBPath(wsPath); dbPath != "" {
 		store, err := sqlstore.NewSQLiteStore(context.Background(), dbPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "sessionhost: failed to open SQLite store, using in-memory:", err)
@@ -254,19 +257,20 @@ func (cm *conversationManager) Close(f sessionclient.Facade) error {
 	return wf.Close()
 }
 
-// WorkspaceIDFromConfig derives a WorkspaceID from the config's working
-// directory (7b3 m4: real derivation — the m3 stub used the raw path, which
-// fails ID validation for an empty workdir and produces unwieldy IDs for long
-// paths). The ID is "wsp_" + the first 16 hex chars of the SHA-256 of the
-// effective workdir: stable for a given workspace (resumes and rotations
-// derive the same ID), collision-safe for practical purposes, and independent
-// of path length. An empty effective workdir (a hand-built test config)
-// derives the zero-value hash of "" — still a valid, stable ID.
+// WorkspaceIDFromConfig derives a WorkspaceID from the config's effective
+// workspace path (7b3 m4: real derivation — the m3 stub used the raw path,
+// which fails ID validation for an empty workdir and produces unwieldy IDs
+// for long paths). The ID is "wsp_" + the first 16 hex chars of the SHA-256
+// of the effective workdir: stable for a given workspace (resumes and
+// rotations derive the same ID), collision-safe for practical purposes, and
+// independent of path length. An empty effective workdir (a hand-built test
+// config) derives the zero-value hash of "" — still a valid, stable ID.
+//
+// Uses Config.WorkspacePath() (which respects WAKIL_WORKSPACE_PATH) so the ID
+// is stable across processes with different cwd — critical for the daemon
+// to see the same workspace identity as the TUI.
 func WorkspaceIDFromConfig(cfg config.Config) event.WorkspaceID {
-	ws := cfg.WorkDir
-	if cfg.ExecMode != "direct" {
-		ws = cfg.HostWorkDir
-	}
+	ws := cfg.WorkspacePath()
 	sum := sha256.Sum256([]byte(ws))
 	return event.WorkspaceID("wsp_" + hex.EncodeToString(sum[:8]))
 }

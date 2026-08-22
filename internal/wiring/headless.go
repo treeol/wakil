@@ -222,10 +222,13 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	}
 
 	// Headless session: construct inline (no resume support in headless mode).
+	// Use cfg.WorkspacePath() (not exe.WorkspaceRoot()) so the session's
+	// recorded workspace matches the storage key derivation — they share the
+	// same source of truth via Config.WorkspacePath().
 	app.Session = &agent.Session{
 		ChatID:    app.Client.ChatID,
 		Model:     app.Client.Model,
-		Workspace: exe.WorkspaceRoot(),
+		Workspace: cfg.WorkspacePath(),
 	}
 
 	// Load --attach-image into PendingImages so the first Send attaches them.
@@ -310,7 +313,7 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
 		return ExitError
 	}
-	h := sessionhost.New(turnFn, headlessStoreOpts()...)
+	h := sessionhost.New(turnFn, headlessStoreOpts(app.SessionWorkspace())...)
 	defer h.Close(ctx)
 	p := core.EmbeddedPrincipal()
 
@@ -435,7 +438,7 @@ func runPlanSession(ctx context.Context, app *agent.App, opts HeadlessOptions, o
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
 		return ExitError
 	}
-	h := sessionhost.New(turnFn, headlessStoreOpts()...)
+	h := sessionhost.New(turnFn, headlessStoreOpts(app.SessionWorkspace())...)
 	defer h.Close(ctx)
 	p := core.EmbeddedPrincipal()
 
@@ -622,9 +625,12 @@ func consumeTurnEvents(ctx context.Context, sub core.EventSubscription, hw *Head
 // workspace-keyed SQLiteStore if the DB path can be derived, else nil (the
 // host falls back to MemLog). Best-effort — a failure to open is logged to
 // stderr and the run proceeds with in-memory storage.
-func headlessStoreOpts() []sessionhost.Option {
-	ws := event.WorkspaceID("wsp_local")
-	dbPath := agent.SessionHostDBPath(string(ws))
+//
+// Passes the raw workspace path to SessionHostDBPath — the storage functions
+// hash the path internally via workspaceKey, so passing the wsp_ ID or a
+// sentinel like "wsp_local" would double-hash and produce a cwd-dependent key.
+func headlessStoreOpts(wsPath string) []sessionhost.Option {
+	dbPath := agent.SessionHostDBPath(wsPath)
 	if dbPath == "" {
 		return nil
 	}

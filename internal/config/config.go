@@ -1155,6 +1155,23 @@ func validateSubagentEndpoint(cfg Config) error {
 	}
 }
 
+// WorkspacePath returns the effective workspace path for this config: the
+// host mount in docker mode, or the working directory in direct mode. This
+// is the raw path (not a hash) — callers that need a storage key pass it to
+// agent.SessionHostDBPath / agent.MemoryDBPath / etc., which hash it via
+// workspaceKey. An explicit WAKIL_WORKSPACE_PATH env var overrides both
+// WorkDir and HostWorkDir so containers can pin the workspace identity
+// regardless of cwd or mount path.
+func (c Config) WorkspacePath() string {
+	if env := os.Getenv("WAKIL_WORKSPACE_PATH"); env != "" {
+		return env
+	}
+	if c.ExecMode == "direct" {
+		return c.WorkDir
+	}
+	return c.HostWorkDir
+}
+
 // ActiveEndpoint returns the resolved endpoint. For Configs built by hand
 // (tests, subagents) that never went through LoadConfig, it synthesizes the
 // legacy ilm-proxy shape from the top-level fields — preserving pre-endpoints

@@ -607,12 +607,11 @@ func findLastCompleteBoundary(conv []proxy.Message) []proxy.Message {
 }
 
 // sessionWorkspace is the host directory associated with this session: the bind
-// mount in docker mode, or the working directory in direct mode.
+// mount in docker mode, or the working directory in direct mode. Delegates to
+// Config.WorkspacePath() (which respects WAKIL_WORKSPACE_PATH) so the daemon
+// and TUI resolve the same workspace identity regardless of cwd.
 func (a *App) SessionWorkspace() string {
-	if a.Cfg.ExecMode == "direct" {
-		return a.Cfg.WorkDir
-	}
-	return a.Cfg.HostWorkDir
+	return a.Cfg.WorkspacePath()
 }
 
 // chatID returns the current session's chat ID. When Session is nil (e.g.
