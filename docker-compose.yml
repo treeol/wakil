@@ -32,9 +32,18 @@ services:
     image: wakil-daemon:latest
     container_name: wakil-daemon
 
-    # Run as the distroless nonroot user (UID 65532). The host directories
-    # mounted at /data and /config must be writable by UID 65532.
-    user: "65532:65532"
+    # Run as the HOST user (uid/gid interpolated from the environment, default
+    # 1000) so the daemon can read/write the mounted host directories. The
+    # distroless :nonroot default (65532) cannot write host-owned mounts —
+    # session/memory/config writes would fail silently. Override with
+    # WAKIL_UID/WAKIL_GID if your host user differs.
+    #
+    # NOTE: unlike $HOME, $UID/$GID are shell variables and usually NOT
+    # exported — export them (or put WAKIL_UID=... in a .env file next to this
+    # compose file) if 1000 is not your uid:
+    #   echo "WAKIL_UID=$(id -u)"  >> .env
+    #   echo "WAKIL_GID=$(id -g)" >> .env
+    user: "${WAKIL_UID:-1000}:${WAKIL_GID:-1000}"
 
     # Direct exec mode — the daemon runs commands inside this container.
     # For docker exec mode (daemon spawns sandbox containers), the daemon
@@ -57,23 +66,23 @@ services:
     volumes:
       # Data directory: sessions, memory, skills, repo-state, session-host.
       # Mount the host's ~/.local/share/wakil here.
-      - ${HOME}/.local/share/wakil:/data/wakil
+      - ${HOME}/.local/share/wakil:/data/wakil:z
 
       # Config directory: config.json.
       # Mount the host's ~/.config/wakil here.
-      - ${HOME}/.config/wakil:/config/wakil
+      - ${HOME}/.config/wakil:/config/wakil:z
 
       # Socket directory: exposed to the host so the TUI can connect.
       # The daemon creates wakild.sock inside /run/wakil (XDG_RUNTIME_DIR).
       # On the host, point the TUI at this socket via --socket or
       # WAKIL_DAEMON_SOCKET environment variable.
-      - ${XDG_RUNTIME_DIR:-/tmp}/wakil-daemon:/run/wakil
+      - ${XDG_RUNTIME_DIR:-/tmp}/wakil-daemon:/run/wakil:z
 
       # Workspace mount: the project directory the daemon operates on.
       # In direct exec mode, the daemon runs commands against this path.
       # WAKIL_WORKSPACE_PATH should match the HOST path for identity, but
       # the container sees it at /workspace.
-      - ${WAKIL_WORKSPACE_PATH:-.}:/workspace
+      - ${WAKIL_WORKSPACE_PATH:-.}:/workspace:z
 
     # Working directory inside the container — the daemon's cwd.
     # When WAKIL_WORKSPACE_PATH is set, the daemon uses it for identity

@@ -15,7 +15,7 @@ import (
 // given workspace by default. Pass all=true to list every session
 // regardless of workspace.
 func PrintSessions(w io.Writer, workspace string, all bool) {
-	agent.PrintSessions(w, workspace, all)
+	agent.PrintSessionsWithScope(w, agent.SessionScope{Workspace: workspace, All: all, IncludeLegacy: true})
 }
 
 // ResolveRecentSession resolves the most recent session in scope (or
@@ -24,7 +24,7 @@ func PrintSessions(w io.Writer, workspace string, all bool) {
 // with a nil error is not produced today but the caller treats "" as
 // "no resume target".
 func ResolveRecentSession(workspace string, all bool) (string, error) {
-	s, err := agent.LoadSessionScoped("", agent.SessionScope{Workspace: workspace, All: all})
+	s, err := agent.LoadSessionScoped("", agent.SessionScope{Workspace: workspace, All: all, IncludeLegacy: true})
 	if err != nil {
 		return "", err
 	}

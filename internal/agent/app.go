@@ -57,6 +57,14 @@ type App struct {
 	Confirm Confirmer
 	Out     io.Writer // assistant text + status sink
 
+	// saveFailedWarned deduplicates SaveSession's failure warning: persistence
+	// is best-effort (a write failure must never interrupt a turn), but a
+	// permanently failing store (bad permissions, read-only mount) previously
+	// failed in total silence — sessions appeared to save while nothing was
+	// ever written. Warn once per App, then stay quiet. Atomic because
+	// SaveSession runs both from Send's defer and from RPC handlers.
+	saveFailedWarned atomic.Bool
+
 	// CtxLimit is the authoritative per-slot context window, resolved from the
 	// backend at startup (see resolveContextLimit). The zero value means "not yet
 	// resolved" — contextLimit() then synthesizes a fallback from Cfg so the
@@ -632,7 +640,9 @@ func (a *App) chatID() string {
 }
 
 // saveSession persists the current transcript. Best-effort: persistence failures
-// must never interrupt a turn, so errors are swallowed.
+// must never interrupt a turn, so the turn continues — but the first failure is
+// surfaced on Out (once per App) so a permanently broken store (bad permissions,
+// read-only mount) is not silently swallowed. Subsequent failures stay quiet.
 func (a *App) SaveSession() {
 	if a.Session == nil {
 		return
@@ -648,7 +658,12 @@ func (a *App) SaveSession() {
 		a.Session.Workspace = a.SessionWorkspace()
 	}
 	a.Session.SavedWorkflow = a.Workflow
-	_ = WriteSession(a.Session)
+	if err := WriteSession(a.Session); err != nil {
+		if !a.saveFailedWarned.Swap(true) && a.Out != nil {
+			fmt.Fprintf(a.Out, "warning: failed to save session %s: %v (further save failures will be silent)\n",
+				ShortID(a.Session.ChatID), err)
+		}
+	}
 }
 
 // SummarizeFn returns the active summarizer for the session: the injected

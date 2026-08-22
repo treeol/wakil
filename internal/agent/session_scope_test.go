@@ -49,6 +49,64 @@ func TestListSessionsScoped_FiltersByWorkspace(t *testing.T) {
 	}
 }
 
+// TestListSessionsScoped_IncludeLegacy verifies that IncludeLegacy appends
+// empty-workspace (legacy) sessions to a scoped listing without counting
+// them as hidden — so old sessions saved before workspace recording remain
+// visible in the picker/listing instead of silently disappearing.
+func TestListSessionsScoped_IncludeLegacy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WAKIL_SESSIONS_DIR", dir)
+
+	wsA := t.TempDir()
+	wsB := t.TempDir()
+	inA := &Session{ChatID: "inA1111a", Workspace: wsA, Updated: time.Now()}
+	inB := &Session{ChatID: "inB2222b", Workspace: wsB, Updated: time.Now().Add(-time.Minute)}
+	noWS := &Session{ChatID: "noWS3333", Updated: time.Now().Add(-2 * time.Minute)} // legacy
+	for _, s := range []*Session{inA, inB, noWS} {
+		if err := WriteSession(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Without IncludeLegacy: noWS is hidden (default behavior unchanged).
+	matched, hidden, err := ListSessionsScoped(SessionScope{Workspace: wsA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matched) != 1 || hidden != 2 {
+		t.Fatalf("default: want 1 matched, 2 hidden; got %d matched, %d hidden", len(matched), hidden)
+	}
+
+	// With IncludeLegacy: noWS is appended, only inB remains hidden.
+	matched, hidden, err = ListSessionsScoped(SessionScope{Workspace: wsA, IncludeLegacy: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matched) != 2 {
+		t.Fatalf("IncludeLegacy: want 2 matched (wsA + legacy); got %d: %+v", len(matched), matched)
+	}
+	if hidden != 1 {
+		t.Errorf("IncludeLegacy: hidden = %d, want 1 (only wsB); matched=%+v", hidden, matched)
+	}
+	// Legacy session must be in the result.
+	found := false
+	for _, s := range matched {
+		if s.ChatID == "noWS3333" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("IncludeLegacy: legacy session noWS3333 not in matched set: %+v", matched)
+	}
+	// Workspace match must come BEFORE legacy (bare --resume prefers in-scope).
+	if matched[0].ChatID != "inA1111a" {
+		t.Errorf("IncludeLegacy: workspace match should be first; got %q", matched[0].ChatID)
+	}
+	if matched[1].ChatID != "noWS3333" {
+		t.Errorf("IncludeLegacy: legacy should be second; got %q", matched[1].ChatID)
+	}
+}
+
 // TestListSessionsScoped_SymlinkEquivalence verifies that a workspace path
 // and its symlinked alias resolve to the same canonical identity.
 func TestListSessionsScoped_SymlinkEquivalence(t *testing.T) {
@@ -166,7 +224,7 @@ func TestPrintSessions_OldestFirstAndScoped(t *testing.T) {
 	}
 
 	var buf strings.Builder
-	PrintSessions(&buf, ws, false)
+	PrintSessionsWithScope(&buf, SessionScope{Workspace: ws, IncludeLegacy: true})
 	out := buf.String()
 	oldIdx := strings.Index(out, "oldest01")
 	newIdx := strings.Index(out, "newest02")
@@ -191,7 +249,7 @@ func TestPrintSessions_HiddenCount(t *testing.T) {
 	}
 
 	var buf strings.Builder
-	PrintSessions(&buf, wsA, false)
+	PrintSessionsWithScope(&buf, SessionScope{Workspace: wsA})
 	if !strings.Contains(buf.String(), "1 session(s) in other folders") {
 		t.Errorf("expected a hidden-count hint; got:\n%s", buf.String())
 	}

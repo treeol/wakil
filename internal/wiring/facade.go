@@ -535,7 +535,7 @@ func (f *wiringFacade) CancelSideQuestion(opID sessionclient.OpID) {
 // ---- Session listing ----
 
 func (f *wiringFacade) ListSessions(scope sessionclient.SessionScope) ([]sessionclient.SessionSummary, int, error) {
-	s := agent.SessionScope{Workspace: scope.Workspace, All: scope.All}
+	s := agent.SessionScope{Workspace: scope.Workspace, All: scope.All, IncludeLegacy: true}
 	sessions, hidden, err := agent.ListSessionsScoped(s)
 	if err != nil {
 		return nil, 0, err

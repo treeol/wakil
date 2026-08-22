@@ -424,7 +424,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// "/sessions" is scoped to the current workspace (with a hidden-count
 		// hint when other-workspace sessions exist).
 		all := len(fields) > 1 && fields[1] == "all"
-		return true, false, note(SessionListText(app.Client.ChatID, SessionScope{Workspace: app.SessionWorkspace(), All: all}))
+		return true, false, note(SessionListText(app.Client.ChatID, SessionScope{Workspace: app.SessionWorkspace(), All: all, IncludeLegacy: true}))
 
 	case "/remember":
 		// /remember <query> searches prior session transcripts in the current
@@ -560,7 +560,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		if len(fields) > 1 {
 			arg = fields[1]
 		}
-		scope := SessionScope{Workspace: app.SessionWorkspace()}
+		scope := SessionScope{Workspace: app.SessionWorkspace(), IncludeLegacy: true}
 		if arg == "all" {
 			scope.All = true
 			arg = ""

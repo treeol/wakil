@@ -122,16 +122,32 @@ func LoadSession(idOrPrefix string) (*Session, error) {
 type SessionScope struct {
 	Workspace string // canonical match target; ignored when All is true
 	All       bool   // true = return every session regardless of Workspace
+
+	// IncludeLegacy also returns sessions whose recorded Workspace is empty
+	// (saved before workspace recording existed, or by a process whose config
+	// resolved no workspace). Without it they are excluded from every scoped
+	// result — invisible in listings and resume pickers even under --all's
+	// workspace-scoped default paths, which made them look lost. When
+	// IncludeLegacy is set they are appended after workspace matches (so bare
+	// --resume still prefers an in-scope session). They are NOT counted toward
+	// hidden. Note: resuming a legacy session and saving it backfills its
+	// Workspace to the current one (a deliberate one-way migration — the
+	// session joins the workspace going forward). Session-history
+	// reconciliation must not set this flag (an unknown-workspace transcript
+	// belongs to no folder).
+	IncludeLegacy bool
 }
 
 // ListSessionsScoped returns saved sessions filtered by scope, most-recently-
 // updated first. When scope.All is true, or scope.Workspace is empty, every
 // session is returned (equivalent to ListSessions). Otherwise only sessions
-// whose recorded Workspace canonically matches scope.Workspace are returned —
-// sessions with no recorded Workspace (legacy, or saved with no resolvable
-// workspace) are excluded from a scoped result. hidden reports how many
-// sessions were filtered out, so callers can surface an "N hidden — use all"
-// hint.
+// whose recorded Workspace canonically matches scope.Workspace are returned;
+// when scope.IncludeLegacy is set, sessions with no recorded Workspace
+// (legacy) are appended AFTER the workspace matches so bare --resume prefers
+// an in-scope session over a legacy one. hidden reports how many sessions
+// were filtered out (excluded other-workspace sessions; legacy sessions are
+// never counted as hidden when IncludeLegacy is set), so callers can surface
+// an "N hidden — use all" hint.
 func ListSessionsScoped(scope SessionScope) (matched []Session, hidden int, err error) {
 	all, err := ListSessions()
 	if err != nil {
@@ -140,13 +156,24 @@ func ListSessionsScoped(scope SessionScope) (matched []Session, hidden int, err 
 	if scope.All || scope.Workspace == "" {
 		return all, 0, nil
 	}
+	// Collect workspace matches and legacy sessions separately, then
+	// concatenate (workspace first, legacy after) — both groups are already
+	// newest-first because ListSessions sorts by Updated descending and
+	// filtering preserves that order. This ensures LoadSessionScoped("",
+	// scope) prefers an in-scope session over a legacy one.
+	var legacy []Session
 	for _, s := range all {
 		if sameWorkspace(s.Workspace, scope.Workspace) {
 			matched = append(matched, s)
-		} else {
-			hidden++
+			continue
 		}
+		if s.Workspace == "" && scope.IncludeLegacy {
+			legacy = append(legacy, s)
+			continue
+		}
+		hidden++
 	}
+	matched = append(matched, legacy...)
 	return matched, hidden, nil
 }
 
@@ -157,6 +184,11 @@ func ListSessionsScoped(scope SessionScope) (matched []Session, hidden int, err 
 // like LoadSession — an id/prefix the user typed should resolve regardless of
 // which folder it was saved from, so hints like "resume with <id>" always
 // work.
+//
+// With scope.IncludeLegacy set and no in-scope match for an empty idOrPrefix,
+// the fallback list still contains legacy (empty-workspace) sessions appended
+// after workspace matches — so `wakil --resume` can find a pre-workspace-
+// recording session instead of failing outright.
 func LoadSessionScoped(idOrPrefix string, scope SessionScope) (*Session, error) {
 	if idOrPrefix != "" {
 		return LoadSession(idOrPrefix)
@@ -189,21 +221,22 @@ func SessionTurns(s Session) (int, string) {
 	return turns, first
 }
 
-// PrintSessions writes a human-readable session list to w, scoped to the
-// current workspace (ws) by default. Printed OLDEST-first — deliberately the
-// reverse of the internal storage order — so in a scrolling terminal the most
-// recent session lands at the bottom, next to the shell prompt, without
-// requiring the reader to scroll up past everything else. Pass all=true (or
-// an empty ws) to list every session regardless of workspace.
-func PrintSessions(w io.Writer, ws string, all bool) {
-	sessions, hidden, err := ListSessionsScoped(SessionScope{Workspace: ws, All: all})
+// PrintSessionsWithScope writes a human-readable session list to w for the
+// given scope. Printed OLDEST-first — deliberately the reverse of the internal
+// storage order — so in a scrolling terminal the most recent session lands at
+// the bottom, next to the shell prompt, without requiring the reader to scroll
+// up past everything else. With All=true every session is listed regardless of
+// workspace; otherwise the list is scoped to Workspace, plus legacy (empty-
+// workspace) sessions when IncludeLegacy is set.
+func PrintSessionsWithScope(w io.Writer, scope SessionScope) {
+	sessions, hidden, err := ListSessionsScoped(scope)
 	if err != nil {
 		fmt.Fprintln(w, "error listing sessions:", err)
 		return
 	}
 	scopeLabel := "all repos"
-	if !all && ws != "" {
-		scopeLabel = ws
+	if !scope.All && scope.Workspace != "" {
+		scopeLabel = scope.Workspace
 	}
 	if len(sessions) == 0 {
 		fmt.Fprintln(w, "no saved sessions for", scopeLabel, "in", sessionsDir())
