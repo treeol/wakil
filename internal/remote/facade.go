@@ -86,6 +86,12 @@ type RemoteFacade struct {
 	// snapshotVersion increments on every facade-mediated mutation.
 	snapshotVersion uint64
 
+	// refreshSeq is a monotonically increasing counter for refreshState
+	// calls. Each refreshState invocation captures a ticket; only the
+	// response with the highest ticket is installed, preventing stale
+	// overwrites when concurrent refreshes complete out of order.
+	refreshSeq uint64
+
 	// state is the cached SessionState from the daemon, projected into
 	// Snapshot()/Consent()/Info()/CompletionSource(). Since those methods are
 	// synchronous (no ctx, no error), they cannot block on an RPC; the cache
@@ -331,11 +337,18 @@ func (f *RemoteFacade) SessionSnapshot(ctx context.Context, principal core.Princ
 // the single write path for the cached state read by Snapshot()/Consent()/
 // Info()/CompletionSource(). Safe to call from any goroutine; failures leave
 // the previous cache intact (stale-but-valid).
+//
+// A monotonic ticket (refreshSeq) prevents stale overwrites: if two
+// refreshState calls run concurrently, only the one with the higher ticket
+// installs its result, so an older fetch that completes after a newer one
+// is discarded.
 func (f *RemoteFacade) refreshState(ctx context.Context) {
 	f.mu.Lock()
 	sid := f.sessionID
 	clients := f.clients
 	closed := f.closed
+	ticket := f.refreshSeq + 1
+	f.refreshSeq = ticket
 	f.mu.Unlock()
 	if closed || clients == nil || clients.SessionState == nil {
 		return
@@ -354,7 +367,10 @@ func (f *RemoteFacade) refreshState(ctx context.Context) {
 	}
 
 	f.mu.Lock()
-	f.state = resp.Msg
+	// Only install if no newer refresh has already landed.
+	if ticket >= f.refreshSeq {
+		f.state = resp.Msg
+	}
 	f.mu.Unlock()
 	f.bumpVersion()
 }

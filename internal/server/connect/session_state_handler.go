@@ -589,6 +589,23 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
 		return nil, mapError(err)
 	}
+	// Load and validate the target session BEFORE mutating any state, so a
+	// failed load (not found, corrupt) leaves the active session untouched.
+	idOrPrefix := req.Msg.IdOrPrefix
+	if idOrPrefix == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("load_session: id_or_prefix must not be empty"))
+	}
+	s, err := agent.LoadSessionScoped(idOrPrefix, agent.SessionScope{All: true})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("load_session: %w", err))
+	}
+	if s == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("load_session: session %q not found", idOrPrefix))
+	}
+
+	// ── Session transition: all mutations below are committed only after
+	// the target session was successfully loaded. ──────────────────────────
+
 	// Clear the hostTurn's session binding so the single App can serve this
 	// resumed session (the previous session's binding would reject it).
 	if h.resetSessionBinding != nil {
@@ -601,25 +618,12 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 	h.resetRestoreDone()
 	app := h.app
 
-	// Reset ephemeral consent grants before restoring the session, so a
-	// previous session's /auto or /auto destructive grant does not leak into
-	// the resumed one. The workspace-level AutoApprove preference is restored
-	// separately (RestoreRepoState, driven by the client on fresh boots).
+	// Reset ephemeral consent grants so a previous session's /auto or
+	// /auto destructive grant does not leak into the resumed one. The
+	// workspace-level AutoApprove preference is restored separately via
+	// RestoreRepoStateResume (driven by the client on resume).
 	app.RevokeAuto()
 	app.SetAllowReads(false)
-
-	// Load the session from disk (same path as embedded ResumeConversation).
-	idOrPrefix := req.Msg.IdOrPrefix
-	if idOrPrefix == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("load_session: id_or_prefix must not be empty"))
-	}
-	s, err := agent.LoadSessionScoped(idOrPrefix, agent.SessionScope{All: true})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("load_session: %w", err))
-	}
-	if s == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("load_session: session %q not found", idOrPrefix))
-	}
 
 	// Restore the loaded session's state into the App — mirroring the embedded
 	// ResumeConversation path (conversation_manager.go:172-176).

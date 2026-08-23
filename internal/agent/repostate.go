@@ -391,12 +391,15 @@ func (a *App) saveRepoState(mutate func(*RepoState)) {
 }
 
 // ClearRepoState deletes the stored settings for app's workspace, if any.
-// Used by /repostate clear. Never errors on a missing file.
+// Used by /repostate clear. Never errors on a missing file. Takes the
+// repoStateUpdateMu so it can't race with a concurrent updateRepoState.
 func ClearRepoState(app *App) error {
 	path := repoStatePath(app.SessionWorkspace())
 	if path == "" {
 		return nil
 	}
+	repoStateUpdateMu.Lock()
+	defer repoStateUpdateMu.Unlock()
 	err := os.Remove(path)
 	if err != nil && os.IsNotExist(err) {
 		return nil
