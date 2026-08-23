@@ -698,6 +698,13 @@ func (a *App) NewConversation(chatID string) {
 		Created:   time.Now(),
 		Workspace: a.SessionWorkspace(),
 	}
+	// Reset ephemeral consent grants so a previous session's /auto or
+	// /auto destructive grant does not leak into the new conversation.
+	// AutoApprove, AllowDestructive, and AllowReads are per-session grants;
+	// they must not survive /new or /resume (the workspace-level AutoApprove
+	// preference is restored separately by RestoreRepoState if applicable).
+	a.RevokeAuto()
+	a.SetAllowReads(false)
 }
 
 // Send runs one user turn through the agent loop: stream a response, and while

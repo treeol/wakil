@@ -50,10 +50,12 @@ type SessionStateHandler struct {
 	resetSessionBinding func() error
 
 	// restoreMu guards restoreDone: RestoreRepoState applies at most once per
-	// daemon App lifetime. The single-App daemon cannot distinguish "fresh boot"
-	// from "resume" from App state alone (a resumed session does not reload the
-	// App's transcript), so the client drives the call (fresh boot only) AND this
-	// guard makes it idempotent — matching embedded restore-once-per-process.
+	// session generation (not per App lifetime). The daemon serves multiple
+	// sequential sessions on one App; each fresh conversation should get its
+	// own repo-state restore. The guard is reset in InitNewSession and
+	// LoadSession (via resetRestoreDone) so a subsequent fresh conversation
+	// can restore again. The client drives the call (fresh boot only); the
+	// guard prevents a duplicate/racing call within one session.
 	restoreMu   sync.Mutex
 	restoreDone bool
 }
@@ -74,6 +76,15 @@ func NewSessionStateHandler(app *agent.App, resolver principalResolver) *Session
 // TUI reconnections.
 func (h *SessionStateHandler) SetResetSessionBinding(fn func() error) {
 	h.resetSessionBinding = fn
+}
+
+// resetRestoreDone clears the restore-done guard so a subsequent fresh
+// conversation can trigger RestoreRepoState again. Called from InitNewSession
+// and LoadSession — each new session generation gets its own restore chance.
+func (h *SessionStateHandler) resetRestoreDone() {
+	h.restoreMu.Lock()
+	h.restoreDone = false
+	h.restoreMu.Unlock()
 }
 
 // App returns the handler's bound *agent.App. Used by callers that need
@@ -239,17 +250,21 @@ func (h *SessionStateHandler) SetAllowDestructive(ctx context.Context, req *conn
 	}
 	app := h.app
 	v := req.Msg.Value
-	if v && !app.Consent().AutoApprove {
-		return connect.NewResponse(&v1alpha1.SetAllowDestructiveResponse{
-			Notice: "auto mode is OFF — enable /auto first, then /auto destructive",
-		}), nil
-	}
-	app.SetAllowDestructive(v)
 	if v {
+		// Enable: use the atomic conditional mutator to prevent the
+		// check-then-act race where a concurrent RevokeAuto between the
+		// AutoApprove check and the SetAllowDestructive call could produce
+		// AutoApprove=false + AllowDestructive=true.
+		if !app.EnableDestructiveIfAuto() {
+			return connect.NewResponse(&v1alpha1.SetAllowDestructiveResponse{
+				Notice: "auto mode is OFF — enable /auto first, then /auto destructive",
+			}), nil
+		}
 		return connect.NewResponse(&v1alpha1.SetAllowDestructiveResponse{
 			Notice: "⚠ destructive auto-approve: ON — rm, mv, git reset, … run without prompting\n  still confirmed: external-backend egress; /auto destructive again to revoke",
 		}), nil
 	}
+	app.SetAllowDestructive(false)
 	return connect.NewResponse(&v1alpha1.SetAllowDestructiveResponse{
 		Notice: "destructive auto-approve: OFF — destructive commands require confirmation again",
 	}), nil
@@ -415,16 +430,22 @@ func (h *SessionStateHandler) SetCounselMode(ctx context.Context, req *connect.R
 		}
 		app.CounselMode = "auto"
 		app.MaxCounsel = cap
+		app.SaveRepoState(func(s *agent.RepoState) {
+			s.CounselMode = "auto"
+			s.MaxCounsel = cap
+		})
 		return connect.NewResponse(&v1alpha1.SetCounselModeResponse{
 			Notice: fmt.Sprintf("counsel mode: auto (cap: %d/turn)", cap),
 		}), nil
 	case "suggest":
 		app.CounselMode = "suggest"
+		app.SaveRepoState(func(s *agent.RepoState) { s.CounselMode = "suggest" })
 		return connect.NewResponse(&v1alpha1.SetCounselModeResponse{
 			Notice: "counsel mode: suggest (hint only, no auto-fire)",
 		}), nil
 	case "off":
 		app.CounselMode = "off"
+		app.SaveRepoState(func(s *agent.RepoState) { s.CounselMode = "off" })
 		return connect.NewResponse(&v1alpha1.SetCounselModeResponse{
 			Notice: "counsel mode: off (struggle detected silently)",
 		}), nil
@@ -543,6 +564,25 @@ func (h *SessionStateHandler) RestoreRepoState(ctx context.Context, req *connect
 	}), nil
 }
 
+// ---- RestoreRepoStateResume ----
+
+func (h *SessionStateHandler) RestoreRepoStateResume(ctx context.Context, req *connect.Request[v1alpha1.RestoreRepoStateResumeRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResumeResponse], error) {
+	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
+		return nil, mapError(err)
+	}
+	app := h.app
+
+	// Restore endpoint-independent settings only (no model/backend changes).
+	// This is called by the remote TUI after LoadSession (resume) to restore
+	// AutoApprove, RawTools, maxpar, maxctx, subagent, mashura settings
+	// without changing the model/backend mid-transcript.
+	result := agent.RestoreRepoStateResume(app)
+
+	return connect.NewResponse(&v1alpha1.RestoreRepoStateResumeResponse{
+		Notice: result.Note,
+	}), nil
+}
+
 // ---- LoadSession (P6f fix: session resume) ----
 
 func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Request[v1alpha1.LoadSessionRequest]) (*connect.Response[v1alpha1.LoadSessionResponse], error) {
@@ -556,7 +596,17 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("load_session: cannot reset session binding: %w", err))
 		}
 	}
+	// Reset the restore-done guard so a subsequent fresh conversation after
+	// this resume can trigger RestoreRepoState again.
+	h.resetRestoreDone()
 	app := h.app
+
+	// Reset ephemeral consent grants before restoring the session, so a
+	// previous session's /auto or /auto destructive grant does not leak into
+	// the resumed one. The workspace-level AutoApprove preference is restored
+	// separately (RestoreRepoState, driven by the client on fresh boots).
+	app.RevokeAuto()
+	app.SetAllowReads(false)
 
 	// Load the session from disk (same path as embedded ResumeConversation).
 	idOrPrefix := req.Msg.IdOrPrefix
@@ -651,6 +701,9 @@ func (h *SessionStateHandler) InitNewSession(ctx context.Context, req *connect.R
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("init_new_session: cannot reset session binding: %w", err))
 		}
 	}
+	// Reset the restore-done guard so this fresh conversation can trigger
+	// RestoreRepoState (the client calls it after InitNewSession on /new).
+	h.resetRestoreDone()
 	app := h.app
 	chatID := agent.NewChatID()
 	app.NewConversation(chatID)

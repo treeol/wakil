@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -61,6 +62,12 @@ type RepoState struct {
 
 	// MashuraTimeoutSeconds persists the /mashura timeout setting.
 	MashuraTimeoutSeconds int `json:"mashura_timeout_seconds,omitempty"`
+
+	// CounselMode persists the /counsel mode (auto|suggest|off).
+	CounselMode string `json:"counsel_mode,omitempty"`
+
+	// MaxCounsel persists the /counsel auto-mode cap (max calls per turn).
+	MaxCounsel int `json:"max_counsel,omitempty"`
 
 	// EffectiveCtxMaxChars persists the /maxctx session override. nil = not set
 	// (use config default); pointer to 0 = explicitly disabled (no cap); >0 =
@@ -132,6 +139,12 @@ func LoadRepoState(ws string) (*RepoState, error) {
 	return &st, nil
 }
 
+// repoStateUpdateMu serializes updateRepoState calls so concurrent RPC
+// handlers don't lose updates by loading the same old file, mutating
+// different fields, and overwriting each other. Atomic rename prevents
+// corruption but not lost updates; this mutex closes that gap.
+var repoStateUpdateMu sync.Mutex
+
 // updateRepoState loads the existing repo-state for ws (or starts a fresh
 // one), applies mutate to change only the field(s) the caller just set, and
 // writes the result back using a crash-durable atomic write (temp file + fsync
@@ -145,6 +158,8 @@ func updateRepoState(ws string, mutate func(*RepoState)) error {
 	if ws == "" {
 		return nil
 	}
+	repoStateUpdateMu.Lock()
+	defer repoStateUpdateMu.Unlock()
 	st, err := LoadRepoState(ws)
 	if err != nil {
 		return err
@@ -230,6 +245,49 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 		}
 	}
 
+	applied = append(applied, restoreEndpointIndependent(app, st)...)
+
+	if len(applied) > 0 {
+		result.Note = "repo-state: restored " + strings.Join(applied, ", ") +
+			" (folder: " + ws + ") — /repostate to inspect or clear"
+	}
+	return result
+}
+
+// RestoreRepoStateResume restores endpoint-independent settings from repo-state
+// on session resume. Unlike RestoreRepoState (fresh conversation), it skips
+// model/backend changes to avoid silently changing the model mid-transcript of
+// a resumed session. AutoApprove is restored (subject to AutoExplicit) because
+// it is endpoint-independent and the user explicitly toggled it.
+//
+// AllowDestructive and AllowReads are NOT restored here — they are ephemeral
+// per-session grants that must not survive across sessions.
+func RestoreRepoStateResume(app *App) RestoreRepoStateResult {
+	ws := app.SessionWorkspace()
+	st, err := LoadRepoState(ws)
+	if err != nil || st == nil {
+		return RestoreRepoStateResult{}
+	}
+
+	var applied []string
+	var result RestoreRepoStateResult
+
+	applied = append(applied, restoreEndpointIndependent(app, st)...)
+
+	if len(applied) > 0 {
+		result.Note = "repo-state (resume): restored " + strings.Join(applied, ", ") +
+			" (folder: " + ws + ")"
+	}
+	return result
+}
+
+// restoreEndpointIndependent applies endpoint-independent settings from the
+// repo-state to the App. These are settings that don't depend on which endpoint
+// is active and are safe to restore on both fresh conversations and resume.
+// Returns the list of applied settings for the restore summary.
+func restoreEndpointIndependent(app *App, st *RepoState) []string {
+	var applied []string
+
 	if st.SubagentEndpoint != "" {
 		if _, err := app.Cfg.NormalizeEndpoint(st.SubagentEndpoint); err == nil {
 			app.SubagentEndpointOverride = st.SubagentEndpoint
@@ -244,7 +302,6 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 	}
 
 	// MaxParallelSubagents: 0 = not persisted → keep the config default.
-	// Restored outside the endpointMatches guard — maxpar is endpoint-independent.
 	if st.MaxParallelSubagents > 0 {
 		app.Cfg.MaxParallelSubagents = st.MaxParallelSubagents
 		applied = append(applied, fmt.Sprintf("maxpar=%d", st.MaxParallelSubagents))
@@ -262,12 +319,10 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 	}
 
 	// Info panel visibility is TUI-only state; restore unconditionally (it's
-	// endpoint-independent, like MaxParallelSubagents). No note — it's a quiet
-	// UI preference, not a settings change the user needs surfaced.
+	// endpoint-independent). No note — it's a quiet UI preference.
 	app.InfoPanelOpen = st.InfoPanelOpen
 
 	// /maxctx override: nil = not persisted → keep the config default.
-	// Restored outside the endpointMatches guard — it's endpoint-independent.
 	if st.EffectiveCtxMaxChars != nil {
 		app.EffectiveCtxMaxCharsOverride = *st.EffectiveCtxMaxChars
 		applied = append(applied, fmt.Sprintf("maxctx=%d", *st.EffectiveCtxMaxChars))
@@ -305,11 +360,17 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 		applied = append(applied, fmt.Sprintf("mashura-timeout=%d", st.MashuraTimeoutSeconds))
 	}
 
-	if len(applied) > 0 {
-		result.Note = "repo-state: restored " + strings.Join(applied, ", ") +
-			" (folder: " + ws + ") — /repostate to inspect or clear"
+	// Counsel mode (endpoint-independent).
+	if st.CounselMode != "" {
+		app.CounselMode = st.CounselMode
+		applied = append(applied, "counsel="+st.CounselMode)
 	}
-	return result
+	if st.MaxCounsel > 0 {
+		app.MaxCounsel = st.MaxCounsel
+		applied = append(applied, fmt.Sprintf("counsel-cap=%d", st.MaxCounsel))
+	}
+
+	return applied
 }
 
 // SaveRepoState is a thin convenience wrapper for command handlers that only

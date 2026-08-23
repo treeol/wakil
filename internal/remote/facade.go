@@ -554,6 +554,10 @@ func (f *RemoteFacade) getRPCTargets() (bool, event.SessionID, wakilv1alpha1conn
 // goMutation fires a state-mutating RPC on a background goroutine (the TUI's
 // direct consent mutations are fire-and-forget). The RPC context is detached
 // from any caller context (these methods carry none) and bounded by rpcTimeout.
+// After the RPC completes (success or failure), it triggers a state refresh so
+// the cached SessionState — and therefore Snapshot()/Consent()/Info() —
+// reconverge to daemon truth. Without this refresh, the TUI could display
+// consent state that disagrees with what the daemon actually enforces.
 func (f *RemoteFacade) goMutation(call func(context.Context, wakilv1alpha1connect.SessionStateServiceClient, event.SessionID) error) {
 	ok, sid, client := f.getRPCTargets()
 	if !ok {
@@ -564,6 +568,9 @@ func (f *RemoteFacade) goMutation(call func(context.Context, wakilv1alpha1connec
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
 		_ = call(ctx, client, sid) // errors dropped: no synchronous return path
+		// Refresh cached state so the TUI's next Snapshot()/Consent() read
+		// reflects the mutation that just landed (or didn't).
+		f.refreshState(context.Background())
 	}()
 }
 
@@ -652,6 +659,29 @@ func (f *RemoteFacade) RestoreRepoState() {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
 	resp, err := client.RestoreRepoState(ctx, connect.NewRequest(&v1alpha1.RestoreRepoStateRequest{
+		SessionId: string(sid),
+	}))
+	if err != nil {
+		return
+	}
+	f.mu.Lock()
+	f.startupNote = resp.Msg.Notice
+	f.mu.Unlock()
+	f.refreshStateSync()
+}
+
+// RestoreRepoStateResume restores endpoint-independent settings from repo-state
+// on session resume (called by BootstrapRemote after ResumeConversation). Skips
+// model/backend to avoid changing them mid-transcript. Restores AutoApprove,
+// RawTools, maxpar, maxctx, subagent, mashura settings.
+func (f *RemoteFacade) RestoreRepoStateResume() {
+	ok, sid, client := f.getRPCTargets()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+	resp, err := client.RestoreRepoStateResume(ctx, connect.NewRequest(&v1alpha1.RestoreRepoStateResumeRequest{
 		SessionId: string(sid),
 	}))
 	if err != nil {

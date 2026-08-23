@@ -78,6 +78,9 @@ const (
 	// SessionStateServiceRestoreRepoStateProcedure is the fully-qualified name of the
 	// SessionStateService's RestoreRepoState RPC.
 	SessionStateServiceRestoreRepoStateProcedure = "/wakil.v1alpha1.SessionStateService/RestoreRepoState"
+	// SessionStateServiceRestoreRepoStateResumeProcedure is the fully-qualified name of the
+	// SessionStateService's RestoreRepoStateResume RPC.
+	SessionStateServiceRestoreRepoStateResumeProcedure = "/wakil.v1alpha1.SessionStateService/RestoreRepoStateResume"
 	// SessionStateServiceSetSessionLabelProcedure is the fully-qualified name of the
 	// SessionStateService's SetSessionLabel RPC.
 	SessionStateServiceSetSessionLabelProcedure = "/wakil.v1alpha1.SessionStateService/SetSessionLabel"
@@ -130,6 +133,10 @@ type SessionStateServiceClient interface {
 	// be silently changed). The daemon re-resolves context limits server-side and
 	// returns the human-readable restore summary as a startup note.
 	RestoreRepoState(context.Context, *connect.Request[v1alpha1.RestoreRepoStateRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResponse], error)
+	// RestoreRepoStateResume restores endpoint-independent settings from
+	// repo-state on session resume (model/backend are skipped, but AutoApprove,
+	// RawTools, maxpar, maxctx, subagent, mashura settings are restored).
+	RestoreRepoStateResume(context.Context, *connect.Request[v1alpha1.RestoreRepoStateResumeRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResumeResponse], error)
 	// SetSessionLabel sets the session label (/session name "<label>").
 	SetSessionLabel(context.Context, *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error)
 	// LoadSession loads a saved session from disk into the daemon's App and
@@ -252,6 +259,12 @@ func NewSessionStateServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(sessionStateServiceMethods.ByName("RestoreRepoState")),
 			connect.WithClientOptions(opts...),
 		),
+		restoreRepoStateResume: connect.NewClient[v1alpha1.RestoreRepoStateResumeRequest, v1alpha1.RestoreRepoStateResumeResponse](
+			httpClient,
+			baseURL+SessionStateServiceRestoreRepoStateResumeProcedure,
+			connect.WithSchema(sessionStateServiceMethods.ByName("RestoreRepoStateResume")),
+			connect.WithClientOptions(opts...),
+		),
 		setSessionLabel: connect.NewClient[v1alpha1.SetSessionLabelRequest, v1alpha1.SetSessionLabelResponse](
 			httpClient,
 			baseURL+SessionStateServiceSetSessionLabelProcedure,
@@ -296,6 +309,7 @@ type sessionStateServiceClient struct {
 	compact                 *connect.Client[v1alpha1.CompactRequest, v1alpha1.CompactResponse]
 	saveRepoState           *connect.Client[v1alpha1.SaveRepoStateRequest, v1alpha1.SaveRepoStateResponse]
 	restoreRepoState        *connect.Client[v1alpha1.RestoreRepoStateRequest, v1alpha1.RestoreRepoStateResponse]
+	restoreRepoStateResume  *connect.Client[v1alpha1.RestoreRepoStateResumeRequest, v1alpha1.RestoreRepoStateResumeResponse]
 	setSessionLabel         *connect.Client[v1alpha1.SetSessionLabelRequest, v1alpha1.SetSessionLabelResponse]
 	loadSession             *connect.Client[v1alpha1.LoadSessionRequest, v1alpha1.LoadSessionResponse]
 	listSavedSessions       *connect.Client[v1alpha1.ListSavedSessionsRequest, v1alpha1.ListSavedSessionsResponse]
@@ -377,6 +391,11 @@ func (c *sessionStateServiceClient) RestoreRepoState(ctx context.Context, req *c
 	return c.restoreRepoState.CallUnary(ctx, req)
 }
 
+// RestoreRepoStateResume calls wakil.v1alpha1.SessionStateService.RestoreRepoStateResume.
+func (c *sessionStateServiceClient) RestoreRepoStateResume(ctx context.Context, req *connect.Request[v1alpha1.RestoreRepoStateResumeRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResumeResponse], error) {
+	return c.restoreRepoStateResume.CallUnary(ctx, req)
+}
+
 // SetSessionLabel calls wakil.v1alpha1.SessionStateService.SetSessionLabel.
 func (c *sessionStateServiceClient) SetSessionLabel(ctx context.Context, req *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error) {
 	return c.setSessionLabel.CallUnary(ctx, req)
@@ -436,6 +455,10 @@ type SessionStateServiceHandler interface {
 	// be silently changed). The daemon re-resolves context limits server-side and
 	// returns the human-readable restore summary as a startup note.
 	RestoreRepoState(context.Context, *connect.Request[v1alpha1.RestoreRepoStateRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResponse], error)
+	// RestoreRepoStateResume restores endpoint-independent settings from
+	// repo-state on session resume (model/backend are skipped, but AutoApprove,
+	// RawTools, maxpar, maxctx, subagent, mashura settings are restored).
+	RestoreRepoStateResume(context.Context, *connect.Request[v1alpha1.RestoreRepoStateResumeRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResumeResponse], error)
 	// SetSessionLabel sets the session label (/session name "<label>").
 	SetSessionLabel(context.Context, *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error)
 	// LoadSession loads a saved session from disk into the daemon's App and
@@ -554,6 +577,12 @@ func NewSessionStateServiceHandler(svc SessionStateServiceHandler, opts ...conne
 		connect.WithSchema(sessionStateServiceMethods.ByName("RestoreRepoState")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionStateServiceRestoreRepoStateResumeHandler := connect.NewUnaryHandler(
+		SessionStateServiceRestoreRepoStateResumeProcedure,
+		svc.RestoreRepoStateResume,
+		connect.WithSchema(sessionStateServiceMethods.ByName("RestoreRepoStateResume")),
+		connect.WithHandlerOptions(opts...),
+	)
 	sessionStateServiceSetSessionLabelHandler := connect.NewUnaryHandler(
 		SessionStateServiceSetSessionLabelProcedure,
 		svc.SetSessionLabel,
@@ -610,6 +639,8 @@ func NewSessionStateServiceHandler(svc SessionStateServiceHandler, opts ...conne
 			sessionStateServiceSaveRepoStateHandler.ServeHTTP(w, r)
 		case SessionStateServiceRestoreRepoStateProcedure:
 			sessionStateServiceRestoreRepoStateHandler.ServeHTTP(w, r)
+		case SessionStateServiceRestoreRepoStateResumeProcedure:
+			sessionStateServiceRestoreRepoStateResumeHandler.ServeHTTP(w, r)
 		case SessionStateServiceSetSessionLabelProcedure:
 			sessionStateServiceSetSessionLabelHandler.ServeHTTP(w, r)
 		case SessionStateServiceLoadSessionProcedure:
@@ -685,6 +716,10 @@ func (UnimplementedSessionStateServiceHandler) SaveRepoState(context.Context, *c
 
 func (UnimplementedSessionStateServiceHandler) RestoreRepoState(context.Context, *connect.Request[v1alpha1.RestoreRepoStateRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.SessionStateService.RestoreRepoState is not implemented"))
+}
+
+func (UnimplementedSessionStateServiceHandler) RestoreRepoStateResume(context.Context, *connect.Request[v1alpha1.RestoreRepoStateResumeRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResumeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wakil.v1alpha1.SessionStateService.RestoreRepoStateResume is not implemented"))
 }
 
 func (UnimplementedSessionStateServiceHandler) SetSessionLabel(context.Context, *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error) {

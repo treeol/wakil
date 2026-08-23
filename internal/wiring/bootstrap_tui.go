@@ -93,6 +93,15 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		if err != nil {
 			return nil, nil, fmt.Errorf("tui bootstrap: %w", err)
 		}
+		// Resume: restore endpoint-independent settings only (AutoApprove,
+		// RawTools, maxpar, maxctx, subagent, mashura) — model/backend are
+		// skipped to avoid changing them mid-transcript.
+		if wf, ok := f.(*wiringFacade); ok {
+			result := agent.RestoreRepoStateResume(wf.app)
+			if result.Note != "" {
+				wf.app.StartupNote = result.Note
+			}
+		}
 	} else {
 		f, err = mgr.NewConversation(ctx, principal, nil)
 		if err != nil {

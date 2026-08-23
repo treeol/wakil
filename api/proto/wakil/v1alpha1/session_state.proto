@@ -66,6 +66,11 @@ service SessionStateService {
   // returns the human-readable restore summary as a startup note.
   rpc RestoreRepoState(RestoreRepoStateRequest) returns (RestoreRepoStateResponse);
 
+  // RestoreRepoStateResume restores endpoint-independent settings from
+  // repo-state on session resume (model/backend are skipped, but AutoApprove,
+  // RawTools, maxpar, maxctx, subagent, mashura settings are restored).
+  rpc RestoreRepoStateResume(RestoreRepoStateResumeRequest) returns (RestoreRepoStateResumeResponse);
+
   // SetSessionLabel sets the session label (/session name "<label>").
   rpc SetSessionLabel(SetSessionLabelRequest) returns (SetSessionLabelResponse);
 
@@ -301,6 +306,16 @@ message RestoreRepoStateRequest {
   string session_id = 1;
 }
 message RestoreRepoStateResponse {
+  // notice is the human-readable restore summary ("" when nothing applied).
+  string notice = 1;
+}
+
+// ---- RestoreRepoStateResume ----
+
+message RestoreRepoStateResumeRequest {
+  string session_id = 1;
+}
+message RestoreRepoStateResumeResponse {
   // notice is the human-readable restore summary ("" when nothing applied).
   string notice = 1;
 }

@@ -211,6 +211,9 @@ func (h *testSessionStateHandler) RestoreRepoState(ctx context.Context, req *con
 	h.mu.Unlock()
 	return connect.NewResponse(&v1alpha1.RestoreRepoStateResponse{Notice: "repo-state: restored model=m1"}), nil
 }
+func (h *testSessionStateHandler) RestoreRepoStateResume(ctx context.Context, req *connect.Request[v1alpha1.RestoreRepoStateResumeRequest]) (*connect.Response[v1alpha1.RestoreRepoStateResumeResponse], error) {
+	return connect.NewResponse(&v1alpha1.RestoreRepoStateResumeResponse{Notice: "repo-state (resume): restored auto=on"}), nil
+}
 func (h *testSessionStateHandler) SetSessionLabel(ctx context.Context, req *connect.Request[v1alpha1.SetSessionLabelRequest]) (*connect.Response[v1alpha1.SetSessionLabelResponse], error) {
 	h.mu.Lock()
 	h.sessionLabel = req.Msg.Label

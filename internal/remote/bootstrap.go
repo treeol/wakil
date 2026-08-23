@@ -57,14 +57,23 @@ func BootstrapRemote(ctx context.Context, socketPath string, workspace event.Wor
 	var f sessionclient.Facade
 	if resumeID != "" {
 		f, err = mgr.ResumeConversation(ctx, principal, resumeID)
+		if err == nil {
+			// Resume: restore endpoint-independent settings only (AutoApprove,
+			// RawTools, maxpar, maxctx, subagent, mashura) — model/backend
+			// are skipped to avoid changing them mid-transcript. The restore
+			// summary surfaces via ConsumeStartupNote.
+			if rf, ok := f.(*RemoteFacade); ok {
+				rf.RestoreRepoStateResume()
+			}
+		}
 	} else {
 		f, err = mgr.NewConversation(ctx, principal, nil)
 		if err == nil {
 			// Fresh conversation only: apply the daemon's persisted per-workspace
-			// terminal settings (repo-state restore). Mirrors embedded BootstrapTUI's
-			// RestoreRepoState:true && resumeID=="" — a resumed session's
-			// model/backend is never silently changed. The restore summary surfaces
-			// via ConsumeStartupNote → the TUI's Init startup-note banner.
+			// terminal settings (full repo-state restore, including model/backend).
+			// Mirrors embedded BootstrapTUI's RestoreRepoState:true && resumeID=="".
+			// The restore summary surfaces via ConsumeStartupNote → the TUI's Init
+			// startup-note banner.
 			if rf, ok := f.(*RemoteFacade); ok {
 				rf.RestoreRepoState()
 			}

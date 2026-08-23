@@ -1850,6 +1850,95 @@ func (x *RestoreRepoStateResponse) GetNotice() string {
 	return ""
 }
 
+type RestoreRepoStateResumeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreRepoStateResumeRequest) Reset() {
+	*x = RestoreRepoStateResumeRequest{}
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreRepoStateResumeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreRepoStateResumeRequest) ProtoMessage() {}
+
+func (x *RestoreRepoStateResumeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreRepoStateResumeRequest.ProtoReflect.Descriptor instead.
+func (*RestoreRepoStateResumeRequest) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *RestoreRepoStateResumeRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type RestoreRepoStateResumeResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// notice is the human-readable restore summary ("" when nothing applied).
+	Notice        string `protobuf:"bytes,1,opt,name=notice,proto3" json:"notice,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreRepoStateResumeResponse) Reset() {
+	*x = RestoreRepoStateResumeResponse{}
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreRepoStateResumeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreRepoStateResumeResponse) ProtoMessage() {}
+
+func (x *RestoreRepoStateResumeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreRepoStateResumeResponse.ProtoReflect.Descriptor instead.
+func (*RestoreRepoStateResumeResponse) Descriptor() ([]byte, []int) {
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *RestoreRepoStateResumeResponse) GetNotice() string {
+	if x != nil {
+		return x.Notice
+	}
+	return ""
+}
+
 type SetSessionLabelRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -1860,7 +1949,7 @@ type SetSessionLabelRequest struct {
 
 func (x *SetSessionLabelRequest) Reset() {
 	*x = SetSessionLabelRequest{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[32]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1872,7 +1961,7 @@ func (x *SetSessionLabelRequest) String() string {
 func (*SetSessionLabelRequest) ProtoMessage() {}
 
 func (x *SetSessionLabelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[32]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1885,7 +1974,7 @@ func (x *SetSessionLabelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSessionLabelRequest.ProtoReflect.Descriptor instead.
 func (*SetSessionLabelRequest) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{32}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *SetSessionLabelRequest) GetSessionId() string {
@@ -1911,7 +2000,7 @@ type SetSessionLabelResponse struct {
 
 func (x *SetSessionLabelResponse) Reset() {
 	*x = SetSessionLabelResponse{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[33]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1923,7 +2012,7 @@ func (x *SetSessionLabelResponse) String() string {
 func (*SetSessionLabelResponse) ProtoMessage() {}
 
 func (x *SetSessionLabelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[33]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1936,7 +2025,7 @@ func (x *SetSessionLabelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSessionLabelResponse.ProtoReflect.Descriptor instead.
 func (*SetSessionLabelResponse) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{33}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *SetSessionLabelResponse) GetNotice() string {
@@ -1956,7 +2045,7 @@ type LoadSessionRequest struct {
 
 func (x *LoadSessionRequest) Reset() {
 	*x = LoadSessionRequest{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[34]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1968,7 +2057,7 @@ func (x *LoadSessionRequest) String() string {
 func (*LoadSessionRequest) ProtoMessage() {}
 
 func (x *LoadSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[34]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1981,7 +2070,7 @@ func (x *LoadSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadSessionRequest.ProtoReflect.Descriptor instead.
 func (*LoadSessionRequest) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{34}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *LoadSessionRequest) GetSessionId() string {
@@ -2013,7 +2102,7 @@ type ConvMessage struct {
 
 func (x *ConvMessage) Reset() {
 	*x = ConvMessage{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[35]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2025,7 +2114,7 @@ func (x *ConvMessage) String() string {
 func (*ConvMessage) ProtoMessage() {}
 
 func (x *ConvMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[35]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2038,7 +2127,7 @@ func (x *ConvMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConvMessage.ProtoReflect.Descriptor instead.
 func (*ConvMessage) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{35}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ConvMessage) GetRole() string {
@@ -2074,7 +2163,7 @@ type LoadSessionResponse struct {
 
 func (x *LoadSessionResponse) Reset() {
 	*x = LoadSessionResponse{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[36]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2086,7 +2175,7 @@ func (x *LoadSessionResponse) String() string {
 func (*LoadSessionResponse) ProtoMessage() {}
 
 func (x *LoadSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[36]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2099,7 +2188,7 @@ func (x *LoadSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadSessionResponse.ProtoReflect.Descriptor instead.
 func (*LoadSessionResponse) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{36}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *LoadSessionResponse) GetChatId() string {
@@ -2140,7 +2229,7 @@ type ListSavedSessionsRequest struct {
 
 func (x *ListSavedSessionsRequest) Reset() {
 	*x = ListSavedSessionsRequest{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[37]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2152,7 +2241,7 @@ func (x *ListSavedSessionsRequest) String() string {
 func (*ListSavedSessionsRequest) ProtoMessage() {}
 
 func (x *ListSavedSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[37]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2165,7 +2254,7 @@ func (x *ListSavedSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSavedSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListSavedSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{37}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListSavedSessionsRequest) GetWorkspace() string {
@@ -2198,7 +2287,7 @@ type SavedSession struct {
 
 func (x *SavedSession) Reset() {
 	*x = SavedSession{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[38]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2210,7 +2299,7 @@ func (x *SavedSession) String() string {
 func (*SavedSession) ProtoMessage() {}
 
 func (x *SavedSession) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[38]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2223,7 +2312,7 @@ func (x *SavedSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SavedSession.ProtoReflect.Descriptor instead.
 func (*SavedSession) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{38}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *SavedSession) GetChatId() string {
@@ -2292,7 +2381,7 @@ type ListSavedSessionsResponse struct {
 
 func (x *ListSavedSessionsResponse) Reset() {
 	*x = ListSavedSessionsResponse{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[39]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2304,7 +2393,7 @@ func (x *ListSavedSessionsResponse) String() string {
 func (*ListSavedSessionsResponse) ProtoMessage() {}
 
 func (x *ListSavedSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[39]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2317,7 +2406,7 @@ func (x *ListSavedSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSavedSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListSavedSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{39}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ListSavedSessionsResponse) GetSessions() []*SavedSession {
@@ -2343,7 +2432,7 @@ type InitNewSessionRequest struct {
 
 func (x *InitNewSessionRequest) Reset() {
 	*x = InitNewSessionRequest{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[40]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2355,7 +2444,7 @@ func (x *InitNewSessionRequest) String() string {
 func (*InitNewSessionRequest) ProtoMessage() {}
 
 func (x *InitNewSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[40]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2368,7 +2457,7 @@ func (x *InitNewSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InitNewSessionRequest.ProtoReflect.Descriptor instead.
 func (*InitNewSessionRequest) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{40}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *InitNewSessionRequest) GetSessionId() string {
@@ -2387,7 +2476,7 @@ type InitNewSessionResponse struct {
 
 func (x *InitNewSessionResponse) Reset() {
 	*x = InitNewSessionResponse{}
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[41]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2399,7 +2488,7 @@ func (x *InitNewSessionResponse) String() string {
 func (*InitNewSessionResponse) ProtoMessage() {}
 
 func (x *InitNewSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[41]
+	mi := &file_wakil_v1alpha1_session_state_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2412,7 +2501,7 @@ func (x *InitNewSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InitNewSessionResponse.ProtoReflect.Descriptor instead.
 func (*InitNewSessionResponse) Descriptor() ([]byte, []int) {
-	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{41}
+	return file_wakil_v1alpha1_session_state_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *InitNewSessionResponse) GetChatId() string {
@@ -2563,6 +2652,11 @@ const file_wakil_v1alpha1_session_state_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"2\n" +
 	"\x18RestoreRepoStateResponse\x12\x16\n" +
+	"\x06notice\x18\x01 \x01(\tR\x06notice\">\n" +
+	"\x1dRestoreRepoStateResumeRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"8\n" +
+	"\x1eRestoreRepoStateResumeResponse\x12\x16\n" +
 	"\x06notice\x18\x01 \x01(\tR\x06notice\"M\n" +
 	"\x16SetSessionLabelRequest\x12\x1d\n" +
 	"\n" +
@@ -2605,7 +2699,7 @@ const file_wakil_v1alpha1_session_state_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"1\n" +
 	"\x16InitNewSessionResponse\x12\x17\n" +
-	"\achat_id\x18\x01 \x01(\tR\x06chatId2\xc9\x0e\n" +
+	"\achat_id\x18\x01 \x01(\tR\x06chatId2\xc2\x0f\n" +
 	"\x13SessionStateService\x12W\n" +
 	"\x0fGetSessionState\x12&.wakil.v1alpha1.GetSessionStateRequest\x1a\x1c.wakil.v1alpha1.SessionState\x12M\n" +
 	"\bSetModel\x12\x1f.wakil.v1alpha1.SetModelRequest\x1a .wakil.v1alpha1.SetModelResponse\x12S\n" +
@@ -2623,7 +2717,8 @@ const file_wakil_v1alpha1_session_state_proto_rawDesc = "" +
 	"\x0eSetCounselMode\x12%.wakil.v1alpha1.SetCounselModeRequest\x1a&.wakil.v1alpha1.SetCounselModeResponse\x12J\n" +
 	"\aCompact\x12\x1e.wakil.v1alpha1.CompactRequest\x1a\x1f.wakil.v1alpha1.CompactResponse\x12\\\n" +
 	"\rSaveRepoState\x12$.wakil.v1alpha1.SaveRepoStateRequest\x1a%.wakil.v1alpha1.SaveRepoStateResponse\x12e\n" +
-	"\x10RestoreRepoState\x12'.wakil.v1alpha1.RestoreRepoStateRequest\x1a(.wakil.v1alpha1.RestoreRepoStateResponse\x12b\n" +
+	"\x10RestoreRepoState\x12'.wakil.v1alpha1.RestoreRepoStateRequest\x1a(.wakil.v1alpha1.RestoreRepoStateResponse\x12w\n" +
+	"\x16RestoreRepoStateResume\x12-.wakil.v1alpha1.RestoreRepoStateResumeRequest\x1a..wakil.v1alpha1.RestoreRepoStateResumeResponse\x12b\n" +
 	"\x0fSetSessionLabel\x12&.wakil.v1alpha1.SetSessionLabelRequest\x1a'.wakil.v1alpha1.SetSessionLabelResponse\x12V\n" +
 	"\vLoadSession\x12\".wakil.v1alpha1.LoadSessionRequest\x1a#.wakil.v1alpha1.LoadSessionResponse\x12h\n" +
 	"\x11ListSavedSessions\x12(.wakil.v1alpha1.ListSavedSessionsRequest\x1a).wakil.v1alpha1.ListSavedSessionsResponse\x12_\n" +
@@ -2642,7 +2737,7 @@ func file_wakil_v1alpha1_session_state_proto_rawDescGZIP() []byte {
 	return file_wakil_v1alpha1_session_state_proto_rawDescData
 }
 
-var file_wakil_v1alpha1_session_state_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_wakil_v1alpha1_session_state_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_wakil_v1alpha1_session_state_proto_goTypes = []any{
 	(*GetSessionStateRequest)(nil),          // 0: wakil.v1alpha1.GetSessionStateRequest
 	(*SessionState)(nil),                    // 1: wakil.v1alpha1.SessionState
@@ -2676,22 +2771,24 @@ var file_wakil_v1alpha1_session_state_proto_goTypes = []any{
 	(*SaveRepoStateResponse)(nil),           // 29: wakil.v1alpha1.SaveRepoStateResponse
 	(*RestoreRepoStateRequest)(nil),         // 30: wakil.v1alpha1.RestoreRepoStateRequest
 	(*RestoreRepoStateResponse)(nil),        // 31: wakil.v1alpha1.RestoreRepoStateResponse
-	(*SetSessionLabelRequest)(nil),          // 32: wakil.v1alpha1.SetSessionLabelRequest
-	(*SetSessionLabelResponse)(nil),         // 33: wakil.v1alpha1.SetSessionLabelResponse
-	(*LoadSessionRequest)(nil),              // 34: wakil.v1alpha1.LoadSessionRequest
-	(*ConvMessage)(nil),                     // 35: wakil.v1alpha1.ConvMessage
-	(*LoadSessionResponse)(nil),             // 36: wakil.v1alpha1.LoadSessionResponse
-	(*ListSavedSessionsRequest)(nil),        // 37: wakil.v1alpha1.ListSavedSessionsRequest
-	(*SavedSession)(nil),                    // 38: wakil.v1alpha1.SavedSession
-	(*ListSavedSessionsResponse)(nil),       // 39: wakil.v1alpha1.ListSavedSessionsResponse
-	(*InitNewSessionRequest)(nil),           // 40: wakil.v1alpha1.InitNewSessionRequest
-	(*InitNewSessionResponse)(nil),          // 41: wakil.v1alpha1.InitNewSessionResponse
+	(*RestoreRepoStateResumeRequest)(nil),   // 32: wakil.v1alpha1.RestoreRepoStateResumeRequest
+	(*RestoreRepoStateResumeResponse)(nil),  // 33: wakil.v1alpha1.RestoreRepoStateResumeResponse
+	(*SetSessionLabelRequest)(nil),          // 34: wakil.v1alpha1.SetSessionLabelRequest
+	(*SetSessionLabelResponse)(nil),         // 35: wakil.v1alpha1.SetSessionLabelResponse
+	(*LoadSessionRequest)(nil),              // 36: wakil.v1alpha1.LoadSessionRequest
+	(*ConvMessage)(nil),                     // 37: wakil.v1alpha1.ConvMessage
+	(*LoadSessionResponse)(nil),             // 38: wakil.v1alpha1.LoadSessionResponse
+	(*ListSavedSessionsRequest)(nil),        // 39: wakil.v1alpha1.ListSavedSessionsRequest
+	(*SavedSession)(nil),                    // 40: wakil.v1alpha1.SavedSession
+	(*ListSavedSessionsResponse)(nil),       // 41: wakil.v1alpha1.ListSavedSessionsResponse
+	(*InitNewSessionRequest)(nil),           // 42: wakil.v1alpha1.InitNewSessionRequest
+	(*InitNewSessionResponse)(nil),          // 43: wakil.v1alpha1.InitNewSessionResponse
 }
 var file_wakil_v1alpha1_session_state_proto_depIdxs = []int32{
 	2,  // 0: wakil.v1alpha1.SessionState.backend_list:type_name -> wakil.v1alpha1.BackendInfo
 	3,  // 1: wakil.v1alpha1.SessionState.context_limit:type_name -> wakil.v1alpha1.ContextLimit
-	35, // 2: wakil.v1alpha1.LoadSessionResponse.conv:type_name -> wakil.v1alpha1.ConvMessage
-	38, // 3: wakil.v1alpha1.ListSavedSessionsResponse.sessions:type_name -> wakil.v1alpha1.SavedSession
+	37, // 2: wakil.v1alpha1.LoadSessionResponse.conv:type_name -> wakil.v1alpha1.ConvMessage
+	40, // 3: wakil.v1alpha1.ListSavedSessionsResponse.sessions:type_name -> wakil.v1alpha1.SavedSession
 	0,  // 4: wakil.v1alpha1.SessionStateService.GetSessionState:input_type -> wakil.v1alpha1.GetSessionStateRequest
 	4,  // 5: wakil.v1alpha1.SessionStateService.SetModel:input_type -> wakil.v1alpha1.SetModelRequest
 	6,  // 6: wakil.v1alpha1.SessionStateService.SetBackend:input_type -> wakil.v1alpha1.SetBackendRequest
@@ -2707,31 +2804,33 @@ var file_wakil_v1alpha1_session_state_proto_depIdxs = []int32{
 	26, // 16: wakil.v1alpha1.SessionStateService.Compact:input_type -> wakil.v1alpha1.CompactRequest
 	28, // 17: wakil.v1alpha1.SessionStateService.SaveRepoState:input_type -> wakil.v1alpha1.SaveRepoStateRequest
 	30, // 18: wakil.v1alpha1.SessionStateService.RestoreRepoState:input_type -> wakil.v1alpha1.RestoreRepoStateRequest
-	32, // 19: wakil.v1alpha1.SessionStateService.SetSessionLabel:input_type -> wakil.v1alpha1.SetSessionLabelRequest
-	34, // 20: wakil.v1alpha1.SessionStateService.LoadSession:input_type -> wakil.v1alpha1.LoadSessionRequest
-	37, // 21: wakil.v1alpha1.SessionStateService.ListSavedSessions:input_type -> wakil.v1alpha1.ListSavedSessionsRequest
-	40, // 22: wakil.v1alpha1.SessionStateService.InitNewSession:input_type -> wakil.v1alpha1.InitNewSessionRequest
-	1,  // 23: wakil.v1alpha1.SessionStateService.GetSessionState:output_type -> wakil.v1alpha1.SessionState
-	5,  // 24: wakil.v1alpha1.SessionStateService.SetModel:output_type -> wakil.v1alpha1.SetModelResponse
-	7,  // 25: wakil.v1alpha1.SessionStateService.SetBackend:output_type -> wakil.v1alpha1.SetBackendResponse
-	9,  // 26: wakil.v1alpha1.SessionStateService.SetAutoApprove:output_type -> wakil.v1alpha1.SetAutoApproveResponse
-	11, // 27: wakil.v1alpha1.SessionStateService.SetAllowDestructive:output_type -> wakil.v1alpha1.SetAllowDestructiveResponse
-	13, // 28: wakil.v1alpha1.SessionStateService.RevokeAuto:output_type -> wakil.v1alpha1.RevokeAutoResponse
-	15, // 29: wakil.v1alpha1.SessionStateService.SetSubagentEndpoint:output_type -> wakil.v1alpha1.SetSubagentEndpointResponse
-	17, // 30: wakil.v1alpha1.SessionStateService.SetSubagentModel:output_type -> wakil.v1alpha1.SetSubagentModelResponse
-	19, // 31: wakil.v1alpha1.SessionStateService.SetMaxParallelSubagents:output_type -> wakil.v1alpha1.SetMaxParallelSubagentsResponse
-	21, // 32: wakil.v1alpha1.SessionStateService.SetEffectiveCtxMax:output_type -> wakil.v1alpha1.SetEffectiveCtxMaxResponse
-	23, // 33: wakil.v1alpha1.SessionStateService.SetRawTools:output_type -> wakil.v1alpha1.SetRawToolsResponse
-	25, // 34: wakil.v1alpha1.SessionStateService.SetCounselMode:output_type -> wakil.v1alpha1.SetCounselModeResponse
-	27, // 35: wakil.v1alpha1.SessionStateService.Compact:output_type -> wakil.v1alpha1.CompactResponse
-	29, // 36: wakil.v1alpha1.SessionStateService.SaveRepoState:output_type -> wakil.v1alpha1.SaveRepoStateResponse
-	31, // 37: wakil.v1alpha1.SessionStateService.RestoreRepoState:output_type -> wakil.v1alpha1.RestoreRepoStateResponse
-	33, // 38: wakil.v1alpha1.SessionStateService.SetSessionLabel:output_type -> wakil.v1alpha1.SetSessionLabelResponse
-	36, // 39: wakil.v1alpha1.SessionStateService.LoadSession:output_type -> wakil.v1alpha1.LoadSessionResponse
-	39, // 40: wakil.v1alpha1.SessionStateService.ListSavedSessions:output_type -> wakil.v1alpha1.ListSavedSessionsResponse
-	41, // 41: wakil.v1alpha1.SessionStateService.InitNewSession:output_type -> wakil.v1alpha1.InitNewSessionResponse
-	23, // [23:42] is the sub-list for method output_type
-	4,  // [4:23] is the sub-list for method input_type
+	32, // 19: wakil.v1alpha1.SessionStateService.RestoreRepoStateResume:input_type -> wakil.v1alpha1.RestoreRepoStateResumeRequest
+	34, // 20: wakil.v1alpha1.SessionStateService.SetSessionLabel:input_type -> wakil.v1alpha1.SetSessionLabelRequest
+	36, // 21: wakil.v1alpha1.SessionStateService.LoadSession:input_type -> wakil.v1alpha1.LoadSessionRequest
+	39, // 22: wakil.v1alpha1.SessionStateService.ListSavedSessions:input_type -> wakil.v1alpha1.ListSavedSessionsRequest
+	42, // 23: wakil.v1alpha1.SessionStateService.InitNewSession:input_type -> wakil.v1alpha1.InitNewSessionRequest
+	1,  // 24: wakil.v1alpha1.SessionStateService.GetSessionState:output_type -> wakil.v1alpha1.SessionState
+	5,  // 25: wakil.v1alpha1.SessionStateService.SetModel:output_type -> wakil.v1alpha1.SetModelResponse
+	7,  // 26: wakil.v1alpha1.SessionStateService.SetBackend:output_type -> wakil.v1alpha1.SetBackendResponse
+	9,  // 27: wakil.v1alpha1.SessionStateService.SetAutoApprove:output_type -> wakil.v1alpha1.SetAutoApproveResponse
+	11, // 28: wakil.v1alpha1.SessionStateService.SetAllowDestructive:output_type -> wakil.v1alpha1.SetAllowDestructiveResponse
+	13, // 29: wakil.v1alpha1.SessionStateService.RevokeAuto:output_type -> wakil.v1alpha1.RevokeAutoResponse
+	15, // 30: wakil.v1alpha1.SessionStateService.SetSubagentEndpoint:output_type -> wakil.v1alpha1.SetSubagentEndpointResponse
+	17, // 31: wakil.v1alpha1.SessionStateService.SetSubagentModel:output_type -> wakil.v1alpha1.SetSubagentModelResponse
+	19, // 32: wakil.v1alpha1.SessionStateService.SetMaxParallelSubagents:output_type -> wakil.v1alpha1.SetMaxParallelSubagentsResponse
+	21, // 33: wakil.v1alpha1.SessionStateService.SetEffectiveCtxMax:output_type -> wakil.v1alpha1.SetEffectiveCtxMaxResponse
+	23, // 34: wakil.v1alpha1.SessionStateService.SetRawTools:output_type -> wakil.v1alpha1.SetRawToolsResponse
+	25, // 35: wakil.v1alpha1.SessionStateService.SetCounselMode:output_type -> wakil.v1alpha1.SetCounselModeResponse
+	27, // 36: wakil.v1alpha1.SessionStateService.Compact:output_type -> wakil.v1alpha1.CompactResponse
+	29, // 37: wakil.v1alpha1.SessionStateService.SaveRepoState:output_type -> wakil.v1alpha1.SaveRepoStateResponse
+	31, // 38: wakil.v1alpha1.SessionStateService.RestoreRepoState:output_type -> wakil.v1alpha1.RestoreRepoStateResponse
+	33, // 39: wakil.v1alpha1.SessionStateService.RestoreRepoStateResume:output_type -> wakil.v1alpha1.RestoreRepoStateResumeResponse
+	35, // 40: wakil.v1alpha1.SessionStateService.SetSessionLabel:output_type -> wakil.v1alpha1.SetSessionLabelResponse
+	38, // 41: wakil.v1alpha1.SessionStateService.LoadSession:output_type -> wakil.v1alpha1.LoadSessionResponse
+	41, // 42: wakil.v1alpha1.SessionStateService.ListSavedSessions:output_type -> wakil.v1alpha1.ListSavedSessionsResponse
+	43, // 43: wakil.v1alpha1.SessionStateService.InitNewSession:output_type -> wakil.v1alpha1.InitNewSessionResponse
+	24, // [24:44] is the sub-list for method output_type
+	4,  // [4:24] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
 	4,  // [4:4] is the sub-list for extension extendee
 	0,  // [0:4] is the sub-list for field type_name
@@ -2742,14 +2841,14 @@ func file_wakil_v1alpha1_session_state_proto_init() {
 	if File_wakil_v1alpha1_session_state_proto != nil {
 		return
 	}
-	file_wakil_v1alpha1_session_state_proto_msgTypes[35].OneofWrappers = []any{}
+	file_wakil_v1alpha1_session_state_proto_msgTypes[37].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wakil_v1alpha1_session_state_proto_rawDesc), len(file_wakil_v1alpha1_session_state_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   42,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
