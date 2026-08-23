@@ -51,8 +51,8 @@ func TestP4b_StaticFilesStillServedOnTCP(t *testing.T) {
 	defer cleanup()
 
 	html := getStaticFile(t, httpAddr, "/")
-	if !strings.Contains(html, "wakild") {
-		t.Errorf("index.html should contain 'wakild', got: %s", html[:min(len(html), 200)])
+	if !strings.Contains(html, "wakil") {
+		t.Errorf("index.html should contain 'wakil', got: %s", html[:min(len(html), 200)])
 	}
 }
 

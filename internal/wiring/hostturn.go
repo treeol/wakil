@@ -248,8 +248,8 @@ func (h *HostTurnHandle) App() *agent.App { return h.app }
 // ResetSessionBinding clears the session binding so the same App can serve
 // a new session after the previous one closes. Used by the daemon path where
 // one agent.App serves multiple sequential sessions across TUI reconnections.
-// Safe to call only when no turn is active.
-func (h *HostTurnHandle) ResetSessionBinding() { h.ht.ResetSessionBinding() }
+// Returns ErrTurnActive if a turn is still in flight.
+func (h *HostTurnHandle) ResetSessionBinding() error { return h.ht.ResetSessionBinding() }
 
 // HostTurnFunc returns a sessionhost.TurnFunc that drives the real agent loop
 // through app. See the package doc for the single-session binding contract.
@@ -363,33 +363,49 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	// installed once and NOT restored per-turn — the per-turn restore was a
 	// 7b2 bug that broke detached event delivery between turns.
 	if ht.sessionEmit == nil && in.SessionEmit != nil {
-		ht.sessionEmit = in.SessionEmit
-		// Install session-scoped callbacks permanently. These use the
-		// session-scoped emitter, not the turn-scoped in.Emit.
-		app.OnTokRate = func(rate float64) {
-			ht.sessionEmit.Notify(event.KindTokRate, event.TokRate{Rate: rate})
-		}
-		app.EventSink = func(msg any) {
-			// Tool-call messages are turn-scoped kinds (D24): the session
-			// emitter REJECTS them, so route them to the live turn's emitter
-			// when one exists. Everything else projects on the session
-			// surface (subagents, async jobs, notes, …). The current turn's
-			// emitter AND its TurnID are read under ht.mu together — the
-			// sink can fire from tool goroutines concurrently with a turn
-			// boundary, and the pair must stay consistent.
-			switch msg.(type) {
-			case agent.ToolStartMsg, agent.ToolResultMsg:
+			// Install session-scoped callbacks permanently. These use the
+			// session-scoped emitter, not the turn-scoped in.Emit.
+			//
+			// sessionEmit is read under ht.mu in the closures because
+			// ResetSessionBinding (daemon path) writes it to nil between
+			// sessions, and detached work (D24: legal until session close) can
+			// invoke these callbacks concurrently with a reset. Without the
+			// lock this is a data race; without the nil-check OnTokRate panics.
+			ht.mu.Lock()
+			ht.sessionEmit = in.SessionEmit
+			ht.mu.Unlock()
+			app.OnTokRate = func(rate float64) {
 				ht.mu.Lock()
-				te, teTurn := ht.turnEmit, ht.turnEmitTurnID
+				se := ht.sessionEmit
 				ht.mu.Unlock()
-				if te != nil {
-					projectAgentEvent(te, teTurn, msg)
+				if se != nil {
+					se.Notify(event.KindTokRate, event.TokRate{Rate: rate})
 				}
-				return
 			}
-			projectAgentEvent(ht.sessionEmit, "", msg)
+			app.EventSink = func(msg any) {
+				// Tool-call messages are turn-scoped kinds (D24): the session
+				// emitter REJECTS them, so route them to the live turn's emitter
+				// when one exists. Everything else projects on the session
+				// surface (subagents, async jobs, notes, …). The current turn's
+				// emitter AND its TurnID are read under ht.mu together — the
+				// sink can fire from tool goroutines concurrently with a turn
+				// boundary, and the pair must stay consistent.
+				switch msg.(type) {
+				case agent.ToolStartMsg, agent.ToolResultMsg:
+					ht.mu.Lock()
+					te, teTurn := ht.turnEmit, ht.turnEmitTurnID
+					ht.mu.Unlock()
+					if te != nil {
+						projectAgentEvent(te, teTurn, msg)
+					}
+					return
+				}
+				ht.mu.Lock()
+				se := ht.sessionEmit
+				ht.mu.Unlock()
+				projectAgentEvent(se, "", msg)
+			}
 		}
-	}
 
 	// Only Out, Confirm, and OnReasoning are turn-scoped — they use the
 	// turn-scoped in.Emit, which is fenced at turn completion. Snapshot and
@@ -512,11 +528,48 @@ func (ht *hostTurn) claimSession(sid event.SessionID) error {
 // ResetSessionBinding clears the session binding so the same App can serve
 // a new session after the previous one closes. This is used by the daemon
 // path where one agent.App serves multiple sequential sessions across TUI
-// reconnections. It is safe to call only when no turn is active.
-func (ht *hostTurn) ResetSessionBinding() {
+// reconnections.
+//
+// Safe to call only when no turn is active — the caller (SessionStateHandler)
+// must ensure the previous session is closed and detached work has quiesced
+// before calling. Returns ErrTurnActive if a turn is still in flight.
+//
+// Reset order (Mashūra-reviewed): callbacks detached before sessionEmit is
+// cleared, so no late EventSink/OnTokRate call nil-dereferences. The decline
+// latch is cleared so a stale decline from session A cannot terminate session
+// B's workflow. sessionID is cleared last, re-arming the handle for a new
+// claim.
+func (ht *hostTurn) ResetSessionBinding() error {
 	ht.mu.Lock()
-	defer ht.mu.Unlock()
+	if ht.turnActive {
+		ht.mu.Unlock()
+		return ErrTurnActive
+	}
+	if ht.released {
+		ht.mu.Unlock()
+		return fmt.Errorf("wiring: cannot reset a released hostTurn")
+	}
+	// Detach callbacks BEFORE clearing sessionEmit — a late call from
+	// quiescing detached work would nil-deref otherwise. projectAgentEvent
+	// is nil-safe, but OnTokRate calls se.Notify directly.
+	ht.app.EventSink = nil
+	ht.app.OnTokRate = nil
+	ht.sessionEmit = nil
+	ht.turnEmit = nil
+	ht.turnEmitTurnID = ""
+	ht.mu.Unlock()
+
+	// Clear the decline latch under its own lock.
+	ht.declineMu.Lock()
+	ht.declineReason = ""
+	ht.declineOccurred = false
+	ht.declineMu.Unlock()
+
+	// Clear sessionID last — re-arms claimSession for the new session.
+	ht.mu.Lock()
 	ht.sessionID = ""
+	ht.mu.Unlock()
+	return nil
 }
 
 // errorLatch is a thread-safe first-error latch shared between the confirmer

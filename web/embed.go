@@ -1,5 +1,5 @@
 // Package web embeds the static web UI files (card #148 P3).
-// The files are served by wakild's HTTP listener — the same listener
+// The files are served by wakil's HTTP listener — the same listener
 // that serves the Connect RPC handlers (HTTP/JSON).
 package web
 

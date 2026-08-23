@@ -47,7 +47,7 @@ type SessionStateHandler struct {
 	// LoadSession to clear the hostTurn's session binding so the single App
 	// can serve a new session after the previous one closes. The daemon path
 	// sets this; the test path leaves it nil.
-	resetSessionBinding func()
+	resetSessionBinding func() error
 
 	// restoreMu guards restoreDone: RestoreRepoState applies at most once per
 	// daemon App lifetime. The single-App daemon cannot distinguish "fresh boot"
@@ -72,7 +72,7 @@ func NewSessionStateHandler(app *agent.App, resolver principalResolver) *Session
 // session binding before a new session is initialized. Used by the daemon
 // path so the single agent.App can serve multiple sequential sessions across
 // TUI reconnections.
-func (h *SessionStateHandler) SetResetSessionBinding(fn func()) {
+func (h *SessionStateHandler) SetResetSessionBinding(fn func() error) {
 	h.resetSessionBinding = fn
 }
 
@@ -440,6 +440,12 @@ func (h *SessionStateHandler) Compact(ctx context.Context, req *connect.Request[
 		return nil, mapError(err)
 	}
 	app := h.app
+	if app.Session == nil {
+		return connect.NewResponse(&v1alpha1.CompactResponse{
+			Compacted: false,
+			Notice:    "no active session",
+		}), nil
+	}
 	ok, err := app.Compact(ctx, app.SummarizeFn(), true)
 	if err != nil {
 		return connect.NewResponse(&v1alpha1.CompactResponse{
@@ -546,7 +552,9 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 	// Clear the hostTurn's session binding so the single App can serve this
 	// resumed session (the previous session's binding would reject it).
 	if h.resetSessionBinding != nil {
-		h.resetSessionBinding()
+		if err := h.resetSessionBinding(); err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("load_session: cannot reset session binding: %w", err))
+		}
 	}
 	app := h.app
 
@@ -639,7 +647,9 @@ func (h *SessionStateHandler) InitNewSession(ctx context.Context, req *connect.R
 	// Clear the hostTurn's session binding so the single App can serve this
 	// new session (the previous session's binding would reject the new one).
 	if h.resetSessionBinding != nil {
-		h.resetSessionBinding()
+		if err := h.resetSessionBinding(); err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("init_new_session: cannot reset session binding: %w", err))
+		}
 	}
 	app := h.app
 	chatID := agent.NewChatID()

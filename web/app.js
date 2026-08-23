@@ -1,4 +1,4 @@
-// wakild web console — app logic (card #148 P3/P5)
+// wakil web console — app logic (card #148 P3/P5)
 // Vanilla JS, no framework. Speaks the Connect API via HTTP/JSON (fetch POST).
 // Connect-Go uses protojson: all field names are camelCase in JSON.
 

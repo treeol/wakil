@@ -128,7 +128,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, httpA
 
 	// 3. Host with store.
 	hostOpts := []sessionhost.Option{
-		sessionhost.WithAgentName("wakild"),
+		sessionhost.WithAgentName("wakil"),
 	}
 	if store != nil {
 		hostOpts = append(hostOpts, sessionhost.WithStore(store))

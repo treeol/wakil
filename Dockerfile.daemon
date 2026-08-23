@@ -25,12 +25,11 @@
 ###############################################################################
 # Stage 1: Build the wakil binary
 ###############################################################################
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.26.6-bookworm AS builder
 
-# go.mod requires go >= 1.26.6 but the base image ships 1.26.4. GOTOOLCHAIN=auto
-# lets the Go binary download the exact toolchain version pinned in go.mod
-# during `go mod download` / `go build`.
-ENV GOTOOLCHAIN=auto
+# go.mod requires go >= 1.26.6; the base image is pinned to 1.26.6 so no
+# toolchain download is needed (GOTOOLCHAIN=local prevents network fallback).
+ENV GOTOOLCHAIN=local
 
 WORKDIR /src
 
@@ -78,14 +77,15 @@ ENV XDG_DATA_HOME=/data \
 COPY --from=builder /out/wakil /usr/local/bin/wakil
 
 # The nonroot user (UID 65532) is provided by the base image. The mount
-# points below must be writable by UID 65532 — the operator is responsible
-# for setting permissions on the host directories (or use named volumes).
+# points below must be writable by the container user — the operator is
+# responsible for setting permissions on the host directories (or use
+# named volumes).
 #
-# Directories are created implicitly by Docker when volumes are mounted,
-# but we declare them here for documentation and to ensure they exist
-# even without a volume mount (the daemon will create subdirs as needed).
+# Create mount-point directories so they exist even without a volume mount
+# (the daemon will create subdirs as needed, but the parent dirs must exist).
+RUN mkdir -p /data/wakil /config/wakil /run/wakil
 
 # Entry point: run the daemon. Flags are passed via CMD in docker-compose.yml
-# or docker run. The socket path defaults to $XDG_RUNTIME_DIR/wakild.sock
-# (= /run/wakil/wakild.sock) per the daemon's defaultSocketPath().
+# or docker run. The socket path defaults to $XDG_RUNTIME_DIR/wakil.sock
+# (= /run/wakil/wakil.sock) per the daemon's defaultSocketPath().
 ENTRYPOINT ["wakil", "daemon"]
