@@ -1,6 +1,6 @@
 package main
 
-// integration_test.go: integration tests for the wakild daemon (card #148 P2d).
+// integration_test.go: integration tests for the wakil daemon (card #148 P2d).
 //
 // These tests exercise the daemon's HTTP server over a real Unix socket,
 // hitting the Health and GetServerInfo RPCs. They use the Connect client
@@ -25,7 +25,7 @@ import (
 // returns a "ready" status.
 func TestHealthRPC(t *testing.T) {
 	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "wakild.sock")
+	socketPath := filepath.Join(dir, "wakil.sock")
 
 	// Build a Connect server with an ephemeral host (no store).
 	// SystemService handler doesn't call into the host, so a nil TurnFunc
@@ -60,7 +60,7 @@ func TestHealthRPC(t *testing.T) {
 // the correct api_version when running in ephemeral mode.
 func TestGetServerInfoRPC(t *testing.T) {
 	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "wakild.sock")
+	socketPath := filepath.Join(dir, "wakil.sock")
 
 	host := sessionhost.New(nil, sessionhost.WithAgentName("test"))
 	srv := connsvc.NewServer(host, true, connsvc.NewEmbeddedResolver()) // ephemeral=true
@@ -94,7 +94,7 @@ func TestGetServerInfoRPC(t *testing.T) {
 // TestGetServerInfoNonEphemeral verifies ephemeral=false in non-ephemeral mode.
 func TestGetServerInfoNonEphemeral(t *testing.T) {
 	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "wakild.sock")
+	socketPath := filepath.Join(dir, "wakil.sock")
 
 	host := sessionhost.New(nil, sessionhost.WithAgentName("test"))
 	srv := connsvc.NewServer(host, false, connsvc.NewEmbeddedResolver()) // ephemeral=false

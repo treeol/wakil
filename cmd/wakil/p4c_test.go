@@ -79,8 +79,8 @@ func TestP4cJoinTokenExchangeFlow(t *testing.T) {
 	if setCookie == "" {
 		t.Fatal("Set-Cookie header is empty")
 	}
-	if !strings.Contains(setCookie, "wakild_session=") {
-		t.Errorf("Set-Cookie doesn't contain wakild_session: %q", setCookie)
+	if !strings.Contains(setCookie, "wakil_session=") {
+		t.Errorf("Set-Cookie doesn't contain wakil_session: %q", setCookie)
 	}
 	if !strings.Contains(setCookie, "HttpOnly") {
 		t.Error("Set-Cookie is not HttpOnly")

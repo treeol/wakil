@@ -1,6 +1,6 @@
 package main
 
-// server.go: server setup for wakild (card #148 P2d).
+// server.go: server setup for wakil daemon (card #148 P2d).
 //
 // Opens the SQLite event store (fail-closed unless --ephemeral), builds the
 // session host with a TurnFunc, registers the Connect service handlers, and

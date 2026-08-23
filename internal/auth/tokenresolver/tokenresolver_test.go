@@ -138,9 +138,9 @@ func TestReadSessionCookie(t *testing.T) {
 		header string
 		want   string
 	}{
-		{"wakild_session=abc123", "abc123"},
-		{"wakild_session=abc123; other=val", "abc123"},
-		{"other=val; wakild_session=xyz", "xyz"},
+		{"wakil_session=abc123", "abc123"},
+		{"wakil_session=abc123; other=val", "abc123"},
+		{"other=val; wakil_session=xyz", "xyz"},
 		{"no_cookie_here=1", ""},
 		{"", ""},
 	}

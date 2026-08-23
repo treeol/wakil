@@ -1,4 +1,4 @@
-// Package core is the transport-free heart of wakild (card #148). It owns the
+// Package core is the transport-free heart of the wakil daemon (card #148). It owns the
 // domain vocabulary that every client (TUI, Web-UI, CLI/CI) and every handler
 // consumes, regardless of whether the core runs embedded in a single process
 // (embedded mode, the default) or behind a Connect/gRPC server (P2).

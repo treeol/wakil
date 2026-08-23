@@ -38,7 +38,7 @@ import (
 func startWebTestDaemon(t *testing.T, turn sessionhost.TurnFunc) (httpAddr, socketPath string, cleanup func(), host *sessionhost.Host) {
 	t.Helper()
 	dir := t.TempDir()
-	socketPath = filepath.Join(dir, "wakild.sock")
+	socketPath = filepath.Join(dir, "wakil.sock")
 
 	// Find a free TCP port.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

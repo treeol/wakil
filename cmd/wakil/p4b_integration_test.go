@@ -34,7 +34,7 @@ import (
 func startLocalAuthDaemon(t *testing.T, turn sessionhost.TurnFunc) (socketPath string, cleanup func()) {
 	t.Helper()
 	dir := t.TempDir()
-	socketPath = filepath.Join(dir, "wakild.sock")
+	socketPath = filepath.Join(dir, "wakil.sock")
 
 	host := sessionhost.New(turn, sessionhost.WithAgentName("test"))
 	resolver := auth.NewLocalResolver() // uses os.Geteuid()
@@ -117,7 +117,7 @@ func TestP4b_LocalAuth_UnixSocketSuccess(t *testing.T) {
 // rejection.
 func TestP4b_LocalAuth_UIDMismatch(t *testing.T) {
 	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "wakild.sock")
+	socketPath := filepath.Join(dir, "wakil.sock")
 
 	host := sessionhost.New(quickTurnFunc, sessionhost.WithAgentName("test"))
 	// Configure resolver with a UID that is NOT the test process's UID.
@@ -171,7 +171,7 @@ func TestP4b_LocalAuth_NoCredentials(t *testing.T) {
 	// a TCP listener that has no ConnContext hook (simulating a TCP
 	// connection with no peer creds).
 	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "wakild.sock")
+	socketPath := filepath.Join(dir, "wakil.sock")
 
 	host := sessionhost.New(quickTurnFunc, sessionhost.WithAgentName("test"))
 	resolver := auth.NewLocalResolver()

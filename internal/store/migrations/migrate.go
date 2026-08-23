@@ -1,5 +1,5 @@
 // Package migrations implements numbered, forward-only SQL migrations for the
-// wakild SQLite store (card #148 P1).
+// wakil SQLite store (card #148 P1).
 //
 // Migrations are embedded SQL files applied at store open. Each migration runs
 // in its own transaction; its version is recorded in schema_migrations only

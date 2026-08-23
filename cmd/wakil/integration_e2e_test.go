@@ -78,7 +78,7 @@ func quickTurnFunc(ctx context.Context, input sessionhost.TurnInput) (string, er
 func startTestDaemon(t *testing.T, turn sessionhost.TurnFunc) (socketPath string, cleanup func(), host *sessionhost.Host) {
 	t.Helper()
 	dir := t.TempDir()
-	socketPath = filepath.Join(dir, "wakild.sock")
+	socketPath = filepath.Join(dir, "wakil.sock")
 
 	host = sessionhost.New(turn, sessionhost.WithAgentName("test"))
 	srv := connsvc.NewServer(host, true, connsvc.NewEmbeddedResolver()) // ephemeral=true

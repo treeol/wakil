@@ -62,7 +62,7 @@ services:
       # Data and config paths (match Dockerfile.daemon defaults).
       # XDG_DATA_HOME=/data      → /data/wakil/sessions, /data/wakil/memory, ...
       # WAKIL_CONFIG=/config/wakil/config.json
-      # XDG_RUNTIME_DIR=/run/wakil → socket at /run/wakil/wakild.sock
+      # XDG_RUNTIME_DIR=/run/wakil → socket at /run/wakil/wakil.sock
 
       # Exec mode: direct (commands run in-container).
       # Override to "docker" for Docker-in-Docker sandbox mode.
@@ -78,7 +78,7 @@ services:
       - ${HOME}/.config/wakil:/config/wakil:z
 
       # Socket directory: exposed to the host so the TUI can connect.
-      # The daemon creates wakild.sock inside /run/wakil (XDG_RUNTIME_DIR).
+      # The daemon creates wakil.sock inside /run/wakil (XDG_RUNTIME_DIR).
       # On the host, point the TUI at this socket via --socket or
       # WAKIL_DAEMON_SOCKET environment variable.
       - ${XDG_RUNTIME_DIR:-/tmp}/wakil-daemon:/run/wakil:z
@@ -96,7 +96,7 @@ services:
     working_dir: /workspace
 
     # Daemon flags passed via CMD (appended to ENTRYPOINT).
-    # The socket path defaults to $XDG_RUNTIME_DIR/wakild.sock.
+    # The socket path defaults to $XDG_RUNTIME_DIR/wakil.sock.
     # Uncomment --http-addr to enable the web UI listener.
     command: []
       # - --http-addr=0.0.0.0:8791

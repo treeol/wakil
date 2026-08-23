@@ -1,5 +1,5 @@
 // Package peercred provides platform-conditional extraction of Unix-socket
-// peer credentials (SO_PEERCRED on Linux). It is used by the wakild daemon's
+// peer credentials (SO_PEERCRED on Linux). It is used by the wakil daemon's
 // local auth path (P4b) to resolve the connecting process's UID, which is then
 // mapped to a core.Principal by the principal resolver.
 //

@@ -1,6 +1,6 @@
 package main
 
-// signal.go: graceful shutdown handling for wakild (card #148 P2d).
+// signal.go: graceful shutdown handling for wakil daemon (card #148 P2d).
 // SIGTERM and SIGINT trigger a graceful drain: stop accepting new connections,
 // drain running turns up to --shutdown-timeout, then close the host and store.
 

@@ -218,7 +218,7 @@ func main() {
 	exe.Close()
 }
 
-// runDaemonMode dials the wakild daemon and runs the TUI in remote mode
+// runDaemonMode dials the wakil daemon and runs the TUI in remote mode
 // (card #148 P2e). When the user runs `wakil --daemon`, the TUI dials the
 // daemon over its Unix socket and drives the session remotely instead of
 // embedding the agent loop. This mirrors main.go's embedded bootstrap path

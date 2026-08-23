@@ -15,7 +15,7 @@
 #   - Non-root: runs as user 65532 (distroless :nonroot variant)
 #   - Data:    /data/wakil      (mounted from host ~/.local/share/wakil)
 #   - Config:  /config/wakil    (mounted from host ~/.config/wakil)
-#   - Socket:  /run/wakil/wakild.sock (mountable for TUI access)
+#   - Socket:  /run/wakil/wakil.sock (mountable for TUI access)
 #   - Exec mode: direct (the daemon runs commands in-container, not Docker-in-Docker)
 #
 # kvr-server (staging KV store) is NOT included — staging degrades
@@ -62,7 +62,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 # XDG_DATA_HOME=/data        → data dir resolves to /data/wakil/...
 # WAKIL_CONFIG=/config/wakil/config.json → config file path
 # WAKIL_EXEC_MODE=direct     → daemon runs commands in-container
-# XDG_RUNTIME_DIR=/run/wakil → socket resolves to /run/wakil/wakild.sock
+# XDG_RUNTIME_DIR=/run/wakil → socket resolves to /run/wakil/wakil.sock
 #
 # WAKIL_WORKSPACE_PATH is NOT set here — it should be set per-container to
 # pin the workspace identity (the host path that gets hashed for storage

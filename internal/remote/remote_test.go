@@ -84,9 +84,9 @@ func TestDefaultSocketPath(t *testing.T) {
 	if p == "" {
 		t.Fatal("DefaultSocketPath returned empty")
 	}
-	if p == "wakild.sock" {
+	if p == "wakil.sock" {
 		// Only acceptable when neither XDG_RUNTIME_DIR nor HOME is set.
-		t.Logf("DefaultSocketPath fell back to wakild.sock (no XDG/HOME)")
+		t.Logf("DefaultSocketPath fell back to wakil.sock (no XDG/HOME)")
 	}
 }
 

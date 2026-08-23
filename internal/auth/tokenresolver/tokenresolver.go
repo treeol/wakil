@@ -1,7 +1,7 @@
 // Package tokenresolver implements the PrincipalResolver for web session
 // cookie authentication (P4c). It reads the Cookie header from the request
 // context (injected by the auth interceptor middleware), extracts the
-// wakild session cookie, hashes it, and looks up the web_sessions table.
+// wakil session cookie, hashes it, and looks up the web_sessions table.
 // The current membership role is read from the memberships table at
 // resolve time — role changes take effect immediately.
 //
@@ -27,8 +27,8 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 )
 
-// CookieName is the name of the wakild session cookie.
-const CookieName = "wakild_session"
+// CookieName is the name of the wakil session cookie.
+const CookieName = "wakil_session"
 
 // WebSessionResolver resolves browser session cookies to principals.
 // It implements auth.PrincipalResolver.
@@ -116,7 +116,7 @@ func (r *WebSessionResolver) Resolve(ctx context.Context) (core.Principal, error
 	}, nil
 }
 
-// readSessionCookie extracts the wakild_session cookie from the Cookie
+// readSessionCookie extracts the wakil_session cookie from the Cookie
 // header. Returns "" if not present.
 func readSessionCookie(h http.Header) string {
 	cookieHeader := h.Get("Cookie")

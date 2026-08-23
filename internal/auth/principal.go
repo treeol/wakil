@@ -1,4 +1,4 @@
-// Package auth provides principal resolution for the wakild daemon's Connect
+// Package auth provides principal resolution for the wakil daemon's Connect
 // server (P4b). It maps transport-level peer credentials (Unix-socket UID via
 // SO_PEERCRED) to a core.Principal that the service layer uses for tenant
 // isolation and authorization.

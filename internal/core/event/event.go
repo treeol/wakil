@@ -1,4 +1,4 @@
-// Package event defines the domain event model for wakild (card #148).
+// Package event defines the domain event model for the wakil daemon (card #148).
 //
 // This is the transport-free core's only outward-facing vocabulary: the typed,
 // sequenced event stream that every client (TUI, Web-UI, CLI/CI) consumes.

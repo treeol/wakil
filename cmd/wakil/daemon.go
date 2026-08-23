@@ -130,7 +130,7 @@ Usage:
   wakil daemon [flags]
 
 Flags:
-  --socket <path>            Unix socket path (default: $XDG_RUNTIME_DIR/wakild.sock)
+  --socket <path>            Unix socket path (default: $XDG_RUNTIME_DIR/wakil.sock)
   --http-addr <addr>         TCP address for web UI (e.g. 127.0.0.1:8791; empty = disabled)
   --tls-cert <path>          PEM TLS certificate file (enables HTTPS on TCP listener)
   --tls-key <path>           PEM TLS private key file (requires --tls-cert)

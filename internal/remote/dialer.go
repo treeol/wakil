@@ -1,6 +1,6 @@
-// Package remote implements the TUI's remote-client surface for wakild daemon
+// Package remote implements the TUI's remote-client surface for the wakil daemon
 // mode (card #148 P2e). When the user runs `wakil --daemon`, the TUI does not
-// embed the agent loop; instead it dials the wakild daemon's Unix socket and
+// embed the agent loop; instead it dials the wakil daemon's Unix socket and
 // drives the session over Connect-RPC.
 //
 // The package provides:
@@ -30,7 +30,7 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 )
 
-// Dial opens a Unix-socket-backed HTTP client connected to the wakild daemon
+// Dial opens a Unix-socket-backed HTTP client connected to the wakil daemon
 // at socketPath. The returned Clients bundle holds the three Connect service
 // clients (Session, Event, System) all sharing one HTTP client.
 //
@@ -44,7 +44,7 @@ func Dial(socketPath string) (*Clients, error) {
 	// Verify the socket exists and is connectable before building the client.
 	// This gives a clear error at startup rather than a confusing HTTP error
 	// on the first RPC. For daemon-mode clients that predate SessionStateService
-	// (older wakild builds), this check passes but GetSessionState will fail at
+	// (older builds), this check passes but GetSessionState will fail at
 	// call time — the RemoteFacade degrades to cached-zero state in that case.
 	if _, err := os.Stat(socketPath); err != nil {
 		return nil, fmt.Errorf("remote: socket %s not found — is `wakil daemon` running?: %w", socketPath, err)
@@ -125,12 +125,12 @@ func CheckHealth(ctx context.Context, c *Clients) error {
 // daemon's defaultSocketPath().
 func DefaultSocketPath() string {
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
-		return xdg + "/wakild.sock"
+		return xdg + "/wakil.sock"
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return home + "/.local/share/wakil/wakild.sock"
+		return home + "/.local/share/wakil/wakil.sock"
 	}
-	return "wakild.sock"
+	return "wakil.sock"
 }
 
 // pingSession verifies the session is reachable on the daemon. Used after

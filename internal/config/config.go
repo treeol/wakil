@@ -447,7 +447,7 @@ type Config struct {
 	ModelExplicit bool `json:"-"`
 	AutoExplicit  bool `json:"-"`
 
-	// DaemonMode selects remote daemon mode (P2e): the TUI dials the wakild
+	// DaemonMode selects remote daemon mode (P2e): the TUI dials the wakil
 	// daemon over its Unix socket instead of embedding the agent loop.
 	// DaemonSocket overrides the default socket path.
 	DaemonMode   bool   `json:"-"`
@@ -847,8 +847,8 @@ func LoadConfig(argv []string) (Config, error) {
 	var traceFlag bool
 	fs.BoolVar(&traceFlag, "trace", false, "enable rich JSONL trace capture for this session (overrides trace_sessions config)")
 	fs.StringVar(&cfg.TraceDir, "trace-dir", cfg.TraceDir, "directory for trace files (default ~/.local/share/wakil/traces)")
-	fs.BoolVar(&cfg.DaemonMode, "daemon", false, "connect to a running wakild daemon over its Unix socket (remote mode)")
-	fs.StringVar(&cfg.DaemonSocket, "socket", "", "path to the wakild daemon's Unix socket (default: $XDG_RUNTIME_DIR/wakild.sock or ~/.local/share/wakil/wakild.sock)")
+	fs.BoolVar(&cfg.DaemonMode, "daemon", false, "connect to a running wakil daemon over its Unix socket (remote mode)")
+	fs.StringVar(&cfg.DaemonSocket, "socket", "", "path to the wakil daemon's Unix socket (default: $XDG_RUNTIME_DIR/wakil.sock or ~/.local/share/wakil/wakil.sock)")
 	fs.Usage = func() {
 		out := fs.Output()
 		fmt.Fprintln(out, "Usage: wakil [flags] [workspace-path]")

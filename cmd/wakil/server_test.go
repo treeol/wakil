@@ -1,6 +1,6 @@
 package main
 
-// server_test.go: tests for the wakild daemon server (card #148 P2d).
+// server_test.go: tests for the wakil daemon server (card #148 P2d).
 //
 // Covers: Unix socket listener (stale-socket handling, permissions, in-use
 // detection), and basic daemon start/health/shutdown lifecycle.
@@ -117,9 +117,9 @@ func TestDefaultSocketPath(t *testing.T) {
 	if path == "" {
 		t.Fatal("default socket path is empty")
 	}
-	// Should end with wakild.sock.
-	if filepath.Base(path) != "wakild.sock" {
-		t.Errorf("expected base name wakild.sock, got %q", filepath.Base(path))
+	// Should end with wakil.sock.
+	if filepath.Base(path) != "wakil.sock" {
+		t.Errorf("expected base name wakil.sock, got %q", filepath.Base(path))
 	}
 }
 

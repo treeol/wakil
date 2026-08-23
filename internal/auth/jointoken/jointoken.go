@@ -1,5 +1,5 @@
 // Package jointoken implements join token generation, issuance, and
-// exchange for the wakild daemon (P4c).
+// exchange for the wakil daemon (P4c).
 //
 // Join tokens are one-time-use, admin-issued credentials that bootstrap new
 // users into the system. They are exchanged for a browser session cookie

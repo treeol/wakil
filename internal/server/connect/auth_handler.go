@@ -56,7 +56,7 @@ func NewAuthHandler(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store 
 		apiIssuer:  apiIssuer,
 		store:      store,
 		resolver:   resolver,
-		cookieName: "wakild_session",
+		cookieName: "wakil_session",
 	}
 }
 
@@ -438,7 +438,7 @@ func (h *AuthHandler) GetOIDCAuthURL(ctx context.Context, req *connect.Request[v
 // the IdP.
 //
 // This RPC is PUBLIC (unauthenticated) — the caller exchanges an IdP code,
-// not a wakild credential.
+// not a wakil credential.
 // Returns Unimplemented when OIDC is not configured.
 func (h *AuthHandler) ExchangeOIDCCode(ctx context.Context, req *connect.Request[v1alpha1.ExchangeOIDCCodeRequest]) (*connect.Response[v1alpha1.ExchangeOIDCCodeResponse], error) {
 	if h.oidcCfg.Issuer == "" {

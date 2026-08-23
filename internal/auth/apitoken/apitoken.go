@@ -1,5 +1,5 @@
 // Package apitoken implements API token generation, issuance, and management
-// for the wakild daemon (P4d).
+// for the wakil daemon (P4d).
 //
 // API tokens are long-lived, scoped credentials for machine/CI clients. They
 // are SHA-256 hashed at rest (plaintext shown once at creation). Unlike join

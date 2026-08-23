@@ -170,7 +170,7 @@ func TestP4fOriginValidatorRejectsUnapprovedOrigin(t *testing.T) {
 	// POST with a cookie from an unapproved origin.
 	req, _ := http.NewRequest("POST", ts.URL+"/api", strings.NewReader("{}"))
 	req.Header.Set("Origin", "https://evil.example.com")
-	req.Header.Set("Cookie", "wakild_session=test")
+	req.Header.Set("Cookie", "wakil_session=test")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -201,7 +201,7 @@ func TestP4fOriginValidatorAllowsApprovedOrigin(t *testing.T) {
 	// POST with a cookie from an approved origin.
 	req, _ := http.NewRequest("POST", ts.URL+"/api", strings.NewReader("{}"))
 	req.Header.Set("Origin", "https://app.example.com")
-	req.Header.Set("Cookie", "wakild_session=test")
+	req.Header.Set("Cookie", "wakil_session=test")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -259,7 +259,7 @@ func TestP4fOriginValidatorDevMode(t *testing.T) {
 	// POST with cookie from any origin in dev mode.
 	req, _ := http.NewRequest("POST", ts.URL+"/api", strings.NewReader("{}"))
 	req.Header.Set("Origin", "https://anything.example.com")
-	req.Header.Set("Cookie", "wakild_session=test")
+	req.Header.Set("Cookie", "wakil_session=test")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
