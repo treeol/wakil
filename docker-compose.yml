@@ -59,6 +59,16 @@ services:
       # contains symlinks.
       WAKIL_WORKSPACE_PATH: ${WAKIL_WORKSPACE_PATH:?set WAKIL_WORKSPACE_PATH to your host workspace path}
 
+      # Pre-computed workspace key (optional). If your host path contains
+      # symlinks, the daemon (running in the container) cannot resolve them,
+      # causing workspace key divergence. To fix: run this on the host to
+      # get the key, then set WAKIL_WORKSPACE_KEY to that value:
+      #   wakil --print-workspace-key /home/user/myproject
+      # (or: python3 -c "import hashlib; print(hashlib.sha256(b'/real/resolved/path').hexdigest())")
+      # When set, WAKIL_WORKSPACE_PATH is used for file operations only;
+      # the key is used directly for identity.
+      # WAKIL_WORKSPACE_KEY: <64-char hex SHA-256 key>
+
       # Data and config paths (match Dockerfile.daemon defaults).
       # XDG_DATA_HOME=/data      → /data/wakil/sessions, /data/wakil/memory, ...
       # WAKIL_CONFIG=/config/wakil/config.json

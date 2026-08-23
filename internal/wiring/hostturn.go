@@ -40,6 +40,7 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/id"
 	"github.com/treeol/wakil/internal/core/sessionhost"
+	"github.com/treeol/wakil/internal/policy"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/workflow"
 )
@@ -597,8 +598,9 @@ func (l *errorLatch) load() error {
 }
 
 // newHostConfirmer is the D5/D25 approval shim: a context-aware agent.Confirmer
-// that emits ApprovalRequested (durable) before resolving and ApprovalResolved
-// (durable) after, with full approve/decline/allow-reads outcome fidelity.
+// that evaluates policy (parity with tuiConfirmer), then emits
+// ApprovalRequested (durable) before resolving and ApprovalResolved (durable)
+// after, with full approve/decline/allow-reads outcome fidelity.
 //
 // Two modes (7b2 D25):
 //   - Sync (headless, asyncApproval=false): the inline resolver runs in a
@@ -613,21 +615,52 @@ func (l *errorLatch) load() error {
 // approval is never silently half-committed.
 func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnInput, resolver ApprovalResolver, asyncApproval bool, emitErr *errorLatch, ht *hostTurn) agent.Confirmer {
 	return func(toolName, headline, detail string, readAction bool) bool {
+		// ── Policy evaluation (parity with tuiConfirmer) ──────────────────
+		// If a policy is active, evaluate it first. Policy allow behaves
+		// like AutoApprove — but SuspendAuto carve-outs (egress, destructive)
+		// still fire on top. Policy deny blocks the call. Policy ask falls
+		// through to the existing confirm path. This was missing from the
+		// hostConfirmer (Mashūra-found: the comment claimed "mirrors
+		// tuiConfirmer exactly" but the policy block was absent).
+		if pol := app.Policy(); pol != nil {
+			input := agent.BuildPolicyInput(toolName, detail, readAction)
+			result := pol.Evaluate(input)
+			switch result.Decision {
+			case policy.Deny:
+				if app.EventSink != nil {
+					app.EventSink(agent.SysNoteMsg{
+						Text: "🚫 blocked by policy: " + result.Reason + " (rule: " + result.RuleName + ")",
+					})
+				}
+				return false
+			case policy.Allow:
+				reason := agent.SuspendAuto(toolName, app, detail)
+				if reason == "" {
+					if app.EventSink != nil {
+						app.EventSink(agent.SysNoteMsg{
+							Text: "⚡ policy allow: " + headline + "\n" + agent.Indent(detail),
+						})
+					}
+					return true
+				}
+				// Auto suspended — the policy said allow, but a hard safety
+				// gate requires confirmation. Fall through to the prompt.
+				headline = "⚡ auto suspended: " + reason + " — " + headline
+			case policy.Ask:
+				// Policy says ask — fall through to AutoApprove / prompt.
+			}
+		}
+
 		// ── AutoApprove short-circuit (parity with tuiConfirmer) ──────────
 		// When /auto is on and SuspendAuto does not carve out this tool,
-		// auto-approve without parking. The daemon's hostConfirmer was
-		// originally written for the async wire path and never had this
-		// short-circuit — so in daemon mode every tool call prompted even
-		// with /auto enabled. This mirrors tuiConfirmer (commands.go:103)
-		// exactly: AutoApprove → SuspendAuto → ⚡ auto note → return true.
+		// auto-approve without parking. No ApprovalRequested/ApprovalResolved
+		// — the call is auto-approved, not user-approved.
 		if app.Consent().AutoApprove {
 			reason := agent.SuspendAuto(toolName, app, detail)
 			if reason == "" {
 				// Emit the ⚡ auto note through the session-scoped EventSink
 				// (same path as tuiConfirmer's sendEvent — the adapter's
-				// EventSink projects SysNoteMsg to KindSessionNote). No
-				// ApprovalRequested/ApprovalResolved — the call is
-				// auto-approved, not user-approved.
+				// EventSink projects SysNoteMsg to KindSessionNote).
 				if app.EventSink != nil {
 					app.EventSink(agent.SysNoteMsg{
 						Text: "⚡ auto: " + headline + "\n" + agent.Indent(detail),
