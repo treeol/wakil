@@ -62,6 +62,19 @@ type App struct {
 	// mutex, the nil-write races the read. Lock ordering: callbackMu is
 	// always standalone — never held while acquiring stateMu or convMu.
 	callbackMu sync.Mutex
+
+	// stateMu protects RPC-driven session settings from concurrent access
+	// by the turn goroutine (prepareTurn writes), RPC handlers (SetModel,
+	// SetBackend, etc.), and GetSessionState reads. Lock ordering:
+	// stateMu is acquired BEFORE convMu. Never hold stateMu across I/O,
+	// network calls, or callbacks. Exported methods on App own this lock;
+	// cross-package callers never lock App internals directly.
+	stateMu sync.RWMutex
+
+	// saveMu serializes SaveSession disk writes. Always standalone —
+	// acquired after stateMu and convMu are released. Prevents two
+	// concurrent saves from racing on Session mutation and WriteSession.
+	saveMu sync.Mutex
 	Confirm    Confirmer
 	Out        io.Writer // assistant text + status sink
 
@@ -537,26 +550,53 @@ type bgEntry struct {
 func (a *App) CounselCallsCount() int { return a.counselCalls }
 
 // SetInfoPanelOpen sets InfoPanelOpen and persists it to repo-state. Called by
-// the TUI when the user toggles the info panel.
+// the TUI when the user toggles the info panel. Now acquires stateMu for the
+// field write so it is safe for cross-goroutine callers (the RPC handler and
+// the TUI goroutine). The saveRepoState call is outside the lock.
 func (a *App) SetInfoPanelOpen(open bool) {
+	a.stateMu.Lock()
 	a.InfoPanelOpen = open
+	a.stateMu.Unlock()
 	a.saveRepoState(func(s *RepoState) { s.InfoPanelOpen = open })
 }
 
 // EffectiveSubagentModel returns the model dispatch_subagent will use:
 // SubagentModelOverride if set, otherwise the resolved endpoint's model.
-// Exported for the TUI status line (WP-9.1).
+// Exported for the TUI status line (WP-9.1). Reads SubagentEndpointOverride
+// under stateMu.RLock to avoid racing with /subagent RPC writes. The
+// resolveSubagentEndpointView chain still reads SubagentModelOverride
+// directly — that race is fixed in Phase 3 (subagent dispatch locking).
 func (a *App) EffectiveSubagentModel() string {
-	return a.resolvedSubagentDisplayModel()
+	// Snapshot the endpoint override under the lock so the epName
+	// resolution doesn't race with a concurrent /subagent RPC write.
+	// The model override read inside resolveSubagentEndpointView is a
+	// pre-existing unsynchronized read addressed in Phase 3.
+	a.stateMu.RLock()
+	epName := a.SubagentEndpointOverride
+	a.stateMu.RUnlock()
+	if epName == "" {
+		epName = a.Cfg.SubagentEndpoint
+	}
+	if epName == "inherit" {
+		epName = ""
+	}
+	view, _ := a.resolveSubagentEndpointView(epName)
+	return view.model
 }
 
 // EffectiveModel returns the model that will be sent in the next request:
-// SelectedModel if set, otherwise Client.Model.
+// SelectedModel if set, otherwise Client.Model. Acquires stateMu.RLock for
+// a consistent read — both SelectedModel and Client.Model are under stateMu.
 func (a *App) EffectiveModel() string {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
 	if a.SelectedModel != "" {
 		return a.SelectedModel
 	}
-	return a.Client.Model
+	if a.Client != nil {
+		return a.Client.Model
+	}
+	return ""
 }
 
 // SetEventSink installs the EventSink callback under callbackMu so a

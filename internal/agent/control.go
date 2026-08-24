@@ -109,14 +109,14 @@ func (a *App) ConsumeStartupNote() string {
 }
 
 // SetCtxLimit sets the resolved per-slot context window and resets the
-// pressure-warning latch so it re-evaluates against the new window. This groups
-// the two writes semantically; it does NOT make them atomic w.r.t. concurrent
-// readers (CtxLimit/CtxPressureWarned are plain fields — the cross-goroutine
-// read/write race is pre-existing and out of chunk 6's scope; see the plan §2
-// concurrency table).
+// pressure-warning latch. Now acquires stateMu so CtxLimit and
+// CtxPressureWarned writes are synchronized with concurrent readers
+// (activeThresholds, ContextLimit, GetSessionState).
 func (a *App) SetCtxLimit(lim ContextLimit) {
+	a.stateMu.Lock()
 	a.CtxLimit = lim
 	a.CtxPressureWarned = false
+	a.stateMu.Unlock()
 }
 
 // SetModelList replaces the model list used for /model and /submodel

@@ -80,9 +80,12 @@ func (a *App) SetCounselMode(mode string) {
 
 // SetWorkflow sets the active workflow state. This is the exported setter for
 // cross-package mutation (e.g. main.go resume, run.go headless workflow setup).
-// Pass nil to clear the workflow.
+// Pass nil to clear the workflow. Acquires stateMu so the write is synchronized
+// with concurrent readers (GetSessionState, SnapshotSessionState).
 func (a *App) SetWorkflow(wf *workflow.WorkflowState) {
+	a.stateMu.Lock()
 	a.Workflow = wf
+	a.stateMu.Unlock()
 }
 
 // SetAutoCounsel is the post-construction setter for auto-counsel config.
