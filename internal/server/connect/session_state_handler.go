@@ -593,25 +593,41 @@ func (h *SessionStateHandler) RestoreRepoState(ctx context.Context, req *connect
 	}
 	app := h.app
 
-	// One-shot per App lifetime (guard + idempotence, not the trigger): the
-	// single-App daemon cannot itself distinguish fresh-boot from resume, so the
-	// remote TUI drives this call on a fresh conversation only. This guard makes
-	// a duplicate/racing call a no-op that still reports the live state safely.
+	// One-shot per session generation (guard + idempotence, not the
+	// trigger): the single-App daemon serves multiple sequential sessions;
+	// each fresh conversation gets its own restore. The guard is reset in
+	// InitNewSession and LoadSession (via resetRestoreDone) so a subsequent
+	// fresh conversation can restore again. The client drives the call
+	// (fresh boot only); the guard prevents a duplicate/racing call within
+	// one session.
 	h.restoreMu.Lock()
 	if h.restoreDone {
+		h.restoreMu.Unlock()
+		return connect.NewResponse(&v1alpha1.RestoreRepoStateResponse{}), nil
+	}
+
+	// Phase 1: Load from disk (no lock).
+	st, err := agent.RestoreRepoStateRead(app)
+	if err != nil || st == nil {
+		// Missing/unreadable file counts as done — there's nothing to apply.
+		h.restoreDone = true
 		h.restoreMu.Unlock()
 		return connect.NewResponse(&v1alpha1.RestoreRepoStateResponse{}), nil
 	}
 	h.restoreDone = true
 	h.restoreMu.Unlock()
 
-	result := agent.RestoreRepoState(app)
+	// Phase 2: Apply under lock. Returns literal model/backend strings that
+	// were actually applied (skipped by eligibility guards don't appear).
+	result := agent.RestoreRepoStateApply(app, st)
 
-	// Re-resolve context limits server-side (the daemon owns app.Client.HTTP and
-	// app.Cfg; the remote TUI does not). Uses the literal restored strings, not
-	// post-restore App fields, mirroring BootstrapTUI's convention exactly.
+	// Phase 3: Network probe (no lock). Re-resolve context limits server-side
+	// using the literal strings Apply actually used — not raw RepoState values
+	// that may have been skipped. The daemon owns app.Client.HTTP and app.Cfg;
+	// the remote TUI does not.
 	if (result.Model != "" || result.Backend != "") && app.Client != nil && app.Client.HTTP != nil {
-		app.CtxLimit = agent.ResolveContextLimitForBackendModel(ctx, app.Client.HTTP, app.Cfg, result.Backend, result.Model, io.Discard)
+		cl := agent.ResolveContextLimitForBackendModel(ctx, app.Client.HTTP, app.Cfg, result.Backend, result.Model, io.Discard)
+		app.SetCtxLimit(cl)
 	}
 
 	return connect.NewResponse(&v1alpha1.RestoreRepoStateResponse{
@@ -631,7 +647,14 @@ func (h *SessionStateHandler) RestoreRepoStateResume(ctx context.Context, req *c
 	// This is called by the remote TUI after LoadSession (resume) to restore
 	// AutoApprove, RawTools, maxpar, maxctx, subagent, mashura settings
 	// without changing the model/backend mid-transcript.
-	result := agent.RestoreRepoStateResume(app)
+	//
+	// Split: Read (I/O) → Apply (lock). No network probe needed (no
+	// model/backend change).
+	st, err := agent.RestoreRepoStateRead(app)
+	if err != nil || st == nil {
+		return connect.NewResponse(&v1alpha1.RestoreRepoStateResumeResponse{}), nil
+	}
+	result := agent.RestoreRepoStateResumeApply(app, st)
 
 	return connect.NewResponse(&v1alpha1.RestoreRepoStateResumeResponse{
 		Notice: result.Note,

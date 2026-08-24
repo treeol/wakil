@@ -97,9 +97,12 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		// RawTools, maxpar, maxctx, subagent, mashura) — model/backend are
 		// skipped to avoid changing them mid-transcript.
 		if wf, ok := f.(*wiringFacade); ok {
-			result := agent.RestoreRepoStateResume(wf.app)
-			if result.Note != "" {
-				wf.app.StartupNote = result.Note
+			st, restoreErr := agent.RestoreRepoStateRead(wf.app)
+			if restoreErr == nil && st != nil {
+				result := agent.RestoreRepoStateResumeApply(wf.app, st)
+				if result.Note != "" {
+					wf.app.StartupNote = result.Note
+				}
 			}
 		}
 	} else {
@@ -119,15 +122,23 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		// Fresh conversation only: per-repo terminal settings restore
 		// (a resumed session's model/backend is never silently changed).
 		if opts.RestoreRepoState && resumeID == "" {
-			result := agent.RestoreRepoState(app)
-			if result.Note != "" {
-				app.StartupNote = result.Note
-			}
-			// Re-resolve context limits using the literal restored strings —
-			// mirrors resolveBackendCtxCmd's calling convention (reading
-			// app.SelectedModel back would be wrong for openai-kind endpoints).
-			if result.Model != "" || result.Backend != "" {
-				app.CtxLimit = agent.ResolveContextLimitForBackendModel(ctx, app.Client.HTTP, cfg, result.Backend, result.Model, os.Stderr)
+			st, restoreErr := agent.RestoreRepoStateRead(app)
+			if restoreErr == nil && st != nil {
+				// Apply under lock. Returns literal model/backend strings
+				// that were actually applied.
+				result := agent.RestoreRepoStateApply(app, st)
+				if result.Note != "" {
+					app.StartupNote = result.Note
+				}
+				// Re-resolve context limits using the literal strings Apply
+				// actually used — mirrors resolveBackendCtxCmd's calling
+				// convention (reading app.SelectedModel back would be wrong
+				// for openai-kind endpoints). Uses app.Cfg (same pointer as
+				// cfg, but explicit for clarity).
+				if (result.Model != "" || result.Backend != "") && app.Client != nil && app.Client.HTTP != nil {
+					cl := agent.ResolveContextLimitForBackendModel(ctx, app.Client.HTTP, app.Cfg, result.Backend, result.Model, os.Stderr)
+					app.SetCtxLimit(cl)
+				}
 			}
 		}
 		// Counsel mode (TUI defaults).
