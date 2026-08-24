@@ -330,6 +330,14 @@ func (a *App) SnapshotSessionState() SessionStateSnapshot {
 		snap.WorkflowLabel = a.Workflow.SidebarLabel()
 	}
 
+	// Workspace: copy under the lock — SessionWorkspace reads Cfg fields
+	// (ExecMode, WorkDir) that share the Cfg struct value with fields
+	// written under stateMu by restoreEndpointIndependentLocked (OracleModel,
+	// MaxParallelSubagents, etc.). The race detector treats writes to any
+	// field in a struct value as racing with reads of any other field in
+	// the same allocation, so this must be under the lock.
+	snap.Workspace = a.SessionWorkspace()
+
 	a.stateMu.RUnlock()
 
 	// ---- Outside stateMu: compute derived values ----
@@ -356,8 +364,7 @@ func (a *App) SnapshotSessionState() SessionStateSnapshot {
 	cl := a.ContextLimit()
 	snap.CtxLimit = cl
 
-	// Workspace.
-	snap.Workspace = a.SessionWorkspace()
+	// Workspace was copied under the lock above.
 
 	// Exec info.
 	if a.Exec != nil {
