@@ -54,8 +54,16 @@ type App struct {
 	// goroutines take a read-lock snapshot. All Conv access must go through
 	// ConvSnapshot (read) or the lock directly (write).
 	convMu  sync.RWMutex
-	Confirm Confirmer
-	Out     io.Writer // assistant text + status sink
+	// callbackMu guards the callback fields EventSink and OnTokRate from
+	// concurrent write/read. These are installed by the turn goroutine in
+	// hostTurn.run and cleared by ResetSessionBinding (an RPC goroutine in
+	// daemon mode). The turn goroutine reads them via sendEvent/streamSink;
+	// the RPC goroutine writes nil on session transition. Without this
+	// mutex, the nil-write races the read. Lock ordering: callbackMu is
+	// always standalone — never held while acquiring stateMu or convMu.
+	callbackMu sync.Mutex
+	Confirm    Confirmer
+	Out        io.Writer // assistant text + status sink
 
 	// saveFailedWarned deduplicates SaveSession's failure warning: persistence
 	// is best-effort (a write failure must never interrupt a turn), but a
@@ -551,11 +559,47 @@ func (a *App) EffectiveModel() string {
 	return a.Client.Model
 }
 
-// sendEvent delivers msg to the EventSink if one is set (nil-safe).
-func (a *App) sendEvent(msg interface{}) {
-	if a.EventSink != nil {
-		a.EventSink(msg)
+// SetEventSink installs the EventSink callback under callbackMu so a
+// concurrent ResetSessionBinding nil-clear cannot race the write.
+func (a *App) SetEventSink(fn func(interface{})) {
+	a.callbackMu.Lock()
+	a.EventSink = fn
+	a.callbackMu.Unlock()
+}
+
+// SetOnTokRate installs the OnTokRate callback under callbackMu.
+func (a *App) SetOnTokRate(fn func(float64)) {
+	a.callbackMu.Lock()
+	a.OnTokRate = fn
+	a.callbackMu.Unlock()
+}
+
+// ClearCallbacks nils EventSink and OnTokRate under callbackMu. Used by
+// ResetSessionBinding to detach callbacks atomically.
+func (a *App) ClearCallbacks() {
+	a.callbackMu.Lock()
+	a.EventSink = nil
+	a.OnTokRate = nil
+	a.callbackMu.Unlock()
+}
+
+// SendEvent delivers msg to the EventSink if one is set (nil-safe).
+// Thread-safe: acquires callbackMu so a concurrent ResetSessionBinding
+// nil-clear cannot race the read. Exported so cross-package callers
+// (wiring/hostturn) can dispatch events without directly accessing the
+// EventSink field.
+func (a *App) SendEvent(msg interface{}) {
+	a.callbackMu.Lock()
+	sink := a.EventSink
+	a.callbackMu.Unlock()
+	if sink != nil {
+		sink(msg)
 	}
+}
+
+// sendEvent is the unexported alias for in-package callers.
+func (a *App) sendEvent(msg interface{}) {
+	a.SendEvent(msg)
 }
 
 // ConvSnapshot returns a copy of the current Conv sanitized to the last complete
@@ -1247,7 +1291,10 @@ func (a *App) streamSink() proxy.Sink {
 	var start, lastEmit time.Time
 	return func(s string) {
 		fmt.Fprint(a.Out, s)
-		if a.OnTokRate == nil {
+		a.callbackMu.Lock()
+		onTokRate := a.OnTokRate
+		a.callbackMu.Unlock()
+		if onTokRate == nil {
 			return
 		}
 		now := time.Now()
@@ -1256,7 +1303,7 @@ func (a *App) streamSink() proxy.Sink {
 		}
 		chars += len(s)
 		if el := now.Sub(start).Seconds(); el >= 0.1 && now.Sub(lastEmit) >= 200*time.Millisecond {
-			a.OnTokRate(float64(chars) / 4.0 / el)
+			onTokRate(float64(chars) / 4.0 / el)
 			lastEmit = now
 		}
 	}

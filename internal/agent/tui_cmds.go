@@ -51,7 +51,7 @@ func RunTurn(app *App, ctx context.Context, userText string) Cmd {
 	return func() Msg {
 		app.Out = NewProgWriter(func(m StreamChunkMsg) { app.sendEvent(m) })
 		app.Confirm = tuiConfirmer(app)
-		app.OnTokRate = func(tps float64) { app.sendEvent(TokRateMsg{Tps: tps}) }
+		app.SetOnTokRate(func(tps float64) { app.sendEvent(TokRateMsg{Tps: tps}) })
 		app.OnReasoning = func(s string) { app.sendEvent(ReasoningChunkMsg{Text: s}) }
 		// Dedup cache is for subagents only (dispatchSubagent sets it). The main
 		// agent is interactive — the user can cancel loops via Ctrl+C, and

@@ -361,11 +361,11 @@ func scrubSensitiveArgs(args string) string {
 // can route concurrent streams to the right tab. Returns io.Discard when the
 // parent app has no EventSink set (CLI invocation or tests).
 func subagentProgressOut(parent *App, chatID string) io.Writer {
-	if parent == nil || parent.EventSink == nil {
+	if parent == nil {
 		return io.Discard
 	}
 	return NewProgWriter(func(m StreamChunkMsg) {
-		parent.sendEvent(SubagentChunkMsg{ChatID: chatID, Text: m.Text})
+		parent.SendEvent(SubagentChunkMsg{ChatID: chatID, Text: m.Text})
 	})
 }
 

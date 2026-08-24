@@ -375,15 +375,15 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 			ht.mu.Lock()
 			ht.sessionEmit = in.SessionEmit
 			ht.mu.Unlock()
-			app.OnTokRate = func(rate float64) {
+			app.SetOnTokRate(func(rate float64) {
 				ht.mu.Lock()
 				se := ht.sessionEmit
 				ht.mu.Unlock()
 				if se != nil {
 					se.Notify(event.KindTokRate, event.TokRate{Rate: rate})
 				}
-			}
-			app.EventSink = func(msg any) {
+			})
+			app.SetEventSink(func(msg any) {
 				// Tool-call messages are turn-scoped kinds (D24): the session
 				// emitter REJECTS them, so route them to the live turn's emitter
 				// when one exists. Everything else projects on the session
@@ -405,8 +405,8 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 				se := ht.sessionEmit
 				ht.mu.Unlock()
 				projectAgentEvent(se, "", msg)
-			}
-		}
+			})
+	}
 
 	// Only Out, Confirm, and OnReasoning are turn-scoped — they use the
 	// turn-scoped in.Emit, which is fenced at turn completion. Snapshot and
@@ -510,6 +510,17 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	return out.Text, nil
 }
 
+// IsTurnActive returns true if a turn is currently in flight on this hostTurn.
+// Thread-safe (read-only under ht.mu). Used by RPC handlers (e.g. Compact)
+// to check whether idle maintenance is safe. This is a non-blocking probe —
+// it does not acquire or modify any transition state.
+func (ht *hostTurn) IsTurnActive() bool {
+	ht.mu.Lock()
+	active := ht.turnActive
+	ht.mu.Unlock()
+	return active
+}
+
 // claimSession binds the App to a single session ID and rejects a second.
 // For the daemon path, ResetSessionBinding clears the binding so the same
 // App can serve a new session after the old one closes (card #149).
@@ -535,11 +546,14 @@ func (ht *hostTurn) claimSession(sid event.SessionID) error {
 // must ensure the previous session is closed and detached work has quiesced
 // before calling. Returns ErrTurnActive if a turn is still in flight.
 //
-// Reset order (Mashūra-reviewed): callbacks detached before sessionEmit is
-// cleared, so no late EventSink/OnTokRate call nil-dereferences. The decline
-// latch is cleared so a stale decline from session A cannot terminate session
-// B's workflow. sessionID is cleared last, re-arming the handle for a new
-// claim.
+// Reset order (Mashūra-reviewed): hostTurn-internal callback state
+// (sessionEmit, turnEmit) is cleared first under ht.mu, so late callback
+// invocations find nil emitters and no-op. Then App callback fields
+// (EventSink, OnTokRate) are cleared OUTSIDE ht.mu via ClearCallbacks
+// (under callbackMu) — this avoids holding hostTurn.mu while touching
+// App-owned fields (lock-order invariant: hostTurn.mu never nests App locks).
+// The decline latch is cleared under its own lock. sessionID is cleared
+// last, re-arming the handle for a new claim.
 func (ht *hostTurn) ResetSessionBinding() error {
 	ht.mu.Lock()
 	if ht.turnActive {
@@ -550,15 +564,19 @@ func (ht *hostTurn) ResetSessionBinding() error {
 		ht.mu.Unlock()
 		return fmt.Errorf("wiring: cannot reset a released hostTurn")
 	}
-	// Detach callbacks BEFORE clearing sessionEmit — a late call from
-	// quiescing detached work would nil-deref otherwise. projectAgentEvent
-	// is nil-safe, but OnTokRate calls se.Notify directly.
-	ht.app.EventSink = nil
-	ht.app.OnTokRate = nil
+	// Detach hostTurn-internal callback state BEFORE clearing App callbacks —
+	// a late call from quiescing detached work would nil-deref otherwise.
+	// projectAgentEvent is nil-safe, but OnTokRate calls se.Notify directly.
 	ht.sessionEmit = nil
 	ht.turnEmit = nil
 	ht.turnEmitTurnID = ""
 	ht.mu.Unlock()
+
+	// Clear App callback fields OUTSIDE hostTurn.mu — these are App-owned
+	// fields protected by callbackMu, not hostTurn.mu. Holding hostTurn.mu
+	// while writing App fields violates the lock-ordering invariant
+	// (hostTurn.mu is never held while touching App locks).
+	ht.app.ClearCallbacks()
 
 	// Clear the decline latch under its own lock.
 	ht.declineMu.Lock()
@@ -627,20 +645,16 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 			result := pol.Evaluate(input)
 			switch result.Decision {
 			case policy.Deny:
-				if app.EventSink != nil {
-					app.EventSink(agent.SysNoteMsg{
-						Text: "🚫 blocked by policy: " + result.Reason + " (rule: " + result.RuleName + ")",
-					})
-				}
+				app.SendEvent(agent.SysNoteMsg{
+					Text: "🚫 blocked by policy: " + result.Reason + " (rule: " + result.RuleName + ")",
+				})
 				return false
 			case policy.Allow:
 				reason := agent.SuspendAuto(toolName, app, detail)
 				if reason == "" {
-					if app.EventSink != nil {
-						app.EventSink(agent.SysNoteMsg{
-							Text: "⚡ policy allow: " + headline + "\n" + agent.Indent(detail),
-						})
-					}
+					app.SendEvent(agent.SysNoteMsg{
+						Text: "⚡ policy allow: " + headline + "\n" + agent.Indent(detail),
+					})
 					return true
 				}
 				// Auto suspended — the policy said allow, but a hard safety
@@ -661,11 +675,9 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 				// Emit the ⚡ auto note through the session-scoped EventSink
 				// (same path as tuiConfirmer's sendEvent — the adapter's
 				// EventSink projects SysNoteMsg to KindSessionNote).
-				if app.EventSink != nil {
-					app.EventSink(agent.SysNoteMsg{
-						Text: "⚡ auto: " + headline + "\n" + agent.Indent(detail),
-					})
-				}
+				app.SendEvent(agent.SysNoteMsg{
+					Text: "⚡ auto: " + headline + "\n" + agent.Indent(detail),
+				})
 				return true
 			}
 			// Auto suspended — prefix the headline so the approval prompt
