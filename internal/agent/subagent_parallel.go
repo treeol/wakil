@@ -106,7 +106,11 @@ func panicJobResult(task string, r interface{}) subagentJobResult {
 //     the parent map.
 func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend string) []subagentJobResult {
 	results := make([]subagentJobResult, len(jobs))
+	// MaxParallelSubagents is turn-stable per batch — read once at batch
+	// start under stateMu.RLock, used for the whole batch.
+	a.stateMu.RLock()
 	maxPar := a.Cfg.MaxParallelSubagents
+	a.stateMu.RUnlock()
 	if maxPar < 1 {
 		maxPar = 1
 	}
@@ -272,7 +276,7 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 // SubagentStartMsg events (Start-before-Chunk invariant). MAIN GOROUTINE ONLY,
 // before any worker spawns.
 func (a *App) announceSubagentBlock(jobs []subagentJob, backend string) {
-	dispCap := a.Cfg.MaxParallelSubagents
+	dispCap := a.MaxParallelLocked()
 	if dispCap < 1 {
 		dispCap = 1
 	}

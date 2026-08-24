@@ -136,6 +136,9 @@ func tuiConfirmer(app *App) Confirmer {
 // auth, sampling) and re-resolves context limits. Subagent clients are built
 // from the live parent Client fields at dispatch time, so they inherit the
 // new endpoint automatically — nothing is snapshotted at startup.
+//
+// All Client.* and Cfg.Endpoint writes are under stateMu.Lock to synchronize
+// with the turn goroutine's prepareTurn reads.
 func handleEndpointSwitch(app *App, name string, note func(string) Cmd) (handled, quit bool, cmd Cmd) {
 	ep, ok := app.Cfg.Endpoints[name]
 	if !ok {
@@ -164,6 +167,9 @@ func handleEndpointSwitch(app *App, name string, note func(string) Cmd) (handled
 	}
 
 	// Commit: config mirror first (AuthHeader() reads Cfg.Endpoint), then client.
+	// All writes under stateMu.Lock so prepareTurn (turn goroutine) and
+	// resolveSubagentEndpointView (subagent dispatch) see a coherent state.
+	app.stateMu.Lock()
 	app.Cfg.Endpoint = ep
 	app.Cfg.EndpointName = name
 	app.Cfg.BaseURL = ep.BaseURL
@@ -182,6 +188,7 @@ func handleEndpointSwitch(app *App, name string, note func(string) Cmd) (handled
 	app.SelectedModel = ""
 	app.SelectedBackend = ""
 	app.defaultModel = ep.Model
+	app.stateMu.Unlock()
 
 	msg := fmt.Sprintf("endpoint: switched to %q (kind %s, %s, model %s)", name, ep.Kind, ep.BaseURL, ep.Model)
 	return true, false, Batch(note(msg), resolveBackendCtxCmd(app, "", ep.Model), fetchModelListCmd(app))
@@ -225,7 +232,13 @@ func listEndpoints(app *App) string {
 // zero effect). Instead this updates the endpoint's effective model for the
 // session — the literal string the client sends. No server-side
 // validation: a bad name surfaces as a request error, which is honest.
+//
+// Acquires stateMu.Lock so Client.Model/ConfiguredModel, Cfg.Endpoint.Model,
+// SelectedModel, and defaultModel writes are synchronized with the turn
+// goroutine's prepareTurn reads.
 func ApplyModelOverride(app *App, model string) {
+	app.stateMu.Lock()
+	defer app.stateMu.Unlock()
 	if app.Cfg.ActiveEndpoint().Kind == config.EndpointKindOpenAI {
 		app.Client.ConfiguredModel = model
 		app.Client.Model = model
@@ -346,9 +359,10 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, note("auto mode: OFF — tool calls require confirmation")
 
 	case "/rawtools":
-		app.RawTools = !app.RawTools
-		app.saveRepoState(func(s *RepoState) { s.RawTools = app.RawTools })
-		if app.RawTools {
+		newRaw := !app.RawTools
+		app.SetRawToolsValue(newRaw)
+		app.saveRepoState(func(s *RepoState) { s.RawTools = newRaw })
+		if newRaw {
 			return true, false, note("raw tool results: ON — full output kept in context (cap disabled)")
 		}
 		cap := app.Cfg.ToolResultCap
@@ -593,8 +607,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			if app.Session == nil {
 				return true, false, note("no active session")
 			}
-			app.Session.Label = label
-			app.SaveSession()
+			app.SetSessionLabelValue(label)
 			return true, false, note("session labeled: " + label)
 		}
 		return true, false, note(`usage: /session name "<label>"`)
@@ -673,34 +686,29 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// sent as the model field so the proxy can route by model prefix.
 		if len(fields) >= 2 {
 			arg := fields[1]
-			if idx := strings.Index(arg, "/"); idx >= 0 {
-				app.SelectedBackend = arg[:idx]
-				app.SelectedModel = arg
-			} else {
-				app.SelectedBackend = arg
-				app.SelectedModel = ""
-			}
-			selected := app.SelectedBackend
+			app.SetBackendSelection(arg)
+			selected := app.SelectedBackendLocked()
+			selectedModel := app.SelectedModelLocked()
 			msg := "backend: set to " + selected
-			if app.SelectedModel != "" {
-				msg += " · model: " + app.SelectedModel
+			if selectedModel != "" {
+				msg += " · model: " + selectedModel
 			}
 			// Persist (ilm-proxy kind only — this branch is unreachable for
 			// kind=openai, which is repurposed above as the endpoint switcher).
 			app.saveRepoState(func(s *RepoState) {
-				s.Backend = app.SelectedBackend
-				if app.SelectedModel != "" {
-					s.Model = app.SelectedModel
+				s.Backend = selected
+				if selectedModel != "" {
+					s.Model = selectedModel
 				}
 				s.EndpointName = app.Cfg.EndpointName
 			})
 			// Re-probe context limits for the new backend so dynamic thresholds
 			// (compact_at_frac etc.) scale to the new window. The result arrives
 			// as BackendCtxLimitMsg and is applied safely in the TUI event loop.
-			return true, false, Batch(note(msg), resolveBackendCtxCmd(app, selected, app.SelectedModel))
+			return true, false, Batch(note(msg), resolveBackendCtxCmd(app, selected, selectedModel))
 		}
 		// No arg: report current selection and last-used.
-		cur := app.SelectedBackend
+		cur := app.SelectedBackendLocked()
 		if cur == "" {
 			cur = "(proxy default)"
 		}
@@ -712,8 +720,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			used = "(none yet)"
 		}
 		msg := "backend: selected=" + cur + " · last-used=" + used
-		if app.SelectedModel != "" {
-			msg += " · model=" + app.SelectedModel
+		selModel := app.SelectedModelLocked()
+		if selModel != "" {
+			msg += " · model=" + selModel
 		}
 		return true, false, note(msg)
 
@@ -749,9 +758,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			// Re-resolve limits for the selected backend + new model.
 			return true, false, Batch(note(msg), resolveBackendCtxCmd(app, app.SelectedBackend, model))
 		}
-		cur := app.SelectedModel
+		cur := app.SelectedModelLocked()
 		if cur == "" {
-			cur = app.Client.Model
+			cur = app.EffectiveModelLocked()
 		}
 		return true, false, note("model: " + cur)
 
@@ -768,14 +777,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		if len(fields) >= 2 {
 			name := fields[1]
 			if name == "inherit" {
-				app.SubagentEndpointOverride = ""
+				app.SetSubagentEndpointOverride("")
 				app.saveRepoState(func(s *RepoState) { s.SubagentEndpoint = "" })
 				return true, false, note("subagent endpoint: inherit (parent endpoint)")
 			}
 			if _, err := app.Cfg.NormalizeEndpoint(name); err != nil {
 				return true, false, note(fmt.Sprintf("subagent endpoint %q: %v — not set", name, err))
 			}
-			app.SubagentEndpointOverride = name
+			app.SetSubagentEndpointOverride(name)
 			app.saveRepoState(func(s *RepoState) { s.SubagentEndpoint = name })
 			return true, false, note("subagent endpoint: set to " + name)
 		}
@@ -797,14 +806,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		if len(fields) >= 2 {
 			name := fields[1]
 			if name == "inherit" {
-				app.SubagentModelOverride = ""
+				app.SetSubagentModelOverride("")
 				// Clear the limits cache so the next dispatch re-probes with
 				// the endpoint's original model, not the stale override.
 				app.subagentLimitsCachePtr = nil
 				app.saveRepoState(func(s *RepoState) { s.SubagentModel = "" })
 				return true, false, note("subagent model: inherit (endpoint model)")
 			}
-			app.SubagentModelOverride = name
+			app.SetSubagentModelOverride(name)
 			// Clear the limits cache so the next dispatch probes the new
 			// model's context window rather than returning a stale cached
 			// limit from the previous model.
@@ -812,7 +821,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			app.saveRepoState(func(s *RepoState) { s.SubagentModel = name })
 			return true, false, note("subagent model: set to " + name)
 		}
-		cur := app.SubagentModelOverride
+		cur := app.SubagentModelOverrideLocked()
 		if cur == "" {
 			// Show what the child will actually use: the override if set,
 			// else the resolved endpoint's model.
@@ -836,14 +845,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			if n > maxParCap {
 				n = maxParCap
 			}
-			app.Cfg.MaxParallelSubagents = n
+			app.SetMaxParallel(n)
 			app.saveRepoState(func(s *RepoState) { s.MaxParallelSubagents = n })
 			if n == maxParCap {
 				return true, false, note(fmt.Sprintf("max parallel subagents: set to %d (capped at %d)", n, maxParCap))
 			}
 			return true, false, note(fmt.Sprintf("max parallel subagents: set to %d", n))
 		}
-		cur := app.Cfg.MaxParallelSubagents
+		cur := app.MaxParallelLocked()
 		if cur < 1 {
 			cur = 1
 		}
@@ -860,7 +869,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			if err != nil || n < 0 {
 				return true, false, note("maxctx: must be a non-negative integer (0 = disabled)")
 			}
-			app.EffectiveCtxMaxCharsOverride = n
+			app.SetMaxCtxOverride(n)
 			app.saveRepoState(func(s *RepoState) { s.EffectiveCtxMaxChars = &n })
 			if n == 0 {
 				return true, false, note("effective context cap: disabled (using full model context)")
@@ -881,33 +890,32 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 	case "/counsel":
 		// /counsel [auto|suggest|off] — set or show the auto-counsel mode.
 		if len(fields) < 2 {
-			mode := app.CounselMode
+			mode := app.CounselModeLocked()
 			if mode == "" {
 				mode = "suggest"
 			}
 			msg := "counsel mode: " + mode
 			if mode == "auto" {
-				msg += fmt.Sprintf(" (cap: %d/turn)", app.MaxCounsel)
+				msg += fmt.Sprintf(" (cap: %d/turn)", app.MaxCounselLocked())
 			}
 			return true, false, note(msg)
 		}
 		switch fields[1] {
 		case "auto":
-			cap := app.MaxCounsel
+			cap := app.MaxCounselLocked()
 			if cap <= 0 {
 				cap = app.Cfg.CounselMaxPerSession
 				if cap <= 0 {
 					cap = 3
 				}
 			}
-			app.CounselMode = "auto"
-			app.MaxCounsel = cap
+			app.SetCounselModeValue("auto", cap)
 			return true, false, note(fmt.Sprintf("counsel mode: auto (cap: %d/turn)", cap))
 		case "suggest":
-			app.CounselMode = "suggest"
+			app.SetCounselModeValue("suggest", 0)
 			return true, false, note("counsel mode: suggest (hint only, no auto-fire)")
 		case "off":
-			app.CounselMode = "off"
+			app.SetCounselModeValue("off", 0)
 			return true, false, note("counsel mode: off (struggle detected silently)")
 		default:
 			return true, false, note("usage: /counsel auto|suggest|off")

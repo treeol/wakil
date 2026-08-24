@@ -122,12 +122,20 @@ func Truncate(s string, n int) string {
 // fires for them. Only override-path probe failures and unprobed startup
 // fall through to absolute values.
 func (a *App) activeThresholds() (compactAt, keepBytes, hardMax int) {
+	// CtxLimit and EffectiveCtxMaxCharsOverride are stateMu-protected.
+	// Cfg fractional fields (CompactAtFrac, etc.) are immutable after startup.
+	// Snapshot CtxLimit and the override under stateMu.RLock, then compute
+	// outside the lock using the snapshot and immutable Cfg fields.
+	a.stateMu.RLock()
+	ctxLimit := a.CtxLimit
+	a.stateMu.RUnlock()
+
 	// Use the raw NCtx field, not a.ContextLimit(), which synthesises a fallback
 	// with a non-zero NCtx even when the backend has never been probed. We want
 	// the fraction path only when an authoritative n_ctx is known from the backend.
-	if a.CtxLimit.NCtx > 0 && a.Cfg.CompactAtFrac > 0 {
+	if ctxLimit.NCtx > 0 && a.Cfg.CompactAtFrac > 0 {
 		// effective_ctx = usable tokens × capacity_frac × charsPerToken
-		usable := a.CtxLimit.Usable()
+		usable := ctxLimit.Usable()
 		capacityFrac := a.Cfg.ContextCapacityFrac
 		if capacityFrac <= 0 {
 			capacityFrac = 0.80 // zero value → use default
@@ -165,9 +173,14 @@ func (a *App) activeThresholds() (compactAt, keepBytes, hardMax int) {
 
 // EffectiveCtxCap returns the active effective-context cap in chars: the /maxctx
 // runtime override if set, otherwise the config field. 0 = no cap.
+// EffectiveCtxMaxCharsOverride is stateMu-protected; Cfg.EffectiveCtxMaxChars
+// is immutable after startup.
 func (a *App) EffectiveCtxCap() int {
-	if a.EffectiveCtxMaxCharsOverride != -1 {
-		return a.EffectiveCtxMaxCharsOverride
+	a.stateMu.RLock()
+	override := a.EffectiveCtxMaxCharsOverride
+	a.stateMu.RUnlock()
+	if override != -1 {
+		return override
 	}
 	return a.Cfg.EffectiveCtxMaxChars
 }
