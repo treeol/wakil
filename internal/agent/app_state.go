@@ -290,9 +290,16 @@ func (a *App) SnapshotSessionState() SessionStateSnapshot {
 		CtxLimit:            a.CtxLimit,
 		ConfigBackend:       a.Cfg.Backend,
 	}
-	// Copy slice fields (shallow copy of scalars — BackendInfo has only
-	// string + bool + []string, all safe to copy).
-	snap.BackendList = append([]BackendInfo(nil), a.BackendList...)
+	// Deep-copy slice fields: BackendInfo.Caps is a []string that must not
+	// remain shared with the live App's backing array.
+	snap.BackendList = make([]BackendInfo, len(a.BackendList))
+	for i, b := range a.BackendList {
+		snap.BackendList[i] = BackendInfo{
+			Name:     b.Name,
+			External: b.External,
+			Caps:     append([]string(nil), b.Caps...),
+		}
+	}
 	snap.ModelList = append([]string(nil), a.ModelList...)
 
 	// Copy Client fields (Client is a *proxy.Client — we read its fields
@@ -308,11 +315,20 @@ func (a *App) SnapshotSessionState() SessionStateSnapshot {
 		snap.SessionLabel = a.Session.Label
 		snap.ChatID       = a.Session.ChatID
 	}
+	// ChatID fallback: when Session is nil (subagents, early init) or
+	// Session.ChatID is empty, fall back to Client.ChatID — same logic as
+	// the appChatID helper and SessionChatIDLocked.
+	if snap.ChatID == "" && a.Client != nil {
+		snap.ChatID = a.Client.ChatID
+	}
 
-	// Workflow: read pointer under stateMu (transitions write it under
-	// stateMu in Phase 5), but copy only the display label — NOT the
-	// pointer — so the snapshot is detached.
-	wf := a.Workflow
+	// Workflow: read pointer and copy the display label UNDER the lock so
+	// the snapshot is fully detached. SidebarLabel is a pure string getter
+	// on WorkflowState (no locks, no I/O), so calling it under stateMu.RLock
+	// is safe and avoids reading a stale or racing pointer after unlock.
+	if a.Workflow != nil {
+		snap.WorkflowLabel = a.Workflow.SidebarLabel()
+	}
 
 	a.stateMu.RUnlock()
 
@@ -357,10 +373,8 @@ func (a *App) SnapshotSessionState() SessionStateSnapshot {
 	// Prompt note.
 	snap.PromptNote = a.AgentPromptNote()
 
-	// Workflow label (detached string copy).
-	if wf != nil {
-		snap.WorkflowLabel = wf.SidebarLabel()
-	}
+	// Workflow label was copied under the lock above — no post-unlock
+	// workflow access needed.
 
 	return snap
 }

@@ -114,54 +114,55 @@ func (h *SessionStateHandler) GetSessionState(ctx context.Context, req *connect.
 	}
 	app := h.app
 
-	used, exact := app.ContextUsage()
-	cl := app.ContextLimit()
+	// One coherent snapshot under stateMu.RLock — replaces ~40 individual
+	// direct field reads that could race with RPC setters and turn goroutine
+	// writes. Derived values (ContextUsage, ContextLimit, Exec, Client) are
+	// computed outside the lock by SnapshotSessionState using stable copies.
+	snap := app.SnapshotSessionState()
 	cs := app.Consent()
 
 	state := &v1alpha1.SessionState{
 		SessionId:           req.Msg.SessionId,
-		ChatId:             appChatID(app),
-		Title:              appSessionLabel(app),
-		Workspace:          app.SessionWorkspace(),
-		SelectedBackend:     app.SelectedBackend,
-		SelectedModel:       app.SelectedModel,
-		EffectiveModel:      app.EffectiveModel(),
-		ModelList:           append([]string(nil), app.ModelList...),
-		ConfigBackend:       app.Cfg.Backend,
-		SubagentEndpoint:    app.SubagentEndpointOverride,
-		SubagentModel:       app.SubagentModelOverride,
-		EffectiveSubagentModel: app.EffectiveSubagentModel(),
-		MaxParallelSubagents: int32(app.Cfg.MaxParallelSubagents),
-		ContextUsed:         int32(used),
-		ContextExact:        exact,
-		EffectiveCtxMax:     int32(app.EffectiveCtxMaxCharsOverride),
-		AutoApprove:         cs.AutoApprove,
-		AllowDestructive:    cs.AllowDestructive,
-		AllowReads:          cs.AllowReads,
-		RawTools:            app.RawTools,
-		CounselMode:         app.CounselMode,
-		MaxCounsel:          int32(app.MaxCounsel),
-		BaseUrl:             appClientBaseURL(app),
-		LastBackend:         appClientLastBackend(app),
-		Cwd:                 appExecCwd(app),
-		ExecMode:            appExecDescribe(app),
-		InfoPanelOpen:       app.InfoPanelOpen,
+		ChatId:               snap.ChatID,
+		Title:                snap.SessionLabel,
+		Workspace:            snap.Workspace,
+		SelectedBackend:      snap.SelectedBackend,
+		SelectedModel:        snap.SelectedModel,
+		EffectiveModel:       snap.EffectiveModel,
+		ModelList:            append([]string(nil), snap.ModelList...),
+		ConfigBackend:        snap.ConfigBackend,
+		SubagentEndpoint:     snap.SubagentEndpoint,
+		SubagentModel:        snap.SubagentModel,
+		EffectiveSubagentModel: snap.EffectiveSubagentModel,
+		MaxParallelSubagents: int32(snap.MaxParallel),
+		ContextUsed:          int32(snap.ContextUsed),
+		ContextExact:         snap.ContextExact,
+		EffectiveCtxMax:      int32(snap.CtxMaxCharsOverride),
+		AutoApprove:          cs.AutoApprove,
+		AllowDestructive:     cs.AllowDestructive,
+		AllowReads:           cs.AllowReads,
+		RawTools:             snap.RawTools,
+		CounselMode:          snap.CounselMode,
+		MaxCounsel:           int32(snap.MaxCounsel),
+		BaseUrl:              snap.BaseURL,
+		LastBackend:          snap.LastBackend,
+		Cwd:                  snap.Cwd,
+		ExecMode:             snap.ExecMode,
+		InfoPanelOpen:        snap.InfoPanelOpen,
 		ContextLimit: &v1alpha1.ContextLimit{
-			NCtx:            int32(cl.NCtx),
-			NCtxTrain:       int32(cl.NCtxTrain),
-			Source:          cl.Source,
-			ContextSource:   cl.ContextSource,
-			UsableCtx:       int32(cl.UsableCtx),
-			ReasoningBudget: int32(cl.ReasoningBudget),
-			AnswerMargin:    int32(cl.AnswerMargin),
-			ModelUnresolved:  cl.ModelUnresolved,
+			NCtx:            int32(snap.CtxLimit.NCtx),
+			NCtxTrain:       int32(snap.CtxLimit.NCtxTrain),
+			Source:          snap.CtxLimit.Source,
+			ContextSource:   snap.CtxLimit.ContextSource,
+			UsableCtx:       int32(snap.CtxLimit.UsableCtx),
+			ReasoningBudget: int32(snap.CtxLimit.ReasoningBudget),
+			AnswerMargin:    int32(snap.CtxLimit.AnswerMargin),
+			ModelUnresolved:  snap.CtxLimit.ModelUnresolved,
 		},
 	}
-	if app.Workflow != nil {
-		state.WorkflowLabel = app.Workflow.SidebarLabel()
-	}
-	state.BackendList = appBackendListToProto(app.BackendList)
-	state.PromptNote = app.AgentPromptNote()
+	state.WorkflowLabel = snap.WorkflowLabel
+	state.BackendList = appBackendListToProto(snap.BackendList)
+	state.PromptNote = snap.PromptNote
 
 	return connect.NewResponse(state), nil
 }
@@ -177,7 +178,32 @@ func (h *SessionStateHandler) SetModel(ctx context.Context, req *connect.Request
 	if model == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("model must not be empty"))
 	}
-	agent.ApplyModelOverride(app, model)
+
+	// Route through the coordinator whenever it is present. This avoids a
+	// TOCTOU race: checking kind outside the lock and then having
+	// SetModelOverride check it again inside stateMu could disagree if an
+	// endpoint switch happens concurrently. For OpenAI kind, the coordinator
+	// rejects the change during an active turn (Client.Model is read by the
+	// streaming turn). For ilm-proxy kind, WithTransition is still safe —
+	// it acquires the lock, runs SetModelOverride (which only writes
+	// SelectedModel), and releases. The turn goroutine snapshots
+	// SelectedModel at prepareTurn time, so a mid-turn change is harmless.
+	setModel := func() error {
+		app.SetModelOverride(model)
+		return nil
+	}
+	if h.coordinator != nil {
+		if err := h.coordinator.WithTransition(setModel); err != nil {
+			if errors.Is(err, wiring.ErrTurnActiveCoord) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("model: cannot switch model during an active turn: %w", err))
+			}
+			return nil, mapError(err)
+		}
+	} else {
+		// Test path: no coordinator — apply directly.
+		_ = setModel()
+	}
+
 	app.SaveRepoState(func(s *agent.RepoState) {
 		s.Model = model
 		s.EndpointName = app.Cfg.EndpointName
@@ -211,22 +237,18 @@ func (h *SessionStateHandler) SetBackend(ctx context.Context, req *connect.Reque
 	}
 
 	// ilm-proxy kind: parse "<name>" or "<name>/<model-path>".
-	if idx := strings.Index(arg, "/"); idx >= 0 {
-		app.SelectedBackend = arg[:idx]
-		app.SelectedModel = arg
-	} else {
-		app.SelectedBackend = arg
-		app.SelectedModel = ""
-	}
-	selected := app.SelectedBackend
+	// SetBackendSelection handles the split and writes under stateMu.Lock.
+	app.SetBackendSelection(arg)
+	selected := app.SelectedBackendLocked()
+	selectedModel := app.SelectedModelLocked()
 	notice := "backend: set to " + selected
-	if app.SelectedModel != "" {
-		notice += " · model: " + app.SelectedModel
+	if selectedModel != "" {
+		notice += " · model: " + selectedModel
 	}
 	app.SaveRepoState(func(s *agent.RepoState) {
-		s.Backend = app.SelectedBackend
-		if app.SelectedModel != "" {
-			s.Model = app.SelectedModel
+		s.Backend = selected
+		if selectedModel != "" {
+			s.Model = selectedModel
 		}
 		s.EndpointName = app.Cfg.EndpointName
 	})
@@ -309,7 +331,7 @@ func (h *SessionStateHandler) SetSubagentEndpoint(ctx context.Context, req *conn
 	app := h.app
 	name := req.Msg.Endpoint
 	if name == "" || name == "inherit" {
-		app.SubagentEndpointOverride = ""
+		app.SetSubagentEndpointOverride("")
 		app.SaveRepoState(func(s *agent.RepoState) { s.SubagentEndpoint = "" })
 		return connect.NewResponse(&v1alpha1.SetSubagentEndpointResponse{
 			Notice: "subagent endpoint: inherit (parent endpoint)",
@@ -320,7 +342,7 @@ func (h *SessionStateHandler) SetSubagentEndpoint(ctx context.Context, req *conn
 			Notice: fmt.Sprintf("subagent endpoint %q: %v — not set", name, err),
 		}), nil
 	}
-	app.SubagentEndpointOverride = name
+	app.SetSubagentEndpointOverride(name)
 	app.SaveRepoState(func(s *agent.RepoState) { s.SubagentEndpoint = name })
 	return connect.NewResponse(&v1alpha1.SetSubagentEndpointResponse{
 		Notice: "subagent endpoint: set to " + name,
@@ -336,13 +358,13 @@ func (h *SessionStateHandler) SetSubagentModel(ctx context.Context, req *connect
 	app := h.app
 	name := req.Msg.Model
 	if name == "" || name == "inherit" {
-		app.SubagentModelOverride = ""
+		app.SetSubagentModelOverride("")
 		app.SaveRepoState(func(s *agent.RepoState) { s.SubagentModel = "" })
 		return connect.NewResponse(&v1alpha1.SetSubagentModelResponse{
 			Notice: "subagent model: inherit (endpoint model)",
 		}), nil
 	}
-	app.SubagentModelOverride = name
+	app.SetSubagentModelOverride(name)
 	app.SaveRepoState(func(s *agent.RepoState) { s.SubagentModel = name })
 	return connect.NewResponse(&v1alpha1.SetSubagentModelResponse{
 		Notice: "subagent model: set to " + name,
@@ -364,7 +386,7 @@ func (h *SessionStateHandler) SetMaxParallelSubagents(ctx context.Context, req *
 	if n > maxParCap {
 		n = maxParCap
 	}
-	app.Cfg.MaxParallelSubagents = n
+	app.SetMaxParallel(n)
 	app.SaveRepoState(func(s *agent.RepoState) { s.MaxParallelSubagents = n })
 	notice := fmt.Sprintf("max parallel subagents: set to %d", n)
 	if n == maxParCap {
@@ -386,7 +408,7 @@ func (h *SessionStateHandler) SetEffectiveCtxMax(ctx context.Context, req *conne
 	if n < 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("maxctx: must be a non-negative integer (0 = disabled)"))
 	}
-	app.EffectiveCtxMaxCharsOverride = n
+	app.SetMaxCtxOverride(n)
 	nVal := n
 	app.SaveRepoState(func(s *agent.RepoState) { s.EffectiveCtxMaxChars = &nVal })
 	if n == 0 {
@@ -407,7 +429,7 @@ func (h *SessionStateHandler) SetRawTools(ctx context.Context, req *connect.Requ
 	}
 	app := h.app
 	v := req.Msg.Value
-	app.RawTools = v
+	app.SetRawToolsValue(v)
 	app.SaveRepoState(func(s *agent.RepoState) { s.RawTools = v })
 	var notice string
 	if v {
@@ -435,15 +457,14 @@ func (h *SessionStateHandler) SetCounselMode(ctx context.Context, req *connect.R
 	mode := req.Msg.Mode
 	switch mode {
 	case "auto":
-		cap := app.MaxCounsel
+		cap := app.MaxCounselLocked()
 		if cap <= 0 {
 			cap = app.Cfg.CounselMaxPerSession
 			if cap <= 0 {
 				cap = 3
 			}
 		}
-		app.CounselMode = "auto"
-		app.MaxCounsel = cap
+		app.SetCounselModeValue("auto", cap)
 		app.SaveRepoState(func(s *agent.RepoState) {
 			s.CounselMode = "auto"
 			s.MaxCounsel = cap
@@ -452,13 +473,13 @@ func (h *SessionStateHandler) SetCounselMode(ctx context.Context, req *connect.R
 			Notice: fmt.Sprintf("counsel mode: auto (cap: %d/turn)", cap),
 		}), nil
 	case "suggest":
-		app.CounselMode = "suggest"
+		app.SetCounselModeValue("suggest", 0)
 		app.SaveRepoState(func(s *agent.RepoState) { s.CounselMode = "suggest" })
 		return connect.NewResponse(&v1alpha1.SetCounselModeResponse{
 			Notice: "counsel mode: suggest (hint only, no auto-fire)",
 		}), nil
 	case "off":
-		app.CounselMode = "off"
+		app.SetCounselModeValue("off", 0)
 		app.SaveRepoState(func(s *agent.RepoState) { s.CounselMode = "off" })
 		return connect.NewResponse(&v1alpha1.SetCounselModeResponse{
 			Notice: "counsel mode: off (struggle detected silently)",
@@ -791,54 +812,6 @@ func (h *SessionStateHandler) InitNewSession(ctx context.Context, req *connect.R
 }
 
 // ---- Helpers ----
-// These wrap App field reads that may be nil (Client, Exec, Session) in
-// early-init or test paths. They are the same nil-safety the wiringFacade
-// applies, but concentrated here so the handler never panics.
-
-func appChatID(app *agent.App) string {
-	if app.Session != nil && app.Session.ChatID != "" {
-		return app.Session.ChatID
-	}
-	if app.Client != nil {
-		return app.Client.ChatID
-	}
-	return ""
-}
-
-func appSessionLabel(app *agent.App) string {
-	if app.Session != nil {
-		return app.Session.Label
-	}
-	return ""
-}
-
-func appClientBaseURL(app *agent.App) string {
-	if app.Client != nil {
-		return app.Client.BaseURL
-	}
-	return ""
-}
-
-func appClientLastBackend(app *agent.App) string {
-	if app.Client != nil {
-		return app.Client.LastUsedBackend()
-	}
-	return ""
-}
-
-func appExecCwd(app *agent.App) string {
-	if app.Exec != nil {
-		return app.Exec.Cwd()
-	}
-	return ""
-}
-
-func appExecDescribe(app *agent.App) string {
-	if app.Exec != nil {
-		return app.Exec.Describe()
-	}
-	return ""
-}
 
 func appBackendListToProto(list []agent.BackendInfo) []*v1alpha1.BackendInfo {
 	if len(list) == 0 {
