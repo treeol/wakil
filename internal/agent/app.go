@@ -71,9 +71,9 @@ type App struct {
 	// cross-package callers never lock App internals directly.
 	stateMu sync.RWMutex
 
-	// saveMu serializes SaveSession disk writes. Always standalone —
-	// acquired after stateMu and convMu are released. Prevents two
-	// concurrent saves from racing on Session mutation and WriteSession.
+	// saveMu serializes SaveSession: acquired before stateMu/convMu so an
+	// older snapshot can never overwrite a newer one. Lock ordering:
+	// saveMu → stateMu → convMu. Only acquired in SaveSession (no deadlock).
 	saveMu sync.Mutex
 	Confirm    Confirmer
 	Out        io.Writer // assistant text + status sink
@@ -727,25 +727,56 @@ func (a *App) chatID() string {
 // must never interrupt a turn, so the turn continues — but the first failure is
 // surfaced on Out (once per App) so a permanently broken store (bad permissions,
 // read-only mount) is not silently swallowed. Subsequent failures stay quiet.
+//
+// The save is fully serialized: saveMu is acquired BEFORE snapshotting so that
+// an older snapshot can never overwrite a newer one (if two saves overlap, the
+// second blocks on saveMu until the first completes, then snapshots the latest
+// state). The snapshot uses nested locks (stateMu → convMu) to get a coherent
+// view of Session + Conv. Lock ordering: saveMu → stateMu → convMu. saveMu is
+// only ever acquired here, so no deadlock is possible. No caller of SaveSession
+// holds stateMu or convMu.
+//
+// WriteSession marshals a detached snapshot (not the live Conv slice, which
+// could be appended to mid-marshal). proxy.Message fields are immutable after
+// creation (Content is a *string, ToolCalls are not mutated in place), so a
+// shallow slice copy is safe.
 func (a *App) SaveSession() {
-	if a.Session == nil {
-		return
-	}
+	// Serialize the entire save: acquire saveMu before snapshotting.
+	a.saveMu.Lock()
+	defer a.saveMu.Unlock()
+
+	// Nested snapshot: stateMu → convMu (consistent lock ordering).
+	a.stateMu.RLock()
 	a.convMu.RLock()
-	a.Session.Conv = a.Conv
-	a.convMu.RUnlock()
-	if len(a.Session.Conv) == 0 {
+
+	if a.Session == nil {
+		a.convMu.RUnlock()
+		a.stateMu.RUnlock()
 		return
 	}
-	a.Session.Updated = time.Now()
-	if a.Session.Workspace == "" {
-		a.Session.Workspace = a.SessionWorkspace()
+
+	// Copy the Session struct value (scalars + slice header are copied).
+	snap := *a.Session
+	// Deep-copy the Conv slice so the snapshot is detached from the live Conv
+	// (which may be appended to after we release convMu).
+	snap.Conv = append([]proxy.Message(nil), a.Conv...)
+	snap.SavedWorkflow = a.Workflow
+	snap.Updated = time.Now()
+	if snap.Workspace == "" {
+		snap.Workspace = a.SessionWorkspace()
 	}
-	a.Session.SavedWorkflow = a.Workflow
-	if err := WriteSession(a.Session); err != nil {
+
+	a.convMu.RUnlock()
+	a.stateMu.RUnlock()
+
+	if len(snap.Conv) == 0 {
+		return
+	}
+
+	if err := WriteSession(&snap); err != nil {
 		if !a.saveFailedWarned.Swap(true) && a.Out != nil {
 			fmt.Fprintf(a.Out, "warning: failed to save session %s: %v (further save failures will be silent)\n",
-				ShortID(a.Session.ChatID), err)
+				ShortID(snap.ChatID), err)
 		}
 	}
 }

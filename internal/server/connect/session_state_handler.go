@@ -523,8 +523,7 @@ func (h *SessionStateHandler) SetSessionLabel(ctx context.Context, req *connect.
 			Notice: "no active session",
 		}), nil
 	}
-	app.Session.Label = label
-	app.SaveSession()
+	app.SetSessionLabelValue(label)
 	return connect.NewResponse(&v1alpha1.SetSessionLabelResponse{
 		Notice: "session labeled: " + label,
 	}), nil

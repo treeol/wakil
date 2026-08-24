@@ -5,9 +5,8 @@ package agent
 // stateMu. Cross-package callers (connect handlers, wiring) use these
 // exported methods instead of directly reading/writing App fields.
 //
-// Lock ordering: stateMu → convMu (stateMu always acquired first when both
-// are needed). saveMu is always standalone (acquired after all other locks
-// are released). callbackMu is always standalone.
+// Lock ordering: saveMu → stateMu → convMu (saveMu acquired first, only in
+// SaveSession). callbackMu is always standalone.
 //
 // Turn-stable fields (SelectedModel, SelectedBackend, CounselMode, etc.)
 // are snapshot in prepareTurn under stateMu.Lock and used for the duration
