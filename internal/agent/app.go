@@ -822,6 +822,62 @@ func (a *App) NewConversation(chatID string) {
 	a.SetAllowReads(false)
 }
 
+// InstallSession atomically installs a loaded session into the App under
+// stateMu.Lock. It replaces Conv, Session, Workflow, Client.ChatID, and
+// resets per-session state (consent grants, consentedBackends, preambleDay).
+// The caller (LoadSession handler) must run this inside a coordinator
+// transition so it doesn't race with an in-flight turn.
+//
+// Lock ordering: stateMu → convMu (nested, consistent with the rest of the
+// codebase). Workflow is set under convMu (not via SetWorkflow, which takes
+// stateMu — avoiding re-entrant locking).
+func (a *App) InstallSession(s *Session) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
+	a.RevokeAuto()
+	a.SetAllowReads(false)
+
+	if a.Client != nil {
+		a.Client.ChatID = s.ChatID
+	}
+
+	a.convMu.Lock()
+	a.Conv = append([]proxy.Message(nil), s.Conv...)
+	a.Workflow = s.SavedWorkflow
+	a.convMu.Unlock()
+
+	a.Session = s
+	a.consentedBackends = nil
+	a.preambleDay = ""
+}
+
+// NewConversationTransition atomically starts a fresh session under
+// stateMu.Lock. It is the locked version of NewConversation, called by the
+// InitNewSession handler inside a coordinator transition. Unlike
+// NewConversation, it acquires stateMu so the writes are synchronized with
+// concurrent readers (SnapshotSessionState, GetSessionState).
+func (a *App) NewConversationTransition(chatID string) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
+	a.convMu.Lock()
+	a.Conv = nil
+	a.convMu.Unlock()
+
+	a.preambleDay = ""
+	a.Client.ChatID = chatID
+	a.Session = &Session{
+		ChatID:    chatID,
+		Model:     a.Client.Model,
+		Created:   time.Now(),
+		Workspace: a.SessionWorkspace(),
+	}
+	a.RevokeAuto()
+	a.SetAllowReads(false)
+	a.consentedBackends = nil
+}
+
 // Send runs one user turn through the agent loop: stream a response, and while
 // the proxy returns tool_calls, gate+execute each and feed results back until a
 // final text answer. Plain-text responses (memory/learn/meta acks, answers) are

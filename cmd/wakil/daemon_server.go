@@ -116,7 +116,13 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, httpA
 	app, res := wiring.BuildApp(cfg, exe, wiring.BuildAppOpts{
 		IsHeadless: true, // no TUI callbacks; the daemon is headless
 	})
-	handle, err := wiring.NewHostTurnHandle(app, wiring.WithAsyncApproval())
+
+	// Create the transition coordinator — shared between the hostTurn
+	// (turn starts) and the SessionStateHandler (session transitions) so
+	// they don't race.
+	coordinator := wiring.NewTransitionCoordinator()
+
+	handle, err := wiring.NewHostTurnHandle(app, wiring.WithAsyncApproval(), wiring.WithCoordinator(coordinator))
 	if err != nil {
 		wiring.CloseResources(app, res)
 		exe.Close()
@@ -195,6 +201,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, httpA
 		// multiple sequential sessions across TUI reconnections.
 		ssh := connsvc.NewSessionStateHandler(app, resolver)
 		ssh.SetResetSessionBinding(handle.ResetSessionBinding)
+		ssh.SetCoordinator(coordinator)
 		srv = srv.WithSessionState(ssh)
 	} else {
 		srv = connsvc.NewServer(host, ephemeral, resolver)
@@ -331,6 +338,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, httpA
 			// Card #149: wire ResetSessionBinding here too.
 			tcpSsh := connsvc.NewSessionStateHandler(app, multiResolver)
 			tcpSsh.SetResetSessionBinding(handle.ResetSessionBinding)
+			tcpSsh.SetCoordinator(coordinator)
 			tcpSrv = tcpSrv.WithSessionState(tcpSsh)
 			tcpConnectHandler := tcpSrv.Handler()
 

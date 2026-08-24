@@ -25,6 +25,7 @@ package connect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -35,6 +36,7 @@ import (
 	wakilv1alpha1connect "github.com/treeol/wakil/api/gen/wakil/v1alpha1/wakilv1alpha1connect"
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/wiring"
 )
 
 // SessionStateHandler implements SessionStateServiceHandler by calling into
@@ -42,6 +44,11 @@ import (
 type SessionStateHandler struct {
 	app      *agent.App
 	resolver principalResolver
+
+	// coordinator serializes session transitions (LoadSession,
+	// InitNewSession) against turn starts and idle maintenance (Compact).
+	// When nil, transitions run without coordination (test path).
+	coordinator *wiring.TransitionCoordinator
 
 	// resetSessionBinding, when non-nil, is called before InitNewSession and
 	// LoadSession to clear the hostTurn's session binding so the single App
@@ -76,6 +83,13 @@ func NewSessionStateHandler(app *agent.App, resolver principalResolver) *Session
 // TUI reconnections.
 func (h *SessionStateHandler) SetResetSessionBinding(fn func() error) {
 	h.resetSessionBinding = fn
+}
+
+// SetCoordinator sets the transition coordinator that serializes session
+// transitions (LoadSession, InitNewSession, Compact) against turn starts.
+// Used by the daemon path; the test path leaves it nil.
+func (h *SessionStateHandler) SetCoordinator(c *wiring.TransitionCoordinator) {
+	h.coordinator = c
 }
 
 // resetRestoreDone clears the restore-done guard so a subsequent fresh
@@ -461,30 +475,51 @@ func (h *SessionStateHandler) Compact(ctx context.Context, req *connect.Request[
 		return nil, mapError(err)
 	}
 	app := h.app
-	if app.Session == nil {
-		return connect.NewResponse(&v1alpha1.CompactResponse{
-			Compacted: false,
-			Notice:    "no active session",
-		}), nil
+
+	// Run Compact inside the coordinator lock so it doesn't race with an
+	// in-flight turn (convMu writes) or a session transition. The Session
+	// nil-check, Compact call, and SaveSession are all inside the
+	// coordinated block so the session can't change between check and use.
+	var resp *connect.Response[v1alpha1.CompactResponse]
+	maint := func() error {
+		if app.Session == nil {
+			resp = connect.NewResponse(&v1alpha1.CompactResponse{
+				Compacted: false,
+				Notice:    "no active session",
+			})
+			return nil
+		}
+		ok, err := app.Compact(ctx, app.SummarizeFn(), true)
+		if err != nil {
+			resp = connect.NewResponse(&v1alpha1.CompactResponse{
+				Compacted: false,
+				Notice:    "compact: " + err.Error(),
+			})
+			return nil
+		}
+		if !ok {
+			resp = connect.NewResponse(&v1alpha1.CompactResponse{
+				Compacted: false,
+				Notice:    "nothing to compact (transcript fits within keep_bytes window)",
+			})
+			return nil
+		}
+		app.SaveSession()
+		resp = connect.NewResponse(&v1alpha1.CompactResponse{
+			Compacted: true,
+			Notice:    "context compacted",
+		})
+		return nil
 	}
-	ok, err := app.Compact(ctx, app.SummarizeFn(), true)
-	if err != nil {
-		return connect.NewResponse(&v1alpha1.CompactResponse{
-			Compacted: false,
-			Notice:    "compact: " + err.Error(),
-		}), nil
+	if h.coordinator != nil {
+		if err := h.coordinator.WithIdleMaintenance(maint); err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("compact: %w", err))
+		}
+	} else {
+		_ = maint()
 	}
-	if !ok {
-		return connect.NewResponse(&v1alpha1.CompactResponse{
-			Compacted: false,
-			Notice:    "nothing to compact (transcript fits within keep_bytes window)",
-		}), nil
-	}
-	app.SaveSession()
-	return connect.NewResponse(&v1alpha1.CompactResponse{
-		Compacted: true,
-		Notice:    "context compacted",
-	}), nil
+
+	return resp, nil
 }
 
 // ---- SaveRepoState ----
@@ -602,36 +637,49 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("load_session: session %q not found", idOrPrefix))
 	}
 
-	// ── Session transition: all mutations below are committed only after
-	// the target session was successfully loaded. ──────────────────────────
+	// ── Session transition: all mutations below run inside the coordinator
+	// lock so no turn can interleave. ───────────────────────────────────────
 
-	// Clear the hostTurn's session binding so the single App can serve this
-	// resumed session (the previous session's binding would reject it).
-	if h.resetSessionBinding != nil {
-		if err := h.resetSessionBinding(); err != nil {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("load_session: cannot reset session binding: %w", err))
+	transition := func() error {
+		// Clear the hostTurn's session binding so the single App can serve this
+		// resumed session (the previous session's binding would reject it).
+		if h.resetSessionBinding != nil {
+			if err := h.resetSessionBinding(); err != nil {
+				return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("load_session: cannot reset session binding: %w", err))
+			}
+		}
+		// Reset the restore-done guard so a subsequent fresh conversation after
+		// this resume can trigger RestoreRepoState again.
+		h.resetRestoreDone()
+
+		// Atomically install the loaded session into the App under stateMu +
+		// convMu. This replaces the individual field writes (Client.ChatID,
+		// SetConv, Session, SetWorkflow) with a single locked method.
+		h.app.InstallSession(s)
+		return nil
+	}
+
+	if h.coordinator != nil {
+		if err := h.coordinator.WithTransition(transition); err != nil {
+			if ce, ok := err.(*connect.Error); ok {
+				return nil, ce
+			}
+			if errors.Is(err, wiring.ErrTurnActiveCoord) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("load_session: %w", err))
+			}
+			return nil, mapError(err)
+		}
+	} else {
+		if err := transition(); err != nil {
+			if ce, ok := err.(*connect.Error); ok {
+				return nil, ce
+			}
+			if errors.Is(err, wiring.ErrTurnActiveCoord) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("load_session: %w", err))
+			}
+			return nil, mapError(err)
 		}
 	}
-	// Reset the restore-done guard so a subsequent fresh conversation after
-	// this resume can trigger RestoreRepoState again.
-	h.resetRestoreDone()
-	app := h.app
-
-	// Reset ephemeral consent grants so a previous session's /auto or
-	// /auto destructive grant does not leak into the resumed one. The
-	// workspace-level AutoApprove preference is restored separately via
-	// RestoreRepoStateResume (driven by the client on resume).
-	app.RevokeAuto()
-	app.SetAllowReads(false)
-
-	// Restore the loaded session's state into the App — mirroring the embedded
-	// ResumeConversation path (conversation_manager.go:172-176).
-	if app.Client != nil {
-		app.Client.ChatID = s.ChatID
-	}
-	app.SetConv(s.Conv)
-	app.Session = s
-	app.SetWorkflow(s.SavedWorkflow)
 
 	// Build the display-only conv projection for the TUI.
 	conv := make([]*v1alpha1.ConvMessage, 0, len(s.Conv))
@@ -697,19 +745,46 @@ func (h *SessionStateHandler) InitNewSession(ctx context.Context, req *connect.R
 	if _, err := resolvePrincipal(ctx, h.resolver); err != nil {
 		return nil, mapError(err)
 	}
-	// Clear the hostTurn's session binding so the single App can serve this
-	// new session (the previous session's binding would reject the new one).
-	if h.resetSessionBinding != nil {
-		if err := h.resetSessionBinding(); err != nil {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("init_new_session: cannot reset session binding: %w", err))
+	chatID := agent.NewChatID()
+
+	transition := func() error {
+		// Clear the hostTurn's session binding so the single App can serve this
+		// new session (the previous session's binding would reject the new one).
+		if h.resetSessionBinding != nil {
+			if err := h.resetSessionBinding(); err != nil {
+				return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("init_new_session: cannot reset session binding: %w", err))
+			}
+		}
+		// Reset the restore-done guard so this fresh conversation can trigger
+		// RestoreRepoState (the client calls it after InitNewSession on /new).
+		h.resetRestoreDone()
+		// Atomically start a fresh session under stateMu.Lock.
+		h.app.NewConversationTransition(chatID)
+		return nil
+	}
+
+	if h.coordinator != nil {
+		if err := h.coordinator.WithTransition(transition); err != nil {
+			if ce, ok := err.(*connect.Error); ok {
+				return nil, ce
+			}
+			if errors.Is(err, wiring.ErrTurnActiveCoord) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("init_new_session: %w", err))
+			}
+			return nil, mapError(err)
+		}
+	} else {
+		if err := transition(); err != nil {
+			if ce, ok := err.(*connect.Error); ok {
+				return nil, ce
+			}
+			if errors.Is(err, wiring.ErrTurnActiveCoord) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("init_new_session: %w", err))
+			}
+			return nil, mapError(err)
 		}
 	}
-	// Reset the restore-done guard so this fresh conversation can trigger
-	// RestoreRepoState (the client calls it after InitNewSession on /new).
-	h.resetRestoreDone()
-	app := h.app
-	chatID := agent.NewChatID()
-	app.NewConversation(chatID)
+
 	return connect.NewResponse(&v1alpha1.InitNewSessionResponse{
 		ChatId: chatID,
 	}), nil

@@ -91,6 +91,10 @@ type adapterConfig struct {
 	// noOracle mirrors HeadlessOptions.NoOracle for the review-skip reason
 	// (legacy parity: "oracle disabled by flag (--no-oracle)").
 	noOracle bool
+	// coordinator serializes turn starts against session transitions
+	// (LoadSession, InitNewSession). The daemon path sets this; the
+	// headless path leaves it nil (single turn, no transitions).
+	coordinator *TransitionCoordinator
 }
 
 // AdapterOption configures the HostTurnFunc adapter.
@@ -108,6 +112,14 @@ func WithResolver(r ApprovalResolver) AdapterOption {
 // headless path does not (keeps sync inline resolution for parity).
 func WithAsyncApproval() AdapterOption {
 	return func(c *adapterConfig) { c.asyncApproval = true }
+}
+
+// WithCoordinator sets the transition coordinator that serializes turn starts
+// against session transitions (LoadSession, InitNewSession, Compact). The
+// daemon path sets this; the headless path does not (single turn, no
+// transitions).
+func WithCoordinator(coord *TransitionCoordinator) AdapterOption {
+	return func(c *adapterConfig) { c.coordinator = coord }
 }
 
 // WithPlanAutoAdvance enables the headless --plan after-turn resolver (7c).
@@ -158,6 +170,7 @@ type hostTurn struct {
 	asyncApproval   bool // 7b2: use ParkApproval instead of inline resolver
 	planAutoAdvance bool // 7c: headless --plan after-turn resolver
 	noOracle        bool // 7c: legacy review-skip reason parity
+	coordinator     *TransitionCoordinator // serializes turn-start vs transitions
 
 	// declineLatch captures the reason of the first declined approval
 	// resolution this session (7c). It is the CONTROL function the legacy
@@ -284,7 +297,7 @@ func NewHostTurnHandle(app *agent.App, opts ...AdapterOption) (*HostTurnHandle, 
 	for _, o := range opts {
 		o(&c)
 	}
-	ht := &hostTurn{app: app, resolver: c.resolver, asyncApproval: c.asyncApproval, planAutoAdvance: c.planAutoAdvance, noOracle: c.noOracle}
+	ht := &hostTurn{app: app, resolver: c.resolver, asyncApproval: c.asyncApproval, planAutoAdvance: c.planAutoAdvance, noOracle: c.noOracle, coordinator: c.coordinator}
 
 	appOwnersMu.Lock()
 	if _, claimed := appOwners[app]; claimed {
@@ -326,32 +339,29 @@ func (ht *hostTurn) Release() error {
 
 // run executes one turn on the bound App.
 func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text string, retErr error) {
-	if err := ht.claimSession(in.SessionID); err != nil {
-		return "", err
+	// Turn-start: claim + activate atomically under the coordinator lock so
+	// no transition (LoadSession, InitNewSession) interleaves. If the
+	// coordinator is nil (headless path), run without it — single turn, no
+	// transitions possible.
+	if ht.coordinator != nil {
+		if err := ht.coordinator.WithTurnStart(func() error {
+			return ht.claimAndActivate(in.SessionID)
+		}); err != nil {
+			return "", err
+		}
+	} else {
+		if err := ht.claimAndActivate(in.SessionID); err != nil {
+			return "", err
+		}
 	}
 
-	// Mark the turn as active so Release rejects a concurrent rotation (7b1).
-	// Also reject a second concurrent turn on the same hostTurn — the
-	// single-App-single-session constraint means at most one turn may execute
-	// at a time (the host's executor goroutine already serializes turns for
-	// one session, but this guard is defense-in-depth).
-	// Cleared by defer before run returns, so Release sees a quiet state once
-	// the turn goroutine has exited.
-	ht.mu.Lock()
-	if ht.released {
-		ht.mu.Unlock()
-		return "", fmt.Errorf("%w: agent.App released before turn completed", sessionhost.ErrInternal)
-	}
-	if ht.turnActive {
-		ht.mu.Unlock()
-		return "", fmt.Errorf("%w: hostTurn already has an active turn", sessionhost.ErrInternal)
-	}
-	ht.turnActive = true
-	ht.mu.Unlock()
 	defer func() {
 		ht.mu.Lock()
 		ht.turnActive = false
 		ht.mu.Unlock()
+		if ht.coordinator != nil {
+			ht.coordinator.ClearTurnActive()
+		}
 	}()
 
 	app := ht.app
@@ -519,6 +529,25 @@ func (ht *hostTurn) IsTurnActive() bool {
 	active := ht.turnActive
 	ht.mu.Unlock()
 	return active
+}
+
+// claimAndActivate claims the session and sets turnActive under ht.mu. This
+// runs inside the coordinator lock (if configured) so no transition
+// interleaves with the claim + activate.
+func (ht *hostTurn) claimAndActivate(sid event.SessionID) error {
+	if err := ht.claimSession(sid); err != nil {
+		return err
+	}
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	if ht.released {
+		return fmt.Errorf("%w: agent.App released before turn completed", sessionhost.ErrInternal)
+	}
+	if ht.turnActive {
+		return fmt.Errorf("%w: hostTurn already has an active turn", sessionhost.ErrInternal)
+	}
+	ht.turnActive = true
+	return nil
 }
 
 // claimSession binds the App to a single session ID and rejects a second.
