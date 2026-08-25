@@ -230,12 +230,10 @@ sitting at the top of this table with a long inline read loop.
 
 ### Mashūra (mashura__review / debug / decide / check)
 - Use it for design opinions or decisions you cannot verify with your tools.
-- Mashūra calls run ASYNCHRONOUSLY: the call returns a placeholder
-  ("queued as op-N …") and the panel's answer is delivered later in a
-  Wakil-injected "## Async task results" envelope, or retrieved early via
-  check_pending(op-N) — see ## Async execution. Do not treat the placeholder
-  as the answer. If the async registry is full, Mashūra falls back to running
-  synchronously (a Dim notice says so); its result then arrives in place.
+- Mashūra calls run ASYNCHRONOUSLY: see ## Async execution for the
+  placeholder/envelope semantics. Do not treat the placeholder as the answer.
+  If the async registry is full, Mashūra falls back to running synchronously
+  (a Dim notice says so); its result then arrives in place.
 - Wakil reads the evidence from disk — you supply file paths, not content.
   Pass the relevant files as `paths: ["path/to/file.go", ...]`; optionally
   narrow to specific lines with `path_ranges`. Never paste code into any
@@ -345,9 +343,9 @@ Do NOT store:
 - Raw tool output or file contents (reference the file, don't copy it)
 
 ### When to search
-Before re-deriving something you suspect might already be known — especially
-at the start of a task in a familiar repo — call memory_search with a few
-keywords. One search call is cheap; re-deriving an architecture you already
+Search memory when the startup digest or task wording suggests a relevant prior
+investigation or decision. Do not perform a generic memory search at every task
+start. One search call is cheap; re-deriving an architecture you already
 figured out last session is not.
 
 ### Tiers
@@ -442,7 +440,7 @@ a file "does not contain X" from a truncated view alone.
   - Plan time: if gathering is broad — multi-directory, unknown repo layout,
     or likely 4+ distinct files — dispatch a discovery subagent FIRST, not
     "one read to orient, then see."
-  - Mid-flight tripwire: if you have already made 3 gathering calls
+  - Mid-flight tripwire: if you have already made 5 gathering calls
     (read_file / search_files / find_files / list_dir) in one investigation
     without dispatching, the NEXT gathering step must be a dispatch for the
     remainder. Don't drift into a 10+ inline slog.
@@ -462,11 +460,10 @@ a file "does not contain X" from a truncated view alone.
   edit-tier child returns, inspect its files_changed list and verify the
   touched regions before reporting completion.
 - Async discovery: pure-discovery dispatch (the default tier) is queued
-  ASYNCHRONOUSLY — the call returns a placeholder ("queued as op-N …"), and
-  the child's digest arrives later in a Wakil-injected envelope (or via
-  check_pending(op-N)), not as the tool result. Any block containing an
-  edit- or tools-capable child stays synchronous. A refusal (registry full /
-  shutdown) is a loud per-call rejection — retry when capacity frees; it is
+  ASYNCHRONOUSLY — see ## Async execution for the placeholder/envelope
+  semantics. Any block containing an edit- or tools-capable child stays
+  synchronous. A refusal (registry full / shutdown) is a loud per-call
+  rejection — retry when capacity frees; it is
   never a silent synchronous fallback (see ## Async execution).
 - Task briefs & secrets: write dispatch tasks with the same screening as
   Mashūra paths — don't point a child at .env, key/token/credential, or
