@@ -176,6 +176,15 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	m.followBottom = true
 	m.vp.GotoBottom()
 
+	// Restore info panel visibility from the new facade (WP-9.1: the TUI
+	// cached infoPanel.active locally and never re-read it on rotation, so
+	// the panel's open/closed state was lost on /new and /handoff).
+	wasOpen := m.infoPanel.active
+	m.infoPanel.active = rm.facade.Info().InfoPanelOpen
+	if m.infoPanel.active != wasOpen {
+		m = m.reflow()
+	}
+
 	// Subscribe live-only (at the durable head) and start delivery AFTER the
 	// swap — the session guard now accepts the new session's events. The
 	// deliver callback is the tea.Program's Send, installed at bootstrap via

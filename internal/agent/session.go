@@ -21,6 +21,7 @@ import (
 type Session struct {
 	ChatID        string                  `json:"chat_id"`
 	Model         string                  `json:"model"`
+	EndpointName  string                  `json:"endpoint_name,omitempty"`
 	Label         string                  `json:"label,omitempty"`
 	Workspace     string                  `json:"workspace,omitempty"`
 	Created       time.Time               `json:"created"`

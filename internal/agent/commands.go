@@ -245,9 +245,15 @@ func ApplyModelOverride(app *App, model string) {
 		app.Cfg.Endpoint.Model = model
 		app.SelectedModel = "" // openai mode: ConfiguredModel is the single source
 		app.defaultModel = model
+		if app.Session != nil {
+			app.Session.Model = model
+		}
 		return
 	}
 	app.SelectedModel = model
+	if app.Session != nil {
+		app.Session.Model = model
+	}
 }
 
 // shellCmdFromDetail extracts the raw shell command from the detail string that
@@ -348,6 +354,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// and RepoState has no field for AllowDestructive regardless — that
 		// grant can never be written to disk from here.
 		app.saveRepoState(func(s *RepoState) { s.AutoApprove = newAuto })
+		// Notify the wiring manager that the user has toggled /auto, so
+		// subsequent rotations restore AutoApprove from RepoState instead
+		// of re-seeding from the --auto CLI flag (Phase 2: clears the
+		// AutoExplicit guard process-locally). No-op when the callback is
+		// nil (headless, tests).
+		if app.OnAutoToggled != nil {
+			app.OnAutoToggled()
+		}
 		if newAuto {
 			app.SetAutoApprove(true)
 			return true, false, note("auto mode: ON — tool calls approved without prompting\n" +
@@ -702,6 +716,11 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				}
 				s.EndpointName = app.Cfg.EndpointName
 			})
+			// /backend with a model is a model override too — notify the
+			// wiring manager so ModelExplicit is cleared for future rotations.
+			if app.OnModelToggled != nil {
+				app.OnModelToggled()
+			}
 			// Re-probe context limits for the new backend so dynamic thresholds
 			// (compact_at_frac etc.) scale to the new window. The result arrives
 			// as BackendCtxLimitMsg and is applied safely in the TUI event loop.
@@ -750,6 +769,13 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				s.Model = model
 				s.EndpointName = app.Cfg.EndpointName
 			})
+			// Notify the wiring manager that the user has set /model, so
+			// subsequent rotations restore Model from RepoState instead of
+			// re-seeding from the --model CLI flag (Phase 2: clears the
+			// ModelExplicit guard process-locally). No-op when nil.
+			if app.OnModelToggled != nil {
+				app.OnModelToggled()
+			}
 			if isOpenAI {
 				msg := "model: set to " + model + " (endpoint " + app.Cfg.EndpointName + ")"
 				return true, false, Batch(note(msg), resolveBackendCtxCmd(app, "", model))
@@ -910,12 +936,18 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				}
 			}
 			app.SetCounselModeValue("auto", cap)
+			app.saveRepoState(func(s *RepoState) {
+				s.CounselMode = "auto"
+				s.MaxCounsel = cap
+			})
 			return true, false, note(fmt.Sprintf("counsel mode: auto (cap: %d/turn)", cap))
 		case "suggest":
 			app.SetCounselModeValue("suggest", 0)
+			app.saveRepoState(func(s *RepoState) { s.CounselMode = "suggest" })
 			return true, false, note("counsel mode: suggest (hint only, no auto-fire)")
 		case "off":
 			app.SetCounselModeValue("off", 0)
+			app.saveRepoState(func(s *RepoState) { s.CounselMode = "off" })
 			return true, false, note("counsel mode: off (struggle detected silently)")
 		default:
 			return true, false, note("usage: /counsel auto|suggest|off")

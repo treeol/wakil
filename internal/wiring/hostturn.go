@@ -394,15 +394,24 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 				}
 			})
 			app.SetEventSink(func(msg any) {
-				// Tool-call messages are turn-scoped kinds (D24): the session
-				// emitter REJECTS them, so route them to the live turn's emitter
-				// when one exists. Everything else projects on the session
-				// surface (subagents, async jobs, notes, …). The current turn's
-				// emitter AND its TurnID are read under ht.mu together — the
-				// sink can fire from tool goroutines concurrently with a turn
-				// boundary, and the pair must stay consistent.
+				// Turn-scoped messages are routed to the live turn's emitter,
+				// because the session emitter REJECTS turn-scoped kinds
+				// (KindSubagentSpawned, KindSubagentCompleted, tool-call
+				// kinds — see turnScopedKinds in host.go). This includes
+				// subagent spawn/done events, which are durable and
+				// turn-scoped: they must go through the turn emitter while a
+				// turn is active. Ephemeral subagent events (progress,
+				// active, finished) use Notify, which the session emitter
+				// accepts, so they fall through to the session surface.
+				//
+				// Everything else projects on the session surface (async
+				// jobs, notes, …). The current turn's emitter AND its
+				// TurnID are read under ht.mu together — the sink can fire
+				// from tool goroutines concurrently with a turn boundary,
+				// and the pair must stay consistent.
 				switch msg.(type) {
-				case agent.ToolStartMsg, agent.ToolResultMsg:
+				case agent.ToolStartMsg, agent.ToolResultMsg,
+					agent.SubagentStartMsg, agent.SubagentDoneMsg:
 					ht.mu.Lock()
 					te, teTurn := ht.turnEmit, ht.turnEmitTurnID
 					ht.mu.Unlock()

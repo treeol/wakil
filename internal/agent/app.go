@@ -378,6 +378,18 @@ type App struct {
 	// the TUI program's Send; nil in tests that don't need TUI events.
 	EventSink func(interface{})
 
+	// OnAutoToggled, when set, is called by the /auto handler after the
+	// toggle is applied. The wiring facade sets this to
+	// ConversationManager.SetAutoUserOverridden so subsequent rotations
+	// restore AutoApprove from RepoState instead of re-seeding from the
+	// --auto CLI flag. nil in tests and the headless path (no rotation).
+	OnAutoToggled func()
+
+	// OnModelToggled, when set, is called by the /model and /backend
+	// handlers after the override is applied. Same purpose as OnAutoToggled
+	// but for ModelExplicit. nil in tests and the headless path.
+	OnModelToggled func()
+
 	// AutoCounsel, when true, fires mashura__debug automatically whenever the
 	// struggle detector triggers, instead of just printing a hint the user would
 	// need to act on. Designed for headless benchmark runs where no human is
@@ -765,6 +777,18 @@ func (a *App) SaveSession() {
 	if snap.Workspace == "" {
 		snap.Workspace = a.SessionWorkspace()
 	}
+	// Derive the effective model from locked fields (NOT EffectiveModel,
+	// which would re-acquire stateMu.RLock — Go's RWMutex is NOT reentrant,
+	// so calling it here would deadlock). SelectedModel takes precedence
+	// over Client.Model (same logic as EffectiveModel, just inlined).
+	if a.SelectedModel != "" {
+		snap.Model = a.SelectedModel
+	} else if a.Client != nil {
+		snap.Model = a.Client.Model
+	}
+	// Keep EndpointName current so resume can verify the saved model is
+	// meaningful for the active endpoint.
+	snap.EndpointName = a.Cfg.EndpointName
 
 	a.convMu.RUnlock()
 	a.stateMu.RUnlock()
@@ -808,10 +832,11 @@ func (a *App) NewConversation(chatID string) {
 	a.preambleDay = ""
 	a.Client.ChatID = chatID
 	a.Session = &Session{
-		ChatID:    chatID,
-		Model:     a.Client.Model,
-		Created:   time.Now(),
-		Workspace: a.SessionWorkspace(),
+		ChatID:       chatID,
+		Model:        a.Client.Model,
+		EndpointName: a.Cfg.EndpointName,
+		Created:      time.Now(),
+		Workspace:    a.SessionWorkspace(),
 	}
 	// Reset ephemeral consent grants so a previous session's /auto or
 	// /auto destructive grant does not leak into the new conversation.
@@ -868,10 +893,11 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.preambleDay = ""
 	a.Client.ChatID = chatID
 	a.Session = &Session{
-		ChatID:    chatID,
-		Model:     a.Client.Model,
-		Created:   time.Now(),
-		Workspace: a.SessionWorkspace(),
+		ChatID:       chatID,
+		Model:        a.Client.Model,
+		EndpointName: a.Cfg.EndpointName,
+		Created:      time.Now(),
+		Workspace:    a.SessionWorkspace(),
 	}
 	a.RevokeAuto()
 	a.SetAllowReads(false)

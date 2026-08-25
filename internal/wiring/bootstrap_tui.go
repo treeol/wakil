@@ -15,10 +15,8 @@ package wiring
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
-	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
@@ -43,9 +41,10 @@ type BootstrapTUIOpts struct {
 	// AttachImages are pre-loaded images (--attach-image) queued into the
 	// first conversation's pending images.
 	AttachImages []proxy.ImagePart
-	// RestoreRepoState runs the per-workspace terminal-settings restore on a
-	// FRESH conversation (never on resume — a resumed session's model/backend
-	// must not be silently changed) and composes its note.
+	// RestoreRepoState is now a no-op on the wiring path — the manager's
+	// NewConversation/ResumeConversation/HandoffConversation handle the
+	// restore. Kept for backward compatibility with callers that still
+	// pass it (cmd/wakil/main.go). The flag has no effect.
 	RestoreRepoState bool
 	// CounselMode/CounselMax configure the counsel engine (TUI defaults).
 	CounselMode string
@@ -93,18 +92,9 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		if err != nil {
 			return nil, nil, fmt.Errorf("tui bootstrap: %w", err)
 		}
-		// Resume: restore endpoint-independent settings only (AutoApprove,
-		// RawTools, maxpar, maxctx, subagent, mashura) — model/backend are
-		// skipped to avoid changing them mid-transcript.
-		if wf, ok := f.(*wiringFacade); ok {
-			st, restoreErr := agent.RestoreRepoStateRead(wf.app)
-			if restoreErr == nil && st != nil {
-				result := agent.RestoreRepoStateResumeApply(wf.app, st)
-				if result.Note != "" {
-					wf.app.StartupNote = result.Note
-				}
-			}
-		}
+		// Resume: endpoint-independent settings (AutoApprove, /counsel,
+		// /mashura, etc.) are now restored by the manager's
+		// ResumeConversation — no duplicate restore here.
 	} else {
 		f, err = mgr.NewConversation(ctx, principal, nil)
 		if err != nil {
@@ -119,28 +109,11 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		if len(opts.AttachImages) > 0 {
 			app.PendingImages = append(app.PendingImages, opts.AttachImages...)
 		}
-		// Fresh conversation only: per-repo terminal settings restore
-		// (a resumed session's model/backend is never silently changed).
-		if opts.RestoreRepoState && resumeID == "" {
-			st, restoreErr := agent.RestoreRepoStateRead(app)
-			if restoreErr == nil && st != nil {
-				// Apply under lock. Returns literal model/backend strings
-				// that were actually applied.
-				result := agent.RestoreRepoStateApply(app, st)
-				if result.Note != "" {
-					app.StartupNote = result.Note
-				}
-				// Re-resolve context limits using the literal strings Apply
-				// actually used — mirrors resolveBackendCtxCmd's calling
-				// convention (reading app.SelectedModel back would be wrong
-				// for openai-kind endpoints). Uses app.Cfg (same pointer as
-				// cfg, but explicit for clarity).
-				if (result.Model != "" || result.Backend != "") && app.Client != nil && app.Client.HTTP != nil {
-					cl := agent.ResolveContextLimitForBackendModel(ctx, app.Client.HTTP, app.Cfg, result.Backend, result.Model, os.Stderr)
-					app.SetCtxLimit(cl)
-				}
-			}
-		}
+		// Fresh conversation only: per-repo terminal settings restore is
+		// now handled by the manager's NewConversation — no duplicate
+		// restore here. The RestoreRepoState field is kept for backward
+		// compatibility but is a no-op on the wiring path.
+		_ = opts.RestoreRepoState
 		// Counsel mode (TUI defaults).
 		if opts.CounselMode != "" {
 			app.SetCounselMode(opts.CounselMode)
@@ -151,12 +124,7 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 			if app.StagingClient != nil {
 				scanCtx, scanCancel := context.WithTimeout(ctx, 3*time.Second)
 				if res, err := app.StagingClient.Scan(scanCtx, "", 1, ""); err == nil && len(res.Keys) > 0 {
-					note := "staging: entries restored"
-					if app.StartupNote != "" {
-						app.StartupNote += " | " + note
-					} else {
-						app.StartupNote = note
-					}
+					appendStartupNote(app, "staging: entries restored")
 				}
 				scanCancel()
 			}
@@ -165,12 +133,7 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 				stats, _ := app.MemoryStore.Stats(statsCtx, 5)
 				statsCancel()
 				if stats != nil && stats.PendingProposed > 0 {
-					note := fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
-					if app.StartupNote != "" {
-						app.StartupNote += " | " + note
-					} else {
-						app.StartupNote = note
-					}
+					appendStartupNote(app, fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed))
 				}
 			}
 		}

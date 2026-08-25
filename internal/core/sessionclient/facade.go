@@ -489,4 +489,16 @@ type ConversationManager interface {
 	// subscription). Detached async jobs are cancelled. After Close, the
 	// facade is unusable.
 	Close(f Facade) error
+
+	// SetAutoUserOverridden marks that the user has toggled /auto
+	// mid-session, so subsequent rotations should restore AutoApprove from
+	// RepoState instead of re-seeding from the --auto CLI flag. Process-
+	// scoped — not persisted, cleared on restart.
+	SetAutoUserOverridden()
+
+	// SetModelUserOverridden marks that the user has set /model or /backend
+	// mid-session, so subsequent rotations should restore Model from
+	// RepoState instead of re-seeding from the --model CLI flag. Process-
+	// scoped — not persisted, cleared on restart.
+	SetModelUserOverridden()
 }

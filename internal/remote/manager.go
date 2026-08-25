@@ -175,6 +175,16 @@ func (m *RemoteConversationManager) Close(f sessionclient.Facade) error {
 	return f.Close()
 }
 
+// SetAutoUserOverridden is a no-op on the remote manager. The override flags
+// are process-local to the embedded wiring manager (they clear AutoExplicit
+// so RepoState restore fires on rotation). The remote path delegates to the
+// daemon, which handles its own state restoration.
+func (m *RemoteConversationManager) SetAutoUserOverridden() {}
+
+// SetModelUserOverridden is a no-op on the remote manager. See
+// SetAutoUserOverridden for rationale.
+func (m *RemoteConversationManager) SetModelUserOverridden() {}
+
 // connectCodeOf extracts the connect.Code from an error. Returns
 // CodeUnknown if the error is not a connect error.
 func connectCodeOf(err error) connect.Code {
