@@ -354,22 +354,25 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// and RepoState has no field for AllowDestructive regardless — that
 		// grant can never be written to disk from here.
 		app.saveRepoState(func(s *RepoState) { s.AutoApprove = newAuto })
-		// Notify the wiring manager that the user has toggled /auto, so
-		// subsequent rotations restore AutoApprove from RepoState instead
-		// of re-seeding from the --auto CLI flag (Phase 2: clears the
-		// AutoExplicit guard process-locally). No-op when the callback is
-		// nil (headless, tests).
-		if app.OnAutoToggled != nil {
-			app.OnAutoToggled()
-		}
 		if newAuto {
 			app.SetAutoApprove(true)
+			// Notify the wiring manager AFTER the consent change is applied,
+			// so subsequent rotations restore AutoApprove from RepoState
+			// instead of re-seeding from the --auto CLI flag (Phase 2:
+			// clears the AutoExplicit guard process-locally). No-op when
+			// the callback is nil (headless, tests).
+			if app.OnAutoToggled != nil {
+				app.OnAutoToggled()
+			}
 			return true, false, note("auto mode: ON — tool calls approved without prompting\n" +
 				"  still confirmed: destructive shell commands (opt in with /auto destructive), external-backend egress")
 		}
 		// OFF: clear both AutoApprove and AllowDestructive atomically (pair
 		// invariant — the destructive grant never outlives the auto session).
 		app.RevokeAuto()
+		if app.OnAutoToggled != nil {
+			app.OnAutoToggled()
+		}
 		return true, false, note("auto mode: OFF — tool calls require confirmation")
 
 	case "/rawtools":

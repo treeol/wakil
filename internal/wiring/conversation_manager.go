@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/treeol/wakil/internal/agent"
@@ -48,10 +49,12 @@ type conversationManager struct {
 	// scoped (not persisted to RepoState) so a fresh process start always
 	// honors the CLI flag — the override only applies within the current
 	// process. See Phase 2 of the handoff-rotation-restore plan.
-	autoUserOverridden bool
+	// atomic.Bool because it's written from command goroutines and read
+	// from rotation goroutines (concurrent unsynchronized access = race).
+	autoUserOverridden atomic.Bool
 	// modelUserOverridden is set when the user sets /model or /backend
 	// mid-session. Same purpose as autoUserOverridden but for ModelExplicit.
-	modelUserOverridden bool
+	modelUserOverridden atomic.Bool
 }
 
 // NewConversationManager creates a ConversationManager from config, executor,
@@ -125,10 +128,10 @@ func (cm *conversationManager) restoreRepoState(ctx context.Context, app *agent.
 	// guard fires when the user has overridden mid-session. The config is
 	// a value type copied by BuildApp, so mutating app.Cfg does NOT affect
 	// cm.cfg or future Apps — it only affects this restore call.
-	if cm.autoUserOverridden {
+	if cm.autoUserOverridden.Load() {
 		app.Cfg.AutoExplicit = false
 	}
-	if cm.modelUserOverridden {
+	if cm.modelUserOverridden.Load() {
 		app.Cfg.ModelExplicit = false
 	}
 	var result agent.RestoreRepoStateResult
@@ -440,13 +443,13 @@ func (cm *conversationManager) Close(f sessionclient.Facade) error {
 // instead of re-seeding from the --auto CLI flag (clearing AutoExplicit's
 // guard). Not persisted — a fresh process start always honors the CLI flag.
 func (cm *conversationManager) SetAutoUserOverridden() {
-	cm.autoUserOverridden = true
+	cm.autoUserOverridden.Store(true)
 }
 
 // SetModelUserOverridden marks that the user has set /model or /backend
 // mid-session. Same purpose as SetAutoUserOverridden but for ModelExplicit.
 func (cm *conversationManager) SetModelUserOverridden() {
-	cm.modelUserOverridden = true
+	cm.modelUserOverridden.Store(true)
 }
 
 // WorkspaceIDFromConfig derives a WorkspaceID from the config's effective
