@@ -136,6 +136,15 @@ func LoadRepoState(ws string) (*RepoState, error) {
 	if st.SchemaVersion != repoStateSchemaVersion {
 		return nil, nil
 	}
+	// Workspace mismatch check: the stored Workspace field should match the
+	// requested workspace after canonicalization. An old record with an empty
+	// Workspace (pre-dating workspace recording) is allowed through for
+	// backward compatibility — updateRepoState will backfill it on the next
+	// write. This prevents a stale file from one workspace silently applying
+	// to another (e.g. after a path rename or a copied state directory).
+	if st.Workspace != "" && workspaceKey(st.Workspace) != workspaceKey(ws) {
+		return nil, nil //nolint:nilerr // mismatched workspace is treated as absent
+	}
 	return &st, nil
 }
 
