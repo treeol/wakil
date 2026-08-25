@@ -529,14 +529,24 @@ type bgEntry struct {
 	startedAt  time.Time
 	generation int // executor generation at time of creation
 
-	// Card #121: detached-job push notification. notifyOnExit is set ONLY when
-	// run_shell auto-backgrounds a command at its deadline (the detached case);
-	// explicit run_background jobs are poll-by-design and don't notify. The
-	// reaper pushes a completion notice into the async inbox exactly once
+	// notifyOnExit is set ONLY when run_shell auto-backgrounds a command at its
+	// deadline (the detached case) OR when run_background is called with
+	// notify_on_exit=true (finite jobs that should wake the agent). In both cases
+	// the reaper pushes a completion notice into the async inbox exactly once
 	// (notifyOnExit && !notified, guarded by bgMu). kill_process and shutdown
 	// clear notifyOnExit so intentional terminations stay silent.
+	//
+	// When notify_on_exit=true is set on a run_background job, asyncOp is
+	// non-nil: the job was registered via registerAsyncOp, incrementing
+	// asyncActive so isIdle returns true and the turn suspends until completion.
+	// The reaper publishes through publishAsyncOp (proper slot accounting) and
+	// the asyncInbox delivery wakes the suspended turn. For default (false)
+	// jobs and auto-bg run_shell, asyncOp is nil — the notification path
+	// (notifyDetachedShellExit) manually appends to asyncInbox without slot
+	// accounting, as before.
 	notifyOnExit bool
 	notified     bool
+	asyncOp      *asyncOp // non-nil when notify_on_exit=true; published on completion
 	cmdDigest    string // short command label for the completion notice
 	readOnly     bool   // whether the command was classified read-only
 
@@ -2233,6 +2243,14 @@ func (a *App) StopAllBackgroundProcs() {
 	if a.bgLogDir != "" {
 		os.RemoveAll(a.bgLogDir)
 		a.bgLogDir = ""
+	}
+	// Release async slots for any notify_on_exit=true jobs. The reaper won't
+	// publish (notifyOnExit was cleared above), so we must release the slots
+	// explicitly to avoid a permanent asyncActive leak.
+	for _, entry := range entries {
+		if entry.asyncOp != nil {
+			a.cancelBgAsyncOp(entry.asyncOp, entry.id, "stopped (shutdown)")
+		}
 	}
 }
 

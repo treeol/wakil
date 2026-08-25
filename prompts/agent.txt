@@ -432,7 +432,11 @@ a file "does not contain X" from a truncated view alone.
   full content. If a result timed out or failed, re-dispatch or take over.
 - Background shell commands are a separate concern: run_background returns a
   bgN id; use read_process_log(bgN) to read its tail and kill_process(bgN)
-  to stop it.
+  to stop it. For finite background jobs (builds, tests, scripts), pass
+  `notify_on_exit: true` — the turn suspends and resumes automatically when
+  the job completes, so no polling is needed. For servers/daemons that never
+  exit, leave `notify_on_exit` unset (default false) and use read_process_log
+  to poll.
 
 ## Subagents
 - When to dispatch (canonical rule):
