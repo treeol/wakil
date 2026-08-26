@@ -625,6 +625,10 @@ func (f *RemoteFacade) RevokeAuto() {
 		return err
 	})
 }
+// SetWorkflow is a no-op in remote mode: the daemon owns workflow state and
+// exposes it via GetSessionState. The workflow snapshot is projected from the
+// cached state, not set locally. bumpVersion ensures the next Snapshot read
+// reflects the version bump so the TUI doesn't miss the call.
 func (f *RemoteFacade) SetWorkflow(wf *sessionclient.WorkflowSnapshot) { f.bumpVersion() }
 func (f *RemoteFacade) AppendSystemMessage(m proxy.Message) {
 	f.mu.Lock()
@@ -632,6 +636,9 @@ func (f *RemoteFacade) AppendSystemMessage(m proxy.Message) {
 	f.mu.Unlock()
 	f.bumpVersion()
 }
+// SaveSession is a no-op in remote mode: the daemon persists the transcript
+// server-side at turn boundaries (SaveSession RPC is wired through the
+// SessionStateService). The remote TUI never writes transcripts directly.
 func (f *RemoteFacade) SaveSession() {}
 func (f *RemoteFacade) ConsumeStartupNote() string {
 	f.mu.Lock()
@@ -715,6 +722,10 @@ func (f *RemoteFacade) RestoreRepoStateResume() {
 	f.mu.Unlock()
 	f.refreshStateSync()
 }
+// SetCtxLimit, SetModelList, SetTools, and PendingImages methods are no-ops
+// in remote mode: these are set server-side by the daemon (via config reload,
+// /model, /rawtools, /image). The remote TUI reads them from the cached
+// SessionState. bumpVersion ensures the TUI doesn't miss the call.
 func (f *RemoteFacade) SetCtxLimit(lim sessionclient.ContextLimit)  { f.bumpVersion() }
 func (f *RemoteFacade) SetModelList(models []string)                { f.bumpVersion() }
 func (f *RemoteFacade) SetTools(tools []proxy.Tool)                 { f.bumpVersion() }
@@ -1448,6 +1459,10 @@ func (c *remoteCompletionSource) Backends() []sessionclient.Backend {
 	return backendsFromProto(st.BackendList)
 }
 
+// Sessions returns nil in remote mode: session auto-completion requires the
+// daemon's ListSavedSessions RPC on every keystroke, which is too expensive
+// for the TUI's inline completion path. The /resume picker uses the full RPC
+// path (ListSessions) instead. This is a documented P2e limitation.
 func (c *remoteCompletionSource) Sessions() []sessionclient.SessionSummary {
 	return nil
 }
