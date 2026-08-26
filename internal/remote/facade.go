@@ -41,7 +41,6 @@ package remote
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +53,7 @@ import (
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/protoconv"
 	"github.com/treeol/wakil/internal/proxy"
 )
@@ -589,7 +589,7 @@ func (f *RemoteFacade) goMutation(op string, call func(context.Context, wakilv1a
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
 		if err := call(ctx, client, sid); err != nil {
-			fmt.Fprintf(os.Stderr, "remote: %s mutation failed: %v\n", op, err)
+			diag.Printf("remote: %s mutation failed: %v\n", op, err)
 		}
 		// Refresh cached state so the TUI's next Snapshot()/Consent() read
 		// reflects the mutation that just landed (or didn't).
