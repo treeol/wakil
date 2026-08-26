@@ -110,6 +110,46 @@ confirmation gate is still on. See [docs/configuration.md](docs/configuration.md
 See [`config.example.json`](config.example.json) for a fully commented
 reference covering all options.
 
+## Daemon mode
+
+In addition to the default embedded mode (TUI + agent in one process), wakil
+can run as a long-lived daemon that owns session state and serves multiple
+clients over a Unix socket or TCP:
+
+```
+TUI ─┐
+     ├─→ wakil daemon (Unix socket / TCP) ──→ agent loop ──→ model endpoint
+Web UI ┘
+```
+
+```sh
+# Start the daemon (listens on $XDG_RUNTIME_DIR/wakil.sock by default)
+./wakil daemon
+
+# Connect the TUI to a running daemon
+./wakil --remote
+
+# Run the daemon in Docker
+docker compose up -d   # see docker-compose.yml + .env.example
+```
+
+The daemon exposes a Connect/gRPC API (`api/proto/wakil/v1alpha1`) for
+session management, event streaming, slash-command dispatch, backends,
+workspaces, and agents. A built-in web console is served on the TCP
+listener (configurable origin allowlist, session-cookie auth, optional
+TLS). See [docs/design/wakil-foundation.md](docs/design/wakil-foundation.md)
+for the full architecture.
+
+### Web console
+
+The daemon serves a built-in web UI for browser-based session management,
+backend/workspace/agent configuration, and live event viewing. Access it at
+the daemon's HTTP address (e.g. `https://localhost:8443/`). Authentication
+uses session cookies with SameSite=Strict and origin validation; API
+tokens and OIDC are also supported. See
+[docs/remote-provisioning.md](docs/remote-provisioning.md) for provisioning
+details.
+
 ## Requirements
 
 | | |
@@ -138,6 +178,7 @@ audited.
 | Features (LSP, browser, counsel, search, memory, tracing) | [docs/features.md](docs/features.md) |
 | Durable memory design | [docs/memory.md](docs/memory.md) |
 | Staging store design | [docs/staging.md](docs/staging.md) |
+| Daemon architecture and API design | [docs/design/wakil-foundation.md](docs/design/wakil-foundation.md) |
 | Remote provisioning | [docs/remote-provisioning.md](docs/remote-provisioning.md) |
 | Security policy and threat model | [SECURITY.md](SECURITY.md) |
 | Contributing and PR checklist | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -145,22 +186,42 @@ audited.
 ## Project layout
 
 ```
-cmd/wakil/         main package — entry point, CLI, TUI wiring, client tests
+cmd/wakil/         main package — entry point, CLI, TUI wiring, daemon subcommand
+api/proto/         Connect/gRPC service definitions (session, event, auth, backend, …)
+api/gen/           generated Go from proto (connectrpc)
 internal/
   agent/           the agent loop and tool-call assembly
+  auth/            authentication — join tokens, web sessions, API tokens, OIDC, peer creds
+  browser/         headless browser integration
   config/          flag/env/file config resolution
+  core/            transport-free domain core — session service, event model, session host
   counsel/         mashūra — external-model counsel (review/debug/decide/check)
+  crypto/          envelope encryption for secrets at rest (AES-256-GCM)
+  diag/            diagnostic output seam (prevents TUI garble from raw stderr writes)
   exec/            executor backends (docker, direct) + cwd tracking
   lsp/             language-server client — manager, JSON-RPC transport, tools
   memory/          durable memory store — SQLite, two tiers, FTS5, provenance
   orregistry/      OpenRouter model registry fetch + cache (context lengths)
+  policy/          policy evaluation for auto-approve and consent gating
+  protoconv/       shared proto↔domain event conversion (32-kind switch)
   proxy/           chat endpoint HTTP client (openai + ilm-proxy kinds)
+  remote/          remote facade — Connect RPC client for daemon mode
+  safe/            path confinement and safety checks
+  scrub/           secret scrubbing for tool output and traces
+  server/connect/  Connect HTTP server — handlers, auth interceptor, origin validation
+  sessionhistory/  searchable session transcript index (SQLite + FTS5)
   staging/         kvr client — in-sandbox ephemeral KV store (UDS wire protocol)
+  store/           SQLite migrations and per-domain stores (agent, backend, workspace)
   tools/           the tool set (run_shell, read_file, edit_file, …)
   trace/           execution tracing
   tui/             terminal UI
+  verify/          deterministic workflow verification (test/build/lint detection)
+  wiring/          bootstrap, conversation manager, facade, host turn, headless runner
   workflow/        /plan gather→plan→review→implement state machine
+web/               embedded web console (vanilla JS, served by the daemon)
 Dockerfile         sandbox image — Go, Node, Rust, Python toolchains, gopls, docker CLI + compose, gh, golangci-lint
+Dockerfile.daemon  minimal daemon image (distroless, non-root, pure-Go SQLite)
+docker-compose.yml daemon as a Docker service with volume mounts for data/config/socket
 ```
 
 ## Security
@@ -170,6 +231,13 @@ primary defense — every workspace mutation and command execution prompts `y/n`
 before it runs. Docker mode provides convenience-grade isolation (read-only
 rootfs, dropped capabilities, resource limits) but is **not** adversarial-grade.
 Direct mode runs on the host with no container isolation.
+
+The daemon mode adds: session-cookie auth with SameSite=Strict, origin
+validation for CSRF prevention, optional TLS, API token authentication,
+OIDC integration, and credential encryption at rest (AES-256-GCM envelope
+encryption with a master key file). See
+[docs/design/wakil-foundation.md](docs/design/wakil-foundation.md) for the
+security architecture.
 
 > **Running untrusted tasks?** Keep the gate on, do not enable
 > `docker_socket`, and audit memory entries (`memory_list`) after operating
