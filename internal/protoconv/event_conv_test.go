@@ -210,7 +210,7 @@ func TestAllKindsRoundTrip(t *testing.T) {
 	// narrowing (0 → 0 is fine) but we want to catch missing switch cases,
 	// not field-level accuracy.
 	payloads := map[event.Kind]any{
-		event.KindSessionCreated:       event.SessionCreated{WorkspaceID: "wsp_1", CreatedBy: "usr_1"},
+		event.KindSessionCreated:        event.SessionCreated{WorkspaceID: "wsp_1", CreatedBy: "usr_1"},
 		event.KindTurnStarted:           event.TurnStarted{TurnID: "t1", TurnIndex: 1},
 		event.KindMessageDelta:          event.MessageDelta{Text: "hi"},
 		event.KindMessageCommitted:      event.MessageCommitted{TurnID: "t1", Text: "hi"},
@@ -232,11 +232,11 @@ func TestAllKindsRoundTrip(t *testing.T) {
 		event.KindConversationCompacted: event.ConversationCompacted{TurnID: "t1"},
 		event.KindWorkflowTurnStarted:   event.WorkflowTurnStarted{TurnID: "t1", UserText: "step 1"},
 		event.KindWorkflowFinalReview:   event.WorkflowFinalReview{TurnID: "t1"},
-		event.KindAsyncJobStarted:        event.AsyncJobStarted{OpID: "op1", Label: "test"},
+		event.KindAsyncJobStarted:       event.AsyncJobStarted{OpID: "op1", Label: "test"},
 		event.KindAsyncJobCompleted:     event.AsyncJobCompleted{OpID: "op1", Status: "ok"},
 		event.KindSideQuestionCompleted: event.SideQuestionCompleted{OpID: "op1", Status: "ok"},
 		event.KindTokRate:               event.TokRate{Rate: 42.5},
-		event.KindAsyncJobProgress:       event.AsyncJobProgress{OpID: "op1", Text: "50%"},
+		event.KindAsyncJobProgress:      event.AsyncJobProgress{OpID: "op1", Text: "50%"},
 		event.KindSideQuestionProgress:  event.SideQuestionProgress{OpID: "op1", Text: "thinking"},
 		event.KindLearnNudge:            event.LearnNudge{Text: "save this?"},
 		event.KindSessionNote:           event.SessionNote{Text: "progress"},

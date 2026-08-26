@@ -625,6 +625,7 @@ func (f *RemoteFacade) RevokeAuto() {
 		return err
 	})
 }
+
 // SetWorkflow is a no-op in remote mode: the daemon owns workflow state and
 // exposes it via GetSessionState. The workflow snapshot is projected from the
 // cached state, not set locally. bumpVersion ensures the next Snapshot read
@@ -636,6 +637,7 @@ func (f *RemoteFacade) AppendSystemMessage(m proxy.Message) {
 	f.mu.Unlock()
 	f.bumpVersion()
 }
+
 // SaveSession is a no-op in remote mode: the daemon persists the transcript
 // server-side at turn boundaries (SaveSession RPC is wired through the
 // SessionStateService). The remote TUI never writes transcripts directly.
@@ -722,6 +724,7 @@ func (f *RemoteFacade) RestoreRepoStateResume() {
 	f.mu.Unlock()
 	f.refreshStateSync()
 }
+
 // SetCtxLimit, SetModelList, SetTools, and PendingImages methods are no-ops
 // in remote mode: these are set server-side by the daemon (via config reload,
 // /model, /rawtools, /image). The remote TUI reads them from the cached

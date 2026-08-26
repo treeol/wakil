@@ -336,7 +336,7 @@ func TestTouchWebSession(t *testing.T) {
 	tx.Commit()
 
 	// Touch — should update last_seen_at and idle_expires_at.
-	newIdle := now + int64(45 * time.Minute)
+	newIdle := now + int64(45*time.Minute)
 	if err := store.TouchWebSession(ctx, "ws_1", now+int64(5*time.Minute), newIdle); err != nil {
 		t.Fatalf("TouchWebSession: %v", err)
 	}

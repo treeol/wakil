@@ -90,11 +90,11 @@ type wiringFacade struct {
 // TUI.
 func newWiringFacade(app *agent.App, handle *HostTurnHandle, host *sessionhost.Host, res *AppResources, principal core.Principal) *wiringFacade {
 	return &wiringFacade{
-		app:          app,
-		handle:       handle,
-		host:         host,
-		resources:    res,
-		principal:    principal,
+		app:           app,
+		handle:        handle,
+		host:          host,
+		resources:     res,
+		principal:     principal,
 		sideQuestions: make(map[sessionclient.OpID]context.CancelFunc),
 	}
 }
@@ -191,23 +191,23 @@ func (f *wiringFacade) Snapshot() sessionclient.ClientSnapshot {
 		title = app.Session.Label
 	}
 	return sessionclient.ClientSnapshot{
-		SessionID:    sessionID,
-		ChatID:       app.Client.ChatID,
-		Title:        title,
-		Workspace:    app.SessionWorkspace(),
-		Backend:      app.SelectedBackend,
-		Model:        app.EffectiveModel(),
-		Conv:         app.ConvSnapshot(),
-		ContextLimit: toClientContextLimit(app.CtxLimit),
-		ModelList:    append([]string(nil), app.ModelList...),
-		BackendList:  toClientBackends(app.BackendList),
-		Tools:        append([]proxy.Tool(nil), app.Tools...),
+		SessionID:     sessionID,
+		ChatID:        app.Client.ChatID,
+		Title:         title,
+		Workspace:     app.SessionWorkspace(),
+		Backend:       app.SelectedBackend,
+		Model:         app.EffectiveModel(),
+		Conv:          app.ConvSnapshot(),
+		ContextLimit:  toClientContextLimit(app.CtxLimit),
+		ModelList:     append([]string(nil), app.ModelList...),
+		BackendList:   toClientBackends(app.BackendList),
+		Tools:         append([]proxy.Tool(nil), app.Tools...),
 		PendingImages: append([]proxy.ImagePart(nil), app.PendingImages...),
-		RawTools:     app.RawTools,
-		OutputMode:   app.Cfg.OutputMode,
-		Costs:        app.Costs,
-		Workflow:     toClientWorkflow(app),
-		Version:      version,
+		RawTools:      app.RawTools,
+		OutputMode:    app.Cfg.OutputMode,
+		Costs:         app.Costs,
+		Workflow:      toClientWorkflow(app),
+		Version:       version,
 	}
 }
 
@@ -233,11 +233,11 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 	used, exact := app.ContextUsage()
 
 	info := sessionclient.InfoSnapshot{
-		ChatID:         app.Client.ChatID,
-		BaseURL:        app.Client.BaseURL,
-		LastBackend:    app.Client.LastUsedBackend(),
-		Cwd:            app.Exec.Cwd(),
-		ExecMode:       app.Exec.Describe(),
+		ChatID:          app.Client.ChatID,
+		BaseURL:         app.Client.BaseURL,
+		LastBackend:     app.Client.LastUsedBackend(),
+		Cwd:             app.Exec.Cwd(),
+		ExecMode:        app.Exec.Describe(),
 		SelectedBackend: app.SelectedBackend,
 		ConfigBackend:   app.Cfg.Backend,
 		EffectiveModel:  app.EffectiveModel(),
@@ -608,8 +608,8 @@ func (f *wiringFacade) DispatchCommand(line string) sessionclient.CommandResult 
 			// there against the old session (it belongs with "old session is
 			// final"). Here we only classify.
 			return sessionclient.CommandResult{
-				Handled: true,
-				Rotate:  &sessionclient.RotateRequest{Type: "new"},
+				Handled:  true,
+				Rotate:   &sessionclient.RotateRequest{Type: "new"},
 				Rotating: true,
 			}
 		case "/resume":
@@ -964,9 +964,9 @@ func toClientContextLimit(lim agent.ContextLimit) sessionclient.ContextLimit {
 		Source:          lim.Source,
 		ContextSource:   lim.ContextSource,
 		UsableCtx:       lim.UsableCtx,
-		ReasoningBudget:  lim.ReasoningBudget,
+		ReasoningBudget: lim.ReasoningBudget,
 		AnswerMargin:    lim.AnswerMargin,
-		ModelUnresolved:  lim.ModelUnresolved,
+		ModelUnresolved: lim.ModelUnresolved,
 	}
 }
 
@@ -977,9 +977,9 @@ func toAgentContextLimit(lim sessionclient.ContextLimit) agent.ContextLimit {
 		Source:          lim.Source,
 		ContextSource:   lim.ContextSource,
 		UsableCtx:       lim.UsableCtx,
-		ReasoningBudget:  lim.ReasoningBudget,
+		ReasoningBudget: lim.ReasoningBudget,
 		AnswerMargin:    lim.AnswerMargin,
-		ModelUnresolved:  lim.ModelUnresolved,
+		ModelUnresolved: lim.ModelUnresolved,
 	}
 }
 
