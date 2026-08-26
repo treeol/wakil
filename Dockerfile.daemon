@@ -25,7 +25,7 @@
 ###############################################################################
 # Stage 1: Build the wakil binary
 ###############################################################################
-FROM golang:1.26.6-bookworm AS builder
+FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS builder
 
 # go.mod requires go >= 1.26.6; the base image is pinned to 1.26.6 so no
 # toolchain download is needed (GOTOOLCHAIN=local prevents network fallback).
@@ -54,7 +54,7 @@ RUN CGO_ENABLED=0 go build \
 ###############################################################################
 # Stage 2: Runtime (distroless, non-root)
 ###############################################################################
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 
 # Default environment. These can be overridden at runtime via docker run -e
 # or docker-compose environment: block.
