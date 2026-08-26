@@ -183,6 +183,7 @@ func (f *wiringFacade) SessionSnapshot(ctx context.Context, principal core.Princ
 func (f *wiringFacade) Snapshot() sessionclient.ClientSnapshot {
 	f.mu.Lock()
 	version := f.snapshotVersion
+	sessionID := f.sessionID
 	f.mu.Unlock()
 	app := f.app
 	title := ""
@@ -190,7 +191,7 @@ func (f *wiringFacade) Snapshot() sessionclient.ClientSnapshot {
 		title = app.Session.Label
 	}
 	return sessionclient.ClientSnapshot{
-		SessionID:    f.sessionID,
+		SessionID:    sessionID,
 		ChatID:       app.Client.ChatID,
 		Title:        title,
 		Workspace:    app.SessionWorkspace(),

@@ -235,7 +235,7 @@
         card.className = 'session-card';
         card.innerHTML =
           '<div class="session-card-header">' +
-          '<span class="session-state ' + s.state + '">' + s.state + '</span>' +
+          '<span class="session-state ' + esc(s.state) + '">' + esc(s.state) + '</span>' +
           '<span class="session-title">' + esc(s.title || 'untitled') + '</span>' +
           '</div>' +
           '<div class="session-id">' + esc(s.id) + '</div>' +
@@ -527,7 +527,7 @@
           (b.baseUrl ? ' · ' + esc(b.baseUrl) : '') +
           '</div>' +
           '<div class="backend-actions">' +
-          '<button class="btn-danger btn-small" data-backend-delete="' + esc(b.id) + '">Delete</button>' +
+          '<button class="btn-danger btn-small" data-backend-delete="' + escAttr(b.id) + '">Delete</button>' +
           '</div>';
         card.querySelector('[data-backend-delete]').addEventListener('click', function () {
           if (!confirm('Delete backend "' + b.label + '"?')) return;
@@ -596,7 +596,7 @@
           (w.vcsRemote ? ' · ' + esc(w.vcsRemote) : '') +
           '</div>' +
           '<div class="workspace-actions">' +
-          '<button class="btn-danger btn-small" data-ws-delete="' + esc(w.id) + '">Delete</button>' +
+          '<button class="btn-danger btn-small" data-ws-delete="' + escAttr(w.id) + '">Delete</button>' +
           '</div>';
         card.querySelector('[data-ws-delete]').addEventListener('click', function () {
           if (!confirm('Delete workspace "' + w.name + '"?')) return;
@@ -659,7 +659,7 @@
           '</div>' +
           '<div class="agent-meta">' + esc(a.id) + '</div>' +
           '<div class="agent-actions">' +
-          '<button class="btn-danger btn-small" data-agent-delete="' + esc(a.id) + '">Delete</button>' +
+          '<button class="btn-danger btn-small" data-agent-delete="' + escAttr(a.id) + '">Delete</button>' +
           '</div>';
         card.querySelector('[data-agent-delete]').addEventListener('click', function () {
           if (!confirm('Delete agent "' + a.name + '" and all its revisions?')) return;
@@ -888,6 +888,14 @@
     var d = document.createElement('div');
     d.textContent = String(s);
     return d.innerHTML;
+  }
+
+  // escAttr escapes for use inside a double-quoted HTML attribute value.
+  // esc() above escapes <, >, & via the browser's textContent→innerHTML
+  // round-trip, but does NOT escape " or ' — which is unsafe inside
+  // attribute contexts (data-backend-delete="..."). escAttr adds those.
+  function escAttr(s) {
+    return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   function fmtTime(ts) {

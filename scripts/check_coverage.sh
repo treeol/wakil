@@ -66,6 +66,16 @@ check "internal/tools" "59.3"
 check "internal/exec" "53.6"
 check "internal/proxy" "79.2"
 check "internal/counsel" "90.0"
+# protoconv: 32-kind domain↔proto event conversion (shared by server + client).
+# Added 2026-08-26 at 97.0% (event_conv_test.go — round-trip + all kinds + edge cases).
+check "internal/protoconv" "96.0"
+# tokenstore: DB-backed auth token store (join tokens, web sessions, API tokens).
+# Added 2026-08-26 at 71.4% (tokenstore_test.go — 16 tests covering all operations).
+check "internal/auth/tokenstore" "70.0"
+
+# TODO: add coverage floors for internal/server/*, internal/remote, and other
+# auth subpackages once they have test files. These are damage-critical but
+# currently have zero or minimal test coverage.
 
 if [ "$fail" -ne 0 ]; then
 	echo "check_coverage: coverage floor violated — see above"
