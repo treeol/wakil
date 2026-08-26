@@ -191,6 +191,9 @@ func TestSubagentTranscriptOmitsMCP(t *testing.T) {
 // the backend returns 500 → Send errors → partial transcript is salvaged.
 func TestDispatchSubagentErrorFlushesPartialTranscript(t *testing.T) {
 	tmpDir := t.TempDir()
+	// Clear WAKIL_SESSIONS_DIR so XDG_DATA_HOME controls the cache dir (see
+	// TestSubagentSummaryWrittenToDisk for the TestMain interaction).
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 
 	fileContent := "package main\n\nfunc main() {}\n"
@@ -318,6 +321,10 @@ func TestDispatchSubagentErrorNoToolWorkNoSpill(t *testing.T) {
 // claim. XDG_DATA_HOME points at a path whose parent is a read-only file, so
 // MkdirAll fails.
 func TestDispatchSubagentErrorSpillWriteFailure(t *testing.T) {
+	// Clear WAKIL_SESSIONS_DIR so XDG_DATA_HOME controls the cache dir (see
+	// TestSubagentSummaryWrittenToDisk for the TestMain interaction).
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
+
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o444); err != nil {
 		t.Fatal(err)

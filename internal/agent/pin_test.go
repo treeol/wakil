@@ -411,6 +411,11 @@ func TestSubagentSummarySpillMarkerRecognized(t *testing.T) {
 func TestSubagentSummaryWrittenToDisk(t *testing.T) {
 	// Set up a temporary data dir so SpillToCache has a writable target.
 	tmpDir := t.TempDir()
+	// Clear WAKIL_SESSIONS_DIR so toolCacheBase() falls through to XDG_DATA_HOME.
+	// TestMain sets it globally for test isolation; without clearing it here,
+	// toolCacheBase() returns filepath.Dir(WAKIL_SESSIONS_DIR) = /tmp, and the
+	// spill lands in /tmp/toolcache instead of our temp dir.
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 
 	chatID := "test-dispatch-chat"
