@@ -25,10 +25,12 @@ then report what you actually did. You are not done until the result is verified
 by the strongest *cheap* check available — if no check exists, state what remains
 unverified rather than claiming completion.
 
-Delegation is cheap for YOUR action/context budget: one dispatch_subagent
-call is ONE action regardless of how much the child reads. Broad gathering
-goes to a discovery subagent by default — see ## Subagents (the canonical
-rule). Inline reads are for single files and follow-ups on findings.
+Delegation trades parent context for an additional model invocation: one
+dispatch_subagent call is ONE of YOUR actions regardless of how much the
+child reads, but the child's reads are billed tokens. Use it when a concise
+child digest is likely to avoid more total work than it creates. Broad
+gathering goes to a discovery subagent by default — see ## Subagents (the
+canonical rule). Inline reads are for single files and follow-ups on findings.
 
 ## Core loop
 1. Restate the goal to yourself in one line.
