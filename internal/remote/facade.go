@@ -41,6 +41,7 @@ package remote
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -574,7 +575,11 @@ func (f *RemoteFacade) getRPCTargets() (bool, event.SessionID, wakilv1alpha1conn
 // the cached SessionState — and therefore Snapshot()/Consent()/Info() —
 // reconverge to daemon truth. Without this refresh, the TUI could display
 // consent state that disagrees with what the daemon actually enforces.
-func (f *RemoteFacade) goMutation(call func(context.Context, wakilv1alpha1connect.SessionStateServiceClient, event.SessionID) error) {
+//
+// If the RPC fails, the error is logged to stderr — there is no synchronous
+// return path or TUI notice mechanism for these fire-and-forget mutations.
+// The subsequent refreshState reconverges to daemon truth regardless.
+func (f *RemoteFacade) goMutation(op string, call func(context.Context, wakilv1alpha1connect.SessionStateServiceClient, event.SessionID) error) {
 	ok, sid, client := f.getRPCTargets()
 	if !ok {
 		return
@@ -583,7 +588,9 @@ func (f *RemoteFacade) goMutation(call func(context.Context, wakilv1alpha1connec
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 		defer cancel()
-		_ = call(ctx, client, sid) // errors dropped: no synchronous return path
+		if err := call(ctx, client, sid); err != nil {
+			fmt.Fprintf(os.Stderr, "remote: %s mutation failed: %v\n", op, err)
+		}
 		// Refresh cached state so the TUI's next Snapshot()/Consent() read
 		// reflects the mutation that just landed (or didn't).
 		f.refreshState(context.Background())
@@ -591,7 +598,7 @@ func (f *RemoteFacade) goMutation(call func(context.Context, wakilv1alpha1connec
 }
 
 func (f *RemoteFacade) SetAutoApprove(v bool) {
-	f.goMutation(func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
+	f.goMutation("SetAutoApprove", func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
 		_, err := c.SetAutoApprove(ctx, connect.NewRequest(&v1alpha1.SetAutoApproveRequest{
 			SessionId: string(sid),
 			Value:     v,
@@ -601,7 +608,7 @@ func (f *RemoteFacade) SetAutoApprove(v bool) {
 }
 
 func (f *RemoteFacade) SetAllowDestructive(v bool) {
-	f.goMutation(func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
+	f.goMutation("SetAllowDestructive", func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
 		_, err := c.SetAllowDestructive(ctx, connect.NewRequest(&v1alpha1.SetAllowDestructiveRequest{
 			SessionId: string(sid),
 			Value:     v,
@@ -611,7 +618,7 @@ func (f *RemoteFacade) SetAllowDestructive(v bool) {
 }
 
 func (f *RemoteFacade) RevokeAuto() {
-	f.goMutation(func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
+	f.goMutation("RevokeAuto", func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
 		_, err := c.RevokeAuto(ctx, connect.NewRequest(&v1alpha1.RevokeAutoRequest{
 			SessionId: string(sid),
 		}))
@@ -645,7 +652,7 @@ func (f *RemoteFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator
 	m := &sessionclient.RepoStateMutator{}
 	mutate(m)
 	if m.AutoApprove {
-		f.goMutation(func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
+		f.goMutation("SaveRepoState", func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) error {
 			_, err := c.SetAutoApprove(ctx, connect.NewRequest(&v1alpha1.SetAutoApproveRequest{
 				SessionId: string(sid),
 				Value:     true,
