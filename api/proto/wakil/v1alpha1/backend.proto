@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "google/protobuf/timestamp.proto";
+
+// Backend is the metadata view of a configured LLM backend (no secrets).
+// The API key is never returned by the API; only last_four is exposed for
+// display purposes (design §6.4).
+message Backend {
+  string id            = 1;
+  string tenant_id     = 2;
+  string label         = 3;  // human-facing name
+  string backend_type  = 4;  // "openai", "anthropic", "custom", etc.
+  string base_url      = 5;  // API endpoint
+  string api_key_last_four = 6;  // last 4 chars of the stored key (display only)
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// --- BackendService RPCs ---
+
+message CreateBackendRequest {
+  string label        = 1;  // human-readable name
+  string backend_type = 2;  // "openai", "anthropic", "custom", etc.
+  string base_url     = 3;  // API endpoint (optional for known types)
+  string api_key      = 4;  // plaintext API key — encrypted server-side, never returned
+}
+
+message CreateBackendResponse {
+  Backend backend = 1;  // metadata view (no api_key)
+}
+
+message ListBackendsRequest {}
+
+message ListBackendsResponse {
+  repeated Backend backends = 1;
+}
+
+message UpdateBackendRequest {
+  string id           = 1;
+  string label        = 2;  // optional: empty = unchanged
+  string base_url     = 3;  // optional: empty = unchanged
+  string api_key      = 4;  // optional: empty = unchanged; non-empty = re-encrypt
+}
+
+message UpdateBackendResponse {
+  Backend backend = 1;
+}
+
+message DeleteBackendRequest {
+  string id = 1;
+}
+
+message DeleteBackendResponse {}

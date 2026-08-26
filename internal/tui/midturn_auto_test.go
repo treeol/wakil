@@ -1,28 +1,36 @@
 package tui
 
 import (
-	"context"
-	"errors"
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/event"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 )
 
-// TestMidTurnAuto_Revoke_Immediate verifies that /auto ON→OFF mid-turn
-// revokes auto-approval immediately (not deferred). A revoke only affects
-// not-yet-approved decisions — it is safe to apply mid-turn.
-func TestMidTurnAuto_Revoke_Immediate(t *testing.T) {
-	m := newTestTUI(t)
-	m.app.SetConsent(agent.ConsentSnapshot{AutoApprove: true, AllowDestructive: true, AllowReads: false})
+// newAutoModel builds a streaming model whose facade consent starts at c.
+func newAutoModel(c sessionclient.Consent) (tuiModel, *fakeFacade) {
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123", consent: c}
+	m := newWiringModel(f)
 	m.state = stateStreaming
+	return m, f
+}
+
+func consentOn() sessionclient.Consent {
+	return sessionclient.Consent{AutoApprove: true, AllowDestructive: true}
+}
+
+// TestMidTurnAuto_Revoke_Immediate verifies that /auto ON→OFF mid-turn
+// revokes auto-approval immediately (not deferred).
+func TestMidTurnAuto_Revoke_Immediate(t *testing.T) {
+	m, _ := newAutoModel(consentOn())
 
 	m = midTurnEnter(m, "/auto", stateStreaming)
 
-	if m.app.Consent().AutoApprove {
+	if m.facade.Consent().AutoApprove {
 		t.Error("revoke should turn AutoApprove OFF immediately")
 	}
-	if m.app.Consent().AllowDestructive {
+	if m.facade.Consent().AllowDestructive {
 		t.Error("revoke should clear AllowDestructive immediately (pair invariant)")
 	}
 	if m.pendingAutoGrant {
@@ -34,17 +42,14 @@ func TestMidTurnAuto_Revoke_Immediate(t *testing.T) {
 	}
 }
 
-// TestMidTurnAuto_Grant_Deferred verifies that /auto OFF→ON mid-turn does NOT
-// apply immediately — it defers to the next idle. A mid-turn grant would
-// auto-approve tools the user hasn't seen.
+// TestMidTurnAuto_Grant_Deferred verifies that /auto OFF→ON mid-turn defers
+// to the next idle.
 func TestMidTurnAuto_Grant_Deferred(t *testing.T) {
-	m := newTestTUI(t)
-	m.app.SetConsent(agent.ConsentSnapshot{AutoApprove: false, AllowDestructive: false, AllowReads: false})
-	m.state = stateStreaming
+	m, _ := newAutoModel(sessionclient.Consent{})
 
 	m = midTurnEnter(m, "/auto", stateStreaming)
 
-	if m.app.Consent().AutoApprove {
+	if m.facade.Consent().AutoApprove {
 		t.Error("deferred grant must NOT apply immediately — auto should still be OFF")
 	}
 	if !m.pendingAutoGrant {
@@ -57,44 +62,37 @@ func TestMidTurnAuto_Grant_Deferred(t *testing.T) {
 }
 
 // TestMidTurnAuto_Grant_CoalesceCancel verifies that a second /auto mid-turn
-// cancels a pending grant (toggle parity). The user can undo a deferred grant
-// before it applies.
+// cancels a pending grant (toggle parity).
 func TestMidTurnAuto_Grant_CoalesceCancel(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
+	m, _ := newAutoModel(sessionclient.Consent{})
 
-	// First /auto: defer the grant.
 	m = midTurnEnter(m, "/auto", stateStreaming)
 	if !m.pendingAutoGrant {
 		t.Fatal("first /auto should set pendingAutoGrant")
 	}
 
-	// Second /auto: cancel the pending grant.
 	m = midTurnEnter(m, "/auto", stateStreaming)
 	if m.pendingAutoGrant {
 		t.Error("second /auto should cancel the pending grant")
 	}
-	if m.app.Consent().AutoApprove {
+	if m.facade.Consent().AutoApprove {
 		t.Error("auto should still be OFF after cancelling pending grant")
 	}
 }
 
 // TestMidTurnAuto_Grant_AppliedAtIdle verifies that a deferred grant applies
-// at the next true idle (clean AgentDoneMsg, no workflow, no error).
+// at the next true idle (clean TurnCompleted, no workflow, no error).
 func TestMidTurnAuto_Grant_AppliedAtIdle(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
+	m, f := newAutoModel(sessionclient.Consent{})
 
-	// Defer the grant.
 	m = midTurnEnter(m, "/auto", stateStreaming)
 	if !m.pendingAutoGrant {
 		t.Fatal("setup: /auto should set pendingAutoGrant")
 	}
 
-	// Turn ends cleanly → grant should apply.
-	m = step(m, agent.AgentDoneMsg{})
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "complete"}, f.sid))
 
-	if !m.app.Consent().AutoApprove {
+	if !m.facade.Consent().AutoApprove {
 		t.Error("deferred grant should apply at clean idle")
 	}
 	if m.pendingAutoGrant {
@@ -103,18 +101,15 @@ func TestMidTurnAuto_Grant_AppliedAtIdle(t *testing.T) {
 }
 
 // TestMidTurnAuto_Grant_HeldOnError verifies that a deferred grant does NOT
-// apply when the turn ends with an error — it should hold for the next clean idle.
+// apply when the turn ends with an error.
 func TestMidTurnAuto_Grant_HeldOnError(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
+	m, f := newAutoModel(sessionclient.Consent{})
 
-	// Defer the grant.
 	m = midTurnEnter(m, "/auto", stateStreaming)
 
-	// Turn ends with error → grant should NOT apply.
-	m = step(m, agent.AgentDoneMsg{Err: errors.New("backend error")})
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "stream_error"}, f.sid))
 
-	if m.app.Consent().AutoApprove {
+	if m.facade.Consent().AutoApprove {
 		t.Error("deferred grant should NOT apply on error — hold for next clean idle")
 	}
 	if !m.pendingAutoGrant {
@@ -123,18 +118,15 @@ func TestMidTurnAuto_Grant_HeldOnError(t *testing.T) {
 }
 
 // TestMidTurnAuto_Grant_HeldOnWorkflowContinue verifies that a deferred grant
-// does NOT apply when the workflow will auto-continue — it should hold.
+// does NOT apply when the workflow will auto-continue.
 func TestMidTurnAuto_Grant_HeldOnWorkflowContinue(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
+	m, f := newAutoModel(sessionclient.Consent{})
 
-	// Defer the grant.
 	m = midTurnEnter(m, "/auto", stateStreaming)
 
-	// Turn ends but workflow will continue → grant should NOT apply.
-	m = step(m, agent.AgentDoneMsg{WorkflowWillContinue: true})
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "complete", WorkflowWillContinue: true}, f.sid))
 
-	if m.app.Consent().AutoApprove {
+	if m.facade.Consent().AutoApprove {
 		t.Error("deferred grant should NOT apply when workflow will continue")
 	}
 	if !m.pendingAutoGrant {
@@ -145,16 +137,14 @@ func TestMidTurnAuto_Grant_HeldOnWorkflowContinue(t *testing.T) {
 // TestMidTurnAuto_Destructive_Revoke_Immediate verifies that /auto destructive
 // mid-turn revokes the destructive grant immediately when it's currently ON.
 func TestMidTurnAuto_Destructive_Revoke_Immediate(t *testing.T) {
-	m := newTestTUI(t)
-	m.app.SetConsent(agent.ConsentSnapshot{AutoApprove: true, AllowDestructive: true, AllowReads: false})
-	m.state = stateStreaming
+	m, _ := newAutoModel(consentOn())
 
 	m = midTurnEnter(m, "/auto destructive", stateStreaming)
 
-	if m.app.Consent().AllowDestructive {
+	if m.facade.Consent().AllowDestructive {
 		t.Error("destructive should be revoked immediately")
 	}
-	if !m.app.Consent().AutoApprove {
+	if !m.facade.Consent().AutoApprove {
 		t.Error("auto should still be ON (only destructive was revoked)")
 	}
 }
@@ -162,13 +152,11 @@ func TestMidTurnAuto_Destructive_Revoke_Immediate(t *testing.T) {
 // TestMidTurnAuto_Destructive_DeferGrant verifies that /auto destructive
 // mid-turn defers the grant when it's currently OFF (and auto is ON).
 func TestMidTurnAuto_Destructive_DeferGrant(t *testing.T) {
-	m := newTestTUI(t)
-	m.app.SetConsent(agent.ConsentSnapshot{AutoApprove: true, AllowDestructive: false, AllowReads: false})
-	m.state = stateStreaming
+	m, _ := newAutoModel(sessionclient.Consent{AutoApprove: true})
 
 	m = midTurnEnter(m, "/auto destructive", stateStreaming)
 
-	if m.app.Consent().AllowDestructive {
+	if m.facade.Consent().AllowDestructive {
 		t.Error("destructive grant should NOT apply immediately mid-turn")
 	}
 	if !m.pendingDestructiveGrant {
@@ -179,9 +167,7 @@ func TestMidTurnAuto_Destructive_DeferGrant(t *testing.T) {
 // TestMidTurnAuto_Destructive_AutoOff_Refused verifies that /auto destructive
 // mid-turn is refused when auto is OFF.
 func TestMidTurnAuto_Destructive_AutoOff_Refused(t *testing.T) {
-	m := newTestTUI(t)
-	m.app.SetConsent(agent.ConsentSnapshot{AutoApprove: false, AllowDestructive: false, AllowReads: false})
-	m.state = stateStreaming
+	m, _ := newAutoModel(sessionclient.Consent{})
 
 	m = midTurnEnter(m, "/auto destructive", stateStreaming)
 
@@ -194,14 +180,11 @@ func TestMidTurnAuto_Destructive_AutoOff_Refused(t *testing.T) {
 	}
 }
 
-// TestMidTurnAuto_Grant_AppliedBeforeQueueFlush verifies that when both a
-// deferred grant and a queued prompt are pending, the grant applies BEFORE
-// the queue flushes — so the queued prompt's turn runs under the new consent.
+// TestMidTurnAuto_Grant_AppliedBeforeQueueFlush verifies that a deferred
+// grant applies BEFORE the queue flushes at idle.
 func TestMidTurnAuto_Grant_AppliedBeforeQueueFlush(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
+	m, f := newAutoModel(sessionclient.Consent{})
 
-	// Queue a prompt AND defer a grant.
 	m = midTurnEnter(m, "follow up", stateStreaming)
 	m = midTurnEnter(m, "/auto", stateStreaming)
 
@@ -212,32 +195,22 @@ func TestMidTurnAuto_Grant_AppliedBeforeQueueFlush(t *testing.T) {
 		t.Fatal("expected pendingAutoGrant to be set")
 	}
 
-	// Turn ends cleanly. The grant should apply, and the queue should flush.
-	// We can't easily test the full flush (it starts a real turn), but we can
-	// verify the grant applied and the queue started draining. Since flushQueuedPrompt
-	// needs a real backend, we just check the grant applied — the queue flush
-	// is tested separately in the Phase A tests.
-	m = step(m, agent.AgentDoneMsg{})
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "complete"}, f.sid))
 
-	if !m.app.Consent().AutoApprove {
+	if !m.facade.Consent().AutoApprove {
 		t.Error("grant should have applied before queue flush")
 	}
 }
 
 // TestMidTurnAuto_RevokeClearsPendingGrant verifies that revoking /auto
-// (ON→OFF) mid-turn also clears any pending destructive grant that was set.
+// (ON→OFF) mid-turn also clears any pending destructive grant.
 func TestMidTurnAuto_RevokeClearsPendingGrant(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
-
-	// Auto is ON with a pending destructive grant.
-	m.app.SetConsent(agent.ConsentSnapshot{AutoApprove: true, AllowDestructive: false, AllowReads: false})
+	m, _ := newAutoModel(sessionclient.Consent{AutoApprove: true})
 	m.pendingDestructiveGrant = true
 
-	// Revoke auto mid-turn.
 	m = midTurnEnter(m, "/auto", stateStreaming)
 
-	if m.app.Consent().AutoApprove {
+	if m.facade.Consent().AutoApprove {
 		t.Error("auto should be OFF after revoke")
 	}
 	if m.pendingAutoGrant {
@@ -248,31 +221,27 @@ func TestMidTurnAuto_RevokeClearsPendingGrant(t *testing.T) {
 	}
 }
 
-// TestMidTurnAuto_PendingGrantClearedOnNewConv verifies that /new clears
+// TestMidTurnAuto_PendingGrantClearedOnRotation verifies that rotation clears
 // pending grants — they belong to the old conversation's turn cycle.
-func TestMidTurnAuto_PendingGrantClearedOnNewConv(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
+func TestMidTurnAuto_PendingGrantClearedOnRotation(t *testing.T) {
+	m, _ := newAutoModel(sessionclient.Consent{})
 
-	// Defer a grant.
 	m = midTurnEnter(m, "/auto", stateStreaming)
 	if !m.pendingAutoGrant {
 		t.Fatal("setup: should have pending grant")
 	}
 
-	// Start a new conversation.
-	m = step(m, agent.NewConvMsg{Note: "fresh conversation"})
+	m = step(m, rotationMsg{facade: rotatedFake()})
 
 	if m.pendingAutoGrant {
-		t.Error("pendingAutoGrant should be cleared on /new")
+		t.Error("pendingAutoGrant should be cleared on rotation")
 	}
 }
 
 // TestMidTurnAuto_NotQueued verifies that /auto mid-turn is never queued as
-// a prompt — it is handled as a command, not plain text.
+// a prompt.
 func TestMidTurnAuto_NotQueued(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
+	m, _ := newAutoModel(sessionclient.Consent{})
 
 	m = midTurnEnter(m, "/auto", stateStreaming)
 
@@ -282,16 +251,11 @@ func TestMidTurnAuto_NotQueued(t *testing.T) {
 }
 
 // TestMidTurnAuto_DestructiveDeferred_AppliesIndependently verifies that a
-// standalone deferred destructive grant (auto already ON, destructive OFF→ON
-// mid-turn) applies at idle even WITHOUT pendingAutoGrant. This was a bug
-// found in Mashūra review: the destructive application was nested inside
-// `if m.pendingAutoGrant`, so it never fired when only destructive was deferred.
+// standalone deferred destructive grant applies at idle even WITHOUT
+// pendingAutoGrant.
 func TestMidTurnAuto_DestructiveDeferred_AppliesIndependently(t *testing.T) {
-	m := newTestTUI(t)
-	m.app.SetConsent(agent.ConsentSnapshot{AutoApprove: true, AllowDestructive: false, AllowReads: false})
-	m.state = stateStreaming
+	m, f := newAutoModel(sessionclient.Consent{AutoApprove: true})
 
-	// Defer the destructive grant (auto is already ON).
 	m = midTurnEnter(m, "/auto destructive", stateStreaming)
 	if !m.pendingDestructiveGrant {
 		t.Fatal("setup: pendingDestructiveGrant should be set")
@@ -300,10 +264,9 @@ func TestMidTurnAuto_DestructiveDeferred_AppliesIndependently(t *testing.T) {
 		t.Fatal("pendingAutoGrant should NOT be set (auto was already ON)")
 	}
 
-	// Turn ends cleanly → destructive grant should apply independently.
-	m = step(m, agent.AgentDoneMsg{})
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "complete"}, f.sid))
 
-	if !m.app.Consent().AllowDestructive {
+	if !m.facade.Consent().AllowDestructive {
 		t.Error("deferred destructive grant should apply at clean idle even without pendingAutoGrant")
 	}
 	if m.pendingDestructiveGrant {
@@ -312,11 +275,9 @@ func TestMidTurnAuto_DestructiveDeferred_AppliesIndependently(t *testing.T) {
 }
 
 // TestMidTurnAuto_UnknownSubcommand_Rejected verifies that /auto with an
-// unknown subcommand (e.g. /auto foo) is rejected mid-turn, matching the
-// idle handler's usage message.
+// unknown subcommand is rejected mid-turn.
 func TestMidTurnAuto_UnknownSubcommand_Rejected(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
+	m, _ := newAutoModel(sessionclient.Consent{})
 
 	m = midTurnEnter(m, "/auto foo", stateStreaming)
 
@@ -328,6 +289,3 @@ func TestMidTurnAuto_UnknownSubcommand_Rejected(t *testing.T) {
 		t.Errorf("expected usage notice for unknown subcommand, got: %q", last)
 	}
 }
-
-// Ensure the test file compiles with all imports used.
-var _ = context.Background

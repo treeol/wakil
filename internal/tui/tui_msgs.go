@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/format"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -64,5 +64,5 @@ func fmtConfirmBlock(headline, detail string, readAction bool) string {
 	if readAction {
 		opts = "  [y] proceed   [a] allow all reads   [n] decline"
 	}
-	return fmt.Sprintf("\n⟂ %s\n%s\n\n%s\n", headline, agent.Indent(detail), opts)
+	return fmt.Sprintf("\n⟂ %s\n%s\n\n%s\n", headline, format.Indent(detail), opts)
 }

@@ -6,7 +6,6 @@ import (
 
 	agent "github.com/treeol/wakil/internal/agent"
 
-	"github.com/treeol/wakil/internal/config"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -51,9 +50,9 @@ func TestNewHTTPClientHasHeaderTimeout(t *testing.T) {
 // View must render without panicking across the common states — a cheap smoke
 // test that guards the rendering paths during refactors.
 func TestViewRendersAcrossStates(t *testing.T) {
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor(),
-		CtxLimit: agent.ContextLimit{NCtx: 196608, Source: "backend", ReasoningBudget: 4096, AnswerMargin: 4096}}
-	m := NewTUIModel(app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123",
+		info: wiringTestInfo(196608)}
+	m := newWiringModel(f)
 	m = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	for _, st := range []agentState{stateIdle, stateStreaming, stateConfirm} {

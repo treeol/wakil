@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "google/protobuf/timestamp.proto";
+
+// Workspace is a project root / working directory configured for a tenant
+// (design §4.3). A session pins a workspace at creation time; the workspace
+// defines the host_path and sandbox_profile that the session operates in.
+message Workspace {
+  string id            = 1;  // "wsp_<uuid>"
+  string tenant_id     = 2;
+  string name          = 3;  // human-facing, unique per tenant
+  string host_path     = 4;  // filesystem path on the daemon host
+  string vcs_remote    = 5;  // optional VCS remote URL
+  google.protobuf.Timestamp created_at = 6;
+}
+
+// --- WorkspaceService RPCs ---
+
+message CreateWorkspaceRequest {
+  string name         = 1;  // human-facing name, unique per tenant
+  string host_path    = 2;  // filesystem path on the daemon host
+  string vcs_remote   = 3;  // optional VCS remote URL
+}
+
+message CreateWorkspaceResponse {
+  Workspace workspace = 1;
+}
+
+message ListWorkspacesRequest {}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+}
+
+message GetWorkspaceRequest {
+  string id = 1;
+}
+
+message GetWorkspaceResponse {
+  Workspace workspace = 1;
+}
+
+message DeleteWorkspaceRequest {
+  string id = 1;
+}
+
+message DeleteWorkspaceResponse {}

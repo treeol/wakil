@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/format"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -13,15 +13,15 @@ func convItemsFrom(conv []proxy.Message) []convItem {
 	for _, m := range conv {
 		switch m.Role {
 		case "user":
-			items = append(items, convItem{kind: iUser, text: agent.DerefStr(m.Content)})
+			items = append(items, convItem{kind: iUser, text: format.DerefStr(m.Content)})
 		case "assistant":
-			if strings.TrimSpace(agent.DerefStr(m.Content)) != "" {
-				items = append(items, convItem{kind: iAsst, text: agent.DerefStr(m.Content)})
+			if strings.TrimSpace(format.DerefStr(m.Content)) != "" {
+				items = append(items, convItem{kind: iAsst, text: format.DerefStr(m.Content)})
 			}
 		case "tool":
-			items = append(items, convItem{kind: iSys, text: dim2("· " + m.Name + "\n" + agent.Indent(agent.Truncate(agent.DerefStr(m.Content), 800)))})
+			items = append(items, convItem{kind: iSys, text: dim2("· " + m.Name + "\n" + format.Indent(format.Truncate(format.DerefStr(m.Content), 800)))})
 		case "system":
-			items = append(items, convItem{kind: iSys, text: dim2(agent.DerefStr(m.Content))})
+			items = append(items, convItem{kind: iSys, text: dim2(format.DerefStr(m.Content))})
 		}
 	}
 	return items

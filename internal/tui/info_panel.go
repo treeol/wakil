@@ -1,13 +1,9 @@
 package tui
 
 import (
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 )
@@ -28,13 +24,12 @@ type infoPanelModel struct {
 
 // toggleInfoPanel flips the info expansion and reflows (the extra segments
 // change statusRows(), so the conversation pane cedes/reclaims those rows).
-// It mirrors the new state to App.InfoPanelOpen and persists it to
-// repo-state, so the expanded/collapsed state is remembered per session.
+// It mirrors the new state through the facade (wiring path) or the App
+// control seam (legacy path), and persists it to repo-state so the
+// expanded/collapsed state is remembered per session.
 func (m tuiModel) toggleInfoPanel() tuiModel {
 	m.infoPanel.active = !m.infoPanel.active
-	if m.app != nil {
-		m.app.SetInfoPanelOpen(m.infoPanel.active)
-	}
+	m.facade.SetInfoPanelOpen(m.infoPanel.active)
 	return m.reflow()
 }
 
@@ -58,53 +53,37 @@ func kvg(p kv) string {
 		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(p.v)
 }
 
-// infoMainSegments gathers the main-session expansion segments.
+// infoMainSegments gathers the main-session expansion segments from the
+// facade's InfoSnapshot (m4b — no App reads).
 func (m tuiModel) infoMainSegments() []string {
-	a := m.app
+	info := m.facade.Info()
 	mode := "docker"
-	cwd := ""
-	if a.Exec != nil {
-		if strings.HasPrefix(a.Exec.Describe(), "direct") {
-			mode = "direct"
-		}
-		cwd = a.Exec.Cwd()
+	if strings.HasPrefix(info.ExecMode, "direct") {
+		mode = "direct"
 	}
-	imgVal := a.Cfg.Image
+	imgVal := info.Image
 	if i := strings.LastIndex(imgVal, "/"); i >= 0 {
 		imgVal = imgVal[i+1:]
 	}
 
-	baseURL, chatID := "", ""
-	if a.Client != nil {
-		baseURL = hostOnly(a.Client.BaseURL)
-		chatID = agent.ShortID(a.Client.ChatID)
-	}
-
-	// model is already in the always-on status line — not repeated here.
 	var segs []string
-	segs = append(segs, kvg(kv{"proxy", baseURL}), kvg(kv{"exec", mode}))
+	segs = append(segs, kvg(kv{"proxy", hostOnly(info.BaseURL)}), kvg(kv{"exec", mode}))
 	if mode == "docker" {
 		segs = append(segs, kvg(kv{"img", imgVal}))
 	}
 	// The prompt source used to be a startup banner line; only shown when a
 	// file path was configured — the built-in fallback note is noise.
-	if note := a.AgentPromptNote(); !strings.Contains(note, "built-in fallback") {
+	if note := info.PromptNote; !strings.Contains(note, "built-in fallback") {
 		if i := strings.Index(note, ": "); i >= 0 {
 			segs = append(segs, kvg(kv{"prompt", note[i+2:]}))
 		}
 	}
-	segs = append(segs, kvg(kv{"cwd", cwd}), kvg(kv{"chat", chatID}))
-	if a.Workflow != nil {
-		segs = append(segs, kvg(kv{"wf", a.Workflow.SidebarLabel()}))
+	segs = append(segs, kvg(kv{"cwd", info.Cwd}), kvg(kv{"chat", formatShortID(info.ChatID)}))
+	if info.WorkflowLabel != "" {
+		segs = append(segs, kvg(kv{"wf", info.WorkflowLabel}))
 	}
-	if a.Cfg.OracleEnabled {
-		anthropicOk := os.Getenv(a.Cfg.OracleAPIKeyEnv) != ""
-		openrouterOk := os.Getenv("OPENROUTER_API_KEY") != ""
-		label := mashuraPanelLabel(a.Cfg)
-		if !anthropicOk && !openrouterOk {
-			label = "no key"
-		}
-		segs = append(segs, kvg(kv{"mashūra", label}))
+	if info.OracleOn {
+		segs = append(segs, kvg(kv{"mashūra", info.OracleLabel}))
 	}
 	segs = append(segs, m.infoToolsSegments()...)
 	segs = append(segs, m.costSegments()...)
@@ -112,9 +91,10 @@ func (m tuiModel) infoMainSegments() []string {
 	return segs
 }
 
-// infoSubSegments gathers the active subagent's expansion segments.
+// infoSubSegments gathers the active subagent's expansion segments. The
+// subagent tab's own fields (status/model/cost/files/backend) are TUI-local
+// (populated from events); proxy/cwd come from Info().
 func (m tuiModel) infoSubSegments(tab *subTab) []string {
-	a := m.app
 	statusStr := "running…"
 	if tab.done {
 		statusStr = "done ✓"
@@ -126,28 +106,21 @@ func (m tuiModel) infoSubSegments(tab *subTab) []string {
 		statusStr = "✓ finished" + ts
 	}
 
-	baseURL, cwd := "", ""
-	if a.Client != nil {
-		baseURL = hostOnly(a.Client.BaseURL)
-	}
-	if a.Exec != nil {
-		cwd = a.Exec.Cwd()
-	}
-
+	info := m.facade.Info()
 	segs := []string{
 		kvg(kv{"status", statusStr}),
-		kvg(kv{"proxy", baseURL}),
+		kvg(kv{"proxy", hostOnly(info.BaseURL)}),
 		kvg(kv{"model", subTabModel(tab)}),
 		kvg(kv{"exec", "docker"}),
-		kvg(kv{"cwd", cwd}),
-		kvg(kv{"chat", agent.ShortID(tab.chatID)}),
+		kvg(kv{"cwd", info.Cwd}),
+		kvg(kv{"chat", formatShortID(tab.chatID)}),
 	}
 	subBackend := tab.usedBackend
 	if subBackend == "" {
 		subBackend = tab.backend
 	}
 	if subBackend != "" {
-		isDefault := subBackend == a.Cfg.Backend
+		isDefault := subBackend == info.ConfigBackend
 		isOverridden := tab.backend != "" && tab.usedBackend != "" && tab.backend != tab.usedBackend
 		if !isDefault || isOverridden {
 			label := subBackend
@@ -190,24 +163,23 @@ func subToolListSegment(tab *subTab) string {
 	return kvg(kv{"tools", strings.Join(names, " ")})
 }
 
-// infoToolsSegments renders the MCP/searxng tool status as one segment.
+// infoToolsSegments renders the MCP/searxng tool status as one segment,
+// from InfoSnapshot (MCPServers + SearxngTools).
 func (m tuiModel) infoToolsSegments() []string {
-	a := m.app
+	info := m.facade.Info()
 	var parts []string
-	if a.MCP != nil {
-		for _, srv := range a.MCP.Servers() {
-			icon := "✓"
-			label := sprint("%d", len(srv.Tools))
-			if srv.Status == "failed" {
-				icon, label = "✗", "failed"
-			} else if srv.Status == "connecting" {
-				icon, label = "…", "…"
-			}
-			parts = append(parts, icon+" "+srv.Cfg.Name+" "+label)
+	for _, srv := range info.MCPServers {
+		icon := "✓"
+		label := sprint("%d", srv.ToolN)
+		if srv.Status == "failed" {
+			icon, label = "✗", "failed"
+		} else if srv.Status == "connecting" {
+			icon, label = "…", "…"
 		}
+		parts = append(parts, icon+" "+srv.Name+" "+label)
 	}
-	if a.Cfg.SearXngURL != "" {
-		parts = append(parts, "✓ searxng "+sprint("%d", len(tools.SearxngTools())))
+	if info.SearXngURL != "" {
+		parts = append(parts, "✓ searxng "+sprint("%d", len(info.SearxngTools)))
 	}
 	if len(parts) == 0 {
 		return nil
@@ -216,13 +188,10 @@ func (m tuiModel) infoToolsSegments() []string {
 }
 
 // infoGroundingSegments renders the grounding list as one segment (was the
-// "grounded on" block).
+// "grounded on" block), from InfoSnapshot.Grounding.
 func (m tuiModel) infoGroundingSegments() []string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	if m.app.Client == nil {
-		return []string{dim.Render("grounded on —")}
-	}
-	grounding := m.app.Client.Grounding()
+	grounding := m.facade.Info().Grounding
 	if len(grounding) == 0 {
 		return []string{dim.Render("grounded on —")}
 	}
@@ -235,10 +204,14 @@ func (m tuiModel) infoGroundingSegments() []string {
 
 // costSegments renders the costs block as segments: a "costs" label, the
 // billed/est subtotals, and one segment per source. Returns nil when no costs
-// have been recorded.
+// have been recorded. The tracker pointer comes from Info()/Snapshot() (the
+// same synchronized object the App held).
 func (m tuiModel) costSegments() []string {
-	billedTotal, estimatedTotal, anyBilled, anyEstimated, rows :=
-		m.app.Costs.SnapshotSplit()
+	costs := m.facade.Info().Costs
+	if costs == nil {
+		return nil
+	}
+	billedTotal, estimatedTotal, anyBilled, anyEstimated, rows := costs.SnapshotSplit()
 	if len(rows) == 0 {
 		return nil
 	}
@@ -290,10 +263,11 @@ func billedCell(billedTotal float64) string {
 // the expansion is on, the full cost block (costSegments) carries it instead,
 // so the segment is not duplicated.
 func (m tuiModel) billedSegment() string {
-	if m.app == nil || m.app.Costs == nil {
+	costs := m.facade.Info().Costs
+	if costs == nil {
 		return ""
 	}
-	billedTotal, _, anyBilled, _, _ := m.app.Costs.SnapshotSplit()
+	billedTotal, _, anyBilled, _, _ := costs.SnapshotSplit()
 	if !anyBilled {
 		return ""
 	}
@@ -360,37 +334,4 @@ func hostOnly(url string) string {
 	return s
 }
 
-// mashuraPanelLabel returns a short display string for the active mashura panel,
-// reading the panel config that the "review" tool would resolve to.
-func mashuraPanelLabel(cfg config.Config) string {
-	name := "default"
-	if cfg.MashuraToolPanels != nil {
-		if p := cfg.MashuraToolPanels["review"]; p != "" {
-			name = p
-		}
-	}
-	if cfg.MashuraPanels != nil {
-		if p, ok := cfg.MashuraPanels[name]; ok && len(p.Models) > 0 {
-			switch p.Mode {
-			case "fusion":
-				return fmt.Sprintf("fusion (%d models)", len(p.Models))
-			case "fallback":
-				return fmt.Sprintf("%s +fallback", mashuraShortModel(p.Models[0]))
-			default:
-				if len(p.Models) == 1 {
-					return mashuraShortModel(p.Models[0])
-				}
-				return fmt.Sprintf("%d models", len(p.Models))
-			}
-		}
-	}
-	return cfg.OracleModel
-}
 
-// mashuraShortModel strips the "provider:" prefix for compact display.
-func mashuraShortModel(s string) string {
-	if i := strings.IndexByte(s, ':'); i >= 0 {
-		return s[i+1:]
-	}
-	return s
-}

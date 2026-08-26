@@ -361,11 +361,11 @@ func scrubSensitiveArgs(args string) string {
 // can route concurrent streams to the right tab. Returns io.Discard when the
 // parent app has no EventSink set (CLI invocation or tests).
 func subagentProgressOut(parent *App, chatID string) io.Writer {
-	if parent == nil || parent.EventSink == nil {
+	if parent == nil {
 		return io.Discard
 	}
 	return NewProgWriter(func(m StreamChunkMsg) {
-		parent.sendEvent(SubagentChunkMsg{ChatID: chatID, Text: m.Text})
+		parent.SendEvent(SubagentChunkMsg{ChatID: chatID, Text: m.Text})
 	})
 }
 
@@ -646,8 +646,12 @@ func (v *subagentEndpointView) applyModelOverride(model string) {
 // resolveSubagentEndpointName returns the endpoint key the child should
 // target: session override (/subagent <name>) > config subagent_endpoint >
 // "" (inherit — the default, and the only path with no config present).
+// SubagentEndpointOverride is stateMu-protected; Cfg.SubagentEndpoint is
+// immutable after startup.
 func resolveSubagentEndpointName(a *App) string {
+	a.stateMu.RLock()
 	name := a.SubagentEndpointOverride
+	a.stateMu.RUnlock()
 	if name == "" {
 		name = a.Cfg.SubagentEndpoint
 	}
@@ -666,9 +670,18 @@ func resolveSubagentEndpointName(a *App) string {
 // semantics. This is also the golden no-op path: when epName is "" (the
 // default, no subagent_endpoint configured), every field below is copied
 // verbatim from a.Client exactly as the pre-endpoint-selection code did.
+//
+// Client fields and SubagentModelOverride are stateMu-protected. The inherit
+// path snapshots Client fields and SubagentModelOverride under stateMu.RLock
+// in one coherent read, then builds the view outside the lock. The named-
+// endpoint path reads SubagentModelOverride under stateMu.RLock and the
+// endpoint config (immutable after startup) without the lock.
 func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, bool) {
 	if epName == "" {
-		v := subagentEndpointView{
+		// Snapshot all Client fields and the model override under stateMu.RLock
+		// so the inherit view is coherent with prepareTurn's writes.
+		a.stateMu.RLock()
+		clientView := subagentEndpointView{
 			kind:            a.Client.Kind,
 			baseURL:         a.Client.BaseURL,
 			model:           a.Client.Model,
@@ -679,12 +692,14 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 			maxTokens:       a.Client.MaxTokens,
 			cachePrompt:     a.Client.CachePrompt,
 			cacheControl:    a.Client.CacheControl,
-			appReferer:      a.Client.AppReferer,
+			appReferer:       a.Client.AppReferer,
 			appTitle:        a.Client.AppTitle,
 			appCategories:   a.Client.AppCategories,
 		}
-		v.applyModelOverride(a.SubagentModelOverride)
-		return v, true
+		modelOverride := a.SubagentModelOverride
+		a.stateMu.RUnlock()
+		clientView.applyModelOverride(modelOverride)
+		return clientView, true
 	}
 	ep, err := a.Cfg.NormalizeEndpoint(epName)
 	if err != nil {
@@ -696,6 +711,9 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 		fmt.Fprintf(a.Out, "⚠ subagent endpoint %q: %v — falling back to inherit\n", epName, err)
 		return a.resolveSubagentEndpointView("")
 	}
+	a.stateMu.RLock()
+	modelOverride := a.SubagentModelOverride
+	a.stateMu.RUnlock()
 	v := subagentEndpointView{
 		name:            epName,
 		kind:            ep.Kind,
@@ -712,7 +730,7 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 		appTitle:        ep.AppTitle,
 		appCategories:   ep.AppCategories,
 	}
-	v.applyModelOverride(a.SubagentModelOverride)
+	v.applyModelOverride(modelOverride)
 	return v, false
 }
 
@@ -747,11 +765,15 @@ func (a *App) resolvedSubagentDisplayModel() string {
 // (and subagent_backend) only apply when epKind is ilm-proxy. For kind openai,
 // backend resolution is skipped entirely — an openai endpoint IS the backend;
 // there is no proxy-side routing concept to select within it.
+// SelectedBackend is stateMu-protected; Cfg.SubagentBackend is immutable.
 func (a *App) resolveSubagentBackendForEndpoint(epKind string) string {
 	if epKind == config.EndpointKindOpenAI {
 		return ""
 	}
-	return ResolveSubagentBackend(a.SelectedBackend, a.Cfg.SubagentBackend)
+	a.stateMu.RLock()
+	selected := a.SelectedBackend
+	a.stateMu.RUnlock()
+	return ResolveSubagentBackend(selected, a.Cfg.SubagentBackend)
 }
 
 // subagentLimitsCache deduplicates context-limit probes across concurrent

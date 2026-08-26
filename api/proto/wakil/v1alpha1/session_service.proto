@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "wakil/v1alpha1/session.proto";
+
+// SessionService exposes the command surface (design §3.3–§3.4).
+// No RPC blocks on an agent turn — SubmitInput enqueues and returns
+// immediately; all turn progress is observed via EventService.
+service SessionService {
+  rpc CreateSession(CreateSessionRequest) returns (Session);
+  rpc GetSession(GetSessionRequest) returns (Session);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+  rpc SubmitInput(SubmitInputRequest) returns (SubmitAck);
+  rpc RespondToApproval(RespondToApprovalRequest) returns (RespondToApprovalResponse);
+  rpc Interrupt(InterruptRequest) returns (InterruptResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+}

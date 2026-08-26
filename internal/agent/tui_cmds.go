@@ -9,6 +9,39 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
+// TakeLearnNudge computes and clears the end-of-turn learn nudge (7b3 m4).
+//
+// It replicates exactly the nudge block the old TUI's RunTurn Cmd ran after
+// each turn (tui_cmds.go): a nudge fires when (a) the learn-candidate log
+// fired this turn (learnNudgePending is set), (b) at least one web or oracle
+// grounding entry was added client-side during the turn, and (c) this query
+// hasn't been nudged already this session. Calling it clears the pending
+// query (always — same as RunTurn) and records a shown nudge (when fired).
+//
+// The wiring adapter calls it after DriveTurnWithResilience so the wiring path
+// produces the same nudge the TUI path did, delivered as an ephemeral
+// learn_nudge event instead of an AgentDoneMsg field.
+func (a *App) TakeLearnNudge() string {
+	pendingQuery := a.learnNudgePending
+	a.learnNudgePending = "" // always clear
+	if pendingQuery == "" {
+		return ""
+	}
+	for _, e := range a.Client.Grounding() {
+		if e.Type == "web" || e.Type == "oracle" {
+			if a.learnNudgedQueries == nil {
+				a.learnNudgedQueries = make(map[string]bool)
+			}
+			if !a.learnNudgedQueries[pendingQuery] {
+				a.learnNudgedQueries[pendingQuery] = true
+				return "· low grounding + external sources used — /learn to save this for next time"
+			}
+			break
+		}
+	}
+	return ""
+}
+
 // RunTurn returns a Cmd that runs the agent turn. When the TUI executes it
 // (via AdaptCmd → tea.Cmd), the body runs off the event loop — all progress
 // is posted into the TUI via EventSink (sendEvent), and the Cmd itself
@@ -18,7 +51,7 @@ func RunTurn(app *App, ctx context.Context, userText string) Cmd {
 	return func() Msg {
 		app.Out = NewProgWriter(func(m StreamChunkMsg) { app.sendEvent(m) })
 		app.Confirm = tuiConfirmer(app)
-		app.OnTokRate = func(tps float64) { app.sendEvent(TokRateMsg{Tps: tps}) }
+		app.SetOnTokRate(func(tps float64) { app.sendEvent(TokRateMsg{Tps: tps}) })
 		app.OnReasoning = func(s string) { app.sendEvent(ReasoningChunkMsg{Text: s}) }
 		// Dedup cache is for subagents only (dispatchSubagent sets it). The main
 		// agent is interactive — the user can cancel loops via Ctrl+C, and
@@ -171,7 +204,9 @@ func fetchModelListCmd(app *App) Cmd {
 // viewport. Shared by /resume's direct-id path and the resume picker's Enter
 // action (internal/tui) so both apply the exact same mutation.
 func ResumeSessionMsg(app *App, s *Session) Msg {
+	app.convMu.Lock()
 	app.Conv = s.Conv
+	app.convMu.Unlock()
 	app.Client.ChatID = s.ChatID
 	app.Session = s
 	app.Workflow = s.SavedWorkflow

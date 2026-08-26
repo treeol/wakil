@@ -168,8 +168,9 @@ func DefaultTools(cwd string) []proxy.Tool {
 				"Maximum 5 concurrent background processes. " +
 				"Requires user confirmation.",
 			Parameters: SchemaObj(map[string]interface{}{
-				"command": StrProp("Shell command to run in the background."),
-				"label":   StrProp("Short human-readable label, e.g. 'dev-server'. Shown in status messages."),
+				"command":       StrProp("Shell command to run in the background."),
+				"label":         StrProp("Short human-readable label, e.g. 'dev-server'. Shown in status messages."),
+				"notify_on_exit": BoolProp("When true, the turn suspends and resumes automatically when the job completes — no polling needed. Use for finite jobs (builds, tests, scripts). Leave false for long-running servers/daemons that never exit (default false)."),
 			}, "command", "label"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{

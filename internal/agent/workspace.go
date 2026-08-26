@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 )
 
@@ -30,7 +31,18 @@ func canonicalWorkspace(ws string) string {
 
 // workspaceKey returns the SHA-256 hex digest of ws's canonical form, for use
 // as a stable comparison key or filename. Returns "" for an empty ws.
+//
+// WAKIL_WORKSPACE_KEY override: when the env var is set to a 64-char hex
+// string (a pre-computed SHA-256 key), it is returned directly without
+// canonicalization or hashing. This is used by the Docker daemon path:
+// the container cannot EvalSymlinks on the host path (it doesn't exist
+// inside the container), so the host TUI computes the key and passes it
+// via WAKIL_WORKSPACE_KEY. This guarantees host and container produce
+// the same workspace identity regardless of symlinks.
 func workspaceKey(ws string) string {
+	if key := os.Getenv("WAKIL_WORKSPACE_KEY"); key != "" {
+		return key
+	}
 	c := canonicalWorkspace(ws)
 	if c == "" {
 		return ""

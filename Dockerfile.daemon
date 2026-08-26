@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1
+#
+# Dockerfile.daemon — minimal image for `wakil daemon` (card #150).
+#
+# The daemon binary uses modernc.org/sqlite (pure-Go, no CGO), so the binary
+# can be statically compiled and run in a distroless image. The cc-debian12
+# variant includes the C runtime libraries that modernc's libc shim may
+# dlopen at runtime (libpthread, libdl — resolved via glibc stubs); the
+# static binary itself does not link against libc, but the distroless cc
+# base provides a minimal /etc/nsswitch.conf and /etc/passwd for the
+# nonroot user.
+#
+# Design:
+#   - Multi-stage build: golang:1.26-bookworm builder → distroless/cc-debian12:nonroot
+#   - Non-root: runs as user 65532 (distroless :nonroot variant)
+#   - Data:    /data/wakil      (mounted from host ~/.local/share/wakil)
+#   - Config:  /config/wakil    (mounted from host ~/.config/wakil)
+#   - Socket:  /run/wakil/wakil.sock (mountable for TUI access)
+#   - Exec mode: direct (the daemon runs commands in-container, not Docker-in-Docker)
+#
+# kvr-server (staging KV store) is NOT included — staging degrades
+# gracefully without it. If staging is needed, run kvr-server as a sidecar
+# and set WAKIL_STAGING_DIR to the shared volume.
+
+###############################################################################
+# Stage 1: Build the wakil binary
+###############################################################################
+FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS builder
+
+# go.mod requires go >= 1.26.6; the base image is pinned to 1.26.6 so no
+# toolchain download is needed (GOTOOLCHAIN=local prevents network fallback).
+ENV GOTOOLCHAIN=local
+
+WORKDIR /src
+
+# Cache module downloads — copy go.mod/go.sum first so dependency changes
+# don't bust the build cache for every source change.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy the rest of the source tree.
+COPY . .
+
+# Build a statically-linked binary. CGO_ENABLED=0 is safe because the project
+# uses modernc.org/sqlite (pure-Go SQLite) — no cgo dependencies.
+# Trimpath and ldflags -s -w strip debug info and symbol tables for a
+# smaller image.
+RUN CGO_ENABLED=0 go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /out/wakil \
+    ./cmd/wakil
+
+###############################################################################
+# Stage 2: Runtime (distroless, non-root)
+###############################################################################
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+
+# Default environment. These can be overridden at runtime via docker run -e
+# or docker-compose environment: block.
+#
+# XDG_DATA_HOME=/data        → data dir resolves to /data/wakil/...
+# WAKIL_CONFIG=/config/wakil/config.json → config file path
+# WAKIL_EXEC_MODE=direct     → daemon runs commands in-container
+# XDG_RUNTIME_DIR=/run/wakil → socket resolves to /run/wakil/wakil.sock
+#
+# WAKIL_WORKSPACE_PATH is NOT set here — it should be set per-container to
+# pin the workspace identity (the host path that gets hashed for storage
+# keys). Set it in docker-compose.yml or docker run -e.
+ENV XDG_DATA_HOME=/data \
+    XDG_RUNTIME_DIR=/run/wakil \
+    WAKIL_CONFIG=/config/wakil/config.json \
+    WAKIL_EXEC_MODE=direct
+
+# Copy the binary from the builder stage. /usr/local/bin is on PATH in
+# distroless cc-debian12.
+COPY --from=builder /out/wakil /usr/local/bin/wakil
+
+# The nonroot user (UID 65532) is provided by the base image. The mount
+# points below must be writable by the container user — the operator is
+# responsible for setting permissions on the host directories (or use
+# named volumes).
+#
+# Create mount-point directories so they exist even without a volume mount
+# (the daemon will create subdirs as needed, but the parent dirs must exist).
+RUN mkdir -p /data/wakil /config/wakil /run/wakil
+
+# Entry point: run the daemon. Flags are passed via CMD in docker-compose.yml
+# or docker run. The socket path defaults to $XDG_RUNTIME_DIR/wakil.sock
+# (= /run/wakil/wakil.sock) per the daemon's defaultSocketPath().
+ENTRYPOINT ["wakil", "daemon"]

@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
-	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -189,7 +188,7 @@ func TestContainsBinary_PNGWordAtStartWithIHDRLater(t *testing.T) {
 // mangled exactly as bubbletea + a control-stripping terminal would deliver
 // them — triggers the clipboard read and does not insert into the textarea.
 func TestBinaryPasteInterception(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	runes := stripControls(mangleAsBubbletea(makeTestPNG()))
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: runes, Paste: true}
 
@@ -203,7 +202,7 @@ func TestBinaryPasteInterception(t *testing.T) {
 // TestBinaryPasteInterception_NonBracketed covers terminals without bracketed
 // paste: the burst arrives as a multi-rune KeyRunes with Paste=false.
 func TestBinaryPasteInterception_NonBracketed(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	runes := stripControls(mangleAsBubbletea(makeTestPNG()))
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: runes, Paste: false}
 
@@ -216,7 +215,7 @@ func TestBinaryPasteInterception_NonBracketed(t *testing.T) {
 // TestSendTimeSafetyNet verifies that if mangled image content somehow lands
 // in the textarea anyway, Enter refuses to send it and reads the clipboard.
 func TestSendTimeSafetyNet(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	mangled := string(stripControls(mangleAsBubbletea(makeTestPNG())))
 	m.ta.SetValue(mangled)
 
@@ -245,16 +244,17 @@ func TestSendTimeSafetyNet(t *testing.T) {
 // image read appends to PendingImages and inserts a compact placeholder chip
 // into the text input (not the transcript) so the input stays readable.
 func TestClipboardImageMsg_AttachImage(t *testing.T) {
-	m := keyModel(t)
+	m, f := keyModel(t)
 	pngData := makeTestPNG()
 	img, _ := proxy.LoadImageFromBytes(pngData, "clipboard:png")
 
 	m2 := step(m, clipboardImageMsg{Img: img})
-	if len(m2.app.PendingImages) != 1 {
-		t.Fatalf("expected 1 pending image, got %d", len(m2.app.PendingImages))
+	pending := m2.facade.Snapshot().PendingImages
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending image, got %d", len(pending))
 	}
-	if m2.app.PendingImages[0].MIME != "image/png" {
-		t.Errorf("pending image MIME=%q, want image/png", m2.app.PendingImages[0].MIME)
+	if pending[0].MIME != "image/png" {
+		t.Errorf("pending image MIME=%q, want image/png", pending[0].MIME)
 	}
 	// The chip must appear in the text input, and be tracked for send-time
 	// reconciliation.
@@ -265,6 +265,7 @@ func TestClipboardImageMsg_AttachImage(t *testing.T) {
 	if len(*m2.imageChips) != 1 || (*m2.imageChips)[0] != chip {
 		t.Errorf("imageChips should track the chip; got %v", *m2.imageChips)
 	}
+	_ = f
 }
 
 // TestReconcileImageChips_StripsSurvivingChip: a chip left in the input is
@@ -324,7 +325,7 @@ func TestReconcileImageChips_PathImagesUntouched(t *testing.T) {
 // a legitimate image-only message — it must start a turn, with the chip
 // stripped from the outgoing text.
 func TestSendWithChipOnlyInput(t *testing.T) {
-	m := keyModel(t)
+	m, f := keyModel(t)
 	img, _ := proxy.LoadImageFromBytes(makeTestPNG(), "clipboard:png")
 	m = step(m, clipboardImageMsg{Img: img})
 	// Input now holds just the chip (plus trailing space from insertion).
@@ -337,10 +338,10 @@ func TestSendWithChipOnlyInput(t *testing.T) {
 		t.Errorf("image-only send should start a turn; state=%v", m2.state)
 	}
 	if len(cmds) == 0 {
-		t.Error("send should produce the turn cmd")
+		t.Error("send should produce the dot-tick cmd")
 	}
-	if len(m2.app.PendingImages) != 1 {
-		t.Errorf("image should still be pending for Send to consume; got %d", len(m2.app.PendingImages))
+	if len(f.Snapshot().PendingImages) != 1 {
+		t.Errorf("image should still be pending for Send to consume; got %d", len(f.Snapshot().PendingImages))
 	}
 	if len(*m2.imageChips) != 0 {
 		t.Errorf("chips should be cleared after send; got %v", *m2.imageChips)
@@ -369,7 +370,7 @@ func fragment(runes []rune, n int) [][]rune {
 // garbage and collapse it as soon as enough fragments have landed — without
 // the user pressing Enter.
 func TestFragmentedPasteCollapsesImmediately(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	mangled := stripControls(mangleAsBubbletea(makeTestPNG()))
 
 	// Feed fragments of 4 runes each — far below what any single-event
@@ -389,7 +390,7 @@ func TestFragmentedPasteCollapsesImmediately(t *testing.T) {
 // TestFragmentedPastePreservesTypedPrefix: text the user typed before pasting
 // must survive the collapse; only the garbage is removed.
 func TestFragmentedPastePreservesTypedPrefix(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	m.ta.SetValue("describe this: ")
 	m.ta.CursorEnd()
 
@@ -411,7 +412,7 @@ func TestFragmentedPastePreservesTypedPrefix(t *testing.T) {
 // key events (the rest of the paste, including a control byte decoded as
 // "enter") are swallowed — no send, no textarea pollution.
 func TestSuppressionWindowSwallowsPasteTail(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
 
 	// A tail fragment and a stray enter (0x0D decoded as a key).
@@ -431,7 +432,7 @@ func TestSuppressionWindowSwallowsPasteTail(t *testing.T) {
 
 // TestSuppressionWindowExpires: after the window closes, typing works again.
 func TestSuppressionWindowExpires(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	m.pasteSuppressUntil = time.Now().Add(-time.Millisecond) // already expired
 
 	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
@@ -448,7 +449,7 @@ func TestSuppressionWindowExpires(t *testing.T) {
 // confirmation (NUL, PNG chunk train, or a symbol-dense ≥96-rune tail) that
 // short typed prose can never satisfy.
 func TestPostInsertScanIgnoresSingleKeystrokes(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	for _, r := range "PNG IHDR JFIF GIF89a RIFF WEBP" {
 		m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -463,7 +464,7 @@ func TestPostInsertScanIgnoresSingleKeystrokes(t *testing.T) {
 // scan must still fire once the garbage is recognizable, even though no
 // event ever carries more than one rune.
 func TestSingleRunePasteDeliveryCollapses(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	m.ta.SetValue("this is how it looks like: ")
 	m.ta.CursorEnd()
 
@@ -488,7 +489,7 @@ func TestSingleRunePasteDeliveryCollapses(t *testing.T) {
 // text in front of the garbage, then Enter. The position-independent scan
 // must catch it, keep the prefix, and read the clipboard.
 func TestSendTimeSafetyNet_WithTypedPrefix(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	mangled := string(stripControls(mangleAsBubbletea(makeTestPNG())))
 	m.ta.SetValue("this is how it looks like: " + mangled)
 
@@ -513,7 +514,7 @@ func TestSendTimeSafetyNet_WithTypedPrefix(t *testing.T) {
 // TestFalsePositiveRestoresCutText: when the collapse fires but the clipboard
 // has no image, the cut text is restored — a false positive never loses data.
 func TestFalsePositiveRestoresCutText(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	m.ta.SetValue("kept prefix ")
 	m.ta.CursorEnd()
 	m.pasteCutStash = "JFIF and then a long hexdump analysis..."
@@ -525,7 +526,7 @@ func TestFalsePositiveRestoresCutText(t *testing.T) {
 	if m2.pasteCutStash != "" {
 		t.Error("stash should be cleared after restore")
 	}
-	if len(m2.app.PendingImages) != 0 {
+	if len(m2.facade.Snapshot().PendingImages) != 0 {
 		t.Error("no image should be attached on failure")
 	}
 }
@@ -533,7 +534,7 @@ func TestFalsePositiveRestoresCutText(t *testing.T) {
 // TestSuccessDiscardsStash: when the clipboard read succeeds, the cut garbage
 // stays gone and the chip replaces it.
 func TestSuccessDiscardsStash(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	m.pasteCutStash = "PNG IHDR <garbage>"
 	img, _ := proxy.LoadImageFromBytes(makeTestPNG(), "clipboard:png")
 
@@ -609,7 +610,7 @@ func pasteAsTerminalEvents(runes []rune) []tea.KeyMsg {
 // re-checked after KeySpace — the garbage sat in the input until Enter.
 // The scan must now run after every event type.
 func TestPasteEndingInSpaceEventCollapses(t *testing.T) {
-	m := keyModel(t)
+	m, _ := keyModel(t)
 	m.ta.SetValue("this is how it looks like: ")
 	m.ta.CursorEnd()
 
@@ -655,25 +656,12 @@ func makeBigMangledPNG() []byte {
 // TestClipboardImageMsg_Error verifies that a clipboard read failure shows an
 // error note and does not attach any image.
 func TestClipboardImageMsg_Error(t *testing.T) {
-	m := keyModel(t)
+	m, f := keyModel(t)
 	m2 := step(m, clipboardImageMsg{Err: "no clipboard backend available"})
-	if len(m2.app.PendingImages) != 0 {
-		t.Fatalf("expected 0 pending images on error, got %d", len(m2.app.PendingImages))
+	if len(m2.facade.Snapshot().PendingImages) != 0 {
+		t.Fatalf("expected 0 pending images on error, got %d", len(m2.facade.Snapshot().PendingImages))
 	}
-}
-
-// TestClipboardImageCmdSentinel verifies that the agent package's
-// /image clipboard command produces the sentinel that the TUI adapter
-// recognizes.
-func TestClipboardImageCmdSentinel(t *testing.T) {
-	// The adapter intercepts agent.ClipboardImageRequest and replaces it.
-	// Verify AdaptCmd returns a non-nil tea.Cmd when given a Cmd that
-	// returns the sentinel.
-	c := func() agent.Msg { return agent.ClipboardImageRequest }
-	adapted := AdaptCmd(c)
-	if adapted == nil {
-		t.Error("AdaptCmd should return a non-nil tea.Cmd for the clipboard sentinel")
-	}
+	_ = f
 }
 
 // makeTestPNG returns a minimal valid 1×1 red PNG file.

@@ -110,7 +110,7 @@ func TestPrintSessionsEmptyAndPopulated(t *testing.T) {
 	empty := t.TempDir()
 	t.Setenv("WAKIL_SESSIONS_DIR", empty)
 	var buf bytes.Buffer
-	agent.PrintSessions(&buf, "", true)
+	agent.PrintSessionsWithScope(&buf, agent.SessionScope{All: true})
 	if !strings.Contains(buf.String(), "no saved sessions") {
 		t.Errorf("empty dir output: %q", buf.String())
 	}
@@ -119,7 +119,7 @@ func TestPrintSessionsEmptyAndPopulated(t *testing.T) {
 	_ = agent.WriteSession(&agent.Session{ChatID: "id123456", Updated: time.Now(),
 		Conv: []proxy.Message{{Role: "user", Content: agent.StrPtr("the task")}}})
 	buf.Reset()
-	agent.PrintSessions(&buf, "", true)
+	agent.PrintSessionsWithScope(&buf, agent.SessionScope{All: true})
 	if !strings.Contains(buf.String(), "id12345") || !strings.Contains(buf.String(), "the task") {
 		t.Errorf("populated output should list the session; got %q", buf.String())
 	}
@@ -155,11 +155,11 @@ func TestSessionLabel(t *testing.T) {
 		t.Errorf("SessionListText should show label; got %q", out)
 	}
 
-	// Label appears in PrintSessions output.
+	// Label appears in PrintSessionsWithScope output.
 	var buf bytes.Buffer
-	agent.PrintSessions(&buf, "", true)
+	agent.PrintSessionsWithScope(&buf, agent.SessionScope{All: true})
 	if !strings.Contains(buf.String(), "my refactor") {
-		t.Errorf("PrintSessions should show label; got %q", buf.String())
+		t.Errorf("PrintSessionsWithScope should show label; got %q", buf.String())
 	}
 }
 

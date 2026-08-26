@@ -1,0 +1,131 @@
+# docker-compose.yml — `wakil daemon` as a Docker service (card #150).
+#
+# Usage:
+#   cp .env.example .env && edit, then:
+#   docker compose up -d
+#
+# The daemon's state (sessions, memory, skills, repo-state, session-host)
+# is stored on the host under ~/.local/share/wakil/ and mounted into the
+# container at /data/wakil. Config is mounted at /config/wakil/config.json.
+# The Unix socket is exposed at /run/wakil/wakil.sock (mountable for the
+# TUI to connect from the host, or use the HTTP listener for network
+# access).
+#
+# Workspace identity:
+#   WAKIL_WORKSPACE_PATH pins the workspace identity across container/host
+#   boundaries. Set it to the host path of your workspace (the directory you
+#   would normally run `wakil` from). The daemon hashes this path to derive
+#   the workspace ID (wsp_<16hex>) and storage keys, so it must match the
+#   path the TUI would use on the host. This variable is REQUIRED — if
+#   unset, docker compose will fail with an error.
+#
+#   NOTE: if your host path contains symlinks, the daemon (running in the
+#   container) cannot resolve them — the host TUI resolves to the real path
+#   while the daemon falls back to the lexical path. To avoid key
+#   divergence, pass the fully-resolved (realpath) host path.
+#
+# Network access:
+#   By default the HTTP listener is disabled (no --http-addr). To enable
+#   the web UI, uncomment the http-addr port mapping and set --http-addr.
+#   For production, use --tls-cert/--tls-key and --allowed-origins.
+
+services:
+  wakil-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    image: wakil-daemon:latest
+    container_name: wakil-daemon
+
+    # Run as the HOST user (uid/gid interpolated from the environment).
+    # The distroless :nonroot default (65532) cannot write host-owned mounts —
+    # session/memory/config writes would fail silently. WAKIL_UID and WAKIL_GID
+    # are REQUIRED — if unset, docker compose will fail with an error.
+    #
+    # $UID/$GID are shell variables and usually NOT exported. Either export
+    # them or put them in a .env file next to this compose file:
+    #   cp .env.example .env
+    #   # edit .env: WAKIL_UID=$(id -u), WAKIL_GID=$(id -g)
+    user: "${WAKIL_UID:?set WAKIL_UID in .env (run: echo WAKIL_UID=$(id -u) >> .env)}:${WAKIL_GID:?set WAKIL_GID in .env (run: echo WAKIL_GID=$(id -g) >> .env)}"
+
+    # Direct exec mode — the daemon runs commands inside this container.
+    # For docker exec mode (daemon spawns sandbox containers), the daemon
+    # needs access to the Docker socket — add a volume mount for
+    # /var/run/docker.sock and change WAKIL_EXEC_MODE to docker.
+    environment:
+      # Pin the workspace identity to the host path. REQUIRED — must be set
+      # to the real host path of your workspace for storage keys to match
+      # the TUI. Use the fully-resolved path (realpath) if the host path
+      # contains symlinks.
+      WAKIL_WORKSPACE_PATH: ${WAKIL_WORKSPACE_PATH:?set WAKIL_WORKSPACE_PATH to your host workspace path}
+
+      # Pre-computed workspace key (optional). If your host path contains
+      # symlinks, the daemon (running in the container) cannot resolve them,
+      # causing workspace key divergence. To fix: run this on the host to
+      # get the key, then set WAKIL_WORKSPACE_KEY to that value:
+      #   wakil --print-workspace-key /home/user/myproject
+      # (or: python3 -c "import hashlib; print(hashlib.sha256(b'/real/resolved/path').hexdigest())")
+      # When set, WAKIL_WORKSPACE_PATH is used for file operations only;
+      # the key is used directly for identity.
+      # WAKIL_WORKSPACE_KEY: <64-char hex SHA-256 key>
+
+      # Data and config paths (match Dockerfile.daemon defaults).
+      # XDG_DATA_HOME=/data      → /data/wakil/sessions, /data/wakil/memory, ...
+      # WAKIL_CONFIG=/config/wakil/config.json
+      # XDG_RUNTIME_DIR=/run/wakil → socket at /run/wakil/wakil.sock
+
+      # Exec mode: direct (commands run in-container).
+      # Override to "docker" for Docker-in-Docker sandbox mode.
+      WAKIL_EXEC_MODE: ${WAKIL_EXEC_MODE:-direct}
+
+    volumes:
+      # Data directory: sessions, memory, skills, repo-state, session-host.
+      # Mount the host's ~/.local/share/wakil here.
+      - ${HOME}/.local/share/wakil:/data/wakil:z
+
+      # Config directory: config.json.
+      # Mount the host's ~/.config/wakil here.
+      - ${HOME}/.config/wakil:/config/wakil:z
+
+      # Socket directory: exposed to the host so the TUI can connect.
+      # The daemon creates wakil.sock inside /run/wakil (XDG_RUNTIME_DIR).
+      # On the host, point the TUI at this socket via --socket or
+      # WAKIL_DAEMON_SOCKET environment variable.
+      - ${XDG_RUNTIME_DIR:-/tmp}/wakil-daemon:/run/wakil:z
+
+      # Workspace mount: the project directory the daemon operates on.
+      # In direct exec mode, the daemon runs commands against this path.
+      # WAKIL_WORKSPACE_PATH is the HOST path; the container sees it at
+      # /workspace.
+      - ${WAKIL_WORKSPACE_PATH:?set WAKIL_WORKSPACE_PATH}:/workspace:z
+
+    # Working directory inside the container — the daemon's cwd.
+    # When WAKIL_WORKSPACE_PATH is set, the daemon uses it for identity
+    # (hashing) regardless of cwd. The actual file operations happen
+    # against /workspace (the mount point).
+    working_dir: /workspace
+
+    # Daemon flags passed via CMD (appended to ENTRYPOINT).
+    # The socket path defaults to $XDG_RUNTIME_DIR/wakil.sock.
+    # Uncomment --http-addr to enable the web UI listener.
+    command: []
+      # - --http-addr=0.0.0.0:8791
+      # - --allowed-origins=http://localhost:8791
+      # - --tls-cert=/config/wakil/cert.pem
+      # - --tls-key=/config/wakil/key.pem
+
+    # Ports — only needed if --http-addr is enabled.
+    # ports:
+    #   - "8791:8791"
+
+    # Restart policy: the daemon is stateful and should stay running.
+    restart: unless-stopped
+
+    # Resource limits (adjust as needed).
+    # The daemon is lightweight (Go binary + pure-Go SQLite); 512MB memory
+    # and 1 CPU is a reasonable default for a single-workspace setup.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"

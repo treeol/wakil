@@ -138,6 +138,44 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 	return lastErr
 }
 
+// DriveTurnWithResilience runs one user turn to its FINAL outcome with the
+// agent's resilience policies applied, and returns the authoritative
+// TurnOutcome. It is the single entry point for callers that need the final
+// assistant text after retry/empty-recovery — the host adapter (card #148 chunk
+// 7) and, later, the TUI re-route.
+//
+// Sequence (mirrors the headless driver's driveHeadlessTurn + recovery, but
+// returns the final text instead of dropping it):
+//  1. send + suspend/wait/resume to Final (runTurnToFinal);
+//  2. on a transient stream error, retry via HandleStreamError — which re-sends
+//     a fresh user turn internally and returns only error, so the recovered
+//     turn's text is read back from the conversation below;
+//  3. on success, apply HandleEmptyResponse (empty-completion recovery).
+//
+// It deliberately does NOT install Out/Confirm/OnReasoning/OnTokRate callbacks
+// and does NOT emit AgentDoneMsg — the caller owns the output sink and the TUI
+// owns done signalling. Fatal (non-retryable) errors are returned for the caller
+// to classify (the host adapter distinguishes backend_failure from
+// request_error).
+func DriveTurnWithResilience(ctx context.Context, app *App, userText string) (TurnOutcome, error) {
+	if err := runTurnToFinal(ctx, app, userText); err != nil {
+		if err = HandleStreamError(ctx, app, err); err != nil {
+			return TurnOutcome{}, err
+		}
+	}
+	// Runs after a clean send AND after a recovered retry (matches the legacy
+	// runSingleTaskHeadless, which applied HandleEmptyResponse on both paths).
+	HandleEmptyResponse(ctx, app)
+	// The last assistant message is authoritative after any retry or recovery:
+	// HandleStreamError's retry (app.Send(streamRetryHint)) and
+	// HandleEmptyResponse's recovery (app.Send(retryHint)) each append a fresh
+	// assistant message, so the pre-recovery TurnOutcome would be stale.
+	app.convMu.RLock()
+	text := workflow.LastAssistantText(app.Conv)
+	app.convMu.RUnlock()
+	return TurnOutcome{Kind: TurnFinal, Text: text}, nil
+}
+
 // retryBackoff returns the wait duration before retry attempt n (0-based).
 // The override function (App.RetryDelay) is used when set (tests); otherwise
 // the standard 1s·2^n + jitter schedule.

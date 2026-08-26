@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -53,7 +53,8 @@ type completionState struct {
 }
 
 // compSources bundles the data sources for all completion types. The sessions
-// field may be nil — fetchSessionShortIDs() reads them from disk on demand.
+// field may be nil — fetchSessionShortIDs() (a model method on the wiring
+// path) reads them on demand.
 type compSources struct {
 	mentionBase string
 	backends    []string // from app.BackendList (names only)
@@ -97,28 +98,27 @@ var allTUICommands = []candidate{
 	{name: "/submodel", hasArgs: true},
 }
 
-// compSrcFromApp builds a compSources from the running App. Sessions are left
-// nil and fetched lazily from disk only when the /resume picker is open.
-func compSrcFromApp(app *agent.App) compSources {
-	if app == nil {
-		return compSources{}
-	}
-	backends := make([]string, len(app.BackendList))
-	for i, b := range app.BackendList {
+// compSources builds a compSources from the facade snapshot: backends/models
+// from Snapshot(), endpoints + mention base from Info(). Sessions are left
+// nil and fetched lazily only when the /resume picker is open.
+func (m tuiModel) compSources() compSources {
+	snap := m.facade.Snapshot()
+	backends := make([]string, len(snap.BackendList))
+	for i, b := range snap.BackendList {
 		backends[i] = b.Name
 	}
-	endpoints := make([]string, 0, len(app.Cfg.Endpoints)+1)
-	endpoints = append(endpoints, "inherit")
-	for name := range app.Cfg.Endpoints {
-		endpoints = append(endpoints, name)
-	}
-	sort.Strings(endpoints[1:]) // keep "inherit" first, sort the rest
+	info := m.facade.Info()
 	return compSources{
-		mentionBase: app.Cfg.MentionBase,
+		mentionBase: info.MentionBase,
 		backends:    backends,
-		models:      app.ModelList,
-		endpoints:   endpoints,
+		models:      snap.ModelList,
+		endpoints:   info.Endpoints,
 	}
+}
+
+// mentionBase returns the @-mention root directory from Info().
+func (m tuiModel) mentionBase() string {
+	return m.facade.Info().MentionBase
 }
 
 // Hidden border: keeps the picker's footprint (matches completionHeight's +2)
@@ -134,11 +134,14 @@ func cursorColInLine(ta textarea.Model) int {
 
 // computeCompletion returns the picker state for the current textarea cursor.
 // It tries @-file completion first; if that doesn't match, it tries /command.
-func computeCompletion(ta textarea.Model, src compSources) completionState {
+// fetchSessions (nil = skip) lazily reads the session list for /resume
+// argument completion — injected so computeSlashCompletion stays a pure
+// function over its arguments.
+func computeCompletion(ta textarea.Model, src compSources, fetchSessions func() []string) completionState {
 	if st := computeAtCompletion(ta, src.mentionBase); st.active {
 		return st
 	}
-	return computeSlashCompletion(ta, src)
+	return computeSlashCompletion(ta, src, fetchSessions)
 }
 
 // computeAtCompletion handles "@token" file-mention completion. When the query
@@ -215,7 +218,7 @@ func computeAtCompletion(ta textarea.Model, base string) completionState {
 //     before the space. Only /auto, /backend, /model, /resume, /subagent,
 //     /submodel, /repostate, and /handoff have argument completion; other
 //     commands are not completed past the space.
-func computeSlashCompletion(ta textarea.Model, src compSources) completionState {
+func computeSlashCompletion(ta textarea.Model, src compSources, fetchSessions func() []string) completionState {
 	lines := strings.Split(ta.Value(), "\n")
 	row := ta.Line()
 	if row < 0 || row >= len(lines) {
@@ -261,8 +264,8 @@ func computeSlashCompletion(ta textarea.Model, src compSources) completionState 
 		cands = listNameCandidates(argLeaf, src.models)
 	case "/resume":
 		sessions := src.sessions
-		if sessions == nil {
-			sessions = fetchSessionShortIDs()
+		if sessions == nil && fetchSessions != nil {
+			sessions = fetchSessions()
 		}
 		cands = listNameCandidates(argLeaf, sessions)
 	case "/subagent":
@@ -594,16 +597,17 @@ func listNameCandidates(leaf string, names []string) []candidate {
 	return cands
 }
 
-// fetchSessionShortIDs reads the local session store and returns short IDs for
-// all saved sessions, sorted most-recent first. Returns nil on failure.
-func fetchSessionShortIDs() []string {
-	sessions, err := agent.ListSessions()
+// fetchSessionShortIDs reads the local session store through the facade and
+// returns short IDs for all saved sessions, most-recent first. Returns nil on
+// failure.
+func (m tuiModel) fetchSessionShortIDs() []string {
+	sessions, _, err := m.facade.ListSessions(sessionclient.SessionScope{All: true})
 	if err != nil || len(sessions) == 0 {
 		return nil
 	}
 	ids := make([]string, len(sessions))
 	for i, s := range sessions {
-		ids[i] = agent.ShortID(s.ChatID)
+		ids[i] = formatShortID(s.ChatID)
 	}
 	return ids
 }
@@ -662,7 +666,7 @@ func (m tuiModel) acceptCompletion() tuiModel {
 	}
 	m.ta.InsertString(ins)
 	if reopen {
-		m.comp = computeCompletion(m.ta, compSrcFromApp(m.app))
+		m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
 	} else {
 		m.comp = completionState{}
 	}

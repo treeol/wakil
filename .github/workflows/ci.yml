@@ -123,3 +123,37 @@ jobs:
 
       - name: vet (darwin/amd64)
         run: GOOS=darwin GOARCH=amd64 go vet ./...
+
+  # Proto schema breaking-change detection (card #148 P2f). Runs `buf breaking`
+  # against the base branch to catch wire-incompatible schema changes (removed
+  # fields, changed types, renumbered tags) before they reach master. The
+  # buf.yaml breaking section is configured with WIRE_JSON + WIRE rules.
+  proto-breaking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Fetch the full history so buf can diff against the base branch.
+          fetch-depth: 0
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: buf lint
+        run: buf lint
+
+      - name: buf breaking
+        run: |
+          # On a PR, compare against the merge base (origin/master).
+          # On a push to master, compare against the previous commit (HEAD~1).
+          #
+          # The checkout action fetches the full history (fetch-depth: 0), so
+          # origin/master is available as a ref even on PR branches.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            buf breaking --against ".git#ref=refs/remotes/origin/master"
+          else
+            buf breaking --against ".git#ref=HEAD~1"
+          fi

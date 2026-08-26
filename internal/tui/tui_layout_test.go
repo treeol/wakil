@@ -5,15 +5,13 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
-	agent "github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
 )
 
 // layoutModel builds a tuiModel with just enough state for sizes() to run.
 func layoutModel(w, h int) tuiModel {
 	ta := textarea.New()
 	ta.SetHeight(3)
-	return tuiModel{ta: ta, width: w, height: h}
+	return tuiModel{facade: &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}, ta: ta, width: w, height: h}
 }
 
 // heightInvariant checks that viewport + border(2) + completionHeight + inputOuter
@@ -67,9 +65,9 @@ func TestLayoutCompletionPickerHeightInvariant(t *testing.T) {
 	const w, h = 120, 40
 	base := compTree(t) // temp dir with a handful of files
 
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	app.Cfg.MentionBase = base
-	m := NewTUIModel(app)
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	f.info.MentionBase = base
+	m := newWiringModel(f)
 	m = step(m, tea.WindowSizeMsg{Width: w, Height: h})
 
 	vpHBefore := m.vp.Height

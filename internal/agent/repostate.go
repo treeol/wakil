@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -61,6 +62,12 @@ type RepoState struct {
 
 	// MashuraTimeoutSeconds persists the /mashura timeout setting.
 	MashuraTimeoutSeconds int `json:"mashura_timeout_seconds,omitempty"`
+
+	// CounselMode persists the /counsel mode (auto|suggest|off).
+	CounselMode string `json:"counsel_mode,omitempty"`
+
+	// MaxCounsel persists the /counsel auto-mode cap (max calls per turn).
+	MaxCounsel int `json:"max_counsel,omitempty"`
 
 	// EffectiveCtxMaxChars persists the /maxctx session override. nil = not set
 	// (use config default); pointer to 0 = explicitly disabled (no cap); >0 =
@@ -129,8 +136,23 @@ func LoadRepoState(ws string) (*RepoState, error) {
 	if st.SchemaVersion != repoStateSchemaVersion {
 		return nil, nil
 	}
+	// Workspace mismatch check: the stored Workspace field should match the
+	// requested workspace after canonicalization. An old record with an empty
+	// Workspace (pre-dating workspace recording) is allowed through for
+	// backward compatibility — updateRepoState will backfill it on the next
+	// write. This prevents a stale file from one workspace silently applying
+	// to another (e.g. after a path rename or a copied state directory).
+	if st.Workspace != "" && workspaceKey(st.Workspace) != workspaceKey(ws) {
+		return nil, nil //nolint:nilerr // mismatched workspace is treated as absent
+	}
 	return &st, nil
 }
+
+// repoStateUpdateMu serializes updateRepoState calls so concurrent RPC
+// handlers don't lose updates by loading the same old file, mutating
+// different fields, and overwriting each other. Atomic rename prevents
+// corruption but not lost updates; this mutex closes that gap.
+var repoStateUpdateMu sync.Mutex
 
 // updateRepoState loads the existing repo-state for ws (or starts a fresh
 // one), applies mutate to change only the field(s) the caller just set, and
@@ -145,6 +167,8 @@ func updateRepoState(ws string, mutate func(*RepoState)) error {
 	if ws == "" {
 		return nil
 	}
+	repoStateUpdateMu.Lock()
+	defer repoStateUpdateMu.Unlock()
 	st, err := LoadRepoState(ws)
 	if err != nil {
 		return err
@@ -180,6 +204,87 @@ type RestoreRepoStateResult struct {
 	Backend string // literal backend name applied, or "" if none
 }
 
+// RestoreRepoStateRead loads repo-state from disk. Pure I/O — no App
+// mutation, no lock. Used by the daemon handler and bootstrap path to
+// separate the I/O step from the locked apply step (Phase 7 split).
+func RestoreRepoStateRead(app *App) (*RepoState, error) {
+	return LoadRepoState(app.SessionWorkspace())
+}
+
+// RestoreRepoStateApply applies repo-state to App under stateMu.Lock.
+// Returns RestoreRepoStateResult with literal model/backend strings so
+// the caller can resolve context limits using the exact strings that
+// were actually applied (not raw RepoState values that may have been
+// skipped by eligibility guards).
+//
+// Model/backend writes use applyModelOverrideLocked (assumes stateMu held)
+// and a direct SelectedBackend write (under the held lock). AutoApprove
+// uses the atomic SetAutoApprove (safe under stateMu — it doesn't
+// re-acquire stateMu). All endpoint-independent writes are direct field
+// writes under the held lock (same as restoreEndpointIndependentLocked).
+//
+// The caller is responsible for resolving and installing context limits
+// AFTER Apply, using result.Model and result.Backend — only those values
+// were actually applied. Use app.SetCtxLimit(cl) for the locked write.
+func RestoreRepoStateApply(app *App, st *RepoState) RestoreRepoStateResult {
+	if st == nil {
+		return RestoreRepoStateResult{}
+	}
+	var applied []string
+	var result RestoreRepoStateResult
+
+	app.stateMu.Lock()
+	defer app.stateMu.Unlock()
+
+	// A model/backend string recorded under one endpoint is meaningless sent
+	// to another (different auth, different model namespace) — skip both
+	// when the active endpoint has changed since the state was written.
+	endpointMatches := st.EndpointName == "" || st.EndpointName == app.Cfg.EndpointName
+	if endpointMatches {
+		if !app.Cfg.ModelExplicit && st.Model != "" {
+			app.applyModelOverrideLocked(st.Model)
+			result.Model = st.Model
+			applied = append(applied, "model="+st.Model)
+		}
+		if st.Backend != "" && app.Cfg.ActiveEndpoint().Kind == config.EndpointKindIlmProxy {
+			app.SelectedBackend = st.Backend
+			result.Backend = st.Backend
+			applied = append(applied, "backend="+st.Backend)
+		}
+	}
+
+	applied = append(applied, app.restoreEndpointIndependentLocked(st)...)
+
+	if len(applied) > 0 {
+		result.Note = "repo-state: restored " + strings.Join(applied, ", ") +
+			" (folder: " + app.SessionWorkspace() + ") — /repostate to inspect or clear"
+	}
+	return result
+}
+
+// RestoreRepoStateResumeApply applies endpoint-independent settings from
+// repo-state under stateMu.Lock. Unlike RestoreRepoStateApply, it skips
+// model/backend changes to avoid silently changing the model mid-transcript
+// of a resumed session.
+func RestoreRepoStateResumeApply(app *App, st *RepoState) RestoreRepoStateResult {
+	if st == nil {
+		return RestoreRepoStateResult{}
+	}
+	app.stateMu.Lock()
+	defer app.stateMu.Unlock()
+
+	var applied []string
+	var result RestoreRepoStateResult
+
+	applied = append(applied, app.restoreEndpointIndependentLocked(st)...)
+
+	if len(applied) > 0 {
+		result.Note = "repo-state (resume): restored " + strings.Join(applied, ", ") +
+			" (folder: " + app.SessionWorkspace() + ")"
+	}
+	return result
+}
+
 // RestoreRepoState applies the stored settings for app's workspace, subject
 // to this-run precedence: an explicit --model/ILM_MODEL always beats a
 // restored model (app.Cfg.ModelExplicit), and an explicit --auto always
@@ -200,116 +305,131 @@ type RestoreRepoStateResult struct {
 // cmd/wakil/run.go, not by a runtime check here.
 //
 // AllowDestructive is never touched — RepoState has no field for it.
+//
+// Backward-compatible wrapper: Read + Apply (no ctxLimit). Callers that
+// need the network probe (daemon handler, bootstrap_tui) should use
+// RestoreRepoStateRead + ResolveContextLimitForBackendModel +
+// RestoreRepoStateApply directly.
 func RestoreRepoState(app *App) RestoreRepoStateResult {
-	ws := app.SessionWorkspace()
-	st, err := LoadRepoState(ws)
+	st, err := RestoreRepoStateRead(app)
 	if err != nil || st == nil {
 		return RestoreRepoStateResult{}
 	}
+	return RestoreRepoStateApply(app, st)
+}
 
-	var applied []string
-	var result RestoreRepoStateResult
-
-	// A model/backend string recorded under one endpoint is meaningless sent
-	// to another (different auth, different model namespace) — skip both
-	// when the active endpoint has changed since the state was written.
-	endpointMatches := st.EndpointName == "" || st.EndpointName == app.Cfg.EndpointName
-	if endpointMatches {
-		if !app.Cfg.ModelExplicit && st.Model != "" {
-			ApplyModelOverride(app, st.Model)
-			result.Model = st.Model
-			applied = append(applied, "model="+st.Model)
-		}
-		if st.Backend != "" && app.Cfg.ActiveEndpoint().Kind == config.EndpointKindIlmProxy {
-			// ilm-proxy kind only — openai-kind /backend reconfigures the
-			// whole endpoint (kind/base_url/auth/sampling) via
-			// handleEndpointSwitch and is deliberately not persisted here.
-			app.SelectedBackend = st.Backend
-			result.Backend = st.Backend
-			applied = append(applied, "backend="+st.Backend)
-		}
+// RestoreRepoStateResume restores endpoint-independent settings from repo-state
+// on session resume. Unlike RestoreRepoState (fresh conversation), it skips
+// model/backend changes to avoid silently changing the model mid-transcript of
+// a resumed session. AutoApprove is restored (subject to AutoExplicit) because
+// it is endpoint-independent and the user explicitly toggled it.
+//
+// AllowDestructive and AllowReads are NOT restored here — they are ephemeral
+// per-session grants that must not survive across sessions.
+//
+// Backward-compatible wrapper: Read + Apply.
+func RestoreRepoStateResume(app *App) RestoreRepoStateResult {
+	st, err := RestoreRepoStateRead(app)
+	if err != nil || st == nil {
+		return RestoreRepoStateResult{}
 	}
+	return RestoreRepoStateResumeApply(app, st)
+}
+
+// restoreEndpointIndependentLocked applies endpoint-independent settings
+// from the repo-state to the App. Caller MUST hold stateMu.Lock.
+// These are settings that don't depend on which endpoint is active and are
+// safe to restore on both fresh conversations and resume.
+// Returns the list of applied settings for the restore summary.
+//
+// SetAutoApprove is atomic (consent atomic.Value), not stateMu — safe to
+// call under stateMu since it doesn't re-acquire stateMu.
+func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
+	var applied []string
 
 	if st.SubagentEndpoint != "" {
-		if _, err := app.Cfg.NormalizeEndpoint(st.SubagentEndpoint); err == nil {
-			app.SubagentEndpointOverride = st.SubagentEndpoint
+		if _, err := a.Cfg.NormalizeEndpoint(st.SubagentEndpoint); err == nil {
+			a.SubagentEndpointOverride = st.SubagentEndpoint
 			applied = append(applied, "subagent="+st.SubagentEndpoint)
 		}
 		// Stale/missing endpoint (no longer in config): silently skipped,
 		// never hard-fails startup.
 	}
 	if st.SubagentModel != "" {
-		app.SubagentModelOverride = st.SubagentModel
+		a.SubagentModelOverride = st.SubagentModel
 		applied = append(applied, "submodel="+st.SubagentModel)
 	}
 
 	// MaxParallelSubagents: 0 = not persisted → keep the config default.
-	// Restored outside the endpointMatches guard — maxpar is endpoint-independent.
 	if st.MaxParallelSubagents > 0 {
-		app.Cfg.MaxParallelSubagents = st.MaxParallelSubagents
+		a.Cfg.MaxParallelSubagents = st.MaxParallelSubagents
 		applied = append(applied, fmt.Sprintf("maxpar=%d", st.MaxParallelSubagents))
 	}
 
-	app.RawTools = st.RawTools // always applies; false is a valid restored value
+	a.RawTools = st.RawTools // always applies; false is a valid restored value
 
-	if !app.Cfg.AutoExplicit {
+	if !a.Cfg.AutoExplicit {
 		if st.AutoApprove {
-			app.SetAutoApprove(true)
+			a.SetAutoApprove(true)
 			applied = append(applied, "auto=on")
 		} else {
-			app.SetAutoApprove(false)
+			a.SetAutoApprove(false)
 		}
 	}
 
 	// Info panel visibility is TUI-only state; restore unconditionally (it's
-	// endpoint-independent, like MaxParallelSubagents). No note — it's a quiet
-	// UI preference, not a settings change the user needs surfaced.
-	app.InfoPanelOpen = st.InfoPanelOpen
+	// endpoint-independent). No note — it's a quiet UI preference.
+	a.InfoPanelOpen = st.InfoPanelOpen
 
 	// /maxctx override: nil = not persisted → keep the config default.
-	// Restored outside the endpointMatches guard — it's endpoint-independent.
 	if st.EffectiveCtxMaxChars != nil {
-		app.EffectiveCtxMaxCharsOverride = *st.EffectiveCtxMaxChars
+		a.EffectiveCtxMaxCharsOverride = *st.EffectiveCtxMaxChars
 		applied = append(applied, fmt.Sprintf("maxctx=%d", *st.EffectiveCtxMaxChars))
 	}
 
 	// Mashūra settings (TUI-only, endpoint-independent).
 	if len(st.MashuraPanels) > 0 {
-		if app.Cfg.MashuraPanels == nil {
-			app.Cfg.MashuraPanels = make(map[string]config.MashuraPanelConfig)
+		if a.Cfg.MashuraPanels == nil {
+			a.Cfg.MashuraPanels = make(map[string]config.MashuraPanelConfig)
 		}
 		for name, panel := range st.MashuraPanels {
-			app.Cfg.MashuraPanels[name] = panel
+			a.Cfg.MashuraPanels[name] = panel
 		}
 		applied = append(applied, fmt.Sprintf("mashura-panels=%d", len(st.MashuraPanels)))
 	}
 	if len(st.MashuraToolPanels) > 0 {
-		if app.Cfg.MashuraToolPanels == nil {
-			app.Cfg.MashuraToolPanels = make(map[string]string)
+		if a.Cfg.MashuraToolPanels == nil {
+			a.Cfg.MashuraToolPanels = make(map[string]string)
 		}
 		for tool, panel := range st.MashuraToolPanels {
-			app.Cfg.MashuraToolPanels[tool] = panel
+			a.Cfg.MashuraToolPanels[tool] = panel
 		}
 		applied = append(applied, "mashura-mappings")
 	}
 	if st.MashuraDefaultModel != "" {
-		app.Cfg.OracleModel = st.MashuraDefaultModel
+		a.Cfg.OracleModel = st.MashuraDefaultModel
 		applied = append(applied, "mashura-model="+st.MashuraDefaultModel)
 	}
 	if st.MashuraMaxTokens > 0 {
-		app.Cfg.OracleMaxTokens = st.MashuraMaxTokens
+		a.Cfg.OracleMaxTokens = st.MashuraMaxTokens
 		applied = append(applied, fmt.Sprintf("mashura-maxtokens=%d", st.MashuraMaxTokens))
 	}
 	if st.MashuraTimeoutSeconds > 0 {
-		app.Cfg.OracleTimeoutSeconds = st.MashuraTimeoutSeconds
+		a.Cfg.OracleTimeoutSeconds = st.MashuraTimeoutSeconds
 		applied = append(applied, fmt.Sprintf("mashura-timeout=%d", st.MashuraTimeoutSeconds))
 	}
 
-	if len(applied) > 0 {
-		result.Note = "repo-state: restored " + strings.Join(applied, ", ") +
-			" (folder: " + ws + ") — /repostate to inspect or clear"
+	// Counsel mode (endpoint-independent).
+	if st.CounselMode != "" {
+		a.CounselMode = st.CounselMode
+		applied = append(applied, "counsel="+st.CounselMode)
 	}
-	return result
+	if st.MaxCounsel > 0 {
+		a.MaxCounsel = st.MaxCounsel
+		applied = append(applied, fmt.Sprintf("counsel-cap=%d", st.MaxCounsel))
+	}
+
+	return applied
 }
 
 // SaveRepoState is a thin convenience wrapper for command handlers that only
@@ -330,12 +450,15 @@ func (a *App) saveRepoState(mutate func(*RepoState)) {
 }
 
 // ClearRepoState deletes the stored settings for app's workspace, if any.
-// Used by /repostate clear. Never errors on a missing file.
+// Used by /repostate clear. Never errors on a missing file. Takes the
+// repoStateUpdateMu so it can't race with a concurrent updateRepoState.
 func ClearRepoState(app *App) error {
 	path := repoStatePath(app.SessionWorkspace())
 	if path == "" {
 		return nil
 	}
+	repoStateUpdateMu.Lock()
+	defer repoStateUpdateMu.Unlock()
 	err := os.Remove(path)
 	if err != nil && os.IsNotExist(err) {
 		return nil

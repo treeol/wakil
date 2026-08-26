@@ -107,6 +107,35 @@ func (a *App) SetAllowDestructive(v bool) {
 	})
 }
 
+// EnableDestructiveIfAuto atomically sets AllowDestructive=true only if
+// AutoApprove is currently true. Returns true if the destructive grant was
+// enabled, false if auto was off. This prevents the check-then-act race where
+// a concurrent RevokeAuto between a Consent().AutoApprove check and a
+// SetAllowDestructive(true) call could produce the forbidden state
+// AutoApprove=false + AllowDestructive=true.
+//
+// The return value is computed from the FINAL successful CAS iteration, not
+// from intermediate attempts: if CAS fails on the first try (concurrent
+// RevokeAuto won), the retry reloads and the callback sees AutoApprove=false,
+// producing enabled=false. The closure resets enabled=false on every entry
+// so only the last (successful) iteration's result is returned.
+func (a *App) EnableDestructiveIfAuto() bool {
+	enabled := false
+	a.updateConsent(func(s ConsentSnapshot) ConsentSnapshot {
+		// Reset on every entry so only the last (successful) iteration wins.
+		enabled = false
+		if s.AutoApprove {
+			s.AllowDestructive = true
+			enabled = true
+			return s
+		}
+		// Auto is off — don't set destructive. Return the same snapshot
+		// (updateConsent no-ops when old == new).
+		return s
+	})
+	return enabled
+}
+
 // SetAllowReads atomically updates the AllowReads field, preserving the
 // other two via a CAS retry loop.
 func (a *App) SetAllowReads(v bool) {

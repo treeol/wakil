@@ -18,7 +18,17 @@ import (
 
 // prepareTurn resets per-turn state and applies model/backend selection at
 // request build time. Called at the top of Send before any request is made.
+//
+// Holds stateMu.Lock for the field assignments only — no I/O, no callbacks.
+// This is a write lock because the turn goroutine writes Client.Model/Backend
+// (turn-stable writes). GetSessionState takes stateMu.RLock and sees a
+// consistent state. Per-turn reset fields (exhausted, stopReason, etc.) are
+// turn-scoped — only the turn goroutine reads them — but are reset here under
+// the lock for consistency.
 func (a *App) prepareTurn() {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
 	// Reset per-turn exhaustion flag. Set by forceFinish or enforceHardMax
 	// during this turn. dispatchSubagent captures the first-Send value before
 	// the retry, then ORs it with the retry's value, so resetting here
@@ -66,31 +76,56 @@ func (a *App) prepareTurn() {
 //
 // Gated even in /auto mode — the SuspendAuto hook in tuiConfirmer ensures the
 // prompt always fires.
+//
+// TOCTOU fix: the backend is snapshotted under stateMu.RLock before the
+// (blocking) Confirm call. If the user declines, the revert is a conditional
+// write under stateMu.Lock — it only reverts if the backend hasn't changed
+// during the prompt. This prevents a /backend RPC that lands mid-prompt from
+// being silently reverted.
 func (a *App) checkEgressConsent() bool {
-	if a.SelectedBackend == "" || !IsExternalBackend(a.BackendList, a.Cfg, a.SelectedBackend) {
+	a.stateMu.RLock()
+	backend := a.SelectedBackend
+	a.stateMu.RUnlock()
+
+	if backend == "" || !IsExternalBackend(a.BackendList, a.Cfg, backend) {
 		return true
 	}
-	if a.consentedBackends != nil && a.consentedBackends[a.SelectedBackend] {
+	if a.consentedBackends != nil && a.consentedBackends[backend] {
 		return true
 	}
 	detail := fmt.Sprintf(
 		"This session's context (memory, grounding, learned notes) will be sent to "+
 			"external backend %q. Proceed?\n\n"+
 			"(The proxy also enforces ILM_ALLOW_EXTERNAL; this gate makes the decision "+
-			"visible at the moment it happens.)", a.SelectedBackend)
+			"visible at the moment it happens.)", backend)
 	if !a.Confirm("external_backend",
-		"⚠ Send session context to external backend "+a.SelectedBackend+"?",
+		"⚠ Send session context to external backend "+backend+"?",
 		detail, false) {
-		prev := a.SelectedBackend
-		a.SelectedBackend = ""
-		a.Client.Backend = ""
-		fmt.Fprintf(a.Out, "\n· backend %q declined — selection reverted to proxy default\n", prev)
+		// Decline: conditional write — only revert if backend hasn't changed
+		// during the prompt. If a /backend RPC changed it mid-prompt, the
+		// new selection stands.
+		reverted := false
+		a.stateMu.Lock()
+		if a.SelectedBackend == backend {
+			a.SelectedBackend = ""
+			a.Client.Backend = ""
+			reverted = true
+		}
+		a.stateMu.Unlock()
+		if reverted {
+			fmt.Fprintf(a.Out, "\n· backend %q declined — selection reverted to proxy default\n", backend)
+		} else {
+			fmt.Fprintf(a.Out, "\n· backend %q declined — selection changed during prompt\n", backend)
+		}
 		return false
 	}
+	// Record consent for the target backend. consentedBackends is turn-scoped
+	// (only the turn goroutine writes it), so no lock is needed here — the
+	// turn goroutine is single-threaded for this map.
 	if a.consentedBackends == nil {
 		a.consentedBackends = make(map[string]bool)
 	}
-	a.consentedBackends[a.SelectedBackend] = true
+	a.consentedBackends[backend] = true
 	return true
 }
 
@@ -245,7 +280,11 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// tool output, not the truncated version the model sees.
 			text := result.text
 			preCapBytes := len(text)
-			if !a.RawTools {
+			// RawTools is LIVE — re-read under stateMu.RLock per tool result.
+			a.stateMu.RLock()
+			rawTools := a.RawTools
+			a.stateMu.RUnlock()
+			if !rawTools {
 				text = a.CapOrStub(text, tc.Function.Name, turnToolBytes)
 			}
 			if a.Trace != nil {

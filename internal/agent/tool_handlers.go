@@ -418,11 +418,12 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 
 	op := &asyncOp{
 		id:        "job-" + bgID,
-		toolName:  "run_shell",
+		toolName:  e.toolName,
 		label:     e.cmdDigest,
 		createdAt: e.startedAt,
 		startedAt: e.startedAt,
 		done:      make(chan struct{}),
+		originChatID: e.originChatID,
 	}
 	op.mu.Lock()
 	op.terminal = true
@@ -453,6 +454,64 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 	// wait_for_completion waiter (idle). Coalescing, buffered-1, under asyncMu.
 	a.ensureWake()
 	a.signalWake()
+}
+
+// publishBgCompletion finalizes a notify_on_exit=true background job's async
+// op: sets the result text, publishes through publishAsyncOp (which decrements
+// asyncActive, appends to asyncInbox, and signals wake). Called from the reaper
+// goroutine. Exactly-once: guarded by the reaper's notifyOnExit && !notified
+// check under bgMu, plus publishAsyncOp's published flag.
+func (a *App) publishBgCompletion(op *asyncOp, bgID string, e *bgEntry, statusLine, tail string) {
+	msg := fmt.Sprintf("%s (\"%s\") %s — last output:\n%s\nuse read_process_log(%q) for the full output", bgID, e.cmdDigest, statusLine, tail, bgID)
+
+	op.mu.Lock()
+	op.terminal = true
+	op.finishedAt = time.Now()
+	op.result = msg
+	op.shellLSPDirty = !e.readOnly
+	op.mu.Unlock()
+	close(op.done)
+
+	// publishAsyncOp handles: asyncActive--, asyncInbox append, evict, signalWake.
+	published := a.publishAsyncOp(op)
+	_ = published // if false (stopping), the slot was still released
+}
+
+// cancelBgAsyncOp releases the async slot for a notify_on_exit=true background
+// job that was intentionally killed or lost (generation mismatch). It does NOT
+// append a completion to asyncInbox (kill = silent), but it DOES signalWake so
+// a suspended turn (blocked in WaitForAsyncCompletion) resumes — it will see
+// asyncActive == 0 and end the turn as Final. Called from kill/shutdown paths —
+// NOT the reaper (the reaper's notifyOnExit check prevents double-publish). Safe
+// to call when asyncOp is nil (no-op).
+func (a *App) cancelBgAsyncOp(op *asyncOp, bgID, reason string) {
+	if op == nil {
+		return
+	}
+	op.mu.Lock()
+	if op.published {
+		op.mu.Unlock()
+		return // already published (reaper won the race)
+	}
+	op.published = true
+	op.terminal = true
+	op.finishedAt = time.Now()
+	op.mu.Unlock()
+	if op.done != nil {
+		close(op.done)
+	}
+
+	// Release the slot silently: decrement asyncActive without appending to
+	// asyncInbox. Signal wake so any suspended turn resumes (it will see
+	// asyncActive == 0 and return Final, not hang forever).
+	a.asyncMu.Lock()
+	a.asyncActive--
+	if a.asyncActive < 0 {
+		a.asyncActive = 0 // guard against underflow
+	}
+	a.ensureWake()
+	a.signalWake()
+	a.asyncMu.Unlock()
 }
 
 // handleOpenURL opens a URL on the host desktop after confirmation.
@@ -979,8 +1038,9 @@ func (a *App) handleMoveFile(ctx context.Context, tc proxy.ToolCall) string {
 // handleRunBackground starts a background process with logging and a reaper goroutine.
 func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string {
 	var args struct {
-		Command string `json:"command"`
-		Label   string `json:"label"`
+		Command      string `json:"command"`
+		Label        string `json:"label"`
+		NotifyOnExit bool   `json:"notify_on_exit"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -1040,40 +1100,66 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 		toolName:     "run_background",
 		cmdDigest:    Truncate(args.Command, 80),
 		originChatID: a.chatID(),
+		notifyOnExit: args.NotifyOnExit,
+	}
+	// When notify_on_exit=true, register as pending async work so isIdle
+	// returns true and the turn suspends until the job completes. The slot
+	// is released by publishAsyncOp in the reaper. Must happen BEFORE the
+	// reaper starts (race: a fast process could exit before registration).
+	var bgAsyncOp *asyncOp
+	if args.NotifyOnExit {
+		op, reason := a.registerAsyncOp("run_background", Truncate(args.Command, 60))
+		if reason == "full" {
+			// No async slot available — degrade gracefully: start the job
+			// but don't register it as pending async work. The agent will
+			// need to poll read_process_log manually (same as default).
+			entry.notifyOnExit = false
+		} else if reason == "stopping" {
+			return "ERROR: session is shutting down — cannot start background process"
+		} else {
+			entry.asyncOp = op
+			bgAsyncOp = op
+		}
 	}
 	a.bgMu.Lock()
 	a.bgProcs[bgID] = entry
 	a.bgMu.Unlock()
-	// Card #128: a run_background job surfaces as a TUI tab (display-only;
-	// explicit background jobs remain poll-by-design — no model inbox notice).
+	// Card #128: a run_background job surfaces as a TUI tab (display-only).
 	a.announceShellStart(bgID, entry)
 	// Reaper goroutine: poll GROUP liveness and close done when the group
 	// exits. This lets StopAllBackgroundProcs wait for clean shutdown without
 	// a fixed sleep. Uses a background context — the process may outlive the
 	// turn context that started it. On exit, emit the tab Done (display-only).
+	// When notify_on_exit=true, also publish a completion notice to the async
+	// inbox so a suspended turn resumes — zero polling, zero wasted tokens.
 	safe.Go("bg-reaper", func() {
 		bgCtx := context.Background()
 		for {
 			if !a.Exec.IsProcessGroupAlive(bgCtx, pgid) {
 				close(done)
 				// Read only the TAIL of the log (multi-GB safe); emit tab Done.
-				statusLine := exec.ExitStatusLine(0, false)
-				tail := ""
-				if out, err := a.Exec.ReadFileTail(bgCtx, logPath, 8*1024); err == nil {
-					cleaned, code, known := exec.ParseExitMarker(out)
-					statusLine = exec.ExitStatusLine(code, known)
-					lines := strings.Split(strings.TrimRight(cleaned, "\n"), "\n")
-					if n := len(lines); n > asyncShellNotifyTail {
-						lines = lines[n-asyncShellNotifyTail:]
-					}
-					tail = strings.Join(lines, "\n")
-				}
+				statusLine, tail := a.shellTailPreview(entry)
 				a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
+				// Model notification: publish exactly once.
+				a.bgMu.Lock()
+				notify := entry.notifyOnExit && !entry.notified
+				if notify {
+					entry.notified = true
+				}
+				op := entry.asyncOp
+				a.bgMu.Unlock()
+				if notify && op != nil {
+					a.publishBgCompletion(op, bgID, entry, statusLine, tail)
+				}
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
 	})
+	_ = bgAsyncOp // used via entry.asyncOp in the reaper
+	if args.NotifyOnExit && entry.notifyOnExit {
+		return fmt.Sprintf("id: %s\npid: %d\nlog: %s\nlabel: %s\nnotify: enabled — you will be notified when it finishes; use read_process_log(%s) to poll, kill_process(%s) to stop", bgID, pid, logPath, args.Label, bgID, bgID)
+	}
 	return fmt.Sprintf("id: %s\npid: %d\nlog: %s\nlabel: %s", bgID, pid, logPath, args.Label)
 }
 
@@ -1094,7 +1180,11 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	if entry.generation != a.Exec.Generation() {
 		a.bgMu.Lock()
 		delete(a.bgProcs, args.ID)
+		asyncOp := entry.asyncOp
 		a.bgMu.Unlock()
+		if asyncOp != nil {
+			a.cancelBgAsyncOp(asyncOp, args.ID, "process lost (container restarted)")
+		}
 		return fmt.Sprintf("[%s] process lost (container restarted)", args.ID)
 	}
 	detail := fmt.Sprintf("kill_process %s (%s) pgid=%d\n  (%s)", args.ID, entry.label, entry.pgid, a.Exec.Describe())
@@ -1104,7 +1194,13 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Exec.IsProcessGroupAlive(ctx, entry.pgid) {
 		a.bgMu.Lock()
 		delete(a.bgProcs, args.ID)
+		// Capture and clear the async op so the reaper won't double-publish.
+		asyncOp := entry.asyncOp
+		entry.notifyOnExit = false
 		a.bgMu.Unlock()
+		if asyncOp != nil {
+			a.cancelBgAsyncOp(asyncOp, args.ID, "already exited")
+		}
 		return fmt.Sprintf("[%s] already exited", args.ID)
 	}
 	// Card #121: an intentional kill must not produce a completion notice —
@@ -1112,6 +1208,7 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	// silent even if it observes the exit first.
 	a.bgMu.Lock()
 	entry.notifyOnExit = false
+	asyncOp := entry.asyncOp
 	a.bgMu.Unlock()
 	_ = a.Exec.KillPgid(ctx, entry.pgid, 15) // SIGTERM
 	// Wait up to 5s for the GROUP to exit, then SIGKILL. Group check (not the
@@ -1129,6 +1226,9 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 			a.bgMu.Lock()
 			delete(a.bgProcs, args.ID)
 			a.bgMu.Unlock()
+			if asyncOp != nil {
+				a.cancelBgAsyncOp(asyncOp, args.ID, "killed (SIGTERM)")
+			}
 			return fmt.Sprintf("[%s] terminated (SIGTERM)", args.ID)
 		}
 	}
@@ -1136,6 +1236,9 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	a.bgMu.Lock()
 	delete(a.bgProcs, args.ID)
 	a.bgMu.Unlock()
+	if asyncOp != nil {
+		a.cancelBgAsyncOp(asyncOp, args.ID, "killed (SIGKILL after 5s timeout)")
+	}
 	return fmt.Sprintf("[%s] killed (SIGKILL after 5s timeout)", args.ID)
 }
 
@@ -1156,7 +1259,11 @@ func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) strin
 	if entry.generation != a.Exec.Generation() {
 		a.bgMu.Lock()
 		delete(a.bgProcs, args.ID)
+		asyncOp := entry.asyncOp
 		a.bgMu.Unlock()
+		if asyncOp != nil {
+			a.cancelBgAsyncOp(asyncOp, args.ID, "process lost (container restarted)")
+		}
 		return fmt.Sprintf("[%s] process lost (container restarted)", args.ID)
 	}
 	alive := a.Exec.IsProcessGroupAlive(ctx, entry.pgid)

@@ -446,6 +446,12 @@ type Config struct {
 	// resolveEndpoint already uses for model/base-url override precedence.
 	ModelExplicit bool `json:"-"`
 	AutoExplicit  bool `json:"-"`
+
+	// DaemonMode selects remote daemon mode (P2e): the TUI dials the wakil
+	// daemon over its Unix socket instead of embedding the agent loop.
+	// DaemonSocket overrides the default socket path.
+	DaemonMode   bool   `json:"-"`
+	DaemonSocket string `json:"-"`
 }
 
 // CostsConfig is the [costs] pricing block consumed by the CostTracker. Rates
@@ -841,6 +847,8 @@ func LoadConfig(argv []string) (Config, error) {
 	var traceFlag bool
 	fs.BoolVar(&traceFlag, "trace", false, "enable rich JSONL trace capture for this session (overrides trace_sessions config)")
 	fs.StringVar(&cfg.TraceDir, "trace-dir", cfg.TraceDir, "directory for trace files (default ~/.local/share/wakil/traces)")
+	fs.BoolVar(&cfg.DaemonMode, "daemon", false, "connect to a running wakil daemon over its Unix socket (remote mode)")
+	fs.StringVar(&cfg.DaemonSocket, "socket", "", "path to the wakil daemon's Unix socket (default: $XDG_RUNTIME_DIR/wakil.sock or ~/.local/share/wakil/wakil.sock)")
 	fs.Usage = func() {
 		out := fs.Output()
 		fmt.Fprintln(out, "Usage: wakil [flags] [workspace-path]")
@@ -1145,6 +1153,23 @@ func validateSubagentEndpoint(cfg Config) error {
 		}
 		return nil
 	}
+}
+
+// WorkspacePath returns the effective workspace path for this config: the
+// host mount in docker mode, or the working directory in direct mode. This
+// is the raw path (not a hash) — callers that need a storage key pass it to
+// agent.SessionHostDBPath / agent.MemoryDBPath / etc., which hash it via
+// workspaceKey. An explicit WAKIL_WORKSPACE_PATH env var overrides both
+// WorkDir and HostWorkDir so containers can pin the workspace identity
+// regardless of cwd or mount path.
+func (c Config) WorkspacePath() string {
+	if env := os.Getenv("WAKIL_WORKSPACE_PATH"); env != "" {
+		return env
+	}
+	if c.ExecMode == "direct" {
+		return c.WorkDir
+	}
+	return c.HostWorkDir
 }
 
 // ActiveEndpoint returns the resolved endpoint. For Configs built by hand

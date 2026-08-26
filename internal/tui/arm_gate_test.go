@@ -5,11 +5,15 @@ import (
 	"testing"
 	"time"
 
-	agent "github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core"
+	"github.com/treeol/wakil/internal/core/event"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// eventKindTurnCompleted is a trivial indirection so the import stays used in
+// this file's single event feed.
+func eventKindTurnCompleted() event.Kind { return event.KindTurnCompleted }
 
 // quits reports whether any cmd in the batch resolves to tea.QuitMsg. It runs
 // each cmd in a goroutine with a short timeout because tea.Tick commands block
@@ -33,15 +37,15 @@ func quits(cmds []tea.Cmd) bool {
 	return false
 }
 
-func armKeyModel(t *testing.T) tuiModel {
+func armKeyModel(t *testing.T) (tuiModel, *fakeFacade) {
 	t.Helper()
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	m := NewTUIModel(app)
-	return step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
+	return step(m, tea.WindowSizeMsg{Width: 100, Height: 40}), f
 }
 
 func TestArmIdleCtrlDDoublePress(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	m2, cmds, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlD})
 	if quits(cmds) || m2.armKind != armQuit || m2.armKey != "ctrl+d" {
@@ -54,7 +58,7 @@ func TestArmIdleCtrlDDoublePress(t *testing.T) {
 }
 
 func TestArmDismissedByUnrelatedKey(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	m2, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if m2.armKind != armQuit {
@@ -69,7 +73,7 @@ func TestArmDismissedByUnrelatedKey(t *testing.T) {
 }
 
 func TestArmExpiredTreatedInactive(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	m.armKind = armQuit
 	m.armKey = "ctrl+c"
@@ -88,7 +92,7 @@ func TestArmExpiredTreatedInactive(t *testing.T) {
 }
 
 func TestArmBannerShown(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	m2, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
 	notice := m2.armNotice()
@@ -103,13 +107,11 @@ func TestArmBannerShown(t *testing.T) {
 }
 
 func TestArmStreamingEscTwiceCancels(t *testing.T) {
-	m := armKeyModel(t)
+	m, f := armKeyModel(t)
 	m.state = stateStreaming
-	cancelled := false
-	m.cancel = func() { cancelled = true }
 
 	m2, cmds, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
-	if cancelled || m2.cancelling {
+	if f.interrupts != 0 || m2.cancelling {
 		t.Fatalf("first esc must NOT cancel; it arms")
 	}
 	if m2.armKind != armCancel {
@@ -117,8 +119,8 @@ func TestArmStreamingEscTwiceCancels(t *testing.T) {
 	}
 	_ = cmds
 	m3, _, _ := m2.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
-	if !cancelled || !m3.cancelling {
-		t.Errorf("second esc should cancel and set cancelling; cancelled=%v cancelling=%v", cancelled, m3.cancelling)
+	if f.interrupts != 1 || !m3.cancelling {
+		t.Errorf("second esc should cancel and set cancelling; interrupts=%d cancelling=%v", f.interrupts, m3.cancelling)
 	}
 	if m3.armKind != armNone {
 		t.Errorf("confirmed cancel should clear the arm; armKind=%v", m3.armKind)
@@ -126,20 +128,18 @@ func TestArmStreamingEscTwiceCancels(t *testing.T) {
 }
 
 func TestArmStreamingCtrlCTwiceCancelsThenForceQuits(t *testing.T) {
-	m := armKeyModel(t)
+	m, f := armKeyModel(t)
 	m.state = stateStreaming
-	cancelled := false
-	m.cancel = func() { cancelled = true }
 
 	// Press 1: arm.
 	m2, cmds1, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cancelled || quits(cmds1) || m2.armKind != armCancel {
-		t.Fatalf("press 1 should arm cancel; cancelled=%v arm=%v", cancelled, m2.armKind)
+	if f.interrupts != 0 || quits(cmds1) || m2.armKind != armCancel {
+		t.Fatalf("press 1 should arm cancel; interrupts=%d arm=%v", f.interrupts, m2.armKind)
 	}
 	// Press 2: cancel + cancelling=true.
 	m3, _, _ := m2.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if !cancelled || !m3.cancelling {
-		t.Fatalf("press 2 should cancel and set cancelling; cancelled=%v cancelling=%v", cancelled, m3.cancelling)
+	if f.interrupts != 1 || !m3.cancelling {
+		t.Fatalf("press 2 should cancel and set cancelling; interrupts=%d cancelling=%v", f.interrupts, m3.cancelling)
 	}
 	// Press 3 while cancelling: force-quit (no re-arm).
 	_, cmds3, _ := m3.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -149,10 +149,8 @@ func TestArmStreamingCtrlCTwiceCancelsThenForceQuits(t *testing.T) {
 }
 
 func TestArmMixedEscThenCtrlCConfirmsCancel(t *testing.T) {
-	m := armKeyModel(t)
+	m, f := armKeyModel(t)
 	m.state = stateStreaming
-	cancelled := false
-	m.cancel = func() { cancelled = true }
 
 	m2, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}) // arms cancel via esc
 	if m2.armKind != armCancel {
@@ -160,16 +158,15 @@ func TestArmMixedEscThenCtrlCConfirmsCancel(t *testing.T) {
 	}
 	// ctrl+c confirms a cancel arm too (avoids the mixed-key 4-press trap).
 	m3, _, _ := m2.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if !cancelled || !m3.cancelling {
-		t.Errorf("esc then ctrl+c should confirm the cancel on press 2; cancelled=%v cancelling=%v", cancelled, m3.cancelling)
+	if f.interrupts != 1 || !m3.cancelling {
+		t.Errorf("esc then ctrl+c should confirm the cancel on press 2; interrupts=%d cancelling=%v", f.interrupts, m3.cancelling)
 	}
 }
 
 func TestArmCancellingNeverRearms(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateStreaming
 	m.cancelling = true
-	m.cancel = func() {}
 	_, cmds, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if !quits(cmds) {
 		t.Errorf("while cancelling, ctrl+c must force-quit directly")
@@ -180,7 +177,7 @@ func TestArmCancellingNeverRearms(t *testing.T) {
 }
 
 func TestArmSearchAbortDoesNotArm(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	m.inputHistory = []string{"one", "two"}
 	m.searchActive = true
@@ -202,27 +199,19 @@ func TestArmSearchAbortDoesNotArm(t *testing.T) {
 }
 
 func TestArmConfirmGateCtrlCUnchanged(t *testing.T) {
-	m := armKeyModel(t)
-	ch := make(chan agent.ConfirmChoice, 1)
+	m, f := armKeyModel(t)
 	m.state = stateConfirm
-	m.pendConf = &agent.ConfirmReqMsg{RespCh: ch, ReadAction: false, Headline: "h", Detail: "d"}
-	cancelled := false
-	m.cancel = func() { cancelled = true }
+	m.pendApproval = &pendingApprovalState{approvalID: "apr_1", headline: "h", detail: "d"}
 
 	m2, cmds, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if quits(cmds) {
 		t.Errorf("confirm-gate ctrl+c must not quit")
 	}
-	select {
-	case got := <-ch:
-		if got != agent.ChoiceDecline {
-			t.Errorf("confirm-gate ctrl+c should decline; got %v", got)
-		}
-	default:
-		t.Fatalf("confirm-gate ctrl+c should answer the gate in one press")
+	if len(f.responded) != 1 || f.responded[0].Outcome != core.ApprovalDeny {
+		t.Fatalf("confirm-gate ctrl+c should decline; responded=%+v", f.responded)
 	}
-	if !cancelled || !m2.cancelling {
-		t.Errorf("confirm-gate ctrl+c should decline+cancel and set cancelling; cancelled=%v cancelling=%v", cancelled, m2.cancelling)
+	if f.interrupts != 1 || !m2.cancelling {
+		t.Errorf("confirm-gate ctrl+c should decline+interrupt and set cancelling; interrupts=%d cancelling=%v", f.interrupts, m2.cancelling)
 	}
 	if m2.armKind != armNone {
 		t.Errorf("confirm gate must not set an arm; armKind=%v", m2.armKind)
@@ -230,13 +219,11 @@ func TestArmConfirmGateCtrlCUnchanged(t *testing.T) {
 }
 
 func TestArmTickClearsOnlyMatchingArm(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	// Arm once (seq=1), capture its tick, then re-arm (seq=2) via a fresh press.
 	m2, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
 	seq1 := m2.armSeq
-	m3, _, _ := m2.handleKey(tea.KeyMsg{Type: tea.KeyCtrlD}) // different key: cleared then re-armed? no — see below
-	_ = m3
 	// Stale tick for seq1 must not clear the current arm if seq advanced.
 	m.armKind = armQuit
 	m.armKey = "ctrl+c"
@@ -253,7 +240,7 @@ func TestArmTickClearsOnlyMatchingArm(t *testing.T) {
 }
 
 func TestArmTickClearsExpiredArm(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	m.armKind = armQuit
 	m.armKey = "ctrl+c"
@@ -266,38 +253,41 @@ func TestArmTickClearsExpiredArm(t *testing.T) {
 }
 
 func TestArmClearedOnTurnDone(t *testing.T) {
-	m := armKeyModel(t)
+	m, f := armKeyModel(t)
 	m.state = stateStreaming
 	m.armKind = armCancel
 	m.armKey = "esc"
 	m.armUntil = time.Now().Add(time.Second)
-	// Simulate the agent finishing while a cancel arm is pending.
-	m2 := step(m, agent.AgentDoneMsg{})
+	// Simulate the host finishing while a cancel arm is pending.
+	m2 := step(m, evt(eventKindTurnCompleted(), event.TurnCompleted{TurnID: "trn_1", Outcome: "complete"}, f.sid))
 	if m2.armKind != armNone {
-		t.Errorf("AgentDoneMsg should clear a pending cancel arm; armKind=%v", m2.armKind)
+		t.Errorf("TurnCompleted should clear a pending cancel arm; armKind=%v", m2.armKind)
 	}
 }
 
 func TestArmCancelConfirmRequiresNonIdle(t *testing.T) {
 	// Defensive: a cancel arm whose turn already ended must not cancel into idle.
-	m := armKeyModel(t)
+	m, f := armKeyModel(t)
 	m.state = stateIdle
 	m.armKind = armCancel
 	m.armKey = "esc"
 	m.armUntil = time.Now().Add(time.Second)
-	m.cancel = func() { t.Errorf("cancel must not fire from idle") }
+	f.interrupts = -1 // sentinel: any cancel call errors below
 	// esc while idle with a (stale) cancel arm: should not cancel. The
 	// precondition is enforced because idle esc never reaches the cancel branch.
 	_, cmds, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if quits(cmds) {
 		t.Errorf("idle esc with stale cancel arm must not quit")
 	}
+	if f.interrupts != -1 {
+		t.Errorf("cancel must not fire from idle (interrupts=%d)", f.interrupts)
+	}
 }
 
 // --- Update-level tests (paste suppression + picker dismiss live in Update) ---
 
 func TestArmPasteSuppressionSwallowsCtrlC(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
 	// Two stray ctrl+c bytes inside the suppression window must NOT quit and
@@ -314,7 +304,7 @@ func TestArmPasteSuppressionSwallowsCtrlC(t *testing.T) {
 }
 
 func TestArmCompletionPickerKeyDismissesArm(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	// Arm quit, then open the completion picker and press a picker-consumed key.
 	m2, _, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -329,7 +319,7 @@ func TestArmCompletionPickerKeyDismissesArm(t *testing.T) {
 }
 
 func TestArmResumePickerPassthroughArmsQuit(t *testing.T) {
-	m := armKeyModel(t)
+	m, _ := armKeyModel(t)
 	m.state = stateIdle
 	m.resumePicker.active = true
 	// ctrl+c passes through the resume picker, so it should arm quit (not quit).

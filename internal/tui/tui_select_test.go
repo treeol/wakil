@@ -124,7 +124,7 @@ func TestCopyToClipboardUnicode(t *testing.T) {
 // renderer's frame coalescing can't drop it. The escape is cleared by a
 // KeyMsg, not by View().
 func TestCopiedMsgOSCEscapeEmission(t *testing.T) {
-	m := newTestTUI(t)
+	m, _ := newTestTUI(t)
 	m.ready = true
 	m.width = 80
 	m.height = 24
@@ -154,7 +154,7 @@ func TestCopiedMsgOSCEscapeEmission(t *testing.T) {
 // via is copyViaOSC52, and shows the normal copy confirmation for native.
 func TestCopiedMsgOSCHint(t *testing.T) {
 	// OSC 52 fallback path — hint should appear, no checkmark.
-	m := newTestTUI(t)
+	m, _ := newTestTUI(t)
 	m = step(m, copiedMsg{n: 10, via: copyViaOSC52})
 	if !strings.Contains(m.flash, "OSC 52") {
 		t.Errorf("osc52 flash should mention OSC 52; got %q", m.flash)
@@ -167,7 +167,7 @@ func TestCopiedMsgOSCHint(t *testing.T) {
 	}
 
 	// Native clipboard path — normal confirmation, no OSC 52 hint.
-	m = newTestTUI(t)
+	m, _ = newTestTUI(t)
 	m = step(m, copiedMsg{n: 20, via: copyViaNative})
 	if strings.Contains(m.flash, "OSC 52") {
 		t.Errorf("native flash should NOT mention OSC 52; got %q", m.flash)
@@ -180,7 +180,7 @@ func TestCopiedMsgOSCHint(t *testing.T) {
 	}
 
 	// Legacy/empty via (backward compat) — no hint, no OSC 52 mention.
-	m = newTestTUI(t)
+	m, _ = newTestTUI(t)
 	m = step(m, copiedMsg{n: 30})
 	if strings.Contains(m.flash, "OSC 52") {
 		t.Errorf("empty-via flash should NOT mention OSC 52; got %q", m.flash)

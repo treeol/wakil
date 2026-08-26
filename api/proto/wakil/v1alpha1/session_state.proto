@@ -1,0 +1,388 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+// SessionStateService exposes the daemon's *agent.App session-scoped state
+// over the wire (card #148 P6a). The daemon owns the App; the TUI's
+// RemoteFacade calls these RPCs to read/write state that is otherwise
+// inaccessible remotely.
+//
+// All RPCs are session-scoped: the caller must specify the session_id.
+// The handler resolves the principal from the request context (same
+// resolver as all other handlers) and the session_id identifies which
+// session's state to read/write. In the single-App daemon, the App is
+// shared across all sessions on one daemon process.
+service SessionStateService {
+  // GetSessionState returns the full session-scoped state snapshot.
+  // Used by RemoteFacade.Snapshot(), Consent(), Info(), CompletionSource().
+  rpc GetSessionState(GetSessionStateRequest) returns (SessionState);
+
+  // SetModel sets the model override for this session (/model <name>).
+  rpc SetModel(SetModelRequest) returns (SetModelResponse);
+
+  // SetBackend sets the backend (and optional model path) for this session
+  // (/backend <name> or /backend <name>/<model-path>).
+  rpc SetBackend(SetBackendRequest) returns (SetBackendResponse);
+
+  // SetAutoApprove toggles auto-approve (/auto).
+  rpc SetAutoApprove(SetAutoApproveRequest) returns (SetAutoApproveResponse);
+
+  // SetAllowDestructive toggles destructive auto-approve (/auto destructive).
+  rpc SetAllowDestructive(SetAllowDestructiveRequest) returns (SetAllowDestructiveResponse);
+
+  // RevokeAuto clears auto-approve and destructive grants (the /auto OFF path).
+  rpc RevokeAuto(RevokeAutoRequest) returns (RevokeAutoResponse);
+
+  // SetSubagentEndpoint sets the subagent endpoint override (/subagent <name>).
+  rpc SetSubagentEndpoint(SetSubagentEndpointRequest) returns (SetSubagentEndpointResponse);
+
+  // SetSubagentModel sets the subagent model override (/submodel <name>).
+  rpc SetSubagentModel(SetSubagentModelRequest) returns (SetSubagentModelResponse);
+
+  // SetMaxParallelSubagents sets the max concurrent subagents (/maxpar <N>).
+  rpc SetMaxParallelSubagents(SetMaxParallelSubagentsRequest) returns (SetMaxParallelSubagentsResponse);
+
+  // SetEffectiveCtxMax sets the effective context cap (/maxctx <N>).
+  rpc SetEffectiveCtxMax(SetEffectiveCtxMaxRequest) returns (SetEffectiveCtxMaxResponse);
+
+  // SetRawTools toggles raw tool results (/rawtools).
+  rpc SetRawTools(SetRawToolsRequest) returns (SetRawToolsResponse);
+
+  // SetCounselMode sets the counsel mode (/counsel auto|suggest|off).
+  rpc SetCounselMode(SetCounselModeRequest) returns (SetCounselModeResponse);
+
+  // Compact forces a context compaction (/compact).
+  rpc Compact(CompactRequest) returns (CompactResponse);
+
+  // SaveRepoState persists or clears the per-workspace repo state (/repostate clear).
+  rpc SaveRepoState(SaveRepoStateRequest) returns (SaveRepoStateResponse);
+
+  // RestoreRepoState applies the persisted per-workspace terminal settings to
+  // the daemon's App (P6d). The remote TUI invokes this once on a FRESH
+  // conversation (never on resume — a resumed session's model/backend must not
+  // be silently changed). The daemon re-resolves context limits server-side and
+  // returns the human-readable restore summary as a startup note.
+  rpc RestoreRepoState(RestoreRepoStateRequest) returns (RestoreRepoStateResponse);
+
+  // RestoreRepoStateResume restores endpoint-independent settings from
+  // repo-state on session resume (model/backend are skipped, but AutoApprove,
+  // RawTools, maxpar, maxctx, subagent, mashura settings are restored).
+  rpc RestoreRepoStateResume(RestoreRepoStateResumeRequest) returns (RestoreRepoStateResumeResponse);
+
+  // SetSessionLabel sets the session label (/session name "<label>").
+  rpc SetSessionLabel(SetSessionLabelRequest) returns (SetSessionLabelResponse);
+
+  // LoadSession loads a saved session from disk into the daemon's App and
+  // returns the conversation transcript for TUI display (P6f fix). The daemon
+  // restores app.Conv, app.Client.ChatID, app.Session, and app.Workflow from
+  // the loaded session — mirroring the embedded ResumeConversation path.
+  // The TUI populates its facade's conv from the returned messages.
+  rpc LoadSession(LoadSessionRequest) returns (LoadSessionResponse);
+
+  // ListSavedSessions lists saved sessions from disk (agent session store),
+  // scoped by workspace. This returns chat IDs, labels, models, timestamps —
+  // the metadata the TUI's resume picker needs. Distinct from the session
+  // host's ListSessions, which returns live session IDs (ses_...).
+  rpc ListSavedSessions(ListSavedSessionsRequest) returns (ListSavedSessionsResponse);
+
+  // InitNewSession initializes the daemon's App for a new conversation —
+  // calls app.NewConversation(chatID) to set app.Session and app.Client.ChatID
+  // so SaveSession persists the transcript to disk. Called by the remote
+  // manager after CreateSession. Without this, the daemon's app.Session stays
+  // nil and sessions are never saved.
+  rpc InitNewSession(InitNewSessionRequest) returns (InitNewSessionResponse);
+}
+
+// ---- GetSessionState ----
+
+message GetSessionStateRequest {
+  string session_id = 1;
+}
+
+// SessionState is the full read-side state the TUI needs. It populates
+// RemoteFacade.Snapshot(), Consent(), Info(), and CompletionSource().
+message SessionState {
+  // Identity.
+  string session_id   = 1;
+  string chat_id      = 2;  // proxy chat ID (display only)
+  string title         = 3;
+  string workspace     = 4;
+
+  // Model / backend.
+  string selected_backend  = 5;
+  string selected_model    = 6;
+  string effective_model   = 7;
+  repeated string model_list = 8;
+  repeated BackendInfo backend_list = 9;
+  string config_backend = 10;
+
+  // Subagent.
+  string subagent_endpoint  = 11;
+  string subagent_model     = 12;
+  string effective_subagent_model = 13;
+  int32  max_parallel_subagents = 14;
+
+  // Context.
+  ContextLimit context_limit = 15;
+  int32  context_used  = 16;
+  bool   context_exact = 17;
+  int32  effective_ctx_max = 18;  // /maxctx override (-1 = not set, 0 = disabled, >0 = cap)
+
+  // Consent.
+  bool auto_approve       = 19;
+  bool allow_destructive  = 20;
+  bool allow_reads        = 21;
+
+  // Tools / workflow.
+  bool   raw_tools      = 22;
+  string counsel_mode  = 23;
+  int32  max_counsel    = 24;
+  string workflow_label = 25;  // "" when no workflow active
+
+  // Endpoint info.
+  string base_url    = 26;
+  string last_backend = 27;
+  string cwd          = 28;
+  string exec_mode     = 29;
+  string prompt_note   = 30;
+
+  // Info panel.
+  bool info_panel_open = 31;
+}
+
+// BackendInfo mirrors agent.BackendInfo.
+message BackendInfo {
+  string name      = 1;
+  bool   external  = 2;
+  repeated string caps = 3;
+}
+
+// ContextLimit mirrors agent.ContextLimit.
+message ContextLimit {
+  int32  n_ctx            = 1;
+  int32  n_ctx_train      = 2;
+  string source           = 3;  // "backend" or "fallback"
+  string context_source   = 4;  // "props", "model_meta", or ""
+  int32  usable_ctx       = 5;
+  int32  reasoning_budget = 6;
+  int32  answer_margin     = 7;
+  bool   model_unresolved  = 8;
+}
+
+// ---- SetModel ----
+
+message SetModelRequest {
+  string session_id = 1;
+  string model      = 2;
+}
+message SetModelResponse {
+  string notice = 1;
+}
+
+// ---- SetBackend ----
+
+message SetBackendRequest {
+  string session_id = 1;
+  string backend    = 2;  // "<name>" or "<name>/<model-path>"
+}
+message SetBackendResponse {
+  string notice = 1;
+}
+
+// ---- SetAutoApprove ----
+
+message SetAutoApproveRequest {
+  string session_id = 1;
+  bool   value      = 2;
+}
+message SetAutoApproveResponse {
+  string notice = 1;
+}
+
+// ---- SetAllowDestructive ----
+
+message SetAllowDestructiveRequest {
+  string session_id = 1;
+  bool   value      = 2;
+}
+message SetAllowDestructiveResponse {
+  string notice = 1;
+}
+
+// ---- RevokeAuto ----
+
+message RevokeAutoRequest {
+  string session_id = 1;
+}
+message RevokeAutoResponse {
+  string notice = 1;
+}
+
+// ---- SetSubagentEndpoint ----
+
+message SetSubagentEndpointRequest {
+  string session_id = 1;
+  string endpoint   = 2;  // endpoint name or "inherit" to clear
+}
+message SetSubagentEndpointResponse {
+  string notice = 1;
+}
+
+// ---- SetSubagentModel ----
+
+message SetSubagentModelRequest {
+  string session_id = 1;
+  string model      = 2;  // model name or "inherit" to clear
+}
+message SetSubagentModelResponse {
+  string notice = 1;
+}
+
+// ---- SetMaxParallelSubagents ----
+
+message SetMaxParallelSubagentsRequest {
+  string session_id = 1;
+  int32  value      = 2;
+}
+message SetMaxParallelSubagentsResponse {
+  string notice = 1;
+}
+
+// ---- SetEffectiveCtxMax ----
+
+message SetEffectiveCtxMaxRequest {
+  string session_id = 1;
+  int32  value      = 2;  // -1 = not set, 0 = disabled, >0 = cap
+}
+message SetEffectiveCtxMaxResponse {
+  string notice = 1;
+}
+
+// ---- SetRawTools ----
+
+message SetRawToolsRequest {
+  string session_id = 1;
+  bool   value      = 2;
+}
+message SetRawToolsResponse {
+  string notice = 1;
+}
+
+// ---- SetCounselMode ----
+
+message SetCounselModeRequest {
+  string session_id = 1;
+  string mode       = 2;  // "auto", "suggest", or "off"
+}
+message SetCounselModeResponse {
+  string notice = 1;
+}
+
+// ---- Compact ----
+
+message CompactRequest {
+  string session_id = 1;
+}
+message CompactResponse {
+  bool   compacted = 1;
+  string notice    = 2;
+}
+
+// ---- SaveRepoState ----
+
+message SaveRepoStateRequest {
+  string session_id = 1;
+  bool   clear      = 2;  // true = /repostate clear; false = describe only
+}
+message SaveRepoStateResponse {
+  string notice = 1;
+}
+
+// ---- RestoreRepoState ----
+
+message RestoreRepoStateRequest {
+  string session_id = 1;
+}
+message RestoreRepoStateResponse {
+  // notice is the human-readable restore summary ("" when nothing applied).
+  string notice = 1;
+}
+
+// ---- RestoreRepoStateResume ----
+
+message RestoreRepoStateResumeRequest {
+  string session_id = 1;
+}
+message RestoreRepoStateResumeResponse {
+  // notice is the human-readable restore summary ("" when nothing applied).
+  string notice = 1;
+}
+
+// ---- SetSessionLabel ----
+
+message SetSessionLabelRequest {
+  string session_id = 1;
+  string label      = 2;
+}
+message SetSessionLabelResponse {
+  string notice = 1;
+}
+
+// ---- LoadSession ----
+
+message LoadSessionRequest {
+  string session_id    = 1;  // the daemon session ID (for principal resolution)
+  string id_or_prefix  = 2;  // chat ID or prefix to resolve on disk
+}
+
+// ConvMessage is a display-only projection of proxy.Message — just the fields
+// the TUI needs to render the conversation view. The daemon restores the full
+// proxy.Message slice (with ToolCalls, ToolCallID, etc.) into app.Conv from
+// disk; the TUI gets this simplified projection for display.
+message ConvMessage {
+  string role         = 1;
+  optional string content = 2;
+  string name         = 3;
+}
+
+message LoadSessionResponse {
+  string chat_id              = 1;
+  string title                = 2;
+  repeated ConvMessage conv   = 3;
+  string workflow_label       = 4;
+}
+
+// ---- ListSavedSessions ----
+
+message ListSavedSessionsRequest {
+  string workspace = 1;  // canonical workspace path; "" = all sessions
+  bool   all        = 2;  // true = ignore workspace, return every session
+}
+
+message SavedSession {
+  string chat_id    = 1;
+  string model      = 2;
+  string label      = 3;
+  string workspace  = 4;
+  int64  created    = 5;  // unix seconds
+  int64  updated    = 6;  // unix seconds
+  int32  turns      = 7;  // user turn count
+  string first_message = 8;  // first user message text (truncated for display)
+}
+
+message ListSavedSessionsResponse {
+  repeated SavedSession sessions = 1;
+  int32 hidden                   = 2;  // sessions filtered out by scope
+}
+
+// ---- InitNewSession ----
+
+message InitNewSessionRequest {
+  string session_id = 1;  // the daemon session ID (for principal resolution)
+}
+
+message InitNewSessionResponse {
+  string chat_id = 1;  // the newly minted chat ID
+}

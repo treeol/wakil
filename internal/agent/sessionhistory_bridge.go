@@ -787,6 +787,16 @@ func stripControl(s string) string {
 	return b.String()
 }
 
+// FinalizeSessionHistory ingests the just-finalized session and (if it meets
+// the turn threshold) captures an end-of-session summary into the index. It
+// is the exported wrapper the wiring layer's rotation path calls (m4b): the
+// old TUI path ran this inside HandleTUICommand's /new Cmd closure; on the
+// wiring path the ConversationManager owns it. ctx must carry a timeout for
+// the summarizer call.
+func FinalizeSessionHistory(ctx context.Context, app *App, s Session) {
+	app.finalizeSessionHistory(ctx, s)
+}
+
 // finalizeSessionHistory ingests the just-finalized session and (if it meets
 // the turn threshold) captures an end-of-session summary into the index. It is
 // intended to run in a Cmd closure (async, off the event loop) at rotation.

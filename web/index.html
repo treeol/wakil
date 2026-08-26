@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wakil — web console</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="app">
+  <!-- Login View (shown when unauthenticated) -->
+  <div id="view-login" class="view active">
+    <div class="login-card">
+      <h1>wakil</h1>
+      <p class="login-hint">Enter your join token to sign in.</p>
+      <input id="login-token" type="password" placeholder="jtk_…" autocomplete="off" />
+      <button id="login-btn" class="btn-primary">Sign In</button>
+      <div id="login-error" class="error-text"></div>
+    </div>
+  </div>
+
+  <!-- Main App (shown when authenticated) -->
+  <div id="view-main" class="view">
+    <header>
+      <h1>wakil</h1>
+      <div id="server-info"></div>
+      <div id="user-info"></div>
+      <button id="logout-btn" class="btn-small">Logout</button>
+    </header>
+    <nav id="view-tabs">
+      <button class="tab active" data-view="sessions">Sessions</button>
+      <button class="tab" data-view="viewer">Live Viewer</button>
+      <button class="tab" data-view="backends">Backends</button>
+      <button class="tab" data-view="workspaces">Workspaces</button>
+      <button class="tab" data-view="agents">Agents</button>
+    </nav>
+
+    <!-- Sessions View -->
+    <main id="view-sessions" class="view-tab active">
+      <div class="view-actions">
+        <button id="new-session-btn" class="btn-primary">+ New Session</button>
+      </div>
+      <div id="session-list"></div>
+    </main>
+
+    <!-- New Session Form (modal-like inline) -->
+    <div id="new-session-form" class="modal hidden">
+      <div class="modal-content">
+        <h2>Create Session</h2>
+        <label>Workspace (host path)
+          <input id="new-session-workspace" placeholder="/path/to/project" />
+        </label>
+        <label>Title
+          <input id="new-session-title" placeholder="My session" />
+        </label>
+        <div class="modal-actions">
+          <button id="create-session-cancel" class="btn-small">Cancel</button>
+          <button id="create-session-confirm" class="btn-primary">Create</button>
+        </div>
+        <div id="create-session-error" class="error-text"></div>
+      </div>
+    </div>
+
+    <!-- Live Viewer View -->
+    <main id="view-viewer" class="view-tab">
+      <div id="viewer-controls">
+        <input id="viewer-session-id" placeholder="session ID (ses_…)" />
+        <button id="viewer-connect" class="btn-small">Connect</button>
+        <span id="viewer-status"></span>
+      </div>
+      <div id="viewer-session-actions" class="session-actions hidden">
+        <button id="btn-interrupt" class="btn-warn">Interrupt</button>
+        <button id="btn-close" class="btn-warn">Close Session</button>
+        <button id="btn-delete" class="btn-danger">Delete</button>
+      </div>
+      <div id="input-area" class="input-area hidden">
+        <textarea id="input-text" placeholder="Send a message…" rows="3"></textarea>
+        <div class="input-controls">
+          <label class="checkbox-label">
+            <input type="checkbox" id="input-read-action" /> Read-only
+          </label>
+          <button id="btn-submit-input" class="btn-primary">Send</button>
+        </div>
+      </div>
+      <div id="approval-area"></div>
+      <div id="event-timeline"></div>
+    </main>
+
+    <!-- Backends View -->
+    <main id="view-backends" class="view-tab">
+      <div class="view-actions">
+        <button id="new-backend-btn" class="btn-primary">+ New Backend</button>
+      </div>
+      <div id="backend-list"></div>
+    </main>
+
+    <!-- New Backend Form -->
+    <div id="new-backend-form" class="modal hidden">
+      <div class="modal-content">
+        <h2>Create Backend</h2>
+        <label>Label
+          <input id="new-backend-label" placeholder="My OpenAI key" />
+        </label>
+        <label>Type
+          <input id="new-backend-type" placeholder="openai" value="openai" />
+        </label>
+        <label>Base URL (optional)
+          <input id="new-backend-baseurl" placeholder="https://api.openai.com/v1" />
+        </label>
+        <label>API Key
+          <input id="new-backend-apikey" type="password" placeholder="sk-…" />
+        </label>
+        <div class="modal-actions">
+          <button id="create-backend-cancel" class="btn-small">Cancel</button>
+          <button id="create-backend-confirm" class="btn-primary">Create</button>
+        </div>
+        <div id="create-backend-error" class="error-text"></div>
+      </div>
+    </div>
+
+    <!-- Workspaces View -->
+    <main id="view-workspaces" class="view-tab">
+      <div class="view-actions">
+        <button id="new-workspace-btn" class="btn-primary">+ New Workspace</button>
+      </div>
+      <div id="workspace-list"></div>
+    </main>
+
+    <!-- New Workspace Form -->
+    <div id="new-workspace-form" class="modal hidden">
+      <div class="modal-content">
+        <h2>Create Workspace</h2>
+        <label>Name
+          <input id="new-workspace-name" placeholder="my-project" />
+        </label>
+        <label>Host Path
+          <input id="new-workspace-path" placeholder="/home/user/projects/my-project" />
+        </label>
+        <label>VCS Remote (optional)
+          <input id="new-workspace-vcs" placeholder="git@github.com:user/repo.git" />
+        </label>
+        <div class="modal-actions">
+          <button id="create-workspace-cancel" class="btn-small">Cancel</button>
+          <button id="create-workspace-confirm" class="btn-primary">Create</button>
+        </div>
+        <div id="create-workspace-error" class="error-text"></div>
+      </div>
+    </div>
+
+    <!-- Agents View -->
+    <main id="view-agents" class="view-tab">
+      <div class="view-actions">
+        <button id="new-agent-btn" class="btn-primary">+ New Agent</button>
+      </div>
+      <div id="agent-list"></div>
+    </main>
+
+    <!-- New Agent Form -->
+    <div id="new-agent-form" class="modal hidden">
+      <div class="modal-content">
+        <h2>Create Agent</h2>
+        <label>Name
+          <input id="new-agent-name" placeholder="code-reviewer" />
+        </label>
+        <div class="modal-actions">
+          <button id="create-agent-cancel" class="btn-small">Cancel</button>
+          <button id="create-agent-confirm" class="btn-primary">Create</button>
+        </div>
+        <div id="create-agent-error" class="error-text"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -5,35 +5,38 @@ import (
 	"testing"
 	"time"
 
-	agent "github.com/treeol/wakil/internal/agent"
-	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/proxy"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func testSessions() []agent.Session {
-	return []agent.Session{
-		{ChatID: "newest01", Updated: time.Now(), Conv: []proxy.Message{{Role: "user", Content: strPtr("newest task")}}},
-		{ChatID: "middle02", Updated: time.Now().Add(-time.Hour), Conv: []proxy.Message{{Role: "user", Content: strPtr("middle task")}}},
-		{ChatID: "oldest03", Updated: time.Now().Add(-2 * time.Hour), Conv: []proxy.Message{{Role: "user", Content: strPtr("oldest task")}}},
+// sessionclientMessage aliases the transcript message type.
+type sessionclientMessage = proxy.Message
+
+func testSessions() []sessionclient.SessionSummary {
+	return []sessionclient.SessionSummary{
+		{ChatID: "newest01", Updated: time.Now(), Conv: []sessionclientMessage{{Role: "user", Content: strPtr("newest task")}}},
+		{ChatID: "middle02", Updated: time.Now().Add(-time.Hour), Conv: []sessionclientMessage{{Role: "user", Content: strPtr("middle task")}}},
+		{ChatID: "oldest03", Updated: time.Now().Add(-2 * time.Hour), Conv: []sessionclientMessage{{Role: "user", Content: strPtr("oldest task")}}},
 	}
 }
 
 func newPickerModel() tuiModel {
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
 	m := tuiModel{
-		app:   &agent.App{Cfg: config.DefaultConfig(), Client: &proxy.Client{ChatID: "current"}},
-		ta:    newTA(""),
+		facade: f,
+		ta:     newTA(""),
 		width: 80, height: 24, ready: true,
 	}
-	m = m.openResumePicker(agent.OpenResumePickerMsg{Sessions: testSessions(), Scope: agent.SessionScope{Workspace: "/work"}})
+	m = m.openResumePicker(testSessions(), sessionclient.SessionScope{Workspace: "/work"}, 0)
 	return m
 }
 
 func TestOpenResumePicker_ActivatesAndClosesCompletion(t *testing.T) {
-	m := tuiModel{app: &agent.App{Cfg: config.DefaultConfig()}, ta: newTA("")}
+	m := tuiModel{facade: &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}, ta: newTA("")}
 	m.comp = completionState{active: true}
-	m = m.openResumePicker(agent.OpenResumePickerMsg{Sessions: testSessions()})
+	m = m.openResumePicker(testSessions(), sessionclient.SessionScope{}, 0)
 	if !m.resumePicker.active {
 		t.Fatal("expected picker to be active")
 	}
@@ -73,7 +76,7 @@ func TestResumePickerNavigation(t *testing.T) {
 
 func TestResumePickerEsc_ClosesWithoutMutating(t *testing.T) {
 	m := newPickerModel()
-	origChatID := m.app.Client.ChatID
+	origSession := m.sessionID
 
 	m, cmd, consumed := m.handleResumePickerKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if !consumed {
@@ -85,8 +88,8 @@ func TestResumePickerEsc_ClosesWithoutMutating(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("esc should not produce a resume command")
 	}
-	if m.app.Client.ChatID != origChatID {
-		t.Fatal("esc must not mutate app state")
+	if m.sessionID != origSession {
+		t.Fatal("esc must not mutate conversation state")
 	}
 }
 
@@ -106,18 +109,14 @@ func TestResumePickerEnter_ResumesSelected(t *testing.T) {
 		t.Fatal("enter should close the picker")
 	}
 	if cmd == nil {
-		t.Fatal("enter should produce a resume command")
+		t.Fatal("enter should produce a rotation command")
 	}
+	// The rotation Cmd needs a manager; with none bound it returns a failed
+	// rotationMsg — assert the message type (the wired path is covered by
+	// applyRotation tests).
 	msg := cmd()
-	nc, ok := msg.(agent.NewConvMsg)
-	if !ok {
-		t.Fatalf("expected NewConvMsg from resume, got %T", msg)
-	}
-	if m.app.Client.ChatID != "middle02" {
-		t.Fatalf("app.Client.ChatID = %q, want middle02", m.app.Client.ChatID)
-	}
-	if nc.Note == "" || !nc.RebuildConv {
-		t.Fatalf("unexpected NewConvMsg: %+v", nc)
+	if _, ok := msg.(rotationMsg); !ok {
+		t.Fatalf("expected rotationMsg from resume, got %T", msg)
 	}
 }
 
@@ -130,8 +129,8 @@ func TestResumePickerCtrlC_NotConsumed(t *testing.T) {
 }
 
 func TestResumePickerEmptyState(t *testing.T) {
-	m := tuiModel{app: &agent.App{Cfg: config.DefaultConfig()}, ta: newTA(""), width: 80, height: 24, ready: true}
-	m = m.openResumePicker(agent.OpenResumePickerMsg{Sessions: nil, Hidden: 2})
+	m := tuiModel{facade: &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}, ta: newTA(""), width: 80, height: 24, ready: true}
+	m = m.openResumePicker(nil, sessionclient.SessionScope{}, 2)
 	out := plain(m.renderResumePicker())
 	if !strings.Contains(out, "no sessions") {
 		t.Fatalf("expected 'no sessions' hint; got %q", out)

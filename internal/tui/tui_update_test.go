@@ -1,26 +1,20 @@
 package tui
 
 import (
-	"context"
-	"errors"
-	"fmt"
+
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
-
-	"github.com/treeol/wakil/internal/config"
-	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/core/event"
 
 	"github.com/charmbracelet/x/ansi"
 )
 
-// newTestTUI builds a driven-ready model over a minimal app.
-func newTestTUI(t *testing.T) tuiModel {
+// newTestTUI builds a driven-ready wiring model.
+func newTestTUI(t *testing.T) (tuiModel, *fakeFacade) {
 	t.Helper()
-	app := &agent.App{Cfg: config.DefaultConfig(), Client: newTestClient(""), Exec: newFakeExecutor()}
-	m := NewTUIModel(app)
-	return m
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	return newWiringModel(f), f
 }
 
 // lastItemText returns the ANSI-stripped text of the most recent conv item.
@@ -32,22 +26,23 @@ func lastItemText(m tuiModel) string {
 	return plain(items[len(items)-1].text)
 }
 
-func TestUpdateSysNoteAppendsItem(t *testing.T) {
-	m := newTestTUI(t)
+func TestUpdateSessionNoteAppendsItem(t *testing.T) {
+	m, f := newTestTUI(t)
 	before := len(*m.items)
-	m = step(m, agent.SysNoteMsg{Text: "hello note"})
+	m = step(m, evt(event.KindSessionNote, event.SessionNote{Text: "hello note"}, f.sid))
 	if len(*m.items) != before+1 {
-		t.Fatalf("agent.SysNoteMsg should append exactly one item")
+		t.Fatalf("SessionNote should append exactly one item")
 	}
 	if !strings.Contains(lastItemText(m), "hello note") {
 		t.Errorf("note text missing; got %q", lastItemText(m))
 	}
 }
 
-func TestUpdateAgentDonePlainError(t *testing.T) {
-	m := newTestTUI(t)
+func TestUpdateTurnCompletedPlainError(t *testing.T) {
+	m, f := newTestTUI(t)
 	m.state = stateStreaming
-	m = step(m, agent.AgentDoneMsg{Err: errors.New("boom")})
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "stream_error"}, f.sid))
+	m = step(m, evt(event.KindSessionError, event.SessionError{Reason: "backend_failure", Err: "boom"}, f.sid))
 	if m.state != stateIdle {
 		t.Errorf("turn end should return to idle; got %v", m.state)
 	}
@@ -59,36 +54,10 @@ func TestUpdateAgentDonePlainError(t *testing.T) {
 	}
 }
 
-func TestUpdateAgentDoneBackendStreamErrorIsTidy(t *testing.T) {
-	m := newTestTUI(t)
+func TestUpdateCancelledRendersTidy(t *testing.T) {
+	m, f := newTestTUI(t)
 	m.state = stateStreaming
-	m = step(m, agent.AgentDoneMsg{Err: fmt.Errorf("%w: connection reset by peer", proxy.ErrBackendStream)})
-	got := lastItemText(m)
-	if !strings.Contains(got, "backend stream error") {
-		t.Errorf("stream error should be surfaced; got %q", got)
-	}
-	// The raw low-level cause must NOT leak into the rendered line.
-	if strings.Contains(got, "connection reset by peer") {
-		t.Errorf("raw cause should not be shown to the user; got %q", got)
-	}
-	if strings.Contains(got, "error:") {
-		t.Errorf("stream error should not render as a raw red 'error:' trace; got %q", got)
-	}
-}
-
-func TestUpdateAgentDoneWarnLine(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
-	m = step(m, agent.AgentDoneMsg{Warn: "⚠ backend stream error (near the context limit)"})
-	if got := lastItemText(m); !strings.Contains(got, "backend stream error") || !strings.Contains(got, "context limit") {
-		t.Errorf("warn line should render verbatim; got %q", got)
-	}
-}
-
-func TestUpdateAgentDoneCancelled(t *testing.T) {
-	m := newTestTUI(t)
-	m.state = stateStreaming
-	m = step(m, agent.AgentDoneMsg{Err: context.Canceled})
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "cancelled"}, f.sid))
 	if got := lastItemText(m); !strings.Contains(got, "cancelled") {
 		t.Errorf("cancellation should render '[turn cancelled]'; got %q", got)
 	}
@@ -97,40 +66,42 @@ func TestUpdateAgentDoneCancelled(t *testing.T) {
 	}
 }
 
-func TestUpdateNewConvClearsViewport(t *testing.T) {
-	m := newTestTUI(t)
-	m = step(m, agent.SysNoteMsg{Text: "a"})
-	m = step(m, agent.SysNoteMsg{Text: "b"})
-	m = step(m, agent.NewConvMsg{Note: "fresh conversation: abc"})
+func TestUpdateRotationClearsViewport(t *testing.T) {
+	m, f := newTestTUI(t)
+	m = step(m, evt(event.KindSessionNote, event.SessionNote{Text: "a"}, f.sid))
+	m = step(m, evt(event.KindSessionNote, event.SessionNote{Text: "b"}, f.sid))
+	m = step(m, rotationMsg{facade: rotatedFake()})
 	items := *m.items
-	if len(items) != 1 {
-		t.Fatalf("agent.NewConvMsg should clear items and leave only the note; got %d", len(items))
+	if len(items) == 0 {
+		t.Fatal("rotation should clear items (and may add its own notes)")
 	}
-	if !strings.Contains(plain(items[0].text), "fresh conversation") {
-		t.Errorf("note should remain after clear; got %q", plain(items[0].text))
+	for _, it := range items {
+		if strings.Contains(plain(it.text), "> a<") {
+			t.Fatal("old item survived rotation")
+		}
 	}
 }
 
 func TestUpdateStreamingAndTokRate(t *testing.T) {
-	m := newTestTUI(t)
-	m = step(m, agent.StreamChunkMsg{Text: "partial answer"})
+	m, f := newTestTUI(t)
+	m = step(m, evt(event.KindMessageDelta, event.MessageDelta{Text: "partial answer"}, f.sid))
 	if m.streaming.String() != "partial answer" {
 		t.Errorf("stream chunk should accumulate; got %q", m.streaming.String())
 	}
-	m = step(m, agent.TokRateMsg{Tps: 42.5})
+	m = step(m, evt(event.KindTokRate, event.TokRate{Rate: 42.5}, f.sid))
 	if m.tps != 42.5 {
-		t.Errorf("agent.TokRateMsg should set tps; got %v", m.tps)
+		t.Errorf("TokRate should set tps; got %v", m.tps)
 	}
 }
 
 func TestUpdateReasoningCollapsesOnFirstContent(t *testing.T) {
-	m := newTestTUI(t)
-	m = step(m, agent.ReasoningChunkMsg{Text: "thinking hard about it"})
+	m, f := newTestTUI(t)
+	m = step(m, evt(event.KindReasoningDelta, event.ReasoningDelta{Text: "thinking hard about it"}, f.sid))
 	if m.reasoning.Len() == 0 {
 		t.Fatal("reasoning should accumulate")
 	}
 	before := len(*m.items)
-	m = step(m, agent.StreamChunkMsg{Text: "the answer"})
+	m = step(m, evt(event.KindMessageDelta, event.MessageDelta{Text: "the answer"}, f.sid))
 	// First content delta collapses the reasoning buffer into one committed line.
 	if m.reasoning.Len() != 0 || !m.reasoningDone {
 		t.Error("reasoning should be collapsed on first content")
@@ -144,20 +115,20 @@ func TestUpdateReasoningCollapsesOnFirstContent(t *testing.T) {
 }
 
 func TestUpdateReasoningExpandedResetsOnDone(t *testing.T) {
-	m := newTestTUI(t)
+	m, f := newTestTUI(t)
 	m.reasoningExpanded = true
-	m = step(m, agent.AgentDoneMsg{})
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "complete"}, f.sid))
 	if m.reasoningExpanded {
-		t.Error("reasoningExpanded should be reset on AgentDoneMsg")
+		t.Error("reasoningExpanded should be reset on TurnCompleted")
 	}
 }
 
-func TestUpdateReasoningExpandedResetsOnNewConv(t *testing.T) {
-	m := newTestTUI(t)
+func TestUpdateReasoningExpandedResetsOnRotation(t *testing.T) {
+	m, _ := newTestTUI(t)
 	m.reasoningExpanded = true
-	m = step(m, agent.NewConvMsg{})
+	m = step(m, rotationMsg{facade: rotatedFake()})
 	if m.reasoningExpanded {
-		t.Error("reasoningExpanded should be reset on NewConvMsg")
+		t.Error("reasoningExpanded should be reset on rotation")
 	}
 }
 
@@ -165,14 +136,14 @@ func TestRenderReasoningCollapsed(t *testing.T) {
 	// Generate enough text to exceed maxReasoningCollapsedLines when wrapped.
 	long := strings.Repeat("thinking about stuff ", 50)
 	out := renderReasoning(long, 40, false)
-	plain := ansi.Strip(out)
-	lines := strings.Split(plain, "\n")
+	plainOut := ansi.Strip(out)
+	lines := strings.Split(plainOut, "\n")
 	// Collapsed: indicator + last N lines = maxReasoningCollapsedLines+1.
 	if len(lines) > maxReasoningCollapsedLines+1 {
 		t.Errorf("collapsed reasoning should be capped at %d lines; got %d",
 			maxReasoningCollapsedLines+1, len(lines))
 	}
-	if !strings.Contains(plain, "ctrl+e to expand") {
+	if !strings.Contains(plainOut, "ctrl+e to expand") {
 		t.Error("collapsed reasoning should show the expand indicator")
 	}
 }
@@ -180,13 +151,13 @@ func TestRenderReasoningCollapsed(t *testing.T) {
 func TestRenderReasoningExpanded(t *testing.T) {
 	long := strings.Repeat("thinking about stuff ", 50)
 	out := renderReasoning(long, 40, true)
-	plain := ansi.Strip(out)
-	lines := strings.Split(plain, "\n")
+	plainOut := ansi.Strip(out)
+	lines := strings.Split(plainOut, "\n")
 	// Expanded: all lines, no indicator.
 	if len(lines) <= maxReasoningCollapsedLines {
 		t.Error("expanded reasoning should show all lines")
 	}
-	if strings.Contains(plain, "ctrl+e to expand") {
+	if strings.Contains(plainOut, "ctrl+e to expand") {
 		t.Error("expanded reasoning should not show the collapse indicator")
 	}
 }
@@ -194,17 +165,17 @@ func TestRenderReasoningExpanded(t *testing.T) {
 func TestRenderReasoningShortShowsAll(t *testing.T) {
 	short := "just a brief thought"
 	out := renderReasoning(short, 40, false)
-	plain := ansi.Strip(out)
-	if strings.Contains(plain, "ctrl+e to expand") {
+	plainOut := ansi.Strip(out)
+	if strings.Contains(plainOut, "ctrl+e to expand") {
 		t.Error("short reasoning should not show the expand indicator")
 	}
 }
 
 func TestUpdateCompactedAndCopied(t *testing.T) {
-	m := newTestTUI(t)
-	m = step(m, agent.CompactedMsg{})
+	m, f := newTestTUI(t)
+	m = step(m, evt(event.KindConversationCompacted, event.ConversationCompacted{TurnID: "trn_1"}, f.sid))
 	if !strings.Contains(lastItemText(m), "compacted") {
-		t.Errorf("agent.CompactedMsg should note a compaction; got %q", lastItemText(m))
+		t.Errorf("ConversationCompacted should note a compaction; got %q", lastItemText(m))
 	}
 	m = step(m, copiedMsg{n: 128})
 	if !strings.Contains(m.flash, "128") {

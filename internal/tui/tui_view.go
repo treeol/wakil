@@ -1,13 +1,16 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	"github.com/charmbracelet/glamour"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -316,9 +319,7 @@ func (m tuiModel) statusLines() []string {
 	}
 	in := m.headerStatusInput()
 	segments := statusSegments(in)
-	if m.app != nil {
-		segments = append(segments, m.ctxSegment())
-	}
+	segments = append(segments, m.ctxSegment())
 	maxRows := 2
 	if m.infoPanel.active {
 		maxRows = statusMaxRows
@@ -442,9 +443,11 @@ func statusSegments(in statusLineInput) []string {
 // Colors match the retired bottom-right block: green → amber (past the
 // usable budget) → red (≥90% of n_ctx); the "ctx" key is amber when the
 // ceiling came from the config fallback or the model was unresolved.
+// Wiring path: all fields from Info() (limit + usage + transcript stats).
 func (m tuiModel) ctxSegment() string {
-	lim := m.app.ContextLimit()
-	used, exact := m.app.ContextUsage()
+	info := m.facade.Info()
+	lim := info.ContextLimit
+	used, exact := info.ContextUsed, info.ContextExact
 	total := lim.NCtx
 	pct := 0
 	if total > 0 {
@@ -476,7 +479,65 @@ func (m tuiModel) ctxSegment() string {
 	}
 	return ctxKey + " " + brailleMeter(used, total, color, 6, usedStr, totalStr) + " " +
 		lipgloss.NewStyle().Foreground(color).Render(sprint("%d%%", pct)) +
-		dim2(sprint(" · hist %d %dk", len(m.app.Conv), agent.TranscriptSize(m.app.Conv)/1000))
+		dim2(sprint(" · hist %d %dk", info.ConvLen, info.TranscriptSize/1000))
+}
+
+// formatTruncate mirrors agent.Truncate without the agent import (status-line
+// command previews).
+func formatTruncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// headerStatusInput assembles the statusLineInput for the status line from
+// model state: identity/model/backend fields from Info(); consent from
+// facade.Consent(); RawTools from Snapshot().
+func (m tuiModel) headerStatusInput() statusLineInput {
+	info := m.facade.Info()
+	snap := m.facade.Snapshot()
+	runningTool := ""
+	if m.runningTool != nil {
+		runningTool = "tool: " + m.runningTool.name
+		if m.runningTool.command != "" {
+			runningTool += " " + formatTruncate(m.runningTool.command, 40)
+		}
+	}
+	// lastToolText persists the last tool's text after it completes (until the
+	// turn ends) so the status line always shows what the agent last did.
+	lastToolText := ""
+	if m.lastTool != nil {
+		lastToolText = m.lastTool.name
+		if m.lastTool.command != "" {
+			lastToolText += " " + formatTruncate(m.lastTool.command, 40)
+		}
+	}
+	consent := m.facade.Consent()
+	return statusLineInput{
+		state:                   m.state,
+		autoApprove:             consent.AutoApprove,
+		allowDestructive:        consent.AllowDestructive,
+		pendingAutoGrant:        m.pendingAutoGrant,
+		pendingDestructiveGrant: m.pendingDestructiveGrant,
+		rawTools:                snap.RawTools,
+		reasoning:               m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
+		tps:                     m.tps,
+		workflowLabel:           info.WorkflowLabel,
+		flash:                   m.flash,
+		dotPhase:                m.dotPhase,
+		hadTurn:                 m.hadTurn,
+		backendUsed:             info.LastBackend,
+		backendRequested:        info.SelectedBackend,
+		backendDefault:          info.ConfigBackend,
+		model:                   info.EffectiveModel,
+		submodel:                info.SubagentModel,
+		arm:                     m.armNotice(),
+		queueLen:                len(m.queuedPrompts),
+		runningTool:             runningTool,
+		lastToolText:            lastToolText,
+	}
 }
 
 // flowSegments packs segments left-to-right with " · " separators onto as
@@ -545,68 +606,78 @@ func flowSegmentsN(segs []string, w, maxRows int) []string {
 	return rows
 }
 
-// headerStatusInput assembles the statusLineInput for the status line from
-// model state.
-func (m tuiModel) headerStatusInput() statusLineInput {
-	var workflowLabel string
-	if m.app != nil && m.app.Workflow != nil {
-		workflowLabel = m.app.Workflow.SidebarLabel()
-	}
-	backendUsed, backendRequested, backendDefault := "", "", ""
-	model, submodel := "", ""
-	if m.app != nil {
-		if m.app.Client != nil {
-			backendUsed = m.app.Client.LastUsedBackend()
+
+// ---- Rotation (m4b stage 3 scaffolding) ----
+
+// rotateKind identifies which manager operation a rotation performs.
+type rotateKind int
+
+const (
+	rotateNew rotateKind = iota
+	rotateResume
+	rotateHandoff
+)
+
+// rotationRequest describes one conversation rotation. Built by the command
+// path (DispatchCommand results) and the resume picker; executed by
+// beginRotation through the ConversationManager.
+type rotationRequest struct {
+	kind      rotateKind
+	sessionID string // rotateResume: id or unique prefix
+	proceed   bool   // rotateHandoff: auto-start the continuation turn
+}
+
+// rotationMsg is delivered when a rotation completes (or fails). The new
+// facade is attached but its pump is NOT started — the model swaps refs and
+// state first, then starts delivery (review finding: events processed before
+// the swap would be dropped by the session guard).
+type rotationMsg struct {
+	facade  sessionclient.Facade
+	err     error
+	note    string // display note (e.g. "resumed session …")
+	failed  bool
+}
+
+// beginRotation returns a tea.Cmd that performs the rotation off the event
+// loop (HandoffConversation runs a summarizer pipeline — up to 120s). The
+// model's rotating flag must already be set by the caller; the Cmd swaps
+// nothing itself, it only delivers rotationMsg.
+//
+// The OLD facade is closed HERE (inside the Cmd, after the manager built the
+// replacement) — closing before would make HandoffConversation unable to read
+// the old conversation (review finding: build-new-first, then dispose old).
+func (m tuiModel) beginRotation(req rotationRequest) tea.Cmd {
+	mgr, principal, old := m.manager, m.principal, m.facade
+	return func() tea.Msg {
+		// No manager bound (unit tests constructing the model directly):
+		// fail the rotation cleanly instead of panicking.
+		if mgr == nil {
+			return rotationMsg{err: errors.New("no conversation manager bound"), failed: true}
 		}
-		backendRequested = m.app.SelectedBackend
-		backendDefault = m.app.Cfg.Backend
-		model = m.app.EffectiveModel()
-		submodel = m.app.EffectiveSubagentModel()
-	}
-	var consent agent.ConsentSnapshot
-	if m.app != nil {
-		consent = m.app.Consent()
-	}
-	runningTool := ""
-	if m.runningTool != nil {
-		runningTool = "tool: " + m.runningTool.name
-		if m.runningTool.command != "" {
-			runningTool += " " + agent.Truncate(m.runningTool.command, 40)
+		ctx := context.Background()
+		var (
+			f   sessionclient.Facade
+			err error
+		)
+		switch req.kind {
+		case rotateNew:
+			f, err = mgr.NewConversation(ctx, principal, old)
+		case rotateResume:
+			f, err = mgr.ResumeConversation(ctx, principal, req.sessionID)
+		case rotateHandoff:
+			f, err = mgr.HandoffConversation(ctx, principal, old, req.proceed)
 		}
-	}
-	// lastToolText persists the last tool's text after it completes (until the
-	// turn ends) so the status line always shows what the agent last did.
-	lastToolText := ""
-	if m.lastTool != nil {
-		lastToolText = m.lastTool.name
-		if m.lastTool.command != "" {
-			lastToolText += " " + agent.Truncate(m.lastTool.command, 40)
+		if err != nil {
+			return rotationMsg{err: err, failed: true}
 		}
-	}
-	return statusLineInput{
-		state:                   m.state,
-		autoApprove:             consent.AutoApprove,
-		allowDestructive:        consent.AllowDestructive,
-		pendingAutoGrant:        m.pendingAutoGrant,
-		pendingDestructiveGrant: m.pendingDestructiveGrant,
-		rawTools:                m.app != nil && m.app.RawTools,
-		reasoning:               m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
-		tps:                     m.tps,
-		workflowLabel:           workflowLabel,
-		flash:                   m.flash,
-		dotPhase:                m.dotPhase,
-		hadTurn:                 m.hadTurn,
-		backendUsed:             backendUsed,
-		backendRequested:        backendRequested,
-		backendDefault:          backendDefault,
-		model:                   model,
-		submodel:                submodel,
-		arm:                     m.armNotice(),
-		queueLen:                len(m.queuedPrompts),
-		runningTool:             runningTool,
-		lastToolText:            lastToolText,
+		// Old facade teardown AFTER the replacement exists (build-new-first).
+		if old != nil {
+			_ = old.Close()
+		}
+		return rotationMsg{facade: f}
 	}
 }
+
 
 // statusLineInput carries all the state needed by statusSegments. It is a
 // plain struct so the builder is a pure function and can be unit-tested.

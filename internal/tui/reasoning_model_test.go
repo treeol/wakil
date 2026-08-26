@@ -3,7 +3,6 @@ package tui
 import (
 	"testing"
 
-	"github.com/treeol/wakil/internal/agent"
 )
 
 // TestTuiModelCopy_SharesReasoningBuilder locks the Bubble Tea value-copy
@@ -12,7 +11,7 @@ import (
 // reasoning is a *strings.Builder. If someone changes the field to a value
 // strings.Builder (or the extraction breaks pointer sharing), this test fails.
 func TestTuiModelCopy_SharesReasoningBuilder(t *testing.T) {
-	m := NewTUIModel(&agent.App{})
+	m := newWiringModel(&fakeFacade{sid: "sess_tui_test", chatID: "chat123"})
 	if m.reasoning == nil {
 		t.Fatal("NewTUIModel must initialize reasoning to a non-nil *strings.Builder")
 	}

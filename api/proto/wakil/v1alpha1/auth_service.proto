@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "wakil/v1alpha1/auth.proto";
+
+// AuthService provides authentication and token management (design §3.3, §6.2).
+//
+// RPC authentication policy:
+//   - CreateJoinToken, ListJoinTokens, RevokeJoinToken: authenticated (owner/admin)
+//   - ExchangeJoinToken: PUBLIC (unauthenticated, rate-limited)
+//   - WhoAmI, Logout: authenticated (any method)
+service AuthService {
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+  rpc ListJoinTokens(ListJoinTokensRequest) returns (ListJoinTokensResponse);
+  rpc RevokeJoinToken(RevokeJoinTokenRequest) returns (RevokeJoinTokenResponse);
+  rpc ExchangeJoinToken(ExchangeJoinTokenRequest) returns (ExchangeJoinTokenResponse);
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  // API token management (P4d). All require authentication.
+  //   - CreateAPIToken, ListAPITokens, RevokeAPIToken: authenticated (any role),
+  //     scoped to the caller's tenant. Users manage their own tokens; admins
+  //     can list/revoke any user's tokens within the tenant.
+  rpc CreateAPIToken(CreateAPITokenRequest) returns (CreateAPITokenResponse);
+  rpc ListAPITokens(ListAPITokensRequest) returns (ListAPITokensResponse);
+  rpc RevokeAPIToken(RevokeAPITokenRequest) returns (RevokeAPITokenResponse);
+  // OIDC (P4e). GetOIDCAuthURL is PUBLIC (returns the IdP redirect URL).
+  // ExchangeOIDCCode is PUBLIC (exchanges the IdP callback code for a
+  // session cookie). Both return Unimplemented when OIDC is not configured.
+  rpc GetOIDCAuthURL(GetOIDCAuthURLRequest) returns (GetOIDCAuthURLResponse);
+  rpc ExchangeOIDCCode(ExchangeOIDCCodeRequest) returns (ExchangeOIDCCodeResponse);
+}

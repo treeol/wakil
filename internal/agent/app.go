@@ -54,8 +54,37 @@ type App struct {
 	// goroutines take a read-lock snapshot. All Conv access must go through
 	// ConvSnapshot (read) or the lock directly (write).
 	convMu  sync.RWMutex
-	Confirm Confirmer
-	Out     io.Writer // assistant text + status sink
+	// callbackMu guards the callback fields EventSink and OnTokRate from
+	// concurrent write/read. These are installed by the turn goroutine in
+	// hostTurn.run and cleared by ResetSessionBinding (an RPC goroutine in
+	// daemon mode). The turn goroutine reads them via sendEvent/streamSink;
+	// the RPC goroutine writes nil on session transition. Without this
+	// mutex, the nil-write races the read. Lock ordering: callbackMu is
+	// always standalone — never held while acquiring stateMu or convMu.
+	callbackMu sync.Mutex
+
+	// stateMu protects RPC-driven session settings from concurrent access
+	// by the turn goroutine (prepareTurn writes), RPC handlers (SetModel,
+	// SetBackend, etc.), and GetSessionState reads. Lock ordering:
+	// stateMu is acquired BEFORE convMu. Never hold stateMu across I/O,
+	// network calls, or callbacks. Exported methods on App own this lock;
+	// cross-package callers never lock App internals directly.
+	stateMu sync.RWMutex
+
+	// saveMu serializes SaveSession: acquired before stateMu/convMu so an
+	// older snapshot can never overwrite a newer one. Lock ordering:
+	// saveMu → stateMu → convMu. Only acquired in SaveSession (no deadlock).
+	saveMu sync.Mutex
+	Confirm    Confirmer
+	Out        io.Writer // assistant text + status sink
+
+	// saveFailedWarned deduplicates SaveSession's failure warning: persistence
+	// is best-effort (a write failure must never interrupt a turn), but a
+	// permanently failing store (bad permissions, read-only mount) previously
+	// failed in total silence — sessions appeared to save while nothing was
+	// ever written. Warn once per App, then stay quiet. Atomic because
+	// SaveSession runs both from Send's defer and from RPC handlers.
+	saveFailedWarned atomic.Bool
 
 	// CtxLimit is the authoritative per-slot context window, resolved from the
 	// backend at startup (see resolveContextLimit). The zero value means "not yet
@@ -349,6 +378,18 @@ type App struct {
 	// the TUI program's Send; nil in tests that don't need TUI events.
 	EventSink func(interface{})
 
+	// OnAutoToggled, when set, is called by the /auto handler after the
+	// toggle is applied. The wiring facade sets this to
+	// ConversationManager.SetAutoUserOverridden so subsequent rotations
+	// restore AutoApprove from RepoState instead of re-seeding from the
+	// --auto CLI flag. nil in tests and the headless path (no rotation).
+	OnAutoToggled func()
+
+	// OnModelToggled, when set, is called by the /model and /backend
+	// handlers after the override is applied. Same purpose as OnAutoToggled
+	// but for ModelExplicit. nil in tests and the headless path.
+	OnModelToggled func()
+
 	// AutoCounsel, when true, fires mashura__debug automatically whenever the
 	// struggle detector triggers, instead of just printing a hint the user would
 	// need to act on. Designed for headless benchmark runs where no human is
@@ -488,14 +529,24 @@ type bgEntry struct {
 	startedAt  time.Time
 	generation int // executor generation at time of creation
 
-	// Card #121: detached-job push notification. notifyOnExit is set ONLY when
-	// run_shell auto-backgrounds a command at its deadline (the detached case);
-	// explicit run_background jobs are poll-by-design and don't notify. The
-	// reaper pushes a completion notice into the async inbox exactly once
+	// notifyOnExit is set ONLY when run_shell auto-backgrounds a command at its
+	// deadline (the detached case) OR when run_background is called with
+	// notify_on_exit=true (finite jobs that should wake the agent). In both cases
+	// the reaper pushes a completion notice into the async inbox exactly once
 	// (notifyOnExit && !notified, guarded by bgMu). kill_process and shutdown
 	// clear notifyOnExit so intentional terminations stay silent.
+	//
+	// When notify_on_exit=true is set on a run_background job, asyncOp is
+	// non-nil: the job was registered via registerAsyncOp, incrementing
+	// asyncActive so isIdle returns true and the turn suspends until completion.
+	// The reaper publishes through publishAsyncOp (proper slot accounting) and
+	// the asyncInbox delivery wakes the suspended turn. For default (false)
+	// jobs and auto-bg run_shell, asyncOp is nil — the notification path
+	// (notifyDetachedShellExit) manually appends to asyncInbox without slot
+	// accounting, as before.
 	notifyOnExit bool
 	notified     bool
+	asyncOp      *asyncOp // non-nil when notify_on_exit=true; published on completion
 	cmdDigest    string // short command label for the completion notice
 	readOnly     bool   // whether the command was classified read-only
 
@@ -521,33 +572,96 @@ type bgEntry struct {
 func (a *App) CounselCallsCount() int { return a.counselCalls }
 
 // SetInfoPanelOpen sets InfoPanelOpen and persists it to repo-state. Called by
-// the TUI when the user toggles the info panel.
+// the TUI when the user toggles the info panel. Now acquires stateMu for the
+// field write so it is safe for cross-goroutine callers (the RPC handler and
+// the TUI goroutine). The saveRepoState call is outside the lock.
 func (a *App) SetInfoPanelOpen(open bool) {
+	a.stateMu.Lock()
 	a.InfoPanelOpen = open
+	a.stateMu.Unlock()
 	a.saveRepoState(func(s *RepoState) { s.InfoPanelOpen = open })
 }
 
 // EffectiveSubagentModel returns the model dispatch_subagent will use:
 // SubagentModelOverride if set, otherwise the resolved endpoint's model.
-// Exported for the TUI status line (WP-9.1).
+// Exported for the TUI status line (WP-9.1). Reads SubagentEndpointOverride
+// under stateMu.RLock to avoid racing with /subagent RPC writes. The
+// resolveSubagentEndpointView chain still reads SubagentModelOverride
+// directly — that race is fixed in Phase 3 (subagent dispatch locking).
 func (a *App) EffectiveSubagentModel() string {
-	return a.resolvedSubagentDisplayModel()
+	// Snapshot the endpoint override under the lock so the epName
+	// resolution doesn't race with a concurrent /subagent RPC write.
+	// The model override read inside resolveSubagentEndpointView is a
+	// pre-existing unsynchronized read addressed in Phase 3.
+	a.stateMu.RLock()
+	epName := a.SubagentEndpointOverride
+	a.stateMu.RUnlock()
+	if epName == "" {
+		epName = a.Cfg.SubagentEndpoint
+	}
+	if epName == "inherit" {
+		epName = ""
+	}
+	view, _ := a.resolveSubagentEndpointView(epName)
+	return view.model
 }
 
 // EffectiveModel returns the model that will be sent in the next request:
-// SelectedModel if set, otherwise Client.Model.
+// SelectedModel if set, otherwise Client.Model. Acquires stateMu.RLock for
+// a consistent read — both SelectedModel and Client.Model are under stateMu.
 func (a *App) EffectiveModel() string {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
 	if a.SelectedModel != "" {
 		return a.SelectedModel
 	}
-	return a.Client.Model
+	if a.Client != nil {
+		return a.Client.Model
+	}
+	return ""
 }
 
-// sendEvent delivers msg to the EventSink if one is set (nil-safe).
-func (a *App) sendEvent(msg interface{}) {
-	if a.EventSink != nil {
-		a.EventSink(msg)
+// SetEventSink installs the EventSink callback under callbackMu so a
+// concurrent ResetSessionBinding nil-clear cannot race the write.
+func (a *App) SetEventSink(fn func(interface{})) {
+	a.callbackMu.Lock()
+	a.EventSink = fn
+	a.callbackMu.Unlock()
+}
+
+// SetOnTokRate installs the OnTokRate callback under callbackMu.
+func (a *App) SetOnTokRate(fn func(float64)) {
+	a.callbackMu.Lock()
+	a.OnTokRate = fn
+	a.callbackMu.Unlock()
+}
+
+// ClearCallbacks nils EventSink and OnTokRate under callbackMu. Used by
+// ResetSessionBinding to detach callbacks atomically.
+func (a *App) ClearCallbacks() {
+	a.callbackMu.Lock()
+	a.EventSink = nil
+	a.OnTokRate = nil
+	a.callbackMu.Unlock()
+}
+
+// SendEvent delivers msg to the EventSink if one is set (nil-safe).
+// Thread-safe: acquires callbackMu so a concurrent ResetSessionBinding
+// nil-clear cannot race the read. Exported so cross-package callers
+// (wiring/hostturn) can dispatch events without directly accessing the
+// EventSink field.
+func (a *App) SendEvent(msg interface{}) {
+	a.callbackMu.Lock()
+	sink := a.EventSink
+	a.callbackMu.Unlock()
+	if sink != nil {
+		sink(msg)
 	}
+}
+
+// sendEvent is the unexported alias for in-package callers.
+func (a *App) sendEvent(msg interface{}) {
+	a.SendEvent(msg)
 }
 
 // ConvSnapshot returns a copy of the current Conv sanitized to the last complete
@@ -607,12 +721,11 @@ func findLastCompleteBoundary(conv []proxy.Message) []proxy.Message {
 }
 
 // sessionWorkspace is the host directory associated with this session: the bind
-// mount in docker mode, or the working directory in direct mode.
+// mount in docker mode, or the working directory in direct mode. Delegates to
+// Config.WorkspacePath() (which respects WAKIL_WORKSPACE_PATH) so the daemon
+// and TUI resolve the same workspace identity regardless of cwd.
 func (a *App) SessionWorkspace() string {
-	if a.Cfg.ExecMode == "direct" {
-		return a.Cfg.WorkDir
-	}
-	return a.Cfg.HostWorkDir
+	return a.Cfg.WorkspacePath()
 }
 
 // chatID returns the current session's chat ID. When Session is nil (e.g.
@@ -633,30 +746,88 @@ func (a *App) chatID() string {
 }
 
 // saveSession persists the current transcript. Best-effort: persistence failures
-// must never interrupt a turn, so errors are swallowed.
+// must never interrupt a turn, so the turn continues — but the first failure is
+// surfaced on Out (once per App) so a permanently broken store (bad permissions,
+// read-only mount) is not silently swallowed. Subsequent failures stay quiet.
+//
+// The save is fully serialized: saveMu is acquired BEFORE snapshotting so that
+// an older snapshot can never overwrite a newer one (if two saves overlap, the
+// second blocks on saveMu until the first completes, then snapshots the latest
+// state). The snapshot uses nested locks (stateMu → convMu) to get a coherent
+// view of Session + Conv. Lock ordering: saveMu → stateMu → convMu. saveMu is
+// only ever acquired here, so no deadlock is possible. No caller of SaveSession
+// holds stateMu or convMu.
+//
+// WriteSession marshals a detached snapshot (not the live Conv slice, which
+// could be appended to mid-marshal). proxy.Message fields are immutable after
+// creation (Content is a *string, ToolCalls are not mutated in place), so a
+// shallow slice copy is safe.
 func (a *App) SaveSession() {
-	if a.Session == nil {
-		return
-	}
+	// Serialize the entire save: acquire saveMu before snapshotting.
+	a.saveMu.Lock()
+	defer a.saveMu.Unlock()
+
+	// Nested snapshot: stateMu → convMu (consistent lock ordering).
+	a.stateMu.RLock()
 	a.convMu.RLock()
-	a.Session.Conv = a.Conv
-	a.convMu.RUnlock()
-	if len(a.Session.Conv) == 0 {
+
+	if a.Session == nil {
+		a.convMu.RUnlock()
+		a.stateMu.RUnlock()
 		return
 	}
-	a.Session.Updated = time.Now()
-	if a.Session.Workspace == "" {
-		a.Session.Workspace = a.SessionWorkspace()
+
+	// Copy the Session struct value (scalars + slice header are copied).
+	snap := *a.Session
+	// Deep-copy the Conv slice so the snapshot is detached from the live Conv
+	// (which may be appended to after we release convMu).
+	snap.Conv = append([]proxy.Message(nil), a.Conv...)
+	snap.SavedWorkflow = a.Workflow
+	snap.Updated = time.Now()
+	if snap.Workspace == "" {
+		snap.Workspace = a.SessionWorkspace()
 	}
-	a.Session.SavedWorkflow = a.Workflow
-	_ = WriteSession(a.Session)
+	// Derive the effective model from locked fields (NOT EffectiveModel,
+	// which would re-acquire stateMu.RLock — Go's RWMutex is NOT reentrant,
+	// so calling it here would deadlock). SelectedModel takes precedence
+	// over Client.Model (same logic as EffectiveModel, just inlined).
+	if a.SelectedModel != "" {
+		snap.Model = a.SelectedModel
+	} else if a.Client != nil {
+		snap.Model = a.Client.Model
+	}
+	// Keep EndpointName current so resume can verify the saved model is
+	// meaningful for the active endpoint.
+	snap.EndpointName = a.Cfg.EndpointName
+
+	a.convMu.RUnlock()
+	a.stateMu.RUnlock()
+
+	if len(snap.Conv) == 0 {
+		return
+	}
+
+	if err := WriteSession(&snap); err != nil {
+		if !a.saveFailedWarned.Swap(true) && a.Out != nil {
+			fmt.Fprintf(a.Out, "warning: failed to save session %s: %v (further save failures will be silent)\n",
+				ShortID(snap.ChatID), err)
+		}
+	}
 }
 
-func (a *App) summarizeFn() summarizer {
+// SummarizeFn returns the active summarizer for the session: the injected
+// Summarize if non-nil, otherwise the proxy summarizer. Exported so the
+// daemon's SessionStateHandler can call Compact with the correct summarizer
+// (P6a) without duplicating the fallback logic.
+func (a *App) SummarizeFn() summarizer {
 	if a.Summarize != nil {
 		return a.Summarize
 	}
 	return a.proxySummarizer
+}
+
+func (a *App) summarizeFn() summarizer {
+	return a.SummarizeFn()
 }
 
 // NewConversation resets the running transcript and rotates the chat_id, starting
@@ -671,11 +842,76 @@ func (a *App) NewConversation(chatID string) {
 	a.preambleDay = ""
 	a.Client.ChatID = chatID
 	a.Session = &Session{
-		ChatID:    chatID,
-		Model:     a.Client.Model,
-		Created:   time.Now(),
-		Workspace: a.SessionWorkspace(),
+		ChatID:       chatID,
+		Model:        a.Client.Model,
+		EndpointName: a.Cfg.EndpointName,
+		Created:      time.Now(),
+		Workspace:    a.SessionWorkspace(),
 	}
+	// Reset ephemeral consent grants so a previous session's /auto or
+	// /auto destructive grant does not leak into the new conversation.
+	// AutoApprove, AllowDestructive, and AllowReads are per-session grants;
+	// they must not survive /new or /resume (the workspace-level AutoApprove
+	// preference is restored separately by RestoreRepoState if applicable).
+	a.RevokeAuto()
+	a.SetAllowReads(false)
+}
+
+// InstallSession atomically installs a loaded session into the App under
+// stateMu.Lock. It replaces Conv, Session, Workflow, Client.ChatID, and
+// resets per-session state (consent grants, consentedBackends, preambleDay).
+// The caller (LoadSession handler) must run this inside a coordinator
+// transition so it doesn't race with an in-flight turn.
+//
+// Lock ordering: stateMu → convMu (nested, consistent with the rest of the
+// codebase). Workflow is set under convMu (not via SetWorkflow, which takes
+// stateMu — avoiding re-entrant locking).
+func (a *App) InstallSession(s *Session) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
+	a.RevokeAuto()
+	a.SetAllowReads(false)
+
+	if a.Client != nil {
+		a.Client.ChatID = s.ChatID
+	}
+
+	a.convMu.Lock()
+	a.Conv = append([]proxy.Message(nil), s.Conv...)
+	a.Workflow = s.SavedWorkflow
+	a.convMu.Unlock()
+
+	a.Session = s
+	a.consentedBackends = nil
+	a.preambleDay = ""
+}
+
+// NewConversationTransition atomically starts a fresh session under
+// stateMu.Lock. It is the locked version of NewConversation, called by the
+// InitNewSession handler inside a coordinator transition. Unlike
+// NewConversation, it acquires stateMu so the writes are synchronized with
+// concurrent readers (SnapshotSessionState, GetSessionState).
+func (a *App) NewConversationTransition(chatID string) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
+	a.convMu.Lock()
+	a.Conv = nil
+	a.convMu.Unlock()
+
+	a.preambleDay = ""
+	a.Client.ChatID = chatID
+	a.Session = &Session{
+		ChatID:       chatID,
+		Model:        a.Client.Model,
+		EndpointName: a.Cfg.EndpointName,
+		Created:      time.Now(),
+		Workspace:    a.SessionWorkspace(),
+	}
+	a.RevokeAuto()
+	a.SetAllowReads(false)
+	a.consentedBackends = nil
 }
 
 // Send runs one user turn through the agent loop: stream a response, and while
@@ -1218,7 +1454,10 @@ func (a *App) streamSink() proxy.Sink {
 	var start, lastEmit time.Time
 	return func(s string) {
 		fmt.Fprint(a.Out, s)
-		if a.OnTokRate == nil {
+		a.callbackMu.Lock()
+		onTokRate := a.OnTokRate
+		a.callbackMu.Unlock()
+		if onTokRate == nil {
 			return
 		}
 		now := time.Now()
@@ -1227,7 +1466,7 @@ func (a *App) streamSink() proxy.Sink {
 		}
 		chars += len(s)
 		if el := now.Sub(start).Seconds(); el >= 0.1 && now.Sub(lastEmit) >= 200*time.Millisecond {
-			a.OnTokRate(float64(chars) / 4.0 / el)
+			onTokRate(float64(chars) / 4.0 / el)
 			lastEmit = now
 		}
 	}
@@ -2004,6 +2243,14 @@ func (a *App) StopAllBackgroundProcs() {
 	if a.bgLogDir != "" {
 		os.RemoveAll(a.bgLogDir)
 		a.bgLogDir = ""
+	}
+	// Release async slots for any notify_on_exit=true jobs. The reaper won't
+	// publish (notifyOnExit was cleared above), so we must release the slots
+	// explicitly to avoid a permanent asyncActive leak.
+	for _, entry := range entries {
+		if entry.asyncOp != nil {
+			a.cancelBgAsyncOp(entry.asyncOp, entry.id, "stopped (shutdown)")
+		}
 	}
 }
 

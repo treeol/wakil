@@ -6,29 +6,29 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	agent "github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core/event"
 )
 
-// appWithOutputMode returns a test app (like newTestApp) but with a specific
-// OutputMode so NewTUIModel snapshots it as the model's startup mode.
-func appWithOutputMode(mode config.OutputMode) *agent.App {
-	app := newTestApp("http://unused", newFakeExecutor(), nil)
-	app.Cfg.OutputMode = mode
-	return app
+// modelWithOutputMode builds a wiring model and sets the (startup-only)
+// output mode directly — the mode is snapshotted at construction.
+func modelWithOutputMode(mode config.OutputMode) (tuiModel, *fakeFacade) {
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
+	m.outputMode = mode
+	return step(m, tea.WindowSizeMsg{Width: 200, Height: 50}), f
 }
 
 func TestOutputModeDefaultIsDebug(t *testing.T) {
-	m := NewTUIModel(newTestApp("http://unused", newFakeExecutor(), nil))
+	m := newWiringModel(&fakeFacade{sid: "sess_tui_test", chatID: "chat123"})
 	if m.outputMode != config.OutputModeDebug {
-		t.Fatalf("default outputMode = %q, want %q", m.outputMode, config.OutputModeDebug)
+		t.Fatalf("default outputMode = %q, want debug", m.outputMode)
 	}
 }
 
 func TestOutputModeDebugShowsDiagnostics(t *testing.T) {
-	m := NewTUIModel(appWithOutputMode(config.OutputModeDebug))
-	m = step(m, tea.WindowSizeMsg{Width: 200, Height: 50})
-	m = step(m, agent.CompactedMsg{})
+	m, f := modelWithOutputMode(config.OutputModeDebug)
+	m = step(m, evt(event.KindConversationCompacted, event.ConversationCompacted{TurnID: "trn_1"}, f.sid))
 	m.refreshViewport()
 	view := plain(m.View())
 	if !strings.Contains(view, "compacted earlier turns") {
@@ -37,12 +37,11 @@ func TestOutputModeDebugShowsDiagnostics(t *testing.T) {
 }
 
 func TestOutputModeSimpleHidesDiagnostics(t *testing.T) {
-	m := NewTUIModel(appWithOutputMode(config.OutputModeSimple))
-	m = step(m, tea.WindowSizeMsg{Width: 200, Height: 50})
+	m, f := modelWithOutputMode(config.OutputModeSimple)
 	// Add an actionable iSys note first (must stay), then a diagnostic iDiag.
-	m = step(m, agent.CompactedMsg{})              // iDiag
-	m.addItem(iSys, "error: something went wrong") // actionable — must stay
-	m.addItem(iSys, "▶ user prompt")               // iUser-ish content stays
+	m = step(m, evt(event.KindConversationCompacted, event.ConversationCompacted{TurnID: "trn_1"}, f.sid)) // iDiag
+	m.addItem(iSys, "error: something went wrong")                                                        // actionable — must stay
+	m.addItem(iSys, "▶ user prompt")                                                                       // iUser-ish content stays
 	m.refreshViewport()
 	view := plain(m.View())
 	if strings.Contains(view, "compacted earlier turns") {
@@ -57,8 +56,8 @@ func TestOutputModeSimpleHidesDiagnostics(t *testing.T) {
 }
 
 func TestOutputModeSimpleRetainsDiagnostics(t *testing.T) {
-	m := NewTUIModel(appWithOutputMode(config.OutputModeSimple))
-	m = step(m, agent.CompactedMsg{})
+	m, f := modelWithOutputMode(config.OutputModeSimple)
+	m = step(m, evt(event.KindConversationCompacted, event.ConversationCompacted{TurnID: "trn_1"}, f.sid))
 	// Item is retained in the transcript even though the view hides it.
 	if len(*m.items) != 1 {
 		t.Fatalf("simple mode hid an item from storage: items len = %d, want 1 (retained)", len(*m.items))
@@ -69,9 +68,8 @@ func TestOutputModeSimpleRetainsDiagnostics(t *testing.T) {
 }
 
 func TestOutputModeSimpleHidesLiveReasoningBody(t *testing.T) {
-	m := NewTUIModel(appWithOutputMode(config.OutputModeSimple))
-	m = step(m, tea.WindowSizeMsg{Width: 200, Height: 50})
-	m = step(m, agent.ReasoningChunkMsg{Text: "thinking hard about the problem"})
+	m, f := modelWithOutputMode(config.OutputModeSimple)
+	m = step(m, evt(event.KindReasoningDelta, event.ReasoningDelta{Text: "thinking hard about the problem"}, f.sid))
 	m.refreshViewport()
 	view := plain(m.View())
 	if strings.Contains(view, "thinking hard about the problem") {
@@ -80,9 +78,8 @@ func TestOutputModeSimpleHidesLiveReasoningBody(t *testing.T) {
 }
 
 func TestOutputModeDebugShowsLiveReasoningBody(t *testing.T) {
-	m := NewTUIModel(appWithOutputMode(config.OutputModeDebug))
-	m = step(m, tea.WindowSizeMsg{Width: 200, Height: 50})
-	m = step(m, agent.ReasoningChunkMsg{Text: "thinking hard about the problem"})
+	m, f := modelWithOutputMode(config.OutputModeDebug)
+	m = step(m, evt(event.KindReasoningDelta, event.ReasoningDelta{Text: "thinking hard about the problem"}, f.sid))
 	m.refreshViewport()
 	view := plain(m.View())
 	if !strings.Contains(view, "thinking hard about the problem") {
@@ -91,11 +88,9 @@ func TestOutputModeDebugShowsLiveReasoningBody(t *testing.T) {
 }
 
 // TestOutputModeSimpleNoLeadingSeparator guards against a hidden diagnostic
-// item leaving a dangling user-separator: when the first visible item is a user
-// item, simple mode must not render a separator above it.
+// item leaving a dangling user-separator.
 func TestOutputModeSimpleNoLeadingSeparator(t *testing.T) {
-	m := NewTUIModel(appWithOutputMode(config.OutputModeSimple))
-	m = step(m, tea.WindowSizeMsg{Width: 200, Height: 50})
+	m, _ := modelWithOutputMode(config.OutputModeSimple)
 	// Diagnostic first, then a user item.
 	m.addItem(iDiag, dim2("· compacted earlier turns"))
 	m.addItem(iUser, "my prompt")
@@ -117,15 +112,12 @@ func TestOutputModeSimpleNoLeadingSeparator(t *testing.T) {
 	}
 }
 
-// TestOutputModeSimpleHidesCommittedThought guards the reasoning-collapse path:
-// after reasoning is committed as an iDiag "· thought" line, simple mode must
-// hide it, while the answer content streams.
+// TestOutputModeSimpleHidesCommittedThought guards the reasoning-collapse path.
 func TestOutputModeSimpleHidesCommittedThought(t *testing.T) {
-	m := NewTUIModel(appWithOutputMode(config.OutputModeSimple))
-	m = step(m, tea.WindowSizeMsg{Width: 200, Height: 50})
+	m, f := modelWithOutputMode(config.OutputModeSimple)
 	// Reasoning, then answer content — collapses reasoning to a committed iDiag.
-	m = step(m, agent.ReasoningChunkMsg{Text: "internal thinking"})
-	m = step(m, agent.StreamChunkMsg{Text: "the final answer here"})
+	m = step(m, evt(event.KindReasoningDelta, event.ReasoningDelta{Text: "internal thinking"}, f.sid))
+	m = step(m, evt(event.KindMessageDelta, event.MessageDelta{Text: "the final answer here"}, f.sid))
 	m.refreshViewport()
 	view := plain(m.View())
 	if strings.Contains(view, "thought") || strings.Contains(view, "tokens") {
@@ -133,20 +125,5 @@ func TestOutputModeSimpleHidesCommittedThought(t *testing.T) {
 	}
 	if !strings.Contains(view, "final answer") {
 		t.Errorf("simple mode must keep the answer streaming tail; view lacked 'final answer'")
-	}
-}
-
-// TestOutputModeStartupSnapshot verifies the mode is snapshotted at construction
-// and a later mutation of app.Cfg does NOT change rendering (startup-only).
-func TestOutputModeStartupSnapshot(t *testing.T) {
-	app := appWithOutputMode(config.OutputModeSimple)
-	m := NewTUIModel(app)
-	m = step(m, tea.WindowSizeMsg{Width: 200, Height: 50})
-	// Flip the config after construction — must have no effect on the model.
-	app.Cfg.OutputMode = config.OutputModeDebug
-	m = step(m, agent.CompactedMsg{})
-	m.refreshViewport()
-	if strings.Contains(plain(m.View()), "compacted") {
-		t.Errorf("startup snapshot violated: changing app.Cfg.OutputMode mid-session changed rendering")
 	}
 }

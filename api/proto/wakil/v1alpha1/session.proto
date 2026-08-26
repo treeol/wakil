@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "google/protobuf/timestamp.proto";
+import "wakil/v1alpha1/event.proto";
+
+// Session is the query-side view of a session's current state.
+message Session {
+  string id          = 1;
+  string tenant_id   = 2;
+  string workspace   = 3;
+  string state       = 4;  // "idle" | "running" | "awaiting_approval" | "error" | "closed"
+  uint64 last_seq    = 5;
+  string created_by  = 6;  // UserID
+  string title       = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp closed_at  = 9;
+}
+
+// SessionSnapshot is the D9 replay bundle (design §3.4): the session's
+// metadata plus its durable event history.
+message SessionSnapshot {
+  Session session  = 1;
+  repeated Event events = 2;
+  uint64 last_seq = 3;
+}
+
+// --- SessionService RPCs ---
+
+message CreateSessionRequest {
+  string workspace         = 1;
+  string title            = 2;
+  string agent_revision_id = 3;  // optional, additive
+  string backend_id        = 4;  // optional, additive
+}
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message ListSessionsRequest {
+  // Pagination is a known P2 seam; v1alpha1 is intentionally minimal.
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+message DeleteSessionRequest {
+  string session_id = 1;
+}
+
+message DeleteSessionResponse {}
+
+message SubmitInputRequest {
+  string session_id = 1;
+  string text       = 2;
+  bool   read_action = 3;
+  string request_id = 4;  // idempotency key (carried, NOT enforced in P2)
+}
+
+message SubmitAck {
+  string session_id = 1;
+  string turn_id    = 2;
+}
+
+enum ApprovalOutcome {
+  APPROVAL_OUTCOME_UNSPECIFIED = 0;
+  APPROVAL_OUTCOME_DENY        = 1;
+  APPROVAL_OUTCOME_ALLOW_ONCE  = 2;
+  APPROVAL_OUTCOME_ALLOW_READS_ONCE = 3;
+}
+
+message RespondToApprovalRequest {
+  string session_id   = 1;
+  string approval_id  = 2;
+  ApprovalOutcome outcome = 3;
+  string reason       = 4;
+}
+
+message RespondToApprovalResponse {}
+
+message InterruptRequest {
+  string session_id = 1;
+}
+
+message InterruptResponse {}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}
+
+message CloseSessionResponse {}

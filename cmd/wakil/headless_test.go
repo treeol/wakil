@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/treeol/wakil/internal/wiring"
 )
 
 func TestHeadlessWriter_BasicOutput(t *testing.T) {
 	var buf bytes.Buffer
-	hw := &headlessWriter{w: &buf}
+	hw := wiring.NewHeadlessWriter(&buf)
 
 	// Write a line with a newline — should emit one JSONL event.
 	n, err := hw.Write([]byte("hello world\n"))
@@ -40,7 +42,7 @@ func TestHeadlessWriter_BasicOutput(t *testing.T) {
 
 func TestHeadlessWriter_StripsANSI(t *testing.T) {
 	var buf bytes.Buffer
-	hw := &headlessWriter{w: &buf}
+	hw := wiring.NewHeadlessWriter(&buf)
 
 	// Write ANSI-colored text.
 	hw.Write([]byte("\x1b[31mred text\x1b[0m\n"))
@@ -54,7 +56,7 @@ func TestHeadlessWriter_StripsANSI(t *testing.T) {
 
 func TestHeadlessWriter_PartialLineBuffered(t *testing.T) {
 	var buf bytes.Buffer
-	hw := &headlessWriter{w: &buf}
+	hw := wiring.NewHeadlessWriter(&buf)
 
 	// Write without newline — should buffer, no output yet.
 	hw.Write([]byte("partial"))
@@ -77,7 +79,7 @@ func TestHeadlessWriter_PartialLineBuffered(t *testing.T) {
 
 func TestHeadlessWriter_MultipleLines(t *testing.T) {
 	var buf bytes.Buffer
-	hw := &headlessWriter{w: &buf}
+	hw := wiring.NewHeadlessWriter(&buf)
 
 	hw.Write([]byte("line1\nline2\nline3\n"))
 
@@ -101,7 +103,7 @@ func TestHeadlessWriter_MultipleLines(t *testing.T) {
 
 func TestHeadlessWriter_EmptyLinesSkipped(t *testing.T) {
 	var buf bytes.Buffer
-	hw := &headlessWriter{w: &buf}
+	hw := wiring.NewHeadlessWriter(&buf)
 
 	// Whitespace-only lines should be skipped.
 	hw.Write([]byte("real\n   \nalso real\n"))
@@ -115,7 +117,7 @@ func TestHeadlessWriter_EmptyLinesSkipped(t *testing.T) {
 
 func TestHeadlessWriter_Flush(t *testing.T) {
 	var buf bytes.Buffer
-	hw := &headlessWriter{w: &buf}
+	hw := wiring.NewHeadlessWriter(&buf)
 
 	// Write without newline, then flush.
 	hw.Write([]byte("unflushed content"))
@@ -123,7 +125,7 @@ func TestHeadlessWriter_Flush(t *testing.T) {
 		t.Fatal("expected no output before flush")
 	}
 
-	hw.flush()
+	hw.Flush()
 
 	if buf.Len() == 0 {
 		t.Fatal("expected output after flush")
@@ -138,10 +140,10 @@ func TestHeadlessWriter_Flush(t *testing.T) {
 
 func TestHeadlessWriter_FlushEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	hw := &headlessWriter{w: &buf}
+	hw := wiring.NewHeadlessWriter(&buf)
 
 	// Flush with nothing buffered — should produce no output.
-	hw.flush()
+	hw.Flush()
 	if buf.Len() != 0 {
 		t.Errorf("expected no output for empty flush, got %d bytes", buf.Len())
 	}
@@ -149,7 +151,7 @@ func TestHeadlessWriter_FlushEmpty(t *testing.T) {
 
 func TestEmitEvent(t *testing.T) {
 	var buf bytes.Buffer
-	emitEvent(&buf, map[string]any{"type": "done", "status": "pass"})
+	wiring.EmitEvent(&buf, map[string]any{"type": "done", "status": "pass"})
 
 	var event map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &event); err != nil {

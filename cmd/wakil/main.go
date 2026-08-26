@@ -3,27 +3,21 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/diag"
-	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/remote"
 	"github.com/treeol/wakil/internal/tui"
-	"github.com/treeol/wakil/prompts"
+	"github.com/treeol/wakil/internal/wiring"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
-
-// globalProg is the running tea.Program. Set once in main() before Run().
-// Agent goroutines use it to post tea.Msgs without threading the pointer
-// through every call site. Safe: only written once before any goroutine reads.
-var globalProg *tea.Program
 
 func main() {
 	// "wakil run" subcommand: headless, non-interactive, exits with a code.
@@ -34,6 +28,13 @@ func main() {
 			os.Exit(ExitError)
 		}
 		os.Exit(RunHeadless(cfg, os.Args[2:]))
+	}
+
+	// "wakil daemon" subcommand: run the daemon server (card #149). Listens on
+	// a Unix socket, serves Connect RPCs, and optionally a web UI on TCP.
+	// Previously a separate `wakild` binary; merged into `wakil` for simplicity.
+	if len(os.Args) >= 2 && os.Args[1] == "daemon" {
+		os.Exit(runDaemon())
 	}
 
 	// --list-sessions short-circuits before config resolution so it works even
@@ -52,7 +53,7 @@ func main() {
 	}
 	if wantList {
 		cwd, _ := os.Getwd()
-		agent.PrintSessions(os.Stdout, cwd, listAll)
+		wiring.PrintSessions(os.Stdout, cwd, listAll)
 		return
 	}
 
@@ -64,40 +65,46 @@ func main() {
 	fmt.Fprintf(os.Stderr, "ctx limits: compactAt=%d hardMax=%d keep=%d summary=%d\n",
 		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
 
-	// Resume a saved session: reload its transcript and re-attach its chat_id so
-	// the proxy's server-side memory for that conversation continues.
-	//
-	// --resume-id (an explicit id/prefix) always searches globally — the same
-	// rule the TUI's /resume <id> follows — so a hint like "resume with <id>"
-	// works from any directory. Bare --resume (no id) defaults to the most
-	// recent session in the CURRENT workspace, resolved the same way
-	// App.SessionWorkspace() would (host path in docker mode, work dir in
-	// direct mode) — computed here directly since App doesn't exist yet.
-	// --all overrides this to search every folder.
-	var resumed *agent.Session
+	// Resolve --resume / --resume-id to a session id/prefix (global search —
+	// the same rule the TUI's /resume <id> follows). Bare --resume (no id)
+	// defaults to the most recent session in the CURRENT workspace; --all
+	// overrides this to search every folder. The manager's ResumeConversation
+	// resolves the prefix and restores the transcript.
+	resumeID := ""
 	if cfg.Resume || cfg.ResumeID != "" {
-		ws := cfg.WorkDir
-		if cfg.ExecMode != "direct" {
-			ws = cfg.HostWorkDir
+		id := cfg.ResumeID
+		if id == "" {
+			// Most recent session in the current workspace (or everywhere
+			// with --all), resolved the same way App.SessionWorkspace() would
+			// (host path in docker mode, work dir in direct mode).
+			ws := cfg.WorkDir
+			if cfg.ExecMode != "direct" {
+				ws = cfg.HostWorkDir
+			}
+			resolved, err := wiring.ResolveRecentSession(ws, cfg.AllSessions)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "resume error:", err)
+				os.Exit(1)
+			}
+			if resolved != "" {
+				id = resolved
+			}
 		}
-		s, err := agent.LoadSessionScoped(cfg.ResumeID, agent.SessionScope{Workspace: ws, All: cfg.AllSessions})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "resume error:", err)
-			os.Exit(1)
-		}
-		resumed = s
+		resumeID = id
 	}
 
-	exe, err := newExecutor(cfg)
+	exe, err := wiring.NewExecutor(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "executor error:", err)
 		os.Exit(1)
 	}
 
-	app, res := buildApp(cfg, exe, buildAppOpts{})
+	if cfg.DaemonMode {
+		os.Exit(runDaemonMode(cfg, resumeID))
+	}
 
-	// Load --attach-image flag into PendingImages so the first user message
-	// carries the image(s). Multiple paths can be comma-separated.
+	// --attach-image: load into pending images for the first message.
+	attach := []proxy.ImagePart{}
 	if cfg.AttachImage != "" {
 		for _, p := range strings.Split(cfg.AttachImage, ",") {
 			p = strings.TrimSpace(p)
@@ -107,17 +114,11 @@ func main() {
 			img, err := proxy.LoadImage(p)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "attach-image:", err)
-				closeResources(app, res)
 				exe.Close()
 				os.Exit(1)
 			}
-			app.PendingImages = append(app.PendingImages, img)
+			attach = append(attach, img)
 		}
-	}
-
-	// Override the client ChatID if resuming a session.
-	if resumed != nil {
-		app.Client.ChatID = resumed.ChatID
 	}
 
 	// Prime the OpenRouter model-context cache in the background when any
@@ -146,83 +147,45 @@ func main() {
 	if counselMode == "auto" && counselMax == 0 {
 		counselMax = 3
 	}
-	app.SetCounselMode(counselMode)
-	app.MaxCounsel = counselMax
 
-	if resumed != nil {
-		app.Conv = resumed.Conv
-		app.Session = resumed
-		app.SetWorkflow(resumed.SavedWorkflow)
-	} else {
-		app.Session = &agent.Session{
-			ChatID:    app.Client.ChatID,
-			Model:     app.Client.Model,
-			Created:   time.Now(),
-			Workspace: app.SessionWorkspace(),
-		}
-		// Per-repo terminal settings restore: only on a fresh conversation.
-		// A resumed session's model/backend must never be silently changed by
-		// a remembered folder preference. TUI-only — cmd/wakil/run.go (the
-		// headless path) never calls this, since App.AutoApprove has no
-		// effect on headless tool confirmation (see repostate.go doc comment).
-		result := agent.RestoreRepoState(app)
-		if result.Note != "" {
-			app.StartupNote = result.Note
-		}
-		// Re-resolve context limits using the literal restored strings —
-		// mirrors resolveBackendCtxCmd's own calling convention, avoiding the
-		// empty-SelectedModel trap ApplyModelOverride leaves for openai-kind
-		// endpoints (reading app.SelectedModel back here would be wrong).
-		if result.Model != "" || result.Backend != "" {
-			app.CtxLimit = agent.ResolveContextLimitForBackendModel(context.Background(), app.Client.HTTP, cfg, result.Backend, result.Model, os.Stderr)
-		}
+	// m4c: the TUI runs through the session host. BootstrapTUI builds the
+	// ConversationManager + first conversation (fresh or resumed), runs the
+	// TUI-specific startup steps (repo-state restore, counsel, attach-images,
+	// startup notes), and subscribes the event stream. Event delivery is
+	// prog.Send once the program exists (the pump is armed, not started).
+	rt, cleanup, err := wiring.BootstrapTUI(cfg, exe, resumeID, nil, wiring.BootstrapTUIOpts{
+		AttachImages:        attach,
+		RestoreRepoState:    true,
+		CounselMode:         counselMode,
+		CounselMax:          counselMax,
+		ComposeStartupNotes: true,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bootstrap error:", err)
+		exe.Close()
+		os.Exit(1)
 	}
 
-	// Check if kvr restored entries from a snapshot. A non-empty SCAN with
-	// limit=1 means the snapshot was loaded and had live entries. This is a
-	// heuristic — it detects "store is non-empty at startup" which in practice
-	// means "snapshot was loaded." Runs after RestoreRepoState so the staging
-	// note composes with (rather than overwrites) the repo-state note.
-	if app.StagingClient != nil {
-		scanCtx, scanCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if result, err := app.StagingClient.Scan(scanCtx, "", 1, ""); err == nil && len(result.Keys) > 0 {
-			note := "staging: entries restored"
-			if app.StartupNote != "" {
-				app.StartupNote += " | " + note
-			} else {
-				app.StartupNote = note
-			}
-		}
-		scanCancel()
-	}
-
-	// Compose pending-proposals note alongside the existing notes.
-	if app.MemoryStore != nil {
-		statsCtx, statsCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		stats, _ := app.MemoryStore.Stats(statsCtx, 5)
-		statsCancel()
-		if stats != nil && stats.PendingProposed > 0 {
-			note := fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
-			if app.StartupNote != "" {
-				app.StartupNote += " | " + note
-			} else {
-				app.StartupNote = note
-			}
-		}
-	}
-
-	// Close trace store on exit.
-	if res.traceStore != nil {
-		defer res.traceStore.Close()
-	}
-
-	model := tui.NewTUIModel(app)
+	model := tui.NewTUIModelWithFacade(rt.Facade, rt.Manager, rt.Principal)
 	prog := tea.NewProgram(model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
-	globalProg = prog
-	app.EventSink = func(msg interface{}) { globalProg.Send(msg) }
+	tui.SetProgramSend(prog.Send)
+	// Subscribe the facade's event stream now that prog.Send exists, then
+	// start delivery. BootstrapTUI could not subscribe at construction (prog
+	// did not exist yet), so the deliver callback is bound here. Without this
+	// the facade has no subscription → no pump → turns run server-side but
+	// their events never reach the TUI (the UI stays stuck on "streaming").
+	if err := rt.SubscribeLive(context.Background(), func(ev event.Event) {
+		prog.Send(ev)
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "subscribe error:", err)
+		cleanup()
+		exe.Close()
+		os.Exit(1)
+	}
+	rt.StartEventPump(context.Background())
 
 	// Redirect raw diagnostics to a session log file BEFORE prog.Run() so a
 	// diagnostic written while the alt-screen is active can never interleave
@@ -230,57 +193,84 @@ func main() {
 	// (wakil run) never reaches this point and keeps stderr. The path is
 	// surfaced to stderr now (the alt-screen isn't up yet) so the user can
 	// find diagnostics later.
-	if f := diag.OpenSessionLog(agent.ShortID(app.Client.ChatID)); f != nil {
-		// Register f.Close() FIRST so it runs LAST (defers are LIFO): the sink
-		// is restored to stderr before the file closes, so late cleanup writes
-		// never target a closed file.
-		defer f.Close()
-		defer diag.Redirect(nil)
-	} else if p := diag.LogPath(agent.ShortID(app.Client.ChatID)); p != "" {
-		fmt.Fprintf(os.Stderr, "diagnostics: cannot open log at %s — session diagnostics stay on stderr\n", p)
+	if snap := rt.Facade.Snapshot(); snap.ChatID != "" {
+		if f := diag.OpenSessionLog(wiring.ShortID(snap.ChatID)); f != nil {
+			// Register f.Close() FIRST so it runs LAST (defers are LIFO): the
+			// sink is restored to stderr before the file closes, so late
+			// cleanup writes never target a closed file.
+			defer f.Close()
+			defer diag.Redirect(nil)
+		} else if p := diag.LogPath(wiring.ShortID(snap.ChatID)); p != "" {
+			fmt.Fprintf(os.Stderr, "diagnostics: cannot open log at %s — session diagnostics stay on stderr\n", p)
+		}
 	}
 
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
-		closeResources(app, res)
+		cleanup()
 		exe.Close()
 		os.Exit(1)
 	}
 
-	app.StopAllAsyncOps()
-	app.StopAllBackgroundProcs()
-	if res.memStore != nil {
-		res.memStore.Close()
-	}
-	if res.skillStore != nil {
-		res.skillStore.Close()
-	}
-	if res.sessionHistStore != nil {
-		res.sessionHistStore.Close()
-	}
+	// Teardown: close the facade (host session, pump, detached jobs) then
+	// the executor-owned resources.
+	cleanup()
 	exe.Close()
-	if res.mcpMgr != nil {
-		res.mcpMgr.Close()
-	}
-	if res.lspMgr != nil {
-		res.lspMgr.Shutdown()
-	}
-	if res.browserMgr != nil {
-		res.browserMgr.Close()
-	}
 }
 
-// newHTTPClient returns an HTTP client suitable for SSE streaming. It sets only
-// ResponseHeaderTimeout so stalls before the first response byte are caught, but
-// a live stream can run as long as needed — the per-turn ctx handles cancellation.
-func newHTTPClient() *http.Client {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.ResponseHeaderTimeout = 30 * time.Second
-	return &http.Client{Transport: tr}
+// runDaemonMode dials the wakil daemon and runs the TUI in remote mode
+// (card #148 P2e). When the user runs `wakil --daemon`, the TUI dials the
+// daemon over its Unix socket and drives the session remotely instead of
+// embedding the agent loop. This mirrors main.go's embedded bootstrap path
+// but uses the remote package.
+func runDaemonMode(cfg config.Config, resumeID string) int {
+	socketPath := cfg.DaemonSocket
+	if socketPath == "" {
+		socketPath = remote.DefaultSocketPath()
+	}
+
+	// Derive the workspace ID from the config (same derivation as the daemon).
+	ws := wiring.WorkspaceIDFromConfig(cfg)
+
+	ctx := context.Background()
+	rt, cleanup, err := remote.BootstrapRemote(ctx, socketPath, ws, resumeID, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "daemon error:", err)
+		return ExitError
+	}
+	defer cleanup()
+
+	model := tui.NewTUIModelWithFacade(rt.Facade, rt.Manager, rt.Principal)
+	prog := tea.NewProgram(model,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+	tui.SetProgramSend(prog.Send)
+	if err := rt.SubscribeLive(ctx, func(ev event.Event) {
+		prog.Send(ev)
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "subscribe error:", err)
+		return ExitError
+	}
+	rt.StartEventPump(ctx)
+
+	// Redirect raw diagnostics to a session log file (mirrors the embedded path).
+	if snap := rt.Facade.Snapshot(); snap.ChatID != "" {
+		if f := diag.OpenSessionLog(snap.ChatID); f != nil {
+			defer f.Close()
+			defer diag.Redirect(nil)
+		}
+	}
+
+	if _, err := prog.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "tui error:", err)
+		return ExitError
+	}
+	return ExitOK
 }
 
-// panelsUseOpenRouter reports whether any configured mashura panel routes at
-// least one model through OpenRouter ("openrouter:..." prefix or "~..." fusion
+// panelsUseOpenRouter reports whether any configured mashura panel routes
+// at least one model through OpenRouter ("openrouter:..." prefix or "~..." fusion
 // syntax). Used to decide whether priming the OpenRouter model-context cache
 // is worthwhile at startup.
 func panelsUseOpenRouter(cfg config.Config) bool {
@@ -295,86 +285,4 @@ func panelsUseOpenRouter(cfg config.Config) bool {
 		}
 	}
 	return false
-}
-
-func newExecutor(cfg config.Config) (exec.Executor, error) {
-	switch cfg.ExecMode {
-	case "direct":
-		if cfg.DockerIOUring {
-			fmt.Fprintln(os.Stderr, "warning: docker_io_uring is set but exec_mode is direct — io_uring setting has no effect in direct mode")
-		}
-		return exec.NewDirectExecutor(cfg.WorkDir)
-	default:
-		// Resolve SSH commit signing on the host before the container starts.
-		// Best-effort: a skip reason is logged, never fatal.
-		signing, skip := exec.DetectSigning(cfg.SSHSigning, cfg.HostWorkDir)
-		if skip != "" {
-			fmt.Fprintln(os.Stderr, "signing disabled —", skip)
-		}
-		if signing.Enabled {
-			fmt.Fprintf(os.Stderr, "ssh signing: active (agent %s, key %.24s…, autosign=%v)\n",
-				signing.AgentSock, signing.PublicKey, signing.AutoSign)
-		}
-
-		// Staging dir: per-repo, host-side. Reuses workspaceKey via the
-		// exported agent.StagingPath helper (same identity as repo-state).
-		var stagingMount string
-		kvrEnabled := !cfg.KVRDisabled
-		if kvrEnabled {
-			var err error
-			stagingMount, err = agent.EnsureStagingDir(cfg.HostWorkDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "kvr: staging dir error (staging unavailable): %v\n", err)
-				kvrEnabled = false
-			}
-		}
-
-		return exec.NewDockerExecutor(exec.DockerOpts{
-			Image:                   cfg.Image,
-			Workdir:                 cfg.WorkDir,
-			HostMount:               cfg.HostWorkDir,
-			DockerSock:              cfg.DockerSocket,
-			Signing:                 signing,
-			StagingMount:            stagingMount,
-			KVREnabled:              kvrEnabled,
-			KVRMaxEntries:           cfg.KVRMaxEntries,
-			KVRSweepIntervalSecs:    cfg.KVRSweepIntervalSecs,
-			KVRSnapshotIntervalSecs: cfg.KVRSnapshotIntervalSecs,
-			DockerCaps:              cfg.DockerCaps,
-			DockerMemory:            cfg.DockerMemory,
-			DockerPidsLimit:         cfg.DockerPidsLimit,
-			DockerTmpfsSize:         cfg.DockerTmpfsSize,
-			DockerIOUring:           cfg.DockerIOUring,
-			BrowserEnabled:          cfg.BrowserEnabled,
-		})
-	}
-}
-
-// loadAgentPrompt reads the agent operating instructions from cfg.AgentPromptPath.
-// On success it logs the byte count and returns the content. On any failure
-// (missing file, read error, empty file, or no path configured) it logs a
-// warning and returns the full embedded prompt from prompts/agent.txt so the
-// process always has a complete system prompt — the bare binary is self-contained.
-func loadAgentPrompt(cfg config.Config) string {
-	embedded := strings.TrimRight(prompts.EmbeddedAgentPrompt, "\n")
-	path := cfg.AgentPromptPath
-	if path == "" {
-		return embedded
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		// Not-found is the normal case (file is optional — embedded prompt is
-		// the default). Only warn on real errors (permissions, I/O, etc.).
-		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using embedded prompt\n", path, err)
-		}
-		return embedded
-	}
-	if len(strings.TrimSpace(string(b))) == 0 {
-		fmt.Fprintf(os.Stderr, "agent prompt: warning: %s is empty — using embedded prompt\n", path)
-		return embedded
-	}
-	prompt := strings.TrimRight(string(b), "\n")
-	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)
-	return prompt
 }

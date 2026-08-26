@@ -1,54 +1,58 @@
 package tui
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/event"
 )
 
-// TestSideQuestionChunkAccumulates verifies that when m.sideQuestion is set,
-// a SideQuestionChunkMsg appends its Text to the sideQuestion buffer.
-func TestSideQuestionChunkAccumulates(t *testing.T) {
-	m := newTestTUI(t)
-	m.sideQuestion = &sideQuestionState{
-		id:  agent.SideQuestionID("sq-1"),
-		buf: &strings.Builder{},
-	}
+func sqModel(t *testing.T) (tuiModel, *fakeFacade) {
+	t.Helper()
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	return newWiringModel(f), f
+}
 
-	m = step(m, agent.SideQuestionChunkMsg{ID: "sq-1", Text: "hello "})
-	m = step(m, agent.SideQuestionChunkMsg{ID: "sq-1", Text: "world"})
+func sqChunk(text string, f *fakeFacade) event.Event {
+	return evt(event.KindSideQuestionProgress, event.SideQuestionProgress{OpID: "op_sq1", Text: text}, f.sid)
+}
+
+func sqDone(status, preview string, f *fakeFacade) event.Event {
+	return evt(event.KindSideQuestionCompleted, event.SideQuestionCompleted{OpID: "op_sq1", Status: status, AnswerPreview: preview}, f.sid)
+}
+
+// TestSideQuestionChunkAccumulates verifies that when m.sideQuestion is set,
+// a SideQuestionProgress event appends its Text to the sideQuestion buffer.
+func TestSideQuestionChunkAccumulates(t *testing.T) {
+	m, f := sqModel(t)
+	m.sideQuestion = &sideQuestionState{buf: &strings.Builder{}}
+
+	m = step(m, sqChunk("hello ", f))
+	m = step(m, sqChunk("world", f))
 
 	if got := m.sideQuestion.buf.String(); got != "hello world" {
 		t.Errorf("sideQuestion.buf = %q, want %q", got, "hello world")
 	}
 }
 
-// TestSideQuestionChunkNilSideQuestion verifies that when m.sideQuestion is nil,
-// a SideQuestionChunkMsg is silently dropped (no panic).
+// TestSideQuestionChunkNilSideQuestion verifies that when m.sideQuestion is
+// nil, a progress event is silently dropped (no panic).
 func TestSideQuestionChunkNilSideQuestion(t *testing.T) {
-	m := newTestTUI(t)
-	// m.sideQuestion is nil by default — this should not panic.
-	step(m, agent.SideQuestionChunkMsg{ID: "sq-1", Text: "hello"})
-	// No assertion needed beyond not panicking.
+	m, f := sqModel(t)
+	step(m, sqChunk("hello", f))
 }
 
-// TestSideQuestionDoneWithOutput verifies that when a side question completes
-// with non-empty output, an iSys item is added with "≫ " + output,
-// and sideQuestion is set to nil.
+// TestSideQuestionDoneWithOutput verifies the completed-with-output render:
+// "≫ " + output, and sideQuestion set to nil.
 func TestSideQuestionDoneWithOutput(t *testing.T) {
-	m := newTestTUI(t)
-	m.sideQuestion = &sideQuestionState{
-		id:  agent.SideQuestionID("sq-1"),
-		buf: &strings.Builder{},
-	}
+	m, f := sqModel(t)
+	m.sideQuestion = &sideQuestionState{buf: &strings.Builder{}}
 	m.sideQuestion.buf.WriteString("some useful info")
 
-	m = step(m, agent.SideQuestionDoneMsg{ID: "sq-1"})
+	m = step(m, sqDone("ok", "", f))
 
 	if m.sideQuestion != nil {
-		t.Fatal("sideQuestion should be nil after SideQuestionDoneMsg")
+		t.Fatal("sideQuestion should be nil after completion")
 	}
 	last := lastItemText(m)
 	if !strings.Contains(last, "some useful info") {
@@ -56,20 +60,16 @@ func TestSideQuestionDoneWithOutput(t *testing.T) {
 	}
 }
 
-// TestSideQuestionDoneWithErr verifies that when side question completes
-// with a non-nil error, the error is rendered as an iSys item.
+// TestSideQuestionDoneWithErr verifies the error render (the error text
+// travels via AnswerPreview on the event path).
 func TestSideQuestionDoneWithErr(t *testing.T) {
-	m := newTestTUI(t)
-	m.sideQuestion = &sideQuestionState{
-		id:  agent.SideQuestionID("sq-1"),
-		buf: &strings.Builder{},
-	}
-	m.sideQuestion.buf.WriteString("partial output")
+	m, f := sqModel(t)
+	m.sideQuestion = &sideQuestionState{buf: &strings.Builder{}}
 
-	m = step(m, agent.SideQuestionDoneMsg{ID: "sq-1", Err: errors.New("something went wrong")})
+	m = step(m, sqDone("error", "something went wrong", f))
 
 	if m.sideQuestion != nil {
-		t.Fatal("sideQuestion should be nil after SideQuestionDoneMsg with Err")
+		t.Fatal("sideQuestion should be nil after errored completion")
 	}
 	last := lastItemText(m)
 	if !strings.Contains(last, "side question error") {
@@ -80,20 +80,15 @@ func TestSideQuestionDoneWithErr(t *testing.T) {
 	}
 }
 
-// TestSideQuestionDoneEmptyOutput verifies that when side question completes
-// with no output and no error, the placeholder text is rendered.
+// TestSideQuestionDoneEmptyOutput verifies the no-output placeholder.
 func TestSideQuestionDoneEmptyOutput(t *testing.T) {
-	m := newTestTUI(t)
-	m.sideQuestion = &sideQuestionState{
-		id:  agent.SideQuestionID("sq-1"),
-		buf: &strings.Builder{},
-	}
-	// buf is empty — no output written.
+	m, f := sqModel(t)
+	m.sideQuestion = &sideQuestionState{buf: &strings.Builder{}}
 
-	m = step(m, agent.SideQuestionDoneMsg{ID: "sq-1"})
+	m = step(m, sqDone("ok", "", f))
 
 	if m.sideQuestion != nil {
-		t.Fatal("sideQuestion should be nil after SideQuestionDoneMsg")
+		t.Fatal("sideQuestion should be nil after completion")
 	}
 	last := lastItemText(m)
 	if !strings.Contains(last, "side question returned no output") {
@@ -101,13 +96,11 @@ func TestSideQuestionDoneEmptyOutput(t *testing.T) {
 	}
 }
 
-// TestSideQuestionDoneNilSideQuestion verifies that when m.sideQuestion is nil,
-// SideQuestionDoneMsg is silently dropped (no panic).
+// TestSideQuestionDoneNilSideQuestion verifies a completion with no active
+// side question is silently dropped (no panic).
 func TestSideQuestionDoneNilSideQuestion(t *testing.T) {
-	m := newTestTUI(t)
-	// m.sideQuestion is nil by default — this should not panic.
-	m = step(m, agent.SideQuestionDoneMsg{ID: "sq-1", Err: errors.New("should be dropped")})
-	// No crash means success.
+	m, f := sqModel(t)
+	m = step(m, sqDone("error", "should be dropped", f))
 	if len(*m.items) != 0 {
 		t.Errorf("expected no items added when sideQuestion is nil, got %d", len(*m.items))
 	}

@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/event"
 )
 
 func newTabModel() tuiModel {
 	// Use the real constructor: reflow() runs when the first tab appears and
 	// walks app, textarea, viewport, items, and streaming builders.
-	m := NewTUIModel(newTestApp("http://unused", newFakeExecutor(), nil))
+	m := newWiringModel(&fakeFacade{sid: "sess_tui_test", chatID: "chat123"})
 	m.width, m.height = 200, 50
 	return m
 }
@@ -23,20 +23,20 @@ func newTabModel() tuiModel {
 // concurrently running subagents are appended to their own tab buffers.
 func TestSubagentChunksRouteByChatID(t *testing.T) {
 	m := newTabModel()
-	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
-	m = step(m, agent.SubagentStartMsg{Task: "task B", ChatID: "chat-b"})
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{SubagentID: "sub_chat-a", Task: "task A", Capability: "discovery"}, tabSID))
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{SubagentID: "sub_chat-b", Task: "task B", Capability: "discovery"}, tabSID))
 
-	m = step(m, agent.SubagentChunkMsg{ChatID: "chat-a", Text: "alpha1 "})
-	m = step(m, agent.SubagentChunkMsg{ChatID: "chat-b", Text: "beta1 "})
-	m = step(m, agent.SubagentChunkMsg{ChatID: "chat-a", Text: "alpha2"})
-	m = step(m, agent.SubagentChunkMsg{ChatID: "chat-b", Text: "beta2"})
+	m = step(m, evt(event.KindSubagentProgress, event.SubagentProgress{SubagentID: "sub_chat-a", Text: "alpha1 "}, tabSID))
+	m = step(m, evt(event.KindSubagentProgress, event.SubagentProgress{SubagentID: "sub_chat-b", Text: "beta1 "}, tabSID))
+	m = step(m, evt(event.KindSubagentProgress, event.SubagentProgress{SubagentID: "sub_chat-a", Text: "alpha2"}, tabSID))
+	m = step(m, evt(event.KindSubagentProgress, event.SubagentProgress{SubagentID: "sub_chat-b", Text: "beta2"}, tabSID))
 
 	var bufA, bufB string
 	for _, tab := range m.subTabs {
 		switch tab.chatID {
-		case "chat-a":
+		case "sub_chat-a":
 			bufA = tab.buf.String()
-		case "chat-b":
+		case "sub_chat-b":
 			bufB = tab.buf.String()
 		}
 	}
@@ -55,24 +55,24 @@ func TestSubagentChunksRouteByChatID(t *testing.T) {
 // only A's tab done while B keeps streaming.
 func TestSubagentDoneClosesOnlyItsTab(t *testing.T) {
 	m := newTabModel()
-	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
-	m = step(m, agent.SubagentStartMsg{Task: "task B", ChatID: "chat-b"})
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{SubagentID: "sub_chat-a", Task: "task A", Capability: "discovery"}, tabSID))
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{SubagentID: "sub_chat-b", Task: "task B", Capability: "discovery"}, tabSID))
 
-	m = step(m, agent.SubagentDoneMsg{ChatID: "chat-a", UsedBackend: "llama"})
+	m = step(m, evt(event.KindSubagentCompleted, event.SubagentCompleted{SubagentID: "sub_chat-a", Status: "ok", UsedBackend: "llama"}, tabSID))
 
 	// B still accepts chunks after A's Done.
-	m = step(m, agent.SubagentChunkMsg{ChatID: "chat-b", Text: "still going"})
+	m = step(m, evt(event.KindSubagentProgress, event.SubagentProgress{SubagentID: "sub_chat-b", Text: "still going"}, tabSID))
 
 	for _, tab := range m.subTabs {
 		switch tab.chatID {
-		case "chat-a":
+		case "sub_chat-a":
 			if !tab.done {
 				t.Error("tab A should be done")
 			}
 			if tab.usedBackend != "llama" {
 				t.Errorf("tab A usedBackend = %q, want llama", tab.usedBackend)
 			}
-		case "chat-b":
+		case "sub_chat-b":
 			if tab.done {
 				t.Error("tab B must not be done")
 			}
@@ -90,14 +90,14 @@ func TestSubagentStartDoesNotStealFocus(t *testing.T) {
 	if m.subCur != -1 {
 		t.Fatalf("precondition: subCur = %d, want -1 (main)", m.subCur)
 	}
-	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{SubagentID: "sub_chat-a", Task: "task A", Capability: "discovery"}, tabSID))
 	if m.subCur != -1 {
 		t.Errorf("after first Start: subCur = %d, want -1 (stay on main)", m.subCur)
 	}
 	// Simulate the user focusing tab A, then a new dispatch arriving.
 	m.subCur = tabIndexByN(m.subTabs, 1)
-	m = step(m, agent.SubagentStartMsg{Task: "task B", ChatID: "chat-b"})
-	if got := m.subTabs[m.subCur].chatID; got != "chat-a" {
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{SubagentID: "sub_chat-b", Task: "task B", Capability: "discovery"}, tabSID))
+	if got := m.subTabs[m.subCur].chatID; got != "sub_chat-a" {
 		t.Errorf("focus moved to %q, want to stay on chat-a", got)
 	}
 }
@@ -106,22 +106,22 @@ func TestSubagentStartDoesNotStealFocus(t *testing.T) {
 // tab whose worker acquired a slot becomes active.
 func TestSubagentActiveMarksTab(t *testing.T) {
 	m := newTabModel()
-	m = step(m, agent.SubagentStartMsg{Task: "task A", ChatID: "chat-a"})
-	m = step(m, agent.SubagentStartMsg{Task: "task B", ChatID: "chat-b"})
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{SubagentID: "sub_chat-a", Task: "task A", Capability: "discovery"}, tabSID))
+	m = step(m, evt(event.KindSubagentSpawned, event.SubagentSpawned{SubagentID: "sub_chat-b", Task: "task B", Capability: "discovery"}, tabSID))
 
 	for _, tab := range m.subTabs {
 		if tab.active {
 			t.Errorf("tab %s active before SubagentActiveMsg", tab.chatID)
 		}
 	}
-	m = step(m, agent.SubagentActiveMsg{ChatID: "chat-a"})
+	m = step(m, evt(event.KindSubagentProgress, event.SubagentProgress{SubagentID: "sub_chat-a", Text: "[active]"}, tabSID))
 	for _, tab := range m.subTabs {
 		switch tab.chatID {
-		case "chat-a":
+		case "sub_chat-a":
 			if !tab.active {
 				t.Error("chat-a should be active")
 			}
-		case "chat-b":
+		case "sub_chat-b":
 			if tab.active {
 				t.Error("chat-b should still be queued")
 			}

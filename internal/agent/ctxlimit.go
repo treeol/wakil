@@ -378,9 +378,14 @@ func ParseContextLimitJSON(body []byte) (nCtx, nCtxTrain int) {
 // never populated (tests, subagents, a build path that skipped the startup
 // probe) it synthesizes a fallback from Cfg so callers always get a positive
 // ceiling and consistent headroom without a network round-trip.
+// CtxLimit is stateMu-protected; the Cfg fallback fields are immutable after
+// startup.
 func (a *App) ContextLimit() ContextLimit {
-	if a.CtxLimit.NCtx > 0 {
-		return a.CtxLimit
+	a.stateMu.RLock()
+	cl := a.CtxLimit
+	a.stateMu.RUnlock()
+	if cl.NCtx > 0 {
+		return cl
 	}
 	fb := a.Cfg.ContextTokensFallback
 	if fb <= 0 {

@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	agent "github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -21,20 +21,21 @@ const resumePickerMaxVisible = 12
 // typing anything.
 type resumePickerState struct {
 	active   bool
-	sessions []agent.Session
-	scope    agent.SessionScope
+	sessions []sessionclient.SessionSummary
+	scope    sessionclient.SessionScope
 	hidden   int // sessions filtered out by scope; shown as a hint
 	sel      int
 }
 
-// openResumePicker activates the picker from an OpenResumePickerMsg.
-func (m tuiModel) openResumePicker(msg agent.OpenResumePickerMsg) tuiModel {
+// openResumePicker activates the picker with a loaded session list (m4b: the
+// facade's ListSessions result, not an agent message).
+func (m tuiModel) openResumePicker(sessions []sessionclient.SessionSummary, scope sessionclient.SessionScope, hidden int) tuiModel {
 	m.comp = completionState{} // never both pickers open at once
 	m.resumePicker = resumePickerState{
 		active:   true,
-		sessions: msg.Sessions,
-		scope:    msg.Scope,
-		hidden:   msg.Hidden,
+		sessions: sessions,
+		scope:    scope,
+		hidden:   hidden,
 		sel:      0,
 	}
 	return m
@@ -47,13 +48,13 @@ func (m tuiModel) closeResumePicker() tuiModel {
 }
 
 // reloadResumePicker toggles the picker's scope (current workspace ↔ all
-// repos) and re-reads the session store. Synchronous disk I/O, same as
-// fetchSessionShortIDs — the session store is small and local, and this only
-// happens on an explicit keypress, not per-frame.
+// repos) and re-reads the session store through the facade. Synchronous disk
+// I/O — the session store is small and local, and this only happens on an
+// explicit keypress, not per-frame.
 func (m tuiModel) reloadResumePicker(all bool) tuiModel {
 	scope := m.resumePicker.scope
 	scope.All = all
-	sessions, hidden, err := agent.ListSessionsScoped(scope)
+	sessions, hidden, err := m.facade.ListSessions(scope)
 	if err != nil {
 		return m
 	}
@@ -96,8 +97,10 @@ func (m tuiModel) handleResumePickerKey(msg tea.KeyMsg) (tuiModel, tea.Cmd, bool
 		}
 		s := m.resumePicker.sessions[m.resumePicker.sel]
 		m = m.closeResumePicker()
-		app := m.app
-		return m, AdaptCmd(func() agent.Msg { return agent.ResumeSessionMsg(app, &s) }), true
+		// Rotation through the ConversationManager (async —
+		// ResumeConversation loads the session).
+		id := s.ChatID
+		return m, m.beginRotation(rotationRequest{kind: rotateResume, sessionID: id}), true
 	case "esc":
 		m = m.closeResumePicker()
 		return m, nil, true
@@ -155,12 +158,12 @@ func (m tuiModel) renderResumePicker() string {
 	}
 	for i := start; i < end; i++ {
 		s := sessions[i]
-		turns, first := agent.SessionTurns(s)
+		turns, first := s.Turns()
 		first = strings.ReplaceAll(first, "\n", " ")
 		if len(first) > 40 {
 			first = first[:40] + "…"
 		}
-		id := agent.ShortID(s.ChatID)
+		id := formatShortID(s.ChatID)
 		if s.Label != "" {
 			id += " [" + s.Label + "]"
 		}

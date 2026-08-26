@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package wakil.v1alpha1;
+
+option go_package = "github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1";
+
+import "wakil/v1alpha1/backend.proto";
+
+// BackendService manages LLM backend configurations (design §6.4, §7).
+//
+// Backend API keys are envelope-encrypted at rest; the API never returns
+// the key — only id, label, last_four, and timestamps.
+//
+// RPC authentication policy:
+//   - All RPCs: authenticated (owner/admin role within the caller's tenant).
+//   - All queries are tenant-scoped: the caller's tenant_id filters every
+//     operation.
+service BackendService {
+  rpc CreateBackend(CreateBackendRequest) returns (CreateBackendResponse);
+  rpc ListBackends(ListBackendsRequest) returns (ListBackendsResponse);
+  rpc UpdateBackend(UpdateBackendRequest) returns (UpdateBackendResponse);
+  rpc DeleteBackend(DeleteBackendRequest) returns (DeleteBackendResponse);
+}
