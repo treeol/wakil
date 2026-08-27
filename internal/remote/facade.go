@@ -736,6 +736,12 @@ func (f *RemoteFacade) ReplacePendingImages(imgs []proxy.ImagePart) { f.bumpVers
 func (f *RemoteFacade) AddPendingImage(img proxy.ImagePart)         { f.bumpVersion() }
 func (f *RemoteFacade) ClearPendingImages()                         { f.bumpVersion() }
 
+// ConsumePendingContinuation returns the pending continuation prompt for
+// /handoff proceed. The daemon path does not support handoff folding (it
+// creates a new conversation), so there is never a pending continuation —
+// returns "".
+func (f *RemoteFacade) ConsumePendingContinuation() string { return "" }
+
 // ---- Side questions ----
 // Side questions require daemon-side support. In P2e they are not available
 // remotely; the methods return no-ops.

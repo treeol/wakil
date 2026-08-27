@@ -315,6 +315,17 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 			})
 		}
 
+	case agent.TurnSuspendedSignal:
+		// Ephemeral: the turn has paused on pending async work. The TUI
+		// transitions to stateWaiting and shows "waiting" instead of
+		// "streaming". Enables input-while-waiting (cancel + send).
+		emit.Notify(event.KindTurnSuspended, event.TurnSuspended{})
+
+	case agent.TurnResumedSignal:
+		// Ephemeral: the suspended turn resumed after an async completion.
+		// The TUI transitions back from stateWaiting to stateStreaming.
+		emit.Notify(event.KindTurnResumed, event.TurnResumed{})
+
 	default:
 		// Unknown message type — drop. New agent message types should be added
 		// to this switch with their domain-event mapping.

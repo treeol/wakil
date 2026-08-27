@@ -294,6 +294,18 @@ type ModelListUpdatedMsg struct {
 	Models []string
 }
 
+// TurnSuspendedSignal is emitted when the turn suspends on pending async work
+// (the model produced final text while a Mashūra panel, detached shell, or
+// discovery subagent is still running). Projected to KindTurnSuspended
+// (ephemeral) by the wiring EventSink so the TUI can show "waiting" instead
+// of "streaming" and enable input-while-waiting.
+type TurnSuspendedSignal struct{}
+
+// TurnResumedSignal is emitted when a suspended turn resumes after an async
+// completion arrived. Projected to KindTurnResumed (ephemeral) by the wiring
+// EventSink so the TUI transitions back from "waiting" to "streaming".
+type TurnResumedSignal struct{}
+
 // ProgWriter is an io.Writer that sends StreamChunkMsgs into the event sink.
 type ProgWriter struct{ send func(StreamChunkMsg) }
 

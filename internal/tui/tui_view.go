@@ -8,9 +8,9 @@ import (
 
 	"github.com/treeol/wakil/internal/core/sessionclient"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -372,6 +372,12 @@ func statusSegments(in statusLineInput) []string {
 			// generating the textual answer
 			stateSeg = styleState.Render("streaming")
 		}
+	case stateWaiting:
+		// The turn is suspended on pending async work (Mashūra panel,
+		// detached shell, discovery subagent). The model produced its
+		// interim answer; the turn will resume when a completion arrives,
+		// or the user can type Enter to cancel-and-send a new prompt.
+		stateSeg = styleState.Render("waiting")
 	case stateConfirm:
 		stateSeg = styleState.Render("confirming")
 	case stateCompacting:
@@ -606,7 +612,6 @@ func flowSegmentsN(segs []string, w, maxRows int) []string {
 	return rows
 }
 
-
 // ---- Rotation (m4b stage 3 scaffolding) ----
 
 // rotateKind identifies which manager operation a rotation performs.
@@ -632,10 +637,10 @@ type rotationRequest struct {
 // state first, then starts delivery (review finding: events processed before
 // the swap would be dropped by the session guard).
 type rotationMsg struct {
-	facade  sessionclient.Facade
-	err     error
-	note    string // display note (e.g. "resumed session …")
-	failed  bool
+	facade sessionclient.Facade
+	err    error
+	note   string // display note (e.g. "resumed session …")
+	failed bool
 }
 
 // beginRotation returns a tea.Cmd that performs the rotation off the event
@@ -677,7 +682,6 @@ func (m tuiModel) beginRotation(req rotationRequest) tea.Cmd {
 		return rotationMsg{facade: f}
 	}
 }
-
 
 // statusLineInput carries all the state needed by statusSegments. It is a
 // plain struct so the builder is a pure function and can be unit-tested.
@@ -733,7 +737,7 @@ func renderStatusDot(state agentState, phase int) string {
 	switch state {
 	case stateConfirm:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(dot)
-	case stateStreaming, stateCompacting:
+	case stateStreaming, stateCompacting, stateWaiting:
 		shade := dotPulseShades[phase%len(dotPulseShades)]
 		return lipgloss.NewStyle().Foreground(shade).Render(dot)
 	default: // idle

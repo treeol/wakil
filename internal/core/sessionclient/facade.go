@@ -88,7 +88,7 @@ type SessionSummary struct {
 	// when the full Conv is not available (remote/daemon mode where sending the
 	// full transcript for every session in the list would be too expensive).
 	// When non-zero, Turns() prefers these over scanning Conv.
-	TurnCount   int
+	TurnCount    int
 	FirstMessage string
 }
 
@@ -155,12 +155,12 @@ type ApprovalRequest struct {
 // a live *agent.App) lands in 7b3.
 type ClientSnapshot struct {
 	// Session identity.
-	SessionID  event.SessionID
-	ChatID     string // proxy chat ID (display only)
-	Title      string
-	Workspace  string
-	Backend    string // selected backend
-	Model      string // selected or effective model
+	SessionID event.SessionID
+	ChatID    string // proxy chat ID (display only)
+	Title     string
+	Workspace string
+	Backend   string // selected backend
+	Model     string // selected or effective model
 
 	// Transcript.
 	Conv []proxy.Message
@@ -228,7 +228,7 @@ type CommandResult struct {
 	Rotate       *RotateRequest // non-nil → rotate the conversation
 	SideQuestion string         // non-empty → start a side question
 	Compacted    bool
-	OpID         OpID           // non-empty → async op initiated; observe via events
+	OpID         OpID // non-empty → async op initiated; observe via events
 
 	// ClipboardImage: the command was /image clipboard — the agent layer
 	// cannot read the host clipboard, so the TUI runs its own clipboard-
@@ -419,6 +419,13 @@ type Facade interface {
 	// Close releases all resources (App, Host, subscription). Called when the
 	// TUI exits or rotates to a new facade. After Close, the facade is unusable.
 	Close() error
+
+	// ConsumePendingContinuation returns and clears the continuation prompt
+	// for /handoff proceed. The TUI calls this after subscribing to the new
+	// session's event stream, then submits it via SubmitInput — so
+	// TurnStarted arrives through the live pump instead of racing ahead of it.
+	// Returns "" when there is no pending continuation (non-handoff rotations).
+	ConsumePendingContinuation() string
 }
 
 // CompletionSource provides per-keystroke completion candidates from the
@@ -481,8 +488,13 @@ type ConversationManager interface {
 
 	// HandoffConversation folds the current conversation into a summary and
 	// creates a new session that carries the folded context. If proceed is
-	// true, the new session auto-starts a continuation turn with the
-	// handoff context. Returns the new facade.
+	// true, the continuation prompt is stored on the returned facade (see
+	// Facade.ConsumePendingContinuation) for the caller to submit AFTER
+	// subscribing to the new session's event stream — this eliminates the
+	// race where the host emits TurnStarted before the caller is subscribed.
+	// The caller MUST call ConsumePendingContinuation and submit the prompt
+	// (if non-empty) to auto-start the continuation turn. Returns the new
+	// facade.
 	HandoffConversation(ctx context.Context, principal core.Principal, current Facade, proceed bool) (Facade, error)
 
 	// Close releases the facade and all its resources (App, Host,

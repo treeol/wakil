@@ -191,19 +191,35 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	// SetProgramSend (the TUI package's replacement for main.go's globalProg).
 	if programSend != nil {
 		ctx := context.Background()
-		go func(f sessionclient.Facade, sid event.SessionID) {
+		go func(f sessionclient.Facade, sid event.SessionID, principal core.Principal) {
 			head := event.Seq(0)
-			if ss, err := f.SessionSnapshot(ctx, m.principal, sid); err == nil {
+			if ss, err := f.SessionSnapshot(ctx, principal, sid); err == nil {
 				head = ss.LastSeq
 			}
-			if _, err := f.Subscribe(ctx, m.principal, sid, head, func(ev event.Event) {
+			if _, err := f.Subscribe(ctx, principal, sid, head, func(ev event.Event) {
 				programSend(ev)
 			}); err != nil {
 				programSend(teaErrorMsg{err})
 				return
 			}
 			f.StartEventPump(ctx)
-		}(rm.facade, m.sessionID)
+			// /handoff proceed: submit the continuation prompt AFTER the
+			// subscription and pump are live, so TurnStarted arrives through
+			// the event stream (eliminates the race where the host emits it
+			// before the TUI is subscribed).
+			if prompt := f.ConsumePendingContinuation(); prompt != "" {
+				if _, err := f.SubmitInput(ctx, principal, core.SubmitInputRequest{
+					SessionID: sid,
+					Text:      prompt,
+				}); err != nil {
+					// SubmitInput failed (queue full or closing). The
+					// handoff itself succeeded — the new session exists and
+					// carries the context as a pinned message. Surface the
+					// miss so the user can send the prompt themselves.
+					programSend(startupNoteMsg{text: "· handoff complete — continuation could not auto-start (" + err.Error() + "); the context is pinned, send your next message"})
+				}
+			}
+		}(rm.facade, m.sessionID, m.principal)
 	}
 	m = m.reflowIfStatusHeightChanged(before)
 	return m, cmds, true

@@ -138,7 +138,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// is the authoritative transition (e.g. for workflow-continuation
 		// turns the TUI did NOT initiate).
 		before := m.statusRows()
-		if m.state == stateIdle {
+		if m.state == stateIdle || m.state == stateWaiting {
 			m.state = stateStreaming
 			m.turnStart = time.Now()
 			m.tps = 0
@@ -151,6 +151,26 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			}
 		}
 		m = m.reflowIfStatusHeightChanged(before)
+
+	case event.KindTurnSuspended:
+		// The turn paused on pending async work (Mashūra panel, detached
+		// shell, discovery subagent). Transition to stateWaiting so the
+		// status line shows "waiting" and Enter-while-waiting can
+		// cancel-and-send.
+		before := m.statusRows()
+		if m.state == stateStreaming {
+			m.state = stateWaiting
+			m = m.reflowIfStatusHeightChanged(before)
+		}
+
+	case event.KindTurnResumed:
+		// A suspended turn resumed after an async completion arrived.
+		// Transition back to stateStreaming.
+		before := m.statusRows()
+		if m.state == stateWaiting {
+			m.state = stateStreaming
+			m = m.reflowIfStatusHeightChanged(before)
+		}
 
 	case event.KindMessageDelta:
 		p := ev.Payload.(event.MessageDelta)
@@ -390,12 +410,20 @@ func (m tuiModel) finishWiringTurn(p event.TurnCompleted, cmds []tea.Cmd) (tuiMo
 	if p.Outcome == "complete" && !m.turnStart.IsZero() && time.Since(m.turnStart) > 3*time.Second {
 		cmds = append(cmds, playFinishSound())
 	}
-	m = m.clearWiringTurnState()
 
 	// Deferred /auto grants + queue flush: only on a clean, terminal turn with
 	// no queued follow-up (WorkflowWillContinue covers the workflow case; a
 	// non-empty host queue means another turn starts immediately).
 	clean := p.Outcome == "complete" && !p.WorkflowWillContinue
+	// flushOnCancel: the user sent a prompt while the turn was waiting
+	// (stateWaiting), which triggered a cancel. Flush the queued prompt as a
+	// new turn even though the outcome is "cancelled" — the cancel was
+	// user-initiated to break out of the wait, not an error or abort.
+	//
+	// Capture the flag BEFORE clearWiringTurnState, which resets it to false
+	// as part of the per-turn display teardown.
+	flushOnCancel := p.Outcome == "cancelled" && m.flushOnCancel
+	m = m.clearWiringTurnState()
 	if clean {
 		if m.pendingAutoGrant {
 			m.facade.SetAutoApprove(true)
@@ -411,7 +439,7 @@ func (m tuiModel) finishWiringTurn(p event.TurnCompleted, cmds []tea.Cmd) (tuiMo
 			m.pendingDestructiveGrant = false
 		}
 	}
-	if clean && len(m.queuedPrompts) > 0 {
+	if (clean || flushOnCancel) && len(m.queuedPrompts) > 0 {
 		next := m.queuedPrompts[0]
 		m.queuedPrompts = m.queuedPrompts[1:]
 		var flushCmds []tea.Cmd
@@ -433,6 +461,7 @@ func (m tuiModel) clearWiringTurnState() tuiModel {
 	m.hadTurn = true
 	m.cancel = nil
 	m.cancelling = false
+	m.flushOnCancel = false
 	m.pendApproval = nil // safety: a lost ApprovalResolved must not wedge the gate
 	m.clearArm()
 	// Cancel any running side question at turn end (same policy as the old

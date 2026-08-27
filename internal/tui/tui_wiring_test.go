@@ -63,10 +63,10 @@ func (f *fakeFacade) AddPendingImage(img proxy.ImagePart) {
 func (f *fakeFacade) ReplacePendingImages(imgs []proxy.ImagePart) {
 	f.snap.PendingImages = append([]proxy.ImagePart(nil), imgs...)
 }
-func (f *fakeFacade) SetAutoApprove(v bool)          { f.consent.AutoApprove = v }
-func (f *fakeFacade) SetAllowDestructive(v bool)     { f.consent.AllowDestructive = v }
-func (f *fakeFacade) RevokeAuto()                    { f.consent.AutoApprove, f.consent.AllowDestructive = false, false }
-func (f *fakeFacade) SetInfoPanelOpen(open bool)     { f.info.InfoPanelOpen = open }
+func (f *fakeFacade) SetAutoApprove(v bool)                                      { f.consent.AutoApprove = v }
+func (f *fakeFacade) SetAllowDestructive(v bool)                                 { f.consent.AllowDestructive = v }
+func (f *fakeFacade) RevokeAuto()                                                { f.consent.AutoApprove, f.consent.AllowDestructive = false, false }
+func (f *fakeFacade) SetInfoPanelOpen(open bool)                                 { f.info.InfoPanelOpen = open }
 func (f *fakeFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {}
 func (f *fakeFacade) ListSessions(scope sessionclient.SessionScope) ([]sessionclient.SessionSummary, int, error) {
 	return nil, 0, nil
@@ -74,6 +74,7 @@ func (f *fakeFacade) ListSessions(scope sessionclient.SessionScope) ([]sessioncl
 func (f *fakeFacade) StartSideQuestion(ctx context.Context, question string) (sessionclient.OpID, context.CancelFunc) {
 	return "op_sq_fake", func() {}
 }
+func (f *fakeFacade) ConsumePendingContinuation() string { return "" }
 
 // newWiringModel builds a facade-backed model for event-switch tests.
 func newWiringModel(f *fakeFacade) tuiModel {
@@ -87,6 +88,7 @@ func newWiringModel(f *fakeFacade) tuiModel {
 	m.width, m.height, m.ready = 100, 30, true
 	return m
 }
+
 // evt builds a committed-style event for direct Update feeding. Ephemeral
 // kinds carry Seq 0; durable kinds get an incrementing Seq (the guard only
 // checks SessionID, so Seq is cosmetic here).

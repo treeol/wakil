@@ -147,6 +147,9 @@ func runTurnToFinal(ctx context.Context, app *App, userText string) error {
 		return err
 	}
 	for out.Kind == TurnSuspended {
+		// Signal the TUI that the turn is paused on async work — it shows
+		// "waiting" instead of "streaming" and enables input-while-waiting.
+		app.sendEvent(TurnSuspendedSignal{})
 		ok, werr := app.WaitForAsyncCompletion(ctx)
 		if werr != nil {
 			return werr
@@ -154,6 +157,8 @@ func runTurnToFinal(ctx context.Context, app *App, userText string) error {
 		if !ok {
 			return nil // nothing left pending → treat as final
 		}
+		// Signal the TUI that the turn resumed after an async completion.
+		app.sendEvent(TurnResumedSignal{})
 		out, err = app.Resume(ctx)
 		if err != nil {
 			return err

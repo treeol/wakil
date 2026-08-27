@@ -231,13 +231,13 @@ type SubagentCompleted struct {
 	SummaryPreview string
 	// Display fields (7b3 m4): the client's tab/info-panel parity with the old
 	// SubagentDoneMsg. Optional — zero values render as absent.
-	Err         string             // non-empty failure text (timeout, panic, refusal)
-	CostUSD     float64            // child's priced cost
-	FilesChanged []string          // canonical paths touched (edit-tier only)
-	Grounding   []string           // grounding-entry labels (display)
-	CtxSize     int                // context size the child consumed
-	HardMaxBytes int               // hard output cap applied to the child
-	UsedBackend string             // actual backend from last response
+	Err          string   // non-empty failure text (timeout, panic, refusal)
+	CostUSD      float64  // child's priced cost
+	FilesChanged []string // canonical paths touched (edit-tier only)
+	Grounding    []string // grounding-entry labels (display)
+	CtxSize      int      // context size the child consumed
+	HardMaxBytes int      // hard output cap applied to the child
+	UsedBackend  string   // actual backend from last response
 }
 
 func (p SubagentCompleted) Validate() error {
@@ -445,8 +445,8 @@ type TokRate struct {
 
 // AsyncJobProgress is the ephemeral detached-job progress payload (D29).
 type AsyncJobProgress struct {
-	OpID  OpID
-	Text  string
+	OpID OpID
+	Text string
 }
 
 // SideQuestionProgress is the ephemeral side-question progress payload (D29).
@@ -512,3 +512,15 @@ func (p WorkflowOutcome) Validate() error {
 type WorkflowWarning struct {
 	Message string
 }
+
+// TurnSuspended is the ephemeral payload for KindTurnSuspended: the turn has
+// paused on pending async work (the model produced final text while a Mashūra
+// panel, detached shell, or discovery subagent is still running). The TUI uses
+// this to show a "waiting" status instead of "streaming" and to enable
+// input-while-waiting (cancel the suspended turn + send a new prompt).
+type TurnSuspended struct{}
+
+// TurnResumed is the ephemeral payload for KindTurnResumed: a suspended turn
+// has resumed after an async completion arrived. The TUI transitions back from
+// "waiting" to "streaming".
+type TurnResumed struct{}

@@ -237,6 +237,10 @@ func payloadsEqual(kind Kind, want, got any) bool {
 		return w.TurnID == g.TurnID && w.Outcome == g.Outcome && w.Reason == g.Reason
 	case KindWorkflowWarning:
 		return want.(WorkflowWarning).Message == got.(WorkflowWarning).Message
+	case KindTurnSuspended:
+		return true // empty struct — always equal
+	case KindTurnResumed:
+		return true // empty struct — always equal
 	default:
 		return false
 	}
@@ -326,6 +330,10 @@ func samplePayload(kind Kind) any {
 		return WorkflowOutcome{TurnID: "trn_test1", Outcome: "declined", Reason: "user declined"}
 	case KindWorkflowWarning:
 		return WorkflowWarning{Message: "oracle unavailable"}
+	case KindTurnSuspended:
+		return TurnSuspended{}
+	case KindTurnResumed:
+		return TurnResumed{}
 	default:
 		return nil
 	}

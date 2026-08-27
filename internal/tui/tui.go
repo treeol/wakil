@@ -29,6 +29,7 @@ const (
 	stateStreaming
 	stateConfirm
 	stateCompacting
+	stateWaiting // turn suspended on async work — input-enabled
 )
 
 // queuedPrompt is a single mid-turn queued prompt. Text-only for now; the struct
@@ -138,6 +139,10 @@ type convItem struct {
 type tuiModel struct {
 	cancel     context.CancelFunc
 	cancelling bool // true after first Ctrl+C, until the turn completes
+	// flushOnCancel is set when the user sends a prompt while stateWaiting:
+	// the suspended turn is cancelled and this flag tells finishWiringTurn
+	// to flush the queued prompt as a new turn when the cancellation completes.
+	flushOnCancel bool
 
 	// facade/manager/principal (m4b): the agent-free conversation surfaces.
 	// During the staged migration the facade is authoritative for reads that
@@ -193,9 +198,9 @@ type tuiModel struct {
 	pendingAutoGrant        bool
 	pendingDestructiveGrant bool
 
-	vp       viewport.Model
-	ta       textarea.Model
-	state    agentState
+	vp    viewport.Model
+	ta    textarea.Model
+	state agentState
 
 	// pendApproval is the confirm gate (m4b): the pending ApprovalRequested
 	// event, answered through facade.RespondToApproval. Non-nil while
@@ -820,7 +825,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			// (ctx-cancel race — cancellation forced a decline first) is
 			// tolerated silently: the turn is already unwinding.
 			_ = m.facade.RespondToApproval(context.Background(), m.principal, core.ApprovalDecision{
-				SessionID: m.sessionID,
+				SessionID:  m.sessionID,
 				ApprovalID: event.ApprovalID(pa.approvalID),
 				Outcome:    outcome,
 			})
@@ -1036,6 +1041,37 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 	case "enter":
 		// Enter is ours (send); never let it reach the textarea as a newline.
 		// Shift+Enter, handled by the textarea below, inserts newlines instead.
+		if m.state == stateWaiting {
+			// Input-while-waiting: the turn is suspended on async work.
+			// Cancel the suspended turn and queue the prompt; it flushes
+			// as a new turn when the cancellation completes (flushOnCancel
+			// in finishWiringTurn). The async job survives — its result
+			// is drained by the new turn's inbox.
+			input := strings.TrimSpace(m.ta.Value())
+			if input == "" {
+				return m, nil, true
+			}
+			if strings.HasPrefix(input, "/") {
+				// Slash commands while waiting: treat the same as mid-turn
+				// streaming (the existing taxonomy below handles /auto,
+				// /info, /queue, /ask; others are hard-rejected). Fall
+				// through to the mid-turn branch.
+			} else {
+				// Plain text: cancel the wait + queue the prompt.
+				m.queuedPrompts = append(m.queuedPrompts, queuedPrompt{
+					text:       input,
+					enqueuedAt: time.Now(),
+				})
+				m.cancelTurn()
+				m.cancelling = true
+				m.flushOnCancel = true
+				m.addItem(iSys, dim2("· wait cancelled — sending your prompt…"))
+				m.ta.Reset()
+				m.comp = completionState{}
+				m = m.reflow()
+				return m, nil, true
+			}
+		}
 		if m.state != stateIdle {
 			// Mid-turn: apply the slash/text taxonomy.
 			input := strings.TrimSpace(m.ta.Value())

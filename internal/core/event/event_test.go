@@ -28,31 +28,31 @@ func committedDraft(kind Kind, payload any) Event {
 
 func durablePayloads() map[Kind]any {
 	return map[Kind]any{
-		KindSessionCreated:         SessionCreated{WorkspaceID: "wsp_1", CreatedBy: EmbeddedUserID},
-		KindTurnStarted:            TurnStarted{TurnID: "trn_1", TurnIndex: 1},
-		KindMessageCommitted:       MessageCommitted{TurnID: "trn_1", Text: "hi"},
-		KindToolCallStarted:        ToolCallStarted{TurnID: "trn_1", ToolCallID: "tcl_1", Name: "run_shell", ArgDigest: "abc"},
-		KindToolCallCompleted:      ToolCallCompleted{ToolCallID: "tcl_1", Name: "run_shell", Status: "ok"},
-		KindApprovalRequested:      ApprovalRequested{ApprovalID: "apr_1", ToolName: "run_shell", Headline: "h", Detail: "d"},
-		KindApprovalResolved:       ApprovalResolved{ApprovalID: "apr_1", Outcome: "approved"},
-		KindSubagentSpawned:        SubagentSpawned{SubagentID: "sub_1", Task: "t", Capability: "discovery"},
-		KindSubagentCompleted:      SubagentCompleted{SubagentID: "sub_1", Status: "ok"},
-		KindMemoryProposed:         MemoryProposed{Key: "k", Kind: "note", Writer: "w"},
-		KindGuardTriggered:         GuardTriggered{Guard: "g", Message: "m"},
-		KindContextWarning:         ContextWarning{Message: "m"},
-		KindTurnCompleted:          TurnCompleted{TurnID: "trn_1", Outcome: "complete"},
-		KindSessionError:           SessionError{Reason: "daemon_restart", Err: "e"},
-		KindSessionClosed:          SessionClosed{Reason: "done"},
+		KindSessionCreated:    SessionCreated{WorkspaceID: "wsp_1", CreatedBy: EmbeddedUserID},
+		KindTurnStarted:       TurnStarted{TurnID: "trn_1", TurnIndex: 1},
+		KindMessageCommitted:  MessageCommitted{TurnID: "trn_1", Text: "hi"},
+		KindToolCallStarted:   ToolCallStarted{TurnID: "trn_1", ToolCallID: "tcl_1", Name: "run_shell", ArgDigest: "abc"},
+		KindToolCallCompleted: ToolCallCompleted{ToolCallID: "tcl_1", Name: "run_shell", Status: "ok"},
+		KindApprovalRequested: ApprovalRequested{ApprovalID: "apr_1", ToolName: "run_shell", Headline: "h", Detail: "d"},
+		KindApprovalResolved:  ApprovalResolved{ApprovalID: "apr_1", Outcome: "approved"},
+		KindSubagentSpawned:   SubagentSpawned{SubagentID: "sub_1", Task: "t", Capability: "discovery"},
+		KindSubagentCompleted: SubagentCompleted{SubagentID: "sub_1", Status: "ok"},
+		KindMemoryProposed:    MemoryProposed{Key: "k", Kind: "note", Writer: "w"},
+		KindGuardTriggered:    GuardTriggered{Guard: "g", Message: "m"},
+		KindContextWarning:    ContextWarning{Message: "m"},
+		KindTurnCompleted:     TurnCompleted{TurnID: "trn_1", Outcome: "complete"},
+		KindSessionError:      SessionError{Reason: "daemon_restart", Err: "e"},
+		KindSessionClosed:     SessionClosed{Reason: "done"},
 		// 7b2 additions
-		KindUserMessageCommitted:   UserMessageCommitted{TurnID: "trn_1", Text: "user input"},
-		KindConversationCompacted:  ConversationCompacted{TurnID: "trn_1"},
-		KindWorkflowTurnStarted:    WorkflowTurnStarted{TurnID: "trn_1", UserText: "next step"},
-		KindWorkflowFinalReview:    WorkflowFinalReview{TurnID: "trn_1"},
-		KindAsyncJobStarted:        AsyncJobStarted{OpID: "op_1", Label: "bg job"},
-		KindAsyncJobCompleted:      AsyncJobCompleted{OpID: "op_1", Status: "ok"},
-		KindSideQuestionCompleted:  SideQuestionCompleted{OpID: "op_1", Status: "ok"},
+		KindUserMessageCommitted:  UserMessageCommitted{TurnID: "trn_1", Text: "user input"},
+		KindConversationCompacted: ConversationCompacted{TurnID: "trn_1"},
+		KindWorkflowTurnStarted:   WorkflowTurnStarted{TurnID: "trn_1", UserText: "next step"},
+		KindWorkflowFinalReview:   WorkflowFinalReview{TurnID: "trn_1"},
+		KindAsyncJobStarted:       AsyncJobStarted{OpID: "op_1", Label: "bg job"},
+		KindAsyncJobCompleted:     AsyncJobCompleted{OpID: "op_1", Status: "ok"},
+		KindSideQuestionCompleted: SideQuestionCompleted{OpID: "op_1", Status: "ok"},
 		// 7c additions
-		KindWorkflowOutcome:        WorkflowOutcome{TurnID: "trn_1", Outcome: "gaps"},
+		KindWorkflowOutcome: WorkflowOutcome{TurnID: "trn_1", Outcome: "gaps"},
 	}
 }
 
@@ -75,6 +75,8 @@ func TestRegistryCompleteness(t *testing.T) {
 		KindLearnNudge, KindSessionNote,
 		// 7c additions
 		KindWorkflowOutcome, KindWorkflowWarning,
+		// turn suspension/resume
+		KindTurnSuspended, KindTurnResumed,
 	}
 	seen := map[Kind]bool{}
 	for _, k := range allKinds {
@@ -117,6 +119,8 @@ func TestValidateAcceptsEphemeralKinds(t *testing.T) {
 		KindLearnNudge:           LearnNudge{Text: "learn this"},
 		KindSessionNote:          SessionNote{Text: "status line"},
 		KindWorkflowWarning:      WorkflowWarning{Message: "oracle unavailable"},
+		KindTurnSuspended:        TurnSuspended{},
+		KindTurnResumed:          TurnResumed{},
 	}
 	for kind, payload := range ephemeral {
 		if err := validDraft(kind, payload).ValidateDraft(); err != nil {

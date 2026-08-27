@@ -412,19 +412,19 @@ func (cm *conversationManager) HandoffConversation(ctx context.Context, principa
 		})
 	}
 
-	// 4. Proceed: enqueue the continuation prompt as the new session's first
-	// turn. The host drives it; the facade returns immediately.
+	// 4. Proceed: the continuation prompt is stored on the facade for the TUI
+	// to submit AFTER subscribing to the new session's event stream. This
+	// eliminates the race where the host starts the turn and emits
+	// TurnStarted before the TUI's subscription is live (the event would be
+	// missed, leaving the TUI showing "idle" while the turn runs).
+	// The caller (TUI's applyRotation) calls ConsumePendingContinuation
+	// after Subscribe + StartEventPump, then submits the prompt via
+	// SubmitInput. See sessionclient.ConversationManager.HandoffConversation
+	// for the contract.
 	if proceed && result.ContinuationPrompt != "" {
-		if _, err := f.host.SubmitInput(ctx, principal, core.SubmitInputRequest{
-			SessionID: f.sessionID,
-			Text:      result.ContinuationPrompt,
-		}); err != nil {
-			// The continuation could not start (queue full or closing). The
-			// handoff itself still succeeded — the new session exists and
-			// carries the context as a pinned message. The user can send the
-			// prompt themselves; surface the miss via the startup note.
-			appendStartupNote(f.app, "· handoff complete — continuation could not auto-start ("+err.Error()+"); the context is pinned, send your next message")
-		}
+		f.mu.Lock()
+		f.pendingContinuation = result.ContinuationPrompt
+		f.mu.Unlock()
 	}
 	return f, nil
 }

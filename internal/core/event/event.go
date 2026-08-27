@@ -68,39 +68,41 @@ const (
 type Kind string
 
 const (
-	KindSessionCreated     Kind = "session_created"
-	KindTurnStarted        Kind = "turn_started"
-	KindMessageDelta       Kind = "message_delta"      // ephemeral: streaming text
-	KindMessageCommitted   Kind = "message_committed"  // durable: coalesced message block
-	KindReasoningDelta     Kind = "reasoning_delta"    // ephemeral: reasoning_content
-	KindToolCallStarted    Kind = "tool_call_started"
-	KindToolCallCompleted  Kind = "tool_call_completed"
-	KindApprovalRequested  Kind = "approval_requested"
-	KindApprovalResolved   Kind = "approval_resolved"
-	KindSubagentSpawned    Kind = "subagent_spawned"
-	KindSubagentProgress   Kind = "subagent_progress" // ephemeral: live progress
-	KindSubagentCompleted  Kind = "subagent_completed"
-	KindMemoryProposed     Kind = "memory_proposed"
-	KindGuardTriggered     Kind = "guard_triggered"
-	KindContextWarning     Kind = "context_warning"
-	KindTurnCompleted      Kind = "turn_completed"
-	KindSessionError       Kind = "session_error"
-	KindSessionClosed      Kind = "session_closed"
+	KindSessionCreated    Kind = "session_created"
+	KindTurnStarted       Kind = "turn_started"
+	KindMessageDelta      Kind = "message_delta"     // ephemeral: streaming text
+	KindMessageCommitted  Kind = "message_committed" // durable: coalesced message block
+	KindReasoningDelta    Kind = "reasoning_delta"   // ephemeral: reasoning_content
+	KindToolCallStarted   Kind = "tool_call_started"
+	KindToolCallCompleted Kind = "tool_call_completed"
+	KindApprovalRequested Kind = "approval_requested"
+	KindApprovalResolved  Kind = "approval_resolved"
+	KindSubagentSpawned   Kind = "subagent_spawned"
+	KindSubagentProgress  Kind = "subagent_progress" // ephemeral: live progress
+	KindSubagentCompleted Kind = "subagent_completed"
+	KindMemoryProposed    Kind = "memory_proposed"
+	KindGuardTriggered    Kind = "guard_triggered"
+	KindContextWarning    Kind = "context_warning"
+	KindTurnCompleted     Kind = "turn_completed"
+	KindSessionError      Kind = "session_error"
+	KindSessionClosed     Kind = "session_closed"
 	// 7b2 additions (D24/D28/D29): session-scoped + detached-operation events.
-	KindUserMessageCommitted   Kind = "user_message_committed"   // durable: user input replay truth
-	KindConversationCompacted  Kind = "conversation_compacted"    // durable: compaction boundary
-	KindWorkflowTurnStarted    Kind = "workflow_turn_started"    // durable: workflow step submit
-	KindWorkflowFinalReview    Kind = "workflow_final_review"    // durable: final-review gate
-	KindAsyncJobStarted       Kind = "async_job_started"         // durable: detached job start
-	KindAsyncJobCompleted      Kind = "async_job_completed"       // durable: detached job done
-	KindSideQuestionCompleted Kind = "side_question_completed"   // durable: side-question done
-	KindTokRate                Kind = "tok_rate"                  // ephemeral: token rate display
-	KindAsyncJobProgress       Kind = "async_job_progress"        // ephemeral: detached job progress
-	KindSideQuestionProgress   Kind = "side_question_progress"    // ephemeral: side-question progress
-	KindLearnNudge             Kind = "learn_nudge"               // ephemeral: learn suggestion
-	KindSessionNote            Kind = "session_note"              // ephemeral: progress/status note (7b3 m4)
-	KindWorkflowOutcome        Kind = "workflow_outcome"          // durable: workflow terminal outcome (7c)
-	KindWorkflowWarning        Kind = "workflow_warning"          // ephemeral: workflow skip/force warning (7c)
+	KindUserMessageCommitted  Kind = "user_message_committed"  // durable: user input replay truth
+	KindConversationCompacted Kind = "conversation_compacted"  // durable: compaction boundary
+	KindWorkflowTurnStarted   Kind = "workflow_turn_started"   // durable: workflow step submit
+	KindWorkflowFinalReview   Kind = "workflow_final_review"   // durable: final-review gate
+	KindAsyncJobStarted       Kind = "async_job_started"       // durable: detached job start
+	KindAsyncJobCompleted     Kind = "async_job_completed"     // durable: detached job done
+	KindSideQuestionCompleted Kind = "side_question_completed" // durable: side-question done
+	KindTokRate               Kind = "tok_rate"                // ephemeral: token rate display
+	KindAsyncJobProgress      Kind = "async_job_progress"      // ephemeral: detached job progress
+	KindSideQuestionProgress  Kind = "side_question_progress"  // ephemeral: side-question progress
+	KindLearnNudge            Kind = "learn_nudge"             // ephemeral: learn suggestion
+	KindSessionNote           Kind = "session_note"            // ephemeral: progress/status note (7b3 m4)
+	KindWorkflowOutcome       Kind = "workflow_outcome"        // durable: workflow terminal outcome (7c)
+	KindWorkflowWarning       Kind = "workflow_warning"        // ephemeral: workflow skip/force warning (7c)
+	KindTurnSuspended         Kind = "turn_suspended"          // ephemeral: turn paused on async work
+	KindTurnResumed           Kind = "turn_resumed"            // ephemeral: turn resumed after async completion
 )
 
 // Class returns the durability class of k.
@@ -108,7 +110,8 @@ func (k Kind) Class() Class {
 	switch k {
 	case KindMessageDelta, KindReasoningDelta, KindSubagentProgress,
 		KindTokRate, KindAsyncJobProgress, KindSideQuestionProgress,
-		KindLearnNudge, KindSessionNote, KindWorkflowWarning:
+		KindLearnNudge, KindSessionNote, KindWorkflowWarning,
+		KindTurnSuspended, KindTurnResumed:
 		return ClassEphemeral
 	default:
 		return ClassDurable

@@ -82,6 +82,14 @@ type wiringFacade struct {
 
 	// closed is true after Close; subsequent calls return ErrSessionClosed.
 	closed bool
+
+	// pendingContinuation is the continuation prompt for /handoff proceed.
+	// Set by HandoffConversation instead of calling SubmitInput directly,
+	// so the TUI can submit it AFTER subscribing to the new session's event
+	// stream (eliminates the TurnStarted race — the event arrives through
+	// the live pump, not before it). Consumed (cleared) by the TUI's
+	// applyRotation after the subscription goroutine starts.
+	pendingContinuation string
 }
 
 // newWiringFacade creates a facade from the given App, handle, host, and
@@ -487,6 +495,18 @@ func (f *wiringFacade) AddPendingImage(img proxy.ImagePart) {
 func (f *wiringFacade) ClearPendingImages() {
 	f.app.PendingImages = nil
 	f.bumpVersion()
+}
+
+// ConsumePendingContinuation returns and clears the pending continuation
+// prompt set by HandoffConversation for /handoff proceed. The TUI calls this
+// after subscribing to the new session's events and starting the pump, so the
+// continuation turn's TurnStarted event arrives through the live stream.
+func (f *wiringFacade) ConsumePendingContinuation() string {
+	f.mu.Lock()
+	p := f.pendingContinuation
+	f.pendingContinuation = ""
+	f.mu.Unlock()
+	return p
 }
 
 // ---- Side questions ----
