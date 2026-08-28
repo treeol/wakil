@@ -25,6 +25,10 @@ type InfoSnapshot struct {
 	Cwd         string // working directory inside the executor
 	ExecMode    string // executor description ("direct", "docker", …)
 
+	// LastLatencyMs is the time-to-first-byte latency from the most recent
+	// Stream call. 0 = no measurement yet. Shown in the status line.
+	LastLatencyMs int64
+
 	// Model / backend selection (status line).
 	SelectedBackend string
 	ConfigBackend   string // the config-level default backend

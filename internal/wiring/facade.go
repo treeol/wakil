@@ -244,6 +244,7 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 		ChatID:          app.Client.ChatID,
 		BaseURL:         app.Client.BaseURL,
 		LastBackend:     app.Client.LastUsedBackend(),
+		LastLatencyMs:   app.Client.LastLatencyMs(),
 		Cwd:             app.Exec.Cwd(),
 		ExecMode:        app.Exec.Describe(),
 		SelectedBackend: app.SelectedBackend,

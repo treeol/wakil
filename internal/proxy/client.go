@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/treeol/wakil/internal/diag"
 )
@@ -509,6 +510,14 @@ type Client struct {
 	lastUsedBackendMu sync.Mutex
 	lastUsedBackend   string
 
+	// lastLatencyMs stores the time-to-first-byte latency (in milliseconds) from
+	// the most recent Stream call — measured from the HTTP request to the first
+	// SSE data chunk. 0 = no measurement yet (or the stream errored before any
+	// data arrived). Written by the agent goroutine, read by the TUI render
+	// loop → mutex-guarded.
+	lastLatencyMu sync.Mutex
+	lastLatencyMs int64
+
 	// MaxRequestBytes is the pre-send byte-size guard. When > 0 and the
 	// serialised request exceeds this limit, the largest tool-role messages are
 	// stubbed to fit before sending. 0 = disabled.
@@ -560,6 +569,20 @@ func (c *Client) SetLastUsedBackend(s string) {
 	c.lastUsedBackendMu.Lock()
 	defer c.lastUsedBackendMu.Unlock()
 	c.lastUsedBackend = s
+}
+
+// LastLatencyMs returns the time-to-first-byte latency (milliseconds) from the
+// most recent Stream call. 0 = no measurement yet.
+func (c *Client) LastLatencyMs() int64 {
+	c.lastLatencyMu.Lock()
+	defer c.lastLatencyMu.Unlock()
+	return c.lastLatencyMs
+}
+
+func (c *Client) setLastLatencyMs(ms int64) {
+	c.lastLatencyMu.Lock()
+	defer c.lastLatencyMu.Unlock()
+	c.lastLatencyMs = ms
 }
 
 // Grounding returns the accumulated grounding entries for the current turn.
@@ -889,6 +912,10 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	promptTok := estimatePromptTokens(len(raw), hasImages(messages), c.calibratedTokensPerByte())
 	c.SetUsage(UsageStat{InputTok: promptTok})
 
+	// Track TTFB for the latency display in the status line.
+	requestStart := time.Now()
+	var firstByteRecorded bool
+
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		// A cancelled context surfaces from Do as a wrapped ctx.Err() — the
@@ -969,6 +996,11 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 			// hold the connection open during long generations). They carry
 			// no payload — skip instead of failing JSON parsing.
 			continue
+		}
+		// Record TTFB on the first real data chunk.
+		if !firstByteRecorded {
+			c.setLastLatencyMs(time.Since(requestStart).Milliseconds())
+			firstByteRecorded = true
 		}
 		var chunk streamChunk
 		if jerr := json.Unmarshal([]byte(data), &chunk); jerr != nil {

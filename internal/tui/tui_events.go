@@ -198,6 +198,9 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		p := ev.Payload.(event.TokRate)
 		before := m.statusRows()
 		m.tps = p.Rate
+		if p.Rate > 0 {
+			m.lastTps = p.Rate
+		}
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case event.KindToolCallStarted:

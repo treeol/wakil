@@ -146,6 +146,7 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	m.flushOnCancel = false
 	m.turnStart = time.Time{}
 	m.tps = 0
+	m.lastTps = 0
 	m.dotPhase = 0
 	if m.sideQuestionCancel != nil {
 		m.sideQuestionCancel()

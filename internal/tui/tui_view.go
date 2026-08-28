@@ -432,8 +432,17 @@ func statusSegments(in statusLineInput) []string {
 			segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(label))
 		}
 	}
-	if in.tps > 0 && in.state == stateStreaming {
+	// t/s: always visible when we have a measurement. While streaming, show the
+	// live rate; at idle, show the last measured rate from a previous turn.
+	if in.state == stateStreaming && in.tps > 0 {
 		segs = append(segs, dim2(sprint("%.0f t/s", in.tps)))
+	} else if in.lastTps > 0 {
+		segs = append(segs, dim2(sprint("%.0f t/s", in.lastTps)))
+	}
+	// Latency: time-to-first-byte from the most recent stream. Always shown
+	// when > 0 — a quick glance shows the endpoint's responsiveness.
+	if in.lastLatencyMs > 0 {
+		segs = append(segs, dim2(sprint("%dms", in.lastLatencyMs)))
 	}
 	if in.flash != "" {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(in.flash))
@@ -543,6 +552,8 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 		queueLen:                len(m.queuedPrompts),
 		runningTool:             runningTool,
 		lastToolText:            lastToolText,
+		lastLatencyMs:           info.LastLatencyMs,
+		lastTps:                 m.lastTps,
 	}
 }
 
@@ -724,6 +735,14 @@ type statusLineInput struct {
 	// the tool completes, until the turn ends). Shown as a segment in the status
 	// line after the state label so the user always sees what the agent last did.
 	lastToolText string
+
+	// lastLatencyMs is the time-to-first-byte latency from the most recent
+	// stream call. 0 = no measurement yet. Always shown when > 0.
+	lastLatencyMs int64
+
+	// lastTps is the last measured t/s from a previous turn. Shown at idle
+	// when tps (live) is 0. 0 = no measurement yet.
+	lastTps float64
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.

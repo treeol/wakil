@@ -224,6 +224,10 @@ type tuiModel struct {
 	// streaming. Set from agent.TokRateMsg, cleared when the turn ends.
 	tps float64
 
+	// lastTps persists the last measured t/s across turns so the status line
+	// can show it at idle too (dimmed). Reset on session start/rotation.
+	lastTps float64
+
 	// Pointer to slice so Bubble Tea's value-copy model contract doesn't
 	// cause diverging copies (same reason convBuf was *strings.Builder).
 	items *[]convItem
