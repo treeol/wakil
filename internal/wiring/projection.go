@@ -29,7 +29,6 @@ package wiring
 import (
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/core/event"
-	"github.com/treeol/wakil/internal/core/id"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 )
 
@@ -90,7 +89,7 @@ func toolCallIDFromString(tcID string) event.ToolCallID {
 // either client-local display signals or snapshot fields per D24).
 //
 // The projection is best-effort: a closed session emitter returns
-// ErrEmitterClosed from Emit, which is logged and ignored (the session is
+// ErrEmitterClosed from Emit, which is silently dropped (the session is
 // closing; the event is lost by design). Ephemeral Notify calls drop silently.
 func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg any) {
 	if emit == nil {
@@ -249,13 +248,15 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		// Durable: side_question_completed.
 		opID := opIDFromString(string(m.ID))
 		status := "ok"
+		answerPreview := ""
 		if m.Err != nil {
 			status = "error"
+			answerPreview = m.Err.Error()
 		}
 		_ = emit.Emit(event.KindSideQuestionCompleted, event.SideQuestionCompleted{
 			OpID:          opID,
 			Status:        status,
-			AnswerPreview: "",
+			AnswerPreview: answerPreview,
 		})
 
 	// ---- Other agent messages (client-local, no domain event) ----
@@ -332,6 +333,3 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		_ = msg
 	}
 }
-
-// Ensure id package is used (for future ID generation needs).
-var _ = id.NewSubagentID

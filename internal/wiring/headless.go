@@ -96,12 +96,13 @@ func (h *HeadlessWriter) Write(p []byte) (int, error) {
 	s := ansi.Strip(string(p))
 	h.buf.WriteString(s)
 	for {
-		idx := strings.IndexByte(h.buf.String(), '\n')
+		full := h.buf.String()
+		idx := strings.IndexByte(full, '\n')
 		if idx < 0 {
 			break
 		}
-		line := h.buf.String()[:idx]
-		remaining := h.buf.String()[idx+1:]
+		line := full[:idx]
+		remaining := full[idx+1:]
 		h.buf.Reset()
 		h.buf.WriteString(remaining)
 		if strings.TrimSpace(line) != "" {

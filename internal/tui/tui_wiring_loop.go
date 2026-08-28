@@ -141,6 +141,18 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	m.sessionID = snap.SessionID
 
 	// Rebuild view state (same reset as the old NewConvMsg handler).
+	m.state = stateIdle
+	m.cancelling = false
+	m.flushOnCancel = false
+	m.turnStart = time.Time{}
+	m.tps = 0
+	m.dotPhase = 0
+	if m.sideQuestionCancel != nil {
+		m.sideQuestionCancel()
+		m.sideQuestionCancel = nil
+	}
+	m.sideQuestion = nil
+	m.clearArm()
 	*m.items = (*m.items)[:0]
 	m.streaming.Reset()
 	m.reasoning.Reset()
