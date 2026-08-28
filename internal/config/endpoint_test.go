@@ -317,8 +317,9 @@ func TestEndpointAuthHeaderWinsOverAPIKey(t *testing.T) {
 	}
 }
 
-// TestAppAttributionFieldsParse: app_referer and app_title parse from JSON,
-// and unset (omitted) vs empty string ("") is distinguishable.
+// TestAppAttributionFieldsParse: app_title parses from JSON, and unset
+// (omitted) vs empty string ("") is distinguishable. app_referer is no
+// longer a config field (silently ignored if present in JSON).
 func TestAppAttributionFieldsParse(t *testing.T) {
 	clearIlmEnv(t)
 	p := writeCfg(t, `{
@@ -351,29 +352,20 @@ func TestAppAttributionFieldsParse(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	// with-attr: both fields explicitly set.
+	// with-attr: app_title explicitly set; app_referer silently ignored.
 	ep := cfg.Endpoints["with-attr"]
-	if ep.AppReferer == nil || *ep.AppReferer != "https://my.app" {
-		t.Errorf("with-attr AppReferer = %v, want %q", ep.AppReferer, "https://my.app")
-	}
 	if ep.AppTitle == nil || *ep.AppTitle != "my-agent" {
 		t.Errorf("with-attr AppTitle = %v, want %q", ep.AppTitle, "my-agent")
 	}
 
-	// with-empty: both fields explicitly empty string (opt-out).
+	// with-empty: app_title explicitly empty string (opt-out).
 	ep2 := cfg.Endpoints["with-empty"]
-	if ep2.AppReferer == nil || *ep2.AppReferer != "" {
-		t.Errorf("with-empty AppReferer = %v, want non-nil empty string", ep2.AppReferer)
-	}
 	if ep2.AppTitle == nil || *ep2.AppTitle != "" {
 		t.Errorf("with-empty AppTitle = %v, want non-nil empty string", ep2.AppTitle)
 	}
 
-	// without-attr: both fields unset (nil).
+	// without-attr: app_title unset (nil).
 	ep3 := cfg.Endpoints["without-attr"]
-	if ep3.AppReferer != nil {
-		t.Errorf("without-attr AppReferer = %v, want nil", ep3.AppReferer)
-	}
 	if ep3.AppTitle != nil {
 		t.Errorf("without-attr AppTitle = %v, want nil", ep3.AppTitle)
 	}

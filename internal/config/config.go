@@ -61,14 +61,17 @@ type EndpointConfig struct {
 	// mechanisms, different providers); both may be set on the same endpoint.
 	CacheControl *bool `json:"cache_control,omitempty"`
 
-	// AppReferer, AppTitle, and AppCategories are OpenRouter app attribution
-	// headers (HTTP-Referer, X-Title, and X-OpenRouter-Categories).
-	// Pointer-typed: nil = apply defaults for openrouter.ai hosts, non-nil =
-	// use verbatim (including empty string to opt out of the header
+	// AppTitle is an OpenRouter app attribution header (X-Title).
+	// Pointer-typed: nil = apply default ("wakil") for openrouter.ai hosts,
+	// non-nil = use verbatim (including empty string to opt out of the header
 	// entirely). Only sent for kind=openai endpoints; ilm-proxy is untouched.
-	AppReferer    *string `json:"app_referer,omitempty"`
-	AppTitle      *string `json:"app_title,omitempty"`
-	AppCategories *string `json:"app_categories,omitempty"`
+	//
+	// app_referer (HTTP-Referer) and app_categories (X-OpenRouter-Categories)
+	// are NOT user-configurable: they are always the hardcoded defaults for
+	// OpenRouter hosts, so wakil identifies itself consistently. The JSON keys
+	// are silently ignored if present in a config file (Go's default unmarshal
+	// behavior for unknown fields).
+	AppTitle *string `json:"app_title,omitempty"`
 }
 
 // OutputMode is the typed TUI verbosity mode. A named type (not a raw string)

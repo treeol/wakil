@@ -73,11 +73,13 @@ The `endpoints` block names each server wakil can talk to;
 Per-endpoint options: `auth_header` (verbatim `Authorization` value, beats
 the global `api_key`) and optional `temperature` / `top_p` / `max_tokens` —
 omitted from the request body entirely when unset, so server defaults stay
-authoritative. For `openai`-kind endpoints, `app_referer` and `app_title`
-set the OpenRouter attribution headers (`HTTP-Referer` and `X-Title`); when
-unset, they default to `https://github.com/treeol/wakil` and `wakil` for
-openrouter.ai hosts, and are omitted for any other host. Set to `""` to
-opt out of a header.
+authoritative. For `openai`-kind endpoints, `app_title` sets the OpenRouter
+`X-Title` attribution header; when unset, it defaults to `wakil` for
+openrouter.ai hosts and is omitted for any other host. Set to `""` to opt out.
+The `HTTP-Referer` and `X-OpenRouter-Categories` headers are always the
+hardcoded project defaults (`https://github.com/treeol/wakil` and `cli-agent`)
+for openrouter.ai hosts and are **not** user-configurable — wakil always
+identifies itself.
 
 **Backward compatibility:** configs without an `endpoints` block keep working
 unchanged — the top-level `base_url` (or `host`+`port`) synthesizes a single

@@ -370,29 +370,24 @@ const (
 )
 
 // appAttributionHeaders resolves the OpenRouter attribution headers for this
-// client. nil fields default to known values when the endpoint host is
-// openrouter.ai (or a subdomain); non-nil fields are used verbatim, including
-// empty string to opt out of the header entirely. For non-openrouter hosts
-// with nil fields, no header is sent.
+// client. HTTP-Referer and X-OpenRouter-Categories are always the hardcoded
+// project defaults for openrouter.ai hosts (never user-configurable, so wakil
+// always identifies itself). AppTitle defaults for openrouter.ai hosts but can
+// be overridden via config (nil = default, non-nil = verbatim including empty
+// string to opt out). For non-openrouter hosts with nil AppTitle, no X-Title
+// header is sent.
 func (c *Client) appAttributionHeaders() (referer, title, categories string) {
 	isOR := isOpenRouterHost(c.BaseURL)
 
-	if c.AppReferer != nil {
-		referer = *c.AppReferer
-	} else if isOR {
+	if isOR {
 		referer = defaultAppReferer
+		categories = defaultAppCategories
 	}
 
 	if c.AppTitle != nil {
 		title = *c.AppTitle
 	} else if isOR {
 		title = defaultAppTitle
-	}
-
-	if c.AppCategories != nil {
-		categories = *c.AppCategories
-	} else if isOR {
-		categories = defaultAppCategories
 	}
 
 	return referer, title, categories
@@ -452,14 +447,15 @@ type Client struct {
 	// modified — breakpoints are computed per-request from the message slice.
 	CacheControl *bool
 
-	// AppReferer, AppTitle, and AppCategories are OpenRouter app attribution
-	// headers sent as "HTTP-Referer", "X-Title" (plus its prefixed alias
-	// "X-OpenRouter-Title"), and "X-OpenRouter-Categories" on chat completion
-	// requests. nil = apply defaults for openrouter.ai hosts; non-nil = use
-	// verbatim (empty string opts the header out). Only sent for KindOpenAI.
-	AppReferer    *string
-	AppTitle      *string
-	AppCategories *string
+	// AppTitle is the OpenRouter app attribution header sent as "X-Title" (plus
+	// its prefixed alias "X-OpenRouter-Title") on chat completion requests.
+	// nil = apply default for openrouter.ai hosts; non-nil = use verbatim (empty
+	// string opts the header out). Only sent for KindOpenAI.
+	//
+	// HTTP-Referer and X-OpenRouter-Categories are NOT user-configurable: they
+	// are always the hardcoded defaults for OpenRouter hosts, so wakil
+	// identifies itself consistently.
+	AppTitle *string
 
 	// Backend is the requested backend name sent as X-Ilm-Backend. Empty = don't
 	// send the header (proxy uses its own default). Set by App.Send before each

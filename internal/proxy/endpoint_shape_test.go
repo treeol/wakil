@@ -331,48 +331,48 @@ func TestOpenAIAttributionHeadersDefaultOnOpenRouter(t *testing.T) {
 	}
 }
 
-// TestOpenAIAttributionHeadersRefererOptOut: an openrouter.ai endpoint with
-// app_referer explicitly set to "" must omit HTTP-Referer but still send
-// X-Title (default, since app_title is unset).
-func TestOpenAIAttributionHeadersRefererOptOut(t *testing.T) {
+// TestOpenAIAttributionHeadersTitleOptOut: an openrouter.ai endpoint
+// with app_title explicitly set to "" must omit X-Title but still send
+// HTTP-Referer (always the hardcoded default — referer is not configurable).
+func TestOpenAIAttributionHeadersTitleOptOut(t *testing.T) {
 	srv, hdr, _ := captureServer(t)
 	c := &Client{
 		BaseURL:         "https://openrouter.ai/api",
 		Kind:            KindOpenAI,
 		ConfiguredModel: "m",
 		Model:           "m",
-		AppReferer:      strPtr2(""),
+		AppTitle:        strPtr2(""),
 		HTTP:            &http.Client{Transport: &rewritingTransport{target: srv.URL}},
 	}
 	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if v := (*hdr).Get("HTTP-Referer"); v != "" {
-		t.Errorf("HTTP-Referer = %q, want absent (opt-out via empty string)", v)
+	if v := (*hdr).Get("HTTP-Referer"); v != "https://github.com/treeol/wakil" {
+		t.Errorf("HTTP-Referer = %q, want hardcoded default (not user-configurable)", v)
 	}
-	if v := (*hdr).Get("X-Title"); v != "wakil" {
-		t.Errorf("X-Title = %q, want default wakil", v)
+	if v := (*hdr).Get("X-Title"); v != "" {
+		t.Errorf("X-Title = %q, want absent (opt-out via empty string)", v)
 	}
 }
 
-// TestOpenAIAttributionHeadersExplicitPassthrough: any endpoint with both
-// fields explicitly set must send them verbatim.
+// TestOpenAIAttributionHeadersExplicitPassthrough: any endpoint with
+// app_title explicitly set must send it verbatim. HTTP-Referer is always
+// the hardcoded default for openrouter.ai hosts.
 func TestOpenAIAttributionHeadersExplicitPassthrough(t *testing.T) {
 	srv, hdr, _ := captureServer(t)
 	c := &Client{
-		BaseURL:         srv.URL, // non-openrouter host
+		BaseURL:         "https://openrouter.ai/api",
 		Kind:            KindOpenAI,
 		ConfiguredModel: "m",
 		Model:           "m",
-		AppReferer:      strPtr2("https://myapp.example.com"),
 		AppTitle:        strPtr2("my-agent"),
-		HTTP:            http.DefaultClient,
+		HTTP:            &http.Client{Transport: &rewritingTransport{target: srv.URL}},
 	}
 	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if v := (*hdr).Get("HTTP-Referer"); v != "https://myapp.example.com" {
-		t.Errorf("HTTP-Referer = %q, want https://myapp.example.com", v)
+	if v := (*hdr).Get("HTTP-Referer"); v != "https://github.com/treeol/wakil" {
+		t.Errorf("HTTP-Referer = %q, want hardcoded default (not user-configurable)", v)
 	}
 	if v := (*hdr).Get("X-Title"); v != "my-agent" {
 		t.Errorf("X-Title = %q, want my-agent", v)
