@@ -73,9 +73,19 @@ check "internal/protoconv" "96.0"
 # Added 2026-08-26 at 71.4% (tokenstore_test.go — 16 tests covering all operations).
 check "internal/auth/tokenstore" "70.0"
 
-# TODO: add coverage floors for internal/server/*, internal/remote, and other
-# auth subpackages once they have test files. These are damage-critical but
-# currently have zero or minimal test coverage.
+# store packages: DB-backed CRUD for agents, backends, workspaces (daemon-era).
+# Added 2026-08-29 (agentstore_test.go, backendstore_test.go, workspacestore_test.go).
+check "internal/store/agentstore" "80.7"
+check "internal/store/backendstore" "82.0"
+check "internal/store/workspacestore" "83.8"
+
+# daemon-era packages: remote facade, Connect RPC handlers, session host, wiring.
+# Added 2026-08-29 — floors ratcheted at current−1pt to catch regressions.
+check "internal/core/sessionhost" "79.9"
+check "internal/core/sessionhost/sqlstore" "70.9"
+check "internal/server/connect" "53.4"
+check "internal/wiring" "56.3"
+check "internal/remote" "23.9"
 
 if [ "$fail" -ne 0 ]; then
 	echo "check_coverage: coverage floor violated — see above"
