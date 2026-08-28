@@ -32,13 +32,13 @@ type InfoSnapshot struct {
 	SubagentModel   string
 
 	// Prompt / config bits the panel displays.
-	PromptNote   string // agent prompt note (file the system prompt came from)
-	Image        string // container image name (docker mode)
-	OracleLabel  string // Mashūra panel label, or "no key"
-	OracleOn     bool   // oracle enabled
-	SearXngURL   string // SearXNG search endpoint ("" = default)
-	MentionBase  string // @-mention root directory
-	Endpoints    []string // endpoint names for /endpoint completion ("inherit" first)
+	PromptNote  string   // agent prompt note (file the system prompt came from)
+	Image       string   // container image name (docker mode)
+	OracleLabel string   // Mashūra panel label, or "no key"
+	OracleOn    bool     // oracle enabled
+	SearXngURL  string   // SearXNG search endpoint ("" = default)
+	MentionBase string   // @-mention root directory
+	Endpoints   []string // endpoint names for /endpoint completion ("inherit" first)
 
 	// Context gauge (status line ctx segment).
 	ContextLimit ContextLimit

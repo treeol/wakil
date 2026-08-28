@@ -104,7 +104,7 @@ func (id TurnID) Validate() error      { return checkID("turn", string(id)) }
 func (id ToolCallID) Validate() error  { return checkID("toolcall", string(id)) }
 func (id ApprovalID) Validate() error  { return checkID("approval", string(id)) }
 func (id SubagentID) Validate() error  { return checkID("subagent", string(id)) }
-func (id OpID) Validate() error       { return checkID("op", string(id)) }
+func (id OpID) Validate() error        { return checkID("op", string(id)) }
 
 // NewTenantID validates a tenant ID string. Returns (TenantID, error).
 func NewTenantID(raw string) (TenantID, error) {

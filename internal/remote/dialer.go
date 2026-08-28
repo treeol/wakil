@@ -26,8 +26,6 @@ import (
 	"connectrpc.com/connect"
 	v1alpha1 "github.com/treeol/wakil/api/gen/wakil/v1alpha1"
 	wakilv1alpha1connect "github.com/treeol/wakil/api/gen/wakil/v1alpha1/wakilv1alpha1connect"
-	"github.com/treeol/wakil/internal/core"
-	"github.com/treeol/wakil/internal/core/event"
 )
 
 // Dial opens a Unix-socket-backed HTTP client connected to the wakil daemon
@@ -100,14 +98,6 @@ func (c *Clients) Close() {
 	}
 }
 
-// localPrincipal returns the fixed principal the remote client uses. The
-// daemon's Connect handler ignores client-supplied principal data (it uses
-// its own localPrincipal()), so this is a formality — the actual principal
-// is resolved server-side from the Unix-socket security boundary.
-func localPrincipal() core.Principal {
-	return core.EmbeddedPrincipal()
-}
-
 // CheckHealth pings the daemon's Health RPC. Used at startup to verify the
 // daemon is alive and responding.
 func CheckHealth(ctx context.Context, c *Clients) error {
@@ -131,15 +121,6 @@ func DefaultSocketPath() string {
 		return home + "/.local/share/wakil/wakil.sock"
 	}
 	return "wakil.sock"
-}
-
-// pingSession verifies the session is reachable on the daemon. Used after
-// CreateSession/ResumeConversation to confirm the session is alive.
-func pingSession(ctx context.Context, c *Clients, sid event.SessionID) error {
-	_, err := c.Session.GetSession(ctx, connect.NewRequest(&v1alpha1.GetSessionRequest{
-		SessionId: string(sid),
-	}))
-	return err
 }
 
 // rpcTimeout is the default context timeout for unary RPCs (non-streaming).

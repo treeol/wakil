@@ -333,5 +333,3 @@ func hostOnly(url string) string {
 	s = strings.TrimPrefix(s, "https://")
 	return s
 }
-
-

@@ -274,13 +274,8 @@ func TestListJoinTokens(t *testing.T) {
 	if len(tokens) != 3 {
 		t.Errorf("len(tokens) = %d, want 3", len(tokens))
 	}
-	// Verify no secrets in the rows.
-	for _, tk := range tokens {
-		if strings.Contains(tk.ID, "jnt_") {
-			// ID is the token row ID (jnt_<uuid>), not the plaintext secret.
-			// The row has no secret field. This is fine.
-		}
-	}
+	// No secrets in the rows: the ID is the token row ID (jnt_<uuid>), not the
+	// plaintext secret, and the row has no secret field.
 }
 
 // TestRevokeIdempotent verifies that revoking an already-revoked token is

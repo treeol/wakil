@@ -49,7 +49,7 @@ func TestHostRestartRecovery(t *testing.T) {
 	// Submit a turn to generate events beyond SessionCreated.
 	_, err = h1.SubmitInput(ctx, principal, core.SubmitInputRequest{
 		SessionID: sess1.ID,
-		Text:     "hello restart",
+		Text:      "hello restart",
 	})
 	if err != nil {
 		t.Fatalf("SubmitInput: %v", err)
@@ -214,7 +214,7 @@ func TestHostWithSQLiteStore_SubmitAndConsume(t *testing.T) {
 
 	_, err = h.SubmitInput(ctx, principal, core.SubmitInputRequest{
 		SessionID: sess.ID,
-		Text:     "test input",
+		Text:      "test input",
 	})
 	if err != nil {
 		t.Fatalf("SubmitInput: %v", err)

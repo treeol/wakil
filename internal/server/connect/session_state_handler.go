@@ -122,33 +122,33 @@ func (h *SessionStateHandler) GetSessionState(ctx context.Context, req *connect.
 	cs := app.Consent()
 
 	state := &v1alpha1.SessionState{
-		SessionId:           req.Msg.SessionId,
-		ChatId:               snap.ChatID,
-		Title:                snap.SessionLabel,
-		Workspace:            snap.Workspace,
-		SelectedBackend:      snap.SelectedBackend,
-		SelectedModel:        snap.SelectedModel,
-		EffectiveModel:       snap.EffectiveModel,
-		ModelList:            append([]string(nil), snap.ModelList...),
-		ConfigBackend:        snap.ConfigBackend,
-		SubagentEndpoint:     snap.SubagentEndpoint,
-		SubagentModel:        snap.SubagentModel,
+		SessionId:              req.Msg.SessionId,
+		ChatId:                 snap.ChatID,
+		Title:                  snap.SessionLabel,
+		Workspace:              snap.Workspace,
+		SelectedBackend:        snap.SelectedBackend,
+		SelectedModel:          snap.SelectedModel,
+		EffectiveModel:         snap.EffectiveModel,
+		ModelList:              append([]string(nil), snap.ModelList...),
+		ConfigBackend:          snap.ConfigBackend,
+		SubagentEndpoint:       snap.SubagentEndpoint,
+		SubagentModel:          snap.SubagentModel,
 		EffectiveSubagentModel: snap.EffectiveSubagentModel,
-		MaxParallelSubagents: int32(snap.MaxParallel),
-		ContextUsed:          int32(snap.ContextUsed),
-		ContextExact:         snap.ContextExact,
-		EffectiveCtxMax:      int32(snap.CtxMaxCharsOverride),
-		AutoApprove:          cs.AutoApprove,
-		AllowDestructive:     cs.AllowDestructive,
-		AllowReads:           cs.AllowReads,
-		RawTools:             snap.RawTools,
-		CounselMode:          snap.CounselMode,
-		MaxCounsel:           int32(snap.MaxCounsel),
-		BaseUrl:              snap.BaseURL,
-		LastBackend:          snap.LastBackend,
-		Cwd:                  snap.Cwd,
-		ExecMode:             snap.ExecMode,
-		InfoPanelOpen:        snap.InfoPanelOpen,
+		MaxParallelSubagents:   int32(snap.MaxParallel),
+		ContextUsed:            int32(snap.ContextUsed),
+		ContextExact:           snap.ContextExact,
+		EffectiveCtxMax:        int32(snap.CtxMaxCharsOverride),
+		AutoApprove:            cs.AutoApprove,
+		AllowDestructive:       cs.AllowDestructive,
+		AllowReads:             cs.AllowReads,
+		RawTools:               snap.RawTools,
+		CounselMode:            snap.CounselMode,
+		MaxCounsel:             int32(snap.MaxCounsel),
+		BaseUrl:                snap.BaseURL,
+		LastBackend:            snap.LastBackend,
+		Cwd:                    snap.Cwd,
+		ExecMode:               snap.ExecMode,
+		InfoPanelOpen:          snap.InfoPanelOpen,
 		ContextLimit: &v1alpha1.ContextLimit{
 			NCtx:            int32(snap.CtxLimit.NCtx),
 			NCtxTrain:       int32(snap.CtxLimit.NCtxTrain),
@@ -157,7 +157,7 @@ func (h *SessionStateHandler) GetSessionState(ctx context.Context, req *connect.
 			UsableCtx:       int32(snap.CtxLimit.UsableCtx),
 			ReasoningBudget: int32(snap.CtxLimit.ReasoningBudget),
 			AnswerMargin:    int32(snap.CtxLimit.AnswerMargin),
-			ModelUnresolved:  snap.CtxLimit.ModelUnresolved,
+			ModelUnresolved: snap.CtxLimit.ModelUnresolved,
 		},
 	}
 	state.WorkflowLabel = snap.WorkflowLabel
@@ -573,7 +573,7 @@ func (h *SessionStateHandler) SetSessionLabel(ctx context.Context, req *connect.
 		return nil, mapError(err)
 	}
 	app := h.app
-	label := strings.Trim(req.Msg.Label, `"'"`)
+	label := strings.Trim(req.Msg.Label, `"'`)
 	if app.Session == nil {
 		return connect.NewResponse(&v1alpha1.SetSessionLabelResponse{
 			Notice: "no active session",
@@ -736,9 +736,9 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 	}
 
 	resp := &v1alpha1.LoadSessionResponse{
-		ChatId:  s.ChatID,
-		Title:   s.Label,
-		Conv:    conv,
+		ChatId: s.ChatID,
+		Title:  s.Label,
+		Conv:   conv,
 	}
 	if s.SavedWorkflow != nil {
 		resp.WorkflowLabel = s.SavedWorkflow.PhaseName()
@@ -770,7 +770,7 @@ func (h *SessionStateHandler) ListSavedSessions(ctx context.Context, req *connec
 			ChatId:       s.ChatID,
 			Model:        s.Model,
 			Label:        s.Label,
-			Workspace:   s.Workspace,
+			Workspace:    s.Workspace,
 			Created:      s.Created.Unix(),
 			Updated:      s.Updated.Unix(),
 			Turns:        int32(turns),

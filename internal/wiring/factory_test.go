@@ -137,8 +137,8 @@ func TestRunRejectsReleasedTurn(t *testing.T) {
 	// The TurnFunc must reject the turn.
 	_, err = h.Turn(context.Background(), sessionhost.TurnInput{
 		SessionID: "ses_test_1",
-		TurnID:   "trn_test_1",
-		Emit:     &nullEmitter{},
+		TurnID:    "trn_test_1",
+		Emit:      &nullEmitter{},
 	})
 	if err == nil {
 		t.Fatal("TurnFunc should error on released handle")

@@ -195,8 +195,8 @@ var hostReservedKinds = map[event.Kind]bool{
 	event.KindMessageCommitted:     true,
 	event.KindUserMessageCommitted: true, // 7b2: host-emitted replay truth
 	event.KindTurnCompleted:        true,
-	event.KindSessionError:          true,
-	event.KindSessionClosed:         true,
+	event.KindSessionError:         true,
+	event.KindSessionClosed:        true,
 }
 
 // turnScopedKinds are durable kinds that belong to the turn-scoped Emitter, not
@@ -1049,9 +1049,7 @@ func (h *Host) runLoop(s *session) {
 		s.mu.Lock()
 		for len(s.queue) == 0 && s.closing == "" {
 			s.mu.Unlock()
-			select {
-			case <-s.kick:
-			}
+			<-s.kick
 			s.mu.Lock()
 		}
 		if s.closing != "" {
@@ -1135,14 +1133,14 @@ func (h *Host) handleInput(s *session, input inputEnvelope) bool {
 	}
 
 	text, err := h.turn(turnCtx, TurnInput{
-		SessionID:   s.sid,
-		TurnID:      input.turnID,
-		TurnIndex:   turnIdx,
-		Text:        input.text,
-		ReadAction:  input.readAction,
-		UserID:      input.userID,
-		Emit:        em,
-		SessionEmit: s.sessionEmit,
+		SessionID:    s.sid,
+		TurnID:       input.turnID,
+		TurnIndex:    turnIdx,
+		Text:         input.text,
+		ReadAction:   input.readAction,
+		UserID:       input.userID,
+		Emit:         em,
+		SessionEmit:  s.sessionEmit,
 		ParkApproval: park,
 		EnqueueInput: enqueue,
 	})

@@ -80,14 +80,6 @@ func payloadType(p any) (reflect.Type, bool) {
 	return t, true
 }
 
-// typeName returns a human-readable name for a payload type, for error messages.
-func typeName(t reflect.Type) string {
-	if t == nil {
-		return "<nil>"
-	}
-	return t.Name()
-}
-
 // validatePayloadType reports whether p's concrete type is exactly the domain
 // type registered for kind. It rejects nil, typed-nil pointers, non-structs,
 // and same-named types from other packages.

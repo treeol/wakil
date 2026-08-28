@@ -2,7 +2,6 @@ package tui
 
 import (
 	"testing"
-
 )
 
 // TestTuiModelCopy_SharesReasoningBuilder locks the Bubble Tea value-copy

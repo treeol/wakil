@@ -502,7 +502,7 @@ func listenUnix(path string) (net.Listener, error) {
 	// permissions.
 	if err := os.Chmod(path, 0o600); err != nil {
 		l.Close()
-		os.Remove(path)
+		_ = os.Remove(path)
 		return nil, fmt.Errorf("chmod socket %s: %w", path, err)
 	}
 

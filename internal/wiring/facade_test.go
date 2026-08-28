@@ -55,7 +55,7 @@ func TestEventPumpDeliversEvents(t *testing.T) {
 	// Submit a turn to generate events.
 	_, err = host.SubmitInput(context.Background(), principal, core.SubmitInputRequest{
 		SessionID: sess.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 	if err != nil {
 		t.Fatalf("SubmitInput: %v", err)

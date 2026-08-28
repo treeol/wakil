@@ -517,7 +517,7 @@ func consumeWorkflowEvents(ctx context.Context, sub core.EventSubscription, hw *
 		}
 		switch ev.Kind {
 		case event.KindMessageDelta:
-			hw.Write([]byte(ev.Payload.(event.MessageDelta).Text))
+			_, _ = hw.Write([]byte(ev.Payload.(event.MessageDelta).Text))
 		case event.KindWorkflowWarning:
 			emitEvent(rawOut, map[string]any{
 				"type":    "warning",
@@ -576,7 +576,7 @@ func consumeTurnEvents(ctx context.Context, sub core.EventSubscription, hw *Head
 		}
 		switch ev.Kind {
 		case event.KindMessageDelta:
-			hw.Write([]byte(ev.Payload.(event.MessageDelta).Text))
+			_, _ = hw.Write([]byte(ev.Payload.(event.MessageDelta).Text))
 		case event.KindApprovalResolved:
 			ar := ev.Payload.(event.ApprovalResolved)
 			if ar.Outcome == "declined" {

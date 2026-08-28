@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-
-
 	"github.com/charmbracelet/bubbles/textarea"
 )
 

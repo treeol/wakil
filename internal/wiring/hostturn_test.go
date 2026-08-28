@@ -126,23 +126,6 @@ func waitUntil(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met within deadline")
 }
 
-// drainReplay reads the replay segment of a subscription until it stalls (the
-// turn hasn't started yet); returns the events drained.
-func drainReplay(t *testing.T, sub core.EventSubscription, want int) []event.Event {
-	t.Helper()
-	var out []event.Event
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	for len(out) < want {
-		ev, err := sub.Next(ctx)
-		if err != nil {
-			t.Fatalf("drain replay Next: %v", err)
-		}
-		out = append(out, ev)
-	}
-	return out
-}
-
 // TestIntegrationRealTurnDrivesSession is the chunk-5 headless proof: a real
 // *agent.App turn (fake SSE backend, no tool calls) driven entirely through
 // SessionService + EventReader, asserting the durable sequence and the
@@ -195,9 +178,6 @@ func TestIntegrationRealTurnDrivesSession(t *testing.T) {
 			lastSeq = ev.Seq
 		case event.KindTurnCompleted:
 			kinds = append(kinds, ev.Kind)
-			if lastSeq == 0 {
-				lastSeq = ev.Seq
-			}
 			goto done
 		default:
 			if ev.Kind.Class() == event.ClassDurable {

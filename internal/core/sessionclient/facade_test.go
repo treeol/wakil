@@ -228,6 +228,6 @@ func (f *fakeConversationManager) ResumeConversation(ctx context.Context, p core
 func (f *fakeConversationManager) HandoffConversation(ctx context.Context, p core.Principal, cur Facade, proceed bool) (Facade, error) {
 	return nil, nil
 }
-func (f *fakeConversationManager) Close(fac Facade) error { return nil }
-func (f *fakeConversationManager) SetAutoUserOverridden()   {}
-func (f *fakeConversationManager) SetModelUserOverridden()  {}
+func (f *fakeConversationManager) Close(fac Facade) error  { return nil }
+func (f *fakeConversationManager) SetAutoUserOverridden()  {}
+func (f *fakeConversationManager) SetModelUserOverridden() {}

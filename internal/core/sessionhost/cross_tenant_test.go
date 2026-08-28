@@ -28,15 +28,15 @@ func TestCrossTenantIsolation(t *testing.T) {
 
 	// Two principals in different tenants.
 	tenantA := core.Principal{
-		TenantID: event.TenantID("tnt_a"),
-		UserID:   event.UserID("usr_a"),
-		Role:     core.RoleOwner,
+		TenantID:   event.TenantID("tnt_a"),
+		UserID:     event.UserID("usr_a"),
+		Role:       core.RoleOwner,
 		AuthMethod: "embedded",
 	}
 	tenantB := core.Principal{
-		TenantID: event.TenantID("tnt_b"),
-		UserID:   event.UserID("usr_b"),
-		Role:     core.RoleOwner,
+		TenantID:   event.TenantID("tnt_b"),
+		UserID:     event.UserID("usr_b"),
+		Role:       core.RoleOwner,
 		AuthMethod: "embedded",
 	}
 
@@ -108,9 +108,9 @@ func TestCrossTenantIsolation(t *testing.T) {
 
 	// Tenant B tries RespondToApproval → ErrSessionNotFound.
 	err = h.RespondToApproval(ctx, tenantB, core.ApprovalDecision{
-		SessionID:   sessionA.ID,
-		ApprovalID:  event.ApprovalID("apr_bogus"),
-		Outcome:     core.ApprovalDeny,
+		SessionID:  sessionA.ID,
+		ApprovalID: event.ApprovalID("apr_bogus"),
+		Outcome:    core.ApprovalDeny,
 	})
 	if !errors.Is(err, core.ErrSessionNotFound) {
 		t.Fatalf("RespondToApproval cross-tenant: expected ErrSessionNotFound, got %v", err)

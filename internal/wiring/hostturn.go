@@ -167,9 +167,9 @@ var ErrTurnActive = errors.New("wiring: cannot release App while a turn is activ
 type hostTurn struct {
 	app             *agent.App
 	resolver        ApprovalResolver
-	asyncApproval   bool // 7b2: use ParkApproval instead of inline resolver
-	planAutoAdvance bool // 7c: headless --plan after-turn resolver
-	noOracle        bool // 7c: legacy review-skip reason parity
+	asyncApproval   bool                   // 7b2: use ParkApproval instead of inline resolver
+	planAutoAdvance bool                   // 7c: headless --plan after-turn resolver
+	noOracle        bool                   // 7c: legacy review-skip reason parity
 	coordinator     *TransitionCoordinator // serializes turn-start vs transitions
 
 	// declineLatch captures the reason of the first declined approval
@@ -374,57 +374,57 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	// installed once and NOT restored per-turn — the per-turn restore was a
 	// 7b2 bug that broke detached event delivery between turns.
 	if ht.sessionEmit == nil && in.SessionEmit != nil {
-			// Install session-scoped callbacks permanently. These use the
-			// session-scoped emitter, not the turn-scoped in.Emit.
-			//
-			// sessionEmit is read under ht.mu in the closures because
-			// ResetSessionBinding (daemon path) writes it to nil between
-			// sessions, and detached work (D24: legal until session close) can
-			// invoke these callbacks concurrently with a reset. Without the
-			// lock this is a data race; without the nil-check OnTokRate panics.
+		// Install session-scoped callbacks permanently. These use the
+		// session-scoped emitter, not the turn-scoped in.Emit.
+		//
+		// sessionEmit is read under ht.mu in the closures because
+		// ResetSessionBinding (daemon path) writes it to nil between
+		// sessions, and detached work (D24: legal until session close) can
+		// invoke these callbacks concurrently with a reset. Without the
+		// lock this is a data race; without the nil-check OnTokRate panics.
+		ht.mu.Lock()
+		ht.sessionEmit = in.SessionEmit
+		ht.mu.Unlock()
+		app.SetOnTokRate(func(rate float64) {
 			ht.mu.Lock()
-			ht.sessionEmit = in.SessionEmit
+			se := ht.sessionEmit
 			ht.mu.Unlock()
-			app.SetOnTokRate(func(rate float64) {
+			if se != nil {
+				se.Notify(event.KindTokRate, event.TokRate{Rate: rate})
+			}
+		})
+		app.SetEventSink(func(msg any) {
+			// Turn-scoped messages are routed to the live turn's emitter,
+			// because the session emitter REJECTS turn-scoped kinds
+			// (KindSubagentSpawned, KindSubagentCompleted, tool-call
+			// kinds — see turnScopedKinds in host.go). This includes
+			// subagent spawn/done events, which are durable and
+			// turn-scoped: they must go through the turn emitter while a
+			// turn is active. Ephemeral subagent events (progress,
+			// active, finished) use Notify, which the session emitter
+			// accepts, so they fall through to the session surface.
+			//
+			// Everything else projects on the session surface (async
+			// jobs, notes, …). The current turn's emitter AND its
+			// TurnID are read under ht.mu together — the sink can fire
+			// from tool goroutines concurrently with a turn boundary,
+			// and the pair must stay consistent.
+			switch msg.(type) {
+			case agent.ToolStartMsg, agent.ToolResultMsg,
+				agent.SubagentStartMsg, agent.SubagentDoneMsg:
 				ht.mu.Lock()
-				se := ht.sessionEmit
+				te, teTurn := ht.turnEmit, ht.turnEmitTurnID
 				ht.mu.Unlock()
-				if se != nil {
-					se.Notify(event.KindTokRate, event.TokRate{Rate: rate})
+				if te != nil {
+					projectAgentEvent(te, teTurn, msg)
 				}
-			})
-			app.SetEventSink(func(msg any) {
-				// Turn-scoped messages are routed to the live turn's emitter,
-				// because the session emitter REJECTS turn-scoped kinds
-				// (KindSubagentSpawned, KindSubagentCompleted, tool-call
-				// kinds — see turnScopedKinds in host.go). This includes
-				// subagent spawn/done events, which are durable and
-				// turn-scoped: they must go through the turn emitter while a
-				// turn is active. Ephemeral subagent events (progress,
-				// active, finished) use Notify, which the session emitter
-				// accepts, so they fall through to the session surface.
-				//
-				// Everything else projects on the session surface (async
-				// jobs, notes, …). The current turn's emitter AND its
-				// TurnID are read under ht.mu together — the sink can fire
-				// from tool goroutines concurrently with a turn boundary,
-				// and the pair must stay consistent.
-				switch msg.(type) {
-				case agent.ToolStartMsg, agent.ToolResultMsg,
-					agent.SubagentStartMsg, agent.SubagentDoneMsg:
-					ht.mu.Lock()
-					te, teTurn := ht.turnEmit, ht.turnEmitTurnID
-					ht.mu.Unlock()
-					if te != nil {
-						projectAgentEvent(te, teTurn, msg)
-					}
-					return
-				}
-				ht.mu.Lock()
-				se := ht.sessionEmit
-				ht.mu.Unlock()
-				projectAgentEvent(se, "", msg)
-			})
+				return
+			}
+			ht.mu.Lock()
+			se := ht.sessionEmit
+			ht.mu.Unlock()
+			projectAgentEvent(se, "", msg)
+		})
 	}
 
 	// Only Out, Confirm, and OnReasoning are turn-scoped — they use the

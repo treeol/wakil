@@ -117,7 +117,7 @@ func TestResolveRecentSessionNoneInScope(t *testing.T) {
 func TestShortID(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"abcdef1234567890", "abcdef12"},
-		{"short", "short"},   // fewer than 8 chars passes through
+		{"short", "short"},       // fewer than 8 chars passes through
 		{"12345678", "12345678"}, // exactly 8 stays unchanged
 		{"", ""},
 	}

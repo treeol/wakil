@@ -566,16 +566,6 @@ func (m tuiModel) snapshot() (sessionclient.ClientSnapshot, bool) {
 	return m.facade.Snapshot(), true
 }
 
-// info returns the facade's InfoSnapshot on the wiring path (ok=false on the
-// legacy path). Info() is fetched on demand — the fields are cheap but
-// numerous, and Snapshot is re-fetched on every event batch.
-func (m tuiModel) info() (sessionclient.InfoSnapshot, bool) {
-	if m.facade == nil {
-		return sessionclient.InfoSnapshot{}, false
-	}
-	return m.facade.Info(), true
-}
-
 func (m tuiModel) Init() tea.Cmd {
 	if note := m.facade.ConsumeStartupNote(); note != "" {
 		return tea.Batch(textarea.Blink, func() tea.Msg { return startupNoteMsg{text: note} })

@@ -56,7 +56,7 @@ func TestResolveValidCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	exResult, err := issuer.Exchange(ctx, jointoken.ExchangeRequest{Token: result.Token, Email: "alice@example.com", DisplayName: "Alice"})
+	exResult, _ := issuer.Exchange(ctx, jointoken.ExchangeRequest{Token: result.Token, Email: "alice@example.com", DisplayName: "Alice"})
 	headers := http.Header{}
 	headers.Set("Cookie", CookieName+"="+exResult.SessionCookie)
 	ctx = withHeaders(ctx, headers)
@@ -115,7 +115,7 @@ func TestResolveRevokedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	exResult, err := issuer.Exchange(ctx, jointoken.ExchangeRequest{Token: result.Token, Email: "bob@example.com", DisplayName: "Bob"})
+	exResult, _ := issuer.Exchange(ctx, jointoken.ExchangeRequest{Token: result.Token, Email: "bob@example.com", DisplayName: "Bob"})
 	tokenHash := jointoken.HashToken(exResult.SessionCookie)
 	if err := store.RevokeWebSessionByHash(ctx, tokenHash); err != nil {
 		t.Fatalf("revoke session: %v", err)

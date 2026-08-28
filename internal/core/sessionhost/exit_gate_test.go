@@ -179,11 +179,9 @@ func TestExitGateTwoSubscribersSameOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	var want []event.Event
-	wantSeqs := make([]event.Seq, 0, len(events))
 	for _, e := range events {
 		if e.Kind.Class() == event.ClassDurable {
 			want = append(want, e)
-			wantSeqs = append(wantSeqs, e.Seq)
 		}
 	}
 

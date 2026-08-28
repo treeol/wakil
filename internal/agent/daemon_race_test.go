@@ -404,15 +404,15 @@ func TestRaceRestoreRepoStateApplyVsSnapshot(t *testing.T) {
 	app.Session = &Session{ChatID: "race-restore", Workspace: t.TempDir()}
 
 	st := &RepoState{
-		SchemaVersion:       repoStateSchemaVersion,
-		Workspace:           app.Session.Workspace,
-		Model:               "test-model",
-		Backend:             "test-backend",
-		RawTools:            true,
+		SchemaVersion:        repoStateSchemaVersion,
+		Workspace:            app.Session.Workspace,
+		Model:                "test-model",
+		Backend:              "test-backend",
+		RawTools:             true,
 		MaxParallelSubagents: 4,
-		CounselMode:         "auto",
-		MaxCounsel:          3,
-		MashuraDefaultModel: "test-oracle",
+		CounselMode:          "auto",
+		MaxCounsel:           3,
+		MashuraDefaultModel:  "test-oracle",
 	}
 
 	barrier, wg := startBarrier(2)

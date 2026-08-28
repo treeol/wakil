@@ -53,7 +53,7 @@ type App struct {
 	// The main goroutine writes Conv inside Send/streamTurn; side-question
 	// goroutines take a read-lock snapshot. All Conv access must go through
 	// ConvSnapshot (read) or the lock directly (write).
-	convMu  sync.RWMutex
+	convMu sync.RWMutex
 	// callbackMu guards the callback fields EventSink and OnTokRate from
 	// concurrent write/read. These are installed by the turn goroutine in
 	// hostTurn.run and cleared by ResetSessionBinding (an RPC goroutine in
@@ -74,9 +74,9 @@ type App struct {
 	// saveMu serializes SaveSession: acquired before stateMu/convMu so an
 	// older snapshot can never overwrite a newer one. Lock ordering:
 	// saveMu → stateMu → convMu. Only acquired in SaveSession (no deadlock).
-	saveMu sync.Mutex
-	Confirm    Confirmer
-	Out        io.Writer // assistant text + status sink
+	saveMu  sync.Mutex
+	Confirm Confirmer
+	Out     io.Writer // assistant text + status sink
 
 	// saveFailedWarned deduplicates SaveSession's failure warning: persistence
 	// is best-effort (a write failure must never interrupt a turn), but a
@@ -547,8 +547,8 @@ type bgEntry struct {
 	notifyOnExit bool
 	notified     bool
 	asyncOp      *asyncOp // non-nil when notify_on_exit=true; published on completion
-	cmdDigest    string // short command label for the completion notice
-	readOnly     bool   // whether the command was classified read-only
+	cmdDigest    string   // short command label for the completion notice
+	readOnly     bool     // whether the command was classified read-only
 
 	// Card #128: detached-shell TUI tabs. tabStarted/tabDoneSent are display
 	// exactly-once guards (independent of the inbox-level `notified`), all under

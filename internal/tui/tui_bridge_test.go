@@ -6,7 +6,6 @@ import (
 
 	agent "github.com/treeol/wakil/internal/agent"
 
-
 	tea "github.com/charmbracelet/bubbletea"
 )
 

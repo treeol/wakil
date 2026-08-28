@@ -40,7 +40,7 @@ func TestOutputModeSimpleHidesDiagnostics(t *testing.T) {
 	m, f := modelWithOutputMode(config.OutputModeSimple)
 	// Add an actionable iSys note first (must stay), then a diagnostic iDiag.
 	m = step(m, evt(event.KindConversationCompacted, event.ConversationCompacted{TurnID: "trn_1"}, f.sid)) // iDiag
-	m.addItem(iSys, "error: something went wrong")                                                        // actionable — must stay
+	m.addItem(iSys, "error: something went wrong")                                                         // actionable — must stay
 	m.addItem(iSys, "▶ user prompt")                                                                       // iUser-ish content stays
 	m.refreshViewport()
 	view := plain(m.View())

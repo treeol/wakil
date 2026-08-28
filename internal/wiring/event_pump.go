@@ -30,13 +30,13 @@ import (
 // callback. It is safe for concurrent use: Stop can be called from any
 // goroutine.
 type EventPump struct {
-	mu     sync.Mutex
-	sub    core.EventSubscription
-	host   *sessionhost.Host
+	mu        sync.Mutex
+	sub       core.EventSubscription
+	host      *sessionhost.Host
 	principal core.Principal
 	sessionID event.SessionID
-	deliver func(event.Event) // the TUI's send function
-	lastSeq event.Seq         // durable cursor for gap recovery
+	deliver   func(event.Event) // the TUI's send function
+	lastSeq   event.Seq         // durable cursor for gap recovery
 
 	stopped atomic.Bool
 	done    chan struct{}

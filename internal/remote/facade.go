@@ -1337,7 +1337,7 @@ func (f *RemoteFacade) dispatchRepoState(fields []string) sessionclient.CommandR
 func (f *RemoteFacade) dispatchSessionLabel(fields []string) sessionclient.CommandResult {
 	if len(fields) >= 3 && fields[1] == "name" {
 		label := strings.Join(fields[2:], " ")
-		label = strings.Trim(label, `"'"`)
+		label = strings.Trim(label, `"'`)
 		notice, err := f.callStateRPC("SetSessionLabel", func(ctx context.Context, c wakilv1alpha1connect.SessionStateServiceClient, sid event.SessionID) (string, error) {
 			resp, err := c.SetSessionLabel(ctx, connect.NewRequest(&v1alpha1.SetSessionLabelRequest{
 				SessionId: string(sid),

@@ -39,7 +39,7 @@ func TestSQLiteStoreContract(t *testing.T) {
 		}
 		_, err = s1.Append(ctx, event.Event{
 			TenantID: tenant, SessionID: sid, Ts: time.Now().UTC(),
-			Kind: event.KindSessionCreated,
+			Kind:    event.KindSessionCreated,
 			Payload: event.SessionCreated{WorkspaceID: "wsp_test", AgentName: "wakil", CreatedBy: "usr_test"},
 		})
 		if err != nil {

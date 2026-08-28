@@ -27,7 +27,7 @@ func newPickerModel() tuiModel {
 	m := tuiModel{
 		facade: f,
 		ta:     newTA(""),
-		width: 80, height: 24, ready: true,
+		width:  80, height: 24, ready: true,
 	}
 	m = m.openResumePicker(testSessions(), sessionclient.SessionScope{Workspace: "/work"}, 0)
 	return m

@@ -64,7 +64,7 @@ func TestSessionEmitterLegalAfterTurn(t *testing.T) {
 
 	_, err = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 	if err != nil {
 		t.Fatalf("SubmitInput: %v", err)
@@ -115,7 +115,7 @@ func TestSessionEmitterFencedAtClose(t *testing.T) {
 
 	_, err := h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 	if err != nil {
 		t.Fatalf("SubmitInput: %v", err)
@@ -167,7 +167,7 @@ func TestSessionEmitterRejectsHostReserved(t *testing.T) {
 
 	_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 	waitFor(t, func() bool {
 		g, _ := h.GetSession(context.Background(), p, s.ID)
@@ -211,7 +211,7 @@ func TestSessionEmitterRejectsEphemeralEmit(t *testing.T) {
 
 	_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 	waitFor(t, func() bool {
 		g, _ := h.GetSession(context.Background(), p, s.ID)
@@ -268,7 +268,7 @@ func TestAsyncApprovalRoundTrip(t *testing.T) {
 
 	_, err = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 	if err != nil {
 		t.Fatalf("SubmitInput: %v", err)
@@ -342,7 +342,7 @@ func TestAsyncApprovalCancelDuringApproval(t *testing.T) {
 
 	_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 
 	// Wait for awaiting_approval
@@ -424,7 +424,7 @@ func TestAsyncApprovalAlreadyResolved(t *testing.T) {
 
 	_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 
 	// Wait for awaiting_approval
@@ -488,7 +488,7 @@ func TestAsyncApprovalWrongID(t *testing.T) {
 
 	_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 
 	waitFor(t, func() bool {
@@ -551,7 +551,7 @@ func TestHeadlessSyncApprovalParity(t *testing.T) {
 
 	_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 
 	// Wait for turn to complete
@@ -593,7 +593,7 @@ func TestSessionEmitterNotifyAcceptsEphemeral(t *testing.T) {
 
 	_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 
 	// Collect events and look for the TokRate ephemeral
@@ -647,7 +647,7 @@ func TestAsyncApprovalConcurrentParkAndResolve(t *testing.T) {
 
 			_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 				SessionID: s.ID,
-				Text:     "test",
+				Text:      "test",
 			})
 
 			waitFor(t, func() bool {
@@ -688,7 +688,7 @@ func TestSessionEmitterRejectsTurnScopedKinds(t *testing.T) {
 
 	_, _ = h.SubmitInput(context.Background(), p, core.SubmitInputRequest{
 		SessionID: s.ID,
-		Text:     "test",
+		Text:      "test",
 	})
 	waitFor(t, func() bool {
 		g, _ := h.GetSession(context.Background(), p, s.ID)

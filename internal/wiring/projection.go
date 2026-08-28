@@ -109,7 +109,7 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 
 	case agent.ToolStartMsg:
 		// Durable (turn-scoped): tool_call_started.
-		emit.Emit(event.KindToolCallStarted, event.ToolCallStarted{
+		_ = emit.Emit(event.KindToolCallStarted, event.ToolCallStarted{
 			TurnID:     turnID,
 			ToolCallID: toolCallIDFromString(m.ToolCallID),
 			Name:       m.Name,
@@ -120,7 +120,7 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		// Durable (turn-scoped): tool_call_completed. The full result already
 		// streams via app.Out (ProgWriter → MessageDelta); the event carries
 		// the truncated Result as the preview.
-		emit.Emit(event.KindToolCallCompleted, event.ToolCallCompleted{
+		_ = emit.Emit(event.KindToolCallCompleted, event.ToolCallCompleted{
 			ToolCallID:    toolCallIDFromString(m.ToolCallID),
 			Name:          m.Name,
 			Status:        "ok",
@@ -136,7 +136,7 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		if capability == "" {
 			capability = "discovery"
 		}
-		emit.Emit(event.KindSubagentSpawned, event.SubagentSpawned{
+		_ = emit.Emit(event.KindSubagentSpawned, event.SubagentSpawned{
 			SubagentID: subID,
 			Task:       m.Task,
 			Capability: capability,
@@ -190,7 +190,7 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		for _, g := range m.Grounding {
 			groundingLabels = append(groundingLabels, g.Label)
 		}
-		emit.Emit(event.KindSubagentCompleted, event.SubagentCompleted{
+		_ = emit.Emit(event.KindSubagentCompleted, event.SubagentCompleted{
 			SubagentID:     subID,
 			Status:         status,
 			SummaryPreview: "",
@@ -208,7 +208,7 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 	case agent.AsyncJobStartMsg:
 		// Durable: async_job_started.
 		opID := opIDFromString(m.OpID)
-		emit.Emit(event.KindAsyncJobStarted, event.AsyncJobStarted{
+		_ = emit.Emit(event.KindAsyncJobStarted, event.AsyncJobStarted{
 			OpID:  opID,
 			Label: m.Label,
 		})
@@ -228,7 +228,7 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		if m.Err != "" {
 			status = "error"
 		}
-		emit.Emit(event.KindAsyncJobCompleted, event.AsyncJobCompleted{
+		_ = emit.Emit(event.KindAsyncJobCompleted, event.AsyncJobCompleted{
 			OpID:           opID,
 			Status:         status,
 			SummaryPreview: m.Result,
@@ -252,7 +252,7 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		if m.Err != nil {
 			status = "error"
 		}
-		emit.Emit(event.KindSideQuestionCompleted, event.SideQuestionCompleted{
+		_ = emit.Emit(event.KindSideQuestionCompleted, event.SideQuestionCompleted{
 			OpID:          opID,
 			Status:        status,
 			AnswerPreview: "",

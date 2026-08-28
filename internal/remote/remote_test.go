@@ -444,9 +444,6 @@ func TestRemoteEventPumpDedup(t *testing.T) {
 
 	// Manually apply the dedup logic from the pump.
 	if converted.Seq > 0 {
-		if converted.Seq <= pump.lastSeq {
-			// would be skipped
-		}
 		if converted.Seq > pump.lastSeq {
 			pump.lastSeq = converted.Seq
 		}

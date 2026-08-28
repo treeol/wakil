@@ -67,7 +67,7 @@ type SessionStateSnapshot struct {
 	InfoPanelOpen       bool
 
 	// Client routing fields.
-	ClientModel   string
+	ClientModel    string
 	ClientBackend  string
 	ClientChatID   string
 	BaseURL        string
@@ -244,9 +244,9 @@ func (a *App) snapshotTurnSettingsLocked() TurnSettings {
 		InfoPanelOpen:       a.InfoPanelOpen,
 	}
 	if a.Client != nil {
-		ts.ClientModel   = a.Client.Model
+		ts.ClientModel = a.Client.Model
 		ts.ClientBackend = a.Client.Backend
-		ts.ClientChatID  = a.Client.ChatID
+		ts.ClientChatID = a.Client.ChatID
 	}
 	return ts
 }
@@ -305,15 +305,15 @@ func (a *App) SnapshotSessionState() SessionStateSnapshot {
 	// Copy Client fields (Client is a *proxy.Client — we read its fields
 	// under stateMu because prepareTurn also writes them under stateMu).
 	if a.Client != nil {
-		snap.ClientModel   = a.Client.Model
+		snap.ClientModel = a.Client.Model
 		snap.ClientBackend = a.Client.Backend
-		snap.ClientChatID  = a.Client.ChatID
-		snap.BaseURL       = a.Client.BaseURL
+		snap.ClientChatID = a.Client.ChatID
+		snap.BaseURL = a.Client.BaseURL
 	}
 	// Copy Session fields.
 	if a.Session != nil {
 		snap.SessionLabel = a.Session.Label
-		snap.ChatID       = a.Session.ChatID
+		snap.ChatID = a.Session.ChatID
 	}
 	// ChatID fallback: when Session is nil (subagents, early init) or
 	// Session.ChatID is empty, fall back to Client.ChatID — same logic as
@@ -359,7 +359,7 @@ func (a *App) SnapshotSessionState() SessionStateSnapshot {
 	// a.CtxLimit — both safe outside the lock since CtxLimit is already
 	// in the snapshot and LastUsage is atomic).
 	used, exact := a.ContextUsage()
-	snap.ContextUsed  = used
+	snap.ContextUsed = used
 	snap.ContextExact = exact
 	cl := a.ContextLimit()
 	snap.CtxLimit = cl
@@ -368,7 +368,7 @@ func (a *App) SnapshotSessionState() SessionStateSnapshot {
 
 	// Exec info.
 	if a.Exec != nil {
-		snap.Cwd      = a.Exec.Cwd()
+		snap.Cwd = a.Exec.Cwd()
 		snap.ExecMode = a.Exec.Describe()
 	}
 

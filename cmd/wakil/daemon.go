@@ -262,7 +262,9 @@ func execDaemon(flags daemonFlags) error {
 	// Graceful shutdown with deadline.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), flags.shutdownTimeout)
 	defer cancel()
-	ds.shutdown(shutdownCtx)
+	if err := ds.shutdown(shutdownCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "wakil daemon: shutdown error: %v\n", err)
+	}
 
 	// Remove the socket file if it still exists.
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {

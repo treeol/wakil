@@ -417,12 +417,12 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 	msg := fmt.Sprintf("%s (\"%s\") %s — last output:\n%s\nuse read_process_log(%q) for the full output", bgID, e.cmdDigest, statusLine, tail, bgID)
 
 	op := &asyncOp{
-		id:        "job-" + bgID,
-		toolName:  e.toolName,
-		label:     e.cmdDigest,
-		createdAt: e.startedAt,
-		startedAt: e.startedAt,
-		done:      make(chan struct{}),
+		id:           "job-" + bgID,
+		toolName:     e.toolName,
+		label:        e.cmdDigest,
+		createdAt:    e.startedAt,
+		startedAt:    e.startedAt,
+		done:         make(chan struct{}),
 		originChatID: e.originChatID,
 	}
 	op.mu.Lock()

@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-
 	tea "github.com/charmbracelet/bubbletea"
 )
 

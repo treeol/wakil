@@ -692,7 +692,7 @@ func (a *App) resolveSubagentEndpointView(epName string) (subagentEndpointView, 
 			maxTokens:       a.Client.MaxTokens,
 			cachePrompt:     a.Client.CachePrompt,
 			cacheControl:    a.Client.CacheControl,
-			appReferer:       a.Client.AppReferer,
+			appReferer:      a.Client.AppReferer,
 			appTitle:        a.Client.AppTitle,
 			appCategories:   a.Client.AppCategories,
 		}
