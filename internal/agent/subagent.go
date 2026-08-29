@@ -635,8 +635,58 @@ func (v *subagentEndpointView) applyModelOverride(model string) {
 	}
 }
 
-// resolveSubagentEndpointName returns the endpoint key the child should
-// target: session override (/subagent <name>) > config subagent_endpoint >
+// resolveModelAlias resolves a user-supplied model string against the list of
+// available models (App.ModelList, fetched from /v1/ilm/models at startup).
+// Resolution rules:
+//   - Exact match (case-sensitive): returned as-is.
+//   - No exact match, exactly 1 substring match (case-insensitive): returned.
+//     e.g. "fable" → "anthropic/claude-fable-5" if that's the only match.
+//   - No exact match, 0 substring matches: returns ("", error) listing up to
+//     10 available models so the model can retry with a valid name.
+//   - No exact match, 2+ substring matches: returns ("", error) listing the
+//     matches so the model can disambiguate.
+//   - Empty modelList (endpoint doesn't support /v1/ilm/models): passthrough —
+//     return the raw string. This preserves the pre-validation behavior for
+//     endpoints without a model list, and avoids blocking dispatches on a
+//     missing list.
+//   - Empty or "inherit" model: passthrough — no validation needed (no-op
+//     override).
+func resolveModelAlias(model string, modelList []string) (string, error) {
+	if model == "" || model == "inherit" {
+		return model, nil
+	}
+	if len(modelList) == 0 {
+		// No model list available — can't validate, pass through.
+		return model, nil
+	}
+	// Exact match.
+	for _, m := range modelList {
+		if m == model {
+			return m, nil
+		}
+	}
+	// Substring match (case-insensitive).
+	lower := strings.ToLower(model)
+	var matches []string
+	for _, m := range modelList {
+		if strings.Contains(strings.ToLower(m), lower) {
+			matches = append(matches, m)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) == 0 {
+		// Show up to 10 available models to help the model retry.
+		hint := modelList
+		if len(hint) > 10 {
+			hint = hint[:10]
+		}
+		return "", fmt.Errorf("model %q not found — available models (showing %d of %d): %s",
+			model, len(hint), len(modelList), strings.Join(hint, ", "))
+	}
+	return "", fmt.Errorf("model %q is ambiguous — matches: %s", model, strings.Join(matches, ", "))
+}
 // "" (inherit — the default, and the only path with no config present).
 // SubagentEndpointOverride is stateMu-protected; Cfg.SubagentEndpoint is
 // immutable after startup.

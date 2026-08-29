@@ -27,7 +27,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 			Parameters: SchemaObj(map[string]interface{}{
 				"task":       StrProp("Specific discovery objective, e.g. 'find where ToolResultCap is configured across the repo'."),
 				"capability": EnumProp("Capability tier: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto).", CapabilityDiscovery, CapabilityEdit, CapabilityTools),
-				"model":      StrProp("Optional per-dispatch model override (e.g. \"deepseek/deepseek-chat\"). Overrides /submodel and the endpoint's model for this one dispatch. Omit or empty = use session-global routing."),
+				"model":      StrProp("Optional per-dispatch model override. Accepts short names (e.g. \"fable\" matches \"anthropic/claude-fable-5\" via substring). Overrides /submodel and the endpoint's model for this one dispatch. Omit or empty = use session-global routing."),
 			}, "task"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
@@ -45,7 +45,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 					"description": "Independent objectives (1–8), each handled by its own subagent.",
 				},
 				"capability": EnumProp("Capability tier for all tasks: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto).", CapabilityDiscovery, CapabilityEdit, CapabilityTools),
-				"model":      StrProp("Optional per-batch model override (e.g. \"deepseek/deepseek-chat\"). Overrides /submodel and the endpoint's model for all tasks in this batch. Omit or empty = use session-global routing."),
+				"model":      StrProp("Optional per-batch model override. Accepts short names (e.g. \"fable\" matches \"anthropic/claude-fable-5\" via substring). Overrides /submodel and the endpoint's model for all tasks in this batch. Omit or empty = use session-global routing."),
 			}, "tasks"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{

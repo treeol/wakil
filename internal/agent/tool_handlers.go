@@ -1319,6 +1319,19 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		return fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q, %q",
 			args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit, wtools.CapabilityTools)
 	}
+	// Resolve the model alias against the available model list. This lets the
+	// caller use short names like "fable" instead of "anthropic/claude-fable-5".
+	// Returns the exact model name if matched, or an error with available models.
+	// Passthrough when no model list is available (endpoint without /v1/ilm/models).
+	resolvedModel := args.Model
+	if args.Model != "" && args.Model != "inherit" {
+		modelList := a.ModelListLocked()
+		resolved, err := resolveModelAlias(args.Model, modelList)
+		if err != nil {
+			return fmt.Sprintf("ERROR: %v", err)
+		}
+		resolvedModel = resolved
+	}
 	// Consent gate: edit capability requires the session to have write consent.
 	// This deliberately mirrors the parent's own write predicate: in /auto
 	// mode (AutoApprove=true), write_file/edit_file/delete_file/move_file
@@ -1366,8 +1379,8 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// Resolve the effective display model for the SubagentStartMsg: per-call
 	// model if set, otherwise the session-global resolved model.
 	displayModel := a.resolvedSubagentDisplayModel()
-	if args.Model != "" && args.Model != "inherit" {
-		displayModel = args.Model
+	if resolvedModel != "" && resolvedModel != "inherit" {
+		displayModel = resolvedModel
 	}
 	a.sendEvent(SubagentStartMsg{
 		Task:       args.Task,
@@ -1383,7 +1396,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		// summary is injected into context at the next drain. This keeps the
 		// sequential read-only path non-blocking like the batch path.
 		block := []proxy.ToolCall{tc}
-		jobs := []subagentJob{{Index: 0, Task: args.Task, ChatID: subChatID, Capability: capability, Model: args.Model}}
+		jobs := []subagentJob{{Index: 0, Task: args.Task, ChatID: subChatID, Capability: capability, Model: resolvedModel}}
 		results, ok := a.queueAsyncDiscoveryBlock(block, jobs, subBackend)
 		if ok {
 			return results[0]
@@ -1393,7 +1406,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	}
 	// Sequential path: the dispatch begins immediately, no queue wait.
 	a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
-	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, args.Model, subChatID)
+	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, resolvedModel, subChatID)
 	// Early display-only completion event: emitted at child return, before
 	// the cost fold, keeping the parallel and sequential paths symmetric.
 	// SubagentDoneMsg below remains the authoritative event carrying the
@@ -1485,6 +1498,17 @@ func (a *App) handleDispatchSubagents(ctx context.Context, tc proxy.ToolCall) st
 		return fmt.Sprintf("ERROR: unknown capability %q — valid values: %q (default), %q, %q",
 			args.Capability, wtools.CapabilityDiscovery, wtools.CapabilityEdit, wtools.CapabilityTools)
 	}
+	// Resolve the model alias against the available model list (same as the
+	// sequential handler). Lets the caller use short names like "fable".
+	resolvedModel := args.Model
+	if args.Model != "" && args.Model != "inherit" {
+		modelList := a.ModelListLocked()
+		resolved, err := resolveModelAlias(args.Model, modelList)
+		if err != nil {
+			return fmt.Sprintf("ERROR: %v", err)
+		}
+		resolvedModel = resolved
+	}
 	// Consent gate (same as sequential path).
 	if capability == wtools.CapabilityEdit && !a.Consent().AutoApprove {
 		return "ERROR: edit capability requires /auto or --auto (session write consent). " +
@@ -1503,7 +1527,7 @@ func (a *App) handleDispatchSubagents(ctx context.Context, tc proxy.ToolCall) st
 			Task       string `json:"task"`
 			Capability string `json:"capability"`
 			Model      string `json:"model"`
-		}{task, capability, args.Model})
+		}{task, capability, resolvedModel})
 		block[i] = proxy.ToolCall{
 			ID:       fmt.Sprintf("%s-b%d", tc.ID, i),
 			Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: string(taskJSON)},

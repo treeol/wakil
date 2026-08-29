@@ -245,6 +245,21 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 			pureDiscovery = false
 			continue
 		}
+		// Resolve the model alias against the available model list (same as
+		// the sequential handler). Lets the caller use short names like "fable".
+		// Model list is fetched once at startup; reading it under stateMu.RLock
+		// is safe on the main goroutine (Phase A).
+		resolvedModel := args.Model
+		if args.Model != "" && args.Model != "inherit" {
+			modelList := a.ModelListLocked()
+			resolved, err := resolveModelAlias(args.Model, modelList)
+			if err != nil {
+				out[i] = fmt.Sprintf("ERROR: %v", err)
+				pureDiscovery = false
+				continue
+			}
+			resolvedModel = resolved
+		}
 		// Consent gate: edit/tools capability requires session write consent (the
 		// parent's own write predicate). INVARIANT: child may write iff parent may.
 		if (capability == wtools.CapabilityEdit || capability == wtools.CapabilityTools) && !a.Consent().AutoApprove {
@@ -257,7 +272,7 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 		if capability != wtools.CapabilityDiscovery {
 			pureDiscovery = false
 		}
-		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability, Model: args.Model})
+		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability, Model: resolvedModel})
 	}
 	if len(jobs) == 0 {
 		return nil, out, "", pureDiscovery, false

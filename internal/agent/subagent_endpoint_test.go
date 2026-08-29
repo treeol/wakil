@@ -1043,3 +1043,115 @@ func TestPerDispatchModelForcesProbeOnInheritPath(t *testing.T) {
 		t.Errorf("non-inherited + per-call model: ctxLimitInherited should be false")
 	}
 }
+
+// --- resolveModelAlias tests ---
+
+func TestResolveModelAliasExactMatch(t *testing.T) {
+	list := []string{"anthropic/claude-fable-5", "deepseek/deepseek-chat", "gpt-4"}
+	resolved, err := resolveModelAlias("deepseek/deepseek-chat", list)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != "deepseek/deepseek-chat" {
+		t.Errorf("got %q, want deepseek/deepseek-chat", resolved)
+	}
+}
+
+func TestResolveModelAliasSubstringMatch(t *testing.T) {
+	list := []string{"anthropic/claude-fable-5", "deepseek/deepseek-chat", "openai/gpt-4"}
+	resolved, err := resolveModelAlias("fable", list)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != "anthropic/claude-fable-5" {
+		t.Errorf("got %q, want anthropic/claude-fable-5", resolved)
+	}
+}
+
+func TestResolveModelAliasCaseInsensitive(t *testing.T) {
+	list := []string{"anthropic/claude-fable-5", "deepseek/deepseek-chat"}
+	resolved, err := resolveModelAlias("FABLE", list)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != "anthropic/claude-fable-5" {
+		t.Errorf("got %q, want anthropic/claude-fable-5", resolved)
+	}
+}
+
+func TestResolveModelAliasAmbiguous(t *testing.T) {
+	list := []string{"anthropic/claude-fable-5", "anthropic/claude-fable-3", "deepseek/deepseek-chat"}
+	_, err := resolveModelAlias("fable", list)
+	if err == nil {
+		t.Fatal("expected ambiguity error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error should mention ambiguity: %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude-fable-5") || !strings.Contains(err.Error(), "claude-fable-3") {
+		t.Errorf("error should list both matches: %v", err)
+	}
+}
+
+func TestResolveModelAliasNotFound(t *testing.T) {
+	list := []string{"anthropic/claude-fable-5", "deepseek/deepseek-chat"}
+	_, err := resolveModelAlias("nonexistent-model", list)
+	if err == nil {
+		t.Fatal("expected not-found error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention not found: %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude-fable-5") {
+		t.Errorf("error should list available models: %v", err)
+	}
+}
+
+func TestResolveModelAliasEmptyIsPassthrough(t *testing.T) {
+	list := []string{"anthropic/claude-fable-5"}
+	resolved, err := resolveModelAlias("", list)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != "" {
+		t.Errorf("empty model should pass through as empty, got %q", resolved)
+	}
+}
+
+func TestResolveModelAliasInheritIsPassthrough(t *testing.T) {
+	list := []string{"anthropic/claude-fable-5"}
+	resolved, err := resolveModelAlias("inherit", list)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != "inherit" {
+		t.Errorf("inherit should pass through, got %q", resolved)
+	}
+}
+
+func TestResolveModelAliasEmptyListPassthrough(t *testing.T) {
+	// No model list available (endpoint without /v1/ilm/models) — can't
+	// validate, so the raw string is passed through.
+	resolved, err := resolveModelAlias("anything", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != "anything" {
+		t.Errorf("empty list should passthrough, got %q", resolved)
+	}
+}
+
+func TestResolveModelAliasNotFoundTruncatesList(t *testing.T) {
+	// When the model list is large, the error should show at most 10 models.
+	list := make([]string, 20)
+	for i := range list {
+		list[i] = "model-" + string(rune('a'+i))
+	}
+	_, err := resolveModelAlias("nonexistent", list)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "showing 10 of 20") {
+		t.Errorf("error should mention truncated list: %v", err)
+	}
+}
