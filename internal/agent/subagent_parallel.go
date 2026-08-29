@@ -36,6 +36,7 @@ type subagentJob struct {
 	Task       string
 	ChatID     string
 	Capability string
+	Model      string // per-dispatch model override ("" or "inherit" = use session-global routing)
 }
 
 // subagentJobResult carries one worker's outcome back to the main goroutine.
@@ -149,7 +150,7 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 			// sendEvent is goroutine-safe (Program.Send), same as chunk events.
 			a.sendEvent(SubagentActiveMsg{ChatID: jobs[i].ChatID})
 			summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(
-				ctx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].ChatID)
+				ctx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].Model, jobs[i].ChatID)
 			results[i] = subagentJobResult{
 				Summary:      summary,
 				Grounding:    grounding,
@@ -222,6 +223,7 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 		var args struct {
 			Task       string `json:"task"`
 			Capability string `json:"capability"`
+			Model      string `json:"model"`
 		}
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			out[i] = fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -255,7 +257,7 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 		if capability != wtools.CapabilityDiscovery {
 			pureDiscovery = false
 		}
-		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability})
+		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability, Model: args.Model})
 	}
 	if len(jobs) == 0 {
 		return nil, out, "", pureDiscovery, false
@@ -284,17 +286,24 @@ func (a *App) announceSubagentBlock(jobs []subagentJob, backend string) {
 		dispCap = len(jobs)
 	}
 	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· %d subagents in parallel (cap %d)", len(jobs), dispCap)))
-	displayModel := a.resolvedSubagentDisplayModel()
-	toolNames := a.subagentToolNames(jobs[0].Capability)
+	sessionModel := a.resolvedSubagentDisplayModel()
 	for _, j := range jobs {
 		fmt.Fprintln(a.Out, Dim("· subagent: "+Truncate(j.Task, 60)))
+		// Per-job model: if the job has a per-dispatch override, show it;
+		// otherwise fall back to the session-global resolved model.
+		dispModel := sessionModel
+		if j.Model != "" && j.Model != "inherit" {
+			dispModel = j.Model
+		}
+		// Per-job tool names: each job can have a different capability in a
+		// mixed block, so resolve tool names per-job, not once for the block.
 		a.sendEvent(SubagentStartMsg{
 			Task:       j.Task,
 			ChatID:     j.ChatID,
 			Backend:    backend,
 			Capability: j.Capability,
-			Model:      displayModel,
-			ToolNames:  toolNames,
+			Model:      dispModel,
+			ToolNames:  a.subagentToolNames(j.Capability),
 		})
 	}
 }

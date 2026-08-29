@@ -542,6 +542,12 @@ You have async work in flight. What should you do?
   mechanically records every file touched and flags discrepancies. For
   discovery children, the summary arrives asynchronously (see "Async
   discovery" above and ## Async execution).
+  Optional model parameter: both dispatch_subagent and dispatch_subagents
+  accept a "model" string that overrides the subagent's LLM for this dispatch
+  only. Per-call model wins over /submodel (session-global) and the resolved
+  endpoint's model. Omit or empty to use the session-global routing. This
+  lets you dispatch to different models in the same turn — e.g. a cheap model
+  for a grep task and a stronger model for a planning task.
 - Parallel dispatch: for 2+ INDEPENDENT objectives, prefer dispatch_subagents
   (plural) with a tasks array — the children run concurrently (bounded by
   config); a pure-discovery batch returns placeholders immediately and the

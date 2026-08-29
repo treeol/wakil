@@ -59,7 +59,7 @@ func TestCapabilityToolsWithAutoApprove(t *testing.T) {
 	parent.SetAutoApprove(true) // session consent
 
 	summary, _, _, _, _, _ := parent.dispatchSubagent(
-		context.Background(), "use tools task", io.Discard, "", wtools.CapabilityTools)
+		context.Background(), "use tools task", io.Discard, "", wtools.CapabilityTools, "")
 
 	if summary.Objective != "tools done" {
 		t.Errorf("objective = %q, want 'tools done'", summary.Objective)
@@ -219,7 +219,7 @@ func TestExternalCallsFoldedIntoSummary(t *testing.T) {
 	// Since there's no real MCPManager, extRecorder is empty, so the model's
 	// self-reported external_calls should be overridden to nil.
 	summary, _, _, _, _, _ := parent.dispatchSubagent(
-		context.Background(), "task", io.Discard, "", wtools.CapabilityTools)
+		context.Background(), "task", io.Discard, "", wtools.CapabilityTools, "")
 
 	// Mechanical record is ground truth — model's self-report is overridden.
 	// With no MCP manager, no external actions were recorded, so ExternalCalls

@@ -616,21 +616,15 @@ type subagentEndpointView struct {
 	appTitle        *string
 }
 
-// applyModelOverride patches in a /submodel model override, mirroring /model's
-// per-kind semantics: for kind=openai both Model and ConfiguredModel are set
-// (plain endpoints send ConfiguredModel on every request); for kind=ilm-proxy
-// only Model is set (the proxy alias/routing string, ConfiguredModel is
-// ignored). A /submodel override also invalidates the subagent limits cache
-// key implicitly: resolveChildCtxLimit keys on endpoint name + backend, and
-// the model is part of the probe — but since the model override is applied
-// to the view BEFORE resolveChildCtxLimit reads it, the probe uses the
-// overridden model. The cache key does NOT include the model, so a second
-// /submodel switch to a different model on the same endpoint+backend would
-// return a stale cached limit. This is an acceptable trade-off: the limits
-// cache is session-scoped and singleflight is primarily to deduplicate
-// parallel dispatches in ONE turn (all using the same override), not to
-// cache across /submodel switches. A /submodel switch is a user action that
-// also clears the cache via the command handler (see /submodel case).
+// applyModelOverride patches in a /submodel or per-dispatch model override,
+// mirroring /model's per-kind semantics: for kind=openai both Model and
+// ConfiguredModel are set (plain endpoints send ConfiguredModel on every
+// request); for kind=ilm-proxy only Model is set (the proxy alias/routing
+// string, ConfiguredModel is ignored). The model override is applied to the
+// view BEFORE resolveChildCtxLimit reads it, so the probe uses the overridden
+// model. The limits cache key includes view.model (see resolveChildCtxLimit),
+// so different models on the same endpoint+backend produce separate cache
+// entries — no stale-limit risk from per-dispatch model overrides.
 func (v *subagentEndpointView) applyModelOverride(model string) {
 	if model == "" || model == "inherit" {
 		return
@@ -851,7 +845,15 @@ func (a *App) resolveChildCtxLimit(ctx context.Context, view subagentEndpointVie
 		// sharing there is only this one call to dedup against.
 		cache = &subagentLimitsCache{}
 	}
-	key := view.name + "|" + backend
+	// The cache key includes the effective model (view.model) in addition to
+	// endpoint name and backend. This is critical for per-dispatch model
+	// overrides: two dispatches to the same endpoint+backend with different
+	// models must NOT share a cached ContextLimit — different models can have
+	// different context windows (e.g. 128k vs 32k), and a stale limit would
+	// produce wrong activeThresholds() budgets. Previously the key omitted
+	// model because /submodel (the only override path) cleared the cache on
+	// switch — per-dispatch overrides have no such clearing step.
+	key := view.name + "|" + backend + "|" + view.model
 	return cache.resolve(key, func() ContextLimit {
 		probeCfg := a.Cfg
 		probeCfg.Endpoint = config.EndpointConfig{
@@ -905,11 +907,11 @@ func foldSubagentCost(tracker *proxy.CostTracker, rows []proxy.CostRow) float64 
 // MAIN GOROUTINE ONLY (it calls ensureSubagentConsent). The parallel path
 // must instead call ensureSubagentConsent once in its prepare phase and then
 // invoke dispatchSubagent directly from workers.
-func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
+func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, model string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
 	if !a.ensureSubagentConsent(resolvedBackend) {
 		return declinedSubagentSummary(task, resolvedBackend), nil, 0, "", nil, nil
 	}
-	return a.dispatchSubagent(ctx, task, progressOut, resolvedBackend, capability, chatID...)
+	return a.dispatchSubagent(ctx, task, progressOut, resolvedBackend, capability, model, chatID...)
 }
 
 // dispatchSubagent runs a bounded subagent for task and returns a structured
@@ -948,7 +950,15 @@ func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOu
 // Returns: summary, grounding, ctxSize, usedBackend, costRows, filesChanged.
 // filesChanged is the mechanically-recorded canonical paths touched by successful
 // edit-category tool calls (nil for discovery-tier).
-func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
+//
+// model is a per-dispatch model override. When non-empty (and not "inherit"),
+// it is applied to the resolved endpoint view via applyModelOverride AFTER
+// resolveSubagentEndpointView applies the session-global /submodel override,
+// so per-call wins over session-global wins over the endpoint's configured
+// model. Empty or "inherit" = use the session-global routing (no-op, same as
+// before). The model never touches shared App state — it is a dispatch-local
+// value applied to a dispatch-local view copy.
+func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, model string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
 	subChatID := NewChatID()
 	if len(chatID) > 0 && chatID[0] != "" {
 		subChatID = chatID[0]
@@ -959,6 +969,24 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 
 	epName := resolveSubagentEndpointName(a)
 	view, inherited := a.resolveSubagentEndpointView(epName)
+
+	// Apply the per-dispatch model override AFTER resolveSubagentEndpointView
+	// has applied the session-global /submodel override. This gives per-call
+	// model precedence over /submodel over the endpoint's configured model,
+	// without touching the resolver's signature or its stateMu lock path.
+	// applyModelOverride is a no-op for "" and "inherit" (reuses the existing
+	// sentinel semantics — no new sentinel invented). The model never touches
+	// shared App state: it is applied to this dispatch-local view copy only.
+	view.applyModelOverride(model)
+
+	// If a per-dispatch model override is active, the child's effective model
+	// differs from what the parent's CtxLimit was probed for — so the inherit
+	// fast-path (reuse a.CtxLimit) would return a stale limit. Force the probe
+	// path by treating the dispatch as non-inherited for CtxLimit purposes when
+	// the model was overridden. The endpoint view itself stays inherited (same
+	// base URL, auth, etc.) — only the CtxLimit resolution changes.
+	perCallModelActive := model != "" && model != "inherit"
+	ctxLimitInherited := inherited && !perCallModelActive
 
 	// Backend (X-Ilm-Backend) resolution is gated on the CHILD's resolved
 	// endpoint kind, not the parent's. On the inherit path this is exactly
@@ -1100,7 +1128,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		SelectedBackend:   backend,
 		BackendList:       a.BackendList,
 		consentedBackends: consentSnapshot,
-		CtxLimit:          a.resolveChildCtxLimit(ctx, view, backend, inherited),
+		CtxLimit:          a.resolveChildCtxLimit(ctx, view, backend, ctxLimitInherited),
 		Costs:             proxy.NewCostTracker(), // fresh, never the parent's pointer — see foldSubagentCost at the join point
 	}
 	sub.filesChanged = fileRecorder

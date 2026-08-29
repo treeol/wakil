@@ -35,9 +35,9 @@ func TestCapabilityDiscoveryNoOp(t *testing.T) {
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
 	// Absent capability (empty string) — the golden no-op path.
-	s1, _, _, _, _, fc1 := parent.dispatchSubagent(context.Background(), "task1", io.Discard, "", "")
+	s1, _, _, _, _, fc1 := parent.dispatchSubagent(context.Background(), "task1", io.Discard, "", "", "")
 	// Explicit "discovery".
-	s2, _, _, _, _, fc2 := parent.dispatchSubagent(context.Background(), "task2", io.Discard, "", wtools.CapabilityDiscovery)
+	s2, _, _, _, _, fc2 := parent.dispatchSubagent(context.Background(), "task2", io.Discard, "", wtools.CapabilityDiscovery, "")
 
 	// Both should have empty filesChanged (discovery tier).
 	if fc1 != nil {
@@ -130,7 +130,7 @@ func TestCapabilityEditWithAutoApprove(t *testing.T) {
 	parent.SetAutoApprove(true) // session write consent
 
 	summary, _, _, _, _, _ := parent.dispatchSubagent(
-		context.Background(), "edit task", io.Discard, "", wtools.CapabilityEdit)
+		context.Background(), "edit task", io.Discard, "", wtools.CapabilityEdit, "")
 
 	if summary.Objective != "edit done" {
 		t.Errorf("objective = %q, want 'edit done'", summary.Objective)
@@ -153,7 +153,7 @@ func TestCapabilityEditConstruction(t *testing.T) {
 	parent.SetAutoApprove(true) // session write consent
 
 	summary, _, _, _, _, filesChanged := parent.dispatchSubagent(
-		context.Background(), "edit task", io.Discard, "", wtools.CapabilityEdit)
+		context.Background(), "edit task", io.Discard, "", wtools.CapabilityEdit, "")
 
 	if summary.Objective != "edit task" {
 		t.Errorf("objective = %q", summary.Objective)
@@ -444,7 +444,7 @@ func TestFilesChangedMechanicalRecord(t *testing.T) {
 	parent.SetAutoApprove(true)
 
 	summary, _, _, _, _, filesChanged := parent.dispatchSubagent(
-		context.Background(), "make edits", io.Discard, "", wtools.CapabilityEdit)
+		context.Background(), "make edits", io.Discard, "", wtools.CapabilityEdit, "")
 
 	// The mechanical record should contain all 5 paths (a, b, c, d, e).
 	// fakeExecutor.ConfinePath returns the path as-is (no /work/ prefix).
@@ -498,7 +498,7 @@ func TestFilesChangedFailedWriteNotRecorded(t *testing.T) {
 	parent.SetAutoApprove(true)
 
 	_, _, _, _, _, filesChanged := parent.dispatchSubagent(
-		context.Background(), "try writes", io.Discard, "", wtools.CapabilityEdit)
+		context.Background(), "try writes", io.Discard, "", wtools.CapabilityEdit, "")
 
 	// Only the successful write should be in filesChanged.
 	if len(filesChanged) != 1 || filesChanged[0] != "ok.go" {
@@ -526,7 +526,7 @@ func TestFilesChangedDiscrepancy(t *testing.T) {
 	parent.SetAutoApprove(true)
 
 	summary, _, _, _, _, filesChanged := parent.dispatchSubagent(
-		context.Background(), "write", io.Discard, "", wtools.CapabilityEdit)
+		context.Background(), "write", io.Discard, "", wtools.CapabilityEdit, "")
 
 	// Mechanical record has only real.go.
 	if len(filesChanged) != 1 || filesChanged[0] != "real.go" {
@@ -573,7 +573,7 @@ func TestEditChildConfinementRegression(t *testing.T) {
 	parent.SetAutoApprove(true)
 
 	_, _, _, _, _, filesChanged := parent.dispatchSubagent(
-		context.Background(), "try escape", io.Discard, "", wtools.CapabilityEdit)
+		context.Background(), "try escape", io.Discard, "", wtools.CapabilityEdit, "")
 
 	// The rejected path should NOT appear in filesChanged.
 	for _, p := range filesChanged {

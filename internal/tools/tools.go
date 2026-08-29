@@ -21,10 +21,13 @@ func DefaultTools(cwd string) []proxy.Tool {
 				"capability \"tools\" adds MCP tools (from configured allowlist), LSP tools, and web search " +
 				"for research and external tool access; requires /auto or --auto. " +
 				"Multiple independent dispatch_subagent calls emitted in the same turn run in parallel (bounded); " +
-				"for several related tasks prefer dispatch_subagents (plural) which runs them concurrently by design.",
+				"for several related tasks prefer dispatch_subagents (plural) which runs them concurrently by design. " +
+				"model optionally overrides the subagent's LLM for this dispatch only (per-call wins over " +
+				"/submodel and the resolved endpoint's model); omit to use the session-global routing.",
 			Parameters: SchemaObj(map[string]interface{}{
 				"task":       StrProp("Specific discovery objective, e.g. 'find where ToolResultCap is configured across the repo'."),
 				"capability": EnumProp("Capability tier: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto).", CapabilityDiscovery, CapabilityEdit, CapabilityTools),
+				"model":      StrProp("Optional per-dispatch model override (e.g. \"deepseek/deepseek-chat\"). Overrides /submodel and the endpoint's model for this one dispatch. Omit or empty = use session-global routing."),
 			}, "task"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
@@ -32,7 +35,9 @@ func DefaultTools(cwd string) []proxy.Tool {
 			Description: "Dispatch several subagents CONCURRENTLY, one per task (bounded by config). " +
 				"Each task is a bounded, single-objective job, independent of the others. Returns a JSON " +
 				"array of structured summaries in task order. Use for 2+ independent objectives — faster " +
-				"than sequential dispatch_subagent calls. All tasks share the same capability tier.",
+				"than sequential dispatch_subagent calls. All tasks share the same capability tier. " +
+				"model optionally overrides the subagent LLM for all tasks in this batch (per-call wins over " +
+				"/submodel and the resolved endpoint's model); omit to use the session-global routing.",
 			Parameters: SchemaObj(map[string]interface{}{
 				"tasks": map[string]interface{}{
 					"type":        "array",
@@ -40,6 +45,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 					"description": "Independent objectives (1–8), each handled by its own subagent.",
 				},
 				"capability": EnumProp("Capability tier for all tasks: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto).", CapabilityDiscovery, CapabilityEdit, CapabilityTools),
+				"model":      StrProp("Optional per-batch model override (e.g. \"deepseek/deepseek-chat\"). Overrides /submodel and the endpoint's model for all tasks in this batch. Omit or empty = use session-global routing."),
 			}, "tasks"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{

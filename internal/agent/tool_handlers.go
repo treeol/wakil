@@ -1302,6 +1302,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	var args struct {
 		Task       string `json:"task"`
 		Capability string `json:"capability"`
+		Model      string `json:"model"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -1362,12 +1363,18 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	if !a.ensureSubagentConsent(subBackend) {
 		return declinedSubagentSummary(args.Task, subBackend).Render()
 	}
+	// Resolve the effective display model for the SubagentStartMsg: per-call
+	// model if set, otherwise the session-global resolved model.
+	displayModel := a.resolvedSubagentDisplayModel()
+	if args.Model != "" && args.Model != "inherit" {
+		displayModel = args.Model
+	}
 	a.sendEvent(SubagentStartMsg{
 		Task:       args.Task,
 		ChatID:     subChatID,
 		Backend:    subBackend,
 		Capability: capability,
-		Model:      a.resolvedSubagentDisplayModel(),
+		Model:      displayModel,
 		ToolNames:  a.subagentToolNames(capability),
 	})
 	if capability == wtools.CapabilityDiscovery {
@@ -1376,7 +1383,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		// summary is injected into context at the next drain. This keeps the
 		// sequential read-only path non-blocking like the batch path.
 		block := []proxy.ToolCall{tc}
-		jobs := []subagentJob{{Index: 0, Task: args.Task, ChatID: subChatID, Capability: capability}}
+		jobs := []subagentJob{{Index: 0, Task: args.Task, ChatID: subChatID, Capability: capability, Model: args.Model}}
 		results, ok := a.queueAsyncDiscoveryBlock(block, jobs, subBackend)
 		if ok {
 			return results[0]
@@ -1386,7 +1393,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	}
 	// Sequential path: the dispatch begins immediately, no queue wait.
 	a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
-	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, subChatID)
+	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, args.Model, subChatID)
 	// Early display-only completion event: emitted at child return, before
 	// the cost fold, keeping the parallel and sequential paths symmetric.
 	// SubagentDoneMsg below remains the authoritative event carrying the
@@ -1452,6 +1459,7 @@ func (a *App) handleDispatchSubagents(ctx context.Context, tc proxy.ToolCall) st
 	var args struct {
 		Tasks      []string `json:"tasks"`
 		Capability string   `json:"capability"`
+		Model      string   `json:"model"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -1494,7 +1502,8 @@ func (a *App) handleDispatchSubagents(ctx context.Context, tc proxy.ToolCall) st
 		taskJSON, _ := json.Marshal(struct {
 			Task       string `json:"task"`
 			Capability string `json:"capability"`
-		}{task, capability})
+			Model      string `json:"model"`
+		}{task, capability, args.Model})
 		block[i] = proxy.ToolCall{
 			ID:       fmt.Sprintf("%s-b%d", tc.ID, i),
 			Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: string(taskJSON)},

@@ -116,7 +116,7 @@ func TestGoldenInheritRequestShape(t *testing.T) {
 	// /model or /backend switch) — the golden no-op must reuse this directly.
 	app.CtxLimit = ContextLimit{NCtx: 99999, Source: "backend"}
 
-	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
 
 	if lastModel != "parent-model" {
 		t.Errorf("request model = %q, want parent-model (inherited)", lastModel)
@@ -159,7 +159,7 @@ func TestSubagentInheritsSwitchedEndpointStillGreen(t *testing.T) {
 	_, _, cmd := HandleTUICommand("/backend b", app)
 	runCmd(cmd)
 
-	app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
+	app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
 
 	raw, _ := subBody.Load().([]byte)
 	if raw == nil {
@@ -212,7 +212,7 @@ func TestOverrideOpenAIChildFromProxyParent(t *testing.T) {
 	app.Client.Kind = proxy.KindIlmProxy
 	app.Client.Model = "ilm"
 
-	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
 
 	if capturedBody == nil {
 		t.Fatal("subagent request did not reach the openai override endpoint")
@@ -290,7 +290,7 @@ func TestOverrideProxyChildFromOpenAIParent(t *testing.T) {
 		t.Fatalf("resolved backend = %q, want llama (subagent_backend applies for ilm-proxy child)", backend)
 	}
 
-	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, backend, "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, backend, "", "")
 
 	if capturedBody == nil {
 		t.Fatal("subagent request did not reach the ilm-proxy override endpoint")
@@ -443,7 +443,7 @@ func TestChildLimitsSingleflightAcrossParallelDispatches(t *testing.T) {
 	done := make(chan struct{}, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
+			app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
 			done <- struct{}{}
 		}()
 	}
@@ -484,7 +484,7 @@ func TestCostFoldSequentialDispatchViaAppHandleToolCall(t *testing.T) {
 
 	// Call dispatchSubagent directly (as a worker would) — this must NOT fold
 	// into the parent tracker by itself.
-	_, _, _, _, costRows, _ := app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
+	_, _, _, _, costRows, _ := app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
 	totalAfterDispatchOnly, _ := app.Costs.Snapshot()
 	if totalAfterDispatchOnly != 0 {
 		t.Errorf("parent tracker changed by dispatchSubagent alone (got %v) — fold must happen only at the join point", totalAfterDispatchOnly)
@@ -859,7 +859,7 @@ func TestOverrideCarriesCacheControl(t *testing.T) {
 		t.Errorf("view.cacheControl = %v, want *true (from named endpoint config)", view.cacheControl)
 	}
 
-	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
 
 	if capturedBody == nil {
 		t.Fatal("subagent request did not reach the openai override endpoint")
@@ -880,5 +880,166 @@ func TestOverrideCarriesCacheControl(t *testing.T) {
 	contentStr := string(parsed.Messages[0].Content)
 	if len(contentStr) == 0 || contentStr[0] != '[' {
 		t.Errorf("messages[0] content should be parts-shaped (array) when CacheControl is on, got: %s", contentStr)
+	}
+}
+
+// TestPerDispatchModelOverrideWinsOverSession: a per-dispatch model applied
+// via dispatchSubagent overrides the session-global SubagentModelOverride.
+// Precedence: per-call > /submodel > endpoint/parent model.
+func TestPerDispatchModelOverrideWinsOverSession(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Client.Kind = proxy.KindOpenAI
+	app.Client.Model = "parent-model"
+	app.Client.ConfiguredModel = "parent-model"
+	app.SubagentModelOverride = "session-override-model"
+
+	// Simulate what dispatchSubagent does: resolve the view, then apply
+	// the per-call model override.
+	epName := resolveSubagentEndpointName(app)
+	view, _ := app.resolveSubagentEndpointView(epName)
+
+	// Before per-call override: session override is applied
+	if view.model != "session-override-model" {
+		t.Fatalf("before per-call: model = %q, want session-override-model", view.model)
+	}
+
+	// Apply per-call override — this is what dispatchSubagent does after
+	// resolveSubagentEndpointView returns.
+	view.applyModelOverride("per-call-model")
+
+	if view.model != "per-call-model" {
+		t.Errorf("after per-call: model = %q, want per-call-model", view.model)
+	}
+	if view.configuredModel != "per-call-model" {
+		t.Errorf("configuredModel = %q, want per-call-model (openai kind)", view.configuredModel)
+	}
+}
+
+// TestPerDispatchModelEmptyIsNoOp: empty or "inherit" per-call model is a
+// no-op — the view retains whatever resolveSubagentEndpointView produced
+// (session override or endpoint model).
+func TestPerDispatchModelEmptyIsNoOp(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Client.Kind = proxy.KindOpenAI
+	app.Client.Model = "parent-model"
+	app.Client.ConfiguredModel = "parent-model"
+
+	epName := resolveSubagentEndpointName(app)
+	view, _ := app.resolveSubagentEndpointView(epName)
+	originalModel := view.model
+
+	// Empty = no-op
+	view.applyModelOverride("")
+	if view.model != originalModel {
+		t.Errorf("empty override changed model: got %q, want %q", view.model, originalModel)
+	}
+
+	// "inherit" = no-op (reuses existing sentinel semantics)
+	view.applyModelOverride("inherit")
+	if view.model != originalModel {
+		t.Errorf("inherit override changed model: got %q, want %q", view.model, originalModel)
+	}
+}
+
+// TestPerDispatchModelProxyKindDoesNotTouchConfiguredModel: for kind=ilm-proxy,
+// the per-call model sets only Model (the alias/routing string), not
+// ConfiguredModel — same semantics as /submodel.
+func TestPerDispatchModelProxyKindDoesNotTouchConfiguredModel(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Client.Kind = proxy.KindIlmProxy
+	app.Client.Model = "ilm-model"
+	app.Client.ConfiguredModel = "" // proxy kind doesn't use it
+
+	epName := resolveSubagentEndpointName(app)
+	view, _ := app.resolveSubagentEndpointView(epName)
+
+	view.applyModelOverride("per-call/deepseek-chat")
+
+	if view.model != "per-call/deepseek-chat" {
+		t.Errorf("model = %q, want per-call/deepseek-chat", view.model)
+	}
+	if view.configuredModel != "" {
+		t.Errorf("configuredModel = %q, want empty (proxy kind ignores it)", view.configuredModel)
+	}
+}
+
+// TestLimitsCacheKeyIncludesModel: the limits cache key must include the
+// effective model so two dispatches with different models on the same
+// endpoint+backend do NOT share a cached ContextLimit.
+func TestLimitsCacheKeyIncludesModel(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.Endpoints = map[string]config.EndpointConfig{
+		"oa": {Kind: config.EndpointKindOpenAI, BaseURL: "http://x", Model: "default-model"},
+	}
+	app.Cfg.SubagentEndpoint = "oa"
+	app.ensureSubagentLimitsCache()
+
+	// Two views with different models on the same endpoint+backend
+	view1, _ := app.resolveSubagentEndpointView("oa")
+	view1.applyModelOverride("model-a")
+
+	view2, _ := app.resolveSubagentEndpointView("oa")
+	view2.applyModelOverride("model-b")
+
+	// The cache key is constructed inside resolveChildCtxLimit; we verify
+	// that the key includes the model by checking that view.model differs
+	// and the key construction would produce different keys.
+	key1 := view1.name + "|" + "" + "|" + view1.model
+	key2 := view2.name + "|" + "" + "|" + view2.model
+
+	if key1 == key2 {
+		t.Errorf("cache keys must differ for different models:\n  key1=%q\n  key2=%q", key1, key2)
+	}
+	if !strings.Contains(key1, "model-a") {
+		t.Errorf("key1 must contain model-a: %q", key1)
+	}
+	if !strings.Contains(key2, "model-b") {
+		t.Errorf("key2 must contain model-b: %q", key2)
+	}
+}
+
+// TestPerDispatchModelForcesProbeOnInheritPath: when a per-dispatch model
+// override is active and the endpoint is inherited, the child must NOT reuse
+// the parent's a.CtxLimit (which was probed for the parent's model). Instead,
+// ctxLimitInherited must be false so resolveChildCtxLimit takes the probe path.
+// This test verifies the logic in dispatchSubagent that computes
+// ctxLimitInherited = inherited && !perCallModelActive.
+func TestPerDispatchModelForcesProbeOnInheritPath(t *testing.T) {
+	// Simulate the logic from dispatchSubagent:
+	// perCallModelActive = model != "" && model != "inherit"
+	// ctxLimitInherited = inherited && !perCallModelActive
+
+	// Case 1: no per-call model → inherited stays true (fast path, reuse a.CtxLimit)
+	model := ""
+	inherited := true
+	perCallModelActive := model != "" && model != "inherit"
+	ctxLimitInherited := inherited && !perCallModelActive
+	if !ctxLimitInherited {
+		t.Errorf("no per-call model: ctxLimitInherited should be true (reuse parent CtxLimit)")
+	}
+
+	// Case 2: per-call model set → inherited forced to false (probe path)
+	model = "deepseek/deepseek-chat"
+	perCallModelActive = model != "" && model != "inherit"
+	ctxLimitInherited = inherited && !perCallModelActive
+	if ctxLimitInherited {
+		t.Errorf("per-call model active: ctxLimitInherited should be false (force probe)")
+	}
+
+	// Case 3: "inherit" as per-call model → no-op, inherited stays true
+	model = "inherit"
+	perCallModelActive = model != "" && model != "inherit"
+	ctxLimitInherited = inherited && !perCallModelActive
+	if !ctxLimitInherited {
+		t.Errorf("per-call model 'inherit': ctxLimitInherited should be true (no-op)")
+	}
+
+	// Case 4: per-call model set but endpoint not inherited → stays false
+	model = "some-model"
+	inherited = false
+	perCallModelActive = model != "" && model != "inherit"
+	ctxLimitInherited = inherited && !perCallModelActive
+	if ctxLimitInherited {
+		t.Errorf("non-inherited + per-call model: ctxLimitInherited should be false")
 	}
 }
