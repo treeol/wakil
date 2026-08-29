@@ -3,7 +3,7 @@
 // This is the transport-free core's only outward-facing vocabulary: the typed,
 // sequenced event stream that every client (TUI, Web-UI, CLI/CI) consumes.
 // It lives under internal/core so that internal/core never imports api/gen or
-// internal/server (the hard rule in docs/design/wakil-foundation.md §2.1) —
+// internal/server (the hard rule in docs/archive/design/wakil-foundation.md §2.1) —
 // the proto in api/proto is written against these domain types in P2, not the
 // other way around.
 //

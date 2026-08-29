@@ -3,7 +3,7 @@
 // internal/core — SessionService, EventReader, SessionReader — over an
 // in-memory EventAppender/EventLog.
 //
-// The core design decisions, all taken from docs/design/wakil-foundation.md and
+// The core design decisions, all taken from docs/archive/design/wakil-foundation.md and
 // the Mashura-gated plan:
 //
 //   - One executor goroutine per session with a bounded input queue (§5.1). All

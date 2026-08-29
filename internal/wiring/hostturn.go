@@ -7,7 +7,7 @@
 // internal/agent (D12), and the agent package is unaware of the host. This is
 // the composition package the plan's §7 names as the home of the adapter.
 //
-// Chunk-5 scope (see docs/cards/card-148-chunk5-plan.md):
+// Chunk-5 scope (see docs/archive/cards/card-148-chunk5-plan.md):
 //   - one *agent.App drives exactly one embedded host session. The returned
 //     TurnFunc is bound to the first session it serves: a second session
 //     reusing the same TurnFunc fails loudly (one App is one mutable

@@ -62,6 +62,11 @@ jobs:
       - name: coverage floors (agent/tools/exec/proxy)
         run: scripts/check_coverage.sh cover.txt
 
+      # Verify every key in config.example.json is documented in
+      # docs/configuration.md — catches config-doc drift.
+      - name: config-doc consistency
+        run: scripts/check_config_docs.sh
+
       - name: coverage artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

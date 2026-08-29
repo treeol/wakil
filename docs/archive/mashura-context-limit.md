@@ -178,7 +178,7 @@ All tests pass under `-race -count=3`.
 | No safety margin on estimate | All 3: undercounts code/JSON | 90% safety margin |
 | Joiner not in estimate | All 3: measures wrong string | Include `"\n\nContext:\n"` in estimate |
 | Anthropic sized from OR catalog | Opus + GPT: wrong source | `knownModelContexts` fallback table |
-| Note not surfaced to user | All 3: silent degradation | Structured `Note` field (integration TODO) |
+| Note not surfaced to user | All 3: silent degradation | Structured `Note` field exists in `ContextFit` (modellimit.go) and is populated by `FitToContext`, but is not yet surfaced to the user — the three call sites in `oracle.go` only read `CannotFit`/`MaxTokens`/`Briefing`, never `Note`. Integration still TODO. |
 
 ## What the panel flagged that we did NOT address (deferred)
 

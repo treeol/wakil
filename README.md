@@ -137,7 +137,7 @@ The daemon exposes a Connect/gRPC API (`api/proto/wakil/v1alpha1`) for
 session management, event streaming, slash-command dispatch, backends,
 workspaces, and agents. A built-in web console is served on the TCP
 listener (configurable origin allowlist, session-cookie auth, optional
-TLS). See [docs/design/wakil-foundation.md](docs/design/wakil-foundation.md)
+TLS). See [docs/archive/design/wakild-foundation.md](docs/archive/design/wakild-foundation.md)
 for the full architecture.
 
 ### Web console
@@ -178,7 +178,7 @@ audited.
 | Features (LSP, browser, counsel, search, memory, tracing) | [docs/features.md](docs/features.md) |
 | Durable memory design | [docs/memory.md](docs/memory.md) |
 | Staging store design | [docs/staging.md](docs/staging.md) |
-| Daemon architecture and API design | [docs/design/wakil-foundation.md](docs/design/wakil-foundation.md) |
+| Daemon architecture and API design | [docs/archive/design/wakild-foundation.md](docs/archive/design/wakild-foundation.md) |
 | Remote provisioning | [docs/remote-provisioning.md](docs/remote-provisioning.md) |
 | Security policy and threat model | [SECURITY.md](SECURITY.md) |
 | Contributing and PR checklist | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -236,7 +236,7 @@ The daemon mode adds: session-cookie auth with SameSite=Strict, origin
 validation for CSRF prevention, optional TLS, API token authentication,
 OIDC integration, and credential encryption at rest (AES-256-GCM envelope
 encryption with a master key file). See
-[docs/design/wakil-foundation.md](docs/design/wakil-foundation.md) for the
+[docs/archive/design/wakild-foundation.md](docs/archive/design/wakild-foundation.md) for the
 security architecture.
 
 > **Running untrusted tasks?** Keep the gate on, do not enable

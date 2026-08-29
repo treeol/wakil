@@ -3,7 +3,7 @@
 // consumes, regardless of whether the core runs embedded in a single process
 // (embedded mode, the default) or behind a Connect/gRPC server (P2).
 //
-// The hard rule from docs/design/wakil-foundation.md §2.1 applies here in full
+// The hard rule from docs/archive/design/wakil-foundation.md §2.1 applies here in full
 // force: this package (and everything under internal/core) imports neither
 // api/gen nor internal/server, and never bubbletea. Handlers in internal/server
 // are pure translators between wire types and these domain types; the proto in

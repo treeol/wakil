@@ -134,6 +134,27 @@ reference covering every section below.
 | `hard_max_frac` | `0.95` | Hard ceiling at 95% of effective context |
 | `context_capacity_frac` | `0.80` | Use 80% of proxy's usable_ctx as working budget |
 | `effective_ctx_max_chars` | `0` (disabled) | Absolute cap (chars) on effective context for large models. Apply to keep context within a working budget (e.g. `200000`); models with very large advertised context may degrade in practice below their nominal limit. Applied before fractions. Override at runtime with `/maxctx` |
+| `reasoning_budget_tokens` | `4096` | Tokens reserved for extended thinking |
+| `answer_margin_tokens` | `4096` | Tokens reserved for the final answer |
+| `context_tokens_fallback` | `131072` | `n_ctx` assumed when the backend context fetch fails |
+| `keep_bytes` | `120000` | Max bytes of verbatim turns kept after compaction (absolute fallback when `n_ctx` unknown) |
+| `summary_bytes` | `20000` | Cap on the running summary; re-summarize if exceeded; `0` = unlimited |
+| `hard_max_bytes` | `160000` | Unconditional context ceiling (absolute fallback); `0` = disabled |
+| `compact_at` | `145000` | Trigger compaction at this size (absolute fallback); `0` → use `max_chars` |
+| `turn_tool_budget` | `40000` | Per-turn cumulative tool output budget |
+| `tool_result_cap` | `8000` | Max chars kept in context per tool result; `0` = unlimited |
+| `tool_result_ttl` | `3` | Evict large tool results after N completed turns; `-1` = never |
+| `max_tool_iterations` | `0` | Hard cap on tool round-trips per turn; `0` = unlimited |
+| `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |
+| `openrouter_api_key_env` | `"OPENROUTER_API_KEY"` | Env var for the OpenRouter API key *(used by mashura panel calls routed through OpenRouter)* |
+| `subagent_max_tool_iterations` | `0` (→ 30) | Cap on tool round-trips per subagent dispatch; `0` = use built-in default |
+| `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(auto-clamped to 35% of active hardMax)* |
+| `subagent_tool_result_cap` | `0` (→ 12000) | Per-result char cap for subagents; `0` = use built-in default |
+
+The absolute byte fields (`keep_bytes`, `summary_bytes`, `hard_max_bytes`, `compact_at`,
+`turn_tool_budget`, `tool_result_cap`, `tool_result_ttl`, `max_tool_iterations`) are
+fallbacks used when the backend's context window is unknown. When `n_ctx` is known, the
+fraction-based fields above override them automatically.
 
 ## Agent prompt
 

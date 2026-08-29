@@ -1,7 +1,7 @@
 package main
 
 // headless_seam_test.go: the structural guard for the chunk-7 headless
-// re-route (docs/cards/card-148-chunk7-plan.md D19/D20, exit criterion 2)
+// re-route (docs/archive/cards/card-148-chunk7-plan.md D19/D20, exit criterion 2)
 // and the Gate #1 cmd half (card-148-chunk7b-plan.md: main.go stops
 // importing internal/agent once the wiring wrappers exist).
 //

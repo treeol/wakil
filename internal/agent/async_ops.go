@@ -19,7 +19,7 @@ import (
 //
 // Long-running work (Mashūra counsel calls, detached background jobs) runs in
 // worker goroutines and reports terminal completion through a single funnel.
-// Invariants (see docs/cards/card-121-async-execution.md):
+// Invariants (see docs/archive/cards/card-121-async-execution.md):
 //
 //   - The original tool call is closed with exactly one placeholder tool result;
 //     the real result is delivered later as a separate, marker-framed user
