@@ -32,6 +32,9 @@ wakil_race
 .tmp/
 .tmp-test/
 
+# archived docs — preserved on archive/docs branch, not tracked on master
+docs/archive/
+
 # plan/audit markdown — session artifacts, not tracked
 b2-b5-plan*.md
 branch-audit.md
