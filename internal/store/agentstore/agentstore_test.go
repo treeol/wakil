@@ -34,7 +34,7 @@ func openTestDB(t *testing.T) *Store {
 
 const (
 	testTenant = "tnt_local"
-	testAgent   = "agt_test1"
+	testAgent  = "agt_test1"
 )
 
 func TestCreateAndGet(t *testing.T) {

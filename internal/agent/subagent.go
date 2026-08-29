@@ -687,6 +687,7 @@ func resolveModelAlias(model string, modelList []string) (string, error) {
 	}
 	return "", fmt.Errorf("model %q is ambiguous — matches: %s", model, strings.Join(matches, ", "))
 }
+
 // "" (inherit — the default, and the only path with no config present).
 // SubagentEndpointOverride is stateMu-protected; Cfg.SubagentEndpoint is
 // immutable after startup.

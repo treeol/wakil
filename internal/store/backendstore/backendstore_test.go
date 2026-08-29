@@ -48,8 +48,8 @@ func testMasterKey(t *testing.T) *crypto.MasterKey {
 }
 
 const (
-	testTenant   = "tnt_local"
-	testBackend  = "be_test1"
+	testTenant      = "tnt_local"
+	testBackend     = "be_test1"
 	apiKeyPlaintext = "sk-0123456789abcdef"
 )
 
