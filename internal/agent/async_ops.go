@@ -390,11 +390,14 @@ func (a *App) mashuraCallTimeout(mode string) time.Duration {
 // and terminalize normally — the watchdog is the safety net, not the
 // primary mechanism. Overridable via the watchdogGrace field for tests
 // (same pattern as asyncShutdownTimeout).
+// Card #168: reduced from 15s to 10s — Go's net/http client cancels
+// streaming responses promptly on context cancellation, so 15s was
+// unnecessarily long. 10s is still enough for HTTP stream wind-down.
 func (a *App) watchdogGracePeriod() time.Duration {
 	if a.watchdogGrace > 0 {
 		return a.watchdogGrace
 	}
-	return 15 * time.Second
+	return 10 * time.Second
 }
 
 // armSubagentWatchdog arms a timeout watchdog for an async discovery
