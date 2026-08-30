@@ -1167,7 +1167,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 					return m, nil, true
 				case "/queue":
 					// TUI-local safe — manage the queue mid-turn.
-					m, _ = m.handleQueueCommand(input)
+					m, _, _ = m.handleQueueCommand(input)
 					m.ta.Reset()
 					m.comp = completionState{}
 					return m, nil, true
@@ -1270,9 +1270,10 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		// agent.HandleTUICommand for the same reason as /info.
 		if strings.HasPrefix(input, "/queue") {
 			var qh bool
-			m, qh = m.handleQueueCommand(input)
+			var qCmds []tea.Cmd
+			m, qCmds, qh = m.handleQueueCommand(input)
 			if qh {
-				return m, nil, true
+				return m, qCmds, true
 			}
 		}
 
@@ -1546,15 +1547,14 @@ func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
 	return m, pair
 }
 
-// handleQueueCommand processes /queue subcommands: list, clear, drop N.
-// Returns (model, true) when the command was recognized and handled.
-// /queue flush is intentionally NOT supported — starting a new turn while
-// the current turn may still be active risks concurrent mutation of App
-// and Conv.
-func (m tuiModel) handleQueueCommand(input string) (tuiModel, bool) {
+// handleQueueCommand processes /queue subcommands: list, clear, drop N, flush.
+// Returns (model, cmds, true) when the command was recognized and handled.
+// flush is only allowed when stateIdle — it dequeues and submits the first
+// queued prompt as a new turn.
+func (m tuiModel) handleQueueCommand(input string) (tuiModel, []tea.Cmd, bool) {
 	fields := strings.Fields(input)
 	if len(fields) == 0 || fields[0] != "/queue" {
-		return m, false
+		return m, nil, false
 	}
 	switch {
 	case len(fields) == 1:
@@ -1590,10 +1590,27 @@ func (m tuiModel) handleQueueCommand(input string) (tuiModel, bool) {
 		dropped := m.queuedPrompts[n-1]
 		m.queuedPrompts = append(m.queuedPrompts[:n-1], m.queuedPrompts[n:]...)
 		m.addItem(iSys, dim2(sprint("· dropped: %s", formatTruncate(dropped.text, 60))))
+	case len(fields) >= 2 && fields[1] == "flush":
+		// /queue flush — manually flush the first queued prompt as a new
+		// turn. Only allowed when idle (stateIdle); rejected when a turn
+		// is active to avoid concurrent turn mutation.
+		if m.state != stateIdle {
+			m.addItem(iSys, dim2("· /queue flush: only available when idle — a turn is still active"))
+			break
+		}
+		if len(m.queuedPrompts) == 0 {
+			m.addItem(iSys, dim2("· queue: empty — nothing to flush"))
+			break
+		}
+		next := m.queuedPrompts[0]
+		m.queuedPrompts = m.queuedPrompts[1:]
+		var flushCmds []tea.Cmd
+		m, flushCmds = m.flushQueuedPrompt(next.text)
+		return m, flushCmds, true
 	default:
-		m.addItem(iSys, dim2("· /queue: usage is /queue [list|clear|drop N]"))
+		m.addItem(iSys, dim2("· /queue: usage is /queue [list|clear|drop N|flush]"))
 	}
-	return m, true
+	return m, nil, true
 }
 
 // startSideQuestion starts a concurrent side-question stream through the

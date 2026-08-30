@@ -272,7 +272,7 @@ func TestQueuePrompt_ClearedOnRotation(t *testing.T) {
 
 func TestQueueCommand_ListEmpty(t *testing.T) {
 	m, _ := queueModel(t)
-	m, _ = m.handleQueueCommand("/queue")
+	m, _, _ = m.handleQueueCommand("/queue")
 	last := lastItemText(m)
 	if !strings.Contains(last, "empty") {
 		t.Errorf("expected 'empty' for empty queue, got: %q", last)
@@ -282,7 +282,7 @@ func TestQueueCommand_ListEmpty(t *testing.T) {
 func TestQueueCommand_ListWithPrompts(t *testing.T) {
 	m, _ := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "first question"}, {text: "second question"}}
-	m, _ = m.handleQueueCommand("/queue")
+	m, _, _ = m.handleQueueCommand("/queue")
 	last := lastItemText(m)
 	if !strings.Contains(last, "queue (2):") {
 		t.Errorf("expected 'queue (2):' header, got: %q", last)
@@ -295,7 +295,7 @@ func TestQueueCommand_ListWithPrompts(t *testing.T) {
 func TestQueueCommand_Clear(t *testing.T) {
 	m, _ := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "a"}, {text: "b"}}
-	m, _ = m.handleQueueCommand("/queue clear")
+	m, _, _ = m.handleQueueCommand("/queue clear")
 	if len(m.queuedPrompts) != 0 {
 		t.Fatalf("queue should be empty after clear, got %d", len(m.queuedPrompts))
 	}
@@ -308,7 +308,7 @@ func TestQueueCommand_Clear(t *testing.T) {
 func TestQueueCommand_Drop(t *testing.T) {
 	m, _ := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "first"}, {text: "second"}, {text: "third"}}
-	m, _ = m.handleQueueCommand("/queue drop 2")
+	m, _, _ = m.handleQueueCommand("/queue drop 2")
 	if len(m.queuedPrompts) != 2 {
 		t.Fatalf("expected 2 remaining after drop, got %d", len(m.queuedPrompts))
 	}
@@ -320,13 +320,62 @@ func TestQueueCommand_Drop(t *testing.T) {
 func TestQueueCommand_DropInvalid(t *testing.T) {
 	m, _ := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "only"}}
-	m, _ = m.handleQueueCommand("/queue drop 5")
+	m, _, _ = m.handleQueueCommand("/queue drop 5")
 	if len(m.queuedPrompts) != 1 {
 		t.Fatalf("invalid drop should not modify queue, got %d", len(m.queuedPrompts))
 	}
 	last := lastItemText(m)
 	if !strings.Contains(last, "invalid") {
 		t.Errorf("expected 'invalid' error, got: %q", last)
+	}
+}
+
+// --- Tests for card #171: /queue flush escape hatch ---
+
+func TestQueueCommand_Flush_Idle(t *testing.T) {
+	// /queue flush when idle and queue is non-empty: dequeues and submits
+	// the first prompt as a new turn.
+	m, f := queueModel(t)
+	m.state = stateIdle
+	m.queuedPrompts = []queuedPrompt{{text: "stuck prompt"}, {text: "second"}}
+	m, _, _ = m.handleQueueCommand("/queue flush")
+	if len(m.queuedPrompts) != 1 {
+		t.Fatalf("expected 1 remaining after flush, got %d", len(m.queuedPrompts))
+	}
+	if m.queuedPrompts[0].text != "second" {
+		t.Errorf("remaining should be 'second', got %q", m.queuedPrompts[0].text)
+	}
+	if m.state != stateStreaming {
+		t.Errorf("flush should start a new turn (stateStreaming), got %v", m.state)
+	}
+	if len(f.submitted) != 1 || f.submitted[0].Text != "stuck prompt" {
+		t.Errorf("expected 1 submit of 'stuck prompt', got %d submits", len(f.submitted))
+	}
+}
+
+func TestQueueCommand_Flush_RejectedWhileStreaming(t *testing.T) {
+	// /queue flush when a turn is active: rejected with a notice.
+	m, _ := queueModel(t)
+	m.state = stateStreaming
+	m.queuedPrompts = []queuedPrompt{{text: "stuck prompt"}}
+	m, _, _ = m.handleQueueCommand("/queue flush")
+	if len(m.queuedPrompts) != 1 {
+		t.Fatalf("queue should not be modified when rejected, got %d", len(m.queuedPrompts))
+	}
+	last := lastItemText(m)
+	if !strings.Contains(last, "only available when idle") {
+		t.Errorf("expected rejection notice, got: %q", last)
+	}
+}
+
+func TestQueueCommand_Flush_EmptyQueue(t *testing.T) {
+	// /queue flush on an empty queue: shows "nothing to flush".
+	m, _ := queueModel(t)
+	m.state = stateIdle
+	m, _, _ = m.handleQueueCommand("/queue flush")
+	last := lastItemText(m)
+	if !strings.Contains(last, "nothing to flush") {
+		t.Errorf("expected 'nothing to flush', got: %q", last)
 	}
 }
 
