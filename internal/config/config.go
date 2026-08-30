@@ -241,7 +241,7 @@ type Config struct {
 	// safety net for hung children (network stall, rate-limit, non-cooperative
 	// blocking). The timeout context requests cooperative cancellation first;
 	// the watchdog guarantees the registry makes progress even if a goroutine
-	// ignores cancellation. 0 = use the built-in default (120s). Negative is
+	// ignores cancellation. 0 = use the built-in default (180s). Negative is
 	// rejected by validation.
 	SubagentTimeoutSeconds int `json:"subagent_timeout_seconds,omitempty"`
 
@@ -668,7 +668,7 @@ func DefaultConfig() Config {
 		MaxRequestBytes:        8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:      3,
 		MaxParallelSubagents:   2,
-		SubagentTimeoutSeconds: 120, // must match agent.defaultSubagentTimeoutSeconds
+		SubagentTimeoutSeconds: 180, // must match agent.defaultSubagentTimeoutSeconds (card #166: raised from 120s)
 		OracleModel:            "claude-sonnet-4-6",
 		OracleMaxTokens:        4096,
 		OracleAPIKeyEnv:        "ANTHROPIC_API_KEY",
@@ -1321,7 +1321,7 @@ func validateContextLimits(cfg Config) error {
 		return fmt.Errorf("subagent_tool_result_cap must be >= 0 (got %d; 0 = use default)", cfg.SubagentToolResultCap)
 	}
 	if cfg.SubagentTimeoutSeconds < 0 {
-		return fmt.Errorf("subagent_timeout_seconds must be >= 0 (got %d; 0 = use default 120s)", cfg.SubagentTimeoutSeconds)
+		return fmt.Errorf("subagent_timeout_seconds must be >= 0 (got %d; 0 = use default 180s)", cfg.SubagentTimeoutSeconds)
 	}
 	return nil
 }

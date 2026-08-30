@@ -227,8 +227,8 @@ func TestSubagentTimeoutConfigValidation(t *testing.T) {
 	// the App-level helper handles 0 (disabled) correctly.
 	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.SubagentTimeoutSeconds = 0
-	if d := app.subagentTimeout(); d != 120*time.Second {
-		t.Errorf("expected default 120s for 0 config, got %v", d)
+	if d := app.subagentTimeout(); d != 180*time.Second {
+		t.Errorf("expected default 180s for 0 config, got %v", d)
 	}
 	app.Cfg.SubagentTimeoutSeconds = 30
 	if d := app.subagentTimeout(); d != 30*time.Second {

@@ -75,10 +75,13 @@ const (
 
 	// defaultSubagentTimeoutSeconds is the fallback async subagent timeout
 	// when SubagentTimeoutSeconds is 0 (or unset). config.DefaultConfig sets
-	// the same value (120) — they must agree. Defined as a named constant
+	// the same value (180) — they must agree. Defined as a named constant
 	// here so the runtime fallback is self-documenting; config cannot import
 	// it (agent depends on config, not vice versa).
-	defaultSubagentTimeoutSeconds = 120
+	// Card #166: raised from 120s to 180s — 30 iterations × ~6s on external
+	// backends = 180s. The previous 120s killed subagents mid-work before
+	// they could complete or summarize.
+	defaultSubagentTimeoutSeconds = 180
 
 	// defaultMashuraTimeoutSeconds is the fallback Mashūra async-op timeout
 	// when OracleTimeoutSeconds is 0 (or unset). config.DefaultConfig sets
