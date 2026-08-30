@@ -536,7 +536,7 @@ func TestCostFoldParallelTwoSubagentsRace(t *testing.T) {
 		{Index: 0, Task: "TASK-A", ChatID: NewChatID()},
 		{Index: 1, Task: "TASK-B", ChatID: NewChatID()},
 	}
-	results := app.runSubagentJobs(context.Background(), jobs, "", 0)
+	results := app.runSubagentJobs(context.Background(), jobs, "", 0, nil)
 	if len(results) != 2 {
 		t.Fatalf("want 2 results, got %d", len(results))
 	}

@@ -141,9 +141,12 @@ type asyncOp struct {
 
 	// subagents holds per-child terminal outcomes for a DISCOVERY-subagent
 	// batch op (toolName dispatch_subagent / dispatch_subagents). Nil for
-	// mashura/shell ops. Slices are frozen at terminal publication (never
-	// mutated after the worker publishes them), so drain may read them
-	// without the registry lock.
+	// mashura/shell ops. Card #165: slots are pre-populated at registration
+	// time (ChatID+Task only) and mutated under op.mu as each child
+	// completes (checkpoint callback in runSubagentJobs writes the real
+	// result). The watchdog reads these to salvage completed children.
+	// After terminal publication (worker or watchdog), the slice is frozen.
+	// Guarded by op.mu.
 	subagents []asyncSubagentResult
 
 	// childChatIDs and childTasks are set at registration time so the watchdog
@@ -153,6 +156,14 @@ type asyncOp struct {
 	// SubagentDoneMsg would ever fire).
 	childChatIDs []string
 	childTasks   []string
+
+	// subagentCheckpointed tracks which child slots in op.subagents have been
+	// populated by the worker goroutine as each child completes (card #165).
+	// The watchdog reads this to determine which children already have real
+	// results (salvage them) vs. which are still pending (synthesize timeout).
+	// Pre-populated with false for every child at registration time.
+	// Guarded by op.mu — the checkpoint callback acquires op.mu before writing.
+	subagentCheckpointed []bool
 
 	// shellLSPDirty marks a detached shell completion whose command was
 	// non-read-only; drainAsyncInbox fires LSP dirty-marking on delivery.
@@ -402,10 +413,18 @@ func (a *App) watchdogGracePeriod() time.Duration {
 
 // armSubagentWatchdog arms a timeout watchdog for an async discovery
 // subagent op. If the worker doesn't terminalize within the configured
-// timeout + grace period, the watchdog force-terminalizes the op with
-// synthetic timeout results for every child, commits cost (no-op since
-// the worker never populated subagent results), and calls publishAsyncOp
-// to release the slot and wake any waiter.
+// timeout + grace period, the watchdog force-terminalizes the op.
+//
+// Card #165: The watchdog now SALVAGES completed children's results. As each
+// child completes, the worker checkpoints its result into op.subagents[i]
+// and sets op.subagentCheckpointed[i]=true. The watchdog reads these:
+//   - Checkpointed children: preserved with their real result, grounding,
+//     cost rows, filesChanged, etc. Their SubagentDoneMsg carries real data.
+//   - Uncheckpointed children: synthesized as "timed out" (same as before).
+//
+// Card #167: Because checkpointed children's CostRows are now in op.subagents,
+// commitAsyncCost is no longer a no-op — it folds whatever cost rows were
+// checkpointed before the watchdog fired. This fixes the silent cost-loss bug.
 //
 // The watchdog NEVER closes op.done (the worker's defer close(op.done)
 // would panic). It only sets op.terminal and publishes. When the worker
@@ -413,7 +432,8 @@ func (a *App) watchdogGracePeriod() time.Duration {
 // own publish, and its deferred close(op.done) fires cleanly.
 //
 // Per-child SubagentDoneMsg events are sent from the watchdog for every
-// childChatID, so TUI tabs don't spin forever.
+// childChatID (real data for checkpointed, timeout for uncheckpointed) so TUI
+// tabs don't spin forever.
 func (a *App) armSubagentWatchdog(op *asyncOp, timeout time.Duration) {
 	if timeout <= 0 {
 		return
@@ -439,43 +459,55 @@ func (a *App) armSubagentWatchdog(op *asyncOp, timeout time.Duration) {
 		op.terminal = true
 		op.finishedAt = time.Now()
 		op.err = fmt.Errorf("async discovery subagent batch timed out after %s", timeout)
-		// Synthesize per-child timeout results so TUI tabs and the model
-		// both see the failure. The worker never populated op.subagents
-		// (it's still stuck), so we build synthetic results from the
-		// ChatIDs/tasks stored at registration time.
-		subs := make([]asyncSubagentResult, 0, len(op.childChatIDs))
-		for i, cid := range op.childChatIDs {
+
+		// Card #165: Salvage checkpointed children. Build the final
+		// op.subagents slice: preserve checkpointed entries as-is, synthesize
+		// "timed out" only for uncheckpointed ones. op.subagents was pre-
+		// populated with ChatID+Task at registration time, so we can iterate
+		// by index.
+		subs := make([]asyncSubagentResult, len(op.subagents))
+		var merged strings.Builder
+		for i := range op.subagents {
+			if i < len(op.subagentCheckpointed) && op.subagentCheckpointed[i] {
+				// Child completed before watchdog — salvage its real result.
+				subs[i] = op.subagents[i]
+				if merged.Len() > 0 {
+					merged.WriteString("\n")
+				}
+				fmt.Fprintf(&merged, "[%s]", subs[i].ChatID)
+				merged.WriteString(subs[i].Result)
+				continue
+			}
+			// Child never checkpointed — synthesize timeout result.
+			cid := ""
 			task := ""
+			if i < len(op.childChatIDs) {
+				cid = op.childChatIDs[i]
+			}
 			if i < len(op.childTasks) {
 				task = op.childTasks[i]
 			}
-			subs = append(subs, asyncSubagentResult{
+			subs[i] = asyncSubagentResult{
 				ChatID: cid,
 				Task:   task,
 				Err:    "timed out",
-			})
+			}
 		}
 		op.subagents = subs
-		op.subagentEffectsCommitted = true
+		op.result = merged.String() // salvaged summaries visible to the model
+		// Card #165: Do NOT set subagentEffectsCommitted here. Let drain-time
+		// commitAsyncSubagentEffects handle per-child Done events, grounding,
+		// and LSP bookkeeping for BOTH salvaged and timed-out children. This
+		// ensures salvaged children's grounding is committed (Mashūra finding #2)
+		// and avoids duplicating the Done-event logic. The watchdog's job is
+		// to set terminal + populate subagents + commit cost + publish — the
+		// turn goroutine at drain handles the rest (same as the normal worker).
 		op.mu.Unlock()
 
-		// Send per-child SubagentDoneMsg with Err so the TUI flips tabs to
-		// a failed state. sendEvent is goroutine-safe (Program.Send).
-		// subagentEffectsCommitted was set under the lock above so drain-time
-		// commitAsyncSubagentEffects won't re-send (avoids double-fire).
-		for _, s := range subs {
-			a.sendEvent(SubagentDoneMsg{
-				ChatID: s.ChatID,
-				Err:    "subagent timed out",
-			})
-			// User-facing warning (parity with drain-time warnings).
-			fmt.Fprintln(a.Out, Yellow("⚠ subagent timed out on task: "+Truncate(s.Task, 80)))
-			fmt.Fprintln(a.Out, Yellow("  the child did not return within the configured timeout — consider re-dispatching or taking over"))
-		}
-
-		// Commit cost (no-op: subagents have no CostRows since the worker
-		// never populated them). This is the accepted trade-off: a stuck
-		// subagent hasn't done billable work yet.
+		// Card #167: Commit cost — no longer a no-op. Salvaged children may
+		// have CostRows with real billed usage. commitAsyncCost is idempotent
+		// (guards on costCommitted), and it folds whatever CostRows are in
+		// op.subagents. Timed-out (uncheckpointed) children have no CostRows.
 		a.commitAsyncCost(op)
 		// Release the slot + publish to inbox (wakes WaitForAsyncCompletion).
 		a.publishAsyncOp(op)

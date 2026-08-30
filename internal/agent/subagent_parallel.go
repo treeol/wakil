@@ -71,6 +71,14 @@ func panicJobResult(task string, r interface{}) subagentJobResult {
 	}}
 }
 
+// subagentCheckpointFn is called from the worker goroutine after each child
+// completes (success, incomplete, cancelled, or panic). It writes the child's
+// result into the async op's subagents slice so the watchdog can salvage it.
+// Returns true if the checkpoint was accepted (op not yet terminal), false if
+// the watchdog already terminalized (the worker should suppress UI events).
+// nil means no checkpointing (sync path — no async op to write to).
+type subagentCheckpointFn func(index int, result asyncSubagentResult) bool
+
 // runSubagentJobs is Phase B: run the prepared jobs concurrently, bounded by
 // MaxParallelSubagents, and return results indexed like jobs.
 //
@@ -94,6 +102,13 @@ func panicJobResult(task string, r interface{}) subagentJobResult {
 // into a child's work budget — the root cause of premature timeouts when
 // overlapping batches compete for the global semaphore.
 //
+// Card #165: When checkpoint is non-nil (async path), each child's result is
+// checkpointed to the async op as it completes — before wg.Wait() returns.
+// This allows the watchdog to salvage completed children's results instead of
+// synthesizing "timed out" for every child. The checkpoint is rejected if the
+// op is already terminal (watchdog won); in that case the worker suppresses
+// the async-path SubagentFinishedMsg to avoid contradictory UI events.
+//
 // Concurrency audit (step 6/7 of the parallel-subagents plan):
 //   - Executor: shared with workers. RunShell/ReadFile/ListDir compose fresh
 //     commands per call (runFromRoot); the one lazily-written cache
@@ -116,7 +131,7 @@ func panicJobResult(task string, r interface{}) subagentJobResult {
 //     every worker without duplicating probes).
 //   - consentedBackends: workers receive a snapshot copy; only Phase A writes
 //     the parent map.
-func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend string, perChildTimeout time.Duration) []subagentJobResult {
+func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend string, perChildTimeout time.Duration, checkpoint subagentCheckpointFn) []subagentJobResult {
 	results := make([]subagentJobResult, len(jobs))
 	// MaxParallelSubagents is turn-stable per batch — read once at batch
 	// start under stateMu.RLock, used for the whole batch.
@@ -141,20 +156,49 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			// checkpointResult writes the child's result to the async op (if
+			// checkpointing is active) and to the local results slice. Returns
+			// true if the checkpoint was accepted (op not yet terminal), false
+			// if the watchdog already terminalized. When false, the caller
+			// suppresses the async-path SubagentFinishedMsg to avoid
+			// contradictory success-after-timeout UI events.
+			checkpointResult := func(r subagentJobResult) bool {
+				results[i] = r
+				if checkpoint == nil {
+					return true // sync path — no checkpoint, always "accepted"
+				}
+				// Build the asyncSubagentResult from the job result. This
+				// mirrors the logic in queueAsyncDiscoveryBlock's worker.
+				rendered := renderSubagentResult(a, jobs[i].Task, r.Summary, r.FilesChanged)
+				sub := asyncSubagentResult{
+					ChatID:       jobs[i].ChatID,
+					Task:         jobs[i].Task,
+					Result:       rendered,
+					Grounding:    r.Grounding,
+					CostRows:     r.CostRows,
+					FilesChanged: r.FilesChanged,
+					CtxSize:      r.CtxSize,
+					UsedBackend:  r.UsedBackend,
+				}
+				if r.Summary.Status == "incomplete" {
+					sub.Err = "subagent incomplete (budget/cancelled)"
+				}
+				return checkpoint(i, sub)
+			}
 			defer func() {
 				if r := recover(); r != nil {
-					results[i] = panicJobResult(jobs[i].Task, r)
+					checkpointResult(panicJobResult(jobs[i].Task, r))
 				}
 			}()
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				results[i] = cancelledJobResult(jobs[i].Task)
+				checkpointResult(cancelledJobResult(jobs[i].Task))
 				return
 			}
 			if ctx.Err() != nil {
-				results[i] = cancelledJobResult(jobs[i].Task)
+				checkpointResult(cancelledJobResult(jobs[i].Task))
 				return
 			}
 			// Slot acquired — this subagent is now actually running (was queued).
@@ -187,14 +231,14 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 			}
 			summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(
 				execCtx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].Model, jobs[i].ChatID)
-			results[i] = subagentJobResult{
+			accepted := checkpointResult(subagentJobResult{
 				Summary:      summary,
 				Grounding:    grounding,
 				CtxSize:      ctxSize,
 				UsedBackend:  usedBackend,
 				CostRows:     costRows,
 				FilesChanged: filesChanged,
-			}
+			})
 			// Early display-only completion event: emitted from the worker the
 			// moment the child returns, before the result enters the results
 			// slice and before Phase C's cost fold. The TUI uses this to flip
@@ -202,7 +246,13 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 			// in Phase C remains the authoritative event carrying the folded
 			// state. No parent-state mutation here — CostUSD is the child's own
 			// total (from its fresh CostTracker), display data only.
-			a.sendSubagentFinished(jobs[i].ChatID, results[i])
+			//
+			// Card #165: Suppress this event on the async path if the watchdog
+			// already terminalized (checkpoint was rejected). Otherwise the TUI
+			// would see a success event after a timeout event for the same child.
+			if accepted {
+				a.sendSubagentFinished(jobs[i].ChatID, results[i])
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -241,9 +291,10 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 	// Mixed / non-discovery / refused: synchronous path (child-vs-parent mutation
 	// invariant preserved; no silent async downgrade on refusal — refusal above
 	// returns explicit rejections already).
-	// Sync path: perChildTimeout=0 — children are bounded only by the turn ctx,
-	// preserving pre-card-#164 behavior (no 120s cap on edit/tools children).
-	syncResults := a.runPreparedSubagents(ctx, jobs, backend, 0)
+	// Sync path: perChildTimeout=0, checkpoint=nil — children are bounded only by
+	// the turn ctx, preserving pre-card-#164 behavior (no 120s cap on edit/tools
+	// children). No checkpointing (no async op to write to).
+	syncResults := a.runPreparedSubagents(ctx, jobs, backend, 0, nil)
 	return a.finalizeSubagentBlock(jobs, syncResults, out)
 }
 
@@ -369,8 +420,12 @@ func (a *App) announceSubagentBlock(jobs []subagentJob, backend string) {
 // acquisition. 0 means no per-child timeout (sync path — children are bounded
 // only by the caller's ctx). A positive value creates a fresh context per child
 // so semaphore queue time doesn't eat into the execution budget (async path).
-func (a *App) runPreparedSubagents(ctx context.Context, jobs []subagentJob, backend string, perChildTimeout time.Duration) []subagentJobResult {
-	return a.runSubagentJobs(ctx, jobs, backend, perChildTimeout)
+//
+// Card #165: checkpoint is called after each child completes to write its
+// result into the async op's subagents slice. nil for the sync path (no async
+// op to checkpoint to).
+func (a *App) runPreparedSubagents(ctx context.Context, jobs []subagentJob, backend string, perChildTimeout time.Duration, checkpoint subagentCheckpointFn) []subagentJobResult {
+	return a.runSubagentJobs(ctx, jobs, backend, perChildTimeout, checkpoint)
 }
 
 // finalizeSubagentBlock is Phase C (MAIN GOROUTINE): fold costs, emit Done

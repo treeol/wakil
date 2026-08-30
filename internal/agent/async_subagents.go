@@ -84,11 +84,23 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 
 	// Store child ChatIDs + tasks on the op so the watchdog can synthesize
 	// per-child SubagentDoneMsg events if the worker doesn't return.
+	// Card #165: Pre-populate op.subagents with placeholder slots (ChatID+Task
+	// only, no result) and op.subagentCheckpointed with false for every child.
+	// As each child completes, the checkpoint callback in runSubagentJobs
+	// writes the real result into op.subagents[i] and sets
+	// subagentCheckpointed[i]=true. The watchdog then salvages completed
+	// children and only synthesizes "timed out" for uncheckpointed ones.
 	op.childChatIDs = make([]string, len(jobs))
 	op.childTasks = make([]string, len(jobs))
+	op.subagents = make([]asyncSubagentResult, len(jobs))
+	op.subagentCheckpointed = make([]bool, len(jobs))
 	for i, j := range jobs {
 		op.childChatIDs[i] = j.ChatID
 		op.childTasks[i] = j.Task
+		op.subagents[i] = asyncSubagentResult{
+			ChatID: j.ChatID,
+			Task:   j.Task,
+		}
 	}
 
 	// Arm the watchdog BEFORE starting the worker so there's no window
@@ -127,43 +139,57 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 					op.terminal = true
 					op.finishedAt = time.Now()
 					op.err = fmt.Errorf("async discovery worker panic: %v", r)
-					// Synthesize per-child error results so tabs don't spin.
-					subs := make([]asyncSubagentResult, 0, len(op.childChatIDs))
-					for i, cid := range op.childChatIDs {
+					// Card #165: Salvage checkpointed children. Same logic as
+					// the watchdog: preserve completed children's real results,
+					// synthesize "worker panicked" only for uncheckpointed ones.
+					// Also build op.result from salvaged summaries so they're
+					// visible to the model (Mashūra finding #3).
+					subs := make([]asyncSubagentResult, len(op.subagents))
+					var merged strings.Builder
+					for i := range op.subagents {
+						if i < len(op.subagentCheckpointed) && op.subagentCheckpointed[i] {
+							subs[i] = op.subagents[i]
+							if merged.Len() > 0 {
+								merged.WriteString("\n")
+							}
+							fmt.Fprintf(&merged, "[%s]", subs[i].ChatID)
+							merged.WriteString(subs[i].Result)
+							continue
+						}
+						cid := ""
 						task := ""
+						if i < len(op.childChatIDs) {
+							cid = op.childChatIDs[i]
+						}
 						if i < len(op.childTasks) {
 							task = op.childTasks[i]
 						}
-						subs = append(subs, asyncSubagentResult{
+						subs[i] = asyncSubagentResult{
 							ChatID: cid,
 							Task:   task,
 							Err:    "worker panicked",
-						})
+						}
 					}
 					op.subagents = subs
-					// Atomically claim event ownership under the lock so the
-					// watchdog can't publish and trigger drain-time sends
-					// in the gap between unlock and our send loop.
-					op.subagentEffectsCommitted = true
+					op.result = merged.String()
+					// Card #165: Do NOT set subagentEffectsCommitted — let
+					// drain handle per-child effects (grounding, Done events,
+					// LSP) for both salvaged and panicked children, same as
+					// the watchdog path (Mashūra finding #2).
 					shouldSend = true
 				}
 				op.mu.Unlock()
 				if !shouldSend {
-					// Watchdog (or a prior panic) already claimed effects.
+					// Watchdog (or a prior panic) already terminalized.
 					// Don't double-fire; just ensure we publish (idempotent).
 					a.commitAsyncCost(op)
 					a.publishAsyncOp(op)
 					return
 				}
-				// Send per-child SubagentDoneMsg with Err for every child so TUI
-				// tabs don't spin. subagentEffectsCommitted was already set
-				// under the lock above so drain won't re-send.
-				for _, cid := range op.childChatIDs {
-					a.sendEvent(SubagentDoneMsg{
-						ChatID: cid,
-						Err:    "subagent worker panicked",
-					})
-				}
+				// Card #165: Don't send Done events here — drain-time
+				// commitAsyncSubagentEffects handles per-child Done events,
+				// grounding, and LSP for both salvaged and panicked children.
+				// This avoids double-firing (Mashūra finding #2).
 				a.commitAsyncCost(op)
 				a.publishAsyncOp(op)
 			}
@@ -193,7 +219,26 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 		// already sent in Phase A on the turn goroutine.
 		// Card #164: Pass the per-child timeout so each child gets a fresh
 		// execution context AFTER semaphore acquisition (not at batch start).
-		results := a.runPreparedSubagents(workCtx, jobs, backend, a.subagentTimeout())
+		// Card #165: Pass a checkpoint callback that writes each child's result
+		// into op.subagents[i] under op.mu as it completes. The watchdog reads
+		// these to salvage completed children instead of synthesizing "timed
+		// out" for every child. The callback returns false if the watchdog
+		// already terminalized (worker suppresses the SubagentFinishedMsg).
+		checkpoint := func(index int, sub asyncSubagentResult) bool {
+			op.mu.Lock()
+			defer op.mu.Unlock()
+			if op.terminal {
+				// Watchdog already terminalized — reject the checkpoint.
+				// The worker should suppress the SubagentFinishedMsg.
+				return false
+			}
+			if index < len(op.subagents) {
+				op.subagents[index] = sub
+				op.subagentCheckpointed[index] = true
+			}
+			return true
+		}
+		results := a.runPreparedSubagents(workCtx, jobs, backend, a.subagentTimeout(), checkpoint)
 
 		// Build the terminal record: per-child effects + a flattened rendered
 		// result (merged) + op-level error if any child failed.

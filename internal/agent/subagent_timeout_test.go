@@ -117,6 +117,13 @@ func TestAsyncSubagentWatchdogForceTerminalizes(t *testing.T) {
 	}
 	op.childChatIDs = []string{"child-1", "child-2"}
 	op.childTasks = []string{"TASK-A", "TASK-B"}
+	// Card #165: queueAsyncDiscoveryBlock now pre-populates op.subagents and
+	// op.subagentCheckpointed at registration time. Simulate that here.
+	op.subagents = []asyncSubagentResult{
+		{ChatID: "child-1", Task: "TASK-A"},
+		{ChatID: "child-2", Task: "TASK-B"},
+	}
+	op.subagentCheckpointed = []bool{false, false}
 
 	// Arm the watchdog with a very short timeout and grace period.
 	app.watchdogGrace = 1 * time.Second
@@ -292,5 +299,147 @@ func TestPerChildTimeoutStartsAfterSemaphore(t *testing.T) {
 	batch3 := app.subagentBatchTimeout(3)
 	if batch3 != 3*child {
 		t.Errorf("3 jobs at maxPar=1: batch should be 3×child: batch=%v child=%v", batch3, child)
+	}
+}
+
+// TestWatchdogSalvagesCheckpointedResults (card #165 + #167) verifies that the
+// watchdog preserves completed children's results and cost rows when it
+// force-terminalizes, instead of synthesizing "timed out" for every child.
+//
+// We simulate a batch where child-1 completed (checkpointed with real result +
+// cost rows) and child-2 is stuck (uncheckpointed). The watchdog should:
+//   - Salvage child-1's real result, grounding, and CostRows
+//   - Synthesize "timed out" only for child-2
+//   - Fold child-1's CostRows into the parent cost tracker (no silent loss)
+func TestWatchdogSalvagesCheckpointedResults(t *testing.T) {
+	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Costs = proxy.NewCostTracker()
+
+	op, reason := app.registerAsyncOp("dispatch_subagents", "2 discovery subagents")
+	if reason != "" {
+		t.Fatalf("register: %s", reason)
+	}
+
+	// Simulate registration-time pre-population (as queueAsyncDiscoveryBlock does).
+	op.childChatIDs = []string{"child-1", "child-2"}
+	op.childTasks = []string{"TASK-A", "TASK-B"}
+	op.subagents = []asyncSubagentResult{
+		{ChatID: "child-1", Task: "TASK-A"},
+		{ChatID: "child-2", Task: "TASK-B"},
+	}
+	op.subagentCheckpointed = []bool{false, false}
+
+	// Simulate child-1 completing (checkpointed) with real result + cost rows
+	// + grounding. Child-2 remains uncheckpointed (stuck).
+	op.mu.Lock()
+	op.subagents[0] = asyncSubagentResult{
+		ChatID:      "child-1",
+		Task:        "TASK-A",
+		Result:      "child-1 completed successfully",
+		UsedBackend: "test-backend",
+		CostRows: []proxy.CostRow{
+			{Source: "test-model", InputTok: 100, OutputTok: 50, CostUSD: 0.01, Priced: true, Calls: 1},
+		},
+		Grounding: []proxy.GroundingEntry{
+			{Type: "file", Label: "test-file.go"},
+		},
+	}
+	op.subagentCheckpointed[0] = true
+	op.mu.Unlock()
+
+	// Arm the watchdog with a very short timeout.
+	app.watchdogGrace = 1 * time.Second
+	app.armSubagentWatchdog(op, 1*time.Second)
+
+	// Don't start a worker — simulate a stuck goroutine.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ok, err := app.WaitForAsyncCompletion(ctx)
+	if err != nil {
+		t.Fatalf("WaitForAsyncCompletion error: %v", err)
+	}
+	if !ok {
+		t.Fatal("watchdog did not fire")
+	}
+
+	// Verify the op terminalized.
+	terminal, _, opErr := op.terminalSnapshot()
+	if !terminal {
+		t.Fatal("op should be terminal after watchdog")
+	}
+	if opErr == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	// Verify child-1 was salvaged (real result preserved, not "timed out").
+	op.mu.Lock()
+	subs := op.subagents
+	op.mu.Unlock()
+	if len(subs) != 2 {
+		t.Fatalf("expected 2 subagent results, got %d", len(subs))
+	}
+	if subs[0].Err == "timed out" {
+		t.Error("child-1 should be salvaged, not timed out")
+	}
+	if subs[0].Result != "child-1 completed successfully" {
+		t.Errorf("child-1 result should be preserved, got %q", subs[0].Result)
+	}
+	if subs[0].UsedBackend != "test-backend" {
+		t.Errorf("child-1 backend should be preserved, got %q", subs[0].UsedBackend)
+	}
+	if len(subs[0].CostRows) != 1 || subs[0].CostRows[0].CostUSD != 0.01 {
+		t.Errorf("child-1 cost rows should be preserved, got %+v", subs[0].CostRows)
+	}
+
+	// Verify child-2 was synthesized as "timed out".
+	if subs[1].Err != "timed out" {
+		t.Errorf("child-2 should be timed out, got Err=%q", subs[1].Err)
+	}
+	if subs[1].ChatID != "child-2" {
+		t.Errorf("child-2 ChatID should be preserved, got %q", subs[1].ChatID)
+	}
+
+	// Card #167: Verify child-1's cost rows were folded into the parent
+	// cost tracker (not silently lost).
+	_, rows := app.Costs.Snapshot()
+	var foundCost bool
+	for _, r := range rows {
+		if r.Source == "test-model" && r.Calls == 1 {
+			foundCost = true
+			break
+		}
+	}
+	if !foundCost {
+		t.Error("child-1 cost rows should be folded into parent tracker (card #167)")
+	}
+
+	// Drain should produce an envelope with child-1's salvaged result.
+	env := app.drainAsyncInbox()
+	if env == "" {
+		t.Fatal("expected non-empty envelope after watchdog")
+	}
+	if !strings.Contains(env, "child-1 completed successfully") {
+		t.Errorf("envelope should contain salvaged child-1 result: %q", truncateStr(env, 120))
+	}
+	if !strings.Contains(env, "timed out") {
+		t.Errorf("envelope should contain timeout for child-2: %q", truncateStr(env, 120))
+	}
+
+	// Card #165 (Mashūra finding #2): Verify salvaged child-1's grounding was
+	// committed via drain-time commitAsyncSubagentEffects (not skipped because
+	// the watchdog no longer sets subagentEffectsCommitted).
+	if !op.groundingCommitted {
+		t.Error("grounding should be committed via drain after watchdog salvage")
+	}
+	// Check that the grounding entry was actually added to the Client.
+	foundGrounding := false
+	for _, g := range app.Client.Grounding() {
+		if g.Label == "test-file.go" {
+			foundGrounding = true
+			break
+		}
+	}
+	if !foundGrounding {
+		t.Error("salvaged child-1 grounding should be committed to Client via drain")
 	}
 }
