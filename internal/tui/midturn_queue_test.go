@@ -169,13 +169,51 @@ func TestQueuePrompt_HoldDuringWorkflowAutoContinue(t *testing.T) {
 	}
 }
 
-func TestQueuePrompt_HoldOnCancel(t *testing.T) {
+func TestQueuePrompt_FlushOnCancel(t *testing.T) {
+	// Card #169: after a plain cancel (not flushOnCancel), queued prompts
+	// should auto-flush as a new turn instead of staying stuck.
 	m, f := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "follow up"}}
 	m.state = stateStreaming
 	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "cancelled"}, f.sid))
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queue should flush on cancel (idle), got %d remaining", len(m.queuedPrompts))
+	}
+	if m.state != stateStreaming {
+		t.Errorf("flush should start a new turn (stateStreaming), got %v", m.state)
+	}
+	if len(f.submitted) != 1 || f.submitted[0].Text != "follow up" {
+		t.Errorf("expected 1 submit of 'follow up', got %d submits, first: %q", len(f.submitted), func() string {
+			if len(f.submitted) > 0 {
+				return f.submitted[0].Text
+			}
+			return ""
+		}())
+	}
+}
+
+func TestQueuePrompt_HoldOnCancelWithWorkflow(t *testing.T) {
+	// Card #169: even after cancel, if WorkflowWillContinue is true, the
+	// queue must hold — another turn starts immediately.
+	m, f := queueModel(t)
+	m.queuedPrompts = []queuedPrompt{{text: "follow up"}}
+	m.state = stateStreaming
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{
+		TurnID: "trn_1", Outcome: "cancelled", WorkflowWillContinue: true,
+	}, f.sid))
 	if len(m.queuedPrompts) != 1 {
-		t.Fatalf("queue should hold on cancel, got %d", len(m.queuedPrompts))
+		t.Fatalf("queue should hold on cancel with workflow continuation, got %d", len(m.queuedPrompts))
+	}
+}
+
+func TestQueuePrompt_FlushOnEmpty(t *testing.T) {
+	// Card #169: "empty" outcome is terminal success — flush the queue.
+	m, f := queueModel(t)
+	m.queuedPrompts = []queuedPrompt{{text: "follow up"}}
+	m.state = stateStreaming
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "empty"}, f.sid))
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queue should flush on empty outcome, got %d remaining", len(m.queuedPrompts))
 	}
 }
 

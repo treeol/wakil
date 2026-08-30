@@ -427,14 +427,15 @@ func (m tuiModel) finishWiringTurn(p event.TurnCompleted, cmds []tea.Cmd) (tuiMo
 	// no queued follow-up (WorkflowWillContinue covers the workflow case; a
 	// non-empty host queue means another turn starts immediately).
 	clean := p.Outcome == "complete" && !p.WorkflowWillContinue
-	// flushOnCancel: the user sent a prompt while the turn was waiting
-	// (stateWaiting), which triggered a cancel. Flush the queued prompt as a
-	// new turn even though the outcome is "cancelled" — the cancel was
-	// user-initiated to break out of the wait, not an error or abort.
-	//
-	// Capture the flag BEFORE clearWiringTurnState, which resets it to false
-	// as part of the per-turn display teardown.
-	flushOnCancel := p.Outcome == "cancelled" && m.flushOnCancel
+	// flushOnIdle: after any non-error turn completion that leaves the system
+	// idle (no workflow continuation), flush a queued prompt. This covers
+	// the case where the user queued a prompt mid-turn and then cancelled —
+	// the prompt should auto-flush instead of staying stuck. Errors are
+	// excluded (the system may be in a bad state); workflow continuations
+	// are excluded (another turn starts immediately). "empty" is treated as
+	// a terminal success — the model returned nothing but the system is idle
+	// and the queue should drain.
+	flushOnIdle := (p.Outcome == "cancelled" || p.Outcome == "complete" || p.Outcome == "empty") && !p.WorkflowWillContinue
 	m = m.clearWiringTurnState()
 	if clean {
 		if m.pendingAutoGrant {
@@ -451,7 +452,7 @@ func (m tuiModel) finishWiringTurn(p event.TurnCompleted, cmds []tea.Cmd) (tuiMo
 			m.pendingDestructiveGrant = false
 		}
 	}
-	if (clean || flushOnCancel) && len(m.queuedPrompts) > 0 {
+	if flushOnIdle && len(m.queuedPrompts) > 0 {
 		next := m.queuedPrompts[0]
 		m.queuedPrompts = m.queuedPrompts[1:]
 		var flushCmds []tea.Cmd
