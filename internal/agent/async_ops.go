@@ -311,6 +311,46 @@ func (a *App) subagentTimeout() time.Duration {
 	return time.Duration(defaultSubagentTimeoutSeconds) * time.Second
 }
 
+// subagentBatchTimeout returns the batch-level timeout for an async discovery
+// subagent batch. This accounts for multi-wave execution under the global
+// semaphore: with maxPar=2 and 6 jobs, children run in ceil(6/2)=3 waves,
+// each needing up to childTimeout. The batch timeout is waves×childTimeout
+// so the watchdog doesn't force-terminalize a legitimately-running multi-wave
+// batch before all children have had their full per-child budget.
+//
+// Card #164: per-child contexts (created in runSubagentJobs after semaphore
+// acquisition) bound individual children; this batch timeout bounds the whole
+// op (all waves) for the watchdog and the batch-level workCtx.
+//
+// LIMITATION: This calculation assumes this batch has exclusive access to
+// maxPar slots. Under cross-batch contention (another batch holding global
+// semaphore slots), queue wait grows beyond the calculated budget and the
+// batch workCtx may expire while children are still queued. This is an
+// accepted trade-off: the per-child timeout still ensures that any child
+// that DOES acquire a slot gets its full execution budget. Cross-batch
+// contention causing queue starvation is a separate issue (card #165
+// addresses salvaging completed sibling results in this scenario).
+func (a *App) subagentBatchTimeout(jobCount int) time.Duration {
+	childTimeout := a.subagentTimeout()
+	a.stateMu.RLock()
+	maxPar := a.Cfg.MaxParallelSubagents
+	a.stateMu.RUnlock()
+	if maxPar < 1 {
+		maxPar = 1
+	}
+	if maxPar > jobCount {
+		maxPar = jobCount
+	}
+	if maxPar < 1 {
+		maxPar = 1
+	}
+	waves := (jobCount + maxPar - 1) / maxPar // ceil division
+	if waves < 1 {
+		waves = 1
+	}
+	return time.Duration(waves) * childTimeout
+}
+
 // mashuraTimeout returns the effective Mashūra async-op timeout. This is the
 // SINGLE authoritative value shared by:
 //  1. the worker's cooperative context deadline (context.WithTimeout), and

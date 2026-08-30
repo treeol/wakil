@@ -245,7 +245,7 @@ func TestSemaphoreBoundsParallelism(t *testing.T) {
 		{Index: 0, Task: "TASK-A", ChatID: NewChatID()},
 		{Index: 1, Task: "TASK-B", ChatID: NewChatID()},
 	}
-	results := app.runSubagentJobs(context.Background(), jobs, "")
+	results := app.runSubagentJobs(context.Background(), jobs, "", 0)
 	if len(results) != 2 {
 		t.Fatalf("want 2 results, got %d", len(results))
 	}
@@ -448,7 +448,7 @@ func TestActiveEventsRespectCap(t *testing.T) {
 		{Index: 1, Task: "TASK-B", ChatID: "chat-b"},
 	}
 	done := make(chan []subagentJobResult, 1)
-	go func() { done <- app.runSubagentJobs(context.Background(), jobs, "") }()
+	go func() { done <- app.runSubagentJobs(context.Background(), jobs, "", 0) }()
 
 	<-arrived // the first worker holds the only slot and is blocked in-flight
 	mu.Lock()
@@ -502,7 +502,7 @@ func TestWorkerPanicIsolated(t *testing.T) {
 	}
 
 	jobs := []subagentJob{{Index: 0, Task: "TASK-A", ChatID: NewChatID()}}
-	results := poisoned.runSubagentJobs(context.Background(), jobs, "")
+	results := poisoned.runSubagentJobs(context.Background(), jobs, "", 0)
 	if len(results) != 1 {
 		t.Fatalf("want 1 result, got %d", len(results))
 	}

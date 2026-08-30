@@ -93,8 +93,16 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 
 	// Arm the watchdog BEFORE starting the worker so there's no window
 	// where a stuck worker has no timeout protection.
-	timeout := a.subagentTimeout()
-	a.armSubagentWatchdog(op, timeout)
+	// Card #164: The watchdog timeout must account for multi-wave execution
+	// under the global semaphore. With maxPar=2 and 6 jobs, children run in
+	// ceil(6/2)=3 waves, each needing up to childTimeout. The watchdog is
+	// armed at waves×childTimeout + grace so it doesn't force-terminalize
+	// a legitimately-running multi-wave batch before all children have had
+	// their full per-child budget. The per-child context (created in
+	// runSubagentJobs after semaphore acquisition) bounds individual children;
+	// the watchdog bounds the BATCH as a whole.
+	batchTimeout := a.subagentBatchTimeout(len(jobs))
+	a.armSubagentWatchdog(op, batchTimeout)
 
 	safe.Go("async-subagent-block", func() {
 		// Set startedAt under lock — but only if not already terminalized
@@ -162,14 +170,17 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 		}()
 		// Detached from the turn context: discovery children are read-only and
 		// should complete even if the turn is cancelled (card #121 D-4 pattern).
-		// But bounded by a timeout: if the child's HTTP stream hangs (network
-		// stall, rate-limit), ctx cancellation kills the request and the worker
-		// returns normally. The watchdog is the safety net for non-cooperative
-		// blocking paths.
+		// Card #164: The batch-level workCtx bounds the TOTAL batch wall time
+		// (queue + multi-wave execution). It is sized to waves×childTimeout so
+		// all children get their full per-child budget. Individual children get
+		// a FRESH per-child context inside runSubagentJobs (after semaphore
+		// acquisition), so queue wait time doesn't eat into a child's work budget.
+		// The watchdog (armed above with batchTimeout) is the safety net for
+		// non-cooperative blocking paths.
 		var workCtx context.Context
-		if timeout > 0 {
+		if batchTimeout > 0 {
 			var cancel context.CancelFunc
-			workCtx, cancel = context.WithTimeout(context.Background(), timeout)
+			workCtx, cancel = context.WithTimeout(context.Background(), batchTimeout)
 			defer cancel()
 		} else {
 			workCtx = context.Background()
@@ -180,7 +191,9 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 		// limits and never touches parent Conv/trace/budget. The worker emits
 		// tagged events (sendEvent is goroutine-safe) and Start events were
 		// already sent in Phase A on the turn goroutine.
-		results := a.runPreparedSubagents(workCtx, jobs, backend)
+		// Card #164: Pass the per-child timeout so each child gets a fresh
+		// execution context AFTER semaphore acquisition (not at batch start).
+		results := a.runPreparedSubagents(workCtx, jobs, backend, a.subagentTimeout())
 
 		// Build the terminal record: per-child effects + a flattened rendered
 		// result (merged) + op-level error if any child failed.

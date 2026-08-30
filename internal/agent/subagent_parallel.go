@@ -83,6 +83,17 @@ func panicJobResult(task string, r interface{}) subagentJobResult {
 // and semaphore acquisition selects on ctx.Done. Returning before all workers
 // finish would race on the results slice, so we always join fully.
 //
+// Per-child timeout (card #164): The caller's ctx is used for semaphore
+// acquisition (so queue wait is bounded by the caller's deadline — the batch-
+// level workCtx in the async path, or the turn ctx in the sync path). AFTER
+// semaphore acquisition, a FRESH per-child context.WithTimeout is created
+// from context.Background() so the child's execution budget starts when it
+// actually begins running, not when it was queued. Parent cancellation is
+// propagated via context.AfterFunc so a turn cancel or batch deadline still
+// cancels in-flight children. This prevents semaphore queue time from eating
+// into a child's work budget — the root cause of premature timeouts when
+// overlapping batches compete for the global semaphore.
+//
 // Concurrency audit (step 6/7 of the parallel-subagents plan):
 //   - Executor: shared with workers. RunShell/ReadFile/ListDir compose fresh
 //     commands per call (runFromRoot); the one lazily-written cache
@@ -105,7 +116,7 @@ func panicJobResult(task string, r interface{}) subagentJobResult {
 //     every worker without duplicating probes).
 //   - consentedBackends: workers receive a snapshot copy; only Phase A writes
 //     the parent map.
-func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend string) []subagentJobResult {
+func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend string, perChildTimeout time.Duration) []subagentJobResult {
 	results := make([]subagentJobResult, len(jobs))
 	// MaxParallelSubagents is turn-stable per batch — read once at batch
 	// start under stateMu.RLock, used for the whole batch.
@@ -149,8 +160,33 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 			// Slot acquired — this subagent is now actually running (was queued).
 			// sendEvent is goroutine-safe (Program.Send), same as chunk events.
 			a.sendEvent(SubagentActiveMsg{ChatID: jobs[i].ChatID})
+			// Card #164: When perChildTimeout > 0 (async path), create a FRESH
+			// per-child timeout context starting NOW (after semaphore acquisition),
+			// not at batch creation. Derived from Background() so the child's
+			// deadline is independent of the caller's ctx deadline (which may have
+			// been partially consumed by queue wait). Parent cancellation is
+			// propagated via AfterFunc: if the caller's ctx is cancelled (turn
+			// cancel, batch deadline, shutdown), the child ctx is cancelled too.
+			// AfterFunc is available since Go 1.21 (go.mod: 1.26).
+			//
+			// When perChildTimeout == 0 (sync path), pass the caller's ctx directly
+			// — sync children are bounded only by the turn context, preserving
+			// pre-card-#164 behavior. This avoids silently imposing a 120s cap on
+			// long-running edit/tools children.
+			execCtx := ctx
+			if perChildTimeout > 0 {
+				childCtx, childCancel := context.WithTimeout(context.Background(), perChildTimeout)
+				defer childCancel()
+				// Propagate parent cancellation to the child. AfterFunc returns a
+				// stop function that deregisters the callback — call it on cleanup
+				// to avoid retaining a reference to childCancel on a long-lived
+				// parent ctx.
+				stop := context.AfterFunc(ctx, childCancel)
+				defer stop()
+				execCtx = childCtx
+			}
 			summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(
-				ctx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].Model, jobs[i].ChatID)
+				execCtx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].Model, jobs[i].ChatID)
 			results[i] = subagentJobResult{
 				Summary:      summary,
 				Grounding:    grounding,
@@ -205,7 +241,9 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 	// Mixed / non-discovery / refused: synchronous path (child-vs-parent mutation
 	// invariant preserved; no silent async downgrade on refusal — refusal above
 	// returns explicit rejections already).
-	syncResults := a.runPreparedSubagents(ctx, jobs, backend)
+	// Sync path: perChildTimeout=0 — children are bounded only by the turn ctx,
+	// preserving pre-card-#164 behavior (no 120s cap on edit/tools children).
+	syncResults := a.runPreparedSubagents(ctx, jobs, backend, 0)
 	return a.finalizeSubagentBlock(jobs, syncResults, out)
 }
 
@@ -326,8 +364,13 @@ func (a *App) announceSubagentBlock(jobs []subagentJob, backend string) {
 // runPreparedSubagents is Phase B: run the prepared jobs concurrently (bounded
 // by MaxParallelSubagents). Safe to call from a worker goroutine (see the
 // concurrency audit on runSubagentJobs). Returns results indexed like jobs.
-func (a *App) runPreparedSubagents(ctx context.Context, jobs []subagentJob, backend string) []subagentJobResult {
-	return a.runSubagentJobs(ctx, jobs, backend)
+//
+// perChildTimeout is the execution timeout applied to each child AFTER semaphore
+// acquisition. 0 means no per-child timeout (sync path — children are bounded
+// only by the caller's ctx). A positive value creates a fresh context per child
+// so semaphore queue time doesn't eat into the execution budget (async path).
+func (a *App) runPreparedSubagents(ctx context.Context, jobs []subagentJob, backend string, perChildTimeout time.Duration) []subagentJobResult {
+	return a.runSubagentJobs(ctx, jobs, backend, perChildTimeout)
 }
 
 // finalizeSubagentBlock is Phase C (MAIN GOROUTINE): fold costs, emit Done

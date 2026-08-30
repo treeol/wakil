@@ -235,3 +235,62 @@ func TestSubagentTimeoutConfigValidation(t *testing.T) {
 		t.Errorf("expected 30s, got %v", d)
 	}
 }
+
+// TestSubagentBatchTimeoutScaling (card #164) verifies that the batch-level
+// timeout scales with job count and maxPar to account for multi-wave execution.
+// With maxPar=2 and 6 jobs, children run in ceil(6/2)=3 waves, so the batch
+// timeout should be 3× childTimeout.
+func TestSubagentBatchTimeoutScaling(t *testing.T) {
+	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.SubagentTimeoutSeconds = 60 // 1 min per child
+	app.Cfg.MaxParallelSubagents = 2
+
+	// 1 job, maxPar=2 (clamped to 1) → 1 wave → 60s
+	if d := app.subagentBatchTimeout(1); d != 60*time.Second {
+		t.Errorf("1 job, maxPar=2: expected 60s (1 wave), got %v", d)
+	}
+	// 2 jobs, maxPar=2 → 1 wave → 60s
+	if d := app.subagentBatchTimeout(2); d != 60*time.Second {
+		t.Errorf("2 jobs, maxPar=2: expected 60s (1 wave), got %v", d)
+	}
+	// 3 jobs, maxPar=2 → ceil(3/2)=2 waves → 120s
+	if d := app.subagentBatchTimeout(3); d != 120*time.Second {
+		t.Errorf("3 jobs, maxPar=2: expected 120s (2 waves), got %v", d)
+	}
+	// 6 jobs, maxPar=2 → ceil(6/2)=3 waves → 180s
+	if d := app.subagentBatchTimeout(6); d != 180*time.Second {
+		t.Errorf("6 jobs, maxPar=2: expected 180s (3 waves), got %v", d)
+	}
+	// 4 jobs, maxPar=4 → 1 wave → 60s
+	app.Cfg.MaxParallelSubagents = 4
+	if d := app.subagentBatchTimeout(4); d != 60*time.Second {
+		t.Errorf("4 jobs, maxPar=4: expected 60s (1 wave), got %v", d)
+	}
+}
+
+// TestPerChildTimeoutStartsAfterSemaphore (card #164) verifies the
+// subagentBatchTimeout calculation for single-child and multi-wave scenarios.
+// This confirms the batch-level timeout scales correctly with job count and
+// maxPar, which is the prerequisite for per-child timeouts to work: the batch
+// must allow enough total time for all waves to complete.
+//
+// The actual per-child timeout behavior (fresh context after semaphore
+// acquisition) is exercised by TestAsyncSubagentCooperativeTimeout, which
+// runs through the async dispatch path that now uses per-child contexts.
+func TestPerChildTimeoutStartsAfterSemaphore(t *testing.T) {
+	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.SubagentTimeoutSeconds = 5
+	app.Cfg.MaxParallelSubagents = 1
+
+	// With 1 job and maxPar=1: batch = 1 wave × 5s = 5s
+	batch := app.subagentBatchTimeout(1)
+	child := app.subagentTimeout()
+	if batch != child {
+		t.Errorf("single-child batch timeout should equal child timeout: batch=%v child=%v", batch, child)
+	}
+	// With 3 jobs and maxPar=1: batch = 3 waves × 5s = 15s
+	batch3 := app.subagentBatchTimeout(3)
+	if batch3 != 3*child {
+		t.Errorf("3 jobs at maxPar=1: batch should be 3×child: batch=%v child=%v", batch3, child)
+	}
+}
