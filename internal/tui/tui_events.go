@@ -168,9 +168,15 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 
 	case event.KindTurnResumed:
 		// A suspended turn resumed after an async completion arrived.
-		// Transition back to stateStreaming.
+		// Transition back to stateStreaming — UNLESS the user already
+		// initiated a cancel-and-send from stateWaiting (cancelling=true).
+		// In that case the cancel is in flight; the TurnResumed event is a
+		// race with the cancel and must NOT restore stateStreaming, or
+		// subsequent prompts would take the streaming-queue path (no
+		// flushOnCancel) and get stuck. The in-flight cancel will produce
+		// a TurnCompleted{cancelled} which flushes the queued prompt.
 		before := m.statusRows()
-		if m.state == stateWaiting {
+		if m.state == stateWaiting && !m.cancelling {
 			m.state = stateStreaming
 			m = m.reflowIfStatusHeightChanged(before)
 		}

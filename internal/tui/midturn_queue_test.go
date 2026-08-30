@@ -292,6 +292,192 @@ func TestQueueCommand_DropInvalid(t *testing.T) {
 	}
 }
 
+// --- Tests for card #170: TurnResumed race during waiting-input cancel ---
+
+// TestQueuePrompt_WaitingInput_CancelsAndFlushes: the happy path — send a
+// prompt while stateWaiting, verify the turn is cancelled and the prompt
+// flushes when the cancelled TurnCompleted arrives.
+func TestQueuePrompt_WaitingInput_CancelsAndFlushes(t *testing.T) {
+	m, f := queueModel(t)
+	m.state = stateWaiting
+
+	// Simulate typing and pressing Enter in stateWaiting.
+	m.ta.SetValue("hello from waiting")
+	m, _, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(m.queuedPrompts) != 1 {
+		t.Fatalf("expected 1 queued prompt, got %d", len(m.queuedPrompts))
+	}
+	if m.queuedPrompts[0].text != "hello from waiting" {
+		t.Errorf("expected 'hello from waiting', got %q", m.queuedPrompts[0].text)
+	}
+	if !m.cancelling {
+		t.Error("cancelling should be true after sending prompt while waiting")
+	}
+	if !m.flushOnCancel {
+		t.Error("flushOnCancel should be true after sending prompt while waiting")
+	}
+	if f.interrupts != 1 {
+		t.Errorf("expected 1 interrupt call, got %d", f.interrupts)
+	}
+
+	// TurnCompleted with cancelled outcome should flush the queued prompt.
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{
+		TurnID: "trn_1", Outcome: "cancelled",
+	}, f.sid))
+
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queue should be flushed on cancel completion, got %d remaining", len(m.queuedPrompts))
+	}
+	if m.state != stateStreaming {
+		t.Errorf("flush should start a new turn (stateStreaming), got %v", m.state)
+	}
+	if len(f.submitted) != 1 {
+		t.Errorf("expected 1 submit call for flushed prompt, got %d", len(f.submitted))
+	}
+	if f.submitted[0].Text != "hello from waiting" {
+		t.Errorf("expected flushed text 'hello from waiting', got %q", f.submitted[0].Text)
+	}
+}
+
+// TestQueuePrompt_TurnResumedRace_DoesNotTransitionToStreaming: if TurnResumed
+// arrives after the user sent a prompt from stateWaiting (cancelling=true),
+// the TUI must NOT transition back to stateStreaming. The in-flight cancel
+// takes precedence.
+func TestQueuePrompt_TurnResumedRace_DoesNotTransitionToStreaming(t *testing.T) {
+	m, f := queueModel(t)
+	m.state = stateWaiting
+
+	// User sends a prompt while waiting → triggers cancel + flushOnCancel.
+	m.ta.SetValue("prompt 1")
+	m, _, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !m.cancelling {
+		t.Fatal("cancelling should be true after sending prompt while waiting")
+	}
+
+	// TurnResumed arrives while cancel is in flight — must NOT transition.
+	m = step(m, evt(event.KindTurnResumed, nil, f.sid))
+
+	if m.state != stateWaiting {
+		t.Errorf("state should remain stateWaiting during cancel, got %v", m.state)
+	}
+	if !m.cancelling {
+		t.Error("cancelling should still be true after TurnResumed race")
+	}
+	if !m.flushOnCancel {
+		t.Error("flushOnCancel should still be true after TurnResumed race")
+	}
+}
+
+// TestQueuePrompt_SecondPromptWhileCancelling_NoDoubleInterrupt: if the user
+// sends a second prompt while still in stateWaiting and a cancel is already
+// pending, the second prompt should be queued without issuing another
+// interrupt, and flushOnCancel should stay true.
+func TestQueuePrompt_SecondPromptWhileCancelling_NoDoubleInterrupt(t *testing.T) {
+	m, f := queueModel(t)
+	m.state = stateWaiting
+
+	// First prompt from stateWaiting — triggers cancel + flushOnCancel.
+	m.ta.SetValue("first prompt")
+	m, _, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if f.interrupts != 1 {
+		t.Fatalf("expected 1 interrupt after first prompt, got %d", f.interrupts)
+	}
+
+	// TurnResumed races in — state should remain stateWaiting.
+	m = step(m, evt(event.KindTurnResumed, nil, f.sid))
+	if m.state != stateWaiting {
+		t.Fatalf("state should still be stateWaiting, got %v", m.state)
+	}
+
+	// Second prompt — should be queued without another interrupt.
+	m.ta.SetValue("second prompt")
+	m, _, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(m.queuedPrompts) != 2 {
+		t.Fatalf("expected 2 queued prompts, got %d", len(m.queuedPrompts))
+	}
+	if m.queuedPrompts[1].text != "second prompt" {
+		t.Errorf("expected 'second prompt' at index 1, got %q", m.queuedPrompts[1].text)
+	}
+	if !m.flushOnCancel {
+		t.Error("flushOnCancel should still be true after second prompt while cancelling")
+	}
+	if f.interrupts != 1 {
+		t.Errorf("should NOT issue a second interrupt, got %d", f.interrupts)
+	}
+
+	// Cancel completes — should flush ONE prompt (the first).
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{
+		TurnID: "trn_1", Outcome: "cancelled",
+	}, f.sid))
+
+	if len(m.queuedPrompts) != 1 {
+		t.Fatalf("one prompt should remain after cancel flush, got %d", len(m.queuedPrompts))
+	}
+	if m.queuedPrompts[0].text != "second prompt" {
+		t.Errorf("remaining should be 'second prompt', got %q", m.queuedPrompts[0].text)
+	}
+}
+
+// TestQueuePrompt_StreamingWhileCancelling_SetsFlushOnCancel: directly tests
+// the streaming-branch change. When state is stateStreaming and cancelling is
+// already true (e.g. from a manual Esc cancel), a queued plain-text prompt
+// should set flushOnCancel so it flushes on cancel completion.
+func TestQueuePrompt_StreamingWhileCancelling_SetsFlushOnCancel(t *testing.T) {
+	m, f := queueModel(t)
+	m.state = stateStreaming
+	m.cancelling = true
+	m.flushOnCancel = false
+
+	// Queue a prompt while streaming + cancelling.
+	m.ta.SetValue("queued during cancel")
+	m, _, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(m.queuedPrompts) != 1 {
+		t.Fatalf("expected 1 queued prompt, got %d", len(m.queuedPrompts))
+	}
+	if m.queuedPrompts[0].text != "queued during cancel" {
+		t.Errorf("expected 'queued during cancel', got %q", m.queuedPrompts[0].text)
+	}
+	if !m.flushOnCancel {
+		t.Error("flushOnCancel should be true after queueing while cancelling in streaming state")
+	}
+	// No additional interrupt — the cancel is already in flight.
+	if f.interrupts != 0 {
+		t.Errorf("streaming-branch queue should not call interrupt, got %d", f.interrupts)
+	}
+
+	// Cancel completes — should flush the queued prompt.
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{
+		TurnID: "trn_1", Outcome: "cancelled",
+	}, f.sid))
+
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queue should be flushed on cancel completion, got %d remaining", len(m.queuedPrompts))
+	}
+	if m.state != stateStreaming {
+		t.Errorf("flush should start a new turn (stateStreaming), got %v", m.state)
+	}
+}
+
+// TestQueuePrompt_TurnResumed_NormalCase_StillTransitions: when not cancelling,
+// TurnResumed should still transition stateWaiting → stateStreaming (the
+// normal, non-race path).
+func TestQueuePrompt_TurnResumed_NormalCase_StillTransitions(t *testing.T) {
+	m, f := queueModel(t)
+	m.state = stateWaiting
+
+	// No cancel in flight — TurnResumed should transition normally.
+	m = step(m, evt(event.KindTurnResumed, nil, f.sid))
+
+	if m.state != stateStreaming {
+		t.Errorf("state should transition to stateStreaming on normal TurnResumed, got %v", m.state)
+	}
+}
+
 func toolStart(tcID, name, cmd string, f *fakeFacade) event.Event {
 	return evt(event.KindToolCallStarted, event.ToolCallStarted{
 		TurnID: "trn_1", ToolCallID: event.ToolCallID(tcID), Name: name, ArgDigest: cmd,

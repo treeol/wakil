@@ -1051,13 +1051,19 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				// /info, /queue, /ask; others are hard-rejected). Fall
 				// through to the mid-turn branch.
 			} else {
-				// Plain text: cancel the wait + queue the prompt.
+				// Plain text: cancel the wait + queue the prompt. If a
+				// cancel is already in flight (from a prior waiting-input
+				// cancel-and-send), don't call cancelTurn() again — the
+				// in-flight cancel will produce the TurnCompleted that
+				// flushes the queue.
 				m.queuedPrompts = append(m.queuedPrompts, queuedPrompt{
 					text:       input,
 					enqueuedAt: time.Now(),
 				})
-				m.cancelTurn()
-				m.cancelling = true
+				if !m.cancelling {
+					m.cancelTurn()
+					m.cancelling = true
+				}
 				m.flushOnCancel = true
 				m.addItem(iSys, dim2("· wait cancelled — sending your prompt…"))
 				m.ta.Reset()
@@ -1192,6 +1198,19 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				enqueuedAt: time.Now(),
 			})
 			n := len(m.queuedPrompts)
+			// If a cancel is already pending (from a prior stateWaiting
+			// cancel-and-send, or from a manual Esc/Ctrl+C cancel), ensure
+			// subsequent prompts also flush when the cancel completes.
+			// Without this, only the first prompt flushes (via the
+			// flushOnCancel set in the stateWaiting path) and subsequent
+			// ones stay stuck in the queue. This also covers the manual-
+			// cancel case: if the user Esc-cancels a streaming turn and
+			// then queues a prompt before the cancel completes, that
+			// prompt should flush on cancel completion rather than stay
+			// stuck (see card #169).
+			if m.cancelling {
+				m.flushOnCancel = true
+			}
 			if n == 1 {
 				m.addItem(iSys, dim2(sprint("· queued (queue: %d) — Esc cancels turn, /queue to manage", n)))
 			} else {
