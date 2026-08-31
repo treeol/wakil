@@ -389,11 +389,22 @@ func TestMashuraDebateWatchdogNotClippedTo1x(t *testing.T) {
 	if perr == nil || !strings.Contains(perr.Error(), "timed out") {
 		t.Errorf("op.err = %v, want 2× timeout error", perr)
 	}
+	// publishAsyncOp sends the Done event to the sink AFTER the registry
+	// publication, so poll for it (bounded) rather than snapshotting
+	// immediately — same timing race as TestMashuraWatchdogForceTerminalizes.
 	var timeoutDone int
-	for _, e := range col.snapshot() {
-		if m, ok := e.(AsyncJobDoneMsg); ok && m.OpID == op.id && m.Err != "" {
-			timeoutDone++
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		timeoutDone = 0
+		for _, e := range col.snapshot() {
+			if m, ok := e.(AsyncJobDoneMsg); ok && m.OpID == op.id && m.Err != "" {
+				timeoutDone++
+			}
 		}
+		if timeoutDone == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if timeoutDone != 1 {
 		t.Errorf("timeout AsyncJobDoneMsg emitted %d times, want exactly 1", timeoutDone)

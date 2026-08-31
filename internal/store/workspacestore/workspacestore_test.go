@@ -146,7 +146,7 @@ func TestListEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List empty: %v", err)
 	}
-	if rows != nil && len(rows) != 0 {
+	if len(rows) != 0 {
 		t.Fatalf("List empty: got %d rows, want nil/empty", len(rows))
 	}
 }
