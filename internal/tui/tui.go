@@ -626,9 +626,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		before := m.statusRows()
 		m.flash = ""
 		m.pendingEscape = nil
-		if m.sel.active {
+		if m.sel.active || m.sel.pressed {
+			wasActive := m.sel.active
 			m.sel = selection{}
-			m.refreshViewport()
+			if wasActive {
+				m.refreshViewport()
+			}
 		}
 
 		// Double-press gate: any key that can't confirm the live arm dismisses

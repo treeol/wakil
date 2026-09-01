@@ -19,8 +19,18 @@ const (
 // content space: row is an index into the viewport's full (scrolled) content,
 // col is a 0-based visual column. anchor is where the drag began; head is the
 // moving end.
+//
+// State machine:
+//   - pressed: a left-press was captured inside the pane. The anchor is recorded
+//     but NO highlight is rendered — styling is preserved. This prevents a plain
+//     click from replacing the styled viewport with the ANSI-stripped plainLines.
+//   - active: the highlight is rendered (reverse video on the selected range).
+//     Set only when the mouse actually moves to a different cell (real drag).
+//   - dragging: the mouse moved since press (distinguishes drag from click for
+//     release routing).
 type selection struct {
-	active    bool // a selection exists (rendered highlighted)
+	pressed   bool // left-press captured in the pane; anchor recorded, no highlight yet
+	active    bool // selection highlight is rendered
 	dragging  bool // the mouse moved since press (distinguishes drag from click)
 	anchorRow int
 	anchorCol int
@@ -56,7 +66,7 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 	// m.height - inputOuterH - completionHeight() - tabH, so the sections
 	// always sum to exactly m.height.
 	if len(m.subTabs) > 0 && msg.Action == tea.MouseActionRelease &&
-		msg.Button == tea.MouseButtonLeft && !m.sel.dragging &&
+		msg.Button == tea.MouseButtonLeft && !m.sel.active && !m.sel.pressed &&
 		msg.Y == m.height-1 {
 		x := msg.X
 		switch {
@@ -109,47 +119,70 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		if msg.Button != tea.MouseButtonLeft {
 			return m, false, nil
 		}
-		row, col, in := m.mouseToContent(msg.X, msg.Y)
-		if !in {
-			// Press outside the conversation pane clears any selection but is
-			// otherwise not ours to consume.
-			if m.sel.active {
-				m.sel = selection{}
-				m.refreshViewport()
-			}
-			return m, false, nil
-		}
+		// Clear flash and reflow BEFORE computing the anchor so the coordinate
+		// maps against the post-reflow geometry (review finding: the old code
+		// computed row/col before reflow, which could shift the anchor if the
+		// status zone height changed).
 		before := m.statusRows()
 		m.flash = ""
 		m = m.reflowIfStatusHeightChanged(before)
-		m.sel = selection{active: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col}
-		m.renderSelection()
+		// If a previous selection's highlight is visible, clear it now and
+		// restore styling before computing the anchor — the anchor must map
+		// against the post-clear geometry/YOffset.
+		if m.sel.active {
+			m.sel = selection{}
+			m.refreshViewport()
+		}
+		row, col, in := m.mouseToContent(msg.X, msg.Y)
+		if !in {
+			// Press outside the conversation pane clears any pending press
+			// state but doesn't need a viewport refresh (no highlight was
+			// rendered for a pending-only state). A prior active highlight
+			// was already cleared above.
+			m.sel = selection{}
+			return m, false, nil
+		}
+		// Record the anchor but do NOT render a highlight yet. This prevents
+		// a plain click from replacing styled content with the ANSI-stripped
+		// plainLines. The highlight activates only on the first real drag
+		// (motion to a different cell).
+		m.sel = selection{pressed: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col}
 		return m, true, nil
 
 	case tea.MouseActionMotion:
-		if !m.sel.active {
+		if !m.sel.pressed {
 			return m, false, nil
 		}
-		// Cell-motion events only arrive while a button is held, so this is a
-		// drag. Clamp to the pane so dragging past an edge extends to it.
+		// Cell-motion events only arrive while a button is held (the program
+		// uses WithMouseCellMotion, not WithMouseAllMotion), so this is a drag.
+		row, col := m.clampToContent(msg.X, msg.Y)
+		// Don't activate until the pointer moves to a different cell — terminal
+		// jitter or a same-cell motion shouldn't turn a click into a selection.
+		if !m.sel.active && row == m.sel.anchorRow && col == m.sel.anchorCol {
+			return m, true, nil
+		}
 		m.sel.dragging = true
-		m.sel.headRow, m.sel.headCol = m.clampToContent(msg.X, msg.Y)
+		m.sel.active = true
+		m.sel.headRow, m.sel.headCol = row, col
 		m.renderSelection()
 		return m, true, nil
 
 	case tea.MouseActionRelease:
-		if !m.sel.active {
+		if !m.sel.pressed {
 			return m, false, nil
 		}
 		if !m.sel.dragging {
-			// A plain click (no drag) just clears the selection.
+			// A plain click (no drag) — clear the pending press state and
+			// consume the event without touching the viewport content.
 			m.sel = selection{}
-			m.refreshViewport()
 			return m, true, nil
 		}
 		text := m.selectedText()
 		// Keep the highlight visible so the user sees what was copied.
 		m.renderSelection()
+		// Clear pressed/dragging but keep active so the highlight persists.
+		m.sel.pressed = false
+		m.sel.dragging = false
 		return m, true, copyToClipboard(text)
 	}
 	return m, false, nil
