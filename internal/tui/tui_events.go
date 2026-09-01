@@ -58,6 +58,13 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 				m.dotArmed = true
 				cmds = append(cmds, startDotTick())
 			}
+			// The dot tick fires every 200ms while busy. Server-side state
+			// (context usage, latency, backend) may have changed since the
+			// last reflow, shifting segment widths and potentially flipping
+			// the status zone between 1 and 2 rows. Check and reflow so the
+			// viewport height stays in sync with the rendered status zone.
+			before := m.statusRows()
+			m = m.reflowIfStatusHeightChanged(before)
 		} else {
 			m.dotArmed = false
 		}
