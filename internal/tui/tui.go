@@ -590,6 +590,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 
 	case tea.MouseMsg:
+		// Fast-path: cell-motion events with no active selection press are
+		// irrelevant (hover is unused — only drag selection uses motion). Skip
+		// handleMouse entirely and let the default forward handle wheel/other
+		// mouse events. This avoids per-event function call overhead on
+		// terminals that emit many motion events.
+		if msg.Action == tea.MouseActionMotion && !m.sel.pressed {
+			break
+		}
 		var handled bool
 		var mCmd tea.Cmd
 		m, handled, mCmd = m.handleMouse(msg)
