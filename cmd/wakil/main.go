@@ -170,6 +170,7 @@ func main() {
 	prog := tea.NewProgram(model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
+		tea.WithANSICompressor(),
 	)
 	tui.SetProgramSend(prog.Send)
 	// Subscribe the facade's event stream now that prog.Send exists, then
@@ -244,6 +245,7 @@ func runDaemonMode(cfg config.Config, resumeID string) int {
 	prog := tea.NewProgram(model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
+		tea.WithANSICompressor(),
 	)
 	tui.SetProgramSend(prog.Send)
 	if err := rt.SubscribeLive(ctx, func(ev event.Event) {
