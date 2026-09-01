@@ -124,6 +124,16 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea.Cmd, bool) {
 	m.rotating = false
 	if rm.failed {
+		// Rotation failed: the old facade is still alive (beginRotation closes
+		// it only on success). However, domain events were suppressed while
+		// m.rotating was true — if the old turn completed during the rotation
+		// attempt, its TurnCompleted was dropped and the TUI missed the state
+		// transition. Reset the per-turn display state to idle as a safety
+		// measure: if the turn is still running, a subsequent TurnCompleted will
+		// reconcile; if it completed, we're no longer stuck in streaming.
+		before := m.statusRows()
+		m = m.clearWiringTurnState()
+		m = m.reflowIfStatusHeightChanged(before)
 		m.addItem(iSys, dim2("⚠ rotation failed: "+rm.err.Error()))
 		if rm.note != "" {
 			m.addItem(iSys, dim2(rm.note))
@@ -131,6 +141,9 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 		return m, cmds, true
 	}
 	if rm.facade == nil {
+		before := m.statusRows()
+		m = m.clearWiringTurnState()
+		m = m.reflowIfStatusHeightChanged(before)
 		m.addItem(iSys, dim2("⚠ rotation returned no conversation"))
 		return m, cmds, true
 	}

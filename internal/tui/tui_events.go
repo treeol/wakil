@@ -30,10 +30,12 @@ import (
 // SaveRepoState callback below (the facade's own type name is a mouthful).
 type sessionclientRepoState = sessionclient.RepoStateMutator
 
-// handleEventMsg handles one domain event on the wiring path. It mirrors
-// handleAgentMsg's forwarding contract: no early return — Update still
-// forwards the event to the textarea/viewport (harmless: they ignore unknown
-// types), and handled reports whether the event matched.
+// handleEventMsg handles one domain event on the wiring path. Local wiring
+// messages (commandResultMsg, rotationMsg, etc.) and domain events (event.Event)
+// are processed here. Domain events that are consumed (handled, rotation guard,
+// session guard) return early — Update does not forward them to the
+// textarea/viewport. Unmatched messages fall through to Update's trailing
+// forward, which is harmless (textarea/viewport ignore unknown types).
 func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.Cmd, bool) {
 	// Local wiring-path messages first (not event.Event values).
 	switch lm := msg.(type) {
@@ -130,6 +132,17 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	// Session guard: drop events not belonging to the current conversation.
 	// m.sessionID is cached at attach/rotation time (never re-fetched per
 	// event — Snapshot() copies the whole conversation).
+	//
+	// Rotation guard: while a rotation Cmd is in flight (m.rotating == true),
+	// the old facade is being closed and its pump may still deliver events
+	// (TurnCompleted{cancelled}, SessionClosed) that pass the session guard
+	// because m.sessionID hasn't been swapped yet. Drop ALL domain events
+	// during rotation to prevent transient items from flashing before
+	// applyRotation wipes the view. The rotationMsg (a local message, not an
+	// event.Event) still gets through and performs the swap.
+	if m.rotating {
+		return m, cmds, true // consumed (rotation in flight), not forwarded
+	}
 	if m.sessionID != "" && ev.SessionID != "" && event.SessionID(ev.SessionID) != m.sessionID {
 		return m, cmds, true // consumed (stale), not forwarded
 	}
