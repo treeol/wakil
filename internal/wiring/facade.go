@@ -30,7 +30,6 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
-	"github.com/treeol/wakil/internal/core/format"
 	"github.com/treeol/wakil/internal/core/id"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/core/sessionhost"
@@ -240,6 +239,10 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 	app := f.app
 	used, exact := app.ContextUsage()
 
+	// ConvLen and TranscriptSize read app.Conv, which is guarded by convMu.
+	// Use ConvStats() which holds the read lock internally.
+	convLen, convSize := app.ConvStats()
+
 	info := sessionclient.InfoSnapshot{
 		ChatID:          app.Client.ChatID,
 		BaseURL:         app.Client.BaseURL,
@@ -258,8 +261,8 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 		ContextLimit:    toClientContextLimit(app.ContextLimit()),
 		ContextUsed:     used,
 		ContextExact:    exact,
-		ConvLen:         len(app.Conv),
-		TranscriptSize:  format.TranscriptSize(app.Conv),
+		ConvLen:         convLen,
+		TranscriptSize:  convSize,
 		Costs:           app.Costs,
 		RawTools:        app.RawTools,
 	}

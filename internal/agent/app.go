@@ -15,6 +15,7 @@ import (
 	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/counsel"
+	"github.com/treeol/wakil/internal/core/format"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"
@@ -673,6 +674,16 @@ func (a *App) ConvSnapshot() []proxy.Message {
 	a.convMu.RLock()
 	defer a.convMu.RUnlock()
 	return sanitizeConvForSideQuestion(a.Conv)
+}
+
+// ConvStats returns the conversation length (message count) and transcript size
+// (total bytes of content + tool-call arguments) under convMu.RLock. This is
+// safe for concurrent access and avoids the O(n) copy of ConvSnapshot when only
+// statistics are needed (e.g. the TUI's status line, which runs per frame).
+func (a *App) ConvStats() (length int, transcriptSize int) {
+	a.convMu.RLock()
+	defer a.convMu.RUnlock()
+	return len(a.Conv), format.TranscriptSize(a.Conv)
 }
 
 // sanitizeConvForSideQuestion trims the conversation to the last complete
