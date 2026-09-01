@@ -301,10 +301,37 @@ func (m tuiModel) statusRows() int {
 // costs/grounding/…) are preserved in-line rather than dropped.
 const statusMaxRows = 4
 
-// statusLines renders the status zone above the input: identity + gauge on
-// one line when it fits, wrapped onto more rows when it doesn't. Reverse
-// search owns the row exclusively (one line) while active. When the info
-// expansion is on, the former-banner segments join the same flow.
+// toolActivityRow returns a single line showing the currently-running or
+// most-recently-completed tool, rendered as a dim line ABOVE the status line
+// (not inside it). Returns "" when no tool has run in the current turn.
+//
+// While a tool is executing (m.runningTool != nil) the text is prefixed with
+// "→"; after completion (m.lastTool, m.runningTool == nil) it shows as the
+// plain tool name+command. Both are cleared at turn end (clearWiringTurnState).
+func (m tuiModel) toolActivityRow() string {
+	// Prefer the running tool; fall back to the last completed tool.
+	tool := m.runningTool
+	if tool == nil {
+		tool = m.lastTool
+	}
+	if tool == nil {
+		return ""
+	}
+	text := tool.name
+	if tool.command != "" {
+		text += " " + formatTruncate(tool.command, 40)
+	}
+	if m.runningTool != nil {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("→ " + text)
+	}
+	return dim2(text)
+}
+
+// statusLines renders the status zone above the input: tool activity row
+// (when a tool is running or just completed) on its own line, then the
+// identity + gauge line(s). Reverse search owns the row exclusively (one
+// line) while active. When the info expansion is on, the former-banner
+// segments join the same flow.
 func (m tuiModel) statusLines() []string {
 	w := m.width - borderW
 	if w < 1 {
@@ -317,20 +344,34 @@ func (m tuiModel) statusLines() []string {
 		}
 		return []string{l}
 	}
-	in := m.headerStatusInput()
+	var rows []string
+	if tr := m.toolActivityRow(); tr != "" {
+		if lipgloss.Width(tr) > w {
+			tr = ansi.Truncate(tr, w, "")
+		}
+		rows = append(rows, tr)
+	}
+	// Fetch Info() and Consent() once for the whole status zone. Previously
+	// headerStatusInput, ctxSegment, and billedSegment each called Info()
+	// separately (and headerStatusInput called Snapshot() which copies the
+	// entire conversation). Now all three read from this single fetch.
+	info := m.facade.Info()
+	consent := m.facade.Consent()
+	in := m.buildStatusInput(info, consent)
 	segments := statusSegments(in)
-	segments = append(segments, m.ctxSegment())
+	segments = append(segments, ctxSegmentFromInfo(info, w))
 	maxRows := 2
 	if m.infoPanel.active {
 		maxRows = statusMaxRows
 		segments = append(segments, m.infoExtraSegments()...)
-	} else if bs := m.billedSegment(); bs != "" {
+	} else if bs := billedSegmentFromInfo(info); bs != "" {
 		// Collapsed: the billed subtotal joins the always-on fixed group so
 		// the real billed spend is visible without opening the expansion.
 		// When the expansion is on, costSegments() carries it instead (no dup).
 		segments = append(segments, bs)
 	}
-	return flowSegmentsN(segments, w, maxRows)
+	rows = append(rows, flowSegmentsN(segments, w, maxRows)...)
+	return rows
 }
 
 // statusSegments builds the ordered identity segment list: dot glued to
@@ -404,11 +445,8 @@ func statusSegments(in statusLineInput) []string {
 	if in.queueLen > 0 {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(sprint("queue: %d", in.queueLen)))
 	}
-	// Last tool text: persists after the tool completes (until turn end) so the
-	// user always sees what the agent last did, right in the status line.
-	if in.lastToolText != "" {
-		segs = append(segs, dim2(in.lastToolText))
-	}
+	// The last-tool text now lives on its own row ABOVE the status line
+	// (toolActivityRow), not as a segment inside it.
 	if in.model != "" {
 		segs = append(segs, dim2(in.model))
 	}
@@ -459,8 +497,16 @@ func statusSegments(in statusLineInput) []string {
 // usable budget) → red (≥90% of n_ctx); the "ctx" key is amber when the
 // ceiling came from the config fallback or the model was unresolved.
 // Wiring path: all fields from Info() (limit + usage + transcript stats).
+// ctxSegment is the backward-compatible wrapper that fetches Info() itself.
+// Prefer ctxSegmentFromInfo in render paths. Kept for test callers.
 func (m tuiModel) ctxSegment() string {
-	info := m.facade.Info()
+	return ctxSegmentFromInfo(m.facade.Info(), m.width)
+}
+
+// ctxSegmentFromInfo is the pure-function version that takes a pre-fetched
+// InfoSnapshot so the caller can share one Info() call across the whole
+// status zone.
+func ctxSegmentFromInfo(info sessionclient.InfoSnapshot, _ int) string {
 	lim := info.ContextLimit
 	used, exact := info.ContextUsed, info.ContextExact
 	total := lim.NCtx
@@ -507,12 +553,19 @@ func formatTruncate(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// headerStatusInput assembles the statusLineInput for the status line from
-// model state: identity/model/backend fields from Info(); consent from
-// facade.Consent(); RawTools from Snapshot().
+// headerStatusInput is the backward-compatible wrapper that fetches Info()
+// and Consent() itself. Prefer buildStatusInput in render paths to avoid
+// duplicate facade reads. Kept for test callers.
 func (m tuiModel) headerStatusInput() statusLineInput {
-	info := m.facade.Info()
-	snap := m.facade.Snapshot()
+	return m.buildStatusInput(m.facade.Info(), m.facade.Consent())
+}
+
+// buildStatusInput assembles the statusLineInput for the status line from
+// model state and the pre-fetched Info/Consent. Callers should fetch Info()
+// and Consent() once per statusLines() call and pass them here — previously
+// this method called Info(), Snapshot(), and Consent() itself, and
+// ctxSegment/billedSegment called Info() again.
+func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sessionclient.Consent) statusLineInput {
 	runningTool := ""
 	if m.runningTool != nil {
 		runningTool = "tool: " + m.runningTool.name
@@ -529,14 +582,13 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 			lastToolText += " " + formatTruncate(m.lastTool.command, 40)
 		}
 	}
-	consent := m.facade.Consent()
 	return statusLineInput{
 		state:                   m.state,
 		autoApprove:             consent.AutoApprove,
 		allowDestructive:        consent.AllowDestructive,
 		pendingAutoGrant:        m.pendingAutoGrant,
 		pendingDestructiveGrant: m.pendingDestructiveGrant,
-		rawTools:                snap.RawTools,
+		rawTools:                info.RawTools,
 		reasoning:               m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
 		tps:                     m.tps,
 		workflowLabel:           info.WorkflowLabel,

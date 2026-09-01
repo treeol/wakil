@@ -60,6 +60,11 @@ type InfoSnapshot struct {
 	// per-session; the TUI seeds its toggle state from it).
 	InfoPanelOpen bool
 
+	// RawTools reports whether raw tool mode is active (from app.RawTools).
+	// Mirrors ClientSnapshot.RawTools so the status line can render the "raw"
+	// segment without calling Snapshot(), which copies the entire conversation.
+	RawTools bool
+
 	// MCP servers: name → status string ("up", "down", …) plus tool count.
 	MCPServers []MCPServerInfo
 

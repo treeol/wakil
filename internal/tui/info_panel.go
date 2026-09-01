@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 )
@@ -262,6 +263,20 @@ func billedCell(billedTotal float64) string {
 // the actual billed cost is visible without opening the info expansion. When
 // the expansion is on, the full cost block (costSegments) carries it instead,
 // so the segment is not duplicated.
+// billedSegmentFromInfo returns the always-on "billed $X" status segment from
+// the pre-fetched InfoSnapshot. See billedSegment for the full doc.
+func billedSegmentFromInfo(info sessionclient.InfoSnapshot) string {
+	costs := info.Costs
+	if costs == nil {
+		return ""
+	}
+	billedTotal, _, anyBilled, _, _ := costs.SnapshotSplit()
+	if !anyBilled {
+		return ""
+	}
+	return billedCell(billedTotal)
+}
+
 func (m tuiModel) billedSegment() string {
 	costs := m.facade.Info().Costs
 	if costs == nil {
