@@ -68,28 +68,21 @@ func TestStatusSegmentsExecuting(t *testing.T) {
 }
 
 func TestStatusSegmentsLastTool(t *testing.T) {
-	// The last tool's text persists in the status line after the tool completes
-	// (sourced from lastTool, not runningTool). Shown as a dimmed segment.
+	// The last tool's text is no longer a status-line segment — it lives on
+	// its own row above the status line (toolActivityRow). So statusSegments
+	// must NOT contain the tool text.
 	segs := statusSegTexts(statusLineInput{state: stateStreaming, lastToolText: "run_shell ls -la"})
-	found := false
 	for _, s := range segs {
 		if strings.Contains(s, "run_shell") {
-			found = true
+			t.Errorf("last tool text should NOT appear in status segments; got %v", segs)
 		}
 	}
-	if !found {
-		t.Errorf("last tool text should appear as a status segment; got %v", segs)
-	}
-	// At idle with lastToolText, the segment still shows.
+	// At idle with lastToolText, the segment still does not appear.
 	segs = statusSegTexts(statusLineInput{state: stateIdle, hadTurn: true, lastToolText: "read_file config.go"})
-	found = false
 	for _, s := range segs {
 		if strings.Contains(s, "read_file") {
-			found = true
+			t.Errorf("last tool text should NOT appear in status segments at idle; got %v", segs)
 		}
-	}
-	if !found {
-		t.Errorf("last tool text should persist at idle; got %v", segs)
 	}
 }
 
@@ -97,6 +90,103 @@ func TestStatusSegmentsConfirm(t *testing.T) {
 	segs := statusSegTexts(statusLineInput{state: stateConfirm})
 	if segs[0] != "• confirming" {
 		t.Errorf("confirm head = %q, want '• confirming'", segs[0])
+	}
+}
+
+// --- toolActivityRow (line above the status line) ---
+
+func TestToolActivityRowEmpty(t *testing.T) {
+	m := layoutModel(100, 40)
+	if got := plain(m.toolActivityRow()); got != "" {
+		t.Errorf("toolActivityRow should be empty when no tool has run; got %q", got)
+	}
+}
+
+func TestToolActivityRowRunningTool(t *testing.T) {
+	m := layoutModel(100, 40)
+	m.runningTool = &runningToolState{name: "run_shell", command: "ls -la"}
+	// Running tool: 2-column blank gutter (no arrow), text starts at col 2
+	// so it aligns with the AUTO label on the status line below.
+	if got := plain(m.toolActivityRow()); got != "  run_shell ls -la" {
+		t.Errorf("running tool row = %q, want %q (2-space gutter, no arrow)", got, "  run_shell ls -la")
+	}
+}
+
+func TestToolActivityRowLastTool(t *testing.T) {
+	m := layoutModel(100, 40)
+	m.lastTool = &runningToolState{name: "read_file", command: "config.go"}
+	// Completed tool: same 2-column gutter, dim text — identical geometry
+	// to the running state so nothing shifts when a tool completes.
+	if got := plain(m.toolActivityRow()); got != "  read_file config.go" {
+		t.Errorf("last tool row = %q, want %q (2-space gutter, same alignment)", got, "  read_file config.go")
+	}
+}
+
+func TestToolActivityRowRunningBeatsLast(t *testing.T) {
+	m := layoutModel(100, 40)
+	m.runningTool = &runningToolState{name: "search_files", command: "pattern"}
+	m.lastTool = &runningToolState{name: "read_file", command: "old.go"}
+	row := plain(m.toolActivityRow())
+	if !strings.Contains(row, "search_files") {
+		t.Errorf("running tool should take precedence over lastTool; got %q", row)
+	}
+}
+
+// TestToolActivityRowAlignmentConsistency verifies that running and
+// completed tool rows have identical left padding (2 spaces) so the text
+// never shifts horizontally when transitioning between states. The status
+// line dot ("• ") is also 2 display columns, so the tool text aligns with
+// the first label after the dot (AUTO when present, otherwise the state
+// label).
+func TestToolActivityRowAlignmentConsistency(t *testing.T) {
+	m := layoutModel(100, 40)
+	m.runningTool = &runningToolState{name: "run_shell", command: "ls -la"}
+	runningRow := plain(m.toolActivityRow())
+	m.runningTool = nil
+	m.lastTool = &runningToolState{name: "run_shell", command: "ls -la"}
+	completedRow := plain(m.toolActivityRow())
+	if runningRow != completedRow {
+		t.Errorf("running and completed rows should have identical geometry;\n  running:   %q\n  completed: %q", runningRow, completedRow)
+	}
+	// No arrow in either state.
+	for _, row := range []string{runningRow, completedRow} {
+		if strings.Contains(row, "→") {
+			t.Errorf("tool row should not contain arrow; got %q", row)
+		}
+	}
+}
+
+// TestToolActivityRowNarrowWidth verifies the 2-column gutter survives
+// ansi.Truncate at narrow widths. statusLines() truncates the tool row
+// after the gutter is prepended; the spaces are outside the styled span,
+// so truncation should preserve them whenever the inner width >= 2.
+// At inner width 0–1 (pathological terminals < 4 cols) the gutter is
+// partially or fully clipped, which is acceptable.
+func TestToolActivityRowNarrowWidth(t *testing.T) {
+	// m.width must be >= borderW(2)+2 so the inner w >= 2.
+	for _, width := range []int{4, 5, 6, 8, 10, 20} {
+		m := layoutModel(width, 40)
+		m.runningTool = &runningToolState{name: "run_shell", command: "ls -la"}
+		lines := m.statusLines()
+		if len(lines) < 1 {
+			t.Errorf("w=%d: statusLines returned no rows", width)
+			continue
+		}
+		innerW := width - borderW
+		// The tool row is the first (and possibly only) row.
+		row := plain(lines[0])
+		// The row must never exceed the available inner width.
+		if lipgloss.Width(row) > innerW {
+			t.Errorf("w=%d: row width %d exceeds available %d; got %q", width, lipgloss.Width(row), innerW, row)
+		}
+		// At inner width >= 2, the gutter should survive (two leading spaces).
+		if !strings.HasPrefix(row, "  ") {
+			t.Errorf("w=%d: row should start with 2-space gutter; got %q", width, row)
+		}
+		// No arrow at any width.
+		if strings.Contains(row, "→") {
+			t.Errorf("w=%d: row should not contain arrow; got %q", width, row)
+		}
 	}
 }
 

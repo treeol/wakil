@@ -302,12 +302,17 @@ func (m tuiModel) statusRows() int {
 const statusMaxRows = 4
 
 // toolActivityRow returns a single line showing the currently-running or
-// most-recently-completed tool, rendered as a dim line ABOVE the status line
-// (not inside it). Returns "" when no tool has run in the current turn.
+// most-recently-completed tool, rendered ABOVE the status line (not inside
+// it). Returns "" when no tool has run in the current turn.
 //
-// While a tool is executing (m.runningTool != nil) the text is prefixed with
-// "→"; after completion (m.lastTool, m.runningTool == nil) it shows as the
-// plain tool name+command. Both are cleared at turn end (clearWiringTurnState).
+// The text is always indented by a 2-column blank gutter so it aligns with
+// the first label after the status dot on the line below (AUTO when /auto
+// is active, otherwise the state label). The dot "• " is also 2 display
+// columns, so the tool text starts at the same zero-based offset (2) as
+// that label. The running vs completed distinction is conveyed by color
+// only (bright orange while running, dim after completion) — no arrow
+// prefix — so the text never shifts left/right. Both are cleared at turn
+// end (clearWiringTurnState).
 func (m tuiModel) toolActivityRow() string {
 	// Prefer the running tool; fall back to the last completed tool.
 	tool := m.runningTool
@@ -321,10 +326,12 @@ func (m tuiModel) toolActivityRow() string {
 	if tool.command != "" {
 		text += " " + formatTruncate(tool.command, 40)
 	}
+	// 2-column blank gutter (outside the styled span) so the tool text
+	// aligns with the AUTO label below and never shifts between states.
 	if m.runningTool != nil {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("→ " + text)
+		return "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(text)
 	}
-	return dim2(text)
+	return "  " + dim2(text)
 }
 
 // statusLines renders the status zone above the input: tool activity row
@@ -573,8 +580,9 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 			runningTool += " " + formatTruncate(m.runningTool.command, 40)
 		}
 	}
-	// lastToolText persists the last tool's text after it completes (until the
-	// turn ends) so the status line always shows what the agent last did.
+	// lastToolText is populated for compatibility but no longer rendered by
+	// statusSegments — toolActivityRow owns the tool detail row above the
+	// status line and reads m.lastTool directly.
 	lastToolText := ""
 	if m.lastTool != nil {
 		lastToolText = m.lastTool.name
@@ -780,12 +788,15 @@ type statusLineInput struct {
 	// queueLen is the number of queued mid-turn prompts. Renders "queue: N" in
 	// the status segment when > 0.
 	queueLen int
-	// runningTool is the formatted "tool: name cmd" string for the status line
-	// when a tool is executing. Empty when no tool is active.
+	// runningTool is the formatted "tool: name cmd" string used to select the
+	// "executing" state label while a tool is active. Empty when no tool is
+	// running. (The tool DETAIL lives on its own row via toolActivityRow, not
+	// as a status-line segment.)
 	runningTool string
-	// lastToolText is the formatted text of the most recent tool (persists after
-	// the tool completes, until the turn ends). Shown as a segment in the status
-	// line after the state label so the user always sees what the agent last did.
+	// lastToolText is the formatted text of the most recent tool (persists
+	// after the tool completes, until the turn ends). It is NOT rendered as a
+	// status-line segment — toolActivityRow owns the tool detail row above the
+	// status line. Kept for potential future use and test compatibility.
 	lastToolText string
 
 	// lastLatencyMs is the time-to-first-byte latency from the most recent
