@@ -14,8 +14,8 @@ import (
 
 	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
-	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/core/format"
+	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"

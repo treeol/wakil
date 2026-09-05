@@ -257,28 +257,14 @@ func billedCell(billedTotal float64) string {
 	return dimStyle.Render("billed") + " " + lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(cell)
 }
 
-// billedSegment returns the always-on "billed $X" status segment — the real
-// billed spend — or "" when no billed source has been recorded. It is rendered
-// in the COLLAPSED status line (the fixed group that never scrolls away), so
-// the actual billed cost is visible without opening the info expansion. When
-// the expansion is on, the full cost block (costSegments) carries it instead,
-// so the segment is not duplicated.
-// billedSegmentFromInfo returns the always-on "billed $X" status segment from
-// the pre-fetched InfoSnapshot. See billedSegment for the full doc.
+// billedSegmentFromInfo returns the always-on "billed $X" status segment — the
+// real billed spend — from the pre-fetched InfoSnapshot, or "" when no billed
+// source has been recorded. It is rendered in the COLLAPSED status line (the
+// fixed group that never scrolls away), so the actual billed cost is visible
+// without opening the info expansion. When the expansion is on, the full cost
+// block (costSegments) carries it instead, so the segment is not duplicated.
 func billedSegmentFromInfo(info sessionclient.InfoSnapshot) string {
 	costs := info.Costs
-	if costs == nil {
-		return ""
-	}
-	billedTotal, _, anyBilled, _, _ := costs.SnapshotSplit()
-	if !anyBilled {
-		return ""
-	}
-	return billedCell(billedTotal)
-}
-
-func (m tuiModel) billedSegment() string {
-	costs := m.facade.Info().Costs
 	if costs == nil {
 		return ""
 	}

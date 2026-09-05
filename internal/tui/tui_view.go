@@ -359,9 +359,9 @@ func (m tuiModel) statusLines() []string {
 		rows = append(rows, tr)
 	}
 	// Fetch Info() and Consent() once for the whole status zone. Previously
-	// headerStatusInput, ctxSegment, and billedSegment each called Info()
-	// separately (and headerStatusInput called Snapshot() which copies the
-	// entire conversation). Now all three read from this single fetch.
+	// headerStatusInput, ctxSegment, and billedSegmentFromInfo each called
+	// Info() separately (and headerStatusInput called Snapshot() which copies
+	// the entire conversation). Now all three read from this single fetch.
 	info := m.facade.Info()
 	consent := m.facade.Consent()
 	in := m.buildStatusInput(info, consent)
@@ -571,7 +571,7 @@ func (m tuiModel) headerStatusInput() statusLineInput {
 // model state and the pre-fetched Info/Consent. Callers should fetch Info()
 // and Consent() once per statusLines() call and pass them here — previously
 // this method called Info(), Snapshot(), and Consent() itself, and
-// ctxSegment/billedSegment called Info() again.
+// ctxSegment/billedSegmentFromInfo called Info() again.
 func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sessionclient.Consent) statusLineInput {
 	runningTool := ""
 	if m.runningTool != nil {
