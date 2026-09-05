@@ -275,7 +275,7 @@ func TestE2E_SessionSnapshot(t *testing.T) {
 // TestE2E_CloseSession verifies the remote client can close a session and the
 // session transitions to closed state.
 func TestE2E_CloseSession(t *testing.T) {
-	sock, cleanup, _ := startTestDaemon(t, stubTurnFunc)
+	sock, cleanup, host := startTestDaemon(t, stubTurnFunc)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -293,6 +293,12 @@ func TestE2E_CloseSession(t *testing.T) {
 	if err := rt.Facade.CloseSession(ctx, core.EmbeddedPrincipal(), sid); err != nil {
 		t.Fatalf("CloseSession: %v", err)
 	}
+
+	// CloseSession is asynchronous: it signals the run loop to finalize (emit
+	// abandonment events + SessionClosed) and returns immediately. Wait for
+	// the session to reach closed state before querying events — same pattern
+	// as TestCloseSessionEmitsSessionClosedAndIsIdempotent in host_test.go.
+	waitForSessionIdle(t, host, sid, 5*time.Second)
 
 	// Verify the session is closed by listing events and finding SessionClosed.
 	events, err := rt.Facade.ListEvents(ctx, core.EmbeddedPrincipal(), sid, 0, 1000)
