@@ -34,7 +34,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.daemon
-    image: wakil-daemon:latest
+    image: wakil-daemon:${WAKIL_DAEMON_TAG:-latest}
     container_name: wakil-daemon
 
     # Run as the HOST user (uid/gid interpolated from the environment).

@@ -162,3 +162,20 @@ jobs:
           else
             buf breaking --against ".git#ref=HEAD~1"
           fi
+
+  # Docker image build gate — catches bit-rot in the Dockerfiles (e.g. the
+  # kvr-server git-clone step, base-image digest drift, apt repo changes)
+  # before it reaches a release. Runs on Dockerfile changes and weekly.
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: build sandbox image (Dockerfile)
+        run: docker build -t wakil-dev:ci .
+
+      - name: build daemon image (Dockerfile.daemon)
+        run: docker build -f Dockerfile.daemon -t wakil-daemon:ci .

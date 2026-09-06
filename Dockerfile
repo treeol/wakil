@@ -15,7 +15,7 @@ RUN cargo build --release --bin server
 # sandbox container by the agent (building user projects, gopls, etc.). It may
 # be newer than the go.mod minimum — the Go toolchain is forward-compatible.
 # See README "Requirements".
-FROM golang:1.26-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS go-toolchain
+FROM golang:1.26.6-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS go-toolchain
 
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716
 
