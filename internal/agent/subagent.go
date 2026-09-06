@@ -1162,25 +1162,29 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 
 	sub := &App{
-		Cfg:               cfg,
-		Client:            subClient,
-		Exec:              a.Exec,
-		Tools:             childTools,
-		Confirm:           childConfirmer,
-		Out:               progressOut,
-		Session:           nil,
-		ToolCache:         map[string]bool{},
-		IsSubagent:        true,
-		AgentPrefix:       "sub-" + ShortID(subChatID),
-		StagingClient:     a.StagingClient, // shared — kvr client is thread-safe
-		MemoryStore:       a.MemoryStore,   // shared — store is thread-safe (internal mutex)
-		SkillStore:        a.SkillStore,    // shared — store is thread-safe (internal mutex)
-		pinUserMessage:    true,            // pin the task instruction so it survives compaction
+		Cfg:           cfg,
+		Client:        subClient,
+		Exec:          a.Exec,
+		Tools:         childTools,
+		Confirm:       childConfirmer,
+		Out:           progressOut,
+		Session:       nil,
+		ToolCache:     map[string]bool{},
+		IsSubagent:    true,
+		AgentPrefix:   "sub-" + ShortID(subChatID),
+		StagingClient: a.StagingClient, // shared — kvr client is thread-safe
+		MemoryStore:   a.MemoryStore,   // shared — store is thread-safe (internal mutex)
+		SkillStore:    a.SkillStore,    // shared — store is thread-safe (internal mutex)
+		subagentState: subagentState{
+			pinUserMessage: true, // pin the task instruction so it survives compaction
+		},
 		SelectedBackend:   backend,
 		BackendList:       a.BackendList,
 		consentedBackends: consentSnapshot,
 		CtxLimit:          a.resolveChildCtxLimit(ctx, view, backend, ctxLimitInherited),
-		Costs:             proxy.NewCostTracker(), // fresh, never the parent's pointer — see foldSubagentCost at the join point
+		costState: costState{
+			Costs: proxy.NewCostTracker(), // fresh, never the parent's pointer — see foldSubagentCost at the join point
+		},
 	}
 	sub.filesChanged = fileRecorder
 	sub.externalActions = extRecorder

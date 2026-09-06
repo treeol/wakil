@@ -309,12 +309,14 @@ func TestConfinementBreakerReportedAsInaccessibleNotBudgetExhausted(t *testing.T
 // exhausted), so a prior turn's trip doesn't leak into a fresh turn.
 func TestConfinementBreakerResetsAcrossSendCalls(t *testing.T) {
 	app := &App{
-		Cfg:                 config.DefaultConfig(),
-		Client:              newTestClient(""),
-		Exec:                newFakeExecutor(),
-		Out:                 io.Discard,
-		confinementTripped:  true,
-		confinementPathsHit: []string{"/some/stale/path"},
+		Cfg:    config.DefaultConfig(),
+		Client: newTestClient(""),
+		Exec:   newFakeExecutor(),
+		Out:    io.Discard,
+		subagentState: subagentState{
+			confinementTripped:  true,
+			confinementPathsHit: []string{"/some/stale/path"},
+		},
 	}
 	// A minimal Send that errors immediately (bad client URL) still must reset
 	// the flags before doing anything else — verify via the reset happening

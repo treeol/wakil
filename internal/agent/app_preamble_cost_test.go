@@ -331,9 +331,9 @@ func preambleMemoryTestApp(t *testing.T) (*App, func()) {
 func TestRecordInferenceCost_NilGuards(t *testing.T) {
 	t.Run("nil_costs", func(t *testing.T) {
 		app := &App{
-			Cfg:    config.DefaultConfig(),
-			Client: &proxy.Client{Model: "test"},
-			Costs:  nil,
+			Cfg:       config.DefaultConfig(),
+			Client:    &proxy.Client{Model: "test"},
+			costState: costState{},
 		}
 		app.Client.SetUsage(proxy.UsageStat{InputTok: 1000, OutputTok: 500, Exact: true})
 		// Should not panic (nil-safe tracker — all methods are no-ops).
@@ -342,9 +342,9 @@ func TestRecordInferenceCost_NilGuards(t *testing.T) {
 
 	t.Run("nil_client", func(t *testing.T) {
 		app := &App{
-			Cfg:    config.DefaultConfig(),
-			Client: nil,
-			Costs:  proxy.NewCostTracker(),
+			Cfg:       config.DefaultConfig(),
+			Client:    nil,
+			costState: costState{Costs: proxy.NewCostTracker()},
 		}
 		// Should not panic.
 		app.RecordInferenceCost()
@@ -356,9 +356,9 @@ func TestRecordInferenceCost_NilGuards(t *testing.T) {
 
 	t.Run("zero_usage", func(t *testing.T) {
 		app := &App{
-			Cfg:    config.DefaultConfig(),
-			Client: &proxy.Client{Model: "test"},
-			Costs:  proxy.NewCostTracker(),
+			Cfg:       config.DefaultConfig(),
+			Client:    &proxy.Client{Model: "test"},
+			costState: costState{Costs: proxy.NewCostTracker()},
 		}
 		// Zero tokens → no-op.
 		app.RecordInferenceCost()
@@ -380,8 +380,8 @@ func TestRecordInferenceCost_NoBackendLegacy(t *testing.T) {
 					Inference: config.InferenceRate{USDPer1MTokens: 5},
 				},
 			},
-			Client: &proxy.Client{Model: "test"},
-			Costs:  proxy.NewCostTracker(),
+			Client:    &proxy.Client{Model: "test"},
+			costState: costState{Costs: proxy.NewCostTracker()},
 		}
 		app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 500_000, Exact: true})
 		// No SetLastUsedBackend → usedBackend == ""
@@ -414,8 +414,8 @@ func TestRecordInferenceCost_NoBackendLegacy(t *testing.T) {
 					Inference: config.InferenceRate{USDPer1MTokens: 5},
 				},
 			},
-			Client: &proxy.Client{Model: "test"},
-			Costs:  proxy.NewCostTracker(),
+			Client:    &proxy.Client{Model: "test"},
+			costState: costState{Costs: proxy.NewCostTracker()},
 		}
 		app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 500_000, Exact: false})
 		app.RecordInferenceCost()
@@ -431,9 +431,9 @@ func TestRecordInferenceCost_NoBackendLegacy(t *testing.T) {
 
 	t.Run("unpriced_when_no_rate", func(t *testing.T) {
 		app := &App{
-			Cfg:    config.DefaultConfig(), // no Inference rate configured
-			Client: &proxy.Client{Model: "test"},
-			Costs:  proxy.NewCostTracker(),
+			Cfg:       config.DefaultConfig(), // no Inference rate configured
+			Client:    &proxy.Client{Model: "test"},
+			costState: costState{Costs: proxy.NewCostTracker()},
 		}
 		app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 500_000, Exact: true})
 		app.RecordInferenceCost()
@@ -460,8 +460,8 @@ func TestRecordInferenceCost_LocalBackend(t *testing.T) {
 					Inference: config.InferenceRate{USDPer1MTokens: 5},
 				},
 			},
-			Client: &proxy.Client{Model: "llama"},
-			Costs:  proxy.NewCostTracker(),
+			Client:    &proxy.Client{Model: "llama"},
+			costState: costState{Costs: proxy.NewCostTracker()},
 			BackendList: []BackendInfo{
 				{Name: "llama", External: false},
 			},
@@ -495,8 +495,8 @@ func TestRecordInferenceCost_LocalBackend(t *testing.T) {
 					Inference: config.InferenceRate{USDPer1MTokens: 5},
 				},
 			},
-			Client: &proxy.Client{Model: "llama"},
-			Costs:  proxy.NewCostTracker(),
+			Client:    &proxy.Client{Model: "llama"},
+			costState: costState{Costs: proxy.NewCostTracker()},
 			BackendList: []BackendInfo{
 				{Name: "llama", External: false},
 			},
@@ -526,8 +526,8 @@ func TestRecordInferenceCost_ExternalApprox(t *testing.T) {
 				},
 			},
 		},
-		Client: &proxy.Client{Model: "openai/gpt-4o"},
-		Costs:  proxy.NewCostTracker(),
+		Client:    &proxy.Client{Model: "openai/gpt-4o"},
+		costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{
 			{Name: "openrouter", External: true},
 		},
@@ -563,8 +563,8 @@ func TestRecordInferenceCost_ExternalExactConfidence(t *testing.T) {
 				},
 			},
 		},
-		Client: &proxy.Client{Model: "openai/gpt-4o"},
-		Costs:  proxy.NewCostTracker(),
+		Client:    &proxy.Client{Model: "openai/gpt-4o"},
+		costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{
 			{Name: "openrouter", External: true},
 		},
@@ -593,8 +593,8 @@ func TestRecordInferenceCost_ExternalUnpriced(t *testing.T) {
 				InferenceBackends: map[string]config.ModelRate{},
 			},
 		},
-		Client: &proxy.Client{Model: "some-model"},
-		Costs:  proxy.NewCostTracker(),
+		Client:    &proxy.Client{Model: "some-model"},
+		costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{
 			{Name: "openrouter", External: true},
 		},
@@ -633,8 +633,8 @@ func TestRecordInferenceCost_ModelPrefixStripping(t *testing.T) {
 				},
 			},
 		},
-		Client: &proxy.Client{Model: "openrouter/anthropic/claude-opus-4-8"},
-		Costs:  proxy.NewCostTracker(),
+		Client:    &proxy.Client{Model: "openrouter/anthropic/claude-opus-4-8"},
+		costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{
 			{Name: "openrouter", External: true},
 		},
@@ -673,8 +673,8 @@ func TestRecordInferenceCost_ModelPrefixNotStrippedForNonExternal(t *testing.T) 
 				Inference: config.InferenceRate{USDPer1MTokens: 5},
 			},
 		},
-		Client: &proxy.Client{Model: "llama/llama-3"}, // local model, not stripped
-		Costs:  proxy.NewCostTracker(),
+		Client:    &proxy.Client{Model: "llama/llama-3"}, // local model, not stripped
+		costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{
 			{Name: "llama", External: false},
 		},

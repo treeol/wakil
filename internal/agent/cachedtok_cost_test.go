@@ -21,8 +21,8 @@ func TestRecordInferenceCostCarriesCachedTokens(t *testing.T) {
 				},
 			},
 		},
-		Client: &proxy.Client{Model: "openai/gpt-4o"},
-		Costs:  proxy.NewCostTracker(),
+		Client:    &proxy.Client{Model: "openai/gpt-4o"},
+		costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{
 			{Name: "openrouter", External: true},
 		},
@@ -63,13 +63,13 @@ func TestRecordInferenceCostCachedTokensGoldenWithoutRate(t *testing.T) {
 		},
 	}
 
-	withoutCache := &App{Cfg: cfg, Client: &proxy.Client{Model: "openai/gpt-4o"}, Costs: proxy.NewCostTracker(),
+	withoutCache := &App{Cfg: cfg, Client: &proxy.Client{Model: "openai/gpt-4o"}, costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}}}
 	withoutCache.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 100_000, Exact: true})
 	withoutCache.Client.SetLastUsedBackend("openrouter")
 	withoutCache.RecordInferenceCost()
 
-	withCache := &App{Cfg: cfg, Client: &proxy.Client{Model: "openai/gpt-4o"}, Costs: proxy.NewCostTracker(),
+	withCache := &App{Cfg: cfg, Client: &proxy.Client{Model: "openai/gpt-4o"}, costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}}}
 	withCache.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 100_000, CachedTok: 400_000, Exact: true})
 	withCache.Client.SetLastUsedBackend("openrouter")
@@ -96,8 +96,8 @@ func TestRecordInferenceCostCarriesCacheWriteTokens(t *testing.T) {
 				},
 			},
 		},
-		Client: &proxy.Client{Model: "openai/gpt-4o"},
-		Costs:  proxy.NewCostTracker(),
+		Client:    &proxy.Client{Model: "openai/gpt-4o"},
+		costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{
 			{Name: "openrouter", External: true},
 		},
@@ -139,13 +139,13 @@ func TestRecordInferenceCostCacheWriteGoldenWithoutRate(t *testing.T) {
 		},
 	}
 
-	withoutWrite := &App{Cfg: cfg, Client: &proxy.Client{Model: "openai/gpt-4o"}, Costs: proxy.NewCostTracker(),
+	withoutWrite := &App{Cfg: cfg, Client: &proxy.Client{Model: "openai/gpt-4o"}, costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}}}
 	withoutWrite.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 100_000, Exact: true})
 	withoutWrite.Client.SetLastUsedBackend("openrouter")
 	withoutWrite.RecordInferenceCost()
 
-	withWrite := &App{Cfg: cfg, Client: &proxy.Client{Model: "openai/gpt-4o"}, Costs: proxy.NewCostTracker(),
+	withWrite := &App{Cfg: cfg, Client: &proxy.Client{Model: "openai/gpt-4o"}, costState: costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}}}
 	withWrite.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 100_000, CacheWriteTok: 200_000, Exact: true})
 	withWrite.Client.SetLastUsedBackend("openrouter")

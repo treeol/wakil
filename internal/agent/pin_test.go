@@ -279,15 +279,15 @@ func TestForceFinishSetsExhaustedFlag(t *testing.T) {
 	cfg.CompactAt = 55000
 
 	sub := &App{
-		Cfg:            cfg,
-		Client:         newTestClient(srv.URL),
-		Exec:           exec,
-		Tools:          wtools.DiscoveryTools("/work"),
-		Confirm:        readOnlyConfirmer(),
-		Out:            io.Discard,
-		IsSubagent:     true,
-		pinUserMessage: true,
-		ToolCache:      map[string]bool{},
+		Cfg:           cfg,
+		Client:        newTestClient(srv.URL),
+		Exec:          exec,
+		Tools:         wtools.DiscoveryTools("/work"),
+		Confirm:       readOnlyConfirmer(),
+		Out:           io.Discard,
+		IsSubagent:    true,
+		subagentState: subagentState{pinUserMessage: true},
+		ToolCache:     map[string]bool{},
 	}
 	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(subagentSystemPrompt), Pinned: true}}
 
@@ -642,16 +642,15 @@ func TestExhaustedResetOnSend(t *testing.T) {
 	cfg.MaxToolIterations = 0 // unlimited — forceFinish won't fire
 
 	sub := &App{
-		Cfg:            cfg,
-		Client:         newTestClient(srv.URL),
-		Exec:           exec,
-		Tools:          wtools.DiscoveryTools("/work"),
-		Confirm:        readOnlyConfirmer(),
-		Out:            io.Discard,
-		IsSubagent:     true,
-		pinUserMessage: true,
-		ToolCache:      map[string]bool{},
-		exhausted:      true, // pre-set to verify it's reset
+		Cfg:           cfg,
+		Client:        newTestClient(srv.URL),
+		Exec:          exec,
+		Tools:         wtools.DiscoveryTools("/work"),
+		Confirm:       readOnlyConfirmer(),
+		Out:           io.Discard,
+		IsSubagent:    true,
+		subagentState: subagentState{pinUserMessage: true, exhausted: true}, // pre-set to verify it's reset
+		ToolCache:     map[string]bool{},
 	}
 	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(subagentSystemPrompt), Pinned: true}}
 

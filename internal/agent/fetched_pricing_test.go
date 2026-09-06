@@ -26,7 +26,7 @@ func TestRecordInferenceCost_FetchedOpenRouterPricing(t *testing.T) {
 	app := &App{
 		Cfg:         config.DefaultConfig(), // no [costs] override
 		Client:      &proxy.Client{Model: "anthropic/claude-opus-4-8"},
-		Costs:       proxy.NewCostTracker(),
+		costState:   costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}},
 	}
 	app.Client.SetUsage(proxy.UsageStat{
@@ -71,7 +71,7 @@ func TestRecordInferenceCost_ConfigOverridesFetched(t *testing.T) {
 			},
 		},
 		Client:      &proxy.Client{Model: "anthropic/claude-opus-4-8"},
-		Costs:       proxy.NewCostTracker(),
+		costState:   costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}},
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 0, Exact: true})
@@ -96,7 +96,7 @@ func TestRecordInferenceCost_NonOpenRouterNoRegistry(t *testing.T) {
 	app := &App{
 		Cfg:         config.DefaultConfig(),
 		Client:      &proxy.Client{Model: "anthropic/claude-opus-4-8"},
-		Costs:       proxy.NewCostTracker(),
+		costState:   costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "groq", External: true}},
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 0, Exact: true})
@@ -125,9 +125,9 @@ func TestRecordInferenceCost_DirectOpenRouterEndpoint(t *testing.T) {
 	}
 
 	app := &App{
-		Cfg:    cfg,
-		Client: &proxy.Client{Model: "anthropic/claude-opus-4-8"},
-		Costs:  proxy.NewCostTracker(),
+		Cfg:       cfg,
+		Client:    &proxy.Client{Model: "anthropic/claude-opus-4-8"},
+		costState: costState{Costs: proxy.NewCostTracker()},
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 0, Exact: true})
 	// No SetLastUsedBackend → usedBackend == "" (direct endpoint)
@@ -151,7 +151,7 @@ func TestRecordInferenceCost_FreeModelRendersZero(t *testing.T) {
 	app := &App{
 		Cfg:         config.DefaultConfig(),
 		Client:      &proxy.Client{Model: "dots-studio/dots-3-note-preview:free"},
-		Costs:       proxy.NewCostTracker(),
+		costState:   costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}},
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 0, Exact: true})
@@ -179,7 +179,7 @@ func TestRecordInferenceCost_UnknownModelUnpriced(t *testing.T) {
 	app := &App{
 		Cfg:         config.DefaultConfig(),
 		Client:      &proxy.Client{Model: "some/unknown-model"},
-		Costs:       proxy.NewCostTracker(),
+		costState:   costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}},
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 0, Exact: true})
@@ -204,7 +204,7 @@ func TestExternalInferenceCost_PrefixStripping(t *testing.T) {
 	app := &App{
 		Cfg:         config.DefaultConfig(),
 		Client:      &proxy.Client{Model: "openrouter/anthropic/claude-opus-4-8"},
-		Costs:       proxy.NewCostTracker(),
+		costState:   costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}},
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 0, Exact: true})
@@ -235,7 +235,7 @@ func TestRecordInferenceCost_PrefixedModelConfigOverride(t *testing.T) {
 			},
 		},
 		Client:      &proxy.Client{Model: "openrouter/anthropic/claude-opus-4-8"},
-		Costs:       proxy.NewCostTracker(),
+		costState:   costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}},
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 0, Exact: true})
@@ -264,9 +264,9 @@ func TestRecordInferenceCost_DirectNonOREndpointUnpriced(t *testing.T) {
 	}
 
 	app := &App{
-		Cfg:    cfg,
-		Client: &proxy.Client{Model: "qwen3.6-35b"},
-		Costs:  proxy.NewCostTracker(),
+		Cfg:       cfg,
+		Client:    &proxy.Client{Model: "qwen3.6-35b"},
+		costState: costState{Costs: proxy.NewCostTracker()},
 	}
 	app.Client.SetUsage(proxy.UsageStat{InputTok: 1_000_000, OutputTok: 0, Exact: true})
 	app.RecordInferenceCost()
@@ -290,7 +290,7 @@ func TestRecordInferenceCost_CacheFallbackToBaseInput(t *testing.T) {
 	app := &App{
 		Cfg:         config.DefaultConfig(),
 		Client:      &proxy.Client{Model: "anthropic/claude-opus-4-8"},
-		Costs:       proxy.NewCostTracker(),
+		costState:   costState{Costs: proxy.NewCostTracker()},
 		BackendList: []BackendInfo{{Name: "openrouter", External: true}},
 	}
 	// 1M input (400k cached) + 0 output → all input billed at base 3.0.
