@@ -74,6 +74,22 @@ var (
 				Border(lipgloss.HiddenBorder())
 
 	styleState = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+
+	// styleTurnBox wraps each turn-pair (user prompt + assistant response +
+	// intervening system/diagnostic notes) in a rounded border. The border
+	// visually separates turns so the conversation reads as discrete blocks.
+	// Note: mouse selection still drops styling viewport-wide via
+	// highlightedContent(); the boxes provide visual separation, not
+	// per-box selection isolation.
+	styleTurnBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("238"))
+
+	// turnBoxBorderW is the total horizontal border cost of a turn box:
+	// 1 col left + 1 col right = 2 cols. lipgloss's Style.Width sets the
+	// inner content width, so Width(vpW - turnBoxBorderW) produces a box
+	// whose outer width equals vpW.
+	turnBoxBorderW = 2
 )
 
 func styleOK(s string) string {

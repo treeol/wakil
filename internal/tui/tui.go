@@ -241,9 +241,10 @@ type tuiModel struct {
 	reasoningModel
 
 	// Mouse text selection over the conversation pane (see tui_select.go).
-	sel        selection
-	plainLines []string // ANSI-stripped view content, kept in sync by refreshViewport
-	flash      string   // transient status shown in the input border (e.g. "copied ✓")
+	sel             selection
+	plainLines      []string // ANSI-stripped view content (with box borders), for mouse coordinate mapping
+	plainLinesNoBox []string // ANSI-stripped content without box borders, for clean clipboard copy
+	flash           string   // transient status shown in the input border (e.g. "copied ✓")
 
 	// pendingEscape holds a raw terminal escape sequence prepended to every
 	// View() frame until a KeyMsg clears it. Used for OSC 52 clipboard writes:
@@ -298,8 +299,12 @@ type tuiModel struct {
 	// not on every streaming chunk. prefixDirty marks that a full rebuild is needed.
 	prefixStyled string
 	prefixPlain  []string
-	prefixDirty  bool
-	prefixW      int // width at which prefixStyled was built
+	// prefixPlainNoBox is the plain text mirror without box borders — used
+	// for clean clipboard copy. prefixPlain (with borders) is used for mouse
+	// coordinate mapping and highlighting.
+	prefixPlainNoBox []string
+	prefixDirty      bool
+	prefixW          int // width at which prefixStyled was built
 
 	// "@" file-mention autocomplete picker (see complete.go).
 	comp completionState
@@ -1716,32 +1721,71 @@ func (m *tuiModel) refreshViewport() {
 	// --- committed prefix ---
 	if m.prefixDirty || m.prefixW != w {
 		hideDiag := m.outputMode == config.OutputModeSimple
-		var sb strings.Builder
-		wroteVisible := false
+		// Inner width for items rendered inside a turn box: the box border
+		// consumes turnBoxBorderW columns per side.
+		innerW := w - turnBoxBorderW
+		if innerW < 1 {
+			innerW = 1
+		}
+
+		// Group items into turn-pairs by index ranges into *m.items (NOT
+		// value copies — cache writes must persist in the original slice).
+		// Each group starts at an iUser item and includes all following
+		// non-iUser items until the next iUser. Items before the first iUser
+		// (e.g. resume notes) form their own group.
+		type itemRange struct{ start, end int } // end exclusive
+		var groups []itemRange
+		groupStart := -1
 		for i := range *m.items {
 			item := &(*m.items)[i]
-			// Simple mode omits transient diagnostic notes at render time. Items
-			// are still retained in *m.items so the transcript stays complete and
-			// a future runtime toggle can reveal them losslessly (Phase 2).
 			if hideDiag && item.kind == iDiag {
 				continue
 			}
-			// The separator precedes a user item only when something was already
-			// rendered above it — use a rendered-index flag, not the storage index,
-			// so leading hidden diagnostics don't leave a dangling separator.
-			if wroteVisible && item.kind == iUser {
-				sb.WriteString(dim2(strings.Repeat("─", w)) + "\n")
+			if item.kind == iUser && groupStart >= 0 {
+				groups = append(groups, itemRange{groupStart, i})
+				groupStart = i
+			} else if groupStart < 0 {
+				groupStart = i
 			}
-			if item.cache == "" || item.cacheW != w {
-				item.cache = renderItem(*item, w)
-				item.cacheW = w
+		}
+		if groupStart >= 0 {
+			groups = append(groups, itemRange{groupStart, len(*m.items)})
+		}
+
+		var sb strings.Builder      // styled output (with boxes)
+		var plainSB strings.Builder // plain mirror (no boxes, for copy)
+		for gi, gr := range groups {
+			var content strings.Builder
+			first := true
+			for i := gr.start; i < gr.end; i++ {
+				item := &(*m.items)[i]
+				if hideDiag && item.kind == iDiag {
+					continue
+				}
+				if !first {
+					content.WriteByte('\n')
+				}
+				first = false
+				if item.cache == "" || item.cacheW != innerW {
+					item.cache = renderItem(*item, innerW)
+					item.cacheW = innerW
+				}
+				content.WriteString(item.cache)
 			}
-			sb.WriteString(item.cache)
-			sb.WriteByte('\n')
-			wroteVisible = true
+			boxed := styleTurnBox.Width(innerW).Render(content.String())
+			if gi > 0 {
+				sb.WriteByte('\n')
+			}
+			sb.WriteString(boxed)
+			// Plain mirror: content without box borders (for clean copy).
+			if gi > 0 {
+				plainSB.WriteByte('\n')
+			}
+			plainSB.WriteString(ansi.Strip(content.String()))
 		}
 		m.prefixStyled = sb.String()
 		m.prefixPlain = strings.Split(ansi.Strip(m.prefixStyled), "\n")
+		m.prefixPlainNoBox = strings.Split(plainSB.String(), "\n")
 		m.prefixDirty = false
 		m.prefixW = w
 	}
@@ -1755,18 +1799,27 @@ func (m *tuiModel) refreshViewport() {
 	// is hidden by the prefix filter. The answer streaming tail always shows.
 	var tailStyled string
 	var tailPlain []string
+	var tailPlainNoBox []string
 	showLiveReasoning := m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone &&
 		m.outputMode != config.OutputModeSimple
 	if showLiveReasoning || m.streaming.Len() > 0 {
+		innerW := w - turnBoxBorderW
+		if innerW < 1 {
+			innerW = 1
+		}
 		var sb strings.Builder
 		if showLiveReasoning {
-			sb.WriteString(renderReasoning(m.reasoning.String(), w, m.reasoningExpanded))
+			sb.WriteString(renderReasoning(m.reasoning.String(), innerW, m.reasoningExpanded))
 		}
 		if m.streaming.Len() > 0 {
-			sb.WriteString(renderStreaming(m.streaming.String(), w))
+			sb.WriteString(renderStreaming(m.streaming.String(), innerW))
 		}
-		tailStyled = sb.String()
+		rawPlain := ansi.Strip(sb.String())
+		// Wrap the streaming tail in a turn box so live content is visually
+		// grouped with the same border as committed turns.
+		tailStyled = styleTurnBox.Width(w - turnBoxBorderW).Render(sb.String())
 		tailPlain = strings.Split(ansi.Strip(tailStyled), "\n")
+		tailPlainNoBox = strings.Split(rawPlain, "\n")
 	}
 
 	// Merge plain lines for selection hit-testing. Avoid a trailing empty line
@@ -1777,15 +1830,27 @@ func (m *tuiModel) refreshViewport() {
 			prefix = prefix[:len(prefix)-1]
 		}
 		m.plainLines = append(prefix, tailPlain...)
+
+		// No-box mirror for clean clipboard copy.
+		prefixNB := m.prefixPlainNoBox
+		if len(prefixNB) > 0 && prefixNB[len(prefixNB)-1] == "" {
+			prefixNB = prefixNB[:len(prefixNB)-1]
+		}
+		m.plainLinesNoBox = append(prefixNB, tailPlainNoBox...)
 	} else {
 		m.plainLines = m.prefixPlain
+		m.plainLinesNoBox = m.prefixPlainNoBox
 	}
 
 	// Capture the pre-swap offset so a paused reader's position survives the
 	// SetContent below (which may change maxYOffset via rewrap).
 	oldOffset := m.vp.YOffset
 
-	styled := m.prefixStyled + tailStyled
+	styled := m.prefixStyled
+	if len(tailStyled) > 0 && len(m.prefixStyled) > 0 {
+		styled += "\n"
+	}
+	styled += tailStyled
 	if m.sel.active {
 		m.vp.SetContent(m.highlightedContent())
 	} else {
@@ -1831,7 +1896,8 @@ func renderItem(item convItem, w int) string {
 
 	case iAsst:
 		// Assistant responses are markdown — format them (headings, bold, lists,
-		// code blocks). glamour handles wrapping to w itself.
+		// code blocks). glamour handles wrapping to w itself. The width w here
+		// is already the turn-box inner width (set by refreshViewport).
 		return renderMarkdown(item.text, w)
 
 	default: // iSys (actionable notes) and iDiag (diagnostic notes, pre-styled)

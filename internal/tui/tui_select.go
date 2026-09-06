@@ -266,23 +266,103 @@ func (m tuiModel) sliceRange(i, sr, sc, er, ec, lineLen int) (a, z int, ok bool)
 	return a, z, true
 }
 
-// selectedText extracts the plain text covered by the selection, trimming the
-// trailing padding spaces glamour adds to each line.
+// selectedText extracts the plain text covered by the selection from the
+// no-box plain mirror (plainLinesNoBox), which contains only conversation
+// content without box border decoration. Selection coordinates are in
+// plainLines space (with borders); rowToNoBox maps them to the no-box mirror.
 func (m tuiModel) selectedText() string {
 	sr, sc, er, ec := m.sel.ordered()
-	var b strings.Builder
-	for i := sr; i <= er && i < len(m.plainLines); i++ {
-		runes := []rune(m.plainLines[i])
+	// Map selection row indices from plainLines (with borders) to
+	// plainLinesNoBox (without borders) by counting non-border rows.
+	srNB := m.rowToNoBox(sr)
+	erNB := m.rowToNoBox(er)
+	if srNB < 0 || erNB < 0 || srNB >= len(m.plainLinesNoBox) {
+		return ""
+	}
+	if erNB >= len(m.plainLinesNoBox) {
+		erNB = len(m.plainLinesNoBox) - 1
+	}
+
+	// Determine whether the source lines have box borders by checking if
+	// plainLines differs from plainLinesNoBox (i.e. boxes are rendered).
+	// When boxes are present, col 0 in plainLines is the left border │,
+	// so content starts at col 1. We subtract 1 from selection columns.
+	// When no boxes, columns map directly.
+	hasBorders := len(m.plainLines) != len(m.plainLinesNoBox)
+	colAdj := 0
+	if hasBorders {
+		colAdj = 1 // shift left past the │ border
+	}
+
+	var parts []string
+	for i := srNB; i <= erNB; i++ {
+		runes := []rune(m.plainLinesNoBox[i])
 		seg := ""
-		if a, z, ok := m.sliceRange(i, sr, sc, er, ec, len(runes)); ok {
+		adjSC := sc
+		adjEC := ec
+		if hasBorders {
+			adjSC = sc - colAdj
+			adjEC = ec - colAdj
+			if adjSC < 0 {
+				adjSC = 0
+			}
+			if adjEC < 0 {
+				adjEC = 0
+			}
+		}
+		if a, z, ok := m.sliceRange(i, srNB, adjSC, erNB, adjEC, len(runes)); ok {
 			seg = string(runes[a : z+1])
 		}
-		b.WriteString(strings.TrimRight(seg, " "))
-		if i != er {
-			b.WriteByte('\n')
+		seg = strings.TrimRight(seg, " ")
+		if seg != "" {
+			parts = append(parts, seg)
 		}
 	}
-	return b.String()
+	return strings.Join(parts, "\n")
+}
+
+// rowToNoBox maps a row index in plainLines (with box borders) to the
+// corresponding index in plainLinesNoBox (without borders). Returns -1
+// if the row is a border row (no corresponding content row).
+func (m tuiModel) rowToNoBox(row int) int {
+	noBoxIdx := 0
+	for i := 0; i < row && i < len(m.plainLines); i++ {
+		if !isBoxBorderLine(strings.TrimSpace(m.plainLines[i])) {
+			noBoxIdx++
+		}
+	}
+	// Check if the target row itself is a border row.
+	if row < len(m.plainLines) && isBoxBorderLine(strings.TrimSpace(m.plainLines[row])) {
+		return noBoxIdx // map to the next content row (or past end)
+	}
+	return noBoxIdx
+}
+
+// isBorderRune returns true for runes used by the turn-box border.
+func isBorderRune(r rune) bool {
+	switch r {
+	case '│', '╭', '╮', '╰', '╯', '─':
+		return true
+	default:
+		return false
+	}
+}
+
+// isBoxBorderLine returns true if the line consists entirely of box-drawing
+// characters (border top/bottom rows produced by styleTurnBox).
+func isBoxBorderLine(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch r {
+		case '│', '╭', '╮', '╰', '╯', '─', ' ':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // highlightedContent rebuilds the viewport content from the plain mirror with

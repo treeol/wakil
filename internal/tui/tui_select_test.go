@@ -8,7 +8,7 @@ import (
 )
 
 func mdl(lines ...string) tuiModel {
-	return tuiModel{plainLines: lines}
+	return tuiModel{plainLines: lines, plainLinesNoBox: lines}
 }
 
 func TestSelectedTextSingleLine(t *testing.T) {
