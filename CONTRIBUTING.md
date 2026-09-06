@@ -91,22 +91,45 @@ Before opening a PR, verify each item:
 The codebase is organized into focused packages under `internal/`:
 
 ```
-agent/       core agent loop, tool dispatch, turn management
-config/      configuration loading (JSON + env + flags)
-counsel/     Mashūra panel counsel (multi-model review/debug/decide/check)
-exec/         executor interface (docker, direct, fake)
-lsp/          LSP code-intelligence server manager
-memory/       durable cross-session memory store
-orregistry/   OpenRouter model metadata cache
-proxy/        chat endpoint HTTP client (openai + ilm-proxy kinds)
-staging/      kvr client — ephemeral KV store
-tools/        the tool set (run_shell, read_file, edit_file, …)
-trace/        execution tracing (JSONL per session)
-tui/          terminal UI
-workflow/     /plan gather→plan→review→implement state machine
+cmd/wakil/         main package — entry point, CLI, TUI wiring, daemon subcommand
+api/proto/         Connect/gRPC service definitions (session, event, auth, backend, …)
+api/gen/           generated Go from proto (connectrpc)
+internal/
+  agent/           the agent loop and tool-call assembly
+  auth/            authentication — join tokens, web sessions, API tokens, OIDC, peer creds
+  browser/         headless browser integration
+  config/          flag/env/file config resolution
+  core/            transport-free domain core — session service, event model, session host
+  counsel/         mashūra — external-model counsel (review/debug/decide/check)
+  crypto/          envelope encryption for secrets at rest (AES-256-GCM)
+  diag/            diagnostic output seam (prevents TUI garble from raw stderr writes)
+  exec/            executor backends (docker, direct) + cwd tracking
+  lsp/             language-server client — manager, JSON-RPC transport, tools
+  memory/          durable memory store — SQLite, two tiers, FTS5, provenance
+  orregistry/      OpenRouter model registry fetch + cache (context lengths)
+  policy/          policy evaluation for auto-approve and consent gating
+  protoconv/       shared proto↔domain event conversion (32-kind switch)
+  proxy/           chat endpoint HTTP client (openai + ilm-proxy kinds)
+  remote/          remote facade — Connect RPC client for daemon mode
+  safe/            path confinement and safety checks
+  scrub/           secret scrubbing for tool output and traces
+  server/connect/  Connect HTTP server — handlers, auth interceptor, origin validation
+  sessionhistory/  searchable session transcript index (SQLite + FTS5)
+  staging/         kvr client — in-sandbox ephemeral KV store (UDS wire protocol)
+  store/           SQLite migrations and per-domain stores (agent, backend, workspace)
+  tools/           the tool set (run_shell, read_file, edit_file, …)
+  trace/           execution tracing
+  tui/             terminal UI
+  verify/          deterministic workflow verification (test/build/lint detection)
+  wiring/          bootstrap, conversation manager, facade, host turn, headless runner
+  workflow/        /plan gather→plan→review→implement state machine
+web/               embedded web console (vanilla JS, served by the daemon)
+Dockerfile         sandbox image — Go, Node, Rust, Python toolchains, gopls, docker CLI + compose, gh, golangci-lint
+Dockerfile.daemon  minimal daemon image (distroless, non-root, pure-Go SQLite)
+docker-compose.yml daemon as a Docker service with volume mounts for data/config/socket
 ```
 
-See `README.md` for the project layout and `docs/features.md` for feature documentation.
+See `docs/features.md` for feature documentation.
 
 ## Security
 
