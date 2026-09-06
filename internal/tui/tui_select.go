@@ -338,16 +338,6 @@ func (m tuiModel) rowToNoBox(row int) int {
 	return noBoxIdx
 }
 
-// isBorderRune returns true for runes used by the turn-box border.
-func isBorderRune(r rune) bool {
-	switch r {
-	case '│', '╭', '╮', '╰', '╯', '─':
-		return true
-	default:
-		return false
-	}
-}
-
 // isBoxBorderLine returns true if the line consists entirely of box-drawing
 // characters (border top/bottom rows produced by styleTurnBox).
 func isBoxBorderLine(s string) bool {
