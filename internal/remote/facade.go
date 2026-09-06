@@ -762,11 +762,12 @@ func (f *RemoteFacade) ListSessions(scope sessionclient.SessionScope) ([]session
 	}))
 	if err != nil {
 		// Fall back to the SessionService's ListSessions for older daemons
-		// that don't implement SessionStateService. The session host's
-		// ListSessions returns live session IDs (ses_...); ListSavedSessions
-		// returns saved chat IDs (chat_...). This fallback is a graceful
-		// degradation — saved sessions won't appear, but live ones will.
-		if connectCodeOf(err) == connect.CodeUnimplemented {
+		// that don't implement SessionStateService, or when the service is not
+		// mounted on the mux (broken pipe). The session host's ListSessions
+		// returns live session IDs (ses_...); ListSavedSessions returns saved
+		// chat IDs (chat_...). This fallback is a graceful degradation — saved
+		// sessions won't appear, but live ones will.
+		if isSessionStateUnavailable(err) {
 			return f.listSessionsFallback(ctx, scope)
 		}
 		return nil, 0, fmt.Errorf("remote: ListSavedSessions: %w", err)

@@ -12,6 +12,7 @@ package remote
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -80,8 +81,11 @@ func (m *RemoteConversationManager) NewConversation(ctx context.Context, princip
 	if _, err := m.clients.SessionState.InitNewSession(ctx, connect.NewRequest(&v1alpha1.InitNewSessionRequest{
 		SessionId: s.ID,
 	})); err != nil {
-		if connectCodeOf(err) == connect.CodeUnimplemented {
-			// Daemon doesn't support SessionStateService — degrade gracefully.
+		if isSessionStateUnavailable(err) {
+			// Daemon doesn't support SessionStateService (Unimplemented) or
+			// the service is not mounted on the mux (Unavailable with broken
+			// pipe — the server 404s and closes the connection before the
+			// client finishes writing). Degrade gracefully either way.
 		} else {
 			return nil, fmt.Errorf("remote: NewConversation: InitNewSession: %w", err)
 		}
@@ -111,9 +115,10 @@ func (m *RemoteConversationManager) ResumeConversation(ctx context.Context, prin
 		IdOrPrefix: idOrPrefix,
 	}))
 	if err != nil {
-		if connectCodeOf(err) == connect.CodeUnimplemented {
-			// Daemon doesn't support SessionStateService — fall back to
-			// creating a new session (the pre-P6 behavior).
+		if isSessionStateUnavailable(err) {
+			// Daemon doesn't support SessionStateService (Unimplemented) or
+			// the service is not mounted (Unavailable with broken pipe) —
+			// fall back to creating a new session (the pre-P6 behavior).
 			return m.NewConversation(ctx, principal, nil)
 		}
 		return nil, fmt.Errorf("remote: ResumeConversation: LoadSession: %w", err)
@@ -192,4 +197,22 @@ func connectCodeOf(err error) connect.Code {
 		return ce.Code()
 	}
 	return connect.CodeUnknown
+}
+
+// isSessionStateUnavailable reports whether an error from a SessionStateService
+// RPC indicates the service is not available on the daemon — either because the
+// daemon is an older build that returns CodeUnimplemented, or because the
+// SessionStateService path is not mounted on the HTTP mux (the server returns
+// 404 and closes the connection before the client finishes writing the request
+// body, producing CodeUnavailable with a "broken pipe" message). Both cases
+// should trigger graceful degradation.
+func isSessionStateUnavailable(err error) bool {
+	code := connectCodeOf(err)
+	if code == connect.CodeUnimplemented {
+		return true
+	}
+	if code == connect.CodeUnavailable && strings.Contains(err.Error(), "broken pipe") {
+		return true
+	}
+	return false
 }
