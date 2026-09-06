@@ -72,6 +72,7 @@ enum ApprovalOutcome {
   APPROVAL_OUTCOME_DENY        = 1;
   APPROVAL_OUTCOME_ALLOW_ONCE  = 2;
   APPROVAL_OUTCOME_ALLOW_READS_ONCE = 3;
+  APPROVAL_OUTCOME_GRANT_TOOL = 4;
 }
 
 message RespondToApprovalRequest {

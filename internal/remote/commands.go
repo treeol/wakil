@@ -106,7 +106,7 @@ func (f *RemoteFacade) DispatchCommand(line string) sessionclient.CommandResult 
 	// (/info and /queue are intercepted TUI-locally before reaching
 	// DispatchCommand, so they do not appear here.)
 	case "/handoff", "/learn", "/remember", "/recall", "/image", "/mcp",
-		"/mashura", "/plan", "/verify", "/sessions", "/history":
+		"/mashura", "/plan", "/verify", "/sessions", "/history", "/grants":
 		return sessionclient.CommandResult{
 			Handled: true,
 			Notice:  fmt.Sprintf("%s is not available remotely in daemon mode", fields[0]),
@@ -628,4 +628,4 @@ const remoteHelpText = `/new, /reset         fresh conversation (new chat_id)
 /quit, /exit        leave
 
 Not available remotely: /handoff /learn /remember /recall /image /mcp
-/mashura /plan /verify /sessions /history`
+/mashura /plan /verify /sessions /history /grants`

@@ -459,6 +459,8 @@ func (h *Host) RespondToApproval(ctx context.Context, principal core.Principal, 
 		outcome = "approved"
 	case core.ApprovalAllowReadsOnce:
 		outcome = "allowed_reads"
+	case core.ApprovalGrantTool:
+		outcome = "granted"
 	case core.ApprovalDeny:
 		outcome = "declined"
 	}
@@ -1334,7 +1336,3 @@ func (h *Host) parkApproval(s *session, ctx context.Context, approvalID event.Ap
 		return "declined", "cancelled", ""
 	}
 }
-
-
-
-

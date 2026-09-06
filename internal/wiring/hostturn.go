@@ -763,6 +763,8 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 				res = ApprovalResolution{Choice: agent.ChoiceApprove}
 			case "allowed_reads":
 				res = ApprovalResolution{Choice: agent.ChoiceAllowReads}
+			case "granted":
+				res = ApprovalResolution{Choice: agent.ChoiceGrantTool}
 			default:
 				res = ApprovalResolution{Choice: agent.ChoiceDecline, Reason: reason}
 			}
@@ -777,6 +779,8 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 		switch res.Choice {
 		case agent.ChoiceAllowReads:
 			outcome, proceed = "allowed_reads", true
+		case agent.ChoiceGrantTool:
+			outcome, proceed = "granted", true
 		case agent.ChoiceApprove:
 			outcome, proceed = "approved", true
 		default:

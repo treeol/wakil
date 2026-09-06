@@ -129,7 +129,38 @@ const (
 	ChoiceDecline    ApprovalChoice = iota // do not run
 	ChoiceApprove                          // run this one
 	ChoiceAllowReads                       // run this one and auto-approve future reads
+	ChoiceGrantTool                        // run this one and auto-approve future [tool] calls this session
 )
+
+// grantEligibleTools is the set of tools that can be granted for the session.
+// Shared by the TUI (to show the 'g' key) and the agent (to enforce the
+// allowlist). Only deterministic, built-in, read-only tools are eligible.
+var grantEligibleTools = map[string]bool{
+	"read_file":      true,
+	"read_file_full": true,
+	"search_files":   true,
+	"find_files":     true,
+	"list_dir":       true,
+	"lsp_definition": true,
+	"lsp_references": true,
+	"lsp_hover":      true,
+	"lsp_symbols":    true,
+}
+
+// IsGrantEligible reports whether a tool name is eligible for session grants.
+func IsGrantEligible(toolName string) bool {
+	return grantEligibleTools[toolName]
+}
+
+// GrantEligibleTools returns a copy of the grant-eligible tools set.
+// Used by parity tests to ensure the agent's copy matches.
+func GrantEligibleTools() map[string]bool {
+	out := make(map[string]bool, len(grantEligibleTools))
+	for k, v := range grantEligibleTools {
+		out[k] = v
+	}
+	return out
+}
 
 // ApprovalRequest mirrors the fields of agent.ConfirmReqMsg that the TUI
 // displays. The response channel (RespCh) is deliberately absent — async

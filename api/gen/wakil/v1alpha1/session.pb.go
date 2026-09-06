@@ -29,6 +29,7 @@ const (
 	ApprovalOutcome_APPROVAL_OUTCOME_DENY             ApprovalOutcome = 1
 	ApprovalOutcome_APPROVAL_OUTCOME_ALLOW_ONCE       ApprovalOutcome = 2
 	ApprovalOutcome_APPROVAL_OUTCOME_ALLOW_READS_ONCE ApprovalOutcome = 3
+	ApprovalOutcome_APPROVAL_OUTCOME_GRANT_TOOL       ApprovalOutcome = 4
 )
 
 // Enum value maps for ApprovalOutcome.
@@ -38,12 +39,14 @@ var (
 		1: "APPROVAL_OUTCOME_DENY",
 		2: "APPROVAL_OUTCOME_ALLOW_ONCE",
 		3: "APPROVAL_OUTCOME_ALLOW_READS_ONCE",
+		4: "APPROVAL_OUTCOME_GRANT_TOOL",
 	}
 	ApprovalOutcome_value = map[string]int32{
 		"APPROVAL_OUTCOME_UNSPECIFIED":      0,
 		"APPROVAL_OUTCOME_DENY":             1,
 		"APPROVAL_OUTCOME_ALLOW_ONCE":       2,
 		"APPROVAL_OUTCOME_ALLOW_READS_ONCE": 3,
+		"APPROVAL_OUTCOME_GRANT_TOOL":       4,
 	}
 )
 
@@ -965,12 +968,13 @@ const file_wakil_v1alpha1_session_proto_rawDesc = "" +
 	"\x13CloseSessionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"\x16\n" +
-	"\x14CloseSessionResponse*\x96\x01\n" +
+	"\x14CloseSessionResponse*\xb7\x01\n" +
 	"\x0fApprovalOutcome\x12 \n" +
 	"\x1cAPPROVAL_OUTCOME_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15APPROVAL_OUTCOME_DENY\x10\x01\x12\x1f\n" +
 	"\x1bAPPROVAL_OUTCOME_ALLOW_ONCE\x10\x02\x12%\n" +
-	"!APPROVAL_OUTCOME_ALLOW_READS_ONCE\x10\x03B\xb9\x01\n" +
+	"!APPROVAL_OUTCOME_ALLOW_READS_ONCE\x10\x03\x12\x1f\n" +
+	"\x1bAPPROVAL_OUTCOME_GRANT_TOOL\x10\x04B\xb9\x01\n" +
 	"\x12com.wakil.v1alpha1B\fSessionProtoP\x01Z<github.com/treeol/wakil/api/gen/wakil/v1alpha1;wakilv1alpha1\xa2\x02\x03WXX\xaa\x02\x0eWakil.V1alpha1\xca\x02\x0eWakil\\V1alpha1\xe2\x02\x1aWakil\\V1alpha1\\GPBMetadata\xea\x02\x0fWakil::V1alpha1b\x06proto3"
 
 var (

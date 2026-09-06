@@ -111,6 +111,21 @@ func tuiConfirmer(app *App) Confirmer {
 			// tool name and detail passed to the gate are unchanged.
 			headline = "⚡ auto suspended: " + reason + " — " + headline
 		}
+
+		// Session grant check: if a grant exists for this tool and it's
+		// eligible (read-only built-in), auto-approve without prompting.
+		// SuspendAuto carve-outs (destructive, external) still fire on top
+		// — grants never bypass hard safety gates.
+		if IsGrantEligible(toolName) && app.HasGrant(toolName) {
+			reason := SuspendAuto(toolName, app, detail)
+			if reason == "" {
+				app.sendEvent(SysNoteMsg{Text: "⚡ granted: " + headline + "\n" + Indent(detail)})
+				return true
+			}
+			// Grant exists but SuspendAuto fires — fall through to prompt.
+			headline = "⚡ auto suspended: " + reason + " — " + headline
+		}
+
 		ch := make(chan ConfirmChoice, 1)
 		app.sendEvent(ConfirmReqMsg{
 			ToolName:   toolName,
@@ -122,6 +137,11 @@ func tuiConfirmer(app *App) Confirmer {
 		switch <-ch {
 		case ChoiceAllowReads:
 			app.SetAllowReads(true)
+			return true
+		case ChoiceGrantTool:
+			if IsGrantEligible(toolName) {
+				app.AddGrant(toolName)
+			}
 			return true
 		case ChoiceApprove:
 			return true
@@ -325,6 +345,21 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 	case "/history":
 		return true, false, note(fmt.Sprintf("%d messages, ~%d chars (max %d)",
 			len(app.Conv), TranscriptSize(app.Conv), app.Cfg.MaxChars))
+
+	case "/grants":
+		if len(fields) > 1 && fields[1] == "clear" {
+			app.ClearGrants()
+			return true, false, note("session grants cleared")
+		}
+		grants := app.Grants()
+		if len(grants) == 0 {
+			return true, false, note("no active session grants")
+		}
+		names := make([]string, 0, len(grants))
+		for _, g := range grants {
+			names = append(names, g.Tool)
+		}
+		return true, false, note("session grants: " + strings.Join(names, ", ") + " (/grants clear to remove)")
 
 	case "/auto":
 		// /auto destructive — separate explicit opt-in for destructive shell

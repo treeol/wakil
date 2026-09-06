@@ -114,6 +114,8 @@ func (h *SessionHandler) RespondToApproval(ctx context.Context, req *connect.Req
 		outcome = core.ApprovalAllowOnce
 	case v1alpha1.ApprovalOutcome_APPROVAL_OUTCOME_ALLOW_READS_ONCE:
 		outcome = core.ApprovalAllowReadsOnce
+	case v1alpha1.ApprovalOutcome_APPROVAL_OUTCOME_GRANT_TOOL:
+		outcome = core.ApprovalGrantTool
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}

@@ -40,6 +40,7 @@ const (
 	ChoiceDecline    ConfirmChoice = iota // do not run
 	ChoiceApprove                         // run this one
 	ChoiceAllowReads                      // run this one and auto-approve future reads
+	ChoiceGrantTool                       // run this one and auto-approve future [tool] calls this session
 )
 
 // App owns the single continuous conversation, the executor, and the agent loop.
@@ -111,6 +112,10 @@ type App struct {
 	// nil (zero value) means no policy is active — the confirmer falls
 	// through to the legacy AutoApprove/SuspendAuto path.
 	policy atomic.Value // stores *policy.Policy
+
+	// grants stores session-scoped tool approval grants (read-only tools only).
+	// See grants.go. Atomic for concurrent access from TUI and agent goroutines.
+	grants atomic.Value // stores grantsSnapshot
 
 	// InfoPanelOpen mirrors the TUI info panel's visibility (WP-9.1). The TUI is
 	// the source of truth during a session; it is restored from and persisted to

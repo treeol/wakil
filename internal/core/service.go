@@ -268,6 +268,9 @@ const (
 	ApprovalAllowOnce ApprovalOutcome = "allow_once"
 	// ApprovalAllowReadsOnce allows read-only execution this one time.
 	ApprovalAllowReadsOnce ApprovalOutcome = "allow_reads_once"
+	// ApprovalGrantTool allows the tool call and grants future calls to the
+	// same tool for the rest of the session (read-only tools only).
+	ApprovalGrantTool ApprovalOutcome = "grant_tool"
 )
 
 // ApprovalDecision is a client's answer to an approval request. The resolver is
@@ -289,7 +292,7 @@ func (d ApprovalDecision) Validate() error {
 		return err
 	}
 	switch d.Outcome {
-	case ApprovalDeny, ApprovalAllowOnce, ApprovalAllowReadsOnce:
+	case ApprovalDeny, ApprovalAllowOnce, ApprovalAllowReadsOnce, ApprovalGrantTool:
 	default:
 		return errors.New("core: invalid approval outcome")
 	}

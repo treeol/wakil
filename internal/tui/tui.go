@@ -826,6 +826,8 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				outcome = core.ApprovalAllowOnce
 			case sessionclient.ChoiceAllowReads:
 				outcome = core.ApprovalAllowReadsOnce
+			case sessionclient.ChoiceGrantTool:
+				outcome = core.ApprovalGrantTool
 			}
 			before := m.statusRows()
 			m.pendApproval = nil
@@ -849,6 +851,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				answer(sessionclient.ChoiceAllowReads, styleOK("  [reads allowed for this session]"))
 			}
 			// 'a' is meaningless for non-read actions — swallow it (consumed below).
+		case "g", "G":
+			if sessionclient.IsGrantEligible(pa.toolName) {
+				answer(sessionclient.ChoiceGrantTool, styleOK("  ["+pa.toolName+" granted for this session]"))
+			}
+			// 'g' is meaningless for non-grantable tools — swallow it.
 		case "n", "N", "esc":
 			answer(sessionclient.ChoiceDecline, dim2("  [declined]"))
 		case "ctrl+c":
