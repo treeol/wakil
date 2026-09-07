@@ -8,13 +8,6 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
-func TestStrPtr(t *testing.T) {
-	p := StrPtr("hello")
-	if p == nil || *p != "hello" {
-		t.Errorf("StrPtr(\"hello\") = %v, want *string pointing to \"hello\"", p)
-	}
-}
-
 func TestDerefStr(t *testing.T) {
 	s := "world"
 	if got := DerefStr(&s); got != "world" {
@@ -22,23 +15,6 @@ func TestDerefStr(t *testing.T) {
 	}
 	if got := DerefStr(nil); got != "" {
 		t.Errorf("DerefStr(nil) = %q, want %q", got, "")
-	}
-}
-
-func TestShortID(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"abcdef1234567890", "abcdef12"},
-		{"short", "short"},
-		{"", ""},
-		{"exactly8", "exactly8"},
-	}
-	for _, tc := range tests {
-		if got := ShortID(tc.in); got != tc.want {
-			t.Errorf("ShortID(%q) = %q, want %q", tc.in, got, tc.want)
-		}
 	}
 }
 
@@ -77,18 +53,12 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestYellow(t *testing.T) {
-	got := Yellow("warn")
-	want := "\x1b[33m" + "warn" + "\x1b[0m"
-	if got != want {
-		t.Errorf("Yellow(\"warn\") = %q, want %q", got, want)
-	}
-}
+func strPtr(s string) *string { return &s }
 
 func TestTranscriptSize(t *testing.T) {
 	conv := []proxy.Message{
-		{Role: "user", Content: StrPtr("hello world")}, // 11
-		{Role: "assistant", Content: StrPtr("hi")},     // 2
+		{Role: "user", Content: strPtr("hello world")}, // 11
+		{Role: "assistant", Content: strPtr("hi")},     // 2
 		{
 			Role: "tool",
 			ToolCalls: []proxy.ToolCall{
