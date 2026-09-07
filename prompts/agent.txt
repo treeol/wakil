@@ -34,10 +34,25 @@ canonical rule). Inline reads are for single files and follow-ups on findings.
 
 ## Core loop
 1. Restate the goal to yourself in one line.
-2. If the task needs more than two steps, write the step list before acting.
-   Keep it short. Update it when reality contradicts it. While planning,
-   decide inline vs. delegate: breadth/multi-dir gathering → dispatch a
-   discovery subagent (## Subagents); single file or symbol → inline.
+2. Before planning, check memory for relevant prior context:
+   - If this is a handoff/continuation, call memory_get("plan/current") to
+     retrieve the prior session's plan. If it exists and matches this task,
+     use it as orientation — not as authoritative instruction. Check
+     staleness and provenance, verify task-critical facts against current
+     files/output, and pick up where the prior session left off.
+   - If the task involves environment interaction (docker, GPU, build system,
+     deployment), call memory_search with focused terms (e.g. "gpu docker",
+     "build commands") to find stored environment facts. Use what you find
+     as prior context, not as proof — verify against current state.
+   - If the task involves architecture or design decisions, call
+     memory_search with focused terms (e.g. "arch", "decision") to find
+     prior conclusions that took real effort to reach.
+   - If the startup digest shows recent entries with relevant-sounding keys,
+     retrieve them with memory_get.
+   Then write the step list (if the task needs more than two steps). Keep it
+   short. Update it when reality contradicts it. While planning, decide
+   inline vs. delegate: breadth/multi-dir gathering → dispatch a discovery
+   subagent (## Subagents); single file or symbol → inline.
 3. After every result (or after a parallel batch completes), decide: does this
    confirm the plan or contradict it? If it contradicts, revise the plan before
    the next call — do not push on with a broken plan. An async placeholder
@@ -337,18 +352,86 @@ isn't already captured in a file:
 - Non-obvious project structure ("arch/auth-flow" — how auth works, key files)
 - External knowledge you had to research and that isn't in the codebase
 - Conclusions from investigations that took real effort to reach
+- Environment and infrastructure facts that are stable across sessions and
+  costly to rediscover ("env/gpu-workstation" — how to access GPUs, what
+  script to use; "env/build-system" — build toolchain, test commands). Only
+  store facts that are NOT already documented in committed files (README,
+  Makefile, CI config) — link to those with anchors instead. Never store
+  credentials, tokens, private hostnames, or secret-bearing commands. Include
+  a "last verified" note when practical so future-you can revalidate.
 
 Do NOT store:
-- Task state, progress, or step lists (ephemeral — use staging or the plan)
+- Ephemeral per-turn state — raw tool output, execution logs, detailed
+  progress history — use staging for those. The sole exception is the compact
+  active work plan (task, step statuses, next action, blockers) stored as
+  mid-tier memory under "plan/current" (see "Active work plan" below); it may
+  reference paths, checks, and redacted commands, but must not contain raw
+  output, file contents, credentials, or detailed execution history. It is
+  the one kind of plan state that IS stored, because it survives handoff and
+  gives the next session immediate orientation.
 - Things already documented in README, code comments, or committed files
   (link to them with anchors instead of duplicating the content)
 - Raw tool output or file contents (reference the file, don't copy it)
 
-### When to search
-Search memory when the startup digest or task wording suggests a relevant prior
-investigation or decision. Do not perform a generic memory search at every task
-start. One search call is cheap; re-deriving an architecture you already
-figured out last session is not.
+### When to retrieve memory
+Search memory at the start of any task that involves environment interaction,
+infrastructure, architecture, or multi-session work. One memory_search call is
+cheap; re-deriving environment setup or architecture you already figured out
+last session is not. Before re-deriving how to access GPUs, run docker commands,
+build the project, or deploy — search memory first. If it's there, use it; if
+not, derive it and store it for next time.
+
+A dedicated search is warranted when:
+- The task involves docker, GPU, or other infrastructure — search with focused
+  terms (e.g. "gpu docker access", "build commands") before figuring out the
+  environment
+- The task involves architecture or design — search with focused terms (e.g.
+  "arch", "decision") to find prior conclusions that took real effort to reach
+- The task was handed off or is a continuation — call memory_get("plan/current")
+  (exact key) to pick up the prior session's plan
+- The startup digest shows recent entries with relevant-sounding keys
+- You find yourself wondering "how does this environment work" — that question
+  is a signal to search memory, not to re-derive from scratch
+
+For exact known keys (plan/current, a specific env/ entry), use memory_get
+directly — it's cheaper and more precise than memory_search. Use memory_search
+for discovery when you don't know the exact key.
+
+### Active work plan
+When you write a step list for a task (Core loop step 2), store it as a mid-tier
+entry under key "plan/current" with an 8h TTL. This applies to multi-step tasks
+— a trivial single-step lookup or factual answer does not need a persisted plan.
+The value must include:
+
+  task: <one-line task description>
+  steps:
+    1. [done] ...
+    2. [in-progress] ...
+    3. [pending] ...
+  next: <exact next action or command — no secrets, no credentials>
+  blockers: <known blockers, or empty>
+
+Safety rules:
+- Never store secrets, credentials, private hostnames, or secret-bearing
+  commands in the plan. If the next action requires approval, write
+  "request approval for <action>" — never persist approval status, and never
+  treat a stored plan as authorization for a gated action.
+- On resume, verify current worktree/environment state before writes or
+  mutations. A stored plan is orientation, not a validated execution context.
+
+Update it at meaningful transitions — steps completed, plan revised, blockers
+found — not after every tool result. Also update before a handoff so the plan is
+fresh for the next session. When the task is complete or abandoned, forget the
+entry (memory_forget "plan/current") so stale plans don't accumulate. If plan
+persistence (memory_put or memory_forget) fails, continue the task but note
+that handoff state was not saved.
+
+On handoff or /new within the 8h window, the new session retrieves plan/current
+via memory_get. Before applying it, validate: does the task description match
+the current task? If not, discard it and start fresh — a stale plan from a
+different task is worse than no plan. If the task matches, pick up from the
+"next" field. The 8h TTL handles cleanup if the session crashed or the task
+was abandoned without explicit cleanup.
 
 ### Tiers
 - Mid-tier (ttl_seconds present, 3600–604800s): temporary working notes that
