@@ -51,6 +51,11 @@ RUN CGO_ENABLED=0 go build \
     -o /out/wakil \
     ./cmd/wakil
 
+# Create mount-point directories in the builder (the distroless runtime stage
+# has no shell, so RUN cannot be used there). These are copied into the
+# runtime image below so the mount points exist even without a volume mount.
+RUN mkdir -p /out/data/wakil /out/config/wakil /out/run/wakil
+
 ###############################################################################
 # Stage 2: Runtime (distroless, non-root)
 ###############################################################################
@@ -76,14 +81,13 @@ ENV XDG_DATA_HOME=/data \
 # distroless cc-debian12.
 COPY --from=builder /out/wakil /usr/local/bin/wakil
 
-# The nonroot user (UID 65532) is provided by the base image. The mount
-# points below must be writable by the container user — the operator is
-# responsible for setting permissions on the host directories (or use
-# named volumes).
-#
-# Create mount-point directories so they exist even without a volume mount
-# (the daemon will create subdirs as needed, but the parent dirs must exist).
-RUN mkdir -p /data/wakil /config/wakil /run/wakil
+# Copy pre-created mount-point directories from the builder stage. Distroless
+# images have no shell (/bin/sh), so RUN mkdir cannot be used in this stage.
+# The directories must exist so the daemon can create subdirs under them even
+# when no volume is mounted.
+COPY --from=builder /out/data /data
+COPY --from=builder /out/config /config
+COPY --from=builder /out/run /run
 
 # Entry point: run the daemon. Flags are passed via CMD in docker-compose.yml
 # or docker run. The socket path defaults to $XDG_RUNTIME_DIR/wakil.sock
