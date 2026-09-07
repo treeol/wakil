@@ -221,7 +221,7 @@ type Config struct {
 	MaxToolIterations     int `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
 
 	// SubagentMaxToolIter caps tool round-trips per subagent dispatch. 0 = use
-	// the built-in default (30). Unlike the parent's MaxToolIterations (0 =
+	// the built-in default (40). Unlike the parent's MaxToolIterations (0 =
 	// unlimited), subagents always get a finite cap — they're autonomous workers
 	// with no human gate.
 	SubagentMaxToolIter int `json:"subagent_max_tool_iterations,omitempty"`
@@ -241,7 +241,7 @@ type Config struct {
 	// safety net for hung children (network stall, rate-limit, non-cooperative
 	// blocking). The timeout context requests cooperative cancellation first;
 	// the watchdog guarantees the registry makes progress even if a goroutine
-	// ignores cancellation. 0 = use the built-in default (180s). Negative is
+	// ignores cancellation. 0 = use the built-in default (360s). Negative is
 	// rejected by validation.
 	SubagentTimeoutSeconds int `json:"subagent_timeout_seconds,omitempty"`
 
@@ -668,7 +668,7 @@ func DefaultConfig() Config {
 		MaxRequestBytes:        8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:      3,
 		MaxParallelSubagents:   2,
-		SubagentTimeoutSeconds: 180, // must match agent.defaultSubagentTimeoutSeconds (card #166: raised from 120s)
+		SubagentTimeoutSeconds: 360, // must match agent.defaultSubagentTimeoutSeconds (raised from 180s: 40 iterations × ~6s + wrap-up + retry margin)
 		OracleModel:            "claude-sonnet-4-6",
 		OracleMaxTokens:        4096,
 		OracleAPIKeyEnv:        "ANTHROPIC_API_KEY",

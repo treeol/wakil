@@ -227,15 +227,15 @@ func TestAsyncRegistryRefusalSendsDoneEvents(t *testing.T) {
 	}
 }
 
-// TestSubagentTimeoutConfigValidation verifies that a negative
-// SubagentTimeoutSeconds is rejected by config validation.
+// TestSubagentTimeoutConfigValidation verifies that the App-level helper
+// handles 0 (unset/default) and explicit overrides correctly. Negative-value
+// rejection is tested in the config package's validation tests.
 func TestSubagentTimeoutConfigValidation(t *testing.T) {
-	// This is tested via the config package's validation tests, but we verify
-	// the App-level helper handles 0 (disabled) correctly.
+	// 0 means "use built-in default" — not "disabled".
 	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.SubagentTimeoutSeconds = 0
-	if d := app.subagentTimeout(); d != 180*time.Second {
-		t.Errorf("expected default 180s for 0 config, got %v", d)
+	if d := app.subagentTimeout(); d != 360*time.Second {
+		t.Errorf("expected default 360s for 0 config, got %v", d)
 	}
 	app.Cfg.SubagentTimeoutSeconds = 30
 	if d := app.subagentTimeout(); d != 30*time.Second {

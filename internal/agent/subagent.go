@@ -33,7 +33,7 @@ const (
 	subagentTurnToolBudget      = 120_000 // RAISED from 50k: allows ~10 full reads before stubbing; clamped to 35% of active hardMax at dispatch
 	subagentTurnToolBudgetFloor = 50_000  // floor for the clamp: never cut below the previous default (regression guard)
 	subagentToolResultTTL       = -1      // never evict; ephemeral ctx is a license to keep
-	subagentMaxToolIter         = 30      // RAISED from 16: more room for nav + search + reads
+	subagentMaxToolIter         = 40      // RAISED from 30: more room for broad exploration without exhaustion
 )
 
 // SubagentSummary is the structured return value of dispatchSubagent.
@@ -121,7 +121,11 @@ Rules:
 - Keep total rendered JSON under 4000 characters.
 - List every file you examined in checked[]; set status: full|truncated|stub-only.
 - List files you could not reach in skipped[].
-- Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.`
+- Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.
+- Use search_files to locate relevant code before reading entire files. If the task names a specific small file, read it directly.
+- Prefer read_file_full (one call) for files small enough to fit meaningfully in one result. For larger files, use targeted offset/limit reads based on search hits.
+- Do not re-read a file you have already examined — list it in checked[] and move on.
+- Once you have enough evidence to answer, stop exploring and produce the JSON summary.`
 
 // subagentEditSystemPrompt instructs an edit-capable subagent to make bounded
 // changes and report every file it modified. Zero interpolation — all edit-tier
@@ -138,7 +142,11 @@ Rules:
 - List every file you examined in checked[]; set status: full|truncated|stub-only.
 - List files you could not reach in skipped[].
 - List every file you modified (created, edited, deleted, or moved) in files_changed[]. For move_file, list both src and dst.
-- Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.`
+- Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.
+- Use search_files to locate relevant code before reading entire files. If the task names a specific small file, read it directly.
+- Prefer read_file_full (one call) for files small enough to fit meaningfully in one result. For larger files, use targeted offset/limit reads based on search hits.
+- Avoid redundant re-reads. Re-read only to verify an edit, recover omitted/truncated content, or check content that may have changed.
+- Once you have enough evidence to complete the task, stop exploring and produce the JSON summary.`
 
 // subagentRetryPrompt is sent on parse failure to request a clean JSON retry.
 const subagentRetryPrompt = `Your previous response was not valid JSON. Respond with ONLY the JSON object — no text before {, no text after }. Start directly with { and end with }.`
@@ -162,7 +170,11 @@ Rules:
 - List every file you examined in checked[]; set status: full|truncated|stub-only.
 - List files you could not reach in skipped[].
 - List every MCP tool call you made in external_calls[] with its status.
-- Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.`
+- Make gaps explicit in uncertainty[] — do not imply complete coverage you did not achieve.
+- Use search_files to locate relevant code before reading entire files. If the task names a specific small file, read it directly.
+- Prefer read_file_full (one call) for files small enough to fit meaningfully in one result. For larger files, use targeted offset/limit reads based on search hits.
+- Do not re-read a file you have already examined — list it in checked[] and move on.
+- Once you have enough evidence to answer, stop exploring and produce the JSON summary.`
 
 // extractJSON strips markdown fences and extracts the outermost {...} object from s.
 
@@ -216,7 +228,7 @@ const subagentTranscriptCap = 8000
 // subagentTranscriptTotalCap is the overall byte budget for a salvaged
 // transcript. When exceeded, the EARLIEST entries are dropped (keeping the
 // most recent tool traffic — the work closest to the failure — which is the
-// most valuable for a re-dispatch). Prevents a 30-iteration child with
+// most valuable for a re-dispatch). Prevents a max-iteration child with
 // max-sized reads from writing an unbounded spill.
 const subagentTranscriptTotalCap = 64_000
 
