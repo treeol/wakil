@@ -28,6 +28,18 @@ import (
 // (wasteful inference).
 const minSummaryTurns = 3
 
+// Shared error strings for session-history unavailability. Repeated across
+// multiple functions — centralized here so the copies can't drift apart.
+// These are string constants passed to errors.New / returned directly, not
+// shared sentinel error values.
+const (
+	errSessionHistoryUnavailable = "session history unavailable"
+	errSessionHistoryNoWorkspace = "session history is unavailable (no workspace, or index open failed)"
+	errNoWorkspaceSearch         = "no workspace — nothing to search"
+	errNoWorkspaceHistory        = "no workspace — session history unavailable"
+	errMissingSessionID          = "missing session ID"
+)
+
 // recallResultLimit and recallByteCap bound the /remember output.
 const (
 	recallResultLimit = 6
@@ -220,7 +232,7 @@ func sourceHash(s Session) string {
 // plain re-parse produces.
 func (a *App) indexSession(ctx context.Context, s Session, preserveGenerated bool) error {
 	if a.SessionHistory == nil {
-		return errors.New("session history unavailable")
+		return errors.New(errSessionHistoryUnavailable)
 	}
 	in := sessionToIndexInput(s)
 	in.SourceHash = sourceHash(s)
@@ -254,7 +266,7 @@ func (a *App) indexSession(ctx context.Context, s Session, preserveGenerated boo
 // synchronous callers on the event loop).
 func (a *App) reconcileHistory(ctx context.Context, ws string) error {
 	if a.SessionHistory == nil {
-		return errors.New("session history unavailable")
+		return errors.New(errSessionHistoryUnavailable)
 	}
 	if ws == "" {
 		ws = a.SessionWorkspace()
@@ -325,10 +337,10 @@ func (a *App) reconcileHistory(ctx context.Context, ws string) error {
 // RememberSearch and the /remember fold path share.
 func (a *App) rememberSearchRaw(ctx context.Context, query, ws, excludeChatID string) ([]sessionhistory.Result, error) {
 	if a.SessionHistory == nil {
-		return nil, errors.New("session history is unavailable (no workspace, or index open failed)")
+		return nil, errors.New(errSessionHistoryNoWorkspace)
 	}
 	if ws == "" {
-		return nil, errors.New("no workspace — nothing to search")
+		return nil, errors.New(errNoWorkspaceSearch)
 	}
 	// Lazy backfill/reconcile before searching (first recall builds the index).
 	// Thread the invocation-time ws so a mid-flight workspace switch can't make
@@ -346,10 +358,10 @@ func (a *App) rememberSearchRaw(ctx context.Context, query, ws, excludeChatID st
 // callers that want the formatted block without starting a model turn.
 func (a *App) RememberSearch(ctx context.Context, query string) (string, error) {
 	if a.SessionHistory == nil {
-		return "session history is unavailable (no workspace, or index open failed)", nil
+		return errSessionHistoryNoWorkspace, nil
 	}
 	if a.SessionWorkspace() == "" {
-		return "no workspace — nothing to search", nil
+		return errNoWorkspaceSearch, nil
 	}
 	if strings.TrimSpace(query) == "" {
 		return "usage: /remember <query>", nil
@@ -421,7 +433,9 @@ func buildRememberUserText(query string, results []sessionhistory.Result) string
 		// Defense-in-depth: neutralize any marker literal in the assembled head
 		// (chat IDs are hex and cannot contain it, but keep the invariant total).
 		head = neutralizeSessionMarker(head)
-		if b.Len()+len(head) > bodyEnd {
+		// b.Len() includes the header h already written; bodyEnd = cap-h-m-q.
+		// Compare against bodyEnd+h to avoid double-subtracting h.
+		if b.Len()+len(head) > bodyEnd+h {
 			break
 		}
 		b.WriteString(head)
@@ -436,7 +450,7 @@ func buildRememberUserText(query string, results []sessionhistory.Result) string
 				role = "summary"
 			}
 			line := fmt.Sprintf("  %s: %s\n", role, text)
-			if b.Len()+len(line) > bodyEnd {
+			if b.Len()+len(line) > bodyEnd+h {
 				break
 			}
 			b.WriteString(line)
@@ -506,6 +520,7 @@ func formatRememberNote(results []sessionhistory.Result) string {
 func formatRememberResults(results []sessionhistory.Result) string {
 	var b strings.Builder
 	b.WriteString("Prior sessions matching:")
+done:
 	for _, r := range results {
 		line := fmt.Sprintf("\n  • %s  %s", ShortID(r.ChatID), r.Updated.Format("2006-01-02 15:04"))
 		if r.Label != "" {
@@ -517,7 +532,7 @@ func formatRememberResults(results []sessionhistory.Result) string {
 		b.WriteString(truncateUTF8(line, recallByteCap-b.Len()))
 		if b.Len() >= recallByteCap {
 			b.WriteString("\n…")
-			break
+			break done
 		}
 		for _, t := range r.Turns {
 			var role string
@@ -536,7 +551,7 @@ func formatRememberResults(results []sessionhistory.Result) string {
 			b.WriteString(tl)
 			if b.Len() >= recallByteCap {
 				b.WriteString("\n…")
-				break
+				break done
 			}
 		}
 	}
@@ -557,13 +572,13 @@ const recallFoldByteCap = recallByteCap
 // prefix branch too).
 func (a *App) recallResolveChatID(ctx context.Context, ws, id string) (string, error) {
 	if ws == "" {
-		return "", errors.New("no workspace — session history unavailable")
+		return "", errors.New(errNoWorkspaceHistory)
 	}
 	if id == "" {
-		return "", errors.New("missing session ID")
+		return "", errors.New(errMissingSessionID)
 	}
 	if a.SessionHistory == nil {
-		return "", errors.New("session history is unavailable (no workspace, or index open failed)")
+		return "", errors.New(errSessionHistoryNoWorkspace)
 	}
 	// Lazy backfill/reconcile so the target session is indexed. Thread the
 	// invocation-time ws (async-goroutine discipline).
@@ -597,10 +612,10 @@ func (a *App) recallResolveChatID(ctx context.Context, ws, id string) (string, e
 // <0 = open). Returns the ordered turns.
 func (a *App) recallFetchTurns(ctx context.Context, chatID, ws string, from, to int) ([]sessionhistory.Turn, error) {
 	if a.SessionHistory == nil {
-		return nil, errors.New("session history is unavailable (no workspace, or index open failed)")
+		return nil, errors.New(errSessionHistoryNoWorkspace)
 	}
 	if ws == "" {
-		return nil, errors.New("no workspace — session history unavailable")
+		return nil, errors.New(errNoWorkspaceHistory)
 	}
 	return a.SessionHistory.GetTurns(ctx, chatID, ws, from, to)
 }
@@ -654,6 +669,12 @@ func buildRecallUserText(chatID, idArg, rangeArg string, turns []sessionhistory.
 		text := neutralizeSessionMarker(stripControl(t.Text))
 		text = strings.ReplaceAll(text, "\n", " ")
 		prefix := fmt.Sprintf("  [#%d %s] ", t.Ordinal, role)
+		// Guard: if the fixed overhead (prefix + "\n") doesn't fit in the
+		// remaining body budget, stop — writing it unconditionally would
+		// overflow bodyEnd.
+		if written+len(prefix)+1 > bodyEnd {
+			break
+		}
 		// Truncate the turn text so this line exactly fits the remaining body
 		// budget; this guarantees an oversized first turn still contributes a
 		// prefix (and the envelope never exceeds the cap).
@@ -662,9 +683,6 @@ func buildRecallUserText(chatID, idArg, rangeArg string, turns []sessionhistory.
 		b.WriteString(text)
 		b.WriteString("\n")
 		written += len(prefix) + len(text) + 1
-		if written >= bodyEnd {
-			break
-		}
 	}
 	b.WriteString(marker)
 	b.WriteString(query)

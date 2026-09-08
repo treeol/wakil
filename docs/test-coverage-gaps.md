@@ -71,16 +71,15 @@ Generated from `go test -coverprofile` + `go tool cover -func` across all packag
 
 ### internal/browser (46.3%) — 6 gaps identified
 
-**Critical issue:**
-- `manager_integration_test.go` does not compile — calls `NewManager()` with zero args but signature is `NewManager(exe SandboxExecutor, browserPath string)`. The entire browser-tagged suite is dead code.
+**Fixed:**
+- `manager_integration_test.go` — updated `NewManager()` calls to match current signature `NewManager(SandboxExecutor, string)`; tests now compile with `-tags=browser`.
 
 **Suggested tests:**
-1. **Fix manager_integration_test.go** — Update `NewManager()` call to match current signature or remove the dead test file
-2. **newDockerManager error paths** — Test CDPPort()==0 and chromium-binary-not-found preflight (unit-testable with fake SandboxExecutor, no browser needed)
-3. **cdpReady HTTP probe** — Test with httptest.NewServer returning 200 vs 404 vs a refusing listener
-4. **EvalJS result-type formatting** — Test nil→"null", string passthrough, object→JSON marshal, marshal-failure fallback
-5. **GetHTML 50KB truncation** — Test that truncation cap kicks in and appends the hint string
-6. **NewManager routing** — Test ContainerName()!="" → docker vs "" → local with a fake executor
+1. **newDockerManager error paths** — Test CDPPort()==0 and chromium-binary-not-found preflight (unit-testable with fake SandboxExecutor, no browser needed)
+2. **cdpReady HTTP probe** — Test with httptest.NewServer returning 200 vs 404 vs a refusing listener
+3. **EvalJS result-type formatting** — Test nil→"null", string passthrough, object→JSON marshal, marshal-failure fallback
+4. **GetHTML 50KB truncation** — Test that truncation cap kicks in and appends the hint string
+5. **NewManager routing** — Test ContainerName()!="" → docker vs "" → local with a fake executor
 
 ---
 

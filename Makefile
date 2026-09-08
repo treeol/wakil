@@ -8,5 +8,5 @@
 .PHONY: clean
 
 clean:
-	rm -rf .tmp-test/ .tmp-gocache/ .tmp-gotest/ .tmp-gobuild/ .gocache/ .gotmp/ __pycache__/
+	rm -rf .tmp-test/ .tmp-gocache/ .tmp-gotest/ .tmp-gobuild/ .gocache/ .gotmp/ .wakil/gotmp/ __pycache__/
 	chmod -R u+w .tmp/ 2>/dev/null; rm -rf .tmp/

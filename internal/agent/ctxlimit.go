@@ -129,9 +129,8 @@ func resolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Con
 		if model != "" {
 			id = backend + "/" + model
 		}
-		fmt.Fprintf(out, "⚠ using fallback context limit %d tokens (%s) — set the backend or context_tokens_fallback\n",
-			lim.NCtx, reason)
-		_ = id
+		fmt.Fprintf(out, "⚠ using fallback context limit %d tokens for %s (%s) — set the backend or context_tokens_fallback\n",
+			lim.NCtx, id, reason)
 		return lim
 	}
 

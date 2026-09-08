@@ -17,12 +17,29 @@ import (
 // CI environment may not have Chromium installed, and these tests
 // would fail or hang if the browser cannot launch.
 
-func TestBrowserIntegration_LaunchAndNavigate(t *testing.T) {
-	mgr, err := NewManager()
+// newTestManager creates a local Manager (nil SandboxExecutor → direct mode)
+// or skips the test if Chromium is unavailable.
+func newTestManager(t *testing.T) *Manager {
+	t.Helper()
+	mgr, err := NewManager(nil, "")
 	if err != nil {
 		t.Skipf("Chromium not available: %v", err)
 	}
-	defer mgr.Close()
+	t.Cleanup(func() { mgr.Close() })
+	return mgr
+}
+
+// mustNavigate navigates to url and fatals on error, so downstream
+// operations don't fail misleadingly when the page never loaded.
+func mustNavigate(t *testing.T, mgr *Manager, url string) {
+	t.Helper()
+	if _, _, err := mgr.Navigate(context.Background(), url); err != nil {
+		t.Fatalf("Navigate(%s): %v", url, err)
+	}
+}
+
+func TestBrowserIntegration_LaunchAndNavigate(t *testing.T) {
+	mgr := newTestManager(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -43,18 +60,14 @@ func TestBrowserIntegration_LaunchAndNavigate(t *testing.T) {
 }
 
 func TestBrowserIntegration_GetText(t *testing.T) {
-	mgr, err := NewManager()
-	if err != nil {
-		t.Skipf("Chromium not available: %v", err)
-	}
-	defer mgr.Close()
+	mgr := newTestManager(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html><body><h1 id="title">Hello Test</h1></body></html>`))
 	}))
 	defer srv.Close()
 
-	mgr.Navigate(context.Background(), srv.URL)
+	mustNavigate(t, mgr, srv.URL)
 	text, err := mgr.GetText(context.Background(), "#title")
 	if err != nil {
 		t.Fatalf("GetText: %v", err)
@@ -65,18 +78,14 @@ func TestBrowserIntegration_GetText(t *testing.T) {
 }
 
 func TestBrowserIntegration_EvalJS(t *testing.T) {
-	mgr, err := NewManager()
-	if err != nil {
-		t.Skipf("Chromium not available: %v", err)
-	}
-	defer mgr.Close()
+	mgr := newTestManager(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html><body></body></html>`))
 	}))
 	defer srv.Close()
 
-	mgr.Navigate(context.Background(), srv.URL)
+	mustNavigate(t, mgr, srv.URL)
 	result, err := mgr.EvalJS(context.Background(), "1 + 1")
 	if err != nil {
 		t.Fatalf("EvalJS: %v", err)
@@ -87,18 +96,14 @@ func TestBrowserIntegration_EvalJS(t *testing.T) {
 }
 
 func TestBrowserIntegration_Screenshot(t *testing.T) {
-	mgr, err := NewManager()
-	if err != nil {
-		t.Skipf("Chromium not available: %v", err)
-	}
-	defer mgr.Close()
+	mgr := newTestManager(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html><body><h1>Screenshot Test</h1></body></html>`))
 	}))
 	defer srv.Close()
 
-	mgr.Navigate(context.Background(), srv.URL)
+	mustNavigate(t, mgr, srv.URL)
 	path, err := mgr.Screenshot(context.Background(), false)
 	if err != nil {
 		t.Fatalf("Screenshot: %v", err)
@@ -109,54 +114,42 @@ func TestBrowserIntegration_Screenshot(t *testing.T) {
 }
 
 func TestBrowserIntegration_SetViewport(t *testing.T) {
-	mgr, err := NewManager()
-	if err != nil {
-		t.Skipf("Chromium not available: %v", err)
-	}
-	defer mgr.Close()
+	mgr := newTestManager(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html><body></body></html>`))
 	}))
 	defer srv.Close()
 
-	mgr.Navigate(context.Background(), srv.URL)
+	mustNavigate(t, mgr, srv.URL)
 	if err := mgr.SetViewport(context.Background(), 375, 812); err != nil {
 		t.Fatalf("SetViewport: %v", err)
 	}
 }
 
 func TestBrowserIntegration_EmulateReducedMotion(t *testing.T) {
-	mgr, err := NewManager()
-	if err != nil {
-		t.Skipf("Chromium not available: %v", err)
-	}
-	defer mgr.Close()
+	mgr := newTestManager(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html><body></body></html>`))
 	}))
 	defer srv.Close()
 
-	mgr.Navigate(context.Background(), srv.URL)
+	mustNavigate(t, mgr, srv.URL)
 	if err := mgr.EmulateReducedMotion(context.Background(), true); err != nil {
 		t.Fatalf("EmulateReducedMotion: %v", err)
 	}
 }
 
 func TestBrowserIntegration_Click(t *testing.T) {
-	mgr, err := NewManager()
-	if err != nil {
-		t.Skipf("Chromium not available: %v", err)
-	}
-	defer mgr.Close()
+	mgr := newTestManager(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html><body><button id="btn" onclick="this.textContent='Clicked'">Click Me</button></body></html>`))
 	}))
 	defer srv.Close()
 
-	mgr.Navigate(context.Background(), srv.URL)
+	mustNavigate(t, mgr, srv.URL)
 	if err := mgr.Click(context.Background(), "#btn"); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
