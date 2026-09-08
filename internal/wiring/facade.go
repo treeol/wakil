@@ -82,6 +82,12 @@ type wiringFacade struct {
 	// closed is true after Close; subsequent calls return ErrSessionClosed.
 	closed bool
 
+	// telegramConsumer is the optional Telegram approval consumer. nil when
+	// the telegram-bridge MCP server is not configured or not connected.
+	// Started by the ConversationManager after session creation; stopped and
+	// drained in Close.
+	telegramConsumer *telegramApprovalConsumer
+
 	// pendingContinuation is the continuation prompt for /handoff proceed.
 	// Set by HandoffConversation instead of calling SubmitInput directly,
 	// so the TUI can submit it AFTER subscribing to the new session's event
@@ -889,6 +895,25 @@ func (f *wiringFacade) Close() error {
 	// had swapped facades, so nobody could answer the old session's approval)
 	// and lets the executor emit TurnCompleted{cancelled} + SessionClosed.
 	// The 10s bound covers a turn that ignores cancellation.
+
+	// Stop the Telegram approval consumer BEFORE closing the host session.
+	// The consumer's goroutine may be blocked on an MCP CallTool
+	// (long-polling Telegram). Cancelling its context first ensures it
+	// exits promptly and does not race with the host session teardown.
+	// Stop is bounded by consumerStopTimeout so a hung transport cannot
+	// delay the host session close (below) indefinitely.
+	if f.telegramConsumer != nil {
+		f.telegramConsumer.Stop()
+		f.telegramConsumer = nil
+	}
+
+	// Close the host session: requestClose cancels the in-flight turn ctx,
+	// which unblocks a Parked approval with a forced decline (m4b review
+	// finding — without this, a rotation while an approval was parked left
+	// the turn goroutine blocked forever: the TUI had swapped facades, so
+	// nobody could answer the old session's approval) and lets the executor
+	// emit TurnCompleted{cancelled} + SessionClosed. The 10s bound covers a
+	// turn that ignores cancellation.
 	if f.host != nil && sessionID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_ = f.host.CloseSession(ctx, principal, sessionID)

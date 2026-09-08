@@ -239,6 +239,23 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 	facade := newWiringFacade(app, handle, host, res, cm.principal)
 	facade.setSession(sess.ID)
 
+	// Start the Telegram approval consumer when the telegram-bridge MCP
+	// server is configured and connected. The consumer subscribes to the
+	// session's event stream and forwards ApprovalRequested events to the
+	// Telegram bridge MCP tool. When not configured, the consumer is nil
+	// and behavior is unchanged (TUI keypress is the only approval path).
+	if detectTelegramBridge(app.MCP) {
+		tc := newTelegramApprovalConsumer(facade, app.MCP, cm.principal)
+		if err := tc.Start(ctx); err != nil {
+			// Best-effort: a failed subscription does not block the
+			// session — the TUI keypress path still works. Log to
+			// stderr so the failure is visible.
+			fmt.Fprintf(os.Stderr, "telegram consumer: failed to start: %v\n", err)
+		} else {
+			facade.telegramConsumer = tc
+		}
+	}
+
 	// The first conversation manager call stores resources for later cleanup.
 	if cm.resources == nil {
 		cm.resources = res
