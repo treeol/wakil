@@ -1035,14 +1035,13 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		if a.AutoCounsel {
 			mode = "auto"
 		} else {
-			mode = "suggest"
+			mode = "off"
 		}
 	}
 
 	switch mode {
 	case "off":
-		fmt.Fprintln(a.Out, Dim("· struggle detected (counsel: off)"))
-		return
+		return // truly silent — no output
 
 	case "auto":
 		if a.MaxCounsel > 0 && a.counselCalls < a.MaxCounsel {

@@ -992,7 +992,7 @@ func TestCounselCapSurvivesAutoApprove(t *testing.T) {
 	}
 }
 
-// TestCounselOffSilent verifies that CounselMode="off" prints a dim note but
+// TestCounselOffSilent verifies that CounselMode="off" prints nothing and
 // fires zero oracle calls.
 func TestCounselOffSilent(t *testing.T) {
 	srv, count := counselServer(t)
@@ -1020,8 +1020,8 @@ func TestCounselOffSilent(t *testing.T) {
 	if *count != 0 {
 		t.Errorf("off mode: expected 0 oracle calls, got %d", *count)
 	}
-	if !strings.Contains(outBuf.String(), "off") {
-		t.Errorf("off mode: expected 'off' in output; got: %q", outBuf.String())
+	if outBuf.Len() != 0 {
+		t.Errorf("off mode: expected no output, got: %q", outBuf.String())
 	}
 }
 

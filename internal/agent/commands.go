@@ -956,7 +956,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		if len(fields) < 2 {
 			mode := app.CounselModeLocked()
 			if mode == "" {
-				mode = "suggest"
+				mode = "off"
 			}
 			msg := "counsel mode: " + mode
 			if mode == "auto" {
@@ -986,7 +986,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		case "off":
 			app.SetCounselModeValue("off", 0)
 			app.saveRepoState(func(s *RepoState) { s.CounselMode = "off" })
-			return true, false, note("counsel mode: off (struggle detected silently)")
+			return true, false, note("counsel mode: off (silent)")
 		default:
 			return true, false, note("usage: /counsel auto|suggest|off")
 		}

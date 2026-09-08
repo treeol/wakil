@@ -193,7 +193,12 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 		*m.items = convItemsFrom(snap.Conv)
 	}
 	m.prefixDirty = true
-	m.refreshViewport()
+	// Reset the textarea and reapply its dimensions. Without this the
+	// textarea's internal width/view is stale after rotation — the Bubbles
+	// textarea renders with the old width, causing ghost text to appear in
+	// the input box until a WindowSizeMsg (resize) triggers reflow().
+	m.ta.Reset()
+	m = m.reflow()
 
 	m.addItem(iSys, dim2("· new conversation: "+formatShortID(snap.ChatID)))
 	if rm.note != "" {
@@ -248,6 +253,13 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 		}(rm.facade, m.sessionID, m.principal)
 	}
 	m = m.reflowIfStatusHeightChanged(before)
+	// Force a full screen clear+repaint. The standard renderer diffs frames
+	// line-by-line; after rotation the conversation is wiped and the layout
+	// shifts, but lines that happen to match the previous frame (blank lines,
+	// placeholder text in the input box) are skipped, leaving stale content
+	// visible. ClearScreen makes the renderer erase everything and repaint
+	// from scratch — the same effect as a resize, but without needing one.
+	cmds = append(cmds, tea.ClearScreen)
 	return m, cmds, true
 }
 
