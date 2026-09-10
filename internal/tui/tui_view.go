@@ -198,11 +198,10 @@ func (m tuiModel) View() string {
 	} else {
 		convContent = bottomAlignViewport(m.vp.View(), vpH)
 		// Show the wakīl splash when the conversation pane is truly
-		// empty (no items, no active turn, empty textarea, idle state).
-		// Startup notes are stored as splashNote instead of items, so
-		// the splash persists until the user types.
+		// empty (no items, no active turn, idle state). The splash
+		// persists while the user types — it only disappears when Enter
+		// is pressed (state transitions from idle to streaming).
 		if m.items != nil && len(*m.items) == 0 && !m.hadTurn &&
-			strings.TrimSpace(m.ta.Value()) == "" &&
 			m.state == stateIdle &&
 			(m.reasoning == nil || m.reasoning.Len() == 0) &&
 			(m.streaming == nil || m.streaming.Len() == 0) {
