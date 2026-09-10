@@ -69,6 +69,13 @@ type RepoState struct {
 	// MaxCounsel persists the /counsel auto-mode cap (max calls per turn).
 	MaxCounsel int `json:"max_counsel,omitempty"`
 
+	// ReasoningEffort persists the /thinking effort level ("" = not set).
+	// See app.go's ReasoningEffort field for valid values.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
+	// ReasoningMaxTokens persists the /thinking max_tokens budget (0 = not set).
+	ReasoningMaxTokens int `json:"reasoning_max_tokens,omitempty"`
+
 	// EffectiveCtxMaxChars persists the /maxctx session override. nil = not set
 	// (use config default); pointer to 0 = explicitly disabled (no cap); >0 =
 	// cap at this many chars. Pointer is needed because 0 is a valid value
@@ -429,6 +436,16 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 		applied = append(applied, fmt.Sprintf("counsel-cap=%d", st.MaxCounsel))
 	}
 
+	// /thinking reasoning settings (endpoint-independent — the reasoning
+	// parameter is sent to whatever endpoint is active, though only
+	// kind=openai endpoints targeting OpenRouter or a reasoning-capable server
+	// will act on it).
+	if st.ReasoningEffort != "" || st.ReasoningMaxTokens > 0 {
+		a.ReasoningEffort = st.ReasoningEffort
+		a.ReasoningMaxTokens = st.ReasoningMaxTokens
+		applied = append(applied, "thinking="+st.ReasoningEffort)
+	}
+
 	return applied
 }
 
@@ -500,6 +517,16 @@ func DescribeRepoState(app *App) string {
 	}
 	if st.MaxParallelSubagents > 0 {
 		b.WriteString(fmt.Sprintf("  max parallel subagents: %d\n", st.MaxParallelSubagents))
+	}
+	if st.ReasoningEffort != "" || st.ReasoningMaxTokens > 0 {
+		line := "  thinking:"
+		if st.ReasoningEffort != "" {
+			line += " effort=" + st.ReasoningEffort
+		}
+		if st.ReasoningMaxTokens > 0 {
+			line += fmt.Sprintf(" max_tokens=%d", st.ReasoningMaxTokens)
+		}
+		b.WriteString(line + "\n")
 	}
 	if st.RawTools {
 		b.WriteString("  raw tools: on\n")

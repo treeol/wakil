@@ -96,6 +96,7 @@ var allTUICommands = []candidate{
 	{name: "/sessions"},
 	{name: "/subagent", hasArgs: true},
 	{name: "/submodel", hasArgs: true},
+	{name: "/thinking", hasArgs: true},
 }
 
 // compSources builds a compSources from the facade snapshot: backends/models
@@ -276,6 +277,8 @@ func computeSlashCompletion(ta textarea.Model, src compSources, fetchSessions fu
 		cands = listNameCandidates(argLeaf, []string{"proceed", "stop"})
 	case "/counsel":
 		cands = listNameCandidates(argLeaf, []string{"auto", "suggest", "off"})
+	case "/thinking":
+		cands = listNameCandidates(argLeaf, []string{"off", "max", "xhigh", "high", "medium", "low", "minimal", "none"})
 	case "/mashura":
 		cands = listNameCandidates(argLeaf, []string{"panel", "map", "model", "maxtokens", "timeout"})
 	default:

@@ -277,6 +277,27 @@ type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
+// ReasoningConfig is the OpenRouter "reasoning" parameter for models that support
+// extended thinking. When non-nil, it is sent verbatim in the request body as the
+// "reasoning" field. nil = omit entirely (the model's default behavior applies).
+//
+// The OpenRouter API accepts either "effort" (a qualitative level: "max",
+// "xhigh", "high", "medium", "low", "minimal", "none") or "max_tokens" (a
+// specific token budget). Both may be set together; "effort" alone for
+// OpenAI-style reasoning models, "max_tokens" for Anthropic-style. "enabled"
+// can be set to true to enable reasoning with default parameters. "exclude"
+// hides reasoning from the response (the model still thinks, just doesn't
+// return the tokens).
+//
+// Empty Effort and zero MaxTokens with Enabled=false produces an empty object —
+// callers should set at least one field to get meaningful behavior.
+type ReasoningConfig struct {
+	Effort    string `json:"effort,omitempty"`     // "max"|"xhigh"|"high"|"medium"|"low"|"minimal"|"none"
+	MaxTokens int    `json:"max_tokens,omitempty"` // reasoning token budget (Anthropic-style)
+	Enabled   bool   `json:"enabled,omitempty"`    // enable with defaults (no effort/max_tokens)
+	Exclude   bool   `json:"exclude,omitempty"`    // hide reasoning from response
+}
+
 // streamChunk mirrors a single SSE chat.completion.chunk. Tolerant of the
 // extra fields the proxy's two backends emit (function_call, refusal, timings…).
 type streamChunk struct {
@@ -284,7 +305,8 @@ type streamChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"` // extended thinking (never stored in history)
+			ReasoningContent string `json:"reasoning_content"` // extended thinking (llama.cpp / DeepSeek style; never stored in history)
+			Reasoning        string `json:"reasoning"`         // extended thinking (OpenRouter style; never stored in history)
 			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
@@ -434,6 +456,13 @@ type Client struct {
 	Temperature *float64
 	TopP        *float64
 	MaxTokens   *int
+
+	// Reasoning is the OpenRouter "reasoning" parameter for extended-thinking
+	// models. nil = omit from the request body (the model's default behavior
+	// applies). Set by /thinking to control reasoning effort or token budget.
+	// Only meaningful for KindOpenAI endpoints targeting OpenRouter or a
+	// reasoning-capable local server; other endpoints ignore it.
+	Reasoning *ReasoningConfig
 
 	// CachePrompt mirrors EndpointConfig.CachePrompt: llama.cpp's non-standard
 	// cache_prompt hint. nil = omit from the request body entirely (server
@@ -714,8 +743,9 @@ type Sink func(string)
 // tool_calls (whose arguments arrive incrementally and are concatenated).
 // The assistant turn may legitimately contain content AND tool_calls together.
 //
-// reasoningSink, when non-nil, receives reasoning_content (extended thinking)
-// deltas. Reasoning is NEVER written into the returned Message — the stored
+// reasoningSink, when non-nil, receives reasoning_content/reasoning (extended
+// thinking) deltas — llama.cpp/DeepSeek use "reasoning_content", OpenRouter uses
+// "reasoning". Reasoning is NEVER written into the returned Message — the stored
 // assistant turn is always final-answer content only.
 func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, sink Sink, reasoningSink Sink) (Message, error) {
 	// proxyShape gates every ilm-proxy-specific request element. Kind ""
@@ -768,6 +798,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		TopP          *float64          `json:"top_p,omitempty"`
 		MaxTokens     *int              `json:"max_tokens,omitempty"`
 		CachePrompt   *bool             `json:"cache_prompt,omitempty"`
+		Reasoning     *ReasoningConfig  `json:"reasoning,omitempty"`
 	}
 
 	// MaxTokens: use the configured value if set; otherwise apply a default
@@ -797,6 +828,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		TopP:          c.TopP,
 		MaxTokens:     maxTokens,
 		CachePrompt:   c.CachePrompt,
+		Reasoning:     c.Reasoning,
 	}
 	if proxyShape {
 		metadata := map[string]string{}
@@ -1039,10 +1071,18 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 				finishReason = choice.FinishReason
 			}
 			d := choice.Delta
-			if d.ReasoningContent != "" {
-				reasoningChars += len(d.ReasoningContent)
+			if d.ReasoningContent != "" || d.Reasoning != "" {
+				// Merge both reasoning fields — llama.cpp/DeepSeek use
+				// "reasoning_content", OpenRouter uses "reasoning". A chunk
+				// should carry one or the other, never both, but concatenating
+				// is safe either way.
+				rc := d.ReasoningContent
+				if rc == "" {
+					rc = d.Reasoning
+				}
+				reasoningChars += len(rc)
 				if reasoningSink != nil {
-					reasoningSink(d.ReasoningContent)
+					reasoningSink(rc)
 					// Reasoning is intentionally NOT written to content — it
 					// must never appear in the Message or the Conv history.
 				}

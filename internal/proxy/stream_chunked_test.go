@@ -519,3 +519,58 @@ func TestStreamChunkedOversizeLineRejected(t *testing.T) {
 		t.Fatalf("oversize line: want ErrBackendStream, got %v", err)
 	}
 }
+
+// TestStreamReasoningContentField: the "reasoning_content" field (llama.cpp /
+// DeepSeek style) is routed to the reasoning sink, not into the content.
+func TestStreamReasoningContentField(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking hard\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	var reasoningParts []string
+	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       &chunkReader{chunks: splitEvery(body, 7)},
+		}, nil
+	})
+	c := &Client{BaseURL: "http://r.test", Model: "m", HTTP: &http.Client{Transport: rt}}
+	msg, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, func(s string) { reasoningParts = append(reasoningParts, s) })
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(reasoningParts) != 1 || reasoningParts[0] != "thinking hard" {
+		t.Errorf("reasoning sink = %v, want [\"thinking hard\"]", reasoningParts)
+	}
+	if msg.Content == nil || *msg.Content != "answer" {
+		t.Errorf("content = %v, want %q", msg.Content, "answer")
+	}
+}
+
+// TestStreamReasoningField: the "reasoning" field (OpenRouter style) is routed
+// to the reasoning sink, not into the content. This is the field OpenRouter uses
+// in streaming deltas — "reasoning_content" is llama.cpp/DeepSeek only.
+func TestStreamReasoningField(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking via openrouter\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	var reasoningParts []string
+	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       &chunkReader{chunks: splitEvery(body, 7)},
+		}, nil
+	})
+	c := &Client{BaseURL: "http://r.test", Model: "m", HTTP: &http.Client{Transport: rt}}
+	msg, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, func(s string) { reasoningParts = append(reasoningParts, s) })
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(reasoningParts) != 1 || reasoningParts[0] != "thinking via openrouter" {
+		t.Errorf("reasoning sink = %v, want [\"thinking via openrouter\"]", reasoningParts)
+	}
+	if msg.Content == nil || *msg.Content != "answer" {
+		t.Errorf("content = %v, want %q", msg.Content, "answer")
+	}
+}

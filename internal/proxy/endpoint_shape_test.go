@@ -390,3 +390,69 @@ func (t *rewritingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	req.URL.Host = targetURL.Host
 	return http.DefaultTransport.RoundTrip(req)
 }
+
+// TestReasoningAbsentWhenUnset: when Client.Reasoning is nil, the "reasoning"
+// key must be entirely absent from the request body (not null, not {}).
+func TestReasoningAbsentWhenUnset(t *testing.T) {
+	srv, _, body := captureServer(t)
+	c := &Client{
+		BaseURL:         srv.URL,
+		Kind:            KindOpenAI,
+		ConfiguredModel: "m",
+		Model:           "m",
+		HTTP:            http.DefaultClient,
+	}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(*body, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["reasoning"]; ok {
+		t.Error("reasoning key present in body when Client.Reasoning is nil — must be absent (omitempty)")
+	}
+}
+
+// TestReasoningPresentWhenSet: when Client.Reasoning is non-nil, the "reasoning"
+// key must appear in the request body with the configured effort and max_tokens.
+func TestReasoningPresentWhenSet(t *testing.T) {
+	srv, _, body := captureServer(t)
+	c := &Client{
+		BaseURL:         srv.URL,
+		Kind:            KindOpenAI,
+		ConfiguredModel: "m",
+		Model:           "m",
+		HTTP:            http.DefaultClient,
+		Reasoning: &ReasoningConfig{
+			Effort:    "medium",
+			MaxTokens: 8000,
+		},
+	}
+	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(*body, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	rcRaw, ok := raw["reasoning"]
+	if !ok {
+		t.Fatal("reasoning key absent from body when Client.Reasoning is set")
+	}
+	var rc struct {
+		Effort    string `json:"effort"`
+		MaxTokens int    `json:"max_tokens"`
+		Enabled   bool   `json:"enabled"`
+		Exclude   bool   `json:"exclude"`
+	}
+	if err := json.Unmarshal(rcRaw, &rc); err != nil {
+		t.Fatalf("unmarshal reasoning: %v", err)
+	}
+	if rc.Effort != "medium" {
+		t.Errorf("reasoning.effort = %q, want %q", rc.Effort, "medium")
+	}
+	if rc.MaxTokens != 8000 {
+		t.Errorf("reasoning.max_tokens = %d, want %d", rc.MaxTokens, 8000)
+	}
+}

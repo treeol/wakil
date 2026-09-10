@@ -55,6 +55,9 @@ func (a *App) prepareTurn() {
 	// Apply the current backend selection at request build time (never snapshot).
 	a.Client.Backend = a.SelectedBackend
 
+	// Apply reasoning configuration from the session-scoped /thinking fields.
+	a.applyReasoningToClientLocked()
+
 	// Set the aux model header only when explicitly configured. When absent the
 	// proxy resolves aux on its own (ILM_OR_AUX_MODEL env or follows main).
 	a.Client.AuxModel = a.Cfg.AuxModel

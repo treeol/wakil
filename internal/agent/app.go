@@ -357,6 +357,17 @@ type App struct {
 	// the model within it. Empty = use the resolved endpoint's model.
 	SubagentModelOverride string
 
+	// ReasoningEffort is the session-scoped OpenRouter reasoning effort level,
+	// set by /thinking <effort>. Empty = not set (the model's default behavior
+	// applies). Valid values: "max", "xhigh", "high", "medium", "low",
+	// "minimal", "none". Applied to Client.Reasoning at prepareTurn time.
+	ReasoningEffort string
+
+	// ReasoningMaxTokens is the session-scoped reasoning token budget, set by
+	// /thinking <effort> <max_tokens> or /thinking <max_tokens>. Zero = not set.
+	// Applied to Client.Reasoning at prepareTurn time alongside ReasoningEffort.
+	ReasoningMaxTokens int
+
 	// defaultModel is Client.Model at construction time, used to restore the
 	// model when SelectedModel is cleared.
 	defaultModel string

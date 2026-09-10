@@ -23,6 +23,7 @@ package agent
 // operations (Exec interface calls, Client methods).
 
 import (
+	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/workflow"
 )
 
@@ -207,6 +208,25 @@ func (a *App) SetMaxParallel(n int) {
 	a.stateMu.Lock()
 	a.Cfg.MaxParallelSubagents = n
 	a.stateMu.Unlock()
+}
+
+// applyReasoningToClientLocked updates Client.Reasoning from the session-scoped
+// ReasoningEffort and ReasoningMaxTokens fields. Caller MUST hold stateMu.Lock.
+// When both fields are zero/empty, Client.Reasoning is set to nil (omitted from
+// the request body entirely — the model's default behavior applies).
+func (a *App) applyReasoningToClientLocked() {
+	if a.ReasoningEffort == "" && a.ReasoningMaxTokens == 0 {
+		a.Client.Reasoning = nil
+		return
+	}
+	rc := &proxy.ReasoningConfig{
+		Effort:    a.ReasoningEffort,
+		MaxTokens: a.ReasoningMaxTokens,
+	}
+	// When only max_tokens is set (no effort), OpenRouter interprets it as a
+	// direct token budget. When only effort is set, it controls the reasoning
+	// intensity. Both together is valid per the API docs.
+	a.Client.Reasoning = rc
 }
 
 // SetSessionLabelValue sets the session label under stateMu.Lock, then
@@ -452,6 +472,20 @@ func (a *App) MaxParallelLocked() int {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
 	return a.Cfg.MaxParallelSubagents
+}
+
+// ReasoningEffortLocked returns ReasoningEffort under stateMu.RLock.
+func (a *App) ReasoningEffortLocked() string {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.ReasoningEffort
+}
+
+// ReasoningMaxTokensLocked returns ReasoningMaxTokens under stateMu.RLock.
+func (a *App) ReasoningMaxTokensLocked() int {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.ReasoningMaxTokens
 }
 
 // CtxLimitLocked returns CtxLimit under stateMu.RLock.

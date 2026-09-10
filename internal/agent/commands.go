@@ -951,6 +951,100 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, note(fmt.Sprintf("effective context cap: %d chars (compact at ~%dk, hard max ~%dk)",
 			cap, compactAt/1000, hardMax/1000))
 
+	case "/thinking":
+		// /thinking — set or show the OpenRouter reasoning parameter for
+		// extended-thinking models. Controls whether the model uses reasoning
+		// tokens and at what intensity/budget.
+		//
+		//   /thinking                     — show current setting
+		//   /thinking medium              — set effort level
+		//   /thinking medium 8000         — set effort + max_tokens budget
+		//   /thinking off                 — disable reasoning
+		//   /thinking 8000                — set only max_tokens (no effort)
+		//
+		// Valid effort levels: max, xhigh, high, medium, low, minimal, none, off.
+		// "off" is a convenience alias for clearing all reasoning settings (nil
+		// reasoning parameter — the model's default behavior applies).
+		//
+		// Session-scoped, persisted to repo-state. Only sent for kind=openai
+		// endpoints (OpenRouter, reasoning-capable local servers); ilm-proxy
+		// endpoints ignore it.
+		if len(fields) < 2 {
+			effort := app.ReasoningEffortLocked()
+			maxTok := app.ReasoningMaxTokensLocked()
+			if effort == "" && maxTok == 0 {
+				return true, false, note("thinking: not set (model default)")
+			}
+			msg := "thinking:"
+			if effort != "" {
+				msg += " effort=" + effort
+			}
+			if maxTok > 0 {
+				msg += fmt.Sprintf(" max_tokens=%d", maxTok)
+			}
+			return true, false, note(msg)
+		}
+		// Parse arguments. The first arg may be an effort level, "off", or a
+		// number (max_tokens only). The optional second arg is always max_tokens.
+		validEffort := map[string]bool{
+			"max": true, "xhigh": true, "high": true,
+			"medium": true, "low": true, "minimal": true, "none": true,
+		}
+		arg := fields[1]
+		if arg == "off" {
+			// Clear all reasoning settings.
+			app.stateMu.Lock()
+			app.ReasoningEffort = ""
+			app.ReasoningMaxTokens = 0
+			app.applyReasoningToClientLocked()
+			app.stateMu.Unlock()
+			app.saveRepoState(func(s *RepoState) {
+				s.ReasoningEffort = ""
+				s.ReasoningMaxTokens = 0
+			})
+			return true, false, note("thinking: off (model default)")
+		}
+		effort := ""
+		maxTok := 0
+		if validEffort[strings.ToLower(arg)] {
+			effort = strings.ToLower(arg)
+			// Optional second arg: max_tokens.
+			if len(fields) >= 3 {
+				n, err := strconv.Atoi(fields[2])
+				if err != nil || n < 0 {
+					return true, false, note("thinking: max_tokens must be a non-negative integer")
+				}
+				maxTok = n
+			}
+		} else {
+			// First arg is a number → max_tokens only (no effort).
+			n, err := strconv.Atoi(arg)
+			if err != nil || n < 0 {
+				return true, false, note("thinking: usage: /thinking [off|<effort> [max_tokens]|<max_tokens>]\n  effort: max, xhigh, high, medium, low, minimal, none")
+			}
+			maxTok = n
+		}
+		app.stateMu.Lock()
+		app.ReasoningEffort = effort
+		app.ReasoningMaxTokens = maxTok
+		app.applyReasoningToClientLocked()
+		app.stateMu.Unlock()
+		app.saveRepoState(func(s *RepoState) {
+			s.ReasoningEffort = effort
+			s.ReasoningMaxTokens = maxTok
+		})
+		msg := "thinking:"
+		if effort != "" {
+			msg += " effort=" + effort
+		}
+		if maxTok > 0 {
+			msg += fmt.Sprintf(" max_tokens=%d", maxTok)
+		}
+		if effort == "" && maxTok == 0 {
+			msg += " (model default)"
+		}
+		return true, false, note(msg)
+
 	case "/counsel":
 		// /counsel [auto|suggest|off] — set or show the auto-counsel mode.
 		if len(fields) < 2 {
