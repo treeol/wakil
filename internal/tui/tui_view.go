@@ -1100,7 +1100,7 @@ var splashArt = []string{
 // centered both horizontally and vertically within the pane.
 func renderSplash(vpW, vpH int) string {
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("type a task below to begin…")
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("make your wish…")
 
 	// Render the art lines.
 	var artLines []string
