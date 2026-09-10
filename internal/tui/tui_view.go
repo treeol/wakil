@@ -191,10 +191,18 @@ func (m tuiModel) View() string {
 	_ = inputOuterH // used implicitly via JoinVertical
 
 	// --- conversation pane ---
-	// When a sub tab is active render its output instead of the main viewport.
+	// When there's no conversation content, no textarea input, and no
+	// completed turn, show a large centered "wakīl" splash in the
+	// conversation pane. It disappears as soon as the user types.
 	var convContent string
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
 		convContent = m.renderSubTabContent(m.subTabs[m.subCur], vpW, vpH)
+	} else if m.items != nil && len(*m.items) == 0 && !m.hadTurn &&
+		strings.TrimSpace(m.ta.Value()) == "" &&
+		m.state == stateIdle &&
+		(m.reasoning == nil || m.reasoning.Len() == 0) &&
+		(m.streaming == nil || m.streaming.Len() == 0) {
+		convContent = renderSplash(vpW, vpH)
 	} else {
 		convContent = bottomAlignViewport(m.vp.View(), vpH)
 	}
@@ -1063,4 +1071,47 @@ func subTabModel(tab *subTab) string {
 		return tab.model
 	}
 	return "…"
+}
+
+// splashArt is the "wakīl" wordmark in figlet 'speed' font (35 wide x 5 tall)
+// with a macron bar above the i (row 0). Used by renderSplash.
+var splashArt = []string{
+	"                        ____       ",
+	"                 ______ ___________",
+	"___      _______ ___  /____(_)__  /",
+	"__ | /| / /  __ ` /_  //_/_  /__  /",
+	"__ |/ |/ // /_/ /_  ,<  _  / _  /  ",
+	"____/|__/ \\__,_/ /_/|_| /_/  /_/   ",
+}
+
+// renderSplash produces a large centered "wakīl" ASCII art for the
+// conversation pane when no conversation has started yet. The art is
+// centered both horizontally and vertically within the pane.
+func renderSplash(vpW, vpH int) string {
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("type a task below to begin…")
+
+	// Render the art lines.
+	var artLines []string
+	for _, row := range splashArt {
+		var b strings.Builder
+		for _, ch := range row {
+			if ch != ' ' {
+				b.WriteString(accent.Render(string(ch)))
+			} else {
+				b.WriteRune(' ')
+			}
+		}
+		artLines = append(artLines, b.String())
+	}
+	art := strings.Join(artLines, "\n")
+
+	// Add the hint below.
+	content := lipgloss.JoinVertical(lipgloss.Center, art, "", hint)
+
+	// Center in the conversation pane.
+	return lipgloss.Place(vpW, vpH,
+		lipgloss.Center, lipgloss.Center,
+		content,
+	)
 }
