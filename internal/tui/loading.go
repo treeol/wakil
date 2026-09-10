@@ -146,10 +146,10 @@ func (m *loadingModel) View() string {
 	}
 
 	// Color palette.
-	accent := lipgloss.Color("39")    // bright blue
-	label := lipgloss.Color("252")    // light gray
-	dimmed := lipgloss.Color("240")  // dim gray
-	border := lipgloss.Color("238")   // dark border
+	accent := lipgloss.Color("39")  // bright blue
+	label := lipgloss.Color("252")  // light gray
+	dimmed := lipgloss.Color("240") // dim gray
+	border := lipgloss.Color("238") // dark border
 
 	// Wordmark.
 	title := lipgloss.NewStyle().
