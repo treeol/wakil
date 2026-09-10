@@ -241,15 +241,6 @@ func (m tuiModel) View() string {
 	} else if m.comp.active {
 		sections = append(sections, m.renderCompletion())
 	}
-	// Show the startup note above the status line while the splash is
-	// active (no conversation yet). Once the user types, splashNote is
-	// cleared and this line disappears.
-	if m.splashNote != "" {
-		sections = append(sections, lipgloss.NewStyle().
-			Width(m.width-borderW).
-			Foreground(lipgloss.Color("240")).
-			Render(m.splashNote))
-	}
 	sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(strings.Join(m.statusLines(), "\n")))
 	sections = append(sections, input)
 	if len(m.subTabs) > 0 {
