@@ -206,7 +206,7 @@ func (m tuiModel) View() string {
 			m.state == stateIdle &&
 			(m.reasoning == nil || m.reasoning.Len() == 0) &&
 			(m.streaming == nil || m.streaming.Len() == 0) {
-			convContent = renderSplash(vpW, vpH, m.splashNote)
+			convContent = renderSplash(vpW, vpH)
 		}
 	}
 	conv := styleConvBorder.
@@ -240,6 +240,15 @@ func (m tuiModel) View() string {
 		sections = append(sections, m.renderResumePicker())
 	} else if m.comp.active {
 		sections = append(sections, m.renderCompletion())
+	}
+	// Show the startup note above the status line while the splash is
+	// active (no conversation yet). Once the user types, splashNote is
+	// cleared and this line disappears.
+	if m.splashNote != "" {
+		sections = append(sections, lipgloss.NewStyle().
+			Width(m.width-borderW).
+			Foreground(lipgloss.Color("240")).
+			Render(m.splashNote))
 	}
 	sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(strings.Join(m.statusLines(), "\n")))
 	sections = append(sections, input)
@@ -1089,7 +1098,7 @@ var splashArt = []string{
 // renderSplash produces a large centered "wakīl" ASCII art for the
 // conversation pane when no conversation has started yet. The art is
 // centered both horizontally and vertically within the pane.
-func renderSplash(vpW, vpH int, note string) string {
+func renderSplash(vpW, vpH int) string {
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("type a task below to begin…")
 
@@ -1108,14 +1117,8 @@ func renderSplash(vpW, vpH int, note string) string {
 	}
 	art := strings.Join(artLines, "\n")
 
-	// Add the hint below, plus any startup note.
-	sections := []string{art}
-	if note != "" {
-		sections = append(sections, "")
-		sections = append(sections, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(note))
-	}
-	sections = append(sections, "", hint)
-	content := lipgloss.JoinVertical(lipgloss.Center, sections...)
+	// Add the hint below.
+	content := lipgloss.JoinVertical(lipgloss.Center, art, "", hint)
 
 	// Center in the conversation pane.
 	return lipgloss.Place(vpW, vpH,
