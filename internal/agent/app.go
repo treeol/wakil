@@ -278,6 +278,12 @@ type App struct {
 	// running. Cleared when the workflow reaches WFDone or the user aborts it.
 	Workflow *workflow.WorkflowState
 
+	// checkpointState holds the in-memory checkpoint stack for /rewind.
+	// Checkpoints are created at the start of each turn and capture pre-mutation
+	// file state. Not persisted — cleared on compaction, session rotation, and
+	// resume. See checkpoint.go.
+	checkpointState
+
 	// EventSink, when set, receives events the agent goroutine posts to the TUI
 	// (stream chunks, done signals, confirm requests, etc.). Set by main to
 	// the TUI program's Send; nil in tests that don't need TUI events.
@@ -737,6 +743,7 @@ func (a *App) summarizeFn() summarizer {
 // NewConversation resets the running transcript and rotates the chat_id, starting
 // a fresh persisted session.
 func (a *App) NewConversation(chatID string) {
+	a.clearCheckpoints()
 	a.convMu.Lock()
 	a.Conv = nil
 	a.convMu.Unlock()
@@ -774,6 +781,7 @@ func (a *App) InstallSession(s *Session) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 
+	a.clearCheckpoints()
 	a.RevokeAuto()
 	a.SetAllowReads(false)
 
@@ -800,6 +808,7 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 
+	a.clearCheckpoints()
 	a.convMu.Lock()
 	a.Conv = nil
 	a.convMu.Unlock()
@@ -875,6 +884,11 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	a.convMu.Lock()
 	a.Conv = append(a.Conv, userMsg)
 	a.convMu.Unlock()
+
+	// Start a checkpoint for this turn. Captures pre-mutation file state as
+	// tools run during the turn, enabling /rewind to undo file changes.
+	a.startCheckpoint()
+	defer a.endCheckpoint()
 
 	var (
 		traceReasoningChars int
@@ -1513,6 +1527,13 @@ func (a *App) recordFileChanged(canonical string) {
 // only the first capture for a path is stored. No-op for the parent and
 // discovery-tier children (filesChanged is nil).
 func (a *App) captureFileOriginal(ctx context.Context, canonical string) {
+	// Checkpoint capture (parent agent only). Copies the pre-mutation file
+	// state into the current turn's checkpoint for /rewind. This runs BEFORE
+	// the subagent check below so the parent's checkpoint is populated even
+	// when filesChanged is nil (parent doesn't track file changes, but
+	// checkpoints do).
+	a.captureForCheckpoint(ctx, canonical)
+
 	if a.filesChanged == nil {
 		return
 	}

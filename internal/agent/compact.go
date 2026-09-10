@@ -239,6 +239,8 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	if boundary <= 0 {
 		return false, nil
 	}
+	// Compaction restructures Conv, invalidating checkpoint ConvLen values.
+	a.clearCheckpoints()
 	// Evict stale tool results immediately before compaction so the summariser
 	// never sees verbose content that would have been pruned anyway. This is
 	// the only unconditional eviction site; Send() only evicts under pressure.
@@ -528,6 +530,10 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	if droppedTurns == 0 {
 		return
 	}
+
+	// Conv was restructured by dropOldestTurn — invalidate checkpoint
+	// ConvLen values (they referenced indices that no longer correspond).
+	a.clearCheckpoints()
 
 	// Signal exhaustion to dispatchSubagent: content was shed from the
 	// transcript during this turn. The subagent's final response may be based

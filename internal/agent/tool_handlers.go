@@ -65,9 +65,18 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 	// Under the deadline: blocking, full output (same as today). Over: auto-
 	// background and return a pointer for read_process_log polling.
 	if a.Cfg.ShellTimeoutSec > 0 {
+		// Mark checkpoint for non-read-only commands — shell side effects
+		// cannot be captured by the file snapshot system.
+		if !readAction {
+			a.markCheckpointShell()
+		}
 		return a.runShellWithDeadline(ctx, args.Command, readAction)
 	}
 
+	// Mark checkpoint for non-read-only commands.
+	if !readAction {
+		a.markCheckpointShell()
+	}
 	out, err := a.Exec.RunShell(ctx, args.Command)
 	// LSP file-sync: after a non-read-only run_shell, mark open files dirty
 	// for lazy resync (R3). The next LSP query touching a dirty file will
@@ -1051,6 +1060,9 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 	if args.Label == "" {
 		args.Label = "bg"
 	}
+	// Mark checkpoint — background processes may modify files outside the
+	// file snapshot system's capture.
+	a.markCheckpointShell()
 	a.bgMu.Lock()
 	if a.bgProcs == nil {
 		a.bgProcs = make(map[string]*bgEntry)

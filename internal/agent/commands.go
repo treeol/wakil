@@ -1130,6 +1130,27 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 	case "/help":
 		return true, false, note(helpTextTUI)
 
+	case "/rewind":
+		// /rewind — show checkpoint list or rewind N checkpoints.
+		// N=1 = undo last turn, N=2 = undo last 2 turns, etc.
+		if len(fields) < 2 {
+			return true, false, note(app.checkpointStatus())
+		}
+		n, err := strconv.Atoi(fields[1])
+		if err != nil || n < 1 {
+			return true, false, note("usage: /rewind <N> — N is checkpoints to rewind (1 = last turn)")
+		}
+		// Refuse rewind during an active workflow — rewinding without
+		// resetting the workflow state would leave it inconsistent.
+		if app.Workflow != nil {
+			return true, false, note("⚠ cannot rewind during an active workflow — /plan abort first")
+		}
+		return true, false, func() Msg {
+			result := app.rewind(n)
+			app.SaveSession()
+			return SysNoteMsg{Text: result.Summary()}
+		}
+
 	case "/quit", "/exit":
 		return true, true, nil
 
@@ -1423,6 +1444,8 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /info                toggle the info panel (proxy/model/exec/cwd/costs/grounding)
                      also toggled by ctrl+o or F2; open state remembered per folder
 /help                this help
+/rewind              list checkpoints (turn-level file snapshots)
+/rewind <N>          rewind N checkpoints (1 = last turn; restores files, truncates history)
 /quit, /exit         leave (ctrl+c in idle also quits)
 
 sessions are saved automatically; resume with: wakil --resume  (or --resume-id <id>)
