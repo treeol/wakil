@@ -1076,15 +1076,14 @@ func subTabModel(tab *subTab) string {
 	return "…"
 }
 
-// splashArt is the "wakīl" wordmark in figlet 'speed' font (35 wide x 5 tall)
-// with a macron bar above the i (row 0). Used by renderSplash.
+// splashArt is the "wakil" wordmark in figlet 'standard' font (26 wide x 5 tall).
+// Used by renderSplash.
 var splashArt = []string{
-	"                        ____       ",
-	"                 ______ ___________",
-	"___      _______ ___  /____(_)__  /",
-	"__ | /| / /  __ ` /_  //_/_  /__  /",
-	"__ |/ |/ // /_/ /_  ,<  _  / _  /  ",
-	"____/|__/ \\__,_/ /_/|_| /_/  /_/   ",
+	"               _    _ _ _ ",
+	"__      ____ _| | _(_|_) |",
+	"\\ \\ /\\ / / _` | |/ / | | |",
+	" \\ V  V / (_| |   <| | | |",
+	"  \\_/\\_/ \\__,_|_|\\_\\_|_|_|",
 }
 
 // renderSplash produces a large centered "wakīl" ASCII art for the
