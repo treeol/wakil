@@ -240,7 +240,15 @@ func (m tuiModel) View() string {
 	} else if m.comp.active {
 		sections = append(sections, m.renderCompletion())
 	}
-	sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(strings.Join(m.statusLines(), "\n")))
+	// Hide the status line until the user has sent their first message
+	// (hadTurn) or a turn is in-flight (streaming). Before that, the
+	// conversation pane shows the wakīl splash and only the textarea is
+	// visible — clean, no chrome. The status line appears once the first
+	// turn is submitted, with zero rearrangement of the textarea (it was
+	// already at the bottom).
+	if m.statusVisible() {
+		sections = append(sections, lipgloss.NewStyle().Width(m.width-borderW).Render(strings.Join(m.statusLines(), "\n")))
+	}
 	sections = append(sections, input)
 	if len(m.subTabs) > 0 {
 		sections = append(sections, m.renderMainTabBar())
@@ -319,6 +327,22 @@ func bottomAlignViewport(view string, vpH int) string {
 // sizes() reserves exactly what View() renders.
 func (m tuiModel) statusRows() int {
 	return len(m.statusLines())
+}
+
+// statusVisible reports whether the status line should be rendered. It's
+// hidden on a fresh start before the user sends their first message (clean
+// splash look); once a turn has been sent or is streaming, it stays visible.
+func (m tuiModel) statusVisible() bool {
+	return m.hadTurn || m.state == stateStreaming || (m.items != nil && len(*m.items) > 0)
+}
+
+// effectiveStatusRows returns 0 when the status line is hidden, otherwise
+// statusRows(). Used by sizes() so the layout math matches View().
+func (m tuiModel) effectiveStatusRows() int {
+	if !m.statusVisible() {
+		return 0
+	}
+	return m.statusRows()
 }
 
 // statusMaxRows is the status zone's row cap when the info expansion is
@@ -738,6 +762,7 @@ type rotationMsg struct {
 	err    error
 	note   string // display note (e.g. "resumed session …")
 	failed bool
+	kind   rotateKind
 }
 
 // beginRotation returns a tea.Cmd that performs the rotation off the event
@@ -754,7 +779,7 @@ func (m tuiModel) beginRotation(req rotationRequest) tea.Cmd {
 		// No manager bound (unit tests constructing the model directly):
 		// fail the rotation cleanly instead of panicking.
 		if mgr == nil {
-			return rotationMsg{err: errors.New("no conversation manager bound"), failed: true}
+			return rotationMsg{err: errors.New("no conversation manager bound"), failed: true, kind: req.kind}
 		}
 		ctx := context.Background()
 		var (
@@ -770,13 +795,13 @@ func (m tuiModel) beginRotation(req rotationRequest) tea.Cmd {
 			f, err = mgr.HandoffConversation(ctx, principal, old, req.proceed)
 		}
 		if err != nil {
-			return rotationMsg{err: err, failed: true}
+			return rotationMsg{err: err, failed: true, kind: req.kind}
 		}
 		// Old facade teardown AFTER the replacement exists (build-new-first).
 		if old != nil {
 			_ = old.Close()
 		}
-		return rotationMsg{facade: f}
+		return rotationMsg{facade: f, kind: req.kind}
 	}
 }
 

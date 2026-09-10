@@ -200,9 +200,16 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	m.ta.Reset()
 	m = m.reflow()
 
-	m.addItem(iSys, dim2("· new conversation: "+formatShortID(snap.ChatID)))
-	if rm.note != "" {
-		m.addItem(iSys, dim2(rm.note))
+	// For /new: reset hadTurn so the wakīl splash reappears in the empty
+	// conversation pane, and skip adding the "new conversation: …" system
+	// item (it would make items non-empty and hide the splash).
+	if rm.kind == rotateNew {
+		m.hadTurn = false
+	} else {
+		m.addItem(iSys, dim2("· new conversation: "+formatShortID(snap.ChatID)))
+		if rm.note != "" {
+			m.addItem(iSys, dim2(rm.note))
+		}
 	}
 	m.followBottom = true
 	m.vp.GotoBottom()

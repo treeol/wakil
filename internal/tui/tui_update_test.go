@@ -69,7 +69,7 @@ func TestUpdateRotationClearsViewport(t *testing.T) {
 	m, f := newTestTUI(t)
 	m = step(m, evt(event.KindSessionNote, event.SessionNote{Text: "a"}, f.sid))
 	m = step(m, evt(event.KindSessionNote, event.SessionNote{Text: "b"}, f.sid))
-	m = step(m, rotationMsg{facade: rotatedFake()})
+	m = step(m, rotationMsg{facade: rotatedFake(), kind: rotateResume})
 	items := *m.items
 	if len(items) == 0 {
 		t.Fatal("rotation should clear items (and may add its own notes)")
