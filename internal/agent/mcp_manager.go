@@ -166,7 +166,8 @@ func (m *MCPManager) OpenAITools() []proxy.Tool {
 			tools = append(tools, MCPToolToOpenAI(srv.Cfg.Name, t))
 		}
 	}
-	return tools
+	// Sort by name for cache-prefix stability (card #189).
+	return SortToolsByName(tools)
 }
 
 // OpenAIToolsForServers returns MCP tools only from servers in the allowlist,
@@ -192,7 +193,8 @@ func (m *MCPManager) OpenAIToolsForServers(allowed map[string]bool) []proxy.Tool
 			tools = append(tools, MCPToolToOpenAI(srv.Cfg.Name, t))
 		}
 	}
-	return tools
+	// Sort by name for cache-prefix stability (card #189).
+	return SortToolsByName(tools)
 }
 
 // MCP tool gating — read-allowlist with write-veto (policy decision
@@ -542,8 +544,16 @@ func waitForCompletionToolDef() proxy.Tool {
 	}}
 }
 
-// BuildTools assembles the full tool list: built-ins → searxng → google → MCP → oracle → LSP.
+// BuildTools assembles the full tool list in stable groups:
+// built-ins → searxng → google → MCP → oracle → LSP → browser.
+// Within each group, tools are sorted by name for prompt-cache stability
+// (card #189): tool schemas are part of the cache prefix, so non-deterministic
+// ordering within a group (e.g., MCP servers returning tools in a different
+// order on reconnect) would silently invalidate the prefix. Group order is
+// preserved so toggling a conditional group only invalidates the suffix,
+// not the entire prefix.
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
+	// Group 1: built-ins (DefaultTools already has a fixed order).
 	t := wtools.DefaultTools(cwd)
 	// Card #121: check_pending is always available — it is the read-only
 	// retrieval surface for async results (mashūra panels, detached shell
@@ -554,21 +564,28 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	// the check_pending spin loop as the only option. Ungated and always
 	// available (like check_pending).
 	t = append(t, waitForCompletionToolDef())
+
+	// Group 2: search (conditional — appended at the end to preserve the
+	// built-in prefix when absent).
 	if cfg.SearXngURL != "" {
 		t = append(t, wtools.SearxngTools()...)
 	}
 	if cfg.GoogleAPIKey != "" && cfg.GoogleCX != "" {
 		t = append(t, wtools.GoogleTools()...)
 	}
+	// Group 3: MCP (conditional). OpenAITools already sorts by name.
 	if mcp != nil {
 		t = append(t, mcp.OpenAITools()...)
 	}
+	// Group 4: oracle (conditional).
 	if cfg.OracleEnabled && (os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv(cfg.OpenRouterAPIKeyEnv) != "") {
 		t = append(t, mashuraToolDefs()...)
 	}
+	// Group 5: LSP (conditional).
 	if cfg.LSPEnabled {
 		t = append(t, lsp.LSPTools(cwd)...)
 	}
+	// Group 6: browser (conditional).
 	if cfg.BrowserEnabled {
 		t = append(t, browser.BrowserTools()...)
 	}

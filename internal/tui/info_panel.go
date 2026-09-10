@@ -241,6 +241,13 @@ func (m tuiModel) costSegments() []string {
 		costSeg := lipgloss.NewStyle().Foreground(lipgloss.Color(costColor)).Render(proxy.CostCell(r))
 		segs = append(segs, g+" "+name+" "+costSeg+dimStyle.Render(sprint("·%d", r.Calls)))
 	}
+	// Cache-hit ratio (card #189): when the backend reports cached tokens,
+	// show the session-wide ratio so users can see whether the prompt-cache
+	// prefix is actually hitting.
+	cacheLine := formatCacheStats(rows)
+	if cacheLine != "" {
+		segs = append(segs, dimStyle.Render("cache")+" "+cacheLine)
+	}
 	return segs
 }
 
@@ -333,4 +340,30 @@ func hostOnly(url string) string {
 	s := strings.TrimPrefix(url, "http://")
 	s = strings.TrimPrefix(s, "https://")
 	return s
+}
+
+// formatCacheStats computes the session-wide cache-hit ratio from cost rows.
+// Returns "" when no backend has reported cached tokens (CachedTok == 0 for
+// all rows), so the cache line is omitted entirely for backends that don't
+// report cache stats.
+//
+// The denominator is ALL session InputTok (not just rows with CachedTok > 0),
+// so cache misses (first turn, post-invalidation) correctly lower the ratio.
+// This is a session-wide metric across all sources — see card #189.
+func formatCacheStats(rows []proxy.CostRow) string {
+	var totalCached, totalInput int64
+	for _, r := range rows {
+		totalCached += r.CachedTok
+		totalInput += r.InputTok
+	}
+	// No cached tokens reported at all → omit the line.
+	if totalCached == 0 {
+		return ""
+	}
+	// No input tokens at all → can't compute ratio.
+	if totalInput <= 0 {
+		return ""
+	}
+	ratio := float64(totalCached) / float64(totalInput)
+	return sprint("%.1f%%", ratio*100)
 }

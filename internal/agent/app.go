@@ -840,12 +840,19 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 
+	// Fire session_end hooks for the ending session (parity with NewConversation).
+	if a.Hooks != nil {
+		a.Hooks.RunSessionHooks(context.Background(), hookSessionEnd)
+	}
+
 	a.clearCheckpoints()
 	a.convMu.Lock()
 	a.Conv = nil
 	a.convMu.Unlock()
 
 	a.preambleDay = ""
+	// Reset session-started flag so session_start hooks fire for the new session.
+	a.sessionStarted = false
 	a.Client.ChatID = chatID
 	a.Session = &Session{
 		ChatID:       chatID,
@@ -1641,6 +1648,8 @@ func (a *App) recordExternalAction(server, tool, status string) {
 // MCP tools (only servers in the SubagentMCPServers allowlist). Never includes
 // run_shell, dispatch_subagent, run_background, kill_process, open_url, or
 // mashura__* — those stay parent-only. Called only when capability == "tools".
+// Group order is preserved (discovery → search → LSP → browser → MCP); MCP
+// tools are sorted by name within the MCP group (card #189).
 func (a *App) buildSubagentTools() []proxy.Tool {
 	cwd := a.Exec.Cwd()
 	t := wtools.DiscoveryTools(cwd)
@@ -1659,7 +1668,8 @@ func (a *App) buildSubagentTools() []proxy.Tool {
 	if a.Cfg.BrowserEnabled {
 		t = append(t, browser.BrowserTools()...)
 	}
-	// MCP — only servers in the allowlist.
+	// MCP — only servers in the allowlist. OpenAIToolsForServers already
+	// sorts by name within the MCP group.
 	if a.MCP != nil && len(a.Cfg.SubagentMCPServers) > 0 {
 		allowed := make(map[string]bool, len(a.Cfg.SubagentMCPServers))
 		for _, s := range a.Cfg.SubagentMCPServers {
