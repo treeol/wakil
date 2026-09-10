@@ -153,6 +153,11 @@ func main() {
 
 	bootstrapCmd := func() tea.Msg {
 		// NewExecutor (container startup — the biggest cost).
+		if cfg.ExecMode == "direct" {
+			tui.SendLoadingProgress("starting executor…")
+		} else {
+			tui.SendLoadingProgress("starting container…")
+		}
 		exe, err := wiring.NewExecutor(cfg)
 		if err != nil {
 			r := bootstrapDoneMsg{err: fmt.Errorf("executor: %w", err)}
@@ -166,6 +171,7 @@ func main() {
 		// --attach-image: load into pending images for the first message.
 		var attach []proxy.ImagePart
 		if cfg.AttachImage != "" {
+			tui.SendLoadingProgress("loading images…")
 			for _, p := range strings.Split(cfg.AttachImage, ",") {
 				p = strings.TrimSpace(p)
 				if p == "" {
@@ -186,6 +192,11 @@ func main() {
 		}
 
 		// BootstrapTUI builds the ConversationManager + first conversation.
+		if resumeID != "" {
+			tui.SendLoadingProgress("resuming session…")
+		} else {
+			tui.SendLoadingProgress("creating session…")
+		}
 		rt, cleanup, err := wiring.BootstrapTUI(cfg, exe, resumeID, nil, wiring.BootstrapTUIOpts{
 			AttachImages:        attach,
 			RestoreRepoState:    true,
@@ -203,6 +214,7 @@ func main() {
 			return r
 		}
 
+		tui.SendLoadingProgress("setting up…")
 		r := bootstrapDoneMsg{rt: rt, cleanup: cleanup, exe: exe}
 		bsResultMu.Lock()
 		bsResult = &r

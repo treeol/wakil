@@ -20,6 +20,22 @@ func spinTick() tea.Cmd {
 	})
 }
 
+// loadingProgressMsg updates the status text shown by the loading model.
+// The bootstrap Cmd sends it via SendLoadingProgress at each startup stage.
+type loadingProgressMsg struct {
+	text string
+}
+
+// SendLoadingProgress sends a progress update to the loading model. It uses
+// programSend (installed by SetProgramSend before prog.Run starts) so the
+// bootstrap goroutine can update the spinner's status text in real time.
+// Safe to call from any goroutine; a no-op when programSend is nil (tests).
+func SendLoadingProgress(text string) {
+	if programSend != nil {
+		programSend(loadingProgressMsg{text: text})
+	}
+}
+
 // BootstrapDone is the interface a bootstrap-completion message must
 // implement. The loading model checks for this interface rather than
 // treating every unhandled message as completion — mouse events, focus
@@ -81,6 +97,10 @@ func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinTickMsg:
 		m.spinIdx = (m.spinIdx + 1) % len(spinnerFrames)
 		return m, spinTick()
+
+	case loadingProgressMsg:
+		m.status = msg.text
+		return m, nil
 
 	case tea.KeyMsg:
 		if msg.String() == "q" || msg.String() == "ctrl+c" {
