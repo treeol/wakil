@@ -48,17 +48,17 @@ type BootstrapDone interface {
 }
 
 // logoRows is the 6-row ASCII art for "wakīl" generated from figlet
-// 'standard' font, with a macron bar (__) prepended above the 'i'.
-// Every row is exactly logoWidth runes wide.
-const logoWidth = 24
+// 'slant' font (wider, shorter than standard), with a macron bar (___)
+// prepended above the 'i'. Every row is exactly logoWidth runes wide.
+const logoWidth = 26
 
 var logoRows = []string{
-	"                   __   ", // macron over the i
-	"               _    _ _ ", // row 0: tops of w a k i l
-	"__      ____ _| | _(_) |", // row 1
-	"\\ \\ /\\ / / _` | |/ / | |", // row 2
-	" \\ V  V / (_| |   <| | |", // row 3
-	"  \\_/\\_/ \\__,_|_|\\_\\_|_|", // row 4: baseline
+	"                     ___  ", // macron over the i
+	"                 __   _ __", // row 0: tops of w a k i l
+	" _      ______ _/ /__(_) /", // row 1
+	"| | /| / / __ ` / //_/ / /", // row 2
+	"| |/ |/ / /_/ / ,< / / /  ", // row 3
+	"|__/|__/\\__,_/_/|_/_/_/   ", // row 4: baseline
 }
 
 // noiseGlyphs are the random characters used in the unrevealed columns.
