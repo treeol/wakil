@@ -284,6 +284,14 @@ type App struct {
 	// resume. See checkpoint.go.
 	checkpointState
 
+	// parentCaptureCallback is set on subagent Apps to relay pre-mutation file
+	// captures back to the PARENT's active checkpoint. When nil (the parent
+	// itself, or a discovery subagent with no file writes), captureForCheckpoint
+	// uses the local checkpoint stack. When non-nil (edit-tier subagents),
+	// the callback calls the parent's captureForCheckpoint so subagent file
+	// mutations are captured in the parent's /rewind history.
+	parentCaptureCallback func(ctx context.Context, canonical string)
+
 	// EventSink, when set, receives events the agent goroutine posts to the TUI
 	// (stream chunks, done signals, confirm requests, etc.). Set by main to
 	// the TUI program's Send; nil in tests that don't need TUI events.

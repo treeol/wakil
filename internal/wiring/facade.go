@@ -716,6 +716,9 @@ func (f *wiringFacade) interpretAgentMsg(msg any, quit bool) sessionclient.Comma
 			if sub.Compacted {
 				cr.Compacted = true
 			}
+			if sub.Rewound {
+				cr.Rewound = true
+			}
 			if sub.ClipboardImage {
 				cr.ClipboardImage = true
 			}
@@ -787,6 +790,8 @@ func (f *wiringFacade) interpretAgentMsg(msg any, quit bool) sessionclient.Comma
 		cr.Submit = m.UserText
 	case agent.CompactedMsg:
 		cr.Compacted = true
+	case agent.RewoundMsg:
+		cr.Rewound = true
 	case agent.MCPReconnectedMsg:
 		// Apply the rebuilt tool list HERE (the old TUI did m.apply.SetTools in
 		// its MCPReconnectedMsg handler). No event carries it — the TUI

@@ -259,6 +259,7 @@ type CommandResult struct {
 	Rotate       *RotateRequest // non-nil → rotate the conversation
 	SideQuestion string         // non-empty → start a side question
 	Compacted    bool
+	Rewound      bool           // true → TUI rebuilds viewport from truncated Conv
 	OpID         OpID // non-empty → async op initiated; observe via events
 
 	// ClipboardImage: the command was /image clipboard — the agent layer

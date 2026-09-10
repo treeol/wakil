@@ -87,6 +87,11 @@ type TokRateMsg struct{ Tps float64 }
 // CompactedMsg tells the TUI that the transcript was compacted.
 type CompactedMsg struct{}
 
+// RewoundMsg tells the TUI that the conversation was rewound by /rewind.
+// The TUI rebuilds the conversation viewport from the (truncated) Conv,
+// clearing stale assistant output and tool results that were undone.
+type RewoundMsg struct{}
+
 // SubagentStartMsg opens a new subagent tab in the main pane.
 type SubagentStartMsg struct {
 	Task       string

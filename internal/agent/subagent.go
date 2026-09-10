@@ -1210,6 +1210,22 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 	sub.filesChanged = fileRecorder
 	sub.externalActions = extRecorder
+
+	// Relay subagent file captures to the parent's active checkpoint so
+	// /rewind can undo subagent file mutations. Only set for edit-tier
+	// children (discovery/tools children don't have file-mutating tools).
+	if isEdit {
+		parentCP := &a.checkpointState
+		sub.parentCaptureCallback = func(ctx context.Context, canonical string) {
+			parentCP.cpMu.Lock()
+			if !parentCP.cpActive || len(parentCP.checkpoints) == 0 {
+				parentCP.cpMu.Unlock()
+				return
+			}
+			parentCP.cpMu.Unlock()
+			a.captureForCheckpoint(ctx, canonical)
+		}
+	}
 	// Tools-tier children get the parent's MCP manager (shared — read-only
 	// queries are safe; mutations serialized by subagentMCPMu), LSP manager
 	// (shared — LSP queries are read-only), and search config so web search

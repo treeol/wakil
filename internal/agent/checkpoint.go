@@ -122,6 +122,14 @@ func (a *App) evictOldestLocked() {
 // a known limitation (permission-denied files can't be distinguished from
 // missing ones without executor-specific error introspection).
 func (a *App) captureForCheckpoint(ctx context.Context, canonical string) {
+	// Subagent path: relay to the parent's checkpoint via the callback.
+	// This ensures subagent file mutations are captured in the parent's
+	// /rewind history.
+	if a.parentCaptureCallback != nil {
+		a.parentCaptureCallback(ctx, canonical)
+		return
+	}
+
 	a.cpMu.Lock()
 	if !a.cpActive || len(a.checkpoints) == 0 {
 		a.cpMu.Unlock()

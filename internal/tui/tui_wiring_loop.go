@@ -49,6 +49,21 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 	if cr.Compacted {
 		m.addItem(iDiag, dim2("· compacted earlier turns"))
 	}
+	if cr.Rewound {
+		// Rebuild the conversation viewport from the truncated Conv.
+		// The TUI reads Snapshot() on demand, but the items list is a cached
+		// rendering — without this rebuild, stale assistant output and tool
+		// results from the rewound turn(s) would remain visible.
+		snap := m.facade.Snapshot()
+		*m.items = (*m.items)[:0]
+		if len(snap.Conv) > 0 {
+			*m.items = convItemsFrom(snap.Conv)
+		}
+		m.prefixDirty = true
+		m.followBottom = true
+		m.vp.GotoBottom()
+		cmds = append(cmds, tea.ClearScreen)
+	}
 	if cr.ClipboardImage {
 		cmds = append(cmds, readClipboardCmd())
 	}

@@ -1148,7 +1148,13 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, func() Msg {
 			result := app.rewind(n)
 			app.SaveSession()
-			return SysNoteMsg{Text: result.Summary()}
+			// Return both a RewoundMsg (for TUI viewport resync) and a
+			// SysNoteMsg (for the user-visible summary). Batch lets the
+			// TUI process both.
+			return BatchMsg{Cmds: []Cmd{
+				func() Msg { return RewoundMsg{} },
+				func() Msg { return SysNoteMsg{Text: result.Summary()} },
+			}}
 		}
 
 	case "/quit", "/exit":
