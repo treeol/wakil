@@ -9,11 +9,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// spinTickMsg drives the runner animation.
+// spinTickMsg drives the loading animation.
 type spinTickMsg struct{}
 
 func spinTick() tea.Cmd {
-	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(90*time.Millisecond, func(time.Time) tea.Msg {
 		return spinTickMsg{}
 	})
 }
@@ -47,58 +47,55 @@ type BootstrapDone interface {
 	IsBootstrapDone()
 }
 
-// runnerFrames is a 6-frame ASCII stick-figure running animation. Each
-// frame is a multi-line string (the figure is 3 lines tall). The legs and
-// arms swap positions to create a running gait.
-//
-// Frame 0 is a relaxed standing pose used as the initial/resting frame.
-var runnerFrames = []string{
-	// 0: standing
-	"    o\n   /|\\\n   / \\\n",
-	// 1: stride 1 — left arm forward, right leg forward
-	"    o\n  / | \\\n  /  \\\n",
-	// 2: stride 2 — both up mid-stride
-	"    o\n  /|\\\n  / \\\n",
-	// 3: stride 3 — right arm forward, left leg forward
-	"    o\n   | \\\n  \\  /\n",
-	// 4: stride 4 — mid-air
-	"    o\n  /|\\\n   | |\n",
-	// 5: stride 5 — landing
-	"    o\n   /|\\\n  / \\\n",
+// logoRows is the 5-row ASCII art for "wakil". Each character is drawn in
+// a compact block style. The macron bar over the 'i' is the first row.
+var logoRows = []string{
+	// macron bar over the 'i' (row -1, prepended)
+	"                    __  ",
+	// row 0
+	" _      _    __ _   _  __  _   _ ",
+	// row 1
+	"| | /\\ | |  / _ ` | | |/ / | | | |",
+	// row 2
+	"| |/ / \\| | | (_| | | ' /  | | | |",
+	// row 3
+	"| |  /\\  |  \\__,_| | . \\  | | | |",
+	// row 4
+	"|_|_/  \\_|         |_|\\\\  |_| |_|",
 }
 
-// runnerColors cycle through per-frame colors to give the figure a subtle
-// "energy" shimmer while running.
-var runnerColors = []lipgloss.Color{
-	"243", "245", "247", "249", "247", "245",
+// logoWidth is the width of the widest logo row (in display columns).
+const logoWidth = 32
+
+// noiseGlyphs are the random characters used in the unrevealed columns.
+var noiseGlyphs = []rune{
+	'#', '%', '&', '+', '=', '*', '@', '^', '~',
+	':', ';', '<', '>', '?', '[', ']', '{', '}',
+	'|', '!', '$', '0', '1', '2', '3', '4', '5',
+	'6', '7', '8', '9', '\\', '/',
 }
 
 // loadingModel is a minimal Bubble Tea model shown during startup while the
-// container and conversation are being set up. It renders an ASCII stick
-// figure running in place with a status line, handles resize and quit, and
-// runs a bootstrap tea.Cmd. When the bootstrap Cmd returns a BootstrapDone
-// message, Update calls the swap function to replace itself with the real
-// TUI model.
+// container and conversation are being set up. It renders the "wakīl" logo
+// emerging from ASCII noise (like a loading bar sweeping left-to-right),
+// handles resize and quit, and runs a bootstrap tea.Cmd.
 type loadingModel struct {
-	width   int
-	height  int
-	ready   bool
+	width    int
+	height   int
+	ready    bool
 	frameIdx int
-	status  string
+	status   string
 
-	// bootstrapCmd is the tea.Cmd that runs the async startup work. Its
-	// returned tea.Msg must implement BootstrapDone.
+	// bootstrapCmd is the tea.Cmd that runs the async startup work.
 	bootstrapCmd tea.Cmd
 
-	// swapFn is called when the bootstrap Cmd completes. It receives the
-	// BootstrapDone message and returns the replacement model + its Init
-	// Cmd. If the bootstrap failed, swapFn may return nil model + tea.Quit.
+	// swapFn is called when the bootstrap Cmd completes.
 	swapFn func(tea.Msg) (tea.Model, tea.Cmd)
 }
 
-// NewLoadingModel creates a loading model that shows a running stick figure
-// while bootstrapCmd runs, then swaps to the real model via swapFn when it
-// completes.
+// NewLoadingModel creates a loading model that shows the wakīl logo
+// emerging from noise while bootstrapCmd runs, then swaps to the real
+// model via swapFn when it completes.
 func NewLoadingModel(status string, bootstrapCmd tea.Cmd, swapFn func(tea.Msg) (tea.Model, tea.Cmd)) tea.Model {
 	return &loadingModel{
 		status:       status,
@@ -120,7 +117,7 @@ func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinTickMsg:
-		m.frameIdx = (m.frameIdx + 1) % len(runnerFrames)
+		m.frameIdx++
 		return m, spinTick()
 
 	case loadingProgressMsg:
@@ -134,13 +131,9 @@ func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case BootstrapDone:
-		// Bootstrap completion — call the swap function.
 		if m.swapFn != nil {
 			newModel, initCmd := m.swapFn(msg)
 			if newModel != nil {
-				// Replay the window size so the new model has correct
-				// dimensions immediately (Bubble Tea only sends
-				// WindowSizeMsg at startup and on SIGWINCH).
 				if m.ready {
 					nm, _ := newModel.Update(tea.WindowSizeMsg{
 						Width:  m.width,
@@ -157,8 +150,6 @@ func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	default:
-		// Ignore mouse events, focus changes, and any other messages
-		// that arrive during loading.
 		return m, nil
 	}
 }
@@ -168,31 +159,80 @@ func (m *loadingModel) View() string {
 		return "starting wakil…\n"
 	}
 
-	// Render the runner frame in its cycling color.
-	color := runnerColors[m.frameIdx%len(runnerColors)]
-	runnerStyle := lipgloss.NewStyle().Foreground(color)
-	frame := runnerFrames[m.frameIdx%len(runnerFrames)]
-	runnerLines := strings.Split(strings.TrimRight(frame, "\n"), "\n")
-	for i, l := range runnerLines {
-		runnerLines[i] = runnerStyle.Render(l)
+	// The fill index sweeps across the logo columns left to right, then
+	// back (ping-pong) to keep the animation alive. Speed: ~1 col per 2
+	// frames (~180ms/col), full 32-col sweep ~5.8s.
+	sweep := m.frameIdx / 2
+	cycle := logoWidth * 2
+	pos := sweep % cycle
+	if pos >= logoWidth {
+		pos = cycle - 1 - pos
 	}
-	runner := strings.Join(runnerLines, "\n")
+	fillCol := pos
 
+	// Render the logo: columns left of fillCol show noise, columns at or
+	// right of fillCol show the real logo characters.
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
+	noiseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
 	status := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(m.status)
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("press q to abort")
 
-	// Center the runner horizontally (indent by ~8 cols to center in the
-	// left half, then the status flows to its right).
-	indent := "        " // 8 spaces
-	statusLine := fmt.Sprintf("%s  %s", indent, status)
-	hintLine := fmt.Sprintf("%s  %s", indent, hint)
+	var logoLines []string
+	for _, row := range logoRows {
+		var b strings.Builder
+		// Pad short rows to logoWidth so column indexing is consistent.
+		r := row
+		for len(r) < logoWidth {
+			r += " "
+		}
+		for col, ch := range r {
+			if col >= fillCol {
+				if ch != ' ' {
+					b.WriteString(accent.Render(string(ch)))
+				} else {
+					b.WriteRune(' ')
+				}
+			} else {
+				if ch != ' ' {
+					noise := noiseGlyphs[(m.frameIdx*7+col*13)%len(noiseGlyphs)]
+					b.WriteString(noiseStyle.Render(string(noise)))
+				} else {
+					b.WriteRune(' ')
+				}
+			}
+		}
+		logoLines = append(logoLines, b.String())
+	}
+	logo := strings.Join(logoLines, "\n")
 
-	lines := []string{"", "", ""}
-	lines = append(lines, indent+runner)
+	// Center horizontally.
+	leftPad := (m.width - logoWidth) / 2
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	pad := strings.Repeat(" ", leftPad)
+	logoPadded := strings.Split(logo, "\n")
+	for i, l := range logoPadded {
+		logoPadded[i] = pad + l
+	}
+	logo = strings.Join(logoPadded, "\n")
+
+	// Center vertically.
+	numLogoRows := len(logoRows)
+	topPad := (m.height - numLogoRows - 4) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	lines := make([]string, 0, m.height)
+	for i := 0; i < topPad; i++ {
+		lines = append(lines, "")
+	}
+	lines = append(lines, logo)
 	lines = append(lines, "")
-	lines = append(lines, statusLine)
+	lines = append(lines, fmt.Sprintf("%s%s", pad, status))
 	lines = append(lines, "")
-	lines = append(lines, hintLine)
+	lines = append(lines, fmt.Sprintf("%s%s", pad, hint))
 	for len(lines) < m.height {
 		lines = append(lines, "")
 	}
