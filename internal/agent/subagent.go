@@ -1173,6 +1173,14 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		extRecorder = newExternalActionsRecorder()
 	}
 
+	// Snapshot the parent's reasoning config (set by /thinking) so the child
+	// inherits it. Copied as App-level fields (not Client.Reasoning) because
+	// the child's prepareTurn → applyReasoningToClientLocked derives
+	// Client.Reasoning from these fields — setting Client.Reasoning directly
+	// would be overwritten to nil on the child's first prepareTurn.
+	parentReasoningEffort := a.ReasoningEffortLocked()
+	parentReasoningMaxTokens := a.ReasoningMaxTokensLocked()
+
 	sub := &App{
 		Cfg:           cfg,
 		Client:        subClient,
@@ -1190,10 +1198,12 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		subagentState: subagentState{
 			pinUserMessage: true, // pin the task instruction so it survives compaction
 		},
-		SelectedBackend:   backend,
-		BackendList:       a.BackendList,
-		consentedBackends: consentSnapshot,
-		CtxLimit:          a.resolveChildCtxLimit(ctx, view, backend, ctxLimitInherited),
+		SelectedBackend:    backend,
+		BackendList:        a.BackendList,
+		consentedBackends:  consentSnapshot,
+		CtxLimit:           a.resolveChildCtxLimit(ctx, view, backend, ctxLimitInherited),
+		ReasoningEffort:    parentReasoningEffort,    // inherit /thinking — applied to Client.Reasoning by child's prepareTurn
+		ReasoningMaxTokens: parentReasoningMaxTokens, // inherit /thinking — applied to Client.Reasoning by child's prepareTurn
 		costState: costState{
 			Costs: proxy.NewCostTracker(), // fresh, never the parent's pointer — see foldSubagentCost at the join point
 		},

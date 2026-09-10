@@ -295,26 +295,43 @@ func TestE2E_CloseSession(t *testing.T) {
 	}
 
 	// CloseSession is asynchronous: it signals the run loop to finalize (emit
-	// abandonment events + SessionClosed) and returns immediately. Wait for
-	// the session to reach closed state before querying events — same pattern
-	// as TestCloseSessionEmitsSessionClosedAndIsIdempotent in host_test.go.
-	waitForSessionIdle(t, host, sid, 5*time.Second)
-
-	// Verify the session is closed by listing events and finding SessionClosed.
-	events, err := rt.Facade.ListEvents(ctx, core.EmbeddedPrincipal(), sid, 0, 1000)
-	if err != nil {
-		t.Fatalf("ListEvents: %v", err)
-	}
-	found := false
-	for _, e := range events {
-		if e.Kind == event.KindSessionClosed {
-			found = true
+	// abandonment events + SessionClosed) and returns immediately. The session
+	// may be in SessionIdle state when CloseSession is called (no turn was
+	// submitted), so waitForSessionIdle would return immediately — before the
+	// async finalizeClose runs. Instead, poll for SessionClosed state AND the
+	// SessionClosed event, mirroring the reference test in host_test.go.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		s, err := host.GetSession(context.Background(), core.EmbeddedPrincipal(), sid)
+		if err != nil {
+			t.Fatalf("GetSession: %v", err)
+		}
+		if s.State == core.SessionClosed {
 			break
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if !found {
-		t.Error("expected SessionClosed event after CloseSession")
+	// Also wait for the SessionClosed event to be appended (state=closed can
+	// be observed before the event is emitted — P0 residual window).
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := rt.Facade.ListEvents(ctx, core.EmbeddedPrincipal(), sid, 0, 1000)
+		if err != nil {
+			t.Fatalf("ListEvents: %v", err)
+		}
+		found := false
+		for _, e := range events {
+			if e.Kind == event.KindSessionClosed {
+				found = true
+				break
+			}
+		}
+		if found {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Error("expected SessionClosed event after CloseSession")
 }
 
 // TestE2E_Interrupt verifies the remote client can interrupt a running turn and
