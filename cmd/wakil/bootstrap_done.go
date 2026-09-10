@@ -12,4 +12,4 @@ type bootstrapDoneMsg struct {
 	err     error
 }
 
-func (bootstrapDoneMsg) bootstrapDoneMarker() {}
+func (bootstrapDoneMsg) IsBootstrapDone() {}

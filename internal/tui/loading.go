@@ -24,9 +24,13 @@ func spinTick() tea.Cmd {
 // implement. The loading model checks for this interface rather than
 // treating every unhandled message as completion — mouse events, focus
 // changes, etc. are silently ignored.
+//
+// The marker method is exported (IsBootstrapDone) so types in other
+// packages (e.g. cmd/wakil) can implement it. An unexported method would
+// only be satisfiable within this package.
 type BootstrapDone interface {
 	tea.Msg
-	bootstrapDoneMarker()
+	IsBootstrapDone()
 }
 
 // loadingModel is a minimal Bubble Tea model shown during startup while the
