@@ -1127,6 +1127,15 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		return true, false, note(DescribeRepoState(app))
 
+	case "/init":
+		return true, false, func() Msg {
+			summary, err := handleInitCommand(app)
+			if err != nil {
+				return SysNoteMsg{Text: "/init: " + err.Error()}
+			}
+			return SysNoteMsg{Text: summary}
+		}
+
 	case "/help":
 		return true, false, note(helpTextTUI)
 
@@ -1449,6 +1458,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /mcp reconnect NAME  reconnect a named MCP server
 /info                toggle the info panel (proxy/model/exec/cwd/costs/grounding)
                      also toggled by ctrl+o or F2; open state remembered per folder
+/init                detect project conventions and create AGENTS.md if absent
 /help                this help
 /rewind              list checkpoints (turn-level file snapshots)
 /rewind <N>          rewind N checkpoints (1 = last turn; restores files, truncates history)
