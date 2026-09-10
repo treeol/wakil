@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -103,48 +104,25 @@ func main() {
 		os.Exit(runDaemonMode(cfg, resumeID))
 	}
 
-	exe, err := wiring.NewExecutor(cfg)
+	// Redirect os.Stderr to a temp file so any fmt.Fprintln(os.Stderr, ...)
+	// during the async bootstrap (NewExecutor, BuildApp, BootstrapTUI) cannot
+	// garble the alt-screen terminal. The temp file contents are copied into
+	// the session log after bootstrap completes, then removed.
+	stderrFile, err := os.CreateTemp("", "wakil-stderr-*.log")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "executor error:", err)
+		fmt.Fprintln(os.Stderr, "startup error: cannot create stderr redirect:", err)
 		os.Exit(1)
 	}
-
-	// --attach-image: load into pending images for the first message.
-	attach := []proxy.ImagePart{}
-	if cfg.AttachImage != "" {
-		for _, p := range strings.Split(cfg.AttachImage, ",") {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			img, err := proxy.LoadImage(p)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "attach-image:", err)
-				exe.Close()
-				os.Exit(1)
-			}
-			attach = append(attach, img)
-		}
+	origStderr := os.Stderr
+	os.Stderr = stderrFile
+	restoreStderr := func() {
+		os.Stderr = origStderr
+		_ = stderrFile.Close()
 	}
 
-	// Prime the OpenRouter model-context cache in the background when any
-	// mashura panel routes through OpenRouter. ResolveContextLength never
-	// fetches on its own (oracle calls must not block on cold-cache network
-	// I/O), so without this warm-up OpenRouter models silently get the
-	// conservative fallback context length. Best-effort; errors are ignored.
-	if panelsUseOpenRouter(cfg) {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					diag.Printf("cache priming panic (non-fatal): %v\n", r)
-				}
-			}()
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			_, _ = counsel.FetchModelContextLimits(ctx)
-		}()
-	}
-
+	// Build the bootstrap tea.Cmd: runs NewExecutor + attach-image + BootstrapTUI
+	// as one unit. SubscribeLive + StartEventPump run in the swap function
+	// (they need prog.Send which is only live after prog.Run() starts).
 	counselMode := cfg.AutoCounsel
 	if counselMode == "" {
 		counselMode = "suggest"
@@ -154,74 +132,251 @@ func main() {
 		counselMax = 3
 	}
 
-	// m4c: the TUI runs through the session host. BootstrapTUI builds the
-	// ConversationManager + first conversation (fresh or resumed), runs the
-	// TUI-specific startup steps (repo-state restore, counsel, attach-images,
-	// startup notes), and subscribes the event stream. Event delivery is
-	// prog.Send once the program exists (the pump is armed, not started).
-	rt, cleanup, err := wiring.BootstrapTUI(cfg, exe, resumeID, nil, wiring.BootstrapTUIOpts{
-		AttachImages:        attach,
-		RestoreRepoState:    true,
-		CounselMode:         counselMode,
-		CounselMax:          counselMax,
-		ComposeStartupNotes: true,
-	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "bootstrap error:", err)
-		exe.Close()
-		os.Exit(1)
+	// bootstrapDoneMsg carries the result of the async bootstrap.
+	// Defined at package level (see bootstrap_done.go) so it can implement
+	// the tui.BootstrapDone interface.
+
+	// postRunCleanup holds the composed cleanup function (runtime + session
+	// log) set by the swap function and called after prog.Run() returns.
+	var postRunCleanup func()
+	var postRunExeClose func() error
+
+	// bsResult stores the bootstrap goroutine's result for cleanup if the
+	// user quits before the swap function runs.
+	var bsResult *bootstrapDoneMsg
+	var bsResultMu sync.Mutex
+	bsDone := make(chan struct{}) // closed when the bootstrap goroutine finishes
+
+	// swapHandled is set to true when swapFn handles cleanup itself (error
+	// paths). main() checks this to avoid double-cleanup.
+	var swapHandled bool
+
+	bootstrapCmd := func() tea.Msg {
+		// NewExecutor (container startup — the biggest cost).
+		exe, err := wiring.NewExecutor(cfg)
+		if err != nil {
+			r := bootstrapDoneMsg{err: fmt.Errorf("executor: %w", err)}
+			bsResultMu.Lock()
+			bsResult = &r
+			bsResultMu.Unlock()
+			close(bsDone)
+			return r
+		}
+
+		// --attach-image: load into pending images for the first message.
+		var attach []proxy.ImagePart
+		if cfg.AttachImage != "" {
+			for _, p := range strings.Split(cfg.AttachImage, ",") {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
+				}
+				img, err := proxy.LoadImage(p)
+				if err != nil {
+					exe.Close()
+					r := bootstrapDoneMsg{err: fmt.Errorf("attach-image: %w", err)}
+					bsResultMu.Lock()
+					bsResult = &r
+					bsResultMu.Unlock()
+					close(bsDone)
+					return r
+				}
+				attach = append(attach, img)
+			}
+		}
+
+		// BootstrapTUI builds the ConversationManager + first conversation.
+		rt, cleanup, err := wiring.BootstrapTUI(cfg, exe, resumeID, nil, wiring.BootstrapTUIOpts{
+			AttachImages:        attach,
+			RestoreRepoState:    true,
+			CounselMode:         counselMode,
+			CounselMax:          counselMax,
+			ComposeStartupNotes: true,
+		})
+		if err != nil {
+			exe.Close()
+			r := bootstrapDoneMsg{err: fmt.Errorf("bootstrap: %w", err)}
+			bsResultMu.Lock()
+			bsResult = &r
+			bsResultMu.Unlock()
+			close(bsDone)
+			return r
+		}
+
+		r := bootstrapDoneMsg{rt: rt, cleanup: cleanup, exe: exe}
+		bsResultMu.Lock()
+		bsResult = &r
+		bsResultMu.Unlock()
+		close(bsDone)
+		return r
 	}
 
-	model := tui.NewTUIModelWithFacade(rt.Facade, rt.Manager, rt.Principal)
-	prog := tea.NewProgram(model,
+	// swapFn is called when the bootstrap Cmd completes. It installs the
+	// real TUI model, wires up event delivery, and sets up cleanup.
+	// On error it returns nil + tea.Quit so prog.Run() unwinds normally
+	// (terminal is restored by Bubble Tea) before main() prints the error.
+	var progRef *tea.Program // set before prog.Run
+	swapFn := func(msg tea.Msg) (tea.Model, tea.Cmd) {
+		done := msg.(bootstrapDoneMsg)
+
+		// Restore os.Stderr so post-bootstrap output is visible.
+		restoreStderr()
+
+		if done.err != nil {
+			// Don't os.Exit — let tea.Quit unwind so the terminal is restored.
+			// The error is stored in bsResult for main() to print after
+			// prog.Run() returns.
+			swapHandled = true
+			_ = os.Remove(stderrFile.Name())
+			if done.exe != nil {
+				done.exe.Close()
+			}
+			return nil, tea.Quit
+		}
+
+		// Prime the OpenRouter model-context cache in the background.
+		if panelsUseOpenRouter(cfg) {
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						diag.Printf("cache priming panic (non-fatal): %v\n", r)
+					}
+				}()
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_, _ = counsel.FetchModelContextLimits(ctx)
+			}()
+		}
+
+		// Build the real TUI model.
+		model := tui.NewTUIModelWithFacade(done.rt.Facade, done.rt.Manager, done.rt.Principal)
+
+		// Wire up event delivery. progRef is set before prog.Run() so this
+		// is never nil. SubscribeLive registers the deliver callback; the
+		// pump is started immediately after.
+		if err := done.rt.SubscribeLive(context.Background(), func(ev event.Event) {
+			progRef.Send(ev)
+		}); err != nil {
+			// Subscription failed — return nil + Quit so the terminal is
+			// restored before main() prints the error.
+			swapHandled = true
+			done.cleanup()
+			done.exe.Close()
+			_ = os.Remove(stderrFile.Name())
+			return nil, tea.Quit
+		}
+		done.rt.StartEventPump(context.Background())
+
+		// Compose cleanup: runtime cleanup + session log teardown.
+		// Both run after prog.Run() returns, in the right order
+		// (runtime first, then diag redirect restore + log close).
+		var sessionLogClose func()
+		if snap := done.rt.Facade.Snapshot(); snap.ChatID != "" {
+			if f := diag.OpenSessionLog(wiring.ShortID(snap.ChatID)); f != nil {
+				sessionLogClose = func() {
+					diag.Redirect(nil)
+					f.Close()
+				}
+			}
+		}
+
+		// Copy early diagnostics (from the stderr temp file) into the
+		// session log before removing the temp file.
+		if data, err := os.ReadFile(stderrFile.Name()); err == nil && len(data) > 0 {
+			diag.Write(data)
+		}
+		_ = os.Remove(stderrFile.Name())
+
+		// Store composed cleanup for after prog.Run() returns.
+		postRunCleanup = func() {
+			done.cleanup()
+			if sessionLogClose != nil {
+				sessionLogClose()
+			}
+		}
+		postRunExeClose = done.exe.Close
+
+		return model, model.Init()
+	}
+
+	loadingStatus := "starting container…"
+	if resumeID != "" {
+		loadingStatus = "resuming session…"
+	}
+	loading := tui.NewLoadingModel(loadingStatus, bootstrapCmd, swapFn)
+	prog := tea.NewProgram(loading,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
+	progRef = prog
 	tui.SetProgramSend(prog.Send)
-	// Subscribe the facade's event stream now that prog.Send exists, then
-	// start delivery. BootstrapTUI could not subscribe at construction (prog
-	// did not exist yet), so the deliver callback is bound here. Without this
-	// the facade has no subscription → no pump → turns run server-side but
-	// their events never reach the TUI (the UI stays stuck on "streaming").
-	if err := rt.SubscribeLive(context.Background(), func(ev event.Event) {
-		prog.Send(ev)
-	}); err != nil {
-		fmt.Fprintln(os.Stderr, "subscribe error:", err)
-		cleanup()
-		exe.Close()
-		os.Exit(1)
-	}
-	rt.StartEventPump(context.Background())
-
-	// Redirect raw diagnostics to a session log file BEFORE prog.Run() so a
-	// diagnostic written while the alt-screen is active can never interleave
-	// with Bubble Tea's renderer and garble the terminal. Headless mode
-	// (wakil run) never reaches this point and keeps stderr. The path is
-	// surfaced to stderr now (the alt-screen isn't up yet) so the user can
-	// find diagnostics later.
-	if snap := rt.Facade.Snapshot(); snap.ChatID != "" {
-		if f := diag.OpenSessionLog(wiring.ShortID(snap.ChatID)); f != nil {
-			// Register f.Close() FIRST so it runs LAST (defers are LIFO): the
-			// sink is restored to stderr before the file closes, so late
-			// cleanup writes never target a closed file.
-			defer f.Close()
-			defer diag.Redirect(nil)
-		} else if p := diag.LogPath(wiring.ShortID(snap.ChatID)); p != "" {
-			fmt.Fprintf(os.Stderr, "diagnostics: cannot open log at %s — session diagnostics stay on stderr\n", p)
-		}
-	}
 
 	if _, err := prog.Run(); err != nil {
+		restoreStderr()
 		fmt.Fprintln(os.Stderr, "tui error:", err)
-		cleanup()
-		exe.Close()
+		if postRunCleanup != nil {
+			postRunCleanup()
+		}
+		if postRunExeClose != nil {
+			postRunExeClose()
+		}
+		_ = os.Remove(stderrFile.Name())
 		os.Exit(1)
 	}
 
-	// Teardown: close the facade (host session, pump, detached jobs) then
-	// the executor-owned resources.
-	cleanup()
-	exe.Close()
+	// prog.Run() returned. If the swap function ran, postRunCleanup is set.
+	// If the user quit during bootstrap, wait briefly for the bootstrap
+	// goroutine to finish so we can clean up any resources it created.
+	if postRunCleanup == nil {
+		// Wait up to 3s for the bootstrap goroutine to complete.
+		select {
+		case <-bsDone:
+		case <-time.After(3 * time.Second):
+			// Bootstrap is still running (e.g., Docker is slow). We can't
+			// cancel it (NewExecutor takes no context), so warn and exit.
+			// The container may be left running.
+		}
+		bsResultMu.Lock()
+		r := bsResult
+		bsResultMu.Unlock()
+		restoreStderr()
+		if swapHandled {
+			// swapFn already cleaned up — just print the error if any.
+			if r != nil && r.err != nil {
+				fmt.Fprintln(os.Stderr, "startup error:", r.err)
+				if data, _ := os.ReadFile(stderrFile.Name()); len(data) > 0 {
+					fmt.Fprintln(os.Stderr, "startup diagnostics:")
+					os.Stderr.Write(data)
+				}
+				_ = os.Remove(stderrFile.Name())
+			}
+		} else if r != nil {
+			if r.err != nil {
+				fmt.Fprintln(os.Stderr, "startup aborted:", r.err)
+			} else {
+				// Bootstrap completed but the user already quit — clean up.
+				if r.cleanup != nil {
+					r.cleanup()
+				}
+				if r.exe != nil {
+					r.exe.Close()
+				}
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "startup aborted — a container may still be starting (Docker cannot be cancelled)")
+		}
+		_ = os.Remove(stderrFile.Name())
+		os.Exit(1)
+	}
+
+	// Normal teardown: close the facade (host session, pump, detached jobs)
+	// then the executor-owned resources.
+	if postRunCleanup != nil {
+		postRunCleanup()
+	}
+	if postRunExeClose != nil {
+		postRunExeClose()
+	}
 }
 
 // runDaemonMode dials the wakil daemon and runs the TUI in remote mode
