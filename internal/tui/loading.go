@@ -3,31 +3,18 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// spinTickMsg drives the loading animation.
-type spinTickMsg struct{}
-
-func spinTick() tea.Cmd {
-	return tea.Tick(90*time.Millisecond, func(time.Time) tea.Msg {
-		return spinTickMsg{}
-	})
-}
-
 // loadingProgressMsg updates the status text shown by the loading model.
-// The bootstrap Cmd sends it via SendLoadingProgress at each startup stage.
 type loadingProgressMsg struct {
 	text string
 }
 
-// SendLoadingProgress sends a progress update to the loading model. It uses
-// programSend (installed by SetProgramSend before prog.Run starts) so the
-// bootstrap goroutine can update the status text in real time.
-// Safe to call from any goroutine; a no-op when programSend is nil (tests).
+// SendLoadingProgress sends a progress update to the loading model.
 func SendLoadingProgress(text string) {
 	if programSend != nil {
 		programSend(loadingProgressMsg{text: text})
@@ -36,49 +23,30 @@ func SendLoadingProgress(text string) {
 
 // BootstrapDone is the interface a bootstrap-completion message must
 // implement. The loading model checks for this interface rather than
-// treating every unhandled message as completion — mouse events, focus
-// changes, etc. are silently ignored.
-//
-// The marker method is exported (IsBootstrapDone) so types in other
-// packages (e.g. cmd/wakil) can implement it. An unexported method would
-// only be satisfiable within this package.
+// treating every unhandled message as completion.
 type BootstrapDone interface {
 	tea.Msg
 	IsBootstrapDone()
 }
 
-// logoRows is the 6-row ASCII art for "wakīl" generated from figlet
-// 'speed' font (wide and short — 35w x 6h including macron), with a
-// macron bar (____) prepended above the 'i'. Every row is exactly
-// logoWidth runes wide.
-const logoWidth = 35
-
-var logoRows = []string{
-	"                        ____       ", // macron over the i
-	"                 ______ ___________", // row 0
-	"___      _______ ___  /____(_)__  /", // row 1
-	"__ | /| / /  __ ` /_  //_/_  /__  /", // row 2
-	"__ |/ |/ // /_/ /_  ,<  _  / _  /  ", // row 3
-	"____/|__/ \\__,_/ /_/|_| /_/  /_/   ", // row 4: baseline
-}
-
-// noiseGlyphs are the random characters used in the unrevealed columns.
-var noiseGlyphs = []rune{
-	'#', '%', '&', '+', '=', '*', '@', '^', '~',
-	':', ';', '<', '>', '?', '0', '1', '2', '3',
-	'4', '5', '6', '7', '8', '9', '\\', '/',
-}
-
-// loadingModel is a minimal Bubble Tea model shown during startup while the
-// container and conversation are being set up. It renders the "wakīl" logo
-// emerging from ASCII noise (left-to-right reveal), then a subtle color
-// shimmer while the bootstrap runs.
+// loadingModel is shown during startup while the container and conversation
+// are being set up. It renders a centered bordered box with the "wakīl"
+// wordmark, a spinner, live status text, and a progress bar that fills as
+// bootstrap stages complete.
 type loadingModel struct {
-	width    int
-	height   int
-	ready    bool
-	frameIdx int
-	status   string
+	width  int
+	height int
+	ready  bool
+	sp     spinner.Model
+	status string
+
+	// stage tracks how many SendLoadingProgress calls have arrived, used
+	// to advance the progress bar.
+	stage int
+
+	// totalStages is the expected number of bootstrap stages (for the
+	// progress bar). 4: container/executor → session → subscribe → done.
+	totalStages int
 
 	// bootstrapCmd is the tea.Cmd that runs the async startup work.
 	bootstrapCmd tea.Cmd
@@ -87,19 +55,22 @@ type loadingModel struct {
 	swapFn func(tea.Msg) (tea.Model, tea.Cmd)
 }
 
-// NewLoadingModel creates a loading model that shows the wakīl logo
-// emerging from noise while bootstrapCmd runs, then swaps to the real
-// model via swapFn when it completes.
+// NewLoadingModel creates a loading model with a spinner and progress bar.
 func NewLoadingModel(status string, bootstrapCmd tea.Cmd, swapFn func(tea.Msg) (tea.Model, tea.Cmd)) tea.Model {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	return &loadingModel{
 		status:       status,
+		sp:           sp,
+		totalStages:  4,
 		bootstrapCmd: bootstrapCmd,
 		swapFn:       swapFn,
 	}
 }
 
 func (m *loadingModel) Init() tea.Cmd {
-	return tea.Batch(spinTick(), m.bootstrapCmd)
+	return tea.Batch(m.sp.Tick, m.bootstrapCmd)
 }
 
 func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -110,12 +81,14 @@ func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		return m, nil
 
-	case spinTickMsg:
-		m.frameIdx++
-		return m, spinTick()
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.sp, cmd = m.sp.Update(msg)
+		return m, cmd
 
 	case loadingProgressMsg:
 		m.status = msg.text
+		m.stage++
 		return m, nil
 
 	case tea.KeyMsg:
@@ -148,93 +121,78 @@ func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// progressBar renders a horizontal progress bar using block characters.
+// filled is 0..total. Width is the bar width in cells.
+func progressBar(filled, total, width int) string {
+	if total <= 0 {
+		total = 1
+	}
+	frac := float64(filled) / float64(total)
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	filledCells := int(frac * float64(width))
+	bar := strings.Repeat("█", filledCells)
+	track := strings.Repeat("░", width-filledCells)
+	return bar + track
+}
+
 func (m *loadingModel) View() string {
 	if !m.ready {
 		return "starting wakil…\n"
 	}
 
-	// Phase 1: Reveal — sweep left-to-right over ~1.8s (20 frames at 90ms).
-	// Columns left of fillCol show the real logo; columns right show noise.
-	// This makes the logo "emerge" from left to right.
-	revealFrames := 20
-	revealed := m.frameIdx >= revealFrames
+	// Color palette.
+	accent := lipgloss.Color("39")    // bright blue
+	label := lipgloss.Color("252")    // light gray
+	dimmed := lipgloss.Color("240")  // dim gray
+	border := lipgloss.Color("238")   // dark border
 
-	var fillCol int
-	if revealed {
-		fillCol = logoWidth // fully revealed
-	} else {
-		fillCol = (m.frameIdx * logoWidth) / revealFrames
-	}
+	// Wordmark.
+	title := lipgloss.NewStyle().
+		Foreground(accent).
+		Render("wakīl")
 
-	// After reveal, cycle accent color for a subtle shimmer (blue shades).
-	accentColor := lipgloss.Color("39")
-	if revealed {
-		shimmer := []lipgloss.Color{"39", "38", "33", "38"}
-		accentColor = shimmer[(m.frameIdx/4)%len(shimmer)]
-	}
+	// Spinner + status.
+	spinnerText := fmt.Sprintf("%s %s",
+		m.sp.View(),
+		lipgloss.NewStyle().Foreground(label).Render(m.status),
+	)
 
-	accent := lipgloss.NewStyle().Foreground(accentColor)
-	noiseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
-	status := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(m.status)
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("press q to abort")
+	// Progress bar.
+	barW := 30
+	bar := lipgloss.NewStyle().
+		Foreground(accent).
+		Render(progressBar(m.stage, m.totalStages, barW))
 
-	// Render the logo row by row.
-	var logoLines []string
-	for rowIdx, row := range logoRows {
-		var b strings.Builder
-		runes := []rune(row)
-		for col, ch := range runes {
-			if col < fillCol {
-				// Revealed: show the real logo character.
-				if ch != ' ' {
-					b.WriteString(accent.Render(string(ch)))
-				} else {
-					b.WriteRune(' ')
-				}
-			} else {
-				// Unrevealed: show noise (varies per row AND column).
-				if ch != ' ' {
-					noise := noiseGlyphs[(m.frameIdx*7+col*13+rowIdx*31)%len(noiseGlyphs)]
-					b.WriteString(noiseStyle.Render(string(noise)))
-				} else {
-					b.WriteRune(' ')
-				}
-			}
-		}
-		logoLines = append(logoLines, b.String())
-	}
-	logo := strings.Join(logoLines, "\n")
+	// Hint.
+	hint := lipgloss.NewStyle().Foreground(dimmed).Render("press q to abort")
 
-	// Center horizontally.
-	leftPad := (m.width - logoWidth) / 2
-	if leftPad < 0 {
-		leftPad = 0
-	}
-	pad := strings.Repeat(" ", leftPad)
-	logoPadded := strings.Split(logo, "\n")
-	for i, l := range logoPadded {
-		logoPadded[i] = pad + l
-	}
-	logo = strings.Join(logoPadded, "\n")
+	// Assemble the content inside a bordered box.
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		title,
+		"",
+		spinnerText,
+		"",
+		bar,
+		"",
+		hint,
+	)
 
-	// Center vertically.
-	numLogoRows := len(logoRows)
-	topPad := (m.height - numLogoRows - 4) / 2
-	if topPad < 0 {
-		topPad = 0
-	}
+	// Bordered box.
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).
+		Padding(1, 2).
+		Render(content)
 
-	lines := make([]string, 0, m.height)
-	for i := 0; i < topPad; i++ {
-		lines = append(lines, "")
-	}
-	lines = append(lines, logo)
-	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("%s%s", pad, status))
-	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("%s%s", pad, hint))
-	for len(lines) < m.height {
-		lines = append(lines, "")
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	// Center in the terminal.
+	return lipgloss.Place(m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		box,
+		lipgloss.WithWhitespaceBackground(lipgloss.Color("0")),
+	)
 }
