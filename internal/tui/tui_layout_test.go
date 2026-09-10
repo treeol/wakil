@@ -11,7 +11,7 @@ import (
 func layoutModel(w, h int) tuiModel {
 	ta := textarea.New()
 	ta.SetHeight(3)
-	return tuiModel{facade: &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}, ta: ta, width: w, height: h}
+	return tuiModel{facade: &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}, ta: ta, width: w, height: h, hadTurn: true}
 }
 
 // heightInvariant checks that viewport + border(2) + completionHeight + inputOuter

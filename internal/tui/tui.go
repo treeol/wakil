@@ -491,6 +491,11 @@ func newBaseModel() tuiModel {
 	ta.CharLimit = 0
 	ta.SetWidth(80)
 	ta.SetHeight(3)
+	// Color the input text and placeholder in the wakīl logo blue.
+	ta.FocusedStyle.Placeholder = ta.FocusedStyle.Placeholder.Foreground(lipgloss.Color("39"))
+	ta.BlurredStyle.Placeholder = ta.BlurredStyle.Placeholder.Foreground(lipgloss.Color("39"))
+	ta.FocusedStyle.Text = ta.FocusedStyle.Text.Foreground(lipgloss.Color("39"))
+	ta.BlurredStyle.Text = ta.BlurredStyle.Text.Foreground(lipgloss.Color("39"))
 	ta.Focus()
 
 	vp := viewport.New(80, 20)
@@ -546,6 +551,9 @@ func NewTUIModelWithFacade(f sessionclient.Facade, mgr sessionclient.Conversatio
 		}
 		items = append(items, convItem{kind: iSys, text: dim2(resumeNote)})
 		m.items = &items
+	} else {
+		// Fresh start: splash shows in the conversation pane, status line
+		// is hidden until the first message is sent.
 	}
 	if f != nil {
 		if info := f.Info(); info.InfoPanelOpen {
@@ -1362,7 +1370,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		m.followBottom = true // re-pin: a sent turn always scrolls into view
 		m.vp.GotoBottom()
 
-		sendBefore := m.statusRows()
+		sendBefore := m.effectiveStatusRows()
 		m.state = stateStreaming // optimistic; TurnStarted confirms
 		m.turnStart = time.Now()
 		m.tps = 0
@@ -1947,7 +1955,7 @@ func (m tuiModel) sizes() (vpW, vpH, inputOuterH int) {
 	// Input box = border (borderH) + textarea; the status line sits directly
 	// above it (1–2 rows, content-dependent — statusRows() is the single
 	// source of truth shared with View()).
-	inputOuterH = m.ta.Height() + borderH + m.statusRows()
+	inputOuterH = m.ta.Height() + borderH + m.effectiveStatusRows()
 	tabH := 0
 	if len(m.subTabs) > 0 {
 		tabH = 1
@@ -1995,7 +2003,7 @@ func (m tuiModel) reflow() tuiModel {
 // followed by this guard or the viewport reservation and the render drift
 // apart by a row (the AltScreen overflow bug class).
 func (m tuiModel) reflowIfStatusHeightChanged(before int) tuiModel {
-	if m.statusRows() != before {
+	if m.effectiveStatusRows() != before {
 		return m.reflow()
 	}
 	return m

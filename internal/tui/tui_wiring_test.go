@@ -86,6 +86,7 @@ func newWiringModel(f *fakeFacade) tuiModel {
 		Role:     core.RoleOwner,
 	})
 	m.width, m.height, m.ready = 100, 30, true
+	m.hadTurn = true // tests exercise the full UI with status line visible
 	return m
 }
 
