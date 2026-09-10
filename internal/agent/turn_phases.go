@@ -36,6 +36,9 @@ func (a *App) prepareTurn() {
 	a.exhausted = false
 	a.stopReason = ""
 	a.turnBudgetStubbed = false
+	// NOTE: budgetExhausted is NOT reset here — it's session-scoped. Once
+	// the budget is breached, all subsequent turns are force-finished
+	// immediately to prevent further spending.
 	// Reset per-turn confinement-breaker flags, same rationale as exhausted
 	// above: dispatchSubagent captures the first-Send value before the retry.
 	a.confinementTripped = false
@@ -154,6 +157,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 	confinementTrip := false
 	for iter := 0; ; iter++ {
 		wantsSuspend = false // one wait_for_completion per round
+		// Budget already exhausted from a prior turn: skip inference entirely,
+		// produce a budget-exceeded notice, and end the turn. This prevents
+		// further spending once the session budget has been breached.
+		if a.budgetExhausted.Load() {
+			fmt.Fprintln(a.Out, Yellow("⚠ session budget exhausted — turn skipped (use /new or increase --budget to continue)"))
+			return "⚠ Session budget exhausted. Increase the budget or start a new session to continue.", false, nil
+		}
 		// Card #121: drain completed async operations (mashūra panels, detached
 		// shell jobs) into the conversation BEFORE the model request, so the
 		// model sees them as a ping. Turn goroutine only; Conv mutated under
@@ -203,6 +213,14 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			return "", false, err
 		}
 		a.RecordInferenceCost() // main inference for this iteration
+		// Budget enforcement (soft cutoff): check after recording cost. If the
+		// session's total priced cost has exceeded BudgetUSD, force-finish this
+		// turn and prevent further inference in subsequent turns. The check is
+		// after RecordInferenceCost — the breaching call has already incurred
+		// its cost, so overshoot is bounded by one turn's inference spend.
+		if a.checkBudgetExhausted() {
+			forceFinish = true
+		}
 		if firstStream {
 			// Retrieval telemetry for the user's query is set by this first call;
 			// log a learn candidate if retrieval ran but coverage was low.

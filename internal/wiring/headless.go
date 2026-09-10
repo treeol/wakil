@@ -62,6 +62,11 @@ type HeadlessOptions struct {
 	Verify      bool
 	// TranscriptFile writes JSON-lines events here instead of stdout.
 	TranscriptFile string
+	// BudgetUSD is the per-session spending ceiling. When > 0, the agent
+	// checks after each inference call whether the session's total priced
+	// cost has exceeded this amount. If so, the current turn is force-finished
+	// and subsequent turns are blocked. Zero = no budget enforcement.
+	BudgetUSD float64
 }
 
 // emitEvent writes one JSON-lines event to w. Errors are swallowed — output is
@@ -211,6 +216,9 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 		AutoCounsel: opts.AutoCounsel,
 		MaxCounsel:  opts.MaxCounsel,
 	})
+	// Set the session budget from the --budget flag. The App's BudgetUSD field
+	// is checked after each inference call in streamTurn.
+	app.BudgetUSD = opts.BudgetUSD
 	// Register resource cleanup immediately after BuildApp so every error path
 	// below is covered (LIFO: resources close before exe).
 	defer func() {
@@ -362,7 +370,7 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 		emitEvent(out, map[string]any{"type": "done", "outcome": "pass"})
 	}
 
-	// Token summary, last (matches legacy ordering).
+	// Token + cost summary, last (matches legacy ordering).
 	if app.Costs != nil {
 		_, rows := app.Costs.Snapshot()
 		var inTok, outTok int64
@@ -370,7 +378,16 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 			inTok += r.InputTok
 			outTok += r.OutputTok
 		}
-		emitEvent(out, map[string]any{"type": "tokens", "input": inTok, "output": outTok})
+		total, _ := app.Costs.Snapshot()
+		record := map[string]any{"type": "tokens", "input": inTok, "output": outTok}
+		if total > 0 || app.BudgetUSD > 0 {
+			record["cost_usd"] = total
+		}
+		if app.BudgetUSD > 0 {
+			record["budget_usd"] = app.BudgetUSD
+			record["budget_exhausted"] = app.BudgetExhausted()
+		}
+		emitEvent(out, record)
 	}
 	return code
 }

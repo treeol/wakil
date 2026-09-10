@@ -389,6 +389,25 @@ func main() {
 	if postRunExeClose != nil {
 		_ = postRunExeClose()
 	}
+
+	// End-of-session cost summary (printed to stderr after terminal is restored).
+	// The facade's Snapshot gives us the CostTracker, which is still valid
+	// after Close (it's a heap pointer; Close doesn't nil it).
+	if bsResult != nil && bsResult.rt != nil {
+		snap := bsResult.rt.Facade.Snapshot()
+		if snap.Costs != nil {
+			total, rows := snap.Costs.Snapshot()
+			var inTok, outTok int64
+			for _, r := range rows {
+				inTok += r.InputTok
+				outTok += r.OutputTok
+			}
+			if total > 0 || inTok > 0 || outTok > 0 {
+				fmt.Fprintf(os.Stderr, "session cost: %s | tokens: %dk in, %dk out\n",
+					proxy.FmtUSDCompact(total), inTok/1000, outTok/1000)
+			}
+		}
+	}
 }
 
 // runDaemonMode dials the wakil daemon and runs the TUI in remote mode

@@ -39,6 +39,7 @@ type RunFlags struct {
 	PolicyPath       string
 	ProfileName      string
 	Verify           bool
+	BudgetUSD        float64
 }
 
 // parseRunArgs parses the args that follow "run":
@@ -95,6 +96,18 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 			flags.ProfileName = args[i]
 		case "--verify":
 			flags.Verify = true
+		case "--budget":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--budget requires a dollar amount")
+			}
+			v, sErr := fmt.Sscanf(args[i], "%f", &flags.BudgetUSD)
+			if sErr != nil || v != 1 {
+				return "", false, flags, fmt.Errorf("--budget requires a number, got %q", args[i])
+			}
+			if flags.BudgetUSD <= 0 {
+				return "", false, flags, fmt.Errorf("--budget must be > 0 (got %.2f)", flags.BudgetUSD)
+			}
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return "", false, flags, fmt.Errorf("unknown flag: %s", args[i])
@@ -105,9 +118,9 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 			task = args[i]
 		}
 	}
-	if task == "" {
+		if task == "" {
 		return "", false, flags, fmt.Errorf(
-			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] \"<task>\"")
+			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] \"<task>\"")
 	}
 	// Default cap: 3 auto-counsel calls when --auto-counsel is set without --max-counsel.
 	if flags.AutoCounsel && flags.MaxCounsel == 0 {
@@ -137,5 +150,6 @@ func RunHeadless(cfg config.Config, args []string) int {
 		ProfileName:      flags.ProfileName,
 		Verify:           flags.Verify,
 		TranscriptFile:   flags.TranscriptFile,
+		BudgetUSD:        flags.BudgetUSD,
 	})
 }
