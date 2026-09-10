@@ -17,11 +17,13 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"
@@ -126,14 +128,34 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	}
 	res.BrowserMgr = browserMgr
 
-	// Context limit resolution
-	ctxLimit := agent.ResolveContextLimit(context.Background(), client.HTTP, cfg, os.Stderr)
-
-	// Backend list
-	backendList := agent.FetchBackendListWithFallback(context.Background(), client.HTTP, cfg, os.Stderr)
-
-	// Model list
-	modelList := agent.FetchModelListForEndpoint(context.Background(), client.HTTP, cfg)
+	// Parallelize the three independent network probes (context limits,
+	// backend list, model list). Each has its own 5s timeout internally;
+	// running them concurrently cuts the worst-case 15s serial wait to 5s.
+	// A shared 6s outer context provides a hard ceiling so a slow endpoint
+	// can't stall startup indefinitely even if an individual call's timeout
+	// is slightly longer than expected.
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 6*time.Second)
+	var (
+		ctxLimit    agent.ContextLimit
+		backendList []agent.BackendInfo
+		modelList   []string
+	)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		ctxLimit = agent.ResolveContextLimit(probeCtx, client.HTTP, cfg, os.Stderr)
+	}()
+	go func() {
+		defer wg.Done()
+		backendList = agent.FetchBackendListWithFallback(probeCtx, client.HTTP, cfg, os.Stderr)
+	}()
+	go func() {
+		defer wg.Done()
+		modelList = agent.FetchModelListForEndpoint(probeCtx, client.HTTP, cfg)
+	}()
+	wg.Wait()
+	probeCancel()
 
 	app := &agent.App{
 		Cfg:                          cfg,
@@ -185,11 +207,18 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
 		} else {
-			sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := memStore.Sweep(sweepCtx); err != nil {
-				fmt.Fprintln(os.Stderr, "memory: sweep warning:", err)
-			}
-			sweepCancel()
+			// Sweep runs in the background — it expires stale mid-tier
+			// entries and is not on the critical path. The store is
+			// usable immediately after Open; Sweep just reclaims space.
+			// Errors go through diag (not os.Stderr) so they can't
+			// garble the TUI alt-screen if the sweep finishes late.
+			go func() {
+				sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer sweepCancel()
+				if err := memStore.Sweep(sweepCtx); err != nil {
+					diag.Printf("memory: sweep warning: %v", err)
+				}
+			}()
 			app.MemoryStore = memStore
 			res.MemStore = memStore
 		}

@@ -485,38 +485,51 @@ func checkDockerImage(image string) error {
 		"Alternatively, use --exec direct for bare-metal execution (no Docker needed).", image, image)
 }
 
+// isImageNotFound reports whether err is a "genuinely missing image" error
+// from checkDockerImage (as opposed to a daemon-level failure). The error
+// messages from checkDockerImage for missing images always contain "not found
+// locally", while daemon/permission/timeout failures have different text.
+func isImageNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found locally")
+}
+
 func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	image, workdir, hostMount, dockerSock := opts.Image, opts.Workdir, opts.HostMount, opts.DockerSock
 	if workdir == "" {
 		workdir = "/work"
 	}
 
-	// Preflight: check Docker CLI is installed and the daemon is reachable
-	// before attempting any docker commands. This produces a clear, actionable
-	// error instead of a confusing "docker run failed:" with an empty or
-	// binary-not-found message.
-	if err := dockerPreflight(); err != nil {
-		return nil, err
+	// Quick binary check first (no Docker CLI round-trip — just PATH lookup).
+	// This catches "docker not installed" before checkDockerImage, which
+	// would misclassify an empty-output exec failure as "image not found".
+	if _, err := exec.LookPath("docker"); err != nil {
+		return nil, fmt.Errorf("docker not found — install Docker or use --exec direct for bare-metal execution")
 	}
 
-	// Preflight: check the image exists locally. A missing image produces a
-	// confusing "pull access denied" error from docker run (it tries to pull
-	// from a registry). Surface a clear message with build instructions.
+	// Check the image exists locally. A missing image produces a confusing
+	// "pull access denied" error from docker run (it tries to pull from a
+	// registry). This check also proves the Docker daemon is reachable (image
+	// inspect requires a working daemon), so dockerPreflight is redundant on
+	// the happy path. We keep dockerPreflight as a fallback to produce a
+	// clearer error message when inspect fails with a daemon-level error.
 	if err := checkDockerImage(image); err != nil {
+		// If the failure looks like a daemon problem (not just "image not
+		// found"), run dockerPreflight for a clearer error message.
+		if !isImageNotFound(err) {
+			if pErr := dockerPreflight(); pErr != nil {
+				return nil, pErr // preflight has better daemon/permission messages
+			}
+		}
 		return nil, err
 	}
 
 	name := "wakil-session-" + fmt.Sprint(os.Getpid()) + "-" + randSuffix(6)
-	// Best-effort remove a stale container from a previous crashed run. The
-	// container name embeds os.Getpid() + 6 random hex chars, so a name
-	// collision with a prior run is essentially impossible — this command
-	// fails with "No such container" on virtually every run, which is the
-	// expected case. If a stale container truly existed, docker run --name
-	// would fail immediately with a name-conflict error, so ignoring the
-	// error here is safe.
-	if err := exec.Command("docker", "rm", "-f", name).Run(); err != nil {
-		log.Printf("docker rm -f %s (pre-create cleanup): %v", name, err)
-	}
+	// The container name embeds os.Getpid() + 6 random hex chars, so a name
+	// collision with a prior run is essentially impossible. The previous
+	// pre-create `docker rm -f` was dropped: it failed with "No such container"
+	// on virtually every run (wasted CLI round-trip). If a stale container
+	// truly existed, docker run --name would fail immediately with a
+	// name-conflict error that surfaces clearly.
 
 	// io_uring: if enabled, materialize the custom seccomp profile to a temp
 	// file and set IOUringProfilePath so dockerHardeningArgs emits it. Docker
@@ -699,6 +712,9 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 			if opts.Signing.Enabled {
 				if err := exec.Command("docker", "rm", "-f", name).Run(); err != nil {
 					log.Printf("docker rm -f %s (passwd setup fail): %v", name, err)
+				}
+				if cleanupProfile != nil {
+					cleanupProfile()
 				}
 				return nil, fmt.Errorf("passwd entry setup for signing: %w", err)
 			}

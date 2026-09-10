@@ -93,14 +93,20 @@ func main() {
 		resumeID = id
 	}
 
+	// Daemon mode: remote TUI dials the daemon — no local executor needed.
+	// Checking BEFORE NewExecutor avoids paying full Docker container startup
+	// and then leaking the container via os.Exit (runDaemonMode takes no exe).
+	if cfg.DaemonMode {
+		if cfg.AttachImage != "" {
+			fmt.Fprintln(os.Stderr, "warning: --attach-image is not supported in daemon mode — ignored")
+		}
+		os.Exit(runDaemonMode(cfg, resumeID))
+	}
+
 	exe, err := wiring.NewExecutor(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "executor error:", err)
 		os.Exit(1)
-	}
-
-	if cfg.DaemonMode {
-		os.Exit(runDaemonMode(cfg, resumeID))
 	}
 
 	// --attach-image: load into pending images for the first message.

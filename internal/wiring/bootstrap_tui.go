@@ -15,6 +15,7 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -120,22 +121,37 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 			app.MaxCounsel = opts.CounselMax
 		}
 		// Compose staging/memory notes onto whatever exists.
+		// Run both scans concurrently (each has a 3s timeout) instead of
+		// sequentially — cuts worst-case 6s to 3s.
 		if opts.ComposeStartupNotes {
+			var stagingNote, memNote string
+			var noteWG sync.WaitGroup
 			if app.StagingClient != nil {
-				scanCtx, scanCancel := context.WithTimeout(ctx, 3*time.Second)
-				if res, err := app.StagingClient.Scan(scanCtx, "", 1, ""); err == nil && len(res.Keys) > 0 {
-					appendStartupNote(app, "staging: entries restored")
-				}
-				scanCancel()
+				noteWG.Add(1)
+				go func() {
+					defer noteWG.Done()
+					scanCtx, scanCancel := context.WithTimeout(ctx, 3*time.Second)
+					if res, err := app.StagingClient.Scan(scanCtx, "", 1, ""); err == nil && len(res.Keys) > 0 {
+						stagingNote = "staging: entries restored"
+					}
+					scanCancel()
+				}()
 			}
 			if app.MemoryStore != nil {
-				statsCtx, statsCancel := context.WithTimeout(ctx, 3*time.Second)
-				stats, _ := app.MemoryStore.Stats(statsCtx, 5)
-				statsCancel()
-				if stats != nil && stats.PendingProposed > 0 {
-					appendStartupNote(app, fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed))
-				}
+				noteWG.Add(1)
+				go func() {
+					defer noteWG.Done()
+					statsCtx, statsCancel := context.WithTimeout(ctx, 3*time.Second)
+					stats, _ := app.MemoryStore.Stats(statsCtx, 5)
+					statsCancel()
+					if stats != nil && stats.PendingProposed > 0 {
+						memNote = fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
+					}
+				}()
 			}
+			noteWG.Wait()
+			appendStartupNote(app, stagingNote)
+			appendStartupNote(app, memNote)
 		}
 	}
 

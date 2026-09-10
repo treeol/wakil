@@ -190,6 +190,11 @@ func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	// Wait for any in-flight background operation (e.g., Sweep) to finish
+	// before closing the connection. Without this, a background Sweep
+	// goroutine could error on a closed database.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.db.Close()
 }
 
