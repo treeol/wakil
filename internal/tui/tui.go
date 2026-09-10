@@ -1771,18 +1771,14 @@ func (m *tuiModel) refreshViewport() {
 				}
 				if !first {
 					// Insert a dim separator line between the user prompt
-					// and the assistant response. The line is not full
-					// width — it has side margins so it reads as a divider,
-					// not a box border connection.
+					// and the assistant response, left-aligned with the text.
 					if item.kind == iAsst || item.kind == iSys || item.kind == iDiag {
 						sepW := innerW * 3 / 5 // 60% of inner width
 						if sepW > 40 {
 							sepW = 40
 						}
-						margin := (innerW - sepW) / 2
 						sep := lipgloss.NewStyle().Foreground(lipgloss.Color("237")).Render(strings.Repeat("─", sepW))
 						content.WriteByte('\n')
-						content.WriteString(strings.Repeat(" ", margin))
 						content.WriteString(sep)
 					}
 					content.WriteByte('\n')
