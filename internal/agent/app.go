@@ -184,6 +184,15 @@ type App struct {
 	// all subsequent memory writes are tainted=true. Never reset.
 	touchedExternal bool
 
+	// Hooks is the lifecycle hook engine. nil when no hooks are configured
+	// (the hot path skips all hook checks). Set once at construction via
+	// the wiring layer.
+	Hooks *HookEngine
+
+	// sessionStarted tracks whether session_start hooks have fired.
+	// Hooks fire once per session (first Send), not per turn.
+	sessionStarted bool
+
 	// compactFailed is a sticky per-App flag for once-per-session warning
 	// on compaction failure. Set when the first compaction error occurs;
 	// prevents spamming the operator on every turn.
@@ -748,9 +757,22 @@ func (a *App) summarizeFn() summarizer {
 	return a.SummarizeFn()
 }
 
+// OnStop fires on_stop lifecycle hooks. Called at process exit, before
+// the executor is closed. Safe to call when no hooks are configured (no-op).
+func (a *App) OnStop() {
+	if a.Hooks != nil {
+		a.Hooks.RunSessionHooks(context.Background(), hookOnStop)
+	}
+}
+
 // NewConversation resets the running transcript and rotates the chat_id, starting
 // a fresh persisted session.
 func (a *App) NewConversation(chatID string) {
+	// Fire session_end hooks for the ending session.
+	if a.Hooks != nil {
+		a.Hooks.RunSessionHooks(context.Background(), hookSessionEnd)
+	}
+
 	a.clearCheckpoints()
 	a.convMu.Lock()
 	a.Conv = nil
@@ -759,6 +781,8 @@ func (a *App) NewConversation(chatID string) {
 	// a same-day preambleDay would read as "already up to date" against the
 	// now-empty Conv and silently leave the new conversation with no preamble.
 	a.preambleDay = ""
+	// Reset session-started flag so session_start hooks fire for the new session.
+	a.sessionStarted = false
 	a.Client.ChatID = chatID
 	a.Session = &Session{
 		ChatID:       chatID,
@@ -864,6 +888,12 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 // WaitForAsyncCompletion, then resumes. Send(ctx, text) is equivalent to
 // out := SendOutcome(ctx, text); out.Text and never distinguishes suspension.
 func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, retErr error) {
+	// Fire session_start hooks once per session (first Send call).
+	if a.Hooks != nil && !a.sessionStarted {
+		a.sessionStarted = true
+		a.Hooks.RunSessionHooks(ctx, hookSessionStart)
+	}
+
 	a.prepareTurn()
 
 	if !a.checkEgressConsent() {
@@ -1684,7 +1714,41 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 		Command:    toolPrimaryArg(tc),
 	})
 
+	// Pre-tool hooks: if any hook returns non-zero, block the tool.
+	// Hooks sit under the permission ladder — they fire after the ToolStart
+	// event but before ExecuteToolCall. A blocked tool returns the hook's
+	// block message as its result, so the model can read and react.
+	if a.Hooks != nil {
+		cwd := ""
+		if a.Exec != nil {
+			cwd = a.Exec.Cwd()
+		}
+		hr := a.Hooks.RunPreToolHooks(ctx, name, tc.Function.Arguments, cwd)
+		if hr.blocked {
+			result := errResult("[blocked by hook: " + hr.blockMsg + "]")
+			a.captureToolTrace(tc, result)
+			a.recordRecentTrace(tc, result)
+			return result
+		}
+	}
+
 	result := a.ExecuteToolCall(ctx, tc)
+
+	// Post-tool hooks: run after execution, output injected into result.
+	// Cannot block. Runs only on successful execution (not on declined
+	// or errored tools) — a formatter hook should only format files that
+	// were actually written.
+	if a.Hooks != nil && result.ok {
+		cwd := ""
+		if a.Exec != nil {
+			cwd = a.Exec.Cwd()
+		}
+		hr := a.Hooks.RunPostToolHooks(ctx, name, tc.Function.Arguments, cwd)
+		if hr.output != "" {
+			// Append hook output to the tool result so the model sees it.
+			result.text += "\n[hook output: " + hr.output + "]"
+		}
+	}
 
 	// Capture tool-call evidence for the IMPLEMENT step trace and the rolling
 	// cross-turn buffer. Called with the pre-cap result so evidence reflects

@@ -187,6 +187,10 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		agent.WithVerifyEnabled(len(cfg.Verify) > 0),
 	)
 
+	// Initialize lifecycle hooks (nil when no hooks configured — hot path
+	// skips all hook checks). Hooks run on the host, not the sandbox.
+	app.Hooks = agent.NewHookEngine(cfg.Hooks, exe.Cwd())
+
 	// Initialize consent state from the --auto flag. RestoreRepoState may
 	// override this later (TUI path only); that uses SetAutoApprove too.
 	// AllowDestructive and AllowReads start false — AllowDestructive is a

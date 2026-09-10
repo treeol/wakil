@@ -891,7 +891,13 @@ func (f *wiringFacade) Close() error {
 	f.sideQuestions = nil
 	sessionID := f.sessionID
 	principal := f.principal
+	app := f.app
 	f.mu.Unlock()
+
+	// Fire on_stop lifecycle hooks before tearing down.
+	if app != nil {
+		app.OnStop()
+	}
 
 	// Close the host session FIRST when one exists: requestClose cancels the
 	// in-flight turn ctx, which unblocks a Parked approval with a forced

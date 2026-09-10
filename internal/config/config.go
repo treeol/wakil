@@ -401,6 +401,14 @@ type Config struct {
 	// but "—" for cost rather than a misleading "$0.00".
 	Costs CostsConfig `json:"costs,omitempty"`
 
+	// Hooks holds user-configurable shell commands triggered on lifecycle
+	// events. Hooks run on the HOST (not the sandbox), with user privileges,
+	// and sit under the permission ladder — they cannot bypass denials.
+	// Pre-tool hooks with non-zero exit block the tool; post-tool hooks
+	// inject output into context. Environment variables WAKIL_TOOL_NAME,
+	// WAKIL_FILE_PATH, and WAKIL_CWD are set for each hook.
+	Hooks HooksConfig `json:"hooks,omitempty"`
+
 	// BackendMaxRetries is the maximum number of retry attempts for transient
 	// backend failures (5xx, connection drops, timeouts) in unattended runs
 	// (auto-approve or headless). Each retry is preceded by exponential backoff
@@ -480,6 +488,42 @@ type CostsConfig struct {
 
 	// Search is charged per query. Default 0.0 leaves search unpriced.
 	Search SearchRate `json:"search,omitempty"`
+}
+
+// HooksConfig holds user-configurable lifecycle hooks. Each list is a set
+// of commands that fire at the named lifecycle event. Hooks run on the HOST
+// (not the sandbox executor), with user privileges. They sit under the
+// permission ladder — a hook cannot bypass a tool denial.
+type HooksConfig struct {
+	// PreTool hooks fire before a tool executes. A non-zero exit code blocks
+	// the tool with a visible reason. Tool is an optional pipe-separated
+	// pattern (e.g. "write_file|edit_file"); empty matches all tools.
+	PreTool []HookConfig `json:"pre_tool,omitempty"`
+
+	// PostTool hooks fire after a tool completes. Output is injected into
+	// the tool result context. Cannot block.
+	PostTool []HookConfig `json:"post_tool,omitempty"`
+
+	// SessionStart hooks fire when a new session begins.
+	SessionStart []HookConfig `json:"session_start,omitempty"`
+
+	// SessionEnd hooks fire when a session ends (quit, /new, /handoff).
+	SessionEnd []HookConfig `json:"session_end,omitempty"`
+
+	// OnStop hooks fire when the agent stops (process exit).
+	OnStop []HookConfig `json:"on_stop,omitempty"`
+}
+
+// HookConfig defines a single lifecycle hook.
+type HookConfig struct {
+	// Tool is an optional pipe-separated tool name pattern
+	// (e.g. "write_file|edit_file"). Empty matches all tools.
+	// Only meaningful for pre_tool and post_tool hooks.
+	Tool string `json:"tool,omitempty"`
+
+	// Command is the shell command to execute. Runs via `sh -c` on the host.
+	// Environment: WAKIL_TOOL_NAME, WAKIL_FILE_PATH, WAKIL_CWD.
+	Command string `json:"command"`
 }
 
 // ModelRate is per-million-token input/output pricing for one oracle model.
