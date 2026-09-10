@@ -47,38 +47,31 @@ type BootstrapDone interface {
 	IsBootstrapDone()
 }
 
-// logoRows is the 5-row ASCII art for "wakil". Each character is drawn in
-// a compact block style. The macron bar over the 'i' is the first row.
-var logoRows = []string{
-	// macron bar over the 'i' (row -1, prepended)
-	"                    __  ",
-	// row 0
-	" _      _    __ _   _  __  _   _ ",
-	// row 1
-	"| | /\\ | |  / _ ` | | |/ / | | | |",
-	// row 2
-	"| |/ / \\| | | (_| | | ' /  | | | |",
-	// row 3
-	"| |  /\\  |  \\__,_| | . \\  | | | |",
-	// row 4
-	"|_|_/  \\_|         |_|\\\\  |_| |_|",
-}
+// logoRows is the 6-row ASCII art for "wakīl" generated from figlet
+// 'standard' font, with a macron bar (__) prepended above the 'i'.
+// Every row is exactly logoWidth runes wide.
+const logoWidth = 24
 
-// logoWidth is the width of the widest logo row (in display columns).
-const logoWidth = 32
+var logoRows = []string{
+	"                   __   ", // macron over the i
+	"               _    _ _ ", // row 0: tops of w a k i l
+	"__      ____ _| | _(_) |", // row 1
+	"\\ \\ /\\ / / _` | |/ / | |", // row 2
+	" \\ V  V / (_| |   <| | |", // row 3
+	"  \\_/\\_/ \\__,_|_|\\_\\_|_|", // row 4: baseline
+}
 
 // noiseGlyphs are the random characters used in the unrevealed columns.
 var noiseGlyphs = []rune{
 	'#', '%', '&', '+', '=', '*', '@', '^', '~',
-	':', ';', '<', '>', '?', '[', ']', '{', '}',
-	'|', '!', '$', '0', '1', '2', '3', '4', '5',
-	'6', '7', '8', '9', '\\', '/',
+	':', ';', '<', '>', '?', '0', '1', '2', '3',
+	'4', '5', '6', '7', '8', '9', '\\', '/',
 }
 
 // loadingModel is a minimal Bubble Tea model shown during startup while the
 // container and conversation are being set up. It renders the "wakīl" logo
-// emerging from ASCII noise (like a loading bar sweeping left-to-right),
-// handles resize and quit, and runs a bootstrap tea.Cmd.
+// emerging from ASCII noise (left-to-right reveal), then a subtle color
+// shimmer while the bootstrap runs.
 type loadingModel struct {
 	width    int
 	height   int
@@ -159,42 +152,48 @@ func (m *loadingModel) View() string {
 		return "starting wakil…\n"
 	}
 
-	// The fill index sweeps across the logo columns left to right, then
-	// back (ping-pong) to keep the animation alive. Speed: ~1 col per 2
-	// frames (~180ms/col), full 32-col sweep ~5.8s.
-	sweep := m.frameIdx / 2
-	cycle := logoWidth * 2
-	pos := sweep % cycle
-	if pos >= logoWidth {
-		pos = cycle - 1 - pos
-	}
-	fillCol := pos
+	// Phase 1: Reveal — sweep left-to-right over ~1.8s (20 frames at 90ms).
+	// Columns left of fillCol show the real logo; columns right show noise.
+	// This makes the logo "emerge" from left to right.
+	revealFrames := 20
+	revealed := m.frameIdx >= revealFrames
 
-	// Render the logo: columns left of fillCol show noise, columns at or
-	// right of fillCol show the real logo characters.
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
-	noiseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	var fillCol int
+	if revealed {
+		fillCol = logoWidth // fully revealed
+	} else {
+		fillCol = (m.frameIdx * logoWidth) / revealFrames
+	}
+
+	// After reveal, cycle accent color for a subtle shimmer (blue shades).
+	accentColor := lipgloss.Color("39")
+	if revealed {
+		shimmer := []lipgloss.Color{"39", "38", "33", "38"}
+		accentColor = shimmer[(m.frameIdx/4)%len(shimmer)]
+	}
+
+	accent := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	noiseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
 	status := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(m.status)
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("press q to abort")
 
+	// Render the logo row by row.
 	var logoLines []string
-	for _, row := range logoRows {
+	for rowIdx, row := range logoRows {
 		var b strings.Builder
-		// Pad short rows to logoWidth so column indexing is consistent.
-		r := row
-		for len(r) < logoWidth {
-			r += " "
-		}
-		for col, ch := range r {
-			if col >= fillCol {
+		runes := []rune(row)
+		for col, ch := range runes {
+			if col < fillCol {
+				// Revealed: show the real logo character.
 				if ch != ' ' {
 					b.WriteString(accent.Render(string(ch)))
 				} else {
 					b.WriteRune(' ')
 				}
 			} else {
+				// Unrevealed: show noise (varies per row AND column).
 				if ch != ' ' {
-					noise := noiseGlyphs[(m.frameIdx*7+col*13)%len(noiseGlyphs)]
+					noise := noiseGlyphs[(m.frameIdx*7+col*13+rowIdx*31)%len(noiseGlyphs)]
 					b.WriteString(noiseStyle.Render(string(noise)))
 				} else {
 					b.WriteRune(' ')
