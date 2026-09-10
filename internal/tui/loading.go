@@ -48,17 +48,18 @@ type BootstrapDone interface {
 }
 
 // logoRows is the 6-row ASCII art for "wakīl" generated from figlet
-// 'slant' font (wider, shorter than standard), with a macron bar (___)
-// prepended above the 'i'. Every row is exactly logoWidth runes wide.
-const logoWidth = 26
+// 'speed' font (wide and short — 35w x 6h including macron), with a
+// macron bar (____) prepended above the 'i'. Every row is exactly
+// logoWidth runes wide.
+const logoWidth = 35
 
 var logoRows = []string{
-	"                     ___  ", // macron over the i
-	"                 __   _ __", // row 0: tops of w a k i l
-	" _      ______ _/ /__(_) /", // row 1
-	"| | /| / / __ ` / //_/ / /", // row 2
-	"| |/ |/ / /_/ / ,< / / /  ", // row 3
-	"|__/|__/\\__,_/_/|_/_/_/   ", // row 4: baseline
+	"                        ____       ", // macron over the i
+	"                 ______ ___________", // row 0
+	"___      _______ ___  /____(_)__  /", // row 1
+	"__ | /| / /  __ ` /_  //_/_  /__  /", // row 2
+	"__ |/ |/ // /_/ /_  ,<  _  / _  /  ", // row 3
+	"____/|__/ \\__,_/ /_/|_| /_/  /_/   ", // row 4: baseline
 }
 
 // noiseGlyphs are the random characters used in the unrevealed columns.
@@ -172,7 +173,7 @@ func (m *loadingModel) View() string {
 		accentColor = shimmer[(m.frameIdx/4)%len(shimmer)]
 	}
 
-	accent := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(accentColor)
 	noiseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
 	status := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(m.status)
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("press q to abort")
