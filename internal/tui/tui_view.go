@@ -191,20 +191,23 @@ func (m tuiModel) View() string {
 	_ = inputOuterH // used implicitly via JoinVertical
 
 	// --- conversation pane ---
-	// When there's no conversation content, no textarea input, and no
-	// completed turn, show a large centered "wakīl" splash in the
-	// conversation pane. It disappears as soon as the user types.
+	// When a sub tab is active render its output instead of the main viewport.
 	var convContent string
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
 		convContent = m.renderSubTabContent(m.subTabs[m.subCur], vpW, vpH)
-	} else if m.items != nil && len(*m.items) == 0 && !m.hadTurn &&
-		strings.TrimSpace(m.ta.Value()) == "" &&
-		m.state == stateIdle &&
-		(m.reasoning == nil || m.reasoning.Len() == 0) &&
-		(m.streaming == nil || m.streaming.Len() == 0) {
-		convContent = renderSplash(vpW, vpH)
 	} else {
 		convContent = bottomAlignViewport(m.vp.View(), vpH)
+		// Show the wakīl splash when the conversation pane is truly
+		// empty (no items, no active turn, empty textarea, idle state).
+		// Startup notes are stored as splashNote instead of items, so
+		// the splash persists until the user types.
+		if m.items != nil && len(*m.items) == 0 && !m.hadTurn &&
+			strings.TrimSpace(m.ta.Value()) == "" &&
+			m.state == stateIdle &&
+			(m.reasoning == nil || m.reasoning.Len() == 0) &&
+			(m.streaming == nil || m.streaming.Len() == 0) {
+			convContent = renderSplash(vpW, vpH, m.splashNote)
+		}
 	}
 	conv := styleConvBorder.
 		Width(vpW).
@@ -1087,7 +1090,7 @@ var splashArt = []string{
 // renderSplash produces a large centered "wakīl" ASCII art for the
 // conversation pane when no conversation has started yet. The art is
 // centered both horizontally and vertically within the pane.
-func renderSplash(vpW, vpH int) string {
+func renderSplash(vpW, vpH int, note string) string {
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("type a task below to begin…")
 
@@ -1106,8 +1109,14 @@ func renderSplash(vpW, vpH int) string {
 	}
 	art := strings.Join(artLines, "\n")
 
-	// Add the hint below.
-	content := lipgloss.JoinVertical(lipgloss.Center, art, "", hint)
+	// Add the hint below, plus any startup note.
+	sections := []string{art}
+	if note != "" {
+		sections = append(sections, "")
+		sections = append(sections, lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(note))
+	}
+	sections = append(sections, "", hint)
+	content := lipgloss.JoinVertical(lipgloss.Center, sections...)
 
 	// Center in the conversation pane.
 	return lipgloss.Place(vpW, vpH,

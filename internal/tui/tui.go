@@ -332,6 +332,11 @@ type tuiModel struct {
 	// "awaiting input" instead of silent idle.
 	hadTurn bool
 
+	// splashNote holds the startup note text while the splash is showing.
+	// When non-empty, the splash renders it as a subtitle. It's cleared
+	// (and the note is added as a regular item) once the user starts typing.
+	splashNote string
+
 	// Input history for UP/DOWN navigation (most-recent entry first).
 	// Extracted to history_model.go (WP-6.6); embedded so selector access is unchanged.
 	historyModel

@@ -44,6 +44,13 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case rotationMsg:
 		return m.applyRotation(lm, cmds)
 	case startupNoteMsg:
+		// If the splash is showing (no conversation items yet), store the
+		// note as a subtitle instead of adding an item — this keeps the
+		// splash visible until the user types.
+		if m.items != nil && len(*m.items) == 0 && !m.hadTurn && m.splashNote == "" {
+			m.splashNote = lm.text
+			return m, cmds, true
+		}
 		m.addItem(iSys, dim2(lm.text))
 		return m, cmds, true
 	case teaErrorMsg:
