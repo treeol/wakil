@@ -28,6 +28,7 @@ func TestEvictTTL0(t *testing.T) {
 	app := &App{Cfg: config.DefaultConfig(), Out: io.Discard}
 	app.Cfg.ToolResultCap = 10
 	app.Cfg.ToolResultTTL = 0
+	app.Client = &proxy.Client{ChatID: "test-evict-ttl0"}
 
 	big := strings.Repeat("x", 100)
 
@@ -53,6 +54,7 @@ func TestEvictTTL1(t *testing.T) {
 	app := &App{Cfg: config.DefaultConfig(), Out: io.Discard}
 	app.Cfg.ToolResultCap = 10
 	app.Cfg.ToolResultTTL = 1
+	app.Client = &proxy.Client{ChatID: "test-evict-ttl1"}
 
 	big := strings.Repeat("x", 100)
 

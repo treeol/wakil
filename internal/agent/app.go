@@ -1460,20 +1460,28 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 	return wtools.CapToolResult(result, toolName, a.chatID(), a.Cfg.ToolResultCap)
 }
 
-// evictStaleToolResults replaces the content of large tool-result messages
-// that are older than ToolResultTTL turns with a compact stub. The model
-// already extracted what it needed during the turn; keeping verbatim bytes
-// in ctx beyond that wastes context budget.
+// evictStaleToolResults replaces the content of tool-result messages that are
+// older than ToolResultTTL turns with a compact stub. The model already
+// extracted what it needed during the turn; keeping verbatim bytes in ctx
+// beyond that wastes context budget.
 //
-// Only messages whose content exceeds ToolResultCap are touched — small
-// results are cheap to keep. Eviction is skipped when ToolResultTTL < 0
-// or ToolResultCap <= 0 (unlimited mode).
+// Eviction rules:
+//   - Pinned messages are NEVER evicted (pinned content must survive verbatim).
+//   - When the content already has a spill path (from CapToolResult/SpillFullResult),
+//     MakeEvictionStub extracts and preserves it — the model can re-read via read_file.
+//   - When the content has NO spill path but exceeds a minimum threshold
+//     (minEvictBytes), it is spilled to disk first so the stub can carry a
+//     recovery path. Content below minEvictBytes is not worth evicting.
+//   - Eviction is skipped when ToolResultTTL < 0 or ToolResultCap <= 0 (unlimited mode).
 func (a *App) evictStaleToolResults() {
 	ttl := a.Cfg.ToolResultTTL
 	cap := a.Cfg.ToolResultCap
 	if ttl < 0 || cap <= 0 {
 		return
 	}
+	// Minimum bytes to bother evicting — below this, the stub overhead
+	// approaches the content size and the recovery path isn't worth it.
+	const minEvictBytes = 50
 	a.convMu.Lock()
 	defer a.convMu.Unlock()
 	// Keep the most recent (ttl+1) user turns verbatim; evict tool results
@@ -1484,8 +1492,31 @@ func (a *App) evictStaleToolResults() {
 	}
 	for i := range a.Conv[:boundary] {
 		m := &a.Conv[i]
-		if m.Role != "tool" || len(DerefStr(m.Content)) <= cap {
+		if m.Role != "tool" || m.Pinned {
 			continue
+		}
+		content := DerefStr(m.Content)
+		// Skip small results — not worth the stub overhead.
+		if len(content) <= minEvictBytes {
+			continue
+		}
+		// If the content already has a spill path (from CapToolResult or
+		// SpillFullResult), MakeEvictionStub extracts and preserves it.
+		// If not, spill the content to disk first so the stub carries a
+		// recovery path — the model can read_file it if needed.
+		// If the spill fails (no chatID, disk full, etc.), do NOT evict —
+		// replacing unrecoverable content with a stub would lose it forever.
+		if wtools.ExtractSpillPath(content) == "" {
+			if a.chatID() == "" {
+				continue // can't spill without a chatID — preserve content
+			}
+			spillPath := wtools.SpillToCache(a.chatID(), m.Name, content)
+			if spillPath == "" {
+				continue // spill failed — preserve content rather than lose it
+			}
+			// Inject a spill path marker so MakeEvictionStub can find it.
+			content = content + "\n[full content at: " + spillPath + "]"
+			m.Content = &content
 		}
 		stub := wtools.MakeEvictionStub(m.Name, DerefStr(m.Content))
 		m.Content = &stub

@@ -369,6 +369,12 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 // finalizeTurn runs post-loop cleanup: compaction, hard-max enforcement, and
 // context pressure warning. Called after the stream loop completes successfully.
 func (a *App) finalizeTurn(ctx context.Context) {
+	// Proactively evict stale tool results before compaction. This prevents
+	// verbose old tool output from consuming context budget between turns
+	// even when the transcript hasn't reached CompactAt. Compact() also
+	// evicts, but doing it here first means the size check might pass and
+	// avoid a summarizer call entirely.
+	a.evictStaleToolResults()
 	ok, err := a.Compact(ctx, a.summarizeFn(), false)
 	if err != nil {
 		// Warn once per session on compaction failure — the hot path falls
