@@ -551,10 +551,9 @@ func NewTUIModelWithFacade(f sessionclient.Facade, mgr sessionclient.Conversatio
 		}
 		items = append(items, convItem{kind: iSys, text: dim2(resumeNote)})
 		m.items = &items
-	} else {
-		// Fresh start: splash shows in the conversation pane, status line
-		// is hidden until the first message is sent.
 	}
+	// Fresh start (no Conv): splash shows in the conversation pane; the
+	// status line is hidden until the first message is sent.
 	if f != nil {
 		if info := f.Info(); info.InfoPanelOpen {
 			m.infoPanel.active = true

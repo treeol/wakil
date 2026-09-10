@@ -295,7 +295,7 @@ func main() {
 		// Copy early diagnostics (from the stderr temp file) into the
 		// session log before removing the temp file.
 		if data, err := os.ReadFile(stderrFile.Name()); err == nil && len(data) > 0 {
-			diag.Write(data)
+			_, _ = diag.Write(data)
 		}
 		_ = os.Remove(stderrFile.Name())
 
@@ -330,7 +330,7 @@ func main() {
 			postRunCleanup()
 		}
 		if postRunExeClose != nil {
-			postRunExeClose()
+			_ = postRunExeClose()
 		}
 		_ = os.Remove(stderrFile.Name())
 		os.Exit(1)
@@ -358,7 +358,7 @@ func main() {
 				fmt.Fprintln(os.Stderr, "startup error:", r.err)
 				if data, _ := os.ReadFile(stderrFile.Name()); len(data) > 0 {
 					fmt.Fprintln(os.Stderr, "startup diagnostics:")
-					os.Stderr.Write(data)
+					_, _ = os.Stderr.Write(data)
 				}
 				_ = os.Remove(stderrFile.Name())
 			}
@@ -387,7 +387,7 @@ func main() {
 		postRunCleanup()
 	}
 	if postRunExeClose != nil {
-		postRunExeClose()
+		_ = postRunExeClose()
 	}
 }
 
