@@ -70,8 +70,41 @@ func (f *fakeExecutor) ListDir(_ context.Context, p string) (string, error) {
 		return "", fmt.Errorf("no such directory: %s", p)
 	}
 	var names []string
+	// When listing ".", also include registered directories (with trailing /).
+	if p == "." {
+		for k := range f.dirs {
+			if k != "." && !strings.Contains(k, "/") {
+				names = append(names, k+"/")
+			}
+		}
+	}
+	// Include registered subdirectories of the requested path.
+	if p != "." {
+		prefix := p + "/"
+		for k := range f.dirs {
+			if strings.HasPrefix(k, prefix) {
+				rest := strings.TrimPrefix(k, prefix)
+				if !strings.Contains(rest, "/") {
+					names = append(names, rest+"/")
+				}
+			}
+		}
+	}
+	// Include files directly in the requested directory (not in subdirs).
 	for k := range f.files {
-		names = append(names, k)
+		if p == "." {
+			if !strings.Contains(k, "/") {
+				names = append(names, k)
+			}
+		} else {
+			prefix := p + "/"
+			if strings.HasPrefix(k, prefix) {
+				rest := strings.TrimPrefix(k, prefix)
+				if !strings.Contains(rest, "/") {
+					names = append(names, rest)
+				}
+			}
+		}
 	}
 	sort.Strings(names)
 	return strings.Join(names, "\n"), nil

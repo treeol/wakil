@@ -1349,6 +1349,19 @@ func (a *App) buildPreamble(today string) string {
 			"layout checks (set viewport to 375x812 for mobile), interaction testing, and "+
 			"prefers-reduced-motion emulation.")
 	}
+	// Repo map: lightweight file-tree outline (card #190). Day-stable —
+	// rebuilt only on session start or day rollover. The full outline is
+	// spilled to cache so the agent can read_file it; only a one-line
+	// summary enters the preamble to avoid bloating the cache prefix.
+	if a.Exec != nil && a.InjectDate {
+		repoCtx, repoCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		repoLine := injectRepoMap(repoCtx, a.Exec, a.chatID())
+		repoCancel()
+		if repoLine != "" {
+			parts = append(parts, repoLine)
+		}
+	}
+
 	// Memory digest: compact session-start snapshot. NOT live — entries
 	// written mid-session won't appear until the next day rollover or
 	// session start. The agent uses memory_search for live data. This is

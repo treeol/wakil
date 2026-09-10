@@ -1151,6 +1151,18 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return SysNoteMsg{Text: report}
 		}
 
+	case "/repomap":
+		// /repomap rebuilds the repo map (lightweight file-tree outline)
+		// and shows a preview. The full outline is spilled to cache for
+		// read_file access.
+		return true, false, func() Msg {
+			summary, err := handleRepoMapCommand(context.Background(), app)
+			if err != nil {
+				return SysNoteMsg{Text: "/repomap: " + err.Error()}
+			}
+			return SysNoteMsg{Text: summary}
+		}
+
 	case "/help":
 		return true, false, note(helpTextTUI)
 
@@ -1475,6 +1487,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
                      also toggled by ctrl+o or F2; open state remembered per folder
 /init                detect project conventions and create AGENTS.md if absent
 /review [ref]        review current diff (or diff vs ref) for correctness, tests, security, style
+/repomap            rebuild and show the repo map (lightweight file-tree outline)
 /help                this help
 /rewind              list checkpoints (turn-level file snapshots)
 /rewind <N>          rewind N checkpoints (1 = last turn; restores files, truncates history)

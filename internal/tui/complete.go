@@ -91,6 +91,7 @@ var allTUICommands = []candidate{
 	{name: "/rawtools"},
 	{name: "/remember", hasArgs: true},
 	{name: "/repostate", hasArgs: true},
+	{name: "/repomap"},
 	{name: "/review", hasArgs: true},
 	{name: "/remember", hasArgs: true},
 	{name: "/reset"},
