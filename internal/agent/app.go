@@ -469,14 +469,15 @@ type bgEntry struct {
 	// (notifyOnExit && !notified, guarded by bgMu). kill_process and shutdown
 	// clear notifyOnExit so intentional terminations stay silent.
 	//
-	// When notify_on_exit=true is set on a run_background job, asyncOp is
+	// When notify_on_exit=true is set on a run_background job, OR when
+	// run_shell auto-backgrounds a command at its deadline, asyncOp is
 	// non-nil: the job was registered via registerAsyncOp, incrementing
-	// asyncActive so isIdle returns true and the turn suspends until completion.
-	// The reaper publishes through publishAsyncOp (proper slot accounting) and
-	// the asyncInbox delivery wakes the suspended turn. For default (false)
-	// jobs and auto-bg run_shell, asyncOp is nil — the notification path
-	// (notifyDetachedShellExit) manually appends to asyncInbox without slot
-	// accounting, as before.
+	// asyncActive so isIdle returns true and the turn suspends until
+	// completion. The reaper publishes through publishAsyncOp (proper slot
+	// accounting) and the asyncInbox delivery wakes the suspended turn.
+	// For default (false) run_background jobs, asyncOp is nil — the
+	// notification path (notifyDetachedShellExit) manually appends to
+	// asyncInbox without slot accounting, as before.
 	notifyOnExit bool
 	notified     bool
 	asyncOp      *asyncOp // non-nil when notify_on_exit=true; published on completion

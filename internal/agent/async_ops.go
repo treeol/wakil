@@ -220,6 +220,10 @@ type asyncOp struct {
 	watchdog *time.Timer
 
 	done chan struct{} // closed exactly once at terminal completion
+
+	// doneClosed guards close(done) against double-close. Set under op.mu
+	// before closing; checked by any path that might close done. Card #220.
+	doneClosed bool
 }
 
 // terminalSnapshot returns an immutable copy of the op's outcome.

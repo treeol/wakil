@@ -205,7 +205,11 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 						// async registry path (decrements asyncActive, appends
 						// to asyncInbox, signals wake). This lets wait_for_completion
 						// suspend the turn and resume on completion.
+						// Card #220: also emit announceShellDone so the TUI tab
+						// is properly closed (publishBgCompletion does NOT call
+						// announceShellDone, unlike notifyDetachedShellExit).
 						statusLine, tail := a.shellTailPreview(entry)
+						a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 						a.publishBgCompletion(op, bgID, entry, statusLine, tail)
 					} else {
 						// No async op registered (registry full, stopping, or
@@ -275,17 +279,29 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		// notification: the reaper will announce the exit (card #121).
 		// Register as a pending async op so wait_for_completion sees it
 		// and the turn suspends properly instead of polling read_process_log.
+		//
 		// Race guard: the process may have exited between the reaper's
 		// notify check and this arm (select picked timer.C while done was
 		// also ready) — then the reaper already left without notifying, so
 		// we notify here ourselves. The notified flag dedupes both paths.
-		var bgAsyncOp *asyncOp
-		a.bgMu.Lock()
+		//
+		// Card #220: register the async op BEFORE taking bgMu and attach it
+		// under bgMu, so the reaper either sees the entry with asyncOp already
+		// set, or doesn't see the entry at all. This mirrors the run_background
+		// pattern and eliminates the slot-leak race where the reaper reads
+		// asyncOp==nil, publishes via notifyDetachedShellExit, and the handler
+		// then registers an op that nobody ever publishes.
 		notifySelf := false
 		var notifyEntry *bgEntry
 		var detachEntry *bgEntry
+		var regOp *asyncOp
+		regOp, _ = a.registerAsyncOp("run_shell", Truncate(command, 60))
+		a.bgMu.Lock()
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
+			if regOp != nil {
+				e.asyncOp = regOp
+			}
 			detachEntry = e
 			select {
 			case <-done: // already exited — reaper saw notifyOnExit==false
@@ -298,40 +314,49 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			}
 		}
 		a.bgMu.Unlock()
-		// Register as pending async work so wait_for_completion suspends
-		// the turn. If the registry is full or stopping, degrade gracefully:
-		// the reaper will still push the completion via notifyDetachedShellExit
-		// (the old manual inbox path), but wait_for_completion won't see it.
-		if !notifySelf && detachEntry != nil {
-			op, reason := a.registerAsyncOp("run_shell", Truncate(command, 60))
-			if reason == "" {
-				bgAsyncOp = op
-				detachEntry.asyncOp = op
-			}
-			// reason == "full" or "stopping": fall back to the old
-			// manual inbox path (notifyDetachedShellExit in the reaper).
+		// If the entry is gone (killed/generation-lost during the deadline
+		// wait), release the registered op to avoid a slot leak (card #220).
+		if detachEntry == nil && regOp != nil {
+			a.cancelBgAsyncOp(regOp, bgID, "entry gone before deadline")
 		}
-		_ = bgAsyncOp // used via entry.asyncOp in the reaper
+		// If the registry was full or stopping, regOp is nil — the reaper
+		// will fall back to notifyDetachedShellExit (the old manual inbox
+		// path), but wait_for_completion won't see it.
+		if notifySelf {
+			// Process already exited and the reaper didn't notify (it saw
+			// notifyOnExit==false before we set it). We must publish the
+			// completion ourselves. Emit Start before Done so the TUI tab
+			// lifecycle is Start → Done (card #132 ordering).
+			a.announceShellStart(bgID, notifyEntry)
+			statusLine, tail := a.shellTailPreview(notifyEntry)
+			a.announceShellDone(bgID, notifyEntry, statusLine+"\n"+tail, "")
+			if regOp != nil {
+				a.publishBgCompletion(regOp, bgID, notifyEntry, statusLine, tail)
+			} else {
+				a.notifyDetachedShellExit(bgID, notifyEntry)
+			}
+		}
 		// Card #128: a detached shell surfaces as a TUI tab. Emit Start (after the
 		// lock; sendEvent may block) so the user can track it until Done.
-		if detachEntry != nil {
+		if detachEntry != nil && !notifySelf {
 			a.announceShellStart(bgID, detachEntry)
-		}
-		if notifySelf {
-			a.notifyDetachedShellExit(bgID, notifyEntry)
 		}
 		return fmt.Sprintf("command still running as %s — you will be notified when it finishes; use read_process_log(%s) to poll for output, kill_process(%s) to stop", bgID, bgID, bgID)
 	case <-ctx.Done():
 		// Turn cancelled — leave the process running for the user to inspect;
 		// arm the notification the same way (the exit still matters). Same
-		// race guard as the timer branch.
-		var bgAsyncOp *asyncOp
-		a.bgMu.Lock()
+		// race guard and registration pattern as the timer branch (card #220).
 		notifySelf := false
 		var notifyEntry *bgEntry
 		var detachEntry *bgEntry
+		var regOp *asyncOp
+		regOp, _ = a.registerAsyncOp("run_shell", Truncate(command, 60))
+		a.bgMu.Lock()
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
+			if regOp != nil {
+				e.asyncOp = regOp
+			}
 			detachEntry = e
 			select {
 			case <-done:
@@ -344,20 +369,21 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			}
 		}
 		a.bgMu.Unlock()
-		// Register as pending async work (same as timer branch).
-		if !notifySelf && detachEntry != nil {
-			op, reason := a.registerAsyncOp("run_shell", Truncate(command, 60))
-			if reason == "" {
-				bgAsyncOp = op
-				detachEntry.asyncOp = op
-			}
-		}
-		_ = bgAsyncOp
-		if detachEntry != nil {
-			a.announceShellStart(bgID, detachEntry)
+		if detachEntry == nil && regOp != nil {
+			a.cancelBgAsyncOp(regOp, bgID, "entry gone before cancellation")
 		}
 		if notifySelf {
-			a.notifyDetachedShellExit(bgID, notifyEntry)
+			a.announceShellStart(bgID, notifyEntry)
+			statusLine, tail := a.shellTailPreview(notifyEntry)
+			a.announceShellDone(bgID, notifyEntry, statusLine+"\n"+tail, "")
+			if regOp != nil {
+				a.publishBgCompletion(regOp, bgID, notifyEntry, statusLine, tail)
+			} else {
+				a.notifyDetachedShellExit(bgID, notifyEntry)
+			}
+		}
+		if detachEntry != nil && !notifySelf {
+			a.announceShellStart(bgID, detachEntry)
 		}
 		return fmt.Sprintf("command still running as %s (turn cancelled) — you will be notified when it finishes; use read_process_log(%s) to poll for output", bgID, bgID)
 	}
@@ -507,20 +533,48 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 // asyncActive, appends to asyncInbox, and signals wake). Called from the reaper
 // goroutine. Exactly-once: guarded by the reaper's notifyOnExit && !notified
 // check under bgMu, plus publishAsyncOp's published flag.
+//
+// Card #220: publishAsyncOp is called BEFORE close(op.done) so that
+// cancelBgAsyncOp (which checks op.published under op.mu) sees published=true
+// and bails out before attempting close(op.done). This eliminates the
+// double-close panic window that existed when close(done) preceded
+// publishAsyncOp. If publishAsyncOp returns false (someone else already
+// published, e.g. cancelBgAsyncOp won the race), we do NOT close done — the
+// winner is responsible for closing it. If it returns false because the
+// session is stopping, we still close done ourselves since no one else will.
 func (a *App) publishBgCompletion(op *asyncOp, bgID string, e *bgEntry, statusLine, tail string) {
 	msg := fmt.Sprintf("%s (\"%s\") %s — last output:\n%s\nuse read_process_log(%q) for the full output", bgID, e.cmdDigest, statusLine, tail, bgID)
 
 	op.mu.Lock()
+	if op.published {
+		// Already published (cancelBgAsyncOp won the race) — nothing to do.
+		op.mu.Unlock()
+		return
+	}
 	op.terminal = true
 	op.finishedAt = time.Now()
+	if op.startedAt.IsZero() {
+		op.startedAt = e.startedAt
+	}
 	op.result = msg
 	op.shellLSPDirty = !e.readOnly
 	op.mu.Unlock()
-	close(op.done)
 
 	// publishAsyncOp handles: asyncActive--, asyncInbox append, evict, signalWake.
+	// It also sets op.published under op.mu, which prevents cancelBgAsyncOp
+	// from double-closing op.done.
 	published := a.publishAsyncOp(op)
-	_ = published // if false (stopping), the slot was still released
+	// Close done exactly once. The doneClosed flag (under op.mu) guards
+	// against double-close in all races (cancelBgAsyncOp, stopping).
+	op.mu.Lock()
+	if !op.doneClosed {
+		op.doneClosed = true
+		_ = published
+		op.mu.Unlock()
+		close(op.done)
+	} else {
+		op.mu.Unlock()
+	}
 }
 
 // cancelBgAsyncOp releases the async slot for a notify_on_exit=true background
@@ -542,8 +596,10 @@ func (a *App) cancelBgAsyncOp(op *asyncOp, bgID, reason string) {
 	op.published = true
 	op.terminal = true
 	op.finishedAt = time.Now()
+	doneClosed := op.doneClosed
+	op.doneClosed = true
 	op.mu.Unlock()
-	if op.done != nil {
+	if op.done != nil && !doneClosed {
 		close(op.done)
 	}
 
