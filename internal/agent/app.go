@@ -1420,8 +1420,7 @@ func (a *App) ensurePreamble() {
 	}
 
 	// Card #191: Prune stale worktrees from previous (possibly crashed) sessions.
-	// Runs once per session (first turn) and on day rollover — cheap enough since
-	// git worktree prune is a no-op when there's nothing to clean.
+	// Runs on the first turn of a new session (when preambleDay is empty).
 	if a.preambleDay == "" {
 		// First turn this session — prune.
 		pruneStaleWorktrees(context.Background(), a)

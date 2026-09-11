@@ -77,6 +77,11 @@ const worktreePrefix = "wakil-wt-"
 // cancelled) request context.
 const worktreeOpTimeout = 30 * time.Second
 
+// worktreeCleanupTimeout is the maximum time allowed for worktree cleanup
+// after a child finishes. Short enough that it doesn't block the parent, long
+// enough for git to remove the worktree directory.
+const worktreeCleanupTimeout = 10 * time.Second
+
 // isGitRepo checks whether the workspace root is inside a git repository.
 // Uses the parent's executor (which runs from the workspace root). We check
 // for `git rev-parse --is-inside-work-tree` rather than looking for a .git
@@ -244,7 +249,7 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 // Safe to call multiple times.
 //
 // Defense-in-depth: asserts the directory is under the system temp dir with
-// the wakil-wt- prefix before removing it. A bug elsewhere handing in the
+// the wakil-wt- prefix before removing it. A bug elsewhere passing in the
 // workspace root would be catastrophic without this check.
 func removeWorktree(ctx context.Context, a *App, wtDir string) {
 	if wtDir == "" {
@@ -285,15 +290,14 @@ func isWorktreePath(path string) bool {
 	return strings.HasPrefix(abs, filepath.Join(tmpDir, worktreePrefix))
 }
 
-// pruneStaleWorktrees removes worktrees with missing administrative metadata.
-// Called at startup (first turn). Uses `git worktree prune` to clean git's
-// internal records, then scans the temp dir for stale wakil-wt-* directories.
-//
-// A worktree is stale if its .git file's gitdir pointer targets a path that
-// no longer exists (the parent repo was deleted/moved). Worktrees whose gitdir
-// pointer still resolves to a live .git directory are left alone (they belong
-// to some active repo, even if it's not this one). On ambiguous errors
-// (permission denied, I/O error), the worktree is left alone — fail closed.
+// pruneStaleWorktrees scans the system temp dir for stale wakil-wt-*
+// directories and removes those whose .git file is missing or whose gitdir
+// pointer targets a path that no longer exists (the parent repo was
+// deleted/moved). Worktrees whose gitdir pointer still resolves to a live
+// .git directory are left alone (they belong to some active repo, even if
+// it's not this one). On ambiguous errors (permission denied, I/O error),
+// the worktree is left alone — fail closed. Does not invoke git worktree
+// prune.
 //
 // Note: this does NOT reclaim worktrees from crashed sessions where the parent
 // repo is still alive (both the worktree dir and the .git metadata exist).
@@ -303,19 +307,6 @@ func isWorktreePath(path string) bool {
 func pruneStaleWorktrees(ctx context.Context, a *App) {
 	_ = ctx
 	_ = a
-	// Scan the temp dir for stale wakil-wt-* directories. A directory is
-	// stale if its .git file's gitdir pointer targets a path that no longer
-	// exists (the parent repo was deleted/moved). Worktrees whose gitdir
-	// pointer still resolves to a live .git directory are left alone (they
-	// belong to some active repo, even if it's not this one). On ambiguous
-	// errors (permission denied, I/O error), the worktree is left alone —
-	// fail closed.
-	//
-	// Note: we intentionally do NOT call `git worktree prune` before the
-	// scan. `git worktree prune` can re-register worktrees whose metadata
-	// was deleted but whose directories still exist, which would make the
-	// scan think the gitdir is still alive. Instead, we scan first, then
-	// let `git worktree prune` clean up git's internal records afterward.
 	tmpDir := os.TempDir()
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
@@ -367,7 +358,3 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 	}
 }
 
-// worktreeCleanupTimeout is the maximum time allowed for worktree cleanup
-// after a child finishes. Short enough that it doesn't block the parent, long
-// enough for git to remove the worktree directory.
-const worktreeCleanupTimeout = 10 * time.Second
