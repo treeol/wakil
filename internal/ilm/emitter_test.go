@@ -507,3 +507,127 @@ func TestConcurrentEmitClose(t *testing.T) {
 	close(done)
 	wg.Wait()
 }
+
+// TestDrainQueuePreservesAppendedEvents verifies that events appended to the
+// queue file DURING the POST window (by an overflowing Emit) are preserved
+// after the POST succeeds. The old code called truncate() which wiped the
+// entire file; the fix uses truncateAfter(len(events)) to keep newly appended
+// events.
+func TestDrainQueuePreservesAppendedEvents(t *testing.T) {
+	var received []Event
+	var mu sync.Mutex
+	// Slow server: takes 200ms to respond, giving us time to append
+	// an event to the queue file while the POST is in flight.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		var body struct {
+			Events []Event `json:"events"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		received = append(received, body.Events...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	queuePath := filepath.Join(t.TempDir(), "queue.jsonl")
+
+	// Pre-populate the queue with 3 events.
+	q, err := newQueue(queuePath)
+	if err != nil {
+		t.Fatalf("newQueue: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		ev := Event{
+			EventID:   fmt.Sprintf("pre-%d", i),
+			SessionID: "wakil-live:test-preserve",
+			Seq:       i,
+			Type:      EventUserTurn,
+			Payload:   json.RawMessage(`{"text":"pre"}`),
+		}
+		if err := q.append(ev); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	// Create the emitter — it will drain the 3 pre-populated events on the
+	// first tick (50ms). The POST takes 200ms.
+	e, err := New(Config{
+		Endpoint:  srv.URL,
+		Token:     "test",
+		Mode:      ModeShadow,
+		QueuePath: queuePath,
+		BatchMS:   50,
+	}, "wakil-live:test-preserve")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Wait for the POST to start (drainQueue reads + POSTs), then append
+	// a new event to the queue file WHILE the POST is in flight. This
+	// simulates an overflowing Emit landing in the queue during the send.
+	time.Sleep(100 * time.Millisecond) // POST is now in flight
+	newEv := Event{
+		EventID:   "post-during-send",
+		SessionID: "wakil-live:test-preserve",
+		Seq:       99,
+		Type:      EventUserTurn,
+		Payload:   json.RawMessage(`{"text":"appended during POST"}`),
+	}
+	if err := q.append(newEv); err != nil {
+		t.Fatalf("append during POST: %v", err)
+	}
+
+	// Wait for the POST to complete and the next drain cycle to send
+	// the appended event.
+	time.Sleep(600 * time.Millisecond)
+	e.Close()
+
+	// The server should have received all 4 events: the 3 pre-populated
+	// (first POST) + the 1 appended during POST (second POST). With the
+	// old truncate() the 4th would have been wiped and never sent.
+	mu.Lock()
+	gotReceived := len(received)
+	mu.Unlock()
+	if gotReceived < 4 {
+		t.Errorf("expected at least 4 received events (3 pre + 1 appended), got %d "+
+			"(the appended event was likely lost to truncate())", gotReceived)
+	}
+
+	// Verify the appended event was received.
+	mu.Lock()
+	foundAppended := false
+	for _, ev := range received {
+		if ev.EventID == "post-during-send" {
+			foundAppended = true
+			break
+		}
+	}
+	mu.Unlock()
+	if !foundAppended {
+		t.Errorf("event appended during POST was not received by server " +
+			"(truncate wiped it before it could be sent)")
+	}
+}
+
+// TestDecodeEventsSkipsMalformedLines verifies that decodeEvents skips
+// corrupt lines instead of breaking — so a single bad line doesn't
+// discard every event after it.
+func TestDecodeEventsSkipsMalformedLines(t *testing.T) {
+	good := `{"event_id":"a","session_id":"s","seq":1,"type":"user_turn","payload":{"text":"first"}}
+not-json-at-all
+{"event_id":"b","session_id":"s","seq":2,"type":"user_turn","payload":{"text":"second"}}
+{"event_id":"c","session_id":"s","seq":3,"type":"user_turn","payload":{"text":"third"}}`
+
+	events := decodeEvents([]byte(good))
+	if len(events) != 3 {
+		t.Errorf("expected 3 valid events (skipping 1 malformed line), got %d", len(events))
+	}
+	if len(events) > 0 && events[0].EventID != "a" {
+		t.Errorf("first event should be 'a', got %q", events[0].EventID)
+	}
+	if len(events) > 2 && events[2].EventID != "c" {
+		t.Errorf("third event should be 'c', got %q", events[2].EventID)
+	}
+}

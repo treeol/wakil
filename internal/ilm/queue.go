@@ -141,18 +141,22 @@ func (q *queue) readAll() ([]Event, error) {
 	return decodeEvents(data), nil
 }
 
-// decodeEvents parses JSONL event data into a slice of Events.
+// decodeEvents parses JSONL event data into a slice of Events. Malformed
+// lines are skipped (not fatal) so a single corrupt line — from a partial
+// crash write — doesn't discard every event after it.
 func decodeEvents(data []byte) []Event {
 	if len(data) == 0 {
 		return nil
 	}
 	var events []Event
-	dec := json.NewDecoder(bytes.NewReader(data))
-	for dec.More() {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
 		var ev Event
-		if err := dec.Decode(&ev); err != nil {
+		if err := json.Unmarshal(line, &ev); err != nil {
 			// Skip malformed lines (could be a partial write from a crash).
-			break
+			continue
 		}
 		events = append(events, ev)
 	}
@@ -328,14 +332,18 @@ func (s *sender) drainQueue() {
 	defer cancel()
 	postErr := s.httpSender.PostEvents(ctx, events)
 	if postErr == nil || IsPermanent(postErr) {
-		// Success, or permanent failure (4xx): remove the events either way.
+		// Success, or permanent failure (4xx): remove the sent events.
 		// A permanent failure can never succeed on retry — keeping the events
 		// would poison the queue and re-send the bad payload every tick.
 		if IsPermanent(postErr) {
 			fmt.Fprintf(os.Stderr, "ilm: dropping %d events after permanent error: %v\n",
 				len(events), postErr)
 		}
-		_ = s.queue.truncate()
+		// Use truncateAfter instead of truncate so events appended to the
+		// queue file during the POST window (by an overflowing Emit) are
+		// preserved. truncate() would wipe the entire file, deleting
+		// events that were never sent.
+		_ = s.queue.truncateAfter(len(events))
 	}
 	// On transient failure: events stay in the file as-is. The next tick
 	// re-reads and retries. No duplication.
