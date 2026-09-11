@@ -301,6 +301,12 @@ type App struct {
 	// mutations are captured in the parent's /rewind history.
 	parentCaptureCallback func(ctx context.Context, canonical string)
 
+	// correctionState holds the in-session state for the correction-capture
+	// learning loop (Card #192). Tracks the last /rewind result (for revert-
+	// based detection) and session-level proposal metrics. Not persisted —
+	// corrections that weren't confirmed are intentionally lost.
+	correctionState
+
 	// EventSink, when set, receives events the agent goroutine posts to the TUI
 	// (stream chunks, done signals, confirm requests, etc.). Set by main to
 	// the TUI program's Send; nil in tests that don't need TUI events.
@@ -906,6 +912,12 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	if !a.checkEgressConsent() {
 		return TurnOutcome{Kind: TurnFinal}, nil
 	}
+
+	// Card #192: Correction-capture learning loop. Detect corrections (user
+	// revert via /rewind, or explicit negation patterns) and propose a durable
+	// memory entry. The user must confirm before anything is stored. Runs after
+	// egress consent (the Confirm gate may block) but before the model runs.
+	a.detectAndProposeCorrection(ctx, userText)
 
 	defer a.SaveSession()
 
