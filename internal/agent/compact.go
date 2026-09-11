@@ -369,8 +369,10 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		// If the generated summary itself exceeds SummaryBytes, condense it further
 		// so the running summary never balloons across repeated compaction cycles.
 		if a.Cfg.SummaryBytes > 0 && len(summary) > a.Cfg.SummaryBytes {
-			if condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary); err2 == nil {
+			if condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary); err2 == nil && strings.TrimSpace(condensed) != "" {
 				summary = condensed
+			} else if err2 != nil {
+				fmt.Fprintf(a.Out, Yellow("⚠ summary condensation failed: %v (keeping original summary)\n"), err2)
 			}
 		}
 		// If the summarizer returned an empty string, don't silently discard

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -612,11 +613,13 @@ func TestRenderTranscriptPreservesSpillPath(t *testing.T) {
 	}
 }
 
-// TestCompactSummaryPreservesCriticalState verifies that the enhanced summary
-// prompt asks the summarizer to preserve plan/current, verification state,
-// permission constraints, and provenance. We verify this by checking that the
-// summarizer receives a prompt containing these preservation instructions.
-func TestCompactSummaryPreservesCriticalState(t *testing.T) {
+// TestCompactSummarizerReceivesRenderedTranscript verifies that the summarizer
+// receives a rendered transcript (not empty) and that the latest-user-task pin
+// excludes the most recent user message from the summarizable block. The
+// preservation instructions live in proxySummarizer's prompt template, which
+// is bypassed by the injected fake — this test verifies transcript rendering
+// and pin exclusion, not the prompt template.
+func TestCompactSummarizerReceivesRenderedTranscript(t *testing.T) {
 	app := &App{Cfg: config.DefaultConfig(), Out: io.Discard}
 	app.Cfg.KeepBytes = 100
 	app.Cfg.CompactAt = 50
@@ -635,14 +638,27 @@ func TestCompactSummaryPreservesCriticalState(t *testing.T) {
 		return "SUMMARY", nil
 	}
 
-	app.Compact(context.Background(), capturingSum, false) //nolint:errcheck
+	ok, err := app.Compact(context.Background(), capturingSum, false)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
 
-	// The summarizer should have received the transcript — the enhanced
-	// prompt is in proxySummarizer, not in the summarizer function itself.
-	// But we can verify the renderTranscript output includes the tool name
-	// and content (which carries the critical state).
 	if capturedPrompt == "" {
 		t.Error("summarizer received empty prompt — transcript not rendered")
+	}
+	// The summarizable block should contain the assistant's 200-char message,
+	// rendered as "ASSISTANT: aaaa...".
+	if !strings.Contains(capturedPrompt, "ASSISTANT:") {
+		t.Error("summarizer prompt should contain rendered ASSISTANT messages")
+	}
+	// The latest user message in the older block ("do the thing") is pinned
+	// and excluded from the summarizable block — it should NOT appear in the
+	// summarizer's input.
+	if strings.Contains(capturedPrompt, "do the thing") {
+		t.Error("pinned user message should be excluded from summarizer input")
 	}
 }
 
@@ -756,6 +772,115 @@ func TestLongSessionStaysUnderLimit(t *testing.T) {
 		if !recentFound {
 			t.Error("no user messages survived 200-turn compaction — agent would lose the task")
 		}
+	}
+}
+
+// TestCompactCondensationFailureKeepsOriginal verifies that when the second
+// summarizer call (condensation) fails, the original summary is kept and a
+// warning is written to a.Out.
+func TestCompactCondensationFailureKeepsOriginal(t *testing.T) {
+	var out strings.Builder
+	app := &App{Cfg: config.DefaultConfig(), Out: &out}
+	app.Cfg.KeepBytes = 100
+	app.Cfg.CompactAt = 50
+	app.Cfg.SummaryBytes = 10 // small so the first summary exceeds it
+
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("do the thing")},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("a", 200))},
+		{Role: "user", Content: StrPtr("proceed?")},
+		{Role: "assistant", Content: StrPtr("ok")},
+	}
+
+	callCount := 0
+	sum := func(_ context.Context, text string) (string, error) {
+		callCount++
+		if callCount == 1 {
+			// First call: return a summary exceeding SummaryBytes (10).
+			return strings.Repeat("b", 50), nil
+		}
+		// Second call (condensation): return an error.
+		return "", fmt.Errorf("condensation backend error")
+	}
+
+	ok, err := app.Compact(context.Background(), sum, false)
+	if err != nil {
+		t.Fatalf("Compact should succeed despite condensation failure: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 summarizer calls, got %d", callCount)
+	}
+
+	// The original summary (50 'b' chars) should be in the conversation.
+	summaryFound := false
+	for _, m := range app.Conv {
+		if m.Role == "system" && strings.Contains(DerefStr(m.Content), strings.Repeat("b", 50)) {
+			summaryFound = true
+			break
+		}
+	}
+	if !summaryFound {
+		t.Error("original summary should be retained after condensation failure")
+	}
+
+	// A warning should have been written to a.Out.
+	outStr := out.String()
+	if !strings.Contains(outStr, "condensation failed") {
+		t.Errorf("expected 'condensation failed' warning in output, got: %s", outStr)
+	}
+}
+
+// TestCompactCondensationSuccessNoWarning verifies that successful condensation
+// produces no warning.
+func TestCompactCondensationSuccessNoWarning(t *testing.T) {
+	var out strings.Builder
+	app := &App{Cfg: config.DefaultConfig(), Out: &out}
+	app.Cfg.KeepBytes = 100
+	app.Cfg.CompactAt = 50
+	app.Cfg.SummaryBytes = 10 // small so the first summary exceeds it
+
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("do the thing")},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("a", 200))},
+		{Role: "user", Content: StrPtr("proceed?")},
+		{Role: "assistant", Content: StrPtr("ok")},
+	}
+
+	callCount := 0
+	sum := func(_ context.Context, text string) (string, error) {
+		callCount++
+		if callCount == 1 {
+			return strings.Repeat("b", 50), nil // exceeds SummaryBytes=10
+		}
+		return "short", nil // successful condensation
+	}
+
+	ok, err := app.Compact(context.Background(), sum, false)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
+
+	outStr := out.String()
+	if strings.Contains(outStr, "condensation failed") {
+		t.Errorf("should not have condensation warning on success, got: %s", outStr)
+	}
+
+	// The condensed summary "short" should be in the conversation.
+	summaryFound := false
+	for _, m := range app.Conv {
+		if m.Role == "system" && strings.Contains(DerefStr(m.Content), "short") {
+			summaryFound = true
+			break
+		}
+	}
+	if !summaryFound {
+		t.Error("condensed summary should be in conversation")
 	}
 }
 
