@@ -4,8 +4,8 @@ package agent
 //
 // Runs a read-only code review over the current git diff by dispatching a
 // discovery-tier subagent with a fixed review rubric. The subagent is strictly
-// read-only (discovery capability → readOnlyConfirmer, 5 read-only tools) —
-// zero file mutations are possible.
+// read-only (discovery capability → readOnlyConfirmer) — zero file mutations
+// are possible.
 //
 // Flow:
 //  1. Capture the git diff (unstaged by default, or against a ref if given).
@@ -16,8 +16,8 @@ package agent
 //  4. Render the SubagentSummary as a readable review report.
 //
 // Failure mode: a failed or incomplete review is NEVER reported as "clean".
-// If the subagent did not complete, or completed with zero findings and zero
-// checked files, the report says so explicitly — it never claims the diff is
+// If the subagent did not complete or produced no usable output (empty
+// Objective), the report says so explicitly — it never claims the diff is
 // clean when the review may not have run.
 
 import (
@@ -71,11 +71,10 @@ Respond with ONLY a valid JSON SubagentSummary object — no prose, no markdown,
 // the rendering from the dispatch so tests can exercise the renderer without
 // a live subagent.
 type reviewResult struct {
-	summary     SubagentSummary
-	refDesc     string
-	costRows    []proxy.CostRow
-	truncated   bool // diff was truncated at reviewDiffCapBytes
-	spillFailed bool // SpillToCache returned ""
+	summary   SubagentSummary
+	refDesc   string
+	costRows  []proxy.CostRow
+	truncated bool // diff was truncated at reviewDiffCapBytes
 }
 
 // handleReviewCommand captures the git diff and dispatches a discovery-tier
@@ -129,9 +128,9 @@ func handleReviewCommand(ctx context.Context, app *App, ref string) (string, err
 
 	// 5. Render the review report.
 	return renderReviewReport(reviewResult{
-		summary:  summary,
-		refDesc:  refDesc,
-		costRows: costRows,
+		summary:   summary,
+		refDesc:   refDesc,
+		costRows:  costRows,
 		truncated: truncated,
 	}), nil
 }
@@ -313,8 +312,8 @@ func formatFinding(n int, f Finding) string {
 // filterFindingsByWeight returns findings matching the given weight,
 // case-insensitively. This handles model outputs like "High" or "HIGH".
 func filterFindingsByWeight(findings []Finding, weight string) []Finding {
-	var out []Finding
 	target := strings.ToLower(weight)
+	var out []Finding
 	for _, f := range findings {
 		if strings.ToLower(f.Weight) == target {
 			out = append(out, f)
