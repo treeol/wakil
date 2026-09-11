@@ -64,7 +64,7 @@ func TestDetectCorrection_NoSignal(t *testing.T) {
 	}
 }
 
-func TestDetectCorrection_Explicit_NoUse(t *testing.T) {
+func TestDetectCorrection_Explicit_NegationUse(t *testing.T) {
 	app := newTestAppCorrection(t)
 	sig, p := app.detectCorrection("no, use const instead of var everywhere")
 	if sig != SignalExplicit || p == nil {
@@ -134,23 +134,13 @@ func TestDetectCorrection_NotQuestion(t *testing.T) {
 
 func TestDetectCorrection_QuestionWithInsteadOf(t *testing.T) {
 	// "Can I use X instead of Y?" — a question, not a correction directive.
-	// "use" is inside "cause" so atSentenceBoundary should reject it.
+	// With the word-boundary fix in hasImperativeVerb, "can i use x" ends
+	// with "x" (not a verb), so this should NOT trigger detection.
 	app := newTestAppCorrection(t)
 	sig, p := app.detectCorrection("Can I use X instead of Y for this?")
-	if sig != SignalExplicit || p == nil {
-		// Actually, "Can I use X instead of Y?" starts with "Can" not "use",
-		// so atSentenceBoundary("use ") returns false (not at start).
-		// The "instead of" pattern checks for an imperative verb before it.
-		// "Can I use X" → before "instead of" is "can i use x" — "use" is at
-		// the end, so hasImperativeVerb returns true. This IS a false positive
-		// case we need to handle better.
-		// For now, let's accept this is a known limitation and the Confirm gate
-		// handles false positives.
-		t.Logf("known limitation: question with 'use ... instead of' triggers — Confirm gate handles it")
+	if sig != SignalNone || p != nil {
+		t.Fatalf("question with 'use ... instead of' should not trigger: sig=%v, p=%v", sig, p)
 	}
-	// The key point: the Confirm gate means the user reviews this.
-	_ = sig
-	_ = p
 }
 
 func TestDetectCorrection_CauseNotUse(t *testing.T) {
@@ -531,24 +521,6 @@ func TestProposeCorrection_RewindAnchorsCapped(t *testing.T) {
 	}
 }
 
-// ── Stats tests ─────────────────────────────────────────────────────────────
-
-func TestCorrectionStats(t *testing.T) {
-	app := newTestAppCorrection(t)
-	s := app.CorrectionStats()
-	if s != "corrections: none detected" {
-		t.Errorf("expected 'none detected', got %s", s)
-	}
-
-	app.correctionProposals = 3
-	app.correctionAccepted = 2
-	app.correctionRejected = 1
-	s = app.CorrectionStats()
-	if !strings.Contains(s, "3 proposed") || !strings.Contains(s, "2 accepted") || !strings.Contains(s, "1 rejected") {
-		t.Errorf("unexpected stats: %s", s)
-	}
-}
-
 // ── Truncation tests ────────────────────────────────────────────────────────
 
 func TestTruncateForMemory_Short(t *testing.T) {
@@ -672,5 +644,55 @@ func TestProposeCorrection_ReadActionFalse(t *testing.T) {
 	})
 	if capturedReadAction {
 		t.Fatal("readAction should be false — correction storage is a write, not a read")
+	}
+}
+
+// ── hasImperativeVerb regression tests ─────────────────────────────────────
+
+func TestHasImperativeVerb(t *testing.T) {
+	tests := []struct {
+		before string
+		want   bool
+	}{
+		// Standalone verbs at end of clause.
+		{"use", true},
+		{"try", true},
+		{"do", true},
+		{"run", true},
+		{"make", true},
+		{"go", true},
+		{"test", true},
+		{"build", true},
+		{"write", true},
+		{"edit", true},
+		// Verb preceded by other words.
+		{"let's use", true},
+		{"please run", true},
+		// False positives that the old suffix-matching had.
+		{"because", false},   // "use" suffix inside "because"
+		{"cause", false},     // "use" suffix inside "cause"
+		{"abuse", false},     // "use" suffix inside "abuse"
+		{"excuse", false},    // "use" suffix inside "excuse"
+		{"peruse", false},    // "use" suffix inside "peruse"
+		{"retry", false},     // "try" suffix inside "retry"
+		{"undo", false},      // "do" suffix inside "undo"
+		{"rerun", false},     // "run" suffix inside "rerun"
+		{"remake", false},    // "make" suffix inside "remake"
+		// Non-verb words.
+		{"config", false},
+		{"approach", false},
+		{"interfaces", false},
+		// Empty/whitespace.
+		{"", false},
+		{"   ", false},
+		// Verb in the middle (not last word) — should NOT match.
+		{"use gofmt", false},
+		{"use interfaces", false},
+	}
+	for _, tt := range tests {
+		got := hasImperativeVerb(tt.before)
+		if got != tt.want {
+			t.Errorf("hasImperativeVerb(%q) = %v, want %v", tt.before, got, tt.want)
+		}
 	}
 }

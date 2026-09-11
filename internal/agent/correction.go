@@ -314,8 +314,8 @@ func (a *App) SetLastRewind(result *rewindResult) {
 	a.lastRewindAt = time.Now()
 }
 
-// ClearLastRewind invalidates the rewind signal. Called when the correction
-// is consumed or expired.
+// ClearLastRewind invalidates the rewind signal. Called internally after
+// the correction is consumed or expired.
 func (a *App) ClearLastRewind() {
 	a.lastRewind = nil
 }
@@ -525,11 +525,18 @@ func containsCorrectionContext(s string) bool {
 
 // hasImperativeVerb checks whether the text ends with an imperative verb
 // that would precede "instead of" / "rather than" in a correction context.
+// Uses exact word matching (not substring) to avoid false positives like
+// "because" matching "use".
 func hasImperativeVerb(before string) bool {
 	before = strings.TrimSpace(before)
 	verbs := []string{"use", "try", "do", "run", "make", "go", "test", "build", "write", "edit"}
+	fields := strings.Fields(before)
+	if len(fields) == 0 {
+		return false
+	}
+	last := fields[len(fields)-1]
 	for _, v := range verbs {
-		if strings.HasSuffix(before, v+" ") || strings.HasSuffix(before, v) {
+		if last == v {
 			return true
 		}
 	}
@@ -576,16 +583,6 @@ func containsSecretPattern(text string) bool {
 		}
 	}
 	return false
-}
-
-// CorrectionStats returns a display string for correction-capture metrics
-// this session. Used for /info or status display.
-func (a *App) CorrectionStats() string {
-	if a.correctionProposals == 0 {
-		return "corrections: none detected"
-	}
-	return fmt.Sprintf("corrections: %d proposed, %d accepted, %d rejected",
-		a.correctionProposals, a.correctionAccepted, a.correctionRejected)
 }
 
 // ── Integration point: called from SendOutcome ──────────────────────────────
