@@ -61,12 +61,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/treeol/wakil/internal/exec"
 )
+
+// processAlive reports whether the given PID is still running. Uses
+// os.FindProcess + Signal(0) on Unix. On non-Unix platforms, always returns
+// true (can't check — fail closed to avoid deleting live worktrees).
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// Signal 0 doesn't send a signal — it just checks if the process exists.
+	if err := proc.Signal(syscall.Signal(0)); err == nil {
+		return true
+	}
+	return false
+}
 
 // patchApplyMu serializes patch application to the parent workspace. While
 // children run in parallel in their own worktrees, applying patches back to
@@ -77,6 +94,11 @@ var patchApplyMu sync.Mutex
 // worktreePrefix is the prefix for worktree directories in the temp dir.
 // Used to identify and prune stale worktrees from crashed sessions.
 const worktreePrefix = "wakil-wt-"
+
+// worktreeOwnerFile is the name of the marker file written into each worktree
+// directory. It contains the PID of the process that created the worktree,
+// enabling pruneStaleWorktrees to detect stale worktrees from crashed sessions.
+const worktreeOwnerFile = ".wakil-owner-pid"
 
 // worktreeOpTimeout is the timeout for worktree diff/apply/cleanup operations.
 // These run after the child finishes and should not use the (possibly
@@ -173,7 +195,103 @@ func createWorktree(ctx context.Context, a *App) (string, error) {
 		}
 		return "", fmt.Errorf("git worktree add: %s", strings.TrimSpace(out))
 	}
+
+	// Write a session-ownership marker so pruneStaleWorktrees can detect
+	// worktrees left behind by crashed sessions. The marker contains the
+	// current process's PID — pruning checks if this PID is still alive.
+	// The marker is stored in the worktree's gitdir (under the main repo's
+	// .git/worktrees/<name>/), NOT in the worktree directory itself — this
+	// avoids it appearing in git add -A / diffs.
+	writeWorktreeOwnerMarker(a, dir)
+
 	return dir, nil
+}
+
+// writeWorktreeOwnerMarker writes a file in the worktree's gitdir (not the
+// worktree directory itself) containing the current process PID. This enables
+// pruneStaleWorktrees to detect stale worktrees from crashed sessions (whose
+// PID is no longer alive). Storing the marker in the gitdir avoids it
+// appearing in git add -A / diffs.
+func writeWorktreeOwnerMarker(a *App, wtDir string) {
+	pid := os.Getpid()
+	// The worktree's .git file points to the gitdir under the main repo's
+	// .git/worktrees/<name>/. Read it to find the gitdir path.
+	var gitDir string
+	if isDockerExecutor(a.Exec) {
+		ctx := context.Background()
+		out, err := a.Exec.RunShell(ctx, "cat "+shellQuote(wtDir+"/.git")+" 2>/dev/null")
+		if err != nil {
+			return
+		}
+		gitDir = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "gitdir: "))
+	} else {
+		data, err := os.ReadFile(filepath.Join(wtDir, ".git"))
+		if err != nil {
+			return
+		}
+		gitDir = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir: "))
+	}
+	if gitDir == "" {
+		return
+	}
+	markerPath := filepath.Join(gitDir, worktreeOwnerFile)
+	if isDockerExecutor(a.Exec) {
+		ctx := context.Background()
+		_, _ = a.Exec.RunShell(ctx,
+			fmt.Sprintf("echo %d > %s", pid, shellQuote(markerPath)))
+	} else {
+		_ = os.WriteFile(markerPath, []byte(fmt.Sprintf("%d\n", pid)), 0o644)
+	}
+}
+
+// isWorktreeOwnerAlive checks whether the process that created the worktree
+// is still running. Returns true if the owner marker is missing (legacy
+// worktree or unknown — err on the side of keeping it).
+func isWorktreeOwnerAlive(a *App, wtDir string) bool {
+	// Read the worktree's .git file to find the gitdir path.
+	var gitDir string
+	if isDockerExecutor(a.Exec) {
+		ctx := context.Background()
+		out, err := a.Exec.RunShell(ctx, "cat "+shellQuote(wtDir+"/.git")+" 2>/dev/null")
+		if err != nil {
+			return true // can't read — keep it
+		}
+		gitDir = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "gitdir: "))
+	} else {
+		data, err := os.ReadFile(filepath.Join(wtDir, ".git"))
+		if err != nil {
+			return true // can't read — keep it
+		}
+		gitDir = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir: "))
+	}
+	if gitDir == "" {
+		return true // can't find gitdir — keep it
+	}
+	markerPath := filepath.Join(gitDir, worktreeOwnerFile)
+	var pidStr string
+	if isDockerExecutor(a.Exec) {
+		ctx := context.Background()
+		out, err := a.Exec.RunShell(ctx,
+			"cat "+shellQuote(markerPath)+" 2>/dev/null")
+		if err != nil {
+			return true // can't read marker — keep it
+		}
+		pidStr = strings.TrimSpace(out)
+	} else {
+		data, err := os.ReadFile(markerPath)
+		if err != nil {
+			return true // can't read marker — keep it
+		}
+		pidStr = strings.TrimSpace(string(data))
+	}
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 0 {
+		return true // invalid marker — keep it
+	}
+	// Check if the process is still alive. On Unix, kill(pid, 0) returns
+	// nil if the process exists (or if we don't have permission to signal
+	// it — but we're in the same user's processes, so that's unlikely).
+	return processAlive(pid)
 }
 
 // diffWorktree captures the diff of all changes in the worktree against HEAD.
@@ -477,9 +595,13 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 		gitContent, err := os.ReadFile(gitFile)
 		if err != nil {
 			if os.IsNotExist(err) {
-				// No .git file — not a valid worktree (either never fully
-				// created, or already partially cleaned). Safe to remove.
-				_ = os.RemoveAll(fullPath)
+				// No .git file — check if this is a partially-created worktree.
+				// If the directory has only the owner marker (or is empty), it's
+				// safe to remove. Otherwise, leave it (a concurrent session may
+				// be mid-creating it).
+				if isWorktreeDirSafeToRemove(fullPath) {
+					_ = os.RemoveAll(fullPath)
+				}
 			}
 			// Other error (permission denied, I/O) — fail closed: leave it.
 			continue
@@ -492,10 +614,17 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 			// Not a gitdir pointer — unknown format, leave it alone.
 			continue
 		}
-		// If the gitdir target exists, this worktree's parent repo is still
-		// alive — leave it alone.
+		// If the gitdir target exists, check if the creating session is still
+		// alive. If the owner PID is dead, the worktree is stale (crashed
+		// session) even though the repo is still present.
 		_, statErr := os.Stat(gitDir)
 		if statErr == nil {
+			// Repo is still alive — check if the session that created this
+			// worktree is still running.
+			if !isWorktreeOwnerAlive(a, fullPath) {
+				// Owner process is dead — stale worktree from a crashed session.
+				_ = os.RemoveAll(fullPath)
+			}
 			continue
 		}
 		if !os.IsNotExist(statErr) {
@@ -506,6 +635,18 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 		// worktree is orphaned. Clean it up.
 		_ = os.RemoveAll(fullPath)
 	}
+}
+
+// isWorktreeDirSafeToRemove checks whether a directory that lacks a .git file
+// is a partially-created worktree safe to remove, or a directory a concurrent
+// session is mid-creating. Returns true only if the directory is empty
+// (git worktree add hasn't run yet). Non-empty dirs are left alone.
+func isWorktreeDirSafeToRemove(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false // can't read — don't remove
+	}
+	return len(entries) == 0
 }
 
 // pruneStaleDockerWorktreeMetadata selectively removes .git/worktrees/
