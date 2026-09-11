@@ -236,12 +236,40 @@ func TestHookEnvironment(t *testing.T) {
 	}
 	h := NewHookEngine(cfg, dir)
 
-	r := h.RunPostToolHooks(context.Background(), "write_file", `{"path":"test.go"}`, "/work")
+	// Use dir as the per-call cwd so cmd.Dir and WAKIL_CWD are consistent
+	// and point to a valid directory.
+	r := h.RunPostToolHooks(context.Background(), "write_file", `{"path":"test.go"}`, dir)
 	if !hookContains(r.output, "write_file") {
 		t.Errorf("expected WAKIL_TOOL_NAME in output, got: %s", r.output)
 	}
 	if !hookContains(r.output, "test.go") {
 		t.Errorf("expected WAKIL_FILE_PATH in output, got: %s", r.output)
+	}
+	if !hookContains(r.output, dir) {
+		t.Errorf("expected WAKIL_CWD=%s in output, got: %s", dir, r.output)
+	}
+}
+
+func TestHookEnvironment_CwdConsistency(t *testing.T) {
+	// cmd.Dir and WAKIL_CWD should use the same value (the per-call cwd).
+	// This test verifies they're consistent by running pwd and comparing
+	// with $WAKIL_CWD.
+	dir := t.TempDir()
+	cfg := config.HooksConfig{
+		PostTool: []config.HookConfig{
+			{Command: "echo $(pwd):$WAKIL_CWD"},
+		},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	r := h.RunPostToolHooks(context.Background(), "write_file", `{}`, dir)
+	if r.blocked {
+		t.Fatalf("hook failed: %s", r.blockMsg)
+	}
+	// Both pwd and WAKIL_CWD should be dir (possibly with trailing differences
+	// due to symlink resolution in t.TempDir).
+	if !hookContains(r.output, dir) {
+		t.Errorf("expected pwd and WAKIL_CWD to match %s, got: %s", dir, r.output)
 	}
 }
 

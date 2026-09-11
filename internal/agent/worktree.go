@@ -64,25 +64,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/treeol/wakil/internal/exec"
 )
 
 // processAlive reports whether the given PID is still running. Uses
-// os.FindProcess + Signal(0) on Unix. On non-Unix platforms, always returns
-// true (can't check — fail closed to avoid deleting live worktrees).
+// kill(pid, 0) on Unix. On non-Unix platforms, always returns true (can't
+// check — fail closed to avoid deleting live worktrees).
+//
+// Implementation is in process_alive_unix.go (//go:build !windows) and
+// process_alive_windows.go (//go:build windows).
 func processAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	// Signal 0 doesn't send a signal — it just checks if the process exists.
-	if err := proc.Signal(syscall.Signal(0)); err == nil {
-		return true
-	}
-	return false
+	return processAliveImpl(pid)
 }
 
 // patchApplyMu serializes patch application to the parent workspace. While

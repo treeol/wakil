@@ -512,6 +512,13 @@ type CostsConfig struct {
 // of commands that fire at the named lifecycle event. Hooks run on the HOST
 // (not the sandbox executor), with user privileges. They sit under the
 // permission ladder — a hook cannot bypass a tool denial.
+//
+// SECURITY: Hooks are loaded ONLY from the user-level config file
+// (~/.config/wakil/config.json or $WAKIL_CONFIG). They are NEVER loaded from
+// workspace-level files, .wakil/ directories, or any repo-local source. This
+// prevents a cloned repository from executing arbitrary host commands on
+// the user's machine. Do not add workspace-level hooks loading without
+// explicit user opt-in and a trust boundary.
 type HooksConfig struct {
 	// PreTool hooks fire before a tool executes. A non-zero exit code blocks
 	// the tool with a visible reason. Tool is an optional pipe-separated

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -156,18 +155,22 @@ func (h *HookEngine) runHook(ctx context.Context, hk config.HookConfig, hc hookC
 		"WAKIL_CWD="+hc.cwd,
 	)
 
-	// Process group: when the timeout fires, kill the entire process group
-	// (sh + any children like sleep), not just the sh process.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	// Use Cancel + WaitDelay (Go 1.20+) for coordinated timeout:
-	// When the context expires, Cmd sends SIGKILL to the process, and
-	// WaitDelay forces the process to terminate within 2s of the signal.
-	// Combined with Setpgid, this kills the whole process group.
-	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	// Use hc.cwd (the per-call cwd) for cmd.Dir, falling back to h.cwd (the
+	// engine's cwd). For session hooks, hc.cwd == h.cwd. For pre/post-tool
+	// hooks, hc.cwd is the cwd passed per-call, which may differ from h.cwd
+	// (e.g. when the caller changes directory mid-session). WAKIL_CWD and
+	// cmd.Dir should use the same value so the hook script sees a consistent
+	// working directory.
+	cmd.Dir = hc.cwd
+	if cmd.Dir == "" {
+		cmd.Dir = h.cwd
 	}
-	cmd.WaitDelay = 2 * time.Second
+	if cmd.Dir == "" {
+		cmd.Dir = "."
+	}
+
+	// Platform-specific process-group setup and kill-on-cancel.
+	setProcessGroupAndCancel(cmd)
 
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
