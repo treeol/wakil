@@ -401,6 +401,61 @@ func TestDefaultRedactorCompilesAllPatterns(t *testing.T) {
 	}
 }
 
+// TestRateLimit429Retryable verifies that a 429 response is classified as
+// transient (retryable), NOT permanent. The old code classified all 4xx as
+// permanent, which dropped rate-limited events instead of retrying.
+func TestRateLimit429Retryable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests) // 429
+	}))
+	defer srv.Close()
+
+	queuePath := filepath.Join(t.TempDir(), "queue.jsonl")
+	e, err := New(Config{
+		Endpoint:  srv.URL,
+		Token:     "test",
+		Mode:      ModeShadow,
+		QueuePath: queuePath,
+		BatchMS:   50,
+	}, "wakil-live:test-429")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		e.Emit(EventUserTurn, UserTurnPayload{Text: fmt.Sprintf("msg %d", i)})
+	}
+	time.Sleep(500 * time.Millisecond)
+	e.Close()
+
+	// 429 is transient — events should remain in the queue (not dropped).
+	q, _ := newQueue(queuePath)
+	events, _ := q.readAll()
+	if len(events) == 0 {
+		t.Errorf("429 should be retryable — events should remain in queue, but queue is empty (events were dropped as permanent failure)")
+	}
+}
+
+// TestQueueFilePermissions verifies that the queue file is created with
+// 0600 permissions (owner read/write only), not 0644 (world-readable).
+func TestQueueFilePermissions(t *testing.T) {
+	queuePath := filepath.Join(t.TempDir(), "queue.jsonl")
+	q, err := newQueue(queuePath)
+	if err != nil {
+		t.Fatalf("newQueue: %v", err)
+	}
+	_ = q
+
+	info, err := os.Stat(queuePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	mode := info.Mode().Perm()
+	if mode != 0o600 {
+		t.Errorf("queue file permissions should be 0600, got %o", mode)
+	}
+}
+
 // TestRedactionInEmit verifies that secrets in event payloads are redacted
 // before being written to the queue.
 func TestRedactionInEmit(t *testing.T) {

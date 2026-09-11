@@ -34,7 +34,7 @@ type queue struct {
 
 func newQueue(path string) (*queue, error) {
 	// Create the file if it doesn't exist.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,7 @@ func (q *queue) append(ev Event) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	f, err := os.OpenFile(q.path, os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(q.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func (q *queue) appendBatch(events []Event) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	f, err := os.OpenFile(q.path, os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(q.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func (q *queue) truncateAfter(count int) error {
 
 	// Write the remaining events back to the file.
 	remaining := data[offset:]
-	return os.WriteFile(q.path, remaining, 0o644)
+	return os.WriteFile(q.path, remaining, 0o600)
 }
 
 // len returns the number of events in the queue.
@@ -252,9 +252,12 @@ func (s *sender) run() {
 	ticker := time.NewTicker(s.batchInterval)
 	defer ticker.Stop()
 
-	// Backoff state for retries.
+	// Backoff state for retries. When the endpoint is down, the ticker
+	// fires at the normal interval but we skip sending until the backoff
+	// window has elapsed. This prevents hammering a struggling server.
 	backoff := time.Second
 	maxBackoff := 60 * time.Second
+	var lastFailure time.Time
 
 	for {
 		select {
@@ -269,8 +272,10 @@ func (s *sender) run() {
 			}
 			batch = append(batch, ev)
 			if len(batch) >= 64 {
-				s.sendBatch(batch)
-				batch = batch[:0] // always clear: on failure, sendBatch persisted to the queue
+				if !s.sendBatchWithBackoff(batch, &backoff, maxBackoff, &lastFailure) {
+					// Failed — batch was persisted to queue by sendBatch.
+				}
+				batch = batch[:0]
 			}
 
 		case <-s.stopCh:
@@ -299,14 +304,38 @@ func (s *sender) run() {
 			// invert the order on every retry cycle.
 			s.drainQueue()
 			if len(batch) > 0 {
-				s.sendBatch(batch)
-				batch = batch[:0] // always clear: on failure, sendBatch persisted to the queue
+				s.sendBatchWithBackoff(batch, &backoff, maxBackoff, &lastFailure)
+				batch = batch[:0]
 			}
 		}
-
-		_ = backoff
-		_ = maxBackoff
 	}
+}
+
+// sendBatchWithBackoff wraps sendBatch with exponential backoff. On transient
+// failure, the backoff window grows. On success, the backoff resets. When
+// within the backoff window, the batch is persisted to the queue without
+// attempting a POST — this prevents hammering a struggling endpoint.
+func (s *sender) sendBatchWithBackoff(batch []Event, backoff *time.Duration, maxBackoff time.Duration, lastFailure *time.Time) bool {
+	if len(batch) == 0 {
+		return true
+	}
+	// If we're in a backoff window, skip the POST and persist to queue.
+	if !(*lastFailure).IsZero() && time.Since(*lastFailure) < *backoff {
+		_ = s.queue.appendBatch(batch)
+		return false
+	}
+	ok := s.sendBatch(batch)
+	if ok {
+		*backoff = time.Second // reset on success
+		*lastFailure = time.Time{}
+	} else {
+		*lastFailure = time.Now()
+		*backoff *= 2
+		if *backoff > maxBackoff {
+			*backoff = maxBackoff
+		}
+	}
+	return ok
 }
 
 // drainQueue reads events from the queue file (from channel overflow) and

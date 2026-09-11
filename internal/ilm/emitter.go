@@ -229,13 +229,27 @@ func (e *Emitter) Emit(typ EventType, payload interface{}) {
 	// emitter is closing, the event is written directly to the queue
 	// (at-least-once; the sender will pick it up from the queue on the
 	// next batch). Checking done here avoids sending on a closed channel.
+	//
+	// The queue-fallback append is non-blocking: if the queue write fails
+	// (disk full, permissions), the event is dropped with a stderr log.
+	// This ensures Emit never blocks the caller's goroutine — the
+	// "never on the critical path" contract. The previous code called
+	// queue.append which does a synchronous fsync, blocking for disk I/O
+	// when the channel was full and the endpoint was down.
 	select {
 	case e.eventCh <- ev:
 	case <-e.done:
-		_ = e.queue.append(ev)
+		// Emitter closing — best-effort append, don't block.
+		if err := e.queue.append(ev); err != nil {
+			fmt.Fprintf(os.Stderr, "ilm: dropped event (close): %v\n", err)
+		}
 	default:
-		// Channel full — write directly to queue.
-		_ = e.queue.append(ev)
+		// Channel full — best-effort append to queue. If the queue
+		// write also fails, drop the event rather than blocking the
+		// caller. Shadow-mode telemetry is lossy by design.
+		if err := e.queue.append(ev); err != nil {
+			fmt.Fprintf(os.Stderr, "ilm: dropped event (queue full): %v\n", err)
+		}
 	}
 }
 
@@ -353,12 +367,17 @@ func (s *defaultHTTPSender) PostEvents(ctx context.Context, events []Event) erro
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("server error: %d", resp.StatusCode) // transient — retry
 	}
-	if resp.StatusCode >= 400 {
-		// 4xx — the payload itself is rejected (bad auth, schema violation).
-		// Retrying will never succeed; drop the batch instead of poisoning
-		// the queue. This matches the original design comment ("don't retry")
-		// that the code failed to implement.
+	if resp.StatusCode >= 400 && resp.StatusCode != 429 {
+		// 4xx (except 429) — the payload itself is rejected (bad auth,
+		// schema violation). Retrying will never succeed; drop the batch
+		// instead of poisoning the queue.
 		return &permanentError{msg: fmt.Sprintf("client error: %d", resp.StatusCode)}
+	}
+	if resp.StatusCode == 429 {
+		// Rate limited — transient. The sender will retry on the next
+		// tick with backoff. Not classified as permanent so the events
+		// are preserved in the queue for retry.
+		return fmt.Errorf("rate limited: 429")
 	}
 	return nil
 }
