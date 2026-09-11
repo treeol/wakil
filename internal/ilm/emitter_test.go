@@ -456,6 +456,23 @@ func TestQueueFilePermissions(t *testing.T) {
 	}
 }
 
+// TestUnknownModeRejected verifies that an unknown mode value is rejected
+// at construction time. The old code activated emission for any non-empty,
+// non-"off" value (e.g. Mode="yes" would start the sender).
+func TestUnknownModeRejected(t *testing.T) {
+	_, err := New(Config{
+		Mode:      "yes",
+		Endpoint:  "http://localhost:9999",
+		QueuePath: filepath.Join(t.TempDir(), "queue.jsonl"),
+	}, "wakil-live:test-unknown")
+	if err == nil {
+		t.Fatal("expected error for unknown mode 'yes', got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown mode") {
+		t.Errorf("expected 'unknown mode' error, got %v", err)
+	}
+}
+
 // TestRedactionInEmit verifies that secrets in event payloads are redacted
 // before being written to the queue.
 func TestRedactionInEmit(t *testing.T) {

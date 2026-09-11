@@ -107,9 +107,13 @@ type Emitter struct {
 	// redactor applies redaction patterns before events leave the process.
 	redactor *Redactor
 
-	// closed marks the emitter as shut down.
+	// closed marks the emitter as shut down. Guarded by closeMu — all
+	// reads AND writes must hold closeMu to avoid a data race.
 	closed bool
 	closeMu sync.Mutex
+
+	// closeOnce ensures Close is idempotent and race-free.
+	closeOnce sync.Once
 
 	// done is closed when the emitter is shutting down. Emit() checks
 	// this to avoid sending on eventCh after Close — which would panic
@@ -122,6 +126,11 @@ type Emitter struct {
 func New(cfg Config, sessionID string) (*Emitter, error) {
 	if cfg.Mode == "" {
 		cfg.Mode = ModeOff
+	}
+	// Reject unknown mode values — only "off" and "shadow" are valid.
+	// The old code activated emission for any non-empty, non-"off" value.
+	if cfg.Mode != ModeOff && cfg.Mode != ModeShadow {
+		return nil, fmt.Errorf("ilm: unknown mode %q (must be %q or %q)", cfg.Mode, ModeOff, ModeShadow)
 	}
 	if cfg.BatchMS <= 0 {
 		cfg.BatchMS = defaultBatchMS
@@ -258,20 +267,23 @@ func (e *Emitter) Emit(typ EventType, payload interface{}) {
 // with Emit — Emit checks the done channel to avoid sending on a closed
 // channel. eventCh is intentionally NOT closed (closing it would race
 // with concurrent Emit calls and panic with "send on closed channel").
+//
+// Close uses sync.Once so the race between the initial e.closed read and
+// the closeMu write is eliminated — the once.Do ensures exactly one close
+// regardless of concurrent callers.
 func (e *Emitter) Close() error {
-	if e == nil || e.cfg.Mode == ModeOff || e.closed {
+	if e == nil || e.cfg.Mode == ModeOff {
 		return nil
 	}
-	e.closeMu.Lock()
-	defer e.closeMu.Unlock()
-	if e.closed {
-		return nil
-	}
-	e.closed = true
-	close(e.done)
-	if e.sender != nil {
-		e.sender.stop()
-	}
+	e.closeOnce.Do(func() {
+		e.closeMu.Lock()
+		e.closed = true
+		close(e.done)
+		e.closeMu.Unlock()
+		if e.sender != nil {
+			e.sender.stop()
+		}
+	})
 	return nil
 }
 
