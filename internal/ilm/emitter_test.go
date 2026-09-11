@@ -214,6 +214,193 @@ func TestRedaction(t *testing.T) {
 	}
 }
 
+// TestRedactionPerMatchAllow verifies that allow patterns are checked per-match,
+// not per-string. A string containing both an allow-pattern match and an
+// unrelated secret should have the secret redacted — the allow pattern should
+// only suppress the redaction it overlaps with, not all redactions.
+func TestRedactionPerMatchAllow(t *testing.T) {
+	r := DefaultRedactor()
+
+	// This string contains both "api_key config" (would have matched an
+	// allow pattern in the old per-string mode) AND a bearer token. With
+	// allow patterns removed, the bearer token must be redacted.
+	input := `api_key config: see docs\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJInR5cCI6IkpXVCJ9`
+	got := r.RedactString(input)
+
+	// The bearer token must be redacted.
+	if strings.Contains(got, "Bearer eyJhbGci") {
+		t.Errorf("bearer token not redacted: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED:bearer-token]") {
+		t.Errorf("expected [REDACTED:bearer-token] in output, got %q", got)
+	}
+}
+
+// TestRedactionPrivateKeyFullBlock verifies that the private key regex matches
+// the entire key block (BEGIN through END), not just the opening delimiter.
+func TestRedactionPrivateKeyFullBlock(t *testing.T) {
+	r := DefaultRedactor()
+
+	input := "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
+	got := r.RedactString(input)
+
+	// The key material must not be present in the output.
+	if strings.Contains(got, "MIIEowIBAAKCAQEA") {
+		t.Errorf("private key body not redacted: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private-key]") {
+		t.Errorf("expected [REDACTED:private-key] in output, got %q", got)
+	}
+}
+
+// TestRedactionPrivateKeyTruncated verifies that a truncated PEM block (BEGIN
+// without END) is still redacted by the fallback pattern.
+func TestRedactionPrivateKeyTruncated(t *testing.T) {
+	r := DefaultRedactor()
+
+	// Truncated key — no END marker (e.g. from log line truncation).
+	input := "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAabcdef123456"
+	got := r.RedactString(input)
+
+	if strings.Contains(got, "MIIEowIBAAKCAQEA") {
+		t.Errorf("truncated private key body not redacted: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private-key]") {
+		t.Errorf("expected [REDACTED:private-key] for truncated PEM, got %q", got)
+	}
+}
+
+// TestRedactionTwoPEMBlocks verifies that multiple PEM blocks in one string
+// are all redacted (lazy quantifier doesn't greedily span both).
+func TestRedactionTwoPEMBlocks(t *testing.T) {
+	r := DefaultRedactor()
+
+	input := "-----BEGIN RSA PRIVATE KEY-----\nkey1\n-----END RSA PRIVATE KEY-----\nsome text\n-----BEGIN EC PRIVATE KEY-----\nkey2\n-----END EC PRIVATE KEY-----"
+	got := r.RedactString(input)
+
+	if strings.Contains(got, "key1") || strings.Contains(got, "key2") {
+		t.Errorf("PEM key body not redacted: %q", got)
+	}
+	// Should have two redaction markers.
+	count := strings.Count(got, "[REDACTED:private-key]")
+	if count != 2 {
+		t.Errorf("expected 2 [REDACTED:private-key] markers, got %d in %q", count, got)
+	}
+}
+
+// TestRedactionCredentialField verifies that JSON fields with known credential
+// names are redacted even when the value doesn't match a regex pattern.
+func TestRedactionCredentialField(t *testing.T) {
+	r := DefaultRedactor()
+
+	// "short" is too short to match the credential_assignment regex, but
+	// the field name "password" should trigger redaction.
+	redacted := r.RedactJSON(json.RawMessage(`{"password":"short"}`))
+	var v map[string]interface{}
+	json.Unmarshal(redacted, &v)
+	if pw, ok := v["password"].(string); ok {
+		if pw != "[REDACTED:credential-field]" {
+			t.Errorf("expected [REDACTED:credential-field] for password field, got %q", pw)
+		}
+	} else {
+		t.Errorf("password field missing or not a string after redaction: %v", v)
+	}
+
+	// Normal fields should not be affected.
+	redacted = r.RedactJSON(json.RawMessage(`{"name":"hello"}`))
+	json.Unmarshal(redacted, &v)
+	if name, ok := v["name"].(string); ok {
+		if name != "hello" {
+			t.Errorf("non-credential field was modified: %q", name)
+		}
+	}
+}
+
+// TestRedactionCredentialFieldNonString verifies that non-string values under
+// credential field names are also redacted (numbers, objects, arrays).
+func TestRedactionCredentialFieldNonString(t *testing.T) {
+	r := DefaultRedactor()
+
+	// Number value
+	redacted := r.RedactJSON(json.RawMessage(`{"password": 12345678}`))
+	var v map[string]interface{}
+	json.Unmarshal(redacted, &v)
+	if pw, ok := v["password"]; ok {
+		if pw != "[REDACTED:credential-field]" {
+			t.Errorf("expected credential-field redaction for numeric password, got %v", pw)
+		}
+	}
+
+	// Object value
+	redacted = r.RedactJSON(json.RawMessage(`{"secret": {"value": "hidden"}}`))
+	json.Unmarshal(redacted, &v)
+	if sec, ok := v["secret"]; ok {
+		if sec != "[REDACTED:credential-field]" {
+			t.Errorf("expected credential-field redaction for object secret, got %v", sec)
+		}
+	}
+
+	// Array value
+	redacted = r.RedactJSON(json.RawMessage(`{"tokens": ["a", "b"]}`))
+	json.Unmarshal(redacted, &v)
+	if toks, ok := v["tokens"]; ok {
+		if toks != "[REDACTED:credential-field]" {
+			t.Errorf("expected credential-field redaction for array tokens, got %v", toks)
+		}
+	}
+}
+
+// TestRedactionCredentialFieldNormalized verifies that field names are
+// normalized (lowercased, _ and - removed) before lookup.
+func TestRedactionCredentialFieldNormalized(t *testing.T) {
+	r := DefaultRedactor()
+
+	tests := []string{
+		`{"API-Key":"secret"}`,
+		`{"api_key":"secret"}`,
+		`{"ApiKey":"secret"}`,
+		`{"PRIVATE-KEY":"secret"}`,
+		`{"private_key":"secret"}`,
+		`{"Access-Token":"secret"}`,
+	}
+	for _, input := range tests {
+		redacted := r.RedactJSON(json.RawMessage(input))
+		var v map[string]interface{}
+		json.Unmarshal(redacted, &v)
+		for _, val := range v {
+			if val != "[REDACTED:credential-field]" {
+				t.Errorf("expected credential-field redaction for %s, got %v", input, val)
+			}
+		}
+	}
+}
+
+// TestRedactionMalformedJSON verifies that secrets in malformed JSON are still
+// redacted via the RedactString fallback.
+func TestRedactionMalformedJSON(t *testing.T) {
+	r := DefaultRedactor()
+
+	// Malformed JSON containing a secret — should fall back to string redaction.
+	malformed := json.RawMessage(`{"text":"my key is sk-1234567890abcdef1234567890abcdef"`)
+	redacted := r.RedactJSON(malformed)
+	got := string(redacted)
+	if strings.Contains(got, "sk-1234567890abcdef") {
+		t.Errorf("secret not redacted in malformed JSON: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED:api-key]") {
+		t.Errorf("expected [REDACTED:api-key] in malformed JSON output, got %q", got)
+	}
+}
+
+// TestDefaultRedactorCompilesAllPatterns verifies that all 5 redaction patterns
+// compile successfully — a silently dropped pattern is a security gap.
+func TestDefaultRedactorCompilesAllPatterns(t *testing.T) {
+	r := DefaultRedactor()
+	if len(r.patterns) != 5 {
+		t.Errorf("expected 5 compiled patterns (private_key_full, private_key_truncated, api_key_long, credential_assignment, bearer_token), got %d", len(r.patterns))
+	}
+}
+
 // TestRedactionInEmit verifies that secrets in event payloads are redacted
 // before being written to the queue.
 func TestRedactionInEmit(t *testing.T) {
