@@ -8,9 +8,8 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
-// cost_state.go: cost-tracking state for App (WP-6.3 extraction).
-// Embedded in App so all field access (a.Costs, etc.) is unchanged via
-// Go's promoted-field access.
+// cost_state.go: cost-tracking state for App. Embedded in App so all field
+// access (a.Costs, etc.) is unchanged via Go's promoted-field access.
 
 type costState struct {
 	// Costs accumulates per-source cost estimates for the session, rendered in the
@@ -82,6 +81,11 @@ func (a *App) SessionTokenTotals() (input, output int64) {
 		return 0, 0
 	}
 	_, rows := a.Costs.Snapshot()
+	return sumTokenTotals(rows)
+}
+
+// sumTokenTotals sums InputTok and OutputTok across all snapshot rows.
+func sumTokenTotals(rows []proxy.CostRow) (input, output int64) {
 	for _, r := range rows {
 		input += r.InputTok
 		output += r.OutputTok
@@ -98,15 +102,13 @@ func (a *App) FormatCostSummary() string {
 		return ""
 	}
 	total, rows := a.Costs.Snapshot()
-	var inTok, outTok int64
 	var hasUnpriced bool
 	for _, r := range rows {
-		inTok += r.InputTok
-		outTok += r.OutputTok
 		if !r.Priced {
 			hasUnpriced = true
 		}
 	}
+	inTok, outTok := sumTokenTotals(rows)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "session cost: %s", proxy.FmtUSDCompact(total))

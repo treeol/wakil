@@ -11,11 +11,10 @@ import (
 // Cost-tracking subsystem. Estimates over precision: modeled numbers are tagged
 // with a confidence tier so a compute-cost guess never reads as a billed amount.
 //
-// Scope (P24): capture + display only, per-session. Two future hooks are
-// intentionally NOT implemented here:
-//   - budget enforcement: refuse a call once a configured ceiling is crossed.
-//   - per-turn alerts: warn when one turn's modeled spend exceeds a threshold.
-// Cross-session persistence is also deferred (this tracker dies with the App).
+// Scope: capture + display, per-session. Budget enforcement is implemented in
+// internal/agent/cost_state.go (checkBudgetExhausted, BudgetUSD) and
+// internal/agent/turn_phases.go. Cross-session persistence is still deferred
+// (this tracker dies with the App).
 
 // Cost sources. Adding a source is one constant plus one [costs] config entry —
 // the tracker map and the sidebar block adapt automatically.

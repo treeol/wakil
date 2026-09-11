@@ -1281,14 +1281,7 @@ func (a *App) RecordOracleCostFor(model string, u counsel.OracleUsage) {
 	a.Costs.Record(source, u.InputTokens, u.OutputTokens, usd, priced, proxy.ConfExact)
 }
 
-// recordOracleCost records one oracle call using the legacy OracleModel field.
-// Kept for callers that pre-date the multi-model panel; new code should use
-// RecordOracleCostFor with an explicit model string.
-func (a *App) RecordOracleCost(u counsel.OracleUsage) {
-	a.RecordOracleCostFor(a.Cfg.OracleModel, u)
-}
-
-// recordSearchCost records one search query against the "search" source, priced
+// RecordSearchCost records one search query against the "search" source, priced
 // per-query. Confidence is modeled. nil tracker → no-op.
 func (a *App) RecordSearchCost() {
 	usd, priced := a.Cfg.Costs.SearchCost()

@@ -38,7 +38,7 @@ func TestMashuraRecordsExactCostFromConfig(t *testing.T) {
 	}
 	app := &agent.App{Cfg: cfg}
 	app.ApplyOptions(agent.WithCosts(proxy.NewCostTracker()))
-	app.RecordOracleCost(counsel.OracleUsage{InputTokens: 1_000_000, OutputTokens: 2_000_000})
+	app.RecordOracleCostFor(model, counsel.OracleUsage{InputTokens: 1_000_000, OutputTokens: 2_000_000})
 
 	total, rows := app.Costs.Snapshot()
 	wantKey := proxy.CostSourceMashuraPrefix + model // "mashura·claude-fable-5"
