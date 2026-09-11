@@ -655,3 +655,198 @@ func TestCheckpoint_EvictionByCount(t *testing.T) {
 		t.Fatalf("expected cpTotalBytes=%d, got %d", expectedBytes, totalBytes)
 	}
 }
+
+// TestCheckpoint_RewindPreservesCheckpointsOnRestoreError verifies that a
+// failed file restore does NOT remove checkpoints or truncate conversation.
+// The checkpoints must remain intact so the user can retry.
+func TestCheckpoint_RewindPreservesCheckpointsOnRestoreError(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	p := filepath.Join(dir, "test.txt")
+	os.WriteFile(p, []byte("original"), 0o644)
+
+	// Turn: capture + mutate.
+	app.startCheckpoint()
+	app.captureForCheckpoint(ctx, p)
+	app.Exec.WriteFile(ctx, p, "modified")
+	app.endCheckpoint()
+
+	// Replace the executor with one that fails WriteFileBytes.
+	// This simulates a restore I/O failure without relying on chmod (which
+	// doesn't work when running as root).
+	recExec := newRecordingExecutor()
+	recExec.writeFileErr = fmt.Errorf("simulated disk error")
+	recExec.files[p] = "modified" // preserve current state for reads
+	app.Exec = recExec
+
+	// Rewind — restore should fail.
+	result := app.rewind(1)
+
+	// Should have errors.
+	if len(result.Errors) == 0 {
+		t.Fatalf("expected restore errors, got none: %+v", result)
+	}
+
+	// TurnsRewound should be 0 (aborted, not completed).
+	if result.TurnsRewound != 0 {
+		t.Fatalf("expected TurnsRewound=0 on error, got %d", result.TurnsRewound)
+	}
+
+	// Checkpoints should still be in the stack (not removed).
+	app.cpMu.Lock()
+	cpCount := len(app.checkpoints)
+	rewinding := app.cpRewinding
+	app.cpMu.Unlock()
+	if cpCount != 1 {
+		t.Fatalf("expected 1 checkpoint preserved after failed restore, got %d", cpCount)
+	}
+	if rewinding {
+		t.Fatal("cpRewinding should be false after failed restore")
+	}
+
+	// Conversation should NOT be truncated.
+	if result.ConvTruncated {
+		t.Fatal("Conv should not be truncated on restore failure")
+	}
+
+	// Summary should indicate abort.
+	summary := result.Summary()
+	if !strings.Contains(summary, "aborted") {
+		t.Fatalf("summary should mention 'aborted', got: %s", summary)
+	}
+
+	// Fix the executor and retry rewind — should succeed now.
+	recExec.writeFileErr = nil
+	result2 := app.rewind(1)
+	if len(result2.RestoredPaths) != 1 {
+		t.Fatalf("retry rewind should succeed, got %d restored: %+v", len(result2.RestoredPaths), result2)
+	}
+
+	// Verify file was restored in the fake executor.
+	got, ok := recExec.files[p]
+	if !ok || got != "original" {
+		t.Fatalf("file should be restored to 'original' on retry, got %q (exists=%v)", got, ok)
+	}
+}
+
+// TestCheckpoint_RewindPreservesConvOnRestoreError verifies that conversation
+// is NOT truncated when a restore error occurs, even with a valid Conv boundary.
+func TestCheckpoint_RewindPreservesConvOnRestoreError(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	p := filepath.Join(dir, "test.txt")
+	os.WriteFile(p, []byte("original"), 0o644)
+
+	// Populate Conv with a valid user boundary.
+	userMsg := "hello"
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: &userMsg},
+	}
+
+	// Turn: capture + mutate.
+	app.startCheckpoint()
+
+	// Simulate assistant response appended to Conv.
+	assistantMsg := "I will help."
+	app.Conv = append(app.Conv, proxy.Message{Role: "assistant", Content: &assistantMsg})
+
+	app.captureForCheckpoint(ctx, p)
+	app.Exec.WriteFile(ctx, p, "modified")
+	app.endCheckpoint()
+
+	// Replace the executor with one that fails WriteFileBytes.
+	recExec := newRecordingExecutor()
+	recExec.writeFileErr = fmt.Errorf("simulated disk error")
+	recExec.files[p] = "modified"
+	app.Exec = recExec
+
+	// Rewind — restore should fail.
+	result := app.rewind(1)
+
+	// Conv should NOT be truncated.
+	if result.ConvTruncated {
+		t.Fatal("Conv should not be truncated on restore failure")
+	}
+
+	// Conv should still have both messages.
+	app.convMu.RLock()
+	convLen := len(app.Conv)
+	app.convMu.RUnlock()
+	if convLen != 2 {
+		t.Fatalf("expected Conv length 2 (preserved), got %d", convLen)
+	}
+
+	// Checkpoints should still be intact.
+	app.cpMu.Lock()
+	cpCount := len(app.checkpoints)
+	app.cpMu.Unlock()
+	if cpCount != 1 {
+		t.Fatalf("expected 1 checkpoint preserved, got %d", cpCount)
+	}
+}
+
+// TestCheckpoint_RewindBlocksNewTurn verifies that startCheckpoint is rejected
+// while a rewind is in progress (cpRewinding=true).
+func TestCheckpoint_RewindBlocksNewTurn(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	p := filepath.Join(dir, "test.txt")
+	os.WriteFile(p, []byte("original"), 0o644)
+
+	app.startCheckpoint()
+	app.captureForCheckpoint(ctx, p)
+	app.Exec.WriteFile(ctx, p, "modified")
+	app.endCheckpoint()
+
+	// Manually set cpRewinding to simulate rewind in progress.
+	app.cpMu.Lock()
+	app.cpRewinding = true
+	app.cpMu.Unlock()
+
+	// startCheckpoint should return false (rewind in progress).
+	ok := app.startCheckpoint()
+	if ok {
+		t.Fatal("expected startCheckpoint to return false during rewind")
+	}
+
+	app.cpMu.Lock()
+	cpCount := len(app.checkpoints)
+	turnCount := app.cpTurnCount
+	rewinding := app.cpRewinding
+	app.cpMu.Unlock()
+
+	if cpCount != 1 {
+		t.Fatalf("expected 1 checkpoint (new turn blocked), got %d", cpCount)
+	}
+	if turnCount != 1 {
+		t.Fatalf("expected turnCount=1 (no increment), got %d", turnCount)
+	}
+	if !rewinding {
+		t.Fatal("cpRewinding should still be true (we set it manually)")
+	}
+
+	// Capture should also be blocked during rewind — test with a new file.
+	p2 := filepath.Join(dir, "new.txt")
+	os.WriteFile(p2, []byte("second"), 0o644)
+	app.captureForCheckpoint(ctx, p2)
+
+	app.cpMu.Lock()
+	cp := app.activeCheckpointLocked()
+	fileCount := 0
+	if cp != nil {
+		fileCount = len(cp.Files)
+	}
+	app.cpMu.Unlock()
+
+	if fileCount != 1 {
+		t.Fatalf("expected 1 file in checkpoint (capture blocked during rewind), got %d", fileCount)
+	}
+
+	// Clean up.
+	app.cpMu.Lock()
+	app.cpRewinding = false
+	app.cpMu.Unlock()
+}

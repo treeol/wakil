@@ -63,6 +63,7 @@ type checkpointState struct {
 	cpTurnCount    int  // total user turns this session (for display)
 	cpActive       bool // true when a checkpoint is active for the current turn
 	cpTotalBytes   int  // approximate total bytes across all checkpoints
+	cpRewinding    bool // true while rewind file I/O is in progress — blocks new turns and captures
 }
 
 // startCheckpoint begins a new checkpoint for the current turn. Called from
@@ -72,13 +73,20 @@ type checkpointState struct {
 // response.
 //
 // Safe to call when no checkpoint system is active (subagents, tests) — it's
-// a no-op for IsSubagent Apps.
-func (a *App) startCheckpoint() {
+// a no-op for IsSubagent Apps. Returns false if a rewind is in progress
+// (the caller should warn the user that the turn will not be checkpointed).
+func (a *App) startCheckpoint() bool {
 	if a.IsSubagent {
-		return
+		return false
 	}
 	a.cpMu.Lock()
 	defer a.cpMu.Unlock()
+
+	// Refuse to start a new checkpoint while a rewind is in progress —
+	// file restores and conversation truncation would race the new turn.
+	if a.cpRewinding {
+		return false
+	}
 
 	a.cpTurnCount++
 	cp := Checkpoint{
@@ -94,6 +102,7 @@ func (a *App) startCheckpoint() {
 	for len(a.checkpoints) > checkpointMaxKeep {
 		a.evictOldestLocked()
 	}
+	return true
 }
 
 // evictOldestLocked removes the oldest checkpoint and updates the total byte
@@ -131,7 +140,7 @@ func (a *App) captureForCheckpoint(ctx context.Context, canonical string) {
 	}
 
 	a.cpMu.Lock()
-	if !a.cpActive || len(a.checkpoints) == 0 {
+	if !a.cpActive || a.cpRewinding || len(a.checkpoints) == 0 {
 		a.cpMu.Unlock()
 		return
 	}
@@ -273,6 +282,8 @@ func (a *App) endCheckpoint() {
 
 // clearCheckpoints discards all checkpoints. Called on compaction, session
 // rotation, and resume — ConvLen values are invalid after Conv restructuring.
+// If a rewind is in progress, this should not be called (the cpRewinding
+// guard prevents concurrent turns that could trigger compaction).
 func (a *App) clearCheckpoints() {
 	a.cpMu.Lock()
 	a.checkpoints = nil
@@ -296,10 +307,25 @@ type rewindResult struct {
 
 func (r *rewindResult) Summary() string {
 	if len(r.Errors) > 0 && r.TurnsRewound == 0 {
-		// Invalid rewind — just report the error.
+		// Rewind was aborted due to restore errors. Checkpoints are preserved
+		// for retry. Report what was partially done + the errors.
 		var b strings.Builder
+		b.WriteString("⚠ rewind aborted — checkpoints preserved for retry\n")
+		if len(r.RestoredPaths) > 0 {
+			fmt.Fprintf(&b, "  %d file(s) were restored before failure:\n", len(r.RestoredPaths))
+			for _, p := range r.RestoredPaths {
+				b.WriteString("    · " + p + "\n")
+			}
+		}
+		if len(r.DeletedPaths) > 0 {
+			fmt.Fprintf(&b, "  %d file(s) were deleted before failure:\n", len(r.DeletedPaths))
+			for _, p := range r.DeletedPaths {
+				b.WriteString("    · " + p + "\n")
+			}
+		}
+		fmt.Fprintf(&b, "  %d restore error(s):", len(r.Errors))
 		for _, e := range r.Errors {
-			b.WriteString(e)
+			b.WriteString("\n    · " + e)
 		}
 		return b.String()
 	}
@@ -373,6 +399,11 @@ func (a *App) rewind(n int) rewindResult {
 		a.cpMu.Unlock()
 		return rewindResult{Errors: []string{"cannot rewind while a turn is in progress"}}
 	}
+	// Refuse rewind while another rewind is already in progress.
+	if a.cpRewinding {
+		a.cpMu.Unlock()
+		return rewindResult{Errors: []string{"cannot rewind while a previous rewind is in progress"}}
+	}
 	if n < 1 || n > len(a.checkpoints) {
 		count := len(a.checkpoints)
 		a.cpMu.Unlock()
@@ -417,19 +448,18 @@ func (a *App) rewind(n int) rewindResult {
 	}
 	a.convMu.RUnlock()
 
-	// Remove the rewound checkpoints from the stack and update byte counter.
-	newCheckpoints := make([]Checkpoint, targetIdx)
-	copy(newCheckpoints, a.checkpoints[:targetIdx])
-	for i := targetIdx; i < len(a.checkpoints); i++ {
-		for _, snap := range a.checkpoints[i].Files {
-			if snap.Content != nil {
-				a.cpTotalBytes -= len(snap.Content)
-			}
-		}
-	}
-	a.checkpoints = newCheckpoints
-	a.cpActive = false
+	// Set cpRewinding to block new turns and captures during file restore I/O.
+	// This acts as a turn-exclusion guard that persists through the entire
+	// restore — unlike cpActive which is already false at this point.
+	a.cpRewinding = true
 	a.cpMu.Unlock()
+
+	// Ensure cpRewinding is cleared even if a panic occurs during I/O.
+	defer func() {
+		a.cpMu.Lock()
+		a.cpRewinding = false
+		a.cpMu.Unlock()
+	}()
 
 	// Restore files outside the checkpoint lock (I/O).
 	ctx := context.Background()
@@ -445,6 +475,7 @@ func (a *App) rewind(n int) rewindResult {
 	}
 	sort.Strings(paths)
 
+	anyError := false
 	for _, path := range paths {
 		snap := manifest[path]
 		switch {
@@ -460,6 +491,7 @@ func (a *App) rewind(n int) rewindResult {
 				// operation. Only report non-not-found errors.
 				if !isFileNotFoundError(err) {
 					result.Errors = append(result.Errors, fmt.Sprintf("delete %s: %v", path, err))
+					anyError = true
 				} else {
 					// Already gone — count as deleted.
 					result.DeletedPaths = append(result.DeletedPaths, path)
@@ -475,6 +507,7 @@ func (a *App) rewind(n int) rewindResult {
 			// (byte-exact, handles both text and binary).
 			if _, err := a.Exec.WriteFileBytes(ctx, path, snap.Content); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("restore %s: %v", path, err))
+				anyError = true
 			} else {
 				result.RestoredPaths = append(result.RestoredPaths, path)
 			}
@@ -484,17 +517,47 @@ func (a *App) rewind(n int) rewindResult {
 		}
 	}
 
+	// If any restore error occurred, keep checkpoints intact so the user can
+	// retry or inspect. Do NOT truncate conversation on partial failure.
+	// Report the failure clearly — the rewind was aborted, not completed.
+	if anyError {
+		result.TurnsRewound = 0
+		result.ConvTruncated = false
+		return result
+	}
+
 	// Truncate Conv to the target checkpoint's ConvLen — only if the boundary
 	// is valid. This removes the assistant's response, tool calls, and tool
 	// results from the rewound turn(s), keeping the user message.
+	// Re-check the boundary at truncation time to detect any Conv restructuring
+	// that happened between the initial check and now.
 	if convValid {
 		a.convMu.Lock()
-		if convLen <= len(a.Conv) {
+		if convLen > 0 && convLen <= len(a.Conv) && a.Conv[convLen-1].Role == "user" {
 			a.Conv = a.Conv[:convLen]
 			result.ConvTruncated = true
 		}
 		a.convMu.Unlock()
 	}
+
+	// Remove the rewound checkpoints from the stack and update byte counter.
+	// This is deferred until AFTER successful file restoration so that a
+	// failed restore leaves checkpoints intact for retry.
+	a.cpMu.Lock()
+	if len(a.checkpoints) >= targetIdx+n {
+		newCheckpoints := make([]Checkpoint, targetIdx)
+		copy(newCheckpoints, a.checkpoints[:targetIdx])
+		for i := targetIdx; i < len(a.checkpoints); i++ {
+			for _, snap := range a.checkpoints[i].Files {
+				if snap.Content != nil {
+					a.cpTotalBytes -= len(snap.Content)
+				}
+			}
+		}
+		a.checkpoints = newCheckpoints
+	}
+	a.cpActive = false
+	a.cpMu.Unlock()
 
 	return result
 }

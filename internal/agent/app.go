@@ -1018,6 +1018,8 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 
 	// Start a checkpoint for this turn. Captures pre-mutation file state as
 	// tools run during the turn, enabling /rewind to undo file changes.
+	// If a rewind is in progress (rare — same goroutine), the turn proceeds
+	// without checkpointing.
 	a.startCheckpoint()
 	defer a.endCheckpoint()
 
