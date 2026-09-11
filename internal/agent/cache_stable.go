@@ -4,18 +4,13 @@ package agent
 //
 // The system prompt (Conv[0]) is already day-stable via ensurePreamble, and
 // Anthropic cache_control breakpoints are already computed by the proxy
-// client. This file fills the remaining gaps:
+// client. This file provides deterministic tool ordering within a group:
 //
-//   - Deterministic tool ordering within groups: tools are sorted by name
-//     *within each group* (built-ins, search, MCP, oracle, LSP, browser),
-//     preserving the group order so toggling a conditional group only
-//     invalidates the suffix, not the entire prefix. This is important
-//     because tool schemas are part of the prompt-cache prefix; non-
-//     deterministic ordering within a group (e.g., MCP server returning
-//     tools in a different order on reconnect) would silently invalidate
-//     the cache.
-//   - Cache-hit ratio: surfaces cached-token statistics for the /info panel
-//     and cost display.
+// Tools are sorted by name within a single group (built-ins, search, MCP,
+// oracle, LSP, browser) so that non-deterministic ordering (e.g., an MCP
+// server returning tools in a different order on reconnect) does not
+// silently invalidate the prompt-cache prefix. Group order itself is
+// determined by the caller's append chain, not by this file.
 
 import (
 	"sort"
@@ -23,9 +18,10 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
-// SortToolsByName returns a copy of tools sorted by Function.Name.
-// Used within a single tool group (not across groups) so that group ordering
-// is preserved — toggling a conditional group only invalidates the suffix.
+// SortToolsByName returns a shallow copy of nonempty tools sorted by
+// Function.Name; empty input is returned unchanged. Callers should sort
+// each group separately and append groups in the desired order so that
+// toggling a conditional group only invalidates from that group onward.
 func SortToolsByName(tools []proxy.Tool) []proxy.Tool {
 	if len(tools) == 0 {
 		return tools
