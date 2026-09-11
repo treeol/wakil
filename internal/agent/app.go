@@ -1413,6 +1413,15 @@ func (a *App) ensurePreamble() {
 	if a.preambleDay == today {
 		return
 	}
+
+	// Card #191: Prune stale worktrees from previous (possibly crashed) sessions.
+	// Runs once per session (first turn) and on day rollover — cheap enough since
+	// git worktree prune is a no-op when there's nothing to clean.
+	if a.preambleDay == "" {
+		// First turn this session — prune.
+		pruneStaleWorktrees(context.Background(), a)
+	}
+
 	text := a.buildPreamble(today)
 	a.convMu.Lock()
 	defer a.convMu.Unlock()

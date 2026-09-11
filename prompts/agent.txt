@@ -610,10 +610,23 @@ You have async work in flight. What should you do?
     - Edit (capability: "edit"): can read AND edit files — edit_file,
       write_file, delete_file, move_file. Gated on /auto (or --auto in
       headless runs — session write consent); rejected without it, never
-      silently downgraded. Edit-tier children are serialized (at most one
-      running at a time); discovery children still parallelize freely,
-      including alongside one edit child. The child never prompts — consent
-      was established at session level.
+      silently downgraded. In a git repo with a DirectExecutor, edit-tier
+      children run in isolated git worktrees — each child gets its own
+      working directory, and changes are applied back as patches (one at a
+      time). This allows parallel edit dispatch. In a non-git directory or
+      with DockerExecutor, edit children fall back to serialized execution
+      (one at a time) with a warning. Discovery children always parallelize
+      freely, including alongside edit children.
+      Important: worktree-mode children see the committed HEAD state, NOT
+      the parent's uncommitted working tree. If you've made edits in the
+      current session (including patches from earlier sibling children),
+      those changes are invisible to the child and may cause its patch to
+      conflict. Overlapping or incompatible changes to the same file will
+      conflict; disjoint changes apply cleanly. A conflicting child's work
+      is discarded and reported in uncertainty[]. Incomplete/timed-out
+      children's partial patches are still applied (no auto-restore in
+      worktree mode). The child never prompts — consent was established at
+      session level.
     - Tools (capability: "tools"): adds MCP tools (from the SubagentMCPServers
       allowlist), LSP tools, and web search to the discovery set. Gated on
       /auto. Mutating MCP calls are serialized per server.
@@ -640,8 +653,9 @@ You have async work in flight. What should you do?
   digests arrive later, not at the end of the tool-call block. Emitting
   several dispatch_subagent calls in one turn also parallelizes contiguous
   runs of them. Keep tasks truly independent: one subagent's task must not
-  depend on another's findings. Edit-tier children are serialized among
-  themselves by a writer lock; mix edit and discovery children freely. When
+  depend on another's findings. Edit-tier children in a git repo run in
+  isolated worktrees (parallel); in a non-git directory they are serialized
+  by a writer lock. Mix edit and discovery children freely. When
   tasks are dependent (one needs another's result), do not rely on sequential
   dispatch calls — the first call returns only a placeholder. Dispatch the
   first, then wait for or retrieve its completed result (wait_for_completion

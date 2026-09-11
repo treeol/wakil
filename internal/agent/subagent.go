@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -388,6 +389,12 @@ func subagentProgressOut(parent *App, chatID string) io.Writer {
 // parallel: wg.Wait joins all workers), so the lock only needs to serialize
 // children among themselves — the parallel path under the semaphore
 // (subagent_parallel.go runSubagentJobs).
+//
+// Card #191: in a git repo, edit children run in isolated git worktrees and
+// skip this lock entirely — they write to separate working directories, so
+// parallel execution is safe. Patch application back to the parent workspace
+// is serialized by patchApplyMu (in worktree.go). This lock is only acquired
+// for the non-git fallback path (useWorktree == false).
 var subagentWriterMu sync.Mutex
 
 // subagentMCPMu serializes mutating MCP calls per server across all tools-tier
@@ -1030,6 +1037,38 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	isEdit := capability == wtools.CapabilityEdit
 	isTools := capability == wtools.CapabilityTools
 
+	// Card #191: worktree isolation for parallel edit subagents. When the
+	// workspace is a git repo, each edit-tier child gets its own git worktree —
+	// an isolated working directory sharing the same .git object store. The
+	// child writes to its worktree; after it finishes, we diff the worktree
+	// against HEAD and apply the patch to the parent workspace. This allows
+	// true parallel edit dispatch (the subagentWriterMu is skipped for
+	// worktree-mode children). Non-git or worktree-creation failure falls back
+	// to the existing serialized behavior with a warning.
+	useWorktree := false
+	var worktreeDir string
+	if isEdit {
+		if isGitRepo(ctx, a) {
+			wtDir, wtErr := createWorktree(ctx, a)
+			if wtErr == nil {
+				useWorktree = true
+				worktreeDir = wtDir
+			} else {
+				fmt.Fprintln(a.Out, Dim("· worktree unavailable, using serialized edit: "+Truncate(wtErr.Error(), 80)))
+			}
+		} else {
+			fmt.Fprintln(a.Out, Dim("· not a git repo — edit subagent runs serialized (no worktree isolation)"))
+		}
+	}
+	// Ensure worktree cleanup on all exit paths.
+	if useWorktree {
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
+			defer cancel()
+			removeWorktree(cleanupCtx, a, worktreeDir)
+		}()
+	}
+
 	epName := resolveSubagentEndpointName(a)
 	view, inherited := a.resolveSubagentEndpointView(epName)
 
@@ -1181,10 +1220,29 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	parentReasoningEffort := a.ReasoningEffortLocked()
 	parentReasoningMaxTokens := a.ReasoningMaxTokensLocked()
 
+	// Select the executor for the child App. When using worktree isolation,
+	// the child gets a DirectExecutor rooted at the worktree directory so its
+	// file writes go to the isolated worktree, not the parent workspace. The
+	// parent's shared executor is still used for discovery/tools children and
+	// as a fallback for non-git or worktree-creation failure.
+	childExec := a.Exec // default: share parent's executor
+	if useWorktree {
+		wtExec, err := exec.NewDirectExecutor(worktreeDir)
+		if err != nil {
+			// Worktree executor failed — fall back to shared executor + serialized.
+			fmt.Fprintln(a.Out, Dim("· worktree executor failed, falling back to serialized: "+Truncate(err.Error(), 80)))
+			useWorktree = false
+			removeWorktree(ctx, a, worktreeDir)
+			worktreeDir = ""
+		} else {
+			childExec = wtExec
+		}
+	}
+
 	sub := &App{
 		Cfg:           cfg,
 		Client:        subClient,
-		Exec:          a.Exec,
+		Exec:          childExec,
 		Tools:         childTools,
 		Confirm:       childConfirmer,
 		Out:           progressOut,
@@ -1214,7 +1272,10 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// Relay subagent file captures to the parent's active checkpoint so
 	// /rewind can undo subagent file mutations. Only set for edit-tier
 	// children (discovery/tools children don't have file-mutating tools).
-	if isEdit {
+	// Skipped in worktree mode: the child writes to its own worktree, not
+	// the parent workspace, so parent checkpoint captures are meaningless —
+	// the parent workspace is only touched when the patch is applied later.
+	if isEdit && !useWorktree {
 		parentCP := &a.checkpointState
 		sub.parentCaptureCallback = func(ctx context.Context, canonical string) {
 			parentCP.cpMu.Lock()
@@ -1263,7 +1324,11 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// Tools-tier children don't acquire this lock: they don't write files,
 	// and mutating MCP calls are serialized per-server by subagentMCPMu
 	// inside the tool-execution path, not across the entire child run.
-	if isEdit {
+	//
+	// Card #191: worktree-mode children skip this lock — they write to
+	// isolated worktrees, so parallel execution is safe. Patch application
+	// back to the parent workspace is serialized separately by patchApplyMu.
+	if isEdit && !useWorktree {
 		subagentWriterMu.Lock()
 		defer subagentWriterMu.Unlock()
 	}
@@ -1419,7 +1484,10 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// edit-tier subagent that returned incomplete (exhaustion, confinement, or
 	// turn budget), and it made at least one edit, offer or auto-restore the
 	// original file contents.
-	if isEdit && fileRecorder.hasSnapshots() && summary.Status == "incomplete" {
+	// Skipped in worktree mode: the child wrote to the worktree, not the parent
+	// workspace, so there's nothing to restore in the parent. The worktree is
+	// simply cleaned up (deferred above) and its changes discarded.
+	if isEdit && !useWorktree && fileRecorder.hasSnapshots() && summary.Status == "incomplete" {
 		if a.IsHeadless {
 			// Headless: auto-restore immediately (no human to decide).
 			restored, errs := fileRecorder.restore(ctx, a.Exec)
@@ -1438,6 +1506,91 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 			a.pendingRestore = fileRecorder
 			fmt.Fprintf(a.Out, "⚠ edit-tier incomplete — %d file(s) may be partially modified. /restore to revert\n",
 				len(fileRecorder.originals))
+		}
+	}
+
+	// Card #191: Worktree patch application. After the child finishes (success
+	// or incomplete), if we used worktree isolation, diff the worktree against
+	// HEAD and apply the patch to the parent workspace. Patch application is
+	// serialized by patchApplyMu so concurrent worktree-mode children don't
+	// race on parent workspace writes. On conflict, the patch is NOT applied —
+	// the conflict is reported in the summary so the parent model knows the
+	// child's work was lost and can re-apply manually or re-dispatch.
+	//
+	// For incomplete children: we still apply the patch. The child may have
+	// made useful partial changes before hitting its budget. The model can
+	// judge from the summary whether to keep or revert them. (In non-worktree
+	// mode, incomplete edit children auto-restore; in worktree mode, the
+	// patch is the only way the parent sees any of the child's work, so we
+	// always apply and let the model decide.)
+	//
+	// We use a fresh timeout context for diff/apply, not the request ctx,
+	// because the request ctx may be cancelled (e.g., the child timed out).
+	// Using the cancelled ctx would prevent the patch from being applied —
+	// the exact case we want to preserve.
+	if useWorktree && isEdit {
+		wtCtx, wtCancel := context.WithTimeout(context.Background(), worktreeOpTimeout)
+		defer wtCancel()
+		patch, diffErr := diffWorktree(wtCtx, a, worktreeDir)
+		if diffErr != nil {
+			summary.Uncertainty = append(summary.Uncertainty,
+				"worktree diff failed: "+Truncate(diffErr.Error(), 100))
+		} else if strings.TrimSpace(patch) != "" {
+			patchApplyMu.Lock()
+			applied, conflict, applyErr := applyPatch(wtCtx, a, patch)
+			patchApplyMu.Unlock()
+			if !applied {
+				if conflict {
+					// Conflict: --check failed, so the parent workspace is
+					// untouched. The child's work is in the worktree (about
+					// to be cleaned up). Preserve the patch to the tool cache
+					// so the model can recover it.
+					patchPath := wtools.SpillToCache(a.chatID(), "worktree_conflict_patch", patch)
+					msg := "worktree patch conflicts with changes already applied by another subagent — " +
+						"the child's work was not applied to the parent workspace"
+					if patchPath != "" {
+						msg += "; patch preserved at " + patchPath + " for manual recovery"
+					}
+					summary.Uncertainty = append(summary.Uncertainty, msg)
+					fmt.Fprintln(a.Out, Yellow("⚠ worktree patch conflict — child changes not applied"))
+				} else {
+					// Non-conflict failure (corrupt patch, I/O error, etc.).
+					// The parent workspace state is uncertain — --check may have
+					// passed but apply failed, which is unexpected. Do not
+					// claim "not applied"; report uncertain state.
+					patchPath := wtools.SpillToCache(a.chatID(), "worktree_failed_patch", patch)
+					msg := "worktree patch application failed (parent workspace state uncertain): " + Truncate(applyErr, 100)
+					if patchPath != "" {
+						msg += "; patch preserved at " + patchPath + " for manual recovery"
+					}
+					summary.Uncertainty = append(summary.Uncertainty, msg)
+					fmt.Fprintln(a.Out, Yellow("⚠ worktree patch failed — parent state uncertain, inspect workspace"))
+				}
+			} else {
+				fmt.Fprintln(a.Out, Dim("· worktree patch applied to parent workspace"))
+			}
+		}
+		// Record the files the child modified (from the worktree). The
+		// filesChangedRecorder was connected to the child's tool execution
+		// loop and tracked canonical paths in the worktree. Translate those
+		// to parent-relative paths for the files_changed report so the parent
+		// model sees workspace-relative paths, not worktree temp paths.
+		// Use filepath.Rel for prefix stripping. Note: filepath.Rel is
+		// lexical, not symlink-aware — if the worktree dir was symlink-
+		// resolved by the executor, we EvalSymlinks the worktree dir first
+		// to get a consistent base for the relative computation.
+		changedFiles := fileRecorder.snapshot()
+		if len(changedFiles) > 0 {
+			wtBase := worktreeDir
+			if resolved, err := filepath.EvalSymlinks(worktreeDir); err == nil {
+				wtBase = resolved
+			}
+			for i, p := range changedFiles {
+				if rel, err := filepath.Rel(wtBase, p); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+					changedFiles[i] = rel
+				}
+			}
+			summary.FilesChanged = changedFiles
 		}
 	}
 

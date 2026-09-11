@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 func TestNewHookEngine_NoHooks(t *testing.T) {
@@ -248,6 +249,275 @@ func TestHookEnvironment(t *testing.T) {
 		t.Errorf("expected WAKIL_FILE_PATH in output, got: %s", r.output)
 	}
 }
+
+// --- session_end and on_stop hooks ---
+
+func TestRunSessionHooks_End(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "session_ended.txt")
+	cfg := config.HooksConfig{
+		SessionEnd: []config.HookConfig{
+			{Command: "touch " + marker},
+		},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	h.RunSessionHooks(context.Background(), hookSessionEnd)
+	time.Sleep(100 * time.Millisecond)
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("session_end hook should have created marker file")
+	}
+}
+
+func TestRunSessionHooks_OnStop(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "stopped.txt")
+	cfg := config.HooksConfig{
+		OnStop: []config.HookConfig{
+			{Command: "touch " + marker},
+		},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	h.RunSessionHooks(context.Background(), hookOnStop)
+	time.Sleep(100 * time.Millisecond)
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("on_stop hook should have created marker file")
+	}
+}
+
+func TestRunSessionHooks_UnknownTimingNoOp(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.HooksConfig{
+		SessionStart: []config.HookConfig{{Command: "touch " + filepath.Join(dir, "should_not_fire.txt")}},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	// An unrecognized timing string should select no hooks and be a no-op.
+	h.RunSessionHooks(context.Background(), "bogus_timing")
+	time.Sleep(50 * time.Millisecond)
+
+	if _, err := os.Stat(filepath.Join(dir, "should_not_fire.txt")); err == nil {
+		t.Error("unknown timing should not fire any hooks")
+	}
+}
+
+// --- multiple hooks: ordering, short-circuit, concatenation ---
+
+func TestRunPreToolHooks_FirstBlockStopsRemaining(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "second_ran.txt")
+	cfg := config.HooksConfig{
+		PreTool: []config.HookConfig{
+			{Tool: "write_file", Command: "exit 1"},                       // blocks
+			{Tool: "write_file", Command: "touch " + marker},              // should NOT run
+		},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	r := h.RunPreToolHooks(context.Background(), "write_file", `{"path":"/foo"}`, dir)
+	if !r.blocked {
+		t.Error("expected first hook to block")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("second hook should not have run after first blocked")
+	}
+}
+
+func TestRunPreToolHooks_MultipleConcatOutput(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.HooksConfig{
+		PreTool: []config.HookConfig{
+			{Tool: "write_file", Command: "echo first"},
+			{Tool: "write_file", Command: "echo second"},
+		},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	r := h.RunPreToolHooks(context.Background(), "write_file", `{}`, dir)
+	if r.blocked {
+		t.Error("expected no block")
+	}
+	if !hookContains(r.output, "first") {
+		t.Errorf("expected 'first' in output, got: %s", r.output)
+	}
+	if !hookContains(r.output, "second") {
+		t.Errorf("expected 'second' in output, got: %s", r.output)
+	}
+}
+
+func TestRunPostToolHooks_MultipleConcatOutput(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.HooksConfig{
+		PostTool: []config.HookConfig{
+			{Tool: "write_file", Command: "echo alpha"},
+			{Tool: "write_file", Command: "echo beta"},
+		},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	r := h.RunPostToolHooks(context.Background(), "write_file", `{}`, dir)
+	if r.blocked {
+		t.Error("post-hook should not block")
+	}
+	if !hookContains(r.output, "alpha") {
+		t.Errorf("expected 'alpha' in output, got: %s", r.output)
+	}
+	if !hookContains(r.output, "beta") {
+		t.Errorf("expected 'beta' in output, got: %s", r.output)
+	}
+}
+
+// --- edge cases: truncation, empty command ---
+
+func TestRunHook_OutputTruncation(t *testing.T) {
+	dir := t.TempDir()
+	// Emit 3000 'x' chars — should be truncated to 2000 + suffix.
+	cfg := config.HooksConfig{
+		PostTool: []config.HookConfig{
+			{Command: "yes x | head -c 3000"},
+		},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	r := h.RunPostToolHooks(context.Background(), "write_file", `{}`, dir)
+	if !hookContains(r.output, "… (truncated)") {
+		t.Errorf("expected truncation marker, got len=%d output: %s", len(r.output), r.output[:100])
+	}
+	// The capped output should be 2000 + len("… (truncated)") = 2013.
+	want := 2000 + len("… (truncated)")
+	if len(r.output) != want {
+		t.Errorf("expected truncated output length %d, got %d", want, len(r.output))
+	}
+}
+
+func TestRunHook_EmptyCommand(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.HooksConfig{
+		PostTool: []config.HookConfig{
+			{Tool: "write_file", Command: ""}, // empty — should be a no-op
+		},
+	}
+	h := NewHookEngine(cfg, dir)
+
+	r := h.RunPostToolHooks(context.Background(), "write_file", `{}`, dir)
+	if r.blocked {
+		t.Error("empty command should not block")
+	}
+	if r.output != "" {
+		t.Errorf("empty command should produce no output, got: %s", r.output)
+	}
+}
+
+// --- extractFilePath for additional file tools ---
+
+func TestExtractFilePath_AdditionalTools(t *testing.T) {
+	tests := []struct {
+		tool, args, want string
+	}{
+		{"write_binary_file", `{"path":"/img.png","content_base64":"x"}`, "/img.png"},
+		{"delete_file", `{"path":"/old.txt"}`, "/old.txt"},
+		{"read_file", `{"path":"/app.go"}`, "/app.go"},
+		{"read_file_full", `{"path":"/main.go"}`, "/main.go"},
+		{"move_file", `{"dst":"/only_dst.txt"}`, "/only_dst.txt"}, // dst fallback when no src
+		{"move_file", `{"src":"/src.txt","dst":"/dst.txt"}`, "/src.txt"}, // src preferred
+	}
+	for _, tc := range tests {
+		got := extractFilePath(tc.tool, tc.args)
+		if got != tc.want {
+			t.Errorf("extractFilePath(%q, %q) = %q, want %q", tc.tool, tc.args, got, tc.want)
+		}
+	}
+}
+
+// --- App-level integration: NewConversation fires session_end + resets sessionStarted ---
+
+func TestNewConversation_FiresSessionEnd(t *testing.T) {
+	dir := t.TempDir()
+	endMarker := filepath.Join(dir, "ended.txt")
+	hooks := NewHookEngine(config.HooksConfig{
+		SessionEnd: []config.HookConfig{{Command: "touch " + endMarker}},
+	}, dir)
+
+	app := &App{
+		Cfg:    config.DefaultConfig(),
+		Client: &proxy.Client{Model: "test"},
+		Hooks:  hooks,
+	}
+	app.sessionStarted = true // simulate an active session
+
+	app.NewConversation("new-chat-id")
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(endMarker); err != nil {
+		t.Error("NewConversation should fire session_end hook")
+	}
+	if app.sessionStarted {
+		t.Error("sessionStarted should be reset to false after NewConversation")
+	}
+	if app.Client.ChatID != "new-chat-id" {
+		t.Errorf("ChatID = %q, want %q", app.Client.ChatID, "new-chat-id")
+	}
+}
+
+func TestNewConversation_NoHooksNoPanic(t *testing.T) {
+	app := &App{
+		Cfg:    config.DefaultConfig(),
+		Client: &proxy.Client{Model: "test"},
+		Hooks:  nil, // no hooks — must not panic
+	}
+	app.NewConversation("new-chat-id")
+	if app.Client.ChatID != "new-chat-id" {
+		t.Errorf("ChatID = %q, want %q", app.Client.ChatID, "new-chat-id")
+	}
+}
+
+// --- App-level integration: NewConversationTransition fires session_end + resets sessionStarted ---
+
+func TestNewConversationTransition_FiresSessionEnd(t *testing.T) {
+	dir := t.TempDir()
+	endMarker := filepath.Join(dir, "ended.txt")
+	hooks := NewHookEngine(config.HooksConfig{
+		SessionEnd: []config.HookConfig{{Command: "touch " + endMarker}},
+	}, dir)
+
+	app := &App{
+		Cfg:    config.DefaultConfig(),
+		Client: &proxy.Client{Model: "test"},
+		Hooks:  hooks,
+	}
+	app.sessionStarted = true
+
+	app.NewConversationTransition("new-chat-id")
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(endMarker); err != nil {
+		t.Error("NewConversationTransition should fire session_end hook")
+	}
+	if app.sessionStarted {
+		t.Error("sessionStarted should be reset to false after NewConversationTransition")
+	}
+	if app.Client.ChatID != "new-chat-id" {
+		t.Errorf("ChatID = %q, want %q", app.Client.ChatID, "new-chat-id")
+	}
+}
+
+func TestNewConversationTransition_NoHooksNoPanic(t *testing.T) {
+	app := &App{
+		Cfg:    config.DefaultConfig(),
+		Client: &proxy.Client{Model: "test"},
+		Hooks:  nil,
+	}
+	app.NewConversationTransition("new-chat-id")
+	if app.Client.ChatID != "new-chat-id" {
+		t.Errorf("ChatID = %q, want %q", app.Client.ChatID, "new-chat-id")
+	}
+}
+
+// --- helpers ---
 
 func hookContains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

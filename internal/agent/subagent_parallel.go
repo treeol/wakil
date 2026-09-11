@@ -115,8 +115,11 @@ type subagentCheckpointFn func(index int, result asyncSubagentResult) bool
 //     (SandboxTools probe) is sync.Once-guarded. Discovery tools are
 //     read-only, so no workspace write races from discovery workers. Edit-
 //     tier children are serialized by subagentWriterMu (at most one edit
-//     child executing at a time); discovery children still parallelize freely,
-//     including alongside one running edit child.
+//     child executing at a time) in non-git workspaces; in a git repo they
+//     run in isolated git worktrees (card #191) and skip the lock — each
+//     child has its own working directory. Patch application back to the
+//     parent workspace is serialized by patchApplyMu. Discovery children
+//     still parallelize freely, including alongside edit children.
 //   - Costs: each child App gets its OWN fresh CostTracker (never a.Costs, the
 //     parent's pointer) — RecordInferenceCost inside a child Send writes only
 //     to that private tracker, so no worker ever touches parent-shared cost

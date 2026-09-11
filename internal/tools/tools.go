@@ -297,6 +297,11 @@ const CapabilityDiscovery = "discovery"
 // exec tools (run_shell, run_background, kill_process) are deliberately excluded:
 // run_shell has no path confinement by design, the shared Executor is read-safe
 // only, and child bgProcs would orphan on child completion.
+//
+// In a git repo, edit children run in isolated git worktrees (card #191) —
+// each child gets its own working directory, and changes are applied back as
+// patches. This allows parallel edit dispatch. In a non-git directory, edit
+// children are serialized by subagentWriterMu (one at a time).
 const CapabilityEdit = "edit"
 
 // CapabilityTools adds MCP tools (from an explicit allowlist), LSP tools, and web
