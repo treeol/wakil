@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // checkpointTestApp creates an App with a DirectExecutor rooted at a temp dir,
@@ -420,5 +422,236 @@ func TestCheckpoint_CopyOnFirstWrite(t *testing.T) {
 	got, _ := app.Exec.ReadFile(ctx, p)
 	if got != "original" {
 		t.Fatalf("copy-on-first-write failed: got %q, want %q", got, "original")
+	}
+}
+
+func TestCheckpoint_UnknownPathSkipped(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	// Create a directory at the capture path — DirectExecutor's ReadFile uses
+	// os.ReadFile, which returns EISDIR ("is a directory"), NOT a not-found
+	// error. This triggers the Unknown path (non-not-found read error).
+	p := filepath.Join(dir, "unreadable")
+	if err := os.Mkdir(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	app.startCheckpoint()
+	app.captureForCheckpoint(ctx, p)
+	app.endCheckpoint()
+
+	// Verify it was captured as Unknown.
+	app.cpMu.Lock()
+	cp := app.activeCheckpointLocked()
+	var snap FileSnapshot
+	if cp != nil {
+		if s, ok := cp.Files[p]; ok {
+			snap = s
+		}
+	}
+	app.cpMu.Unlock()
+
+	if !snap.Unknown {
+		t.Fatalf("expected Unknown=true for unreadable path, got %+v", snap)
+	}
+
+	// Rewind should skip it (not delete, not restore, no errors).
+	result := app.rewind(1)
+	if len(result.UnknownPaths) != 1 {
+		t.Fatalf("expected 1 unknown path in rewind, got %d: %+v", len(result.UnknownPaths), result)
+	}
+	if len(result.RestoredPaths) != 0 {
+		t.Fatalf("expected 0 restored paths, got %d", len(result.RestoredPaths))
+	}
+	if len(result.DeletedPaths) != 0 {
+		t.Fatalf("expected 0 deleted paths, got %d", len(result.DeletedPaths))
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected 0 errors, got %d: %+v", len(result.Errors), result.Errors)
+	}
+
+	// The directory should still exist (rewind skips unknown paths).
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("unknown path should still exist after rewind: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("path should still be a directory, got mode %v", info.Mode())
+	}
+}
+
+func TestCheckpoint_RewindWhileActive(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	p := filepath.Join(dir, "test.txt")
+	os.WriteFile(p, []byte("original"), 0o644)
+
+	// Start checkpoint but DON'T end it — simulates a turn in progress.
+	app.startCheckpoint()
+	app.captureForCheckpoint(ctx, p)
+	app.Exec.WriteFile(ctx, p, "modified")
+
+	// Attempt rewind — should fail with "cannot rewind while a turn is in progress".
+	result := app.rewind(1)
+	if len(result.Errors) == 0 {
+		t.Fatal("expected error for rewind while checkpoint is active")
+	}
+	if !strings.Contains(result.Errors[0], "in progress") {
+		t.Fatalf("expected 'in progress' error, got: %s", result.Errors[0])
+	}
+	if result.TurnsRewound != 0 {
+		t.Fatalf("expected 0 turns rewound, got %d", result.TurnsRewound)
+	}
+
+	// Verify state is unchanged: checkpoint still exists, file still modified.
+	app.cpMu.Lock()
+	cpCount := len(app.checkpoints)
+	app.cpMu.Unlock()
+	if cpCount != 1 {
+		t.Fatalf("expected 1 checkpoint (rewind rejected), got %d", cpCount)
+	}
+	got, _ := app.Exec.ReadFile(ctx, p)
+	if got != "modified" {
+		t.Fatalf("file should still be 'modified' after rejected rewind, got %q", got)
+	}
+
+	// End the turn and verify rewind still works.
+	app.endCheckpoint()
+	result2 := app.rewind(1)
+	if len(result2.RestoredPaths) != 1 {
+		t.Fatalf("after ending turn, expected 1 restored path, got %d: %+v", len(result2.RestoredPaths), result2)
+	}
+	got2, _ := app.Exec.ReadFile(ctx, p)
+	if got2 != "original" {
+		t.Fatalf("file should be restored to 'original', got %q", got2)
+	}
+}
+
+func TestCheckpoint_ConvTruncated(t *testing.T) {
+	app, _ := checkpointTestApp(t)
+
+	// Populate Conv with just a user message (as startCheckpoint is called
+	// after the user message is appended but before the assistant responds).
+	userMsg := "hello"
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: &userMsg},
+	}
+
+	// Start checkpoint — ConvLen should be 1 (just the user message).
+	app.startCheckpoint()
+
+	// Simulate an assistant response being appended.
+	assistantMsg := "I will help."
+	app.Conv = append(app.Conv, proxy.Message{Role: "assistant", Content: &assistantMsg})
+	// Also simulate a tool result.
+	toolMsg := "tool result"
+	app.Conv = append(app.Conv, proxy.Message{Role: "tool", Content: &toolMsg})
+
+	app.endCheckpoint()
+
+	// Rewind should truncate Conv back to ConvLen=1 (just the user message).
+	result := app.rewind(1)
+	if !result.ConvTruncated {
+		t.Fatal("expected ConvTruncated=true")
+	}
+
+	app.convMu.RLock()
+	convLen := len(app.Conv)
+	firstRole := ""
+	firstContent := ""
+	if convLen > 0 {
+		firstRole = app.Conv[0].Role
+		firstContent = DerefStr(app.Conv[0].Content)
+	}
+	app.convMu.RUnlock()
+	if convLen != 1 {
+		t.Fatalf("expected Conv length 1 after rewind, got %d", convLen)
+	}
+	if firstRole != "user" {
+		t.Fatalf("expected retained message role 'user', got %q", firstRole)
+	}
+	if firstContent != "hello" {
+		t.Fatalf("expected retained message content 'hello', got %q", firstContent)
+	}
+}
+
+func TestCheckpoint_ConvNotTruncatedStaleBoundary(t *testing.T) {
+	app, _ := checkpointTestApp(t)
+
+	// Populate Conv with only an assistant message (no user message at ConvLen-1).
+	assistantMsg := "response"
+	app.Conv = []proxy.Message{
+		{Role: "assistant", Content: &assistantMsg},
+	}
+
+	// Start checkpoint — ConvLen=1, but Conv[0] is "assistant", not "user".
+	app.startCheckpoint()
+	app.endCheckpoint()
+
+	// Append more messages to verify they survive rewind (no truncation).
+	extraMsg := "extra"
+	app.Conv = append(app.Conv, proxy.Message{Role: "user", Content: &extraMsg})
+
+	// Rewind should NOT truncate (boundary is invalid — Conv[0] is not "user").
+	result := app.rewind(1)
+	if result.ConvTruncated {
+		t.Fatal("expected ConvTruncated=false for stale boundary")
+	}
+
+	// Verify Conv is completely unchanged (both original + appended messages).
+	app.convMu.RLock()
+	convLen := len(app.Conv)
+	app.convMu.RUnlock()
+	if convLen != 2 {
+		t.Fatalf("expected Conv length 2 (unchanged), got %d", convLen)
+	}
+}
+
+func TestCheckpoint_EvictionByCount(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	// Create more checkpoints than checkpointMaxKeep (20).
+	// Each turn captures a different file so they have content.
+	for i := 0; i < checkpointMaxKeep+5; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("file_%d.txt", i))
+		os.WriteFile(p, []byte("content"), 0o644)
+		app.startCheckpoint()
+		app.captureForCheckpoint(ctx, p)
+		app.endCheckpoint()
+	}
+
+	app.cpMu.Lock()
+	count := len(app.checkpoints)
+	firstTurn := -1
+	lastTurn := -1
+	if count > 0 {
+		firstTurn = app.checkpoints[0].TurnIndex
+		lastTurn = app.checkpoints[len(app.checkpoints)-1].TurnIndex
+	}
+	totalBytes := app.cpTotalBytes
+	app.cpMu.Unlock()
+
+	if count != checkpointMaxKeep {
+		t.Fatalf("expected exactly %d checkpoints, got %d", checkpointMaxKeep, count)
+	}
+
+	// FIFO eviction: oldest 5 should be gone. First surviving turn is turn 6.
+	expectedFirst := 6
+	if firstTurn != expectedFirst {
+		t.Fatalf("expected first surviving TurnIndex=%d (FIFO), got %d", expectedFirst, firstTurn)
+	}
+	// Last surviving turn is the most recent one created.
+	expectedLast := checkpointMaxKeep + 5
+	if lastTurn != expectedLast {
+		t.Fatalf("expected last surviving TurnIndex=%d, got %d", expectedLast, lastTurn)
+	}
+
+	// Each checkpoint captured one file with "content" (7 bytes).
+	expectedBytes := checkpointMaxKeep * len("content")
+	if totalBytes != expectedBytes {
+		t.Fatalf("expected cpTotalBytes=%d, got %d", expectedBytes, totalBytes)
 	}
 }

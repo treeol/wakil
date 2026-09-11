@@ -58,11 +58,11 @@ const (
 // Checkpoints are NOT persisted — they are cleared on session rotation,
 // compaction, and resume. They exist only for the current session's undo.
 type checkpointState struct {
-	cpMu        sync.Mutex
-	checkpoints []Checkpoint
-	cpTurnCount int  // total user turns this session (for display)
-	cpActive    bool // true when a checkpoint is active for the current turn
-	cpTotalBytes int  // approximate total bytes across all checkpoints
+	cpMu           sync.Mutex
+	checkpoints    []Checkpoint
+	cpTurnCount    int  // total user turns this session (for display)
+	cpActive       bool // true when a checkpoint is active for the current turn
+	cpTotalBytes   int  // approximate total bytes across all checkpoints
 }
 
 // startCheckpoint begins a new checkpoint for the current turn. Called from
@@ -118,9 +118,9 @@ func (a *App) evictOldestLocked() {
 //
 // If the file is too large, it's marked TooLarge (rewind will warn).
 // If the file doesn't exist, it's marked Exists=false (rewind will delete it).
-// Read errors other than "not exist" are treated as non-existent — this is
-// a known limitation (permission-denied files can't be distinguished from
-// missing ones without executor-specific error introspection).
+// Other read errors (permission, transport, cancellation) are marked Unknown
+// (rewind skips with warning — never deletes). This prevents destructive
+// deletion of files whose state could not be determined.
 func (a *App) captureForCheckpoint(ctx context.Context, canonical string) {
 	// Subagent path: relay to the parent's checkpoint via the callback.
 	// This ensures subagent file mutations are captured in the parent's
@@ -356,10 +356,13 @@ func (r *rewindResult) Summary() string {
 //    OLDEST checkpoint's snapshot (that's the state before any rewound turn
 //    touched it)
 // 3. Restore each file: existing files via WriteFileBytes, non-existing via
-//    DeletePath, too-large files are skipped with a warning
+//    DeletePath, too-large files and unknown-state files are skipped with
+//    a warning
 // 4. Truncate Conv to the target checkpoint's ConvLen
 // 5. Remove the rewound checkpoints
-// 6. Save session
+//
+// Note: session persistence (if any) is the caller's responsibility, not
+// rewind's.
 //
 // Returns a structured result with per-path outcomes.
 func (a *App) rewind(n int) rewindResult {
@@ -507,8 +510,9 @@ func (a *App) checkpointStatus() string {
 		return "no checkpoints available — checkpoints are created at the start of each turn"
 	}
 
-	// Snapshot Conv preview data under convMu.RLock. cpMu is a leaf lock
-	// (never held while acquiring convMu elsewhere), so cpMu → convMu is safe.
+	// Snapshot Conv preview data under convMu.RLock. cpMu → convMu is safe
+	// because the codebase never acquires convMu → cpMu (no reverse-order
+	// acquisition that could deadlock).
 	a.convMu.RLock()
 	convCopy := make([]proxy.Message, len(a.Conv))
 	copy(convCopy, a.Conv)
