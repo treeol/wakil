@@ -26,9 +26,6 @@ const (
 
 // agentsMDSection is one collected AGENTS.md file's rendered content.
 type agentsMDSection struct {
-	// depth is 0 for the cwd-level file, 1 for its parent, etc.
-	// Used to budget deepest-first (most specific files get priority).
-	depth int
 	// header is the label line (e.g. "### AGENTS.md — (workspace root)").
 	header string
 	// body is the (possibly truncated) file content.
@@ -71,7 +68,7 @@ func loadAgentsMD(cwd string) string {
 	// (root-level or nearest ancestor before root).
 	var paths []string
 	dir := cwd
-	for depth := 0; ; depth++ {
+	for {
 		candidate := filepath.Join(dir, agentsMDFilename)
 		if info, err := os.Stat(candidate); err == nil {
 			// Require a regular file — reject symlinks to directories
@@ -92,10 +89,10 @@ func loadAgentsMD(cwd string) string {
 		return ""
 	}
 
-	// Read and format each file, tracking depth for budget allocation.
-	// paths[0] is deepest (depth 0), paths[len-1] is shallowest.
+	// Read and format each file.
+	// paths[0] is deepest (cwd-level), paths[len-1] is shallowest.
 	var sections []agentsMDSection
-	for i, p := range paths {
+	for _, p := range paths {
 		content, err := os.ReadFile(p)
 		if err != nil {
 			continue
@@ -121,7 +118,6 @@ func loadAgentsMD(cwd string) string {
 		header := fmt.Sprintf("### AGENTS.md — %s", label)
 
 		sections = append(sections, agentsMDSection{
-			depth:     i, // 0 = deepest (cwd-level)
 			header:    header,
 			body:      trimmed,
 			bodyLen:   len(trimmed),

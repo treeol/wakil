@@ -17,8 +17,6 @@ type projectInfo struct {
 	testCmds   []string
 	lintCmds   []string
 	moduleName string
-	// dirs are the top-level directories (architecture map).
-	dirs []string
 	// entryPoints are the main package directories (e.g. cmd/wakil).
 	entryPoints []string
 	// packages are key directories under internal/ or src/ that form the
@@ -28,7 +26,7 @@ type projectInfo struct {
 	hasDocs bool
 	// hasDocker is true if a Dockerfile exists.
 	hasDocker bool
-	// hasCI is true if .github/workflows exists.
+	// hasCI is true if a .github directory exists.
 	hasCI bool
 }
 
@@ -126,19 +124,6 @@ func detectProject(ctx context.Context, exe fileLister) (*projectInfo, error) {
 		info.buildCmds = appendIfMissing(info.buildCmds, "make")
 	}
 
-	// Detect architecture: top-level directories.
-	for d := range dirs {
-		// Skip hidden dirs (.git, .github) and common non-architecture dirs.
-		if strings.HasPrefix(d, ".") {
-			if d == ".github" {
-				info.hasCI = true
-			}
-			continue
-		}
-		info.dirs = append(info.dirs, d)
-	}
-	sort.Strings(info.dirs)
-
 	// Detect entry points (cmd/ directory with Go main packages).
 	if dirs["cmd"] {
 		if cmdListing, err := exe.ListDir(ctx, "cmd"); err == nil {
@@ -192,6 +177,7 @@ func detectProject(ctx context.Context, exe fileLister) (*projectInfo, error) {
 
 	info.hasDocs = dirs["docs"]
 	info.hasDocker = files["Dockerfile"] || files["Dockerfile.daemon"]
+	info.hasCI = dirs[".github"]
 
 	return info, nil
 }
@@ -295,8 +281,7 @@ func handleInitCommand(app *App) (string, error) {
 	}
 
 	// Check if AGENTS.md already exists.
-	if content, err := app.Exec.ReadFile(context.Background(), "AGENTS.md"); err == nil {
-		_ = content
+	if _, err := app.Exec.ReadFile(context.Background(), "AGENTS.md"); err == nil {
 		return fmt.Sprintf("AGENTS.md already exists at %s — /init will not overwrite it", filepath.Join(cwd, "AGENTS.md")), nil
 	}
 
