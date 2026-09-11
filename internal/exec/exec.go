@@ -6,6 +6,7 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +22,16 @@ import (
 
 	"github.com/treeol/wakil/internal/safe"
 )
+
+// ErrFileNotFound is a typed sentinel returned by executor methods when a file
+// or directory does not exist. Callers use errors.Is(err, ErrFileNotFound) to
+// reliably distinguish "not found" from other errors (permission denied,
+// transport failure, cancellation) without relying on fragile string matching.
+//
+// DirectExecutor wraps os.IsNotExist errors with this sentinel.
+// DockerExecutor wraps its shell-level "No such file or directory" / "No such
+// container" errors with this sentinel.
+var ErrFileNotFound = errors.New("file not found")
 
 // Executor abstracts where tool_calls actually run. Commands always execute
 // from the workspace root; in-command directory changes (cd sub && …) affect
@@ -978,7 +989,11 @@ func (d *DockerExecutor) ReadFile(ctx context.Context, path string) (string, err
 	// cd into workspaceRoot first so relative paths resolve from the project root.
 	out, err := d.execCtx(ctx, false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && cat -- "$1"`, "sh", path)
 	if err != nil {
-		return "", fmt.Errorf("%s", strings.TrimSpace(out))
+		msg := strings.TrimSpace(out)
+		if isShellNotFound(msg) {
+			return "", fmt.Errorf("%w: %s", ErrFileNotFound, path)
+		}
+		return "", fmt.Errorf("%s", msg)
 	}
 	return out, nil
 }
@@ -986,7 +1001,14 @@ func (d *DockerExecutor) ReadFile(ctx context.Context, path string) (string, err
 func (d *DockerExecutor) StatFile(ctx context.Context, path string) (int64, error) {
 	out, err := d.execCtx(ctx, false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && stat -c %s -- "$1"`, "sh", path)
 	if err != nil {
-		return 0, fmt.Errorf("%s", strings.TrimSpace(out))
+		msg := strings.TrimSpace(out)
+		if isShellNotFound(msg) {
+			return 0, fmt.Errorf("%w: %s", ErrFileNotFound, path)
+		}
+		if msg != "" {
+			return 0, fmt.Errorf("%s", msg)
+		}
+		return 0, err
 	}
 	var size int64
 	if _, scanErr := fmt.Sscan(strings.TrimSpace(out), &size); scanErr != nil {
@@ -1205,6 +1227,9 @@ func (e *DirectExecutor) resolve(path string) string {
 func (e *DirectExecutor) StatFile(_ context.Context, path string) (int64, error) {
 	info, err := os.Stat(e.resolve(path))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, fmt.Errorf("%w: %s", ErrFileNotFound, path)
+		}
 		return 0, err
 	}
 	return info.Size(), nil
@@ -1213,6 +1238,9 @@ func (e *DirectExecutor) StatFile(_ context.Context, path string) (int64, error)
 func (e *DirectExecutor) ReadFile(_ context.Context, path string) (string, error) {
 	b, err := os.ReadFile(e.resolve(path))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: %s", ErrFileNotFound, path)
+		}
 		return "", err
 	}
 	return string(b), nil

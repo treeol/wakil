@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -394,6 +395,68 @@ func TestIsInsideWorkspaceSeparatorAware(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("isInsideWorkspace(%q, %q) = %v, want %v  [%s]",
 				tc.p, tc.root, got, tc.want, tc.label)
+		}
+	}
+}
+
+func TestDirectExecutorReadFileNotFoundReturnsSentinel(t *testing.T) {
+	ex, _ := newDirectExec(t)
+	ctx := context.Background()
+
+	_, err := ex.ReadFile(ctx, "nonexistent.txt")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+	if !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("ReadFile nonexistent: errors.Is(err, ErrFileNotFound) = false; err = %v", err)
+	}
+}
+
+func TestDirectExecutorStatFileNotFoundReturnsSentinel(t *testing.T) {
+	ex, _ := newDirectExec(t)
+	ctx := context.Background()
+
+	_, err := ex.StatFile(ctx, "nonexistent.txt")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+	if !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("StatFile nonexistent: errors.Is(err, ErrFileNotFound) = false; err = %v", err)
+	}
+}
+
+func TestDirectExecutorDeletePathNotFoundReturnsSentinel(t *testing.T) {
+	ex, root := newDirectExec(t)
+	ctx := context.Background()
+
+	err := ex.DeletePath(ctx, filepath.Join(root, "nonexistent.txt"))
+	if err == nil {
+		t.Fatal("expected error for deleting nonexistent file")
+	}
+	if !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("DeletePath nonexistent: errors.Is(err, ErrFileNotFound) = false; err = %v", err)
+	}
+}
+
+func TestIsShellNotFound(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"cat: /work/foo.txt: No such file or directory", true},
+		{"rm: cannot remove '/work/foo.txt': No such file or directory", true},
+		{"stat: cannot stat '/work/foo.txt': No such file or directory", true},
+		{"No such file or directory", true},
+		{"no such file or directory", true},
+		{"", false},
+		{"Error response from daemon: container does not exist", false},
+		{"permission denied", false},
+		{"directory is not empty", false},
+	}
+	for _, tc := range cases {
+		got := isShellNotFound(tc.msg)
+		if got != tc.want {
+			t.Errorf("isShellNotFound(%q) = %v, want %v", tc.msg, got, tc.want)
 		}
 	}
 }

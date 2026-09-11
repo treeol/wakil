@@ -969,3 +969,48 @@ func TestCheckpoint_CaptureGenNotFound(t *testing.T) {
 		t.Fatalf("expected 0 checkpoints after clear, got %d", cpCount)
 	}
 }
+
+func TestIsFileNotFoundErrorTypedSentinel(t *testing.T) {
+	// The typed sentinel from the exec package is the primary detection path.
+	err := fmt.Errorf("%w: /some/path", exec.ErrFileNotFound)
+	if !isFileNotFoundError(err) {
+		t.Error("expected errors.Is via ErrFileNotFound sentinel to return true")
+	}
+}
+
+func TestIsFileNotFoundErrorRawOSNotExist(t *testing.T) {
+	// Raw os errors (not wrapped by the executor) should still be detected.
+	if !isFileNotFoundError(os.ErrNotExist) {
+		t.Error("expected os.ErrNotExist to be detected")
+	}
+}
+
+func TestIsFileNotFoundErrorDockerShellNotFound(t *testing.T) {
+	// Docker shell error patterns should still be detected as fallback.
+	err := fmt.Errorf("cat: /work/foo.txt: No such file or directory")
+	if !isFileNotFoundError(err) {
+		t.Error("expected Docker 'No such file or directory' to be detected")
+	}
+}
+
+func TestIsFileNotFoundErrorRejectsContainerDoesNotExist(t *testing.T) {
+	// "container does not exist" is a Docker transport error, NOT file-not-found.
+	// The old code matched "does not exist" and misclassified this.
+	err := fmt.Errorf("Error response from daemon: container does not exist (id=abc123)")
+	if isFileNotFoundError(err) {
+		t.Error("expected 'container does not exist' to NOT be classified as file-not-found")
+	}
+}
+
+func TestIsFileNotFoundErrorNil(t *testing.T) {
+	if isFileNotFoundError(nil) {
+		t.Error("expected nil error to return false")
+	}
+}
+
+func TestIsFileNotFoundErrorPermissionDenied(t *testing.T) {
+	err := fmt.Errorf("permission denied")
+	if isFileNotFoundError(err) {
+		t.Error("expected 'permission denied' to NOT be classified as file-not-found")
+	}
+}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -296,18 +298,28 @@ func (a *App) markCheckpointShell() {
 // This distinguishes "not found" (safe to record as Exists=false for rewind
 // to delete) from other errors (permission, transport, cancellation) which
 // must be recorded as Unknown to prevent destructive deletion.
+//
+// Primary check is the typed sentinel exec.ErrFileNotFound (returned by both
+// DirectExecutor and DockerExecutor). The string-based fallbacks remain for
+// any errors that don't wrap the sentinel (e.g. raw os errors from paths
+// outside the executor, or future executor implementations). "does not
+// exist" is intentionally NOT matched — it matches Docker container errors
+// ("container does not exist") which are transport failures, not file-not-
+// found.
 func isFileNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, exec.ErrFileNotFound) {
+		return true
+	}
 	msg := err.Error()
-	// os.IsNotExist covers the DirectExecutor path (os.ReadFile errors).
-	// The DockerExecutor returns "cat: <path>: No such file or directory"
-	// via CombinedOutput — match the common patterns.
+	// Fallback: os.IsNotExist covers raw os errors not wrapped by the executor.
+	// "no such file or directory" / "No such file" cover Docker shell errors
+	// that may arrive unwrapped (e.g. from test helpers or future code paths).
 	return os.IsNotExist(err) ||
-		strings.Contains(msg, "no such file or directory") ||
-		strings.Contains(msg, "No such file") ||
-		strings.Contains(msg, "does not exist")
+		strings.Contains(strings.ToLower(msg), "no such file or directory") ||
+		strings.Contains(msg, "No such file")
 }
 
 // endCheckpoint marks the current turn's checkpoint as no longer active.

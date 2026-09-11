@@ -165,6 +165,20 @@ func (e *DirectExecutor) ConfinePath(_ context.Context, path string) (string, er
 
 // ── B1: delete ────────────────────────────────────────────────────────────────
 
+// isShellNotFound reports whether msg is a shell-level "No such file or
+// directory" error from cat, rm, rmdir, or stat inside the container. This is
+// used to classify DockerExecutor errors as ErrFileNotFound.
+//
+// We match "No such file or directory" (cat/rm/rmdir) and "No such file"
+// (stat) case-insensitively. Other Docker errors like "container does not
+// exist" are NOT matched — those indicate a dead container, not a missing
+// workspace file.
+func isShellNotFound(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "no such file or directory") ||
+		strings.Contains(lower, "no such file")
+}
+
 func (d *DockerExecutor) DeletePath(ctx context.Context, path string) error {
 	// For directories use rmdir (fails on non-empty); for files/symlinks use rm.
 	script := fmt.Sprintf(
@@ -176,6 +190,9 @@ func (d *DockerExecutor) DeletePath(ctx context.Context, path string) error {
 		if strings.Contains(msg, "not empty") || strings.Contains(strings.ToLower(msg), "directory not empty") {
 			return fmt.Errorf("directory is not empty — use run_shell rm -r to remove recursively")
 		}
+		if isShellNotFound(msg) {
+			return fmt.Errorf("%w: %s", ErrFileNotFound, path)
+		}
 		if msg != "" {
 			return fmt.Errorf("%s", msg)
 		}
@@ -186,6 +203,9 @@ func (d *DockerExecutor) DeletePath(ctx context.Context, path string) error {
 
 func (e *DirectExecutor) DeletePath(_ context.Context, path string) error {
 	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: %s", ErrFileNotFound, path)
+		}
 		var pe *os.PathError
 		if errors.As(err, &pe) && errors.Is(pe.Err, syscall.ENOTEMPTY) {
 			return fmt.Errorf("directory is not empty — use run_shell rm -r to remove recursively")
