@@ -174,6 +174,9 @@ func (h *HookEngine) runHook(ctx context.Context, hk config.HookConfig, hc hookC
 	if len(trimmed) > 2000 {
 		trimmed = trimmed[:2000] + "… (truncated)"
 	}
+	// Note: blocked is also set for post-tool hooks on timeout/error, but
+	// RunPostToolHooks ignores r.blocked (post hooks cannot block), so this
+	// is harmless — the field just carries diagnostic info in the result.
 	if err != nil {
 		return hookResult{
 			output:   trimmed,
@@ -209,7 +212,11 @@ func extractFilePath(toolName, args string) string {
 		return ""
 	}
 	switch toolName {
-	case "write_file", "write_binary_file", "delete_file", "read_file", "read_file_full", "edit_file":
+	case "write_file", "write_binary_file", "delete_file", "read_file", "read_file_full", "edit_file",
+		"replace", "multi_edit", "list_dir", "find_files", "search_files":
+		// These tools all use a top-level "path" JSON field. For directory-
+		// scoped tools (list_dir, find_files, search_files) the value may
+		// be a directory, not an individual file.
 		if v, ok := fields["path"].(string); ok {
 			return v
 		}

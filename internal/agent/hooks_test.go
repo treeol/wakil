@@ -57,27 +57,22 @@ func TestExtractFilePath(t *testing.T) {
 		{"edit_file", `{"path":"/foo/bar.go","old":"a","new":"b"}`, "/foo/bar.go"},
 		{"move_file", `{"src":"/a","dst":"/b"}`, "/a"},
 		{"run_shell", `{"command":"ls"}`, ""},
-		{"write_file", `{"content":"x"}`, ""}, // no path field
-	}
-	for _, tc := range tests {
-		got := extractFilePath(tc.tool, tc.args)
-		if got != tc.want {
-			t.Errorf("extractFilePath(%q, %q) = %q, want %q", tc.tool, tc.args, got, tc.want)
-		}
-	}
-}
-
-func TestJsonField(t *testing.T) {
-	tests := []struct {
-		tool, args, want string
-	}{
-		{"write_file", `{"path":"foo.go","content":"x"}`, "foo.go"},
-		{"write_file", `{"path": "foo.go", "content": "x"}`, "foo.go"},     // whitespace
-		{"write_file", `{"content":"x"}`, ""},                               // no path field
-		{"write_file", ``, ""},                                               // empty
-		{"move_file", `{"src":"/a","dst":"/b"}`, "/a"},                      // move src
-		{"edit_file", `{"path":"bar.go","old":"a","new":"b"}`, "bar.go"},    // edit
-		{"run_shell", `{"command":"ls"}`, ""},                               // not a file tool
+		{"write_file", `{"content":"x"}`, ""},                    // no path field
+		{"write_file", `{"path": "foo.go", "content": "x"}`, "foo.go"}, // whitespace in JSON
+		{"write_file", ``, ""},                                    // empty args
+		// Additional tools (from TestExtractFilePath_AdditionalTools).
+		{"write_binary_file", `{"path":"/img.png","content_base64":"x"}`, "/img.png"},
+		{"delete_file", `{"path":"/old.txt"}`, "/old.txt"},
+		{"read_file", `{"path":"/app.go"}`, "/app.go"},
+		{"read_file_full", `{"path":"/main.go"}`, "/main.go"},
+		{"move_file", `{"dst":"/only_dst.txt"}`, "/only_dst.txt"}, // dst fallback when no src
+		{"move_file", `{"src":"/src.txt","dst":"/dst.txt"}`, "/src.txt"}, // src preferred
+		// Newly supported tools.
+		{"replace", `{"path":"/config.yml","old":"a","new":"b"}`, "/config.yml"},
+		{"multi_edit", `{"path":"/app.go","edits":[]}`, "/app.go"},
+		{"list_dir", `{"path":"/workspace"}`, "/workspace"},
+		{"find_files", `{"path":"/src","pattern":"*.go"}`, "/src"},
+		{"search_files", `{"path":".","pattern":"TODO"}`, "."},
 	}
 	for _, tc := range tests {
 		got := extractFilePath(tc.tool, tc.args)
@@ -409,27 +404,6 @@ func TestRunHook_EmptyCommand(t *testing.T) {
 	}
 	if r.output != "" {
 		t.Errorf("empty command should produce no output, got: %s", r.output)
-	}
-}
-
-// --- extractFilePath for additional file tools ---
-
-func TestExtractFilePath_AdditionalTools(t *testing.T) {
-	tests := []struct {
-		tool, args, want string
-	}{
-		{"write_binary_file", `{"path":"/img.png","content_base64":"x"}`, "/img.png"},
-		{"delete_file", `{"path":"/old.txt"}`, "/old.txt"},
-		{"read_file", `{"path":"/app.go"}`, "/app.go"},
-		{"read_file_full", `{"path":"/main.go"}`, "/main.go"},
-		{"move_file", `{"dst":"/only_dst.txt"}`, "/only_dst.txt"}, // dst fallback when no src
-		{"move_file", `{"src":"/src.txt","dst":"/dst.txt"}`, "/src.txt"}, // src preferred
-	}
-	for _, tc := range tests {
-		got := extractFilePath(tc.tool, tc.args)
-		if got != tc.want {
-			t.Errorf("extractFilePath(%q, %q) = %q, want %q", tc.tool, tc.args, got, tc.want)
-		}
 	}
 }
 
