@@ -508,3 +508,98 @@ func TestEndToEnd_DisjointEditsBothApplied(t *testing.T) {
 		t.Errorf("parent should have 'wt2 new file\\n', got: %q", string(content2))
 	}
 }
+
+func TestPatchFilePaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		patch  string
+		expect []string
+	}{
+		{
+			name: "single file modification",
+			patch: `diff --git a/hello.txt b/hello.txt
+index 1234567..abcdefg 100644
+--- a/hello.txt
++++ b/hello.txt
+@@ -1 +1 @@
+-old
++new
+`,
+			expect: []string{"hello.txt"},
+		},
+		{
+			name: "new file",
+			patch: `diff --git a/new.txt b/new.txt
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1 @@
++content
+`,
+			expect: []string{"new.txt"},
+		},
+		{
+			name: "deleted file",
+			patch: `diff --git a/old.txt b/old.txt
+deleted file mode 100644
+index 1234567..0000000
+--- a/old.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-content
+`,
+			expect: []string{"old.txt"},
+		},
+		{
+			name: "multiple files",
+			patch: `diff --git a/file1.go b/file1.go
+index 111..222 100644
+--- a/file1.go
++++ b/file1.go
+@@ -1 +1 @@
+-a
++b
+diff --git a/file2.go b/file2.go
+index 333..444 100644
+--- a/file2.go
++++ b/file2.go
+@@ -1 +1 @@
+-c
++d
+`,
+			expect: []string{"file1.go", "file2.go"},
+		},
+		{
+			name: "empty patch",
+			patch: "",
+			expect: nil,
+		},
+		{
+			name: "file with timestamp in header",
+			patch: `diff --git a/main.go b/main.go
+index 123..456 100644
+--- a/main.go	2024-01-01 12:00:00.000000000 +0000
++++ b/main.go	2024-01-02 12:00:00.000000000 +0000
+@@ -1 +1 @@
+-old
++new
+`,
+			expect: []string{"main.go"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := patchFilePaths(tc.patch)
+			if len(got) != len(tc.expect) {
+				t.Fatalf("expected %d paths, got %d: %v", len(tc.expect), len(got), got)
+			}
+			for i, p := range tc.expect {
+				if got[i] != p {
+					t.Errorf("path[%d]: expected %q, got %q", i, p, got[i])
+				}
+			}
+		})
+	}
+}

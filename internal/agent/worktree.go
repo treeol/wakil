@@ -292,7 +292,20 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 		return false, false, checkStr
 	}
 
-	// --check passed — apply for real.
+	// --check passed — capture pre-mutation state for each file in the patch
+	// BEFORE applying it. This enables /rewind to revert worktree-isolated
+	// subagent edits (card #211). The patch header lines (--- a/..., +++ b/...)
+	// list the affected files; we extract parent-relative paths from them.
+	for _, path := range patchFilePaths(patch) {
+		// Resolve to canonical parent-workspace path before capturing.
+		canon, err := a.Exec.ConfinePath(ctx, path)
+		if err != nil {
+			continue // skip paths that can't be confined
+		}
+		a.captureForCheckpoint(ctx, canon)
+	}
+
+	// Apply for real.
 	applyCmd := fmt.Sprintf("%sgit -C %s %s apply %s 2>&1",
 		gitBaseEnv(),
 		shellQuote(repoRoot),
@@ -305,6 +318,46 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 		return false, false, strings.TrimSpace(applyOut)
 	}
 	return true, false, ""
+}
+
+// patchFilePaths extracts the list of file paths affected by a unified diff
+// patch. It parses the "+++ b/path" and "--- a/path" header lines to find the
+// modified files. For new files, "+++ b/path" is used (--- is /dev/null).
+// For deleted files, "--- a/path" is used (+++ is /dev/null).
+// Returns parent-workspace-relative paths (without the "a/" or "b/" prefix).
+func patchFilePaths(patch string) []string {
+	var paths []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(patch, "\n") {
+		var path string
+		if strings.HasPrefix(line, "+++ ") {
+			path = strings.TrimPrefix(line, "+++ ")
+		} else if strings.HasPrefix(line, "--- ") {
+			path = strings.TrimPrefix(line, "--- ")
+		} else {
+			continue
+		}
+		// Skip /dev/null (new or deleted files).
+		if path == "/dev/null" {
+			continue
+		}
+		// Strip the "a/" or "b/" prefix used by git diffs.
+		if strings.HasPrefix(path, "a/") {
+			path = strings.TrimPrefix(path, "a/")
+		} else if strings.HasPrefix(path, "b/") {
+			path = strings.TrimPrefix(path, "b/")
+		}
+		// Strip any trailing tab + timestamp.
+		if idx := strings.IndexByte(path, '\t'); idx >= 0 {
+			path = path[:idx]
+		}
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 // removeWorktree removes a git worktree and its directory. Best-effort —
