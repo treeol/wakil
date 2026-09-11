@@ -197,11 +197,21 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 					entry.notified = true
 				}
 				tabStarted := entry.tabStarted
+				op := entry.asyncOp
 				a.bgMu.Unlock()
 				if notify {
-					// notifyDetachedShellExit emits the tab Done (via
-					// announceShellDone) AND models the inbox completion notice.
-					a.notifyDetachedShellExit(bgID, entry)
+					if op != nil {
+						// Registered as async op: publish through the proper
+						// async registry path (decrements asyncActive, appends
+						// to asyncInbox, signals wake). This lets wait_for_completion
+						// suspend the turn and resume on completion.
+						statusLine, tail := a.shellTailPreview(entry)
+						a.publishBgCompletion(op, bgID, entry, statusLine, tail)
+					} else {
+						// No async op registered (registry full, stopping, or
+						// old path): fall back to the manual inbox append.
+						a.notifyDetachedShellExit(bgID, entry)
+					}
 				} else if tabStarted {
 					// Detached shell tab was opened but model notification was
 					// suppressed (kill/shutdown). Still terminalize the tab so it
@@ -263,10 +273,13 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		// Deadline reached — the process is still running. Leave it
 		// registered for read_process_log polling, and arm the push
 		// notification: the reaper will announce the exit (card #121).
+		// Register as a pending async op so wait_for_completion sees it
+		// and the turn suspends properly instead of polling read_process_log.
 		// Race guard: the process may have exited between the reaper's
 		// notify check and this arm (select picked timer.C while done was
 		// also ready) — then the reaper already left without notifying, so
 		// we notify here ourselves. The notified flag dedupes both paths.
+		var bgAsyncOp *asyncOp
 		a.bgMu.Lock()
 		notifySelf := false
 		var notifyEntry *bgEntry
@@ -285,6 +298,20 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			}
 		}
 		a.bgMu.Unlock()
+		// Register as pending async work so wait_for_completion suspends
+		// the turn. If the registry is full or stopping, degrade gracefully:
+		// the reaper will still push the completion via notifyDetachedShellExit
+		// (the old manual inbox path), but wait_for_completion won't see it.
+		if !notifySelf && detachEntry != nil {
+			op, reason := a.registerAsyncOp("run_shell", Truncate(command, 60))
+			if reason == "" {
+				bgAsyncOp = op
+				detachEntry.asyncOp = op
+			}
+			// reason == "full" or "stopping": fall back to the old
+			// manual inbox path (notifyDetachedShellExit in the reaper).
+		}
+		_ = bgAsyncOp // used via entry.asyncOp in the reaper
 		// Card #128: a detached shell surfaces as a TUI tab. Emit Start (after the
 		// lock; sendEvent may block) so the user can track it until Done.
 		if detachEntry != nil {
@@ -298,6 +325,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		// Turn cancelled — leave the process running for the user to inspect;
 		// arm the notification the same way (the exit still matters). Same
 		// race guard as the timer branch.
+		var bgAsyncOp *asyncOp
 		a.bgMu.Lock()
 		notifySelf := false
 		var notifyEntry *bgEntry
@@ -316,6 +344,15 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			}
 		}
 		a.bgMu.Unlock()
+		// Register as pending async work (same as timer branch).
+		if !notifySelf && detachEntry != nil {
+			op, reason := a.registerAsyncOp("run_shell", Truncate(command, 60))
+			if reason == "" {
+				bgAsyncOp = op
+				detachEntry.asyncOp = op
+			}
+		}
+		_ = bgAsyncOp
 		if detachEntry != nil {
 			a.announceShellStart(bgID, detachEntry)
 		}
