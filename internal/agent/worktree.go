@@ -17,7 +17,10 @@ package agent
 // Lifecycle:
 //   1. createWorktree: `git worktree add --detach <dir> HEAD` — detached HEAD
 //      so the worktree isn't tied to a branch (no branch to clean up).
-//   2. Child runs with a DirectExecutor rooted at the worktree dir.
+//   2. Child runs with an executor rooted at the worktree dir:
+//      - DirectExecutor in direct mode (host filesystem).
+//      - DockerWorktreeExecutor in docker mode (shares the parent's container,
+//        re-rooted at the worktree dir inside container /tmp).
 //   3. diffWorktree: `git diff --cached --binary HEAD` in the worktree —
 //      captures all changes including binary files and new files (staged
 //      first with `git add -A`).
@@ -28,10 +31,13 @@ package agent
 //   5. removeWorktree: `git worktree remove --force <dir>` — cleans up.
 //
 // Crash safety: stale worktrees (from a crashed session) are pruned on
-// startup. Worktree dirs are under the system temp dir, prefixed with
-// "wakil-wt-", so they're identifiable. Pruning checks the worktree's own
-// .git gitdir pointer — not the current repo's worktree list — so worktrees
-// belonging to other repos/sessions are never deleted.
+// startup. In direct mode, worktree dirs are under the system temp dir,
+// prefixed with "wakil-wt-". In docker mode, worktree dirs are under
+// container /tmp (tmpfs), which is wiped on container restart — but stale
+// .git/worktrees/ metadata in the repo may remain and is cleaned selectively.
+// Pruning checks the worktree's own .git gitdir pointer — not the current
+// repo's worktree list — so worktrees belonging to other repos/sessions are
+// never deleted.
 //
 // Non-git fallback: when the workspace is not a git repo, edit children fall
 // back to the existing serialized behavior (subagentWriterMu) with a one-line
@@ -68,8 +74,8 @@ import (
 // files. The lock is held only during applyPatch, not during the child's run.
 var patchApplyMu sync.Mutex
 
-// worktreePrefix is the prefix for worktree directories in the system temp
-// dir. Used to identify and prune stale worktrees from crashed sessions.
+// worktreePrefix is the prefix for worktree directories in the temp dir.
+// Used to identify and prune stale worktrees from crashed sessions.
 const worktreePrefix = "wakil-wt-"
 
 // worktreeOpTimeout is the timeout for worktree diff/apply/cleanup operations.
@@ -82,19 +88,31 @@ const worktreeOpTimeout = 30 * time.Second
 // enough for git to remove the worktree directory.
 const worktreeCleanupTimeout = 10 * time.Second
 
+// isDockerExecutor returns true if the executor is a DockerExecutor (but not
+// a dockerWorktreeExecutor, which embeds it).
+func isDockerExecutor(e exec.Executor) bool {
+	_, ok := e.(*exec.DockerExecutor)
+	return ok
+}
+
 // isGitRepo checks whether the workspace root is inside a git repository.
 // Uses the parent's executor (which runs from the workspace root). We check
 // for `git rev-parse --is-inside-work-tree` rather than looking for a .git
 // directory because submodules and worktrees have different layouts.
 //
-// Only enabled for DirectExecutor (host filesystem). When using
-// DockerExecutor, the host temp dir and container filesystem are different
-// namespaces, so worktree isolation doesn't apply.
+// Enabled for both DirectExecutor (host filesystem) and DockerExecutor
+// (container filesystem). In docker mode, worktrees are created inside
+// container /tmp (tmpfs), visible to in-container git but isolated from the
+// parent workspace.
 func isGitRepo(ctx context.Context, a *App) bool {
-	// Worktree isolation requires a DirectExecutor — the worktree is on the
-	// host filesystem, and the child needs a DirectExecutor rooted there.
-	// DockerExecutor runs in a container; host temp dirs are inaccessible.
-	if _, ok := a.Exec.(*exec.DirectExecutor); !ok {
+	// Worktree isolation requires a git repo accessible via the executor.
+	// Both DirectExecutor and DockerExecutor are supported. The
+	// dockerWorktreeExecutor is not — nested dispatch is not allowed and
+	// the wrapper's WorkspaceRoot is a /tmp path, not the repo root.
+	switch a.Exec.(type) {
+	case *exec.DirectExecutor:
+	case *exec.DockerExecutor:
+	default:
 		return false
 	}
 	out, err := a.Exec.RunShell(ctx, gitBaseEnv()+"git "+gitBaseArgs()+" rev-parse --is-inside-work-tree 2>/dev/null")
@@ -105,21 +123,40 @@ func isGitRepo(ctx context.Context, a *App) bool {
 }
 
 // createWorktree creates a new git worktree at a temp dir, detached at HEAD.
-// Returns the worktree directory path. The caller must call removeWorktree
-// when done (typically via defer).
+// Returns the worktree directory path (executor-visible path). The caller must
+// call removeWorktree when done (typically via defer).
 //
 // The worktree is created from the parent workspace's current HEAD, so the
 // child sees the committed state the parent sees at dispatch time. The
 // --detach flag means the worktree is not on any branch — no branch to clean
 // up later. Uncommitted changes in the parent are NOT copied (see the dirty-
 // parent limitation in the file header).
+//
+// In direct mode, the temp dir is on the host filesystem (via os.MkdirTemp).
+// In docker mode, the temp dir is inside the container's /tmp (via mktemp -d
+// through the executor) so it's visible to in-container git.
 func createWorktree(ctx context.Context, a *App) (string, error) {
-	dir, err := os.MkdirTemp("", worktreePrefix)
-	if err != nil {
-		return "", fmt.Errorf("worktree: could not create temp dir: %w", err)
+	var dir string
+	if isDockerExecutor(a.Exec) {
+		// Docker mode: create temp dir inside the container via the executor.
+		// mktemp -d creates a directory in TMPDIR (defaults to /tmp).
+		out, err := a.Exec.RunShell(ctx, "mktemp -d -p /tmp "+worktreePrefix+"XXXXXX 2>&1")
+		if err != nil {
+			return "", fmt.Errorf("worktree: could not create temp dir: %s", strings.TrimSpace(out))
+		}
+		dir = strings.TrimSpace(out)
+		// Remove the empty dir so git worktree add can create it fresh.
+		_, _ = a.Exec.RunShell(ctx, "rm -rf "+shellQuote(dir))
+	} else {
+		// Direct mode: create temp dir on the host.
+		tmp, err := os.MkdirTemp("", worktreePrefix)
+		if err != nil {
+			return "", fmt.Errorf("worktree: could not create temp dir: %w", err)
+		}
+		dir = tmp
+		// Remove the empty dir so git worktree add can create it fresh.
+		_ = os.RemoveAll(dir)
 	}
-	// Remove the empty dir so git worktree add can create it fresh.
-	_ = os.RemoveAll(dir)
 
 	repoRoot := a.Exec.WorkspaceRoot()
 	cmd := fmt.Sprintf("%sgit -C %s worktree add --detach %s HEAD 2>&1",
@@ -129,7 +166,11 @@ func createWorktree(ctx context.Context, a *App) (string, error) {
 	out, err := a.Exec.RunShell(ctx, cmd)
 	if err != nil {
 		// Cleanup the temp dir on failure.
-		_ = os.RemoveAll(dir)
+		if isDockerExecutor(a.Exec) {
+			_, _ = a.Exec.RunShell(ctx, "rm -rf "+shellQuote(dir))
+		} else {
+			_ = os.RemoveAll(dir)
+		}
 		return "", fmt.Errorf("git worktree add: %s", strings.TrimSpace(out))
 	}
 	return dir, nil
@@ -148,7 +189,7 @@ func createWorktree(ctx context.Context, a *App) (string, error) {
 // `--binary` is included so binary file changes emit apply-able patches
 // (without it, git emits "Binary files differ" stubs that git apply rejects).
 //
-// The DirectExecutor's RunShell trims trailing \r\n from output, which would
+// The executor's RunShell trims trailing \r\n from output, which would
 // corrupt the patch (git apply expects a trailing newline after the last
 // hunk). We restore the trailing newline here.
 func diffWorktree(ctx context.Context, a *App, wtDir string) (string, error) {
@@ -194,19 +235,41 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 	}
 
 	repoRoot := a.Exec.WorkspaceRoot()
+
 	// Write the patch to a temp file so we can pass it to git apply via file
 	// path (avoids shell-quoting issues with the diff content).
-	patchFile, err := os.CreateTemp("", "wakil-patch-*.patch")
-	if err != nil {
-		return false, false, fmt.Sprintf("could not create patch temp file: %v", err)
-	}
-	defer func() { _ = os.Remove(patchFile.Name()) }()
-	if _, err := patchFile.WriteString(patch); err != nil {
-		_ = patchFile.Close()
-		return false, false, fmt.Sprintf("could not write patch temp file: %v", err)
-	}
-	if err := patchFile.Close(); err != nil {
-		return false, false, fmt.Sprintf("could not close patch temp file: %v", err)
+	//
+	// In direct mode, use host os.CreateTemp (git runs on host).
+	// In docker mode, use container /tmp via the executor (git runs in container).
+	var patchPath string
+	if isDockerExecutor(a.Exec) {
+		// Create a temp file inside the container via mktemp, then write the
+		// patch content via WriteFileBytes.
+		out, err := a.Exec.RunShell(ctx, "mktemp -p /tmp wakil-patch-XXXXXX 2>&1")
+		if err != nil {
+			return false, false, fmt.Sprintf("could not create patch temp file: %s", strings.TrimSpace(out))
+		}
+		patchPath = strings.TrimSpace(out)
+		defer func() {
+			_, _ = a.Exec.RunShell(ctx, "rm -f "+shellQuote(patchPath))
+		}()
+		if _, err := a.Exec.WriteFileBytes(ctx, patchPath, []byte(patch)); err != nil {
+			return false, false, fmt.Sprintf("could not write patch temp file: %v", err)
+		}
+	} else {
+		patchFile, err := os.CreateTemp("", "wakil-patch-*.patch")
+		if err != nil {
+			return false, false, fmt.Sprintf("could not create patch temp file: %v", err)
+		}
+		patchPath = patchFile.Name()
+		defer func() { _ = os.Remove(patchPath) }()
+		if _, err := patchFile.WriteString(patch); err != nil {
+			_ = patchFile.Close()
+			return false, false, fmt.Sprintf("could not write patch temp file: %v", err)
+		}
+		if err := patchFile.Close(); err != nil {
+			return false, false, fmt.Sprintf("could not close patch temp file: %v", err)
+		}
 	}
 
 	// First, check if the patch applies cleanly (--check is a dry run that
@@ -215,7 +278,7 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 		gitBaseEnv(),
 		shellQuote(repoRoot),
 		gitBaseArgs(),
-		shellQuote(patchFile.Name()))
+		shellQuote(patchPath))
 	checkOut, checkErr := a.Exec.RunShell(ctx, checkCmd)
 	if checkErr != nil {
 		checkStr := strings.TrimSpace(checkOut)
@@ -234,7 +297,7 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 		gitBaseEnv(),
 		shellQuote(repoRoot),
 		gitBaseArgs(),
-		shellQuote(patchFile.Name()))
+		shellQuote(patchPath))
 	applyOut, applyErr := a.Exec.RunShell(ctx, applyCmd)
 	if applyErr != nil {
 		// --check passed but --apply failed — unexpected. The parent may be
@@ -248,16 +311,16 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 // errors are not returned because cleanup must continue even on failure.
 // Safe to call multiple times.
 //
-// Defense-in-depth: asserts the directory is under the system temp dir with
-// the wakil-wt- prefix before removing it. A bug elsewhere passing in the
+// Defense-in-depth: asserts the directory is under the temp dir with the
+// wakil-wt- prefix before removing it. A bug elsewhere passing in the
 // workspace root would be catastrophic without this check.
 func removeWorktree(ctx context.Context, a *App, wtDir string) {
 	if wtDir == "" {
 		return
 	}
-	// Assert the path is under the system temp dir with our prefix — never
+	// Assert the path is under the temp dir with our prefix — never
 	// remove a path that doesn't match (defense against catastrophic misuse).
-	if !isWorktreePath(wtDir) {
+	if !isWorktreePath(wtDir, a.Exec) {
 		return
 	}
 	// First, try the git way (removes from worktree list + deletes dir).
@@ -268,43 +331,77 @@ func removeWorktree(ctx context.Context, a *App, wtDir string) {
 		shellQuote(wtDir))
 	_, _ = a.Exec.RunShell(ctx, cmd)
 	// Then, belt-and-suspenders: remove the directory if it still exists.
-	if _, err := os.Stat(wtDir); err == nil {
-		_ = os.RemoveAll(wtDir)
+	if isDockerExecutor(a.Exec) {
+		// Docker mode: check and remove via executor (container /tmp).
+		_, _ = a.Exec.RunShell(ctx, "rm -rf "+shellQuote(wtDir))
+	} else {
+		// Direct mode: check and remove via host os.
+		if _, err := os.Stat(wtDir); err == nil {
+			_ = os.RemoveAll(wtDir)
+		}
 	}
 }
 
-// isWorktreePath returns true if path is under the system temp dir and starts
-// with the wakil-wt- prefix. Used as a safety guard before deletion.
-func isWorktreePath(path string) bool {
+// isWorktreePath returns true if path is under the temp dir and starts with
+// the wakil-wt- prefix. Used as a safety guard before deletion.
+//
+// In direct mode, the temp dir is the host's os.TempDir(). In docker mode,
+// it's /tmp (container-internal). The path is matched against the namespace
+// the executor sees — a container /tmp path is never confused with a host
+// /tmp path.
+func isWorktreePath(path string, executor exec.Executor) bool {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return false
 	}
-	tmpDir := os.TempDir()
-	if resolved, err := filepath.EvalSymlinks(tmpDir); err == nil {
-		tmpDir = resolved
+
+	var tmpDir string
+	if isDockerExecutor(executor) {
+		// Docker mode: temp dir is container /tmp.
+		tmpDir = "/tmp"
+	} else {
+		// Direct mode: temp dir is host os.TempDir().
+		tmpDir = os.TempDir()
+		if resolved, err := filepath.EvalSymlinks(tmpDir); err == nil {
+			tmpDir = resolved
+		}
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
+
+	// In docker mode, don't try EvalSymlinks on the host — the path is
+	// container-internal and won't resolve on the host.
+	if !isDockerExecutor(executor) {
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = resolved
+		}
 	}
 	return strings.HasPrefix(abs, filepath.Join(tmpDir, worktreePrefix))
 }
 
-// pruneStaleWorktrees scans the system temp dir for stale wakil-wt-*
-// directories and removes those whose .git file is missing or whose gitdir
-// pointer targets a path that no longer exists (the parent repo was
-// deleted/moved). Worktrees whose gitdir pointer still resolves to a live
-// .git directory are left alone (they belong to some active repo, even if
-// it's not this one). On ambiguous errors (permission denied, I/O error),
-// the worktree is left alone — fail closed. Does not invoke git worktree
-// prune.
+// pruneStaleWorktrees scans for stale wakil-wt-* worktrees and cleans them up.
 //
-// Note: this does NOT reclaim worktrees from crashed sessions where the parent
-// repo is still alive (both the worktree dir and the .git metadata exist).
-// Those require a session-liveness mechanism (e.g., pid-based locks) which is
-// out of scope for v1. They can be cleaned up manually with
-// `git worktree remove --force <dir>`.
+// In direct mode, it scans the host temp dir (os.TempDir()) for stale
+// worktree directories whose .git gitdir pointer targets a path that no
+// longer exists. Worktrees whose gitdir pointer still resolves to a live
+// .git directory are left alone. On ambiguous errors (permission denied,
+// I/O error), the worktree is left alone — fail closed.
+//
+// In docker mode, the container's /tmp is tmpfs and wiped on container
+// restart, so stale worktree directories don't survive. However, stale
+// .git/worktrees/ metadata in the repo may remain (the repo is bind-mounted
+// and persists). We selectively clean entries whose name has the wakil-wt-
+// prefix, whose gitdir points under /tmp/wakil-wt-, and whose target no
+// longer exists. This avoids deleting user-created host worktrees.
+//
+// Note: this does NOT invoke `git worktree prune` because it would also
+// prune user-created worktrees that happen to be missing from the
+// container's view.
 func pruneStaleWorktrees(ctx context.Context, a *App) {
+	if isDockerExecutor(a.Exec) {
+		pruneStaleDockerWorktreeMetadata(ctx, a)
+		return
+	}
+
+	// Direct mode: scan host temp dir.
 	_ = ctx
 	_ = a
 	tmpDir := os.TempDir()
@@ -358,3 +455,60 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 	}
 }
 
+// pruneStaleDockerWorktreeMetadata selectively removes .git/worktrees/
+// entries for wakil-wt-* worktrees whose gitdir target no longer exists
+// inside the container. This runs inside the container via the executor.
+//
+// It does NOT use `git worktree prune` because that would also prune
+// user-created worktrees that are invisible from the container's view
+// (e.g., a worktree at /home/user/project-wt on the host).
+//
+// Safety: only entries matching wakil-wt-* prefix with gitdir pointing
+// under /tmp/wakil-wt- are considered for removal. All others are left
+// alone. The gitdir file contains a bare path (not "gitdir: <path>" —
+// that format is in the worktree's own .git file). The existence check
+// uses test -e (the target is a file, not a directory).
+func pruneStaleDockerWorktreeMetadata(ctx context.Context, a *App) {
+	repoRoot := a.Exec.WorkspaceRoot()
+	// List .git/worktrees/ entries that have our prefix. Use newline
+	// splitting (not strings.Fields) to handle paths with spaces.
+	listCmd := fmt.Sprintf(
+		`ls -d %s/.git/worktrees/%s* 2>/dev/null`,
+		shellQuote(repoRoot), worktreePrefix)
+	out, err := a.Exec.RunShell(ctx, listCmd)
+	if err != nil {
+		return // no entries or error — nothing to prune
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for _, line := range lines {
+		wtMetaDir := strings.TrimSpace(line)
+		if wtMetaDir == "" {
+			continue
+		}
+		// Read the gitdir file inside .git/worktrees/<name>/gitdir.
+		// This file contains a bare path like "/tmp/wakil-wt-XXXXXX/.git"
+		// (NOT "gitdir: <path>" — that format is in the worktree's .git file).
+		gitdirFile := wtMetaDir + "/gitdir"
+		gitdirOut, gitdirErr := a.Exec.RunShell(ctx,
+			"cat "+shellQuote(gitdirFile)+" 2>/dev/null")
+		if gitdirErr != nil {
+			continue // can't read gitdir — leave it
+		}
+		gitdirPath := strings.TrimSpace(gitdirOut)
+		if gitdirPath == "" {
+			continue // empty gitdir — leave it
+		}
+		// Only consider entries whose gitdir points under /tmp/wakil-wt-.
+		if !strings.Contains(gitdirPath, "/tmp/"+worktreePrefix) {
+			continue // not one of ours — leave it
+		}
+		// Check if the gitdir target still exists inside the container.
+		// Use test -e (not -d) — the target is a .git file, not a directory.
+		existsOut, _ := a.Exec.RunShell(ctx, "test -e "+shellQuote(gitdirPath)+" 2>/dev/null && echo yes || echo no")
+		if strings.TrimSpace(existsOut) == "yes" {
+			continue // worktree still exists — leave it
+		}
+		// gitdir target is gone — stale metadata. Remove the .git/worktrees/<name> entry.
+		_, _ = a.Exec.RunShell(ctx, "rm -rf "+shellQuote(wtMetaDir))
+	}
+}

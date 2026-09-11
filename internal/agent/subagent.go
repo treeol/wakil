@@ -1221,13 +1221,26 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	parentReasoningMaxTokens := a.ReasoningMaxTokensLocked()
 
 	// Select the executor for the child App. When using worktree isolation,
-	// the child gets a DirectExecutor rooted at the worktree directory so its
-	// file writes go to the isolated worktree, not the parent workspace. The
-	// parent's shared executor is still used for discovery/tools children and
-	// as a fallback for non-git or worktree-creation failure.
+	// the child gets an executor rooted at the worktree directory so its
+	// file writes go to the isolated worktree, not the parent workspace:
+	//   - DirectExecutor in direct mode (host filesystem).
+	//   - DockerWorktreeExecutor in docker mode (shares the parent's container,
+	//     re-rooted at the worktree dir inside container /tmp).
+	// The parent's shared executor is still used for discovery/tools children
+	// and as a fallback for non-git or worktree-creation failure.
 	childExec := a.Exec // default: share parent's executor
 	if useWorktree {
-		wtExec, err := exec.NewDirectExecutor(worktreeDir)
+		var wtExec exec.Executor
+		var err error
+		switch parentExec := a.Exec.(type) {
+		case *exec.DirectExecutor:
+			wtExec, err = exec.NewDirectExecutor(worktreeDir)
+		case *exec.DockerExecutor:
+			wtExec = exec.NewDockerWorktreeExecutor(parentExec, worktreeDir)
+		default:
+			// Unknown executor type — fall back to serialized.
+			err = fmt.Errorf("unsupported executor type for worktree isolation: %T", a.Exec)
+		}
 		if err != nil {
 			// Worktree executor failed — fall back to shared executor + serialized.
 			fmt.Fprintln(a.Out, Dim("· worktree executor failed, falling back to serialized: "+Truncate(err.Error(), 80)))
@@ -1576,14 +1589,17 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// to parent-relative paths for the files_changed report so the parent
 		// model sees workspace-relative paths, not worktree temp paths.
 		// Use filepath.Rel for prefix stripping. Note: filepath.Rel is
-		// lexical, not symlink-aware — if the worktree dir was symlink-
-		// resolved by the executor, we EvalSymlinks the worktree dir first
-		// to get a consistent base for the relative computation.
+		// lexical, not symlink-aware — in direct mode, EvalSymlinks the
+		// worktree dir to get a consistent base. In docker mode, the worktree
+		// dir is a container path that doesn't resolve on the host, so skip
+		// EvalSymlinks and use the path as-is.
 		changedFiles := fileRecorder.snapshot()
 		if len(changedFiles) > 0 {
 			wtBase := worktreeDir
-			if resolved, err := filepath.EvalSymlinks(worktreeDir); err == nil {
-				wtBase = resolved
+			if _, isDocker := a.Exec.(*exec.DockerExecutor); !isDocker {
+				if resolved, err := filepath.EvalSymlinks(worktreeDir); err == nil {
+					wtBase = resolved
+				}
 			}
 			for i, p := range changedFiles {
 				if rel, err := filepath.Rel(wtBase, p); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
