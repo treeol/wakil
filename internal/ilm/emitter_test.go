@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // TestOffModeNoDial verifies that mode=off produces zero network activity.
@@ -470,6 +472,53 @@ func TestUnknownModeRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown mode") {
 		t.Errorf("expected 'unknown mode' error, got %v", err)
+	}
+}
+
+// TestEventIDNoCollisionOnResume verifies that two emitters with the same
+// session ID (simulating a resume/rotation) produce different event IDs for
+// the same seq number. The old code used uuid5(session, seq) which collided
+// across processes — the server would dedup real events as duplicates.
+func TestEventIDNoCollisionOnResume(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable) // don't care about delivery
+	}))
+	defer srv.Close()
+
+	queue1 := filepath.Join(t.TempDir(), "q1.jsonl")
+	queue2 := filepath.Join(t.TempDir(), "q2.jsonl")
+
+	e1, err := New(Config{
+		Endpoint: srv.URL, Token: "t", Mode: ModeShadow,
+		QueuePath: queue1, BatchMS: 50,
+	}, "wakil-live:same-session")
+	if err != nil {
+		t.Fatalf("New e1: %v", err)
+	}
+	e2, err := New(Config{
+		Endpoint: srv.URL, Token: "t", Mode: ModeShadow,
+		QueuePath: queue2, BatchMS: 50,
+	}, "wakil-live:same-session") // same session ID
+	if err != nil {
+		t.Fatalf("New e2: %v", err)
+	}
+
+	// Both emit seq=1 with the same session ID.
+	e1.seqMu.Lock()
+	e1.seq = 1
+	id1 := uuid.NewSHA1(uuidNamespace, []byte(fmt.Sprintf("%s:%s:%d", e1.sessionID, e1.processID, 1))).String()
+	e1.seqMu.Unlock()
+
+	e2.seqMu.Lock()
+	e2.seq = 1
+	id2 := uuid.NewSHA1(uuidNamespace, []byte(fmt.Sprintf("%s:%s:%d", e2.sessionID, e2.processID, 1))).String()
+	e2.seqMu.Unlock()
+
+	e1.Close()
+	e2.Close()
+
+	if id1 == id2 {
+		t.Errorf("event IDs collided across processes for same session: %s (resume/rotation would cause server dedup to drop events)", id1)
 	}
 }
 

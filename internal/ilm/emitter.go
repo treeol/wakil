@@ -90,10 +90,16 @@ type ClientInfo struct {
 // Emitter is the main emitter instance. It is safe for concurrent use.
 // A nil Emitter (or one with Mode=off) silently discards all events.
 type Emitter struct {
-	cfg      Config
+	cfg       Config
 	sessionID string
-	seq      int
-	seqMu    sync.Mutex
+	seq       int
+	seqMu     sync.Mutex
+
+	// processID is a per-Emitter-instance UUID that prevents event ID
+	// collisions when a session ID survives resume/rotation. Without it,
+	// uuid5(session, seq) would produce the same IDs in the new process
+	// and the server would dedup real events as duplicates.
+	processID string
 
 	// eventCh is the in-process channel. nil when mode=off.
 	eventCh chan Event
@@ -142,6 +148,7 @@ func New(cfg Config, sessionID string) (*Emitter, error) {
 	e := &Emitter{
 		cfg:       cfg,
 		sessionID: sessionID,
+		processID: uuid.NewString(), // per-instance ID prevents event ID collisions on resume
 		done:      make(chan struct{}),
 	}
 
@@ -212,13 +219,16 @@ func (e *Emitter) Emit(typ EventType, payload interface{}) {
 		raw = e.redactor.RedactJSON(raw)
 	}
 
-	// Assign event ID (uuid5: namespace + session + seq) and seq.
+	// Assign event ID (uuid5: namespace + session + processID + seq). The
+	// processID is a per-Emitter UUID that prevents collisions when a session
+	// ID survives resume/rotation — without it, uuid5(session, seq) would
+	// produce the same IDs and the server would dedup real events.
 	e.seqMu.Lock()
 	e.seq++
 	seq := e.seq
 	e.seqMu.Unlock()
 
-	eventID := uuid.NewSHA1(uuidNamespace, []byte(fmt.Sprintf("%s:%d", e.sessionID, seq))).String()
+	eventID := uuid.NewSHA1(uuidNamespace, []byte(fmt.Sprintf("%s:%s:%d", e.sessionID, e.processID, seq))).String()
 
 	ev := Event{
 		EventID:       eventID,
