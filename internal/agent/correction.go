@@ -34,10 +34,13 @@ package agent
 //     require directive structure (not just substring presence). Questions
 //     like "can I use X instead of Y?" do NOT trigger — the pattern requires
 //     an imperative or declarative correction form.
+//   - For SignalRevert, the message must reference a restored file path or
+//     contain an explicit correction pattern — not just be any substantive
+//     message after a /rewind.
 //   - The Confirm gate (SuspendAuto carve-out) means the user reviews every
-//     proposal — false positives are rejected by the user, and a rejection
-//     rate >20% would signal the detector needs tuning (measurable via
-//     memory_reject logs).
+//     proposal — false positives are rejected by the user. Session-level
+//     counters (correctionProposals/Accepted/Rejected) track the rejection
+//     rate within the current session.
 //   - The memory store requires promotion (memory_promote) before the entry
 //     becomes active — a two-step gate (confirm + promote) prevents accidental
 //     pollution of the model's context.
@@ -107,10 +110,13 @@ func (a *App) detectCorrection(userText string) (correctionSignal, *correctionPr
 	}
 
 	// Signal 1: /rewind was used recently — the user's new message is the
-	// correction for the reverted work. Only trigger if the user's message is
-	// substantive (not a greeting, ack, or slash command).
+	// correction for the reverted work. Only trigger if the user's message
+	// references the reverted work (mentions a restored file path, or
+	// contains an explicit correction pattern). A bare substantive message
+	// like "no, I don't think that's a problem" after a rewind should NOT
+	// trigger a correction prompt.
 	if a.lastRewind != nil && time.Since(a.lastRewindAt) < correctionDetectWindow {
-		if isSubstantiveCorrection(userText) {
+		if isSubstantiveCorrection(userText) && referencesRewindOrCorrection(userText, a.lastRewind) {
 			proposal := a.buildRewindProposal(userText)
 			if proposal != nil {
 				return SignalRevert, proposal
@@ -334,6 +340,39 @@ func isSubstantiveCorrection(text string) bool {
 	return len(strings.Fields(text)) >= 3
 }
 
+// referencesRewindOrCorrection checks whether the user's message references the
+// reverted work (mentions a restored file path) or contains an explicit
+// correction pattern. This prevents every substantive message after a /rewind
+// from triggering a blocking correction prompt.
+func referencesRewindOrCorrection(text string, rr *rewindResult) bool {
+	if rr == nil {
+		return false
+	}
+	// Check if the message mentions any of the restored file paths (by basename
+	// or full path). This is the strongest signal that the user is correcting
+	// the reverted work.
+	lower := strings.ToLower(text)
+	for _, p := range rr.RestoredPaths {
+		// Match both the full path and the basename.
+		if strings.Contains(lower, strings.ToLower(p)) {
+			return true
+		}
+		// Check basename (last path component).
+		base := p
+		if idx := strings.LastIndex(p, "/"); idx >= 0 {
+			base = p[idx+1:]
+		}
+		if base != p && strings.Contains(lower, strings.ToLower(base)) {
+			return true
+		}
+	}
+
+	// Check if the message contains an explicit correction pattern. If the
+	// user is using correction language after a rewind, it's likely a correction
+	// of the reverted work.
+	return detectExplicitCorrection(text) != nil
+}
+
 // correctionMatch represents a detected correction pattern in user text.
 type correctionMatch struct {
 	// pattern is the matched pattern type.
@@ -370,12 +409,15 @@ func detectExplicitCorrection(text string) []correctionMatch {
 	var matches []correctionMatch
 
 	// Helper: extract a snippet of the text after a matched prefix.
+	// Uses the lowercased string for searching AND slicing to avoid byte-index
+	// misalignment when ToLower changes byte lengths (e.g. 'İ' → 2→3 bytes).
 	snippet := func(full, prefix string, n int) string {
-		idx := strings.Index(strings.ToLower(full), prefix)
+		lowered := strings.ToLower(full)
+		idx := strings.Index(lowered, prefix)
 		if idx < 0 {
 			return ""
 		}
-		rest := full[idx+len(prefix):]
+		rest := lowered[idx+len(prefix):]
 		rest = strings.TrimSpace(rest)
 		if len(rest) > n {
 			rest = rest[:n]
@@ -570,7 +612,7 @@ func containsSecretPattern(text string) bool {
 		"secret_key", "secretkey",
 		"access_token", "accesstoken",
 		"private_key", "privatekey",
-		"password", "passwd", "pwd",
+		"password", "passwd",
 		"bearer ", "authorization:",
 		"-----begin",
 		"aws_secret", "aws_access",

@@ -191,7 +191,7 @@ func TestDetectCorrection_RewindSignal(t *testing.T) {
 		t.Fatal("SetLastRewind should store the result")
 	}
 
-	sig, p := app.detectCorrection("actually, let's use a different approach with interfaces")
+	sig, p := app.detectCorrection("actually, main.go should use a different approach with interfaces")
 	if sig != SignalRevert || p == nil {
 		t.Fatalf("expected SignalRevert after rewind, got sig=%v, p=%v", sig, p)
 	}
@@ -378,6 +378,11 @@ func TestContainsSecretPattern(t *testing.T) {
 		{"bearer abc123", true},
 		{"use const not var", false},
 		{"the cause is not known", false},
+		// "pwd" should NOT trigger — too broad (matches the shell command,
+		// paths like /etc/pwd, etc.). Use "password" or "passwd" instead.
+		{"don't run pwd first", false},
+		{"the passwd file is at /etc/passwd", true},
+		{"the password is hunter2", true},
 	}
 	for _, tt := range tests {
 		got := containsSecretPattern(tt.text)
@@ -421,7 +426,7 @@ func TestDetectAndProposeCorrection_Rewind(t *testing.T) {
 	app.SetLastRewind(rr)
 
 	app.detectAndProposeCorrection(context.Background(),
-		"let me restructure this to use a middleware pattern instead")
+		"let me restructure handler.go to use a middleware pattern instead")
 
 	if app.correctionProposals != 1 {
 		t.Fatalf("expected 1 proposal after rewind, got %d", app.correctionProposals)
@@ -442,19 +447,20 @@ func TestDetectAndProposeCorrection_RewindConsumedByNonCorrection(t *testing.T) 
 	app.SetLastRewind(rr)
 
 	// A non-correction message after rewind still consumes the rewind signal
-	// (one-shot lifecycle). Since the rewind signal treats any substantive
-	// message as a correction candidate, this WILL trigger a proposal — but
-	// the Confirm gate lets the user decline false positives. The key
-	// assertion is that the rewind signal is consumed.
+	// (one-shot lifecycle). With the tightened detection, this message does
+	// NOT reference restored files or contain a correction pattern, so no
+	// proposal is made — but the signal is still consumed.
 	app.detectAndProposeCorrection(context.Background(),
 		"add a function to parse JSON")
 
 	if app.lastRewind != nil {
 		t.Fatal("rewind signal should be consumed by any message, not just corrections")
 	}
-	// A proposal IS made (rewind + substantive message = candidate), but the
-	// Confirm gate handles false positives. The test auto-approves, so it's
-	// accepted. The one-shot lifecycle is the key check.
+	// No proposal should be made — the message doesn't reference handler.go
+	// or contain a correction pattern.
+	if app.correctionProposals != 0 {
+		t.Fatalf("expected 0 proposals for non-correction after rewind, got %d", app.correctionProposals)
+	}
 }
 
 func TestDetectAndProposeCorrection_SubagentNoop(t *testing.T) {
@@ -490,7 +496,7 @@ func TestProposeCorrection_RewindAnchors(t *testing.T) {
 	}
 	app.SetLastRewind(rr)
 
-	sig, p := app.detectCorrection("let's use a different approach here")
+	sig, p := app.detectCorrection("main.go should use a different approach here")
 	if sig != SignalRevert || p == nil {
 		t.Fatalf("expected SignalRevert, got sig=%v, p=%v", sig, p)
 	}
@@ -512,7 +518,7 @@ func TestProposeCorrection_RewindAnchorsCapped(t *testing.T) {
 	}
 	app.SetLastRewind(rr)
 
-	_, p := app.detectCorrection("let's fix this properly with the new approach")
+	_, p := app.detectCorrection("a.go should be fixed properly with the new approach")
 	if p == nil {
 		t.Fatal("expected proposal")
 	}
@@ -596,9 +602,12 @@ func TestCorrectionsNeverStoredWithoutConfirmation(t *testing.T) {
 	// Try both signal types.
 	app.detectAndProposeCorrection(context.Background(),
 		"no, use const instead of var")
-	app.SetLastRewind(&rewindResult{TurnsRewound: 1})
+	app.SetLastRewind(&rewindResult{
+		TurnsRewound:  1,
+		RestoredPaths: []string{"main.go"},
+	})
 	app.detectAndProposeCorrection(context.Background(),
-		"let's restructure this properly here")
+		"main.go should use a different structure here")
 
 	// No entries should be in the store under correction/.
 	entries, err := app.MemoryStore.List(context.Background(), "correction/", "", "")
@@ -694,5 +703,70 @@ func TestHasImperativeVerb(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("hasImperativeVerb(%q) = %v, want %v", tt.before, got, tt.want)
 		}
+	}
+}
+
+// ── referencesRewindOrCorrection tests ─────────────────────────────────────
+
+func TestReferencesRewindOrCorrection(t *testing.T) {
+	rr := &rewindResult{
+		TurnsRewound:  1,
+		RestoredPaths: []string{"main.go", "util/helper.go"},
+	}
+	tests := []struct {
+		text string
+		want bool
+	}{
+		// References restored file by full path.
+		{"main.go should be refactored", true},
+		// References restored file by basename.
+		{"helper.go needs to use a different approach", true},
+		// Contains an explicit correction pattern.
+		{"no, use const instead of var", true},
+		// Substantive but doesn't reference files or correction patterns.
+		{"add a function to parse JSON", false},
+		{"I don't think that's a problem here", false},
+		// References a non-restored file.
+		{"config.go should be updated too", false},
+	}
+	for _, tt := range tests {
+		got := referencesRewindOrCorrection(tt.text, rr)
+		if got != tt.want {
+			t.Errorf("referencesRewindOrCorrection(%q) = %v, want %v", tt.text, got, tt.want)
+		}
+	}
+}
+
+func TestReferencesRewindOrCorrection_NilRewind(t *testing.T) {
+	if referencesRewindOrCorrection("anything", nil) {
+		t.Fatal("should return false for nil rewind result")
+	}
+}
+
+// ── snippet Unicode safety test ─────────────────────────────────────────────
+
+func TestDetectExplicitCorrection_UnicodeSnippet(t *testing.T) {
+	// The snippet helper previously mixed byte indices from the original
+	// and lowercased strings. When ToLower changes byte lengths (e.g. 'İ'
+	// → 2→3 bytes), the index could misalign. Verify the fix doesn't panic
+	// and still detects the correction.
+	text := "no, use İnterfaces not structs"
+	matches := detectExplicitCorrection(text)
+	if matches == nil {
+		t.Fatal("expected matches for unicode correction text")
+	}
+}
+
+func TestDetectExplicitCorrection_UnicodeNoPanic(t *testing.T) {
+	// Text with multibyte characters that change byte length under ToLower.
+	// Should not panic from slice bounds.
+	texts := []string{
+		"use İnterfaces instead of structs",
+		"don't use İ as a variable name",
+		"I wanted İnterfaces, not structs",
+		"stop using İ as a placeholder",
+	}
+	for _, text := range texts {
+		_ = detectExplicitCorrection(text) // should not panic
 	}
 }
