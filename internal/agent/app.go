@@ -1391,12 +1391,17 @@ func (a *App) buildPreamble(today string) string {
 		parts = append(parts, a.AgentPrompt)
 	}
 	// AGENTS.md (advisory project instructions) — loaded from the workspace
-	// root and ancestor directories. Inserted AFTER Wakil's own instructions
-	// and BEFORE the date line so the precedence rule is visually obvious:
+	// root and ancestor directories (bounded by the workspace root, never
+	// walking above it). Inserted AFTER Wakil's own instructions and BEFORE
+	// the date line so the precedence rule is visually obvious:
 	// Wakil's instructions → AGENTS.md (advisory) → runtime context (date,
 	// cwd, tools, memory). Content is untrusted repo content; sets the
 	// sticky touchedExternal flag for taint tracking.
-	if agentsMD := loadAgentsMD(cwd); agentsMD != "" {
+	var wsRoot string
+	if a.Exec != nil {
+		wsRoot = a.Exec.WorkspaceRoot()
+	}
+	if agentsMD := loadAgentsMD(cwd, wsRoot); agentsMD != "" {
 		parts = append(parts, agentsMD)
 		a.touchedExternal = true
 	}

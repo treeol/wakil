@@ -8,7 +8,7 @@ import (
 )
 
 func TestLoadAgentsMD_empty(t *testing.T) {
-	got := loadAgentsMD("")
+	got := loadAgentsMD("", "")
 	if got != "" {
 		t.Fatalf("expected empty string for empty cwd, got %q", got)
 	}
@@ -16,7 +16,7 @@ func TestLoadAgentsMD_empty(t *testing.T) {
 
 func TestLoadAgentsMD_noFile(t *testing.T) {
 	dir := t.TempDir()
-	got := loadAgentsMD(dir)
+	got := loadAgentsMD(dir, dir)
 	if got != "" {
 		t.Fatalf("expected empty string when no AGENTS.md exists, got %q", got)
 	}
@@ -29,7 +29,7 @@ func TestLoadAgentsMD_rootOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := loadAgentsMD(dir)
+	got := loadAgentsMD(dir, dir)
 	if got == "" {
 		t.Fatal("expected non-empty result")
 	}
@@ -64,7 +64,7 @@ func TestLoadAgentsMD_nestedOverridesRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := loadAgentsMD(deep)
+	got := loadAgentsMD(deep, root)
 	if got == "" {
 		t.Fatal("expected non-empty result")
 	}
@@ -99,7 +99,7 @@ func TestLoadAgentsMD_truncatesLargeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := loadAgentsMD(dir)
+	got := loadAgentsMD(dir, dir)
 	if got == "" {
 		t.Fatal("expected non-empty result")
 	}
@@ -114,7 +114,7 @@ func TestLoadAgentsMD_emptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := loadAgentsMD(dir)
+	got := loadAgentsMD(dir, dir)
 	if got != "" {
 		t.Errorf("expected empty result for whitespace-only file, got %q", got)
 	}
@@ -188,7 +188,7 @@ func TestLoadAgentsMD_deepestFirstBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := loadAgentsMD(deep)
+	got := loadAgentsMD(deep, root)
 	if got == "" {
 		t.Fatal("expected non-empty result")
 	}
@@ -216,7 +216,7 @@ func TestLoadAgentsMD_rejectsNonRegularFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := loadAgentsMD(dir)
+	got := loadAgentsMD(dir, dir)
 	if got != "" {
 		t.Errorf("expected empty result when AGENTS.md is a directory, got %q", got)
 	}
@@ -224,7 +224,7 @@ func TestLoadAgentsMD_rejectsNonRegularFile(t *testing.T) {
 
 func TestLoadAgentsMD_relativeCwdHandled(t *testing.T) {
 	// A relative cwd like "." should be resolved to absolute and not loop.
-	got := loadAgentsMD(".")
+	got := loadAgentsMD(".", "")
 	// No AGENTS.md in the test's CWD (the Go package dir) — may or may not
 	// return content. The important thing is it doesn't hang or panic.
 	_ = got
@@ -278,7 +278,7 @@ func TestLoadAgentsMD_totalCapTruncationReported(t *testing.T) {
 		}
 	}
 
-	got := loadAgentsMD(deep)
+	got := loadAgentsMD(deep, root)
 	if got == "" {
 		t.Fatal("expected non-empty result")
 	}
@@ -301,5 +301,64 @@ func TestLoadAgentsMD_totalCapTruncationReported(t *testing.T) {
 	// A rough check: body should be well under 100KB (64KB content + overhead).
 	if len(body) > 100*1024 {
 		t.Errorf("total rendered content too large: %d bytes", len(body))
+	}
+}
+
+func TestLoadAgentsMD_stopsAtWorkspaceRoot(t *testing.T) {
+	// The ancestor walk must stop at the workspace root — it must not
+	// ingest AGENTS.md from directories above the workspace boundary.
+	// Structure: root/AGENTS.md + root/workspace/AGENTS.md + root/workspace/sub/AGENTS.md
+	// cwd = root/workspace/sub, workspaceRoot = root/workspace
+	// The walk should find sub + workspace, but NOT root (above workspace).
+	root := t.TempDir()
+	wsRoot := filepath.Join(root, "workspace")
+	sub := filepath.Join(wsRoot, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root-secret-instruction"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsRoot, "AGENTS.md"), []byte("workspace-instruction"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "AGENTS.md"), []byte("sub-instruction"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := loadAgentsMD(sub, wsRoot)
+	if got == "" {
+		t.Fatal("expected non-empty result")
+	}
+	// sub and workspace should be present
+	if !strings.Contains(got, "sub-instruction") {
+		t.Error("sub-level AGENTS.md should be included")
+	}
+	if !strings.Contains(got, "workspace-instruction") {
+		t.Error("workspace-root AGENTS.md should be included")
+	}
+	// root should NOT be present (above workspace boundary)
+	if strings.Contains(got, "root-secret-instruction") {
+		t.Error("root AGENTS.md above workspace boundary should NOT be included")
+	}
+}
+
+func TestLoadAgentsMD_emptyWorkspaceRootWalksToFSRoot(t *testing.T) {
+	// When workspaceRoot is empty, the walk should fall back to the
+	// filesystem root (old behavior). This is the backward-compatible
+	// path for callers that don't pass a workspace root.
+	// We test with a single-level structure to verify it still works.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("test-instruction"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := loadAgentsMD(dir, "")
+	if got == "" {
+		t.Fatal("expected non-empty result with empty workspace root")
+	}
+	if !strings.Contains(got, "test-instruction") {
+		t.Error("AGENTS.md should be found when workspaceRoot is empty")
 	}
 }

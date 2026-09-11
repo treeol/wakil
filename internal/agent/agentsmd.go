@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,9 @@ const (
 	// agentsMDMaxFile caps a single AGENTS.md file's contribution to the
 	// system prompt. Large files are truncated; the truncation is noted
 	// in the section header so the model knows the instructions are
-	// incomplete.
+	// incomplete. The read itself is capped at this limit + 1 byte (to
+	// detect truncation) via io.LimitReader — the file is never fully
+	// ingested into memory regardless of its size on disk.
 	agentsMDMaxFile = 32 * 1024 // 32 KB per file
 
 	// agentsMDMaxTotal caps the combined size of all AGENTS.md files found
@@ -36,10 +39,17 @@ type agentsMDSection struct {
 	truncated bool
 }
 
-// loadAgentsMD walks from cwd upward to the filesystem root, collecting
-// AGENTS.md files. It returns formatted content ordered root-first (most
-// general first, most specific last) so deeper files visually override
-// ancestor ones. Returns empty string if no AGENTS.md is found.
+// loadAgentsMD walks from cwd upward to the workspace root (not the filesystem
+// root), collecting AGENTS.md files. It returns formatted content ordered
+// root-first (most general first, most specific last) so deeper files visually
+// override ancestor ones. Returns empty string if no AGENTS.md is found.
+//
+// The ancestor walk is bounded by workspaceRoot — it never goes above the
+// workspace boundary. This prevents ingesting AGENTS.md from ~/AGENTS.md or
+// /AGENTS.md, which are outside the workspace trust boundary.
+//
+// Files are read with io.LimitReader capped at agentsMDMaxFile + 1 byte, so a
+// huge file is never fully ingested into memory regardless of its disk size.
 //
 // Budget allocation is deepest-first: the cwd-level AGENTS.md gets the
 // first slice of the total budget, then its parent, etc. This ensures the
@@ -49,7 +59,7 @@ type agentsMDSection struct {
 // precedence over any conflicting AGENTS.md directive. Callers are
 // responsible for marking the session as having touched untrusted
 // content (setting touchedExternal) when the result is non-empty.
-func loadAgentsMD(cwd string) string {
+func loadAgentsMD(cwd, workspaceRoot string) string {
 	if cwd == "" {
 		return ""
 	}
@@ -63,9 +73,19 @@ func loadAgentsMD(cwd string) string {
 	}
 	cwd = filepath.Clean(abs)
 
-	// Collect AGENTS.md paths from cwd upward to the filesystem root.
+	// Resolve the workspace root to an absolute path. The walk stops at
+	// this boundary — it never goes above the workspace.
+	root := cwd
+	if workspaceRoot != "" {
+		rootAbs, err := filepath.Abs(workspaceRoot)
+		if err == nil {
+			root = filepath.Clean(rootAbs)
+		}
+	}
+
+	// Collect AGENTS.md paths from cwd upward to the workspace root.
 	// paths[0] is the deepest (cwd-level), paths[len-1] is the shallowest
-	// (root-level or nearest ancestor before root).
+	// (workspace-root-level).
 	var paths []string
 	dir := cwd
 	for {
@@ -78,6 +98,10 @@ func loadAgentsMD(cwd string) string {
 				paths = append(paths, candidate)
 			}
 		}
+		// Stop at the workspace root — never walk above it.
+		if dir == root {
+			break
+		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			break // reached filesystem root
@@ -89,15 +113,24 @@ func loadAgentsMD(cwd string) string {
 		return ""
 	}
 
-	// Read and format each file.
+	// Read and format each file, using io.LimitReader to cap the read.
 	// paths[0] is deepest (cwd-level), paths[len-1] is shallowest.
 	var sections []agentsMDSection
 	for _, p := range paths {
-		content, err := os.ReadFile(p)
+		f, err := os.Open(p)
 		if err != nil {
 			continue
 		}
-		trimmed := strings.Trim(string(content), "\n\r \t")
+		// Read at most agentsMDMaxFile + 1 bytes. The +1 lets us detect
+		// truncation: if we read exactly agentsMDMaxFile + 1 bytes, the
+		// file is larger than the cap and will be truncated.
+		limited := io.LimitReader(f, agentsMDMaxFile+1)
+		raw, err := io.ReadAll(limited)
+		f.Close()
+		if err != nil {
+			continue
+		}
+		trimmed := strings.Trim(string(raw), "\n\r \t")
 		if trimmed == "" {
 			continue
 		}
