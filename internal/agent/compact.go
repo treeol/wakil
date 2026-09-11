@@ -270,8 +270,10 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	if boundary <= 0 {
 		return false, nil
 	}
-	// Compaction restructures Conv, invalidating checkpoint ConvLen values.
-	a.clearCheckpoints()
+	// Note: clearCheckpoints is deferred until AFTER successful summarization,
+	// so a summarizer error leaves checkpoints intact (same pattern as the
+	// rewind fix — don't destroy metadata before the operation that
+	// invalidates it is confirmed to succeed).
 
 	// Pinned messages in the "older" block are exempt from summarization.
 	// They are extracted from older, held aside, and re-inserted verbatim
@@ -394,7 +396,13 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		newConv = append(newConv, proxy.Message{Role: "system", Content: StrPtr("[Summary of earlier conversation]\n" + summary)})
 	}
 	newConv = append(newConv, a.Conv[boundary:]...)
+	// Conv is about to be restructured — invalidate checkpoint ConvLen values
+	// now that summarization has succeeded. Hold convMu so the Conv write
+	// and checkpoint clear are atomic w.r.t. concurrent readers.
+	a.convMu.Lock()
+	a.clearCheckpoints()
 	a.Conv = newConv
+	a.convMu.Unlock()
 	return true, nil
 }
 
@@ -553,7 +561,14 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	var droppedPaths []string
 	droppedTurns := 0
 	droppedSubagent := false
-	for TranscriptSize(a.Conv) > max && len(a.Conv) > 1 {
+	for {
+		a.convMu.RLock()
+		convSize := TranscriptSize(a.Conv)
+		convLen := len(a.Conv)
+		a.convMu.RUnlock()
+		if convSize <= max || convLen <= 1 {
+			break
+		}
 		first, next := oldestTurnRange(a.Conv)
 		if first < 0 {
 			break
@@ -562,11 +577,19 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 			droppedSubagent = true
 		}
 		droppedPaths = append(droppedPaths, spillPathsInTurn(a.Conv)...)
+		a.convMu.Lock()
 		a.Conv = dropOldestTurn(a.Conv)
+		a.convMu.Unlock()
 		droppedTurns++
 	}
 
 	if droppedTurns == 0 {
+		// Could not drop any turns (all remaining content is pinned or
+		// no droppable turns exist). If still over max, warn explicitly.
+		if TranscriptSize(a.Conv) > max {
+			fmt.Fprintf(a.Out, Yellow("⚠ hard-max could not be met — %dk remains (limit %dk). Pinned content may exceed the limit.\n"),
+				TranscriptSize(a.Conv)/1000, max/1000)
+		}
 		return
 	}
 
@@ -609,6 +632,11 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 		} else {
 			b.WriteString("\n  " + Yellow("transcript is now empty"))
 		}
+	}
+	// Check if the hard max is still not met after dropping (partial drop
+	// case — some turns were shed but pinned content keeps us over the limit).
+	if TranscriptSize(a.Conv) > max {
+		fmt.Fprintf(&b, "\n  ⚠ %s", Yellow(fmt.Sprintf("hard-max still not met — %dk remains (limit %dk), pinned content may exceed the limit", TranscriptSize(a.Conv)/1000, max/1000)))
 	}
 	fmt.Fprintln(a.Out, b.String())
 }
