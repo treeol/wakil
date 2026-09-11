@@ -141,5 +141,16 @@
 
   "agent_prompt_path": "",
   "backend_max_retries": 3,
-  "mention_base": ""
+  "mention_base": "",
+
+  "_comment_ilm_stack": "ilm-stack shadow-mode emitter. mode=off (default): zero behaviour change, zero network calls. mode=shadow: emit session/turn/tool events to the ilm-stack endpoint via a local durable queue + background sender. Never on the critical path. Env vars: ILM_STACK_URL, ILM_STACK_TOKEN, ILM_MODE, ILM_QUEUE_PATH, ILM_BATCH_SIZE, ILM_OUTPUT_LIMIT.",
+
+  "ilm_stack": {
+    "endpoint": "",
+    "token": "",
+    "mode": "off",
+    "queue_path": "",
+    "batch_ms": 500,
+    "max_output_bytes": 65536
+  }
 }

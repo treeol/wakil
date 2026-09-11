@@ -8,9 +8,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/treeol/wakil/internal/ilm"
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
@@ -244,6 +246,14 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		a.convMu.Unlock()
 		final = DerefStr(msg.Content)
 
+		// ilm-stack: emit assistant_turn with the full text.
+		if a.ILM != nil {
+			a.ILM.Emit(ilm.EventAssistantTurn, ilm.AssistantTurnPayload{
+				Text:    DerefStr(msg.Content),
+				ModelID: a.Client.Model,
+			})
+		}
+
 		if len(msg.ToolCalls) == 0 || forceFinish {
 			// Card #122 Phase 2: a genuine idle point is when the model produced
 			// final text with NO tool calls AND async work is still pending. NOT a
@@ -332,6 +342,24 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				Pinned:     pinned,
 			})
 			a.convMu.Unlock()
+
+			// ilm-stack: emit tool_result with the full (pre-cap) output,
+			// bounded to max_output_bytes with truncated flag, full_hash,
+			// and full_size.
+			if a.ILM != nil {
+				bounded, truncated, fullHash, fullSize := ilm.BoundOutput(
+					result.text, a.ILM.MaxOutputBytes())
+				okVal := result.ok
+				a.ILM.Emit(ilm.EventToolResult, ilm.ToolResultPayload{
+					Tool:       tc.Function.Name,
+					CallID:     tc.ID,
+					OK:         &okVal,
+					Output:      bounded,
+					Truncated:   truncated,
+					FullHash:    fullHash,
+					FullSize:    fullSize,
+				})
+			}
 		}
 
 		// Walk tool calls in order. A maximal contiguous run of ≥2
@@ -354,6 +382,14 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				// synchronously. Returns one result per call in block order.
 				blockResults := a.runParallelSubagentBlock(ctx, block)
 				for bi, btc := range block {
+					// ilm-stack: emit tool_call for parallel subagent block.
+					if a.ILM != nil {
+						a.ILM.Emit(ilm.EventToolCall, ilm.ToolCallPayload{
+							Tool:   btc.Function.Name,
+							Args:   json.RawMessage(btc.Function.Arguments),
+							CallID: btc.ID,
+						})
+					}
 					br := stringToToolResult(blockResults[bi])
 					a.captureToolTrace(btc, br)
 					a.recordRecentTrace(btc, br)
@@ -361,6 +397,14 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				}
 				ti = tj
 				continue
+			}
+			// ilm-stack: emit tool_call before dispatch.
+			if a.ILM != nil {
+				a.ILM.Emit(ilm.EventToolCall, ilm.ToolCallPayload{
+					Tool:   tc.Function.Name,
+					Args:   json.RawMessage(tc.Function.Arguments),
+					CallID: tc.ID,
+				})
 			}
 			result := a.handleToolCall(ctx, tc)
 			if result.text == waitForCompletionToken {

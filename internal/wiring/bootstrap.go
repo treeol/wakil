@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/ilm"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
@@ -270,6 +272,30 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		}
 	}
 
+	// ilm-stack shadow-mode emitter. mode=off (default) → nil emitter (no-op).
+	// mode=shadow → create channel + durable queue + background sender.
+	if cfg.ILMStack.Mode == "shadow" {
+		ilmSessionID := "wakil-live:" + client.ChatID
+		queuePath := cfg.ILMStack.QueuePath
+		if queuePath == "" {
+			// Default: alongside the sessions directory.
+			queuePath = filepath.Join(filepath.Dir(agent.MemoryDBPath(app.SessionWorkspace())), "ilm-queue.jsonl")
+		}
+		emitter, err := ilm.New(ilm.Config{
+			Endpoint:       cfg.ILMStack.Endpoint,
+			Token:          cfg.ILMStack.Token,
+			Mode:           ilm.ModeShadow,
+			QueuePath:       queuePath,
+			BatchMS:        cfg.ILMStack.BatchMS,
+			MaxOutputBytes: cfg.ILMStack.MaxOutputBytes,
+		}, ilmSessionID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ilm-stack: failed to initialize emitter:", err)
+		} else {
+			app.ILM = emitter
+		}
+	}
+
 	return app, &res
 }
 
@@ -286,8 +312,14 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 // never followed by a normal return that would fire resource defers again —
 // avoiding any double-close.
 func CloseResources(app *agent.App, res *AppResources) {
+	// ilm-stack: emit session_end before closing the emitter. This fires
+	// OnStop which emits the event, then Close flushes it.
+	app.OnStop()
 	app.StopAllAsyncOps()
 	app.StopAllBackgroundProcs()
+	if app.ILM != nil {
+		_ = app.ILM.Close()
+	}
 	if res.MemStore != nil {
 		res.MemStore.Close()
 	}

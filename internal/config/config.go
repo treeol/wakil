@@ -440,6 +440,12 @@ type Config struct {
 	// is installed at a non-standard location or not in PATH.
 	BrowserPath string `json:"browser_path,omitempty"`
 
+	// ilm-stack shadow-mode emitter (v0: shadow only, no write-back).
+	// mode=off (default): zero behaviour change, zero network calls.
+	// mode=shadow: emit events to the ilm-stack endpoint via a local durable
+	// queue + background sender. Never on the critical path.
+	ILMStack ILMStackConfig `json:"ilm_stack,omitempty"`
+
 	// Runtime-only flags (never read from / written to the JSON config file).
 	Resume       bool   `json:"-"` // resume the most recent session
 	ResumeID     string `json:"-"` // resume a session by chat_id or unique prefix
@@ -463,6 +469,18 @@ type Config struct {
 	// DaemonSocket overrides the default socket path.
 	DaemonMode   bool   `json:"-"`
 	DaemonSocket string `json:"-"`
+}
+
+// ILMStackConfig configures the ilm-stack shadow-mode emitter.
+// mode=off (default): zero behaviour change, zero network calls.
+// mode=shadow: emit events to the ilm-stack endpoint.
+type ILMStackConfig struct {
+	Endpoint       string `json:"endpoint"`
+	Token          string `json:"token"`
+	Mode           string `json:"mode"`            // "off" (default) | "shadow"
+	QueuePath      string `json:"queue_path"`
+	BatchMS        int    `json:"batch_ms"`        // default 500
+	MaxOutputBytes int    `json:"max_output_bytes"` // default 65536
 }
 
 // CostsConfig is the [costs] pricing block consumed by the CostTracker. Rates
@@ -866,6 +884,14 @@ func LoadConfig(argv []string) (Config, error) {
 	envInt(&cfg.KVRSnapshotIntervalSecs, "WAKIL_KVR_SNAPSHOT_INTERVAL_SECS")
 	envBool(&cfg.TraceSessions, "WAKIL_TRACE_SESSIONS")
 	envStr(&cfg.TraceDir, "WAKIL_TRACE_DIR")
+
+	// ilm-stack emitter env vars.
+	envStr(&cfg.ILMStack.Endpoint, "ILM_STACK_URL")
+	envStr(&cfg.ILMStack.Token, "ILM_STACK_TOKEN")
+	envStr(&cfg.ILMStack.Mode, "ILM_MODE")
+	envStr(&cfg.ILMStack.QueuePath, "ILM_QUEUE_PATH")
+	envInt(&cfg.ILMStack.BatchMS, "ILM_BATCH_SIZE")
+	envInt(&cfg.ILMStack.MaxOutputBytes, "ILM_OUTPUT_LIMIT")
 
 	// 3) flags (highest precedence)
 	fs := flag.NewFlagSet("wakil", flag.ContinueOnError)
@@ -1373,6 +1399,12 @@ func validateContextLimits(cfg Config) error {
 // validateEnums checks that string-enum config fields have valid values.
 // Unknown values are startup errors, not silent degradation.
 func validateEnums(cfg Config) error {
+	// ilm-stack mode validation.
+	switch cfg.ILMStack.Mode {
+	case "", "off", "shadow":
+	default:
+		return fmt.Errorf("ilm_stack.mode must be one of: off, shadow (got %q)", cfg.ILMStack.Mode)
+	}
 	switch cfg.AutoCounsel {
 	case "", "suggest", "auto", "off":
 	default:

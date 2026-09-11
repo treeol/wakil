@@ -962,6 +962,14 @@ func (f *wiringFacade) Close() error {
 	// conversation was started) or when Conv is empty (nothing to save).
 	f.app.SaveSession()
 
+	// ilm-stack: close the emitter. OnStop (called above) already emitted
+	// session_end; Close flushes the pending event through the channel and
+	// sender before stopping the goroutine, so session_end reaches the
+	// stack even during a rotation. Without this, the sender goroutine leaks.
+	if f.app.ILM != nil {
+		_ = f.app.ILM.Close()
+	}
+
 	// Release the App ownership claim. The turn may still be winding down
 	// from the CloseSession cancellation above (the executor goroutine clears
 	// turnActive in its defer after finishTurn); retry briefly so a normal
