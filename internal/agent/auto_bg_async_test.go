@@ -377,3 +377,129 @@ func TestPublishBgCompletion_NoDoubleClose(t *testing.T) {
 		t.Fatalf("asyncActive = %d, want 0 (double-decrement?)", active)
 	}
 }
+
+// TestAutoBG_RegistryFullReturnMessage verifies that when the async registry
+// is full, the return message does NOT promise "you will be notified" but
+// instead tells the model to poll read_process_log (card #221).
+func TestAutoBG_RegistryFullReturnMessage(t *testing.T) {
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.ShellTimeoutSec = 1
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     cfg,
+	}
+
+	// Fill the async registry with blocking ops.
+	block := make(chan struct{})
+	for i := 0; i < asyncMaxActive; i++ {
+		if _, reason := app.enqueueAsyncOp("mashura__review", "filler", func() (string, []counselUsageRec, []string, error) {
+			<-block
+			return "", nil, nil, nil
+		}); reason != "" {
+			t.Fatalf("enqueue %d refused early: %s", i, reason)
+		}
+	}
+
+	// Now an auto-bg run_shell should get "full" from registerAsyncOp.
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "run_shell", Arguments: `{"command":"sleep 30"}`,
+	}})
+	if !strings.Contains(res.text, "still running") {
+		t.Fatalf("expected auto-background, got: %s", res.text)
+	}
+	// The message must NOT promise notification.
+	if strings.Contains(res.text, "you will be notified") {
+		t.Errorf("return message should NOT say 'you will be notified' when registry is full, got: %s", res.text)
+	}
+	// The message MUST mention the registry is full.
+	if !strings.Contains(res.text, "registry is full") {
+		t.Errorf("return message should mention 'registry is full', got: %s", res.text)
+	}
+	// The message MUST still mention read_process_log for polling.
+	if !strings.Contains(res.text, "read_process_log") {
+		t.Errorf("return message should mention read_process_log, got: %s", res.text)
+	}
+
+	// Clean up: kill the auto-bg shell and release the blocking ops.
+	time.Sleep(500 * time.Millisecond)
+	app.bgMu.RLock()
+	var bgID string
+	for id := range app.bgProcs {
+		bgID = id
+	}
+	app.bgMu.RUnlock()
+	if bgID != "" {
+		app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+			Name: "kill_process", Arguments: fmt.Sprintf(`{"id":%q}`, bgID),
+		}})
+	}
+	close(block)
+	waitAsyncOps(t, app)
+}
+
+// TestAutoBG_StoppingReturnMessage verifies that when the session is stopping,
+// the return message says notification will not arrive (card #221).
+func TestAutoBG_StoppingReturnMessage(t *testing.T) {
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.ShellTimeoutSec = 1
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     cfg,
+	}
+
+	// Mark the async registry as stopping.
+	app.asyncMu.Lock()
+	app.asyncStopping = true
+	app.asyncMu.Unlock()
+
+	// An auto-bg run_shell should get "stopping" from registerAsyncOp.
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "run_shell", Arguments: `{"command":"sleep 30"}`,
+	}})
+	if !strings.Contains(res.text, "still running") {
+		t.Fatalf("expected auto-background, got: %s", res.text)
+	}
+	// The message must NOT promise notification.
+	if strings.Contains(res.text, "you will be notified") {
+		t.Errorf("return message should NOT say 'you will be notified' when stopping, got: %s", res.text)
+	}
+	// The message MUST mention shutting down.
+	if !strings.Contains(res.text, "shutting down") {
+		t.Errorf("return message should mention 'shutting down', got: %s", res.text)
+	}
+
+	// Clean up: kill the shell.
+	time.Sleep(500 * time.Millisecond)
+	app.bgMu.RLock()
+	var bgID string
+	for id := range app.bgProcs {
+		bgID = id
+	}
+	app.bgMu.RUnlock()
+	if bgID != "" {
+		app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+			Name: "kill_process", Arguments: fmt.Sprintf(`{"id":%q}`, bgID),
+		}})
+	}
+
+	// Reset stopping state for other tests.
+	app.asyncMu.Lock()
+	app.asyncStopping = false
+	app.asyncMu.Unlock()
+}

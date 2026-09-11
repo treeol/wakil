@@ -295,7 +295,8 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		var notifyEntry *bgEntry
 		var detachEntry *bgEntry
 		var regOp *asyncOp
-		regOp, _ = a.registerAsyncOp("run_shell", Truncate(command, 60))
+		var regReason string
+		regOp, regReason = a.registerAsyncOp("run_shell", Truncate(command, 60))
 		a.bgMu.Lock()
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
@@ -319,14 +320,13 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		if detachEntry == nil && regOp != nil {
 			a.cancelBgAsyncOp(regOp, bgID, "entry gone before deadline")
 		}
-		// If the registry was full or stopping, regOp is nil — the reaper
-		// will fall back to notifyDetachedShellExit (the old manual inbox
-		// path), but wait_for_completion won't see it.
+		// notifySelf: process already exited and the reaper didn't notify
+		// (it saw notifyOnExit==false before we set it). We must publish the
+		// completion ourselves. Emit Start before Done so the TUI tab
+		// lifecycle is Start -> Done (card #132 ordering). If the session is
+		// stopping, the inbox notice is suppressed but we can still return
+		// the status inline so the model sees the output.
 		if notifySelf {
-			// Process already exited and the reaper didn't notify (it saw
-			// notifyOnExit==false before we set it). We must publish the
-			// completion ourselves. Emit Start before Done so the TUI tab
-			// lifecycle is Start → Done (card #132 ordering).
 			a.announceShellStart(bgID, notifyEntry)
 			statusLine, tail := a.shellTailPreview(notifyEntry)
 			a.announceShellDone(bgID, notifyEntry, statusLine+"\n"+tail, "")
@@ -335,11 +335,34 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			} else {
 				a.notifyDetachedShellExit(bgID, notifyEntry)
 			}
+			// If stopping, the inbox notice was suppressed — return the
+			// output inline so it is not lost.
+			if regReason == "stopping" {
+				return fmt.Sprintf("%s (\"%s\") %s — last output:\n%s\n(session is shutting down; notification was not delivered)", bgID, notifyEntry.cmdDigest, statusLine, tail)
+			}
+			// Process already exited and the completion was published.
+			// Do NOT say "still running" — the process is done.
+			return fmt.Sprintf("command %s (\"%s\") %s — last output:\n%s\ncompletion notice queued; use read_process_log(%s) for the full output", bgID, notifyEntry.cmdDigest, statusLine, tail, bgID)
+		}
+		// Entry gone (killed/generation-lost during the deadline wait).
+		if detachEntry == nil {
+			return fmt.Sprintf("entry %s no longer tracked — process status and output availability are unknown", bgID)
 		}
 		// Card #128: a detached shell surfaces as a TUI tab. Emit Start (after the
 		// lock; sendEvent may block) so the user can track it until Done.
-		if detachEntry != nil && !notifySelf {
+		if !notifySelf {
 			a.announceShellStart(bgID, detachEntry)
+		}
+		// Tailor the return message based on the registration outcome.
+		// "full": notifyDetachedShellExit still appends to asyncInbox and
+		// signals wake, so a completion notice MAY still arrive — but
+		// wait_for_completion won't suspend (no asyncActive slot).
+		// "stopping": asyncStopping suppresses inbox publication entirely.
+		if regReason == "full" {
+			return fmt.Sprintf("command still running as %s — async registry is full; wait_for_completion won't wait for this job, but a completion notice may still arrive; use read_process_log(%s) to poll for output, kill_process(%s) to stop", bgID, bgID, bgID)
+		}
+		if regReason == "stopping" {
+			return fmt.Sprintf("command still running as %s — session is shutting down; completion notification will not arrive; use read_process_log(%s) to check output", bgID, bgID)
 		}
 		return fmt.Sprintf("command still running as %s — you will be notified when it finishes; use read_process_log(%s) to poll for output, kill_process(%s) to stop", bgID, bgID, bgID)
 	case <-ctx.Done():
@@ -350,7 +373,8 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		var notifyEntry *bgEntry
 		var detachEntry *bgEntry
 		var regOp *asyncOp
-		regOp, _ = a.registerAsyncOp("run_shell", Truncate(command, 60))
+		var regReason string
+		regOp, regReason = a.registerAsyncOp("run_shell", Truncate(command, 60))
 		a.bgMu.Lock()
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
@@ -381,9 +405,24 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			} else {
 				a.notifyDetachedShellExit(bgID, notifyEntry)
 			}
+			if regReason == "stopping" {
+				return fmt.Sprintf("%s (\"%s\") %s — last output:\n%s\n(session is shutting down; notification was not delivered)", bgID, notifyEntry.cmdDigest, statusLine, tail)
+			}
+			// Process already exited and the completion was published.
+			// Do NOT say "still running" — the process is done.
+			return fmt.Sprintf("command %s (\"%s\") %s — last output:\n%s\ncompletion notice queued; use read_process_log(%s) for the full output", bgID, notifyEntry.cmdDigest, statusLine, tail, bgID)
 		}
-		if detachEntry != nil && !notifySelf {
+		if detachEntry == nil {
+			return fmt.Sprintf("entry %s no longer tracked — process status and output availability are unknown", bgID)
+		}
+		if !notifySelf {
 			a.announceShellStart(bgID, detachEntry)
+		}
+		if regReason == "full" {
+			return fmt.Sprintf("command still running as %s (turn cancelled) — async registry is full; wait_for_completion won't wait for this job, but a completion notice may still arrive; use read_process_log(%s) to poll for output", bgID, bgID)
+		}
+		if regReason == "stopping" {
+			return fmt.Sprintf("command still running as %s (turn cancelled) — session is shutting down; completion notification will not arrive; use read_process_log(%s) to check output", bgID, bgID)
 		}
 		return fmt.Sprintf("command still running as %s (turn cancelled) — you will be notified when it finishes; use read_process_log(%s) to poll for output", bgID, bgID)
 	}
