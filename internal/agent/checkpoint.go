@@ -39,6 +39,7 @@ type Checkpoint struct {
 	Files       map[string]FileSnapshot // canonical path → pre-mutation state
 	HadShellCmd bool                   // turn included non-read-only shell/background
 	CreatedAt   time.Time
+	Generation  int64                  // monotonically increasing ID for capture identity checks
 }
 
 const (
@@ -64,6 +65,7 @@ type checkpointState struct {
 	cpActive       bool // true when a checkpoint is active for the current turn
 	cpTotalBytes   int  // approximate total bytes across all checkpoints
 	cpRewinding    bool // true while rewind file I/O is in progress — blocks new turns and captures
+	cpGenCounter   int64 // monotonically increasing generation ID for checkpoint identity
 }
 
 // startCheckpoint begins a new checkpoint for the current turn. Called from
@@ -89,11 +91,13 @@ func (a *App) startCheckpoint() bool {
 	}
 
 	a.cpTurnCount++
+	a.cpGenCounter++
 	cp := Checkpoint{
-		TurnIndex: a.cpTurnCount,
-		ConvLen:   len(a.Conv),
-		Files:     make(map[string]FileSnapshot),
-		CreatedAt: time.Now(),
+		TurnIndex:  a.cpTurnCount,
+		ConvLen:    len(a.Conv),
+		Files:      make(map[string]FileSnapshot),
+		CreatedAt:  time.Now(),
+		Generation: a.cpGenCounter,
 	}
 	a.checkpoints = append(a.checkpoints, cp)
 	a.cpActive = true
@@ -150,16 +154,20 @@ func (a *App) captureForCheckpoint(ctx context.Context, canonical string) {
 		a.cpMu.Unlock()
 		return
 	}
-	// Record the checkpoint index for the second-phase re-check (prevents
-	// a slow capture from landing in the next turn's checkpoint).
-	cpIdx := len(a.checkpoints) - 1
+	// Record the checkpoint generation for the second-phase re-check.
+	// Generation is immutable, so it remains valid even if the checkpoint
+	// stack is restructured (compaction, new turn, session rotation) —
+	// the capture simply won't store into a different checkpoint.
+	cpGen := cp.Generation
 	a.cpMu.Unlock()
 
 	// Check file size first to avoid reading large files into memory.
 	if a.Exec != nil {
 		if size, err := a.Exec.StatFile(ctx, canonical); err == nil && size > checkpointMaxFileSize {
 			a.cpMu.Lock()
-			if cp2 := a.activeCheckpointLocked(); cp2 != nil {
+			// Verify the checkpoint is still the active (last) one — a slow
+			// StatFile may have spanned a turn boundary or compaction.
+			if cp2 := a.activeCheckpointByGenLocked(cpGen); cp2 != nil {
 				if _, ok := cp2.Files[canonical]; !ok {
 					cp2.Files[canonical] = FileSnapshot{TooLarge: true}
 				}
@@ -181,7 +189,8 @@ func (a *App) captureForCheckpoint(ctx context.Context, canonical string) {
 		// cancellation) are recorded as Unknown (rewind skips with warning).
 		isNotFound := isFileNotFoundError(err)
 		a.cpMu.Lock()
-		if cp2 := a.activeCheckpointLocked(); cp2 != nil {
+		// Verify the checkpoint is still the active (last) one.
+		if cp2 := a.activeCheckpointByGenLocked(cpGen); cp2 != nil {
 			if _, ok := cp2.Files[canonical]; !ok {
 				if isNotFound {
 					cp2.Files[canonical] = FileSnapshot{Exists: false}
@@ -198,7 +207,7 @@ func (a *App) captureForCheckpoint(ctx context.Context, canonical string) {
 	// Post-read size check (StatFile may have been racy).
 	if len(bytes) > checkpointMaxFileSize {
 		a.cpMu.Lock()
-		if cp2 := a.activeCheckpointLocked(); cp2 != nil {
+		if cp2 := a.activeCheckpointByGenLocked(cpGen); cp2 != nil {
 			if _, ok := cp2.Files[canonical]; !ok {
 				cp2.Files[canonical] = FileSnapshot{TooLarge: true}
 			}
@@ -209,12 +218,13 @@ func (a *App) captureForCheckpoint(ctx context.Context, canonical string) {
 
 	a.cpMu.Lock()
 	// Re-check: the checkpoint stack may have changed during I/O (compaction,
-	// new turn, session rotation). Validate we're still on the same checkpoint.
-	if cpIdx >= len(a.checkpoints) || cpIdx != len(a.checkpoints)-1 {
+	// new turn, session rotation). Verify the checkpoint with the same
+	// generation still exists and is still the last (active) one.
+	cp2 := a.activeCheckpointByGenLocked(cpGen)
+	if cp2 == nil {
 		a.cpMu.Unlock()
 		return // checkpoint stack changed — don't store stale data
 	}
-	cp2 := &a.checkpoints[cpIdx]
 	if _, ok := cp2.Files[canonical]; ok {
 		// Already captured by a concurrent call — don't overwrite.
 		a.cpMu.Unlock()
@@ -236,6 +246,35 @@ func (a *App) activeCheckpointLocked() *Checkpoint {
 		return nil
 	}
 	return &a.checkpoints[len(a.checkpoints)-1]
+}
+
+// checkpointByGenLocked returns a pointer to the checkpoint with the given
+// generation ID, or nil if it no longer exists (evicted, compacted, or
+// session rotated). Caller must hold cpMu.
+func (a *App) checkpointByGenLocked(gen int64) *Checkpoint {
+	for i := range a.checkpoints {
+		if a.checkpoints[i].Generation == gen {
+			return &a.checkpoints[i]
+		}
+	}
+	return nil
+}
+
+// activeCheckpointByGenLocked returns a pointer to the checkpoint with the
+// given generation ID only if it is still the last (active) checkpoint.
+// This prevents a slow capture from storing into a checkpoint that is no
+// longer the active one (e.g. a new turn has started or compaction occurred).
+// Returns nil if the checkpoint was evicted or is no longer the last one.
+// Caller must hold cpMu.
+func (a *App) activeCheckpointByGenLocked(gen int64) *Checkpoint {
+	if len(a.checkpoints) == 0 {
+		return nil
+	}
+	last := &a.checkpoints[len(a.checkpoints)-1]
+	if last.Generation == gen {
+		return last
+	}
+	return nil
 }
 
 // markCheckpointShell marks the current checkpoint as having had a non-read-only

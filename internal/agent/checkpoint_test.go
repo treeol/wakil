@@ -850,3 +850,122 @@ func TestCheckpoint_RewindBlocksNewTurn(t *testing.T) {
 	app.cpRewinding = false
 	app.cpMu.Unlock()
 }
+
+// TestCheckpoint_CaptureGenIdentity verifies that a slow capture (one where
+// the checkpoint stack changes between capture start and completion) does
+// NOT land in the wrong checkpoint. The generation ID ensures captures are
+// attributed to the correct checkpoint even after the stack changes.
+func TestCheckpoint_CaptureGenIdentity(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	p := filepath.Join(dir, "test.txt")
+	os.WriteFile(p, []byte("original"), 0o644)
+
+	// Turn 1: start checkpoint and capture.
+	app.startCheckpoint()
+	app.captureForCheckpoint(ctx, p)
+	app.endCheckpoint()
+
+	// Verify it landed in checkpoint gen 1.
+	app.cpMu.Lock()
+	gen1 := app.checkpoints[0].Generation
+	fileCount1 := len(app.checkpoints[0].Files)
+	app.cpMu.Unlock()
+
+	if fileCount1 != 1 {
+		t.Fatalf("expected 1 file in checkpoint gen %d, got %d", gen1, fileCount1)
+	}
+
+	// Turn 2: start a new checkpoint with a different file.
+	p2 := filepath.Join(dir, "other.txt")
+	os.WriteFile(p2, []byte("other-original"), 0o644)
+	app.startCheckpoint()
+
+	// Verify gen 1 checkpoint is no longer the active (last) one.
+	app.cpMu.Lock()
+	gen1StillLast := app.activeCheckpointByGenLocked(gen1) != nil
+	currentGen := app.checkpoints[len(app.checkpoints)-1].Generation
+	app.cpMu.Unlock()
+
+	if gen1StillLast {
+		t.Fatal("gen 1 should NOT be the active checkpoint after turn 2 started")
+	}
+	if currentGen == gen1 {
+		t.Fatalf("expected different generation, got gen1=%d current=%d", gen1, currentGen)
+	}
+
+	app.endCheckpoint()
+}
+
+// TestCheckpoint_CaptureDroppedAfterTurnEnd verifies that a capture whose
+// generation is no longer the active (last) checkpoint is dropped, not
+// stored into the old checkpoint. This tests the TooLarge branch specifically.
+func TestCheckpoint_CaptureDroppedAfterTurnEnd(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+
+	// Create a large file (> 1MB).
+	big := make([]byte, checkpointMaxFileSize+1024)
+	for i := range big {
+		big[i] = byte(i % 256)
+	}
+	p := filepath.Join(dir, "big.dat")
+	os.WriteFile(p, big, 0o644)
+
+	// Turn 1: start checkpoint, then end it without capturing.
+	app.startCheckpoint()
+	gen1 := app.checkpoints[len(app.checkpoints)-1].Generation
+	app.endCheckpoint()
+
+	// Turn 2: start a new checkpoint.
+	app.startCheckpoint()
+
+	// Now simulate: a slow StatFile from turn 1 completes, finds the file
+	// is too large, and tries to store. It should be dropped because gen 1
+	// is no longer the active checkpoint.
+	// We directly test activeCheckpointByGenLocked.
+	app.cpMu.Lock()
+	cp := app.activeCheckpointByGenLocked(gen1) // should return nil
+	app.cpMu.Unlock()
+
+	if cp != nil {
+		t.Fatal("expected nil from activeCheckpointByGenLocked for stale gen")
+	}
+
+	app.endCheckpoint()
+}
+
+// TestCheckpoint_CaptureGenNotFound verifies that a capture whose checkpoint
+// has been evicted/compacted does NOT store into any checkpoint.
+func TestCheckpoint_CaptureGenNotFound(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	p := filepath.Join(dir, "test.txt")
+	os.WriteFile(p, []byte("original"), 0o644)
+
+	// Turn 1: capture.
+	app.startCheckpoint()
+	app.captureForCheckpoint(ctx, p)
+	app.endCheckpoint()
+
+	// Clear checkpoints (simulates compaction).
+	app.clearCheckpoints()
+
+	// Both lookup helpers should return nil for the old generation.
+	app.cpMu.Lock()
+	cp := app.checkpointByGenLocked(1) // gen 1 was the first checkpoint
+	cpActive := app.activeCheckpointByGenLocked(1)
+	cpCount := len(app.checkpoints)
+	app.cpMu.Unlock()
+
+	if cp != nil {
+		t.Fatal("expected nil from checkpointByGenLocked for evicted checkpoint")
+	}
+	if cpActive != nil {
+		t.Fatal("expected nil from activeCheckpointByGenLocked for evicted checkpoint")
+	}
+	if cpCount != 0 {
+		t.Fatalf("expected 0 checkpoints after clear, got %d", cpCount)
+	}
+}
