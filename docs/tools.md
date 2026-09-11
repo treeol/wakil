@@ -80,8 +80,10 @@ Subagents have three capability tiers:
 - **discovery** (default, read-only) — read files, search, list directories.
   Cannot modify files.
 - **edit** — can `edit_file` / `write_file` / `delete_file` / `move_file`,
-  gated on `/auto` consent, serialized by a writer lock — at most one edit
-  child at a time.
+  gated on `/auto` consent. In git repos (direct mode), edit children run in
+  isolated git worktrees — parallel edits without writer-lock serialization.
+  Non-git directories and Docker mode fall back to serialized execution (at
+  most one edit child at a time).
 - **tools** — adds MCP tools from a configured allowlist, LSP, and web search
   to the discovery set. Also gated on `/auto`; mutating MCP calls are
   serialized per-server.

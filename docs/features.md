@@ -15,6 +15,13 @@ file or the matching flags/env vars (see [Configuration](configuration.md)).
 | Memory and staging | built-in | [↓](#memory-and-staging) |
 | `/plan` workflow | built-in | [workflows.md](workflows.md) |
 | Trace capture | `trace_sessions` | [↓](#trace-capture) |
+| Checkpoint/Rewind | built-in | [↓](#checkpointrewind) |
+| AGENTS.md ingestion | built-in | [↓](#agentsmd-ingestion) |
+| Lifecycle hooks | `hooks` | [↓](#lifecycle-hooks) |
+| Code review | built-in | [↓](#code-review) |
+| Repo map | built-in | [↓](#repo-map) |
+| Worktree isolation | built-in | [↓](#worktree-isolation) |
+| Correction capture | built-in | [↓](#correction-capture) |
 
 ## LSP code intelligence
 
@@ -159,3 +166,58 @@ Set `trace_sessions: true` (or pass `--trace`) to enable JSONL trace capture
 for the session. Traces are written to `~/.local/share/wakil/traces` (or
 `trace_dir` if set). Each trace file records the full conversation flow —
 useful for debugging, auditing, and reproducing issues.
+
+## Checkpoint/Rewind
+
+Every turn starts a checkpoint that captures the pre-mutation state of files the agent touches. `/rewind` (or `/rewind <N>`) restores files to their pre-edit state and truncates the conversation — undo the last turn or the last N turns. Checkpoints are in-memory and per-session (cleared on compaction, session rotation, and resume). Shell command side effects are not reliably reverted; the rewind summary warns which turns had shell commands.
+
+## AGENTS.md ingestion
+
+Wakil looks for `AGENTS.md` in the workspace root and ancestor directories at session start. The content is injected into the system prompt as advisory project instructions — after Wakil's own operating instructions and before the runtime context (date, cwd, tools). This is untrusted repo content; it sets the taint flag for provenance tracking.
+
+The `/init` command detects project conventions (build tool, test command, linter, language, framework) from manifest files (go.mod, package.json, Makefile, Cargo.toml, etc.) and creates an `AGENTS.md` file if one doesn't exist.
+
+## Lifecycle hooks
+
+Configure shell hooks that fire at specific lifecycle events. Hooks run on the host (not the sandbox), inherit the host environment, and receive `WAKIL_TOOL_NAME`, `WAKIL_FILE_PATH`, and `WAKIL_CWD` env vars.
+
+| Timing | Config key | Behavior |
+|---|---|---|
+| `pre_tool` | `hooks.pre_tool` | Fires before a tool call. Non-zero exit blocks the tool. |
+| `post_tool` | `hooks.post_tool` | Fires after a successful tool call. Cannot block. Output injected into the tool result. |
+| `session_start` | `hooks.session_start` | Fires once at the first turn of a session. |
+| `session_end` | `hooks.session_end` | Fires when the session ends (/new, /resume, /handoff). |
+| `on_stop` | `hooks.on_stop` | Fires at process exit. |
+
+Each hook entry has a `tool` pattern (empty = all tools, pipe-separated for alternatives like `write_file|edit_file`) and a `command` (shell string, runs via `sh -c`).
+
+```json
+{
+  "hooks": {
+    "post_tool": [
+      {"tool": "write_file|edit_file", "command": "gofmt -w $WAKIL_FILE_PATH"}
+    ]
+  }
+}
+```
+
+## Code review
+
+`/review [ref]` runs a read-only subagent review of the current diff (unstaged changes by default, or against a git ref like `HEAD~1`). The reviewer checks for correctness, tests, security, and style using a fixed rubric. The review is strictly read-only — zero file mutations. The report is displayed in the TUI.
+
+## Repo map
+
+A lightweight file-tree outline is built at session start and injected into the system prompt as a one-line summary. The full outline is spilled to the tool cache so the agent can `read_file` it for the complete project layout. Rebuild on demand with `/repomap`.
+
+## Worktree isolation
+
+Edit-tier subagents in git repos (direct mode) run in isolated `git worktree add --detach` working directories. After a child finishes, its changes are diffed and applied as a patch to the parent workspace (serialized by a patch-apply lock). Disjoint edits from parallel children apply cleanly; conflicting patches are detected and the second child's changes are not applied (with a warning). Non-git directories and Docker mode fall back to the serialized writer-lock behavior.
+
+## Correction capture
+
+Wakil automatically detects when you correct its work and proposes storing a memory entry:
+
+- **After `/rewind`**: if you undo the agent's work and then send a new message, Wakil proposes capturing your correction with the reverted file paths as anchors.
+- **Explicit patterns**: messages like "no, use const not var", "stop doing X", "I wanted Y, not Z" trigger detection.
+
+You must explicitly confirm before anything is stored — the `correction_capture` gate is carved out from `/auto` mode so it always prompts. Approved corrections are stored as PROPOSED memory entries (kind="correction") that require `memory_promote` before becoming active. Once active, they're automatically retrieved in future sessions working on similar tasks.

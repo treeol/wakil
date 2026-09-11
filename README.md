@@ -124,6 +124,13 @@ for the architecture.
 | **SSH commit signing** | Sign commits inside the sandbox using your host SSH agent — the key never enters the sandbox |
 | **Tracing** | Full JSONL session traces for debugging and reproduction |
 | **Context management** | Backend-truth context sizing, `/compact`, and `/maxctx` for capping context on large models |
+| **Checkpoint/Rewind** | `/rewind` to undo the last turn — restores files to their pre-edit state and truncates the conversation |
+| **Project conventions** | `AGENTS.md` ingestion and `/init` command — detect project conventions and inject them into the agent's context |
+| **Lifecycle hooks** | Configure shell hooks that fire before/after tool calls and at session start/end — format on write, lint on save, etc. |
+| **Code review** | `/review` runs a read-only subagent review of your current diff for correctness, tests, security, and style |
+| **Repo map** | Lightweight file-tree outline injected at session start so the agent knows your project layout |
+| **Worktree isolation** | Edit-tier subagents run in isolated git worktrees — parallel edits without writer-lock serialization (git repos, direct mode) |
+| **Correction capture** | Detects when you correct the agent's work (via `/rewind` or explicit patterns) and proposes a memory entry — with your explicit confirmation |
 | **In-sandbox staging** | Fast ephemeral KV store for scratch space and subagent handoffs — snapshots survive sandbox restarts |
 
 ## Requirements

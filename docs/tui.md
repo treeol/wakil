@@ -9,8 +9,10 @@ opens a picker to attach a file or folder for context.
 
 ```
 /new, /reset         fresh conversation (new chat_id, clears viewport)
-/handoff             summarize session → store in memory → start fresh session with continuation prompt
+/handoff [proceed|stop] summarize → memory → fresh session (default: show and wait; proceed: auto-continue)
 /compact             summarize older turns now (frees context)
+/rewind              list checkpoints (turn-level file snapshots)
+/rewind <N>          rewind N checkpoints (1 = last turn; restores files, truncates history)
 /sessions            list saved sessions (★ = current)
 /history             transcript size
 /quit, /exit         leave (tears down the container)
@@ -54,10 +56,19 @@ opens a picker to attach a file or folder for context.
 /rawtools            toggle full tool output in context (default: capped at 8k chars)
 /maxctx <chars>      cap effective context for large models (e.g. 200000 = ~200k chars; 0 = disabled)
 /maxctx              show current effective context cap and resulting compaction thresholds
+/init                detect project conventions and create AGENTS.md if absent
+/review [ref]        review current diff (or diff vs ref) for correctness, tests, security, style
+/repomap             rebuild and show the repo map (lightweight file-tree outline)
+/rewind              list checkpoints or rewind N turns (see Session section above)
+/info                toggle the info panel (proxy/model/exec/cwd/costs/grounding)
 /help                full command list
 ```
 
 See also the [`/plan` workflow](workflows.md) documentation.
+
+**Lifecycle hooks**
+
+Hooks are configured in the config file, not via TUI commands. See [features.md](features.md#lifecycle-hooks) for configuration.
 
 ## Keybindings
 
