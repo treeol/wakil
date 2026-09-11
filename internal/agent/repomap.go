@@ -49,6 +49,14 @@ const repoMapMaxBytes = 32 * 1024
 // traversal work even on a monorepo with thousands of directories.
 const repoMapMaxVisits = 500
 
+// repoMapMaxEntriesPerDir caps the number of entries parsed from a single
+// ListDir response. A directory with tens of thousands of files (e.g. a
+// cache dir, node_modules contents) would otherwise be fully ingested into
+// memory before the display cap kicks in. The cap is generous (1000) —
+// beyond this, the display cap (maxShow=8) means extra entries only affect
+// the "… N more" count, not the actual outline.
+const repoMapMaxEntriesPerDir = 1000
+
 // repoMapNoiseDirs are directories that are never included in the outline.
 // Dot-prefixed directories are excluded separately by the HasPrefix check
 // in walkLevel, so only non-dot noise directories are listed here.
@@ -147,11 +155,21 @@ func walkLevel(ctx context.Context, exe fileLister, dirPath string, depth int, o
 	}
 
 	// Parse the listing into dirs and files.
+	// Cap the number of entries parsed to avoid ingesting unbounded output
+	// from a directory with tens of thousands of files. Beyond the cap, the
+	// display cap (maxShow) means extra entries only affect the "… N more"
+	// count — we approximate the total via the raw line count.
 	var dirs, files []string
-	for _, line := range strings.Split(listing, "\n") {
+	rawLines := strings.Split(listing, "\n")
+	totalEntries := 0
+	for _, line := range rawLines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
+		}
+		totalEntries++
+		if totalEntries > repoMapMaxEntriesPerDir {
+			continue // stop parsing, but totalEntries tracks the raw count
 		}
 		if strings.HasSuffix(line, "/") {
 			name := strings.TrimSuffix(line, "/")
@@ -182,6 +200,9 @@ func walkLevel(ctx context.Context, exe fileLister, dirPath string, depth int, o
 		out.WriteString(indent + strings.Join(shown, ", "))
 		if len(files) > maxShow {
 			out.WriteString(fmt.Sprintf(", … %d more", len(files)-maxShow))
+		}
+		if totalEntries > repoMapMaxEntriesPerDir {
+			out.WriteString(fmt.Sprintf(" (listing capped at %d entries)", repoMapMaxEntriesPerDir))
 		}
 		out.WriteString("\n")
 		*fileCount += len(files)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -172,20 +173,41 @@ func (h *HookEngine) runHook(ctx context.Context, hk config.HookConfig, hc hookC
 	// Platform-specific process-group setup and kill-on-cancel.
 	setProcessGroupAndCancel(cmd)
 
-	out, err := cmd.CombinedOutput()
-	trimmed := strings.TrimSpace(string(out))
-	if len(trimmed) > 2000 {
-		trimmed = trimmed[:2000] + "… (truncated)"
-	}
-	// Note: blocked is also set for post-tool hooks on timeout/error, but
-	// RunPostToolHooks ignores r.blocked (post hooks cannot block), so this
-	// is harmless — the field just carries diagnostic info in the result.
-	if err != nil {
-		return hookResult{
-			output:   trimmed,
-			blocked:  true,
-			blockMsg: fmt.Sprintf("hook '%s' blocked: %s", hk.Command, err.Error()),
+	// Cap output during read to avoid ingesting unbounded hook output into
+	// memory. We read at most hookMaxOutput+1 bytes — the +1 lets us detect
+	// truncation. This replaces the old CombinedOutput + post-truncation
+	// pattern that fully consumed the output before capping.
+	const hookMaxOutput = 2000
+	var out []byte
+	if pr, pw := io.Pipe(); true {
+		// Set Stdout and Stderr to the write end of the pipe so we can
+		// limit the read. CombinedOutput is not suitable here because it
+		// reads the entire output before any cap can be applied.
+		cmd.Stdout = pw
+		cmd.Stderr = pw
+		done := make(chan struct{})
+		go func() {
+			out, _ = io.ReadAll(io.LimitReader(pr, hookMaxOutput+1))
+			close(done)
+		}()
+		err := cmd.Run()
+		pw.Close()
+		<-done
+		if err != nil {
+			trimmed := strings.TrimSpace(string(out))
+			if len(trimmed) > hookMaxOutput {
+				trimmed = trimmed[:hookMaxOutput] + "… (truncated)"
+			}
+			return hookResult{
+				output:   trimmed,
+				blocked:  true,
+				blockMsg: fmt.Sprintf("hook '%s' blocked: %s", hk.Command, err.Error()),
+			}
 		}
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if len(trimmed) > hookMaxOutput {
+		trimmed = trimmed[:hookMaxOutput] + "… (truncated)"
 	}
 	return hookResult{output: trimmed}
 }
