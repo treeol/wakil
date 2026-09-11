@@ -363,28 +363,39 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 
 	var summary string
 	if len(summarizable) > 0 {
-		var err error
-		summary, err = sum(ctx, renderTranscript(summarizable))
-		if err != nil {
-			return false, err
-		}
-		// If the generated summary itself exceeds SummaryBytes, condense it further
-		// so the running summary never balloons across repeated compaction cycles.
-		if a.Cfg.SummaryBytes > 0 && len(summary) > a.Cfg.SummaryBytes {
-			if condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary); err2 == nil && strings.TrimSpace(condensed) != "" {
-				summary = condensed
-			} else if err2 != nil {
-				fmt.Fprintf(a.Out, Yellow("⚠ summary condensation failed: %v (keeping original summary)\n"), err2)
-			}
-		}
-		// If the summarizer returned an empty string, don't silently discard
-		// the summarizable content — fall back to a truncated render so the
-		// model still has some context from the older turns. This prevents
-		// the "empty summary = lost history" failure mode.
-		if strings.TrimSpace(summary) == "" {
+		// Budget guard: if the session budget is exhausted, skip the summarizer
+		// (which makes an inference call) and fall back to truncation. This
+		// prevents compaction from spending money after the budget was
+		// supposed to be cut. The budgetExhausted flag is sticky once set.
+		if a.BudgetExhausted() {
 			summary = Truncate(renderTranscript(summarizable), a.Cfg.SummaryBytes)
 			if summary == "" {
-				summary = "[compaction produced no summary — older turns were shed]"
+				summary = "[compaction produced no summary — older turns were shed (budget exhausted)]"
+			}
+		} else {
+			var err error
+			summary, err = sum(ctx, renderTranscript(summarizable))
+			if err != nil {
+				return false, err
+			}
+			// If the generated summary itself exceeds SummaryBytes, condense it further
+			// so the running summary never balloons across repeated compaction cycles.
+			if a.Cfg.SummaryBytes > 0 && len(summary) > a.Cfg.SummaryBytes {
+				if condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary); err2 == nil && strings.TrimSpace(condensed) != "" {
+					summary = condensed
+				} else if err2 != nil {
+					fmt.Fprintf(a.Out, Yellow("⚠ summary condensation failed: %v (keeping original summary)\n"), err2)
+				}
+			}
+			// If the summarizer returned an empty string, don't silently discard
+			// the summarizable content — fall back to a truncated render so the
+			// model still has some context from the older turns. This prevents
+			// the "empty summary = lost history" failure mode.
+			if strings.TrimSpace(summary) == "" {
+				summary = Truncate(renderTranscript(summarizable), a.Cfg.SummaryBytes)
+				if summary == "" {
+					summary = "[compaction produced no summary — older turns were shed]"
+				}
 			}
 		}
 	}
