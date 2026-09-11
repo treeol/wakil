@@ -16,9 +16,10 @@ package agent
 //     NOT the full outline (which would bloat the prefix).
 //   - The full outline is spilled to the tool cache so the agent can
 //     read_file it on demand for detail.
-//   - Bounded: depth-limited (3 levels), noise directories skipped
+//   - Bounded: depth-limited (4 levels: depth 0–3), noise directories skipped
 //     (.git, node_modules, vendor, etc.), byte-capped at 32KB, visit-capped
-//     at 500 directory listings.
+//     at 500 directory listings. Preamble injection uses a 5s timeout;
+//     the /repomap command uses a longer 30s timeout for manual rebuilds.
 //
 // Design decision: directory-tree outline, NOT symbol-level. Symbol-level
 // indexing (via LSP lsp_symbols) is too slow for a 50k-LOC repo on first
@@ -49,10 +50,12 @@ const repoMapMaxBytes = 32 * 1024
 const repoMapMaxVisits = 500
 
 // repoMapNoiseDirs are directories that are never included in the outline.
+// Dot-prefixed directories are excluded separately by the HasPrefix check
+// in walkLevel, so only non-dot noise directories are listed here.
 var repoMapNoiseDirs = map[string]bool{
-	".git": true, "node_modules": true, "vendor": true, "__pycache__": true,
-	".cache": true, "dist": true, "build": true, "target": true, ".next": true,
-	"tmp": true, ".tmp": true, "coverage": true, ".nuxt": true, ".svelte-kit": true,
+	"node_modules": true, "vendor": true, "__pycache__": true,
+	"dist": true, "build": true, "target": true,
+	"tmp": true, "coverage": true,
 }
 
 // repoMapNoiseSuffixes are file suffixes skipped in the outline.
