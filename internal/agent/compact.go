@@ -380,7 +380,8 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 			}
 			// If the generated summary itself exceeds SummaryBytes, condense it further
 			// so the running summary never balloons across repeated compaction cycles.
-			if a.Cfg.SummaryBytes > 0 && len(summary) > a.Cfg.SummaryBytes {
+			// Check budget again — the first summary call may have exhausted it.
+			if a.Cfg.SummaryBytes > 0 && len(summary) > a.Cfg.SummaryBytes && !a.BudgetExhausted() {
 				if condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary); err2 == nil && strings.TrimSpace(condensed) != "" {
 					summary = condensed
 				} else if err2 != nil {
