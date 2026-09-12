@@ -772,3 +772,58 @@ func TestPruneStaleWorktrees_DeadOwnerPID(t *testing.T) {
 		t.Error("worktree .git/worktrees metadata should be removed by prune (card #229)")
 	}
 }
+
+// TestPruneStaleDockerWorktreeMetadata_StaleEntryRemoved tests the Docker-mode
+// pruning path directly. Since isDockerExecutor returns false for
+// DirectExecutor, we call pruneStaleDockerWorktreeMetadata directly (it uses
+// a.Exec.RunShell which works with DirectExecutor too). The function reads
+// .git/worktrees/<name>/gitdir and checks if the target exists (card #236).
+func TestPruneStaleDockerWorktreeMetadata_StaleEntryRemoved(t *testing.T) {
+	dir := setupGitRepo(t)
+	app := newWorktreeTestApp(t, dir)
+
+	// Create a stale .git/worktrees/wakil-wt-test/ entry with a gitdir file
+	// pointing to a non-existent /tmp/wakil-wt-test/.git.
+	wtMetaDir := filepath.Join(dir, ".git", "worktrees", "wakil-wt-test")
+	if err := os.MkdirAll(wtMetaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write the gitdir file pointing to a non-existent path.
+	staleGitdir := "/tmp/wakil-wt-test-stale/.git"
+	if err := os.WriteFile(filepath.Join(wtMetaDir, "gitdir"), []byte(staleGitdir), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also create a live entry that should NOT be removed.
+	liveMetaDir := filepath.Join(dir, ".git", "worktrees", "wakil-wt-live")
+	if err := os.MkdirAll(liveMetaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a "live" target dir and .git file so test -e succeeds.
+	liveWtDir := filepath.Join(os.TempDir(), "wakil-wt-live-test")
+	os.MkdirAll(liveWtDir, 0o755)
+	defer os.RemoveAll(liveWtDir)
+	liveGitFile := filepath.Join(liveWtDir, ".git")
+	if err := os.WriteFile(liveGitFile, []byte("gitdir: "+liveMetaDir), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(liveMetaDir, "gitdir"), []byte(liveGitFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Call the Docker pruning function directly (bypasses isDockerExecutor check).
+	pruneStaleDockerWorktreeMetadata(context.Background(), app)
+
+	// The stale entry should be removed.
+	if _, err := os.Stat(wtMetaDir); err == nil {
+		t.Error("stale .git/worktrees entry should be removed by pruneStaleDockerWorktreeMetadata")
+	}
+
+	// The live entry should NOT be removed (its gitdir target exists).
+	if _, err := os.Stat(liveMetaDir); err != nil {
+		t.Error("live .git/worktrees entry should NOT be removed by prune")
+	}
+
+	// Clean up the live worktree dir.
+	os.RemoveAll(liveWtDir)
+}
