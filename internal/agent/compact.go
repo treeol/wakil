@@ -110,6 +110,9 @@ func renderTranscript(conv []proxy.Message) string {
 }
 
 func Truncate(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
 	r := []rune(s)
 	if len(r) <= n {
 		return s
@@ -368,7 +371,14 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		// prevents compaction from spending money after the budget was
 		// supposed to be cut. The budgetExhausted flag is sticky once set.
 		if a.BudgetExhausted() {
-			summary = Truncate(renderTranscript(summarizable), a.Cfg.SummaryBytes)
+			if a.Cfg.SummaryBytes <= 0 {
+				// No byte limit configured — use the full transcript as the
+				// summary. Truncate(s, 0) returns "…" which would lose all
+				// history (card #228).
+				summary = renderTranscript(summarizable)
+			} else {
+				summary = Truncate(renderTranscript(summarizable), a.Cfg.SummaryBytes)
+			}
 			if summary == "" {
 				summary = "[compaction produced no summary — older turns were shed (budget exhausted)]"
 			}
@@ -393,7 +403,11 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 			// model still has some context from the older turns. This prevents
 			// the "empty summary = lost history" failure mode.
 			if strings.TrimSpace(summary) == "" {
-				summary = Truncate(renderTranscript(summarizable), a.Cfg.SummaryBytes)
+				if a.Cfg.SummaryBytes <= 0 {
+					summary = renderTranscript(summarizable)
+				} else {
+					summary = Truncate(renderTranscript(summarizable), a.Cfg.SummaryBytes)
+				}
 				if summary == "" {
 					summary = "[compaction produced no summary — older turns were shed]"
 				}
