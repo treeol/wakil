@@ -205,6 +205,14 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		before := m.statusRows()
 		if m.state == stateWaiting && !m.cancelling {
 			m.state = stateStreaming
+			// Re-engage follow so resumed content (streaming text, tool
+			// output) scrolls into view. During the wait the viewport may
+			// have been reflowed (status height change) or the user may
+			// have scrolled; without this the resumed content renders
+			// below the visible area — producing but not showing.
+			m.followBottom = true
+			m.vp.GotoBottom()
+			m.refreshViewport()
 			m = m.reflowIfStatusHeightChanged(before)
 		}
 
@@ -284,6 +292,11 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		if m.pendApproval != nil && m.pendApproval.approvalID == string(p.ApprovalID) {
 			m.pendApproval = nil
 			m.state = stateStreaming
+			// Re-engage follow so post-approval content scrolls into view
+			// (same fix as KindTurnResumed).
+			m.followBottom = true
+			m.vp.GotoBottom()
+			m.refreshViewport()
 			m = m.reflowIfStatusHeightChanged(before)
 		}
 
