@@ -208,9 +208,11 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 						// Card #220: also emit announceShellDone so the TUI tab
 						// is properly closed (publishBgCompletion does NOT call
 						// announceShellDone, unlike notifyDetachedShellExit).
+						// Card #226: publishBgCompletion BEFORE announceShellDone —
+						// the slot release must not be blocked by UI delivery.
 						statusLine, tail := a.shellTailPreview(entry)
-						a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 						a.publishBgCompletion(op, bgID, entry, statusLine, tail)
+						a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 					} else {
 						// No async op registered (registry full, stopping, or
 						// old path): fall back to the manual inbox append.
@@ -329,9 +331,11 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		if notifySelf {
 			a.announceShellStart(bgID, notifyEntry)
 			statusLine, tail := a.shellTailPreview(notifyEntry)
-			a.announceShellDone(bgID, notifyEntry, statusLine+"\n"+tail, "")
+			// Card #226: publishBgCompletion BEFORE announceShellDone —
+			// the slot release must not be blocked by UI delivery.
 			if regOp != nil {
 				a.publishBgCompletion(regOp, bgID, notifyEntry, statusLine, tail)
+				a.announceShellDone(bgID, notifyEntry, statusLine+"\n"+tail, "")
 			} else {
 				a.notifyDetachedShellExit(bgID, notifyEntry)
 			}
@@ -399,9 +403,10 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		if notifySelf {
 			a.announceShellStart(bgID, notifyEntry)
 			statusLine, tail := a.shellTailPreview(notifyEntry)
-			a.announceShellDone(bgID, notifyEntry, statusLine+"\n"+tail, "")
+			// Card #226: publishBgCompletion BEFORE announceShellDone.
 			if regOp != nil {
 				a.publishBgCompletion(regOp, bgID, notifyEntry, statusLine, tail)
+				a.announceShellDone(bgID, notifyEntry, statusLine+"\n"+tail, "")
 			} else {
 				a.notifyDetachedShellExit(bgID, notifyEntry)
 			}
@@ -1283,8 +1288,9 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 				close(done)
 				// Read only the TAIL of the log (multi-GB safe); emit tab Done.
 				statusLine, tail := a.shellTailPreview(entry)
-				a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 				// Model notification: publish exactly once.
+				// Card #226: publishBgCompletion BEFORE announceShellDone —
+				// the slot release must not be blocked by UI delivery.
 				a.bgMu.Lock()
 				notify := entry.notifyOnExit && !entry.notified
 				if notify {
@@ -1295,6 +1301,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 				if notify && op != nil {
 					a.publishBgCompletion(op, bgID, entry, statusLine, tail)
 				}
+				a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
