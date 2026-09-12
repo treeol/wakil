@@ -188,6 +188,12 @@ func (h *HookEngine) runHook(ctx context.Context, hk config.HookConfig, hc hookC
 		done := make(chan struct{})
 		go func() {
 			out, _ = io.ReadAll(io.LimitReader(pr, hookMaxOutput+1))
+			// We've read enough (or the pipe was closed). Close pr so
+			// cmd.Wait doesn't deadlock when the command produces
+			// unbounded output (e.g. `yes x | head -c 3000`): without
+			// this, the LimitReader stops, the pipe buffer fills, and
+			// the command blocks on write forever.
+			pr.Close()
 			close(done)
 		}()
 		err := cmd.Run()
