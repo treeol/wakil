@@ -650,11 +650,15 @@ func (a *App) cancelBgAsyncOp(op *asyncOp, bgID, reason string) {
 	// Release the slot silently: decrement asyncActive without appending to
 	// asyncInbox. Signal wake so any suspended turn resumes (it will see
 	// asyncActive == 0 and return Final, not hang forever).
+	// Also remove the op from asyncOps so repeated register/cancel cycles
+	// don't grow the map unboundedly (card #227). The op is terminal and
+	// will never be retrieved — no inbox entry to evict.
 	a.asyncMu.Lock()
 	a.asyncActive--
 	if a.asyncActive < 0 {
 		a.asyncActive = 0 // guard against underflow
 	}
+	delete(a.asyncOps, op.id)
 	a.ensureWake()
 	a.signalWake()
 	a.asyncMu.Unlock()
