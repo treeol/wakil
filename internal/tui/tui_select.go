@@ -276,7 +276,7 @@ func (m tuiModel) selectedText() string {
 	// plainLinesNoBox (without borders) by counting non-border rows.
 	srNB := m.rowToNoBox(sr)
 	erNB := m.rowToNoBox(er)
-	if srNB < 0 || erNB < 0 || srNB >= len(m.plainLinesNoBox) {
+	if srNB >= len(m.plainLinesNoBox) {
 		return ""
 	}
 	if erNB >= len(m.plainLinesNoBox) {
@@ -322,8 +322,10 @@ func (m tuiModel) selectedText() string {
 }
 
 // rowToNoBox maps a row index in plainLines (with box borders) to the
-// corresponding index in plainLinesNoBox (without borders). Returns -1
-// if the row is a border row (no corresponding content row).
+// corresponding index in plainLinesNoBox (without borders). For border rows,
+// returns the index of the next content row (or past-end if the border is
+// the last row). Callers must bounds-check the result against
+// len(plainLinesNoBox) before use.
 func (m tuiModel) rowToNoBox(row int) int {
 	noBoxIdx := 0
 	for i := 0; i < row && i < len(m.plainLines); i++ {
