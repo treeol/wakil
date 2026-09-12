@@ -61,8 +61,10 @@ check "internal/agent" "68.3"
 check "internal/tools" "59.3"
 # exec floor: Docker-dependent tests (live_docker_test.go) require the
 # wakil-dev image. CI pulls it from Docker Hub (see ci.yml "pull sandbox
-# image" step); without it, these tests skip and coverage drops. The
-# floor was ratcheted at 2026-07-23 when the image became available in CI.
+# image" step); without it, these tests skip and coverage drops ~3pt.
+# The floor was ratcheted at 2026-07-23 when the image became available
+# in CI. Local non-Docker coverage is ~51.9% (2026-09-12); CI with the
+# image is ~53.6%+. The floor stays at 53.6 — CI is the authority.
 check "internal/exec" "53.6"
 check "internal/proxy" "79.2"
 check "internal/counsel" "90.0"

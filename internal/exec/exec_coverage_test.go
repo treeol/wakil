@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -382,5 +383,194 @@ func TestDockerExecutorURIToHostPath(t *testing.T) {
 	_, err = d.URIToHostPath("file:///usr/local/go/src/fmt/print.go")
 	if err == nil {
 		t.Error("URIToHostPath outside workspaceRoot should return error")
+	}
+}
+
+// TestDirectExecutorWriteFileBytes: WriteFileBytes writes raw bytes (binary-safe).
+func TestDirectExecutorWriteFileBytes(t *testing.T) {
+	dir := t.TempDir()
+	ex, err := NewDirectExecutor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+
+	ctx := context.Background()
+	data := []byte{0x00, 0x01, 0xFF, 0xFE, 'h', 'i'}
+	msg, err := ex.WriteFileBytes(ctx, "bin.dat", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msg, "wrote") {
+		t.Errorf("WriteFileBytes message = %q, want to contain 'wrote'", msg)
+	}
+	got, err := ex.ReadFile(ctx, "bin.dat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(data) {
+		t.Errorf("ReadFile length = %d, want %d", len(got), len(data))
+	}
+}
+
+// TestDirectExecutorConfinePath: ConfinePath resolves and confines paths to workspace.
+func TestDirectExecutorConfinePath(t *testing.T) {
+	dir := t.TempDir()
+	ex, err := NewDirectExecutor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+
+	ctx := context.Background()
+	// Write a file so it exists for symlink resolution.
+	if _, err := ex.WriteFile(ctx, "real.txt", "content"); err != nil {
+		t.Fatal(err)
+	}
+	// Relative path inside workspace → resolved absolute path.
+	p, err := ex.ConfinePath(ctx, "real.txt")
+	if err != nil {
+		t.Fatalf("ConfinePath(real.txt): %v", err)
+	}
+	if !filepath.IsAbs(p) && !strings.Contains(p, "real.txt") {
+		t.Errorf("ConfinePath = %q, expected absolute path with real.txt", p)
+	}
+	// Non-existent relative path inside workspace → should still resolve (no symlink).
+	p2, err := ex.ConfinePath(ctx, "newdir/file.txt")
+	if err != nil {
+		t.Fatalf("ConfinePath(newdir/file.txt): %v", err)
+	}
+	if !strings.HasSuffix(p2, "newdir/file.txt") {
+		t.Errorf("ConfinePath = %q, expected suffix newdir/file.txt", p2)
+	}
+	// Path outside workspace → error.
+	_, err = ex.ConfinePath(ctx, "/etc/passwd")
+	if err == nil {
+		t.Error("ConfinePath(/etc/passwd) should error (outside workspace)")
+	}
+}
+
+// TestDirectExecutorDeletePath: DeletePath removes files and errors on non-existent.
+func TestDirectExecutorDeletePath(t *testing.T) {
+	dir := t.TempDir()
+	ex, err := NewDirectExecutor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+
+	ctx := context.Background()
+	if _, err := ex.WriteFile(ctx, "to-delete.txt", "bye"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.DeletePath(ctx, filepath.Join(dir, "to-delete.txt")); err != nil {
+		t.Fatalf("DeletePath: %v", err)
+	}
+	// Deleting again should return ErrFileNotFound.
+	err = ex.DeletePath(ctx, filepath.Join(dir, "to-delete.txt"))
+	if err == nil {
+		t.Error("DeletePath on non-existent file should error")
+	}
+}
+
+// TestDirectExecutorDeletePathNonEmptyDir: DeletePath on non-empty dir gives
+// actionable error.
+func TestDirectExecutorDeletePathNonEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	ex, err := NewDirectExecutor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+
+	ctx := context.Background()
+	if _, err := ex.WriteFile(ctx, "dir/file.txt", "content"); err != nil {
+		t.Fatal(err)
+	}
+	err = ex.DeletePath(ctx, filepath.Join(dir, "dir"))
+	if err == nil {
+		t.Fatal("DeletePath on non-empty dir should error")
+	}
+	if !strings.Contains(err.Error(), "not empty") {
+		t.Errorf("DeletePath on non-empty dir should mention 'not empty'; got %v", err)
+	}
+}
+
+// TestDirectExecutorMovePath: MovePath renames files and errors on existing dst.
+func TestDirectExecutorMovePath(t *testing.T) {
+	dir := t.TempDir()
+	ex, err := NewDirectExecutor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+
+	ctx := context.Background()
+	if _, err := ex.WriteFile(ctx, "src.txt", "content"); err != nil {
+		t.Fatal(err)
+	}
+	srcFull := filepath.Join(dir, "src.txt")
+	dstFull := filepath.Join(dir, "dst.txt")
+	if err := ex.MovePath(ctx, srcFull, dstFull); err != nil {
+		t.Fatalf("MovePath: %v", err)
+	}
+	// Verify src gone, dst exists.
+	got, err := ex.ReadFile(ctx, "dst.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "content" {
+		t.Errorf("ReadFile(dst) = %q, want 'content'", got)
+	}
+	// Moving to an existing dst should error.
+	if _, err := ex.WriteFile(ctx, "src2.txt", "x"); err != nil {
+		t.Fatal(err)
+	}
+	err = ex.MovePath(ctx, filepath.Join(dir, "src2.txt"), dstFull)
+	if err == nil {
+		t.Error("MovePath to existing dst should error")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("MovePath to existing dst should mention 'already exists'; got %v", err)
+	}
+}
+
+// TestDirectExecutorSandboxTools: SandboxTools probes and caches tool availability.
+func TestDirectExecutorSandboxTools(t *testing.T) {
+	dir := t.TempDir()
+	ex, err := NewDirectExecutor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+
+	// SandboxTools should return a non-empty string (at least the probe result).
+	got := ex.SandboxTools()
+	// On this system sh, cat, etc. should be present. But on minimal CI it may
+	// be empty if ALL tools are absent — just check it doesn't panic and is
+	// idempotent (cached by sync.Once).
+	got2 := ex.SandboxTools()
+	if got != got2 {
+		t.Errorf("SandboxTools not idempotent: first=%q second=%q", got, got2)
+	}
+}
+
+// TestExitStatusLine: ExitStatusLine renders correct strings for all cases.
+func TestExitStatusLine(t *testing.T) {
+	tests := []struct {
+		code  int
+		known bool
+		want  string
+	}{
+		{0, true, "exited OK"},
+		{1, true, "exited with code 1"},
+		{42, true, "exited with code 42"},
+		{0, false, "exit code unknown (completion marker missing or log unreadable)"},
+	}
+	for _, tt := range tests {
+		got := ExitStatusLine(tt.code, tt.known)
+		if got != tt.want {
+			t.Errorf("ExitStatusLine(%d, %v) = %q, want %q", tt.code, tt.known, got, tt.want)
+		}
 	}
 }
