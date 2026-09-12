@@ -735,3 +735,40 @@ func TestApplyPatch_CheckpointCaptureAndRewind(t *testing.T) {
 		t.Fatalf("after rewind: got %q, want %q", string(content), "hello world\n")
 	}
 }
+
+// TestPruneStaleWorktrees_DeadOwnerPID tests that a worktree whose owner PID
+// is no longer alive (crashed session) is pruned — including its .git/worktrees
+// metadata (card #234, #212 coverage).
+func TestPruneStaleWorktrees_DeadOwnerPID(t *testing.T) {
+	dir := setupGitRepo(t)
+	app := newWorktreeTestApp(t, dir)
+
+	// Create a worktree.
+	wtDir, err := createWorktree(context.Background(), app)
+	if err != nil {
+		t.Fatalf("createWorktree: %v", err)
+	}
+
+	// Overwrite the owner-marker PID with a dead PID (999999 — almost
+	// certainly not running). The marker is in .git/worktrees/<name>/.wakil-owner-pid.
+	repoRoot := app.Exec.WorkspaceRoot()
+	wtName := filepath.Base(wtDir)
+	wtGitDir := filepath.Join(repoRoot, ".git", "worktrees", wtName)
+	markerPath := filepath.Join(wtGitDir, ".wakil-owner-pid")
+	if err := os.WriteFile(markerPath, []byte("999999"), 0644); err != nil {
+		t.Fatalf("overwrite owner marker: %v", err)
+	}
+
+	// Prune — should detect dead owner PID and remove the worktree.
+	pruneStaleWorktrees(context.Background(), app)
+
+	// The worktree directory should be gone.
+	if _, err := os.Stat(wtDir); err == nil {
+		t.Error("worktree with dead owner PID should be removed by prune")
+	}
+
+	// The .git/worktrees/<name> metadata should also be gone (card #229 fix).
+	if _, err := os.Stat(wtGitDir); err == nil {
+		t.Error("worktree .git/worktrees metadata should be removed by prune (card #229)")
+	}
+}
