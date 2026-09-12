@@ -618,6 +618,10 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 			if !isWorktreeOwnerAlive(a, fullPath) {
 				// Owner process is dead — stale worktree from a crashed session.
 				_ = os.RemoveAll(fullPath)
+				// Also clean up the .git/worktrees/<name>/ metadata in the
+				// parent repo (card #229). The gitDir points to the
+				// .git/worktrees/<name> directory — remove it too.
+				_ = os.RemoveAll(gitDir)
 			}
 			continue
 		}
@@ -628,6 +632,9 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 		// gitdir target is gone — the parent repo was deleted/moved. This
 		// worktree is orphaned. Clean it up.
 		_ = os.RemoveAll(fullPath)
+		// The .git/worktrees/<name> metadata is also stale — the repo is
+		// gone so the metadata dir is orphaned too. Remove it (card #229).
+		_ = os.RemoveAll(gitDir)
 	}
 }
 
@@ -687,7 +694,9 @@ func pruneStaleDockerWorktreeMetadata(ctx context.Context, a *App) {
 			continue // empty gitdir — leave it
 		}
 		// Only consider entries whose gitdir points under /tmp/wakil-wt-.
-		if !strings.Contains(gitdirPath, "/tmp/"+worktreePrefix) {
+		// Use HasPrefix on the path after trimming, not Contains, to avoid
+		// matching paths like /home/user/tmp/wakil-wt-x/.git (card #230).
+		if !strings.HasPrefix(gitdirPath, "/tmp/"+worktreePrefix) {
 			continue // not one of ours — leave it
 		}
 		// Check if the gitdir target still exists inside the container.
