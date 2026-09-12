@@ -338,21 +338,31 @@ func (m tuiModel) rowToNoBox(row int) int {
 	return noBoxIdx
 }
 
-// isBoxBorderLine returns true if the line consists entirely of box-drawing
-// characters (border top/bottom rows produced by styleTurnBox).
+// isBoxBorderLine returns true if the line is a top or bottom border row of a
+// turn box (e.g. "╭───╮" or "╰───╯"). Only these rows exist in plainLines
+// (with borders) but NOT in plainLinesNoBox (without borders), so rowToNoBox
+// must skip exactly these and no others.
+//
+// The previous implementation matched any line consisting solely of
+// box-drawing characters and spaces, which misidentified separator lines
+// ("│ ─── │"), blank content lines ("│     │"), and any content line
+// containing only box glyphs as border rows. This caused rowToNoBox to skip
+// content rows, desynchronizing the plainLines → plainLinesNoBox mapping and
+// making copied text come from the wrong lines.
 func isBoxBorderLine(s string) bool {
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return false
 	}
-	for _, r := range s {
-		switch r {
-		case '│', '╭', '╮', '╰', '╯', '─', ' ':
-			continue
-		default:
-			return false
-		}
+	runes := []rune(s)
+	if len(runes) < 2 {
+		return false
 	}
-	return true
+	first, last := runes[0], runes[len(runes)-1]
+	// Rounded border corners (styleTurnBox uses lipgloss.RoundedBorder()).
+	// Also accept square corners for robustness.
+	return (first == '╭' && last == '╮') || (first == '╰' && last == '╯') ||
+		(first == '┌' && last == '┐') || (first == '└' && last == '┘')
 }
 
 // highlightedContent rebuilds the viewport content from the plain mirror with

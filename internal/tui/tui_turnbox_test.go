@@ -288,3 +288,123 @@ func TestTurnBoxPlainLinesMatchesViewport(t *testing.T) {
 			len(m.plainLines), m.vp.TotalLineCount())
 	}
 }
+
+// TestIsBoxBorderLine verifies that isBoxBorderLine only matches actual box
+// top/bottom border rows, not separator lines, blank content lines, or
+// content lines that happen to contain only box-drawing characters.
+func TestIsBoxBorderLine(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+		desc string
+	}{
+		{"╭──────────╮", true, "top border"},
+		{"╰──────────╯", true, "bottom border"},
+		{"╭─╮", true, "minimal top border"},
+		{"╰─╯", true, "minimal bottom border"},
+		{"  ╭────╮  ", true, "padded top border"},
+		{"  ╰────╯  ", true, "padded bottom border"},
+		{"│ hello │", false, "content line with border sides"},
+		{"│ ───── │", false, "separator line inside box"},
+		{"│       │", false, "blank content line inside box"},
+		{"│", false, "left border only"},
+		{"────────", false, "horizontal line only"},
+		{"hello", false, "plain content"},
+		{"", false, "empty string"},
+		{"  ", false, "whitespace only"},
+		{"│ │", false, "border sides with space"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			got := isBoxBorderLine(tt.line)
+			if got != tt.want {
+				t.Errorf("isBoxBorderLine(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTurnBoxCopyWithSeparator verifies that selectedText returns the correct
+// content (not misaligned text) when a turn box contains a separator line
+// between user prompt and assistant response. This exercises the
+// isBoxBorderLine → rowToNoBox path that was previously broken.
+func TestTurnBoxCopyWithSeparator(t *testing.T) {
+	m := newTabModel()
+	m.width, m.height = 80, 30
+	m = m.reflow()
+
+	m.addItem(iUser, "what is 2+2")
+	m.addItem(iAsst, "the answer is 4")
+
+	m.prefixDirty = true
+	m.refreshViewport()
+
+	// Find the assistant content line in plainLines.
+	asstRow := -1
+	for i, line := range m.plainLines {
+		stripped := strings.TrimSpace(line)
+		if strings.Contains(stripped, "answer is 4") && !isBoxBorderLine(stripped) {
+			asstRow = i
+			break
+		}
+	}
+	if asstRow < 0 {
+		t.Fatal("could not find assistant content line in plainLines")
+	}
+
+	// Select across the assistant line.
+	m.sel = selection{
+		active:    true,
+		anchorRow: asstRow,
+		anchorCol: 1, // past left border
+		headRow:   asstRow,
+		headCol:   80, // well past end
+	}
+	text := m.selectedText()
+
+	if !strings.Contains(text, "answer is 4") {
+		t.Errorf("selectedText should contain 'answer is 4', got %q", text)
+	}
+	for _, bc := range []string{"│", "╭", "╮", "╰", "╯", "─"} {
+		if strings.Contains(text, bc) {
+			t.Errorf("selectedText should not contain border glyph %q, got %q", bc, text)
+		}
+	}
+}
+
+// TestTurnBoxRowToNoBoxWithSeparator verifies that rowToNoBox correctly maps
+// content rows (not border rows) when separator lines are present. The
+// plainLines and plainLinesNoBox indices must stay in sync for all non-border
+// rows.
+func TestTurnBoxRowToNoBoxWithSeparator(t *testing.T) {
+	m := newTabModel()
+	m.width, m.height = 80, 30
+	m = m.reflow()
+
+	m.addItem(iUser, "question text")
+	m.addItem(iAsst, "answer text")
+
+	m.prefixDirty = true
+	m.refreshViewport()
+
+	// For every non-border row in plainLines, rowToNoBox should return an
+	// index that, when used to index plainLinesNoBox, yields the same
+	// content (without the border padding).
+	for i, line := range m.plainLines {
+		if isBoxBorderLine(strings.TrimSpace(line)) {
+			continue
+		}
+		nbIdx := m.rowToNoBox(i)
+		if nbIdx < 0 || nbIdx >= len(m.plainLinesNoBox) {
+			t.Errorf("row %d: rowToNoBox returned %d, out of range [0, %d)", i, nbIdx, len(m.plainLinesNoBox))
+			continue
+		}
+		// The no-box line should be a trimmed version of the boxed line
+		// (content matches after removing border chars).
+		boxedContent := strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "│"))
+		noBoxContent := strings.TrimSpace(m.plainLinesNoBox[nbIdx])
+		if boxedContent != noBoxContent {
+			t.Errorf("row %d → noBox %d: content mismatch %q vs %q", i, nbIdx, boxedContent, noBoxContent)
+		}
+	}
+}
