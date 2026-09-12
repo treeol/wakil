@@ -425,9 +425,20 @@ func TestConcurrentSubmitsYieldStrictSeq(t *testing.T) {
 		}
 	}
 
+	// Wait for all n turns to complete. SessionIdle alone is insufficient:
+	// finishTurn sets the state to idle BEFORE emitting the final
+	// TurnCompleted event (the emit runs after s.mu.Unlock to avoid holding
+	// the session lock during store I/O). Polling the event count ensures the
+	// last TurnCompleted is persisted before we read the full list.
 	waitFor(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s.ID)
-		return g.State == core.SessionIdle
+		events, _ := h.ListEvents(context.Background(), p, s.ID, 0, 0)
+		var completes int
+		for _, e := range events {
+			if e.Kind == event.KindTurnCompleted {
+				completes++
+			}
+		}
+		return completes == n
 	})
 
 	events, _ := h.ListEvents(context.Background(), p, s.ID, 0, 0)
