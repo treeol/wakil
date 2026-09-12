@@ -1014,3 +1014,45 @@ func TestIsFileNotFoundErrorPermissionDenied(t *testing.T) {
 		t.Error("expected 'permission denied' to NOT be classified as file-not-found")
 	}
 }
+// TestRewind_ConcurrentRewindBlocked verifies that a second rewind is rejected
+// with "cannot rewind while a previous rewind is in progress" when
+// cpRewinding is already set (card #235, checkpoint.go:454-456).
+func TestRewind_ConcurrentRewindBlocked(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	// Write a file and set up a checkpoint.
+	p := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(p, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.startCheckpoint()
+	app.captureForCheckpoint(ctx, p)
+	app.endCheckpoint()
+
+	// Simulate that a rewind is already in progress by setting
+	// cpRewinding. This is the guard the test exercises.
+	app.cpMu.Lock()
+	app.cpRewinding = true
+	app.cpMu.Unlock()
+
+	// Now calling rewind should return an error about a previous rewind.
+	result := app.rewind(1)
+	if len(result.Errors) == 0 {
+		t.Fatal("expected error about previous rewind in progress, got no errors")
+	}
+	found := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "previous rewind") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'previous rewind in progress' error, got: %v", result.Errors)
+	}
+
+	// Clean up the cpRewinding flag.
+	app.cpMu.Lock()
+	app.cpRewinding = false
+	app.cpMu.Unlock()
+}
