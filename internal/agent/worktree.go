@@ -440,36 +440,81 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 func patchFilePaths(patch string) []string {
 	var paths []string
 	seen := make(map[string]bool)
-	for _, line := range strings.Split(patch, "\n") {
-		var path string
-		if strings.HasPrefix(line, "+++ ") {
-			path = strings.TrimPrefix(line, "+++ ")
-		} else if strings.HasPrefix(line, "--- ") {
-			path = strings.TrimPrefix(line, "--- ")
-		} else {
-			continue
-		}
-		// Skip /dev/null (new or deleted files).
-		if path == "/dev/null" {
-			continue
+	addPath := func(raw string) {
+		// Unquote C-quoted paths (git quotes paths with spaces/unicode).
+		if unquoted, err := unquoteGitPath(raw); err == nil {
+			raw = unquoted
 		}
 		// Strip the "a/" or "b/" prefix used by git diffs.
-		if strings.HasPrefix(path, "a/") {
-			path = strings.TrimPrefix(path, "a/")
-		} else if strings.HasPrefix(path, "b/") {
-			path = strings.TrimPrefix(path, "b/")
+		if strings.HasPrefix(raw, "a/") {
+			raw = strings.TrimPrefix(raw, "a/")
+		} else if strings.HasPrefix(raw, "b/") {
+			raw = strings.TrimPrefix(raw, "b/")
 		}
 		// Strip any trailing tab + timestamp.
-		if idx := strings.IndexByte(path, '\t'); idx >= 0 {
-			path = path[:idx]
+		if idx := strings.IndexByte(raw, '\t'); idx >= 0 {
+			raw = raw[:idx]
 		}
-		if path == "" || seen[path] {
+		if raw == "" || raw == "/dev/null" || seen[raw] {
+			return
+		}
+		seen[raw] = true
+		paths = append(paths, raw)
+	}
+	for _, line := range strings.Split(patch, "\n") {
+		// Parse "diff --git a/<path> b/<path>" headers. These are present
+		// for ALL diff types (text, binary, renames, mode-only) and give us
+		// the definitive list of affected files. The "b/" path is the
+		// post-patch path (the file we need to checkpoint for rewind).
+		if strings.HasPrefix(line, "diff --git ") {
+			path := parseDiffGitHeader(line)
+			if path != "" {
+				addPath(path)
+			}
 			continue
 		}
-		seen[path] = true
-		paths = append(paths, path)
+		if strings.HasPrefix(line, "+++ ") {
+			addPath(strings.TrimPrefix(line, "+++ "))
+		} else if strings.HasPrefix(line, "--- ") {
+			addPath(strings.TrimPrefix(line, "--- "))
+		}
 	}
 	return paths
+}
+
+// parseDiffGitHeader extracts the "b/" path from a "diff --git a/old b/new"
+// line. Returns the new path (post-patch) since that's what we need for
+// checkpoint capture. Handles C-quoted paths (e.g., "a/path with spaces").
+func parseDiffGitHeader(line string) string {
+	// line is "diff --git a/oldpath b/newpath"
+	rest := strings.TrimPrefix(line, "diff --git ")
+	// Split into a/old and b/new. Git uses a space separator, but paths
+	// with spaces are C-quoted (e.g., "a/path with spaces"). We need to
+	// find the " b/" separator that's NOT inside quotes.
+	inQuote := false
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == '"' {
+			inQuote = !inQuote
+		}
+		if !inQuote && i+3 <= len(rest) && rest[i] == ' ' && rest[i+1] == 'b' && rest[i+2] == '/' {
+			// Found " b/" separator outside quotes. The new path is rest[i+1:].
+			newPath := rest[i+1:]
+			// Strip b/ prefix.
+			return strings.TrimPrefix(newPath, "b/")
+		}
+	}
+	return ""
+}
+
+// unquoteGitPath unquotes a C-quoted git path. Git C-quotes paths that
+// contain special characters (spaces, non-ASCII, etc.) by wrapping them in
+// double quotes and escaping. This function reverses that quoting.
+func unquoteGitPath(path string) (string, error) {
+	if len(path) == 0 || path[0] != '"' {
+		return path, nil // not quoted
+	}
+	// Use strconv.Unquote which handles Go/C-style quoting (same as git's).
+	return strconv.Unquote(path)
 }
 
 // removeWorktree removes a git worktree and its directory. Best-effort —

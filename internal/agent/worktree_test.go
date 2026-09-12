@@ -587,6 +587,56 @@ index 123..456 100644
 `,
 			expect: []string{"main.go"},
 		},
+		{
+			name: "binary file diff (no ---/+++ headers, only diff --git)",
+			patch: `diff --git a/image.png b/image.png
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 100
+zacma...
+`,
+			expect: []string{"image.png"},
+		},
+		{
+			name: "rename without content change (rename from/to, no ---/+++)",
+			patch: `diff --git a/old.txt b/new.txt
+similarity index 100%
+rename from old.txt
+rename to new.txt
+`,
+			expect: []string{"new.txt"},
+		},
+		{
+			name: "C-quoted path with spaces",
+			patch: `diff --git "a/path with spaces.txt" "b/path with spaces.txt"
+index 123..456 100644
+--- "a/path with spaces.txt"
++++ "b/path with spaces.txt"
+@@ -1 +1 @@
+-old
++new
+`,
+			expect: []string{"path with spaces.txt"},
+		},
+		{
+			name: "diff --git with binary and text files combined",
+			patch: `diff --git a/text.go b/text.go
+index 111..222 100644
+--- a/text.go
++++ b/text.go
+@@ -1 +1 @@
+-a
++b
+diff --git a/data.bin b/data.bin
+new file mode 100644
+index 0000000..333
+GIT binary patch
+literal 50
+zabc...
+`,
+			expect: []string{"text.go", "data.bin"},
+		},
 	}
 
 	for _, tc := range tests {
