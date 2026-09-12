@@ -385,7 +385,7 @@ func (s *defaultHTTPSender) PostEvents(ctx context.Context, events []Event) erro
 		return err // transient (network) — retry
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 500 {
 		return fmt.Errorf("server error: %d", resp.StatusCode) // transient — retry

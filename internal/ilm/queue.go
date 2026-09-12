@@ -165,15 +165,6 @@ func decodeEvents(data []byte) []Event {
 }
 
 // truncate removes all events from the queue file (after a successful batch
-// POST). This is safe because the events have been acknowledged by the server;
-// idempotent event IDs make re-sends harmless even if this is called
-// prematurely.
-func (q *queue) truncate() error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return os.Truncate(q.path, 0)
-}
-
 // truncateAfter removes events up to and including the given count (after a
 // partial batch POST). Events after `count` remain in the queue.
 func (q *queue) truncateAfter(count int) error {
@@ -203,15 +194,6 @@ func (q *queue) truncateAfter(count int) error {
 	// Write the remaining events back to the file.
 	remaining := data[offset:]
 	return os.WriteFile(q.path, remaining, 0o600)
-}
-
-// len returns the number of events in the queue.
-func (q *queue) len() (int, error) {
-	events, err := q.readAll()
-	if err != nil {
-		return 0, err
-	}
-	return len(events), nil
 }
 
 // sender is the background goroutine that batches events from the channel and
@@ -273,9 +255,7 @@ func (s *sender) run() {
 			}
 			batch = append(batch, ev)
 			if len(batch) >= 64 {
-				if !s.sendBatchWithBackoff(batch, &backoff, maxBackoff, &lastFailure) {
-					// Failed — batch was persisted to queue by sendBatch.
-				}
+				s.sendBatchWithBackoff(batch, &backoff, maxBackoff, &lastFailure)
 				batch = batch[:0]
 			}
 

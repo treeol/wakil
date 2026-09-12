@@ -216,7 +216,9 @@ func walkLevel(ctx context.Context, exe fileLister, dirPath string, depth int, o
 		if dirPath != "." {
 			subPath = dirPath + "/" + dir
 		}
-		walkLevel(ctx, exe, subPath, depth+1, out, dirCount, fileCount, visits, partial)
+		if err := walkLevel(ctx, exe, subPath, depth+1, out, dirCount, fileCount, visits, partial); err != nil {
+			return err
+		}
 	}
 
 	return nil
