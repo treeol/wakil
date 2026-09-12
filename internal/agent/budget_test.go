@@ -87,9 +87,9 @@ func TestBudgetExhaustedIsSticky(t *testing.T) {
 // TestBudgetNilCostTracker verifies that nil CostTracker is safe.
 func TestBudgetNilCostTracker(t *testing.T) {
 	app := &App{
-		Cfg:        config.DefaultConfig(),
-		Out:        io.Discard,
-		costState:  costState{BudgetUSD: 5.00},
+		Cfg:       config.DefaultConfig(),
+		Out:       io.Discard,
+		costState: costState{BudgetUSD: 5.00},
 	}
 	if app.checkBudgetExhausted() {
 		t.Error("checkBudgetExhausted should return false when CostTracker is nil")
@@ -237,8 +237,8 @@ func TestBudgetConcurrentReservation(t *testing.T) {
 // when the budget is already exhausted.
 func TestBudgetStreamTurnSkipsOnExhausted(t *testing.T) {
 	app := &App{
-		Cfg:   config.DefaultConfig(),
-		Out:   io.Discard,
+		Cfg:    config.DefaultConfig(),
+		Out:    io.Discard,
 		Client: &proxy.Client{ChatID: "test-budget-skip"},
 		costState: costState{
 			Costs: proxy.NewCostTracker(),

@@ -641,8 +641,8 @@ func TestProposeCorrection_ReadActionFalse(t *testing.T) {
 	// not a read).
 	var capturedReadAction bool
 	app := &App{
-		AgentPrefix:  "main",
-		MemoryStore:  testStore(t),
+		AgentPrefix: "main",
+		MemoryStore: testStore(t),
 		Confirm: func(toolName, headline, detail string, readAction bool) bool {
 			capturedReadAction = readAction
 			return false // decline to avoid storing
@@ -678,15 +678,15 @@ func TestHasImperativeVerb(t *testing.T) {
 		{"let's use", true},
 		{"please run", true},
 		// False positives that the old suffix-matching had.
-		{"because", false},   // "use" suffix inside "because"
-		{"cause", false},     // "use" suffix inside "cause"
-		{"abuse", false},     // "use" suffix inside "abuse"
-		{"excuse", false},    // "use" suffix inside "excuse"
-		{"peruse", false},    // "use" suffix inside "peruse"
-		{"retry", false},     // "try" suffix inside "retry"
-		{"undo", false},      // "do" suffix inside "undo"
-		{"rerun", false},     // "run" suffix inside "rerun"
-		{"remake", false},    // "make" suffix inside "remake"
+		{"because", false}, // "use" suffix inside "because"
+		{"cause", false},   // "use" suffix inside "cause"
+		{"abuse", false},   // "use" suffix inside "abuse"
+		{"excuse", false},  // "use" suffix inside "excuse"
+		{"peruse", false},  // "use" suffix inside "peruse"
+		{"retry", false},   // "try" suffix inside "retry"
+		{"undo", false},    // "do" suffix inside "undo"
+		{"rerun", false},   // "run" suffix inside "rerun"
+		{"remake", false},  // "make" suffix inside "remake"
 		// Non-verb words.
 		{"config", false},
 		{"approach", false},

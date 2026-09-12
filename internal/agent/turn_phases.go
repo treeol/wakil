@@ -351,13 +351,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 					result.text, a.ILM.MaxOutputBytes())
 				okVal := result.ok
 				a.ILM.Emit(ilm.EventToolResult, ilm.ToolResultPayload{
-					Tool:       tc.Function.Name,
-					CallID:     tc.ID,
-					OK:         &okVal,
-					Output:      bounded,
-					Truncated:   truncated,
-					FullHash:    fullHash,
-					FullSize:    fullSize,
+					Tool:      tc.Function.Name,
+					CallID:    tc.ID,
+					OK:        &okVal,
+					Output:    bounded,
+					Truncated: truncated,
+					FullHash:  fullHash,
+					FullSize:  fullSize,
 				})
 			}
 		}

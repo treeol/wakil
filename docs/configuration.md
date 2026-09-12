@@ -152,6 +152,7 @@ reference covering every section below.
 | `subagent_tool_result_cap` | `0` (→ 12000) | Per-result char cap for subagents; `0` = use built-in default |
 | `hooks` | — | Lifecycle hooks block (pre_tool, post_tool, session_start, session_end, on_stop) — see [features](features.md#lifecycle-hooks) |
 | `verify` | — | Commands for `/verify` workflow verification (auto-detected from manifests if unset) |
+| `ilm_stack` | — | ILM shadow-mode emitter block (`endpoint`, `token`, `mode`, `queue_path`, `batch_ms`, `max_output_bytes`). `mode=off` (default): zero behaviour change. `mode=shadow`: emit session/turn/tool events to an ILM-stack endpoint via a local durable queue + background sender. Env vars: `ILM_STACK_URL`, `ILM_STACK_TOKEN`, `ILM_MODE`, `ILM_QUEUE_PATH`, `ILM_BATCH_SIZE`, `ILM_OUTPUT_LIMIT`. |
 
 The absolute byte fields (`keep_bytes`, `summary_bytes`, `hard_max_bytes`, `compact_at`,
 `turn_tool_budget`, `tool_result_cap`, `tool_result_ttl`, `max_tool_iterations`) are

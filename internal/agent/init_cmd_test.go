@@ -32,13 +32,13 @@ func TestGenerateAgentsMD_Go(t *testing.T) {
 
 func TestGenerateAgentsMD_WithArchitecture(t *testing.T) {
 	info := &projectInfo{
-		languages:    []string{"Go"},
-		buildCmds:    []string{"go build ./..."},
-		entryPoints:  []string{"cmd/wakil"},
-		packages:     []string{"internal/agent", "internal/exec", "internal/tui"},
-		hasDocker:    true,
-		hasCI:        true,
-		hasDocs:      true,
+		languages:   []string{"Go"},
+		buildCmds:   []string{"go build ./..."},
+		entryPoints: []string{"cmd/wakil"},
+		packages:    []string{"internal/agent", "internal/exec", "internal/tui"},
+		hasDocker:   true,
+		hasCI:       true,
+		hasDocs:     true,
 	}
 	got := generateAgentsMD(info)
 

@@ -103,10 +103,10 @@ func TestConformance(t *testing.T) {
 	defer resp.Body.Close()
 
 	var confResult struct {
-		Passed         bool            `json:"passed"`
-		Diffs          json.RawMessage `json:"diffs"`
-		SessionsChecked int            `json:"sessions_checked"`
-		TotalDiffs      int            `json:"total_diffs"`
+		Passed          bool            `json:"passed"`
+		Diffs           json.RawMessage `json:"diffs"`
+		SessionsChecked int             `json:"sessions_checked"`
+		TotalDiffs      int             `json:"total_diffs"`
 	}
 	json.NewDecoder(resp.Body).Decode(&confResult)
 

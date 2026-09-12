@@ -118,7 +118,7 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 			task = args[i]
 		}
 	}
-		if task == "" {
+	if task == "" {
 		return "", false, flags, fmt.Errorf(
 			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] \"<task>\"")
 	}

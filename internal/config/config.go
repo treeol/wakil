@@ -477,9 +477,9 @@ type Config struct {
 type ILMStackConfig struct {
 	Endpoint       string `json:"endpoint"`
 	Token          string `json:"token"`
-	Mode           string `json:"mode"`            // "off" (default) | "shadow"
+	Mode           string `json:"mode"` // "off" (default) | "shadow"
 	QueuePath      string `json:"queue_path"`
-	BatchMS        int    `json:"batch_ms"`        // default 500
+	BatchMS        int    `json:"batch_ms"`         // default 500
 	MaxOutputBytes int    `json:"max_output_bytes"` // default 65536
 }
 

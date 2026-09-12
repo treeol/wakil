@@ -236,10 +236,10 @@ func TestSafeTruncate(t *testing.T) {
 		n     int
 		want  string
 	}{
-		{"hello world", 100, "hello world"},       // n > len
-		{"line1\nline2\nline3", 8, "line1\n"},      // back to newline
-		{"nolinebreakhere", 5, "nolin"},            // no newline: cut at n (safe ASCII)
-		{"", 10, ""},                               // empty
+		{"hello world", 100, "hello world"},   // n > len
+		{"line1\nline2\nline3", 8, "line1\n"}, // back to newline
+		{"nolinebreakhere", 5, "nolin"},       // no newline: cut at n (safe ASCII)
+		{"", 10, ""},                          // empty
 	}
 	for _, tc := range tests {
 		got := safeTruncate(tc.input, tc.n)

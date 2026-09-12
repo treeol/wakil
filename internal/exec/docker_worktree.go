@@ -33,8 +33,8 @@ import (
 //   - SandboxTools (probe runs in the container, not workspace-specific)
 //   - Generation, KVRSocketPath, KVRAvailable, ContainerName, CDPPort (container-level)
 type dockerWorktreeExecutor struct {
-	*DockerExecutor          // delegate container-level methods
-	wtRoot          string   // container-internal worktree root (e.g. /tmp/wakil-wt-XXX)
+	*DockerExecutor        // delegate container-level methods
+	wtRoot          string // container-internal worktree root (e.g. /tmp/wakil-wt-XXX)
 }
 
 // NewDockerWorktreeExecutor creates an Executor that shares the parent's

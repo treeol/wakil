@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/treeol/wakil/internal/diag"
 )
 
 // Mode controls emitter behaviour.
@@ -39,26 +40,26 @@ const (
 
 // Config holds the ilm-stack emitter configuration.
 type Config struct {
-	Endpoint      string `json:"endpoint"`
-	Token         string `json:"token"`
-	Mode          Mode   `json:"mode"` // "off" (default) | "shadow"
-	QueuePath     string `json:"queue_path"`
-	BatchMS       int    `json:"batch_ms"`        // default 500
-	MaxOutputBytes int   `json:"max_output_bytes"` // default 65536
+	Endpoint       string `json:"endpoint"`
+	Token          string `json:"token"`
+	Mode           Mode   `json:"mode"` // "off" (default) | "shadow"
+	QueuePath      string `json:"queue_path"`
+	BatchMS        int    `json:"batch_ms"`         // default 500
+	MaxOutputBytes int    `json:"max_output_bytes"` // default 65536
 }
 
 // Defaults
 const (
-	defaultBatchMS       = 500
+	defaultBatchMS        = 500
 	defaultMaxOutputBytes = 65536
-	clientName           = "wakil"
+	clientName            = "wakil"
 )
 
 // EventType matches the contract's event type strings.
 type EventType string
 
 const (
-	EventSessionStart EventType = "session_start"
+	EventSessionStart  EventType = "session_start"
 	EventUserTurn      EventType = "user_turn"
 	EventAssistantTurn EventType = "assistant_turn"
 	EventToolCall      EventType = "tool_call"
@@ -115,7 +116,7 @@ type Emitter struct {
 
 	// closed marks the emitter as shut down. Guarded by closeMu — all
 	// reads AND writes must hold closeMu to avoid a data race.
-	closed bool
+	closed  bool
 	closeMu sync.Mutex
 
 	// closeOnce ensures Close is idempotent and race-free.
@@ -260,14 +261,14 @@ func (e *Emitter) Emit(typ EventType, payload interface{}) {
 	case <-e.done:
 		// Emitter closing — best-effort append, don't block.
 		if err := e.queue.append(ev); err != nil {
-			fmt.Fprintf(os.Stderr, "ilm: dropped event (close): %v\n", err)
+			diag.Printf("ilm: dropped event (close): %v", err)
 		}
 	default:
 		// Channel full — best-effort append to queue. If the queue
 		// write also fails, drop the event rather than blocking the
 		// caller. Shadow-mode telemetry is lossy by design.
 		if err := e.queue.append(ev); err != nil {
-			fmt.Fprintf(os.Stderr, "ilm: dropped event (queue full): %v\n", err)
+			diag.Printf("ilm: dropped event (queue full): %v", err)
 		}
 	}
 }

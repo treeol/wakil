@@ -84,8 +84,8 @@ type correctionState struct {
 
 	// correctionProposals/Accepted/Rejected count session-level metrics.
 	correctionProposals int
-	correctionAccepted   int
-	correctionRejected   int
+	correctionAccepted  int
+	correctionRejected  int
 }
 
 // correctionDetectWindow is how long after a /rewind the detection signal

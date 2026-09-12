@@ -571,8 +571,8 @@ index 333..444 100644
 			expect: []string{"file1.go", "file2.go"},
 		},
 		{
-			name: "empty patch",
-			patch: "",
+			name:   "empty patch",
+			patch:  "",
 			expect: nil,
 		},
 		{

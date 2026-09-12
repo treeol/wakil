@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/treeol/wakil/internal/diag"
 )
 
 // queue is an append-only JSONL durable queue. Events are written one per line
@@ -126,7 +127,7 @@ func (q *queue) readAll() ([]Event, error) {
 		// while the endpoint stays down. Shadow-mode telemetry is
 		// lossy by design — truncate the file and start clean rather
 		// than nursing gigabytes of garbage.
-		fmt.Fprintf(os.Stderr, "ilm: queue file is %d bytes (>%d cap) — truncating runaway queue, events dropped\n",
+		diag.Printf("ilm: queue file is %d bytes (>%d cap) — truncating runaway queue, events dropped",
 			info.Size(), maxQueueReadBytes)
 		if err := os.Truncate(q.path, 0); err != nil {
 			return nil, err
@@ -365,7 +366,7 @@ func (s *sender) drainQueue() {
 		// A permanent failure can never succeed on retry — keeping the events
 		// would poison the queue and re-send the bad payload every tick.
 		if IsPermanent(postErr) {
-			fmt.Fprintf(os.Stderr, "ilm: dropping %d events after permanent error: %v\n",
+			diag.Printf("ilm: dropping %d events after permanent error: %v",
 				len(events), postErr)
 		}
 		// Use truncateAfter instead of truncate so events appended to the
@@ -396,7 +397,7 @@ func (s *sender) sendBatch(batch []Event) bool {
 	if IsPermanent(err) {
 		// 4xx — the payload is rejected. Queueing it would poison the queue
 		// (retried forever, blocking everything behind it). Drop it.
-		fmt.Fprintf(os.Stderr, "ilm: dropping %d events after permanent error: %v\n",
+		diag.Printf("ilm: dropping %d events after permanent error: %v",
 			len(batch), err)
 		return true
 	}

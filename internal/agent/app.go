@@ -185,8 +185,8 @@ type App struct {
 	// ilm-stack via a background sender. Never on the critical path —
 	// Emit is a non-blocking channel send. Set by the host startup code.
 	ILM        *ilm.Emitter
-	ilmStarted bool   // guards session_start emit (once per session)
-	ilmEnded   bool   // guards session_end emit (once per session)
+	ilmStarted bool // guards session_start emit (once per session)
+	ilmEnded   bool // guards session_end emit (once per session)
 
 	// touchedExternal is a sticky per-App flag set when the agent's
 	// grounding records web/oracle content. Used for the session-cumulative

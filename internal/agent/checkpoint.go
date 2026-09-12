@@ -36,12 +36,12 @@ type FileSnapshot struct {
 // was executed during this turn — rewind warns that shell side effects are not
 // reliably reverted.
 type Checkpoint struct {
-	TurnIndex   int                    // 1-based user turn index (for display)
-	ConvLen     int                    // len(a.Conv) at checkpoint creation
+	TurnIndex   int                     // 1-based user turn index (for display)
+	ConvLen     int                     // len(a.Conv) at checkpoint creation
 	Files       map[string]FileSnapshot // canonical path → pre-mutation state
-	HadShellCmd bool                   // turn included non-read-only shell/background
+	HadShellCmd bool                    // turn included non-read-only shell/background
 	CreatedAt   time.Time
-	Generation  int64                  // monotonically increasing ID for capture identity checks
+	Generation  int64 // monotonically increasing ID for capture identity checks
 }
 
 const (
@@ -61,13 +61,13 @@ const (
 // Checkpoints are NOT persisted — they are cleared on session rotation,
 // compaction, and resume. They exist only for the current session's undo.
 type checkpointState struct {
-	cpMu           sync.Mutex
-	checkpoints    []Checkpoint
-	cpTurnCount    int  // total user turns this session (for display)
-	cpActive       bool // true when a checkpoint is active for the current turn
-	cpTotalBytes   int  // approximate total bytes across all checkpoints
-	cpRewinding    bool // true while rewind file I/O is in progress — blocks new turns and captures
-	cpGenCounter   int64 // monotonically increasing generation ID for checkpoint identity
+	cpMu         sync.Mutex
+	checkpoints  []Checkpoint
+	cpTurnCount  int   // total user turns this session (for display)
+	cpActive     bool  // true when a checkpoint is active for the current turn
+	cpTotalBytes int   // approximate total bytes across all checkpoints
+	cpRewinding  bool  // true while rewind file I/O is in progress — blocks new turns and captures
+	cpGenCounter int64 // monotonically increasing generation ID for checkpoint identity
 }
 
 // startCheckpoint begins a new checkpoint for the current turn. Called from
@@ -346,14 +346,14 @@ func (a *App) clearCheckpoints() {
 
 // rewindResult holds the outcome of a rewind operation.
 type rewindResult struct {
-	RestoredPaths  []string // files successfully restored
-	DeletedPaths   []string // files successfully deleted (were created during rewound turns)
-	TooLargePaths  []string // files that could not be restored (too large to capture)
-	UnknownPaths   []string // files whose state was unknown (skipped — not deleted or restored)
-	ShellWarnings  []string // turns that had shell commands
-	TurnsRewound   int
-	ConvTruncated  bool
-	Errors         []string // per-path restore errors
+	RestoredPaths []string // files successfully restored
+	DeletedPaths  []string // files successfully deleted (were created during rewound turns)
+	TooLargePaths []string // files that could not be restored (too large to capture)
+	UnknownPaths  []string // files whose state was unknown (skipped — not deleted or restored)
+	ShellWarnings []string // turns that had shell commands
+	TurnsRewound  int
+	ConvTruncated bool
+	Errors        []string // per-path restore errors
 }
 
 func (r *rewindResult) Summary() string {
@@ -428,15 +428,15 @@ func (r *rewindResult) Summary() string {
 // back. N=1 means undo the last turn, N=2 means undo the last 2 turns, etc.
 //
 // The algorithm:
-// 1. Validate N (1 ≤ N ≤ len(checkpoints))
-// 2. Build a restore manifest: for each path in the undone range, take the
-//    OLDEST checkpoint's snapshot (that's the state before any rewound turn
-//    touched it)
-// 3. Restore each file: existing files via WriteFileBytes, non-existing via
-//    DeletePath, too-large files and unknown-state files are skipped with
-//    a warning
-// 4. Truncate Conv to the target checkpoint's ConvLen
-// 5. Remove the rewound checkpoints
+//  1. Validate N (1 ≤ N ≤ len(checkpoints))
+//  2. Build a restore manifest: for each path in the undone range, take the
+//     OLDEST checkpoint's snapshot (that's the state before any rewound turn
+//     touched it)
+//  3. Restore each file: existing files via WriteFileBytes, non-existing via
+//     DeletePath, too-large files and unknown-state files are skipped with
+//     a warning
+//  4. Truncate Conv to the target checkpoint's ConvLen
+//  5. Remove the rewound checkpoints
 //
 // Note: session persistence (if any) is the caller's responsibility, not
 // rewind's.

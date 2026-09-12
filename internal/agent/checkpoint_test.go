@@ -22,8 +22,8 @@ func checkpointTestApp(t *testing.T) (*App, string) {
 		t.Fatalf("NewDirectExecutor: %v", err)
 	}
 	app := &App{
-		Exec:  exe,
-		Out:   os.Stderr,
+		Exec: exe,
+		Out:  os.Stderr,
 	}
 	return app, dir
 }
@@ -1014,6 +1014,7 @@ func TestIsFileNotFoundErrorPermissionDenied(t *testing.T) {
 		t.Error("expected 'permission denied' to NOT be classified as file-not-found")
 	}
 }
+
 // TestRewind_ConcurrentRewindBlocked verifies that a second rewind is rejected
 // with "cannot rewind while a previous rewind is in progress" when
 // cpRewinding is already set (card #235, checkpoint.go:454-456).

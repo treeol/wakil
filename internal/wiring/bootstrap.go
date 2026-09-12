@@ -285,7 +285,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 			Endpoint:       cfg.ILMStack.Endpoint,
 			Token:          cfg.ILMStack.Token,
 			Mode:           ilm.ModeShadow,
-			QueuePath:       queuePath,
+			QueuePath:      queuePath,
 			BatchMS:        cfg.ILMStack.BatchMS,
 			MaxOutputBytes: cfg.ILMStack.MaxOutputBytes,
 		}, ilmSessionID)

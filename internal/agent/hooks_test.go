@@ -33,9 +33,9 @@ func TestToolMatches(t *testing.T) {
 		pattern, tool string
 		want          bool
 	}{
-		{"", "write_file", true},          // empty matches all
-		{"write_file", "write_file", true},  // exact
-		{"write_file", "run_shell", false},  // mismatch
+		{"", "write_file", true},                      // empty matches all
+		{"write_file", "write_file", true},            // exact
+		{"write_file", "run_shell", false},            // mismatch
 		{"write_file|edit_file", "edit_file", true},   // pipe alt
 		{"write_file|edit_file", "write_file", true},  // pipe alt
 		{"write_file|edit_file", "run_shell", false},  // no match
@@ -57,15 +57,15 @@ func TestExtractFilePath(t *testing.T) {
 		{"edit_file", `{"path":"/foo/bar.go","old":"a","new":"b"}`, "/foo/bar.go"},
 		{"move_file", `{"src":"/a","dst":"/b"}`, "/a"},
 		{"run_shell", `{"command":"ls"}`, ""},
-		{"write_file", `{"content":"x"}`, ""},                    // no path field
+		{"write_file", `{"content":"x"}`, ""},                          // no path field
 		{"write_file", `{"path": "foo.go", "content": "x"}`, "foo.go"}, // whitespace in JSON
-		{"write_file", ``, ""},                                    // empty args
+		{"write_file", ``, ""},                                         // empty args
 		// Additional tools (from TestExtractFilePath_AdditionalTools).
 		{"write_binary_file", `{"path":"/img.png","content_base64":"x"}`, "/img.png"},
 		{"delete_file", `{"path":"/old.txt"}`, "/old.txt"},
 		{"read_file", `{"path":"/app.go"}`, "/app.go"},
 		{"read_file_full", `{"path":"/main.go"}`, "/main.go"},
-		{"move_file", `{"dst":"/only_dst.txt"}`, "/only_dst.txt"}, // dst fallback when no src
+		{"move_file", `{"dst":"/only_dst.txt"}`, "/only_dst.txt"},        // dst fallback when no src
 		{"move_file", `{"src":"/src.txt","dst":"/dst.txt"}`, "/src.txt"}, // src preferred
 		// Newly supported tools.
 		{"replace", `{"path":"/config.yml","old":"a","new":"b"}`, "/config.yml"},
@@ -334,8 +334,8 @@ func TestRunPreToolHooks_FirstBlockStopsRemaining(t *testing.T) {
 	marker := filepath.Join(dir, "second_ran.txt")
 	cfg := config.HooksConfig{
 		PreTool: []config.HookConfig{
-			{Tool: "write_file", Command: "exit 1"},                       // blocks
-			{Tool: "write_file", Command: "touch " + marker},              // should NOT run
+			{Tool: "write_file", Command: "exit 1"},          // blocks
+			{Tool: "write_file", Command: "touch " + marker}, // should NOT run
 		},
 	}
 	h := NewHookEngine(cfg, dir)
