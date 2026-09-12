@@ -407,11 +407,14 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		newConv = append(newConv, proxy.Message{Role: "system", Content: StrPtr("[Summary of earlier conversation]\n" + summary)})
 	}
 	newConv = append(newConv, a.Conv[boundary:]...)
-	// Conv is about to be restructured — invalidate checkpoint ConvLen values
-	// now that summarization has succeeded. Hold convMu so the Conv write
-	// and checkpoint clear are atomic w.r.t. concurrent readers.
-	a.convMu.Lock()
+	// Invalidate checkpoint ConvLen values before the Conv write. Call
+	// clearCheckpoints BEFORE acquiring convMu — this avoids a lock-order
+	// inversion (convMu → cpMu) that would deadlock with checkpointStatus
+	// and rewind, which acquire cpMu → convMu. The clear must happen before
+	// the Conv write so concurrent readers (checkpointStatus, rewind) that
+	// hold cpMu see the cleared checkpoints when they read Conv.
 	a.clearCheckpoints()
+	a.convMu.Lock()
 	a.Conv = newConv
 	a.convMu.Unlock()
 	return true, nil

@@ -624,9 +624,9 @@ func (a *App) checkpointStatus() string {
 		return "no checkpoints available — checkpoints are created at the start of each turn"
 	}
 
-	// Snapshot Conv preview data under convMu.RLock. cpMu → convMu is safe
-	// because the codebase never acquires convMu → cpMu (no reverse-order
-	// acquisition that could deadlock).
+	// Snapshot Conv preview data under convMu.RLock. cpMu → convMu is the
+	// established lock order. Compact() calls clearCheckpoints (acquires
+	// cpMu) BEFORE acquiring convMu, so no convMu → cpMu inversion exists.
 	a.convMu.RLock()
 	convCopy := make([]proxy.Message, len(a.Conv))
 	copy(convCopy, a.Conv)
