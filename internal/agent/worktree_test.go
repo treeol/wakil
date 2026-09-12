@@ -217,10 +217,10 @@ func TestApplyPatch_AppliesCleanly(t *testing.T) {
 
 	// Apply the patch to the parent workspace.
 	patchApplyMu.Lock()
-	applied, conflict, applyErr := applyPatch(context.Background(), app, diff)
+	applied, conflict, errMsg := applyPatch(context.Background(), app, diff)
 	patchApplyMu.Unlock()
 	if !applied {
-		t.Fatalf("applyPatch failed (conflict=%v): %s", conflict, applyErr)
+		t.Fatalf("applyPatch failed (conflict=%v): %s", conflict, errMsg)
 	}
 
 	// Verify the parent workspace now has the modified content.
@@ -441,10 +441,10 @@ func TestEndToEnd_WorktreeEditAndApply(t *testing.T) {
 
 	// Apply to parent.
 	patchApplyMu.Lock()
-	applied, conflict, applyErr := applyPatch(context.Background(), app, patch)
+	applied, conflict, errMsg := applyPatch(context.Background(), app, patch)
 	patchApplyMu.Unlock()
 	if !applied {
-		t.Fatalf("patch should apply cleanly (conflict=%v): %s", conflict, applyErr)
+		t.Fatalf("patch should apply cleanly (conflict=%v): %s", conflict, errMsg)
 	}
 
 	// Verify parent workspace has the changes.
@@ -651,5 +651,87 @@ zabc...
 				}
 			}
 		})
+	}
+}
+
+// TestApplyPatch_CheckpointCaptureAndRewind verifies that applyPatch captures
+// pre-patch state for each file in the patch and that /rewind restores the
+// original content after a worktree patch apply (card #211 regression coverage).
+func TestApplyPatch_CheckpointCaptureAndRewind(t *testing.T) {
+	dir := setupGitRepo(t)
+	app := newWorktreeTestApp(t, dir)
+	ctx := context.Background()
+
+	// Set up a checkpoint (simulates turn start).
+	app.checkpoints = make([]Checkpoint, 0)
+	app.startCheckpoint()
+
+	// Create a worktree and modify a file.
+	wtDir, err := createWorktree(ctx, app)
+	if err != nil {
+		t.Fatalf("createWorktree: %v", err)
+	}
+	defer removeWorktree(ctx, app, wtDir)
+
+	if err := os.WriteFile(filepath.Join(wtDir, "hello.txt"), []byte("changed by worktree\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture the diff and apply the patch to the parent workspace.
+	diff, err := diffWorktree(ctx, app, wtDir)
+	if err != nil {
+		t.Fatalf("diffWorktree: %v", err)
+	}
+	if diff == "" {
+		t.Fatal("diff should not be empty after modifying worktree file")
+	}
+
+	patchApplyMu.Lock()
+	applied, conflict, errMsg := applyPatch(ctx, app, diff)
+	patchApplyMu.Unlock()
+	if !applied || errMsg != "" {
+		t.Fatalf("applyPatch failed (applied=%v, conflict=%v): %v", applied, conflict, errMsg)
+	}
+
+	// Verify the parent workspace has the modified content.
+	content, err := os.ReadFile(filepath.Join(dir, "hello.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "changed by worktree\n" {
+		t.Fatalf("parent should have 'changed by worktree\n', got %q", string(content))
+	}
+
+	// Verify that the checkpoint captured the file (pre-patch state).
+	app.cpMu.Lock()
+	cpCount := len(app.checkpoints)
+	var hasCapture bool
+	if cpCount > 0 {
+		cp := app.checkpoints[len(app.checkpoints)-1]
+		if cp.Files != nil {
+			_, hasCapture = cp.Files[filepath.Join(dir, "hello.txt")]
+		}
+	}
+	app.cpMu.Unlock()
+	if !hasCapture {
+		t.Error("expected checkpoint to have captured hello.txt pre-patch state")
+	}
+
+	// End the turn (simulates SendOutcome completion).
+	app.endCheckpoint()
+
+	// Rewind 1 turn — should restore the original content.
+	result := app.rewind(1)
+	if len(result.RestoredPaths) == 0 {
+		t.Fatalf("expected at least 1 restored path, got 0: %+v", result)
+	}
+
+	// Verify the file is back to the original content.
+	content, err = os.ReadFile(filepath.Join(dir, "hello.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "hello world\n" {
+		t.Fatalf("after rewind: got %q, want %q", string(content), "hello world\n")
 	}
 }
