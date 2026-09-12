@@ -724,3 +724,43 @@ func TestMultiToolCallSiblingPreservation(t *testing.T) {
 		t.Error("sibling tool result r1 was orphaned — should be co-preserved with pinned s1")
 	}
 }
+
+// TestEnforceHardMax_PinnedContentExceedsLimit verifies that enforceHardMax
+// cannot drop turns when all remaining turns contain pinned messages, and
+// returns while still over the hard max ceiling (card #237). This is a
+// documented product choice — the warning at compact.go:618-621 makes it
+// visible.
+func TestEnforceHardMax_PinnedContentExceedsLimit(t *testing.T) {
+	var buf strings.Builder
+	app := &App{Cfg: config.DefaultConfig(), Out: &buf}
+	app.Cfg.HardMaxBytes = 200
+	app.Cfg.CompactAt = 150
+	app.Cfg.KeepBytes = 100
+	app.Cfg.SummaryBytes = 5000
+
+	// Create a conversation with a single turn that exceeds the hard max
+	// and has a pinned message — enforceHardMax should not be able to drop it.
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr(strings.Repeat("x", 300)), Pinned: true},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("a", 100))},
+	}
+
+	app.enforceHardMax(context.Background(), app.Cfg.HardMaxBytes)
+
+	// No turns should have been dropped (all pinned).
+	if app.exhausted {
+		t.Error("exhausted should be false — no turns were dropped (all pinned)")
+	}
+
+	// The conversation should still be over the hard max.
+	if TranscriptSize(app.Conv) <= app.Cfg.HardMaxBytes {
+		t.Errorf("expected conversation over hard max (%d bytes), got %d",
+			app.Cfg.HardMaxBytes, TranscriptSize(app.Conv))
+	}
+
+	// The warning should mention "hard-max could not be met".
+	output := buf.String()
+	if !strings.Contains(output, "hard-max could not be met") {
+		t.Errorf("expected 'hard-max could not be met' warning, got: %s", output)
+	}
+}
