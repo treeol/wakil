@@ -29,7 +29,7 @@ const (
 
 // agentsMDSection is one collected AGENTS.md file's rendered content.
 type agentsMDSection struct {
-	// header is the label line (e.g. "### AGENTS.md — (workspace root)").
+	// header is the label line (e.g. "### AGENTS.md — (cwd)").
 	header string
 	// body is the (possibly truncated) file content.
 	body string
@@ -73,14 +73,38 @@ func loadAgentsMD(cwd, workspaceRoot string) string {
 	}
 	cwd = filepath.Clean(abs)
 
-	// Resolve the workspace root to an absolute path. The walk stops at
-	// this boundary — it never goes above the workspace.
+	// Resolve symlinks for both cwd and workspaceRoot. Without this,
+	// a symlinked path (e.g., /tmp → /private/tmp on macOS, or a
+	// symlinked project dir) would never match the root, and the walk
+	// would escape above the workspace boundary.
+	cwdResolved, err := filepath.EvalSymlinks(cwd)
+	if err == nil {
+		cwd = cwdResolved
+	}
+
+	// Resolve the workspace root to an absolute path and resolve
+	// symlinks. The walk stops at this boundary — it never goes
+	// above the workspace.
 	root := cwd
 	if workspaceRoot != "" {
 		rootAbs, err := filepath.Abs(workspaceRoot)
 		if err == nil {
-			root = filepath.Clean(rootAbs)
+			rootClean := filepath.Clean(rootAbs)
+			rootResolved, err := filepath.EvalSymlinks(rootClean)
+			if err == nil {
+				root = rootResolved
+			} else {
+				root = rootClean
+			}
 		}
+	}
+
+	// Safety check: if cwd is not within root (after symlink resolution),
+	// clamp root to cwd. This prevents the walk from escaping above the
+	// workspace boundary when cwd is outside workspaceRoot (e.g., a
+	// symlink that resolves outside, or an incorrect workspaceRoot).
+	if !strings.HasPrefix(cwd+string(filepath.Separator), root+string(filepath.Separator)) && cwd != root {
+		root = cwd
 	}
 
 	// Collect AGENTS.md paths from cwd upward to the workspace root.
@@ -90,13 +114,18 @@ func loadAgentsMD(cwd, workspaceRoot string) string {
 	dir := cwd
 	for {
 		candidate := filepath.Join(dir, agentsMDFilename)
-		if info, err := os.Stat(candidate); err == nil {
-			// Require a regular file — reject symlinks to directories
-			// (already excluded by IsDir) and special files (FIFOs,
-			// devices, sockets) that could block on read.
+		// Use Lstat (not Stat) to detect symlinks. A symlinked AGENTS.md
+		// could point outside the workspace (e.g., to /etc/passwd or
+		// ~/.ssh/id_rsa) — reject it as a security measure. Regular files
+		// are accepted; symlinks to directories are already excluded by
+		// the IsDir check below (Lstat returns symlink mode, not dir).
+		info, err := os.Lstat(candidate)
+		if err == nil {
 			if info.Mode().IsRegular() {
 				paths = append(paths, candidate)
 			}
+			// Reject symlinks (ModeSymlink) and special files (FIFOs,
+			// devices, sockets) that could block on read.
 		}
 		// Stop at the workspace root — never walk above it.
 		if dir == root {
@@ -146,7 +175,7 @@ func loadAgentsMD(cwd, workspaceRoot string) string {
 		fileDir := filepath.Dir(p)
 		label, _ := filepath.Rel(cwd, fileDir)
 		if label == "." {
-			label = "(workspace root)"
+			label = "(cwd)"
 		}
 		header := fmt.Sprintf("### AGENTS.md — %s", label)
 

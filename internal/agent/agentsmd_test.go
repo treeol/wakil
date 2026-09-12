@@ -36,8 +36,8 @@ func TestLoadAgentsMD_rootOnly(t *testing.T) {
 	if !strings.Contains(got, "Use pnpm not npm") {
 		t.Errorf("result should contain AGENTS.md content, got: %s", got)
 	}
-	if !strings.Contains(got, "(workspace root)") {
-		t.Errorf("result should label root as (workspace root), got: %s", got)
+	if !strings.Contains(got, "(cwd)") {
+		t.Errorf("result should label cwd as (cwd), got: %s", got)
 	}
 	if !strings.Contains(got, "advisory") {
 		t.Error("result should contain the 'advisory' precedence disclaimer")
@@ -80,9 +80,9 @@ func TestLoadAgentsMD_nestedOverridesRoot(t *testing.T) {
 		t.Errorf("expected root-first ordering (root < sub < deep), got root=%d sub=%d deep=%d", rootIdx, subIdx, deepIdx)
 	}
 
-	// Verify the deepest file (cwd-level) is labeled "(workspace root)".
-	if !strings.Contains(got, "(workspace root)") {
-		t.Error("deepest AGENTS.md should be labeled (workspace root)")
+	// Verify the deepest file (cwd-level) is labeled "(cwd)".
+	if !strings.Contains(got, "(cwd)") {
+		t.Error("deepest AGENTS.md should be labeled (cwd)")
 	}
 }
 
@@ -285,8 +285,8 @@ func TestLoadAgentsMD_totalCapTruncationReported(t *testing.T) {
 	// Deep and mid should be present, root should be omitted.
 	// Count occurrences of "X" as a proxy for content presence —
 	// but "X" is in all files. Instead check the headers.
-	if !strings.Contains(got, "(workspace root)") {
-		t.Error("deepest file should be present and labeled (workspace root)")
+	if !strings.Contains(got, "(cwd)") {
+		t.Error("deepest file should be present and labeled (cwd)")
 	}
 	// Root file should not be present (omitted by budget).
 	// The root file's label would be the relative path from deep to root.
@@ -360,5 +360,62 @@ func TestLoadAgentsMD_emptyWorkspaceRootWalksToFSRoot(t *testing.T) {
 	}
 	if !strings.Contains(got, "test-instruction") {
 		t.Error("AGENTS.md should be found when workspaceRoot is empty")
+	}
+}
+
+func TestLoadAgentsMD_rejectsSymlinkAGENTSMD(t *testing.T) {
+	// A symlinked AGENTS.md pointing outside the workspace must be
+	// rejected — it's a security vector for host file exfiltration.
+	// os.Lstat detects the symlink; os.Stat would follow it.
+	dir := t.TempDir()
+	target := t.TempDir()
+	secret := filepath.Join(target, "secret.txt")
+	if err := os.WriteFile(secret, []byte("host-secret-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Create a symlink: dir/AGENTS.md → target/secret.txt
+	link := filepath.Join(dir, "AGENTS.md")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+
+	got := loadAgentsMD(dir, dir)
+	if got != "" {
+		t.Errorf("symlinked AGENTS.md should be rejected, got: %s", got)
+	}
+}
+
+func TestLoadAgentsMD_cwdOutsideWorkspaceRootClampsToCwd(t *testing.T) {
+	// When cwd is outside workspaceRoot (after symlink resolution), the
+	// walk must clamp root to cwd — it must NOT escape above cwd to the
+	// filesystem root. This prevents ingesting ~/AGENTS.md or /AGENTS.md.
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	inside := filepath.Join(root, "inside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// root has an AGENTS.md that must NOT be ingested when cwd is outside.
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root-secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "AGENTS.md"), []byte("outside-instruction"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// cwd=outside, workspaceRoot=inside — cwd is NOT inside inside.
+	// The walk should clamp root to cwd (outside) and only find outside.
+	got := loadAgentsMD(outside, inside)
+	if got == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !strings.Contains(got, "outside-instruction") {
+		t.Error("cwd-level AGENTS.md should be included")
+	}
+	if strings.Contains(got, "root-secret") {
+		t.Error("root AGENTS.md should NOT be included when cwd is outside workspaceRoot")
 	}
 }
