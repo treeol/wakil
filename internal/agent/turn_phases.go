@@ -256,11 +256,24 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 
 		if len(msg.ToolCalls) == 0 || forceFinish {
 			// Card #122 Phase 2: a genuine idle point is when the model produced
-			// final text with NO tool calls AND async work is still pending. NOT a
-			// suspension when forceFinish stripped tools (limit/breaker backstop —
+			// final text with NO tool calls AND async work is still actively running.
+			// NOT a suspension when forceFinish stripped tools (limit/breaker backstop —
 			// that is a definitive stop, not an idle). Return suspended so the
 			// caller can wake on the next completion instead of ending the turn.
 			suspended = !forceFinish && a.isIdle(len(msg.ToolCalls) == 0)
+			if suspended {
+				break
+			}
+			// Completed-but-undelivered async work (e.g. a Mashūra panel or
+			// discovery subagent that finished during the model's stream) is
+			// NOT a suspension condition — the work is done, it just needs
+			// draining. Continue the loop so the inbox is drained at the top
+			// of the next iteration and the model re-runs with the results.
+			// This avoids a spurious "waiting" flash when the work completes
+			// before the model finishes its answer.
+			if !forceFinish && a.hasInboxContent() {
+				continue
+			}
 			break
 		}
 		// Circuit breaker (checked pre-cap, on the raw tool result): a

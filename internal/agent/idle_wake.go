@@ -44,19 +44,34 @@ type TurnOutcome struct {
 }
 
 // isIdle reports whether the turn loop is at a genuine idle point: the model
-// produced a final message with no tool calls, and async work is STILL PENDING —
-// either actively running OR already completed but not yet drained from the
-// inbox. The second clause matters: a worker can finish during the model stream,
-// leaving asyncActive == 0 and len(asyncInbox) > 0; that completion must not be
-// stranded as a "final" turn. Both counts are read atomically under asyncMu.
+// produced a final message with no tool calls, and async work is STILL ACTIVELY
+// RUNNING. This is the only condition that warrants a suspension: the turn must
+// wait for the running work to complete so its result can be delivered.
+//
+// Completed-but-undelivered work (asyncActive == 0, len(asyncInbox) > 0) is NOT
+// idle: the work is already done, it just needs draining. The turn loop handles
+// that case by continuing to drain and re-run the model, rather than suspending
+// and showing a spurious "waiting" state to the user.
 func (a *App) isIdle(noToolCalls bool) bool {
 	if !noToolCalls {
 		return false
 	}
 	a.asyncMu.Lock()
-	pending := a.asyncActive > 0 || len(a.asyncInbox) > 0
+	pending := a.asyncActive > 0
 	a.asyncMu.Unlock()
 	return pending
+}
+
+// hasInboxContent reports whether the async inbox has completed-but-undelivered
+// async work (a completion that landed during the model's stream). This is NOT a
+// suspend condition — the work is done, it just needs to be drained and shown to
+// the model. The turn loop calls this to decide whether to continue looping
+// (drain + re-run) instead of ending the turn.
+func (a *App) hasInboxContent() bool {
+	a.asyncMu.Lock()
+	n := len(a.asyncInbox)
+	a.asyncMu.Unlock()
+	return n > 0
 }
 
 // WaitForAsyncCompletion blocks until an async completion is available to drain

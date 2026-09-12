@@ -181,6 +181,67 @@ func TestWaitForCompletionToolSuspends(t *testing.T) {
 	}
 }
 
+// TestSendFinalWhenAsyncCompletedDuringStream reproduces the spurious "waiting"
+// bug: an async op (discovery subagent) completes DURING the model's stream, so
+// by the time the model produces final text, asyncActive == 0 but
+// len(asyncInbox) > 0. The turn should end as TurnFinal (after draining the
+// inbox and re-running the model), NOT TurnSuspended — no "waiting" state should
+// be shown to the user because nothing is actively being waited for.
+func TestSendFinalWhenAsyncCompletedDuringStream(t *testing.T) {
+	var parentCalls atomic.Int32
+	subDone := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if isSubagentRequest(body) {
+			// Subagent completes immediately.
+			writeSSE(w, contentChunk(summaryFor(taskFromBody(body))))
+			close(subDone)
+			return
+		}
+		switch parentCalls.Add(1) {
+		case 1:
+			// First parent call: dispatch a discovery subagent.
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A"}`)...)
+		case 2:
+			// Wait for the subagent to have completed before responding,
+			// so asyncActive == 0 and inbox > 0 when the model finishes.
+			select {
+			case <-subDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for subagent to complete")
+			}
+			// Give the worker goroutine time to call publishAsyncOp
+			// (decrement asyncActive, append to inbox) after the HTTP
+			// response returns. Without this, the worker may still be
+			// processing and asyncActive > 0 when the model finishes.
+			time.Sleep(50 * time.Millisecond)
+			// Now the subagent has completed. Its result is in the inbox
+			// (or will be drained at the top of this iteration). The model
+			// produces final text.
+			writeSSE(w, contentChunk("all done"))
+		default:
+			writeSSE(w, contentChunk("all done"))
+		}
+	}))
+	defer srv.Close()
+
+	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	out, err := app.SendOutcome(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The subagent completed during the stream. By the time the model produces
+	// final text, asyncActive == 0. The inbox content is drained at the top of
+	// the next iteration and the model re-runs with the results. The turn
+	// should end as Final, NOT Suspended — no "waiting" state.
+	if out.Kind != TurnFinal {
+		t.Fatalf("expected Final (async completed during stream, not actively running), got %v (text=%q)", out.Kind, out.Text)
+	}
+	if !strings.Contains(out.Text, "all done") {
+		t.Errorf("final text = %q, want 'all done'", out.Text)
+	}
+}
+
 // TestHandleWaitForCompletionViaTool verifies the wait_for_completion tool is
 // dispatched through ExecuteToolCall and returns the token (async pending),
 // which streamTurn then turns into suspension.
@@ -190,5 +251,59 @@ func TestHandleWaitForCompletionViaTool(t *testing.T) {
 	res := app.ExecuteToolCall(context.Background(), tc)
 	if !strings.Contains(res.text, "no async") {
 		t.Errorf("empty case: %q", res.text)
+	}
+}
+
+// TestIsIdleFalseWhenOnlyInbox verifies that isIdle returns false when the
+// async work has already completed (asyncActive == 0) but the completion is
+// still in the inbox (len(asyncInbox) > 0). This is the key fix: completed
+// work should not cause a spurious "waiting" state — it just needs draining.
+func TestIsIdleFalseWhenOnlyInbox(t *testing.T) {
+	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	// Register and immediately finish an op, leaving it in the inbox.
+	op, reason := app.registerAsyncOp("dispatch_subagents", "done-during-stream")
+	if reason != "" {
+		t.Fatalf("register: %s", reason)
+	}
+	op.mu.Lock()
+	op.terminal, op.result = true, "finished during stream"
+	op.mu.Unlock()
+	app.finishAsyncOp(op) // publishes to inbox, decrements asyncActive
+
+	// asyncActive == 0, len(asyncInbox) > 0 → isIdle must be false.
+	if app.isIdle(true) {
+		t.Error("isIdle should return false when async work is completed (inbox-only)")
+	}
+	// hasInboxContent must be true (the completion is undelivered).
+	if !app.hasInboxContent() {
+		t.Error("hasInboxContent should return true with undelivered inbox content")
+	}
+	// After draining, both should be false.
+	app.drainAsyncInbox()
+	if app.isIdle(true) {
+		t.Error("isIdle should return false after drain")
+	}
+	if app.hasInboxContent() {
+		t.Error("hasInboxContent should return false after drain")
+	}
+}
+
+// TestIsIdleTrueWhenActive verifies that isIdle returns true when async work
+// is actively running (asyncActive > 0), regardless of inbox state.
+func TestIsIdleTrueWhenActive(t *testing.T) {
+	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	op, reason := app.registerAsyncOp("dispatch_subagents", "still running")
+	if reason != "" {
+		t.Fatalf("register: %s", reason)
+	}
+	defer func() {
+		op.mu.Lock()
+		op.terminal = true
+		op.mu.Unlock()
+		app.finishAsyncOp(op)
+	}()
+	// asyncActive > 0 → isIdle must be true.
+	if !app.isIdle(true) {
+		t.Error("isIdle should return true while async work is actively running")
 	}
 }
