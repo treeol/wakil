@@ -388,13 +388,29 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 			if err != nil {
 				return false, err
 			}
+			// The summarizer inference above recorded its cost via
+			// RecordInferenceCost, which only accumulates spend — it does NOT set
+			// the sticky budget flag. Evaluate the budget now so a breach is
+			// recorded before we decide whether to spend on condensation
+			// (card #238). This runs regardless of whether condensation is
+			// eligible, so the flag is set even when SummaryBytes <= 0 or the
+			// summary already fits.
+			a.checkBudgetExhausted()
 			// If the generated summary itself exceeds SummaryBytes, condense it further
 			// so the running summary never balloons across repeated compaction cycles.
-			// Check budget again — the first summary call may have exhausted it.
+			// The second inference is skipped when the first already exhausted the
+			// budget above.
 			if a.Cfg.SummaryBytes > 0 && len(summary) > a.Cfg.SummaryBytes && !a.BudgetExhausted() {
-				if condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary); err2 == nil && strings.TrimSpace(condensed) != "" {
-					summary = condensed
-				} else if err2 != nil {
+				condensed, err2 := sum(ctx, "Condense the following summary to its essential points only:\n\n"+summary)
+				if err2 == nil {
+					// The condensation inference recorded its cost even when it
+					// returned unusable (empty/whitespace) content, so evaluate the
+					// budget independently of whether we accept the result.
+					a.checkBudgetExhausted()
+					if strings.TrimSpace(condensed) != "" {
+						summary = condensed
+					}
+				} else {
 					fmt.Fprintf(a.Out, Yellow("⚠ summary condensation failed: %v (keeping original summary)\n"), err2)
 				}
 			}

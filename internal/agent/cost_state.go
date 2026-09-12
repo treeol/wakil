@@ -18,8 +18,11 @@ type costState struct {
 	Costs *proxy.CostTracker
 
 	// BudgetUSD is the per-session spending ceiling. When > 0, the agent checks
-	// after each inference call whether the session's total priced cost has
-	// exceeded this amount. If so, the current turn is force-finished (no further
+	// after each *main-turn* inference call whether the session's total priced
+	// cost has reached this amount; auxiliary inference calls (compaction
+	// summarization/condensation) evaluate it explicitly via
+	// checkBudgetExhausted after recording their cost (card #238). If breached,
+	// the current turn is force-finished (no further
 	// tool calls) and budgetExhausted is set to prevent subsequent turns from
 	// issuing more inference calls. This is a SOFT cutoff: the check runs after
 	// RecordInferenceCost, so the call that breaches the budget has already

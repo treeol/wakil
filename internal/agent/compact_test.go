@@ -884,4 +884,136 @@ func TestCompactCondensationSuccessNoWarning(t *testing.T) {
 	}
 }
 
+// TestCompactCondensationSkippedWhenBudgetExhausted is the regression test for
+// card #238: the first summarizer inference must evaluate the session budget so
+// the condensation inference is skipped once the budget is breached. Before the
+// fix, sum() recorded cost but never set the sticky flag, so the guard at the
+// condensation site was ineffective and a second paid inference ran.
+//
+// The call count alone can be vacuous (condensation might be unreachable), so
+// the fixture guarantees the first summary exceeds SummaryBytes, and an
+// under-budget control proves the same fixture reaches two calls.
+func TestCompactCondensationSkippedWhenBudgetExhausted(t *testing.T) {
+	run := func(budgetUSD float64, firstCallCost float64) (callCount int, app *App, out *strings.Builder) {
+		out = &strings.Builder{}
+		app = newBudgetApp(budgetUSD, out)
+		app.Cfg.KeepBytes = 100
+		app.Cfg.CompactAt = 50
+		app.Cfg.SummaryBytes = 10 // small so the first summary exceeds it
+
+		app.Conv = []proxy.Message{
+			{Role: "user", Content: StrPtr("do the thing")},
+			{Role: "assistant", Content: StrPtr(strings.Repeat("a", 200))},
+			{Role: "user", Content: StrPtr("proceed?")},
+			{Role: "assistant", Content: StrPtr("ok")},
+		}
+
+		sum := func(_ context.Context, text string) (string, error) {
+			callCount++
+			if callCount == 1 {
+				// Model the production summarizer: record the cost this call
+				// incurred, WITHOUT touching the budget flag directly.
+				app.Costs.Record(proxy.CostSourceInference, 1000000, 500000, firstCallCost, true, proxy.ConfExact)
+				return strings.Repeat("b", 50), nil // exceeds SummaryBytes=10
+			}
+			return "short", nil // successful condensation
+		}
+		ok, err := app.Compact(context.Background(), sum, false)
+		if err != nil {
+			t.Fatalf("Compact failed: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected compaction to occur")
+		}
+		return callCount, app, out
+	}
+
+	// Positive: the first summary call breaches the $5 budget, so condensation
+	// must be skipped (exactly one summarizer invocation) and the flag set.
+	count, app, out := run(5.00, 7.50)
+	if count != 1 {
+		t.Errorf("condensation should be skipped when budget is breached: got %d summarizer calls, want 1", count)
+	}
+	if !app.BudgetExhausted() {
+		t.Error("budgetExhausted should be set after the summarizer inference breached the budget")
+	}
+	if !strings.Contains(out.String(), "budget exhausted") {
+		t.Errorf("expected budget warning in output, got: %q", out.String())
+	}
+	// The paid-for first summary must be retained (not discarded).
+	retained := false
+	for _, m := range app.Conv {
+		if m.Role == "system" && strings.Contains(DerefStr(m.Content), strings.Repeat("b", 50)) {
+			retained = true
+			break
+		}
+	}
+	if !retained {
+		t.Error("original summary should be retained when condensation is skipped for budget")
+	}
+
+	// Negative control: same fixture, cost stays under budget → two calls.
+	countCtrl, appCtrl, _ := run(100.00, 7.50)
+	if countCtrl != 2 {
+		t.Errorf("under budget the same fixture must reach condensation: got %d summarizer calls, want 2", countCtrl)
+	}
+	if appCtrl.BudgetExhausted() {
+		t.Error("budgetExhausted should remain false under budget")
+	}
+}
+
+// TestCompactCondensationBreachSetsFlag verifies the post-condensation budget
+// check: when the first summary stays under budget but the condensation call
+// breaches it, the sticky flag must be set — including when condensation returns
+// unusable (empty) content, since the inference still incurred cost (card #238).
+func TestCompactCondensationBreachSetsFlag(t *testing.T) {
+	for _, condensedContent := range []string{"short", "   "} {
+		name := "nonempty"
+		if strings.TrimSpace(condensedContent) == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			app := newBudgetApp(5.00, io.Discard)
+			app.Cfg.KeepBytes = 100
+			app.Cfg.CompactAt = 50
+			app.Cfg.SummaryBytes = 10
+
+			app.Conv = []proxy.Message{
+				{Role: "user", Content: StrPtr("do the thing")},
+				{Role: "assistant", Content: StrPtr(strings.Repeat("a", 200))},
+				{Role: "user", Content: StrPtr("proceed?")},
+				{Role: "assistant", Content: StrPtr("ok")},
+			}
+
+			calls := 0
+			sum := func(_ context.Context, _ string) (string, error) {
+				calls++
+				if calls == 1 {
+					// First summary: cheap (stays under the $5 budget), oversized.
+					app.Costs.Record(proxy.CostSourceInference, 100000, 50000, 1.00, true, proxy.ConfExact)
+					return strings.Repeat("b", 50), nil
+				}
+				// Condensation: expensive (breaches the budget). May return
+				// unusable content, but its cost was still incurred.
+				app.Costs.Record(proxy.CostSourceInference, 1000000, 500000, 9.00, true, proxy.ConfExact)
+				return condensedContent, nil
+			}
+
+			ok, err := app.Compact(context.Background(), sum, false)
+			if err != nil {
+				t.Fatalf("Compact failed: %v", err)
+			}
+			if !ok {
+				t.Fatal("expected compaction to occur")
+			}
+			if calls != 2 {
+				t.Fatalf("condensation should have run under budget initially: got %d calls, want 2", calls)
+			}
+			if !app.BudgetExhausted() {
+				t.Error("budgetExhausted should be set after condensation breached the budget")
+			}
+		})
+	}
+}
+
 // (min is already defined in subagent_test.go)
