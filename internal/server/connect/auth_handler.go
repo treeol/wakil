@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -251,7 +252,16 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[v1alpha1.
 		if cookieStr != "" {
 			// Revoke the session by hash.
 			tokenHash := jointoken.HashToken(cookieStr)
-			_ = h.store.RevokeWebSessionByHash(ctx, tokenHash)
+			if err := h.store.RevokeWebSessionByHash(ctx, tokenHash); err != nil {
+				// Clear the cookie anyway so the browser forgets the session,
+				// but return an error so the user knows revocation may have
+				// failed — the server-side session could still be active.
+				resp := connect.NewResponse(&v1alpha1.LogoutResponse{})
+				clearSessionCookie(resp, h.cookieName, h.secureCookies)
+				return resp, connect.NewError(connect.CodeInternal, fmt.Errorf(
+					"session revocation failed — the browser cookie has been cleared, "+
+						"but the server-side session may still be active until it expires"))
+			}
 		}
 	}
 
