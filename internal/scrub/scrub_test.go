@@ -78,13 +78,159 @@ func TestScrubAWSAccessKey(t *testing.T) {
 
 func TestScrubPrivateKey(t *testing.T) {
 	s := New(LevelStandard)
-	block := "-----BEGIN RSA PRIVATE KEY-----\nMIIE..."
+	block := "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3FSq...\n-----END RSA PRIVATE KEY-----"
 	got := s.Scrub(block)
 	if strings.Contains(got, "BEGIN RSA PRIVATE KEY") {
-		t.Fatalf("private key not redacted: %s", got)
+		t.Fatalf("private key header not redacted: %s", got)
+	}
+	if strings.Contains(got, "MIIEowIBAAKCAQEA0Z3FSq") {
+		t.Fatalf("private key body not redacted: %s", got)
+	}
+	if strings.Contains(got, "END RSA PRIVATE KEY") {
+		t.Fatalf("private key footer not redacted: %s", got)
 	}
 	if !strings.Contains(got, "[REDACTED:private_key]") {
 		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyPKCS8(t *testing.T) {
+	s := New(LevelStandard)
+	// Bare "PRIVATE KEY" without algorithm prefix (PKCS#8).
+	block := "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANB\n-----END PRIVATE KEY-----"
+	got := s.Scrub(block)
+	if strings.Contains(got, "MIIEvQIBADANB") {
+		t.Fatalf("PKCS#8 body not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private_key]") {
+		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyOpenSSH(t *testing.T) {
+	s := New(LevelStandard)
+	block := "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNz...\n-----END OPENSSH PRIVATE KEY-----"
+	got := s.Scrub(block)
+	if strings.Contains(got, "b3BlbnNz") {
+		t.Fatalf("OpenSSH key body not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private_key]") {
+		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyEC(t *testing.T) {
+	s := New(LevelStandard)
+	block := "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEE\n-----END EC PRIVATE KEY-----"
+	got := s.Scrub(block)
+	if strings.Contains(got, "MHcCAQEE") {
+		t.Fatalf("EC key body not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private_key]") {
+		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyEncrypted(t *testing.T) {
+	s := New(LevelStandard)
+	block := "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFDjBABgkq\n-----END ENCRYPTED PRIVATE KEY-----"
+	got := s.Scrub(block)
+	if strings.Contains(got, "MIIFDjBABgkq") {
+		t.Fatalf("encrypted key body not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private_key]") {
+		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyTruncated(t *testing.T) {
+	s := New(LevelStandard)
+	// Truncated block: header only, no END marker. The header should be
+	// redacted (fallback pattern), but the body is NOT redacted — an accepted
+	// limitation per the package's false-negative-tolerant policy.
+	block := "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3FSq..."
+	got := s.Scrub(block)
+	if strings.Contains(got, "BEGIN RSA PRIVATE KEY") {
+		t.Fatalf("truncated private key header not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private_key]") {
+		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+	// Body remains — lock in this limitation so a future change is deliberate.
+	if !strings.Contains(got, "MIIEowIBAAKCAQEA0Z3FSq") {
+		t.Fatalf("truncated body should remain (accepted limitation): %s", got)
+	}
+}
+
+func TestScrubPrivateKeyDSA(t *testing.T) {
+	s := New(LevelStandard)
+	block := "-----BEGIN DSA PRIVATE KEY-----\nMIIBv...\n-----END DSA PRIVATE KEY-----"
+	got := s.Scrub(block)
+	if strings.Contains(got, "MIIBv") {
+		t.Fatalf("DSA key body not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private_key]") {
+		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyCRLF(t *testing.T) {
+	s := New(LevelStandard)
+	block := "-----BEGIN RSA PRIVATE KEY-----\r\nMIIEowIBAA\r\n-----END RSA PRIVATE KEY-----"
+	got := s.Scrub(block)
+	if strings.Contains(got, "MIIEowIBAA") {
+		t.Fatalf("CRLF key body not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private_key]") {
+		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyMultiple(t *testing.T) {
+	s := New(LevelStandard)
+	block := "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n" +
+		"some text between\n" +
+		"-----BEGIN EC PRIVATE KEY-----\nMHcC...\n-----END EC PRIVATE KEY-----"
+	got := s.Scrub(block)
+	if strings.Contains(got, "MIIE") || strings.Contains(got, "MHcC") {
+		t.Fatalf("multiple private key bodies not redacted: %s", got)
+	}
+	if strings.Count(got, "[REDACTED:private_key]") != 2 {
+		t.Fatalf("expected 2 [REDACTED:private_key] markers, got: %s", got)
+	}
+	if !strings.Contains(got, "some text between") {
+		t.Fatalf("text between blocks should survive: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyJSONEscaped(t *testing.T) {
+	s := New(LevelStandard)
+	// PEM in JSON string with escaped newlines (\n as two chars: backslash + n).
+	// In a Go raw string, \n is literally backslash-n, which is what JSON
+	// serialized text would contain.
+	block := `{"key":"-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"}`
+	got := s.Scrub(block)
+	if strings.Contains(got, "MIIE") {
+		t.Fatalf("JSON-escaped key body not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:private_key]") {
+		t.Fatalf("expected [REDACTED:private_key] in: %s", got)
+	}
+}
+
+func TestScrubPrivateKeyNoFalsePositive(t *testing.T) {
+	s := New(LevelStandard)
+	// Public keys and certificates should NOT be redacted.
+	tests := []string{
+		"-----BEGIN CERTIFICATE-----\nMIID...\n-----END CERTIFICATE-----",
+		"-----BEGIN PUBLIC KEY-----\nMIIBIjANB\n-----END PUBLIC KEY-----",
+		"// a comment about PRIVATE KEY patterns",
+	}
+	for _, text := range tests {
+		got := s.Scrub(text)
+		if strings.Contains(got, "[REDACTED:private_key]") {
+			t.Fatalf("false positive on non-private-key: %q -> %q", text, got)
+		}
 	}
 }
 

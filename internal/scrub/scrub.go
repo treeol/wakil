@@ -63,6 +63,21 @@ func New(level Level) *PatternScrubber {
 
 	ps := &PatternScrubber{}
 
+	// Private-key patterns run first because they are the most distinctive
+	// markers and least likely to be damaged by other patterns (e.g., bearer's
+	// char class includes '-' which could eat PEM header delimiters).
+	// Full PEM private-key blocks: header → body → footer. The (?s) flag
+	// makes . match newlines so the non-greedy .*? captures the entire block.
+	// [A-Z ]* (not +) matches both "RSA PRIVATE KEY" and bare "PRIVATE KEY"
+	// (PKCS#8). Go's regexp (RE2) does not support backreferences, so we
+	// cannot enforce BEGIN/END label matching — the non-greedy .*? stops at
+	// the first END marker, which is correct for well-formed PEM.
+	ps.add("private_key", `(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`, "[REDACTED:private_key]")
+	// Fallback for truncated blocks (header without a matching END marker).
+	// Only the header is redacted; the body may remain. This is an accepted
+	// limitation consistent with the package's "prefer false negatives" policy.
+	ps.add("private_key_trunc", `-----BEGIN [A-Z ]*PRIVATE KEY-----`, "[REDACTED:private_key]")
+
 	// Standard patterns — high confidence.
 	ps.add("bearer", `(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*`, "[REDACTED:bearer]")
 	ps.add("openai_key", `sk-[A-Za-z0-9]{20,}`, "[REDACTED:openai_key]")
@@ -71,7 +86,6 @@ func New(level Level) *PatternScrubber {
 	ps.add("google_api", `AIza[A-Za-z0-9\-_]{35}`, "[REDACTED:google_api_key]")
 	ps.add("aws_access", `AKIA[A-Z0-9]{16}`, "[REDACTED:aws_access_key]")
 	ps.add("aws_secret", `(?i)aws_secret_access_key["'\s:=]+[A-Za-z0-9/+=]{40}`, "[REDACTED:aws_secret_key]")
-	ps.add("private_key", `-----BEGIN [A-Z ]+PRIVATE KEY-----`, "[REDACTED:private_key]")
 	ps.add("jwt", `eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`, "[REDACTED:jwt]")
 	ps.add("connstring_pwd", `([a-z][a-z0-9+]*)://([^:\s]+):([^\s@]+)@`, "${1}://${2}:[REDACTED:password]@")
 
