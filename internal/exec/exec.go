@@ -109,6 +109,7 @@ type Executor interface {
 	// SIGTERM kill.
 	IsProcessGroupAlive(ctx context.Context, pgid int) bool
 	// ReadFileTail returns the last maxBytes of path; enforces the cap internally.
+	// maxBytes must be > 0; callers passing zero or negative get an error.
 	ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error)
 	// StatFile returns the byte size of the file at path without reading it.
 	// Returns an error if the path does not exist or is not accessible.

@@ -153,6 +153,9 @@ func (w *dockerWorktreeExecutor) WriteFileBytes(ctx context.Context, path string
 
 // ReadFileTail returns the last maxBytes of a file in the worktree.
 func (w *dockerWorktreeExecutor) ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error) {
+	if maxBytes <= 0 {
+		return "", fmt.Errorf("ReadFileTail: maxBytes must be > 0, got %d", maxBytes)
+	}
 	out, err := w.execCtx(ctx, false, "sh", "-c",
 		fmt.Sprintf("cd %s && tail -c %d -- \"$1\" 2>&1", shQuote(w.wtRoot), maxBytes), "sh", path)
 	if err != nil {

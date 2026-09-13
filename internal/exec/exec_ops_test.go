@@ -197,6 +197,38 @@ func TestReadFileTailCap(t *testing.T) {
 	}
 }
 
+func TestReadFileTailRejectsInvalidMaxBytes(t *testing.T) {
+	ex, root := newDirectExec(t)
+	p := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(p, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []int64{0, -1, -100} {
+		got, err := ex.ReadFileTail(context.Background(), p, bad)
+		if err == nil {
+			t.Errorf("ReadFileTail(maxBytes=%d): expected error, got %q", bad, got)
+		}
+		if got != "" {
+			t.Errorf("ReadFileTail(maxBytes=%d): expected empty result, got %q", bad, got)
+		}
+	}
+}
+
+func TestReadFileTailEmptyFile(t *testing.T) {
+	ex, root := newDirectExec(t)
+	p := filepath.Join(root, "empty.txt")
+	if err := os.WriteFile(p, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ex.ReadFileTail(context.Background(), p, 100)
+	if err != nil {
+		t.Fatalf("ReadFileTail empty file: %v", err)
+	}
+	if got != "" {
+		t.Errorf("ReadFileTail empty file = %q, want empty", got)
+	}
+}
+
 func TestDirectExecutorStatFile(t *testing.T) {
 	ex, root := newDirectExec(t)
 	ctx := context.Background()

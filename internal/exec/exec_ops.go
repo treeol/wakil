@@ -450,6 +450,9 @@ func (d *DockerExecutor) IsProcessGroupAlive(ctx context.Context, pgid int) bool
 }
 
 func (d *DockerExecutor) ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error) {
+	if maxBytes <= 0 {
+		return "", fmt.Errorf("ReadFileTail: maxBytes must be > 0, got %d", maxBytes)
+	}
 	out, err := d.execCtx(ctx, false, "sh", "-c",
 		fmt.Sprintf("tail -c %d %s 2>&1", maxBytes, shQuote(path)))
 	if err != nil {
@@ -459,6 +462,9 @@ func (d *DockerExecutor) ReadFileTail(ctx context.Context, path string, maxBytes
 }
 
 func (e *DirectExecutor) ReadFileTail(_ context.Context, path string, maxBytes int64) (string, error) {
+	if maxBytes <= 0 {
+		return "", fmt.Errorf("ReadFileTail: maxBytes must be > 0, got %d", maxBytes)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -474,8 +480,11 @@ func (e *DirectExecutor) ReadFileTail(_ context.Context, path string, maxBytes i
 		start = 0
 	}
 	buf := make([]byte, size-start)
-	if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
+	n, err := f.ReadAt(buf, start)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
-	return string(buf), nil
+	// Use buf[:n] — a short read (file truncated between Stat and ReadAt)
+	// would otherwise return trailing NUL bytes from the zero-initialised buffer.
+	return string(buf[:n]), nil
 }
