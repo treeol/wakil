@@ -134,27 +134,36 @@ type UpdateParams struct {
 }
 
 // Update modifies a backend. Only non-empty fields are updated.
+// Empty Label/BaseURL means "unchanged" — existing values are preserved.
 func (s *Store) Update(ctx context.Context, p UpdateParams) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if p.EncryptedKey != nil {
-		_, err := s.db.ExecContext(ctx, `UPDATE backends SET
-			label = ?, base_url = ?,
+		res, err := s.db.ExecContext(ctx, `UPDATE backends SET
+			label = CASE WHEN ? = '' THEN label ELSE ? END,
+			base_url = CASE WHEN ? = '' THEN base_url ELSE ? END,
 			api_key_cipher = ?, api_key_dek = ?, api_key_data_nonce = ?, api_key_dek_nonce = ?, api_key_key_id = ?,
 			api_key_last_four = ?, updated_at = ?
 			WHERE id = ? AND tenant_id = ?`,
-			p.Label, p.BaseURL,
+			p.Label, p.Label, p.BaseURL, p.BaseURL,
 			p.EncryptedKey.Cipher, p.EncryptedKey.DEK, p.EncryptedKey.DataNonce, p.EncryptedKey.DEKNonce, p.EncryptedKey.KeyID,
 			p.LastFour, now, p.ID, p.TenantID)
 		if err != nil {
 			return fmt.Errorf("backendstore: update with key: %w", err)
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("backendstore: rows affected: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("backendstore: not found: %w", sql.ErrNoRows)
+		}
 		return nil
 	}
 
-	// Update without key change. Use COALESCE to preserve existing values
+	// Update without key change. Use CASE to preserve existing values
 	// for empty fields.
-	_, err := s.db.ExecContext(ctx, `UPDATE backends SET
+	res, err := s.db.ExecContext(ctx, `UPDATE backends SET
 		label = CASE WHEN ? = '' THEN label ELSE ? END,
 		base_url = CASE WHEN ? = '' THEN base_url ELSE ? END,
 		updated_at = ?
@@ -162,6 +171,13 @@ func (s *Store) Update(ctx context.Context, p UpdateParams) error {
 		p.Label, p.Label, p.BaseURL, p.BaseURL, now, p.ID, p.TenantID)
 	if err != nil {
 		return fmt.Errorf("backendstore: update: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("backendstore: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("backendstore: not found: %w", sql.ErrNoRows)
 	}
 	return nil
 }

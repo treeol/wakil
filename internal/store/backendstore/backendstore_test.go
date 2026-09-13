@@ -287,6 +287,94 @@ func TestUpdateWithNewKey(t *testing.T) {
 	}
 }
 
+func TestUpdateWithNewKeyPreservesMetadata(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	mk := testMasterKey(t)
+
+	ek, _ := EncryptAPIKey(mk, []byte(apiKeyPlaintext), testTenant, testBackend)
+
+	if err := s.Create(ctx, CreateParams{
+		ID:           testBackend,
+		TenantID:     testTenant,
+		Label:        "my-backend",
+		BackendType:  "openai",
+		BaseURL:      "https://api.openai.com",
+		EncryptedKey: ek,
+		LastFour:     "cdef",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Rotate the key with empty Label and BaseURL — should preserve existing values.
+	newKey := "sk-newkey1234567890"
+	newEK, err := EncryptAPIKey(mk, []byte(newKey), testTenant, testBackend)
+	if err != nil {
+		t.Fatalf("EncryptAPIKey new: %v", err)
+	}
+
+	if err := s.Update(ctx, UpdateParams{
+		ID:           testBackend,
+		TenantID:     testTenant,
+		Label:        "", // empty = unchanged
+		BaseURL:      "", // empty = unchanged
+		EncryptedKey: &newEK,
+		LastFour:     LastFour(newKey),
+	}); err != nil {
+		t.Fatalf("Update with key only: %v", err)
+	}
+
+	row, _, err := s.Get(ctx, testBackend, testTenant)
+	if err != nil {
+		t.Fatalf("Get after key-only rotation: %v", err)
+	}
+	if row.Label != "my-backend" {
+		t.Errorf("Label = %q, want %q (should be preserved)", row.Label, "my-backend")
+	}
+	if row.BaseURL != "https://api.openai.com" {
+		t.Errorf("BaseURL = %q, want %q (should be preserved)", row.BaseURL, "https://api.openai.com")
+	}
+	if row.APIKeyLastFour != LastFour(newKey) {
+		t.Errorf("APIKeyLastFour = %q, want %q", row.APIKeyLastFour, LastFour(newKey))
+	}
+}
+
+func TestUpdateNotFound(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	err := s.Update(ctx, UpdateParams{
+		ID:       "be_nonexistent",
+		TenantID: testTenant,
+		Label:    "new-label",
+	})
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("Update nonexistent: err = %v, want sql.ErrNoRows wrapped", err)
+	}
+}
+
+func TestUpdateWithKeyNotFound(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	mk := testMasterKey(t)
+
+	newKey := "sk-newkey1234567890"
+	newEK, err := EncryptAPIKey(mk, []byte(newKey), testTenant, "be_nonexistent")
+	if err != nil {
+		t.Fatalf("EncryptAPIKey: %v", err)
+	}
+
+	err = s.Update(ctx, UpdateParams{
+		ID:           "be_nonexistent",
+		TenantID:     testTenant,
+		EncryptedKey: &newEK,
+		LastFour:     LastFour(newKey),
+	})
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("Update with key nonexistent: err = %v, want sql.ErrNoRows wrapped", err)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
