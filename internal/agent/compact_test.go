@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
@@ -1013,6 +1014,111 @@ func TestCompactCondensationBreachSetsFlag(t *testing.T) {
 				t.Error("budgetExhausted should be set after condensation breached the budget")
 			}
 		})
+	}
+}
+
+// TestTruncateBytes covers the byte-budget truncation used for SummaryBytes
+// (card #240): the result must always be valid UTF-8 and never exceed the byte
+// budget (ellipsis included), and multi-byte content must be cut on a rune
+// boundary rather than a partial sequence.
+func TestTruncateBytes(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		n     int
+		want  string
+		exact bool // when true, assert byte length <= n for all cases instead of want
+	}{
+		{name: "fits unchanged", in: "short", n: 10, want: "short"},
+		{name: "exact fit unchanged", in: "12345", n: 5, want: "12345"},
+		{name: "zero means unlimited", in: "abcdef", n: 0, want: "abcdef"},
+		{name: "negative means unlimited", in: "abcdef", n: -1, want: "abcdef"},
+		{name: "empty input", in: "", n: 10, want: ""},
+		{name: "ascii truncation keeps marker inside budget", in: "abcdefghij", n: 5, want: "ab…"},
+		{name: "tiny budget cannot fit marker", in: "abcdef", n: 2, want: "ab"},
+		{name: "budget one", in: "abcdef", n: 1, want: "a"},
+		{name: "budget three no marker", in: "abcdef", n: 3, want: "abc"},
+		{name: "budget three multibyte no marker", in: "中文", n: 3, want: "中"},
+		{name: "budget four ascii shortens for marker", in: "abcdef", n: 4, want: "a…"},
+		{name: "budget five multibyte cuts to first rune", in: "中文", n: 5, want: "中"},
+		{name: "budget two multibyte empty", in: "中文", n: 2, want: ""},
+		{name: "multibyte rune dropped not split", in: "héllo", n: 4, want: "h…"},
+		{name: "3-byte runes", in: "中文字符", n: 8, want: "中…"},
+		{name: "emoji 4-byte runes", in: "😀😀😀", n: 8, want: "😀…"},
+	}
+	for _, tc := range cases {
+		got := truncateBytes(tc.in, tc.n)
+		if got != tc.want {
+			t.Errorf("%s: truncateBytes(%q, %d) = %q, want %q", tc.name, tc.in, tc.n, got, tc.want)
+		}
+		if tc.n > 0 && len(got) > tc.n {
+			t.Errorf("%s: result %q is %d bytes, exceeds budget %d", tc.name, got, len(got), tc.n)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: result %q is not valid UTF-8", tc.name, got)
+		}
+	}
+
+	// Property sweep: for valid UTF-8 input and any positive budget, the output
+	// must stay valid and within budget.
+	samples := []string{"hello world", "héllo wörld", "中文字符串测试", "😀a😀b😀c", "mixed 中 é 😀 text"}
+	for _, s := range samples {
+		for n := 1; n <= len(s)+2; n++ {
+			got := truncateBytes(s, n)
+			if !utf8.ValidString(got) {
+				t.Fatalf("n=%d: invalid UTF-8 %q from %q", n, got, s)
+			}
+			if len(got) > n {
+				t.Fatalf("n=%d: %q (%d bytes) exceeds budget from %q", n, got, len(got), s)
+			}
+		}
+	}
+}
+
+// TestCompactSummaryByteBudget is the integration regression for card #240: a
+// multi-byte summary under the budget-exhausted fallback must respect the byte
+// budget. With the old rune-based Truncate, a 3-byte-per-rune summary at
+// SummaryBytes runes would be ~3x the byte budget.
+func TestCompactSummaryByteBudget(t *testing.T) {
+	app := newBudgetApp(0, io.Discard) // no budget → but we force the exhausted path below
+	app.budgetExhausted.Store(true)    // take the truncation fallback
+	app.Cfg.KeepBytes = 100
+	app.Cfg.CompactAt = 50
+	app.Cfg.SummaryBytes = 50 // 50 BYTES
+
+	// Summarizable older content made of 3-byte CJK runes.
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("start")},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("中", 100))},
+		{Role: "user", Content: StrPtr("proceed?")},
+		{Role: "assistant", Content: StrPtr("ok")},
+	}
+
+	ok, err := app.Compact(context.Background(), app.summarizeFn(), false)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
+
+	found := false
+	for _, m := range app.Conv {
+		c := DerefStr(m.Content)
+		if m.Role == "system" && strings.Contains(c, "[Summary of earlier conversation]") {
+			body := strings.TrimPrefix(c, "[Summary of earlier conversation]\n")
+			if len(body) > 50 {
+				t.Errorf("summary body is %d bytes, exceeds SummaryBytes=50: %q", len(body), body)
+			}
+			if !utf8.ValidString(body) {
+				t.Errorf("summary body is not valid UTF-8: %q", body)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no summary system message found after compaction")
 	}
 }
 

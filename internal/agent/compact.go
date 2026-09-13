@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
@@ -118,6 +119,50 @@ func Truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// truncateBytes caps s at n *bytes* (card #240) — SummaryBytes is a byte budget,
+// while Truncate counts runes, so multi-byte UTF-8 summaries could exceed it.
+// The ellipsis counts INSIDE the budget: for valid UTF-8 input a truncated
+// result is never longer than n bytes. It preserves UTF-8 validity by cutting
+// only on rune boundaries; it does not validate or repair already-invalid input.
+// The marker is omitted when the ellipsis plus at least one rune cannot fit
+// within n (so a tiny budget returns the largest complete prefix, which may be
+// empty). n <= 0 means unlimited (returns s unchanged, matching Truncate so the
+// SummaryBytes <= 0 guard keeps its meaning).
+//
+// Note the deliberate divergence from Truncate: this counts bytes and puts the
+// marker inside the budget; Truncate counts runes and adds the marker on top.
+// Do not "harmonize" them — the display callers of Truncate want rune semantics.
+func truncateBytes(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	const ellipsis = "…" // 3 bytes
+	if n >= len(ellipsis) {
+		if cut := utf8Boundary(s, n-len(ellipsis)); cut > 0 {
+			return s[:cut] + ellipsis
+		}
+	}
+	// Not enough room for the marker (or none of the marker-reserved budget
+	// forms a complete rune) — return the largest fitting prefix, no marker.
+	return s[:utf8Boundary(s, n)]
+}
+
+// utf8Boundary returns the largest byte offset <= n that does not split a
+// multi-byte UTF-8 sequence (a partial trailing rune is dropped). Requires
+// n >= 0. Mirrors the idiom in verify.CapOutput; kept local rather than shared
+// because the two callers truncate for different purposes (a summary byte
+// budget here vs. workflow output capping there).
+func utf8Boundary(s string, n int) int {
+	if n >= len(s) {
+		return len(s)
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return cut
 }
 
 // activeThresholds returns the compaction thresholds in chars for the current
@@ -373,11 +418,11 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		if a.BudgetExhausted() {
 			if a.Cfg.SummaryBytes <= 0 {
 				// No byte limit configured — use the full transcript as the
-				// summary. Truncate(s, 0) returns "…" which would lose all
-				// history (card #228).
+				// summary (the SummaryBytes<=0 sentinel means unlimited; card
+				// #228).
 				summary = renderTranscript(summarizable)
 			} else {
-				summary = Truncate(renderTranscript(summarizable), a.Cfg.SummaryBytes)
+				summary = truncateBytes(renderTranscript(summarizable), a.Cfg.SummaryBytes)
 			}
 			if summary == "" {
 				summary = "[compaction produced no summary — older turns were shed (budget exhausted)]"
@@ -422,7 +467,7 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 				if a.Cfg.SummaryBytes <= 0 {
 					summary = renderTranscript(summarizable)
 				} else {
-					summary = Truncate(renderTranscript(summarizable), a.Cfg.SummaryBytes)
+					summary = truncateBytes(renderTranscript(summarizable), a.Cfg.SummaryBytes)
 				}
 				if summary == "" {
 					summary = "[compaction produced no summary — older turns were shed]"
