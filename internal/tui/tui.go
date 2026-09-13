@@ -60,7 +60,8 @@ type pendingApprovalState struct {
 
 // sideQuestionState tracks a running side-question stream for the TUI.
 type sideQuestionState struct {
-	buf *strings.Builder
+	buf   *strings.Builder
+	opID  sessionclient.OpID // correlates progress/completion to the correct question
 }
 
 // Layout metrics shared by sizes() and View(). In Lip Gloss a border adds 2 to
@@ -1652,8 +1653,8 @@ func (m tuiModel) startSideQuestion(question string) tuiModel {
 		m.sideQuestionCancel() // cancel any previous side question
 	}
 	buf := &strings.Builder{}
-	m.sideQuestion = &sideQuestionState{buf: buf} // correlated by "the active side question", not OpID
-	_, cancel := m.facade.StartSideQuestion(context.Background(), question)
+	opID, cancel := m.facade.StartSideQuestion(context.Background(), question)
+	m.sideQuestion = &sideQuestionState{buf: buf, opID: opID}
 	m.sideQuestionCancel = cancel
 	return m
 }

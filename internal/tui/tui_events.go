@@ -371,13 +371,15 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 
 	case event.KindSideQuestionProgress:
 		p := ev.Payload.(event.SideQuestionProgress)
-		if m.sideQuestion != nil {
+		if m.sideQuestion != nil && string(m.sideQuestion.opID) == string(p.OpID) {
 			m.sideQuestion.buf.WriteString(p.Text)
 		}
 
 	case event.KindSideQuestionCompleted:
 		p := ev.Payload.(event.SideQuestionCompleted)
-		if m.sideQuestion != nil {
+		// Only handle if this completion matches the active side question's OpID.
+		// A late completion from a cancelled question is ignored (stale).
+		if m.sideQuestion != nil && string(m.sideQuestion.opID) == string(p.OpID) {
 			switch p.Status {
 			case "error":
 				m.addItem(iSys, dim2("≫ side question error: "+p.AnswerPreview))
