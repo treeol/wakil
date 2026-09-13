@@ -11,10 +11,10 @@ import "strings"
 // WP-6.8 centralizes the prefix classification into stringToToolResult (the
 // single sanctioned bridge from handler-level string returns to the typed
 // boundary). Downstream code now uses result.ok instead of re-sniffing
-// prefixes — eliminating duplicate classification sites. The full fix (handlers
-// returning toolResult natively via okResult/errResult, bypassing the bridge
-// for cases where the output text is ambiguous) is a future pass; the typed
-// boundary makes that possible.
+// prefixes — eliminating duplicate classification sites. The Contains check
+// was removed because it misclassified legitimate output containing ERROR:
+// lines (e.g. log files). formatResult now prefixes errors at the start so
+// HasPrefix catches them.
 //
 // ok is true for successful results (including "(no output)"); false for errors
 // and user declines. text is the human-readable result string that ultimately
@@ -49,7 +49,7 @@ func stringToToolResult(s string) toolResult {
 	if s == "[declined by user]" || strings.HasPrefix(s, "[declined by user]") {
 		return toolResult{ok: false, text: s}
 	}
-	if strings.HasPrefix(s, "ERROR:") || strings.Contains(s, "\nERROR:") {
+	if strings.HasPrefix(s, "ERROR:") {
 		return toolResult{ok: false, text: s}
 	}
 	return toolResult{ok: true, text: s}
