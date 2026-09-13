@@ -55,28 +55,39 @@ func (f *fileSyncManager) ensureOpen(ctx context.Context, srv *Server, hostPath,
 
 	f.mu.Lock()
 	_, ok := f.docs[uri]
-	if !ok {
-		// Read file content via the executor (same filesystem gopls sees).
-		content, err := srv.mgr.exec.ReadFile(ctx, hostPath)
-		if err != nil {
-			f.mu.Unlock()
-			return "", fmt.Errorf("reading file for didOpen: %w", err)
-		}
-		version := int32(1)
-		doc := &fileSyncState{
-			version:    version,
-			content:    content,
-			languageID: languageID,
-		}
-		f.docs[uri] = doc
-		f.mu.Unlock()
+	f.mu.Unlock()
+	if ok {
+		return uri, nil
+	}
 
-		// Send didOpen (flows during Indexing — not gated behind Ready).
-		if err := srv.DidOpen(ctx, uri, languageID, content); err != nil {
-			return "", fmt.Errorf("didOpen: %w", err)
-		}
-	} else {
+	// Read file content via the executor (same filesystem gopls sees).
+	// Read outside f.mu — in docker mode this is a docker exec round-trip
+	// and must not serialize file sync (matching syncIfDirty's pattern).
+	content, err := srv.mgr.exec.ReadFile(ctx, hostPath)
+	if err != nil {
+		return "", fmt.Errorf("reading file for didOpen: %w", err)
+	}
+
+	version := int32(1)
+	doc := &fileSyncState{
+		version:    version,
+		content:    content,
+		languageID: languageID,
+	}
+
+	f.mu.Lock()
+	// Re-check: another goroutine may have opened the file while we read.
+	if existing, ok := f.docs[uri]; ok {
 		f.mu.Unlock()
+		_ = existing // already open — no need to send didOpen again
+		return uri, nil
+	}
+	f.docs[uri] = doc
+	f.mu.Unlock()
+
+	// Send didOpen (flows during Indexing — not gated behind Ready).
+	if err := srv.DidOpen(ctx, uri, languageID, content); err != nil {
+		return "", fmt.Errorf("didOpen: %w", err)
 	}
 	return uri, nil
 }
@@ -212,7 +223,18 @@ func (f *fileSyncManager) batchNotifyWatchedFiles(ctx context.Context, srv *Serv
 			{URI: rootURI, Type: FileChanged},
 		},
 	}
-	return srv.conn.notify("workspace/didChangeWatchedFiles", params)
+	// Lock to safely read srv.conn (matching DidOpen/DidChange pattern).
+	// spawn/markDead replace srv.conn under srv.mu, so we must capture it
+	// under the lock to avoid a data race.
+	srv.mu.Lock()
+	conn := srv.conn
+	state := srv.state
+	srv.mu.Unlock()
+
+	if conn == nil || state == StateDead || state == StateDraining {
+		return nil // server not running — fire-and-forget, skip silently
+	}
+	return conn.notify("workspace/didChangeWatchedFiles", params)
 }
 
 // ─── Language detection ─────────────────────────────────────────────────────
