@@ -1205,6 +1205,14 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 				s.pending -= len(abandoned)
 			}
 		case len(s.queue) == 0:
+			// P0 seam (card #244): SessionIdle is set before s.mu is released
+			// and before TurnCompleted is emitted at ~line 1227. An external
+			// caller polling GetSession in this window sees Idle before the
+			// completion event is observable. This is an instance of the
+			// documented P0 non-atomicity between session state and the event
+			// log (see package-level "Known P0 seams" above). The TUI flush
+			// path is unaffected — flushQueuedPrompt runs in the TurnCompleted
+			// event handler (after delivery) and does not gate on state.
 			s.setStateLocked(core.SessionIdle)
 		}
 		// else: queue non-empty and no error — stay running for the next turn.

@@ -626,3 +626,31 @@ func TestTurnCompleted_ClearsRunningTool(t *testing.T) {
 		t.Fatal("runningTool should be cleared on TurnCompleted")
 	}
 }
+
+// TestFlushQueuedPrompt_IgnoresState (card #244) pins that flushQueuedPrompt
+// does NOT gate on m.state — it unconditionally sets state=stateStreaming and
+// proceeds. This is why clearWiringTurnState setting stateIdle before the
+// flush in finishWiringTurn is harmless: the flush overwrites it.
+//
+// The test verifies:
+// 1. flushQueuedPrompt succeeds regardless of the initial state.
+// 2. After flush, state is stateStreaming (not whatever it was before).
+// 3. clearWiringTurnState → flushQueuedPrompt ordering produces stateStreaming.
+func TestFlushQueuedPrompt_IgnoresState(t *testing.T) {
+	m, f := queueModel(t)
+	m.queuedPrompts = []queuedPrompt{{text: "follow up"}}
+	m.state = stateIdle // clearWiringTurnState sets this before flush
+
+	// flushQueuedPrompt is called internally by finishWiringTurn via the
+	// TurnCompleted handler. Verify via the public event path.
+	m = step(m, turnDone(f))
+
+	// State should be stateStreaming (flush overwrote the idle set by
+	// clearWiringTurnState).
+	if m.state != stateStreaming {
+		t.Errorf("after flush, state = %v, want stateStreaming (flushQueuedPrompt should overwrite stateIdle from clearWiringTurnState)", m.state)
+	}
+	if len(m.queuedPrompts) != 0 {
+		t.Errorf("queue should be empty after flush, got %d remaining", len(m.queuedPrompts))
+	}
+}
