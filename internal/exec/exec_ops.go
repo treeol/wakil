@@ -332,13 +332,38 @@ func (d *DockerExecutor) IsProcessAlive(ctx context.Context, pid int) bool {
 	// (same hazard class the group probe avoids). Strip comm (${s##*) }),
 	// then $1 is the state. A zombie (state Z) has exited — treat as not
 	// alive, matching the pre-existing ps-based semantics.
-	script := fmt.Sprintf(`s=$(cat /proc/%d/stat 2>/dev/null) || exit 1; rest=${s##*) }; set -f; set -- $rest; set +f; [ "$#" -ge 1 ] || exit 1; printf '%%s' "$1"`, pid)
-	out, err := d.execCtx(ctx, false, "sh", "-c", script)
+	//
+	// Card #245: if cat fails (e.g., permission denied under hidepid or an
+	// LSM policy), distinguish "process directory gone" (dead) from
+	// "directory exists but stat unreadable" (conservatively alive, mirroring
+	// processAliveFromErr's EPERM→alive from card #239). Under hidepid=2 the
+	// directory itself is invisible and this procfs probe cannot distinguish
+	// hidden from dead — that is a documented limitation, not fixable from
+	// userspace.
+	//
+	// The script outputs a state char on success, "?" when the process is
+	// alive but its state is unreadable, and exits non-zero (empty output)
+	// when the process is gone or docker exec failed.
+	out, err := d.execCtx(ctx, false, "sh", "-c", procPIDAliveScript(pid))
 	if err != nil {
 		return false // docker exec failed (container may be gone)
 	}
 	state := strings.TrimSpace(out)
+	if state == "?" {
+		// Process directory exists but /proc/<pid>/stat is unreadable —
+		// conservatively treat as alive (cannot confirm it's dead).
+		return true
+	}
 	return state != "" && !strings.HasPrefix(state, "Z")
+}
+
+// procPIDAliveScript builds the POSIX-sh probe that reports the process state
+// char from /proc/<pid>/stat, or "?" if the process directory exists but the
+// stat file is unreadable (card #245). Exported-shape for a host-side test:
+// it is the EXACT script the docker executor runs, and it is also valid on any
+// Linux host with /proc.
+func procPIDAliveScript(pid int) string {
+	return fmt.Sprintf(`s=$(cat /proc/%d/stat 2>/dev/null) || { [ -d /proc/%d ] && printf '?' && exit 0; exit 1; }; rest=${s##*) }; set -f; set -- $rest; set +f; [ "$#" -ge 1 ] || exit 1; printf '%%s' "$1"`, pid, pid)
 }
 
 // processAliveFromErr classifies a kill(2) existence-probe error. nil means the
@@ -371,7 +396,14 @@ func (e *DirectExecutor) IsProcessAlive(_ context.Context, pid int) bool {
 // proves the group is gone — a setuid child (e.g. `sudo`) can be unsignalable
 // by its launcher, and under a filter that synthesizes EPERM the two probes
 // fail in opposite directions. Note this asymmetry is Direct-only: the Docker
-// group probe scans /proc and has no ownership concept.
+// PID probe (card #245) now treats an unreadable /proc/<pid>/stat as
+// conservatively alive, while the Docker group probe below skips unreadable
+// /proc entries (treating them as not-alive). The group probe's skip is
+// deliberate — counting an unreadable entry as alive would keep finished
+// groups "alive" forever under a hidepid mount. This means the Docker PID
+// and group probes can disagree for an unsignalable process, mirroring the
+// Direct asymmetry but for a different reason (procfs visibility vs kill
+// permission).
 func (e *DirectExecutor) IsProcessGroupAlive(_ context.Context, pgid int) bool {
 	return syscall.Kill(-pgid, 0) == nil
 }

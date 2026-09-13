@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -512,4 +513,90 @@ func TestDirectExecutorIsProcessAliveRealProcess(t *testing.T) {
 	if ex.IsProcessAlive(ctx, pid) {
 		t.Error("reaped child should not be reported alive")
 	}
+}
+
+// TestDockerIsProcessAliveScript verifies the exact shell script used by
+// DockerExecutor.IsProcessAlive (card #245). Runs the script on the host
+// (it is valid POSIX sh with /proc) against real PIDs: a live child and a
+// reaped PID. The unreadable-stat path is tested deterministically against a
+// temp directory (no root needed).
+func TestDockerIsProcessAliveScript(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("/proc not available")
+	}
+
+	runScript := func(script string) (string, error) {
+		cmd := exec.Command("sh", "-c", script)
+		out, err := cmd.Output()
+		return string(out), err
+	}
+
+	t.Run("live self", func(t *testing.T) {
+		state, err := runScript(procPIDAliveScript(os.Getpid()))
+		if err != nil {
+			t.Fatalf("script failed: %v", err)
+		}
+		state = strings.TrimSpace(state)
+		if state == "" || state == "?" {
+			t.Errorf("state = %q, want a non-empty state char", state)
+		}
+		if strings.HasPrefix(state, "Z") {
+			t.Errorf("state = Z (zombie), want non-zombie")
+		}
+	})
+
+	t.Run("dead PID", func(t *testing.T) {
+		ex, root := newDirectExec(t)
+		ctx := context.Background()
+		logPath := filepath.Join(root, "dead.log")
+		pid, pgid, err := ex.StartBackground(ctx, "sleep 30", logPath)
+		if err != nil {
+			t.Fatalf("StartBackground: %v", err)
+		}
+		if err := ex.KillPgid(ctx, pgid, 9); err != nil {
+			t.Fatalf("KillPgid: %v", err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := runScript(procPIDAliveScript(pid)); err != nil {
+				return // script exits non-zero → process gone
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Error("dead PID: script still succeeds after 3s — process not reaped?")
+	})
+
+	// Deterministic unreadable-stat test (no root needed). Builds a temp
+	// directory tree that mirrors /proc/<pid>/ with a directory present but
+	// no readable stat file, then runs the script logic against it. This
+	// tests the fallback mechanics without relying on procfs permissions.
+	t.Run("unreadable stat (temp-dir fallback)", func(t *testing.T) {
+		dir := t.TempDir()
+		// Create a fake "proc" root: <dir>/<pid>/ exists but has no stat file.
+		fakeProcPID := filepath.Join(dir, "12345")
+		if err := os.MkdirAll(fakeProcPID, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Shell-quote the paths in case t.TempDir() returns paths with spaces.
+		quotedPID := shQuote(fakeProcPID)
+		// Build a script that uses the temp dir instead of /proc, but
+		// applies the same fallback logic as procPIDAliveScript.
+		script := fmt.Sprintf(`s=$(cat %s/stat 2>/dev/null) || { [ -d %s ] && printf '?' && exit 0; exit 1; }; rest=${s##*) }; set -f; set -- $rest; set +f; [ "$#" -ge 1 ] || exit 1; printf '%%s' "$1"`, quotedPID, quotedPID)
+		out, err := runScript(script)
+		if err != nil {
+			t.Fatalf("script failed, want output '?': %v", err)
+		}
+		if strings.TrimSpace(out) != "?" {
+			t.Errorf("state = %q, want '?' (dir exists, stat missing)", strings.TrimSpace(out))
+		}
+
+		// Also test the "directory gone" case → dead (exit non-zero).
+		gonePID := filepath.Join(dir, "99999")
+		quotedGone := shQuote(gonePID)
+		scriptDead := fmt.Sprintf(`s=$(cat %s/stat 2>/dev/null) || { [ -d %s ] && printf '?' && exit 0; exit 1; }; rest=${s##*) }; set -f; set -- $rest; set +f; [ "$#" -ge 1 ] || exit 1; printf '%%s' "$1"`, quotedGone, quotedGone)
+		_, err = runScript(scriptDead)
+		if err == nil {
+			t.Error("missing dir: script succeeded, want failure (dead)")
+		}
+	})
 }
