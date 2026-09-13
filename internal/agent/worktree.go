@@ -433,77 +433,253 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 }
 
 // patchFilePaths extracts the list of file paths affected by a unified diff
-// patch. It parses the "+++ b/path" and "--- a/path" header lines to find the
-// modified files. For new files, "+++ b/path" is used (--- is /dev/null).
-// For deleted files, "--- a/path" is used (+++ is /dev/null).
-// Returns parent-workspace-relative paths (without the "a/" or "b/" prefix).
+// patch. It parses "diff --git" headers, "+++"/"---" lines, and "rename
+// from"/"rename to"/"copy from"/"copy to" metadata to find all affected files.
+//
+// For each file, it returns the parent-workspace-relative path (without the
+// "a/" or "b/" prefix). Both the old (pre-patch) and new (post-patch) paths are
+// captured so /rewind can restore renamed-away files (card #243).
+//
+// Decoding is done at each parse site (not in addPath) because the different
+// header types use different formats: "diff --git" and "+++"/"---" carry an
+// "a/" or "b/" transport prefix, while "rename from"/"rename to" carry bare
+// repository-relative paths with no prefix.
 func patchFilePaths(patch string) []string {
 	var paths []string
 	seen := make(map[string]bool)
-	addPath := func(raw string) {
-		// Unquote C-quoted paths (git quotes paths with spaces/unicode).
-		if unquoted, err := unquoteGitPath(raw); err == nil {
-			raw = unquoted
-		}
-		// Strip the "a/" or "b/" prefix used by git diffs.
-		if strings.HasPrefix(raw, "a/") {
-			raw = strings.TrimPrefix(raw, "a/")
-		} else if strings.HasPrefix(raw, "b/") {
-			raw = strings.TrimPrefix(raw, "b/")
-		}
-		// Strip any trailing tab + timestamp.
-		if idx := strings.IndexByte(raw, '\t'); idx >= 0 {
-			raw = raw[:idx]
-		}
-		if raw == "" || raw == "/dev/null" || seen[raw] {
+	// addPath records a decoded, repository-relative path. It does NOT unquote,
+	// strip prefixes, or truncate — each caller is responsible for producing a
+	// fully decoded path (card #243: separate parsing from collection).
+	addPath := func(path string) {
+		if path == "" || path == "/dev/null" || seen[path] {
 			return
 		}
-		seen[raw] = true
-		paths = append(paths, raw)
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	// stripDiffPrefix removes the "a/" or "b/" transport prefix from a decoded
+	// git diff path. Returns the path unchanged if neither prefix is present.
+	stripDiffPrefix := func(path string) string {
+		if strings.HasPrefix(path, "a/") {
+			return strings.TrimPrefix(path, "a/")
+		}
+		if strings.HasPrefix(path, "b/") {
+			return strings.TrimPrefix(path, "b/")
+		}
+		return path
+	}
+	// decodeDiffPath unquotes (if C-quoted), strips the a//b/ prefix, and
+	// removes any trailing tab+timestamp. Used for "+++"/"---" lines and
+	// "diff --git" header paths — all of which carry the transport prefix.
+	// For quoted paths, the tab/timestamp is outside the quotes, so we split
+	// BEFORE unquoting to avoid corrupting quoted filenames containing \t
+	// (card #243).
+	decodeDiffPath := func(raw string) string {
+		// If the path is C-quoted, the tab/timestamp (if present) is outside
+		// the closing quote. Find the closing quote and split there.
+		if len(raw) > 0 && raw[0] == '"' {
+			// Find closing quote (respecting backslash escapes).
+			end := 1
+			for end < len(raw) {
+				if raw[end] == '\\' && end+1 < len(raw) {
+					end += 2
+					continue
+				}
+				if raw[end] == '"' {
+					break
+				}
+				end++
+			}
+			if end < len(raw) {
+				// Tab/timestamp is after the closing quote.
+				raw = raw[:end+1]
+			}
+		} else {
+			// Unquoted — strip trailing tab+timestamp directly.
+			if idx := strings.IndexByte(raw, '\t'); idx >= 0 {
+				raw = raw[:idx]
+			}
+		}
+		decoded, err := unquoteGitPath(raw)
+		if err != nil {
+			return "" // malformed quoting — skip
+		}
+		return stripDiffPrefix(decoded)
+	}
+	// decodeRenamePath unquotes (if C-quoted) a bare "rename from"/"rename to"
+	// path. These carry NO a//b/ prefix — the value is repository-relative as-is
+	// (card #243: feeding through stripDiffPrefix would corrupt paths starting
+	// with "a/" or "b/"). Only trailing \r\n (from line splitting) is stripped;
+	// meaningful whitespace within the path is preserved.
+	decodeRenamePath := func(raw string) string {
+		decoded, err := unquoteGitPath(raw)
+		if err != nil {
+			return "" // malformed quoting — skip
+		}
+		return strings.TrimRight(decoded, "\r\n")
 	}
 	for _, line := range strings.Split(patch, "\n") {
-		// Parse "diff --git a/<path> b/<path>" headers. These are present
-		// for ALL diff types (text, binary, renames, mode-only) and give us
-		// the definitive list of affected files. The "b/" path is the
-		// post-patch path (the file we need to checkpoint for rewind).
 		if strings.HasPrefix(line, "diff --git ") {
-			path := parseDiffGitHeader(line)
-			if path != "" {
-				addPath(path)
-			}
+			// "diff --git a/<old> b/<new>" — present for ALL diff types (text,
+			// binary, renames, mode-only). parseDiffGitHeader returns the
+			// decoded new (b/) path; the old (a/) path is also captured so
+			// /rewind can restore a renamed-away file (card #243).
+			oldPath, newPath := parseDiffGitHeader(line)
+			addPath(newPath)
+			addPath(oldPath)
+			continue
+		}
+		// "rename from <path>" / "rename to <path>" — bare paths, no a//b/
+		// prefix. Capture both so /rewind can restore the old name and remove
+		// the new name (card #243).
+		if rest, ok := strings.CutPrefix(line, "rename from "); ok {
+			addPath(decodeRenamePath(rest))
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "rename to "); ok {
+			addPath(decodeRenamePath(rest))
+			continue
+		}
+		// "copy from <path>" / "copy to <path>" — same format as rename.
+		// Capture both endpoints; the source is not mutated by a copy, but
+		// capturing it is conservative (card #243).
+		if rest, ok := strings.CutPrefix(line, "copy from "); ok {
+			addPath(decodeRenamePath(rest))
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "copy to "); ok {
+			addPath(decodeRenamePath(rest))
 			continue
 		}
 		if strings.HasPrefix(line, "+++ ") {
-			addPath(strings.TrimPrefix(line, "+++ "))
+			addPath(decodeDiffPath(strings.TrimPrefix(line, "+++ ")))
 		} else if strings.HasPrefix(line, "--- ") {
-			addPath(strings.TrimPrefix(line, "--- "))
+			addPath(decodeDiffPath(strings.TrimPrefix(line, "--- ")))
 		}
 	}
 	return paths
 }
 
-// parseDiffGitHeader extracts the "b/" path from a "diff --git a/old b/new"
-// line. Returns the new path (post-patch) since that's what we need for
-// checkpoint capture. Handles C-quoted paths (e.g., "a/path with spaces").
-func parseDiffGitHeader(line string) string {
-	// line is "diff --git a/oldpath b/newpath"
+// parseDiffGitHeader extracts the old (a/) and new (b/) paths from a
+// "diff --git a/old b/new" line. Both paths are returned decoded (C-unquoted,
+// prefix stripped) and repository-relative. The old path is captured so /rewind
+// can restore renamed-away files (card #243).
+//
+// Git quotes both names in a diff --git header if either needs quoting
+// (quote_two in git's diff.c). Quoted paths are unambiguous: we tokenize by
+// finding the closing quote of each.
+//
+// Unquoted paths with spaces are emitted UNQUOTED by git (git does not quote
+// spaces alone), making the header ambiguous. Git's own resolver
+// (git_header_name in diff.c) tries all possible splits and picks the one where
+// the a/ and b/ halves produce identical paths. We mirror that: for unquoted
+// headers, we scan for " b/" separators and accept the split only if both
+// halves match after stripping the a//b/ prefix. If no split matches (e.g., a
+// rename where old≠new), the header cannot be resolved unambiguously — we
+// return empty strings and rely on rename from/to or ---/+++ metadata to
+// supply the paths.
+func parseDiffGitHeader(line string) (oldPath, newPath string) {
 	rest := strings.TrimPrefix(line, "diff --git ")
-	// Split into a/old and b/new. Git uses a space separator, but paths
-	// with spaces are C-quoted (e.g., "a/path with spaces"). We need to
-	// find the " b/" separator that's NOT inside quotes.
-	inQuote := false
-	for i := 0; i < len(rest); i++ {
-		if rest[i] == '"' {
-			inQuote = !inQuote
+
+	// Case 1: first path is C-quoted. Find its closing quote, then the second
+	// path starts after the space separator (quoted or not).
+	if len(rest) > 0 && rest[0] == '"' {
+		// Find the closing quote (respecting backslash escapes).
+		end := 1
+		for end < len(rest) {
+			if rest[end] == '\\' && end+1 < len(rest) {
+				end += 2
+				continue
+			}
+			if rest[end] == '"' {
+				break
+			}
+			end++
 		}
-		if !inQuote && i+3 <= len(rest) && rest[i] == ' ' && rest[i+1] == 'b' && rest[i+2] == '/' {
-			// Found " b/" separator outside quotes. The new path is rest[i+1:].
-			newPath := rest[i+1:]
-			// Strip b/ prefix.
-			return strings.TrimPrefix(newPath, "b/")
+		if end >= len(rest) {
+			return "", "" // unterminated quote
+		}
+		token1 := rest[:end+1] // includes quotes
+		// Skip space(s) after the closing quote.
+		pos := end + 1
+		for pos < len(rest) && rest[pos] == ' ' {
+			pos++
+		}
+		if pos >= len(rest) {
+			return "", ""
+		}
+		// Second path: quoted or unquoted (if quoted, include to closing quote;
+		// if unquoted, take the rest — unquoted second paths can't have spaces
+		// in a valid git header since the space is the separator).
+		var token2 string
+		if rest[pos] == '"' {
+			end2 := pos + 1
+			for end2 < len(rest) {
+				if rest[end2] == '\\' && end2+1 < len(rest) {
+					end2 += 2
+					continue
+				}
+				if rest[end2] == '"' {
+					break
+				}
+				end2++
+			}
+			if end2 >= len(rest) {
+				return "", "" // unterminated quote
+			}
+			token2 = rest[pos : end2+1]
+		} else {
+			token2 = rest[pos:]
+			// Strip trailing whitespace/CR (git headers shouldn't have it, but
+			// defensive against malformed input).
+			token2 = strings.TrimRight(token2, " \r\n")
+		}
+		oldPath = decodeDiffToken(token1, "a/")
+		newPath = decodeDiffToken(token2, "b/")
+		return oldPath, newPath
+	}
+
+	// Case 2: unquoted. Scan for " b/" separators and find the split where
+	// a/<left> and b/<right> produce matching paths (git's git_header_name
+	// approach). This resolves the common case where old==new (spaces in path).
+	// For renames where old≠new, no split matches → return "" and rely on
+	// rename from/to metadata.
+	for i := 0; i+3 <= len(rest); i++ {
+		if rest[i] != ' ' || rest[i+1] != 'b' || rest[i+2] != '/' {
+			continue
+		}
+		// Candidate split: a-side = rest[:i], b-side = rest[i+1:]
+		// (b-side includes the "b/" prefix).
+		aSide := rest[:i]
+		bSide := rest[i+1:]
+		// Both sides must start with their respective prefix.
+		if !strings.HasPrefix(aSide, "a/") {
+			continue
+		}
+		// Strip prefixes and compare.
+		aPath := strings.TrimPrefix(aSide, "a/")
+		bPath := strings.TrimPrefix(bSide, "b/")
+		if aPath == bPath {
+			// Match — this is the correct split.
+			return aPath, bPath
 		}
 	}
-	return ""
+	// No unambiguous split found. This happens for renames where old≠new
+	// (the header is "diff --git a/old b/new" with old≠new and possibly
+	// spaces). The paths will be supplied by rename from/to or ---/+++
+	// metadata lines in patchFilePaths.
+	return "", ""
+}
+
+// decodeDiffToken decodes a single path token from a "diff --git" header:
+// C-unquotes if needed, then strips the given a//b/ prefix. Returns "" on
+// unquote failure (malformed quoting).
+func decodeDiffToken(token, prefix string) string {
+	decoded, err := unquoteGitPath(token)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(decoded, prefix)
 }
 
 // unquoteGitPath unquotes a C-quoted git path. Git C-quotes paths that

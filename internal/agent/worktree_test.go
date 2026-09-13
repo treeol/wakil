@@ -605,7 +605,10 @@ similarity index 100%
 rename from old.txt
 rename to new.txt
 `,
-			expect: []string{"new.txt"},
+			// Both old and new paths are captured so /rewind can restore the
+			// renamed-away file (card #243). Order: rename from (old) appears
+			// before rename to (new) in the patch.
+			expect: []string{"old.txt", "new.txt"},
 		},
 		{
 			name: "C-quoted path with spaces",
@@ -636,6 +639,97 @@ literal 50
 zabc...
 `,
 			expect: []string{"text.go", "data.bin"},
+		},
+		// --- Card #243 regression cases ---
+		{
+			// Unquoted path with spaces — git does NOT quote spaces alone.
+			// The header is "diff --git a/foo bar.txt b/foo bar.txt".
+			// The resolver finds the split where a/ and b/ halves match.
+			name: "unquoted path with spaces (content diff)",
+			patch: `diff --git a/foo bar.txt b/foo bar.txt
+index 123..456 100644
+--- a/foo bar.txt	
++++ b/foo bar.txt	
+@@ -1 +1 @@
+-old
++new
+`,
+			expect: []string{"foo bar.txt"},
+		},
+		{
+			// Unquoted path with spaces, binary (no ---/+++ to rescue).
+			// The resolver must find the matching split.
+			name: "unquoted path with spaces (binary, no ---/+++)",
+			patch: `diff --git a/data file.bin b/data file.bin
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 100
+zacma...
+`,
+			expect: []string{"data file.bin"},
+		},
+		{
+			// Unquoted rename where old≠new — header is ambiguous (no split
+			// matches), so the header returns "" and paths come from rename
+			// from/to metadata.
+			name: "unquoted rename (old≠new, paths from metadata)",
+			patch: `diff --git a/old name.txt b/new name.txt
+similarity index 100%
+rename from old name.txt
+rename to new name.txt
+`,
+			expect: []string{"old name.txt", "new name.txt"},
+		},
+		{
+			// Both paths C-quoted, binary diff (no ---/+++ to mask the
+			// header parsing failure).
+			name: "quoted binary diff (both-quoted, no ---/+++)",
+			patch: `diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 100
+zacma...
+`,
+			expect: []string{"café.txt"},
+		},
+		{
+			// Pure rename with C-quoted paths — both old and new captured.
+			name:   "rename with quoted paths (no ---/+++)",
+			patch:  "diff --git \"a/old file.txt\" \"b/new file.txt\"\nsimilarity index 100%\nrename from old file.txt\nrename to new file.txt\n",
+			expect: []string{"new file.txt", "old file.txt"},
+		},
+		{
+			// Path that legitimately starts with "a/" — must not be
+			// corrupted by the prefix strip on rename from/to lines.
+			name: "rename from path starting with a/",
+			patch: `diff --git a/a/src.go b/b/src.go
+similarity index 100%
+rename from a/src.go
+rename to b/src.go
+`,
+			expect: []string{"a/src.go", "b/src.go"},
+		},
+		{
+			// Copy metadata — both endpoints captured.
+			name: "copy without content change",
+			patch: `diff --git a/orig.txt b/copy.txt
+similarity index 100%
+copy from orig.txt
+copy to copy.txt
+`,
+			expect: []string{"orig.txt", "copy.txt"},
+		},
+		{
+			// Mode-only change (no ---/+++ content, no rename) — just the
+			// diff --git header. Both old and new are the same path.
+			name: "mode-only change (no ---/+++)",
+			patch: `diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+`,
+			expect: []string{"script.sh"},
 		},
 	}
 
