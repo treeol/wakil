@@ -87,7 +87,9 @@ func (p *EventPump) Run(ctx context.Context) {
 			if errors.Is(err, sessionhost.ErrSubscriptionGap) {
 				newSub, subErr := p.host.Subscribe(ctx, p.principal, p.sessionID, p.lastSeq)
 				if subErr != nil {
-					return // can't recover; stop the pump
+					// Can't recover — surface a session error before stopping.
+					p.deliverError("subscription_gap", subErr.Error())
+					return
 				}
 				p.mu.Lock()
 				oldSub := p.sub
@@ -100,7 +102,8 @@ func (p *EventPump) Run(ctx context.Context) {
 			if errors.Is(err, io.EOF) {
 				return
 			}
-			// Unknown error: stop the pump rather than spinning.
+			// Unknown error: surface a session error, then stop.
+			p.deliverError("subscription_error", err.Error())
 			return
 		}
 
@@ -112,6 +115,19 @@ func (p *EventPump) Run(ctx context.Context) {
 		// Deliver the event to the TUI.
 		p.deliver(ev)
 	}
+}
+
+// deliverError sends a synthetic SessionError event to the TUI so the user
+// sees a message instead of a silent stall when the pump dies.
+func (p *EventPump) deliverError(reason, errMsg string) {
+	p.deliver(event.Event{
+		SessionID: p.sessionID,
+		Kind:      event.KindSessionError,
+		Payload: event.SessionError{
+			Reason: reason,
+			Err:    errMsg,
+		},
+	})
 }
 
 // Stop signals the pump to stop and closes the subscription. It is idempotent
