@@ -861,7 +861,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.GoogleCX, "GOOGLE_CX")
 	envStr(&cfg.MentionBase, "WAKIL_MENTION_BASE")
 	// ILM_* env vars are legacy aliases. WAKIL_* is the preferred namespace.
-	// ILM_* takes precedence (checked first) for backward compatibility.
+	// WAKIL_* takes precedence (checked last — last non-empty write wins).
 	envStr(&cfg.BaseURL, "ILM_BASE_URL")
 	envStr(&cfg.BaseURL, "WAKIL_BASE_URL")
 	envStr(&cfg.Host, "ILM_HOST")
@@ -1145,12 +1145,13 @@ func envInt(dst *int, key string) {
 
 // resolveEndpoint populates cfg.Endpoint/EndpointName from the endpoints block,
 // or synthesizes a legacy ilm-proxy endpoint when no block exists. It then
-// applies explicit env/flag overrides (ILM_MODEL/--model, ILM_BASE_URL/
-// --base-url) and mirrors the result into the legacy cfg.BaseURL/cfg.Model
-// fields so existing call sites keep reading one source of truth.
+// applies explicit env/flag overrides (ILM_MODEL/WAKIL_MODEL/--model,
+// ILM_BASE_URL/WAKIL_BASE_URL/--base-url) and mirrors the result into the
+// legacy cfg.BaseURL/cfg.Model fields so existing call sites keep reading
+// one source of truth.
 func resolveEndpoint(cfg *Config, flagsSet map[string]bool) error {
-	modelOverridden := flagsSet["model"] || os.Getenv("ILM_MODEL") != ""
-	baseURLOverridden := flagsSet["base-url"] || os.Getenv("ILM_BASE_URL") != ""
+	modelOverridden := flagsSet["model"] || os.Getenv("ILM_MODEL") != "" || os.Getenv("WAKIL_MODEL") != ""
+	baseURLOverridden := flagsSet["base-url"] || os.Getenv("ILM_BASE_URL") != "" || os.Getenv("WAKIL_BASE_URL") != ""
 
 	if len(cfg.Endpoints) == 0 {
 		// Legacy config: synthesize a single ilm-proxy endpoint from the

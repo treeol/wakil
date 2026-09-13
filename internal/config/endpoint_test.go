@@ -17,10 +17,10 @@ func writeCfg(t *testing.T, body string) string {
 	return p
 }
 
-// clearIlmEnv guards the test from ambient ILM_* variables on the host.
+// clearIlmEnv guards the test from ambient ILM_*/WAKIL_* variables on the host.
 func clearIlmEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"ILM_BASE_URL", "ILM_HOST", "ILM_PORT", "ILM_API_KEY", "ILM_MODEL", "WAKIL_CONFIG"} {
+	for _, k := range []string{"ILM_BASE_URL", "ILM_HOST", "ILM_PORT", "ILM_API_KEY", "ILM_MODEL", "ILM_EXEC_MODE", "WAKIL_BASE_URL", "WAKIL_HOST", "WAKIL_PORT", "WAKIL_API_KEY", "WAKIL_MODEL", "WAKIL_EXEC_MODE", "WAKIL_CONFIG"} {
 		t.Setenv(k, "")
 	}
 }
@@ -192,6 +192,61 @@ func TestIlmModelEnvOverridesEndpointModel(t *testing.T) {
 	}
 	if got := cfg.ActiveEndpoint().Model; got != "env-model" {
 		t.Errorf("ILM_MODEL should override endpoint model: got %q, want env-model", got)
+	}
+}
+
+// TestWakilModelEnvOverridesEndpointModel: WAKIL_MODEL wins over the endpoint's
+// configured model (WAKIL_* takes precedence over ILM_* and file config).
+func TestWakilModelEnvOverridesEndpointModel(t *testing.T) {
+	clearIlmEnv(t)
+	t.Setenv("WAKIL_MODEL", "wakil-model")
+	p := writeCfg(t, `{
+		"endpoints": {"e": {"kind": "openai", "base_url": "http://h:1", "model": "cfg-model"}},
+		"default_endpoint": "e"
+	}`)
+	cfg, err := LoadConfig([]string{"--config", p, "--exec", "direct"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.ActiveEndpoint().Model; got != "wakil-model" {
+		t.Errorf("WAKIL_MODEL should override endpoint model: got %q, want wakil-model", got)
+	}
+}
+
+// TestWakilBaseURLOverridesEndpoint: WAKIL_BASE_URL overrides the endpoint's
+// configured base_url (same as ILM_BASE_URL).
+func TestWakilBaseURLOverridesEndpoint(t *testing.T) {
+	clearIlmEnv(t)
+	t.Setenv("WAKIL_BASE_URL", "http://wakil-url")
+	p := writeCfg(t, `{
+		"endpoints": {"e": {"kind": "openai", "base_url": "http://cfg-url", "model": "m"}},
+		"default_endpoint": "e"
+	}`)
+	cfg, err := LoadConfig([]string{"--config", p, "--exec", "direct"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.ActiveEndpoint().BaseURL; got != "http://wakil-url" {
+		t.Errorf("WAKIL_BASE_URL should override endpoint base_url: got %q, want http://wakil-url", got)
+	}
+}
+
+// TestWakilModelBeatsIlmModel: when both WAKIL_MODEL and ILM_MODEL are set,
+// WAKIL_MODEL wins (checked last — last non-empty write wins).
+func TestWakilModelBeatsIlmModel(t *testing.T) {
+	clearIlmEnv(t)
+	t.Setenv("ILM_MODEL", "ilm-model")
+	t.Setenv("WAKIL_MODEL", "wakil-model")
+	p := writeCfg(t, `{
+		"endpoints": {"e": {"kind": "openai", "base_url": "http://h:1", "model": "cfg-model"}},
+		"default_endpoint": "e"
+	}`)
+	cfg, err := LoadConfig([]string{"--config", p, "--exec", "direct"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.ActiveEndpoint().Model; got != "wakil-model" {
+		t.Errorf("WAKIL_MODEL should beat ILM_MODEL: got %q, want wakil-model", got)
 	}
 }
 
