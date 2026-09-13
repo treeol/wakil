@@ -410,6 +410,7 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	}
 
 	var summary string
+	sentinel := false // true when summary is a fixed marker (exempt from byte cap)
 	if len(summarizable) > 0 {
 		// Budget guard: if the session budget is exhausted, skip the summarizer
 		// (which makes an inference call) and fall back to truncation. This
@@ -426,6 +427,7 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 			}
 			if summary == "" {
 				summary = "[compaction produced no summary — older turns were shed (budget exhausted)]"
+				sentinel = true
 			}
 		} else {
 			var err error
@@ -471,8 +473,27 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 				}
 				if summary == "" {
 					summary = "[compaction produced no summary — older turns were shed]"
+					sentinel = true
 				}
 			}
+		}
+	}
+
+	// Final byte-cap guard (card #246): regardless of which path produced the
+	// summary (summarizer, condensation, fallback), apply the byte budget as a
+	// hard cap on the summary body. The "[Summary of earlier conversation]\n"
+	// wrapper is NOT counted (it's a fixed prefix, not content). Sentinels
+	// (fixed markers assigned above) are exempt — capping them would produce
+	// garbled text. This guard catches the case where condensation succeeds but
+	// still exceeds SummaryBytes, or where condensation is skipped (budget
+	// exhausted) and the summarizer output was oversized.
+	if a.Cfg.SummaryBytes > 0 && summary != "" && !sentinel {
+		summary = truncateBytes(summary, a.Cfg.SummaryBytes)
+		// If truncation produced empty (tiny budget, multibyte first rune),
+		// fall back to a sentinel so we don't silently lose history.
+		if summary == "" {
+			summary = "[compaction produced no summary — older turns were shed]"
+			sentinel = true
 		}
 	}
 

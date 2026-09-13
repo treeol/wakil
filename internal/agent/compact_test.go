@@ -815,16 +815,32 @@ func TestCompactCondensationFailureKeepsOriginal(t *testing.T) {
 		t.Fatalf("expected 2 summarizer calls, got %d", callCount)
 	}
 
-	// The original summary (50 'b' chars) should be in the conversation.
+	// The original summary (50 'b' chars) should be in the conversation,
+	// truncated to SummaryBytes=10 by the final cap (card #246).
+	// truncateBytes("b"*50, 10) = "b"*7 + "…" = 10 bytes.
+	const prefix = "[Summary of earlier conversation]\n"
 	summaryFound := false
 	for _, m := range app.Conv {
-		if m.Role == "system" && strings.Contains(DerefStr(m.Content), strings.Repeat("b", 50)) {
-			summaryFound = true
-			break
+		if m.Role != "system" {
+			continue
 		}
+		content := DerefStr(m.Content)
+		if !strings.HasPrefix(content, prefix) {
+			continue
+		}
+		body := content[len(prefix):]
+		want := strings.Repeat("b", 7) + "…"
+		if body != want {
+			t.Errorf("summary body = %q (len %d), want %q (len %d)", body, len(body), want, len(want))
+		}
+		if len(body) > app.Cfg.SummaryBytes {
+			t.Errorf("summary body is %d bytes, exceeds SummaryBytes=%d", len(body), app.Cfg.SummaryBytes)
+		}
+		summaryFound = true
+		break
 	}
 	if !summaryFound {
-		t.Error("original summary should be retained after condensation failure")
+		t.Error("truncated original summary should be retained after condensation failure")
 	}
 
 	// A warning should have been written to a.Out.
@@ -885,6 +901,71 @@ func TestCompactCondensationSuccessNoWarning(t *testing.T) {
 	}
 }
 
+// TestCompactFinalCapTruncatesOversizedCondensation (card #246) verifies that
+// when condensation succeeds but the condensed result still exceeds
+// SummaryBytes, the final byte-cap guard truncates it. Before the fix, the
+// oversized condensed summary was stored as-is.
+func TestCompactFinalCapTruncatesOversizedCondensation(t *testing.T) {
+	var out strings.Builder
+	app := &App{Cfg: config.DefaultConfig(), Out: &out}
+	app.Cfg.KeepBytes = 100
+	app.Cfg.CompactAt = 50
+	app.Cfg.SummaryBytes = 20 // small enough that both summaries exceed it
+
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("do the thing")},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("a", 200))},
+		{Role: "user", Content: StrPtr("proceed?")},
+		{Role: "assistant", Content: StrPtr("ok")},
+	}
+
+	callCount := 0
+	sum := func(_ context.Context, text string) (string, error) {
+		callCount++
+		if callCount == 1 {
+			return strings.Repeat("x", 100), nil // first summary exceeds
+		}
+		// Verify the second call is the condensation request.
+		if !strings.Contains(text, "Condense") {
+			t.Errorf("second call should be condensation, got: %q", text[:min(50, len(text))])
+		}
+		return strings.Repeat("y", 100), nil // condensed also exceeds
+	}
+
+	ok, err := app.Compact(context.Background(), sum, false)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 summarizer calls (summary + condensation), got %d", callCount)
+	}
+
+	// Find the summary message and verify its body is exactly the truncated
+	// condensed result: 17 "y" chars + "…" (3 bytes) = 20 bytes.
+	const prefix = "[Summary of earlier conversation]\n"
+	for _, m := range app.Conv {
+		if m.Role == "system" {
+			content := DerefStr(m.Content)
+			if !strings.HasPrefix(content, prefix) {
+				continue
+			}
+			body := content[len(prefix):]
+			want := strings.Repeat("y", 17) + "…"
+			if body != want {
+				t.Errorf("summary body = %q (len %d), want %q (len %d)", body, len(body), want, len(want))
+			}
+			if len(body) > app.Cfg.SummaryBytes {
+				t.Errorf("summary body is %d bytes, exceeds SummaryBytes=%d", len(body), app.Cfg.SummaryBytes)
+			}
+			return
+		}
+	}
+	t.Error("summary message not found in conversation")
+}
+
 // TestCompactCondensationSkippedWhenBudgetExhausted is the regression test for
 // card #238: the first summarizer inference must evaluate the session budget so
 // the condensation inference is skipped once the budget is breached. Before the
@@ -941,16 +1022,32 @@ func TestCompactCondensationSkippedWhenBudgetExhausted(t *testing.T) {
 	if !strings.Contains(out.String(), "budget exhausted") {
 		t.Errorf("expected budget warning in output, got: %q", out.String())
 	}
-	// The paid-for first summary must be retained (not discarded).
+	// The paid-for first summary must be retained (not discarded), truncated
+	// to SummaryBytes=10 by the final cap (card #246).
+	// truncateBytes("b"*50, 10) = "b"*7 + "…" = 10 bytes.
+	const bePrefix = "[Summary of earlier conversation]\n"
 	retained := false
 	for _, m := range app.Conv {
-		if m.Role == "system" && strings.Contains(DerefStr(m.Content), strings.Repeat("b", 50)) {
-			retained = true
-			break
+		if m.Role != "system" {
+			continue
 		}
+		content := DerefStr(m.Content)
+		if !strings.HasPrefix(content, bePrefix) {
+			continue
+		}
+		body := content[len(bePrefix):]
+		want := strings.Repeat("b", 7) + "…"
+		if body != want {
+			t.Errorf("summary body = %q (len %d), want %q (len %d)", body, len(body), want, len(want))
+		}
+		if len(body) > app.Cfg.SummaryBytes {
+			t.Errorf("summary body is %d bytes, exceeds SummaryBytes=%d", len(body), app.Cfg.SummaryBytes)
+		}
+		retained = true
+		break
 	}
 	if !retained {
-		t.Error("original summary should be retained when condensation is skipped for budget")
+		t.Error("truncated original summary should be retained when condensation is skipped for budget")
 	}
 
 	// Negative control: same fixture, cost stays under budget → two calls.
