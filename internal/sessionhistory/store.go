@@ -299,7 +299,11 @@ func (s *Store) Delete(ctx context.Context, chatID string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sessionhistory: commit delete: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sessionhistory: rows affected: %w", err)
+	}
+	if n == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -342,13 +346,16 @@ func (s *Store) ListMeta(ctx context.Context, workspace string) ([]IndexedMeta, 
 		var upd int64
 		var gen int
 		if err := rows.Scan(&m.ChatID, &upd, &m.SourceHash, &m.SizeBytes, &gen); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("sessionhistory: scan: %w", err)
 		}
 		m.Updated = time.UnixMilli(upd)
 		m.SummaryGenerated = gen == 1
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sessionhistory: rows: %w", err)
+	}
+	return out, nil
 }
 
 // GetTurns returns the indexed turns of one session in the given workspace whose

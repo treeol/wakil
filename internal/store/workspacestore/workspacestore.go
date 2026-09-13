@@ -91,7 +91,10 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]WorkspaceRow, erro
 		}
 		out = append(out, row)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("workspacestore: rows: %w", err)
+	}
+	return out, nil
 }
 
 // Delete removes a workspace, scoped to tenantID.
@@ -105,7 +108,7 @@ func (s *Store) Delete(ctx context.Context, id, tenantID string) error {
 		return fmt.Errorf("workspacestore: rows affected: %w", err)
 	}
 	if n == 0 {
-		return sql.ErrNoRows
+		return fmt.Errorf("workspacestore: delete: %w", sql.ErrNoRows)
 	}
 	return nil
 }
