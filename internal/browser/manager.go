@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/emulation"
@@ -81,6 +82,10 @@ type Manager struct {
 	// process (NewRemoteAllocator does not own the process lifecycle).
 	dockerExe       SandboxExecutor
 	dockerContainer string
+
+	// screenshots tracks temp screenshot files for cleanup on Close.
+	screenshots []string
+	screenshotMu sync.Mutex
 }
 
 // NewManager creates a browser Manager and eagerly launches a headless Chromium
@@ -156,7 +161,9 @@ func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error)
 			" --remote-debugging-port=%d"+
 			" --user-data-dir=%s >%s 2>&1 &",
 		quote(chromiumBin), cdpContainerPort, profileDir, logFile)
-	if _, err := exe.RunShell(context.Background(), startCmd); err != nil {
+	startCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer startCancel()
+	if _, err := exe.RunShell(startCtx, startCmd); err != nil {
 		return nil, fmt.Errorf("cannot start Chromium in container %s (%w) — set browser_enabled:false or install chromium in the image", container, err)
 	}
 
@@ -203,7 +210,9 @@ while True:
         d.sendall(data)
 ' &`,
 		cdpRelayPort, cdpContainerPort)
-	if _, err := exe.RunShell(context.Background(), relayCmd); err != nil {
+	relayCtx, relayCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer relayCancel()
+	if _, err := exe.RunShell(relayCtx, relayCmd); err != nil {
 		return nil, fmt.Errorf("cannot start CDP relay in container %s (%w)", container, err)
 	}
 
@@ -221,9 +230,11 @@ while True:
 	if !cdpReady(cdpURL) {
 		// Chromium didn't start — gather diagnostics: logs, listener state,
 		// and the exact chromium process command line.
-		logOut, _ := exe.RunShell(context.Background(), "tail -20 "+logFile)
-		listenerOut, _ := exe.RunShell(context.Background(), "grep -E '2406|2407' /proc/net/tcp /proc/net/tcp6 2>/dev/null; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\" {print $2}' 2>/dev/null; true")
-		chromiumCmdline, _ := exe.RunShell(context.Background(), "cat /proc/*/cmdline 2>/dev/null | tr '\\0' ' ' | grep chromium 2>/dev/null | head -3; true")
+		diagCtx, diagCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer diagCancel()
+		logOut, _ := exe.RunShell(diagCtx, "tail -20 "+logFile)
+		listenerOut, _ := exe.RunShell(diagCtx, "grep -E '2406|2407' /proc/net/tcp /proc/net/tcp6 2>/dev/null; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\" {print $2}' 2>/dev/null; true")
+		chromiumCmdline, _ := exe.RunShell(diagCtx, "cat /proc/*/cmdline 2>/dev/null | tr '\\0' ' ' | grep chromium 2>/dev/null | head -3; true")
 		return nil, fmt.Errorf("Chromium did not start in container %s (port %d not responding after 15s).\n"+
 			"Logs:\n%s\n\nListeners:\n%s\n\nChromium processes:\n%s",
 			container, cdpRelayPort,
@@ -240,7 +251,7 @@ while True:
 		ctx:         browserCtx,
 		ctxCancel:   browserCancel,
 		// Store the executor + container name so Close() can kill the
-		// container-side chromium process.
+		// container-side chromium process and relay.
 		dockerExe:       exe,
 		dockerContainer: container,
 	}
@@ -355,12 +366,25 @@ func (m *Manager) Close() error {
 	if m.userDataDir != "" {
 		os.RemoveAll(m.userDataDir)
 	}
-	// Docker mode: kill the chromium process inside the container.
+	// Docker mode: kill the chromium process AND the CDP relay inside the container.
 	if m.dockerExe != nil && m.dockerContainer != "" {
 		killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer killCancel()
-		_, _ = m.dockerExe.RunShell(killCtx, "pkill -f 'remote-debugging-port=9222' 2>/dev/null; rm -rf /tmp/wakil-chrome-profile /tmp/wakil-chrome.log")
+		// Kill both chromium (remote-debugging-port=9222) and the python CDP
+		// relay (port 9223). The relay is started with python3 -c ... & so
+		// pkill on the python3 relay script cleans it up.
+		_, _ = m.dockerExe.RunShell(killCtx,
+			"pkill -f 'remote-debugging-port=9222' 2>/dev/null; "+
+				"pkill -f '0.0.0.0.*9223' 2>/dev/null; "+
+				"rm -rf /tmp/wakil-chrome-profile /tmp/wakil-chrome.log")
 	}
+	// Clean up tracked screenshot temp files.
+	m.screenshotMu.Lock()
+	for _, p := range m.screenshots {
+		_ = os.Remove(p)
+	}
+	m.screenshots = nil
+	m.screenshotMu.Unlock()
 	return nil
 }
 
@@ -448,6 +472,10 @@ func (m *Manager) Screenshot(ctx context.Context, fullPage bool) (string, error)
 		return "", fmt.Errorf("browser: write screenshot file: %w", err)
 	}
 	tmpFile.Close()
+	// Track for cleanup on Close.
+	m.screenshotMu.Lock()
+	m.screenshots = append(m.screenshots, tmpFile.Name())
+	m.screenshotMu.Unlock()
 	return tmpFile.Name(), nil
 }
 
