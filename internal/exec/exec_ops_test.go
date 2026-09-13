@@ -3,9 +3,11 @@ package exec
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -458,5 +460,56 @@ func TestIsShellNotFound(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("isShellNotFound(%q) = %v, want %v", tc.msg, got, tc.want)
 		}
+	}
+}
+
+// TestProcessAliveFromErr covers the kill(2) error classification used by
+// DirectExecutor.IsProcessAlive (card #239): EPERM means the process exists but
+// is owned by another user → alive; ESRCH/nil-adjacent errors → dead.
+func TestProcessAliveFromErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil means alive", nil, true},
+		{"EPERM means alive (other user)", syscall.EPERM, true},
+		{"wrapped EPERM means alive", fmt.Errorf("kill: %w", syscall.EPERM), true},
+		{"ESRCH means dead", syscall.ESRCH, false},
+		{"wrapped ESRCH means dead", fmt.Errorf("kill: %w", syscall.ESRCH), false},
+		{"EINVAL (bad signal) means dead", syscall.EINVAL, false},
+		{"unrelated error means dead", errors.New("boom"), false},
+	}
+	for _, tc := range cases {
+		if got := processAliveFromErr(tc.err); got != tc.want {
+			t.Errorf("%s: processAliveFromErr(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
+		}
+	}
+}
+
+// TestDirectExecutorIsProcessAliveRealProcess is the wiring smoke test: a real
+// child is reported alive, and a reaped PID is not (so the classifier cannot be
+// wired backwards without failing).
+func TestDirectExecutorIsProcessAliveRealProcess(t *testing.T) {
+	ex, root := newDirectExec(t)
+	ctx := context.Background()
+	logPath := filepath.Join(root, "alive.log")
+
+	pid, pgid, err := ex.StartBackground(ctx, "sleep 30", logPath)
+	if err != nil {
+		t.Fatalf("StartBackground: %v", err)
+	}
+	if !ex.IsProcessAlive(ctx, pid) {
+		t.Error("live child should be reported alive")
+	}
+	if err := ex.KillPgid(ctx, pgid, 9); err != nil {
+		t.Fatalf("KillPgid: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for ex.IsProcessAlive(ctx, pid) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ex.IsProcessAlive(ctx, pid) {
+		t.Error("reaped child should not be reported alive")
 	}
 }

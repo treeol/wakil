@@ -341,13 +341,37 @@ func (d *DockerExecutor) IsProcessAlive(ctx context.Context, pid int) bool {
 	return state != "" && !strings.HasPrefix(state, "Z")
 }
 
+// processAliveFromErr classifies a kill(2) existence-probe error. nil means the
+// probe succeeded (process exists and we could signal it). EPERM means
+// permission was denied — the process is present but we cannot signal it — so
+// treat it as alive (parity with card #224's processAliveImpl). ESRCH means no
+// such process. Any other error also returns false, preserving prior behavior;
+// note that such an error does not by itself establish absence.
+//
+// The API cannot represent "unknown": a security filter that synthesizes EPERM
+// is indistinguishable from a genuine permission denial, so EPERM is
+// interpreted conservatively as "present".
+func processAliveFromErr(err error) bool {
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
 func (e *DirectExecutor) IsProcessAlive(_ context.Context, pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+	return processAliveFromErr(syscall.Kill(pid, 0))
 }
 
 // IsProcessGroupAlive reports whether any process in the group is alive
 // (kill -0 on the negated pgid). See the Executor interface doc for why
 // kill_process/shutdown must check the GROUP, not the leader pid.
+//
+// This one-line form is left as-is by card #239: only the PID probe changed.
+// Success-only is retained because the auto-bg reaper polls this in an
+// unbounded loop until it returns false, so treating an unsignalable group as
+// alive would strand the background slot. This is deliberately narrower than
+// the PID probe (which now counts EPERM as alive); it is not a claim that EPERM
+// proves the group is gone — a setuid child (e.g. `sudo`) can be unsignalable
+// by its launcher, and under a filter that synthesizes EPERM the two probes
+// fail in opposite directions. Note this asymmetry is Direct-only: the Docker
+// group probe scans /proc and has no ownership concept.
 func (e *DirectExecutor) IsProcessGroupAlive(_ context.Context, pgid int) bool {
 	return syscall.Kill(-pgid, 0) == nil
 }
