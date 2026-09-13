@@ -13,9 +13,11 @@ package trace
 import (
 	"bufio"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -64,6 +66,8 @@ type Store struct {
 	wg     sync.WaitGroup
 	mu     sync.Mutex
 	closed bool
+
+	dropped atomic.Int64 // records dropped due to full channel
 }
 
 // Open creates (or appends to) the per-session JSONL file under dir and
@@ -121,8 +125,18 @@ func (s *Store) Write(r Record) {
 	// send here could deadlock against Close.
 	select {
 	case s.ch <- b:
-	default: // channel full → drop silently
+	default: // channel full → drop and count
+		s.dropped.Add(1)
 	}
+}
+
+// Dropped returns the number of records dropped due to a full channel.
+// Useful for monitoring trace data loss.
+func (s *Store) Dropped() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.dropped.Load()
 }
 
 // Close stops accepting new records, flushes records already queued to disk,
@@ -149,8 +163,14 @@ func (s *Store) drainTo(f *os.File) {
 	defer f.Close()
 	bw := bufio.NewWriterSize(f, 64*1024)
 	for b := range s.ch {
-		_, _ = bw.Write(b)
-		_ = bw.WriteByte('\n')
+		if _, err := bw.Write(b); err != nil {
+			log.Printf("trace: write error: %v", err)
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			log.Printf("trace: write error: %v", err)
+		}
 	}
-	_ = bw.Flush()
+	if err := bw.Flush(); err != nil {
+		log.Printf("trace: flush error: %v", err)
+	}
 }
