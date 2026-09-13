@@ -252,6 +252,28 @@ func TestWriteMasterKeyFileRefusesOverwrite(t *testing.T) {
 	}
 }
 
+func TestLoadMasterKeyFromFileRejectsSymlink(t *testing.T) {
+	key, _ := GenerateMasterKey()
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "master.key")
+	linkPath := filepath.Join(dir, "symlink.key")
+
+	if err := WriteMasterKeyFile(realPath, key); err != nil {
+		t.Fatalf("WriteMasterKeyFile: %v", err)
+	}
+
+	// Create a symlink to the real key file.
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	// Loading via the symlink should fail (O_NOFOLLOW rejects symlinks).
+	_, err := LoadMasterKeyFromFile("v1", linkPath)
+	if err == nil {
+		t.Fatal("LoadMasterKeyFromFile should reject symlinks")
+	}
+}
+
 func TestReEncryptWithNewKey(t *testing.T) {
 	// Simulate rotation: decrypt with old key, re-encrypt with new key.
 	mk1, _ := NewMasterKey("v1", mustGenKey(t))

@@ -246,21 +246,42 @@ func (mk *MasterKey) Decrypt(env *Envelope, aad AAD) ([]byte, error) {
 // and returns a MasterKey with the given key_id. The file must have 0600
 // permissions (owner-only readable) to prevent key exposure to other users.
 func LoadMasterKeyFromFile(keyID, path string) (*MasterKey, error) {
-	// Verify file permissions before reading.
-	info, err := os.Stat(path)
+	// Lstat first — does NOT follow symlinks. Rejects symlinks before opening.
+	li, err := os.Lstat(path)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: stat key file %s: %w", path, err)
 	}
-	// Reject non-regular files (symlinks, pipes, etc.).
-	if !info.Mode().IsRegular() {
+	if li.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("crypto: key file %s is a symlink", path)
+	}
+	if !li.Mode().IsRegular() {
 		return nil, fmt.Errorf("crypto: key file %s is not a regular file", path)
 	}
-	// Reject group/world-readable files.
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+	if perm := li.Mode().Perm(); perm&0o077 != 0 {
 		return nil, fmt.Errorf("crypto: key file %s has permissions %o; must be 0600 (owner-only)", path, perm)
 	}
 
-	data, err := os.ReadFile(path)
+	// Open the file — no TOCTOU race because we open the same file we stat'd
+	// (and the permission/symlink check is advisory, not a security gate).
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: open key file %s: %w", path, err)
+	}
+	defer f.Close()
+
+	// Verify the opened fd matches what we lstat'd (defense-in-depth).
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("crypto: fstat key file %s: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("crypto: key file %s is not a regular file", path)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		return nil, fmt.Errorf("crypto: key file %s has permissions %o; must be 0600 (owner-only)", path, perm)
+	}
+
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: read key file %s: %w", path, err)
 	}
@@ -285,6 +306,10 @@ func WriteMasterKeyFile(path string, key []byte) error {
 	defer f.Close()
 	if _, err := f.WriteString(encoded); err != nil {
 		return fmt.Errorf("crypto: write key file %s: %w", path, err)
+	}
+	// fsync so the key survives a crash after the function returns.
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("crypto: sync key file %s: %w", path, err)
 	}
 	return nil
 }
