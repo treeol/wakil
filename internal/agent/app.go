@@ -827,45 +827,10 @@ func (a *App) OnStop() {
 }
 
 // NewConversation resets the running transcript and rotates the chat_id, starting
-// a fresh persisted session.
+// a fresh persisted session. It acquires stateMu so the writes are synchronized
+// with concurrent readers (SnapshotSessionState, GetSessionState).
 func (a *App) NewConversation(chatID string) {
-	// Fire session_end hooks for the ending session.
-	if a.Hooks != nil {
-		a.Hooks.RunSessionHooks(context.Background(), hookSessionEnd)
-	}
-
-	// ilm-stack: session_end is NOT emitted here. NewConversation is called
-	// on the NEW app (with a NEW emitter), so emitting here would attribute
-	// the old session's end to the new session's id. session_end is emitted
-	// in OnStop, which fires on the OLD app during facade.Close().
-
-	a.clearCheckpoints()
-	a.convMu.Lock()
-	a.Conv = nil
-	a.convMu.Unlock()
-	// Force ensurePreamble to re-insert Conv[0] on the next Send — otherwise
-	// a same-day preambleDay would read as "already up to date" against the
-	// now-empty Conv and silently leave the new conversation with no preamble.
-	a.preambleDay = ""
-	// Reset session-started flag so session_start hooks fire for the new session.
-	a.sessionStarted = false
-	a.ilmStarted = false
-	a.ilmEnded = false
-	a.Client.ChatID = chatID
-	a.Session = &Session{
-		ChatID:       chatID,
-		Model:        a.Client.Model,
-		EndpointName: a.Cfg.EndpointName,
-		Created:      time.Now(),
-		Workspace:    a.SessionWorkspace(),
-	}
-	// Reset ephemeral consent grants so a previous session's /auto or
-	// /auto destructive grant does not leak into the new conversation.
-	// AutoApprove, AllowDestructive, and AllowReads are per-session grants;
-	// they must not survive /new or /resume (the workspace-level AutoApprove
-	// preference is restored separately by RestoreRepoState if applicable).
-	a.RevokeAuto()
-	a.SetAllowReads(false)
+	a.NewConversationTransition(chatID)
 }
 
 // InstallSession atomically installs a loaded session into the App under
@@ -901,20 +866,21 @@ func (a *App) InstallSession(s *Session) {
 
 // NewConversationTransition atomically starts a fresh session under
 // stateMu.Lock. It is the locked version of NewConversation, called by the
-// InitNewSession handler inside a coordinator transition. Unlike
-// NewConversation, it acquires stateMu so the writes are synchronized with
-// concurrent readers (SnapshotSessionState, GetSessionState).
+// InitNewSession handler inside a coordinator transition. Both NewConversation
+// and NewConversationTransition acquire stateMu so the writes are synchronized
+// with concurrent readers (SnapshotSessionState, GetSessionState).
+//
+// Session-end hooks are fired BEFORE acquiring stateMu to avoid holding the
+// lock across subprocess execution (RunSessionHooks runs shell commands).
 func (a *App) NewConversationTransition(chatID string) {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-
-	// Fire session_end hooks for the ending session (parity with NewConversation).
+	// Fire session_end hooks for the ending session BEFORE acquiring stateMu
+	// — hooks run shell subprocesses and must not hold the lock.
 	if a.Hooks != nil {
 		a.Hooks.RunSessionHooks(context.Background(), hookSessionEnd)
 	}
 
-	// ilm-stack: session_end is NOT emitted here (same reason as
-	// NewConversation — this runs on the NEW app). See OnStop.
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
 
 	a.clearCheckpoints()
 	a.convMu.Lock()
@@ -926,7 +892,9 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.sessionStarted = false
 	a.ilmStarted = false
 	a.ilmEnded = false
-	a.Client.ChatID = chatID
+	if a.Client != nil {
+		a.Client.ChatID = chatID
+	}
 	a.Session = &Session{
 		ChatID:       chatID,
 		Model:        a.Client.Model,
