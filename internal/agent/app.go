@@ -968,6 +968,15 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 // WaitForAsyncCompletion, then resumes. Send(ctx, text) is equivalent to
 // out := SendOutcome(ctx, text); out.Text and never distinguishes suspension.
 func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, retErr error) {
+	// Card #250: atomically admit the turn under cpMu. If a rewind is in
+	// progress, refuse before any side effects. The cpTurnAdmitted flag blocks
+	// rewind for the full turn lifetime (unlike cpActive, which
+	// clearCheckpoints can clear mid-turn during compaction).
+	if !a.admitTurn() {
+		return TurnOutcome{Kind: TurnFinal}, fmt.Errorf("cannot start turn during rewind — try again when rewind completes")
+	}
+	defer a.releaseTurn()
+
 	// Fire session_start hooks once per session (first Send call).
 	if a.Hooks != nil && !a.sessionStarted {
 		a.sessionStarted = true
@@ -1019,8 +1028,9 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 
 	// Start a checkpoint for this turn. Captures pre-mutation file state as
 	// tools run during the turn, enabling /rewind to undo file changes.
-	// If a rewind is in progress (rare — same goroutine), the turn proceeds
-	// without checkpointing.
+	// The pre-admission gate at the top of SendOutcome (card #250) ensures
+	// cpRewinding is false by this point; startCheckpoint's own check is a
+	// defense-in-depth second gate.
 	a.startCheckpoint()
 	defer a.endCheckpoint()
 

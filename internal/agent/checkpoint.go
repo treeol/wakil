@@ -61,13 +61,44 @@ const (
 // Checkpoints are NOT persisted — they are cleared on session rotation,
 // compaction, and resume. They exist only for the current session's undo.
 type checkpointState struct {
-	cpMu         sync.Mutex
-	checkpoints  []Checkpoint
-	cpTurnCount  int   // total user turns this session (for display)
-	cpActive     bool  // true when a checkpoint is active for the current turn
-	cpTotalBytes int   // approximate total bytes across all checkpoints
-	cpRewinding  bool  // true while rewind file I/O is in progress — blocks new turns and captures
-	cpGenCounter int64 // monotonically increasing generation ID for checkpoint identity
+	cpMu           sync.Mutex
+	checkpoints    []Checkpoint
+	cpTurnCount    int   // total user turns this session (for display)
+	cpActive       bool  // true when a checkpoint is active for the current turn
+	cpTurnAdmitted bool  // true while a turn is admitted (card #250) — blocks rewind for the full turn lifetime, unlike cpActive which clearCheckpoints clears
+	cpTotalBytes   int   // approximate total bytes across all checkpoints
+	cpRewinding    bool  // true while rewind file I/O is in progress — blocks new turns and captures
+	cpGenCounter   int64 // monotonically increasing generation ID for checkpoint identity
+}
+
+// admitTurn atomically checks that no rewind is in progress AND reserves the
+// turn under cpMu. If cpRewinding is true, returns false (turn must not start).
+// Otherwise sets cpTurnAdmitted=true, which blocks rewind for the full turn
+// lifetime (unlike cpActive, which clearCheckpoints can clear mid-turn during
+// compaction). The caller must call releaseTurn (via defer) when the turn ends.
+// Returns false for subagents (subagents don't interact with the rewind system).
+func (a *App) admitTurn() bool {
+	if a.IsSubagent {
+		return true // subagent turns always proceed; no checkpoint interaction
+	}
+	a.cpMu.Lock()
+	defer a.cpMu.Unlock()
+	if a.cpRewinding {
+		return false
+	}
+	a.cpTurnAdmitted = true
+	return true
+}
+
+// releaseTurn clears the turn-admitted flag set by admitTurn. Called via defer
+// at the end of SendOutcome. Safe to call when not admitted (no-op).
+func (a *App) releaseTurn() {
+	if a.IsSubagent {
+		return
+	}
+	a.cpMu.Lock()
+	a.cpTurnAdmitted = false
+	a.cpMu.Unlock()
 }
 
 // startCheckpoint begins a new checkpoint for the current turn. Called from
@@ -78,7 +109,9 @@ type checkpointState struct {
 //
 // Safe to call when no checkpoint system is active (subagents, tests) — it's
 // a no-op for IsSubagent Apps. Returns false if a rewind is in progress
-// (the caller should warn the user that the turn will not be checkpointed).
+// (defense-in-depth; the pre-admission gate in SendOutcome should prevent
+// this, but clearCheckpoints during compaction could theoretically reopen a
+// window).
 func (a *App) startCheckpoint() bool {
 	if a.IsSubagent {
 		return false
@@ -446,7 +479,7 @@ func (a *App) rewind(n int) rewindResult {
 	a.cpMu.Lock()
 	// Refuse rewind while a turn is active — file restores and Conv truncation
 	// would race the turn's tool writes and Conv appends.
-	if a.cpActive {
+	if a.cpActive || a.cpTurnAdmitted {
 		a.cpMu.Unlock()
 		return rewindResult{Errors: []string{"cannot rewind while a turn is in progress"}}
 	}

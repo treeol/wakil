@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 )
@@ -1053,6 +1054,126 @@ func TestRewind_ConcurrentRewindBlocked(t *testing.T) {
 	}
 
 	// Clean up the cpRewinding flag.
+	app.cpMu.Lock()
+	app.cpRewinding = false
+	app.cpMu.Unlock()
+}
+
+// TestSendOutcomeRefusedDuringRewind (card #250) verifies that SendOutcome
+// refuses to start a turn while a rewind is in progress, and that the user
+// message is NOT appended to Conv (preventing data loss from rewind's Conv
+// truncation).
+func TestSendOutcomeRefusedDuringRewind(t *testing.T) {
+	app := &App{
+		Out:  os.Stderr,
+		Cfg:  config.DefaultConfig(),
+		Conv: []proxy.Message{{Role: "system", Content: StrPtr("system prompt")}},
+	}
+	app.SetConsent(ConsentSnapshot{})
+
+	// Simulate a rewind in progress.
+	app.cpMu.Lock()
+	app.cpRewinding = true
+	app.cpMu.Unlock()
+
+	convBefore := len(app.Conv)
+	out, err := app.SendOutcome(context.Background(), "test message")
+	if err == nil {
+		t.Fatal("expected error when starting turn during rewind, got nil")
+	}
+	if out.Kind != TurnFinal {
+		t.Errorf("expected TurnFinal, got %v", out.Kind)
+	}
+	if len(app.Conv) != convBefore {
+		t.Errorf("Conv was mutated during refused turn: before=%d, after=%d (user message should NOT be appended)", convBefore, len(app.Conv))
+	}
+
+	// Verify cpTurnAdmitted was NOT set (admission was refused).
+	app.cpMu.Lock()
+	admitted := app.cpTurnAdmitted
+	app.cpMu.Unlock()
+	if admitted {
+		t.Error("cpTurnAdmitted should be false when turn is refused during rewind")
+	}
+
+	// Clean up.
+	app.cpMu.Lock()
+	app.cpRewinding = false
+	app.cpMu.Unlock()
+}
+
+// TestAdmitTurnBlocksRewind (card #250) verifies that after admitTurn succeeds,
+// rewind refuses — the atomic admission prevents the TOCTOU race where
+// rewind starts between the gate check and startCheckpoint.
+func TestAdmitTurnBlocksRewind(t *testing.T) {
+	app, dir := checkpointTestApp(t)
+	ctx := context.Background()
+
+	// Write a file and create a checkpoint so rewind has something to work with.
+	p := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(p, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.startCheckpoint()
+	app.captureForCheckpoint(ctx, p)
+	if _, err := app.Exec.WriteFile(ctx, p, "modified"); err != nil {
+		t.Fatal(err)
+	}
+	app.endCheckpoint()
+
+	// Admit a turn (simulates SendOutcome start).
+	if !app.admitTurn() {
+		t.Fatal("admitTurn should succeed when no rewind is in progress")
+	}
+	defer app.releaseTurn()
+
+	// Rewind should refuse while a turn is admitted.
+	result := app.rewind(1)
+	if len(result.Errors) == 0 {
+		t.Fatal("rewind should refuse while a turn is admitted (cpTurnAdmitted)")
+	}
+	if !strings.Contains(result.Errors[0], "turn is in progress") {
+		t.Errorf("unexpected error: %v", result.Errors)
+	}
+}
+
+// TestAdmitTurnRefusedDuringRewind (card #250) verifies that admitTurn returns
+// false when cpRewinding is set.
+func TestAdmitTurnRefusedDuringRewind(t *testing.T) {
+	app := &App{Out: os.Stderr}
+
+	app.cpMu.Lock()
+	app.cpRewinding = true
+	app.cpMu.Unlock()
+
+	if app.admitTurn() {
+		t.Error("admitTurn should return false during rewind")
+	}
+
+	// Clean up.
+	app.cpMu.Lock()
+	app.cpRewinding = false
+	app.cpMu.Unlock()
+}
+
+// TestAdmitTurnSubagentBypass (card #250) verifies that subagent turns always
+// proceed (admitTurn returns true) regardless of cpRewinding state — subagents
+// don't interact with the rewind system.
+func TestAdmitTurnSubagentBypass(t *testing.T) {
+	app := &App{IsSubagent: true, Out: os.Stderr}
+
+	app.cpMu.Lock()
+	app.cpRewinding = true
+	app.cpMu.Unlock()
+
+	if !app.admitTurn() {
+		t.Error("admitTurn should return true for subagents even during rewind")
+	}
+
+	// releaseTurn should be a no-op for subagents.
+	app.releaseTurn()
+
+	// Clean up.
 	app.cpMu.Lock()
 	app.cpRewinding = false
 	app.cpMu.Unlock()
