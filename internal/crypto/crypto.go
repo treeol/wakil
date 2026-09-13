@@ -79,6 +79,23 @@ func (a AAD) bytes() []byte {
 	return []byte(envelopeVersion + "\x00" + a.Purpose + "\x00" + a.TenantID + "\x00" + a.RowID)
 }
 
+// validate returns an error if any AAD field contains a NUL byte (\x00).
+// The AAD format uses \x00 as a field delimiter; fields containing \x00
+// would create ambiguous AAD bytes, allowing two different AAD values to
+// collide — defeating the ciphertext-binding purpose of AAD.
+func (a AAD) validate() error {
+	if strings.ContainsRune(a.Purpose, 0) {
+		return fmt.Errorf("crypto: AAD Purpose contains NUL byte")
+	}
+	if strings.ContainsRune(a.TenantID, 0) {
+		return fmt.Errorf("crypto: AAD TenantID contains NUL byte")
+	}
+	if strings.ContainsRune(a.RowID, 0) {
+		return fmt.Errorf("crypto: AAD RowID contains NUL byte")
+	}
+	return nil
+}
+
 // NewMasterKey creates a MasterKey from a raw 32-byte key and a key_id.
 func NewMasterKey(keyID string, key []byte) (*MasterKey, error) {
 	if len(key) != KeySize {
@@ -134,6 +151,9 @@ func DecodeKey(s string) ([]byte, error) {
 // The aad is bound to both encryption layers so swapping ciphertext or DEKs
 // between rows with different AAD will fail decryption.
 func (mk *MasterKey) Encrypt(plaintext []byte, aad AAD) (*Envelope, error) {
+	if err := aad.validate(); err != nil {
+		return nil, err
+	}
 	aadBytes := aad.bytes()
 
 	// Generate DEK.
@@ -177,6 +197,9 @@ func (mk *MasterKey) Encrypt(plaintext []byte, aad AAD) (*Envelope, error) {
 // decrypts the payload ciphertext. The aad must match the AAD used during
 // encryption or decryption will fail (GCM auth tag mismatch).
 func (mk *MasterKey) Decrypt(env *Envelope, aad AAD) ([]byte, error) {
+	if err := aad.validate(); err != nil {
+		return nil, err
+	}
 	if env.KeyID != mk.keyID {
 		return nil, fmt.Errorf("crypto: key_id mismatch (have %q, want %q)", env.KeyID, mk.keyID)
 	}

@@ -269,6 +269,49 @@ func TestDecryptMalformedEnvelopes(t *testing.T) {
 	}
 }
 
+func TestAADRejectsNULBytes(t *testing.T) {
+	mk, _ := NewMasterKey("v1", mustGenKey(t))
+
+	// NUL in Purpose.
+	_, err := mk.Encrypt([]byte("secret"), AAD{Purpose: "test\x00evil", TenantID: "t", RowID: "r"})
+	if err == nil {
+		t.Fatal("Encrypt with NUL in Purpose should fail")
+	}
+
+	// NUL in TenantID.
+	_, err = mk.Encrypt([]byte("secret"), AAD{Purpose: "test", TenantID: "t\x00evil", RowID: "r"})
+	if err == nil {
+		t.Fatal("Encrypt with NUL in TenantID should fail")
+	}
+
+	// NUL in RowID.
+	_, err = mk.Encrypt([]byte("secret"), AAD{Purpose: "test", TenantID: "t", RowID: "r\x00evil"})
+	if err == nil {
+		t.Fatal("Encrypt with NUL in RowID should fail")
+	}
+
+	// Valid AAD still works.
+	env, err := mk.Encrypt([]byte("secret"), testAAD)
+	if err != nil {
+		t.Fatalf("Encrypt with valid AAD failed: %v", err)
+	}
+
+	// Decrypt with NUL in AAD should also fail.
+	_, err = mk.Decrypt(env, AAD{Purpose: "test\x00evil", TenantID: "tnt_1", RowID: "row_1"})
+	if err == nil {
+		t.Fatal("Decrypt with NUL in Purpose should fail")
+	}
+
+	// Existing ciphertext (no NUL) still decrypts with valid AAD.
+	decrypted, err := mk.Decrypt(env, testAAD)
+	if err != nil {
+		t.Fatalf("Decrypt with valid AAD failed: %v", err)
+	}
+	if !bytes.Equal(decrypted, []byte("secret")) {
+		t.Fatalf("decrypted = %q, want %q", decrypted, "secret")
+	}
+}
+
 func mustGenKey(t *testing.T) []byte {
 	t.Helper()
 	key, err := GenerateMasterKey()
