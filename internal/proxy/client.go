@@ -748,6 +748,11 @@ type Sink func(string)
 // "reasoning". Reasoning is NEVER written into the returned Message — the stored
 // assistant turn is always final-answer content only.
 func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, sink Sink, reasoningSink Sink) (Message, error) {
+	// Reset usage at entry so a pre-publication failure (e.g., marshal error,
+	// request-build error) does not leave stale usage from the previous call.
+	// RecordInferenceCost no-ops on zero usage, preventing double-recording
+	// (card #247).
+	c.SetUsage(UsageStat{})
 	// proxyShape gates every ilm-proxy-specific request element. Kind ""
 	// means an old construction site that predates endpoint kinds — treat as
 	// the proxy so existing behavior is untouched.
