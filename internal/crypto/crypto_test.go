@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -140,6 +141,58 @@ func TestDecodeKeyBase64(t *testing.T) {
 	}
 	if !bytes.Equal(decoded, key) {
 		t.Fatal("hex decode mismatch")
+	}
+}
+
+func TestDecodeKeyBase64Std(t *testing.T) {
+	key, _ := GenerateMasterKey()
+	encoded := base64.StdEncoding.EncodeToString(key)
+	decoded, err := DecodeKey(encoded)
+	if err != nil {
+		t.Fatalf("DecodeKey base64: %v", err)
+	}
+	if !bytes.Equal(decoded, key) {
+		t.Fatal("base64 decode mismatch")
+	}
+}
+
+func TestDecodeKeyURLSafeBase64(t *testing.T) {
+	key, _ := GenerateMasterKey()
+	encoded := base64.URLEncoding.EncodeToString(key)
+	decoded, err := DecodeKey(encoded)
+	if err != nil {
+		t.Fatalf("DecodeKey URL-safe base64: %v", err)
+	}
+	if !bytes.Equal(decoded, key) {
+		t.Fatal("URL-safe base64 decode mismatch")
+	}
+}
+
+func TestDecodeKeyRejectsWrongLength(t *testing.T) {
+	for _, n := range []int{0, 16, 24, 64} {
+		key := make([]byte, n)
+		for i := range key {
+			key[i] = byte(i)
+		}
+		encoded := hex.EncodeToString(key)
+		_, err := DecodeKey(encoded)
+		if err == nil {
+			t.Errorf("DecodeKey with %d-byte key should fail", n)
+		}
+	}
+}
+
+func TestDecodeKeyRejectsEmpty(t *testing.T) {
+	_, err := DecodeKey("")
+	if err == nil {
+		t.Fatal("DecodeKey with empty string should fail")
+	}
+}
+
+func TestDecodeKeyRejectsMalformed(t *testing.T) {
+	_, err := DecodeKey("not-valid-hex-or-base64!!!")
+	if err == nil {
+		t.Fatal("DecodeKey with malformed input should fail")
 	}
 }
 

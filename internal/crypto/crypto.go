@@ -129,17 +129,25 @@ func EncodeKey(key []byte) string {
 func DecodeKey(s string) ([]byte, error) {
 	// Try hex first (most common for key material).
 	if b, err := hex.DecodeString(s); err == nil {
-		return b, nil
+		if len(b) == KeySize {
+			return b, nil
+		}
+		// Wrong length — fall through to try base64 (the input might be
+		// base64 that happened to be valid hex of a different length).
 	}
 	// Try standard base64.
 	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return b, nil
+		if len(b) == KeySize {
+			return b, nil
+		}
 	}
 	// Try URL-safe base64.
 	if b, err := base64.URLEncoding.DecodeString(s); err == nil {
-		return b, nil
+		if len(b) == KeySize {
+			return b, nil
+		}
 	}
-	return nil, errors.New("crypto: key is not valid hex or base64")
+	return nil, errors.New("crypto: key is not valid hex or base64, or not exactly 32 bytes")
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM with envelope encryption:
