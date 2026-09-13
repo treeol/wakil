@@ -364,3 +364,65 @@ func TestScrubNilSafe(t *testing.T) {
 		t.Fatalf("nil PatternScrubber should return text unchanged")
 	}
 }
+
+func TestScrubOpenAIProjKey(t *testing.T) {
+	s := New(LevelStandard)
+	// sk-proj- keys contain hyphens — the old pattern [A-Za-z0-9]{20,} missed them.
+	key := "sk-proj-abcdef1234567890abcdefghij"
+	got := s.Scrub("api_key=" + key)
+	if strings.Contains(got, key) {
+		t.Fatalf("OpenAI sk-proj key not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:openai_key]") {
+		t.Fatalf("expected [REDACTED:openai_key] in: %s", got)
+	}
+}
+
+func TestScrubSlackToken(t *testing.T) {
+	s := New(LevelStandard)
+	key := "xoxb-1234567890123-09876543210987654321"
+	got := s.Scrub("token: " + key)
+	if strings.Contains(got, key) {
+		t.Fatalf("Slack token not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:slack_token]") {
+		t.Fatalf("expected [REDACTED:slack_token] in: %s", got)
+	}
+}
+
+func TestScrubStripeKey(t *testing.T) {
+	s := New(LevelStandard)
+	key := "sk_live_abcdef1234567890ABCDEF12"
+	got := s.Scrub("key: " + key)
+	if strings.Contains(got, key) {
+		t.Fatalf("Stripe key not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:stripe_key]") {
+		t.Fatalf("expected [REDACTED:stripe_key] in: %s", got)
+	}
+}
+
+func TestScrubGitHubFineGrainedPAT(t *testing.T) {
+	s := New(LevelStandard)
+	key := "github_pat_" + strings.Repeat("A", 22)
+	got := s.Scrub("token: " + key)
+	if strings.Contains(got, key) {
+		t.Fatalf("GitHub fine-grained PAT not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:github_token]") {
+		t.Fatalf("expected [REDACTED:github_token] in: %s", got)
+	}
+}
+
+func TestScrubAggressiveGenericTokenURLSafe(t *testing.T) {
+	s := New(LevelAggressive)
+	// URL-safe base64 uses - and _ — the old pattern [A-Za-z0-9+/]{40,} missed them.
+	token := strings.Repeat("A-B_C", 10) // 50 chars with - and _
+	got := s.Scrub("secret=" + token)
+	if strings.Contains(got, token) {
+		t.Fatalf("URL-safe base64 generic token not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:secret]") {
+		t.Fatalf("expected [REDACTED:secret] in: %s", got)
+	}
+}

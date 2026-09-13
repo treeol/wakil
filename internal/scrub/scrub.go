@@ -80,18 +80,24 @@ func New(level Level) *PatternScrubber {
 
 	// Standard patterns — high confidence.
 	ps.add("bearer", `(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*`, "[REDACTED:bearer]")
-	ps.add("openai_key", `sk-[A-Za-z0-9]{20,}`, "[REDACTED:openai_key]")
+	// Anthropic key MUST come before openai_key — the openai pattern sk-[A-Za-z0-9-]{20,}
+	// would match sk-ant-... keys first if ordered after.
 	ps.add("anthropic_key", `sk-ant-[A-Za-z0-9\-_]{20,}`, "[REDACTED:anthropic_key]")
+	ps.add("openai_key", `sk-[A-Za-z0-9\-]{20,}`, "[REDACTED:openai_key]")
 	ps.add("github_pat", `gh[pousr]_[A-Za-z0-9]{36,}`, "[REDACTED:github_token]")
 	ps.add("google_api", `AIza[A-Za-z0-9\-_]{35}`, "[REDACTED:google_api_key]")
 	ps.add("aws_access", `AKIA[A-Z0-9]{16}`, "[REDACTED:aws_access_key]")
 	ps.add("aws_secret", `(?i)aws_secret_access_key["'\s:=]+[A-Za-z0-9/+=]{40}`, "[REDACTED:aws_secret_key]")
 	ps.add("jwt", `eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`, "[REDACTED:jwt]")
 	ps.add("connstring_pwd", `([a-z][a-z0-9+]*)://([^:\s]+):([^\s@]+)@`, "${1}://${2}:[REDACTED:password]@")
+	// Common SaaS secret formats.
+	ps.add("slack_token", `xox[abp]-[A-Za-z0-9\-]{10,}`, "[REDACTED:slack_token]")
+	ps.add("stripe_key", `sk_live_[A-Za-z0-9]{24,}`, "[REDACTED:stripe_key]")
+	ps.add("github_fine_pat", `github_pat_[A-Za-z0-9_]{22,}`, "[REDACTED:github_token]")
 
 	if level >= LevelAggressive {
 		// Generic high-entropy tokens — only when preceded by a secret-like keyword.
-		ps.add("generic_token", `(?i)(token|secret|key|password|passwd|auth|credential)["'\s:=]+[A-Za-z0-9+/]{40,}={0,2}`, "[REDACTED:secret]")
+		ps.add("generic_token", `(?i)(token|secret|key|password|passwd|auth|credential)["'\s:=]+[A-Za-z0-9\-_+/]{40,}={0,2}`, "[REDACTED:secret]")
 	}
 
 	return ps
