@@ -844,11 +844,13 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			// RespondToApproval is non-blocking; an already-resolved approval
 			// (ctx-cancel race — cancellation forced a decline first) is
 			// tolerated silently: the turn is already unwinding.
-			_ = m.facade.RespondToApproval(context.Background(), m.principal, core.ApprovalDecision{
+			if err := m.facade.RespondToApproval(context.Background(), m.principal, core.ApprovalDecision{
 				SessionID:  m.sessionID,
 				ApprovalID: event.ApprovalID(pa.approvalID),
 				Outcome:    outcome,
-			})
+			}); err != nil {
+				m.addItem(iSys, dim2("≫ approval delivery failed: "+err.Error()))
+			}
 			m = m.reflowIfStatusHeightChanged(before)
 		}
 		switch msg.String() {
@@ -1465,7 +1467,9 @@ func (m *tuiModel) cancelTurn() {
 	// The host owns the turn: Interrupt cancels it (non-blocking — the
 	// executor sees the cancellation and finalizes with
 	// TurnCompleted{cancelled}).
-	_ = m.facade.Interrupt(context.Background(), m.principal, m.sessionID)
+	if err := m.facade.Interrupt(context.Background(), m.principal, m.sessionID); err != nil {
+		m.addItem(iSys, dim2("≫ cancel failed: "+err.Error()))
+	}
 }
 
 // --- Double-press arm (quit/cancel confirmation gate) ---
