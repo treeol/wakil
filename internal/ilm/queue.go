@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -108,16 +109,20 @@ const maxQueueReadBytes = 64 * 1024 * 1024
 // causing a 55GB-RSS OOM kill) is unrecoverable garbage, and re-reading a
 // capped slice every tick while the endpoint is down would churn memory
 // indefinitely.
-func (q *queue) readAll() ([]Event, error) {
+//
+// Returns (events, byteLen, error) where byteLen is the total number of bytes
+// in the file at read time. Callers pass byteLen to truncateAfter to remove
+// exactly the snapshot, preserving events appended during the POST window.
+func (q *queue) readAll() ([]Event, int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	info, err := os.Stat(q.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	if info.Size() > maxQueueReadBytes {
 		// File is too large — this can only happen from a runaway bug
@@ -130,16 +135,16 @@ func (q *queue) readAll() ([]Event, error) {
 		diag.Printf("ilm: queue file is %d bytes (>%d cap) — truncating runaway queue, events dropped",
 			info.Size(), maxQueueReadBytes)
 		if err := os.Truncate(q.path, 0); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	data, err := os.ReadFile(q.path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return decodeEvents(data), nil
+	return decodeEvents(data), len(data), nil
 }
 
 // decodeEvents parses JSONL event data into a slice of Events. Malformed
@@ -164,36 +169,57 @@ func decodeEvents(data []byte) []Event {
 	return events
 }
 
-// truncate removes all events from the queue file (after a successful batch
-// truncateAfter removes events up to and including the given count (after a
-// partial batch POST). Events after `count` remain in the queue.
-func (q *queue) truncateAfter(count int) error {
+// truncateAfter removes the first offset bytes from the queue file (the
+// snapshot that was just sent). Events appended during the POST window are
+// preserved because appends use O_APPEND and land strictly after offset.
+// Uses temp file + rename for atomicity — a crash during compaction leaves
+// the original file intact.
+func (q *queue) truncateAfter(offset int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	if offset <= 0 {
+		return nil
+	}
 
 	data, err := os.ReadFile(q.path)
 	if err != nil {
 		return err
 	}
 
-	lines := 0
-	offset := 0
-	for offset < len(data) && lines < count {
-		nl := bytes.IndexByte(data[offset:], '\n')
-		if nl < 0 {
-			break
-		}
-		offset += nl + 1
-		lines++
+	// Guard: if the file shrank since readAll (shouldn't happen with a
+	// single owner, but defense-in-depth), bail without writing.
+	if len(data) < offset {
+		return nil
 	}
 
-	if offset >= len(data) {
+	remaining := data[offset:]
+	if len(remaining) == 0 {
+		// No remaining events — truncate to empty.
 		return os.Truncate(q.path, 0)
 	}
 
-	// Write the remaining events back to the file.
-	remaining := data[offset:]
-	return os.WriteFile(q.path, remaining, 0o600)
+	// Write to a temp file in the same directory, then rename for atomicity.
+	dir := filepath.Dir(q.path)
+	tmp, err := os.CreateTemp(dir, ".queue-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op if rename succeeded
+
+	if _, err := tmp.Write(remaining); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, q.path)
 }
 
 // sender is the background goroutine that batches events from the channel and
@@ -334,7 +360,7 @@ func (s *sender) sendBatchWithBackoff(batch []Event, backoff *time.Duration, max
 // the events stay in the file unchanged — the next tick re-reads and retries.
 // No duplication, no growth.
 func (s *sender) drainQueue() {
-	events, err := s.queue.readAll()
+	events, byteLen, err := s.queue.readAll()
 	if err != nil || len(events) == 0 {
 		return
 	}
@@ -349,11 +375,13 @@ func (s *sender) drainQueue() {
 			diag.Printf("ilm: dropping %d events after permanent error: %v",
 				len(events), postErr)
 		}
-		// Use truncateAfter instead of truncate so events appended to the
-		// queue file during the POST window (by an overflowing Emit) are
-		// preserved. truncate() would wipe the entire file, deleting
-		// events that were never sent.
-		_ = s.queue.truncateAfter(len(events))
+		// Use truncateAfter with the byte offset to remove exactly the
+		// snapshot read by readAll, preserving events appended during the
+		// POST window. The byte offset avoids counting mismatches with
+		// malformed/empty lines that decodeEvents skips.
+		if err := s.queue.truncateAfter(byteLen); err != nil {
+			diag.Printf("ilm: queue compaction failed: %v", err)
+		}
 	}
 	// On transient failure: events stay in the file as-is. The next tick
 	// re-reads and retries. No duplication.

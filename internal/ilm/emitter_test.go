@@ -432,7 +432,7 @@ func TestRateLimit429Retryable(t *testing.T) {
 
 	// 429 is transient — events should remain in the queue (not dropped).
 	q, _ := newQueue(queuePath)
-	events, _ := q.readAll()
+	events, _, _ := q.readAll()
 	if len(events) == 0 {
 		t.Errorf("429 should be retryable — events should remain in queue, but queue is empty (events were dropped as permanent failure)")
 	}
@@ -557,7 +557,7 @@ func TestRedactionInEmit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen queue: %v", err)
 	}
-	events, err := q.readAll()
+	events, _, err := q.readAll()
 	if err != nil {
 		t.Fatalf("readAll: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestDrainQueueNoAmplification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen queue: %v", err)
 	}
-	events, err := q.readAll()
+	events, _, err := q.readAll()
 	if err != nil {
 		t.Fatalf("readAll: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestReadAllOversizedQueueTruncates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newQueue: %v", err)
 	}
-	events, err := q.readAll()
+	events, _, err := q.readAll()
 	if err != nil {
 		t.Fatalf("readAll: %v", err)
 	}
@@ -712,7 +712,7 @@ func TestPermanentErrorDropsQueue(t *testing.T) {
 
 	// Queue must be empty — the 4xx'd batch was dropped, not persisted.
 	q, _ := newQueue(queuePath)
-	events, _ := q.readAll()
+	events, _, _ := q.readAll()
 	if len(events) != 0 {
 		t.Errorf("4xx should drop events, but queue has %d events", len(events))
 	}
@@ -937,5 +937,106 @@ not-json-at-all
 	}
 	if len(events) > 2 && events[2].EventID != "c" {
 		t.Errorf("third event should be 'c', got %q", events[2].EventID)
+	}
+}
+
+// TestTruncateAfterByteOffset verifies that truncateAfter uses byte offsets
+// (not line counts) so malformed/empty lines don't cause replay divergence.
+// With the old count-based approach, truncateAfter(3) would remove only 3
+// physical lines (including the malformed one), leaving a valid event for replay.
+func TestTruncateAfterByteOffset(t *testing.T) {
+	queuePath := filepath.Join(t.TempDir(), "queue.jsonl")
+	q, err := newQueue(queuePath)
+	if err != nil {
+		t.Fatalf("newQueue: %v", err)
+	}
+
+	// Write: valid, malformed, valid, valid
+	// decodeEvents returns 3 events (skipping the malformed line).
+	// readAll returns byteLen = total bytes in file.
+	data := `{"event_id":"a","session_id":"s","seq":1,"type":"user_turn","payload":{"text":"first"}}
+not-json
+{"event_id":"b","session_id":"s","seq":2,"type":"user_turn","payload":{"text":"second"}}
+{"event_id":"c","session_id":"s","seq":3,"type":"user_turn","payload":{"text":"third"}}
+`
+	if err := os.WriteFile(queuePath, []byte(data), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	events, byteLen, err := q.readAll()
+	if err != nil {
+		t.Fatalf("readAll: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events (skipping 1 malformed), got %d", len(events))
+	}
+	if byteLen != len(data) {
+		t.Fatalf("byteLen = %d, want %d", byteLen, len(data))
+	}
+
+	// Simulate successful POST of all 3 events — truncate by byte offset.
+	if err := q.truncateAfter(byteLen); err != nil {
+		t.Fatalf("truncateAfter: %v", err)
+	}
+
+	// File should be empty — all bytes (including malformed line) removed.
+	remaining, _, err := q.readAll()
+	if err != nil {
+		t.Fatalf("readAll after truncate: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 events after truncateAfter(byteLen), got %d", len(remaining))
+	}
+}
+
+// TestTruncateAfterPreservesAppendedEvents verifies that events appended
+// after readAll are preserved by truncateAfter (byte offset approach).
+func TestTruncateAfterPreservesAppendedEvents(t *testing.T) {
+	queuePath := filepath.Join(t.TempDir(), "queue.jsonl")
+	q, err := newQueue(queuePath)
+	if err != nil {
+		t.Fatalf("newQueue: %v", err)
+	}
+
+	// Write 2 events.
+	for i := 0; i < 2; i++ {
+		if err := q.append(Event{
+			EventID: fmt.Sprintf("ev-%d", i), SessionID: "s", Seq: i,
+			Type: EventUserTurn, Payload: json.RawMessage(`{"text":"x"}`),
+		}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	events, byteLen, err := q.readAll()
+	if err != nil {
+		t.Fatalf("readAll: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	// Append a 3rd event AFTER readAll (simulates append during POST).
+	if err := q.append(Event{
+		EventID: "ev-appended", SessionID: "s", Seq: 99,
+		Type: EventUserTurn, Payload: json.RawMessage(`{"text":"appended"}`),
+	}); err != nil {
+		t.Fatalf("append after readAll: %v", err)
+	}
+
+	// Truncate the snapshot — should preserve the appended event.
+	if err := q.truncateAfter(byteLen); err != nil {
+		t.Fatalf("truncateAfter: %v", err)
+	}
+
+	remaining, _, err := q.readAll()
+	if err != nil {
+		t.Fatalf("readAll after truncate: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("expected 1 remaining event (appended), got %d", len(remaining))
+	}
+	if remaining[0].EventID != "ev-appended" {
+		t.Errorf("remaining event = %q, want %q", remaining[0].EventID, "ev-appended")
 	}
 }
