@@ -140,3 +140,109 @@ All existing tests also pass:
    - The `assist` block in `/v1/adapters`: assist rate, act rate, agreement
      with the main model's subsequent action when Wakil ignored the proposal
      (A4).
+
+---
+
+## 2026-09-17 — Call-count check and fix
+
+### Check result: FAILED (fixed)
+
+The call-count contract — **exactly one POST /v1/assist and one assist_event
+per assistant turn that could produce a tool call** — was violated by three
+bugs in the counting/emission path. The policy (confirm mode, allowlist, auto
+flag) is unchanged.
+
+### Session data check
+
+Session `wakil-live:1b2e8523-1a8e-475d-9147-6f06ec204d22` (and predecessors)
+could not be inspected directly: the ILM queue file (`ilm-queue.jsonl`) and
+trace files live on the host at `~/.local/share/wakil/`, not inside the
+sandbox. The code-level analysis is definitive — the bugs below guarantee
+over-counting on any multi-iteration turn.
+
+### Bug 1: Per-iteration, not per-turn (counting)
+
+**Location**: `internal/agent/turn_phases.go:228`
+
+`assistCanAct(forceFinish)` was called inside the `streamTurn` for-loop on
+every iteration. A single user turn with N tool-call iterations (model calls
+tool → gets result → model called again → … → final text) produced N+1 assist
+calls instead of 1. The contract requires exactly one per turn.
+
+**Fix**: Gate the assist call on `iter == 0`. Assist runs once at the top of
+the turn, before the first model call. On subsequent iterations (after tool
+results are fed back), assist is not called again — the model drives the rest
+of the turn.
+
+### Bug 2: No "rejected" decision for 400 (emission)
+
+**Location**: `internal/ilm/assist.go:95`, `internal/agent/assist.go:42`
+
+When the seq passed to `/v1/assist` is an `assistant_turn` seq (which happens
+on iteration 1+ due to bug 1), the server returns 400. `AssistClient.Query`
+returned a generic error for all non-200s, and `tryAssist` classified it as
+`decision="error"`. The contract requires `decision="rejected"` for a 400 —
+the server rejected the request, distinct from a transport error.
+
+**Fix**: Added `AssistRejectedError` type in `internal/ilm/assist.go`. `Query`
+returns it for HTTP 400. `tryAssist` uses `errors.As` to detect it and emits
+`decision="rejected"` instead of `"error"`.
+
+### Bug 3: forceFinish guard (not a bug — correct)
+
+The `forceFinish` guard in `assistCanAct` was a candidate concern: when
+`forceFinish` is true (iteration limit hit), assist is skipped entirely and
+no assist_event is emitted. This is **correct** — a force-finished turn has
+tools stripped, so there is no tool-decision point. The `iter == 0` gate
+makes this moot in practice (forceFinish is always false on iter 0), and the
+guard is retained as defense-in-depth.
+
+### Replay test (C5, extended)
+
+`TestAssistReplay4Turns` in `internal/agent/assist_replay_test.go` — a
+4-turn agent-level replay asserting:
+
+- 4 assist calls to the stub server (exactly 1 per turn)
+- 4 assist_events in the emitter queue (exactly 1 per turn)
+- Decisions in order: `auto`, `abstain`, `error`, `rejected`
+- Turn 3: 800ms timeout (2s server delay)
+- Turn 4: 400 (server rejects seq)
+
+The model server returns text-only responses (no tool calls), so each turn
+is exactly 1 iteration — verifying the `iter == 0` gate.
+
+### Files changed
+
+| file | change |
+|---|---|
+| `internal/agent/turn_phases.go:228` | Gate assist call on `iter == 0` |
+| `internal/ilm/assist.go` | Add `AssistRejectedError`, return it for HTTP 400 |
+| `internal/agent/assist.go` | Handle `AssistRejectedError` → emit `decision="rejected"` |
+| `internal/ilm/payloads.go` | Add `"rejected"` to `AssistEventPayload.Decision` doc |
+| `internal/ilm/assist_test.go` | Add `TestAssistClient400Rejected` |
+| `internal/agent/assist_replay_test.go` (NEW) | `TestAssistReplay4Turns`: 4-turn agent-level replay |
+
+### Test results
+
+```
+internal/ilm   — PASS (9.15s)  [11 tests incl. TestAssistClient400Rejected]
+internal/agent — PASS (51.8s)  [incl. TestAssistReplay4Turns]
+internal/config — PASS (0.01s)
+```
+
+### What remains unverified
+
+- The live session `wakil-live:1b2e8523-…` was not inspected (host-side data
+  not accessible from sandbox). Run this on the host to confirm the fix
+  retroactively:
+
+  ```bash
+  jq -c 'select(.type=="assist_event")' ~/.local/share/wakil/ilm-queue.jsonl | \
+    jq -r '.seq' | sort -n
+  jq -c 'select(.type=="assistant_turn")' ~/.local/share/wakil/ilm-queue.jsonl | \
+    jq -r '.seq' | sort -n
+  ```
+
+  The assist_event seqs should be a strict subset of the assistant_turn seqs,
+  one per turn, after the fix. Before the fix, there would be more
+  assist_events than turns on any multi-iteration turn.

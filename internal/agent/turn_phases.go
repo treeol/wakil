@@ -224,8 +224,18 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// On any error, abstain, or allowlist failure, we fall through to the
 		// normal model call — the assist path is strictly an optimization.
 		// Assist is skipped when forceFinish is active (tools stripped).
+		//
+		// ASSIST-1 call-count contract: exactly one assist call per assistant
+		// turn that could produce a tool call. The gate is iter==0 — assist
+		// runs once at the top of the turn, before the first model call. On
+		// subsequent iterations (after tool results are fed back), assist is
+		// NOT called again; the model drives the rest of the turn. This
+		// prevents N+1 assist calls for a turn with N tool-call iterations.
+		// forceFinish is always false on iter 0 (budget exhaustion returns
+		// early, MaxToolIterations > 0 means iter 0 < limit), but the
+		// assistCanAct guard is retained as defense-in-depth.
 		var assistTookThisIter bool
-		if a.assistCanAct(forceFinish) {
+		if iter == 0 && a.assistCanAct(forceFinish) {
 			assistMsg, took := a.tryAssist(ctx)
 			assistTookThisIter = took
 			if took {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -40,6 +41,15 @@ func (a *App) tryAssist(ctx context.Context) (proxy.Message, bool) {
 
 	resp, err := a.Assist.Query(ctx, sessionID, seq)
 	if err != nil {
+		// A 400 (AssistRejectedError) means the server rejected the seq —
+		// it was not a valid decision point (e.g. an assistant_turn seq).
+		// The call-count contract still requires an assist_event, but with
+		// decision "rejected" instead of "error".
+		var rejErr *ilm.AssistRejectedError
+		if errors.As(err, &rejErr) {
+			a.emitAssistEvent("rejected", nil, resp, "", rejErr.Error())
+			return proxy.Message{}, false
+		}
 		// Transport error / non-200 / timeout → emit event and fall through.
 		a.emitAssistEvent("error", nil, resp, "", err.Error())
 		return proxy.Message{}, false

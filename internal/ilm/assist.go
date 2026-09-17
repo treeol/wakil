@@ -14,6 +14,19 @@ import (
 // Per C1: 800 ms. Any non-200, timeout, or abstain → proceed as without assist.
 const assistTimeout = 800 * time.Millisecond
 
+// AssistRejectedError signals that the server returned 400 — the seq passed
+// was not a valid decision-point seq (e.g. an assistant_turn seq instead of
+// a user_turn or tool_result seq). The server rejects the request, but the
+// call-count contract still requires an assist_event with decision "rejected".
+type AssistRejectedError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *AssistRejectedError) Error() string {
+	return fmt.Sprintf("assist: HTTP %d (rejected)", e.StatusCode)
+}
+
 // AssistRequest is the POST /v1/assist request body (per the served contract).
 type AssistRequest struct {
 	SessionID string `json:"session_id"`
@@ -93,6 +106,14 @@ func (c *AssistClient) Query(ctx context.Context, sessionID string, seq int) (*A
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// A 400 means the server rejected the request — typically because
+		// the seq passed was not a valid decision-point seq (e.g. an
+		// assistant_turn seq). We return a distinct error type so tryAssist
+		// can emit decision="rejected" rather than "error".
+		if resp.StatusCode == http.StatusBadRequest {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			return nil, &AssistRejectedError{StatusCode: 400, Body: string(body)}
+		}
 		return nil, fmt.Errorf("assist: HTTP %d", resp.StatusCode)
 	}
 

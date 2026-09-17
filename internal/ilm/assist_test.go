@@ -3,6 +3,7 @@ package ilm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -198,6 +199,30 @@ func TestAssistClientNon200(t *testing.T) {
 	_, err := client.Query(context.Background(), "wakil-live:test", 4)
 	if err == nil {
 		t.Fatal("expected error on 503, got nil")
+	}
+}
+
+// TestAssistClient400Rejected tests that a 400 response returns an
+// AssistRejectedError (not a generic error), so tryAssist can emit
+// decision="rejected" instead of "error".
+func TestAssistClient400Rejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"seq is not a decision point"}`))
+	}))
+	defer srv.Close()
+
+	client := NewAssistClient(srv.URL, "test-token")
+	_, err := client.Query(context.Background(), "wakil-live:test", 42)
+	if err == nil {
+		t.Fatal("expected error on 400, got nil")
+	}
+	var rejErr *AssistRejectedError
+	if !errors.As(err, &rejErr) {
+		t.Fatalf("expected AssistRejectedError, got %T: %v", err, err)
+	}
+	if rejErr.StatusCode != 400 {
+		t.Errorf("expected StatusCode 400, got %d", rejErr.StatusCode)
 	}
 }
 

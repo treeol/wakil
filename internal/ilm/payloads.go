@@ -86,6 +86,7 @@ type AssistEventPayload struct {
 	//   "auto"            — assist_auto=true and Wakil executed directly.
 	//   "abstain"         — the server abstained (no action proposed).
 	//   "error"           — transport error (timeout, non-200, malformed response).
+	//   "rejected"        — the server returned 400 (seq not a valid decision point).
 	Decision string `json:"decision"`
 
 	// Tool is the proposed tool name (empty when abstain/error).
