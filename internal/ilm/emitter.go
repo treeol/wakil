@@ -1,4 +1,4 @@
-// Package ilm implements the ilm-stack shadow-mode emitter.
+// Package ilm implements the ilm-stack shadow and assist-mode emitter.
 //
 // It hooks into Wakil's write paths (session start/end, user/assistant turns,
 // tool calls/results, memory ops, mashura calls, errors) and emits events to
@@ -8,8 +8,8 @@
 // backoff. Wakil's main loop never blocks on the network.
 //
 // mode=off (the default): the emitter discards all events immediately — zero
-// behaviour change, zero network calls. Only mode=shadow activates the channel,
-// queue, and sender.
+// behaviour change, zero network calls. mode=shadow and mode=assist activate the
+// channel, queue, and sender.
 package ilm
 
 import (
@@ -137,8 +137,7 @@ func New(cfg Config, sessionID string) (*Emitter, error) {
 	if cfg.Mode == "" {
 		cfg.Mode = ModeOff
 	}
-	// Reject unknown mode values — only "off" and "shadow" are valid.
-	// The old code activated emission for any non-empty, non-"off" value.
+	// Reject unknown mode values — "off", "shadow", and "assist" are valid.
 	if cfg.Mode != ModeOff && cfg.Mode != ModeShadow && cfg.Mode != ModeAssist {
 		return nil, fmt.Errorf("ilm: unknown mode %q (must be %q, %q, or %q)", cfg.Mode, ModeOff, ModeShadow, ModeAssist)
 	}
@@ -290,7 +289,7 @@ func (e *Emitter) Emit(typ EventType, payload interface{}) {
 	default:
 		// Channel full — best-effort append to queue. If the queue
 		// write also fails, drop the event rather than blocking the
-		// caller. Shadow-mode telemetry is lossy by design.
+		// caller. Shadow and assist-mode telemetry is lossy by design.
 		if err := e.queue.append(ev); err != nil {
 			diag.Printf("ilm: dropped event (queue full): %v", err)
 		}
