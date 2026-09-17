@@ -85,6 +85,108 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m = m.reflowIfStatusHeightChanged(before)
 		}
 		return m, cmds, true
+	case pasteBurstTickMsg:
+		// Collapse a fragmented paste burst into a placeholder, but only if
+		// this tick belongs to the current burst, the burst has actually gone
+		// quiet, and the accumulated text meets the collapse threshold.
+		if lm.seq != m.pasteBurstSeq {
+			return m, cmds, true
+		}
+		if !m.pasteBurstLast.IsZero() && time.Since(m.pasteBurstLast) < pasteBurstGap {
+			// Still receiving events (stale tick fired early) — re-arm.
+			cmds = append(cmds, tea.Tick(pasteBurstGap, func(time.Time) tea.Msg {
+				return pasteBurstTickMsg{seq: m.pasteBurstSeq}
+			}))
+			return m, cmds, true
+		}
+		// Burst is over. Before finalizing/collapsing, run the binary-image
+		// detector over the burst content — including anything already stashed
+		// by the eager collapse. An image paste whose mangled bytes contain no
+		// NULs and no recognizable chunk train slips past the per-key scan
+		// (symbol ratio alone doesn't confirm) and would otherwise sit in the
+		// stash until Enter re-ran the detector — the "must press Enter to get
+		// the image chip" failure. Cutting here costs a false positive only a
+		// visible note: the stash is restored if the clipboard has no image.
+		{
+			all := []rune(m.ta.Value())
+			text := ""
+			cutRune := 0
+			if m.pasteBurstPh != "" {
+				text = m.pasteStash[m.pasteBurstPh]
+				cutRune = m.pasteBurstStart
+			} else if m.pasteBurstStart >= 0 && m.pasteBurstStart <= len(all) {
+				text = string(all[m.pasteBurstStart:])
+				cutRune = m.pasteBurstStart
+			}
+			if text != "" {
+				idx := binaryPasteStart(text)
+				if idx < 0 {
+					// Signature-less garbage: a burst that is long, dense in
+					// symbols, and starved of spaces is mangled binary data
+					// even without a recognizable format signature (e.g. a
+					// JPEG whose "JFIF" remnant was stripped). Hand-typed
+					// prose never reaches this density inside a burst.
+					if tr := []rune(text); len(tr) >= binaryTailMinRunes &&
+						symbolRatio(tr) >= binaryTailSymbolRatio &&
+						spaceRatio(tr) <= binaryTailMaxSpaceRatio {
+						idx = 0
+					}
+				}
+				if idx >= 0 {
+					keep := strings.TrimRight(string(all[:cutRune])+string([]rune(text)[:idx]), " ")
+					m.pasteCutStash = string([]rune(text)[idx:])
+					if m.pasteBurstPh != "" {
+						delete(m.pasteStash, m.pasteBurstPh)
+					}
+					m.ta.SetValue(keep)
+					m.ta.CursorEnd()
+					m.pasteBurstRunes = 0
+					m.pasteBurstPh = ""
+					m.pasteBurstSeq++
+					m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
+					m.pasteReadInFlight = true
+					m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
+					m.addItem(iSys, dim2("· binary paste detected: reading image from clipboard…"))
+					m.refreshViewport()
+					return m, append(cmds, readClipboardCmd()), true
+				}
+			}
+		}
+		// Burst is over. If it was already collapsed eagerly, just finalize
+		// (reset burst counters; the placeholder stays). Otherwise collapse
+		// now if the threshold is met.
+		if m.pasteBurstPh != "" {
+			m.pasteBurstRunes = 0
+			m.pasteBurstPh = ""
+			m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
+			m = m.reflow()
+			return m, cmds, true
+		}
+		if m.pasteBurstRunes < pasteBurstMinRunes {
+			m.pasteBurstRunes = 0
+			return m, cmds, true
+		}
+		all := []rune(m.ta.Value())
+		if m.pasteBurstStart < 0 || m.pasteBurstStart > len(all) {
+			m.pasteBurstRunes = 0
+			return m, cmds, true
+		}
+		burst := string(all[m.pasteBurstStart:])
+		if !shouldCollapsePaste(burst) || containsBinary([]rune(burst)) {
+			m.pasteBurstRunes = 0
+			return m, cmds, true
+		}
+		if m.pasteStash == nil {
+			m.pasteStash = make(map[string]string)
+		}
+		placeholder := makePastePlaceholder(burst)
+		m.pasteStash[placeholder] = burst
+		m.ta.SetValue(string(all[:m.pasteBurstStart]) + placeholder + " ")
+		m.ta.CursorEnd()
+		m.pasteBurstRunes = 0
+		m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
+		m = m.reflow()
+		return m, cmds, true
 	case subTabCloseMsg:
 		focusN := 0
 		if m.subCur >= 0 && m.subCur < len(m.subTabs) {
@@ -120,11 +222,20 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		return m, cmds, true
 	case clipboardImageMsg:
 		// A clipboard read completed (paste-detection or /image clipboard).
+		m.pasteReadInFlight = false
+		m.addItem(iSys, dim2(sprint("· dbg %s: clipboard read done (err=%q)", time.Now().Format("15:04:05.000"), lm.Err)))
 		if lm.Err != "" {
 			if m.pasteCutStash != "" {
-				m.ta.InsertString(m.pasteCutStash)
-				m.pasteCutStash = ""
-				m.addItem(iSys, dim2("· no image on clipboard — restored the pasted text"))
+				// Drain the paste tail before restoring: fragments may still
+				// be arriving (slow terminal, read failed fast). Restore
+				// happens in restorePasteStashMsg after the tail settles;
+				// the suppression window stays armed in the meantime.
+				m.pasteRestoreArmed = true
+				m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
+				m.addItem(iSys, dim2("· no image on clipboard — restoring the pasted text…"))
+				cmds = append(cmds, tea.Tick(pasteSuppressWindow*2, func(time.Time) tea.Msg {
+					return restorePasteStashMsg{}
+				}))
 			} else {
 				m.addItem(iSys, styleErr("clipboard: "+lm.Err))
 			}
@@ -136,6 +247,27 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.ta.InsertString(chip + " ")
 		}
 		m.refreshViewport()
+		return m, cmds, true
+	case restorePasteStashMsg:
+		// Fires after the paste tail has drained (suppression window expired
+		// without new fragments). If more fragments arrived since it was
+		// armed, the window is still open — re-arm and wait for the tail.
+		if !m.pasteRestoreArmed {
+			return m, cmds, true
+		}
+		if time.Now().Before(m.pasteSuppressUntil) {
+			cmds = append(cmds, tea.Tick(pasteSuppressWindow*2, func(time.Time) tea.Msg {
+				return restorePasteStashMsg{}
+			}))
+			return m, cmds, true
+		}
+		m.pasteRestoreArmed = false
+		if m.pasteCutStash != "" {
+			m.ta.InsertString(m.pasteCutStash)
+			m.pasteCutStash = ""
+			m.addItem(iSys, dim2("· no image on clipboard — restored the pasted text"))
+			m.refreshViewport()
+		}
 		return m, cmds, true
 	}
 

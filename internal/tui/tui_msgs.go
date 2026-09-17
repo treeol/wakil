@@ -15,6 +15,17 @@ type dotTickMsg struct{}
 // m.armSeq, so a stale tick from a superseded arm can't clear a newer one.
 type armTickMsg struct{ seq int }
 
+// pasteBurstTickMsg fires pasteBurstGap after the last key event of a rapid
+// input burst (a fragmented, non-bracketed paste). seq is the burst's
+// generation counter: the handler only collapses if seq still matches
+// m.pasteBurstSeq, so a stale tick from a superseded burst is a no-op.
+type pasteBurstTickMsg struct{ seq int }
+
+// restorePasteStashMsg fires after a failed clipboard read once the paste
+// tail has drained, to restore the cut text into the textarea. Re-arms
+// itself while the suppression window is still open (tail still arriving).
+type restorePasteStashMsg struct{}
+
 // subTabCloseMsg is fired 30s after a tab becomes done (via SubagentDoneMsg or
 // AsyncJobDoneMsg), to auto-close it if the user is not currently viewing it.
 // Fire-and-validate: if the tab was already pruned, manually closed, or is

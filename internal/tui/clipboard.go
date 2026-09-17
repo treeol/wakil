@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os/exec"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -367,4 +368,116 @@ func reconcileImageChips(input string, chips []string, pending []proxy.ImagePart
 		}
 	}
 	return strings.TrimSpace(input), pending
+}
+
+// pastePlaceholderPrefix is the prefix of collapsed-paste placeholders.
+const pastePlaceholderPrefix = "[Pasted text +"
+
+// countLines counts the number of lines in s, counting a trailing newline as
+// starting a new (empty) line — matching how editors count lines.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	// If the string doesn't end with a newline, the last partial line still
+	// counts as a line. If it does end with a newline, the trailing empty line
+	// is not counted (consistent with wc -l when the input ends in \n).
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}
+
+// makePastePlaceholder returns a "[Pasted text +N lines]" string for the given
+// pasted content. A short content hash suffix disambiguates pastes with the
+// same line count so multiple collapsed pastes in one input don't collide.
+func makePastePlaceholder(text string) string {
+	lines := countLines(text)
+	h := fnvHash(text)
+	return sprint("%s%d lines %s]", pastePlaceholderPrefix, lines, h)
+}
+
+// fnvHash returns a short 6-char FNV-1a hash of s, used to disambiguate paste
+// placeholders with the same line count.
+func fnvHash(s string) string {
+	const (
+		offsetBasis = 14695981039346656037
+		prime       = 1099511628211
+	)
+	h := uint64(offsetBasis)
+	for i := 0; i < len(s); i++ {
+		h *= prime
+		h ^= uint64(s[i])
+	}
+	// Base36 keeps it compact and alphanumeric.
+	return strconv.FormatUint(h, 36)[:6]
+}
+
+// runeCountOfKey returns how many runes a key event contributes to the
+// textarea content: the rune payload for KeyRunes, 1 for space/enter.
+func runeCountOfKey(msg tea.KeyMsg) int {
+	if msg.Type == tea.KeyRunes {
+		return len(msg.Runes)
+	}
+	return 1
+}
+
+// shouldCollapsePaste returns true if the pasted text is large enough to
+// warrant collapsing into a placeholder.
+func shouldCollapsePaste(text string) bool {
+	return countLines(text) >= pasteCollapseMinLines
+}
+
+// collapseLiveBurst folds the current burst's textarea tail (from
+// pasteBurstStart on) into the paste stash and shows a placeholder instead.
+// On the first call for a burst the accumulated text is replaced by a fresh
+// placeholder; on later calls (more fragments of the same burst) the old
+// placeholder's stashed text is merged with the new tail and the placeholder
+// is regenerated with the updated line count.
+func (m tuiModel) collapseLiveBurst() tuiModel {
+	all := []rune(m.ta.Value())
+	if m.pasteBurstStart < 0 || m.pasteBurstStart > len(all) {
+		return m
+	}
+	tail := string(all[m.pasteBurstStart:])
+	if m.pasteBurstPh != "" {
+		// Continuing an already-collapsed burst: merge the stash content with
+		// the newly arrived tail. The old placeholder occupies the textarea
+		// after pasteBurstStart, so the tail IS the new fragment.
+		prev := m.pasteStash[m.pasteBurstPh]
+		delete(m.pasteStash, m.pasteBurstPh)
+		tail = prev + tail
+	}
+	if !shouldCollapsePaste(tail) {
+		// Below the line threshold — but if we already collapsed once, keep
+		// the collapse (the user saw a placeholder; flashing the full text
+		// back would be worse). Only pre-collapse calls may bail.
+		if m.pasteBurstPh == "" {
+			return m
+		}
+	}
+	if m.pasteStash == nil {
+		m.pasteStash = make(map[string]string)
+	}
+	ph := makePastePlaceholder(tail)
+	m.pasteStash[ph] = tail
+	m.pasteBurstPh = ph
+	m.ta.SetValue(string(all[:m.pasteBurstStart]) + ph + " ")
+	m.ta.CursorEnd()
+	return m
+}
+
+// expandPastedText replaces every placeholder in pasteStash with its original
+// full text. Placeholders that the user deleted from the textarea are not
+// expanded (they're absent from the input). After expansion, the stash is
+// cleared — each paste is expanded exactly once at send time.
+func expandPastedText(input string, stash map[string]string) string {
+	if len(stash) == 0 {
+		return input
+	}
+	for placeholder, original := range stash {
+		input = strings.ReplaceAll(input, placeholder, original)
+	}
+	return input
 }

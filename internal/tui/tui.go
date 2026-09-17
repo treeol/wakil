@@ -60,8 +60,8 @@ type pendingApprovalState struct {
 
 // sideQuestionState tracks a running side-question stream for the TUI.
 type sideQuestionState struct {
-	buf   *strings.Builder
-	opID  sessionclient.OpID // correlates progress/completion to the correct question
+	buf  *strings.Builder
+	opID sessionclient.OpID // correlates progress/completion to the correct question
 }
 
 // Layout metrics shared by sizes() and View(). In Lip Gloss a border adds 2 to
@@ -97,6 +97,29 @@ const subTabAutoCloseDelay = 30 * time.Second
 // while short enough that real typing resumes almost immediately. Each
 // swallowed event extends the window, so a long paste tail stays covered.
 const pasteSuppressWindow = 150 * time.Millisecond
+
+// pasteCollapseMinLines is the minimum line count for a pasted text block to
+// be collapsed into a "[Pasted text +N lines]" placeholder. Short pastes
+// (1–2 lines) flow into the textarea unchanged — they're typically typing
+// corrections or short snippets the user wants to see inline. Multi-line
+// blocks (3+) are collapsed to keep the input area readable.
+const pasteCollapseMinLines = 5
+
+// pasteBurstGap is the idle gap that marks the end of a fragmented (non-
+// bracketed) paste burst. A burst starts when key events arrive faster than
+// one per pasteBurstMinGap and ends when no further event arrives within
+// pasteBurstGap — at which point the accumulated text is collapsed into a
+// placeholder if it meets the line threshold. Fast human typing can reach
+// ~10 chars/sec (100ms/char), so the start gate is tighter than the end gap.
+const pasteBurstGap = 250 * time.Millisecond
+
+// pasteBurstMinGap is the maximum inter-key interval for an event to count
+// as part of a burst. Human typing rarely sustains below ~40ms/char.
+const pasteBurstMinGap = 40 * time.Millisecond
+
+// pasteBurstMinRunes is the minimum accumulated rune count before a burst is
+// even considered for collapse — guards against fast two-key combos.
+const pasteBurstMinRunes = 40
 
 // armWindow is how long a quit/cancel confirmation arm stays live after the
 // first press of a destructive key. A second confirming press within the window
@@ -279,6 +302,21 @@ type tuiModel struct {
 	// Bubble Tea value-copy reason as items.
 	imageChips *[]string
 
+	// pasteReadInFlight is true while a binary-paste clipboard read is pending.
+	// Tail fragments of the same paste keep arriving while the read runs (the
+	// terminal delivers a large paste over hundreds of ms, slower than the
+	// fixed suppression window can cover) — while set, ALL key events are
+	// swallowed exactly like the suppression window, and the window itself is
+	// kept alive. Cleared by clipboardImageMsg (success or failure).
+	pasteReadInFlight bool
+
+	// pasteRestoreArmed gates restorePasteStashMsg: set when a failed
+	// clipboard read defers the cut-text restore until the paste tail drains.
+	pasteRestoreArmed bool
+
+	// dbgSuppressN caps the temporary suppression debug lines (TEMP DEBUG).
+	dbgSuppressN int
+
 	// pasteSuppressUntil, when in the future, swallows ALL key events (except
 	// ctrl+c) — set right after a binary paste is detected mid-stream. A
 	// fragmented binary paste keeps delivering KeyMsg events after detection:
@@ -289,11 +327,37 @@ type tuiModel struct {
 	pasteSuppressUntil time.Time
 
 	// pasteCutStash holds the text that was cut from the input when a binary
-	// paste was detected. If the clipboard read then FAILS (false positive:
+	// paste is detected. If the clipboard read then FAILS (false positive:
 	// the "garbage" was real text, e.g. a pasted hexdump analysis), the cut
 	// text is restored to the input instead of being lost. Cleared when the
 	// clipboard read succeeds.
 	pasteCutStash string
+
+	// pasteBurst* track a fragmented (non-bracketed) paste burst: runes
+	// accumulate while key events arrive faster than pasteBurstMinGap; when
+	// the burst goes quiet for pasteBurstGap, pasteBurstTickMsg collapses the
+	// accumulated text into a placeholder. start marks where in the textarea
+	// the burst text begins (rune index), seq is the burst generation used to
+	// invalidate stale ticks, and lastKey is the last event time.
+	pasteBurstRunes int
+	pasteBurstStart int
+	pasteBurstSeq   int
+	pasteBurstLast  time.Time
+	// pasteBurstPh is the live placeholder of an eagerly-collapsed burst:
+	// once a burst crosses the collapse threshold it is replaced by a
+	// placeholder IMMEDIATELY (no quiet-gap wait), and later fragments of
+	// the same burst are folded into the stash and the placeholder is
+	// regenerated with the updated line count. Empty when no burst has
+	// been collapsed yet.
+	pasteBurstPh string
+
+	// pasteStash maps collapsed-paste placeholders to their original full text.
+	// When a large text paste arrives (bracketed paste, non-binary), the full
+	// text is stashed here and a compact "[Pasted text +N lines]" placeholder
+	// is inserted into the textarea instead — so the input area stays readable.
+	// At send time the placeholder is expanded back to the full text before the
+	// prompt is submitted. Cleared on send and on /new.
+	pasteStash map[string]string
 
 	// Prefix cache: the rendered + stripped committed items (everything except the
 	// live streaming tail). Rebuilt only when items change or the viewport resizes,
@@ -636,11 +700,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// event extends the window, so it tracks the paste tail regardless of
 		// length.
 		if !m.pasteSuppressUntil.IsZero() {
-			if time.Now().Before(m.pasteSuppressUntil) {
+			if m.pasteReadInFlight || time.Now().Before(m.pasteSuppressUntil) {
 				m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
+				if m.dbgSuppressN < 3 {
+					m.dbgSuppressN++
+					m.addItem(iSys, dim2(sprint("· dbg %s: swallowed key (inFlight=%v, type=%v)", time.Now().Format("15:04:05.000"), m.pasteReadInFlight, msg.Type)))
+				}
 				return m, tea.Batch(cmds...)
 			}
 			m.pasteSuppressUntil = time.Time{}
+			m.addItem(iSys, dim2(sprint("· dbg %s: suppression window EXPIRED (type=%v reaches the textarea)", time.Now().Format("15:04:05.000"), msg.Type)))
 		}
 
 		// Any keystroke dismisses an active selection and its highlight.
@@ -717,10 +786,44 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Fragmented pastes are handled by the post-insert scan below.
 		if msg.Paste && msg.Type == tea.KeyRunes && containsBinary(msg.Runes) {
 			m.pasteCutStash = string(msg.Runes)
+			m.pasteReadInFlight = true
 			m.addItem(iSys, dim2("· binary paste detected: reading image from clipboard…"))
 			m.refreshViewport()
 			m = m.reflowIfStatusHeightChanged(before)
 			return m, tea.Batch(append(cmds, readClipboardCmd())...)
+		}
+
+		// Large-text-paste collapse: a bracketed paste (Paste=true) that is
+		// NOT binary but IS multi-line (≥ pasteCollapseMinLines lines) is
+		// collapsed into a compact "[Pasted text +N lines]" placeholder.
+		// The full text is stashed in pasteStash and expanded back at send
+		// time (Enter). This keeps the input area readable when pasting long
+		// prompts, logs, or code blocks — the user sees a one-line summary
+		// instead of the textarea exploding to 50+ lines. Short pastes (1–2
+		// lines) flow into the textarea unchanged.
+		//
+		// Only bracketed pastes (Paste=true) are collapsed: non-bracketed
+		// pastes arrive as fragmented KeyRunes bursts with Paste=false, and
+		// collapsing individual fragments would lose their ordering. The
+		// fragments accumulate in the textarea normally and the post-insert
+		// scan below catches any binary content among them.
+		if msg.Paste && msg.Type == tea.KeyRunes && !containsBinary(msg.Runes) {
+			pasted := string(msg.Runes)
+			if shouldCollapsePaste(pasted) {
+				if m.pasteStash == nil {
+					m.pasteStash = make(map[string]string)
+				}
+				placeholder := makePastePlaceholder(pasted)
+				m.pasteStash[placeholder] = pasted
+				// Insert the placeholder into the textarea instead of the
+				// full text. A trailing space makes it natural to continue
+				// typing after the placeholder.
+				m.ta.InsertString(placeholder + " ")
+				m.ta.CursorEnd()
+				m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
+				m = m.reflowIfStatusHeightChanged(before)
+				return m, tea.Batch(cmds...)
+			}
 		}
 
 		// Track before handleKey: Enter with the /command picker open falls
@@ -759,6 +862,50 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var taCmd, vpCmd tea.Cmd
 		m.ta, taCmd = m.ta.Update(msg)
 
+		// Fragmented-paste burst tracking: a non-bracketed paste arrives as a
+		// rapid stream of key events (KeyRunes bursts, KeySpace, enter, …).
+		// Track text-growing events that arrive faster than pasteBurstMinGap;
+		// when the stream goes quiet for pasteBurstGap, pasteBurstTickMsg
+		// collapses the accumulated text. Human typing is excluded by the gap
+		// threshold (nobody sustains <40ms/char over 40+ runes).
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace || msg.Type == tea.KeyEnter {
+			now := time.Now()
+			if m.pasteBurstRunes > 0 && now.Sub(m.pasteBurstLast) > pasteBurstMinGap {
+				// Gap too long: previous burst died without reaching the
+				// collapse threshold (or the tick already handled it). Reset.
+				m.pasteBurstRunes = 0
+				m.pasteBurstPh = ""
+			}
+			if m.pasteBurstRunes == 0 {
+				m.pasteBurstStart = len([]rune(m.ta.Value())) - runeCountOfKey(msg)
+				if m.pasteBurstStart < 0 {
+					m.pasteBurstStart = 0
+				}
+				m.pasteBurstSeq++
+				cmds = append(cmds, tea.Tick(pasteBurstGap, func(time.Time) tea.Msg {
+					return pasteBurstTickMsg{seq: m.pasteBurstSeq}
+				}))
+			}
+			m.pasteBurstRunes += runeCountOfKey(msg)
+			m.pasteBurstLast = now
+
+			// Eager collapse: as soon as the burst crosses the threshold,
+			// replace the accumulated text with a placeholder NOW — no wait
+			// for the quiet gap. Later fragments of the same burst fold into
+			// the stash and regenerate the placeholder, so the full text is
+			// never visible for more than the first ~40 runes.
+			if m.pasteBurstRunes >= pasteBurstMinRunes {
+				if all := []rune(m.ta.Value()); m.pasteBurstStart <= len(all) && !containsBinary(all[m.pasteBurstStart:]) {
+					m = m.collapseLiveBurst()
+				}
+			}
+		} else if m.pasteBurstRunes > 0 {
+			// A non-text key (arrow, ctrl+x, …) breaks the burst.
+			m.pasteBurstRunes = 0
+			m.pasteBurstPh = ""
+			m.pasteBurstSeq++
+		}
+
 		// Post-insert scan: catch binary pastes however they arrive — one
 		// bracketed event, multi-rune bursts, or rapid single-rune events.
 		// This runs after EVERY key event that reached the textarea, not
@@ -779,7 +926,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ta.SetValue(keep)
 			m.ta.CursorEnd()
 			m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
+			m.pasteReadInFlight = true
 			m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
+			m.addItem(iSys, dim2(sprint("· dbg %s: binary detected (idx=%d, kept=%d runes), reading clipboard…", time.Now().Format("15:04:05.000"), idx, len([]rune(keep)))))
 			return m, tea.Batch(append(cmds, taCmd, readClipboardCmd())...)
 		}
 
@@ -1074,7 +1223,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			// as a new turn when the cancellation completes (flushOnCancel
 			// in finishWiringTurn). The async job survives — its result
 			// is drained by the new turn's inbox.
-			input := strings.TrimSpace(m.ta.Value())
+			input := strings.TrimSpace(expandPastedText(m.ta.Value(), m.pasteStash))
 			if input == "" {
 				return m, nil, true
 			}
@@ -1100,6 +1249,10 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				m.flushOnCancel = true
 				m.addItem(iSys, dim2("· wait cancelled — sending your prompt…"))
 				m.ta.Reset()
+				m.pasteStash = nil
+				m.pasteBurstRunes = 0
+				m.pasteBurstPh = ""
+				m.pasteBurstSeq++
 				m.comp = completionState{}
 				m = m.reflow()
 				return m, nil, true
@@ -1107,7 +1260,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		}
 		if m.state != stateIdle {
 			// Mid-turn: apply the slash/text taxonomy.
-			input := strings.TrimSpace(m.ta.Value())
+			input := strings.TrimSpace(expandPastedText(m.ta.Value(), m.pasteStash))
 			if input == "" {
 				return m, nil, true
 			}
@@ -1250,6 +1403,10 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				m.addItem(iSys, dim2(sprint("· queued (queue: %d)", n)))
 			}
 			m.ta.Reset()
+			m.pasteStash = nil
+			m.pasteBurstRunes = 0
+			m.pasteBurstPh = ""
+			m.pasteBurstSeq++
 			m.comp = completionState{}
 			m = m.reflow()
 			return m, nil, true
@@ -1261,7 +1418,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.searchExit(true)
 			m = m.reflow()
 		}
-		input := strings.TrimSpace(m.ta.Value())
+		input := strings.TrimSpace(expandPastedText(m.ta.Value(), m.pasteStash))
 		if input == "" {
 			return m, nil, true
 		}
@@ -1278,6 +1435,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.ta.SetValue(keep)
 			m.ta.CursorEnd()
 			m.comp = completionState{}
+			m.pasteReadInFlight = true
 			m.addItem(iSys, dim2("· input contained a pasted image, not text — reading image from clipboard…"))
 			return m, []tea.Cmd{readClipboardCmd()}, true
 		}
@@ -1289,6 +1447,10 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		m.histIdx = -1
 		m.histSaved = ""
 		m.ta.Reset()
+		m.pasteStash = nil // paste placeholders expanded and sent; clear stash
+		m.pasteBurstRunes = 0
+		m.pasteBurstPh = ""
+		m.pasteBurstSeq++
 		m.comp = completionState{} // input cleared; close the picker
 
 		// /info is TUI-local: it toggles the info panel (a tuiModel field the

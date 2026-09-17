@@ -520,8 +520,18 @@ func TestFalsePositiveRestoresCutText(t *testing.T) {
 	m.pasteCutStash = "JFIF and then a long hexdump analysis..."
 
 	m2 := step(m, clipboardImageMsg{Err: "no clipboard backend available"})
+	// Restore is deferred until the paste tail drains (restorePasteStashMsg).
+	if !m2.pasteRestoreArmed {
+		t.Fatal("restore should be armed after failed clipboard read")
+	}
+	if strings.Contains(m2.ta.Value(), "JFIF") {
+		t.Error("cut text should NOT be restored before the tail drains")
+	}
+	// Suppression window expired → the tick restores.
+	m2.pasteSuppressUntil = time.Now().Add(-time.Second)
+	m2 = step(m2, restorePasteStashMsg{})
 	if !strings.Contains(m2.ta.Value(), "JFIF and then a long hexdump analysis...") {
-		t.Errorf("cut text should be restored on clipboard failure; got %q", m2.ta.Value())
+		t.Errorf("cut text should be restored after tail drains; got %q", m2.ta.Value())
 	}
 	if m2.pasteCutStash != "" {
 		t.Error("stash should be cleared after restore")
