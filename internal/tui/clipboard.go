@@ -475,7 +475,7 @@ func (m tuiModel) collapseLiveBurst() tuiModel {
 // expandPastedText replaces every placeholder in pasteStash with its original
 // full text. Placeholders that the user deleted from the textarea are not
 // expanded (they're absent from the input). After expansion, the stash is
-// cleared — each paste is expanded exactly once at send time.
+// cleared by the caller — each paste is expanded exactly once at send time.
 func expandPastedText(input string, stash map[string]string) string {
 	if len(stash) == 0 {
 		return input
@@ -484,4 +484,22 @@ func expandPastedText(input string, stash map[string]string) string {
 		input = strings.ReplaceAll(input, placeholder, original)
 	}
 	return input
+}
+
+// prunePasteStash removes stash entries whose placeholder is absent from the
+// current textarea value. This reclaims entries orphaned by the user deleting
+// a placeholder before sending. The live burst placeholder (if any) is still
+// in the textarea, so it is never pruned. Call this after ta.Update to catch
+// deletions, backspaces, and any other edit that removes a placeholder.
+func (m tuiModel) prunePasteStash() tuiModel {
+	if len(m.pasteStash) == 0 {
+		return m
+	}
+	val := m.ta.Value()
+	for ph := range m.pasteStash {
+		if ph != m.pasteBurstPh && !strings.Contains(val, ph) {
+			delete(m.pasteStash, ph)
+		}
+	}
+	return m
 }

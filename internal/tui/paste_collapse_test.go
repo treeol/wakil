@@ -142,6 +142,61 @@ func TestPasteCollapseMultiplePastes(t *testing.T) {
 	}
 }
 
+// TestPasteCollapsePruneOrphanedStashEntry: if the user deletes a placeholder
+// from the textarea before sending, the orphaned stash entry is pruned — not
+// left to accumulate.
+func TestPasteCollapsePruneOrphanedStashEntry(t *testing.T) {
+	m, _ := keyModel(t)
+	m.state = stateIdle
+
+	// Paste and collapse.
+	pasted := "line one\nline two\nline three\nline four\nline five"
+	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+
+	if len(m.pasteStash) != 1 {
+		t.Fatalf("pasteStash should have 1 entry; got %d", len(m.pasteStash))
+	}
+
+	// Capture the placeholder.
+	ph := ""
+	for k := range m.pasteStash {
+		ph = k
+	}
+	if ph == "" {
+		t.Fatal("expected non-empty placeholder key")
+	}
+
+	// Simulate the user deleting the placeholder: clear the textarea.
+	m.ta.SetValue("")
+	m = m.prunePasteStash()
+
+	if len(m.pasteStash) != 0 {
+		t.Errorf("orphaned stash entry should be pruned; got %d entries", len(m.pasteStash))
+	}
+}
+
+// TestPasteCollapsePruneKeepsLivePlaceholder: pruning must NOT remove the
+// live burst placeholder that is still visible in the textarea.
+func TestPasteCollapsePruneKeepsLivePlaceholder(t *testing.T) {
+	m, _ := keyModel(t)
+	m.state = stateIdle
+
+	// Paste and collapse.
+	pasted := "line one\nline two\nline three\nline four\nline five"
+	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+
+	if len(m.pasteStash) != 1 {
+		t.Fatalf("pasteStash should have 1 entry; got %d", len(m.pasteStash))
+	}
+
+	// Prune — the placeholder is still in the textarea.
+	m = m.prunePasteStash()
+
+	if len(m.pasteStash) != 1 {
+		t.Errorf("live stash entry should NOT be pruned; got %d entries", len(m.pasteStash))
+	}
+}
+
 // TestPasteBurstCollapse: a fragmented (non-bracketed) paste — a rapid stream
 // of KeyRunes with Paste=false — is collapsed into a placeholder once the
 // burst goes quiet and the tick fires.

@@ -854,6 +854,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var taCmd, vpCmd tea.Cmd
 		m.ta, taCmd = m.ta.Update(msg)
 
+		// Reclaim orphaned paste-stash entries: if the user deleted a
+		// placeholder from the textarea, drop its stash entry now.
+		// The live burst placeholder is protected (pasteBurstPh).
+		m = m.prunePasteStash()
+
 		// Fragmented-paste burst tracking: a non-bracketed paste arrives as a
 		// rapid stream of key events (KeyRunes bursts, KeySpace, enter, …).
 		// Track text-growing events that arrive faster than pasteBurstMinGap;
