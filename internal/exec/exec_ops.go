@@ -15,6 +15,16 @@ import (
 	"github.com/treeol/wakil/internal/safe"
 )
 
+// validateReadFileTailMaxBytes checks the maxBytes parameter for ReadFileTail
+// implementations. Shared to avoid message drift across the three
+// implementations (DirectExecutor, DockerExecutor, dockerWorktreeExecutor).
+func validateReadFileTailMaxBytes(maxBytes int64) error {
+	if maxBytes <= 0 {
+		return fmt.Errorf("ReadFileTail: maxBytes must be > 0, got %d", maxBytes)
+	}
+	return nil
+}
+
 // ── A2: sandbox tool probe ────────────────────────────────────────────────────
 
 var versionRe = regexp.MustCompile(`\d+\.\d+[\d.]*`)
@@ -450,8 +460,8 @@ func (d *DockerExecutor) IsProcessGroupAlive(ctx context.Context, pgid int) bool
 }
 
 func (d *DockerExecutor) ReadFileTail(ctx context.Context, path string, maxBytes int64) (string, error) {
-	if maxBytes <= 0 {
-		return "", fmt.Errorf("ReadFileTail: maxBytes must be > 0, got %d", maxBytes)
+	if err := validateReadFileTailMaxBytes(maxBytes); err != nil {
+		return "", err
 	}
 	out, err := d.execCtx(ctx, false, "sh", "-c",
 		fmt.Sprintf("tail -c %d %s 2>&1", maxBytes, shQuote(path)))
@@ -462,8 +472,8 @@ func (d *DockerExecutor) ReadFileTail(ctx context.Context, path string, maxBytes
 }
 
 func (e *DirectExecutor) ReadFileTail(_ context.Context, path string, maxBytes int64) (string, error) {
-	if maxBytes <= 0 {
-		return "", fmt.Errorf("ReadFileTail: maxBytes must be > 0, got %d", maxBytes)
+	if err := validateReadFileTailMaxBytes(maxBytes); err != nil {
+		return "", err
 	}
 	f, err := os.Open(path)
 	if err != nil {
