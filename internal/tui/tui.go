@@ -98,6 +98,13 @@ const subTabAutoCloseDelay = 30 * time.Second
 // swallowed event extends the window, so a long paste tail stays covered.
 const pasteSuppressWindow = 150 * time.Millisecond
 
+// pasteReadInFlightTimeout is the maximum time pasteReadInFlight can stay
+// true. If the clipboardImageMsg doesn't arrive within this duration (e.g.
+// the clipboard backend hangs), the flag is force-cleared in the key
+// suppression branch so the keyboard unwedges. Set well above the worst-case
+// clipboard read time (3 backends × (3s timeout + 1s WaitDelay) = 12s).
+const pasteReadInFlightTimeout = 15 * time.Second
+
 // pasteCollapseMinLines is the minimum line count for a pasted text block to
 // be collapsed into a "[Pasted text +N lines]" placeholder. Short pastes
 // (1–2 lines) flow into the textarea unchanged — they're typically typing
@@ -307,8 +314,15 @@ type tuiModel struct {
 	// terminal delivers a large paste over hundreds of ms, slower than the
 	// fixed suppression window can cover) — while set, ALL key events are
 	// swallowed exactly like the suppression window, and the window itself is
-	// kept alive. Cleared by clipboardImageMsg (success or failure).
+	// kept alive. Cleared by clipboardImageMsg (success or failure), or
+	// automatically when pasteReadInFlightDeadline passes (defensive: if the
+	// clipboard read hangs or the message is lost, the keyboard unwedges).
 	pasteReadInFlight bool
+
+	// pasteReadInFlightDeadline is the absolute time after which
+	// pasteReadInFlight is force-cleared. Set when pasteReadInFlight is set
+	// to true; checked in the key-suppression branch.
+	pasteReadInFlightDeadline time.Time
 
 	// pasteRestoreArmed gates restorePasteStashMsg: set when a failed
 	// clipboard read defers the cut-text restore until the paste tail drains.
@@ -696,7 +710,19 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// self-extending, so swallowing ctrl+c here is safe. Each swallowed
 		// event extends the window, so it tracks the paste tail regardless of
 		// length.
+		//
+		// pasteReadInFlight is bounded by pasteReadInFlightDeadline: if the
+		// clipboard read hangs (unresponsive selection owner) or the message
+		// is lost, the deadline force-clears the flag so the keyboard unwedges.
 		if !m.pasteSuppressUntil.IsZero() {
+			// Force-clear pasteReadInFlight if the deadline has passed.
+			// Also clear the suppression window so the next key reaches the
+			// textarea instead of being swallowed by the time-window branch.
+			if m.pasteReadInFlight && !m.pasteReadInFlightDeadline.IsZero() && !time.Now().Before(m.pasteReadInFlightDeadline) {
+				m.pasteReadInFlight = false
+				m.pasteReadInFlightDeadline = time.Time{}
+				m.pasteSuppressUntil = time.Time{}
+			}
 			if m.pasteReadInFlight || time.Now().Before(m.pasteSuppressUntil) {
 				m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
 				return m, tea.Batch(cmds...)
@@ -779,6 +805,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Paste && msg.Type == tea.KeyRunes && containsBinary(msg.Runes) {
 			m.pasteCutStash = string(msg.Runes)
 			m.pasteReadInFlight = true
+			m.pasteReadInFlightDeadline = time.Now().Add(pasteReadInFlightTimeout)
 			m.addItem(iSys, dim2("· binary paste detected: reading image from clipboard…"))
 			m.refreshViewport()
 			m = m.reflowIfStatusHeightChanged(before)
@@ -924,6 +951,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ta.CursorEnd()
 			m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
 			m.pasteReadInFlight = true
+			m.pasteReadInFlightDeadline = time.Now().Add(pasteReadInFlightTimeout)
 			m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
 			return m, tea.Batch(append(cmds, taCmd, readClipboardCmd())...)
 		}
@@ -1432,6 +1460,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.ta.CursorEnd()
 			m.comp = completionState{}
 			m.pasteReadInFlight = true
+			m.pasteReadInFlightDeadline = time.Now().Add(pasteReadInFlightTimeout)
 			m.addItem(iSys, dim2("· input contained a pasted image, not text — reading image from clipboard…"))
 			return m, []tea.Cmd{readClipboardCmd()}, true
 		}

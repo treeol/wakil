@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"context"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -16,6 +18,11 @@ import (
 // non-image output) when the clipboard holds no image.
 //
 // Backends are tried in order: wl-paste (Wayland), xclip (X11), pbpaste (macOS).
+//
+// A 3s timeout bounds each backend — xclip -o can block indefinitely when the
+// selection owner is unresponsive. The timeout ensures readClipboardCmd always
+// returns a clipboardImageMsg, preventing pasteReadInFlight from wedging the
+// keyboard indefinitely.
 func readClipboardImageBytes() ([]byte, error) {
 	backends := []clipboardBackend{
 		{"wl-paste", []string{"-t", "image/png"}},
@@ -37,9 +44,26 @@ type clipboardBackend struct {
 	args []string
 }
 
+// clipboardReadTimeout bounds each backend command. If the clipboard owner
+// is unresponsive, the command is killed after this duration and the next
+// backend is tried (or errNoClipboardBackend is returned).
+const clipboardReadTimeout = 3 * time.Second
+
+// clipboardReadWaitDelay bounds the wait for the process's stdout/stderr
+// pipes to close after the context deadline kills the process. This handles
+// backends that fork children holding inherited pipes.
+const clipboardReadWaitDelay = 1 * time.Second
+
 func (b clipboardBackend) run() ([]byte, error) {
-	c := exec.Command(b.cmd, b.args...)
-	return c.Output()
+	ctx, cancel := context.WithTimeout(context.Background(), clipboardReadTimeout)
+	defer cancel()
+	c := exec.CommandContext(ctx, b.cmd, b.args...)
+	c.WaitDelay = clipboardReadWaitDelay
+	data, err := c.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, &clipboardError{b.cmd + " timed out after " + clipboardReadTimeout.String()}
+	}
+	return data, err
 }
 
 // errNoClipboardBackend is returned when none of the clipboard backends

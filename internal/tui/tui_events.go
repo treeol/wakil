@@ -145,6 +145,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 					m.pasteBurstSeq++
 					m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
 					m.pasteReadInFlight = true
+					m.pasteReadInFlightDeadline = time.Now().Add(pasteReadInFlightTimeout)
 					m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
 					m.addItem(iSys, dim2("· binary paste detected: reading image from clipboard…"))
 					m.refreshViewport()
@@ -223,6 +224,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case clipboardImageMsg:
 		// A clipboard read completed (paste-detection or /image clipboard).
 		m.pasteReadInFlight = false
+		m.pasteReadInFlightDeadline = time.Time{}
 		if lm.Err != "" {
 			if m.pasteCutStash != "" {
 				// Drain the paste tail before restoring: fragments may still

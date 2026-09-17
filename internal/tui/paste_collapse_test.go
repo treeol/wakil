@@ -197,6 +197,50 @@ func TestPasteCollapsePruneKeepsLivePlaceholder(t *testing.T) {
 	}
 }
 
+// TestPasteReadInFlightDeadlineUnwedgesKeyboard: if pasteReadInFlight is set
+// and the deadline passes, the next key event should force-clear the flag
+// and reach the textarea instead of being swallowed forever.
+func TestPasteReadInFlightDeadlineUnwedgesKeyboard(t *testing.T) {
+	m, _ := keyModel(t)
+	m.state = stateIdle
+
+	// Simulate a hung clipboard read: pasteReadInFlight is set with a
+	// deadline that has already passed.
+	m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
+	m.pasteReadInFlight = true
+	m.pasteReadInFlightDeadline = time.Now().Add(-time.Millisecond) // expired
+
+	// A normal key event should force-clear the flag and reach the textarea.
+	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+
+	if m.pasteReadInFlight {
+		t.Error("pasteReadInFlight should be force-cleared after deadline expiry")
+	}
+	if m.ta.Value() != "x" {
+		t.Errorf("key event should reach textarea after deadline; got %q", m.ta.Value())
+	}
+}
+
+// TestPasteReadInFlightWithinDeadlineSwallows: while pasteReadInFlight is set
+// and the deadline has NOT passed, key events are still swallowed.
+func TestPasteReadInFlightWithinDeadlineSwallows(t *testing.T) {
+	m, _ := keyModel(t)
+	m.state = stateIdle
+
+	m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
+	m.pasteReadInFlight = true
+	m.pasteReadInFlightDeadline = time.Now().Add(15 * time.Second) // not expired
+
+	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+
+	if !m.pasteReadInFlight {
+		t.Error("pasteReadInFlight should still be set within deadline")
+	}
+	if m.ta.Value() == "x" {
+		t.Error("key event should be swallowed within deadline")
+	}
+}
+
 // TestPasteBurstCollapse: a fragmented (non-bracketed) paste — a rapid stream
 // of KeyRunes with Paste=false — is collapsed into a placeholder once the
 // burst goes quiet and the tick fires.
