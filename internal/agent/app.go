@@ -2474,9 +2474,8 @@ func formatResult(out string, err error) string {
 			return "ERROR: " + err.Error()
 		}
 		// Put ERROR: at the start so stringToToolResult's HasPrefix check
-		// catches it. The previous form (out + "\nERROR: " + err) required
-		// a Contains check in stringToToolResult which misclassified
-		// legitimate output containing ERROR: lines.
+		// catches it without misclassifying legitimate output containing
+		// ERROR: lines.
 		return "ERROR: " + err.Error() + "\n" + out
 	}
 	if out == "" {
