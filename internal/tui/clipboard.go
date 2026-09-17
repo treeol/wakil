@@ -442,9 +442,13 @@ func (m tuiModel) collapseLiveBurst() tuiModel {
 	}
 	tail := string(all[m.pasteBurstStart:])
 	if m.pasteBurstPh != "" {
-		// Continuing an already-collapsed burst: merge the stash content with
-		// the newly arrived tail. The old placeholder occupies the textarea
-		// after pasteBurstStart, so the tail IS the new fragment.
+		// Continuing an already-collapsed burst: the textarea holds
+		// prefix + oldPlaceholder + " " + newFragment. Strip the old
+		// placeholder (and its trailing space) from the tail before
+		// merging with the stashed text — otherwise the literal
+		// placeholder string bakes into the stash and leaks into the
+		// submitted prompt at send time.
+		tail = strings.TrimPrefix(tail, m.pasteBurstPh+" ")
 		prev := m.pasteStash[m.pasteBurstPh]
 		delete(m.pasteStash, m.pasteBurstPh)
 		tail = prev + tail

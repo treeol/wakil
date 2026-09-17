@@ -229,6 +229,81 @@ func TestPasteBurstEagerCollapse(t *testing.T) {
 	}
 }
 
+// TestPasteBurstEagerCollapseMultiFragmentContent: a multi-fragment burst
+// must NOT bake the old placeholder literal into the stash. The expanded
+// text at send time must contain only the original fragments, not the
+// placeholder string.
+func TestPasteBurstEagerCollapseMultiFragmentContent(t *testing.T) {
+	m, f := keyModel(t)
+	m.state = stateIdle
+
+	// First fragment crosses the threshold.
+	frag1 := "line one\nline two\nline three\nline four\nline five\n"
+	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(frag1)})
+
+	if m.pasteBurstPh == "" {
+		t.Fatal("expected placeholder after first fragment")
+	}
+
+	// Second fragment — must fold into stash without baking the placeholder.
+	frag2 := "line six\nline seven\nline eight"
+	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(frag2)})
+
+	// Assert exactly one merged stash entry, old key is gone.
+	if len(m.pasteStash) != 1 {
+		t.Fatalf("expected 1 merged stash entry; got %d", len(m.pasteStash))
+	}
+
+	// Assert the stash value is exactly frag1+frag2, no placeholder literal.
+	for _, stashed := range m.pasteStash {
+		if strings.Contains(stashed, "[Pasted text +") {
+			t.Fatalf("stash contains placeholder literal: %q", stashed)
+		}
+		want := frag1 + frag2
+		if stashed != want {
+			t.Fatalf("stashed text = %q; want %q", stashed, want)
+		}
+	}
+
+	// Third fragment — second continuation collapse.
+	frag3 := "\nline nine\nline ten"
+	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(frag3)})
+
+	if len(m.pasteStash) != 1 {
+		t.Fatalf("expected 1 merged stash entry after frag3; got %d", len(m.pasteStash))
+	}
+	for _, stashed := range m.pasteStash {
+		if strings.Contains(stashed, "[Pasted text +") {
+			t.Fatalf("stash contains placeholder literal after frag3: %q", stashed)
+		}
+		want := frag1 + frag2 + frag3
+		if stashed != want {
+			t.Fatalf("stashed text after frag3 = %q; want %q", stashed, want)
+		}
+	}
+
+	// End the burst and send.
+	m.pasteBurstLast = time.Now().Add(-time.Second)
+	m = step(m, pasteBurstTickMsg{seq: m.pasteBurstSeq})
+	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(f.submitted) != 1 {
+		t.Fatalf("should have 1 submitted prompt; got %d", len(f.submitted))
+	}
+	submitted := f.submitted[0].Text
+
+	// The submitted text must contain the exact concatenated fragments.
+	want := frag1 + frag2 + frag3
+	if !strings.Contains(submitted, want) {
+		t.Errorf("submitted text should contain %q; got %q", want, submitted)
+	}
+
+	// The submitted text must NOT contain the placeholder literal.
+	if strings.Contains(submitted, "[Pasted text +") {
+		t.Errorf("submitted text should NOT contain placeholder literal; got %q", submitted)
+	}
+}
+
 // TestPasteBurstSlowTypingNotCollapsed: slow human typing (gaps larger than
 // pasteBurstMinGap between keys) must never be collapsed.
 func TestPasteBurstSlowTypingNotCollapsed(t *testing.T) {
