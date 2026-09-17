@@ -77,9 +77,8 @@ func (f *fileSyncManager) ensureOpen(ctx context.Context, srv *Server, hostPath,
 
 	f.mu.Lock()
 	// Re-check: another goroutine may have opened the file while we read.
-	if existing, ok := f.docs[uri]; ok {
+	if _, ok := f.docs[uri]; ok {
 		f.mu.Unlock()
-		_ = existing // already open — no need to send didOpen again
 		return uri, nil
 	}
 	f.docs[uri] = doc
