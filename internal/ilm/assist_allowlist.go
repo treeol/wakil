@@ -33,13 +33,13 @@ var assistAllowedTools = map[string]bool{
 }
 
 // IsAssistAllowed checks whether a proposed tool action passes Wakil's
-// read-only allowlist. It validates both the tool name and the arguments
-// (no paths outside the workspace, no write flags, no shell).
-//
-// The tool name must be in the explicit allowlist. Arguments are checked
-// for path confinement: any "path" or "url" argument is allowed (these are
-// read-only tools), but no argument may contain shell commands or write flags.
-// MCP tools (containing "__") are rejected — their safety is not guaranteed.
+// read-only allowlist. It validates the tool name against the explicit
+// allowlist and, when args are non-empty and not JSON null, verifies
+// they parse as a JSON object (rejecting malformed JSON, arrays, and
+// scalars). This function does NOT inspect argument contents — path
+// confinement and argument safety are enforced by the executor at
+// execution time. MCP tools (containing "__") are rejected — their
+// safety is not guaranteed.
 func IsAssistAllowed(toolName string, args json.RawMessage) bool {
 	// Reject MCP tools (name contains "__" — e.g. "trello__create_card").
 	if strings.Contains(toolName, "__") {
@@ -51,11 +51,10 @@ func IsAssistAllowed(toolName string, args json.RawMessage) bool {
 		return false
 	}
 
-	// Parse args to check for dangerous patterns. For read-only tools the
-	// main risk is a path traversal outside the workspace — but the executor's
-	// ConfinePath already enforces that at execution time. Here we only reject
-	// obviously malformed args (e.g. empty args on tools that need a path).
-	// The actual path confinement is the executor's job.
+	// When args are non-empty and not JSON null, verify they parse as a
+	// JSON object (rejects malformed JSON, arrays, and scalars). Empty
+	// and null args are accepted — the executor rejects missing required
+	// params at execution time.
 	var m map[string]interface{}
 	if len(args) > 0 && string(args) != "null" {
 		if err := json.Unmarshal(args, &m); err != nil {
