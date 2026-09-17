@@ -14,18 +14,18 @@ import (
 // not statically known and their safety is not guaranteed by the name).
 var assistAllowedTools = map[string]bool{
 	// File reads
-	"read_file":     true,
+	"read_file":      true,
 	"read_file_full": true,
 	"search_files":   true,
 	"find_files":     true,
 	"list_dir":       true,
 	// LSP (read-only)
 	"lsp_definition": true,
-	"lsp_references":  true,
+	"lsp_references": true,
 	"lsp_hover":      true,
 	"lsp_symbols":    true,
 	// Browser (read-only — no click, no eval)
-	"browser_navigate":  true,
+	"browser_navigate":   true,
 	"browser_screenshot": true,
 	"browser_text":       true,
 	"browser_html":       true,

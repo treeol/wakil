@@ -91,8 +91,8 @@ func (a *App) tryAssist(ctx context.Context) (proxy.Message, bool) {
 	}
 
 	assistantMsg := proxy.Message{
-		Role:     "assistant",
-		Content:  StrPtr(""),
+		Role:      "assistant",
+		Content:   StrPtr(""),
 		ToolCalls: []proxy.ToolCall{tc},
 	}
 
@@ -125,7 +125,7 @@ func (a *App) assistConfirm(toolName string, args json.RawMessage, gateProb floa
 		var cp struct {
 			Selected struct {
 				SessionID string `json:"session_id"`
-				Seq      int    `json:"seq"`
+				Seq       int    `json:"seq"`
 			} `json:"selected"`
 		}
 		if json.Unmarshal(provenance, &cp) == nil && cp.Selected.SessionID != "" {

@@ -73,9 +73,9 @@ func makeActionResp(tool string, args map[string]interface{}, gate float64) *Ass
 			},
 			"candidates": []interface{}{},
 		}),
-		DeciderID:  "d-wlm",
-		Threshold:  0.76,
-		LatencyMS:  42.5,
+		DeciderID: "d-wlm",
+		Threshold: 0.76,
+		LatencyMS: 42.5,
 	}
 }
 
@@ -91,7 +91,7 @@ func makeAbstainResp(reason string, gate float64) *AssistResponse {
 		}),
 		DeciderID: "d-wlm",
 		Threshold: 0.76,
-		LatencyMS:  12.3,
+		LatencyMS: 12.3,
 	}
 }
 

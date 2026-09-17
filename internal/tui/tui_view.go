@@ -673,8 +673,8 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 		lastToolText:            lastToolText,
 		lastLatencyMs:           info.LastLatencyMs,
 		lastTps:                 m.lastTps,
-		AssistEnabled:            info.AssistEnabled,
-		AssistAuto:               info.AssistAuto,
+		AssistEnabled:           info.AssistEnabled,
+		AssistAuto:              info.AssistAuto,
 	}
 }
 

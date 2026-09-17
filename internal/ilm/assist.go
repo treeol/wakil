@@ -37,7 +37,7 @@ type AssistResponse struct {
 
 // AssistAction is the parsed action from the response (when action is non-null).
 type AssistAction struct {
-	Kind string          `json:"b"`   // must be "tool"
+	Kind string          `json:"b"`    // must be "tool"
 	Name string          `json:"name"` // tool name, e.g. "read_file"
 	Args json.RawMessage `json:"args"` // tool arguments
 }
