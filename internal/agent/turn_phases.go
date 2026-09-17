@@ -143,7 +143,7 @@ func (a *App) checkEgressConsent() bool {
 // traceToolCalls is appended to for the deferred trace flush in the caller.
 func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink, traceToolCalls *[]trace.ToolTrace) (string, bool, error) {
 	var final string
-	var suspended bool    // card #122 Phase 2: true when the turn idled with async work pending
+	var suspended bool    // Phase 2: true when the turn idled with async work pending
 	var wantsSuspend bool // wait_for_completion requested a suspension this round
 	var turnToolBytes int
 	var msg proxy.Message
@@ -168,7 +168,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			fmt.Fprintln(a.Out, Yellow("⚠ session budget exhausted — turn skipped (use /new or increase --budget to continue)"))
 			return "⚠ Session budget exhausted. Increase the budget or start a new session to continue.", false, nil
 		}
-		// Card #121: drain completed async operations (mashūra panels, detached
+		// drain completed async operations (mashūra panels, detached
 		// shell jobs) into the conversation BEFORE the model request, so the
 		// model sees them as a ping. Turn goroutine only; Conv mutated under
 		// convMu. Empty inbox → no message, no cost.
@@ -279,7 +279,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		}
 
 		if len(msg.ToolCalls) == 0 || forceFinish {
-			// Card #122 Phase 2: a genuine idle point is when the model produced
+			// Phase 2: a genuine idle point is when the model produced
 			// final text with NO tool calls AND async work is still actively running.
 			// NOT a suspension when forceFinish stripped tools (limit/breaker backstop —
 			// that is a definitive stop, not an idle). Return suspended so the
@@ -414,7 +414,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			}
 			if tj-ti >= 2 {
 				block := msg.ToolCalls[ti:tj]
-				// Card #122 Phase 1: runParallelSubagentBlock routes pure-discovery
+				// Phase 1: runParallelSubagentBlock routes pure-discovery
 				// blocks through the async funnel and runs mixed/non-discovery blocks
 				// synchronously. Returns one result per call in block order.
 				blockResults := a.runParallelSubagentBlock(ctx, block)
@@ -450,7 +450,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			finalizeToolResult(tc, result)
 			ti++
 		}
-		// Card #122 Phase 2: wait_for_completion hands control back. If the model
+		// Phase 2: wait_for_completion hands control back. If the model
 		// explicitly requested a wait and async work is pending, suspend so the
 		// caller awaits a completion and resumes (instead of ending or spinning).
 		if wantsSuspend && a.countActiveAsyncOps() > 0 {

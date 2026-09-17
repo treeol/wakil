@@ -1,4 +1,4 @@
-// Package sqlstore implements sessionhost.Store backed by SQLite (card #148 P1).
+// Package sqlstore implements sessionhost.Store backed by SQLite (P1).
 //
 // It replaces the P0 in-memory MemLog for production use. The Store interface
 // (EventAppender + EventLog) is unchanged; the host injects SQLiteStore via

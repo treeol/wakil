@@ -1,6 +1,6 @@
 package agent
 
-// Tests for card #130: a timeout watchdog for Mashūra async ops (uiJob). A hung
+// Tests for a timeout watchdog for Mashūra async ops (uiJob). A hung
 // panel must be force-terminalized so the async-job tab doesn't spin forever,
 // the admission slot is released, and AsyncJobDoneMsg is emitted exactly once —
 // without double-closing op.done or losing paid (late) usage.
@@ -332,7 +332,7 @@ func TestMashuraTimeoutNeverZero(t *testing.T) {
 
 // TestMashuraCallTimeoutDebate verifies debate mode gets 2× the provider
 // timeout up front (so runDebate's derived 2× wall-time deadline isn't clipped
-// to 1× — card #131), while non-debate modes use 1×.
+// to 1× — ), while non-debate modes use 1×.
 func TestMashuraCallTimeoutDebate(t *testing.T) {
 	a := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	a.Cfg.OracleTimeoutSeconds = 30
@@ -346,7 +346,7 @@ func TestMashuraCallTimeoutDebate(t *testing.T) {
 	}
 }
 
-// TestMashuraDebateWatchdogNotClippedTo1x verifies the card #131 + watchdog
+// TestMashuraDebateWatchdogNotClippedTo1x verifies the + watchdog
 // fix: a debate op's watchdog is armed with the 2× call timeout (threaded via
 // enqueueAsyncOpJob), NOT the mode-blind 1×. The worker is held blocked; the
 // watchdog must NOT fire at the 1×+grace point (which it would if wrongly armed
@@ -371,7 +371,7 @@ func TestMashuraDebateWatchdogNotClippedTo1x(t *testing.T) {
 	// must STILL be running (watchdog armed at 2×, so it fires ~2.3s).
 	time.Sleep(1400 * time.Millisecond)
 	if terminal, _, _ := op.terminalSnapshot(); terminal {
-		t.Fatal("debate worker was force-terminalized at the 1× point — the watchdog must be armed at 2× (card #131)")
+		t.Fatal("debate worker was force-terminalized at the 1× point — the watchdog must be armed at 2×")
 	}
 
 	// Now wait past the 2×+grace point (~2.3s) and confirm the watchdog DOES

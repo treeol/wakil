@@ -1,5 +1,5 @@
 // Package remote implements the TUI's remote-client surface for the wakil daemon
-// mode (card #148 P2e). When the user runs `wakil --daemon`, the TUI does not
+// mode (P2e). When the user runs `wakil --daemon`, the TUI does not
 // embed the agent loop; instead it dials the wakil daemon's Unix socket and
 // drives the session over Connect-RPC.
 //

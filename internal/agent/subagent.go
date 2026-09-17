@@ -263,7 +263,7 @@ var sensitiveArgValuePattern = regexp.MustCompile(
 // boilerplate. Returns "" if the child made no salvageable tool work (avoids
 // writing an empty/header-only spill file).
 //
-// This is the card #146 salvage path: when sub.Send errors (context deadline,
+// This is the salvage path: when sub.Send errors (context deadline,
 // stream failure, …) the structured summary never gets produced, but the child
 // usually gathered real findings first — those live only in sub.Conv. Flushing
 // this transcript to disk makes that work recoverable by the parent. Note the
@@ -390,7 +390,7 @@ func subagentProgressOut(parent *App, chatID string) io.Writer {
 // children among themselves — the parallel path under the semaphore
 // (subagent_parallel.go runSubagentJobs).
 //
-// Card #191: in a git repo, edit children run in isolated git worktrees and
+// in a git repo, edit children run in isolated git worktrees and
 // skip this lock entirely — they write to separate working directories, so
 // parallel execution is safe. Patch application back to the parent workspace
 // is serialized by patchApplyMu (in worktree.go). This lock is only acquired
@@ -1037,7 +1037,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	isEdit := capability == wtools.CapabilityEdit
 	isTools := capability == wtools.CapabilityTools
 
-	// Card #191: worktree isolation for parallel edit subagents. When the
+	// worktree isolation for parallel edit subagents. When the
 	// workspace is a git repo, each edit-tier child gets its own git worktree —
 	// an isolated working directory sharing the same .git object store. The
 	// child writes to its worktree; after it finishes, we diff the worktree
@@ -1338,7 +1338,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// and mutating MCP calls are serialized per-server by subagentMCPMu
 	// inside the tool-execution path, not across the entire child run.
 	//
-	// Card #191: worktree-mode children skip this lock — they write to
+	// worktree-mode children skip this lock — they write to
 	// isolated worktrees, so parallel execution is safe. Patch application
 	// back to the parent workspace is serialized separately by patchApplyMu.
 	if isEdit && !useWorktree {
@@ -1373,7 +1373,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 			Findings:    []Finding{{Summary: Truncate("subagent error: "+err.Error(), 200), Kind: "error", Weight: "low"}},
 			Uncertainty: []string{"subagent failed with error"},
 		}
-		// Card #146: salvage the child's partial work before discarding it. The
+		// salvage the child's partial work before discarding it. The
 		// child's transcript (sub.Conv) holds the tool calls and tool results it
 		// accumulated before the error — on a context deadline that is often a
 		// full audit's worth of findings the model never got to summarize. Flush
@@ -1522,7 +1522,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		}
 	}
 
-	// Card #191: Worktree patch application. After the child finishes (success
+	// Worktree patch application. After the child finishes (success
 	// or incomplete), if we used worktree isolation, diff the worktree against
 	// HEAD and apply the patch to the parent workspace. Patch application is
 	// serialized by patchApplyMu so concurrent worktree-mode children don't

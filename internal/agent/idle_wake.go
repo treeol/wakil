@@ -6,7 +6,7 @@ import (
 	"github.com/treeol/wakil/internal/trace"
 )
 
-// ─── Card #122 Phase 2: Idle/Wake engine ───────────────────────────────────
+// ─── Phase 2: Idle/Wake engine ───────────────────────────────────
 //
 // A turn can END in one of two ways: the model produced a final answer and no
 // async work remains (Final), or the model produced final text while async work
@@ -120,7 +120,7 @@ func (a *App) Resume(ctx context.Context) (TurnOutcome, error) {
 	a.ensurePreamble()
 	// Slip under the context-pressure window the same way SendOutcome does.
 	a.fitConvToWindow(ctx)
-	// Card #122 Phase 2 (review finding #7): persist on every resume exit path so
+	// Phase 2 (review finding #7): persist on every resume exit path so
 	// the async envelope + final assistant response are never lost when the turn
 	// completes via a resume (SendOutcome defers this, Resume must too).
 	defer a.SaveSession()

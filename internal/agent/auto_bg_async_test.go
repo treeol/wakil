@@ -1,6 +1,6 @@
 package agent
 
-// Tests for card #220: auto-bg run_shell async registry races.
+// Tests for auto-bg run_shell async registry races.
 // Verifies:
 //   - auto-bg run_shell registers as pending async work (asyncActive incremented)
 //   - isIdle returns true while an auto-bg shell is running
@@ -255,7 +255,7 @@ func TestAutoBG_KillReleasesSlot(t *testing.T) {
 
 // TestAutoBG_TabDoneEmittedOnNaturalExit verifies that the TUI tab is properly
 // closed (announceShellDone) when an auto-bg shell exits naturally on the
-// registered-async-op path (card #220 finding 2 regression test).
+// registered-async-op path (finding 2 regression test).
 func TestAutoBG_TabDoneEmittedOnNaturalExit(t *testing.T) {
 	exe, err := exec.NewDirectExecutor(t.TempDir())
 	if err != nil {
@@ -335,7 +335,7 @@ func TestAutoBG_TabDoneEmittedOnNaturalExit(t *testing.T) {
 }
 
 // TestPublishBgCompletion_NoDoubleClose verifies that publishBgCompletion
-// and cancelBgAsyncOp cannot both close op.done (card #220 finding 3).
+// and cancelBgAsyncOp cannot both close op.done (finding 3).
 // This is a unit test for the helper functions directly.
 func TestPublishBgCompletion_NoDoubleClose(t *testing.T) {
 	app := &App{
@@ -380,7 +380,7 @@ func TestPublishBgCompletion_NoDoubleClose(t *testing.T) {
 
 // TestAutoBG_RegistryFullReturnMessage verifies that when the async registry
 // is full, the return message does NOT promise "you will be notified" but
-// instead tells the model to poll read_process_log (card #221).
+// instead tells the model to poll read_process_log.
 func TestAutoBG_RegistryFullReturnMessage(t *testing.T) {
 	exe, err := exec.NewDirectExecutor(t.TempDir())
 	if err != nil {
@@ -446,7 +446,7 @@ func TestAutoBG_RegistryFullReturnMessage(t *testing.T) {
 }
 
 // TestAutoBG_StoppingReturnMessage verifies that when the session is stopping,
-// the return message says notification will not arrive (card #221).
+// the return message says notification will not arrive.
 func TestAutoBG_StoppingReturnMessage(t *testing.T) {
 	exe, err := exec.NewDirectExecutor(t.TempDir())
 	if err != nil {

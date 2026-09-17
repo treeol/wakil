@@ -1,6 +1,6 @@
 package counsel
 
-// Tests for card #126 Phase 2: the optional OnMemberEvent progress observer.
+// Tests for Phase 2: the optional OnMemberEvent progress observer.
 
 import (
 	"context"

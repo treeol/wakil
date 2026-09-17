@@ -1,4 +1,4 @@
-// facade.go: the remote Facade implementation (card #148 P2e).
+// facade.go: the remote Facade implementation (P2e).
 //
 // RemoteFacade implements sessionclient.Facade by calling Connect RPCs on the
 // daemon. It is the remote counterpart of wiring.wiringFacade — every call

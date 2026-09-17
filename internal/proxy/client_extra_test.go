@@ -458,7 +458,7 @@ func TestSSEReader_RejectsOversizedLine(t *testing.T) {
 	}
 }
 
-// TestStreamResetsUsageAtEntry (card #247) verifies that Stream resets
+// TestStreamResetsUsageAtEntry verifies that Stream resets
 // lastUsage to zero at entry, so a pre-publication failure (e.g., marshal
 // error, request-build error) does not leave stale usage from the previous
 // call. Without this reset, calling RecordInferenceCost after such a failure
@@ -495,7 +495,7 @@ func TestStreamResetsUsageAtEntry(t *testing.T) {
 	}
 }
 
-// TestStreamResetsUsageOnMarshalError (card #247) verifies that when Stream
+// TestStreamResetsUsageOnMarshalError verifies that when Stream
 // fails BEFORE the provisional SetUsage (e.g., marshal error), lastUsage is
 // zero — so RecordInferenceCost no-ops and no stale cost is recorded.
 func TestStreamResetsUsageOnMarshalError(t *testing.T) {
@@ -518,7 +518,7 @@ func TestStreamResetsUsageOnMarshalError(t *testing.T) {
 	// The provisional estimate is Exact=false. If the reset didn't happen,
 	// a pre-publication failure would leave Exact=true with stale data.
 	if u.Exact {
-		t.Error("Exact = true after Stream — stale usage was not reset at entry (card #247)")
+		t.Error("Exact = true after Stream — stale usage was not reset at entry")
 	}
 	if u.OutputTok != 0 {
 		t.Errorf("OutputTok = %d, want 0 (provisional estimate has no output tokens)", u.OutputTok)

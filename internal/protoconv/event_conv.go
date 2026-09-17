@@ -1,4 +1,4 @@
-// Package protoconv provides shared proto↔domain event conversion (card #148 P2e).
+// Package protoconv provides shared proto↔domain event conversion (P2e).
 //
 // The conversion logic is shared between the Connect server adapter
 // (internal/server/connect, which converts domain→proto for responses) and

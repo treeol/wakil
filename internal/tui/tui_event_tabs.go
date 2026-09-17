@@ -46,7 +46,7 @@ func (m tuiModel) spawnSubTab(p event.SubagentSpawned, cmds []tea.Cmd) (tuiModel
 
 // completeSubTab applies the authoritative SubagentCompleted (the old
 // SubagentDoneMsg case): enrichment without visual regression, done-flag
-// transition arms the auto-close timer (card #133), error text is kept if
+// transition arms the auto-close timer, error text is kept if
 // already set (defense-in-depth).
 func (m tuiModel) completeSubTab(p event.SubagentCompleted, cmds []tea.Cmd) (tuiModel, []tea.Cmd) {
 	becameDone := false

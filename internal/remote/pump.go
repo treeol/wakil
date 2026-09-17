@@ -1,4 +1,4 @@
-// pump.go: the remote event pump (card #148 P2e).
+// pump.go: the remote event pump (P2e).
 //
 // The remote pump consumes the daemon's StreamEvents server-stream RPC and
 // delivers domain events to the TUI via a callback (tea.Program.Send). It
@@ -207,7 +207,7 @@ func (p *RemoteEventPump) LastSeq() event.Seq {
 }
 
 // eventFromProto converts a proto Event to a domain event via the shared
-// protoconv package (card #148 P2e). The converter handles the 32-kind oneof
+// protoconv package (P2e). The converter handles the 32-kind oneof
 // switch; we don't duplicate it here.
 func eventFromProto(pb *v1alpha1.Event) (event.Event, error) {
 	return protoconv.EventFromProto(pb)

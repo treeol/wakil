@@ -1,6 +1,6 @@
 package agent
 
-// worktree.go — Git worktree isolation for parallel edit-tier subagents (card #191).
+// worktree.go — Git worktree isolation for parallel edit-tier subagents.
 //
 // Problem: parallel edit subagents sharing one workspace can clobber each
 // other's changes. The subagentWriterMu mutex serializes them, but that
@@ -406,7 +406,7 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 
 	// --check passed — capture pre-mutation state for each file in the patch
 	// BEFORE applying it. This enables /rewind to revert worktree-isolated
-	// subagent edits (card #211). The patch header lines (--- a/..., +++ b/...)
+	// subagent edits. The patch header lines (--- a/..., +++ b/...)
 	// list the affected files; we extract parent-relative paths from them.
 	for _, path := range patchFilePaths(patch) {
 		// Resolve to canonical parent-workspace path before capturing.
@@ -438,7 +438,7 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 //
 // For each file, it returns the parent-workspace-relative path (without the
 // "a/" or "b/" prefix). Both the old (pre-patch) and new (post-patch) paths are
-// captured so /rewind can restore renamed-away files (card #243).
+// captured so /rewind can restore renamed-away files.
 //
 // Decoding is done at each parse site (not in addPath) because the different
 // header types use different formats: "diff --git" and "+++"/"---" carry an
@@ -449,7 +449,7 @@ func patchFilePaths(patch string) []string {
 	seen := make(map[string]bool)
 	// addPath records a decoded, repository-relative path. It does NOT unquote,
 	// strip prefixes, or truncate — each caller is responsible for producing a
-	// fully decoded path (card #243: separate parsing from collection).
+	// fully decoded path (separate parsing from collection).
 	addPath := func(path string) {
 		if path == "" || path == "/dev/null" || seen[path] {
 			return
@@ -473,7 +473,7 @@ func patchFilePaths(patch string) []string {
 	// "diff --git" header paths — all of which carry the transport prefix.
 	// For quoted paths, the tab/timestamp is outside the quotes, so we split
 	// BEFORE unquoting to avoid corrupting quoted filenames containing \t
-	// (card #243).
+	//.
 	decodeDiffPath := func(raw string) string {
 		// If the path is C-quoted, the tab/timestamp (if present) is outside
 		// the closing quote. Find the closing quote and split there.
@@ -508,7 +508,7 @@ func patchFilePaths(patch string) []string {
 	}
 	// decodeRenamePath unquotes (if C-quoted) a bare "rename from"/"rename to"
 	// path. These carry NO a//b/ prefix — the value is repository-relative as-is
-	// (card #243: feeding through stripDiffPrefix would corrupt paths starting
+	// (feeding through stripDiffPrefix would corrupt paths starting
 	// with "a/" or "b/"). Only trailing \r\n (from line splitting) is stripped;
 	// meaningful whitespace within the path is preserved.
 	decodeRenamePath := func(raw string) string {
@@ -523,7 +523,7 @@ func patchFilePaths(patch string) []string {
 			// "diff --git a/<old> b/<new>" — present for ALL diff types (text,
 			// binary, renames, mode-only). parseDiffGitHeader returns the
 			// decoded new (b/) path; the old (a/) path is also captured so
-			// /rewind can restore a renamed-away file (card #243).
+			// /rewind can restore a renamed-away file.
 			oldPath, newPath := parseDiffGitHeader(line)
 			addPath(newPath)
 			addPath(oldPath)
@@ -531,7 +531,7 @@ func patchFilePaths(patch string) []string {
 		}
 		// "rename from <path>" / "rename to <path>" — bare paths, no a//b/
 		// prefix. Capture both so /rewind can restore the old name and remove
-		// the new name (card #243).
+		// the new name.
 		if rest, ok := strings.CutPrefix(line, "rename from "); ok {
 			addPath(decodeRenamePath(rest))
 			continue
@@ -542,7 +542,7 @@ func patchFilePaths(patch string) []string {
 		}
 		// "copy from <path>" / "copy to <path>" — same format as rename.
 		// Capture both endpoints; the source is not mutated by a copy, but
-		// capturing it is conservative (card #243).
+		// capturing it is conservative.
 		if rest, ok := strings.CutPrefix(line, "copy from "); ok {
 			addPath(decodeRenamePath(rest))
 			continue
@@ -563,7 +563,7 @@ func patchFilePaths(patch string) []string {
 // parseDiffGitHeader extracts the old (a/) and new (b/) paths from a
 // "diff --git a/old b/new" line. Both paths are returned decoded (C-unquoted,
 // prefix stripped) and repository-relative. The old path is captured so /rewind
-// can restore renamed-away files (card #243).
+// can restore renamed-away files.
 //
 // Git quotes both names in a diff --git header if either needs quoting
 // (quote_two in git's diff.c). Quoted paths are unambiguous: we tokenize by
@@ -840,7 +840,7 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 				// Owner process is dead — stale worktree from a crashed session.
 				_ = os.RemoveAll(fullPath)
 				// Also clean up the .git/worktrees/<name>/ metadata in the
-				// parent repo (card #229). The gitDir points to the
+				// parent repo. The gitDir points to the
 				// .git/worktrees/<name> directory — remove it too.
 				_ = os.RemoveAll(gitDir)
 			}
@@ -854,7 +854,7 @@ func pruneStaleWorktrees(ctx context.Context, a *App) {
 		// worktree is orphaned. Clean it up.
 		_ = os.RemoveAll(fullPath)
 		// The .git/worktrees/<name> metadata is also stale — the repo is
-		// gone so the metadata dir is orphaned too. Remove it (card #229).
+		// gone so the metadata dir is orphaned too. Remove it.
 		_ = os.RemoveAll(gitDir)
 	}
 }
@@ -916,7 +916,7 @@ func pruneStaleDockerWorktreeMetadata(ctx context.Context, a *App) {
 		}
 		// Only consider entries whose gitdir points under /tmp/wakil-wt-.
 		// Use HasPrefix on the path after trimming, not Contains, to avoid
-		// matching paths like /home/user/tmp/wakil-wt-x/.git (card #230).
+		// matching paths like /home/user/tmp/wakil-wt-x/.git.
 		if !strings.HasPrefix(gitdirPath, "/tmp/"+worktreePrefix) {
 			continue // not one of ours — leave it
 		}

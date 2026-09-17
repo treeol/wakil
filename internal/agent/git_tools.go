@@ -1,6 +1,6 @@
 package agent
 
-// git_tools.go — handlers for the structured read-only git tools (card #137).
+// git_tools.go — handlers for the structured read-only git tools.
 //
 // Each handler builds a git command from structured JSON arguments and runs it
 // via Exec.RunShell, then parses the output into structured JSON (status/log/

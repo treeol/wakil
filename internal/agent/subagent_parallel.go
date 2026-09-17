@@ -91,7 +91,7 @@ type subagentCheckpointFn func(index int, result asyncSubagentResult) bool
 // and semaphore acquisition selects on ctx.Done. Returning before all workers
 // finish would race on the results slice, so we always join fully.
 //
-// Per-child timeout (card #164): The caller's ctx is used for semaphore
+// Per-child timeout: The caller's ctx is used for semaphore
 // acquisition (so queue wait is bounded by the caller's deadline — the batch-
 // level workCtx in the async path, or the turn ctx in the sync path). AFTER
 // semaphore acquisition, a FRESH per-child context.WithTimeout is created
@@ -102,7 +102,7 @@ type subagentCheckpointFn func(index int, result asyncSubagentResult) bool
 // into a child's work budget — the root cause of premature timeouts when
 // overlapping batches compete for the global semaphore.
 //
-// Card #165: When checkpoint is non-nil (async path), each child's result is
+// When checkpoint is non-nil (async path), each child's result is
 // checkpointed to the async op as it completes — before wg.Wait() returns.
 // This allows the watchdog to salvage completed children's results instead of
 // synthesizing "timed out" for every child. The checkpoint is rejected if the
@@ -116,7 +116,7 @@ type subagentCheckpointFn func(index int, result asyncSubagentResult) bool
 //     read-only, so no workspace write races from discovery workers. Edit-
 //     tier children are serialized by subagentWriterMu (at most one edit
 //     child executing at a time) in non-git workspaces; in a git repo they
-//     run in isolated git worktrees (card #191) and skip the lock — each
+//     run in isolated git worktrees and skip the lock — each
 //     child has its own working directory. Patch application back to the
 //     parent workspace is serialized by patchApplyMu. Discovery children
 //     still parallelize freely, including alongside edit children.
@@ -149,7 +149,7 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 	if maxPar > len(jobs) {
 		maxPar = len(jobs)
 	}
-	// Card #122 Phase 1: the GLOBAL semaphore bounds total concurrent subagent
+	// Phase 1: the GLOBAL semaphore bounds total concurrent subagent
 	// children ACROSS all overlapping batches (incl. detached async discovery),
 	// not just within this invocation — so async batches cannot balloon
 	// parallelism beyond /maxpar. Sized once by maxPar.
@@ -207,7 +207,7 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 			// Slot acquired — this subagent is now actually running (was queued).
 			// sendEvent is goroutine-safe (Program.Send), same as chunk events.
 			a.sendEvent(SubagentActiveMsg{ChatID: jobs[i].ChatID})
-			// Card #164: When perChildTimeout > 0 (async path), create a FRESH
+			// When perChildTimeout > 0 (async path), create a FRESH
 			// per-child timeout context starting NOW (after semaphore acquisition),
 			// not at batch creation. Derived from Background() so the child's
 			// deadline is independent of the caller's ctx deadline (which may have
@@ -250,7 +250,7 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 			// state. No parent-state mutation here — CostUSD is the child's own
 			// total (from its fresh CostTracker), display data only.
 			//
-			// Card #165: Suppress this event on the async path if the watchdog
+			// Suppress this event on the async path if the watchdog
 			// already terminalized (checkpoint was rejected). Otherwise the TUI
 			// would see a success event after a timeout event for the same child.
 			if accepted {
@@ -283,7 +283,7 @@ func (a *App) runParallelSubagentBlock(ctx context.Context, block []proxy.ToolCa
 	}
 	a.announceSubagentBlock(jobs, backend)
 	if pureDiscovery {
-		// Card #122 Phase 1: route pure-discovery blocks through the async
+		// Phase 1: route pure-discovery blocks through the async
 		// funnel. queueAsyncDiscoveryBlock returns per-call placeholders on
 		// success, or explicit per-call rejections on refusal (never silent sync).
 		results, ok := a.queueAsyncDiscoveryBlock(block, jobs, backend)
@@ -424,7 +424,7 @@ func (a *App) announceSubagentBlock(jobs []subagentJob, backend string) {
 // only by the caller's ctx). A positive value creates a fresh context per child
 // so semaphore queue time doesn't eat into the execution budget (async path).
 //
-// Card #165: checkpoint is called after each child completes to write its
+// checkpoint is called after each child completes to write its
 // result into the async op's subagents slice. nil for the sync path (no async
 // op to checkpoint to).
 func (a *App) runPreparedSubagents(ctx context.Context, jobs []subagentJob, backend string, perChildTimeout time.Duration, checkpoint subagentCheckpointFn) []subagentJobResult {

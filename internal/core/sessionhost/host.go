@@ -1,4 +1,4 @@
-// Package sessionhost is the P0 in-memory session host (card #148, plan §2
+// Package sessionhost is the P0 in-memory session host (, plan §2
 // deliverable 3). It implements the three service interfaces from
 // internal/core — SessionService, EventReader, SessionReader — over an
 // in-memory EventAppender/EventLog.
@@ -1205,7 +1205,7 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 				s.pending -= len(abandoned)
 			}
 		case len(s.queue) == 0:
-			// P0 seam (card #244): SessionIdle is set before s.mu is released
+			// P0 seam: SessionIdle is set before s.mu is released
 			// and before TurnCompleted is emitted at ~line 1227. An external
 			// caller polling GetSession in this window sees Idle before the
 			// completion event is observable. This is an instance of the

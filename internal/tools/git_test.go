@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Parser unit tests for the structured git tools (card #137). Fixtures mirror
+// Parser unit tests for the structured git tools. Fixtures mirror
 // real `git --porcelain=v1 -z`, `git log --format=`, and `git blame --porcelain`
 // output so the parsers are exercised against machine-format quirks (NUL
 // framing, rename records, the branch header, 2-field blame headers).

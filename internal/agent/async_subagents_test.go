@@ -1,6 +1,6 @@
 package agent
 
-// Card #122 Phase 1 acceptance tests: async discovery subagents through the
+// Phase 1 acceptance tests: async discovery subagents through the
 // async funnel.
 //
 // Invariants under test:

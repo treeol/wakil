@@ -1,4 +1,4 @@
-// Package event — payload codec (P1, card #148).
+// Package event — payload codec (P1, ).
 //
 // The codec serializes and deserializes event payloads for the SQLite event
 // log. P1 uses JSON (encoding "json-v1"); P2 will introduce protobuf

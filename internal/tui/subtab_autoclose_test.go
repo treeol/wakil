@@ -8,7 +8,7 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 )
 
-// TestSubagentDoneClearsActive verifies card #134: a done subagent tab is no
+// TestSubagentDoneClearsActive verifies a done subagent tab is no
 // longer active (the active flag is cleared).
 func TestSubagentDoneClearsActive(t *testing.T) {
 	m := newTabModel()
@@ -28,7 +28,7 @@ func TestSubagentDoneClearsActive(t *testing.T) {
 		t.Fatal("tab missing after Done")
 	}
 	if tab.active {
-		t.Error("done subagent tab still active=true (card #134)")
+		t.Error("done subagent tab still active=true")
 	}
 	if !tab.done || !tab.finished {
 		t.Errorf("tab done=%v finished=%v, want both true", tab.done, tab.finished)
@@ -168,7 +168,7 @@ func TestSubTabCloseMsgFixesSubCur(t *testing.T) {
 	}
 }
 
-// TestSubagentDoneArmsExactlyOneCloseTimer verifies card #133: only the FIRST
+// TestSubagentDoneArmsExactlyOneCloseTimer verifies only the FIRST
 // SubagentDoneMsg for a chatID arms the 30s auto-close timer. A duplicate/
 // replayed Done for an already-done tab must NOT arm an additional timer (which
 // would leak a timer and fire a redundant subTabCloseMsg). We assert the first
@@ -188,6 +188,6 @@ func TestSubagentDoneArmsExactlyOneCloseTimer(t *testing.T) {
 		t.Error("first Done did not arm an auto-close timer")
 	}
 	if cmd2 != nil {
-		t.Error("duplicate Done armed an additional auto-close timer (card #133 regression)")
+		t.Error("duplicate Done armed an additional auto-close timer (regression)")
 	}
 }

@@ -282,7 +282,7 @@ const (
 	PanelMemberStart PanelMemberEventKind = "start"
 	PanelMemberDone  PanelMemberEventKind = "done"
 	PanelMemberError PanelMemberEventKind = "error"
-	// PanelMemberDelta is reserved for future token streaming (card #126 option c).
+	// PanelMemberDelta is reserved for future token streaming (option c).
 	PanelMemberDelta PanelMemberEventKind = "delta"
 )
 

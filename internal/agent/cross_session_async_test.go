@@ -1,6 +1,6 @@
 package agent
 
-// Tests for card #129: cross-session async delivery/grounding. When the
+// Tests for cross-session async delivery/grounding. When the
 // conversation is rotated (/new, /resume, handoff) while an async op is in
 // flight, a result completing after rotation must be delivered inline (tagged
 // as prior-session) but must NOT commit oracle grounding into the NEW session.
@@ -36,7 +36,7 @@ func enqueueTerminalOp(t *testing.T, a *App, originChatID string, okModels []str
 	return op
 }
 
-// TestCrossSessionAsyncSuppressesGroundingAndTags verifies the card #129 fix:
+// TestCrossSessionAsyncSuppressesGroundingAndTags verifies the fix:
 // an op originating in a PRIOR session (delivered after /new) is delivered
 // inline with a prior-session tag but its oracle grounding is NOT committed to
 // the new session.

@@ -1,6 +1,6 @@
 package tui
 
-// Tests for card #126 Phase 1: Mashūra async-job tabs (AsyncJobStarted /
+// Tests for Phase 1: Mashūra async-job tabs (AsyncJobStarted /
 // AsyncJobCompleted) reusing the subTab machinery. Event-driven (m4d):
 // tabs are keyed by domain OpIDs ("op_<id>").
 
@@ -46,7 +46,7 @@ func findJobTab(m tuiModel, opID string) *subTab {
 	return nil
 }
 
-// TestAsyncJobDoneClearsActive verifies card #134: a done async-job tab is no
+// TestAsyncJobDoneClearsActive verifies a done async-job tab is no
 // longer active (the active flag is cleared), so a future reader keying on
 // active before done won't see a stale "running" tab.
 func TestAsyncJobDoneClearsActive(t *testing.T) {
@@ -60,7 +60,7 @@ func TestAsyncJobDoneClearsActive(t *testing.T) {
 	m = step(m, jobDone("op_op-1", "panel A", "x", "", tabSID))
 	tab = findJobTab(m, "op_op-1")
 	if tab.active {
-		t.Error("done async-job tab still active=true (card #134)")
+		t.Error("done async-job tab still active=true")
 	}
 	if !tab.done || !tab.finished {
 		t.Errorf("tab done=%v finished=%v, want both true", tab.done, tab.finished)
@@ -467,7 +467,7 @@ func TestAsyncJobDoneSeparatesFromStatus(t *testing.T) {
 	}
 }
 
-// TestAsyncJobDoneArmsExactlyOneCloseTimer verifies card #133: only the first
+// TestAsyncJobDoneArmsExactlyOneCloseTimer verifies only the first
 // Done for an opID arms the 30s auto-close timer. A duplicate/replayed Done
 // for an already-done tab must NOT arm an additional timer.
 func TestAsyncJobDoneArmsExactlyOneCloseTimer(t *testing.T) {
@@ -484,6 +484,6 @@ func TestAsyncJobDoneArmsExactlyOneCloseTimer(t *testing.T) {
 		t.Error("first Done did not arm an auto-close timer")
 	}
 	if cmd2 != nil {
-		t.Error("duplicate Done armed an additional auto-close timer (card #133 regression)")
+		t.Error("duplicate Done armed an additional auto-close timer (regression)")
 	}
 }

@@ -15,7 +15,7 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
-// ─── Card #121: async operation registry + completion funnel ───────────────
+// ─── async operation registry + completion funnel ───────────────
 
 // enqueueAndWait enqueues fn, waits for terminal completion, returns the op.
 func enqueueAndWait(t *testing.T, a *App, fn func() (string, []counselUsageRec, []string, error)) *asyncOp {

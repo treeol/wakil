@@ -201,7 +201,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 	// Staging, memory, and skill tools are appended to every tier.
 	// Staging is ungated by design; memory and skill tier-gating is at dispatch time.
 	tools = append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
-	// Structured read-only git tools (card #137): parent + discovery tiers.
+	// Structured read-only git tools: parent + discovery tiers.
 	tools = append(tools, GitTools()...)
 	return tools
 }
@@ -283,7 +283,7 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 	}
 	// Staging, memory, and skill tools are appended to every tier.
 	tools = append(append(append(tools, StagingTools()...), MemoryTools()...), SkillTools()...)
-	// Structured read-only git tools (card #137): discovery subagents get
+	// Structured read-only git tools: discovery subagents get
 	// structured git access without a raw run_shell escape hatch.
 	tools = append(tools, GitTools()...)
 	return tools
@@ -298,7 +298,7 @@ const CapabilityDiscovery = "discovery"
 // run_shell has no path confinement by design, the shared Executor is read-safe
 // only, and child bgProcs would orphan on child completion.
 //
-// In a git repo, edit children run in isolated git worktrees (card #191) —
+// In a git repo, edit children run in isolated git worktrees —
 // each child gets its own working directory, and changes are applied back as
 // patches. This allows parallel edit dispatch. In a non-git directory, edit
 // children are serialized by subagentWriterMu (one at a time).

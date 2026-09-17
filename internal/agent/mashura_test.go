@@ -592,7 +592,7 @@ func TestPanelSingleGateForWholePanel(t *testing.T) {
 	if confirmCount != 1 {
 		t.Errorf("confirm count = %d, want 1 (single gate for panel)", confirmCount)
 	}
-	// Card #121: the tool call now returns a placeholder immediately; the
+	// the tool call now returns a placeholder immediately; the
 	// panel result arrives via the async funnel (drain into Conv).
 	if !strings.Contains(got, "queued as op-") {
 		t.Fatalf("expected async placeholder, got: %q", got)
@@ -666,7 +666,7 @@ func TestPanelCostPerModel(t *testing.T) {
 	app.handleMashura(context.Background(), "mashura__review",
 		tcArgs("mashura__review", `{"focus":"x"}`))
 
-	// Card #121: cost is committed at terminal completion via the funnel, not
+	// cost is committed at terminal completion via the funnel, not
 	// inside the tool call. Wait for the panel, then drain (which commits).
 	waitAsyncOps(t, app)
 	app.drainAsyncInbox()

@@ -1,4 +1,4 @@
-// manager.go: the remote ConversationManager implementation (card #148 P2e).
+// manager.go: the remote ConversationManager implementation (P2e).
 //
 // RemoteConversationManager implements sessionclient.ConversationManager by
 // creating sessions on the daemon and returning RemoteFacade instances. It

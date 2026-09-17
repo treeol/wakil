@@ -141,7 +141,7 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 // DriveTurnWithResilience runs one user turn to its FINAL outcome with the
 // agent's resilience policies applied, and returns the authoritative
 // TurnOutcome. It is the single entry point for callers that need the final
-// assistant text after retry/empty-recovery — the host adapter (card #148 chunk
+// assistant text after retry/empty-recovery — the host adapter (chunk
 // 7) and, later, the TUI re-route.
 //
 // Sequence (mirrors the headless driver's driveHeadlessTurn + recovery, but

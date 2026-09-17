@@ -1,6 +1,6 @@
 // Package wiring composes the transport-free core (internal/core, chunk 4's
 // in-memory session host) with the real agent loop (internal/agent), translating
-// the agent's outbound signals into domain events (card #148 chunk 5, plan
+// the agent's outbound signals into domain events (chunk 5, plan
 // deliverables 4 + 6).
 //
 // It is the ONLY package that bridges the two: sessionhost stays free of
@@ -561,7 +561,7 @@ func (ht *hostTurn) claimAndActivate(sid event.SessionID) error {
 
 // claimSession binds the App to a single session ID and rejects a second.
 // For the daemon path, ResetSessionBinding clears the binding so the same
-// App can serve a new session after the old one closes (card #149).
+// App can serve a new session after the old one closes.
 func (ht *hostTurn) claimSession(sid event.SessionID) error {
 	ht.mu.Lock()
 	defer ht.mu.Unlock()

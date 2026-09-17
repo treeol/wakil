@@ -1,6 +1,6 @@
 package wiring
 
-// sessions.go: package-level session helpers for cmd/wakil (card #148 Gate
+// sessions.go: package-level session helpers for cmd/wakil (Gate
 // #1, cmd half). These thin wrappers keep internal/agent out of package
 // main — after the m4 cut main.go was the last production file still
 // importing it. Behaviour is delegated verbatim; no logic lives here.

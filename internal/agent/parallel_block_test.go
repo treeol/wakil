@@ -71,7 +71,7 @@ func writeSSE(w http.ResponseWriter, frames ...string) {
 // one assistant turn actually OVERLAP at the worker layer: the server holds
 // each subagent response on a barrier that only opens once BOTH subagent
 // requests have arrived (sequential execution would deadlock, guarded by the
-// test timeout below). Card #122 Phase 1 makes pure-discovery blocks ASYNC, so
+// test timeout below). Phase 1 makes pure-discovery blocks ASYNC, so
 // the tool results are placeholders and the structured summaries arrive via the
 // async envelope — this test asserts BOTH: protocol closure (placeholders) and
 // concurrency at the detached-worker layer + envelope delivery of both tasks.
@@ -155,8 +155,8 @@ func TestParallelBlockRunsConcurrently(t *testing.T) {
 
 // TestParallelBlockCancellationStubs verifies that cancelling ctx mid-dispatch
 // still yields a tool response (placeholder) for every dispatched tool_call_id.
-// Card #122 Phase 1: discovery subagents run on DETACHED workers, so they
-// complete even if the parent's context is cancelled (card #121 D-4 semantics) —
+// Phase 1: discovery subagents run on DETACHED workers, so they
+// complete even if the parent's context is cancelled (D-4 semantics) —
 // this test asserts (a) no hang before cancel, and (b) both tool_call_ids still
 // carry a placeholder tool result in Conv. It must NOT hold the server on a
 // blocking ctx.Done() for the detached child (that would hang).

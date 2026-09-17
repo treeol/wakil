@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// ─── WrapExitMarker / ParseExitMarker (card #121 exit-code follow-up) ──────
+// ─── WrapExitMarker / ParseExitMarker (exit-code follow-up) ──────
 
 func TestWrapExitMarkerShape(t *testing.T) {
 	got := WrapExitMarker("echo hi", "/tmp/x.log")

@@ -1,6 +1,6 @@
 package agent
 
-// Tests for card #126 Phase 2: runMashuraCore async path emits live
+// Tests for Phase 2: runMashuraCore async path emits live
 // AsyncJobChunkMsg progress events (per panel member) into the async-job tab,
 // while synchronous call sites (registry-full fallback) emit none.
 

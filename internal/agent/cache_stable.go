@@ -1,6 +1,6 @@
 package agent
 
-// cache_stable.go — Cache-stable prompt layout helpers (card #189).
+// cache_stable.go — Cache-stable prompt layout helpers.
 //
 // The system prompt (Conv[0]) is already day-stable via ensurePreamble, and
 // Anthropic cache_control breakpoints are already computed by the proxy

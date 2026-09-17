@@ -727,7 +727,7 @@ func TestMultiToolCallSiblingPreservation(t *testing.T) {
 
 // TestEnforceHardMax_PinnedContentExceedsLimit verifies that enforceHardMax
 // cannot drop turns when all remaining turns contain pinned messages, and
-// returns while still over the hard max ceiling (card #237). This is a
+// returns while still over the hard max ceiling. This is a
 // documented product choice — the warning at compact.go:618-621 makes it
 // visible.
 func TestEnforceHardMax_PinnedContentExceedsLimit(t *testing.T) {

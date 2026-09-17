@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-// ─── Backgrounded-shell exit-code marker (card #121 follow-up) ─────────────
+// ─── Backgrounded-shell exit-code marker (follow-up) ─────────────
 //
 // Backgrounded shell commands are not waited on directly: their exit status
 // lives only in the process table, and the poll-based liveness check

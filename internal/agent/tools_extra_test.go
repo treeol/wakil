@@ -366,7 +366,7 @@ func TestGenerationStaleness(t *testing.T) {
 
 // ── Item 1: read_process_log 8 KB hard cap ────────────────────────────────────
 
-// TestReadProcessLogCapEnforced updates for card #121 follow-up: exited
+// TestReadProcessLogCapEnforced updates for follow-up: exited
 // processes now report exit status in the header — "exited (code unknown)"
 // for logs without the wrapper marker (fake executor logs have none). verifies:
 //   - total returned payload never exceeds 8 KB + 256-byte header overhead
@@ -398,7 +398,7 @@ func TestReadProcessLogCapEnforced(t *testing.T) {
 	if len(result.text) > maxTotal {
 		t.Errorf("result len=%d exceeds hard cap %d", len(result.text), maxTotal)
 	}
-	// Status-line prefix must be present. Card #121 follow-up: exited
+	// Status-line prefix must be present. follow-up: exited
 	// processes carry the exit status in the header; the fake log has no
 	// wrapper marker, so the honest status is "code unknown".
 	wantPrefix := "[bg1 srv] exited (code unknown) pid=42\n"

@@ -1,6 +1,6 @@
 package agent
 
-// Async discovery subagents (card #122 Phase 1).
+// Async discovery subagents (Phase 1).
 //
 // Pure-discovery dispatch_subagent / dispatch_subagents blocks run through the
 // async funnel: the turn goroutine prepares (Phase A), children run on a worker
@@ -84,7 +84,7 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 
 	// Store child ChatIDs + tasks on the op so the watchdog can synthesize
 	// per-child SubagentDoneMsg events if the worker doesn't return.
-	// Card #165: Pre-populate op.subagents with placeholder slots (ChatID+Task
+	// Pre-populate op.subagents with placeholder slots (ChatID+Task
 	// only, no result) and op.subagentCheckpointed with false for every child.
 	// As each child completes, the checkpoint callback in runSubagentJobs
 	// writes the real result into op.subagents[i] and sets
@@ -105,7 +105,7 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 
 	// Arm the watchdog BEFORE starting the worker so there's no window
 	// where a stuck worker has no timeout protection.
-	// Card #164: The watchdog timeout must account for multi-wave execution
+	// The watchdog timeout must account for multi-wave execution
 	// under the global semaphore. With maxPar=2 and 6 jobs, children run in
 	// ceil(6/2)=3 waves, each needing up to childTimeout. The watchdog is
 	// armed at waves×childTimeout + grace so it doesn't force-terminalize
@@ -139,7 +139,7 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 					op.terminal = true
 					op.finishedAt = time.Now()
 					op.err = fmt.Errorf("async discovery worker panic: %v", r)
-					// Card #165: Salvage checkpointed children. Same logic as
+					// Salvage checkpointed children. Same logic as
 					// the watchdog: preserve completed children's real results,
 					// synthesize "worker panicked" only for uncheckpointed ones.
 					// Also build op.result from salvaged summaries so they're
@@ -172,7 +172,7 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 					}
 					op.subagents = subs
 					op.result = merged.String()
-					// Card #165: Do NOT set subagentEffectsCommitted — let
+					// Do NOT set subagentEffectsCommitted — let
 					// drain handle per-child effects (grounding, Done events,
 					// LSP) for both salvaged and panicked children, same as
 					// the watchdog path (Mashūra finding #2).
@@ -186,7 +186,7 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 					a.publishAsyncOp(op)
 					return
 				}
-				// Card #165: Don't send Done events here — drain-time
+				// Don't send Done events here — drain-time
 				// commitAsyncSubagentEffects handles per-child Done events,
 				// grounding, and LSP for both salvaged and panicked children.
 				// This avoids double-firing (Mashūra finding #2).
@@ -195,8 +195,8 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 			}
 		}()
 		// Detached from the turn context: discovery children are read-only and
-		// should complete even if the turn is cancelled (card #121 D-4 pattern).
-		// Card #164: The batch-level workCtx bounds the TOTAL batch wall time
+		// should complete even if the turn is cancelled (D-4 pattern).
+		// The batch-level workCtx bounds the TOTAL batch wall time
 		// (queue + multi-wave execution). It is sized to waves×childTimeout so
 		// all children get their full per-child budget. Individual children get
 		// a FRESH per-child context inside runSubagentJobs (after semaphore
@@ -217,9 +217,9 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 		// limits and never touches parent Conv/trace/budget. The worker emits
 		// tagged events (sendEvent is goroutine-safe) and Start events were
 		// already sent in Phase A on the turn goroutine.
-		// Card #164: Pass the per-child timeout so each child gets a fresh
+		// Pass the per-child timeout so each child gets a fresh
 		// execution context AFTER semaphore acquisition (not at batch start).
-		// Card #165: Pass a checkpoint callback that writes each child's result
+		// Pass a checkpoint callback that writes each child's result
 		// into op.subagents[i] under op.mu as it completes. The watchdog reads
 		// these to salvage completed children instead of synthesizing "timed
 		// out" for every child. The callback returns false if the watchdog

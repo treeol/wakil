@@ -1,6 +1,6 @@
 package agent
 
-// Card #125: check_pending shows registration age instead of runtime for terminal ops.
+// check_pending shows registration age instead of runtime for terminal ops.
 //
 // Invariants under test:
 //   - Running ops show "running for Xs" (time.Since(startedAt)), not registration age.

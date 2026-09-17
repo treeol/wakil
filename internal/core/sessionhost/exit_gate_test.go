@@ -1,6 +1,6 @@
 package sessionhost
 
-// exit_gate_test.go: P0 exit-gate certification tests (card #148, impl-plan §3).
+// exit_gate_test.go: P0 exit-gate certification tests (, impl-plan §3).
 //
 // Gates covered:
 //   - Gate 4 — durable Seq values are unique and strictly increasing under

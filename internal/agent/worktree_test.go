@@ -606,7 +606,7 @@ rename from old.txt
 rename to new.txt
 `,
 			// Both old and new paths are captured so /rewind can restore the
-			// renamed-away file (card #243). Order: rename from (old) appears
+			// renamed-away file. Order: rename from (old) appears
 			// before rename to (new) in the patch.
 			expect: []string{"old.txt", "new.txt"},
 		},
@@ -640,7 +640,7 @@ zabc...
 `,
 			expect: []string{"text.go", "data.bin"},
 		},
-		// --- Card #243 regression cases ---
+		// --- regression cases ---
 		{
 			// Unquoted path with spaces — git does NOT quote spaces alone.
 			// The header is "diff --git a/foo bar.txt b/foo bar.txt".
@@ -750,7 +750,7 @@ new mode 100755
 
 // TestApplyPatch_CheckpointCaptureAndRewind verifies that applyPatch captures
 // pre-patch state for each file in the patch and that /rewind restores the
-// original content after a worktree patch apply (card #211 regression coverage).
+// original content after a worktree patch apply (regression coverage).
 func TestApplyPatch_CheckpointCaptureAndRewind(t *testing.T) {
 	dir := setupGitRepo(t)
 	app := newWorktreeTestApp(t, dir)
@@ -832,7 +832,7 @@ func TestApplyPatch_CheckpointCaptureAndRewind(t *testing.T) {
 
 // TestPruneStaleWorktrees_DeadOwnerPID tests that a worktree whose owner PID
 // is no longer alive (crashed session) is pruned — including its .git/worktrees
-// metadata (card #234, #212 coverage).
+// metadata (, #212 coverage).
 func TestPruneStaleWorktrees_DeadOwnerPID(t *testing.T) {
 	dir := setupGitRepo(t)
 	app := newWorktreeTestApp(t, dir)
@@ -861,9 +861,9 @@ func TestPruneStaleWorktrees_DeadOwnerPID(t *testing.T) {
 		t.Error("worktree with dead owner PID should be removed by prune")
 	}
 
-	// The .git/worktrees/<name> metadata should also be gone (card #229 fix).
+	// The .git/worktrees/<name> metadata should also be gone (fix).
 	if _, err := os.Stat(wtGitDir); err == nil {
-		t.Error("worktree .git/worktrees metadata should be removed by prune (card #229)")
+		t.Error("worktree .git/worktrees metadata should be removed by prune")
 	}
 }
 
@@ -871,7 +871,7 @@ func TestPruneStaleWorktrees_DeadOwnerPID(t *testing.T) {
 // pruning path directly. Since isDockerExecutor returns false for
 // DirectExecutor, we call pruneStaleDockerWorktreeMetadata directly (it uses
 // a.Exec.RunShell which works with DirectExecutor too). The function reads
-// .git/worktrees/<name>/gitdir and checks if the target exists (card #236).
+// .git/worktrees/<name>/gitdir and checks if the target exists.
 func TestPruneStaleDockerWorktreeMetadata_StaleEntryRemoved(t *testing.T) {
 	dir := setupGitRepo(t)
 	app := newWorktreeTestApp(t, dir)

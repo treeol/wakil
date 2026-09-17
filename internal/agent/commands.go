@@ -38,7 +38,7 @@ func SuspendAuto(toolName string, app *App, detail string) string {
 		// Always requires explicit approval — never auto-approved, even in /auto.
 		return "external backend egress (privacy gate)"
 	case "correction_capture":
-		// Card #192: Correction-capture stores a durable memory entry from user
+		// Correction-capture stores a durable memory entry from user
 		// input. Always requires explicit per-entry approval — never auto-approved,
 		// even in /auto or under a policy "allow" rule. The "never store without
 		// explicit user confirmation" acceptance criterion requires this carve-out.
@@ -1212,7 +1212,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		return true, false, func() Msg {
 			result := app.rewind(n)
-			// Card #192: Record the rewind result so the next user message
+			// Record the rewind result so the next user message
 			// can be evaluated as a correction candidate.
 			app.SetLastRewind(&result)
 			app.SaveSession()

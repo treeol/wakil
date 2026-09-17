@@ -1,4 +1,4 @@
-// bootstrap_tui.go: the TUI bootstrap surface (card #148 chunk 7b3 m4c).
+// bootstrap_tui.go: the TUI bootstrap surface (chunk 7b3 m4c).
 //
 // This is the single entry point cmd/wakil/main.go calls to run the TUI
 // through the session host: it constructs the ConversationManager, creates

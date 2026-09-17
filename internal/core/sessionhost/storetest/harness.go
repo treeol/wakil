@@ -1,5 +1,5 @@
 // Package storetest provides a shared store contract test harness for
-// sessionhost.Store implementations (card #148 P1). It is imported by both the
+// sessionhost.Store implementations (P1). It is imported by both the
 // MemLog and SQLiteStore test suites to verify behavioral equivalence.
 package storetest
 

@@ -152,7 +152,7 @@ func mashuraToolDefs() []proxy.Tool {
 // handleMashura dispatches a mashura__* tool call: it parses the tool-specific
 // args, resolves the target panel (from config + optional per-call override),
 // gates the entire panel with a single confirm prompt, and returns a PLACEHOLDER
-// immediately — the panel runs on a worker goroutine (card #121) and its result
+// immediately — the panel runs on a worker goroutine and its result
 // is injected into the conversation before the next model request, or can be
 // retrieved early via check_pending. Cost is committed at worker terminal
 // completion; grounding is committed at delivery (drain/check_pending) — both
@@ -236,12 +236,12 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 
 	op, reason := a.enqueueAsyncOpJob(name, panelName, a.mashuraCallTimeout(mode), func(opID, originChatID string) (string, []counselUsageRec, []string, error) {
 		// Detached from the turn context on purpose: the paid call was approved
-		// and should complete even if the turn is cancelled (card #121 D-4;
+		// and should complete even if the turn is cancelled (D-4;
 		// cancellation support is a follow-up). Layer the provider timeout using
 		// the SAME authoritative value the watchdog uses (mashuraTimeout), so a
 		// "0 = no timeout" config still yields the bounded default — a hung panel
-		// can never run unbounded (card #130). Debate mode gets 2× up front so
-		// runDebate's derived 2× wall-time deadline isn't clipped to 1× (card #131).
+		// can never run unbounded. Debate mode gets 2× up front so
+		// runDebate's derived 2× wall-time deadline isn't clipped to 1×.
 		callCtx, cancel := context.WithTimeout(context.Background(), a.mashuraCallTimeout(mode))
 		defer cancel()
 
@@ -339,8 +339,8 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		}
 		fmt.Fprintln(a.Out, Dim("· "+why+" — running mashūra synchronously"))
 		// Same bounded provider timeout as the async worker path (mashuraTimeout
-		// never returns 0 — card #130), with the debate 2× up-front so runDebate's
-		// derived 2× wall-time deadline isn't clipped to 1× (card #131).
+		// never returns 0 — ), with the debate 2× up-front so runDebate's
+		// derived 2× wall-time deadline isn't clipped to 1×.
 		fbCtx, cancel := context.WithTimeout(context.Background(), a.mashuraCallTimeout(mode))
 		defer cancel()
 		results := counsel.RunPanel(fbCtx, models, mode, question, briefing, ccfg, apiKeys)
@@ -1059,7 +1059,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 					Arguments: fmt.Sprintf(`{"symptom":%q}`, "auto-counsel: "+symptom),
 				},
 			}
-			// Card #121: auto-counsel stays SYNCHRONOUS — its diagnosis must be
+			// auto-counsel stays SYNCHRONOUS — its diagnosis must be
 			// injected immediately as the assistant+tool pair below (cap/dedup
 			// semantics depend on the result being in hand right now).
 			result := a.runMashuraCore(ctx, "mashura__debug", fakeTC, true)

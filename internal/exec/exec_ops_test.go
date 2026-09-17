@@ -497,7 +497,7 @@ func TestIsShellNotFound(t *testing.T) {
 }
 
 // TestProcessAliveFromErr covers the kill(2) error classification used by
-// DirectExecutor.IsProcessAlive (card #239): EPERM means the process exists but
+// DirectExecutor.IsProcessAlive: EPERM means the process exists but
 // is owned by another user → alive; ESRCH/nil-adjacent errors → dead.
 func TestProcessAliveFromErr(t *testing.T) {
 	cases := []struct {
@@ -520,8 +520,8 @@ func TestProcessAliveFromErr(t *testing.T) {
 	}
 }
 
-// TestIsProcessGroupAlive_EPERM_MeansDead (card #249) pins the deliberate
-// asymmetry between IsProcessAlive (EPERM→alive, card #239) and
+// TestIsProcessGroupAlive_EPERM_MeansDead pins the deliberate
+// asymmetry between IsProcessAlive (EPERM→alive, ) and
 // IsProcessGroupAlive (EPERM→dead). The auto-bg reaper polls
 // IsProcessGroupAlive in an unbounded loop; treating an unsignalable group as
 // alive would strand the background slot forever. This test documents that
@@ -534,7 +534,7 @@ func TestIsProcessGroupAlive_EPERM_MeansDead(t *testing.T) {
 	//
 	// Pin the asymmetry at the classification level:
 	if processAliveFromErr(syscall.EPERM) != true {
-		t.Error("IsProcessAlive should treat EPERM as alive (card #239)")
+		t.Error("IsProcessAlive should treat EPERM as alive")
 	}
 	// IsProcessGroupAlive uses syscall.Kill(-pgid, 0) == nil — any error
 	// (including EPERM) means false. Pin this by verifying the policy:
@@ -576,7 +576,7 @@ func TestDirectExecutorIsProcessAliveRealProcess(t *testing.T) {
 }
 
 // TestDockerIsProcessAliveScript verifies the exact shell script used by
-// DockerExecutor.IsProcessAlive (card #245). Runs the script on the host
+// DockerExecutor.IsProcessAlive. Runs the script on the host
 // (it is valid POSIX sh with /proc) against real PIDs: a live child and a
 // reaped PID. The unreadable-stat path is tested deterministically against a
 // temp directory (no root needed).

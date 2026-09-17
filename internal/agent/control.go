@@ -1,6 +1,6 @@
 package agent
 
-// control.go: the TUI→App mutation seam (card #148 chunk 6, deliverable 5
+// control.go: the TUI→App mutation seam (chunk 6, deliverable 5
 // step 1/2). This is an INTERIM, throwaway P0 seam — not the D7 Service
 // boundary and not a wire contract. Several methods carry Go callbacks or
 // internal types (SaveRepoState's func(*RepoState), StartSideQuestion's

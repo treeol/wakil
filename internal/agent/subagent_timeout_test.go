@@ -1,6 +1,6 @@
 package agent
 
-// Card #123: stuck async subagent fix — timeout + watchdog + refusal-path Done events.
+// stuck async subagent fix — timeout + watchdog + refusal-path Done events.
 //
 // Invariants under test:
 //   - A cooperative child (ctx-aware HTTP stream) that exceeds the timeout is
@@ -117,7 +117,7 @@ func TestAsyncSubagentWatchdogForceTerminalizes(t *testing.T) {
 	}
 	op.childChatIDs = []string{"child-1", "child-2"}
 	op.childTasks = []string{"TASK-A", "TASK-B"}
-	// Card #165: queueAsyncDiscoveryBlock now pre-populates op.subagents and
+	// queueAsyncDiscoveryBlock now pre-populates op.subagents and
 	// op.subagentCheckpointed at registration time. Simulate that here.
 	op.subagents = []asyncSubagentResult{
 		{ChatID: "child-1", Task: "TASK-A"},
@@ -243,7 +243,7 @@ func TestSubagentTimeoutConfigValidation(t *testing.T) {
 	}
 }
 
-// TestSubagentBatchTimeoutScaling (card #164) verifies that the batch-level
+// TestSubagentBatchTimeoutScaling verifies that the batch-level
 // timeout scales with job count and maxPar to account for multi-wave execution.
 // With maxPar=2 and 6 jobs, children run in ceil(6/2)=3 waves, so the batch
 // timeout should be 3× childTimeout.
@@ -275,7 +275,7 @@ func TestSubagentBatchTimeoutScaling(t *testing.T) {
 	}
 }
 
-// TestPerChildTimeoutStartsAfterSemaphore (card #164) verifies the
+// TestPerChildTimeoutStartsAfterSemaphore verifies the
 // subagentBatchTimeout calculation for single-child and multi-wave scenarios.
 // This confirms the batch-level timeout scales correctly with job count and
 // maxPar, which is the prerequisite for per-child timeouts to work: the batch
@@ -302,7 +302,7 @@ func TestPerChildTimeoutStartsAfterSemaphore(t *testing.T) {
 	}
 }
 
-// TestWatchdogSalvagesCheckpointedResults (card #165 + #167) verifies that the
+// TestWatchdogSalvagesCheckpointedResults (+ #167) verifies that the
 // watchdog preserves completed children's results and cost rows when it
 // force-terminalizes, instead of synthesizing "timed out" for every child.
 //
@@ -399,7 +399,7 @@ func TestWatchdogSalvagesCheckpointedResults(t *testing.T) {
 		t.Errorf("child-2 ChatID should be preserved, got %q", subs[1].ChatID)
 	}
 
-	// Card #167: Verify child-1's cost rows were folded into the parent
+	// Verify child-1's cost rows were folded into the parent
 	// cost tracker (not silently lost).
 	_, rows := app.Costs.Snapshot()
 	var foundCost bool
@@ -410,7 +410,7 @@ func TestWatchdogSalvagesCheckpointedResults(t *testing.T) {
 		}
 	}
 	if !foundCost {
-		t.Error("child-1 cost rows should be folded into parent tracker (card #167)")
+		t.Error("child-1 cost rows should be folded into parent tracker")
 	}
 
 	// Drain should produce an envelope with child-1's salvaged result.
@@ -425,7 +425,7 @@ func TestWatchdogSalvagesCheckpointedResults(t *testing.T) {
 		t.Errorf("envelope should contain timeout for child-2: %q", truncateStr(env, 120))
 	}
 
-	// Card #165 (Mashūra finding #2): Verify salvaged child-1's grounding was
+	// (Mashūra finding #2): Verify salvaged child-1's grounding was
 	// committed via drain-time commitAsyncSubagentEffects (not skipped because
 	// the watchdog no longer sets subagentEffectsCommitted).
 	if !op.groundingCommitted {

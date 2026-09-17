@@ -1,6 +1,6 @@
 package agent
 
-// review_cmd.go — /review [ref] slash command (card #188).
+// review_cmd.go — /review [ref] slash command.
 //
 // Runs a read-only code review over the current git diff by dispatching a
 // discovery-tier subagent with a fixed review rubric. The subagent is strictly

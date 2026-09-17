@@ -736,7 +736,7 @@ func TestPanelDetailDebateMode(t *testing.T) {
 	}
 }
 
-// TestRunPanelDebateRound2SurvivesWith2xDeadline verifies the card #131 fix:
+// TestRunPanelDebateRound2SurvivesWith2xDeadline verifies the fix:
 // debate gets 2× total wall-time (round 1 + round 2), not 1×. Each round's
 // individual HTTP call is separately capped at perCall (CallOracle's
 // WithTimeout), so the meaningful effect of the fix is on the OVERALL budget:

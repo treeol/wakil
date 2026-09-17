@@ -1,6 +1,6 @@
 package agent
 
-// Tests for card #126 Phase 1: Mashūra async ops surface as TUI job tabs via
+// Tests for Phase 1: Mashūra async ops surface as TUI job tabs via
 // AsyncJobStartMsg (emitted before the worker launches) and AsyncJobDoneMsg
 // (emitted exactly once at publication).
 

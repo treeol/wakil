@@ -7,7 +7,7 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
-// git.go — structured read-only git tools (card #137, local half).
+// git.go — structured read-only git tools (, local half).
 //
 // These give the model structured, injection-hardened access to git status/
 // diff/log/show/blame instead of a raw `run_shell git ...` round-trip. Every
@@ -16,7 +16,7 @@ import (
 // confined), so the model cannot reach mutating/destructive subcommands or
 // inject options. Forge/PR integration and commit are intentionally out of
 // scope here (commit stays behind run_shell's gate; forge depends on the
-// credential vault — card #142).
+// credential vault — ).
 //
 // Definitions + parsers live here; the *App handlers that build and run the
 // commands live in internal/agent/git_tools.go.

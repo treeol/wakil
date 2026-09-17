@@ -1,6 +1,6 @@
 package wiring
 
-// facade.go: the wiring-side implementation of sessionclient.Facade (card #148
+// facade.go: the wiring-side implementation of sessionclient.Facade (
 // chunk 7b3 m3). It bridges the agent-free facade contract to the real
 // *agent.App + *sessionhost.Host, translating facade calls into App mutations
 // and host service calls.

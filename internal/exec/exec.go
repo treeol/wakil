@@ -102,7 +102,7 @@ type Executor interface {
 	// IsProcessGroupAlive returns true if ANY live process in the group exists
 	// (direct mode: kill -0 on -pgid, zombies count; docker mode: ps scan
 	// excluding Z-state, consistent with IsProcessAlive). Required for correct
-	// kill_process/shutdown/reaper semantics after card #121's exit-marker
+	// kill_process/shutdown/reaper semantics after  exit-marker
 	// wrapping: the group leader is the wrapper shell, which can die to
 	// SIGTERM while a signal-ignoring child (e.g. `trap '' TERM; sleep 300`)
 	// survives — polling only the leader pid would then report a successful

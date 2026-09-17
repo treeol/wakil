@@ -1,4 +1,4 @@
-// Package wiring — bootstrap surface (card #148 chunk 7, plan D19).
+// Package wiring — bootstrap surface (chunk 7, plan D19).
 //
 // This file owns *agent.App construction and resource lifecycle for BOTH
 // entry points: the headless driver (see headless.go) and the TUI bootstrap in

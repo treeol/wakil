@@ -121,7 +121,7 @@ func Truncate(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// truncateBytes caps s at n *bytes* (card #240) — SummaryBytes is a byte budget,
+// truncateBytes caps s at n *bytes* — SummaryBytes is a byte budget,
 // while Truncate counts runes, so multi-byte UTF-8 summaries could exceed it.
 // The ellipsis counts INSIDE the budget: for valid UTF-8 input a truncated
 // result is never longer than n bytes. It preserves UTF-8 validity by cutting
@@ -286,7 +286,7 @@ Transcript:
 	// before the HTTP call, so post-HTTP failures (timeout, rate-limit) still
 	// have token data to record. Pre-publication failures (marshal, request-
 	// build) leave zero usage (Stream resets at entry), so RecordInferenceCost
-	// no-ops and no stale cost is recorded (card #247).
+	// no-ops and no stale cost is recorded.
 	a.RecordInferenceCost() // aux inference: summarization/compaction
 	if err != nil {
 		return "", err
@@ -444,7 +444,7 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 			// RecordInferenceCost, which only accumulates spend — it does NOT set
 			// the sticky budget flag. Evaluate the budget now so a breach is
 			// recorded before we decide whether to spend on condensation
-			// (card #238). This runs regardless of whether condensation is
+			//. This runs regardless of whether condensation is
 			// eligible, so the flag is set even when SummaryBytes <= 0 or the
 			// summary already fits.
 			a.checkBudgetExhausted()
@@ -484,7 +484,7 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		}
 	}
 
-	// Final byte-cap guard (card #246): regardless of which path produced the
+	// Final byte-cap guard: regardless of which path produced the
 	// summary (summarizer, condensation, fallback), apply the byte budget as a
 	// hard cap on the summary body. The "[Summary of earlier conversation]\n"
 	// wrapper is NOT counted (it's a fixed prefix, not content). Sentinels

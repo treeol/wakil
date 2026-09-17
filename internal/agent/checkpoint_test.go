@@ -1018,7 +1018,7 @@ func TestIsFileNotFoundErrorPermissionDenied(t *testing.T) {
 
 // TestRewind_ConcurrentRewindBlocked verifies that a second rewind is rejected
 // with "cannot rewind while a previous rewind is in progress" when
-// cpRewinding is already set (card #235, checkpoint.go:454-456).
+// cpRewinding is already set (, checkpoint.go:454-456).
 func TestRewind_ConcurrentRewindBlocked(t *testing.T) {
 	app, dir := checkpointTestApp(t)
 	ctx := context.Background()
@@ -1059,7 +1059,7 @@ func TestRewind_ConcurrentRewindBlocked(t *testing.T) {
 	app.cpMu.Unlock()
 }
 
-// TestSendOutcomeRefusedDuringRewind (card #250) verifies that SendOutcome
+// TestSendOutcomeRefusedDuringRewind verifies that SendOutcome
 // refuses to start a turn while a rewind is in progress, and that the user
 // message is NOT appended to Conv (preventing data loss from rewind's Conv
 // truncation).
@@ -1102,7 +1102,7 @@ func TestSendOutcomeRefusedDuringRewind(t *testing.T) {
 	app.cpMu.Unlock()
 }
 
-// TestAdmitTurnBlocksRewind (card #250) verifies that after admitTurn succeeds,
+// TestAdmitTurnBlocksRewind verifies that after admitTurn succeeds,
 // rewind refuses — the atomic admission prevents the TOCTOU race where
 // rewind starts between the gate check and startCheckpoint.
 func TestAdmitTurnBlocksRewind(t *testing.T) {
@@ -1137,7 +1137,7 @@ func TestAdmitTurnBlocksRewind(t *testing.T) {
 	}
 }
 
-// TestAdmitTurnRefusedDuringRewind (card #250) verifies that admitTurn returns
+// TestAdmitTurnRefusedDuringRewind verifies that admitTurn returns
 // false when cpRewinding is set.
 func TestAdmitTurnRefusedDuringRewind(t *testing.T) {
 	app := &App{Out: os.Stderr}
@@ -1156,7 +1156,7 @@ func TestAdmitTurnRefusedDuringRewind(t *testing.T) {
 	app.cpMu.Unlock()
 }
 
-// TestAdmitTurnSubagentBypass (card #250) verifies that subagent turns always
+// TestAdmitTurnSubagentBypass verifies that subagent turns always
 // proceed (admitTurn returns true) regardless of cpRewinding state — subagents
 // don't interact with the rewind system.
 func TestAdmitTurnSubagentBypass(t *testing.T) {

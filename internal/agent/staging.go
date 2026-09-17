@@ -140,7 +140,7 @@ func SessionHistoryDBPath(ws string) string {
 // workspace-keyed (same SHA-256-derived short key). Path:
 // <wakil-data-dir>/sessionhost/<short-key>/sessionhost.db
 //
-// This is the P1 SQLite-backed event store (card #148 D3). It replaces the P0
+// This is the P1 SQLite-backed event store (D3). It replaces the P0
 // in-memory MemLog for production use. Returns "" if the data directory cannot
 // be determined or the workspace key is empty. The directory is NOT created
 // here — sqlstore.NewSQLiteStore creates it.

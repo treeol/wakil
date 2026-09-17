@@ -1,7 +1,7 @@
 package wiring
 
 // conversation_manager.go: the wiring-side implementation of
-// sessionclient.ConversationManager (card #148 chunk 7b3 m3).
+// sessionclient.ConversationManager (chunk 7b3 m3).
 //
 // The ConversationManager sits above the facade and handles conversation
 // lifecycle operations (/new, /resume, /handoff). It owns the App factory
@@ -60,7 +60,7 @@ type conversationManager struct {
 // NewConversationManager creates a ConversationManager from config, executor,
 // and principal. The manager creates fresh App instances for each conversation.
 // In P1 it opens a workspace-keyed SQLiteStore for the session-host event log
-// (card #148 D3); if the store cannot be opened it falls back to the in-memory
+// (D3); if the store cannot be opened it falls back to the in-memory
 // MemLog (best-effort — the session works, but events don't persist).
 func NewConversationManager(cfg config.Config, exe exec.Executor, principal core.Principal) (sessionclient.ConversationManager, error) {
 	if principal.UserID == "" {

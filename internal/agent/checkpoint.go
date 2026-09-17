@@ -65,7 +65,7 @@ type checkpointState struct {
 	checkpoints    []Checkpoint
 	cpTurnCount    int   // total user turns this session (for display)
 	cpActive       bool  // true when a checkpoint is active for the current turn
-	cpTurnAdmitted bool  // true while a turn is admitted (card #250) — blocks rewind for the full turn lifetime, unlike cpActive which clearCheckpoints clears
+	cpTurnAdmitted bool  // true while a turn is admitted — blocks rewind for the full turn lifetime, unlike cpActive which clearCheckpoints clears
 	cpTotalBytes   int   // approximate total bytes across all checkpoints
 	cpRewinding    bool  // true while rewind file I/O is in progress — blocks new turns and captures
 	cpGenCounter   int64 // monotonically increasing generation ID for checkpoint identity

@@ -1,7 +1,7 @@
 package wiring
 
 // sessions_test.go: covers the package-level session wrappers (sessions.go)
-// that keep internal/agent out of package main (card #148 Gate #1, cmd half).
+// that keep internal/agent out of package main (Gate #1, cmd half).
 // Fixtures use the same pattern as internal/agent/session_scope_test.go:
 // an isolated WAKIL_SESSIONS_DIR plus agent.WriteSession. The wrappers
 // delegate verbatim, so these tests pin the contract main.go relies on —

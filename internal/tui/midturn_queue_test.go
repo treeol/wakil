@@ -170,7 +170,7 @@ func TestQueuePrompt_HoldDuringWorkflowAutoContinue(t *testing.T) {
 }
 
 func TestQueuePrompt_FlushOnCancel(t *testing.T) {
-	// Card #169: after a plain cancel (not flushOnCancel), queued prompts
+	// after a plain cancel (not flushOnCancel), queued prompts
 	// should auto-flush as a new turn instead of staying stuck.
 	m, f := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "follow up"}}
@@ -193,7 +193,7 @@ func TestQueuePrompt_FlushOnCancel(t *testing.T) {
 }
 
 func TestQueuePrompt_HoldOnCancelWithWorkflow(t *testing.T) {
-	// Card #169: even after cancel, if WorkflowWillContinue is true, the
+	// even after cancel, if WorkflowWillContinue is true, the
 	// queue must hold — another turn starts immediately.
 	m, f := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "follow up"}}
@@ -207,7 +207,7 @@ func TestQueuePrompt_HoldOnCancelWithWorkflow(t *testing.T) {
 }
 
 func TestQueuePrompt_FlushOnEmpty(t *testing.T) {
-	// Card #169: "empty" outcome is terminal success — flush the queue.
+	// "empty" outcome is terminal success — flush the queue.
 	m, f := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "follow up"}}
 	m.state = stateStreaming
@@ -330,7 +330,7 @@ func TestQueueCommand_DropInvalid(t *testing.T) {
 	}
 }
 
-// --- Tests for card #171: /queue flush escape hatch ---
+// --- Tests for /queue flush escape hatch ---
 
 func TestQueueCommand_Flush_Idle(t *testing.T) {
 	// /queue flush when idle and queue is non-empty: dequeues and submits
@@ -379,7 +379,7 @@ func TestQueueCommand_Flush_EmptyQueue(t *testing.T) {
 	}
 }
 
-// --- Tests for card #170: TurnResumed race during waiting-input cancel ---
+// --- Tests for TurnResumed race during waiting-input cancel ---
 
 // TestQueuePrompt_WaitingInput_CancelsAndFlushes: the happy path — send a
 // prompt while stateWaiting, verify the turn is cancelled and the prompt
@@ -627,7 +627,7 @@ func TestTurnCompleted_ClearsRunningTool(t *testing.T) {
 	}
 }
 
-// TestFlushQueuedPrompt_IgnoresState (card #244) pins that flushQueuedPrompt
+// TestFlushQueuedPrompt_IgnoresState pins that flushQueuedPrompt
 // does NOT gate on m.state — it unconditionally sets state=stateStreaming and
 // proceeds. This is why clearWiringTurnState setting stateIdle before the
 // flush in finishWiringTurn is harmless: the flush overwrites it.

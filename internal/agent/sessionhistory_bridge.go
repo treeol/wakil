@@ -70,7 +70,7 @@ const (
 )
 
 // asyncBlockHeader/End delimit async task completions drained into the
-// conversation by the non-blocking execution funnel (card #121). Like the other
+// conversation by the non-blocking execution funnel. Like the other
 // envelopes, the content is untrusted external output and is stripped at index
 // time via stripRetrievalBlock — the feedback-loop guard. The header MUST be
 // the leading bytes of the user message (drainAsyncInbox builds the message as

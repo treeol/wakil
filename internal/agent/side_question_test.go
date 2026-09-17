@@ -189,7 +189,7 @@ func (e *logWritingExec) StartBackground(_ context.Context, command, logPath str
 	return e.fakeExecutor.StartBackground(context.Background(), command, logPath)
 }
 
-// TestRunShellWithDeadline_BgLimitFailsClosed (card #121): when the bg process
+// TestRunShellWithDeadline_BgLimitFailsClosed: when the bg process
 // limit is reached, run_shell FAILS CLOSED with an actionable error instead of
 // silently falling back to blocking execution (invariant 6: never silently
 // fall back to sync; run_background shares the same limit, so blocking would

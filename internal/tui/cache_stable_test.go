@@ -9,7 +9,7 @@ import (
 )
 
 // TestCacheStatsDisplayed verifies that cache-hit ratio appears in the cost
-// segments when the backend reports cached tokens (card #189).
+// segments when the backend reports cached tokens.
 func TestCacheStatsDisplayed(t *testing.T) {
 	costs := proxy.NewCostTracker()
 	// Record an inference call with cached tokens.

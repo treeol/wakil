@@ -1,6 +1,6 @@
 package agent
 
-// Handler tests for the structured read-only git tools (card #137): command
+// Handler tests for the structured read-only git tools: command
 // construction (injection resistance, hardening flags, caps), ref validation,
 // non-repo error translation, and a live integration test against the real
 // wakiil repository (which the test runs inside).

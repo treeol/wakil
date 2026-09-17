@@ -1,6 +1,6 @@
 package tui
 
-// tui_events.go: the wiring-path event switch (card #148 chunk 7b3 m4b).
+// tui_events.go: the wiring-path event switch (chunk 7b3 m4b).
 //
 // On the wiring path the TUI receives event.Event values from the facade's
 // event pump (delivered via tea.Program.Send) instead of agent messages.

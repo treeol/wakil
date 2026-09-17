@@ -1,6 +1,6 @@
 package wiring
 
-// projection.go: agent-message → domain-event projection (card #148 chunk 7b3).
+// projection.go: agent-message → domain-event projection (chunk 7b3).
 //
 // The agent loop emits various message types through app.EventSink (subagent
 // start/chunk/done, async-job start/chunk/done, side-question chunk/done,

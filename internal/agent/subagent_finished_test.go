@@ -75,7 +75,7 @@ func TestWorkerEmitsFinishedBeforeDone(t *testing.T) {
 	block := []proxy.ToolCall{
 		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
 	}
-	// Pure-discovery block routes ASYNC (card #122 Phase 1): returns placeholders
+	// Pure-discovery block routes ASYNC (Phase 1): returns placeholders
 	// immediately; Start (A) on this goroutine, Finished (B) on a worker, Done (C)
 	// committed at drain. Await terminal workers, then drain to emit Done events.
 	app.runParallelSubagentBlock(context.Background(), block)

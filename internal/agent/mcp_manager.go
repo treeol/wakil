@@ -166,7 +166,7 @@ func (m *MCPManager) OpenAITools() []proxy.Tool {
 			tools = append(tools, MCPToolToOpenAI(srv.Cfg.Name, t))
 		}
 	}
-	// Sort by name for cache-prefix stability (card #189).
+	// Sort by name for cache-prefix stability.
 	return SortToolsByName(tools)
 }
 
@@ -193,7 +193,7 @@ func (m *MCPManager) OpenAIToolsForServers(allowed map[string]bool) []proxy.Tool
 			tools = append(tools, MCPToolToOpenAI(srv.Cfg.Name, t))
 		}
 	}
-	// Sort by name for cache-prefix stability (card #189).
+	// Sort by name for cache-prefix stability.
 	return SortToolsByName(tools)
 }
 
@@ -504,7 +504,7 @@ func PrettyArgs(raw string) string {
 	return string(b)
 }
 
-// checkPendingToolDef returns the check_pending tool definition (card #121):
+// checkPendingToolDef returns the check_pending tool definition:
 // the read-only retrieval surface for async operation results.
 func checkPendingToolDef() proxy.Tool {
 	params, _ := json.Marshal(map[string]interface{}{
@@ -525,7 +525,7 @@ func checkPendingToolDef() proxy.Tool {
 	}}
 }
 
-// waitForCompletionToolDef is the card #122 Phase 2 tool: it lets the model
+// waitForCompletionToolDef is the Phase 2 tool: it lets the model
 // hand control back and suspend the turn until an async completion arrives,
 // removing the check_pending spin loop as the only option. Returns immediately
 // with a token; the turn loop translates it into a Suspended outcome (the
@@ -547,7 +547,7 @@ func waitForCompletionToolDef() proxy.Tool {
 // BuildTools assembles the full tool list in stable groups:
 // built-ins → searxng → google → MCP → oracle → LSP → browser.
 // Within each group, tools are sorted by name for prompt-cache stability
-// (card #189): tool schemas are part of the cache prefix, so non-deterministic
+//: tool schemas are part of the cache prefix, so non-deterministic
 // ordering within a group (e.g., MCP servers returning tools in a different
 // order on reconnect) would silently invalidate the prefix. Group order is
 // preserved so toggling a conditional group only invalidates the suffix,
@@ -555,11 +555,11 @@ func waitForCompletionToolDef() proxy.Tool {
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	// Group 1: built-ins (DefaultTools already has a fixed order).
 	t := wtools.DefaultTools(cwd)
-	// Card #121: check_pending is always available — it is the read-only
+	// check_pending is always available — it is the read-only
 	// retrieval surface for async results (mashūra panels, detached shell
 	// jobs). Cheap, ungated, and excluded from subagent toolsets.
 	t = append(t, checkPendingToolDef())
-	// Card #122 Phase 2: wait_for_completion lets the model explicitly hand
+	// Phase 2: wait_for_completion lets the model explicitly hand
 	// control and suspend the turn until an async completion arrives, removing
 	// the check_pending spin loop as the only option. Ungated and always
 	// available (like check_pending).

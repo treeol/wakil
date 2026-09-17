@@ -1,4 +1,4 @@
-// Command/message mapping matrix for the agent-free facade (card #148, 7b3 m1).
+// Command/message mapping matrix for the agent-free facade (, 7b3 m1).
 //
 // This file is documentation-only (all comments, no executable code). It maps
 // every agent.Msg type the TUI currently handles to its agent-free replacement.

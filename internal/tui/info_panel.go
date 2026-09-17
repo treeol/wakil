@@ -241,7 +241,7 @@ func (m tuiModel) costSegments() []string {
 		costSeg := lipgloss.NewStyle().Foreground(lipgloss.Color(costColor)).Render(proxy.CostCell(r))
 		segs = append(segs, g+" "+name+" "+costSeg+dimStyle.Render(sprint("·%d", r.Calls)))
 	}
-	// Cache-hit ratio (card #189): when the backend reports cached tokens,
+	// Cache-hit ratio: when the backend reports cached tokens,
 	// show the session-wide ratio so users can see whether the prompt-cache
 	// prefix is actually hitting.
 	cacheLine := formatCacheStats(rows)
@@ -349,7 +349,7 @@ func hostOnly(url string) string {
 //
 // The denominator is ALL session InputTok (not just rows with CachedTok > 0),
 // so cache misses (first turn, post-invalidation) correctly lower the ratio.
-// This is a session-wide metric across all sources — see card #189.
+// This is a session-wide metric across all sources — see .
 func formatCacheStats(rows []proxy.CostRow) string {
 	var totalCached, totalInput int64
 	for _, r := range rows {

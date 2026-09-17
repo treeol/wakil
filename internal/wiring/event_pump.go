@@ -1,7 +1,7 @@
 package wiring
 
 // event_pump.go: the event pump that drives EventSubscription.Next and posts
-// events to the TUI (card #148 chunk 7b3 m3).
+// events to the TUI (chunk 7b3 m3).
 //
 // The pump runs in its own goroutine. It reads events from the session host's
 // subscription and delivers them to the TUI via a callback (the TUI's

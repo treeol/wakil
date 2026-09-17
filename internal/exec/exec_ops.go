@@ -333,10 +333,10 @@ func (d *DockerExecutor) IsProcessAlive(ctx context.Context, pid int) bool {
 	// then $1 is the state. A zombie (state Z) has exited — treat as not
 	// alive, matching the pre-existing ps-based semantics.
 	//
-	// Card #245: if cat fails (e.g., permission denied under hidepid or an
+	// if cat fails (e.g., permission denied under hidepid or an
 	// LSM policy), distinguish "process directory gone" (dead) from
 	// "directory exists but stat unreadable" (conservatively alive, mirroring
-	// processAliveFromErr's EPERM→alive from card #239). Under hidepid=2 the
+	// processAliveFromErr's EPERM→alive from ). Under hidepid=2 the
 	// directory itself is invisible and this procfs probe cannot distinguish
 	// hidden from dead — that is a documented limitation, not fixable from
 	// userspace.
@@ -359,7 +359,7 @@ func (d *DockerExecutor) IsProcessAlive(ctx context.Context, pid int) bool {
 
 // procPIDAliveScript builds the POSIX-sh probe that reports the process state
 // char from /proc/<pid>/stat, or "?" if the process directory exists but the
-// stat file is unreadable (card #245). Exported-shape for a host-side test:
+// stat file is unreadable. Exported-shape for a host-side test:
 // it is the EXACT script the docker executor runs, and it is also valid on any
 // Linux host with /proc.
 func procPIDAliveScript(pid int) string {
@@ -369,7 +369,7 @@ func procPIDAliveScript(pid int) string {
 // processAliveFromErr classifies a kill(2) existence-probe error. nil means the
 // probe succeeded (process exists and we could signal it). EPERM means
 // permission was denied — the process is present but we cannot signal it — so
-// treat it as alive (parity with card #224's processAliveImpl). ESRCH means no
+// treat it as alive (parity with  processAliveImpl). ESRCH means no
 // such process. Any other error also returns false, preserving prior behavior;
 // note that such an error does not by itself establish absence.
 //
@@ -388,7 +388,7 @@ func (e *DirectExecutor) IsProcessAlive(_ context.Context, pid int) bool {
 // (kill -0 on the negated pgid). See the Executor interface doc for why
 // kill_process/shutdown must check the GROUP, not the leader pid.
 //
-// This one-line form is left as-is by card #239: only the PID probe changed.
+// This one-line form is left as-is by only the PID probe changed.
 // Success-only is retained because the auto-bg reaper polls this in an
 // unbounded loop until it returns false, so treating an unsignalable group as
 // alive would strand the background slot. This is deliberately narrower than
@@ -396,7 +396,7 @@ func (e *DirectExecutor) IsProcessAlive(_ context.Context, pid int) bool {
 // proves the group is gone — a setuid child (e.g. `sudo`) can be unsignalable
 // by its launcher, and under a filter that synthesizes EPERM the two probes
 // fail in opposite directions. Note this asymmetry is Direct-only: the Docker
-// PID probe (card #245) now treats an unreadable /proc/<pid>/stat as
+// PID probe now treats an unreadable /proc/<pid>/stat as
 // conservatively alive, while the Docker group probe below skips unreadable
 // /proc entries (treating them as not-alive). The group probe's skip is
 // deliberate — counting an unreadable entry as alive would keep finished

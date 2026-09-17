@@ -1,6 +1,6 @@
 package agent
 
-// Card #146: a subagent that fails (context deadline, stream error) must not
+// a subagent that fails (context deadline, stream error) must not
 // lose the work it already did. These tests verify the salvage path added to
 // dispatchSubagent's error branch: the child's in-memory transcript (tool
 // calls + results) is flushed to a spill file under the parent's chatID and

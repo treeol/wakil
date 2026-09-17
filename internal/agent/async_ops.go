@@ -15,7 +15,7 @@ import (
 	wtools "github.com/treeol/wakil/internal/tools"
 )
 
-// ─── Async operation registry (card #121: non-blocking execution) ──────────
+// ─── Async operation registry (non-blocking execution) ──────────
 //
 // Long-running work (Mashūra counsel calls, detached background jobs) runs in
 // worker goroutines and reports terminal completion through a single funnel.
@@ -78,7 +78,7 @@ const (
 	// the same value (360) — they must agree. Defined as a named constant
 	// here so the runtime fallback is self-documenting; config cannot import
 	// it (agent depends on config, not vice versa).
-	// Card #166: raised from 120s to 180s. Later raised from 180s to 360s:
+	// raised from 120s to 180s. Later raised from 180s to 360s:
 	// 40 iterations × ~6s on external backends = 240s, plus a forced wrap-up
 	// request and potential JSON parse-retry Send = ~300s. 360s gives 60s
 	// of headroom so the watchdog doesn't kill a legitimately-running child.
@@ -109,7 +109,7 @@ type counselUsageRec struct {
 // of a batch async op. A batch op holds one of these per child so per-child
 // effects (grounding, cost rows, files changed, events) are committed/delivered
 // independently. Discovery subagents are read-only; edit/tools-capable dispatch
-// stays synchronous (see card #122 Phase 1 security invariant).
+// stays synchronous (see Phase 1 security invariant).
 type asyncSubagentResult struct {
 	ChatID       string
 	Task         string // child's objective (for drain-time incomplete warnings)
@@ -142,7 +142,7 @@ type asyncOp struct {
 
 	// subagents holds per-child terminal outcomes for a DISCOVERY-subagent
 	// batch op (toolName dispatch_subagent / dispatch_subagents). Nil for
-	// mashura/shell ops. Card #165: slots are pre-populated at registration
+	// mashura/shell ops. slots are pre-populated at registration
 	// time (ChatID+Task only) and mutated under op.mu as each child
 	// completes (checkpoint callback in runSubagentJobs writes the real
 	// result). The watchdog reads these to salvage completed children.
@@ -159,7 +159,7 @@ type asyncOp struct {
 	childTasks   []string
 
 	// subagentCheckpointed tracks which child slots in op.subagents have been
-	// populated by the worker goroutine as each child completes (card #165).
+	// populated by the worker goroutine as each child completes.
 	// The watchdog reads this to determine which children already have real
 	// results (salvage them) vs. which are still pending (synthesize timeout).
 	// Pre-populated with false for every child at registration time.
@@ -181,7 +181,7 @@ type asyncOp struct {
 
 	// originChatID is the chat session that issued the op. Stamped at
 	// registration and IMMUTABLE thereafter (write-before-publish, so it can be
-	// read without op.mu). Card #129 reads it in the delivery path
+	// read without op.mu). reads it in the delivery path
 	// (opIsCrossSession) to tag cross-session results and suppress their
 	// grounding into the current session.
 	originChatID string
@@ -222,7 +222,7 @@ type asyncOp struct {
 	done chan struct{} // closed exactly once at terminal completion
 
 	// doneClosed guards close(done) against double-close. Set under op.mu
-	// before closing; checked by any path that might close done. Card #220.
+	// before closing; checked by any path that might close done. .
 	doneClosed bool
 }
 
@@ -337,7 +337,7 @@ func (a *App) subagentTimeout() time.Duration {
 // so the watchdog doesn't force-terminalize a legitimately-running multi-wave
 // batch before all children have had their full per-child budget.
 //
-// Card #164: per-child contexts (created in runSubagentJobs after semaphore
+// per-child contexts (created in runSubagentJobs after semaphore
 // acquisition) bound individual children; this batch timeout bounds the whole
 // op (all waves) for the watchdog and the batch-level workCtx.
 //
@@ -347,7 +347,7 @@ func (a *App) subagentTimeout() time.Duration {
 // batch workCtx may expire while children are still queued. This is an
 // accepted trade-off: the per-child timeout still ensures that any child
 // that DOES acquire a slot gets its full execution budget. Cross-batch
-// contention causing queue starvation is a separate issue (card #165
+// contention causing queue starvation is a separate issue (
 // addresses salvaging completed sibling results in this scenario).
 func (a *App) subagentBatchTimeout(jobCount int) time.Duration {
 	childTimeout := a.subagentTimeout()
@@ -391,7 +391,7 @@ func (a *App) mashuraTimeout() time.Duration {
 // passed ctx (runDebate: debateCtx = WithTimeout(parent, 2*perCall)), so the
 // outer deadline must be 2× too — otherwise context.WithTimeout takes the
 // EARLIER of parent and new timeout and clips debate to 1×, prematurely
-// cancelling round 2 (card #131). All other modes use 1×.
+// cancelling round 2. All other modes use 1×.
 func (a *App) mashuraCallTimeout(mode string) time.Duration {
 	t := a.mashuraTimeout()
 	if mode == "debate" {
@@ -406,7 +406,7 @@ func (a *App) mashuraCallTimeout(mode string) time.Duration {
 // and terminalize normally — the watchdog is the safety net, not the
 // primary mechanism. Overridable via the watchdogGrace field for tests
 // (same pattern as asyncShutdownTimeout).
-// Card #168: reduced from 15s to 10s — Go's net/http client cancels
+// reduced from 15s to 10s — Go's net/http client cancels
 // streaming responses promptly on context cancellation, so 15s was
 // unnecessarily long. 10s is still enough for HTTP stream wind-down.
 func (a *App) watchdogGracePeriod() time.Duration {
@@ -420,14 +420,14 @@ func (a *App) watchdogGracePeriod() time.Duration {
 // subagent op. If the worker doesn't terminalize within the configured
 // timeout + grace period, the watchdog force-terminalizes the op.
 //
-// Card #165: The watchdog now SALVAGES completed children's results. As each
+// The watchdog now SALVAGES completed children's results. As each
 // child completes, the worker checkpoints its result into op.subagents[i]
 // and sets op.subagentCheckpointed[i]=true. The watchdog reads these:
 //   - Checkpointed children: preserved with their real result, grounding,
 //     cost rows, filesChanged, etc. Their SubagentDoneMsg carries real data.
 //   - Uncheckpointed children: synthesized as "timed out" (same as before).
 //
-// Card #167: Because checkpointed children's CostRows are now in op.subagents,
+// Because checkpointed children's CostRows are now in op.subagents,
 // commitAsyncCost is no longer a no-op — it folds whatever cost rows were
 // checkpointed before the watchdog fired. This fixes the silent cost-loss bug.
 //
@@ -465,7 +465,7 @@ func (a *App) armSubagentWatchdog(op *asyncOp, timeout time.Duration) {
 		op.finishedAt = time.Now()
 		op.err = fmt.Errorf("async discovery subagent batch timed out after %s", timeout)
 
-		// Card #165: Salvage checkpointed children. Build the final
+		// Salvage checkpointed children. Build the final
 		// op.subagents slice: preserve checkpointed entries as-is, synthesize
 		// "timed out" only for uncheckpointed ones. op.subagents was pre-
 		// populated with ChatID+Task at registration time, so we can iterate
@@ -500,7 +500,7 @@ func (a *App) armSubagentWatchdog(op *asyncOp, timeout time.Duration) {
 		}
 		op.subagents = subs
 		op.result = merged.String() // salvaged summaries visible to the model
-		// Card #165: Do NOT set subagentEffectsCommitted here. Let drain-time
+		// Do NOT set subagentEffectsCommitted here. Let drain-time
 		// commitAsyncSubagentEffects handle per-child Done events, grounding,
 		// and LSP bookkeeping for BOTH salvaged and timed-out children. This
 		// ensures salvaged children's grounding is committed (Mashūra finding #2)
@@ -509,7 +509,7 @@ func (a *App) armSubagentWatchdog(op *asyncOp, timeout time.Duration) {
 		// turn goroutine at drain handles the rest (same as the normal worker).
 		op.mu.Unlock()
 
-		// Card #167: Commit cost — no longer a no-op. Salvaged children may
+		// Commit cost — no longer a no-op. Salvaged children may
 		// have CostRows with real billed usage. commitAsyncCost is idempotent
 		// (guards on costCommitted), and it folds whatever CostRows are in
 		// op.subagents. Timed-out (uncheckpointed) children have no CostRows.
@@ -778,7 +778,7 @@ func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, u
 // used to arm the watchdog so it matches the worker's execution budget. In
 // particular, debate mode is 2× — arming the watchdog with the mode-blind 1×
 // would force-terminalize a legit 2-round debate before its round 2 finishes
-// (card #131). Pass 0 for non-job (uiJob=false) ops, which arm no watchdog.
+//. Pass 0 for non-job (uiJob=false) ops, which arm no watchdog.
 func (a *App) enqueueAsyncOpJob(toolName, label string, callTimeout time.Duration, fn func(opID, originChatID string) (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
 	return a.enqueueAsyncOpInternal(toolName, label, true, callTimeout, fn)
 }
@@ -989,7 +989,7 @@ func (a *App) commitAsyncGrounding(op *asyncOp) {
 	okModels := op.okModels
 	op.mu.Unlock()
 
-	// Card #129: if the op originated in a DIFFERENT session than the current
+	// if the op originated in a DIFFERENT session than the current
 	// one (the conversation was rotated via /new, /resume, or handoff while it
 	// was in flight), do NOT add its oracle grounding to the NEW session.
 	// Grounding is provenance ("the model relied on this oracle answer here"),
@@ -1013,7 +1013,7 @@ func (a *App) commitAsyncGrounding(op *asyncOp) {
 // opIsCrossSession reports whether an async op originated in a conversation
 // other than the current one. originChatID is stamped at registration
 // (registerAsyncOp) and is metadata until now — this is the delivery-path read
-// card #126 prepared for. Empty originChatID is treated as in-session (behaves
+// prepared for. Empty originChatID is treated as in-session (behaves
 // exactly as before the fix) so legacy/registered-without-origin ops don't
 // change delivery or grounding.
 func (a *App) opIsCrossSession(op *asyncOp) bool {
@@ -1050,7 +1050,7 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 			anyLSPDirty = true
 		}
 		if cross {
-			// Card #129: a cross-session discovery-subagent batch must NOT ground
+			// a cross-session discovery-subagent batch must NOT ground
 			// its per-child entries into the NEW session (wrong provenance), but
 			// the untrusted child content is still delivered into / consumed by
 			// the new session, so the taint signal is still set.
@@ -1116,7 +1116,7 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 // dependency).
 func (a *App) renderAsyncLine(op *asyncOp, result string, opErr error) (string, bool) {
 	var line strings.Builder
-	// Card #129: a result originating in a PRIOR session (conversation rotated
+	// a result originating in a PRIOR session (conversation rotated
 	// while it was in flight) is still delivered, but tagged so the model and
 	// user know it belongs to the earlier conversation — not the current one.
 	// Grounding for it is suppressed separately in commitAsyncGrounding.
@@ -1192,7 +1192,7 @@ func (a *App) drainAsyncInbox() string {
 		// (grounding, LSP, SubagentDoneMsg) on the turn goroutine — the cost was
 		// already folded at terminal by the worker.
 		a.commitAsyncSubagentEffects(op)
-		// Card #121: a completed MODIFYING detached shell command makes open
+		// a completed MODIFYING detached shell command makes open
 		// files dirty for LSP resync. Fired here (turn goroutine) because the
 		// reaper that observes the exit is not allowed to touch LSP state.
 		op.mu.Lock()
@@ -1244,7 +1244,7 @@ func neutralizeAsyncMarker(s string) string {
 // and resumes) rather than continuing the tool loop.
 const waitForCompletionToken = "[wait_for_completion: wait — I'm suspending until an async completion arrives; no need to poll]"
 
-// handleWaitForCompletion implements the card #122 Phase 2 wait_for_completion
+// handleWaitForCompletion implements the Phase 2 wait_for_completion
 // tool. When async work is pending, it returns the idle token so the turn loop
 // suspends the turn (the model is asking to hand control back). When nothing is
 // running it returns immediately indicating no wait is needed.

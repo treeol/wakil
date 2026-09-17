@@ -402,7 +402,7 @@ type tuiModel struct {
 	// whenever a tick is armed (AgentDone/turn start or a detached async-job
 	// tab), cleared when a dotTickMsg does NOT re-arm. Prevents N concurrent
 	// AsyncJobStartMsg handlers or a startTurn overlapping a live tick from
-	// launching N recurring tick loops (card #126 review finding).
+	// launching N recurring tick loops (review finding).
 	dotArmed bool
 	// hadTurn is set after the first agent.AgentDoneMsg so the status line can show
 	// "awaiting input" instead of silent idle.
@@ -1417,7 +1417,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			// cancel case: if the user Esc-cancels a streaming turn and
 			// then queues a prompt before the cancel completes, that
 			// prompt should flush on cancel completion rather than stay
-			// stuck (see card #169).
+			// stuck (see ).
 			if m.cancelling {
 				m.flushOnCancel = true
 			}
@@ -2209,7 +2209,7 @@ func startDotTick() tea.Cmd {
 // startDotTickIfUnarmed returns a startDotTick command only if no tick is
 // currently armed (m.dotArmed == false), and sets dotArmed. This prevents
 // duplicate recurring tick chains when multiple sources (turn start, detached
-// async-job tabs) would otherwise each arm their own loop (card #126 review).
+// async-job tabs) would otherwise each arm their own loop (review).
 func (m tuiModel) startDotTickIfUnarmed() (tuiModel, tea.Cmd) {
 	if m.dotArmed {
 		return m, nil

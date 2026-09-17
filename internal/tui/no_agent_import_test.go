@@ -17,7 +17,7 @@ func goList(t *testing.T, args ...string) (string, error) {
 	return string(out), err
 }
 
-// TestNoAgentImport (card #148 m4d, Gate #1 TUI half): internal/tui must not
+// TestNoAgentImport (m4d, Gate #1 TUI half): internal/tui must not
 // depend on internal/agent in PRODUCTION code. The go list -deps graph is the
 // authoritative check (catches indirect imports too); test files are exempt
 // (behavior tests of agent-package functions still live here until they move).

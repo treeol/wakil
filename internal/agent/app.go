@@ -290,7 +290,7 @@ type App struct {
 	// embedded here so selector access (a.bgProcs, a.bgMu, ...) is unchanged.
 	bgRegistry
 
-	// Card #121: async operation registry (non-blocking mashūra/shell).
+	// async operation registry (non-blocking mashūra/shell).
 	// Embedded like bgRegistry; see async_ops.go for the invariants.
 	asyncRegistry
 
@@ -321,7 +321,7 @@ type App struct {
 	parentCaptureCallback func(ctx context.Context, canonical string)
 
 	// correctionState holds the in-session state for the correction-capture
-	// learning loop (Card #192). Tracks the last /rewind result (for revert-
+	// learning loop. Tracks the last /rewind result (for revert-
 	// based detection) and session-level proposal metrics. Not persisted —
 	// corrections that weren't confirmed are intentionally lost.
 	correctionState
@@ -493,7 +493,7 @@ type bgEntry struct {
 	cmdDigest    string   // short command label for the completion notice
 	readOnly     bool     // whether the command was classified read-only
 
-	// Card #128: detached-shell TUI tabs. tabStarted/tabDoneSent are display
+	// detached-shell TUI tabs. tabStarted/tabDoneSent are display
 	// exactly-once guards (independent of the inbox-level `notified`), all under
 	// bgMu. originChatID is captured ONCE at creation (the reaper/exit paths run
 	// async, so they must never read the current ChatID) and carried in both the
@@ -928,7 +928,7 @@ func (a *App) NewConversationTransition(chatID string) {
 // selection), checkEgressConsent (external backend gate), streamTurn (stream +
 // tool loop), finalizeTurn (compaction + hard-max + pressure warning).
 func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error) {
-	// Card #122 Phase 2: Send is the backward-compatible wrapper — it returns
+	// Phase 2: Send is the backward-compatible wrapper — it returns
 	// the turn's text and does not distinguish Final from Suspended. Callers
 	// that need to detect suspension (TUI, headless idle/wake) use SendOutcome.
 	out, err := a.SendOutcome(ctx, userText)
@@ -939,13 +939,13 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 }
 
 // SendOutcome is like Send but returns a TurnOutcome so the caller can detect a
-// SUSPENDED turn (card #122 Phase 2: the model produced final text while async
+// SUSPENDED turn (Phase 2: the model produced final text while async
 // work is pending and it has no further independent tool work). A suspended
 // caller retains the continuation, awaits a completion via
 // WaitForAsyncCompletion, then resumes. Send(ctx, text) is equivalent to
 // out := SendOutcome(ctx, text); out.Text and never distinguishes suspension.
 func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, retErr error) {
-	// Card #250: atomically admit the turn under cpMu. If a rewind is in
+	// atomically admit the turn under cpMu. If a rewind is in
 	// progress, refuse before any side effects. The cpTurnAdmitted flag blocks
 	// rewind for the full turn lifetime (unlike cpActive, which
 	// clearCheckpoints can clear mid-turn during compaction).
@@ -969,7 +969,7 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 		return TurnOutcome{Kind: TurnFinal}, nil
 	}
 
-	// Card #192: Correction-capture learning loop. Detect corrections (user
+	// Correction-capture learning loop. Detect corrections (user
 	// revert via /rewind, or explicit negation patterns) and propose a durable
 	// memory entry. The user must confirm before anything is stored. Runs after
 	// egress consent (the Confirm gate may block) but before the model runs.
@@ -1005,7 +1005,7 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 
 	// Start a checkpoint for this turn. Captures pre-mutation file state as
 	// tools run during the turn, enabling /rewind to undo file changes.
-	// The pre-admission gate at the top of SendOutcome (card #250) ensures
+	// The pre-admission gate at the top of SendOutcome ensures
 	// cpRewinding is false by this point; startCheckpoint's own check is a
 	// defense-in-depth second gate.
 	a.startCheckpoint()
@@ -1423,7 +1423,7 @@ func (a *App) buildPreamble(today string) string {
 			"layout checks (set viewport to 375x812 for mobile), interaction testing, and "+
 			"prefers-reduced-motion emulation.")
 	}
-	// Repo map: lightweight file-tree outline (card #190). Day-stable —
+	// Repo map: lightweight file-tree outline. Day-stable —
 	// rebuilt only on session start or day rollover. The full outline is
 	// spilled to cache so the agent can read_file it; only a one-line
 	// summary enters the preamble to avoid bloating the cache prefix.
@@ -1488,7 +1488,7 @@ func (a *App) ensurePreamble() {
 		return
 	}
 
-	// Card #191: Prune stale worktrees from previous (possibly crashed) sessions.
+	// Prune stale worktrees from previous (possibly crashed) sessions.
 	// Runs on the first turn of a new session (when preambleDay is empty).
 	if a.preambleDay == "" {
 		// First turn this session — prune.
@@ -1576,7 +1576,7 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 	// of internal tool iterations — re-truncating or stubbing a digest discards
 	// the work. Same exemption rationale.
 	//
-	// check_pending (card #121) serves async results — most often full mashūra
+	// check_pending serves async results — most often full mashūra
 	// answers — so it shares the mashūra exemption; capping it would defeat the
 	// "retrieve the full result on demand" contract.
 	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) || toolName == "check_pending" || toolName == "wait_for_completion" {
@@ -1744,7 +1744,7 @@ func (a *App) recordExternalAction(server, tool, status string) {
 // run_shell, dispatch_subagent, run_background, kill_process, open_url, or
 // mashura__* — those stay parent-only. Called only when capability == "tools".
 // Group order is preserved (discovery → search → LSP → browser → MCP); MCP
-// tools are sorted by name within the MCP group (card #189).
+// tools are sorted by name within the MCP group.
 func (a *App) buildSubagentTools() []proxy.Tool {
 	cwd := a.Exec.Cwd()
 	t := wtools.DiscoveryTools(cwd)
@@ -2352,7 +2352,7 @@ func (a *App) StopAllBackgroundProcs() {
 	a.bgMu.Lock()
 	entries := make([]*bgEntry, 0, len(a.bgProcs))
 	for _, entry := range a.bgProcs {
-		// Card #121: shutdown kills are intentional — disarm detached-job
+		// shutdown kills are intentional — disarm detached-job
 		// notifications so reapers don't enqueue pings during teardown.
 		entry.notifyOnExit = false
 		entries = append(entries, entry)

@@ -1,6 +1,6 @@
 package agent
 
-// repomap.go — Repo map: lightweight file-tree outline (card #190).
+// repomap.go — Repo map: lightweight file-tree outline.
 //
 // Builds a compact directory-tree outline of the workspace so the agent
 // knows the repo layout on the first turn without burning discovery

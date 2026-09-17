@@ -444,7 +444,7 @@ func TestTurnBoundaryKeepsGroupsIntact(t *testing.T) {
 	}
 }
 
-// ── Card #184: Context Compaction / Stale-Output Pruning ────────────────────────
+// ── Context Compaction / Stale-Output Pruning ────────────────────────
 
 // TestCompactEmptySummaryFallback verifies that when the summarizer returns an
 // empty string, summarizable content is NOT silently discarded — the fallback
@@ -709,7 +709,7 @@ func TestCompactEvictsBeforeSummarizing(t *testing.T) {
 
 // TestLongSessionStaysUnderLimit builds a synthetic 200-turn session and verifies
 // that compaction + eviction + hard-max keep the transcript bounded. This is
-// acceptance criterion #1 from Card #184.
+// acceptance criterion #1 from .
 func TestLongSessionStaysUnderLimit(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.SummaryBytes = 500
@@ -816,7 +816,7 @@ func TestCompactCondensationFailureKeepsOriginal(t *testing.T) {
 	}
 
 	// The original summary (50 'b' chars) should be in the conversation,
-	// truncated to SummaryBytes=10 by the final cap (card #246).
+	// truncated to SummaryBytes=10 by the final cap.
 	// truncateBytes("b"*50, 10) = "b"*7 + "…" = 10 bytes.
 	const prefix = "[Summary of earlier conversation]\n"
 	summaryFound := false
@@ -901,7 +901,7 @@ func TestCompactCondensationSuccessNoWarning(t *testing.T) {
 	}
 }
 
-// TestCompactFinalCapTruncatesOversizedCondensation (card #246) verifies that
+// TestCompactFinalCapTruncatesOversizedCondensation verifies that
 // when condensation succeeds but the condensed result still exceeds
 // SummaryBytes, the final byte-cap guard truncates it. Before the fix, the
 // oversized condensed summary was stored as-is.
@@ -967,7 +967,7 @@ func TestCompactFinalCapTruncatesOversizedCondensation(t *testing.T) {
 }
 
 // TestCompactCondensationSkippedWhenBudgetExhausted is the regression test for
-// card #238: the first summarizer inference must evaluate the session budget so
+// the first summarizer inference must evaluate the session budget so
 // the condensation inference is skipped once the budget is breached. Before the
 // fix, sum() recorded cost but never set the sticky flag, so the guard at the
 // condensation site was ineffective and a second paid inference ran.
@@ -1023,7 +1023,7 @@ func TestCompactCondensationSkippedWhenBudgetExhausted(t *testing.T) {
 		t.Errorf("expected budget warning in output, got: %q", out.String())
 	}
 	// The paid-for first summary must be retained (not discarded), truncated
-	// to SummaryBytes=10 by the final cap (card #246).
+	// to SummaryBytes=10 by the final cap.
 	// truncateBytes("b"*50, 10) = "b"*7 + "…" = 10 bytes.
 	const bePrefix = "[Summary of earlier conversation]\n"
 	retained := false
@@ -1063,7 +1063,7 @@ func TestCompactCondensationSkippedWhenBudgetExhausted(t *testing.T) {
 // TestCompactCondensationBreachSetsFlag verifies the post-condensation budget
 // check: when the first summary stays under budget but the condensation call
 // breaches it, the sticky flag must be set — including when condensation returns
-// unusable (empty) content, since the inference still incurred cost (card #238).
+// unusable (empty) content, since the inference still incurred cost.
 func TestCompactCondensationBreachSetsFlag(t *testing.T) {
 	for _, condensedContent := range []string{"short", "   "} {
 		name := "nonempty"
@@ -1115,7 +1115,7 @@ func TestCompactCondensationBreachSetsFlag(t *testing.T) {
 }
 
 // TestTruncateBytes covers the byte-budget truncation used for SummaryBytes
-// (card #240): the result must always be valid UTF-8 and never exceed the byte
+//: the result must always be valid UTF-8 and never exceed the byte
 // budget (ellipsis included), and multi-byte content must be cut on a rune
 // boundary rather than a partial sequence.
 func TestTruncateBytes(t *testing.T) {
@@ -1172,7 +1172,7 @@ func TestTruncateBytes(t *testing.T) {
 	}
 }
 
-// TestCompactSummaryByteBudget is the integration regression for card #240: a
+// TestCompactSummaryByteBudget is the integration regression for a
 // multi-byte summary under the budget-exhausted fallback must respect the byte
 // budget. With the old rune-based Truncate, a 3-byte-per-rune summary at
 // SummaryBytes runes would be ~3x the byte budget.
@@ -1219,7 +1219,7 @@ func TestCompactSummaryByteBudget(t *testing.T) {
 	}
 }
 
-// TestTruncateBytesEdgeCases (card #248) covers tiny-budget edge cases with
+// TestTruncateBytesEdgeCases covers tiny-budget edge cases with
 // 4-byte runes and invalid UTF-8 input that the main TestTruncateBytes table
 // doesn't fully exercise.
 func TestTruncateBytesEdgeCases(t *testing.T) {
@@ -1301,7 +1301,7 @@ func TestTruncateBytesEdgeCases(t *testing.T) {
 	}
 }
 
-// FuzzTruncateBytes (card #248) checks that for any input and positive budget n:
+// FuzzTruncateBytes checks that for any input and positive budget n:
 // - len(result) <= n (byte bound — holds for ALL input, valid or invalid UTF-8)
 // - result is valid UTF-8 when input is valid UTF-8
 // - identity: when len(s) <= n, result == s (no truncation needed)

@@ -1,4 +1,4 @@
-// payload.go: proto oneof payload conversion (card #148 P2e).
+// payload.go: proto oneof payload conversion (P2e).
 //
 // The isEvent_Payload interface is unexported in the generated code, so we
 // use reflection to set the oneof payload on the Event proto (setPayload)

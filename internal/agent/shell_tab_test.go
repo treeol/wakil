@@ -1,6 +1,6 @@
 package agent
 
-// Tests for card #128: detached-shell TUI tabs. announceShellStart/announceShellDone
+// Tests for detached-shell TUI tabs. announceShellStart/announceShellDone
 // emit AsyncJobStartMsg/DoneMsg exactly once (keyed by job-<bgID>), carrying the
 // origin captured at launch.
 
@@ -122,7 +122,7 @@ func TestShellTabStartThenDoneSequence(t *testing.T) {
 	}
 }
 
-// TestShellTabDoneEmittedAfterKill verifies card #132: a run_background tab whose
+// TestShellTabDoneEmittedAfterKill verifies a run_background tab whose
 // process is killed via kill_process must still terminalize (emit AsyncJobDoneMsg)
 // rather than strand yellow & unclosable. The bg-reaper captures the entry pointer
 // and emits the tab Done on group exit even though kill_process deleted the entry
@@ -197,7 +197,7 @@ found:
 	}
 }
 
-// TestAutoBGShellTabDoneEmittedAfterKill verifies card #132 on the auto-bg
+// TestAutoBGShellTabDoneEmittedAfterKill verifies on the auto-bg
 // run_shell path (the reaper actually modified): a run_shell that auto-backgrounds
 // at its deadline opens a tab (Start), and a subsequent kill_process must still
 // terminalize it (exactly one Done) rather than strand it yellow. Prior to the

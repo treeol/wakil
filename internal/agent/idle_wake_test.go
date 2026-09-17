@@ -1,6 +1,6 @@
 package agent
 
-// Card #122 Phase 2 acceptance tests: Idle/Wake engine.
+// Phase 2 acceptance tests: Idle/Wake engine.
 //   - A turn that idles with async work pending returns Suspended, not Final.
 //   - wait_for_completion token triggers suspension.
 //   - WaitForAsyncCompletion: no lost wake (check-then-subscribe), coalescing,

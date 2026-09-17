@@ -74,7 +74,7 @@ type subagentState struct {
 	// without changing the package-level constant. Zero = use the constant.
 	subMaxToolIter int
 
-	// Card #122 Phase 1: GLOBAL subagent concurrency cap across ALL overlapping
+	// Phase 1: GLOBAL subagent concurrency cap across ALL overlapping
 	// batches (synchronous + async discovery). Sized lazily by MaxParallelSubagents;
 	// bounded by a wire in runSubagentJobs so total concurrent children never
 	// exceeds /maxpar even when async batches detach and overlap. nil until first use.

@@ -1,4 +1,4 @@
-// Headless driver (card #148 chunk 7, plan D20): re-routes the single-task
+// Headless driver (chunk 7, plan D20): re-routes the single-task
 // `wakil run "<task>"` path through the session host + adapter, projecting
 // domain events onto the existing JSON-lines transcript and exit codes.
 //

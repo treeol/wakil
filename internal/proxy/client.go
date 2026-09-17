@@ -751,7 +751,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// Reset usage at entry so a pre-publication failure (e.g., marshal error,
 	// request-build error) does not leave stale usage from the previous call.
 	// RecordInferenceCost no-ops on zero usage, preventing double-recording
-	// (card #247).
+	//.
 	c.SetUsage(UsageStat{})
 	// proxyShape gates every ilm-proxy-specific request element. Kind ""
 	// means an old construction site that predates endpoint kinds — treat as

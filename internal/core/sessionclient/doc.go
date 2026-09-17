@@ -1,5 +1,5 @@
 // Package sessionclient defines the agent-free facade contract the TUI consumes
-// (card #148 chunk 7b1, plan D26).
+// (chunk 7b1, plan D26).
 //
 // It is the client-facing interface between internal/tui and the session host +
 // agent loop. The TUI imports this package and event/proxy/core leaf types ONLY

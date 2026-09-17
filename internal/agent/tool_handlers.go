@@ -114,7 +114,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	}
 	if live >= 5 {
 		a.bgMu.Unlock()
-		// Card #121: fail closed instead of silently blocking. run_background
+		// fail closed instead of silently blocking. run_background
 		// shares this same 5-proc limit, so the honest remediation is to free a
 		// slot (kill_process) or wait — not to block the turn.
 		return "ERROR: background process limit reached (5 live) — free a slot with kill_process(bgN) or wait for a running process to finish; auto-backgrounding is unavailable until then"
@@ -136,8 +136,8 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	if err != nil {
 		// NOTE: the counter slot is deliberately NOT rolled back — IDs stay
 		// monotonic so a failed start can never cause a future bgN collision
-		// (pre-existing rollback bug, card #121 review).
-		// Card #121: StartBackground failure is usually environmental (executor
+		// (pre-existing rollback bug, review).
+		// StartBackground failure is usually environmental (executor
 		// or container quirk); erroring here would make EVERY shell command
 		// unrunnable. Loud blocking fallback instead — never silent.
 		fmt.Fprintln(a.Out, Yellow("⚠ auto-background unavailable ("+err.Error()+") — running synchronously"))
@@ -170,9 +170,9 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 
 	// Reaper goroutine: polls GROUP liveness, closes done when the whole group
 	// is gone. Uses a background context — the process may outlive the turn.
-	// Group check (not the leader pid): since card #121 the leader is the
+	// Group check (not the leader pid): since the leader is the
 	// exit-marker wrapper shell; a signal-ignoring child could outlive it and
-	// must still count as running. Card #121: when the command was DETACHED
+	// must still count as running. when the command was DETACHED
 	// (deadline hit), the reaper also pushes a one-line completion notice into
 	// the async inbox — the "ping". Exactly once: notifyOnExit && !notified
 	// under bgMu; the sync waiter sets notifyOnExit=false when it returns
@@ -183,7 +183,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		for {
 			if !a.Exec.IsProcessGroupAlive(bgCtx, pgid) {
 				close(done)
-				// Card #132: decouple the TUI tab lifecycle from the model-notify
+				// decouple the TUI tab lifecycle from the model-notify
 				// flag. The reaper captures the bgEntry pointer (not a fresh map
 				// lookup), so kill_process / read_process_log / generation loss
 				// that delete the entry can no longer strand an opened tab. The
@@ -205,10 +205,10 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 						// async registry path (decrements asyncActive, appends
 						// to asyncInbox, signals wake). This lets wait_for_completion
 						// suspend the turn and resume on completion.
-						// Card #220: also emit announceShellDone so the TUI tab
+						// also emit announceShellDone so the TUI tab
 						// is properly closed (publishBgCompletion does NOT call
 						// announceShellDone, unlike notifyDetachedShellExit).
-						// Card #226: publishBgCompletion BEFORE announceShellDone —
+						// publishBgCompletion BEFORE announceShellDone —
 						// the slot release must not be blocked by UI delivery.
 						statusLine, tail := a.shellTailPreview(entry)
 						a.publishBgCompletion(op, bgID, entry, statusLine, tail)
@@ -221,7 +221,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 				} else if tabStarted {
 					// Detached shell tab was opened but model notification was
 					// suppressed (kill/shutdown). Still terminalize the tab so it
-					// doesn't strand yellow & unclosable (card #132).
+					// doesn't strand yellow & unclosable.
 					statusLine, tail := a.shellTailPreview(entry)
 					a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 				}
@@ -243,7 +243,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		if readErr != nil {
 			out = "(output unreadable: " + readErr.Error() + ")"
 		}
-		// Exit-code recovery (card #121 follow-up): the wrapper wrote a
+		// Exit-code recovery (follow-up): the wrapper wrote a
 		// sentinel marker; parse it and surface non-zero exits as ERROR so a
 		// failing backgrounded command can never masquerade as "(no output)".
 		// The "exit status N" wording deliberately mirrors exec.ExitError so
@@ -278,7 +278,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	case <-timer.C:
 		// Deadline reached — the process is still running. Leave it
 		// registered for read_process_log polling, and arm the push
-		// notification: the reaper will announce the exit (card #121).
+		// notification: the reaper will announce the exit.
 		// Register as a pending async op so wait_for_completion sees it
 		// and the turn suspends properly instead of polling read_process_log.
 		//
@@ -287,7 +287,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		// also ready) — then the reaper already left without notifying, so
 		// we notify here ourselves. The notified flag dedupes both paths.
 		//
-		// Card #220: register the async op BEFORE taking bgMu and attach it
+		// register the async op BEFORE taking bgMu and attach it
 		// under bgMu, so the reaper either sees the entry with asyncOp already
 		// set, or doesn't see the entry at all. This mirrors the run_background
 		// pattern and eliminates the slot-leak race where the reaper reads
@@ -318,20 +318,20 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		}
 		a.bgMu.Unlock()
 		// If the entry is gone (killed/generation-lost during the deadline
-		// wait), release the registered op to avoid a slot leak (card #220).
+		// wait), release the registered op to avoid a slot leak.
 		if detachEntry == nil && regOp != nil {
 			a.cancelBgAsyncOp(regOp, bgID, "entry gone before deadline")
 		}
 		// notifySelf: process already exited and the reaper didn't notify
 		// (it saw notifyOnExit==false before we set it). We must publish the
 		// completion ourselves. Emit Start before Done so the TUI tab
-		// lifecycle is Start -> Done (card #132 ordering). If the session is
+		// lifecycle is Start -> Done (ordering). If the session is
 		// stopping, the inbox notice is suppressed but we can still return
 		// the status inline so the model sees the output.
 		if notifySelf {
 			a.announceShellStart(bgID, notifyEntry)
 			statusLine, tail := a.shellTailPreview(notifyEntry)
-			// Card #226: publishBgCompletion BEFORE announceShellDone —
+			// publishBgCompletion BEFORE announceShellDone —
 			// the slot release must not be blocked by UI delivery.
 			if regOp != nil {
 				a.publishBgCompletion(regOp, bgID, notifyEntry, statusLine, tail)
@@ -352,7 +352,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		if detachEntry == nil {
 			return fmt.Sprintf("entry %s no longer tracked — process status and output availability are unknown", bgID)
 		}
-		// Card #128: a detached shell surfaces as a TUI tab. Emit Start (after the
+		// a detached shell surfaces as a TUI tab. Emit Start (after the
 		// lock; sendEvent may block) so the user can track it until Done.
 		if !notifySelf {
 			a.announceShellStart(bgID, detachEntry)
@@ -372,7 +372,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	case <-ctx.Done():
 		// Turn cancelled — leave the process running for the user to inspect;
 		// arm the notification the same way (the exit still matters). Same
-		// race guard and registration pattern as the timer branch (card #220).
+		// race guard and registration pattern as the timer branch.
 		notifySelf := false
 		var notifyEntry *bgEntry
 		var detachEntry *bgEntry
@@ -403,7 +403,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		if notifySelf {
 			a.announceShellStart(bgID, notifyEntry)
 			statusLine, tail := a.shellTailPreview(notifyEntry)
-			// Card #226: publishBgCompletion BEFORE announceShellDone.
+			// publishBgCompletion BEFORE announceShellDone.
 			if regOp != nil {
 				a.publishBgCompletion(regOp, bgID, notifyEntry, statusLine, tail)
 				a.announceShellDone(bgID, notifyEntry, statusLine+"\n"+tail, "")
@@ -438,7 +438,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 // when invoking it (sendEvent may block on the event sink). The originChatID
 // was captured at entry creation, so both Start and Done carry the same origin.
 //
-// Card #132: also no-ops if the tab was already finalized (tabDoneSent). The
+// also no-ops if the tab was already finalized (tabDoneSent). The
 // reaper always finalizes a started tab on group exit, which can race a late
 // Start emission here (the reaper observes tabStarted=true and emits Done while
 // this goroutine is between the unlock and sendEvent). Suppressing a Done-after
@@ -507,7 +507,7 @@ func (a *App) announceShellDone(bgID string, e *bgEntry, result, errStr string) 
 // never loads the whole file) and returns the exit-status line plus the bounded
 // tail preview. Shared by the tab-Done path and the model inbox notice so both
 // report the same exit status. The wrapper's exit marker is parsed and stripped
-// (card #121 follow-up); a self-backgrounded child writing after the marker can
+// (follow-up); a self-backgrounded child writing after the marker can
 // push it out of the window or break end-anchoring → known=false → honest
 // "code unknown". context.Background: the reaper/notice runs async and must not
 // be cancelled by a turn ending.
@@ -549,7 +549,7 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 	op.mu.Unlock()
 	close(op.done)
 
-	// Card #128: emit the TUI tab Done (display-only; the model delivery below
+	// emit the TUI tab Done (display-only; the model delivery below
 	// via asyncInbox is unchanged and exactly-once). shows status + tail preview.
 	a.announceShellDone(bgID, e, statusLine+"\n"+tail, "")
 
@@ -566,7 +566,7 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 	// victim (it is inbox-pending/undelivered and should be kept longest).
 	a.asyncInbox = append(a.asyncInbox, op)
 	a.evictOldestTerminalLocked()
-	// Card #122 Phase 2: a detached-shell completion must wake any pending
+	// Phase 2: a detached-shell completion must wake any pending
 	// wait_for_completion waiter (idle). Coalescing, buffered-1, under asyncMu.
 	a.ensureWake()
 	a.signalWake()
@@ -578,7 +578,7 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 // goroutine. Exactly-once: guarded by the reaper's notifyOnExit && !notified
 // check under bgMu, plus publishAsyncOp's published flag.
 //
-// Card #220: publishAsyncOp is called BEFORE close(op.done) so that
+// publishAsyncOp is called BEFORE close(op.done) so that
 // cancelBgAsyncOp (which checks op.published under op.mu) sees published=true
 // and bails out before attempting close(op.done). This eliminates the
 // double-close panic window that existed when close(done) preceded
@@ -651,7 +651,7 @@ func (a *App) cancelBgAsyncOp(op *asyncOp, bgID, reason string) {
 	// asyncInbox. Signal wake so any suspended turn resumes (it will see
 	// asyncActive == 0 and return Final, not hang forever).
 	// Also remove the op from asyncOps so repeated register/cancel cycles
-	// don't grow the map unboundedly (card #227). The op is terminal and
+	// don't grow the map unboundedly. The op is terminal and
 	// will never be retrieved — no inbox entry to evict.
 	a.asyncMu.Lock()
 	a.asyncActive--
@@ -1277,7 +1277,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 	a.bgMu.Lock()
 	a.bgProcs[bgID] = entry
 	a.bgMu.Unlock()
-	// Card #128: a run_background job surfaces as a TUI tab (display-only).
+	// a run_background job surfaces as a TUI tab (display-only).
 	a.announceShellStart(bgID, entry)
 	// Reaper goroutine: poll GROUP liveness and close done when the group
 	// exits. This lets StopAllBackgroundProcs wait for clean shutdown without
@@ -1293,7 +1293,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 				// Read only the TAIL of the log (multi-GB safe); emit tab Done.
 				statusLine, tail := a.shellTailPreview(entry)
 				// Model notification: publish exactly once.
-				// Card #226: publishBgCompletion BEFORE announceShellDone —
+				// publishBgCompletion BEFORE announceShellDone —
 				// the slot release must not be blocked by UI delivery.
 				a.bgMu.Lock()
 				notify := entry.notifyOnExit && !entry.notified
@@ -1358,7 +1358,7 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 		}
 		return fmt.Sprintf("[%s] already exited", args.ID)
 	}
-	// Card #121: an intentional kill must not produce a completion notice —
+	// an intentional kill must not produce a completion notice —
 	// disarm before signalling so the reaper (which races this path) stays
 	// silent even if it observes the exit first.
 	a.bgMu.Lock()
@@ -1367,7 +1367,7 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	a.bgMu.Unlock()
 	_ = a.Exec.KillPgid(ctx, entry.pgid, 15) // SIGTERM
 	// Wait up to 5s for the GROUP to exit, then SIGKILL. Group check (not the
-	// leader pid): since card #121 the leader is the exit-marker wrapper shell,
+	// leader pid): since the leader is the exit-marker wrapper shell,
 	// which can die to SIGTERM while a signal-ignoring child survives.
 	// The lock is NOT held during this wait — see bgMu comment.
 	deadline := time.Now().Add(5 * time.Second)
@@ -1432,7 +1432,7 @@ func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) strin
 		header := fmt.Sprintf("[%s %s] %s pid=%d\n", args.ID, entry.label, status, entry.pid)
 		return header + "(log not yet available)"
 	}
-	// Exit-code recovery (card #121 follow-up): exited processes carry the
+	// Exit-code recovery (follow-up): exited processes carry the
 	// wrapper's marker at the end of the log — parse it, strip it from the
 	// shown tail, and surface the code in the status line.
 	if !alive {
@@ -1546,7 +1546,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		ToolNames:  a.subagentToolNames(capability),
 	})
 	if capability == wtools.CapabilityDiscovery {
-		// Card #122 Phase 1: a single DISCOVERY dispatch goes async. Reserve the
+		// Phase 1: a single DISCOVERY dispatch goes async. Reserve the
 		// slot on the turn goroutine; the child runs on a detached worker; the
 		// summary is injected into context at the next drain. This keeps the
 		// sequential read-only path non-blocking like the batch path.

@@ -1,4 +1,4 @@
-// bootstrap.go: the remote TUI bootstrap surface (card #148 P2e).
+// bootstrap.go: the remote TUI bootstrap surface (P2e).
 //
 // BootstrapRemote is the remote counterpart of wiring.BootstrapTUI. It dials
 // the daemon, checks health, builds the ConversationManager, creates (or

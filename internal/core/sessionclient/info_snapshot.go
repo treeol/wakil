@@ -1,5 +1,5 @@
 // InfoSnapshot: the narrow, immutable DTO the TUI's info panel and status
-// line read instead of deep *agent.App internals (card #148 chunk 7b3 m4,
+// line read instead of deep *agent.App internals (chunk 7b3 m4,
 // per the review-panel guidance: "no vague Info() — a narrow, immutable
 // InfoSnapshot() DTO with defensive copies").
 //

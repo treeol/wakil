@@ -1,6 +1,6 @@
 package agent
 
-// correction.go implements the Correction-Capture Learning Loop (Card #192).
+// correction.go implements the Correction-Capture Learning Loop.
 //
 // Users repeat the same corrections across sessions: "Don't use var, use const."
 // "Run tests with make test not go test." The agent forgets between sessions
