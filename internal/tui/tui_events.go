@@ -223,7 +223,6 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case clipboardImageMsg:
 		// A clipboard read completed (paste-detection or /image clipboard).
 		m.pasteReadInFlight = false
-		m.addItem(iSys, dim2(sprint("· dbg %s: clipboard read done (err=%q)", time.Now().Format("15:04:05.000"), lm.Err)))
 		if lm.Err != "" {
 			if m.pasteCutStash != "" {
 				// Drain the paste tail before restoring: fragments may still

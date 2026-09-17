@@ -314,9 +314,6 @@ type tuiModel struct {
 	// clipboard read defers the cut-text restore until the paste tail drains.
 	pasteRestoreArmed bool
 
-	// dbgSuppressN caps the temporary suppression debug lines (TEMP DEBUG).
-	dbgSuppressN int
-
 	// pasteSuppressUntil, when in the future, swallows ALL key events (except
 	// ctrl+c) — set right after a binary paste is detected mid-stream. A
 	// fragmented binary paste keeps delivering KeyMsg events after detection:
@@ -702,14 +699,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.pasteSuppressUntil.IsZero() {
 			if m.pasteReadInFlight || time.Now().Before(m.pasteSuppressUntil) {
 				m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
-				if m.dbgSuppressN < 3 {
-					m.dbgSuppressN++
-					m.addItem(iSys, dim2(sprint("· dbg %s: swallowed key (inFlight=%v, type=%v)", time.Now().Format("15:04:05.000"), m.pasteReadInFlight, msg.Type)))
-				}
 				return m, tea.Batch(cmds...)
 			}
 			m.pasteSuppressUntil = time.Time{}
-			m.addItem(iSys, dim2(sprint("· dbg %s: suppression window EXPIRED (type=%v reaches the textarea)", time.Now().Format("15:04:05.000"), msg.Type)))
 		}
 
 		// Any keystroke dismisses an active selection and its highlight.
@@ -928,7 +920,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pasteSuppressUntil = time.Now().Add(pasteSuppressWindow)
 			m.pasteReadInFlight = true
 			m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
-			m.addItem(iSys, dim2(sprint("· dbg %s: binary detected (idx=%d, kept=%d runes), reading clipboard…", time.Now().Format("15:04:05.000"), idx, len([]rune(keep)))))
 			return m, tea.Batch(append(cmds, taCmd, readClipboardCmd())...)
 		}
 
