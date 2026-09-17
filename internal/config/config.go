@@ -477,10 +477,11 @@ type Config struct {
 type ILMStackConfig struct {
 	Endpoint       string `json:"endpoint"`
 	Token          string `json:"token"`
-	Mode           string `json:"mode"` // "off" (default) | "shadow"
+	Mode           string `json:"mode"` // "off" (default) | "shadow" | "assist"
 	QueuePath      string `json:"queue_path"`
 	BatchMS        int    `json:"batch_ms"`         // default 500
 	MaxOutputBytes int    `json:"max_output_bytes"` // default 65536
+	AssistAuto     bool   `json:"assist_auto"`       // assist mode: auto-execute proposals without y/n prompt (default false)
 }
 
 // CostsConfig is the [costs] pricing block consumed by the CostTracker. Rates
@@ -899,6 +900,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.ILMStack.QueuePath, "ILM_QUEUE_PATH")
 	envInt(&cfg.ILMStack.BatchMS, "ILM_BATCH_SIZE")
 	envInt(&cfg.ILMStack.MaxOutputBytes, "ILM_OUTPUT_LIMIT")
+	envBool(&cfg.ILMStack.AssistAuto, "ILM_ASSIST_AUTO")
 
 	// 3) flags (highest precedence)
 	fs := flag.NewFlagSet("wakil", flag.ContinueOnError)
@@ -1409,9 +1411,9 @@ func validateContextLimits(cfg Config) error {
 func validateEnums(cfg Config) error {
 	// ilm-stack mode validation.
 	switch cfg.ILMStack.Mode {
-	case "", "off", "shadow":
+	case "", "off", "shadow", "assist":
 	default:
-		return fmt.Errorf("ilm_stack.mode must be one of: off, shadow (got %q)", cfg.ILMStack.Mode)
+		return fmt.Errorf("ilm_stack.mode must be one of: off, shadow, assist (got %q)", cfg.ILMStack.Mode)
 	}
 	switch cfg.AutoCounsel {
 	case "", "suggest", "auto", "off":

@@ -271,6 +271,8 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 		TranscriptSize:  convSize,
 		Costs:           app.Costs,
 		RawTools:        app.RawTools,
+		AssistEnabled:   app.AssistEnabled,
+		AssistAuto:      app.AssistAuto,
 	}
 
 	if app.Workflow != nil {

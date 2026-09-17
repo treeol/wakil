@@ -188,6 +188,15 @@ type App struct {
 	ilmStarted bool // guards session_start emit (once per session)
 	ilmEnded   bool // guards session_end emit (once per session)
 
+	// Assist is the ilm-stack assist client for synchronous /v1/assist calls.
+	// nil when mode != "assist". When non-nil, the agent queries the assist
+	// server before each model call in the tool-decision loop; a proposal that
+	// passes the allowlist is either executed directly (assist_auto=true) or
+	// shown as a y/n prompt to the user (assist_auto=false).
+	Assist       *ilm.AssistClient
+	AssistEnabled bool // per-session toggle (C4): /assist on|off
+	AssistAuto    bool // per-session toggle (C4): /assist auto on|off
+
 	// touchedExternal is a sticky per-App flag set when the agent's
 	// grounding records web/oracle content. Used for the session-cumulative
 	// taint signal (A1): once the agent touches untrusted external content,

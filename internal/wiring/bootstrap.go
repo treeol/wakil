@@ -272,27 +272,40 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		}
 	}
 
-	// ilm-stack shadow-mode emitter. mode=off (default) → nil emitter (no-op).
-	// mode=shadow → create channel + durable queue + background sender.
-	if cfg.ILMStack.Mode == "shadow" {
+	// ilm-stack emitter. mode=off (default) → nil emitter (no-op).
+	// mode=shadow → create channel + durable queue + background sender for event emission.
+	// mode=assist → same as shadow (event emission) plus an AssistClient for
+	// synchronous /v1/assist calls before tool decisions.
+	if cfg.ILMStack.Mode == "shadow" || cfg.ILMStack.Mode == "assist" {
 		ilmSessionID := "wakil-live:" + client.ChatID
 		queuePath := cfg.ILMStack.QueuePath
 		if queuePath == "" {
 			// Default: alongside the sessions directory.
 			queuePath = filepath.Join(filepath.Dir(agent.MemoryDBPath(app.SessionWorkspace())), "ilm-queue.jsonl")
 		}
+		ilmMode := ilm.ModeShadow
+		if cfg.ILMStack.Mode == "assist" {
+			ilmMode = ilm.ModeAssist
+		}
 		emitter, err := ilm.New(ilm.Config{
 			Endpoint:       cfg.ILMStack.Endpoint,
 			Token:          cfg.ILMStack.Token,
-			Mode:           ilm.ModeShadow,
+			Mode:           ilmMode,
 			QueuePath:      queuePath,
 			BatchMS:        cfg.ILMStack.BatchMS,
 			MaxOutputBytes: cfg.ILMStack.MaxOutputBytes,
+			AssistAuto:     cfg.ILMStack.AssistAuto,
 		}, ilmSessionID)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ilm-stack: failed to initialize emitter:", err)
 		} else {
 			app.ILM = emitter
+			// In assist mode, also create the assist client.
+			if cfg.ILMStack.Mode == "assist" {
+				app.Assist = ilm.NewAssistClient(cfg.ILMStack.Endpoint, cfg.ILMStack.Token)
+				app.AssistEnabled = true
+				app.AssistAuto = cfg.ILMStack.AssistAuto
+			}
 		}
 	}
 

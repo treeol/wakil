@@ -65,6 +65,12 @@ type InfoSnapshot struct {
 	// segment without calling Snapshot(), which copies the entire conversation.
 	RawTools bool
 
+	// AssistEnabled reports whether /assist is ON (querying /v1/assist before
+	// tool decisions). AssistAuto reports whether proposals auto-execute.
+	// Both are per-session toggles; the TUI seeds from config ilm_stack.mode.
+	AssistEnabled bool
+	AssistAuto    bool
+
 	// MCP servers: name → status string ("up", "down", …) plus tool count.
 	MCPServers []MCPServerInfo
 

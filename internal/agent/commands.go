@@ -429,6 +429,29 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		return true, false, note(fmt.Sprintf("raw tool results: OFF — results capped at %d chars", cap))
 
+	case "/assist":
+		// /assist — toggle assist mode on/off (per-session).
+		// /assist auto — toggle auto-execution of proposals on/off.
+		// Requires ilm_stack.mode="assist" in config; otherwise it's a no-op.
+		if app.Assist == nil {
+			return true, false, note("assist: not configured (ilm_stack.mode must be \"assist\")")
+		}
+		if len(fields) > 1 {
+			if fields[1] != "auto" {
+				return true, false, note("usage: /assist | /assist auto")
+			}
+			app.AssistAuto = !app.AssistAuto
+			if app.AssistAuto {
+				return true, false, note("assist auto: ON — proposals executed without prompting")
+			}
+			return true, false, note("assist auto: OFF — proposals require y/n confirmation")
+		}
+		app.AssistEnabled = !app.AssistEnabled
+		if app.AssistEnabled {
+			return true, false, note("assist: ON — querying /v1/assist before tool decisions")
+		}
+		return true, false, note("assist: OFF — main model only")
+
 	case "/compact":
 		return true, false, func() Msg {
 			ok, err := app.Compact(context.Background(), app.summarizeFn(), true)

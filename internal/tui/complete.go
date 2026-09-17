@@ -68,6 +68,7 @@ type compSources struct {
 // re-opens the picker to complete that argument.
 var allTUICommands = []candidate{
 	{name: "/auto", hasArgs: true},
+	{name: "/assist", hasArgs: true},
 	{name: "/backend", hasArgs: true},
 	{name: "/compact"},
 	{name: "/counsel", hasArgs: true},

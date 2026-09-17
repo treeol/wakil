@@ -146,6 +146,8 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 	var suspended bool    // card #122 Phase 2: true when the turn idled with async work pending
 	var wantsSuspend bool // wait_for_completion requested a suspension this round
 	var turnToolBytes int
+	var msg proxy.Message
+	var err error
 	firstStream := true
 	// Path-confinement circuit breaker state (see confinementBreakerThreshold):
 	// confinementFailures counts ConfinePath rejections per distinct path across
@@ -210,28 +212,50 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		a.convMu.RUnlock()
 
 		sink := a.streamSink()
-		msg, err := a.Client.Stream(ctx, msgs, tools, sink, rsink)
-		if err != nil {
-			return "", false, err
-		}
-		a.RecordInferenceCost() // main inference for this iteration
-		// Budget enforcement (soft cutoff): check after recording cost. If the
-		// session's total priced cost has exceeded BudgetUSD, force-finish this
-		// turn and prevent further inference in subsequent turns. The check is
-		// after RecordInferenceCost — the breaching call has already incurred
-		// its cost, so overshoot is bounded by one turn's inference spend.
-		if a.checkBudgetExhausted() {
-			forceFinish = true
-		}
-		if firstStream {
-			// Retrieval telemetry for the user's query is set by this first call;
-			// log a learn candidate if retrieval ran but coverage was low.
-			attempted, maxScore, _ := a.Client.GroundingState()
-			if a.maybeLogLearnCandidate(userText, attempted, maxScore) {
-				// Store the normalised query so runTurn can decide whether to nudge.
-				a.learnNudgePending = strings.Join(strings.Fields(wtools.UserQueryText(userText)), " ")
+
+		// ASSIST-1: before calling the main model, query /v1/assist for a
+		// candidate next action. If the server returns an action that passes
+		// Wakil's allowlist, we return a synthetic assistant message with the
+		// proposed tool call. The normal dispatch path in streamTurn then
+		// executes it exactly once (append to Conv, emit tool_call, handleToolCall,
+		// finalizeToolResult, emit tool_result) — the same path as a
+		// model-initiated tool call. tryAssist does NOT execute or append.
+		//
+		// On any error, abstain, or allowlist failure, we fall through to the
+		// normal model call — the assist path is strictly an optimization.
+		// Assist is skipped when forceFinish is active (tools stripped).
+		var assistTookThisIter bool
+		if a.assistCanAct(forceFinish) {
+			assistMsg, took := a.tryAssist(ctx)
+			assistTookThisIter = took
+			if took {
+				msg = assistMsg
 			}
-			firstStream = false
+		}
+		if !assistTookThisIter {
+			msg, err = a.Client.Stream(ctx, msgs, tools, sink, rsink)
+			if err != nil {
+				return "", false, err
+			}
+			a.RecordInferenceCost() // main inference for this iteration
+			// Budget enforcement (soft cutoff): check after recording cost. If the
+			// session's total priced cost has exceeded BudgetUSD, force-finish this
+			// turn and prevent further inference in subsequent turns. The check is
+			// after RecordInferenceCost — the breaching call has already incurred
+			// its cost, so overshoot is bounded by one turn's inference spend.
+			if a.checkBudgetExhausted() {
+				forceFinish = true
+			}
+			if firstStream {
+				// Retrieval telemetry for the user's query is set by this first call;
+				// log a learn candidate if retrieval ran but coverage was low.
+				attempted, maxScore, _ := a.Client.GroundingState()
+				if a.maybeLogLearnCandidate(userText, attempted, maxScore) {
+					// Store the normalised query so runTurn can decide whether to nudge.
+					a.learnNudgePending = strings.Join(strings.Fields(wtools.UserQueryText(userText)), " ")
+				}
+				firstStream = false
+			}
 		}
 		if DerefStr(msg.Content) != "" {
 			fmt.Fprintln(a.Out)

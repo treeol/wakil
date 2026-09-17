@@ -72,3 +72,41 @@ type SessionEndPayload struct {
 	Outcome string `json:"outcome,omitempty"`
 	Summary string `json:"summary,omitempty"`
 }
+
+// AssistEventPayload is the payload for assist_event events (C3). Every assist
+// response and Wakil's decision are emitted with this payload: the proposed
+// action (if any), the server's gate probability and provenance, and Wakil's
+// decision (took, ignored, not_applicable, auto) plus the main model's
+// subsequent action when Wakil did not take the proposal.
+type AssistEventPayload struct {
+	// Decision is Wakil's disposition of the proposal.
+	//   "took"            — Wakil executed the proposed action.
+	//   "ignored"         — Wakil called the main model instead (user declined or assist_auto=false and user said n).
+	//   "not_applicable"  — the proposal failed Wakil's allowlist.
+	//   "auto"            — assist_auto=true and Wakil executed directly.
+	//   "abstain"         — the server abstained (no action proposed).
+	//   "error"           — transport error (timeout, non-200, malformed response).
+	Decision string `json:"decision"`
+
+	// Tool is the proposed tool name (empty when abstain/error).
+	Tool string `json:"tool,omitempty"`
+	// Args is the proposed tool arguments (empty when abstain/error).
+	Args json.RawMessage `json:"args,omitempty"`
+	// GateProbability is the server's gate probability (0 when abstain/error).
+	GateProbability float64 `json:"gate_probability"`
+	// Abstain is true when the server abstained.
+	Abstain bool `json:"abstain,omitempty"`
+	// Reason is the abstain/error reason (when present).
+	Reason string `json:"reason,omitempty"`
+
+	// CandidateProvenance is the server's provenance for the proposal.
+	CandidateProvenance json.RawMessage `json:"candidate_provenance,omitempty"`
+
+	// LatencyMS is the /v1/assist round-trip latency.
+	LatencyMS float64 `json:"latency_ms,omitempty"`
+
+	// MainModelAction is the main model's subsequent action when Wakil did not
+	// take the proposal (decision=ignored or not_applicable). It records what
+	// the main model actually did, for agreement measurement.
+	MainModelAction string `json:"main_model_action,omitempty"`
+}

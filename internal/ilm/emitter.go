@@ -36,16 +36,18 @@ type Mode string
 const (
 	ModeOff    Mode = "off"
 	ModeShadow Mode = "shadow"
+	ModeAssist Mode = "assist"
 )
 
 // Config holds the ilm-stack emitter configuration.
 type Config struct {
 	Endpoint       string `json:"endpoint"`
 	Token          string `json:"token"`
-	Mode           Mode   `json:"mode"` // "off" (default) | "shadow"
+	Mode           Mode   `json:"mode"` // "off" (default) | "shadow" | "assist"
 	QueuePath      string `json:"queue_path"`
-	BatchMS        int    `json:"batch_ms"`         // default 500
-	MaxOutputBytes int    `json:"max_output_bytes"` // default 65536
+	BatchMS        int    `json:"batch_ms"`          // default 500
+	MaxOutputBytes int    `json:"max_output_bytes"`  // default 65536
+	AssistAuto     bool   `json:"assist_auto"`       // assist mode: auto-execute proposals without y/n prompt
 }
 
 // Defaults
@@ -68,6 +70,7 @@ const (
 	EventMashuraCall   EventType = "mashura_call"
 	EventError         EventType = "error"
 	EventSessionEnd    EventType = "session_end"
+	EventAssist        EventType = "assist_event"
 )
 
 // Event is the wire-level event sent to ilm-stack.
@@ -136,8 +139,8 @@ func New(cfg Config, sessionID string) (*Emitter, error) {
 	}
 	// Reject unknown mode values — only "off" and "shadow" are valid.
 	// The old code activated emission for any non-empty, non-"off" value.
-	if cfg.Mode != ModeOff && cfg.Mode != ModeShadow {
-		return nil, fmt.Errorf("ilm: unknown mode %q (must be %q or %q)", cfg.Mode, ModeOff, ModeShadow)
+	if cfg.Mode != ModeOff && cfg.Mode != ModeShadow && cfg.Mode != ModeAssist {
+		return nil, fmt.Errorf("ilm: unknown mode %q (must be %q, %q, or %q)", cfg.Mode, ModeOff, ModeShadow, ModeAssist)
 	}
 	if cfg.BatchMS <= 0 {
 		cfg.BatchMS = defaultBatchMS
@@ -157,12 +160,12 @@ func New(cfg Config, sessionID string) (*Emitter, error) {
 		return e, nil
 	}
 
-	// Shadow mode: allocate channel, queue, sender.
+	// Shadow and assist modes: allocate channel, queue, sender.
 	if cfg.Endpoint == "" {
-		return nil, fmt.Errorf("ilm: endpoint is required when mode=shadow")
+		return nil, fmt.Errorf("ilm: endpoint is required when mode=%s", cfg.Mode)
 	}
 	if cfg.QueuePath == "" {
-		return nil, fmt.Errorf("ilm: queue_path is required when mode=shadow")
+		return nil, fmt.Errorf("ilm: queue_path is required when mode=%s", cfg.Mode)
 	}
 
 	// Ensure queue directory exists.
@@ -187,6 +190,27 @@ func New(cfg Config, sessionID string) (*Emitter, error) {
 	go e.sender.run()
 
 	return e, nil
+}
+
+// SessionID returns the emitter's session identifier (e.g. "wakil-live:<chatID>").
+// Used by the assist client to construct the POST /v1/assist request.
+func (e *Emitter) SessionID() string {
+	if e == nil {
+		return ""
+	}
+	return e.sessionID
+}
+
+// Seq returns the current event sequence number (the last assigned seq).
+// The assist client sends this as the decision-point seq in the /v1/assist
+// request; the server uses it to locate the window in its event stream.
+func (e *Emitter) Seq() int {
+	if e == nil {
+		return 0
+	}
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+	return e.seq
 }
 
 // Emit sends an event through the pipeline. In off mode it is a no-op.
