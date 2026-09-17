@@ -96,9 +96,13 @@ func makeAbstainResp(reason string, gate float64) *AssistResponse {
 }
 
 // makeDisallowedActionResp returns an action with a tool NOT on Wakil's allowlist.
+// It panics if the tool is actually allowed — catching future allowlist edits that
+// would make the test's "disallowed" scenario no longer disallowed.
 func makeDisallowedActionResp(tool string, args map[string]interface{}) *AssistResponse {
-	r := makeActionResp(tool, args, 0.85)
-	return r
+	if assistAllowedTools[tool] {
+		panic("makeDisallowedActionResp: tool " + tool + " is on the allowlist")
+	}
+	return makeActionResp(tool, args, 0.85)
 }
 
 func mustMarshal(v interface{}) json.RawMessage {
