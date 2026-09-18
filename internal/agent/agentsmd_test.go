@@ -225,8 +225,10 @@ func TestLoadAgentsMD_rejectsNonRegularFile(t *testing.T) {
 func TestLoadAgentsMD_relativeCwdHandled(t *testing.T) {
 	// A relative cwd like "." should be resolved to absolute and not loop.
 	got := loadAgentsMD(".", "")
-	// No AGENTS.md in the test's CWD (the Go package dir) — may or may not
-	// return content. The important thing is it doesn't hang or panic.
+	// Intentionally not asserting on got: this is a smoke test verifying the
+	// function doesn't hang or panic on a relative cwd. The test CWD (the Go
+	// package dir) may or may not contain an AGENTS.md, so the return value
+	// is not deterministic.
 	_ = got
 }
 

@@ -414,6 +414,10 @@ func TestStreamTurn_MaxIterationsForcesFinish(t *testing.T) {
 	// At iteration 2, tools are stripped; the model gets ToolLimitPrompt
 	// and responds with the same tool call — but tools are nil so it
 	// breaks with whatever content came back.
+	// Intentionally discarding final: this test verifies the iteration-limit
+	// mechanism (app.exhausted, app.stopReason), not the final text content.
+	// The final text is non-deterministic (depends on the fake executor's
+	// response at the iteration boundary).
 	_ = final
 	if !app.exhausted {
 		t.Error("app.exhausted should be true after hitting iteration cap")
