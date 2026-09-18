@@ -558,7 +558,7 @@ done:
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// recallByteCapRecall bounds the /recall fold envelope injected into context.
+// recallFoldByteCap bounds the /recall fold envelope injected into context.
 // Reuses recallByteCap (the display-only block cap) as the fold bound — the
 // /recall path is user-gated and injects specific turns, so it is bounded the
 // same as a recall display to keep context growth conservative.
