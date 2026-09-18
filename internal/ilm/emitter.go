@@ -45,9 +45,9 @@ type Config struct {
 	Token          string `json:"token"`
 	Mode           Mode   `json:"mode"` // "off" (default) | "shadow" | "assist"
 	QueuePath      string `json:"queue_path"`
-	BatchMS        int    `json:"batch_ms"`          // default 500
-	MaxOutputBytes int    `json:"max_output_bytes"`  // default 65536
-	AssistAuto     bool   `json:"assist_auto"`       // assist mode: auto-execute proposals without y/n prompt
+	BatchMS        int    `json:"batch_ms"`         // default 500
+	MaxOutputBytes int    `json:"max_output_bytes"` // default 65536
+	AssistAuto     bool   `json:"assist_auto"`      // assist mode: auto-execute proposals without y/n prompt
 }
 
 // Defaults

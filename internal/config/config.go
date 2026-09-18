@@ -481,7 +481,7 @@ type ILMStackConfig struct {
 	QueuePath      string `json:"queue_path"`
 	BatchMS        int    `json:"batch_ms"`         // default 500
 	MaxOutputBytes int    `json:"max_output_bytes"` // default 65536
-	AssistAuto     bool   `json:"assist_auto"`       // assist mode: auto-execute proposals without y/n prompt (default false)
+	AssistAuto     bool   `json:"assist_auto"`      // assist mode: auto-execute proposals without y/n prompt (default false)
 }
 
 // CostsConfig is the [costs] pricing block consumed by the CostTracker. Rates

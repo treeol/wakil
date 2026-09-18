@@ -778,7 +778,7 @@ func (a *App) enqueueAsyncOp(toolName, label string, fn func() (result string, u
 // used to arm the watchdog so it matches the worker's execution budget. In
 // particular, debate mode is 2× — arming the watchdog with the mode-blind 1×
 // would force-terminalize a legit 2-round debate before its round 2 finishes
-//. Pass 0 for non-job (uiJob=false) ops, which arm no watchdog.
+// . Pass 0 for non-job (uiJob=false) ops, which arm no watchdog.
 func (a *App) enqueueAsyncOpJob(toolName, label string, callTimeout time.Duration, fn func(opID, originChatID string) (result string, usage []counselUsageRec, okModels []string, err error)) (*asyncOp, string) {
 	return a.enqueueAsyncOpInternal(toolName, label, true, callTimeout, fn)
 }

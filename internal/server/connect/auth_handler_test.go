@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"database/sql"
 	v1alpha1 "github.com/treeol/wakil/api/gen/wakil/v1alpha1"
 	"github.com/treeol/wakil/internal/auth"
 	"github.com/treeol/wakil/internal/auth/apitoken"
@@ -16,7 +17,6 @@ import (
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/store/migrations"
-	"database/sql"
 
 	_ "modernc.org/sqlite"
 )

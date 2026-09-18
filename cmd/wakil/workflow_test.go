@@ -1914,8 +1914,9 @@ func TestMakeTraceEntry(t *testing.T) {
 		Type:     "function",
 		Function: proxy.FunctionCall{Name: "run_shell", Arguments: `{"command":"go test ./..."}`},
 	}
-	// Error result from formatResult(out, err).
-	errResult := "FAIL\twakil\nERROR: exit status 1"
+	// Error result from formatResult(out, err) — formatResult puts "ERROR: "
+	// at the start so stringToToolResult's HasPrefix check classifies it as !ok.
+	errResult := "ERROR: exit status 1\nFAIL\twakil"
 	e := agent.MakeTraceEntry(tc, agent.StringToToolResult(errResult))
 	if !e.ExitErr {
 		t.Error("makeTraceEntry should detect exitErr from 'ERROR:' in result")

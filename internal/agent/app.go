@@ -194,7 +194,7 @@ type App struct {
 	// server before each model call in the tool-decision loop; a proposal that
 	// passes the allowlist is either executed directly (assist_auto=true) or
 	// shown as a y/n prompt to the user (assist_auto=false).
-	Assist       *ilm.AssistClient
+	Assist        *ilm.AssistClient
 	AssistEnabled bool // per-session toggle (C4): /assist on|off
 	AssistAuto    bool // per-session toggle (C4): /assist auto on|off
 

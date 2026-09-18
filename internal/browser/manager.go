@@ -84,7 +84,7 @@ type Manager struct {
 	dockerContainer string
 
 	// screenshots tracks temp screenshot files for cleanup on Close.
-	screenshots []string
+	screenshots  []string
 	screenshotMu sync.Mutex
 }
 

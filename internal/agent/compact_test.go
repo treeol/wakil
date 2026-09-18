@@ -1115,7 +1115,7 @@ func TestCompactCondensationBreachSetsFlag(t *testing.T) {
 }
 
 // TestTruncateBytes covers the byte-budget truncation used for SummaryBytes
-//: the result must always be valid UTF-8 and never exceed the byte
+// : the result must always be valid UTF-8 and never exceed the byte
 // budget (ellipsis included), and multi-byte content must be cut on a rune
 // boundary rather than a partial sequence.
 func TestTruncateBytes(t *testing.T) {

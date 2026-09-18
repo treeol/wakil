@@ -104,7 +104,7 @@ func TestRedactJSON_NestedObject(t *testing.T) {
 func TestRedactJSON_CredentialFieldNames(t *testing.T) {
 	r := DefaultRedactor()
 	cases := []struct {
-		key     string
+		key      string
 		redacted bool
 	}{
 		{"password", true},
@@ -115,7 +115,7 @@ func TestRedactJSON_CredentialFieldNames(t *testing.T) {
 		{"access-token", true},
 		{"my_secret", true},
 		{"clientSecret", true},
-		{"nonSecret", true},  // suffix-matched: "secret" is a credential suffix
+		{"nonSecret", true}, // suffix-matched: "secret" is a credential suffix
 		{"description", false},
 	}
 	for _, tc := range cases {

@@ -547,7 +547,7 @@ func waitForCompletionToolDef() proxy.Tool {
 // BuildTools assembles the full tool list in stable groups:
 // built-ins → searxng → google → MCP → oracle → LSP → browser.
 // Within each group, tools are sorted by name for prompt-cache stability
-//: tool schemas are part of the cache prefix, so non-deterministic
+// : tool schemas are part of the cache prefix, so non-deterministic
 // ordering within a group (e.g., MCP servers returning tools in a different
 // order on reconnect) would silently invalidate the prefix. Group order is
 // preserved so toggling a conditional group only invalidates the suffix,

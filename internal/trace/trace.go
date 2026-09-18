@@ -13,12 +13,13 @@ package trace
 import (
 	"bufio"
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/treeol/wakil/internal/diag"
 )
 
 // Record is one JSONL line in a trace file.
@@ -164,13 +165,13 @@ func (s *Store) drainTo(f *os.File) {
 	bw := bufio.NewWriterSize(f, 64*1024)
 	for b := range s.ch {
 		if _, err := bw.Write(b); err != nil {
-			log.Printf("trace: write error: %v", err)
+			diag.Printf("trace: write error: %v", err)
 		}
 		if err := bw.WriteByte('\n'); err != nil {
-			log.Printf("trace: write error: %v", err)
+			diag.Printf("trace: write error: %v", err)
 		}
 	}
 	if err := bw.Flush(); err != nil {
-		log.Printf("trace: flush error: %v", err)
+		diag.Printf("trace: flush error: %v", err)
 	}
 }

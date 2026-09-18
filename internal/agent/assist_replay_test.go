@@ -71,12 +71,12 @@ func makeActionRespJSON(tool string, args map[string]interface{}, gate float64) 
 		"args": args,
 	})
 	resp := map[string]interface{}{
-		"action":              json.RawMessage(action),
-		"abstain":             false,
-		"gate_probability":    gate,
-		"decider_id":          "d-wlm",
-		"threshold":           0.76,
-		"latency_ms":          42.5,
+		"action":               json.RawMessage(action),
+		"abstain":              false,
+		"gate_probability":     gate,
+		"decider_id":           "d-wlm",
+		"threshold":            0.76,
+		"latency_ms":           42.5,
 		"candidate_provenance": map[string]interface{}{"candidates": []interface{}{}},
 	}
 	b, _ := json.Marshal(resp)
@@ -85,13 +85,13 @@ func makeActionRespJSON(tool string, args map[string]interface{}, gate float64) 
 
 func makeAbstainRespJSON(reason string, gate float64) []byte {
 	resp := map[string]interface{}{
-		"action":              nil,
-		"abstain":             true,
-		"reason":              reason,
-		"gate_probability":    gate,
-		"decider_id":          "d-wlm",
-		"threshold":           0.76,
-		"latency_ms":          12.3,
+		"action":               nil,
+		"abstain":              true,
+		"reason":               reason,
+		"gate_probability":     gate,
+		"decider_id":           "d-wlm",
+		"threshold":            0.76,
+		"latency_ms":           12.3,
 		"candidate_provenance": map[string]interface{}{"candidates": []interface{}{}},
 	}
 	b, _ := json.Marshal(resp)
