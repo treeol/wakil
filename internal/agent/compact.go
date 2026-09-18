@@ -498,7 +498,6 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		// fall back to a sentinel so we don't silently lose history.
 		if summary == "" {
 			summary = "[compaction produced no summary — older turns were shed]"
-			sentinel = true
 		}
 	}
 

@@ -126,6 +126,27 @@ func waitUntil(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met within deadline")
 }
 
+// waitUntilTurnCompletes polls ListEvents until the expected number of
+// TurnCompleted events is observed. This avoids the P0 state/event race:
+// SessionIdle is set before TurnCompleted is emitted (see host.go finishTurn),
+// so polling state alone can return before the event is persisted.
+func waitUntilTurnCompletes(t *testing.T, h *sessionhost.Host, p core.Principal, sessionID event.SessionID, want int) {
+	t.Helper()
+	waitUntil(t, func() bool {
+		events, err := h.ListEvents(context.Background(), p, sessionID, 0, 0)
+		if err != nil {
+			return false
+		}
+		count := 0
+		for _, e := range events {
+			if e.Kind == event.KindTurnCompleted {
+				count++
+			}
+		}
+		return count >= want
+	})
+}
+
 // TestIntegrationRealTurnDrivesSession is the chunk-5 headless proof: a real
 // *agent.App turn (fake SSE backend, no tool calls) driven entirely through
 // SessionService + EventReader, asserting the durable sequence and the
@@ -272,10 +293,8 @@ func TestIntegrationApprovalEmitsRequestResolved(t *testing.T) {
 		t.Fatalf("SubmitInput: %v", err)
 	}
 
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s.ID)
-		return g.State != core.SessionRunning
-	})
+	// Wait for TurnCompleted to be persisted (avoids P0 state/event race).
+	waitUntilTurnCompletes(t, h, p, s.ID, 1)
 
 	events, err := h.ListEvents(context.Background(), p, s.ID, 0, 0)
 	if err != nil {
@@ -378,20 +397,15 @@ func TestHostTurnSingleSessionBinding(t *testing.T) {
 	if _, err := h.SubmitInput(context.Background(), p, core.SubmitInputRequest{SessionID: s1.ID, Text: "one"}); err != nil {
 		t.Fatalf("SubmitInput s1: %v", err)
 	}
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s1.ID)
-		return g.State == core.SessionIdle
-	})
+	waitUntilTurnCompletes(t, h, p, s1.ID, 1)
 
 	// Second session: the turn must fail with internal_error (not backend).
 	s2 := createSessionT(t, h, p)
 	if _, err := h.SubmitInput(context.Background(), p, core.SubmitInputRequest{SessionID: s2.ID, Text: "two"}); err != nil {
 		t.Fatalf("SubmitInput s2: %v", err)
 	}
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s2.ID)
-		return g.State == core.SessionError
-	})
+	// Wait for the error turn to complete (TurnCompleted with "stream_error").
+	waitUntilTurnCompletes(t, h, p, s2.ID, 1)
 
 	events, err := h.ListEvents(context.Background(), p, s2.ID, 0, 0)
 	if err != nil {
@@ -506,10 +520,8 @@ func TestApprovalAllowReads(t *testing.T) {
 	if _, err := h.SubmitInput(context.Background(), p, core.SubmitInputRequest{SessionID: s.ID, Text: "write"}); err != nil {
 		t.Fatalf("SubmitInput: %v", err)
 	}
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s.ID)
-		return g.State != core.SessionRunning
-	})
+	// Wait for TurnCompleted to be persisted (avoids P0 state/event race).
+	waitUntilTurnCompletes(t, h, p, s.ID, 1)
 
 	events, err := h.ListEvents(context.Background(), p, s.ID, 0, 0)
 	if err != nil {
@@ -554,10 +566,8 @@ func TestCallbackRestore(t *testing.T) {
 	if _, err := h.SubmitInput(context.Background(), p, core.SubmitInputRequest{SessionID: s.ID, Text: "hi"}); err != nil {
 		t.Fatalf("SubmitInput: %v", err)
 	}
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s.ID)
-		return g.State == core.SessionIdle
-	})
+	// Wait for TurnCompleted to be persisted (avoids P0 state/event race).
+	waitUntilTurnCompletes(t, h, p, s.ID, 1)
 
 	// Turn-scoped callbacks must be restored to their original identity.
 	if app.Out != origOut {

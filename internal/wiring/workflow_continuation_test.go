@@ -59,11 +59,9 @@ func TestWorkflowContinuationEnqueued(t *testing.T) {
 		t.Fatalf("SubmitInput: %v", err)
 	}
 
-	// Drain events until the session returns to idle (both turns done).
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s.ID)
-		return g.State == core.SessionIdle
-	})
+	// Drain events until both turns complete (TurnCompleted is persisted,
+	// not just state — avoids the P0 state/event race).
+	waitUntilTurnCompletes(t, h, p, s.ID, 2)
 
 	events, err := h.ListEvents(context.Background(), p, s.ID, 0, 0)
 	if err != nil {
@@ -139,10 +137,9 @@ func TestWorkflowContinuationNotEnqueuedWithoutWorkflow(t *testing.T) {
 		t.Fatalf("SubmitInput: %v", err)
 	}
 
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s.ID)
-		return g.State == core.SessionIdle
-	})
+	// Wait for TurnCompleted to be persisted, not just SessionIdle — avoids
+	// the P0 state/event race (Idle is set before TurnCompleted is emitted).
+	waitUntilTurnCompletes(t, h, p, s.ID, 1)
 
 	events, err := h.ListEvents(context.Background(), p, s.ID, 0, 0)
 	if err != nil {
@@ -191,10 +188,8 @@ func TestToolEventsFlowThroughTurn(t *testing.T) {
 		t.Fatalf("SubmitInput: %v", err)
 	}
 
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s.ID)
-		return g.State == core.SessionIdle
-	})
+	// Wait for TurnCompleted to be persisted (avoids P0 state/event race).
+	waitUntilTurnCompletes(t, h, p, s.ID, 1)
 
 	events, err := h.ListEvents(context.Background(), p, s.ID, 0, 0)
 	if err != nil {
@@ -297,10 +292,8 @@ func TestWorkflowNotesProjected(t *testing.T) {
 		}
 	}()
 
-	waitUntil(t, func() bool {
-		g, _ := h.GetSession(context.Background(), p, s.ID)
-		return g.State == core.SessionIdle
-	})
+	// Wait for TurnCompleted to be persisted (avoids P0 state/event race).
+	waitUntilTurnCompletes(t, h, p, s.ID, 1)
 	select {
 	case <-done:
 	case <-waitForTimeout(5):

@@ -206,7 +206,7 @@ func (q *queue) truncateAfter(offset int) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op if rename succeeded
+	defer func() { _ = os.Remove(tmpName) }() // no-op if rename succeeded
 
 	if _, err := tmp.Write(remaining); err != nil {
 		tmp.Close()
