@@ -22,6 +22,7 @@ import (
 	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/orregistry"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/scrub"
 	"github.com/treeol/wakil/internal/sessionhistory"
 	"github.com/treeol/wakil/internal/staging"
 	wtools "github.com/treeol/wakil/internal/tools"
@@ -1876,6 +1877,23 @@ func (a *App) captureToolTrace(tc proxy.ToolCall, result toolResult) {
 	a.WorkflowStepTrace = append(a.WorkflowStepTrace, MakeTraceEntry(tc, result))
 }
 
+// traceScrubber redacts known secret patterns from tool trace entries before
+// they are distilled into FirstLine/LastLine/ErrorTail. This prevents
+// recognized secrets (API keys, PEM blocks, JWTs, bearer tokens, connection
+// strings) in tool output from reaching external counsel providers via
+// mashuraDebugTraces.
+//
+// The scrubber is stateless after construction (patterns are compiled once)
+// and safe for concurrent use. LevelStandard covers high-confidence secret
+// patterns without false-positiving on legitimate code/diagnostics. The
+// scrubber intentionally prefers false negatives over false positives — it
+// will not catch arbitrary secrets (e.g. generic env var values like
+// MY_SERVICE_KEY=abc123), only recognized prefix-based patterns. See
+// internal/scrub/scrub.go for the full pattern list and limitations (e.g.
+// truncated PEM bodies may remain if the header was cut by upstream output
+// truncation).
+var traceScrubber = scrub.New(scrub.LevelStandard)
+
 func MakeTraceEntry(tc proxy.ToolCall, result toolResult) ToolTraceEntry {
 	e := ToolTraceEntry{
 		Abbrev:    toolAbbrev(tc.Function.Name),
@@ -1937,8 +1955,15 @@ func MakeTraceEntry(tc proxy.ToolCall, result toolResult) ToolTraceEntry {
 			}
 		}
 	}
+	// Scrub known secret patterns from the Command (e.g. a shell command may
+	// contain an embedded API key or bearer token) and from the tool output
+	// before line selection/truncation. Scrubbing before truncation is critical:
+	// truncating a PEM header while retaining the body would defeat the pattern.
+	// OutputLen is already set from the raw (pre-scrub) result.text above.
+	e.Command = traceScrubber.Scrub(e.Command)
+	scrubbedText := traceScrubber.Scrub(result.text)
 	// Extract first output line and a tail of output lines.
-	lines := strings.Split(strings.TrimSpace(result.text), "\n")
+	lines := strings.Split(strings.TrimSpace(scrubbedText), "\n")
 	for _, l := range lines {
 		if l = strings.TrimSpace(l); l != "" {
 			e.FirstLine = Truncate(l, 80)
