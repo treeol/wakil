@@ -75,10 +75,13 @@ func NewClient(socketPath string) *Client {
 	}
 }
 
-// SetTimeout overrides the per-call timeout (default 2s). Must be called
-// before concurrent use — not synchronized.
+// SetTimeout overrides the per-call timeout (default 2s). Safe to call
+// concurrently with other operations — acquires c.mu so the timeout field
+// cannot race with a concurrent call().
 func (c *Client) SetTimeout(d time.Duration) {
+	c.mu.Lock()
 	c.timeout = d
+	c.mu.Unlock()
 }
 
 // Close closes the underlying connection if open.
