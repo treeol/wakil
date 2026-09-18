@@ -199,6 +199,12 @@ var (
 	ErrInvalidScope    = errors.New("apitoken: invalid scope")
 )
 
+// GetByID returns a single API token by ID within a tenant. Used by the
+// handler to verify ownership before revocation.
+func (i *Issuer) GetByID(ctx context.Context, id, tenantID string) (*tokenstore.APITokenRow, error) {
+	return i.store.GetAPITokenByID(ctx, id, tenantID)
+}
+
 // IsNotFound returns true if the error indicates the token was not found.
 func IsNotFound(err error) bool {
 	return errors.Is(err, tokenstore.ErrAPITokenNotFound)

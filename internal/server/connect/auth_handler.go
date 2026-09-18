@@ -397,6 +397,21 @@ func (h *AuthHandler) RevokeAPIToken(ctx context.Context, req *connect.Request[v
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("api tokens cannot manage api tokens; use session or local auth"))
 	}
 
+	// Non-admin callers can only revoke their own tokens. Owners and admins
+	// can revoke any user's tokens within the tenant.
+	if p.Role != core.RoleOwner && p.Role != core.RoleAdmin {
+		token, err := h.apiIssuer.GetByID(ctx, req.Msg.Id, string(p.TenantID))
+		if err != nil {
+			if errors.Is(err, tokenstore.ErrAPITokenNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, err)
+			}
+			return nil, mapError(err)
+		}
+		if token.UserID != string(p.UserID) {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("can only revoke your own tokens"))
+		}
+	}
+
 	// Revoke is tenant-scoped: the store's RevokeAPITokenByTenant includes
 	// a tenant_id predicate to prevent cross-tenant revocation.
 	if err := h.apiIssuer.Revoke(ctx, req.Msg.Id, string(p.TenantID)); err != nil {

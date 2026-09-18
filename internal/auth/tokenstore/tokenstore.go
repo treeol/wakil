@@ -366,6 +366,34 @@ func (s *Store) LookupAPIToken(ctx context.Context, tokenHash string, now int64)
 	return &r, nil
 }
 
+// GetAPITokenByID returns a single API token by ID within a tenant.
+// Returns ErrAPITokenNotFound if the token does not exist in this tenant.
+func (s *Store) GetAPITokenByID(ctx context.Context, id, tenantID string) (*APITokenRow, error) {
+	var r APITokenRow
+	var expiresAt, lastUsedAt, revokedAt sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, tenant_id, user_id, name, scopes, COALESCE(expires_at, 0), COALESCE(last_used_at, 0), COALESCE(revoked_at, 0), created_at
+		 FROM api_tokens WHERE id = ? AND tenant_id = ?`,
+		id, tenantID).
+		Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.ScopesJSON, &expiresAt, &lastUsedAt, &revokedAt, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrAPITokenNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tokenstore: get api token by id: %w", err)
+	}
+	if expiresAt.Valid {
+		r.ExpiresAt = expiresAt.Int64
+	}
+	if lastUsedAt.Valid {
+		r.LastUsedAt = lastUsedAt.Int64
+	}
+	if revokedAt.Valid {
+		r.RevokedAt = revokedAt.Int64
+	}
+	return &r, nil
+}
+
 // TouchAPIToken updates last_used_at (best-effort, not in the auth
 // critical path). A failure is logged by the caller but does not reject
 // the request.
