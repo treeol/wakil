@@ -524,7 +524,7 @@ func (a *App) mashuraReview(ctx context.Context, tc proxy.ToolCall) (question, b
 		PathRanges []PathRange `json:"path_ranges"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
-		return "", "", nil, fmt.Errorf("could not parse arguments: %v", e)
+		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
 	}
 	focus := strings.TrimSpace(args.Focus)
 	if focus == "" {
@@ -569,7 +569,7 @@ func (a *App) mashuraDebug(ctx context.Context, tc proxy.ToolCall) (question, br
 		PathRanges []PathRange `json:"path_ranges"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
-		return "", "", nil, fmt.Errorf("could not parse arguments: %v", e)
+		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
 	}
 	symptom := strings.TrimSpace(args.Symptom)
 	if symptom == "" {
@@ -648,7 +648,7 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 		}
 		expanded, isDir, expErr := a.mashuraExpandPath(ctx, p)
 		if expErr != nil {
-			return "", nil, fmt.Errorf("path %q: %v", p, expErr)
+			return "", nil, fmt.Errorf("path %q: %w", p, expErr)
 		}
 		if isDir {
 			for _, fp := range expanded {
@@ -685,7 +685,7 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 	for _, e := range entries {
 		body, readErr := a.Exec.ReadFile(ctx, e.path)
 		if readErr != nil {
-			return "", nil, fmt.Errorf("path %q: %v", e.path, readErr)
+			return "", nil, fmt.Errorf("path %q: %w", e.path, readErr)
 		}
 
 		allLines := strings.Split(body, "\n")
@@ -763,7 +763,7 @@ func (a *App) mashuraExpandPath(ctx context.Context, path string) (files []strin
 	}
 	_, listErr := a.Exec.ListDir(ctx, path)
 	if listErr != nil {
-		return nil, false, fmt.Errorf("path %q not found (read: %v, list: %v)", path, readErr, listErr)
+		return nil, false, fmt.Errorf("path %q not found (read: %w, list: %w)", path, readErr, listErr)
 	}
 	// It's a directory.
 	expanded, expErr := a.mashuraExpandDir(ctx, path)
@@ -784,7 +784,7 @@ func (a *App) mashuraExpandDir(ctx context.Context, dirPath string) ([]string, e
 		cmd = `find ` + q + ` -type f ! -path '*/.git/*' ! -path '*/node_modules/*' | sort`
 		out, err = a.Exec.RunShell(ctx, cmd)
 		if err != nil {
-			return nil, fmt.Errorf("directory expansion failed: %v", err)
+			return nil, fmt.Errorf("directory expansion failed: %w", err)
 		}
 	}
 
@@ -857,7 +857,7 @@ func (a *App) mashuraDecide(ctx context.Context, tc proxy.ToolCall) (question, b
 		PathRanges []PathRange `json:"path_ranges"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
-		return "", "", nil, fmt.Errorf("could not parse arguments: %v", e)
+		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
 	}
 	decision := strings.TrimSpace(args.Question)
 	options := strings.TrimSpace(args.Options)
@@ -898,7 +898,7 @@ func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, br
 		PathRanges []PathRange `json:"path_ranges"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
-		return "", "", nil, fmt.Errorf("could not parse arguments: %v", e)
+		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
 	}
 	claim := strings.TrimSpace(args.Claim)
 	if claim == "" {
