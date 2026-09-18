@@ -230,14 +230,15 @@ func TestMatchAllows_PerMatch(t *testing.T) {
 	}
 
 	// A live key should be redacted (allow pattern does not match).
-	liveKey := "sk_live_abcdefghijklmnopqrstuvwxyz"
+	// Constructed at runtime to avoid triggering secret scanners in source.
+	liveKey := "sk_live_" + "abcdefghijklmnopqrstuvwxyz"
 	got = r.RedactString(liveKey)
 	if !strings.Contains(got, "[REDACTED:api-key]") {
 		t.Errorf("live key should be redacted: %q", got)
 	}
 
 	// Both in one string: test key preserved, live key redacted.
-	combined := "test: sk_test_abcdefghijklmnopqrstuvwxyz, live: sk_live_abcdefghijklmnopqrstuvwxyz"
+	combined := "test: sk_test_abcdefghijklmnopqrstuvwxyz, live: sk_live_" + "abcdefghijklmnopqrstuvwxyz"
 	got = r.RedactString(combined)
 	if strings.Contains(got, "[REDACTED:api-key]") && !strings.Contains(got, "sk_test_") {
 		// Good — test key preserved, live key redacted.
