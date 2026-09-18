@@ -267,11 +267,4 @@ func (r *Redactor) matchAllows(s string) bool {
 	return false
 }
 
-// RedactIfNeeded is a convenience that redacts a string only if a redactor is
-// non-nil. Used in tests.
-func RedactIfNeeded(r *Redactor, s string) string {
-	if r == nil {
-		return s
-	}
-	return r.RedactString(s)
-}
+// (RedactIfNeeded removed — was dead code, never called outside its definition.)
