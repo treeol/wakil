@@ -769,6 +769,152 @@ func TestPanelPerCallOverride(t *testing.T) {
 	}
 }
 
+// A panel override whose provider key is missing must fail BEFORE any source
+// reads (zero briefing work), with an actionable error naming the panel, the
+// env var, credential-ready alternatives, and an omission suggestion only if
+// the no-override target passes the same preflight.
+func TestPanelOverrideMissingKeyFailsBeforeSourceReads(t *testing.T) {
+	// MASHURA_TEST_KEY (anthropic) forced empty (isolated from ambient env);
+	// openrouter key set.
+	t.Setenv("MASHURA_TEST_KEY", "")
+	t.Setenv("MASHURA_TEST_OR_KEY", "x")
+
+	app, fe := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
+		"default":   {Models: []string{"openrouter:default-model"}, Mode: "panel"},
+		"resilient": {Models: []string{"openrouter:some-model"}, Mode: "panel"},
+		"broken":    {Models: []string{"anthropic:nope"}, Mode: "panel"},
+	}
+	// The gate must never be reached on a preflight failure.
+	app.Confirm = func(string, string, string, bool) bool {
+		t.Error("confirm gate reached despite failing key preflight")
+		return false
+	}
+	// No source reads should happen: track executor file reads.
+	fe.readCalls = 0
+
+	result := app.runMashuraCore(context.Background(), "mashura__review",
+		tcArgs("mashura__review", `{"focus":"x","paths":[".wakil/plan.md"],"panel":"broken"}`), true)
+
+	if !strings.Contains(result, "MASHURA_TEST_KEY") {
+		t.Errorf("error should name the missing env var; got: %q", result)
+	}
+	if !strings.Contains(result, `panel "broken"`) {
+		t.Errorf("error should name the panel; got: %q", result)
+	}
+	if !strings.Contains(result, "resilient") {
+		t.Errorf("error should list credential-ready alternative panels; got: %q", result)
+	}
+	// No-override target ("default", openrouter) passes preflight → omission
+	// suggestion expected.
+	if !strings.Contains(result, "retry without the panel override") {
+		t.Errorf("error should suggest omitting the override when default passes preflight; got: %q", result)
+	}
+	if fe.readCalls != 0 {
+		t.Errorf("unavailable panel selection must perform zero source reads; got %d", fe.readCalls)
+	}
+}
+
+// The omission suggestion must NOT appear when the effective no-override
+// target also fails preflight (tool mapping routes to an unavailable panel).
+func TestKeyErrorMessageNoOmissionSuggestionWhenDefaultUnavailable(t *testing.T) {
+	t.Setenv("MASHURA_TEST_KEY", "")
+	t.Setenv("MASHURA_TEST_OR_KEY", "")
+	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	// MASHURA_TEST_KEY intentionally unset → anthropic panels unavailable.
+	app.Cfg.MashuraToolPanels = map[string]string{"review": "mapped-broken"}
+	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
+		"mapped-broken": {Models: []string{"anthropic:nope"}, Mode: "panel"},
+		"other-broken":  {Models: []string{"anthropic:also-nope"}, Mode: "panel"},
+	}
+
+	msg := app.mashuraKeyErrorMessage("mashura__review", "other-broken",
+		fmt.Errorf("mashūra API key not set (MASHURA_TEST_KEY) for provider \"anthropic\""))
+
+	if strings.Contains(msg, "retry without the panel override") {
+		t.Errorf("omission suggestion must be absent when no-override target fails preflight; got: %q", msg)
+	}
+}
+
+// /mashura status flags panels whose provider keys are not set.
+func TestMashuraStatusFlagsUnusablePanels(t *testing.T) {
+	os.Setenv("MASHURA_TEST_KEY", "x")
+	defer os.Unsetenv("MASHURA_TEST_KEY")
+
+	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
+		"ok":     {Models: []string{"anthropic:m1"}, Mode: "panel"},
+		"unsets": {Models: []string{"openrouter:m2"}, Mode: "panel"},
+	}
+
+	status := mashuraStatus(app)
+	if !strings.Contains(status, "⚠ NOT USABLE") {
+		t.Errorf("status should flag the panel with missing key; got: %q", status)
+	}
+	if strings.Contains(status, "NOT USABLE") && !strings.Contains(status, "MASHURA_TEST_OR_KEY") {
+		t.Errorf("flag should name the missing env var; got: %q", status)
+	}
+}
+
+// The tool schema must not advertise a concrete panel name (models treat the
+// example as a blessed suggestion and call unconfigured panels).
+func TestToolSchemaNoPanelNameExample(t *testing.T) {
+	// buildTools constructs the schema; simplest faithful check is on the
+	// literal source of truth: the panel param text used by the schema.
+	if strings.Contains(panelParamText(), "resilient") {
+		t.Errorf("panel param description must not contain a concrete panel-name example")
+	}
+}
+
+// panelParamText returns the panel parameter description from the live tool
+// definitions (indirection so the assertion tracks the real schema source).
+func panelParamText() string {
+	for _, tool := range mashuraToolDefs() {
+		if tool.Function.Name == "mashura__review" {
+			b, _ := json.Marshal(tool.Function.Parameters)
+			return string(b)
+		}
+	}
+	return ""
+}
+
+// Positive control: when the selected panel passes preflight, source reads DO
+// happen (guards the zero-read assertion against passing vacuously if source
+// discovery ever moves off ReadFile).
+func TestPanelPreflightSuccessPerformsSourceReads(t *testing.T) {
+	t.Setenv("MASHURA_TEST_KEY", "x")
+	app, fe := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
+		"default": {Models: []string{"anthropic:m1"}, Mode: "panel"},
+	}
+	app.Confirm = func(string, string, string, bool) bool { return false } // decline; past preflight is enough
+	fe.readCalls = 0
+
+	app.runMashuraCore(context.Background(), "mashura__review",
+		tcArgs("mashura__review", `{"focus":"x","paths":[".wakil/plan.md"]}`), true)
+
+	if fe.readCalls == 0 {
+		t.Error("successful preflight should perform source reads before the gate; readCalls = 0 (assertion may be vacuous)")
+	}
+}
+
+// A nil Confirm must fail closed at the gate, not bypass it.
+func TestNilConfirmFailsClosed(t *testing.T) {
+	t.Setenv("MASHURA_TEST_KEY", "x")
+	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	app.Confirm = nil
+
+	result := app.runMashuraCore(context.Background(), "mashura__review",
+		tcArgs("mashura__review", `{"focus":"x"}`), true)
+
+	if !strings.Contains(result, "no confirmer configured") {
+		t.Errorf("nil Confirm must fail closed with an error; got: %q", result)
+	}
+}
+
 // Config: the canonical mashura_* keys win over the legacy oracle_* spelling.
 func TestMashuraConfigAliasWins(t *testing.T) {
 	dir := t.TempDir()

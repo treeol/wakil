@@ -103,7 +103,11 @@ func mashuraStatus(app *App) string {
 			if mode == "" {
 				mode = "panel"
 			}
-			sb.WriteString(fmt.Sprintf("  %-15s  [%s]  %s\n", name, mode, strings.Join(p.Models, ", ")))
+			line := fmt.Sprintf("  %-15s  [%s]  %s", name, mode, strings.Join(p.Models, ", "))
+			if _, keyErr := app.mashuraPanelKeys(p); keyErr != nil {
+				line += fmt.Sprintf("\n                    ⚠ NOT USABLE: %v", keyErr)
+			}
+			sb.WriteString(line + "\n")
 		}
 	}
 

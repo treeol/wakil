@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -97,7 +98,7 @@ func mashuraToolDefs() []proxy.Tool {
 	}
 	const shared = " Counsel from a more capable external AI; use sparingly — the call is gated and costs money, and the answer is an OPINION to evaluate, not ground truth. Wakil attaches the authoritative context (task, phase, recent step log, named files) automatically — you supply only the intent, never paste what Wakil can read."
 
-	panelParam := str("Optional: named panel to use for this call (overrides the default panel configured for this tool). E.g. \"resilient\".")
+	panelParam := str("Optional: named panel to use for this call (overrides the default panel configured for this tool). Omit unless the user explicitly named a panel.")
 	pathsParam := strArr("Optional: file or directory paths for Wakil to read from disk and attach as sources. Wakil reads current bytes — never paste content yourself.")
 	pathRangesParam := map[string]interface{}{
 		"type":        "array",
@@ -183,8 +184,19 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 	skipGate := a.autoCounselSkipGate
 	a.autoCounselSkipGate = false
 
-	// Extract the optional per-call panel override before tool-specific parsing.
+	// Resolve the panel config and preflight API keys BEFORE any tool-specific
+	// work (briefing build reads sources from disk). An unavailable selection
+	// must fail with zero source reads — previously the briefing was assembled
+	// first, wasting evidence gathering on a call that could never run.
 	panelOverride := mashuraPanelArg(tc)
+	panelName, panel, panelOK := a.resolvePanel(name, panelOverride)
+	if !panelOK {
+		return "ERROR: panel " + panelName + " not found or has no models"
+	}
+	apiKeys, keyErr := a.mashuraPanelKeys(panel)
+	if keyErr != nil {
+		return "ERROR: " + a.mashuraKeyErrorMessage(name, panelName, keyErr)
+	}
 
 	var question, briefing string
 	var receipts []mashuraSourceMeta
@@ -203,20 +215,19 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		return "ERROR: " + err.Error()
 	}
 
-	// Resolve the panel config (fail-closed: key check before gate).
-	panelName, panel, panelOK := a.resolvePanel(name, panelOverride)
-	if !panelOK {
-		return "ERROR: panel " + panelName + " not found or has no models"
-	}
-	apiKeys, keyErr := a.mashuraPanelKeys(panel)
-	if keyErr != nil {
-		return "ERROR: " + keyErr.Error()
-	}
-
 	maxTokens := a.mashuraMaxTokensFor(name)
 	detail := counsel.PanelDetail(panelName, panel.Models, panel.Mode, question, briefing, panel.ServerTools)
-	if !skipGate && !a.Confirm(name, "Send to external AI?", detail, false) {
-		return "[declined by user]"
+	// Fail-closed: a nil Confirm must never silently bypass the gate. Production
+	// wiring (TUI, headless, host turn) always sets Confirm; nil here is a
+	// wiring bug and an error is the correct outcome — a panic would also be
+	// acceptable, but an ERROR string keeps the tool-result contract uniform.
+	if !skipGate {
+		if a.Confirm == nil {
+			return "ERROR: no confirmer configured — refusing to send to external AI (wiring bug)"
+		}
+		if !a.Confirm(name, "Send to external AI?", detail, false) {
+			return "[declined by user]"
+		}
 	}
 
 	// Log read receipts now that the user approved (pre-panel, post-gate).
@@ -385,6 +396,44 @@ func mashuraPanelArg(tc proxy.ToolCall) string {
 	}
 	_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) // optional field
 	return strings.TrimSpace(args.Panel)
+}
+
+// mashuraKeyErrorMessage enriches a panel key preflight failure with the panel
+// name, credential-ready alternative panels, and an omission suggestion only
+// when the no-override target would pass the same preflight. The goal is that
+// a model (or human) can recover without guessing: the error names what failed
+// and what would work. Only env var NAMES, panel names, and provider/model
+// identifiers are disclosed — never key values. Alternatives are informational
+// for the user; per the tool schema the model should not switch panels unless
+// the user named one.
+func (a *App) mashuraKeyErrorMessage(toolName, panelName string, keyErr error) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s (panel %q)", keyErr.Error(), panelName)
+
+	// Collect panels whose required keys are all present (same preflight).
+	ready := make([]string, 0, len(a.Cfg.MashuraPanels))
+	for name, p := range a.Cfg.MashuraPanels {
+		if len(p.Models) == 0 {
+			continue
+		}
+		if _, err := a.mashuraPanelKeys(p); err == nil {
+			ready = append(ready, name)
+		}
+	}
+	sort.Strings(ready)
+	if len(ready) > 0 {
+		fmt.Fprintf(&sb, "; panels with keys available: %s (ask the user whether to switch)", strings.Join(ready, ", "))
+	}
+
+	// Suggest omitting the override only if the effective no-override target
+	// passes preflight (and is not the failing panel itself — the tool mapping
+	// may route to a panel other than the one the override named).
+	if defName, defPanel, ok := a.resolvePanel(toolName, ""); ok && defName != panelName {
+		if _, err := a.mashuraPanelKeys(defPanel); err == nil {
+			fmt.Fprintf(&sb, "; if you did not intend to select this panel, retry without the panel override (would use %q)", defName)
+		}
+	}
+	return sb.String()
 }
 
 // resolvePanel returns the panel name and config to use for a mashura tool call.

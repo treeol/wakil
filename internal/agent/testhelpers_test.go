@@ -36,6 +36,10 @@ type fakeExecutor struct {
 	// the real "outside workspace" error DockerExecutor/DirectExecutor return)
 	// without needing a real sandboxed executor. Return "" error to allow.
 	confineErrFn func(path string) error
+
+	// readCalls counts ReadFile invocations — used by mashura tests to assert
+	// that unavailable panel selections perform zero source reads.
+	readCalls int
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -56,6 +60,7 @@ func (f *fakeExecutor) StatFile(_ context.Context, p string) (int64, error) {
 }
 
 func (f *fakeExecutor) ReadFile(_ context.Context, p string) (string, error) {
+	f.readCalls++
 	if f.dirs[p] {
 		return "", fmt.Errorf("read %s: is a directory", p)
 	}
