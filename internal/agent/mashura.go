@@ -297,6 +297,18 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 				if line == "" {
 					continue // unknown/reserved kind — skip, no garbage status line
 				}
+				// Record the chunk time for the async heartbeat's liveness check.
+				// Look up the op by ID (the forwarder runs concurrently with the
+				// worker; the op is guaranteed to exist because the forwarder is
+				// closed before the worker terminalizes).
+				a.asyncMu.Lock()
+				chunkOp := a.asyncOps[opID]
+				a.asyncMu.Unlock()
+				if chunkOp != nil {
+					chunkOp.mu.Lock()
+					chunkOp.lastChunkAt = time.Now()
+					chunkOp.mu.Unlock()
+				}
 				a.sendEvent(AsyncJobChunkMsg{OpID: opID, OriginChatID: originChatID, Text: line})
 			}
 		})

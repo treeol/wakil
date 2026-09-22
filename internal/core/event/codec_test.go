@@ -241,6 +241,17 @@ func payloadsEqual(kind Kind, want, got any) bool {
 		return true // empty struct — always equal
 	case KindTurnResumed:
 		return true // empty struct — always equal
+	case KindAsyncProgress:
+		w, g := want.(AsyncProgress), got.(AsyncProgress)
+		if len(w.Ops) != len(g.Ops) {
+			return false
+		}
+		for i := range w.Ops {
+			if w.Ops[i] != g.Ops[i] {
+				return false
+			}
+		}
+		return true
 	default:
 		return false
 	}
@@ -334,6 +345,10 @@ func samplePayload(kind Kind) any {
 		return TurnSuspended{}
 	case KindTurnResumed:
 		return TurnResumed{}
+	case KindAsyncProgress:
+		return AsyncProgress{Ops: []AsyncProgressItem{
+			{OpID: "op-1", Kind: "run_background", Label: "npm run dev", Elapsed: "2m30s", Activity: "log growing", Stalled: false},
+		}}
 	default:
 		return nil
 	}

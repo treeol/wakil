@@ -150,7 +150,13 @@ func runTurnToFinal(ctx context.Context, app *App, userText string) error {
 		// Signal the TUI that the turn is paused on async work — it shows
 		// "waiting" instead of "streaming" and enables input-while-waiting.
 		app.sendEvent(TurnSuspendedSignal{})
+		// Start the async heartbeat: periodically polls pending async ops
+		// and emits AsyncProgressMsg so the TUI's "waiting" line shows live
+		// status instead of a static label.
+		hbCtx, hbCancel := context.WithCancel(ctx)
+		app.startAsyncHeartbeat(hbCtx)
 		ok, werr := app.WaitForAsyncCompletion(ctx)
+		hbCancel() // stop the heartbeat before signaling resume
 		if werr != nil {
 			return werr
 		}

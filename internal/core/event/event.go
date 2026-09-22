@@ -103,6 +103,7 @@ const (
 	KindWorkflowWarning       Kind = "workflow_warning"        // ephemeral: workflow skip/force warning (7c)
 	KindTurnSuspended         Kind = "turn_suspended"          // ephemeral: turn paused on async work
 	KindTurnResumed           Kind = "turn_resumed"            // ephemeral: turn resumed after async completion
+	KindAsyncProgress         Kind = "async_progress"          // ephemeral: heartbeat progress for suspended turns
 )
 
 // Class returns the durability class of k.
@@ -111,7 +112,7 @@ func (k Kind) Class() Class {
 	case KindMessageDelta, KindReasoningDelta, KindSubagentProgress,
 		KindTokRate, KindAsyncJobProgress, KindSideQuestionProgress,
 		KindLearnNudge, KindSessionNote, KindWorkflowWarning,
-		KindTurnSuspended, KindTurnResumed:
+		KindTurnSuspended, KindTurnResumed, KindAsyncProgress:
 		return ClassEphemeral
 	default:
 		return ClassDurable

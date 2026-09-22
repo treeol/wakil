@@ -55,6 +55,7 @@ var payloadTypes = map[Kind]reflect.Type{
 	KindWorkflowWarning:       reflect.TypeOf(WorkflowWarning{}),
 	KindTurnSuspended:         reflect.TypeOf(TurnSuspended{}),
 	KindTurnResumed:           reflect.TypeOf(TurnResumed{}),
+	KindAsyncProgress:         reflect.TypeOf(AsyncProgress{}),
 }
 
 // payloadType returns the concrete Go type of p's payload, canonicalized to a

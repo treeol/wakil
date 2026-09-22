@@ -77,6 +77,8 @@ func TestRegistryCompleteness(t *testing.T) {
 		KindWorkflowOutcome, KindWorkflowWarning,
 		// turn suspension/resume
 		KindTurnSuspended, KindTurnResumed,
+		// async progress heartbeat
+		KindAsyncProgress,
 	}
 	seen := map[Kind]bool{}
 	for _, k := range allKinds {

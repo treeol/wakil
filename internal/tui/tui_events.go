@@ -370,6 +370,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		before := m.statusRows()
 		if m.state == stateStreaming {
 			m.state = stateWaiting
+			m.asyncProgress = nil // clear any stale snapshot from a prior suspension
 			m = m.reflowIfStatusHeightChanged(before)
 		}
 
@@ -385,6 +386,8 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		before := m.statusRows()
 		if m.state == stateWaiting && !m.cancelling {
 			m.state = stateStreaming
+			// Clear the progress snapshot — no longer waiting.
+			m.asyncProgress = nil
 			// Re-engage follow so resumed content (streaming text, tool
 			// output) scrolls into view. During the wait the viewport may
 			// have been reflowed (status height change) or the user may
@@ -393,6 +396,17 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.followBottom = true
 			m.vp.GotoBottom()
 			m.refreshViewport()
+			m = m.reflowIfStatusHeightChanged(before)
+		}
+
+	case event.KindAsyncProgress:
+		// Live progress snapshot for pending async ops while the turn is
+		// suspended. Store it so the status line can render a dynamic
+		// "waiting" detail instead of a static label.
+		if m.state == stateWaiting {
+			p := ev.Payload.(event.AsyncProgress)
+			m.asyncProgress = p.Ops
+			before := m.statusRows()
 			m = m.reflowIfStatusHeightChanged(before)
 		}
 
@@ -696,6 +710,7 @@ func (m tuiModel) clearWiringTurnState() tuiModel {
 	m.runningTool = nil
 	m.lastTool = nil
 	m.state = stateIdle
+	m.asyncProgress = nil // clear stale progress snapshot from the suspended turn
 	m.dotPhase = 0
 	m.hadTurn = true
 	m.cancel = nil

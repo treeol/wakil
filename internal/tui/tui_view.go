@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -489,7 +490,22 @@ func statusSegments(in statusLineInput) []string {
 		// detached shell, discovery subagent). The model produced its
 		// interim answer; the turn will resume when a completion arrives,
 		// or the user can type Enter to cancel-and-send a new prompt.
-		stateSeg = styleState.Render("waiting")
+		// If we have a live progress snapshot, show a dynamic detail.
+		if len(in.asyncProgress) > 0 {
+			op := in.asyncProgress[0] // oldest op (sorted by createdAt)
+			label := op.Label
+			if len(label) > 30 {
+				label = label[:27] + "…"
+			}
+			detail := op.Activity
+			if op.Stalled {
+				detail = "⚠ " + detail
+			}
+			stateSeg = styleState.Render(fmt.Sprintf("waiting · %s %s (%s, %s)",
+				op.Kind, label, op.Elapsed, detail))
+		} else {
+			stateSeg = styleState.Render("waiting")
+		}
 	case stateConfirm:
 		stateSeg = styleState.Render("confirming")
 	case stateCompacting:
@@ -689,6 +705,7 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 		lastTps:                 m.lastTps,
 		AssistEnabled:           info.AssistEnabled,
 		AssistAuto:              info.AssistAuto,
+		asyncProgress:           m.asyncProgress,
 	}
 }
 
@@ -888,6 +905,11 @@ type statusLineInput struct {
 	// in the status line so the mode is never silent.
 	AssistEnabled bool
 	AssistAuto    bool
+
+	// asyncProgress is the latest progress snapshot for pending async ops
+	// while the turn is suspended (stateWaiting). Renders a dynamic "waiting"
+	// detail line showing what each pending op is doing.
+	asyncProgress []event.AsyncProgressItem
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.

@@ -515,6 +515,13 @@ type bgEntry struct {
 	// StopAllBackgroundProcs to wait for clean shutdown without a fixed sleep.
 	// nil when the entry was constructed by test code (not via run_background).
 	done chan struct{}
+
+	// lastLogSize and lastLogGrowth track log file growth for the async
+	// heartbeat's liveness check. Updated by checkBgShellLiveness on each
+	// heartbeat tick. Per-entry (not a global map) to avoid cross-session
+	// collisions and leaks.
+	lastLogSize   int64
+	lastLogGrowth time.Time
 }
 
 // CounselCallsCount returns how many auto-counsel calls have fired this session.

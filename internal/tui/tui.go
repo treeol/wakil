@@ -181,6 +181,12 @@ type tuiModel struct {
 	// to flush the queued prompt as a new turn when the cancellation completes.
 	flushOnCancel bool
 
+	// asyncProgress is the latest progress snapshot for pending async ops
+	// while the turn is suspended (stateWaiting). Updated on
+	// KindAsyncProgress events; rendered in the status line so the user
+	// sees what each pending op is doing instead of a static "waiting" label.
+	asyncProgress []event.AsyncProgressItem
+
 	// facade/manager/principal (m4b): the agent-free conversation surfaces.
 	// During the staged migration the facade is authoritative for reads that
 	// have been migrated (Snapshot/Info); app remains for the un-migrated

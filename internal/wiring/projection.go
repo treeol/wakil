@@ -327,6 +327,22 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		// The TUI transitions back from stateWaiting to stateStreaming.
 		emit.Notify(event.KindTurnResumed, event.TurnResumed{})
 
+	case agent.AsyncProgressMsg:
+		// Ephemeral: live progress snapshot for pending async ops while
+		// the turn is suspended. The TUI renders a dynamic "waiting" line.
+		items := make([]event.AsyncProgressItem, len(m.Ops))
+		for i, op := range m.Ops {
+			items[i] = event.AsyncProgressItem{
+				OpID:     op.OpID,
+				Kind:     op.Kind,
+				Label:    op.Label,
+				Elapsed:  op.Elapsed,
+				Activity: op.Activity,
+				Stalled:  op.Stalled,
+			}
+		}
+		emit.Notify(event.KindAsyncProgress, event.AsyncProgress{Ops: items})
+
 	default:
 		// Unknown message type — drop. New agent message types should be added
 		// to this switch with their domain-event mapping.

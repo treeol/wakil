@@ -524,3 +524,21 @@ type TurnSuspended struct{}
 // has resumed after an async completion arrived. The TUI transitions back from
 // "waiting" to "streaming".
 type TurnResumed struct{}
+
+// AsyncProgress is the ephemeral payload for KindAsyncProgress: a live
+// snapshot of pending async ops while the turn is suspended. The TUI uses
+// this to render a dynamic "waiting" status line showing what each pending
+// op is doing and whether it shows signs of life.
+type AsyncProgress struct {
+	Ops []AsyncProgressItem
+}
+
+// AsyncProgressItem is one op's progress snapshot in the event payload.
+type AsyncProgressItem struct {
+	OpID     string
+	Kind     string
+	Label    string
+	Elapsed  string
+	Activity string
+	Stalled  bool
+}

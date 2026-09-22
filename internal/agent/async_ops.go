@@ -245,6 +245,12 @@ type asyncOp struct {
 	// doneClosed guards close(done) against double-close. Set under op.mu
 	// before closing; checked by any path that might close done. .
 	doneClosed bool
+
+	// lastChunkAt is the timestamp of the most recent AsyncJobChunkMsg
+	// forwarded for this op (Mashūra panel events). Used by the async
+	// heartbeat to report "last chunk Xs ago" while the turn is suspended.
+	// Set under op.mu by the chunk forwarder.
+	lastChunkAt time.Time
 }
 
 // terminalSnapshot returns an immutable copy of the op's outcome.

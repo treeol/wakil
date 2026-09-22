@@ -311,6 +311,26 @@ type TurnSuspendedSignal struct{}
 // EventSink so the TUI transitions back from "waiting" to "streaming".
 type TurnResumedSignal struct{}
 
+// AsyncProgressMsg carries a live snapshot of pending async ops while the turn
+// is suspended. Emitted by the async heartbeat goroutine (started on
+// TurnSuspended, stopped on TurnResumed). The TUI consumes it to render a
+// dynamic "waiting" status line showing what each pending op is doing, how
+// long it's been running, and whether it shows signs of life (log growth for
+// shells, checkpoint progress for subagents, panel chunks for Mashūra).
+type AsyncProgressMsg struct {
+	Ops []AsyncProgressOp
+}
+
+// AsyncProgressOp is the per-op progress snapshot.
+type AsyncProgressOp struct {
+	OpID      string // "op-1", "bg1", etc.
+	Kind      string // "run_shell", "run_background", "dispatch_subagent", "mashura"
+	Label     string // truncated command or task description
+	Elapsed   string // human-readable elapsed time ("2m30s")
+	Activity  string // "log growing", "last chunk 30s ago", "3/5 children done", etc.
+	Stalled   bool   // no activity beyond the stall threshold for this op kind
+}
+
 // ProgWriter is an io.Writer that sends StreamChunkMsgs into the event sink.
 type ProgWriter struct{ send func(StreamChunkMsg) }
 
