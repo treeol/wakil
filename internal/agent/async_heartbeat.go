@@ -231,9 +231,27 @@ func (a *App) checkBgShellLiveness(ctx context.Context, op *asyncOp) (string, bo
 	a.bgMu.RUnlock()
 	idle := time.Since(currentGrowth)
 	if idle >= bgShellStallThreshold {
+		// Recheck op.terminal before the stall warning — the watchdog or
+		// reaper may have terminalized the op while we were in StatFile
+		// or waiting for the idle threshold. If the op is already terminal,
+		// report "completed" instead of a misleading "stuck" warning.
+		op.mu.Lock()
+		terminal := op.terminal
+		op.mu.Unlock()
+		if terminal {
+			return "completed", false
+		}
 		// Stalled: log not growing for >threshold. Check if the process
 		// group is still alive.
 		if a.Exec.IsProcessGroupAlive(ctx, entry.pgid) {
+			// Recheck terminal after the blocking probe — the op may have
+			// been terminalized while we were checking process liveness.
+			op.mu.Lock()
+			terminal = op.terminal
+			op.mu.Unlock()
+			if terminal {
+				return "completed", false
+			}
 			return fmt.Sprintf("log idle %s, process alive", idle.Truncate(time.Second)), true
 		}
 		// Process gone but op not terminal — the waiting-hang signature.
