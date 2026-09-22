@@ -183,6 +183,30 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		reaperStart := time.Now()
 		const reaperMaxPoll = 24 * time.Hour
 		for {
+			// H7: Bound the reaper — check the 24h deadline BEFORE the
+			// liveness probe so a blocked IsProcessGroupAlive (hung NFS,
+			// zombie process group) can't defeat the bound.
+			if time.Since(reaperStart) >= reaperMaxPoll {
+				close(done)
+				// Release the async slot so a suspended turn doesn't wait
+				// forever on a phantom active op. The watchdog (armed at
+				// registration) should have already terminalized this op
+				// long before 24h, but if it was somehow disabled or the
+				// timer was stopped, this is the last-resort cleanup.
+				a.bgMu.Lock()
+				op := entry.asyncOp
+				tabStarted := entry.tabStarted
+				delete(a.bgProcs, bgID)
+				a.bgMu.Unlock()
+				if op != nil {
+					a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
+				}
+				// Close the TUI tab so it doesn't strand yellow & unclosable.
+				if tabStarted {
+					a.announceShellDone(bgID, entry, "abandoned after 24h (process group still alive)", "")
+				}
+				return
+			}
 			if !a.Exec.IsProcessGroupAlive(bgCtx, pgid) {
 				close(done)
 				// decouple the TUI tab lifecycle from the model-notify
@@ -233,30 +257,6 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 				a.bgMu.Lock()
 				delete(a.bgProcs, bgID)
 				a.bgMu.Unlock()
-				return
-			}
-			// H7: Bound the reaper — a stuck process group (or an
-			// IsProcessGroupAlive bug that never returns false) must not
-			// leak the goroutine forever. After 24h, abandon the entry.
-			if time.Since(reaperStart) >= reaperMaxPoll {
-				close(done)
-				// Release the async slot so a suspended turn doesn't wait
-				// forever on a phantom active op. The watchdog (armed at
-				// registration) should have already terminalized this op
-				// long before 24h, but if it was somehow disabled or the
-				// timer was stopped, this is the last-resort cleanup.
-				a.bgMu.Lock()
-				op := entry.asyncOp
-				tabStarted := entry.tabStarted
-				delete(a.bgProcs, bgID)
-				a.bgMu.Unlock()
-				if op != nil {
-					a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
-				}
-				// Close the TUI tab so it doesn't strand yellow & unclosable.
-				if tabStarted {
-					a.announceShellDone(bgID, entry, "abandoned after 24h (process group still alive)", "")
-				}
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -1374,6 +1374,30 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 		reaperStart := time.Now()
 		const reaperMaxPoll = 24 * time.Hour
 		for {
+			// H7: Bound the reaper — check the 24h deadline BEFORE the
+			// liveness probe so a blocked IsProcessGroupAlive can't
+			// defeat the bound.
+			if time.Since(reaperStart) >= reaperMaxPoll {
+				close(done)
+				// Release the async slot so a suspended turn doesn't wait
+				// forever on a phantom active op. The watchdog (armed at
+				// registration) should have already terminalized this op
+				// long before 24h, but if it was somehow disabled or the
+				// timer was stopped, this is the last-resort cleanup.
+				a.bgMu.Lock()
+				op := entry.asyncOp
+				tabStarted := entry.tabStarted
+				delete(a.bgProcs, bgID)
+				a.bgMu.Unlock()
+				if op != nil {
+					a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
+				}
+				// Close the TUI tab so it doesn't strand yellow & unclosable.
+				if tabStarted {
+					a.announceShellDone(bgID, entry, "abandoned after 24h (process group still alive)", "")
+				}
+				return
+			}
 			if !a.Exec.IsProcessGroupAlive(bgCtx, pgid) {
 				close(done)
 				// Read only the TAIL of the log (multi-GB safe); emit tab Done.
@@ -1396,28 +1420,6 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 				a.bgMu.Lock()
 				delete(a.bgProcs, bgID)
 				a.bgMu.Unlock()
-				return
-			}
-			// H7: Bound the reaper — 24h max, then abandon the entry.
-			if time.Since(reaperStart) >= reaperMaxPoll {
-				close(done)
-				// Release the async slot so a suspended turn doesn't wait
-				// forever on a phantom active op. The watchdog (armed at
-				// registration) should have already terminalized this op
-				// long before 24h, but if it was somehow disabled or the
-				// timer was stopped, this is the last-resort cleanup.
-				a.bgMu.Lock()
-				op := entry.asyncOp
-				tabStarted := entry.tabStarted
-				delete(a.bgProcs, bgID)
-				a.bgMu.Unlock()
-				if op != nil {
-					a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
-				}
-				// Close the TUI tab so it doesn't strand yellow & unclosable.
-				if tabStarted {
-					a.announceShellDone(bgID, entry, "abandoned after 24h (process group still alive)", "")
-				}
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
