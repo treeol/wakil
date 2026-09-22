@@ -96,6 +96,21 @@ const (
 	// cooperative context both read mashuraTimeout(), so 0 can never mean
 	// "no deadline" (that would let a hung panel spin the tab + leak the slot).
 	defaultMashuraTimeoutSeconds = 300
+
+	// defaultStreamIdleTimeoutSeconds is the fallback SSE read-idle timeout
+	// when StreamIdleTimeoutSeconds is 0 (or unset). A silent upstream beyond
+	// this threshold returns a retryable ErrBackendStream. 120s = 2 minutes:
+	// generous for reasoning models that think before emitting, but finite so
+	// a hung stream doesn't block the turn forever.
+	defaultStreamIdleTimeoutSeconds = 120
+
+	// defaultBgShellTimeoutSeconds is the fallback background-shell async-op
+	// watchdog timeout when BgShellTimeoutSeconds is 0 (or unset). Detached
+	// notify_on_exit shells previously had NO watchdog (unlike subagent/Mashūra
+	// ops) — the 24h reaper was the only bound, and it leaked the async slot.
+	// 3600s = 1 hour: generous for builds and scripts, finite so a stuck
+	// process can't hang the turn forever.
+	defaultBgShellTimeoutSeconds = 3600
 )
 
 const (
@@ -607,6 +622,62 @@ func (a *App) armMashuraWatchdog(op *asyncOp, timeout time.Duration) {
 		op.mu.Unlock()
 		// Single registry publication → emits exactly one AsyncJobDoneMsg (uiJob
 		// branch) and releases the slot + wakes any waiter.
+		a.publishAsyncOp(op)
+	})
+	op.mu.Unlock()
+}
+
+// bgShellTimeout returns the effective background-shell async-op watchdog
+// timeout. 0 (or unset) means use the built-in default
+// (defaultBgShellTimeoutSeconds). Never returns 0: a "0 = no timeout" config
+// cannot disable the watchdog — a hung shell would otherwise leak the async
+// slot and hang the turn forever (the pre-fix bug).
+func (a *App) bgShellTimeout() time.Duration {
+	if a.Cfg.BgShellTimeoutSeconds > 0 {
+		return time.Duration(a.Cfg.BgShellTimeoutSeconds) * time.Second
+	}
+	return time.Duration(defaultBgShellTimeoutSeconds) * time.Second
+}
+
+// armShellWatchdog arms a timeout watchdog for a notify_on_exit background
+// shell async op. If the process doesn't exit (and the reaper doesn't
+// publish) within the configured timeout + grace period, the watchdog
+// force-terminalizes the op so the async slot is released and any suspended
+// turn resumes.
+//
+// Unlike armSubagentWatchdog, there is nothing to salvage — the shell either
+// exited (reaper published) or it's stuck. The watchdog sets a timeout result
+// and publishes through publishAsyncOp (exactly-once via op.published). It
+// NEVER closes op.done (the reaper's publishBgCompletion or cancelBgAsyncOp
+// owns that). When the reaper eventually runs (process finally exits), it
+// finds op.terminal == true and its publishBgCompletion bails (published
+// guard).
+func (a *App) armShellWatchdog(op *asyncOp, timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	op.mu.Lock()
+	op.watchdog = time.AfterFunc(timeout+a.watchdogGracePeriod(), func() {
+		op.mu.Lock()
+		if op.terminal && op.published {
+			op.mu.Unlock()
+			return
+		}
+		if op.terminal && !op.published {
+			// Reaper set terminal but didn't publish (rare race). Publish for it.
+			op.mu.Unlock()
+			a.publishAsyncOp(op)
+			return
+		}
+		op.terminal = true
+		op.finishedAt = time.Now()
+		if op.startedAt.IsZero() {
+			op.startedAt = op.createdAt // watchdog fires before reaper sets it
+		}
+		op.err = fmt.Errorf("background shell timed out after %s", timeout)
+		op.result = fmt.Sprintf("Background shell timed out after %s — the process did not exit within the configured deadline.", timeout)
+		op.mu.Unlock()
+		// Release the slot + publish to inbox (wakes WaitForAsyncCompletion).
 		a.publishAsyncOp(op)
 	})
 	op.mu.Unlock()

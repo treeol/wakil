@@ -240,9 +240,23 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			// leak the goroutine forever. After 24h, abandon the entry.
 			if time.Since(reaperStart) >= reaperMaxPoll {
 				close(done)
+				// Release the async slot so a suspended turn doesn't wait
+				// forever on a phantom active op. The watchdog (armed at
+				// registration) should have already terminalized this op
+				// long before 24h, but if it was somehow disabled or the
+				// timer was stopped, this is the last-resort cleanup.
 				a.bgMu.Lock()
+				op := entry.asyncOp
+				tabStarted := entry.tabStarted
 				delete(a.bgProcs, bgID)
 				a.bgMu.Unlock()
+				if op != nil {
+					a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
+				}
+				// Close the TUI tab so it doesn't strand yellow & unclosable.
+				if tabStarted {
+					a.announceShellDone(bgID, entry, "abandoned after 24h (process group still alive)", "")
+				}
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -331,6 +345,9 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		var regOp *asyncOp
 		var regReason string
 		regOp, regReason = a.registerAsyncOp("run_shell", Truncate(command, 60))
+		if regOp != nil {
+			a.armShellWatchdog(regOp, a.bgShellTimeout())
+		}
 		a.bgMu.Lock()
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
@@ -411,6 +428,9 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		var regOp *asyncOp
 		var regReason string
 		regOp, regReason = a.registerAsyncOp("run_shell", Truncate(command, 60))
+		if regOp != nil {
+			a.armShellWatchdog(regOp, a.bgShellTimeout())
+		}
 		a.bgMu.Lock()
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
@@ -636,6 +656,10 @@ func (a *App) publishBgCompletion(op *asyncOp, bgID string, e *bgEntry, statusLi
 	op.shellLSPDirty = !e.readOnly
 	op.mu.Unlock()
 
+	// Cancel the shell watchdog — the process exited normally before the
+	// timeout fired. Without this, the timer holds op+app for up to 1h+grace.
+	a.cancelWatchdog(op)
+
 	// publishAsyncOp handles: asyncActive--, asyncInbox append, evict, signalWake.
 	// It also sets op.published under op.mu, which prevents cancelBgAsyncOp
 	// from double-closing op.done.
@@ -664,6 +688,10 @@ func (a *App) cancelBgAsyncOp(op *asyncOp, bgID, reason string) {
 	if op == nil {
 		return
 	}
+	// Cancel the shell watchdog — the op is being explicitly cancelled
+	// (kill/shutdown/reaper abandonment), not timing out. Without this,
+	// the timer holds op+app for up to 1h+grace after cancellation.
+	a.cancelWatchdog(op)
 	op.mu.Lock()
 	if op.published {
 		op.mu.Unlock()
@@ -1329,6 +1357,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 		} else {
 			entry.asyncOp = op
 			bgAsyncOp = op
+			a.armShellWatchdog(op, a.bgShellTimeout())
 		}
 	}
 	a.bgMu.Lock()
@@ -1374,9 +1403,23 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 			// H7: Bound the reaper — 24h max, then abandon the entry.
 			if time.Since(reaperStart) >= reaperMaxPoll {
 				close(done)
+				// Release the async slot so a suspended turn doesn't wait
+				// forever on a phantom active op. The watchdog (armed at
+				// registration) should have already terminalized this op
+				// long before 24h, but if it was somehow disabled or the
+				// timer was stopped, this is the last-resort cleanup.
 				a.bgMu.Lock()
+				op := entry.asyncOp
+				tabStarted := entry.tabStarted
 				delete(a.bgProcs, bgID)
 				a.bgMu.Unlock()
+				if op != nil {
+					a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
+				}
+				// Close the TUI tab so it doesn't strand yellow & unclosable.
+				if tabStarted {
+					a.announceShellDone(bgID, entry, "abandoned after 24h (process group still alive)", "")
+				}
 				return
 			}
 			time.Sleep(200 * time.Millisecond)

@@ -461,6 +461,23 @@ type Config struct {
 	// (1s, 2s, 4s…). Default 3. 0 disables automatic retrying.
 	BackendMaxRetries int `json:"backend_max_retries,omitempty"`
 
+	// StreamIdleTimeoutSeconds bounds how long the SSE stream reader may wait
+	// between bytes before declaring a stall. A silent upstream (idle beyond
+	// this threshold) returns a retryable ErrBackendStream, feeding the existing
+	// retry loop. This catches mid-stream stalls that ResponseHeaderTimeout
+	// (which only covers the first response byte) cannot. 0 = use the built-in
+	// default (120s). Negative is rejected by validation. Note: local backends
+	// (llama.cpp) may emit no body bytes during long prompt evaluation; increase
+	// this if you see spurious stream-idle errors on large prompts.
+	StreamIdleTimeoutSeconds int `json:"stream_idle_timeout_seconds,omitempty"`
+
+	// BgShellTimeoutSeconds bounds how long a notify_on_exit background shell
+	// may run before the async-op watchdog force-terminalizes it. Without this,
+	// detached-shell ops have no watchdog (unlike subagent/Mashūra ops) and rely
+	// solely on the reaper's 24h abandonment bound — which leaked the async
+	// slot. 0 = use the built-in default (3600s / 1h). Negative is rejected.
+	BgShellTimeoutSeconds int `json:"bg_shell_timeout_seconds,omitempty"`
+
 	// Trace capture. TraceSessions enables a rich JSONL trace store for every TUI
 	// session; TraceDir is where trace files are written. Both are config-file
 	// fields so "always trace" can be set once rather than on every invocation.
@@ -788,6 +805,8 @@ func DefaultConfig() Config {
 		MaxFullReadBytes:           256 << 10, // 256 KB: full-read ceiling (higher than ToolResultCap 8K, under MaxRequestBytes 8MB)
 		MaxRequestBytes:            8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:          3,
+		StreamIdleTimeoutSeconds:   120,  // SSE read-idle: 2 min between bytes before declaring a stall
+		BgShellTimeoutSeconds:     3600, // 1h watchdog for notify_on_exit background shells (was unbounded → 24h reaper only)
 		MaxParallelSubagents:       2,
 		SubagentTimeoutSeconds:     360, // must match agent.defaultSubagentTimeoutSeconds (raised from 180s: 40 iterations × ~6s + wrap-up + retry margin)
 		SubagentSyncTimeoutSeconds: 600, // generous for edit tasks; bounds edit/tools children that previously had no per-child timeout
@@ -1539,6 +1558,12 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.SubagentSyncTimeoutSeconds < 0 {
 		return fmt.Errorf("subagent_sync_timeout_seconds must be >= 0 (got %d; 0 = use default 600s)", cfg.SubagentSyncTimeoutSeconds)
+	}
+	if cfg.StreamIdleTimeoutSeconds < 0 {
+		return fmt.Errorf("stream_idle_timeout_seconds must be >= 0 (got %d; 0 = use default 120s)", cfg.StreamIdleTimeoutSeconds)
+	}
+	if cfg.BgShellTimeoutSeconds < 0 {
+		return fmt.Errorf("bg_shell_timeout_seconds must be >= 0 (got %d; 0 = use default 3600s)", cfg.BgShellTimeoutSeconds)
 	}
 	return nil
 }

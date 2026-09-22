@@ -1191,6 +1191,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		HTTP:            a.Client.HTTP, // shared transport pools per-host automatically; see discovery §6
 		Backend:         backend,       // propagate X-Ilm-Backend (the P31 bug fix) — gated above by the child's own kind
 		MaxRequestBytes: a.Client.MaxRequestBytes,
+		StreamIdleTimeout: a.Client.StreamIdleTimeout,
 	}
 
 	cfg := config.DefaultConfig()

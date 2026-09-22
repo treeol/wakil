@@ -555,6 +555,12 @@ type Client struct {
 	// stubbed to fit before sending. 0 = disabled.
 	MaxRequestBytes int
 
+	// StreamIdleTimeout is the maximum duration to wait between SSE bytes
+	// before declaring a stall. A silent upstream beyond this threshold
+	// returns a retryable ErrBackendStream (wrapStreamErr). 0 = use default
+	// (120s). Set by the wiring layer from config.StreamIdleTimeoutSeconds.
+	StreamIdleTimeout time.Duration
+
 	// malformedChunks counts SSE data chunks that failed to parse as JSON.
 	// Each one aborts its stream as ErrBackendStream and is logged to stderr
 	// with its byte offset (fail-fast — a lost chunk corrupts the accumulated
@@ -1027,7 +1033,16 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// larger than maxSSELineSize is rejected with an error instead of
 	// causing unbounded memory growth.
 	const maxSSELineSize = 10 * 1024 * 1024 // 10 MB
-	scanner := bufio.NewScanner(resp.Body)
+	// Wrap the response body with an idle-deadline reader. If no bytes
+	// arrive within StreamIdleTimeout, the reader returns a timeout error,
+	// unblocking the scanner and feeding the existing retry loop.
+	idleTimeout := c.StreamIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 120 * time.Second
+	}
+	bodyReader := newIdleReader(resp.Body, idleTimeout)
+	defer bodyReader.Close()
+	scanner := bufio.NewScanner(bodyReader)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
 	var bytesRead int // approximate SSE bytes consumed, for error offsets
 	for scanner.Scan() {
@@ -1479,4 +1494,89 @@ func extractSpillPath(content string) string {
 		return ""
 	}
 	return path
+}
+
+// idleReader wraps an io.ReadCloser and returns a timeout error if no bytes
+// are read within the idle timeout. Each successful Read resets the deadline.
+// This catches mid-stream stalls where the upstream connection is alive but
+// silent (no data flowing) — ResponseHeaderTimeout only covers the first
+// response byte, not idle gaps during streaming.
+//
+// The timer fires in a goroutine; on timeout it closes the underlying body,
+// which unblocks any in-progress Read with a read-on-closed-body error. The
+// error is wrapped as ErrBackendStream so the retry loop in resilience.go
+// handles it like any other transient failure.
+type idleReader struct {
+	src     io.ReadCloser
+	timeout time.Duration
+	timer   *time.Timer
+	mu      sync.Mutex
+	closed  bool
+}
+
+// idleTimeoutErr is returned by idleReader.Read when the idle deadline fires.
+type idleTimeoutErr struct{ d time.Duration }
+
+func (e *idleTimeoutErr) Error() string {
+	return fmt.Sprintf("SSE stream idle for %s — upstream stall", e.d)
+}
+
+func (e *idleTimeoutErr) Unwrap() error { return ErrBackendStream }
+
+func newIdleReader(src io.ReadCloser, timeout time.Duration) *idleReader {
+	r := &idleReader{src: src, timeout: timeout}
+	r.resetTimer()
+	return r
+}
+
+func (r *idleReader) resetTimer() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.timer = time.AfterFunc(r.timeout, func() {
+		r.mu.Lock()
+		if r.closed {
+			r.mu.Unlock()
+			return
+		}
+		r.closed = true
+		r.mu.Unlock()
+		_ = r.src.Close() // unblock any in-progress Read
+	})
+}
+
+func (r *idleReader) Read(p []byte) (int, error) {
+	n, err := r.src.Read(p)
+	if n > 0 {
+		r.resetTimer() // got bytes — reset the idle deadline
+	}
+	if err != nil {
+		// If the body was closed by our timer, classify as a stall.
+		r.mu.Lock()
+		closed := r.closed
+		r.mu.Unlock()
+		if closed {
+			return n, &idleTimeoutErr{d: r.timeout}
+		}
+	}
+	return n, err
+}
+
+func (r *idleReader) Close() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	r.closed = true
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.mu.Unlock()
+	return r.src.Close()
 }

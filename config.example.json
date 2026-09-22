@@ -148,10 +148,12 @@
   "trace_sessions": false,
   "trace_dir": "",
 
-  "_comment_misc": "agent_prompt_path defaults to agent.txt next to the config file. backend_max_retries caps automatic retries for transient backend failures in unattended runs. mention_base is the base directory for @ file mentions.",
+  "_comment_misc": "agent_prompt_path defaults to agent.txt next to the config file. backend_max_retries caps automatic retries for transient backend failures in unattended runs. stream_idle_timeout_seconds bounds SSE read-idle (0 = default 120s). bg_shell_timeout_seconds bounds notify_on_exit background shell watchdog (0 = default 3600s). mention_base is the base directory for @ file mentions.",
 
   "agent_prompt_path": "",
   "backend_max_retries": 3,
+  "stream_idle_timeout_seconds": 0,
+  "bg_shell_timeout_seconds": 0,
   "mention_base": "",
 
   "_comment_ilm_stack": "ilm-stack shadow-mode emitter. mode=off (default): zero behaviour change, zero network calls. mode=shadow: emit session/turn/tool events to the ilm-stack endpoint via a local durable queue + background sender. Never on the critical path. Env vars: ILM_STACK_URL, ILM_STACK_TOKEN, ILM_MODE, ILM_QUEUE_PATH, ILM_BATCH_SIZE, ILM_OUTPUT_LIMIT.",

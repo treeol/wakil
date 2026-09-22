@@ -98,6 +98,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		AuthHeader:      cfg.AuthHeader(),
 		HTTP:            newHTTPClient(),
 		MaxRequestBytes: cfg.MaxRequestBytes,
+		StreamIdleTimeout: time.Duration(cfg.StreamIdleTimeoutSeconds) * time.Second,
 	}
 
 	// MCP manager

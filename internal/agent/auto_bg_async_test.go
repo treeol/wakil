@@ -603,3 +603,118 @@ func TestAutoBG_StoppingReturnMessage(t *testing.T) {
 	app.asyncStopping = false
 	app.asyncMu.Unlock()
 }
+
+// TestBgShellWatchdogReleasesSlot verifies that the shell watchdog arms on
+// registration and force-terminalizes a stuck background shell, releasing the
+// async slot so a suspended turn doesn't wait forever. This is the regression
+// test for the pre-fix bug where detached-shell ops had no watchdog and the
+// 24h reaper leaked the slot.
+func TestBgShellWatchdogReleasesSlot(t *testing.T) {
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.BgShellTimeoutSeconds = 1 // 1s watchdog for test speed
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     cfg,
+	}
+
+	bgID := startAutoBGShell(t, app, "sleep 30")
+
+	// asyncActive must be 1 (registered).
+	if active := app.countActiveAsyncOps(); active != 1 {
+		t.Fatalf("asyncActive = %d after start, want 1", active)
+	}
+
+	// The watchdog (1s + 10s grace = ~11s) should fire and release the slot.
+	// Wait up to 20s for the watchdog to terminalize.
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if app.countActiveAsyncOps() == 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if active := app.countActiveAsyncOps(); active != 0 {
+		t.Fatalf("asyncActive = %d after watchdog timeout, want 0 (slot leak — watchdog did not fire)", active)
+	}
+
+	// The inbox should have the timeout completion.
+	app.asyncMu.Lock()
+	inboxLen := len(app.asyncInbox)
+	app.asyncMu.Unlock()
+	if inboxLen < 1 {
+		t.Error("asyncInbox should have the timeout completion, got 0 entries")
+	}
+
+	// Clean up: kill the process.
+	app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "kill_process", Arguments: fmt.Sprintf(`{"id":%q}`, bgID),
+	}})
+}
+
+// TestReaperAbandonmentReleasesSlot verifies that the 24h reaper abandonment
+// path calls cancelBgAsyncOp to release the async slot, rather than just
+// deleting the entry — the original bug that caused indefinite "waiting".
+func TestReaperAbandonmentReleasesSlot(t *testing.T) {
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.BgShellTimeoutSeconds = 3600 // 1h watchdog — won't fire during this test
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     cfg,
+	}
+
+	bgID := startAutoBGShell(t, app, "sleep 30")
+
+	if active := app.countActiveAsyncOps(); active != 1 {
+		t.Fatalf("asyncActive = %d after start, want 1", active)
+	}
+
+	// Simulate the reaper's 24h abandonment: grab the asyncOp, delete the
+	// entry, and call cancelBgAsyncOp — the fix we added.
+	app.bgMu.Lock()
+	entry := app.bgProcs[bgID]
+	op := entry.asyncOp
+	delete(app.bgProcs, bgID)
+	app.bgMu.Unlock()
+
+	if op == nil {
+		t.Fatal("entry.asyncOp should be non-nil")
+	}
+
+	a := app
+	a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
+
+	// asyncActive must be 0 after cancelBgAsyncOp.
+	if active := app.countActiveAsyncOps(); active != 0 {
+		t.Fatalf("asyncActive = %d after reaper abandonment, want 0 (slot leak)", active)
+	}
+
+	// WaitForAsyncCompletion should return (false, nil) — nothing left to wait.
+	got, werr := app.WaitForAsyncCompletion(context.Background())
+	if werr != nil {
+		t.Fatalf("WaitForAsyncCompletion error: %v", werr)
+	}
+	if got {
+		t.Error("WaitForAsyncCompletion should return false (nothing left), got true")
+	}
+
+	// Clean up: kill the process.
+	app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "kill_process", Arguments: fmt.Sprintf(`{"id":%q}`, bgID),
+	}})
+}
