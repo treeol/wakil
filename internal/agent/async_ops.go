@@ -234,10 +234,13 @@ type asyncOp struct {
 	// watchdog is the timeout timer armed at registration. It fires if the
 	// worker doesn't terminalize within the configured timeout + grace period.
 	// Cancelled by the worker's defer cancelWatchdog at normal completion. The
-	// watchdog NEVER closes op.done — only the worker does that (avoiding
-	// double-close panic). The watchdog only sets op.terminal, populates
-	// synthetic subagent results, marks subagentEffectsCommitted, commits
-	// cost, and calls publishAsyncOp to release the slot and wake the waiter.
+	// mashura watchdog NEVER closes op.done — only the worker's defer
+	// close(op.done) does (avoiding double-close panic). The shell watchdog
+	// DOES close op.done via closeOpDone after publishing, because shell ops
+	// have no worker goroutine to close it. The watchdog only sets op.terminal,
+	// populates synthetic subagent results, marks subagentEffectsCommitted,
+	// commits cost, and calls publishAsyncOp to release the slot and wake the
+	// waiter.
 	watchdog *time.Timer
 
 	done chan struct{} // closed exactly once at terminal completion
@@ -653,11 +656,12 @@ func (a *App) bgShellTimeout() time.Duration {
 //
 // Unlike armSubagentWatchdog, there is nothing to salvage — the shell either
 // exited (reaper published) or it's stuck. The watchdog sets a timeout result
-// and publishes through publishAsyncOp (exactly-once via op.published). It
-// NEVER closes op.done (the reaper's publishBgCompletion or cancelBgAsyncOp
-// owns that). When the reaper eventually runs (process finally exits), it
-// finds op.terminal == true and its publishBgCompletion bails (published
-// guard).
+// and publishes through publishAsyncOp (exactly-once via op.published). Unlike
+// mashura ops (where the worker's defer close(op.done) is the guaranteed
+// closer), shell ops have NO worker goroutine — so the watchdog MUST also close
+// op.done (guarded by doneClosed) to prevent a channel leak. When the reaper
+// eventually runs (process finally exits), it finds op.terminal == true and
+// its publishBgCompletion bails (published guard).
 func (a *App) armShellWatchdog(op *asyncOp, timeout time.Duration) {
 	if timeout <= 0 {
 		return
@@ -673,6 +677,7 @@ func (a *App) armShellWatchdog(op *asyncOp, timeout time.Duration) {
 			// Reaper set terminal but didn't publish (rare race). Publish for it.
 			op.mu.Unlock()
 			a.publishAsyncOp(op)
+			a.closeOpDone(op)
 			return
 		}
 		op.terminal = true
@@ -685,8 +690,25 @@ func (a *App) armShellWatchdog(op *asyncOp, timeout time.Duration) {
 		op.mu.Unlock()
 		// Release the slot + publish to inbox (wakes WaitForAsyncCompletion).
 		a.publishAsyncOp(op)
+		// Close done (guarded by doneClosed) — shell ops have no worker
+		// goroutine to close it, so the watchdog is the last resort.
+		a.closeOpDone(op)
 	})
 	op.mu.Unlock()
+}
+
+// closeOpDone closes op.done exactly once, guarded by op.doneClosed under
+// op.mu. Shared by armShellWatchdog and publishBgCompletion so both publication
+// paths use the same close protocol. Safe to call when op.done is nil (no-op).
+func (a *App) closeOpDone(op *asyncOp) {
+	op.mu.Lock()
+	if op.doneClosed || op.done == nil {
+		op.mu.Unlock()
+		return
+	}
+	op.doneClosed = true
+	op.mu.Unlock()
+	close(op.done)
 }
 
 // countActiveAsyncOps returns the number of currently-running (non-terminal)

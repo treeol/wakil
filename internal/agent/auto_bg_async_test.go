@@ -718,3 +718,132 @@ func TestReaperAbandonmentReleasesSlot(t *testing.T) {
 		Name: "kill_process", Arguments: fmt.Sprintf(`{"id":%q}`, bgID),
 	}})
 }
+
+// TestBgShellWatchdogClosesDone verifies that the shell watchdog closes op.done
+// after publishing — the fix for the channel leak where armShellWatchdog
+// published but nobody closed op.done (Bug 1 from Mashūra review).
+func TestBgShellWatchdogClosesDone(t *testing.T) {
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.BgShellTimeoutSeconds = 1 // 1s watchdog for test speed
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     cfg,
+	}
+
+	bgID := startAutoBGShell(t, app, "sleep 30")
+
+	// Grab the asyncOp before the watchdog fires.
+	app.bgMu.RLock()
+	entry := app.bgProcs[bgID]
+	app.bgMu.RUnlock()
+	if entry == nil || entry.asyncOp == nil {
+		t.Fatal("entry.asyncOp should be non-nil before watchdog fires")
+	}
+	op := entry.asyncOp
+
+	// Wait for the watchdog to close op.done (with a timeout). Publication
+	// precedes closure, so waiting on done is the correct synchronization.
+	select {
+	case <-op.done:
+		// Good — channel was closed by the watchdog.
+	case <-time.After(20 * time.Second):
+		t.Fatal("op.done was not closed within 20s (channel leak — watchdog did not close it)")
+	}
+
+	// After done is closed, the slot must be released.
+	if active := app.countActiveAsyncOps(); active != 0 {
+		t.Fatalf("asyncActive = %d after watchdog closed done, want 0", active)
+	}
+
+	// Clean up: kill the process.
+	app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "kill_process", Arguments: fmt.Sprintf(`{"id":%q}`, bgID),
+	}})
+}
+
+// TestPublishBgCompletionPreservesWatchdogOutcome verifies that when the
+// watchdog terminalizes first (timeout), a subsequent publishBgCompletion call
+// does NOT overwrite the timeout outcome — the first terminalizer owns the
+// outcome (Bug 2 from Mashūra review).
+func TestPublishBgCompletionPreservesWatchdogOutcome(t *testing.T) {
+	exe, err := exec.NewDirectExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exe.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.BgShellTimeoutSeconds = 3600 // won't fire — we simulate the watchdog
+	app := &App{
+		Exec:    exe,
+		Out:     io.Discard,
+		Confirm: func(_, _, _ string, _ bool) bool { return true },
+		Cfg:     cfg,
+	}
+
+	bgID := startAutoBGShell(t, app, "sleep 30")
+	defer func() {
+		app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+			Name: "kill_process", Arguments: fmt.Sprintf(`{"id":%q}`, bgID),
+		}})
+	}()
+
+	// Grab the asyncOp.
+	app.bgMu.RLock()
+	entry := app.bgProcs[bgID]
+	app.bgMu.RUnlock()
+	if entry == nil || entry.asyncOp == nil {
+		t.Fatal("entry.asyncOp should be non-nil")
+	}
+	op := entry.asyncOp
+
+	// Simulate the watchdog terminalizing first (timeout outcome).
+	op.mu.Lock()
+	op.terminal = true
+	op.finishedAt = time.Now()
+	op.startedAt = op.createdAt
+	op.err = fmt.Errorf("background shell timed out after %s", 1*time.Second)
+	op.result = "Background shell timed out — timeout outcome from watchdog."
+	op.mu.Unlock()
+
+	// Now simulate the reaper calling publishBgCompletion with a normal-exit
+	// result. The watchdog's timeout outcome must NOT be overwritten.
+	app.publishBgCompletion(op, bgID, entry, "exit 0", "normal output")
+
+	// Verify the timeout outcome was preserved, not overwritten.
+	op.mu.Lock()
+	terminalResult := op.result
+	terminalErr := op.err
+	doneClosed := op.doneClosed
+	published := op.published
+	op.mu.Unlock()
+
+	if terminalResult != "Background shell timed out — timeout outcome from watchdog." {
+		t.Errorf("op.result was overwritten by publishBgCompletion: got %q, want watchdog timeout message", terminalResult)
+	}
+	if terminalErr == nil || !strings.Contains(terminalErr.Error(), "timed out") {
+		t.Errorf("op.err was overwritten or cleared: got %v, want timeout error", terminalErr)
+	}
+	if !published {
+		t.Error("op.published should be true (publishBgCompletion should still publish)")
+	}
+	if !doneClosed {
+		t.Error("op.doneClosed should be true (publishBgCompletion should close done)")
+	}
+
+	// op.done must be closed.
+	select {
+	case <-op.done:
+		// Good.
+	default:
+		t.Error("op.done should be closed after publishBgCompletion")
+	}
+}

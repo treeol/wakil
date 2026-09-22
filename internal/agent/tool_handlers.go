@@ -630,30 +630,37 @@ func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {
 // goroutine. Exactly-once: guarded by the reaper's notifyOnExit && !notified
 // check under bgMu, plus publishAsyncOp's published flag.
 //
-// publishAsyncOp is called BEFORE close(op.done) so that
-// cancelBgAsyncOp (which checks op.published under op.mu) sees published=true
-// and bails out before attempting close(op.done). This eliminates the
-// double-close panic window that existed when close(done) preceded
-// publishAsyncOp. If publishAsyncOp returns false (someone else already
-// published, e.g. cancelBgAsyncOp won the race), we do NOT close done — the
-// winner is responsible for closing it. If it returns false because the
-// session is stopping, we still close done ourselves since no one else will.
+// Outcome ownership: if the watchdog already set terminal=true with a timeout
+// outcome, the reaper does NOT overwrite it — the first terminalizer owns the
+// outcome (same pattern as the mashura worker's if !op.terminal guard).
+// Publication (publishAsyncOp + close(op.done)) still proceeds regardless, so
+// the slot is released and the waiter resumes even when the watchdog won the
+// outcome.
+//
+// closeOpDone is the shared close protocol (guarded by doneClosed under op.mu),
+// extracted so both publishBgCompletion and armShellWatchdog use the same path.
 func (a *App) publishBgCompletion(op *asyncOp, bgID string, e *bgEntry, statusLine, tail string) {
 	msg := fmt.Sprintf("%s (\"%s\") %s — last output:\n%s\nuse read_process_log(%q) for the full output", bgID, e.cmdDigest, statusLine, tail, bgID)
 
 	op.mu.Lock()
 	if op.published {
-		// Already published (cancelBgAsyncOp won the race) — nothing to do.
+		// Already published (watchdog or cancelBgAsyncOp won the race) —
+		// nothing to do; the winner owns the outcome and the done channel.
 		op.mu.Unlock()
 		return
 	}
-	op.terminal = true
-	op.finishedAt = time.Now()
-	if op.startedAt.IsZero() {
-		op.startedAt = e.startedAt
+	// First terminalizer owns the outcome. If the watchdog already set
+	// terminal=true with a timeout result, don't overwrite it — only
+	// proceed with publication (below) to release the slot.
+	if !op.terminal {
+		op.terminal = true
+		op.finishedAt = time.Now()
+		if op.startedAt.IsZero() {
+			op.startedAt = e.startedAt
+		}
+		op.result = msg
+		op.shellLSPDirty = !e.readOnly
 	}
-	op.result = msg
-	op.shellLSPDirty = !e.readOnly
 	op.mu.Unlock()
 
 	// Cancel the shell watchdog — the process exited normally before the
@@ -663,18 +670,9 @@ func (a *App) publishBgCompletion(op *asyncOp, bgID string, e *bgEntry, statusLi
 	// publishAsyncOp handles: asyncActive--, asyncInbox append, evict, signalWake.
 	// It also sets op.published under op.mu, which prevents cancelBgAsyncOp
 	// from double-closing op.done.
-	published := a.publishAsyncOp(op)
-	// Close done exactly once. The doneClosed flag (under op.mu) guards
-	// against double-close in all races (cancelBgAsyncOp, stopping).
-	op.mu.Lock()
-	if !op.doneClosed {
-		op.doneClosed = true
-		_ = published
-		op.mu.Unlock()
-		close(op.done)
-	} else {
-		op.mu.Unlock()
-	}
+	a.publishAsyncOp(op)
+	// Close done exactly once via the shared helper.
+	a.closeOpDone(op)
 }
 
 // cancelBgAsyncOp releases the async slot for a notify_on_exit=true background
@@ -695,17 +693,17 @@ func (a *App) cancelBgAsyncOp(op *asyncOp, bgID, reason string) {
 	op.mu.Lock()
 	if op.published {
 		op.mu.Unlock()
-		return // already published (reaper won the race)
+		return // already published (reaper/watchdog won the race)
 	}
+	// Cancellation deliberately overrides an already-terminal-but-unpublished
+	// outcome: kill = silent, so the timeout notification is suppressed and
+	// the timing is updated. This is the intended exception to "first
+	// terminalizer owns the outcome" — documented here.
 	op.published = true
 	op.terminal = true
 	op.finishedAt = time.Now()
-	doneClosed := op.doneClosed
-	op.doneClosed = true
 	op.mu.Unlock()
-	if op.done != nil && !doneClosed {
-		close(op.done)
-	}
+	a.closeOpDone(op)
 
 	// Release the slot silently: decrement asyncActive without appending to
 	// asyncInbox. Signal wake so any suspended turn resumes (it will see
