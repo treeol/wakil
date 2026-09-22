@@ -166,6 +166,11 @@ func (a *App) buildProgressMsg(ctx context.Context) *AsyncProgressMsg {
 // the caller snapshots the needed fields and passes the op pointer only
 // to find the matching bgEntry. All blocking calls use the heartbeat's
 // ctx so cancellation propagates.
+//
+// bgEntry.lastLogSize and lastLogGrowth are read and written under bgMu to
+// prevent a data race when two heartbeat goroutines overlap (hbCancel does
+// not join the goroutine, so a fast resume + re-suspend can start a new
+// heartbeat while the old one is still in buildProgressMsg).
 func (a *App) checkBgShellLiveness(ctx context.Context, op *asyncOp) (string, bool) {
 	// Find the bgEntry for this op by pointer match. Hold bgMu only briefly.
 	a.bgMu.RLock()
@@ -181,30 +186,50 @@ func (a *App) checkBgShellLiveness(ctx context.Context, op *asyncOp) (string, bo
 		return "no log", false
 	}
 
+	// Snapshot the current tracking state under bgMu before blocking calls.
+	a.bgMu.RLock()
+	prevSize := entry.lastLogSize
+	prevGrowth := entry.lastLogGrowth
+	a.bgMu.RUnlock()
+
 	// Use Exec.StatFile (works in docker/sandbox mode, unlike os.Stat).
 	size, err := a.Exec.StatFile(ctx, entry.logPath)
 	if err != nil {
 		return "log unreadable", false
 	}
 
-	// Track log size on the bgEntry itself (not a global map) — per-entry,
-	// initialized at spawn, no leak, no cross-session collision.
-	if entry.lastLogSize == 0 && entry.lastLogGrowth.IsZero() {
-		// First observation — record and don't judge.
-		entry.lastLogSize = size
-		entry.lastLogGrowth = time.Now()
+	// First observation — record and don't judge.
+	if prevSize == 0 && prevGrowth.IsZero() {
+		a.bgMu.Lock()
+		// Recheck under write lock: another heartbeat may have initialized
+		// while we were in StatFile. Only initialize if still unset.
+		if entry.lastLogSize == 0 && entry.lastLogGrowth.IsZero() {
+			entry.lastLogSize = size
+			entry.lastLogGrowth = time.Now()
+		}
+		a.bgMu.Unlock()
 		return "monitoring", false
 	}
 
-	if size > entry.lastLogSize {
-		// Log grew — update the last-growth time.
-		entry.lastLogSize = size
-		entry.lastLogGrowth = time.Now()
+	if size > prevSize {
+		// Log grew — update the last-growth time with a monotonic CAS:
+		// only write if size exceeds the current value, so a stale
+		// snapshot from a slower heartbeat can't regress the tracking state.
+		a.bgMu.Lock()
+		if size > entry.lastLogSize {
+			entry.lastLogSize = size
+			entry.lastLogGrowth = time.Now()
+		}
+		a.bgMu.Unlock()
 		return "log growing", false
 	}
 
-	// Log didn't grow. Check how long it's been idle.
-	idle := time.Since(entry.lastLogGrowth)
+	// Log didn't grow. Check how long it's been idle. Re-read the current
+	// lastLogGrowth under the lock to avoid using a stale snapshot.
+	a.bgMu.RLock()
+	currentGrowth := entry.lastLogGrowth
+	a.bgMu.RUnlock()
+	idle := time.Since(currentGrowth)
 	if idle >= bgShellStallThreshold {
 		// Stalled: log not growing for >threshold. Check if the process
 		// group is still alive.
