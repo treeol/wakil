@@ -323,12 +323,12 @@ type AsyncProgressMsg struct {
 
 // AsyncProgressOp is the per-op progress snapshot.
 type AsyncProgressOp struct {
-	OpID      string // "op-1", "bg1", etc.
-	Kind      string // "run_shell", "run_background", "dispatch_subagent", "mashura"
-	Label     string // truncated command or task description
-	Elapsed   string // human-readable elapsed time ("2m30s")
-	Activity  string // "log growing", "last chunk 30s ago", "3/5 children done", etc.
-	Stalled   bool   // no activity beyond the stall threshold for this op kind
+	OpID     string // "op-1", "bg1", etc.
+	Kind     string // "run_shell", "run_background", "dispatch_subagent", "mashura"
+	Label    string // truncated command or task description
+	Elapsed  string // human-readable elapsed time ("2m30s")
+	Activity string // "log growing", "last chunk 30s ago", "3/5 children done", etc.
+	Stalled  bool   // no activity beyond the stall threshold for this op kind
 }
 
 // ProgWriter is an io.Writer that sends StreamChunkMsgs into the event sink.

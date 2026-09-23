@@ -1174,23 +1174,23 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 
 	subClient := &proxy.Client{
-		BaseURL:         view.baseURL,
-		Model:           view.model,
-		Kind:            view.kind,            // always the CHILD's actual kind — resolved together with BaseURL/model above, never divergent by construction
-		ConfiguredModel: view.configuredModel, // plain endpoints always send the configured model
-		Temperature:     view.temperature,
-		TopP:            view.topP,
-		MaxTokens:       view.maxTokens,
-		CachePrompt:     view.cachePrompt,
-		ToolChoice:      view.toolChoice,
-		CacheControl:    view.cacheControl,
-		AppTitle:        view.appTitle,
-		ChatID:          subChatID,
-		AuthHeader:      view.authHeader,
-		NoMemoryWrite:   true,
-		HTTP:            a.Client.HTTP, // shared transport pools per-host automatically; see discovery §6
-		Backend:         backend,       // propagate X-Ilm-Backend (the P31 bug fix) — gated above by the child's own kind
-		MaxRequestBytes: a.Client.MaxRequestBytes,
+		BaseURL:           view.baseURL,
+		Model:             view.model,
+		Kind:              view.kind,            // always the CHILD's actual kind — resolved together with BaseURL/model above, never divergent by construction
+		ConfiguredModel:   view.configuredModel, // plain endpoints always send the configured model
+		Temperature:       view.temperature,
+		TopP:              view.topP,
+		MaxTokens:         view.maxTokens,
+		CachePrompt:       view.cachePrompt,
+		ToolChoice:        view.toolChoice,
+		CacheControl:      view.cacheControl,
+		AppTitle:          view.appTitle,
+		ChatID:            subChatID,
+		AuthHeader:        view.authHeader,
+		NoMemoryWrite:     true,
+		HTTP:              a.Client.HTTP, // shared transport pools per-host automatically; see discovery §6
+		Backend:           backend,       // propagate X-Ilm-Backend (the P31 bug fix) — gated above by the child's own kind
+		MaxRequestBytes:   a.Client.MaxRequestBytes,
 		StreamIdleTimeout: a.Client.StreamIdleTimeout,
 	}
 

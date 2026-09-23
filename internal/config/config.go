@@ -806,7 +806,7 @@ func DefaultConfig() Config {
 		MaxRequestBytes:            8 << 20,   // 8 MB: trim tool results before sending if over
 		BackendMaxRetries:          3,
 		StreamIdleTimeoutSeconds:   120,  // SSE read-idle: 2 min between bytes before declaring a stall
-		BgShellTimeoutSeconds:     3600, // 1h watchdog for notify_on_exit background shells (was unbounded → 24h reaper only)
+		BgShellTimeoutSeconds:      3600, // 1h watchdog for notify_on_exit background shells (was unbounded → 24h reaper only)
 		MaxParallelSubagents:       2,
 		SubagentTimeoutSeconds:     360, // must match agent.defaultSubagentTimeoutSeconds (raised from 180s: 40 iterations × ~6s + wrap-up + retry margin)
 		SubagentSyncTimeoutSeconds: 600, // generous for edit tasks; bounds edit/tools children that previously had no per-child timeout

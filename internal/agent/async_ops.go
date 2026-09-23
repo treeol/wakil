@@ -97,13 +97,6 @@ const (
 	// "no deadline" (that would let a hung panel spin the tab + leak the slot).
 	defaultMashuraTimeoutSeconds = 300
 
-	// defaultStreamIdleTimeoutSeconds is the fallback SSE read-idle timeout
-	// when StreamIdleTimeoutSeconds is 0 (or unset). A silent upstream beyond
-	// this threshold returns a retryable ErrBackendStream. 120s = 2 minutes:
-	// generous for reasoning models that think before emitting, but finite so
-	// a hung stream doesn't block the turn forever.
-	defaultStreamIdleTimeoutSeconds = 120
-
 	// defaultBgShellTimeoutSeconds is the fallback background-shell async-op
 	// watchdog timeout when BgShellTimeoutSeconds is 0 (or unset). Detached
 	// notify_on_exit shells previously had NO watchdog (unlike subagent/Mashūra
