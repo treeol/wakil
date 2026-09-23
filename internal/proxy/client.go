@@ -469,6 +469,13 @@ type Client struct {
 	// default / no opinion); set only for endpoints that explicitly opt in.
 	CachePrompt *bool
 
+	// ToolChoice mirrors EndpointConfig.ToolChoice: the OpenAI
+	// "tool_choice" request field, sent verbatim when set. nil = omit
+	// from the request body entirely (the server's default applies).
+	// Only sent when the request carries tools, per the Chat Completions
+	// contract (tool_choice is only valid alongside tools).
+	ToolChoice *string
+
 	// CacheControl mirrors EndpointConfig.CacheControl: Anthropic-style
 	// prompt-caching breakpoints injected on the wire copy at serialization
 	// time. nil = no decoration (byte-identical to today); set only for
@@ -803,6 +810,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		TopP          *float64          `json:"top_p,omitempty"`
 		MaxTokens     *int              `json:"max_tokens,omitempty"`
 		CachePrompt   *bool             `json:"cache_prompt,omitempty"`
+		ToolChoice    *string           `json:"tool_choice,omitempty"`
 		Reasoning     *ReasoningConfig  `json:"reasoning,omitempty"`
 	}
 
@@ -823,6 +831,14 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		maxTokens = &defaultMax
 	}
 
+	// ToolChoice is only valid alongside tools (the Chat Completions
+	// contract ties the two); drop it on tool-less requests so strict
+	// servers don't 400 on a dangling tool_choice.
+	toolChoice := c.ToolChoice
+	if len(tools) == 0 {
+		toolChoice = nil
+	}
+
 	body := wireBody{
 		Model:         model,
 		Stream:        true,
@@ -833,6 +849,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		TopP:          c.TopP,
 		MaxTokens:     maxTokens,
 		CachePrompt:   c.CachePrompt,
+		ToolChoice:    toolChoice,
 		Reasoning:     c.Reasoning,
 	}
 	if proxyShape {

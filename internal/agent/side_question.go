@@ -98,6 +98,7 @@ func (a *App) cloneClientForSideQuestion() *proxy.Client {
 		TopP:            a.Client.TopP,
 		MaxTokens:       a.Client.MaxTokens,
 		CachePrompt:     a.Client.CachePrompt,
+		ToolChoice:      a.Client.ToolChoice,
 		CacheControl:    a.Client.CacheControl,
 		AppTitle:        a.Client.AppTitle,
 		NoMemoryWrite:   true,

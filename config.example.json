@@ -16,6 +16,13 @@
       "app_title": "your-app",
       "max_tokens": 65536
     },
+    "ionet": {
+      "kind": "openai",
+      "base_url": "https://api.intelligence.io.solutions/api",
+      "model": "meta-llama/Llama-3.3-70B-Instruct",
+      "auth_header": "Bearer io-...",
+      "tool_choice": "auto"
+    },
     "ilm": {
       "kind": "ilm-proxy",
       "base_url": "http://proxy-host:11400",

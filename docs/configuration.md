@@ -71,11 +71,18 @@ The `endpoints` block names each server wakil can talk to;
 ```
 
 Per-endpoint options: `auth_header` (verbatim `Authorization` value, beats
-the global `api_key`) and optional `temperature` / `top_p` / `max_tokens` —
-omitted from the request body entirely when unset, so server defaults stay
-authoritative. For `openai`-kind endpoints, `app_title` sets the OpenRouter
-`X-Title` attribution header; when unset, it defaults to `wakil` for
-openrouter.ai hosts and is omitted for any other host. Set to `""` to opt out.
+the global `api_key`) and optional `temperature` / `top_p` / `max_tokens` /
+`tool_choice` — omitted from the request body entirely when unset, so server
+defaults stay authoritative. `tool_choice` is the OpenAI Chat Completions
+field sent verbatim (only on requests that carry tools); set it to `"auto"`
+for endpoints whose tool_choice default is `"none"` — e.g. IO Intelligence
+by io.net — so tool calls fire. The documented values are the OpenAI string
+forms (`"auto"`, `"none"`, `"required"`); the field is not
+validated — an empty string is sent as-is, like any other value. It is
+honoured by any endpoint kind that sends the shared Chat-Completions wire
+body. For `openai`-kind endpoints, `app_title`
+sets the OpenRouter `X-Title` attribution header; when unset, it defaults to
+`wakil` for openrouter.ai hosts and is omitted for any other host. Set to `""` to opt out.
 The `HTTP-Referer` and `X-OpenRouter-Categories` headers are always the
 hardcoded project defaults (`https://github.com/treeol/wakil` and `cli-agent`)
 for openrouter.ai hosts and are **not** user-configurable — wakil always

@@ -42,6 +42,7 @@ func TestInheritNoOpFieldsMatchTodaysCopy(t *testing.T) {
 	app.Client.MaxTokens = maxTok
 	app.Client.AuthHeader = "Bearer parent-key"
 	app.Client.CachePrompt = boolPtr(true)
+	app.Client.ToolChoice = strPtr("auto")
 
 	name := resolveSubagentEndpointName(app)
 	if name != "" {
@@ -77,6 +78,9 @@ func TestInheritNoOpFieldsMatchTodaysCopy(t *testing.T) {
 	}
 	if view.cachePrompt != app.Client.CachePrompt {
 		t.Errorf("cachePrompt pointer = %p, want %p (same pointer value)", view.cachePrompt, app.Client.CachePrompt)
+	}
+	if view.toolChoice != app.Client.ToolChoice {
+		t.Errorf("toolChoice pointer = %p, want %p (same pointer value)", view.toolChoice, app.Client.ToolChoice)
 	}
 }
 
@@ -206,7 +210,7 @@ func TestOverrideOpenAIChildFromProxyParent(t *testing.T) {
 	app := newTestApp("http://proxy-parent", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg = proxyCfg("http://proxy-parent")
 	app.Cfg.Endpoints = map[string]config.EndpointConfig{
-		"oa": {Kind: config.EndpointKindOpenAI, BaseURL: openaiSrv.URL, Model: "gpt-child", AuthHeader: "Bearer child-key", CachePrompt: boolPtr(true)},
+		"oa": {Kind: config.EndpointKindOpenAI, BaseURL: openaiSrv.URL, Model: "gpt-child", AuthHeader: "Bearer child-key", CachePrompt: boolPtr(true), ToolChoice: strPtr("auto")},
 	}
 	app.Cfg.SubagentEndpoint = "oa"
 	app.Client.Kind = proxy.KindIlmProxy
@@ -245,6 +249,17 @@ func TestOverrideOpenAIChildFromProxyParent(t *testing.T) {
 	}
 	if !cachePrompt {
 		t.Errorf("cache_prompt = %v, want true (from the named endpoint's config)", cachePrompt)
+	}
+	// The named endpoint's tool_choice must reach the child's actual request
+	// too — proof that subagentEndpointView.toolChoice (override branch) flows
+	// into subClient.ToolChoice and out on the wire (the subagent request
+	// carries the discovery tools, so the tools-gate keeps it in the body).
+	var toolChoice string
+	if err := json.Unmarshal(parsed["tool_choice"], &toolChoice); err != nil {
+		t.Fatalf("tool_choice missing or malformed on child request: %v", err)
+	}
+	if toolChoice != "auto" {
+		t.Errorf("tool_choice = %q, want %q (from the named endpoint's config)", toolChoice, "auto")
 	}
 }
 

@@ -456,3 +456,85 @@ func TestReasoningPresentWhenSet(t *testing.T) {
 		t.Errorf("reasoning.max_tokens = %d, want %d", rc.MaxTokens, 8000)
 	}
 }
+
+// TestToolChoiceWireShape: a configured ToolChoice is sent verbatim when the
+// request carries tools, and omitted entirely otherwise (the Chat Completions
+// contract only allows tool_choice alongside tools, so a dangling value would
+// 400 on strict servers). Unset stays absent in both cases.
+func TestToolChoiceWireShape(t *testing.T) {
+	tools := []Tool{{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "ping",
+			Description: "ping",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+		},
+	}}
+	msgs := []Message{{Role: "user", Content: strPtr("hi")}}
+
+	t.Run("sent verbatim with tools", func(t *testing.T) {
+		srv, _, body := captureServer(t)
+		c := &Client{
+			BaseURL:         srv.URL,
+			Kind:            KindOpenAI,
+			ConfiguredModel: "meta-llama/Llama-3.3-70B-Instruct",
+			ToolChoice:      strPtr("auto"),
+			HTTP:            http.DefaultClient,
+		}
+		if _, err := c.Stream(t.Context(), msgs, tools, nil, nil); err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(*body, &raw); err != nil {
+			t.Fatal(err)
+		}
+		var tc string
+		if err := json.Unmarshal(raw["tool_choice"], &tc); err != nil {
+			t.Fatalf("tool_choice missing or not a string: %v", err)
+		}
+		if tc != "auto" {
+			t.Errorf("tool_choice = %q, want auto", tc)
+		}
+	})
+
+	t.Run("omitted without tools even when configured", func(t *testing.T) {
+		srv, _, body := captureServer(t)
+		c := &Client{
+			BaseURL:         srv.URL,
+			Kind:            KindOpenAI,
+			ConfiguredModel: "m",
+			ToolChoice:      strPtr("auto"),
+			HTTP:            http.DefaultClient,
+		}
+		if _, err := c.Stream(t.Context(), msgs, nil, nil, nil); err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(*body, &raw); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := raw["tool_choice"]; ok {
+			t.Error("tool_choice must be omitted on tool-less requests")
+		}
+	})
+
+	t.Run("absent when unset", func(t *testing.T) {
+		srv, _, body := captureServer(t)
+		c := &Client{
+			BaseURL:         srv.URL,
+			Kind:            KindOpenAI,
+			ConfiguredModel: "m",
+			HTTP:            http.DefaultClient,
+		}
+		if _, err := c.Stream(t.Context(), msgs, tools, nil, nil); err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(*body, &raw); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := raw["tool_choice"]; ok {
+			t.Error("tool_choice must be absent when unset")
+		}
+	})
+}

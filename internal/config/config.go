@@ -52,6 +52,14 @@ type EndpointConfig struct {
 	// above: unset omits the field entirely, never sends a literal false.
 	CachePrompt *bool `json:"cache_prompt,omitempty"`
 
+	// ToolChoice is the OpenAI Chat Completions "tool_choice" field, sent
+	// verbatim when set. Unset omits the field entirely (server default
+	// stays authoritative). Some OpenAI-compatible endpoints default
+	// tool_choice to "none" while wakil's requests always carry tools —
+	// for those endpoints (e.g. IO Intelligence by io.net) set "auto"
+	// explicitly so tool calls fire.
+	ToolChoice *string `json:"tool_choice,omitempty"`
+
 	// CacheControl enables Anthropic-style prompt caching via cache_control
 	// breakpoints on message content parts. When set, Stream injects two
 	// ephemeral breakpoints on the wire copy of the request: one on

@@ -91,6 +91,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		TopP:            ep.TopP,
 		MaxTokens:       ep.MaxTokens,
 		CachePrompt:     ep.CachePrompt,
+		ToolChoice:      ep.ToolChoice,
 		CacheControl:    ep.CacheControl,
 		AppTitle:        ep.AppTitle,
 		ChatID:          agent.NewChatID(),
