@@ -158,6 +158,8 @@ reference covering every section below.
 | `subagent_max_tool_iterations` | `0` (→ 30) | Cap on tool round-trips per subagent dispatch; `0` = use built-in default |
 | `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(auto-clamped to 35% of active hardMax)* |
 | `subagent_tool_result_cap` | `0` (→ 12000) | Per-result char cap for subagents; `0` = use built-in default |
+| `stream_idle_timeout_seconds` | `0` (→ 120) | Max seconds between SSE bytes from the backend before the stream is declared stalled and retried; `0` = use built-in default |
+| `bg_shell_timeout_seconds` | `0` (→ 3600) | Watchdog timeout for `notify_on_exit` background shells (async ops); `0` = use built-in default |
 | `hooks` | — | Lifecycle hooks block (pre_tool, post_tool, session_start, session_end, on_stop) — see [features](features.md#lifecycle-hooks) |
 | `verify` | — | Commands for `/verify` workflow verification (auto-detected from manifests if unset) |
 | `ilm_stack` | — | ILM shadow-mode emitter block (`endpoint`, `token`, `mode`, `queue_path`, `batch_ms`, `max_output_bytes`). `mode=off` (default): zero behaviour change. `mode=shadow`: emit session/turn/tool events to an ILM-stack endpoint via a local durable queue + background sender. Env vars: `ILM_STACK_URL`, `ILM_STACK_TOKEN`, `ILM_MODE`, `ILM_QUEUE_PATH`, `ILM_BATCH_SIZE`, `ILM_OUTPUT_LIMIT`. |
