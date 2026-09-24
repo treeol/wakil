@@ -29,6 +29,12 @@ type fakeExecutor struct {
 	files       map[string]string
 	dirs        map[string]bool
 
+	// mu guards all mutable fakeExecutor state (call counters and maps) —
+	// parallel-subagent tests execute tools concurrently on the same fake,
+	// so unsynchronized access is a data race (caught by -race in
+	// TestParallelBlockExhaustionSurfaced).
+	mu sync.Mutex
+
 	// sandboxTools, when non-empty, is returned by SandboxTools() instead of "".
 	sandboxTools string
 
@@ -46,6 +52,8 @@ func newFakeExecutor() *fakeExecutor {
 	return &fakeExecutor{writeCalls: map[string]string{}, files: map[string]string{}, dirs: map[string]bool{}}
 }
 func (f *fakeExecutor) RunShell(_ context.Context, c string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.shellCalls = append(f.shellCalls, c)
 	if f.shellResult != "" {
 		return f.shellResult, f.shellErr
@@ -53,6 +61,8 @@ func (f *fakeExecutor) RunShell(_ context.Context, c string) (string, error) {
 	return "ran: " + c, f.shellErr
 }
 func (f *fakeExecutor) StatFile(_ context.Context, p string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if v, ok := f.files[p]; ok {
 		return int64(len(v)), nil
 	}
@@ -60,6 +70,8 @@ func (f *fakeExecutor) StatFile(_ context.Context, p string) (int64, error) {
 }
 
 func (f *fakeExecutor) ReadFile(_ context.Context, p string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.readCalls++
 	if f.dirs[p] {
 		return "", fmt.Errorf("read %s: is a directory", p)
@@ -70,6 +82,8 @@ func (f *fakeExecutor) ReadFile(_ context.Context, p string) (string, error) {
 	return "", fmt.Errorf("no such file: %s", p)
 }
 func (f *fakeExecutor) ListDir(_ context.Context, p string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	// Only succeed for "." (list all) or explicitly registered dirs.
 	if p != "." && !f.dirs[p] {
 		return "", fmt.Errorf("no such directory: %s", p)
@@ -115,11 +129,15 @@ func (f *fakeExecutor) ListDir(_ context.Context, p string) (string, error) {
 	return strings.Join(names, "\n"), nil
 }
 func (f *fakeExecutor) WriteFile(_ context.Context, p, c string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.writeCalls[p] = c
 	f.files[p] = c
 	return fmt.Sprintf("wrote %d bytes to %s", len(c), p), nil
 }
 func (f *fakeExecutor) WriteFileBytes(_ context.Context, p string, c []byte) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.writeCalls[p] = string(c)
 	f.files[p] = string(c)
 	return fmt.Sprintf("wrote %d bytes to %s", len(c), p), nil
@@ -135,8 +153,11 @@ func (f *fakeExecutor) KVRAvailable() bool    { return false }
 func (f *fakeExecutor) ContainerName() string { return "" }
 func (f *fakeExecutor) CDPPort() int          { return 0 }
 func (f *fakeExecutor) ConfinePath(_ context.Context, path string) (string, error) {
-	if f.confineErrFn != nil {
-		if err := f.confineErrFn(path); err != nil {
+	f.mu.Lock()
+	confineErrFn := f.confineErrFn
+	f.mu.Unlock()
+	if confineErrFn != nil {
+		if err := confineErrFn(path); err != nil {
 			return "", err
 		}
 	}
