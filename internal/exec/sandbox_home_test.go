@@ -18,8 +18,8 @@ func TestSandboxHomeArgs_TmpfsOverlays(t *testing.T) {
 	// The tmpfs overlays must shadow the persistent bind mount at the
 	// two PATH-first executable directories.
 	required := []string{
-		"--tmpfs /home/user/go/bin:rw,nosuid,nodev,size=64m",
-		"--tmpfs /home/user/.cargo/bin:rw,nosuid,nodev,size=64m",
+		"--tmpfs /home/user/go/bin:rw,exec,nosuid,nodev,size=64m",
+		"--tmpfs /home/user/.cargo/bin:rw,exec,nosuid,nodev,size=64m",
 	}
 	for _, flag := range required {
 		if !strings.Contains(joined, flag) {
@@ -64,7 +64,7 @@ func TestSandboxHomeArgs_TmpfsAfterBindMount(t *testing.T) {
 		if a == "-v" && i+1 < len(args) && strings.Contains(args[i+1], "/home/user:z") {
 			bindIdx = i
 		}
-		if a == "--tmpfs" && i+1 < len(args) && args[i+1] == "/home/user/go/bin:rw,nosuid,nodev,size=64m" {
+		if a == "--tmpfs" && i+1 < len(args) && args[i+1] == "/home/user/go/bin:rw,exec,nosuid,nodev,size=64m" {
 			goBinTmpfsIdx = i
 		}
 	}

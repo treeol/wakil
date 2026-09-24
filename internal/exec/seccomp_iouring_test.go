@@ -121,7 +121,7 @@ func TestDockerHardeningArgs_IOUringEnabled(t *testing.T) {
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
 		"--read-only",
-		"--tmpfs=/tmp:rw,nosuid,nodev,size=4g",
+		"--tmpfs=/tmp:rw,exec,nosuid,nodev,size=4g",
 		"--tmpfs=/etc:rw,nosuid,nodev,size=1m",
 	}
 	for _, flag := range core {

@@ -21,7 +21,7 @@ func TestDockerHardeningArgs_AllFlagsPresent(t *testing.T) {
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
 		"--read-only",
-		"--tmpfs=/tmp:rw,nosuid,nodev,size=4g",
+		"--tmpfs=/tmp:rw,exec,nosuid,nodev,size=4g",
 		"--memory=4g",
 		"--pids-limit=512",
 		"--cap-add=CHOWN",
@@ -74,7 +74,7 @@ func TestDockerHardeningArgs_CoreFlagsAlwaysPresent(t *testing.T) {
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
 		"--read-only",
-		"--tmpfs=/tmp:rw,nosuid,nodev,size=4g",
+		"--tmpfs=/tmp:rw,exec,nosuid,nodev,size=4g",
 		"--tmpfs=/etc:rw,nosuid,nodev,size=1m",
 	}
 	for _, flag := range core {
@@ -94,7 +94,7 @@ func TestDockerHardeningArgs_TmpfsSizeOverride(t *testing.T) {
 	args := dockerHardeningArgs(opts)
 	joined := strings.Join(args, " ")
 
-	if !strings.Contains(joined, "--tmpfs=/tmp:rw,nosuid,nodev,size=4096m") {
+	if !strings.Contains(joined, "--tmpfs=/tmp:rw,exec,nosuid,nodev,size=4096m") {
 		t.Errorf("expected /tmp tmpfs size=4096m, got: %s", joined)
 	}
 	if strings.Contains(joined, "size=4g") {

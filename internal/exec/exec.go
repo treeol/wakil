@@ -329,14 +329,17 @@ const systemPath = "/usr/local/go/bin:/usr/local/go-workspace/bin" +
 // mount at those executable dirs. Installed binaries (go install, cargo
 // install) work within the session but do not persist into the next one.
 // Cache dirs (go/pkg/mod, .cargo/registry) persist via the bind mount.
+//
+// Docker's tmpfs option parser defaults to noexec; `exec` is explicit so
+// go install / cargo install binaries are actually executable (H5).
 func sandboxHomeArgs(sandboxHome string, uid, gid int) []string {
 	return []string{
 		"--user", fmt.Sprintf("%d:%d", uid, gid),
 		"-v", sandboxHome + ":/home/user:z",
 		// H3: tmpfs overlay shadows the persistent bind mount at the
 		// two executable bin dirs. 64m is generous for tool binaries.
-		"--tmpfs", "/home/user/go/bin:rw,nosuid,nodev,size=64m",
-		"--tmpfs", "/home/user/.cargo/bin:rw,nosuid,nodev,size=64m",
+		"--tmpfs", "/home/user/go/bin:rw,exec,nosuid,nodev,size=64m",
+		"--tmpfs", "/home/user/.cargo/bin:rw,exec,nosuid,nodev,size=64m",
 		"-e", "HOME=/home/user",
 		"-e", "GOPATH=/home/user/go",
 		"-e", "CARGO_HOME=/home/user/.cargo",
@@ -355,8 +358,11 @@ const defaultDockerTmpfsSize = "4g"
 // applied; resource limits and cap re-additions are configurable via DockerOpts.
 //
 // The workspace mount (-v hostMount:workdir, added separately) is RW so the
-// agent can write files. /tmp gets a writable tmpfs. The sandbox-home mount
-// (added separately) is also RW for Go/Cargo caches. /etc gets a writable
+// agent can write files. /tmp gets a writable, exec-permitted tmpfs — Docker
+// defaults tmpfs mounts to noexec, which breaks cargo/go build scripts and
+// test binaries that compile-then-exec from $TMPDIR (and spawns confusing
+// host-side systemd-coredump/SELinux notifications when execve is denied).
+// The sandbox-home mount (added separately) is also RW for Go/Cargo caches. /etc gets a writable
 // tmpfs overlay so ensurePasswdEntry can append the mapped uid (needed for
 // ssh-keygen, whoami, git commit signing) under the read-only rootfs.
 //
@@ -376,7 +382,7 @@ func dockerHardeningArgs(opts DockerOpts) []string {
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
 		"--read-only",
-		"--tmpfs=/tmp:rw,nosuid,nodev,size=" + tmpSize,
+		"--tmpfs=/tmp:rw,exec,nosuid,nodev,size=" + tmpSize,
 		"--tmpfs=/etc:rw,nosuid,nodev,size=1m",
 	}
 	// Re-add specific capabilities if configured (e.g. CHOWN for go build).
