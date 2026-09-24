@@ -92,7 +92,7 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 		// route through the same submit path as a user send. No image chips.
 		m.followBottom = true
 		m.vp.GotoBottom()
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		m.state = stateStreaming
 		m.turnStart = time.Now()
 		m = m.reflowIfStatusHeightChanged(before)
@@ -106,12 +106,12 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 		}
 	}
 	if cr.Rotate != nil {
+		before := m.effectiveStatusRows()
+		var rotateCmd tea.Cmd
 		switch cr.Rotate.Type {
 		case "new":
-			m.rotating = true
-			cmds = append(cmds, m.beginRotation(rotationRequest{kind: rotateNew}))
+			m, rotateCmd = m.beginRotate(rotateNew, rotationRequest{kind: rotateNew})
 		case "resume":
-			m.rotating = true
 			// The id/prefix travels via Rotate.Session when the manager
 			// resolved it; /resume <id> dispatch left it nil — the manager
 			// re-resolves from Rotate.Session.ChatID only when present, so
@@ -120,11 +120,17 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 			if cr.Rotate.Session != nil {
 				id = cr.Rotate.Session.ChatID
 			}
-			cmds = append(cmds, m.beginRotation(rotationRequest{kind: rotateResume, sessionID: id}))
+			m, rotateCmd = m.beginRotate(rotateResume, rotationRequest{kind: rotateResume, sessionID: id})
 		case "handoff":
-			m.rotating = true
-			cmds = append(cmds, m.beginRotation(rotationRequest{kind: rotateHandoff, proceed: cr.Rotate.Proceed}))
+			m, rotateCmd = m.beginRotate(rotateHandoff, rotationRequest{kind: rotateHandoff, proceed: cr.Rotate.Proceed})
 		}
+		if rotateCmd != nil {
+			cmds = append(cmds, rotateCmd)
+		}
+		// The rotating status label may flip the status zone 0↔N rows
+		// (fresh state); reflow synchronously — the 200ms tick is not
+		// guaranteed to fire before the first frame.
+		m = m.reflowIfStatusHeightChanged(before)
 	}
 	return m, cmds, true
 }
@@ -137,7 +143,14 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 //     after the swap, so the session guard accepts the new session's events
 //     (op-32 review: events delivered before the swap would be dropped).
 func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea.Cmd, bool) {
+	// Snapshot BEFORE clearing rotating: the rotation label may currently
+	// force the status zone visible; the snapshot must reflect the
+	// pre-apply (rotating) effective height or the shrink to a hidden zone
+	// would go undetected by reflowIfStatusHeightChanged.
+	before := m.effectiveStatusRows()
 	m.rotating = false
+	m.rotationStart = time.Time{}
+	m.rotationNoteShown = false
 	if rm.failed {
 		// Rotation failed: the old facade is still alive (beginRotation closes
 		// it only on success). However, domain events were suppressed while
@@ -146,7 +159,6 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 		// transition. Reset the per-turn display state to idle as a safety
 		// measure: if the turn is still running, a subsequent TurnCompleted will
 		// reconcile; if it completed, we're no longer stuck in streaming.
-		before := m.statusRows()
 		m = m.clearWiringTurnState()
 		m = m.reflowIfStatusHeightChanged(before)
 		m.addItem(iSys, dim2("⚠ rotation failed: "+rm.err.Error()))
@@ -156,14 +168,12 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 		return m, cmds, true
 	}
 	if rm.facade == nil {
-		before := m.statusRows()
 		m = m.clearWiringTurnState()
 		m = m.reflowIfStatusHeightChanged(before)
 		m.addItem(iSys, dim2("⚠ rotation returned no conversation"))
 		return m, cmds, true
 	}
 
-	before := m.statusRows()
 	m.facade = rm.facade
 	snap := rm.facade.Snapshot()
 	m.sessionID = snap.SessionID
@@ -228,6 +238,12 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	}
 	m.followBottom = true
 	m.vp.GotoBottom()
+	// hadTurn/notes may have flipped the status zone's visibility or row
+	// count AFTER the reflow above — reconcile unconditionally so the
+	// installed geometry always matches the final state (the earlier
+	// conditional check compared against the pre-apply snapshot, which
+	// silently drifts when intermediate reflows install a different layout).
+	m = m.reflow()
 
 	// Restore info panel visibility from the new facade (WP-9.1: the TUI
 	// cached infoPanel.active locally and never re-read it on rotation, so
@@ -274,7 +290,9 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 			}
 		}(rm.facade, m.sessionID, m.principal)
 	}
-	m = m.reflowIfStatusHeightChanged(before)
+	// (Final layout reconciliation is the unconditional reflow() above —
+	// the pre-apply snapshot is stale by this point, so the conditional
+	// compare was removed.)
 	// Force a full screen clear+repaint. The standard renderer diffs frames
 	// line-by-line; after rotation the conversation is wiped and the layout
 	// shifts, but lines that happen to match the previous frame (blank lines,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
@@ -348,7 +349,7 @@ func (m tuiModel) statusRows() int {
 // hidden on a fresh start before the user sends their first message (clean
 // splash look); once a turn has been sent or is streaming, it stays visible.
 func (m tuiModel) statusVisible() bool {
-	return m.hadTurn || m.state == stateStreaming || (m.items != nil && len(*m.items) > 0)
+	return m.hadTurn || m.state == stateStreaming || m.rotating || (m.items != nil && len(*m.items) > 0)
 }
 
 // effectiveStatusRows returns 0 when the status line is hidden, otherwise
@@ -410,7 +411,7 @@ func (m tuiModel) statusLines() []string {
 		w = 1
 	}
 	if sp := m.searchPrompt(); sp != "" {
-		l := renderStatusDot(m.state, m.dotPhase) + " " + sp
+		l := renderStatusDot(m.state, m.dotPhase, m.rotating) + " " + sp
 		if lipgloss.Width(l) > w {
 			l = ansi.Truncate(l, w, "")
 		}
@@ -450,7 +451,7 @@ func (m tuiModel) statusLines() []string {
 // AUTO/state first (fixed slots 1+2), then least → most volatile:
 // model, sub, plan, raw, backend, t/s, flash.
 func statusSegments(in statusLineInput) []string {
-	head := []string{renderStatusDot(in.state, in.dotPhase)}
+	head := []string{renderStatusDot(in.state, in.dotPhase, in.rotating)}
 	if in.autoApprove {
 		label := "AUTO"
 		if in.allowDestructive {
@@ -472,51 +473,58 @@ func statusSegments(in statusLineInput) []string {
 		head = append(head, dim2(label))
 	}
 	var stateSeg string
-	switch in.state {
-	case stateStreaming:
-		switch {
-		case in.reasoning:
-			// extended thinking is actively streaming
-			stateSeg = styleState.Render("reasoning")
-		case in.runningTool != "":
-			// a tool is currently executing (e.g. "run_shell ls -la")
-			stateSeg = styleState.Render("executing")
-		default:
-			// generating the textual answer
-			stateSeg = styleState.Render("streaming")
-		}
-	case stateWaiting:
-		// The turn is suspended on pending async work (Mashūra panel,
-		// detached shell, discovery subagent). The model produced its
-		// interim answer; the turn will resume when a completion arrives,
-		// or the user can type Enter to cancel-and-send a new prompt.
-		// If we have a live progress snapshot, show a dynamic detail.
-		if len(in.asyncProgress) > 0 {
-			op := in.asyncProgress[0] // oldest op (sorted by createdAt)
-			label := op.Label
-			if len(label) > 30 {
-				label = label[:27] + "…"
+	if in.rotating {
+		// Rotation label wins over any agentState label — a turn may still
+		// be streaming underneath a rotation (failure-path reconciliation),
+		// and the rotation is what the user must see.
+		stateSeg = styleState.Render(rotationLabel(in.rotationKind) + fmt.Sprintf("… %ds", int(in.rotationElapsed.Seconds())))
+	} else {
+		switch in.state {
+		case stateStreaming:
+			switch {
+			case in.reasoning:
+				// extended thinking is actively streaming
+				stateSeg = styleState.Render("reasoning")
+			case in.runningTool != "":
+				// a tool is currently executing (e.g. "run_shell ls -la")
+				stateSeg = styleState.Render("executing")
+			default:
+				// generating the textual answer
+				stateSeg = styleState.Render("streaming")
 			}
-			detail := op.Activity
-			if op.Stalled {
-				detail = "⚠ " + detail
+		case stateWaiting:
+			// The turn is suspended on pending async work (Mashūra panel,
+			// detached shell, discovery subagent). The model produced its
+			// interim answer; the turn will resume when a completion arrives,
+			// or the user can type Enter to cancel-and-send a new prompt.
+			// If we have a live progress snapshot, show a dynamic detail.
+			if len(in.asyncProgress) > 0 {
+				op := in.asyncProgress[0] // oldest op (sorted by createdAt)
+				label := op.Label
+				if len(label) > 30 {
+					label = label[:27] + "…"
+				}
+				detail := op.Activity
+				if op.Stalled {
+					detail = "⚠ " + detail
+				}
+				stateSeg = styleState.Render(fmt.Sprintf("waiting · %s %s (%s, %s)",
+					op.Kind, label, op.Elapsed, detail))
+			} else {
+				stateSeg = styleState.Render("waiting")
 			}
-			stateSeg = styleState.Render(fmt.Sprintf("waiting · %s %s (%s, %s)",
-				op.Kind, label, op.Elapsed, detail))
-		} else {
-			stateSeg = styleState.Render("waiting")
-		}
-	case stateConfirm:
-		stateSeg = styleState.Render("confirming")
-	case stateCompacting:
-		stateSeg = styleState.Render("compacting")
-	case stateIdle:
-		// Always show a state label at idle — "awaiting input" after the first
-		// turn, "idle" before it. Never disappears.
-		if in.hadTurn {
-			stateSeg = dim2("awaiting input")
-		} else {
-			stateSeg = dim2("idle")
+		case stateConfirm:
+			stateSeg = styleState.Render("confirming")
+		case stateCompacting:
+			stateSeg = styleState.Render("compacting")
+		case stateIdle:
+			// Always show a state label at idle — "awaiting input" after the first
+			// turn, "idle" before it. Never disappears.
+			if in.hadTurn {
+				stateSeg = dim2("awaiting input")
+			} else {
+				stateSeg = dim2("idle")
+			}
 		}
 	}
 	if stateSeg != "" {
@@ -679,7 +687,7 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 			lastToolText += " " + formatTruncate(m.lastTool.command, 40)
 		}
 	}
-	return statusLineInput{
+	in := statusLineInput{
 		state:                   m.state,
 		autoApprove:             consent.AutoApprove,
 		allowDestructive:        consent.AllowDestructive,
@@ -706,7 +714,13 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 		AssistEnabled:           info.AssistEnabled,
 		AssistAuto:              info.AssistAuto,
 		asyncProgress:           m.asyncProgress,
+		rotating:                m.rotating,
+		rotationKind:            m.rotationKind,
 	}
+	if m.rotating {
+		in.rotationElapsed = time.Since(m.rotationStart)
+	}
+	return in
 }
 
 // flowSegments packs segments left-to-right with " · " separators onto as
@@ -910,6 +924,28 @@ type statusLineInput struct {
 	// while the turn is suspended (stateWaiting). Renders a dynamic "waiting"
 	// detail line showing what each pending op is doing.
 	asyncProgress []event.AsyncProgressItem
+
+	// Rotation in flight (phase 1 of the rotation activity proposal): the
+	// rotating label overrides the agentState label, and pulse overrides the
+	// dot's idle shade. rotationElapsed is computed by buildStatusInput from
+	// rotationStart (wall clock — tests assert with regexes, not exact
+	// seconds).
+	rotating        bool
+	rotationKind    rotateKind
+	rotationElapsed time.Duration
+}
+
+// rotationLabel returns the present-participle verb for a rotation kind —
+// the status-zone label during a rotation ("handing off… 12s").
+func rotationLabel(k rotateKind) string {
+	switch k {
+	case rotateHandoff:
+		return "handing off"
+	case rotateResume:
+		return "resuming session"
+	default:
+		return "starting new session"
+	}
 }
 
 // dotPulseShades are the four color levels cycled by the pulsing activity dot.
@@ -918,12 +954,14 @@ var dotPulseShades = []lipgloss.Color{"235", "241", "247", "252"}
 // renderStatusDot renders the always-present activity indicator •.
 // Idle: dim static.  Confirm: solid bright (paused-busy).
 // Streaming/compacting: pulses through dotPulseShades.
-func renderStatusDot(state agentState, phase int) string {
+// pulse forces the pulsing shades regardless of state (rotation in flight —
+// the dot must animate even at idle agent state).
+func renderStatusDot(state agentState, phase int, pulse bool) string {
 	const dot = "•"
-	switch state {
-	case stateConfirm:
+	switch {
+	case state == stateConfirm:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(dot)
-	case stateStreaming, stateCompacting, stateWaiting:
+	case pulse || state == stateStreaming || state == stateCompacting || state == stateWaiting:
 		shade := dotPulseShades[phase%len(dotPulseShades)]
 		return lipgloss.NewStyle().Foreground(shade).Render(dot)
 	default: // idle

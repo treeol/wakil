@@ -57,9 +57,10 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.addItem(iSys, styleErr("subscription error: "+lm.err.Error()))
 		return m, cmds, true
 	case dotTickMsg:
-		// Re-arm only while busy OR an async-job tab is still running. The
-		// dotArmed flag keeps exactly one recurring tick chain alive.
-		if m.state != stateIdle || m.hasActiveJobTab() {
+		// Re-arm only while busy, a rotation is in flight, OR an async-job tab
+		// is still running. The dotArmed flag keeps exactly one recurring tick
+		// chain alive.
+		if m.state != stateIdle || m.rotating || m.hasActiveJobTab() {
 			m.dotPhase = (m.dotPhase + 1) % len(dotPulseShades)
 			if !m.dotArmed {
 				m.dotArmed = true

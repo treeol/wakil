@@ -204,6 +204,14 @@ type tuiModel struct {
 	// are hard-rejected until the rotationMsg swaps the facade (set in Update,
 	// never from the Cmd goroutine — Bubble Tea models are not thread-safe).
 	rotating bool
+	// rotationStart/rotationKind back the status-zone rotation label
+	// ("• handing off… 12s"). Set together with rotating by beginRotate,
+	// cleared in applyRotation. rotationStart is zero when not rotating.
+	rotationStart time.Time
+	rotationKind  rotateKind
+	// rotationNoteShown dedupes the "rotation in progress — please wait"
+	// note printed on blocked plain sends (one note per rotation).
+	rotationNoteShown bool
 
 	// outputMode is snapshotted once at construction (startup-only). It is
 	// immutable for the life of the model — see NewTUIModel. Kept immutable so
@@ -1606,6 +1614,13 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		// submitted through the host (SubmitInput), and the display state
 		// flips on the TurnStarted/TurnCompleted events.
 		if m.rotating {
+			// Blocked send: give visible feedback (deduped per rotation) —
+			// a silent drop looks like a frozen TUI, the exact problem the
+			// rotation indicator exists to fix.
+			if !m.rotationNoteShown {
+				m.addItem(iSys, dim2("· rotation in progress — please wait"))
+				m.rotationNoteShown = true
+			}
 			return m, nil, true
 		}
 		snap := m.facade.Snapshot()
@@ -2344,6 +2359,26 @@ func (m tuiModel) reflowIfStatusHeightChanged(before int) tuiModel {
 // The tick self-terminates: the dotTickMsg handler only re-arms when busy.
 func startDotTick() tea.Cmd {
 	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return dotTickMsg{} })
+}
+
+// beginRotate starts a rotation display window: sets the rotating flag plus
+// the label fields (rotationStart/rotationKind), arms the dot tick so the
+// pulsing dot and elapsed timer animate during the rotation, and resets the
+// blocked-send note dedupe. Returns the updated model and the rotation Cmd —
+// callers must append the Cmd. Every rotation entry point (command results
+// and the resume picker) must go through this helper so the indicator, the
+// tick, and send-blocking stay in sync.
+func (m tuiModel) beginRotate(kind rotateKind, req rotationRequest) (tuiModel, tea.Cmd) {
+	m.rotating = true
+	m.rotationStart = time.Now()
+	m.rotationKind = kind
+	m.rotationNoteShown = false
+	m, tick := m.startDotTickIfUnarmed()
+	cmd := m.beginRotation(req)
+	if tick != nil {
+		return m, tea.Batch(tick, cmd)
+	}
+	return m, cmd
 }
 
 // startDotTickIfUnarmed returns a startDotTick command only if no tick is

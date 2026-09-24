@@ -111,10 +111,28 @@ func TestResumePickerEnter_ResumesSelected(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("enter should produce a rotation command")
 	}
+	_ = m // picker model lacks ready/width — skip render-dependent asserts
 	// The rotation Cmd needs a manager; with none bound it returns a failed
 	// rotationMsg — assert the message type (the wired path is covered by
-	// applyRotation tests).
+	// applyRotation tests). beginRotate batches the rotation Cmd with the
+	// dot-tick arm command, so unpack tea.BatchMsg.
 	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		if len(batch) == 0 {
+			t.Fatal("empty batch from resume")
+		}
+		var found bool
+		for _, c := range batch {
+			if r, ok := c().(rotationMsg); ok {
+				_ = r
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected rotationMsg inside batch, got %T", msg)
+		}
+		return
+	}
 	if _, ok := msg.(rotationMsg); !ok {
 		t.Fatalf("expected rotationMsg from resume, got %T", msg)
 	}

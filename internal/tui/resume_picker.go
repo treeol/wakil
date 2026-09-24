@@ -98,9 +98,22 @@ func (m tuiModel) handleResumePickerKey(msg tea.KeyMsg) (tuiModel, tea.Cmd, bool
 		s := m.resumePicker.sessions[m.resumePicker.sel]
 		m = m.closeResumePicker()
 		// Rotation through the ConversationManager (async —
-		// ResumeConversation loads the session).
+		// ResumeConversation loads the session). beginRotate also sets the
+		// rotating flag (previously the picker resume never blocked sends)
+		// and arms the rotation status label + dot tick. The status zone may
+		// flip 0↔N rows from a fresh splash state — reflow synchronously,
+		// same as the applyCommandResult rotation path (the tick can't
+		// detect the flip: it snapshots after rotating is already set).
 		id := s.ChatID
-		return m, m.beginRotation(rotationRequest{kind: rotateResume, sessionID: id}), true
+		// Reflow only when the model is fully initialized — raw test models
+		// have a nil items slice; reflow→refreshViewport would dereference it.
+		// The production model always has items non-nil (NewTUIModel).
+		before := m.effectiveStatusRows()
+		m, cmd := m.beginRotate(rotateResume, rotationRequest{kind: rotateResume, sessionID: id})
+		if m.items != nil {
+			m = m.reflowIfStatusHeightChanged(before)
+		}
+		return m, cmd, true
 	case "esc":
 		m = m.closeResumePicker()
 		return m, nil, true
