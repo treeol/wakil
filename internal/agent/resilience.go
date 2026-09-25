@@ -158,10 +158,18 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 // to classify (the host adapter distinguishes backend_failure from
 // request_error).
 func DriveTurnWithResilience(ctx context.Context, app *App, userText string) (TurnOutcome, error) {
-	if err := runTurnToFinal(ctx, app, userText); err != nil {
+	out, err := runTurnToFinal(ctx, app, userText)
+	if err != nil {
 		if err = HandleStreamError(ctx, app, err); err != nil {
-			return TurnOutcome{}, err
+			if out.Kind == TurnFinal || out.Kind == TurnSuspended || out.Cause == StopCauseNone {
+				out = abortedTurnOutcome(ctx, err)
+			}
+			return out, err
 		}
+		// Recovery succeeded. The next assistant text is authoritative, but the
+		// outcome is only clean if recovery itself did not record an abnormal cause.
+		out = TurnOutcome{Kind: TurnFinal, Text: workflow.LastAssistantText(app.Conv), Cause: currentTurnStopCause(app)}
+		out = turnOutcome(out.Text, false, out.Cause)
 	}
 	// Runs after a clean send AND after a recovered retry (matches the legacy
 	// runSingleTaskHeadless, which applied HandleEmptyResponse on both paths).
@@ -173,7 +181,8 @@ func DriveTurnWithResilience(ctx context.Context, app *App, userText string) (Tu
 	app.convMu.RLock()
 	text := workflow.LastAssistantText(app.Conv)
 	app.convMu.RUnlock()
-	return TurnOutcome{Kind: TurnFinal, Text: text}, nil
+	out = turnOutcome(text, false, currentTurnStopCause(app))
+	return out, nil
 }
 
 // retryBackoff returns the wait duration before retry attempt n (0-based).

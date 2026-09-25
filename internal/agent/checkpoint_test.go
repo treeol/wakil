@@ -1081,8 +1081,11 @@ func TestSendOutcomeRefusedDuringRewind(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when starting turn during rewind, got nil")
 	}
-	if out.Kind != TurnFinal {
-		t.Errorf("expected TurnFinal, got %v", out.Kind)
+	if out.Kind != TurnAborted {
+		t.Errorf("expected TurnAborted, got %v", out.Kind)
+	}
+	if out.Cause != StopCauseTurnAdmissionRefused {
+		t.Errorf("cause = %q, want %q", out.Cause, StopCauseTurnAdmissionRefused)
 	}
 	if len(app.Conv) != convBefore {
 		t.Errorf("Conv was mutated during refused turn: before=%d, after=%d (user message should NOT be appended)", convBefore, len(app.Conv))

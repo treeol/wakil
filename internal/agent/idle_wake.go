@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/treeol/wakil/internal/trace"
 )
@@ -16,31 +17,91 @@ import (
 // waiter and resumes once a completion arrives (wake), instead of spinning on
 // check_pending or ending the turn.
 
-// TurnOutcomeKind distinguishes a fully-finished turn from a suspended one
-// awaiting async completions.
+// TurnOutcomeKind distinguishes the disposition of one turn invocation. None of
+// these kinds means that a broader goal is complete; goal completion is owned by
+// the future continuous-mode coordinator.
 type TurnOutcomeKind int
 
 const (
-	// TurnFinal: the turn is complete — the answer is final.
+	// TurnFinal: the turn produced an ordinary final response. It is only
+	// eligible for coordinator evaluation and is not itself proof of success.
 	TurnFinal TurnOutcomeKind = iota
 	// TurnSuspended: the model produced final text while async work is pending;
 	// the caller should await a completion (WaitForAsyncCompletion) and resume.
 	TurnSuspended
+	// TurnAborted: the turn stopped abnormally, such as a provider failure.
+	TurnAborted
+	// TurnCancelled: the caller cancelled the turn or its deadline expired.
+	TurnCancelled
+	// TurnDeclined: a required consent gate was declined; no model request was
+	// admitted for this turn.
+	TurnDeclined
+)
+
+// TurnStopCause is a typed reason a turn ended without an ordinary final
+// disposition. Empty means no abnormal cause was recorded for this invocation.
+type TurnStopCause string
+
+const (
+	StopCauseNone                   TurnStopCause = ""
+	StopCauseProvider               TurnStopCause = "provider_error"
+	StopCauseCancelled              TurnStopCause = "cancelled"
+	StopCauseDeadline               TurnStopCause = "deadline_exceeded"
+	StopCauseConsentDeclined        TurnStopCause = "consent_declined"
+	StopCauseTurnAdmissionRefused   TurnStopCause = "turn_admission_refused"
+	StopCauseSessionBudgetExhausted TurnStopCause = "session_budget_exhausted"
+	StopCauseIterationLimit         TurnStopCause = "iteration_limit"
+	StopCauseTurnBudgetExhausted    TurnStopCause = "turn_budget_exhausted"
+	StopCauseConfinementBreaker     TurnStopCause = "confinement_breaker"
+	StopCauseHardMaxShed            TurnStopCause = "hard_max_shed"
 )
 
 func (k TurnOutcomeKind) String() string {
-	if k == TurnSuspended {
+	switch k {
+	case TurnFinal:
+		return "final"
+	case TurnSuspended:
 		return "suspended"
+	case TurnAborted:
+		return "aborted"
+	case TurnCancelled:
+		return "cancelled"
+	case TurnDeclined:
+		return "declined"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(k))
 	}
-	return "final"
 }
 
-// TurnOutcome is the result of one Send. When Kind == TurnSuspended, Text holds
-// the model's final text (the interim answer); the caller should not treat it
-// as the definitive end of the turn.
+func (c TurnStopCause) String() string { return string(c) }
+
+// stopCauseFromLegacy maps the existing internal stop-reason strings to the
+// typed public outcome contract. Unknown values are preserved conservatively so
+// future causes are visible rather than silently treated as normal completion.
+func stopCauseFromLegacy(reason string) TurnStopCause {
+	switch reason {
+	case "":
+		return StopCauseNone
+	case "iteration_limit":
+		return StopCauseIterationLimit
+	case "turn_budget_exhausted":
+		return StopCauseTurnBudgetExhausted
+	case "confinement_breaker":
+		return StopCauseConfinementBreaker
+	case "hard_max_shed":
+		return StopCauseHardMaxShed
+	default:
+		return TurnStopCause(reason)
+	}
+}
+
+// TurnOutcome is the result of one Send invocation. Text holds assistant text
+// when present, but callers must inspect Kind and Cause before treating it as an
+// ordinary final response.
 type TurnOutcome struct {
-	Kind TurnOutcomeKind
-	Text string
+	Kind  TurnOutcomeKind
+	Text  string
+	Cause TurnStopCause
 }
 
 // isIdle reports whether the turn loop is at a genuine idle point: the model
@@ -85,6 +146,14 @@ func (a *App) hasInboxContent() bool {
 // nothing is or will become available (inbox empty + no active ops); (false, ctx.Err())
 // when cancelled. On resume the caller must call SendOutcome/drainAsyncInbox to
 // pick up the result — exactly one resume owns Conv at a time.
+// asyncIsStopping reports whether async admission/shutdown has begun. A
+// suspended turn must not silently turn this state into a clean final result.
+func (a *App) asyncIsStopping() bool {
+	a.asyncMu.Lock()
+	defer a.asyncMu.Unlock()
+	return a.asyncStopping
+}
+
 func (a *App) WaitForAsyncCompletion(ctx context.Context) (bool, error) {
 	a.ensureWake()
 	for {
@@ -138,12 +207,8 @@ func (a *App) Resume(ctx context.Context) (TurnOutcome, error) {
 	rsink := a.traceReasoningSink(&traceReasoningChars)
 	final, suspended, err := a.streamTurn(ctx, "", rsink, &traceToolCalls)
 	if err != nil {
-		return TurnOutcome{}, err
+		return abortedTurnOutcome(ctx, err), err
 	}
 	a.finalizeTurn(ctx)
-	kind := TurnFinal
-	if suspended {
-		kind = TurnSuspended
-	}
-	return TurnOutcome{Kind: kind, Text: final}, nil
+	return turnOutcome(final, suspended, currentTurnStopCause(a)), nil
 }

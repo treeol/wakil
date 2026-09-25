@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -964,7 +965,7 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	// rewind for the full turn lifetime (unlike cpActive, which
 	// clearCheckpoints can clear mid-turn during compaction).
 	if !a.admitTurn() {
-		return TurnOutcome{Kind: TurnFinal}, fmt.Errorf("cannot start turn during rewind — try again when rewind completes")
+		return TurnOutcome{Kind: TurnAborted, Cause: StopCauseTurnAdmissionRefused}, fmt.Errorf("cannot start turn during rewind — try again when rewind completes")
 	}
 	defer a.releaseTurn()
 
@@ -980,7 +981,7 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	a.prepareTurn()
 
 	if !a.checkEgressConsent() {
-		return TurnOutcome{Kind: TurnFinal}, nil
+		return TurnOutcome{Kind: TurnDeclined, Cause: StopCauseConsentDeclined}, nil
 	}
 
 	// Correction-capture learning loop. Detect corrections (user
@@ -1049,14 +1050,55 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	rsink := a.traceReasoningSink(&traceReasoningChars)
 	final, suspended, err := a.streamTurn(ctx, userText, rsink, &traceToolCalls)
 	if err != nil {
-		return TurnOutcome{}, err
+		return abortedTurnOutcome(ctx, err), err
 	}
 	a.finalizeTurn(ctx)
-	kind := TurnFinal
+	return turnOutcome(final, suspended, currentTurnStopCause(a)), nil
+}
+
+// turnOutcome builds the typed contract after finalization. Causes that mean
+// the invocation ended abnormally are normalized to TurnAborted; only a clean
+// stop may remain TurnFinal. This prevents callers from accepting a final-looking
+// response carrying an iteration, confinement, hard-max, or budget cause.
+func turnOutcome(text string, suspended bool, cause TurnStopCause) TurnOutcome {
 	if suspended {
-		kind = TurnSuspended
+		return TurnOutcome{Kind: TurnSuspended, Text: text, Cause: cause}
 	}
-	return TurnOutcome{Kind: kind, Text: final}, nil
+	if cause != StopCauseNone {
+		return TurnOutcome{Kind: TurnAborted, Text: text, Cause: cause}
+	}
+	return TurnOutcome{Kind: TurnFinal, Text: text}
+}
+
+func currentTurnStopCause(a *App) TurnStopCause {
+	cause := stopCauseFromLegacy(a.stopReason)
+	if cause == StopCauseNone && a.BudgetExhausted() {
+		cause = StopCauseSessionBudgetExhausted
+	}
+	return cause
+}
+
+// abortedTurnOutcome classifies an error without losing the original error. A
+// caller must still return the Go error; this metadata prevents callers that
+// inspect Kind first from mistaking the zero-value TurnFinal for an ordinary
+// final response.
+func abortedTurnOutcome(ctx context.Context, err error) TurnOutcome {
+	kind := TurnAborted
+	cause := StopCauseProvider
+	if errors.Is(err, context.DeadlineExceeded) {
+		kind = TurnCancelled
+		cause = StopCauseDeadline
+	} else if errors.Is(err, context.Canceled) {
+		kind = TurnCancelled
+		cause = StopCauseCancelled
+	} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		kind = TurnCancelled
+		cause = StopCauseDeadline
+	} else if errors.Is(ctx.Err(), context.Canceled) {
+		kind = TurnCancelled
+		cause = StopCauseCancelled
+	}
+	return TurnOutcome{Kind: kind, Cause: cause}
 }
 
 // traceReasoningSink returns a Sink that accumulates reasoning_content chars

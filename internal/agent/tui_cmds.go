@@ -68,7 +68,7 @@ func RunTurn(app *App, ctx context.Context, userText string) Cmd {
 		// Phase 2: run the turn to its FINAL outcome, transparently
 		// resuming through suspensions (pending async work) so the TUI doesn't end
 		// the turn / fire AgentDoneMsg while background work is still running.
-		err := runTurnToFinal(ctx, app, userText) // Retry transient backend failures in auto mode; surface fatal errors and
+		_, err := runTurnToFinal(ctx, app, userText) // Retry transient backend failures in auto mode; surface fatal errors and
 		// exhausted-retry state as tidy ⚠ lines rather than raw error traces.
 		err = HandleStreamError(ctx, app, err)
 		streamWarn := ""
@@ -141,36 +141,39 @@ func RunTurn(app *App, ctx context.Context, userText string) Cmd {
 // async work, it awaits a completion (WaitForAsyncCompletion) and resumes until
 // the turn reaches a Final outcome. Used by both the TUI (RunTurn) and headless
 // (cmd/wakil/run.go, which has its own equivalent in package main).
-func runTurnToFinal(ctx context.Context, app *App, userText string) error {
+func runTurnToFinal(ctx context.Context, app *App, userText string) (TurnOutcome, error) {
 	out, err := app.SendOutcome(ctx, userText)
 	if err != nil {
-		return err
+		return out, err
+	}
+	if out.Kind != TurnFinal && out.Kind != TurnSuspended {
+		return out, fmt.Errorf("turn aborted: %s", out.Cause)
 	}
 	for out.Kind == TurnSuspended {
-		// Signal the TUI that the turn is paused on async work — it shows
-		// "waiting" instead of "streaming" and enables input-while-waiting.
 		app.sendEvent(TurnSuspendedSignal{})
-		// Start the async heartbeat: periodically polls pending async ops
-		// and emits AsyncProgressMsg so the TUI's "waiting" line shows live
-		// status instead of a static label.
 		hbCtx, hbCancel := context.WithCancel(ctx)
 		app.startAsyncHeartbeat(hbCtx)
 		ok, werr := app.WaitForAsyncCompletion(ctx)
-		hbCancel() // stop the heartbeat before signaling resume
+		hbCancel()
 		if werr != nil {
-			return werr
+			return out, werr
 		}
 		if !ok {
-			return nil // nothing left pending → treat as final
+			if app.asyncIsStopping() {
+				return TurnOutcome{Kind: TurnAborted, Text: out.Text, Cause: StopCauseCancelled}, fmt.Errorf("async operations stopped while turn was suspended")
+			}
+			return out, nil
 		}
-		// Signal the TUI that the turn resumed after an async completion.
 		app.sendEvent(TurnResumedSignal{})
 		out, err = app.Resume(ctx)
 		if err != nil {
-			return err
+			return out, err
+		}
+		if out.Kind != TurnFinal && out.Kind != TurnSuspended {
+			return out, fmt.Errorf("turn aborted: %s", out.Cause)
 		}
 	}
-	return nil
+	return out, nil
 }
 
 // runFinalReview is the Cmd that the TUI fires when WFFinalReviewMsg arrives.

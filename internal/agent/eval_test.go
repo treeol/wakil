@@ -246,8 +246,8 @@ func TestEval_TurnBudgetLoopTermination(t *testing.T) {
 		t.Fatalf("SendOutcome error: %v", err)
 	}
 
-	if out.Kind != TurnFinal {
-		t.Errorf("expected TurnFinal, got %v (text=%q)", out.Kind, out.Text)
+	if out.Kind != TurnAborted || out.Cause != StopCauseIterationLimit {
+		t.Errorf("expected TurnAborted/iteration_limit, got %v/%s (text=%q)", out.Kind, out.Cause, out.Text)
 	}
 
 	// Count tool results — should be exactly MaxToolIterations (each iteration
