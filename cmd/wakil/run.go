@@ -10,7 +10,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/wiring"
@@ -40,13 +42,31 @@ type RunFlags struct {
 	ProfileName      string
 	Verify           bool
 	BudgetUSD        float64
+	Continuous       *wiring.ContinuousOptions
+	verifyCmds       []string
+	continueFlag     bool
+	maxTurns         int
+	maxTime          time.Duration
+	sawVerifyCmd     bool
+	sawMaxTurns      bool
+	sawMaxTime       bool
+}
+
+// parseDurationStrict parses a Go duration with no leading/trailing junk.
+func parseDurationStrict(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("requires a positive duration like 30m, got %q", s)
+	}
+	return d, nil
 }
 
 // parseRunArgs parses the args that follow "run":
 //
 //	[--plan] [--auto] [--allow-destructive] [--allow-external]
 //	[--auto-counsel] [--max-counsel N] [--no-oracle] [--transcript <file>]
-//	[--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] "<task>"
+//	[--attach-image <path>] [--policy <path>] [--profile <name>] [--verify]
+//	[--budget $N] [--continue --max-turns N --max-time D --verify-cmd CMD] "<task>"
 func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -108,6 +128,38 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 			if flags.BudgetUSD <= 0 {
 				return "", false, flags, fmt.Errorf("--budget must be > 0 (got %.2f)", flags.BudgetUSD)
 			}
+		case "--continue":
+			flags.continueFlag = true
+		case "--max-turns":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--max-turns requires an integer")
+			}
+			n, sErr := strconv.Atoi(args[i])
+			if sErr != nil || n <= 0 {
+				return "", false, flags, fmt.Errorf("--max-turns requires a positive integer, got %q", args[i])
+			}
+			flags.maxTurns, flags.sawMaxTurns = n, true
+		case "--max-time":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--max-time requires a duration")
+			}
+			d, dErr := parseDurationStrict(args[i])
+			if dErr != nil {
+				return "", false, flags, fmt.Errorf("--max-time %v", dErr)
+			}
+			flags.maxTime, flags.sawMaxTime = d, true
+		case "--verify-cmd":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--verify-cmd requires a command")
+			}
+			if strings.TrimSpace(args[i]) == "" {
+				return "", false, flags, fmt.Errorf("--verify-cmd requires a non-empty command")
+			}
+			flags.verifyCmds = append(flags.verifyCmds, args[i])
+			flags.sawVerifyCmd = true
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return "", false, flags, fmt.Errorf("unknown flag: %s", args[i])
@@ -120,11 +172,28 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 	}
 	if task == "" {
 		return "", false, flags, fmt.Errorf(
-			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] \"<task>\"")
+			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] " +
+				"[--continue --max-turns N --max-time D [--verify-cmd CMD]] \"<task>\"")
 	}
 	// Default cap: 3 auto-counsel calls when --auto-counsel is set without --max-counsel.
 	if flags.AutoCounsel && flags.MaxCounsel == 0 {
 		flags.MaxCounsel = 3
+	}
+	// Continuous-only flags are rejected without --continue, so bounds can never
+	// be silently ignored.
+	if !flags.continueFlag {
+		if flags.sawMaxTurns || flags.sawMaxTime || flags.sawVerifyCmd {
+			return "", false, flags, fmt.Errorf("--max-turns, --max-time and --verify-cmd require --continue")
+		}
+		return task, planMode, flags, nil
+	}
+	if !flags.sawMaxTurns || !flags.sawMaxTime {
+		return "", false, flags, fmt.Errorf("--continue requires both --max-turns and --max-time")
+	}
+	flags.Continuous = &wiring.ContinuousOptions{
+		MaxTurns:       flags.maxTurns,
+		MaxTime:        flags.maxTime,
+		VerifyCommands: flags.verifyCmds,
 	}
 	return task, planMode, flags, nil
 }
@@ -151,5 +220,6 @@ func RunHeadless(cfg config.Config, args []string) int {
 		Verify:           flags.Verify,
 		TranscriptFile:   flags.TranscriptFile,
 		BudgetUSD:        flags.BudgetUSD,
+		Continuous:       flags.Continuous,
 	})
 }

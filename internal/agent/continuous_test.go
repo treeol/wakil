@@ -34,6 +34,11 @@ func TestHandleFinalizeGoalRejectsContradictions(t *testing.T) {
 		`{"status":"complete","summary":"","requires_user":false}`,
 		`{"status":"complete","summary":"done","requires_user":true}`,
 		`{"status":"complete","summary":"done","requires_user":false,"unknown":1}`,
+		`{"status":"continue","summary":"more","requires_user":false}`,
+		`{"status":"complete","summary":"done"}`,
+		`{"summary":"done","requires_user":false}`,
+		`{"status":"complete","requires_user":false}`,
+		`{"status":"complete","summary":"done","requires_user":false} {"status":"blocked"}`,
 	}
 	for _, args := range cases {
 		if res := app.handleFinalizeGoal(finalizeCall(args)); res.ok || res.endTurn {

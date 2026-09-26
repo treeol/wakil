@@ -38,6 +38,18 @@ type FinalizeGoalFunc func(GoalFinalization) error
 // subagents and TUI one-shot behavior never see the finalize_goal tool.
 type FinalizeGoalCallback FinalizeGoalFunc
 
+// Quiesced reports whether no async operation and no tracked background process
+// is still live. Continuous-mode completion requires this: evidence produced
+// while other work can still mutate the workspace is not stable evidence.
+func (a *App) Quiesced() bool {
+	if a.countActiveAsyncOps() > 0 {
+		return false
+	}
+	a.bgMu.RLock()
+	defer a.bgMu.RUnlock()
+	return len(a.bgProcs) == 0
+}
+
 // SetFinalizeGoal installs the continuous-mode finalization callback.
 func (a *App) SetFinalizeGoal(fn FinalizeGoalFunc) { a.finalizeGoal = FinalizeGoalCallback(fn) }
 
@@ -52,11 +64,43 @@ func (a *App) handleFinalizeGoal(tc proxy.ToolCall) toolResult {
 	if a.finalizeGoal == nil {
 		return errResult("finalize_goal is only available in continuous mode")
 	}
-	var p GoalFinalization
+	var raw struct {
+		Status             *string   `json:"status"`
+		Summary            *string   `json:"summary"`
+		RemainingWork      *[]string `json:"remaining_work"`
+		RequiresUser       *bool     `json:"requires_user"`
+		RequiredUserAction *string   `json:"required_user_action"`
+	}
 	dec := json.NewDecoder(strings.NewReader(tc.Function.Arguments))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&p); err != nil {
+	if err := dec.Decode(&raw); err != nil {
 		return errResult("finalize_goal: " + err.Error())
+	}
+	// Require the whole argument object to be consumed: trailing JSON is
+	// malformed, not a silently ignored second payload.
+	if _, err := dec.Token(); err == nil {
+		return errResult("finalize_goal: unexpected trailing content after the argument object")
+	}
+	// status, summary and requires_user are required by the advertised schema;
+	// Go's decoder cannot distinguish "absent" from "zero" on a plain struct.
+	if raw.Status == nil {
+		return errResult(`finalize_goal: "status" is required`)
+	}
+	if raw.Summary == nil {
+		return errResult(`finalize_goal: "summary" is required`)
+	}
+	if raw.RequiresUser == nil {
+		return errResult(`finalize_goal: "requires_user" is required`)
+	}
+	var p GoalFinalization
+	p.Status = FinalizeGoalStatus(*raw.Status)
+	p.Summary = *raw.Summary
+	if raw.RemainingWork != nil {
+		p.RemainingWork = *raw.RemainingWork
+	}
+	p.RequiresUser = *raw.RequiresUser
+	if raw.RequiredUserAction != nil {
+		p.RequiredUserAction = *raw.RequiredUserAction
 	}
 	switch p.Status {
 	case FinalizeGoalComplete, FinalizeGoalContinue, FinalizeGoalBlocked:
@@ -91,6 +135,9 @@ func (a *App) handleFinalizeGoal(tc proxy.ToolCall) toolResult {
 	}
 	if p.Status == FinalizeGoalContinue && p.RequiresUser {
 		return errResult("finalize_goal: use blocked, not continue, when user input is required")
+	}
+	if p.Status == FinalizeGoalContinue && len(p.RemainingWork) == 0 {
+		return errResult("finalize_goal: continue requires at least one remaining_work item")
 	}
 	if err := a.finalizeGoal(p); err != nil {
 		return errResult("finalize_goal: " + err.Error())

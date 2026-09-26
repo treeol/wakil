@@ -66,7 +66,35 @@ type HeadlessOptions struct {
 	// checks after each inference call whether the session's total priced
 	// cost has exceeded this amount. If so, the current turn is force-finished
 	// and subsequent turns are blocked. Zero = no budget enforcement.
+	// This is a SOFT cutoff (checked after the call), and in continuous mode it
+	// is not a hard total-cost guarantee.
 	BudgetUSD float64
+	// Continuous turns on the experimental bounded continuous coordinator. CLI
+	// opt-in only; never enabled by a config file.
+	Continuous *ContinuousOptions
+}
+
+// Validate checks the continuous-mode bounds. It is enforced in wiring as well
+// as in the CLI parser because callers can construct HeadlessOptions directly.
+func (c *ContinuousOptions) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.MaxTurns <= 0 {
+		return fmt.Errorf("--continue requires --max-turns > 0")
+	}
+	if c.MaxTime <= 0 {
+		return fmt.Errorf("--continue requires --max-time > 0")
+	}
+	if c.MaxProtocolCorrections < 0 || c.MaxVerificationBatches < 0 {
+		return fmt.Errorf("continuous correction budgets must be >= 0")
+	}
+	for i, cmd := range c.VerifyCommands {
+		if strings.TrimSpace(cmd) == "" {
+			return fmt.Errorf("--verify-cmd[%d] must be a non-empty command", i)
+		}
+	}
+	return nil
 }
 
 // emitEvent writes one JSON-lines event to w. Errors are swallowed — output is
@@ -285,21 +313,46 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 		out = f
 	}
 
-	if !opts.PlanMode {
-		return runSingleTask(ctx, app, task, opts, out)
+	code, err := dispatchHeadlessMode(ctx, app, task, opts.PlanMode, opts, out)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return ExitError
 	}
-	return runPlanTask(ctx, app, task, opts, out)
+	return code
 }
 
-// RunHeadlessApp drives a pre-built *agent.App through either the single-task
-// host path (no --plan) or the plan-mode host path (--plan). It is the
-// test-friendly entry point equivalent of cmd/wakil's old runHeadlessApp: the
-// caller owns App construction. Returns the exit code.
+// RunHeadlessApp drives a pre-built *agent.App. Mode selection and continuous
+// validation are shared with RunHeadless so a direct caller cannot request
+// continuous execution and silently get the ordinary single-turn driver.
 func RunHeadlessApp(ctx context.Context, app *agent.App, task string, planMode bool, opts HeadlessOptions, out io.Writer) int {
-	if !planMode {
-		return runSingleTask(ctx, app, task, opts, out)
+	code, err := dispatchHeadlessMode(ctx, app, task, planMode, opts, out)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return ExitError
 	}
-	return runPlanTask(ctx, app, task, opts, out)
+	return code
+}
+
+// dispatchHeadlessMode validates the requested mode and dispatches. It is the
+// single mode-selection point shared by RunHeadless and RunHeadlessApp, so
+// continuous mode cannot be bypassed by calling the App-level entry point.
+func dispatchHeadlessMode(ctx context.Context, app *agent.App, task string, planMode bool, opts HeadlessOptions, out io.Writer) (int, error) {
+	if opts.Continuous != nil {
+		if err := opts.Continuous.Validate(); err != nil {
+			return ExitError, err
+		}
+		if planMode {
+			return ExitError, fmt.Errorf("--continue cannot be combined with --plan")
+		}
+		if opts.Verify {
+			return ExitError, fmt.Errorf("--continue cannot be combined with --verify; use --verify-cmd so the acceptance contract is explicit")
+		}
+		return runContinuousTask(ctx, app, task, opts, *opts.Continuous, out), nil
+	}
+	if !planMode {
+		return runSingleTask(ctx, app, task, opts, out), nil
+	}
+	return runPlanTask(ctx, app, task, opts, out), nil
 }
 
 // runSingleTask drives one task through the session host (D20). Returns the
