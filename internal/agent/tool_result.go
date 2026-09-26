@@ -26,8 +26,9 @@ import "strings"
 // This keeps the handler bodies untouched in the initial WP-6.8 pass; a future
 // pass can migrate handlers to return toolResult directly if desired.
 type toolResult struct {
-	ok   bool
-	text string
+	ok      bool
+	text    string
+	endTurn bool
 }
 
 // String renders the toolResult to its string form for the transcript, TUI,

@@ -497,6 +497,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// act as ordering barriers: [dispatch, shell, dispatch] never runs the
 		// second dispatch before the shell. Results are finalized in original
 		// call order either way, so every tool_call_id is answered in sequence.
+		var endTurn bool
 		for ti := 0; ti < len(msg.ToolCalls); {
 			tc := msg.ToolCalls[ti]
 			tj := ti
@@ -538,8 +539,28 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			if result.text == waitForCompletionToken {
 				wantsSuspend = true
 			}
+			endTurn = endTurn || result.endTurn
 			finalizeToolResult(tc, result)
 			ti++
+			if endTurn {
+				if ti < len(msg.ToolCalls) {
+					a.convMu.Lock()
+					for _, pending := range msg.ToolCalls[ti:] {
+						a.Conv = append(a.Conv, proxy.Message{
+							Role:       "tool",
+							ToolCallID: pending.ID,
+							Name:       pending.Function.Name,
+							Content:    StrPtr("ERROR: tool call skipped after finalize_goal ended the invocation"),
+						})
+					}
+					a.convMu.Unlock()
+					ti = len(msg.ToolCalls)
+				}
+				break
+			}
+		}
+		if endTurn {
+			break
 		}
 		// Phase 2: wait_for_completion hands control back. If the model
 		// explicitly requested a wait and async work is pending, suspend so the

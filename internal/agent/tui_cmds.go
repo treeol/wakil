@@ -162,7 +162,7 @@ func runTurnToFinal(ctx context.Context, app *App, userText string) (TurnOutcome
 			if app.asyncIsStopping() {
 				return TurnOutcome{Kind: TurnAborted, Text: out.Text, Cause: StopCauseCancelled}, fmt.Errorf("async operations stopped while turn was suspended")
 			}
-			return out, nil
+			return TurnOutcome{Kind: TurnAborted, Text: out.Text, Cause: StopCauseAsyncLost}, fmt.Errorf("async completion was lost before the suspended turn could resume")
 		}
 		app.sendEvent(TurnResumedSignal{})
 		out, err = app.Resume(ctx)

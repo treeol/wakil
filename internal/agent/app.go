@@ -310,6 +310,11 @@ type App struct {
 	turnState
 	subagentState
 
+	// FinalizeGoal is nil unless the experimental continuous headless
+	// coordinator installs it. It captures structured finalization proposals
+	// through the dispatch callback rather than transcript scraping.
+	finalizeGoal FinalizeGoalCallback
+
 	// Workflow is set while a /plan workflow is active. Nil when no workflow is
 	// running. Cleared when the workflow reaches WFDone or the user aborts it.
 	Workflow *workflow.WorkflowState
@@ -2402,6 +2407,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 	}
 
 	switch name {
+	case "finalize_goal":
+		return a.handleFinalizeGoal(tc)
 	case "run_shell":
 		return stringToToolResult(a.handleRunShell(ctx, tc))
 	case "open_url":

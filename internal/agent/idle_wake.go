@@ -54,6 +54,7 @@ const (
 	StopCauseTurnBudgetExhausted    TurnStopCause = "turn_budget_exhausted"
 	StopCauseConfinementBreaker     TurnStopCause = "confinement_breaker"
 	StopCauseHardMaxShed            TurnStopCause = "hard_max_shed"
+	StopCauseAsyncLost              TurnStopCause = "async_completion_lost"
 )
 
 func (k TurnOutcomeKind) String() string {
