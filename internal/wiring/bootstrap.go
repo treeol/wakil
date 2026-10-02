@@ -78,13 +78,30 @@ type AppResources struct {
 //   - Closing resources (exe, mcpMgr, lspMgr, browserMgr, traceStore, memStore, skillStore)
 //
 // Returns the App and an AppResources struct holding the closable resources.
-func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.App, *AppResources) {
+//
+// Returns an error if the workspace could not be resolved: the client needs a
+// working directory to scope every request to the workspace it came from, and an
+// unscoped request is rejected downstream, so failing here keeps the error next
+// to its cause. Callers must treat this as fatal and close any executor they had
+// already opened.
+func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.App, *AppResources, error) {
 	var res AppResources
+
+	// The workspace the tools operate on (the executor's root), not the launch
+	// directory: in docker mode this is the in-container /mnt/<basename>, in
+	// direct mode the host path. Resolved once here rather than per request —
+	// a session's workspace does not move, and re-reading it each turn would let
+	// a mid-session chdir silently repoint the workspace.
+	cwd, err := proxy.ResolveCwd(cfg.WorkDir)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	ep := cfg.ActiveEndpoint()
 	client := &proxy.Client{
 		BaseURL:           strings.TrimRight(ep.BaseURL, "/"),
 		Model:             ep.Model,
+		Cwd:               cwd,
 		Kind:              ep.Kind,
 		ConfiguredModel:   ep.Model,
 		Temperature:       ep.Temperature,
@@ -311,7 +328,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		}
 	}
 
-	return app, &res
+	return app, &res, nil
 }
 
 // CloseResources drains async work and closes all AppResources. It is used on

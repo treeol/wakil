@@ -239,11 +239,15 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	}
 	defer exe.Close()
 
-	app, res := BuildApp(cfg, exe, BuildAppOpts{
+	app, res, err := BuildApp(cfg, exe, BuildAppOpts{
 		IsHeadless:  true,
 		AutoCounsel: opts.AutoCounsel,
 		MaxCounsel:  opts.MaxCounsel,
 	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bootstrap error:", err)
+		return ExitError
+	}
 	// Set the session budget from the --budget flag. The App's BudgetUSD field
 	// is checked after each inference call in streamTurn.
 	app.BudgetUSD = opts.BudgetUSD

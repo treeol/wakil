@@ -59,7 +59,7 @@ func TestCacheControlUnsetByteIdentical(t *testing.T) {
 // encoding), proving byte-identity.
 func TestCacheControlUnsetExactGolden(t *testing.T) {
 	srv, _, body := captureServer(t)
-	c := &Client{BaseURL: srv.URL, Kind: KindOpenAI, ConfiguredModel: "m", Model: "m", HTTP: http.DefaultClient}
+	c := &Client{BaseURL: srv.URL, Kind: KindOpenAI, ConfiguredModel: "m", Model: "m", Cwd: "/mnt/ilmql", HTTP: http.DefaultClient}
 	msgs := []Message{
 		{Role: "system", Content: strPtr("preamble")},
 		{Role: "user", Content: strPtr("query")},
@@ -70,17 +70,19 @@ func TestCacheControlUnsetExactGolden(t *testing.T) {
 
 	// Build the expected body with the same shape the old chatRequest would
 	// have produced (now via wireMessage with no marks). max_tokens gets a
-	// default of 32768 for KindOpenAI when unset (reasoning-model fix).
+	// default of 32768 for KindOpenAI when unset (reasoning-model fix). cwd is
+	// the workspace-scoping field, present on every request and sent verbatim.
 	wireMsgs, _ := marshalWireMessages(msgs, nil)
 	defaultMax := 32768
 	expected, _ := json.Marshal(struct {
 		Model         string         `json:"model"`
+		Cwd           string         `json:"cwd"`
 		Stream        bool           `json:"stream"`
 		StreamOptions *streamOptions `json:"stream_options,omitempty"`
 		Messages      []wireMessage  `json:"messages"`
 		MaxTokens     *int           `json:"max_tokens,omitempty"`
 	}{
-		Model: "m", Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
+		Model: "m", Cwd: "/mnt/ilmql", Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
 		Messages: wireMsgs, MaxTokens: &defaultMax,
 	})
 

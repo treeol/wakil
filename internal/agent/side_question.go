@@ -89,6 +89,7 @@ func (a *App) cloneClientForSideQuestion() *proxy.Client {
 		BaseURL:           a.Client.BaseURL,
 		HTTP:              a.Client.HTTP,
 		Model:             a.Client.Model,
+		Cwd:               a.Client.Cwd,
 		AuthHeader:        a.Client.AuthHeader,
 		Backend:           a.Client.Backend,
 		Kind:              a.Client.Kind,

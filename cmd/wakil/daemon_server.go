@@ -113,9 +113,16 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, httpA
 		return nil, fmt.Errorf("wakil daemon: executor: %w", err)
 	}
 
-	app, res := wiring.BuildApp(cfg, exe, wiring.BuildAppOpts{
+	app, res, err := wiring.BuildApp(cfg, exe, wiring.BuildAppOpts{
 		IsHeadless: true, // no TUI callbacks; the daemon is headless
 	})
+	if err != nil {
+		exe.Close()
+		if store != nil {
+			store.Close()
+		}
+		return nil, fmt.Errorf("wakil daemon: bootstrap: %w", err)
+	}
 
 	// Create the transition coordinator — shared between the hostTurn
 	// (turn starts) and the SessionStateHandler (session transitions) so

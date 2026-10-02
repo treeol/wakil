@@ -189,7 +189,10 @@ func appendStartupNote(app *agent.App, note string) {
 
 // newConversation creates a fresh App + host + facade and creates a session.
 func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFacade, error) {
-	app, res := BuildApp(cm.cfg, cm.exe, BuildAppOpts{})
+	app, res, err := BuildApp(cm.cfg, cm.exe, BuildAppOpts{})
+	if err != nil {
+		return nil, err
+	}
 
 	// WithAsyncApproval: the TUI session parks approvals in awaiting_approval
 	// (7b2 D25) so the turn goroutine blocks on RespondToApproval instead of an

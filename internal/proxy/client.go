@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -426,6 +428,47 @@ func isOpenRouterHost(baseURL string) bool {
 	return h == "openrouter.ai" || strings.HasSuffix(h, ".openrouter.ai")
 }
 
+// ResolveCwd returns the session's working directory as the value for
+// Client.Cwd: the path the agent's own tools operate on, which is the
+// executor's root (internal/exec.NewDirectExecutor uses cfg.WorkDir) rather
+// than the process launch directory.
+//
+// The distinction matters. os.Getwd() is where|wakil was launched, which
+// diverges from the tool root whenever a workspace is pinned — a positional
+// workspace argument, --workdir, ILM_WORKDIR/WAKIL_WORKDIR, or the docker
+// host→in-container path derivation in config.LoadConfig. In docker mode
+// cfg.WorkDir is the in-container /mnt/<basename>; in direct mode it is the
+// host path. Either way it is what run_shell, read_file and friends resolve
+// against, so it is the directory an answer must be scoped to. Sending the
+// launch directory instead would silently mis-scope every request.
+//
+// Resolved once per client, never per request: the session's workspace is fixed
+// for its lifetime, and a per-request Getwd would both cost a syscall on every
+// turn and let a mid-session chdir silently repoint the workspace.
+//
+// A relative or symlinked workdir is resolved to its absolute form; the store
+// maps the path to a workspace by directory basename.
+//
+// An empty workdir falls back to the process cwd, matching NewDirectExecutor's
+// own fallback (direct mode leaves WorkDir unset when no workspace was given),
+// so the field is never empty on a live session. An empty result is still
+// accepted on the wire — only the production construction paths in
+// internal/wiring call this, so an empty Cwd means a hand-built test client.
+func ResolveCwd(workdir string) (string, error) {
+	if workdir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("proxy: resolve working directory: %w", err)
+		}
+		workdir = wd
+	}
+	abs, err := filepath.Abs(workdir)
+	if err != nil {
+		return "", fmt.Errorf("proxy: absolutize working directory %q: %w", workdir, err)
+	}
+	return abs, nil
+}
+
 // Client is a thin HTTP client of an OpenAI-compatible chat endpoint —
 // either the remote ilm proxy (Kind "ilm-proxy") or a plain server
 // (Kind "openai": llama.cpp server, OpenRouter, vLLM…).
@@ -444,6 +487,16 @@ type Client struct {
 	// (entirely absent, not empty — strict servers 400 on unknown fields),
 	// and the model field is always ConfiguredModel.
 	Kind string
+
+	// Cwd is the session's absolute working directory, sent as the top-level
+	// "cwd" field on every chat-completions request body. The workspace store
+	// (ilmql) reads it to scope an answer to the directory the request came
+	// from; OpenAI-compatible servers ignore unknown top-level fields, so it is
+	// sent unconditionally — deliberately NOT gated by the proxyShape/Metadata
+	// guard, which exists for ilm-proxy-only fields.
+	//
+	// Resolved once via ResolveCwd at client construction (never per request).
+	Cwd string
 
 	// ConfiguredModel is the endpoint's literal model string, sent as the
 	// model field on every request when Kind is KindOpenAI — session model
@@ -807,6 +860,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 
 	type wireBody struct {
 		Model         string            `json:"model"`
+		Cwd           string            `json:"cwd"`
 		Stream        bool              `json:"stream"`
 		StreamOptions *streamOptions    `json:"stream_options,omitempty"`
 		Messages      []wireMessage     `json:"messages"`
@@ -847,6 +901,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 
 	body := wireBody{
 		Model:         model,
+		Cwd:           c.Cwd,
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
 		Messages:      wireMsgs,

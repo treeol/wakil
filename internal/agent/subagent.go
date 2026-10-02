@@ -1176,6 +1176,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	subClient := &proxy.Client{
 		BaseURL:           view.baseURL,
 		Model:             view.model,
+		Cwd:               a.Client.Cwd,         // inherited: the child runs in the same workspace as the session
 		Kind:              view.kind,            // always the CHILD's actual kind — resolved together with BaseURL/model above, never divergent by construction
 		ConfiguredModel:   view.configuredModel, // plain endpoints always send the configured model
 		Temperature:       view.temperature,
