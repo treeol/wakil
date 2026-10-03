@@ -465,13 +465,15 @@ func subagentProgressOut(parent *App, chatID string) io.Writer {
 // for the non-git fallback path (useWorktree == false).
 var subagentWriterMu sync.Mutex
 
-// subagentMCPMu serializes mutating MCP calls per server across all tools-tier
-// children. When a tools-tier child calls a mutating MCP tool (detected via
-// !IsMCPReadTool), it acquires this lock for that server. This prevents parallel
-// children from racing on the same external API (e.g. two children creating
-// conflicting Trello cards or sending duplicate invoices). Read-only MCP calls
-// still parallelize freely. The lock is held around the session.CallTool call
-// only, not the entire child run.
+// subagentMCPMu serializes mutating MCP calls across ALL servers, process-wide.
+// It is a single mutex, not per-server: any call that IsMCPReadTool classifies
+// as non-read acquires it, whether issued by the parent or a tools-tier child
+// (both route through handleMCPTool). This prevents parallel children from
+// racing on the same external API (e.g. two children creating conflicting
+// Trello cards or sending duplicate invoices). Read-only MCP calls still
+// parallelize freely. The lock is held around the session.CallTool call only,
+// not the entire child run — so it serializes individual calls, not
+// read-modify-write workflows spanning several calls.
 //
 // IsMCPReadTool is used here as a HINT, not a security boundary — with the
 // read-allowlist (fail-safe default), a misclassified READ tool merely takes

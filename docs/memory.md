@@ -282,3 +282,29 @@ WAL mode handles concurrent readers. Single-writer discipline via app-level
 mutex. Two wakil instances on the same workspace would conflict on the SQLite
 write lock — but this is already an issue for staging (same kvr socket, same
 UDS path). The existing constraint "one wakil process per workspace" applies.
+
+## Correction-Capture Learning Loop
+
+Wakil automatically detects when you correct the agent's work and proposes a
+memory entry to capture the correction for future sessions. The loop is
+detect → propose → confirm → store → auto-apply.
+
+Two detection signals:
+
+- **Revert**: when you run `/rewind` to undo the agent's work, your next
+  message is treated as a correction candidate. Wakil proposes a memory entry
+  with the reverted file paths as anchors.
+- **Explicit**: when your message contains a correction pattern ("no, use
+  const not var", "stop doing X", "I wanted Y, not Z", "use X instead of Y"),
+  Wakil proposes storing it.
+
+When a correction is detected, Wakil asks you to confirm before storing
+anything. Corrections are never stored without explicit confirmation.
+Approved corrections are stored as PROPOSED entries (`kind="correction"`) and
+must be promoted via `memory_promote` before they become active. Once active,
+they are surfaced to the agent at the start of relevant turns so the
+correction is applied without re-prompting.
+
+You will see a `· correction stored` or `· correction proposal declined`
+notice in the output. The loop runs in the parent agent before each turn; the
+agent itself neither triggers nor suppresses it.
