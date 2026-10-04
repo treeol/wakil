@@ -111,7 +111,14 @@ func readClipboardCmd() tea.Cmd {
 		if !ok {
 			return clipboardImageMsg{Err: "clipboard does not contain a recognizable image (png, jpeg, gif, webp)"}
 		}
-		img, loadErr := proxy.LoadImageFromBytes(data, "clipboard:"+strings.Split(mime, "/")[1])
+		// Defensive against a contract break in proxy: this is a
+		// cross-package value, and a malformed one would panic here inside a
+		// tea.Cmd goroutine rather than surface an error to the user.
+		_, subtype, found := strings.Cut(mime, "/")
+		if !found || subtype == "" {
+			return clipboardImageMsg{Err: "clipboard image type not recognised (got " + mime + ")"}
+		}
+		img, loadErr := proxy.LoadImageFromBytes(data, "clipboard:"+subtype)
 		if loadErr != nil {
 			return clipboardImageMsg{Err: loadErr.Error()}
 		}

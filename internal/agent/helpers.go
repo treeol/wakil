@@ -19,6 +19,12 @@ func DerefStr(p *string) string {
 
 // --- UUID v4 ---
 
+// NewChatID returns a random UUID v4 string.
+//
+// The error from rand.Read is deliberately discarded: as of Go 1.24 crypto/rand
+// documents that Read never returns an error — it fills the buffer entirely or
+// crashes the program irrecoverably — so there is no failure mode here to
+// handle. Do not add error handling to this function; it would be unreachable.
 func NewChatID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])

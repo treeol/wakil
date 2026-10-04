@@ -5,8 +5,35 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestDetectMIME_ReturnedValuesAreSplittable pins the contract DetectMIME
+// offers its exported callers: a recognised image must report a "type/subtype"
+// MIME string with a non-empty subtype on each side. The TUI's clipboard reader
+// derives its chip label by splitting on "/", so this keeps that consumer safe
+// if a future format is added with a malformed or bare MIME value.
+func TestDetectMIME_ReturnedValuesAreSplittable(t *testing.T) {
+	// One valid header per format DetectMIME recognises.
+	samples := [][]byte{
+		append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 8)...),        // png
+		append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 12)...),          // jpeg
+		append([]byte("GIF89a"), make([]byte, 12)...),                  // gif
+		append([]byte("RIFF\x00\x00\x00\x00WEBP"), make([]byte, 8)...), // webp
+	}
+
+	for _, data := range samples {
+		mime, ok := DetectMIME(data)
+		if !ok {
+			t.Fatalf("DetectMIME(%q...) = not recognised, want recognised", data[:6])
+		}
+		scheme, subtype, found := strings.Cut(mime, "/")
+		if !found || scheme == "" || subtype == "" {
+			t.Errorf("DetectMIME(%q...) = %q, want non-empty scheme and subtype", data[:6], mime)
+		}
+	}
+}
 
 // TestMarshalWireMessages_TextOnlyByteIdentical verifies the golden no-op
 // guarantee: text-only messages with no cache_control markers produce
