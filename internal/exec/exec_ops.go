@@ -131,6 +131,20 @@ func (e *DirectExecutor) SandboxTools() string {
 
 // ── B1/B2: path confinement ───────────────────────────────────────────────────
 
+// resolvePathError builds the error returned when readlink -f fails for path.
+// readlink normally reports the cause on stdout (it is captured with 2>&1), but
+// when it writes nothing the exit status alone used to produce a message ending
+// in a dangling colon. Fall back to the exec error so the cause is never lost.
+func resolvePathError(path, out string, err error) error {
+	if cause := strings.TrimSpace(out); cause != "" {
+		return fmt.Errorf("resolving path %q: %s", path, cause)
+	}
+	if err != nil {
+		return fmt.Errorf("resolving path %q: %w", path, err)
+	}
+	return fmt.Errorf("resolving path %q: no output from readlink", path)
+}
+
 // isInsideWorkspace returns true if p equals root or is directly nested inside it.
 func isInsideWorkspace(p, root string) bool {
 	root = filepath.Clean(root)
@@ -146,7 +160,7 @@ func (d *DockerExecutor) ConfinePath(ctx context.Context, path string) (string, 
 	// it also works for non-existent paths by resolving existing components.
 	out, err := d.execCtx(ctx, false, "sh", "-c", "readlink -f "+shQuote(path)+" 2>&1")
 	if err != nil {
-		return "", fmt.Errorf("resolving path %q: %s", path, strings.TrimSpace(out))
+		return "", resolvePathError(path, out, err)
 	}
 	canonical := strings.TrimSpace(out)
 	if canonical == "" {

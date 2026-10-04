@@ -19,8 +19,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
+	osexec "os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -986,7 +989,9 @@ func (a *App) handleSearchFiles(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	// Build a controlled grep command. All model-supplied values are
 	// single-quoted so the model cannot inject shell metacharacters.
-	cmd := "grep -rn"
+	// -I skips binary files so build artifacts and images do not flood
+	// the result with unreadable matches.
+	cmd := "grep -rn -I"
 	if args.CaseInsensitive {
 		cmd += " -i"
 	}
@@ -995,11 +1000,70 @@ func (a *App) handleSearchFiles(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	cmd += " -- " + shellQuote(args.Pattern) + " " + shellQuote(canonical)
 	out, err := a.Exec.RunShell(ctx, cmd)
-	// grep exits 1 when it finds zero matches — not an error.
-	if err != nil && strings.TrimSpace(out) == "" && strings.Contains(err.Error(), "exit status 1") {
+	// Interpret the exit code exactly rather than substring-matching the
+	// error text: "exit status 1" is also a prefix of "exit status 127",
+	// which would misreport a missing/failing grep as "(no matches)".
+	if err == nil {
+		return formatResult(out, nil)
+	}
+	// grep exits 1 with empty output only when it searched successfully and
+	// found nothing. Anything else is a failed search: output collected
+	// before the failure is kept, but flagged so it is not read as a
+	// complete result. This fails closed — a status of 0 on a non-nil error
+	// (only reachable through the textual fallback, since a real
+	// *exec.ExitError never carries 0) must not be trusted as success.
+	if code := shellExitCode(err); code == 1 && strings.TrimSpace(out) == "" {
 		return "(no matches)"
 	}
-	return formatResult(out, err)
+	return incompleteSearchResult(out, err)
+}
+
+// incompleteSearchResult renders a failed search that still produced output.
+// The warning is placed immediately after the ERROR: prefix, ahead of the
+// error text: CapToolResult keeps only the leading characters of an oversized
+// result, so a marker placed anywhere later could be truncated away.
+func incompleteSearchResult(out string, err error) string {
+	const marker = "[search incomplete — matches may be missing]"
+	if strings.TrimSpace(out) == "" {
+		return formatResult(out, err)
+	}
+	// formatResult renders "ERROR: <err>\n<out>". Build the result directly
+	// so ERROR: stays at position 0 (consumers detect it with HasPrefix) and
+	// the marker is guaranteed to precede any variable-length error text.
+	var b strings.Builder
+	b.WriteString("ERROR: ")
+	b.WriteString(marker)
+	if err != nil {
+		b.WriteString(" — ")
+		b.WriteString(err.Error())
+	}
+	b.WriteString("\n")
+	b.WriteString(strings.TrimRight(out, "\n"))
+	return b.String()
+}
+
+// shellExitCode returns the process exit status carried by err, or -1 when
+// err is not an exec.ExitError (or is nil).
+func shellExitCode(err error) int {
+	if err == nil {
+		return -1
+	}
+	var ee *osexec.ExitError
+	if stderrors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	// Fall back to the textual form for executors that flatten the error.
+	msg := err.Error()
+	const prefix = "exit status "
+	i := strings.LastIndex(msg, prefix)
+	if i < 0 {
+		return -1
+	}
+	n, perr := strconv.Atoi(strings.TrimSpace(msg[i+len(prefix):]))
+	if perr != nil {
+		return -1
+	}
+	return n
 }
 
 // handleWriteFile writes content to a file after confirmation and path confinement.

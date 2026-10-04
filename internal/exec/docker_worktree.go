@@ -82,7 +82,7 @@ func (w *dockerWorktreeExecutor) ConfinePath(ctx context.Context, path string) (
 	}
 	out, err := w.execCtx(ctx, false, "sh", "-c", "readlink -f "+shQuote(path)+" 2>&1")
 	if err != nil {
-		return "", fmt.Errorf("resolving path %q: %s", path, strings.TrimSpace(out))
+		return "", resolvePathError(path, out, err)
 	}
 	canonical := strings.TrimSpace(out)
 	if canonical == "" {
