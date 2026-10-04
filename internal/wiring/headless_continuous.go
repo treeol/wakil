@@ -192,10 +192,7 @@ type continuousState struct {
 	host      *sessionhost.Host
 	hw        *HeadlessWriter
 
-	// verification is the coordinator's receipt, recorded only when the
-	// coordinator itself ran the checks.
-	verification string
-	term         continuousTerminal
+	term continuousTerminal
 }
 
 // recordProposal captures a validated finalize_goal proposal. A second
