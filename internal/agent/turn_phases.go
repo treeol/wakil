@@ -554,7 +554,6 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 						})
 					}
 					a.convMu.Unlock()
-					ti = len(msg.ToolCalls)
 				}
 				break
 			}
