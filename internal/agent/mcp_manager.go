@@ -13,6 +13,7 @@ import (
 
 	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
@@ -54,7 +55,37 @@ type MCPServer struct {
 	reconnectMu sync.Mutex
 }
 
-// MCPManager owns all MCP server connections for the process lifetime.
+// closeDrainTimeout bounds how long Close waits for in-flight CallTool calls
+// on a session before abandoning it. Long enough for an ordinary RPC to
+// finish, short enough that a wedged transport cannot hang teardown.
+const closeDrainTimeout = 5 * time.Second
+
+// drainAndClose waits for in-flight CallTool calls to release sessionMu,
+// then closes the session. It reports whether the close actually happened;
+// false means the drain timed out and the session was left untouched (the
+// caller must not then force-close it).
+func (s *MCPServer) drainAndClose(session mcpSession, timeout time.Duration) bool {
+	acquired := make(chan struct{})
+	go func() {
+		s.sessionMu.Lock()
+		close(acquired)
+		s.sessionMu.Unlock()
+	}()
+	select {
+	case <-acquired:
+		_ = session.Close()
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// MCPManager owns all MCP server connections for the lifetime of the App that
+// built it. Each stdio server is a child process, so Close is mandatory for
+// every owner: the daemon releases it via CloseResources, and the TUI's
+// wiringFacade.Close releases it on close/rotation. Skipping Close orphans the
+// child process — see the telegram-bridge GetUpdates contention described in
+// internal/wiring/facade.go.
 type MCPManager struct {
 	mu      sync.RWMutex
 	servers []*MCPServer
@@ -405,8 +436,14 @@ func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
 	tmp := &MCPServer{Cfg: srv.Cfg, Status: "connecting"}
 	if err := m.connectOrDefault()(ctx, tmp); err != nil {
 		m.mu.Lock()
-		srv.Status = "failed"
-		srv.Err = err
+		// Do NOT resurrect a closed server by relabelling it "failed":
+		// Close is permanent, and a later Reconnect only rejects "closed".
+		// Close() can have run while we were connecting — leave the status
+		// alone in that case so the manager stays shut down.
+		if srv.Status != "closed" {
+			srv.Status = "failed"
+			srv.Err = err
+		}
 		m.mu.Unlock()
 		return err
 	}
@@ -434,6 +471,16 @@ func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
 // calls before closing each session (same drain pattern as Reconnect).
 // After Close, the manager is permanently shut down — Reconnect will refuse
 // to resurrect closed servers.
+//
+// The drain is BOUNDED by closeDrainTimeout. sessionMu.Lock waits for every
+// in-flight CallTool RLock holder to return, and CallTool holds that lock for
+// the whole RPC — including a long-polling bridge call that can block for
+// minutes. Context cancellation is cooperative: if a transport ignores it,
+// an unbounded Lock would hang the caller's teardown forever (for the TUI,
+// facade.Close during a rotation). On timeout the session is abandoned rather
+// than force-closed, since closing underneath a live RPC is the race
+// sessionMu exists to prevent; the servers are already marked "closed", so no
+// new call can reach them.
 func (m *MCPManager) Close() {
 	// Snapshot sessions under the lock and mark all as closed.
 	// Nilling Session prevents Close from double-closing and prevents
@@ -455,9 +502,10 @@ func (m *MCPManager) Close() {
 
 	// Drain in-flight calls and close sessions — outside m.mu.
 	for _, t := range targets {
-		t.srv.sessionMu.Lock()
-		_ = t.session.Close()
-		t.srv.sessionMu.Unlock()
+		if !t.srv.drainAndClose(t.session, closeDrainTimeout) {
+			diag.Printf("mcp: drain timed out after %v closing %q; session abandoned",
+				closeDrainTimeout, t.srv.Cfg.Name)
+		}
 	}
 }
 

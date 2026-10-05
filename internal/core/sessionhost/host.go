@@ -500,6 +500,49 @@ func (h *Host) RespondToApproval(ctx context.Context, principal core.Principal, 
 	return nil
 }
 
+// NotifySessionNote streams one ephemeral display-only note to the session's
+// subscribers (projected by the TUI as a dimmed system item).
+//
+// This is the out-of-band diagnostic channel for actors that run OUTSIDE the
+// turn goroutine and therefore have no Emitter to hand — notably the Telegram
+// approval consumer (internal/wiring/telegram_consumer.go), which must report
+// bridge failures without writing to os.Stderr. In TUI mode os.Stderr is the
+// live alt-screen terminal (restoreStderr runs at cmd/wakil/main.go:235 before
+// the real model is installed), so a raw Fprintf injects bytes into the middle
+// of Bubble Tea's frame and corrupts the display until a resize forces a full
+// repaint.
+//
+// Ephemeral by design: notes are dropped after session close and are never
+// persisted to the durable log, matching the SysNoteMsg → KindSessionNote
+// projection at internal/wiring/projection.go:272.
+//
+// Deliberately NOT part of the core.SessionService interface: it is a
+// presentation concern with no remote/daemon equivalent, so it is called
+// directly on the host by the in-process wiring layer.
+func (h *Host) NotifySessionNote(ctx context.Context, principal core.Principal, sessionID event.SessionID, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := principal.Validate(); err != nil {
+		return err
+	}
+	// Notes render into another user's TUI, so gate on the same writer role
+	// as the mutating operations rather than any authenticated principal — a
+	// read-only member must not be able to inject text into the session.
+	if !writerAllowed(principal.Role) {
+		return core.ErrNotAuthorized
+	}
+	if text == "" {
+		return core.ErrInvalidInput
+	}
+	s, err := h.lookup(principal, sessionID)
+	if err != nil {
+		return err
+	}
+	s.sessionEmit.Notify(event.KindSessionNote, event.SessionNote{Text: text})
+	return nil
+}
+
 func (h *Host) Interrupt(ctx context.Context, principal core.Principal, sessionID event.SessionID) error {
 	if err := ctx.Err(); err != nil {
 		return err

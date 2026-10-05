@@ -41,6 +41,55 @@ func testManagerConfig(t *testing.T, url string) config.Config {
 	return cfg
 }
 
+// TestFacadeCloseReapsMCPManager verifies that closing a facade releases the
+// MCP manager it owns.
+//
+// Regression: every conversation rotation builds a fresh App (newConversation
+// → BuildApp → NewMCPManager connects to every configured stdio server), but
+// nothing tore the old manager down. Each orphaned telegram-mcp kept its own
+// GetUpdates long-poll running, and since Telegram delivers every update to
+// exactly ONE poller, the user's button press landed in a process that wasn't
+// holding the prompt — the real one then waited out its full
+// TELEGRAM_APPROVAL_TIMEOUT and reported "timeout".
+func TestFacadeCloseReapsMCPManager(t *testing.T) {
+	srv := sseServer(t, []string{contentChunk("done")})
+	defer srv.Close()
+
+	mgr, err := NewConversationManager(testManagerConfig(t, srv.URL), fakeExec{}, managerPrincipal())
+	if err != nil {
+		t.Fatalf("NewConversationManager: %v", err)
+	}
+	ctx := context.Background()
+	f, err := mgr.NewConversation(ctx, managerPrincipal(), nil)
+	if err != nil {
+		t.Fatalf("NewConversation: %v", err)
+	}
+	wf := f.(*wiringFacade)
+
+	if wf.resources == nil || wf.resources.MCPMgr == nil {
+		t.Skip("no MCP manager on this facade (no MCP servers configured)")
+	}
+
+	if err := mgr.Close(f); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Close marks every server "closed" and nils its session; a subsequent
+	// CallTool must report it rather than silently succeeding against a
+	// process we believe we reaped.
+	got := wf.resources.MCPMgr.CallTool(ctx, "nope__tool", "{}", func(string, string, string, bool) bool { return true }, true)
+	if got == "" {
+		t.Fatal("CallTool after Close returned empty; expected a closed-server error")
+	}
+	t.Logf("post-Close CallTool: %s", got)
+
+	// Close is idempotent — the TUI can close the same facade on rotation and
+	// again at shutdown without double-reaping.
+	if err := mgr.Close(f); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
 // TestManagerEnablesAsyncApproval verifies the m4b B1 fix: conversations built
 // by the ConversationManager park approvals in awaiting_approval instead of
 // using the sync inline resolver (which, with no resolver configured,

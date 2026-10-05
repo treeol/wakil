@@ -1005,6 +1005,33 @@ func (f *wiringFacade) Close() error {
 	f.app.StopAllAsyncOps()
 	f.app.StopAllBackgroundProcs()
 
+	// Release this facade's MCP server connections — the stdio child processes
+	// this App spawned in BuildApp.
+	//
+	// This is the fix for the leaked telegram-bridge processes: every
+	// conversation rotation builds a fresh App (newConversation → BuildApp →
+	// NewMCPManager connects to every configured server), but nothing tore the
+	// old manager down, so each /new and /handoff left an orphaned
+	// telegram-mcp alive. Each one independently long-polls Telegram's
+	// GetUpdates, and Telegram delivers every update to exactly ONE poller —
+	// so with N strays the user's button press landed in a pending map that
+	// wasn't the one holding the prompt. HandleCallback then took the
+	// !exists branch and answered "Expired", while the correct process waited
+	// out its full TELEGRAM_APPROVAL_TIMEOUT and returned "timeout".
+	//
+	// Safe here because f.resources is per-facade: each newConversation calls
+	// BuildApp, which constructs a fresh MCPManager. Closing it cannot affect
+	// a sibling session. This runs AFTER telegramConsumer.Stop() above, so
+	// the consumer's in-flight CallTool has already been cancelled and
+	// drained — Close would otherwise block on that call's sessionMu.
+	//
+	// The daemon path is unaffected: it owns its App and calls
+	// CloseResources directly (cmd/wakil/daemon_server.go), never the
+	// ConversationManager, so its manager is still released exactly once.
+	if f.resources != nil && f.resources.MCPMgr != nil {
+		f.resources.MCPMgr.Close()
+	}
+
 	// Persist the session transcript on close — belt-and-suspenders for state
 	// mutated after the last turn's defer SaveSession (e.g. /label, /model,
 	// repo-state). SaveSession is a no-op when app.Session is nil (no

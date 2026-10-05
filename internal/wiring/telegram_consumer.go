@@ -25,12 +25,15 @@ package wiring
 // already-TUI-answered approval must not prevent the consumer from seeing
 // the next ApprovalRequested. A cancel context (per-consumer) stops the
 // consumer goroutine and all in-flight handlers on Close or session rotation.
+//
+// Diagnostics go to the session's ephemeral note stream (note), NOT to
+// os.Stderr: in TUI mode stderr is the live alt-screen terminal, so writing
+// to it corrupts Bubble Tea's frame until a resize.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +41,7 @@ import (
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
+	"github.com/treeol/wakil/internal/diag"
 )
 
 // telegramBridgeServerName is the MCP server name we look for to activate
@@ -91,6 +95,29 @@ type telegramApprovalConsumer struct {
 	wg     sync.WaitGroup // tracks the reader goroutine + all in-flight handlers
 }
 
+// note reports a diagnostic as an ephemeral session note so it renders in the
+// TUI's item stream instead of corrupting the alt-screen.
+//
+// os.Stderr is unusable here: in TUI mode it IS the live alt-screen terminal
+// (restoreStderr runs at cmd/wakil/main.go:235 before the real model is
+// installed), so writing to it injects bytes into the middle of Bubble Tea's
+// frame. The corruption persists until a resize forces a full repaint — the
+// exact symptom this replaced.
+//
+// The fallback is diag.Printf, NOT os.Stderr: diag is redirected to a per-session
+// log file at startup and back to os.Stderr only after the TUI exits
+// (cmd/wakil/main.go:286-300), so it never writes into a live alt-screen. A
+// note that cannot be delivered falls back to a file-backed sink rather than
+// the terminal — a note failing to publish does NOT establish that the
+// terminal is ours to write to (the common cause of failure, a cancelled ctx
+// during rotation, is precisely when the alt-screen is still active).
+func (tc *telegramApprovalConsumer) note(ctx context.Context, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if err := tc.facade.host.NotifySessionNote(ctx, tc.principal, tc.sessionID, msg); err != nil {
+		diag.Printf("telegram consumer: %s (note undeliverable: %v)", msg, err)
+	}
+}
+
 // newTelegramApprovalConsumer creates a consumer for the given facade. It does
 // NOT start it — call Start.
 func newTelegramApprovalConsumer(f *wiringFacade, mcp *agent.MCPManager, principal core.Principal) *telegramApprovalConsumer {
@@ -121,7 +148,13 @@ func (tc *telegramApprovalConsumer) Start(ctx context.Context) error {
 		return fmt.Errorf("telegram consumer: subscribe: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	// Detach from the caller's context on purpose. Start receives the
+	// bootstrap context, which is cancelled once the TUI finishes starting
+	// up; a consumer bound to it would have its subscription reader die at
+	// run()'s sub.Next(ctx) error return, leaving it permanently deaf while
+	// still looking alive (no log, no symptom). The consumer's lifetime is
+	// owned by Stop() via tc.cancel, called from facade.Close().
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	tc.cancel = cancel
 	tc.wg.Add(1)
 	go tc.run(ctx, sub)
@@ -148,7 +181,7 @@ func (tc *telegramApprovalConsumer) Stop() {
 	select {
 	case <-done:
 	case <-time.After(consumerStopTimeout):
-		fmt.Fprintln(os.Stderr, "telegram consumer: Stop timed out after", consumerStopTimeout)
+		tc.note(context.Background(), "≫ telegram consumer: Stop timed out after %v", consumerStopTimeout)
 	}
 }
 
@@ -162,7 +195,14 @@ func (tc *telegramApprovalConsumer) run(ctx context.Context, sub core.EventSubsc
 	for {
 		ev, err := sub.Next(ctx)
 		if err != nil {
-			return // ctx cancelled or subscription closed
+			// A silent return here is what made this bug invisible: the
+			// consumer goes deaf with no symptom in the TUI. Report the
+			// reason, distinguishing an expected Stop() from a real fault.
+			if ctx.Err() != nil {
+				return // Stop() or session close — expected
+			}
+			tc.note(ctx, "≫ telegram approval consumer stopped: %v", err)
+			return
 		}
 		if ev.Kind != event.KindApprovalRequested {
 			continue
@@ -191,8 +231,9 @@ func (tc *telegramApprovalConsumer) run(ctx context.Context, sub core.EventSubsc
 // Failure policy:
 //   - "approve"/"allow_reads"/"grant" → resolve with the matching outcome
 //   - "decline"                       → resolve as deny
-//   - "timeout"/"cancelled"           → resolve as deny (the bridge reported
-//     an explicit terminal state; the user is unreachable)
+//   - "timeout"/"cancelled"           → do NOT resolve; the bridge reported a
+//     non-decision (the user never answered), so the approval stays parked and
+//     the TUI confirm gate remains the live fallback
 //   - MCP transport error / unparseable → do NOT resolve (the bridge is
 //     broken; the TUI keypress path remains the fallback)
 func (tc *telegramApprovalConsumer) handleApproval(ctx context.Context, p event.ApprovalRequested) {
@@ -205,13 +246,16 @@ func (tc *telegramApprovalConsumer) handleApproval(ctx context.Context, p event.
 		"read_action": p.ReadAction,
 	})
 
-	// Call the MCP tool with a confirmer that always approves. The
-	// send_confirmation tool is an infrastructure call — it must not trigger
-	// the agent's interactive confirmation gate (which would recurse back
-	// into the approval system). Passing always-true bypasses the gate in
-	// MCPManager.CallTool (which calls confirm only for non-read tools when
-	// allowReads is false; we pass allowReads=true so the gate is skipped
-	// entirely, but the confirmer is a belt-and-suspenders safeguard).
+	// Call the MCP tool with a confirmer that always approves.
+	//
+	// The always-true confirmer is LOAD-BEARING, not belt-and-suspenders:
+	// send_confirmation is a write tool (it sends a Telegram message), so
+	// CallTool's gate at internal/agent/mcp_manager.go:288 evaluates
+	// !(isRead && allowReads) → true and calls this confirmer. An
+	// always-false confirmer would make the consumer decline its own
+	// infrastructure call. Passing allowReads=true does NOT skip the gate
+	// (the "send" prefix marks it non-read); it only prevents the gate from
+	// being additionally gated by the session's read-consent state.
 	alwaysApprove := agent.Confirmer(func(string, string, string, bool) bool {
 		return true
 	})
@@ -223,23 +267,17 @@ func (tc *telegramApprovalConsumer) handleApproval(ctx context.Context, p event.
 		// MCP call failed or returned an unparseable result. Do not
 		// resolve the approval — the TUI keypress path is still live
 		// and can answer it.
-		fmt.Fprintf(os.Stderr, "telegram consumer: unparseable result for approval %s: %q\n",
-			p.ApprovalID, result)
+		tc.note(ctx, "≫ telegram bridge failed (approval %s): %s — answer in the TUI to proceed",
+			p.ApprovalID, strings.TrimSpace(result))
 		return
 	}
 
-	// Map the Telegram result to a core.ApprovalOutcome.
-	var coreOutcome core.ApprovalOutcome
-	switch outcome {
-	case "approve":
-		coreOutcome = core.ApprovalAllowOnce
-	case "allow_reads":
-		coreOutcome = core.ApprovalAllowReadsOnce
-	case "grant":
-		coreOutcome = core.ApprovalGrantTool
-	default:
-		// "decline", "timeout", "cancelled" all map to deny.
-		coreOutcome = core.ApprovalDeny
+	// Map the Telegram result to a core.ApprovalOutcome. ok is false for a
+	// non-decision outcome — see telegramOutcomeToCore.
+	coreOutcome, ok := telegramOutcomeToCore(outcome)
+	if !ok {
+		tc.note(ctx, "≫ telegram: %s — answer in the TUI to proceed", outcome)
+		return
 	}
 
 	err := tc.facade.host.RespondToApproval(ctx, tc.principal, core.ApprovalDecision{
@@ -253,8 +291,32 @@ func (tc *telegramApprovalConsumer) handleApproval(ctx context.Context, p event.
 		// Other errors (session closed, not found) are also safe to
 		// log and discard — the turn's ParkApproval will be released by
 		// the host session lifecycle.
-		fmt.Fprintf(os.Stderr, "telegram consumer: RespondToApproval for %s: %v\n",
-			p.ApprovalID, err)
+		tc.note(ctx, "≫ telegram: approval %s not delivered: %v", p.ApprovalID, err)
+	}
+}
+
+// telegramOutcomeToCore maps a telegram-bridge choice to a core.ApprovalOutcome.
+//
+// ok is FALSE for the non-decision outcomes "timeout" and "cancelled" (and any
+// unrecognized choice): the caller must NOT resolve the approval. The bridge
+// reaching its TELEGRAM_APPROVAL_TIMEOUT means "the user did not answer", not
+// "the user declined" — mapping it to deny silently cancelled the user's tool
+// call with no visible cause. Leaving the approval parked keeps the TUI
+// confirm gate live as the documented fallback, so the user can still answer
+// with y/a/g/n.
+func telegramOutcomeToCore(outcome string) (core.ApprovalOutcome, bool) {
+	switch outcome {
+	case "approve":
+		return core.ApprovalAllowOnce, true
+	case "allow_reads":
+		return core.ApprovalAllowReadsOnce, true
+	case "grant":
+		return core.ApprovalGrantTool, true
+	case "decline":
+		return core.ApprovalDeny, true
+	default:
+		// "timeout", "cancelled" — non-decisions.
+		return "", false
 	}
 }
 

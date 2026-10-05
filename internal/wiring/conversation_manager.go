@@ -251,9 +251,10 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 		tc := newTelegramApprovalConsumer(facade, app.MCP, cm.principal)
 		if err := tc.Start(ctx); err != nil {
 			// Best-effort: a failed subscription does not block the
-			// session — the TUI keypress path still works. Log to
-			// stderr so the failure is visible.
-			fmt.Fprintf(os.Stderr, "telegram consumer: failed to start: %v\n", err)
+			// session — the TUI keypress path still works. Report it in
+			// the TUI's item stream (see telegram_consumer.go's note) so
+			// the failure is visible; stderr is unusable here.
+			tc.note(ctx, "≫ telegram approval consumer failed to start: %v", err)
 		} else {
 			facade.telegramConsumer = tc
 		}

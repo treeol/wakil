@@ -2,6 +2,8 @@ package wiring
 
 import (
 	"testing"
+
+	"github.com/treeol/wakil/internal/core"
 )
 
 func TestIsTelegramChoice(t *testing.T) {
@@ -74,5 +76,47 @@ func TestDetectTelegramBridge_NilMCP(t *testing.T) {
 	// A nil MCPManager must return false, not panic.
 	if detectTelegramBridge(nil) {
 		t.Error("detectTelegramBridge(nil) should return false")
+	}
+}
+
+// TestTelegramOutcomeToCore_NonDecisionsDoNotResolve pins the regression where
+// a bridge "timeout"/"cancelled" was mapped to ApprovalDeny: the user's tool
+// call was silently declined even though they never answered. A non-decision
+// must leave the approval parked so the TUI gate stays live.
+func TestTelegramOutcomeToCore_NonDecisionsDoNotResolve(t *testing.T) {
+	nonDecisions := []string{"timeout", "cancelled", "unknown", ""}
+	for _, outcome := range nonDecisions {
+		t.Run(outcome, func(t *testing.T) {
+			got, ok := telegramOutcomeToCore(outcome)
+			if ok {
+				t.Errorf("telegramOutcomeToCore(%q) resolved to %q, want no resolution", outcome, got)
+			}
+			if got != "" {
+				t.Errorf("telegramOutcomeToCore(%q) = %q, want empty outcome", outcome, got)
+			}
+		})
+	}
+}
+
+func TestTelegramOutcomeToCore_Decisions(t *testing.T) {
+	tests := []struct {
+		outcome string
+		want    core.ApprovalOutcome
+	}{
+		{"approve", core.ApprovalAllowOnce},
+		{"allow_reads", core.ApprovalAllowReadsOnce},
+		{"grant", core.ApprovalGrantTool},
+		{"decline", core.ApprovalDeny},
+	}
+	for _, tt := range tests {
+		t.Run(tt.outcome, func(t *testing.T) {
+			got, ok := telegramOutcomeToCore(tt.outcome)
+			if !ok {
+				t.Fatalf("telegramOutcomeToCore(%q) did not resolve", tt.outcome)
+			}
+			if got != tt.want {
+				t.Errorf("telegramOutcomeToCore(%q) = %q, want %q", tt.outcome, got, tt.want)
+			}
+		})
 	}
 }
