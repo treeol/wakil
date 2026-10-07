@@ -106,6 +106,33 @@ func OutputModeIsValid(v OutputMode) bool {
 	return false
 }
 
+// ClipboardMode selects how TUI copy operations reach the system clipboard.
+type ClipboardMode string
+
+const (
+	// ClipboardModeAuto (default) tries native clipboard tools first
+	// (wl-copy/xclip/xsel/pbcopy/clip.exe) and falls back to OSC 52 when none
+	// works. Note: OSC 52 delivery is unverifiable from the app — many
+	// terminals and tmux configurations block it by default.
+	ClipboardModeAuto ClipboardMode = "auto"
+	// ClipboardModeNative only uses native clipboard tools; no OSC 52 escape
+	// is ever emitted. Use when the terminal would otherwise echo stray OSC 52
+	// payloads or when a local clipboard tool is known to work.
+	ClipboardModeNative ClipboardMode = "native"
+	// ClipboardModeOSC52 only emits OSC 52 (useful over SSH where no local
+	// clipboard tool exists but the terminal supports the sequence).
+	ClipboardModeOSC52 ClipboardMode = "osc52"
+)
+
+// ClipboardModeIsValid reports whether v is a known clipboard mode.
+func ClipboardModeIsValid(v ClipboardMode) bool {
+	switch v {
+	case ClipboardModeAuto, ClipboardModeNative, ClipboardModeOSC52:
+		return true
+	}
+	return false
+}
+
 // Config is resolved with precedence: defaults < config file < env < flags.
 // base_url takes precedence over host+port; if only host (and optionally port)
 // are set, the URL is constructed as http://{host}:{port}.
@@ -136,11 +163,15 @@ type Config struct {
 	// items including diagnostic notes; "simple" hides transient diagnostic notes
 	// and the live reasoning body so only the most important info is shown.
 	// Headless (`wakil run`) never consults this field.
-	OutputMode   OutputMode `json:"output_mode,omitempty"`
-	Image        string     `json:"image"`                   // container image for docker mode
-	WorkDir      string     `json:"work_dir"`                // working dir inside the container
-	HostWorkDir  string     `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
-	DockerSocket bool       `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
+	OutputMode OutputMode `json:"output_mode,omitempty"`
+	// ClipboardMode selects the TUI copy transport: "auto" (default) tries
+	// native clipboard tools then OSC 52; "native" never emits OSC 52;
+	// "osc52" never runs a local clipboard tool. See the ClipboardMode consts.
+	ClipboardMode ClipboardMode `json:"clipboard_mode,omitempty"`
+	Image         string        `json:"image"`                   // container image for docker mode
+	WorkDir       string        `json:"work_dir"`                // working dir inside the container
+	HostWorkDir   string        `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
+	DockerSocket  bool          `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
 	// Docker hardening (defense-in-depth for the sandbox container).
 	// DockerCaps re-adds specific capabilities after --cap-drop=ALL.
 	// Empty = no caps re-added (strictest). Add "CHOWN" if go build fails.
@@ -775,6 +806,7 @@ func DefaultConfig() Config {
 		Model:                   "ilm",
 		ExecMode:                "docker",
 		OutputMode:              OutputModeDebug,
+		ClipboardMode:           ClipboardModeAuto,
 		Image:                   "wakil-dev",
 		DockerSocket:            false,
 		DockerMemory:            "4g",
@@ -1029,6 +1061,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.ExecMode, "ILM_EXEC_MODE")
 	envStr(&cfg.ExecMode, "WAKIL_EXEC_MODE")
 	envStr((*string)(&cfg.OutputMode), "WAKIL_OUTPUT_MODE")
+	envStr((*string)(&cfg.ClipboardMode), "WAKIL_CLIPBOARD_MODE")
 	envStr(&cfg.Image, "ILM_CONTAINER_IMAGE")
 	envStr(&cfg.Image, "WAKIL_IMAGE")
 	envStr(&cfg.WorkDir, "ILM_WORKDIR")
@@ -1229,6 +1262,12 @@ func LoadConfig(argv []string) (Config, error) {
 	// config file writing ""). Guarded by OutputModeIsValid in validateEnums.
 	if cfg.OutputMode == "" {
 		cfg.OutputMode = OutputModeDebug
+	}
+
+	// Normalize an explicitly-empty clipboard_mode to the auto default.
+	// Guarded by ClipboardModeIsValid in validateEnums.
+	if cfg.ClipboardMode == "" {
+		cfg.ClipboardMode = ClipboardModeAuto
 	}
 
 	if err := validateEnums(cfg); err != nil {
@@ -1591,6 +1630,11 @@ func validateEnums(cfg Config) error {
 	case OutputModeDebug, OutputModeSimple:
 	default:
 		return fmt.Errorf("output_mode must be one of: debug, simple (got %q)", cfg.OutputMode)
+	}
+	switch cfg.ClipboardMode {
+	case ClipboardModeAuto, ClipboardModeNative, ClipboardModeOSC52:
+	default:
+		return fmt.Errorf("clipboard_mode must be one of: auto, native, osc52 (got %q)", cfg.ClipboardMode)
 	}
 	switch cfg.SubagentBackend {
 	case "", "inherit", "default":

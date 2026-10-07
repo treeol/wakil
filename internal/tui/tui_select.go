@@ -1,11 +1,17 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"os/exec"
 	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/treeol/wakil/internal/config"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // SGR escapes for the selection highlight. Emitted literally (rather than via
@@ -114,6 +120,28 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		}
 	}
 
+	// Sub-tab guard: when a sub-tab renders the conversation-pane area, the
+	// in-app selection coordinates would map into the HIDDEN main-pane
+	// content (mouseToContent reads the main viewport's plain mirrors) —
+	// dragging visible sub-tab output must not copy hidden main-pane text
+	// (Mashūra review finding). Tab-bar clicks are handled above; everything
+	// else left-button in the pane area is swallowed while a sub-tab is
+	// active. Wheel events already fell through earlier for scrolling. Any
+	// stale selection highlight from the main pane is cleared so it can't
+	// linger over sub-tab output.
+	if m.subCur >= 0 {
+		if m.sel.active || m.sel.pressed {
+			wasActive := m.sel.active
+			m.sel = selection{}
+			if wasActive {
+				// Restore the styled viewport — the selection highlight
+				// replaced it with the ANSI-stripped plainLines overlay.
+				m.refreshViewport()
+			}
+		}
+		return m, true, nil
+	}
+
 	switch msg.Action {
 	case tea.MouseActionPress:
 		if msg.Button != tea.MouseButtonLeft {
@@ -183,7 +211,7 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		// Clear pressed/dragging but keep active so the highlight persists.
 		m.sel.pressed = false
 		m.sel.dragging = false
-		return m, true, copyToClipboard(text)
+		return m, true, m.copyToClipboard(text)
 	}
 	return m, false, nil
 }
@@ -310,13 +338,16 @@ func (m tuiModel) selectedText() string {
 				adjEC = 0
 			}
 		}
+		// Preserve interior structure exactly: a full-width selection on a blank
+		// interior line yields an empty segment (kept — blank lines are part of
+		// the copied text), and trailing spaces within the selected range are kept
+		// verbatim. Trailing layout padding is excluded because the no-box mirror
+		// is built from ansi.Strip of UNPADDED content (refreshViewport's
+		// plainSB path) — the mirror lines carry no renderer padding to leak.
 		if a, z, ok := m.sliceRange(i, srNB, adjSC, erNB, adjEC, len(runes)); ok {
 			seg = string(runes[a : z+1])
 		}
-		seg = strings.TrimRight(seg, " ")
-		if seg != "" {
-			parts = append(parts, seg)
-		}
+		parts = append(parts, seg)
 	}
 	return strings.Join(parts, "\n")
 }
@@ -389,9 +420,11 @@ func (m tuiModel) highlightedContent() string {
 	return strings.Join(out, "\n")
 }
 
-// clipboardCmds lists the native clipboard writers we try, in preference order.
-// The first one found on PATH wins. wl-copy (Wayland) and the X11 tools forward
-// stdin to the system clipboard; pbcopy is macOS; clip.exe covers WSL.
+// clipboardCmds lists the native clipboard writers we try, in preference
+// order. wl-copy (Wayland) and the X11 tools forward stdin to the system
+// clipboard; pbcopy is macOS; clip.exe covers WSL. copyToClipboard tries them
+// in order until one SUCCEEDS — presence on PATH is not enough (review
+// finding: xclip present without DISPLAY must not block xsel/wl-copy).
 var clipboardCmds = [][]string{
 	{"wl-copy"},
 	{"xclip", "-selection", "clipboard"},
@@ -400,52 +433,103 @@ var clipboardCmds = [][]string{
 	{"clip.exe"},
 }
 
-// nativeClipboardWriter returns the first available clipboard command, or nil.
-func nativeClipboardWriter() []string {
-	for _, c := range clipboardCmds {
-		if p, err := exec.LookPath(c[0]); err == nil {
-			return append([]string{p}, c[1:]...)
-		}
-	}
-	return nil
+// clipboardTimeout bounds each native clipboard writer. A hanging selection
+// owner must not leave the copy command in flight forever.
+const clipboardTimeout = 2 * time.Second
+
+// nativeCopyResult reports the outcome of attempting the native backends.
+type nativeCopyResult struct {
+	backend string   // name of the backend that succeeded (e.g. "wl-copy"), if any
+	errs    []string // per-backend failure reasons (bounded), for diagnostics
 }
 
-// copyToClipboard writes the selection to the system clipboard. It prefers a
-// native clipboard command (wl-copy/xclip/xsel/pbcopy/clip.exe) since many
-// terminals silently ignore OSC 52 clipboard writes, and falls back to OSC 52
-// when no command is available (e.g. a bare remote shell over SSH).
+// tryNativeClipboard runs each known backend in order until one succeeds.
+// Bounded by clipboardTimeout per command via CommandContext; child stdout and
+// stderr are left nil (/dev/null) so a chatty writer can't scribble on the
+// TUI. Note CommandContext does not kill grandchildren the backend may fork
+// (wl-copy daemonizes legitimately) — the timeout applies to the foreground
+// process only, which is the behavior we want.
+func tryNativeClipboard(text string) (nativeCopyResult, bool) {
+	var res nativeCopyResult
+	for _, c := range clipboardCmds {
+		path, err := exec.LookPath(c[0])
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), clipboardTimeout)
+		cmd := exec.CommandContext(ctx, path, c[1:]...)
+		cmd.Stdin = strings.NewReader(text)
+		err = cmd.Run()
+		cancel()
+		if err == nil {
+			res.backend = c[0]
+			return res, true
+		}
+		if len(res.errs) < 3 { // bounded diagnostics, not a full log
+			res.errs = append(res.errs, fmt.Sprintf("%s: %v", c[0], err))
+		}
+	}
+	return res, false
+}
+
+// copyToClipboard writes text to the system clipboard, honoring the model's
+// configured clipboard mode:
 //
-// The returned copiedMsg carries via=copyViaNative or via=copyViaOSC52 so the
-// handler can hint the user when the copy relied on OSC 52 (which many
-// terminals block by default). When via is copyViaOSC52, escape holds the raw
-// OSC 52 bytes — the handler routes them through View() so they're emitted on
-// the renderer's synchronized output, NOT written to os.Stdout from this
-// goroutine (which would race with the renderer in alt-screen mode and garble
-// the display).
-func copyToClipboard(text string) tea.Cmd {
+//   - auto (default): native tools first (tried until one succeeds), then
+//     OSC 52 — so SSH users still get a best-effort copy.
+//   - native: native tools only; failure is reported honestly, no OSC 52.
+//   - osc52: OSC 52 only; no local command is ever executed.
+//
+// The OSC 52 path returns the escape bytes in the msg instead of writing them
+// to os.Stdout here — the renderer owns stdout in alt-screen mode, and a
+// direct write from this goroutine would interleave with frame data and
+// garble the display. Delivery is best-effort: the terminal may silently
+// ignore the sequence, and the status hint says "sent, unverified".
+func (m tuiModel) copyToClipboard(text string) tea.Cmd {
+	mode := m.clipboardMode
+	if mode == "" {
+		mode = config.ClipboardModeAuto
+	}
+	// Mint the request id NOW, synchronously: copyToClipboard is called from
+	// Update (single-threaded), so dispatch order == id order. Minting inside
+	// the Cmd closure would let concurrent Cmd goroutines invert the order
+	// (Mashūra A1): an older copy could mint a higher id and supersede a
+	// newer one.
+	id := nextCopyID()
 	return func() tea.Msg {
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		if argv := nativeClipboardWriter(); argv != nil {
-			cmd := exec.Command(argv[0], argv[1:]...)
-			cmd.Stdin = strings.NewReader(text)
-			// Leave Stdout/Stderr nil → /dev/null, so a daemonizing writer
-			// (wl-copy forks to serve the selection) can't scribble on the TUI.
-			if err := cmd.Run(); err == nil {
-				return copiedMsg{n: len([]rune(text)), via: copyViaNative}
+		var detail string
+		if mode != config.ClipboardModeOSC52 {
+			res, ok := tryNativeClipboard(text)
+			if ok {
+				return copiedMsg{n: len([]rune(text)), via: copyViaNative, outcome: copyOK, detail: res.backend, id: id}
 			}
-			// Native command failed (e.g. xclip without DISPLAY) — fall through
-			// to OSC 52 so SSH users still get a best-effort copy.
+			if len(res.errs) > 0 {
+				detail = strings.Join(res.errs, "; ")
+			}
 		}
-		// Fallback: OSC 52. Return the escape bytes in the msg instead of
-		// writing them to os.Stdout here — the renderer owns stdout in
-		// alt-screen mode, and a direct write from this goroutine would
-		// interleave with frame data and garble the display.
+		if mode == config.ClipboardModeNative {
+			if detail == "" {
+				detail = "no native clipboard tool available"
+			}
+			return copiedMsg{n: 0, via: copyViaNative, outcome: copyFailed, detail: detail, id: id}
+		}
 		esc := []byte(ansi.SetSystemClipboard(text))
-		return copiedMsg{n: len([]rune(text)), via: copyViaOSC52, escape: esc}
+		if mode == config.ClipboardModeAuto && detail != "" {
+			// Auto mode fell through after real native failures — surface why.
+			return copiedMsg{n: len([]rune(text)), via: copyViaOSC52, outcome: copySentUnverified, detail: "native failed (" + detail + ")", id: id, escape: esc}
+		}
+		return copiedMsg{n: len([]rune(text)), via: copyViaOSC52, outcome: copySentUnverified, detail: "", id: id, escape: esc}
 	}
 }
+
+// copyIDGen is the process-wide copy-request generation counter. Monotonic per
+// process; the handler rejects copiedMsg with id < the latest seen.
+var copyIDGen atomic.Uint64
+
+func nextCopyID() uint64 { return copyIDGen.Add(1) }
 
 // bottomPad returns the number of blank rows prepended at the top of the
 // conversation pane when content is shorter than the viewport. This happens

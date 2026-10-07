@@ -432,6 +432,14 @@ func (m tuiModel) statusLines() []string {
 	consent := m.facade.Consent()
 	in := m.buildStatusInput(info, consent)
 	segments := statusSegments(in)
+	// Terminal-selection mode indicator: inserted EARLY (right after the
+	// fixed head slots, before model/ctx/flash) so flowSegmentsN's
+	// rightmost-suffix drop can't discard it before the flash on narrow
+	// terminals — the mode is invisible otherwise and must stay discoverable.
+	if m.nativeSel.active {
+		indicator := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("select:terminal (alt+t restores mouse)")
+		segments = append(segments[:1:1], indicator)
+	}
 	segments = append(segments, ctxSegmentFromInfo(info, w))
 	maxRows := 2
 	if m.infoPanel.active {

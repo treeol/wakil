@@ -162,6 +162,8 @@ reference covering every section below.
 | `bg_shell_timeout_seconds` | `0` (→ 3600) | Watchdog timeout for `notify_on_exit` background shells (async ops); `0` = use built-in default |
 | `hooks` | — | Lifecycle hooks block (pre_tool, post_tool, session_start, session_end, on_stop) — see [features](features.md#lifecycle-hooks) |
 | `verify` | — | Commands for `/verify` workflow verification (auto-detected from manifests if unset) |
+| `output_mode` | `"debug"` | TUI verbosity: `debug` shows all conversation items; `simple` hides transient diagnostics and the live reasoning body *(env `WAKIL_OUTPUT_MODE`, flag `--output-mode`)* |
+| `clipboard_mode` | `"auto"` | TUI copy transport: `auto` tries native clipboard tools (`wl-copy`/`xclip`/`xsel`/`pbcopy`/`clip.exe`) then OSC 52; `native` never emits OSC 52; `osc52` never runs a local tool *(env `WAKIL_CLIPBOARD_MODE`)*. Note: OSC 52 delivery depends on the terminal/tmux (`set -g set-clipboard on`) and cannot be verified by the app — the status hint says "unverified" |
 | `ilm_stack` | — | ILM shadow-mode emitter block (`endpoint`, `token`, `mode`, `queue_path`, `batch_ms`, `max_output_bytes`). `mode=off` (default): zero behaviour change. `mode=shadow`: emit session/turn/tool events to an ILM-stack endpoint via a local durable queue + background sender. Env vars: `ILM_STACK_URL`, `ILM_STACK_TOKEN`, `ILM_MODE`, `ILM_QUEUE_PATH`, `ILM_BATCH_SIZE`, `ILM_OUTPUT_LIMIT`. |
 
 The absolute byte fields (`keep_bytes`, `summary_bytes`, `hard_max_bytes`, `compact_at`,

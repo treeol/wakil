@@ -218,6 +218,15 @@ type tuiModel struct {
 	// the prefix/convItem render caches need not be mode-keyed.
 	outputMode config.OutputMode
 
+	// clipboardMode is the configured copy transport (startup-only, from
+	// ClientSnapshot.ClipboardMode). See tui_select.go for how it's applied.
+	clipboardMode config.ClipboardMode
+
+	// nativeSel tracks terminal-selection mode: when active, application
+	// mouse reporting is disabled (tea.DisableMouse) so the terminal's native
+	// click-drag selection works. Toggled with alt+t; see tui_copy.go.
+	nativeSel nativeSelectionState
+
 	// queuedPrompts is a FIFO of plain-text prompts submitted mid-turn. Flushes
 	// as the next user turn(s) when the model is truly idle (no workflow
 	// auto-continuation, no error/cancel). Pure TUI-side — no agent-goroutine
@@ -296,6 +305,10 @@ type tuiModel struct {
 	plainLines      []string // ANSI-stripped view content (with box borders), for mouse coordinate mapping
 	plainLinesNoBox []string // ANSI-stripped content without box borders, for clean clipboard copy
 	flash           string   // transient status shown in the input border (e.g. "copied ✓")
+
+	// lastCopyID is the highest copiedMsg id accepted (stale-result guard).
+	// copyToClipboard stamps each request with a monotonically increasing id.
+	lastCopyID uint64
 
 	// pendingEscape holds a raw terminal escape sequence prepended to every
 	// View() frame until a KeyMsg clears it. Used for OSC 52 clipboard writes:
@@ -633,14 +646,15 @@ func newBaseModel() tuiModel {
 	}
 	items := make([]convItem, 0, 64)
 	return tuiModel{
-		outputMode:   config.OutputModeDebug,
-		vp:           vp,
-		ta:           ta,
-		state:        stateIdle,
-		followBottom: true,
-		items:        &items,
-		streaming:    &strings.Builder{},
-		imageChips:   &[]string{},
+		outputMode:    config.OutputModeDebug,
+		clipboardMode: config.ClipboardModeAuto,
+		vp:            vp,
+		ta:            ta,
+		state:         stateIdle,
+		followBottom:  true,
+		items:         &items,
+		streaming:     &strings.Builder{},
+		imageChips:    &[]string{},
 		subAgentModel: subAgentModel{
 			subCur: -1,
 		},
@@ -666,6 +680,10 @@ func NewTUIModelWithFacade(f sessionclient.Facade, mgr sessionclient.Conversatio
 
 	snap := f.Snapshot()
 	m.sessionID = snap.SessionID
+	m.clipboardMode = snap.ClipboardMode
+	if m.clipboardMode == "" {
+		m.clipboardMode = config.ClipboardModeAuto
+	}
 	if len(snap.Conv) > 0 {
 		items := convItemsFrom(snap.Conv)
 		resumeNote := sprint("· resumed session %s — %d messages", formatShortID(snap.ChatID), len(snap.Conv))
@@ -1280,6 +1298,24 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.refreshViewport()
 		}
 		return m, nil, true
+
+	case "ctrl+y":
+		// Copy the last assistant response's SOURCE text (pre-glamour) to the
+		// clipboard — a keyboard copy path that doesn't depend on drag
+		// geometry or terminal mouse modes. Works idle/streaming; the copy is
+		// transport-configurable (clipboard_mode).
+		var copyCmd tea.Cmd
+		m, copyCmd = m.copyLastResponseCmd()
+		return m, []tea.Cmd{copyCmd}, true
+
+	case "alt+t":
+		// Toggle terminal-selection mode: hand the mouse back to the terminal
+		// so its native click-drag selection works (the in-app drag selection
+		// stays available when toggled off). The status line shows a
+		// persistent "select:terminal" hint while active.
+		var cmd tea.Cmd
+		m, cmd = m.toggleNativeSelection()
+		return m, []tea.Cmd{cmd}, true
 
 	case "up":
 		if m.searchActive {

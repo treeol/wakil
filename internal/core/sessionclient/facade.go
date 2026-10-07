@@ -207,6 +207,10 @@ type ClientSnapshot struct {
 	// Output mode (snapshotted once at session creation; never changes).
 	OutputMode config.OutputMode
 
+	// Clipboard transport mode (snapshotted once at session creation; never
+	// changes). Drives how TUI copy operations reach the system clipboard.
+	ClipboardMode config.ClipboardMode
+
 	// Costs.
 	Costs *proxy.CostTracker
 

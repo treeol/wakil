@@ -47,9 +47,16 @@ type subTabCloseMsg struct {
 
 // copiedMsg reports that a text selection was copied to the system clipboard.
 // via is copyViaNative when a local clipboard command (wl-copy/xclip/etc.)
-// wrote it, or copyViaOSC52 when the OSC 52 terminal escape was the fallback
-// (e.g. a bare SSH shell with no clipboard daemon). The handler uses this to
-// hint the user when the terminal may silently ignore OSC 52.
+// wrote it, or copyViaOSC52 when the OSC 52 terminal escape carried it
+// (fallback or configured transport). The handler uses via + detail to hint
+// the user how the copy was delivered — and at what verification level:
+// native success means the tool exited 0; OSC 52 means the bytes were sent,
+// NOT that the clipboard changed (many terminals/tmux block the sequence).
+//
+// id is the copy-request generation that produced this message. The handler
+// drops stale results so an older, slow native write can't overwrite the
+// status of a newer copy (ordering review finding). It cannot un-write an
+// older native clipboard write — only its status.
 //
 // When via is copyViaOSC52, escape holds the raw OSC 52 terminal escape bytes.
 // The handler stores them on the model as pendingEscape so View() can emit
@@ -57,12 +64,27 @@ type subTabCloseMsg struct {
 // os.Stdout from the Cmd goroutine would race with the renderer in alt-screen
 // mode and garble the display. pendingEscape persists across View() calls
 // (NOT cleared in View()) so the standard renderer's frame coalescing can't
-// drop it; a KeyMsg clears it (alongside flash) as the lifecycle boundary.
+// drop it; a KeyMsg clears it (alongside flash) as the lifecycle boundary, and
+// a subsequent native success also clears it (a native write supersedes the
+// older OSC payload — stale retransmission guard).
 type copiedMsg struct {
-	n      int
-	via    string
-	escape []byte
+	n       int
+	via     string
+	outcome copyOutcome // explicit transport outcome — free-text matching is fragile
+	detail  string      // native backend name, or failure context in via=osc52 fallback
+	id      uint64
+	escape  []byte
 }
+
+// copyOutcome classifies a copiedMsg so the handler doesn't string-match free
+// text (review finding A4).
+type copyOutcome uint8
+
+const (
+	copyOK             copyOutcome = iota // native write succeeded (tool exited 0)
+	copySentUnverified                    // OSC 52 bytes queued for emission — clipboard NOT verified
+	copyFailed                            // no transport succeeded
+)
 
 const (
 	copyViaNative = "native"

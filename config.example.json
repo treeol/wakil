@@ -117,6 +117,8 @@
   "keep_bytes": 120000,
   "summary_bytes": 20000,
   "hard_max_bytes": 160000,
+  "clipboard_mode": "auto",
+  "_comment_clipboard": "TUI copy transport: auto (try native clipboard tools wl-copy/xclip/xsel/pbcopy/clip.exe, then OSC 52 fallback) | native (never emit OSC 52) | osc52 (never run a local clipboard tool). Env: WAKIL_CLIPBOARD_MODE. Note: OSC 52 delivery depends on terminal/tmux support (tmux: set -g set-clipboard on) and cannot be verified by the app.",
   "compact_at": 145000,
   "turn_tool_budget": 40000,
   "tool_result_cap": 8000,

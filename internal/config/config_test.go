@@ -860,6 +860,27 @@ func TestLoadConfig_ExplicitConfigMissingDoesNotCreate(t *testing.T) {
 	}
 }
 
+func TestClipboardMode_DefaultIsAuto(t *testing.T) {
+	if got := DefaultConfig().ClipboardMode; got != ClipboardModeAuto {
+		t.Errorf("default ClipboardMode = %q, want %q", got, ClipboardModeAuto)
+	}
+}
+
+func TestClipboardMode_Validate(t *testing.T) {
+	for _, v := range []ClipboardMode{ClipboardModeAuto, ClipboardModeNative, ClipboardModeOSC52} {
+		cfg := DefaultConfig()
+		cfg.ClipboardMode = v
+		if err := validateEnums(cfg); err != nil {
+			t.Errorf("clipboard_mode=%q: unexpected error: %v", v, err)
+		}
+	}
+	cfg := DefaultConfig()
+	cfg.ClipboardMode = "bogus"
+	if err := validateEnums(cfg); err == nil {
+		t.Error("expected error for invalid clipboard_mode")
+	}
+}
+
 func TestOutputMode_DefaultIsDebug(t *testing.T) {
 	if got := DefaultConfig().OutputMode; got != OutputModeDebug {
 		t.Errorf("default OutputMode = %q, want %q", got, OutputModeDebug)

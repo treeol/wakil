@@ -232,6 +232,7 @@ func (f *wiringFacade) Snapshot() sessionclient.ClientSnapshot {
 		PendingImages: pendingImages,
 		RawTools:      rawTools,
 		OutputMode:    app.Cfg.OutputMode,
+		ClipboardMode: app.Cfg.ClipboardMode,
 		Costs:         app.Costs,
 		Workflow:      workflowSnapshot(wf),
 		Version:       version,

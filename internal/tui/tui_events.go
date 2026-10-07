@@ -252,11 +252,34 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		return m, cmds, true
 	case copiedMsg:
 		before := m.statusRows()
-		if lm.via == copyViaOSC52 {
-			m.flash = sprint("sent %d chars via OSC 52 — if paste is empty, enable terminal/tmux clipboard", lm.n)
+		// Drop stale results: an older, slower copy command finishing after a
+		// newer one must not overwrite the newer copy's status. (It cannot
+		// un-write an older native clipboard write — only its status.)
+		if lm.id != 0 {
+			if lm.id < m.lastCopyID {
+				return m, cmds, true
+			}
+			m.lastCopyID = lm.id
+		}
+		switch lm.outcome {
+		case copyFailed:
+			m.flash = sprint("copy failed: %s", lm.detail)
+			m.pendingEscape = nil
+		case copySentUnverified:
+			// Bytes queued for the renderer — NOT verified as delivered, and
+			// the clipboard is NOT verified as changed. "queued", not "copied".
+			if lm.detail != "" {
+				m.flash = sprint("queued %d chars via OSC 52 (%s) — unverified; if paste is empty, enable terminal/tmux clipboard", lm.n, lm.detail)
+			} else {
+				m.flash = sprint("queued %d chars via OSC 52 — unverified; if paste is empty, enable terminal/tmux clipboard", lm.n)
+			}
 			m.pendingEscape = lm.escape
-		} else {
-			m.flash = sprint("copied %d chars ✓", lm.n)
+		default: // copyOK
+			m.flash = sprint("copied %d chars ✓ via %s", lm.n, lm.detail)
+			// A native success supersedes any previously queued OSC 52
+			// payload — clear it so a later redraw can't retransmit the old
+			// clipboard contents (stale-retransmission guard).
+			m.pendingEscape = nil
 		}
 		m = m.reflowIfStatusHeightChanged(before)
 		return m, cmds, true

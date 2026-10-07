@@ -79,6 +79,8 @@ Hooks are configured in the config file, not via TUI commands. See [features.md]
 | `↑` / `↓` | Browse command history *(previous / next)* |
 | `Ctrl+R` | Reverse incremental search through command history |
 | `Ctrl+E` | Expand/collapse live reasoning while the model is thinking |
+| `Ctrl+Y` | Copy the last assistant response (raw source text) to the clipboard. Mid-stream this copies the previous *completed* response, not the in-flight one |
+| `Alt+T` | Toggle terminal-selection mode: hands the mouse back to the terminal so its native click-drag selection works (status shows `select:terminal`; press again to restore wakil's mouse handling) |
 | `Ctrl+C` | Cancel in-flight turn *(press twice to force-quit)* |
 | `Esc` | Cancel in-flight turn |
 | `Ctrl+D` | Quit *(when idle)* |
@@ -86,16 +88,30 @@ Hooks are configured in the config file, not via TUI commands. See [features.md]
 | `a` | Allow all read-only calls for this session |
 | `@` | Attach a file or folder |
 
-## Copying text over SSH
+## Copying text
 
-Mouse-drag to select text in the conversation pane, then release — wakil copies
-the selection to the clipboard. On a **remote host over SSH** (no local
-clipboard daemon), it falls back to the **OSC 52** terminal escape sequence,
-which forwards the text through the terminal to your *local* clipboard.
+Three ways to copy out of the TUI:
 
-If copy-over-SSH doesn't work, the flash message will say
-`sent N chars via OSC 52 — if paste is empty, enable terminal/tmux clipboard`.
-That means OSC 52 was used but your terminal or tmux is blocking it. Enable it:
+1. **Drag-select in the conversation pane** (mouse) — release copies the
+   selection. Copy failures are reported honestly in the status line, with
+   the transport used (native tool name, or OSC 52 "unverified").
+2. **`Ctrl+Y`** — copies the last assistant response's *raw source* text
+   (pre-rendering, blank lines preserved). No mouse needed. A whitespace-only
+   response is a no-op (nothing to copy).
+3. **`Alt+T` terminal-selection mode** — disables wakil's mouse handling so
+   your terminal's own click-drag selection works (includes tmux copy-mode
+   users). The status line shows `select:terminal` while active; `Alt+T`
+   again restores mouse handling.
+
+The transport follows `clipboard_mode` in the config (`auto` by default:
+native tools first, then OSC 52).
+
+### If OSC 52 paste is empty
+
+Over **SSH** (no local clipboard daemon), wakil falls back to the **OSC 52**
+terminal escape sequence, which forwards the text through the terminal to
+your *local* clipboard. The status hint says "unverified" because the app
+cannot know whether the sequence was honored. Enable it:
 
 **tmux** (local or remote): add to `~/.tmux.conf`:
 
@@ -103,9 +119,9 @@ That means OSC 52 was used but your terminal or tmux is blocking it. Enable it:
 set -g set-clipboard on
 ```
 
-Depending on your tmux version, `set -g set-clipboard external` may be needed
-instead — check `man tmux` for your installed version. Nested tmux (local +
-remote) requires the setting on **both**.
+If your tmux version doesn't support `on`, check `man tmux` for the
+`set-clipboard` values your version accepts (older versions differ). Nested
+tmux (local + remote) requires the setting on **both**.
 
 **Terminal emulators** — OSC 52 clipboard writes are disabled by default in some
 terminals. Check your terminal's documentation for how to enable it:
