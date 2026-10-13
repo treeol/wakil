@@ -371,7 +371,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				}
 				return true, false, note("context mode: long-session — finished requests are collapsed to question + answer")
 			case "status":
-				return true, false, note(fmt.Sprintf("context mode: %s", app.ContextMode()))
+				collapsedCount := 0
+				if a, ok := app.CollapsedCount(); ok {
+					collapsedCount = a
+				}
+				_, sentSize := app.ConvStats()
+				_, fullSize := app.ConvStatsFull()
+				return true, false, note(fmt.Sprintf("context mode: %s · %d collapsed · sent ~%dk · full ~%dk",
+					app.ContextMode(), collapsedCount, sentSize/1024, fullSize/1024))
 			default:
 				return true, false, note("usage: /mode [standard|long-session|status]")
 			}
@@ -380,8 +387,10 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, note("exec: " + app.Exec.Describe() + " · context: " + app.ContextMode())
 
 	case "/history":
-		return true, false, note(fmt.Sprintf("%d messages, ~%d chars (max %d)",
-			len(app.Conv), TranscriptSize(app.Conv), app.Cfg.MaxChars))
+		sentLen, sentSize := app.ConvStats()
+		_, fullSize := app.ConvStatsFull()
+		return true, false, note(fmt.Sprintf("%d messages · sent ~%d chars · full ~%d chars (max %d)",
+			sentLen, sentSize, fullSize, app.Cfg.MaxChars))
 
 	case "/grants":
 		if len(fields) > 1 && fields[1] == "clear" {

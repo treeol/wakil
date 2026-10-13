@@ -207,6 +207,17 @@ func (a *App) IsLongSession() bool {
 	return a.contextMode == "long-session" && !a.IsSubagent
 }
 
+// CollapsedCount returns the number of currently-collapsed turns and whether
+// long-session mode is active. Returns (0, false) in standard mode.
+func (a *App) CollapsedCount() (int, bool) {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	if a.collapsed == nil {
+		return 0, a.contextMode == "long-session"
+	}
+	return len(a.collapsed), a.contextMode == "long-session"
+}
+
 // SetCounselModeValue sets the counsel mode and max under stateMu.Lock.
 func (a *App) SetCounselModeValue(mode string, cap int) {
 	a.stateMu.Lock()

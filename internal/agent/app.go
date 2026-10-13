@@ -247,6 +247,13 @@ type App struct {
 	curTurn              int
 	lastOutcomeSuspended bool
 
+	// Long-session collapse state. Turn goroutine writes; projection reads
+	// under stateMu.RLock. collapsed maps turn numbers to their archive
+	// records; keep is the set of turns exempted from collapse by /keep.
+	collapsed             map[int]CollapseRecord
+	keep                  map[int]bool
+	collapseArchiveFailed bool
+
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly
 	// disabled (no cap); >0 = cap at this many chars. Applied live in
@@ -654,11 +661,19 @@ func (a *App) ConvSnapshot() []proxy.Message {
 	return sanitizeConvForSideQuestion(a.Conv)
 }
 
-// ConvStats returns the conversation length (message count) and transcript size
-// (total bytes of content + tool-call arguments) under convMu.RLock. This is
-// safe for concurrent access and avoids the O(n) copy of ConvSnapshot when only
-// statistics are needed (e.g. the TUI's status line, which runs per frame).
+// ConvStats returns the conversation length and transcript size of what is
+// SENT to the model (the projection in long-session mode; a.Conv in standard).
+// Uses convMu.RLock for the conv read. In long-session mode with collapse
+// records, this reflects the projected (collapsed) size, not the full history.
 func (a *App) ConvStats() (length int, transcriptSize int) {
+	proj := a.contextProjection()
+	return len(proj), format.TranscriptSize(proj)
+}
+
+// ConvStatsFull returns the conversation length and transcript size of the
+// FULL conversation (a.Conv), regardless of mode. Used by /history and
+// /mode status to show the full vs sent sizes.
+func (a *App) ConvStatsFull() (length int, transcriptSize int) {
 	a.convMu.RLock()
 	defer a.convMu.RUnlock()
 	return len(a.Conv), format.TranscriptSize(a.Conv)
@@ -1034,6 +1049,9 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 		stored = memCtx + "\n" + stored
 	}
 	a.ensurePreamble()
+	// Long-session mode: collapse finished turns before fitting the window.
+	// Picks up turns that rule 6 skipped earlier (async work has since finished).
+	a.collapseFinishedTurns()
 	a.fitConvToWindow(ctx)
 
 	userMsg := proxy.Message{Role: "user", Content: StrPtr(stored), Pinned: a.pinUserMessage}
