@@ -394,3 +394,126 @@ func messageSize(m proxy.Message) int {
 
 // collapseArchiveFailed is declared on App (app.go) — this comment is the
 // field doc. Turn goroutine only — no lock needed.
+
+// materializeCollapsed replaces collapsed turns in a.Conv with their
+// U + A + note (the projection content), then clears all collapse records.
+// This is the fallback path when compaction or hard-max must operate on
+// the real slice the model sees. After materialisation, a.Conv IS the
+// projection — no more filtering needed until new turns are collapsed.
+func (a *App) materializeCollapsed() {
+	a.stateMu.RLock()
+	if len(a.collapsed) == 0 {
+		a.stateMu.RUnlock()
+		return
+	}
+	a.stateMu.RUnlock()
+
+	proj := a.contextProjection()
+	a.convMu.Lock()
+	a.Conv = proj
+	a.convMu.Unlock()
+
+	a.stateMu.Lock()
+	a.collapsed = nil
+	a.stateMu.Unlock()
+}
+
+// pruneCollapseOnRewind removes collapse/keep entries for turns that no longer
+// exist in a.Conv after a rewind truncation, and resets turnSeq to the max
+// remaining Turn so subsequent turns continue numbering correctly.
+func (a *App) pruneCollapseOnRewind() {
+	a.convMu.RLock()
+	maxTurn := 0
+	remainingTurns := map[int]bool{}
+	for _, m := range a.Conv {
+		if m.Turn > 0 {
+			remainingTurns[m.Turn] = true
+			if m.Turn > maxTurn {
+				maxTurn = m.Turn
+			}
+		}
+	}
+	a.convMu.RUnlock()
+
+	a.stateMu.Lock()
+	if a.collapsed != nil {
+		for t := range a.collapsed {
+			if !remainingTurns[t] {
+				delete(a.collapsed, t)
+			}
+		}
+	}
+	if a.keep != nil {
+		for t := range a.keep {
+			if !remainingTurns[t] {
+				delete(a.keep, t)
+			}
+		}
+	}
+	a.turnSeq = maxTurn
+	a.stateMu.Unlock()
+}
+
+// collapsedRecords returns the collapse records as a slice for session
+// persistence. Under stateMu.RLock.
+func (a *App) collapsedRecords() []CollapseRecord {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	if len(a.collapsed) == 0 {
+		return nil
+	}
+	out := make([]CollapseRecord, 0, len(a.collapsed))
+	for _, rec := range a.collapsed {
+		out = append(out, rec)
+	}
+	return out
+}
+
+// keepSlice returns the keep set as a slice for session persistence.
+func (a *App) keepSlice() []int {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	if len(a.keep) == 0 {
+		return nil
+	}
+	out := make([]int, 0, len(a.keep))
+	for t := range a.keep {
+		out = append(out, t)
+	}
+	return out
+}
+
+// RestoreTurnState rebuilds the collapsed/keep maps from a saved Session and
+// resets turnSeq to the max Turn in a.Conv. Called from LoadSession,
+// ResumeConversation, and SetConv (daemon resume paths).
+func (a *App) RestoreTurnState(s *Session) {
+	a.stateMu.Lock()
+	if len(s.Collapsed) > 0 {
+		a.collapsed = map[int]CollapseRecord{}
+		for _, rec := range s.Collapsed {
+			a.collapsed[rec.Turn] = rec
+		}
+	}
+	if len(s.Keep) > 0 {
+		a.keep = map[int]bool{}
+		for _, t := range s.Keep {
+			a.keep[t] = true
+		}
+	}
+	a.lastOutcomeSuspended = false
+	a.stateMu.Unlock()
+
+	// Reset turnSeq to the max Turn in a.Conv so new turns continue
+	// numbering after the restored history.
+	a.convMu.RLock()
+	maxTurn := 0
+	for _, m := range a.Conv {
+		if m.Turn > maxTurn {
+			maxTurn = m.Turn
+		}
+	}
+	a.convMu.RUnlock()
+	a.stateMu.Lock()
+	a.turnSeq = maxTurn
+	a.stateMu.Unlock()
+}

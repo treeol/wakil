@@ -330,6 +330,9 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 	f.app.Session = s
 	f.app.SetWorkflow(s.SavedWorkflow)
 
+	// Restore long-session collapse state so the projection survives resume.
+	f.app.RestoreTurnState(s)
+
 	// Restore endpoint-independent settings from RepoState (AutoApprove,
 	// /counsel, /mashura, etc.) — resume=true so model/backend are NOT
 	// changed (avoid silently changing the model mid-transcript of a

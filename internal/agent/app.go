@@ -804,6 +804,21 @@ func (a *App) SaveSession() {
 	// meaningful for the active endpoint.
 	snap.EndpointName = a.Cfg.EndpointName
 
+	// Persist long-session collapse state (under stateMu, same as the
+	// fields it guards).
+	if len(a.collapsed) > 0 {
+		snap.Collapsed = make([]CollapseRecord, 0, len(a.collapsed))
+		for _, rec := range a.collapsed {
+			snap.Collapsed = append(snap.Collapsed, rec)
+		}
+	}
+	if len(a.keep) > 0 {
+		snap.Keep = make([]int, 0, len(a.keep))
+		for t := range a.keep {
+			snap.Keep = append(snap.Keep, t)
+		}
+	}
+
 	a.convMu.RUnlock()
 	a.stateMu.RUnlock()
 
@@ -918,6 +933,10 @@ func (a *App) InstallSession(s *Session) {
 	a.Conv = append([]proxy.Message(nil), s.Conv...)
 	a.Workflow = s.SavedWorkflow
 	a.convMu.Unlock()
+
+	// Restore long-session collapse state (turn numbers, collapse records,
+	// keep set) so the projection survives /resume.
+	a.RestoreTurnState(s)
 
 	a.Session = s
 	a.consentedBackends = nil

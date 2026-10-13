@@ -624,6 +624,13 @@ func (a *App) rewind(n int) rewindResult {
 		a.convMu.Unlock()
 	}
 
+	// Long-session mode: prune collapse/keep entries for turns that no longer
+	// exist in a.Conv after truncation. Also reset turnSeq to the max remaining
+	// Turn so new turns continue numbering correctly.
+	if convValid && result.ConvTruncated {
+		a.pruneCollapseOnRewind()
+	}
+
 	// Remove the rewound checkpoints from the stack and update byte counter.
 	// This is deferred until AFTER successful file restoration so that a
 	// failed restore leaves checkpoints intact for retry.

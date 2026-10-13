@@ -518,6 +518,14 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	a.convMu.Lock()
 	a.Conv = newConv
 	a.convMu.Unlock()
+	// Long-session mode: compaction absorbed the old turns into the summary,
+	// so the collapse records (which pointed at archive files for turns that
+	// no longer exist in a.Conv) are stale. Clear them.
+	if a.IsLongSession() {
+		a.stateMu.Lock()
+		a.collapsed = nil
+		a.stateMu.Unlock()
+	}
 	return true, nil
 }
 
@@ -666,6 +674,12 @@ func spillPathsInTurn(conv []proxy.Message) []string {
 // eviction is listed by spill-cache path so the user can retrieve it.
 // Pass max ≤ 0 to disable (no-op, matching HardMaxBytes=0 behaviour).
 func (a *App) enforceHardMax(ctx context.Context, max int) {
+	// In long-session mode, the projection (what the model sees) may be
+	// smaller than a.Conv. Materialise collapsed turns first so the drop
+	// loop and size check operate on the same slice the model sees.
+	if a.IsLongSession() {
+		a.materializeCollapsed()
+	}
 	if max <= 0 || TranscriptSize(a.Conv) <= max {
 		return
 	}

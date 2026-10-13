@@ -28,6 +28,12 @@ type Session struct {
 	Updated       time.Time               `json:"updated"`
 	Conv          []proxy.Message         `json:"conv"`
 	SavedWorkflow *workflow.WorkflowState `json:"saved_workflow,omitempty"`
+
+	// Long-session collapse state (persisted so /resume restores the
+	// projection). Collapsed maps turn → archive record; Keep is the set of
+	// turns exempted from collapse by /keep.
+	Collapsed []CollapseRecord `json:"collapsed,omitempty"`
+	Keep      []int            `json:"keep,omitempty"`
 }
 
 // sessionsDir is where transcripts live: $WAKIL_SESSIONS_DIR, else

@@ -123,6 +123,10 @@ func RunHandoffPipeline(ctx context.Context, app *App) (HandoffResult, error) {
 		app.Session.Workspace = workspace
 	}
 	app.Session.SavedWorkflow = app.Workflow
+	// Persist collapse state (long-session mode) so the session record
+	// reflects the projection that was in use.
+	app.Session.Collapsed = app.collapsedRecords()
+	app.Session.Keep = app.keepSlice()
 	if err := WriteSession(app.Session); err != nil {
 		return HandoffResult{}, fmt.Errorf("could not save old session: %w", err)
 	}
