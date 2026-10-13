@@ -133,6 +133,28 @@ func ClipboardModeIsValid(v ClipboardMode) bool {
 	return false
 }
 
+// Context mode constants.
+const (
+	ContextModeStandard    = "standard"     // default: full conversation sent as today
+	ContextModeLongSession = "long-session" // finished requests collapsed to Q + A + note
+)
+
+// NormalizeContextMode normalises a raw context-mode string to one of the
+// canonical constants (ContextModeStandard or ContextModeLongSession).
+// "long" is accepted as a shorthand alias for "long-session". An empty
+// string defaults to ContextModeStandard. Returns the normalised mode and
+// whether the input was valid.
+func NormalizeContextMode(s string) (string, bool) {
+	switch s {
+	case "", ContextModeStandard:
+		return ContextModeStandard, true
+	case ContextModeLongSession, "long":
+		return ContextModeLongSession, true
+	default:
+		return "", false
+	}
+}
+
 // Config is resolved with precedence: defaults < config file < env < flags.
 // base_url takes precedence over host+port; if only host (and optionally port)
 // are set, the URL is constructed as http://{host}:{port}.
@@ -248,6 +270,15 @@ type Config struct {
 	// Default 0.80 (80% of the proxy's usable budget). Set to 1.0 to use the
 	// full ceiling with no additional headroom.
 	ContextCapacityFrac float64 `json:"context_capacity_frac,omitempty"`
+
+	// Context mode: "standard" (default) sends the full conversation as today;
+	// "long-session" collapses finished requests to question + answer + a note
+	// pointing to an archived working set, so context grows only with the
+	// current request. Per-repo setting (see RepoState); --context-mode and
+	// WAKIL_CONTEXT_MODE override it. NormalizeContextMode normalises "long"
+	// to "long-session".
+	ContextMode             string `json:"context_mode,omitempty"`
+	ContextCollapseMinBytes int    `json:"context_collapse_min_bytes,omitempty"` // default 2000; turns under this are not collapsed
 
 	// EffectiveCtxMaxChars is an absolute cap (in chars) on the effective context
 	// used to compute compaction thresholds. When the backend reports a large
@@ -555,8 +586,9 @@ type Config struct {
 	// may apply: an explicit flag or env var for this run always wins over a
 	// restored value. Computed once in LoadConfig from the same flagsSet map
 	// resolveEndpoint already uses for model/base-url override precedence.
-	ModelExplicit bool `json:"-"`
-	AutoExplicit  bool `json:"-"`
+	ModelExplicit       bool `json:"-"`
+	AutoExplicit        bool `json:"-"`
+	ContextModeExplicit bool `json:"-"` // set when --context-mode was passed
 
 	// DaemonMode selects remote daemon mode (P2e): the TUI dials the wakil
 	// daemon over its Unix socket instead of embedding the agent loop.
@@ -828,6 +860,9 @@ func DefaultConfig() Config {
 		HardMaxFrac:             0.95,   // hard ceiling at 95% of effective context
 		ContextCapacityFrac:     0.80,   // use 80% of proxy's usable_ctx as the working budget
 
+		ContextMode:             ContextModeStandard, // standard = full conversation sent as today
+		ContextCollapseMinBytes: 2000,                // turns under 2k are not worth collapsing
+
 		ReasoningBudgetTokens:      4096,      // headroom for extended thinking
 		AnswerMarginTokens:         4096,      // headroom for the final answer
 		ContextTokensFallback:      131072,    // assumed n_ctx when the backend is unreachable
@@ -1078,6 +1113,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envInt(&cfg.KVRSnapshotIntervalSecs, "WAKIL_KVR_SNAPSHOT_INTERVAL_SECS")
 	envBool(&cfg.TraceSessions, "WAKIL_TRACE_SESSIONS")
 	envStr(&cfg.TraceDir, "WAKIL_TRACE_DIR")
+	envStr(&cfg.ContextMode, "WAKIL_CONTEXT_MODE")
 
 	// ilm-stack emitter env vars.
 	envStr(&cfg.ILMStack.Endpoint, "ILM_STACK_URL")
@@ -1117,6 +1153,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.TraceDir, "trace-dir", cfg.TraceDir, "directory for trace files (default ~/.local/share/wakil/traces)")
 	fs.BoolVar(&cfg.DaemonMode, "daemon", false, "connect to a running wakil daemon over its Unix socket (remote mode)")
 	fs.StringVar(&cfg.DaemonSocket, "socket", "", "path to the wakil daemon's Unix socket (default: $XDG_RUNTIME_DIR/wakil.sock or ~/.local/share/wakil/wakil.sock)")
+	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: standard (default, full history sent) | long-session (finished requests collapsed to Q+A)")
 	fs.Usage = func() {
 		out := fs.Output()
 		fmt.Fprintln(out, "Usage: wakil [flags] [workspace-path]")
@@ -1140,6 +1177,7 @@ func LoadConfig(argv []string) (Config, error) {
 	// invocation always wins over a remembered folder preference.
 	cfg.ModelExplicit = flagsSet["model"] || os.Getenv("ILM_MODEL") != ""
 	cfg.AutoExplicit = flagsSet["auto"]
+	cfg.ContextModeExplicit = flagsSet["context-mode"]
 
 	// Resolve trace: --trace flag enables for this run; config trace_sessions makes
 	// it the standing default. Either way cfg.Trace is the single bit callers check.
@@ -1191,6 +1229,12 @@ func LoadConfig(argv []string) (Config, error) {
 		// explicit opt-out
 	} else if cfg.ExecMode != "docker" {
 		cfg.KVRDisabled = true
+	}
+	// Normalize context_mode: "long" → "long-session", "" → "standard".
+	// Done here (not inside validateContextLimits) because validateContextLimits
+	// takes cfg by value — the write wouldn't reach the caller.
+	if m, ok := NormalizeContextMode(cfg.ContextMode); ok {
+		cfg.ContextMode = m
 	}
 	if err := validateContextLimits(cfg); err != nil {
 		return cfg, err
@@ -1603,6 +1647,17 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.BgShellTimeoutSeconds < 0 {
 		return fmt.Errorf("bg_shell_timeout_seconds must be >= 0 (got %d; 0 = use default 3600s)", cfg.BgShellTimeoutSeconds)
+	}
+	// Context mode: reject unknown values. Normalization ("long" → "long-session",
+	// "" → "standard") is done in LoadConfig before this call; here we only
+	// validate the (already-normalized) value.
+	if cfg.ContextMode != "" {
+		if _, ok := NormalizeContextMode(cfg.ContextMode); !ok {
+			return fmt.Errorf("context_mode must be one of: standard, long-session (got %q)", cfg.ContextMode)
+		}
+	}
+	if cfg.ContextCollapseMinBytes < 0 {
+		return fmt.Errorf("context_collapse_min_bytes must be >= 0 (got %d)", cfg.ContextCollapseMinBytes)
 	}
 	return nil
 }

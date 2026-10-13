@@ -33,6 +33,7 @@ type RepoState struct {
 	SubagentEndpoint string `json:"subagent_endpoint,omitempty"`
 	SubagentModel    string `json:"subagent_model,omitempty"`
 	RawTools         bool   `json:"raw_tools,omitempty"`
+	ContextMode      string `json:"context_mode,omitempty"`
 
 	// MaxParallelSubagents persists the /maxpar session override (0 = not set;
 	// the config default is used). Restored outside the endpointMatches guard
@@ -375,6 +376,16 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 
 	a.RawTools = st.RawTools // always applies; false is a valid restored value
 
+	// Context mode: restored from repo state unless --context-mode was
+	// explicitly passed this run (same guard as AutoExplicit for /auto).
+	// Normalise "long" → "long-session" so the shorthand is accepted.
+	if !a.Cfg.ContextModeExplicit && st.ContextMode != "" {
+		if m, ok := config.NormalizeContextMode(st.ContextMode); ok {
+			a.contextMode = m
+			applied = append(applied, "context="+m)
+		}
+	}
+
 	if !a.Cfg.AutoExplicit {
 		if st.AutoApprove {
 			a.SetAutoApprove(true)
@@ -530,6 +541,9 @@ func DescribeRepoState(app *App) string {
 	}
 	if st.RawTools {
 		b.WriteString("  raw tools: on\n")
+	}
+	if st.ContextMode != "" {
+		b.WriteString("  context mode: " + st.ContextMode + "\n")
 	}
 	if st.AutoApprove {
 		b.WriteString("  auto: on\n")

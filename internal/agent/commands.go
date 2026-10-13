@@ -354,7 +354,30 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, note("cwd: " + app.Exec.Cwd())
 
 	case "/mode":
-		return true, false, note("exec: " + app.Exec.Describe())
+		if len(fields) > 1 {
+			arg := fields[1]
+			switch arg {
+			case "standard", "long-session", "long":
+				mode := arg
+				if mode == "long" {
+					mode = "long-session"
+				}
+				if err := app.SetContextMode(mode); err != nil {
+					return true, false, note(err.Error())
+				}
+				app.saveRepoState(func(s *RepoState) { s.ContextMode = mode })
+				if mode == "standard" {
+					return true, false, note("context mode: standard (full history sent)")
+				}
+				return true, false, note("context mode: long-session — finished requests are collapsed to question + answer")
+			case "status":
+				return true, false, note(fmt.Sprintf("context mode: %s", app.ContextMode()))
+			default:
+				return true, false, note("usage: /mode [standard|long-session|status]")
+			}
+		}
+		// Bare /mode: show both exec backend and context mode.
+		return true, false, note("exec: " + app.Exec.Describe() + " · context: " + app.ContextMode())
 
 	case "/history":
 		return true, false, note(fmt.Sprintf("%d messages, ~%d chars (max %d)",
@@ -1546,7 +1569,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /repostate           show terminal settings remembered for this folder (model/backend/auto/…)
 /repostate clear     delete the remembered settings for this folder
 /cwd                 show executor working directory
-/mode                show execution backend
+/mode [standard|long-session|status]  show exec backend / set context mode
 /history             transcript size
 /sessions            list saved sessions (★ = current)
 /resume [<id>]       resume a saved session by id prefix; omit for most recent

@@ -23,6 +23,9 @@ package agent
 // operations (Exec interface calls, Client methods).
 
 import (
+	"fmt"
+
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/workflow"
 )
@@ -161,6 +164,47 @@ func (a *App) SetRawToolsValue(v bool) {
 	a.stateMu.Lock()
 	a.RawTools = v
 	a.stateMu.Unlock()
+}
+
+// ContextMode returns the active context mode under stateMu.RLock.
+// "standard" is the default; "long-session" collapses finished requests.
+func (a *App) ContextMode() string {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	if a.contextMode == "" {
+		return "standard"
+	}
+	return a.contextMode
+}
+
+// SetContextMode sets the context mode under stateMu.Lock.
+// NormalizeContextMode is applied so "long" is accepted as a shorthand.
+func (a *App) SetContextMode(mode string) error {
+	m, ok := config.NormalizeContextMode(mode)
+	if !ok {
+		return fmt.Errorf("invalid context mode %q (want standard or long-session)", mode)
+	}
+	a.stateMu.Lock()
+	a.contextMode = m
+	a.stateMu.Unlock()
+	return nil
+}
+
+// contextModeLocked returns the active context mode. Caller MUST hold stateMu.
+func (a *App) contextModeLocked() string {
+	if a.contextMode == "" {
+		return "standard"
+	}
+	return a.contextMode
+}
+
+// IsLongSession reports whether long-session mode is active AND this is not
+// a subagent. Subagents always run in standard mode (their context is
+// already discarded after each task, so collapsing would add nothing).
+func (a *App) IsLongSession() bool {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.contextMode == "long-session" && !a.IsSubagent
 }
 
 // SetCounselModeValue sets the counsel mode and max under stateMu.Lock.

@@ -273,6 +273,7 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 	app.StateRLock()
 	selectedBackend := app.SelectedBackend
 	rawTools := app.RawTools
+	contextMode := app.ContextMode()
 	assistEnabled := app.AssistEnabled
 	assistAuto := app.AssistAuto
 	infoPanelOpen := app.InfoPanelOpen
@@ -316,6 +317,7 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 		TranscriptSize:  convSize,
 		Costs:           app.Costs,
 		RawTools:        rawTools,
+		ContextMode:     contextMode,
 		AssistEnabled:   assistEnabled,
 		AssistAuto:      assistAuto,
 	}

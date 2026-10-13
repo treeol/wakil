@@ -231,6 +231,13 @@ type App struct {
 	// Toggled by the /rawtools command.
 	RawTools bool
 
+	// contextMode is the active context mode: "standard" (default) or
+	// "long-session". In long-session mode, finished requests are collapsed to
+	// question + answer + a note pointing to an archived working set, so context
+	// grows only with the current request. Guarded by stateMu. Restored from
+	// RepoState (guarded by Cfg.ContextModeExplicit) or set by /mode.
+	contextMode string
+
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly
 	// disabled (no cap); >0 = cap at this many chars. Applied live in

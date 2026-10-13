@@ -562,6 +562,9 @@ func statusSegments(in statusLineInput) []string {
 	if in.rawTools {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("raw"))
 	}
+	if in.contextMode == "long-session" {
+		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("long"))
+	}
 	if in.AssistEnabled {
 		label := "assist"
 		if in.AssistAuto {
@@ -702,6 +705,7 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 		pendingAutoGrant:        m.pendingAutoGrant,
 		pendingDestructiveGrant: m.pendingDestructiveGrant,
 		rawTools:                info.RawTools,
+		contextMode:             info.ContextMode,
 		reasoning:               m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
 		tps:                     m.tps,
 		workflowLabel:           info.WorkflowLabel,
@@ -880,6 +884,7 @@ type statusLineInput struct {
 	pendingAutoGrant        bool // deferred /auto grant requested mid-turn (renders AUTO*)
 	pendingDestructiveGrant bool // deferred destructive grant (renders AUTO!*)
 	rawTools                bool
+	contextMode             string  // "standard" or "long-session"; renders "long" segment when active
 	reasoning               bool    // extended-thinking in progress
 	tps                     float64 // decode speed; 0 = not measured yet
 	workflowLabel           string  // e.g. "implement 3/6" or "" when no workflow

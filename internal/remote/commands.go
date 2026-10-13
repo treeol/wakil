@@ -97,6 +97,9 @@ func (f *RemoteFacade) DispatchCommand(line string) sessionclient.CommandResult 
 		return sessionclient.CommandResult{Handled: true, Notice: "cwd: (unknown — wait for the daemon state to load)"}
 
 	case "/mode":
+		if len(fields) > 1 {
+			return sessionclient.CommandResult{Handled: true, Notice: "context mode switching is not supported over the daemon yet"}
+		}
 		if m := f.stateString(func(s *v1alpha1.SessionState) string { return s.ExecMode }); m != "" {
 			return sessionclient.CommandResult{Handled: true, Notice: "exec: " + m}
 		}

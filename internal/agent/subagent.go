@@ -1203,6 +1203,11 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	cfg.KeepBytes = subagentKeepBytes
 	cfg.SummaryBytes = subagentSummaryBytes
 
+	// Subagents always run in standard context mode — their context is
+	// already discarded after each task, so long-session collapse would
+	// add nothing. Force standard regardless of the parent's mode.
+	cfg.ContextMode = config.ContextModeStandard
+
 	// Per-result cap: config override > hardcoded default
 	cfg.ToolResultCap = subagentToolResultCap
 	if a.Cfg.SubagentToolResultCap > 0 {

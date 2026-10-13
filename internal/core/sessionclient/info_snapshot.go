@@ -65,6 +65,11 @@ type InfoSnapshot struct {
 	// segment without calling Snapshot(), which copies the entire conversation.
 	RawTools bool
 
+	// ContextMode reports the active context mode ("standard" or
+	// "long-session"). When long-session is active, the status line shows
+	// a "long" segment so the mode is always visible.
+	ContextMode string
+
 	// AssistEnabled reports whether /assist is ON (querying /v1/assist before
 	// tool decisions). AssistAuto reports whether proposals auto-execute.
 	// Both are per-session toggles; the TUI seeds from config ilm_stack.mode.

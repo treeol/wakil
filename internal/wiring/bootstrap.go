@@ -220,6 +220,11 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// set it directly, so the bridge is this exported setter.
 	app.SetConsent(agent.ConsentSnapshot{AutoApprove: cfg.AutoApprove})
 
+	// Initialize context mode from config. RestoreRepoState may override
+	// this later (guarded by Cfg.ContextModeExplicit). Subagents force
+	// standard regardless (see subagent construction).
+	app.SetContextMode(cfg.ContextMode)
+
 	// Staging client
 	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
 		app.StagingClient = staging.NewClient(kvrSocket)
