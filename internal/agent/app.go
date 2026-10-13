@@ -238,6 +238,15 @@ type App struct {
 	// RepoState (guarded by Cfg.ContextModeExplicit) or set by /mode.
 	contextMode string
 
+	// Turn tracking (long-session mode bookkeeping). Turn goroutine only —
+	// no lock needed for writes; reads under convMu.RLock when from another
+	// goroutine. turnSeq is the monotonic counter; curTurn is the current
+	// request's number. lastOutcomeSuspended records whether the most recent
+	// outcome was suspended (for collapse rule 6).
+	turnSeq              int
+	curTurn              int
+	lastOutcomeSuspended bool
+
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly
 	// disabled (no cap); >0 = cap at this many chars. Applied live in
@@ -923,6 +932,11 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.Conv = nil
 	a.convMu.Unlock()
 
+	// Reset turn tracking for long-session mode.
+	a.turnSeq = 0
+	a.curTurn = 0
+	a.lastOutcomeSuspended = false
+
 	a.preambleDay = ""
 	// Reset session-started flag so session_start hooks fire for the new session.
 	a.sessionStarted = false
@@ -981,6 +995,12 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	}
 	defer a.releaseTurn()
 
+	// Long-session mode: number this request. turnSeq is monotonic across
+	// the session; curTurn is read by appendConv to stamp every message
+	// appended during this request. Turn goroutine only — no lock.
+	a.turnSeq++
+	a.curTurn = a.turnSeq
+
 	// Fire session_start hooks once per session (first Send call).
 	if a.Hooks != nil && !a.sessionStarted {
 		a.sessionStarted = true
@@ -1026,9 +1046,7 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 		a.PendingImages = nil
 	}
 	a.stateMu.Unlock()
-	a.convMu.Lock()
-	a.Conv = append(a.Conv, userMsg)
-	a.convMu.Unlock()
+	a.appendConv(userMsg)
 
 	// ilm-stack: emit user_turn with the full user text.
 	if a.ILM != nil {
@@ -1062,8 +1080,10 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	rsink := a.traceReasoningSink(&traceReasoningChars)
 	final, suspended, err := a.streamTurn(ctx, userText, rsink, &traceToolCalls)
 	if err != nil {
+		a.lastOutcomeSuspended = false
 		return abortedTurnOutcome(ctx, err), err
 	}
+	a.lastOutcomeSuspended = suspended
 	a.finalizeTurn(ctx)
 	return turnOutcome(final, suspended, currentTurnStopCause(a)), nil
 }

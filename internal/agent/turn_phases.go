@@ -181,9 +181,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// model sees them as a ping. Turn goroutine only; Conv mutated under
 		// convMu. Empty inbox → no message, no cost.
 		if envelope := a.drainAsyncInbox(); envelope != "" {
-			a.convMu.Lock()
-			a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(envelope)})
-			a.convMu.Unlock()
+			a.appendConv(proxy.Message{Role: "user", Content: StrPtr(envelope)})
 			fmt.Fprintln(a.Out, Dim("· async results delivered"))
 		}
 		// Subagent budget visibility: inject a per-iteration budget snapshot
@@ -215,9 +213,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			if itersRemaining <= 5 || budgetLeft < a.Cfg.TurnToolBudget*15/100 {
 				budgetMsg = "⚠ Budget low — produce the JSON summary now with what you have.\n" + budgetMsg
 			}
-			a.convMu.Lock()
-			a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(budgetMsg)})
-			a.convMu.Unlock()
+			a.appendConv(proxy.Message{Role: "user", Content: StrPtr(budgetMsg)})
 		}
 		// Hard backstop against runaway tool loops: on the final allowed iteration
 		// drop the tools and force the model to answer from what it already has.
@@ -241,22 +237,16 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				a.confinementTripped = true
 				a.confinementPathsHit = confinementPaths
 				a.stopReason = "confinement_breaker"
-				a.convMu.Lock()
-				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(confinementBreakerPrompt(confinementPaths))})
-				a.convMu.Unlock()
+				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(confinementBreakerPrompt(confinementPaths))})
 			} else if stopOnStub {
 				// Stop-on-stub: the per-turn tool-output budget was exhausted and
 				// the grace window expired. Dedicated stop reason so the parent
 				// knows this was budget exhaustion, not iteration limit.
 				a.stopReason = "turn_budget_exhausted"
-				a.convMu.Lock()
-				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(BudgetExhaustedPrompt)})
-				a.convMu.Unlock()
+				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(BudgetExhaustedPrompt)})
 			} else {
 				a.stopReason = "iteration_limit"
-				a.convMu.Lock()
-				a.Conv = append(a.Conv, proxy.Message{Role: "user", Content: StrPtr(ToolLimitPrompt)})
-				a.convMu.Unlock()
+				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(ToolLimitPrompt)})
 			}
 		}
 
@@ -330,9 +320,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// no dangling tool_calls (without responses) are left in the transcript.
 			msg.ToolCalls = nil
 		}
-		a.convMu.Lock()
-		a.Conv = append(a.Conv, msg)
-		a.convMu.Unlock()
+		a.appendConv(msg)
 		final = DerefStr(msg.Content)
 
 		// ilm-stack: emit assistant_turn with the full text.
@@ -461,15 +449,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// text (possibly with an appended in-band hint) is what the model
 			// sees. Same pattern as load_skill's refinement hint.
 			text = a.appendSkillHint(tc.Function.Name, result.ok, text)
-			a.convMu.Lock()
-			a.Conv = append(a.Conv, proxy.Message{
+			a.appendConv(proxy.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 				Content:    StrPtr(text),
 				Pinned:     pinned,
 			})
-			a.convMu.Unlock()
 
 			// ilm-stack: emit tool_result with the full (pre-cap) output,
 			// bounded to max_output_bytes with truncated flag, full_hash,
@@ -544,16 +530,16 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			ti++
 			if endTurn {
 				if ti < len(msg.ToolCalls) {
-					a.convMu.Lock()
+					skipped := make([]proxy.Message, 0, len(msg.ToolCalls)-ti)
 					for _, pending := range msg.ToolCalls[ti:] {
-						a.Conv = append(a.Conv, proxy.Message{
+						skipped = append(skipped, proxy.Message{
 							Role:       "tool",
 							ToolCallID: pending.ID,
 							Name:       pending.Function.Name,
 							Content:    StrPtr("ERROR: tool call skipped after finalize_goal ended the invocation"),
 						})
 					}
-					a.convMu.Unlock()
+					a.appendConv(skipped...)
 				}
 				break
 			}

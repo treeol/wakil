@@ -1251,7 +1251,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			result := a.runMashuraCore(ctx, "mashura__debug", fakeTC, true)
 			a.autoCounselSkipGate = false // ensure cleared even on early return
 			// Inject as assistant+tool pair so the model sees the diagnosis.
-			a.Conv = append(a.Conv,
+			a.appendConv(
 				proxy.Message{Role: "assistant", Content: nil, ToolCalls: []proxy.ToolCall{fakeTC}},
 				proxy.Message{Role: "tool", ToolCallID: fakeTC.ID, Name: fakeTC.Function.Name, Content: StrPtr(result)},
 			)

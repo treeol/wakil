@@ -90,6 +90,13 @@ type Message struct {
 	// because the proxy/memory layer has no concept of pinning and would
 	// silently ignore it (or, worse, persist it as a stale marker).
 	Pinned bool `json:"-"`
+
+	// Turn is the wakil request number this message belongs to (0 = none:
+	// preamble, summary, handoff seed, legacy). Local bookkeeping for
+	// long-session mode. Persisted in session JSON; MUST NOT reach the wire
+	// (marshalWireMessages builds wireMessage field by field and never
+	// includes Turn).
+	Turn int `json:"wakil_turn,omitempty"`
 }
 
 type ToolCall struct {
