@@ -483,6 +483,35 @@ func (a *App) keepSlice() []int {
 	return out
 }
 
+// AddKeep exempts turn n from collapse. If the turn is already collapsed,
+// the collapse record is deleted so the turn is sent in full again.
+func (a *App) AddKeep(n int) error {
+	if n <= 0 {
+		return fmt.Errorf("invalid request number %d (must be > 0)", n)
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.keep == nil {
+		a.keep = map[int]bool{}
+	}
+	a.keep[n] = true
+	// If already collapsed, remove the record so it's sent in full again.
+	if a.collapsed != nil {
+		delete(a.collapsed, n)
+	}
+	return nil
+}
+
+// RemoveKeep removes the keep exemption for turn n, allowing it to be
+// collapsed again at the next request.
+func (a *App) RemoveKeep(n int) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.keep != nil {
+		delete(a.keep, n)
+	}
+}
+
 // RestoreTurnState rebuilds the collapsed/keep maps from a saved Session and
 // resets turnSeq to the max Turn in a.Conv. Called from LoadSession,
 // ResumeConversation, and SetConv (daemon resume paths).

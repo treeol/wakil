@@ -34,7 +34,11 @@ opens a picker to attach a file or folder for context.
 
 ```
 /cwd                 show executor working directory
-/mode                show execution backend
+/mode                show execution backend · context mode
+/mode standard       set context mode: full history sent (default; persisted per repo)
+/mode long-session   set long-session mode: finished requests collapse to question + answer + note (alias: /mode long)
+/mode status         show context mode, collapsed/kept counts, sent vs full sizes, archive dir
+/keep [n]            exempt request n from collapse (default: most recent finished); /keep off <n> removes the exemption
 /mcp                 list connected MCP servers and their tools
 /mcp reconnect NAME  reconnect a named MCP server
 ```

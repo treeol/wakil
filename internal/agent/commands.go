@@ -392,6 +392,30 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, note(fmt.Sprintf("%d messages · sent ~%d chars · full ~%d chars (max %d)",
 			sentLen, sentSize, fullSize, app.Cfg.MaxChars))
 
+	case "/keep":
+		if len(fields) < 2 {
+			return true, false, note("usage: /keep <n> — exempt request n from collapse; /keep off <n> removes the exemption")
+		}
+		if fields[1] == "off" {
+			if len(fields) < 3 {
+				return true, false, note("usage: /keep off <n>")
+			}
+			n, err := strconv.Atoi(fields[2])
+			if err != nil || n <= 0 {
+				return true, false, note("usage: /keep off <n> — n must be a positive request number")
+			}
+			app.RemoveKeep(n)
+			return true, false, note(fmt.Sprintf("request %d will be collapsed again at the next request", n))
+		}
+		n, err := strconv.Atoi(fields[1])
+		if err != nil || n <= 0 {
+			return true, false, note("usage: /keep <n> — n must be a positive request number")
+		}
+		if err := app.AddKeep(n); err != nil {
+			return true, false, note(err.Error())
+		}
+		return true, false, note(fmt.Sprintf("request %d kept in full context (exempt from collapse)", n))
+
 	case "/grants":
 		if len(fields) > 1 && fields[1] == "clear" {
 			app.ClearGrants()
@@ -1579,6 +1603,8 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /repostate clear     delete the remembered settings for this folder
 /cwd                 show executor working directory
 /mode [standard|long-session|status]  show exec backend / set context mode
+/keep <n>            keep request n in full context (exempt from long-session collapse)
+/keep off <n>        remove the keep exemption for request n
 /history             transcript size
 /sessions            list saved sessions (★ = current)
 /resume [<id>]       resume a saved session by id prefix; omit for most recent

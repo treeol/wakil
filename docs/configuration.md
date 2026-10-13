@@ -32,6 +32,7 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--all` | — | — | with `--resume`/`--list-sessions`: search all workspaces |
 | `--ssh-signing` | — | `off` | SSH commit signing in the sandbox: `off`\|`auto`\|`<path>` |
 | `--config` | `WAKIL_CONFIG` | `~/.config/wakil/config.json` | JSON config file path |
+| `--context-mode` | `WAKIL_CONTEXT_MODE` | `standard` | context mode: `standard` (full history sent) \| `long-session` (collapse finished requests to question + answer + note); persisted per repo, beats the config file |
 
 `lsp_enabled` is config-file only, no flag — see [LSP code intelligence](features.md#lsp-code-intelligence).
 
@@ -152,6 +153,8 @@ reference covering every section below.
 | `turn_tool_budget` | `40000` | Per-turn cumulative tool output budget |
 | `tool_result_cap` | `8000` | Max chars kept in context per tool result; `0` = unlimited |
 | `tool_result_ttl` | `3` | Evict large tool results after N completed turns; `-1` = never |
+| `context_mode` | `"standard"` | Context mode: `standard` (full history sent; default) \| `long-session` (after a request finishes, its working set is archived to disk and no longer sent; later requests see only the user message + final answer + a one-line note). Persisted per repo (beats the config file); flag `--context-mode`, env `WAKIL_CONTEXT_MODE`; `long` is an alias for `long-session`. Subagents always run in `standard` |
+| `context_collapse_min_bytes` | `2000` | Min working-set size for a finished request to be collapsed in `long-session` mode; smaller turns aren't worth a note |
 | `max_tool_iterations` | `0` | Hard cap on tool round-trips per turn; `0` = unlimited |
 | `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |
 | `openrouter_api_key_env` | `"OPENROUTER_API_KEY"` | Env var for the OpenRouter API key *(used by mashura panel calls routed through OpenRouter)* |
@@ -167,7 +170,8 @@ reference covering every section below.
 | `ilm_stack` | — | ILM shadow-mode emitter block (`endpoint`, `token`, `mode`, `queue_path`, `batch_ms`, `max_output_bytes`). `mode=off` (default): zero behaviour change. `mode=shadow`: emit session/turn/tool events to an ILM-stack endpoint via a local durable queue + background sender. Env vars: `ILM_STACK_URL`, `ILM_STACK_TOKEN`, `ILM_MODE`, `ILM_QUEUE_PATH`, `ILM_BATCH_SIZE`, `ILM_OUTPUT_LIMIT`. |
 
 The absolute byte fields (`keep_bytes`, `summary_bytes`, `hard_max_bytes`, `compact_at`,
-`turn_tool_budget`, `tool_result_cap`, `tool_result_ttl`, `max_tool_iterations`) are
+`turn_tool_budget`, `tool_result_cap`, `tool_result_ttl`, `max_tool_iterations`,
+`context_collapse_min_bytes`) are
 fallbacks used when the backend's context window is unknown. When `n_ctx` is known, the
 fraction-based fields above override them automatically.
 

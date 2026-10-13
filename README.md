@@ -124,6 +124,7 @@ for the architecture.
 | **SSH commit signing** | Sign commits inside the sandbox using your host SSH agent — the key never enters the sandbox |
 | **Tracing** | Full JSONL session traces for debugging and reproduction |
 | **Context management** | Backend-truth context sizing, `/compact`, and `/maxctx` for capping context on large models |
+| **Long-session mode** | `/mode long-session` collapses each finished request to a question + answer + archive note, so context grows only when the current work needs it; `/keep <n>` exempts a turn from collapse |
 | **Checkpoint/Rewind** | `/rewind` to undo the last turn — restores files to their pre-edit state and truncates the conversation |
 | **Project conventions** | `AGENTS.md` ingestion and `/init` command — detect project conventions and inject them into the agent's context |
 | **Lifecycle hooks** | Configure shell hooks that fire before/after tool calls and at session start/end — format on write, lint on save, etc. |
@@ -132,6 +133,28 @@ for the architecture.
 | **Worktree isolation** | Edit-tier subagents run in isolated git worktrees — parallel edits without writer-lock serialization (git repos, direct mode) |
 | **Correction capture** | Detects when you correct the agent's work (via `/rewind` or explicit patterns) and proposes a memory entry — with your explicit confirmation |
 | **In-sandbox staging** | Fast ephemeral KV store for scratch space and subagent handoffs — snapshots survive sandbox restarts |
+
+## Slash commands
+
+In the TUI, type these at the prompt:
+
+| Command | What it does |
+|---|---|
+| `/mode [standard\|long-session\|status]` | Switch context mode, or show the current mode with `/mode status` |
+| `/keep <n>` | Keep the last `n` turns uncollapsed in long-session mode |
+| `/compact` | Compact the conversation now |
+| `/maxctx <n>` | Cap the context window the model sees |
+
+### Long-session mode
+
+Long-session mode keeps the context the agent sees small by default and
+lets it grow only when the current turn needs it, then shrink back once
+the turn is finished. Finished turns are collapsed into a short summary;
+the most recent turns stay in full until they age out. Use
+`/mode long-session` to enable it, `/mode standard` to go back to the
+always-full context, and `/keep <n>` to tune how many recent turns stay
+expanded. See [docs/long-session-mode-plan.md](docs/long-session-mode-plan.md)
+for the design.
 
 ## Requirements
 
