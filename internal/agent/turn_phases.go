@@ -252,9 +252,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 
 		// Conv[0] already carries the day-stable preamble (ensurePreamble, run
 		// once at Send entry) when InjectDate is on — no per-iteration rebuild.
-		a.convMu.RLock()
-		msgs := a.Conv
-		a.convMu.RUnlock()
+		// In long-session mode, contextProjection returns the collapsed view
+		// (U + A + note per finished turn). In standard mode it returns a.Conv.
+		msgs := a.contextProjection()
 
 		sink := a.streamSink()
 

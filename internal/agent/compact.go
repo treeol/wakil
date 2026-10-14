@@ -301,10 +301,18 @@ Transcript:
 // enforceHardMax).
 func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, error) {
 	compactAt, keepBytes, _ := a.activeThresholds()
+	// In long-session mode, the compaction trigger should reflect the
+	// projected (sent) size, not the full a.Conv. But Compact operates on
+	// a.Conv directly, so materialise collapsed turns first so the summary
+	// sees the full content and the records don't point at removed turns.
 	if !force {
-		if TranscriptSize(a.Conv) <= compactAt {
+		sentSize := TranscriptSize(a.contextProjection())
+		if sentSize <= compactAt {
 			return false, nil
 		}
+	}
+	if a.IsLongSession() {
+		a.materializeCollapsed()
 	}
 	// Evict stale tool results BEFORE computing the keep boundary. Pruning
 	// verbose old results first shrinks the transcript, which may reduce
@@ -518,14 +526,9 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	a.convMu.Lock()
 	a.Conv = newConv
 	a.convMu.Unlock()
-	// Long-session mode: compaction absorbed the old turns into the summary,
-	// so the collapse records (which pointed at archive files for turns that
-	// no longer exist in a.Conv) are stale. Clear them.
-	if a.IsLongSession() {
-		a.stateMu.Lock()
-		a.collapsed = nil
-		a.stateMu.Unlock()
-	}
+	// Long-session mode: collapse records were already cleared by
+	// materializeCollapsed() at the start of Compact. No additional
+	// cleanup needed — a.Conv is now the materialised projection.
 	return true, nil
 }
 
@@ -674,14 +677,19 @@ func spillPathsInTurn(conv []proxy.Message) []string {
 // eviction is listed by spill-cache path so the user can retrieve it.
 // Pass max ≤ 0 to disable (no-op, matching HardMaxBytes=0 behaviour).
 func (a *App) enforceHardMax(ctx context.Context, max int) {
+	if max <= 0 {
+		return
+	}
 	// In long-session mode, the projection (what the model sees) may be
-	// smaller than a.Conv. Materialise collapsed turns first so the drop
-	// loop and size check operate on the same slice the model sees.
+	// smaller than a.Conv. Only materialise when the projected size
+	// exceeds max — otherwise the collapse is working and no fallback
+	// is needed.
+	sentSize := TranscriptSize(a.contextProjection())
+	if sentSize <= max {
+		return
+	}
 	if a.IsLongSession() {
 		a.materializeCollapsed()
-	}
-	if max <= 0 || TranscriptSize(a.Conv) <= max {
-		return
 	}
 	sizeBefore := TranscriptSize(a.Conv)
 	// Try a forced compact pass first — summarise rather than drop when possible.

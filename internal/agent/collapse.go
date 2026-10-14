@@ -149,8 +149,18 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	fmt.Fprintf(&b, "full record: %s (read_file with offset/limit)\n", archive)
 
 	note := b.String()
+	// Cap the note at 600 bytes, but never truncate the archive path line
+	// (it's the recovery reference). If the note exceeds the cap, trim the
+	// "touched" section and keep the header + archive path.
 	if len(note) > 600 {
-		note = note[:597] + "…\n"
+		// Rebuild a minimal note: header + archive path only.
+		var mb strings.Builder
+		fmt.Fprintf(&mb, "[request %d working set collapsed — %d tool calls · %d chars]\n",
+			turn, sumCounts(toolCounts), renderWorkingSetBytes(w))
+		fmt.Fprintf(&mb, "full record: %s (read_file with offset/limit)\n", archive)
+		note = mb.String()
+		// If even the minimal note exceeds 600 (very long archive path),
+		// leave it as-is — the path is essential and must not be truncated.
 	}
 	return note
 }
@@ -201,21 +211,36 @@ func renderWorkingSetBytes(w []proxy.Message) int {
 // otherwise it is a.Conv (zero cost, byte-identical).
 func (a *App) contextProjection() []proxy.Message {
 	if !a.IsLongSession() {
-		return a.Conv
+		// Standard mode: return a.Conv under convMu.RLock for a consistent
+		// snapshot. In practice the turn goroutine is the sole reader at
+		// this point, but the lock prevents races with SaveSession/TUI.
+		a.convMu.RLock()
+		conv := a.Conv
+		a.convMu.RUnlock()
+		return conv
 	}
+	// Copy collapse records under stateMu so we can iterate them without
+	// holding the lock during the projection build.
 	a.stateMu.RLock()
-	collapsed := a.collapsed
+	collapsedCopy := make(map[int]CollapseRecord, len(a.collapsed))
+	for t, rec := range a.collapsed {
+		collapsedCopy[t] = rec
+	}
+	keepCopy := make(map[int]bool, len(a.keep))
+	for t := range a.keep {
+		keepCopy[t] = true
+	}
 	a.stateMu.RUnlock()
-	if len(collapsed) == 0 {
-		return a.Conv
+	if len(collapsedCopy) == 0 {
+		a.convMu.RLock()
+		conv := a.Conv
+		a.convMu.RUnlock()
+		return conv
 	}
 
 	spans := a.turnSpans()
 	// Build a set of collapsed turn numbers for fast lookup.
-	collapsedSet := map[int]CollapseRecord{}
-	for t, rec := range collapsed {
-		collapsedSet[t] = rec
-	}
+	collapsedSet := collapsedCopy
 
 	a.convMu.RLock()
 	defer a.convMu.RUnlock()
@@ -419,15 +444,17 @@ func (a *App) materializeCollapsed() {
 }
 
 // pruneCollapseOnRewind removes collapse/keep entries for turns that no longer
-// exist in a.Conv after a rewind truncation, and resets turnSeq to the max
-// remaining Turn so subsequent turns continue numbering correctly.
+// exist in a.Conv after a rewind truncation, or that exist but no longer end
+// with a clean answer (the rewind removed the answer but kept the user message).
+// Resets turnSeq to the max remaining Turn.
 func (a *App) pruneCollapseOnRewind() {
 	a.convMu.RLock()
 	maxTurn := 0
-	remainingTurns := map[int]bool{}
+	// For each remaining turn, check if it still ends with a clean answer.
+	turnLastMsg := map[int]proxy.Message{}
 	for _, m := range a.Conv {
 		if m.Turn > 0 {
-			remainingTurns[m.Turn] = true
+			turnLastMsg[m.Turn] = m
 			if m.Turn > maxTurn {
 				maxTurn = m.Turn
 			}
@@ -438,14 +465,15 @@ func (a *App) pruneCollapseOnRewind() {
 	a.stateMu.Lock()
 	if a.collapsed != nil {
 		for t := range a.collapsed {
-			if !remainingTurns[t] {
+			lastMsg, exists := turnLastMsg[t]
+			if !exists || !isCleanAnswer(lastMsg) {
 				delete(a.collapsed, t)
 			}
 		}
 	}
 	if a.keep != nil {
 		for t := range a.keep {
-			if !remainingTurns[t] {
+			if _, exists := turnLastMsg[t]; !exists {
 				delete(a.keep, t)
 			}
 		}
@@ -517,17 +545,14 @@ func (a *App) RemoveKeep(n int) {
 // ResumeConversation, and SetConv (daemon resume paths).
 func (a *App) RestoreTurnState(s *Session) {
 	a.stateMu.Lock()
-	if len(s.Collapsed) > 0 {
-		a.collapsed = map[int]CollapseRecord{}
-		for _, rec := range s.Collapsed {
-			a.collapsed[rec.Turn] = rec
-		}
+	// Always reset: an empty/legacy session should clear any prior state.
+	a.collapsed = map[int]CollapseRecord{}
+	for _, rec := range s.Collapsed {
+		a.collapsed[rec.Turn] = rec
 	}
-	if len(s.Keep) > 0 {
-		a.keep = map[int]bool{}
-		for _, t := range s.Keep {
-			a.keep[t] = true
-		}
+	a.keep = map[int]bool{}
+	for _, t := range s.Keep {
+		a.keep[t] = true
 	}
 	a.lastOutcomeSuspended = false
 	a.stateMu.Unlock()
