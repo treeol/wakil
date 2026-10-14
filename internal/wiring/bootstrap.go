@@ -223,7 +223,12 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// Initialize context mode from config. RestoreRepoState may override
 	// this later (guarded by Cfg.ContextModeExplicit). Subagents force
 	// standard regardless (see subagent construction).
-	app.SetContextMode(cfg.ContextMode)
+	if err := app.SetContextMode(cfg.ContextMode); err != nil {
+		// SetContextMode normalises via NormalizeContextMode, so an invalid
+		// value here means the config itself is invalid — log and continue
+		// with the default (standard) rather than crash startup.
+		fmt.Fprintf(os.Stderr, "warning: invalid context_mode %q: %v\n", cfg.ContextMode, err)
+	}
 
 	// Staging client
 	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {

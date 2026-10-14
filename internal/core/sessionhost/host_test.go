@@ -528,6 +528,80 @@ func TestTenantIsolation(t *testing.T) {
 	}
 }
 
+func TestNotifySessionNote(t *testing.T) {
+	h, p := testEnv()
+	defer h.Close(context.Background())
+	s := createSession(t, h, p)
+
+	// Subscribe so the note event is observable.
+	sub, err := h.Subscribe(context.Background(), p, s.ID, 0)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	// Skip the SessionCreated event from the replay.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = sub.Next(ctx)
+	if err != nil {
+		t.Fatalf("drain SessionCreated: %v", err)
+	}
+
+	if err := h.NotifySessionNote(context.Background(), p, s.ID, "hello from wakil"); err != nil {
+		t.Fatalf("NotifySessionNote: %v", err)
+	}
+
+	// The note is emitted as a session_note event.
+	ev, err := sub.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if ev.Kind != event.KindSessionNote {
+		t.Fatalf("event kind = %q, want %q", ev.Kind, event.KindSessionNote)
+	}
+	payload, ok := ev.Payload.(event.SessionNote)
+	if !ok {
+		t.Fatalf("payload type = %T, want event.SessionNote", ev.Payload)
+	}
+	if payload.Text != "hello from wakil" {
+		t.Fatalf("note text = %q, want %q", payload.Text, "hello from wakil")
+	}
+}
+
+func TestNotifySessionNoteViewerRejected(t *testing.T) {
+	h, p := testEnv()
+	defer h.Close(context.Background())
+	s := createSession(t, h, p)
+
+	viewer := core.Principal{TenantID: "tnt_test", UserID: "usr_v", Role: core.RoleViewer}
+	if err := h.NotifySessionNote(context.Background(), viewer, s.ID, "sneaky"); !errors.Is(err, core.ErrNotAuthorized) {
+		t.Fatalf("viewer NotifySessionNote = %v, want ErrNotAuthorized", err)
+	}
+}
+
+func TestNotifySessionNoteEmptyText(t *testing.T) {
+	h, p := testEnv()
+	defer h.Close(context.Background())
+	s := createSession(t, h, p)
+
+	if err := h.NotifySessionNote(context.Background(), p, s.ID, ""); !errors.Is(err, core.ErrInvalidInput) {
+		t.Fatalf("empty text NotifySessionNote = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestInterruptOnIdle(t *testing.T) {
+	h, p := testEnv()
+	defer h.Close(context.Background())
+	s := createSession(t, h, p)
+
+	// Session is idle (no turn in flight). Interrupt should return
+	// ErrInvalidStateTransition — there is nothing to cancel.
+	if err := h.Interrupt(context.Background(), p, s.ID); !errors.Is(err, core.ErrInvalidStateTransition) {
+		t.Fatalf("Interrupt on idle = %v, want ErrInvalidStateTransition", err)
+	}
+}
+
 func TestRoleGating(t *testing.T) {
 	h, p := testEnv()
 	defer h.Close(context.Background())

@@ -190,14 +190,6 @@ func (a *App) SetContextMode(mode string) error {
 	return nil
 }
 
-// contextModeLocked returns the active context mode. Caller MUST hold stateMu.
-func (a *App) contextModeLocked() string {
-	if a.contextMode == "" {
-		return "standard"
-	}
-	return a.contextMode
-}
-
 // IsLongSession reports whether long-session mode is active AND this is not
 // a subagent. Subagents always run in standard mode (their context is
 // already discarded after each task, so collapsing would add nothing).
