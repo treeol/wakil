@@ -129,6 +129,9 @@
   "context_mode": "standard",
   "context_collapse_min_bytes": 2000,
 
+  "_comment_prompt_mode": "Split system prompt. prompt_mode: full (default — complete system prompt always loaded) | core (lean preamble with identity + safety gates only; the workflow extension is lazy-loaded as a second system message when the classifier detects a task). Flag: --prompt-mode. Env: WAKIL_PROMPT_MODE. A custom agent_prompt_path bypasses the split (the full file is used).",
+  "prompt_mode": "full",
+
   "max_tool_iterations": 0,
 
   "_comment_subagent_budget": "Subagent tool-loop budgets. 0 = use built-in defaults. subagent_max_tool_iterations caps tool round-trips per dispatch (default 30). subagent_turn_tool_budget caps cumulative tool output per dispatch (default 120000, auto-clamped to 35% of active hardMax). subagent_tool_result_cap limits per-result chars (default 12000).",

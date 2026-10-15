@@ -190,6 +190,41 @@ func (a *App) SetContextMode(mode string) error {
 	return nil
 }
 
+// PromptMode returns the active prompt mode under stateMu.RLock.
+// "full" is the default; "core" uses a leaner preamble with lazy-loaded extension.
+func (a *App) PromptMode() string {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	if a.promptMode == "" {
+		return config.PromptModeFull
+	}
+	return a.promptMode
+}
+
+// SetPromptMode sets the prompt mode under stateMu.Lock.
+// NormalizePromptMode is applied so invalid values are rejected. Resets
+// preambleDay so the next turn rebuilds Conv[0] with the correct prompt.
+func (a *App) SetPromptMode(mode string) error {
+	m, ok := config.NormalizePromptMode(mode)
+	if !ok {
+		return fmt.Errorf("invalid prompt mode %q (want full or core)", mode)
+	}
+	a.stateMu.Lock()
+	a.promptMode = m
+	// Invalidate the preamble cache so the next ensurePreamble call
+	// rebuilds Conv[0] with the new prompt mode's content.
+	a.preambleDay = ""
+	a.stateMu.Unlock()
+	return nil
+}
+
+// IsPromptCore reports whether core prompt mode is active.
+func (a *App) IsPromptCore() bool {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.promptMode == config.PromptModeCore
+}
+
 // IsLongSession reports whether long-session mode is active AND this is not
 // a subagent. Subagents always run in standard mode (their context is
 // already discarded after each task, so collapsing would add nothing).

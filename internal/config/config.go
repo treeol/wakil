@@ -133,6 +133,27 @@ func ClipboardModeIsValid(v ClipboardMode) bool {
 	return false
 }
 
+// Prompt mode constants.
+const (
+	PromptModeFull = "full" // default: full system prompt always loaded
+	PromptModeCore = "core" // core-only preamble; extension lazy-loaded on activation
+)
+
+// NormalizePromptMode normalises a raw prompt-mode string to one of the
+// canonical constants (PromptModeFull or PromptModeCore). An empty string
+// defaults to PromptModeFull. Returns the normalised mode and whether the
+// input was valid.
+func NormalizePromptMode(s string) (string, bool) {
+	switch s {
+	case "", PromptModeFull:
+		return PromptModeFull, true
+	case PromptModeCore:
+		return PromptModeCore, true
+	default:
+		return "", false
+	}
+}
+
 // Context mode constants.
 const (
 	ContextModeStandard    = "standard"     // default: full conversation sent as today
@@ -279,6 +300,14 @@ type Config struct {
 	// to "long-session".
 	ContextMode             string `json:"context_mode,omitempty"`
 	ContextCollapseMinBytes int    `json:"context_collapse_min_bytes,omitempty"` // default 2000; turns under this are not collapsed
+
+	// Prompt mode: "full" (default) sends the complete system prompt as today;
+	// "core" sends only the safety-critical core prompt, and lazy-loads the
+	// extension (workflow guidance) as a second system message when the
+	// classifier detects a task that needs it. Per-repo setting (see RepoState);
+	// --prompt-mode and WAKIL_PROMPT_MODE override it. NormalizePromptMode
+	// validates.
+	PromptMode string `json:"prompt_mode,omitempty"`
 
 	// EffectiveCtxMaxChars is an absolute cap (in chars) on the effective context
 	// used to compute compaction thresholds. When the backend reports a large
@@ -589,6 +618,7 @@ type Config struct {
 	ModelExplicit       bool `json:"-"`
 	AutoExplicit        bool `json:"-"`
 	ContextModeExplicit bool `json:"-"` // set when --context-mode was passed
+	PromptModeExplicit  bool `json:"-"` // set when --prompt-mode was passed
 
 	// DaemonMode selects remote daemon mode (P2e): the TUI dials the wakil
 	// daemon over its Unix socket instead of embedding the agent loop.
@@ -863,6 +893,8 @@ func DefaultConfig() Config {
 		ContextMode:             ContextModeStandard, // standard = full conversation sent as today
 		ContextCollapseMinBytes: 2000,                // turns under 2k are not worth collapsing
 
+		PromptMode: PromptModeFull, // full = complete system prompt always loaded
+
 		ReasoningBudgetTokens:      4096,      // headroom for extended thinking
 		AnswerMarginTokens:         4096,      // headroom for the final answer
 		ContextTokensFallback:      131072,    // assumed n_ctx when the backend is unreachable
@@ -1114,6 +1146,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envBool(&cfg.TraceSessions, "WAKIL_TRACE_SESSIONS")
 	envStr(&cfg.TraceDir, "WAKIL_TRACE_DIR")
 	envStr(&cfg.ContextMode, "WAKIL_CONTEXT_MODE")
+	envStr(&cfg.PromptMode, "WAKIL_PROMPT_MODE")
 
 	// ilm-stack emitter env vars.
 	envStr(&cfg.ILMStack.Endpoint, "ILM_STACK_URL")
@@ -1154,6 +1187,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.BoolVar(&cfg.DaemonMode, "daemon", false, "connect to a running wakil daemon over its Unix socket (remote mode)")
 	fs.StringVar(&cfg.DaemonSocket, "socket", "", "path to the wakil daemon's Unix socket (default: $XDG_RUNTIME_DIR/wakil.sock or ~/.local/share/wakil/wakil.sock)")
 	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: standard (default, full history sent) | long-session (finished requests collapsed to Q+A)")
+	fs.StringVar(&cfg.PromptMode, "prompt-mode", cfg.PromptMode, "prompt mode: full (default, complete system prompt) | core (core-only preamble, extension lazy-loaded on task detection)")
 	fs.Usage = func() {
 		out := fs.Output()
 		fmt.Fprintln(out, "Usage: wakil [flags] [workspace-path]")
@@ -1178,6 +1212,7 @@ func LoadConfig(argv []string) (Config, error) {
 	cfg.ModelExplicit = flagsSet["model"] || os.Getenv("ILM_MODEL") != ""
 	cfg.AutoExplicit = flagsSet["auto"]
 	cfg.ContextModeExplicit = flagsSet["context-mode"]
+	cfg.PromptModeExplicit = flagsSet["prompt-mode"]
 
 	// Resolve trace: --trace flag enables for this run; config trace_sessions makes
 	// it the standing default. Either way cfg.Trace is the single bit callers check.
@@ -1235,6 +1270,10 @@ func LoadConfig(argv []string) (Config, error) {
 	// takes cfg by value — the write wouldn't reach the caller.
 	if m, ok := NormalizeContextMode(cfg.ContextMode); ok {
 		cfg.ContextMode = m
+	}
+	// Normalize prompt_mode: "" → "full".
+	if m, ok := NormalizePromptMode(cfg.PromptMode); ok {
+		cfg.PromptMode = m
 	}
 	if err := validateContextLimits(cfg); err != nil {
 		return cfg, err
@@ -1654,6 +1693,14 @@ func validateContextLimits(cfg Config) error {
 	if cfg.ContextMode != "" {
 		if _, ok := NormalizeContextMode(cfg.ContextMode); !ok {
 			return fmt.Errorf("context_mode must be one of: standard, long-session (got %q)", cfg.ContextMode)
+		}
+	}
+	// Prompt mode: reject unknown values. Normalization ("" → "full") is done
+	// in LoadConfig before this call; here we only validate the (already-
+	// normalized) value.
+	if cfg.PromptMode != "" {
+		if _, ok := NormalizePromptMode(cfg.PromptMode); !ok {
+			return fmt.Errorf("prompt_mode must be one of: full, core (got %q)", cfg.PromptMode)
 		}
 	}
 	if cfg.ContextCollapseMinBytes < 0 {

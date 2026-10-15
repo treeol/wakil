@@ -238,6 +238,20 @@ type App struct {
 	// RepoState (guarded by Cfg.ContextModeExplicit) or set by /mode.
 	contextMode string
 
+	// promptMode is the active prompt mode: "full" (default) or "core". In core
+	// mode, the preamble uses only AgentCorePrompt (safety + identity), and the
+	// extension (AgentExtensionPrompt) is lazy-loaded as a second system message
+	// when the classifier detects a task. Guarded by stateMu. Restored from
+	// RepoState (guarded by Cfg.PromptModeExplicit) or set by /prompt.
+	promptMode string
+
+	// extensionActivated tracks whether the extension prompt has been appended
+	// to a.Conv as a second system message this session. Once true, it stays
+	// true for the session (sticky activation). Turn-goroutine only — set by
+	// maybeActivateExtension in Send, read by contextProjection (under convMu
+	// since it reads a.Conv).
+	extensionActivated bool
+
 	// Turn tracking (long-session mode bookkeeping). Turn goroutine only —
 	// no lock needed for writes; reads under convMu.RLock when from another
 	// goroutine. turnSeq is the monotonic counter; curTurn is the current
@@ -293,6 +307,18 @@ type App struct {
 	// system message. Empty string = no agent system prompt (proxy-side injections
 	// are unaffected).
 	AgentPrompt string
+
+	// AgentCorePrompt is the core-only system prompt (identity + safety gates +
+	// basic protocol). Used as the preamble when /prompt core is active instead
+	// of AgentPrompt. Empty when /prompt full is active or a custom prompt path
+	// is configured (the full AgentPrompt is used instead).
+	AgentCorePrompt string
+
+	// AgentExtensionPrompt is the workflow extension (search, memory, subagents,
+	// async, output formatting). Lazy-loaded as a second system message when
+	// /prompt core is active and the classifier detects a task. Empty when
+	// /prompt full is active or a custom prompt path is configured.
+	AgentExtensionPrompt string
 
 	// InjectDate keeps a day-stable system message (agent prompt + date + cwd
 	// + tool inventory) as Conv[0], so the model doesn't fall back to its
@@ -971,6 +997,9 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.curTurn = 0
 	a.lastOutcomeSuspended = false
 
+	// Reset split-prompt activation so a new session re-classifies.
+	a.extensionActivated = false
+
 	a.preambleDay = ""
 	// Reset session-started flag so session_start hooks fire for the new session.
 	a.sessionStarted = false
@@ -1068,6 +1097,14 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 		stored = memCtx + "\n" + stored
 	}
 	a.ensurePreamble()
+	// Split-prompt activation: in core mode, classify the user message and
+	// append the extension prompt as a second system message (Turn==0, Pinned)
+	// when a task is detected. Once activated, it stays for the session — no
+	// re-classification needed. The extension is inserted after Conv[0] (the
+	// core preamble) and before the user message, never between a tool-call
+	// and its result. Must have Turn==0 so collapse projection passes it
+	// through unchanged.
+	a.maybeActivateExtension(userText)
 	// Long-session mode: collapse finished turns before fitting the window.
 	// Picks up turns that rule 6 skipped earlier (async work has since finished).
 	a.collapseFinishedTurns()
@@ -1521,8 +1558,18 @@ func (a *App) buildPreamble(today string) string {
 	}
 
 	var parts []string
-	if a.AgentPrompt != "" {
-		parts = append(parts, a.AgentPrompt)
+	// In core prompt mode, use the leaner AgentCorePrompt (safety + identity +
+	// protocol). The extension (AgentExtensionPrompt) is lazy-loaded as a
+	// second system message by maybeActivateExtension. In full mode (default),
+	// or when a custom prompt path is configured (AgentCorePrompt is empty),
+	// use the full AgentPrompt as before.
+	corePrompt := a.AgentCorePrompt
+	if corePrompt == "" || !a.IsPromptCore() {
+		if a.AgentPrompt != "" {
+			parts = append(parts, a.AgentPrompt)
+		}
+	} else {
+		parts = append(parts, corePrompt)
 	}
 	// AGENTS.md (advisory project instructions) — loaded from the workspace
 	// root and ancestor directories (bounded by the workspace root, never

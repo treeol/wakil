@@ -230,6 +230,24 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		fmt.Fprintf(os.Stderr, "warning: invalid context_mode %q: %v\n", cfg.ContextMode, err)
 	}
 
+	// Split-prompt support: load the core and extension prompts unconditionally
+	// so they're available when the mode changes at runtime (/prompt core) or
+	// via repo-state restore. Only the embedded split prompts participate — a
+	// custom agent_prompt_path file bypasses the feature (the full file is the
+	// core; no extension is loaded), preserving backward compatibility with
+	// user overrides.
+	// RestoreRepoState may override the mode later (guarded by
+	// Cfg.PromptModeExplicit).
+	if err := app.SetPromptMode(cfg.PromptMode); err != nil {
+		// SetPromptMode normalises via NormalizePromptMode — an invalid value
+		// means invalid config. Log and continue with the default (full).
+		fmt.Fprintf(os.Stderr, "warning: invalid prompt_mode %q: %v\n", cfg.PromptMode, err)
+	}
+	if cfg.AgentPromptPath == "" {
+		app.AgentCorePrompt = strings.TrimRight(prompts.EmbeddedCorePrompt, "\n")
+		app.AgentExtensionPrompt = strings.TrimRight(prompts.EmbeddedExtensionPrompt, "\n")
+	}
+
 	// Staging client
 	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
 		app.StagingClient = staging.NewClient(kvrSocket)

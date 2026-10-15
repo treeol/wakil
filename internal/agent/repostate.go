@@ -34,6 +34,7 @@ type RepoState struct {
 	SubagentModel    string `json:"subagent_model,omitempty"`
 	RawTools         bool   `json:"raw_tools,omitempty"`
 	ContextMode      string `json:"context_mode,omitempty"`
+	PromptMode       string `json:"prompt_mode,omitempty"`
 
 	// MaxParallelSubagents persists the /maxpar session override (0 = not set;
 	// the config default is used). Restored outside the endpointMatches guard
@@ -383,6 +384,15 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 		if m, ok := config.NormalizeContextMode(st.ContextMode); ok {
 			a.contextMode = m
 			applied = append(applied, "context="+m)
+		}
+	}
+
+	// Prompt mode: restored from repo state unless --prompt-mode was
+	// explicitly passed this run. Normalises via NormalizePromptMode.
+	if !a.Cfg.PromptModeExplicit && st.PromptMode != "" {
+		if m, ok := config.NormalizePromptMode(st.PromptMode); ok {
+			a.promptMode = m
+			applied = append(applied, "prompt="+m)
 		}
 	}
 

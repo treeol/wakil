@@ -386,6 +386,27 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// Bare /mode: show both exec backend and context mode.
 		return true, false, note("exec: " + app.Exec.Describe() + " · context: " + app.ContextMode())
 
+	case "/prompt":
+		if len(fields) > 1 {
+			arg := fields[1]
+			switch arg {
+			case "full", "core":
+				if err := app.SetPromptMode(arg); err != nil {
+					return true, false, note(err.Error())
+				}
+				app.saveRepoState(func(s *RepoState) { s.PromptMode = arg })
+				if arg == "full" {
+					return true, false, note("prompt mode: full (complete system prompt always loaded)")
+				}
+				return true, false, note("prompt mode: core — lean preamble, extension lazy-loaded on task detection")
+			case "status":
+				return true, false, note("prompt mode: " + app.PromptMode())
+			default:
+				return true, false, note("usage: /prompt [full|core|status]")
+			}
+		}
+		return true, false, note("prompt: " + app.PromptMode())
+
 	case "/history":
 		sentLen, sentSize := app.ConvStats()
 		_, fullSize := app.ConvStatsFull()
