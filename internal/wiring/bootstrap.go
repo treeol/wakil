@@ -178,6 +178,11 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	wg.Wait()
 	probeCancel()
 
+	// Load the agent prompt. When using the embedded prompt (the common case —
+	// AgentPromptPath is auto-set to a non-existent file next to config.json),
+	// also load the embedded core/extension split prompts so /prompt core works.
+	promptForApp, usingEmbedded := loadAgentPrompt(cfg)
+
 	app := &agent.App{
 		Cfg:                          cfg,
 		Client:                       client,
@@ -187,7 +192,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		Browser:                      browserMgr,
 		Tools:                        agent.BuildTools(cfg, exe.Cwd(), mcpMgr),
 		CtxLimit:                     ctxLimit,
-		AgentPrompt:                  loadAgentPrompt(cfg),
+		AgentPrompt:                  promptForApp,
 		BackendList:                  backendList,
 		ModelList:                    modelList,
 		SelectedBackend:              cfg.Backend,
@@ -243,7 +248,13 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		// means invalid config. Log and continue with the default (full).
 		fmt.Fprintf(os.Stderr, "warning: invalid prompt_mode %q: %v\n", cfg.PromptMode, err)
 	}
-	if cfg.AgentPromptPath == "" {
+	// Load the embedded core/extension split prompts when the embedded agent
+	// prompt is in use (no custom prompt file resolved). This covers the common
+	// case where AgentPromptPath is auto-set to a non-existent file next to
+	// config.json — loadAgentPrompt falls back to the embedded prompt, and
+	// usingEmbedded is true. With a custom prompt file, the split is bypassed
+	// (the custom file becomes the full/core prompt; no extension).
+	if usingEmbedded {
 		app.AgentCorePrompt = strings.TrimRight(prompts.EmbeddedCorePrompt, "\n")
 		app.AgentExtensionPrompt = strings.TrimRight(prompts.EmbeddedExtensionPrompt, "\n")
 	}
@@ -477,18 +488,22 @@ func NewExecutor(cfg config.Config) (exec.Executor, error) {
 // (missing file, read error, empty file, or no path configured) it logs a
 // warning and returns the full embedded prompt from prompts/agent.txt so the
 // process always has a complete system prompt — the bare binary is self-contained.
-func LoadAgentPrompt(cfg config.Config) string { return loadAgentPrompt(cfg) }
+func LoadAgentPrompt(cfg config.Config) string { prompt, _ := loadAgentPrompt(cfg); return prompt }
 
 // loadAgentPrompt reads the agent operating instructions from cfg.AgentPromptPath.
 // On success it logs the byte count and returns the content. On any failure
 // (missing file, read error, empty file, or no path configured) it logs a
 // warning and returns the full embedded prompt from prompts/agent.txt so the
 // process always has a complete system prompt — the bare binary is self-contained.
-func loadAgentPrompt(cfg config.Config) string {
+// usingEmbedded reports whether the returned content came from the embedded
+// prompt (not a custom file). When true, the caller also loads the embedded
+// core/extension split prompts so /prompt core works even when AgentPromptPath
+// was auto-set to a non-existent file (the common case with a config.json).
+func loadAgentPrompt(cfg config.Config) (prompt string, usingEmbedded bool) {
 	embedded := strings.TrimRight(prompts.EmbeddedAgentPrompt, "\n")
 	path := cfg.AgentPromptPath
 	if path == "" {
-		return embedded
+		return embedded, true
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -497,13 +512,13 @@ func loadAgentPrompt(cfg config.Config) string {
 		if !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using embedded prompt\n", path, err)
 		}
-		return embedded
+		return embedded, true
 	}
 	if len(strings.TrimSpace(string(b))) == 0 {
 		fmt.Fprintf(os.Stderr, "agent prompt: warning: %s is empty — using embedded prompt\n", path)
-		return embedded
+		return embedded, true
 	}
-	prompt := strings.TrimRight(string(b), "\n")
+	prompt = strings.TrimRight(string(b), "\n")
 	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)
-	return prompt
+	return prompt, false
 }
