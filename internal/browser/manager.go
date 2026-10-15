@@ -7,7 +7,7 @@
 // browser_* tools to the agent.
 //
 // In docker exec mode, Chromium is launched INSIDE the sandbox container (via
-// docker exec) and controlled from the host via chromedp.NewRemoteAllocator
+// docker exec) and controlled from the host via remote.NewAllocator
 // (CDP over WebSocket). This reuses the chromium installed in the Docker image.
 // In direct mode, Chromium is launched as a child of the wakil process on the
 // host via chromedp.NewExecAllocator.
@@ -31,6 +31,7 @@ import (
 
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/remote"
 	"github.com/treeol/wakil/internal/safe"
 )
 
@@ -79,7 +80,7 @@ type Manager struct {
 
 	// dockerExe and dockerContainer are set when the browser runs inside a
 	// Docker container. Close() uses them to kill the container-side chromium
-	// process (NewRemoteAllocator does not own the process lifecycle).
+	// process (the remote allocator does not own the process lifecycle).
 	dockerExe       SandboxExecutor
 	dockerContainer string
 
@@ -120,7 +121,7 @@ func cdpReady(cdpURL string) bool {
 }
 
 // newDockerManager launches Chromium inside the Docker container and connects
-// to it via chromedp.NewRemoteAllocator (CDP over WebSocket). The container
+// to it via remote.NewAllocator (CDP over WebSocket). The container
 // publishes port 9222 to an ephemeral host port (via -p 127.0.0.1::9222 at
 // container creation), which the host-side browser manager connects to via
 // localhost. This avoids container-IP routing issues (Docker Desktop, rootless
@@ -241,8 +242,8 @@ while True:
 			strings.TrimSpace(logOut), strings.TrimSpace(listenerOut), strings.TrimSpace(chromiumCmdline))
 	}
 
-	// Connect via chromedp.NewRemoteAllocator.
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), cdpURL)
+	// Connect via remote.NewAllocator.
+	allocCtx, allocCancel := remote.NewAllocator(context.Background(), cdpURL)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 
 	m := &Manager{
@@ -258,7 +259,7 @@ while True:
 
 	// Verify the CDP connection works by running a no-op action.
 	launchDone := make(chan error, 1)
-	safe.Go("browser-launch", func() { launchDone <- chromedp.Run(browserCtx) })
+	safe.Go("browser-launch", func() { _, err := chromedp.Run(browserCtx, chromedp.Navigate("about:blank")); launchDone <- err })
 	select {
 	case err := <-launchDone:
 		if err != nil {
@@ -333,7 +334,7 @@ func newLocalManager(browserPath string) (*Manager, error) {
 	// the (failed or hung) allocator — that is a deliberate full abort, not
 	// a mid-session op cancellation, so canceling ctx there is correct.
 	launchDone := make(chan error, 1)
-	safe.Go("browser-launch", func() { launchDone <- chromedp.Run(ctx) })
+	safe.Go("browser-launch", func() { _, err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); launchDone <- err })
 	select {
 	case err := <-launchDone:
 		if err != nil {
@@ -350,7 +351,7 @@ func newLocalManager(browserPath string) (*Manager, error) {
 
 // Close shuts down the browser process, releases all resources, and removes
 // the temporary user-data-dir. For docker-mode managers, also kills the
-// container-side chromium process (NewRemoteAllocator does not own the process
+// container-side chromium process (the remote allocator does not own the process
 // lifecycle, so canceling the chromedp context only closes the WebSocket —
 // the chromium process would otherwise leak until the container is destroyed).
 func (m *Manager) Close() error {
@@ -431,13 +432,21 @@ func (m *Manager) Navigate(ctx context.Context, url string) (title, finalURL str
 	}
 	octx, cancel := m.opCtx(ctx)
 	defer cancel()
-	err = chromedp.Run(octx,
+	if err := chromedp.Do(octx,
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
-		chromedp.Title(&title),
-		chromedp.Location(&finalURL),
-	)
-	return title, finalURL, err
+	); err != nil {
+		return "", "", err
+	}
+	title, err = chromedp.Run(octx, chromedp.Title())
+	if err != nil {
+		return "", "", err
+	}
+	finalURL, err = chromedp.Run(octx, chromedp.Location())
+	if err != nil {
+		return "", "", err
+	}
+	return title, finalURL, nil
 }
 
 // Screenshot captures a screenshot of the current page and saves it to a
@@ -450,12 +459,15 @@ func (m *Manager) Screenshot(ctx context.Context, fullPage bool) (string, error)
 	octx, cancel := m.opCtx(ctx)
 	defer cancel()
 	var buf []byte
+	var err error
 	if fullPage {
-		if err := chromedp.Run(octx, chromedp.FullScreenshot(&buf, 90)); err != nil {
+		buf, err = chromedp.Run(octx, chromedp.FullScreenshot(90))
+		if err != nil {
 			return "", err
 		}
 	} else {
-		if err := chromedp.Run(octx, chromedp.CaptureScreenshot(&buf)); err != nil {
+		buf, err = chromedp.Run(octx, chromedp.CaptureScreenshot())
+		if err != nil {
 			return "", err
 		}
 	}
@@ -487,7 +499,7 @@ func (m *Manager) SetViewport(ctx context.Context, width, height int) error {
 	}
 	octx, cancel := m.opCtx(ctx)
 	defer cancel()
-	return chromedp.Run(octx,
+	return chromedp.Do(octx,
 		chromedp.EmulateViewport(int64(width), int64(height)),
 	)
 }
@@ -505,13 +517,15 @@ func (m *Manager) EmulateReducedMotion(ctx context.Context, enable bool) error {
 	}
 	octx, cancel := m.opCtx(ctx)
 	defer cancel()
-	return chromedp.Run(octx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			return emulation.SetEmulatedMedia().
-				WithMedia("").
-				WithFeatures([]*emulation.MediaFeature{
+	return chromedp.Do(octx,
+		chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+			_, err := chromedp.Call(ctx, emulation.SetEmulatedMedia, emulation.SetEmulatedMediaParams{
+				Media: "",
+				Features: []*emulation.MediaFeature{
 					{Name: "prefers-reduced-motion", Value: value},
-				}).Do(ctx)
+				},
+			})
+			return err
 		}),
 	)
 }
@@ -524,7 +538,7 @@ func (m *Manager) Click(ctx context.Context, selector string) error {
 	}
 	octx, cancel := m.opCtx(ctx)
 	defer cancel()
-	return chromedp.Run(octx,
+	return chromedp.Do(octx,
 		chromedp.WaitVisible(selector),
 		chromedp.Click(selector),
 	)
@@ -541,10 +555,7 @@ func (m *Manager) EvalJS(ctx context.Context, expr string) (string, error) {
 	defer cancel()
 	// Evaluate into any to handle arbitrary return types (string, number,
 	// boolean, object, null). chromedp JSON-decodes the CDP result.
-	var result any
-	err := chromedp.Run(octx,
-		chromedp.Evaluate(expr, &result),
-	)
+	result, err := chromedp.Run(octx, chromedp.Evaluate[any](expr))
 	if err != nil {
 		return "", err
 	}
@@ -571,11 +582,7 @@ func (m *Manager) GetText(ctx context.Context, selector string) (string, error) 
 	}
 	octx, cancel := m.opCtx(ctx)
 	defer cancel()
-	var text string
-	err := chromedp.Run(octx,
-		chromedp.Text(selector, &text),
-	)
-	return text, err
+	return chromedp.Run(octx, chromedp.Text(selector))
 }
 
 // GetHTML returns the outerHTML of the element matching the selector, or the
@@ -587,12 +594,11 @@ func (m *Manager) GetHTML(ctx context.Context, selector string) (string, error) 
 	}
 	octx, cancel := m.opCtx(ctx)
 	defer cancel()
-	var html string
 	target := "html"
 	if selector != "" {
 		target = selector
 	}
-	err := chromedp.Run(octx, chromedp.OuterHTML(target, &html))
+	html, err := chromedp.Run(octx, chromedp.OuterHTML(target))
 	if err != nil {
 		return "", err
 	}

@@ -147,7 +147,7 @@ type Executor interface {
 
 	// CDPPort returns the host-side port published for the container's CDP
 	// endpoint (chromium remote debugging), or 0 if not published. The browser
-	// manager uses this to connect via chromedp.NewRemoteAllocator.
+	// manager uses this to connect via remote.NewAllocator.
 	CDPPort() int
 }
 
@@ -733,7 +733,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// Publish the CDP port for the browser manager when browser is enabled.
 	// We publish to 127.0.0.1 with an ephemeral host port (::9222) so the
 	// host-side browser manager can connect to chromium inside the container
-	// via chromedp.NewRemoteAllocator. The actual host port is resolved via
+	// via remote.NewAllocator. The actual host port is resolved via
 	// docker port after the container starts.
 	if opts.BrowserEnabled {
 		args = append(args, "-p", "127.0.0.1::9223")
