@@ -592,6 +592,34 @@ func waitForCompletionToolDef() proxy.Tool {
 	}}
 }
 
+// collapseContextToolDef returns the collapse_context tool definition: lets
+// the model proactively collapse accumulated working-set messages mid-turn (or
+// sweep deferred prior turns) in long-session mode when a sub-task finishes or
+// a new task begins.
+func collapseContextToolDef() proxy.Tool {
+	params, _ := json.Marshal(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"summary": map[string]interface{}{
+				"type":        "string",
+				"description": "Cumulative summary of key findings, decisions, files modified, and state from the completed work being collapsed. Required; if called more than once in a turn, include earlier collapsed findings so nothing is lost.",
+			},
+			"next_steps": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional clean instructions or plan for how to proceed next after the context is collapsed.",
+			},
+		},
+		"required": []string{"summary"},
+	})
+	return proxy.Tool{Type: "function", Function: proxy.ToolFunction{
+		Name: "collapse_context",
+		Description: "Proactively collapse accumulated tool-call working sets in long-session mode without waiting for the turn to end. " +
+			"Call this when a distinct sub-task or investigation phase is complete and you are transitioning to the next phase or a new task. " +
+			"Archives earlier tool rounds of the current request (and any newly-eligible prior requests) to disk and replaces them in context with your summary, next_steps, and an archive file path you can read_file back if needed.",
+		Parameters: params,
+	}}
+}
+
 // BuildTools assembles the full tool list in stable groups:
 // built-ins → searxng → google → MCP → oracle → LSP → browser.
 // Within each group, tools are sorted by name for prompt-cache stability
@@ -612,6 +640,10 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	// the check_pending spin loop as the only option. Ungated and always
 	// available (like check_pending).
 	t = append(t, waitForCompletionToolDef())
+	// collapse_context lets the model trigger mid-turn or task-boundary
+	// working-set collapse in long-session mode. Ungated and excluded from
+	// subagent toolsets.
+	t = append(t, collapseContextToolDef())
 
 	// Group 2: search (conditional — appended at the end to preserve the
 	// built-in prefix when absent).

@@ -834,3 +834,365 @@ func TestCollapseRemoveKeepAllowsCollapse(t *testing.T) {
 		os.Remove(rec.Archive)
 	}
 }
+
+// --- 22. Mid-turn collapse_context: basic partial collapse & projection ---
+
+func TestCollapseContextMidTurnBasic(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.turnSeq = 1
+	app.curTurn = 1
+
+	// Simulate an active turn on iteration 2:
+	// idx 0: U
+	// idx 1: assistant tool_call read_file (iter 0)
+	// idx 2: tool result read_file (iter 0)
+	// idx 3: assistant tool_call collapse_context (iter 1 — currently executing)
+	collapseCall := proxy.ToolCall{
+		ID:   "cc-1",
+		Type: "function",
+		Function: proxy.FunctionCall{
+			Name:      "collapse_context",
+			Arguments: `{"summary":"Inspected foo.go and confirmed handler layout","next_steps":"Edit foo.go and run tests"}`,
+		},
+	}
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("refactor foo.go"), Turn: 1},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: "tc1", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"foo.go"}`}}}, Turn: 1},
+		{Role: "tool", ToolCallID: "tc1", Name: "read_file", Content: StrPtr(bigContent), Turn: 1},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{collapseCall}, Turn: 1},
+	}
+
+	res := app.handletoolCallForTest(collapseCall)
+	if !strings.Contains(res, "collapsed request 1 working set") {
+		t.Fatalf("unexpected handleCollapseContext result: %q", res)
+	}
+
+	// Simulate finalizeToolResult appending the collapse_context tool result.
+	app.appendConv(proxy.Message{
+		Role:       "tool",
+		ToolCallID: "cc-1",
+		Name:       "collapse_context",
+		Content:    StrPtr(res),
+	})
+
+	app.stateMu.RLock()
+	rec, ok := app.collapsed[1]
+	app.stateMu.RUnlock()
+	if !ok || !rec.Partial || rec.BoundaryCallID != "cc-1" {
+		t.Fatalf("expected partial CollapseRecord with BoundaryCallID=cc-1, got %+v (ok=%v)", rec, ok)
+	}
+	defer func() {
+		if rec.Archive != "" {
+			os.Remove(rec.Archive)
+		}
+	}()
+
+	proj := app.contextProjection()
+	assertNoOrphanedToolCalls(t, proj)
+
+	// Projection should have:
+	// proj[0]: U + partial checkpoint block
+	// proj[1]: assistant tool_call collapse_context (idx 3)
+	// proj[2]: tool result collapse_context (idx 4)
+	// (idx 1 and idx 2 — the read_file call+result — are elided!)
+	if len(proj) != 3 {
+		t.Fatalf("projection len = %d, want 3 (U + collapse_context call + result)", len(proj))
+	}
+	uText := DerefStr(proj[0].Content)
+	if !strings.Contains(uText, "[assistant checkpoint") {
+		t.Errorf("projected U should contain checkpoint header: %q", uText)
+	}
+	if !strings.Contains(uText, "Inspected foo.go and confirmed handler layout") {
+		t.Errorf("projected U should contain summary: %q", uText)
+	}
+	if !strings.Contains(uText, "Edit foo.go and run tests") {
+		t.Errorf("projected U should contain next_steps: %q", uText)
+	}
+	if !strings.Contains(uText, rec.Archive) {
+		t.Errorf("projected U should contain archive path %q: %q", rec.Archive, uText)
+	}
+	// Original U in a.Conv must not be mutated.
+	if *app.Conv[0].Content != "refactor foo.go" {
+		t.Errorf("original U in a.Conv was mutated: %q", *app.Conv[0].Content)
+	}
+}
+
+// handletoolCallForTest dispatches a tool call through handleToolCall.
+func (a *App) handletoolCallForTest(tc proxy.ToolCall) string {
+	return a.handleToolCall(context.Background(), tc).text
+}
+
+// --- 23. Mid-turn collapse upgrades to full collapse at finalizeTurn ---
+
+func TestCollapseContextUpgradesToFullAtFinalize(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.turnSeq = 1
+	app.curTurn = 1
+
+	collapseCall := proxy.ToolCall{
+		ID:   "cc-1",
+		Type: "function",
+		Function: proxy.FunctionCall{
+			Name:      "collapse_context",
+			Arguments: `{"summary":"Phase 1 investigation done","next_steps":"Write final answer"}`,
+		},
+	}
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("investigate and summarize"), Turn: 1},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: "tc1", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}}}, Turn: 1},
+		{Role: "tool", ToolCallID: "tc1", Name: "read_file", Content: StrPtr(bigContent), Turn: 1},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{collapseCall}, Turn: 1},
+	}
+
+	res := app.handleCollapseContext(collapseCall)
+	app.appendConv(proxy.Message{
+		Role:       "tool",
+		ToolCallID: "cc-1",
+		Name:       "collapse_context",
+		Content:    StrPtr(res),
+	})
+
+	app.stateMu.RLock()
+	partArchive := app.collapsed[1].Archive
+	app.stateMu.RUnlock()
+	defer func() {
+		if partArchive != "" {
+			os.Remove(partArchive)
+		}
+	}()
+
+	// Now the turn finishes with a clean assistant answer A.
+	app.appendConv(proxy.Message{
+		Role:    "assistant",
+		Content: StrPtr("All done — here is the final answer."),
+	})
+
+	// Run collapseFinishedTurns (as finalizeTurn does).
+	app.collapseFinishedTurns()
+
+	app.stateMu.RLock()
+	fullRec, ok := app.collapsed[1]
+	app.stateMu.RUnlock()
+	if !ok {
+		t.Fatal("expected collapse record after finalize")
+	}
+	defer func() {
+		if fullRec.Archive != "" {
+			os.Remove(fullRec.Archive)
+		}
+	}()
+	if fullRec.Partial {
+		t.Error("expected Partial=false after turn finished and upgraded")
+	}
+	if fullRec.BoundaryCallID != "" {
+		t.Errorf("expected empty BoundaryCallID after upgrade, got %q", fullRec.BoundaryCallID)
+	}
+	if fullRec.Summary != "Phase 1 investigation done" {
+		t.Errorf("expected Summary preserved across upgrade, got %q", fullRec.Summary)
+	}
+
+	// Projection should now be just U + A (2 messages).
+	proj := app.contextProjection()
+	assertNoOrphanedToolCalls(t, proj)
+	if len(proj) != 2 {
+		t.Fatalf("upgraded projection: want 2 msgs (U+A), got %d", len(proj))
+	}
+	if !strings.Contains(DerefStr(proj[1].Content), "Phase 1 investigation done") {
+		t.Errorf("projected A should preserve checkpoint summary: %q", DerefStr(proj[1].Content))
+	}
+}
+
+// --- 24. Second mid-turn collapse in the same turn advances boundary ---
+
+func TestCollapseContextRepeatedInSameTurn(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.turnSeq = 1
+	app.curTurn = 1
+
+	cc1 := proxy.ToolCall{
+		ID:   "cc-1",
+		Type: "function",
+		Function: proxy.FunctionCall{
+			Name:      "collapse_context",
+			Arguments: `{"summary":"Round 1 summary","next_steps":"Do round 2"}`,
+		},
+	}
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("multi-phase task"), Turn: 1},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: "tc1", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"p1.go"}`}}}, Turn: 1},
+		{Role: "tool", ToolCallID: "tc1", Name: "read_file", Content: StrPtr(bigContent), Turn: 1},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{cc1}, Turn: 1},
+	}
+	res1 := app.handleCollapseContext(cc1)
+	app.appendConv(proxy.Message{Role: "tool", ToolCallID: "cc-1", Name: "collapse_context", Content: StrPtr(res1)})
+
+	app.stateMu.RLock()
+	arch1 := app.collapsed[1].Archive
+	app.stateMu.RUnlock()
+	defer func() {
+		if arch1 != "" {
+			os.Remove(arch1)
+		}
+	}()
+
+	// Now round 2 happens, followed by a second collapse_context call cc2.
+	cc2 := proxy.ToolCall{
+		ID:   "cc-2",
+		Type: "function",
+		Function: proxy.FunctionCall{
+			Name:      "collapse_context",
+			Arguments: `{"summary":"Cumulative round 1 + round 2 summary","next_steps":"Finish up"}`,
+		},
+	}
+	app.appendConv(
+		proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: "tc2", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"p2.go"}`}}}},
+		proxy.Message{Role: "tool", ToolCallID: "tc2", Name: "read_file", Content: StrPtr(bigContent)},
+		proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{cc2}},
+	)
+	res2 := app.handleCollapseContext(cc2)
+	app.appendConv(proxy.Message{Role: "tool", ToolCallID: "cc-2", Name: "collapse_context", Content: StrPtr(res2)})
+
+	app.stateMu.RLock()
+	rec2 := app.collapsed[1]
+	app.stateMu.RUnlock()
+	defer func() {
+		if rec2.Archive != "" {
+			os.Remove(rec2.Archive)
+		}
+	}()
+
+	if rec2.BoundaryCallID != "cc-2" {
+		t.Errorf("BoundaryCallID = %q, want cc-2", rec2.BoundaryCallID)
+	}
+
+	proj := app.contextProjection()
+	assertNoOrphanedToolCalls(t, proj)
+	// Only U + cc2 assistant + cc2 tool result should remain in projection (3 msgs).
+	if len(proj) != 3 {
+		t.Fatalf("after 2nd collapse: projection len = %d, want 3", len(proj))
+	}
+	if !strings.Contains(DerefStr(proj[0].Content), "Cumulative round 1 + round 2 summary") {
+		t.Errorf("U checkpoint should carry updated cumulative summary: %q", DerefStr(proj[0].Content))
+	}
+}
+
+// --- 25. Multi-tool batch safety: sibling tools in same batch stay intact ---
+
+func TestCollapseContextMultiToolBatchSafety(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.turnSeq = 1
+	app.curTurn = 1
+
+	ccCall := proxy.ToolCall{
+		ID:   "cc-batch",
+		Type: "function",
+		Function: proxy.FunctionCall{
+			Name:      "collapse_context",
+			Arguments: `{"summary":"Collapsed prior round","next_steps":"Read bar.go in same batch"}`,
+		},
+	}
+	siblingCall := proxy.ToolCall{
+		ID:   "tc-sibling",
+		Type: "function",
+		Function: proxy.FunctionCall{
+			Name:      "read_file",
+			Arguments: `{"path":"bar.go"}`,
+		},
+	}
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("check files"), Turn: 1},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: "tc1", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"foo.go"}`}}}, Turn: 1},
+		{Role: "tool", ToolCallID: "tc1", Name: "read_file", Content: StrPtr(bigContent), Turn: 1},
+		// Current batch has both collapse_context AND a sibling tool call:
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{ccCall, siblingCall}, Turn: 1},
+	}
+
+	res := app.handleCollapseContext(ccCall)
+	app.appendConv(
+		proxy.Message{Role: "tool", ToolCallID: "cc-batch", Name: "collapse_context", Content: StrPtr(res)},
+		proxy.Message{Role: "tool", ToolCallID: "tc-sibling", Name: "read_file", Content: StrPtr("package bar")},
+	)
+
+	app.stateMu.RLock()
+	rec := app.collapsed[1]
+	app.stateMu.RUnlock()
+	defer func() {
+		if rec.Archive != "" {
+			os.Remove(rec.Archive)
+		}
+	}()
+
+	proj := app.contextProjection()
+	assertNoOrphanedToolCalls(t, proj)
+	// U + assistant(2 tool calls) + tool(cc-batch) + tool(tc-sibling) = 4 messages.
+	if len(proj) != 4 {
+		t.Fatalf("multi-tool batch projection: want 4 msgs, got %d", len(proj))
+	}
+}
+
+// --- 26. Edge cases: standard mode no-op, iter-0 no-op + prior turn sweep, async guard ---
+
+func TestCollapseContextEdgeCases(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("standard")
+
+	cc := proxy.ToolCall{
+		ID:   "cc-std",
+		Type: "function",
+		Function: proxy.FunctionCall{
+			Name:      "collapse_context",
+			Arguments: `{"summary":"test"}`,
+		},
+	}
+	// 1. Standard mode is a clean no-op.
+	if out := app.handleCollapseContext(cc); !strings.Contains(out, "no-op in standard mode") {
+		t.Errorf("standard mode: got %q", out)
+	}
+
+	// 2. Switch to long-session. Set up Turn 1 (finished, uncollapsed) and Turn 2 on iter 0
+	// (user switches task and model calls collapse_context on the first iteration of Turn 2).
+	app.SetContextMode("long-session")
+	t1 := oneCollapsedTurn(1)
+	for i := range t1 {
+		t1[i].Turn = 1
+	}
+	app.Conv = append([]proxy.Message{}, t1...)
+	app.turnSeq = 2
+	app.curTurn = 2
+	app.appendConv(
+		proxy.Message{Role: "user", Content: StrPtr("new task now")},
+		proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{cc}},
+	)
+
+	out := app.handleCollapseContext(cc)
+	if !strings.Contains(out, "collapsed 1 prior request(s)") {
+		t.Errorf("iter-0 with uncollapsed prior turn: got %q", out)
+	}
+	app.stateMu.RLock()
+	rec1, ok1 := app.collapsed[1]
+	_, ok2 := app.collapsed[2]
+	app.stateMu.RUnlock()
+	defer func() {
+		if rec1.Archive != "" {
+			os.Remove(rec1.Archive)
+		}
+	}()
+	if !ok1 {
+		t.Error("turn 1 should have been collapsed by prior-turn sweep")
+	}
+	if ok2 {
+		t.Error("turn 2 (iter 0) has no prior tool rounds and should not have a record")
+	}
+
+	// 3. Async pending guard blocks current-turn collapse.
+	app.asyncActive = 1
+	outAsync := app.handleCollapseContext(cc)
+	if !strings.Contains(outAsync, "deferred") {
+		t.Errorf("async pending: expected deferred message, got %q", outAsync)
+	}
+	app.asyncActive = 0
+}

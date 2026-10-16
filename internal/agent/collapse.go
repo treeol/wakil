@@ -25,14 +25,19 @@ func (a *App) appendConv(msgs ...proxy.Message) {
 	a.convMu.Unlock()
 }
 
-// CollapseRecord records that a finished request's working set was archived
-// to disk and replaced in the projection by a note pointing to the archive.
+// CollapseRecord records that a finished request's working set (or a mid-turn
+// prefix of the active request) was archived to disk and replaced in the
+// projection by a note pointing to the archive.
 type CollapseRecord struct {
-	Turn    int       `json:"turn"`
-	Archive string    `json:"archive"` // spill path of the full W render
-	WBytes  int       `json:"w_bytes"` // size of the working set (W)
-	Note    string    `json:"note"`    // deterministic note appended to A
-	At      time.Time `json:"at"`      // when the collapse happened
+	Turn           int       `json:"turn"`
+	Archive        string    `json:"archive"`                    // spill path of the full W render
+	WBytes         int       `json:"w_bytes"`                    // size of the working set (W)
+	Note           string    `json:"note"`                       // deterministic note appended to A (or U when Partial)
+	At             time.Time `json:"at"`                         // when the collapse happened
+	Partial        bool      `json:"partial,omitempty"`          // true = mid-turn prefix collapse; false = full finished turn
+	BoundaryCallID string    `json:"boundary_call_id,omitempty"` // tool_call ID of the collapse_context call; elides s.first+1 .. curAsstIdx-1
+	Summary        string    `json:"summary,omitempty"`          // model-supplied checkpoint summary
+	NextSteps      string    `json:"next_steps,omitempty"`       // model-supplied continuation plan
 }
 
 // span is the first and last index in a.Conv for messages of a given turn.
@@ -40,14 +45,12 @@ type span struct {
 	first, last int
 }
 
-// turnSpans returns a map from turn number to the first/last index in a.Conv
-// for that turn's messages. Messages with Turn==0 (preamble, summary, handoff
-// seed, legacy) are not in the map. One pass over a.Conv under convMu.RLock.
-func (a *App) turnSpans() map[int]span {
-	a.convMu.RLock()
-	defer a.convMu.RUnlock()
+// turnSpansFromSlice computes the first/last index in conv for each turn > 0.
+// Messages with Turn==0 (preamble, summary, handoff seed, legacy) are not in
+// the map. Callers must hold convMu (RLock or Lock) or pass an owned snapshot.
+func turnSpansFromSlice(conv []proxy.Message) map[int]span {
 	spans := map[int]span{}
-	for i, m := range a.Conv {
+	for i, m := range conv {
 		if m.Turn > 0 {
 			s, ok := spans[m.Turn]
 			if !ok {
@@ -204,11 +207,56 @@ func renderWorkingSetBytes(w []proxy.Message) int {
 	return len(renderWorkingSet(w))
 }
 
+// findBoundaryAssistantIdx returns the index in conv (within [s.first+1, s.last])
+// of the assistant message whose ToolCalls contains callID. Returns -1 if not
+// found or if callID is empty.
+func findBoundaryAssistantIdx(conv []proxy.Message, s span, callID string) int {
+	if callID == "" {
+		return -1
+	}
+	for i := s.first + 1; i <= s.last && i < len(conv); i++ {
+		m := conv[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID == callID {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// buildPartialCheckpointBlock formats the checkpoint block appended to a
+// shallow copy of U in contextProjection when a turn has a mid-turn partial
+// collapse record. Explicitly labeled as an assistant checkpoint so the model
+// does not confuse its own summary with user instructions.
+func buildPartialCheckpointBlock(rec CollapseRecord) string {
+	var b strings.Builder
+	b.WriteString("[assistant checkpoint — earlier working set in this request collapsed]\n")
+	if rec.Summary != "" {
+		b.WriteString("Summary: ")
+		b.WriteString(rec.Summary)
+		b.WriteString("\n")
+	}
+	if rec.NextSteps != "" {
+		b.WriteString("Next steps: ")
+		b.WriteString(rec.NextSteps)
+		b.WriteString("\n")
+	}
+	b.WriteString(rec.Note)
+	return b.String()
+}
+
 // contextProjection returns the messages that should be sent to the model.
 // In standard mode, or when no collapse records exist, this is a.Conv itself.
-// In long-session mode with collapse records, collapsed turns are replaced by
-// their U + A + note. The returned slice is a fresh copy when records exist;
-// otherwise it is a.Conv (zero cost, byte-identical).
+// In long-session mode with collapse records, finished collapsed turns are
+// replaced by their U + A + note, and mid-turn partially-collapsed turns emit
+// U + checkpoint block, elide the archived prefix (s.first+1 .. curAsstIdx-1),
+// and pass through curAsstIdx .. s.last verbatim. The returned slice is a
+// fresh copy when records exist; otherwise it is a.Conv (zero cost,
+// byte-identical).
 func (a *App) contextProjection() []proxy.Message {
 	if !a.IsLongSession() {
 		// Standard mode: return a.Conv under convMu.RLock for a consistent
@@ -226,10 +274,6 @@ func (a *App) contextProjection() []proxy.Message {
 	for t, rec := range a.collapsed {
 		collapsedCopy[t] = rec
 	}
-	keepCopy := make(map[int]bool, len(a.keep))
-	for t := range a.keep {
-		keepCopy[t] = true
-	}
 	a.stateMu.RUnlock()
 	if len(collapsedCopy) == 0 {
 		a.convMu.RLock()
@@ -238,19 +282,38 @@ func (a *App) contextProjection() []proxy.Message {
 		return conv
 	}
 
-	spans := a.turnSpans()
-	// Build a set of collapsed turn numbers for fast lookup.
-	collapsedSet := collapsedCopy
-
 	a.convMu.RLock()
 	defer a.convMu.RUnlock()
 
-	// If no messages with collapsed turns exist in a.Conv, return a.Conv.
+	spans := turnSpansFromSlice(a.Conv)
+	// Build a set of collapsed turn numbers for fast lookup.
+	collapsedSet := collapsedCopy
+
+	// Precompute resolved boundary indices for partial records. A partial
+	// record is only active if its BoundaryCallID still resolves to an
+	// assistant message after s.first+1 (so at least one message is elided).
+	partialBoundary := map[int]int{}
 	hasCollapsed := false
 	for _, m := range a.Conv {
-		if _, ok := collapsedSet[m.Turn]; ok {
+		rec, ok := collapsedSet[m.Turn]
+		if !ok || m.Turn == 0 {
+			continue
+		}
+		if rec.Partial {
+			if _, checked := partialBoundary[m.Turn]; !checked {
+				s, sok := spans[m.Turn]
+				if sok {
+					bIdx := findBoundaryAssistantIdx(a.Conv, s, rec.BoundaryCallID)
+					if bIdx > s.first+1 {
+						partialBoundary[m.Turn] = bIdx
+						hasCollapsed = true
+					} else {
+						partialBoundary[m.Turn] = -1
+					}
+				}
+			}
+		} else {
 			hasCollapsed = true
-			break
 		}
 	}
 	if !hasCollapsed {
@@ -259,20 +322,49 @@ func (a *App) contextProjection() []proxy.Message {
 
 	var out []proxy.Message
 	emittedTurn := map[int]bool{}
-	for _, m := range a.Conv {
+	for idx, m := range a.Conv {
 		rec, isCollapsed := collapsedSet[m.Turn]
 		if !isCollapsed || m.Turn == 0 {
 			// Not collapsed, or legacy — pass through unchanged.
 			out = append(out, m)
 			continue
 		}
-		// Collapsed turn: emit only U (first message) and A (last message + note).
 		s, ok := spans[m.Turn]
 		if !ok {
 			// No span found (shouldn't happen) — pass through.
 			out = append(out, m)
 			continue
 		}
+		if rec.Partial {
+			bIdx := partialBoundary[m.Turn]
+			if bIdx <= s.first+1 {
+				// Boundary not found or nothing before boundary — pass through.
+				out = append(out, m)
+				continue
+			}
+			if idx == s.first {
+				// Emit U with the partial checkpoint block appended to a shallow copy.
+				uMsg := m
+				cpBlock := buildPartialCheckpointBlock(rec)
+				if uMsg.Content != nil && *uMsg.Content != "" {
+					newContent := *uMsg.Content + "\n\n" + cpBlock
+					uMsg.Content = &newContent
+				} else {
+					uMsg.Content = &cpBlock
+				}
+				out = append(out, uMsg)
+				continue
+			}
+			if idx > s.first && idx < bIdx {
+				// Elide the archived mid-turn prefix.
+				continue
+			}
+			// idx >= bIdx: pass through the boundary assistant batch and any
+			// subsequent messages in this turn verbatim.
+			out = append(out, m)
+			continue
+		}
+		// Full collapsed turn: emit only U (first message) and A (last message + note).
 		if emittedTurn[m.Turn] {
 			continue // already emitted U and A for this turn
 		}
@@ -280,13 +372,16 @@ func (a *App) contextProjection() []proxy.Message {
 		out = append(out, a.Conv[s.first])
 		// Emit A (last message) with the note appended to its content.
 		lastMsg := a.Conv[s.last]
+		noteText := rec.Note
+		if rec.Summary != "" {
+			noteText = "[checkpoint summary: " + rec.Summary + "]\n" + noteText
+		}
 		if lastMsg.Content != nil && *lastMsg.Content != "" {
-			newContent := *lastMsg.Content + "\n\n" + rec.Note
+			newContent := *lastMsg.Content + "\n\n" + noteText
 			lastMsg.Content = &newContent
 		} else {
 			// A has nil or empty content — use the note as the content.
-			note := rec.Note
-			lastMsg.Content = &note
+			lastMsg.Content = &noteText
 		}
 		out = append(out, lastMsg)
 		emittedTurn[m.Turn] = true
@@ -302,7 +397,10 @@ func (a *App) collapseFinishedTurns() {
 	if !a.IsLongSession() {
 		return
 	}
-	spans := a.turnSpans()
+	a.convMu.RLock()
+	spans := turnSpansFromSlice(a.Conv)
+	convSnap := a.Conv
+	a.convMu.RUnlock()
 	if len(spans) == 0 {
 		return
 	}
@@ -311,6 +409,7 @@ func (a *App) collapseFinishedTurns() {
 	if a.collapsed == nil {
 		a.collapsed = map[int]CollapseRecord{}
 	}
+	suspended := a.lastOutcomeSuspended
 	a.stateMu.Unlock()
 
 	// Sort turn numbers for deterministic processing.
@@ -325,15 +424,15 @@ func (a *App) collapseFinishedTurns() {
 
 	asyncPending := a.countActiveAsyncOps() > 0
 	inboxHas := a.hasInboxContent()
-	suspended := a.lastOutcomeSuspended
 
 	for _, t := range turnNums {
-		// Already collapsed?
+		// Already collapsed? If it's a partial (mid-turn) collapse, allow
+		// upgrading to a full collapse once the turn finishes with a clean answer.
 		a.stateMu.RLock()
-		_, alreadyCollapsed := a.collapsed[t]
+		existingRec, alreadyCollapsed := a.collapsed[t]
 		_, kept := a.keep[t]
 		a.stateMu.RUnlock()
-		if alreadyCollapsed {
+		if alreadyCollapsed && !existingRec.Partial {
 			continue
 		}
 		if kept {
@@ -344,17 +443,20 @@ func (a *App) collapseFinishedTurns() {
 
 		// Rule 1: Turn > 0 (already guaranteed by turnSpans).
 		// Rule 2: finished — last message is an assistant with non-empty text and no tool calls.
-		lastMsg := a.Conv[s.last]
+		lastMsg := convSnap[s.last]
 		if !isCleanAnswer(lastMsg) {
 			continue
 		}
 
 		// Rule 3: |W| >= context_collapse_min_bytes (W = all messages except U and A).
+		// If this turn already has a mid-turn partial collapse record, upgrade it
+		// unconditionally so the turn ends in a clean U+A full collapse rather
+		// than staying stuck in partial state.
 		wSize := 0
 		for i := s.first + 1; i < s.last; i++ {
-			wSize += messageSize(a.Conv[i])
+			wSize += messageSize(convSnap[i])
 		}
-		if wSize < a.Cfg.ContextCollapseMinBytes {
+		if !existingRec.Partial && wSize < a.Cfg.ContextCollapseMinBytes {
 			continue
 		}
 
@@ -366,10 +468,11 @@ func (a *App) collapseFinishedTurns() {
 			}
 		}
 
-		// Rule 7: archive to disk. On failure, skip this turn (one warning per session).
+		// Rule 7: archive to disk. On failure, skip this turn (one warning per session);
+		// if upgrading from a partial collapse, the existing partial record is retained.
 		var w []proxy.Message
 		for i := s.first + 1; i < s.last; i++ {
-			w = append(w, a.Conv[i])
+			w = append(w, convSnap[i])
 		}
 		archive := wtools.SpillToCache(a.chatID(), fmt.Sprintf("turn-%d", t), renderWorkingSet(w))
 		if archive == "" {
@@ -389,11 +492,180 @@ func (a *App) collapseFinishedTurns() {
 			WBytes:  wSize,
 			Note:    note,
 			At:      time.Now(),
+			Summary: existingRec.Summary,
 		}
 		a.stateMu.Unlock()
 
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· collapsed request %d — %dk → 0.4k sent (archived)", t, wSize/1024)))
 	}
+}
+
+// handleCollapseContext implements the collapse_context tool: sweeps any
+// newly-eligible finished prior turns via collapseFinishedTurns(), then
+// archives and collapses the completed prefix of the current turn (s.first+1
+// .. curAsstIdx-1) into a partial CollapseRecord anchored at tc.ID.
+func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
+	if !a.IsLongSession() {
+		return "collapse_context: no-op in standard mode (use /mode long-session to enable context collapse)"
+	}
+
+	var args struct {
+		Summary   string `json:"summary"`
+		NextSteps string `json:"next_steps"`
+	}
+	if tc.Function.Arguments != "" {
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return "ERROR: invalid arguments for collapse_context: " + err.Error()
+		}
+	}
+	args.Summary = strings.TrimSpace(args.Summary)
+	args.NextSteps = strings.TrimSpace(args.NextSteps)
+	if args.Summary == "" {
+		return "ERROR: collapse_context requires a non-empty 'summary' of the completed work"
+	}
+
+	// Step 1: sweep any finished prior turns that became eligible since the
+	// start of the turn (e.g. deferred by Rule 6 while async work was active).
+	a.stateMu.RLock()
+	beforeCount := 0
+	for _, r := range a.collapsed {
+		if !r.Partial {
+			beforeCount++
+		}
+	}
+	a.stateMu.RUnlock()
+	a.collapseFinishedTurns()
+	a.stateMu.RLock()
+	afterPriorCount := 0
+	for _, r := range a.collapsed {
+		if !r.Partial {
+			afterPriorCount++
+		}
+	}
+	_, curKept := a.keep[a.curTurn]
+	existingCur, hasExistingCur := a.collapsed[a.curTurn]
+	a.stateMu.RUnlock()
+	priorCollapsed := afterPriorCount - beforeCount
+
+	if a.curTurn <= 0 {
+		if priorCollapsed > 0 {
+			return fmt.Sprintf("collapsed %d prior request(s); no active request prefix to collapse", priorCollapsed)
+		}
+		return "collapse_context: no active request prefix to collapse"
+	}
+	if curKept {
+		if priorCollapsed > 0 {
+			return fmt.Sprintf("collapsed %d prior request(s); current request %d is exempted by /keep", priorCollapsed, a.curTurn)
+		}
+		return fmt.Sprintf("collapse_context: request %d is exempted from collapse by /keep", a.curTurn)
+	}
+
+	// Guard: if async work is actively running or sitting in the inbox,
+	// defer collapsing the current turn's prefix so async op handles and
+	// correlation context stay visible until delivery.
+	if a.countActiveAsyncOps() > 0 || a.hasInboxContent() {
+		if priorCollapsed > 0 {
+			return fmt.Sprintf("collapsed %d prior request(s); current request prefix deferred while async operations are pending", priorCollapsed)
+		}
+		return "collapse_context: deferred for current request while async operations or inbox deliveries are pending"
+	}
+
+	a.convMu.RLock()
+	spans := turnSpansFromSlice(a.Conv)
+	s, ok := spans[a.curTurn]
+	if !ok {
+		a.convMu.RUnlock()
+		if priorCollapsed > 0 {
+			return fmt.Sprintf("collapsed %d prior request(s)", priorCollapsed)
+		}
+		return "collapse_context: nothing in current request to collapse yet"
+	}
+
+	curAsstIdx := findBoundaryAssistantIdx(a.Conv, s, tc.ID)
+	if curAsstIdx <= s.first+1 {
+		a.convMu.RUnlock()
+		if priorCollapsed > 0 {
+			res := fmt.Sprintf("collapsed %d prior request(s); no completed tool rounds in current request %d to collapse yet", priorCollapsed, a.curTurn)
+			if args.NextSteps != "" {
+				res += "\nNext steps: " + args.NextSteps
+			}
+			return res
+		}
+		return "collapse_context: no completed tool rounds in the current request to collapse yet (call after completing at least one tool round)"
+	}
+
+	// If collapse_context was already called in the SAME assistant tool batch,
+	// curAsstIdx matches the existing partial record's boundary assistant index.
+	if hasExistingCur && existingCur.Partial {
+		prevIdx := findBoundaryAssistantIdx(a.Conv, s, existingCur.BoundaryCallID)
+		if prevIdx == curAsstIdx {
+			a.convMu.RUnlock()
+			return fmt.Sprintf("collapse_context: current prefix up to this tool batch is already collapsed (archive: %s)", existingCur.Archive)
+		}
+	}
+
+	// Extract the completed prefix of the current turn: s.first+1 .. curAsstIdx-1.
+	w := make([]proxy.Message, 0, curAsstIdx-(s.first+1))
+	wSize := 0
+	for i := s.first + 1; i < curAsstIdx; i++ {
+		w = append(w, a.Conv[i])
+		wSize += messageSize(a.Conv[i])
+	}
+	a.convMu.RUnlock()
+
+	// Minimum threshold for explicit mid-turn collapse: min(ContextCollapseMinBytes, 512)
+	// when ContextCollapseMinBytes > 0.
+	minBytes := a.Cfg.ContextCollapseMinBytes
+	if minBytes > 512 {
+		minBytes = 512
+	}
+	if wSize < minBytes {
+		if priorCollapsed > 0 {
+			return fmt.Sprintf("collapsed %d prior request(s); current request prefix (%d chars) is below minimum collapse threshold (%d chars)", priorCollapsed, wSize, minBytes)
+		}
+		return fmt.Sprintf("collapse_context: current request working set (%d chars) is below minimum collapse threshold (%d chars)", wSize, minBytes)
+	}
+
+	archive := wtools.SpillToCache(a.chatID(), fmt.Sprintf("turn-%d-part", a.curTurn), renderWorkingSet(w))
+	if archive == "" {
+		if !a.collapseArchiveFailed {
+			a.collapseArchiveFailed = true
+			fmt.Fprintln(a.Out, Yellow("⚠ collapse: archive write failed for turn "+fmt.Sprint(a.curTurn)+" — working set kept in context"))
+		}
+		return "collapse_context: archive write failed — working set kept in context"
+	}
+
+	note := buildCollapseNote(a.curTurn, w, archive)
+	rec := CollapseRecord{
+		Turn:           a.curTurn,
+		Archive:        archive,
+		WBytes:         wSize,
+		Note:           note,
+		At:             time.Now(),
+		Partial:        true,
+		BoundaryCallID: tc.ID,
+		Summary:        args.Summary,
+		NextSteps:      args.NextSteps,
+	}
+	cpLen := len(buildPartialCheckpointBlock(rec))
+
+	a.stateMu.Lock()
+	if a.collapsed == nil {
+		a.collapsed = map[int]CollapseRecord{}
+	}
+	a.collapsed[a.curTurn] = rec
+	a.stateMu.Unlock()
+
+	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· collapsed request %d working set (mid-turn) — %dk → %.1fk sent (archived)",
+		a.curTurn, wSize/1024, float64(cpLen)/1024)))
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "collapsed request %d working set (%d bytes → %d bytes checkpoint; full record at %s)",
+		a.curTurn, wSize, cpLen, archive)
+	if priorCollapsed > 0 {
+		fmt.Fprintf(&b, " + %d prior request(s)", priorCollapsed)
+	}
+	return b.String()
 }
 
 // isCleanAnswer reports whether m is a finished assistant message: role
@@ -434,6 +706,10 @@ func (a *App) materializeCollapsed() {
 	a.stateMu.RUnlock()
 
 	proj := a.contextProjection()
+	// Clear checkpoints before restructuring a.Conv so early returns in
+	// Compact() never leave stale ConvLen indices pointing into a shortened Conv.
+	// Lock order: clearCheckpoints acquires cpMu (before convMu).
+	a.clearCheckpoints()
 	a.convMu.Lock()
 	a.Conv = proj
 	a.convMu.Unlock()
@@ -445,10 +721,11 @@ func (a *App) materializeCollapsed() {
 
 // pruneCollapseOnRewind removes collapse/keep entries for turns that no longer
 // exist in a.Conv after a rewind truncation, or that exist but no longer end
-// with a clean answer (the rewind removed the answer but kept the user message).
-// Resets turnSeq to the max remaining Turn.
+// with a clean answer (for full records) or whose BoundaryCallID no longer
+// resolves (for partial records). Resets turnSeq to the max remaining Turn.
 func (a *App) pruneCollapseOnRewind() {
 	a.convMu.RLock()
+	spans := turnSpansFromSlice(a.Conv)
 	maxTurn := 0
 	// For each remaining turn, check if it still ends with a clean answer.
 	turnLastMsg := map[int]proxy.Message{}
@@ -460,13 +737,25 @@ func (a *App) pruneCollapseOnRewind() {
 			}
 		}
 	}
+	convSnap := a.Conv
 	a.convMu.RUnlock()
 
 	a.stateMu.Lock()
 	if a.collapsed != nil {
-		for t := range a.collapsed {
+		for t, rec := range a.collapsed {
 			lastMsg, exists := turnLastMsg[t]
-			if !exists || !isCleanAnswer(lastMsg) {
+			if !exists {
+				delete(a.collapsed, t)
+				continue
+			}
+			if rec.Partial {
+				s, sok := spans[t]
+				if !sok || findBoundaryAssistantIdx(convSnap, s, rec.BoundaryCallID) <= s.first+1 {
+					delete(a.collapsed, t)
+				}
+				continue
+			}
+			if !isCleanAnswer(lastMsg) {
 				delete(a.collapsed, t)
 			}
 		}

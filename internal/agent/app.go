@@ -1735,7 +1735,7 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 	// check_pending serves async results — most often full mashūra
 	// answers — so it shares the mashūra exemption; capping it would defeat the
 	// "retrieve the full result on demand" contract.
-	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) || toolName == "check_pending" || toolName == "wait_for_completion" {
+	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) || toolName == "check_pending" || toolName == "wait_for_completion" || toolName == "collapse_context" {
 		return result
 	}
 	if a.Cfg.TurnToolBudget > 0 && turnToolBytesSoFar >= a.Cfg.TurnToolBudget {
@@ -2513,6 +2513,8 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleCheckPending(tc))
 	case "wait_for_completion":
 		return stringToToolResult(a.handleWaitForCompletion())
+	case "collapse_context":
+		return stringToToolResult(a.handleCollapseContext(tc))
 	case "kill_process":
 		return stringToToolResult(a.handleKillProcess(ctx, tc))
 	case "read_process_log":
@@ -2958,7 +2960,7 @@ func toolPrimaryArg(tc proxy.ToolCall) string {
 	if json.Unmarshal([]byte(tc.Function.Arguments), &m) != nil {
 		return ""
 	}
-	for _, k := range []string{"path", "command", "query", "url", "pattern", "file", "src"} {
+	for _, k := range []string{"path", "command", "query", "url", "pattern", "file", "src", "summary"} {
 		if v, ok := m[k].(string); ok && v != "" {
 			return Truncate(strings.Join(strings.Fields(v), " "), 50)
 		}

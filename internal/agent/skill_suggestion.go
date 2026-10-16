@@ -58,7 +58,7 @@ var skillHintExcludedTools = map[string]bool{
 	"memory_promote_from_staging": true,
 	"mashura__review":             true, "mashura__debug": true, "mashura__decide": true, "mashura__check": true,
 	"dispatch_subagent": true, "dispatch_subagents": true,
-	"check_pending": true, "wait_for_completion": true, "read_process_log": true, "kill_process": true,
+	"check_pending": true, "wait_for_completion": true, "collapse_context": true, "read_process_log": true, "kill_process": true,
 }
 
 // skillHintNonReadTools are tools that (usually) change state. A qualifying
