@@ -24,3 +24,46 @@ func TestEmbeddedAgentPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestEmbeddedSplitPrompts(t *testing.T) {
+	// The core prompt must contain safety-critical sections.
+	if len(EmbeddedCorePrompt) < 1000 {
+		t.Errorf("EmbeddedCorePrompt is only %d bytes — expected ~17KB", len(EmbeddedCorePrompt))
+	}
+	coreMarkers := []string{
+		"## Global precedence ladder",
+		"## Core loop",
+		"## Secrets",
+		"## Shell",
+		"## Files",
+		"## Honesty Invariants",
+	}
+	for _, m := range coreMarkers {
+		if !strings.Contains(EmbeddedCorePrompt, m) {
+			t.Errorf("EmbeddedCorePrompt missing marker %q", m)
+		}
+	}
+
+	// The extension prompt must contain workflow guidance sections.
+	if len(EmbeddedExtensionPrompt) < 1000 {
+		t.Errorf("EmbeddedExtensionPrompt is only %d bytes — expected ~31KB", len(EmbeddedExtensionPrompt))
+	}
+	extMarkers := []string{
+		"## Documentation upkeep",
+		"## Subagents",
+		"## Durable Memory",
+		"## Async execution",
+	}
+	for _, m := range extMarkers {
+		if !strings.Contains(EmbeddedExtensionPrompt, m) {
+			t.Errorf("EmbeddedExtensionPrompt missing marker %q", m)
+		}
+	}
+
+	// Core + extension should roughly equal the full prompt in size.
+	combined := len(EmbeddedCorePrompt) + len(EmbeddedExtensionPrompt)
+	full := len(EmbeddedAgentPrompt)
+	if combined < full*9/10 {
+		t.Errorf("core(%d) + ext(%d) = %d < 90%% of full(%d) — split may be incomplete", len(EmbeddedCorePrompt), len(EmbeddedExtensionPrompt), combined, full)
+	}
+}

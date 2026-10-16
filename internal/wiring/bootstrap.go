@@ -178,10 +178,12 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	wg.Wait()
 	probeCancel()
 
-	// Load the agent prompt. When using the embedded prompt (the common case —
-	// AgentPromptPath is auto-set to a non-existent file next to config.json),
-	// also load the embedded core/extension split prompts so /prompt core works.
-	promptForApp, usingEmbedded := loadAgentPrompt(cfg)
+	// Load the agent prompt. The full prompt is used as AgentPrompt (the
+	// preamble in full mode, or as the fallback when split prompts aren't
+	// available). Split prompts (core + extension) are always loaded from the
+	// binary embed below — they don't depend on whether the full prompt came
+	// from a custom file or the embed.
+	promptForApp, _ := loadAgentPrompt(cfg)
 
 	app := &agent.App{
 		Cfg:                          cfg,
@@ -248,16 +250,15 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		// means invalid config. Log and continue with the default (full).
 		fmt.Fprintf(os.Stderr, "warning: invalid prompt_mode %q: %v\n", cfg.PromptMode, err)
 	}
-	// Load the embedded core/extension split prompts when the embedded agent
-	// prompt is in use (no custom prompt file resolved). This covers the common
-	// case where AgentPromptPath is auto-set to a non-existent file next to
-	// config.json — loadAgentPrompt falls back to the embedded prompt, and
-	// usingEmbedded is true. With a custom prompt file, the split is bypassed
-	// (the custom file becomes the full/core prompt; no extension).
-	if usingEmbedded {
-		app.AgentCorePrompt = strings.TrimRight(prompts.EmbeddedCorePrompt, "\n")
-		app.AgentExtensionPrompt = strings.TrimRight(prompts.EmbeddedExtensionPrompt, "\n")
-	}
+	// Load the embedded core/extension split prompts unconditionally. They
+	// are embedded in the binary and always available, independent of
+	// whether the full AgentPrompt came from a custom file or the embed.
+	// In full mode (default) AgentPrompt is used; in core mode AgentCorePrompt
+	// is used as the lean preamble and AgentExtensionPrompt is lazy-loaded.
+	// A custom agent_prompt_path only affects the full prompt — the split
+	// prompts still come from the binary embed.
+	app.AgentCorePrompt = strings.TrimRight(prompts.EmbeddedCorePrompt, "\n")
+	app.AgentExtensionPrompt = strings.TrimRight(prompts.EmbeddedExtensionPrompt, "\n")
 
 	// Staging client
 	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {

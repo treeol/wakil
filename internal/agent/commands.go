@@ -400,7 +400,10 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				}
 				return true, false, note("prompt mode: core — lean preamble, extension lazy-loaded on task detection")
 			case "status":
-				return true, false, note("prompt mode: " + app.PromptMode())
+				coreLen := len(app.AgentCorePrompt)
+				extLen := len(app.AgentExtensionPrompt)
+				fullLen := len(app.AgentPrompt)
+				return true, false, note(fmt.Sprintf("prompt mode: %s · core=%d ext=%d full=%d", app.PromptMode(), coreLen, extLen, fullLen))
 			default:
 				return true, false, note("usage: /prompt [full|core|status]")
 			}
