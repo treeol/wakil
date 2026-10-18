@@ -610,7 +610,7 @@ func collapseContextToolDef() proxy.Tool {
 			},
 			"memory_key": map[string]interface{}{
 				"type":        "string",
-				"description": "Optional: store the summary as a named memory entry (key, e.g. \"ctx/<this-chat>/plan-auth-flow\") and replace the raw context with a one-line pointer. Use when this distilled knowledge will be needed later in the session but not immediately — recall it with memory_get or memory_search. Keys without a slash are namespaced under the current chat automatically.",
+				"description": "Optional: store the summary as a named memory entry and replace the raw context with a one-line pointer. Use when this distilled knowledge will be needed later in the session but not immediately — recall it with memory_get or memory_search. The key is a bare single-segment name (letters, digits, hyphens); it is namespaced under ctx/<this-chat>/ automatically. Qualified keys must be exactly ctx/<this-chat>/<name> with a non-empty single-segment name — foreign namespaces, empty/dot/dot-dot/multi-segment suffixes are refused.",
 			},
 			"description": map[string]interface{}{
 				"type":        "string",

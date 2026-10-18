@@ -43,6 +43,18 @@ type CollapseRecord struct {
 	MemoryKey      string    `json:"memory_key,omitempty"`       // mid-tier memory index entry for this archive (auto)
 	StashKey       string    `json:"stash_key,omitempty"`        // model-named memory stash for this collapse (optional)
 	StashDesc      string    `json:"stash_desc,omitempty"`       // one-line description of the model-named stash
+	// IndexRefreshFailed: the last re-put of MemoryKey failed; the retained
+	// entry may be stale (older archive reference, no latest summary).
+	IndexRefreshFailed bool `json:"index_refresh_failed,omitempty"`
+	// Stash outcome flags for the LAST stash attempt on this record:
+	// StashRefused — requested memory_key refused by namespacing.
+	// StashWriteFailed — requested memory_key failed to write (store
+	// unavailable or PutActive error). Mutually exclusive with success.
+	StashRefused     bool `json:"stash_refused,omitempty"`
+	StashWriteFailed bool `json:"stash_write_failed,omitempty"`
+	// StashKeptFromPrior: the last attempt refused/failed, so StashKey
+	// points at an EARLIER stash on this turn (not the requested one).
+	StashKeptFromPrior bool `json:"stash_kept_from_prior,omitempty"`
 }
 
 // span is the first and last index in a.Conv for messages of a given turn.
@@ -303,20 +315,36 @@ func (a *App) indexCollapsedInMemory(rec CollapseRecord, value string) string {
 // Mid-tier with a 7d TTL by default — durable writes are a promotion-policy
 // decision and are never bypassed here. Best-effort: on failure the collapse
 // itself stays intact (the on-disk archive is the durable copy).
-func (a *App) stashCollapse(rec CollapseRecord, key, description string) (string, string) {
+func (a *App) stashCollapse(rec CollapseRecord, key, description string) (keyOut, descOut string, refused bool) {
 	if a.MemoryStore == nil {
 		fmt.Fprintln(a.Out, Yellow("⚠ stash: memory store unavailable — archive is still written"))
-		return "", ""
+		return "", "", false
 	}
-	// Namespace enforcement: caller-supplied keys may only live under ctx/.
-	// A bare key is auto-qualified; a qualified key must start with "ctx/" —
-	// anything else could overwrite unrelated memory (project notes, handoff
-	// records, promoted corrections) via a TierMid re-put.
-	if !strings.Contains(key, "/") {
-		key = "ctx/" + a.chatID() + "/" + key
-	} else if !strings.HasPrefix(key, "ctx/") {
-		fmt.Fprintln(a.Out, Yellow("⚠ stash: memory_key must live under ctx/ (namespacing refused) — archive is still written"))
-		return "", ""
+	// Namespace enforcement: caller-supplied keys may only live under
+	// ctx/<this-chatID>/. A bare key is auto-qualified; a qualified key must
+	// be exactly this session's namespace — anything else (another ctx/
+	// prefix, a foreign top-level key) could overwrite unrelated memory
+	// (project notes, handoff records, promoted corrections) via a TierMid
+	// re-put. Refusal is non-destructive: the caller keeps its prior key.
+	ns := "ctx/" + a.chatID() + "/"
+	suffix := ""
+	if i := strings.Index(key, "/"); i >= 0 {
+		if !strings.HasPrefix(key, ns) {
+			fmt.Fprintln(a.Out, Yellow("⚠ stash: memory_key must live under "+ns+" (namespacing refused) — archive is still written"))
+			return "", "", true
+		}
+		suffix = strings.TrimPrefix(key, ns)
+	} else {
+		suffix = key
+		key = ns + key
+	}
+	// The key suffix must be a non-empty single path segment: no "..", no
+	// ".", no slashes or backslashes, no path-like content — memory keys are
+	// opaque to the store, so the caller must guarantee lexical sanity here.
+	if suffix == "" || suffix == "." || suffix == ".." ||
+		strings.ContainsAny(suffix, "/\\") {
+		fmt.Fprintln(a.Out, Yellow("⚠ stash: memory_key suffix invalid (empty or path-like) — archive is still written"))
+		return "", "", true
 	}
 	if description == "" {
 		description = "model stash of collapsed working set (request " + fmt.Sprint(rec.Turn) + ")"
@@ -330,9 +358,9 @@ func (a *App) stashCollapse(rec CollapseRecord, key, description string) (string
 		memory.TierMid, a.AgentPrefix, a.chatID(), a.computeTainted(), &expires, nil,
 		"model-named stash via collapse_context (archive is the durable copy)"); err != nil {
 		fmt.Fprintln(a.Out, Yellow("⚠ stash: memory write failed — archive is still written at "+rec.Archive))
-		return "", ""
+		return "", "", false
 	}
-	return key, description
+	return key, description, false
 }
 
 // indexValueForTurn builds the auto-index memory value for a finished turn:
@@ -702,17 +730,29 @@ func (a *App) collapseFinishedTurns() {
 		// auto-index key — a finished turn must not silently lose the
 		// "one pointer stays" promise made by collapse_context memory_key.
 		// (A fresh record on a non-partial turn has none of these set.)
+		// Stash-attempt flags carry over too: the upgrade performs no new
+		// stash attempt, so the record must keep reporting the LAST attempt's
+		// outcome, not silently claim a clean state.
 		rec.NextSteps = existingRec.NextSteps
 		rec.StashKey = existingRec.StashKey
 		rec.StashDesc = existingRec.StashDesc
+		rec.StashRefused = existingRec.StashRefused
+		rec.StashWriteFailed = existingRec.StashWriteFailed
+		rec.StashKeptFromPrior = existingRec.StashKeptFromPrior
 		rec.MemoryKey = existingRec.MemoryKey
 		// Auto-index into memory (best-effort): the value carries the user
 		// request, the preserved summary, and the note so memory_search can
 		// find the turn by its content, with the archive path as the
-		// verbatim recovery reference. Refresh (re-put) if the turn already
-		// has a key from its partial phase.
-		if rec.MemoryKey == "" {
-			rec.MemoryKey = a.indexCollapsedInMemory(rec, a.indexValueForTurn(t, rec))
+		// verbatim recovery reference. Always attempt a re-put on upgrade
+		// from partial: the entry must gain indexValueForTurn content and
+		// point at the FINISHED archive, not the stale partial one. Keep the
+		// prior key on failure (entry may be stale — flagged, not dropped).
+		newKey := a.indexCollapsedInMemory(rec, a.indexValueForTurn(t, rec))
+		if newKey == "" && rec.MemoryKey != "" {
+			rec.IndexRefreshFailed = true
+		} else {
+			rec.MemoryKey = newKey
+			rec.IndexRefreshFailed = false
 		}
 
 		a.stateMu.Lock()
@@ -720,6 +760,19 @@ func (a *App) collapseFinishedTurns() {
 		a.stateMu.Unlock()
 
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· collapsed request %d — %dk → 0.4k sent (archived)", t, wSize/1024)))
+	}
+}
+
+// stashFailureReason describes why the requested stash was not written, for
+// the result caveat. Caller must not call it on a successful stash.
+func stashFailureReason(rec CollapseRecord) string {
+	switch {
+	case rec.StashRefused:
+		return "refused by namespacing"
+	case rec.StashWriteFailed:
+		return "write failed"
+	default:
+		return "unavailable"
 	}
 }
 
@@ -827,7 +880,11 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		prevIdx := findBoundaryAssistantIdx(a.Conv, s, existingCur.BoundaryCallID)
 		if prevIdx == curAsstIdx {
 			a.convMu.RUnlock()
-			return fmt.Sprintf("collapse_context: current prefix up to this tool batch is already collapsed (archive: %s)", existingCur.Archive)
+			res := fmt.Sprintf("collapse_context: current prefix up to this tool batch is already collapsed (archive: %s)", existingCur.Archive)
+			if args.MemoryKey != "" {
+				res += "\nNOTE: a new memory_key is ignored for an already-collapsed prefix — the earlier stash pointer is unchanged."
+			}
+			return res
 		}
 	}
 
@@ -875,9 +932,21 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		NextSteps:      args.NextSteps,
 	}
 	if args.MemoryKey != "" {
-		key, desc := a.stashCollapse(rec, args.MemoryKey, args.Description)
-		if key != "" {
+		key, desc, refused := a.stashCollapse(rec, args.MemoryKey, args.Description)
+		switch {
+		case key != "":
 			rec.StashKey, rec.StashDesc = key, desc
+		case refused:
+			rec.StashRefused = true
+		default:
+			rec.StashWriteFailed = true
+		}
+		// Non-destructive on EVERY failure mode: a refused, failed, or
+		// unavailable replacement must not silently drop the "one pointer
+		// stays" promise of an earlier stash on a partial record.
+		if rec.StashKey == "" && existingCur.Partial && existingCur.StashKey != "" {
+			rec.StashKey, rec.StashDesc = existingCur.StashKey, existingCur.StashDesc
+			rec.StashKeptFromPrior = true
 		}
 	} else if existingCur.Partial {
 		// Repeated collapse without a new memory_key: keep the earlier
@@ -886,10 +955,17 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		rec.StashKey, rec.StashDesc = existingCur.StashKey, existingCur.StashDesc
 	}
 	// Auto-index (mid-tier, 7d) — discovery layer on top of the archive.
-	// Carry forward the existing key so the re-put refreshes the same entry
-	// (the checkpoint block is cumulative across repeated collapses).
-	rec.MemoryKey = existingCur.MemoryKey
-	rec.MemoryKey = a.indexCollapsedInMemory(rec, buildPartialCheckpointBlock(rec))
+	// Carry forward the existing key and refresh the same entry (the
+	// checkpoint block is cumulative across repeated collapses). On refresh
+	// failure the prior key is RETAINED — the entry may be stale, but the
+	// pointer must not silently vanish from the collapse record.
+	prevKey := existingCur.MemoryKey
+	rec.MemoryKey = prevKey
+	if newKey := a.indexCollapsedInMemory(rec, buildPartialCheckpointBlock(rec)); newKey != "" {
+		rec.MemoryKey = newKey
+	} else if prevKey != "" {
+		rec.IndexRefreshFailed = true
+	}
 	cpLen := len(buildPartialCheckpointBlock(rec))
 
 	a.stateMu.Lock()
@@ -907,6 +983,21 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		a.curTurn, wSize, cpLen, archive)
 	if priorCollapsed > 0 {
 		fmt.Fprintf(&b, " + %d prior request(s)", priorCollapsed)
+	}
+	// Operation-specific memory caveats (1.4): the model must know which
+	// recall paths are usable, not just "something failed".
+	switch {
+	case a.MemoryStore == nil:
+		b.WriteString("\nNOTE: no memory store — recall is archive-read only (read_file the path above).")
+	case rec.StashKeptFromPrior:
+		fmt.Fprintf(&b, "\nNOTE: requested memory_key was not written (%s) — retained earlier stash %s; archive is the durable copy.",
+			stashFailureReason(rec), rec.StashKey)
+	case rec.StashRefused:
+		fmt.Fprintf(&b, "\nNOTE: memory_key refused (must live under ctx/%s/); archive is the durable copy — recall via read_file %s.", a.chatID(), archive)
+	case rec.StashWriteFailed:
+		fmt.Fprintf(&b, "\nNOTE: memory stash write failed — archive is the durable copy; recall via read_file %s.", archive)
+	case rec.IndexRefreshFailed:
+		fmt.Fprintf(&b, "\nNOTE: memory index refresh failed — entry %s may be stale (older archive reference); archive is current at %s.", rec.MemoryKey, archive)
 	}
 	return b.String()
 }
