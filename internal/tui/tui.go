@@ -47,6 +47,15 @@ type runningToolState struct {
 	command    string
 }
 
+// completedToolLine is one entry of the per-turn tool trail: the prebuilt
+// plain-text summary (from the ToolCallCompleted event's ToolLine) plus its
+// status, kept for the turn-end collapsed summary.
+type completedToolLine struct {
+	name string
+	line string
+	ok   bool
+}
+
 // pendingApprovalState is the wiring-path confirm gate: the approval the TUI
 // is currently rendering, identified by its domain ApprovalID. Key answers
 // go through facade.RespondToApproval (data-only — no response channel).
@@ -242,6 +251,17 @@ type tuiModel struct {
 	// result arrives but before the next tool starts). Cleared on AgentDoneMsg
 	// (turn end). Set alongside runningTool on ToolStartMsg.
 	lastTool *runningToolState
+
+	// turnToolTrail records this turn's completed tool calls for the compact
+	// in-place tool display: each completion replaces the previous line in
+	// the tail (the count prefixes it), and turn end commits ONE collapsed
+	// summary line instead of one line per call. Cleared in
+	// clearWiringTurnState.
+	turnToolTrail []completedToolLine
+
+	// pendingToolErrs counts non-ok completions this turn (errors + declines)
+	// so the turn-end collapsed summary can flag them.
+	pendingToolErrs int
 
 	// sideQuestion tracks a running side-question stream (/ask command).
 	// nil when no side question is active. The cancel function aborts the
@@ -2191,12 +2211,40 @@ func (m *tuiModel) refreshViewport() {
 	var tailPlainNoBox []string
 	showLiveReasoning := m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone &&
 		m.outputMode != config.OutputModeSimple
-	if showLiveReasoning || m.streaming.Len() > 0 {
+	// Compact in-place tool line: the latest completed call this turn, dim,
+	// prefixed with the call count. Because it renders as part of the live
+	// tail, each completion REPLACES the previous line instead of stacking
+	// one line per call; the turn-end handler commits a single collapsed
+	// summary. Only shown mid-turn while a tail box exists.
+	toolTailLine := ""
+	if len(m.turnToolTrail) > 0 && m.state == stateStreaming {
+		last := m.turnToolTrail[len(m.turnToolTrail)-1]
+		text := last.line
+		if text == "" {
+			// Legacy event without ToolLine — synthesize from name only.
+			text = "· " + last.name
+		}
+		// toolLine already begins with "· " — replace it with the call count
+		// so the in-place line reads "N· read_file foo.go → …" and each
+		// completion replaces the previous line's content.
+		body := strings.TrimPrefix(text, "· ")
+		toolTailLine = dim2(sprint("%d· %s", len(m.turnToolTrail), body))
+		innerW := w - turnBoxBorderW
+		if innerW < 1 {
+			innerW = 1
+		}
+		toolTailLine = wrapAnsi(toolTailLine, innerW)
+	}
+
+	if showLiveReasoning || m.streaming.Len() > 0 || toolTailLine != "" {
 		innerW := w - turnBoxBorderW
 		if innerW < 1 {
 			innerW = 1
 		}
 		var sb strings.Builder
+		if toolTailLine != "" {
+			sb.WriteString(toolTailLine + "\n")
+		}
 		if showLiveReasoning {
 			sb.WriteString(renderReasoning(m.reasoning.String(), innerW, m.reasoningExpanded))
 		}

@@ -593,6 +593,12 @@ func consumeWorkflowEvents(ctx context.Context, sub core.EventSubscription, hw *
 		switch ev.Kind {
 		case event.KindMessageDelta:
 			_, _ = hw.Write([]byte(ev.Payload.(event.MessageDelta).Text))
+		case event.KindToolCallCompleted:
+			// Tool-call summaries ride the completion event (see
+			// consumeTurnEvents for rationale). Render exactly once per call.
+			if tl := ev.Payload.(event.ToolCallCompleted).ToolLine; tl != "" {
+				_, _ = hw.Write([]byte(tl + "\n"))
+			}
 		case event.KindWorkflowWarning:
 			emitEvent(rawOut, map[string]any{
 				"type":    "warning",
@@ -652,6 +658,14 @@ func consumeTurnEvents(ctx context.Context, sub core.EventSubscription, hw *Head
 		switch ev.Kind {
 		case event.KindMessageDelta:
 			_, _ = hw.Write([]byte(ev.Payload.(event.MessageDelta).Text))
+		case event.KindToolCallCompleted:
+			// Tool-call summaries now arrive on the completion event (the
+			// agent stopped writing them through a.Out → MessageDelta, which
+			// mixed them into the prose stream with raw ANSI). Render exactly
+			// once per call; ToolLine is empty on legacy/replayed events.
+			if tl := ev.Payload.(event.ToolCallCompleted).ToolLine; tl != "" {
+				_, _ = hw.Write([]byte(tl + "\n"))
+			}
 		case event.KindApprovalResolved:
 			ar := ev.Payload.(event.ApprovalResolved)
 			if ar.Outcome == "declined" {

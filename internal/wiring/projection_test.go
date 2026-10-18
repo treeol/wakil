@@ -323,7 +323,7 @@ func TestProjectToolEventsOnTurnEmitter(t *testing.T) {
 	}
 
 	done := &fakeSessionEmitter{}
-	projectAgentEvent(done, "trn_1", agent.ToolResultMsg{ToolCallID: "call_9", Name: "run_shell", Result: "file1\nfile2"})
+	projectAgentEvent(done, "trn_1", agent.ToolResultMsg{ToolCallID: "call_9", Name: "run_shell", Result: "file1\nfile2", ToolLine: "· run_shell ls -la → 2 lines · 12B", Status: "ok"})
 	emitted = done.emitList()
 	if len(emitted) != 1 || emitted[0].kind != event.KindToolCallCompleted {
 		t.Fatalf("want 1 tool_call_completed, got %v", emitted)
@@ -331,6 +331,21 @@ func TestProjectToolEventsOnTurnEmitter(t *testing.T) {
 	completed := emitted[0].payload.(event.ToolCallCompleted)
 	if completed.ToolCallID != "tcl_call_9" || completed.Status != "ok" || completed.ResultPreview != "file1\nfile2" {
 		t.Errorf("ToolCallCompleted = %+v", completed)
+	}
+	if completed.ToolLine != "· run_shell ls -la → 2 lines · 12B" {
+		t.Errorf("ToolLine not projected; got %q", completed.ToolLine)
+	}
+
+	// Empty Status (legacy caller) normalizes to "ok" so the payload still
+	// passes Validate.
+	done2 := &fakeSessionEmitter{}
+	projectAgentEvent(done2, "trn_1", agent.ToolResultMsg{ToolCallID: "call_9", Name: "run_shell", Result: "x", Status: ""})
+	emitted = done2.emitList()
+	if len(emitted) != 1 {
+		t.Fatal("legacy empty-status ToolResultMsg must still emit")
+	}
+	if got := emitted[0].payload.(event.ToolCallCompleted).Status; got != "ok" {
+		t.Errorf("empty Status must normalize to ok; got %q", got)
 	}
 }
 

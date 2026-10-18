@@ -44,6 +44,26 @@ func TestResultSummaryEdges(t *testing.T) {
 	}
 }
 
+func TestToolResultStatus(t *testing.T) {
+	cases := []struct {
+		in   string
+		ok   bool
+		want string
+	}{
+		{"[declined by user]", false, "declined"},
+		{"file1\nfile2", true, "ok"},
+		{"(no output)", true, "ok"},
+		{"ERROR: boom", false, "error"},
+	}
+	for _, c := range cases {
+		r := stringToToolResult(c.in)
+		r.ok = c.ok
+		if got := toolResultStatus(r); got != c.want {
+			t.Errorf("toolResultStatus(%q, ok=%v) = %q, want %q", c.in, c.ok, got, c.want)
+		}
+	}
+}
+
 func TestToolPrimaryArgFlattensAndTruncates(t *testing.T) {
 	// Multi-line / multi-space command flattens to a single spaced line.
 	got := toolPrimaryArg(tcall("run_shell", `{"command":"grep -rn foo\n   bar baz"}`))

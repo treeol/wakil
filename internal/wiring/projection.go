@@ -116,14 +116,21 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		})
 
 	case agent.ToolResultMsg:
-		// Durable (turn-scoped): tool_call_completed. The full result already
-		// streams via app.Out (ProgWriter → MessageDelta); the event carries
-		// the truncated Result as the preview.
+		// Durable (turn-scoped): tool_call_completed. The full result goes
+		// into the transcript; the event carries the truncated Result as the
+		// preview. ToolLine is the user-facing one-line summary (live-path
+		// display; not wire-serialized). Empty Status from legacy callers
+		// normalizes to "ok".
+		status := m.Status
+		if status == "" {
+			status = "ok"
+		}
 		_ = emit.Emit(event.KindToolCallCompleted, event.ToolCallCompleted{
 			ToolCallID:    toolCallIDFromString(m.ToolCallID),
 			Name:          m.Name,
-			Status:        "ok",
+			Status:        status,
 			ResultPreview: m.Result,
+			ToolLine:      m.ToolLine,
 		})
 
 	// ---- Subagent events ----

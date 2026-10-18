@@ -3046,6 +3046,24 @@ func resultSummary(result toolResult) string {
 	return summary
 }
 
+// toolResultStatus classifies a tool result for event consumers: the TUI
+// colors failures in the tool-activity display; the projection stamps it on
+// the durable ToolCallCompleted event. Declines carry ok=false with the
+// "[declined by user]" marker text (stringToToolResult's convention), so the
+// distinction from errors needs the text check here — the one sanctioned
+// prefix inspection outside stringToToolResult, kept next to its sibling
+// classifiers.
+func toolResultStatus(result toolResult) string {
+	switch {
+	case !result.ok && strings.HasPrefix(strings.TrimSpace(result.text), "[declined by user]"):
+		return "declined"
+	case !result.ok:
+		return "error"
+	default:
+		return "ok"
+	}
+}
+
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return strings.TrimSpace(s[:i])

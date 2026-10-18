@@ -378,19 +378,28 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// goroutine: progress line, breaker check, cap/stub, trace, budget, Conv
 		// append.
 		finalizeToolResult := func(tc proxy.ToolCall, result toolResult) {
-			// Show a one-line summary (path/command + a result digest). The full
-			// result still goes into the transcript below for the model to read.
-			fmt.Fprintln(a.Out, Dim(toolLine(tc, result)))
+			// One-line summary (path/command + result digest). Delivery differs
+			// by consumer: the TUI path renders it from the ToolResultMsg event
+			// below (routing the raw line through a.Out → MessageDelta fed it
+			// into the markdown renderer, which mangled the ANSI styling codes
+			// into literal "[2m…[0m" fragments). Subagent children have no
+			// EventSink — their tab streams a.Out verbatim (ANSI-safe via
+			// wrapAnsi) — so they keep the direct write.
+			if a.IsSubagent {
+				fmt.Fprintln(a.Out, Dim(toolLine(tc, result)))
+			}
 
-			// Emit a tool-result event to clear the TUI's running-tool indicator.
-			// Truncate the result at emission — the one-line summary above is
-			// what the user sees (the full result goes into the transcript
-			// below); the event only needs enough text for the indicator-clear
-			// match, not the full payload.
+			// Emit the tool-result event: clears the TUI's running-tool
+			// indicator and carries the user-facing summary + status.
+			// Truncate the result at emission — the full result goes into the
+			// transcript for the model; the event only needs enough text for
+			// the indicator-clear match, not the full payload.
 			a.sendEvent(ToolResultMsg{
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 				Result:     Truncate(result.text, 2000),
+				ToolLine:   toolLine(tc, result),
+				Status:     toolResultStatus(result),
 			})
 
 			// Check the RAW result (before CapOrStub can touch it) against the

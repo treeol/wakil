@@ -109,6 +109,12 @@ type ToolCallCompleted struct {
 	// ResultPreview is a bounded display summary; the full result is a blob.
 	ResultPreview string
 	DurationMs    int64
+	// ToolLine is the prebuilt plain-text one-line summary of the call
+	// (name + primary arg + result digest), live-path display only. It is
+	// NOT serialized on the wire yet (proto schema would need a field;
+	// the live in-process emitter carries it) — replay/rebuild paths derive
+	// their own view from the transcript instead.
+	ToolLine string
 }
 
 func (p ToolCallCompleted) Validate() error {

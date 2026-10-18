@@ -23,7 +23,8 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // sessionclientRepoState aliases the neutral repo-state mutator type for the
@@ -445,6 +446,15 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.reasoningExpanded = false
 			m.addItem(iDiag, dim2(sprint("· thought (~%d tokens)", toks)))
 		}
+		// Strip raw ANSI before the text enters the streaming buffer: the
+		// buffer is later committed as an iAsst item rendered through glamour
+		// (markdown), which treats ESC sequences as literal text and showed
+		// them as "[2m…[0m" fragments. Agent-side Dim/Yellow writes to a.Out
+		// (warnings, compaction notices, …) are the historical source of
+		// these sequences; the TUI applies its own styling instead.
+		if strings.ContainsRune(p.Text, '\x1b') {
+			p.Text = ansi.Strip(p.Text)
+		}
 		m.streaming.WriteString(p.Text)
 		if cmd := m.refreshViewportThrottled(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -498,11 +508,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// Completion is a collapse boundary for streamed text and reasoning:
 		// flush before anything that follows (same ordering contract as
 		// KindApprovalRequested) and fold an open reasoning block into a
-		// "· thought" line. The per-call one-line summary is NOT rendered
-		// here — the agent side already emits a richer one via a.Out
-		// (finalizeToolResult → toolLine, which digests the result:
-		// lines · size, declined, "✗ err"); rendering it again here
-		// duplicated every call in the viewport.
+		// "· thought" line.
 		m.flushStreaming()
 		if m.reasoning.Len() > 0 && !m.reasoningDone {
 			toks := m.reasoning.Len() / 4
@@ -510,6 +516,26 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.reasoningDone = true
 			m.reasoningExpanded = false
 			m.addItem(iDiag, dim2(sprint("· thought (~%d tokens)", toks)))
+		}
+		// Record the completed call for the compact in-place tool display:
+		// the live tail renders the latest line (replacing the previous
+		// one), and turn end commits a single collapsed summary. ToolLine is
+		// prebuilt plain text from the event — no ANSI, no markdown.
+		ok := p.Status == "" || p.Status == "ok"
+		m.turnToolTrail = append(m.turnToolTrail, completedToolLine{
+			name: p.Name,
+			line: p.ToolLine,
+			ok:   ok,
+		})
+		if !ok {
+			m.pendingToolErrs++
+		}
+		// The trail renders in the live tail area — refresh it now so the
+		// in-place line updates immediately even when nothing else follows
+		// (flushStreaming/addItem above only refresh when there was
+		// streamed text or reasoning to commit).
+		if m.state == stateStreaming {
+			m.refreshViewport()
 		}
 
 	case event.KindApprovalRequested:
@@ -553,6 +579,12 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 
 	case event.KindSessionError:
 		p := ev.Payload.(event.SessionError)
+		// Stream errors are always preceded by TurnCompleted{stream_error}
+		// (which commits the tool summary), but a standalone session error
+		// still ends the turn — flush and commit the trail so its line
+		// cannot outlive the turn state clear below.
+		m.flushStreaming()
+		m.commitToolTrailSummary()
 		m.addItem(iSys, styleErr("error: "+p.Err))
 		m = m.clearWiringTurnState()
 
@@ -687,6 +719,10 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 func (m tuiModel) finishWiringTurn(p event.TurnCompleted, cmds []tea.Cmd) (tuiModel, []tea.Cmd) {
 	before := m.statusRows()
 	m.flushStreaming()
+	// Commit the turn's tool activity as ONE collapsed summary line (the
+	// live in-place trail line disappears with the tail; this is what
+	// remains in the committed viewport).
+	m.commitToolTrailSummary()
 	// Edge case: turn ended during/after reasoning but before any content.
 	if m.reasoning.Len() > 0 {
 		toks := m.reasoning.Len() / 4
@@ -752,12 +788,54 @@ func (m tuiModel) finishWiringTurn(p event.TurnCompleted, cmds []tea.Cmd) (tuiMo
 	return m, cmds
 }
 
+// commitToolTrailSummary folds the per-turn tool trail into ONE collapsed
+// iDiag summary line (counts per tool name + failure flag) and clears the
+// live trail state, so the in-place tail line cannot linger beside the
+// committed summary. No-op for a turn with no completed calls. Callers: the
+// turn-end and session-error handlers, before clearWiringTurnState.
+func (m *tuiModel) commitToolTrailSummary() {
+	trail := m.turnToolTrail
+	errs := m.pendingToolErrs
+	m.turnToolTrail = nil
+	m.pendingToolErrs = 0
+	if len(trail) == 0 {
+		return
+	}
+	counts := map[string]int{}
+	var order []string
+	for _, c := range trail {
+		if counts[c.name] == 0 {
+			order = append(order, c.name)
+		}
+		counts[c.name]++
+	}
+	var parts []string
+	for _, name := range order {
+		if c := counts[name]; c > 1 {
+			parts = append(parts, sprint("%s×%d", name, c))
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	summary := sprint("· %d tool call", len(trail))
+	if len(trail) > 1 {
+		summary += "s"
+	}
+	summary += ": " + strings.Join(parts, ", ")
+	if errs > 0 {
+		summary += sprint(" — %d failed", errs)
+	}
+	m.addItem(iDiag, dim2(summary))
+}
+
 // clearWiringTurnState resets the per-turn display state at turn end.
 func (m tuiModel) clearWiringTurnState() tuiModel {
 	m.turnStart = time.Time{}
 	m.tps = 0
 	m.runningTool = nil
 	m.lastTool = nil
+	m.turnToolTrail = nil
+	m.pendingToolErrs = 0
 	m.state = stateIdle
 	m.asyncProgress = nil // clear stale progress snapshot from the suspended turn
 	m.dotPhase = 0

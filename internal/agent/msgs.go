@@ -30,14 +30,17 @@ type ToolStartMsg struct {
 	Command    string // primary arg (command, path, query) — truncated for display
 }
 
-// ToolResultMsg clears the TUI's running-tool indicator (matched by ToolCallID).
-// The full tool result is already rendered via a.Out (ProgWriter → StreamChunkMsg)
-// in finalizeToolResult's toolLine call; this event only signals completion. The
-// Result field is truncated at emission for event-loop efficiency.
+// ToolResultMsg clears the TUI's running-tool indicator (matched by ToolCallID)
+// and carries the user-facing per-call summary. ToolLine is the prebuilt plain
+// text digest (path/command + result digest, no ANSI — consumers apply their
+// own styling); Status is ok|error|declined. The Result field is truncated at
+// emission for event-loop efficiency.
 type ToolResultMsg struct {
 	ToolCallID string // matches the ToolStartMsg for clearing the running indicator
 	Name       string
-	Result     string // truncated to 2 KiB at emission; full result goes via a.Out
+	Result     string // truncated to 2 KiB at emission; full result goes to the transcript
+	ToolLine   string // plain-text one-line summary; "" when unavailable (older callers)
+	Status     string // "ok" | "error" | "declined"; "" treated as "ok" by consumers
 }
 
 // AgentDoneMsg signals that the current turn finished.
