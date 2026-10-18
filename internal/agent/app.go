@@ -267,6 +267,7 @@ type App struct {
 	collapsed             map[int]CollapseRecord
 	keep                  map[int]bool
 	collapseArchiveFailed bool
+	collapseMemoryFailed  bool
 
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly

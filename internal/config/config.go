@@ -301,6 +301,15 @@ type Config struct {
 	ContextMode             string `json:"context_mode,omitempty"`
 	ContextCollapseMinBytes int    `json:"context_collapse_min_bytes,omitempty"` // default 2000; turns under this are not collapsed
 
+	// ContextTailTurns bounds the number of finished requests that stay in the
+	// projection at full size (question + answer + note) in long-session mode.
+	// Requests older than the tail degrade to a single pointer line each
+	// (archive path + memory key) — the soft middle cut that keeps sent size
+	// roughly constant as the session grows. 0 disables the degrade (v1
+	// behavior: collapsed turns stay in the tail forever and sent size grows
+	// linearly with request count).
+	ContextTailTurns int `json:"context_tail_turns,omitempty"` // default 20; 0 = never degrade old turns
+
 	// Prompt mode: "full" (default) sends the complete system prompt as today;
 	// "core" sends only the safety-critical core prompt, and lazy-loads the
 	// extension (workflow guidance) as a second system message when the
@@ -892,6 +901,7 @@ func DefaultConfig() Config {
 
 		ContextMode:             ContextModeStandard, // standard = full conversation sent as today
 		ContextCollapseMinBytes: 2000,                // turns under 2k are not worth collapsing
+		ContextTailTurns:        20,                  // keep last 20 requests at full size before pointer degrade
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
@@ -1705,6 +1715,9 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.ContextCollapseMinBytes < 0 {
 		return fmt.Errorf("context_collapse_min_bytes must be >= 0 (got %d)", cfg.ContextCollapseMinBytes)
+	}
+	if cfg.ContextTailTurns < 0 {
+		return fmt.Errorf("context_tail_turns must be >= 0 (got %d)", cfg.ContextTailTurns)
 	}
 	return nil
 }

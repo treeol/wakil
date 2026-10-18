@@ -155,6 +155,7 @@ reference covering every section below.
 | `tool_result_ttl` | `3` | Evict large tool results after N completed turns; `-1` = never |
 | `context_mode` | `"standard"` | Context mode: `standard` (full history sent; default) \| `long-session` (after a request finishes, its working set is archived to disk and no longer sent; later requests see only the user message + final answer + a one-line note). Persisted per repo (beats the config file); flag `--context-mode`, env `WAKIL_CONTEXT_MODE`; `long` is an alias for `long-session`. Subagents always run in `standard` |
 | `context_collapse_min_bytes` | `2000` | Min working-set size for a finished request to be collapsed in `long-session` mode; smaller turns aren't worth a note |
+| `context_tail_turns` | `20` | In `long-session` mode, requests older than the N most recent degrade to a single pointer line (archive path + memory key); `0` = never degrade (sent size grows with session length) |
 | `prompt_mode` | `"full"` | Prompt mode: `full` (complete system prompt always loaded; default) \| `core` (lean preamble with identity + safety gates only; the workflow extension is lazy-loaded as a second system message when the classifier detects a task). Persisted per repo; flag `--prompt-mode`, env `WAKIL_PROMPT_MODE`. A custom `agent_prompt_path` bypasses the split (the full file is used) |
 | `max_tool_iterations` | `0` | Hard cap on tool round-trips per turn; `0` = unlimited |
 | `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |

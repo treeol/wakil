@@ -722,7 +722,15 @@ func TestCollapseCompactSentSize(t *testing.T) {
 	app.stateMu.RUnlock()
 }
 
-// --- 19. Compact over threshold: materialises and clears records ---
+// --- 19. Compact soft path is a no-op in long-session mode ---
+//
+// v2 (soft-budget middle cut): in long-session mode the deterministic tail
+// degrade in contextProjection owns old-turn overhead. A soft Compact pass
+// would materializeCollapsed() — baking the projection into a.Conv and
+// destroying the collapse records that anchor archive-pointer recovery — then
+// re-summarize what Layer 2 already degrades. So the soft path returns
+// (false, nil) without touching anything; enforceHardMax keeps its own
+// materialize call as the last-resort fallback (and /compact forces=true).
 
 func TestCollapseCompactOverThreshold(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
@@ -732,7 +740,7 @@ func TestCollapseCompactOverThreshold(t *testing.T) {
 
 	app.collapseFinishedTurns()
 
-	// Set compactAt very low so compaction fires on the projection.
+	// Set compactAt very low so the sent projection would exceed it.
 	app.Cfg.CompactAt = 10
 	app.Cfg.KeepBytes = 5
 	app.Cfg.HardMaxBytes = 100000
@@ -745,16 +753,22 @@ func TestCollapseCompactOverThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compact error: %v", err)
 	}
-	if !did {
-		t.Error("Compact should fire when sent size exceeds compactAt")
+	if did {
+		t.Error("soft Compact should be a no-op in long-session mode (Layer 2 owns the middle cut)")
 	}
 	n, _ := app.CollapsedCount()
-	if n != 0 {
-		t.Errorf("after Compact: CollapsedCount = %d, want 0 (records cleared)", n)
+	if n != 2 {
+		t.Errorf("after soft Compact: CollapsedCount = %d, want 2 (records preserved)", n)
 	}
 
-	// Cleanup: archives were on disk but materializeCollapsed cleared records.
-	// We can't know the paths after clearing, so skip cleanup (temp files).
+	// Cleanup: archives were written to disk by collapseFinishedTurns.
+	app.stateMu.RLock()
+	for _, rec := range app.collapsed {
+		if rec.Archive != "" {
+			os.Remove(rec.Archive)
+		}
+	}
+	app.stateMu.RUnlock()
 }
 
 // --- 20. AddKeep removes existing collapse record ---

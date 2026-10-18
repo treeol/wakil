@@ -252,7 +252,16 @@ func (a *App) EffectiveCtxCap() int {
 // knows their context is being trimmed to fit the new backend.
 func (a *App) fitConvToWindow(ctx context.Context) {
 	_, _, hm := a.activeThresholds()
-	if hm <= 0 || TranscriptSize(a.Conv) <= hm {
+	if hm <= 0 {
+		return
+	}
+	// Measure the projection, not raw a.Conv: in long-session mode a.Conv keeps
+	// every archived working set while the model only ever sees the projected
+	// (U + A + note) form. Comparing the raw size against the new backend's
+	// ceiling would fire a spurious ⚠ + hard-max pass once a.Conv grows past
+	// the window even though the sent transcript fits comfortably.
+	sentSize := TranscriptSize(a.contextProjection())
+	if sentSize <= hm {
 		return
 	}
 	usable := a.ContextLimit().Usable()
@@ -305,11 +314,17 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	// projected (sent) size, not the full a.Conv. But Compact operates on
 	// a.Conv directly, so materialise collapsed turns first so the summary
 	// sees the full content and the records don't point at removed turns.
-	if !force {
-		sentSize := TranscriptSize(a.contextProjection())
-		if sentSize <= compactAt {
-			return false, nil
-		}
+	// Long-session mode: the deterministic tail degrade in contextProjection
+	// owns old-turn overhead (soft budget — context may grow with recent work
+	// by design). A soft Compact pass here would materializeCollapsed() —
+	// baking the projection into a.Conv, destroying collapse records and the
+	// archive-pointer recovery path — and then re-summarize content Layer 2
+	// already degrades. Mutating compaction stays a hard-max-only fallback
+	// (enforceHardMax keeps its own materializeCollapsed call). /compact can
+	// still force a pass explicitly. Checked before the projection build —
+	// no point measuring a projection we're about to throw away.
+	if a.IsLongSession() && !force {
+		return false, nil
 	}
 	if a.IsLongSession() {
 		a.materializeCollapsed()

@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
 )
@@ -38,6 +40,9 @@ type CollapseRecord struct {
 	BoundaryCallID string    `json:"boundary_call_id,omitempty"` // tool_call ID of the collapse_context call; elides s.first+1 .. curAsstIdx-1
 	Summary        string    `json:"summary,omitempty"`          // model-supplied checkpoint summary
 	NextSteps      string    `json:"next_steps,omitempty"`       // model-supplied continuation plan
+	MemoryKey      string    `json:"memory_key,omitempty"`       // mid-tier memory index entry for this archive (auto)
+	StashKey       string    `json:"stash_key,omitempty"`        // model-named memory stash for this collapse (optional)
+	StashDesc      string    `json:"stash_desc,omitempty"`       // one-line description of the model-named stash
 }
 
 // span is the first and last index in a.Conv for messages of a given turn.
@@ -235,6 +240,9 @@ func findBoundaryAssistantIdx(conv []proxy.Message, s span, callID string) int {
 func buildPartialCheckpointBlock(rec CollapseRecord) string {
 	var b strings.Builder
 	b.WriteString("[assistant checkpoint — earlier working set in this request collapsed]\n")
+	if rec.StashKey != "" {
+		fmt.Fprintf(&b, "memory: %s — %s\n", rec.StashKey, rec.StashDesc)
+	}
 	if rec.Summary != "" {
 		b.WriteString("Summary: ")
 		b.WriteString(rec.Summary)
@@ -246,6 +254,165 @@ func buildPartialCheckpointBlock(rec CollapseRecord) string {
 		b.WriteString("\n")
 	}
 	b.WriteString(rec.Note)
+	return b.String()
+}
+
+// indexCollapsedInMemory writes a mid-tier memory entry for a collapse archive
+// (the auto-index). Memory is the recall/discovery layer; the on-disk archive
+// is the durable record. Best-effort: failure never blocks the collapse and is
+// only surfaced once per session. Key: ctx/<chatID>/<archive basename> — the
+// basename is a CreateTemp unique name, stable across rewinds (turn numbers
+// are reused after rewind, so they are never part of the key).
+func (a *App) indexCollapsedInMemory(rec CollapseRecord, value string) string {
+	if a.MemoryStore == nil {
+		return ""
+	}
+	var key string
+	if rec.MemoryKey != "" {
+		key = rec.MemoryKey // refresh the same entry (cumulative re-put)
+	} else {
+		base := archiveBaseName(rec.Archive)
+		if base == "" {
+			return ""
+		}
+		key = "ctx/" + a.chatID() + "/" + base
+	}
+	expires := time.Now().Add(7 * 24 * time.Hour).UnixMilli()
+	_, err := a.MemoryStore.PutActive(context.Background(), key, value, "collapse",
+		memory.TierMid, a.AgentPrefix, a.chatID(), a.computeTainted(), &expires, nil,
+		"auto-index of collapsed request working set (archive is the durable copy)")
+	if err != nil {
+		// Separate flag from collapseArchiveFailed: a memory-index failure
+		// must not swallow the one-time warning for a later archive failure
+		// (and vice versa) — different failure modes, different consequences.
+		if !a.collapseMemoryFailed {
+			a.collapseMemoryFailed = true
+			fmt.Fprintln(a.Out, Yellow("⚠ collapse: memory index write failed — archive on disk is still the recovery path"))
+		}
+		return ""
+	}
+	return key
+}
+
+// stashCollapse writes the model-named memory stash for an explicit
+// collapse_context call with memory_key: the distilled result of the
+// just-completed work, stored under the model's chosen key with its
+// description. This is the "distill and stash" loop — the raw chunk leaves
+// context, one pointer stays, memory_get/memory_search recall it on demand.
+// Keys are namespaced under ctx/<chatID>/ so parallel sessions don't collide.
+// Mid-tier with a 7d TTL by default — durable writes are a promotion-policy
+// decision and are never bypassed here. Best-effort: on failure the collapse
+// itself stays intact (the on-disk archive is the durable copy).
+func (a *App) stashCollapse(rec CollapseRecord, key, description string) (string, string) {
+	if a.MemoryStore == nil {
+		fmt.Fprintln(a.Out, Yellow("⚠ stash: memory store unavailable — archive is still written"))
+		return "", ""
+	}
+	// Namespace enforcement: caller-supplied keys may only live under ctx/.
+	// A bare key is auto-qualified; a qualified key must start with "ctx/" —
+	// anything else could overwrite unrelated memory (project notes, handoff
+	// records, promoted corrections) via a TierMid re-put.
+	if !strings.Contains(key, "/") {
+		key = "ctx/" + a.chatID() + "/" + key
+	} else if !strings.HasPrefix(key, "ctx/") {
+		fmt.Fprintln(a.Out, Yellow("⚠ stash: memory_key must live under ctx/ (namespacing refused) — archive is still written"))
+		return "", ""
+	}
+	if description == "" {
+		description = "model stash of collapsed working set (request " + fmt.Sprint(rec.Turn) + ")"
+	}
+	value := buildPartialCheckpointBlock(rec)
+	if rec.StashDesc != "" && rec.StashDesc != description {
+		value = rec.StashDesc + "\n\n" + value
+	}
+	expires := time.Now().Add(7 * 24 * time.Hour).UnixMilli()
+	if _, err := a.MemoryStore.PutActive(context.Background(), key, value, "stash",
+		memory.TierMid, a.AgentPrefix, a.chatID(), a.computeTainted(), &expires, nil,
+		"model-named stash via collapse_context (archive is the durable copy)"); err != nil {
+		fmt.Fprintln(a.Out, Yellow("⚠ stash: memory write failed — archive is still written at "+rec.Archive))
+		return "", ""
+	}
+	return key, description
+}
+
+// indexValueForTurn builds the auto-index memory value for a finished turn:
+// truncated user text + preserved summary + note. Tool counts alone are a
+// weak search target; including U and Summary makes "what did we decide in
+// request N" discoverable via memory_search.
+func (a *App) indexValueForTurn(t int, rec CollapseRecord) string {
+	uText := ""
+	a.convMu.RLock()
+	spans := turnSpansFromSlice(a.Conv)
+	if s, ok := spans[t]; ok && s.first < len(a.Conv) {
+		uText = strings.TrimSpace(DerefStr(a.Conv[s.first].Content))
+	}
+	a.convMu.RUnlock()
+	var b strings.Builder
+	if uText != "" {
+		fmt.Fprintf(&b, "request %d: %s\n", t, Truncate(uText, 200))
+	}
+	if rec.Summary != "" {
+		fmt.Fprintf(&b, "summary: %s\n", rec.Summary)
+	}
+	if rec.StashKey != "" {
+		fmt.Fprintf(&b, "stash: %s — %s\n", rec.StashKey, rec.StashDesc)
+	}
+	b.WriteString(rec.Note)
+	return b.String()
+}
+
+// archiveBaseName returns the final path element of a spill path.
+func archiveBaseName(path string) string {
+	if path == "" {
+		return ""
+	}
+	if i := strings.LastIndexAny(path, "/\\"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+// degradePointerLine renders the compact projection of an old collapsed
+// turn after it ages out of the tail: a truncated echo of the user request
+// plus the preserved summary and the archive/memory recovery pointers.
+// NOT byte-capped: the archive path and keys are the recovery references and
+// are never truncated (spill paths are bounded by the OS path limit in
+// practice); the truncated parts (U echo, summary, stash desc) are the only
+// variable-size components.
+func degradePointerLine(rec CollapseRecord, u []proxy.Message) string {
+	var uText string
+	for _, m := range u {
+		if m.Role == "user" {
+			uText = strings.TrimSpace(DerefStr(m.Content))
+			break
+		}
+	}
+	var b strings.Builder
+	b.WriteString("[older request ")
+	fmt.Fprintf(&b, "%d", rec.Turn)
+	b.WriteString(" — details archived. ")
+	b.WriteString(Truncate(uText, 80))
+	b.WriteString("]\n")
+	if rec.Summary != "" {
+		b.WriteString("summary: ")
+		b.WriteString(Truncate(rec.Summary, 200))
+		b.WriteString("\n")
+	}
+	b.WriteString("full record: ")
+	b.WriteString(rec.Archive)
+	b.WriteString(" (read_file with offset/limit)\n")
+	if rec.MemoryKey != "" {
+		b.WriteString("memory index: ")
+		b.WriteString(rec.MemoryKey)
+		b.WriteString("\n")
+	}
+	if rec.StashKey != "" {
+		b.WriteString("stash: ")
+		b.WriteString(rec.StashKey)
+		b.WriteString(" — ")
+		b.WriteString(Truncate(rec.StashDesc, 120))
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 
@@ -322,6 +489,27 @@ func (a *App) contextProjection() []proxy.Message {
 
 	var out []proxy.Message
 	emittedTurn := map[int]bool{}
+	// Tier-2 degrade: in long-session mode, the ContextTailTurns most recent
+	// collapsed turns stay at full size (U + A + note); older collapsed turns
+	// degrade to a pointer line. Ranking is among collapsed turns only —
+	// /keep, unfinished, and never-collapsed turns don't consume tail slots
+	// (they're sent at full size regardless, by design: a kept or uncollapsed
+	// turn is content the model should see verbatim). 0 disables (v1).
+	tailTurns := a.Cfg.ContextTailTurns
+	degradedTurn := map[int]bool{}
+	if tailTurns > 0 {
+		for t := range collapsedCopy {
+			newer := 0
+			for t2 := range collapsedCopy {
+				if t2 > t && !collapsedCopy[t2].Partial {
+					newer++
+				}
+			}
+			if newer >= tailTurns {
+				degradedTurn[t] = true
+			}
+		}
+	}
 	for idx, m := range a.Conv {
 		rec, isCollapsed := collapsedSet[m.Turn]
 		if !isCollapsed || m.Turn == 0 {
@@ -367,6 +555,15 @@ func (a *App) contextProjection() []proxy.Message {
 		// Full collapsed turn: emit only U (first message) and A (last message + note).
 		if emittedTurn[m.Turn] {
 			continue // already emitted U and A for this turn
+		}
+		if degradedTurn[m.Turn] {
+			// Tier-2 degrade: one pointer line as a user-role message keeps
+			// the projection schema-valid (no leading orphan assistant turn).
+			pointer := degradePointerLine(rec, a.Conv[s.first:s.first+1])
+			content := pointer
+			out = append(out, proxy.Message{Role: "user", Turn: m.Turn, Content: &content})
+			emittedTurn[m.Turn] = true
+			continue
 		}
 		// Emit U (first message of the turn).
 		out = append(out, a.Conv[s.first])
@@ -470,9 +667,17 @@ func (a *App) collapseFinishedTurns() {
 
 		// Rule 7: archive to disk. On failure, skip this turn (one warning per session);
 		// if upgrading from a partial collapse, the existing partial record is retained.
+		// The archive carries the FULL turn (U + W + A): the tier-2 degrade later
+		// replaces even U and A with a pointer line, so the archive is then the
+		// only durable copy of the question and answer. The note still describes
+		// W only — that's what left the context.
 		var w []proxy.Message
-		for i := s.first + 1; i < s.last; i++ {
+		for i := s.first; i <= s.last; i++ {
 			w = append(w, convSnap[i])
+		}
+		var wOnly []proxy.Message
+		for i := s.first + 1; i < s.last; i++ {
+			wOnly = append(wOnly, convSnap[i])
 		}
 		archive := wtools.SpillToCache(a.chatID(), fmt.Sprintf("turn-%d", t), renderWorkingSet(w))
 		if archive == "" {
@@ -483,10 +688,8 @@ func (a *App) collapseFinishedTurns() {
 			continue
 		}
 
-		note := buildCollapseNote(t, w, archive)
-
-		a.stateMu.Lock()
-		a.collapsed[t] = CollapseRecord{
+		note := buildCollapseNote(t, wOnly, archive)
+		rec := CollapseRecord{
 			Turn:    t,
 			Archive: archive,
 			WBytes:  wSize,
@@ -494,6 +697,26 @@ func (a *App) collapseFinishedTurns() {
 			At:      time.Now(),
 			Summary: existingRec.Summary,
 		}
+		// Upgrading from a mid-turn partial collapse: preserve the model's
+		// checkpoint metadata (stash pointer, next steps) and the existing
+		// auto-index key — a finished turn must not silently lose the
+		// "one pointer stays" promise made by collapse_context memory_key.
+		// (A fresh record on a non-partial turn has none of these set.)
+		rec.NextSteps = existingRec.NextSteps
+		rec.StashKey = existingRec.StashKey
+		rec.StashDesc = existingRec.StashDesc
+		rec.MemoryKey = existingRec.MemoryKey
+		// Auto-index into memory (best-effort): the value carries the user
+		// request, the preserved summary, and the note so memory_search can
+		// find the turn by its content, with the archive path as the
+		// verbatim recovery reference. Refresh (re-put) if the turn already
+		// has a key from its partial phase.
+		if rec.MemoryKey == "" {
+			rec.MemoryKey = a.indexCollapsedInMemory(rec, a.indexValueForTurn(t, rec))
+		}
+
+		a.stateMu.Lock()
+		a.collapsed[t] = rec
 		a.stateMu.Unlock()
 
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· collapsed request %d — %dk → 0.4k sent (archived)", t, wSize/1024)))
@@ -510,8 +733,10 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	}
 
 	var args struct {
-		Summary   string `json:"summary"`
-		NextSteps string `json:"next_steps"`
+		Summary     string `json:"summary"`
+		NextSteps   string `json:"next_steps"`
+		MemoryKey   string `json:"memory_key"`
+		Description string `json:"description"`
 	}
 	if tc.Function.Arguments != "" {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
@@ -520,6 +745,8 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	}
 	args.Summary = strings.TrimSpace(args.Summary)
 	args.NextSteps = strings.TrimSpace(args.NextSteps)
+	args.MemoryKey = strings.TrimSpace(args.MemoryKey)
+	args.Description = strings.TrimSpace(args.Description)
 	if args.Summary == "" {
 		return "ERROR: collapse_context requires a non-empty 'summary' of the completed work"
 	}
@@ -647,6 +874,22 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		Summary:        args.Summary,
 		NextSteps:      args.NextSteps,
 	}
+	if args.MemoryKey != "" {
+		key, desc := a.stashCollapse(rec, args.MemoryKey, args.Description)
+		if key != "" {
+			rec.StashKey, rec.StashDesc = key, desc
+		}
+	} else if existingCur.Partial {
+		// Repeated collapse without a new memory_key: keep the earlier
+		// stash pointer — a later collapse must not silently drop the
+		// "one pointer stays" promise of the first one.
+		rec.StashKey, rec.StashDesc = existingCur.StashKey, existingCur.StashDesc
+	}
+	// Auto-index (mid-tier, 7d) — discovery layer on top of the archive.
+	// Carry forward the existing key so the re-put refreshes the same entry
+	// (the checkpoint block is cumulative across repeated collapses).
+	rec.MemoryKey = existingCur.MemoryKey
+	rec.MemoryKey = a.indexCollapsedInMemory(rec, buildPartialCheckpointBlock(rec))
 	cpLen := len(buildPartialCheckpointBlock(rec))
 
 	a.stateMu.Lock()

@@ -608,6 +608,14 @@ func collapseContextToolDef() proxy.Tool {
 				"type":        "string",
 				"description": "Optional clean instructions or plan for how to proceed next after the context is collapsed.",
 			},
+			"memory_key": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional: store the summary as a named memory entry (key, e.g. \"ctx/<this-chat>/plan-auth-flow\") and replace the raw context with a one-line pointer. Use when this distilled knowledge will be needed later in the session but not immediately — recall it with memory_get or memory_search. Keys without a slash are namespaced under the current chat automatically.",
+			},
+			"description": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional one-line description of the memory_key stash, shown in listings and the checkpoint pointer.",
+			},
 		},
 		"required": []string{"summary"},
 	})

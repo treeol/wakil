@@ -124,10 +124,11 @@
   "tool_result_cap": 8000,
   "tool_result_ttl": 3,
 
-  "_comment_context_mode": "Long-session mode. context_mode: standard (default — full conversation sent) | long-session (finished requests are collapsed to question + answer, working set archived to the tool cache). context_collapse_min_bytes: turns smaller than this are never collapsed (not worth a note). Flag: --context-mode. Env: WAKIL_CONTEXT_MODE. Subagents always run in standard.",
+  "_comment_context_mode": "Long-session mode. context_mode: standard (default — full conversation sent) | long-session (finished requests are collapsed to question + answer, working set archived to the tool cache). context_collapse_min_bytes: turns smaller than this are never collapsed (not worth a note). context_tail_turns: requests older than this many most-recent requests degrade to a single pointer line (archive path + memory key) instead of staying at full size — the soft middle cut that keeps sent context from growing with session length; 0 disables (older requests stay at full size forever). Flag: --context-mode. Env: WAKIL_CONTEXT_MODE. Subagents always run in standard.",
 
   "context_mode": "standard",
   "context_collapse_min_bytes": 2000,
+  "context_tail_turns": 20,
 
   "_comment_prompt_mode": "Split system prompt. prompt_mode: full (default — complete system prompt always loaded) | core (lean preamble with identity + safety gates only; the workflow extension is lazy-loaded as a second system message when the classifier detects a task). Flag: --prompt-mode. Env: WAKIL_PROMPT_MODE. A custom agent_prompt_path bypasses the split (the full file is used).",
   "prompt_mode": "full",
