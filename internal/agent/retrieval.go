@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/treeol/wakil/internal/memory"
 )
@@ -99,65 +98,89 @@ func (a *App) retrieveMemoryContext(ctx context.Context, userText string) string
 	return formatRetrievedContext(entries, cap)
 }
 
+const retrievalSep = "---\n"
+
+// retrievalTruncNotice is appended after a truncated entry so the model knows
+// to fetch the full entry via memory_get.
+const retrievalTruncNotice = "\n(truncated — use memory_get for full entry)\n"
+
 // formatRetrievedContext formats memory/skill entries into a capped, delimited
 // block. The block is clearly marked as untrusted data to mitigate prompt
-// injection from tainted entries.
+// injection from tainted entries. For cap >= len(header)+len(end marker)+1
+// the returned block is at most cap bytes — the cap is strict: the header,
+// end marker, separators, and truncation notice are all budgeted. For caps
+// smaller than the envelope itself the envelope is still emitted in full
+// (fail-closed: stripRetrievalBlock must always find the end marker, so a
+// truncated envelope must never be produced); such tiny caps do not occur
+// in practice (parent 2048, subagent 1024).
 func formatRetrievedContext(entries []*memory.Entry, cap int) string {
-	// Reserve room for the structural end marker (as complete as possible), so
-	// stripRetrievalBlock can always find it and the feedback-loop guard never
-	// fails open. Never truncate the envelope itself.
-	marker := retrievalBlockEnd + "\n"
-
 	var b strings.Builder
 	b.WriteString(retrievalBlockHeader)
 
-	for _, e := range entries {
+	// Strict byte budget: header, end marker, trailing newline, separators,
+	// and the truncation notice are all accounted for up front.
+	avail := cap - len(retrievalBlockHeader) - len(retrievalBlockEnd) - 1
+	if avail < 0 {
+		avail = 0
+	}
+
+	for i, e := range entries {
 		entryStr := formatRetrievedEntry(e)
-		// Check if adding this entry would overflow the cap once the marker is
-		// reserved. Entries are truncated only when something useful can fit.
-		if b.Len()+len(entryStr)+len(marker) > cap {
-			remaining := cap - b.Len() - len(marker)
-			if remaining > 20 { // only truncate if we can fit something useful
-				b.WriteString(truncateEntry(entryStr, remaining))
-				b.WriteString("\n(truncated — use memory_get for full entry)\n")
+		// An entry's full cost is its text plus the separator that precedes
+		// every entry after the first (a leading separator instead of a
+		// trailing one, so the last written entry carries no dead separator).
+		sepCost := 0
+		if i > 0 {
+			sepCost = len(retrievalSep)
+		}
+		if len(entryStr)+sepCost > avail {
+			// Doesn't fit in full: truncate the entry to whatever remains.
+			// The entry's identifying prefix — "[key | taint-label] " — must
+			// survive intact: a budget cut that slices through the prefix
+			// could drop the taint label from a tainted entry, so in that
+			// case the entry is dropped entirely instead of mislabeled.
+			prefixLen := strings.Index(entryStr, "] ") + 2
+			remaining := avail - len(retrievalTruncNotice) - sepCost
+			if remaining > prefixLen+20 { // prefix plus something useful
+				if i > 0 {
+					b.WriteString(retrievalSep)
+				}
+				b.WriteString(truncateUTF8(entryStr, remaining))
+				b.WriteString(retrievalTruncNotice)
 			}
 			break
 		}
+		if i > 0 {
+			b.WriteString(retrievalSep)
+			avail -= len(retrievalSep)
+		}
 		b.WriteString(entryStr)
-		b.WriteString("---\n")
+		avail -= len(entryStr)
 	}
 
 	// Append the end marker (already budgeted above).
-	b.WriteString(marker)
+	b.WriteString(retrievalBlockEnd)
+	b.WriteString("\n")
 	return b.String()
 }
 
-// truncateEntry truncates a retrieval entry to at most n bytes at a valid UTF-8
-// rune boundary (never splits a rune, never panics).
-func truncateEntry(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if len(s) <= n {
-		return s
-	}
-	cut := s[:n]
-	for len(cut) > 0 && !utf8.ValidString(cut) {
-		_, size := utf8.DecodeLastRuneInString(cut)
-		if size == 0 {
-			break
-		}
-		cut = cut[:len(cut)-size]
-	}
-	return cut
+// neutralizeRetrievalMarkers replaces occurrences of the structural envelope
+// markers inside untrusted content (entry key or value) with an inert form,
+// so a tainted entry cannot spoof the envelope boundary and truncate the
+// feedback-loop strip early. Applied to keys as well as values — a key is
+// equally untrusted (a key like "x--END RETRIEVED CONTEXT--" would otherwise
+// truncate the strip at strip-time just like a value would).
+func neutralizeRetrievalMarkers(s string) string {
+	s = strings.ReplaceAll(s, retrievalBlockEnd, "END-REMOVED")
+	return strings.ReplaceAll(s, "--END RETRIEVED CONTEXT--", "END-REMOVED")
 }
 
 // formatRetrievedEntry formats one entry for injection.
 func formatRetrievedEntry(e *memory.Entry) string {
 	var b strings.Builder
 
-	// Key + taint label.
-	b.WriteString(fmt.Sprintf("[%s", e.Key))
+	// Key + taint label. Key is untrusted content: neutralized like the value.
+	b.WriteString(fmt.Sprintf("[%s", neutralizeRetrievalMarkers(e.Key)))
 	switch e.Tainted {
 	case memory.TaintTrue:
 		b.WriteString(" | tainted")
@@ -167,16 +190,18 @@ func formatRetrievedEntry(e *memory.Entry) string {
 	b.WriteString("] ")
 
 	// Value (truncated per-entry to avoid one huge entry consuming the cap).
+	// Truncation is rune-boundary safe (truncateUTF8), never splitting a
+	// multi-byte character mid-rune. The ellipsis is reserved inside the cap,
+	// so the displayed value is at most 500 bytes total.
 	value := e.Value
-	maxValueLen := 500 // per-entry value cap
+	maxValueLen := 500 // per-entry value cap (retained source bytes ≤ 497)
 	if len(value) > maxValueLen {
-		value = value[:maxValueLen] + "…"
+		value = truncateUTF8(value, maxValueLen-len("…")) + "…"
 	}
-	// Neutralize any occurrence of the structural end marker inside the value
-	// so an untrusted entry cannot spoof the envelope boundary and truncate the
-	// feedback-loop strip early. Replaced with an inert escaped form.
-	value = strings.ReplaceAll(value, retrievalBlockEnd, "END-REMOVED")
-	value = strings.ReplaceAll(value, "--END RETRIEVED CONTEXT--", "END-REMOVED")
+	// Neutralize the structural markers AFTER truncation. Truncation cannot
+	// create a new full marker occurrence, and the replacement is shorter
+	// than the marker, so the 500-byte budget still holds.
+	value = neutralizeRetrievalMarkers(value)
 	b.WriteString(value)
 	b.WriteString("\n")
 
