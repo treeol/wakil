@@ -97,6 +97,27 @@ anything that should not outlive the session. Use `ttl_seconds` on
 Without a TTL, entries persist until explicitly deleted or the store
 reaches its entry limit (default 100,000).
 
+### TTL expiry contract (kvr, verified 2026-10)
+
+kvr never serves, counts, or persists an entry whose absolute epoch-ms
+deadline is at or before the operation's sampled time:
+
+- **Filtering happens at read time**, on every value- or key-returning
+  path (`get`, `mget`, `scan`, `contains`, `ttl`, `del`, plus active-count
+  and snapshot collection) — the deadline is checked against the current
+  time on every operation, with the boundary inclusive (an entry at
+  exactly its deadline is expired).
+- **Sweep-independent.** The periodic sweep reclaims memory but never
+  determines visibility: an expired-but-unswept entry is already invisible
+  to reads.
+- **Restart-safe.** Deadlines are absolute epoch-ms and survive snapshot
+  round-trips; startup filters expired records, so a key that expires
+  during sandbox downtime is never served after restart.
+
+Exclusions (physical, not semantic): `len`/`is_empty` count physical
+slots (expired-but-unswept entries included) until the sweep reclaims
+them. Wall-clock rollback can extend an entry's apparent lifetime.
+
 ## Tools
 
 | Tool | Description |
