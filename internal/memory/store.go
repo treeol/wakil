@@ -952,6 +952,29 @@ func (s *Store) GetByID(ctx context.Context, id int64) (*Entry, error) {
 	return e, nil
 }
 
+// sanitizeFTSQuery converts a raw user query into a safe FTS5 MATCH
+// expression. The query is tokenized on whitespace and each token is
+// wrapped as a quoted phrase, so FTS5 metacharacters (-, ", :, ^, *, etc.)
+// are treated as literal text instead of query syntax. An empty result
+// (whitespace-only input) means "match nothing" — callers treat it as no
+// query. This changes multi-token queries from implicit AND semantics to
+// phrase-per-token OR-of-phrases; we join with spaces, which FTS5 reads as
+// implicit AND, preserving the previous behavior for plain word queries.
+func sanitizeFTSQuery(query string) string {
+	fields := strings.Fields(query)
+	if len(fields) == 0 {
+		return ""
+	}
+	parts := make([]string, len(fields))
+	for i, f := range fields {
+		// Escape any embedded double quotes by doubling them (FTS5
+		// phrase-quote convention), then wrap the token as a phrase.
+		f = strings.ReplaceAll(f, `"`, `""`)
+		parts[i] = `"` + f + `"`
+	}
+	return strings.Join(parts, " ")
+}
+
 // Search searches the FTS5 index for the query. Returns up to searchCap
 // entries, ordered by FTS5 bm25 relevance (rank ascending, lower = more
 // relevant) with created_at DESC then id DESC as deterministic tie-breaks.
@@ -959,6 +982,7 @@ func (s *Store) GetByID(ctx context.Context, id int64) (*Entry, error) {
 // proposed entries. Expired entries are always filtered. Stale entries are
 // returned with the flag — never silently dropped.
 func (s *Store) Search(ctx context.Context, query, tier string, includeProposed bool) ([]*Entry, error) {
+	query = sanitizeFTSQuery(query)
 	if query == "" {
 		return nil, nil
 	}

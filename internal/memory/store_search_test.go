@@ -207,6 +207,77 @@ func TestSearchCapReturnsBest(t *testing.T) {
 	}
 }
 
+// TestSearchFTSSanitization verifies that raw queries containing FTS5
+// metacharacters (-, :, ", *, ^) are treated as literal text instead of
+// erroring or being parsed as FTS5 query syntax.
+func TestSearchFTSSanitization(t *testing.T) {
+	s, _ := newTestStore(t)
+	c := ctx(t)
+
+	// Keys/values with metacharacters, mirroring real key shapes.
+	if _, err := s.PutActive(c, "done/wakil/long-session-mode-v2", "collapse degrade pointer line", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutActive(c, "env/gpu-workstation", "docker gpu access notes", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hyphenated query: previously "no such column: session" SQL error.
+	results, err := s.Search(c, "long-session-mode", "", false)
+	if err != nil {
+		t.Fatalf("hyphenated query errored (unsanitized FTS5 syntax): %v", err)
+	}
+	if len(results) != 1 || results[0].Key != "done/wakil/long-session-mode-v2" {
+		t.Fatalf("expected 1 result for hyphenated query, got %d: %v", len(results), keysOf(results))
+	}
+
+	// Quoted token: embedded double quotes must not break the MATCH.
+	results, err = s.Search(c, `mode"v2`, "", false)
+	if err != nil {
+		t.Fatalf("quote-containing query errored: %v", err)
+	}
+
+	// Prefix with colon (column-filter syntax in FTS5): treated literally.
+	results, err = s.Search(c, "gpu-workstation:", "", false)
+	if err != nil {
+		t.Fatalf("colon query errored: %v", err)
+	}
+	if len(results) != 1 || results[0].Key != "env/gpu-workstation" {
+		t.Fatalf("expected env/gpu-workstation for colon query, got %v", keysOf(results))
+	}
+
+	// NEAR and other operators are neutralized to literal phrases: a raw
+	// "NEAR(" token in the index body must match the literal query.
+	if _, err := s.PutActive(c, "misc/operators", "contains NEAR( and OR tokens", "note", TierMid, "main", "s1", TaintUnknown, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	results, err = s.Search(c, "NEAR(", "", false)
+	if err != nil {
+		t.Fatalf("NEAR query errored: %v", err)
+	}
+	if len(results) != 1 || results[0].Key != "misc/operators" {
+		t.Fatalf("expected misc/operators for NEAR query, got %v", keysOf(results))
+	}
+
+	// Whitespace-only query: no results, no error.
+	results, err = s.Search(c, "   ", "", false)
+	if err != nil {
+		t.Fatalf("whitespace-only query errored: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for whitespace-only query, got %d", len(results))
+	}
+
+	// Multi-token queries still AND across tokens.
+	results, err = s.Search(c, "gpu docker", "", false)
+	if err != nil {
+		t.Fatalf("multi-token query errored: %v", err)
+	}
+	if len(results) != 1 || results[0].Key != "env/gpu-workstation" {
+		t.Fatalf("expected env/gpu-workstation for 'gpu docker', got %v", keysOf(results))
+	}
+}
+
 // keysOf is a test helper: the keys of a result slice, for failure messages.
 func keysOf(entries []*Entry) []string {
 	keys := make([]string, len(entries))
