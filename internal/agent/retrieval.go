@@ -125,7 +125,7 @@ func formatRetrievedContext(entries []*memory.Entry, cap int) string {
 	}
 
 	for i, e := range entries {
-		entryStr := formatRetrievedEntry(e)
+		entryStr, prefixLen := formatRetrievedEntry(e)
 		// An entry's full cost is its text plus the separator that precedes
 		// every entry after the first (a leading separator instead of a
 		// trailing one, so the last written entry carries no dead separator).
@@ -139,7 +139,9 @@ func formatRetrievedContext(entries []*memory.Entry, cap int) string {
 			// survive intact: a budget cut that slices through the prefix
 			// could drop the taint label from a tainted entry, so in that
 			// case the entry is dropped entirely instead of mislabeled.
-			prefixLen := strings.Index(entryStr, "] ") + 2
+			// prefixLen comes from the formatter (trusted structure), never
+			// recovered by searching the formatted untrusted text — a key
+			// containing "] " would otherwise defeat the measurement.
 			remaining := avail - len(retrievalTruncNotice) - sepCost
 			if remaining > prefixLen+20 { // prefix plus something useful
 				if i > 0 {
@@ -175,12 +177,17 @@ func neutralizeRetrievalMarkers(s string) string {
 	return strings.ReplaceAll(s, "--END RETRIEVED CONTEXT--", "END-REMOVED")
 }
 
-// formatRetrievedEntry formats one entry for injection.
-func formatRetrievedEntry(e *memory.Entry) string {
+// formatRetrievedEntry formats one entry for injection. It also returns the
+// byte length of the identifying prefix — "[key | taint-label] " — as
+// written by this function, so callers can reason about the trusted
+// structure without re-parsing the formatted (untrusted) text: a key that
+// itself contains "] " would defeat any prefix search.
+func formatRetrievedEntry(e *memory.Entry) (string, int) {
 	var b strings.Builder
 
 	// Key + taint label. Key is untrusted content: neutralized like the value.
 	b.WriteString(fmt.Sprintf("[%s", neutralizeRetrievalMarkers(e.Key)))
+	prefixLen := b.Len() + 2 // the " " after "]" is not yet written
 	switch e.Tainted {
 	case memory.TaintTrue:
 		b.WriteString(" | tainted")
@@ -188,6 +195,7 @@ func formatRetrievedEntry(e *memory.Entry) string {
 		b.WriteString(" | taint-unknown")
 	}
 	b.WriteString("] ")
+	prefixLen = b.Len()
 
 	// Value (truncated per-entry to avoid one huge entry consuming the cap).
 	// Truncation is rune-boundary safe (truncateUTF8), never splitting a
@@ -205,7 +213,7 @@ func formatRetrievedEntry(e *memory.Entry) string {
 	b.WriteString(value)
 	b.WriteString("\n")
 
-	return b.String()
+	return b.String(), prefixLen
 }
 
 // sanitizeFTSQuery extracts searchable tokens from user text and builds a

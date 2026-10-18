@@ -380,12 +380,12 @@ func TestFormatRetrievedContext_StrictBudget(t *testing.T) {
 	})
 
 	t.Run("exact fit within budget", func(t *testing.T) {
-		// Choose cap so entry + separator + envelope fit exactly.
-		one := formatRetrievedEntry(entry("k", "value"))
-		capv := headerLen + len(one) + len(retrievalSep) + endLen
+		// Single entry: no separator is charged. Cap = header + entry + end.
+		one, _ := formatRetrievedEntry(entry("k", "value"))
+		capv := headerLen + len(one) + endLen
 		got := formatRetrievedContext([]*memory.Entry{entry("k", "value")}, capv)
-		if len(got) > capv {
-			t.Fatalf("exact fit exceeded cap: %d > %d", len(got), capv)
+		if len(got) != capv {
+			t.Fatalf("exact fit should fill the cap exactly: %d != %d", len(got), capv)
 		}
 		if !strings.Contains(got, "value") {
 			t.Fatalf("entry missing at exact fit: %q", got)
@@ -393,14 +393,47 @@ func TestFormatRetrievedContext_StrictBudget(t *testing.T) {
 	})
 
 	t.Run("one byte short truncates within cap", func(t *testing.T) {
-		one := formatRetrievedEntry(entry("k", "value"))
-		capv := headerLen + len(one) + len(retrievalSep) + endLen - 1
-		got := formatRetrievedContext([]*memory.Entry{entry("k", "value")}, capv)
+		// A large value: one byte short of the full entry leaves plenty of
+		// room for the truncated variant (prefix + partial value + notice),
+		// so the truncation branch must fire — not the drop branch.
+		val := strings.Repeat("v", 100)
+		one, _ := formatRetrievedEntry(entry("k", val))
+		capv := headerLen + len(one) + endLen - 1
+		got := formatRetrievedContext([]*memory.Entry{entry("k", val)}, capv)
 		if len(got) > capv {
 			t.Fatalf("truncated block exceeded cap: %d > %d", len(got), capv)
 		}
-		if strings.Contains(got, retrievalTruncNotice) && !strings.Contains(got, "[k] ") {
+		if !strings.Contains(got, retrievalTruncNotice) {
+			t.Fatalf("one-byte-short must hit the truncation branch: %q", got)
+		}
+		if !strings.Contains(got, "[k | taint-unknown] ") {
 			t.Fatalf("truncated entry lost its prefix: %q", got)
+		}
+	})
+
+	t.Run("adversarial ] in key keeps taint label", func(t *testing.T) {
+		// Regression for prefix measurement by search: a key containing
+		// "] " used to shrink the computed prefix to a point inside the key,
+		// letting a budget cut drop the taint label from a tainted entry.
+		// The prefix length now comes from the formatter, so the label area
+		// is protected and the entry is dropped entirely when it can't fit
+		// with its label.
+		entries := []*memory.Entry{
+			{Key: "x] " + strings.Repeat("a", 40), Value: strings.Repeat("v", 300), Tainted: memory.TaintTrue},
+		}
+		// Budget that lands inside the old failure window: enough for the
+		// forged short prefix + slack (old bug path) but NOT enough for the
+		// real prefix + truncation notice.
+		capv := headerLen + 25 + endLen // less than prefixLen + notice + 20
+		got := formatRetrievedContext(entries, capv)
+		if len(got) > capv {
+			t.Fatalf("block exceeded cap: %d > %d", len(got), capv)
+		}
+		// Either dropped entirely (fine) or present WITH its taint label.
+		// Check the key's distinctive filler, not a single letter that also
+		// appears in the header text.
+		if strings.Contains(got, strings.Repeat("a", 10)) && !strings.Contains(got, " | tainted") {
+			t.Fatalf("tainted entry rendered without taint label: %q", got)
 		}
 	})
 
@@ -436,18 +469,19 @@ func TestFormatRetrievedContext_StrictBudget(t *testing.T) {
 	t.Run("taint label never cut by budget", func(t *testing.T) {
 		// A tainted entry whose budget truncation would slice the prefix
 		// must be dropped entirely, never rendered without its taint label.
+		// The key deliberately does NOT contain the word "tainted" so the
+		// label assertion cannot pass vacuously.
 		entries := []*memory.Entry{
-			{Key: "some-long-tainted-key", Value: strings.Repeat("x", 300), Tainted: memory.TaintTrue},
+			{Key: "some-long-key-here", Value: strings.Repeat("x", 300), Tainted: memory.TaintTrue},
 		}
 		// Budget leaves room for only part of the prefix.
 		capv := headerLen + 30 + endLen
 		got := formatRetrievedContext(entries, capv)
-		if strings.Contains(got, "some-long-tainted-key") &&
-			!strings.Contains(got, "tainted") {
-			t.Fatalf("tainted entry rendered without taint label: %q", got)
+		if len(got) > capv {
+			t.Fatalf("block exceeded cap: %d > %d", len(got), capv)
 		}
-		if len(got) > capv && strings.Contains(got, "[some-long") {
-			t.Fatalf("partial prefix leaked: %q", got)
+		if strings.Contains(got, "some-long-key-here") && !strings.Contains(got, " | tainted") {
+			t.Fatalf("tainted entry rendered without taint label: %q", got)
 		}
 	})
 }
