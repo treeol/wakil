@@ -31,6 +31,7 @@ wakil_race
 # local temp/workspace docs
 .tmp/
 .tmp-test/
+tmp/
 
 # archived docs — preserved on archive/docs branch, not tracked on master
 docs/archive/
