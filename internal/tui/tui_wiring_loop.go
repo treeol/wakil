@@ -204,6 +204,7 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	m.queuedPrompts = nil
 	m.runningTool = nil
 	m.lastTool = nil
+	m.toolDigests = nil
 	m.pendingAutoGrant = false
 	m.pendingDestructiveGrant = false
 	*m.imageChips = (*m.imageChips)[:0]

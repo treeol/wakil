@@ -243,6 +243,15 @@ type tuiModel struct {
 	// (turn end). Set alongside runningTool on ToolStartMsg.
 	lastTool *runningToolState
 
+	// toolDigests maps ToolCallID → ArgDigest (display command) for the calls
+	// of the CURRENT turn. KindToolCallCompleted consumes it to render one
+	// compact "· tool digest" line per completed call in the viewport, so the
+	// intermediate tool activity of a turn reads as single lines instead of
+	// interleaving with the streamed text. Cleared at turn end alongside
+	// runningTool/lastTool (clearWiringTurnState and the wiring-loop reset).
+	// Pure TUI-side.
+	toolDigests map[string]string
+
 	// sideQuestion tracks a running side-question stream (/ask command).
 	// nil when no side question is active. The cancel function aborts the
 	// stream when the user hits Esc or the main turn ends.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
@@ -199,6 +200,77 @@ func TestWiringTurnLifecycle(t *testing.T) {
 	}
 	if !m.hadTurn {
 		t.Fatal("hadTurn not set")
+	}
+}
+
+// TestWiringCompactToolLines verifies the compact per-call tool history:
+// each completed tool call commits one dim "· name digest" iDiag line to the
+// viewport (after flushing any streamed text, so ordering holds), error and
+// declined statuses get a suffix, an unmatched completion still renders
+// without a digest, and the digest map is cleared at turn end.
+func TestWiringCompactToolLines(t *testing.T) {
+	f := &fakeFacade{sid: "sess_tui_test", chatID: "chat123"}
+	m := newWiringModel(f)
+	m.state = stateStreaming
+
+	// Stream text, then start a tool — the line must land AFTER the text.
+	m = step(m, evt(event.KindMessageDelta, event.MessageDelta{Text: "working"}, f.sid))
+	m = step(m, evt(event.KindToolCallStarted, event.ToolCallStarted{
+		TurnID: "trn_1", ToolCallID: "tcl_1", Name: "edit_file", ArgDigest: "tui_events.go",
+	}, f.sid))
+	if m.toolDigests["tcl_1"] != "tui_events.go" {
+		t.Fatalf("toolDigests[tcl_1] = %q, want tui_events.go", m.toolDigests["tcl_1"])
+	}
+	m = step(m, evt(event.KindToolCallCompleted, event.ToolCallCompleted{
+		ToolCallID: "tcl_1", Name: "edit_file", Status: "ok",
+	}, f.sid))
+	if m.streaming.Len() != 0 {
+		t.Fatal("streaming should be flushed before the tool line")
+	}
+
+	// Error status gets a suffix.
+	m = step(m, evt(event.KindToolCallStarted, event.ToolCallStarted{
+		TurnID: "trn_1", ToolCallID: "tcl_2", Name: "run_shell", ArgDigest: "make test",
+	}, f.sid))
+	m = step(m, evt(event.KindToolCallCompleted, event.ToolCallCompleted{
+		ToolCallID: "tcl_2", Name: "run_shell", Status: "error",
+	}, f.sid))
+
+	// Unmatched completion (no matching start): still renders, no digest.
+	m = step(m, evt(event.KindToolCallCompleted, event.ToolCallCompleted{
+		ToolCallID: "tcl_x", Name: "read_file", Status: "ok",
+	}, f.sid))
+
+	// A second reasoning block after a tool line collapses at the next
+	// boundary (per-block semantics). Text streamed after the boundary stays
+	// in the streaming buffer until the next flush (turn end).
+	m = step(m, evt(event.KindReasoningDelta, event.ReasoningDelta{Text: "thinking again"}, f.sid))
+	m = step(m, evt(event.KindMessageDelta, event.MessageDelta{Text: "done"}, f.sid))
+
+	want := []string{
+		"working",
+		"· edit_file tui_events.go",
+		"· run_shell make test (error)",
+		"· read_file",
+		"· thought (~3 tokens)",
+	}
+	var got []string
+	for _, it := range *m.items {
+		got = append(got, ansi.Strip(it.text))
+	}
+	if len(got) != len(want) {
+		t.Fatalf("items = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("item[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// Turn end clears the per-turn digest map.
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn_1", Outcome: "complete"}, f.sid))
+	if m.toolDigests != nil {
+		t.Fatal("toolDigests should be cleared at turn end")
 	}
 }
 

@@ -452,6 +452,15 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 
 	case event.KindReasoningDelta:
 		p := ev.Payload.(event.ReasoningDelta)
+		// A new reasoning block opens when the previous one was already
+		// collapsed (reasoningDone latched) — reset the flag so the next
+		// collapse boundary (MessageDelta or ToolCallCompleted) folds THIS
+		// block into a "· thought" line too. Without this, only the first
+		// block per turn would ever collapse.
+		if m.reasoningDone {
+			m.reasoningDone = false
+			m.reasoningExpanded = false
+		}
 		m.reasoning.WriteString(p.Text)
 		if cmd := m.refreshViewportThrottled(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -477,6 +486,10 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 		m.runningTool = tool
 		m.lastTool = tool
+		if m.toolDigests == nil {
+			m.toolDigests = make(map[string]string)
+		}
+		m.toolDigests[string(p.ToolCallID)] = p.ArgDigest
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case event.KindToolCallCompleted:
@@ -486,6 +499,36 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.runningTool = nil
 			m = m.reflowIfStatusHeightChanged(before)
 		}
+		// Compact per-call history: one dim line per completed tool call, so
+		// a turn's intermediate tool activity renders as single lines. The
+		// running affordance stays in the status row (toolActivityRow); this
+		// commits the call into the viewport at completion, before any text
+		// streamed after it (flushStreaming first, same ordering contract as
+		// KindApprovalRequested). The digest comes from the ToolCallStarted
+		// side (toolDigests); an unmatched completion (e.g. overlapping calls
+		// or a lost start) still renders — just without the digest.
+		m.flushStreaming()
+		if m.reasoning.Len() > 0 && !m.reasoningDone {
+			toks := m.reasoning.Len() / 4
+			m.reasoning.Reset()
+			m.reasoningDone = true
+			m.reasoningExpanded = false
+			m.addItem(iDiag, dim2(sprint("· thought (~%d tokens)", toks)))
+		}
+		digest := m.toolDigests[string(p.ToolCallID)]
+		delete(m.toolDigests, string(p.ToolCallID))
+		text := p.Name
+		if digest != "" {
+			text += " " + digest
+		}
+		// Any non-"ok" status is annotated (payload validation currently
+		// admits only ok|error|declined, but an allow-list would silently
+		// render a future status as success).
+		if p.Status != "ok" {
+			text += " (" + p.Status + ")"
+		}
+		m.addItem(iDiag, dim2("· "+text))
+
 
 	case event.KindApprovalRequested:
 		p := ev.Payload.(event.ApprovalRequested)
@@ -733,6 +776,7 @@ func (m tuiModel) clearWiringTurnState() tuiModel {
 	m.tps = 0
 	m.runningTool = nil
 	m.lastTool = nil
+	m.toolDigests = nil
 	m.state = stateIdle
 	m.asyncProgress = nil // clear stale progress snapshot from the suspended turn
 	m.dotPhase = 0
