@@ -326,7 +326,17 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	if a.IsLongSession() && !force {
 		return false, nil
 	}
+	// Long-session destructiveness guard (plan 2.1 follow-up): materializing
+	// bakes the projection into a.Conv and DESTROYS the collapse records.
+	// Previously this ran before the summarizability check, so even a
+	// "nothing to compact" outcome had already destroyed the records.
+	// Check on the PROJECTION first — keepBoundary over the projected Conv
+	// answers whether compaction would summarize anything. If not, return
+	// with the collapse state fully intact (non-destructive no-op).
 	if a.IsLongSession() {
+		if boundary := keepBoundary(a.contextProjection(), keepBytes); boundary <= 0 {
+			return false, nil
+		}
 		a.materializeCollapsed()
 	}
 	// Evict stale tool results BEFORE computing the keep boundary. Pruning

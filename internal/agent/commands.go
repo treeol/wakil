@@ -547,6 +547,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, note("assist: OFF — main model only")
 
 	case "/compact":
+		// Long-session gate (plan 2.1a): a forced /compact in long mode
+		// MATERIALIZES all collapsed turns back into Conv and destroys the
+		// collapse records and archive pointers — the whole point of the
+		// mode. It is destructive to long-mode session state and therefore
+		// requires the explicit "/compact force" syntax.
+		if app.IsLongSession() && !(len(fields) > 1 && fields[1] == "force") {
+			return true, false, note("compact: refused in long-session mode — a forced compact materializes collapsed requests and destroys their archive pointers. If you really want that, run /compact force. Prefer collapse_context instead (it frees context without destroying records).")
+		}
 		return true, false, func() Msg {
 			ok, err := app.Compact(context.Background(), app.summarizeFn(), true)
 			if err != nil {

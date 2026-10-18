@@ -10,7 +10,7 @@ opens a picker to attach a file or folder for context.
 ```
 /new, /reset         fresh conversation (new chat_id, clears viewport)
 /handoff [proceed|stop] summarize → memory → fresh session (default: show and wait; proceed: auto-continue)
-/compact             summarize older turns now (frees context)
+/compact             summarize older turns now (frees context); in long-session mode requires /compact force (a forced compact materializes collapsed requests and destroys their archive pointers)
 /rewind              list checkpoints (turn-level file snapshots)
 /rewind <N>          rewind N checkpoints (1 = last turn; restores files, truncates history)
 /sessions            list saved sessions (★ = current)
@@ -38,7 +38,7 @@ opens a picker to attach a file or folder for context.
 /mode standard       set context mode: full history sent (default; persisted per repo)
 /mode long-session   set long-session mode: finished requests collapse to question + answer + note (alias: /mode long)
 /mode status         show context mode, collapsed/kept counts, sent vs full sizes, archive dir
-/keep [n]            exempt request n from collapse (default: most recent finished); /keep off <n> removes the exemption
+/keep <n>            exempt request n from collapse; /keep off <n> removes the exemption
 /mcp                 list connected MCP servers and their tools
 /mcp reconnect NAME  reconnect a named MCP server
 ```
