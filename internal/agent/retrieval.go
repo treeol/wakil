@@ -62,11 +62,14 @@ func (a *App) retrieveMemoryContext(ctx context.Context, userText string) string
 
 	var entries []*memory.Entry
 
-	// Search memory store (active entries only, all tiers).
+	// Search memory store (active entries only, all tiers). The query from
+	// sanitizeFTSQuery is already an FTS5-safe MATCH expression (OR-of-
+	// quoted-phrases), so it must go through SearchRaw — Search would
+	// re-quote it into a match-nothing double-quoted string.
 	if a.MemoryStore != nil {
 		memCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		results, err := a.MemoryStore.Search(memCtx, query, "", false)
+		results, err := a.MemoryStore.SearchRaw(memCtx, query, "", false)
 		if err == nil && len(results) > 0 {
 			if len(results) > retrievalMaxMemory {
 				results = results[:retrievalMaxMemory]
@@ -75,11 +78,12 @@ func (a *App) retrieveMemoryContext(ctx context.Context, userText string) string
 		}
 	}
 
-	// Search skill store (active durable only).
+	// Search skill store (active durable only). Query is a prepared FTS5
+	// MATCH expression — SearchRaw, or it would be double-quoted.
 	if a.SkillStore != nil {
 		skillCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		results, err := a.SkillStore.searchSkills(skillCtx, query)
+		results, err := a.SkillStore.searchSkillsRaw(skillCtx, query)
 		if err == nil && len(results) > 0 {
 			if len(results) > retrievalMaxSkills {
 				results = results[:retrievalMaxSkills]

@@ -69,6 +69,7 @@ const (
 const (
 	searchCap       = 20
 	listCap         = 200
+	prefixCap       = 15 // max distinct prefixes in the Stats inventory
 	auditWindowDays = 30
 	maxKeyLen       = 256
 	maxValueLen     = 64 * 1024
@@ -123,6 +124,11 @@ type Stats struct {
 	ActiveMid       int
 	PendingProposed int
 	RecentKeys      []string // top-N durable keys by recency
+	// PrefixCounts maps each top-level key prefix (the segment before the
+	// first "/"; keys without "/" use the whole key) to its active-entry
+	// count. Gives the model a retrieval inventory: what namespaces exist
+	// and how full they are, without injecting entry content.
+	PrefixCounts map[string]int
 }
 
 // Store is the durable host-side memory store.
@@ -957,9 +963,14 @@ func (s *Store) GetByID(ctx context.Context, id int64) (*Entry, error) {
 // wrapped as a quoted phrase, so FTS5 metacharacters (-, ", :, ^, *, etc.)
 // are treated as literal text instead of query syntax. An empty result
 // (whitespace-only input) means "match nothing" — callers treat it as no
-// query. This changes multi-token queries from implicit AND semantics to
-// phrase-per-token OR-of-phrases; we join with spaces, which FTS5 reads as
-// implicit AND, preserving the previous behavior for plain word queries.
+// query. Quoted phrases are joined with spaces, which FTS5 reads as
+// implicit AND, preserving the pre-sanitization behavior for plain
+// multi-word queries.
+//
+// NOTE: passing an ALREADY-quoted expression here re-quotes each token
+// (embedded quotes doubled, then wrapped again), changing its semantics —
+// this is how the turn-entry retrieval pass broke when sanitization was
+// added. Callers with prepared MATCH expressions must use SearchRaw.
 func sanitizeFTSQuery(query string) string {
 	fields := strings.Fields(query)
 	if len(fields) == 0 {
@@ -981,8 +992,29 @@ func sanitizeFTSQuery(query string) string {
 // By default, only active entries are returned; includeProposed adds
 // proposed entries. Expired entries are always filtered. Stale entries are
 // returned with the flag — never silently dropped.
+//
+// The query is a raw user string: it is sanitized into a safe FTS5 MATCH
+// expression (each whitespace token becomes a quoted phrase, so FTS5
+// metacharacters are literal). Passing an already-prepared expression
+// here re-quotes it and changes its semantics — such callers must use
+// SearchRaw.
 func (s *Store) Search(ctx context.Context, query, tier string, includeProposed bool) ([]*Entry, error) {
-	query = sanitizeFTSQuery(query)
+	return s.search(ctx, sanitizeFTSQuery(query), tier, includeProposed)
+}
+
+// SearchRaw runs a search with a caller-prepared FTS5 MATCH expression. The
+// expression is used as-is — the caller is responsible for FTS5 safety
+// (quoting phrases, escaping embedded quotes by doubling). An empty
+// expression matches nothing and returns nil. Use this when the caller
+// composes boolean/or semantics itself (e.g. the turn-entry retrieval pass).
+func (s *Store) SearchRaw(ctx context.Context, matchExpr, tier string, includeProposed bool) ([]*Entry, error) {
+	return s.search(ctx, matchExpr, tier, includeProposed)
+}
+
+// search is the shared implementation. matchExpr must already be a valid
+// FTS5 MATCH expression (or empty for match-nothing).
+func (s *Store) search(ctx context.Context, matchExpr, tier string, includeProposed bool) ([]*Entry, error) {
+	query := matchExpr
 	if query == "" {
 		return nil, nil
 	}
@@ -1124,6 +1156,35 @@ func (s *Store) Stats(ctx context.Context, recentN int) (*Stats, error) {
 			}
 			stats.RecentKeys = append(stats.RecentKeys, key)
 		}
+	}
+
+	// Prefix inventory: count active entries (any tier) per top-level key
+	// prefix, bounded to prefixCap distinct prefixes. This is the retrieval
+	// handle for the model — it learns which namespaces exist without any
+	// entry content being injected.
+	prow, err := s.db.QueryContext(ctx,
+		`SELECT CASE WHEN instr(key, '/') > 0 THEN substr(key, 1, instr(key, '/') - 1) ELSE key END AS prefix,
+		        COUNT(*) AS n
+		 FROM entries
+		 WHERE status = 'active' AND (expires_at IS NULL OR expires_at >= ?)
+		 GROUP BY prefix
+		 ORDER BY n DESC, prefix ASC
+		 LIMIT ?`, now, prefixCap)
+	if err != nil {
+		return nil, err
+	}
+	defer prow.Close()
+	stats.PrefixCounts = make(map[string]int)
+	for prow.Next() {
+		var prefix string
+		var n int
+		if err := prow.Scan(&prefix, &n); err != nil {
+			return nil, err
+		}
+		stats.PrefixCounts[prefix] = n
+	}
+	if err := prow.Err(); err != nil {
+		return nil, err
 	}
 
 	return stats, nil

@@ -271,3 +271,35 @@ func TestRetrieveMemoryContext_Timeout(t *testing.T) {
 		t.Errorf("expected empty result with cancelled context, got: %s", result)
 	}
 }
+
+// TestSearchRawNotDoubleQuoted locks the regression where Store.Search
+// re-sanitized a caller-prepared MATCH expression, double-quoting it into
+// a match-nothing string and silently breaking the turn-entry retrieval
+// pass (retrieval.go). SearchRaw must use the expression verbatim.
+func TestSearchRawNotDoubleQuoted(t *testing.T) {
+	dir := t.TempDir()
+	store, err := memory.Open(filepath.Join(dir, "memory", "test.db"), filepath.Join(dir, "workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	c := context.Background()
+
+	if _, err := store.PutActive(c, "arch/auth-flow", "The auth module uses JWT with refresh tokens.", "summary", memory.TierDurable, "main", "s1", memory.TaintUnknown, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A prepared OR-of-quoted-phrases expression (what retrieval builds).
+	prepared := `"fix" OR "the" OR "auth" OR "token" OR "bug"`
+
+	raw, err := store.SearchRaw(c, prepared, "", false)
+	if err != nil {
+		t.Fatalf("SearchRaw failed: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Fatal("SearchRaw returned 0 results for a valid prepared expression — double-quoting regression")
+	}
+	if raw[0].Key != "arch/auth-flow" {
+		t.Fatalf("expected arch/auth-flow, got %s", raw[0].Key)
+	}
+}

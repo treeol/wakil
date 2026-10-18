@@ -112,9 +112,17 @@ func (p *skillsProfile) listActiveSkills(ctx context.Context) ([]*memory.Entry, 
 	return p.store.List(ctx, "", memory.TierDurable, memory.StatusActive)
 }
 
-// searchSkills runs FTS5 search over active skills.
+// searchSkills runs FTS5 search over active skills. The query is a raw user
+// string — it is sanitized inside Store.Search.
 func (p *skillsProfile) searchSkills(ctx context.Context, query string) ([]*memory.Entry, error) {
 	return p.store.Search(ctx, query, memory.TierDurable, false)
+}
+
+// searchSkillsRaw runs FTS5 search over active skills with a caller-prepared
+// FTS5 MATCH expression (already quoted/escaped). Used by the turn-entry
+// retrieval pass, which builds its own OR-of-phrases query.
+func (p *skillsProfile) searchSkillsRaw(ctx context.Context, matchExpr string) ([]*memory.Entry, error) {
+	return p.store.SearchRaw(ctx, matchExpr, memory.TierDurable, false)
 }
 
 // historyForKey returns the full supersedes chain for key, newest→oldest,
