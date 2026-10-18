@@ -366,20 +366,32 @@ func (a *App) stashCollapse(rec CollapseRecord, key, description string) (keyOut
 }
 
 // indexValueForTurn builds the auto-index memory value for a finished turn:
-// truncated user text + preserved summary + note. Tool counts alone are a
-// weak search target; including U and Summary makes "what did we decide in
-// request N" discoverable via memory_search.
+// truncated user text + final answer excerpt + preserved summary + note.
+// Tool counts alone are a weak search target; including U, the answer, and
+// Summary makes "what did we decide in request N" discoverable via
+// memory_search even when the query is phrased from the answer (recall
+// fixture finding — the answer is often the only distinctive text).
 func (a *App) indexValueForTurn(t int, rec CollapseRecord) string {
-	uText := ""
+	uText, aText := "", ""
 	a.convMu.RLock()
 	spans := turnSpansFromSlice(a.Conv)
 	if s, ok := spans[t]; ok && s.first < len(a.Conv) {
 		uText = strings.TrimSpace(DerefStr(a.Conv[s.first].Content))
+		// Final answer = the last clean assistant message of the turn.
+		for i := s.last; i > s.first; i-- {
+			if isCleanAnswer(a.Conv[i]) {
+				aText = strings.TrimSpace(DerefStr(a.Conv[i].Content))
+				break
+			}
+		}
 	}
 	a.convMu.RUnlock()
 	var b strings.Builder
 	if uText != "" {
 		fmt.Fprintf(&b, "request %d: %s\n", t, Truncate(uText, 200))
+	}
+	if aText != "" {
+		fmt.Fprintf(&b, "answer: %s\n", Truncate(aText, 200))
 	}
 	if rec.Summary != "" {
 		fmt.Fprintf(&b, "summary: %s\n", rec.Summary)
