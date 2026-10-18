@@ -124,6 +124,7 @@ reference covering every section below.
 | `lsp_enabled` | `false` | Gate for `lsp_*` code-intelligence tools |
 | `lsp_servers` | — | Maps language → server command |
 | `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium) |
+| `memory_preflight_recall` | `true` | Turn-entry memory/skill retrieval: one FTS query per user request; injects top hits as a delimited untrusted-data block. Set `false` to disable. |
 | `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
 | `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
 | `external_backends` | — | Backend names known to route to external providers |

@@ -612,6 +612,15 @@ type Config struct {
 	// is installed at a non-standard location or not in PATH.
 	BrowserPath string `json:"browser_path,omitempty"`
 
+	// MemoryPreflightRecall controls the automatic turn-entry memory/skill
+	// retrieval pass (the "Relevant context from memory" envelope). When
+	// true (the default), each new user request triggers one FTS query over
+	// active memory/skill entries and injects the top hits as a clearly
+	// delimited, byte-capped, untrusted-data block into the user message.
+	// Set false to disable the pass entirely (prompt-driven recall via
+	// memory_search still works).
+	MemoryPreflightRecall *bool `json:"memory_preflight_recall,omitempty"`
+
 	// ilm-stack shadow-mode emitter (v0: shadow only, no write-back).
 	// mode=off (default): zero behaviour change, zero network calls.
 	// mode=shadow: emit events to the ilm-stack endpoint via a local durable
