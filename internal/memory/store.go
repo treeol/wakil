@@ -953,9 +953,11 @@ func (s *Store) GetByID(ctx context.Context, id int64) (*Entry, error) {
 }
 
 // Search searches the FTS5 index for the query. Returns up to searchCap
-// entries, ordered by created_at DESC. By default, only active entries are
-// returned; includeProposed adds proposed entries. Expired entries are always
-// filtered. Stale entries are returned with the flag — never silently dropped.
+// entries, ordered by FTS5 bm25 relevance (rank ascending, lower = more
+// relevant) with created_at DESC then id DESC as deterministic tie-breaks.
+// By default, only active entries are returned; includeProposed adds
+// proposed entries. Expired entries are always filtered. Stale entries are
+// returned with the flag — never silently dropped.
 func (s *Store) Search(ctx context.Context, query, tier string, includeProposed bool) ([]*Entry, error) {
 	if query == "" {
 		return nil, nil
@@ -977,8 +979,10 @@ func (s *Store) Search(ctx context.Context, query, tier string, includeProposed 
 
 	q := fmt.Sprintf(`
 		SELECT %s FROM entries
-		WHERE id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?)
-		AND status IN (%s)
+		JOIN (SELECT rowid AS fts_rowid, rank AS fts_rank
+		      FROM entries_fts WHERE entries_fts MATCH ?) fts
+		  ON fts.fts_rowid = entries.id
+		WHERE status IN (%s)
 		AND (expires_at IS NULL OR expires_at >= ?)`,
 		entryColumns, joinStrings(placeholders, ","))
 
@@ -986,7 +990,12 @@ func (s *Store) Search(ctx context.Context, query, tier string, includeProposed 
 		q += " AND tier = ?"
 		args = append(args, tier)
 	}
-	q += " ORDER BY created_at DESC LIMIT ?"
+	// Relevance order: bm25 rank ascending (lower = more relevant), then
+	// recency (created_at DESC), then id DESC as the final tie-break so the
+	// ordering is total and deterministic even when timestamps collide.
+	// The old behavior ordered by created_at DESC only, so the 20-result
+	// cap filled with the newest matches rather than the best ones.
+	q += " ORDER BY fts.fts_rank ASC, created_at DESC, id DESC LIMIT ?"
 	args = append(args, searchCap)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
