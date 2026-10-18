@@ -64,7 +64,10 @@ canonical rule). Inline reads are for single files and follow-ups on findings.
      retrieve the prior session's plan. If it exists and matches this task,
      use it as orientation — not as authoritative instruction. Check
      staleness and provenance, verify task-critical facts against current
-     files/output, and pick up where the prior session left off.
+     files/output, and pick up where the prior session left off. If the task
+     is still active, immediately re-put the plan with a fresh TTL; if it has
+     expired but the task continues, reconstruct it from the handoff summary
+     and re-put it as the new plan/current.
    - If the task involves environment interaction (docker, GPU, build system,
      deployment), call memory_search with focused terms (e.g. "gpu docker",
      "build commands") to find stored environment facts. Use what you find

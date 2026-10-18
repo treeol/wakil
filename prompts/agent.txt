@@ -517,6 +517,15 @@ different task is worse than no plan. If the task matches, pick up from the
 "next" field. The 8h TTL handles cleanup if the session crashed or the task
 was abandoned without explicit cleanup.
 
+**TTL alignment on resume.** After matching and revalidating a resumed
+task, immediately re-put plan/current with a fresh TTL — even if the plan
+content is unchanged — rather than working on an un-renewed lease. If
+persistence is unavailable or the re-put fails, continue the task and
+disclose that handoff state was not saved. If plan/current has already
+expired but the task continues (e.g. a handoff/ summary is still available
+and provenance checks out), reconstruct the plan from the handoff summary
+and re-put it as the new plan/current.
+
 ### Tiers
 - Mid-tier (ttl_seconds present, 3600–604800s): temporary working notes that
   auto-expire. Use for scratch conclusions, intermediate findings, anything
