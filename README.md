@@ -1,38 +1,23 @@
 # wakīl
 
+<p align="center">
+  <img src="assets/wakil.png" alt="wakil" width="500">
+</p>
+
 [![CI](https://github.com/treeol/wakil/actions/workflows/ci.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
-A terminal-native coding agent. It runs in your terminal, talks to any
-OpenAI-compatible Chat Completions endpoint, and stores sessions, memory, and
-traces locally on disk. No hosted control plane required — you bring your own
-model endpoint.
+**Your terminal. Your model. Your coding agent.**
 
-```
-you → wakil → your model (llama.cpp, OpenRouter, vLLM, Ollama, …)
-              ↳ optional ilm proxy → routed backend/model (server-side recall, /learn)
-```
-
-## Why wakil?
-
-- **Sandboxed by default** — commands run inside a Docker container with a
-  read-only rootfs and dropped capabilities. Commands and workspace mutations
-  require confirmation by default; read-only tools may run without prompting.
-  Docker mode provides convenience-grade isolation, not a security boundary
-  for adversarial workloads. (See [SECURITY.md](SECURITY.md).)
-- **Model-agnostic** — works with OpenAI-compatible Chat Completions endpoints;
-  tested with llama.cpp, OpenRouter, and vLLM. Ollama is expected to work via
-  its OpenAI-compatible API. An optional `ilm` proxy adds server-side recall
-  and routing but is not required. (See [docs/endpoints.md](docs/endpoints.md).)
-- **Remembers across sessions** — built-in per-workspace memory so it recalls
-  decisions, architecture, and context from previous sessions. No external
-  database required. (See [docs/memory.md](docs/memory.md).)
-- **Not just chat** — reads and edits files, runs commands, navigates code
-  with LSP, drives a headless browser for visual checks, and delegates to
-  subagents for parallel work.
+wakīl reads and edits code, runs commands, and remembers your project across
+sessions — connecting to any OpenAI-compatible Chat Completions endpoint you
+bring (llama.cpp, OpenRouter, vLLM, Ollama). No hosted control plane; sessions,
+memory, and traces stay on your disk.
 
 ## Quickstart
+
+Prerequisites: [Go 1.26+](https://go.dev), Docker, and a running model endpoint.
 
 ```sh
 # 1. Build — single Go executable
@@ -41,7 +26,7 @@ go build -o wakil ./cmd/wakil
 # 2. Build the sandbox image (Go, Node, Rust, Python + gopls, baked in)
 docker build -t wakil-dev .
 
-# 3. Create a config and add your endpoint
+# 3. Configure your endpoint
 mkdir -p ~/.config/wakil
 cat > ~/.config/wakil/config.json << 'EOF'
 {
@@ -60,157 +45,55 @@ EOF
 ./wakil ~/projects/myapp
 ```
 
-That's it. wakil starts, connects to your model, and you're coding.
-
-**Common endpoints:**
-
-| Provider | `base_url` | Notes |
-|---|---|---|
-| llama.cpp | `http://localhost:8080` | Local, free |
-| OpenRouter | `https://openrouter.ai/api` | Set `auth_header: "Bearer sk-or-..."` |
-| Ollama | `http://localhost:11434` | Use model `llama3` |
-| vLLM | `http://localhost:8000` | OpenAI-compatible |
-
-> **Tip:** Use an explicit `endpoints` block with `"kind": "openai"` for
-> plain OpenAI-compatible servers. The legacy env-var path
-> (`ILM_BASE_URL=... ./wakil`) sends proxy-shaped requests — see
-> [docs/endpoints.md](docs/endpoints.md).
-
-**No Docker?** Run directly on the host with `--exec direct` — the
-confirmation gate is still on.
-
-See [`config.example.json`](config.example.json) for all options, or
-[docs/configuration.md](docs/configuration.md) for the full reference.
-
-## Daemon mode
-
-wakil can also run as a long-lived daemon — own session state, serve multiple
-clients, and provide a web UI:
-
-```sh
-# Start the daemon
-./wakil daemon
-
-# Connect a TUI to it
-./wakil --remote
-
-# Or run it in Docker
-docker compose up -d
-```
-
-The daemon serves a built-in web console for browser-based session management,
-backend configuration, and live event viewing. Authentication uses session
-cookies with SameSite=Strict and origin validation; API tokens and OIDC are
-also supported.
-
-See [docs/remote-provisioning.md](docs/remote-provisioning.md) for setup
-details and [docs/archive/design/wakild-foundation.md](docs/archive/design/wakild-foundation.md)
-for the architecture.
+No Docker? Run with `--exec direct` — the confirmation gate stays on.
+See [docs/endpoints.md](docs/endpoints.md) for other providers and
+[config.example.json](config.example.json) for all options.
 
 ## What it can do
 
-| Feature | What it means |
-|---|---|
-| **File tools** | Read, edit, search, and navigate files in your workspace |
-| **Shell execution** | Run commands inside the sandbox, with `y/n` confirmation by default |
-| **Code intelligence** | LSP-backed symbol navigation (go-to-definition, find references, hover) via gopls, designed to support other language servers |
-| **Headless browser** | Screenshot pages, inspect DOM, test layouts, emulate reduced-motion — all inside the sandbox |
-| **Subagents** | Delegate to parallel workers for discovery, editing, or tool-use tasks |
-| **Durable memory** | Per-workspace memory with propose→promote review and provenance — it remembers what it learned |
-| **Multi-model counsel** | Get a second opinion from external models on reviews, bugs, or decisions. Destructive operations and counsel remain gated even in auto mode. Keys read at call time, never stored. |
-| **Session persistence** | Sessions save automatically; `/resume` to continue, `/handoff` to summarize and start fresh |
-| **MCP tools** | Connect stdio or HTTP MCP servers; tools appear automatically |
-| **Cost tracking** | Per-source token and cost accounting so you know what you're spending |
-| **SSH commit signing** | Sign commits inside the sandbox using your host SSH agent — the key never enters the sandbox |
-| **Tracing** | Full JSONL session traces for debugging and reproduction |
-| **Context management** | Backend-truth context sizing, `/compact`, and `/maxctx` for capping context on large models |
-| **Long-session mode** | `/mode long-session` collapses each finished request to a question + answer + archive note, so context grows only when the current work needs it; `/keep <n>` exempts a turn from collapse |
-| **Checkpoint/Rewind** | `/rewind` to undo the last turn — restores files to their pre-edit state and truncates the conversation |
-| **Project conventions** | `AGENTS.md` ingestion and `/init` command — detect project conventions and inject them into the agent's context |
-| **Lifecycle hooks** | Configure shell hooks that fire before/after tool calls and at session start/end — format on write, lint on save, etc. |
-| **Code review** | `/review` runs a read-only subagent review of your current diff for correctness, tests, security, and style |
-| **Repo map** | Lightweight file-tree outline injected at session start so the agent knows your project layout |
-| **Worktree isolation** | Edit-tier subagents run in isolated git worktrees — parallel edits without writer-lock serialization (git repos, direct mode) |
-| **Correction capture** | Detects when you correct the agent's work (via `/rewind` or explicit patterns) and proposes a memory entry — with your explicit confirmation |
-| **In-sandbox staging** | Fast ephemeral KV store for scratch space and subagent handoffs — snapshots survive sandbox restarts |
-
-## Slash commands
-
-In the TUI, type these at the prompt:
-
-| Command | What it does |
-|---|---|
-| `/mode [standard\|long-session\|status]` | Switch context mode, or show the current mode with `/mode status` |
-| `/keep <n>` | Keep the last `n` turns uncollapsed in long-session mode |
-| `/compact` | Compact the conversation now |
-| `/maxctx <n>` | Cap the context window the model sees |
-
-### Long-session mode
-
-Long-session mode keeps the context the agent sees small by default and
-lets it grow only when the current turn needs it, then shrink back once
-the turn is finished. Finished turns are collapsed into a short summary;
-the most recent turns stay in full until they age out. Use
-`/mode long-session` to enable it, `/mode standard` to go back to the
-always-full context, and `/keep <n>` to tune how many recent turns stay
-expanded. See [docs/long-session-mode-plan.md](docs/long-session-mode-plan.md)
-for the design.
-
-## Requirements
-
-| | |
-|---|---|
-| **Go 1.26+** | to build from source |
-| **Docker** | for the default sandboxed exec mode (skip with `--exec direct`) |
-| **A model endpoint** | any OpenAI-compatible Chat Completions server — wakil is a client, so you need an inference endpoint to talk to |
+- **Code work, end to end** — file tools, sandboxed shell, LSP-backed symbol
+  navigation, and a headless browser for visual checks.
+- **Confirmation-first execution** — every command and workspace mutation
+  prompts before it runs; reads proceed without prompting. Even in auto mode,
+  destructive operations stay gated.
+- **Long-session memory** — finished turns collapse to a question + answer +
+  archive note, so context grows only when the current work needs it. Durable
+  per-workspace memory recalls decisions and architecture across sessions.
+- **Parallel subagents** — discovery, edit, and tool-use workers; edits run in
+  isolated git worktrees.
+- **Second opinions** — multi-model counsel on reviews, bugs, and decisions,
+  with keys read at call time and never stored.
+- **Plays well with your stack** — MCP tools, `AGENTS.md` conventions, repo
+  map injection, lifecycle hooks, cost tracking, and full JSONL traces.
+- **Scales to a daemon** — `./wakil daemon` serves multiple clients with a
+  built-in web console ([docs/remote-provisioning.md](docs/remote-provisioning.md)).
 
 ## Security
 
-wakil executes shell commands and writes files. The confirmation gate is the
-primary defense — every workspace mutation and command execution prompts
-`y/n` before it runs. Read-only tools (file reads, search, LSP) may run
-without prompting. Destructive operations and counsel calls remain gated even
-in auto mode.
+wakil executes commands and writes files. The confirmation gate is the primary
+defense. Docker mode adds a read-only rootfs, dropped capabilities, and
+resource limits — convenience-grade isolation, not adversarial-grade. Tools
+you configure (endpoints, counsel models, MCP servers, search) can send data
+externally. See [SECURITY.md](SECURITY.md) for the threat model and hardening
+checklist.
 
-Docker mode adds a read-only rootfs, dropped capabilities, and resource
-limits, but is **not** adversarial-grade. Direct mode runs on the host with no
-container isolation.
-
-Configured model endpoints, optional counsel models, HTTP MCP servers, and
-search may send data externally — wakil has no required hosted control plane,
-but networked tools you configure can egress. See [SECURITY.md](SECURITY.md)
-for the full threat model, data-egress disclosure, and hardening checklist.
-
-> **Running untrusted tasks?** Keep the gate on, do not enable
-> `docker_socket`, and audit memory entries (`memory_list`) after operating
-> on untrusted content.
-
-## Documentation
+## Explore
 
 | Topic | Document |
 |---|---|
-| Configuration (flags, env, config fields, endpoints) | [docs/configuration.md](docs/configuration.md) |
-| Endpoint kinds, switching, state management | [docs/endpoints.md](docs/endpoints.md) |
-| Tools (reference, gating, subagents) | [docs/tools.md](docs/tools.md) |
-| TUI (commands, keybindings) | [docs/tui.md](docs/tui.md) |
-| `/plan` workflow | [docs/workflows.md](docs/workflows.md) |
-| Features (LSP, browser, counsel, search, memory, tracing) | [docs/features.md](docs/features.md) |
-| Durable memory design | [docs/memory.md](docs/memory.md) |
-| Staging store design | [docs/staging.md](docs/staging.md) |
-| Daemon architecture | [docs/archive/design/wakild-foundation.md](docs/archive/design/wakild-foundation.md) |
-| Remote provisioning | [docs/remote-provisioning.md](docs/remote-provisioning.md) |
-| Security policy and threat model | [SECURITY.md](SECURITY.md) |
-| Contributing and PR checklist | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Configuration | [docs/configuration.md](docs/configuration.md) |
+| Endpoints | [docs/endpoints.md](docs/endpoints.md) |
+| Tools & subagents | [docs/tools.md](docs/tools.md) · [docs/features.md](docs/features.md) |
+| TUI commands | [docs/tui.md](docs/tui.md) |
+| Memory & context modes | [docs/memory.md](docs/memory.md) · [docs/long-session-mode-plan.md](docs/long-session-mode-plan.md) |
+| Daemon | [docs/remote-provisioning.md](docs/remote-provisioning.md) |
+| Security | [SECURITY.md](SECURITY.md) |
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ## Status
 
 Early-stage. Config keys, session format, and the tool set may change between
 commits.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test instructions and the PR
-checklist. For security concerns, see [SECURITY.md](SECURITY.md).
 
 ## License
 
