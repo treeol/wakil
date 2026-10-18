@@ -268,6 +268,9 @@ type App struct {
 	keep                  map[int]bool
 	collapseArchiveFailed bool
 	collapseMemoryFailed  bool
+	// indexReconciled: reconcileArchiveIndexes has run once this session
+	// (bounded cleanup trigger — never repeated in-process).
+	indexReconciled bool
 
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly

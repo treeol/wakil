@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 	"time"
@@ -614,6 +616,80 @@ func (a *App) contextProjection() []proxy.Message {
 	return out
 }
 
+// reconcileArchiveIndexes is the bounded, idempotent lifecycle reconciliation
+// (plan phase 2): auto-index entries whose owned archive is CONFIRMED absent
+// are tombstoned (Store.Forget) so memory_search no longer surfaces dead
+// pointers. Runs once per session, triggered from the first collapse sweep.
+//
+// Safety rules:
+//   - Auto-index entries only, identified by record ownership (a.MemoryKey of
+//     a collapsed turn in THIS session), never by prefix prose-parsing.
+//   - CONFIRMED absence only: stat says not-exist. I/O errors, permission
+//     failures, or an unusable path → keep the entry (never delete on doubt).
+//   - Stash entries are NEVER pruned here: they hold distilled value beyond
+//     the archive (panel direction). Their archive references may go stale —
+//     acceptable; the stash content itself is the recall target.
+//   - Concurrent refresh safety: entries re-put since the stat are unaffected
+//     (we only Forget keys whose archive is confirmed gone; a refresh targets
+//     the same key, and a live archive is never confirmed gone).
+//   - Legacy/foreign entries (no owning record in this session) are left
+//     untouched — this pass has no provenance authority over them.
+func (a *App) reconcileArchiveIndexes() {
+	if a.MemoryStore == nil || a.indexReconciled {
+		return
+	}
+	a.indexReconciled = true // once per session, even on partial failure
+
+	a.stateMu.RLock()
+	keys := make([][2]string, 0, len(a.collapsed)) // [memoryKey, archive]
+	for _, rec := range a.collapsed {
+		if rec.MemoryKey != "" && rec.Archive != "" {
+			keys = append(keys, [2]string{rec.MemoryKey, rec.Archive})
+		}
+	}
+	a.stateMu.RUnlock()
+
+	for _, pair := range keys {
+		key, archive := pair[0], pair[1]
+		// Confirmed absence = stat fails with fs.ErrNotExist. Any other
+		// error (or success) → keep the entry. Paths outside the toolcache
+		// root return ErrHostCacheEscape — an error, not confirmed absence →
+		// keep (conservative).
+		if _, err := wtools.StatHostCacheFile(archive); err == nil {
+			continue // archive alive
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			continue // unknown → never prune on doubt
+		}
+		// Re-check ownership: the record may have been refreshed (rewound,
+		// re-collapsed) between the snapshot and now. Only Forget the key
+		// if some record still claims it AND that record's archive is the
+		// confirmed-absent one. A refreshed entry pointing at a live archive
+		// must survive.
+		owned := false
+		a.stateMu.RLock()
+		for _, rec := range a.collapsed {
+			if rec.MemoryKey == key && rec.Archive == archive {
+				owned = true
+				break
+			}
+		}
+		a.stateMu.RUnlock()
+		if !owned {
+			continue
+		}
+		if err := a.MemoryStore.Forget(context.Background(), key); err != nil {
+			// Best-effort: a failed tombstone is a stale entry, not data
+			// loss. Warn once via the collapse-memory flag.
+			if !a.collapseMemoryFailed {
+				a.collapseMemoryFailed = true
+				fmt.Fprintln(a.Out, Yellow("⚠ reconcile: failed to tombstone index entry for missing archive "+archive+" — entry may surface a dead pointer"))
+			}
+			continue
+		}
+		fmt.Fprintln(a.Out, Dim("· pruned index entry for missing archive "+archiveBaseName(archive)))
+	}
+}
+
 // collapseFinishedTurns runs the collapse rules (§4) on all not-yet-collapsed
 // turns. Called at the start of finalizeTurn (before eviction and Compact) and
 // at the start of SendOutcome (before fitConvToWindow). Idempotent — already
@@ -622,6 +698,9 @@ func (a *App) collapseFinishedTurns() {
 	if !a.IsLongSession() {
 		return
 	}
+	// Bounded lifecycle trigger (plan phase 2): once per session, before the
+	// sweep, prune index entries whose archives are confirmed gone.
+	a.reconcileArchiveIndexes()
 	a.convMu.RLock()
 	spans := turnSpansFromSlice(a.Conv)
 	convSnap := a.Conv
