@@ -299,6 +299,50 @@ func TestExpiryBoundary(t *testing.T) {
 	}
 }
 
+func TestStatsPrefixInventory(t *testing.T) {
+	s, _ := newTestStore(t)
+	c := ctx(t)
+
+	// Entries across several prefixes, mixed tiers, one expired (must not
+	// count), one proposed (must not count — inventory is active-only).
+	s.PutActive(c, "done/one", "v", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, "")
+	s.PutActive(c, "done/two", "v", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, "")
+	s.PutActive(c, "done/three", "v", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, "")
+	s.PutActive(c, "arch/flow", "v", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, "")
+	s.PutActive(c, "arch/other", "v", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, "")
+	s.PutActive(c, "env/build", "v", "note", TierMid, "main", "s1", TaintUnknown, nil, nil, "")
+	s.PutActive(c, "barekey", "v", "note", TierDurable, "main", "s1", TaintUnknown, nil, nil, "")
+	expires := s.now() - 1
+	s.PutActive(c, "expired/x", "v", "note", TierDurable, "main", "s1", TaintUnknown, &expires, nil, "")
+	s.PutProposed(c, "proposed/x", "v", "note", "sub-a", "s1", TaintUnknown, nil, "")
+
+	stats, err := s.Stats(c, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.PrefixCounts["done"] != 3 {
+		t.Fatalf("expected done=3, got %d", stats.PrefixCounts["done"])
+	}
+	if stats.PrefixCounts["arch"] != 2 {
+		t.Fatalf("expected arch=2, got %d", stats.PrefixCounts["arch"])
+	}
+	if stats.PrefixCounts["env"] != 1 {
+		t.Fatalf("expected env=1, got %d", stats.PrefixCounts["env"])
+	}
+	if stats.PrefixCounts["barekey"] != 1 {
+		t.Fatalf("expected barekey=1 (no-slash key), got %d", stats.PrefixCounts["barekey"])
+	}
+	if _, ok := stats.PrefixCounts["expired"]; ok {
+		t.Fatal("expired entry counted in prefix inventory")
+	}
+	if _, ok := stats.PrefixCounts["proposed"]; ok {
+		t.Fatal("proposed entry counted in prefix inventory")
+	}
+	if len(stats.PrefixCounts) != 4 {
+		t.Fatalf("expected 4 prefixes, got %d: %v", len(stats.PrefixCounts), stats.PrefixCounts)
+	}
+}
+
 func TestExpirySweepHardDelete(t *testing.T) {
 	dir := t.TempDir()
 	wsRoot := filepath.Join(dir, "workspace")

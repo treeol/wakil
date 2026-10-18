@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1654,6 +1655,42 @@ func (a *App) buildPreamble(today string) string {
 			memLine := strings.Join(memParts, ", ") + "."
 			if len(stats.RecentKeys) > 0 {
 				memLine += " Recent: " + strings.Join(stats.RecentKeys, ", ") + "."
+			}
+			// Prefix inventory: retrieval handles so the model knows which
+			// namespaces exist without guessing search terms. Bounded to
+			// prefixCap prefixes; counts only, no content. The rendered line
+			// has its own display budget so adversarially long key prefixes
+			// cannot bloat the preamble.
+			if len(stats.PrefixCounts) > 0 {
+				type pc struct {
+					prefix string
+					n      int
+				}
+				var inv []pc
+				for p, n := range stats.PrefixCounts {
+					inv = append(inv, pc{p, n})
+				}
+				// Deterministic render: count DESC then prefix ASC (the
+				// Stats query ties on prefix ASC; mirror it here).
+				sort.Slice(inv, func(i, j int) bool {
+					if inv[i].n != inv[j].n {
+						return inv[i].n > inv[j].n
+					}
+					return inv[i].prefix < inv[j].prefix
+				})
+				var invParts []string
+				budget := 400 // display bytes for the whole inventory line
+				for _, e := range inv {
+					part := fmt.Sprintf("%s ×%d", e.prefix, e.n)
+					if budget-len(part) < 0 {
+						break
+					}
+					budget -= len(part)
+					invParts = append(invParts, part)
+				}
+				if len(invParts) > 0 {
+					memLine += " Namespaces: " + strings.Join(invParts, ", ") + "."
+				}
 			}
 			memLine += " Use memory_search or memory_get to retrieve entries."
 			parts = append(parts, memLine)
