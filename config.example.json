@@ -126,7 +126,7 @@
 
   "_comment_context_mode": "Long-session mode. context_mode: standard (default — full conversation sent) | long-session (finished requests are collapsed to question + answer, working set archived to the tool cache). context_collapse_min_bytes: turns smaller than this are never collapsed (not worth a note). context_tail_turns: requests older than this many most-recent requests degrade to a single pointer line (archive path + memory key) instead of staying at full size — the soft middle cut that keeps sent context from growing with session length; 0 disables (older requests stay at full size forever). Flag: --context-mode. Env: WAKIL_CONTEXT_MODE. Subagents always run in standard.",
 
-  "context_mode": "standard",
+  "context_mode": "long-session",
   "context_collapse_min_bytes": 2000,
   "context_tail_turns": 20,
 

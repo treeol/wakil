@@ -27,8 +27,8 @@ func TestModeCommandBareShowsExecAndContext(t *testing.T) {
 	if !strings.Contains(sn.Text, "context:") {
 		t.Errorf("bare /mode should show context mode, got: %q", sn.Text)
 	}
-	if !strings.Contains(sn.Text, "standard") {
-		t.Errorf("bare /mode should show standard as default context mode, got: %q", sn.Text)
+	if !strings.Contains(sn.Text, config.DefaultContextMode) {
+		t.Errorf("bare /mode should show the default context mode %q, got: %q", config.DefaultContextMode, sn.Text)
 	}
 }
 
@@ -136,16 +136,26 @@ func TestSetContextModeInvalid(t *testing.T) {
 	if err := app.SetContextMode("bogus"); err == nil {
 		t.Error("SetContextMode should reject invalid mode")
 	}
-	// Mode should be unchanged (standard default).
-	if app.ContextMode() != "standard" {
-		t.Errorf("ContextMode() = %q, want standard after failed set", app.ContextMode())
+	// Mode should be unchanged (the default).
+	if app.ContextMode() != config.DefaultContextMode {
+		t.Errorf("ContextMode() = %q, want %q after failed set", app.ContextMode(), config.DefaultContextMode)
 	}
 }
 
-func TestContextModeDefaultsToStandard(t *testing.T) {
+// TestContextModeDefault: the default (no explicit selection anywhere) is
+// long-session. Explicit "standard" still opts out.
+func TestContextModeDefault(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
-	if app.ContextMode() != "standard" {
-		t.Errorf("ContextMode() = %q, want standard (default)", app.ContextMode())
+	if app.ContextMode() != "long-session" {
+		t.Errorf("ContextMode() = %q, want long-session (default)", app.ContextMode())
+	}
+	// NormalizeContextMode: "" resolves to the default too.
+	if m, ok := config.NormalizeContextMode(""); !ok || m != config.DefaultContextMode {
+		t.Errorf("NormalizeContextMode(\"\") = %q, %v; want %q, true", m, ok, config.DefaultContextMode)
+	}
+	// Explicit standard is still honored.
+	if m, ok := config.NormalizeContextMode("standard"); !ok || m != "standard" {
+		t.Errorf("NormalizeContextMode(\"standard\") = %q, %v; want standard, true", m, ok)
 	}
 }
 

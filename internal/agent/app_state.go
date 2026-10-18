@@ -167,12 +167,12 @@ func (a *App) SetRawToolsValue(v bool) {
 }
 
 // ContextMode returns the active context mode under stateMu.RLock.
-// "standard" is the default; "long-session" collapses finished requests.
+// Falls back to the configured default (long-session) when unset.
 func (a *App) ContextMode() string {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
 	if a.contextMode == "" {
-		return "standard"
+		return config.DefaultContextMode
 	}
 	return a.contextMode
 }

@@ -156,18 +156,27 @@ func NormalizePromptMode(s string) (string, bool) {
 
 // Context mode constants.
 const (
-	ContextModeStandard    = "standard"     // default: full conversation sent as today
+	ContextModeStandard    = "standard"     // full conversation sent as today
 	ContextModeLongSession = "long-session" // finished requests collapsed to Q + A + note
+
+	// DefaultContextMode is the mode applied when config file, env, flag,
+	// and repo state are all silent. Long-session is the default: collapse
+	// keeps sessions usable indefinitely; the projections stay lossless by
+	// archive + memory index. Set "standard" explicitly to opt out.
+	DefaultContextMode = ContextModeLongSession
 )
 
 // NormalizeContextMode normalises a raw context-mode string to one of the
 // canonical constants (ContextModeStandard or ContextModeLongSession).
 // "long" is accepted as a shorthand alias for "long-session". An empty
-// string defaults to ContextModeStandard. Returns the normalised mode and
+// string defaults to DefaultContextMode. Returns the normalised mode and
 // whether the input was valid.
 func NormalizeContextMode(s string) (string, bool) {
 	switch s {
 	case "", ContextModeStandard:
+		if s == "" {
+			return DefaultContextMode, true
+		}
 		return ContextModeStandard, true
 	case ContextModeLongSession, "long":
 		return ContextModeLongSession, true
@@ -899,9 +908,9 @@ func DefaultConfig() Config {
 		HardMaxFrac:             0.95,   // hard ceiling at 95% of effective context
 		ContextCapacityFrac:     0.80,   // use 80% of proxy's usable_ctx as the working budget
 
-		ContextMode:             ContextModeStandard, // standard = full conversation sent as today
-		ContextCollapseMinBytes: 2000,                // turns under 2k are not worth collapsing
-		ContextTailTurns:        20,                  // keep last 20 requests at full size before pointer degrade
+		ContextMode:             DefaultContextMode, // long-session default; "standard" opts out
+		ContextCollapseMinBytes: 2000,               // turns under 2k are not worth collapsing
+		ContextTailTurns:        20,                 // keep last 20 requests at full size before pointer degrade
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
@@ -1196,7 +1205,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.TraceDir, "trace-dir", cfg.TraceDir, "directory for trace files (default ~/.local/share/wakil/traces)")
 	fs.BoolVar(&cfg.DaemonMode, "daemon", false, "connect to a running wakil daemon over its Unix socket (remote mode)")
 	fs.StringVar(&cfg.DaemonSocket, "socket", "", "path to the wakil daemon's Unix socket (default: $XDG_RUNTIME_DIR/wakil.sock or ~/.local/share/wakil/wakil.sock)")
-	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: standard (default, full history sent) | long-session (finished requests collapsed to Q+A)")
+	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: long-session (default, finished requests collapsed to Q+A with archive pointers) | standard (full history sent)")
 	fs.StringVar(&cfg.PromptMode, "prompt-mode", cfg.PromptMode, "prompt mode: full (default, complete system prompt) | core (core-only preamble, extension lazy-loaded on task detection)")
 	fs.Usage = func() {
 		out := fs.Output()

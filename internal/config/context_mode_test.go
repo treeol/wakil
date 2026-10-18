@@ -9,8 +9,11 @@ import (
 
 func TestContextModeDefaults(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.ContextMode != ContextModeStandard {
-		t.Errorf("DefaultConfig ContextMode = %q, want %q", cfg.ContextMode, ContextModeStandard)
+	if cfg.ContextMode != DefaultContextMode {
+		t.Errorf("DefaultConfig ContextMode = %q, want %q (default)", cfg.ContextMode, DefaultContextMode)
+	}
+	if DefaultContextMode != ContextModeLongSession {
+		t.Errorf("DefaultContextMode = %q, want long-session (the flip)", DefaultContextMode)
 	}
 	if cfg.ContextCollapseMinBytes != 2000 {
 		t.Errorf("DefaultConfig ContextCollapseMinBytes = %d, want 2000", cfg.ContextCollapseMinBytes)
@@ -23,7 +26,7 @@ func TestNormalizeContextMode(t *testing.T) {
 		want string
 		ok   bool
 	}{
-		{"", ContextModeStandard, true},
+		{"", DefaultContextMode, true},
 		{"standard", ContextModeStandard, true},
 		{"long", ContextModeLongSession, true},
 		{"long-session", ContextModeLongSession, true},
