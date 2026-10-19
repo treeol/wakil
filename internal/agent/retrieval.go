@@ -204,7 +204,6 @@ func formatRetrievedEntry(e *memory.Entry) (string, int) {
 	key = strings.ToValidUTF8(key, "�")
 	key = neutralizeRetrievalMarkers(key)
 	b.WriteString(fmt.Sprintf("[%s", key))
-	prefixLen := b.Len() + 2 // the " " after "]" is not yet written
 	switch e.Tainted {
 	case memory.TaintTrue:
 		b.WriteString(" | tainted")
@@ -212,7 +211,7 @@ func formatRetrievedEntry(e *memory.Entry) (string, int) {
 		b.WriteString(" | taint-unknown")
 	}
 	b.WriteString("] ")
-	prefixLen = b.Len()
+	prefixLen := b.Len()
 
 	// Invalid-UTF-8 defense: memory values are arbitrary Go strings and may
 	// contain invalid bytes (e.g. binary pasted into a value). Sanitize to

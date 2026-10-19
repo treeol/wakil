@@ -231,8 +231,10 @@ func TestSearchFTSSanitization(t *testing.T) {
 		t.Fatalf("expected 1 result for hyphenated query, got %d: %v", len(results), keysOf(results))
 	}
 
-	// Quoted token: embedded double quotes must not break the MATCH.
-	results, err = s.Search(c, `mode"v2`, "", false)
+	// Quoted token: embedded double quotes must not break the MATCH. Only
+	// the error is of interest here; the result set is asserted in the
+	// following cases.
+	_, err = s.Search(c, `mode"v2`, "", false)
 	if err != nil {
 		t.Fatalf("quote-containing query errored: %v", err)
 	}

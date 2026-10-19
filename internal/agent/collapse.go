@@ -429,7 +429,7 @@ func archiveBaseName(path string) string {
 // marker-only answer carries no information. Capping never grows the
 // message: an answer is only rewritten when it strictly exceeds capBytes.
 func capTailAnswer(answer string, capBytes int, archive string) string {
-	_ = archive // recovery pointer intentionally omitted — see doc comment
+	_ = archive                // recovery pointer intentionally omitted — see doc comment
 	if capBytes < len("…")+2 { // too small for any content + marker
 		return ""
 	}
