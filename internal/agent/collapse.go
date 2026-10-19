@@ -414,6 +414,23 @@ func archiveBaseName(path string) string {
 	return path
 }
 
+// capTailAnswer caps a tail answer to at most capBytes (rune-safe, never
+// splitting a multi-byte character), appending an archive pointer when the
+// answer was cut. Returns "" when no capping is needed (answer already
+// fits or is empty) — callers skip the rewrite in that case. The pointer
+// suffix is added only on truncation and is small; it keeps the elided
+// tail recoverable exactly like a degraded turn's pointer line.
+func capTailAnswer(answer string, capBytes int, archive string) string {
+	if capBytes <= 0 || answer == "" || len(answer) <= capBytes {
+		return ""
+	}
+	capped := truncateUTF8(answer, capBytes-len("…")) + "…"
+	if archive != "" {
+		capped += "\n[full answer archived: " + archive + " (read_file with offset/limit)]"
+	}
+	return capped
+}
+
 // degradePointerLine renders the compact projection of an old collapsed
 // turn after it ages out of the tail: a truncated echo of the user request
 // plus the preserved summary and the archive/memory recovery pointers.
@@ -611,6 +628,18 @@ func (a *App) contextProjection() []proxy.Message {
 		out = append(out, a.Conv[s.first])
 		// Emit A (last message) with the note appended to its content.
 		lastMsg := a.Conv[s.last]
+		// Tail-answer cap: A dominates the tail's byte weight. Cap it (with
+		// an archive pointer) so the long-session floor stays bounded; the
+		// question, note, and recovery references are never capped. Applies
+		// only to turns in the tail (degraded turns are already pointer
+		// lines; /keep and uncollapsed turns don't pass through here).
+		// 0 disables (full answer kept).
+		if a.Cfg.ContextTailAnswerBytes > 0 && lastMsg.Content != nil {
+			if capped := capTailAnswer(*lastMsg.Content, a.Cfg.ContextTailAnswerBytes, rec.Archive); capped != "" {
+				c := capped
+				lastMsg.Content = &c
+			}
+		}
 		noteText := rec.Note
 		if rec.Summary != "" {
 			noteText = "[checkpoint summary: " + rec.Summary + "]\n" + noteText

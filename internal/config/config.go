@@ -319,6 +319,15 @@ type Config struct {
 	// linearly with request count).
 	ContextTailTurns int `json:"context_tail_turns,omitempty"` // default 20; 0 = never degrade old turns
 
+	// ContextTailAnswerBytes caps the FINAL ANSWER (A) retained for turns in
+	// the tail. Long answers dominate the tail's byte weight — capping them
+	// (with an archive pointer appended) drops the long-session context
+	// floor from ~20 × (U + multi-KB A) to ~20 × (U + 0.5KB) while keeping
+	// the answer's opening and its recovery reference in place. The question
+	// (U) and the collapse note are never capped; degraded pointer turns and
+	// /keep-exempt turns are unaffected. 0 disables the cap (full A kept).
+	ContextTailAnswerBytes int `json:"context_tail_answer_bytes,omitempty"` // default 500; 0 = keep full answers
+
 	// Prompt mode: "full" (default) sends the complete system prompt as today;
 	// "core" sends only the safety-critical core prompt, and lazy-loads the
 	// extension (workflow guidance) as a second system message when the
@@ -920,6 +929,7 @@ func DefaultConfig() Config {
 		ContextMode:             DefaultContextMode, // long-session default; "standard" opts out
 		ContextCollapseMinBytes: 2000,               // turns under 2k are not worth collapsing
 		ContextTailTurns:        20,                 // keep last 20 requests at full size before pointer degrade
+		ContextTailAnswerBytes:  500,                // cap tail answers at 0.5k + archive pointer (0 = full)
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
@@ -1736,6 +1746,9 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.ContextTailTurns < 0 {
 		return fmt.Errorf("context_tail_turns must be >= 0 (got %d)", cfg.ContextTailTurns)
+	}
+	if cfg.ContextTailAnswerBytes < 0 {
+		return fmt.Errorf("context_tail_answer_bytes must be >= 0 (got %d)", cfg.ContextTailAnswerBytes)
 	}
 	return nil
 }
