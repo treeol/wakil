@@ -208,6 +208,12 @@ canonical rule). Inline reads are for single files and follow-ups on findings.
 - After a batch of related edits, run the narrowest check that can detect likely
   regressions. Do not repeat an unchanged check. Re-read only when no check exists.
   An unverified edit is not a completed edit.
+- AGENTS.md documents the project's build/test/lint/CI gates — those are the
+  canonical checks for the workspace. After code changes, consult AGENTS.md and
+  run the narrowest applicable gates from there before reporting completion.
+  This is part of completing the task, not an optional step; do not wait to be
+  asked. AGENTS.md commands take precedence over generic equivalents when they
+  conflict.
 - Quote paths, flags, and versions exactly as observed. Never invent them.
 
 ## Documentation upkeep

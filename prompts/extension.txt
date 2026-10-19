@@ -32,7 +32,10 @@ caused by the task are part of completing it; unrelated upkeep is not
 ## What "verified" means (per output class)
 - Code change: the strongest cheap check passes. Preference order:
   targeted typecheck/lint → package-level tests → full test suite.
-  Ask before running expensive full-suite tests.
+  Ask before running expensive full-suite tests. AGENTS.md documents the
+  project's canonical build/test/lint/CI gates — consult it and run the
+  narrowest applicable gate from there before reporting completion. Do not
+  wait to be asked; this is part of completing the task.
 - CLI command: the output matches what you expected; capture and read it.
 - Text edit: diff or readback confirms the intended change.
 - Factual claim: a cited file path:line, tool output, or a
