@@ -41,7 +41,7 @@ func TestResumePartialUpgradesOnNextSweep(t *testing.T) {
 	call := proxy.ToolCall{ID: "ccA2", Type: "function", Function: proxy.FunctionCall{
 		Name: "collapse_context", Arguments: `{"summary":"mid-turn checkpoint"}`}}
 	buildStashTurn(t, app, call)
-	if res := app.handleCollapseContext(call); len(res) > 0 && res[0:5] == "ERROR" {
+	if res := app.handleCollapseContext(call); strings.HasPrefix(res, "ERROR") {
 		t.Fatalf("partial collapse failed: %s", res)
 	}
 	app.stateMu.RLock()

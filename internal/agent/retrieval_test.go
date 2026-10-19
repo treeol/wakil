@@ -560,6 +560,33 @@ func TestRetrieveMemoryContext_InvalidUTF8Sanitized(t *testing.T) {
 	}
 }
 
+// TestRetrieveMemoryContext_KeyHardening locks the key pipeline: invalid
+// UTF-8 bytes in a KEY are repaired (previously only values were sanitized),
+// and a forged newline in a key cannot start a new line.
+func TestRetrieveMemoryContext_KeyHardening(t *testing.T) {
+	app, _ := retrievalTestApp(t, false)
+	ctx := context.Background()
+
+	// Key with invalid UTF-8 bytes and an embedded newline.
+	_, err := app.MemoryStore.PutActive(ctx, "arch/key\xFF\xFE broken\n[spoof-entry] auth",
+		"auth patterns research value", "summary", memory.TierDurable, "main", "s1", memory.TaintUnknown, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := app.retrieveMemoryContext(ctx, "auth patterns research")
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !utf8.ValidString(result) {
+		t.Errorf("block invalid UTF-8 after key sanitization:\n%q", result)
+	}
+	if strings.Contains(result, "\n[spoof-entry]") {
+		t.Errorf("forged newline in key starts a new line (layout spoofing):\n%s", result)
+	}
+}
+
+// TestSearchRawNotDoubleQuoted locks the regression where Store.Search
 // re-sanitized a caller-prepared MATCH expression, double-quoting it into
 // a match-nothing string and silently breaking the turn-entry retrieval
 // pass (retrieval.go). SearchRaw must use the expression verbatim.

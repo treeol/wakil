@@ -414,19 +414,35 @@ func archiveBaseName(path string) string {
 	return path
 }
 
-// capTailAnswer caps a tail answer to at most capBytes (rune-safe, never
-// splitting a multi-byte character), appending an archive pointer when the
-// answer was cut. Returns "" when no capping is needed (answer already
-// fits or is empty) — callers skip the rewrite in that case. The pointer
-// suffix is added only on truncation and is small; it keeps the elided
-// tail recoverable exactly like a degraded turn's pointer line.
+// capTailAnswer caps a tail answer to at most capBytes TOTAL (rune-safe,
+// never splitting a multi-byte character), including the truncation
+// marker; the archive recovery reference is NOT repeated here because the
+// collapse note appended right after the answer already carries
+// "full record: <archive> (read_file with offset/limit)" — duplicating the
+// path per turn would waste the very bytes the cap exists to save.
+// Returns "" when no capping is needed (answer fits, is empty, or the cap
+// is too small to hold any content plus the marker) — callers skip the
+// rewrite in that case.
+//
+// Edge semantics: capBytes must be at least len("…")+1 rune; smaller caps
+// are treated as disabled (the answer passes through uncapped) because a
+// marker-only answer carries no information. Capping never grows the
+// message: an answer is only rewritten when it strictly exceeds capBytes.
 func capTailAnswer(answer string, capBytes int, archive string) string {
-	if capBytes <= 0 || answer == "" || len(answer) <= capBytes {
+	_ = archive // recovery pointer intentionally omitted — see doc comment
+	if capBytes < len("…")+2 { // too small for any content + marker
+		return ""
+	}
+	if len(answer) <= capBytes {
 		return ""
 	}
 	capped := truncateUTF8(answer, capBytes-len("…")) + "…"
-	if archive != "" {
-		capped += "\n[full answer archived: " + archive + " (read_file with offset/limit)]"
+	// truncateUTF8 never returns more than its argument; with the marker
+	// the result is at most capBytes. A pathological answer whose first
+	// runes are wider than the budget yields an empty prefix + marker,
+	// still within capBytes.
+	if len(capped) > capBytes {
+		capped = "…" // marker-only fallback, still ≤ capBytes
 	}
 	return capped
 }
@@ -628,33 +644,43 @@ func (a *App) contextProjection() []proxy.Message {
 		out = append(out, a.Conv[s.first])
 		// Emit A (last message) with the note appended to its content.
 		lastMsg := a.Conv[s.last]
-		// Tail-answer cap: A dominates the tail's byte weight. Cap it (with
-		// an archive pointer) so the long-session floor stays bounded; the
-		// question, note, and recovery references are never capped. Applies
-		// only to turns in the tail (degraded turns are already pointer
-		// lines; /keep and uncollapsed turns don't pass through here).
-		// 0 disables (full answer kept).
-		if a.Cfg.ContextTailAnswerBytes > 0 && lastMsg.Content != nil {
-			if capped := capTailAnswer(*lastMsg.Content, a.Cfg.ContextTailAnswerBytes, rec.Archive); capped != "" {
-				c := capped
-				lastMsg.Content = &c
-			}
-		}
-		noteText := rec.Note
-		if rec.Summary != "" {
-			noteText = "[checkpoint summary: " + rec.Summary + "]\n" + noteText
-		}
-		if lastMsg.Content != nil && *lastMsg.Content != "" {
-			newContent := *lastMsg.Content + "\n\n" + noteText
-			lastMsg.Content = &newContent
-		} else {
-			// A has nil or empty content — use the note as the content.
-			lastMsg.Content = &noteText
-		}
+		lastMsg.Content = projectTailAnswerContent(lastMsg.Content, rec, a.Cfg.ContextTailAnswerBytes)
 		out = append(out, lastMsg)
 		emittedTurn[m.Turn] = true
 	}
 	return out
+}
+
+// projectTailAnswerContent renders the final-answer content a collapsed
+// tail turn projects: the answer (capped per ContextTailAnswerBytes — see
+// capTailAnswer) joined to the note (with the optional checkpoint-summary
+// wrapper). Shared by contextProjection and the collapse-notice arithmetic
+// so the notice reports EXACTLY what the projection sends, not a parallel
+// computation that can drift. content may be nil (note becomes the content);
+// the returned pointer is always non-nil.
+func projectTailAnswerContent(content *string, rec CollapseRecord, capBytes int) *string {
+	// Tail-answer cap: A dominates the tail's byte weight. Cap it so the
+	// long-session floor stays bounded; the question, note, and recovery
+	// references (the note carries the archive path) are never capped.
+	// Applies only to turns in the tail (degraded turns are already pointer
+	// lines; /keep and uncollapsed turns don't pass through here).
+	// 0 (or a too-small-to-be-useful value) disables (full answer kept).
+	if content != nil {
+		if capped := capTailAnswer(*content, capBytes, rec.Archive); capped != "" {
+			c := capped
+			content = &c
+		}
+	}
+	noteText := rec.Note
+	if rec.Summary != "" {
+		noteText = "[checkpoint summary: " + rec.Summary + "]\n" + noteText
+	}
+	if content != nil && *content != "" {
+		joined := *content + "\n\n" + noteText
+		return &joined
+	}
+	// A has nil or empty content — use the note as the content.
+	return &noteText
 }
 
 // reconcileArchiveIndexes is the bounded, idempotent lifecycle reconciliation
@@ -879,12 +905,14 @@ func (a *App) collapseFinishedTurns() {
 		a.collapsed[t] = rec
 		a.stateMu.Unlock()
 
-		// Report the true projected size: what the model actually sees for
-		// this turn after collapse is U + A + note (not a fixed 0.4k — the
-		// old hardcoded notice systematically overstated the shrink, since
-		// A is often several KB; observed live as "notice says 0.4k but the
-		// ctx gauge only dropped 13k").
-		projected := messageSize(convSnap[s.first]) + messageSize(convSnap[s.last]) + len(rec.Note)
+		// Report the true projected size via the SAME rendering the
+		// projection uses (projectTailAnswerContent) — a parallel
+		// arithmetic here would drift from what the model actually sees
+		// (tail-answer cap, checkpoint-summary wrapper, note join). The
+		// old hardcoded "0.4k sent" overstated the shrink; so did the
+		// first fix, which counted the uncapped answer.
+		projectedContent := projectTailAnswerContent(convSnap[s.last].Content, rec, a.Cfg.ContextTailAnswerBytes)
+		projected := messageSize(convSnap[s.first]) + len(*projectedContent)
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf(
 			"· collapsed request %d — %dk → %dk sent (archived)", t, wSize/1024, projected/1024)))
 	}

@@ -9,22 +9,27 @@ import (
 // --- A1: truthful collapse-notice sizes ------------------------------------
 //
 // The end-of-turn collapse notice used to print a hardcoded "0.4k sent" —
-// the actual projected size (U + A + note) is often several KB, so the
-// notice systematically overstated the shrink (observed live: notice said
-// 0.4k while the ctx gauge dropped 13k). The notice must report the real
-// projected byte count.
+// the actual projected size (U + A + note, answer subject to the
+// context_tail_answer_bytes cap) is often several KB, so the notice
+// systematically overstated the shrink (observed live: notice said 0.4k
+// while the ctx gauge dropped 13k). The notice must report the real
+// projected byte count, computed by the SAME rendering the projection uses
+// (projectTailAnswerContent) so the two cannot drift.
 
 // TestCollapseNoticeReportsProjectedSize collapses a real turn whose A is
-// several KB and asserts the printed "… → Nk sent" matches the projected
-// U + A + note size (rounded down to k), not a hardcoded value.
+// several KB — exceeding the default 500-byte tail-answer cap, so the cap,
+// the note join, and the notice all interact — and asserts the printed
+// "… → Nk sent" matches the notice arithmetic AND the actual projection.
 func TestCollapseNoticeReportsProjectedSize(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.SetContextMode("long-session")
 	var out strings.Builder
 	app.Out = &out
+	if app.Cfg.ContextTailAnswerBytes != 500 {
+		t.Fatalf("test premise: default cap should be 500, got %d", app.Cfg.ContextTailAnswerBytes)
+	}
 
-	// One collapsible turn with a multi-KB answer: the fixture answer is
-	// tiny ("Here is the answer."), so give turn 1 a large A explicitly.
+	// One collapsible turn with a multi-KB answer (cap fires).
 	conv := oneCollapsedTurn(1)
 	for i := range conv {
 		conv[i].Turn = 1
@@ -43,9 +48,10 @@ func TestCollapseNoticeReportsProjectedSize(t *testing.T) {
 		t.Fatal("turn 1 should have collapsed")
 	}
 
-	// Expected projected size: U + A + note (messageSize of first + last,
-	// plus the note text) — the same arithmetic the notice prints.
-	projected := messageSize(app.Conv[0]) + messageSize(app.Conv[len(app.Conv)-1]) + len(rec.Note)
+	// Notice arithmetic: U + projected A content (capped answer + note),
+	// via the shared helper — identical to what the projection emits.
+	projectedContent := projectTailAnswerContent(app.Conv[len(app.Conv)-1].Content, rec, app.Cfg.ContextTailAnswerBytes)
+	projected := messageSize(app.Conv[0]) + len(*projectedContent)
 	wantLine := fmt.Sprintf("· collapsed request 1 — %dk → %dk sent (archived)", rec.WBytes/1024, projected/1024)
 
 	if !strings.Contains(out.String(), wantLine) {
@@ -54,48 +60,70 @@ func TestCollapseNoticeReportsProjectedSize(t *testing.T) {
 	if strings.Contains(out.String(), "0.4k sent") {
 		t.Error("notice still reports the old hardcoded 0.4k value")
 	}
+
+	// Non-vacuous cross-check: the notice's number matches the ACTUAL
+	// projection bytes for the turn (the cap fired — the projected A is
+	// ~500 bytes, not 5.5k).
+	proj := app.contextProjection()
+	if len(proj) != 2 {
+		t.Fatalf("projection: want U+A (2 msgs), got %d", len(proj))
+	}
+	projBytes := messageSize(proj[0]) + messageSize(proj[1])
+	if abs(projBytes-projected) > 2 { // "\n\n" join already counted by both
+		t.Errorf("notice disagrees with projection: notice=%d proj=%d (cap should make both ~%d)",
+			projected, projBytes, messageSize(app.Conv[0])+500+len(rec.Note))
+	}
+	if projBytes >= len(largeAnswer) {
+		t.Errorf("cap did not fire: projection %d bytes >= original answer %d", projBytes, len(largeAnswer))
+	}
 }
 
-// TestCollapseNoticeProjectedMatchesProjection cross-checks the notice's
-// arithmetic against the actual projection: the emitted U + A messages
-// must measure the same bytes the notice claimed (within the note that the
-// projection appends to A's content).
-func TestCollapseNoticeProjectedMatchesProjection(t *testing.T) {
+// TestCollapseNoticeSummaryWrapperCounted: upgrading from a partial record
+// (which carries a Summary) must count the "[checkpoint summary: …]"
+// wrapper in the notice — the wrapper is part of what the projection sends.
+func TestCollapseNoticeSummaryWrapperCounted(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.SetContextMode("long-session")
-	app.Conv = oneCollapsedTurn(1)
-	for i := range app.Conv {
-		app.Conv[i].Turn = 1
+	var out strings.Builder
+	app.Out = &out
+
+	conv := oneCollapsedTurn(1)
+	for i := range conv {
+		conv[i].Turn = 1
 	}
+	app.Conv = conv
 	app.turnSeq = 1
+
+	// Pre-seed a partial record with a Summary — the sweep upgrades it to
+	// a full collapse, preserving Summary.
+	app.stateMu.Lock()
+	app.collapsed = map[int]CollapseRecord{1: {
+		Turn: 1, Partial: true, Summary: "phase one wrapped up cleanly",
+		BoundaryCallID: "cc1",
+	}}
+	app.stateMu.Unlock()
 
 	app.collapseFinishedTurns()
 
 	app.stateMu.RLock()
 	rec, ok := app.collapsed[1]
 	app.stateMu.RUnlock()
-	if !ok {
-		t.Fatal("turn 1 should have collapsed")
+	if !ok || rec.Partial {
+		t.Fatal("precondition: partial should have upgraded to full")
+	}
+	if rec.Summary == "" {
+		t.Fatal("precondition: summary should be preserved on upgrade")
 	}
 
-	proj := app.contextProjection()
-	if len(proj) != 2 {
-		t.Fatalf("projection: want U+A (2 msgs), got %d", len(proj))
+	projectedContent := projectTailAnswerContent(app.Conv[len(app.Conv)-1].Content, rec, app.Cfg.ContextTailAnswerBytes)
+	if !strings.Contains(*projectedContent, "[checkpoint summary: phase one wrapped up cleanly]") {
+		t.Fatalf("projected content missing summary wrapper: %q", *projectedContent)
 	}
-	// The projection's A includes the note; the notice's projected size
-	// counts U + A + note separately — both must agree within rounding.
-	projBytes := messageSize(proj[0]) + messageSize(proj[1])
-	noticeBytes := messageSize(app.Conv[0]) + messageSize(app.Conv[len(app.Conv)-1]) + len(rec.Note)
-	if abs(projBytes-noticeBytes) > 8 { // "\n\n" join + rounding slack
-		t.Errorf("notice arithmetic disagrees with projection: notice=%d proj=%d", noticeBytes, projBytes)
+	projected := messageSize(app.Conv[0]) + len(*projectedContent)
+	wantLine := fmt.Sprintf("→ %dk sent", projected/1024)
+	if !strings.Contains(out.String(), wantLine) {
+		t.Errorf("notice with summary wrapper mismatch: want %q in %q", wantLine, out.String())
 	}
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
 }
 
 // TestCollapseNoticeSmallTurnZeroK guards the degenerate display: a turn
@@ -120,9 +148,17 @@ func TestCollapseNoticeSmallTurnZeroK(t *testing.T) {
 	if !ok {
 		t.Fatal("turn 1 should have collapsed")
 	}
-	projected := messageSize(app.Conv[0]) + messageSize(app.Conv[len(app.Conv)-1]) + len(rec.Note)
+	projectedContent := projectTailAnswerContent(app.Conv[len(app.Conv)-1].Content, rec, app.Cfg.ContextTailAnswerBytes)
+	projected := messageSize(app.Conv[0]) + len(*projectedContent)
 	want := fmt.Sprintf("→ %dk sent", projected/1024)
 	if !strings.Contains(out.String(), want) {
 		t.Errorf("small-turn notice mismatch: want %q in %q", want, out.String())
 	}
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }

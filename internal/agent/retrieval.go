@@ -197,8 +197,13 @@ func flattenEntryText(s string) string {
 func formatRetrievedEntry(e *memory.Entry) (string, int) {
 	var b strings.Builder
 
-	// Key + taint label. Key is untrusted content: neutralized like the value.
-	b.WriteString(fmt.Sprintf("[%s", flattenEntryText(neutralizeRetrievalMarkers(e.Key))))
+	// Key + taint label. Key is untrusted content: sanitized exactly like
+	// the value (flatten → UTF-8 repair → neutralize) so the two pipelines
+	// cannot drift apart — a maintenance hazard the review rounds flagged.
+	key := flattenEntryText(e.Key)
+	key = strings.ToValidUTF8(key, "�")
+	key = neutralizeRetrievalMarkers(key)
+	b.WriteString(fmt.Sprintf("[%s", key))
 	prefixLen := b.Len() + 2 // the " " after "]" is not yet written
 	switch e.Tainted {
 	case memory.TaintTrue:
@@ -209,18 +214,12 @@ func formatRetrievedEntry(e *memory.Entry) (string, int) {
 	b.WriteString("] ")
 	prefixLen = b.Len()
 
-	// Value (truncated per-entry to avoid one huge entry consuming the cap).
-	// Layout-spoofing defense: newlines in the value (and key, above) are
-	// flattened to spaces BEFORE truncation, so a forged "\n[clean-key] …"
-	// line inside a value cannot visually mimic a second entry — the fake
-	// prefix ends up mid-line, where it cannot start a new entry block.
-	// Byte-neutral (1 byte → 1 byte), so the 500-byte cap arithmetic holds.
-	value := e.Value
-	value = flattenEntryText(value)
 	// Invalid-UTF-8 defense: memory values are arbitrary Go strings and may
 	// contain invalid bytes (e.g. binary pasted into a value). Sanitize to
 	// valid UTF-8 so truncation and the wire encoder can't split or mangle
-	// a sequence; the replacement rune keeps the entry retrievable.
+	// a sequence; the replacement rune keeps the entry retrievable. Same
+	// for the key above — keys are equally untrusted.
+	value := flattenEntryText(e.Value)
 	value = strings.ToValidUTF8(value, "�")
 	// Truncation is rune-boundary safe (truncateUTF8), never splitting a
 	// multi-byte character mid-rune. The ellipsis is reserved inside the cap,
