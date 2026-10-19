@@ -850,7 +850,14 @@ func (a *App) collapseFinishedTurns() {
 		a.collapsed[t] = rec
 		a.stateMu.Unlock()
 
-		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· collapsed request %d — %dk → 0.4k sent (archived)", t, wSize/1024)))
+		// Report the true projected size: what the model actually sees for
+		// this turn after collapse is U + A + note (not a fixed 0.4k — the
+		// old hardcoded notice systematically overstated the shrink, since
+		// A is often several KB; observed live as "notice says 0.4k but the
+		// ctx gauge only dropped 13k").
+		projected := messageSize(convSnap[s.first]) + messageSize(convSnap[s.last]) + len(rec.Note)
+		fmt.Fprintln(a.Out, Dim(fmt.Sprintf(
+			"· collapsed request %d — %dk → %dk sent (archived)", t, wSize/1024, projected/1024)))
 	}
 }
 

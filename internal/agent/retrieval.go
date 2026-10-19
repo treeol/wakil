@@ -177,6 +177,18 @@ func neutralizeRetrievalMarkers(s string) string {
 	return strings.ReplaceAll(s, "--END RETRIEVED CONTEXT--", "END-REMOVED")
 }
 
+// flattenEntryText replaces newlines (and carriage returns) with single
+// spaces so a forged line-break inside an untrusted key or value cannot
+// start a visually new line in the injected block — entries always render
+// as exactly one line: "[key | taint] value\n". Byte-neutral for single-
+// byte newlines; \r\n collapses to one space (" \r" → " " handled by the
+// replacement order), never growing the text.
+func flattenEntryText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "\r", " ")
+}
+
 // formatRetrievedEntry formats one entry for injection. It also returns the
 // byte length of the identifying prefix — "[key | taint-label] " — as
 // written by this function, so callers can reason about the trusted
@@ -186,7 +198,7 @@ func formatRetrievedEntry(e *memory.Entry) (string, int) {
 	var b strings.Builder
 
 	// Key + taint label. Key is untrusted content: neutralized like the value.
-	b.WriteString(fmt.Sprintf("[%s", neutralizeRetrievalMarkers(e.Key)))
+	b.WriteString(fmt.Sprintf("[%s", flattenEntryText(neutralizeRetrievalMarkers(e.Key))))
 	prefixLen := b.Len() + 2 // the " " after "]" is not yet written
 	switch e.Tainted {
 	case memory.TaintTrue:
@@ -198,10 +210,21 @@ func formatRetrievedEntry(e *memory.Entry) (string, int) {
 	prefixLen = b.Len()
 
 	// Value (truncated per-entry to avoid one huge entry consuming the cap).
+	// Layout-spoofing defense: newlines in the value (and key, above) are
+	// flattened to spaces BEFORE truncation, so a forged "\n[clean-key] …"
+	// line inside a value cannot visually mimic a second entry — the fake
+	// prefix ends up mid-line, where it cannot start a new entry block.
+	// Byte-neutral (1 byte → 1 byte), so the 500-byte cap arithmetic holds.
+	value := e.Value
+	value = flattenEntryText(value)
+	// Invalid-UTF-8 defense: memory values are arbitrary Go strings and may
+	// contain invalid bytes (e.g. binary pasted into a value). Sanitize to
+	// valid UTF-8 so truncation and the wire encoder can't split or mangle
+	// a sequence; the replacement rune keeps the entry retrievable.
+	value = strings.ToValidUTF8(value, "�")
 	// Truncation is rune-boundary safe (truncateUTF8), never splitting a
 	// multi-byte character mid-rune. The ellipsis is reserved inside the cap,
 	// so the displayed value is at most 500 bytes total.
-	value := e.Value
 	maxValueLen := 500 // per-entry value cap (retained source bytes ≤ 497)
 	if len(value) > maxValueLen {
 		value = truncateUTF8(value, maxValueLen-len("…")) + "…"
