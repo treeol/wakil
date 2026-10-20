@@ -49,6 +49,14 @@ func (m tuiModel) infoExtraSegments() []string {
 // kv is one label:value pair; kvg renders it as a dim-key/bright-value segment.
 type kv struct{ k, v string }
 
+// execModeLabel reduces an Executor.Describe() string to "direct" or "docker".
+func execModeLabel(describe string) string {
+	if strings.HasPrefix(describe, "direct") {
+		return "direct"
+	}
+	return "docker"
+}
+
 func kvg(p kv) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(p.k) + " " +
 		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(p.v)
@@ -58,10 +66,7 @@ func kvg(p kv) string {
 // facade's InfoSnapshot (m4b — no App reads).
 func (m tuiModel) infoMainSegments() []string {
 	info := m.facade.Info()
-	mode := "docker"
-	if strings.HasPrefix(info.ExecMode, "direct") {
-		mode = "direct"
-	}
+	mode := execModeLabel(info.ExecMode)
 	imgVal := info.Image
 	if i := strings.LastIndex(imgVal, "/"); i >= 0 {
 		imgVal = imgVal[i+1:]
@@ -112,7 +117,9 @@ func (m tuiModel) infoSubSegments(tab *subTab) []string {
 		kvg(kv{"status", statusStr}),
 		kvg(kv{"proxy", hostOnly(info.BaseURL)}),
 		kvg(kv{"model", subTabModel(tab)}),
-		kvg(kv{"exec", "docker"}),
+		// Subagents use the parent's executor kind (worktree children wrap
+		// the same Docker/direct backend), so mirror the main tab's mode.
+		kvg(kv{"exec", execModeLabel(info.ExecMode)}),
 		kvg(kv{"cwd", info.Cwd}),
 		kvg(kv{"chat", formatShortID(tab.chatID)}),
 	}

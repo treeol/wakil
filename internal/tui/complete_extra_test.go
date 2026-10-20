@@ -254,8 +254,9 @@ func TestComputeSlashCompletionSubagentArg(t *testing.T) {
 
 func TestComputeSlashCompletionNoArgForOtherCommands(t *testing.T) {
 	src := compSources{}
-	// /compact takes no argument — picker should be inactive after the space.
-	st := computeSlashCompletion(newTA("/compact "), src, nil)
+	// /cwd takes no argument — picker should be inactive after the space.
+	// (/compact used to be the example; it now completes "force".)
+	st := computeSlashCompletion(newTA("/cwd "), src, nil)
 	if st.active {
 		t.Error("picker should not activate for commands without argument completion")
 	}

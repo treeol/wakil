@@ -1153,13 +1153,17 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		case "a", "A":
 			if readAction {
 				answer(sessionclient.ChoiceAllowReads, styleOK("  [reads allowed for this session]"))
+			} else {
+				// 'a' is meaningless for non-read actions — swallow it, but
+				// say why so the key doesn't look broken.
+				m.flash = "'a' only applies to read-only actions — y/n"
 			}
-			// 'a' is meaningless for non-read actions — swallow it (consumed below).
 		case "g", "G":
 			if sessionclient.IsGrantEligible(pa.toolName) {
 				answer(sessionclient.ChoiceGrantTool, styleOK("  ["+pa.toolName+" granted for this session]"))
+			} else {
+				m.flash = pa.toolName + " is not grantable for the session — y/n"
 			}
-			// 'g' is meaningless for non-grantable tools — swallow it.
 		case "n", "N", "esc":
 			answer(sessionclient.ChoiceDecline, dim2("  [declined]"))
 		case "ctrl+c":
@@ -1574,7 +1578,6 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m = m.reflow()
 			return m, nil, true
 		}
-		before := m.statusRows()
 		// If reverse-search is active, exit it keeping the matched entry, then
 		// fall through to the normal send logic (which reads ta.Value()).
 		if m.searchActive {
@@ -1585,7 +1588,6 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		if input == "" {
 			return m, nil, true
 		}
-		_ = before // reflow guard for the search-exit path above; consumed by the slash-dispatch path via statusRows re-check
 		// Send-time safety net: if mangled binary-image content still made it
 		// into the textarea (a paste path the live interception didn't see),
 		// refuse to send it to the model and read the clipboard instead. The

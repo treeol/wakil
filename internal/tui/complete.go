@@ -66,17 +66,23 @@ type compSources struct {
 // allTUICommands is the authoritative command list for "/" picker completion.
 // hasArgs marks commands that take a following argument — Tab appends " " and
 // re-opens the picker to complete that argument.
+//
+// Keep in sync with agent.HandleTUICommand and the TUI-local commands in
+// tui.go (/info, /queue, /ask); TestAllTUICommandsMatchDispatcher enforces it.
 var allTUICommands = []candidate{
+	{name: "/ask", hasArgs: true},
 	{name: "/auto", hasArgs: true},
 	{name: "/assist", hasArgs: true},
 	{name: "/backend", hasArgs: true},
-	{name: "/compact"},
+	{name: "/compact", hasArgs: true},
 	{name: "/counsel", hasArgs: true},
 	{name: "/cwd"},
+	{name: "/grants", hasArgs: true},
 	{name: "/handoff", hasArgs: true},
 	{name: "/exit"},
 	{name: "/help"},
 	{name: "/history"},
+	{name: "/image", hasArgs: true},
 	{name: "/info"},
 	{name: "/init"},
 	{name: "/keep", hasArgs: true},
@@ -89,20 +95,38 @@ var allTUICommands = []candidate{
 	{name: "/model", hasArgs: true},
 	{name: "/new"},
 	{name: "/plan", hasArgs: true},
+	{name: "/prompt", hasArgs: true},
+	{name: "/queue", hasArgs: true},
 	{name: "/quit"},
 	{name: "/rawtools"},
+	{name: "/recall", hasArgs: true},
 	{name: "/remember", hasArgs: true},
 	{name: "/repostate", hasArgs: true},
-	{name: "/repomap"},
+	{name: "/repomap", hasArgs: true},
 	{name: "/review", hasArgs: true},
-	{name: "/remember", hasArgs: true},
 	{name: "/reset"},
 	{name: "/resume", hasArgs: true},
+	{name: "/rewind", hasArgs: true},
 	{name: "/session", hasArgs: true},
-	{name: "/sessions"},
+	{name: "/sessions", hasArgs: true},
+	{name: "/skill-create", hasArgs: true},
 	{name: "/subagent", hasArgs: true},
 	{name: "/submodel", hasArgs: true},
 	{name: "/thinking", hasArgs: true},
+	{name: "/verify"},
+}
+
+// freeFormArgCommands take either a keyword or free text (a task, a path, a
+// number). Their keyword picker closes instead of showing "no matches".
+var freeFormArgCommands = map[string]bool{
+	"/plan":  true,
+	"/image": true,
+	"/keep":  true,
+	// Model lists come from the server and may be incomplete; a typed
+	// "backend/model" or unlisted model ID is still valid input.
+	"/backend":  true,
+	"/model":    true,
+	"/submodel": true,
 }
 
 // compSources builds a compSources from the facade snapshot: backends/models
@@ -222,9 +246,10 @@ func computeAtCompletion(ta textarea.Model, base string) completionState {
 //     inserts the chosen "/command" name in one step.
 //
 //   - Space before cursor ("/backend op"): argument picker for the command
-//     before the space. Only /auto, /backend, /model, /resume, /subagent,
-//     /submodel, /repostate, and /handoff have argument completion; other
-//     commands are not completed past the space.
+//     before the space. Commands with a case in the switch below (dynamic
+//     lists such as /backend, /model, /resume, or fixed keywords such as
+//     /mode, /prompt, /plan) get argument completion; other commands are not
+//     completed past the space.
 func computeSlashCompletion(ta textarea.Model, src compSources, fetchSessions func() []string) completionState {
 	lines := strings.Split(ta.Value(), "\n")
 	row := ta.Line()
@@ -258,6 +283,11 @@ func computeSlashCompletion(ta textarea.Model, src compSources, fetchSessions fu
 	cmdWord := textBeforeCursor[:spaceIdx] // e.g. "/backend"
 	argLeaf := textBeforeCursor[spaceIdx+1:]
 	leafLen := len([]rune(argLeaf))
+	if strings.ContainsAny(argLeaf, " \t") {
+		// Only the first argument is completed; past it the user is typing
+		// free text (e.g. "/plan fix the login", "/keep off 3").
+		return completionState{}
+	}
 
 	var cands []candidate
 	switch cmdWord {
@@ -274,7 +304,7 @@ func computeSlashCompletion(ta textarea.Model, src compSources, fetchSessions fu
 		if sessions == nil && fetchSessions != nil {
 			sessions = fetchSessions()
 		}
-		cands = listNameCandidates(argLeaf, sessions)
+		cands = listNameCandidates(argLeaf, append([]string{"all"}, sessions...))
 	case "/subagent":
 		cands = listNameCandidates(argLeaf, src.endpoints)
 	case "/submodel":
@@ -287,8 +317,35 @@ func computeSlashCompletion(ta textarea.Model, src compSources, fetchSessions fu
 		cands = listNameCandidates(argLeaf, []string{"off", "max", "xhigh", "high", "medium", "low", "minimal", "none"})
 	case "/mashura":
 		cands = listNameCandidates(argLeaf, []string{"panel", "map", "model", "maxtokens", "timeout"})
+	case "/prompt":
+		cands = listNameCandidates(argLeaf, []string{"full", "core", "status"})
+	case "/mode":
+		cands = listNameCandidates(argLeaf, []string{"standard", "long-session", "long", "status"})
+	case "/grants":
+		cands = listNameCandidates(argLeaf, []string{"clear"})
+	case "/sessions":
+		cands = listNameCandidates(argLeaf, []string{"all"})
+	case "/repomap":
+		cands = listNameCandidates(argLeaf, []string{"--symbols"})
+	case "/plan":
+		cands = listNameCandidates(argLeaf, []string{"status", "approve", "review", "verify", "abort"})
+	case "/keep":
+		cands = listNameCandidates(argLeaf, []string{"off"})
+	case "/compact":
+		cands = listNameCandidates(argLeaf, []string{"force"})
+	case "/assist":
+		cands = listNameCandidates(argLeaf, []string{"auto"})
+	case "/queue":
+		cands = listNameCandidates(argLeaf, []string{"clear", "drop"})
+	case "/image":
+		cands = listNameCandidates(argLeaf, []string{"clipboard"})
 	default:
 		return completionState{} // no argument completion for other commands
+	}
+	if len(cands) == 0 && freeFormArgCommands[cmdWord] {
+		// Keywords are optional suggestions here; a non-matching argument is
+		// a task/path, so don't show a "no matches" box over it.
+		return completionState{}
 	}
 	return completionState{
 		active:  true,

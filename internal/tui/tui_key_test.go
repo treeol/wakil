@@ -46,6 +46,30 @@ func TestHandleKeyConfirmGate(t *testing.T) {
 	}
 }
 
+// 'a' on a non-read action and 'g' on a non-grantable tool are swallowed but
+// must explain themselves via the flash, leaving the gate pending.
+func TestHandleKeyConfirmGateInapplicableKeyFlash(t *testing.T) {
+	for _, k := range []string{"a", "g"} {
+		m, f := keyModel(t)
+		m.state = stateConfirm
+		m.pendApproval = &pendingApprovalState{approvalID: "apr_1", toolName: "write_file", readAction: false, headline: "h", detail: "d"}
+
+		m2, _, consumed := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
+		if !consumed {
+			t.Fatalf("%q should be consumed by the confirm gate", k)
+		}
+		if len(f.responded) != 0 {
+			t.Errorf("%q must not answer the gate; responded=%d", k, len(f.responded))
+		}
+		if m2.pendApproval == nil || m2.state != stateConfirm {
+			t.Errorf("%q: gate should stay pending; state=%v", k, m2.state)
+		}
+		if m2.flash == "" {
+			t.Errorf("%q: expected an explanatory flash", k)
+		}
+	}
+}
+
 func TestHandleKeyEnterSlashCommand(t *testing.T) {
 	m, _ := keyModel(t)
 	m.ta.SetValue("/cwd")

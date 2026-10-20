@@ -493,3 +493,39 @@ func TestWrapAnsiLinePreservesStyle(t *testing.T) {
 		t.Errorf("first segment should close the dim code: %q", lines[0])
 	}
 }
+
+func TestStatusSegmentsContextAndPromptMode(t *testing.T) {
+	has := func(segs []string, want string) bool {
+		for _, s := range segs {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+	segs := statusSegTexts(statusLineInput{state: stateIdle, contextMode: "long-session"})
+	if !has(segs, "long") || has(segs, "std") {
+		t.Errorf("long-session should render 'long' only; got %v", segs)
+	}
+	segs = statusSegTexts(statusLineInput{state: stateIdle, contextMode: "standard"})
+	if !has(segs, "std") || has(segs, "long") {
+		t.Errorf("standard should render 'std' only; got %v", segs)
+	}
+	segs = statusSegTexts(statusLineInput{state: stateIdle, promptMode: "core"})
+	if !has(segs, "core") {
+		t.Errorf("core prompt mode should render 'core'; got %v", segs)
+	}
+	segs = statusSegTexts(statusLineInput{state: stateIdle, promptMode: "full"})
+	if has(segs, "core") {
+		t.Errorf("full prompt mode should not render 'core'; got %v", segs)
+	}
+}
+
+func TestExecModeLabel(t *testing.T) {
+	if got := execModeLabel("direct[/repo]"); got != "direct" {
+		t.Errorf("direct → %q", got)
+	}
+	if got := execModeLabel("docker[img]"); got != "docker" {
+		t.Errorf("docker → %q", got)
+	}
+}

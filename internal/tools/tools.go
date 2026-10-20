@@ -424,8 +424,9 @@ func EditTools(cwd string) []proxy.Tool {
 			}, "path", "old_string", "new_string"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
-			Name:        "write_file",
-			Description: "Write content to a file, overwriting it if it exists. " + cwdNote,
+			Name: "write_file",
+			Description: "Write content to a file, overwriting it if it exists (parent directories are created). " +
+				"Prefer edit_file for changes to existing files. " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path":    StrProp("Path to the file to write."),
 				"content": StrProp("The full content to write to the file"),
@@ -434,8 +435,8 @@ func EditTools(cwd string) []proxy.Tool {
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "write_binary_file",
 			Description: "Decode a base64-encoded string to raw bytes and write them to a file. " +
-				"Use this for binary data (images, PDFs, .xlsx, executables). " +
-				"The base64 string is the standard padded encoding (whitespace is stripped). " + cwdNote,
+				"Use this for binary data (images, PDFs, .xlsx, executables) that cannot be written via write_file. " +
+				"The base64 string is the standard padded encoding (whitespace/newlines are stripped automatically). " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path":           StrProp("Path to the file to write."),
 				"content_base64": StrProp("Base64-encoded content to decode and write as raw bytes."),
@@ -444,7 +445,8 @@ func EditTools(cwd string) []proxy.Tool {
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "delete_file",
 			Description: "Delete a file or empty directory. " +
-				"Does NOT delete non-empty directories — path must be inside the workspace. " +
+				"Does NOT delete non-empty directories — delete their contents first. " +
+				"Path must be inside the workspace; traversal and symlink escapes outside the workspace are rejected. " +
 				cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path": StrProp("Path to the file or empty directory to delete."),
@@ -454,7 +456,8 @@ func EditTools(cwd string) []proxy.Tool {
 			Name: "move_file",
 			Description: "Rename or move a file or directory within the workspace. " +
 				"Both src and dst must be inside the workspace. " +
-				"Fails if dst already exists. " + cwdNote,
+				"Fails if dst already exists — delete it first if you intend to overwrite. " +
+				"Does not create parent directories of dst — write a file into the target directory first if needed. " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"src": StrProp("Source path (file or directory to move)."),
 				"dst": StrProp("Destination path. Must not already exist."),

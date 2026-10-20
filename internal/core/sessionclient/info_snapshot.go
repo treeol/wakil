@@ -70,6 +70,10 @@ type InfoSnapshot struct {
 	// a "long" segment so the mode is always visible.
 	ContextMode string
 
+	// PromptMode reports the active prompt mode ("full" or "core"). The
+	// status line shows a "core" segment when the lean preamble is active.
+	PromptMode string
+
 	// AssistEnabled reports whether /assist is ON (querying /v1/assist before
 	// tool decisions). AssistAuto reports whether proposals auto-execute.
 	// Both are per-session toggles; the TUI seeds from config ilm_stack.mode.

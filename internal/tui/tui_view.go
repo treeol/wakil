@@ -562,8 +562,16 @@ func statusSegments(in statusLineInput) []string {
 	if in.rawTools {
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("raw"))
 	}
-	if in.contextMode == "long-session" {
+	switch in.contextMode {
+	case "long-session":
 		segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("long"))
+	case "standard":
+		// long-session is the default, so an opted-out session is the
+		// state worth surfacing.
+		segs = append(segs, dim2("std"))
+	}
+	if in.promptMode == "core" {
+		segs = append(segs, dim2("core"))
 	}
 	if in.AssistEnabled {
 		label := "assist"
@@ -706,6 +714,7 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 		pendingDestructiveGrant: m.pendingDestructiveGrant,
 		rawTools:                info.RawTools,
 		contextMode:             info.ContextMode,
+		promptMode:              info.PromptMode,
 		reasoning:               m.reasoning != nil && m.reasoning.Len() > 0 && !m.reasoningDone,
 		tps:                     m.tps,
 		workflowLabel:           info.WorkflowLabel,
@@ -884,7 +893,8 @@ type statusLineInput struct {
 	pendingAutoGrant        bool // deferred /auto grant requested mid-turn (renders AUTO*)
 	pendingDestructiveGrant bool // deferred destructive grant (renders AUTO!*)
 	rawTools                bool
-	contextMode             string  // "standard" or "long-session"; renders "long" segment when active
+	contextMode             string  // "standard" or "long-session"; renders "long" / "std"
+	promptMode              string  // "full" or "core"; renders "core" segment when core
 	reasoning               bool    // extended-thinking in progress
 	tps                     float64 // decode speed; 0 = not measured yet
 	workflowLabel           string  // e.g. "implement 3/6" or "" when no workflow

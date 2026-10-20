@@ -273,7 +273,6 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 	app.StateRLock()
 	selectedBackend := app.SelectedBackend
 	rawTools := app.RawTools
-	contextMode := app.ContextMode()
 	assistEnabled := app.AssistEnabled
 	assistAuto := app.AssistAuto
 	infoPanelOpen := app.InfoPanelOpen
@@ -294,6 +293,11 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 		workflowLabel = wf.SidebarLabel()
 	}
 	app.StateRUnlock()
+	// ContextMode/PromptMode take stateMu.RLock themselves; calling them
+	// while already holding RLock would be a recursive read lock, which can
+	// deadlock if a writer queues in between.
+	contextMode := app.ContextMode()
+	promptMode := app.PromptMode()
 
 	info := sessionclient.InfoSnapshot{
 		ChatID:          app.Client.ChatID,
@@ -318,6 +322,7 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 		Costs:           app.Costs,
 		RawTools:        rawTools,
 		ContextMode:     contextMode,
+		PromptMode:      promptMode,
 		AssistEnabled:   assistEnabled,
 		AssistAuto:      assistAuto,
 	}

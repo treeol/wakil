@@ -1603,14 +1603,16 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /maxctx <chars>      cap effective context for large models (e.g. 200000 = ~200k chars; 0 = disabled)
 /maxctx              show current effective context cap and resulting thresholds
 /plan <task>         start a gather→plan→review→implement workflow for <task>
-/skill-create <topic> research a topic and save it as a skill (asks for confirmation)
 /plan --oracle=MODE  set per-run oracle schedule (every-step|on-deviation|phases-only)
 /plan status         show current workflow phase and step
 /plan approve        approve the plan; force-skip review (logged); advance past pauses
 /plan review         retry the oracle plan review (when review is pending/unavailable)
 /plan verify         re-run the final oracle review (in verify state after gaps flagged)
 /plan abort          cancel the active workflow
+/verify              run the configured/detected verification commands (tests, lint, build)
+/skill-create <topic> research a topic and save it as a skill (asks for confirmation)
 /compact             summarize older turns now (frees context, improves performance)
+/compact force       required in long-session mode (materializes collapsed requests)
 /handoff [proceed|stop] summarize session → store in memory → start fresh session
                      default (or stop): display summary and wait for input
                      proceed: auto-start continuation turn (original behavior)
@@ -1625,30 +1627,39 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /mashura model <model-id>  set the default mashura model
 /mashura maxtokens <N>     set max tokens for mashura responses
 /mashura timeout <seconds> set timeout for mashura calls
+/thinking [effort] [max_tokens]  show/set reasoning (off|max|xhigh|high|medium|low|minimal|none)
+/assist              toggle assist mode (ilm_stack.mode="assist"); /assist auto toggles auto-execution
 /auto                toggle: auto-approve tool calls without prompting (shown as AUTO in status)
                      still confirmed: destructive shell commands, external-backend egress
                      in /plan: a successful review auto-approves the plan and starts implementation
 /auto destructive    toggle: also auto-approve destructive shell commands (rm, mv, git reset, …)
                      requires /auto ON; cleared when /auto goes OFF; shown as AUTO! in status
-/rawtools            toggle: include full tool output in context (default: capped at 8k chars)
+/grants              list session-scoped tool grants; /grants clear removes them
+/rawtools            toggle: include full tool output in context (default: capped at tool_result_cap)
 /repostate           show terminal settings remembered for this folder (model/backend/auto/…)
 /repostate clear     delete the remembered settings for this folder
 /cwd                 show executor working directory
-/mode [standard|long-session|status]  show exec backend / set context mode
+/mode [standard|long-session|long|status]  show exec backend / set context mode
+/prompt [full|core|status]  show/set prompt mode (core = lean preamble, extension lazy-loaded)
 /keep <n>            keep request n in full context (exempt from long-session collapse)
 /keep off <n>        remove the keep exemption for request n
 /history             transcript size
-/sessions            list saved sessions (★ = current)
-/resume [<id>]       resume a saved session by id prefix; omit for most recent
+/sessions            list saved sessions for this folder (★ = current); /sessions all = every folder
+/resume [<id>|all]   resume a saved session by id prefix; omit for a picker (all = every folder)
+/remember <query>    search prior sessions in this folder and fold matching context in
+/recall <id> [n|a-b] fetch verbatim turns from a named prior session into context
 /session name "..."  label the current session (shown in /sessions listing)
 /mcp                 list tool servers and tools
 /mcp reconnect NAME  reconnect a named MCP server
 /info                toggle the info panel (proxy/model/exec/cwd/costs/grounding)
                      also toggled by ctrl+o or F2; open state remembered per folder
+/ask <question>      side question on a cloned client (runs concurrently, not added to history)
+/queue               list prompts queued during a turn; /queue clear | /queue drop <N>
+/image <path…>       attach image(s) to your next message; /image clipboard; bare /image lists queued
 /init                detect project conventions and create AGENTS.md if absent
 /review [ref]        review current diff (or diff vs ref) for correctness, tests, security, style
-/repomap            rebuild and show the repo map (lightweight file-tree outline)
-/repomap --symbols  rebuild and show a symbol-level map via LSP (Go-only, requires lsp_enabled)
+/repomap             rebuild and show the repo map (lightweight file-tree outline)
+/repomap --symbols   rebuild and show a symbol-level map via LSP (Go-only, requires lsp_enabled)
 /help                this help
 /rewind              list checkpoints (turn-level file snapshots)
 /rewind <N>          rewind N checkpoints (1 = last turn; restores files, truncates history)

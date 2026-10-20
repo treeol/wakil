@@ -64,7 +64,7 @@ func MemoryTools() []proxy.Tool {
 			Parameters: SchemaObj(map[string]interface{}{
 				"query":            StrProp("FTS5 search query."),
 				"tier":             StrProp("Optional tier filter: 'mid' or 'durable'."),
-				"include_proposed": StrProp("Optional: include proposed entries (default false). Pass 'true' to include."),
+				"include_proposed": BoolProp("Optional: include proposed entries (default false)."),
 			}, "query"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{

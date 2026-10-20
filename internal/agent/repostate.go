@@ -555,6 +555,9 @@ func DescribeRepoState(app *App) string {
 	if st.ContextMode != "" {
 		b.WriteString("  context mode: " + st.ContextMode + "\n")
 	}
+	if st.PromptMode != "" {
+		b.WriteString("  prompt mode: " + st.PromptMode + "\n")
+	}
 	if st.AutoApprove {
 		b.WriteString("  auto: on\n")
 	}
