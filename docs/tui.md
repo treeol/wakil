@@ -13,7 +13,11 @@ opens a picker to attach a file or folder for context.
 /compact             summarize older turns now (frees context); in long-session mode requires /compact force (a forced compact materializes collapsed requests and destroys their archive pointers)
 /rewind              list checkpoints (turn-level file snapshots)
 /rewind <N>          rewind N checkpoints (1 = last turn; restores files, truncates history)
-/sessions            list saved sessions (★ = current)
+/sessions            list saved sessions for this folder (★ = current); /sessions all = every folder
+/resume [<id>|all]   resume a saved session by id prefix (tab-completes); omit for a picker (all = every folder)
+/session name "..."  label the current session
+/remember <query>    search prior sessions in this folder and fold matching context in
+/recall <id> [n|a-b] fetch verbatim turns from a named prior session into context
 /history             transcript size
 /quit, /exit         leave (tears down the container)
 ```
@@ -28,6 +32,7 @@ opens a picker to attach a file or folder for context.
 /plan review         retry the counsel plan review (when review is pending/unavailable)
 /plan verify         re-run the final review (in verify state after gaps flagged)
 /plan abort          cancel the active workflow
+/verify              run configured/detected verification commands (tests, lint, build)
 ```
 
 **Executor and tools**
@@ -35,10 +40,12 @@ opens a picker to attach a file or folder for context.
 ```
 /cwd                 show executor working directory
 /mode                show execution backend · context mode
-/mode standard       set context mode: full history sent (default; persisted per repo)
-/mode long-session   set long-session mode: finished requests collapse to question + answer + note (alias: /mode long)
+/mode standard       set context mode: full history sent (persisted per repo; status line shows "std")
+/mode long-session   set long-session mode (default): finished requests collapse to question + answer + note (alias: /mode long; status line shows "long")
 /mode status         show context mode, collapsed/kept counts, sent vs full sizes, archive dir
+/prompt [full|core|status]  show/set prompt mode: full (default) or core (lean preamble, extension lazy-loaded; status line shows "core")
 /keep <n>            exempt request n from collapse; /keep off <n> removes the exemption
+/grants              list session-scoped tool grants; /grants clear removes them
 /mcp                 list connected MCP servers and their tools
 /mcp reconnect NAME  reconnect a named MCP server
 ```
@@ -57,7 +64,7 @@ opens a picker to attach a file or folder for context.
 /learn               ask the proxy to synthesise a fact to remember (ilm-proxy endpoints only —
                      refuses client-side on openai endpoints instead of faking success)
 /auto                toggle auto-approve (shown as AUTO in status bar)
-/rawtools            toggle full tool output in context (default: capped at 8k chars)
+/rawtools            toggle full tool output in context (default: capped at tool_result_cap)
 /maxctx <chars>      cap effective context for large models (e.g. 200000 = ~200k chars; 0 = disabled)
 /maxctx              show current effective context cap and resulting compaction thresholds
 /init                detect project conventions and create AGENTS.md if absent
@@ -66,6 +73,9 @@ opens a picker to attach a file or folder for context.
 /repomap             rebuild and show the repo map (lightweight file-tree outline)
 /rewind              list checkpoints or rewind N turns (see Session section above)
 /info                toggle the info panel (proxy/model/exec/cwd/costs/grounding)
+/ask <question>      side question on a cloned client (concurrent; not added to history)
+/queue               list prompts queued mid-turn; /queue clear | /queue drop <N>
+/image <path…>       attach image(s) to the next message; /image clipboard
 /help                full command list
 ```
 

@@ -32,7 +32,7 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--all` | — | — | with `--resume`/`--list-sessions`: search all workspaces |
 | `--ssh-signing` | — | `off` | SSH commit signing in the sandbox: `off`\|`auto`\|`<path>` |
 | `--config` | `WAKIL_CONFIG` | `~/.config/wakil/config.json` | JSON config file path |
-| `--context-mode` | `WAKIL_CONTEXT_MODE` | `standard` | context mode: `standard` (full history sent) \| `long-session` (collapse finished requests to question + answer + note); persisted per repo, beats the config file |
+| `--context-mode` | `WAKIL_CONTEXT_MODE` | `long-session` | context mode: `standard` (full history sent) \| `long-session` (collapse finished requests to question + answer + note); persisted per repo, beats the config file |
 
 `lsp_enabled` is config-file only, no flag — see [LSP code intelligence](features.md#lsp-code-intelligence).
 
@@ -131,6 +131,7 @@ reference covering every section below.
 | `aux_model` | `""` | Pins `X-Ilm-Aux-Model` (empty = follow main) |
 | `kvr_disabled` | `false` | Disable the staging KV store *(auto-disabled in direct mode)* |
 | `kvr_max_entries` | `100000` | Max entries in the staging store |
+| `kvr_sweep_interval_secs` | `30` | Staging TTL sweep frequency *(expired entries are already hidden on read; the sweep only reclaims memory)* |
 | `kvr_snapshot_interval_secs` | `300` | Staging snapshot frequency *(survives sandbox restarts)* |
 | `docker_caps` | `[]` | Linux capabilities to re-add after `--cap-drop=ALL` *(e.g. `["CHOWN"]` if go build fails)* |
 | `docker_memory` | `"4g"` | Container memory limit; must be ≥ `docker_tmpfs_size` *(tmpfs counts against the cgroup)* |
@@ -162,7 +163,7 @@ reference covering every section below.
 | `max_tool_iterations` | `0` | Hard cap on tool round-trips per turn; `0` = unlimited |
 | `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |
 | `openrouter_api_key_env` | `"OPENROUTER_API_KEY"` | Env var for the OpenRouter API key *(used by mashura panel calls routed through OpenRouter)* |
-| `subagent_max_tool_iterations` | `0` (→ 30) | Cap on tool round-trips per subagent dispatch; `0` = use built-in default |
+| `subagent_max_tool_iterations` | `0` (→ 40) | Cap on tool round-trips per subagent dispatch; `0` = use built-in default |
 | `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(auto-clamped to 35% of active hardMax)* |
 | `subagent_tool_result_cap` | `0` (→ 12000) | Per-result char cap for subagents; `0` = use built-in default |
 | `stream_idle_timeout_seconds` | `0` (→ 120) | Max seconds between SSE bytes from the backend before the stream is declared stalled and retried; `0` = use built-in default |

@@ -39,6 +39,7 @@
   "docker_memory": "4g",
   "docker_pids_limit": 512,
   "docker_tmpfs_size": "4g",
+  "docker_io_uring": false,
 
   "_comment_subagents": "Subagent dispatch: dispatch_subagent spawns a read-only discovery worker. dispatch_subagents fans out several in parallel. max_parallel_subagents bounds concurrency. subagent_endpoint / subagent_backend route children to a different endpoint or backend than the parent.",
 
@@ -119,13 +120,15 @@
   "summary_bytes": 20000,
   "hard_max_bytes": 160000,
   "clipboard_mode": "auto",
+  "output_mode": "debug",
   "_comment_clipboard": "TUI copy transport: auto (try native clipboard tools wl-copy/xclip/xsel/pbcopy/clip.exe, then OSC 52 fallback) | native (never emit OSC 52) | osc52 (never run a local clipboard tool). Env: WAKIL_CLIPBOARD_MODE. Note: OSC 52 delivery depends on terminal/tmux support (tmux: set -g set-clipboard on) and cannot be verified by the app.",
   "compact_at": 145000,
   "turn_tool_budget": 40000,
   "tool_result_cap": 8000,
   "tool_result_ttl": 3,
+  "effective_ctx_max_chars": 0,
 
-  "_comment_context_mode": "Long-session mode. context_mode: standard (default — full conversation sent) | long-session (finished requests are collapsed to question + answer, working set archived to the tool cache). context_collapse_min_bytes: turns smaller than this are never collapsed (not worth a note). context_tail_turns: requests older than this many most-recent requests degrade to a single pointer line (archive path + memory key) instead of staying at full size — the soft middle cut that keeps sent context from growing with session length; 0 disables (older requests stay at full size forever). context_tail_answer_bytes: cap on the final answer retained for tail turns; longer answers are truncated with an archive pointer appended (0 = keep full answers). Flag: --context-mode. Env: WAKIL_CONTEXT_MODE. Subagents always run in standard.",
+  "_comment_context_mode": "Long-session mode. context_mode: standard (full conversation sent) | long-session (default — finished requests are collapsed to question + answer, working set archived to the tool cache). context_collapse_min_bytes: turns smaller than this are never collapsed (not worth a note). context_tail_turns: requests older than this many most-recent requests degrade to a single pointer line (archive path + memory key) instead of staying at full size — the soft middle cut that keeps sent context from growing with session length; 0 disables (older requests stay at full size forever). context_tail_answer_bytes: cap on the final answer retained for tail turns; longer answers are truncated with an archive pointer appended (0 = keep full answers). Flag: --context-mode. Env: WAKIL_CONTEXT_MODE. Subagents always run in standard.",
 
   "context_mode": "long-session",
   "context_collapse_min_bytes": 2000,
@@ -137,7 +140,7 @@
 
   "max_tool_iterations": 0,
 
-  "_comment_subagent_budget": "Subagent tool-loop budgets. 0 = use built-in defaults. subagent_max_tool_iterations caps tool round-trips per dispatch (default 30). subagent_turn_tool_budget caps cumulative tool output per dispatch (default 120000, auto-clamped to 35% of active hardMax). subagent_tool_result_cap limits per-result chars (default 12000).",
+  "_comment_subagent_budget": "Subagent tool-loop budgets. 0 = use built-in defaults. subagent_max_tool_iterations caps tool round-trips per dispatch (default 40). subagent_turn_tool_budget caps cumulative tool output per dispatch (default 120000, auto-clamped to 35% of active hardMax). subagent_tool_result_cap limits per-result chars (default 12000).",
   "subagent_max_tool_iterations": 0,
   "subagent_turn_tool_budget": 0,
   "subagent_tool_result_cap": 0,

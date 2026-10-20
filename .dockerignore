@@ -5,6 +5,9 @@
 runs/
 .tmp/
 .gotmp/
+.gocache/
+.tmp-*/
+tmp/
 *.test
 *.out
 
@@ -35,3 +38,9 @@ node_modules/
 
 # Data directories (should never be in the image)
 data/
+
+# Local secrets (gitignored; must not enter the build context or builder layer)
+master.key
+.env
+.env.*
+*.pem

@@ -84,8 +84,8 @@ checklist.
 | Configuration | [docs/configuration.md](docs/configuration.md) |
 | Endpoints | [docs/endpoints.md](docs/endpoints.md) |
 | Tools & subagents | [docs/tools.md](docs/tools.md) · [docs/features.md](docs/features.md) |
-| TUI commands | [docs/tui.md](docs/tui.md) |
-| Memory & context modes | [docs/memory.md](docs/memory.md) · [docs/long-session-mode-plan.md](docs/long-session-mode-plan.md) |
+| TUI commands | [docs/tui.md](docs/tui.md) · type `/` in the TUI for the command picker, `/help` for the full list |
+| Memory & context modes | [docs/memory.md](docs/memory.md) · [context modes](docs/configuration.md#config-only-fields) (`context_mode`, `/mode`) |
 | Daemon | [docs/remote-provisioning.md](docs/remote-provisioning.md) |
 | Security | [SECURITY.md](SECURITY.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |

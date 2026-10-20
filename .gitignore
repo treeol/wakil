@@ -54,6 +54,8 @@ runs/
 # go build cache (sandbox /tmp is tiny)
 .tmp-gocache/
 .tmp-gobuild/
+.tmp-go-build/
+.tmp-gotmp/
 .gotmp/
 .gocache/
 master.key
