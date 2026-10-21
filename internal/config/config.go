@@ -359,7 +359,11 @@ type Config struct {
 	ContextTokensFallback int `json:"context_tokens_fallback,omitempty"` // n_ctx assumed when the backend fetch fails; default 131072
 	ToolResultCap         int `json:"tool_result_cap"`                   // max chars kept in ctx per tool result; 0 = unlimited; default 8000
 	ToolResultTTL         int `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 3
-	MaxToolIterations     int `json:"max_tool_iterations"`               // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
+	// ToolCacheRetentionDays prunes per-chat tool-cache dirs (spilled tool
+	// results, collapse archives, subagent summaries) whose newest file is
+	// older than N days, once at startup in the background. 0 = never prune.
+	ToolCacheRetentionDays int `json:"tool_cache_retention_days"` // default 30
+	MaxToolIterations      int `json:"max_tool_iterations"`       // hard cap on tool round-trips per turn; on the last iteration tools are dropped to force a wrap-up answer; 0 = unlimited (parent default)
 
 	// SubagentMaxToolIter caps tool round-trips per subagent dispatch. 0 = use
 	// the built-in default (40). Unlike the parent's MaxToolIterations (0 =
@@ -937,11 +941,12 @@ func DefaultConfig() Config {
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
-		ReasoningBudgetTokens:      4096,      // headroom for extended thinking
-		AnswerMarginTokens:         4096,      // headroom for the final answer
-		ContextTokensFallback:      131072,    // assumed n_ctx when the backend is unreachable
-		ToolResultCap:              8000,      // keep first 8k chars in ctx; spill the rest to disk
-		ToolResultTTL:              3,         // evict after 3 completed turns (longer window before re-reads are needed)
+		ReasoningBudgetTokens:      4096,   // headroom for extended thinking
+		AnswerMarginTokens:         4096,   // headroom for the final answer
+		ContextTokensFallback:      131072, // assumed n_ctx when the backend is unreachable
+		ToolResultCap:              8000,   // keep first 8k chars in ctx; spill the rest to disk
+		ToolResultTTL:              3,      // evict after 3 completed turns (longer window before re-reads are needed)
+		ToolCacheRetentionDays:     30,
 		ReadFileSizeLimit:          1 << 20,   // 1 MB: refuse larger reads at the tool layer
 		MaxFullReadBytes:           256 << 10, // 256 KB: full-read ceiling (higher than ToolResultCap 8K, under MaxRequestBytes 8MB)
 		MaxRequestBytes:            8 << 20,   // 8 MB: trim tool results before sending if over
@@ -1645,6 +1650,9 @@ func (c Config) NormalizeEndpoint(name string) (EndpointConfig, error) {
 // internal consistency. Called at the end of LoadConfig so any source
 // (file/env/flag) is covered.
 func validateContextLimits(cfg Config) error {
+	if cfg.ToolCacheRetentionDays < 0 {
+		return fmt.Errorf("tool_cache_retention_days must be >= 0 (got %d; 0 = never prune)", cfg.ToolCacheRetentionDays)
+	}
 	if cfg.CompactAt <= 0 {
 		return fmt.Errorf("compact_at must be > 0 (got %d)", cfg.CompactAt)
 	}

@@ -94,6 +94,13 @@ func main() {
 		resumeID = id
 	}
 
+	// Background tool-cache retention sweep (once per process; 0 = off).
+	// A resumed chat (exact id) is exempt even if its spill files are older
+	// than the retention window — its transcript still points at them.
+	if !cfg.DaemonMode {
+		wiring.SweepToolCacheOnce(cfg.ToolCacheRetentionDays, resumeID)
+	}
+
 	// Daemon mode: remote TUI dials the daemon — no local executor needed.
 	// Checking BEFORE NewExecutor avoids paying full Docker container startup
 	// and then leaking the container via os.Exit (runDaemonMode takes no exe).

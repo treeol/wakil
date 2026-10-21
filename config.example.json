@@ -126,6 +126,7 @@
   "turn_tool_budget": 40000,
   "tool_result_cap": 8000,
   "tool_result_ttl": 3,
+  "tool_cache_retention_days": 30,
   "effective_ctx_max_chars": 0,
 
   "_comment_context_mode": "Long-session mode. context_mode: standard (full conversation sent) | long-session (default — finished requests are collapsed to question + answer, working set archived to the tool cache). context_collapse_min_bytes: turns smaller than this are never collapsed (not worth a note). context_tail_turns: requests older than this many most-recent requests degrade to a single pointer line (archive path + memory key) instead of staying at full size — the soft middle cut that keeps sent context from growing with session length; 0 disables (older requests stay at full size forever). context_tail_answer_bytes: cap on the final answer retained for tail turns; longer answers are truncated with an archive pointer appended (0 = keep full answers). Flag: --context-mode. Env: WAKIL_CONTEXT_MODE. Subagents always run in standard.",

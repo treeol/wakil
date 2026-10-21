@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -222,6 +223,9 @@ func execDaemon(flags daemonFlags) error {
 
 	wsID := wiring.WorkspaceIDFromConfig(cfg)
 
+	// Background tool-cache retention sweep (once per process; 0 = off).
+	wiring.SweepToolCacheOnce(cfg.ToolCacheRetentionDays)
+
 	socketPath := flags.socketPath
 	if socketPath == "" {
 		socketPath = defaultSocketPath()
@@ -252,7 +256,7 @@ func execDaemon(flags daemonFlags) error {
 	select {
 	case err := <-serveErr:
 		// Serve exited (error or clean stop).
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintf(os.Stderr, "wakil daemon: serve error: %v\n", err)
 		}
 	case <-ctx.Done():

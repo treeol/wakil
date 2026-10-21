@@ -32,6 +32,7 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/sessionhistory"
 	"github.com/treeol/wakil/internal/staging"
+	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
 	"github.com/treeol/wakil/prompts"
 )
@@ -522,4 +523,36 @@ func loadAgentPrompt(cfg config.Config) (prompt string, usingEmbedded bool) {
 	prompt = strings.TrimRight(string(b), "\n")
 	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)
 	return prompt, false
+}
+
+var toolCacheSweep sync.Once
+
+// SweepToolCacheOnce prunes stale per-chat tool-cache dirs at most once per
+// process, in the background (never on the critical path). It is called by
+// the long-lived entry points (interactive TUI, daemon) — not by BuildApp, so
+// tests and per-conversation rebuilds never touch the real data dir.
+// retentionDays <= 0 disables it. Live chats are protected by the newest-file
+// mtime rule (they are being written to); keepChatIDs adds explicit
+// exemptions. Errors go through diag so a late finish cannot garble the TUI.
+func SweepToolCacheOnce(retentionDays int, keepChatIDs ...string) {
+	if retentionDays <= 0 {
+		return
+	}
+	toolCacheSweep.Do(func() {
+		keep := map[string]bool{}
+		for _, id := range keepChatIDs {
+			if id != "" {
+				keep[id] = true
+			}
+		}
+		go func() {
+			n, err := wtools.SweepToolCache(wtools.ToolCacheRoot(),
+				time.Duration(retentionDays)*24*time.Hour, time.Now(), keep)
+			if err != nil {
+				diag.Printf("toolcache: sweep warning: %v", err)
+			} else if n > 0 {
+				diag.Printf("toolcache: pruned %d stale chat dir(s) older than %d days", n, retentionDays)
+			}
+		}()
+	})
 }
