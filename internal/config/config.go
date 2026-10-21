@@ -301,12 +301,11 @@ type Config struct {
 	// full ceiling with no additional headroom.
 	ContextCapacityFrac float64 `json:"context_capacity_frac,omitempty"`
 
-	// Context mode: "standard" (default) sends the full conversation as today;
-	// "long-session" collapses finished requests to question + answer + a note
-	// pointing to an archived working set, so context grows only with the
-	// current request. Per-repo setting (see RepoState); --context-mode and
-	// WAKIL_CONTEXT_MODE override it. NormalizeContextMode normalises "long"
-	// to "long-session".
+	// Context mode: "long-session" (default) collapses finished requests to
+	// question + answer + a note pointing to an archived working set, so context
+	// grows only with the current request; "standard" sends the full conversation.
+	// Per-repo setting (see RepoState); --context-mode and WAKIL_CONTEXT_MODE
+	// override it. NormalizeContextMode normalises "long" to "long-session".
 	ContextMode             string `json:"context_mode,omitempty"`
 	ContextCollapseMinBytes int    `json:"context_collapse_min_bytes,omitempty"` // default 2000; turns under this are not collapsed
 

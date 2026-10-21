@@ -789,9 +789,6 @@ func flowSegmentsN(segs []string, w, maxRows int) []string {
 			seg = ansi.Truncate(seg, w, "…")
 			segW = lipgloss.Width(seg)
 			addW = segW
-			if curW > 0 {
-				addW += sepW
-			}
 		}
 		if curW > 0 {
 			cur += sep
