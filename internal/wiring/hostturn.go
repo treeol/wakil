@@ -942,7 +942,7 @@ func (ht *hostTurn) resolveWaitingState(ctx context.Context, app *agent.App, in 
 		if ht.sessionEmit != nil {
 			ht.sessionEmit.Notify(event.KindWorkflowWarning, event.WorkflowWarning{Message: reason})
 		}
-		agent.WFWriteReviewSkipForce(app, logReason)
+		agent.WFWriteReviewSkipForce(ctx, app, logReason)
 		app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.Phase = workflow.WFPresent })
 		return ht.enqueueContinue(in)
 
