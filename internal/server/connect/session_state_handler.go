@@ -705,7 +705,7 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 
 	if h.coordinator != nil {
 		if err := h.coordinator.WithTransition(transition); err != nil {
-			if ce, ok := err.(*connect.Error); ok {
+			if ce := new(connect.Error); errors.As(err, &ce) {
 				return nil, ce
 			}
 			if errors.Is(err, wiring.ErrTurnActiveCoord) {
@@ -715,7 +715,7 @@ func (h *SessionStateHandler) LoadSession(ctx context.Context, req *connect.Requ
 		}
 	} else {
 		if err := transition(); err != nil {
-			if ce, ok := err.(*connect.Error); ok {
+			if ce := new(connect.Error); errors.As(err, &ce) {
 				return nil, ce
 			}
 			if errors.Is(err, wiring.ErrTurnActiveCoord) {
@@ -809,7 +809,7 @@ func (h *SessionStateHandler) InitNewSession(ctx context.Context, req *connect.R
 
 	if h.coordinator != nil {
 		if err := h.coordinator.WithTransition(transition); err != nil {
-			if ce, ok := err.(*connect.Error); ok {
+			if ce := new(connect.Error); errors.As(err, &ce) {
 				return nil, ce
 			}
 			if errors.Is(err, wiring.ErrTurnActiveCoord) {
@@ -819,7 +819,7 @@ func (h *SessionStateHandler) InitNewSession(ctx context.Context, req *connect.R
 		}
 	} else {
 		if err := transition(); err != nil {
-			if ce, ok := err.(*connect.Error); ok {
+			if ce := new(connect.Error); errors.As(err, &ce) {
 				return nil, ce
 			}
 			if errors.Is(err, wiring.ErrTurnActiveCoord) {

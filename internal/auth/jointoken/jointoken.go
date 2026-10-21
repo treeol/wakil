@@ -194,7 +194,7 @@ func (i *Issuer) Exchange(ctx context.Context, req ExchangeRequest) (*ExchangeRe
 		var userStatus string
 		err = tx.QueryRowContext(ctx,
 			"SELECT status FROM users WHERE id = ?", tokenRow.UserID).Scan(&userStatus)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, tokenstore.ErrUserNotFound
 		}
 		if err != nil {
@@ -230,7 +230,7 @@ func (i *Issuer) Exchange(ctx context.Context, req ExchangeRequest) (*ExchangeRe
 		err = tx.QueryRowContext(ctx,
 			"SELECT role FROM memberships WHERE tenant_id = ? AND user_id = ?",
 			tokenRow.TenantID, userID).Scan(&mRole)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, tokenstore.ErrMembershipNotFound
 		}
 		if err != nil {

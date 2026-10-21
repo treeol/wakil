@@ -28,6 +28,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -219,7 +220,7 @@ func handleSkillCreateCommand(ctx context.Context, app *App, topic string) (stri
 	// Create vs update against real store state.
 	existingEntry, err := s.getActiveSkill(ctx, draft.Key)
 	isUpdate := err == nil
-	if err != nil && err != memory.ErrNotFound {
+	if err != nil && !errors.Is(err, memory.ErrNotFound) {
 		return "", fmt.Errorf("skill store: %w", err)
 	}
 
@@ -254,10 +255,10 @@ func handleSkillCreateCommand(ctx context.Context, app *App, topic string) (stri
 	if err != nil {
 		// Mirror the handlers' race backstops: a concurrent save/forget may
 		// have won between our pre-check and the write.
-		if !isUpdate && err == memory.ErrSkillExists {
+		if !isUpdate && errors.Is(err, memory.ErrSkillExists) {
 			return "", fmt.Errorf("skill already exists: %s — use /skill-create again to update it", draft.Key)
 		}
-		if isUpdate && err == memory.ErrSkillNotFound {
+		if isUpdate && errors.Is(err, memory.ErrSkillNotFound) {
 			return "", fmt.Errorf("skill not found: %s — it was removed during research", draft.Key)
 		}
 		return "", fmt.Errorf("save skill: %w", err)

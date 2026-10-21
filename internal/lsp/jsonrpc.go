@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -213,7 +214,8 @@ func (c *rpcConn) readLoop() {
 func (c *rpcConn) respondToServer(id int64, result any, err error) {
 	var rpcErr *rpcError
 	if err != nil {
-		if re, ok := err.(*rpcError); ok {
+		var re *rpcError
+		if errors.As(err, &re) {
 			rpcErr = re
 		} else {
 			rpcErr = &rpcError{Code: -32603, Message: err.Error()}

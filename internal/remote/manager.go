@@ -11,6 +11,7 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -193,7 +194,8 @@ func (m *RemoteConversationManager) SetModelUserOverridden() {}
 // connectCodeOf extracts the connect.Code from an error. Returns
 // CodeUnknown if the error is not a connect error.
 func connectCodeOf(err error) connect.Code {
-	if ce, ok := err.(*connect.Error); ok {
+	var ce *connect.Error
+	if errors.As(err, &ce) {
 		return ce.Code()
 	}
 	return connect.CodeUnknown

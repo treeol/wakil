@@ -18,6 +18,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -74,7 +75,7 @@ func (a *App) handleLoadSkill(ctx context.Context, tc proxy.ToolCall) string {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
 	e, err := s.getActiveSkill(ctx, args.Key)
-	if err == memory.ErrNotFound {
+	if errors.Is(err, memory.ErrNotFound) {
 		return "not found: " + args.Key + " (no active skill with that key — use list_skills to see available skills)"
 	}
 	if err != nil {
@@ -170,7 +171,7 @@ func (a *App) handleSaveSkill(ctx context.Context, tc proxy.ToolCall) string {
 	// Reject if an active skill already exists — save is create-only.
 	if _, err := s.getActiveSkill(ctx, args.Key); err == nil {
 		return "ERROR: skill already exists: " + args.Key + " — use update_skill to change it"
-	} else if err != memory.ErrNotFound {
+	} else if !errors.Is(err, memory.ErrNotFound) {
 		return fmt.Sprintf("ERROR: save skill: %v", err)
 	}
 
@@ -193,7 +194,7 @@ func (a *App) handleSaveSkill(ctx context.Context, tc proxy.ToolCall) string {
 		return "[declined by user]"
 	}
 	e, err := s.putActiveSkill(ctx, args.Key, value, a.AgentPrefix, a.chatID(), a.computeTainted(), false, "")
-	if err == memory.ErrSkillExists {
+	if errors.Is(err, memory.ErrSkillExists) {
 		// Race-safe backstop: a concurrent save won between our pre-check and
 		// the write transaction. The store enforced create-only atomically.
 		return "ERROR: skill already exists: " + args.Key + " — use update_skill to change it"
@@ -224,7 +225,7 @@ func (a *App) handleUpdateSkill(ctx context.Context, tc proxy.ToolCall) string {
 	// Must already exist — update is not create.
 	// Fetch the existing content for the diff preview.
 	existingEntry, err := s.getActiveSkill(ctx, args.Key)
-	if err == memory.ErrNotFound {
+	if errors.Is(err, memory.ErrNotFound) {
 		return "ERROR: skill not found: " + args.Key + " — use save_skill to create it"
 	} else if err != nil {
 		return fmt.Sprintf("ERROR: update skill: %v", err)
@@ -253,7 +254,7 @@ func (a *App) handleUpdateSkill(ctx context.Context, tc proxy.ToolCall) string {
 		return "[declined by user]"
 	}
 	e, err := s.putActiveSkill(ctx, args.Key, value, a.AgentPrefix, a.chatID(), a.computeTainted(), true, "")
-	if err == memory.ErrSkillNotFound {
+	if errors.Is(err, memory.ErrSkillNotFound) {
 		// Race-safe backstop: a concurrent forget won between our pre-check and
 		// the write transaction. The store enforced requires-existing atomically.
 		return "ERROR: skill not found: " + args.Key + " — use save_skill to create it"
@@ -285,7 +286,7 @@ func (a *App) handleForgetSkill(ctx context.Context, tc proxy.ToolCall) string {
 		return "ERROR: " + err.Error()
 	}
 	existingEntry, err := s.getActiveSkill(ctx, args.Key)
-	if err == memory.ErrNotFound {
+	if errors.Is(err, memory.ErrNotFound) {
 		return "ERROR: skill not found: " + args.Key
 	} else if err != nil {
 		return fmt.Sprintf("ERROR: forget skill: %v", err)
@@ -293,7 +294,7 @@ func (a *App) handleForgetSkill(ctx context.Context, tc proxy.ToolCall) string {
 	if !a.Confirm("forget_skill", fmt.Sprintf("Forget skill %q from the global store (tombstone — still in history)?", args.Key), fmt.Sprintf("Size: %d bytes\nTainted: %s", len(existingEntry.Value), taintLabel(existingEntry.Tainted)), false) {
 		return "[declined by user]"
 	}
-	if err := s.forgetSkill(ctx, args.Key); err == memory.ErrNotFound {
+	if err := s.forgetSkill(ctx, args.Key); errors.Is(err, memory.ErrNotFound) {
 		return "ERROR: skill not found: " + args.Key
 	} else if err != nil {
 		return fmt.Sprintf("ERROR: forget skill: %v", err)

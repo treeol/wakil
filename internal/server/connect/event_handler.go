@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"errors"
 	"io"
 
 	"connectrpc.com/connect"
@@ -44,7 +45,7 @@ func (h *EventHandler) StreamEvents(ctx context.Context, req *connect.Request[v1
 		}
 		ev, err := sub.Next(ctx)
 		if err != nil {
-			if err == io.EOF || err == core.ErrSubscriptionClosed {
+			if errors.Is(err, io.EOF) || errors.Is(err, core.ErrSubscriptionClosed) {
 				return nil
 			}
 			// Context cancellation is expected on client disconnect.
@@ -109,5 +110,5 @@ func (h *EventHandler) GetSessionSnapshot(ctx context.Context, req *connect.Requ
 
 // isContextCanceled reports whether err is a context cancellation.
 func isContextCanceled(err error) bool {
-	return err == context.Canceled || err == context.DeadlineExceeded
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
