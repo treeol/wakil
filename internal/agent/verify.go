@@ -97,7 +97,7 @@ func RunVerification(ctx context.Context, app *App, cmds []verify.Command) verif
 	// carries the verification receipts as machine evidence. Summarize() already
 	// prefixes each line with "VERIFY:" so no additional wrapping is needed.
 	if app.Workflow != nil {
-		wfAppendStepLogEntry(app, strings.TrimRight(outcome.Summarize(), "\n"))
+		wfAppendStepLogEntry(ctx, app, strings.TrimRight(outcome.Summarize(), "\n"))
 	}
 
 	return outcome
@@ -114,7 +114,7 @@ func runFinalVerification(ctx context.Context, app *App) verify.Outcome {
 		// Still append to step log so the final-review briefing knows
 		// verification was attempted but had no commands.
 		if app.Workflow != nil {
-			wfAppendStepLogEntry(app, "VERIFY: skipped — no commands configured or detected")
+			wfAppendStepLogEntry(ctx, app, "VERIFY: skipped — no commands configured or detected")
 		}
 		return verify.Outcome{}
 	}

@@ -1420,7 +1420,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 			if reason == "" {
 				reason = "oracle review was unavailable"
 			}
-			WFWriteReviewSkipForce(app, reason)
+			WFWriteReviewSkipForce(context.Background(), app, reason)
 			app.UpdateWorkflow(func(w *workflow.WorkflowState) {
 				w.ReviewSkipReason = ""
 				w.Phase = workflow.WFPresent
@@ -1485,7 +1485,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 			if wf.StepIdx > wf.StepCount {
 				// Force-close from verify state. Log that flags were not resolved
 				// so the step log is an honest record of the workflow outcome.
-				wfWriteFinalLog(app, "FINAL REVIEW: workflow force-closed with unresolved flags.")
+				wfWriteFinalLog(context.Background(), app, "FINAL REVIEW: workflow force-closed with unresolved flags.")
 				app.SetWorkflow(nil)
 				return true, false, note("· workflow force-closed (unresolved flags logged to step log)")
 			}

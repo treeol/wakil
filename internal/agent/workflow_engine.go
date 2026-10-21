@@ -55,7 +55,12 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 		// Read plan and check for the format contract before advancing.
 		content := ""
 		if app.Exec != nil {
-			content, _ = app.Exec.ReadFile(ctx, wf.PlanPath)
+			var err error
+			content, err = app.Exec.ReadFile(ctx, wf.PlanPath)
+			if err != nil {
+				wfProgNote(app, "⚠ plan file unreadable: "+err.Error())
+				return nil // stay in WFPlan; retry requires another %%PHASE_DONE%% marker
+			}
 		}
 		n := workflow.CountPlanSteps(content)
 		if n == 0 {
@@ -64,7 +69,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 			if notEmpty {
 				wfProgNote(app, "⚠ plan format error: ## Plan is non-empty but contains no numbered steps")
 				wfProgNote(app, "· each step must be a top-level 'N.' line (e.g. '1. Fix the bug') — headers are not valid")
-				wfWritePlanFormatError(app)
+				wfWritePlanFormatError(ctx, app)
 				app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.PlanFormatInvalid = true })
 				return nil // stay in WFPlan; reformat directive fires on next turn
 			}
@@ -92,7 +97,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 		if wf.StepIdx > wf.StepCount {
 			// Append the remediation evidence block to plan.md BEFORE the final
 			// review fires so the briefing carries the new receipts, not stale ones.
-			wfAppendRemediationEvidence(app)
+			wfAppendRemediationEvidence(ctx, app)
 			wfProgNote(app, "· remediation turn complete — re-running final review")
 			HandleFinalReview(ctx, app)
 			return nil
@@ -113,7 +118,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 					if ev := FormatStepEvidence(app.WorkflowStepTrace); ev != "" {
 						combined = entry + "\n" + ev
 					}
-					wfAppendStepLogEntry(app, combined)
+					wfAppendStepLogEntry(ctx, app, combined)
 				} else {
 					wfProgNote(app, fmt.Sprintf("⚠ step %d: no %%%%STEP_LOG%%%% entry found — log may be incomplete", completedStep))
 				}
@@ -121,10 +126,11 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 
 			// Verify the step log now has exactly completedStep entries.
 			if app.Exec != nil {
-				if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err == nil {
-					if got := workflow.CountStepLogEntries(content); got != completedStep {
-						wfProgNote(app, fmt.Sprintf("⚠ step log count: expected %d entries, found %d", completedStep, got))
-					}
+				content, err := app.Exec.ReadFile(ctx, wf.PlanPath)
+				if err != nil {
+					wfProgNote(app, "⚠ step log unreadable: "+err.Error())
+				} else if got := workflow.CountStepLogEntries(content); got != completedStep {
+					wfProgNote(app, fmt.Sprintf("⚠ step log count: expected %d entries, found %d", completedStep, got))
 				}
 			}
 
@@ -285,11 +291,11 @@ func doWFOracleOnPlan(ctx context.Context, app *App, question, planContent strin
 
 // wfAppendStepLogEntry appends a step-log entry extracted from the model's output
 // to plan.md. Best-effort; errors are warned once per session.
-func wfAppendStepLogEntry(app *App, entry string) {
+func wfAppendStepLogEntry(ctx context.Context, app *App, entry string) {
 	if app.Exec == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
 		if !app.planWriteFailed {
 			app.planWriteFailed = true
@@ -297,7 +303,7 @@ func wfAppendStepLogEntry(app *App, entry string) {
 		}
 		return
 	}
-	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+	if _, err := app.Exec.WriteFile(ctx, app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
 		if !app.planWriteFailed {
 			app.planWriteFailed = true
 			fmt.Fprintln(app.Out, Yellow("⚠ failed to write plan.md step log: "+err.Error()))
@@ -364,35 +370,35 @@ func HandleFinalReview(ctx context.Context, app *App) {
 
 	if app.Exec == nil {
 		wfProgNote(app, "⚠ FINAL REVIEW: oracle unavailable — briefing incomplete: no executor")
-		wfWriteFinalLog(app, "FINAL REVIEW skipped: briefing incomplete (no executor) — /plan approve required to close.")
+		wfWriteFinalLog(ctx, app, "FINAL REVIEW skipped: briefing incomplete (no executor) — /plan approve required to close.")
 		wfProgNote(app, "· type /plan approve to force-close, or fix oracle config and retry")
 		return
 	}
 	planContent, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
 		wfProgNote(app, "⚠ FINAL REVIEW: oracle unavailable — briefing incomplete: plan file unreadable")
-		wfWriteFinalLog(app, "FINAL REVIEW skipped: briefing incomplete (plan file unreadable) — /plan approve required to close.")
+		wfWriteFinalLog(ctx, app, "FINAL REVIEW skipped: briefing incomplete (plan file unreadable) — /plan approve required to close.")
 		wfProgNote(app, "· type /plan approve to force-close, or fix oracle config and retry")
 		return
 	}
 	briefing := workflow.BuildFinalReviewBriefing(app.Workflow.Task, planContent, reviewQ, app.Cfg.WFBriefingMaxBytes)
 	if reason := workflow.ValidateBriefing(briefing, true); reason != "" {
 		wfProgNote(app, "⚠ FINAL REVIEW: oracle unavailable — briefing incomplete: "+reason)
-		wfWriteFinalLog(app, "FINAL REVIEW skipped: briefing incomplete ("+reason+") — /plan approve required to close.")
+		wfWriteFinalLog(ctx, app, "FINAL REVIEW skipped: briefing incomplete ("+reason+") — /plan approve required to close.")
 		wfProgNote(app, "· type /plan approve to force-close, or fix oracle config and retry")
 		return
 	}
 	panelName, panel, panelOK := app.defaultPanel()
 	if !panelOK {
 		wfProgNote(app, "⚠ FINAL REVIEW: oracle unavailable — default panel not configured")
-		wfWriteFinalLog(app, "FINAL REVIEW skipped: default panel not configured — /plan approve required to close.")
+		wfWriteFinalLog(ctx, app, "FINAL REVIEW skipped: default panel not configured — /plan approve required to close.")
 		wfProgNote(app, "· type /plan approve to force-close, or fix oracle config and retry")
 		return
 	}
 	oracleResult, panelResults, oracleAvail := doWFOracleWithBriefing(ctx, app, reviewQ, briefing, panelName, panel)
 	if !oracleAvail {
 		wfProgNote(app, "⚠ FINAL REVIEW: oracle unavailable — "+oracleResult)
-		wfWriteFinalLog(app, "FINAL REVIEW skipped: oracle unavailable ("+oracleResult+") — /plan approve required to close.")
+		wfWriteFinalLog(ctx, app, "FINAL REVIEW skipped: oracle unavailable ("+oracleResult+") — /plan approve required to close.")
 		wfProgNote(app, "· type /plan approve to force-close, or fix oracle config and retry")
 		// Workflow stays in IMPLEMENT with StepIdx > StepCount.
 		return
@@ -404,24 +410,24 @@ func HandleFinalReview(ctx context.Context, app *App) {
 	if len(panelResults) > 1 {
 		for _, r := range panelResults {
 			if r.Err != nil {
-				wfWriteFinalLog(app, fmt.Sprintf("FINAL REVIEW [%s]: error — %v", r.Model, r.Err))
+				wfWriteFinalLog(ctx, app, fmt.Sprintf("FINAL REVIEW [%s]: error — %v", r.Model, r.Err))
 			} else if workflow.WFFlagsGaps(r.Answer) {
-				wfWriteFinalLog(app, fmt.Sprintf("FINAL REVIEW [%s]: GAPS — %s", r.Model, workflow.GapGist(r.Answer)))
+				wfWriteFinalLog(ctx, app, fmt.Sprintf("FINAL REVIEW [%s]: GAPS — %s", r.Model, workflow.GapGist(r.Answer)))
 			} else {
-				wfWriteFinalLog(app, fmt.Sprintf("FINAL REVIEW [%s]: PASS", r.Model))
+				wfWriteFinalLog(ctx, app, fmt.Sprintf("FINAL REVIEW [%s]: PASS", r.Model))
 			}
 		}
 	}
 
 	// Fail-closed: any GAPS from any responding model keeps the workflow open.
 	if panelFlagsGaps(panelResults) {
-		wfWriteFinalLog(app, "FINAL REVIEW: gaps — "+workflow.GapGist(oracleResult))
+		wfWriteFinalLog(ctx, app, "FINAL REVIEW: gaps — "+workflow.GapGist(oracleResult))
 		wfProgNote(app, "· gaps flagged — address them or type /plan approve to force-close")
 		// Workflow stays in IMPLEMENT with StepIdx > StepCount.
 		return
 	}
 
-	wfWriteFinalLog(app, "FINAL REVIEW: all acceptance criteria verified ✓")
+	wfWriteFinalLog(ctx, app, "FINAL REVIEW: all acceptance criteria verified ✓")
 	app.SetWorkflow(nil)
 	wfProgNote(app, "· workflow complete — all acceptance criteria verified ✓")
 }
@@ -438,15 +444,15 @@ func doWFOracleWithBriefing(ctx context.Context, app *App, question, briefing, p
 }
 
 // wfWriteFinalLog appends a final-review log entry to plan.md. Best-effort.
-func wfWriteFinalLog(app *App, entry string) {
+func wfWriteFinalLog(ctx context.Context, app *App, entry string) {
 	if app.Exec == nil || app.Workflow == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
-	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+	if _, err := app.Exec.WriteFile(ctx, app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
 		wfProgNote(app, "⚠ step log write failed: "+err.Error())
 	}
 }
@@ -491,7 +497,7 @@ func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 			w.ReviewSkipReason = oracleResult
 		})
 		wfProgNote(app, "⚠ REVIEW: oracle unavailable — "+oracleResult)
-		wfWriteReviewSkip(app, oracleResult)
+		wfWriteReviewSkip(ctx, app, oracleResult)
 		wfProgNote(app, "· type /plan review to retry, or /plan approve to skip (reason will be logged)")
 		return nil
 	}
@@ -538,16 +544,16 @@ func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 
 // wfWriteReviewSkip appends a REVIEW-skipped log entry to plan.md. Best-effort:
 // errors are swallowed — the visible warning and the user gate are the real guards.
-func wfWriteReviewSkip(app *App, reason string) {
+func wfWriteReviewSkip(ctx context.Context, app *App, reason string) {
 	if app.Exec == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
 	entry := "REVIEW skipped: oracle unavailable (" + reason + ") — /plan approve required to proceed."
-	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+	if _, err := app.Exec.WriteFile(ctx, app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
 		wfProgNote(app, "⚠ step log write failed: "+err.Error())
 	}
 }
@@ -557,7 +563,7 @@ func wfWriteReviewSkip(app *App, reason string) {
 // deterministic tool-call trace (receipt) into a single step-log paragraph — the
 // same claim-and-receipt structure used for normal IMPLEMENT steps. The append
 // happens before handleFinalReview so the briefing carries up-to-date evidence.
-func wfAppendRemediationEvidence(app *App) {
+func wfAppendRemediationEvidence(ctx context.Context, app *App) {
 	if app.Exec == nil || app.Workflow == nil {
 		return
 	}
@@ -579,36 +585,36 @@ func wfAppendRemediationEvidence(app *App) {
 		}
 		combined += ev
 	}
-	wfAppendStepLogEntry(app, combined)
+	wfAppendStepLogEntry(ctx, app, combined)
 }
 
 // wfWriteReviewSkipForce appends "REVIEW skipped with reason: …" when the user
 // explicitly force-skips the oracle review via /plan approve. Best-effort.
-func WFWriteReviewSkipForce(app *App, reason string) {
+func WFWriteReviewSkipForce(ctx context.Context, app *App, reason string) {
 	if app.Exec == nil || app.Workflow == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
 	entry := "REVIEW skipped with reason: " + reason + " (/plan approve used to force-skip)"
-	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+	if _, err := app.Exec.WriteFile(ctx, app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
 		wfProgNote(app, "⚠ step log write failed: "+err.Error())
 	}
 }
 
 // wfWritePlanFormatError appends a format-error log entry to plan.md. Best-effort.
-func wfWritePlanFormatError(app *App) {
+func wfWritePlanFormatError(ctx context.Context, app *App) {
 	if app.Exec == nil {
 		return
 	}
-	content, err := app.Exec.ReadFile(context.Background(), app.Workflow.PlanPath)
+	content, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
 		return
 	}
 	entry := "PLAN FORMAT ERROR: ## Plan is non-empty but contains no numbered steps — model must reformat."
-	if _, err := app.Exec.WriteFile(context.Background(), app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
+	if _, err := app.Exec.WriteFile(ctx, app.Workflow.PlanPath, workflow.WFAppendToStepLog(content, entry)); err != nil {
 		wfProgNote(app, "⚠ step log write failed: "+err.Error())
 	}
 }
