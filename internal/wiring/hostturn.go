@@ -478,7 +478,7 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 		// from retryable backend failures (SessionError{request_error} vs
 		// {backend_failure}) without importing the proxy package (D12).
 		if errors.Is(err, proxy.ErrBackendFatal) {
-			return "", fmt.Errorf("%w: %v", sessionhost.ErrBackendFatal, err)
+			return "", fmt.Errorf("%w: %w", sessionhost.ErrBackendFatal, err)
 		}
 		return "", err
 	}
@@ -728,7 +728,7 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 			// Cannot mint a valid ID: fail closed AND record it — an approval
 			// that produced no durable audit trail must surface as an internal
 			// error, not silently look like a benign decline (op-35 finding).
-			emitErr.set(fmt.Errorf("%w: approval ID generation failed: %v", sessionhost.ErrInternal, err))
+			emitErr.set(fmt.Errorf("%w: approval ID generation failed: %w", sessionhost.ErrInternal, err))
 			return false
 		}
 		req := ApprovalRequest{ToolName: toolName, Headline: headline, Detail: detail, ReadAction: readAction}
@@ -888,7 +888,7 @@ func (ht *hostTurn) resolveAfterTurn(ctx context.Context, app *agent.App, in ses
 		// Engine-requested continuation: enqueue + audit marker on success.
 		if err := in.EnqueueInput(wfNext.UserText); err != nil {
 			if ht.planAutoAdvance {
-				return fmt.Errorf("%w: workflow continuation enqueue failed: %v", sessionhost.ErrInternal, err)
+				return fmt.Errorf("%w: workflow continuation enqueue failed: %w", sessionhost.ErrInternal, err)
 			}
 			return nil // legacy 7b3 drop semantics (interactive user resumes)
 		}
@@ -979,7 +979,7 @@ func (ht *hostTurn) resolveWaitingState(ctx context.Context, app *agent.App, in 
 // enqueueContinue enqueues the legacy "continue" input with the audit marker.
 func (ht *hostTurn) enqueueContinue(in sessionhost.TurnInput) error {
 	if err := in.EnqueueInput("continue"); err != nil {
-		return fmt.Errorf("%w: workflow continuation enqueue failed: %v", sessionhost.ErrInternal, err)
+		return fmt.Errorf("%w: workflow continuation enqueue failed: %w", sessionhost.ErrInternal, err)
 	}
 	_ = in.SessionEmit.Emit(event.KindWorkflowTurnStarted, event.WorkflowTurnStarted{
 		TurnID:   in.TurnID,

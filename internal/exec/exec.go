@@ -312,7 +312,7 @@ func waitForKVR(socketPath string, timeout time.Duration) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if lastErr != nil {
-		return fmt.Errorf("kvr did not become ready within %s (last error: %v)", timeout, lastErr)
+		return fmt.Errorf("kvr did not become ready within %s (last error: %w)", timeout, lastErr)
 	}
 	return fmt.Errorf("kvr did not become ready within %s", timeout)
 }

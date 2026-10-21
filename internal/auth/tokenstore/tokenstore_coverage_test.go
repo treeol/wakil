@@ -2,6 +2,7 @@ package tokenstore
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -36,13 +37,13 @@ func TestGetAPITokenByID(t *testing.T) {
 
 	// Not found in this tenant.
 	_, err = store.GetAPITokenByID(ctx, "at_1", "tnt_other")
-	if err != ErrAPITokenNotFound {
+	if !errors.Is(err, ErrAPITokenNotFound) {
 		t.Errorf("GetAPITokenByID (wrong tenant): got %v, want ErrAPITokenNotFound", err)
 	}
 
 	// Non-existent ID.
 	_, err = store.GetAPITokenByID(ctx, "nonexistent", "tnt_1")
-	if err != ErrAPITokenNotFound {
+	if !errors.Is(err, ErrAPITokenNotFound) {
 		t.Errorf("GetAPITokenByID (nonexistent): got %v, want ErrAPITokenNotFound", err)
 	}
 }
@@ -89,7 +90,7 @@ func TestCheckTenantActive(t *testing.T) {
 	}
 
 	// Non-existent tenant.
-	if err := store.CheckTenantActive(ctx, "tnt_nonexistent"); err != ErrTenantNotFound {
+	if err := store.CheckTenantActive(ctx, "tnt_nonexistent"); !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("CheckTenantActive (nonexistent): got %v, want ErrTenantNotFound", err)
 	}
 
@@ -100,7 +101,7 @@ func TestCheckTenantActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed suspended tenant: %v", err)
 	}
-	if err := store.CheckTenantActive(ctx, "tnt_suspended"); err != ErrTenantSuspended {
+	if err := store.CheckTenantActive(ctx, "tnt_suspended"); !errors.Is(err, ErrTenantSuspended) {
 		t.Errorf("CheckTenantActive (suspended): got %v, want ErrTenantSuspended", err)
 	}
 }
@@ -121,7 +122,7 @@ func TestCheckUserActiveSuspended(t *testing.T) {
 		t.Fatalf("suspend user: %v", err)
 	}
 
-	if err := store.CheckUserActive(ctx, "usr_suspended"); err != ErrUserSuspended {
+	if err := store.CheckUserActive(ctx, "usr_suspended"); !errors.Is(err, ErrUserSuspended) {
 		t.Errorf("CheckUserActive (suspended): got %v, want ErrUserSuspended", err)
 	}
 }
@@ -152,7 +153,7 @@ func TestConsumeJoinTokenRevoked(t *testing.T) {
 	defer tx.Rollback()
 
 	_, err = store.ConsumeJoinToken(ctx, tx, tokenHash, nowNanos())
-	if err != ErrJoinTokenInvalid {
+	if !errors.Is(err, ErrJoinTokenInvalid) {
 		t.Errorf("ConsumeJoinToken (revoked): got %v, want ErrJoinTokenInvalid", err)
 	}
 }
@@ -189,7 +190,7 @@ func TestLookupUserByAuthSubject(t *testing.T) {
 
 	// Non-existent auth_subject.
 	_, err = store.LookupUserByAuthSubject(ctx, "nonexistent:sub")
-	if err != ErrUserNotFound {
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("LookupUserByAuthSubject (nonexistent): got %v, want ErrUserNotFound", err)
 	}
 }

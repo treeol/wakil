@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -154,12 +155,12 @@ func TestRevokeJoinToken(t *testing.T) {
 	}
 
 	// Revoke from a different tenant — should return ErrJoinTokenNotFound.
-	if err := store.RevokeJoinToken(ctx, "jt_1", "tnt_other"); err != ErrJoinTokenNotFound {
+	if err := store.RevokeJoinToken(ctx, "jt_1", "tnt_other"); !errors.Is(err, ErrJoinTokenNotFound) {
 		t.Errorf("RevokeJoinToken from wrong tenant: got %v, want ErrJoinTokenNotFound", err)
 	}
 
 	// Revoke a non-existent token — should return ErrJoinTokenNotFound.
-	if err := store.RevokeJoinToken(ctx, "nonexistent", "tnt_1"); err != ErrJoinTokenNotFound {
+	if err := store.RevokeJoinToken(ctx, "nonexistent", "tnt_1"); !errors.Is(err, ErrJoinTokenNotFound) {
 		t.Errorf("RevokeJoinToken nonexistent: got %v, want ErrJoinTokenNotFound", err)
 	}
 }
@@ -192,13 +193,13 @@ func TestConsumeJoinToken(t *testing.T) {
 
 	// Consume again — should fail (already used).
 	_, err = store.ConsumeJoinToken(ctx, tx, tokenHash, nowNanos())
-	if err != ErrJoinTokenInvalid {
+	if !errors.Is(err, ErrJoinTokenInvalid) {
 		t.Errorf("ConsumeJoinToken (already used): got %v, want ErrJoinTokenInvalid", err)
 	}
 
 	// Consume a non-existent token hash — should fail.
 	_, err = store.ConsumeJoinToken(ctx, tx, hashHex("nonexistent"), nowNanos())
-	if err != ErrJoinTokenInvalid {
+	if !errors.Is(err, ErrJoinTokenInvalid) {
 		t.Errorf("ConsumeJoinToken (nonexistent): got %v, want ErrJoinTokenInvalid", err)
 	}
 }
@@ -222,7 +223,7 @@ func TestConsumeJoinTokenExpired(t *testing.T) {
 	defer tx.Rollback()
 
 	_, err = store.ConsumeJoinToken(ctx, tx, tokenHash, nowNanos())
-	if err != ErrJoinTokenInvalid {
+	if !errors.Is(err, ErrJoinTokenInvalid) {
 		t.Errorf("ConsumeJoinToken (expired): got %v, want ErrJoinTokenInvalid", err)
 	}
 }
@@ -275,7 +276,7 @@ func TestLookupWebSessionExpired(t *testing.T) {
 	tx.Commit()
 
 	_, err := store.LookupWebSession(ctx, tokenHash, now)
-	if err != ErrSessionInvalid {
+	if !errors.Is(err, ErrSessionInvalid) {
 		t.Errorf("LookupWebSession (expired): got %v, want ErrSessionInvalid", err)
 	}
 }
@@ -294,7 +295,7 @@ func TestLookupWebSessionIdleExpired(t *testing.T) {
 	tx.Commit()
 
 	_, err := store.LookupWebSession(ctx, tokenHash, now)
-	if err != ErrSessionInvalid {
+	if !errors.Is(err, ErrSessionInvalid) {
 		t.Errorf("LookupWebSession (idle expired): got %v, want ErrSessionInvalid", err)
 	}
 }
@@ -318,7 +319,7 @@ func TestRevokeWebSessionByHash(t *testing.T) {
 
 	// Lookup should now fail.
 	_, err := store.LookupWebSession(ctx, tokenHash, now)
-	if err != ErrSessionInvalid {
+	if !errors.Is(err, ErrSessionInvalid) {
 		t.Errorf("LookupWebSession after revoke: got %v, want ErrSessionInvalid", err)
 	}
 }
@@ -390,7 +391,7 @@ func TestLookupAPITokenExpired(t *testing.T) {
 	}
 
 	_, err := store.LookupAPIToken(ctx, tokenHash, nowNanos())
-	if err != ErrAPITokenInvalid {
+	if !errors.Is(err, ErrAPITokenInvalid) {
 		t.Errorf("LookupAPIToken (expired): got %v, want ErrAPITokenInvalid", err)
 	}
 }
@@ -441,12 +442,12 @@ func TestRevokeAPIToken(t *testing.T) {
 
 	// Lookup should now fail.
 	_, err := store.LookupAPIToken(ctx, tokenHash, nowNanos())
-	if err != ErrAPITokenInvalid {
+	if !errors.Is(err, ErrAPITokenInvalid) {
 		t.Errorf("LookupAPIToken after revoke: got %v, want ErrAPITokenInvalid", err)
 	}
 
 	// Revoke from wrong tenant — should return ErrAPITokenNotFound.
-	if err := store.RevokeAPIToken(ctx, "at_1", "tnt_other"); err != ErrAPITokenNotFound {
+	if err := store.RevokeAPIToken(ctx, "at_1", "tnt_other"); !errors.Is(err, ErrAPITokenNotFound) {
 		t.Errorf("RevokeAPIToken from wrong tenant: got %v, want ErrAPITokenNotFound", err)
 	}
 }
@@ -535,7 +536,7 @@ func TestMembershipLookup(t *testing.T) {
 
 	// Non-existent membership.
 	_, err = store.LookupMembershipRole(ctx, "tnt_1", "nonexistent")
-	if err != ErrMembershipNotFound {
+	if !errors.Is(err, ErrMembershipNotFound) {
 		t.Errorf("LookupMembershipRole (nonexistent): got %v, want ErrMembershipNotFound", err)
 	}
 }
@@ -552,7 +553,7 @@ func TestCheckUserActive(t *testing.T) {
 		t.Errorf("CheckUserActive: %v", err)
 	}
 
-	if err := store.CheckUserActive(ctx, "nonexistent"); err != ErrUserNotFound {
+	if err := store.CheckUserActive(ctx, "nonexistent"); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("CheckUserActive (nonexistent): got %v, want ErrUserNotFound", err)
 	}
 }

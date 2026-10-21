@@ -1879,7 +1879,7 @@ func validateURLs(cfg Config) error {
 func validateHTTPURL(raw, fieldName string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return fmt.Errorf("%s: invalid URL %q: %v", fieldName, raw, err)
+		return fmt.Errorf("%s: invalid URL %q: %w", fieldName, raw, err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("%s: must be http or https URL (got %q)", fieldName, raw)

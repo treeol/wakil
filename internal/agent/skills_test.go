@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,7 +152,7 @@ func TestSkillsProfile_ForgetTombstones(t *testing.T) {
 	}
 
 	// No longer active.
-	if _, err := sp.getActiveSkill(ctx, "gone"); err != memory.ErrNotFound {
+	if _, err := sp.getActiveSkill(ctx, "gone"); !errors.Is(err, memory.ErrNotFound) {
 		t.Errorf("forgotten skill should be ErrNotFound, got %v", err)
 	}
 

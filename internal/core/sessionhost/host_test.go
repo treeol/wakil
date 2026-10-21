@@ -362,7 +362,7 @@ func TestSubscribeReplayAndLiveDedup(t *testing.T) {
 	if err := sub.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := sub.Next(context.Background()); err != io.EOF {
+	if _, err := sub.Next(context.Background()); !errors.Is(err, io.EOF) {
 		t.Fatalf("Next after Close = %v, want io.EOF", err)
 	}
 }
@@ -781,10 +781,10 @@ func TestSlowSubscriberDoesNotBlockExecutor(t *testing.T) {
 		if err != nil {
 			if errors.Is(err, ErrSubscriptionGap) {
 				gap = true
-			} else if err == io.EOF {
+			} else if errors.Is(err, io.EOF) {
 				break
 			}
-			if err != nil && err != io.EOF && !errors.Is(err, ErrSubscriptionGap) {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, ErrSubscriptionGap) {
 				t.Fatalf("unexpected Next error: %v", err)
 			}
 			break

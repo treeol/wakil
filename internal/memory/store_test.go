@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -281,7 +282,7 @@ func TestExpiryBoundary(t *testing.T) {
 
 	// After expiry: should be not found (lazy expiry on read).
 	_, err = s.Get(c, "temp/data")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after expiry, got %v", err)
 	}
 
@@ -377,7 +378,7 @@ func TestExpirySweepHardDelete(t *testing.T) {
 
 	// The entry should be gone (hard-deleted).
 	_, err = s.GetByID(c, e.ID)
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after hard-delete, got %v", err)
 	}
 }
@@ -638,7 +639,7 @@ func TestForget(t *testing.T) {
 
 	// Should be gone from Get (no active entry).
 	_, err = s.Get(c, "forget/x")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after forget, got %v", err)
 	}
 
@@ -715,7 +716,7 @@ func TestDanglingSupersedes(t *testing.T) {
 
 	// Loading B by ID should return ErrNotFound — the reference dangles.
 	_, err = s.GetByID(c, b.ID)
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for hard-deleted B, got %v", err)
 	}
 
@@ -742,7 +743,7 @@ func TestValidation(t *testing.T) {
 
 	// Empty key.
 	_, err := s.PutActive(c, "", "v", "note", TierMid, "main", "s1", TaintUnknown, nil, nil, "")
-	if err != ErrEmptyKey {
+	if !errors.Is(err, ErrEmptyKey) {
 		t.Fatalf("expected ErrEmptyKey, got %v", err)
 	}
 
@@ -752,7 +753,7 @@ func TestValidation(t *testing.T) {
 		longKey[i] = 'a'
 	}
 	_, err = s.PutActive(c, string(longKey), "v", "note", TierMid, "main", "s1", TaintUnknown, nil, nil, "")
-	if err != ErrKeyTooLong {
+	if !errors.Is(err, ErrKeyTooLong) {
 		t.Fatalf("expected ErrKeyTooLong, got %v", err)
 	}
 
@@ -762,7 +763,7 @@ func TestValidation(t *testing.T) {
 		bigValue[i] = 'x'
 	}
 	_, err = s.PutActive(c, "k", string(bigValue), "note", TierMid, "main", "s1", TaintUnknown, nil, nil, "")
-	if err != ErrValueTooBig {
+	if !errors.Is(err, ErrValueTooBig) {
 		t.Fatalf("expected ErrValueTooBig, got %v", err)
 	}
 }

@@ -35,6 +35,12 @@ var counselClient = func() *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	tr.TLSHandshakeTimeout = 10 * time.Second
+	// ResponseHeaderTimeout is intentionally NOT set: Mashūra calls with
+	// server-side tools (web_search, web_fetch) can delay response headers
+	// for several minutes while the panel computes. The context deadline
+	// (default 300s, configurable via oracle_timeout_seconds) is the
+	// proper upper bound — a transport-level header timeout would cut those
+	// legitimate long calls short.
 	return &http.Client{Transport: tr}
 }()
 

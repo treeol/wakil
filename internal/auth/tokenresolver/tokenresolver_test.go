@@ -2,6 +2,7 @@ package tokenresolver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -320,11 +321,11 @@ func withHeaders(ctx context.Context, h http.Header) context.Context {
 }
 
 func isCredentialAbsent(err error) bool {
-	return err == auth.ErrCredentialAbsent
+	return errors.Is(err, auth.ErrCredentialAbsent)
 }
 
 func isInvalidCredential(err error) bool {
-	return err == auth.ErrInvalidCredential || strings.Contains(err.Error(), "invalid credential")
+	return errors.Is(err, auth.ErrInvalidCredential) || strings.Contains(err.Error(), "invalid credential")
 }
 
 // setupTestStore is shared with the jointoken package's test setup.

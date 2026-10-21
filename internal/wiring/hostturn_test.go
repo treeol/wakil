@@ -2,6 +2,7 @@ package wiring
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -375,7 +376,7 @@ func TestHostTurnFuncSingleAppConstraint(t *testing.T) {
 	if _, err := HostTurnFunc(app); err != nil {
 		t.Fatalf("first HostTurnFunc: %v", err)
 	}
-	if _, err := HostTurnFunc(app); err != ErrAppInUse {
+	if _, err := HostTurnFunc(app); !errors.Is(err, ErrAppInUse) {
 		t.Fatalf("second HostTurnFunc err = %v, want ErrAppInUse", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -151,7 +152,8 @@ func TestRPCConn_CallAndNotify(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if re, ok := err.(*rpcError); !ok || re.Code != -32603 {
+	var re *rpcError
+	if !errors.As(err, &re) || re.Code != -32603 {
 		t.Errorf("error = %v, want code -32603", err)
 	}
 

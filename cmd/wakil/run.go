@@ -147,7 +147,7 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 			}
 			d, dErr := parseDurationStrict(args[i])
 			if dErr != nil {
-				return "", false, flags, fmt.Errorf("--max-time %v", dErr)
+				return "", false, flags, fmt.Errorf("--max-time %w", dErr)
 			}
 			flags.maxTime, flags.sawMaxTime = d, true
 		case "--verify-cmd":

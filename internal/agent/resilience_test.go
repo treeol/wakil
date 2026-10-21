@@ -67,7 +67,7 @@ func TestHandleStreamError_NilPassThrough(t *testing.T) {
 func TestHandleStreamError_NonStreamPassThrough(t *testing.T) {
 	app := newResilienceApp("http://unused")
 	plainErr := errors.New("something else entirely")
-	if got := HandleStreamError(context.Background(), app, plainErr); got != plainErr {
+	if got := HandleStreamError(context.Background(), app, plainErr); !errors.Is(got, plainErr) {
 		t.Errorf("non-stream error should pass through unchanged")
 	}
 }

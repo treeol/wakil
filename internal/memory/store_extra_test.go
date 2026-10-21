@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,7 +145,7 @@ func TestAUTOINCREMENTNoReuse(t *testing.T) {
 
 	// The deleted entry should be gone.
 	_, err = s.GetByID(c, e1.ID)
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for hard-deleted entry, got %v", err)
 	}
 }
@@ -230,7 +231,7 @@ func TestExactExpiryBoundary(t *testing.T) {
 	// Advance 1ms past expiry: now expired.
 	now += 1
 	_, err = s.Get(c, "boundary/x")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("entry 1ms past boundary should be expired, got: %v", err)
 	}
 }
@@ -285,7 +286,7 @@ func TestPutProposedMid(t *testing.T) {
 
 	// Get must NOT return proposed entries — only active.
 	_, err = s.Get(c, "test/quarantined")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get should return ErrNotFound for proposed entry, got err=%v", err)
 	}
 

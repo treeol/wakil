@@ -34,7 +34,7 @@ var ErrBackendFatal = errors.New("backend fatal error")
 
 // wrapStreamErr tags cause as a retryable backend stream error.
 func wrapStreamErr(cause error) error {
-	return fmt.Errorf("%w: %v", ErrBackendStream, cause)
+	return fmt.Errorf("%w: %w", ErrBackendStream, cause)
 }
 
 // isFatalStatus classifies a non-200 status as fatal (never retry). 3xx
@@ -1141,7 +1141,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 			// skipped above) and [DONE] is handled before the parse.
 			atomic.AddInt64(&c.malformedChunks, 1)
 			diag.Printf("proxy: malformed SSE chunk at byte %d: %v — aborting stream\n", bytesRead, jerr)
-			return Message{}, wrapStreamErr(fmt.Errorf("malformed SSE chunk at byte %d: %v", bytesRead, jerr))
+			return Message{}, wrapStreamErr(fmt.Errorf("malformed SSE chunk at byte %d: %w", bytesRead, jerr))
 		}
 		// OpenRouter-style mid-stream error chunk: {"error": {...}}. Surface
 		// its message instead of letting the stream fizzle into a generic
