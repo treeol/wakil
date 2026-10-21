@@ -86,10 +86,10 @@ func DefaultTools(cwd string) []proxy.Tool {
 				"Equivalent to grep -rn. " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"pattern":          StrProp("Search pattern (literal string or basic regex)."),
-				"path":             StrProp("File or directory to search."),
+				"path":             StrProp("File or directory to search (defaults to the working directory)."),
 				"file_pattern":     StrProp("Optional glob to restrict which files are searched, e.g. '*.go'."),
 				"case_insensitive": BoolProp("Case-insensitive search (default false)."),
-			}, "pattern", "path"),
+			}, "pattern"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "find_files",
@@ -280,10 +280,10 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 				"Equivalent to grep -rn. " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"pattern":          StrProp("Search pattern (literal string or basic regex)."),
-				"path":             StrProp("File or directory to search."),
+				"path":             StrProp("File or directory to search (defaults to the working directory)."),
 				"file_pattern":     StrProp("Optional glob to restrict which files are searched, e.g. '*.go'."),
 				"case_insensitive": BoolProp("Case-insensitive search (default false)."),
-			}, "pattern", "path"),
+			}, "pattern"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "find_files",
@@ -386,10 +386,10 @@ func EditTools(cwd string) []proxy.Tool {
 				"Equivalent to grep -rn. " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"pattern":          StrProp("Search pattern (literal string or basic regex)."),
-				"path":             StrProp("File or directory to search."),
+				"path":             StrProp("File or directory to search (defaults to the working directory)."),
 				"file_pattern":     StrProp("Optional glob to restrict which files are searched, e.g. '*.go'."),
 				"case_insensitive": BoolProp("Case-insensitive search (default false)."),
-			}, "pattern", "path"),
+			}, "pattern"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "find_files",

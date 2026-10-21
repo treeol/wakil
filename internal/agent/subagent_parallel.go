@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -323,7 +324,7 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 			pureDiscovery = false
 			continue
 		}
-		if args.Task == "" {
+		if strings.TrimSpace(args.Task) == "" {
 			out[i] = "ERROR: task is required"
 			pureDiscovery = false
 			continue

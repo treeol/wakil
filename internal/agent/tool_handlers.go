@@ -43,6 +43,9 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
+	if args.Command == "" {
+		return "ERROR: command is required"
+	}
 	// Read-only commands are auto-approved once the user has allowed reads;
 	// otherwise prompt, offering the "allow all reads" choice for reads.
 	readAction := IsReadOnlyShell(args.Command)
@@ -735,6 +738,9 @@ func (a *App) handleOpenURL(ctx context.Context, tc proxy.ToolCall) string {
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
+	if args.URL == "" {
+		return "ERROR: url is required"
+	}
 	// Always runs on the host (not via a.Exec), so it reaches the user's
 	// desktop even when shell commands are sandboxed.
 	detail := fmt.Sprintf("xdg-open %s\n  (on the host desktop)", args.URL)
@@ -981,11 +987,15 @@ func (a *App) handleSearchFiles(ctx context.Context, tc proxy.ToolCall) string {
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
-	if args.Pattern == "" || args.Path == "" {
-		return "ERROR: pattern and path are required"
+	if args.Pattern == "" {
+		return "ERROR: pattern is required"
+	}
+	searchPath := args.Path
+	if searchPath == "" {
+		searchPath = "."
 	}
 	// Confine the path to the workspace (P0-3: path confinement).
-	canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+	canonical, err := a.Exec.ConfinePath(ctx, searchPath)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -1076,6 +1086,9 @@ func (a *App) handleWriteFile(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+	}
+	if args.Path == "" {
+		return "ERROR: path is required"
 	}
 	// Confine the path to the workspace (P0-3: path confinement).
 	canonical, err := a.Exec.ConfinePath(ctx, args.Path)
@@ -1196,6 +1209,9 @@ func (a *App) handleSearxngSearch(ctx context.Context, tc proxy.ToolCall) string
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
+	if args.Query == "" {
+		return "ERROR: query is required"
+	}
 	result, urls := wtools.CallSearxng(a.Cfg.SearXngURL, args.Query, args.Categories, args.TimeRange, args.Engines)
 	a.RecordSearchCost()
 	for i, u := range urls {
@@ -1237,6 +1253,9 @@ func (a *App) handleGoogleSearch(ctx context.Context, tc proxy.ToolCall) string 
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+	}
+	if args.Query == "" {
+		return "ERROR: query is required"
 	}
 	result, urls := wtools.CallGoogle(a.Cfg.GoogleAPIKey, a.Cfg.GoogleCX, args.Query, args.Num, args.Start, args.After, args.Before)
 	a.RecordSearchCost()
@@ -1644,7 +1663,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
-	if args.Task == "" {
+	if strings.TrimSpace(args.Task) == "" {
 		return "ERROR: task is required"
 	}
 	// Normalize capability: empty = discovery (the default, golden no-op).
