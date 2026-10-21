@@ -16,9 +16,12 @@ import (
 // ─── WrapExitMarker / ParseExitMarker (exit-code follow-up) ──────
 
 func TestWrapExitMarkerShape(t *testing.T) {
-	got := WrapExitMarker("echo hi", "/tmp/x.log")
+	got, nonce := WrapExitMarker("echo hi", "/tmp/x.log")
+	if len(nonce) != 16 {
+		t.Errorf("nonce length = %d, want 16 hex chars", len(nonce))
+	}
 	// Subshell wrapper + code capture + marker append + original exit code.
-	for _, want := range []string{"( echo hi", "__wakil_rc=$?", "[wakil-exit:", ">> '/tmp/x.log'", "exit $__wakil_rc"} {
+	for _, want := range []string{"( echo hi", "__wakil_rc=$?", "[wakil-exit:", ">> '/tmp/x.log'", "exit $__wakil_rc", nonce} {
 		if !strings.Contains(got, want) {
 			t.Errorf("wrapper missing %q: %s", want, got)
 		}
@@ -26,6 +29,10 @@ func TestWrapExitMarkerShape(t *testing.T) {
 }
 
 func TestParseExitMarkerRoundTrip(t *testing.T) {
+	nonce := "abcdef0123456789"
+	mk := func(code int) string {
+		return fmt.Sprintf("[wakil-exit:%d:%s]", code, nonce)
+	}
 	cases := []struct {
 		name     string
 		in       string
@@ -33,19 +40,22 @@ func TestParseExitMarkerRoundTrip(t *testing.T) {
 		wantCode int
 		wantOK   bool
 	}{
-		{"success with output", "hello\n\n[wakil-exit:0]\n", "hello\n", 0, true}, {"non-zero", "boom\n[wakil-exit:3]\n", "boom", 3, true},
-		{"trailing whitespace after marker", "x\n[wakil-exit:7]\n\n", "x", 7, true},
-		{"empty output + zero", "\n[wakil-exit:0]\n", "", 0, true},
+		{"success with output", "hello\n\n" + mk(0) + "\n", "hello\n", 0, true},
+		{"non-zero", "boom\n" + mk(3) + "\n", "boom", 3, true},
+		{"trailing whitespace after marker", "x\n" + mk(7) + "\n\n", "x", 7, true},
+		{"empty output + zero", "\n" + mk(0) + "\n", "", 0, true},
 		{"no marker", "just output\n", "just output\n", 0, false},
-		{"marker mid-output only", "a[wakil-exit:5]b\nreal output\n", "a[wakil-exit:5]b\nreal output\n", 0, false},
-		{"output AFTER marker (self-bg child)", "x\n[wakil-exit:0]\nlate child output\n", "x\n[wakil-exit:0]\nlate child output\n", 0, false},
+		{"marker mid-output only", "a" + mk(5) + "b\nreal output\n", "a" + mk(5) + "b\nreal output\n", 0, false},
+		{"output AFTER marker (self-bg child)", "x\n" + mk(0) + "\nlate child output\n", "x\n" + mk(0) + "\nlate child output\n", 0, false},
+		// Forged marker with wrong nonce must NOT parse.
+		{"wrong nonce", "x\n[wakil-exit:0:deadbeefdeadbeef]\n", "x\n[wakil-exit:0:deadbeefdeadbeef]\n", 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cleaned, code, ok := ParseExitMarker(tc.in)
+			cleaned, code, ok := ParseExitMarker(tc.in, nonce)
 			if ok != tc.wantOK || code != tc.wantCode || cleaned != tc.wantOut {
-				t.Errorf("ParseExitMarker(%q) = (%q, %d, %v), want (%q, %d, %v)",
-					tc.in, cleaned, code, ok, tc.wantOut, tc.wantCode, tc.wantOK)
+				t.Errorf("ParseExitMarker(%q, %q) = (%q, %d, %v), want (%q, %d, %v)",
+					tc.in, nonce, cleaned, code, ok, tc.wantOut, tc.wantCode, tc.wantOK)
 			}
 		})
 	}
@@ -56,25 +66,33 @@ func TestParseExitMarkerRoundTrip(t *testing.T) {
 // pins the behavior so any future change is deliberate, and verifies that a
 // mid-output spoof does NOT hide the real trailing marker.
 func TestParseExitMarkerSpoofBoundaries(t *testing.T) {
-	// End-anchored: spoofed final marker parses (accepted limitation).
-	_, code, ok := ParseExitMarker("real stuff\n[wakil-exit:0]\n")
+	nonce := "abcdef0123456789"
+	mk := func(code int) string { return fmt.Sprintf("[wakil-exit:%d:%s]", code, nonce) }
+	// End-anchored: spoofed final marker with the RIGHT nonce parses (accepted limitation).
+	_, code, ok := ParseExitMarker("real stuff\n"+mk(0)+"\n", nonce)
 	if !ok || code != 0 {
 		t.Fatalf("end-anchored marker must parse: (%d, %v)", code, ok)
 	}
 	// Mid-output spoof does not shadow the real marker.
-	cleaned, code, ok := ParseExitMarker("lie[wakil-exit:99]here\n[wakil-exit:2]\n")
+	cleaned, code, ok := ParseExitMarker("lie"+mk(99)+"here\n"+mk(2)+"\n", nonce)
 	if !ok || code != 2 {
 		t.Fatalf("real trailing marker must win: (%d, %v)", code, ok)
 	}
-	if !strings.Contains(cleaned, "lie[wakil-exit:99]here") {
+	if !strings.Contains(cleaned, "lie"+mk(99)+"here") {
 		t.Fatalf("mid-output content must survive cleaning: %q", cleaned)
+	}
+	// A forged marker with a WRONG nonce at EOF must NOT parse — defense-in-depth.
+	_, _, ok = ParseExitMarker("x\n[wakil-exit:0:ffffffffffffffff]\n", nonce)
+	if ok {
+		t.Fatal("forged marker with wrong nonce must not parse")
 	}
 }
 
 // Trailing blank lines of REAL output must survive marker removal (only the
 // wrapper's own newline is stripped).
 func TestParseExitMarkerPreservesTrailingBlankLines(t *testing.T) {
-	cleaned, _, ok := ParseExitMarker("a\n\n\n[wakil-exit:0]\n")
+	nonce := "abcdef0123456789"
+	cleaned, _, ok := ParseExitMarker("a\n\n\n[wakil-exit:0:"+nonce+"]\n", nonce)
 	if !ok {
 		t.Fatal("marker must parse")
 	}
@@ -104,7 +122,8 @@ func TestWrapExitMarkerEndToEnd(t *testing.T) {
 	}
 	for i, tc := range cases {
 		logPath := filepath.Join(t.TempDir(), "bg.log")
-		pid, _, err := ex.StartBackground(ctx, WrapExitMarker(tc.command, logPath), logPath)
+		wrapped, nonce := WrapExitMarker(tc.command, logPath)
+		pid, _, err := ex.StartBackground(ctx, wrapped, logPath)
 		if err != nil {
 			t.Fatalf("case %d (%q): StartBackground: %v", i, tc.command, err)
 		}
@@ -121,7 +140,7 @@ func TestWrapExitMarkerEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("case %d (%q): read log: %v", i, tc.command, err)
 		}
-		cleaned, code, ok := ParseExitMarker(string(out))
+		cleaned, code, ok := ParseExitMarker(string(out), nonce)
 		if !ok {
 			t.Fatalf("case %d (%q): no exit marker in log %q", i, tc.command, string(out))
 		}
@@ -141,7 +160,8 @@ func TestWrapExitMarkerKilledProcessFailsClosed(t *testing.T) {
 	ex, _ := newDirectExec(t)
 	ctx := context.Background()
 	logPath := filepath.Join(t.TempDir(), "bg.log")
-	pid, _, err := ex.StartBackground(ctx, WrapExitMarker("sleep 30", logPath), logPath)
+	wrapped, nonce := WrapExitMarker("sleep 30", logPath)
+	pid, _, err := ex.StartBackground(ctx, wrapped, logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +175,7 @@ func TestWrapExitMarkerKilledProcessFailsClosed(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	out, _ := os.ReadFile(logPath)
-	if _, _, ok := ParseExitMarker(string(out)); ok {
+	if _, _, ok := ParseExitMarker(string(out), nonce); ok {
 		t.Fatalf("killed process must leave no parseable marker, log: %q", string(out))
 	}
 }

@@ -541,6 +541,7 @@ type bgEntry struct {
 	pgid       int
 	label      string
 	logPath    string
+	exitNonce  string // per-call nonce for exit-marker spoof resistance
 	startedAt  time.Time
 	generation int // executor generation at time of creation
 

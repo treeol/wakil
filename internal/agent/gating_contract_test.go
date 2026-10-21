@@ -730,6 +730,9 @@ func TestIsDestructiveShell_Adversarial(t *testing.T) {
 		`mv a b`, `dd if=x of=y`, `mkfs /dev/sda`, `tee out.go`,
 		`sh -c "echo hi"`, `find . -delete`, `sed -i s/a/b/ f`,
 		`X=1 rm -rf /tmp/x`,
+		// dangerous env prefixes that can influence execution of the payload
+		`LD_PRELOAD=evil.so ls`, `GIT_SSH_COMMAND="rm -rf x" git push`,
+		`DYLD_INSERT_LIBRARIES=evil ls`, `PATH=/evil rm`,
 	}
 	for _, cmd := range mustBeDestructive {
 		if !IsDestructiveShell(cmd) {

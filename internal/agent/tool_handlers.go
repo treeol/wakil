@@ -135,7 +135,8 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	logPath := a.bgLogPath(n)
 	bgID := fmt.Sprintf("bg%d", n)
 
-	pid, pgid, err := a.Exec.StartBackground(ctx, exec.WrapExitMarker(command, logPath), logPath)
+	wrapped, nonce := exec.WrapExitMarker(command, logPath)
+	pid, pgid, err := a.Exec.StartBackground(ctx, wrapped, logPath)
 	if err != nil {
 		// NOTE: the counter slot is deliberately NOT rolled back — IDs stay
 		// monotonic so a failed start can never cause a future bgN collision
@@ -159,6 +160,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		pgid:         pgid,
 		label:        "auto-bg",
 		logPath:      logPath,
+		exitNonce:    nonce,
 		startedAt:    time.Now(),
 		generation:   a.Exec.Generation(),
 		readOnly:     readAction,
@@ -296,7 +298,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		var runErr error
 		if readErr != nil {
 			runErr = fmt.Errorf("exit code unknown (log unreadable)")
-		} else if cleaned, code, ok := exec.ParseExitMarker(out); ok {
+		} else if cleaned, code, ok := exec.ParseExitMarker(out, entry.exitNonce); ok {
 			out = cleaned
 			if code != 0 {
 				runErr = fmt.Errorf("exit status %d", code)
@@ -569,7 +571,7 @@ func (a *App) announceShellDone(bgID string, e *bgEntry, result, errStr string) 
 func (a *App) shellTailPreview(e *bgEntry) (statusLine, tail string) {
 	statusLine = exec.ExitStatusLine(0, false)
 	if out, err := a.Exec.ReadFileTail(context.Background(), e.logPath, 8*1024); err == nil {
-		cleaned, code, known := exec.ParseExitMarker(out)
+		cleaned, code, known := exec.ParseExitMarker(out, e.exitNonce)
 		statusLine = exec.ExitStatusLine(code, known)
 		lines := strings.Split(strings.TrimRight(cleaned, "\n"), "\n")
 		if n := len(lines); n > asyncShellNotifyTail {
@@ -1382,7 +1384,8 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 		// No counter rollback: IDs stay monotonic (no future bgN collision).
 		return "[declined by user]"
 	}
-	pid, pgid, err := a.Exec.StartBackground(ctx, exec.WrapExitMarker(args.Command, logPath), logPath)
+	wrapped, nonce := exec.WrapExitMarker(args.Command, logPath)
+	pid, pgid, err := a.Exec.StartBackground(ctx, wrapped, logPath)
 	if err != nil {
 		// No counter rollback: IDs stay monotonic (no future bgN collision).
 		return "ERROR: " + err.Error()
@@ -1394,6 +1397,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 		pgid:         pgid,
 		label:        args.Label,
 		logPath:      logPath,
+		exitNonce:    nonce,
 		startedAt:    time.Now(),
 		generation:   a.Exec.Generation(),
 		done:         done,
@@ -1614,7 +1618,7 @@ func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) strin
 	// wrapper's marker at the end of the log — parse it, strip it from the
 	// shown tail, and surface the code in the status line.
 	if !alive {
-		if cleaned, code, known := exec.ParseExitMarker(tail); known {
+		if cleaned, code, known := exec.ParseExitMarker(tail, entry.exitNonce); known {
 			tail = cleaned
 			status = fmt.Sprintf("exited (code %d)", code)
 		} else {
