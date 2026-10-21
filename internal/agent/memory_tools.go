@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -177,7 +178,7 @@ func (a *App) handleMemoryGet(ctx context.Context, tc proxy.ToolCall) string {
 	}
 
 	entry, err := s.Get(ctx, args.Key)
-	if err == memory.ErrNotFound {
+	if errors.Is(err, memory.ErrNotFound) {
 		return "not found: " + args.Key + " (memory is scoped to the current workspace — entries from other workspaces are not visible here)"
 	}
 	if err != nil {
@@ -367,7 +368,7 @@ func renderSupersedesHistory(ctx context.Context, s *memory.Store, e *memory.Ent
 		return ""
 	}
 	prev, err := s.GetByID(ctx, *e.Supersedes)
-	if err == memory.ErrNotFound {
+	if errors.Is(err, memory.ErrNotFound) {
 		return "\n  supersedes: entry #" + fmt.Sprintf("%d", *e.Supersedes) + " (history unavailable — hard-deleted past audit window)"
 	}
 	if err != nil {
@@ -456,7 +457,7 @@ func (a *App) addExternalGrounding(e proxy.GroundingEntry) {
 		a.Client.AddGrounding(e)
 	}
 	if e.Type == "web" || e.Type == "oracle" {
-		a.touchedExternal = true
+		a.touchedExternal.Store(true)
 	}
 }
 
@@ -474,7 +475,7 @@ func (a *App) addExternalGrounding(e proxy.GroundingEntry) {
 //     doesn't prove no untrusted content was touched — file-read injection
 //     is not captured by this signal)
 func (a *App) computeTainted() int {
-	if a.touchedExternal {
+	if a.touchedExternal.Load() {
 		return memory.TaintTrue
 	}
 	return memory.TaintUnknown

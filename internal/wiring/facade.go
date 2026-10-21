@@ -214,7 +214,12 @@ func (f *wiringFacade) Snapshot() sessionclient.ClientSnapshot {
 	if app.Session != nil {
 		title = app.Session.Label
 	}
+	// Detached value copy: workflowSnapshot reads fields after the unlock.
 	wf := app.Workflow
+	if wf != nil {
+		cp := *wf
+		wf = &cp
+	}
 	app.StateRUnlock()
 
 	return sessionclient.ClientSnapshot{

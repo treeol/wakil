@@ -923,8 +923,10 @@ func (ht *hostTurn) resolveWaitingState(ctx context.Context, app *agent.App, in 
 	switch wf.Phase {
 	case workflow.WFPresent:
 		// Legacy 145-147: auto-approve — advance to implementation step 1.
-		wf.Phase = workflow.WFImplement
-		wf.StepIdx = 1
+		app.UpdateWorkflow(func(w *workflow.WorkflowState) {
+			w.Phase = workflow.WFImplement
+			w.StepIdx = 1
+		})
 		return ht.enqueueContinue(in)
 
 	case workflow.WFReview:
@@ -941,7 +943,7 @@ func (ht *hostTurn) resolveWaitingState(ctx context.Context, app *agent.App, in 
 			ht.sessionEmit.Notify(event.KindWorkflowWarning, event.WorkflowWarning{Message: reason})
 		}
 		agent.WFWriteReviewSkipForce(app, logReason)
-		wf.Phase = workflow.WFPresent
+		app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.Phase = workflow.WFPresent })
 		return ht.enqueueContinue(in)
 
 	case workflow.WFImplement:
@@ -952,7 +954,7 @@ func (ht *hostTurn) resolveWaitingState(ctx context.Context, app *agent.App, in 
 			return ht.mapFinalReviewOutcome(in, wf)
 		}
 		// Legacy 186: advance to the next step.
-		wf.StepIdx++
+		app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.StepIdx++ })
 		if wf.StepIdx > wf.StepCount {
 			// Legacy 186-209 (the no-marker crossing): the resolver itself
 			// runs the final review once and maps its outcome.

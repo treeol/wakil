@@ -229,3 +229,42 @@ func buildPolicyInput(toolName, detail string, readAction bool) policy.EvalInput
 	}
 	return input
 }
+
+// hasBackendConsent reports whether the user already consented to sending
+// context to the external backend this session.
+func (a *App) hasBackendConsent(backend string) bool {
+	a.consentMu.Lock()
+	defer a.consentMu.Unlock()
+	return a.consentedBackends[backend]
+}
+
+// grantBackendConsent records consent for backend. Never call it while a
+// Confirm prompt is pending under consentMu (the lock is not held across
+// prompts by any caller).
+func (a *App) grantBackendConsent(backend string) {
+	a.consentMu.Lock()
+	defer a.consentMu.Unlock()
+	if a.consentedBackends == nil {
+		a.consentedBackends = make(map[string]bool)
+	}
+	a.consentedBackends[backend] = true
+}
+
+// snapshotBackendConsent returns a detached copy of the consent set, for a
+// child App that must not share the parent's map.
+func (a *App) snapshotBackendConsent() map[string]bool {
+	a.consentMu.Lock()
+	defer a.consentMu.Unlock()
+	out := make(map[string]bool, len(a.consentedBackends))
+	for k, v := range a.consentedBackends {
+		out[k] = v
+	}
+	return out
+}
+
+// resetBackendConsent clears all backend consent (new session / resume).
+func (a *App) resetBackendConsent() {
+	a.consentMu.Lock()
+	a.consentedBackends = nil
+	a.consentMu.Unlock()
+}

@@ -57,6 +57,13 @@ func resolveDataDir(envKey, subdir string) string {
 // The parent directory must already exist (call os.MkdirAll before calling
 // this).
 func atomicWriteJSON(path string, v interface{}) error {
+	return atomicWriteJSONMode(path, v, 0o644)
+}
+
+// atomicWriteJSONMode is atomicWriteJSON with an explicit file mode, for
+// private artifacts (e.g. the handoff sidecar, 0600) that must not be created
+// world-readable even transiently.
+func atomicWriteJSONMode(path string, v interface{}, mode os.FileMode) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
@@ -71,10 +78,10 @@ func atomicWriteJSON(path string, v interface{}) error {
 		tmp.Close()
 		_ = os.Remove(tmpName)
 	}
-	// os.CreateTemp creates files with mode 0600; explicitly set 0644 to
-	// match the previous os.WriteFile(tmp, b, 0o644) behavior so the
-	// migration doesn't silently tighten permissions on existing files.
-	if err := tmp.Chmod(0o644); err != nil {
+	// os.CreateTemp creates files with mode 0600; apply the requested mode
+	// (0644 for atomicWriteJSON, matching the previous os.WriteFile
+	// behavior so the migration doesn't silently tighten permissions).
+	if err := tmp.Chmod(mode); err != nil {
 		cleanup()
 		return fmt.Errorf("chmod temp file: %w", err)
 	}

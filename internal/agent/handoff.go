@@ -2,9 +2,7 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -122,7 +120,7 @@ func RunHandoffPipeline(ctx context.Context, app *App) (HandoffResult, error) {
 	if app.Session.Workspace == "" {
 		app.Session.Workspace = workspace
 	}
-	app.Session.SavedWorkflow = app.Workflow
+	app.Session.SavedWorkflow = app.WorkflowCopy()
 	// Persist collapse state (long-session mode) so the session record
 	// reflects the projection that was in use.
 	app.Session.Collapsed = app.collapsedRecords()
@@ -232,7 +230,7 @@ func performHandoff(ctx context.Context, app *App, proceed bool) Msg {
 	if app.Session.Workspace == "" {
 		app.Session.Workspace = workspace
 	}
-	app.Session.SavedWorkflow = app.Workflow
+	app.Session.SavedWorkflow = app.WorkflowCopy()
 	if err := WriteSession(app.Session); err != nil {
 		return HandoffMsg{
 			OldChatID: oldChatID,
@@ -553,9 +551,10 @@ func storeHandoffRecord(ctx context.Context, app *App, payload HandoffPayload, c
 			Model:       app.Client.Model,
 			TranscriptN: len(app.Conv),
 		}
-		b, _ := json.MarshalIndent(rec, "", "  ")
 		path := filepath.Join(dir, oldChatID+".handoff.json")
-		if err := os.WriteFile(path, b, 0o600); err != nil {
+		// Atomic temp+fsync+rename at 0600: a crash mid-write must not leave a
+		// truncated audit sidecar.
+		if err := atomicWriteJSONMode(path, rec, 0o600); err != nil {
 			warnings = append(warnings, fmt.Sprintf("sidecar: %v", err))
 		}
 	}

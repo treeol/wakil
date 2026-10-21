@@ -637,6 +637,20 @@ func (h *Host) DeleteSession(ctx context.Context, principal core.Principal, sess
 	s.deleted = true
 	s.mu.Unlock()
 
+	// Reap the in-memory entry once the executor has finished draining, so a
+	// long-running daemon does not accumulate deleted sessions forever.
+	// Visibility is unchanged: lookup already reports a deleted session as
+	// not found, exactly as for an absent one. The identity check guards
+	// against removing a different session registered under the same ID.
+	go func() {
+		<-s.doneCh
+		h.mu.Lock()
+		if h.sessions[s.sid] == s {
+			delete(h.sessions, s.sid)
+		}
+		h.mu.Unlock()
+	}()
+
 	return nil
 }
 

@@ -206,7 +206,7 @@ func TestTaintSurvivesGroundingResetAcrossTurns(t *testing.T) {
 	app.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: "hostile-page.com"})
 
 	// Verify the flag was set eagerly (before any memory_put).
-	if !app.touchedExternal {
+	if !app.touchedExternal.Load() {
 		t.Fatal("touchedExternal should be set eagerly by addExternalGrounding")
 	}
 
@@ -220,7 +220,7 @@ func TestTaintSurvivesGroundingResetAcrossTurns(t *testing.T) {
 	}
 
 	// The sticky flag must survive the reset.
-	if !app.touchedExternal {
+	if !app.touchedExternal.Load() {
 		t.Fatal("touchedExternal should survive ResetGrounding (sticky, A1)")
 	}
 

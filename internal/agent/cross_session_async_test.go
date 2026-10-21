@@ -233,7 +233,7 @@ func TestCrossSessionSubagentGroundingSuppressed(t *testing.T) {
 	}
 	// But the taint signal is still set (external content delivered), and the
 	// SubagentDoneMsg event still fires (per-child completion bookkeeping kept).
-	if !a.touchedExternal {
+	if !a.touchedExternal.Load() {
 		t.Error("cross-session subagent delivery should still set touchedExternal")
 	}
 	foundDone := false

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -576,29 +577,31 @@ func (r *filesChangedRecorder) snapshot() []string {
 // restore writes back original content for all captured paths. Files that
 // didn't exist before are deleted. Returns the list of restored paths and
 // any errors encountered (partial restore is possible). Nil-safe.
-func (r *filesChangedRecorder) restore(ctx context.Context, exec exec.Executor) ([]string, []string) {
+func (r *filesChangedRecorder) restore(ctx context.Context, ex exec.Executor) ([]string, []string) {
 	if r == nil || len(r.originals) == 0 {
 		return nil, nil
 	}
-	var restored, errors []string
+	var restored, errs []string
 	for path, snap := range r.originals {
 		if snap.Existed {
-			if _, err := exec.WriteFile(ctx, path, snap.Content); err != nil {
-				errors = append(errors, fmt.Sprintf("restore %s: %v", path, err))
+			if _, err := ex.WriteFile(ctx, path, snap.Content); err != nil {
+				errs = append(errs, fmt.Sprintf("restore %s: %v", path, err))
 			} else {
 				restored = append(restored, path)
 			}
 		} else {
-			// File was created by the subagent — delete on restore.
-			if err := exec.DeletePath(ctx, path); err != nil {
-				// Best-effort: file may already be gone.
-				restored = append(restored, path)
+			// File was created by the subagent — delete on restore. Only a
+			// successful delete or confirmed absence counts as restored; any
+			// other failure leaves the subagent's file in place and must be
+			// reported, not silently claimed as reverted.
+			if err := ex.DeletePath(ctx, path); err != nil && !errors.Is(err, exec.ErrFileNotFound) {
+				errs = append(errs, fmt.Sprintf("delete %s: %v", path, err))
 			} else {
 				restored = append(restored, path)
 			}
 		}
 	}
-	return restored, errors
+	return restored, errs
 }
 
 // hasSnapshots reports whether any pre-edit snapshots were captured.
@@ -655,7 +658,7 @@ func (a *App) ensureSubagentConsent(resolvedBackend string) bool {
 	if resolvedBackend == "" || !IsExternalBackend(a.BackendList, a.Cfg, resolvedBackend) {
 		return true
 	}
-	if a.consentedBackends != nil && a.consentedBackends[resolvedBackend] {
+	if a.hasBackendConsent(resolvedBackend) {
 		return true
 	}
 	detail := fmt.Sprintf(
@@ -667,10 +670,7 @@ func (a *App) ensureSubagentConsent(resolvedBackend string) bool {
 		detail, false) {
 		return false
 	}
-	if a.consentedBackends == nil {
-		a.consentedBackends = make(map[string]bool)
-	}
-	a.consentedBackends[resolvedBackend] = true
+	a.grantBackendConsent(resolvedBackend)
 	return true
 }
 
@@ -1249,10 +1249,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// ensureSubagentConsent just granted (so sub.Send's egress check doesn't
 	// re-prompt), but it must NOT share the parent's map: concurrent dispatch
 	// workers reading a map the parent could write is a fatal data race.
-	consentSnapshot := make(map[string]bool, len(a.consentedBackends))
-	for k, v := range a.consentedBackends {
-		consentSnapshot[k] = v
-	}
+	consentSnapshot := a.snapshotBackendConsent()
 
 	// Select toolset, confirmer, and system prompt by capability. Discovery is
 	// the golden no-op path: the three fields are byte-identical to the pre-
@@ -1326,7 +1323,13 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 			// Worktree executor failed — fall back to shared executor + serialized.
 			fmt.Fprintln(a.Out, Dim("· worktree executor failed, falling back to serialized: "+Truncate(err.Error(), 80)))
 			useWorktree = false
-			removeWorktree(ctx, a, worktreeDir)
+			// Cancellation-independent cleanup: the request ctx may already be
+			// cancelled here, and the deferred Background-ctx cleanup below is
+			// skipped once useWorktree is false — a cancelled ctx would orphan
+			// the worktree dir and branch.
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
+			removeWorktree(cleanupCtx, a, worktreeDir)
+			cleanupCancel()
 			worktreeDir = ""
 		} else {
 			childExec = wtExec
@@ -1567,11 +1570,10 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// its run, the parent has now transitively consumed that content via the
 	// summary. Latch the parent's flag so a subsequent main-agent memory_put
 	// derived from the subagent's findings is correctly tainted, not
-	// taint-unknown. The child's flag is its own (fresh per dispatch); the
-	// parent latches here, on the caller's side of the goroutine boundary
-	// where parent-state mutation is safe.
-	if sub.touchedExternal {
-		a.touchedExternal = true
+	// taint-unknown. The child's flag is its own (fresh per dispatch). This
+	// runs on a parallel/async worker goroutine, so the latch is atomic.
+	if sub.touchedExternal.Load() {
+		a.touchedExternal.Store(true)
 	}
 
 	// Auto snapshot/restore for failed edit-tier dispatch: if the child was an

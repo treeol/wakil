@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/treeol/wakil/internal/core"
+	"github.com/treeol/wakil/internal/core/event"
 )
 
 func TestDeleteSessionExcludesFromQueries(t *testing.T) {
@@ -134,5 +135,48 @@ func TestDeleteSessionViewerNotAllowed(t *testing.T) {
 	}
 	if g.State != core.SessionIdle {
 		t.Fatalf("state = %q, want idle", g.State)
+	}
+}
+
+// TestDeleteSessionReapsInMemoryEntry verifies that a deleted session is
+// eventually removed from the host's session map (no unbounded growth in a
+// long-running daemon), both for an idle session and one deleted mid-turn.
+func TestDeleteSessionReapsInMemoryEntry(t *testing.T) {
+	h := New(func(ctx context.Context, in TurnInput) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	p := core.Principal{TenantID: "tnt_test", UserID: "usr_test", Role: core.RoleOwner}
+	defer h.Close(context.Background())
+
+	idle := createSession(t, h, p)
+	busy := createSession(t, h, p)
+	if _, err := h.SubmitInput(context.Background(), p, core.SubmitInputRequest{SessionID: busy.ID, Text: "block"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+	waitFor(t, func() bool {
+		g, _ := h.GetSession(context.Background(), p, busy.ID)
+		return g.State == core.SessionRunning
+	})
+
+	for _, id := range []event.SessionID{idle.ID, busy.ID} {
+		if err := h.DeleteSession(context.Background(), p, id); err != nil {
+			t.Fatalf("DeleteSession(%s): %v", id, err)
+		}
+	}
+	waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		_, a := h.sessions[idle.ID]
+		_, b := h.sessions[busy.ID]
+		return !a && !b
+	})
+
+	// Still not found after reaping; a repeat delete reports not-found.
+	if _, err := h.GetSession(context.Background(), p, idle.ID); !errors.Is(err, core.ErrSessionNotFound) {
+		t.Fatalf("GetSession after reap: err = %v, want ErrSessionNotFound", err)
+	}
+	if err := h.DeleteSession(context.Background(), p, idle.ID); !errors.Is(err, core.ErrSessionNotFound) {
+		t.Fatalf("repeat DeleteSession: err = %v, want ErrSessionNotFound", err)
 	}
 }

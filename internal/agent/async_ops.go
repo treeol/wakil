@@ -1125,7 +1125,7 @@ func (a *App) commitAsyncGrounding(op *asyncOp) {
 	// not attribute the grounding entry to the new session.
 	if a.opIsCrossSession(op) {
 		if len(okModels) > 0 {
-			a.touchedExternal = true
+			a.touchedExternal.Store(true)
 		}
 		return
 	}
@@ -1179,7 +1179,7 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 			// the untrusted child content is still delivered into / consumed by
 			// the new session, so the taint signal is still set.
 			if len(s.Grounding) > 0 {
-				a.touchedExternal = true
+				a.touchedExternal.Store(true)
 			}
 		} else {
 			for _, g := range s.Grounding {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -183,5 +184,33 @@ func TestResolveDataDir_MatchesRepoStateDir(t *testing.T) {
 	want := resolveDataDir("WAKIL_REPO_STATE_DIR", "repo-state")
 	if got != want {
 		t.Errorf("repoStateDir() = %q, want %q (resolveDataDir)", got, want)
+	}
+}
+
+// TestAtomicWriteJSONModePrivate verifies the explicit-mode variant creates a
+// private (0600) file — used for the handoff sidecar — and replaces an
+// existing file atomically.
+func TestAtomicWriteJSONModePrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.handoff.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteJSONMode(path, &struct{ X int }{X: 7}, 0o600); err != nil {
+		t.Fatalf("atomicWriteJSONMode: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("mode = %o, want 600", got)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `"X": 7`) {
+		t.Errorf("content not replaced: %q", raw)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if len(entries) != 1 {
+		t.Errorf("temp file left behind: %d entries", len(entries))
 	}
 }

@@ -106,7 +106,7 @@ func (a *App) checkEgressConsent() bool {
 	if backend == "" || !IsExternalBackend(a.BackendList, a.Cfg, backend) {
 		return true
 	}
-	if a.consentedBackends != nil && a.consentedBackends[backend] {
+	if a.hasBackendConsent(backend) {
 		return true
 	}
 	detail := fmt.Sprintf(
@@ -135,13 +135,9 @@ func (a *App) checkEgressConsent() bool {
 		}
 		return false
 	}
-	// Record consent for the target backend. consentedBackends is turn-scoped
-	// (only the turn goroutine writes it), so no lock is needed here — the
-	// turn goroutine is single-threaded for this map.
-	if a.consentedBackends == nil {
-		a.consentedBackends = make(map[string]bool)
-	}
-	a.consentedBackends[backend] = true
+	// Record consent for the target backend (locked: detached async subagent
+	// workers from an earlier turn may be snapshotting the map concurrently).
+	a.grantBackendConsent(backend)
 	return true
 }
 

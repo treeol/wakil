@@ -23,7 +23,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 		if !phaseDone {
 			return nil
 		}
-		wf.Phase = workflow.WFPlan
+		app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.Phase = workflow.WFPlan })
 		wfProgNote(app, "· gather complete → plan phase")
 		return &WFStartTurnMsg{
 			Note:     "plan phase: writing implementation plan",
@@ -37,10 +37,12 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 			if wf.PlanFormatInvalid && app.Exec != nil {
 				if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err == nil {
 					if n := workflow.CountPlanSteps(content); n > 0 {
-						wf.StepCount = n
-						wf.PlanFormatInvalid = false
+						app.UpdateWorkflow(func(w *workflow.WorkflowState) {
+							w.StepCount = n
+							w.PlanFormatInvalid = false
+							w.Phase = workflow.WFReview
+						})
 						wfProgNote(app, fmt.Sprintf("· plan re-parsed: %d steps — running oracle review", n))
-						wf.Phase = workflow.WFReview
 						return HandleReviewOracle(ctx, app)
 					}
 					wfProgNote(app, "⚠ plan still has no numbered steps — reformat as 'N. description' and emit %%PHASE_DONE%%")
@@ -63,14 +65,16 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 				wfProgNote(app, "⚠ plan format error: ## Plan is non-empty but contains no numbered steps")
 				wfProgNote(app, "· each step must be a top-level 'N.' line (e.g. '1. Fix the bug') — headers are not valid")
 				wfWritePlanFormatError(app)
-				wf.PlanFormatInvalid = true
+				app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.PlanFormatInvalid = true })
 				return nil // stay in WFPlan; reformat directive fires on next turn
 			}
 		}
 
-		wf.StepCount = n
-		wf.PlanFormatInvalid = false // clear any previous format error
-		wf.Phase = workflow.WFReview
+		app.UpdateWorkflow(func(w *workflow.WorkflowState) {
+			w.StepCount = n
+			w.PlanFormatInvalid = false // clear any previous format error
+			w.Phase = workflow.WFReview
+		})
 		wfProgNote(app, "· plan complete — running oracle review")
 		return HandleReviewOracle(ctx, app)
 
@@ -147,7 +151,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 				}
 			}
 
-			wf.StepIdx++
+			app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.StepIdx++ })
 			if wf.StepIdx > wf.StepCount {
 				HandleFinalReview(ctx, app)
 				return nil
@@ -258,6 +262,15 @@ func doWFOracle(ctx context.Context, app *App, question string) (string, bool) {
 	if err != nil {
 		return "briefing incomplete: plan file unreadable", false
 	}
+	return doWFOracleOnPlan(ctx, app, question, planContent)
+}
+
+// doWFOracleOnPlan is doWFOracle on an already-read plan, so a caller can bind
+// the oracle verdict to exactly the content it hashed (HandleReviewOracle).
+func doWFOracleOnPlan(ctx context.Context, app *App, question, planContent string) (string, bool) {
+	if !app.Cfg.OracleEnabled {
+		return "oracle not enabled in config", false
+	}
 	briefing := workflow.BuildOracleBriefing(app.Workflow.Task, planContent, question)
 	if reason := workflow.ValidateBriefing(briefing, false); reason != "" {
 		return "briefing incomplete: " + reason, false
@@ -292,10 +305,10 @@ func wfAppendStepLogEntry(app *App, entry string) {
 	}
 }
 
-// handleFinalReview runs the closing oracle check after the last IMPLEMENT step.
-// It may be called from two places:
-//  1. handleWorkflowTransition (already inside the runTurn goroutine).
-//  2. runFinalReview (a standalone Cmd goroutine started from WFFinalReviewMsg).
+// HandleFinalReview runs the closing oracle check after the last IMPLEMENT step.
+// It runs on the turn goroutine: from HandleWorkflowTransition, and from the
+// wiring host's resolveWaitingState. A user-typed /plan verify reaches it by
+// submitting a continuation turn (facade maps WFFinalReviewMsg → "continue").
 //
 // Outcomes:
 //   - Oracle OK, no gaps: workflow cleared (done).
@@ -307,7 +320,7 @@ func HandleFinalReview(ctx context.Context, app *App) {
 		return
 	}
 	if !app.Cfg.WFFinalReview {
-		app.Workflow = nil
+		app.SetWorkflow(nil)
 		wfProgNote(app, "· workflow complete — all steps done (final review disabled)")
 		return
 	}
@@ -323,19 +336,21 @@ func HandleFinalReview(ctx context.Context, app *App) {
 	// The outcome is recorded on WorkflowState (VerifyFailed/VerifyDeclined)
 	// so the headless exit path can report the correct JSON outcome without
 	// re-deriving the cause.
-	app.Workflow.VerifyFailed = false
-	app.Workflow.VerifyDeclined = false
+	app.UpdateWorkflow(func(w *workflow.WorkflowState) {
+		w.VerifyFailed = false
+		w.VerifyDeclined = false
+	})
 	if app.VerifyEnabled {
 		verifyOutcome := runFinalVerification(ctx, app)
 		if verifyOutcome.HasFailures() {
-			app.Workflow.VerifyFailed = true
+			app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.VerifyFailed = true })
 			wfProgNote(app, "⚠ verification failed — workflow remains open")
 			wfProgNote(app, "· fix the failing tests or type /plan approve to force-close")
 			// Stay in WFImplement with StepIdx > StepCount (same as oracle gaps).
 			return
 		}
 		if verifyOutcome.AnyDeclined() {
-			app.Workflow.VerifyDeclined = true
+			app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.VerifyDeclined = true })
 			wfProgNote(app, "⚠ verification command declined — workflow remains open")
 			wfProgNote(app, "· approve the verification command or type /plan approve to force-close")
 			return
@@ -407,7 +422,7 @@ func HandleFinalReview(ctx context.Context, app *App) {
 	}
 
 	wfWriteFinalLog(app, "FINAL REVIEW: all acceptance criteria verified ✓")
-	app.Workflow = nil
+	app.SetWorkflow(nil)
 	wfProgNote(app, "· workflow complete — all acceptance criteria verified ✓")
 }
 
@@ -450,39 +465,66 @@ func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 	wf := app.Workflow
 	reviewQ := "Critically review this implementation plan. Identify missing steps, " +
 		"incorrect assumptions, unclear acceptance criteria, risks, and improvements."
-	oracleResult, oracleAvail := doWFOracle(ctx, app, reviewQ)
+	// Read the plan ONCE: the oracle briefing and the stored fingerprint are
+	// both derived from this content, so ReviewPlanHash describes exactly what
+	// the oracle reviewed and an edit made while the review is in flight is
+	// detected as stale (at approve time, and before auto-advance below).
+	var oracleResult, reviewedHash string
+	var oracleAvail bool
+	switch {
+	case !app.Cfg.OracleEnabled:
+		oracleResult = "oracle not enabled in config"
+	case app.Exec == nil:
+		oracleResult = "briefing incomplete: no executor"
+	default:
+		if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err != nil {
+			oracleResult = "briefing incomplete: plan file unreadable"
+		} else {
+			reviewedHash = workflow.HashPlanSection(content)
+			oracleResult, oracleAvail = doWFOracleOnPlan(ctx, app, reviewQ, content)
+		}
+	}
 
 	if !oracleAvail {
-		wf.OracleReview = ""
-		wf.ReviewSkipReason = oracleResult
+		app.UpdateWorkflow(func(w *workflow.WorkflowState) {
+			w.OracleReview = ""
+			w.ReviewSkipReason = oracleResult
+		})
 		wfProgNote(app, "⚠ REVIEW: oracle unavailable — "+oracleResult)
 		wfWriteReviewSkip(app, oracleResult)
 		wfProgNote(app, "· type /plan review to retry, or /plan approve to skip (reason will be logged)")
 		return nil
 	}
 
-	wf.OracleReview = oracleResult
-	wf.ReviewSkipReason = ""     // cleared on success
-	wf.ReviewStaleWarned = false // a fresh review clears any pending stale warning
-
-	// Fingerprint the ## Plan section so a later edit can be detected at approve time.
-	if app.Exec != nil {
-		if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err == nil {
-			wf.ReviewPlanHash = workflow.HashPlanSection(content)
-		}
-	}
-
-	wfProgNote(app, "oracle review:\n"+oracleResult)
-	wf.Phase = workflow.WFPresent
-
+	// Consent() takes stateMu — read it BEFORE UpdateWorkflow (not reentrant).
+	autoApprove := app.Consent().AutoApprove
 	// Auto mode: a successful review with a parseable plan auto-approves and
-	// starts implementation. The plan hash was fingerprinted moments ago, so
-	// the stale-plan check the manual /plan approve performs cannot trip here.
+	// starts implementation — but only if the plan on disk is still the one
+	// the oracle reviewed (an external edit during the review parks the
+	// workflow at WFPresent so /plan approve's stale check can fire).
 	// StepCount==0 (empty plan section) never auto-advances — that state needs
 	// a human decision.
-	if app.Consent().AutoApprove && wf.StepCount > 0 {
-		wf.Phase = workflow.WFImplement
-		wf.StepIdx = 1
+	autoAdvance := autoApprove && wf.StepCount > 0
+	if autoAdvance {
+		if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err != nil || workflow.HashPlanSection(content) != reviewedHash {
+			autoAdvance = false
+			wfProgNote(app, "⚠ plan changed (or became unreadable) during the oracle review — not auto-approving; /plan review or /plan approve")
+		}
+	}
+	app.UpdateWorkflow(func(w *workflow.WorkflowState) {
+		w.OracleReview = oracleResult
+		w.ReviewSkipReason = ""     // cleared on success
+		w.ReviewStaleWarned = false // a fresh review clears any pending stale warning
+		w.ReviewPlanHash = reviewedHash
+		w.Phase = workflow.WFPresent
+		if autoAdvance {
+			w.Phase = workflow.WFImplement
+			w.StepIdx = 1
+		}
+	})
+
+	wfProgNote(app, "oracle review:\n"+oracleResult)
+	if autoAdvance {
 		wfProgNote(app, fmt.Sprintf("⚡ auto: plan approved after successful review (%d steps) — starting implementation", wf.StepCount))
 		return &WFStartTurnMsg{
 			Note:     fmt.Sprintf("auto-approved — starting implementation: step 1/%d", wf.StepCount),

@@ -298,3 +298,56 @@ func TestCaptureFileOriginal_MoveBothPaths(t *testing.T) {
 		t.Error("dst should not exist (Existed=false)")
 	}
 }
+
+// TestRestore_DeleteFailureReported verifies that a subagent-created path the
+// restore could NOT delete is reported as an error, not claimed as restored.
+// A non-empty directory makes DeletePath fail for real on the DirectExecutor.
+func TestRestore_DeleteFailureReported(t *testing.T) {
+	app, cleanup := snapshotTestApp(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	dir := filepath.Join(app.Exec.Cwd(), "created-dir")
+	recorder := newFilesChangedRecorder()
+	app.filesChanged = recorder
+	app.captureFileOriginal(ctx, dir) // did not exist before
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "child.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, errs := recorder.restore(ctx, app.Exec)
+	if len(restored) != 0 {
+		t.Errorf("undeletable path must not be reported as restored, got %v", restored)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 delete error, got %v", errs)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("directory should still exist: %v", err)
+	}
+}
+
+// TestRestore_AlreadyGoneCountsAsRestored verifies that a subagent-created file
+// that is already absent at restore time counts as restored (confirmed absence).
+func TestRestore_AlreadyGoneCountsAsRestored(t *testing.T) {
+	app, cleanup := snapshotTestApp(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	path := filepath.Join(app.Exec.Cwd(), "transient.txt")
+	recorder := newFilesChangedRecorder()
+	app.filesChanged = recorder
+	app.captureFileOriginal(ctx, path) // never created
+
+	restored, errs := recorder.restore(ctx, app.Exec)
+	if len(errs) != 0 {
+		t.Fatalf("confirmed absence must not be an error, got %v", errs)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored, got %v", restored)
+	}
+}

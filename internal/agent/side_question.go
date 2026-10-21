@@ -48,7 +48,7 @@ func (a *App) StartSideQuestion(ctx context.Context, question string) context.Ca
 
 	// Check egress consent — same gate as the main turn.
 	if a.SelectedBackend != "" && IsExternalBackend(a.BackendList, a.Cfg, a.SelectedBackend) {
-		if a.consentedBackends == nil || !a.consentedBackends[a.SelectedBackend] {
+		if !a.hasBackendConsent(a.SelectedBackend) {
 			a.sendEvent(SideQuestionDoneMsg{Err: fmt.Errorf("external backend %q not consented — use /backend to consent first", a.SelectedBackend)})
 			return cancel
 		}

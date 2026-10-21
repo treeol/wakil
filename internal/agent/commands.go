@@ -1376,7 +1376,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 		return true, false, note("workflow:\n" + app.Workflow.StatusString())
 
 	case "abort":
-		app.Workflow = nil
+		app.SetWorkflow(nil)
 		return true, false, note("workflow aborted")
 
 	case "verify":
@@ -1402,7 +1402,7 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 		// handleWorkflowTransition picks up and calls handleReviewOracle when
 		// the turn completes. For WFReview this is a no-op; for WFPresent it
 		// enables the voluntary re-review that refreshes ReviewPlanHash.
-		app.Workflow.Phase = workflow.WFReview
+		app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.Phase = workflow.WFReview })
 		return true, false, func() Msg {
 			return WFStartTurnMsg{Note: "running oracle plan review", UserText: "continue"}
 		}
@@ -1420,9 +1420,11 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 			if reason == "" {
 				reason = "oracle review was unavailable"
 			}
-			app.Workflow.ReviewSkipReason = ""
 			WFWriteReviewSkipForce(app, reason)
-			app.Workflow.Phase = workflow.WFPresent
+			app.UpdateWorkflow(func(w *workflow.WorkflowState) {
+				w.ReviewSkipReason = ""
+				w.Phase = workflow.WFPresent
+			})
 			stepLabel := strconv.Itoa(app.Workflow.StepCount)
 			return true, false, note(fmt.Sprintf(
 				"· oracle review skipped (logged) — plan ready (%s steps)\n"+
@@ -1433,25 +1435,45 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 			// warn and require a second approve. Phase acknowledgments are user-only
 			// (see /plan review comment above) so this gate cannot be auto-bypassed.
 			stepLabel := strconv.Itoa(app.Workflow.StepCount)
+			// Capture identity NOW (command time), not when the closure runs:
+			// the closure executes later in its own goroutine, and the
+			// approval must apply to the workflow the user was looking at.
+			live := app.Workflow
 			return true, false, func() Msg {
-				wf := app.Workflow
+				wf := app.WorkflowCopy()
 				if wf == nil {
 					return SysNoteMsg{Text: "no active workflow"}
+				}
+				stale := func() Msg {
+					return SysNoteMsg{Text: "· workflow changed while /plan approve was running — nothing approved (use /plan status)"}
 				}
 				// Check for plan modification since last review.
 				if wf.ReviewPlanHash != "" && app.Exec != nil {
 					if content, err := app.Exec.ReadFile(context.Background(), wf.PlanPath); err == nil {
 						if workflow.HashPlanSection(content) != wf.ReviewPlanHash && !wf.ReviewStaleWarned {
-							wf.ReviewStaleWarned = true
+							if !app.UpdateWorkflowIf(live, func(w *workflow.WorkflowState) { w.ReviewStaleWarned = true }) {
+								return stale()
+							}
 							return SysNoteMsg{Text: "⚠ plan modified since last review — " +
 								"/plan review recommended (approve again to proceed anyway)"}
 						}
 					}
 				}
-				// Second approve (warned) or no hash stored — proceed.
-				wf.ReviewStaleWarned = false
-				wf.Phase = workflow.WFImplement
-				wf.StepIdx = 1
+				// Second approve (warned) or no hash stored — proceed, but only if
+				// the same workflow is still active and still awaiting approval.
+				advanced := false
+				app.UpdateWorkflowIf(live, func(w *workflow.WorkflowState) {
+					if w.Phase != workflow.WFPresent {
+						return
+					}
+					w.ReviewStaleWarned = false
+					w.Phase = workflow.WFImplement
+					w.StepIdx = 1
+					advanced = true
+				})
+				if !advanced {
+					return stale()
+				}
 				return WFStartTurnMsg{
 					Note:     "approved — starting implementation: step 1/" + stepLabel,
 					UserText: "continue",
@@ -1464,17 +1486,17 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 				// Force-close from verify state. Log that flags were not resolved
 				// so the step log is an honest record of the workflow outcome.
 				wfWriteFinalLog(app, "FINAL REVIEW: workflow force-closed with unresolved flags.")
-				app.Workflow = nil
+				app.SetWorkflow(nil)
 				return true, false, note("· workflow force-closed (unresolved flags logged to step log)")
 			}
 			// Paused by every-step oracle critique — advance to next step.
-			wf.StepIdx++
+			app.UpdateWorkflow(func(w *workflow.WorkflowState) { w.StepIdx++ })
 			if wf.StepIdx > wf.StepCount {
 				// The paused step was the last — run the final review now.
 				if app.Cfg.WFFinalReview {
 					return true, false, func() Msg { return WFFinalReviewMsg{} }
 				}
-				app.Workflow = nil
+				app.SetWorkflow(nil)
 				return true, false, note("· workflow complete — all steps done")
 			}
 			stepLabel := strconv.Itoa(wf.StepCount)
@@ -1530,12 +1552,12 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 					return SysNoteMsg{Text: "workflow: could not write plan.md: " + err.Error()}
 				}
 			}
-			app.Workflow = &workflow.WorkflowState{
+			app.SetWorkflow(&workflow.WorkflowState{
 				Task:       task,
 				Phase:      workflow.WFGather,
 				PlanPath:   planPath,
 				OracleMode: capturedOracleMode,
-			}
+			})
 			note := "workflow started: gather — " + Truncate(task, 60)
 			if capturedOracleMode != "" {
 				note += " (oracle: " + capturedOracleMode + ")"

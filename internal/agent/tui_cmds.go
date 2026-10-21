@@ -176,20 +176,6 @@ func runTurnToFinal(ctx context.Context, app *App, userText string) (TurnOutcome
 	return out, nil
 }
 
-// runFinalReview is the Cmd that the TUI fires when WFFinalReviewMsg arrives.
-// It sets up the oracle/confirm infrastructure, runs handleFinalReview, then
-// signals completion via AgentDoneMsg.
-func RunFinalReview(app *App, ctx context.Context) Cmd {
-	return func() Msg {
-		app.Out = NewProgWriter(func(m StreamChunkMsg) { app.sendEvent(m) })
-		app.Confirm = tuiConfirmer(app)
-		app.Client.ResetGrounding()
-		HandleFinalReview(ctx, app)
-		app.sendEvent(AgentDoneMsg{Err: nil})
-		return nil
-	}
-}
-
 // resolveBackendCtxCmd returns a Cmd that probes the new backend+model's
 // context window in a goroutine and delivers the result as a BackendCtxLimitMsg.
 // The TUI event loop applies the update to app.CtxLimit when the msg is handled,
@@ -223,7 +209,7 @@ func ResumeSessionMsg(app *App, s *Session) Msg {
 	app.convMu.Unlock()
 	app.Client.ChatID = s.ChatID
 	app.Session = s
-	app.Workflow = s.SavedWorkflow
+	app.SetWorkflow(s.SavedWorkflow)
 	msg := "resumed session " + ShortID(s.ChatID)
 	if s.Label != "" {
 		msg += " [" + s.Label + "]"

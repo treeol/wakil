@@ -127,9 +127,8 @@ func TestLoadAgentsMD_setsTaintInBuildPreamble(t *testing.T) {
 	}
 
 	app := &App{
-		AgentPrompt:     "You are Wakil.",
-		InjectDate:      false,
-		touchedExternal: false,
+		AgentPrompt: "You are Wakil.",
+		InjectDate:  false,
 	}
 	app.Cfg.WorkDir = dir
 
@@ -140,7 +139,7 @@ func TestLoadAgentsMD_setsTaintInBuildPreamble(t *testing.T) {
 	if !strings.Contains(got, "advisory") {
 		t.Error("preamble should contain the advisory precedence disclaimer")
 	}
-	if !app.touchedExternal {
+	if !app.touchedExternal.Load() {
 		t.Error("buildPreamble should set touchedExternal when AGENTS.md is found")
 	}
 }
@@ -149,14 +148,13 @@ func TestLoadAgentsMD_noTaintWhenAbsent(t *testing.T) {
 	dir := t.TempDir()
 
 	app := &App{
-		AgentPrompt:     "You are Wakil.",
-		InjectDate:      false,
-		touchedExternal: false,
+		AgentPrompt: "You are Wakil.",
+		InjectDate:  false,
 	}
 	app.Cfg.WorkDir = dir
 
 	app.buildPreamble("Thursday, 10 September 2026")
-	if app.touchedExternal {
+	if app.touchedExternal.Load() {
 		t.Error("touchedExternal should remain false when no AGENTS.md is present")
 	}
 }

@@ -764,3 +764,77 @@ func TestEnforceHardMax_PinnedContentExceedsLimit(t *testing.T) {
 		t.Errorf("expected 'hard-max could not be met' warning, got: %s", output)
 	}
 }
+
+// TestPinnedAssistantToolCallsKeepResults is the mirror of the pinned-tool
+// co-pin: a pinned assistant message carrying tool_calls must keep ALL of its
+// tool results verbatim through Compact. Otherwise the preserved tool_calls
+// reach the provider with no matching tool messages (schema violation).
+func TestPinnedAssistantToolCallsKeepResults(t *testing.T) {
+	app := &App{Cfg: config.DefaultConfig(), Out: io.Discard}
+	app.Cfg.KeepBytes = 100
+	app.Cfg.CompactAt = 50
+	app.Cfg.SummaryBytes = 5000
+
+	app.Conv = []proxy.Message{
+		{Role: "system", Content: StrPtr("sys"), Pinned: true},
+		{Role: "user", Content: StrPtr("old task")},
+		{Role: "assistant", Pinned: true, ToolCalls: []proxy.ToolCall{
+			{ID: "a1", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}},
+			{ID: "a2", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"b.go"}`}},
+		}},
+		{Role: "tool", ToolCallID: "a1", Name: "read_file", Content: StrPtr(strings.Repeat("A", 200))},
+		{Role: "tool", ToolCallID: "a2", Name: "read_file", Content: StrPtr(strings.Repeat("B", 200))},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("ans-", 20))},
+		{Role: "user", Content: StrPtr("older follow-up")},
+		{Role: "assistant", Content: StrPtr(strings.Repeat("more-", 20))},
+		{Role: "user", Content: StrPtr("recent question")},
+		{Role: "assistant", Content: StrPtr("recent answer")},
+	}
+
+	fakeSum := func(_ context.Context, _ string) (string, error) { return "SUMMARY", nil }
+	ok, err := app.Compact(context.Background(), fakeSum, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected compaction to occur")
+	}
+
+	// Every tool_call ID still present must have a matching tool result.
+	calls := map[string]bool{}
+	results := map[string]bool{}
+	for _, m := range app.Conv {
+		for _, tc := range m.ToolCalls {
+			calls[tc.ID] = true
+		}
+		if m.Role == "tool" {
+			results[m.ToolCallID] = true
+		}
+	}
+	if !calls["a1"] || !calls["a2"] {
+		t.Fatalf("pinned assistant tool_calls were not preserved: %v", calls)
+	}
+	for id := range calls {
+		if !results[id] {
+			t.Errorf("tool_call %q kept without its tool result (orphaned tool_use)", id)
+		}
+	}
+	// Adjacency + verbatim: the results must DIRECTLY follow the pinned
+	// assistant message (provider schema), in order, unmodified.
+	for i, m := range app.Conv {
+		if m.Role == "assistant" && len(m.ToolCalls) == 2 && m.ToolCalls[0].ID == "a1" {
+			if i+2 >= len(app.Conv) {
+				t.Fatal("tool results missing after pinned assistant")
+			}
+			r1, r2 := app.Conv[i+1], app.Conv[i+2]
+			if r1.ToolCallID != "a1" || r2.ToolCallID != "a2" {
+				t.Fatalf("tool results not adjacent/in order: %q, %q", r1.ToolCallID, r2.ToolCallID)
+			}
+			if DerefStr(r1.Content) != strings.Repeat("A", 200) || DerefStr(r2.Content) != strings.Repeat("B", 200) {
+				t.Fatal("pinned tool results were not preserved verbatim")
+			}
+			return
+		}
+	}
+	t.Fatal("pinned assistant tool_calls message not found")
+}

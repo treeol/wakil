@@ -88,6 +88,68 @@ func (a *App) SetWorkflow(wf *workflow.WorkflowState) {
 	a.stateMu.Unlock()
 }
 
+// Workflow ownership model (concurrency contract):
+//
+//   - WRITERS: the turn goroutine (HandleWorkflowTransition / HandleFinalReview /
+//     HandleReviewOracle, hostturn's resolveWaitingState) and idle-time /plan
+//     command goroutines. Turns and commands do not overlap (the TUI
+//     hard-rejects slash commands mid-turn), but two idle-time commands CAN
+//     overlap: each runs in its own Cmd goroutine. Every field WRITE and every
+//     pointer replacement therefore goes through UpdateWorkflow / SetWorkflow
+//     (ordered against readers), and any write that follows blocking work
+//     uses UpdateWorkflowIf so it cannot land on a replaced workflow.
+//   - READERS on other goroutines (facade Snapshot/Info per frame, session
+//     persistence) must read under stateMu.RLock and must not retain the
+//     pointer past the unlock — use WorkflowCopy.
+//
+// UpdateWorkflow applies fn to the active workflow under stateMu.Lock and
+// reports whether a workflow was active. fn must only assign fields: it must
+// not call App methods (many take stateMu, and RWMutex is not reentrant) or
+// do I/O.
+func (a *App) UpdateWorkflow(fn func(wf *workflow.WorkflowState)) bool {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.Workflow == nil {
+		return false
+	}
+	fn(a.Workflow)
+	return true
+}
+
+// UpdateWorkflowIf is UpdateWorkflow guarded by pointer identity: fn runs only
+// if expected is still the active workflow. Use it after blocking work (file
+// I/O in a /plan command closure, an oracle call) so a commit cannot land on a
+// workflow that was aborted or replaced in the meantime — the TUI runs each
+// slash command in its own goroutine, so two quick /plan commands may overlap.
+func (a *App) UpdateWorkflowIf(expected *workflow.WorkflowState, fn func(wf *workflow.WorkflowState)) bool {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.Workflow == nil || a.Workflow != expected {
+		return false
+	}
+	fn(a.Workflow)
+	return true
+}
+
+// WorkflowCopy returns a detached copy of the active workflow (nil when none),
+// taken under stateMu.RLock. Safe to read on any goroutine.
+func (a *App) WorkflowCopy() *workflow.WorkflowState {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return copyWorkflow(a.Workflow)
+}
+
+// copyWorkflow returns a value copy of wf. WorkflowState holds only value
+// fields (strings, ints, bools), so a shallow copy is a full copy. Caller must
+// hold stateMu (read or write) if wf is the live a.Workflow.
+func copyWorkflow(wf *workflow.WorkflowState) *workflow.WorkflowState {
+	if wf == nil {
+		return nil
+	}
+	cp := *wf
+	return &cp
+}
+
 // SetAutoCounsel is the post-construction setter for auto-counsel config.
 // Used by run.go (headless) to set the --auto-counsel/--max-counsel flags
 // after buildApp returns.

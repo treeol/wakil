@@ -204,7 +204,8 @@ type App struct {
 	// grounding records web/oracle content. Used for the session-cumulative
 	// taint signal (A1): once the agent touches untrusted external content,
 	// all subsequent memory writes are tainted=true. Never reset.
-	touchedExternal bool
+	// Atomic: parallel subagent workers latch it from their goroutines.
+	touchedExternal atomic.Bool
 
 	// Hooks is the lifecycle hook engine. nil when no hooks are configured
 	// (the hot path skips all hook checks). Set once at construction via
@@ -489,6 +490,11 @@ type App struct {
 
 	// consentedBackends is the per-session set of external backends the user has
 	// already consented to. nil until the first consented external request.
+	// Guarded by consentMu: written on the turn goroutine, read by detached
+	// async subagent workers that may outlive the turn that started them.
+	// Access through hasBackendConsent / grantBackendConsent /
+	// snapshotBackendConsent / resetBackendConsent.
+	consentMu         sync.Mutex
 	consentedBackends map[string]bool
 
 	// BackendList is the list of available backends fetched from /v1/ilm/backends
@@ -817,7 +823,9 @@ func (a *App) SaveSession() {
 	// Deep-copy the Conv slice so the snapshot is detached from the live Conv
 	// (which may be appended to after we release convMu).
 	snap.Conv = append([]proxy.Message(nil), a.Conv...)
-	snap.SavedWorkflow = a.Workflow
+	// Value copy: the live workflow is mutated by the turn goroutine after
+	// we release stateMu, and WriteSession marshals this snapshot unlocked.
+	snap.SavedWorkflow = copyWorkflow(a.Workflow)
 	snap.Updated = time.Now()
 	if snap.Workspace == "" {
 		snap.Workspace = a.SessionWorkspace()
@@ -970,7 +978,7 @@ func (a *App) InstallSession(s *Session) {
 	a.RestoreTurnState(s)
 
 	a.Session = s
-	a.consentedBackends = nil
+	a.resetBackendConsent()
 	a.preambleDay = ""
 }
 
@@ -1022,7 +1030,7 @@ func (a *App) NewConversationTransition(chatID string) {
 	}
 	a.RevokeAuto()
 	a.SetAllowReads(false)
-	a.consentedBackends = nil
+	a.resetBackendConsent()
 }
 
 // Send runs one user turn through the agent loop: stream a response, and while
@@ -1589,7 +1597,7 @@ func (a *App) buildPreamble(today string) string {
 	}
 	if agentsMD := loadAgentsMD(cwd, wsRoot); agentsMD != "" {
 		parts = append(parts, agentsMD)
-		a.touchedExternal = true
+		a.touchedExternal.Store(true)
 	}
 	parts = append(parts, date)
 	if cwd != "" {
@@ -2954,7 +2962,7 @@ func (a *App) handleEditFile(ctx context.Context, tc proxy.ToolCall) string {
 		return "ERROR: old_string and new_string are identical — nothing to change"
 	}
 	// Confine the path to the workspace (P0-3: path confinement).
-	canonical, err := a.Exec.ConfinePath(context.Background(), args.Path)
+	canonical, err := a.Exec.ConfinePath(ctx, args.Path)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}

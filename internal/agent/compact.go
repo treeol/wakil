@@ -375,6 +375,25 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	for i, m := range older {
 		if m.Pinned {
 			pinnedSet[i] = true
+			// Mirror case: a pinned assistant tool_calls message must keep ALL
+			// of its tool results verbatim, or the preserved tool_calls would
+			// reach the provider with no matching tool messages (schema
+			// violation). Results belong to the same turn: stop at the next
+			// assistant or user message.
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+				ids := make(map[string]bool, len(m.ToolCalls))
+				for _, tc := range m.ToolCalls {
+					ids[tc.ID] = true
+				}
+				for k := i + 1; k < len(older); k++ {
+					if older[k].Role == "assistant" || older[k].Role == "user" {
+						break
+					}
+					if older[k].Role == "tool" && ids[older[k].ToolCallID] {
+						pinnedSet[k] = true
+					}
+				}
+			}
 			// If this is a pinned tool message, find its parent assistant
 			// tool_calls message and co-preserve it. This prevents an orphaned
 			// tool message (tool result without preceding tool_calls).

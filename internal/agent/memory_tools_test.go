@@ -171,7 +171,7 @@ func TestMainAgentPromoteTaintedEntry(t *testing.T) {
 	ctx := memCtx(t)
 
 	// Simulate that the agent touched external content.
-	app.touchedExternal = true
+	app.touchedExternal.Store(true)
 
 	// Put a proposed entry — should be tainted.
 	putResult := app.ExecuteToolCall(ctx, memToolCall("memory_put",
@@ -401,7 +401,7 @@ func TestTaintSessionCumulative(t *testing.T) {
 
 	// Simulate the agent touching external content (e.g. web search in a
 	// previous tool call this session).
-	app.touchedExternal = true
+	app.touchedExternal.Store(true)
 
 	// Second put: now tainted (sticky — once set, never cleared).
 	result2 := app.ExecuteToolCall(ctx, memToolCall("memory_put",
