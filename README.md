@@ -9,8 +9,6 @@
 [![CI](https://github.com/treeol/wakil/actions/workflows/ci.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/ci.yml)
 [![govulncheck](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml)
 
-**Your terminal. Your model. Your coding agent.**
-
 wakīl reads and edits code, runs commands, and remembers your project across
 sessions — connecting to any OpenAI-compatible Chat Completions endpoint you
 bring (llama.cpp, OpenRouter, vLLM, Ollama). No hosted control plane; sessions,
