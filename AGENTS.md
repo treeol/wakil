@@ -19,7 +19,7 @@
 
 - `golangci-lint run` (v2.11.1) — CI gate
 - `gofmt -l .` — CI fails on unformatted files
-- `govulncheck ./...` — vulnerability scan (CI)
+- `govulncheck ./...` — vulnerability scan (dedicated workflow: .github/workflows/govulncheck.yml)
 
 ## CI Checks (.github/workflows/ci.yml)
 

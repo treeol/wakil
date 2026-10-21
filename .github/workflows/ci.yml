@@ -9,8 +9,8 @@ on:
   pull_request:
     branches: [master]
   # Weekly re-scan: a dependency that was clean at merge time can become
-  # vulnerable later with no code change. govulncheck and the race suite run
-  # on this schedule even without a PR.
+  # vulnerable later with no code change. The race suite runs on this schedule
+  # (govulncheck has its own workflow: .github/workflows/govulncheck.yml).
   schedule:
     - cron: "0 6 * * 1"
 
@@ -78,13 +78,6 @@ jobs:
       # former 4-package scope was widened.
       - name: race detector
         run: go test -race -count=1 ./...
-
-      # Vulnerability scan — reports known Go vulnerabilities in code reachable
-      # from this module (symbol-level analysis, not "any CVE in any dep").
-      - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
-          "$(go env GOPATH)/bin/govulncheck" ./...
 
   lint:
     runs-on: ubuntu-latest

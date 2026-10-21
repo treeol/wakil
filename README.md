@@ -5,6 +5,7 @@
 </p>
 
 [![CI](https://github.com/treeol/wakil/actions/workflows/ci.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/ci.yml)
+[![govulncheck](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
