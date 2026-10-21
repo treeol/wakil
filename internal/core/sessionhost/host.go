@@ -380,7 +380,7 @@ func (h *Host) CreateSession(ctx context.Context, principal core.Principal, req 
 	// Append the creation event BEFORE registration so a session is never
 	// visible with an empty log, and the executor never runs before its own
 	// creation marker exists (single-producer invariant).
-	h.emitDraft(s, event.KindSessionCreated, event.SessionCreated{
+	_ = h.emitDraft(s, event.KindSessionCreated, event.SessionCreated{
 		WorkspaceID: req.Workspace,
 		AgentName:   h.agentName,
 		CreatedBy:   principal.UserID,
@@ -848,7 +848,7 @@ func (h *Host) RecoverRunning(ctx context.Context, principal core.Principal, met
 		s.state = core.SessionError // recovered into error state; initialization, not a transition
 		// Append the marker BEFORE registration so the executor never runs
 		// before its restart marker exists (single-producer invariant).
-		h.emitDraft(s, event.KindSessionError, event.SessionError{
+		_ = h.emitDraft(s, event.KindSessionError, event.SessionError{
 			Reason: "daemon_restart",
 			Err:    "session was running at daemon shutdown; recovered in error state",
 		})
@@ -1142,7 +1142,7 @@ func (h *Host) handleInput(s *session, input inputEnvelope) bool {
 	if s.closing != "" {
 		s.pending--
 		s.mu.Unlock()
-		h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: input.turnID, Outcome: "cancelled"})
+		_ = h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: input.turnID, Outcome: "cancelled"})
 		return true
 	}
 	s.turnIndex++
@@ -1162,11 +1162,11 @@ func (h *Host) handleInput(s *session, input inputEnvelope) bool {
 	// Emitted from the executor goroutine (not SubmitInput) so the ordering
 	// invariant holds: UserMessageCommitted(turn X) < TurnStarted(turn X),
 	// and concurrent submissions append in FIFO queue order.
-	h.emitDraft(s, event.KindUserMessageCommitted, event.UserMessageCommitted{
+	_ = h.emitDraft(s, event.KindUserMessageCommitted, event.UserMessageCommitted{
 		TurnID: input.turnID,
 		Text:   input.text,
 	})
-	h.emitDraft(s, event.KindTurnStarted, event.TurnStarted{TurnID: input.turnID, TurnIndex: turnIdx})
+	_ = h.emitDraft(s, event.KindTurnStarted, event.TurnStarted{TurnID: input.turnID, TurnIndex: turnIdx})
 
 	// The turn-scoped emitter: built per turn and fenced at finalization so no
 	// turn-emitted durable event can outlive its TurnCompleted (terminal ordering).
@@ -1287,9 +1287,9 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 
 	// Emit (never while holding s.mu — emitDraft takes store.mu and subsMu).
 	if outcome == "complete" {
-		h.emitDraft(s, event.KindMessageCommitted, event.MessageCommitted{TurnID: turnID, Text: text})
+		_ = h.emitDraft(s, event.KindMessageCommitted, event.MessageCommitted{TurnID: turnID, Text: text})
 	}
-	h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: turnID, Outcome: outcome, WorkflowWillContinue: wfWillContinue})
+	_ = h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: turnID, Outcome: outcome, WorkflowWillContinue: wfWillContinue})
 	if outcome == "stream_error" {
 		reason := "backend_failure"
 		if internalErr {
@@ -1297,9 +1297,9 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 		} else if fatalReq {
 			reason = "request_error"
 		}
-		h.emitDraft(s, event.KindSessionError, event.SessionError{Reason: reason, Err: turnErr.Error()})
+		_ = h.emitDraft(s, event.KindSessionError, event.SessionError{Reason: reason, Err: turnErr.Error()})
 		for _, q := range abandoned {
-			h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: q.turnID, Outcome: "cancelled"})
+			_ = h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: q.turnID, Outcome: "cancelled"})
 		}
 	}
 	return terminal
@@ -1319,9 +1319,9 @@ func (h *Host) finalizeClose(s *session) {
 	s.mu.Unlock()
 
 	for _, q := range queued {
-		h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: q.turnID, Outcome: "cancelled"})
+		_ = h.emitDraft(s, event.KindTurnCompleted, event.TurnCompleted{TurnID: q.turnID, Outcome: "cancelled"})
 	}
-	h.emitDraft(s, event.KindSessionClosed, event.SessionClosed{Reason: reason})
+	_ = h.emitDraft(s, event.KindSessionClosed, event.SessionClosed{Reason: reason})
 
 	// Fence the session-scoped emitter AFTER all host-emitted events are
 	// appended, so no detached work can append after SessionClosed (7b2 D24).

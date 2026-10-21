@@ -15,10 +15,11 @@ import (
 // single commit→notify point. It must NOT be called while holding s.mu (lock
 // order is store.mu then subsMu, never nested under s.mu).
 //
-// In P0 an append failure can only be an invalid draft — a programmer error. The
-// host panics rather than silently dropping a durable event; P1's store-backed
-// append returns errors the host turns into SessionError.
-func (h *Host) emitDraft(s *session, kind event.Kind, payload any) {
+// Returns an error instead of panicking on store failure — a disk-full or
+// locked SQLite should not crash the daemon. The caller decides how to handle
+// the error (typically: emit a SessionError event and close the session).
+// A nil draft (invalid event payload) is still a programmer error and panics.
+func (h *Host) emitDraft(s *session, kind event.Kind, payload any) error {
 	draft := event.Event{
 		TenantID:  s.tenant,
 		SessionID: s.sid,
@@ -37,8 +38,9 @@ func (h *Host) emitDraft(s *session, kind event.Kind, payload any) {
 	s.emitMu.Unlock()
 
 	if err != nil {
-		panic(fmt.Sprintf("sessionhost: durable append %s failed: %v", kind, err))
+		return fmt.Errorf("sessionhost: durable append %s failed: %w", kind, err)
 	}
+	return nil
 }
 
 // notify delivers a committed durable event to every live subscriber. It is
@@ -122,7 +124,7 @@ func (e *hostEmitter) Emit(kind event.Kind, payload any) error {
 	}
 	committed, err := e.host.store.Append(context.Background(), draft)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrEmitFailed, err)
+		return fmt.Errorf("%w: %w", ErrEmitFailed, err)
 	}
 	e.host.notify(e.s, committed)
 	return nil
@@ -193,7 +195,7 @@ func (e *sessionEmitter) Emit(kind event.Kind, payload any) error {
 	}
 	committed, err := e.host.store.Append(context.Background(), draft)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrEmitFailed, err)
+		return fmt.Errorf("%w: %w", ErrEmitFailed, err)
 	}
 	e.host.notify(e.s, committed)
 	return nil
