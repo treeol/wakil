@@ -169,7 +169,12 @@ func shQuote(s string) string {
 // is not predictable. e.g. randSuffix(6) returns 12 hex chars.
 func randSuffix(n int) string {
 	b := make([]byte, n)
-	_, _ = crand.Read(b)
+	if _, err := crand.Read(b); err != nil {
+		// crypto/rand failure means the system is fundamentally broken (entropy
+		// source unavailable). Log so it's diagnosable; the zeroed b still
+		// produces a valid (if predictable) hex suffix so naming doesn't fail.
+		log.Printf("randSuffix: crypto/rand.Read failed: %v", err)
+	}
 	return hex.EncodeToString(b)
 }
 
@@ -1262,7 +1267,7 @@ func (d *DockerExecutor) WriteFile(ctx context.Context, path, content string) (s
 	cmd.Stdin = strings.NewReader(content)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }
@@ -1276,7 +1281,7 @@ func (d *DockerExecutor) WriteFileBytes(ctx context.Context, path string, conten
 	cmd.Stdin = bytes.NewReader(content)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }

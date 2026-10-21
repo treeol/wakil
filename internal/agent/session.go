@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/workflow"
 )
@@ -80,10 +81,14 @@ func ListSessions() ([]Session, error) {
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
+			if !os.IsNotExist(err) {
+				diag.Printf("ListSessions: read %s: %v", e.Name(), err)
+			}
 			continue
 		}
 		var s Session
-		if json.Unmarshal(b, &s) != nil {
+		if err := json.Unmarshal(b, &s); err != nil {
+			diag.Printf("ListSessions: unmarshal %s: %v", e.Name(), err)
 			continue // skip malformed/partial files
 		}
 		out = append(out, s)
