@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -1463,6 +1464,23 @@ func NewDirectExecutor(workdir string) (*DirectExecutor, error) {
 
 func (e *DirectExecutor) RunShell(ctx context.Context, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", runFromRoot(e.root, command))
+	// Run the shell in its own process group and, on ctx cancellation, kill
+	// the WHOLE group — not just `sh`. Without this a timed-out or cancelled
+	// command's children (e.g. `sleep 600 &`, a hung test binary) survive
+	// the cancel and keep running on the host. Descendants that escape the
+	// group themselves (setsid/nohup daemonizing) are out of reach; that is
+	// an accepted limitation. Docker mode is not covered here: killing the
+	// host-side `docker exec` client does not reach in-container processes.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
 	// H4: host-side bounded capture (tail-keeping) — see DockerExecutor.RunShell.
 	out, omitted, err := runShellCapped(cmd, capOr(e.ShellOutputCap))
 	if omitted > 0 {

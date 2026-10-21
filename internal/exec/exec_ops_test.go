@@ -684,3 +684,58 @@ func TestStartBackground_O_EXCL_FailsOnExistingLog(t *testing.T) {
 		t.Errorf("existing log was modified (O_EXCL should prevent this): %q", content)
 	}
 }
+
+// TestDirectExecutorRunShellCancelKillsProcessGroup verifies that cancelling a
+// RunShell kills the shell's whole process group, including a backgrounded
+// grandchild — not just the leader `sh`. The grandchild writes its PID to a
+// file so the test observes the real process instead of guessing.
+func TestDirectExecutorRunShellCancelKillsProcessGroup(t *testing.T) {
+	ex, dir := newDirectExec(t)
+	pidFile := filepath.Join(dir, "child.pid")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ex.RunShell(ctx, fmt.Sprintf("sleep 60 & echo $! > %s; wait", pidFile))
+		done <- err
+	}()
+
+	var pid int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if _, err := fmt.Sscan(strings.TrimSpace(string(b)), &pid); err == nil && pid > 0 {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pid <= 0 {
+		t.Fatal("grandchild never reported its PID")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error from the cancelled RunShell")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunShell did not return after cancel")
+	}
+
+	// The grandchild must be gone (allow a moment for the kernel to reap).
+	gone := false
+	for i := 0; i < 100; i++ {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			gone = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !gone {
+		t.Fatalf("backgrounded grandchild %d survived RunShell cancellation", pid)
+	}
+}
