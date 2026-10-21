@@ -411,7 +411,8 @@ var ErrInvalidRange = errors.New("sessionhistory: invalid turn range")
 // Search returns up to limit sessions from the given workspace whose indexed
 // turns match the query. Empty workspace returns no results (fail-closed).
 // excludeChatID removes the current session from results. Results are grouped
-// by session and ordered by FTS relevance (BM25) blended with recency.
+// by session and ordered by recency (most recently updated session first);
+// FTS5 is used for matching only, not for ranking.
 func (s *Store) Search(ctx context.Context, query, workspace, excludeChatID string, limit int) ([]Result, error) {
 	if workspace == "" {
 		return nil, nil // fail-closed: empty workspace is never global

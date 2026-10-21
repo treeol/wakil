@@ -303,17 +303,22 @@ var migrationColumns = []struct {
 // because they handle DBs that were partially migrated or created outside
 // the normal createSchema path.
 //
-// The entire migration (column adds + FTS rebuild) runs inside BEGIN
-// IMMEDIATE, which acquires the SQLite write lock before reading table_info.
-// This serializes concurrent opens: if two processes open the same old DB,
-// the second waits on the write lock until the first commits, then sees all
-// columns present and skips the ALTERs.
+// The entire migration (column adds + FTS rebuild) runs in one transaction
+// that takes the SQLite write lock BEFORE reading table_info: a no-op UPDATE
+// of meta.schema_version is issued first, so the deferred transaction
+// is promoted to a write transaction up front. This serializes concurrent
+// opens: if two processes open the same old DB, the second waits (bounded by
+// busy_timeout) until the first commits, then sees all columns present and
+// skips the ALTERs.
 func migrateSchema(db *sql.DB) error {
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return fmt.Errorf("memory: migrate: begin tx: %w", err)
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE meta SET value = value WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("memory: migrate: acquire write lock: %w", err)
+	}
 
 	existing := make(map[string]bool)
 	rows, err := tx.Query("PRAGMA table_info(entries)")
@@ -370,7 +375,7 @@ func migrateSchema(db *sql.DB) error {
 		return fmt.Errorf("memory: migrate: count entries: %w", err)
 	}
 	var ftsFlag sql.NullString
-	if err := tx.QueryRow("SELECT value FROM meta WHERE key = 'fts_rebuilt'").Scan(&ftsFlag); err != nil && err != sql.ErrNoRows {
+	if err := tx.QueryRow("SELECT value FROM meta WHERE key = 'fts_rebuilt'").Scan(&ftsFlag); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("memory: migrate: read fts_rebuilt flag: %w", err)
 	}
 	needsRebuild := added > 0 || entryCount > 0 && (!ftsFlag.Valid || ftsFlag.String != "1")
@@ -542,7 +547,7 @@ func (s *Store) PutActive(ctx context.Context, key, value, kind, tier, writer, s
 	var oldID sql.NullInt64
 	var oldTier string
 	if err := tx.QueryRowContext(ctx,
-		"SELECT id, tier FROM entries WHERE key = ? AND status = 'active'", key).Scan(&oldID, &oldTier); err != nil && err != sql.ErrNoRows {
+		"SELECT id, tier FROM entries WHERE key = ? AND status = 'active'", key).Scan(&oldID, &oldTier); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("memory: find active: %w", err)
 	}
 	// Cross-tier protection: a mid-tier write cannot supersede a durable
@@ -763,7 +768,7 @@ func (s *Store) Promote(ctx context.Context, id int64, editedValue *string, prom
 	// Find existing active entry for this key.
 	var oldID sql.NullInt64
 	if err := tx.QueryRowContext(ctx,
-		"SELECT id FROM entries WHERE key = ? AND status = 'active'", e.Key).Scan(&oldID); err != nil && err != sql.ErrNoRows {
+		"SELECT id FROM entries WHERE key = ? AND status = 'active'", e.Key).Scan(&oldID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("memory: find active: %w", err)
 	}
 
@@ -870,7 +875,7 @@ func (s *Store) Reject(ctx context.Context, id int64, reason string) error {
 
 	var status string
 	err := s.db.QueryRowContext(ctx, "SELECT status FROM entries WHERE id = ?", id).Scan(&status)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -902,7 +907,7 @@ func (s *Store) Forget(ctx context.Context, key string) error {
 	var id int64
 	err := s.db.QueryRowContext(ctx,
 		"SELECT id FROM entries WHERE key = ? AND status = 'active'", key).Scan(&id)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -931,7 +936,7 @@ func (s *Store) Get(ctx context.Context, key string) (*Entry, error) {
 		WHERE key = ? AND status = 'active' AND (expires_at IS NULL OR expires_at >= ?)`, key, now)
 
 	e, err := scanEntry(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -948,7 +953,7 @@ func (s *Store) Get(ctx context.Context, key string) (*Entry, error) {
 func (s *Store) GetByID(ctx context.Context, id int64) (*Entry, error) {
 	row := s.db.QueryRowContext(ctx, selectEntrySQL+` WHERE id = ?`, id)
 	e, err := scanEntry(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -1084,8 +1089,11 @@ func (s *Store) List(ctx context.Context, prefix, tier, status string) ([]*Entry
 	q := fmt.Sprintf(`SELECT %s FROM entries WHERE 1=1`, entryColumns)
 
 	if prefix != "" {
-		q += " AND key LIKE ? || '%'"
-		args = append(args, prefix)
+		// Literal, case-sensitive prefix match. LIKE would treat '%' and '_'
+		// in the prefix as wildcards and ignores ASCII case, so keys such as
+		// "a_b/x" matched "aXb/x" and "Plan/" matched "plan/".
+		q += " AND substr(key, 1, length(?)) = ?"
+		args = append(args, prefix, prefix)
 	}
 	if tier != "" {
 		q += " AND tier = ?"
@@ -1274,7 +1282,7 @@ func scanEntry(row scanner) (*Entry, error) {
 func scanEntryByIDTx(ctx context.Context, tx *sql.Tx, id int64) (*Entry, error) {
 	row := tx.QueryRowContext(ctx, selectEntrySQL+` WHERE id = ?`, id)
 	e, err := scanEntry(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return e, err

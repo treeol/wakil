@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -794,5 +795,82 @@ func TestStats(t *testing.T) {
 	}
 	if len(stats.RecentKeys) != 2 {
 		t.Fatalf("expected 2 recent keys, got %d", len(stats.RecentKeys))
+	}
+}
+
+// TestListPrefixIsLiteral verifies the List prefix filter is an exact,
+// case-sensitive literal prefix: '%' and '_' are not wildcards.
+func TestListPrefixIsLiteral(t *testing.T) {
+	s, _ := newTestStore(t)
+	c := ctx(t)
+	for _, k := range []string{"a_b/one", "aXb/two", "Plan/three", "plan/four", "100%/five", "100x/six"} {
+		if _, err := s.PutActive(c, k, "v", "note", TierDurable, "main", "", TaintUnknown, nil, nil, ""); err != nil {
+			t.Fatalf("PutActive %s: %v", k, err)
+		}
+	}
+	cases := map[string][]string{
+		"a_b/":  {"a_b/one"},
+		"plan/": {"plan/four"},
+		"100%/": {"100%/five"},
+	}
+	for prefix, want := range cases {
+		got, err := s.List(c, prefix, "", StatusActive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var keys []string
+		for _, e := range got {
+			keys = append(keys, e.Key)
+		}
+		if len(keys) != len(want) || (len(keys) > 0 && keys[0] != want[0]) {
+			t.Errorf("List(%q) = %v, want %v", prefix, keys, want)
+		}
+	}
+}
+
+// TestMigrateSchemaTakesWriteLockFirst verifies migrateSchema holds the SQLite
+// write lock for the whole migration: while another connection holds the
+// write lock, migrateSchema must block (and fail with busy after the timeout)
+// instead of reading table_info under a shared lock and racing the ALTERs.
+func TestMigrateSchemaTakesWriteLockFirst(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "lock.db")
+	s, err := Open(dbPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	holder, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	holder.SetMaxOpenConns(1)
+	if _, err := holder.Exec("PRAGMA busy_timeout = 100"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := holder.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE meta SET value = value WHERE key = 'schema_version'`); err != nil {
+		t.Fatalf("holder could not take write lock: %v", err)
+	}
+
+	other, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	other.SetMaxOpenConns(1)
+	if _, err := other.Exec("PRAGMA busy_timeout = 100"); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchema(other); err == nil {
+		t.Fatal("migrateSchema must not proceed while another writer holds the lock")
+	}
+	_ = tx.Rollback()
+	if err := migrateSchema(other); err != nil {
+		t.Fatalf("migrateSchema after lock release: %v", err)
 	}
 }
