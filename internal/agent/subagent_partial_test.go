@@ -133,7 +133,7 @@ func TestSubagentTranscriptScrubsSecrets(t *testing.T) {
 			Name:      "read_file",
 			Arguments: `{"path":".env"}`,
 		}}}},
-		{Role: "tool", Name: "read_file", Content: StrPtr("API_KEY=topsecret\nDB_PASS=hunter2")},
+		{Role: "tool", Name: "read_file", Content: StrPtr("Bearer sk-ant-ABCDEFGHIJKLMNOPQRSTUVWXYabcdefghijklmnopqrstuvwxyz\nAPI_KEY=topsecret\nDB_PASS=hunter2")},
 		{Role: "assistant", ToolCalls: []proxy.ToolCall{{Function: proxy.FunctionCall{
 			Name:      "write_file",
 			Arguments: `{"path":"big.go","content":"func main(){}"}`,
@@ -150,13 +150,19 @@ func TestSubagentTranscriptScrubsSecrets(t *testing.T) {
 	if !strings.Contains(got, "arguments omitted") {
 		t.Errorf("expected content-bearing arg omission marker:\n%s", got)
 	}
-	// 2. Tool RESULTS are kept verbatim (they carry the findings) — this is
-	// intentional; the review's concern was structured args, not results. The
-	// .env read result is NOT scrubbed because it is the child's observed
-	// content, but we must not have *invented* a redaction guarantee we don't
-	// make. Assert the result is present (documenting current behavior).
-	if !strings.Contains(got, "API_KEY=topsecret") {
-		t.Errorf("tool result content should be preserved verbatim (documented behavior):\n%s", got)
+	// 2. Tool RESULTS are scrubbed of known secret patterns. The scrubber
+	// catches Bearer tokens and API keys matching known formats (sk-ant-...).
+	// Short generic env-var values like API_KEY=topsecret are NOT caught
+	// (false-negative tradeoff by design) — the test uses a Bearer token
+	// to verify the scrubber is actually applied to tool results.
+	if strings.Contains(got, "sk-ant-ABCDEFGHIJKLMNOPQRSTUVWXYabcdefghijklmnopqrstuvwxyz") {
+		t.Errorf("tool result Bearer token should be scrubbed:\n%s", got)
+	}
+	if !strings.Contains(got, "tool result: read_file") {
+		t.Errorf("tool result header should be present:\n%s", got)
+	}
+	if !strings.Contains(got, "[REDACTED:bearer]") {
+		t.Errorf("expected bearer redaction marker in tool result:\n%s", got)
 	}
 	// 3. write_file args are content-bearing → omitted.
 	if strings.Contains(got, "func main(){}") {

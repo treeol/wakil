@@ -362,6 +362,8 @@ func subagentTranscript(conv []proxy.Message) string {
 				continue
 			}
 			content := DerefStr(m.Content)
+			content = traceScrubber.Scrub(content)
+			scrubbedLen := len(content)
 			trunc := false
 			if len(content) > subagentTranscriptCap {
 				content = truncateUTF8(content, subagentTranscriptCap)
@@ -371,7 +373,7 @@ func subagentTranscript(conv []proxy.Message) string {
 			fmt.Fprintf(&b, "tool result: %s\n", m.Name)
 			b.WriteString(content)
 			if trunc {
-				fmt.Fprintf(&b, "\n… [+%d chars truncated]", len(DerefStr(m.Content))-len(content))
+				fmt.Fprintf(&b, "\n… [+%d chars truncated]", scrubbedLen-len(content))
 			}
 			entries = append(entries, b.String())
 			total += b.Len()
