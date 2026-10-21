@@ -96,9 +96,14 @@ func IsDestructiveShell(cmd string) bool {
 		}
 		// Skip leading "VAR=value" env assignments before the binary, mirroring
 		// IsReadOnlyShell. Without this, `X=1 rm -rf /` is tokenized as bin
-		// "X=1" and the rm payload is missed.
+		// "X=1" and the rm payload is missed. Dangerous env prefixes (LD_*,
+		// GIT_*, etc.) that can influence execution of the payload also make
+		// the segment destructive — same check as IsReadOnlyShell for symmetry.
 		i := 0
 		for i < len(fields) && !strings.HasPrefix(fields[i], "-") && strings.Contains(fields[i], "=") {
+			if name := envPrefixName(fields[i]); dangerousEnvPrefix(name) {
+				return true
+			}
 			i++
 		}
 		if i >= len(fields) {
