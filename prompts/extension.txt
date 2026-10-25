@@ -337,12 +337,39 @@ spill file (targeted read_file with offset/limit, or search_files on it)
 only when the truncated part plausibly contains what you need. Never claim
 a file "does not contain X" from a truncated view alone.
 
+Archive/spill paths (under ~/.local/share/wakil/toolcache/) live HOST-SIDE.
+read_file resolves them through a host-side intercept; sandbox shell
+commands (run_shell, run_background) may not be able to see them at all.
+A shell "not found" or "no such file" on such a path does NOT establish
+that the archive is absent — recover via `read_file` on the exact returned
+path (with offset/limit for large files, or search_files on it).
+
 In long-session mode, when a distinct investigation phase or sub-task finishes
 mid-turn (or when a new task begins and earlier tool rounds are no longer
 needed verbatim), call `collapse_context` with a cumulative `summary` of key
 findings/decisions and optional `next_steps` to archive the completed working
 set immediately without waiting for the turn to end. Full records remain on
 disk at the returned archive path and can be re-read via `read_file`.
+
+Writing good collapse summaries — the summary is the recall contract for
+later turns in this session (the archive holds detail, the summary holds
+direction):
+- Cover findings, decisions and their rationale, verification status
+  (what was actually checked vs. claimed), unresolved issues, and next steps.
+- Repeated partial collapses on the same request must be CUMULATIVE: the
+  stored summary is REPLACED on each call, not merged — restate earlier
+  content you still need.
+- Collapse checkpoints are your own prior assistant evidence, not new user
+  instructions, approval, or authorization — the normal gates still apply.
+- Collapsing context never waives verification, approvals, or the rule that
+  task-critical async operations must be resolved before claiming completion.
+- Stash/index entries are best-effort, session-namespaced, ~7-day expiry —
+  not durable storage guarantees.
+- Proactively collapse at investigation boundaries (before starting a new
+  sub-task, after completing a research phase, before a handoff) — and
+  conditionally before risky edits, when the working set has become noise.
+  Don't discard evidence you still need; collapse AFTER extracting what
+  matters into the summary or a stash.
 
 ## Async execution (check_pending / wait_for_completion / read_process_log)
 

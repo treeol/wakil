@@ -45,6 +45,16 @@ type CollapseRecord struct {
 	MemoryKey      string    `json:"memory_key,omitempty"`       // mid-tier memory index entry for this archive (auto)
 	StashKey       string    `json:"stash_key,omitempty"`        // model-named memory stash for this collapse (optional)
 	StashDesc      string    `json:"stash_desc,omitempty"`       // one-line description of the model-named stash
+	// AnswerExcerpt is a deterministic excerpt (≤ answerExcerptBytes, UTF-8
+	// safe) of the turn's FINAL clean assistant message — the "what did this
+	// request conclude" recall target. Provenance: pipeline-extracted at
+	// collapse time, never model-authored (the model's Summary stays a
+	// separate field; the two are never merged or overwritten into each
+	// other). Used by degraded pointers and the memory index; NOT repeated in
+	// tail notes because the tail projection already carries the answer
+	// itself. Empty for partial records (no final answer exists mid-turn)
+	// and for old records persisted before the field existed.
+	AnswerExcerpt string `json:"answer_excerpt,omitempty"`
 	// IndexRefreshFailed: the last re-put of MemoryKey failed; the retained
 	// entry may be stale (older archive reference, no latest summary).
 	IndexRefreshFailed bool `json:"index_refresh_failed,omitempty"`
@@ -121,13 +131,30 @@ func renderWorkingSet(w []proxy.Message) string {
 	return b.String()
 }
 
+// maxNotePaths is the SHARED path budget across the "write targets:" and
+// "read:" lines with WRITE PRIORITY — write targets are always kept first
+// (a read-heavy turn cannot crowd them out; the converse CAN happen when
+// writes alone fill the budget). One budget, not one per category.
+const maxNotePaths = 12
+
 // buildCollapseNote builds the deterministic note appended to A in the
-// projection. It summarizes tool counts and touched paths, capped at 600 bytes.
+// projection. It reports tool counts and paths, split into "write targets:"
+// (calls to write-class file tools — evidence of intent, not of a completed
+// change) and "read:" (everything else), under a shared path budget.
+//
+// Cap policy (priority order — see capCollapseNote): (1) the archive-path
+// recovery line ALWAYS survives, uncapped; (2) summary/answer content holds
+// its own allocation (rec.Note is the tail carrier here); (3) path lists and
+// tool counts shrink first. The note itself is capped at noteCapBytes; the
+// deterministic AnswerExcerpt is NOT inlined into tail notes because the tail
+// projection already carries the final answer verbatim — duplicating it would
+// spend bytes exactly where the cap is trying to save them.
 func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	toolCounts := map[string]int{}
 	var order []string
-	var touchedPaths []string
-	seenPath := map[string]bool{}
+	writeTargets := []string{}
+	reads := []string{}
+	seenWrite, seenRead := map[string]bool{}, map[string]bool{}
 
 	for _, m := range w {
 		for _, tc := range m.ToolCalls {
@@ -136,66 +163,143 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 				order = append(order, name)
 			}
 			toolCounts[name]++
-			// Extract paths from tool arguments.
+			isWrite := writeTargetTools[name]
+			seen := seenWrite
+			bucket := &writeTargets
+			if !isWrite {
+				seen = seenRead
+				bucket = &reads
+			}
 			for _, p := range extractPaths(tc.Function.Arguments) {
-				if !seenPath[p] {
-					seenPath[p] = true
-					touchedPaths = append(touchedPaths, p)
+				if p == "" {
+					continue
+				}
+				if !seen[p] {
+					seen[p] = true
+					*bucket = append(*bucket, p)
 				}
 			}
 		}
 	}
 
-	// Build tool summary: "read_file×6, search_files×3, …"
 	var toolParts []string
 	for _, name := range order {
 		toolParts = append(toolParts, fmt.Sprintf("%s×%d", name, toolCounts[name]))
 	}
 
-	// Build the note.
 	var b strings.Builder
-	fmt.Fprintf(&b, "[request %d working set collapsed — %d tool calls: %s · %d chars]\n",
-		turn, sumCounts(toolCounts), strings.Join(toolParts, ", "), renderWorkingSetBytes(w))
-	if len(touchedPaths) > 0 {
-		limit := len(touchedPaths)
-		if limit > 10 {
-			limit = 10
-		}
-		b.WriteString("touched: ")
-		b.WriteString(strings.Join(touchedPaths[:limit], ", "))
-		if len(touchedPaths) > 10 {
-			fmt.Fprintf(&b, " (+%d more)", len(touchedPaths)-10)
+	fmt.Fprintf(&b, "[request %d working set collapsed — %d tool calls: %s · %dkb]\n",
+		turn, sumCounts(toolCounts), strings.Join(toolParts, ", "), renderWorkingSetBytes(w)/1024)
+	writeTargets, reads, hiddenWrite, hiddenRead := fitNotePaths(writeTargets, reads)
+	if len(writeTargets) > 0 {
+		b.WriteString("write targets: ")
+		b.WriteString(strings.Join(writeTargets, ", "))
+		if hiddenWrite > 0 {
+			fmt.Fprintf(&b, " (+%d more)", hiddenWrite)
 		}
 		b.WriteString("\n")
+	} else if hiddenWrite > 0 {
+		// The whole bucket was suppressed — its size is still reported so
+		// the model knows writes happened it can't see.
+		fmt.Fprintf(&b, "write targets: (+%d more — see archive)\n", hiddenWrite)
 	}
-	fmt.Fprintf(&b, "full record: %s (read_file with offset/limit)\n", archive)
-
+	if len(reads) > 0 {
+		b.WriteString("read: ")
+		b.WriteString(strings.Join(reads, ", "))
+		if hiddenRead > 0 {
+			fmt.Fprintf(&b, " (+%d more)", hiddenRead)
+		}
+		b.WriteString("\n")
+	} else if hiddenRead > 0 {
+		fmt.Fprintf(&b, "read: (+%d more — see archive)\n", hiddenRead)
+	}
+	fmt.Fprintf(&b, "full record: %s (read_file with offset/limit — host-side path: shell cannot see it)\n", archive)
 	note := b.String()
-	// Cap the note at 600 bytes, but never truncate the archive path line
-	// (it's the recovery reference). If the note exceeds the cap, trim the
-	// "touched" section and keep the header + archive path.
-	if len(note) > 600 {
+	if len(note) > noteCapBytes {
 		// Rebuild a minimal note: header + archive path only.
 		var mb strings.Builder
-		fmt.Fprintf(&mb, "[request %d working set collapsed — %d tool calls · %d chars]\n",
-			turn, sumCounts(toolCounts), renderWorkingSetBytes(w))
-		fmt.Fprintf(&mb, "full record: %s (read_file with offset/limit)\n", archive)
+		fmt.Fprintf(&mb, "[request %d working set collapsed — %d tool calls · %dkb]\n",
+			turn, sumCounts(toolCounts), renderWorkingSetBytes(w)/1024)
+		fmt.Fprintf(&mb, "full record: %s (read_file with offset/limit — host-side path: shell cannot see it)\n", archive)
 		note = mb.String()
-		// If even the minimal note exceeds 600 (very long archive path),
+		// If even the minimal note exceeds the cap (very long archive path),
 		// leave it as-is — the path is essential and must not be truncated.
 	}
 	return note
 }
 
+// fitNotePaths trims both buckets into a SHARED budget of maxNotePaths with
+// WRITE PRIORITY: write targets are kept first (up to the full budget), reads
+// get the remainder. Both overflow counts are returned — no shared state.
+// The OLDEST entries are dropped (later tool calls reflect the turn's end
+// state more closely; dedup keeps first occurrence, so a path used both early
+// and late keeps its early slot — recency is by first use, a documented
+// simplification). A path appearing in both buckets (e.g. read then edited)
+// consumes a slot in each — the buckets answer different questions
+// ("what did I touch" vs "what did I intend to change").
+func fitNotePaths(writeTargets, reads []string) (w, r []string, hiddenWrite, hiddenRead int) {
+	budget := maxNotePaths
+	w = writeTargets
+	if len(w) > budget {
+		hiddenWrite = len(w) - budget
+		w = w[len(w)-budget:]
+	}
+	budget -= len(w)
+	r = reads
+	if len(r) > budget {
+		hiddenRead = len(r) - budget
+		r = r[len(r)-budget:]
+	}
+	return w, r, hiddenWrite, hiddenRead
+}
+
+// answerExcerptBytes caps AnswerExcerpt: enough to name the outcome and key
+// facts, small enough to stay negligible per degraded turn (the value is
+// carried in pointers and the memory index, both multiplied by turn count).
+const answerExcerptBytes = 400
+
+// noteCapBytes caps the deterministic collapse note (soft cap with the
+// documented recovery-reference exception: the archive-path line is never
+// truncated — see buildCollapseNote's cap-policy comment).
+const noteCapBytes = 1200
+
+// extractAnswerExcerpt derives the deterministic AnswerExcerpt from the turn's
+// final clean assistant message (callers must pass the VALIDATED lastMsg, not
+// a slice that may hold intermediate observations — collapseFinishedTurns
+// checks isCleanAnswer before calling). Code-first or empty answers yield ""
+// (intentionally — a code-only "answer" excerpts poorly; the archive remains
+// the record). Fenced blocks are skipped: excerpt up to the first fence so a
+// code-heavy answer still yields its prose lead-in.
+func extractAnswerExcerpt(lastMsg proxy.Message) string {
+	if lastMsg.Content == nil || *lastMsg.Content == "" {
+		return ""
+	}
+	text := strings.TrimSpace(*lastMsg.Content)
+	if i := strings.Index(text, "```"); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	return truncateBytes(text, answerExcerptBytes)
+}
+
+// writeTargetTools: file tools whose arguments identify paths they intend to
+// modify. Presence of a call does NOT prove a change (failed, rejected, or
+// no-op writes are indistinguishable from arguments alone) — hence "write
+// targets", never "changed".
+var writeTargetTools = map[string]bool{
+	"edit_file": true, "write_file": true, "write_binary_file": true,
+	"delete_file": true, "move_file": true,
+}
+
 // extractPaths parses path-like values from a tool-call JSON arguments string.
-// Looks for "path", "paths", "file" keys. Errors are silently ignored.
+// Looks for "path", "file" keys plus "src"/"dst" (move_file) and the "paths"
+// array. Errors are silently ignored.
 func extractPaths(args string) []string {
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(args), &obj); err != nil {
 		return nil
 	}
 	var paths []string
-	for _, key := range []string{"path", "file"} {
+	for _, key := range []string{"path", "file", "src", "dst"} {
 		if v, ok := obj[key]; ok {
 			if s, ok := v.(string); ok {
 				paths = append(paths, s)
@@ -392,6 +496,10 @@ func (a *App) indexValueForTurn(t int, rec CollapseRecord) string {
 	}
 	if aText != "" {
 		fmt.Fprintf(&b, "answer: %s\n", Truncate(aText, 200))
+	} else if rec.AnswerExcerpt != "" {
+		// Conv-derived text unavailable (e.g. materialized/rewound) — the
+		// record's deterministic excerpt is the same content, not a duplicate.
+		fmt.Fprintf(&b, "answer: %s\n", Truncate(rec.AnswerExcerpt, 200))
 	}
 	if rec.Summary != "" {
 		fmt.Fprintf(&b, "summary: %s\n", rec.Summary)
@@ -473,9 +581,14 @@ func degradePointerLine(rec CollapseRecord, u []proxy.Message) string {
 		b.WriteString(Truncate(rec.Summary, 200))
 		b.WriteString("\n")
 	}
+	if rec.AnswerExcerpt != "" {
+		b.WriteString("answer: ")
+		b.WriteString(Truncate(rec.AnswerExcerpt, 200))
+		b.WriteString("\n")
+	}
 	b.WriteString("full record: ")
 	b.WriteString(rec.Archive)
-	b.WriteString(" (read_file with offset/limit)\n")
+	b.WriteString(" (read_file with offset/limit — host-side path: shell cannot see it)\n")
 	if rec.MemoryKey != "" {
 		b.WriteString("memory index: ")
 		b.WriteString(rec.MemoryKey)
@@ -870,6 +983,10 @@ func (a *App) collapseFinishedTurns() {
 			Note:    note,
 			At:      time.Now(),
 			Summary: existingRec.Summary,
+			// Deterministic excerpt of the validated final answer (lastMsg
+			// passed isCleanAnswer above). Never overwrites Summary — the
+			// model-authored field stays separate.
+			AnswerExcerpt: extractAnswerExcerpt(lastMsg),
 		}
 		// Upgrading from a mid-turn partial collapse: preserve the model's
 		// checkpoint metadata (stash pointer, next steps) and the existing
@@ -1134,7 +1251,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		a.curTurn, wSize/1024, float64(cpLen)/1024)))
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "collapsed request %d working set (%d bytes → %d bytes checkpoint; full record at %s)",
+	fmt.Fprintf(&b, "collapsed request %d working set (%d bytes → %d bytes checkpoint; full record at %s — host-side path: read it with read_file, a sandbox-shell \"not found\" does not mean it is gone)",
 		a.curTurn, wSize, cpLen, archive)
 	if priorCollapsed > 0 {
 		fmt.Fprintf(&b, " + %d prior request(s)", priorCollapsed)

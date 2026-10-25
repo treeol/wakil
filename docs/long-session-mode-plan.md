@@ -143,15 +143,24 @@ Any turn skipped by rule 6 or 7 is reconsidered at the next request.
 Appended to A in the projection only:
 
 ```
-[request 12 working set collapsed — 14 tool calls: read_file×6, search_files×3, run_shell×2, edit_file×3 · 96k chars]
-touched: internal/agent/compact.go, internal/agent/turn_phases.go, docs/x.md (+4)
-full record: /home/u/.local/share/wakil/toolcache/<chat>/turn-12-XXXX.txt (read_file with offset/limit)
+[request 12 working set collapsed — 14 tool calls: read_file×6, search_files×3, run_shell×2, edit_file×3 · 96k kb]
+write targets: internal/agent/compact.go, internal/agent/turn_phases.go, docs/x.md (+1)
+read: internal/agent/app.go, docs/y.md (+2)
+full record: /home/u/.local/share/wakil/toolcache/<chat>/turn-12-XXXX.txt (read_file with offset/limit — host-side path: shell cannot see it)
 ```
 
 - Tool counts come from the `ToolCalls` of W's assistant messages.
-- `touched` lists up to 10 distinct `path` / `paths` / `file` values parsed from
-  tool-call JSON arguments (errors ignored).
-- Cap the note at 600 bytes.
+- `write targets` lists up to 12 distinct paths (shared budget with `read`,
+  write-priority) from write-class tool calls (`edit_file`, `write_file`,
+  `write_binary_file`, `delete_file`, `move_file`) — evidence of *intent to
+  modify*, not of a completed change. `read` lists everything else
+  (`path` / `paths` / `file` / `src` / `dst` values parsed from tool-call
+  JSON arguments; errors ignored). A fully-suppressed bucket still reports
+  its overflow count.
+- The archive path is HOST-SIDE: `read_file` resolves it via a host-side
+  intercept; a sandbox shell "not found" does not mean the archive is gone
+  — that hint is printed in the note itself.
+- Cap the note at 1200 bytes (soft: the archive-path line is never trimmed).
 - The note is wakil-authored, not model-authored. The archive path is created by
   wakil inside the tool cache, so it is trusted for `read_file`.
 
