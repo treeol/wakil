@@ -10,7 +10,7 @@ carries a version and sha256.
 |---|---|---|---|
 | endpoint | `ILM_STACK_URL` | str | e.g. `http://smaragd.local:8400` |
 | token | `ILM_STACK_TOKEN` | str | shared bearer token |
-| mode | `ILM_MODE` | str | `off` \| `shadow` (`assist` returns 501) |
+| mode | `ILM_MODE` | str | `off` \| `shadow` \| `assist` |
 | queue_path | `ILM_QUEUE_PATH` | str | local spool dir for at-least-once delivery |
 | batch_size | `ILM_BATCH_SIZE` | int | default 64 |
 | flush_interval_s | `ILM_FLUSH_S` | float | default 2.0 |
@@ -38,9 +38,6 @@ namespaces can never collide.
 | W1: error | `error` | {text} |
 | W1: session end | `session_end` | {outcome?, summary?} |
 | W1: system prompt | captured on `session_start` payload `system[]` | {source:"live", workspace, model, system:[text,...]} |
-| mashura__* call | `mashura_call` | {tool, args} |
-| any error surfaced to the turn | `error` | {text} |
-| session end | `session_end` | {outcome?, summary?} |
 
 `seq` is assigned by the emitter monotonically per session (Wakil's own
 sequence + a per-type suffix is acceptable as long as it is strictly

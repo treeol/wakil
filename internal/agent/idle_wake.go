@@ -9,13 +9,15 @@ import (
 
 // ─── Phase 2: Idle/Wake engine ───────────────────────────────────
 //
-// A turn can END in one of two ways: the model produced a final answer and no
+// The two common turn endings: the model produced a final answer and no
 // async work remains (Final), or the model produced final text while async work
 // (mashura panel, detached shell, discovery subagents) is still pending and it
 // has no further independent tool work (Suspended). The caller — TUI or headless
 // run loop — retains the continuation and, on a Suspended outcome, registers a
 // waiter and resumes once a completion arrives (wake), instead of spinning on
-// check_pending or ending the turn.
+// check_pending or ending the turn. Abnormal endings (provider failure,
+// cancellation, consent decline) are classified via TurnOutcomeKind — see
+// docs/continuous-mode.md for the full outcome contract.
 
 // TurnOutcomeKind distinguishes the disposition of one turn invocation. None of
 // these kinds means that a broader goal is complete; goal completion is owned by

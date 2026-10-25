@@ -44,6 +44,7 @@ opens a picker to attach a file or folder for context.
 /mode long-session   set long-session mode (default): finished requests collapse to question + answer + note (alias: /mode long; status line shows "long")
 /mode status         show context mode, collapsed/kept counts, sent vs full sizes, archive dir
 /prompt [full|core|status]  show/set prompt mode: full (default) or core (lean preamble, extension lazy-loaded; status line shows "core")
+/assist              toggle assist mode (requires ilm_stack.mode="assist"); /assist auto toggles auto-execution
 /keep <n>            exempt request n from collapse; /keep off <n> removes the exemption
 /grants              list session-scoped tool grants; /grants clear removes them
 /mcp                 list connected MCP servers and their tools
@@ -84,6 +85,12 @@ See also the [`/plan` workflow](workflows.md) documentation.
 **Lifecycle hooks**
 
 Hooks are configured in the config file, not via TUI commands. See [features.md](features.md#lifecycle-hooks) for configuration.
+
+Paste from the conversation pane is blocked while a rotation operation
+(`/handoff`, `/resume`, `/new`) is running: these show a pulsing dot + verb
+label + elapsed timer in the status zone (`beginRotate`, `internal/tui/tui.go`),
+and plain sends print a deduped "· rotation in progress — please wait" note.
+Slash commands are ignored during rotation; ctrl+c semantics are unchanged.
 
 ## Keybindings
 

@@ -797,7 +797,7 @@ func projectTailAnswerContent(content *string, rec CollapseRecord, capBytes int)
 }
 
 // reconcileArchiveIndexes is the bounded, idempotent lifecycle reconciliation
-// (plan phase 2): auto-index entries whose owned archive is CONFIRMED absent
+// (auto-index reconciliation): auto-index entries whose owned archive is CONFIRMED absent
 // are tombstoned (Store.Forget) so memory_search no longer surfaces dead
 // pointers. Runs once per session, triggered from the first collapse sweep.
 //
@@ -878,7 +878,7 @@ func (a *App) collapseFinishedTurns() {
 	if !a.IsLongSession() {
 		return
 	}
-	// Bounded lifecycle trigger (plan phase 2): once per session, before the
+	// Bounded lifecycle trigger (auto-index reconciliation): once per session, before the
 	// sweep, prune index entries whose archives are confirmed gone.
 	a.reconcileArchiveIndexes()
 	a.convMu.RLock()

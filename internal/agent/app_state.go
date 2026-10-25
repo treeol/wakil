@@ -13,7 +13,8 @@ package agent
 // of the turn. Live fields (RawTools, SubagentModelOverride, etc.) are
 // re-read under stateMu.RLock at each use site.
 //
-// See b2-b5-plan-v3.md for the full architecture and snapshot semantics table.
+// Snapshot semantics: turn-stable fields are copied once per turn under
+// stateMu.Lock; live fields are re-read under stateMu.RLock at each use.
 //
 // IMPORTANT: stateMu must NEVER be held across method calls that may
 // acquire locks, perform I/O, or invoke callbacks. Snapshot methods copy
