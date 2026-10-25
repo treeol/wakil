@@ -46,9 +46,9 @@ func turnBoundary(conv []proxy.Message, keep int) int {
 // consecutive turns whose total byte size fits within keepBytes. The split
 // always lands on a user-message boundary so turn groupings stay intact.
 //
-// Returns 0 when everything fits (nothing to summarize). Returns the index of
-// the last user message when that single turn already exceeds keepBytes (keep
-// at least the most recent turn verbatim no matter what).
+// Returns 0 when everything fits (nothing to summarize), or when keepBytes is
+// non-positive. Compact handles an exhausted style-adjusted budget separately.
+// A too-large newest turn is kept verbatim no matter the positive budget.
 func keepBoundary(conv []proxy.Message, keepBytes int) int {
 	if keepBytes <= 0 || len(conv) == 0 {
 		return 0
@@ -73,6 +73,18 @@ func keepBoundary(conv []proxy.Message, keepBytes int) int {
 		}
 	}
 	return 0 // everything fits within keepBytes
+}
+
+// newestUserBoundary returns the start of the newest user turn. It is used
+// when guide overhead leaves no verbatim-tail budget but older turns can still
+// be summarized. Zero means there is no complete prior user turn to compact.
+func newestUserBoundary(conv []proxy.Message) int {
+	for i := len(conv) - 1; i >= 0; i-- {
+		if conv[i].Role == "user" {
+			return i
+		}
+	}
+	return 0
 }
 
 // renderTranscript turns messages into plain text for embedding in a summary
@@ -260,7 +272,7 @@ func (a *App) fitConvToWindow(ctx context.Context) {
 	// (U + A + note) form. Comparing the raw size against the new backend's
 	// ceiling would fire a spurious ⚠ + hard-max pass once a.Conv grows past
 	// the window even though the sent transcript fits comfortably.
-	sentSize := TranscriptSize(a.contextProjection())
+	sentSize := a.sentSize(a.contextProjection())
 	if sentSize <= hm {
 		return
 	}
@@ -310,6 +322,12 @@ Transcript:
 // enforceHardMax).
 func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, error) {
 	compactAt, keepBytes, _ := a.activeThresholds()
+	// Style bytes share the delivery budget but are not transcript messages.
+	// keepBoundary indices always target the unaugmented transcript/projection.
+	keepBytes -= a.styleSelection().Bytes()
+	// keepBoundary(0) means no retention, which would disable compaction.
+	// When guides exhaust retention, use the newest-turn-preserving path below.
+	keepNewestOnly := keepBytes <= 0 && a.styleSelection().Bytes() > 0
 	// In long-session mode, the compaction trigger should reflect the
 	// projected (sent) size, not the full a.Conv. But Compact operates on
 	// a.Conv directly, so materialise collapsed turns first so the summary
@@ -334,7 +352,11 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	// answers whether compaction would summarize anything. If not, return
 	// with the collapse state fully intact (non-destructive no-op).
 	if a.IsLongSession() {
-		if boundary := keepBoundary(a.contextProjection(), keepBytes); boundary <= 0 {
+		boundary := keepBoundary(a.contextProjection(), keepBytes)
+		if keepNewestOnly {
+			boundary = newestUserBoundary(a.contextProjection())
+		}
+		if boundary <= 0 {
 			return false, nil
 		}
 		a.materializeCollapsed()
@@ -349,10 +371,13 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	// Re-check size after eviction: if pruning brought us under compactAt,
 	// no compaction is needed (eviction was sufficient). The force flag
 	// bypasses this check (used by /compact and enforceHardMax).
-	if !force && TranscriptSize(a.Conv) <= compactAt {
+	if !force && a.sentSize(a.Conv) <= compactAt {
 		return false, nil
 	}
 	boundary := keepBoundary(a.Conv, keepBytes)
+	if keepNewestOnly {
+		boundary = newestUserBoundary(a.Conv)
+	}
 	if boundary <= 0 {
 		return false, nil
 	}
@@ -728,14 +753,14 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	// smaller than a.Conv. Only materialise when the projected size
 	// exceeds max — otherwise the collapse is working and no fallback
 	// is needed.
-	sentSize := TranscriptSize(a.contextProjection())
+	sentSize := a.sentSize(a.contextProjection())
 	if sentSize <= max {
 		return
 	}
 	if a.IsLongSession() {
 		a.materializeCollapsed()
 	}
-	sizeBefore := TranscriptSize(a.Conv)
+	sizeBefore := a.sentSize(a.Conv)
 	// Try a forced compact pass first — summarise rather than drop when possible.
 	a.Compact(ctx, a.summarizeFn(), true) //nolint:errcheck
 
@@ -744,7 +769,7 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	droppedSubagent := false
 	for {
 		a.convMu.RLock()
-		convSize := TranscriptSize(a.Conv)
+		convSize := a.sentSize(a.Conv)
 		convLen := len(a.Conv)
 		a.convMu.RUnlock()
 		if convSize <= max || convLen <= 1 {
@@ -767,9 +792,9 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	if droppedTurns == 0 {
 		// Could not drop any turns (all remaining content is pinned or
 		// no droppable turns exist). If still over max, warn explicitly.
-		if TranscriptSize(a.Conv) > max {
+		if a.sentSize(a.Conv) > max {
 			fmt.Fprintf(a.Out, Yellow("⚠ hard-max could not be met — %dk remains (limit %dk). Pinned content may exceed the limit.\n"),
-				TranscriptSize(a.Conv)/1000, max/1000)
+				a.sentSize(a.Conv)/1000, max/1000)
 		}
 		return
 	}
@@ -816,8 +841,8 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	}
 	// Check if the hard max is still not met after dropping (partial drop
 	// case — some turns were shed but pinned content keeps us over the limit).
-	if TranscriptSize(a.Conv) > max {
-		fmt.Fprintf(&b, "\n  ⚠ %s", Yellow(fmt.Sprintf("hard-max still not met — %dk remains (limit %dk), pinned content may exceed the limit", TranscriptSize(a.Conv)/1000, max/1000)))
+	if a.sentSize(a.Conv) > max {
+		fmt.Fprintf(&b, "\n  ⚠ %s", Yellow(fmt.Sprintf("hard-max still not met — %dk remains (limit %dk), pinned content may exceed the limit", a.sentSize(a.Conv)/1000, max/1000)))
 	}
 	fmt.Fprintln(a.Out, b.String())
 }

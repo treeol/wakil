@@ -1,0 +1,5 @@
+- Follow the project's TypeScript version, tsconfig, formatter, linter, module system, and framework conventions.
+- Preserve type safety: avoid unnecessary any, unsafe assertions, and non-null assertions. Model invalid states out of public types where practical.
+- Handle promise failures deliberately and avoid floating promises. Use existing async, cancellation, and error-handling patterns.
+- Keep functions and components focused; use descriptive names and avoid unexpected side effects. Match existing import and export conventions.
+- Add focused tests for behavior and failure cases. Do not add dependencies, change compiler settings, or reformat unrelated code without need.

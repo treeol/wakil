@@ -32,6 +32,7 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/sessionhistory"
 	"github.com/treeol/wakil/internal/staging"
+	"github.com/treeol/wakil/internal/styleguide"
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
 	"github.com/treeol/wakil/prompts"
@@ -87,6 +88,12 @@ type AppResources struct {
 // already opened.
 func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.App, *AppResources, error) {
 	var res AppResources
+
+	// Validate user-owned style files before endpoint probes or tool managers.
+	guides, err := styleguide.NewCatalog(cfg.StyleGuidesEnabled, cfg.StyleGuidePaths)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// The workspace the tools operate on (the executor's root), not the launch
 	// directory: in docker mode this is the in-container /mnt/<basename>, in
@@ -215,6 +222,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		agent.WithCosts(proxy.NewCostTracker()),
 		agent.WithVerifyEnabled(len(cfg.Verify) > 0),
 	)
+	app.SetStyleGuideCatalog(guides)
 
 	// Initialize lifecycle hooks (nil when no hooks configured — hot path
 	// skips all hook checks). Hooks run on the host, not the sandbox.

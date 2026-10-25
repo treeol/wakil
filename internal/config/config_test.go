@@ -860,6 +860,38 @@ func TestLoadConfig_ExplicitConfigMissingDoesNotCreate(t *testing.T) {
 	}
 }
 
+func TestStyleGuidePathsResolveBesideConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "styles"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	content := `{"base_url":"http://localhost:11400","style_guides_enabled":true,"style_guide_paths":{"go":"styles/go.md","python":"~/python.md"}}`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err := LoadConfig([]string{"--config", cfgPath, "--exec", "direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.StyleGuidePaths["go"], filepath.Join(dir, "styles", "go.md"); got != want {
+		t.Fatalf("relative path = %q, want %q", got, want)
+	}
+	if got, want := cfg.StyleGuidePaths["python"], filepath.Join(home, "python.md"); got != want {
+		t.Fatalf("home path = %q, want %q", got, want)
+	}
+}
+
+func TestStyleGuideDisabledDoesNotResolvePaths(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StyleGuidePaths = map[string]string{"go": "styles/go.md"}
+	if cfg.StyleGuidesEnabled {
+		t.Fatal("style guides must be opt-in")
+	}
+}
+
 func TestClipboardMode_DefaultIsAuto(t *testing.T) {
 	if got := DefaultConfig().ClipboardMode; got != ClipboardModeAuto {
 		t.Errorf("default ClipboardMode = %q, want %q", got, ClipboardModeAuto)

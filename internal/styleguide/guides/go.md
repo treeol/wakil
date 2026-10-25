@@ -1,0 +1,5 @@
+- Follow the project's Go version, formatting, and lint configuration; run gofmt on changed Go files.
+- Keep packages cohesive and exported APIs small. Use clear names; avoid unnecessary abbreviations and stutter.
+- Return errors with useful context using fmt.Errorf and %w; do not panic for ordinary failures or silently discard errors.
+- Propagate context cancellation and prefer standard-library interfaces at API boundaries. Do not launch unbounded goroutines or share mutable state without synchronization.
+- Use table-driven tests for meaningful behavior and edge cases. Avoid unrelated formatting, generated-code edits, and dependency upgrades.

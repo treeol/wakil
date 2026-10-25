@@ -250,7 +250,10 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// once at Send entry) when InjectDate is on — no per-iteration rebuild.
 		// In long-session mode, contextProjection returns the collapsed view
 		// (U + A + note per finished turn). In standard mode it returns a.Conv.
-		msgs := a.contextProjection()
+		msgs := a.requestMessages()
+		if _, _, hardMax := a.activeThresholds(); hardMax > 0 && a.styleSelection().Bytes() > 0 && TranscriptSize(msgs) > hardMax {
+			return "", false, fmt.Errorf("context including style guides is %d bytes; protected content exceeds the %d-byte request limit", TranscriptSize(msgs), hardMax)
+		}
 
 		sink := a.streamSink()
 
@@ -402,6 +405,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// path-confinement breaker — ConfinePath error text is short and
 			// never capped, so this ordering is only for clarity/robustness.
 			trackConfinement(result)
+			a.observeStyleToolPath(tc.Function.Name, tc.Function.Arguments, result.ok)
 
 			// Capture pre-cap size before CapOrStub so the trace reflects actual
 			// tool output, not the truncated version the model sees.

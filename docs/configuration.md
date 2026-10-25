@@ -123,6 +123,8 @@ reference covering every section below.
 | `mashura_fallback_model` | `""` | Explicitly prefixed fallback model (e.g. `"openrouter:anthropic/claude-sonnet-4"`) used when no `default` panel is configured. If empty, auto-detects based on which API key is set. Must include provider prefix. |
 | `lsp_enabled` | `false` | Gate for `lsp_*` code-intelligence tools |
 | `lsp_servers` | — | Maps language → server command |
+| `style_guides_enabled` | `false` | Enable built-in and user-configured language style guides |
+| `style_guide_paths` | `{}` | Map language ID → replacement or custom host-side guide file; paths relative to the config file, `~/` expanded |
 | `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium) |
 | `memory_preflight_recall` | `true` | Turn-entry memory/skill retrieval: one FTS query per user request; injects top hits as a delimited untrusted-data block. Set `false` to disable. |
 | `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
@@ -198,6 +200,62 @@ directory:
 ```sh
 ln -sf "$(pwd)/prompts/agent.txt" ~/.config/wakil/agent.txt
 ```
+
+## Language style guides
+
+Set `style_guides_enabled` to `true` to opt in. Wakil includes concise guides for
+Go, Python, TypeScript, and JavaScript. These advise on coding style only; they
+do not run formatters, install tools, change dependencies, or override safety
+rules, your current request, repository `AGENTS.md` instructions, or project
+formatting/lint configuration.
+
+To replace a built-in guide or add another language, configure a host-side file:
+
+```json
+{
+  "style_guides_enabled": true,
+  "style_guide_paths": {
+    "go": "styles/go.md",
+    "python": "~/Documents/python-style.md",
+    "rs": "styles/rust.md"
+  }
+}
+```
+
+A configured path **replaces**, rather than supplements, the embedded guide for
+that language. Relative paths resolve beside the selected config file (usually
+`~/.config/wakil/config.json`), not the workspace; `~/` expands to your home
+directory. Files are read once at startup and reloaded when Wakil is restarted.
+They must be regular, nonempty UTF-8 files that fit the rendered-message limit;
+an unreadable, invalid, or oversized configured file causes a startup error.
+Symlinks to regular files are followed. Paths are host paths, including in
+Docker mode.
+
+A custom key is both a language name and filename extension: `rs` matches the
+name `rs` and `.rs` files. Use an extension-based key such as `rs` rather than
+`rust` when you want ordinary `.rs` files recognized automatically. The
+built-in aliases cover `golang` (or a `.go` path), `py`/`python`, `js`/`javascript`, and
+TypeScript/JavaScript filename variants including `.tsx` and `.jsx`.
+
+Explicitly named languages in coding requests stay selected for the session.
+File paths used by successful `read_file`, `read_file_full`, `write_file`, and
+`edit_file` calls select a guide only for that request; the selection affects
+the next model call, not an edit already generated. At most two guides and 4096
+rendered bytes are active. When two explicit guides fill the selection, later
+languages are omitted with a notice rather than replacing an explicit choice.
+
+Guides are rebuilt as a transient system message on each model request. They
+are **not** saved in conversation history, collapse archives, or summaries, so
+compaction and long-session collapse cannot discard the active selection. New
+or loaded sessions start with no selection; subsequent requests activate guides
+again. Subagents inherit the active guides and may add their own, without
+modifying the parent session. `Disable the Python guide` (or another configured
+language) suppresses that language's sticky and path activation; `Enable the
+Python guide` restores it. `Disable style guides` suppresses all activation for
+the current session; `Enable style guides` allows subsequent activation again.
+
+Style bytes count toward context limits; Wakil returns an explicit error rather
+than delivering an over-limit request.
 
 ## Execution modes
 

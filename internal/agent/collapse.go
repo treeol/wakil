@@ -1440,6 +1440,14 @@ func (a *App) RemoveKeep(n int) {
 // ResumeConversation, and SetConv (daemon resume paths).
 func (a *App) RestoreTurnState(s *Session) {
 	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.restoreTurnStateLocked(s)
+}
+
+// restoreTurnStateLocked restores collapse and turn numbering while the caller
+// holds stateMu. InstallSession uses this to keep transcript installation and
+// restoration atomic without recursively acquiring the non-reentrant mutex.
+func (a *App) restoreTurnStateLocked(s *Session) {
 	// Always reset: an empty/legacy session should clear any prior state.
 	a.collapsed = map[int]CollapseRecord{}
 	for _, rec := range s.Collapsed {
@@ -1450,10 +1458,9 @@ func (a *App) RestoreTurnState(s *Session) {
 		a.keep[t] = true
 	}
 	a.lastOutcomeSuspended = false
-	a.stateMu.Unlock()
 
 	// Reset turnSeq to the max Turn in a.Conv so new turns continue
-	// numbering after the restored history.
+	// numbering after the restored history. Lock order is stateMu → convMu.
 	a.convMu.RLock()
 	maxTurn := 0
 	for _, m := range a.Conv {
@@ -1462,7 +1469,5 @@ func (a *App) RestoreTurnState(s *Session) {
 		}
 	}
 	a.convMu.RUnlock()
-	a.stateMu.Lock()
 	a.turnSeq = maxTurn
-	a.stateMu.Unlock()
 }

@@ -1367,6 +1367,12 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 	sub.filesChanged = fileRecorder
 	sub.externalActions = extRecorder
+	// The catalog is immutable; selection is a child-local copy. The child can
+	// activate another language for its own task without mutating its parent.
+	catalog, explicit := a.styleSnapshot()
+	sub.styleState.catalog = catalog
+	sub.styleState.explicit = append([]string(nil), explicit...)
+	sub.publishStyleSelection()
 
 	// Relay subagent file captures to the parent's active checkpoint so
 	// /rewind can undo subagent file mutations. Only set for edit-tier
@@ -1434,7 +1440,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 
 	raw, err := sub.Send(ctx, task)
 	grounding := sub.Client.Grounding()
-	ctxSize := TranscriptSize(sub.Conv)
+	ctxSize := sub.sentSize(sub.Conv)
 	usedBackend := sub.Client.LastUsedBackend()
 
 	// Capture exhaustion from the first Send before the retry path runs.

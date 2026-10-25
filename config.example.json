@@ -98,6 +98,11 @@
     }
   },
 
+  "_comment_style_guides": "Optional language-specific coding guidance. Disabled by default. Embedded guides: go, python, typescript, javascript. style_guide_paths replaces a built-in or adds a custom language; files are read on the host once at startup. Relative paths resolve beside this config file; ~/ is expanded. Custom key 'rs' matches .rs paths and the name rs. Maximum two active guides and 4096 rendered bytes.",
+
+  "style_guides_enabled": false,
+  "style_guide_paths": {},
+
   "_comment_browser": "Headless-browser tools (chromedp + Chromium) for visual verification, DOM inspection, interaction testing. Off by default. Requires chromium in the sandbox image (included in the default Dockerfile). Set browser_path to a specific Chromium binary when it's not in PATH (e.g. on a bare host).",
 
   "browser_enabled": false,

@@ -1,0 +1,5 @@
+- Follow the project's Python version, formatter, linter, and dependency conventions; match surrounding code.
+- Prefer small functions, clear names, useful type hints, and pathlib for filesystem paths. Keep public APIs focused.
+- Raise specific exceptions and catch only exceptions that can be handled; avoid bare except and silent fallback behavior.
+- Use context managers for resources. Do not use mutable default arguments, unbounded background work, or unnecessary global state.
+- Prefer standard-library solutions where appropriate. Add or update focused tests, including error and boundary cases, without reformatting untouched files.

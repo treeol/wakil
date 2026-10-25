@@ -567,6 +567,12 @@ type Config struct {
 	// config file. If missing, the built-in fallback prompt is used.
 	AgentPromptPath string `json:"agent_prompt_path,omitempty"`
 
+	// StyleGuidesEnabled activates bounded language-specific coding guidance.
+	// StyleGuidePaths replaces embedded guides or adds custom languages using
+	// explicitly configured, host-side files loaded once at startup.
+	StyleGuidesEnabled bool              `json:"style_guides_enabled,omitempty"`
+	StyleGuidePaths    map[string]string `json:"style_guide_paths,omitempty"`
+
 	// Costs holds per-source pricing for the cost-tracking sidebar. All rates
 	// default to zero (unpriced): an unpriced source shows its call/token counts
 	// but "—" for cost rather than a misleading "$0.00".
@@ -1385,6 +1391,26 @@ func LoadConfig(argv []string) (Config, error) {
 	// supplied via the config file, env, or flags.
 	if cfg.AgentPromptPath == "" && cfgPath != "" {
 		cfg.AgentPromptPath = filepath.Join(filepath.Dir(cfgPath), "agent.txt")
+	}
+
+	// Style guide paths are host-side user files. Relative paths follow the
+	// selected config file, not the project workspace or launch directory.
+	if cfg.StyleGuidesEnabled && len(cfg.StyleGuidePaths) > 0 {
+		baseDir := filepath.Dir(cfgPath)
+		if cfgPath == "" {
+			baseDir = "."
+		}
+		absBase, err := filepath.Abs(baseDir)
+		if err != nil {
+			return cfg, fmt.Errorf("resolving style guide config directory: %w", err)
+		}
+		for id, path := range cfg.StyleGuidePaths {
+			path = expandTilde(path)
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(absBase, path)
+			}
+			cfg.StyleGuidePaths[id] = filepath.Clean(path)
+		}
 	}
 
 	// Normalize an explicitly-empty output_mode to the debug default (e.g. a

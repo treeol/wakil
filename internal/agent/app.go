@@ -254,6 +254,13 @@ type App struct {
 	// since it reads a.Conv).
 	extensionActivated bool
 
+	// Style-guide catalog is immutable. Mutable activation bookkeeping is
+	// stateMu-protected; one atomic snapshot serves RPC readers and detached
+	// child construction. Guides never enter Conv or Session.
+	styleState   styleGuideState
+	styleActive  atomic.Value // styleSnapshot
+	styleOmitted map[string]bool
+
 	// Turn tracking (long-session mode bookkeeping). Turn goroutine only —
 	// no lock needed for writes; reads under convMu.RLock when from another
 	// goroutine. turnSeq is the monotonic counter; curTurn is the current
@@ -705,7 +712,7 @@ func (a *App) ConvSnapshot() []proxy.Message {
 // records, this reflects the projected (collapsed) size, not the full history.
 func (a *App) ConvStats() (length int, transcriptSize int) {
 	proj := a.contextProjection()
-	return len(proj), format.TranscriptSize(proj)
+	return len(proj), format.TranscriptSize(proj) + a.styleSelection().Bytes()
 }
 
 // ConvStatsFull returns the conversation length and transcript size of the
@@ -976,9 +983,10 @@ func (a *App) InstallSession(s *Session) {
 
 	// Restore long-session collapse state (turn numbers, collapse records,
 	// keep set) so the projection survives /resume.
-	a.RestoreTurnState(s)
+	a.restoreTurnStateLocked(s)
 
 	a.Session = s
+	a.resetStyleGuides()
 	a.resetBackendConsent()
 	a.preambleDay = ""
 }
@@ -1013,6 +1021,7 @@ func (a *App) NewConversationTransition(chatID string) {
 
 	// Reset split-prompt activation so a new session re-classifies.
 	a.extensionActivated = false
+	a.resetStyleGuides()
 
 	a.preambleDay = ""
 	// Reset session-started flag so session_start hooks fire for the new session.
@@ -1088,6 +1097,7 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	a.ilmSessionStartOnce()
 
 	a.prepareTurn()
+	a.prepareStyleGuides(userText)
 
 	if !a.checkEgressConsent() {
 		return TurnOutcome{Kind: TurnDeclined, Cause: StopCauseConsentDeclined}, nil

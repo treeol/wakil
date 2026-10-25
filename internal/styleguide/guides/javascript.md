@@ -1,0 +1,5 @@
+- Follow the project's JavaScript runtime, module system, formatter, linter, and framework conventions.
+- Use const by default and let when reassignment is needed; avoid var and unintended globals. Prefer clear names and focused functions.
+- Handle promise failures deliberately and avoid floating promises. Use existing async, cancellation, and error-handling patterns.
+- Validate external input at trust boundaries and preserve the project's equality, import, and export conventions.
+- Add focused tests for behavior and failure cases. Avoid unrelated modernization, new dependencies, or reformatting untouched files.

@@ -93,6 +93,9 @@ func (a *App) AppendSystemMessage(m proxy.Message) {
 // (mirrors the embedded ResumeConversation's `f.app.Conv = s.Conv` assignment,
 // but under the lock since the daemon handler is not on the turn goroutine).
 func (a *App) SetConv(conv []proxy.Message) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.resetStyleGuides()
 	a.convMu.Lock()
 	a.Conv = append([]proxy.Message(nil), conv...)
 	a.convMu.Unlock()

@@ -421,7 +421,7 @@ func (a *App) ContextUsage() (tokens int, exact bool) {
 			return int(u.InputTok), u.Exact
 		}
 	}
-	return int(proxy.ApproxTokens(TranscriptSize(a.contextProjection()))), false
+	return int(proxy.ApproxTokens(a.sentSize(a.contextProjection()))), false
 }
 
 // nearContextLimit reports whether the current context occupancy is within ~10%
