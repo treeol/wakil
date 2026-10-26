@@ -386,6 +386,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// Bare /mode: show both exec backend and context mode.
 		return true, false, note("exec: " + app.Exec.Describe() + " · context: " + app.ContextMode())
 
+	case "/styles":
+		return true, false, note(app.HandleStyleCommand(fields))
+
 	case "/prompt":
 		if len(fields) > 1 {
 			arg := fields[1]
@@ -1663,6 +1666,8 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /cwd                 show executor working directory
 /mode [standard|long-session|long|status]  show exec backend / set context mode
 /prompt [full|core|status]  show/set prompt mode (core = lean preamble, extension lazy-loaded)
+/styles              show loaded style guides and actual session state
+/styles enable|disable <language|all>  control this session (no config changes)
 /keep <n>            keep request n in full context (exempt from long-session collapse)
 /keep off <n>        remove the keep exemption for request n
 /history             transcript size

@@ -231,11 +231,21 @@ an unreadable, invalid, or oversized configured file causes a startup error.
 Symlinks to regular files are followed. Paths are host paths, including in
 Docker mode.
 
-A custom key is both a language name and filename extension: `rs` matches the
-name `rs` and `.rs` files. Use an extension-based key such as `rs` rather than
-`rust` when you want ordinary `.rs` files recognized automatically. The
-built-in aliases cover `golang` (or a `.go` path), `py`/`python`, `js`/`javascript`, and
+Common language keys are canonicalized: `rs` and `rust` both identify a Rust
+guide, recognize the names `rust` and `rs`, and match `.rs` files. Do not
+configure both keys; that is a duplicate-language startup error. Other custom
+keys retain their language-name and filename-extension behavior. Built-in
+aliases cover `golang`, `py`/`python`, `js`/`javascript`, and
 TypeScript/JavaScript filename variants including `.tsx` and `.jsx`.
+
+`/styles` deterministically lists every successfully loaded guide, its source
+(`embedded` or `user`), and whether it is active, available, disabled, or
+selected but omitted by a limit. It reads startup state; it does not search
+skills, invoke a model, or reload files. `/styles enable <language>` explicitly
+selects a guide for the session, `/styles disable <language>` suppresses its
+sticky and path activation, and `/styles enable|disable all` lifts or applies
+the session-wide opt-out. `all` resumes automatic selection rather than
+selecting every guide at once. These controls never change configuration.
 
 Explicitly named languages in coding requests stay selected for the session.
 File paths used by successful `read_file`, `read_file_full`, `write_file`, and

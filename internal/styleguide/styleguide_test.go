@@ -25,18 +25,56 @@ func TestEmbeddedCatalogAndReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selection, omitted := c.Select([]string{"go"}, []string{"rs"})
+	selection, omitted := c.Select([]string{"go"}, []string{"rust"})
 	if len(omitted) != 0 || !strings.Contains(selection.Text(), "MY-GO-RULES") || !strings.Contains(selection.Text(), "RUST-RULES") {
 		t.Fatalf("unexpected selection: %#v %v", selection.Sources(), omitted)
 	}
 	if strings.Contains(selection.Text(), "gofmt") {
 		t.Fatal("replacement must not concatenate the embedded guide")
 	}
-	if got := c.LanguageForPath("MAIN.RS"); got != "rs" {
-		t.Fatalf("LanguageForPath = %q, want rs", got)
+	if got := c.LanguageForPath("MAIN.RS"); got != "rust" {
+		t.Fatalf("LanguageForPath = %q, want rust", got)
+	}
+	if got := c.NamedLanguages("Use the rust and rs guides"); !reflect.DeepEqual(got, []string{"rust"}) {
+		t.Fatalf("Rust aliases = %v, want one canonical guide", got)
+	}
+	if id, enable, ok := c.GuideDirective("Use the rust guide"); !ok || !enable || id != "rust" {
+		t.Fatalf("Rust directive = %q %v %v", id, enable, ok)
 	}
 	if got := c.LanguageForPath("thing.py"); got != "python" {
 		t.Fatalf("LanguageForPath = %q, want python", got)
+	}
+}
+
+func TestCanonicalCustomLanguageKeys(t *testing.T) {
+	dir := t.TempDir()
+	for _, key := range []string{"rs", "rust"} {
+		path := filepath.Join(dir, key+".md")
+		if err := os.WriteFile(path, []byte("RUST-RULES"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := NewCatalog(true, map[string]string{key: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, alias := range []string{"rs", "rust"} {
+			if got := c.Resolve(alias); got != "rust" {
+				t.Errorf("Resolve(%q) with key %q = %q", alias, key, got)
+			}
+		}
+		if got := c.NamedLanguages("Use the rust guide"); !reflect.DeepEqual(got, []string{"rust"}) {
+			t.Errorf("Rust name = %v", got)
+		}
+		if got := c.LanguageForPath("main.rs"); got != "rust" {
+			t.Errorf("Rust extension = %q", got)
+		}
+	}
+	other := filepath.Join(dir, "other.md")
+	if err := os.WriteFile(other, []byte("RUST-RULES"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewCatalog(true, map[string]string{"rs": other, "rust": other}); err == nil {
+		t.Fatal("duplicate canonical language should fail")
 	}
 }
 

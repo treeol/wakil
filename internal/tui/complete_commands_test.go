@@ -142,6 +142,7 @@ func TestSlashArgCompletionKeywords(t *testing.T) {
 		{"/sessions ", []string{"all"}},
 		{"/repomap ", []string{"--symbols"}},
 		{"/mode long", []string{"long", "long-session"}},
+		{"/styles ", []string{"disable", "enable"}},
 	}
 	for _, tc := range cases {
 		st := computeSlashCompletion(newTA(tc.input), compSources{}, nil)

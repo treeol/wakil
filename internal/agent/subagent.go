@@ -1369,9 +1369,11 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	sub.externalActions = extRecorder
 	// The catalog is immutable; selection is a child-local copy. The child can
 	// activate another language for its own task without mutating its parent.
-	catalog, explicit := a.styleSnapshot()
-	sub.styleState.catalog = catalog
-	sub.styleState.explicit = append([]string(nil), explicit...)
+	snapshot := a.styleSnapshot()
+	sub.styleState.catalog = snapshot.catalog
+	sub.styleState.explicit = snapshot.explicit
+	sub.styleState.path = snapshot.path
+	sub.styleState.disabled = snapshot.disabled
 	sub.publishStyleSelection()
 
 	// Relay subagent file captures to the parent's active checkpoint so

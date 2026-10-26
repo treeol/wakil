@@ -251,7 +251,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// In long-session mode, contextProjection returns the collapsed view
 		// (U + A + note per finished turn). In standard mode it returns a.Conv.
 		msgs := a.requestMessages()
-		if _, _, hardMax := a.activeThresholds(); hardMax > 0 && a.styleSelection().Bytes() > 0 && TranscriptSize(msgs) > hardMax {
+		if _, _, hardMax := a.activeThresholds(); hardMax > 0 && requestHasStyleGuide(msgs) && TranscriptSize(msgs) > hardMax {
 			return "", false, fmt.Errorf("context including style guides is %d bytes; protected content exceeds the %d-byte request limit", TranscriptSize(msgs), hardMax)
 		}
 

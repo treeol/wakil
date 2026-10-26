@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/treeol/wakil/internal/proxy"
@@ -32,6 +33,125 @@ func (a *App) SetStyleGuideCatalog(catalog *styleguide.Catalog) {
 	a.resetStyleGuides()
 }
 
+// HandleStyleCommand reports catalog-backed state or changes this session's
+// selection. It never reads guide files, changes configuration, or invokes a model.
+func (a *App) HandleStyleCommand(fields []string) string {
+	if len(fields) == 1 {
+		return a.styleStatus()
+	}
+	if len(fields) != 3 || (fields[1] != "enable" && fields[1] != "disable") {
+		return "usage: /styles | /styles enable|disable <language|all>"
+	}
+	return a.setStyleGuide(fields[1] == "enable", fields[2])
+}
+
+func (a *App) styleStatus() string {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	catalog := a.styleState.catalog
+	if catalog == nil || len(catalog.Guides()) == 0 {
+		return "style guides: disabled or none configured\n  enable in config with \"style_guides_enabled\": true, then restart"
+	}
+	active := map[string]bool{}
+	for _, id := range a.styleSelection().IDs() {
+		active[id] = true
+	}
+	var b strings.Builder
+	b.WriteString("style guides (loaded at startup):")
+	_, omitted := catalog.Select(a.styleState.explicit, nil)
+	omittedIDs := map[string]bool{}
+	for _, id := range omitted {
+		omittedIDs[id] = true
+	}
+	for _, guide := range catalog.Guides() {
+		state := "available"
+		if a.styleState.disabled["*"] || a.styleState.disabled[guide.ID] {
+			state = "disabled"
+		} else if omittedIDs[guide.ID] {
+			state = "selected; omitted by limit"
+		}
+		if active[guide.ID] {
+			state = "active"
+		}
+		fmt.Fprintf(&b, "\n  %s (%s): %s", guide.ID, guide.Source, state)
+	}
+	b.WriteString("\nUse /styles enable|disable <language|all>; project AGENTS.md and your request take priority.")
+	return b.String()
+}
+
+func (a *App) setStyleGuide(enable bool, name string) string {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	catalog := a.styleState.catalog
+	if catalog == nil || len(catalog.Guides()) == 0 {
+		return "style guides are not enabled; set style_guides_enabled in config and restart"
+	}
+	name = strings.ToLower(name)
+	if name == "all" {
+		if a.styleState.disabled == nil {
+			a.styleState.disabled = map[string]bool{}
+		}
+		if enable {
+			delete(a.styleState.disabled, "*")
+		} else {
+			a.styleState.disabled["*"] = true
+			a.styleState.explicit = nil
+			a.styleState.path = nil
+		}
+		a.publishStyleSelection()
+		return a.styleCommandResult(enable, "all")
+	}
+	id := catalog.Resolve(name)
+	if id == "" || !catalog.Has(id) {
+		loaded := catalog.Guides()
+		names := make([]string, 0, len(loaded))
+		for _, guide := range loaded {
+			names = append(names, guide.ID)
+		}
+		sort.Strings(names)
+		return fmt.Sprintf("style guide %q is not loaded; available: %s", name, strings.Join(names, ", "))
+	}
+	if a.styleState.disabled == nil {
+		a.styleState.disabled = map[string]bool{}
+	}
+	if enable {
+		if a.styleState.disabled["*"] {
+			return "all style guides are disabled; run /styles enable all first"
+		}
+		delete(a.styleState.disabled, id)
+		if !containsString(a.styleState.explicit, id) {
+			a.styleState.explicit = append(a.styleState.explicit, id)
+		}
+	} else {
+		a.styleState.disabled[id] = true
+		a.styleState.explicit = removeString(a.styleState.explicit, id)
+		a.styleState.path = removeString(a.styleState.path, id)
+	}
+	a.publishStyleSelection()
+	return a.styleCommandResult(enable, id)
+}
+
+func (a *App) styleCommandResult(enable bool, id string) string {
+	// Caller holds stateMu.
+	verb := "disabled"
+	if enable {
+		verb = "enabled"
+	}
+	result := "style guide " + id + ": " + verb
+	if enable && id == "all" {
+		result = "style guides: automatic activation re-enabled; individual opt-outs preserved"
+	}
+	if _, omitted := a.styleState.catalog.Select(a.styleState.explicit, nil); len(omitted) > 0 {
+		result += fmt.Sprintf("\n⚠ not active due to the %d-guide/%d-byte limit: %s", styleguide.MaxGuides, styleguide.MaxMessageBytes, strings.Join(omitted, ", "))
+	}
+	if active := a.styleSelection().Sources(); len(active) > 0 {
+		result += "\nactive: " + strings.Join(active, ", ")
+	} else {
+		result += "\nactive: none"
+	}
+	return result
+}
+
 func (a *App) styleSelection() styleguide.Selection {
 	if v := a.styleActive.Load(); v != nil {
 		return v.(styleSnapshot).active
@@ -39,30 +159,66 @@ func (a *App) styleSelection() styleguide.Selection {
 	return emptyStyleSelection
 }
 
-func (a *App) styleSnapshot() (*styleguide.Catalog, []string) {
+func (a *App) styleSnapshot() styleSnapshot {
 	if v := a.styleActive.Load(); v != nil {
 		s := v.(styleSnapshot)
-		return s.catalog, append([]string(nil), s.explicit...)
+		s.explicit = append([]string(nil), s.explicit...)
+		s.disabled = copyStyleDisabled(s.disabled)
+		s.path = append([]string(nil), s.path...)
+		return s
 	}
-	return nil, nil
+	return styleSnapshot{}
 }
 
 type styleSnapshot struct {
 	catalog  *styleguide.Catalog
 	explicit []string
+	path     []string
+	disabled map[string]bool
 	active   styleguide.Selection
+}
+
+func copyStyleDisabled(in map[string]bool) map[string]bool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for id, disabled := range in {
+		out[id] = disabled
+	}
+	return out
 }
 
 // publishStyleSelection builds from caller-owned fields, then publishes one
 // immutable snapshot. Callers hold stateMu (or are constructing an unpublished
 // child); no I/O or callbacks occur here.
 func (a *App) publishStyleSelection() {
-	selection, _ := a.styleState.catalog.Select(a.styleState.explicit, a.styleState.path)
+	explicit := a.styleState.explicit
+	paths := a.styleState.path
+	if a.styleState.disabled["*"] {
+		explicit, paths = nil, nil
+	} else {
+		explicit = a.enabledStyleIDs(explicit)
+		paths = a.enabledStyleIDs(paths)
+	}
+	selection, _ := a.styleState.catalog.Select(explicit, paths)
 	a.styleActive.Store(styleSnapshot{
 		catalog:  a.styleState.catalog,
 		explicit: append([]string(nil), a.styleState.explicit...),
+		path:     append([]string(nil), a.styleState.path...),
+		disabled: copyStyleDisabled(a.styleState.disabled),
 		active:   selection,
 	})
+}
+
+func (a *App) enabledStyleIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !a.styleState.disabled[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (a *App) prepareStyleGuides(userText string) {
@@ -89,7 +245,7 @@ func (a *App) updateStyleGuides(userText string) (notices []string) {
 		a.styleState.disabled["*"] = true
 		a.styleState.explicit = nil
 		a.publishStyleSelection()
-		return nil
+		return []string{Dim("· style guides disabled for this session")}
 	}
 	if id, enable, ok := a.styleState.catalog.GuideDirective(userText); ok {
 		if a.styleState.disabled == nil {
@@ -97,17 +253,11 @@ func (a *App) updateStyleGuides(userText string) (notices []string) {
 		}
 		if enable {
 			if a.styleState.disabled["*"] {
-				return nil
+				return []string{Yellow("style guides remain globally disabled; use /styles enable all first")}
 			}
 			delete(a.styleState.disabled, id)
 			if !containsString(a.styleState.explicit, id) {
-				if len(a.styleState.explicit) >= styleguide.MaxGuides {
-					if warning := a.styleOmittedOnce([]string{id}); warning != "" {
-						notices = append(notices, warning)
-					}
-				} else {
-					a.styleState.explicit = append(a.styleState.explicit, id)
-				}
+				a.styleState.explicit = append(a.styleState.explicit, id)
 			}
 		} else {
 			a.styleState.disabled[id] = true
@@ -132,14 +282,7 @@ func (a *App) updateStyleGuides(userText string) (notices []string) {
 				continue
 			}
 			if !containsString(a.styleState.explicit, id) {
-				// Explicit languages are session-sticky and cannot be evicted
-				// by incidental tool paths.
-				if len(a.styleState.explicit) >= styleguide.MaxGuides {
-					if warning := a.styleOmittedOnce([]string{id}); warning != "" {
-						notices = append(notices, warning)
-					}
-					continue
-				}
+				// Keep overflow requests pending; a freed slot promotes them.
 				a.styleState.explicit = append(a.styleState.explicit, id)
 			}
 		}
@@ -286,4 +429,13 @@ func (a *App) requestMessages() []proxy.Message {
 
 func (a *App) sentSize(messages []proxy.Message) int {
 	return TranscriptSize(messages) + a.styleSelection().Bytes()
+}
+
+func requestHasStyleGuide(messages []proxy.Message) bool {
+	for _, message := range messages {
+		if message.Role == "system" && strings.HasPrefix(DerefStr(message.Content), "Language style guidance") {
+			return true
+		}
+	}
+	return false
 }

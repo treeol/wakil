@@ -490,6 +490,12 @@ func TestRemoteFacadeDispatchCommand(t *testing.T) {
 		t.Errorf("/resume: Handled=%v ResumePicker=%v", r.Handled, r.ResumePicker)
 	}
 
+	// /styles must never fall through as ordinary model input.
+	r = f.DispatchCommand("/styles")
+	if !r.Handled || !strings.Contains(r.Notice, "not available remotely") {
+		t.Errorf("/styles: %+v", r)
+	}
+
 	// Unknown command → not handled
 	r = f.DispatchCommand("hello world")
 	if r.Handled {

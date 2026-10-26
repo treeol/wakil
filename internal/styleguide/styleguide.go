@@ -33,6 +33,16 @@ type Guide struct {
 	Content string
 }
 
+// languageAliases normalizes common names to one catalog ID. Config keys use
+// the same names as requests, so "rs" and "rust" cannot become separate guides.
+var languageAliases = map[string]string{
+	"golang": "go", "go": "go",
+	"py": "python", "python": "python",
+	"rs": "rust", "rust": "rust",
+	"js": "javascript", "javascript": "javascript", "node": "javascript", "nodejs": "javascript",
+	"ts": "typescript", "typescript": "typescript",
+}
+
 // Catalog has separate language-name and extension lookup tables. It is safe
 // for concurrent use after construction.
 type Catalog struct {
@@ -67,40 +77,67 @@ func NewCatalog(enabled bool, paths map[string]string) (*Catalog, error) {
 	}
 	c.addAliases("go", []string{"golang"}, []string{"go"})
 	c.addAliases("python", []string{"py"}, []string{"py", "python", "pyi", "pyw"})
-	c.addAliases("typescript", nil, []string{"ts", "typescript", "tsx", "mts", "cts"})
+	c.addAliases("typescript", []string{"ts"}, []string{"ts", "typescript", "tsx", "mts", "cts"})
 	c.addAliases("javascript", []string{"js", "node", "nodejs"}, []string{"js", "javascript", "jsx", "mjs", "cjs"})
 
 	keys := make([]string, 0, len(paths))
 	for id := range paths {
-		keys = append(keys, id)
-	}
-	sort.Strings(keys)
-	if len(c.guides)+len(paths) > maxCatalogEntries {
-		return nil, fmt.Errorf("style_guide_paths: at most %d total guides are supported", maxCatalogEntries)
-	}
-	for _, id := range keys {
 		if err := validateID(id); err != nil {
 			return nil, fmt.Errorf("style_guide_paths[%q]: %w", id, err)
 		}
-		if c.names[id] != "" && c.names[id] != id {
-			return nil, fmt.Errorf("style_guide_paths[%q]: collides with an alias for %q", id, c.names[id])
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	if len(paths) > maxCatalogEntries {
+		return nil, fmt.Errorf("style_guide_paths: at most %d configured entries are supported", maxCatalogEntries)
+	}
+	for _, key := range keys {
+		id := canonicalLanguage(key)
+		if id == "" {
+			id = key
+		}
+		if previous := c.names[id]; previous != "" && previous != id {
+			return nil, fmt.Errorf("style_guide_paths[%q]: collides with an alias for %q", key, previous)
 		}
 		if c.extensions[id] != "" && c.extensions[id] != id {
-			return nil, fmt.Errorf("style_guide_paths[%q]: collides with an extension for %q", id, c.extensions[id])
+			return nil, fmt.Errorf("style_guide_paths[%q]: collides with an extension for %q", key, c.extensions[id])
 		}
-		data, err := readGuideFile(paths[id])
+		if previous, exists := c.guides[id]; exists && previous.Source == "user" {
+			return nil, fmt.Errorf("style_guide_paths[%q]: duplicate canonical language %q; configure only one key", key, id)
+		}
+		if key == "all" {
+			return nil, fmt.Errorf("style_guide_paths[%q]: reserved for /styles enable|disable all", key)
+		}
+		if c.names[key] != "" && c.names[key] != id {
+			return nil, fmt.Errorf("style_guide_paths[%q]: collides with an alias for %q", key, c.names[key])
+		}
+		if c.extensions[key] != "" && c.extensions[key] != id {
+			return nil, fmt.Errorf("style_guide_paths[%q]: collides with an extension for %q", key, c.extensions[key])
+		}
+		data, err := readGuideFile(paths[key])
 		if err != nil {
-			return nil, fmt.Errorf("style_guide_paths[%q]: %w", id, err)
+			return nil, fmt.Errorf("style_guide_paths[%q]: %w", key, err)
 		}
 		guide := Guide{ID: id, Source: "user", Content: strings.TrimSpace(string(data))}
 		if err := validateGuide(guide); err != nil {
-			return nil, fmt.Errorf("style_guide_paths[%q]: %w", id, err)
+			return nil, fmt.Errorf("style_guide_paths[%q]: %w", key, err)
 		}
-		// A custom ID also names its extension. For example, "rs" recognizes
-		// ordinary .rs paths; "rust" recognizes .rust and the name "rust".
+		// Canonical names and the configured extension key share one guide.
+		// Thus either "rs" or "rust" recognizes Rust requests and .rs paths.
 		c.guides[id] = guide
 		c.names[id] = id
-		c.extensions[id] = id
+		c.names[key] = id
+		c.extensions[key] = id
+		if id == "python" {
+			c.names["py"] = id
+		}
+		if id == "javascript" {
+			c.names["js"] = id
+		}
+		if id == "rust" {
+			c.names["rs"] = id
+			c.extensions["rs"] = id
+		}
 	}
 	return c, nil
 }
@@ -123,6 +160,18 @@ func (c *Catalog) LanguageForPath(path string) string {
 	return c.extensions[ext]
 }
 
+func canonicalLanguage(id string) string {
+	return languageAliases[strings.ToLower(id)]
+}
+
+// Resolve returns the canonical guide ID for a configured language name or alias.
+func (c *Catalog) Resolve(name string) string {
+	if c == nil {
+		return ""
+	}
+	return c.names[strings.ToLower(name)]
+}
+
 // Has reports whether a canonical guide ID is configured.
 func (c *Catalog) Has(id string) bool {
 	if c == nil {
@@ -130,6 +179,25 @@ func (c *Catalog) Has(id string) bool {
 	}
 	_, ok := c.guides[id]
 	return ok
+}
+
+// Info describes loaded guides without exposing their prompt content.
+type Info struct {
+	ID     string
+	Source string
+}
+
+// Guides returns all successfully loaded guides in stable ID order.
+func (c *Catalog) Guides() []Info {
+	if c == nil {
+		return nil
+	}
+	out := make([]Info, 0, len(c.guides))
+	for _, guide := range c.guides {
+		out = append(out, Info{ID: guide.ID, Source: guide.Source})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // NamedLanguages returns unique canonical IDs explicitly named in text.
@@ -166,7 +234,13 @@ func (c *Catalog) GuideDirective(text string) (id string, enable bool, ok bool) 
 		return "", false, false
 	}
 	lower := strings.ToLower(text)
-	for alias, canonical := range c.names {
+	aliases := make([]string, 0, len(c.names))
+	for alias := range c.names {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	for _, alias := range aliases {
+		canonical := c.names[alias]
 		for _, directive := range []struct {
 			phrase  string
 			enable  bool

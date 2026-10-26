@@ -340,6 +340,48 @@ func TestStyleGuideCompactionExcludesGuideAndKeepsNewest(t *testing.T) {
 	}
 }
 
+func TestStyleCommandPendingPromotionAndUserStatus(t *testing.T) {
+	app := enabledStyleApp(t, "http://unused")
+	app.HandleStyleCommand([]string{"/styles", "enable", "go"})
+	app.HandleStyleCommand([]string{"/styles", "enable", "python"})
+	app.HandleStyleCommand([]string{"/styles", "enable", "typescript"})
+	if got := app.HandleStyleCommand([]string{"/styles"}); !strings.Contains(got, "typescript (embedded): selected; omitted by limit") {
+		t.Fatalf("omitted status = %q", got)
+	}
+	app.HandleStyleCommand([]string{"/styles", "disable", "go"})
+	if got := app.styleSelection().IDs(); len(got) != 2 || got[0] != "python" || got[1] != "typescript" {
+		t.Fatalf("pending guide not promoted: %v", got)
+	}
+	path := filepath.Join(t.TempDir(), "rust.md")
+	if err := os.WriteFile(path, []byte("RUST-RULES"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := styleguide.NewCatalog(true, map[string]string{"rs": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.SetStyleGuideCatalog(catalog)
+	if got := app.HandleStyleCommand([]string{"/styles"}); !strings.Contains(got, "rust (user): available") {
+		t.Fatalf("user source status = %q", got)
+	}
+}
+
+func TestStyleSnapshotCopiesPathAndDisables(t *testing.T) {
+	app := enabledStyleApp(t, "http://unused")
+	app.HandleStyleCommand([]string{"/styles", "enable", "python"})
+	app.HandleStyleCommand([]string{"/styles", "disable", "python"})
+	app.observeStyleToolPath("read_file", `{"path":"main.go"}`, true)
+	snapshot := app.styleSnapshot()
+	if len(snapshot.path) != 1 || snapshot.path[0] != "go" || !snapshot.disabled["python"] {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	snapshot.path[0] = "python"
+	delete(snapshot.disabled, "python")
+	if app.styleState.path[0] != "go" || !app.styleState.disabled["python"] {
+		t.Fatal("snapshot shares mutable state")
+	}
+}
+
 func TestStyleGuideSubagentSnapshot(t *testing.T) {
 	var subStyle atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -359,6 +401,119 @@ func TestStyleGuideSubagentSnapshot(t *testing.T) {
 	}
 	if len(app.styleSelection().IDs()) != 1 {
 		t.Fatal("child modified parent selection")
+	}
+}
+
+func TestStyleCommandReportsActualStateAndControls(t *testing.T) {
+	app := enabledStyleApp(t, "http://unused")
+	if got := app.HandleStyleCommand([]string{"/styles"}); !strings.Contains(got, "go (embedded): available") {
+		t.Fatalf("initial status = %q", got)
+	}
+	if got := app.HandleStyleCommand([]string{"/styles", "enable", "python"}); !strings.Contains(got, "active: python (embedded)") {
+		t.Fatalf("enable = %q", got)
+	}
+	if got := app.HandleStyleCommand([]string{"/styles"}); !strings.Contains(got, "python (embedded): active") {
+		t.Fatalf("active status = %q", got)
+	}
+	app.HandleStyleCommand([]string{"/styles", "disable", "python"})
+	app.prepareStyleGuides("script.py")
+	if app.styleSelection().Bytes() != 0 {
+		t.Fatal("disabled language reactivated from a path")
+	}
+	if got := app.HandleStyleCommand([]string{"/styles", "enable", "unknown"}); !strings.Contains(got, "not loaded") {
+		t.Fatalf("unknown language = %q", got)
+	}
+	app.HandleStyleCommand([]string{"/styles", "disable", "all"})
+	if got := app.HandleStyleCommand([]string{"/styles", "enable", "go"}); !strings.Contains(got, "enable all first") {
+		t.Fatalf("global disable bypass = %q", got)
+	}
+	app.HandleStyleCommand([]string{"/styles", "enable", "all"})
+	app.prepareStyleGuides("main.go")
+	if app.styleSelection().Bytes() == 0 {
+		t.Fatal("global re-enable did not resume automatic activation")
+	}
+	app.HandleStyleCommand([]string{"/styles", "disable", "go"})
+	app.HandleStyleCommand([]string{"/styles", "disable", "all"})
+	app.HandleStyleCommand([]string{"/styles", "enable", "all"})
+	app.prepareStyleGuides("main.go")
+	if app.styleSelection().Bytes() != 0 {
+		t.Fatal("enable all erased the per-language opt-out")
+	}
+}
+
+func TestStyleCommandRustAndStrictParsing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rust.md")
+	if err := os.WriteFile(path, []byte("RUST-RULES"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := styleguide.NewCatalog(true, map[string]string{"rs": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := newTestApp("http://unused", newFakeExecutor(), nil)
+	app.SetStyleGuideCatalog(catalog)
+	for _, line := range []string{"/styles enable rust", "/styles enable rs"} {
+		handled, _, cmd := HandleTUICommand(line, app)
+		if !handled || cmd == nil {
+			t.Fatalf("%q was not dispatched", line)
+		}
+		if got := app.styleSelection().IDs(); len(got) != 1 || got[0] != "rust" {
+			t.Fatalf("%q selected %v", line, got)
+		}
+	}
+	app.prepareStyleGuides("Use the rust guide for this code")
+	if got := app.styleSelection().IDs(); len(got) != 1 || got[0] != "rust" {
+		t.Fatalf("natural Rust selection = %v", got)
+	}
+	for _, line := range []string{"/styles enable", "/styles enable rust extra", "/styles toggle rust"} {
+		handled, _, cmd := HandleTUICommand(line, app)
+		msg, ok := cmd().(SysNoteMsg)
+		if !handled || !ok || !strings.Contains(msg.Text, "usage:") {
+			t.Errorf("%q result = %#v", line, cmd())
+		}
+	}
+}
+
+func TestStyleCommandConcurrentWithRequests(t *testing.T) {
+	app := enabledStyleApp(t, "http://unused")
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range 100 {
+				app.requestMessages()
+				app.sentSize(app.contextProjection())
+				app.observeStyleToolPath("read_file", `{"path":"main.go"}`, true)
+				if (i+j)%2 == 0 {
+					app.HandleStyleCommand([]string{"/styles"})
+				} else {
+					app.HandleStyleCommand([]string{"/styles", "enable", "python"})
+					app.HandleStyleCommand([]string{"/styles", "disable", "python"})
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestStyleCatalogDoesNotReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rust.md")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := styleguide.NewCatalog(true, map[string]string{"rs": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := newTestApp("http://unused", newFakeExecutor(), nil)
+	app.SetStyleGuideCatalog(catalog)
+	if err := os.WriteFile(path, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.HandleStyleCommand([]string{"/styles", "enable", "rust"})
+	if !strings.Contains(app.styleSelection().Text(), "original") || strings.Contains(app.styleSelection().Text(), "changed") {
+		t.Fatal("command reloaded configured guide")
 	}
 }
 
