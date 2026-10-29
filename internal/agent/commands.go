@@ -51,6 +51,14 @@ func SuspendAuto(toolName string, app *App, detail string) string {
 		// (potentially from MCP/external sources) into a global store that
 		// spreads across workspaces.
 		return "skill write (global store consent gate)"
+	case "capture_skill_template":
+		// Same consent gate as save_skill/update_skill: writes the global store.
+		return "skill write (global store consent gate)"
+	case "apply_skill_template":
+		// Writes global (possibly tainted) skill content — including
+		// executable files — into the workspace in one approval. Never
+		// auto-approved: the user reviews the file list every time.
+		return "skill template apply (multi-file workspace write)"
 	case "run_shell", "run_background":
 		// run_background detail lines are "$ <cmd> (background)" — the trailing
 		// marker is harmless: the destructive check matches on segment-leading

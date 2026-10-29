@@ -218,7 +218,9 @@ func formatRetrievedEntry(e *memory.Entry) (string, int) {
 	// valid UTF-8 so truncation and the wire encoder can't split or mangle
 	// a sequence; the replacement rune keeps the entry retrievable. Same
 	// for the key above — keys are equally untrusted.
-	value := flattenEntryText(e.Value)
+	// Template skills: retrieval shows prose only — file bodies are reached
+	// through load_skill / apply_skill_template, never the preamble.
+	value := flattenEntryText(skillProse(e.Value))
 	value = strings.ToValidUTF8(value, "�")
 	// Truncation is rune-boundary safe (truncateUTF8), never splitting a
 	// multi-byte character mid-rune. The ellipsis is reserved inside the cap,

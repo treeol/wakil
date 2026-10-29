@@ -2418,6 +2418,12 @@ func toolAbbrev(name string) string {
 		return "subagent"
 	case "dispatch_subagents":
 		return "subagents"
+	case "apply_skill_template":
+		return "tapply"
+	case "capture_skill_template":
+		return "tcapture"
+	case "check_skill_template":
+		return "tcheck"
 	default:
 		if len([]rune(name)) > 8 {
 			return string([]rune(name)[:8])
@@ -2547,7 +2553,7 @@ func (a *App) wfPhaseBlock(toolName, argsJSON string) string {
 			if json.Unmarshal([]byte(argsJSON), &args) == nil && args.Path != "" && !workflow.IsWakilPath(args.Path) {
 				return "workflow phase " + wf.PhaseName() + writeRejected
 			}
-		case "run_background":
+		case "run_background", "apply_skill_template":
 			return "workflow phase " + wf.PhaseName() + writeRejected
 		}
 	}
@@ -2719,6 +2725,12 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleUpdateSkill(ctx, tc))
 	case "forget_skill":
 		return stringToToolResult(a.handleForgetSkill(ctx, tc))
+	case "apply_skill_template":
+		return stringToToolResult(a.handleApplySkillTemplate(ctx, tc))
+	case "capture_skill_template":
+		return stringToToolResult(a.handleCaptureSkillTemplate(ctx, tc))
+	case "check_skill_template":
+		return stringToToolResult(a.handleCheckSkillTemplate(ctx, tc))
 	default:
 		return stringToToolResult(a.handleMCPTool(ctx, tc))
 	}

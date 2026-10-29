@@ -69,7 +69,8 @@ func (a *App) handleLoadSkill(ctx context.Context, tc proxy.ToolCall) string {
 		return skillsUnavailable
 	}
 	var args struct {
-		Key string `json:"key"`
+		Key          string `json:"key"`
+		IncludeFiles bool   `json:"include_files"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -81,7 +82,17 @@ func (a *App) handleLoadSkill(ctx context.Context, tc proxy.ToolCall) string {
 	if err != nil {
 		return fmt.Sprintf("ERROR: load skill: %v", err)
 	}
-	out := fmt.Sprintf("# skill: %s\n%s\n\n%s", e.Key, renderSkillProvenance(e), e.Value)
+	body := e.Value
+	// Template skills: show prose + a compact summary instead of the file
+	// bodies, so applying a template doesn't cost the whole bundle in context.
+	if !args.IncludeFiles {
+		if tmpl, terr := parseSkillTemplateValue(e.Value); terr != nil {
+			body = skillProse(e.Value) + "\n\n## Template\n(invalid template section: " + terr.Error() + " — load_skill include_files=true to inspect)"
+		} else if tmpl != nil {
+			body = skillProse(e.Value) + "\n\n" + summarizeSkillTemplate(tmpl)
+		}
+	}
+	out := fmt.Sprintf("# skill: %s\n%s\n\n%s", e.Key, renderSkillProvenance(e), body)
 	// Refinement invitation (skill system Part B3): ask the model to propose
 	// an update when it finds the content wrong or outdated. The write itself
 	// always goes through update_skill's interactive confirm gate — this note
@@ -186,6 +197,9 @@ func (a *App) handleSaveSkill(ctx context.Context, tc proxy.ToolCall) string {
 	if err := validateSkillValue(value); err != nil {
 		return "ERROR: " + err.Error()
 	}
+	if err := validateSkillTemplateValue(value); err != nil {
+		return "ERROR: " + err.Error()
+	}
 	// Secret screening: refuse to persist embedded secrets to the global store.
 	if msg := screenSkillSecrets(value); msg != "" {
 		return "ERROR: " + msg
@@ -215,9 +229,10 @@ func (a *App) handleUpdateSkill(ctx context.Context, tc proxy.ToolCall) string {
 		return skillsUnavailable
 	}
 	var args struct {
-		Key         string `json:"key"`
-		Value       string `json:"value"`
-		Description string `json:"description,omitempty"`
+		Key          string `json:"key"`
+		Value        string `json:"value"`
+		Description  string `json:"description,omitempty"`
+		DropTemplate bool   `json:"drop_template,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -238,7 +253,35 @@ func (a *App) handleUpdateSkill(ctx context.Context, tc proxy.ToolCall) string {
 	if err := validateSkillKey(args.Key); err != nil {
 		return "ERROR: " + err.Error()
 	}
+	// Template preservation: editing a template skill's prose must not
+	// silently drop its files. When the new value carries no template section
+	// and the existing one does, append the existing section bytes verbatim
+	// (no re-serialization, so a repeated identical update stays a no-op).
+	// drop_template=true is the explicit removal path. All checks below run
+	// on the MERGED value.
+	templateNote := ""
+	_, newSection, newHas := splitSkillTemplate(value)
+	_, oldSection, oldHas := splitSkillTemplate(existingEntry.Value)
+	switch {
+	case args.DropTemplate && newHas:
+		return "ERROR: drop_template=true but the new value contains a template section — remove one or the other"
+	case args.DropTemplate && !oldHas:
+		return "ERROR: drop_template=true but skill " + args.Key + " has no template section"
+	case args.DropTemplate:
+		templateNote = "template files REMOVED (drop_template=true)"
+	case !newHas && oldHas:
+		if _, err := parseTemplateSection(oldSection); err != nil {
+			return "ERROR: the existing template section is invalid (" + err.Error() + ") — include a corrected section in value, or pass drop_template=true"
+		}
+		value = strings.TrimRight(value, " \t\r\n") + "\n\n" + oldSection
+		templateNote = "existing template files preserved unchanged"
+	case newHas && oldHas && newSection != oldSection:
+		templateNote = "template files CHANGED"
+	}
 	if err := validateSkillValue(value); err != nil {
+		return "ERROR: " + err.Error()
+	}
+	if err := validateSkillTemplateValue(value); err != nil {
 		return "ERROR: " + err.Error()
 	}
 	// No-op guard: identical content must not prompt or create a history
@@ -250,8 +293,19 @@ func (a *App) handleUpdateSkill(ctx context.Context, tc proxy.ToolCall) string {
 	if msg := screenSkillSecrets(value); msg != "" {
 		return "ERROR: " + msg
 	}
-	if !a.Confirm("update_skill", fmt.Sprintf("Update skill %q in the global store (old version kept in history)?", args.Key), fmt.Sprintf("Old: %d bytes\nNew: %d bytes\nTainted: %s\n\nDiff (old → new):\n%s\n\nNew content preview:\n%s", len(existingEntry.Value), len(value), taintLabel(a.computeTainted()), skillLineDiff(existingEntry.Value, value), previewSkillValue(value)), false) {
+	noteLine := ""
+	if templateNote != "" {
+		noteLine = "Template: " + templateNote + "\n"
+	}
+	if !a.Confirm("update_skill", fmt.Sprintf("Update skill %q in the global store (old version kept in history)?", args.Key), fmt.Sprintf("Old: %d bytes\nNew: %d bytes\nTainted: %s\n%s\nDiff (old → new):\n%s\n\nNew content preview:\n%s", len(existingEntry.Value), len(value), taintLabel(a.computeTainted()), noteLine, skillLineDiff(existingEntry.Value, value), previewSkillValue(value)), false) {
 		return "[declined by user]"
+	}
+	// Post-confirm recheck (handler level, NOT an atomic store CAS — that is a
+	// follow-up): the version the user reviewed must still be the active one,
+	// or a section preserved from a stale version could overwrite a concurrent
+	// change. Fails closed: any lookup error aborts too.
+	if cur, err := s.getActiveSkill(ctx, args.Key); err != nil || cur.ID != existingEntry.ID {
+		return "ERROR: skill " + args.Key + " changed or could not be re-read while the confirm was open — nothing updated; re-run update_skill"
 	}
 	e, err := s.putActiveSkill(ctx, args.Key, value, a.AgentPrefix, a.chatID(), a.computeTainted(), true, "")
 	if errors.Is(err, memory.ErrSkillNotFound) {
@@ -262,7 +316,11 @@ func (a *App) handleUpdateSkill(ctx context.Context, tc proxy.ToolCall) string {
 	if err != nil {
 		return fmt.Sprintf("ERROR: update skill: %v", err)
 	}
-	return fmt.Sprintf("updated skill: %s [id: %d]\n%s", e.Key, e.ID, renderSkillProvenance(e))
+	out := fmt.Sprintf("updated skill: %s [id: %d]\n%s", e.Key, e.ID, renderSkillProvenance(e))
+	if templateNote != "" {
+		out += "\n" + templateNote
+	}
+	return out
 }
 
 // handleForgetSkill tombstones the active skill. MAIN AGENT ONLY.

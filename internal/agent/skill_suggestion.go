@@ -53,6 +53,7 @@ const (
 var skillHintExcludedTools = map[string]bool{
 	"save_skill": true, "update_skill": true, "forget_skill": true,
 	"load_skill": true, "list_skills": true, "skill_search": true, "skill_history": true,
+	"apply_skill_template": true, "capture_skill_template": true, "check_skill_template": true,
 	"memory_put": true, "memory_get": true, "memory_search": true, "memory_list": true,
 	"memory_promote": true, "memory_reject": true, "memory_forget": true,
 	"memory_promote_from_staging": true,
@@ -86,7 +87,7 @@ func (s *skillSuggestionState) recordSkillToolCall(name string, ok bool) string 
 	if !ok || skillHintExcludedTools[name] {
 		// Loading an existing skill suggests the workflow already IS a skill —
 		// suppress the hint for that turn (no point inviting a duplicate save).
-		if name == "load_skill" && ok {
+		if (name == "load_skill" || name == "apply_skill_template") && ok {
 			s.hintedThisTurn = true
 		}
 		return ""

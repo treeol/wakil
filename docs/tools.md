@@ -32,6 +32,12 @@
 | `memory_reject` | no | Reject a proposed durable entry *(main agent only)* |
 | `memory_forget` | no | Supersede an active entry with a tombstone *(main agent only)* |
 | `memory_promote_from_staging` | no | Bridge a staging value into durable memory as proposed *(main agent only)* |
+| `list_skills` / `skill_search` / `skill_history` | no | Browse the global skill store (reference docs shared across all projects) |
+| `load_skill` | no | Load a skill; for [template skills](#skill-templates) file bodies are replaced by a params/files summary unless `include_files=true` |
+| `save_skill` / `update_skill` / `forget_skill` | yes | Write the global skill store *(main agent only; never auto-approved)*. `update_skill` keeps an existing template section when the new value has none; `drop_template=true` removes it |
+| `apply_skill_template` | yes | Write a template skill's files into the workspace exactly as stored, filling `@@NAME@@` placeholders *(main agent only; never auto-approved)* |
+| `capture_skill_template` | yes | Store workspace files verbatim as a skill's template files *(main agent only; never auto-approved)* |
+| `check_skill_template` | no | Report whether files written by `apply_skill_template` are unchanged, modified, or missing, and whether their skill has a newer version |
 | `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` | no | Language-server-backed code intelligence *(off by default — see [features](features.md#lsp-code-intelligence))* |
 | `browser_navigate` / `browser_screenshot` / `browser_viewport` / `browser_click` / `browser_eval` / `browser_text` / `browser_html` / `browser_reduced_motion` | no | Headless-browser tools — visual verification, DOM inspection, interaction testing *(off by default — see [features](features.md#headless-browser))* |
 
@@ -43,7 +49,9 @@ configured. The host Docker socket passthrough (`--docker-sock`) is what lets
 
 **Gated** — `run_shell`, `write_file`, `edit_file`, `delete_file`, `move_file`,
 `run_background`, `kill_process`, `open_url`. By default each call prompts `y/n`
-before it runs; `/auto` changes this (see below).
+before it runs; `/auto` changes this (see below). The skill write tools
+(`save_skill`, `update_skill`, `forget_skill`, `capture_skill_template`) and
+`apply_skill_template` always prompt, even in `/auto`.
 
 **Ungated** — `read_file`, `read_file_full`, `list_dir`, `search_files`,
 `find_files`, `dispatch_subagent`, `dispatch_subagents`, `read_process_log`,
@@ -72,6 +80,47 @@ operating on untrusted content.
 
 See [SECURITY.md](../SECURITY.md) for the full threat model and sandbox
 classification.
+
+## Skill templates
+
+A skill can carry template files alongside its prose: setups you repeat
+across projects (a deploy script plus stack file, a database bootstrap).
+The files live in the skill value, so they get the skill store's version
+history, secret screening, and confirm gate.
+
+- **Capture.** `capture_skill_template` reads files from the workspace (text
+  only, ≤64 KiB each, ≤50 files). Each literal `value` you pass as a param
+  (≥3 bytes) becomes an `@@NAME@@` placeholder; the value itself is not
+  stored. A param with a `default` is optional, one without is required,
+  and `pattern` is a full-match regexp. Capturing into an existing skill
+  keeps its prose and replaces only the files.
+- **Apply.** `apply_skill_template(key, params, target_dir, overwrite)` renders
+  the files host-side and writes exactly those bytes and file modes, so the
+  model never retypes the bundle. Placeholders are substituted in a single
+  pass with no logic, so `{{…}}` text (docker `--format`, Helm) is left
+  untouched. Files that differ in content or mode are only replaced with
+  `overwrite=true`, and the confirm then shows a diff. Nothing is written if
+  a target or the skill changes while the confirm is open. Verify steps
+  stored in the skill are listed, never run. Content changes go into the
+  `/rewind` checkpoint. `/rewind` does not restore file modes.
+- **Provenance.** Each written file is recorded in `.wakil/skill-templates.json`
+  (skill key, skill entry ID, params, sha256, mode); `check_skill_template`
+  reads it. A corrupt provenance file blocks `apply_skill_template` instead of
+  being replaced. Paths under `.wakil/` can't be template outputs.
+- **No secrets.** Template params are not a secret channel. Their values pass
+  through tool arguments, the transcript, and the provenance file. Templates
+  should reference `.env` files or docker secrets instead.
+
+Storage format (the last part of the skill value, written by
+`capture_skill_template`; it can be edited via `update_skill`):
+
+```
+=== wakil-template v1 ===
+{"params":[{"name":"STACK_NAME","pattern":"[a-z0-9-]+"}],"files":[{"path":"deploy.sh","mode":"0755"}],"verify":["bash -n deploy.sh"]}
+=== file: deploy.sh ===
+<verbatim body>
+=== end: deploy.sh ===
+```
 
 ## Subagents
 

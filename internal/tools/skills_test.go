@@ -73,3 +73,25 @@ func TestIsSkillTool(t *testing.T) {
 		t.Error("IsSkillTool returned true for a non-skill tool")
 	}
 }
+
+func TestSkillTemplateTools_Classification(t *testing.T) {
+	for _, n := range []string{"apply_skill_template", "capture_skill_template", "check_skill_template"} {
+		if !IsSkillTool(n) {
+			t.Errorf("IsSkillTool(%q) = false", n)
+		}
+		if !hasTool(names(SkillTools()), n) {
+			t.Errorf("SkillTools missing %q", n)
+		}
+	}
+	for _, n := range []string{"apply_skill_template", "capture_skill_template"} {
+		if !GatedTool(n) || !IsSkillTemplateMainOnlyTool(n) {
+			t.Errorf("%q must be gated and main-agent only", n)
+		}
+		if IsSkillWriteTool(n) {
+			t.Errorf("IsSkillWriteTool(%q) = true; template tools use IsSkillTemplateMainOnlyTool", n)
+		}
+	}
+	if GatedTool("check_skill_template") || IsSkillTemplateMainOnlyTool("check_skill_template") {
+		t.Error("check_skill_template is read-only: ungated and available to all tiers")
+	}
+}

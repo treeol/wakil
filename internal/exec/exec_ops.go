@@ -156,8 +156,10 @@ func (d *DockerExecutor) ConfinePath(ctx context.Context, path string) (string, 
 	if !strings.HasPrefix(path, "/") {
 		path = d.workspaceRoot + "/" + path
 	}
-	// readlink -f canonicalises the path and resolves symlinks; on GNU coreutils
-	// it also works for non-existent paths by resolving existing components.
+	// readlink -f canonicalises the path and resolves symlinks. On GNU
+	// coreutils only the LAST component may be missing; a path with a missing
+	// parent fails (callers that create nested paths use the agent's
+	// confineForCreate fallback).
 	out, err := d.execCtx(ctx, false, "sh", "-c", "readlink -f "+shQuote(path)+" 2>&1")
 	if err != nil {
 		return "", resolvePathError(path, out, err)
@@ -172,14 +174,50 @@ func (d *DockerExecutor) ConfinePath(ctx context.Context, path string) (string, 
 	return canonical, nil
 }
 
+// resolveExistingAncestor resolves symlinks in the deepest existing ancestor
+// of a cleaned absolute path and re-joins the non-existent remainder. A
+// dangling symlink anywhere on the path is an error: its target is unknown,
+// so writing through it could land outside the workspace.
+func resolveExistingAncestor(path string) (string, error) {
+	dir, rest := path, ""
+	for {
+		if _, err := os.Lstat(dir); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolving path %q: %w", path, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path, nil // nothing exists, not even the root — keep lexical
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving path %q: %w (dangling symlink?)", path, err)
+	}
+	if rest == "" {
+		return resolved, nil
+	}
+	return filepath.Join(resolved, rest), nil
+}
+
 func (e *DirectExecutor) ConfinePath(_ context.Context, path string) (string, error) {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(e.root, path)
 	}
 	path = filepath.Clean(path)
-	// Resolve symlinks for existing paths; skip for non-existent (move dst).
+	// Resolve symlinks for existing paths. For a non-existent path (write
+	// target, move dst) resolve the deepest EXISTING ancestor and re-join the
+	// missing tail — otherwise a symlinked parent directory (ws/link → /etc)
+	// would pass the lexical check for ws/link/new/file.
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
+	} else if resolved, rerr := resolveExistingAncestor(path); rerr == nil {
+		path = resolved
+	} else {
+		return "", rerr
 	}
 	if !isInsideWorkspace(path, e.root) {
 		return "", fmt.Errorf("path %q is outside workspace %q — traversal not allowed", path, e.root)
