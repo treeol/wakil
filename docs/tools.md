@@ -35,9 +35,9 @@
 | `list_skills` / `skill_search` / `skill_history` | no | Browse the global skill store (reference docs shared across all projects) |
 | `load_skill` | no | Load a skill; for [template skills](#skill-templates) file bodies are replaced by a params/files summary unless `include_files=true` |
 | `save_skill` / `update_skill` / `forget_skill` | yes | Write the global skill store *(main agent only; never auto-approved)*. `update_skill` keeps an existing template section when the new value has none; `drop_template=true` removes it |
-| `apply_skill_template` | yes | Write a template skill's files into the workspace exactly as stored, filling `@@NAME@@` placeholders *(main agent only; never auto-approved)* |
-| `capture_skill_template` | yes | Store workspace files verbatim as a skill's template files *(main agent only; never auto-approved)* |
-| `check_skill_template` | no | Report whether files written by `apply_skill_template` are unchanged, modified, or missing, and whether their skill has a newer version |
+| `apply_skill_template` | yes | Write the files of a template skill (or of the named `templates` you pick) into the workspace exactly as stored, filling `@@NAME@@` placeholders; snippets are returned, not written *(main agent only; never auto-approved)* |
+| `capture_skill_template` | yes | Store workspace files (and exact line-range snippets) verbatim as a skill's template files, optionally grouped into named templates *(main agent only; never auto-approved)* |
+| `check_skill_template` | no | Report whether files written by `apply_skill_template` are unchanged, modified, or missing, show what changed since apply, and whether their skill has a newer version |
 | `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` | no | Language-server-backed code intelligence *(off by default — see [features](features.md#lsp-code-intelligence))* |
 | `browser_navigate` / `browser_screenshot` / `browser_viewport` / `browser_click` / `browser_eval` / `browser_text` / `browser_html` / `browser_reduced_motion` | no | Headless-browser tools — visual verification, DOM inspection, interaction testing *(off by default — see [features](features.md#headless-browser))* |
 
@@ -94,18 +94,54 @@ history, secret screening, and confirm gate.
   stored. A param with a `default` is optional, one without is required,
   and `pattern` is a full-match regexp. Capturing into an existing skill
   keeps its prose and replaces only the files.
-- **Apply.** `apply_skill_template(key, params, target_dir, overwrite)` renders
-  the files host-side and writes exactly those bytes and file modes, so the
-  model never retypes the bundle. Placeholders are substituted in a single
+- **Apply.** `apply_skill_template(key, templates, params, target_dir,
+  overwrite, allow_unfilled)` renders the files host-side and writes exactly
+  those bytes and file modes, so the model never retypes the bundle. The
+  result is a *starting skeleton*: the agent is expected to adapt it to the
+  project afterwards (`edit_file`). Placeholders are substituted in a single
   pass with no logic, so `{{…}}` text (docker `--format`, Helm) is left
   untouched. Files that differ in content or mode are only replaced with
   `overwrite=true`, and the confirm then shows a diff. Nothing is written if
   a target or the skill changes while the confirm is open. Verify steps
   stored in the skill are listed, never run. Content changes go into the
   `/rewind` checkpoint. `/rewind` does not restore file modes.
+  `allow_unfilled=true` leaves required params you cannot fill yet as
+  `@@NAME@@` tokens in file *contents* (never in file paths or snippet
+  targets, which must be fully resolved) and lists them in the result.
+- **Named templates.** A skill may declare several named templates
+  (`stack`, `deploy-script`, `tde`, …) and the caller picks any combination:
+  `apply_skill_template {key, templates:["stack","tde"], ...}`. Only the
+  selected templates' files are written, only params those files reference
+  are required, and only their verify steps are shown. A template may list
+  `requires: [...]`; this is a *hint only* — a missing dependency is noted in
+  the result, never added or refused. Each entry is either a **file** (written)
+  or a **snippet** (`"kind":"snippet"` with a `target` file): snippets are
+  never written; their text is returned to the agent, labeled as untrusted
+  reference material, to add with `edit_file` where it fits. File paths and
+  snippet ids share one namespace across all templates of a skill. A selection
+  that contains only snippets (or whose files already match) still returns
+  the snippets; a selection whose snippets exceed 48 KiB is refused rather
+  than truncated. A skill without declared templates keeps the single
+  anonymous template (every file is always applied).
+- **Capturing named templates.** `capture_skill_template` takes
+  `templates:[{name, description, requires, verify, paths}]` and
+  `snippets:[{template, id, file, start_line, end_line, target}]` (exact line
+  ranges, CRLF preserved, params still substituted). Into an existing
+  named-template skill it **merges**: same-named templates are replaced, the
+  others kept, params no longer referenced are pruned, a param that is already
+  defined with a different default/pattern is an error, and the whole merged
+  result is validated (cross-template path collisions are refused). Converting
+  a legacy single-template skill to named templates needs `replace_all=true`
+  (the old version stays in `skill_history`). Captured bodies may contain
+  `@@NAME@@` tokens only for params the skill already declares and the
+  capture does not re-supply (so an `allow_unfilled` file can be captured back).
 - **Provenance.** Each written file is recorded in `.wakil/skill-templates.json`
-  (skill key, skill entry ID, params, sha256, mode); `check_skill_template`
-  reads it. A corrupt provenance file blocks `apply_skill_template` instead of
+  (skill key, skill entry ID, template name, source path, params, unfilled
+  params, sha256, mode); `check_skill_template` reads it. For a modified
+  file it re-renders the original from the recorded skill version and shows
+  a bounded line diff (template → current); the diff is shown only when the
+  re-render reproduces the recorded sha256, otherwise the baseline is
+  reported as unavailable. A corrupt provenance file blocks `apply_skill_template` instead of
   being replaced. Paths under `.wakil/` can't be template outputs.
 - **No secrets.** Template params are not a secret channel. Their values pass
   through tool arguments, the transcript, and the provenance file. Templates
@@ -121,6 +157,12 @@ Storage format (the last part of the skill value, written by
 <verbatim body>
 === end: deploy.sh ===
 ```
+
+With named templates the manifest adds `"templates":[{"name":"tde","requires":["stack"]}]`
+and each file entry gets `"template":"tde"`; a snippet entry is
+`{"path":"tde/env","kind":"snippet","target":"stack.yml","template":"tde"}`.
+Older Wakil builds reject manifests that use these keys (unknown fields are
+refused), so a skill that uses named templates needs a current build.
 
 ## Subagents
 

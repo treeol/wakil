@@ -87,26 +87,48 @@ func SkillTools() []proxy.Tool {
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "apply_skill_template",
 			Description: "Write a template skill's files into the workspace exactly as stored, substituting @@NAME@@ placeholders " +
-				"with params — instead of retyping files from load_skill. Refuses to overwrite differing files unless overwrite=true; " +
+				"with params — instead of retyping files from load_skill. The result is a starting skeleton: adapt it to the project afterwards " +
+				"(edit_file), including adding any returned snippets. Refuses to overwrite differing files unless overwrite=true; " +
 				"never runs the skill's verify steps (they are returned for you to propose separately). Records provenance in " +
 				".wakil/skill-templates.json. MAIN AGENT ONLY. Always requires confirmation (even in /auto)." + skillScopeNote,
 			Parameters: SchemaObj(map[string]interface{}{
-				"key":        StrProp("Template skill key."),
-				"params":     map[string]interface{}{"type": "object", "description": "Placeholder values by name, e.g. {\"STACK_NAME\":\"shop\"}. Required params without defaults must be given.", "additionalProperties": map[string]interface{}{"type": "string"}},
-				"target_dir": StrProp("Directory (workspace-relative) to write into. Default \".\"."),
-				"overwrite":  BoolProp("Replace existing files whose content or mode differs (default false)."),
+				"key":            StrProp("Template skill key."),
+				"templates":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Named templates to apply (required when the skill declares named templates — load_skill lists them). Only their files are written; their snippets are returned to you as reference text, not written — add them to the project files they are associated with using edit_file, adapted to the project. 'requires' between templates is a hint only."},
+				"params":         map[string]interface{}{"type": "object", "description": "Placeholder values by name, e.g. {\"STACK_NAME\":\"shop\"}. Required params without defaults must be given (only params used by the selected templates are required).", "additionalProperties": map[string]interface{}{"type": "string"}},
+				"target_dir":     StrProp("Directory (workspace-relative) to write into. Default \".\"."),
+				"overwrite":      BoolProp("Replace existing files whose content or mode differs (default false)."),
+				"allow_unfilled": BoolProp("Leave required params you cannot fill yet as @@NAME@@ tokens in file CONTENTS (never in paths/targets) instead of failing; fill them afterwards with edit_file (default false)."),
 			}, "key"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "capture_skill_template",
 			Description: "Read workspace files and store them verbatim as a skill's template files (no retyping). Literal param values " +
-				"in paths/bodies become @@NAME@@ placeholders; the captured values themselves are not stored. Creates the skill " +
-				"(description required) or replaces the template section of an existing one (its prose is kept). Never put secrets in " +
+				"in paths/bodies become @@NAME@@ placeholders; the captured values themselves are not stored. Give EITHER paths (one unnamed template) " +
+				"OR templates/snippets (named templates; merged into an existing named-template skill). Creates the skill " +
+				"(description required) or updates the template section of an existing one (its prose is kept). Never put secrets in " +
 				"templates — reference .env files / docker secrets instead. MAIN AGENT ONLY. Always requires confirmation." + skillScopeNote,
 			Parameters: SchemaObj(map[string]interface{}{
-				"key":      StrProp("Skill key to create or update."),
-				"paths":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Files to capture, relative to base_dir (max 50, 64 KiB each, text only)."},
-				"base_dir": StrProp("Directory the stored paths are relative to. Default \".\"."),
+				"key":   StrProp("Skill key to create or update."),
+				"paths": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Legacy single-template form: files to capture, relative to base_dir (max 50, 64 KiB each, text only). Not combinable with templates/snippets."},
+				"templates": map[string]interface{}{"type": "array", "description": "Named templates: each lists the files (relative to base_dir) it owns. Merges into an existing named-template skill: same-named templates are replaced, others kept; a shared param defined differently is an error.",
+					"items": map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+						"name":        map[string]interface{}{"type": "string", "description": "Lowercase slug, e.g. \"tde\"."},
+						"description": map[string]interface{}{"type": "string"},
+						"requires":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Hint only: other templates this one is meant to be used with."},
+						"verify":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Verification commands for this template (never auto-run)."},
+						"paths":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					}, "required": []string{"name"}}},
+				"snippets": map[string]interface{}{"type": "array", "description": "Snippets captured verbatim from a line range of a workspace file; apply returns them as reference and never writes them.",
+					"items": map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+						"template":   map[string]interface{}{"type": "string", "description": "Owning named template."},
+						"id":         map[string]interface{}{"type": "string", "description": "Unique id (shares the namespace of file paths)."},
+						"file":       map[string]interface{}{"type": "string", "description": "Source file relative to base_dir."},
+						"start_line": map[string]interface{}{"type": "integer"},
+						"end_line":   map[string]interface{}{"type": "integer"},
+						"target":     map[string]interface{}{"type": "string", "description": "File the snippet belongs in (default: file)."},
+					}, "required": []string{"template", "id", "file", "start_line", "end_line"}}},
+				"replace_all": BoolProp("Replace the whole template section instead of merging (needed to convert a legacy single template to named templates; the old version stays in skill_history)."),
+				"base_dir":    StrProp("Directory the stored paths are relative to. Default \".\"."),
 				"params": map[string]interface{}{"type": "array", "description": "Placeholders: each literal value (≥3 bytes) is replaced by @@NAME@@. Without default the param is required at apply time.",
 					"items": map[string]interface{}{"type": "object", "properties": map[string]interface{}{
 						"name":        map[string]interface{}{"type": "string", "description": "UPPER_SNAKE name."},
@@ -118,12 +140,13 @@ func SkillTools() []proxy.Tool {
 				"modes":       map[string]interface{}{"type": "object", "description": "Optional file mode overrides by path, e.g. {\"deploy.sh\":\"0755\"}.", "additionalProperties": map[string]interface{}{"type": "string"}},
 				"verify":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional verification commands to suggest after apply (never auto-run)."},
 				"description": StrProp("One-line description — required when creating a new skill."),
-			}, "key", "paths"),
+			}, "key"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "check_skill_template",
 			Description: "Read-only: for files recorded in .wakil/skill-templates.json, report whether each is unchanged, locally modified, " +
-				"or missing, and whether its template skill has a newer version." + skillScopeNote + " Available to all agent tiers.",
+				"or missing, and whether its template skill has a newer version. For modified files it shows the changes since apply " +
+				"(template → current) when the original can be reconstructed from the recorded skill version." + skillScopeNote + " Available to all agent tiers.",
 			Parameters: SchemaObj(map[string]interface{}{
 				"path": StrProp("Optional: only this workspace file."),
 				"key":  StrProp("Optional: only files from this skill."),

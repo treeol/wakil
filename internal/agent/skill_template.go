@@ -56,9 +56,19 @@ const (
 	// tmplReservedDir is never a valid template output: it holds the
 	// provenance file and the workflow plan.
 	tmplReservedDir = ".wakil"
+
+	// tmplKindSnippet marks a manifest entry that is never written to disk:
+	// a tested block returned to the agent as reference material.
+	tmplKindSnippet = "snippet"
+
+	// tmplMaxSnippetBytes bounds one snippet body (storage and the apply
+	// result both stay small).
+	tmplMaxSnippetBytes = 16 * 1024
 )
 
 var (
+	// tmplNameRE: lowercase slug used to select a named template.
+	tmplNameRE      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 	tmplParamNameRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	tmplTokenRE     = regexp.MustCompile(`@@([A-Z][A-Z0-9_]*)@@`)
 	// tmplModeRE: octal permission bits; the owner must be able to read the
@@ -85,27 +95,52 @@ func (p templateParam) patternRE() (*regexp.Regexp, error) {
 	return regexp.Compile(`^(?:` + p.Pattern + `)$`)
 }
 
-// templateFile is one file of the bundle. Body is carried in the section,
-// not in the JSON manifest.
-type templateFile struct {
-	Path  string `json:"path"`
-	Mode  string `json:"mode,omitempty"`
-	NoEOL bool   `json:"no_eol,omitempty"` // body has no trailing newline
-	Body  string `json:"-"`
+// templateDef declares one NAMED template of a skill. A skill without any
+// templateDef carries the legacy single anonymous template (every file is
+// always applied). Requires is a HINT only: apply notes a missing dependency
+// but never adds or refuses anything, and a satisfied hint does not prove the
+// combination is valid. Verify is scoped to this template (the manifest-level
+// Verify stays global).
+type templateDef struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Requires    []string `json:"requires,omitempty"`
+	Verify      []string `json:"verify,omitempty"`
 }
+
+// templateFile is one entry of the bundle: a file written to disk, or a
+// snippet (Kind == "snippet") returned to the agent and never written. Body
+// is carried in the section, not in the JSON manifest. For a snippet, Path is
+// only a unique id and Target names the workspace file it belongs in. Paths
+// and ids share one namespace.
+type templateFile struct {
+	Path     string `json:"path"`
+	Mode     string `json:"mode,omitempty"`
+	NoEOL    bool   `json:"no_eol,omitempty"` // body has no trailing newline
+	Template string `json:"template,omitempty"`
+	Kind     string `json:"kind,omitempty"` // "" (file) or "snippet"
+	Target   string `json:"target,omitempty"`
+	Body     string `json:"-"`
+}
+
+// isSnippet reports whether the entry is a snippet.
+func (f templateFile) isSnippet() bool { return f.Kind == tmplKindSnippet }
 
 // skillTemplate is a parsed template section.
 type skillTemplate struct {
-	Params []templateParam `json:"params,omitempty"`
-	Files  []templateFile  `json:"files"`
-	Verify []string        `json:"verify,omitempty"`
+	Params    []templateParam `json:"params,omitempty"`
+	Templates []templateDef   `json:"templates,omitempty"`
+	Files     []templateFile  `json:"files"`
+	Verify    []string        `json:"verify,omitempty"`
 }
 
 // renderedFile is one template file after placeholder substitution.
 type renderedFile struct {
-	Path    string // workspace-relative to the target dir, slash-separated
-	Mode    string
-	Content string
+	Path     string // workspace-relative to the target dir, slash-separated
+	Mode     string
+	Content  string
+	SrcPath  string // the template's own path (source identity for check)
+	Template string // owning named template ("" for legacy)
 }
 
 // splitSkillTemplate separates a skill value into prose and the template
@@ -277,6 +312,10 @@ func (t *skillTemplate) validate() error {
 			return fmt.Errorf("template param %q default: %w", p.Name, err)
 		}
 	}
+	tdefs, err := t.validateTemplateDefs()
+	if err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for k := range t.Files {
 		f := &t.Files[k]
@@ -287,16 +326,51 @@ func (t *skillTemplate) validate() error {
 			return fmt.Errorf("template file %q listed twice", f.Path)
 		}
 		seen[f.Path] = true
-		if f.Mode == "" {
-			f.Mode = tmplDefaultMode
+		switch {
+		case len(tdefs) == 0 && f.Template != "":
+			return fmt.Errorf("template file %q names template %q but the manifest declares no templates", f.Path, f.Template)
+		case len(tdefs) > 0 && f.Template == "":
+			return fmt.Errorf("template file %q must name one of the declared templates (%s)", f.Path, strings.Join(t.templateNames(), ", "))
+		case len(tdefs) > 0 && !tdefs[f.Template]:
+			return fmt.Errorf("template file %q names undeclared template %q", f.Path, f.Template)
 		}
-		if !tmplModeRE.MatchString(f.Mode) {
-			return fmt.Errorf("template file %q: mode %q must be octal like 0644 or 0755 (owner-readable)", f.Path, f.Mode)
+		switch f.Kind {
+		case "":
+			if f.Target != "" {
+				return fmt.Errorf("template file %q: target is only valid for snippets", f.Path)
+			}
+			if f.Mode == "" {
+				f.Mode = tmplDefaultMode
+			}
+			if !tmplModeRE.MatchString(f.Mode) {
+				return fmt.Errorf("template file %q: mode %q must be octal like 0644 or 0755 (owner-readable)", f.Path, f.Mode)
+			}
+		case tmplKindSnippet:
+			if len(tdefs) == 0 {
+				return fmt.Errorf("template snippet %q: snippets need named templates (declare \"templates\" and give the snippet a \"template\")", f.Path)
+			}
+			if err := checkSnippetDelimiters(f.Path, f.Body); err != nil {
+				return err
+			}
+			if f.Mode != "" {
+				return fmt.Errorf("template snippet %q: mode is not applicable (snippets are never written)", f.Path)
+			}
+			if f.Target == "" {
+				return fmt.Errorf("template snippet %q: target (the workspace file it belongs in) is required", f.Path)
+			}
+			if err := validateTemplatePath(f.Target); err != nil {
+				return fmt.Errorf("template snippet %q target: %w", f.Path, err)
+			}
+			if len(f.Body) > tmplMaxSnippetBytes {
+				return fmt.Errorf("template snippet %q is %d bytes (max %d)", f.Path, len(f.Body), tmplMaxSnippetBytes)
+			}
+		default:
+			return fmt.Errorf("template file %q: unknown kind %q (use \"snippet\" or omit)", f.Path, f.Kind)
 		}
 		if err := validateTemplateBody(f.Path, f.Body); err != nil {
 			return err
 		}
-		for _, src := range []string{f.Path, f.Body} {
+		for _, src := range []string{f.Path, f.Target, f.Body} {
 			for _, m := range tmplTokenRE.FindAllStringSubmatch(src, -1) {
 				if !declared[m[1]] {
 					return fmt.Errorf("template file %q uses undeclared placeholder @@%s@@", f.Path, m[1])
@@ -305,6 +379,98 @@ func (t *skillTemplate) validate() error {
 		}
 	}
 	return nil
+}
+
+// snippetDelimPrefix starts every delimiter line apply_skill_template puts
+// around a returned snippet. A snippet body must never contain a line that
+// starts like one, or its text could close the "untrusted data" frame early.
+const snippetDelimPrefix = "<<<"
+
+// checkSnippetDelimiters rejects snippet text with a line that starts like
+// the result frame's delimiters.
+func checkSnippetDelimiters(id, body string) error {
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(l, " \t"), snippetDelimPrefix) {
+			return fmt.Errorf("template snippet %q has a line starting with %q, which is reserved for result delimiters", id, snippetDelimPrefix)
+		}
+	}
+	return nil
+}
+
+// templateNames lists declared template names in manifest order.
+func (t *skillTemplate) templateNames() []string {
+	names := make([]string, len(t.Templates))
+	for i, d := range t.Templates {
+		names[i] = d.Name
+	}
+	return names
+}
+
+// templateDef returns the declaration of a named template.
+func (t *skillTemplate) templateDefByName(name string) (templateDef, bool) {
+	for _, d := range t.Templates {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return templateDef{}, false
+}
+
+// validateTemplateDefs checks the named-template declarations and returns the
+// set of declared names (empty for a legacy single-template manifest).
+func (t *skillTemplate) validateTemplateDefs() (map[string]bool, error) {
+	names := map[string]bool{}
+	for _, d := range t.Templates {
+		if !tmplNameRE.MatchString(d.Name) {
+			return nil, fmt.Errorf("template name %q must match %s", d.Name, tmplNameRE)
+		}
+		if names[d.Name] {
+			return nil, fmt.Errorf("template %q declared twice", d.Name)
+		}
+		names[d.Name] = true
+	}
+	for _, d := range t.Templates {
+		for _, r := range d.Requires {
+			if r == d.Name {
+				return nil, fmt.Errorf("template %q requires itself", d.Name)
+			}
+			if !names[r] {
+				return nil, fmt.Errorf("template %q requires undeclared template %q", d.Name, r)
+			}
+		}
+		for _, v := range d.Verify {
+			if strings.ContainsAny(v, "\r\n\x00") {
+				return nil, fmt.Errorf("template %q: verify commands must be single-line", d.Name)
+			}
+		}
+	}
+	// requires is a hint, but a cycle is still a mistake worth rejecting.
+	state := map[string]int{} // 0 new, 1 visiting, 2 done
+	var visit func(string) error
+	visit = func(n string) error {
+		switch state[n] {
+		case 1:
+			return fmt.Errorf("templates form a requires cycle through %q", n)
+		case 2:
+			return nil
+		}
+		state[n] = 1
+		if d, ok := t.templateDefByName(n); ok {
+			for _, r := range d.Requires {
+				if err := visit(r); err != nil {
+					return err
+				}
+			}
+		}
+		state[n] = 2
+		return nil
+	}
+	for _, d := range t.Templates {
+		if err := visit(d.Name); err != nil {
+			return nil, err
+		}
+	}
+	return names, nil
 }
 
 // validateTemplatePath requires a clean, relative, slash-separated path that
@@ -370,9 +536,101 @@ func validateParamValue(v string) error {
 	return nil
 }
 
+// selectEntries returns the manifest entries chosen by the named templates,
+// in manifest order. A legacy manifest (no declared templates) has one
+// anonymous template: names must be empty and every entry is selected. With
+// declared templates a non-empty, duplicate-free, known selection is required.
+func (t *skillTemplate) selectEntries(names []string) ([]templateFile, error) {
+	if len(t.Templates) == 0 {
+		if len(names) > 0 {
+			return nil, fmt.Errorf("this skill declares no named templates, but templates %s were requested", strings.Join(names, ", "))
+		}
+		return append([]templateFile(nil), t.Files...), nil
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("this skill has named templates — choose from: %s", strings.Join(t.templateNames(), ", "))
+	}
+	chosen := map[string]bool{}
+	for _, n := range names {
+		if _, ok := t.templateDefByName(n); !ok {
+			return nil, fmt.Errorf("unknown template %q — available: %s", n, strings.Join(t.templateNames(), ", "))
+		}
+		if chosen[n] {
+			return nil, fmt.Errorf("template %q selected twice", n)
+		}
+		chosen[n] = true
+	}
+	var out []templateFile
+	for _, f := range t.Files {
+		if chosen[f.Template] {
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("the selected template(s) %s contain no files or snippets", strings.Join(names, ", "))
+	}
+	return out, nil
+}
+
+// missingRequires lists "A requires B" hints for selected templates whose
+// declared dependencies were not selected. Hint only — nothing is refused.
+func (t *skillTemplate) missingRequires(names []string) []string {
+	chosen := map[string]bool{}
+	for _, n := range names {
+		chosen[n] = true
+	}
+	var out []string
+	for _, n := range names {
+		d, _ := t.templateDefByName(n)
+		for _, r := range d.Requires {
+			if !chosen[r] {
+				out = append(out, fmt.Sprintf("%s requires %s (not selected)", n, r))
+			}
+		}
+	}
+	return out
+}
+
+// selectedVerify returns the global verify commands plus those scoped to the
+// selected templates.
+func (t *skillTemplate) selectedVerify(names []string) []string {
+	out := append([]string(nil), t.Verify...)
+	for _, n := range names {
+		if d, ok := t.templateDefByName(n); ok {
+			out = append(out, d.Verify...)
+		}
+	}
+	return out
+}
+
+// referencedParams returns the declared param names used by the entries'
+// paths, targets and bodies.
+func referencedParams(entries []templateFile) map[string]bool {
+	ref := map[string]bool{}
+	for _, f := range entries {
+		for _, src := range []string{f.Path, f.Target, f.Body} {
+			for _, m := range tmplTokenRE.FindAllStringSubmatch(src, -1) {
+				ref[m[1]] = true
+			}
+		}
+	}
+	return ref
+}
+
 // resolveTemplateParams merges supplied values with defaults and validates
-// them. It reports every missing required param at once.
+// them for the whole template (legacy behavior: every declared param is in
+// scope). It reports every missing required param at once.
 func resolveTemplateParams(t *skillTemplate, supplied map[string]string) (map[string]string, error) {
+	values, _, err := resolveParamsScoped(t, nil, supplied, false)
+	return values, err
+}
+
+// resolveParamsScoped resolves params for a selection. scope limits which
+// declared params are resolved (nil: all); supplied params outside the scope
+// but declared are ignored, undeclared ones are an error. With allowUnfilled a
+// required param without a value is not an error: it is reported in unfilled
+// and its @@NAME@@ tokens stay in the rendered bodies.
+func resolveParamsScoped(t *skillTemplate, scope map[string]bool, supplied map[string]string, allowUnfilled bool) (values map[string]string, unfilled []string, err error) {
 	declared := map[string]templateParam{}
 	for _, p := range t.Params {
 		declared[p.Name] = p
@@ -385,42 +643,49 @@ func resolveTemplateParams(t *skillTemplate, supplied map[string]string) (map[st
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("unknown template param(s): %s", strings.Join(unknown, ", "))
+		return nil, nil, fmt.Errorf("unknown template param(s): %s", strings.Join(unknown, ", "))
 	}
-	values := map[string]string{}
+	values = map[string]string{}
 	var missing []string
 	for _, p := range t.Params {
+		if scope != nil && !scope[p.Name] {
+			continue
+		}
 		v, ok := supplied[p.Name]
 		if !ok {
 			v = p.Default
 		}
 		if v == "" && p.Required {
-			missing = append(missing, p.Name)
+			if allowUnfilled {
+				unfilled = append(unfilled, p.Name)
+			} else {
+				missing = append(missing, p.Name)
+			}
 			continue
 		}
 		if err := validateParamValue(v); err != nil {
-			return nil, fmt.Errorf("template param %s: %w", p.Name, err)
+			return nil, nil, fmt.Errorf("template param %s: %w", p.Name, err)
 		}
 		if p.Pattern != "" && v != "" {
 			re, err := p.patternRE()
 			if err != nil {
-				return nil, fmt.Errorf("template param %s: invalid pattern: %w", p.Name, err)
+				return nil, nil, fmt.Errorf("template param %s: invalid pattern: %w", p.Name, err)
 			}
 			if !re.MatchString(v) {
-				return nil, fmt.Errorf("template param %s: value %q does not fully match pattern %s", p.Name, v, p.Pattern)
+				return nil, nil, fmt.Errorf("template param %s: value %q does not fully match pattern %s", p.Name, v, p.Pattern)
 			}
 		}
 		values[p.Name] = v
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("missing required template param(s): %s", strings.Join(missing, ", "))
+		return nil, nil, fmt.Errorf("missing required template param(s): %s", strings.Join(missing, ", "))
 	}
-	return values, nil
+	return values, unfilled, nil
 }
 
 // substitute replaces every @@NAME@@ token in s in a single pass. Tokens for
-// names absent from values are left untouched (validate guarantees every
-// token is declared, and resolveTemplateParams fills every declared name).
+// names absent from values are left untouched (unfilled params stay as
+// tokens; validate guarantees every token is declared).
 func substitute(s string, values map[string]string) string {
 	return tmplTokenRE.ReplaceAllStringFunc(s, func(tok string) string {
 		if v, ok := values[tok[2:len(tok)-2]]; ok {
@@ -430,39 +695,79 @@ func substitute(s string, values map[string]string) string {
 	})
 }
 
-// renderTemplate renders every file with resolved values. Rendered paths are
-// re-validated (a placeholder value must not introduce traversal).
+// renderedSnippet is one snippet after placeholder substitution. Snippets are
+// returned to the agent and never written.
+type renderedSnippet struct {
+	ID       string
+	Template string
+	Target   string
+	Content  string
+}
+
+// renderTemplate renders every file of a legacy/whole template with resolved
+// values (snippets are skipped). Rendered paths are re-validated (a
+// placeholder value must not introduce traversal).
 func renderTemplate(t *skillTemplate, values map[string]string) ([]renderedFile, error) {
-	out := make([]renderedFile, 0, len(t.Files))
+	files, _, err := renderSelection(t.Files, values)
+	return files, err
+}
+
+// renderSelection renders the chosen entries: files are validated and
+// collision-checked; snippets are only substituted. A path or snippet target
+// that still contains an @@NAME@@ token (unfilled param) is refused — an
+// unresolved name must never become a literal file name.
+func renderSelection(entries []templateFile, values map[string]string) ([]renderedFile, []renderedSnippet, error) {
+	out := make([]renderedFile, 0, len(entries))
+	var snips []renderedSnippet
 	seen := map[string]bool{}
 	total := 0
-	for _, f := range t.Files {
-		p := substitute(f.Path, values)
-		if err := validateTemplatePath(p); err != nil {
-			return nil, fmt.Errorf("rendered path for %q: %w", f.Path, err)
-		}
-		if seen[p] {
-			return nil, fmt.Errorf("two template files render to the same path %q", p)
-		}
-		seen[p] = true
+	for _, f := range entries {
 		content := substitute(f.Body, values)
 		total += len(content)
 		if total > tmplMaxRenderedSize {
-			return nil, fmt.Errorf("rendered template exceeds %d bytes", tmplMaxRenderedSize)
+			return nil, nil, fmt.Errorf("rendered template exceeds %d bytes", tmplMaxRenderedSize)
 		}
-		out = append(out, renderedFile{Path: p, Mode: f.Mode, Content: content})
+		if f.isSnippet() {
+			if len(content) > tmplMaxSnippetBytes {
+				return nil, nil, fmt.Errorf("snippet %q renders to %d bytes (max %d)", f.Path, len(content), tmplMaxSnippetBytes)
+			}
+			if err := checkSnippetDelimiters(f.Path, content); err != nil {
+				return nil, nil, fmt.Errorf("rendered %w", err)
+			}
+			target := substitute(f.Target, values)
+			if m := tmplTokenRE.FindString(target); m != "" {
+				return nil, nil, fmt.Errorf("snippet %q: target %q still contains placeholder %s — supply that param", f.Path, target, m)
+			}
+			if err := validateTemplatePath(target); err != nil {
+				return nil, nil, fmt.Errorf("rendered target for snippet %q: %w", f.Path, err)
+			}
+			snips = append(snips, renderedSnippet{ID: f.Path, Template: f.Template, Target: target, Content: content})
+			continue
+		}
+		p := substitute(f.Path, values)
+		if m := tmplTokenRE.FindString(p); m != "" {
+			return nil, nil, fmt.Errorf("file path %q still contains placeholder %s — supply that param (unfilled placeholders are only allowed in file contents)", p, m)
+		}
+		if err := validateTemplatePath(p); err != nil {
+			return nil, nil, fmt.Errorf("rendered path for %q: %w", f.Path, err)
+		}
+		if seen[p] {
+			return nil, nil, fmt.Errorf("two template files render to the same path %q", p)
+		}
+		seen[p] = true
+		out = append(out, renderedFile{Path: p, Mode: f.Mode, Content: content, SrcPath: f.Path, Template: f.Template})
 	}
 	// A rendered path that is a prefix directory of another (a, a/b) can
 	// never both be files.
 	for p := range seen {
 		for dir := path.Dir(p); dir != "."; dir = path.Dir(dir) {
 			if seen[dir] {
-				return nil, fmt.Errorf("template file %q is also the parent directory of %q", dir, p)
+				return nil, nil, fmt.Errorf("template file %q is also the parent directory of %q", dir, p)
 			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, nil
+	return out, snips, nil
 }
 
 // serializeTemplateSection renders a template back to its section text.
@@ -470,12 +775,12 @@ func serializeTemplateSection(t *skillTemplate) (string, error) {
 	files := make([]templateFile, len(t.Files))
 	for i, f := range t.Files {
 		f.NoEOL = !strings.HasSuffix(f.Body, "\n")
-		if f.Mode == "" {
+		if f.Mode == "" && !f.isSnippet() {
 			f.Mode = tmplDefaultMode
 		}
 		files[i] = f
 	}
-	manifest := skillTemplate{Params: t.Params, Files: files, Verify: t.Verify}
+	manifest := skillTemplate{Params: t.Params, Templates: t.Templates, Files: files, Verify: t.Verify}
 	if err := manifest.validate(); err != nil {
 		return "", err
 	}
@@ -523,10 +828,15 @@ func validateSkillTemplateValue(value string) error {
 }
 
 // summarizeSkillTemplate renders the compact template description shown by
-// load_skill instead of the file bodies.
+// load_skill instead of the file bodies. Named templates are grouped with
+// their files, snippets, requires hints and the params they reference.
 func summarizeSkillTemplate(t *skillTemplate) string {
 	var b strings.Builder
-	b.WriteString("## Template (apply with apply_skill_template — bodies omitted; load_skill include_files=true shows them)\n")
+	b.WriteString("## Template (apply with apply_skill_template")
+	if len(t.Templates) > 0 {
+		b.WriteString(" + templates: [...]")
+	}
+	b.WriteString(" — bodies omitted; load_skill include_files=true shows them)\n")
 	if len(t.Params) > 0 {
 		b.WriteString("Params:\n")
 		for _, p := range t.Params {
@@ -545,19 +855,60 @@ func summarizeSkillTemplate(t *skillTemplate) string {
 				fmt.Fprintf(&b, " (%s)", strings.Join(flags, ", "))
 			}
 			if p.Description != "" {
-				b.WriteString(" — " + p.Description)
+				b.WriteString(" — " + sanitizeDiffLine(p.Description))
 			}
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("Files:\n")
-	for _, f := range t.Files {
-		fmt.Fprintf(&b, "  - %s (%s, %d bytes, %d lines)\n", f.Path, f.Mode, len(f.Body), strings.Count(f.Body, "\n"))
+	writeEntry := func(indent string, f templateFile) {
+		if f.isSnippet() {
+			fmt.Fprintf(&b, "%s- snippet %s → add to %s (%d bytes, %d lines; returned, never written)\n", indent, f.Path, f.Target, len(f.Body), strings.Count(f.Body, "\n"))
+			return
+		}
+		fmt.Fprintf(&b, "%s- %s (%s, %d bytes, %d lines)\n", indent, f.Path, f.Mode, len(f.Body), strings.Count(f.Body, "\n"))
+	}
+	if len(t.Templates) == 0 {
+		b.WriteString("Files:\n")
+		for _, f := range t.Files {
+			writeEntry("  ", f)
+		}
+	} else {
+		b.WriteString("Templates (choose any combination; requires is a hint only):\n")
+		for _, d := range t.Templates {
+			fmt.Fprintf(&b, "  [%s]", d.Name)
+			if d.Description != "" {
+				b.WriteString(" " + sanitizeDiffLine(d.Description))
+			}
+			if len(d.Requires) > 0 {
+				b.WriteString(" — requires: " + strings.Join(d.Requires, ", "))
+			}
+			b.WriteString("\n")
+			var mine []templateFile
+			for _, f := range t.Files {
+				if f.Template == d.Name {
+					mine = append(mine, f)
+				}
+			}
+			for _, f := range mine {
+				writeEntry("      ", f)
+			}
+			var names []string
+			for p := range referencedParams(mine) {
+				names = append(names, p)
+			}
+			sort.Strings(names)
+			if len(names) > 0 {
+				fmt.Fprintf(&b, "      params used: %s\n", strings.Join(names, ", "))
+			}
+			for _, v := range d.Verify {
+				b.WriteString("      verify: " + sanitizeDiffLine(v) + "\n")
+			}
+		}
 	}
 	if len(t.Verify) > 0 {
 		b.WriteString("Verify after applying (run separately; each needs approval):\n")
 		for _, v := range t.Verify {
-			b.WriteString("  - " + v + "\n")
+			b.WriteString("  - " + sanitizeDiffLine(v) + "\n")
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")

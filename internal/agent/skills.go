@@ -97,6 +97,20 @@ func (p *skillsProfile) getActiveSkill(ctx context.Context, key string) (*memory
 	return p.store.Get(ctx, key)
 }
 
+// getSkillByID returns a skill entry by ID regardless of status (superseded
+// versions stay readable until the store's auditability window prunes them).
+// Used to reconstruct the exact template version a workspace file came from.
+func (p *skillsProfile) getSkillByID(ctx context.Context, id int64) (*memory.Entry, error) {
+	e, err := p.store.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if e.Kind != "skill" {
+		return nil, memory.ErrNotFound
+	}
+	return e, nil
+}
+
 // forgetSkill tombstones the active skill for key (supersede + note), exactly
 // like memory Forget — nothing is hard-deleted; the tombstone stays visible
 // in skill_history.
