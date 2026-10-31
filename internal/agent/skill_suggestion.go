@@ -78,6 +78,7 @@ type skillSuggestionState struct {
 	history        [][]string
 	hintsUsed      int
 	hintedThisTurn bool
+	signal         string // "repeat" | "long" when a trigger fired this call
 }
 
 // recordSkillToolCall feeds one finalized tool call into the tracker and
@@ -104,6 +105,7 @@ func (s *skillSuggestionState) recordSkillToolCall(name string, ok bool) string 
 	if skillTurnQualifies(s.current) && skillTurnRepeats(s.current, s.history) {
 		s.hintedThisTurn = true
 		s.hintsUsed++
+		s.signal = "repeat"
 		return "\n\n[app note — not from the user: this turn's tool sequence so far matches an earlier turn this session (tool names only — arguments may differ)" +
 			". If the procedure behind this turn is reusable reference material, consider drafting it as a skill (skill_search first for near-duplicates, then save_skill or update_skill). This is a weak signal — skip it if the work is one-off. Finish the user's task first; the skill draft can happen after.]"
 	}
@@ -112,6 +114,7 @@ func (s *skillSuggestionState) recordSkillToolCall(name string, ok bool) string 
 	if len(s.current) >= b1MinCalls && skillTurnHasNonRead(s.current) {
 		s.hintedThisTurn = true
 		s.hintsUsed++
+		s.signal = "long"
 		return "\n\n[app note — not from the user: this turn has run a long multi-step sequence of tool calls" +
 			". If the procedure behind this turn is reusable reference material, consider drafting it as a skill (skill_search first for near-duplicates, then save_skill or update_skill). This is a weak signal — skip it if the work is one-off. Finish the user's task first; the skill draft can happen after.]"
 	}
@@ -196,8 +199,15 @@ func (a *App) appendSkillHint(tcName string, ok bool, text string) string {
 	if a.skillSuggest == nil {
 		a.skillSuggest = &skillSuggestionState{}
 	}
+	a.skillSuggest.signal = ""
 	if hint := a.skillSuggest.recordSkillToolCall(tcName, ok); hint != "" {
-		return text + hint
+		// The detector fired: remember it for the end-of-turn hook, and only
+		// show the in-band model hint in the default "on" mode (off suppresses
+		// it; auto modes build the skill themselves).
+		a.setSkillSignal(a.skillSuggest.signal)
+		if mode, _ := a.SkillCreationMode(); mode == "on" {
+			return text + hint
+		}
 	}
 	return text
 }

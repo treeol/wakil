@@ -46,10 +46,16 @@ type skillCreationState struct {
 	mu sync.Mutex
 	// written lists workspace files written during the current session via
 	// edit/write/template tools (canonical paths, insertion order, deduped).
-	written []string
+	written []writtenPath
+	// writeGen increments on every tracked write.
+	writeGen uint64
 	// pendingSignal records that the in-session detector fired this turn
 	// ("repeat" or "long"); consumed by the end-of-turn hook.
 	pendingSignal string
+	// last is the most recent pipeline outcome.
+	last skillCreationOutcome
+	// hooks replaces the model-plan and Mashūra-review calls (tests).
+	hooks skillCreationHooks
 }
 
 // SkillCreationMode returns the effective mode and its source
@@ -85,6 +91,9 @@ func handleSkillCreationCommand(app *App, fields []string) Cmd {
 	if len(fields) < 2 {
 		return NoteCmd(describeSkillCreation(app))
 	}
+	if app.IsSubagent {
+		return NoteCmd("/skill-creation: not available in subagents")
+	}
 	arg := config.NormalizeSkillCreationMode(fields[1])
 	if arg == "now" {
 		return skillCreationNowCmd(app, fields[2:])
@@ -106,9 +115,6 @@ func handleSkillCreationCommand(app *App, fields []string) Cmd {
 	}
 	if arg == "" || !config.ValidSkillCreationMode(arg) {
 		return NoteCmd(usage)
-	}
-	if app.IsSubagent {
-		return NoteCmd("/skill-creation: not available in subagents")
 	}
 	app.setSkillCreationMode(arg, sessionOnly)
 	scope := "this repo"
@@ -152,6 +158,13 @@ func dropUnconfirmedAutoSkills(in []*memory.Entry) []*memory.Entry {
 	return out
 }
 
+// writtenPath is one tracked workspace write; gen lets a finished run consume
+// only the writes it actually captured, not ones that landed during the run.
+type writtenPath struct {
+	Path string
+	Gen  uint64
+}
+
 // noteSkillFileWritten records a workspace path written this session so the
 // skill-creation builder knows what the work produced.
 func (a *App) noteSkillFileWritten(canonical string) {
@@ -160,8 +173,10 @@ func (a *App) noteSkillFileWritten(canonical string) {
 	}
 	a.skillCreate.mu.Lock()
 	defer a.skillCreate.mu.Unlock()
-	for _, p := range a.skillCreate.written {
-		if p == canonical {
+	a.skillCreate.writeGen++
+	for i, w := range a.skillCreate.written {
+		if w.Path == canonical {
+			a.skillCreate.written[i].Gen = a.skillCreate.writeGen
 			return
 		}
 	}
@@ -169,14 +184,43 @@ func (a *App) noteSkillFileWritten(canonical string) {
 	if len(a.skillCreate.written) >= maxTracked {
 		a.skillCreate.written = a.skillCreate.written[1:]
 	}
-	a.skillCreate.written = append(a.skillCreate.written, canonical)
+	a.skillCreate.written = append(a.skillCreate.written, writtenPath{canonical, a.skillCreate.writeGen})
 }
 
-// writtenSkillPaths returns a copy of the tracked written paths.
+// writtenSkillPaths returns the tracked written paths.
 func (a *App) writtenSkillPaths() []string {
+	paths, _ := a.writtenSkillSnapshot()
+	return paths
+}
+
+// writtenSkillSnapshot returns the paths plus the exact entries (for consume).
+func (a *App) writtenSkillSnapshot() ([]string, []writtenPath) {
 	a.skillCreate.mu.Lock()
 	defer a.skillCreate.mu.Unlock()
-	return append([]string(nil), a.skillCreate.written...)
+	snap := append([]writtenPath(nil), a.skillCreate.written...)
+	paths := make([]string, len(snap))
+	for i, w := range snap {
+		paths[i] = w.Path
+	}
+	return paths, snap
+}
+
+// consumeWritten removes the snapshot entries a finished run captured. An
+// entry rewritten (new generation) or added during the run stays tracked.
+func (a *App) consumeWritten(snap []writtenPath) {
+	a.skillCreate.mu.Lock()
+	defer a.skillCreate.mu.Unlock()
+	done := make(map[writtenPath]bool, len(snap))
+	for _, w := range snap {
+		done[w] = true
+	}
+	kept := a.skillCreate.written[:0]
+	for _, w := range a.skillCreate.written {
+		if !done[w] {
+			kept = append(kept, w)
+		}
+	}
+	a.skillCreate.written = kept
 }
 
 // ─── /skills ────────────────────────────────────────────────────────────────

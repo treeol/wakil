@@ -1110,6 +1110,11 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	a.detectAndProposeCorrection(ctx, userText)
 
 	defer a.SaveSession()
+	defer func() {
+		if retErr == nil {
+			a.onTurnEndSkillCreation()
+		}
+	}()
 
 	stored := userText
 	if a.Workflow != nil {

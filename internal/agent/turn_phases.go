@@ -53,6 +53,9 @@ func (a *App) prepareTurn() {
 	if a.skillSuggest != nil {
 		a.skillSuggest.commitSkillTurn()
 	}
+	// A detector signal left by an earlier turn that did not finish cleanly
+	// must not trigger on this turn's end.
+	a.setSkillSignal("")
 
 	// Lazy-initialize defaultModel so it can be restored when SelectedModel is cleared.
 	if a.defaultModel == "" {

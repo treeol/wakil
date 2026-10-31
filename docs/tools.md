@@ -164,6 +164,36 @@ and each file entry gets `"template":"tde"`; a snippet entry is
 Older Wakil builds reject manifests that use these keys (unknown fields are
 refused), so a skill that uses named templates needs a current build.
 
+### Automatic skill creation
+
+`/skill-creation off|on|auto|auto-mashura` (saved per repo; add `session` for
+this session only; `default` clears) controls what happens when Wakil notices
+recurring work (a long or repeated sequence of state-changing tool calls):
+
+| Mode | Behaviour |
+|---|---|
+| `off` | No detection hints or suggestions |
+| `on` (default) | The model is invited to draft a skill, and Wakil suggests `/skill-creation now` at the end of the turn |
+| `auto` | Wakil builds a **draft** from the files written this session (in the background) |
+| `auto-mashura` | Builds the draft, has Mashūra review it, and activates it only when the exact final bytes were approved; every failure falls back to a draft |
+
+`/skill-creation now [key] [paths…]` builds one immediately (a draft, or the
+full pipeline in `auto-mashura`). Drafts are managed with `/skills review`,
+`/skills show|approve|reject <id>`.
+
+The pipeline never lets the model or Mashūra write anything: captured files
+are read from disk, secret-scanned (any hit aborts before anything is sent
+out), IP addresses and e-mail addresses must be turned into params, and only
+allowlisted file types are captured. Only **new** skill keys can be activated
+automatically; a key that already exists always becomes a draft. If Mashūra
+requests changes, they are applied and the exact result is reviewed once more
+(at most two Mashūra calls); anything but a final `approve` leaves a draft.
+Auto-created skills are visible to `list_skills` / `skill_search` / `load_skill`
+but are **not auto-injected** into turns until `/skills confirm <key>`;
+`/skills undo <key>` forgets one. The `save_skill` / `update_skill` /
+`forget_skill` tools keep their always-confirm gate. Limits and the file
+allowlist are configurable under `skill_creation` ([configuration](configuration.md)).
+
 ## Subagents
 
 Subagents have three capability tiers:

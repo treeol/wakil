@@ -309,13 +309,20 @@ func (s *Store) ReserveDaily(ctx context.Context, name, day string, max int) (bo
 }
 
 // ReleaseDaily gives back one unit reserved by ReserveDaily for day (used when
-// a reserved run is abandoned before doing paid work). Best effort.
+// a reserved run is abandoned before doing paid work). Best effort; the
+// decrement is a single conditional statement so a concurrent reservation by
+// another process cannot be overwritten.
 func (s *Store) ReleaseDaily(ctx context.Context, name, day string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
 	metaKey := "daily:" + name
 	var raw string
-	if err := s.db.QueryRowContext(ctx, "SELECT value FROM meta WHERE key = ?", metaKey).Scan(&raw); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT value FROM meta WHERE key = ?", metaKey).Scan(&raw); err != nil {
 		return
 	}
 	d, c, ok := strings.Cut(raw, ":")
@@ -323,5 +330,9 @@ func (s *Store) ReleaseDaily(ctx context.Context, name, day string) {
 	if !ok || d != day || n <= 0 {
 		return
 	}
-	_, _ = s.db.ExecContext(ctx, "UPDATE meta SET value = ? WHERE key = ?", fmt.Sprintf("%s:%d", day, n-1), metaKey)
+	if _, err := tx.ExecContext(ctx, "UPDATE meta SET value = ? WHERE key = ? AND value = ?",
+		fmt.Sprintf("%s:%d", day, n-1), metaKey, raw); err != nil {
+		return
+	}
+	_ = tx.Commit()
 }

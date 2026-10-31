@@ -117,6 +117,16 @@ reference covering every section below.
 | `mashura_panels` | — | Named counsel model panels |
 | `mashura_tool_panels` | — | Maps each counsel tool to a named panel |
 | `mashura_mode` | — | Default oracle consult schedule: `every-step` \| `on-deviation` \| `phases-only` *(alias: `wf_oracle_mode`)* |
+| `skill_creation` | — | Automatic skill creation (`/skill-creation`); object with the keys below |
+| `skill_creation.mode` | `"on"` | Default mode: `off`, `on` (hint + suggestion), `auto` (builds drafts), `auto-mashura` (Mashūra review, then activates new skills). A per-repo `/skill-creation` setting and a per-session override take precedence |
+| `skill_creation.max_auto_per_day` | `3` | Cap on automatically triggered runs per UTC day |
+| `skill_creation.max_drafts` | `10` | Pending drafts allowed; further runs stop until drafts are reviewed |
+| `skill_creation.draft_ttl_days` | `30` | Pending drafts older than this are rejected |
+| `skill_creation.review_timeout_seconds` | `180` | Wall-clock bound for one whole pipeline run |
+| `skill_creation.max_review_bytes` | `122880` | Largest draft that may be built / sent to Mashūra |
+| `skill_creation.max_capture_files` | `12` | Files one automatic capture may include |
+| `skill_creation.panel` | — | Mashūra panel used for skill reviews (default panel when empty) |
+| `skill_creation.allowed_files` | `*.yml *.yaml *.sh *.sql *.conf *.md Dockerfile Dockerfile.*` | Base-name globs of capturable files. `.env*`, `*.pem`, `*.key`, `*secret*`, `*credential*`, `*token*`, `*id_rsa*` are never captured |
 | `oracle_enabled` | `false` | Gate for `mashura__*` counsel tools |
 | `oracle_model` | `"claude-sonnet-4-6"` | Model ID for counsel calls |
 | `oracle_api_key_env` | `"ANTHROPIC_API_KEY"` | Env var read at call time for the API key |
