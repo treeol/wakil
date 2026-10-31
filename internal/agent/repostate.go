@@ -71,6 +71,10 @@ type RepoState struct {
 	// MaxCounsel persists the /counsel auto-mode cap (max calls per turn).
 	MaxCounsel int `json:"max_counsel,omitempty"`
 
+	// SkillCreation persists the /skill-creation mode for this repo
+	// (off|on|auto|auto-mashura; "" = use the config default).
+	SkillCreation string `json:"skill_creation,omitempty"`
+
 	// ReasoningEffort persists the /thinking effort level ("" = not set).
 	// See app.go's ReasoningEffort field for valid values.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
@@ -456,6 +460,10 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 		a.MaxCounsel = st.MaxCounsel
 		applied = append(applied, fmt.Sprintf("counsel-cap=%d", st.MaxCounsel))
 	}
+	if st.SkillCreation != "" && config.ValidSkillCreationMode(st.SkillCreation) {
+		a.skillCreate.repoMode = st.SkillCreation
+		applied = append(applied, "skill-creation="+st.SkillCreation)
+	}
 
 	// /thinking reasoning settings (endpoint-independent — the reasoning
 	// parameter is sent to whatever endpoint is active, though only
@@ -548,6 +556,9 @@ func DescribeRepoState(app *App) string {
 			line += fmt.Sprintf(" max_tokens=%d", st.ReasoningMaxTokens)
 		}
 		b.WriteString(line + "\n")
+	}
+	if st.SkillCreation != "" {
+		b.WriteString("  skill creation: " + st.SkillCreation + "\n")
 	}
 	if st.RawTools {
 		b.WriteString("  raw tools: on\n")

@@ -11,6 +11,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // skillStoreValueMaxBytes is the per-skill content cap enforced at the STORE
@@ -183,4 +185,143 @@ func (s *Store) HistoryForKey(ctx context.Context, key string) ([]*Entry, error)
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// PutSkillDraft stores a PROPOSED durable skill (a draft awaiting approval).
+// It mirrors PutSkillActive's 256 KiB cap (PutProposed's 64 KiB validateValue
+// would reject large template skills). Any earlier pending draft for the same
+// key is rejected in the same transaction so at most one draft per key stays
+// pending. Drafts never shadow the active entry; they only take effect through
+// Promote.
+func (s *Store) PutSkillDraft(ctx context.Context, key, value, kind, writer, sessionID string, tainted int, note string) (*Entry, error) {
+	if err := validateKey(key); err != nil {
+		return nil, err
+	}
+	if value == "" {
+		return nil, fmt.Errorf("memory: skill value is required")
+	}
+	if len(value) > skillStoreValueMaxBytes {
+		return nil, fmt.Errorf("memory: skill value exceeds %d bytes (got %d)", skillStoreValueMaxBytes, len(value))
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("memory: skill draft: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE entries SET status = 'rejected', note = 'replaced by newer draft'
+		 WHERE key = ? AND status = 'proposed' AND kind = ? AND tier = 'durable'`, key, kind); err != nil {
+		return nil, fmt.Errorf("memory: skill draft: replace old drafts: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO entries (key, value, kind, tier, status, writer, session_id, tainted, created_at, expires_at, anchors, note)
+		VALUES (?, ?, ?, 'durable', 'proposed', ?, ?, ?, ?, NULL, '', ?)`,
+		key, value, kind, writer, sessionID, tainted, now, note)
+	if err != nil {
+		return nil, fmt.Errorf("memory: skill draft: insert: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("memory: skill draft: commit: %w", err)
+	}
+	return &Entry{ID: id, Key: key, Value: value, Kind: kind, Tier: TierDurable,
+		Status: StatusProposed, Writer: writer, SessionID: sessionID, Tainted: tainted,
+		CreatedAt: now, Note: note}, nil
+}
+
+// ListSkillDrafts returns pending (proposed) durable entries of the given kind,
+// newest first.
+func (s *Store) ListSkillDrafts(ctx context.Context, kind string) ([]*Entry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		selectEntrySQL+` WHERE status = 'proposed' AND tier = 'durable' AND kind = ? ORDER BY created_at DESC, id DESC`, kind)
+	if err != nil {
+		return nil, fmt.Errorf("memory: list skill drafts: %w", err)
+	}
+	defer rows.Close()
+	var out []*Entry
+	for rows.Next() {
+		e, err := scanEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SetEntryNote replaces the note column of one entry (used to flip the
+// "auto-unconfirmed" marker on /skills confirm). Value and status are untouched.
+func (s *Store) SetEntryNote(ctx context.Context, id int64, note string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, "UPDATE entries SET note = ? WHERE id = ?", note, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ReserveDaily atomically reserves one unit of a per-day budget stored in the
+// meta table under key "daily:<name>" as "<day>:<count>". It returns false when
+// the budget for day is already max. A new day resets the counter.
+func (s *Store) ReserveDaily(ctx context.Context, name, day string, max int) (bool, error) {
+	if max <= 0 {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	metaKey := "daily:" + name
+	count := 0
+	var raw string
+	switch err := tx.QueryRowContext(ctx, "SELECT value FROM meta WHERE key = ?", metaKey).Scan(&raw); {
+	case err == nil:
+		if d, c, ok := strings.Cut(raw, ":"); ok && d == day {
+			count, _ = strconv.Atoi(c)
+		}
+	case errors.Is(err, sql.ErrNoRows):
+	default:
+		return false, err
+	}
+	if count >= max {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+		metaKey, fmt.Sprintf("%s:%d", day, count+1)); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// ReleaseDaily gives back one unit reserved by ReserveDaily for day (used when
+// a reserved run is abandoned before doing paid work). Best effort.
+func (s *Store) ReleaseDaily(ctx context.Context, name, day string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	metaKey := "daily:" + name
+	var raw string
+	if err := s.db.QueryRowContext(ctx, "SELECT value FROM meta WHERE key = ?", metaKey).Scan(&raw); err != nil {
+		return
+	}
+	d, c, ok := strings.Cut(raw, ":")
+	n, _ := strconv.Atoi(c)
+	if !ok || d != day || n <= 0 {
+		return
+	}
+	_, _ = s.db.ExecContext(ctx, "UPDATE meta SET value = ? WHERE key = ?", fmt.Sprintf("%s:%d", day, n-1), metaKey)
 }

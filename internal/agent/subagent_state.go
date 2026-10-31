@@ -76,6 +76,11 @@ type subagentState struct {
 	// concurrently. Nil until the first hint check.
 	skillSuggest *skillSuggestionState
 
+	// skillCreate holds the /skill-creation mode (repo-persisted value and
+	// session override) and the auto-creation pipeline bookkeeping. Mode fields
+	// are guarded by stateMu; see skill_creation.go.
+	skillCreate skillCreationState
+
 	// pinUserMessage marks the user message appended by Send as Pinned, so it
 	// survives compaction and hard-max dropping. Set by dispatchSubagent for
 	// the subagent's task instruction — the subagent must never forget its own

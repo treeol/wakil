@@ -83,6 +83,9 @@ func (a *App) retrieveMemoryContext(ctx context.Context, userText string) string
 		skillCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		results, err := a.SkillStore.searchSkillsRaw(skillCtx, query)
+		// Auto-created skills stay out of automatic injection until the user
+		// runs /skills confirm (they remain visible to list/search/load).
+		results = dropUnconfirmedAutoSkills(results)
 		if err == nil && len(results) > 0 {
 			if len(results) > retrievalMaxSkills {
 				results = results[:retrievalMaxSkills]

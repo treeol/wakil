@@ -1315,6 +1315,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return SysNoteMsg{Text: summary}
 		}
 
+	case "/skill-creation":
+		return true, false, handleSkillCreationCommand(app, fields)
+
+	case "/skills":
+		return true, false, func() Msg {
+			return SysNoteMsg{Text: handleSkillsCommand(context.Background(), app, fields)}
+		}
+
 	case "/skill-create":
 		// /skill-create <topic> — research a topic via a tools-tier subagent
 		// and save the draft as a skill after explicit user confirmation.
@@ -1644,6 +1652,9 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /plan abort          cancel the active workflow
 /verify              run the configured/detected verification commands (tests, lint, build)
 /skill-create <topic> research a topic and save it as a skill (asks for confirmation)
+/skill-creation [off|on|auto|auto-mashura|default] [session]  show/set automatic skill creation
+                     (per repo; "session" = this session only). /skill-creation now [key] [paths…] builds one now
+/skills [review|show <id>|approve <id>|reject <id>|recent|undo <key>|confirm <key>]  manage skill drafts and auto-created skills
 /compact             summarize older turns now (frees context, improves performance)
 /compact force       required in long-session mode (materializes collapsed requests)
 /handoff [proceed|stop] summarize session → store in memory → start fresh session

@@ -147,3 +147,70 @@ func (p *skillsProfile) historyForKey(ctx context.Context, key string) ([]*memor
 	}
 	return p.store.HistoryForKey(ctx, key)
 }
+
+// Auto-created skill bookkeeping. Skills written by the skill-creation pipeline
+// carry a note starting with one of these prefixes so retrieval and the /skills
+// commands can tell them apart from hand-written skills.
+const (
+	// autoSkillNoteUnconfirmed marks an auto-created active skill that has not
+	// been confirmed by the user yet: visible to list/search/load but NOT
+	// auto-injected into turns by the retrieval pass.
+	autoSkillNoteUnconfirmed = "auto-unconfirmed"
+	// autoSkillNoteConfirmed is set by /skills confirm.
+	autoSkillNoteConfirmed = "auto-confirmed"
+	// autoDraftNotePrefix marks drafts produced by the pipeline.
+	autoDraftNotePrefix = "auto-draft"
+)
+
+// isUnconfirmedAutoSkill reports whether e is an auto-created skill still
+// awaiting /skills confirm.
+func isUnconfirmedAutoSkill(e *memory.Entry) bool {
+	return e != nil && strings.HasPrefix(e.Note, autoSkillNoteUnconfirmed)
+}
+
+// isAutoSkill reports whether e was created by the pipeline (confirmed or not).
+func isAutoSkill(e *memory.Entry) bool {
+	return e != nil && (strings.HasPrefix(e.Note, autoSkillNoteUnconfirmed) || strings.HasPrefix(e.Note, autoSkillNoteConfirmed))
+}
+
+// putSkillDraft stores a pending draft (status proposed).
+func (p *skillsProfile) putSkillDraft(ctx context.Context, key, value, writer, sessionID string, tainted int, note string) (*memory.Entry, error) {
+	if err := validateSkillKey(key); err != nil {
+		return nil, err
+	}
+	if err := validateSkillValue(value); err != nil {
+		return nil, err
+	}
+	return p.store.PutSkillDraft(ctx, key, value, "skill", writer, sessionID, tainted, note)
+}
+
+// listSkillDrafts returns pending skill drafts, newest first.
+func (p *skillsProfile) listSkillDrafts(ctx context.Context) ([]*memory.Entry, error) {
+	return p.store.ListSkillDrafts(ctx, "skill")
+}
+
+// rejectSkillDraft rejects a pending draft by ID.
+func (p *skillsProfile) rejectSkillDraft(ctx context.Context, id int64, reason string) error {
+	return p.store.Reject(ctx, id, reason)
+}
+
+// promoteSkillDraft activates a pending draft in place (superseding any
+// existing active skill for the key).
+func (p *skillsProfile) promoteSkillDraft(ctx context.Context, id int64, by string) (*memory.Entry, error) {
+	return p.store.Promote(ctx, id, nil, by)
+}
+
+// setSkillNote replaces the note of one skill row.
+func (p *skillsProfile) setSkillNote(ctx context.Context, id int64, note string) error {
+	return p.store.SetEntryNote(ctx, id, note)
+}
+
+// reserveDaily reserves one unit of a named per-day budget.
+func (p *skillsProfile) reserveDaily(ctx context.Context, name, day string, max int) (bool, error) {
+	return p.store.ReserveDaily(ctx, name, day, max)
+}
+
+// releaseDaily returns a unit reserved by reserveDaily.
+func (p *skillsProfile) releaseDaily(ctx context.Context, name, day string) {
+	p.store.ReleaseDaily(ctx, name, day)
+}

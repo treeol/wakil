@@ -470,6 +470,9 @@ type Config struct {
 	// Default 3 when auto_counsel is "auto" and this is unset.
 	CounselMaxPerSession int `json:"counsel_max_per_session,omitempty"`
 
+	// SkillCreation configures automatic skill creation (/skill-creation).
+	SkillCreation SkillCreationConfig `json:"skill_creation,omitempty"`
+
 	// MashuraPanels defines named model panels. Each panel is a named group of
 	// prefixed model strings ("anthropic:model-id" or "openrouter:model-id") with
 	// an execution mode ("panel" = query all, collect all; "fallback" = try in
@@ -1803,6 +1806,9 @@ func validateEnums(cfg Config) error {
 	case "", "suggest", "auto", "off":
 	default:
 		return fmt.Errorf("auto_counsel must be one of: suggest, auto, off (got %q)", cfg.AutoCounsel)
+	}
+	if !ValidSkillCreationMode(cfg.SkillCreation.Mode) {
+		return fmt.Errorf("skill_creation.mode must be one of: off, on, auto, auto-mashura (got %q)", cfg.SkillCreation.Mode)
 	}
 	switch cfg.WFOracleMode {
 	case "", "every-step", "on-deviation", "phases-only":

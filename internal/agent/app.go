@@ -2042,6 +2042,7 @@ func isPathAncestor(ancestor, path string) bool {
 // re-reads updated content instead of getting a stale "already called" hit.
 func (a *App) recordFileChanged(canonical string) {
 	a.invalidateCachedPath(canonical)
+	a.noteSkillFileWritten(canonical)
 	if a.filesChanged != nil {
 		a.filesChanged.record(canonical)
 	}
