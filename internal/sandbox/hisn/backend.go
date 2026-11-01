@@ -172,6 +172,11 @@ func (b *Backend) Start(ctx context.Context, s sandbox.Session) error {
 		return err
 	})
 	if err != nil {
+		if l != nil {
+			// A failed start left a possibly-running session of ours behind:
+			// keep the cleanup obligation so Stop/Close/Start retry it.
+			b.orphans = append(b.orphans, l)
+		}
 		return err
 	}
 	b.cur = l
@@ -252,6 +257,24 @@ func (b *Backend) AgentRoot() string { return b.opts.HostCwd }
 // SandboxTempDir implements sandbox.Backend: the session-private /tmp.
 func (b *Backend) SandboxTempDir() string { return "/tmp" }
 
+// bindCtx ties ctx to the session instance: it is cancelled when the session is
+// being replaced or stopped, so a control operation cannot outlive its session.
+func bindCtx(ctx context.Context, l *live) (context.Context, context.CancelFunc) {
+	cctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(l.ctx, cancel)
+	if l.ctx.Err() != nil {
+		cancel() // already replaced: do not wait for the async AfterFunc
+	}
+	return cctx, func() { stop(); cancel() }
+}
+
+// stillCurrent reports whether l is still the running session.
+func (b *Backend) stillCurrent(l *live) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.cur == l
+}
+
 // Grant implements sandbox.Backend.
 func (b *Backend) Grant(ctx context.Context, path string, rw bool) error {
 	l, release, err := b.admit()
@@ -259,6 +282,8 @@ func (b *Backend) Grant(ctx context.Context, path string, rw bool) error {
 		return err
 	}
 	defer release()
+	ctx, done := bindCtx(ctx, l)
+	defer done()
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("hisn grant: path %q is not absolute", path)
 	}
@@ -270,6 +295,11 @@ func (b *Backend) Grant(ctx context.Context, path string, rw bool) error {
 	out, err := b.output(ctx, false, args...)
 	if err != nil {
 		return classifyControlError("grant", path, out, err)
+	}
+	// Only record the grant if the session it was made in is still the
+	// current one; otherwise it would leak into the replacement's path map.
+	if !b.stillCurrent(l) {
+		return sandbox.ErrNoSession
 	}
 	b.pm.AddGrant(path)
 	return nil
@@ -283,9 +313,14 @@ func (b *Backend) Revoke(ctx context.Context, path string) error {
 		return err
 	}
 	defer release()
+	ctx, done := bindCtx(ctx, l)
+	defer done()
 	out, err := b.output(ctx, false, "revoke", "--session", l.id, "--", path)
 	if err != nil {
 		return classifyControlError("revoke", path, out, err)
+	}
+	if !b.stillCurrent(l) {
+		return sandbox.ErrNoSession
 	}
 	b.pm.RemoveGrant(path)
 	return nil

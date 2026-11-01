@@ -126,6 +126,10 @@ func fakeLs(state string) int {
 }
 
 func fakeInspect(state string, args []string) int {
+	if exists(filepath.Join(state, "inspect_fail")) {
+		fmt.Fprintln(os.Stderr, "hisn: inspect failed")
+		return 125
+	}
 	pol, err := os.ReadFile(filepath.Join(state, "s", flagVal(args, "--session"), "policy"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")

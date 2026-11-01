@@ -249,27 +249,37 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
   (bounded, 5 s), then removes the record. A failed or unverified kill keeps
   the record (recovery information) and returns the error; the id is not
   reused until the session is gone.
-* **Lifecycle vs execution.** A `sync.RWMutex` + epoch protects the session:
-  `Exec`/`StartBackground`/`StartInteractive` take the read lock to *admit*
-  and capture the current session handle; `Bind`/`Reset`/`Close` take the write
-  lock, cancel the handle's context (which cancels every in-flight `hisn exec`
-  client of that epoch), wait for them (bounded), then stop the session and
-  advance the epoch. `Generation()` returns the epoch and is advanced on
-  **every** replacement (bind to a different chat, reset, close). A stale
-  call that arrives after the transition either sees "no session" and fails,
-  or — only if the executor is still bound — lazily starts the session for
-  the *currently bound* chat; it can never target a previous epoch's handle.
-  Turn admission is serialised against these transitions by the existing
-  `TransitionCoordinator` (`/new`, `/resume`, handoff) and by `rewind`'s
-  "refuse while a turn is active" guard.
+* **Lifecycle vs execution.** `BackendExecutor.life` (RWMutex) serialises
+  transitions with *admission*. Every call captures a `(chat, generation)`
+  scope at entry; `admit` re-checks it under the lock and returns
+  `errRebound` instead of retrying against whichever session is current, so a
+  call that began under chat A can never start or run inside chat B's session
+  (multi-step operations such as `MovePath` pin one scope for all their steps).
+  Execs hold the lock only while being handed to the backend. The hisn
+  `Backend` additionally binds every exec/grant/revoke to its `live` session
+  instance (context cancelled when the session is replaced or stopped; a
+  grant that finishes after replacement does not touch the new path map).
+  `Generation()` advances on every replacement (bind to another chat, reset,
+  close). Worktree child executors share the session but can never bind,
+  reset or close it. Holding `life` while `Backend.Start` runs is safe: the
+  backend never calls back into the executor.
+* **Failed starts keep their cleanup obligation.** If `hisn run --detach`
+  succeeded but verification or cleanup failed, the session is tracked in the
+  backend's `orphans` list and retried by `Start`/`Stop`/`Close`; its owner
+  record is kept until the session is verifiably gone.
+* **Kill safety.** hisn offers no instance-bound kill, so the instance token
+  is re-verified (`hisn inspect`) immediately before **each** signal; a
+  mismatch aborts without signalling. A residual window of one CLI round trip
+  remains and is listed under Known limits.
 * **Bind** (`exec.ChatBinder`): called from the one place the chat ID changes
   (`App.setChatID`, replacing the five `Client.ChatID =` writes). Binding the
   same ID is a no-op; binding a different ID stops the current session and
   starts lazily on the next exec. Handoff therefore needs no record hand-over:
   the old session is stopped (record removed) and the new chat starts its own.
-* **Reset** (`/rewind`): same as a bind to the same ID with a forced stop; the
-  epoch advances so bg-registry entries are marked "process lost". The restart
-  waits for the id to disappear from `hisn ls` first.
+* **Reset** (`/rewind`): after a fully successful rewind the session is
+  stopped and the generation advances so bg-registry entries are marked
+  "process lost"; the next call restarts lazily for the same chat once the id
+  has disappeared from `hisn ls`. A refused rewind does not reset anything.
 * **Reconcile** at construction, under the lock: for each record whose owner
   process is gone (pid absent or start time differs): if `hisn ls` lists the id
   and the instance token verifies, `hisn kill` + wait; if the id is absent,
@@ -285,10 +295,12 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
   exits immediately and the setsid'ed child is no longer the exec's program,
   so cancelling/closing the launcher client does not kill it (to be confirmed
   by the integration test "background survives launcher exit"); it dies with
-  the session. `StartInteractive` returns the **host** pid of the local
-  `hisn exec` client, with the same meaning as docker's host `docker exec`
-  client pid; callers never mix it with in-sandbox pid calls (LSP only logs
-  it). `ExecHandle.Kill` cancels the local client (hisn TERMs, then KILLs
+  the session. `StartInteractive` always returns pid **0**: the only pid Wakil has is the
+  host-side `hisn exec` client's, and every pid-based call
+  (`IsProcessAlive`/`KillPgid`) runs in the sandbox pid namespace where that
+  number could name an unrelated process. Callers treat 0 as "no process guard".
+  The pipes are real OS pipes (not `io.Pipe`), so reaping the client never
+  depends on the caller draining stdout or closing stdin. `ExecHandle.Kill` cancels the local client (hisn TERMs, then KILLs
   after 5 s).
 * **Lost exec**: `hisn exec` exit 125 *without* a `hisn:` diagnostic line on
   stderr (v0.2.0 prints none for a lost exec). A program that itself exits 125
@@ -298,7 +310,7 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
 ## Policy generation
 
 A Go struct is marshalled with `github.com/BurntSushi/toml` into
-`<state>/hisn/sessions/<id>/policy.toml`, then checked with
+`<state>/hisn/sessions/<id>.toml`, then checked with
 `hisn policy validate`. Contents:
 
 ```toml
@@ -366,5 +378,21 @@ ignored, `WorkDir == HostWorkDir`.
 * Browser tools unavailable.
 * Worktree dirs live in the session `/tmp` tmpfs; very large repos can hit
   hisn's fixed tmpfs size.
+* Instance verification relies on `session.hostname` carrying a random token
+  and on `hisn inspect --json` returning the resolved policy as a TOML string
+  (checked against hisn v0.2.0 source and `hisn policy validate` output, not
+  against a running session on this build host). A session whose policy
+  carries no hostname is treated as *unverifiable* (record kept, error
+  reported), never as foreign.
+* The kill re-verification window (one CLI round trip) cannot be closed
+  without an instance-bound kill in hisn.
+* `StartBackground` uses `setsid nohup … &` inside `hisn exec`. That the
+  detached process survives its launcher exec is asserted by
+  `TestIntegrationStopKillsSleeper` (once) but has **not been run**, and there
+  is no readiness handshake between launcher exit and `setsid`.
+* Host<->URI mapping (LSP) is refused for paths that resolve outside the
+  workspace on the host (e.g. `ws/link -> /tmp/x`), because the same name can
+  be a different object inside the sandbox.
 * The hisn integration tests skip when `hisn check` fails (no user namespaces);
-  they have not been run in the build sandbox.
+  they have not been run in the build sandbox (see the final report for the
+  host commands).

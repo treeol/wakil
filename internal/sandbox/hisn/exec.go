@@ -47,6 +47,10 @@ func (b *Backend) Exec(ctx context.Context, spec sandbox.ExecSpec) (sandbox.Exec
 	if err != nil {
 		return nil, err
 	}
+	if l.ctx.Err() != nil { // replaced between admission and here
+		release()
+		return nil, sandbox.ErrNoSession
+	}
 	args[2] = l.id
 	args = append(args, "--")
 	args = append(args, spec.Argv...)

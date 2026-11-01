@@ -61,7 +61,17 @@ func (b *Backend) verifyInstance(ctx context.Context, id, token string) (verifie
 	}
 	// The token is 128 random bits, so a substring match cannot collide with a
 	// foreign session and does not depend on hisn's TOML quoting.
-	return strings.Contains(r.Policy, hostnameFor(token)), nil
+	if strings.Contains(r.Policy, hostnameFor(token)) {
+		return true, nil
+	}
+	// A different instance is only proven when the policy NAMES a hostname and
+	// it is not ours. A policy without any hostname is "unknown" (an error), so
+	// callers keep their record instead of discarding ownership of a session
+	// that may well be ours.
+	if !strings.Contains(r.Policy, "hostname") {
+		return false, fmt.Errorf("hisn inspect %s: resolved policy carries no hostname; cannot verify instance", id)
+	}
+	return false, nil
 }
 
 // waitGone polls `hisn ls` until id disappears or the deadline passes.
@@ -81,9 +91,24 @@ func (b *Backend) waitGone(ctx context.Context, id string, d time.Duration) bool
 	}
 }
 
-// killSession ends session id: TERM, then KILL, waiting for it to vanish.
-func (b *Backend) killSession(ctx context.Context, id string) error {
+// killSession ends session id: TERM, then KILL, waiting for it to vanish. The
+// instance is re-verified immediately before EACH signal, so an id that was
+// reused by a foreign session between steps is never signalled. hisn offers no
+// instance-bound kill, so a residual window of a single CLI round trip remains
+// (a foreign session would need to reuse a UUID-sized id in that window).
+func (b *Backend) killSession(ctx context.Context, id, token string) error {
 	for _, sig := range []string{"TERM", "KILL"} {
+		ok, err := b.verifyInstance(ctx, id, token)
+		if err != nil {
+			// inspect fails once the session is gone; that is success.
+			if b.waitGone(ctx, id, time.Second) {
+				return nil
+			}
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("hisn session %s is no longer the instance Wakil created; not signalling it", id)
+		}
 		_, _ = b.output(ctx, false, "kill", "--session", id, "--signal", sig)
 		if b.waitGone(ctx, id, 5*time.Second) {
 			return nil
@@ -120,17 +145,27 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 		return nil, err
 	}
 
+	newLive := func() *live {
+		lctx, cancel := context.WithCancel(context.Background())
+		return &live{id: s.ID, token: rec.Token, ctx: lctx, cancel: cancel}
+	}
 	if err := b.runSession(ctx, rec); err != nil {
-		b.abortStartLocked(rec)
+		if !b.abortStartLocked(rec) {
+			// Cleanup did not complete: hand back an obligation so the backend
+			// keeps retrying (Start/Stop/Close) instead of forgetting a session
+			// that may still be running.
+			return newLive(), err
+		}
 		return nil, err
 	}
 	rec.Started = true
 	if err := b.rewriteRecord(rec); err != nil {
-		b.abortStartLocked(rec)
+		if !b.abortStartLocked(rec) {
+			return newLive(), fmt.Errorf("hisn: updating owner record: %w", err)
+		}
 		return nil, fmt.Errorf("hisn: updating owner record: %w", err)
 	}
-	lctx, cancel := context.WithCancel(context.Background())
-	return &live{id: s.ID, token: rec.Token, ctx: lctx, cancel: cancel}, nil
+	return newLive(), nil
 }
 
 // runSession writes + validates the policy, starts the detached session and
@@ -170,29 +205,33 @@ func (b *Backend) runSession(ctx context.Context, rec record) error {
 
 // abortStartLocked cleans up after a failed start WITHOUT ever touching a
 // session Wakil did not create: it kills only an instance whose token matches
-// and removes the record only when nothing of ours can still be running.
-func (b *Backend) abortStartLocked(rec record) {
+// and removes the record only when nothing of ours can still be running. It
+// reports whether nothing of ours is left running (true) or a cleanup
+// obligation remains (false; the record is kept).
+func (b *Backend) abortStartLocked(rec record) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sessions, err := b.listSessions(ctx)
 	if err != nil {
-		return // keep the record: recovery information
+		return false // keep the record: recovery information
 	}
 	if _, present := sessions[rec.ID]; !present {
 		b.removeRecord(rec.ID)
-		return
+		return true
 	}
 	ok, err := b.verifyInstance(ctx, rec.ID, rec.Token)
 	if err != nil {
-		return // present but unverifiable: keep the record
+		return false // present but unverifiable: keep the record
 	}
 	if !ok {
 		b.removeRecord(rec.ID) // someone else's session; never ours
-		return
+		return true
 	}
-	if err := b.killSession(ctx, rec.ID); err == nil {
-		b.removeRecord(rec.ID)
+	if err := b.killSession(ctx, rec.ID, rec.Token); err != nil {
+		return false
 	}
+	b.removeRecord(rec.ID)
+	return true
 }
 
 // stopLocked ends the session described by l. Caller holds the state lock.
@@ -217,7 +256,7 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 		if !ok {
 			return fmt.Errorf("hisn stop: session %s is not the instance Wakil created; refusing to kill", l.id)
 		}
-		if err := b.killSession(ctx, l.id); err != nil {
+		if err := b.killSession(ctx, l.id, l.token); err != nil {
 			return err
 		}
 	}
@@ -278,7 +317,7 @@ func (b *Backend) reconcileOneLocked(ctx context.Context, r record) error {
 		b.removeRecord(r.ID) // the id was reused by a session that is not ours
 		return nil
 	}
-	if err := b.killSession(ctx, r.ID); err != nil {
+	if err := b.killSession(ctx, r.ID, r.Token); err != nil {
 		return err // keep the record
 	}
 	b.removeRecord(r.ID)

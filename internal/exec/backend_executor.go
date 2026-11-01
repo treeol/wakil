@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -83,6 +84,38 @@ func NewBackendExecutor(b sandbox.Backend, opts BackendOptions) *BackendExecutor
 
 // ---- lifecycle ----
 
+// callScope pins one logical operation to the (chat, generation) that was
+// current when it began. A call whose scope no longer matches is rejected
+// instead of being retried against whichever session happens to be current.
+type callScope struct {
+	chatID string
+	gen    int
+}
+
+type scopeKey struct{}
+
+func (s *shared) captureScope() *callScope {
+	s.life.RLock()
+	defer s.life.RUnlock()
+	return &callScope{chatID: s.chatID, gen: s.gen}
+}
+
+// withScope returns ctx carrying a scope captured now, unless it already has one.
+// Multi-step operations call it once so every step shares one identity.
+func (s *shared) withScope(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(scopeKey{}).(*callScope); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, scopeKey{}, s.captureScope())
+}
+
+var errRebound = errors.New("sandbox session was replaced while the call was in flight; retry")
+
+// matches reports whether sc is still the live identity. Caller holds life.
+func (s *shared) matches(sc *callScope) bool {
+	return sc == nil || (sc.chatID == s.chatID && sc.gen == s.gen)
+}
+
 // current reports whether a session for the bound chat is running. Caller
 // holds life (shared or exclusive).
 func (s *shared) current() bool {
@@ -90,11 +123,14 @@ func (s *shared) current() bool {
 }
 
 // startSession starts the session for the bound chat if it is not running.
-func (s *shared) startSession(ctx context.Context) error {
+func (s *shared) startSession(ctx context.Context, sc *callScope) error {
 	s.life.Lock()
 	defer s.life.Unlock()
 	if s.closed {
 		return errors.New("sandbox executor is closed")
+	}
+	if !s.matches(sc) {
+		return errRebound
 	}
 	if s.chatID == "" {
 		return errors.New("sandbox: no chat bound yet")
@@ -115,15 +151,23 @@ func (s *shared) startSession(ctx context.Context) error {
 // chat, starting it first if needed. It never starts a session for any other
 // chat and never after Close.
 func (s *shared) admit(ctx context.Context, fn func() error) error {
+	sc, _ := ctx.Value(scopeKey{}).(*callScope)
+	if sc == nil {
+		sc = s.captureScope()
+	}
 	for {
 		s.life.RLock()
+		if !s.matches(sc) {
+			s.life.RUnlock()
+			return errRebound
+		}
 		if s.current() {
 			err := fn()
 			s.life.RUnlock()
 			return err
 		}
 		s.life.RUnlock()
-		if err := s.startSession(ctx); err != nil {
+		if err := s.startSession(ctx, sc); err != nil {
 			return err
 		}
 	}
@@ -131,6 +175,9 @@ func (s *shared) admit(ctx context.Context, fn func() error) error {
 
 // BindChat implements ChatBinder.
 func (e *BackendExecutor) BindChat(ctx context.Context, chatID string) error {
+	if e.child {
+		return errors.New("a worktree executor cannot bind the shared sandbox session")
+	}
 	s := e.shared
 	s.life.Lock()
 	defer s.life.Unlock()
@@ -158,6 +205,9 @@ func (e *BackendExecutor) BindChat(ctx context.Context, chatID string) error {
 
 // ResetSandbox implements SandboxResetter (used by /rewind).
 func (e *BackendExecutor) ResetSandbox(ctx context.Context) error {
+	if e.child {
+		return errors.New("a worktree executor cannot reset the shared sandbox session")
+	}
 	s := e.shared
 	s.life.Lock()
 	defer s.life.Unlock()
@@ -426,6 +476,7 @@ func (e *BackendExecutor) DeletePath(ctx context.Context, path string) error {
 
 // MovePath implements Executor.
 func (e *BackendExecutor) MovePath(ctx context.Context, src, dst string) error {
+	ctx = e.withScope(ctx) // check and mutation must hit the same session
 	chk, cerr := e.sh(ctx, fmt.Sprintf(`[ ! -e %[1]s ] && [ ! -L %[1]s ] && echo ok || echo exists`, shQuote(dst)))
 	if cerr == nil && strings.TrimSpace(chk) == "exists" {
 		return fmt.Errorf("destination already exists: %s — delete it first if you intended to overwrite", dst)
@@ -483,9 +534,24 @@ func (e *BackendExecutor) IsProcessGroupAlive(ctx context.Context, pgid int) boo
 func (e *BackendExecutor) StartInteractive(ctx context.Context, command string) (
 	stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, pid int, err error,
 ) {
-	inR, inW := io.Pipe()
-	outR, outW := io.Pipe()
-	errR, errW := io.Pipe()
+	// Real OS pipes, not io.Pipe: os/exec hands *os.File streams straight to
+	// the child, so no copier goroutine exists whose completion Wait would
+	// depend on (a caller that keeps stdin open or never drains stdout can no
+	// longer delay or wedge process reaping).
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		return nil, nil, nil, 0, fmt.Errorf("stdin pipe: %w", err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		closeAll(inR, inW)
+		return nil, nil, nil, 0, fmt.Errorf("stdout pipe: %w", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		closeAll(inR, inW, outR, outW)
+		return nil, nil, nil, 0, fmt.Errorf("stderr pipe: %w", err)
+	}
 	var h sandbox.ExecHandle
 	err = e.admit(ctx, func() (err error) {
 		h, err = e.b.Exec(ctx, sandbox.ExecSpec{
@@ -495,18 +561,25 @@ func (e *BackendExecutor) StartInteractive(ctx context.Context, command string) 
 		return err
 	})
 	if err != nil {
-		_ = inR.Close()
-		_ = outW.Close()
-		_ = errW.Close()
+		closeAll(inR, inW, outR, outW, errR, errW)
 		return nil, nil, nil, 0, fmt.Errorf("starting interactive process: %w", err)
 	}
+	// The backend may keep writing to outW/errW (and reading inR) until the
+	// exec finishes, so the parent's copies of the CHILD-side ends are closed
+	// only after Wait. stdin is an *os.File, so os/exec starts no stdin copier
+	// and Wait cannot be held up by a caller that keeps stdin open; stdout and
+	// stderr copiers are bounded by the client's WaitDelay if nobody reads.
 	go func() {
 		_, _ = h.Wait()
-		_ = inR.Close()
-		_ = outW.Close()
-		_ = errW.Close()
+		closeAll(inR, outW, errW)
 	}()
 	return inW, outR, errR, 0, nil
+}
+
+func closeAll(fs ...*os.File) {
+	for _, f := range fs {
+		_ = f.Close()
+	}
 }
 
 // ---- file modes ----
@@ -607,6 +680,9 @@ func (e *BackendExecutor) HostPathToURI(hostPath string) (string, error) {
 	if !filepath.IsAbs(hostPath) {
 		hostPath = filepath.Join(e.root, hostPath)
 	}
+	if err := e.hostIdentity(hostPath); err != nil {
+		return "", err
+	}
 	agent, err := e.b.UnmapPath(hostPath)
 	if err != nil {
 		return "", fmt.Errorf("path %q has no sandbox mapping: %w", hostPath, err)
@@ -627,7 +703,30 @@ func (e *BackendExecutor) URIToHostPath(uri string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("URI %q has no host mapping: %w", uri, err)
 	}
+	if err := e.hostIdentity(host); err != nil {
+		return "", err
+	}
 	return host, nil
+}
+
+// hostIdentity refuses a host path whose real location (after resolving
+// symlinks on the HOST) lies outside the workspace: a symlink such as
+// ws/link -> /tmp/x names a HOST object when opened by Wakil but the
+// sandbox-private /tmp/x when resolved inside the sandbox, so the two would be
+// different files with one name. Nonexistent tails are allowed (the deepest
+// existing ancestor is checked).
+func (e *BackendExecutor) hostIdentity(hostPath string) error {
+	real, err := resolveExistingAncestor(filepath.Clean(hostPath))
+	if err != nil {
+		return fmt.Errorf("path %q cannot be resolved on the host: %w", hostPath, err)
+	}
+	if isInsideWorkspace(real, e.root) {
+		return nil
+	}
+	if _, err := e.b.UnmapPath(real); err == nil {
+		return nil // an active grant is the same object on both sides
+	}
+	return fmt.Errorf("path %q resolves to %q outside the workspace on the host; the sandbox may see a different object there — refusing to map it", hostPath, real)
 }
 
 // ---- WorktreeHost ----
@@ -654,11 +753,24 @@ func (e *BackendExecutor) NewWorktreeExecutor(dir string) (Executor, error) {
 // ---- AccessGranter ----
 
 // EnsureAccess implements AccessGranter.
+//
+// The session is started/admitted first, but the (possibly slow) grant itself
+// runs OUTSIDE the lifecycle lock: the backend binds the operation to its
+// session instance and cancels it when that session is replaced, so a hung
+// grant can neither block a rebind nor reach the replacement session.
 func (e *BackendExecutor) EnsureAccess(ctx context.Context, path string, tier sandbox.Tier) error {
-	return e.admit(ctx, func() error { return e.grants.Ensure(ctx, path, tier) })
+	ctx = e.withScope(ctx)
+	if err := e.admit(ctx, func() error { return nil }); err != nil {
+		return err
+	}
+	return e.grants.Ensure(ctx, path, tier)
 }
 
 // WithdrawAccess implements AccessGranter.
 func (e *BackendExecutor) WithdrawAccess(ctx context.Context, path string) error {
+	ctx = e.withScope(ctx)
+	if err := e.admit(ctx, func() error { return nil }); err != nil {
+		return err
+	}
 	return e.grants.Withdraw(ctx, path)
 }

@@ -13,6 +13,7 @@
 
 - `go test ./...`
 - `go test -race ./...` — race detector (CI runs this on the full suite)
+- hisn backend integration tests (`go test -run TestIntegration ./internal/sandbox/hisn/`) skip unless `hisn` >= 0.2.0 is installed and `hisn check` passes; set `WAKIL_HISN_BIN` to pick a binary
 - `go vet ./...`
 
 ## Lint
@@ -50,7 +51,8 @@ Core packages (`internal/`):
 - `counsel/` — external AI counsel (oracle) HTTP calls, panel execution, response parsing
 - `crypto/` — cryptographic utilities
 - `diag/` — diagnostics
-- `exec/` — sandboxed execution (Docker + direct modes)
+- `exec/` — sandboxed execution (Docker + direct modes; `BackendExecutor` for pluggable sandbox backends; optional capability interfaces in `capabilities.go`)
+- `sandbox/` — backend-neutral sandbox contract (`Backend`, `PathMap`, `GrantManager`); `sandbox/hisn/` is the hisn backend, `sandbox/fake/` a test double. The tool layer (agent, tools, lsp, browser, tui) must not import a concrete backend — enforced by `internal/agent/no_backend_import_test.go`. Design: `docs/sandbox-backends.md`
 - `ilm/` — ILM (in-context learning memory) stack
 - `lsp/` — language server protocol integration
 - `memory/` — durable memory store

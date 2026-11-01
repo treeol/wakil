@@ -31,7 +31,9 @@ func scrubbedEnv(base []string, pass []string) []string {
 	for _, n := range pass {
 		want[n] = true
 	}
-	var out []string
+	// Non-nil on purpose: exec.Cmd treats a nil Env as "inherit the parent's
+	// environment", which would be the opposite of scrubbing.
+	out := []string{}
 	for _, kv := range base {
 		name, _, ok := strings.Cut(kv, "=")
 		if !ok {

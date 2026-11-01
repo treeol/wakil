@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
 )
@@ -18,6 +19,7 @@ import (
 // can assert on it. It is a test double only; production never runs on the host.
 type shBackend struct {
 	root string
+	pm   *sandbox.PathMap
 
 	mu      sync.Mutex
 	started []string
@@ -90,11 +92,22 @@ func (b *shBackend) Stop(context.Context) error {
 	b.live = ""
 	return nil
 }
-func (b *shBackend) Close(ctx context.Context) error    { return b.Stop(ctx) }
-func (b *shBackend) MapPath(p string) (string, error)   { return p, nil }
-func (b *shBackend) UnmapPath(p string) (string, error) { return p, nil }
-func (b *shBackend) AgentRoot() string                  { return b.root }
-func (b *shBackend) SandboxTempDir() string             { return "/tmp" }
+func (b *shBackend) Close(ctx context.Context) error  { return b.Stop(ctx) }
+func (b *shBackend) MapPath(p string) (string, error) { return b.pathMap().MapPath(p) }
+func (b *shBackend) UnmapPath(p string) (string, error) {
+	return b.pathMap().UnmapPath(p)
+}
+
+func (b *shBackend) pathMap() *sandbox.PathMap {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pm == nil {
+		b.pm = sandbox.NewPathMap(b.root, b.root, "/tmp")
+	}
+	return b.pm
+}
+func (b *shBackend) AgentRoot() string      { return b.root }
+func (b *shBackend) SandboxTempDir() string { return "/tmp" }
 
 func newTestBackendExec(t *testing.T) (*BackendExecutor, *shBackend) {
 	t.Helper()
@@ -354,4 +367,132 @@ func TestDockerAndDirectAreWorktreeHosts(t *testing.T) {
 	if os.TempDir() != d.SandboxTempDir() {
 		t.Error("direct sandbox temp dir should be the host temp dir")
 	}
+}
+
+// ---- round-2 regressions ----
+
+// A call that began under one chat must never run in the session of a chat
+// bound later. The gate between "no session" and "start it" is forced open
+// deterministically: the call is pinned to a scope, then the chat changes.
+func TestBackendExecutorStaleScopeCannotStartReplacement(t *testing.T) {
+	ex, sb := newTestBackendExec(t)
+	ctx := context.Background()
+	_ = ex.BindChat(ctx, "old")
+	scoped := ex.withScope(ctx) // call begins under chat "old"
+	_ = ex.BindChat(ctx, "new") // ... the chat changes before it is admitted
+	_, err := ex.RunShell(scoped, "touch must-not-run")
+	if !errors.Is(err, errRebound) {
+		t.Fatalf("stale call = %v, want errRebound", err)
+	}
+	if len(sb.started) != 0 {
+		t.Fatalf("a stale call started a session: %v", sb.started)
+	}
+	if _, serr := os.Stat(ex.Cwd() + "/must-not-run"); serr == nil {
+		t.Fatal("stale call executed")
+	}
+	// A fresh call under the new chat is fine.
+	if _, err := ex.RunShell(ctx, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if len(sb.started) != 1 || sb.started[0] != "new" {
+		t.Fatalf("started = %v", sb.started)
+	}
+}
+
+func TestBackendExecutorGenerationBumpRejectsStaleScope(t *testing.T) {
+	ex, _ := newTestBackendExec(t)
+	ctx := context.Background()
+	_ = ex.BindChat(ctx, "a")
+	_, _ = ex.RunShell(ctx, "true")
+	scoped := ex.withScope(ctx)
+	_ = ex.ResetSandbox(ctx) // same chat, new generation
+	if _, err := ex.RunShell(scoped, "true"); !errors.Is(err, errRebound) {
+		t.Fatalf("call pinned to the pre-reset generation = %v, want errRebound", err)
+	}
+}
+
+func TestBackendExecutorMovePathPinnedToOneSession(t *testing.T) {
+	ex, _ := newTestBackendExec(t)
+	ctx := context.Background()
+	_ = ex.BindChat(ctx, "a")
+	if _, err := ex.WriteFile(ctx, "src.txt", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.MovePath(ctx, "src.txt", "dst.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := ex.EntryExists(ctx, "dst.txt"); !ok {
+		t.Fatal("move did not happen")
+	}
+}
+
+func TestBackendExecutorChildCannotBindOrReset(t *testing.T) {
+	ex, sb := newTestBackendExec(t)
+	ctx := context.Background()
+	_ = ex.BindChat(ctx, "parent")
+	_, _ = ex.RunShell(ctx, "true")
+	child, _ := ex.NewWorktreeExecutor("/tmp/wakil-wt-x")
+	if err := child.(ChatBinder).BindChat(ctx, "subagent-chat"); err == nil {
+		t.Error("a worktree child must not bind the shared session")
+	}
+	if err := child.(SandboxResetter).ResetSandbox(ctx); err == nil {
+		t.Error("a worktree child must not reset the shared session")
+	}
+	if sb.stopped != 0 || sb.live != "parent" {
+		t.Fatalf("the parent's session was disturbed: stopped=%d live=%q", sb.stopped, sb.live)
+	}
+}
+
+// ws/link -> a directory outside the workspace: opened on the HOST it is one
+// object, resolved in the sandbox (private /tmp, other mounts) another. Such
+// a path must not get a host<->URI mapping.
+func TestBackendExecutorHostIdentityRejectsEscapingSymlink(t *testing.T) {
+	ex, _ := newTestBackendExec(t)
+	outside := t.TempDir()
+	link := ex.Cwd() + "/link"
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if _, err := ex.HostPathToURI(link + "/f.go"); err == nil {
+		t.Error("HostPathToURI must refuse a path that resolves outside the workspace on the host")
+	}
+	uri := "file://" + link + "/f.go"
+	if _, err := ex.URIToHostPath(uri); err == nil {
+		t.Error("URIToHostPath must refuse a path that resolves outside the workspace on the host")
+	}
+	// A normal in-workspace path still maps.
+	_ = os.WriteFile(ex.Cwd()+"/ok.go", []byte("x"), 0o600)
+	u, err := ex.HostPathToURI(ex.Cwd() + "/ok.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back, err := ex.URIToHostPath(u); err != nil || back != ex.Cwd()+"/ok.go" {
+		t.Fatalf("round trip = %q %v", back, err)
+	}
+}
+
+// A child that exits while the caller keeps stdin open and never reads stdout
+// must be reaped; teardown must not depend on the caller's pipes.
+func TestBackendExecutorInteractiveChildExitWithOpenStdin(t *testing.T) {
+	ex, _ := newTestBackendExec(t)
+	ctx := context.Background()
+	_ = ex.BindChat(ctx, "c")
+	in, out, errp, _, err := ex.StartInteractive(ctx, "echo bye; exit 0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// stdin deliberately left open; stdout deliberately not drained first.
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.ReadAll(out) // sees EOF once the child exits
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stdout never reached EOF after the child exited (teardown depends on the caller)")
+	}
+	_ = in.Close()
+	_ = out.Close()
+	_ = errp.Close()
 }
