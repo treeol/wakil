@@ -1,0 +1,129 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/treeol/wakil/internal/buildinfo"
+	"github.com/treeol/wakil/internal/config"
+)
+
+const pinned = "ghcr.io/treeol/wakil-sandbox@sha256:" +
+	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func setPinned(t *testing.T, v string) {
+	t.Helper()
+	old := buildinfo.SandboxImage
+	buildinfo.SandboxImage = v
+	t.Cleanup(func() { buildinfo.SandboxImage = old })
+}
+
+func TestSandboxImageResolutionOrder(t *testing.T) {
+	writeCfg := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "c.json")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	base := []string{"--base-url", "http://x:1"}
+	tests := []struct {
+		name   string
+		pinned string
+		cfg    string
+		env    string
+		args   []string
+		want   string
+	}{
+		{"dev fallback", "", "", "", nil, "wakil-dev"},
+		{"pinned beats dev", pinned, "", "", nil, pinned},
+		{"config sandbox.image beats pinned", pinned, `{"sandbox":{"image":"cfg/img:1"}}`, "", nil, "cfg/img:1"},
+		{"sandbox.image beats legacy image", pinned, `{"image":"legacy:1","sandbox":{"image":"cfg/img:1"}}`, "", nil, "cfg/img:1"},
+		{"legacy image beats pinned", pinned, `{"image":"legacy:1"}`, "", nil, "legacy:1"},
+		{"flag beats config", pinned, `{"sandbox":{"image":"cfg/img:1"}}`, "", []string{"--sandbox-image", "flag/img:2"}, "flag/img:2"},
+		{"env beats config", pinned, `{"sandbox":{"image":"cfg/img:1"}}`, "env/img:3", nil, "env/img:3"},
+		{"flag beats env", pinned, "", "env/img:3", []string{"--sandbox-image", "flag/img:2"}, "flag/img:2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setPinned(t, tc.pinned)
+			cfgFile := filepath.Join(t.TempDir(), "none.json")
+			if tc.cfg != "" {
+				cfgFile = writeCfg(t, tc.cfg)
+			}
+			t.Setenv("WAKIL_CONFIG", cfgFile)
+			t.Setenv("WAKIL_IMAGE", tc.env)
+			t.Setenv("ILM_CONTAINER_IMAGE", "")
+			cfg, err := config.LoadConfig(append(append([]string{}, base...), tc.args...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Image != tc.want {
+				t.Fatalf("Image = %q, want %q", cfg.Image, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrintVersion(t *testing.T) {
+	oldV, oldC, oldD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
+	t.Cleanup(func() { buildinfo.Version, buildinfo.Commit, buildinfo.Date = oldV, oldC, oldD })
+	buildinfo.Version, buildinfo.Commit, buildinfo.Date = "v1.2.3", "abc1234", "2026-01-02T03:04:05Z"
+	setPinned(t, pinned)
+	var b bytes.Buffer
+	printVersion(&b)
+	for _, want := range []string{"v1.2.3", "abc1234", "2026-01-02T03:04:05Z", pinned, "go1."} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("version output missing %q:\n%s", want, b.String())
+		}
+	}
+	if !strings.Contains(b.String(), "sha256:") {
+		t.Error("version output must show the full sandbox digest")
+	}
+}
+
+func TestDoctorNoRuntime(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no docker/podman
+	t.Setenv("WAKIL_CONFIG", filepath.Join(t.TempDir(), "none.json"))
+	var b bytes.Buffer
+	run := func(context.Context, string, ...string) (string, error) { return "", errors.New("unexpected") }
+	if rc := runDoctor(&b, nil, run); rc == 0 {
+		t.Fatalf("exit code = 0, want non-zero; output:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "no usable container runtime") {
+		t.Errorf("missing runtime failure message:\n%s", b.String())
+	}
+}
+
+func TestDoctorRuntimeAndMissingImage(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	setPinned(t, pinned)
+	cfgFile := filepath.Join(t.TempDir(), "c.json")
+	if err := os.WriteFile(cfgFile, []byte(`{"base_url":"http://x:1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(_ context.Context, _ string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "image" {
+			return "No such image", errors.New("exit 1")
+		}
+		return "id", nil
+	}
+	var b bytes.Buffer
+	if rc := runDoctor(&b, []string{"--config", cfgFile}, run); rc != 0 {
+		t.Fatalf("exit code = %d, want 0:\n%s", rc, b.String())
+	}
+	for _, want := range []string{"daemon reachable", cfgFile + " loaded", "docker pull " + pinned} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("doctor output missing %q:\n%s", want, b.String())
+		}
+	}
+}

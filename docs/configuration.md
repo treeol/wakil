@@ -14,7 +14,7 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--api-key` | `ILM_API_KEY` / `WAKIL_API_KEY` | — | sent as `Authorization: Bearer <key>` *(endpoint-level `auth_header` wins)* |
 | `--model` | `ILM_MODEL` / `WAKIL_MODEL` | `ilm` | model name; overrides the selected endpoint's `model` |
 | `--exec` | `ILM_EXEC_MODE` / `WAKIL_EXEC_MODE` | `docker` | `docker` \| `direct` |
-| `--image` | `ILM_CONTAINER_IMAGE` / `WAKIL_IMAGE` | `wakil-dev` | sandbox image *(build from `Dockerfile`)* |
+| `--sandbox-image` *(alias `--image`)* | `ILM_CONTAINER_IMAGE` / `WAKIL_IMAGE` | image pinned into the release binary *(`ghcr.io/treeol/wakil-sandbox@sha256:…`; see `wakil version`)*; dev builds fall back to `wakil-dev` with a warning | sandbox image. Resolution order: flag → env → config `sandbox.image` → legacy `image` → pinned digest → dev fallback. Release binaries pull the pinned image on first run. Build your own with `docker build -t wakil-dev .` |
 | `--workdir` | `ILM_WORKDIR` / `WAKIL_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
 | `--host-workdir` | `ILM_HOST_WORKDIR` / `WAKIL_HOST_WORKDIR` | cwd *(auto-detected)* | host path bind-mounted into the container |
 | `--docker-sock` | `ILM_DOCKER_SOCKET` / `WAKIL_DOCKER_SOCKET` | `false` | pass host Docker socket into the sandbox |

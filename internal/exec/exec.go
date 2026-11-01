@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/treeol/wakil/internal/buildinfo"
 	"github.com/treeol/wakil/internal/safe"
 )
 
@@ -607,6 +608,21 @@ func checkDockerImage(image string) error {
 		"Alternatively, use --exec direct for bare-metal execution (no Docker needed).", image, image)
 }
 
+// pullPinnedImage pulls a digest-pinned sandbox image. Progress goes to
+// stderr. Only called for the exact image reference baked into the release
+// binary, never for user-configured images.
+func pullPinnedImage(image string) error {
+	fmt.Fprintf(os.Stderr, "sandbox image not found locally — pulling %s (first run only)\n", image)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "pull", image)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker pull %s failed: %w — fix connectivity, or pull it manually, or use --exec direct", image, err)
+	}
+	return nil
+}
+
 // isImageNotFound reports whether err is a "genuinely missing image" error
 // from checkDockerImage (as opposed to a daemon-level failure). The error
 // messages from checkDockerImage for missing images always contain "not found
@@ -634,7 +650,17 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// inspect requires a working daemon), so dockerPreflight is redundant on
 	// the happy path. We keep dockerPreflight as a fallback to produce a
 	// clearer error message when inspect fails with a daemon-level error.
-	if err := checkDockerImage(image); err != nil {
+	err := checkDockerImage(image)
+	if err != nil && isImageNotFound(err) && buildinfo.SandboxImage != "" && image == buildinfo.SandboxImage {
+		// First run of a release binary: the digest-pinned sandbox image it
+		// shipped with is not local yet. Packages never download anything at
+		// install time, so wakil pulls it here, once, on first use.
+		if pErr := pullPinnedImage(image); pErr != nil {
+			return nil, pErr
+		}
+		err = checkDockerImage(image)
+	}
+	if err != nil {
 		// If the failure looks like a daemon problem (not just "image not
 		// found"), run dockerPreflight for a clearer error message.
 		if !isImageNotFound(err) {

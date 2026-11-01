@@ -11,6 +11,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/treeol/wakil/internal/buildinfo"
 )
 
 // Endpoint kinds. "openai" is a plain OpenAI-compatible chat-completions
@@ -220,10 +223,15 @@ type Config struct {
 	// native clipboard tools then OSC 52; "native" never emits OSC 52;
 	// "osc52" never runs a local clipboard tool. See the ClipboardMode consts.
 	ClipboardMode ClipboardMode `json:"clipboard_mode,omitempty"`
-	Image         string        `json:"image"`                   // container image for docker mode
-	WorkDir       string        `json:"work_dir"`                // working dir inside the container
-	HostWorkDir   string        `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
-	DockerSocket  bool          `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
+	// Image is the resolved sandbox image. Resolution order (see
+	// resolveSandboxImage): --sandbox-image/--image flag > env > config
+	// "sandbox.image" > "image" (legacy key) > build-time pinned digest
+	// (release binaries) > unpinned dev fallback.
+	Image        string        `json:"image"`                   // container image for docker mode
+	Sandbox      SandboxConfig `json:"sandbox,omitempty"`       // sandbox settings (image override)
+	WorkDir      string        `json:"work_dir"`                // working dir inside the container
+	HostWorkDir  string        `json:"host_work_dir,omitempty"` // host path mounted into container (files appear here)
+	DockerSocket bool          `json:"docker_socket,omitempty"` // bind-mount the host docker socket into the sandbox (drive host docker from inside)
 	// Docker hardening (defense-in-depth for the sandbox container).
 	// DockerCaps re-adds specific capabilities after --cap-drop=ALL.
 	// Empty = no caps re-added (strictest). Add "CHOWN" if go build fails.
@@ -897,6 +905,14 @@ type MashuraPanelConfig struct {
 	ServerToolMaxCalls int      `json:"server_tool_max_calls,omitempty"` // max server-tool steps per request; 0 = OpenRouter default (30)
 }
 
+// SandboxConfig groups sandbox-related config-file settings.
+type SandboxConfig struct {
+	// Image overrides the sandbox image (config key "sandbox.image"). Takes
+	// precedence over the legacy top-level "image" key and the image pinned
+	// into release binaries; env vars and --sandbox-image override it.
+	Image string `json:"image,omitempty"`
+}
+
 // MCPServerConfig declares one MCP server. Transport is "stdio" or "http".
 type MCPServerConfig struct {
 	Name      string            `json:"name"`
@@ -921,7 +937,7 @@ func DefaultConfig() Config {
 		ExecMode:                "docker",
 		OutputMode:              OutputModeDebug,
 		ClipboardMode:           ClipboardModeAuto,
-		Image:                   "wakil-dev",
+		Image:                   DefaultSandboxImage(), // LoadConfig re-resolves via resolveSandboxImage
 		DockerSocket:            false,
 		DockerMemory:            "4g",
 		DockerPidsLimit:         512,
@@ -972,6 +988,39 @@ func DefaultConfig() Config {
 		WFFinalReview:              true,
 	}
 }
+
+var warnDevImageOnce sync.Once
+
+// resolveSandboxImage returns configured when non-empty (flag/env/file already
+// applied by the caller), else the image pinned into this binary at release
+// time, else — dev builds only — the unpinned DevSandboxImage plus a one-line
+// warning on stderr.
+func resolveSandboxImage(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if buildinfo.SandboxImage != "" {
+		return buildinfo.SandboxImage
+	}
+	warnDevImageOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, "warning: unpinned dev sandbox image ("+buildinfo.DevSandboxImage+")")
+	})
+	return buildinfo.DevSandboxImage
+}
+
+// DefaultSandboxImage reports the image used when nothing is configured: the
+// pinned release digest, or the unpinned dev image for non-release builds.
+// Unlike resolveSandboxImage it never prints a warning.
+func DefaultSandboxImage() string {
+	if buildinfo.SandboxImage != "" {
+		return buildinfo.SandboxImage
+	}
+	return buildinfo.DevSandboxImage
+}
+
+// DefaultConfigPath returns the config file path used when --config is not
+// given (WAKIL_CONFIG, else ~/.config/wakil/config.json).
+func DefaultConfigPath() string { return defaultConfigPath() }
 
 func defaultConfigPath() string {
 	if x := os.Getenv("WAKIL_CONFIG"); x != "" {
@@ -1030,6 +1079,9 @@ func maybeCreateDefaultConfig(cfgPath string) {
 // LoadConfig resolves configuration from all sources.
 func LoadConfig(argv []string) (Config, error) {
 	cfg := DefaultConfig()
+	// Blank the image so "unset" is distinguishable from an explicit value;
+	// resolveSandboxImage fills it in after flag/env/file are applied.
+	cfg.Image = ""
 
 	// 1) config file (explicit --config handled by pre-scan; else default path)
 	cfgPath := defaultConfigPath()
@@ -1067,6 +1119,11 @@ func LoadConfig(argv []string) (Config, error) {
 		} else if err := json.Unmarshal(b, &cfg); err != nil {
 			return cfg, fmt.Errorf("parsing %s: %w", cfgPath, err)
 		}
+	}
+
+	// sandbox.image (config file) wins over the legacy top-level "image" key.
+	if cfg.Sandbox.Image != "" {
+		cfg.Image = cfg.Sandbox.Image
 	}
 
 	// Canonical mashura_* keys win over the legacy oracle_* spelling when both are
@@ -1224,7 +1281,8 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "execution mode: docker|direct")
 	fs.StringVar((*string)(&cfg.OutputMode), "output-mode", string(cfg.OutputMode), "TUI output mode: debug|simple")
-	fs.StringVar(&cfg.Image, "image", cfg.Image, "container image (docker mode)")
+	fs.StringVar(&cfg.Image, "sandbox-image", cfg.Image, "sandbox container image (docker mode); overrides config sandbox.image and the image pinned into release builds")
+	fs.StringVar(&cfg.Image, "image", cfg.Image, "alias of --sandbox-image")
 	fs.StringVar(&cfg.AttachImage, "attach-image", cfg.AttachImage, "path to an image file to attach to the first message (png, jpeg, gif, webp; comma-separate for multiple)")
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "working directory inside the container")
 	fs.StringVar(&cfg.HostWorkDir, "host-workdir", cfg.HostWorkDir, "host path bind-mounted into container (files appear here locally)")
@@ -1260,6 +1318,10 @@ func LoadConfig(argv []string) (Config, error) {
 	// "flag default carried the config value through".
 	flagsSet := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { flagsSet[f.Name] = true })
+
+	// Anything still unset falls back to the build-time pinned digest, or the
+	// unpinned dev image (with a one-line warning) for non-release builds.
+	cfg.Image = resolveSandboxImage(cfg.Image)
 
 	// Record explicit-this-run overrides for the per-repo settings restore
 	// feature (RestoreRepoState): a --model/ILM_MODEL or --auto set for THIS

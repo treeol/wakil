@@ -21,6 +21,17 @@ import (
 )
 
 func main() {
+	// "wakil version" / "wakil doctor": no config load, no side effects.
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "version", "--version", "-version":
+			printVersion(os.Stdout)
+			return
+		case "doctor":
+			os.Exit(runDoctor(os.Stdout, os.Args[2:], execRunner))
+		}
+	}
+
 	// "wakil run" subcommand: headless, non-interactive, exits with a code.
 	if len(os.Args) >= 2 && os.Args[1] == "run" {
 		cfg, err := config.LoadConfig(nil) // flags after "run" are for RunHeadless, not LoadConfig

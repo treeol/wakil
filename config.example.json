@@ -32,7 +32,8 @@
   "default_endpoint": "llama",
 
   "exec_mode": "docker",
-  "image": "wakil-dev",
+  "_comment_sandbox": "Sandbox image resolution: --sandbox-image flag > WAKIL_IMAGE env > sandbox.image (this file) > legacy top-level \"image\" > the digest-pinned image built into release binaries > (dev builds only) the unpinned local image \"wakil-dev\" with a warning. Leave unset to use the image your wakil release was published with.",
+  "_comment_sandbox_override": "To override: \"sandbox\": { \"image\": \"ghcr.io/treeol/wakil-sandbox@sha256:<digest>\" }",
 
   "_comment_docker": "Docker sandbox hardening. --cap-drop=ALL + --read-only + --security-opt=no-new-privileges are always applied. docker_caps re-adds specific caps if the toolchain needs them (e.g. [\"CHOWN\"] if go build fails). docker_memory and docker_pids_limit set resource ceilings. docker_tmpfs_size sets the /tmp tmpfs size — must be coherent with docker_memory (tmpfs pages count against the container memory cgroup).",
   "docker_caps": [],
