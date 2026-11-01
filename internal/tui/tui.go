@@ -86,9 +86,15 @@ const (
 
 // Chrome widths: horizontal pixels consumed by border + padding around content.
 const (
+	// promptBarW is the width of the left prompt bar ("┃ ") drawn by View in
+	// front of every textarea row (the textarea's own Prompt is empty so the bar
+	// colour can follow the AUTO state — see renderInputRows).
+	promptBarW = 2
 	// textareaChromeW is the horizontal chrome around the textarea: input border
-	// (borderW) + Bubbles' built-in side padding (2). textarea width = m.width - textareaChromeW.
-	textareaChromeW = borderW + 2
+	// (borderW) + the prompt bar (promptBarW). The textarea is
+	// m.width - textareaChromeW - promptBarW wide (the same 2-col slack the old
+	// built-in prompt layout left), less the feather's reserve when shown.
+	textareaChromeW = borderW + promptBarW
 )
 
 // maxSubTabs bounds how many subagent tabs are retained; once exceeded, the
@@ -644,9 +650,10 @@ func newBaseModel() tuiModel {
 	ta := textarea.New()
 	ta.Placeholder = "type a task… (Enter=send, Shift+Enter=newline, /help)"
 	ta.ShowLineNumbers = false
+	ta.Prompt = "" // the "┃ " bar is drawn by renderInputRows
 	ta.CharLimit = 0
 	ta.SetWidth(80)
-	ta.SetHeight(3)
+	ta.SetHeight(inputRowsNormal)
 	// Color the input text and placeholder in the wakīl logo blue.
 	ta.FocusedStyle.Placeholder = ta.FocusedStyle.Placeholder.Foreground(lipgloss.Color("39"))
 	ta.BlurredStyle.Placeholder = ta.BlurredStyle.Placeholder.Foreground(lipgloss.Color("39"))
@@ -2420,9 +2427,10 @@ func (m tuiModel) reflow() tuiModel {
 	vpW, vpH, _ := m.sizes()
 	m.vp.Width = vpW
 	m.vp.Height = vpH
-	// Textarea always takes the full inner width — the hist/ctx gauge lives
-	// in the status line now.
-	m.ta.SetWidth(m.width - textareaChromeW)
+	// Compact mode shrinks the input to one row; the textarea's width leaves
+	// room for the prompt bar and, when shown, the feather.
+	m.ta.SetHeight(m.inputRows())
+	m.ta.SetWidth(m.width - textareaChromeW - promptBarW - m.featherReserve())
 	m.prefixDirty = true // width changed — committed items must be re-wrapped
 	m.refreshViewport()
 	return m

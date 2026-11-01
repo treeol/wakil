@@ -124,8 +124,9 @@ func TestTwoZoneBilledSegmentAbsentWhenNoBilled(t *testing.T) {
 // viewport by the same amount, capped at statusMaxRows.
 func TestTwoZonePanelToggleReservesHeight(t *testing.T) {
 	// Narrow width + a streaming state so even the collapsed line is near
-	// capacity; the expansion then clearly adds rows.
-	m := twoZoneModel(48, 40)
+	// capacity; the expansion then clearly adds rows. compactMinW is the
+	// narrowest width that still shows the status zone.
+	m := twoZoneModel(compactMinW, 40)
 	m.state = stateStreaming
 	m.tps = 87
 	closedRows := m.statusRows()

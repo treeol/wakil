@@ -238,9 +238,7 @@ func (m tuiModel) View() string {
 	// Textarea is the full inner width — the hist/ctx gauge and the status
 	// line moved to the status zone directly above this box, so the input box
 	// is just the textarea + border.
-	input := styleInputBorder.
-		Width(m.width - borderW).
-		Render(m.ta.View())
+	input := m.renderInput()
 
 	// The "@"/"/" completion picker or the resume picker sits between the
 	// conversation and the input — the two are mutually exclusive (opening
@@ -349,7 +347,105 @@ func (m tuiModel) statusRows() int {
 // hidden on a fresh start before the user sends their first message (clean
 // splash look); once a turn has been sent or is streaming, it stays visible.
 func (m tuiModel) statusVisible() bool {
+	if m.compact() {
+		// Compact mode drops the status line, except for the two things that
+		// live only there and would otherwise break: reverse search (ctrl+r)
+		// and the rotation indicator (/new, /resume, /handoff block input).
+		return m.searchActive || m.rotating
+	}
 	return m.hadTurn || m.state == stateStreaming || m.rotating || (m.items != nil && len(*m.items) > 0)
+}
+
+// Compact mode: on small or heavily zoomed-in windows (zooming shrinks the
+// terminal's size in cells) the chrome collapses to a one-row prompt with no
+// status line. Thresholds are in cells.
+const (
+	compactMinW = 60 // narrower than this → compact
+	compactMinH = 18 // shorter than this → compact
+
+	inputRowsNormal  = 3
+	inputRowsCompact = 1
+
+	// featherMinW is the narrowest terminal that shows the feather beside the
+	// input box; below it the empty space is too precious.
+	featherMinW = 100
+)
+
+// compact reports whether the window is small enough for the one-row layout.
+func (m tuiModel) compact() bool {
+	return m.width < compactMinW || m.height < compactMinH
+}
+
+// inputRows is the textarea height for the current window size.
+func (m tuiModel) inputRows() int {
+	if m.compact() {
+		return inputRowsCompact
+	}
+	return inputRowsNormal
+}
+
+// featherW is the feather's width in cells (0 = not shown). It is shown only in
+// the normal layout on wide terminals with truecolor, sized to the input box's
+// full outer height (textarea rows + its hidden border).
+func (m tuiModel) featherW() int {
+	if m.compact() || m.width < featherMinW || !splashTruecolor() {
+		return 0
+	}
+	return featherSprite.brailleCols(m.inputOuterBoxH())
+}
+
+// featherReserve is the width taken from the input box for the feather and a
+// one-column right margin (0 when the feather is hidden).
+func (m tuiModel) featherReserve() int {
+	if w := m.featherW(); w > 0 {
+		return w + 1
+	}
+	return 0
+}
+
+// inputOuterBoxH is the input box's outer height: textarea rows + border.
+func (m tuiModel) inputOuterBoxH() int { return m.inputRows() + borderH }
+
+// autoApprove reports whether /auto is active (pending grants don't count).
+func (m tuiModel) autoApprove() bool {
+	return m.facade != nil && m.facade.Consent().AutoApprove
+}
+
+// renderInputRows returns the textarea view with the left prompt bar ("┃ ")
+// in front of every row: red while AUTO is on, the usual grey otherwise.
+func (m tuiModel) renderInputRows() string {
+	colour := lipgloss.Color("7")
+	if m.autoApprove() {
+		colour = lipgloss.Color("196")
+	}
+	bar := lipgloss.NewStyle().Foreground(colour).Render(lipgloss.ThickBorder().Left + " ")
+	rows := strings.Split(m.ta.View(), "\n")
+	for i, r := range rows {
+		rows[i] = bar + r
+	}
+	return strings.Join(rows, "\n")
+}
+
+// renderInput renders the input box, with the feather to its right when there
+// is room. The whole block is m.width wide.
+func (m tuiModel) renderInput() string {
+	reserve := m.featherReserve()
+	box := styleInputBorder.
+		Width(m.width - borderW - reserve).
+		Render(m.renderInputRows())
+	if reserve == 0 {
+		return box
+	}
+	w := m.featherW()
+	art := featherSprite.renderBraille(w, m.inputOuterBoxH())
+	if art == "" {
+		return box
+	}
+	lines := strings.Split(art, "\n")
+	for i := range lines {
+		lines[i] += " " // right margin
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, box, strings.Join(lines, "\n"))
 }
 
 // effectiveStatusRows returns 0 when the status line is hidden, otherwise
@@ -1221,30 +1317,30 @@ var splashArt = []string{
 	"  \\_/\\_/ \\__,_|_|\\_\\_|_|_|",
 }
 
-// renderSplash produces a large centered "wakīl" ASCII art for the
-// conversation pane when no conversation has started yet. The art is
-// centered both horizontally and vertically within the pane.
+// renderSplash produces the centered start-up splash for the conversation pane
+// when no conversation has started yet: the embedded logo (see splash.go) on
+// truecolor terminals large enough to show it, otherwise the figlet "wakil"
+// wordmark. There is no tagline.
 func renderSplash(vpW, vpH int) string {
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("make your wish…")
-
-	// Render the art lines.
-	var artLines []string
-	for _, row := range splashArt {
-		var b strings.Builder
-		for _, ch := range row {
-			if ch != ' ' {
-				b.WriteString(accent.Render(string(ch)))
-			} else {
-				b.WriteRune(' ')
+	art := pickSplashLogo(vpW, vpH, splashTruecolor())
+	if art == "" {
+		accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+		var artLines []string
+		for _, row := range splashArt {
+			var b strings.Builder
+			for _, ch := range row {
+				if ch != ' ' {
+					b.WriteString(accent.Render(string(ch)))
+				} else {
+					b.WriteRune(' ')
+				}
 			}
+			artLines = append(artLines, b.String())
 		}
-		artLines = append(artLines, b.String())
+		art = strings.Join(artLines, "\n")
 	}
-	art := strings.Join(artLines, "\n")
 
-	// Add the hint below.
-	content := lipgloss.JoinVertical(lipgloss.Center, art, "", hint)
+	content := art
 
 	// Center in the conversation pane.
 	return lipgloss.Place(vpW, vpH,

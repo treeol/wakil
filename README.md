@@ -1,7 +1,7 @@
 # wakīl
 
 <p align="center">
-  <img src="assets/wakil.png" alt="wakil" width="500">
+  <img src="assets/wakil-braille.png" alt="wakil" width="320">
 </p>
 
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
