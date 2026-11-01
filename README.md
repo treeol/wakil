@@ -28,7 +28,7 @@ time. Each release binary is pinned to one sandbox image **by digest**
 (`ghcr.io/treeol/wakil-sandbox@sha256:…`, see `wakil version`) and pulls it on
 first run. `wakil doctor` checks your container runtime, config and image.
 
-**Verify a release** (replace `v0.1.0` with the tag you downloaded):
+**Verify a release** (download `checksums.txt`, `checksums.txt.sigstore.json` and your artifact from the same release, e.g. `v0.3.0`):
 
 ```sh
 # checksums.txt is signed keyless with cosign (GitHub Actions OIDC identity)
