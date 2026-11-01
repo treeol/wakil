@@ -207,7 +207,7 @@ func ResumeSessionMsg(app *App, s *Session) Msg {
 	app.convMu.Lock()
 	app.Conv = s.Conv
 	app.convMu.Unlock()
-	app.Client.ChatID = s.ChatID
+	app.SetChatID(s.ChatID)
 	app.Session = s
 	app.SetWorkflow(s.SavedWorkflow)
 	msg := "resumed session " + ShortID(s.ChatID)

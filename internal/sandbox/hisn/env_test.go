@@ -82,19 +82,23 @@ func TestEnvPassOnlyOnRun(t *testing.T) {
 
 // One command factory: no other call site may build a process.
 func TestNoStrayExecCommand(t *testing.T) {
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	ents, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range pkgs {
-		for name, f := range p.Files {
-			for _, imp := range f.Imports {
-				if imp.Path.Value == `"os/exec"` && filepath.Base(name) != "cmd.go" {
-					t.Errorf("%s imports os/exec; only cmd.go (the command factory) may", name)
-				}
+	fset := token.NewFileSet()
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, n, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range f.Imports {
+			if imp.Path.Value == `"os/exec"` && filepath.Base(n) != "cmd.go" {
+				t.Errorf("%s imports os/exec; only cmd.go (the command factory) may", n)
 			}
 		}
 	}

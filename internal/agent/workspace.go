@@ -39,6 +39,10 @@ func canonicalWorkspace(ws string) string {
 // inside the container), so the host TUI computes the key and passes it
 // via WAKIL_WORKSPACE_KEY. This guarantees host and container produce
 // the same workspace identity regardless of symlinks.
+// WorkspaceKey is the exported form of workspaceKey: the stable hash used to
+// key per-workspace state.
+func WorkspaceKey(ws string) string { return workspaceKey(ws) }
+
 func workspaceKey(ws string) string {
 	if key := os.Getenv("WAKIL_WORKSPACE_KEY"); key != "" {
 		return key

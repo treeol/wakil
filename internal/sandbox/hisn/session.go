@@ -101,7 +101,7 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 			return nil, fmt.Errorf("%w: chat %s is active in Wakil process %d", sandbox.ErrSessionInUse, s.ID, r.Pid)
 		}
 		if err := b.reconcileOneLocked(ctx, r); err != nil {
-			return nil, fmt.Errorf("%w: stale session %s could not be cleaned: %v", sandbox.ErrSessionInUse, s.ID, err)
+			return nil, fmt.Errorf("%w: stale session %s could not be cleaned: %w", sandbox.ErrSessionInUse, s.ID, err)
 		}
 	}
 	sessions, err := b.listSessions(ctx)
@@ -115,7 +115,7 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 	rec := record{ID: s.ID, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), Token: newToken(), Cwd: s.HostCwd}
 	if err := b.createRecord(rec); err != nil {
 		if errors.Is(err, errSessionInUse) {
-			return nil, fmt.Errorf("%w: %v", sandbox.ErrSessionInUse, err)
+			return nil, fmt.Errorf("%w: %w", sandbox.ErrSessionInUse, err)
 		}
 		return nil, err
 	}

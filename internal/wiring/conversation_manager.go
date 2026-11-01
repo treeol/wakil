@@ -325,7 +325,7 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 	}
 
 	// Restore the loaded session's state into the App.
-	f.app.Client.ChatID = s.ChatID
+	f.app.SetChatID(s.ChatID)
 	f.app.Conv = s.Conv
 	f.app.Session = s
 	f.app.SetWorkflow(s.SavedWorkflow)

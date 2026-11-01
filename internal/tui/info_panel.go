@@ -54,6 +54,9 @@ func execModeLabel(describe string) string {
 	if strings.HasPrefix(describe, "direct") {
 		return "direct"
 	}
+	if strings.HasPrefix(describe, "hisn") {
+		return "hisn"
+	}
 	return "docker"
 }
 

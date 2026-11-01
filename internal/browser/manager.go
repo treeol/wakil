@@ -103,6 +103,12 @@ type Manager struct {
 // libraries, etc.) so the caller can log a clear message at startup instead
 // of masking the failure as "context canceled" on every tool call.
 func NewManager(exe SandboxExecutor, browserPath string) (*Manager, error) {
+	// An executor that is neither a container nor the host (a sandbox backend
+	// such as hisn) must never fall through to the host launcher below: that
+	// would run Chromium outside the sandbox.
+	if g, ok := exe.(interface{ HostBrowserAllowed() bool }); ok && !g.HostBrowserAllowed() {
+		return nil, fmt.Errorf("browser tools are not supported by this sandbox backend")
+	}
 	if exe != nil && exe.ContainerName() != "" {
 		return newDockerManager(exe, browserPath)
 	}

@@ -972,9 +972,7 @@ func (a *App) InstallSession(s *Session) {
 	a.RevokeAuto()
 	a.SetAllowReads(false)
 
-	if a.Client != nil {
-		a.Client.ChatID = s.ChatID
-	}
+	a.setChatID(s.ChatID)
 
 	a.convMu.Lock()
 	a.Conv = append([]proxy.Message(nil), s.Conv...)
@@ -989,6 +987,29 @@ func (a *App) InstallSession(s *Session) {
 	a.resetStyleGuides()
 	a.resetBackendConsent()
 	a.preambleDay = ""
+}
+
+// SetChatID changes the main conversation's chat ID. It is the ONE place the
+// ID changes after construction: the sandbox session belongs to the chat, so a
+// executor that implements exec.ChatBinder ends the previous chat's session
+// here (a new one starts lazily on the next tool call). Subagents never call
+// it; they share the parent's session.
+func (a *App) SetChatID(chatID string) { a.setChatID(chatID) }
+
+func (a *App) setChatID(chatID string) {
+	if a.Client != nil {
+		a.Client.ChatID = chatID
+	}
+	if a.IsSubagent || a.Exec == nil || chatID == "" {
+		return
+	}
+	if b, ok := a.Exec.(exec.ChatBinder); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		if err := b.BindChat(ctx, chatID); err != nil && a.Out != nil {
+			fmt.Fprintln(a.Out, Yellow("⚠ sandbox: "+err.Error()))
+		}
+	}
 }
 
 // NewConversationTransition atomically starts a fresh session under
@@ -1028,9 +1049,7 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.sessionStarted = false
 	a.ilmStarted = false
 	a.ilmEnded = false
-	if a.Client != nil {
-		a.Client.ChatID = chatID
-	}
+	a.setChatID(chatID)
 	a.Session = &Session{
 		ChatID:       chatID,
 		Model:        a.Client.Model,

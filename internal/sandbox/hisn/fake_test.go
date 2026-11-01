@@ -2,6 +2,7 @@ package hisn
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -252,7 +253,8 @@ func fakeExec(state string, args []string) int {
 	if err == nil {
 		return 0
 	}
-	if ee, ok := err.(*exec.ExitError); ok {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
 		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 			return 128 + int(ws.Signal())
 		}

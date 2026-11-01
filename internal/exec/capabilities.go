@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/treeol/wakil/internal/sandbox"
 )
@@ -65,29 +66,7 @@ type AccessGranter interface {
 // "exit status N" so textual fallbacks keep working.
 type ExitStatusError struct{ Code int }
 
-func (e *ExitStatusError) Error() string { return "exit status " + itoa(e.Code) }
+func (e *ExitStatusError) Error() string { return "exit status " + strconv.Itoa(e.Code) }
 
 // ExitCode lets errors.As(err, &interface{ExitCode() int}) see the status.
 func (e *ExitStatusError) ExitCode() int { return e.Code }
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
-}

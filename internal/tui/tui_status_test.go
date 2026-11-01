@@ -525,6 +525,9 @@ func TestExecModeLabel(t *testing.T) {
 	if got := execModeLabel("direct[/repo]"); got != "direct" {
 		t.Errorf("direct → %q", got)
 	}
+	if got := execModeLabel("hisn[/repo]"); got != "hisn" {
+		t.Errorf("execModeLabel(hisn) = %q", got)
+	}
 	if got := execModeLabel("docker[img]"); got != "docker" {
 		t.Errorf("docker → %q", got)
 	}

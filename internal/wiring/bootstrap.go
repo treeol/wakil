@@ -223,6 +223,9 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		agent.WithVerifyEnabled(len(cfg.Verify) > 0),
 	)
 	app.SetStyleGuideCatalog(guides)
+	// Bind the sandbox session to this conversation's chat (no-op for
+	// executors without per-chat sessions). The session starts lazily.
+	app.SetChatID(client.ChatID)
 
 	// Initialize lifecycle hooks (nil when no hooks configured — hot path
 	// skips all hook checks). Hooks run on the host, not the sandbox.
@@ -444,6 +447,9 @@ func NewExecutor(cfg config.Config) (exec.Executor, error) {
 		}
 		return exec.NewDirectExecutor(cfg.WorkDir)
 	default:
+		if cfg.Sandbox.Backend == config.SandboxBackendHisn {
+			return newHisnExecutor(cfg)
+		}
 		// Resolve SSH commit signing on the host before the container starts.
 		// Best-effort: a skip reason is logged, never fatal.
 		signing, skip := exec.DetectSigning(cfg.SSHSigning, cfg.HostWorkDir)

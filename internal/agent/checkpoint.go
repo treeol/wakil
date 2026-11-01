@@ -650,6 +650,16 @@ func (a *App) rewind(n int) rewindResult {
 	a.cpActive = false
 	a.cpMu.Unlock()
 
+	// A fully successful rewind restarts the sandbox session: everything that
+	// ran inside it (background processes, grants, stray state) is killed and
+	// the executor's generation advances so background-registry entries are
+	// treated as lost. The next tool call starts a fresh session lazily.
+	if r, ok := a.Exec.(exec.SandboxResetter); ok {
+		if err := r.ResetSandbox(ctx); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("sandbox reset: %v", err))
+		}
+	}
+
 	return result
 }
 
