@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/treeol/wakil/internal/buildinfo"
+	"github.com/treeol/wakil/internal/sandbox"
 )
 
 // Endpoint kinds. "openai" is a plain OpenAI-compatible chat-completions
@@ -907,10 +908,47 @@ type MashuraPanelConfig struct {
 
 // SandboxConfig groups sandbox-related config-file settings.
 type SandboxConfig struct {
+	// Backend selects the sandbox implementation: "docker" (default) or
+	// "hisn". An unknown value is a config error, never a fallback.
+	Backend string `json:"backend,omitempty"`
+	// Hisn configures the hisn backend (ignored for docker).
+	Hisn HisnConfig `json:"hisn,omitempty"`
 	// Image overrides the sandbox image (config key "sandbox.image"). Takes
 	// precedence over the legacy top-level "image" key and the image pinned
 	// into release binaries; env vars and --sandbox-image override it.
 	Image string `json:"image,omitempty"`
+}
+
+// Sandbox backend names.
+const (
+	SandboxBackendDocker = "docker"
+	SandboxBackendHisn   = "hisn"
+)
+
+// MinHisnVersion is the oldest hisn release the backend supports.
+const MinHisnVersion = "0.2.0"
+
+// DefaultHisnEnvPass is the set of variable names allowed through into hisn
+// execs by default: toolchain knobs Wakil's tools need, none that carry
+// secrets and none that alter host process startup.
+var DefaultHisnEnvPass = []string{
+	"GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTFLAGS",
+	"npm_config_cache", "PIP_CACHE_DIR", "CI",
+}
+
+// HisnConfig groups the hisn backend settings (config key "sandbox.hisn").
+type HisnConfig struct {
+	// Binary is the hisn executable (name on PATH or absolute path).
+	Binary string `json:"binary,omitempty"`
+	// HomeRoot is the persistent host directory used as the sandbox $HOME.
+	// Empty = <wakil state dir>/hisn-home/<workspace-hash>.
+	HomeRoot string `json:"home_root,omitempty"`
+	// GrantableRW lists absolute host prefixes under which read-write grants
+	// outside the workspace are allowed (Landlock cannot widen later).
+	GrantableRW []string `json:"grantable_rw,omitempty"`
+	// EnvPass lists the variable names hisn copies from Wakil's environment
+	// into the sandbox (and the only keys an exec may set). Never the host env.
+	EnvPass []string `json:"env_pass,omitempty"`
 }
 
 // MCPServerConfig declares one MCP server. Transport is "stdio" or "http".
@@ -933,8 +971,15 @@ type LSPServer struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Model:                   "ilm",
-		ExecMode:                "docker",
+		Model:    "ilm",
+		ExecMode: "docker",
+		Sandbox: SandboxConfig{
+			Backend: SandboxBackendDocker,
+			Hisn: HisnConfig{
+				Binary:  "hisn",
+				EnvPass: append([]string(nil), DefaultHisnEnvPass...),
+			},
+		},
 		OutputMode:              OutputModeDebug,
 		ClipboardMode:           ClipboardModeAuto,
 		Image:                   DefaultSandboxImage(), // LoadConfig re-resolves via resolveSandboxImage
@@ -1239,6 +1284,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.Model, "WAKIL_MODEL")
 	envStr(&cfg.ExecMode, "ILM_EXEC_MODE")
 	envStr(&cfg.ExecMode, "WAKIL_EXEC_MODE")
+	envStr(&cfg.Sandbox.Backend, "WAKIL_SANDBOX_BACKEND")
 	envStr((*string)(&cfg.OutputMode), "WAKIL_OUTPUT_MODE")
 	envStr((*string)(&cfg.ClipboardMode), "WAKIL_CLIPBOARD_MODE")
 	envStr(&cfg.Image, "ILM_CONTAINER_IMAGE")
@@ -1280,6 +1326,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key (sent as Bearer token)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "execution mode: docker|direct")
+	fs.StringVar(&cfg.Sandbox.Backend, "sandbox", cfg.Sandbox.Backend, "sandbox backend for exec mode docker: docker (default)|hisn")
 	fs.StringVar((*string)(&cfg.OutputMode), "output-mode", string(cfg.OutputMode), "TUI output mode: debug|simple")
 	fs.StringVar(&cfg.Image, "sandbox-image", cfg.Image, "sandbox container image (docker mode); overrides config sandbox.image and the image pinned into release builds")
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "alias of --sandbox-image")
@@ -1374,13 +1421,17 @@ func LoadConfig(argv []string) (Config, error) {
 		return cfg, fmt.Errorf("invalid exec mode %q (want docker|direct)", cfg.ExecMode)
 	}
 
+	if err := validateSandboxConfig(&cfg); err != nil {
+		return cfg, err
+	}
+
 	// Resolve kvr effective state. KVRDisabled is the single opt-out
 	// (default: false = enabled). Also auto-disabled in direct mode
 	// (staging is docker-only in this ticket).
 	if cfg.KVRDisabled {
 		// explicit opt-out
-	} else if cfg.ExecMode != "docker" {
-		cfg.KVRDisabled = true
+	} else if cfg.ExecMode != "docker" || cfg.Sandbox.Backend != SandboxBackendDocker {
+		cfg.KVRDisabled = true // staging is docker-only
 	}
 	// Normalize context_mode: "long" → "long-session", "" → "standard".
 	// Done here (not inside validateContextLimits) because validateContextLimits
@@ -1424,13 +1475,26 @@ func LoadConfig(argv []string) (Config, error) {
 				cfg.HostWorkDir = wd // default: mount the current directory
 			}
 		}
+		if cfg.Sandbox.Backend == SandboxBackendHisn {
+			// hisn mounts the workspace at the IDENTICAL host path, so the
+			// agent root is the (symlink-resolved) host directory itself.
+			wd, err := resolveHisnWorkspace(cfg.HostWorkDir)
+			if err != nil {
+				return cfg, err
+			}
+			if cfg.WorkDir != "" && filepath.Clean(cfg.WorkDir) != wd {
+				return cfg, fmt.Errorf("--workdir %q conflicts with sandbox backend hisn, which mounts the workspace at its host path %q (omit --workdir)", cfg.WorkDir, wd)
+			}
+			cfg.HostWorkDir, cfg.WorkDir = wd, wd
+			break
+		}
 		// Derive the in-container path from the host directory name so the agent
 		// always sees the project at a predictable, descriptive location.
 		if cfg.WorkDir == "" && cfg.HostWorkDir != "" {
-			cfg.WorkDir = "/mnt/" + filepath.Base(cfg.HostWorkDir)
+			cfg.WorkDir = sandbox.DockerAgentRoot(cfg.HostWorkDir)
 		}
 		if cfg.WorkDir == "" {
-			cfg.WorkDir = "/mnt/work"
+			cfg.WorkDir = sandbox.DockerAgentRoot("")
 		}
 	case "direct":
 		if workspace != "" {
@@ -1901,6 +1965,92 @@ func validateEnums(cfg Config) error {
 		}
 	}
 	return nil
+}
+
+// envPassName is the shape hisn accepts for env.pass names.
+var envPassName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// hostStartupEnv lists variables that alter how a HOST process starts or
+// resolves libraries/locales. They must never be handed to the hisn client via
+// env_pass: sandbox env permissions do not authorize host-client injection.
+func hostStartupEnv(name string) bool {
+	switch name {
+	case "PATH", "HOME", "IFS", "ENV", "BASH_ENV", "CDPATH", "SHELLOPTS", "BASHOPTS",
+		"GCONV_PATH", "LOCPATH", "NLSPATH", "HOSTALIASES", "RES_OPTIONS",
+		"GODEBUG", "GOROOT", "GOTOOLCHAIN", "TMPDIR", "XDG_RUNTIME_DIR":
+		return true
+	}
+	return strings.HasPrefix(name, "LD_") || strings.HasPrefix(name, "DYLD_") ||
+		strings.HasPrefix(name, "XDG_")
+}
+
+// validateSandboxConfig validates sandbox.backend and sandbox.hisn.*. An
+// unknown backend is an error: there is no implicit fallback to docker.
+func validateSandboxConfig(cfg *Config) error {
+	sb := &cfg.Sandbox
+	if sb.Backend == "" {
+		sb.Backend = SandboxBackendDocker
+	}
+	switch sb.Backend {
+	case SandboxBackendDocker:
+		return nil
+	case SandboxBackendHisn:
+	default:
+		return fmt.Errorf("invalid sandbox backend %q (want docker|hisn)", sb.Backend)
+	}
+	if cfg.ExecMode != "docker" {
+		return fmt.Errorf("sandbox backend hisn conflicts with exec mode %q: direct mode runs unsandboxed and is never combined with a sandbox backend", cfg.ExecMode)
+	}
+	if cfg.BrowserEnabled {
+		return fmt.Errorf("browser_enabled is not supported with sandbox backend hisn (the browser would launch on the host, outside the sandbox)")
+	}
+	h := &sb.Hisn
+	if strings.TrimSpace(h.Binary) == "" {
+		h.Binary = "hisn"
+	}
+	if h.HomeRoot != "" && !filepath.IsAbs(h.HomeRoot) {
+		return fmt.Errorf("sandbox.hisn.home_root %q must be an absolute path", h.HomeRoot)
+	}
+	for i, g := range h.GrantableRW {
+		if !filepath.IsAbs(g) || filepath.Clean(g) == "/" {
+			return fmt.Errorf("sandbox.hisn.grantable_rw[%d]: %q must be an absolute path other than /", i, g)
+		}
+		h.GrantableRW[i] = filepath.Clean(g)
+	}
+	if h.EnvPass == nil {
+		h.EnvPass = append([]string(nil), DefaultHisnEnvPass...)
+	}
+	seen := map[string]bool{}
+	for i, n := range h.EnvPass {
+		switch {
+		case !envPassName.MatchString(n):
+			return fmt.Errorf("sandbox.hisn.env_pass[%d]: invalid name %q", i, n)
+		case hostStartupEnv(n):
+			return fmt.Errorf("sandbox.hisn.env_pass[%d]: %q is not allowed (it changes how host processes start)", i, n)
+		case seen[n]:
+			return fmt.Errorf("sandbox.hisn.env_pass[%d]: duplicate name %q", i, n)
+		}
+		seen[n] = true
+	}
+	return nil
+}
+
+// resolveHisnWorkspace returns the absolute, symlink-free workspace directory
+// hisn will mount (hisn canonicalises cwd itself, so the agent must use the
+// canonical path from the start).
+func resolveHisnWorkspace(dir string) (string, error) {
+	if dir == "" {
+		return "", fmt.Errorf("sandbox backend hisn: cannot determine the workspace directory")
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving workspace %q: %w", dir, err)
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolving workspace %q: %w", dir, err)
+	}
+	return real, nil
 }
 
 // validateDockerConfig checks Docker-related fields for syntactic validity.

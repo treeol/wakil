@@ -1,0 +1,137 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// loadSandboxCfg writes cfgJSON and loads it with the given extra args.
+func loadSandboxCfg(t *testing.T, cfgJSON string, args ...string) (Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(p, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return LoadConfig(append([]string{"--config", p, "--base-url", "http://proxy:11400"}, args...))
+}
+
+func TestSandboxBackendDefaultsToDocker(t *testing.T) {
+	cfg, err := loadSandboxCfg(t, `{}`, "--host-workdir", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.Backend != SandboxBackendDocker {
+		t.Errorf("backend = %q, want docker", cfg.Sandbox.Backend)
+	}
+	if !strings.HasPrefix(cfg.WorkDir, "/mnt/") {
+		t.Errorf("docker WorkDir = %q, want /mnt/<name> (behaviour must be unchanged)", cfg.WorkDir)
+	}
+}
+
+func TestSandboxBackendUnknownIsError(t *testing.T) {
+	for _, via := range []struct {
+		name string
+		cfg  string
+		args []string
+	}{
+		{"file", `{"sandbox":{"backend":"hsin"}}`, nil},
+		{"flag", `{}`, []string{"--sandbox", "hsin"}},
+	} {
+		t.Run(via.name, func(t *testing.T) {
+			_, err := loadSandboxCfg(t, via.cfg, append(via.args, "--host-workdir", t.TempDir())...)
+			if err == nil || !strings.Contains(err.Error(), "invalid sandbox backend") {
+				t.Fatalf("want invalid sandbox backend error, got %v", err)
+			}
+		})
+	}
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("WAKIL_SANDBOX_BACKEND", "hsin")
+		_, err := loadSandboxCfg(t, `{}`, "--host-workdir", t.TempDir())
+		if err == nil || !strings.Contains(err.Error(), "invalid sandbox backend") {
+			t.Fatalf("want invalid sandbox backend error, got %v", err)
+		}
+	})
+}
+
+func TestSandboxHisnWorkdirIsHostPath(t *testing.T) {
+	dir := t.TempDir()
+	real, _ := filepath.EvalSymlinks(dir)
+	cfg, err := loadSandboxCfg(t, `{"sandbox":{"backend":"hisn"}}`, "--host-workdir", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkDir != real || cfg.HostWorkDir != real {
+		t.Errorf("WorkDir=%q HostWorkDir=%q, want both %q", cfg.WorkDir, cfg.HostWorkDir, real)
+	}
+	if !cfg.KVRDisabled {
+		t.Error("kvr is docker-only and must be disabled under hisn")
+	}
+	if got := cfg.Sandbox.Hisn.Binary; got != "hisn" {
+		t.Errorf("binary default = %q", got)
+	}
+	if len(cfg.Sandbox.Hisn.EnvPass) != len(DefaultHisnEnvPass) {
+		t.Errorf("env_pass default = %v", cfg.Sandbox.Hisn.EnvPass)
+	}
+}
+
+func TestSandboxHisnResolvesSymlinkedWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	real, _ := filepath.EvalSymlinks(dir)
+	cfg, err := loadSandboxCfg(t, `{"sandbox":{"backend":"hisn"}}`, "--host-workdir", link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkDir != real {
+		t.Errorf("WorkDir = %q, want canonical %q", cfg.WorkDir, real)
+	}
+}
+
+func TestSandboxHisnRejections(t *testing.T) {
+	ws := t.TempDir()
+	for _, tc := range []struct {
+		name, cfg, want string
+		args            []string
+	}{
+		{"direct mode", `{"sandbox":{"backend":"hisn"}}`, "conflicts with exec mode", []string{"--exec", "direct"}},
+		{"browser", `{"browser_enabled":true,"sandbox":{"backend":"hisn"}}`, "browser_enabled", nil},
+		{"workdir flag", `{"sandbox":{"backend":"hisn"}}`, "conflicts with sandbox backend hisn", []string{"--workdir", "/mnt/x"}},
+		{"relative home_root", `{"sandbox":{"backend":"hisn","hisn":{"home_root":"rel"}}}`, "home_root", nil},
+		{"grantable root", `{"sandbox":{"backend":"hisn","hisn":{"grantable_rw":["/"]}}}`, "grantable_rw", nil},
+		{"grantable relative", `{"sandbox":{"backend":"hisn","hisn":{"grantable_rw":["out"]}}}`, "grantable_rw", nil},
+		{"env LD_PRELOAD", `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["LD_PRELOAD"]}}}`, "not allowed", nil},
+		{"env PATH", `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["PATH"]}}}`, "not allowed", nil},
+		{"env bad name", `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["A=B"]}}}`, "invalid name", nil},
+		{"env dup", `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["CI","CI"]}}}`, "duplicate", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{}, tc.args...)
+			if tc.name != "direct mode" {
+				args = append(args, "--host-workdir", ws)
+			}
+			_, err := loadSandboxCfg(t, tc.cfg, args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestSandboxHisnEnvPassOverride(t *testing.T) {
+	cfg, err := loadSandboxCfg(t, `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["CI"],"grantable_rw":["/srv/out/"]}}}`, "--host-workdir", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Sandbox.Hisn.EnvPass; len(got) != 1 || got[0] != "CI" {
+		t.Errorf("env_pass = %v", got)
+	}
+	if got := cfg.Sandbox.Hisn.GrantableRW; len(got) != 1 || got[0] != "/srv/out" {
+		t.Errorf("grantable_rw = %v (must be cleaned)", got)
+	}
+}
