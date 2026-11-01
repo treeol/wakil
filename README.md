@@ -14,15 +14,49 @@ sessions — connecting to any OpenAI-compatible Chat Completions endpoint you
 bring (llama.cpp, OpenRouter, vLLM, Ollama). No hosted control plane; sessions,
 memory, and traces stay on your disk.
 
-## Quickstart
+## Install
 
-Prerequisites: [Go 1.26+](https://go.dev), Docker, and a running model endpoint.
+Linux and macOS (amd64, arm64). Docker or Podman is needed for the default sandbox.
+
+| Method | Command |
+|---|---|
+| GitHub Releases | `.tar.gz`, `.deb`, `.rpm`, `.apk` from the [releases page](https://github.com/treeol/wakil/releases), e.g. `sudo dpkg -i wakil_*_linux_amd64.deb` or `sudo rpm -i wakil_*_linux_amd64.rpm` |
+| Go | `go install github.com/treeol/wakil/cmd/wakil@latest` *(dev build: not paired with a pinned sandbox image)* |
+
+Packages only install `/usr/bin/wakil` — no scripts, no network access at install
+time. Each release binary is pinned to one sandbox image **by digest**
+(`ghcr.io/treeol/wakil-sandbox@sha256:…`, see `wakil version`) and pulls it on
+first run. `wakil doctor` checks your container runtime, config and image.
+
+**Verify a release** (replace `v0.1.0` with the tag you downloaded):
 
 ```sh
-# 1. Build — single Go executable
+# checksums.txt is signed keyless with cosign (GitHub Actions OIDC identity)
+cosign verify-blob checksums.txt \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/treeol/wakil/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --check --ignore-missing checksums.txt
+
+# build provenance attestation for any artifact
+gh attestation verify wakil_*_linux_amd64.tar.gz --repo treeol/wakil
+
+# the sandbox image is signed too (digest from `wakil version`)
+cosign verify ghcr.io/treeol/wakil-sandbox@sha256:<digest> \
+  --certificate-identity-regexp '^https://github.com/treeol/wakil/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+## Quickstart
+
+Prerequisites: [Go 1.26+](https://go.dev) *(only to build from source)*, Docker, and a running model endpoint.
+
+```sh
+# 1. Build — single Go executable (or install a release, see above)
 go build -o wakil ./cmd/wakil
 
-# 2. Build the sandbox image (Go, Node, Rust, Python + gopls, baked in)
+# 2. Sandbox image: release binaries pull their pinned image automatically.
+#    For a source build, build the dev image (Go, Node, Rust, Python + gopls):
 docker build -t wakil-dev .
 
 # 3. Configure your endpoint
