@@ -4,15 +4,17 @@
   <img src="assets/wakil-braille.png" alt="wakil" width="320">
 </p>
 
+wakīl is an AI coding agent for your terminal. Describe what you want built,
+fixed or understood, and it works through your codebase alongside you: reading
+and changing code, running commands safely in an isolated sandbox, and
+remembering your project from one session to the next. It works with the AI
+model of your choice, and your sessions and project knowledge stay on your own
+machine.
+
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/treeol/wakil/actions/workflows/ci.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/ci.yml)
 [![govulncheck](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml)
-
-wakīl reads and edits code, runs commands, and remembers your project across
-sessions — connecting to any OpenAI-compatible Chat Completions endpoint you
-bring (llama.cpp, OpenRouter, vLLM, Ollama). No hosted control plane; sessions,
-memory, and traces stay on your disk.
 
 ## Install
 
