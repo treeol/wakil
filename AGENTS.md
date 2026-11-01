@@ -33,6 +33,8 @@ Beyond build/test/lint, CI enforces:
 - **buf breaking** — proto schema breaking-change detection against base branch
 - **darwin cross-compile** — GOOS=darwin amd64 + arm64 build & vet
 - **docker build** — Dockerfile + Dockerfile.daemon build gates
+- **goreleaser snapshot** — `goreleaser build --snapshot --clean` (no publish/sign)
+- **sandbox image multi-arch** — buildx linux/amd64+arm64 of `Dockerfile`, `push: false`
 
 ## Architecture
 
@@ -74,6 +76,7 @@ Core packages (`internal/`):
 
 - Docker (`Dockerfile` — sandbox image, `Dockerfile.daemon` — daemon image)
 - GitHub Actions CI (`.github/workflows/ci.yml`)
+- Release (`.github/workflows/release.yml`, `.goreleaser.yaml`) — tag `v*` only: sandbox image → ghcr.io (digest) → goreleaser (digest injected via `SANDBOX_IMAGE`) → package smoke test. Local dry run: `goreleaser release --snapshot --clean --skip=sign,publish`
 - Dependabot (gomod + github-actions, weekly)
 - Proto schema (`buf.yaml`, `buf.lock`)
 - `scripts/` — `check_coverage.sh`, `check_config_docs.sh`
