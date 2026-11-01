@@ -156,6 +156,31 @@ jobs:
             buf breaking --against ".git#ref=HEAD~1"
           fi
 
+  # Release-pipeline gate: the goreleaser config must keep building all four
+  # targets (snapshot: no publish, no signing, no packages), and the sandbox
+  # Dockerfile must keep building for both release platforms (push: false).
+  # release.yml only runs on tags, so without this a broken config or
+  # Dockerfile would first surface on the real tag push.
+  goreleaser-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --clean
+
   # Docker image build gate — catches bit-rot in the Dockerfiles (e.g. the
   # kvr-server git-clone step, base-image digest drift, apt repo changes)
   # before it reaches a release. Runs on Dockerfile changes and weekly.
@@ -169,6 +194,29 @@ jobs:
 
       - name: build sandbox image (Dockerfile)
         run: docker build -t wakil-dev:ci .
+
+  # Same Dockerfile, built exactly as release.yml builds it (buildx, amd64 +
+  # arm64 via QEMU), but never pushed. Catches arm64-only breakage early.
+  sandbox-image-multiarch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: build daemon image (Dockerfile.daemon)
         run: docker build -f Dockerfile.daemon -t wakil-daemon:ci .
