@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120 # arm64 under QEMU compiles kvr-server (cargo) — slow
     permissions:
-      contents: read # checkout (subset of the workflow-level contents: write)
+      contents: read # checkout
       packages: write # push to ghcr.io
       id-token: write # cosign keyless OIDC
     outputs:
