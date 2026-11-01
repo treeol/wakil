@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // The fake hisn is this test binary re-executed through a one-line shell
@@ -20,7 +23,30 @@ func TestMain(m *testing.M) {
 	if st := os.Getenv("HISN_FAKE_STATE"); st != "" {
 		os.Exit(fakeMain(st, os.Args[1:]))
 	}
+	if os.Getenv(parentHelperEnv) != "" {
+		os.Exit(parentHelperMain())
+	}
 	os.Exit(m.Run())
+}
+
+// sessRoot is where the fake keeps its sessions: hisn's own runtime directory
+// layout, $XDG_RUNTIME_DIR/hisn/<id>/control.sock. (Tests always set
+// XDG_RUNTIME_DIR; the state-dir fallback only serves stray invocations.)
+func sessRoot(state string) string {
+	if x := os.Getenv("XDG_RUNTIME_DIR"); x != "" {
+		return filepath.Join(x, "hisn")
+	}
+	return filepath.Join(state, "s")
+}
+
+// dialable reports whether something accepts connections on the session socket.
+func dialable(dir string) bool {
+	c, err := net.DialTimeout("unix", filepath.Join(dir, "control.sock"), time.Second)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
 }
 
 func fakeMain(state string, args []string) int {
@@ -49,7 +75,7 @@ func fakeMain(state string, args []string) int {
 	case "run":
 		return fakeRun(state, args[1:])
 	case "ls":
-		return fakeLs(state)
+		return fakeLs(state, args[1:])
 	case "inspect":
 		return fakeInspect(state, args[1:])
 	case "kill":
@@ -94,11 +120,36 @@ func fakePolicyValidate(args []string) int {
 	return 0
 }
 
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
+// fakeRun is the supervisor: like the real `hisn run --detach` it does NOT
+// return while the session lives. run_mode (a file in the fake state) selects a
+// failure to inject: fail | hang | nosock | late:<ms> | crash:<ms> | ignoreterm.
 func fakeRun(state string, args []string) int {
 	id := flagVal(args, "--session-id")
-	dir := filepath.Join(state, "s", id)
-	if exists(dir) {
-		fmt.Fprintln(os.Stderr, "hisn: session id in use")
+	verbose := hasFlag(args, "-v")
+	logf := func(format string, a ...any) {
+		if verbose { // real hisn prints nothing to stderr without -v
+			fmt.Fprintf(os.Stderr, "hisn: "+format+"\n", a...)
+		}
+	}
+	modeB, _ := os.ReadFile(filepath.Join(state, "run_mode"))
+	mode, arg, _ := strings.Cut(strings.TrimSpace(string(modeB)), ":")
+	dir := filepath.Join(sessRoot(state), id)
+	if mode == "fail" {
+		fmt.Fprintln(os.Stderr, "hisn: injected failure: cannot create sandbox")
+		return 125
+	}
+	if mode == "hang" { // never becomes ready, no socket
+		logf("session %s starting", id)
+		time.Sleep(time.Hour)
 		return 125
 	}
 	pol, err := os.ReadFile(flagVal(args, "--policy"))
@@ -106,19 +157,93 @@ func fakeRun(state string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: no policy")
 		return 125
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return 125
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil { // fails if it exists: id in use
+		fmt.Fprintln(os.Stderr, "hisn: session id in use")
 		return 125
 	}
 	_ = os.WriteFile(filepath.Join(dir, "policy"), pol, 0o600)
+	// Real hisn writes the resolved policy before it binds the socket; Wakil
+	// uses it (carrying the instance hostname token) as proof of ownership.
+	_ = os.WriteFile(filepath.Join(dir, "policy.resolved.toml"), pol, 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "cwd"), []byte(flagVal(args, "--cwd")), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "sup.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+	logf("session %s init pid %d", id, os.Getpid())
+	if mode == "nosock" { // dir but no socket, ever
+		time.Sleep(time.Hour)
+		return 125
+	}
+	if mode == "late" {
+		ms, _ := strconv.Atoi(arg)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
+	ln, err := net.Listen("unix", filepath.Join(dir, "control.sock"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hisn: binding control socket: %v\n", err)
+		return 125
+	}
+	go func() { // accept and drop: enough for "is it live"
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	if mode == "crash" { // ready, then dies leaving its directory (like SIGKILL)
+		ms, _ := strconv.Atoi(arg)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		fmt.Fprintln(os.Stderr, "hisn: injected crash: supervisor lost its init")
+		return 125
+	}
+	sig := make(chan os.Signal, 4)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	for range sig {
+		if mode == "ignoreterm" {
+			continue
+		}
+		killRecordedPids(dir) // init dying takes the whole sandbox with it
+		_ = ln.Close()
+		_ = os.RemoveAll(dir) // an orderly supervisor removes its own directory
+		return 0
+	}
 	return 0
 }
 
-func fakeLs(state string) int {
-	ents, _ := os.ReadDir(filepath.Join(state, "s"))
+func killRecordedPids(dir string) {
+	b, err := os.ReadFile(filepath.Join(dir, "pids"))
+	if err != nil {
+		return
+	}
+	for _, f := range strings.Fields(string(b)) {
+		if pid, _ := strconv.Atoi(f); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+}
+
+func fakeLs(state string, args []string) int {
+	if id := flagVal(args, "--session"); id != "" {
+		if !dialable(filepath.Join(sessRoot(state), id)) {
+			fmt.Fprintf(os.Stderr, "hisn: no such session %s\n", id)
+			return 125
+		}
+		fmt.Println(`{"ok":true,"grants":[]}`)
+		return 0
+	}
+	ents, _ := os.ReadDir(sessRoot(state))
 	rows := []map[string]any{}
 	for _, e := range ents {
-		rows = append(rows, map[string]any{"id": e.Name(), "live": true})
+		d := filepath.Join(sessRoot(state), e.Name())
+		// A session without a supervisor pid file is a foreign fixture: live.
+		live := true
+		if exists(filepath.Join(d, "sup.pid")) {
+			live = dialable(d)
+		}
+		rows = append(rows, map[string]any{"id": e.Name(), "live": live})
 	}
 	b, _ := json.Marshal(rows)
 	fmt.Println(string(b))
@@ -130,7 +255,7 @@ func fakeInspect(state string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: inspect failed")
 		return 125
 	}
-	pol, err := os.ReadFile(filepath.Join(state, "s", flagVal(args, "--session"), "policy"))
+	pol, err := os.ReadFile(filepath.Join(sessRoot(state), flagVal(args, "--session"), "policy"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")
 		return 125
@@ -141,31 +266,36 @@ func fakeInspect(state string, args []string) int {
 }
 
 func fakeKill(state string, args []string) int {
+	if exists(filepath.Join(state, "kill_hang")) {
+		time.Sleep(time.Hour)
+	}
 	if exists(filepath.Join(state, "kill_fail")) {
 		fmt.Fprintln(os.Stderr, "hisn: kill failed")
 		return 125
 	}
-	dir := filepath.Join(state, "s", flagVal(args, "--session"))
+	dir := filepath.Join(sessRoot(state), flagVal(args, "--session"))
 	if !exists(dir) {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")
 		return 125
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, "pids")); err == nil {
-		for _, f := range strings.Fields(string(b)) {
-			var pid int
-			fmt.Sscan(f, &pid)
-			if pid > 0 {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
+	if b, err := os.ReadFile(filepath.Join(dir, "sup.pid")); err == nil {
+		if !dialable(dir) { // a dead supervisor: the real CLI cannot connect
+			fmt.Fprintln(os.Stderr, "hisn: connecting control socket: connection refused")
+			return 125
 		}
+		if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+		}
+		return 0
 	}
+	killRecordedPids(dir) // foreign fixture without a supervisor process
 	_ = os.RemoveAll(dir)
 	return 0
 }
 
 func fakeGrant(state, op string, args []string) int {
 	id := flagVal(args, "--session")
-	dir := filepath.Join(state, "s", id)
+	dir := filepath.Join(sessRoot(state), id)
 	if !exists(dir) {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")
 		return 125
@@ -201,8 +331,8 @@ func fakeGrant(state, op string, args []string) int {
 
 func fakeExec(state string, args []string) int {
 	id := flagVal(args, "--session")
-	dir := filepath.Join(state, "s", id)
-	if !exists(dir) {
+	dir := filepath.Join(sessRoot(state), id)
+	if !exists(dir) || (exists(filepath.Join(dir, "sup.pid")) && !dialable(dir)) {
 		fmt.Fprintln(os.Stderr, "hisn: exec: E_NOT_FOUND: no such session")
 		return 125
 	}
@@ -276,13 +406,14 @@ type fakeEnv struct {
 	home  string
 	cwd   string
 	sdir  string // wakil-side state dir
+	xdg   string // XDG_RUNTIME_DIR handed to every hisn client
 }
 
 func newFakeEnv(t *testing.T) *fakeEnv {
 	t.Helper()
 	root := t.TempDir()
 	state := filepath.Join(root, "fake")
-	if err := os.MkdirAll(filepath.Join(state, "s"), 0o700); err != nil {
+	if err := os.MkdirAll(state, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	self, err := os.Executable()
@@ -299,7 +430,13 @@ func newFakeEnv(t *testing.T) *fakeEnv {
 		t.Fatal(err)
 	}
 	real, _ := filepath.EvalSymlinks(cwd)
-	return &fakeEnv{t: t, state: state, bin: bin, home: filepath.Join(root, "home"), cwd: real, sdir: filepath.Join(root, "wakil-state")}
+	// Short path: unix socket paths are limited to ~100 bytes.
+	xdg, err := os.MkdirTemp("", "hx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(xdg) })
+	return &fakeEnv{t: t, state: state, bin: bin, home: filepath.Join(root, "home"), cwd: real, sdir: filepath.Join(root, "wakil-state"), xdg: xdg}
 }
 
 func (f *fakeEnv) options() Options {
@@ -310,13 +447,24 @@ func (f *fakeEnv) options() Options {
 		HostCwd:  f.cwd,
 		EnvPass:  []string{"GOFLAGS", "CI"},
 		// A hostile host environment: none of this may reach hisn clients.
-		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=/home/x", "LANG=C.UTF-8", "LC_ALL=C",
+		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=/home/x", "LANG=C.UTF-8", "LC_ALL=C", "XDG_RUNTIME_DIR=" + f.xdg,
 			"ANTHROPIC_API_KEY=sk-should-never-leak", "LD_PRELOAD=/evil.so", "GOFLAGS=-mod=mod", "CI=1"},
 	}
 }
 
+// rt is the fake's session root (hisn's runtime directory).
+func (f *fakeEnv) rt() string { return filepath.Join(f.xdg, "hisn") }
+
+// setMode injects a supervisor failure mode for the next `hisn run`.
+func (f *fakeEnv) setMode(m string) {
+	f.t.Helper()
+	if err := os.WriteFile(filepath.Join(f.state, "run_mode"), []byte(m), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 func (f *fakeEnv) sessionIDs() []string {
-	ents, _ := os.ReadDir(filepath.Join(f.state, "s"))
+	ents, _ := os.ReadDir(f.rt())
 	var ids []string
 	for _, e := range ents {
 		ids = append(ids, e.Name())
@@ -326,7 +474,7 @@ func (f *fakeEnv) sessionIDs() []string {
 
 func (f *fakeEnv) addForeignSession(id string) {
 	f.t.Helper()
-	dir := filepath.Join(f.state, "s", id)
+	dir := filepath.Join(f.rt(), id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		f.t.Fatal(err)
 	}

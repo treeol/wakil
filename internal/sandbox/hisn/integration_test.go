@@ -1,8 +1,10 @@
 package hisn
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	osexec "os/exec"
@@ -22,7 +24,12 @@ import (
 //
 // Run on a host with hisn >= 0.2.0:
 //
-//	go test -count=1 -v -run TestIntegration ./internal/sandbox/hisn/
+//	go test -count=1 -v -timeout 5m -run TestIntegration ./internal/sandbox/hisn/
+//
+// `hisn run --detach` does NOT return: its supervisor IS the session. Start
+// therefore spawns it, waits for readiness (control socket + `hisn ls
+// --session`) and keeps the process as the session's lifetime handle. Every
+// Start error carries the supervisor's stderr (captured with `-v`).
 //
 // Set WAKIL_HISN_BIN to test a specific binary.
 
@@ -62,6 +69,15 @@ func realBackend(t *testing.T, grantable ...string) (*Backend, string) {
 	return b, cwd
 }
 
+// istart starts the session; on failure it reports the full error, which
+// includes the supervisor's exit status and captured stderr.
+func istart(t *testing.T, b *Backend, id, cwd string) {
+	t.Helper()
+	if err := b.Start(ictx(t), sandbox.Session{ID: id, HostCwd: cwd}); err != nil {
+		t.Fatalf("Start(%s) failed: %v", id, err)
+	}
+}
+
 func ictx(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -85,9 +101,7 @@ func irun(t *testing.T, b *Backend, cwd string, argv ...string) (string, sandbox
 
 func TestIntegrationStartExec(t *testing.T) {
 	b, cwd := realBackend(t)
-	if err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-1", HostCwd: cwd}); err != nil {
-		t.Fatal(err)
-	}
+	istart(t, b, "wakil-it-1", cwd)
 	for i := 0; i < 3; i++ { // 3 sequential
 		out, info := irun(t, b, "", "sh", "-c", "echo seq-$$ && pwd")
 		if info.Code != 0 || !strings.Contains(out, "seq-") || !strings.Contains(out, cwd) {
@@ -122,9 +136,7 @@ func TestIntegrationEnvIsAllowlisted(t *testing.T) {
 	b, cwd := realBackend(t)
 	t.Setenv("WAKIL_IT_SECRET", "must-not-leak")
 	t.Setenv("CI", "1")
-	if err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-env", HostCwd: cwd}); err != nil {
-		t.Fatal(err)
-	}
+	istart(t, b, "wakil-it-env", cwd)
 	out, _ := irun(t, b, "", "sh", "-c", "env")
 	if strings.Contains(out, "WAKIL_IT_SECRET") || strings.Contains(out, "must-not-leak") {
 		t.Errorf("host environment leaked into the sandbox:\n%s", out)
@@ -136,9 +148,7 @@ func TestIntegrationEnvIsAllowlisted(t *testing.T) {
 
 func TestIntegrationGrantRevokeVisibility(t *testing.T) {
 	b, cwd := realBackend(t)
-	if err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-grant", HostCwd: cwd}); err != nil {
-		t.Fatal(err)
-	}
+	istart(t, b, "wakil-it-grant", cwd)
 	outside := t.TempDir()
 	// t.TempDir lives under /tmp, which hisn masks with a private tmpfs; use a
 	// directory under the user's cache instead when /tmp is the parent.
@@ -180,9 +190,7 @@ func TestIntegrationGrantRevokeVisibility(t *testing.T) {
 
 func TestIntegrationStopKillsSleeper(t *testing.T) {
 	b, cwd := realBackend(t)
-	if err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-kill", HostCwd: cwd}); err != nil {
-		t.Fatal(err)
-	}
+	istart(t, b, "wakil-it-kill", cwd)
 	pidfile := filepath.Join(cwd, "sleeper.pid")
 	// A detached sleeper that outlives its launcher exec.
 	if _, info := irun(t, b, "", "sh", "-c", "setsid nohup sleep 300 >/dev/null 2>&1 & echo $! > "+pidfile); info.Code != 0 {
@@ -217,9 +225,7 @@ func TestIntegrationStopKillsSleeper(t *testing.T) {
 
 func TestIntegrationOrphanReconcile(t *testing.T) {
 	b, cwd := realBackend(t)
-	if err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-orphan", HostCwd: cwd}); err != nil {
-		t.Fatal(err)
-	}
+	istart(t, b, "wakil-it-orphan", cwd)
 	// Forge a dead owner, as if the Wakil that created the session crashed.
 	rec, err := b.readRecord("wakil-it-orphan")
 	if err != nil {
@@ -251,12 +257,42 @@ func TestIntegrationOrphanReconcile(t *testing.T) {
 
 func TestIntegrationStartRefusesForeignSession(t *testing.T) {
 	b, cwd := realBackend(t)
-	// A session created outside Wakil's control (no owner record).
-	foreign := osexec.Command(b.opts.Binary, "run", "--detach", "--session-id", "wakil-it-foreign", "--cwd", cwd)
-	if out, err := foreign.CombinedOutput(); err != nil {
-		t.Skipf("cannot create a foreign session: %v: %s", err, out)
+	// A session created outside Wakil's control (no owner record). `hisn run
+	// --detach` blocks, so run it as a child and wait until it is live.
+	var ferr bytes.Buffer
+	foreign := osexec.Command(b.opts.Binary, "run", "--detach", "-v", "--session-id", "wakil-it-foreign", "--cwd", cwd)
+	foreign.Stdout, foreign.Stderr = &ferr, &ferr
+	foreign.SysProcAttr = supervisorSysProcAttr()
+	if err := foreign.Start(); err != nil {
+		t.Skipf("cannot create a foreign session: %v", err)
 	}
-	t.Cleanup(func() { _ = osexec.Command(b.opts.Binary, "kill", "--session", "wakil-it-foreign").Run() })
+	fdone := make(chan struct{})
+	go func() { _ = foreign.Wait(); close(fdone) }()
+	t.Cleanup(func() {
+		_ = osexec.Command(b.opts.Binary, "kill", "--session", "wakil-it-foreign").Run()
+		select {
+		case <-fdone:
+		case <-time.After(5 * time.Second):
+			_ = foreign.Process.Kill()
+			<-fdone
+		}
+	})
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m, err := b.listSessions(ictx(t))
+		if err == nil && m["wakil-it-foreign"].Live {
+			break
+		}
+		select {
+		case <-fdone:
+			t.Skipf("cannot create a foreign session: supervisor exited: %s", ferr.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Skipf("foreign session never became live: %s", ferr.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-foreign", HostCwd: cwd})
 	if !errors.Is(err, sandbox.ErrSessionInUse) {
 		t.Fatalf("want ErrSessionInUse, got %v", err)
@@ -264,6 +300,55 @@ func TestIntegrationStartRefusesForeignSession(t *testing.T) {
 	sessions, _ := b.listSessions(ictx(t))
 	if _, ok := sessions["wakil-it-foreign"]; !ok {
 		t.Fatal("Wakil killed a session it did not create")
+	}
+}
+
+// The supervisor carries Pdeathsig: a Wakil that dies without stopping anything
+// must not leave a live sandbox behind. The session is started from a child
+// process that then exits (a "crash"); `hisn ls` must stop listing it.
+func TestIntegrationSupervisorDiesWithParent(t *testing.T) {
+	b, cwd := realBackend(t)
+	cfg, err := json.Marshal(parentHelperCfg{Options: b.opts, ID: "wakil-it-parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := osexec.Command(self)
+	cmd.Env = []string{parentHelperEnv + "=" + string(cfg), "PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"), "XDG_RUNTIME_DIR=" + os.Getenv("XDG_RUNTIME_DIR")}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var herr bytes.Buffer
+	cmd.Stderr = &herr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, _ := bufio.NewReader(out).ReadString('\n')
+	_ = cmd.Wait() // the helper has exited without Stop/Close
+	if !strings.HasPrefix(line, "started ") {
+		t.Fatalf("helper could not start a session: %q stderr: %s", line, herr.String())
+	}
+	t.Cleanup(func() { // belt and braces: never leave it behind if the assertion fails
+		_ = osexec.Command(b.opts.Binary, "kill", "--session", "wakil-it-parent", "--signal", "KILL").Run()
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		m, err := b.listSessions(ictx(t))
+		if err != nil {
+			t.Fatalf("hisn ls: %v", err)
+		}
+		if _, still := m["wakil-it-parent"]; !still {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the supervisor outlived its parent for 5s: hisn ls = %+v (cwd %s)", m, cwd)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

@@ -141,7 +141,7 @@ func TestPolicyContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b2.Close(context.Background())
-	pol, _ := os.ReadFile(filepath.Join(fe.state, "s", "p1", "policy"))
+	pol, _ := os.ReadFile(filepath.Join(fe.rt(), "p1", "policy"))
 	s := string(pol)
 	for _, want := range []string{`version = "hisn-policy/v1"`, `network = "host"`, `cwd = '` + fe.cwd + `'`, `"/srv/out"`, `"GOFLAGS"`} {
 		if !strings.Contains(s, want) && !strings.Contains(s, strings.ReplaceAll(want, "'", `"`)) {
@@ -215,9 +215,11 @@ func TestExecCwdMapping(t *testing.T) {
 	if _, err := b.MapPath("/tmp/anything"); !errors.Is(err, sandbox.ErrNoHostPath) {
 		t.Errorf("MapPath(/tmp/..) = %v, want ErrNoHostPath", err)
 	}
-	if _, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"true"}, Cwd: "/tmp"}); err != nil {
+	if h, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"true"}, Cwd: "/tmp"}); err != nil {
 		// the fake runs the command in the REAL /tmp; only admission matters here
 		t.Errorf("private /tmp cwd rejected: %v", err)
+	} else {
+		_, _ = h.Wait() // an unwaited handle would pin the session's in-flight count
 	}
 }
 
@@ -240,8 +242,9 @@ func TestLostExec(t *testing.T) {
 	_ = b.Stop(ctxT(t))
 	// Exec against a vanished session: the fake prints "hisn: ..." and exits 125.
 	b2, fe2 := openFake(t)
+	b2.stopWait = 300 * time.Millisecond // its supervisor never sees the kill below
 	_ = b2.Start(ctxT(t), sandbox.Session{ID: "gone", HostCwd: fe2.cwd})
-	_ = os.RemoveAll(filepath.Join(fe2.state, "s", "gone"))
+	_ = os.RemoveAll(filepath.Join(fe2.rt(), "gone"))
 	_, info2 := run(t, b2, "true")
 	if !info2.BackendError || info2.Lost {
 		t.Fatalf("hisn diagnostic + 125 must be BackendError: %+v", info2)
@@ -465,28 +468,53 @@ func TestReconcileIDReuseNotKilled(t *testing.T) {
 	}
 }
 
-func TestFailedKillKeepsRecovery(t *testing.T) {
+// A failing `hisn kill` is not fatal: the supervisor handle is authoritative, so
+// Stop falls back to SIGKILL on the supervisor and still ends the session.
+func TestFailedHisnKillFallsBackToSupervisorKill(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, _ := Open(ctxT(t), fe.options())
+	b.stopWait = 400 * time.Millisecond
 	_ = b.Start(ctxT(t), sandbox.Session{ID: "stuck", HostCwd: fe.cwd})
 	_ = os.WriteFile(filepath.Join(fe.state, "kill_fail"), nil, 0o600)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := b.Stop(ctx); err == nil {
-		t.Fatal("Stop must report a failed kill")
+	sup := b.supOf()
+	if err := b.Stop(ctxT(t)); err != nil {
+		t.Fatalf("Stop must succeed through the SIGKILL fallback: %v", err)
+	}
+	if !sup.hasExited() || !strings.Contains(sup.exitStatus(), "killed") {
+		t.Fatalf("supervisor not SIGKILLed: %s", sup.exitStatus())
+	}
+	if len(b.listRecordIDs()) != 0 || contains(fe.sessionIDs(), "stuck") {
+		t.Fatal("leftovers after a forced stop")
+	}
+}
+
+// A supervisor that cannot be reaped keeps the owner record (recovery
+// information) and stays tracked; a later Close finishes once it can be killed.
+func TestUnreapableSupervisorKeepsRecoveryUntilRetry(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, _ := Open(ctxT(t), fe.options())
+	b.stopWait = 300 * time.Millisecond
+	fe.setMode("ignoreterm")
+	_ = b.Start(ctxT(t), sandbox.Session{ID: "stuck", HostCwd: fe.cwd})
+	sup := b.supOf()
+	sup.killFn = func() {} // simulate D-state: SIGKILL has no effect
+	if err := b.Stop(ctxT(t)); err == nil {
+		t.Fatal("Stop must report a supervisor that did not exit")
 	}
 	if len(b.listRecordIDs()) != 1 {
-		t.Fatal("failed kill discarded the owner record (recovery information lost)")
+		t.Fatal("unreaped supervisor discarded the owner record (recovery information lost)")
 	}
-	if !contains(fe.sessionIDs(), "stuck") {
-		t.Fatal("session vanished unexpectedly")
+	b.mu.RLock()
+	tracked := len(b.orphans)
+	b.mu.RUnlock()
+	if tracked != 1 {
+		t.Fatalf("unstopped session not tracked: %d", tracked)
 	}
-	// Recovery: once kill works, Close finishes the job.
-	_ = os.Remove(filepath.Join(fe.state, "kill_fail"))
+	sup.killFn = nil
 	if err := b.Close(ctxT(t)); err != nil {
 		t.Fatalf("retry after failed stop: %v", err)
 	}
-	if contains(fe.sessionIDs(), "stuck") || len(b.listRecordIDs()) != 0 {
+	if contains(fe.sessionIDs(), "stuck") || len(b.listRecordIDs()) != 0 || !sup.hasExited() {
 		t.Fatal("retry did not clean up")
 	}
 }

@@ -46,6 +46,26 @@ type live struct {
 	ctx    context.Context // cancelled when the session is being replaced/stopped
 	cancel context.CancelFunc
 	wg     sync.WaitGroup // in-flight hisn exec clients
+	// sup is the `hisn run --detach` supervisor process: the session's lifetime
+	// handle. nil only for a start that failed before the supervisor spawned.
+	sup *supervisorProc
+}
+
+// dead reports whether the session's supervisor has exited. A dead session can
+// never come back: the supervisor holds the namespaces and the control socket.
+func (l *live) dead() bool { return l.sup != nil && l.sup.hasExited() }
+
+// deadErr describes a dead session, with the supervisor's captured stderr.
+func (l *live) deadErr() error {
+	if l.sup == nil {
+		return fmt.Errorf("%w: hisn session %s has no supervisor", sandbox.ErrSessionDead, l.id)
+	}
+	msg := l.sup.stderrText()
+	if msg == "" {
+		msg = "(no output; hisn prints diagnostics only with -v)"
+	}
+	return fmt.Errorf("%w: hisn supervisor for session %s exited (%s); stderr: %s",
+		sandbox.ErrSessionDead, l.id, l.sup.exitStatus(), msg)
 }
 
 // Backend drives hisn. Lifecycle transitions (Start/Stop/Close) take mu for
@@ -63,7 +83,24 @@ type Backend struct {
 
 	lostMu sync.Mutex
 	lost   []string // argv summaries of execs whose status was lost
+
+	// Bounds (fields so tests can shorten them; never above the documented caps).
+	readyTimeout time.Duration // session readiness: socket + `hisn ls --session`
+	stopWait     time.Duration // per phase of Stop: after `hisn kill`, after SIGKILL
+
+	// afterSpawn, when set (tests only), sees every supervisor right after it
+	// was spawned and before readiness is awaited.
+	afterSpawn func(*supervisorProc)
 }
+
+const (
+	// readyCap is the longest a new session may take to become ready.
+	readyCap = 10 * time.Second
+	// readyPoll is the readiness polling interval.
+	readyPoll = 100 * time.Millisecond
+	// stopCap bounds each phase of stopping the supervisor.
+	stopCap = 5 * time.Second
+)
 
 var _ sandbox.Backend = (*Backend)(nil)
 
@@ -84,7 +121,9 @@ func New(opts Options) (*Backend, error) {
 	}
 	opts.HostCwd = filepath.Clean(opts.HostCwd)
 	return &Backend{
-		opts: opts,
+		opts:         opts,
+		readyTimeout: readyCap,
+		stopWait:     stopCap,
 		// hisn mounts cwd at the identical path and gives the sandbox a
 		// private /tmp: host /tmp is NOT the sandbox /tmp.
 		pm: sandbox.NewPathMap(opts.HostCwd, opts.HostCwd, "/tmp"),
@@ -156,7 +195,9 @@ func (b *Backend) Start(ctx context.Context, s sandbox.Session) error {
 	if b.closed {
 		return errors.New("hisn backend: closed")
 	}
-	if b.cur != nil && b.cur.id == s.ID && len(b.orphans) == 0 {
+	// A session whose supervisor died is NOT running: it is replaced (cleaned
+	// up and started fresh) rather than treated as already started.
+	if b.cur != nil && b.cur.id == s.ID && len(b.orphans) == 0 && !b.cur.dead() {
 		return nil
 	}
 	if err := b.stopAllLocked(ctx); err != nil {
@@ -243,6 +284,11 @@ func (b *Backend) admit() (*live, func(), error) {
 		return nil, nil, sandbox.ErrNoSession
 	}
 	l := b.cur
+	if l.dead() {
+		// Never hand a dead session to a tool call. The caller learns it is
+		// dead (typed error) and starts a fresh one; nothing is retried here.
+		return nil, nil, l.deadErr()
+	}
 	l.wg.Add(1)
 	return l, l.wg.Done, nil
 }
@@ -294,6 +340,9 @@ func (b *Backend) Grant(ctx context.Context, path string, rw bool) error {
 	args = append(args, "--", path)
 	out, err := b.output(ctx, false, args...)
 	if err != nil {
+		if l.dead() { // the supervisor died while the request was in flight
+			return l.deadErr()
+		}
 		return classifyControlError("grant", path, out, err)
 	}
 	// Only record the grant if the session it was made in is still the
@@ -317,6 +366,9 @@ func (b *Backend) Revoke(ctx context.Context, path string) error {
 	defer done()
 	out, err := b.output(ctx, false, "revoke", "--session", l.id, "--", path)
 	if err != nil {
+		if l.dead() {
+			return l.deadErr()
+		}
 		return classifyControlError("revoke", path, out, err)
 	}
 	if !b.stillCurrent(l) {

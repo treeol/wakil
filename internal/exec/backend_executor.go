@@ -164,6 +164,12 @@ func (s *shared) admit(ctx context.Context, fn func() error) error {
 		if s.current() {
 			err := fn()
 			s.life.RUnlock()
+			if errors.Is(err, sandbox.ErrSessionDead) {
+				// The session's supervisor is gone for good. This call fails
+				// (it is not retried: it may not be idempotent); the NEXT call
+				// starts a fresh session.
+				s.markDead(sc)
+			}
 			return err
 		}
 		s.life.RUnlock()
@@ -171,6 +177,22 @@ func (s *shared) admit(ctx context.Context, fn func() error) error {
 			return err
 		}
 	}
+}
+
+// markDead forgets the running session after the backend reported it dead, so
+// the next admission starts a fresh one. The generation advances so background
+// registry entries of the dead session are never trusted. A no-op when the
+// identity captured by the failing call is no longer current (someone else
+// already replaced or reset the session).
+func (s *shared) markDead(sc *callScope) {
+	s.life.Lock()
+	defer s.life.Unlock()
+	if s.closed || !s.matches(sc) || s.startedID != s.chatID {
+		return
+	}
+	s.startedID = ""
+	s.gen++
+	s.grants.Reset()
 }
 
 // BindChat implements ChatBinder.
@@ -270,6 +292,7 @@ func (e *BackendExecutor) run(ctx context.Context, argv []string, o runOpts) (re
 		tail = newBoundedTailBuffer(o.capOut)
 		w = tail
 	}
+	ctx = e.withScope(ctx) // one identity for admission AND a dead-session verdict
 	var h sandbox.ExecHandle
 	err := e.admit(ctx, func() (err error) {
 		h, err = e.b.Exec(ctx, sandbox.ExecSpec{Argv: argv, Stdin: o.stdin, Stdout: w})
@@ -279,6 +302,9 @@ func (e *BackendExecutor) run(ctx context.Context, argv []string, o runOpts) (re
 		return result{}, 0, err
 	}
 	info, werr := h.Wait()
+	// The session may have died while this exec was in flight: forget it so the
+	// next call starts a fresh one (the failing call is never retried).
+	werr = e.noteDead(ctx, werr)
 	var omitted int64
 	out := buf.String()
 	if tail != nil {
@@ -763,7 +789,7 @@ func (e *BackendExecutor) EnsureAccess(ctx context.Context, path string, tier sa
 	if err := e.admit(ctx, func() error { return nil }); err != nil {
 		return err
 	}
-	return e.grants.Ensure(ctx, path, tier)
+	return e.noteDead(ctx, e.grants.Ensure(ctx, path, tier))
 }
 
 // WithdrawAccess implements AccessGranter.
@@ -772,5 +798,15 @@ func (e *BackendExecutor) WithdrawAccess(ctx context.Context, path string) error
 	if err := e.admit(ctx, func() error { return nil }); err != nil {
 		return err
 	}
-	return e.grants.Withdraw(ctx, path)
+	return e.noteDead(ctx, e.grants.Withdraw(ctx, path))
+}
+
+// noteDead forgets the session when a control operation found it dead, so the
+// next call starts a fresh one (see markDead).
+func (e *BackendExecutor) noteDead(ctx context.Context, err error) error {
+	if errors.Is(err, sandbox.ErrSessionDead) {
+		sc, _ := ctx.Value(scopeKey{}).(*callScope)
+		e.markDead(sc)
+	}
+	return err
 }

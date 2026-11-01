@@ -63,7 +63,7 @@ func TestKillReverifiesInstance(t *testing.T) {
 func TestUnverifiableInstanceKeepsRecord(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, _ := Open(ctxT(t), fe.options())
-	dir := filepath.Join(fe.state, "s", "nohost")
+	dir := filepath.Join(fe.rt(), "nohost")
 	_ = os.MkdirAll(dir, 0o700)
 	_ = os.WriteFile(filepath.Join(dir, "policy"), []byte("cwd = '/x'\n"), 0o600) // no hostname key
 	rec := record{ID: "nohost", Pid: 999999, Token: newToken(), Cwd: fe.cwd, Started: true}
@@ -79,18 +79,20 @@ func TestUnverifiableInstanceKeepsRecord(t *testing.T) {
 	}
 }
 
-// A failed start whose cleanup also fails must stay tracked, and Close must
-// finish the job once the failure clears.
+// A failed start whose supervisor cannot be reaped must stay tracked, and Close
+// must finish the job once it can be killed.
 func TestFailedStartCleanupIsTrackedAndRetried(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, _ := Open(ctxT(t), fe.options())
-	// Make verification fail after `run` succeeded (inspect cannot find it),
-	// and make the abort kill fail too.
-	_ = os.WriteFile(filepath.Join(fe.state, "inspect_fail"), nil, 0o600)
-	_ = os.WriteFile(filepath.Join(fe.state, "kill_fail"), nil, 0o600)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := b.Start(ctx, sandbox.Session{ID: "half", HostCwd: fe.cwd}); err == nil {
+	b.readyTimeout = 400 * time.Millisecond
+	b.stopWait = 300 * time.Millisecond
+	fe.setMode("nosock") // never becomes ready
+	var sup *supervisorProc
+	b.afterSpawn = func(p *supervisorProc) {
+		sup = p
+		p.killFn = func() {} // SIGKILL has no effect: the abort cannot reap it
+	}
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "half", HostCwd: fe.cwd}); err == nil {
 		t.Fatal("start must fail")
 	}
 	b.mu.RLock()
@@ -100,14 +102,13 @@ func TestFailedStartCleanupIsTrackedAndRetried(t *testing.T) {
 		t.Fatalf("failed start left %d tracked obligations, want 1", tracked)
 	}
 	if len(b.listRecordIDs()) != 1 {
-		t.Fatal("record must be kept while the session may still run")
+		t.Fatal("record must be kept while the supervisor may still run")
 	}
-	_ = os.Remove(filepath.Join(fe.state, "inspect_fail"))
-	_ = os.Remove(filepath.Join(fe.state, "kill_fail"))
+	sup.killFn = nil
 	if err := b.Close(ctxT(t)); err != nil {
 		t.Fatalf("Close must retry the stranded cleanup: %v", err)
 	}
-	if contains(fe.sessionIDs(), "half") || len(b.listRecordIDs()) != 0 {
+	if !sup.hasExited() || contains(fe.sessionIDs(), "half") || len(b.listRecordIDs()) != 0 {
 		t.Fatal("stranded session not cleaned by Close")
 	}
 }

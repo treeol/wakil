@@ -13,7 +13,7 @@
 
 - `go test ./...`
 - `go test -race ./...` — race detector (CI runs this on the full suite)
-- hisn backend integration tests (`go test -run TestIntegration ./internal/sandbox/hisn/`) skip unless `hisn` >= 0.2.0 is installed and `hisn check` passes; set `WAKIL_HISN_BIN` to pick a binary
+- hisn backend integration tests (`go test -count=1 -v -timeout 5m -run TestIntegration ./internal/sandbox/hisn/`) skip unless `hisn` >= 0.2.0 is installed and `hisn check` passes; set `WAKIL_HISN_BIN` to pick a binary
 - `go vet ./...`
 
 ## Lint

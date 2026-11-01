@@ -2,6 +2,8 @@ package hisn
 
 import (
 	"io"
+	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -46,3 +48,31 @@ func (d *diagWriter) Write(p []byte) (int, error) {
 
 // Seen reports whether a hisn diagnostic line was observed.
 func (d *diagWriter) Seen() bool { return d.seen.Load() }
+
+// ringBuffer keeps the LAST max bytes written to it. It captures the hisn
+// supervisor's stderr (hisn prints nothing unless run with -v) for diagnostics
+// without growing with the session's lifetime. Safe for concurrent use.
+type ringBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func newRingBuffer(max int) *ringBuffer { return &ringBuffer{max: max} }
+
+func (r *ringBuffer) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf = append(r.buf, p...)
+	if over := len(r.buf) - r.max; over > 0 {
+		r.buf = append(r.buf[:0], r.buf[over:]...)
+	}
+	return len(p), nil
+}
+
+// String returns the captured tail, trimmed.
+func (r *ringBuffer) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.TrimSpace(string(r.buf))
+}

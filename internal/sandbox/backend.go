@@ -16,6 +16,10 @@ var (
 	ErrNotSupported = errors.New("sandbox: operation not supported by this backend")
 	// ErrNoSession is returned when an operation needs a started session.
 	ErrNoSession = errors.New("sandbox: no active session")
+	// ErrSessionDead is returned when the session existed but its supervisor
+	// has exited (crash, OOM, external kill). The session is gone for good: the
+	// caller must start a fresh one before the next tool call.
+	ErrSessionDead = errors.New("sandbox: session is dead")
 	// ErrNoHostPath is returned by MapPath for a path that is visible inside
 	// the sandbox but has no host representation (e.g. the private /tmp).
 	ErrNoHostPath = errors.New("sandbox: path has no host representation")

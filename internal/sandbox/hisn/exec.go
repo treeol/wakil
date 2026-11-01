@@ -47,8 +47,11 @@ func (b *Backend) Exec(ctx context.Context, spec sandbox.ExecSpec) (sandbox.Exec
 	if err != nil {
 		return nil, err
 	}
-	if l.ctx.Err() != nil { // replaced between admission and here
+	if l.ctx.Err() != nil { // died or replaced between admission and here
 		release()
+		if l.dead() {
+			return nil, l.deadErr()
+		}
 		return nil, sandbox.ErrNoSession
 	}
 	args[2] = l.id
@@ -80,12 +83,13 @@ func (b *Backend) Exec(ctx context.Context, spec sandbox.ExecSpec) (sandbox.Exec
 		release()
 		return nil, err
 	}
-	return &execHandle{b: b, h: h, dw: dw, argv: spec.Argv, cleanup: func() { stop(); cancel(); release() }}, nil
+	return &execHandle{b: b, l: l, h: h, dw: dw, argv: spec.Argv, cleanup: func() { stop(); cancel(); release() }}, nil
 }
 
 // execHandle post-processes the hisn client's exit into a sandbox.ExitInfo.
 type execHandle struct {
 	b       *Backend
+	l       *live
 	h       *sandbox.CmdHandle
 	dw      *diagWriter
 	argv    []string
@@ -103,6 +107,15 @@ func (e *execHandle) Wait() (sandbox.ExitInfo, error) {
 	e.once.Do(func() {
 		e.info, e.err = e.h.Wait()
 		e.cleanup()
+		// A supervisor that died while the exec was in flight ended the whole
+		// sandbox, program included: nothing "may still be running" and the
+		// failure is the session's, not the program's. Only a failed run is
+		// reinterpreted; a program that already finished keeps its status.
+		if e.l.dead() && (e.err != nil || e.info.Code == exitHisnError || e.info.Code >= 128) {
+			e.info.Lost, e.info.BackendError = false, true
+			e.err = e.l.deadErr()
+			return
+		}
 		// hisn exit 125 is hisn's own error. v0.2.0 prints a "hisn: ..."
 		// diagnostic for real errors but nothing for a lost exec, so 125
 		// without one means the program MAY STILL BE RUNNING.

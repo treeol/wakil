@@ -21,11 +21,13 @@ type shBackend struct {
 	root string
 	pm   *sandbox.PathMap
 
-	mu      sync.Mutex
-	started []string
-	stopped int
-	live    string
-	execs   int
+	mu         sync.Mutex
+	started    []string
+	stopped    int
+	live       string
+	execs      int
+	dead       bool // the next Exec/Grant reports the session dead (and clears it)
+	deadOnWait bool // the next exec's Wait reports the session dead (death in flight)
 }
 
 func (b *shBackend) Start(_ context.Context, s sandbox.Session) error {
@@ -39,9 +41,10 @@ func (b *shBackend) Start(_ context.Context, s sandbox.Session) error {
 type shHandle struct {
 	done chan struct{}
 	info sandbox.ExitInfo
+	err  error
 }
 
-func (h *shHandle) Wait() (sandbox.ExitInfo, error) { <-h.done; return h.info, nil }
+func (h *shHandle) Wait() (sandbox.ExitInfo, error) { <-h.done; return h.info, h.err }
 func (h *shHandle) Kill() error                     { return nil }
 func (h *shHandle) Pid() int                        { return 4242 }
 
@@ -50,6 +53,11 @@ func (b *shBackend) Exec(ctx context.Context, spec sandbox.ExecSpec) (sandbox.Ex
 	if b.live == "" {
 		b.mu.Unlock()
 		return nil, sandbox.ErrNoSession
+	}
+	if b.dead {
+		b.dead, b.live = false, ""
+		b.mu.Unlock()
+		return nil, sandbox.ErrSessionDead
 	}
 	b.execs++
 	b.mu.Unlock()
@@ -63,6 +71,14 @@ func (b *shBackend) Exec(ctx context.Context, spec sandbox.ExecSpec) (sandbox.Ex
 		cmd.Stderr = spec.Stdout
 	}
 	h := &shHandle{done: make(chan struct{})}
+	b.mu.Lock()
+	dieInFlight := b.deadOnWait
+	b.deadOnWait = false
+	b.mu.Unlock()
+	if dieInFlight {
+		go func() { h.err = sandbox.ErrSessionDead; b.mu.Lock(); b.live = ""; b.mu.Unlock(); close(h.done) }()
+		return h, nil
+	}
 	go func() {
 		defer close(h.done)
 		err := cmd.Run()
@@ -495,4 +511,65 @@ func TestBackendExecutorInteractiveChildExitWithOpenStdin(t *testing.T) {
 	_ = in.Close()
 	_ = out.Close()
 	_ = errp.Close()
+}
+
+// A dead session fails the call that found it (no retry: it may not be
+// idempotent) and the NEXT call starts a fresh session, like a missing one.
+func TestBackendExecutorDeadSessionRestartsOnNextCall(t *testing.T) {
+	ex, sb := newTestBackendExec(t)
+	ctx := context.Background()
+	_ = ex.BindChat(ctx, "chat-d")
+	if _, err := ex.RunShell(ctx, "true"); err != nil {
+		t.Fatal(err)
+	}
+	g1 := ex.Generation()
+	sb.mu.Lock()
+	sb.dead = true
+	sb.mu.Unlock()
+	if _, err := ex.RunShell(ctx, "echo must-not-run"); !errors.Is(err, sandbox.ErrSessionDead) {
+		t.Fatalf("call on a dead session = %v, want ErrSessionDead", err)
+	}
+	if ex.Generation() == g1 {
+		t.Error("generation must advance so bg entries of the dead session are not trusted")
+	}
+	sb.mu.Lock()
+	execsAfterFailure := sb.execs
+	sb.mu.Unlock()
+	if execsAfterFailure != 1 {
+		t.Errorf("the failing call was retried: %d execs", execsAfterFailure)
+	}
+	out, err := ex.RunShell(ctx, "echo fresh")
+	if err != nil || !strings.Contains(out, "fresh") {
+		t.Fatalf("next call after a dead session = %q, %v", out, err)
+	}
+	if len(sb.started) != 2 || sb.started[1] != "chat-d" {
+		t.Errorf("a fresh session for the same chat was not started: %v", sb.started)
+	}
+}
+
+// Death while the call is in flight (reported by Wait): the call fails typed,
+// the generation advances, and the very next call starts a fresh session.
+func TestBackendExecutorDeathInFlightRestartsOnNextCall(t *testing.T) {
+	ex, sb := newTestBackendExec(t)
+	ctx := context.Background()
+	_ = ex.BindChat(ctx, "chat-f")
+	if _, err := ex.RunShell(ctx, "true"); err != nil {
+		t.Fatal(err)
+	}
+	g1 := ex.Generation()
+	sb.mu.Lock()
+	sb.deadOnWait = true
+	sb.mu.Unlock()
+	if _, err := ex.RunShell(ctx, "sleep 1"); !errors.Is(err, sandbox.ErrSessionDead) {
+		t.Fatalf("in-flight death = %v, want ErrSessionDead", err)
+	}
+	if ex.Generation() == g1 {
+		t.Error("generation must advance after an in-flight death")
+	}
+	if out, err := ex.RunShell(ctx, "echo again"); err != nil || !strings.Contains(out, "again") {
+		t.Fatalf("next call = %q, %v; want a fresh session", out, err)
+	}
+	if len(sb.started) != 2 {
+		t.Errorf("fresh session not started: %v", sb.started)
+	}
 }
