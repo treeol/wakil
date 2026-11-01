@@ -219,3 +219,11 @@ func (w *dockerWorktreeExecutor) dockerSuffix() string {
 	}
 	return sock
 }
+
+// IsWorktreeChild is true: this executor is already re-rooted at a worktree.
+func (w *dockerWorktreeExecutor) IsWorktreeChild() bool { return true }
+
+// NewWorktreeExecutor refuses: worktree children never dispatch further.
+func (w *dockerWorktreeExecutor) NewWorktreeExecutor(string) (Executor, error) {
+	return nil, errNestedWorktree
+}

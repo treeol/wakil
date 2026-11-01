@@ -1312,12 +1312,9 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	if useWorktree {
 		var wtExec exec.Executor
 		var err error
-		switch parentExec := a.Exec.(type) {
-		case *exec.DirectExecutor:
-			wtExec, err = exec.NewDirectExecutor(worktreeDir)
-		case *exec.DockerExecutor:
-			wtExec = exec.NewDockerWorktreeExecutor(parentExec, worktreeDir)
-		default:
+		if wh, ok := a.Exec.(exec.WorktreeHost); ok {
+			wtExec, err = wh.NewWorktreeExecutor(worktreeDir)
+		} else {
 			// Unknown executor type — fall back to serialized.
 			err = fmt.Errorf("unsupported executor type for worktree isolation: %T", a.Exec)
 		}
@@ -1718,7 +1715,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		changedFiles := fileRecorder.snapshot()
 		if len(changedFiles) > 0 {
 			wtBase := worktreeDir
-			if _, isDocker := a.Exec.(*exec.DockerExecutor); !isDocker {
+			if !isDockerExecutor(a.Exec) {
 				if resolved, err := filepath.EvalSymlinks(worktreeDir); err == nil {
 					wtBase = resolved
 				}

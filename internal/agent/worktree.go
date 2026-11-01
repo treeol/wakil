@@ -114,11 +114,23 @@ const worktreeVerifyTimeout = 120 * time.Second
 // enough for git to remove the worktree directory.
 const worktreeCleanupTimeout = 10 * time.Second
 
-// isDockerExecutor returns true if the executor is a DockerExecutor (but not
-// a dockerWorktreeExecutor, which embeds it).
+// isDockerExecutor returns true if the executor keeps its worktree temp dirs in
+// a sandbox-private /tmp (docker, hisn): they have no host representation, so
+// every operation on them must go through the executor. The name is historical.
 func isDockerExecutor(e exec.Executor) bool {
-	_, ok := e.(*exec.DockerExecutor)
-	return ok
+	wh, ok := e.(exec.WorktreeHost)
+	return ok && wh.WorktreeKind() == exec.WorktreeSandboxTmp
+}
+
+// sandboxTmp returns the executor's sandbox-private temp dir (container or
+// session /tmp). Only meaningful when isDockerExecutor(e).
+func sandboxTmp(e exec.Executor) string {
+	if wh, ok := e.(exec.WorktreeHost); ok {
+		if d := wh.SandboxTempDir(); d != "" {
+			return d
+		}
+	}
+	return "/tmp"
 }
 
 // isGitRepo checks whether the workspace root is inside a git repository.
@@ -135,10 +147,8 @@ func isGitRepo(ctx context.Context, a *App) bool {
 	// Both DirectExecutor and DockerExecutor are supported. The
 	// dockerWorktreeExecutor is not — nested dispatch is not allowed and
 	// the wrapper's WorkspaceRoot is a /tmp path, not the repo root.
-	switch a.Exec.(type) {
-	case *exec.DirectExecutor:
-	case *exec.DockerExecutor:
-	default:
+	wh, ok := a.Exec.(exec.WorktreeHost)
+	if !ok || wh.IsWorktreeChild() {
 		return false
 	}
 	out, err := a.Exec.RunShell(ctx, gitBaseEnv()+"git "+gitBaseArgs()+" rev-parse --is-inside-work-tree 2>/dev/null")
@@ -192,7 +202,7 @@ func createWorktree(ctx context.Context, a *App) (string, error) {
 
 	var dir string
 	if isDockerExecutor(a.Exec) {
-		out, err := a.Exec.RunShell(ctx, "mktemp -d -p /tmp "+worktreePrefix+"XXXXXX 2>&1")
+		out, err := a.Exec.RunShell(ctx, "mktemp -d -p "+sandboxTmp(a.Exec)+" "+worktreePrefix+"XXXXXX 2>&1")
 		if err != nil {
 			return "", fmt.Errorf("worktree: could not create temp dir: %s", strings.TrimSpace(out))
 		}
@@ -251,7 +261,7 @@ func captureWorktreeSnapshot(ctx context.Context, a *App) (string, error) {
 	// In direct mode, use host temp files. In docker mode, use container /tmp.
 	var tempIndexPath string
 	if isDockerExecutor(a.Exec) {
-		out, err := a.Exec.RunShell(ctx, "mktemp -p /tmp wakil-snap-idx-XXXXXX 2>&1")
+		out, err := a.Exec.RunShell(ctx, "mktemp -p "+sandboxTmp(a.Exec)+" wakil-snap-idx-XXXXXX 2>&1")
 		if err != nil {
 			return "", fmt.Errorf("create temp index: %s", strings.TrimSpace(out))
 		}
@@ -504,7 +514,7 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 	if isDockerExecutor(a.Exec) {
 		// Create a temp file inside the container via mktemp, then write the
 		// patch content via WriteFileBytes.
-		out, err := a.Exec.RunShell(ctx, "mktemp -p /tmp wakil-patch-XXXXXX 2>&1")
+		out, err := a.Exec.RunShell(ctx, "mktemp -p "+sandboxTmp(a.Exec)+" wakil-patch-XXXXXX 2>&1")
 		if err != nil {
 			return false, false, fmt.Sprintf("could not create patch temp file: %s", strings.TrimSpace(out))
 		}
@@ -890,8 +900,8 @@ func isWorktreePath(path string, executor exec.Executor) bool {
 
 	var tmpDir string
 	if isDockerExecutor(executor) {
-		// Docker mode: temp dir is container /tmp.
-		tmpDir = "/tmp"
+		// Sandbox mode: temp dir is the sandbox-private temp dir.
+		tmpDir = sandboxTmp(executor)
 	} else {
 		// Direct mode: temp dir is host os.TempDir().
 		tmpDir = os.TempDir()
