@@ -34,6 +34,16 @@
   "exec_mode": "docker",
   "_comment_sandbox": "Sandbox image resolution: --sandbox-image flag > WAKIL_IMAGE env > sandbox.image (this file) > legacy top-level \"image\" > the digest-pinned image built into release binaries > (dev builds only) the unpinned local image \"wakil-dev\" with a warning. Leave unset to use the image your wakil release was published with.",
   "_comment_sandbox_override": "To override: \"sandbox\": { \"image\": \"ghcr.io/treeol/wakil-sandbox@sha256:<digest>\" }",
+  "_comment_sandbox_backend": "sandbox.backend selects the sandbox implementation for exec_mode docker: \"docker\" (default) or \"hisn\" (github.com/treeol/hisn >= 0.2.0, rootless, opt-in). An unknown value is an error; there is never a fallback to docker or to running unsandboxed. sandbox.hisn.* applies to hisn only. See docs/sandbox-backends.md.",
+  "sandbox": {
+    "backend": "docker",
+    "hisn": {
+      "binary": "hisn",
+      "home_root": "",
+      "grantable_rw": [],
+      "env_pass": ["GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTFLAGS", "npm_config_cache", "PIP_CACHE_DIR", "CI"]
+    }
+  },
 
   "_comment_docker": "Docker sandbox hardening. --cap-drop=ALL + --read-only + --security-opt=no-new-privileges are always applied. docker_caps re-adds specific caps if the toolchain needs them (e.g. [\"CHOWN\"] if go build fails). docker_memory and docker_pids_limit set resource ceilings. docker_tmpfs_size sets the /tmp tmpfs size — must be coherent with docker_memory (tmpfs pages count against the container memory cgroup).",
   "docker_caps": [],

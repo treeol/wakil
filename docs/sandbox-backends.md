@@ -65,10 +65,13 @@ the generic `BackendExecutor` would change observable behaviour (error text,
 exit semantics, kvr/browser wiring), which violates invariant 1. So:
 
 * `DockerExecutor` keeps being the Executor for backend `docker`.
-* `(*DockerExecutor).Backend()` returns a `sandbox.Backend` adapter over it
-  (Exec → `docker exec`, Stop → `Close`, MapPath → `/mnt/<name>` ↔ host mount).
-  Grant/Revoke return `sandbox.ErrNotSupported` (docker mounts are fixed at
-  `docker run`).
+* `(*DockerExecutor).Backend()` (`internal/exec/docker_backend.go`) returns a
+  `sandbox.Backend` adapter over it (Exec → `docker exec`, Stop → `Close`,
+  MapPath → `/mnt/<name>` ↔ host mount). Grant/Revoke return
+  `sandbox.ErrNotSupported` (docker mounts are fixed at `docker run`). The tool
+  layer does not use the adapter; it exists so docker satisfies the same
+  contract and so the `/mnt` convention lives in one place
+  (`sandbox.DockerAgentRoot`).
 * The docker-specific `switch a.Exec.(type)` / `isDockerExecutor` sites in the
   agent are replaced by optional interfaces (below), implemented by Docker with
   identical results.
@@ -326,10 +329,12 @@ the network) and is called out in the README of the backend.
 | withdrawal | `Revoke(path)` — **soft** (per the task). hisn's own guidance is `--hard` whenever revocation is a security decision; soft only guarantees the path stops resolving, not that open fds die. This residual risk is documented in "Known limits". |
 
 Today the file tools confine every path to the workspace, so nothing in the
-tool layer requests outside-cwd access yet. The manager is wired onto the
+tool layer requests outside-cwd access yet. The manager is exposed on the
 executor as the optional `exec.AccessGranter` interface so a future
 `/grant`-style feature (or tools-tier MCP data dirs) has the seam; this change
-adds no new user-facing command.
+adds no new user-facing command and **no caller of `EnsureAccess` exists yet**
+(it is covered by unit tests with a fake backend and by the real-hisn
+integration test).
 
 ## Config
 

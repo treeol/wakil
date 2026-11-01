@@ -14,6 +14,7 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--api-key` | `ILM_API_KEY` / `WAKIL_API_KEY` | — | sent as `Authorization: Bearer <key>` *(endpoint-level `auth_header` wins)* |
 | `--model` | `ILM_MODEL` / `WAKIL_MODEL` | `ilm` | model name; overrides the selected endpoint's `model` |
 | `--exec` | `ILM_EXEC_MODE` / `WAKIL_EXEC_MODE` | `docker` | `docker` \| `direct` |
+| `--sandbox` | `WAKIL_SANDBOX_BACKEND` | `docker` | sandbox backend for `--exec docker`: `docker` \| `hisn`. Unknown values are an error (no silent fallback). See [Sandbox backends](#sandbox-backends) |
 | `--sandbox-image` *(alias `--image`)* | `ILM_CONTAINER_IMAGE` / `WAKIL_IMAGE` | image pinned into the release binary *(`ghcr.io/treeol/wakil-sandbox@sha256:…`; see `wakil version`)*; dev builds fall back to `wakil-dev` with a warning | sandbox image. Resolution order: flag → env → config `sandbox.image` → legacy `image` → pinned digest → dev fallback. Release binaries pull the pinned image on first run. Build your own with `docker build -t wakil-dev .` |
 | `--workdir` | `ILM_WORKDIR` / `WAKIL_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
 | `--host-workdir` | `ILM_HOST_WORKDIR` / `WAKIL_HOST_WORKDIR` | cwd *(auto-detected)* | host path bind-mounted into the container |
@@ -283,6 +284,28 @@ Tool calls run inside one persistent Docker container for the process
 lifetime by default. The workspace directory — positional arg, or cwd if
 omitted — bind-mounts into the container at `/mnt/<dirname>`. `--exec direct`
 runs on the host instead, no container.
+
+## Sandbox backends
+
+`--exec docker` runs tool calls in a sandbox; two backends exist. `docker`
+(default) is the production sandbox and is unchanged. `hisn`
+([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.2.0) is a
+rootless, daemonless alternative. Design, path model, lifecycle and known
+limits: [sandbox-backends.md](sandbox-backends.md).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `sandbox.backend` | `docker` | `docker` \| `hisn`. Flag `--sandbox`, env `WAKIL_SANDBOX_BACKEND` |
+| `sandbox.hisn.binary` | `hisn` | hisn executable (name on `PATH` or absolute path) |
+| `sandbox.hisn.home_root` | `<state dir>/hisn-home/<workspace-hash>` | persistent host directory used as the sandbox `$HOME` *(absolute path)* |
+| `sandbox.hisn.grantable_rw` | `[]` | absolute host prefixes under which read-write grants outside the workspace are allowed *(fixed at session start; cannot be `/`)* |
+| `sandbox.hisn.env_pass` | `GOFLAGS GOCACHE GOMODCACHE CARGO_HOME RUSTFLAGS npm_config_cache PIP_CACHE_DIR CI` | environment variable names copied into the sandbox; nothing else of the host environment enters. Names that alter host process startup (`LD_*`, `PATH`, `HOME`, `GODEBUG`, …) are rejected |
+
+With `hisn`: startup requires `hisn --version` >= 0.2.0 and `hisn check` exit
+0, otherwise Wakil refuses to start (no fallback). The workspace is mounted at
+its identical host path (`--workdir` is rejected); `kvr` staging is disabled;
+`browser_enabled` and `--exec direct` are rejected. One hisn session per chat,
+stopped on `/new`, `/resume`, handoff, `/rewind` and exit.
 
 ## Sessions
 
