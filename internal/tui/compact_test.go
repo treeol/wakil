@@ -119,33 +119,9 @@ func TestPromptBarRedWhenAuto(t *testing.T) {
 	}
 }
 
-func TestFeatherShownOnlyWhenRoom(t *testing.T) {
-	forceTruecolor(t)
-	for _, c := range []struct {
-		w, h int
-		want bool
-	}{
-		{160, 40, true},
-		{featherMinW, 40, true},
-		{featherMinW - 1, 40, false},
-		{160, compactMinH - 1, false}, // compact wins
-	} {
-		m := sizedModel(c.w, c.h)
-		if got := m.featherW() > 0; got != c.want {
-			t.Errorf("%dx%d: feather shown = %v, want %v", c.w, c.h, got, c.want)
-		}
-	}
-	// Without truecolor it never shows.
-	splashTruecolor = func() bool { return false }
-	if m := sizedModel(160, 40); m.featherW() != 0 {
-		t.Error("feather shown without truecolor")
-	}
-}
-
-// With the feather on, the input block is exactly m.width wide and as tall as
-// without it; the feather sits at the right and has transparent corners.
-func TestFeatherLayout(t *testing.T) {
-	forceTruecolor(t)
+// The input block is exactly m.width wide and inputOuterBoxH tall, and the
+// full View fits the terminal.
+func TestInputLayout(t *testing.T) {
 	m := sizedModel(140, 40)
 	in := m.renderInput()
 	lines := strings.Split(in, "\n")
@@ -157,20 +133,15 @@ func TestFeatherLayout(t *testing.T) {
 			t.Errorf("line %d width = %d, want %d", i, w, m.width)
 		}
 	}
-	if !strings.Contains(in, "\x1b[38;2;") {
-		t.Error("feather not rendered")
-	}
 	if !strings.Contains(ansi.Strip(lines[1]), "┃") {
 		t.Error("prompt bar missing from input box")
 	}
-	// Full View must fit the terminal.
 	if h := lipgloss.Height(m.View()); h > 40 {
 		t.Errorf("View height %d exceeds 40", h)
 	}
 }
 
-// Every size from tiny to large renders within bounds, with and without the
-// feather and in both layouts.
+// Every size from tiny to large renders within bounds in both layouts.
 func TestViewFitsAcrossSizes(t *testing.T) {
 	forceTruecolor(t)
 	for _, w := range []int{20, 40, 59, 60, 99, 100, 140, 220} {

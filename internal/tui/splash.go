@@ -24,12 +24,8 @@ import (
 //go:embed splash/logo.png
 var splashLogoPNG []byte
 
-//go:embed splash/feather.png
-var splashFeatherPNG []byte
-
 var (
-	logoSprite    = &splashSprite{data: splashLogoPNG}    // start-up splash
-	featherSprite = &splashSprite{data: splashFeatherPNG} // beside the input box
+	logoSprite = &splashSprite{data: splashLogoPNG} // start-up splash
 )
 
 const (

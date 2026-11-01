@@ -365,10 +365,6 @@ const (
 
 	inputRowsNormal  = 3
 	inputRowsCompact = 1
-
-	// featherMinW is the narrowest terminal that shows the feather beside the
-	// input box; below it the empty space is too precious.
-	featherMinW = 100
 )
 
 // compact reports whether the window is small enough for the one-row layout.
@@ -382,25 +378,6 @@ func (m tuiModel) inputRows() int {
 		return inputRowsCompact
 	}
 	return inputRowsNormal
-}
-
-// featherW is the feather's width in cells (0 = not shown). It is shown only in
-// the normal layout on wide terminals with truecolor, sized to the input box's
-// full outer height (textarea rows + its hidden border).
-func (m tuiModel) featherW() int {
-	if m.compact() || m.width < featherMinW || !splashTruecolor() {
-		return 0
-	}
-	return featherSprite.brailleCols(m.inputOuterBoxH())
-}
-
-// featherReserve is the width taken from the input box for the feather and a
-// one-column right margin (0 when the feather is hidden).
-func (m tuiModel) featherReserve() int {
-	if w := m.featherW(); w > 0 {
-		return w + 1
-	}
-	return 0
 }
 
 // inputOuterBoxH is the input box's outer height: textarea rows + border.
@@ -426,26 +403,11 @@ func (m tuiModel) renderInputRows() string {
 	return strings.Join(rows, "\n")
 }
 
-// renderInput renders the input box, with the feather to its right when there
-// is room. The whole block is m.width wide.
+// renderInput renders the input box, m.width wide.
 func (m tuiModel) renderInput() string {
-	reserve := m.featherReserve()
-	box := styleInputBorder.
-		Width(m.width - borderW - reserve).
+	return styleInputBorder.
+		Width(m.width - borderW).
 		Render(m.renderInputRows())
-	if reserve == 0 {
-		return box
-	}
-	w := m.featherW()
-	art := featherSprite.renderBraille(w, m.inputOuterBoxH())
-	if art == "" {
-		return box
-	}
-	lines := strings.Split(art, "\n")
-	for i := range lines {
-		lines[i] += " " // right margin
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, box, strings.Join(lines, "\n"))
 }
 
 // effectiveStatusRows returns 0 when the status line is hidden, otherwise

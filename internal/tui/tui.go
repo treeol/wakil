@@ -93,7 +93,7 @@ const (
 	// textareaChromeW is the horizontal chrome around the textarea: input border
 	// (borderW) + the prompt bar (promptBarW). The textarea is
 	// m.width - textareaChromeW - promptBarW wide (the same 2-col slack the old
-	// built-in prompt layout left), less the feather's reserve when shown.
+	// built-in prompt layout left).
 	textareaChromeW = borderW + promptBarW
 )
 
@@ -2428,9 +2428,9 @@ func (m tuiModel) reflow() tuiModel {
 	m.vp.Width = vpW
 	m.vp.Height = vpH
 	// Compact mode shrinks the input to one row; the textarea's width leaves
-	// room for the prompt bar and, when shown, the feather.
+	// room for the prompt bar.
 	m.ta.SetHeight(m.inputRows())
-	m.ta.SetWidth(m.width - textareaChromeW - promptBarW - m.featherReserve())
+	m.ta.SetWidth(m.width - textareaChromeW - promptBarW)
 	m.prefixDirty = true // width changed — committed items must be re-wrapped
 	m.refreshViewport()
 	return m

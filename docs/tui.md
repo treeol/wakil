@@ -99,8 +99,7 @@ Slash commands are ignored during rotation; ctrl+c semantics are unchanged.
 
 - **Splash:** an empty conversation shows the wakil logo, drawn at runtime as braille truecolor art and scaled to the pane. Terminals without truecolor, or panes that are too small, get a plain wordmark instead. The embedded images are produced by `scripts/gen_splash_logo.py` (dev-time, needs Pillow).
 - **Prompt bar:** the `┃` at the left of the input turns red while `/auto` is on.
-- **Feather:** on terminals at least 100 columns wide with truecolor, the feather appears to the right of the input box.
-- **Compact mode:** below 60 columns or 18 rows (this includes zooming the terminal in) the TUI shrinks to a one-line prompt. The status line and feather are hidden, so there is no `copied` flash or `ctx` gauge. Reverse search (`Ctrl+R`) and the rotation indicator (`/new`, `/resume`, `/handoff`) still show the status line, and tool approvals still appear in the conversation. Resizing back restores the normal layout.
+- **Compact mode:** below 60 columns or 18 rows (this includes zooming the terminal in) the TUI shrinks to a one-line prompt. The status line is hidden, so there is no `copied` flash or `ctx` gauge. Reverse search (`Ctrl+R`) and the rotation indicator (`/new`, `/resume`, `/handoff`) still show the status line, and tool approvals still appear in the conversation. Resizing back restores the normal layout.
 
 ## Keybindings
 
