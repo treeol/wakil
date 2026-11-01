@@ -1,6 +1,10 @@
 package config
 
-import "strings"
+import (
+	"fmt"
+	"path"
+	"strings"
+)
 
 // Skill-creation modes (/skill-creation).
 const (
@@ -48,6 +52,32 @@ type SkillCreationConfig struct {
 	Panel string `json:"panel,omitempty"`
 	// AllowedFiles overrides the base-name glob allowlist for captured files.
 	AllowedFiles []string `json:"allowed_files,omitempty"`
+}
+
+// Validate rejects values that cannot work: negative limits (0 = default) and
+// allowed_files globs that path.Match cannot parse.
+func (c SkillCreationConfig) Validate() error {
+	for name, v := range map[string]int{
+		"max_auto_per_day": c.MaxAutoPerDay, "max_drafts": c.MaxDrafts, "draft_ttl_days": c.DraftTTLDays,
+		"review_timeout_seconds": c.ReviewTimeoutSeconds, "max_review_bytes": c.MaxReviewBytes,
+		"max_capture_files": c.MaxCaptureFiles,
+	} {
+		if v < 0 {
+			return fmt.Errorf("skill_creation.%s must be >= 0 (0 = default), got %d", name, v)
+		}
+	}
+	if c.DraftTTLDays > 3650 {
+		return fmt.Errorf("skill_creation.draft_ttl_days must be <= 3650, got %d", c.DraftTTLDays)
+	}
+	if c.ReviewTimeoutSeconds > 86400 {
+		return fmt.Errorf("skill_creation.review_timeout_seconds must be <= 86400, got %d", c.ReviewTimeoutSeconds)
+	}
+	for _, g := range c.AllowedFiles {
+		if _, err := path.Match(g, "x"); err != nil {
+			return fmt.Errorf("skill_creation.allowed_files: invalid glob %q: %w", g, err)
+		}
+	}
+	return nil
 }
 
 // ValidSkillCreationMode reports whether m is empty or a known mode.

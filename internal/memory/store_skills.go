@@ -235,6 +235,74 @@ func (s *Store) PutSkillDraft(ctx context.Context, key, value, kind, writer, ses
 		CreatedAt: now, Note: note}, nil
 }
 
+// PromoteSkillDraft activates a pending skill draft in place, atomically.
+// Inside ONE transaction it: requires the row to be a proposed durable draft;
+// refuses with ErrSkillExists when an active skill already holds the key and
+// allowReplace is false (so a skill that appeared after the caller's check can
+// never be silently superseded); optionally rewrites the note (note != "");
+// supersedes any existing active row (kept in history) and flips the draft to
+// active. It returns the promoted entry and the entry it replaced (nil if none).
+func (s *Store) PromoteSkillDraft(ctx context.Context, id int64, allowReplace bool, note, promotedBy string) (promoted, replaced *Entry, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("memory: promote skill draft: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	e, err := scanEntryByIDTx(ctx, tx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if e.Status != StatusProposed {
+		return nil, nil, fmt.Errorf("%w (status=%s)", ErrNotProposed, e.Status)
+	}
+	if e.Tier != TierDurable || e.Kind != "skill" {
+		return nil, nil, fmt.Errorf("memory: entry #%d is not a skill draft", id)
+	}
+
+	row := tx.QueryRowContext(ctx, selectEntrySQL+` WHERE key = ? AND status = 'active'`, e.Key)
+	old, err := scanEntry(row)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		old = nil
+	case err != nil:
+		return nil, nil, fmt.Errorf("memory: promote skill draft: find active: %w", err)
+	}
+	if old != nil && !allowReplace {
+		return nil, old, ErrSkillExists
+	}
+	if old != nil {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE entries SET status = 'superseded', superseded_by = ? WHERE id = ?", id, old.ID); err != nil {
+			return nil, nil, fmt.Errorf("memory: promote skill draft: supersede old: %w", err)
+		}
+	}
+	var supersedes sql.NullInt64
+	if old != nil {
+		supersedes = sql.NullInt64{Int64: old.ID, Valid: true}
+	}
+	finalNote := e.Note
+	if note != "" {
+		finalNote = note
+	}
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE entries SET status = 'active', promoted_by = ?, supersedes = ?, note = ? WHERE id = ?",
+		promotedBy, supersedes, finalNote, id); err != nil {
+		return nil, nil, fmt.Errorf("memory: promote skill draft: activate: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("memory: promote skill draft: commit: %w", err)
+	}
+	e.Status, e.PromotedBy, e.Note = StatusActive, promotedBy, finalNote
+	if old != nil {
+		e.Supersedes = &old.ID
+	}
+	return e, old, nil
+}
+
 // ListSkillDrafts returns pending (proposed) durable entries of the given kind,
 // newest first.
 func (s *Store) ListSkillDrafts(ctx context.Context, kind string) ([]*Entry, error) {

@@ -4,13 +4,17 @@ package agent
 //
 // Modes (config skill_creation.mode, per-repo saved value, per-session override):
 //
-//	off           no detection; the in-band B1/B2 model hints are suppressed
+//	off           no hints, suggestions or automatic runs (the detector still
+//	              records its signal; the in-band B1/B2 model hints are suppressed)
 //	on            (default) the existing in-band hint plus an end-of-turn note
 //	              suggesting /skill-creation now
 //	auto          builds a DRAFT automatically when recurring work is detected
 //	auto-mashura  builds the draft, has Mashūra review it, and activates it only
 //	              when the exact final bytes were approved; every failure falls
-//	              back to a draft
+//	              back to a draft. The activated skill stays "unconfirmed" (not
+//	              usable by the model) until the user runs /skills confirm.
+//	              Choosing this mode (command, config or saved repo state) is the
+//	              standing opt-in to send the sanitized draft to the Mashūra panel.
 //
 // Precedence: session override > per-repo saved value > config default.
 //
@@ -21,6 +25,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -28,6 +33,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/memory"
@@ -52,6 +58,11 @@ type skillCreationState struct {
 	// pendingSignal records that the in-session detector fired this turn
 	// ("repeat" or "long"); consumed by the end-of-turn hook.
 	pendingSignal string
+	// turnEnds counts end-of-turn hook invocations (tests assert it fires once
+	// per finished turn, not for suspended ones).
+	turnEnds atomic.Int32
+	// lastAutoNote is the previous automatic run's note (dedup).
+	lastAutoNote string
 	// last is the most recent pipeline outcome.
 	last skillCreationOutcome
 	// hooks replaces the model-plan and Mashūra-review calls (tests).
@@ -88,11 +99,11 @@ func (a *App) setSkillCreationMode(mode string, sessionOnly bool) {
 // handleSkillCreationCommand implements /skill-creation.
 func handleSkillCreationCommand(app *App, fields []string) Cmd {
 	usage := "usage: /skill-creation [off|on|auto|auto-mashura|default] [session] | now [key] [paths…]"
-	if len(fields) < 2 {
-		return NoteCmd(describeSkillCreation(app))
-	}
 	if app.IsSubagent {
 		return NoteCmd("/skill-creation: not available in subagents")
+	}
+	if len(fields) < 2 {
+		return NoteCmd(describeSkillCreation(app))
 	}
 	arg := config.NormalizeSkillCreationMode(fields[1])
 	if arg == "now" {
@@ -126,6 +137,8 @@ func handleSkillCreationCommand(app *App, fields []string) Cmd {
 	msg := fmt.Sprintf("skill creation: %s (%s)", arg, scope)
 	if arg == config.SkillCreationAutoMashura && !app.mashuraAvailable() {
 		msg += "\n⚠ Mashūra is not configured — auto-mashura will behave like auto (saves drafts)"
+	} else if arg == config.SkillCreationAutoMashura {
+		msg += "\n⚠ Each automatic run sends the sanitized draft (file contents with secrets/IPs/e-mails screened; hostnames and names are NOT screened) to the Mashūra panel without asking again. Use /skill-creation auto to review drafts yourself instead."
 	}
 	return NoteCmd(msg)
 }
@@ -138,11 +151,15 @@ func describeSkillCreation(app *App) string {
 	fmt.Fprintf(&b, "skill creation: %s (from %s)\n", mode, src)
 	fmt.Fprintf(&b, "  limits: %d auto/day, %d drafts max, drafts expire after %d days, review timeout %ds\n",
 		sc.MaxAutoPerDayOrDefault(), sc.MaxDraftsOrDefault(), sc.DraftTTLDaysOrDefault(), sc.ReviewTimeoutSecondsOrDefault())
-	if mode == config.SkillCreationAutoMashura && !app.mashuraAvailable() {
-		b.WriteString("  ⚠ Mashūra not configured: behaves like auto (drafts)\n")
+	if mode == config.SkillCreationAutoMashura {
+		if !app.mashuraAvailable() {
+			b.WriteString("  ⚠ Mashūra not configured: behaves like auto (drafts)\n")
+		} else {
+			b.WriteString("  ⚠ each run sends the sanitized draft to the Mashūra panel without asking again\n")
+		}
 	}
 	b.WriteString("  /skill-creation off|on|auto|auto-mashura [session] · now [key] [paths…] · default\n")
-	b.WriteString("  /skills review|approve|reject|recent|undo|confirm")
+	b.WriteString("  /skills review|show|approve|reject|recent|undo|confirm")
 	return b.String()
 }
 
@@ -231,14 +248,14 @@ func (a *App) expireSkillDrafts(ctx context.Context) {
 	if sp == nil {
 		return
 	}
-	ttl := time.Duration(a.Cfg.SkillCreation.DraftTTLDaysOrDefault()) * 24 * time.Hour
+	ttlDays := a.Cfg.SkillCreation.DraftTTLDaysOrDefault()
 	drafts, err := sp.listSkillDrafts(ctx)
 	if err != nil {
 		return
 	}
-	cutoff := time.Now().Add(-ttl).UnixMilli()
+	now := time.Now()
 	for _, d := range drafts {
-		if d.CreatedAt < cutoff {
+		if draftExpired(d, ttlDays, now) {
 			_ = sp.rejectSkillDraft(ctx, d.ID, "expired (draft TTL)")
 		}
 	}
@@ -246,6 +263,9 @@ func (a *App) expireSkillDrafts(ctx context.Context) {
 
 // handleSkillsCommand implements /skills.
 func handleSkillsCommand(ctx context.Context, app *App, fields []string) string {
+	if app.IsSubagent {
+		return "/skills: not available in subagents"
+	}
 	sp := app.getSkillStore()
 	if sp == nil {
 		return "/skills: the skills store is not available"
@@ -273,27 +293,25 @@ func handleSkillsCommand(ctx context.Context, app *App, fields []string) string 
 
 	case "show":
 		id, ok := idArg()
-		if !ok {
-			return "usage: /skills show <draft-id>"
+		if !ok || len(args) > 2 || (len(args) == 2 && !strings.EqualFold(args[1], "full")) {
+			return "usage: /skills show <draft-id> [full]"
 		}
 		e, err := sp.getSkillByID(ctx, id)
 		if err != nil {
 			return fmt.Sprintf("/skills show: no skill entry #%d", id)
 		}
-		body := e.Value
-		const maxShow = 6000
-		trunc := ""
-		if len(body) > maxShow {
-			body, trunc = body[:maxShow], fmt.Sprintf("\n… (%d more bytes)", len(e.Value)-maxShow)
+		body, trunc := truncateForShow(e.Value, 6000, len(args) == 2)
+		if trunc != "" {
+			trunc = fmt.Sprintf("\n… (%s more — /skills show %d full prints everything)", trunc, id)
 		}
 		return fmt.Sprintf("#%d %s %s\nnote: %s\n---\n%s%s", e.ID, e.Key, renderSkillProvenance(e), e.Note, body, trunc)
 
 	case "approve":
 		id, ok := idArg()
-		if !ok {
-			return "usage: /skills approve <draft-id>"
+		if !ok || len(args) > 2 || (len(args) == 2 && !strings.EqualFold(args[1], "replace")) {
+			return "usage: /skills approve <draft-id> [replace]"
 		}
-		return approveSkillDraft(ctx, app, sp, id)
+		return approveSkillDraft(ctx, app, sp, id, len(args) == 2)
 
 	case "reject":
 		id, ok := idArg()
@@ -345,15 +363,19 @@ func handleSkillsCommand(ctx context.Context, app *App, fields []string) string 
 		}
 		return fmt.Sprintf("confirmed %q — it will now be injected into matching turns", args[0])
 	}
-	return "usage: /skills [review|show <id>|approve <id>|reject <id> [reason]|recent|undo <key>|confirm <key>]"
+	return "usage: /skills [review|show <id> [full]|approve <id> [replace]|reject <id> [reason]|recent|undo <key>|confirm <key>]"
 }
 
 // approveSkillDraft validates and promotes a draft. The user's explicit
 // command is the approval, so the skill becomes a normal active skill.
-func approveSkillDraft(ctx context.Context, app *App, sp *skillsProfile, id int64) string {
+func approveSkillDraft(ctx context.Context, app *App, sp *skillsProfile, id int64, replace bool) string {
 	e, err := sp.getSkillByID(ctx, id)
 	if err != nil || e.Status != memory.StatusProposed {
 		return fmt.Sprintf("/skills approve: #%d is not a pending skill draft", id)
+	}
+	if draftExpired(e, app.Cfg.SkillCreation.DraftTTLDaysOrDefault(), time.Now()) {
+		_ = sp.rejectSkillDraft(ctx, id, "expired (draft TTL)")
+		return fmt.Sprintf("/skills approve: draft #%d is older than the draft TTL (%d days) and was rejected — re-create it with /skill-creation now", id, app.Cfg.SkillCreation.DraftTTLDaysOrDefault())
 	}
 	if err := validateSkillTemplateValue(e.Value); err != nil {
 		return fmt.Sprintf("/skills approve: draft #%d failed template validation: %v", id, err)
@@ -361,14 +383,60 @@ func approveSkillDraft(ctx context.Context, app *App, sp *skillsProfile, id int6
 	if containsSkillSecret(e.Value) {
 		return fmt.Sprintf("/skills approve: draft #%d contains secret-like content — reject it or edit and re-create", id)
 	}
-	replaced := ""
-	if cur, err := sp.getActiveSkill(ctx, e.Key); err == nil && cur != nil {
-		replaced = fmt.Sprintf(" (replaces active version #%d — old version stays in skill_history)", cur.ID)
+	// Approval is the user's confirmation: an auto-created draft becomes an
+	// "auto-confirmed" skill so /skills recent and /skills undo track it and the
+	// retrieval pass may use it. Hand-made drafts keep their note.
+	note := ""
+	if strings.HasPrefix(e.Note, autoDraftNotePrefix) {
+		rest := strings.TrimLeft(strings.TrimPrefix(e.Note, autoDraftNotePrefix), ": ")
+		note = snippet(autoSkillNoteConfirmed+"; approved by user; "+rest, 900)
 	}
-	if _, err := sp.promoteSkillDraft(ctx, id, "user"); err != nil {
+	// One transaction: the replace guard, the supersede and the note update.
+	_, old, err := sp.promoteSkillDraftAtomic(ctx, id, replace, note, "user")
+	switch {
+	case errors.Is(err, memory.ErrSkillExists):
+		return fmt.Sprintf("/skills approve: skill %q is already active (%s) — approving draft #%d would replace it. "+
+			"The old version stays in skill_history, but /skills undo would forget the key rather than restore it. "+
+			"Review with /skills show %d, then run /skills approve %d replace to replace it.",
+			e.Key, describeActiveSkill(old), id, id, id)
+	case err != nil:
 		return "/skills approve: " + err.Error()
 	}
+	replaced := ""
+	if old != nil {
+		replaced = fmt.Sprintf(" (replaced active version #%d — old version stays in skill_history)", old.ID)
+	}
 	return fmt.Sprintf("approved draft #%d → active skill %q%s", id, e.Key, replaced)
+}
+
+// draftExpired reports whether a pending draft is older than ttlDays at now.
+func draftExpired(e *memory.Entry, ttlDays int, now time.Time) bool {
+	return e.CreatedAt < now.Add(-time.Duration(ttlDays)*24*time.Hour).UnixMilli()
+}
+
+// describeActiveSkill renders "#id, by writer, date[, unconfirmed auto-created]".
+func describeActiveSkill(e *memory.Entry) string {
+	if e == nil {
+		return "unknown"
+	}
+	s := fmt.Sprintf("#%d by %s, %s", e.ID, e.Writer, time.UnixMilli(e.CreatedAt).UTC().Format("2006-01-02"))
+	if isUnconfirmedAutoSkill(e) {
+		s += ", unconfirmed auto-created"
+	}
+	return s
+}
+
+// truncateForShow cuts s to at most max bytes on a rune boundary unless full.
+// The second result describes the cut-off remainder ("" when nothing was cut).
+func truncateForShow(s string, max int, full bool) (string, string) {
+	if full || len(s) <= max {
+		return s, ""
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut], humanBytes(len(s) - cut)
 }
 
 func renderSkillReview(ctx context.Context, app *App, sp *skillsProfile) string {
@@ -382,11 +450,15 @@ func renderSkillReview(ctx context.Context, app *App, sp *skillsProfile) string 
 	} else {
 		fmt.Fprintf(&b, "%d pending skill draft%s:\n", len(drafts), plural(len(drafts)))
 		for _, d := range drafts {
-			fmt.Fprintf(&b, "  #%d %s  %s  %s  — %s\n", d.ID, d.Key,
+			mark := ""
+			if cur, err := sp.getActiveSkill(ctx, d.Key); err == nil && cur != nil {
+				mark = " [REPLACES active skill — approve needs `replace`]"
+			}
+			fmt.Fprintf(&b, "  #%d %s%s  %s  %s  — %s\n", d.ID, d.Key, mark,
 				time.UnixMilli(d.CreatedAt).UTC().Format("2006-01-02"), humanBytes(len(d.Value)),
 				snippet(firstLine(d.Note), 100))
 		}
-		b.WriteString("  /skills show <id> · approve <id> · reject <id> [reason]\n")
+		b.WriteString("  /skills show <id> [full] · approve <id> [replace] · reject <id> [reason]\n")
 	}
 	if recent := renderRecentAutoSkills(ctx, sp); recent != "" {
 		b.WriteString(recent)
@@ -414,7 +486,7 @@ func renderRecentAutoSkills(ctx context.Context, sp *skillsProfile) string {
 	for _, e := range auto {
 		state := "confirmed"
 		if isUnconfirmedAutoSkill(e) {
-			state = "unconfirmed (not auto-injected)"
+			state = "unconfirmed (not usable by the model, not auto-injected)"
 		}
 		fmt.Fprintf(&b, "  %s  %s  %s\n", e.Key, time.UnixMilli(e.CreatedAt).UTC().Format("2006-01-02"), state)
 	}

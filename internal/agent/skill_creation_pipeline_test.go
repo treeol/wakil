@@ -3,9 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/memory"
@@ -494,5 +499,191 @@ func TestRetrievalFilterExcludesUnconfirmedAutoSkills(t *testing.T) {
 	}
 	if got := app.retrieveMemoryContext(ctx, "postgres deploy recipe unique-zebra-token"); !strings.Contains(got, "zebra") {
 		t.Fatalf("confirmed skill should be injected:\n%s", got)
+	}
+}
+
+// ─── audit fixes ────────────────────────────────────────────────────────────
+
+func TestSkillPipeline_AutoMashuraNeedsExplicitReusable(t *testing.T) {
+	app, _ := scApp(t)
+	plan := strings.Replace(scPlanJSON, `"reusable":true,`, ``, 1)
+	calls := scHooks(app, plan, `{"verdict":"approve"}`)
+	out := scRun(app, config.SkillCreationAutoMashura)
+	if out.Kind != "draft" || !strings.Contains(out.Text, "reusable") {
+		t.Fatalf("missing reusable must stay a draft, got %+v", out)
+	}
+	if *calls != 0 {
+		t.Fatalf("no Mashūra call expected before the reusable gate, got %d", *calls)
+	}
+	if _, err := app.getSkillStore().getActiveSkill(context.Background(), "shop-swarm"); err == nil {
+		t.Fatal("must not activate")
+	}
+}
+
+func TestSkillPipeline_DraftNotesReplacement(t *testing.T) {
+	app, _ := scApp(t)
+	ctx := context.Background()
+	if _, err := app.getSkillStore().putActiveSkill(ctx, "shop-swarm", "old", "main", "s", memory.TaintUnknown, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	scHooks(app, scPlanJSON)
+	if out := scRun(app, config.SkillCreationAuto); out.Kind != "draft" {
+		t.Fatalf("outcome = %+v", out)
+	}
+	drafts, _ := app.getSkillStore().listSkillDrafts(ctx)
+	if len(drafts) != 1 || !strings.Contains(drafts[0].Note, "REPLACES active skill") {
+		t.Fatalf("draft note must flag the replacement: %+v", drafts)
+	}
+}
+
+func TestSkillPipeline_TerminalOutcomesAreMarked(t *testing.T) {
+	app, ws := scApp(t)
+	scHooks(app, `{"reusable":false}`)
+	if out := scRun(app, config.SkillCreationAuto); !out.Terminal {
+		t.Fatalf("one-off must be terminal: %+v", out)
+	}
+	writeWS(t, ws, "ops/leak.sh", "export api_key=abcdef123456\n", 0o644)
+	if out := app.runSkillCreation(context.Background(), skillCreationRequest{Mode: "auto", Manual: true, Paths: []string{"ops/leak.sh"}}); out.Kind != "aborted" || !out.Terminal {
+		t.Fatalf("secret must be terminal: %+v", out)
+	}
+}
+
+// A failing automatic run consumes its snapshot (no per-turn retry loop) and a
+// rewrite re-arms it; identical automatic notes are shown once.
+func TestStartSkillCreation_TerminalAbortConsumesSnapshotAndDedupes(t *testing.T) {
+	app, _ := scApp(t)
+	scHooks(app, `{"reusable":false}`)
+	var notes []string
+	var mu sync.Mutex
+	app.EventSink = func(msg any) {
+		if n, ok := msg.(SysNoteMsg); ok {
+			mu.Lock()
+			notes = append(notes, n.Text)
+			mu.Unlock()
+		}
+	}
+	wait := func() {
+		for i := 0; i < 400 && app.skillCreate.busy.Load(); i++ {
+			time.Sleep(5 * time.Millisecond)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	app.startSkillCreation(skillCreationRequest{Mode: "auto"})
+	wait()
+	if got := app.writtenSkillPaths(); len(got) != 0 {
+		t.Fatalf("snapshot must be consumed after a terminal abort, left %v", got)
+	}
+	if msg := app.startSkillCreation(skillCreationRequest{Mode: "auto"}); msg != "" {
+		t.Fatalf("nothing tracked → no run and no note, got %q", msg)
+	}
+	// Rewriting re-arms; the identical abort note is not repeated.
+	app.skillCreate.hooks.plan = func(context.Context, string) (string, error) { return `{"reusable":false}`, nil }
+	app.Cfg.SkillCreation.MaxAutoPerDay = 5
+	app.noteSkillFileWritten(app.Exec.WorkspaceRoot() + "/ops/deploy.sh")
+	app.startSkillCreation(skillCreationRequest{Mode: "auto"})
+	wait()
+	mu.Lock()
+	defer mu.Unlock()
+	aborts := 0
+	for _, n := range notes {
+		if strings.Contains(n, "judged one-off") {
+			aborts++
+		}
+	}
+	if aborts != 1 {
+		t.Fatalf("identical automatic abort notes must be shown once, got %d: %v", aborts, notes)
+	}
+}
+
+func TestStartSkillCreation_BusyMessageNotRepeatedByHook(t *testing.T) {
+	app, _ := scApp(t)
+	app.skillCreate.busy.Store(true)
+	var sent int
+	app.EventSink = func(any) { sent++ }
+	app.setSkillSignal("repeat")
+	app.setSkillCreationMode("auto", false)
+	app.onTurnEndSkillCreation()
+	if sent != 0 {
+		t.Fatalf("busy note must not be emitted by the turn-end hook, got %d events", sent)
+	}
+}
+
+// The end-of-turn hook fires once per finished turn: not for a suspended
+// outcome, then once when Resume ends the turn.
+func TestSkillTurnEndHook_FiresOnceAfterSuspendResume(t *testing.T) {
+	release := make(chan struct{})
+	var parentCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if isSubagentRequest(body) {
+			<-release
+			writeSSE(w, contentChunk(summaryFor(taskFromBody(body))))
+			return
+		}
+		switch parentCalls.Add(1) {
+		case 1:
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A"}`)...)
+		case 2:
+			writeSSE(w, contentChunk("waiting"))
+		default:
+			writeSSE(w, contentChunk("all done"))
+		}
+	}))
+	defer srv.Close()
+
+	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	out, err := app.SendOutcome(context.Background(), "go")
+	if err != nil || out.Kind != TurnSuspended {
+		t.Fatalf("expected suspended, got %v err=%v", out.Kind, err)
+	}
+	if n := app.skillCreate.turnEnds.Load(); n != 0 {
+		t.Fatalf("hook must not fire for a suspended turn, fired %d", n)
+	}
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for out.Kind == TurnSuspended {
+		if ok, werr := app.WaitForAsyncCompletion(ctx); werr != nil || !ok {
+			t.Fatalf("wait: ok=%v err=%v", ok, werr)
+		}
+		if out, err = app.Resume(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out.Kind != TurnFinal {
+		t.Fatalf("final outcome = %v", out.Kind)
+	}
+	if n := app.skillCreate.turnEnds.Load(); n != 1 {
+		t.Fatalf("hook must fire exactly once after the resumed turn ends, fired %d", n)
+	}
+}
+
+func TestSkillTurnEndHook_NotFiredOnAbortedOutcome(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	out, _ := app.SendOutcome(context.Background(), "hi")
+	if out.Kind == TurnFinal {
+		t.Skip("model error did not abort in this harness")
+	}
+	if n := app.skillCreate.turnEnds.Load(); n != 0 {
+		t.Fatalf("hook must not fire for %v, fired %d", out.Kind, n)
+	}
+}
+
+func TestSkillPipeline_PlannerDownThenCheckFailureIsNotTerminal(t *testing.T) {
+	app, ws := scApp(t)
+	// An IP the planner would have turned into a param; with the planner down
+	// the deterministic fallback cannot, so the draft check fails.
+	writeWS(t, ws, "ops/ip.sh", "#!/bin/sh\nssh deploy@203.0.113.7 uptime\n", 0o755)
+	app.noteSkillFileWritten(ws + "/ops/ip.sh")
+	app.skillCreate.hooks = skillCreationHooks{
+		plan: func(context.Context, string) (string, error) { return "", errors.New("planner timeout") },
+	}
+	out := scRun(app, config.SkillCreationAuto)
+	if out.Kind != "aborted" || out.Terminal {
+		t.Fatalf("planner outage must not consume the input: %+v", out)
 	}
 }

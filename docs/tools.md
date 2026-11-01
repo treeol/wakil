@@ -172,14 +172,30 @@ recurring work (a long or repeated sequence of state-changing tool calls):
 
 | Mode | Behaviour |
 |---|---|
-| `off` | No detection hints or suggestions |
+| `off` | No hints, suggestions or automatic runs |
 | `on` (default) | The model is invited to draft a skill, and Wakil suggests `/skill-creation now` at the end of the turn |
 | `auto` | Wakil builds a **draft** from the files written this session (in the background) |
-| `auto-mashura` | Builds the draft, has Mashūra review it, and activates it only when the exact final bytes were approved; every failure falls back to a draft |
+| `auto-mashura` | Builds the draft, has Mashūra review it, and activates it only when the exact final bytes were approved and the plan explicitly said the work is reusable; every failure falls back to a draft |
+
+**`auto-mashura` consent.** Choosing this mode — by command, `skill_creation.mode` in the config, or a saved per-repo value — is a standing opt-in: each automatic run sends the sanitized draft to the configured Mashūra panel without asking again. Secrets, IPv4 addresses and e-mail addresses are screened out first (IPv6 and some reserved IPv4 ranges are not); hostnames and customer or project names are **not**. Use `auto` if you want to read the draft before it goes to the Mashūra panel. Note that every automatic mode (`auto` and `auto-mashura`) also sends the captured files and your latest request to your own model backend for the planning step, so the backend you use is the privacy boundary for that step.
 
 `/skill-creation now [key] [paths…]` builds one immediately (a draft, or the
 full pipeline in `auto-mashura`). Drafts are managed with `/skills review`,
-`/skills show|approve|reject <id>`.
+`/skills show <id> [full]`, `/skills approve <id> [replace]` and `/skills reject <id>`.
+Approving a draft counts as your confirmation: the skill becomes usable and shows up
+in `/skills recent` and `/skills undo`. If a skill with that key is already active,
+`approve` refuses until you add `replace` (the old version stays in `skill_history`;
+`/skills undo` forgets the key, it does not restore the old version). `/skills` and
+`/skill-creation` are not available in subagents.
+
+A skill that `auto-mashura` activates starts **unconfirmed**: it is not injected into
+turns, `list_skills`/`skill_search` show it only with a marker, and `load_skill`,
+`apply_skill_template` refuse it until you run `/skills confirm <key>`.
+
+An automatic run that fails because of its input (secret found, judged a one-off, draft
+failed its checks) drops those files from the tracked set so the same failure is not
+repeated every turn; editing a file tracks it again, and
+`/skill-creation now <paths>` always works.
 
 The pipeline never lets the model or Mashūra write anything: captured files
 are read from disk, secret-scanned (any hit aborts before anything is sent

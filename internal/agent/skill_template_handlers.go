@@ -378,6 +378,9 @@ func (a *App) handleApplySkillTemplate(ctx context.Context, tc proxy.ToolCall) s
 	} else if err != nil {
 		return fmt.Sprintf("ERROR: load skill: %v", err)
 	}
+	if isUnconfirmedAutoSkill(entry) {
+		return "ERROR: " + unconfirmedSkillRefusal(entry.Key)
+	}
 	tmpl, err := parseSkillTemplateValue(entry.Value)
 	if err != nil {
 		return fmt.Sprintf("ERROR: skill %q has an invalid template section: %v", args.Key, err)

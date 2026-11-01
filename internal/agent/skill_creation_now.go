@@ -6,7 +6,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -15,6 +14,9 @@ import (
 )
 
 // setSkillSignal records that the detector fired this turn.
+// skillCreationBusyMsg is returned while a run is in flight.
+const skillCreationBusyMsg = "skill creation: a run is already in progress"
+
 func (a *App) setSkillSignal(sig string) {
 	a.skillCreate.mu.Lock()
 	a.skillCreate.pendingSignal = sig
@@ -32,6 +34,7 @@ func (a *App) takeSkillSignal() string {
 // onTurnEndSkillCreation runs after a successful main-agent turn. It consumes
 // the detector signal and, depending on the mode, suggests or starts a run.
 func (a *App) onTurnEndSkillCreation() {
+	a.skillCreate.turnEnds.Add(1)
 	if a.IsSubagent || a.SkillStore == nil {
 		return
 	}
@@ -45,7 +48,8 @@ func (a *App) onTurnEndSkillCreation() {
 	case config.SkillCreationOn:
 		a.sendEvent(SysNoteMsg{Text: "This looks like reusable work. /skill-creation now builds a skill draft from the files written in this session (/skill-creation auto automates it)."})
 	case config.SkillCreationAuto, config.SkillCreationAutoMashura:
-		if msg := a.startSkillCreation(skillCreationRequest{Mode: mode}); msg != "" {
+		// A run already in flight is not worth a note on every turn.
+		if msg := a.startSkillCreation(skillCreationRequest{Mode: mode}); msg != "" && msg != skillCreationBusyMsg {
 			a.sendEvent(SysNoteMsg{Text: msg})
 		}
 	}
@@ -60,12 +64,24 @@ func (a *App) startSkillCreation(req skillCreationRequest) string {
 	if a.getSkillStore() == nil {
 		return "skill creation: the skills store is not available"
 	}
+	// Admission first, snapshot second: a caller that waited for the flag must
+	// not act on generations a finished run has already consumed.
 	if !a.skillCreate.busy.CompareAndSwap(false, true) {
-		return "skill creation: a run is already in progress"
+		return skillCreationBusyMsg
 	}
 	var snap []writtenPath
+	var snapPaths []string
 	if len(req.Paths) == 0 {
-		_, snap = a.writtenSkillSnapshot()
+		snapPaths, snap = a.writtenSkillSnapshot()
+		if len(snap) == 0 {
+			a.skillCreate.busy.Store(false)
+			return ""
+		}
+	}
+	// The run captures exactly the snapshot taken here, so what it reads and
+	// what it later consumes are the same set.
+	if len(req.Paths) == 0 {
+		req.Paths = snapPaths
 	}
 	timeout := time.Duration(a.Cfg.SkillCreation.ReviewTimeoutSecondsOrDefault()) * time.Second
 	safe.Go("skill-creation", func() {
@@ -76,20 +92,41 @@ func (a *App) startSkillCreation(req skillCreationRequest) string {
 		if ctx.Err() != nil && out.Kind == "aborted" {
 			out.Text = "timed out after " + timeout.String() + " — " + out.Text
 		}
-		if out.Kind == "active" || out.Kind == "draft" {
+		// Consume what the run captured. An automatic run that failed on its
+		// input (secret, judged one-off, draft checks) also consumes it so the
+		// same files do not re-trigger the same failure every turn; a rewrite
+		// re-tracks them, and /skill-creation now <paths> still works.
+		consumed := out.Kind == "active" || out.Kind == "draft"
+		if out.Terminal && !req.Manual {
+			consumed = true
+			out.Text += " — automatic retries for these files are off; edit them or run /skill-creation now <paths>"
+		}
+		if consumed && snap != nil {
 			a.consumeWritten(snap)
 		}
 		prefix := "skill creation: "
 		if out.Kind == "aborted" {
 			prefix = "skill creation aborted: "
 		}
-		a.sendEvent(SysNoteMsg{Text: prefix + out.Text})
+		if req.Manual || !a.skillCreate.sameAutoNote(prefix+out.Text) {
+			a.sendEvent(SysNoteMsg{Text: prefix + out.Text})
+		}
 		a.skillCreate.recordOutcome(out)
 	})
 	return "skill creation: building a skill from this session's files in the background…"
 }
 
-// recordOutcome stores the last outcome (tests and /skill-creation status).
+// sameAutoNote reports whether text equals the previous automatic run's note
+// (and remembers it), so identical automatic notes are shown once.
+func (s *skillCreationState) sameAutoNote(text string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	same := s.lastAutoNote == text
+	s.lastAutoNote = text
+	return same
+}
+
+// recordOutcome stores the last outcome (read by tests).
 func (s *skillCreationState) recordOutcome(o skillCreationOutcome) {
 	s.mu.Lock()
 	s.last = o
@@ -120,7 +157,7 @@ func skillCreationNowCmd(app *App, args []string) Cmd {
 	}
 	msg := app.startSkillCreation(req)
 	if msg == "" {
-		msg = fmt.Sprintf("skill creation: not started")
+		msg = "skill creation: not started"
 	}
 	return NoteCmd(msg)
 }

@@ -213,5 +213,11 @@ func (a *App) Resume(ctx context.Context) (TurnOutcome, error) {
 		return abortedTurnOutcome(ctx, err), err
 	}
 	a.finalizeTurn(ctx)
-	return turnOutcome(final, suspended, currentTurnStopCause(a)), nil
+	out := turnOutcome(final, suspended, currentTurnStopCause(a))
+	if out.Kind == TurnFinal {
+		// The suspended turn finally ended: run the skill-creation end-of-turn
+		// hook that SendOutcome skipped for the suspended outcome.
+		a.onTurnEndSkillCreation()
+	}
+	return out, nil
 }

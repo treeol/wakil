@@ -114,3 +114,58 @@ func TestHistoryForKey(t *testing.T) {
 		t.Errorf("forgotten version status = %q, want superseded", hist[0].Status)
 	}
 }
+
+func TestPromoteSkillDraft_AtomicReplaceGuardAndNote(t *testing.T) {
+	s := openSkillStore(t)
+	ctx := context.Background()
+
+	d1, err := s.PutSkillDraft(ctx, "k", "draft one", "skill", "auto", "sess", TaintFalse, "auto-draft: x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No active row yet: promotes, rewrites the note, no replaced entry.
+	got, replaced, err := s.PromoteSkillDraft(ctx, d1.ID, false, "auto-confirmed; approved", "user")
+	if err != nil || replaced != nil {
+		t.Fatalf("first promote: %v replaced=%v", err, replaced)
+	}
+	if got.Status != StatusActive || got.Note != "auto-confirmed; approved" || got.PromotedBy != "user" {
+		t.Fatalf("promoted entry = %+v", got)
+	}
+	act, _ := s.Get(ctx, "k")
+	if act == nil || act.ID != d1.ID || act.Note != "auto-confirmed; approved" {
+		t.Fatalf("active row = %+v", act)
+	}
+
+	// A second draft must NOT replace the active skill without allowReplace,
+	// and the failed attempt must leave the draft pending.
+	d2, _ := s.PutSkillDraft(ctx, "k", "draft two", "skill", "auto", "sess", TaintFalse, "auto-draft: y")
+	_, old, err := s.PromoteSkillDraft(ctx, d2.ID, false, "", "user")
+	if !errors.Is(err, ErrSkillExists) || old == nil || old.ID != d1.ID {
+		t.Fatalf("guard: err=%v old=%v", err, old)
+	}
+	if drafts, _ := s.ListSkillDrafts(ctx, "skill"); len(drafts) != 1 || drafts[0].ID != d2.ID {
+		t.Fatalf("draft must stay pending, got %d", len(drafts))
+	}
+	if cur, _ := s.Get(ctx, "k"); cur.ID != d1.ID {
+		t.Fatal("active skill changed despite the guard")
+	}
+
+	// With allowReplace the old row is superseded (history kept) and the note
+	// stays the draft's own when none is given.
+	got2, old2, err := s.PromoteSkillDraft(ctx, d2.ID, true, "", "user")
+	if err != nil || old2 == nil || old2.ID != d1.ID || got2.Note != "auto-draft: y" {
+		t.Fatalf("replace: %v old=%v got=%+v", err, old2, got2)
+	}
+	hist, _ := s.HistoryForKey(ctx, "k")
+	if len(hist) != 2 {
+		t.Fatalf("history = %d entries, want 2", len(hist))
+	}
+
+	// Not-a-draft / unknown ids fail cleanly.
+	if _, _, err := s.PromoteSkillDraft(ctx, d2.ID, true, "", "user"); !errors.Is(err, ErrNotProposed) {
+		t.Fatalf("re-promote: %v", err)
+	}
+	if _, _, err := s.PromoteSkillDraft(ctx, 99999, true, "", "user"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: %v", err)
+	}
+}

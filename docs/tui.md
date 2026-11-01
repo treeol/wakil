@@ -73,7 +73,7 @@ opens a picker to attach a file or folder for context.
 /skill-create <topic> research a topic via a subagent and save it as a skill (asks for confirmation)
 /skill-creation [off|on|auto|auto-mashura|default] [session]  show/set automatic skill creation (saved per repo; `session` = this session only)
 /skill-creation now [key] [paths…]  build a skill from this session's written files (or the given paths) now
-/skills [review|show <id>|approve <id>|reject <id>|recent|undo <key>|confirm <key>]  manage skill drafts and auto-created skills
+/skills [review|show <id> [full]|approve <id> [replace]|reject <id>|recent|undo <key>|confirm <key>]  manage skill drafts and auto-created skills
 /repomap             rebuild and show the repo map (lightweight file-tree outline)
 /rewind              list checkpoints or rewind N turns (see Session section above)
 /info                toggle the info panel (proxy/model/exec/cwd/costs/grounding)

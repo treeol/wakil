@@ -1810,6 +1810,9 @@ func validateEnums(cfg Config) error {
 	if !ValidSkillCreationMode(cfg.SkillCreation.Mode) {
 		return fmt.Errorf("skill_creation.mode must be one of: off, on, auto, auto-mashura (got %q)", cfg.SkillCreation.Mode)
 	}
+	if err := cfg.SkillCreation.Validate(); err != nil {
+		return err
+	}
 	switch cfg.WFOracleMode {
 	case "", "every-step", "on-deviation", "phases-only":
 	default:

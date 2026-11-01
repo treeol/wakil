@@ -118,7 +118,7 @@ reference covering every section below.
 | `mashura_tool_panels` | — | Maps each counsel tool to a named panel |
 | `mashura_mode` | — | Default oracle consult schedule: `every-step` \| `on-deviation` \| `phases-only` *(alias: `wf_oracle_mode`)* |
 | `skill_creation` | — | Automatic skill creation (`/skill-creation`); object with the keys below |
-| `skill_creation.mode` | `"on"` | Default mode: `off`, `on` (hint + suggestion), `auto` (builds drafts), `auto-mashura` (Mashūra review, then activates new skills). A per-repo `/skill-creation` setting and a per-session override take precedence |
+| `skill_creation.mode` | `"on"` | Default mode: `off`, `on` (hint + suggestion), `auto` (builds drafts), `auto-mashura` (Mashūra review, then activates new skills; setting it here is the standing opt-in to send sanitized drafts to the Mashūra panel). Numeric `skill_creation.*` limits must be >= 0 (0 = default) and `allowed_files` globs must be valid, or the config is rejected at load. A per-repo `/skill-creation` setting and a per-session override take precedence |
 | `skill_creation.max_auto_per_day` | `3` | Cap on automatically triggered runs per UTC day |
 | `skill_creation.max_drafts` | `10` | Pending drafts allowed; further runs stop until drafts are reviewed |
 | `skill_creation.draft_ttl_days` | `30` | Pending drafts older than this are rejected |

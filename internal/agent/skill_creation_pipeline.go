@@ -114,6 +114,10 @@ type skillCreationOutcome struct {
 	Kind string // "active" | "draft" | "aborted"
 	Key  string
 	Text string
+	// Terminal marks an abort caused by the INPUT (secret found, judged
+	// one-off, draft failed checks): retrying the same files cannot succeed,
+	// so automatic runs consume them. Store/IO failures are not terminal.
+	Terminal bool
 }
 
 // skillCreationHooks lets tests replace the two external calls.
@@ -454,7 +458,7 @@ func buildSkillDraft(cfg config.SkillCreationConfig, files []skillSrcFile, plan 
 				}
 			}
 			seenVal[p.Value], seenName[p.Name] = true, true
-			params = append(params, captureParam{Name: p.Name, Value: p.Value, Description: p.Description, Default: p.Default, Pattern: p.Pattern})
+			params = append(params, captureParam(p))
 		}
 	}
 	if keyOverride != "" {
@@ -592,13 +596,13 @@ func (a *App) runSkillReview(ctx context.Context, h skillCreationHooks, d *autoS
 	for _, r := range results {
 		if r.Err != nil {
 			if panelMode != "fallback" {
-				return "", nil, nil, nil, fmt.Errorf("reviewer %s failed: %v", r.Model, r.Err)
+				return "", nil, nil, nil, fmt.Errorf("reviewer %s failed: %w", r.Model, r.Err)
 			}
 			continue
 		}
 		v, perr := parseSkillVerdict(r.Answer)
 		if perr != nil {
-			return "", nil, nil, nil, fmt.Errorf("reviewer %s: unparseable verdict: %v", r.Model, perr)
+			return "", nil, nil, nil, fmt.Errorf("reviewer %s: unparseable verdict: %w", r.Model, perr)
 		}
 		vs = append(vs, v)
 		models = append(models, r.Model)
@@ -784,6 +788,11 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 	abort := func(f string, args ...any) skillCreationOutcome {
 		return skillCreationOutcome{Kind: "aborted", Text: fmt.Sprintf(f, args...)}
 	}
+	abortInput := func(f string, args ...any) skillCreationOutcome {
+		o := abort(f, args...)
+		o.Terminal = true
+		return o
+	}
 
 	a.expireSkillDrafts(ctx)
 	drafts, err := sp.listSkillDrafts(ctx)
@@ -810,7 +819,9 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 	// external call; once the plan call is made it counts as an attempt.
 	release := func() {
 		if reserved {
-			sp.releaseDaily(context.Background(), "skill-creation", day)
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			sp.releaseDaily(rctx, "skill-creation", day)
+			rcancel()
 			reserved = false
 		}
 	}
@@ -824,7 +835,7 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 	for _, f := range files {
 		if containsSkillSecret(f.Body) || containsSkillSecret(f.Rel) {
 			release()
-			return abort("%s contains secret-like content — nothing was sent or saved; remove the secret or capture manually", f.Rel)
+			return abortInput("%s contains secret-like content — nothing was sent or saved; remove the secret or capture manually", f.Rel)
 		}
 	}
 
@@ -836,7 +847,7 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 	planPrompt := a.buildSkillPlanPrompt(files, a.lastUserText())
 	if containsSkillSecret(planPrompt) {
 		release()
-		return abort("the request text or files contain secret-like content — nothing was sent or saved")
+		return abortInput("the request text or files contain secret-like content — nothing was sent or saved")
 	}
 
 	var plan *skillPlan
@@ -859,7 +870,7 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 		}
 	}
 	if plan != nil && plan.Reusable != nil && !*plan.Reusable && !req.Manual {
-		return abort("judged one-off — no skill created")
+		return abortInput("judged one-off — no skill created")
 	}
 
 	draft, bnotes, err := buildSkillDraft(cfg, files, plan, req.Key)
@@ -879,7 +890,12 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 		}
 	}
 	if err != nil {
-		return abort("draft failed checks: %v", err)
+		if perr != nil {
+			// The planner was unavailable, so the deterministic fallback may
+			// fail only because nothing was parameterized: retry later.
+			return abort("draft failed checks (model plan was unavailable): %v", err)
+		}
+		return abortInput("draft failed checks: %v", err)
 	}
 	if len(skipped) > 0 {
 		notes = append(notes, "skipped: "+strings.Join(skipped, "; "))
@@ -891,8 +907,19 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 		return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	}
 
-	_, existsErr := sp.getActiveSkill(ctx, draft.Key)
-	keyTaken := existsErr == nil || !errors.Is(existsErr, memory.ErrNotFound)
+	// The lookup runs on the persist context: an expired run deadline must not
+	// be mistaken for "key is free" or "key is taken".
+	lctx, lcancel := persistCtx()
+	_, existsErr := sp.getActiveSkill(lctx, draft.Key)
+	lcancel()
+	keyTaken := existsErr == nil
+	lookupFailed := existsErr != nil && !errors.Is(existsErr, memory.ErrNotFound)
+	switch {
+	case keyTaken:
+		notes = append(notes, "REPLACES active skill "+draft.Key+" (approve needs `replace`)")
+	case lookupFailed:
+		notes = append(notes, "could not check for an existing skill ("+snippet(existsErr.Error(), 80)+")")
+	}
 
 	saveDraft := func(why string) skillCreationOutcome {
 		note := autoDraftNotePrefix + ": " + why
@@ -914,6 +941,15 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 	}
 	if keyTaken {
 		return saveDraft("skill " + draft.Key + " already exists — update proposal")
+	}
+	if lookupFailed {
+		return saveDraft("could not verify the key is free — review needed")
+	}
+	if plan == nil || plan.Reusable == nil || !*plan.Reusable {
+		// Activation without a human needs the plan to say reusable:true
+		// explicitly; a missing verdict or a manual override of a one-off
+		// verdict only ever produces a draft.
+		return saveDraft("plan did not confirm the work is reusable — review needed")
 	}
 	if planFallback {
 		// A degraded plan (model unavailable / invalid / split rejected) never
@@ -940,7 +976,7 @@ func (a *App) runSkillCreation(ctx context.Context, req skillCreationRequest) sk
 		if rerr != nil {
 			return saveDraft("second review failed: " + snippet(rerr.Error(), 120))
 		}
-		reasons, models = append(reasons, reasons2...), models2
+		models = models2
 		if verdict != "approve" {
 			return saveDraft("second review: " + verdict + " " + snippet(strings.Join(reasons2, "; "), 160))
 		}

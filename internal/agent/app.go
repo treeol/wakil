@@ -1071,7 +1071,7 @@ func (a *App) Send(ctx context.Context, userText string) (_ string, retErr error
 // caller retains the continuation, awaits a completion via
 // WaitForAsyncCompletion, then resumes. Send(ctx, text) is equivalent to
 // out := SendOutcome(ctx, text); out.Text and never distinguishes suspension.
-func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, retErr error) {
+func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOutcome, retErr error) {
 	// atomically admit the turn under cpMu. If a rewind is in
 	// progress, refuse before any side effects. The cpTurnAdmitted flag blocks
 	// rewind for the full turn lifetime (unlike cpActive, which
@@ -1110,8 +1110,11 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (_ TurnOutcome, 
 	a.detectAndProposeCorrection(ctx, userText)
 
 	defer a.SaveSession()
+	// Skill-creation hook: only a clean FINAL outcome counts. A suspended turn
+	// fires it from Resume once the turn really ends; aborted/declined outcomes
+	// never fire (their signal is cleared by the next prepareTurn).
 	defer func() {
-		if retErr == nil {
+		if retErr == nil && outcome.Kind == TurnFinal {
 			a.onTurnEndSkillCreation()
 		}
 	}()

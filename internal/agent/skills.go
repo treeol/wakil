@@ -153,8 +153,10 @@ func (p *skillsProfile) historyForKey(ctx context.Context, key string) ([]*memor
 // commands can tell them apart from hand-written skills.
 const (
 	// autoSkillNoteUnconfirmed marks an auto-created active skill that has not
-	// been confirmed by the user yet: visible to list/search/load but NOT
-	// auto-injected into turns by the retrieval pass.
+	// been confirmed by the user yet: listed/searchable (with a marker) but NOT
+	// auto-injected into turns by the retrieval pass, and load_skill /
+	// apply_skill_template / check_skill_template refuse it until the user runs
+	// /skills confirm.
 	autoSkillNoteUnconfirmed = "auto-unconfirmed"
 	// autoSkillNoteConfirmed is set by /skills confirm.
 	autoSkillNoteConfirmed = "auto-confirmed"
@@ -168,9 +170,20 @@ func isUnconfirmedAutoSkill(e *memory.Entry) bool {
 	return e != nil && strings.HasPrefix(e.Note, autoSkillNoteUnconfirmed)
 }
 
+// unconfirmedSkillMarker is the inline marker shown in model-facing listings.
+const unconfirmedSkillMarker = " (unconfirmed auto-created skill — not usable until the user runs /skills confirm)"
+
+// unconfirmedSkillRefusal is the model-facing refusal for content access.
+func unconfirmedSkillRefusal(key string) string {
+	return "not available: skill " + key + " was created automatically and has not been confirmed by the user yet — ask the user to review it and run /skills confirm " + key
+}
+
 // isAutoSkill reports whether e was created by the pipeline (confirmed or not).
 func isAutoSkill(e *memory.Entry) bool {
-	return e != nil && (strings.HasPrefix(e.Note, autoSkillNoteUnconfirmed) || strings.HasPrefix(e.Note, autoSkillNoteConfirmed))
+	// An ACTIVE row still carrying the draft prefix was approved by the user
+	// before approval rewrote the note — it counts as confirmed.
+	return e != nil && (strings.HasPrefix(e.Note, autoSkillNoteUnconfirmed) || strings.HasPrefix(e.Note, autoSkillNoteConfirmed) ||
+		(e.Status == memory.StatusActive && strings.HasPrefix(e.Note, autoDraftNotePrefix)))
 }
 
 // putSkillDraft stores a pending draft (status proposed).
@@ -194,10 +207,11 @@ func (p *skillsProfile) rejectSkillDraft(ctx context.Context, id int64, reason s
 	return p.store.Reject(ctx, id, reason)
 }
 
-// promoteSkillDraft activates a pending draft in place (superseding any
-// existing active skill for the key).
-func (p *skillsProfile) promoteSkillDraft(ctx context.Context, id int64, by string) (*memory.Entry, error) {
-	return p.store.Promote(ctx, id, nil, by)
+// promoteSkillDraftAtomic activates a draft in one store transaction: it
+// refuses (memory.ErrSkillExists, with the blocking entry) when an active skill
+// holds the key and allowReplace is false, and rewrites the note when note != "".
+func (p *skillsProfile) promoteSkillDraftAtomic(ctx context.Context, id int64, allowReplace bool, note, by string) (promoted, replaced *memory.Entry, err error) {
+	return p.store.PromoteSkillDraft(ctx, id, allowReplace, note, by)
 }
 
 // setSkillNote replaces the note of one skill row.

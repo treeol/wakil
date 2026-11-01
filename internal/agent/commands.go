@@ -1654,7 +1654,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /skill-create <topic> research a topic and save it as a skill (asks for confirmation)
 /skill-creation [off|on|auto|auto-mashura|default] [session]  show/set automatic skill creation
                      (per repo; "session" = this session only). /skill-creation now [key] [paths…] builds one now
-/skills [review|show <id>|approve <id>|reject <id>|recent|undo <key>|confirm <key>]  manage skill drafts and auto-created skills
+/skills [review|show <id> [full]|approve <id> [replace]|reject <id>|recent|undo <key>|confirm <key>]  manage skill drafts and auto-created skills
 /compact             summarize older turns now (frees context, improves performance)
 /compact force       required in long-session mode (materializes collapsed requests)
 /handoff [proceed|stop] summarize session → store in memory → start fresh session

@@ -55,6 +55,10 @@ func (a *App) handleListSkills(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	var b strings.Builder
 	for _, e := range entries {
+		if isUnconfirmedAutoSkill(e) {
+			fmt.Fprintf(&b, "%s%s —%s\n", e.Key, skillProvenanceSuffix(e), unconfirmedSkillMarker)
+			continue
+		}
 		fmt.Fprintf(&b, "%s%s — %s\n", e.Key, skillProvenanceSuffix(e), firstLine(e.Value))
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -81,6 +85,9 @@ func (a *App) handleLoadSkill(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	if err != nil {
 		return fmt.Sprintf("ERROR: load skill: %v", err)
+	}
+	if isUnconfirmedAutoSkill(e) {
+		return unconfirmedSkillRefusal(e.Key)
 	}
 	body := e.Value
 	// Template skills: show prose + a compact summary instead of the file
@@ -129,6 +136,10 @@ func (a *App) handleSkillSearch(ctx context.Context, tc proxy.ToolCall) string {
 	for i, e := range entries {
 		if i > 0 {
 			b.WriteString("\n---\n")
+		}
+		if isUnconfirmedAutoSkill(e) {
+			fmt.Fprintf(&b, "%s%s\n%s", e.Key, skillProvenanceSuffix(e), strings.TrimSpace(unconfirmedSkillMarker))
+			continue
 		}
 		fmt.Fprintf(&b, "%s%s\n%s", e.Key, skillProvenanceSuffix(e), snippet(e.Value, 200))
 	}
