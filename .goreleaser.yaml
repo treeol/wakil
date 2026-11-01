@@ -1,0 +1,110 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# GoReleaser v2 config. Real releases run ONLY from the tag-triggered workflow
+# (.github/workflows/release.yml), which builds + signs the sandbox image first
+# and passes its digest in as $SANDBOX_IMAGE, so every release binary is
+# paired with exactly one digest-pinned sandbox image.
+#
+# Local dry run (no signing, no publishing):
+#   goreleaser release --snapshot --clean --skip=sign,publish
+# CI-only validation build (no packages, no signing):
+#   goreleaser build --snapshot --clean
+version: 2
+
+project_name: wakil
+
+builds:
+  - id: wakil
+    main: ./cmd/wakil
+    binary: wakil
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/treeol/wakil/internal/buildinfo.Version={{ if .IsSnapshot }}{{ .Version }}{{ else }}{{ .Tag }}{{ end }}
+      - -X github.com/treeol/wakil/internal/buildinfo.Commit={{ .FullCommit }}
+      - -X github.com/treeol/wakil/internal/buildinfo.Date={{ .Date }}
+      # Full ghcr.io/treeol/wakil-sandbox@sha256:... reference, never a tag.
+      # Empty only for local snapshot builds (binary then uses the unpinned dev
+      # fallback); release.yml refuses to run goreleaser unless SANDBOX_IMAGE is
+      # a digest reference.
+      - -X github.com/treeol/wakil/internal/buildinfo.SandboxImage={{ envOrDefault "SANDBOX_IMAGE" "" }}
+
+archives:
+  - id: wakil
+    formats: [tar.gz]
+    name_template: "wakil_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+nfpms:
+  - id: packages
+    package_name: wakil
+    file_name_template: "wakil_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    ids: [wakil]
+    formats: [deb, rpm, apk]
+    maintainer: Valon Mamudi <mamudi92@gmail.com>
+    homepage: https://github.com/treeol/wakil
+    license: Apache-2.0
+    description: Terminal coding agent that edits code, runs commands in a Docker sandbox, and remembers your project.
+    bindir: /usr/bin
+    # No `depends`, no maintainer scripts: packages install files only and do no
+    # network access at install time. The sandbox image is pulled by wakil on
+    # first run.
+    recommends:
+      - docker.io | docker-ce | podman
+    overrides:
+      rpm:
+        recommends:
+          - docker-ce
+          - podman
+      apk:
+        # apk has no weak-dependency concept.
+        recommends: []
+
+# Signs checksums.txt with cosign keyless (OIDC from GitHub Actions). Only the
+# CI release job runs this; local runs use --skip=sign.
+signs:
+  - id: checksums
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
+release:
+  github:
+    owner: treeol
+    name: wakil
+  draft: false
+  prerelease: auto
+
+changelog:
+  sort: asc
+  use: git
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^docs(\([[:word:]]+\))?:'
+      - '^chore(\([[:word:]]+\))?:'
+      - '^ci(\([[:word:]]+\))?:'
