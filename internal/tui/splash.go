@@ -86,17 +86,6 @@ func pickSplashLogo(vpW, vpH int, truecolor bool) string {
 	return logoSprite.renderBraille(cols, logoSprite.brailleRows(cols))
 }
 
-// brailleCols is the width in cells that keeps the sprite's aspect ratio when
-// drawn as braille cellRows tall (each cell is 2x4 dots). 0 if undecodable.
-func (s *splashSprite) brailleCols(cellRows int) int {
-	img := s.image()
-	if img == nil || cellRows < 1 {
-		return 0
-	}
-	b := img.Bounds()
-	return max(1, int(math.Round(float64(cellRows*4*b.Dx())/float64(b.Dy())/2)))
-}
-
 // renderBraille returns the sprite as braille art cols x cellRows cells, each
 // cell coloured with the average colour of its opaque pixels. Braille dots are
 // much finer than half-blocks, which keeps thin shapes like a feather's barbs
