@@ -14,14 +14,14 @@ func TestEmbeddedCatalogAndReplacement(t *testing.T) {
 	if err := os.WriteFile(path, []byte("MY-GO-RULES"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewCatalog(true, map[string]string{"go": path, "rs": filepath.Join(dir, "rs.md")})
+	_, err := NewCatalog(true, map[string]string{"go": path, "rs": filepath.Join(dir, "rs.md")})
 	if err == nil {
 		t.Fatal("missing custom guide should fail")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "rs.md"), []byte("RUST-RULES"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c, err = NewCatalog(true, map[string]string{"go": path, "rs": filepath.Join(dir, "rs.md")})
+	c, err := NewCatalog(true, map[string]string{"go": path, "rs": filepath.Join(dir, "rs.md")})
 	if err != nil {
 		t.Fatal(err)
 	}
