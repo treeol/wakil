@@ -272,17 +272,23 @@ func TestBuildFinalReviewBriefing(t *testing.T) {
 	}
 }
 
-// TestBuildFinalReviewBriefingTruncation verifies the hard truncation path.
-func TestBuildFinalReviewBriefingTruncation(t *testing.T) {
-	// Build content that exceeds a small maxBytes.
+// TestBuildFinalReviewBriefingNeverHardCut: a cap smaller than the mandatory
+// sections no longer cuts the briefing (the old behaviour left a reviewer a
+// prefix); it is returned whole and the reviewer dispatcher decides.
+func TestBuildFinalReviewBriefingNeverHardCut(t *testing.T) {
 	task := strings.Repeat("x", 200)
 	planContent := "## Task\n\n" + task + "\n\n## Plan\n\n1. Step\n\n## Step log\n\nStep 1: " + strings.Repeat("y", 200)
 	briefing := BuildFinalReviewBriefing(task, planContent, "q", 100) // tiny cap
-	if !strings.Contains(briefing, "[briefing truncated]") {
-		t.Error("briefing should contain truncation marker when content exceeds cap")
+	if strings.Contains(briefing, "[briefing truncated]") {
+		t.Error("briefing must never be hard-cut")
 	}
-	if len(briefing) > 100+100 { // cap + marker overhead
-		t.Errorf("briefing too long: %d bytes (cap was 100)", len(briefing))
+	// The step-log evidence is kept too: dropping it while reporting "0
+	// omitted" would be a silent cut.
+	if !strings.Contains(briefing, "Step 1: "+strings.Repeat("y", 200)) {
+		t.Error("oversized-mandatory fallback must keep the step-log entries whole")
+	}
+	if !strings.Contains(briefing, "## Task\n\n"+task) || !strings.Contains(briefing, "1. Step") || !strings.HasSuffix(briefing, "## Question\n\nq") {
+		t.Errorf("mandatory sections must be whole, got %q", briefing)
 	}
 }
 

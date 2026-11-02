@@ -346,7 +346,7 @@ type Config struct {
 	// treated as disabled. 0 disables the cap (full A kept). This bounds the
 	// answer component only — total context is bounded by the tail turn
 	// count, degrade, and compaction thresholds together.
-	ContextTailAnswerBytes int `json:"context_tail_answer_bytes,omitempty"` // default 500; 0 = keep full answers
+	ContextTailAnswerBytes int `json:"context_tail_answer_bytes,omitempty"` // default 0 = keep full answers
 
 	// Prompt mode: "full" (default) sends the complete system prompt as today;
 	// "core" sends only the safety-critical core prompt, and lazy-loads the
@@ -477,6 +477,14 @@ type Config struct {
 	// name ("review"|"debug"|"decide"|"check"). Unset tools fall back to a tool
 	// default (check is lighter) then to the shared base above.
 	MashuraToolMaxTokens map[string]int `json:"mashura_max_tokens_by_tool,omitempty"`
+
+	// MashuraModels sets per-model limits for the whole-or-fail reviewer
+	// dispatcher, keyed by the prefixed "provider:model" string or the bare
+	// model id. context_tokens overrides the provider table / OpenRouter
+	// registry context window; review_max_tokens overrides the answer budget
+	// (still raised to at least 4096 for a review, and capped by what fits the
+	// context window). Zero/absent = use the default.
+	MashuraModels map[string]MashuraModelLimits `json:"mashura_models,omitempty"`
 
 	// AutoCounsel controls the TUI session counsel mode: "suggest" (default,
 	// hint-only), "auto" (auto-fire mashura__debug up to CounselMaxPerSession
@@ -898,6 +906,12 @@ func (c CostsConfig) SearchCost() (usd float64, priced bool) {
 	return c.Search.USDPerQuery, true
 }
 
+// MashuraModelLimits are the per-model reviewer limits (see Config.MashuraModels).
+type MashuraModelLimits struct {
+	ContextTokens   int `json:"context_tokens,omitempty"`    // model context window in tokens; 0 = provider table
+	ReviewMaxTokens int `json:"review_max_tokens,omitempty"` // answer budget for a review; 0 = mashura_max_tokens
+}
+
 // MashuraPanelConfig defines one named panel: a list of prefixed model strings
 // and the panel execution mode.
 //
@@ -1024,7 +1038,7 @@ func DefaultConfig() Config {
 		ContextMode:             DefaultContextMode, // long-session default; "standard" opts out
 		ContextCollapseMinBytes: 2000,               // turns under 2k are not worth collapsing
 		ContextTailTurns:        20,                 // keep last 20 requests at full size before pointer degrade
-		ContextTailAnswerBytes:  500,                // cap tail answers at 0.5k + archive pointer (0 = full)
+		ContextTailAnswerBytes:  0,                  // prior assistant reports are kept whole (>0 caps them + archive pointer)
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
@@ -1933,6 +1947,11 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.ContextTailAnswerBytes < 0 {
 		return fmt.Errorf("context_tail_answer_bytes must be >= 0 (got %d)", cfg.ContextTailAnswerBytes)
+	}
+	for name, lim := range cfg.MashuraModels {
+		if lim.ContextTokens < 0 || lim.ReviewMaxTokens < 0 {
+			return fmt.Errorf("mashura_models[%q]: context_tokens and review_max_tokens must be >= 0", name)
+		}
 	}
 	return nil
 }

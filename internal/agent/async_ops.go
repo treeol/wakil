@@ -1261,7 +1261,12 @@ func (a *App) renderAsyncLine(op *asyncOp, result string, opErr error) (string, 
 		text = result
 	}
 	text = neutralizeAsyncMarker(text)
-	if len(text) > asyncEnvelopeOpCap {
+	// Mashūra reviews are model-requested document reviews whose answer is the
+	// whole point of the call: cutting one to an excerpt hides findings (the
+	// reviewer's later sections were lost behind a spill pointer). They are
+	// delivered whole; the envelope total cap still defers (never cuts) a
+	// second op that would not fit alongside.
+	if len(text) > asyncEnvelopeOpCap && !strings.HasPrefix(op.toolName, "mashura__") {
 		// Oversized: spill the FULL content to a durable host-side file and
 		// keep a bounded excerpt + path in the envelope.
 		if spillPath := wtools.SpillToCache(a.chatID(), op.toolName, text); spillPath != "" {

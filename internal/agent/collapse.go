@@ -1031,8 +1031,48 @@ func (a *App) collapseFinishedTurns() {
 		projectedContent := projectTailAnswerContent(convSnap[s.last].Content, rec, a.Cfg.ContextTailAnswerBytes)
 		projected := messageSize(convSnap[s.first]) + len(*projectedContent)
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf(
-			"· collapsed request %d — %dk → %dk sent (archived)", t, wSize/1024, projected/1024)))
+			"· collapsed request %d — %dk → %dk sent (archived)", t, wSize/1024, projected/1024)+
+			collapseDroppedDetail(wOnly, s.first+1, archive)))
 	}
+}
+
+// maxNoticeToolIDs bounds how many tool-result ids the collapse notice lists.
+const maxNoticeToolIDs = 8
+
+// collapseDroppedDetail names exactly what a collapse removed from the sent
+// context so the user can see it: the message range in the transcript, the
+// tool-result ids, byte and ~token counts, and where the full copy is archived.
+// first is the transcript index of dropped[0]. Returns "" when nothing was
+// dropped.
+func collapseDroppedDetail(dropped []proxy.Message, first int, archive string) string {
+	if len(dropped) == 0 {
+		return ""
+	}
+	var ids []string
+	size := 0
+	for _, m := range dropped {
+		size += messageSize(m)
+		if m.Role == "tool" && m.ToolCallID != "" {
+			ids = append(ids, m.ToolCallID)
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, " · dropped messages %d–%d (%d msgs, %d bytes ≈ %d tokens)",
+		first, first+len(dropped)-1, len(dropped), size, size/charsPerToken)
+	if len(ids) > 0 {
+		shown := ids
+		if len(shown) > maxNoticeToolIDs {
+			shown = shown[:maxNoticeToolIDs]
+		}
+		fmt.Fprintf(&b, " · tool results: %s", strings.Join(shown, ", "))
+		if len(ids) > len(shown) {
+			fmt.Fprintf(&b, " +%d more", len(ids)-len(shown))
+		}
+	}
+	if archive != "" {
+		fmt.Fprintf(&b, " · archive: %s", archive)
+	}
+	return b.String()
 }
 
 // stashFailureReason describes why the requested stash was not written, for
@@ -1133,6 +1173,16 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		return "collapse_context: nothing in current request to collapse yet"
 	}
 
+	// Invariant: collapse_context reduces only the MODEL's own earlier work in
+	// the turn (tool calls/results/assistant text AFTER the user's message). The
+	// user's message — its text, @-attached file contents and images — is the
+	// first message of the turn and is never part of the collapsed range or
+	// elided by the projection. If the turn does not start with the user's
+	// message we cannot tell the brief from the working set: refuse.
+	if a.Conv[s.first].Role != "user" {
+		a.convMu.RUnlock()
+		return "collapse_context: refused — the current request does not start with the user's message, so its brief cannot be told apart from the working set; nothing was collapsed"
+	}
 	curAsstIdx := findBoundaryAssistantIdx(a.Conv, s, tc.ID)
 	if curAsstIdx <= s.first+1 {
 		a.convMu.RUnlock()
@@ -1248,7 +1298,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	a.stateMu.Unlock()
 
 	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· collapsed request %d working set (mid-turn) — %dk → %.1fk sent (archived)",
-		a.curTurn, wSize/1024, float64(cpLen)/1024)))
+		a.curTurn, wSize/1024, float64(cpLen)/1024)+collapseDroppedDetail(w, s.first+1, archive)))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "collapsed request %d working set (%d bytes → %d bytes checkpoint; full record at %s — host-side path: read it with read_file, a sandbox-shell \"not found\" does not mean it is gone)",

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -195,8 +196,8 @@ func TestStyleGuideFinalHardMaxCheck(t *testing.T) {
 	app := enabledStyleApp(t, srv.URL)
 	app.Cfg.HardMaxBytes = 100
 	app.CtxLimit.NCtx = 100
-	if _, err := app.Send(context.Background(), "Implement a Python function"); err == nil || !strings.Contains(err.Error(), "including style guides") {
-		t.Fatalf("expected pre-send context error, got %v", err)
+	if _, err := app.Send(context.Background(), "Implement a Python function"); err == nil || !errors.Is(err, ErrCurrentTurnTooLarge) {
+		t.Fatalf("expected pre-send current-turn-too-large error, got %v", err)
 	}
 }
 

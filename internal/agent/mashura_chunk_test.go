@@ -20,7 +20,7 @@ func newAnthropicFormEndpoint(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		writeCitedReply(w, r, "ok", `{"input_tokens":1,"output_tokens":1}`)
 	}))
 }
 

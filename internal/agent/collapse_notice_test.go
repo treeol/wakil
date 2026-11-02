@@ -17,7 +17,7 @@ import (
 // (projectTailAnswerContent) so the two cannot drift.
 
 // TestCollapseNoticeReportsProjectedSize collapses a real turn whose A is
-// several KB — exceeding the default 500-byte tail-answer cap, so the cap,
+// several KB — exceeding the 500-byte tail-answer cap enabled below, so the cap,
 // the note join, and the notice all interact — and asserts the printed
 // "… → Nk sent" matches the notice arithmetic AND the actual projection.
 func TestCollapseNoticeReportsProjectedSize(t *testing.T) {
@@ -25,9 +25,10 @@ func TestCollapseNoticeReportsProjectedSize(t *testing.T) {
 	app.SetContextMode("long-session")
 	var out strings.Builder
 	app.Out = &out
-	if app.Cfg.ContextTailAnswerBytes != 500 {
-		t.Fatalf("test premise: default cap should be 500, got %d", app.Cfg.ContextTailAnswerBytes)
+	if app.Cfg.ContextTailAnswerBytes != 0 {
+		t.Fatalf("test premise: prior answers are uncapped by default, got %d", app.Cfg.ContextTailAnswerBytes)
 	}
+	app.Cfg.ContextTailAnswerBytes = 500 // opt in to the cap so it interacts with the notice
 
 	// One collapsible turn with a multi-KB answer (cap fires).
 	conv := oneCollapsedTurn(1)
@@ -53,6 +54,13 @@ func TestCollapseNoticeReportsProjectedSize(t *testing.T) {
 	projectedContent := projectTailAnswerContent(app.Conv[len(app.Conv)-1].Content, rec, app.Cfg.ContextTailAnswerBytes)
 	projected := messageSize(app.Conv[0]) + len(*projectedContent)
 	wantLine := fmt.Sprintf("· collapsed request 1 — %dk → %dk sent (archived)", rec.WBytes/1024, projected/1024)
+	// The line also names what was dropped: message range, byte/token counts
+	// and the archive location.
+	for _, want := range []string{"dropped messages 1–", "bytes ≈", "tokens)", "archive: " + rec.Archive} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("collapse notice missing %q:\n%s", want, out.String())
+		}
+	}
 
 	if !strings.Contains(out.String(), wantLine) {
 		t.Errorf("notice mismatch.\nwant: %s\ngot:  %s", wantLine, out.String())

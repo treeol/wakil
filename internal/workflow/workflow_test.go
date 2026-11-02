@@ -271,23 +271,6 @@ func TestHashPlanSection(t *testing.T) {
 	}
 }
 
-// TestCapFindings verifies that findings are truncated when they exceed the cap.
-func TestCapFindings(t *testing.T) {
-	short := "short findings"
-	if got := CapFindings(short); got != short {
-		t.Errorf("CapFindings(short) = %q, want %q", got, short)
-	}
-
-	long := strings.Repeat("x", FindingsCap+100)
-	got := CapFindings(long)
-	if len(got) > FindingsCap+50 { // allow for truncation marker
-		t.Errorf("CapFindings(long) len = %d, want <= %d", len(got), FindingsCap+50)
-	}
-	if !strings.Contains(got, "[findings truncated]") {
-		t.Error("CapFindings should append truncation marker")
-	}
-}
-
 // TestBuildOracleBriefing verifies that a well-formed plan produces a valid briefing.
 func TestBuildOracleBriefing(t *testing.T) {
 	planContent := "## Task\n\ndo the thing\n\n## Findings\n\nfound stuff\n\n## Plan\n\n1. Step one\n2. Step two\n\n## Step log\n\nStep 1: done"

@@ -318,25 +318,15 @@ func CountPlanSteps(planContent string) int {
 // ## Task and ## Plan are always included intact. Step-log entries are windowed
 // from the most recent end: oldest are dropped first with an explicit
 // "[… N earlier entries omitted …]" marker so the oracle knows evidence was
-// withheld. Hard tail-truncation is the absolute last resort; it always appends
-// "[briefing truncated]" so the oracle can flag the incomplete input.
+// withheld (the step log is a labelled window of recent entries, by design).
+// Task, findings, plan and question are never cut: when they alone exceed
+// maxBytes the briefing is returned whole.
 //
 // task comes from WorkflowState.Task (Wakil's authoritative record) and is
 // never read from plan.md, so model edits to ## Task cannot corrupt the briefing.
-// FindingsCap is the maximum bytes kept from the ## Findings section in a
-// briefing. Findings are written oldest-first during GATHER, so early facts
-// are the most relevant — tail-truncation is acceptable here.
-const FindingsCap = 4 * 1024
-
-// CapFindings returns findings truncated to FindingsCap bytes, appending
-// "[findings truncated]" when the cap bites.
-func CapFindings(findings string) string {
-	if len(findings) <= FindingsCap {
-		return findings
-	}
-	return findings[:FindingsCap] + "\n[findings truncated]"
-}
-
+// Findings are included whole: they are evidence the reviewer must see, and
+// the reviewer dispatcher (internal/counsel) either sends the briefing whole,
+// in labelled parts, or fails — nothing is cut here.
 func assembleBriefing(task, findings, plan string, entries []string, question, stepLogHeader string, maxBytes int) string {
 	build := func(kept []string, omitted int) string {
 		var sb strings.Builder
@@ -344,7 +334,7 @@ func assembleBriefing(task, findings, plan string, entries []string, question, s
 			fmt.Fprintf(&sb, "## Task\n\n%s\n\n", task)
 		}
 		if findings != "" {
-			fmt.Fprintf(&sb, "## Findings\n\n%s\n\n", CapFindings(findings))
+			fmt.Fprintf(&sb, "## Findings\n\n%s\n\n", findings)
 		}
 		if plan != "" {
 			fmt.Fprintf(&sb, "## Plan\n\n%s\n\n", plan)
@@ -375,12 +365,10 @@ func assembleBriefing(task, findings, plan string, entries []string, question, s
 		}
 	}
 
-	// Even with no step-log entries, still too big: hard tail truncation.
-	result := build(nil, 0)
-	if len(result) > maxBytes {
-		result = result[:maxBytes] + "\n[briefing truncated]"
-	}
-	return result
+	// Even with no step-log entries the briefing exceeds maxBytes: return it
+	// WHOLE. A hard tail cut would send the reviewer a prefix; the reviewer
+	// dispatcher decides whether it fits the model (whole / parts / error).
+	return build(entries, 0)
 }
 
 // BuildOracleBriefing builds an oracle briefing for the standard review question.

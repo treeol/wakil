@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -276,3 +277,84 @@ func TestSubagentActuallyRecoversItsOwnCappedResult(t *testing.T) {
 }
 
 var _ = proxy.Message{}
+
+// Spill round trip (truncation-fix acceptance): a tool result that CapOrStub
+// replaces with a pointer — because it exceeds the per-result cap (8000) OR
+// the per-turn tool budget (40000) — is not lost. The pointer names a file, the
+// file holds the FULL original byte-for-byte, and the model can read it back
+// with the ordinary read_file / read_file_full tools even when the executor
+// would refuse paths outside the workspace.
+func TestSpilledToolResultRoundTripsThroughReadFile(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	var sb strings.Builder
+	for i := 0; i < 3000; i++ {
+		sb.WriteString("spilled line ")
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(" with filler text to exceed the cap\n")
+	}
+	sb.WriteString("LAST-LINE-OF-SPILLED-RESULT")
+	original := sb.String()
+	if len(original) <= 8000 {
+		t.Fatal("test premise: original must exceed the 8000-byte result cap")
+	}
+
+	newApp := func() *App {
+		exec := newFakeExecutor()
+		exec.confineErrFn = func(path string) error { return &confinementRejection{path: path} }
+		a := &App{Cfg: config.DefaultConfig(), Exec: exec, Out: io.Discard, Client: newTestClient("http://unused")}
+		a.Client.ChatID = "roundtrip-chat"
+		return a
+	}
+
+	cases := []struct {
+		name        string
+		turnBytes   int // bytes already spent this turn (budget trigger)
+		wantPointer string
+	}{
+		{"per-result cap (8000)", 0, "full content at: "},
+		{"per-turn budget (40000)", config.DefaultConfig().TurnToolBudget, "at: "},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			app := newApp()
+			out := app.CapOrStub(original, "search_files", c.turnBytes)
+			if len(out) >= len(original) {
+				t.Fatalf("result was not replaced by a pointer (len %d)", len(out))
+			}
+			path := wtools.ExtractSpillPath(out)
+			if path == "" && c.turnBytes > 0 {
+				// the budget stub uses "[budget — N chars at: PATH]"
+				if i := strings.Index(out, "at: "); i >= 0 {
+					path = strings.TrimSuffix(strings.TrimSpace(out[i+len("at: "):]), "]")
+				}
+			}
+			if path == "" || !strings.Contains(out, c.wantPointer) {
+				t.Fatalf("the pointer must name the file; got %q", out)
+			}
+			if !wtools.IsToolCacheHostPath(path) {
+				t.Fatalf("pointer path %q is not under the tool cache", path)
+			}
+
+			// Read back through the ordinary tools, byte-exact.
+			for _, tool := range []string{"read_file_full", "read_file"} {
+				args := map[string]interface{}{"path": path}
+				if tool == "read_file" {
+					args["limit"] = 100000
+				}
+				res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+					Name: tool, Arguments: mustJSON(args),
+				}})
+				if !res.ok {
+					t.Fatalf("%s on the spill pointer failed: %q", tool, Truncate(res.text, 200))
+				}
+				if !strings.Contains(res.text, "LAST-LINE-OF-SPILLED-RESULT") || !strings.Contains(res.text, "spilled line 0 ") {
+					t.Errorf("%s did not return the full original (len %d)", tool, len(res.text))
+				}
+			}
+			if data, err := os.ReadFile(path); err != nil || string(data) != original {
+				t.Errorf("spill file is not byte-identical to the original (err=%v)", err)
+			}
+		})
+	}
+}

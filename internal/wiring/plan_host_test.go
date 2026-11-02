@@ -185,7 +185,7 @@ func TestPlanHostPassWithOracle(t *testing.T) {
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCalls++
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"content":[{"type":"text","text":"looks good\nVERDICT: PASS"}],"stop_reason":"end_turn","usage":{}}`)
+		fmt.Fprint(w, `{"content":[{"type":"text","text":"looks good\nVERDICT: PASS\nLAST SECTION READ: Question"}],"stop_reason":"end_turn","usage":{}}`)
 	}))
 	defer oracleSrv.Close()
 

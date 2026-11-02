@@ -135,12 +135,12 @@ func TestTouchedExternalParallelLatch(t *testing.T) {
 // runs onCall (e.g. to edit the plan) while the review request is in flight.
 func reviewOracleApp(t *testing.T, onCall func()) (*App, *fakeExecutor) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if onCall != nil {
 			onCall()
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"looks fine"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		writeCitedReply(w, r, "looks fine", `{"input_tokens":1,"output_tokens":1}`)
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("MASHURA_TEST_KEY", "x")

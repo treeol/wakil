@@ -1362,6 +1362,7 @@ func argsAreValidObject(s string) bool {
 // trimToolResults replaces the content of the largest tool-role messages with
 // stub strings until the estimated request size fits within maxBytes. Returns
 // the modified message slice, or nil if there are no large tool results to trim.
+// Tool results of the current (newest) turn are exempt.
 //
 // The size estimate is heuristic (subtracts content bytes, adds stub bytes)
 // rather than re-marshalling each iteration; the caller re-marshals once after
@@ -1369,7 +1370,18 @@ func argsAreValidObject(s string) bool {
 func trimToolResults(msgs []Message, currentSize, maxBytes int) []Message {
 	type entry struct{ idx, size int }
 	var large []entry
+	// The newest request number (Message.Turn) is the CURRENT turn: its tool
+	// results are never trimmed. If they alone exceed the limit the caller gets
+	// the loud error below rather than a request with stubbed current content.
+	// Turn==0 everywhere (no stamps: subagents, tests) protects nothing.
+	curTurn := 0
+	for _, m := range msgs {
+		curTurn = max(curTurn, m.Turn)
+	}
 	for i, m := range msgs {
+		if curTurn > 0 && m.Turn == curTurn {
+			continue
+		}
 		if m.Role == "tool" && m.Content != nil && len(*m.Content) > 200 {
 			large = append(large, entry{i, len(*m.Content)})
 		}

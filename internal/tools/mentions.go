@@ -19,10 +19,14 @@ import (
 // The user sees a chip; the raw content goes to the proxy, not the visible input.
 
 const (
-	maxMentionBytes   = 50 * 1024 // per-file content cap
-	maxMentionLines   = 800       // per-file line cap
-	maxMentionDepth   = 2         // folder tree depth
-	maxMentionEntries = 200       // folder entry cap
+	// maxMentionBytes is a SANITY limit, not a truncation cap: a file at or
+	// below it is injected whole; above it the mention fails loudly (chip
+	// Ok=false, nothing injected). A mentioned file is current-turn content and
+	// is never silently shortened. The request-size guard in the agent reports
+	// when the whole turn is too large for the model.
+	maxMentionBytes   = 64 << 20
+	maxMentionDepth   = 2   // folder tree depth
+	maxMentionEntries = 200 // folder entry cap
 )
 
 // mentionRe matches "@path" where @ starts the input or follows whitespace.
@@ -93,7 +97,10 @@ func resolveMention(tok, base string) (MentionRef, string) {
 		return MentionRef{Token: tok, Ok: true, Note: fmt.Sprintf("%d entries", n)},
 			fmt.Sprintf("--- @%s (directory) ---\n%s", tok, listing)
 	}
-	content, truncated, binary, err := readFileCapped(path)
+	if info.Size() > maxMentionBytes {
+		return MentionRef{Token: tok, Note: fmt.Sprintf("too large (%s > %s) — not attached", HumanSize(info.Size()), HumanSize(maxMentionBytes))}, ""
+	}
+	content, binary, err := readMentionFile(path)
 	if err != nil {
 		return MentionRef{Token: tok, Note: "unreadable"}, ""
 	}
@@ -101,40 +108,27 @@ func resolveMention(tok, base string) (MentionRef, string) {
 		return MentionRef{Token: tok, Ok: true, Note: "binary, skipped"},
 			fmt.Sprintf("--- @%s ---\n[binary file, not injected]", tok)
 	}
-	notice := ""
-	if truncated {
-		notice = fmt.Sprintf("\n[… truncated to %d KB / %d lines …]", maxMentionBytes/1024, maxMentionLines)
-	}
 	return MentionRef{Token: tok, Ok: true, Note: HumanSize(info.Size())},
-		fmt.Sprintf("--- @%s (%s) ---\n```%s\n%s\n```%s", tok, HumanSize(info.Size()), langForExt(path), content, notice)
+		fmt.Sprintf("--- @%s (%s) ---\n```%s\n%s\n```", tok, HumanSize(info.Size()), langForExt(path), content)
 }
 
-// readFileCapped reads at most maxMentionBytes / maxMentionLines, reporting
-// truncation and whether the file looks binary (contains a NUL byte).
-func readFileCapped(path string) (content string, truncated, binary bool, err error) {
+// readMentionFile reads the whole file (never truncated), reporting whether it
+// looks binary (contains a NUL byte). Callers enforce maxMentionBytes first.
+func readMentionFile(path string) (content string, binary bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", false, false, err
+		return "", false, err
 	}
 	defer f.Close()
 
-	data, err := io.ReadAll(io.LimitReader(f, maxMentionBytes+1))
+	data, err := io.ReadAll(f)
 	if err != nil {
-		return "", false, false, err
+		return "", false, err
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
-		return "", false, true, nil
+		return "", true, nil
 	}
-	if len(data) > maxMentionBytes {
-		data = data[:maxMentionBytes]
-		truncated = true
-	}
-	s := string(data)
-	if lines := strings.Split(s, "\n"); len(lines) > maxMentionLines {
-		s = strings.Join(lines[:maxMentionLines], "\n")
-		truncated = true
-	}
-	return s, truncated, false, nil
+	return string(data), false, nil
 }
 
 // listDirCapped renders an indented tree of names (no file contents), capped by

@@ -20,7 +20,14 @@ import (
 // enqueueAndWait enqueues fn, waits for terminal completion, returns the op.
 func enqueueAndWait(t *testing.T, a *App, fn func() (string, []counselUsageRec, []string, error)) *asyncOp {
 	t.Helper()
-	op, reason := a.enqueueAsyncOp("mashura__review", "test", fn)
+	return enqueueNamedAndWait(t, a, "mashura__review", fn)
+}
+
+// enqueueNamedAndWait is enqueueAndWait for a specific originating tool name
+// (the envelope op cap applies to every tool EXCEPT mashura__*).
+func enqueueNamedAndWait(t *testing.T, a *App, toolName string, fn func() (string, []counselUsageRec, []string, error)) *asyncOp {
+	t.Helper()
+	op, reason := a.enqueueAsyncOp(toolName, "test", fn)
 	if reason != "" {
 		t.Fatalf("enqueueAsyncOp refused: %s", reason)
 	}
@@ -179,7 +186,7 @@ func TestAsyncEnvelopeOpCapSpills(t *testing.T) {
 	a := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	a.Client.ChatID = "testchat" // provide a chatID so toolCacheDir is non-empty
 	big := strings.Repeat("x", asyncEnvelopeOpCap*2)
-	op := enqueueAndWait(t, a, func() (string, []counselUsageRec, []string, error) {
+	op := enqueueNamedAndWait(t, a, "run_shell", func() (string, []counselUsageRec, []string, error) {
 		return big, nil, nil, nil
 	})
 	env := a.drainAsyncInbox()
@@ -219,6 +226,22 @@ func TestAsyncEnvelopeOpCapSpills(t *testing.T) {
 	}
 }
 
+// A Mashūra review is delivered WHOLE in the envelope (never cut to an
+// excerpt behind a spill pointer): the reviewer's later sections are the
+// findings the model asked for.
+func TestAsyncEnvelopeMashuraResultNotCut(t *testing.T) {
+	a := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	a.Client.ChatID = "testchat"
+	big := strings.Repeat("finding line\n", asyncEnvelopeOpCap/4) + "LAST-FINDING-MARKER"
+	enqueueAndWait(t, a, func() (string, []counselUsageRec, []string, error) {
+		return big, nil, nil, nil
+	})
+	env := a.drainAsyncInbox()
+	if !strings.Contains(env, "LAST-FINDING-MARKER") || strings.Contains(env, "[full content at:") || strings.Contains(env, "truncated") {
+		t.Fatalf("mashura result was cut in the envelope (len %d)", len(env))
+	}
+}
+
 // When spill is unavailable (no writable session dir), the async result falls
 // back to a bounded in-context truncation + check_pending pointer — best
 // effort, result stays reachable via check_pending.
@@ -228,7 +251,7 @@ func TestAsyncEnvelopeOpCapSpillUnavailable(t *testing.T) {
 	// → SpillToCache returns "" → renderAsyncLine falls back to truncation.
 	a.Client.ChatID = ""
 	big := strings.Repeat("x", asyncEnvelopeOpCap*2)
-	op := enqueueAndWait(t, a, func() (string, []counselUsageRec, []string, error) {
+	op := enqueueNamedAndWait(t, a, "run_shell", func() (string, []counselUsageRec, []string, error) {
 		return big, nil, nil, nil
 	})
 	env := a.drainAsyncInbox()

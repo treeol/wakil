@@ -7,27 +7,53 @@ import (
 	"testing"
 )
 
-// TestReadFileCappedTruncatesAndDetectsBinary verifies file content capping and
-// binary detection.
-func TestReadFileCappedTruncatesAndDetectsBinary(t *testing.T) {
+// TestMentionFileWholeOrLoud verifies an attached file is injected whole (a
+// 300 KB file used to be cut at 50 KB), binary files are detected, and a file
+// above the sanity limit fails loudly instead of being cut.
+func TestMentionFileWholeOrLoud(t *testing.T) {
 	dir := t.TempDir()
 
-	big := filepath.Join(dir, "big.txt")
-	if err := os.WriteFile(big, []byte(strings.Repeat("x", maxMentionBytes+100)), 0o644); err != nil {
+	var sb strings.Builder
+	for i := 0; i < 20000; i++ {
+		sb.WriteString("line of a long attached document number ")
+		sb.WriteString(strings.Repeat("x", 5))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("LAST-LINE-MARKER\n")
+	if err := os.WriteFile(filepath.Join(dir, "big.md"), []byte(sb.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, truncated, binary, err := readFileCapped(big)
-	if err != nil || binary || !truncated {
-		t.Fatalf("big file: truncated=%v binary=%v err=%v", truncated, binary, err)
+	out, refs := ResolveMentions("review @big.md", dir)
+	if len(refs) != 1 || !refs[0].Ok {
+		t.Fatalf("refs = %+v", refs)
+	}
+	if !strings.Contains(out, "LAST-LINE-MARKER") || !strings.Contains(out, sb.String()) || strings.Contains(out, "truncated") {
+		t.Fatalf("attached file was not injected whole (len %d, file %d)", len(out), sb.Len())
 	}
 
 	bin := filepath.Join(dir, "blob.bin")
 	if err := os.WriteFile(bin, []byte{1, 2, 0, 3, 4}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, binary, err = readFileCapped(bin)
-	if err != nil || !binary {
+	if _, binary, err := readMentionFile(bin); err != nil || !binary {
 		t.Fatalf("binary detection failed: binary=%v err=%v", binary, err)
+	}
+
+	huge := filepath.Join(dir, "huge.log")
+	f, err := os.Create(huge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxMentionBytes + 1); err != nil { // sparse file
+		t.Fatal(err)
+	}
+	f.Close()
+	out, refs = ResolveMentions("see @huge.log", dir)
+	if len(refs) != 1 || refs[0].Ok || !strings.Contains(refs[0].Note, "too large") {
+		t.Fatalf("oversized mention must fail loudly: %+v", refs)
+	}
+	if out != "see @huge.log" {
+		t.Fatalf("nothing may be injected for a failed mention, got %d bytes", len(out))
 	}
 }
 

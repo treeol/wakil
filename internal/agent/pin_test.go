@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -234,11 +235,13 @@ func TestDropLoopTerminatesWithAllPinned(t *testing.T) {
 // to produce a truthful Status:"incomplete" summary.
 func TestEnforceHardMaxSetsExhaustedFlag(t *testing.T) {
 	app := &App{Cfg: config.DefaultConfig(), Out: io.Discard, IsSubagent: true}
-	app.Cfg.HardMaxBytes = 200
+	app.Cfg.HardMaxBytes = 400
 	app.Cfg.CompactAt = 150
 	app.Cfg.KeepBytes = 100
 	app.Cfg.SummaryBytes = 5000
 
+	// Only PRIOR turns may be shed: the newest turn (y…) is current-turn
+	// content and survives; the older turn (x…) is dropped to fit.
 	app.Conv = []proxy.Message{
 		{Role: "user", Content: StrPtr(strings.Repeat("x", 300))},
 		{Role: "assistant", Content: StrPtr("answer")},
@@ -246,12 +249,15 @@ func TestEnforceHardMaxSetsExhaustedFlag(t *testing.T) {
 		{Role: "assistant", Content: StrPtr("answer2")},
 	}
 	app.Summarize = func(_ context.Context, _ string) (string, error) {
-		return "summary", nil
+		return "", errors.New("summarizer unavailable")
 	}
 
 	app.enforceHardMax(context.Background(), app.Cfg.HardMaxBytes)
 	if !app.exhausted {
 		t.Error("expected exhausted=true after enforceHardMax dropped content")
+	}
+	if len(app.Conv) != 2 || !strings.HasPrefix(DerefStr(app.Conv[0].Content), "yyy") {
+		t.Errorf("current turn must survive, prior turn must be shed: %+v", app.Conv)
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -25,6 +26,44 @@ func TranscriptSize(conv []proxy.Message) int {
 		}
 	}
 	return n
+}
+
+// protectedStart returns the index in conv of the first message of the
+// CURRENT turn (the request being processed, or the most recently finished one
+// between turns). Everything at or after it is "current-turn content": the
+// user's message, any attached files, and the tool results of the turn. It must
+// never be summarised, evicted or dropped — only prior turns may be reduced.
+//
+// Detection is Turn-field based (appendConv stamps every in-turn message with
+// a.curTurn), NOT role based: the loop injects extra user-role messages
+// (async-result envelopes, budget notes, wrap-up prompts) that a role-based
+// scan would mistake for turn starts, exposing the real brief to compaction.
+//
+// When curTurn is set but no message carries it yet (the window between
+// SendOutcome's turn numbering and the user message being appended) nothing is
+// protected (len(conv)). When curTurn is 0 (manually built transcripts,
+// /compact before any turn) it falls back to the last user message.
+func protectedStart(conv []proxy.Message, curTurn int) int {
+	if curTurn > 0 {
+		for i, m := range conv {
+			if m.Turn == curTurn {
+				return i
+			}
+		}
+		return len(conv)
+	}
+	for i := len(conv) - 1; i >= 0; i-- {
+		if conv[i].Role == "user" {
+			return i
+		}
+	}
+	return len(conv)
+}
+
+// protectedStart is the App-bound form of protectedStart for a transcript
+// snapshot. curTurn is turn-goroutine state, read here without a lock.
+func (a *App) protectedStart(conv []proxy.Message) int {
+	return protectedStart(conv, a.curTurn)
 }
 
 // turnBoundary returns the index of the start of the keep-th user turn counted
@@ -352,10 +391,12 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	// answers whether compaction would summarize anything. If not, return
 	// with the collapse state fully intact (non-destructive no-op).
 	if a.IsLongSession() {
-		boundary := keepBoundary(a.contextProjection(), keepBytes)
+		proj := a.contextProjection()
+		boundary := keepBoundary(proj, keepBytes)
 		if keepNewestOnly {
-			boundary = newestUserBoundary(a.contextProjection())
+			boundary = newestUserBoundary(proj)
 		}
+		boundary = min(boundary, a.protectedStart(proj))
 		if boundary <= 0 {
 			return false, nil
 		}
@@ -378,6 +419,9 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	if keepNewestOnly {
 		boundary = newestUserBoundary(a.Conv)
 	}
+	// Never summarise the current turn: its brief, attached files and tool
+	// results are sent whole. Only prior turns may be compacted.
+	boundary = min(boundary, a.protectedStart(a.Conv))
 	if boundary <= 0 {
 		return false, nil
 	}
@@ -489,6 +533,44 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		} else {
 			summarizable = append(summarizable, m)
 		}
+	}
+
+	// Archive the originals BEFORE they are replaced by the summary, so the
+	// full text stays recoverable and the user can be told where it is.
+	a.lastCompactNote = ""
+	if len(summarizable) > 0 {
+		size := 0
+		var ids []string
+		for _, m := range summarizable {
+			size += messageSize(m)
+			if m.Role == "tool" && m.ToolCallID != "" {
+				ids = append(ids, m.ToolCallID)
+			}
+		}
+		first, last := summarizable[0].Turn, summarizable[len(summarizable)-1].Turn
+		note := fmt.Sprintf(" · %d messages (%d bytes ≈ %d tokens)", len(summarizable), size, size/charsPerToken)
+		if first > 0 && last > 0 {
+			note += fmt.Sprintf(" from request %d–%d", first, last)
+		}
+		if len(ids) > 0 {
+			shown := ids
+			if len(shown) > maxNoticeToolIDs {
+				shown = shown[:maxNoticeToolIDs]
+			}
+			note += " · tool results: " + strings.Join(shown, ", ")
+			if len(ids) > len(shown) {
+				note += fmt.Sprintf(" +%d more", len(ids)-len(shown))
+			}
+		}
+		arch := a.archiveTranscript(fmt.Sprintf("compact-%d", a.compactSeq+1), renderWorkingSet(summarizable))
+		if arch == "" {
+			// Never replace originals with a lossy summary unless a durable
+			// archive of the originals was written first.
+			return false, errors.New("compaction aborted: failed to write archive of the turns to be summarised (originals kept intact)")
+		}
+		note += " · archive: " + arch
+		a.compactSeq++
+		a.lastCompactNote = note
 	}
 
 	var summary string
@@ -665,59 +747,8 @@ func turnContainsSubagent(conv []proxy.Message, first, next int) bool {
 	return false
 }
 
-// dropOldestTurn removes the oldest complete user turn from the transcript,
-// preserving any leading system summary. Dropping complete turns (rather than
-// individual messages) keeps the remaining transcript coherent — no orphaned
-// tool results or assistant messages without a preceding user message.
-func dropOldestTurn(conv []proxy.Message) []proxy.Message {
-	first, next := oldestTurnRange(conv)
-	if first < 0 {
-		// No droppable user turns — nothing safe to drop; remove one non-pinned
-		// raw message as last resort. Skip:
-		// - pinned messages (system prompt, task, breadcrumbs)
-		// - assistant messages with tool_calls (dropping orphans their tool results)
-		// - tool messages whose parent assistant is being retained (dropping
-		//   orphans the tool_calls — the inverse schema violation)
-		start := 0
-		if len(conv) > 0 && conv[0].Role == "system" {
-			start = 1
-		}
-		for i := start; i < len(conv); i++ {
-			if conv[i].Pinned {
-				continue
-			}
-			if conv[i].Role == "assistant" && len(conv[i].ToolCalls) > 0 {
-				continue
-			}
-			if conv[i].Role == "tool" && conv[i].ToolCallID != "" {
-				// Check if the parent assistant is still in conv (being retained).
-				// If it is, dropping this tool message would orphan it.
-				parentRetained := false
-				for j := i - 1; j >= 0; j-- {
-					if conv[j].Role == "assistant" && len(conv[j].ToolCalls) > 0 {
-						for _, tc := range conv[j].ToolCalls {
-							if tc.ID == conv[i].ToolCallID {
-								parentRetained = true
-								break
-							}
-						}
-						break // nearest assistant is the structural parent
-					}
-				}
-				if parentRetained {
-					continue
-				}
-			}
-			return append(conv[:i:i], conv[i+1:]...)
-		}
-		return conv
-	}
-	// Drop [first, next): the entire oldest user turn.
-	return append(conv[:first:first], conv[next:]...)
-}
-
 // spillPathsInTurn collects every spill-cache path referenced by tool messages
-// in the first user turn of conv (i.e. the turn dropOldestTurn is about to
+// in the first user turn of conv (i.e. the turn enforceHardMax is about to
 // remove). Paths come from capToolResult and stubToolResult annotations.
 func spillPathsInTurn(conv []proxy.Message) []string {
 	first, next := oldestTurnRange(conv)
@@ -762,7 +793,9 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 	}
 	sizeBefore := a.sentSize(a.Conv)
 	// Try a forced compact pass first — summarise rather than drop when possible.
-	a.Compact(ctx, a.summarizeFn(), true) //nolint:errcheck
+	if ok, _ := a.Compact(ctx, a.summarizeFn(), true); ok {
+		fmt.Fprintln(a.Out, Dim("· compacted earlier turns into a summary"+a.lastCompactNote))
+	}
 
 	var droppedPaths []string
 	droppedTurns := 0
@@ -776,15 +809,28 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 			break
 		}
 		first, next := oldestTurnRange(a.Conv)
-		if first < 0 {
+		// Only PRIOR turns may be shed. The current turn (its brief, attached
+		// files, tool results) is never dropped — if it alone is over the
+		// limit the pre-send guard in streamTurn fails loudly instead.
+		protect := a.protectedStart(a.Conv)
+		if first < 0 || first >= protect {
 			break
 		}
+		next = min(next, protect)
 		if turnContainsSubagent(a.Conv, first, next) {
 			droppedSubagent = true
 		}
 		droppedPaths = append(droppedPaths, spillPathsInTurn(a.Conv)...)
+		// Archive the whole turn BEFORE dropping it; never drop a turn whose
+		// archive could not be written (nothing shed here may become
+		// unrecoverable).
+		arch := a.archiveTranscript(fmt.Sprintf("hardmax-turn-%d", a.Conv[first].Turn), renderWorkingSet(a.Conv[first:next]))
+		if arch == "" {
+			break
+		}
+		droppedPaths = append(droppedPaths, arch)
 		a.convMu.Lock()
-		a.Conv = dropOldestTurn(a.Conv)
+		a.Conv = append(a.Conv[:first:first], a.Conv[next:]...)
 		a.convMu.Unlock()
 		droppedTurns++
 	}
@@ -799,7 +845,7 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 		return
 	}
 
-	// Conv was restructured by dropOldestTurn — invalidate checkpoint
+	// Conv was restructured by the turn drops above — invalidate checkpoint
 	// ConvLen values (they referenced indices that no longer correspond).
 	a.clearCheckpoints()
 
@@ -845,4 +891,50 @@ func (a *App) enforceHardMax(ctx context.Context, max int) {
 		fmt.Fprintf(&b, "\n  ⚠ %s", Yellow(fmt.Sprintf("hard-max still not met — %dk remains (limit %dk), pinned content may exceed the limit", a.sentSize(a.Conv)/1000, max/1000)))
 	}
 	fmt.Fprintln(a.Out, b.String())
+}
+
+// ErrCurrentTurnTooLarge is returned (wrapped) when the current turn — the
+// user's message, attached files and this turn's tool results — together with
+// the pinned preamble does not fit the request limit even after every prior
+// turn was reduced. Nothing is sent: a prefix of the brief is worse than no
+// answer.
+var ErrCurrentTurnTooLarge = errors.New("current turn exceeds the request limit")
+
+// guardCurrentTurn is the pre-send guard. When the request would exceed the
+// hard ceiling it first reduces PRIOR turns (enforceHardMax: summarise, then
+// archive-and-drop) and re-measures. If the request is still too large the
+// current turn itself is the problem; the error names its size and the limit
+// and nothing is sent. The current turn is never cut to make it fit.
+func (a *App) guardCurrentTurn(ctx context.Context, msgs []proxy.Message) ([]proxy.Message, error) {
+	_, _, hardMax := a.activeThresholds()
+	if hardMax <= 0 || TranscriptSize(msgs) <= hardMax {
+		return msgs, nil
+	}
+	a.enforceHardMax(ctx, hardMax)
+	msgs = a.requestMessages()
+	total := TranscriptSize(msgs)
+	if total <= hardMax {
+		return msgs, nil
+	}
+	cur := 0
+	if ps := a.protectedStart(msgs); ps < len(msgs) {
+		cur = TranscriptSize(msgs[ps:])
+	}
+	return msgs, fmt.Errorf("%w: the request is %d bytes (~%d tokens) of which the current turn is %d bytes (~%d tokens), "+
+		"limit %d bytes (~%d tokens); nothing was sent. Shorten or split the message/attachments, "+
+		"or raise hard_max_bytes / context_capacity",
+		ErrCurrentTurnTooLarge, total, total/charsPerToken, cur, cur/charsPerToken, hardMax, hardMax/charsPerToken)
+}
+
+// archiveTranscript writes text to the session's toolcache directory and
+// returns its path, falling back to an "_unscoped" bucket inside the toolcache
+// root when the App has no chatID (headless/subagent/test callers). Returns ""
+// when the archive could not be written — callers must refuse to drop or
+// replace the originals in that case.
+func (a *App) archiveTranscript(name, text string) string {
+	id := a.chatID()
+	if id == "" {
+		id = "_unscoped"
+	}
+	return tools.SpillToCache(id, name, text)
 }

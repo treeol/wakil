@@ -730,6 +730,7 @@ func (a *App) defaultSkillReview(ctx context.Context, question, briefing string)
 		AnthropicEndpoint:  a.Cfg.OracleEndpoint,
 		FusionJudge:        panel.FusionJudge,
 		FusionMaxToolCalls: panel.FusionMaxToolCalls,
+		ModelLimits:        a.mashuraModelLimits(),
 		// Server tools (web search/fetch) are deliberately NOT forwarded: the
 		// reviewer sees only the sanitized draft and must not be able to send
 		// any of it to a third-party search.
@@ -740,6 +741,8 @@ func (a *App) defaultSkillReview(ctx context.Context, question, briefing string)
 		if r.Usage.InputTokens > 0 || r.Usage.OutputTokens > 0 {
 			a.RecordOracleCostFor(r.Model, r.Usage)
 		}
+		// A VOID reply keeps its Err (VoidError): it is never an empty "approved"
+		// answer, so the pipeline cannot read it as a clean review.
 		out = append(out, skillReviewResult{Model: r.Model, Answer: r.Answer, Err: r.Err})
 	}
 	return out, panel.Mode, nil

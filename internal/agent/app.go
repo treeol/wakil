@@ -266,8 +266,17 @@ type App struct {
 	// goroutine. turnSeq is the monotonic counter; curTurn is the current
 	// request's number. lastOutcomeSuspended records whether the most recent
 	// outcome was suspended (for collapse rule 6).
-	turnSeq              int
-	curTurn              int
+	turnSeq int
+	curTurn int
+	// lastPanelVoid is set by a synchronous mashūra panel when any reply was
+	// VOID (truncated / empty / wrong last-section citation). Turn goroutine
+	// only. Auto-counsel reads it to refund the round counter.
+	lastPanelVoid bool
+	// lastCompactNote describes what the last Compact pass folded into its
+	// summary (message count, bytes/tokens, request range, tool-result ids and
+	// the archive path); compactSeq numbers the archives. Turn goroutine only.
+	lastCompactNote      string
+	compactSeq           int
 	lastOutcomeSuspended bool
 
 	// Long-session collapse state. Turn goroutine writes; projection reads
@@ -1795,7 +1804,7 @@ func (a *App) ensurePreamble() {
 		// First turn this session, or Conv was just reset (NewConversation) —
 		// insert fresh. Pinned so compaction/hard-max never dissolve or drop
 		// it (see compact.go's leading-system-message handling in
-		// oldestTurnRange/dropOldestTurn, which already special-cases Conv[0]
+		// oldestTurnRange (enforceHardMax), which already special-cases Conv[0]
 		// being a system message).
 		a.Conv = append([]proxy.Message{{Role: "system", Content: StrPtr(text), Pinned: true}}, a.Conv...)
 	}
@@ -1919,6 +1928,9 @@ func (a *App) evictStaleToolResults() {
 	// Keep the most recent (ttl+1) user turns verbatim; evict tool results
 	// in anything older. boundary==0 means not enough turns yet.
 	boundary := turnBoundary(a.Conv, ttl+1)
+	// Never evict current-turn tool results (role-based turnBoundary can land
+	// inside the current turn on injected user messages).
+	boundary = min(boundary, a.protectedStart(a.Conv))
 	if boundary <= 0 {
 		return
 	}

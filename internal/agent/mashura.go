@@ -31,11 +31,12 @@ import (
 // intent → ERROR, no call made).
 
 const (
-	// Source-reading caps. Wakil reads paths from disk; the model never pastes content.
-	mashuraSourceFileCap   = 32 * 1024  // per-file bytes before line-level clip
-	mashuraSourcesTotal    = 150 * 1024 // total bytes across all sources in one briefing
-	mashuraDirFileCap      = 20         // max source files expanded from one directory
-	mashuraToolBriefingCap = 200 * 1024 // overall briefing cap for tool-initiated calls
+	// Source-reading limits. Wakil reads paths from disk; the model never pastes
+	// content. Nothing read is ever clipped: a source is included whole, or the
+	// call fails loudly (the reviewer dispatcher then sends whole / in labelled
+	// parts / errors against the model's real context window).
+	mashuraDirFileCap     = 20      // max source files expanded from one directory (more = error, never a silent subset)
+	mashuraBriefingSanity = 8 << 20 // absolute sanity bound on one briefing (bytes); above it the call fails
 
 	// mashuraDebugTraceK is how many recent tool calls a debug briefing includes.
 	mashuraDebugTraceK = 8
@@ -54,12 +55,10 @@ type PathRange struct {
 
 // mashuraSourceMeta is the read receipt for one file sent to the oracle.
 type mashuraSourceMeta struct {
-	Path    string
-	Bytes   int
-	Lines   int  // lines shown
-	Total   int  // total lines in file
-	Clipped bool // clipped to per-file cap
-	Omitted bool // skipped due to total budget
+	Path  string
+	Bytes int
+	Lines int // lines shown
+	Total int // total lines in file
 }
 
 // binaryExts are file extensions Wakil skips during directory expansion.
@@ -214,6 +213,9 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
+	if err := mashuraCheckSize(briefing); err != nil {
+		return "ERROR: " + err.Error()
+	}
 
 	maxTokens := a.mashuraMaxTokensFor(name)
 	detail := counsel.PanelDetail(panelName, panel.Models, panel.Mode, question, briefing, panel.ServerTools)
@@ -246,12 +248,15 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		ServerTools:        panel.ServerTools,
 		WebSearchEngine:    panel.WebSearchEngine,
 		ServerToolMaxCalls: panel.ServerToolMaxCalls,
+		ModelLimits:        a.mashuraModelLimits(),
+		MinAnswerTokens:    a.mashuraMinAnswerTokens(name),
 	}
 	models, mode := panel.Models, panel.Mode
 
 	if sync {
 		results := counsel.RunPanel(ctx, models, mode, question, briefing, ccfg, apiKeys)
 		a.recordMashuraResults(results)
+		a.lastPanelVoid = counsel.AnyVoid(results)
 		return counsel.FormatPanelResult(results)
 	}
 
@@ -358,6 +363,9 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 			}
 		}
 		if allErr && len(results) > 0 {
+			if counsel.AnyVoid(results) {
+				return counsel.FormatPanelResult(results), recs, okModels, fmt.Errorf("round NOT COMPLETED: VOID reply (see result) — not a review round, not \"no findings\"")
+			}
 			return counsel.FormatPanelResult(results), recs, okModels, fmt.Errorf("all panel members failed (see check_pending result for details)")
 		}
 		return counsel.FormatPanelResult(results), recs, okModels, nil
@@ -378,6 +386,7 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		defer cancel()
 		results := counsel.RunPanel(fbCtx, models, mode, question, briefing, ccfg, apiKeys)
 		a.recordMashuraResults(results)
+		a.lastPanelVoid = counsel.AnyVoid(results)
 		return counsel.FormatPanelResult(results)
 	}
 	return fmt.Sprintf("queued as %s (%s, panel %s) — the panel is running now; once it completes, its result will be injected into context at the next model request while this turn continues. Keep working; call check_pending(%q) any time to retrieve it early.",
@@ -398,6 +407,27 @@ func (a *App) recordMashuraResults(results []counsel.PanelMemberResult) {
 			a.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}
 	}
+}
+
+// mashuraModelLimits converts the mashura_models config to dispatcher limits.
+func (a *App) mashuraModelLimits() map[string]counsel.ModelLimits {
+	if len(a.Cfg.MashuraModels) == 0 {
+		return nil
+	}
+	out := make(map[string]counsel.ModelLimits, len(a.Cfg.MashuraModels))
+	for k, v := range a.Cfg.MashuraModels {
+		out[k] = counsel.ModelLimits{ContextTokens: v.ContextTokens, ReviewMaxTokens: v.ReviewMaxTokens}
+	}
+	return out
+}
+
+// mashuraMinAnswerTokens is the answer-budget floor: 4096 for a review (the
+// dispatcher default), the lightweight check tool keeps its own small floor.
+func (a *App) mashuraMinAnswerTokens(name string) int {
+	if strings.TrimPrefix(name, "mashura__") == "check" {
+		return mashuraCheckMaxTokens
+	}
+	return 0
 }
 
 // mashuraPanelArg extracts the optional "panel" field from a tool call's JSON
@@ -641,51 +671,16 @@ func (a *App) mashuraPlanSections(ctx context.Context) (findings, plan string) {
 	return workflow.ExtractPlanSection(content, "## Findings"), workflow.ExtractPlanSection(content, "## Plan")
 }
 
-// mashuraCap tail-truncates an assembled tool briefing to mashuraToolBriefingCap.
-// This is larger than the WF oracle cap — tool calls can attach full source files.
-//
-// If the briefing contains a Sources section, the tail-truncation would drop the
-// evidence first (Sources are appended last). To avoid this, we split on the
-// Sources header and truncate the non-sources portion separately, preserving
-// as much evidence as fits within the overall cap.
-func mashuraCap(s string) string {
-	if len(s) <= mashuraToolBriefingCap {
-		return s
+// mashuraCheckSize is the last line of defence before any panel member is
+// contacted: an absurd briefing fails the call. Everything below the sanity
+// bound is sized by the reviewer dispatcher against each model's context
+// window; nothing is ever cut here.
+func mashuraCheckSize(briefing string) error {
+	if len(briefing) > mashuraBriefingSanity {
+		return fmt.Errorf("briefing is %d bytes (~%d tokens), above the %d-byte sanity limit — nothing was sent; attach fewer or smaller sources",
+			len(briefing), len(briefing)/3, mashuraBriefingSanity)
 	}
-	// The Sources header is "## Sources (read by Wakil)\n" — match on the
-	// stable prefix "## Sources" to find where evidence begins.
-	const marker = "## Sources"
-	idx := strings.Index(s, marker)
-	if idx < 0 {
-		// No Sources section — simple tail truncation.
-		return s[:mashuraToolBriefingCap] + "\n[briefing truncated at overall cap]"
-	}
-	// Split into body (before Sources) and sources (from marker onward).
-	body := s[:idx]
-	sources := s[idx:]
-	// Reserve space for truncation notices (worst case: two notices ~60 bytes).
-	usable := mashuraToolBriefingCap - 80
-	bodyCap := usable * 6 / 10 // 60% to body
-	srcCap := usable - bodyCap // 40% to sources
-	if len(sources) <= srcCap {
-		// Sources fit — give the remainder to body.
-		bodyCap = usable - len(sources)
-	} else if len(body) <= bodyCap {
-		// Body fits — give the remainder to sources.
-		srcCap = usable - len(body)
-	}
-	var result string
-	if len(body) > bodyCap {
-		result = body[:bodyCap] + "\n[briefing body truncated]\n"
-	} else {
-		result = body
-	}
-	if len(sources) > srcCap {
-		result += sources[:srcCap] + "\n[sources truncated]"
-	} else {
-		result += sources
-	}
-	return result
+	return nil
 }
 
 // mashuraReview builds the review briefing: core + findings + plan + model focus
@@ -717,7 +712,7 @@ func (a *App) mashuraReview(ctx context.Context, tc proxy.ToolCall) (question, b
 	var sb strings.Builder
 	sb.WriteString(a.mashuraCore(ctx))
 	if findings != "" {
-		fmt.Fprintf(&sb, "## Findings\n\n%s\n\n", workflow.CapFindings(findings))
+		fmt.Fprintf(&sb, "## Findings\n\n%s\n\n", findings)
 	}
 	if plan != "" {
 		fmt.Fprintf(&sb, "## Plan\n\n%s\n\n", plan)
@@ -731,7 +726,7 @@ func (a *App) mashuraReview(ctx context.Context, tc proxy.ToolCall) (question, b
 	q := "Critically review the plan and work against the task. Identify missing steps, " +
 		"incorrect assumptions, unclear acceptance criteria, risks, and contradictions. " +
 		"Distinguish what the shown context demonstrates from what you recall."
-	return q, mashuraCap(sb.String()), receipts, nil
+	return q, sb.String(), receipts, nil
 }
 
 // mashuraDebug builds the debug briefing: core + symptom + recent tool calls +
@@ -767,7 +762,7 @@ func (a *App) mashuraDebug(ctx context.Context, tc proxy.ToolCall) (question, br
 	q := "Diagnose the root cause of the symptom. Distinguish what the shown evidence " +
 		"demonstrates from what you recall. Propose the single cheapest next experiment to " +
 		"confirm or refute the leading hypothesis."
-	return q, mashuraCap(sb.String()), receipts, nil
+	return q, sb.String(), receipts, nil
 }
 
 // mashuraDebugTraces formats the last mashuraDebugTraceK rolling traces. EXIT≠0
@@ -796,9 +791,9 @@ func (a *App) mashuraDebugTraces() string {
 // receipts, and a pre-API error for bad (not found) paths.
 //
 // Capping rules:
-//   - Per file: clipped to mashuraSourceFileCap bytes with an explicit marker.
-//   - Total budget: whole files are dropped (not partially clipped) once exceeded;
-//     each omission is reported explicitly.
+//   - Files are included WHOLE (or the requested line range, whole). Nothing is
+//     clipped or omitted; an oversized total fails the call (mashuraCheckSize)
+//     and the reviewer dispatcher decides whole / labelled parts / error.
 func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []PathRange) (section string, receipts []mashuraSourceMeta, err error) {
 	if len(paths) == 0 && len(ranges) == 0 {
 		return "", nil, nil
@@ -857,6 +852,9 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 	total := 0
 
 	for _, e := range entries {
+		if total > mashuraBriefingSanity {
+			return "", nil, fmt.Errorf("sources exceed the %d-byte sanity limit after %q — nothing was sent; attach fewer or smaller sources", mashuraBriefingSanity, e.path)
+		}
 		body, readErr := a.Exec.ReadFile(ctx, e.path)
 		if readErr != nil {
 			return "", nil, fmt.Errorf("path %q: %w", e.path, readErr)
@@ -882,36 +880,13 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 		shownLines := allLines[start:end]
 		shownBody := strings.Join(shownLines, "\n")
 
-		// Per-file cap: clip and mark.
-		clipped := false
-		if len(shownBody) > mashuraSourceFileCap {
-			clipped = true
-			clipped_body := shownBody[:mashuraSourceFileCap]
-			// Back up to a newline so we don't split mid-line.
-			if nl := strings.LastIndexByte(clipped_body, '\n'); nl >= 0 {
-				clipped_body = clipped_body[:nl]
-			}
-			clippedCount := strings.Count(clipped_body, "\n") + 1
-			shownBody = clipped_body + fmt.Sprintf("\n[%s: truncated, %d of %d lines shown]", e.path, clippedCount, totalLines)
-			shownLines = allLines[start : start+clippedCount]
-		}
-
-		// Total budget: drop whole file if it won't fit.
-		if total+len(shownBody) > mashuraSourcesTotal {
-			receipts = append(receipts, mashuraSourceMeta{Path: e.path, Total: totalLines, Omitted: true})
-			fmt.Fprintf(&sb, "── %s ──\n[%s: omitted — total sources cap reached]\n\n", e.path, e.path)
-			continue
-		}
-
 		total += len(shownBody)
-		meta := mashuraSourceMeta{
-			Path:    e.path,
-			Bytes:   len(shownBody),
-			Lines:   len(shownLines),
-			Total:   totalLines,
-			Clipped: clipped,
-		}
-		receipts = append(receipts, meta)
+		receipts = append(receipts, mashuraSourceMeta{
+			Path:  e.path,
+			Bytes: len(shownBody),
+			Lines: len(shownLines),
+			Total: totalLines,
+		})
 
 		label := e.path
 		if e.start > 0 || e.end > 0 {
@@ -948,7 +923,8 @@ func (a *App) mashuraExpandPath(ctx context.Context, path string) (files []strin
 }
 
 // mashuraExpandDir lists source files inside dirPath, respecting .gitignore
-// (via git ls-files) and capping at mashuraDirFileCap files.
+// (via git ls-files). More than mashuraDirFileCap files is an error — a silent
+// subset would make the review look complete when it is not.
 func (a *App) mashuraExpandDir(ctx context.Context, dirPath string) ([]string, error) {
 	q := "'" + strings.ReplaceAll(dirPath, "'", `'\''`) + "'"
 	// git ls-files respects .gitignore; fall back to find ONLY if git fails
@@ -966,32 +942,16 @@ func (a *App) mashuraExpandDir(ctx context.Context, dirPath string) ([]string, e
 	}
 
 	var files []string
-	total := 0
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if binaryExts[strings.ToLower(filepath.Ext(line))] {
+		if line == "" || binaryExts[strings.ToLower(filepath.Ext(line))] {
 			continue
 		}
 		files = append(files, line)
-		total++
-		if len(files) >= mashuraDirFileCap {
-			break
-		}
 	}
-	// Count how many were skipped for the cap marker.
-	all := 0
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !binaryExts[strings.ToLower(filepath.Ext(line))] {
-			all++
-		}
-	}
-	if all > mashuraDirFileCap {
-		files = append(files, fmt.Sprintf("[+%d files omitted from %s — use explicit paths for full coverage]",
-			all-mashuraDirFileCap, dirPath))
+	if len(files) > mashuraDirFileCap {
+		return nil, fmt.Errorf("directory %s has %d source files (limit %d per directory) — nothing was sent; name the files or a narrower directory explicitly",
+			dirPath, len(files), mashuraDirFileCap)
 	}
 	return files, nil
 }
@@ -1004,14 +964,7 @@ func (a *App) mashuraLogReceipts(ctx context.Context, receipts []mashuraSourceMe
 	}
 	var parts []string
 	for _, r := range receipts {
-		switch {
-		case r.Omitted:
-			parts = append(parts, r.Path+" (omitted — cap)")
-		case r.Clipped:
-			parts = append(parts, fmt.Sprintf("%s (%d bytes, clipped)", r.Path, r.Bytes))
-		default:
-			parts = append(parts, fmt.Sprintf("%s (%d bytes)", r.Path, r.Bytes))
-		}
+		parts = append(parts, fmt.Sprintf("%s (%d bytes)", r.Path, r.Bytes))
 	}
 	msg := "[mashura] sent: " + strings.Join(parts, ", ")
 	fmt.Fprintln(a.Out, Dim("· "+msg))
@@ -1054,7 +1007,7 @@ func (a *App) mashuraDecide(ctx context.Context, tc proxy.ToolCall) (question, b
 	var sb strings.Builder
 	sb.WriteString(a.mashuraCore(ctx))
 	if findings != "" {
-		fmt.Fprintf(&sb, "## Findings\n\n%s\n\n", workflow.CapFindings(findings))
+		fmt.Fprintf(&sb, "## Findings\n\n%s\n\n", findings)
 	}
 	fmt.Fprintf(&sb, "## Decision\n\n%s\n\n", decision)
 	fmt.Fprintf(&sb, "## Options\n\n%s\n\n", options)
@@ -1063,7 +1016,7 @@ func (a *App) mashuraDecide(ctx context.Context, tc proxy.ToolCall) (question, b
 	}
 	q := "Which option best fits the shown constraints (task and findings)? State what " +
 		"evidence would change your answer. Flag any option that contradicts a stated finding."
-	return q, mashuraCap(sb.String()), receipts, nil
+	return q, sb.String(), receipts, nil
 }
 
 // mashuraCheck builds the lightweight check briefing: core + the single claim +
@@ -1095,7 +1048,7 @@ func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, br
 	}
 	q := "Verify the single claim against the shown evidence only. Answer SUPPORTED, " +
 		"CONTRADICTED, or INSUFFICIENT EVIDENCE, then one sentence why. Do not rely on recall."
-	return q, mashuraCap(sb.String()), receipts, nil
+	return q, sb.String(), receipts, nil
 }
 
 // mashuraMaxTokensFor returns the max_tokens for a mashura tool: a per-tool config
@@ -1248,8 +1201,16 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			// auto-counsel stays SYNCHRONOUS — its diagnosis must be
 			// injected immediately as the assistant+tool pair below (cap/dedup
 			// semantics depend on the result being in hand right now).
+			a.lastPanelVoid = false
 			result := a.runMashuraCore(ctx, "mashura__debug", fakeTC, true)
 			a.autoCounselSkipGate = false // ensure cleared even on early return
+			if a.lastPanelVoid {
+				// A VOID reply is not a counsel round: give the call back so
+				// the per-turn cap counts only real reviews.
+				a.counselCalls--
+				a.lastPanelVoid = false
+				fmt.Fprintln(a.Out, Yellow("⚠ auto-counsel: VOID reply — round not counted (cap unchanged)"))
+			}
 			// Inject as assistant+tool pair so the model sees the diagnosis.
 			a.appendConv(
 				proxy.Message{Role: "assistant", Content: nil, ToolCalls: []proxy.ToolCall{fakeTC}},

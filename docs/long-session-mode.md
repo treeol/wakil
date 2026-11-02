@@ -12,7 +12,7 @@ records, projection, note building, rewind pruning, memory indexing) and
 (`standard` | `long-session`, default `long-session`; `long` is an alias),
 flag `--context-mode`, env `WAKIL_CONTEXT_MODE`,
 `context_collapse_min_bytes` (default 2000), `context_tail_turns` (default
-20), `context_tail_answer_bytes` (default 500). The collapse note is capped
+20), `context_tail_answer_bytes` (default 0 = prior answers kept whole). The collapse note is capped
 by a fixed internal constant (1200 bytes), not a config key.
 
 ## Core principle: projection, not mutation
@@ -142,7 +142,7 @@ between the first message and the `collapse_context` call.
 - Tool-cache retention is age-based only (`tool_cache_retention_days`, default
   30, pruned once at startup in the background; 0 = never). There is no
   size-based cleanup.
-- Answers in the tail are capped by `context_tail_answer_bytes` (0 disables);
+- Answers in the tail are kept whole by default; `context_tail_answer_bytes` > 0 opts in to a cap;
   answers outside the tail are never collapsed. Very long base growth still
   ends in compaction, just much later.
 - Daemon parity: mode switching over the remote facade is not supported yet.

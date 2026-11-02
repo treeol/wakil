@@ -336,17 +336,17 @@ func TestContextFieldIgnoredNotSources(t *testing.T) {
 	}
 }
 
-// Oversized file: contents are clipped at the per-file cap with an explicit
-// marker; the omitted portion is not silently discarded.
-func TestSourcesOversizedFileClipped(t *testing.T) {
+// Large sources are included WHOLE: a 300 KB file (the old per-file cap was
+// 32 KB) arrives complete, with no truncation marker and a receipt that shows
+// every line.
+func TestSourcesLargeFileKeptWhole(t *testing.T) {
 	app, fe := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
-	// Build a file larger than mashuraSourceFileCap.
 	var sb strings.Builder
-	for i := 0; i < mashuraSourceFileCap/20+10; i++ {
+	for i := 0; i < 8000; i++ {
 		fmt.Fprintf(&sb, "line %05d: padding padding padding\n", i+1)
 	}
+	sb.WriteString("LAST-LINE-OF-BIG-FILE")
 	bigFile := sb.String()
-	totalLines := strings.Count(bigFile, "\n") + 1
 	fe.files["big.go"] = bigFile
 
 	_, briefing, receipts, err := app.mashuraReview(context.Background(),
@@ -354,53 +354,63 @@ func TestSourcesOversizedFileClipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(briefing, "truncated") {
-		t.Error("oversized file must show truncation marker in briefing")
+	if !strings.Contains(briefing, bigFile) {
+		t.Error("large file must be in the briefing whole")
 	}
-	if len(receipts) != 1 || !receipts[0].Clipped {
-		t.Error("receipt for oversized file must have Clipped=true")
+	if strings.Contains(briefing, "truncated") || strings.Contains(briefing, "omitted") {
+		t.Error("nothing may be clipped or omitted")
 	}
-	if receipts[0].Lines >= totalLines {
-		t.Errorf("clipped receipt should show fewer lines than total; got %d/%d", receipts[0].Lines, totalLines)
+	if len(receipts) != 1 || receipts[0].Lines != strings.Count(bigFile, "\n")+1 || receipts[0].Bytes != len(bigFile) {
+		t.Errorf("receipt must cover the whole file: %+v", receipts)
 	}
 }
 
-// A file is dropped whole (not partially clipped) when the total budget is
-// exhausted; its omission is reported explicitly in the briefing and receipts.
-func TestSourcesTotalBudgetDropsWhole(t *testing.T) {
+// Many large files are all included (the old 150 KB total budget dropped whole
+// files with an "omitted" marker).
+func TestSourcesTotalNeverDropsFiles(t *testing.T) {
 	app, fe := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
-	// Four files at the per-file cap fill 4×32 KB = 128 KB of the 150 KB budget.
-	// The fifth file (>32 KB) would require 32 KB more but only 22 KB remain → omitted.
-	bigContent := strings.Repeat("padding ", (mashuraSourceFileCap/8)+1) // > 32 KB
+	bigContent := strings.Repeat("padding ", 8000) // 64 KB
 	paths := make([]string, 0, 5)
-	for i := 1; i <= 4; i++ {
+	for i := 1; i <= 5; i++ {
 		name := fmt.Sprintf("big%d.go", i)
-		fe.files[name] = bigContent
+		fe.files[name] = bigContent + name
 		paths = append(paths, name)
 	}
-	fe.files["overflow.go"] = bigContent
-	paths = append(paths, "overflow.go")
-
 	pathsJSON, _ := json.Marshal(paths)
 	_, briefing, receipts, err := app.mashuraReview(context.Background(),
 		tcArgs("mashura__review", fmt.Sprintf(`{"focus":"x","paths":%s}`, pathsJSON)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(briefing, "overflow.go") {
-		t.Error("omitted file should still be mentioned in the briefing")
+	if len(receipts) != 5 {
+		t.Fatalf("all 5 files must be read, got %d receipts", len(receipts))
 	}
-	if !strings.Contains(briefing, "omitted") {
-		t.Error("omission must be reported explicitly in the briefing")
-	}
-	var omitted bool
-	for _, r := range receipts {
-		if r.Path == "overflow.go" && r.Omitted {
-			omitted = true
+	for _, p := range paths {
+		if !strings.Contains(briefing, bigContent+p) {
+			t.Errorf("%s not whole in briefing", p)
 		}
 	}
-	if !omitted {
-		t.Error("receipt for overflow.go must have Omitted=true")
+	if strings.Contains(briefing, "omitted") {
+		t.Error("nothing may be omitted")
+	}
+}
+
+// A directory with more files than the expansion limit is an error, never a
+// silent subset.
+func TestSourcesDirectoryOverLimitErrors(t *testing.T) {
+	app, fe := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	fe.dirs["bigdir"] = true
+	var list strings.Builder
+	for i := 0; i < mashuraDirFileCap+3; i++ {
+		name := fmt.Sprintf("bigdir/f%02d.go", i)
+		fe.files[name] = "package f"
+		list.WriteString(name + "\n")
+	}
+	fe.shellResult = list.String()
+	_, _, _, err := app.mashuraReview(context.Background(),
+		tcArgs("mashura__review", `{"focus":"x","paths":["bigdir"]}`))
+	if err == nil || !strings.Contains(err.Error(), "nothing was sent") {
+		t.Fatalf("over-limit directory must fail loudly, got %v", err)
 	}
 }
 
@@ -498,7 +508,7 @@ func TestSourcesReadReceiptsLogged(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		writeCitedReply(w, r, "ok", `{"input_tokens":1,"output_tokens":1}`)
 	}))
 	defer srv.Close()
 
@@ -565,7 +575,7 @@ func TestPanelSingleGateForWholePanel(t *testing.T) {
 	// A fake oracle endpoint that returns valid Anthropic-format responses.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		writeCitedReply(w, r, "ok", `{"input_tokens":1,"output_tokens":1}`)
 	}))
 	defer srv.Close()
 
@@ -675,7 +685,7 @@ func TestPanelCostPerModel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// 10 input + 5 output tokens each call.
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+		writeCitedReply(w, r, "ok", `{"input_tokens":10,"output_tokens":5}`)
 	}))
 	defer srv.Close()
 
@@ -742,7 +752,7 @@ func TestPanelPerCallOverride(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"resilient answer"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		writeCitedReply(w, r, "resilient answer", `{"input_tokens":1,"output_tokens":1}`)
 	}))
 	defer srv.Close()
 
@@ -950,7 +960,7 @@ func counselServer(t *testing.T) (*httptest.Server, *int) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*count++
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"diagnosis: fix the loop exit condition"}],"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50}}`))
+		writeCitedReply(w, r, "diagnosis: fix the loop exit condition", `{"input_tokens":100,"output_tokens":50}`)
 	}))
 	t.Cleanup(srv.Close)
 	return srv, count
@@ -1629,46 +1639,14 @@ func TestAutoCounselSkipGateClearedOnError(t *testing.T) {
 	}
 }
 
-// ── Card #M5: mashuraCap tests ─────────────────────────────────────────────
+// ── mashuraCheckSize: sanity bound, never a cut ───────────────────────────
 
-// TestMashuraCapNoSources verifies that a briefing without a Sources section
-// is simply tail-truncated.
-func TestMashuraCapNoSources(t *testing.T) {
-	// Create a string larger than the cap with no "## Sources" marker.
-	s := strings.Repeat("A", mashuraToolBriefingCap+500)
-	result := mashuraCap(s)
-	if len(result) > mashuraToolBriefingCap+50 { // allow for truncation notice
-		t.Errorf("result length %d exceeds cap + notice", len(result))
+func TestMashuraCheckSize(t *testing.T) {
+	if err := mashuraCheckSize(strings.Repeat("A", 1<<20)); err != nil {
+		t.Errorf("1 MB briefing must be accepted: %v", err)
 	}
-	if !strings.Contains(result, "[briefing truncated") {
-		t.Error("expected truncation notice")
-	}
-}
-
-// TestMashuraCapPreservesSources verifies that the Sources section is preserved
-// when the briefing is truncated, using the actual header format
-// "## Sources (read by Wakil)\n".
-func TestMashuraCapPreservesSources(t *testing.T) {
-	// Build a briefing where body is large and sources are small.
-	body := strings.Repeat("B", mashuraToolBriefingCap-200)
-	sources := "## Sources (read by Wakil)\n\nfile.go: line 42\n"
-	s := body + sources
-
-	result := mashuraCap(s)
-	if !strings.Contains(result, "## Sources") {
-		t.Error("Sources section was dropped by mashuraCap")
-	}
-	if !strings.Contains(result, "file.go: line 42") {
-		t.Error("source evidence was dropped by mashuraCap")
-	}
-}
-
-// TestMashuraCapUnderLimitNoChange verifies that a briefing under the cap
-// is returned unchanged.
-func TestMashuraCapUnderLimitNoChange(t *testing.T) {
-	s := "short briefing\n## Sources (read by Wakil)\n\nfile.go\n"
-	result := mashuraCap(s)
-	if result != s {
-		t.Errorf("briefing under cap was modified: got %q", result)
+	err := mashuraCheckSize(strings.Repeat("A", mashuraBriefingSanity+1))
+	if err == nil || !strings.Contains(err.Error(), "nothing was sent") {
+		t.Errorf("over-sanity briefing must fail loudly, got %v", err)
 	}
 }

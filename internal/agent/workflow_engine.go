@@ -231,15 +231,25 @@ func runWFPanel(ctx context.Context, app *App, headline, question, briefing, pan
 		ServerTools:        panel.ServerTools,
 		WebSearchEngine:    panel.WebSearchEngine,
 		ServerToolMaxCalls: panel.ServerToolMaxCalls,
+		ModelLimits:        app.mashuraModelLimits(),
 	}
 	results := counsel.RunPanel(ctx, panel.Models, panel.Mode, question, briefing, ccfg, apiKeys)
 	for _, r := range results {
+		if r.Usage.InputTokens > 0 || r.Usage.OutputTokens > 0 {
+			app.RecordOracleCostFor(r.Model, r.Usage) // billed even when VOID
+		}
 		if r.Err == nil {
-			app.RecordOracleCostFor(r.Model, r.Usage)
 			app.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}
 	}
 	formatted := counsel.FormatPanelResult(results)
+	if counsel.AnyVoid(results) {
+		// A VOID reply means a reviewer did not (fully) read the briefing. The
+		// consult is NOT completed: it must neither pass as "no gaps" nor be
+		// counted as a review round. The caller treats available=false as
+		// "oracle unavailable" and does not advance the workflow.
+		return formatted, results, false
+	}
 	anyOk := false
 	for _, r := range results {
 		if r.Err == nil {

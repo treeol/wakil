@@ -855,7 +855,9 @@ func oracleServer(t *testing.T, text string) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"content":[{"type":"text","text":` +
 			func() string {
-				b, _ := json.Marshal(text)
+				// A real reviewer ends with the mandatory last-section citation
+				// (workflow briefings always end in "## Question").
+				b, _ := json.Marshal(text + "\nLAST SECTION READ: Question")
 				return string(b)
 			}() +
 			`}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":20}}`))
@@ -1047,7 +1049,7 @@ func TestEverystepOracleCalledPerStep(t *testing.T) {
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCallCount++
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"Looks good, proceed."}],"stop_reason":"end_turn","usage":{}}`))
+		w.Write([]byte(`{"content":[{"type":"text","text":"Looks good, proceed.\nLAST SECTION READ: Question"}],"stop_reason":"end_turn","usage":{}}`))
 	}))
 	defer oracleSrv.Close()
 
@@ -1149,7 +1151,7 @@ func TestRemediationTurnRetriggersVerification(t *testing.T) {
 			verdict = "VERDICT: GAPS"
 		}
 		w.Header().Set("Content-Type", "application/json")
-		txt, _ := json.Marshal("Remediation complete.\n" + verdict)
+		txt, _ := json.Marshal("Remediation complete.\n" + verdict + "\nLAST SECTION READ: Question")
 		w.Write([]byte(`{"content":[{"type":"text","text":` + string(txt) + `}],"stop_reason":"end_turn","usage":{}}`))
 	}))
 	defer oracleSrv.Close()
@@ -1369,7 +1371,7 @@ func TestFailedPlanReadRoutesUnavailable(t *testing.T) {
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCallCount++
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok\nVERDICT: PASS"}],"stop_reason":"end_turn","usage":{}}`))
+		w.Write([]byte(`{"content":[{"type":"text","text":"ok\nVERDICT: PASS\nLAST SECTION READ: Question"}],"stop_reason":"end_turn","usage":{}}`))
 	}))
 	defer oracleSrv.Close()
 
@@ -2038,7 +2040,7 @@ func TestRunHeadlessDefaultInvokesOracle(t *testing.T) {
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCallCount++
 		w.Header().Set("Content-Type", "application/json")
-		txt, _ := json.Marshal("Plan is solid.\nVERDICT: PASS")
+		txt, _ := json.Marshal("Plan is solid.\nVERDICT: PASS\nLAST SECTION READ: Question")
 		w.Write([]byte(`{"content":[{"type":"text","text":` + string(txt) + `}],"stop_reason":"end_turn","usage":{}}`))
 	}))
 	defer oracleSrv.Close()
@@ -2091,7 +2093,7 @@ func TestRunHeadlessNoOracleFlag(t *testing.T) {
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCallCount++
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok\nVERDICT: PASS"}],"stop_reason":"end_turn","usage":{}}`))
+		w.Write([]byte(`{"content":[{"type":"text","text":"ok\nVERDICT: PASS\nLAST SECTION READ: Question"}],"stop_reason":"end_turn","usage":{}}`))
 	}))
 	defer oracleSrv.Close()
 
@@ -2567,22 +2569,15 @@ func TestBriefingContainsFindings(t *testing.T) {
 	}
 }
 
-// TestFindingsTruncatedWithMarker: findings larger than 4 KB are tail-truncated
-// with "[findings truncated]" appended.
-func TestFindingsTruncatedWithMarker(t *testing.T) {
-	bigFindings := strings.Repeat("x", workflow.FindingsCap+200)
+// TestFindingsKeptWhole: large findings are never cut — a reviewer must see
+// the whole evidence (the dispatcher decides whole / parts / error).
+func TestFindingsKeptWhole(t *testing.T) {
+	bigFindings := strings.Repeat("x", 9000) + "END-OF-FINDINGS"
 	plan := "## Task\n\nt\n\n## Findings\n\n" + bigFindings + "\n\n## Plan\n\n1. step\n"
 
 	oracle := workflow.BuildOracleBriefing("t", plan, "q?")
-	if !strings.Contains(oracle, "[findings truncated]") {
-		t.Error("oversized findings must include truncation marker")
-	}
-	// Marker must be inside the Findings section, before Plan.
-	findingsStart := strings.Index(oracle, "## Findings")
-	planStart := strings.Index(oracle, "## Plan")
-	markerPos := strings.Index(oracle, "[findings truncated]")
-	if !(findingsStart < markerPos && markerPos < planStart) {
-		t.Error("[findings truncated] must appear inside ## Findings, before ## Plan")
+	if !strings.Contains(oracle, bigFindings) || strings.Contains(oracle, "truncated") {
+		t.Error("findings must be included whole")
 	}
 }
 
@@ -2632,18 +2627,18 @@ func TestBriefingOmissionMarkerKeepsNewest(t *testing.T) {
 	}
 }
 
-// TestBriefingTruncationMarkerAppended: when even ## Task + ## Plan + ## Question
-// alone exceed the cap, the result ends with [briefing truncated] — never silent.
-func TestBriefingTruncationMarkerAppended(t *testing.T) {
+// TestBriefingNeverHardCut: when Task+Findings+Plan+Question alone exceed the
+// cap the briefing is returned WHOLE (the old behaviour cut the tail and left
+// the reviewer a prefix).
+func TestBriefingNeverHardCut(t *testing.T) {
 	longTask := strings.Repeat("a", 600)
-	longPlan := strings.Repeat("b", 600)
+	longPlan := strings.Repeat("b", 600) + "END-OF-PLAN"
 	planContent := fmt.Sprintf("## Task\n\n%s\n\n## Plan\n\n%s\n", longTask, longPlan)
 
 	briefing := workflow.BuildFinalReviewBriefing(longTask, planContent, "q?", 200)
 
-	if !strings.HasSuffix(briefing, "[briefing truncated]") {
-		t.Errorf("hard-truncated briefing must end with [briefing truncated]; got tail: %q",
-			briefing[max(0, len(briefing)-40):])
+	if !strings.Contains(briefing, "END-OF-PLAN") || !strings.HasSuffix(briefing, "q?") || strings.Contains(briefing, "[briefing truncated]") {
+		t.Errorf("briefing must be whole; tail: %q", briefing[max(0, len(briefing)-40):])
 	}
 }
 

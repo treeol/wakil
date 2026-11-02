@@ -157,8 +157,10 @@ func TestTurnBudgetHardStop200Files(t *testing.T) {
 
 func TestEnforceHardMaxFires(t *testing.T) {
 	// Scenario A: 5 normal turns to build history + summary, then one
-	// RawTools turn with 15 files × 15k each (225k raw) that defeats all
-	// earlier layers and forces enforceHardMax to drop the huge turn.
+	// RawTools turn with 15 files × 15k each (225k raw). The huge turn is the
+	// CURRENT turn: enforceHardMax sheds every prior turn but never the
+	// current one (only a warning says the limit is still not met; the
+	// pre-send guard in streamTurn is what fails loudly).
 	t.Run("rawtools_huge_turn_after_history", func(t *testing.T) {
 		var out bytes.Buffer
 		app := newSimApp(15000)
@@ -167,32 +169,36 @@ func TestEnforceHardMaxFires(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			simTurn(app, false, 3, 15000, 3000)
 		}
-		sizeBefore5 := TranscriptSize(app.Conv)
 		out.Reset() // only capture output of the final turn
 
 		before, after, _ := simTurn(app, true, 15, 15000, 3000)
 		warning := out.String()
 
-		t.Logf("after 5 normal turns: ctx=%dk", sizeBefore5/1000)
 		t.Logf("huge rawtools turn:   before=%dk  after=%dk  hard_max=%dk",
 			before/1000, after/1000, app.Cfg.HardMaxBytes/1000)
-		t.Logf("warning output:\n%s", warning)
 
-		if after > app.Cfg.HardMaxBytes {
-			t.Errorf("ctx %d exceeds hard max %d — enforceHardMax failed", after, app.Cfg.HardMaxBytes)
+		if !strings.Contains(warning, "hard-max shed") || !strings.Contains(warning, "ctx was") {
+			t.Errorf("expected hard-max shed warning with sizes, got %q", warning)
 		}
-		if !strings.Contains(warning, "hard-max shed") {
-			t.Error("expected hard-max warning in output, got none")
+		if !strings.Contains(warning, "still not met") {
+			t.Errorf("expected an explicit not-met warning, got %q", warning)
 		}
-		if !strings.Contains(warning, "ctx was") {
-			t.Error("expected ctx-was size in warning")
+		// The current turn (15 tool results of 15k) must be intact.
+		tools := 0
+		for _, m := range app.Conv {
+			if m.Role == "tool" && len(DerefStr(m.Content)) == 15000 {
+				tools++
+			}
+		}
+		if tools != 15 {
+			t.Errorf("current turn was cut: %d/15 tool results intact", tools)
 		}
 		checkCoherence(t, app.Conv)
 	})
 
-	// Scenario B: single fresh RawTools turn of 200k (no prior history).
-	// No summary exists; enforceHardMax drops the turn entirely.
-	// Warning must note that the transcript is now empty.
+	// Scenario B: single fresh RawTools turn of 210k (no prior history). It is
+	// the current turn, so nothing may be dropped; the warning says the limit
+	// could not be met and the content is intact.
 	t.Run("rawtools_single_fresh_turn", func(t *testing.T) {
 		var out bytes.Buffer
 		app := newSimApp(15000)
@@ -201,18 +207,11 @@ func TestEnforceHardMaxFires(t *testing.T) {
 		before, after, _ := simTurn(app, true, 14, 15000, 2000) // 14×15k = 210k raw
 		warning := out.String()
 
-		t.Logf("fresh 210k rawtools turn: before=%dk  after=%dk  hard_max=%dk",
-			before/1000, after/1000, app.Cfg.HardMaxBytes/1000)
-		t.Logf("warning output:\n%s", warning)
-
-		if after > app.Cfg.HardMaxBytes {
-			t.Errorf("ctx %d exceeds hard max %d — enforceHardMax failed", after, app.Cfg.HardMaxBytes)
+		if after != before {
+			t.Errorf("current turn must not be cut: before=%d after=%d", before, after)
 		}
-		if !strings.Contains(warning, "hard-max shed") {
-			t.Error("expected hard-max warning in output, got none")
-		}
-		if !strings.Contains(warning, "empty") && !strings.Contains(warning, "summary") {
-			t.Error("expected transcript-state note (empty or summary-only) in warning")
+		if !strings.Contains(warning, "could not be met") {
+			t.Errorf("expected a could-not-be-met warning, got %q", warning)
 		}
 		checkCoherence(t, app.Conv)
 	})
