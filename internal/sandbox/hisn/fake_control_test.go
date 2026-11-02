@@ -22,9 +22,9 @@ import (
 )
 
 type fakeCtl struct {
-	mu     sync.Mutex
-	next   int64 // exec counter
-	execs  map[string]*fakeExecRec // exec_id → exec (finished ones kept: signal → E_NOT_FOUND)
+	mu    sync.Mutex
+	next  int64                   // exec counter
+	execs map[string]*fakeExecRec // exec_id → exec (finished ones kept: signal → E_NOT_FOUND)
 }
 
 type fakeExecRec struct {
@@ -75,7 +75,7 @@ func (c *fakeCtl) serve(conn net.Conn) {
 			ExecID string            `json:"exec_id"`
 			Path   string            `json:"path"`
 			Mode   string            `json:"mode"`
-			Row    json.RawMessage    `json:"-"`
+			Row    json.RawMessage   `json:"-"`
 		}
 		if err := json.Unmarshal(line, &req); err != nil {
 			writeLine(uc, map[string]any{"ok": false, "error": "E_BAD_REQUEST", "message": "malformed line"})
@@ -115,7 +115,7 @@ func (c *fakeCtl) serveExec(uc *net.UnixConn, req struct {
 	ExecID string            `json:"exec_id"`
 	Path   string            `json:"path"`
 	Mode   string            `json:"mode"`
-	Row    json.RawMessage    `json:"-"`
+	Row    json.RawMessage   `json:"-"`
 }, fds []int) {
 	if len(fds) != 3 || len(req.Argv) == 0 {
 		writeLine(uc, map[string]any{"ok": false, "error": "E_BAD_REQUEST", "message": "exec needs argv and 3 fds"})
@@ -243,7 +243,7 @@ func parseOOB(b []byte) []int {
 	for _, m := range msgs {
 		if m.Header.Level == syscall.SOL_SOCKET && m.Header.Type == syscall.SCM_RIGHTS {
 			for i := 0; i+4 <= len(m.Data); i += 4 {
-				fds = append(fds, int(int32(uint32(m.Data[i]) | uint32(m.Data[i+1])<<8 | uint32(m.Data[i+2])<<16 | uint32(m.Data[i+3])<<24)))
+				fds = append(fds, int(int32(uint32(m.Data[i])|uint32(m.Data[i+1])<<8|uint32(m.Data[i+2])<<16|uint32(m.Data[i+3])<<24)))
 			}
 		}
 	}

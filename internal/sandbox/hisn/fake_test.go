@@ -192,7 +192,7 @@ func fakeRun(state string, args []string) int {
 		_ = ln.Close()
 	}
 	fakeCtlServe(ln, dir) // §7 protocol: exec/signal/grant/revoke/list/inspect/kill
-	if mode == "flood" { // ready, floods stderr (to jam a stalled log), then dies
+	if mode == "flood" {  // ready, floods stderr (to jam a stalled log), then dies
 		fmt.Fprint(os.Stderr, strings.Repeat("hisn: flood line\n", 20000))
 		return 125
 	}
