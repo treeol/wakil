@@ -518,11 +518,26 @@ func (ec *ExecConn) Signal(ctx context.Context, signal string) error {
 	if _, err := conn.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("hisn ctl signal %s: write: %w", signal, err)
 	}
-	// One response line, then close. Its body is irrelevant: only the exit
-	// line (on the exec connection) decides the outcome.
+	// Read the ONE response line and RETURN ITS FULL BODY — never swallow
+	// it: an {"ok":false,"error":…} here is exactly what diagnostics need
+	// (and what the integration test failure must show). Only the EXIT line
+	// (on the exec connection) decides the exec's outcome; this body is
+	// diagnostic, not verdict.
 	br := bufio.NewReaderSize(conn, maxLine+1)
-	if _, err := br.ReadString('\n'); err != nil {
+	resp, err := br.ReadString('\n')
+	if err != nil {
 		return fmt.Errorf("hisn ctl signal %s: read response: %w", signal, err)
+	}
+	var r struct {
+		OK      bool   `json:"ok"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(resp)), &r); err != nil {
+		return fmt.Errorf("hisn ctl signal %s: malformed response %q: %w", signal, strings.TrimSpace(resp), err)
+	}
+	if !r.OK {
+		return &Error{Op: "signal", Code: r.Error, Message: r.Message}
 	}
 	return nil
 }

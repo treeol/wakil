@@ -339,36 +339,51 @@ func (e *ctlExecHandle) Kill() error { return e.cancel() }
 
 // cancel TERMs then KILLs the exec via exec_id, each on its own fresh signal
 // connection (hisn does not read the exec connection after the request
-// line); closing the exec connection is the backstop (close = hisn TERMs
-// then KILLs after 5 s on its own).
+// line). The exec connection stays open until the exit line arrives or the
+// bounded post-KILL wait (10 s) expires — closing it earlier LOSES the exit
+// status. Closing the exec connection is the LAST RESORT (close = hisn
+// TERMs then KILLs after 5 s on its own), not part of the normal sequence.
+// A signal error is never swallowed: it propagates, carrying hisn's answer.
 func (e *ctlExecHandle) cancel() error {
-	// Cleanup budget: independent of the cancelled caller's deadline.
+	// Cleanup budget per step: independent of the cancelled caller's deadline.
 	sctx, scancel := context.WithTimeout(context.Background(), e.b.stopWait)
-	defer scancel()
-	if err := e.ec.Signal(sctx, "TERM"); err != nil {
-		// Signal failed (e.g. the session is already gone): close the exec
-		// connection — hisn's own cancel path — and let WaitExit decide.
-		e.ec.Close()
-	} else {
-		// Bounded grace for the exit line.
+	terr := e.ec.Signal(sctx, "TERM")
+	scancel()
+	if terr == nil {
 		wctx, wcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		ep, _ := e.ec.WaitExit(wctx)
 		wcancel()
 		if ep != nil {
-			return nil // TERMed in time
+			return nil // TERMed in time: the exit line arrived
 		}
 	}
-	if err := e.ec.Signal(sctx, "KILL"); err != nil {
+	// TERM failed or was ignored (trap): KILL on a fresh conn. A failed TERM
+	// does not preclude a KILL — different connection, same exec_id.
+	kctx, kcancel := context.WithTimeout(context.Background(), e.b.stopWait)
+	kerr := e.ec.Signal(kctx, "KILL")
+	kcancel()
+	if kerr != nil {
+		// Last resort: close the exec conn — hisn TERMs then KILLs after 5 s
+		// on its own — and keep waiting for the exit line.
 		e.ec.Close()
-	} else {
-		wctx, wcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		wctx, wcancel := context.WithTimeout(context.Background(), 10*time.Second)
 		ep, _ := e.ec.WaitExit(wctx)
 		wcancel()
 		if ep != nil {
 			return nil
 		}
+		return fmt.Errorf("hisn exec kill: %s did not exit after KILL (TERM: %w; KILL: %w)",
+			strings.Join(e.argv, " "), terr, kerr)
 	}
-	return fmt.Errorf("hisn exec kill: %s did not exit after KILL", strings.Join(e.argv, " "))
+	// KILL accepted: the exit line must follow within the bounded wait.
+	wctx, wcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ep, _ := e.ec.WaitExit(wctx)
+	wcancel()
+	if ep != nil {
+		return nil
+	}
+	return fmt.Errorf("hisn exec kill: %s did not exit after KILL (hisn accepted TERM=%v, KILL=%v, but no exit line arrived)",
+		strings.Join(e.argv, " "), terr == nil, kerr == nil)
 }
 
 func (e *ctlExecHandle) Wait() (sandbox.ExitInfo, error) {

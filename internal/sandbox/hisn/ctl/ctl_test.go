@@ -25,6 +25,9 @@ type fakeServer struct {
 	execs   int      // exec requests received
 	fdsPer  [][]int  // fds arrived with each exec line (ONE sendmsg or not)
 	exitIDs []string // exec_ids assigned
+	// signalLines are the raw request lines of every signal connection, in
+	// arrival order — for the byte-for-byte spec pin.
+	signalLines []string
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -82,6 +85,7 @@ func (f *fakeServer) serveConn(t *testing.T, conn net.Conn) {
 		switch req.Op {
 		case "signal":
 			f.mu.Lock()
+			f.signalLines = append(f.signalLines, string(line))
 			known := false
 			for _, id := range f.exitIDs {
 				if id == req.ExecID {
@@ -334,6 +338,60 @@ func TestSignalNeverWritesToExecConn(t *testing.T) {
 	ep, err := ec.WaitExit(ctx)
 	if err != nil || ep == nil || ep.Code == nil || *ep.Code != 7 {
 		t.Fatalf("exit = %+v err %v: the exec conn was disturbed by the signal", ep, err)
+	}
+	ec.Close()
+}
+
+// The signal request line is pinned BYTE-FOR-BYTE to POLICY-SPEC §7:
+//
+//	{"op":"signal","exec_id":"e-n","signal":"TERM"}
+//
+// field names exactly `op`/`exec_id`/`signal`, signal spelled as the short
+// name ("TERM"/"KILL", both accepted by hisn as name-or-number), one line,
+// on a fresh connection.
+func TestSignalRequestJSONByteForByte(t *testing.T) {
+	f := newFakeServer(t)
+	go f.serve(t)
+	c := New(f.sock)
+	stdio, _ := NewStdio()
+	ctx, cancel := ctxT(t, 5*time.Second)
+	defer cancel()
+	ec, _, err := c.StartExec(ctx, []string{"cat"}, "", nil, stdio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sig := range []string{"TERM", "KILL"} {
+		if err := ec.Signal(ctx, sig); err != nil {
+			t.Fatalf("signal %s: %v", sig, err)
+		}
+	}
+	f.mu.Lock()
+	lines := append([]string(nil), f.signalLines...)
+	f.mu.Unlock()
+	if len(lines) != 2 {
+		t.Fatalf("signal lines = %d, want 2 (one per signal)", len(lines))
+	}
+	// json.Marshal of a map sorts keys alphabetically; §7 is a JSON object
+	// per line, key order immaterial — the RECEIVER contract is field names
+	// + values.
+	for i, tc := range []struct{ execID, sig string }{{"e-1", "TERM"}, {"e-1", "KILL"}} {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(lines[i]), &m); err != nil {
+			t.Fatalf("signal line %d not JSON: %q: %v", i, lines[i], err)
+		}
+		if len(m) != 3 {
+			t.Fatalf("signal line %d has %d fields, want exactly op+exec_id+signal: %q", i, len(m), lines[i])
+		}
+		if m["op"] != "signal" || m["exec_id"] != tc.execID || m["signal"] != tc.sig {
+			t.Fatalf("signal line %d = %q, want {op:signal, exec_id:%s, signal:%s}", i, lines[i], tc.execID, tc.sig)
+		}
+	}
+	// The exec connection is untouched by signals: stdin EOF still delivers
+	// the exit line.
+	_ = stdio.InW.Close()
+	ep, err := ec.WaitExit(ctx)
+	if err != nil || ep == nil || ep.Code == nil || *ep.Code != 7 {
+		t.Fatalf("exit after signals = %+v err %v", ep, err)
 	}
 	ec.Close()
 }
