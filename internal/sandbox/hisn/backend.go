@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
+	"github.com/treeol/wakil/internal/sandbox/hisn/ctl"
 )
 
 // MinVersion is the oldest supported hisn release: 0.2.1 (ready-fd,
@@ -44,12 +45,19 @@ type Options struct {
 	// shm 1..65536; validated here so a bad config fails before start.
 	TmpSizeMB int64
 	ShmSizeMB int64
+	// ExecViaCLI runs tool-call execs through the `hisn exec` CLI (one client
+	// process per call) instead of the control-socket client. Fallback for
+	// one release; default false (ctl path).
+	ExecViaCLI bool
 }
 
 // live is one running session instance.
 type live struct {
 	id     string
 	token  string
+	// runtimeRoot is hisn's runtime directory for this instance (the parent
+	// of the session dir; ctl.SocketPath(root, id) is the control socket).
+	runtimeRoot string
 	ctx    context.Context // cancelled when the session is being replaced/stopped
 	cancel context.CancelFunc
 	wg     sync.WaitGroup // in-flight hisn exec clients
@@ -59,6 +67,9 @@ type live struct {
 	// refused is set when a control request found the session's socket refusing
 	// connections: whatever the process table says, the session is dead.
 	refused atomic.Bool
+	// ctl is the session's control-socket client (lazily built).
+	ctlOnce sync.Once
+	ctlCli  *ctl.Client
 }
 
 // dead reports whether the session's supervisor has exited. A dead session can
@@ -92,6 +103,15 @@ func (l *live) noteRefused(out string) bool {
 	}
 	l.refused.Store(true)
 	return true
+}
+
+// ctl returns the session's control-socket client, building it once: the
+// socket of THIS instance's session directory under hisn's runtime root.
+func (l *live) ctl() *ctl.Client {
+	l.ctlOnce.Do(func() {
+		l.ctlCli = ctl.New(ctl.SocketPath(l.runtimeRoot, l.id))
+	})
+	return l.ctlCli
 }
 
 // Backend drives hisn. Lifecycle transitions (Start/Stop/Close) take mu for

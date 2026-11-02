@@ -191,15 +191,7 @@ func fakeRun(state string, args []string) int {
 		ln.(*net.UnixListener).SetUnlinkOnClose(false)
 		_ = ln.Close()
 	}
-	go func() { // accept and drop: enough for "is it live"
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = c.Close()
-		}
-	}()
+	fakeCtlServe(ln, dir) // §7 protocol: exec/signal/grant/revoke/list/inspect/kill
 	if mode == "flood" { // ready, floods stderr (to jam a stalled log), then dies
 		fmt.Fprint(os.Stderr, strings.Repeat("hisn: flood line\n", 20000))
 		return 125

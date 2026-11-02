@@ -186,7 +186,7 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 
 func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 	lctx, cancel := context.WithCancel(context.Background())
-	l := &live{id: rec.ID, token: rec.Token, ctx: lctx, cancel: cancel, sup: sup}
+	l := &live{id: rec.ID, token: rec.Token, runtimeRoot: b.primaryRuntimeRoot(), ctx: lctx, cancel: cancel, sup: sup}
 	// When the supervisor dies the session is over: end every in-flight hisn
 	// client bound to it (they would otherwise be talking to a dead socket).
 	go func() {
@@ -275,6 +275,10 @@ func (b *Backend) runtimeRoots() []string {
 	}
 	return append(roots, fmt.Sprintf("/tmp/hisn-%d", os.Getuid()))
 }
+
+// primaryRuntimeRoot is where THIS instance's session directory lives (the
+// first runtime root; hisn uses it for the run that just started).
+func (b *Backend) primaryRuntimeRoot() string { return b.runtimeRoots()[0] }
 
 // sessionState classifies id as hisn itself does: "live" (something answers on
 // the control socket), "stale" (the directory exists, nothing answers) or

@@ -48,6 +48,7 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		EnvPass:     h.EnvPass,
 		TmpSizeMB:   h.TmpSizeMB,
 		ShmSizeMB:   h.ShmSizeMB,
+		ExecViaCLI:  h.ExecViaCLI,
 	})
 	if err != nil {
 		return nil, err
