@@ -446,7 +446,7 @@ func TestIntegrationSignalByExecID(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(300 * time.Millisecond) // let the trap install
-	if err := h.Kill(); err != nil {    // TERM (ignored) then KILL by exec_id
+	if err := h.Kill(); err != nil {   // TERM (ignored) then KILL by exec_id
 		t.Fatal(err)
 	}
 	info, werr := h.Wait()

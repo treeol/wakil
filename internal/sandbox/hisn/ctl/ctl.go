@@ -266,11 +266,15 @@ func (s *Stdio) closeKept() {
 	_ = s.ErrR.Close()
 }
 
-// ExecConn is one accepted exec: one connection for the program's whole life,
-// one dispatcher reading it, the accepted exec_id, and the kept stdio ends.
+// ExecConn is one accepted exec: one exec connection for the program's whole
+// life (the request line, the acceptance response, the async exit line —
+// nothing else; hisn does not read it further), one dispatcher reading it,
+// the accepted exec_id, and the kept stdio ends. Signals open their OWN
+// short-lived connections (see Signal).
 type ExecConn struct {
 	conn  net.Conn
-	wmu   sync.Mutex // serializes signal writes
+	dial  func(ctx context.Context) (net.Conn, error) // the client's dialer, for signal connections
+	wmu   sync.Mutex                                  // serializes signal requests
 	stdio *Stdio
 
 	execIDMu sync.RWMutex
@@ -337,7 +341,7 @@ func (c *Client) StartExec(ctx context.Context, argv []string, cwd string, env m
 	// Transfer succeeded: hisn owns the passed ends now. Close ours.
 	stdio.closePassed()
 
-	ec := &ExecConn{conn: conn, stdio: stdio, acceptCh: make(chan acceptReply, 1), exitCh: make(chan *ExitPayload, 1)}
+	ec := &ExecConn{conn: conn, dial: c.dialConn, stdio: stdio, acceptCh: make(chan acceptReply, 1), exitCh: make(chan *ExitPayload, 1)}
 	go ec.dispatch()
 
 	// Wait for acceptance under ctx.
@@ -482,22 +486,43 @@ func (ec *ExecConn) WaitExit(ctx context.Context) (*ExitPayload, error) {
 	}
 }
 
-// Signal writes {"op":"signal","exec_id":…} ON THE EXEC'S OWN CONNECTION,
-// serialized by wmu. A signal response line is consumed (and dropped) by the
-// dispatcher; E_NOT_FOUND in it means the exec already exited — the exit
-// line decides the outcome.
-func (ec *ExecConn) Signal(signal string) error {
-	ec.wmu.Lock()
-	defer ec.wmu.Unlock()
-	if ec.ExecID() == "" {
+// Signal sends {"op":"signal","exec_id":…} on a NEW connection to the
+// session socket, reads the one response line, closes. hisn (DESIGN §14.7)
+// does NOT read the exec connection after the request line: the exec
+// connection carries only the request, the acceptance response, and the
+// async exit line — a signal written there would hang forever. The
+// replacement-identity hazard the same-conn design closed is not reopened:
+// the signal is keyed by exec_id, and a replacement session's own exec ids
+// start fresh; a stale id in a replacement is E_NOT_FOUND, never a hit.
+// E_NOT_FOUND here means the exec already exited — the exit line decides
+// the outcome.
+func (ec *ExecConn) Signal(ctx context.Context, signal string) error {
+	id := ec.ExecID()
+	if id == "" {
 		return fmt.Errorf("hisn ctl signal: exec not yet accepted")
 	}
-	line, err := json.Marshal(map[string]any{"op": "signal", "exec_id": ec.ExecID(), "signal": signal})
+	ec.wmu.Lock()
+	defer ec.wmu.Unlock()
+	conn, err := ec.dial(ctx)
+	if err != nil {
+		return fmt.Errorf("hisn ctl signal %s: %w", signal, err)
+	}
+	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
+	line, err := json.Marshal(map[string]any{"op": "signal", "exec_id": id, "signal": signal})
 	if err != nil {
 		return err
 	}
-	if _, err := ec.conn.Write(append(line, '\n')); err != nil {
+	if _, err := conn.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("hisn ctl signal %s: write: %w", signal, err)
+	}
+	// One response line, then close. Its body is irrelevant: only the exit
+	// line (on the exec connection) decides the outcome.
+	br := bufio.NewReaderSize(conn, maxLine+1)
+	if _, err := br.ReadString('\n'); err != nil {
+		return fmt.Errorf("hisn ctl signal %s: read response: %w", signal, err)
 	}
 	return nil
 }

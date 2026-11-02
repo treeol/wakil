@@ -413,14 +413,19 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
   travel in **one `sendmsg`** (SCM_RIGHTS; fds only on the first line of a
   connection, exec only, `tty=false` always); Wakil closes its copies of the
   passed ends right after the send (transfer does not consume them). The
-  acceptance response carries `exec_id` (`e-<n>`). **One connection per exec
-  for its whole life**: signals (`{"op":"signal","exec_id":…}`) travel on that
-  same connection — never a fresh dial — so a replacement session reusing
-  the socket path can never receive a stale exec_id. One dispatcher goroutine
-  owns the reader and routes the async `{"exit":…}` line; a dropped conn
+  acceptance response carries `exec_id` (`e-<n>`). **The exec connection
+  carries only the request line, the acceptance, and the async
+  `{"exit":…}` line** — hisn does not read it further (DESIGN §14.7):
+  signals (`{"op":"signal","exec_id":…}`) travel on their OWN new
+  connections, one response line each. The replacement-identity hazard is
+  still closed: a stale `exec_id` in a replacement session is `E_NOT_FOUND`
+  (ids start fresh per session), never a hit on a foreign process. One
+  dispatcher goroutine owns the exec conn's reader and routes the
+  `{"exit":…}` line; a dropped conn
   before the exit line probes the session (a dead sandbox is a typed session
-  error, not "lost"). Cancel/Kill: TERM by `exec_id`, ≤ 5 s grace (own
-  budget), then KILL, then close (close alone cancels: hisn TERMs then KILLs
+  error, not "lost"). Cancel/Kill: TERM by `exec_id` on a fresh conn, ≤ 5 s
+  grace (own budget), then KILL on a fresh conn, then close the exec conn
+  (close alone cancels: hisn TERMs then KILLs
   after 5 s). Exit codes are the program's own (any code, incl. 125 — the
   CLI stderr-heuristic dies with this path). `sandbox.hisn.exec_via_cli =
   true` keeps the one-client-per-call CLI path for one release.

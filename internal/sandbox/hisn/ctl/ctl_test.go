@@ -274,9 +274,11 @@ func TestStartExecFramingStdioAndExit(t *testing.T) {
 	ec.Close()
 }
 
-// Signal travels on the exec's OWN connection (the server's per-exec loop
-// answers it), and the dispatcher never misroutes it as the exit line.
-func TestSignalOnOwnConn(t *testing.T) {
+// Signal travels on its OWN fresh connection (hisn DESIGN §14.7: the exec
+// connection is not read after the request line — a signal written there
+// would hang). The signal reply is read on that fresh conn and closed; the
+// exec dispatcher never sees it, so it cannot misroute it as the exit line.
+func TestSignalOnFreshConn(t *testing.T) {
 	f := newFakeServer(t)
 	go f.serve(t)
 	c := New(f.sock)
@@ -287,11 +289,12 @@ func TestSignalOnOwnConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ec.Signal("TERM"); err != nil {
-		t.Fatalf("signal on own conn: %v", err)
+	if err := ec.Signal(ctx, "TERM"); err != nil {
+		t.Fatalf("signal on a fresh conn: %v", err)
 	}
-	// The reply (ok) is consumed by the dispatcher and dropped; the exec is
-	// still waiting for its exit line, not the signal reply.
+	// The exec is still waiting for its EXIT line (the signal reply went to
+	// its own conn), so the program must still be alive here; stdin EOF ends
+	// it and delivers the exit line.
 	_ = stdio.InW.Close()
 	ep, err := ec.WaitExit(ctx)
 	if err != nil {
@@ -299,6 +302,38 @@ func TestSignalOnOwnConn(t *testing.T) {
 	}
 	if ep == nil || ep.Code == nil || *ep.Code != 7 {
 		t.Fatalf("exit after signal = %+v", ep)
+	}
+	ec.Close()
+}
+
+// The Signal path NEVER writes to the exec connection: hisn does not read it
+// after the request line. A signal line written to the exec conn would hang
+// the client (no response ever comes) — assert Signal does not do that by
+// checking the signal arrives (its conn gets a response) while the exec
+// conn carries nothing past the acceptance + exit lines.
+func TestSignalNeverWritesToExecConn(t *testing.T) {
+	f := newFakeServer(t)
+	go f.serve(t)
+	c := New(f.sock)
+	stdio, _ := NewStdio()
+	ctx, cancel := ctxT(t, 5*time.Second)
+	defer cancel()
+	ec, _, err := c.StartExec(ctx, []string{"cat"}, "", nil, stdio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fake ignores anything written to the exec conn after the request
+	// line (as real hisn does). If Signal used the exec conn, this call
+	// would time out on its response read.
+	sctx, scancel := ctxT(t, 2*time.Second)
+	defer scancel()
+	if err := ec.Signal(sctx, "TERM"); err != nil {
+		t.Fatalf("signal must succeed without touching the exec conn: %v", err)
+	}
+	_ = stdio.InW.Close()
+	ep, err := ec.WaitExit(ctx)
+	if err != nil || ep == nil || ep.Code == nil || *ep.Code != 7 {
+		t.Fatalf("exit = %+v err %v: the exec conn was disturbed by the signal", ep, err)
 	}
 	ec.Close()
 }

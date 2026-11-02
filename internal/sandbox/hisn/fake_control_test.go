@@ -144,34 +144,21 @@ func (c *fakeCtl) serveExec(uc *net.UnixConn, req struct {
 	c.mu.Unlock()
 	writeLine(uc, map[string]any{"ok": true, "pid": cmd.Process.Pid, "exec_id": id})
 
+	// Real hisn (DESIGN §14.7) does NOT read the exec connection after the
+	// request line: the exec conn carries only the request, the acceptance
+	// response, and the exit line. A signal written there would hang — and in
+	// the fake it must hang too (a client that signals on the exec conn is
+	// buggy and must be caught by tests). Do NOT read further lines here.
 	done := make(chan struct{})
-	sigc := make(chan os.Signal, 4)
-	go func() { // relay later lines as signals to this exec
-		for {
-			line, _, err := readMsg(uc)
-			if err != nil {
-				close(sigc)
-				return
-			}
-			var m struct {
-				Op     string `json:"op"`
-				ExecID string `json:"exec_id"`
-				Signal string `json:"signal"`
-			}
-			_ = json.Unmarshal(line, &m)
-			if m.Op == "signal" && m.ExecID == id {
-				_ = cmd.Process.Signal(signalFromName(m.Signal))
-			}
-		}
-	}()
 	go func() {
 		_ = cmd.Wait()
 		close(done)
 	}()
-	// Closing the connection cancels: TERM then KILL after 5s (protocol §7).
-	// The fake compresses that to: wait for the exit, then send the exit line.
+	// Closing the connection cancels: TERM then KILL after 5 s (protocol §7);
+	// the fake does not need to emulate that — the exit line below ends the
+	// exec once the program does, and Wakil's Kill path signals on a fresh
+	// connection.
 	<-done
-	_, _ = sigc, stdin
 	writeLine(uc, map[string]any{"exit": map[string]any{"code": exitCodeOf(cmd)}})
 }
 

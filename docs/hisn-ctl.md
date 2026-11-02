@@ -51,32 +51,42 @@ holds. The stdin copier closes the write end at `spec.Stdin` EOF (or
 immediately when nil). Stdio copiers start **after** the response line
 (accepted); on rejection all kept ends close at once.
 
-## 3. exec lifecycle — one conn, one dispatcher
+## 3. exec lifecycle — one exec conn, one dispatcher; signals on fresh conns
 
-The exec owns **one connection for its whole life**, never closed while the
-program runs, with **one reader goroutine** (the dispatcher) owning the
-`bufio.Reader`: it parses every line, routes `{"ok":...}` responses to the
-pending request's channel (correlated in order — one outstanding request
-per conn at a time, so no id multiplexing is needed), and routes
-`{"exit":...}` to the terminal state exactly once. Writes serialized by the
-conn mutex. This closes the dispatcher hazard: no second logical reader can
-consume the exit line or a signal response.
+The exec owns **one exec connection for its whole life**, never closed while
+the program runs, with **one reader goroutine** (the dispatcher) owning the
+`bufio.Reader`: it parses every line, routes the acceptance response to
+`acceptCh` (in order), and routes `{"exit":...}` to the terminal state
+exactly once. Writes to the exec conn are serialized by its mutex. This
+closes the dispatcher hazard: no second logical reader can consume the exit
+line or a response.
+
+**The exec connection carries only the request line, the acceptance
+response, and the exit line.** hisn (DESIGN §14.7) does **not read it**
+after the request line: `signal` travels on its OWN new connection to the
+session socket — `{"op":"signal","exec_id":"e-n","signal":"TERM"}`, one
+response line, close. A signal written to the exec connection would hang
+forever (no response ever comes); the fake hisn reproduces this so a
+regression is caught in tests. The replacement-identity hazard the earlier
+"signal on the exec conn" design closed is still closed: the signal is
+keyed by `exec_id`, and a replacement session's exec ids start fresh, so a
+stale id in a replacement yields `E_NOT_FOUND`, never a hit on a foreign
+process.
 
 States: `launching` (line sent, no response) → `running` (response has
 `exec_id`) → `terminal` (exit line received).
 
-- **launching + cancel**: close the conn → hisn cancels the exec (close =
-  TERM then KILL after 5 s, protocol §7). No `exec_id` exists; no signal is
-  possible. `Wait` → `Lost=true`.
-- **running + Kill/cancel**: `signal {exec_id, TERM}` **on the same conn**
-  (never a fresh dial — a replacement session reusing the socket path
-  would allocate its own `e-n`; the exec's own conn is bound to its
-  supervisor), wait ≤ 5 s (cleanup budget, not the cancelled caller's
-  deadline) for the exit line, then `signal {KILL}` on the same conn, wait
-  ≤ 5 s more. Exit line → the real status (any code, incl. 125 — the CLI
-  stderr heuristic dies with ctl). Otherwise `Lost=true`, recorded like
-  the CLI path. `E_NOT_FOUND` on a signal → the exec already exited; the
-  dispatcher's exit line decides, never synthesized.
+- **launching + cancel**: close the exec conn → hisn cancels the exec (close
+  = TERM then KILL after 5 s, protocol §7). No `exec_id` exists; no signal
+  is possible. `Wait` → `Lost=true`.
+- **running + Kill/cancel**: `signal {exec_id, TERM}` **on a fresh conn**,
+  wait ≤ 5 s (cleanup budget, not the cancelled caller's deadline) for the
+  exit line on the exec conn, then `signal {KILL}` on another fresh conn,
+  wait ≤ 5 s more; closing the exec conn is the backstop (hisn TERMs then
+  KILLs after 5 s on its own). Exit line → the real status (any code, incl.
+  125 — the CLI stderr heuristic dies with ctl). Otherwise `Lost=true`,
+  recorded like the CLI path. `E_NOT_FOUND` on a signal → the exec already
+  exited; the exit line decides, never synthesized.
 - **EOF / transport error before exit line**: `Lost=true` (transport
   failure); session death is **not** inferred from the conn — only Wakil's
   own `hisn ls` probe marks the session dead, as today.

@@ -337,28 +337,38 @@ func (e *ctlExecHandle) startCopiers(spec sandbox.ExecSpec) {
 func (e *ctlExecHandle) Pid() int    { return e.ec.Pid() }
 func (e *ctlExecHandle) Kill() error { return e.cancel() }
 
-// cancel TERMs then KILLs the exec via exec_id on its own connection.
+// cancel TERMs then KILLs the exec via exec_id, each on its own fresh signal
+// connection (hisn does not read the exec connection after the request
+// line); closing the exec connection is the backstop (close = hisn TERMs
+// then KILLs after 5 s on its own).
 func (e *ctlExecHandle) cancel() error {
-	if err := e.ec.Signal("TERM"); err != nil {
-		return err
+	// Cleanup budget: independent of the cancelled caller's deadline.
+	sctx, scancel := context.WithTimeout(context.Background(), e.b.stopWait)
+	defer scancel()
+	if err := e.ec.Signal(sctx, "TERM"); err != nil {
+		// Signal failed (e.g. the session is already gone): close the exec
+		// connection — hisn's own cancel path — and let WaitExit decide.
+		e.ec.Close()
+	} else {
+		// Bounded grace for the exit line.
+		wctx, wcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ep, _ := e.ec.WaitExit(wctx)
+		wcancel()
+		if ep != nil {
+			return nil // TERMed in time
+		}
 	}
-	// Bounded grace: cleanup budget independent of the caller's deadline.
-	cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	ep, _ := e.ec.WaitExit(cctx)
-	if ep != nil {
-		return nil // TERMed in time
+	if err := e.ec.Signal(sctx, "KILL"); err != nil {
+		e.ec.Close()
+	} else {
+		wctx, wcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ep, _ := e.ec.WaitExit(wctx)
+		wcancel()
+		if ep != nil {
+			return nil
+		}
 	}
-	if err := e.ec.Signal("KILL"); err != nil {
-		return err
-	}
-	cctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-	ep, _ = e.ec.WaitExit(cctx2)
-	if ep == nil {
-		return fmt.Errorf("hisn exec kill: %s did not exit after KILL", strings.Join(e.argv, " "))
-	}
-	return nil
+	return fmt.Errorf("hisn exec kill: %s did not exit after KILL", strings.Join(e.argv, " "))
 }
 
 func (e *ctlExecHandle) Wait() (sandbox.ExitInfo, error) {
