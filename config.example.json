@@ -34,14 +34,17 @@
   "exec_mode": "docker",
   "_comment_sandbox": "Sandbox image resolution: --sandbox-image flag > WAKIL_IMAGE env > sandbox.image (this file) > legacy top-level \"image\" > the digest-pinned image built into release binaries > (dev builds only) the unpinned local image \"wakil-dev\" with a warning. Leave unset to use the image your wakil release was published with.",
   "_comment_sandbox_override": "To override: \"sandbox\": { \"image\": \"ghcr.io/treeol/wakil-sandbox@sha256:<digest>\" }",
-  "_comment_sandbox_backend": "sandbox.backend selects the sandbox implementation for exec_mode docker: \"docker\" (default) or \"hisn\" (github.com/treeol/hisn >= 0.2.0, rootless, opt-in). An unknown value is an error; there is never a fallback to docker or to running unsandboxed. sandbox.hisn.* applies to hisn only. See docs/sandbox-backends.md.",
+  "_comment_sandbox_backend": "sandbox.backend selects the sandbox implementation for exec_mode docker: \"docker\" (default) or \"hisn\" (github.com/treeol/hisn >= 0.2.1, rootless, opt-in). An unknown value is an error; there is never a fallback to docker or to running unsandboxed. sandbox.hisn.* applies to hisn only. See docs/sandbox-backends.md.",
   "sandbox": {
     "backend": "docker",
     "hisn": {
       "binary": "hisn",
       "home_root": "",
       "grantable_rw": [],
-      "env_pass": ["GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTFLAGS", "npm_config_cache", "PIP_CACHE_DIR", "CI"]
+      "env_pass": ["GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTFLAGS", "npm_config_cache", "PIP_CACHE_DIR", "CI"],
+      "tmp_size_mb": 1024,
+      "shm_size_mb": 64,
+      "exec_via_cli": false
     }
   },
 
@@ -51,6 +54,7 @@
   "docker_pids_limit": 512,
   "docker_tmpfs_size": "4g",
   "docker_io_uring": false,
+  "docker_allow_userns": false,
 
   "_comment_subagents": "Subagent dispatch: dispatch_subagent spawns a read-only discovery worker. dispatch_subagents fans out several in parallel. max_parallel_subagents bounds concurrency. subagent_endpoint / subagent_backend route children to a different endpoint or backend than the parent.",
 

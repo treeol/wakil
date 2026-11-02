@@ -266,16 +266,20 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
     threads: the same goroutine starts the supervisor and blocks in `cmd.Wait`
     for its whole life. Linux only (`sysproc_linux.go`); other platforms compile
     but have no parent-death signal and rely on Stop/reconcile.
-  * **Readiness is strict.** Polled every 100 ms for at most **10 s**; ready means,
-    all at once: the supervisor has not exited, `hisn ls --json` reports the
-    session **`live`**, and `hisn ls --session <id>` exits 0, and the same holds
-    again one poll interval later. `stale`, missing, a non-zero exit or an exited
-    supervisor is *not ready*. (A supervisor that creates its socket and dies
-    right after used to pass; the second probe and the exit check close that.) A
-    supervisor that exits first fails Start with its exit status and stderr; on
-    timeout it is SIGKILLed, reaped, and the error carries the last probe's
-    reason, the stderr and the log path. There is no silent success: a
-    half-started session never receives a tool call, because it is only
+  * **Readiness is strict (hisn >= 0.2.1: `--ready-fd`).** The supervisor is
+    started with `--ready-fd 3` and the write end of a pipe as fd 3
+    (`ExtraFiles`); Wakil closes its copy right after the spawn, so EOF means
+    every writer (hisn included) is gone. Ready means, all at once, within one
+    total **10 s** budget: the supervisor has not exited, the whole `"ready\n"`
+    line arrived on the pipe, `hisn ls --json` (frozen schema
+    `hisn-ls/v1`, field `state`) reports the session **`live`**, and the same
+    holds again one poll interval later (confirm probe). A partial line
+    without `\n`, EOF, `stale`, missing, an error or an exited supervisor is
+    *not ready*. The 0.2.0 polling loop is gone — the pipe read replaces it.
+    A supervisor that exits first fails Start with its exit status and stderr;
+    on timeout it is SIGKILLed, reaped, and the error carries the last
+    probe's reason, the stderr and the log path. There is no silent success:
+    a half-started session never receives a tool call, because it is only
     published (`cur`) after readiness *and* instance verification.
 * **Stop** reaps the supervisor Wakil spawned **unconditionally**: it is an exact
   process handle, so no record or id lookup gates it. `hisn kill --session <id>`
@@ -286,13 +290,13 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
   tolerant of "session not found": the supervisor having exited is what counts,
   not the CLI's answer. Only the *bookkeeping* is gated on the owner record
   (a record belonging to another instance is left in place and reported).
-  A SIGKILLed supervisor cannot remove its runtime directory, which would make
-  every later `hisn run` with that id fail with "exists". Wakil removes it only
-  with **proof of ownership**: the directory is not a symlink, its
-  `policy.resolved.toml` (which hisn writes before binding the socket) carries
-  this instance's random hostname token, and nothing answers on its socket.
-  A foreign directory, or one without that proof (supervisor died before writing
-  the policy), is never touched. A supervisor that cannot be reaped
+  **The runtime directory is hisn's to clean (0.2.1)**: a stale dir (socket
+  refused AND supervisor pid gone or starttime-mismatched — hisn's own check,
+  fd-relative, owner-checked, runtime-root confined) is removed by
+  `hisn kill --session <id>` itself (stale-kill: remove + exit 0). After OUR
+  supervisor is reaped, a `live` socket on the id is a REPLACEMENT by a foreign
+  session: left alone and reported — Wakil never signals an id it no longer
+  owns. A supervisor that cannot be reaped
   (uninterruptible sleep) keeps the owner record and stays in the `orphans` list;
   `Start`/`Stop`/`Close` retry it.
 * **Health.** A session is dead when its supervisor has exited **or** a hisn
@@ -320,17 +324,12 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
      refuse (`session id in use`) — Wakil never adopts, claims or kills a
      session it did not just create. If it is present but **`stale`** (the
      directory is there, nothing answers) and no live Wakil owns the chat (step
-     2), it is a dead leftover of this very chat id: it is removed and one line
-     is logged (stderr and the supervisor log), then the start proceeds. The
-     removal needs the directory to be named exactly `<id>` under hisn's runtime
-     roots, not a symlink, to refuse connections twice 300 ms apart, and, when
-     hisn has already written its `policy.resolved.toml`, that policy must carry a
-     `wakil-` instance hostname (a stale directory of a session somebody else
-     started under this id is left alone and the start fails with
-     `ErrSessionInUse`). Without a policy file nothing contradicts ownership and
-     the directory is replaced: the chat id is a UUID only Wakil uses, and the
-     300 ms settle is a heuristic, not proof (Known limits). Other ids are never
-     touched;
+     2), it is a dead leftover of this very chat id: `hisn run --session-id`
+     (0.2.1) replaces it itself — hisn's staleness check (socket refused AND
+     supervisor pid gone or starttime-mismatched, twice 300 ms apart; removal
+     fd-relative, owner-checked, runtime-root confined) — and one line is
+     logged (stderr and the supervisor log), then the start proceeds. Other
+     ids are never touched;
   2. if a record `<id>.json` exists with a live owner (pid + start time), refuse
      (the chat is active in another Wakil process); a dead owner's record is
      reconciled (below) first;
@@ -380,7 +379,12 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
 * **Reconcile** at construction is now a *fallback*: normally the supervisor
   dies with Wakil through `Pdeathsig` and nothing is left to reap. It still
   runs for the cases the kernel cannot cover (SIGKILL of a hisn child, a
-  non-Linux build, an upgrade from a build without the supervisor handle). Under
+  non-Linux build, an upgrade from a build without the supervisor handle).
+  First `hisn ls --prune` (0.2.1): hisn itself removes every provably stale
+  dir (its own staleness check: socket refused AND supervisor pid gone or
+  starttime-mismatched, twice 300 ms apart; removal fd-relative, owner-checked,
+  runtime-root confined) — no live session and no process is touched, so no
+  owner record is needed. Then, under
   the lock: for each record whose owner
   process is gone (pid absent or start time differs): if `hisn ls` lists the id
   and the instance token verifies, `hisn kill` + wait; if the id is absent,
@@ -401,12 +405,29 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
   (`IsProcessAlive`/`KillPgid`) runs in the sandbox pid namespace where that
   number could name an unrelated process. Callers treat 0 as "no process guard".
   The pipes are real OS pipes (not `io.Pipe`), so reaping the client never
-  depends on the caller draining stdout or closing stdin. `ExecHandle.Kill` cancels the local client (hisn TERMs, then KILLs
-  after 5 s).
-* **Lost exec**: `hisn exec` exit 125 *without* a `hisn:` diagnostic line on
-  stderr (v0.2.0 prints none for a lost exec). A program that itself exits 125
-  silently is indistinguishable, so it is treated as possibly-lost: the result
-  says so, the executor records it, and the session is stopped at chat end.
+  depends on the caller draining stdout or closing stdin.
+* **Exec via the control socket (0.2.1, default)**: tool-call execs speak the
+  §7 protocol directly (`internal/sandbox/hisn/ctl`) instead of spawning one
+  `hisn exec` client per call — one fewer process per tool call, and no
+  pid-reuse window. The exec request line and the program's three stdio fds
+  travel in **one `sendmsg`** (SCM_RIGHTS; fds only on the first line of a
+  connection, exec only, `tty=false` always); Wakil closes its copies of the
+  passed ends right after the send (transfer does not consume them). The
+  acceptance response carries `exec_id` (`e-<n>`). **One connection per exec
+  for its whole life**: signals (`{"op":"signal","exec_id":…}`) travel on that
+  same connection — never a fresh dial — so a replacement session reusing
+  the socket path can never receive a stale exec_id. One dispatcher goroutine
+  owns the reader and routes the async `{"exit":…}` line; a dropped conn
+  before the exit line probes the session (a dead sandbox is a typed session
+  error, not "lost"). Cancel/Kill: TERM by `exec_id`, ≤ 5 s grace (own
+  budget), then KILL, then close (close alone cancels: hisn TERMs then KILLs
+  after 5 s). Exit codes are the program's own (any code, incl. 125 — the
+  CLI stderr-heuristic dies with this path). `sandbox.hisn.exec_via_cli =
+  true` keeps the one-client-per-call CLI path for one release.
+* **Lost exec**: exit 125 *without* a diagnostic (CLI path) or a dropped
+  connection without an exit line (ctl path, session still reachable): the
+  program may still be running. The result says so, the executor records it,
+  and the session is stopped at chat end.
 
 ## Policy generation
 
@@ -420,6 +441,9 @@ version = "hisn-policy/v1"
 cwd = "<host cwd>"      # rw, identical path
 home = "<home_root>"    # persistent, created 0700
 network = "host"
+shm = true              # 0.2.1: /dev/shm tmpfs (mode=1777, /dev's flags)
+shm_size = 64           # sandbox.hisn.shm_size_mb (MiB, 1..65536)
+tmp_size = 1024         # sandbox.hisn.tmp_size_mb (MiB, 16..65536)
 [mounts]
 grantable_rw = [ ... ]  # sandbox.hisn.grantable_rw; each must exist at start
 [env]

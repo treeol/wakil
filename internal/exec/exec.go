@@ -250,6 +250,11 @@ type DockerOpts struct {
 	// profile. When true, NewDockerExecutor materializes the profile to a temp
 	// file and sets IOUringProfilePath. Docker-only; ignored in direct mode.
 	DockerIOUring bool
+	// DockerAllowUserns adds --security-opt seccomp=unconfined,
+	// apparmor=unconfined, systempaths=unconfined to the sandbox container so
+	// unprivileged user namespaces work inside it (hisn development).
+	// Default false — the flags WEAKEN the container's isolation.
+	DockerAllowUserns bool
 	// IOUringProfilePath is the host path to a custom seccomp profile that
 	// allows io_uring. When non-empty, dockerHardeningArgs emits
 	// --security-opt=seccomp=<path>. Set by NewDockerExecutor when
@@ -408,6 +413,15 @@ func dockerHardeningArgs(opts DockerOpts) []string {
 	// baseline denials (keyctl, bpf, mount, etc.) remain in effect.
 	if opts.IOUringProfilePath != "" {
 		args = append(args, "--security-opt=seccomp="+opts.IOUringProfilePath)
+	}
+	// User namespaces inside the sandbox (hisn development). This WEAKENS the
+	// container: seccomp and AppArmor are unconfined and the host's system
+	// paths are visible. Only ever on explicit config; startup warns once.
+	if opts.DockerAllowUserns {
+		args = append(args,
+			"--security-opt=seccomp=unconfined",
+			"--security-opt=apparmor=unconfined",
+			"--security-opt=systempaths=unconfined")
 	}
 	return args
 }

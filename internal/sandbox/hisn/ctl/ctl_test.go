@@ -174,9 +174,9 @@ func readLineMsg(uc *net.UnixConn) (line []byte, fds []int, err error) {
 			fds = append(fds, parseOOBTest(oob[:oobn])...)
 		}
 		if idx := indexByte(buf[:n], '\n'); idx >= 0 {
-			return buf[:idx], fds, nil
+			line = append(line, buf[:idx]...)
+			return line, fds, nil
 		}
-		line = append(line, buf[:n]...)
 	}
 }
 

@@ -256,6 +256,14 @@ type Config struct {
 	// Docker-only; ignored in direct mode. No CLI flag or env var (config-file only,
 	// matching DockerCaps/DockerMemory/DockerPidsLimit/DockerTmpfsSize).
 	DockerIOUring bool `json:"docker_io_uring,omitempty"`
+	// DockerAllowUserns adds --security-opt seccomp=unconfined,
+	// apparmor=unconfined, systempaths=unconfined to the docker run of the
+	// sandbox container, so unprivileged user namespaces work INSIDE it
+	// (needed to develop/run the hisn sandbox inside Wakil's docker sandbox).
+	// Default false: the flags WEAKEN the sandbox container's isolation.
+	// When true, startup prints one warning line. Docker-only, config-file
+	// only. Never combined with backend "hisn" (hisn runs on the host).
+	DockerAllowUserns bool `json:"docker_allow_userns,omitempty"`
 	// DockerStartTimeoutSec bounds the docker run command in the constructor
 	// (container creation). Default 120s — generous because SELinux :z
 	// relabeling of large mount points can take minutes on first run.

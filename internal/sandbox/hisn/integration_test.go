@@ -44,6 +44,12 @@ func realBackend(t *testing.T, grantable ...string) (*Backend, string) {
 		}
 		bin = p
 	}
+	// 0.2.1 gate: --ready-fd, exec_id, --prune, stale-kill, session.shm/tmp_size.
+	if out, err := osexec.Command(bin, "--version").Output(); err != nil {
+		t.Skipf("hisn unusable: %v", err)
+	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 2, 1}) {
+		t.Skipf("hisn >= 0.2.1 required (got %q, err %v)", strings.TrimSpace(string(out)), err)
+	}
 	root := t.TempDir()
 	// hisn forbids cwd under its runtime dir (/tmp/hisn-$UID); a t.TempDir()
 	// below /tmp is fine, but resolve symlinks like Wakil does.
@@ -422,7 +428,57 @@ func TestIntegrationStaleDirReplaced(t *testing.T) {
 	if st, _ := b.sessionState(ictx(t), id); st != "live" {
 		t.Fatalf("session state after replacement = %q, want live", st)
 	}
-	if !strings.Contains(readLog(t, b, id), "replaced stale session directory") {
+	if !strings.Contains(readLog(t, b, id), "replacing stale session directory") {
 		t.Errorf("replacement not recorded in the supervisor log:\n%s", readLog(t, b, id))
+	}
+}
+
+// 0.2.1 follow-ups, against a REAL hisn >= 0.2.1 (realBackend skips below it):
+
+// Kill (cancel) a ctl exec by exec_id: TERM reaches the program's process
+// group through the same connection; a stale exec_id is E_NOT_FOUND.
+func TestIntegrationSignalByExecID(t *testing.T) {
+	b, cwd := realBackend(t)
+	istart(t, b, "wakil-it-sig", cwd)
+	var out bytes.Buffer
+	h, err := b.Exec(ictx(t), sandbox.ExecSpec{Argv: []string{"sh", "-c", "trap '' TERM; sleep 60; echo done"}, Cwd: cwd, Stdout: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the trap install
+	if err := h.Kill(); err != nil {    // TERM (ignored) then KILL by exec_id
+		t.Fatal(err)
+	}
+	info, werr := h.Wait()
+	if werr != nil {
+		t.Fatal(werr)
+	}
+	if info.Code != 128+9 {
+		t.Fatalf("signalled exec: %+v, want 137 (SIGKILL)", info)
+	}
+}
+
+// `hisn ls --prune` at startup (Reconcile) removes only provably stale dirs;
+// the live session this test just started survives it.
+func TestIntegrationPruneKeepsLiveSessions(t *testing.T) {
+	b1, cwd := realBackend(t)
+	istart(t, b1, "wakil-it-prune", cwd)
+	// A second backend over the same state: Reconcile runs ls --prune first.
+	b2, err := New(Options{
+		Binary: b1.opts.Binary, StateDir: b1.opts.StateDir, HomeRoot: b1.opts.HomeRoot,
+		HostCwd: cwd, EnvPass: b1.opts.EnvPass,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b2.Reconcile(ictx(t)); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := b1.listSessions(ictx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, ok := sessions["wakil-it-prune"]; !ok || !e.Live() {
+		t.Fatalf("prune removed or lost the live session: %+v ok=%v", e, ok)
 	}
 }

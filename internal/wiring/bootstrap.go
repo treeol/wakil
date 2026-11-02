@@ -445,10 +445,16 @@ func NewExecutor(cfg config.Config) (exec.Executor, error) {
 		if cfg.DockerIOUring {
 			fmt.Fprintln(os.Stderr, "warning: docker_io_uring is set but exec_mode is direct — io_uring setting has no effect in direct mode")
 		}
+		if cfg.DockerAllowUserns {
+			fmt.Fprintln(os.Stderr, "warning: docker_allow_userns is set but exec_mode is direct — the setting has no effect in direct mode")
+		}
 		return exec.NewDirectExecutor(cfg.WorkDir)
 	default:
 		if cfg.Sandbox.Backend == config.SandboxBackendHisn {
 			return newHisnExecutor(cfg)
+		}
+		if cfg.DockerAllowUserns {
+			fmt.Fprintln(os.Stderr, "warning: docker sandbox isolation reduced: user namespaces enabled (sandbox.docker.allow_userns)")
 		}
 		// Resolve SSH commit signing on the host before the container starts.
 		// Best-effort: a skip reason is logged, never fatal.
@@ -492,6 +498,7 @@ func NewExecutor(cfg config.Config) (exec.Executor, error) {
 			DockerPidsLimit:         cfg.DockerPidsLimit,
 			DockerTmpfsSize:         cfg.DockerTmpfsSize,
 			DockerIOUring:           cfg.DockerIOUring,
+			DockerAllowUserns:       cfg.DockerAllowUserns,
 			BrowserEnabled:          cfg.BrowserEnabled,
 			DockerStartTimeout:      cfg.DockerStartTimeoutSec,
 			DockerStopTimeout:       cfg.DockerStopTimeoutSec,

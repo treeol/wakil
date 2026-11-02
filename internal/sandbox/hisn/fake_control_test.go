@@ -169,10 +169,8 @@ func (c *fakeCtl) serveExec(uc *net.UnixConn, req struct {
 		close(done)
 	}()
 	// Closing the connection cancels: TERM then KILL after 5s (protocol §7).
-	// The fake compresses that to: wait for the conn to close or exit.
-	select {
-	case <-done:
-	}
+	// The fake compresses that to: wait for the exit, then send the exit line.
+	<-done
 	_, _ = sigc, stdin
 	writeLine(uc, map[string]any{"exit": map[string]any{"code": exitCodeOf(cmd)}})
 }

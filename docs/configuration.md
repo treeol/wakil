@@ -151,6 +151,7 @@ reference covering every section below.
 | `docker_pids_limit` | `512` | Max processes in the sandbox container *(0 = no limit)* |
 | `docker_tmpfs_size` | `""` (→ 4g) | Size of the sandbox `/tmp` tmpfs *(empty uses built-in default)* |
 | `docker_io_uring` | `false` | Enable io_uring via custom seccomp profile *(increases kernel attack surface — see [SECURITY.md](../SECURITY.md#seccomp))* |
+| `docker_allow_userns` | `false` | Add `--security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined` to the sandbox container so unprivileged user namespaces work inside it *(weakens the container's isolation — hisn development only; startup prints a one-line warning when set)* |
 | `agent_prompt_path` | `agent.txt` next to config | System prompt file path |
 | `backend_max_retries` | `3` | Max retries for transient backend failures (unattended) |
 | `compact_at_frac` | `0.75` | Compact at 75% of effective context |
@@ -289,7 +290,7 @@ runs on the host instead, no container.
 
 `--exec docker` runs tool calls in a sandbox; two backends exist. `docker`
 (default) is the production sandbox and is unchanged. `hisn`
-([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.2.0) is a
+([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.2.1) is a
 rootless, daemonless alternative. Design, path model, lifecycle and known
 limits: [sandbox-backends.md](sandbox-backends.md).
 
@@ -300,8 +301,11 @@ limits: [sandbox-backends.md](sandbox-backends.md).
 | `sandbox.hisn.home_root` | `<state dir>/hisn-home/<workspace-hash>` | persistent host directory used as the sandbox `$HOME` *(absolute path)* |
 | `sandbox.hisn.grantable_rw` | `[]` | absolute host prefixes under which read-write grants outside the workspace are allowed *(fixed at session start; cannot be `/`)* |
 | `sandbox.hisn.env_pass` | `GOFLAGS GOCACHE GOMODCACHE CARGO_HOME RUSTFLAGS npm_config_cache PIP_CACHE_DIR CI` | environment variable names copied into the sandbox; nothing else of the host environment enters. Names that alter host process startup (`LD_*`, `PATH`, `HOME`, `GODEBUG`, …) are rejected |
+| `sandbox.hisn.tmp_size_mb` | `1024` | Size (MiB, 16..=65536) of the session-private `/tmp` tmpfs *(hisn 0.2.1 `session.tmp_size`)* |
+| `sandbox.hisn.shm_size_mb` | `64` | Size (MiB, 1..=65536) of `/dev/shm` *(Wakil always sets `session.shm = true`)* |
+| `sandbox.hisn.exec_via_cli` | `false` | Run tool-call execs through the `hisn exec` CLI (one client process per call) instead of the control-socket client. Fallback, one release |
 
-With `hisn`: startup requires `hisn --version` >= 0.2.0 and `hisn check` exit
+With `hisn`: startup requires `hisn --version` >= 0.2.1 and `hisn check` exit
 0, otherwise Wakil refuses to start (no fallback). The workspace is mounted at
 its identical host path (`--workdir` is rejected); `kvr` staging is disabled;
 `browser_enabled` and `--exec direct` are rejected. One hisn session per chat,

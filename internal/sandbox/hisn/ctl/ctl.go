@@ -77,10 +77,10 @@ func (c *Client) dialConn(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		var oe *net.OpError
 		if errors.As(err, &oe) && oe.Op == "dial" && errors.Is(oe.Err, syscall.ECONNREFUSED) {
-			return nil, fmt.Errorf("%w: %v", ErrSessionDead, err)
+			return nil, fmt.Errorf("%w: %w", ErrSessionDead, err)
 		}
 		if errors.As(err, &oe) && oe.Op == "dial" && errors.Is(oe.Err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w: %v", ErrNoSession, err)
+			return nil, fmt.Errorf("%w: %w", ErrNoSession, err)
 		}
 		return nil, fmt.Errorf("hisn ctl dial %s: %w", c.sockPath, err)
 	}
@@ -330,7 +330,7 @@ func (c *Client) StartExec(ctx context.Context, argv []string, cwd string, env m
 		stdio.CloseEnds()
 		_ = conn.Close()
 		if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
-			return nil, nil, fmt.Errorf("%w: %v", ErrAmbiguousLaunch, err)
+			return nil, nil, fmt.Errorf("%w: %w", ErrAmbiguousLaunch, err)
 		}
 		return nil, nil, fmt.Errorf("hisn ctl exec: write: %w", err)
 	}
@@ -348,18 +348,16 @@ func (c *Client) StartExec(ctx context.Context, argv []string, cwd string, env m
 	}
 	ch := make(chan result, 1)
 	go func() {
-		select {
-		case a := <-ec.acceptCh:
-			if a.err != nil {
-				_ = conn.Close()
-				stdio.closeKept()
-				ch <- result{nil, nil, a.err}
-				return
-			}
-			ec.setExecID(a.res.ExecID)
-			ec.setPid(a.res.Pid)
-			ch <- result{ec, &a.res, nil}
+		a := <-ec.acceptCh
+		if a.err != nil {
+			_ = conn.Close()
+			stdio.closeKept()
+			ch <- result{nil, nil, a.err}
+			return
 		}
+		ec.setExecID(a.res.ExecID)
+		ec.setPid(a.res.Pid)
+		ch <- result{ec, &a.res, nil}
 	}()
 	select {
 	case <-ctx.Done():
