@@ -1,6 +1,7 @@
 package hisn
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -197,9 +198,12 @@ func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 
 // supervisorArgs is the `hisn run --detach` command line. `-v` is REQUIRED: hisn
 // prints nothing to stderr without it, so a failed start would be undiagnosable.
+// `--ready-fd 3` (0.2.1): hisn writes "ready\n" to fd 3 once the session is
+// live — the write end of the readiness pipe, passed as the child's fd 3 via
+// ExtraFiles. Nothing weaker than that line plus a `live` confirm passes.
 func supervisorArgs(id, policy, cwd string) []string {
 	return []string{"run", "--detach", "-v", "--session-id", id,
-		"--policy", policy, "--cwd", cwd, "--network", "host"}
+		"--policy", policy, "--cwd", cwd, "--network", "host", "--ready-fd", "3"}
 }
 
 // runSession writes + validates the policy, spawns the supervisor (which IS the
@@ -225,14 +229,15 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 	if out, err := b.output(vctx, false, "policy", "validate", polPath); err != nil {
 		return nil, fmt.Errorf("hisn policy validate failed: %w: %s", err, strings.TrimSpace(out))
 	}
-	sup, err := b.startSupervisor(b.supervisorLogPath(rec.ID), notes, supervisorArgs(rec.ID, polPath, rec.Cwd)...)
+	sup, readyR, err := b.startSupervisor(b.supervisorLogPath(rec.ID), notes, supervisorArgs(rec.ID, polPath, rec.Cwd)...)
 	if err != nil {
 		return nil, fmt.Errorf("hisn run --detach: %w", err)
 	}
+	defer readyR.Close()
 	if b.afterSpawn != nil {
 		b.afterSpawn(sup)
 	}
-	if err := b.waitReady(ctx, rec.ID, sup); err != nil {
+	if err := b.waitReady(ctx, rec.ID, sup, readyR); err != nil {
 		b.reapSupervisor(sup)
 		return sup, b.withSupervisorStderr(err, sup)
 	}
@@ -306,14 +311,51 @@ func (b *Backend) ready(ctx context.Context, id string) (bool, string) {
 	return true, ""
 }
 
-// waitReady blocks until the session is READY, polling every readyPoll for at
-// most b.readyTimeout. Ready means, all at once: the supervisor process has not
-// exited, `hisn ls` reports the session `live`, and `hisn ls --session ID`
-// succeeds, confirmed by a second probe one poll interval later (a supervisor
-// that dies right after creating its socket must not slip through). There is no
-// weaker path: `stale`, missing, an error or an exited supervisor is "not ready".
-func (b *Backend) waitReady(ctx context.Context, id string, sup *supervisorProc) error {
+// waitReady blocks until the session is READY, for at most b.readyTimeout.
+// Ready means, all at once: the supervisor process has not exited, hisn wrote
+// the whole "ready\n" line to the readiness pipe (`--ready-fd`, hisn >= 0.2.1),
+// `hisn ls` reports the session `live`, and the same holds again one poll
+// interval later (confirm probe). There is no weaker path: a partial line
+// without "\n", `stale`, missing, an error, an exited supervisor or a timeout
+// is "not ready". The 0.2.0 polling loop is gone: the pipe read replaces it.
+func (b *Backend) waitReady(ctx context.Context, id string, sup *supervisorProc, readyR *os.File) error {
 	deadline := time.Now().Add(b.readyTimeout)
+	// readyLine reads the one "ready\n" line hisn writes to fd 3, with the
+	// remaining budget. An EOF (all writers gone: supervisor exited or never
+	// passed --ready-fd) is a definitive not-ready, not a poll timeout. It
+	// returns eof=true so the caller still probes `hisn ls` once: the recorded
+	// reason then says what hisn itself thinks of the session (e.g. `stale`).
+	readReady := func() (ok bool, eof bool, why string) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false, false, ""
+		}
+		if err := readyR.SetReadDeadline(time.Now().Add(remaining)); err != nil {
+			return false, false, "setting readiness pipe deadline: " + err.Error()
+		}
+		line, err := bufio.NewReader(readyR).ReadString('\n')
+		if err == nil && strings.TrimSpace(line) != "ready" {
+			return false, false, fmt.Sprintf("unexpected readiness line %q", line)
+		}
+		if err == nil {
+			return true, false, ""
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return false, false, "readiness pipe: " + err.Error()
+		}
+		if sup.hasExited() {
+			return false, false, "" // the exit check below reports it with stderr
+		}
+		// EOF: no "ready\n" will ever arrive. Probe `hisn ls` once for the
+		// session's own verdict — usually "stale" — and record that.
+		pctx, cancel := context.WithTimeout(ctx, min(time.Until(deadline), 2*time.Second))
+		state, serr := b.sessionState(pctx, id)
+		cancel()
+		if serr == nil {
+			return false, true, fmt.Sprintf("hisn ls reports the session %s (no readiness line)", state)
+		}
+		return false, true, "readiness pipe: " + err.Error()
+	}
 	probe := func() (bool, string) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -334,25 +376,35 @@ func (b *Backend) waitReady(ctx context.Context, id string, sup *supervisorProc)
 		if sup.hasExited() {
 			return fmt.Errorf("hisn run --detach exited before the session was ready (last probe: %s)", orNone(last))
 		}
-		ok, why := probe()
+		ok, _, why := readReady()
 		if !ok && why != "" {
 			last = why
 		}
 		if ok {
-			// Confirm: still running and still live one interval later.
-			select {
-			case <-sup.exited:
-				return fmt.Errorf("hisn run --detach exited right after the session became ready")
-			case <-ctx.Done():
-				return fmt.Errorf("waiting for hisn session %s: %w", id, ctx.Err())
-			case <-time.After(readyPoll):
-			}
-			if ok2, why2 := probe(); ok2 && !sup.hasExited() {
-				return nil
-			} else if sup.hasExited() {
-				return fmt.Errorf("hisn run --detach exited right after the session became ready")
-			} else if why2 != "" {
-				last = "second probe failed: " + why2
+			// Confirm: `live` now, and still live one interval later.
+			ok, why = probe()
+			if !ok {
+				if why != "" {
+					last = why
+				}
+				if sup.hasExited() {
+					return fmt.Errorf("hisn run --detach exited right after the readiness line")
+				}
+			} else {
+				select {
+				case <-sup.exited:
+					return fmt.Errorf("hisn run --detach exited right after the session became ready")
+				case <-ctx.Done():
+					return fmt.Errorf("waiting for hisn session %s: %w", id, ctx.Err())
+				case <-time.After(readyPoll):
+				}
+				if ok2, why2 := probe(); ok2 && !sup.hasExited() {
+					return nil
+				} else if sup.hasExited() {
+					return fmt.Errorf("hisn run --detach exited right after the session became ready")
+				} else if why2 != "" {
+					last = "second probe failed: " + why2
+				}
 			}
 		}
 		if !time.Now().Before(deadline) {

@@ -74,7 +74,7 @@ func TestStartFailureModes(t *testing.T) {
 		{"exits immediately with a diagnostic", "fail",
 			[]string{"exited before the session was ready", "exit status 125", "injected failure: cannot create sandbox"}, 0},
 		{"never creates the control socket", "nosock",
-			[]string{"not ready after", "hisn ls reports the session", "stderr:", "init pid", ".supervisor.log"}, 700 * time.Millisecond},
+			[]string{"not ready after", "readiness pipe", "init pid", ".supervisor.log"}, 700 * time.Millisecond},
 		{"hangs without ever being ready", "hang",
 			[]string{"not ready after", "starting"}, 700 * time.Millisecond},
 	} {
@@ -161,11 +161,12 @@ func TestReadinessNeedsLsAnswerNotJustSocketFile(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "control.sock"), nil, 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "sup.pid"), []byte("1"), 0o600) // fake: ours, not live
 	// Any long-running process stands in for the supervisor.
-	sup, err := b.startSupervisor(filepath.Join(fe.sdir, "other.supervisor.log"), nil, "run", "--detach", "-v", "--session-id", "other", "--policy", "/nonexistent")
+	sup, readyR, err := b.startSupervisor(filepath.Join(fe.sdir, "other.supervisor.log"), nil, "run", "--detach", "-v", "--session-id", "other", "--policy", "/nonexistent")
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = b.waitReady(ctxT(t), id, sup)
+	_ = readyR.Close() // no "ready\n" will ever arrive: this supervisor has no socket
+	err = b.waitReady(ctxT(t), id, sup, readyR)
 	b.reapSupervisor(sup)
 	if err == nil {
 		t.Fatal("a stale socket file with no listener must not count as ready")
@@ -578,7 +579,7 @@ func TestReadinessRejectsStale(t *testing.T) {
 	if err == nil {
 		t.Fatal("a session that `hisn ls` reports stale must NOT be ready")
 	}
-	for _, w := range []string{"not ready after", "hisn ls reports the session stale", "stl.supervisor.log", "init pid"} {
+	for _, w := range []string{"not ready after", "no readiness line", "hisn ls reports the session stale", "stl.supervisor.log", "init pid"} {
 		if !strings.Contains(err.Error(), w) {
 			t.Errorf("error lacks %q:\n%v", w, err)
 		}

@@ -205,6 +205,11 @@ func fakeRun(state string, args []string) int {
 		return 125
 	}
 	if mode == "crash" { // ready, then dies leaving its directory (like SIGKILL)
+		// 0.2.1 semantics: --ready-fd gets "ready\n" once the socket accepts,
+		// before any crash. A crash INSIDE the confirm window (before readyPoll
+		// elapses) must be caught by waitReady; a crash after it is a session
+		// that was ready and died later (ErrSessionDead, not a failed start).
+		readyWrite(args)
 		ms, _ := strconv.Atoi(arg)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		fmt.Fprintln(os.Stderr, "hisn: injected crash: supervisor lost its init")
@@ -212,6 +217,7 @@ func fakeRun(state string, args []string) int {
 	}
 	sig := make(chan os.Signal, 4)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	readyWrite(args) // 0.2.1: the session is live — announce it on the ready fd
 	for range sig {
 		if mode == "ignoreterm" {
 			continue
@@ -234,6 +240,25 @@ func killRecordedPids(dir string) {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	}
+}
+
+// readyWrite implements `--ready-fd N` (hisn 0.2.1): the whole "ready\n" line
+// to fd N once the session is live, then the fd is closed. Missing or unwritable
+// fd → E_BAD_REQUEST on stderr, exit 125 (a start failure carries nothing).
+func readyWrite(args []string) {
+	n := 0
+	for i, a := range args {
+		if a == "--ready-fd" && i+1 < len(args) {
+			n, _ = strconv.Atoi(args[i+1])
+		}
+	}
+	if n <= 0 {
+		return
+	}
+	if _, err := syscall.Write(n, []byte("ready\n")); err != nil {
+		fmt.Fprintf(os.Stderr, "hisn: --ready-fd %d: E_BAD_REQUEST: %v\n", n, err)
+	}
+	_ = syscall.Close(n)
 }
 
 func fakeLs(state string, args []string) int {

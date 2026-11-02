@@ -193,15 +193,21 @@ func (b *Backend) supervisorLogPath(id string) string {
 // can reach hisn; stderr is a pipe teed into a ring buffer and into logPath
 // (truncated per start, so it always holds exactly the latest supervisor).
 // notes are written first, as "wakil: ..." lines.
-func (b *Backend) startSupervisor(logPath string, notes []string, args ...string) (*supervisorProc, error) {
+//
+// Readiness (hisn >= 0.2.1): `--ready-fd 3` with the WRITE end of a pipe as the
+// child's fd 3 (ExtraFiles); hisn writes "ready\n" there once the session is
+// live. Wakil closes its own write end immediately after a successful Start —
+// EOF on the read end then means every writer (hisn included) is gone. The
+// returned reader is drained by waitReady and closed by its caller.
+func (b *Backend) startSupervisor(logPath string, notes []string, args ...string) (*supervisorProc, *os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return nil, fmt.Errorf("supervisor log directory: %w", err)
+		return nil, nil, fmt.Errorf("supervisor log directory: %w", err)
 	}
 	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		// Diagnostics are not optional: a supervisor whose stderr vanishes with
 		// the process is exactly what made earlier failures undiagnosable.
-		return nil, fmt.Errorf("supervisor log %s: %w", logPath, err)
+		return nil, nil, fmt.Errorf("supervisor log %s: %w", logPath, err)
 	}
 	ring := newRingBuffer(supervisorStderrCap)
 	tee := newTeeWriter(ring, f)
@@ -210,6 +216,10 @@ func (b *Backend) startSupervisor(logPath string, notes []string, args ...string
 	}
 	_, _ = fmt.Fprintf(tee, "wakil: starting %s %s\n", b.opts.Binary, strings.Join(args, " "))
 
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("readiness pipe: %w", err)
+	}
 	supCtx, supCancel := context.WithCancel(context.Background())
 	cmd := b.command(supCtx, true, args...)
 	cmd.SysProcAttr = supervisorSysProcAttr()
@@ -217,6 +227,7 @@ func (b *Backend) startSupervisor(logPath string, notes []string, args ...string
 	cmd.Stdout = nil // /dev/null; hisn run prints nothing on stdout
 	cmd.Stderr = tee
 	cmd.WaitDelay = supervisorWaitDelay
+	cmd.ExtraFiles = []*os.File{readyW} // fd 3: --ready-fd 3
 	p := &supervisorProc{cmd: cmd, stderr: ring, logPath: logPath, cancel: supCancel, exited: make(chan struct{}), logged: make(chan struct{})}
 	started := make(chan error, 1)
 	go func() {
@@ -248,9 +259,16 @@ func (b *Backend) startSupervisor(logPath string, notes []string, args ...string
 		close(p.logged)
 	}()
 	if err := <-started; err != nil {
-		return nil, err
+		_ = readyR.Close()
+		_ = readyW.Close()
+		return nil, nil, err
 	}
-	return p, nil
+	// Start succeeded: our copy of the write end goes away NOW, so a read of
+	// EOF proves hisn's copy (the only other writer) was closed — supervisor
+	// exited or exec failed before writing. hisn also closes it after writing
+	// "ready\n", so EOF is not itself "not ready".
+	_ = readyW.Close()
+	return p, readyR, nil
 }
 
 func exitText(err error) string {
