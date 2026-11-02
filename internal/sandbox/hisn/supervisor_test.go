@@ -591,7 +591,7 @@ func TestReadinessRejectsStale(t *testing.T) {
 // A supervisor that creates its socket and dies right after (tonight's fault)
 // must not pass as ready, and the failure carries its stderr and exit status.
 func TestReadinessRejectsDiesAfterSocket(t *testing.T) {
-	for _, mode := range []string{"crash:0", "crash:120"} {
+	for _, mode := range []string{"crash:0", "crash:40"} {
 		t.Run(mode, func(t *testing.T) {
 			fe := newFakeEnv(t)
 			b, _ := Open(ctxT(t), fe.options())

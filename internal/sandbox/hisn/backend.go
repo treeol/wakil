@@ -14,8 +14,9 @@ import (
 	"github.com/treeol/wakil/internal/sandbox"
 )
 
-// MinVersion is the oldest supported hisn release.
-const MinVersion = "0.2.0"
+// MinVersion is the oldest supported hisn release: 0.2.1 (ready-fd,
+// exec_id, prune, stale-kill, session.shm/tmp_size, frozen --json schemas).
+const MinVersion = "0.2.1"
 
 // computedEnv names hisn always sets itself inside the sandbox; an exec may
 // not override them (hisn rejects the whole request if it tries).

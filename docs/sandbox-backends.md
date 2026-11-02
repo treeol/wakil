@@ -5,7 +5,7 @@ Wakil runs every tool call inside a sandbox. Two backends exist:
 | backend | selected by | status |
 |---|---|---|
 | `docker` | default (`sandbox.backend: "docker"`) | production, behaviour unchanged |
-| `hisn` | `sandbox.backend: "hisn"` | second backend, opt-in, needs hisn >= 0.2.0 |
+| `hisn` | `sandbox.backend: "hisn"` | second backend, opt-in, needs hisn >= 0.2.1 |
 
 `exec_mode: "direct"` (no sandbox at all) is a separate, explicit opt-out and is
 **not** a backend. Combining it with `backend: "hisn"` is a configuration error.
@@ -209,7 +209,7 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
 
 ## Lifecycle (hisn)
 
-* **Preflight** in the constructor: `hisn --version` parses and is >= 0.2.0,
+* **Preflight** in the constructor: `hisn --version` parses and is >= 0.2.1,
   and `hisn check` exits 0. Otherwise `NewExecutor` returns an error and Wakil
   exits. No fallback. Unknown `sandbox.backend` values are a config error.
 * **One command factory.** Every `hisn` invocation (version, check, policy

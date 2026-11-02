@@ -925,8 +925,9 @@ const (
 	SandboxBackendHisn   = "hisn"
 )
 
-// MinHisnVersion is the oldest hisn release the backend supports.
-const MinHisnVersion = "0.2.0"
+// MinHisnVersion is the oldest hisn release the backend supports: 0.2.1
+// (--ready-fd, exec_id, --prune, stale-kill, session.shm/tmp_size).
+const MinHisnVersion = "0.2.1"
 
 // DefaultHisnEnvPass is the set of variable names allowed through into hisn
 // execs by default: toolchain knobs Wakil's tools need, none that carry
