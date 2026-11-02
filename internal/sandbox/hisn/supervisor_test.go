@@ -482,7 +482,7 @@ func TestStopNeverSignalsForeignReplacement(t *testing.T) {
 	}
 	sup := b.supOf()
 	_ = syscall.Kill(sup.pid(), syscall.SIGKILL) // our supervisor dies, dir stays
-	if !sup.waitExit(5*time.Second) {
+	if !sup.waitExit(5 * time.Second) {
 		t.Fatal("supervisor did not die")
 	}
 	// A foreign fixture with a LIVE socket under the same id: stopLocked must
