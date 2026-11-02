@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
@@ -49,13 +50,17 @@ type live struct {
 	// sup is the `hisn run --detach` supervisor process: the session's lifetime
 	// handle. nil only for a start that failed before the supervisor spawned.
 	sup *supervisorProc
+	// refused is set when a control request found the session's socket refusing
+	// connections: whatever the process table says, the session is dead.
+	refused atomic.Bool
 }
 
 // dead reports whether the session's supervisor has exited. A dead session can
 // never come back: the supervisor holds the namespaces and the control socket.
-func (l *live) dead() bool { return l.sup != nil && l.sup.hasExited() }
+func (l *live) dead() bool { return l.refused.Load() || (l.sup != nil && l.sup.hasExited()) }
 
-// deadErr describes a dead session, with the supervisor's captured stderr.
+// deadErr describes a dead session, with the supervisor's captured stderr and
+// the path of its log.
 func (l *live) deadErr() error {
 	if l.sup == nil {
 		return fmt.Errorf("%w: hisn session %s has no supervisor", sandbox.ErrSessionDead, l.id)
@@ -64,8 +69,23 @@ func (l *live) deadErr() error {
 	if msg == "" {
 		msg = "(no output; hisn prints diagnostics only with -v)"
 	}
-	return fmt.Errorf("%w: hisn supervisor for session %s exited (%s); stderr: %s",
-		sandbox.ErrSessionDead, l.id, l.sup.exitStatus(), msg)
+	state := "exited (" + l.sup.exitStatus() + ")"
+	if !l.sup.hasExited() {
+		state = "is running but its control socket refuses connections; it will be replaced"
+	}
+	return fmt.Errorf("%w: hisn supervisor for session %s %s; log %s; stderr: %s",
+		sandbox.ErrSessionDead, l.id, state, l.sup.logPath, msg)
+}
+
+// noteRefused marks the session dead when a hisn client's diagnostic says the
+// control socket refused the connection (the supervisor behind it is gone or
+// wedged). It reports whether it did.
+func (l *live) noteRefused(out string) bool {
+	if !isConnRefused(out) {
+		return false
+	}
+	l.refused.Store(true)
+	return true
 }
 
 // Backend drives hisn. Lifecycle transitions (Start/Stop/Close) take mu for
@@ -201,7 +221,11 @@ func (b *Backend) Start(ctx context.Context, s sandbox.Session) error {
 		return nil
 	}
 	if err := b.stopAllLocked(ctx); err != nil {
-		return fmt.Errorf("hisn backend: previous session not stopped: %w", err)
+		// A tool call is never failed because the PREVIOUS session would not stop:
+		// the new session is started regardless (a conflict on the SAME id is
+		// still caught by startLocked) and the leftover stays tracked and is
+		// retried by Stop/Close. One line says so.
+		fmt.Fprintf(errWriter, "hisn: starting %s although the previous session was not fully stopped: %v\n", s.ID, err)
 	}
 	hostCwd := s.HostCwd
 	if hostCwd == "" {
@@ -340,7 +364,9 @@ func (b *Backend) Grant(ctx context.Context, path string, rw bool) error {
 	args = append(args, "--", path)
 	out, err := b.output(ctx, false, args...)
 	if err != nil {
-		if l.dead() { // the supervisor died while the request was in flight
+		// `out` is hisn's own client output (no program is involved), so a
+		// refused connection here is trustworthy evidence the session is dead.
+		if l.noteRefused(out) || l.dead() { // or the supervisor died mid-request
 			return l.deadErr()
 		}
 		return classifyControlError("grant", path, out, err)
@@ -366,7 +392,9 @@ func (b *Backend) Revoke(ctx context.Context, path string) error {
 	defer done()
 	out, err := b.output(ctx, false, "revoke", "--session", l.id, "--", path)
 	if err != nil {
-		if l.dead() {
+		// `out` is hisn's own client output (no program is involved), so a
+		// refused connection here is trustworthy evidence the session is dead.
+		if l.noteRefused(out) || l.dead() { // or the supervisor died mid-request
 			return l.deadErr()
 		}
 		return classifyControlError("revoke", path, out, err)

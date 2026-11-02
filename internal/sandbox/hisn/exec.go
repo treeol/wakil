@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
 )
@@ -111,6 +112,12 @@ func (e *execHandle) Wait() (sandbox.ExitInfo, error) {
 		// sandbox, program included: nothing "may still be running" and the
 		// failure is the session's, not the program's. Only a failed run is
 		// reinterpreted; a program that already finished keeps its status.
+		// The exec client's stderr also carries the PROGRAM's stderr, so a text
+		// match alone proves nothing: a program may print "hisn: connection
+		// refused" and exit 125. Only Wakil's own probe of the session decides.
+		if e.info.Code == exitHisnError && e.dw.Refused() && !e.l.dead() && e.b.sessionUnreachable(e.l) {
+			e.l.refused.Store(true)
+		}
 		if e.l.dead() && (e.err != nil || e.info.Code == exitHisnError || e.info.Code >= 128) {
 			e.info.Lost, e.info.BackendError = false, true
 			e.err = e.l.deadErr()
@@ -129,6 +136,24 @@ func (e *execHandle) Wait() (sandbox.ExitInfo, error) {
 		}
 	})
 	return e.info, e.err
+}
+
+// sessionUnreachable probes l's control socket with a client of Wakil's own
+// (never program output): it reports true only when `hisn ls --session` fails
+// with a refused connection or `hisn ls` no longer lists the session `live`.
+// An inconclusive probe (timeout, other error) is NOT proof of death.
+func (b *Backend) sessionUnreachable(l *live) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := b.output(ctx, false, "ls", "--session", l.id)
+	if err == nil {
+		return false
+	}
+	if isConnRefused(out) {
+		return true
+	}
+	state, serr := b.sessionState(ctx, l.id)
+	return serr == nil && state != "live"
 }
 
 // exitHisnError is hisn's reserved exit status for its own failures.

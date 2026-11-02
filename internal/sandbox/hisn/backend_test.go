@@ -331,7 +331,10 @@ func TestRebindReplacesSession(t *testing.T) {
 func TestStaleExecCannotReachReplacement(t *testing.T) {
 	b, fe := openFake(t)
 	_ = b.Start(ctxT(t), sandbox.Session{ID: "a", HostCwd: fe.cwd})
-	h, _ := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"sleep", "60"}})
+	h, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"sleep", "60"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = b.Start(ctxT(t), sandbox.Session{ID: "b", HostCwd: fe.cwd})
 	done := make(chan struct{})
 	go func() { _, _ = h.Wait(); close(done) }()

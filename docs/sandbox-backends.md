@@ -237,23 +237,46 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
   ```
 
   * **`-v` is required.** hisn prints nothing to stderr without it, so a start
-    that fails would be undiagnosable. stdout and stderr go into a bounded ring
-    buffer (last 64 KiB), which is appended to every start/dead-session error.
+    that fails would be undiagnosable.
+  * **Stdio.** `stdin` and `stdout` are `nil` (Go maps that to `/dev/null`): hisn
+    refuses to start when stdin or stderr is a terminal, and no descriptor of
+    Wakil's TUI may reach it. `stderr` is a pipe teed into two places: a bounded
+    in-memory ring (last 64 KiB) and the **supervisor log**
+    `<wakil state dir>/hisn/<chatID>.supervisor.log` (`0600`, truncated at every
+    start, written on every start, successful or not; it starts with the exact
+    command line and ends with a `wakil: supervisor exited: ...` line). The file is
+    written by a separate goroutine through a bounded queue and chunks are
+    dropped (and counted in the log) when it stalls, so a hung log destination can
+    never wedge hisn's stderr nor delay the publication of its death. Every
+    start, readiness and dead-session error names that path and appends the ring.
+    If the log file cannot be created, Start fails: diagnostics are not optional.
+  * **Lifetime belongs to the session, not to a tool call.** The command is built
+    on a context derived from `context.Background()` and cancelled only by the
+    supervisor's own teardown (kill/reap). The context of the tool call that
+    triggered the lazy start is used for the policy validation and the readiness
+    wait, and never reaches the supervisor, so cancelling that call (Esc, a
+    timeout) cannot kill the session. The supervisor also runs in its own session
+    (`Setsid`): a terminal Ctrl-C or hang-up that reaches Wakil's process group
+    must not reach it, because hisn treats SIGINT/SIGHUP as "shut down".
   * **`Pdeathsig = SIGTERM`** on the supervisor, so a Wakil crash (or any exit
     that skips `Close`) makes the kernel TERM it; hisn then shuts the whole
     sandbox down. The spawning goroutine is pinned to its OS thread for the
     supervisor's lifetime, because the kernel delivers `Pdeathsig` when the
     *thread* that forked the child exits and the Go runtime may retire idle
-    threads. Linux only (`sysproc_linux.go`); other platforms compile but have
-    no parent-death signal and rely on Stop/reconcile.
-  * **Readiness** is polled every 100 ms for at most **10 s** until *both*
-    `<runtime>/hisn/<id>/control.sock` exists (`runtime` = `$XDG_RUNTIME_DIR`
-    as given to hisn, else `/tmp/hisn-$UID`, the same candidates hisn uses) *and*
-    `hisn ls --session <id>` exits 0. If the supervisor exits first, Start fails
-    with its exit status and captured stderr. On timeout it is SIGKILLed, reaped,
-    and the error carries the stderr. There is no silent success: a half-started
-    session never receives a tool call, because the session is only published
-    (`cur`) after readiness *and* instance verification.
+    threads: the same goroutine starts the supervisor and blocks in `cmd.Wait`
+    for its whole life. Linux only (`sysproc_linux.go`); other platforms compile
+    but have no parent-death signal and rely on Stop/reconcile.
+  * **Readiness is strict.** Polled every 100 ms for at most **10 s**; ready means,
+    all at once: the supervisor has not exited, `hisn ls --json` reports the
+    session **`live`**, and `hisn ls --session <id>` exits 0, and the same holds
+    again one poll interval later. `stale`, missing, a non-zero exit or an exited
+    supervisor is *not ready*. (A supervisor that creates its socket and dies
+    right after used to pass; the second probe and the exit check close that.) A
+    supervisor that exits first fails Start with its exit status and stderr; on
+    timeout it is SIGKILLed, reaped, and the error carries the last probe's
+    reason, the stderr and the log path. There is no silent success: a
+    half-started session never receives a tool call, because it is only
+    published (`cur`) after readiness *and* instance verification.
 * **Stop** reaps the supervisor Wakil spawned **unconditionally**: it is an exact
   process handle, so no record or id lookup gates it. `hisn kill --session <id>`
   (its own 5 s bound, independent of the caller's context, so a hung client or
@@ -272,20 +295,42 @@ program group and KILLs after 5 s). Backends must be safe for concurrent
   the policy), is never touched. A supervisor that cannot be reaped
   (uninterruptible sleep) keeps the owner record and stays in the `orphans` list;
   `Start`/`Stop`/`Close` retry it.
-* **Health.** A session whose supervisor has exited is dead. `Exec`, `Grant`
-  and `Revoke` on it return `sandbox.ErrSessionDead` (exit status + captured
-  stderr) *before* any `hisn` client is spawned. The executor drops the dead
+* **Health.** A session is dead when its supervisor has exited **or** a hisn
+  client reported `Connection refused` on its control socket (a supervisor that
+  is alive but no longer accepting). The text alone never decides: an exec
+  client's stderr also carries the *program's* stderr, so on `exit 125` plus a
+  refusal-looking line Wakil probes the session itself (`hisn ls --session`,
+  `hisn ls --json`) and only a failed probe marks the session dead. `Exec`, `Grant` and `Revoke` on a session
+  already known dead return `sandbox.ErrSessionDead` (exit status, captured
+  stderr, log path) *before* any `hisn` client is spawned; a refused connection
+  discovered by a client marks the session dead and fails that call with the same
+  error (the program did not run). The executor drops the dead
   session (generation advances, so bg-registry entries are marked lost) and the
   chat's next tool call starts a fresh one, exactly as for a missing session;
   the failing call itself is not retried (it may not be idempotent).
   `Start` for the same id replaces a dead session instead of treating it as
-  running.
+  running. A tool call is **never** failed with "previous session not stopped":
+  if the previous session cannot be stopped, one line is logged, the leftover
+  stays tracked (retried by `Stop`/`Close`), and the new session starts anyway
+  (a clash on the *same* id is still caught by the start steps below).
 * **Ownership is exclusive and instance-bound.** The records directory
   `<state>/hisn/sessions/` is guarded by an `flock`ed lock file for every
   start, stop and reconcile step. A start:
-  1. under the lock, `hisn ls --json`: if the id is already present, refuse
-     (`session id in use`) — Wakil never adopts, claims or kills a session it
-     did not just create;
+  1. under the lock, `hisn ls --json`: if the id is present and **`live`**,
+     refuse (`session id in use`) — Wakil never adopts, claims or kills a
+     session it did not just create. If it is present but **`stale`** (the
+     directory is there, nothing answers) and no live Wakil owns the chat (step
+     2), it is a dead leftover of this very chat id: it is removed and one line
+     is logged (stderr and the supervisor log), then the start proceeds. The
+     removal needs the directory to be named exactly `<id>` under hisn's runtime
+     roots, not a symlink, to refuse connections twice 300 ms apart, and, when
+     hisn has already written its `policy.resolved.toml`, that policy must carry a
+     `wakil-` instance hostname (a stale directory of a session somebody else
+     started under this id is left alone and the start fails with
+     `ErrSessionInUse`). Without a policy file nothing contradicts ownership and
+     the directory is replaced: the chat id is a UUID only Wakil uses, and the
+     300 ms settle is a heuristic, not proof (Known limits). Other ids are never
+     touched;
   2. if a record `<id>.json` exists with a live owner (pid + start time), refuse
      (the chat is active in another Wakil process); a dead owner's record is
      reconciled (below) first;
@@ -444,9 +489,10 @@ ignored, `WorkDir == HostWorkDir`.
   be closed without an instance-bound kill in hisn.
 * Reconcile does not remove a non-live runtime directory it finds by id: with
   no supervisor handle it cannot tell a crashed one from a foreign session that
-  is still starting. A directory left by a SIGKILLed supervisor of a *previous*
-  Wakil process therefore blocks that id until removed
-  (`rm -r $XDG_RUNTIME_DIR/hisn/<id>`); Stop removes its own (with proof, above).
+  is still starting. Such a directory (left by a SIGKILLed supervisor of a
+  *previous* Wakil process) is only cleaned when that same chat id starts again
+  (the stale replacement above); other stale entries in `hisn ls` stay until
+  removed (`rm -r $XDG_RUNTIME_DIR/hisn/<id>`). Stop removes its own (with proof).
 * hisn's `Pdeathsig` safety net is a no-op if the `hisn` binary carries
   setuid/setgid or file capabilities (the kernel clears the death signal on such
   an execve). Check with `getcap "$(command -v hisn)"`; the startup Reconcile
@@ -459,9 +505,16 @@ ignored, `WorkDir == HostWorkDir`.
   `src/supervisor.rs`); `TestIntegrationStartExec` and
   `TestIntegrationSupervisorDiesWithParent` are the on-host proof and have not
   run on this build host.
-* `ErrSessionDead` is detected from the supervisor process, not from
-  `hisn ls`: a supervisor that is alive but wedged is not noticed until an exec
-  fails on its own.
+* The stale-directory replacement is not a proof of ownership when hisn died
+  before writing `policy.resolved.toml`: a *foreign* supervisor that took longer
+  than the 300 ms settle to bind its socket under the *same* chat id would lose
+  its directory. Chat ids are UUIDs that only Wakil generates, which is the
+  mitigation; the design has no stronger evidence to offer.
+* `ErrSessionDead` comes from the supervisor process exiting or from a client
+  reporting `Connection refused` (matched on that text in hisn's `hisn: ...`
+  diagnostic). A supervisor that is alive, accepting, but wedged is not noticed
+  until an exec fails on its own; there is no periodic health probe between tool
+  calls.
 * `Pdeathsig` covers Wakil's exit and crash, not a hisn child that is itself
   SIGKILLed independently of Wakil.
 * `StartBackground` uses `setsid nohup … &` inside `hisn exec`. That the

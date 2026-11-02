@@ -5,10 +5,14 @@ package hisn
 
 import (
 	"context"
+	"fmt"
 	"os"
 	osexec "os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -75,12 +79,85 @@ func (b *Backend) output(ctx context.Context, withPass bool, args ...string) (st
 	return string(out), err
 }
 
-// supervisorStderrCap bounds the captured supervisor output.
+// supervisorStderrCap bounds the in-memory copy of the supervisor's output.
 const supervisorStderrCap = 64 << 10
 
 // supervisorWaitDelay bounds how long Wait lingers for the output pipe after
 // the supervisor exited (a straggler holding stderr must not wedge the reaper).
 const supervisorWaitDelay = 2 * time.Second
+
+// teeWriter sends supervisor output to the in-memory ring AND the per-chat log
+// file. The ring is written synchronously; the file is written by a separate
+// goroutine through a bounded queue, and chunks are DROPPED (counted, and noted
+// in the log) when the queue is full. A stalled log destination (a hung network
+// filesystem, a FIFO) must never block hisn's stderr: a supervisor stuck in a
+// stderr write is a wedged session. A failing file never fails the write either
+// (an error would end the stderr copier and hisn would die of SIGPIPE).
+type teeWriter struct {
+	ring    *ringBuffer
+	q       chan []byte
+	done    chan struct{} // closed when the file writer goroutine has finished
+	dropped atomic.Int64
+	once    sync.Once
+	mu      sync.Mutex // guards q against send-after-close
+	closed  bool
+}
+
+// logQueueLen bounds the chunks waiting for the file writer.
+const logQueueLen = 256
+
+func newTeeWriter(ring *ringBuffer, f *os.File) *teeWriter {
+	t := &teeWriter{ring: ring, q: make(chan []byte, logQueueLen), done: make(chan struct{})}
+	go func() {
+		defer close(t.done)
+		defer f.Close()
+		failed := false
+		for chunk := range t.q {
+			if failed {
+				continue
+			}
+			if _, err := f.Write(chunk); err != nil {
+				failed = true
+			}
+		}
+		if n := t.dropped.Load(); n > 0 && !failed {
+			_, _ = fmt.Fprintf(f, "wakil: %d log chunk(s) dropped while the log was slow\n", n)
+		}
+	}()
+	return t
+}
+
+func (t *teeWriter) Write(p []byte) (int, error) {
+	_, _ = t.ring.Write(p)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return len(p), nil
+	}
+	select {
+	case t.q <- append([]byte(nil), p...):
+	default:
+		t.dropped.Add(1)
+	}
+	return len(p), nil
+}
+
+// close ends the log: queued chunks are flushed when the file keeps up, and the
+// wait is bounded so a stalled file cannot hold up lifecycle cleanup.
+func (t *teeWriter) close() {
+	t.once.Do(func() {
+		t.mu.Lock()
+		t.closed = true
+		close(t.q)
+		t.mu.Unlock()
+	})
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-t.done:
+	case <-timer.C:
+	}
+}
 
 // supervisorProc is the long-lived `hisn run --detach` process. In hisn the
 // supervisor IS the session: it holds the namespace fds and the control socket,
@@ -91,47 +168,96 @@ const supervisorWaitDelay = 2 * time.Second
 type supervisorProc struct {
 	cmd     *osexec.Cmd
 	stderr  *ringBuffer
-	exited  chan struct{} // closed after cmd.Wait returned
-	waitErr error         // valid once exited is closed
+	logPath string             // per-chat supervisor log (truncated at every start)
+	cancel  context.CancelFunc // cancels the SESSION-OWNED context of cmd
+	exited  chan struct{}      // closed as soon as cmd.Wait returned (no log I/O before it)
+	logged  chan struct{}      // closed once the exit note is logged and the log closed
+	waitErr error              // valid once exited is closed
 	// killFn delivers SIGKILL. A field only so tests can simulate a supervisor
 	// that cannot be killed (uninterruptible sleep); production never sets it.
 	killFn func()
 }
 
-// startSupervisor spawns the supervisor with the same scrubbed environment as
-// every hisn invocation (plus env_pass, which hisn snapshots at session start).
-// It deliberately has NO context: the process outlives the call that started
-// it, and dies with Wakil through Pdeathsig.
-func (b *Backend) startSupervisor(args ...string) (*supervisorProc, error) {
-	// The factory's ctx-less form: Background never cancels, so the supervisor
-	// outlives the call that started it.
-	cmd := b.command(context.Background(), true, args...)
-	cmd.SysProcAttr = supervisorSysProcAttr()
+// supervisorLogPath is where chat id's supervisor output goes.
+func (b *Backend) supervisorLogPath(id string) string {
+	return filepath.Join(b.opts.StateDir, id+".supervisor.log")
+}
+
+// startSupervisor spawns the supervisor. Its lifetime is owned by the SESSION,
+// never by a tool call: the command's context derives from context.Background()
+// and is cancelled only by the supervisor's own teardown (kill), so cancelling
+// the context of the call that happened to start the session cannot reach it.
+// It also dies with Wakil through Pdeathsig.
+//
+// Stdio: stdin and stdout are explicitly nil (/dev/null) so no TUI descriptor
+// can reach hisn; stderr is a pipe teed into a ring buffer and into logPath
+// (truncated per start, so it always holds exactly the latest supervisor).
+// notes are written first, as "wakil: ..." lines.
+func (b *Backend) startSupervisor(logPath string, notes []string, args ...string) (*supervisorProc, error) {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return nil, fmt.Errorf("supervisor log directory: %w", err)
+	}
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		// Diagnostics are not optional: a supervisor whose stderr vanishes with
+		// the process is exactly what made earlier failures undiagnosable.
+		return nil, fmt.Errorf("supervisor log %s: %w", logPath, err)
+	}
 	ring := newRingBuffer(supervisorStderrCap)
-	cmd.Stdout, cmd.Stderr = ring, ring // one interface value: one pipe, one copier
+	tee := newTeeWriter(ring, f)
+	for _, n := range notes {
+		_, _ = fmt.Fprintf(tee, "wakil: %s\n", n)
+	}
+	_, _ = fmt.Fprintf(tee, "wakil: starting %s %s\n", b.opts.Binary, strings.Join(args, " "))
+
+	supCtx, supCancel := context.WithCancel(context.Background())
+	cmd := b.command(supCtx, true, args...)
+	cmd.SysProcAttr = supervisorSysProcAttr()
+	cmd.Stdin = nil  // /dev/null
+	cmd.Stdout = nil // /dev/null; hisn run prints nothing on stdout
+	cmd.Stderr = tee
 	cmd.WaitDelay = supervisorWaitDelay
-	p := &supervisorProc{cmd: cmd, stderr: ring, exited: make(chan struct{})}
+	p := &supervisorProc{cmd: cmd, stderr: ring, logPath: logPath, cancel: supCancel, exited: make(chan struct{}), logged: make(chan struct{})}
 	started := make(chan error, 1)
 	go func() {
 		// Pdeathsig is delivered when the OS THREAD that forked the child
-		// exits, and the Go runtime may retire an idle thread at any time. Pin
-		// this goroutine (and so its thread) for the supervisor's whole life:
-		// the same goroutine starts and reaps it, and only then lets go.
+		// exits, not when the process does, and the Go runtime may retire an
+		// idle thread at any time. Pin this goroutine (and so its thread) for
+		// the supervisor's whole life: the same goroutine starts and reaps it,
+		// blocked in cmd.Wait, and only then lets the thread go.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		err := cmd.Start()
 		started <- err
 		if err != nil {
+			supCancel()
 			close(p.exited)
+			tee.close()
+			close(p.logged)
 			return
 		}
 		p.waitErr = cmd.Wait()
+		// Publish the death FIRST: health checks read `exited`, and no log I/O
+		// (a stalled disk, a full volume) may delay them or the cleanup that
+		// follows. The exit note goes to the log afterwards; error messages that
+		// quote the log wait for `logged` with a short bound.
+		supCancel()
 		close(p.exited)
+		_, _ = fmt.Fprintf(tee, "wakil: supervisor exited: %s\n", exitText(p.waitErr))
+		tee.close()
+		close(p.logged)
 	}()
 	if err := <-started; err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+func exitText(err error) string {
+	if err == nil {
+		return "exit status 0"
+	}
+	return err.Error()
 }
 
 func (p *supervisorProc) hasExited() bool {
@@ -155,13 +281,16 @@ func (p *supervisorProc) waitExit(d time.Duration) bool {
 	}
 }
 
-// kill SIGKILLs the supervisor. Its init dies through its own PDEATHSIG.
-// Killing an already-reaped process is a harmless no-op (os.ErrProcessDone).
+// kill SIGKILLs the supervisor: cancelling its session-owned context makes the
+// runtime kill it, and the explicit Kill makes that independent of scheduling.
+// Its init dies through its own PDEATHSIG. Killing an already-reaped process is
+// a harmless no-op.
 func (p *supervisorProc) kill() {
 	if p.killFn != nil {
 		p.killFn()
 		return
 	}
+	p.cancel()
 	_ = p.cmd.Process.Kill()
 }
 
@@ -171,12 +300,21 @@ func (p *supervisorProc) exitStatus() string {
 	if !p.hasExited() {
 		return "still running"
 	}
-	if p.waitErr == nil {
-		return "exit status 0"
-	}
-	return p.waitErr.Error()
+	return exitText(p.waitErr)
 }
 
 func (p *supervisorProc) pid() int { return p.cmd.Process.Pid }
 
-func (p *supervisorProc) stderrText() string { return p.stderr.String() }
+// stderrText returns the captured stderr. After an exit it waits briefly (bounded;
+// the log may be stalled) so the exit note is included.
+func (p *supervisorProc) stderrText() string {
+	if p.hasExited() {
+		t := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-p.logged:
+		case <-t.C:
+		}
+		t.Stop()
+	}
+	return p.stderr.String()
+}

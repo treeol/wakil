@@ -2,6 +2,7 @@ package hisn
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,7 +74,7 @@ func TestStartFailureModes(t *testing.T) {
 		{"exits immediately with a diagnostic", "fail",
 			[]string{"exited before the session was ready", "exit status 125", "injected failure: cannot create sandbox"}, 0},
 		{"never creates the control socket", "nosock",
-			[]string{"not ready after", "control socket not created yet", "stderr:", "init pid"}, 700 * time.Millisecond},
+			[]string{"not ready after", "hisn ls reports the session", "stderr:", "init pid", ".supervisor.log"}, 700 * time.Millisecond},
 		{"hangs without ever being ready", "hang",
 			[]string{"not ready after", "starting"}, 700 * time.Millisecond},
 	} {
@@ -160,7 +161,7 @@ func TestReadinessNeedsLsAnswerNotJustSocketFile(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "control.sock"), nil, 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "sup.pid"), []byte("1"), 0o600) // fake: ours, not live
 	// Any long-running process stands in for the supervisor.
-	sup, err := b.startSupervisor("run", "--detach", "-v", "--session-id", "other", "--policy", "/nonexistent")
+	sup, err := b.startSupervisor(filepath.Join(fe.sdir, "other.supervisor.log"), nil, "run", "--detach", "-v", "--session-id", "other", "--policy", "/nonexistent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,4 +553,462 @@ func TestStopReapsOwnSupervisorEvenIfRecordIsForeign(t *testing.T) {
 	b.mu.Lock()
 	b.orphans = nil
 	b.mu.Unlock()
+}
+
+// ================= strict readiness, log file, lifetime, stale handling =================
+
+func readLog(t *testing.T, b *Backend, id string) string {
+	t.Helper()
+	data, err := os.ReadFile(b.supervisorLogPath(id))
+	if err != nil {
+		t.Fatalf("supervisor log missing: %v", err)
+	}
+	return string(data)
+}
+
+// `stale` is not ready, ever: the supervisor runs, the socket FILE exists, but
+// nothing accepts, so `hisn ls` says stale and Start must fail with the log path.
+func TestReadinessRejectsStale(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, _ := Open(ctxT(t), fe.options())
+	b.readyTimeout = 700 * time.Millisecond
+	b.stopWait = 2 * time.Second
+	fe.setMode("stale")
+	err := b.Start(ctxT(t), sandbox.Session{ID: "stl", HostCwd: fe.cwd})
+	if err == nil {
+		t.Fatal("a session that `hisn ls` reports stale must NOT be ready")
+	}
+	for _, w := range []string{"not ready after", "hisn ls reports the session stale", "stl.supervisor.log", "init pid"} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error lacks %q:\n%v", w, err)
+		}
+	}
+	if b.ActiveID() != "" || len(b.listRecordIDs()) != 0 || len(fe.sessionIDs()) != 0 {
+		t.Errorf("failed start left state: active=%q records=%v sessions=%v", b.ActiveID(), b.listRecordIDs(), fe.sessionIDs())
+	}
+}
+
+// A supervisor that creates its socket and dies right after (tonight's fault)
+// must not pass as ready, and the failure carries its stderr and exit status.
+func TestReadinessRejectsDiesAfterSocket(t *testing.T) {
+	for _, mode := range []string{"crash:0", "crash:120"} {
+		t.Run(mode, func(t *testing.T) {
+			fe := newFakeEnv(t)
+			b, _ := Open(ctxT(t), fe.options())
+			b.stopWait = 2 * time.Second
+			fe.setMode(mode)
+			err := b.Start(ctxT(t), sandbox.Session{ID: "das", HostCwd: fe.cwd})
+			if err == nil {
+				t.Fatal("a supervisor that died right after creating its socket passed as ready")
+			}
+			for _, w := range []string{"exit status 125", "injected crash", ".supervisor.log"} {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error lacks %q:\n%v", w, err)
+				}
+			}
+			if b.ActiveID() != "" {
+				t.Error("a failed start must not leave a current session")
+			}
+			if lg := readLog(t, b, "das"); !strings.Contains(lg, "injected crash") || !strings.Contains(lg, "supervisor exited: exit status 125") {
+				t.Errorf("log lacks the supervisor's stderr / exit:\n%s", lg)
+			}
+		})
+	}
+}
+
+// Supervisor stderr is written to <state>/<chat>.supervisor.log on EVERY start,
+// success included, truncated per start, and error messages name the path.
+func TestSupervisorLogFileEveryStartTruncated(t *testing.T) {
+	b, fe := openFake(t)
+	b.stopWait = 2 * time.Second
+	want := filepath.Join(fe.sdir, "lg.supervisor.log")
+	if got := b.supervisorLogPath("lg"); got != want {
+		t.Fatalf("log path = %q, want %q", got, want)
+	}
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "lg", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	first := readLog(t, b, "lg")
+	if !strings.Contains(first, "wakil: starting ") || !strings.Contains(first, "run --detach -v --session-id lg") ||
+		!strings.Contains(first, "init pid") {
+		t.Fatalf("log of a SUCCESSFUL start lacks the supervisor's output:\n%s", first)
+	}
+	if err := b.Stop(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "lg", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	second := readLog(t, b, "lg")
+	if strings.Count(second, "wakil: starting ") != 1 {
+		t.Fatalf("log not truncated per start:\n%s", second)
+	}
+	// The per-process ring buffer is a second copy of the same output.
+	if !strings.Contains(b.supOf().stderrText(), "init pid") {
+		t.Error("ring buffer lost the supervisor's stderr")
+	}
+	// The log is private.
+	if fi, err := os.Stat(b.supervisorLogPath("lg")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("log mode = %v, %v; want 0600", fi.Mode().Perm(), err)
+	}
+	// A dead session's error names the log too.
+	killSupervisorHard(t, b)
+	_, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"true"}})
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("dead-session error must name the log %s: %v", want, err)
+	}
+}
+
+// A log that cannot be created is an error, never a silent loss of diagnostics.
+func TestUnwritableSupervisorLogFailsStart(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, _ := Open(ctxT(t), fe.options())
+	_ = os.MkdirAll(b.opts.StateDir, 0o700)
+	// A directory where the log file must go.
+	if err := os.MkdirAll(b.supervisorLogPath("nolog"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := b.Start(ctxT(t), sandbox.Session{ID: "nolog", HostCwd: fe.cwd})
+	if err == nil || !strings.Contains(err.Error(), "supervisor log") {
+		t.Fatalf("want a supervisor-log error, got %v", err)
+	}
+	if len(fe.sessionIDs()) != 0 || len(b.listRecordIDs()) != 0 {
+		t.Fatalf("failed start left state: %v %v", fe.sessionIDs(), b.listRecordIDs())
+	}
+}
+
+// ---- lifetime: owned by the session, never by a tool call's context ----
+
+func TestSupervisorSurvivesStartContextCancel(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, _ := Open(ctxT(t), fe.options())
+	defer b.Close(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := b.Start(ctx, sandbox.Session{ID: "ctxc", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	cancel() // the tool call that started the session ends
+	time.Sleep(500 * time.Millisecond)
+	if b.supOf().hasExited() {
+		t.Fatalf("cancelling the starting call's context killed the supervisor: %s\n%s",
+			b.supOf().exitStatus(), readLog(t, b, "ctxc"))
+	}
+	if out, info := run(t, b, "echo", "still-here"); strings.TrimSpace(out) != "still-here" || info.Code != 0 {
+		t.Fatalf("exec after the start context was cancelled: %q %+v", out, info)
+	}
+}
+
+// Even a start whose context is ALREADY cancelled when readiness begins must not
+// leave the supervisor tied to it: the failure is clean and nothing leaks.
+func TestStartWithCancelledContextFailsCleanly(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, _ := Open(ctxT(t), fe.options())
+	b.stopWait = 2 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.Start(ctx, sandbox.Session{ID: "cc", HostCwd: fe.cwd}); err == nil {
+		t.Fatal("Start with a cancelled context must fail")
+	}
+	if len(fe.sessionIDs()) != 0 || len(b.listRecordIDs()) != 0 || b.ActiveID() != "" {
+		t.Fatalf("leftovers: %v %v %q", fe.sessionIDs(), b.listRecordIDs(), b.ActiveID())
+	}
+}
+
+// Stop is what ends the supervisor; the session-owned context is cancelled only
+// by that teardown.
+func TestStopCancelsSessionOwnedContext(t *testing.T) {
+	b, fe := openFake(t)
+	_ = b.Start(ctxT(t), sandbox.Session{ID: "own", HostCwd: fe.cwd})
+	sup := b.supOf()
+	if sup.cmd.Process == nil {
+		t.Fatal("no process")
+	}
+	_ = b.Stop(ctxT(t))
+	if !sup.hasExited() {
+		t.Fatal("Stop left the supervisor running")
+	}
+}
+
+// stdin and stdout are /dev/null: no descriptor of Wakil's terminal can reach hisn.
+func TestSupervisorStdioIsDevNull(t *testing.T) {
+	b, fe := openFake(t)
+	_ = b.Start(ctxT(t), sandbox.Session{ID: "io", HostCwd: fe.cwd})
+	sup := b.supOf()
+	if sup.cmd.Stdin != nil || sup.cmd.Stdout != nil {
+		t.Fatalf("stdin/stdout must be nil (/dev/null): %v %v", sup.cmd.Stdin, sup.cmd.Stdout)
+	}
+	if sup.cmd.Stderr == nil {
+		t.Fatal("stderr must be the diagnostics pipe")
+	}
+	for _, fd := range []string{"0", "1"} {
+		l, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(sup.pid()), "fd", fd))
+		if err != nil {
+			t.Skip("no /proc/<pid>/fd")
+		}
+		if l != "/dev/null" {
+			t.Errorf("supervisor fd %s -> %s, want /dev/null", fd, l)
+		}
+	}
+	if a := supervisorSysProcAttr(); a == nil || !a.Setsid {
+		t.Error("the supervisor must run in its own session (no controlling terminal)")
+	}
+}
+
+// ---- stale handling ----
+
+func plantStale(t *testing.T, fe *fakeEnv, id string) string {
+	t.Helper()
+	dir := filepath.Join(fe.rt(), id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "sup.pid"), []byte("1"), 0o600) // fake: a supervisor session that is not live
+	_ = os.WriteFile(filepath.Join(dir, "control.sock"), nil, 0o600)
+	return dir
+}
+
+func TestStartReplacesStaleDirOfThisChat(t *testing.T) {
+	var diag strings.Builder
+	old := errWriter
+	SetDiagnostics(&diag)
+	t.Cleanup(func() { SetDiagnostics(old) })
+	b, fe := openFake(t)
+	stale := plantStale(t, fe, "chat-s")
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "chat-s", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("a stale directory of this chat blocked the start: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stale, "policy")); err != nil {
+		t.Fatal("the fresh session did not take the id")
+	}
+	if !strings.Contains(diag.String(), "replaced stale session directory") {
+		t.Errorf("no one-line notice: %q", diag.String())
+	}
+	if !strings.Contains(readLog(t, b, "chat-s"), "replaced stale session directory") {
+		t.Error("the replacement is not recorded in the supervisor log")
+	}
+	if out, info := run(t, b, "echo", "ok"); strings.TrimSpace(out) != "ok" || info.Code != 0 {
+		t.Fatalf("replacement session unusable: %q %+v", out, info)
+	}
+}
+
+func TestStaleReplacementNeverTouchesLiveForeignOrOtherIDs(t *testing.T) {
+	b, fe := openFake(t)
+	fe.addForeignSession("chat-live") // live in the fake (no supervisor pid file)
+	err := b.Start(ctxT(t), sandbox.Session{ID: "chat-live", HostCwd: fe.cwd})
+	if !errors.Is(err, sandbox.ErrSessionInUse) || !strings.Contains(err.Error(), "LIVE") {
+		t.Fatalf("a live foreign session must be refused: %v", err)
+	}
+	other := plantStale(t, fe, "someone-elses-stale")
+	_ = b.Start(ctxT(t), sandbox.Session{ID: "chat-other", HostCwd: fe.cwd})
+	if _, err := os.Stat(other); err != nil {
+		t.Error("a stale directory of ANOTHER id was removed")
+	}
+	if !contains(fe.sessionIDs(), "chat-live") {
+		t.Error("the live foreign session was removed")
+	}
+}
+
+// A stale directory is not replaced while a live Wakil owns the chat.
+func TestStaleReplacementRespectsLiveOwner(t *testing.T) {
+	fe := newFakeEnv(t)
+	b1, _ := Open(ctxT(t), fe.options())
+	defer b1.Close(context.Background())
+	_ = b1.Start(ctxT(t), sandbox.Session{ID: "own2", HostCwd: fe.cwd})
+	_ = os.WriteFile(filepath.Join(fe.rt(), "own2", "refuse"), nil, 0o600) // now stale
+	b2, _ := New(fe.options())
+	if err := b2.Start(ctxT(t), sandbox.Session{ID: "own2", HostCwd: fe.cwd}); !errors.Is(err, sandbox.ErrSessionInUse) {
+		t.Fatalf("a second Wakil must not replace a chat owned by a live one: %v", err)
+	}
+}
+
+// ECONNREFUSED from a hisn client means dead: the call fails typed (the program
+// did not run), and the next Start replaces the session without ever failing
+// with "previous session not stopped".
+func TestConnectionRefusedMeansDeadAndIsReplaced(t *testing.T) {
+	b, fe := openFake(t)
+	b.stopWait = 500 * time.Millisecond
+	_ = b.Start(ctxT(t), sandbox.Session{ID: "ref", HostCwd: fe.cwd})
+	// The supervisor process is alive but its socket no longer accepts.
+	_ = os.WriteFile(filepath.Join(fe.rt(), "ref", "refuse"), nil, 0o600)
+	var out bytes.Buffer
+	h, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"echo", "must-not-run"}, Stdout: &out})
+	if err != nil {
+		t.Fatalf("admission of a still-running supervisor: %v", err)
+	}
+	info, werr := h.Wait()
+	if !errors.Is(werr, sandbox.ErrSessionDead) {
+		t.Fatalf("exec on a refusing socket = %+v, %v; want ErrSessionDead", info, werr)
+	}
+	if strings.Contains(out.String(), "must-not-run") {
+		t.Fatal("the program ran")
+	}
+	// Grant on the same dead session is a typed error without a new client.
+	if err := b.Grant(ctxT(t), "/srv/x", false); !errors.Is(err, sandbox.ErrSessionDead) {
+		t.Errorf("Grant after a refused exec = %v, want ErrSessionDead", err)
+	}
+	// Start replaces it: same chat, fresh supervisor, no error.
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "ref", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("replacing a dead session failed: %v", err)
+	}
+	if o, info := run(t, b, "echo", "fresh"); strings.TrimSpace(o) != "fresh" || info.Code != 0 {
+		t.Fatalf("fresh session unusable: %q %+v", o, info)
+	}
+}
+
+// Start never fails because the PREVIOUS session would not stop.
+func TestStartNeverFailsOnUnstoppablePreviousSession(t *testing.T) {
+	var diag strings.Builder
+	old := errWriter
+	SetDiagnostics(&diag)
+	t.Cleanup(func() { SetDiagnostics(old) })
+	fe := newFakeEnv(t)
+	b, _ := Open(ctxT(t), fe.options())
+	b.stopWait = 300 * time.Millisecond
+	fe.setMode("ignoreterm")
+	_ = b.Start(ctxT(t), sandbox.Session{ID: "prev", HostCwd: fe.cwd})
+	prev := b.supOf()
+	prev.killFn = func() {} // cannot be killed
+	fe.setMode("")
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "next", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("an unstoppable previous session failed a new start: %v", err)
+	}
+	if !strings.Contains(diag.String(), "previous session was not fully stopped") {
+		t.Errorf("no one-line notice: %q", diag.String())
+	}
+	if b.ActiveID() != "next" {
+		t.Fatalf("active = %q", b.ActiveID())
+	}
+	b.mu.RLock()
+	tracked := len(b.orphans)
+	b.mu.RUnlock()
+	if tracked != 1 {
+		t.Errorf("the unstoppable session must stay tracked for retry: %d", tracked)
+	}
+	prev.killFn = nil
+	if err := b.Close(ctxT(t)); err != nil {
+		t.Fatalf("Close must finish the stranded cleanup: %v", err)
+	}
+}
+
+// Stop ignores "not found"/"refused" from kill and removes what is provably ours.
+func TestStopIgnoresRefusedAndRemovesDir(t *testing.T) {
+	b, fe := openFake(t)
+	b.stopWait = 500 * time.Millisecond
+	_ = b.Start(ctxT(t), sandbox.Session{ID: "sr", HostCwd: fe.cwd})
+	_ = os.WriteFile(filepath.Join(fe.rt(), "sr", "refuse"), nil, 0o600) // kill gets "refused"
+	if err := b.Stop(ctxT(t)); err != nil {
+		t.Fatalf("Stop must tolerate a refusing socket: %v", err)
+	}
+	if len(fe.sessionIDs()) != 0 || len(b.listRecordIDs()) != 0 {
+		t.Fatalf("leftovers: %v %v", fe.sessionIDs(), b.listRecordIDs())
+	}
+}
+
+// ---- review round 1 regressions ----
+
+// PROGRAM stderr must never be able to declare the session dead: a program that
+// prints hisn's refusal text and exits 125 leaves a healthy session healthy.
+func TestProgramStderrCannotMarkSessionDead(t *testing.T) {
+	b, fe := openFake(t)
+	_ = b.Start(ctxT(t), sandbox.Session{ID: "liar", HostCwd: fe.cwd})
+	_, info := run(t, b, "sh", "-c", `echo "hisn: connecting to control socket: Connection refused (os error 111)" >&2; exit 125`)
+	if info.Code != 125 {
+		t.Fatalf("program exit not propagated: %+v", info)
+	}
+	b.mu.RLock()
+	l := b.cur
+	b.mu.RUnlock()
+	if l == nil || l.dead() {
+		t.Fatal("a program's stderr poisoned a healthy session")
+	}
+	if out, info := run(t, b, "echo", "still-fine"); strings.TrimSpace(out) != "still-fine" || info.Code != 0 {
+		t.Fatalf("session unusable after a lying program: %q %+v", out, info)
+	}
+	// The same session, genuinely refusing, IS declared dead (see
+	// TestConnectionRefusedMeansDeadAndIsReplaced): only the probe decides.
+}
+
+// A stalled supervisor log (a FIFO nobody reads) must neither wedge hisn's stderr
+// nor delay publishing its death or the cleanup that depends on it.
+func TestStalledLogDoesNotWedgeSupervisorNorDelayCleanup(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, _ := Open(ctxT(t), fe.options())
+	b.stopWait = 2 * time.Second
+	logPath := b.supervisorLogPath("jam")
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o700)
+	if err := syscall.Mkfifo(logPath, 0o600); err != nil {
+		t.Skipf("no fifo: %v", err)
+	}
+	rd, err := os.OpenFile(logPath, os.O_RDONLY|syscall.O_NONBLOCK, 0) // holds it open, never reads
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	fe.setMode("flood") // floods stderr (far beyond the pipe buffer), then exits 125
+	t0 := time.Now()
+	err = b.Start(ctxT(t), sandbox.Session{ID: "jam", HostCwd: fe.cwd})
+	if err == nil {
+		t.Fatal("a flooding, dying supervisor must fail Start")
+	}
+	if !strings.Contains(err.Error(), "exit status 125") {
+		t.Errorf("the supervisor was wedged by the stalled log instead of exiting: %v", err)
+	}
+	if d := time.Since(t0); d > 15*time.Second {
+		t.Fatalf("Start with a stalled log took %v", d)
+	}
+	if b.ActiveID() != "" || len(b.listRecordIDs()) != 0 {
+		t.Errorf("failed start left state: %q %v", b.ActiveID(), b.listRecordIDs())
+	}
+}
+
+// A stale directory whose resolved policy names no Wakil instance belongs to
+// somebody else, whatever its id: never replaced.
+func TestStaleForeignPolicyDirNotDeleted(t *testing.T) {
+	b, fe := openFake(t)
+	dir := plantStale(t, fe, "chat-fp")
+	_ = os.WriteFile(filepath.Join(dir, "policy.resolved.toml"), []byte("hostname = 'someone-else'\n"), 0o600)
+	err := b.Start(ctxT(t), sandbox.Session{ID: "chat-fp", HostCwd: fe.cwd})
+	if !errors.Is(err, sandbox.ErrSessionInUse) {
+		t.Fatalf("a stale directory that is not Wakil's must block, got %v", err)
+	}
+	if _, serr := os.Stat(dir); serr != nil {
+		t.Fatal("a directory with a foreign policy was deleted")
+	}
+	// ... while a Wakil-made one (its policy carries a wakil- hostname) is replaced.
+	dir2 := plantStale(t, fe, "chat-wp")
+	_ = os.WriteFile(filepath.Join(dir2, "policy.resolved.toml"), []byte("hostname = 'wakil-0123456789abcdef'\n"), 0o600)
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "chat-wp", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("a Wakil-made stale directory must be replaced: %v", err)
+	}
+}
+
+// A grant/revoke client that is refused marks the session dead (its output is
+// hisn's own, not a program's), so the next Start replaces it.
+func TestRefusedGrantAndRevokeMarkSessionDead(t *testing.T) {
+	for _, op := range []string{"grant", "revoke"} {
+		t.Run(op, func(t *testing.T) {
+			b, fe := openFake(t)
+			b.stopWait = 500 * time.Millisecond
+			_ = b.Start(ctxT(t), sandbox.Session{ID: "gr-" + op, HostCwd: fe.cwd})
+			_ = os.WriteFile(filepath.Join(fe.rt(), "gr-"+op, "refuse"), nil, 0o600)
+			var err error
+			if op == "grant" {
+				err = b.Grant(ctxT(t), "/srv/x", false)
+			} else {
+				err = b.Revoke(ctxT(t), "/srv/x")
+			}
+			if !errors.Is(err, sandbox.ErrSessionDead) {
+				t.Fatalf("%s on a refusing socket = %v, want ErrSessionDead", op, err)
+			}
+			b.mu.RLock()
+			dead := b.cur.dead()
+			b.mu.RUnlock()
+			if !dead {
+				t.Fatal("the session was not marked dead")
+			}
+			if _, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"true"}}); !errors.Is(err, sandbox.ErrSessionDead) {
+				t.Errorf("Exec after a refused %s = %v, want ErrSessionDead", op, err)
+			}
+		})
+	}
 }

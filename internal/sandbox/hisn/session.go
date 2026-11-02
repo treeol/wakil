@@ -135,8 +135,21 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 	if err != nil {
 		return nil, err
 	}
-	if _, taken := sessions[s.ID]; taken {
-		return nil, fmt.Errorf("%w: a hisn session %q already exists and was not created by this Wakil", sandbox.ErrSessionInUse, s.ID)
+	var notes []string
+	if ent, taken := sessions[s.ID]; taken {
+		if ent.Live {
+			return nil, fmt.Errorf("%w: a LIVE hisn session %q already exists and was not created by this Wakil", sandbox.ErrSessionInUse, s.ID)
+		}
+		// `stale`: the directory is there but nothing answers on its socket. No
+		// live Wakil owns this chat (checked above, under the state lock), so a
+		// dead leftover of this very chat id is replaced, never an obstacle.
+		removed, err := b.removeDeadSessionDir(ctx, s.ID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: stale hisn session %q could not be replaced: %w", sandbox.ErrSessionInUse, s.ID, err)
+		}
+		note := fmt.Sprintf("replaced stale session directory %s (nothing answered on its control socket)", strings.Join(removed, ", "))
+		fmt.Fprintf(errWriter, "hisn: %s: %s\n", s.ID, note)
+		notes = append(notes, note)
 	}
 
 	rec := record{ID: s.ID, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), Token: newToken(), Cwd: s.HostCwd}
@@ -147,7 +160,7 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 		return nil, err
 	}
 
-	sup, err := b.runSession(ctx, rec)
+	sup, err := b.runSession(ctx, rec, notes)
 	if err != nil {
 		if sup != nil && !b.abortStartLocked(rec, sup) {
 			// The supervisor could not be reaped: hand back an obligation so the
@@ -195,7 +208,7 @@ func supervisorArgs(id, policy, cwd string) []string {
 // supervisor is non-nil whenever one was spawned, success or not, so the caller
 // can reap it. On any error after the spawn the supervisor is already killed
 // (best effort) and the error carries its exit status and captured stderr.
-func (b *Backend) runSession(ctx context.Context, rec record) (*supervisorProc, error) {
+func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*supervisorProc, error) {
 	if err := os.MkdirAll(b.opts.HomeRoot, 0o700); err != nil {
 		return nil, fmt.Errorf("hisn home_root: %w", err)
 	}
@@ -212,7 +225,7 @@ func (b *Backend) runSession(ctx context.Context, rec record) (*supervisorProc, 
 	if out, err := b.output(vctx, false, "policy", "validate", polPath); err != nil {
 		return nil, fmt.Errorf("hisn policy validate failed: %w: %s", err, strings.TrimSpace(out))
 	}
-	sup, err := b.startSupervisor(supervisorArgs(rec.ID, polPath, rec.Cwd)...)
+	sup, err := b.startSupervisor(b.supervisorLogPath(rec.ID), notes, supervisorArgs(rec.ID, polPath, rec.Cwd)...)
 	if err != nil {
 		return nil, fmt.Errorf("hisn run --detach: %w", err)
 	}
@@ -240,7 +253,7 @@ func (b *Backend) withSupervisorStderr(err error, sup *supervisorProc) error {
 	if msg == "" {
 		msg = "(no output)"
 	}
-	return fmt.Errorf("%w (supervisor %s); stderr: %s", err, sup.exitStatus(), msg)
+	return fmt.Errorf("%w (supervisor %s; log %s); stderr: %s", err, sup.exitStatus(), sup.logPath, msg)
 }
 
 // runtimeRoots mirrors hisn's session-directory candidates, in preference order:
@@ -257,47 +270,93 @@ func (b *Backend) runtimeRoots() []string {
 	return append(roots, fmt.Sprintf("/tmp/hisn-%d", os.Getuid()))
 }
 
-func (b *Backend) controlSocketExists(id string) bool {
-	for _, r := range b.runtimeRoots() {
-		if _, err := os.Lstat(filepath.Join(r, id, "control.sock")); err == nil {
-			return true
-		}
+// sessionState classifies id as hisn itself does: "live" (something answers on
+// the control socket), "stale" (the directory exists, nothing answers) or
+// "missing". `hisn ls --session ID` prints no state word (it lists grants), so
+// the state comes from `hisn ls --json`.
+func (b *Backend) sessionState(ctx context.Context, id string) (string, error) {
+	m, err := b.listSessions(ctx)
+	if err != nil {
+		return "", err
 	}
-	return false
+	ent, ok := m[id]
+	switch {
+	case !ok:
+		return "missing", nil
+	case ent.Live:
+		return "live", nil
+	}
+	return "stale", nil
 }
 
-// waitReady blocks until BOTH the control socket exists AND `hisn ls --session
-// ID` succeeds, polling every readyPoll for at most b.readyTimeout. It fails
-// early, with the supervisor's exit status, if the supervisor exits first. There
-// is no silent success: a nil return means the session answered a control
-// request after the supervisor had been seen running.
+// ready is one readiness probe: the session must be reported `live` by `hisn ls`
+// AND answer `hisn ls --session ID`. Anything else, including an error, is "not
+// ready" with the reason.
+func (b *Backend) ready(ctx context.Context, id string) (bool, string) {
+	state, err := b.sessionState(ctx, id)
+	if err != nil {
+		return false, err.Error() // already prefixed "hisn ls: ..."
+	}
+	if state != "live" {
+		return false, fmt.Sprintf("hisn ls reports the session %s", state)
+	}
+	if out, err := b.output(ctx, false, "ls", "--session", id); err != nil {
+		return false, fmt.Sprintf("hisn ls --session: %v: %s", err, strings.TrimSpace(out))
+	}
+	return true, ""
+}
+
+// waitReady blocks until the session is READY, polling every readyPoll for at
+// most b.readyTimeout. Ready means, all at once: the supervisor process has not
+// exited, `hisn ls` reports the session `live`, and `hisn ls --session ID`
+// succeeds, confirmed by a second probe one poll interval later (a supervisor
+// that dies right after creating its socket must not slip through). There is no
+// weaker path: `stale`, missing, an error or an exited supervisor is "not ready".
 func (b *Backend) waitReady(ctx context.Context, id string, sup *supervisorProc) error {
 	deadline := time.Now().Add(b.readyTimeout)
+	probe := func() (bool, string) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false, "" // out of time: no probe, and no reason to overwrite the last one
+		}
+		pctx, cancel := context.WithTimeout(ctx, min(remaining, 2*time.Second))
+		defer cancel()
+		ok, why := b.ready(pctx, id)
+		if !ok && pctx.Err() != nil {
+			// The probe was cut short by the deadline: its failure says nothing
+			// about the session, so it must not replace the last real reason.
+			return false, ""
+		}
+		return ok, why
+	}
 	var last string
 	for {
 		if sup.hasExited() {
-			return fmt.Errorf("hisn run --detach exited before the session was ready")
+			return fmt.Errorf("hisn run --detach exited before the session was ready (last probe: %s)", orNone(last))
 		}
-		if b.controlSocketExists(id) {
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				remaining = time.Millisecond
+		ok, why := probe()
+		if !ok && why != "" {
+			last = why
+		}
+		if ok {
+			// Confirm: still running and still live one interval later.
+			select {
+			case <-sup.exited:
+				return fmt.Errorf("hisn run --detach exited right after the session became ready")
+			case <-ctx.Done():
+				return fmt.Errorf("waiting for hisn session %s: %w", id, ctx.Err())
+			case <-time.After(readyPoll):
 			}
-			pctx, cancel := context.WithTimeout(ctx, min(remaining, 2*time.Second))
-			out, err := b.output(pctx, false, "ls", "--session", id)
-			cancel()
-			if err == nil {
-				if sup.hasExited() { // answered, but the supervisor is already gone
-					return fmt.Errorf("hisn run --detach exited right after the session became ready")
-				}
+			if ok2, why2 := probe(); ok2 && !sup.hasExited() {
 				return nil
+			} else if sup.hasExited() {
+				return fmt.Errorf("hisn run --detach exited right after the session became ready")
+			} else if why2 != "" {
+				last = "second probe failed: " + why2
 			}
-			last = fmt.Sprintf("hisn ls --session: %v: %s", err, strings.TrimSpace(out))
-		} else {
-			last = "control socket not created yet"
 		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("hisn session %s not ready after %s (%s)", id, b.readyTimeout, last)
+			return fmt.Errorf("hisn session %s not ready after %s (%s)", id, b.readyTimeout, orNone(last))
 		}
 		select {
 		case <-ctx.Done():
@@ -307,6 +366,72 @@ func (b *Backend) waitReady(ctx context.Context, id string, sup *supervisorProc)
 		}
 	}
 }
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
+// removeDeadSessionDir removes the runtime directory of chat id when it is
+// provably dead: nothing accepts on its control socket now AND after a settle
+// delay (a supervisor that is still starting binds within that time). Only
+// directories named exactly id under the hisn runtime roots are considered;
+// symlinks and files are never followed. Callers hold the state lock and have
+// established that no live Wakil owns the id. It returns the removed paths.
+func (b *Backend) removeDeadSessionDir(ctx context.Context, id string) ([]string, error) {
+	var dirs []string
+	for _, r := range b.runtimeRoots() {
+		dir := filepath.Join(r, id)
+		if fi, err := os.Lstat(dir); err == nil && fi.IsDir() {
+			dirs = append(dirs, dir)
+		}
+	}
+	answers := func(dir string) bool {
+		c, err := net.DialTimeout("unix", filepath.Join(dir, "control.sock"), time.Second)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	}
+	for _, d := range dirs {
+		if answers(d) {
+			return nil, fmt.Errorf("%s answers on its control socket", d)
+		}
+		// hisn writes the resolved policy before it binds the socket. When it is
+		// there and names no Wakil instance hostname, the directory belongs to a
+		// session somebody else started under this id: leave it alone. (Without a
+		// policy, the supervisor died before writing it: nothing contradicts
+		// ownership, and the chat id is a UUID only Wakil uses.)
+		if pol, err := os.ReadFile(filepath.Join(d, "policy.resolved.toml")); err == nil && !strings.Contains(string(pol), "wakil-") {
+			return nil, fmt.Errorf("%s was not created by Wakil (its policy carries no Wakil instance hostname)", d)
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(staleSettle):
+	}
+	var removed []string
+	for _, d := range dirs {
+		if answers(d) {
+			return removed, fmt.Errorf("%s came alive while being checked", d)
+		}
+		if err := os.RemoveAll(d); err != nil {
+			return removed, fmt.Errorf("removing %s: %w", d, err)
+		}
+		removed = append(removed, d)
+	}
+	if len(removed) == 0 {
+		return nil, fmt.Errorf("hisn lists the session but no directory for it exists under %v", b.runtimeRoots())
+	}
+	return removed, nil
+}
+
+// staleSettle is how long a "dead" directory must stay dead before it is removed.
+const staleSettle = 300 * time.Millisecond
 
 // reapSupervisor makes sure the supervisor is gone: SIGKILL, then Wait (bounded).
 // The supervisor holds the namespaces; killing it makes its init die through its

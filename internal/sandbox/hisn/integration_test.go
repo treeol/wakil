@@ -29,7 +29,8 @@ import (
 // `hisn run --detach` does NOT return: its supervisor IS the session. Start
 // therefore spawns it, waits for readiness (control socket + `hisn ls
 // --session`) and keeps the process as the session's lifetime handle. Every
-// Start error carries the supervisor's stderr (captured with `-v`).
+// Start error carries the supervisor's stderr (captured with `-v`) and names
+// <state>/<chat>.supervisor.log, which holds it for every start.
 //
 // Set WAKIL_HISN_BIN to test a specific binary.
 
@@ -362,4 +363,66 @@ func fmtSscan(s string, n *int) (int, error) {
 	}
 	*n = v
 	return 1, nil
+}
+
+// The supervisor's lifetime belongs to the SESSION, not to the tool call that
+// happened to start it: cancelling that call's context must not touch it.
+func TestIntegrationSupervisorSurvivesToolCallContext(t *testing.T) {
+	b, cwd := realBackend(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	if err := b.Start(ctx, sandbox.Session{ID: "wakil-it-ctx", HostCwd: cwd}); err != nil {
+		cancel()
+		t.Fatalf("Start failed: %v", err)
+	}
+	cancel() // the tool call that started the session is over
+	time.Sleep(1500 * time.Millisecond)
+	if b.supOf().hasExited() {
+		t.Fatalf("cancelling the starting call's context killed the supervisor: %s\n%s",
+			b.supOf().exitStatus(), readLog(t, b, "wakil-it-ctx"))
+	}
+	out, info := irun(t, b, "", "sh", "-c", "echo after-cancel")
+	if info.Code != 0 || strings.TrimSpace(out) != "after-cancel" {
+		t.Fatalf("exec after the start context was cancelled: %q %+v\nsupervisor log:\n%s", out, info, readLog(t, b, "wakil-it-ctx"))
+	}
+}
+
+// A dead (stale) leftover of THIS chat id is replaced, not an obstacle: SIGKILL
+// a real Wakil-started supervisor so its directory stays behind, forget the
+// session as a restarted Wakil would, then Start the same id.
+func TestIntegrationStaleDirReplaced(t *testing.T) {
+	b, cwd := realBackend(t)
+	const id = "wakil-it-stale"
+	istart(t, b, id, cwd)
+	sup := b.supOf()
+	_ = syscall.Kill(sup.pid(), syscall.SIGKILL) // no cleanup: the directory stays behind
+	if !sup.waitExit(5 * time.Second) {
+		t.Fatal("supervisor did not die")
+	}
+	var st string
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		if st, _ = b.sessionState(ictx(t), id); st != "live" {
+			break
+		}
+	}
+	if st != "stale" {
+		t.Skipf("hisn left no stale directory after SIGKILL (state %q); nothing to replace", st)
+	}
+	// A restarted Wakil knows nothing of the old process or its record.
+	b.mu.Lock()
+	b.cur, b.orphans = nil, nil
+	b.mu.Unlock()
+	b.removeRecord(id)
+
+	if err := b.Start(ictx(t), sandbox.Session{ID: id, HostCwd: cwd}); err != nil {
+		t.Fatalf("a stale directory of this chat blocked the start: %v", err)
+	}
+	if out, info := irun(t, b, "", "sh", "-c", "echo replaced"); info.Code != 0 || strings.TrimSpace(out) != "replaced" {
+		t.Fatalf("replacement session unusable: %q %+v\nlog:\n%s", out, info, readLog(t, b, id))
+	}
+	if st, _ := b.sessionState(ictx(t), id); st != "live" {
+		t.Fatalf("session state after replacement = %q, want live", st)
+	}
+	if !strings.Contains(readLog(t, b, id), "replaced stale session directory") {
+		t.Errorf("replacement not recorded in the supervisor log:\n%s", readLog(t, b, id))
+	}
 }

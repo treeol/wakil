@@ -41,6 +41,9 @@ func sessRoot(state string) string {
 
 // dialable reports whether something accepts connections on the session socket.
 func dialable(dir string) bool {
+	if exists(filepath.Join(dir, "refuse")) { // test hook: the socket stops accepting
+		return false
+	}
 	c, err := net.DialTimeout("unix", filepath.Join(dir, "control.sock"), time.Second)
 	if err != nil {
 		return false
@@ -184,6 +187,10 @@ func fakeRun(state string, args []string) int {
 		fmt.Fprintf(os.Stderr, "hisn: binding control socket: %v\n", err)
 		return 125
 	}
+	if mode == "stale" { // socket file exists, nobody accepts: `hisn ls` says "stale"
+		ln.(*net.UnixListener).SetUnlinkOnClose(false)
+		_ = ln.Close()
+	}
 	go func() { // accept and drop: enough for "is it live"
 		for {
 			c, err := ln.Accept()
@@ -193,6 +200,10 @@ func fakeRun(state string, args []string) int {
 			_ = c.Close()
 		}
 	}()
+	if mode == "flood" { // ready, floods stderr (to jam a stalled log), then dies
+		fmt.Fprint(os.Stderr, strings.Repeat("hisn: flood line\n", 20000))
+		return 125
+	}
 	if mode == "crash" { // ready, then dies leaving its directory (like SIGKILL)
 		ms, _ := strconv.Atoi(arg)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
@@ -300,6 +311,10 @@ func fakeGrant(state, op string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")
 		return 125
 	}
+	if exists(filepath.Join(dir, "sup.pid")) && !dialable(dir) {
+		fmt.Fprintln(os.Stderr, "hisn: connecting to control socket: Connection refused (os error 111)")
+		return 125
+	}
 	path := args[len(args)-1]
 	rw := false
 	for _, a := range args {
@@ -332,8 +347,12 @@ func fakeGrant(state, op string, args []string) int {
 func fakeExec(state string, args []string) int {
 	id := flagVal(args, "--session")
 	dir := filepath.Join(sessRoot(state), id)
-	if !exists(dir) || (exists(filepath.Join(dir, "sup.pid")) && !dialable(dir)) {
+	if !exists(dir) {
 		fmt.Fprintln(os.Stderr, "hisn: exec: E_NOT_FOUND: no such session")
+		return 125
+	}
+	if exists(filepath.Join(dir, "sup.pid")) && !dialable(dir) {
+		fmt.Fprintln(os.Stderr, "hisn: connecting to control socket: Connection refused (os error 111)")
 		return 125
 	}
 	var cmdline []string
@@ -421,7 +440,10 @@ func newFakeEnv(t *testing.T) *fakeEnv {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(root, "hisn")
-	script := fmt.Sprintf("#!/bin/sh\nHISN_FAKE_STATE='%s' exec '%s' \"$@\"\n", state, self)
+	// GORACE: a -race binary sleeps 1 s at exit by default; every fake hisn call
+	// is such a process, and readiness makes several per probe. The real hisn
+	// has no such delay.
+	script := fmt.Sprintf("#!/bin/sh\nGORACE=atexit_sleep_ms=0 HISN_FAKE_STATE='%s' exec '%s' \"$@\"\n", state, self)
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
