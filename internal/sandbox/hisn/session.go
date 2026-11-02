@@ -216,7 +216,8 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 	if err := os.MkdirAll(b.opts.HomeRoot, 0o700); err != nil {
 		return nil, fmt.Errorf("hisn home_root: %w", err)
 	}
-	pol, err := buildPolicy(rec.Cwd, b.opts.HomeRoot, hostnameFor(rec.Token), b.opts.GrantableRW, b.opts.EnvPass)
+	pol, err := buildPolicy(rec.Cwd, b.opts.HomeRoot, hostnameFor(rec.Token), b.opts.GrantableRW, b.opts.EnvPass,
+		b.opts.ShmSizeMB, b.opts.TmpSizeMB)
 	if err != nil {
 		return nil, err
 	}

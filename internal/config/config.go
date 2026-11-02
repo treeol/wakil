@@ -950,6 +950,15 @@ type HisnConfig struct {
 	// EnvPass lists the variable names hisn copies from Wakil's environment
 	// into the sandbox (and the only keys an exec may set). Never the host env.
 	EnvPass []string `json:"env_pass,omitempty"`
+	// TmpSizeMB sizes the session-private /tmp tmpfs (MiB, 16..65536;
+	// default 1024; hisn 0.2.1 `session.tmp_size`).
+	TmpSizeMB int64 `json:"tmp_size_mb,omitempty"`
+	// ShmSizeMB sizes /dev/shm (MiB, 1..65536; default 64; hisn 0.2.1
+	// `session.shm_size` — Wakil always sets `session.shm = true`).
+	ShmSizeMB int64 `json:"shm_size_mb,omitempty"`
+	// ExecViaCLI keeps the per-tool-call `hisn exec` CLI path alongside the
+	// control-socket client, as a fallback for one release. Default false.
+	ExecViaCLI bool `json:"exec_via_cli,omitempty"`
 }
 
 // MCPServerConfig declares one MCP server. Transport is "stdio" or "http".
@@ -2020,6 +2029,18 @@ func validateSandboxConfig(cfg *Config) error {
 	}
 	if h.EnvPass == nil {
 		h.EnvPass = append([]string(nil), DefaultHisnEnvPass...)
+	}
+	if h.TmpSizeMB == 0 {
+		h.TmpSizeMB = 1024
+	}
+	if h.TmpSizeMB < 16 || h.TmpSizeMB > 65536 {
+		return fmt.Errorf("sandbox.hisn.tmp_size_mb %d out of range 16..65536 (MiB)", h.TmpSizeMB)
+	}
+	if h.ShmSizeMB == 0 {
+		h.ShmSizeMB = 64
+	}
+	if h.ShmSizeMB < 1 || h.ShmSizeMB > 65536 {
+		return fmt.Errorf("sandbox.hisn.shm_size_mb %d out of range 1..65536 (MiB)", h.ShmSizeMB)
 	}
 	seen := map[string]bool{}
 	for i, n := range h.EnvPass {

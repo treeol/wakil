@@ -22,6 +22,11 @@ type policySession struct {
 	Home     string `toml:"home"`
 	Network  string `toml:"network"`
 	Hostname string `toml:"hostname"`
+	// 0.2.1: /dev/shm tmpfs (always on for Wakil sessions; Chrome/Node and
+	// POSIX shm users need it) and the /tmp tmpfs size, both MiB.
+	Shm     bool  `toml:"shm"`
+	ShmSize int64 `toml:"shm_size"`
+	TmpSize int64 `toml:"tmp_size"`
 }
 
 type policyMounts struct {
@@ -34,12 +39,17 @@ type policyEnv struct {
 
 // buildPolicy renders the session policy. network is "host" by decision:
 // builds need the network and hisn offers no filtering in between.
-func buildPolicy(cwd, home, hostname string, grantableRW, envPass []string) ([]byte, error) {
+// buildPolicy renders the session policy. network is "host" by decision:
+// builds need the network and hisn offers no filtering in between. shm is
+// true by decision: /dev/shm is needed by real toolchains (Chrome, Node,
+// POSIX shm), and hisn mounts it with /dev's flags, not /tmp's.
+func buildPolicy(cwd, home, hostname string, grantableRW, envPass []string, shmSize, tmpSize int64) ([]byte, error) {
 	p := policyFile{
 		Version: "hisn-policy/v1",
-		Session: policySession{Cwd: cwd, Home: home, Network: "host", Hostname: hostname},
-		Mounts:  policyMounts{GrantableRW: nonNil(grantableRW)},
-		Env:     policyEnv{Pass: nonNil(envPass)},
+		Session: policySession{Cwd: cwd, Home: home, Network: "host", Hostname: hostname,
+			Shm: true, ShmSize: shmSize, TmpSize: tmpSize},
+		Mounts: policyMounts{GrantableRW: nonNil(grantableRW)},
+		Env:    policyEnv{Pass: nonNil(envPass)},
 	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(p); err != nil {

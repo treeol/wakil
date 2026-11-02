@@ -39,6 +39,11 @@ type Options struct {
 	GrantableRW []string // prefixes allowed for rw grants
 	EnvPass     []string // names passed into the sandbox
 	Env         []string // base environment for hisn clients; nil = os.Environ()
+	// TmpSizeMB / ShmSizeMB size the session tmpfs mounts (MiB). Defaults
+	// (1024 / 64) mirror hisn 0.2.1. Ranges are hisn's: tmp 16..65536,
+	// shm 1..65536; validated here so a bad config fails before start.
+	TmpSizeMB int64
+	ShmSizeMB int64
 }
 
 // live is one running session instance.
@@ -136,6 +141,18 @@ func New(opts Options) (*Backend, error) {
 	}
 	if opts.StateDir == "" || opts.HomeRoot == "" {
 		return nil, errors.New("hisn backend: StateDir and HomeRoot are required")
+	}
+	if opts.TmpSizeMB == 0 {
+		opts.TmpSizeMB = 1024
+	}
+	if opts.ShmSizeMB == 0 {
+		opts.ShmSizeMB = 64
+	}
+	if opts.TmpSizeMB < 16 || opts.TmpSizeMB > 65536 {
+		return nil, fmt.Errorf("hisn backend: tmp_size_mb %d out of range 16..65536", opts.TmpSizeMB)
+	}
+	if opts.ShmSizeMB < 1 || opts.ShmSizeMB > 65536 {
+		return nil, fmt.Errorf("hisn backend: shm_size_mb %d out of range 1..65536", opts.ShmSizeMB)
 	}
 	if !filepath.IsAbs(opts.HostCwd) {
 		return nil, fmt.Errorf("hisn backend: HostCwd %q must be absolute", opts.HostCwd)

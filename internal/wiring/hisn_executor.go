@@ -46,6 +46,8 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		HostCwd:     cfg.HostWorkDir,
 		GrantableRW: h.GrantableRW,
 		EnvPass:     h.EnvPass,
+		TmpSizeMB:   h.TmpSizeMB,
+		ShmSizeMB:   h.ShmSizeMB,
 	})
 	if err != nil {
 		return nil, err
