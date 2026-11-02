@@ -3,6 +3,7 @@ package hisn
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,5 +163,85 @@ func TestStopCancelsInFlightExecsWithinBound(t *testing.T) {
 	}
 	if _, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"true"}}); !errors.Is(err, sandbox.ErrNoSession) {
 		t.Fatalf("exec after Stop = %v", err)
+	}
+}
+
+// Wait after cancel() must never block: cancel()'s bounded wait used to
+// consume the single-shot exit and the later Wait() hung forever. The exit is
+// latched now. TERM is ignored by the program (trap), so this also walks the
+// TERM → KILL path and the exit must report the KILL signal (128+9).
+func TestWaitAfterKillReturnsLatchedExit(t *testing.T) {
+	b, fe := openFake(t)
+	b.stopWait = 2 * time.Second
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "wk1", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"sh", "-c", "trap '' TERM; sleep 60"}, Stdout: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the trap install
+	if err := h.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	done := make(chan struct{})
+	var info sandbox.ExitInfo
+	var werr error
+	go func() { info, werr = h.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait blocked after Kill: the exit status was consumed, not latched")
+	}
+	if werr != nil {
+		t.Fatal(werr)
+	}
+	if info.Code != 128+9 || info.Lost || info.BackendError {
+		t.Fatalf("exit after Kill = %+v, want Code 137 (SIGKILL) and no Lost/BackendError", info)
+	}
+}
+
+// Wait and Kill racing from two goroutines both return, with the same result:
+// neither may steal the other's exit.
+func TestWaitAndKillConcurrentAgree(t *testing.T) {
+	b, fe := openFake(t)
+	b.stopWait = 2 * time.Second
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "wk2", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"sh", "-c", "trap '' TERM; sleep 60"}, Stdout: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	type res struct {
+		info sandbox.ExitInfo
+		err  error
+	}
+	waitC, waitC2, killC := make(chan res, 1), make(chan res, 1), make(chan error, 1)
+	go func() { i, e := h.Wait(); waitC <- res{i, e} }()
+	go func() { i, e := h.Wait(); waitC2 <- res{i, e} }()
+	go func() { killC <- h.Kill() }()
+	timeout := time.After(15 * time.Second)
+	var w1, w2 res
+	for got := 0; got < 3; got++ {
+		select {
+		case w1x := <-waitC:
+			w1 = w1x
+		case w2x := <-waitC2:
+			w2 = w2x
+		case err := <-killC:
+			if err != nil {
+				t.Errorf("Kill: %v", err)
+			}
+		case <-timeout:
+			t.Fatal("Wait/Kill deadlocked: an exit consumer starved the other")
+		}
+	}
+	if w1.err != nil || w2.err != nil {
+		t.Fatalf("Wait errors: %v / %v", w1.err, w2.err)
+	}
+	if w1.info != w2.info || w1.info.Code != 128+9 {
+		t.Fatalf("concurrent Waits disagree: %+v vs %+v (want both 137)", w1.info, w2.info)
 	}
 }

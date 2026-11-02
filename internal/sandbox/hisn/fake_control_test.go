@@ -159,14 +159,26 @@ func (c *fakeCtl) serveExec(uc *net.UnixConn, req struct {
 	// exec once the program does, and Wakil's Kill path signals on a fresh
 	// connection.
 	<-done
-	writeLine(uc, map[string]any{"exit": map[string]any{"code": exitCodeOf(cmd)}})
+	writeLine(uc, map[string]any{"exit": exitPayloadOf(cmd)})
 }
 
-func exitCodeOf(cmd *exec.Cmd) int {
+// exitPayloadOf is the §7 exit object: {"code":N} for a normal exit,
+// {"signal":"KILL"} when the program was killed by a signal.
+func exitPayloadOf(cmd *exec.Cmd) map[string]any {
 	if cmd.ProcessState == nil {
-		return -1
+		return map[string]any{"lost": true}
 	}
-	return cmd.ProcessState.ExitCode()
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		name := strings.TrimPrefix(strings.ToUpper(ws.Signal().String()), "SIG")
+		switch ws.Signal() {
+		case syscall.SIGKILL:
+			name = "KILL"
+		case syscall.SIGTERM:
+			name = "TERM"
+		}
+		return map[string]any{"signal": name}
+	}
+	return map[string]any{"code": cmd.ProcessState.ExitCode()}
 }
 
 func signalFromName(s string) syscall.Signal {

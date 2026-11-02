@@ -25,6 +25,8 @@ type fakeServer struct {
 	execs   int      // exec requests received
 	fdsPer  [][]int  // fds arrived with each exec line (ONE sendmsg or not)
 	exitIDs []string // exec_ids assigned
+	// sigcs delivers signals received on FRESH connections to their exec.
+	sigcs map[string]chan string
 	// signalLines are the raw request lines of every signal connection, in
 	// arrival order — for the byte-for-byte spec pin.
 	signalLines []string
@@ -41,7 +43,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeServer{ln: ln, sock: sock}
+	f := &fakeServer{ln: ln, sock: sock, sigcs: map[string]chan string{}}
 	t.Cleanup(func() {
 		_ = ln.Close()
 		_ = os.RemoveAll(dir)
@@ -92,10 +94,17 @@ func (f *fakeServer) serveConn(t *testing.T, conn net.Conn) {
 					known = true
 				}
 			}
+			sigc := f.sigcs[req.ExecID]
 			f.mu.Unlock()
 			if !known {
 				writeJSON(uc, map[string]any{"ok": false, "error": "E_NOT_FOUND", "message": "stale exec_id"})
 				return
+			}
+			if sigc != nil {
+				select {
+				case sigc <- req.Signal:
+				default:
+				}
 			}
 			writeJSON(uc, map[string]any{"ok": true})
 		default:
@@ -121,48 +130,53 @@ func (f *fakeServer) serveConn(t *testing.T, conn net.Conn) {
 	stdin := os.NewFile(uintptr(fds[0]), "stdin")
 	stdout := os.NewFile(uintptr(fds[1]), "stdout")
 	stderr := os.NewFile(uintptr(fds[2]), "stderr")
-	// Relay stdin → stdout verbatim, a note to stderr, exit 7 on stdin EOF.
+	// Per-exec control: a signal on a FRESH connection lands in sigc. argv
+	// ["trapterm"] ignores TERM (like `trap '' TERM`); KILL always ends it.
+	sigc := make(chan string, 8)
+	f.mu.Lock()
+	f.sigcs[id] = sigc
+	f.mu.Unlock()
+	trapTERM := len(req.Argv) > 0 && req.Argv[0] == "trapterm"
+	// Relay stdin → stdout verbatim, a note to stderr, exit 7 on stdin EOF —
+	// or end with {"exit":{"signal":"KILL"}} on a KILL (and "TERM" on TERM
+	// unless trapped).
 	go func() {
-		buf := make([]byte, 4096)
-		var acc []byte
+		eof := make(chan struct{})
+		go func() {
+			buf := make([]byte, 4096)
+			var acc []byte
+			for {
+				n, err := stdin.Read(buf)
+				acc = append(acc, buf[:n]...)
+				if err != nil {
+					break
+				}
+			}
+			_, _ = stdout.Write(acc)
+			_, _ = stderr.Write([]byte("note\n"))
+			close(eof)
+		}()
 		for {
-			n, err := stdin.Read(buf)
-			acc = append(acc, buf[:n]...)
-			if err != nil {
-				break
+			select {
+			case <-eof:
+				writeJSON(uc, map[string]any{"exit": map[string]any{"code": 7}})
+				return
+			case s := <-sigc:
+				if s == "TERM" && trapTERM {
+					continue // ignored, like `trap '' TERM`
+				}
+				writeJSON(uc, map[string]any{"exit": map[string]any{"signal": s}})
+				return
 			}
 		}
-		_, _ = stdout.Write(acc)
-		_, _ = stderr.Write([]byte("note\n"))
-		writeJSON(uc, map[string]any{"exit": map[string]any{"code": 7}})
 	}()
-	// Signal lines after acceptance on the same conn.
+	// Like real hisn (DESIGN §14.7): NOTHING more is read from the exec
+	// connection after the request line. A client that writes a signal line
+	// here would hang; this blocks until the client closes the conn.
 	for {
-		ln, _, err := readLineMsg(uc)
-		if err != nil {
+		if _, _, err := readLineMsg(uc); err != nil {
 			return
 		}
-		var sig struct {
-			Op     string `json:"op"`
-			ExecID string `json:"exec_id"`
-		}
-		_ = json.Unmarshal(ln, &sig)
-		if sig.Op != "signal" {
-			continue
-		}
-		f.mu.Lock()
-		known := false
-		for _, id := range f.exitIDs {
-			if id == sig.ExecID {
-				known = true
-			}
-		}
-		f.mu.Unlock()
-		if !known {
-			writeJSON(uc, map[string]any{"ok": false, "error": "E_NOT_FOUND", "message": "stale exec_id"})
-			continue
-		}
-		writeJSON(uc, map[string]any{"ok": true})
 	}
 }
 
@@ -289,7 +303,7 @@ func TestSignalOnFreshConn(t *testing.T) {
 	stdio, _ := NewStdio()
 	ctx, cancel := ctxT(t, 5*time.Second)
 	defer cancel()
-	ec, _, err := c.StartExec(ctx, []string{"cat"}, "", nil, stdio)
+	ec, _, err := c.StartExec(ctx, []string{"trapterm"}, "", nil, stdio)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +336,7 @@ func TestSignalNeverWritesToExecConn(t *testing.T) {
 	stdio, _ := NewStdio()
 	ctx, cancel := ctxT(t, 5*time.Second)
 	defer cancel()
-	ec, _, err := c.StartExec(ctx, []string{"cat"}, "", nil, stdio)
+	ec, _, err := c.StartExec(ctx, []string{"trapterm"}, "", nil, stdio)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +370,7 @@ func TestSignalRequestJSONByteForByte(t *testing.T) {
 	stdio, _ := NewStdio()
 	ctx, cancel := ctxT(t, 5*time.Second)
 	defer cancel()
-	ec, _, err := c.StartExec(ctx, []string{"cat"}, "", nil, stdio)
+	ec, _, err := c.StartExec(ctx, []string{"trapterm"}, "", nil, stdio)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,14 +400,86 @@ func TestSignalRequestJSONByteForByte(t *testing.T) {
 			t.Fatalf("signal line %d = %q, want {op:signal, exec_id:%s, signal:%s}", i, lines[i], tc.execID, tc.sig)
 		}
 	}
-	// The exec connection is untouched by signals: stdin EOF still delivers
-	// the exit line.
-	_ = stdio.InW.Close()
+	// TERM is trapped (ignored); KILL ends the program. The exec connection
+	// itself was never written to: it still delivers the exit line, now
+	// reporting the KILL signal.
 	ep, err := ec.WaitExit(ctx)
-	if err != nil || ep == nil || ep.Code == nil || *ep.Code != 7 {
-		t.Fatalf("exit after signals = %+v err %v", ep, err)
+	if err != nil || ep == nil || ep.Signal == nil || *ep.Signal != "KILL" {
+		t.Fatalf("exit after TERM+KILL = %+v err %v, want signal KILL", ep, err)
 	}
 	ec.Close()
+}
+
+// The exit is LATCHED, not sent: WaitExit may be called any number of times,
+// concurrently and after the exit, and every call observes the same payload.
+// (Regression: a single-consumer channel was drained by cancel()'s bounded
+// wait, and the later Wait() blocked forever.)
+func TestWaitExitLatchedForAllReaders(t *testing.T) {
+	f := newFakeServer(t)
+	go f.serve(t)
+	c := New(f.sock)
+	stdio, _ := NewStdio()
+	ctx, cancel := ctxT(t, 5*time.Second)
+	defer cancel()
+	ec, _, err := c.StartExec(ctx, []string{"cat"}, "", nil, stdio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four concurrent readers, started BEFORE the exit exists.
+	var wg sync.WaitGroup
+	got := make([]*ExitPayload, 4)
+	for i := range got {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ep, err := ec.WaitExit(ctx)
+			if err != nil {
+				t.Errorf("reader %d: %v", i, err)
+			}
+			got[i] = ep
+		}()
+	}
+	_ = stdio.InW.Close() // stdin EOF → exit {"code":7}
+	wg.Wait()
+	for i, ep := range got {
+		if ep == nil || ep.Code == nil || *ep.Code != 7 {
+			t.Fatalf("reader %d saw %+v, want code 7", i, ep)
+		}
+	}
+	// And LATE readers, after the exit was long consumed by the others.
+	for i := 0; i < 3; i++ {
+		lctx, lcancel := ctxT(t, time.Second)
+		ep, err := ec.WaitExit(lctx)
+		lcancel()
+		if err != nil || ep == nil || ep.Code == nil || *ep.Code != 7 {
+			t.Fatalf("late reader %d: %+v err %v — the exit must stay readable", i, ep, err)
+		}
+	}
+	ec.Close()
+}
+
+// A lost exit (the conn drops before an exit line) is latched too: every
+// reader, early or late, sees Lost — never a hang, never a one-shot.
+func TestLostExitLatched(t *testing.T) {
+	f := newFakeServer(t)
+	go f.serve(t)
+	c := New(f.sock)
+	stdio, _ := NewStdio()
+	ctx, cancel := ctxT(t, 5*time.Second)
+	defer cancel()
+	ec, _, err := c.StartExec(ctx, []string{"cat"}, "", nil, stdio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ec.Close() // drop the exec conn before any exit line
+	for i := 0; i < 3; i++ {
+		lctx, lcancel := ctxT(t, 2*time.Second)
+		ep, err := ec.WaitExit(lctx)
+		lcancel()
+		if err != nil || ep == nil || !ep.Lost {
+			t.Fatalf("reader %d after drop: %+v err %v, want Lost latched", i, ep, err)
+		}
+	}
 }
 
 // A refused dial (socket file present, nothing listening) is ErrSessionDead;

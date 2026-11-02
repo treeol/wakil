@@ -24,7 +24,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 )
 
 // ErrAmbiguousLaunch reports that the connection dropped before the exec was
@@ -281,14 +280,39 @@ type ExecConn struct {
 	execID   string
 	pid      int
 
-	acceptCh chan acceptReply // buffered 1; the first response line
-	exitCh   chan *ExitPayload
+	// Latched outcomes. Each is written EXACTLY ONCE (Once), then its done
+	// channel is closed: any number of readers, in any order, concurrently
+	// or later, observe the same value after <-done. Nothing here is ever
+	// received from a channel that carries the value itself — a consumed
+	// single-shot send was the "Wait hangs after cancel()" bug.
+	acceptOnce sync.Once
+	acceptDone chan struct{}
+	acceptVal  acceptReply // valid once acceptDone is closed
+
 	exitOnce sync.Once
+	exitDone chan struct{}
+	exitVal  *ExitPayload // valid once exitDone is closed; never nil there
 }
 
 type acceptReply struct {
 	res ExecResult
 	err error
+}
+
+// latchAccept records the acceptance outcome once; later calls are no-ops.
+func (ec *ExecConn) latchAccept(r acceptReply) {
+	ec.acceptOnce.Do(func() {
+		ec.acceptVal = r
+		close(ec.acceptDone)
+	})
+}
+
+// latchExit records the terminal exit outcome once; later calls are no-ops.
+func (ec *ExecConn) latchExit(p *ExitPayload) {
+	ec.exitOnce.Do(func() {
+		ec.exitVal = p
+		close(ec.exitDone)
+	})
 }
 
 // StartExec dials, sends the exec request line WITH the three passed fds in
@@ -341,54 +365,33 @@ func (c *Client) StartExec(ctx context.Context, argv []string, cwd string, env m
 	// Transfer succeeded: hisn owns the passed ends now. Close ours.
 	stdio.closePassed()
 
-	ec := &ExecConn{conn: conn, dial: c.dialConn, stdio: stdio, acceptCh: make(chan acceptReply, 1), exitCh: make(chan *ExitPayload, 1)}
+	ec := &ExecConn{conn: conn, dial: c.dialConn, stdio: stdio, acceptDone: make(chan struct{}), exitDone: make(chan struct{})}
 	go ec.dispatch()
 
-	// Wait for acceptance under ctx.
-	type result struct {
-		ec  *ExecConn
-		res *ExecResult
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		a := <-ec.acceptCh
-		if a.err != nil {
-			_ = conn.Close()
-			stdio.closeKept()
-			ch <- result{nil, nil, a.err}
-			return
-		}
-		ec.setExecID(a.res.ExecID)
-		ec.setPid(a.res.Pid)
-		ch <- result{ec, &a.res, nil}
-	}()
+	// Wait for the latched acceptance under ctx.
 	select {
 	case <-ctx.Done():
 		// Ambiguous launch: close the conn — hisn cancels (TERM, then KILL
 		// after 5 s) — and report lost. Never retry the launch.
 		ec.closeLost()
-		// Drain the acceptance goroutine so it does not leak its channel.
-		go func() {
-			select {
-			case <-ch:
-			case <-time.After(time.Second):
-			}
-		}()
 		return nil, nil, ctx.Err()
-	case r := <-ch:
-		return r.ec, r.res, r.err
+	case <-ec.acceptDone:
 	}
+	a := ec.acceptVal
+	if a.err != nil {
+		_ = conn.Close()
+		stdio.closeKept()
+		return nil, nil, a.err
+	}
+	ec.setExecID(a.res.ExecID)
+	ec.setPid(a.res.Pid)
+	return ec, &a.res, nil
 }
 
-// closeLost closes the connection and publishes a lost terminal event.
+// closeLost closes the connection and latches a lost terminal event.
 func (ec *ExecConn) closeLost() {
 	_ = ec.conn.Close()
-	ec.publishLost()
-}
-
-func (ec *ExecConn) publishLost() {
-	ec.exitOnce.Do(func() { ec.exitCh <- &ExitPayload{Lost: true} })
+	ec.latchExit(&ExitPayload{Lost: true})
 }
 
 func (ec *ExecConn) setExecID(id string) { ec.execIDMu.Lock(); ec.execID = id; ec.execIDMu.Unlock() }
@@ -413,10 +416,11 @@ func (ec *ExecConn) Stdio() *Stdio { return ec.stdio }
 // setPid records the accepted pid.
 func (ec *ExecConn) setPid(pid int) { ec.execIDMu.Lock(); ec.pid = pid; ec.execIDMu.Unlock() }
 
-// dispatch is the ONE reader of the exec connection: it routes the first
-// response line to acceptCh and the async `{"exit":…}` line to exitCh.
-// Any later response lines (signal replies) are consumed and dropped — only
-// the exit line carries state that matters.
+// dispatch is the ONE reader of the exec connection: it latches the first
+// response line as the acceptance and the async `{"exit":…}` line as the
+// exit. Any later response lines (signal replies) are consumed and dropped —
+// only the exit line carries state that matters. Both outcomes are latched
+// (written once, broadcast by closing a done channel), never sent.
 func (ec *ExecConn) dispatch() {
 	br := bufio.NewReaderSize(ec.conn, maxLine+1)
 	accepted := false
@@ -425,19 +429,19 @@ func (ec *ExecConn) dispatch() {
 		if err != nil {
 			// EOF/transport failure before an exit line: the status is lost.
 			// Session death is NOT inferred from this EOF — a probe decides.
-			// Before acceptance the launch was ambiguous: it goes to the
-			// acceptance channel too, so StartExec does not block on ctx.
-			ec.exitOnce.Do(func() { ec.exitCh <- &ExitPayload{Lost: true} })
+			// Before acceptance the launch was ambiguous: latch that too, so
+			// StartExec does not block on ctx.
+			ec.latchExit(&ExitPayload{Lost: true})
 			if !accepted {
-				select {
-				case ec.acceptCh <- acceptReply{err: fmt.Errorf("%w", ErrAmbiguousLaunch)}:
-				default:
-				}
+				ec.latchAccept(acceptReply{err: fmt.Errorf("%w", ErrAmbiguousLaunch)})
 			}
 			return
 		}
 		if len(line) > maxLine {
-			ec.exitOnce.Do(func() { ec.exitCh <- &ExitPayload{Lost: true} })
+			ec.latchExit(&ExitPayload{Lost: true})
+			if !accepted {
+				ec.latchAccept(acceptReply{err: fmt.Errorf("%w: response line exceeds 64 KiB", ErrAmbiguousLaunch)})
+			}
 			return
 		}
 		var probe struct {
@@ -451,7 +455,7 @@ func (ec *ExecConn) dispatch() {
 			if err := json.Unmarshal(probe.Exit, &ep); err != nil {
 				ep = ExitPayload{Lost: true}
 			}
-			ec.exitOnce.Do(func() { ec.exitCh <- &ep })
+			ec.latchExit(&ep)
 			return
 		}
 		// A response line: the acceptance (first), or a signal reply (later).
@@ -469,20 +473,19 @@ func (ec *ExecConn) dispatch() {
 		} else {
 			accepted = true
 		}
-		select {
-		case ec.acceptCh <- reply:
-		default: // acceptance already consumed: a signal reply, dropped
-		}
+		ec.latchAccept(reply) // first response wins; later ones are no-ops
 	}
 }
 
-// WaitExit blocks for the terminal exit line, or ctx done.
+// WaitExit blocks until the exit is latched (or ctx is done) and returns the
+// latched value. It is safe to call from any number of goroutines, any number
+// of times, before or after the exit: every call observes the same payload.
 func (ec *ExecConn) WaitExit(ctx context.Context) (*ExitPayload, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case ep := <-ec.exitCh:
-		return ep, nil
+	case <-ec.exitDone:
+		return ec.exitVal, nil
 	}
 }
 

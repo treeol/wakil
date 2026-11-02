@@ -55,11 +55,15 @@ immediately when nil). Stdio copiers start **after** the response line
 
 The exec owns **one exec connection for its whole life**, never closed while
 the program runs, with **one reader goroutine** (the dispatcher) owning the
-`bufio.Reader`: it parses every line, routes the acceptance response to
-`acceptCh` (in order), and routes `{"exit":...}` to the terminal state
-exactly once. Writes to the exec conn are serialized by its mutex. This
-closes the dispatcher hazard: no second logical reader can consume the exit
-line or a response.
+`bufio.Reader`: it parses every line and **latches** two outcomes — the
+acceptance response and `{"exit":...}`. A latch is written exactly once
+(`sync.Once`) and broadcast by closing a `done` channel; readers wait on
+`<-done` and then read the stored value. **Nothing consumes an outcome from
+a channel**: `WaitExit` can be called from any number of goroutines, before
+or after the exit (e.g. `cancel()`'s bounded wait and a later `Wait()`), and
+every call sees the same payload. The earlier single-shot channel was
+drained by `cancel()`, so a later `Wait()` blocked forever. The lost outcome
+(EOF, over-long line, closed conn) is latched the same way.
 
 **The exec connection carries only the request line, the acceptance
 response, and the exit line.** hisn (DESIGN §14.7) does **not read it**
