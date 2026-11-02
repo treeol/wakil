@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -467,31 +468,47 @@ func TestFinishedExecKeepsItsStatusAfterDeath(t *testing.T) {
 	}
 }
 
-// Stop and failed-start cleanup only remove a directory carrying OUR token. A
-// foreign same-id directory (no socket) in either runtime root survives.
-func TestCleanupNeverRemovesForeignDirectory(t *testing.T) {
+// 0.2.1: dir removal is hisn's (`ls --prune`, stale-kill, run-replaces-stale),
+// so Wakil no longer removes directories by hand. What remains to verify:
+// Stop never signals a session id that a FOREIGN session owns (a live socket
+// after our supervisor is reaped is a replacement: left alone), and prune (the
+// fake's) only removes dirs with a dead supervisor.
+func TestStopNeverSignalsForeignReplacement(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, _ := Open(ctxT(t), fe.options())
-	foreign := filepath.Join(fe.rt(), "frn")
-	_ = os.MkdirAll(foreign, 0o700)
-	_ = os.WriteFile(filepath.Join(foreign, "policy.resolved.toml"), []byte(`hostname = "someone-else"`), 0o600)
-	b.removeOwnSessionDir("frn", newToken())
-	if _, err := os.Stat(foreign); err != nil {
-		t.Fatal("a directory without our instance token was removed")
+	b.stopWait = 500 * time.Millisecond
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "frn", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
 	}
-	nopol := filepath.Join(fe.rt(), "nopol") // started, policy not written yet
-	_ = os.MkdirAll(nopol, 0o700)
-	b.removeOwnSessionDir("nopol", newToken())
-	if _, err := os.Stat(nopol); err != nil {
-		t.Fatal("a directory without a resolved policy was removed")
+	sup := b.supOf()
+	_ = syscall.Kill(sup.pid(), syscall.SIGKILL) // our supervisor dies, dir stays
+	if !sup.waitExit(5*time.Second) {
+		t.Fatal("supervisor did not die")
 	}
-	tok := newToken() // ours, leftover of a SIGKILLed supervisor: removed
-	mine := filepath.Join(fe.rt(), "mine")
-	_ = os.MkdirAll(mine, 0o700)
-	_ = os.WriteFile(filepath.Join(mine, "policy.resolved.toml"), []byte(`hostname = "`+hostnameFor(tok)+`"`), 0o600)
-	b.removeOwnSessionDir("mine", tok)
-	if _, err := os.Stat(mine); err == nil {
-		t.Fatal("our own leftover directory was not removed")
+	// A foreign fixture with a LIVE socket under the same id: stopLocked must
+	// see `live` after our supervisor is reaped and NOT kill it. The fake
+	// supervisor's socket file still exists (SIGKILL leaves it), so plant the
+	// foreign listener on a socket file we create fresh after removing the old.
+	fdir := filepath.Join(fe.rt(), "frn")
+	fsock := filepath.Join(fdir, "control.sock")
+	_ = os.Remove(fsock) // the SIGKILLed supervisor's leftover file
+	fln, err := net.Listen("unix", fsock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fln.Close()
+	go func() {
+		for {
+			c, err := fln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	_ = b.Stop(ctxT(t))
+	if _, err := os.Stat(fsock); err != nil {
+		t.Fatal("Wakil removed or disturbed a foreign session directory")
 	}
 }
 
@@ -781,10 +798,10 @@ func TestStartReplacesStaleDirOfThisChat(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stale, "policy")); err != nil {
 		t.Fatal("the fresh session did not take the id")
 	}
-	if !strings.Contains(diag.String(), "replaced stale session directory") {
+	if !strings.Contains(diag.String(), "replacing stale session directory") {
 		t.Errorf("no one-line notice: %q", diag.String())
 	}
-	if !strings.Contains(readLog(t, b, "chat-s"), "replaced stale session directory") {
+	if !strings.Contains(readLog(t, b, "chat-s"), "replacing stale session directory") {
 		t.Error("the replacement is not recorded in the supervisor log")
 	}
 	if out, info := run(t, b, "echo", "ok"); strings.TrimSpace(out) != "ok" || info.Code != 0 {
@@ -964,22 +981,21 @@ func TestStalledLogDoesNotWedgeSupervisorNorDelayCleanup(t *testing.T) {
 
 // A stale directory whose resolved policy names no Wakil instance belongs to
 // somebody else, whatever its id: never replaced.
+// 0.2.1: `hisn run --session-id` replaces a provably STALE directory itself
+// (socket refused AND supervisor pid gone; hisn's own check, fd-relative,
+// runtime-root confined) — Wakil no longer refuses on policy ownership, the
+// token check died with the hand-rolled dir removal. A stale dir of another
+// id is still never touched by a Start for OUR id.
 func TestStaleForeignPolicyDirNotDeleted(t *testing.T) {
 	b, fe := openFake(t)
 	dir := plantStale(t, fe, "chat-fp")
 	_ = os.WriteFile(filepath.Join(dir, "policy.resolved.toml"), []byte("hostname = 'someone-else'\n"), 0o600)
-	err := b.Start(ctxT(t), sandbox.Session{ID: "chat-fp", HostCwd: fe.cwd})
-	if !errors.Is(err, sandbox.ErrSessionInUse) {
-		t.Fatalf("a stale directory that is not Wakil's must block, got %v", err)
+	// 0.2.1: the stale dir (whoever made it) is replaced by `hisn run`.
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "chat-fp", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("a provably stale directory must be replaced by hisn itself: %v", err)
 	}
-	if _, serr := os.Stat(dir); serr != nil {
-		t.Fatal("a directory with a foreign policy was deleted")
-	}
-	// ... while a Wakil-made one (its policy carries a wakil- hostname) is replaced.
-	dir2 := plantStale(t, fe, "chat-wp")
-	_ = os.WriteFile(filepath.Join(dir2, "policy.resolved.toml"), []byte("hostname = 'wakil-0123456789abcdef'\n"), 0o600)
-	if err := b.Start(ctxT(t), sandbox.Session{ID: "chat-wp", HostCwd: fe.cwd}); err != nil {
-		t.Fatalf("a Wakil-made stale directory must be replaced: %v", err)
+	if out, info := run(t, b, "echo", "ok"); strings.TrimSpace(out) != "ok" || info.Code != 0 {
+		t.Fatalf("replacement session unusable: %q %+v", out, info)
 	}
 }
 

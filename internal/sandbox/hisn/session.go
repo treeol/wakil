@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,22 +26,27 @@ func newToken() string {
 func hostnameFor(token string) string { return "wakil-" + token[:16] }
 
 type lsEntry struct {
-	ID   string `json:"id"`
-	Live bool   `json:"live"`
+	ID    string `json:"id"`
+	State string `json:"state"` // "live" | "stale" (0.2.1 frozen schema)
 }
 
-// listSessions parses `hisn ls --json`.
+func (e lsEntry) Live() bool { return e.State == "live" }
+
+// listSessions parses `hisn ls --json` (schema "hisn-ls/v1").
 func (b *Backend) listSessions(ctx context.Context) (map[string]lsEntry, error) {
 	out, err := b.output(ctx, false, "ls", "--json")
 	if err != nil {
 		return nil, fmt.Errorf("hisn ls: %w: %s", err, strings.TrimSpace(out))
 	}
-	var rows []lsEntry
+	var rows struct {
+		Schema   string    `json:"schema"`
+		Sessions []lsEntry `json:"sessions"`
+	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rows); err != nil {
 		return nil, fmt.Errorf("hisn ls: unexpected output %q: %w", strings.TrimSpace(out), err)
 	}
-	m := make(map[string]lsEntry, len(rows))
-	for _, r := range rows {
+	m := make(map[string]lsEntry, len(rows.Sessions))
+	for _, r := range rows.Sessions {
 		m[r.ID] = r
 	}
 	return m, nil
@@ -138,18 +142,17 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 	}
 	var notes []string
 	if ent, taken := sessions[s.ID]; taken {
-		if ent.Live {
+		if ent.Live() {
 			return nil, fmt.Errorf("%w: a LIVE hisn session %q already exists and was not created by this Wakil", sandbox.ErrSessionInUse, s.ID)
 		}
-		// `stale`: the directory is there but nothing answers on its socket. No
-		// live Wakil owns this chat (checked above, under the state lock), so a
-		// dead leftover of this very chat id is replaced, never an obstacle.
-		removed, err := b.removeDeadSessionDir(ctx, s.ID)
-		if err != nil {
-			return nil, fmt.Errorf("%w: stale hisn session %q could not be replaced: %w", sandbox.ErrSessionInUse, s.ID, err)
-		}
-		note := fmt.Sprintf("replaced stale session directory %s (nothing answered on its control socket)", strings.Join(removed, ", "))
-		fmt.Fprintf(errWriter, "hisn: %s: %s\n", s.ID, note)
+		// `stale` (0.2.1): the directory is there but provably dead (hisn's
+		// own staleness check: socket refused AND supervisor pid gone or
+		// starttime-mismatched). `hisn run --session-id` replaces it itself;
+		// Wakil only says so in one line. No live Wakil owns this chat
+		// (checked above, under the state lock), so a dead leftover of this
+		// very chat id is replaced, never an obstacle.
+		note := fmt.Sprintf("replacing stale session directory for %s (hisn %s removes it: nothing answered on its control socket)", s.ID, b.opts.Binary)
+		fmt.Fprintf(errWriter, "hisn: %s\n", note)
 		notes = append(notes, note)
 	}
 
@@ -293,7 +296,7 @@ func (b *Backend) sessionState(ctx context.Context, id string) (string, error) {
 	switch {
 	case !ok:
 		return "missing", nil
-	case ent.Live:
+	case ent.Live():
 		return "live", nil
 	}
 	return "stale", nil
@@ -431,65 +434,6 @@ func orNone(s string) string {
 	return s
 }
 
-// removeDeadSessionDir removes the runtime directory of chat id when it is
-// provably dead: nothing accepts on its control socket now AND after a settle
-// delay (a supervisor that is still starting binds within that time). Only
-// directories named exactly id under the hisn runtime roots are considered;
-// symlinks and files are never followed. Callers hold the state lock and have
-// established that no live Wakil owns the id. It returns the removed paths.
-func (b *Backend) removeDeadSessionDir(ctx context.Context, id string) ([]string, error) {
-	var dirs []string
-	for _, r := range b.runtimeRoots() {
-		dir := filepath.Join(r, id)
-		if fi, err := os.Lstat(dir); err == nil && fi.IsDir() {
-			dirs = append(dirs, dir)
-		}
-	}
-	answers := func(dir string) bool {
-		c, err := net.DialTimeout("unix", filepath.Join(dir, "control.sock"), time.Second)
-		if err != nil {
-			return false
-		}
-		_ = c.Close()
-		return true
-	}
-	for _, d := range dirs {
-		if answers(d) {
-			return nil, fmt.Errorf("%s answers on its control socket", d)
-		}
-		// hisn writes the resolved policy before it binds the socket. When it is
-		// there and names no Wakil instance hostname, the directory belongs to a
-		// session somebody else started under this id: leave it alone. (Without a
-		// policy, the supervisor died before writing it: nothing contradicts
-		// ownership, and the chat id is a UUID only Wakil uses.)
-		if pol, err := os.ReadFile(filepath.Join(d, "policy.resolved.toml")); err == nil && !strings.Contains(string(pol), "wakil-") {
-			return nil, fmt.Errorf("%s was not created by Wakil (its policy carries no Wakil instance hostname)", d)
-		}
-	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(staleSettle):
-	}
-	var removed []string
-	for _, d := range dirs {
-		if answers(d) {
-			return removed, fmt.Errorf("%s came alive while being checked", d)
-		}
-		if err := os.RemoveAll(d); err != nil {
-			return removed, fmt.Errorf("removing %s: %w", d, err)
-		}
-		removed = append(removed, d)
-	}
-	if len(removed) == 0 {
-		return nil, fmt.Errorf("hisn lists the session but no directory for it exists under %v", b.runtimeRoots())
-	}
-	return removed, nil
-}
-
-// staleSettle is how long a "dead" directory must stay dead before it is removed.
-const staleSettle = 300 * time.Millisecond
-
 // reapSupervisor makes sure the supervisor is gone: SIGKILL, then Wait (bounded).
 // The supervisor holds the namespaces; killing it makes its init die through its
 // own PDEATHSIG. It reports whether the process was reaped.
@@ -501,44 +445,22 @@ func (b *Backend) reapSupervisor(sup *supervisorProc) bool {
 	return sup.waitExit(b.stopWait)
 }
 
-// removeOwnSessionDir deletes hisn's runtime directory for id, but ONLY when it
-// is provably this instance's: hisn writes the resolved policy into the session
-// directory before it binds the socket, and that policy carries the instance's
-// random hostname token. A directory without our token (a foreign session, even
-// one still starting with no socket yet; a symlink; the alternate runtime root)
-// is never touched. A SIGKILLed supervisor cannot remove its own directory and
-// the leftover would make every later `hisn run` with this id fail with
-// "exists", hence this cleanup. If the proof is missing (the supervisor died
-// before writing the policy) the directory is left alone and the next start
-// reports "exists" with the path; see Known limits.
-func (b *Backend) removeOwnSessionDir(id, token string) {
-	for _, r := range b.runtimeRoots() {
-		dir := filepath.Join(r, id)
-		fi, err := os.Lstat(dir)
-		if err != nil || !fi.IsDir() { // absent, or a symlink/file: never follow
-			continue
-		}
-		pol, err := os.ReadFile(filepath.Join(dir, "policy.resolved.toml"))
-		if err != nil || !strings.Contains(string(pol), hostnameFor(token)) {
-			continue
-		}
-		if c, err := net.DialTimeout("unix", filepath.Join(dir, "control.sock"), time.Second); err == nil {
-			_ = c.Close() // something answers there: not a leftover
-			continue
-		}
-		_ = os.RemoveAll(dir)
-	}
-}
-
 // abortStartLocked cleans up after a failed start. The supervisor handle makes
 // this exact: the process Wakil spawned is killed and reaped, never a session
-// found by id. It reports whether nothing of ours is left running (true) or a
-// cleanup obligation remains (false; the record is kept).
+// found by id. The runtime directory is hisn's to clean (0.2.1: `hisn kill` on
+// a stale dir removes it, exit 0). It reports whether nothing of ours is left
+// running (true) or a cleanup obligation remains (false; the record is kept).
 func (b *Backend) abortStartLocked(rec record, sup *supervisorProc) bool {
 	if !b.reapSupervisor(sup) {
 		return false
 	}
-	b.removeOwnSessionDir(rec.ID, rec.Token)
+	// 0.2.1: after the reap the dir is stale by construction (socket refused,
+	// supervisor gone); `hisn kill --session` removes it and exits 0 even on
+	// a dir that never became live. Best effort here: a leftover is caught by
+	// the next Start (hisn run replaces stale) or `ls --prune` at Reconcile.
+	kctx, cancel := context.WithTimeout(context.Background(), b.stopWait)
+	_, _ = b.output(kctx, false, "kill", "--session", rec.ID)
+	cancel()
 	b.removeRecord(rec.ID)
 	return true
 }
@@ -578,15 +500,44 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 	default:
 		return fmt.Errorf("hisn stop: owner record for %s unreadable: %w", l.id, err)
 	}
-	b.removeOwnSessionDir(l.id, l.token)
+	// 0.2.1: the runtime directory is hisn's to clean. After OUR supervisor is
+	// reaped, a `live` socket on the id is a REPLACEMENT by a foreign session:
+	// leave it alone (the id is no longer ours). A `stale` dir is removed by
+	// `hisn kill --session id` itself (stale-kill: remove + exit 0). The
+	// residual window is the one CLI round trip killSession already documents.
+	if l.sup != nil && !l.sup.hasExited() {
+		// unreachable (reaped above), kept for clarity
+		_ = l.sup
+	}
+	sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
+	state, serr := b.sessionState(sctx, l.id)
+	scancel()
+	if serr == nil {
+		switch state {
+		case "stale":
+			kctx, kcancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
+			_, _ = b.output(kctx, false, "kill", "--session", l.id)
+			kcancel()
+		case "live":
+			fmt.Fprintf(errWriter, "hisn: session %s answers on its socket after our supervisor exited; a foreign session, not touched\n", l.id)
+		}
+	}
 	b.removeRecord(l.id)
 	return nil
 }
 
-// Reconcile cleans up sessions left behind by dead Wakil processes. Only
-// sessions with an owner record whose process is gone are touched; sessions
-// without a record (other tools, other users of hisn) are never killed.
+// Reconcile cleans up sessions left behind by dead Wakil processes. First
+// `hisn ls --prune` (0.2.1): hisn itself removes every provably stale dir
+// (socket refused AND supervisor pid gone or starttime-mismatched, checked
+// twice 300 ms apart, fd-relative, owner-checked, runtime-root confined) —
+// no live session is touched, only dead directories, so no owner record is
+// needed for it. Then the owner-record reconcile: only sessions with an
+// owner record whose process is gone are touched; sessions without a record
+// (other tools, other users of hisn) are never killed.
 func (b *Backend) Reconcile(ctx context.Context) error {
+	pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
+	_, _ = b.output(pctx, false, "ls", "--prune")
+	pcancel()
 	return b.withLock(func() error {
 		var errs []error
 		for _, id := range b.listRecordIDs() {
@@ -624,7 +575,7 @@ func (b *Backend) reconcileOneLocked(ctx context.Context, r record) error {
 		return err
 	}
 	ent, present := sessions[r.ID]
-	if !present || !ent.Live {
+	if !present || !ent.Live() {
 		// Deliberately NOT removing a non-live directory here: unlike Stop, no
 		// supervisor of ours was reaped in this process, so it could belong to a
 		// foreign session that is still starting (no socket yet). A stale

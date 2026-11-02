@@ -281,7 +281,7 @@ func TestIntegrationStartRefusesForeignSession(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		m, err := b.listSessions(ictx(t))
-		if err == nil && m["wakil-it-foreign"].Live {
+		if err == nil && m["wakil-it-foreign"].Live() {
 			break
 		}
 		select {

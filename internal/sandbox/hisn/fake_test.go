@@ -163,7 +163,19 @@ func fakeRun(state string, args []string) int {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return 125
 	}
-	if err := os.Mkdir(dir, 0o700); err != nil { // fails if it exists: id in use
+	// 0.2.1: a STALE dir under this id is replaced (removed) and the run
+	// proceeds; a LIVE one (something answers) is E_EXISTS.
+	if exists(dir) && dialable(dir) {
+		fmt.Fprintln(os.Stderr, "hisn: session id in use")
+		return 125
+	}
+	if exists(dir) {
+		if verbose {
+			logf("session %s was stale; replaced", id)
+		}
+		_ = os.RemoveAll(dir)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil { // fails only in a genuine race
 		fmt.Fprintln(os.Stderr, "hisn: session id in use")
 		return 125
 	}
@@ -262,8 +274,19 @@ func fakeLs(state string, args []string) int {
 		fmt.Println(`{"ok":true,"grants":[]}`)
 		return 0
 	}
+	if hasFlag(args, "--prune") { // 0.2.1: remove stale dirs (socket refused AND supervisor gone)
+		ents, _ := os.ReadDir(sessRoot(state))
+		for _, e := range ents {
+			d := filepath.Join(sessRoot(state), e.Name())
+			if exists(filepath.Join(d, "sup.pid")) && !dialable(d) {
+				fmt.Fprintf(os.Stderr, "hisn: pruned stale session %s\n", e.Name())
+				_ = os.RemoveAll(d)
+			}
+		}
+		return 0
+	}
 	ents, _ := os.ReadDir(sessRoot(state))
-	rows := []map[string]any{}
+	sessions := []map[string]any{}
 	for _, e := range ents {
 		d := filepath.Join(sessRoot(state), e.Name())
 		// A session without a supervisor pid file is a foreign fixture: live.
@@ -271,9 +294,17 @@ func fakeLs(state string, args []string) int {
 		if exists(filepath.Join(d, "sup.pid")) {
 			live = dialable(d)
 		}
-		rows = append(rows, map[string]any{"id": e.Name(), "live": live})
+		st := "stale"
+		if live {
+			st = "live"
+		}
+		cwd := ""
+		if b, err := os.ReadFile(filepath.Join(d, "cwd")); err == nil {
+			cwd = string(b)
+		}
+		sessions = append(sessions, map[string]any{"id": e.Name(), "state": st, "cwd": cwd, "execs": []any{}})
 	}
-	b, _ := json.Marshal(rows)
+	b, _ := json.Marshal(map[string]any{"schema": "hisn-ls/v1", "sessions": sessions})
 	fmt.Println(string(b))
 	return 0
 }
@@ -294,6 +325,14 @@ func fakeInspect(state string, args []string) int {
 }
 
 func fakeKill(state string, args []string) int {
+	dir := filepath.Join(sessRoot(state), flagVal(args, "--session"))
+	// 0.2.1: kill on a STALE session (socket refused) removes the dir and
+	// exits 0 — even under kill_fail (a live-session kill failure injection).
+	if exists(dir) && exists(filepath.Join(dir, "sup.pid")) && !dialable(dir) {
+		fmt.Fprintf(os.Stderr, "hisn: session %s was stale; removed\n", flagVal(args, "--session"))
+		_ = os.RemoveAll(dir)
+		return 0
+	}
 	if exists(filepath.Join(state, "kill_hang")) {
 		time.Sleep(time.Hour)
 	}
@@ -301,15 +340,16 @@ func fakeKill(state string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: kill failed")
 		return 125
 	}
-	dir := filepath.Join(sessRoot(state), flagVal(args, "--session"))
 	if !exists(dir) {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")
 		return 125
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "sup.pid")); err == nil {
-		if !dialable(dir) { // a dead supervisor: the real CLI cannot connect
-			fmt.Fprintln(os.Stderr, "hisn: connecting control socket: connection refused")
-			return 125
+		if !dialable(dir) {
+			// 0.2.1: kill on a stale session removes the dir and exits 0.
+			fmt.Fprintf(os.Stderr, "hisn: session %s was stale; removed\n", flagVal(args, "--session"))
+			_ = os.RemoveAll(dir)
+			return 0
 		}
 		if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 0 {
 			_ = syscall.Kill(pid, syscall.SIGTERM)
