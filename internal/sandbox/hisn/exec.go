@@ -299,10 +299,10 @@ type ctlExecHandle struct {
 	done    func()
 	release func()
 
-	once     sync.Once
-	info     sandbox.ExitInfo
-	err      error
-	wg       sync.WaitGroup
+	once sync.Once
+	info sandbox.ExitInfo
+	err  error
+	wg   sync.WaitGroup
 }
 
 // startCopiers wires spec.Stdin → InW and OutR/ErrR → spec.Stdout/Stderr.

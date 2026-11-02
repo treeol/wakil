@@ -53,14 +53,14 @@ type Options struct {
 
 // live is one running session instance.
 type live struct {
-	id     string
-	token  string
+	id    string
+	token string
 	// runtimeRoot is hisn's runtime directory for this instance (the parent
 	// of the session dir; ctl.SocketPath(root, id) is the control socket).
 	runtimeRoot string
-	ctx    context.Context // cancelled when the session is being replaced/stopped
-	cancel context.CancelFunc
-	wg     sync.WaitGroup // in-flight hisn exec clients
+	ctx         context.Context // cancelled when the session is being replaced/stopped
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup // in-flight hisn exec clients
 	// sup is the `hisn run --detach` supervisor process: the session's lifetime
 	// handle. nil only for a start that failed before the supervisor spawned.
 	sup *supervisorProc

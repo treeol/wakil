@@ -21,10 +21,10 @@ type fakeServer struct {
 	ln   net.Listener
 	sock string
 
-	mu       sync.Mutex
-	execs    int       // exec requests received
-	fdsPer   [][]int   // fds arrived with each exec line (ONE sendmsg or not)
-	exitIDs  []string  // exec_ids assigned
+	mu      sync.Mutex
+	execs   int      // exec requests received
+	fdsPer  [][]int  // fds arrived with each exec line (ONE sendmsg or not)
+	exitIDs []string // exec_ids assigned
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -188,7 +188,7 @@ func parseOOBTest(b []byte) (fds []int) {
 	for _, m := range msgs {
 		if m.Header.Level == syscall.SOL_SOCKET && m.Header.Type == syscall.SCM_RIGHTS {
 			for i := 0; i+4 <= len(m.Data); i += 4 {
-				fds = append(fds, int(int32(uint32(m.Data[i]) | uint32(m.Data[i+1])<<8 | uint32(m.Data[i+2])<<16 | uint32(m.Data[i+3])<<24)))
+				fds = append(fds, int(int32(uint32(m.Data[i])|uint32(m.Data[i+1])<<8|uint32(m.Data[i+2])<<16|uint32(m.Data[i+3])<<24)))
 			}
 		}
 	}
