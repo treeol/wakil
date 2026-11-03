@@ -56,7 +56,7 @@ type profileFile struct {
 }
 ```
 
-* `policyFile` gains `Mounts.RO/RW` and `Env.Set` with `omitempty`; with no overrides the encoded
+* `policyFile` gains `Mounts.RO/RW/Mask` and `Env.Set` with `omitempty`; with no overrides the encoded
   `[policy]` is byte-identical in content to today's policy (test asserts equality with the legacy
   encoder's output modulo the `[policy]` prefix).
 * **Version gating.** `Preflight` records the parsed version. `profileMode = version ≥ 0.3.1`
@@ -107,14 +107,17 @@ Rules:
   label: a project mixing capabilities with different labels must use `hisn.profile` (documented).
 * Relative `socket`/`ready_socket` paths in `services` are resolved against the cwd (hisn does not);
   `ready_socket` defaults to `socket`.
+* A named `hisn.profile` is verified with `hisn profile explain NAME` (**observed**: works with
+  `$HISN_PROFILES`) — it supplies `L` for the ack comparison.
 * `hisn.profile = NAME` → Wakil does **not** generate a profile: `hisn run --profile NAME --cwd CWD
   [--grant PATH:ro|rw]… --ready-fd 3`. `mounts_ro`/`mounts_rw` become initial grants (rw bounded by that
   profile's `grantable_rw`). Combining `profile` with `services|forward|host_services|env_set` is a
   config error naming the key ("Wakil only adds grants to a named profile"). No generated policy,
   hence no `session.hostname` token: instance identity in this mode is the supervisor process handle
   (exact) plus the `--ready-fd` line; the owner record additionally stores the supervisor's pid +
-  starttime so Reconcile can kill a leftover supervisor exactly (instead of the token check, which is
-  `unverifiable → keep record` today). kvr service is not added in this mode (§5).
+  starttime and a `mode:"named"` flag; `reconcileOneLocked`/`verifyInstance` use pid+starttime for
+  such records (the token check would say "different session" or "unverifiable" for a profile that
+  sets its own hostname). kvr service is not added in this mode (§5).
 * **`sandbox.json` is read-only for the agent:**
   1. Executor-level write guard (`protectedPath`): `WriteFile`, `WriteFileBytes`, `DeletePath`,
      `MovePath` (src **and** dst) in `DockerExecutor`, `DirectExecutor`, `BackendExecutor` and the
@@ -124,7 +127,8 @@ Rules:
   2. `applyPatch` (worktree children → parent `git apply`) rejects a patch whose `--numstat` touches
      that path (otherwise a child worktree would be a bypass).
   3. hisn backend, generated-profile mode: when the file exists at start it is added to
-     `mounts.mask` (reads as empty, writes discarded) so `run_shell` cannot edit it either.
+     `mounts.mask` (reads as empty, writes discarded) so `run_shell` cannot edit it either
+     (defence in depth; the approval gate in 4. is the actual control).
      Caveat: a tracked `sandbox.json` shows as emptied to `git` *inside* the sandbox.
   4. **User approval gate (Mashūra R1 B1, folded).** The mask cannot cover a file that does not exist
      yet, and `.wakil` could be renamed, so an agent could author a `sandbox.json` that takes effect at
@@ -169,17 +173,25 @@ Surfacing:
   declares `hisn.services` entry named `kvr` — used as-is, Wakil takes its `socket` as the staging
   socket (missing `socket` → error) — or (b) Wakil's default: binary from `sandbox.hisn.kvr_binary`
   (new config key) or `exec.LookPath("kvr-server")`.
-* **Default service** (no env table exists, so env travels via `env`):
+* **Socket containment (R1 B2, folded).** Whether default or project-declared, the kvr socket must
+  canonicalise to a path **under `<cwd>/.wakil/`** (and `ready_socket`, if any, equal it); anything
+  else (e.g. `$SSH_AUTH_SOCK`, `docker.sock`) is a config error. The host client never dials a path
+  outside that directory.
+* **Default service** (no env table exists, so env travels via `/usr/bin/env`):
   `exec = ["env","KVR_SOCKET_PATH=<cwd>/.wakil/kvr.sock","KVR_SNAPSHOT_PATH=<cwd>/.wakil/staging.kvr",
   "KVR_SNAPSHOT_ON_SHUTDOWN=true","KVR_MAX_ENTRIES=…","KVR_SWEEP_INTERVAL_SECS=…",
-  "KVR_SNAPSHOT_INTERVAL_SECS=…", "<binary>"]`, `ready = {socket = "<abs>", timeout = 15}`,
-  `stop = {TERM, 5}`, `restart = "none"`. Absolute paths throughout (§1).
-* **Binary visibility.** The sandbox only sees `/usr /bin /sbin /lib* /opt /nix` read-only (+ project
+  "KVR_SNAPSHOT_INTERVAL_SECS=…", "<binary>"]`, **no `ready`** (**observed**: a readiness
+  timeout fails the *whole session* closed, so a broken kvr must not be able to; Wakil PINGs instead),
+  `stop = {TERM, 5}`, `restart = "none"`. Absolute paths throughout (§1). A project-declared
+  `kvr` service that sets `ready` keeps hisn's fail-closed semantics — the user's choice.
+* **Binary visibility** (path is `EvalSymlinks`-resolved first). The sandbox only sees `/usr /bin /sbin /lib* /opt /nix` read-only (+ project
   `mounts_ro`). A binary outside those ⇒ staging off with reason `kvr binary <path> is not visible inside
   the sandbox (install it under /usr or /opt, or list its directory in hisn.mounts_ro)`.
 * **No binary / disabled / named profile / 0.2.x** ⇒ `KVRSocketPath()==""`, staging tools stay off,
   reason in the banner. **No fallback to a host-side kvr.**
-* **Lifecycle.** Before spawn, a stale socket file (dial fails) is removed by Wakil (hisn does not).
+* **Lifecycle.** Before spawn, a stale socket file (dial fails) is removed by Wakil (hisn does not);
+  `.wakil` is created/checked with the same Lstat guard (no symlinks) so a planted symlink cannot
+  redirect the unlink.
   After readiness Wakil `PING`s (len=1, op 3 → 0x10, 5 s, like docker's `waitForKVR`); on failure the
   session continues, staging is disabled for the process with a warning (never a session failure).
 * **Confused-deputy guard.** The socket lives in a directory the sandbox can write. The host-side
@@ -208,7 +220,11 @@ with the exact line to uncomment; header explains: copy to `$HISN_PROFILES`, set
   `wiring.ResolveSandbox`; `avail` is produced by `hisn.Probe(ctx, binary)` (binary found via
   `LookPath`, version ≥ 0.3.1, `hisn check` exit 0). Flip ⇒ `Backend=hisn`, re-run the hisn workspace
   and browser/kvr normalisation (`finalizeBackend`, factored out of `LoadConfig`). An explicit
-  `--workdir` (docker-only) keeps docker with that reason. Reasons (`hisn not found in PATH`,
+  `--workdir` (docker-only) keeps docker with that reason. A trust pre-check failure (§2) or an
+  unapproved `sandbox.json` with a **defaulted** backend is likewise a non-flip reason (stay on
+  docker, say why) — a working docker setup never becomes a hard error through the default alone.
+  `NewExecutor(cfg)` (wrapper) never probes and treats an unresolved default as docker; the three
+  entry points resolve once and hand the *resolved* cfg down (subagents share the executor). Reasons (`hisn not found in PATH`,
   `hisn 0.2.2 < 0.3.1`, `hisn check failed: …`, `explicit workdir`) appear in the banner.
 * Docker-only probes stay gated on `backend=docker` (`probeScriptFor` already; `wakil doctor`'s
   container-runtime FAIL becomes a WARN when the resolved backend is hisn, plus a hisn check line).
@@ -242,3 +258,23 @@ with the exact line to uncomment; header explains: copy to `$HISN_PROFILES`, set
 * Named-profile mode: no mask for `sandbox.json`, no kvr service, identity by supervisor handle.
 * kvr protocol has no authentication; guard narrows but cannot close the swap window.
 * Release binary ships no `profiles/` dir, so built-in names need `$HISN_PROFILES`.
+
+## 10. Mashūra round 1 — disposition
+
+Reviewers: claude-fable-5.1 answered; gpt-6-astra was rate-limited upstream (no second opinion; no retry
+— the budget is one round).
+
+| finding | verdict | action |
+|---|---|---|
+| B1 agent authors `sandbox.json` → self-ack | BLOCKING, folded | approval hash in state dir + `wakil sandbox trust` (§3.4) |
+| B2 kvr socket path arbitrary | BLOCKING, folded | must be under `<cwd>/.wakil/` (§5) |
+| N1 mask weaker than described | wording + `Mask` field folded; parent-rename untested → follow-up | |
+| N2 `explain NAME` | verified against the 0.3.1 binary: works | §3 |
+| N3 named-mode identity | folded (record flag, pid+starttime) | §3 |
+| N4 dropping `--network host` | profile carries network; confirm in host integration test | follow-up |
+| N5 ack on `data` entries | test row: "data with matching ack passes validate" | §8 |
+| N6 readiness kills session | verified in source (fail closed) → default kvr has no `ready` | §5 |
+| N7 SO_PEERCRED | follow-up | docs/follow-ups.md |
+| N8/N10 symlink/Lstat | folded | §5 |
+| N9 default flip / wrapper | folded | §7 |
+| N11 wording | §4 plans from a template profile; the per-session file differs only by token/id | |
