@@ -1,56 +1,49 @@
-# Design note: A.1 (tail cap default + notice format) and A.6 (taint guard + /taint)
+# Design note: A.1 (timeout tail + notice format) and A.6 (taint guard + /taint)
 
-## A.1 — Tool timeout/cancel returns LAST N KB (default 16 KB, configurable)
+## A.1 — Tool timeout/cancel returns the LAST 16 KB (normal cap unchanged at 1 MB)
+
+### Scope
+- **Timeout/cancel only.** When a tool call's context ends and the command
+  did not finish normally, the result is the **last 16 KB** of its output
+  (`exec.TimeoutOutputTail`) with a truncation notice.
+- **Normal output is unchanged.** `DefaultShellOutputCap` stays `1 << 20`
+  (1 MB); `ShellOutputCap` still overrides it per executor, and the agent
+  layer's `tool_result_cap` still applies on top. A completed command's
+  output is never cut to 16 KB: a 200 KB `cat` or `go test ./...` returns
+  whole.
 
 ### Current state
-**Scope:** the cap applies to ALL shell output (every `runShellCapped`
-call), not only timeout/cancel paths. The heading is the task item label;
-the change is to the universal default. A successful `cat largefile` or
-`go test ./...` also returns only the last 16 KB — this is intended, and
-`ShellOutputCap` remains configurable for users who need more.
-- `DefaultShellOutputCap = 1 << 20` (1 MB) — exec.go:42
-- `boundedTailBuffer` already retains the TAIL (correct direction)
-- Notice format: `"[... first %d bytes of output omitted (showing last %d) ...]\n"`
-  (exec.go:1221, backend_executor.go:354) — says "first %d bytes omitted" which
-  is misleading: it reads as if the FIRST bytes are shown.
-- `ShellOutputCap` config key already exists (DockerExecutor.exec.go:202,
-  BackendExecutor.backend_executor.go:27); `<= 0` means default.
+- `boundedTailBuffer` retains the TAIL up to the cap (correct direction).
+- The old notice `[... first N bytes of output omitted (showing last M) ...]`
+  read as if the FIRST bytes were shown.
 
-### Changes
-1. **Default**: change `DefaultShellOutputCap` from `1 << 20` to `16 << 10`
-   (16384 bytes = 16 KB). Both backends share this constant (docker path:
-   exec.go:1231; hisn/backend path: backend_executor.go via `capOr`).
-2. **Notice format**: replace the two format sites with:
-   `"[truncated, %d bytes total — showing last %d]\n"`
-   where `%d` (total) = `omitted + len(out)` and `len(out)` = retained tail.
-   This makes it unambiguous: the line says "truncated" (not "omitted"),
-   gives the total output size, and clarifies the tail is shown.
-3. **Config**: no new key needed — `ShellOutputCap` already exists. Update
-   the doc comment to say "default 16 KB" instead of implying 1 MB.
-   **Configurability**: `ShellOutputCap` is set from the config file key
-   `shell_output_cap` on both backends. Grep `ShellOutputCap =` in
-   `internal/exec/` to confirm the assignment path before implementing.
-
-### Why 16 KB
-- The task asked for 16 KB as the default — this is the stated requirement,
-  not a "16 KB is enough" claim. O(cap) memory was already true at 1 MB.
-- 16 KB is configurable via `ShellOutputCap` for users who need more
-  (large test outputs, full compiler error batches, Go panic traces).
+### Behaviour
+1. **Timeout tail.** `shellResult(out, omitted, timedOut)` (exec.go) is the
+   one place all four `RunShell` implementations (docker, direct,
+   docker-worktree, backend) render their result. `timedOut` is
+   `ctx.Err() != nil && err != nil`: the context ended AND the command
+   failed. When set, the retained tail is cut to the last 16 KB, on a rune
+   boundary.
+2. **Notice format.** `[truncated, N bytes total — showing last M]`, where
+   `M` is what is shown and `N = bytes dropped before it + M`. Emitted only
+   when bytes were dropped: by the cap (normal path), by the timeout cut, or
+   both.
+3. **Config.** No new key. `ShellOutputCap` keeps its meaning; `<= 0` means
+   the 1 MB default.
 
 ### What does NOT change
-- `boundedTailBuffer` tail-retention semantics (already correct).
-- `WaitDelay` (5 s) — unrelated to the cap.
-- `runShellCapped` signature — callers compute total from `omitted + len(out)`.
+- `boundedTailBuffer` tail-retention semantics.
+- `WaitDelay` (5 s) and `runShellCapped`'s signature.
 
-### Tests (A.1)
-1. Notice emitted ONLY when overflow occurs (no notice when output < cap).
-2. `total == omitted + len(out)` in the notice string.
-3. Both backends produce the identical notice string for the same input.
-4. Existing tests asserting the old 1 MB default or the old notice format
-   are updated.
-5. `omitted` counter: confirm it tracks bytes DISCARDED (not total written)
-   so the total formula doesn't double-count. Check `boundedTailBuffer` in
-   `internal/exec/bounded_capture.go` before implementing.
+### Tests (A.1) — `internal/exec/shell_cap_test.go`
+1. `shellResult` table: no notice when nothing was dropped; a large normal
+   result is not cut; a capped normal result keeps its cap notice; a timed-out
+   result is cut to 16 KB; earlier omissions are added to the total.
+2. The 16 KB cut never starts mid-rune.
+3. Direct and backend executors: 200 KB of normal output passes through
+   untruncated with no notice; a flood cut off by a context deadline returns
+   exactly 16 KB with the notice; an explicit small cap still applies to
+   normal output.
 
 ---
 
