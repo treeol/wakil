@@ -217,6 +217,12 @@ func (discard) Write(p []byte) (int, error) { return len(p), nil }
 // SetDiagnostics redirects non-fatal diagnostics (Wakil passes os.Stderr).
 func SetDiagnostics(w io.Writer) { errWriter = w }
 
+// Grants returns the active grants of the current session: the backend's
+// ledger, which is the single source of truth for what the sandbox can reach.
+func (b *Backend) Grants() []sandbox.GrantEntry { return b.pm.Grants() }
+
+var _ sandbox.GrantLister = (*Backend)(nil)
+
 // Epoch advances on every session replacement.
 func (b *Backend) Epoch() uint64 {
 	b.mu.RLock()
@@ -258,11 +264,19 @@ func (b *Backend) Start(ctx context.Context, s sandbox.Session) error {
 	if b.cur != nil && b.cur.id == s.ID && len(b.orphans) == 0 && !b.cur.dead() {
 		return nil
 	}
-	// Snapshot active grants before the replacement: the old session's grants
-	// must be replayed on the replacement so a stale-session replacement does
-	// not silently drop access the user already granted. stopAllLocked clears
-	// the grants, so the snapshot must happen first.
-	grants := b.pm.Grants()
+	// Snapshot active grants before the replacement so a stale-session
+	// replacement does not silently drop access the user already granted
+	// (stopAllLocked clears the ledger, so the snapshot must come first). Grants
+	// belong to ONE chat's session: they are replayed only into a replacement of
+	// the SAME id. Starting a different id never inherits them; a line says so.
+	var grants []sandbox.GrantEntry
+	if held := b.pm.Grants(); len(held) > 0 {
+		if b.cur != nil && b.cur.id == s.ID {
+			grants = held
+		} else {
+			fmt.Fprintf(errWriter, "hisn: not carrying %d grant(s) over to session %s (they belonged to another session)\n", len(held), s.ID)
+		}
+	}
 	if err := b.stopAllLocked(ctx); err != nil {
 		// A tool call is never failed because the PREVIOUS session would not stop:
 		// the new session is started regardless (a conflict on the SAME id is

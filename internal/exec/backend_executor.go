@@ -142,7 +142,15 @@ func (s *shared) startSession(ctx context.Context, sc *callScope) error {
 		return fmt.Errorf("starting %s sandbox session: %w", s.opts.Label, err)
 	}
 	s.startedID = s.chatID
-	s.grants.Reset()
+	// One ledger: a backend that restored grants on a replacement session owns
+	// the truth, so the manager follows it instead of forgetting them (which
+	// would turn a later Withdraw into a silent no-op). Other backends start
+	// with no grants.
+	if gl, ok := s.b.(sandbox.GrantLister); ok {
+		s.grants.Sync(gl.Grants())
+	} else {
+		s.grants.Reset()
+	}
 	return nil
 }
 
@@ -778,6 +786,10 @@ func (e *BackendExecutor) NewWorktreeExecutor(dir string) (Executor, error) {
 }
 
 // ---- AccessGranter ----
+
+// Grants returns the access manager's ledger (outside-workspace grants it
+// believes are active), sorted by path.
+func (e *BackendExecutor) Grants() []sandbox.GrantEntry { return e.grants.Grants() }
 
 // EnsureAccess implements AccessGranter.
 //

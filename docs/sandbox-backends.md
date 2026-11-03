@@ -246,6 +246,10 @@ Before the replacement, the active grant set is snapshotted
 (`PathMap.Grants()`); after the new session starts, the grants are replayed
 (rw grants re-issued through `hisn grant`, ro grants re-added to the path
 map). `stopAllLocked` clears the grants, so the snapshot must happen first.
+Grants belong to one chat's session: the snapshot is replayed only when the
+replacement has the **same id** as the session it replaces. Starting a
+different id never inherits them (one diagnostic line says how many were
+not carried over).
 
 If the previous session cannot be stopped, one line is logged, the leftover
 stays tracked (retried by Stop/Close), and the new session starts anyway.
@@ -330,7 +334,17 @@ policy (and thus `grantable_rw`) does not change across replacements of the
 same session, so replay always succeeds for the same set. A failed replay is
 best-effort: logged, not a start failure; the user re-grants if needed.
 
-`TestStartReplaysGrantsOnReplacement` covers this.
+**One ledger.** The backend's `PathMap` is the source of truth for active
+grants. After `BackendExecutor` starts a session it makes its
+`GrantManager` equal to the backend's ledger (`GrantManager.Sync`, via the
+optional `sandbox.GrantLister` interface), instead of forgetting the grants:
+a later `Withdraw` must still reach the backend. Backends without a ledger
+of their own start with no grants (`Reset`).
+
+`TestStartReplaysGrantsOnReplacement` covers replay;
+`TestGrantLedgerIdenticalAfterReplacement` asserts the manager and the path
+map report the identical set after a replacement and that `Withdraw` works;
+`TestStartDoesNotCarryGrantsToAnotherSession` covers the id check.
 
 ### Bind (`ChatBinder`)
 

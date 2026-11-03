@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -81,18 +82,19 @@ func (m *PathMap) ResetGrants() {
 }
 
 // Grants returns a snapshot of the active grant paths and their rw mode.
-func (m *PathMap) Grants() []grantEntry {
+func (m *PathMap) Grants() []GrantEntry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]grantEntry, 0, len(m.grants))
+	out := make([]GrantEntry, 0, len(m.grants))
 	for g := range m.grants {
-		out = append(out, grantEntry{Path: g, RW: m.grantRW[g]})
+		out = append(out, GrantEntry{Path: g, RW: m.grantRW[g]})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 
-// grantEntry is one active grant with its rw mode.
-type grantEntry struct {
+// GrantEntry is one active grant with its rw mode.
+type GrantEntry struct {
 	Path string
 	RW   bool
 }

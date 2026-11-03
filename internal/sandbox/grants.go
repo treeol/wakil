@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -93,6 +94,39 @@ func (g *GrantManager) Reset() {
 	g.mu.Lock()
 	g.active = map[string]bool{}
 	g.mu.Unlock()
+}
+
+// Sync makes the manager's ledger equal to entries. It is how the manager
+// follows a backend that restored grants on its own (a replacement session
+// replays them): the backend's ledger is the single source of truth, so the
+// manager must neither forget them (a later Withdraw would silently do
+// nothing) nor keep ones the backend dropped.
+func (g *GrantManager) Sync(entries []GrantEntry) {
+	active := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		active[filepath.Clean(e.Path)] = e.RW
+	}
+	g.mu.Lock()
+	g.active = active
+	g.mu.Unlock()
+}
+
+// Grants returns a snapshot of the manager's ledger, sorted by path.
+func (g *GrantManager) Grants() []GrantEntry {
+	g.mu.Lock()
+	out := make([]GrantEntry, 0, len(g.active))
+	for p, rw := range g.active {
+		out = append(out, GrantEntry{Path: p, RW: rw})
+	}
+	g.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// GrantLister is implemented by backends that keep their own grant ledger and
+// may restore grants when they replace a session.
+type GrantLister interface {
+	Grants() []GrantEntry
 }
 
 func (g *GrantManager) underGrantable(p string) bool {

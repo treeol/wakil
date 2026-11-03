@@ -231,7 +231,8 @@ type Stdio struct {
 	ErrR, ErrW *os.File
 }
 
-// NewStdio builds the three stdio pipes.
+// NewStdio builds the three stdio pipes. If a later pipe cannot be created the
+// earlier ones are closed again, so a failure leaks no descriptors.
 func NewStdio() (*Stdio, error) {
 	s := &Stdio{}
 	var err error
@@ -239,9 +240,11 @@ func NewStdio() (*Stdio, error) {
 		return nil, err
 	}
 	if s.OutR, s.OutW, err = os.Pipe(); err != nil {
+		s.CloseEnds()
 		return nil, err
 	}
 	if s.ErrR, s.ErrW, err = os.Pipe(); err != nil {
+		s.CloseEnds()
 		return nil, err
 	}
 	return s, nil
@@ -250,7 +253,9 @@ func NewStdio() (*Stdio, error) {
 // CloseEnds closes every end (failure paths only).
 func (s *Stdio) CloseEnds() {
 	for _, f := range []*os.File{s.InR, s.InW, s.OutR, s.OutW, s.ErrR, s.ErrW} {
-		_ = f.Close()
+		if f != nil {
+			_ = f.Close()
+		}
 	}
 }
 
