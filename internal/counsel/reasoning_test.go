@@ -862,3 +862,35 @@ func TestBackoffRange(t *testing.T) {
 		}
 	}
 }
+
+// TestRunMemberDefaultReviewerSpecOpenRouterBody drives the full reviewer
+// path (runMember → clamp → callOpenRouter) with the built-in default
+// reviewer spec {effort medium, max_tokens 8192} and asserts the wire body:
+// reasoning has max_tokens 8192 and NO effort key (OpenRouter 400s on both).
+func TestRunMemberDefaultReviewerSpecOpenRouterBody(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	ccfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL,
+		Reasoning:   &config.ReasoningSpec{Effort: "medium", MaxTokens: 8192},
+		ModelLimits: map[string]ModelLimits{"openrouter:m": {ContextTokens: 200000}}}
+	res := runMember(context.Background(), "openrouter:m", "openrouter", "m", "q", "doc", "", ccfg, map[string]string{"openrouter": "k"}, nil)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	r, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("no reasoning object in body: %v", body)
+	}
+	if _, has := r["effort"]; has {
+		t.Errorf("reasoning.effort must be absent: %v", r)
+	}
+	if r["max_tokens"] != float64(8192) {
+		t.Errorf("reasoning.max_tokens = %v, want 8192", r["max_tokens"])
+	}
+}
