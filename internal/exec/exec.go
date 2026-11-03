@@ -39,7 +39,7 @@ var ErrFileNotFound = errors.New("file not found")
 // DefaultShellOutputCap bounds how much of a shell command's combined output
 // RunShell retains in host memory (H4). Generous default; per-executor
 // override via ShellOutputCap.
-const DefaultShellOutputCap = 1 << 20 // 1 MB
+const DefaultShellOutputCap = 16 << 10 // 16 KB
 
 // Executor abstracts where tool_calls actually run. Commands always execute
 // from the workspace root; in-command directory changes (cd sub && …) affect
@@ -1218,7 +1218,7 @@ func (d *DockerExecutor) RunShell(ctx context.Context, command string) (string, 
 	// surfaces as success with the captured tail — the command itself exited.
 	out, omitted, err := runShellCapped(cmd, capOr(d.ShellOutputCap))
 	if omitted > 0 {
-		out = fmt.Sprintf("[... first %d bytes of output omitted (showing last %d) ...]\n", omitted, len(out)) + out
+		out = fmt.Sprintf("[truncated, %d bytes total — showing last %d]\n", omitted+int64(len(out)), len(out)) + out
 	}
 	return strings.TrimRight(out, "\r\n"), err
 }
@@ -1529,7 +1529,7 @@ func (e *DirectExecutor) RunShell(ctx context.Context, command string) (string, 
 	// H4: host-side bounded capture (tail-keeping) — see DockerExecutor.RunShell.
 	out, omitted, err := runShellCapped(cmd, capOr(e.ShellOutputCap))
 	if omitted > 0 {
-		out = fmt.Sprintf("[... first %d bytes of output omitted (showing last %d) ...]\n", omitted, len(out)) + out
+		out = fmt.Sprintf("[truncated, %d bytes total — showing last %d]\n", omitted+int64(len(out)), len(out)) + out
 	}
 	return strings.TrimRight(out, "\r\n"), err
 }

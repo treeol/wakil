@@ -13,7 +13,7 @@ import (
 // oldest bytes, so the child's pipe always drains (no deadlock from a full
 // pipe) and the command's exit behavior is unchanged by truncation. This is
 // a shifting buffer, not a ring: over-cap writes memmove the retained window
-// (write-amplified but bounded — acceptable at the 1 MB default with os/exec's
+// (write-amplified but bounded — acceptable at the 16 KB default with os/exec's
 // 32 KiB copy chunks). Writes block only on mutex acquisition, never on the
 // consumer.
 //
