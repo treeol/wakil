@@ -419,3 +419,20 @@ only**. Mashūra calls do not write trace records with reasoning tokens
   OpenRouter) to `MashuraCost`. No separate reasoning pricing is applied — the
   output rate covers it. This avoids double-counting (Anthropic) but does not
   split reasoning vs answer for per-token pricing (OpenRouter).
+
+### Mashūra round 4: reviewer ceiling + SSE multi-line assembly
+
+- **Reviewer reasoning ceiling enforced**: `runMember` now clamps the
+  effective reasoning spec through `clampReviewerReasoning`, which caps
+  `max_tokens` at `maxReviewerReasoningTokens` (16384) regardless of config.
+  This covers both per-model overrides (`mashura_models.<model>.reasoning`)
+  and the role-level default. The original spec is never mutated. Test:
+  `TestClampReviewerReasoning` (unit), `TestRunMemberReviewerReasoningCeiling`
+  (integration — verifies the wire request's `thinking.budget_tokens` is
+  clamped).
+- **SSE multi-line `data:` assembly**: `streamRequest` now assembles
+  multi-line `data:` events per the SSE spec — multiple `data:` lines within
+  one event are joined with `\n` before dispatching to the parser, and a blank
+  line terminates the event. Previously each `data:` line was parsed
+  independently, which silently dropped JSON payloads spanning multiple lines.
+  Test: `TestSSEMultiLineDataEvent` (two-line data: event → joined → parsed).

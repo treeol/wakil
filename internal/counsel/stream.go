@@ -165,18 +165,25 @@ func streamRequest(ctx context.Context, endpoint string, headers map[string]stri
 	var content strings.Builder
 	var usage *streamUsage
 	gotTerminal := false // set when [DONE] or a parser signals done
-	for scanner.Scan() {
-		s := strings.TrimRight(scanner.Text(), "\r")
-		if !strings.HasPrefix(s, "data:") {
-			continue
+	// dataLines accumulates data: lines for the current SSE event. Per the
+	// SSE spec, multiple data: lines within one event are joined with \n
+	// before dispatching to the parser. A blank line terminates the event.
+	var dataLines []string
+
+	// mergeEvent processes the accumulated data: lines (joined with \n)
+	// and returns true if the stream should stop (terminal event or done).
+	mergeEvent := func() bool {
+		if len(dataLines) == 0 {
+			return false
 		}
-		data := strings.TrimSpace(s[len("data:"):])
+		data := strings.Join(dataLines, "\n")
+		dataLines = nil
 		if data == "[DONE]" {
 			gotTerminal = true
-			break
+			return true
 		}
 		if data == "" {
-			continue
+			return false
 		}
 		c, u, done := parseSSE([]byte(data))
 		if c != "" {
@@ -211,8 +218,30 @@ func streamRequest(ctx context.Context, endpoint string, headers map[string]stri
 		}
 		if done {
 			gotTerminal = true
-			break
+			return true
 		}
+		return false
+	}
+
+	for scanner.Scan() {
+		s := strings.TrimRight(scanner.Text(), "\r")
+		if s == "" {
+			// Blank line = SSE event delimiter. Process accumulated data.
+			if mergeEvent() {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(s, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(s[len("data:"):]))
+			continue
+		}
+		// Other SSE fields (event:, id:, retry:) are ignored per spec.
+	}
+	// Flush any remaining accumulated data (stream ended without a final
+	// blank line — unusual but valid per spec).
+	if !gotTerminal {
+		mergeEvent()
 	}
 	if err := scanner.Err(); err != nil {
 		if ctxErr := tctx.Err(); ctxErr != nil {

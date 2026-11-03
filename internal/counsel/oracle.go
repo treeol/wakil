@@ -1307,6 +1307,27 @@ func PanelDetail(panelName string, models []string, mode, question, oracleCtx st
 	return full[:maxDisplay] + fmt.Sprintf(" (+%d chars)", excess)
 }
 
+// maxReviewerReasoningTokens is the hard ceiling on reasoning tokens for a
+// reviewer call, regardless of config. A reviewer never gets more than 16k
+// reasoning tokens — the EffortToBudget table caps effort-based budgets at
+// 16384 ("max"), and explicit max_tokens above this are clamped.
+const maxReviewerReasoningTokens = 16384
+
+// clampReviewerReasoning returns a copy of spec with MaxTokens clamped to
+// maxReviewerReasoningTokens. nil or zero specs are returned as-is. The
+// original spec is never mutated.
+func clampReviewerReasoning(spec *config.ReasoningSpec) *config.ReasoningSpec {
+	if spec == nil || spec.IsZero() {
+		return spec
+	}
+	if spec.MaxTokens > 0 && spec.MaxTokens > maxReviewerReasoningTokens {
+		clamped := *spec
+		clamped.MaxTokens = maxReviewerReasoningTokens
+		return &clamped
+	}
+	return spec
+}
+
 // runMember sends the review to one panel member through the whole-or-fail
 // dispatcher and converts the outcome to a PanelMemberResult. send may be nil
 // (the member's provider call is used).
@@ -1322,6 +1343,10 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 	} else if lim, ok := ccfg.ModelLimits[model]; ok && lim.Reasoning != nil && !lim.Reasoning.IsZero() {
 		effectiveReasoning = lim.Reasoning
 	}
+	// Enforce the reviewer ceiling: a reviewer never gets more than 16k
+	// reasoning tokens, regardless of config. This covers both per-model
+	// overrides and the role-level default.
+	effectiveReasoning = clampReviewerReasoning(effectiveReasoning)
 
 	if send == nil {
 		send = func(c context.Context, q, b string, maxTok int) (string, OracleUsage, error) {

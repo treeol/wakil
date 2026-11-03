@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 )
@@ -333,5 +334,154 @@ func TestLogFooterShowsReasoningAnswerSplit(t *testing.T) {
 	footer2 := logFooter(r2)
 	if strings.Contains(footer2, "reasoning") {
 		t.Errorf("Anthropic footer should NOT show reasoning/answer split, got: %s", footer2)
+	}
+}
+
+// TestClampReviewerReasoning verifies that clampReviewerReasoning caps
+// max_tokens at maxReviewerReasoningTokens (16384) while leaving lower
+// values and nil/zero specs untouched.
+func TestClampReviewerReasoning(t *testing.T) {
+	// nil → nil
+	if got := clampReviewerReasoning(nil); got != nil {
+		t.Errorf("clamp(nil) = %v, want nil", got)
+	}
+	// zero spec → unchanged
+	zero := &config.ReasoningSpec{}
+	if got := clampReviewerReasoning(zero); got != zero {
+		t.Errorf("clamp(zero) = %v, want %v", got, zero)
+	}
+	// under ceiling → unchanged
+	small := &config.ReasoningSpec{Effort: "low", MaxTokens: 4096}
+	if got := clampReviewerReasoning(small); got != small || got.MaxTokens != 4096 {
+		t.Errorf("clamp(4096) = %v, want unchanged", got)
+	}
+	// exactly at ceiling → unchanged
+	atCeiling := &config.ReasoningSpec{Effort: "max", MaxTokens: maxReviewerReasoningTokens}
+	if got := clampReviewerReasoning(atCeiling); got != atCeiling || got.MaxTokens != maxReviewerReasoningTokens {
+		t.Errorf("clamp(%d) = %v, want unchanged", maxReviewerReasoningTokens, got)
+	}
+	// above ceiling → clamped
+	over := &config.ReasoningSpec{Effort: "max", MaxTokens: 32768}
+	got := clampReviewerReasoning(over)
+	if got == over {
+		t.Fatal("clamp should return a new spec, not mutate the original")
+	}
+	if over.MaxTokens != 32768 {
+		t.Errorf("original spec was mutated: MaxTokens = %d, want 32768", over.MaxTokens)
+	}
+	if got.MaxTokens != maxReviewerReasoningTokens {
+		t.Errorf("clamp(32768).MaxTokens = %d, want %d", got.MaxTokens, maxReviewerReasoningTokens)
+	}
+	if got.Effort != "max" {
+		t.Errorf("clamp should preserve Effort, got %q", got.Effort)
+	}
+	// effort-only (no MaxTokens) → unchanged
+	effortOnly := &config.ReasoningSpec{Effort: "max"}
+	if got := clampReviewerReasoning(effortOnly); got != effortOnly {
+		t.Errorf("clamp(effort-only) = %v, want %v", got, effortOnly)
+	}
+}
+
+// TestRunMemberReviewerReasoningCeiling verifies that a per-model reasoning
+// spec with max_tokens above the 16384 ceiling is clamped in the request
+// sent to the provider. The Anthropic thinking budget_tokens must not exceed
+// maxReviewerReasoningTokens.
+func TestRunMemberReviewerReasoningCeiling(t *testing.T) {
+	var reqBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer srv.Close()
+
+	// Per-model reasoning with max_tokens=32768, above the 16384 ceiling.
+	lim := map[string]ModelLimits{
+		"anthropic:big-model": {
+			ContextTokens: 200000,
+			Reasoning:     &config.ReasoningSpec{Effort: "max", MaxTokens: 32768},
+		},
+	}
+	ccfg := PanelCallConfig{
+		MaxTokens:         4096,
+		TimeoutSeconds:    5,
+		AnthropicEndpoint: srv.URL,
+		ModelLimits:       lim,
+		MinAnswerTokens:   4096,
+	}
+
+	res := runMember(context.Background(), "anthropic:big-model", "anthropic", "big-model",
+		"q", "briefing", "", ccfg, map[string]string{"anthropic": "key"}, nil)
+	if res.Err != nil {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+
+	var req oracleReq
+	if err := json.Unmarshal(reqBody, &req); err != nil {
+		t.Fatalf("request body not valid JSON: %v", err)
+	}
+	if req.Thinking == nil {
+		t.Fatal("thinking parameter not sent")
+	}
+	if req.Thinking.BudgetTokens > maxReviewerReasoningTokens {
+		t.Errorf("thinking.budget_tokens = %d, must be <= %d (reviewer ceiling)", req.Thinking.BudgetTokens, maxReviewerReasoningTokens)
+	}
+	// max_tokens must be additive: clamped budget + answer (4096).
+	expectedMax := req.Thinking.BudgetTokens + 4096
+	if req.MaxTokens != expectedMax {
+		t.Errorf("max_tokens = %d, want %d (clamped budget %d + answer 4096)", req.MaxTokens, expectedMax, req.Thinking.BudgetTokens)
+	}
+}
+
+// TestSSEMultiLineDataEvent verifies that the SSE parser correctly assembles
+// multi-line data: events per the SSE spec. A single event whose data spans
+// two data: lines must be joined with \n before dispatching to the parser.
+// The Anthropic SSE stream sometimes sends JSON payloads that span multiple
+// data: lines (e.g. large usage objects).
+func TestSSEMultiLineDataEvent(t *testing.T) {
+	// We test streamRequest directly with a custom server that sends a
+	// two-line data: event. The parser must join them with \n and parse
+	// the resulting JSON.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// A two-line data: event. The JSON is split across two lines.
+		// The parser joins them with \n and must parse the complete JSON.
+		fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":\n")
+		fmt.Fprint(w, "data: {\"usage\":{\"input_tokens\":42,\"output_tokens\":0}}}\n\n")
+		// content + stop to make it a complete stream
+		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer srv.Close()
+
+	content, usage, status, err := streamRequest(
+		context.Background(),
+		srv.URL,
+		map[string]string{"x-api-key": "key", "anthropic-version": "2023-06-01"},
+		[]byte(`{"model":"m","max_tokens":256,"messages":[{"role":"user","content":"q"}],"stream":true}`),
+		5*time.Second,
+		10*time.Second,
+		parseAnthropicSSE,
+	)
+	if err != nil {
+		t.Fatalf("streamRequest error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want %d", status, http.StatusOK)
+	}
+	if content != "ok" {
+		t.Errorf("content = %q, want %q", content, "ok")
+	}
+	if usage == nil {
+		t.Fatal("usage is nil")
+	}
+	if usage.InputTokens != 42 {
+		t.Errorf("InputTokens = %d, want 42 (from multi-line data: event)", usage.InputTokens)
 	}
 }
