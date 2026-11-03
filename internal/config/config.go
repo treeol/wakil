@@ -214,7 +214,10 @@ type Config struct {
 
 	APIKey   string `json:"api_key"` // sent as "Authorization: Bearer <key>"
 	Model    string `json:"model"`
-	ExecMode string `json:"exec_mode"` // "docker" (default) | "direct"
+	// ExecMode is DEPRECATED as an input (use sandbox.backend). After
+	// LoadConfig it is derived from Sandbox.Backend: "direct" for backend
+	// direct, "docker" otherwise.
+	ExecMode string `json:"exec_mode,omitempty"`
 	// OutputMode selects TUI verbosity: "debug" (default) shows all conversation
 	// items including diagnostic notes; "simple" hides transient diagnostic notes
 	// and the live reasoning body so only the most important info is shown.
@@ -1007,8 +1010,9 @@ type MashuraPanelConfig struct {
 
 // SandboxConfig groups sandbox-related config-file settings.
 type SandboxConfig struct {
-	// Backend selects the sandbox implementation: "docker" (default) or
-	// "hisn". An unknown value is a config error, never a fallback.
+	// Backend selects the sandbox implementation: "docker" (default), "hisn",
+	// or "direct" (no sandbox). An unknown value is a config error, never a
+	// fallback. The deprecated top-level exec_mode is mapped onto it.
 	Backend string `json:"backend,omitempty"`
 	// Hisn configures the hisn backend (ignored for docker).
 	Hisn HisnConfig `json:"hisn,omitempty"`
@@ -1022,6 +1026,9 @@ type SandboxConfig struct {
 const (
 	SandboxBackendDocker = "docker"
 	SandboxBackendHisn   = "hisn"
+	// SandboxBackendDirect runs commands on the host, unsandboxed (explicit
+	// opt-out; formerly exec_mode "direct").
+	SandboxBackendDirect = "direct"
 )
 
 // MinHisnVersion is the oldest hisn release the backend supports: 0.2.1
@@ -1198,7 +1205,7 @@ const defaultConfigTemplate = `{
 
   "_comment_endpoints": "REQUIRED: set at least one endpoint. Either add an \"endpoints\" block here (see config.example.json) or set the ILM_BASE_URL env var. Example: \"endpoints\": {\"local\": {\"kind\": \"openai\", \"base_url\": \"http://localhost:8080\", \"model\": \"qwen3.6-35b\"}}, \"default_endpoint\": \"local\"",
 
-  "_comment_exec": "exec_mode: \"docker\" (default, needs the wakil-dev image — build with: docker build -t wakil-dev .) or \"direct\" (bare-metal, no Docker)."
+  "_comment_sandbox": "sandbox.backend: \"docker\" (default, needs the wakil-dev image — build with: docker build -t wakil-dev .), \"hisn\" (rootless, opt-in) or \"direct\" (bare-metal, no sandbox). The old top-level exec_mode still works but is deprecated."
 }
 `
 
@@ -1236,6 +1243,10 @@ func LoadConfig(argv []string) (Config, error) {
 	// Blank the image so "unset" is distinguishable from an explicit value;
 	// resolveSandboxImage fills it in after flag/env/file are applied.
 	cfg.Image = ""
+	// Same for the deprecated exec_mode and sandbox.backend: resolveBackend
+	// needs to know which one the user actually set (file, env or flag).
+	cfg.ExecMode = ""
+	cfg.Sandbox.Backend = ""
 
 	// 1) config file (explicit --config handled by pre-scan; else default path)
 	cfgPath := defaultConfigPath()
@@ -1434,8 +1445,8 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.IntVar(&cfg.Port, "port", cfg.Port, "ilm proxy port (used with --host, default 11400)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key (sent as Bearer token)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
-	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "execution mode: docker|direct")
-	fs.StringVar(&cfg.Sandbox.Backend, "sandbox", cfg.Sandbox.Backend, "sandbox backend for exec mode docker: docker (default)|hisn")
+	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "DEPRECATED alias of --sandbox: docker|direct")
+	fs.StringVar(&cfg.Sandbox.Backend, "sandbox", cfg.Sandbox.Backend, "sandbox backend: docker (default)|hisn|direct (direct = no sandbox)")
 	fs.StringVar((*string)(&cfg.OutputMode), "output-mode", string(cfg.OutputMode), "TUI output mode: debug|simple")
 	fs.StringVar(&cfg.Image, "sandbox-image", cfg.Image, "sandbox container image (docker mode); overrides config sandbox.image and the image pinned into release builds")
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "alias of --sandbox-image")
@@ -1536,8 +1547,12 @@ func LoadConfig(argv []string) (Config, error) {
 	if err := validateSubagentEndpoint(cfg); err != nil {
 		return cfg, err
 	}
-	if cfg.ExecMode != "docker" && cfg.ExecMode != "direct" {
-		return cfg, fmt.Errorf("invalid exec mode %q (want docker|direct)", cfg.ExecMode)
+	warning, err := resolveBackend(&cfg)
+	if err != nil {
+		return cfg, err
+	}
+	if warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 
 	if err := validateSandboxConfig(&cfg); err != nil {
@@ -2143,6 +2158,48 @@ func hostStartupEnv(name string) bool {
 		strings.HasPrefix(name, "XDG_")
 }
 
+// resolveBackend makes sandbox.backend the single source of truth and maps the
+// deprecated exec_mode (config key, ILM_/WAKIL_EXEC_MODE, --exec) onto it.
+// It returns a one-line deprecation warning when exec_mode was used. Afterwards
+// cfg.ExecMode is DERIVED ("direct" for backend direct, else "docker") so the
+// code that still reads it keeps working unchanged. A contradiction between an
+// explicit exec_mode and an explicit sandbox.backend is an error, never a
+// silent pick.
+func resolveBackend(cfg *Config) (warning string, err error) {
+	mode, backend := cfg.ExecMode, cfg.Sandbox.Backend
+	switch mode {
+	case "", "docker", "direct":
+	default:
+		return "", fmt.Errorf("invalid exec mode %q (want docker|direct; exec_mode is deprecated — use sandbox.backend)", mode)
+	}
+	switch backend {
+	case "", SandboxBackendDocker, SandboxBackendHisn, SandboxBackendDirect:
+	default:
+		return "", fmt.Errorf("invalid sandbox backend %q (want docker|hisn|direct)", backend)
+	}
+	if mode != "" {
+		switch {
+		case mode == "direct" && backend != "" && backend != SandboxBackendDirect:
+			return "", fmt.Errorf("sandbox backend %s conflicts with exec mode %q: direct mode runs unsandboxed and is never combined with a sandbox backend", backend, mode)
+		case mode == "docker" && backend == SandboxBackendDirect:
+			return "", fmt.Errorf("sandbox backend direct conflicts with exec mode %q", mode)
+		}
+		if backend == "" {
+			backend = mode // docker→docker, direct→direct
+		}
+		warning = fmt.Sprintf("warning: exec_mode is deprecated — use sandbox.backend (exec_mode %q → sandbox.backend %q)", mode, backend)
+	}
+	if backend == "" {
+		backend = SandboxBackendDocker
+	}
+	cfg.Sandbox.Backend = backend
+	cfg.ExecMode = "docker"
+	if backend == SandboxBackendDirect {
+		cfg.ExecMode = "direct"
+	}
+	return warning, nil
+}
+
 // validateSandboxConfig validates sandbox.backend and sandbox.hisn.*. An
 // unknown backend is an error: there is no implicit fallback to docker.
 func validateSandboxConfig(cfg *Config) error {
@@ -2151,14 +2208,11 @@ func validateSandboxConfig(cfg *Config) error {
 		sb.Backend = SandboxBackendDocker
 	}
 	switch sb.Backend {
-	case SandboxBackendDocker:
+	case SandboxBackendDocker, SandboxBackendDirect:
 		return nil
 	case SandboxBackendHisn:
 	default:
-		return fmt.Errorf("invalid sandbox backend %q (want docker|hisn)", sb.Backend)
-	}
-	if cfg.ExecMode != "docker" {
-		return fmt.Errorf("sandbox backend hisn conflicts with exec mode %q: direct mode runs unsandboxed and is never combined with a sandbox backend", cfg.ExecMode)
+		return fmt.Errorf("invalid sandbox backend %q (want docker|hisn|direct)", sb.Backend)
 	}
 	if cfg.BrowserEnabled {
 		return fmt.Errorf("browser_enabled is not supported with sandbox backend hisn (the browser would launch on the host, outside the sandbox)")

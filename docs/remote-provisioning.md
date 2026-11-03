@@ -10,7 +10,7 @@ clean on the first.
 ## Prerequisites
 
 - Go 1.26+ (build from source)
-- Docker (for the default sandbox mode; skip with `--exec direct`)
+- Docker (for the default sandbox mode; skip with `--sandbox direct`)
 - An OpenAI-compatible endpoint or ilm proxy to point at
 
 ## Checklist
@@ -108,7 +108,7 @@ sudo semodule -i wakil_dockersock.pp
 # This adds: allow container_t container_runtime_t:unix_stream_socket connectto;
 ```
 
-**Fallback:** run wakil with `--exec direct` on SELinux hosts to skip the
+**Fallback:** run wakil with `--sandbox direct` on SELinux hosts to skip the
 sandbox entirely.
 
 ### 6. MCP server absolute paths
@@ -136,7 +136,7 @@ echo "$ANTHROPIC_API_KEY"   # should be non-empty
 # 2. Docker works inside the sandbox
 docker info   # on the host — should succeed
 # Inside wakil's sandbox, docker commands should also work
-# (or use --exec direct on SELinux hosts)
+# (or use --sandbox direct on SELinux hosts)
 
 # 3. MCP servers connect
 # Start wakil and run /mcp — should list connected servers and their tools

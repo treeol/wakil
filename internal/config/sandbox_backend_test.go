@@ -123,6 +123,67 @@ func TestSandboxHisnRejections(t *testing.T) {
 	}
 }
 
+// TestExecModeDeprecatedAlias: exec_mode maps onto sandbox.backend (with a
+// warning) and ExecMode is derived from the backend afterwards.
+func TestExecModeDeprecatedAlias(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, backend   string
+		wantBackend, wantMode string
+		wantWarn              bool
+	}{
+		{"defaults", "", "", "docker", "docker", false},
+		{"exec docker", "docker", "", "docker", "docker", true},
+		{"exec direct", "direct", "", "direct", "direct", true},
+		{"backend direct", "", "direct", "direct", "direct", false},
+		{"backend hisn", "", "hisn", "hisn", "docker", false},
+		{"exec docker + hisn", "docker", "hisn", "hisn", "docker", true},
+		{"exec direct + direct", "direct", "direct", "direct", "direct", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{ExecMode: tc.mode, Sandbox: SandboxConfig{Backend: tc.backend}}
+			warn, err := resolveBackend(&cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Sandbox.Backend != tc.wantBackend || cfg.ExecMode != tc.wantMode {
+				t.Errorf("backend=%q mode=%q, want %q/%q", cfg.Sandbox.Backend, cfg.ExecMode, tc.wantBackend, tc.wantMode)
+			}
+			if (warn != "") != tc.wantWarn {
+				t.Errorf("warning = %q, want present=%v", warn, tc.wantWarn)
+			}
+			if warn != "" && strings.Count(warn, "\n") != 0 {
+				t.Errorf("warning must be one line: %q", warn)
+			}
+		})
+	}
+	for _, bad := range []struct{ mode, backend, want string }{
+		{"direct", "hisn", "conflicts with exec mode"},
+		{"direct", "docker", "conflicts with exec mode"},
+		{"docker", "direct", "conflicts with exec mode"},
+		{"bare", "", "invalid exec mode"},
+		{"", "hsin", "invalid sandbox backend"},
+	} {
+		cfg := Config{ExecMode: bad.mode, Sandbox: SandboxConfig{Backend: bad.backend}}
+		if _, err := resolveBackend(&cfg); err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("%q/%q: want error %q, got %v", bad.mode, bad.backend, bad.want, err)
+		}
+	}
+}
+
+func TestSandboxBackendDirectViaConfig(t *testing.T) {
+	ws := t.TempDir()
+	cfg, err := loadSandboxCfg(t, `{"sandbox":{"backend":"direct"}}`, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExecMode != "direct" || cfg.WorkDir != ws {
+		t.Errorf("ExecMode=%q WorkDir=%q, want direct/%q", cfg.ExecMode, cfg.WorkDir, ws)
+	}
+	if !cfg.KVRDisabled {
+		t.Error("kvr must be disabled outside docker")
+	}
+}
+
 func TestSandboxHisnEnvPassOverride(t *testing.T) {
 	cfg, err := loadSandboxCfg(t, `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["CI"],"grantable_rw":["/srv/out/"]}}}`, "--host-workdir", t.TempDir())
 	if err != nil {

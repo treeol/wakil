@@ -80,7 +80,7 @@ EOF
 ./wakil ~/projects/myapp
 ```
 
-No Docker? Run with `--exec direct` — the confirmation gate stays on.
+No Docker? Run with `--sandbox direct` — the confirmation gate stays on.
 See [docs/endpoints.md](docs/endpoints.md) for other providers and
 [config.example.json](config.example.json) for all options.
 

@@ -30,7 +30,6 @@ fi
 # Keys documented via flag/env name in the flags table, not as JSON keys.
 # These are still documented — just under a different name — so they're allowed.
 allowlist="
-exec_mode
 image
 searxng_url
 google_api_key

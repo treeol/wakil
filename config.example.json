@@ -31,10 +31,9 @@
   },
   "default_endpoint": "llama",
 
-  "exec_mode": "docker",
   "_comment_sandbox": "Sandbox image resolution: --sandbox-image flag > WAKIL_IMAGE env > sandbox.image (this file) > legacy top-level \"image\" > the digest-pinned image built into release binaries > (dev builds only) the unpinned local image \"wakil-dev\" with a warning. Leave unset to use the image your wakil release was published with.",
   "_comment_sandbox_override": "To override: \"sandbox\": { \"image\": \"ghcr.io/treeol/wakil-sandbox@sha256:<digest>\" }",
-  "_comment_sandbox_backend": "sandbox.backend selects the sandbox implementation for exec_mode docker: \"docker\" (default) or \"hisn\" (github.com/treeol/hisn >= 0.2.1, rootless, opt-in). An unknown value is an error; there is never a fallback to docker or to running unsandboxed. sandbox.hisn.* applies to hisn only. See docs/sandbox-backends.md.",
+  "_comment_sandbox_backend": "sandbox.backend selects where tool calls run: \"docker\" (default), \"hisn\" (github.com/treeol/hisn >= 0.2.1, rootless, opt-in) or \"direct\" (no sandbox, host execution). The old top-level exec_mode (docker|direct) is a deprecated alias that prints a warning. An unknown value is an error; there is never a fallback to docker or to running unsandboxed. sandbox.hisn.* applies to hisn only. See docs/sandbox-backends.md.",
   "sandbox": {
     "backend": "docker",
     "hisn": {

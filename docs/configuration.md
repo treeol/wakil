@@ -13,8 +13,8 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--base-url` | `ILM_BASE_URL` / `WAKIL_BASE_URL` | — *(required unless `endpoints` is set)* | endpoint base URL; overrides the selected endpoint's `base_url` |
 | `--api-key` | `ILM_API_KEY` / `WAKIL_API_KEY` | — | sent as `Authorization: Bearer <key>` *(endpoint-level `auth_header` wins)* |
 | `--model` | `ILM_MODEL` / `WAKIL_MODEL` | `ilm` | model name; overrides the selected endpoint's `model` |
-| `--exec` | `ILM_EXEC_MODE` / `WAKIL_EXEC_MODE` | `docker` | `docker` \| `direct` |
-| `--sandbox` | `WAKIL_SANDBOX_BACKEND` | `docker` | sandbox backend for `--exec docker`: `docker` \| `hisn`. Unknown values are an error (no silent fallback). See [Sandbox backends](#sandbox-backends) |
+| `--exec` *(deprecated)* | `ILM_EXEC_MODE` / `WAKIL_EXEC_MODE` | — | deprecated alias of `--sandbox` (`docker` \| `direct`); prints a one-line warning. Config key `exec_mode` likewise maps onto `sandbox.backend`; an explicit contradiction (e.g. `exec_mode: direct` + `sandbox.backend: hisn`) is an error |
+| `--sandbox` | `WAKIL_SANDBOX_BACKEND` | `docker` | sandbox backend: `docker` \| `hisn` \| `direct` (no sandbox — commands run on the host). Unknown values are an error (no silent fallback). See [Sandbox backends](#sandbox-backends) |
 | `--sandbox-image` *(alias `--image`)* | `ILM_CONTAINER_IMAGE` / `WAKIL_IMAGE` | image pinned into the release binary *(`ghcr.io/treeol/wakil-sandbox@sha256:…`; see `wakil version`)*; dev builds fall back to `wakil-dev` with a warning | sandbox image. Resolution order: flag → env → config `sandbox.image` → legacy `image` → pinned digest → dev fallback. Release binaries pull the pinned image on first run. Build your own with `docker build -t wakil-dev .` |
 | `--workdir` | `ILM_WORKDIR` / `WAKIL_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
 | `--host-workdir` | `ILM_HOST_WORKDIR` / `WAKIL_HOST_WORKDIR` | cwd *(auto-detected)* | host path bind-mounted into the container |
@@ -313,7 +313,8 @@ runs on the host instead, no container.
 
 ## Sandbox backends
 
-`--exec docker` runs tool calls in a sandbox; two backends exist. `docker`
+`sandbox.backend` selects where tool calls run: two sandbox backends exist, plus
+`direct` (no sandbox, explicit opt-out). `docker`
 (default) is the production sandbox and is unchanged. `hisn`
 ([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.2.1) is a
 rootless, daemonless alternative. Design, path model, lifecycle and known
@@ -321,7 +322,7 @@ limits: [sandbox-backends.md](sandbox-backends.md).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sandbox.backend` | `docker` | `docker` \| `hisn`. Flag `--sandbox`, env `WAKIL_SANDBOX_BACKEND` |
+| `sandbox.backend` | `docker` | `docker` \| `hisn` \| `direct`. Flag `--sandbox`, env `WAKIL_SANDBOX_BACKEND`. Replaces the deprecated top-level `exec_mode` |
 | `sandbox.hisn.binary` | `hisn` | hisn executable (name on `PATH` or absolute path) |
 | `sandbox.hisn.home_root` | `<state dir>/hisn-home/<workspace-hash>` | persistent host directory used as the sandbox `$HOME` *(absolute path)* |
 | `sandbox.hisn.grantable_rw` | `[]` | absolute host prefixes under which read-write grants outside the workspace are allowed *(fixed at session start; cannot be `/`)* |
