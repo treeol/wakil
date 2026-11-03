@@ -56,10 +56,21 @@ func (b *Backend) Preflight(ctx context.Context) error {
 	if !VersionAtLeast(got, want) {
 		return fmt.Errorf("sandbox backend hisn: hisn %d.%d.%d is too old, need >= %s", got[0], got[1], got[2], b.opts.MinVersion)
 	}
+	b.ver = got
+	if f := b.opts.Surface.needs03(); len(f) > 0 && !b.profileMode() {
+		return fmt.Errorf("sandbox backend hisn: %w", featureError(f, got))
+	}
 	if out, err := b.output(ctx, false, "check"); err != nil {
 		return fmt.Errorf("sandbox backend hisn: `hisn check` failed — this host cannot run hisn sessions:\n%s", tailLines(out, 12))
 	}
 	return nil
+}
+
+// profileMode reports whether sessions start from a hisn-profile/v1 file
+// (hisn >= ProfileMinVersion); older hisn gets the bare --policy document.
+func (b *Backend) profileMode() bool {
+	want, _ := ParseVersion(ProfileMinVersion)
+	return VersionAtLeast(b.ver, want)
 }
 
 func tailLines(s string, n int) string {

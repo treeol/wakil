@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
@@ -178,6 +179,10 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 		return nil, err
 	}
 	rec.Started = true
+	if b.opts.Surface.Profile != "" {
+		rec.Mode, rec.SupPid = "named", sup.pid()
+		rec.SupStart = procStart(rec.SupPid)
+	}
 	if err := b.rewriteRecord(rec); err != nil {
 		if !b.abortStartLocked(rec, sup) {
 			return b.newLive(rec, sup), fmt.Errorf("hisn: updating owner record: %w", err)
@@ -199,18 +204,108 @@ func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 	return l
 }
 
-// supervisorArgs is the `hisn run --detach` command line. `-v` is REQUIRED: hisn
-// prints nothing to stderr without it, so a failed start would be undiagnosable.
-// `--ready-fd 3` (0.2.1): hisn writes "ready\n" to fd 3 once the session is
-// live — the write end of the readiness pipe, passed as the child's fd 3 via
-// ExtraFiles. Nothing weaker than that line plus a `live` confirm passes.
+// supervisorArgs is the `hisn run --detach` command line of the bare-policy path
+// (hisn < 0.3.1). `-v` is REQUIRED: hisn prints nothing to stderr without it, so
+// a failed start would be undiagnosable. `--ready-fd 3` (0.2.1): hisn writes
+// "ready\n" to fd 3 once the session is live — the write end of the readiness
+// pipe, passed as the child's fd 3 via ExtraFiles. Nothing weaker than that line
+// plus a `live` confirm passes.
 func supervisorArgs(id, policy, cwd string) []string {
 	return []string{"run", "--detach", "-v", "--session-id", id,
 		"--policy", policy, "--cwd", cwd, "--network", "host", "--ready-fd", "3"}
 }
 
-// runSession writes + validates the policy, spawns the supervisor (which IS the
-// session and never returns while it lives), waits until the session is
+// launch is everything needed to start one session: the supervisor command
+// line, its working directory and how the instance is identified afterwards.
+type launch struct {
+	args []string
+	dir  string // supervisor process cwd ("" = inherit)
+	mode string // "policy" | "profile" | "named"
+}
+
+// prepareLaunch renders and validates what hisn is started with. Three modes:
+//
+//   - policy: hisn < 0.3.1, a bare hisn-policy/v1 file (`--policy`);
+//   - profile: hisn >= 0.3.1, a generated hisn-profile/v1 file (`--profile`);
+//   - named: a hisn profile chosen by the project (hisn.profile), used as is;
+//     Wakil only adds initial grants.
+//
+// Wakil never writes a risk_ack: the profile carries whatever the user put in
+// the project file, and hisn refuses a mismatch.
+func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error) {
+	s := b.opts.Surface
+	if s.Profile != "" {
+		if err := os.MkdirAll(b.procCwd(), 0o700); err != nil {
+			return launch{}, fmt.Errorf("hisn supervisor cwd: %w", err)
+		}
+		return launch{args: namedArgs(rec.ID, s.Profile, rec.Cwd, s.MountsRO, s.MountsRW), dir: b.procCwd(), mode: "named"}, nil
+	}
+	pp := policyParams{Cwd: rec.Cwd, Home: b.opts.HomeRoot, Hostname: hostnameFor(rec.Token),
+		GrantableRW: b.opts.GrantableRW, EnvPass: b.opts.EnvPass, ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
+	vctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if !b.profileMode() {
+		pp.EnvSet, pp.MountsRO, pp.MountsRW = s.EnvSet, s.MountsRO, s.MountsRW
+		pol, err := buildPolicy(pp)
+		if err != nil {
+			return launch{}, err
+		}
+		path, err := writePolicy(b.sessionsDir(), rec.ID, pol)
+		if err != nil {
+			return launch{}, fmt.Errorf("writing hisn policy: %w", err)
+		}
+		if out, err := b.output(vctx, false, "policy", "validate", path); err != nil {
+			return launch{}, fmt.Errorf("hisn policy validate failed: %w: %s", err, strings.TrimSpace(out))
+		}
+		return launch{args: supervisorArgs(rec.ID, path, rec.Cwd), mode: "policy"}, nil
+	}
+	prof, err := buildProfile(pp, s)
+	if err != nil {
+		return launch{}, err
+	}
+	if err := checkProfileTrust(b.profilePath(rec.ID), rec.Cwd, b.opts.HomeRoot, s.MountsRW); err != nil {
+		return launch{}, err
+	}
+	if err := os.MkdirAll(b.procCwd(), 0o700); err != nil {
+		return launch{}, fmt.Errorf("hisn supervisor cwd: %w", err)
+	}
+	if err := os.WriteFile(b.profilePath(rec.ID), prof, 0o600); err != nil {
+		return launch{}, fmt.Errorf("writing hisn profile: %w", err)
+	}
+	if out, err := b.output(vctx, false, "profile", "validate", b.profilePath(rec.ID)); err != nil {
+		return launch{}, validateError(err, out)
+	}
+	return launch{args: profileArgs(rec.ID, b.profilePath(rec.ID), rec.Cwd), dir: b.procCwd(), mode: "profile"}, nil
+}
+
+// validateError turns `hisn profile validate` output into an error; the risk
+// codes get their own type so callers can name the project key.
+func validateError(err error, out string) error {
+	msg := strings.TrimSpace(out)
+	if i := strings.Index(msg, "E_RISK_ACK_"); i >= 0 {
+		return &RiskAckError{Detail: strings.TrimSpace(msg[i:])}
+	}
+	return fmt.Errorf("hisn profile validate failed: %w: %s", err, msg)
+}
+
+// RiskAckError means the profile needs a risk acknowledgement the project file
+// does not carry (or carries wrongly). Wakil never supplies one itself.
+type RiskAckError struct {
+	Label  string // the computed label, when known
+	Detail string // hisn's message
+}
+
+func (e *RiskAckError) Error() string {
+	l := ""
+	if e.Label != "" {
+		l = " (label " + e.Label + ")"
+	}
+	return "sandbox: hisn.risk_ack in .wakil/sandbox.json is missing or does not match" + l +
+		" — Wakil never writes an acknowledgement for you; " + e.Detail
+}
+
+// runSession prepares + validates the launch, spawns the supervisor (which IS
+// the session and never returns while it lives), waits until the session is
 // provably ready and verifies it is the instance we just created. The returned
 // supervisor is non-nil whenever one was spawned, success or not, so the caller
 // can reap it. On any error after the spawn the supervisor is already killed
@@ -219,21 +314,11 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 	if err := os.MkdirAll(b.opts.HomeRoot, 0o700); err != nil {
 		return nil, fmt.Errorf("hisn home_root: %w", err)
 	}
-	pol, err := buildPolicy(rec.Cwd, b.opts.HomeRoot, hostnameFor(rec.Token), b.opts.GrantableRW, b.opts.EnvPass,
-		b.opts.ShmSizeMB, b.opts.TmpSizeMB)
+	l, err := b.prepareLaunch(ctx, rec)
 	if err != nil {
 		return nil, err
 	}
-	polPath, err := writePolicy(b.sessionsDir(), rec.ID, pol)
-	if err != nil {
-		return nil, fmt.Errorf("writing hisn policy: %w", err)
-	}
-	vctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if out, err := b.output(vctx, false, "policy", "validate", polPath); err != nil {
-		return nil, fmt.Errorf("hisn policy validate failed: %w: %s", err, strings.TrimSpace(out))
-	}
-	sup, readyR, err := b.startSupervisor(b.supervisorLogPath(rec.ID), notes, supervisorArgs(rec.ID, polPath, rec.Cwd)...)
+	sup, readyR, err := b.startSupervisor(b.supervisorLogPath(rec.ID), l.dir, notes, l.args...)
 	if err != nil {
 		return nil, fmt.Errorf("hisn run --detach: %w", err)
 	}
@@ -244,6 +329,13 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 	if err := b.waitReady(ctx, rec.ID, sup, readyR); err != nil {
 		b.reapSupervisor(sup)
 		return sup, b.withSupervisorStderr(err, sup)
+	}
+	if l.mode == "named" {
+		// A named profile brings its own hostname, so the token cannot prove
+		// the instance; the supervisor process handle (exact, unreaped) and
+		// the --ready-fd line do. The owner record keeps pid+starttime for
+		// Reconcile.
+		return sup, nil
 	}
 	ok, err := b.verifyInstance(ctx, rec.ID, rec.Token)
 	if err == nil && !ok {
@@ -576,6 +668,9 @@ func (b *Backend) reconcileOneLocked(ctx context.Context, r record) error {
 	if cur.Token != r.Token || ownerAlive(cur) {
 		return nil // replaced or revived: not ours to clean
 	}
+	if cur.Mode == "named" {
+		return b.reconcileNamedLocked(ctx, cur)
+	}
 	sessions, err := b.listSessions(ctx)
 	if err != nil {
 		return err
@@ -600,6 +695,34 @@ func (b *Backend) reconcileOneLocked(ctx context.Context, r record) error {
 	if err := b.killSession(ctx, r.ID, r.Token); err != nil {
 		return err // keep the record
 	}
+	b.removeRecord(r.ID)
+	return nil
+}
+
+// reconcileNamedLocked cleans up a session started from a named hisn profile.
+// Its policy carries no instance token, so identity is the supervisor process
+// Wakil spawned: pid AND /proc starttime. Only that exact process is signalled.
+func (b *Backend) reconcileNamedLocked(ctx context.Context, r record) error {
+	if r.SupPid > 0 && r.SupStart != "" && procStart(r.SupPid) == r.SupStart {
+		_ = syscall.Kill(r.SupPid, syscall.SIGTERM)
+		gone := func() bool { return procStart(r.SupPid) != r.SupStart }
+		for i := 0; i < 50 && !gone(); i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !gone() {
+			_ = syscall.Kill(r.SupPid, syscall.SIGKILL)
+			for i := 0; i < 50 && !gone(); i++ {
+				time.Sleep(100 * time.Millisecond)
+			}
+			if !gone() {
+				return fmt.Errorf("hisn: supervisor %d of named-profile session %s did not exit", r.SupPid, r.ID)
+			}
+		}
+	}
+	// The supervisor is gone: a stale directory is removed by hisn itself.
+	kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
+	_, _ = b.output(kctx, false, "kill", "--session", r.ID)
+	cancel()
 	b.removeRecord(r.ID)
 	return nil
 }

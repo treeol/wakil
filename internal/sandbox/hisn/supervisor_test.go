@@ -165,7 +165,7 @@ func TestReadinessNeedsLsAnswerNotJustSocketFile(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "control.sock"), nil, 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "sup.pid"), []byte("1"), 0o600) // fake: ours, not live
 	// Any long-running process stands in for the supervisor.
-	sup, readyR, err := b.startSupervisor(filepath.Join(fe.sdir, "other.supervisor.log"), nil, "run", "--detach", "-v", "--session-id", "other", "--policy", "/nonexistent")
+	sup, readyR, err := b.startSupervisor(filepath.Join(fe.sdir, "other.supervisor.log"), "", nil, "run", "--detach", "-v", "--session-id", "other", "--policy", "/nonexistent")
 	if err != nil {
 		t.Fatal(err)
 	}

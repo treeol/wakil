@@ -49,6 +49,9 @@ type Options struct {
 	// process per call) instead of the control-socket client. Fallback for
 	// one release; default false (ctl path).
 	ExecViaCLI bool
+	// Surface is the per-project request from .wakil/sandbox.json (services,
+	// forwards, env, mounts, risk_ack, named profile). Zero = nothing extra.
+	Surface Surface
 }
 
 // live is one running session instance.
@@ -120,6 +123,9 @@ func (l *live) ctl() *ctl.Client {
 type Backend struct {
 	opts Options
 	pm   *sandbox.PathMap
+	// ver is the hisn version seen by Preflight (zero until then); it selects
+	// profile mode (>= ProfileMinVersion) or the bare --policy path.
+	ver [3]int
 
 	mu      sync.RWMutex
 	cur     *live
@@ -178,6 +184,11 @@ func New(opts Options) (*Backend, error) {
 		return nil, fmt.Errorf("hisn backend: HostCwd %q must be absolute", opts.HostCwd)
 	}
 	opts.HostCwd = filepath.Clean(opts.HostCwd)
+	surf, err := opts.Surface.Normalize(opts.HostCwd)
+	if err != nil {
+		return nil, fmt.Errorf("hisn backend: %w", err)
+	}
+	opts.Surface = surf
 	return &Backend{
 		opts:         opts,
 		readyTimeout: readyCap,

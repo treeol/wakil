@@ -75,6 +75,8 @@ func fakeMain(state string, args []string) int {
 		return 0
 	case "policy":
 		return fakePolicyValidate(args[2:])
+	case "profile":
+		return fakeProfileCmd(args[1:])
 	case "run":
 		return fakeRun(state, args[1:])
 	case "ls":
@@ -155,10 +157,25 @@ func fakeRun(state string, args []string) int {
 		time.Sleep(time.Hour)
 		return 125
 	}
-	pol, err := os.ReadFile(flagVal(args, "--policy"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "hisn: no policy")
-		return 125
+	var pol []byte
+	var risks []fakeRisk
+	if hasFlag(args, "--profile") {
+		if hasFlag(args, "--policy") {
+			fmt.Fprintln(os.Stderr, "hisn: E_PROFILE_POLICY: --profile and --policy are mutually exclusive")
+			return 125
+		}
+		text, r, rc := fakeRunProfile(state, args)
+		if rc != 0 {
+			return rc
+		}
+		pol, risks = []byte(text), r
+	} else {
+		var err error
+		pol, err = os.ReadFile(flagVal(args, "--policy"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "hisn: no policy")
+			return 125
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return 125
@@ -180,6 +197,8 @@ func fakeRun(state string, args []string) int {
 		return 125
 	}
 	_ = os.WriteFile(filepath.Join(dir, "policy"), pol, 0o600)
+	rj, _ := json.Marshal(nonNilRisks(risks))
+	_ = os.WriteFile(filepath.Join(dir, "risk.json"), rj, 0o600)
 	// Real hisn writes the resolved policy before it binds the socket; Wakil
 	// uses it (carrying the instance hostname token) as proof of ownership.
 	_ = os.WriteFile(filepath.Join(dir, "policy.resolved.toml"), pol, 0o600)
@@ -319,7 +338,12 @@ func fakeInspect(state string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")
 		return 125
 	}
-	b, _ := json.Marshal(map[string]any{"ok": true, "mountinfo": "", "policy": string(pol)})
+	var risks []fakeRisk
+	if rj, err := os.ReadFile(filepath.Join(sessRoot(state), flagVal(args, "--session"), "risk.json")); err == nil {
+		_ = json.Unmarshal(rj, &risks)
+	}
+	b, _ := json.Marshal(map[string]any{"ok": true, "mountinfo": "", "policy": string(pol),
+		"risk": nonNilRisks(risks), "services": []any{}})
 	fmt.Println(string(b))
 	return 0
 }

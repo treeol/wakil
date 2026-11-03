@@ -24,6 +24,9 @@ import (
 var clientEnvAllow = map[string]bool{
 	"PATH": true, "HOME": true, "XDG_RUNTIME_DIR": true,
 	"LANG": true, "TZ": true, "TERM": true,
+	// hisn's own trusted profile directory (a path, not a secret): needed to
+	// resolve a named hisn.profile.
+	"HISN_PROFILES": true,
 }
 
 func clientEnvAllowed(name string) bool {
@@ -220,7 +223,7 @@ func (b *Backend) supervisorLogPath(id string) string {
 // live. Wakil closes its own write end immediately after a successful Start —
 // EOF on the read end then means every writer (hisn included) is gone. The
 // returned reader is drained by waitReady and closed by its caller.
-func (b *Backend) startSupervisor(logPath string, notes []string, args ...string) (*supervisorProc, *os.File, error) {
+func (b *Backend) startSupervisor(logPath, dir string, notes []string, args ...string) (*supervisorProc, *os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("supervisor log directory: %w", err)
 	}
@@ -244,6 +247,10 @@ func (b *Backend) startSupervisor(logPath string, notes []string, args ...string
 	supCtx, supCancel := context.WithCancel(context.Background())
 	cmd := b.command(supCtx, true, args...)
 	cmd.SysProcAttr = supervisorSysProcAttr()
+	// A neutral working directory: hisn also checks a profile against the
+	// supervisor's PROCESS cwd (E_PROFILE_UNTRUSTED), and Wakil's own cwd is
+	// normally the project. Empty = inherit (legacy --policy path).
+	cmd.Dir = dir
 	cmd.Stdin = nil  // /dev/null
 	cmd.Stdout = nil // /dev/null; hisn run prints nothing on stdout
 	cmd.Stderr = tee

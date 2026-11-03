@@ -23,6 +23,12 @@ type record struct {
 	Token    string `json:"token"`     // random; becomes the session hostname
 	Cwd      string `json:"cwd"`
 	Started  bool   `json:"started"`
+	// Mode is "named" for a session started from a hisn-named profile (no
+	// instance token in its policy). Such a session is identified by the
+	// supervisor process Wakil spawned: SupPid + SupStart (/proc starttime).
+	Mode     string `json:"mode,omitempty"`
+	SupPid   int    `json:"sup_pid,omitempty"`
+	SupStart string `json:"sup_start,omitempty"`
 }
 
 func (b *Backend) sessionsDir() string         { return filepath.Join(b.opts.StateDir, "sessions") }
@@ -98,6 +104,7 @@ func (b *Backend) readRecord(id string) (record, error) {
 func (b *Backend) removeRecord(id string) {
 	_ = os.Remove(b.recordPath(id))
 	_ = os.Remove(filepath.Join(b.sessionsDir(), id+".toml"))
+	_ = os.Remove(filepath.Join(b.opts.StateDir, id+".profile.toml"))
 }
 
 func (b *Backend) listRecordIDs() []string {

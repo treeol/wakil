@@ -31,26 +31,51 @@ type policySession struct {
 
 type policyMounts struct {
 	GrantableRW []string `toml:"grantable_rw"`
+	// Project additions (.wakil/sandbox.json); omitted when empty so a session
+	// without overrides renders exactly the policy Wakil always rendered.
+	RO   []string `toml:"ro,omitempty"`
+	RW   []string `toml:"rw,omitempty"`
+	Mask []string `toml:"mask,omitempty"`
 }
 
 type policyEnv struct {
-	Pass []string `toml:"pass"`
+	Pass []string          `toml:"pass"`
+	Set  map[string]string `toml:"set,omitempty"`
 }
 
-// buildPolicy renders the session policy. network is "host" by decision:
-// builds need the network and hisn offers no filtering in between. shm is
-// true by decision: /dev/shm is needed by real toolchains (Chrome, Node,
-// POSIX shm), and hisn mounts it with /dev's flags, not /tmp's.
-func buildPolicy(cwd, home, hostname string, grantableRW, envPass []string, shmSize, tmpSize int64) ([]byte, error) {
-	p := policyFile{
+// policyParams are the inputs of one rendered session policy.
+type policyParams struct {
+	Cwd, Home, Hostname string
+	GrantableRW         []string
+	EnvPass             []string
+	ShmSize, TmpSize    int64
+	EnvSet              map[string]string
+	MountsRO, MountsRW  []string
+	Mask                []string
+}
+
+// policyFor builds the session policy. network is "host" by decision: builds
+// need the network and hisn offers no filtering in between. shm is true by
+// decision: /dev/shm is needed by real toolchains (Chrome, Node, POSIX shm),
+// and hisn mounts it with /dev's flags, not /tmp's.
+func policyFor(p policyParams) policyFile {
+	pf := policyFile{
 		Version: "hisn-policy/v1",
-		Session: policySession{Cwd: cwd, Home: home, Network: "host", Hostname: hostname,
-			Shm: true, ShmSize: shmSize, TmpSize: tmpSize},
-		Mounts: policyMounts{GrantableRW: nonNil(grantableRW)},
-		Env:    policyEnv{Pass: nonNil(envPass)},
+		Session: policySession{Cwd: p.Cwd, Home: p.Home, Network: "host", Hostname: p.Hostname,
+			Shm: true, ShmSize: p.ShmSize, TmpSize: p.TmpSize},
+		Mounts: policyMounts{GrantableRW: nonNil(p.GrantableRW), RO: p.MountsRO, RW: p.MountsRW, Mask: p.Mask},
+		Env:    policyEnv{Pass: nonNil(p.EnvPass), Set: p.EnvSet},
 	}
+	if len(pf.Env.Set) == 0 {
+		pf.Env.Set = nil
+	}
+	return pf
+}
+
+// buildPolicy renders a bare hisn-policy/v1 document (hisn < 0.3.1 path).
+func buildPolicy(p policyParams) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(p); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(policyFor(p)); err != nil {
 		return nil, fmt.Errorf("encoding hisn policy: %w", err)
 	}
 	return buf.Bytes(), nil
