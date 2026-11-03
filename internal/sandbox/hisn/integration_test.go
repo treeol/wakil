@@ -482,3 +482,90 @@ func TestIntegrationPruneKeepsLiveSessions(t *testing.T) {
 		t.Fatalf("prune removed or lost the live session: %+v ok=%v", e, ok)
 	}
 }
+
+// A ctl exec cancelled AFTER the daemon accepted it is stopped by exec_id
+// (TERM → 5 s → KILL) and Wait returns promptly: within 6 s, with the latched
+// signalled status, and nothing of the program is left running in the session.
+//
+// "Nothing left running" is checked from inside the session (a /proc scan, the
+// only evidence that does not depend on hisn-ls/v1 carrying an exec list — its
+// documented row is {id,state,…}) and, defensively, against the `hisn ls
+// --json` row: the session must still be live, and if the row exposes an exec
+// list under a known key it must be empty.
+func TestIntegrationCancelAfterAccept(t *testing.T) {
+	b, cwd := realBackend(t)
+	istart(t, b, "wakil-it-cancel", cwd)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := b.Exec(ctx, sandbox.ExecSpec{Argv: []string{"sleep", "60"}, Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the program start
+	start := time.Now()
+	cancel()
+	type res struct {
+		info sandbox.ExitInfo
+		err  error
+	}
+	done := make(chan res, 1)
+	go func() { i, e := h.Wait(); done <- res{i, e} }()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Wait: %v", r.err)
+		}
+		if r.info.Lost || r.info.Code == 0 {
+			t.Fatalf("cancelled exec reported %+v, want a signalled (non-zero, not lost) status", r.info)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatalf("Wait still blocked %v after cancel (limit 6s)", time.Since(start))
+	}
+	if d := time.Since(start); d > 6*time.Second {
+		t.Fatalf("cancel took %v, limit 6s", d)
+	}
+
+	// 1. Inside the session: no sleep 60 survives. ("slee[p]" keeps this very
+	// command line from matching itself.)
+	out, info := irun(t, b, cwd, "sh", "-c",
+		`n=0; for d in /proc/[0-9]*; do tr '\0' ' ' < $d/cmdline 2>/dev/null | grep -q 'slee[p] 60' && n=$((n+1)); done; echo running=$n`)
+	if info.Code != 0 || !strings.Contains(out, "running=0") {
+		t.Fatalf("a cancelled exec is still running in the session: %q %+v", out, info)
+	}
+
+	// 2. hisn ls --json: the session is live, and any exec list is empty.
+	raw, err := b.output(ictx(t), false, "ls", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Sessions []map[string]json.RawMessage `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &doc); err != nil {
+		t.Fatalf("ls --json: %v: %q", err, raw)
+	}
+	found := false
+	for _, row := range doc.Sessions {
+		var id, state string
+		_ = json.Unmarshal(row["id"], &id)
+		if id != "wakil-it-cancel" {
+			continue
+		}
+		found = true
+		_ = json.Unmarshal(row["state"], &state)
+		if state != "live" {
+			t.Fatalf("session state = %q after cancel, want live", state)
+		}
+		for _, k := range []string{"execs", "running_execs", "exec_ids"} {
+			if v, ok := row[k]; ok {
+				var list []json.RawMessage
+				if json.Unmarshal(v, &list) == nil && len(list) != 0 {
+					t.Fatalf("hisn ls --json shows running execs under %q after cancel: %s", k, v)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("session missing from hisn ls --json: %q", raw)
+	}
+}

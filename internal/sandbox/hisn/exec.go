@@ -287,6 +287,7 @@ func (b *Backend) execCtl(ctx context.Context, l *live, release func(), spec san
 	_ = res
 	eh := &ctlExecHandle{b: b, l: l, ec: ec, argv: spec.Argv, done: done, release: release}
 	eh.startCopiers(spec)
+	eh.watchCancel(ctx)
 	return eh, nil
 }
 
@@ -303,6 +304,34 @@ type ctlExecHandle struct {
 	info sandbox.ExitInfo
 	err  error
 	wg   sync.WaitGroup
+
+	cancelOnce sync.Once
+	cancelErr  error
+}
+
+// watchCancel ties the accepted exec to ctx (the caller's context AND the
+// session instance, see bindCtx): when ctx ends before the program does, the
+// exec is stopped through the SAME TERM → grace → KILL sequence Kill uses, so
+// a cancelled tool call never leaves the program running or Wait hanging. If
+// the sequence cannot obtain the exit line, the exec connection is closed (hisn
+// then cancels on its own) and the status latches as lost. The watcher ends
+// with the exec.
+func (e *ctlExecHandle) watchCancel(ctx context.Context) {
+	go func() {
+		select {
+		case <-e.ec.ExitDone():
+			return
+		case <-ctx.Done():
+		}
+		select {
+		case <-e.ec.ExitDone(): // finished first; ctx ended only because Wait cleaned up
+			return
+		default:
+		}
+		if err := e.cancel(); err != nil {
+			e.ec.Close() // last resort: lets Wait return (lost) instead of hanging
+		}
+	}()
 }
 
 // startCopiers wires spec.Stdin → InW and OutR/ErrR → spec.Stdout/Stderr.
@@ -345,6 +374,13 @@ func (e *ctlExecHandle) Kill() error { return e.cancel() }
 // TERMs then KILLs after 5 s on its own), not part of the normal sequence.
 // A signal error is never swallowed: it propagates, carrying hisn's answer.
 func (e *ctlExecHandle) cancel() error {
+	// Kill and the ctx watcher may both ask: run the sequence once, share the
+	// outcome.
+	e.cancelOnce.Do(func() { e.cancelErr = e.cancelSeq() })
+	return e.cancelErr
+}
+
+func (e *ctlExecHandle) cancelSeq() error {
 	// Cleanup budget per step: independent of the cancelled caller's deadline.
 	sctx, scancel := context.WithTimeout(context.Background(), e.b.stopWait)
 	terr := e.ec.Signal(sctx, "TERM")

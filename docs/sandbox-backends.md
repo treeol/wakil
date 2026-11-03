@@ -402,6 +402,15 @@ the async `{"exit":…}` line — hisn does not read it further (DESIGN
 fresh connections, one response line each. One dispatcher goroutine owns
 the exec conn's reader and routes the `{"exit":…}` line.
 
+Cancellation after acceptance: the exec's `ctx` (the caller's context,
+joined with the session instance) is watched for the life of the exec. When
+it ends before the program does, the same sequence as `Kill` runs (once —
+`Kill` and the watcher share it), and `Wait` returns with the latched exit
+(a signalled status such as 143), not "lost" and not hung. If the sequence
+cannot obtain the exit line, the exec conn is closed so `Wait` still returns.
+The caller's deadline bounds only the dial and the acceptance; it is cleared
+once the exec is accepted so it cannot race the real exit line.
+
 Cancel/Kill: TERM by `exec_id` on a fresh conn, ≤ 5 s grace, then KILL on a
 fresh conn, then close the exec conn (close alone cancels: hisn TERMs then
 KILLs after 5 s). Exit codes are the program's own (any code, incl. 125 —

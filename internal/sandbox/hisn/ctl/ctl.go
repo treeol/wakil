@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // ErrAmbiguousLaunch reports that the connection dropped before the exec was
@@ -387,6 +388,12 @@ func (c *Client) StartExec(ctx context.Context, argv []string, cwd string, env m
 	}
 	ec.setExecID(a.res.ExecID)
 	ec.setPid(a.res.Pid)
+	// The caller's deadline bounded the dial and the acceptance only. From here
+	// the exec's life is governed by the program and by cancellation through
+	// exec_id (TERM, then KILL, on fresh connections): a read deadline left on
+	// the exec connection would make the dispatcher latch "lost" at the
+	// deadline, racing the real exit line of a program that is being stopped.
+	_ = conn.SetDeadline(time.Time{})
 	return ec, &a.res, nil
 }
 
@@ -481,6 +488,9 @@ func (ec *ExecConn) dispatch() {
 		ec.latchAccept(reply) // first response wins; later ones are no-ops
 	}
 }
+
+// ExitDone is closed once the exit (or a lost status) has been latched.
+func (ec *ExecConn) ExitDone() <-chan struct{} { return ec.exitDone }
 
 // WaitExit blocks until the exit is latched (or ctx is done) and returns the
 // latched value. It is safe to call from any number of goroutines, any number
