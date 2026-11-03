@@ -774,3 +774,91 @@ func TestStreamIdleErrErrorUnwrap(t *testing.T) {
 		t.Errorf("errors.Is(streamIdleErr, ErrBackendStream) = false, want true")
 	}
 }
+
+// TestProviderHTTP400IsHardErrorNotVoid: a provider 400 (e.g. the OpenRouter
+// "Only one of reasoning.effort and reasoning.max_tokens" refusal) is a hard,
+// non-VOID error stated in the footer, and is not retried.
+func TestProviderHTTP400IsHardErrorNotVoid(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"Only one of \"reasoning.effort\" and \"reasoning.max_tokens\" can be specified"}}`)
+	}))
+	defer srv.Close()
+	ccfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL,
+		ModelLimits: map[string]ModelLimits{"openrouter:m": {ContextTokens: 200000}}}
+	res := runMember(context.Background(), "openrouter:m", "openrouter", "m", "q", "doc", "", ccfg, map[string]string{"openrouter": "k"}, nil)
+	if res.Err == nil || res.Void {
+		t.Fatalf("want hard non-VOID error, got err=%v void=%v", res.Err, res.Void)
+	}
+	var pe *ProviderHTTPError
+	if !errors.As(res.Err, &pe) || pe.Status != 400 {
+		t.Fatalf("want *ProviderHTTPError 400, got %T %v", res.Err, res.Err)
+	}
+	if calls != 1 {
+		t.Errorf("400 must not be retried: %d calls", calls)
+	}
+	out := FormatPanelResult([]PanelMemberResult{res})
+	if !strings.Contains(out, "PROVIDER ERROR (not a review outcome): HTTP 400") || strings.Contains(out, "VOID") {
+		t.Errorf("footer must state the provider error, not VOID: %s", out)
+	}
+}
+
+// TestProviderRetryOn429And5xx: a 429/5xx is retried exactly once after the
+// backoff; success on the retry is a normal reply; two failures stay a hard
+// error. The footer records the retry.
+func TestProviderRetryOn429And5xx(t *testing.T) {
+	old := retryBackoff
+	retryBackoff = func() time.Duration { return time.Millisecond }
+	defer func() { retryBackoff = old }()
+
+	for _, status := range []int{429, 502} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if calls == 1 {
+					w.WriteHeader(status)
+					fmt.Fprint(w, `{"error":{"message":"busy"}}`)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"fine\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			}))
+			defer srv.Close()
+			ccfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL,
+				ModelLimits: map[string]ModelLimits{"openrouter:m": {ContextTokens: 200000}}}
+			res := runMember(context.Background(), "openrouter:m", "openrouter", "m", "q", "doc", "", ccfg, map[string]string{"openrouter": "k"}, nil)
+			if res.Err != nil || res.Answer != "fine" || calls != 2 {
+				t.Fatalf("err=%v answer=%q calls=%d", res.Err, res.Answer, calls)
+			}
+			if !res.Log.ProviderRetried {
+				t.Error("retry not recorded in the log")
+			}
+		})
+	}
+
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(503)
+	}))
+	defer srv.Close()
+	ccfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL,
+		ModelLimits: map[string]ModelLimits{"openrouter:m": {ContextTokens: 200000}}}
+	res := runMember(context.Background(), "openrouter:m", "openrouter", "m", "q", "doc", "", ccfg, map[string]string{"openrouter": "k"}, nil)
+	if res.Err == nil || res.Void || calls != 2 {
+		t.Fatalf("two 503s: err=%v void=%v calls=%d (want hard error after exactly 2 calls)", res.Err, res.Void, calls)
+	}
+}
+
+// TestBackoffRange: the retry pause is 5–15 s.
+func TestBackoffRange(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		if d := prodRetryBackoff(); d < 5*time.Second || d >= 15*time.Second {
+			t.Fatalf("backoff %v outside [5s,15s)", d)
+		}
+	}
+}

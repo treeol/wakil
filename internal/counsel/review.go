@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/diag"
@@ -80,6 +82,71 @@ type ReviewLog struct {
 	// AnswerTokens is the non-reasoning output tokens (completion_tokens minus
 	// reasoning_tokens) when the provider reports them separately. 0 otherwise.
 	AnswerTokens int64
+	// ProviderRetried is true when a 429/5xx provider error was retried once.
+	ProviderRetried bool
+	// ProviderError is the provider's non-200 refusal (e.g. "HTTP 400: …")
+	// when the call ended with one. It is a hard error — not VOID and not a
+	// review outcome — and is stated in the footer.
+	ProviderError string
+}
+
+// ProviderHTTPError is a non-200 answer from the provider API. It is a HARD
+// error, never VOID: the provider refused the request, so there is no reply to
+// judge and it is not a review outcome. Error() keeps the historical
+// "<label>: HTTP <status>[: <msg>]" text.
+type ProviderHTTPError struct {
+	Label  string
+	Status int
+	Msg    string
+}
+
+func (e *ProviderHTTPError) Error() string {
+	if e.Msg == "" {
+		return fmt.Sprintf("%s: HTTP %d", e.Label, e.Status)
+	}
+	return fmt.Sprintf("%s: HTTP %d: %s", e.Label, e.Status, e.Msg)
+}
+
+// Retryable reports whether one retry may help: rate limiting (429) and
+// server-side failures (5xx). 4xx request errors (bad parameters, auth) are
+// final — retrying the same request cannot succeed.
+func (e *ProviderHTTPError) Retryable() bool {
+	return e.Status == 429 || e.Status >= 500
+}
+
+// retryBackoff is the pause before the single retry of a 429/5xx reviewer
+// call: a random 5–15 s. A var so tests can shorten it.
+var retryBackoff = func() time.Duration {
+	return 5*time.Second + time.Duration(rand.Int64N(int64(10*time.Second)))
+}
+
+// withProviderRetry wraps send: a 429/5xx provider error is retried exactly
+// once after retryBackoff; any other outcome is returned as is. Usage of the
+// failed attempt is folded into the result (failed calls can still bill).
+// retried reports whether the retry happened.
+func withProviderRetry(send sendFunc, retried *bool) sendFunc {
+	return func(ctx context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
+		ans, usage, err := send(ctx, q, b, maxTok)
+		var pe *ProviderHTTPError
+		if err == nil || !errors.As(err, &pe) || !pe.Retryable() {
+			return ans, usage, err
+		}
+		t := time.NewTimer(retryBackoff())
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return ans, usage, err
+		case <-t.C:
+		}
+		*retried = true
+		diag.Printf("mashura: provider %s — retrying once\n", pe.Error())
+		ans2, usage2, err2 := send(ctx, q, b, maxTok)
+		usage2.InputTokens += usage.InputTokens
+		usage2.OutputTokens += usage.OutputTokens
+		usage2.ReasoningTokens += usage.ReasoningTokens
+		usage2.WebSearchRequests += usage.WebSearchRequests
+		return ans2, usage2, err2
+	}
 }
 
 // VoidError marks a reviewer reply that must not be trusted: truncated,
@@ -594,6 +661,7 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 	// Largest input (tokens) that still leaves room for the floor answer.
 	inputBudget := usable - floor - answerReserveTokens
 	log := &ReviewLog{Model: label, ContextTokens: ctxTokens}
+	send = withProviderRetry(send, &log.ProviderRetried)
 
 	doc := briefing
 	hasStructure := len(headingsOf(doc)) > 0 || strings.Contains(doc, "\n── ") || strings.HasPrefix(doc, "── ")
@@ -667,6 +735,13 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 					}
 					out.Err = &VoidError{Reason: fmt.Sprintf("empty or interrupted reply on part %d of %d", i+1, n)}
 					return out, false
+				}
+				var pe *ProviderHTTPError
+				if errors.As(err, &pe) {
+					log.ProviderError = fmt.Sprintf("HTTP %d", pe.Status)
+					if pe.Msg != "" {
+						log.ProviderError += ": " + pe.Msg
+					}
 				}
 				out.Err = err
 				return out, false

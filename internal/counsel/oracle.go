@@ -327,14 +327,14 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 	if status != http.StatusOK {
 		// Non-200: the streamRequest already read the body; parse it as an error.
 		var apiErr oracleResp
+		msg := ""
 		if json.Unmarshal([]byte(content), &apiErr) == nil && apiErr.Error != nil {
-			msg := apiErr.Error.Message
+			msg = apiErr.Error.Message
 			if status == 400 && strings.Contains(msg, "max_tokens") {
 				msg += " (API rejected large request; reduce oracle_max_tokens)"
 			}
-			return "", OracleUsage{}, fmt.Errorf("anthropic: HTTP %d: %s", status, msg)
 		}
-		return "", OracleUsage{}, fmt.Errorf("anthropic: HTTP %d", status)
+		return "", OracleUsage{}, &ProviderHTTPError{Label: "anthropic", Status: status, Msg: msg}
 	}
 
 	// Build usage from the streamed data.
@@ -1128,10 +1128,11 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 	if status != http.StatusOK {
 		// Non-200: the streamRequest already read the body; parse it as an error.
 		var apiErr orResp
+		msg := ""
 		if json.Unmarshal([]byte(content), &apiErr) == nil && apiErr.Error != nil {
-			return "", OracleUsage{}, fmt.Errorf("%s: HTTP %d: %s", label, status, apiErr.Error.Message)
+			msg = apiErr.Error.Message
 		}
-		return "", OracleUsage{}, fmt.Errorf("%s: HTTP %d", label, status)
+		return "", OracleUsage{}, &ProviderHTTPError{Label: label, Status: status, Msg: msg}
 	}
 
 	// Build usage from the streamed data.
@@ -1234,6 +1235,14 @@ func logFooter(r PanelMemberResult) string {
 		return ""
 	}
 	s := fmt.Sprintf("\n\n[mashūra: %s — ~%d tokens sent, %d part(s), ctx %d", l.Model, l.TokensSent, l.Parts, l.ContextTokens)
+	if l.ProviderError != "" {
+		// A provider refusal is a hard error, not VOID and not a review
+		// outcome: say so explicitly so it can't be read as "no findings".
+		s += "; PROVIDER ERROR (not a review outcome): " + l.ProviderError
+	}
+	if l.ProviderRetried {
+		s += "; retried once after provider 429/5xx"
+	}
 	// Show reasoning / answer token breakdown when the provider reported
 	// reasoning tokens separately (OpenRouter). Anthropic-native output_tokens
 	// already includes thinking, so ReasoningTokens is 0 there and the line is

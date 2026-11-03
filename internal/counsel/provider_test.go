@@ -239,9 +239,11 @@ func TestRunPanelFallbackStopsOnSuccess(t *testing.T) {
 		n := callN
 		mu.Unlock()
 		if n == 1 {
-			// First member: API error.
-			w.WriteHeader(http.StatusBadGateway)
-			w.Write([]byte(`{"error":{"type":"gateway_error","message":"upstream down"}}`))
+			// First member: a FINAL API error (401 — not retried; a 429/5xx
+			// would be retried once by withProviderRetry, which is a separate
+			// behaviour covered by TestProviderRetryOn429And5xx).
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":{"type":"authentication_error","message":"bad key"}}`))
 		} else {
 			// Second member: success.
 			writeAnthropicSSE(w, "fallback answer", "end_turn", 8, 4)
@@ -550,9 +552,9 @@ func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
 		modelCalls[req.Model]++
 		mu.Unlock()
 		if req.Model == "model-a" {
-			// model-a always fails.
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"error":{"type":"server_error","message":"simulated failure"}}`))
+			// model-a always fails with a final (non-retryable) error.
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"error":{"type":"permission_error","message":"simulated failure"}}`))
 		} else {
 			// model-b succeeds in both rounds.
 			writeAnthropicSSE(w, "answer from model-b", "end_turn", 10, 5)
@@ -604,8 +606,9 @@ func TestRunPanelDebateAllFailRound1(t *testing.T) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
-		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(`{"error":{"type":"gateway_error","message":"all down"}}`))
+		// Final (non-retryable) error so the call count is round-1 only.
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"type":"authentication_error","message":"all down"}}`))
 	}))
 	defer srv.Close()
 
