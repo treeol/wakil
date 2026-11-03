@@ -54,10 +54,7 @@ func (w *dockerWorktreeExecutor) RunShell(ctx context.Context, command string) (
 		runFromRoot(w.wtRoot, command))
 	// H4: bounded capture, same as the parent executor (inherits its cap).
 	out, omitted, err := runShellCapped(cmd, capOr(w.ShellOutputCap))
-	if omitted > 0 {
-		out = fmt.Sprintf("[truncated, %d bytes total — showing last %d]\n", omitted+int64(len(out)), len(out)) + out
-	}
-	return strings.TrimRight(out, "\r\n"), err
+	return shellResult(out, omitted, ctx.Err() != nil && err != nil), err
 }
 
 // Cwd returns the worktree root.

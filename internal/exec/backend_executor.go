@@ -349,11 +349,8 @@ func (e *BackendExecutor) RunShell(ctx context.Context, command string) (string,
 	if err != nil {
 		return r.out, err
 	}
-	out := r.out
-	if omitted > 0 {
-		out = fmt.Sprintf("[truncated, %d bytes total — showing last %d]\n", omitted+int64(len(out)), len(out)) + out
-	}
-	return strings.TrimRight(out, "\r\n"), e.exitErr(r)
+	xerr := e.exitErr(r)
+	return shellResult(r.out, omitted, ctx.Err() != nil && xerr != nil), xerr
 }
 
 // ShellOutputCap returns the configured cap (0 = default).

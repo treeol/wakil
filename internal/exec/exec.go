@@ -38,8 +38,37 @@ var ErrFileNotFound = errors.New("file not found")
 
 // DefaultShellOutputCap bounds how much of a shell command's combined output
 // RunShell retains in host memory (H4). Generous default; per-executor
-// override via ShellOutputCap.
-const DefaultShellOutputCap = 16 << 10 // 16 KB
+// override via ShellOutputCap. Normal (completed) output is bounded by this
+// cap only; the agent layer's tool_result_cap applies on top of it.
+const DefaultShellOutputCap = 1 << 20 // 1 MB
+
+// TimeoutOutputTail is how much of a shell command's output RunShell returns
+// when the call was cut short (its context expired or was cancelled and the
+// command did not finish normally): the LAST TimeoutOutputTail bytes, with the
+// truncation notice. It never affects a command that completed.
+const TimeoutOutputTail = 16 << 10 // 16 KB
+
+// shellResult renders RunShell's output. out is the retained tail (at most the
+// executor's cap), omitted the bytes already dropped before it. When timedOut,
+// the tail is cut further to the last TimeoutOutputTail bytes. A notice
+// "[truncated, N bytes total — showing last M]" is prepended whenever any
+// bytes were dropped (N = dropped + shown). Shared by every RunShell so the
+// docker, direct, worktree and backend executors cannot drift.
+func shellResult(out string, omitted int64, timedOut bool) string {
+	if timedOut && len(out) > TimeoutOutputTail {
+		tail := out[len(out)-TimeoutOutputTail:]
+		// Do not start mid-rune: drop up to 3 leading continuation bytes.
+		for i := 0; i < 3 && len(tail) > 0 && !utf8.RuneStart(tail[0]); i++ {
+			tail = tail[1:]
+		}
+		omitted += int64(len(out) - len(tail))
+		out = tail
+	}
+	if omitted > 0 {
+		out = fmt.Sprintf("[truncated, %d bytes total — showing last %d]\n", omitted+int64(len(out)), len(out)) + out
+	}
+	return strings.TrimRight(out, "\r\n")
+}
 
 // Executor abstracts where tool_calls actually run. Commands always execute
 // from the workspace root; in-command directory changes (cd sub && …) affect
@@ -1228,10 +1257,7 @@ func (d *DockerExecutor) RunShell(ctx context.Context, command string) (string, 
 	// semantics unchanged. ErrWaitDelay (grandchild outliving the leader)
 	// surfaces as success with the captured tail — the command itself exited.
 	out, omitted, err := runShellCapped(cmd, capOr(d.ShellOutputCap))
-	if omitted > 0 {
-		out = fmt.Sprintf("[truncated, %d bytes total — showing last %d]\n", omitted+int64(len(out)), len(out)) + out
-	}
-	return strings.TrimRight(out, "\r\n"), err
+	return shellResult(out, omitted, ctx.Err() != nil && err != nil), err
 }
 
 // capOr returns v if positive, else the default shell output cap.
@@ -1539,10 +1565,7 @@ func (e *DirectExecutor) RunShell(ctx context.Context, command string) (string, 
 	}
 	// H4: host-side bounded capture (tail-keeping) — see DockerExecutor.RunShell.
 	out, omitted, err := runShellCapped(cmd, capOr(e.ShellOutputCap))
-	if omitted > 0 {
-		out = fmt.Sprintf("[truncated, %d bytes total — showing last %d]\n", omitted+int64(len(out)), len(out)) + out
-	}
-	return strings.TrimRight(out, "\r\n"), err
+	return shellResult(out, omitted, ctx.Err() != nil && err != nil), err
 }
 
 func (e *DirectExecutor) resolve(path string) string {
