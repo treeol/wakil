@@ -29,37 +29,58 @@ func validateReadFileTailMaxBytes(maxBytes int64) error {
 
 var versionRe = regexp.MustCompile(`\d+\.\d+[\d.]*`)
 
-// probeScript checks each tool with `command -v`, then captures the first line
-// of version output. `go` uses `go version` (not --version); `docker` reports
-// the CLI version but is also pinged against the daemon so it only shows when
-// the host socket is actually mounted and reachable. Absent tools produce no
-// output for that iteration.
-const probeScript = `_ver() {
+// probeScriptFor returns the tool-probe script for the given backend label.
+// When backend != "docker", docker probes are omitted: under hisn they
+// trigger SELinux nosuid_transition denials, and under direct they probe the
+// host's docker (not the sandbox's). The rest of the tool list is unchanged.
+func probeScriptFor(backend string) string {
+	const base = `_ver() {
   case "$1" in
     go) "$1" version 2>&1 | head -1 ;;
-    docker) "$1" version --format '{{.Client.Version}}' 2>&1 | head -1 ;;
+    %s
     *)  "$1" --version 2>&1 | head -1 ;;
   esac
 }
-for t in git curl jq make gcc python3 node npm go rustc docker; do
+for t in git curl jq make gcc python3 node npm go rustc%s; do
   if command -v "$t" > /dev/null 2>&1; then
     v=$(_ver "$t")
     echo "$t:$v"
   fi
-done
+done%s`
+
+	dockerCase := `docker) "$1" version --format '{{.Client.Version}}' 2>&1 | head -1 ;;`
+	dockerTool := " docker"
+	dockerDaemon := `
 if command -v docker > /dev/null 2>&1; then
   if docker info > /dev/null 2>&1; then echo "docker-daemon:up"; else echo "docker-daemon:down"; fi
 fi`
 
+	if backend != "docker" {
+		dockerCase = ""
+		dockerTool = ""
+		dockerDaemon = ""
+	}
+
+	return fmt.Sprintf(base, dockerCase, dockerTool, dockerDaemon)
+}
+
+// probeScript is the docker-backend probe script (backward compat).
+var probeScript = probeScriptFor("docker")
+
 // probeTools runs the probe via the supplied runner and returns the formatted
 // "Sandbox tools: …" line, or empty string on failure / all absent.
-func probeTools(run func(string) string) string {
-	out := strings.TrimSpace(run(probeScript))
+// backend is the sandbox backend label ("docker", "hisn", "direct"); when
+// non-"docker", docker probes are skipped.
+func probeTools(backend string, run func(string) string) string {
+	out := strings.TrimSpace(run(probeScriptFor(backend)))
 	if out == "" {
 		return ""
 	}
 
-	order := []string{"git", "curl", "jq", "make", "gcc", "python3", "node", "npm", "go", "rustc", "docker"}
+	order := []string{"git", "curl", "jq", "make", "gcc", "python3", "node", "npm", "go", "rustc"}
+	if backend == "docker" {
+		order = append(order, "docker")
+	}
 	versions := make(map[string]string, len(order))
 	daemonDown := false
 
@@ -111,7 +132,7 @@ func probeTools(run func(string) string) string {
 // subagent workers, so the lazy probe cache must not be written racily.
 func (d *DockerExecutor) SandboxTools() string {
 	d.toolsOnce.Do(func() {
-		d.sandboxTools = probeTools(func(script string) string {
+		d.sandboxTools = probeTools("docker", func(script string) string {
 			out, _ := d.execCtx(context.Background(), false, "sh", "-c", script)
 			return out
 		})
@@ -121,7 +142,7 @@ func (d *DockerExecutor) SandboxTools() string {
 
 func (e *DirectExecutor) SandboxTools() string {
 	e.toolsOnce.Do(func() {
-		e.sandboxTools = probeTools(func(script string) string {
+		e.sandboxTools = probeTools("direct", func(script string) string {
 			out, _ := exec.Command("sh", "-c", script).CombinedOutput()
 			return string(out)
 		})

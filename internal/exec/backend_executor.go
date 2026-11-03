@@ -688,7 +688,11 @@ func (e *BackendExecutor) HostBrowserAllowed() bool { return false }
 // SandboxTools implements Executor: probed once, inside the sandbox.
 func (e *BackendExecutor) SandboxTools() string {
 	e.toolsOnce.Do(func() {
-		e.sandboxTools = probeTools(func(script string) string {
+		backend := e.opts.Label
+		if backend == "" {
+			backend = "docker"
+		}
+		e.sandboxTools = probeTools(backend, func(script string) string {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			out, _ := e.sh(ctx, script)

@@ -304,7 +304,7 @@ func TestProbeToolsFormatting(t *testing.T) {
 			"jq:jq-1.7\n" +
 			"go:go version go1.25.0 linux/amd64\n"
 	}
-	got := probeTools(run)
+	got := probeTools("docker", run)
 	if !strings.HasPrefix(got, "Sandbox tools: ") {
 		t.Fatalf("missing prefix: %q", got)
 	}
@@ -319,7 +319,7 @@ func TestProbeToolsFormatting(t *testing.T) {
 	}
 
 	// All-absent → empty string (no noise in the system prompt).
-	if probeTools(func(string) string { return "" }) != "" {
+	if probeTools("docker", func(string) string { return "" }) != "" {
 		t.Error("empty probe output should yield empty string")
 	}
 }
@@ -357,7 +357,7 @@ func TestProbeToolsParsing(t *testing.T) {
 		"docker:28.1.1",
 		"docker-daemon:up",
 	}, "\n")
-	result := probeTools(func(_ string) string { return fakeOutput })
+	result := probeTools("docker", func(_ string) string { return fakeOutput })
 	if !strings.HasPrefix(result, "Sandbox tools:") {
 		t.Fatalf("expected 'Sandbox tools:' prefix, got: %q", result)
 	}
@@ -376,7 +376,7 @@ func TestProbeToolsParsing(t *testing.T) {
 // agent doesn't assume it can drive the host daemon.
 func TestProbeToolsDockerDaemonDown(t *testing.T) {
 	fakeOutput := "git:git version 2.39.5\ndocker:28.1.1\ndocker-daemon:down"
-	result := probeTools(func(_ string) string { return fakeOutput })
+	result := probeTools("docker", func(_ string) string { return fakeOutput })
 	if !strings.Contains(result, "git 2.39.5") {
 		t.Errorf("expected git present: %s", result)
 	}
@@ -390,7 +390,7 @@ func TestProbeToolsDockerDaemonDown(t *testing.T) {
 
 func TestProbeToolsAbsent(t *testing.T) {
 	fakeOutput := "git:git version 2.39.5\npython3:Python 3.11.2"
-	result := probeTools(func(_ string) string { return fakeOutput })
+	result := probeTools("docker", func(_ string) string { return fakeOutput })
 	if !strings.Contains(result, "Sandbox tools:") {
 		t.Fatalf("unexpected: %q", result)
 	}
@@ -405,9 +405,42 @@ func TestProbeToolsAbsent(t *testing.T) {
 }
 
 func TestProbeToolsFailure(t *testing.T) {
-	result := probeTools(func(_ string) string { return "" })
+	result := probeTools("docker", func(_ string) string { return "" })
 	if result != "" {
 		t.Errorf("probe failure should return empty string, got: %q", result)
+	}
+}
+
+// TestProbeToolsNonDockerSkipsDocker verifies that when backend != "docker",
+// docker is not in the tool order and the probe script does not contain
+// docker commands. Under hisn, docker probes trigger SELinux nosuid_transition
+// denials; under direct, they probe the host's docker (not the sandbox's).
+func TestProbeToolsNonDockerSkipsDocker(t *testing.T) {
+	// hisn: docker should be absent from the probe script and the order.
+	scriptHisn := probeScriptFor("hisn")
+	if strings.Contains(scriptHisn, "docker") {
+		t.Errorf("hisn probe script should not contain docker: %q", scriptHisn)
+	}
+	resultHisn := probeTools("hisn", func(_ string) string {
+		return "git:git version 2.39.5\ngo:go version go1.26.0"
+	})
+	if strings.Contains(resultHisn, "docker") {
+		t.Errorf("hisn probe result should not mention docker: %q", resultHisn)
+	}
+	if !strings.Contains(resultHisn, "unavailable:") {
+		t.Errorf("hisn probe should list unavailable tools: %q", resultHisn)
+	}
+
+	// direct: same — docker not probed.
+	scriptDirect := probeScriptFor("direct")
+	if strings.Contains(scriptDirect, "docker") {
+		t.Errorf("direct probe script should not contain docker: %q", scriptDirect)
+	}
+
+	// docker: docker IS in the probe script and the order.
+	scriptDocker := probeScriptFor("docker")
+	if !strings.Contains(scriptDocker, "docker") {
+		t.Errorf("docker probe script should contain docker: %q", scriptDocker)
 	}
 }
 
