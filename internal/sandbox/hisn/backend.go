@@ -435,7 +435,7 @@ func (b *Backend) Grant(ctx context.Context, path string, rw bool) error {
 	if !b.stillCurrent(l) {
 		return sandbox.ErrNoSession
 	}
-	b.pm.AddGrant(path, false)
+	b.pm.AddGrant(path, rw)
 	return nil
 }
 
