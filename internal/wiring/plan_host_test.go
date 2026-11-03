@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/core/event"
+	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/workflow"
 )
 
@@ -261,6 +263,212 @@ type memFilesExec struct {
 	files     map[string]string
 	failShell bool
 }
+
+// TestMapFinalReviewOutcomeDeclineWithoutLatch covers the
+// mapFinalReviewOutcome decline branch (hostturn.go:998-1003): the workflow
+// carries VerifyDeclined=true (a verify command was declined in a prior turn)
+// but no decline was latched in THIS turn — takeDecline() returns false. The
+// outcome must still be "declined" with the consent-gate reason.
+func TestMapFinalReviewOutcomeDeclineWithoutLatch(t *testing.T) {
+	ht := &hostTurn{}
+	wf := &workflow.WorkflowState{
+		Task: "t", VerifyDeclined: true, Phase: workflow.WFImplement,
+		StepIdx: 2, StepCount: 1, PlanPath: ".wakil/plan.md",
+	}
+	rec := &recordSessionEmitter{}
+	in := sessionhost.TurnInput{TurnID: event.TurnID("trn_test"), SessionEmit: rec}
+
+	if err := ht.mapFinalReviewOutcome(in, wf); err != nil {
+		t.Fatalf("mapFinalReviewOutcome = %v, want nil", err)
+	}
+	// The final-review audit marker precedes the terminal outcome.
+	if rec.emitted[event.KindWorkflowOutcome] != 1 {
+		t.Fatalf("WorkflowOutcome emitted %d times, want 1", rec.emitted[event.KindWorkflowOutcome])
+	}
+	if rec.outcomes[0].Outcome != "declined" {
+		t.Fatalf("outcome = %q, want declined", rec.outcomes[0].Outcome)
+	}
+	if rec.outcomes[0].Reason != "verification command declined by consent gate" {
+		t.Fatalf("reason = %q, want the consent-gate default", rec.outcomes[0].Reason)
+	}
+
+	// With a latched decline the reason must win over the default text.
+	ht.recordDecline("test reason")
+	rec2 := &recordSessionEmitter{}
+	in.SessionEmit = rec2
+	if err := ht.mapFinalReviewOutcome(in, wf); err != nil {
+		t.Fatalf("mapFinalReviewOutcome (latched) = %v, want nil", err)
+	}
+	if len(rec2.outcomes) != 1 || rec2.outcomes[0].Outcome != "declined" || rec2.outcomes[0].Reason != "test reason" {
+		t.Fatalf("latched outcome = %v, want declined/test reason", rec2.outcomes)
+	}
+}
+
+// TestResolveAfterTurnNoEnqueueInput covers the resolveAfterTurn path where
+// EnqueueInput is nil and planAutoAdvance is true — returns an internal error.
+func TestResolveAfterTurnNoEnqueueInput(t *testing.T) {
+	ht := &hostTurn{planAutoAdvance: true}
+	app := &agent.App{Workflow: &workflow.WorkflowState{Task: "t", Phase: workflow.WFGather, PlanPath: ".wakil/plan.md"}}
+	err := ht.resolveAfterTurn(context.Background(), app,
+		sessionhost.TurnInput{TurnID: event.TurnID("trn_test"), SessionEmit: &recordSessionEmitter{}})
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no EnqueueInput hook") {
+		t.Errorf("error should mention 'no EnqueueInput hook', got: %v", err)
+	}
+}
+
+// TestResolveWaitingStatePresent covers the WFPresent branch of
+// resolveWaitingState — auto-advance to implementation step 1.
+func TestResolveWaitingStatePresent(t *testing.T) {
+	ht := &hostTurn{planAutoAdvance: true}
+	wf := &workflow.WorkflowState{
+		Task: "t", Phase: workflow.WFPresent,
+		StepIdx: 0, StepCount: 1, PlanPath: ".wakil/plan.md",
+	}
+	var enqueued string
+	app := &agent.App{Workflow: wf}
+	_ = ht.resolveWaitingState(context.Background(), app,
+		sessionhost.TurnInput{
+			TurnID:       event.TurnID("trn_test"),
+			EnqueueInput: func(s string) error { enqueued = s; return nil },
+			SessionEmit:  &recordSessionEmitter{},
+		})
+	if enqueued != "continue" {
+		t.Errorf("enqueued = %q, want 'continue'", enqueued)
+	}
+	if wf.Phase != workflow.WFImplement || wf.StepIdx != 1 {
+		t.Errorf("workflow state = %v/%d, want WFImplement/1", wf.Phase, wf.StepIdx)
+	}
+}
+
+// TestResolveWaitingStateDecline covers the decline branch of resolveWaitingState
+// (a decline latched during the transition by an oracle confirm).
+func TestResolveWaitingStateDecline(t *testing.T) {
+	ht := &hostTurn{planAutoAdvance: true}
+	ht.recordDecline("oracle confirm declined")
+	wf := &workflow.WorkflowState{
+		Task: "t", Phase: workflow.WFReview,
+		StepIdx: 1, StepCount: 1, PlanPath: ".wakil/plan.md",
+	}
+	rec := &recordSessionEmitter{}
+	in := event.TurnID("trn_test")
+	ht.sessionEmit = rec
+	_ = ht.resolveWaitingState(context.Background(), &agent.App{Workflow: wf},
+		sessionhost.TurnInput{TurnID: in, SessionEmit: rec, EnqueueInput: func(string) error { return nil }})
+	if len(rec.outcomes) != 1 || rec.outcomes[0].Outcome != "declined" || rec.outcomes[0].Reason != "oracle confirm declined" {
+		t.Fatalf("outcome = %v, want declined/oracle confirm declined", rec.outcomes)
+	}
+}
+
+// TestResolveApprovalNilResolver covers resolveApproval with a nil resolver
+// (returns a decline with "no resolver configured") and a cancelled context
+// with a non-nil resolver (returns a decline with "cancelled").
+func TestResolveApprovalNilResolver(t *testing.T) {
+	// nil resolver → "no resolver configured" (checked before ctx.Err()).
+	res := resolveApproval(context.Background(), nil, ApprovalRequest{})
+	if res.Choice != agent.ChoiceDecline {
+		t.Errorf("choice = %v, want ChoiceDecline", res.Choice)
+	}
+	if res.Reason != "no resolver configured" {
+		t.Errorf("reason = %q, want 'no resolver configured'", res.Reason)
+	}
+
+	// Already-cancelled context with a non-nil resolver → "cancelled".
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res2 := resolveApproval(ctx, func(context.Context, ApprovalRequest) ApprovalResolution {
+		return ApprovalResolution{Choice: agent.ChoiceApprove}
+	}, ApprovalRequest{})
+	if res2.Choice != agent.ChoiceDecline {
+		t.Errorf("choice = %v, want ChoiceDecline", res2.Choice)
+	}
+	if res2.Reason != "cancelled" {
+		t.Errorf("reason = %q, want 'cancelled'", res2.Reason)
+	}
+}
+
+// TestEnqueueContinueError covers the enqueueContinue error path where
+// EnqueueInput returns an error (the continuation cannot be queued).
+func TestEnqueueContinueError(t *testing.T) {
+	ht := &hostTurn{planAutoAdvance: true}
+	in := sessionhost.TurnInput{
+		TurnID:       event.TurnID("trn_test"),
+		EnqueueInput: func(string) error { return errors.New("queue full") },
+		SessionEmit:  &recordSessionEmitter{},
+	}
+	err := ht.enqueueContinue(in)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "workflow continuation enqueue failed") {
+		t.Errorf("error should mention 'workflow continuation enqueue failed', got: %v", err)
+	}
+}
+
+// TestEnqueueContinueSuccess covers the enqueueContinue success path where
+// EnqueueInput succeeds and the WorkflowTurnStarted marker is emitted.
+func TestEnqueueContinueSuccess(t *testing.T) {
+	ht := &hostTurn{planAutoAdvance: true}
+	rec := &recordSessionEmitter{}
+	var enqueued string
+	in := sessionhost.TurnInput{
+		TurnID:       event.TurnID("trn_test"),
+		EnqueueInput: func(s string) error { enqueued = s; return nil },
+		SessionEmit:  rec,
+	}
+	if err := ht.enqueueContinue(in); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if enqueued != "continue" {
+		t.Errorf("enqueued = %q, want 'continue'", enqueued)
+	}
+	if rec.emitted[event.KindWorkflowTurnStarted] != 1 {
+		t.Errorf("WorkflowTurnStarted emitted %d times, want 1", rec.emitted[event.KindWorkflowTurnStarted])
+	}
+}
+
+// TestMapFinalReviewOutcomeGaps covers the mapFinalReviewOutcome gaps path —
+// the workflow is open, no decline latched, and VerifyDeclined is false.
+func TestMapFinalReviewOutcomeGaps(t *testing.T) {
+	ht := &hostTurn{}
+	wf := &workflow.WorkflowState{
+		Task: "t", Phase: workflow.WFImplement,
+		StepIdx: 2, StepCount: 1, PlanPath: ".wakil/plan.md",
+	}
+	rec := &recordSessionEmitter{}
+	in := sessionhost.TurnInput{TurnID: event.TurnID("trn_test"), SessionEmit: rec}
+
+	if err := ht.mapFinalReviewOutcome(in, wf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.outcomes) != 1 || rec.outcomes[0].Outcome != "gaps" {
+		t.Fatalf("outcome = %v, want gaps", rec.outcomes)
+	}
+}
+
+// recordSessionEmitter records emitted durable WorkflowOutcome /
+// WorkflowFinalReview events for assertions.
+type recordSessionEmitter struct {
+	emitted  map[event.Kind]int
+	outcomes []event.WorkflowOutcome
+}
+
+func (r *recordSessionEmitter) Emit(kind event.Kind, payload any) error {
+	if r.emitted == nil {
+		r.emitted = map[event.Kind]int{}
+	}
+	r.emitted[kind]++
+	if kind == event.KindWorkflowOutcome {
+		if o, ok := payload.(event.WorkflowOutcome); ok {
+			r.outcomes = append(r.outcomes, o)
+		}
+	}
+	return nil
+}
+
+func (r *recordSessionEmitter) Notify(event.Kind, any) {}
 
 func (m *memFilesExec) ReadFile(_ context.Context, p string) (string, error) {
 	return m.files[p], nil

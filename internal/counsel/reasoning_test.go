@@ -485,3 +485,239 @@ func TestSSEMultiLineDataEvent(t *testing.T) {
 		t.Errorf("InputTokens = %d, want 42 (from multi-line data: event)", usage.InputTokens)
 	}
 }
+
+// TestStreamRequestIdleTimeout verifies that a server that accepts the
+// connection, sends SSE headers, and then stalls forever is aborted by the
+// streamIdleReader's idle timeout, surfacing a *streamIdleErr (retryable via
+// ErrBackendStream) rather than hanging until the total cap.
+func TestStreamRequestIdleTimeout(t *testing.T) {
+	stalled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Send SSE headers, then never write a body: stall forever.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-stalled
+	}))
+	defer srv.Close()
+	defer close(stalled)
+
+	start := time.Now()
+	_, _, _, err := streamRequest(
+		context.Background(),
+		srv.URL,
+		map[string]string{"x-api-key": "key"},
+		[]byte(`{"model":"m","max_tokens":256,"messages":[{"role":"user","content":"q"}],"stream":true}`),
+		100*time.Millisecond,
+		5*time.Second,
+		parseAnthropicSSE,
+	)
+	if err == nil {
+		t.Fatal("expected an error from the idle timeout, got nil")
+	}
+	var idleErr *streamIdleErr
+	if !errors.As(err, &idleErr) {
+		t.Fatalf("expected *streamIdleErr in the chain, got %T: %v", err, err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("idle timeout fired late: %v elapsed (want ~100ms)", elapsed)
+	}
+}
+
+// TestStreamIdleReaderDoubleClose verifies that a second Close on an
+// already-closed streamIdleReader is a no-op (the already-closed branch).
+func TestStreamIdleReaderDoubleClose(t *testing.T) {
+	rc := &closeOnlyReader{}
+	r := newStreamIdleReader(rc, time.Hour)
+	if err := r.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if rc.closes != 1 {
+		t.Errorf("underlying Close calls = %d, want 1", rc.closes)
+	}
+	// Second Close hits the already-closed branch: no-op, no panic.
+	if err := r.Close(); err != nil {
+		t.Errorf("second Close should return nil, got %v", err)
+	}
+	if rc.closes != 1 {
+		t.Errorf("underlying Close calls after double Close = %d, want 1", rc.closes)
+	}
+}
+
+type closeOnlyReader struct{ closes int }
+
+func (c *closeOnlyReader) Read(p []byte) (int, error) { return 0, io.EOF }
+func (c *closeOnlyReader) Close() error {
+	c.closes++
+	return nil
+}
+
+// TestStreamRequestJSONFallback covers the application/json content-type path
+// (a server that returns JSON instead of SSE) and the non-data: line branch.
+func TestStreamRequestJSONFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"choices":[{"delta":{"content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	content, _, status, err := streamRequest(
+		context.Background(),
+		srv.URL,
+		map[string]string{"x-api-key": "key"},
+		[]byte(`{"model":"m","max_tokens":256,"stream":true}`),
+		5*time.Second,
+		10*time.Second,
+		parseOpenRouterSSE,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if content != "ok" {
+		t.Errorf("content = %q, want 'ok'", content)
+	}
+}
+
+// TestStreamRequestJSONFallbackReadError covers the application/json path where
+// the body read fails (a server that sets application/json and then drops the
+// connection).
+func TestStreamRequestJSONFallbackReadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Hijack and close immediately to cause a read error on the body.
+		if hijacker, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hijacker.Hijack()
+			conn.Close()
+		}
+	}))
+	defer srv.Close()
+
+	_, _, _, err := streamRequest(
+		context.Background(),
+		srv.URL,
+		map[string]string{"x-api-key": "key"},
+		[]byte(`{"model":"m","max_tokens":256,"stream":true}`),
+		5*time.Second,
+		10*time.Second,
+		parseAnthropicSSE,
+	)
+	if err == nil {
+		t.Fatal("expected an error for a dropped JSON response, got nil")
+	}
+}
+
+// TestParseAnthropicSSEErrorEvent verifies the mid-stream error event is
+// surfaced as an error finish reason with the error message.
+func TestParseAnthropicSSEErrorEvent(t *testing.T) {
+	_, u, done := parseAnthropicSSE([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`))
+	if !done {
+		t.Error("expected done=true for error event")
+	}
+	if u == nil {
+		t.Fatal("usage is nil")
+	}
+	if u.FinishReason != "error" {
+		t.Errorf("FinishReason = %q, want 'error'", u.FinishReason)
+	}
+	if u.ErrorMsg != "overloaded" {
+		t.Errorf("ErrorMsg = %q, want 'overloaded'", u.ErrorMsg)
+	}
+}
+
+// TestParseAnthropicSSEBadJSON verifies the JSON-unmarshal-failure path returns
+// no content and not-done.
+func TestParseAnthropicSSEBadJSON(t *testing.T) {
+	content, u, done := parseAnthropicSSE([]byte(`not valid json`))
+	if content != "" {
+		t.Errorf("content = %q, want empty", content)
+	}
+	if u != nil {
+		t.Errorf("usage = %v, want nil", u)
+	}
+	if done {
+		t.Error("done = true, want false")
+	}
+}
+
+// TestStreamRequestNoTerminalEvent verifies that a stream that sends content
+// but no [DONE] or terminal event is rejected as an error (not accepted as a
+// complete answer).
+func TestStreamRequestNoTerminalEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Send a content line but NO [DONE] — the stream ends cleanly (EOF)
+		// without a terminal event.
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+	}))
+	defer srv.Close()
+
+	_, _, _, err := streamRequest(
+		context.Background(),
+		srv.URL,
+		map[string]string{"x-api-key": "key"},
+		[]byte(`{"model":"m","max_tokens":256,"messages":[{"role":"user","content":"q"}],"stream":true}`),
+		5*time.Second,
+		10*time.Second,
+		parseAnthropicSSE,
+	)
+	if err == nil {
+		t.Fatal("expected an error for stream without terminal event, got nil")
+	}
+	if !strings.Contains(err.Error(), "without a terminal event") {
+		t.Errorf("error should mention 'without a terminal event', got: %v", err)
+	}
+}
+
+// TestStreamRequestContextCancelled covers the streamRequest path where the
+// context is cancelled (not idle timeout) — the scanner.Err() + tctx.Err()
+// branch at line 247-249.
+func TestStreamRequestContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Stall forever — the context will cancel before the idle timeout.
+		<-time.After(10 * time.Second)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	_, _, _, err := streamRequest(
+		ctx,
+		srv.URL,
+		map[string]string{"x-api-key": "key"},
+		[]byte(`{"model":"m","max_tokens":256,"stream":true}`),
+		5*time.Second,
+		2*time.Second,
+		parseAnthropicSSE,
+	)
+	if err == nil {
+		t.Fatal("expected a context-cancelled error, got nil")
+	}
+}
+
+// TestStreamIdleErrErrorUnwrap verifies the streamIdleErr error text and its
+// unwrap to ErrBackendStream (the retryable sentinel).
+func TestStreamIdleErrErrorUnwrap(t *testing.T) {
+	e := &streamIdleErr{d: 5 * time.Second}
+	if msg := e.Error(); !strings.Contains(msg, "counsel stream idle") {
+		t.Errorf("Error() = %q, want it to contain %q", msg, "counsel stream idle")
+	}
+	if got := e.Unwrap(); !errors.Is(got, ErrBackendStream) {
+		t.Errorf("Unwrap() = %v, want ErrBackendStream", got)
+	}
+	if !errors.Is(e, ErrBackendStream) {
+		t.Errorf("errors.Is(streamIdleErr, ErrBackendStream) = false, want true")
+	}
+}
