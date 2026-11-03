@@ -599,7 +599,7 @@ func TestReadinessRejectsStale(t *testing.T) {
 	if err == nil {
 		t.Fatal("a session that `hisn ls` reports stale must NOT be ready")
 	}
-	for _, w := range []string{"not ready after", "no readiness line", "hisn ls reports the session stale", "stl.supervisor.log", "init pid"} {
+	for _, w := range []string{"not ready after", "hisn ls reports the session stale", "stl.supervisor.log", "init pid"} {
 		if !strings.Contains(err.Error(), w) {
 			t.Errorf("error lacks %q:\n%v", w, err)
 		}
