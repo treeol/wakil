@@ -1,6 +1,7 @@
 // Package hisn implements sandbox.Backend on top of the hisn CLI
-// (github.com/treeol/hisn, >= 0.2.0). Wakil drives it exclusively through the
-// command line: one detached session per chat, many `hisn exec` calls.
+// (github.com/treeol/hisn, >= 0.2.1). Wakil drives it through the command line
+// (one detached session per chat) and the session control socket (one exec
+// per tool call, via the ctl client).
 package hisn
 
 import (

@@ -5,11 +5,14 @@
 // only on the first line of a connection, and only for exec.
 //
 // Lifecycle (docs/hisn-ctl.md §3): an exec owns ONE connection for its whole
-// life. Signals travel on that connection — never a fresh dial — so a
-// replacement session reusing the socket path can never be signalled with a
-// stale exec_id. One reader goroutine (the dispatcher) owns the bufio.Reader
-// and routes response lines and the async `{"exit":…}` line; writes are
-// serialized by the conn mutex.
+// life. Signals travel on their OWN fresh connections (DESIGN §14.7: hisn
+// does not read the exec connection after the request line), so the exec
+// connection carries only the request, the acceptance, and the async
+// `{"exit":…}` line. A replacement session reusing the socket path can never
+// be signalled with a stale exec_id: exec ids start fresh per session, so a
+// stale id is E_NOT_FOUND, never a hit on a foreign process. One reader
+// goroutine (the dispatcher) owns the bufio.Reader and routes response lines
+// and the `{"exit":…}` line; writes are serialized by the conn mutex.
 package ctl
 
 import (
@@ -86,7 +89,6 @@ func (c *Client) dialConn(ctx context.Context) (net.Conn, error) {
 	return conn, nil
 }
 
-// call dials, sends one request line, reads one response line, maps errors.
 // call dials, sends one request line, reads one response line, maps errors.
 // It returns "" (the response carries no body beyond ok/error/message).
 func (c *Client) call(ctx context.Context, op string, body map[string]any) error {

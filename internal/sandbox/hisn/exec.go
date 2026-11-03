@@ -212,7 +212,7 @@ func DefaultStateDir(base string) string { return filepath.Join(base, "hisn") }
 // ctlLostHandle is a failed ctl launch (ambiguous or refused): Exec succeeds
 // so the failure surfaces in Wait exactly like the CLI path's, never as a
 // lost start. Wait probes the session: unreachable means the program did
-// // not run at all (typed session death); reachable means it may still be
+// not run at all (typed session death); reachable means it may still be
 // running (Lost, recorded).
 type ctlLostHandle struct {
 	b    *Backend
