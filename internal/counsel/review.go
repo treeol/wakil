@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/diag"
 )
 
@@ -51,6 +52,10 @@ const (
 type ModelLimits struct {
 	ContextTokens   int // model context window in tokens; 0 = provider table / registry
 	ReviewMaxTokens int // max answer tokens for a review; 0 = the call's configured MaxTokens
+	// Reasoning is the per-model reasoning/thinking spec. When non-nil, the
+	// provider layer maps it to the native reasoning parameter and makes
+	// max_tokens additive (reasoning budget + answer budget).
+	Reasoning *config.ReasoningSpec
 }
 
 // ReviewLog records what one reviewer was actually sent (logged per reviewer
@@ -67,6 +72,14 @@ type ReviewLog struct {
 	FinishReasons []string
 	Retried       bool   // a length truncation forced a retry
 	Why           string // how the retry differed when it was not the chunked path
+	// ReasoningTokens is the count of reasoning/thinking tokens the provider
+	// reported for this reviewer (OpenRouter completion_tokens_details.
+	// reasoning_tokens). 0 when the provider does not report a separate count
+	// (Anthropic-native output_tokens includes thinking).
+	ReasoningTokens int64
+	// AnswerTokens is the non-reasoning output tokens (completion_tokens minus
+	// reasoning_tokens) when the provider reports them separately. 0 otherwise.
+	AnswerTokens int64
 }
 
 // VoidError marks a reviewer reply that must not be trusted: truncated,
@@ -497,15 +510,26 @@ var trailingParenRe = regexp.MustCompile(`\s*\([^)]*\)\s*$`)
 // earlier heading that happens to be a prefix of the last one ("Safety" vs
 // "Safety risks") must not pass as proof of having read to the end.
 func citationMatches(cited string, expected ...string) bool {
-	strip := func(x string) string {
-		return normHeading(trailingParenRe.ReplaceAllString(strings.Trim(strings.TrimSpace(x), "*`_# "), ""))
+	stripAllParens := func(x string) string {
+		// Apply trailingParenRe repeatedly to strip all trailing "(…)"
+		// groups — a range label like "foo.go (lines 10–20) (15 lines)"
+		// needs both groups removed so the citation "foo.go" matches.
+		s := strings.Trim(strings.TrimSpace(x), "*`_# ")
+		for {
+			stripped := trailingParenRe.ReplaceAllString(s, "")
+			if stripped == s {
+				break
+			}
+			s = stripped
+		}
+		return normHeading(s)
 	}
-	c := strip(cited)
+	c := stripAllParens(cited)
 	if c == "" {
 		return false
 	}
 	for _, e := range expected {
-		if n := strip(e); n != "" && c == n {
+		if n := stripAllParens(e); n != "" && c == n {
 			return true
 		}
 	}
@@ -525,7 +549,7 @@ func (p part) expectedEvidence() []string {
 
 // ── dispatch ────────────────────────────────────────────────────────────────
 
-const evidenceInstruction = "Finish your reply with one final line, exactly: `" + evidencePrefix + " <the heading (or `── label ──` block label) of the LAST section of the document above that you actually read (ignore quoted answers of other models)>`. This is checked mechanically; a wrong or missing citation voids your reply."
+const evidenceInstruction = "Finish your reply with one final line, exactly: `" + evidencePrefix + " <the heading (or `── label ──` block label — for a source file, cite its path) of the LAST section of the document above that you actually read (ignore quoted answers of other models)>`. This is checked mechanically; a wrong or missing citation voids your reply."
 
 func partFraming(i, n int, hasOverlap bool) string {
 	var b strings.Builder
@@ -616,7 +640,9 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 			ans, usage, err := send(ctx, q, text, maxTok)
 			out.Usage.InputTokens += usage.InputTokens
 			out.Usage.OutputTokens += usage.OutputTokens
+			out.Usage.ReasoningTokens += usage.ReasoningTokens
 			out.Usage.WebSearchRequests += usage.WebSearchRequests
+			log.ReasoningTokens += usage.ReasoningTokens
 			fr := usage.FinishReason
 			if fr == "" {
 				fr = "?"
@@ -708,6 +734,7 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 				out, _ = run(parts, bigger)
 				out.Usage.InputTokens += usage.InputTokens
 				out.Usage.OutputTokens += usage.OutputTokens
+				out.Usage.ReasoningTokens += usage.ReasoningTokens
 				out.Usage.WebSearchRequests += usage.WebSearchRequests
 				out.Log = log
 				out.Err = voidAfterTruncation(out.Err, "whole-document retry")
@@ -725,6 +752,7 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 		out, _ = run(retryParts, answerWant)
 		out.Usage.InputTokens += usage.InputTokens
 		out.Usage.OutputTokens += usage.OutputTokens
+		out.Usage.ReasoningTokens += usage.ReasoningTokens
 		out.Usage.WebSearchRequests += usage.WebSearchRequests
 		out.Err = voidAfterTruncation(out.Err, "chunked retry")
 	}

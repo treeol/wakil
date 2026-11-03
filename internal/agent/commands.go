@@ -1096,7 +1096,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, note(fmt.Sprintf("effective context cap: %d chars (compact at ~%dk, hard max ~%dk)",
 			cap, compactAt/1000, hardMax/1000))
 
-	case "/thinking":
+	case "/thinking", "/think":
 		// /thinking — set or show the OpenRouter reasoning parameter for
 		// extended-thinking models. Controls whether the model uses reasoning
 		// tokens and at what intensity/budget.
@@ -1672,6 +1672,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /mashura maxtokens <N>     set max tokens for mashura responses
 /mashura timeout <seconds> set timeout for mashura calls
 /thinking [effort] [max_tokens]  show/set reasoning (off|max|xhigh|high|medium|low|minimal|none)
+/think                alias for /thinking
 /assist              toggle assist mode (ilm_stack.mode="assist"); /assist auto toggles auto-execution
 /auto                toggle: auto-approve tool calls without prompting (shown as AUTO in status)
                      still confirmed: destructive shell commands, external-backend egress

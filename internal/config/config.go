@@ -483,8 +483,17 @@ type Config struct {
 	// model id. context_tokens overrides the provider table / OpenRouter
 	// registry context window; review_max_tokens overrides the answer budget
 	// (still raised to at least 4096 for a review, and capped by what fits the
-	// context window). Zero/absent = use the default.
+	// context window). reasoning sets the per-model reasoning/thinking budget
+	// for reviewer calls to this model. Zero/absent = use the default.
 	MashuraModels map[string]MashuraModelLimits `json:"mashura_models,omitempty"`
+
+	// MashuraRoles holds per-role overrides for Mashūra counsel calls, keyed
+	// by role name ("reviewer" or "check"). When a role's Reasoning is set, it
+	// overrides the per-model reasoning for calls dispatched under that role.
+	// Per-model reasoning takes precedence over role reasoning for the reviewer
+	// role (the model-specific setting is more specific). For the check role,
+	// the role-level setting is the only source (check has no per-model entry).
+	MashuraRoles map[string]MashuraRoleConfig `json:"mashura_roles,omitempty"`
 
 	// AutoCounsel controls the TUI session counsel mode: "suggest" (default,
 	// hint-only), "auto" (auto-fire mashura__debug up to CounselMaxPerSession
@@ -696,12 +705,18 @@ type Config struct {
 	AutoExplicit        bool `json:"-"`
 	ContextModeExplicit bool `json:"-"` // set when --context-mode was passed
 	PromptModeExplicit  bool `json:"-"` // set when --prompt-mode was passed
+	ThinkExplicit       bool `json:"-"` // set when --think was passed
 
 	// DaemonMode selects remote daemon mode (P2e): the TUI dials the wakil
 	// daemon over its Unix socket instead of embedding the agent loop.
 	// DaemonSocket overrides the default socket path.
 	DaemonMode   bool   `json:"-"`
 	DaemonSocket string `json:"-"`
+
+	// ThinkEffort is the reasoning effort level set by the --think CLI flag.
+	// Applied to the main model's session ReasoningEffort at startup. Empty = no
+	// override (use config file / repo-state / /thinking session value).
+	ThinkEffort string `json:"-"`
 }
 
 // ILMStackConfig configures the ilm-stack shadow-mode emitter.
@@ -906,10 +921,72 @@ func (c CostsConfig) SearchCost() (usd float64, priced bool) {
 	return c.Search.USDPerQuery, true
 }
 
+// ReasoningSpec captures the user's intent for model reasoning/thinking budget.
+// Either or both of Effort and MaxTokens may be set. Effort is a qualitative
+// level ("low"|"medium"|"high"|"none"); MaxTokens is a specific token budget.
+// The provider-specific wire mapping is applied by the layer that sends the
+// request (counsel for Mashūra, proxy for the main client).
+//
+// When Effort is "none" (or empty and MaxTokens is 0), reasoning is omitted
+// entirely — the model's default behavior applies. When only Effort is set, the
+// counsel layer maps it to a provider-specific budget (see EffortToBudget).
+type ReasoningSpec struct {
+	Effort    string `json:"effort,omitempty"`     // "low"|"medium"|"high"|"none" ("" = unset)
+	MaxTokens int    `json:"max_tokens,omitempty"` // reasoning token budget (0 = derive from effort)
+}
+
+// IsZero reports whether the spec is completely unset (no effort, no budget).
+func (r *ReasoningSpec) IsZero() bool {
+	return r == nil || (r.Effort == "" && r.MaxTokens == 0)
+}
+
+// EffortToBudget maps a reasoning effort level to an approximate token budget
+// for providers that require a numeric budget (e.g. Anthropic thinking).
+// "none" and empty map to 0 (omit reasoning). The mapping is conservative so
+// reasoning never dominates the answer budget.
+var EffortToBudget = map[string]int{
+	"minimal": 1024,
+	"low":     2048,
+	"medium":  4096,
+	"high":    8192,
+	"xhigh":   12288,
+	"max":     16384,
+}
+
+// ReasoningBudgetFor resolves the effective reasoning token budget from a
+// ReasoningSpec. When MaxTokens is set, it wins; otherwise Effort is mapped via
+// EffortToBudget. Returns 0 when the spec is unset or effort is "none"/empty.
+func ReasoningBudgetFor(spec *ReasoningSpec) int {
+	if spec == nil {
+		return 0
+	}
+	if spec.MaxTokens > 0 {
+		return spec.MaxTokens
+	}
+	if spec.Effort == "" || spec.Effort == "none" {
+		return 0
+	}
+	return EffortToBudget[spec.Effort]
+}
+
 // MashuraModelLimits are the per-model reviewer limits (see Config.MashuraModels).
 type MashuraModelLimits struct {
 	ContextTokens   int `json:"context_tokens,omitempty"`    // model context window in tokens; 0 = provider table
 	ReviewMaxTokens int `json:"review_max_tokens,omitempty"` // answer budget for a review; 0 = mashura_max_tokens
+	// Reasoning is the per-model reasoning/thinking budget for Mashūra reviewer
+	// calls to this model. When set, the counsel layer maps it to the provider's
+	// native reasoning parameter (Anthropic thinking, OpenRouter reasoning) and
+	// makes the max_tokens budget additive: max_tokens = reasoning budget +
+	// answer budget. The answer budget (review_max_tokens) is never reduced to
+	// make room for reasoning.
+	Reasoning *ReasoningSpec `json:"reasoning,omitempty"`
+}
+
+// MashuraRoleConfig holds per-role overrides for Mashūra counsel calls.
+// Currently only Reasoning is supported. The role key is one of "reviewer" or
+// "check" (see Config.MashuraRoles).
+type MashuraRoleConfig struct {
+	Reasoning *ReasoningSpec `json:"reasoning,omitempty"`
 }
 
 // MashuraPanelConfig defines one named panel: a list of prefixed model strings
@@ -1380,6 +1457,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.DaemonSocket, "socket", "", "path to the wakil daemon's Unix socket (default: $XDG_RUNTIME_DIR/wakil.sock or ~/.local/share/wakil/wakil.sock)")
 	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: long-session (default, finished requests collapsed to Q+A with archive pointers) | standard (full history sent)")
 	fs.StringVar(&cfg.PromptMode, "prompt-mode", cfg.PromptMode, "prompt mode: full (default, complete system prompt) | core (core-only preamble, extension lazy-loaded on task detection)")
+	fs.StringVar(&cfg.ThinkEffort, "think", "", "set the reasoning/thinking effort level for the main model: off|none|minimal|low|medium|high|xhigh|max (session-scoped; overrides config and /think)")
 	fs.Usage = func() {
 		out := fs.Output()
 		fmt.Fprintln(out, "Usage: wakil [flags] [workspace-path]")
@@ -1409,6 +1487,15 @@ func LoadConfig(argv []string) (Config, error) {
 	cfg.AutoExplicit = flagsSet["auto"]
 	cfg.ContextModeExplicit = flagsSet["context-mode"]
 	cfg.PromptModeExplicit = flagsSet["prompt-mode"]
+	cfg.ThinkExplicit = flagsSet["think"]
+
+	// Validate --think effort level at load time so a typo fails immediately
+	// rather than silently sending an invalid effort string to the provider.
+	if cfg.ThinkExplicit && cfg.ThinkEffort != "" {
+		if err := validateReasoningSpec("think", ReasoningSpec{Effort: cfg.ThinkEffort}); err != nil {
+			return cfg, fmt.Errorf("--think: %w", err)
+		}
+	}
 
 	// Resolve trace: --trace flag enables for this run; config trace_sessions makes
 	// it the standing default. Either way cfg.Trace is the single bit callers check.
@@ -1952,6 +2039,41 @@ func validateContextLimits(cfg Config) error {
 		if lim.ContextTokens < 0 || lim.ReviewMaxTokens < 0 {
 			return fmt.Errorf("mashura_models[%q]: context_tokens and review_max_tokens must be >= 0", name)
 		}
+		if lim.Reasoning != nil {
+			if err := validateReasoningSpec(name, *lim.Reasoning); err != nil {
+				return fmt.Errorf("mashura_models[%q]: %w", name, err)
+			}
+		}
+	}
+	for role, rc := range cfg.MashuraRoles {
+		if rc.Reasoning != nil {
+			if err := validateReasoningSpec("role "+role, *rc.Reasoning); err != nil {
+				return fmt.Errorf("mashura_roles[%q]: %w", role, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateReasoningSpec checks a ReasoningSpec for valid effort levels and
+// non-negative max_tokens.
+func validateReasoningSpec(label string, spec ReasoningSpec) error {
+	validEffort := map[string]bool{
+		"":        true,
+		"none":    true,
+		"minimal": true,
+		"low":     true,
+		"medium":  true,
+		"high":    true,
+		"xhigh":   true,
+		"max":     true,
+		"off":     true,
+	}
+	if !validEffort[spec.Effort] {
+		return fmt.Errorf("reasoning.effort %q is invalid (valid: none, minimal, low, medium, high, xhigh, max, off)", spec.Effort)
+	}
+	if spec.MaxTokens < 0 {
+		return fmt.Errorf("reasoning.max_tokens must be >= 0 (got %d)", spec.MaxTokens)
 	}
 	return nil
 }

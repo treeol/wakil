@@ -250,6 +250,7 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		ServerToolMaxCalls: panel.ServerToolMaxCalls,
 		ModelLimits:        a.mashuraModelLimits(),
 		MinAnswerTokens:    a.mashuraMinAnswerTokens(name),
+		Reasoning:          a.mashuraReasoningFor(name),
 	}
 	models, mode := panel.Models, panel.Mode
 
@@ -416,7 +417,11 @@ func (a *App) mashuraModelLimits() map[string]counsel.ModelLimits {
 	}
 	out := make(map[string]counsel.ModelLimits, len(a.Cfg.MashuraModels))
 	for k, v := range a.Cfg.MashuraModels {
-		out[k] = counsel.ModelLimits{ContextTokens: v.ContextTokens, ReviewMaxTokens: v.ReviewMaxTokens}
+		out[k] = counsel.ModelLimits{
+			ContextTokens:   v.ContextTokens,
+			ReviewMaxTokens: v.ReviewMaxTokens,
+			Reasoning:       v.Reasoning,
+		}
 	}
 	return out
 }
@@ -1070,6 +1075,26 @@ func (a *App) mashuraMaxTokensFor(name string) int {
 		return mashuraCheckMaxTokens
 	}
 	return base
+}
+
+// mashuraReasoningFor resolves the role-level reasoning spec for a mashura
+// tool call. Per-model reasoning is resolved per-member in counsel.runMember
+// (via ModelLimits); this method provides the role-level default. The role is
+// derived from the tool short name: "review"/"debug"/"decide" → "reviewer",
+// "check" → "check". Returns nil when no role-level reasoning is configured.
+func (a *App) mashuraReasoningFor(name string) *config.ReasoningSpec {
+	short := strings.TrimPrefix(name, "mashura__")
+	if name == "oracle__ask" {
+		short = "review"
+	}
+	role := "reviewer"
+	if short == "check" {
+		role = "check"
+	}
+	if rc, ok := a.Cfg.MashuraRoles[role]; ok && rc.Reasoning != nil && !rc.Reasoning.IsZero() {
+		return rc.Reasoning
+	}
+	return nil
 }
 
 // displayAbbrev renders a trace entry's tool abbreviation for symptoms. An

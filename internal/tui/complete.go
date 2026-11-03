@@ -116,6 +116,7 @@ var allTUICommands = []candidate{
 	{name: "/submodel", hasArgs: true},
 	{name: "/styles", hasArgs: true},
 	{name: "/thinking", hasArgs: true},
+	{name: "/think", hasArgs: true},
 	{name: "/verify"},
 }
 
@@ -322,7 +323,7 @@ func computeSlashCompletion(ta textarea.Model, src compSources, fetchSessions fu
 		cands = listNameCandidates(argLeaf, []string{"off", "on", "auto", "auto-mashura", "now", "default", "session"})
 	case "/skills":
 		cands = listNameCandidates(argLeaf, []string{"review", "show", "approve", "reject", "recent", "undo", "confirm"})
-	case "/thinking":
+	case "/thinking", "/think":
 		cands = listNameCandidates(argLeaf, []string{"off", "max", "xhigh", "high", "medium", "low", "minimal", "none"})
 	case "/mashura":
 		cands = listNameCandidates(argLeaf, []string{"panel", "map", "model", "maxtokens", "timeout"})

@@ -79,6 +79,17 @@ type oracleReq struct {
 	MaxTokens int         `json:"max_tokens"`
 	System    string      `json:"system"`
 	Messages  []oracleMsg `json:"messages"`
+	// Thinking enables extended thinking (Anthropic-native). When non-nil,
+	// MaxTokens MUST be > budget_tokens (Anthropic requires this strictly).
+	// The caller makes max_tokens = budget_tokens + answer_budget so the total
+	// is additive and the answer budget is never reduced for reasoning.
+	Thinking *oracleThinking `json:"thinking,omitempty"`
+}
+
+// oracleThinking is the Anthropic-native thinking parameter.
+type oracleThinking struct {
+	Type         string `json:"type"`          // "enabled"
+	BudgetTokens int    `json:"budget_tokens"` // reasoning token budget
 }
 
 type oracleMsg struct {
@@ -109,6 +120,15 @@ type OracleUsage struct {
 	InputTokens  int64
 	OutputTokens int64
 
+	// ReasoningTokens is the count of tokens spent on extended thinking
+	// (reasoning/thinking). For OpenRouter this comes from
+	// completion_tokens_details.reasoning_tokens. For Anthropic-native,
+	// output_tokens already includes thinking tokens (no exact split), so
+	// ReasoningTokens is 0 and OutputTokens carries the combined count.
+	// Cost accounting uses ReasoningTokens only when the provider reports it
+	// separately — never double-counting.
+	ReasoningTokens int64
+
 	// WebSearchRequests is the number of OpenRouter server-side web search
 	// requests consumed. 0 when server tools are not used or not reported.
 	WebSearchRequests int64
@@ -136,17 +156,51 @@ func CallOracle(ctx context.Context, cfg config.Config, apiKey, question, oracle
 
 // CallOracleURL is the implementation of CallOracle with an explicit endpoint,
 // used in tests to point at a local httptest.Server instead of the live API.
+// When cfg's reasoning spec is set (via the panel call config), the Anthropic
+// thinking parameter is sent with a budget derived from the spec, and
+// max_tokens is made additive (budget + answer). The answer budget is never
+// reduced for reasoning.
 func CallOracleURL(ctx context.Context, cfg config.Config, apiKey, question, oracleCtx, endpoint string) (string, OracleUsage, error) {
+	return callOracleWithReasoning(ctx, cfg, apiKey, question, oracleCtx, endpoint, nil)
+}
+
+// callOracleWithReasoning is the reasoning-aware implementation of CallOracleURL.
+// When reasoning is non-nil, the Anthropic-native thinking parameter is sent
+// with budget_tokens = reasoningBudget, and max_tokens = budget + answerBudget.
+// When nil, behavior is byte-identical to the original CallOracleURL.
+func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, question, oracleCtx, endpoint string, reasoning *config.ReasoningSpec) (string, OracleUsage, error) {
 	userContent := question
 	if oracleCtx != "" {
 		userContent += "\n\nContext:\n" + oracleCtx
 	}
 
+	maxTokens := cfg.OracleMaxTokens
+	var thinking *oracleThinking
+	if reasoning != nil && !reasoning.IsZero() {
+		// "off"/"none" effort means omit reasoning entirely — do not send
+		// thinking or add a budget to max_tokens.
+		if reasoning.Effort != "off" && reasoning.Effort != "none" {
+			budget := config.ReasoningBudgetFor(reasoning)
+			if budget > 0 {
+				// Anthropic requires budget_tokens >= 1024 and < max_tokens (strict).
+				// Ensure at least 1024 and that max_tokens exceeds the budget by the
+				// answer budget.
+				if budget < 1024 {
+					budget = 1024
+				}
+				thinking = &oracleThinking{Type: "enabled", BudgetTokens: budget}
+				// Additive: max_tokens = budget + answer. Never reduce the answer.
+				maxTokens = budget + maxTokens
+			}
+		}
+	}
+
 	body, err := json.Marshal(oracleReq{
 		Model:     cfg.OracleModel,
-		MaxTokens: cfg.OracleMaxTokens,
+		MaxTokens: maxTokens,
 		System:    oracleSystemPrompt,
 		Messages:  []oracleMsg{{Role: "user", Content: userContent}},
+		Thinking:  thinking,
 	})
 	if err != nil {
 		return "", OracleUsage{}, fmt.Errorf("marshal: %w", err)
@@ -320,6 +374,14 @@ type PanelCallConfig struct {
 	// review). The lightweight check tool sets its own lower floor. A floor
 	// that does not fit forces chunking or an error — never input truncation.
 	MinAnswerTokens int
+
+	// Reasoning is the per-role reasoning/thinking spec for this panel call.
+	// When non-nil, the Anthropic path sends a "thinking" parameter with a
+	// budget_tokens derived from the spec, and the OpenRouter path sends a
+	// "reasoning" object with effort or max_tokens. The answer budget
+	// (MaxTokens) is never reduced to make room for reasoning — max_tokens on
+	// the wire is additive (reasoning budget + answer budget).
+	Reasoning *config.ReasoningSpec
 }
 
 // PanelMemberEventKind discriminates async-job progress events.
@@ -597,6 +659,7 @@ func runDebate(ctx context.Context, models []string, question, briefing string, 
 			totalUsage := r1Results[s.index].Usage
 			totalUsage.InputTokens += res.Usage.InputTokens
 			totalUsage.OutputTokens += res.Usage.OutputTokens
+			totalUsage.ReasoningTokens += res.Usage.ReasoningTokens
 			totalUsage.WebSearchRequests += res.Usage.WebSearchRequests
 			res.Usage = totalUsage
 			r2Results[s.index] = res
@@ -649,7 +712,11 @@ func callAnthropic(ctx context.Context, model, apiKey, question, briefing string
 		OracleTimeoutSeconds: ccfg.TimeoutSeconds,
 		OracleEndpoint:       ccfg.AnthropicEndpoint,
 	}
-	return CallOracle(ctx, synCfg, apiKey, question, briefing)
+	endpoint := oracleEndpoint
+	if synCfg.OracleEndpoint != "" {
+		endpoint = synCfg.OracleEndpoint
+	}
+	return callOracleWithReasoning(ctx, synCfg, apiKey, question, briefing, endpoint, ccfg.Reasoning)
 }
 
 // orFusionPlugin is the "fusion" plugin block sent in the OpenRouter request.
@@ -668,6 +735,9 @@ type orReq struct {
 	Plugins      []orFusionPlugin `json:"plugins,omitempty"`
 	Tools        []orServerTool   `json:"tools,omitempty"`
 	MaxToolCalls int              `json:"max_tool_calls,omitempty"` // server-tool step budget; 0 = omit
+	// Reasoning is the OpenRouter reasoning parameter, sent when the panel
+	// call config specifies a reasoning spec. nil = omit entirely.
+	Reasoning *config.ReasoningSpec `json:"reasoning,omitempty"`
 }
 
 // orServerTool is one OpenRouter server-side tool entry. OpenRouter executes
@@ -695,6 +765,11 @@ type orResp struct {
 		ServerToolUse    *struct {
 			WebSearchRequests int `json:"web_search_requests"`
 		} `json:"server_tool_use,omitempty"`
+		// CompletionTokensDetails carries per-type breakdowns for the
+		// completion tokens. OpenRouter reports reasoning_tokens here.
+		CompletionTokensDetails *struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details,omitempty"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -768,13 +843,29 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 		userContent += "\n\nContext:\n" + briefing
 	}
 
+	maxTokens := ccfg.MaxTokens
+	var reasoning *config.ReasoningSpec
+	if ccfg.Reasoning != nil && !ccfg.Reasoning.IsZero() {
+		// "off"/"none" effort means omit reasoning entirely — do not send
+		// the reasoning parameter or add a budget to max_tokens.
+		if ccfg.Reasoning.Effort != "off" && ccfg.Reasoning.Effort != "none" {
+			reasoning = ccfg.Reasoning
+			// Additive: max_tokens = reasoning budget + answer budget.
+			budget := config.ReasoningBudgetFor(reasoning)
+			if budget > 0 {
+				maxTokens = budget + maxTokens
+			}
+		}
+	}
+
 	req := orReq{
 		Model:     model,
-		MaxTokens: ccfg.MaxTokens,
+		MaxTokens: maxTokens,
 		Messages: []orMsg{
 			{Role: "system", Content: oracleSystemPrompt},
 			{Role: "user", Content: userContent},
 		},
+		Reasoning: reasoning,
 	}
 
 	// Wire server-side tools when configured. OpenRouter executes these
@@ -882,6 +973,9 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 		if result.Usage.ServerToolUse != nil {
 			usage.WebSearchRequests = int64(result.Usage.ServerToolUse.WebSearchRequests)
 		}
+		if result.Usage.CompletionTokensDetails != nil {
+			usage.ReasoningTokens = int64(result.Usage.CompletionTokensDetails.ReasoningTokens)
+		}
 	}
 
 	// Check for error object in 200 response (provider failures can return
@@ -983,6 +1077,13 @@ func logFooter(r PanelMemberResult) string {
 		return ""
 	}
 	s := fmt.Sprintf("\n\n[mashūra: %s — ~%d tokens sent, %d part(s), ctx %d", l.Model, l.TokensSent, l.Parts, l.ContextTokens)
+	// Show reasoning / answer token breakdown when the provider reported
+	// reasoning tokens separately (OpenRouter). Anthropic-native output_tokens
+	// already includes thinking, so ReasoningTokens is 0 there and the line is
+	// omitted to avoid a misleading split.
+	if l.ReasoningTokens > 0 {
+		s += fmt.Sprintf("; reasoning %d / answer %d", l.ReasoningTokens, l.AnswerTokens)
+	}
 	if len(l.FinishReasons) > 0 {
 		s += "; finish_reason: " + strings.Join(l.FinishReasons, ",")
 	}
@@ -1061,15 +1162,41 @@ func PanelDetail(panelName string, models []string, mode, question, oracleCtx st
 // dispatcher and converts the outcome to a PanelMemberResult. send may be nil
 // (the member's provider call is used).
 func runMember(ctx context.Context, prefixed, prov, model, question, briefing, appendix string, ccfg PanelCallConfig, apiKeys map[string]string, send sendFunc) PanelMemberResult {
+	// Resolve per-model reasoning: ModelLimits[prefixed].Reasoning takes
+	// precedence, then ModelLimits[model].Reasoning, then the panel-level
+	// ccfg.Reasoning (role-level default). This ensures each panel member gets
+	// its own model-specific reasoning budget rather than a single panel-wide
+	// value.
+	effectiveReasoning := ccfg.Reasoning
+	if lim, ok := ccfg.ModelLimits[prefixed]; ok && lim.Reasoning != nil && !lim.Reasoning.IsZero() {
+		effectiveReasoning = lim.Reasoning
+	} else if lim, ok := ccfg.ModelLimits[model]; ok && lim.Reasoning != nil && !lim.Reasoning.IsZero() {
+		effectiveReasoning = lim.Reasoning
+	}
+
 	if send == nil {
 		send = func(c context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
 			mc := ccfg
 			mc.MaxTokens = maxTok
+			mc.Reasoning = effectiveReasoning
 			return callMember(c, prov, model, q, b, mc, apiKeys)
 		}
 	}
 	ctxTokens, configuredMax := limitsFor(ctx, ccfg, prefixed, model)
 	out := dispatchReview(ctx, prefixed, ctxTokens, configuredMax, ccfg.MinAnswerTokens, question, briefing, appendix, send)
+	if out.Log != nil {
+		out.Log.ReasoningTokens = out.Usage.ReasoningTokens
+		// AnswerTokens = output minus reasoning, only when the provider
+		// reports reasoning separately. When ReasoningTokens is 0, the
+		// output_tokens already include thinking (Anthropic-native) and no
+		// split is shown.
+		if out.Usage.ReasoningTokens > 0 {
+			out.Log.AnswerTokens = out.Usage.OutputTokens - out.Usage.ReasoningTokens
+			if out.Log.AnswerTokens < 0 {
+				out.Log.AnswerTokens = 0
+			}
+		}
+	}
 	res := PanelMemberResult{
 		PrefixedModel: prefixed,
 		Model:         model,

@@ -1581,7 +1581,10 @@ func (a *App) isOpenRouterRoute(usedBackend string) bool {
 // RecordOracleCostFor records one panel member's exact token usage under the
 // per-model source key "mashura·<model>". Usage is exact (from the API
 // response), so confidence is always ConfExact even when no rate is configured
-// (cost then renders "—"). nil tracker → no-op.
+// (cost then renders "—"). When the provider reports reasoning tokens
+// separately (OpenRouter), they are included in the token counts but not
+// double-counted in cost (OutputTokens already includes them for billing).
+// nil tracker → no-op.
 func (a *App) RecordOracleCostFor(model string, u counsel.OracleUsage) {
 	usd, priced := a.Cfg.Costs.MashuraCost(model, u.InputTokens, u.OutputTokens)
 	source := proxy.CostSourceMashuraPrefix + model

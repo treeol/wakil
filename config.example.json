@@ -94,8 +94,11 @@
 
   "mashura_fallback_model": "",
 
-  "_comment_mashura_models": "Per-model reviewer limits, keyed by 'provider:model' or the bare model id. context_tokens overrides the built-in/OpenRouter context window; review_max_tokens is the answer budget (never below 4096 for a review). A document that does not fit is sent in labelled parts or the call fails — it is never truncated.",
+  "_comment_mashura_models": "Per-model reviewer limits, keyed by 'provider:model' or the bare model id. context_tokens overrides the built-in/OpenRouter context window; review_max_tokens is the answer budget (never below 4096 for a review). reasoning sets the per-model reasoning/thinking budget for reviewer calls to this model — max_tokens on the wire is additive (reasoning budget + answer budget); the answer budget is never reduced. A document that does not fit is sent in labelled parts or the call fails — it is never truncated.",
   "mashura_models": {},
+
+  "_comment_mashura_roles": "Per-role overrides for Mashūra counsel reasoning, keyed by role name ('reviewer' or 'check'). When a role's reasoning is set, it applies to all calls dispatched under that role. Per-model reasoning (in mashura_models above) takes precedence for the reviewer role. For the check role, the role-level setting is the only source. Example: \"mashura_roles\": {\"reviewer\": {\"reasoning\": {\"effort\": \"medium\", \"max_tokens\": 4096}}, \"check\": {\"reasoning\": {\"effort\": \"low\"}}}",
+  "mashura_roles": {},
 
   "mashura_panels": {
     "default": {
@@ -189,7 +192,7 @@
   "trace_sessions": false,
   "trace_dir": "",
 
-  "_comment_misc": "agent_prompt_path defaults to agent.txt next to the config file. backend_max_retries caps automatic retries for transient backend failures in unattended runs. stream_idle_timeout_seconds bounds SSE read-idle (0 = default 120s). bg_shell_timeout_seconds bounds notify_on_exit background shell watchdog (0 = default 3600s). mention_base is the base directory for @ file mentions.",
+  "_comment_misc": "agent_prompt_path defaults to agent.txt next to the config file. backend_max_retries caps automatic retries for transient backend failures in unattended runs. stream_idle_timeout_seconds bounds SSE read-idle (0 = default 120s). bg_shell_timeout_seconds bounds notify_on_exit background shell watchdog (0 = default 3600s). mention_base is the base directory for @ file mentions. --think sets the reasoning/thinking effort for the main model (off|none|minimal|low|medium|high|xhigh|max); session-scoped, overrides /thinking and config; see /thinking for runtime control.",
 
   "agent_prompt_path": "",
   "backend_max_retries": 3,

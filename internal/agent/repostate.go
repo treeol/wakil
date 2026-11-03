@@ -326,6 +326,16 @@ func RestoreRepoStateResumeApply(app *App, st *RepoState) RestoreRepoStateResult
 func RestoreRepoState(app *App) RestoreRepoStateResult {
 	st, err := RestoreRepoStateRead(app)
 	if err != nil || st == nil {
+		// Even with no saved state, apply the --think CLI flag so it works
+		// on a fresh workspace.
+		if app.Cfg.ThinkExplicit && app.Cfg.ThinkEffort != "" {
+			app.stateMu.Lock()
+			applied := app.applyThinkFlagLocked()
+			app.stateMu.Unlock()
+			if len(applied) > 0 {
+				return RestoreRepoStateResult{Note: strings.Join(applied, ", ")}
+			}
+		}
 		return RestoreRepoStateResult{}
 	}
 	return RestoreRepoStateApply(app, st)
@@ -344,6 +354,16 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 func RestoreRepoStateResume(app *App) RestoreRepoStateResult {
 	st, err := RestoreRepoStateRead(app)
 	if err != nil || st == nil {
+		// Even with no saved state, apply the --think CLI flag so it works
+		// on a fresh workspace.
+		if app.Cfg.ThinkExplicit && app.Cfg.ThinkEffort != "" {
+			app.stateMu.Lock()
+			applied := app.applyThinkFlagLocked()
+			app.stateMu.Unlock()
+			if len(applied) > 0 {
+				return RestoreRepoStateResult{Note: strings.Join(applied, ", ")}
+			}
+		}
 		return RestoreRepoStateResult{}
 	}
 	return RestoreRepoStateResumeApply(app, st)
@@ -475,7 +495,32 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 		applied = append(applied, "thinking="+st.ReasoningEffort)
 	}
 
+	// --think CLI flag overrides the restored repo-state value when explicitly
+	// passed this run. "off" clears all reasoning settings; any other valid
+	// effort level sets it. The flag is applied AFTER the repo-state restore so
+	// it always wins over a saved preference.
+	applied = append(applied, a.applyThinkFlagLocked()...)
+
 	return applied
+}
+
+// applyThinkFlagLocked applies the --think CLI flag to the session's reasoning
+// settings. Called from restoreEndpointIndependentLocked (after the repo-state
+// restore) AND from RestoreRepoState/RestoreRepoStateResume when st is nil
+// (fresh workspace with no saved state). Returns the applied settings labels.
+// Caller MUST hold stateMu.Lock.
+func (a *App) applyThinkFlagLocked() []string {
+	if !a.Cfg.ThinkExplicit || a.Cfg.ThinkEffort == "" {
+		return nil
+	}
+	if a.Cfg.ThinkEffort == "off" {
+		a.ReasoningEffort = ""
+		a.ReasoningMaxTokens = 0
+		return []string{"thinking=off (--think)"}
+	}
+	a.ReasoningEffort = strings.ToLower(a.Cfg.ThinkEffort)
+	a.ReasoningMaxTokens = 0
+	return []string{"thinking=" + a.ReasoningEffort + " (--think)"}
 }
 
 // SaveRepoState is a thin convenience wrapper for command handlers that only
