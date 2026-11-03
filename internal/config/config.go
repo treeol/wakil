@@ -212,8 +212,8 @@ type Config struct {
 	Endpoint     EndpointConfig `json:"-"`
 	EndpointName string         `json:"-"`
 
-	APIKey   string `json:"api_key"` // sent as "Authorization: Bearer <key>"
-	Model    string `json:"model"`
+	APIKey string `json:"api_key"` // sent as "Authorization: Bearer <key>"
+	Model  string `json:"model"`
 	// ExecMode is DEPRECATED as an input (use sandbox.backend). After
 	// LoadConfig it is derived from Sandbox.Backend: "direct" for backend
 	// direct, "docker" otherwise.
