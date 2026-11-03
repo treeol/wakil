@@ -54,6 +54,12 @@ jobs:
             && docker tag vmamudi/wakil-dev:latest wakil-dev:latest \
             || echo "⚠ wakil-dev image pull failed — Docker integration tests will skip"
 
+      # ubuntu-24.04 runners set kernel.apparmor_restrict_unprivileged_userns=1,
+      # which makes `unshare -Ur` fail (uid_map write EPERM) in a container run
+      # with apparmor=unconfined. TestLiveDockerAllowUserns needs it off.
+      - name: allow unprivileged user namespaces (for allow_userns test)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: test (with coverage)
         run: |
           set -euo pipefail

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -120,6 +121,11 @@ func TestDockerHardeningArgs_AllowUserns(t *testing.T) {
 // it, unshare fails and none of those options are set.
 func TestLiveDockerAllowUserns(t *testing.T) {
 	requireDocker(t)
+	// Ubuntu 24.04+ hosts can forbid unprivileged userns for unconfined
+	// processes, which no container option can override.
+	if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil && strings.TrimSpace(string(b)) == "1" {
+		t.Skip("host sets kernel.apparmor_restrict_unprivileged_userns=1; user namespaces unavailable in containers")
+	}
 	for _, on := range []bool{true, false} {
 		ex, err := NewDockerExecutor(DockerOpts{Image: "wakil-dev:latest", Workdir: "/work", HostMount: t.TempDir(), DockerAllowUserns: on})
 		if err != nil {
