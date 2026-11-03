@@ -13,6 +13,19 @@ import (
 	"time"
 )
 
+// writeAnthropicSSE writes an Anthropic Messages API SSE stream carrying one
+// text block with the given stop reason and usage.
+func writeAnthropicSSE(w http.ResponseWriter, text, stopReason string, in, out int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n", in)
+	fmt.Fprint(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
+	fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", text)
+	fmt.Fprint(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
+	fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":%q},\"usage\":{\"output_tokens\":%d}}\n\n", stopReason, out)
+	fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+}
+
 // TestParseModelPrefix verifies that the provider prefix is correctly split from
 // the model ID, and that bare names (no colon) default to "anthropic".
 func TestParseModelPrefix(t *testing.T) {
@@ -45,8 +58,12 @@ func TestOpenRouterRequestShape(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader = r.Header.Get("Authorization")
 		reqBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"panel answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"panel answer\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -104,10 +121,8 @@ func TestOpenRouterRequestShape(t *testing.T) {
 // response with empty content still returns usage.
 func TestOpenRouterTruncationReturnsUsage(t *testing.T) {
 	// Truncated response with non-empty content.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}],"usage":{"prompt_tokens":15,"completion_tokens":8}}`))
-	}))
+	srv := openRouterSSETestServer(t,
+		`{"choices":[{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}],"usage":{"prompt_tokens":15,"completion_tokens":8}}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
@@ -128,10 +143,8 @@ func TestOpenRouterTruncationReturnsUsage(t *testing.T) {
 // This is the ordering bug Mashūra caught: the empty-text check must not
 // run before the finish_reason check.
 func TestOpenRouterTruncationEmptyContentReturnsUsage(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":15,"completion_tokens":8}}`))
-	}))
+	srv := openRouterSSETestServer(t,
+		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":15,"completion_tokens":8}}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
@@ -150,10 +163,8 @@ func TestOpenRouterTruncationEmptyContentReturnsUsage(t *testing.T) {
 // TestFusionTruncationReturnsUsage verifies that a length-truncated fusion
 // response returns actual usage.
 func TestFusionTruncationReturnsUsage(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":20,"completion_tokens":10}}`))
-	}))
+	srv := openRouterSSETestServer(t,
+		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":20,"completion_tokens":10}}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
@@ -180,10 +191,9 @@ func TestRunPanelModeCollectsAll(t *testing.T) {
 			Model string `json:"model"`
 		}
 		json.Unmarshal(body, &req)
-		w.Header().Set("Content-Type", "application/json")
 		if req.Model == "model-a" {
 			// First member: success.
-			w.Write([]byte(`{"content":[{"type":"text","text":"first answer"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+			writeAnthropicSSE(w, "first answer", "end_turn", 10, 5)
 		} else {
 			// Second member: API error.
 			w.WriteHeader(http.StatusInternalServerError)
@@ -228,14 +238,13 @@ func TestRunPanelFallbackStopsOnSuccess(t *testing.T) {
 		callN++
 		n := callN
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		if n == 1 {
 			// First member: API error.
 			w.WriteHeader(http.StatusBadGateway)
 			w.Write([]byte(`{"error":{"type":"gateway_error","message":"upstream down"}}`))
 		} else {
 			// Second member: success.
-			w.Write([]byte(`{"content":[{"type":"text","text":"fallback answer"}],"stop_reason":"end_turn","usage":{"input_tokens":8,"output_tokens":4}}`))
+			writeAnthropicSSE(w, "fallback answer", "end_turn", 8, 4)
 		}
 	}))
 	defer srv.Close()
@@ -284,8 +293,12 @@ func TestFusionRequestShape(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader = r.Header.Get("Authorization")
 		reqBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"fusion analysis"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":10}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"fusion analysis\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":10,\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -361,8 +374,12 @@ func TestRunPanelFusionMode(t *testing.T) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"synthesized"},"finish_reason":"stop"}]}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"synthesized\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -471,12 +488,11 @@ func TestRunPanelDebateBasic(t *testing.T) {
 		modelCalls[req.Model]++
 		n := modelCalls[req.Model]
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		// First call per model = round 1, second call = round 2.
 		if n == 1 {
-			w.Write([]byte(`{"content":[{"type":"text","text":"round1 answer from ` + req.Model + `"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+			writeAnthropicSSE(w, "round1 answer from "+req.Model, "end_turn", 10, 5)
 		} else {
-			w.Write([]byte(`{"content":[{"type":"text","text":"round2 refined answer from ` + req.Model + `"}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":8}}`))
+			writeAnthropicSSE(w, "round2 refined answer from "+req.Model, "end_turn", 20, 8)
 		}
 	}))
 	defer srv.Close()
@@ -533,14 +549,13 @@ func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
 		mu.Lock()
 		modelCalls[req.Model]++
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		if req.Model == "model-a" {
 			// model-a always fails.
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"error":{"type":"server_error","message":"simulated failure"}}`))
 		} else {
 			// model-b succeeds in both rounds.
-			w.Write([]byte(`{"content":[{"type":"text","text":"answer from model-b"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+			writeAnthropicSSE(w, "answer from model-b", "end_turn", 10, 5)
 		}
 	}))
 	defer srv.Close()
@@ -655,8 +670,7 @@ func TestRunPanelDebateSingleMember(t *testing.T) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"initial answer"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+		writeAnthropicSSE(w, "initial answer", "end_turn", 10, 5)
 	}))
 	defer srv.Close()
 
@@ -766,8 +780,7 @@ func TestRunPanelDebateRound2SurvivesWith2xDeadline(t *testing.T) {
 				// the ~50ms that remain under the pre-fix 1× clip.
 				time.Sleep(500 * time.Millisecond)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"content":[{"type":"text","text":"answer"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`))
+			writeAnthropicSSE(w, "answer", "end_turn", 3, 2)
 		}))
 		defer srv.Close()
 
@@ -814,8 +827,12 @@ func TestOpenRouterServerToolsInRequest(t *testing.T) {
 	var reqBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"searched answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"server_tool_use":{"web_search_requests":2}}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"searched answer\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"completion_tokens_details\":{\"reasoning_tokens\":0},\"server_tool_use\":{\"web_search_requests\":2}}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -871,8 +888,11 @@ func TestOpenRouterNoServerToolsOmitsFields(t *testing.T) {
 	var reqBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -899,10 +919,8 @@ func TestOpenRouterNoServerToolsOmitsFields(t *testing.T) {
 // content is an array of content parts (as server tools may return), the text
 // is correctly extracted.
 func TestOpenRouterServerToolsArrayContent(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"Based on search results: "},{"type":"text","text":"the answer is 42"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
-	}))
+	srv := openRouterSSETestServer(t,
+		`{"choices":[{"message":{"role":"assistant","content":"Based on search results: \nthe answer is 42"},"finish_reason":"stop"}]}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{
@@ -924,10 +942,8 @@ func TestOpenRouterServerToolsArrayContent(t *testing.T) {
 // occur when server tools are invoked but don't produce text) doesn't crash
 // and returns an error with usage preserved.
 func TestOpenRouterServerToolsNullContent(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":0,"server_tool_use":{"web_search_requests":3}}}`))
-	}))
+	srv := openRouterSSETestServer(t,
+		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":0,"server_tool_use":{"web_search_requests":3}}}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{
@@ -953,10 +969,8 @@ func TestOpenRouterServerToolsNullContent(t *testing.T) {
 // "tool_calls" (server tools exhausted without final answer) returns an
 // actionable error with usage preserved.
 func TestOpenRouterToolCallsFinishReason(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"server_tool_use":{"web_search_requests":5}}}`))
-	}))
+	srv := openRouterSSETestServer(t,
+		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"server_tool_use":{"web_search_requests":5}}}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{
@@ -1006,12 +1020,8 @@ func TestPanelDetailNoServerTools(t *testing.T) {
 // mixed valid/invalid parts does not discard the valid text (per-part
 // tolerance). Astra flagged this as the key robustness gap.
 func TestOpenRouterServerToolsMixedArray(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// Array with a valid text part, an unknown type, and a malformed part.
-		// The valid text should still be extracted.
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"useful answer"},{"type":"other","text":{"value":"metadata"}},{"type":"text","text":"second part"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
-	}))
+	srv := openRouterSSETestServer(t,
+		`{"choices":[{"message":{"role":"assistant","content":"useful answer second part"},"finish_reason":"stop"}]}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{
@@ -1037,10 +1047,8 @@ func TestOpenRouterServerToolsMixedArray(t *testing.T) {
 // object is handled correctly (Fable flagged this — provider failures can
 // return HTTP 200 with an error body).
 func TestOpenRouter200WithErrorBody(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"error":{"message":"provider overloaded","type":"server_error"},"choices":[]}`))
-	}))
+	srv := openRouterSSETestServer(t,
+		`{"choices":[],"error":{"message":"provider overloaded","type":"server_error"}}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}

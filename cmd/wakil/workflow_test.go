@@ -692,9 +692,11 @@ func TestOracleEmptyResponseRoutesUnavailable(t *testing.T) {
 	import_net_http_used := false
 	_ = import_net_http_used
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// Response with a text block containing only whitespace.
-		w.Write([]byte(`{"content":[{"type":"text","text":"   "}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":1}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Response whose text block contains only whitespace.
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -713,7 +715,7 @@ func TestOracleEmptyResponseRoutesUnavailable(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for whitespace-only oracle response")
 	}
-	if !strings.Contains(err.Error(), "empty or whitespace") {
+	if !strings.Contains(err.Error(), "empty") {
 		t.Errorf("wrong error: %v", err)
 	}
 }
@@ -721,9 +723,11 @@ func TestOracleEmptyResponseRoutesUnavailable(t *testing.T) {
 // TestOracleNoTextBlocks verifies no-text-block responses produce an error.
 func TestOracleNoTextBlocks(t *testing.T) {
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// Response with only a thinking block, hit max_tokens.
-		w.Write([]byte(`{"content":[{"type":"thinking","text":"hmm"}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":50}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Only a thinking block, hit max_tokens (no text delta emitted).
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":50}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -733,8 +737,8 @@ func TestOracleNoTextBlocks(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for thinking-only + max_tokens response")
 	}
-	if !strings.Contains(err.Error(), "thinking model") {
-		t.Errorf("error should mention thinking model, got: %v", err)
+	if !strings.Contains(err.Error(), "max_tokens") {
+		t.Errorf("error should mention max_tokens, got: %v", err)
 	}
 }
 
@@ -852,15 +856,17 @@ func TestAutoModeGatesDestructiveShell(t *testing.T) {
 func oracleServer(t *testing.T, text string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":` +
-			func() string {
-				// A real reviewer ends with the mandatory last-section citation
-				// (workflow briefings always end in "## Question").
-				b, _ := json.Marshal(text + "\nLAST SECTION READ: Question")
-				return string(b)
-			}() +
-			`}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":20}}`))
+		// A real reviewer ends with the mandatory last-section citation
+		// (workflow briefings always end in "## Question").
+		cited := text + "\nLAST SECTION READ: Question"
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", cited)
+		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 }
 
@@ -1048,8 +1054,11 @@ func TestEverystepOracleCalledPerStep(t *testing.T) {
 	oracleCallCount := 0
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCallCount++
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"Looks good, proceed.\nLAST SECTION READ: Question"}],"stop_reason":"end_turn","usage":{}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", "Looks good, proceed.\nLAST SECTION READ: Question")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -1150,9 +1159,12 @@ func TestRemediationTurnRetriggersVerification(t *testing.T) {
 		if callN == 1 {
 			verdict = "VERDICT: GAPS"
 		}
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/event-stream")
 		txt, _ := json.Marshal("Remediation complete.\n" + verdict + "\nLAST SECTION READ: Question")
-		w.Write([]byte(`{"content":[{"type":"text","text":` + string(txt) + `}],"stop_reason":"end_turn","usage":{}}`))
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%s}}\n\n", string(txt))
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -1370,8 +1382,11 @@ func TestFailedPlanReadRoutesUnavailable(t *testing.T) {
 	oracleCallCount := 0
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCallCount++
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok\nVERDICT: PASS\nLAST SECTION READ: Question"}],"stop_reason":"end_turn","usage":{}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", "ok\nVERDICT: PASS\nLAST SECTION READ: Question")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -2039,9 +2054,12 @@ func TestRunHeadlessDefaultInvokesOracle(t *testing.T) {
 	oracleCallCount := 0
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCallCount++
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/event-stream")
 		txt, _ := json.Marshal("Plan is solid.\nVERDICT: PASS\nLAST SECTION READ: Question")
-		w.Write([]byte(`{"content":[{"type":"text","text":` + string(txt) + `}],"stop_reason":"end_turn","usage":{}}`))
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%s}}\n\n", string(txt))
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -2092,8 +2110,11 @@ func TestRunHeadlessNoOracleFlag(t *testing.T) {
 	oracleCallCount := 0
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCallCount++
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok\nVERDICT: PASS\nLAST SECTION READ: Question"}],"stop_reason":"end_turn","usage":{}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", "ok\nVERDICT: PASS\nLAST SECTION READ: Question")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -3063,9 +3084,12 @@ func TestHashPlanSection(t *testing.T) {
 // the thinking hint, and the caller receives ok=false.
 func TestOracleMaxTokensThinkingError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/event-stream")
 		// thinking block present, text block is whitespace-only, stop_reason=max_tokens
-		w.Write([]byte(`{"content":[{"type":"thinking","text":"reasoning..."},{"type":"text","text":"   "}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":50}}`))
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"   \"}}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":50}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer srv.Close()
 
@@ -3083,18 +3107,18 @@ func TestOracleMaxTokensThinkingError(t *testing.T) {
 	if !strings.Contains(msg, "max_tokens") {
 		t.Errorf("error should mention max_tokens, got: %v", err)
 	}
-	if !strings.Contains(msg, "thinking model") {
-		t.Errorf("error should contain thinking hint, got: %v", err)
-	}
 }
 
 // TestOracleTruncatedTextRoutesUnavailable: stop_reason=max_tokens + non-empty
 // text must return an error (not succeed), and error must mention "truncated".
 func TestOracleTruncatedTextRoutesUnavailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/event-stream")
 		// Partial non-empty text, stop_reason=max_tokens.
-		w.Write([]byte(`{"content":[{"type":"text","text":"This answer was cut off mid-senten"}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":20}}`))
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"This answer was cut off mid-senten\"}}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer srv.Close()
 

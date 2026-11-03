@@ -513,8 +513,8 @@ func (a *App) applyThinkFlagLocked() []string {
 	if !a.Cfg.ThinkExplicit || a.Cfg.ThinkEffort == "" {
 		return nil
 	}
-	if a.Cfg.ThinkEffort == "off" {
-		a.ReasoningEffort = ""
+	if a.Cfg.ThinkEffort == "off" || a.Cfg.ThinkEffort == "none" {
+		a.ReasoningEffort = "none"
 		a.ReasoningMaxTokens = 0
 		return []string{"thinking=off (--think)"}
 	}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,10 @@ import (
 // fake oracle received, finds the last heading / "── label ──" block of the
 // document and ends its text with the mandatory "LAST SECTION READ:" citation.
 // A fake that returns fixed text without it is (correctly) VOID.
+//
+// The response is sent as an Anthropic SSE stream (message_start,
+// content_block_delta, message_delta, message_stop) because
+// callOracleWithReasoning now sends stream:true.
 func writeCitedReply(w http.ResponseWriter, r *http.Request, text, usageJSON string) {
 	raw, _ := io.ReadAll(r.Body)
 	var body struct {
@@ -43,11 +48,19 @@ func writeCitedReply(w http.ResponseWriter, r *http.Request, text, usageJSON str
 	if last != "" {
 		text += "\nLAST SECTION READ: " + last
 	}
-	out, _ := json.Marshal(map[string]any{
-		"content":     []map[string]string{{"type": "text", "text": text}},
-		"stop_reason": "end_turn",
-		"usage":       json.RawMessage(usageJSON),
-	})
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(out)
+	// Parse the usage JSON to extract input/output tokens for the SSE events.
+	var usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	}
+	_ = json.Unmarshal([]byte(usageJSON), &usage)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n", usage.InputTokens)
+	fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
+	fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", text)
+	fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
+	fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":%d}}\n\n", usage.OutputTokens)
+	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 }

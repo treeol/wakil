@@ -265,11 +265,13 @@ func TestVoidReplyNeverCountsAsARound(t *testing.T) {
 			http.Error(w, `{"error":{"message":"overloaded"}}`, 529)
 			return
 		}
-		out, _ := json.Marshal(map[string]any{
-			"content":     []map[string]string{{"type": "text", "text": "cut o"}},
-			"stop_reason": "max_tokens", "usage": map[string]int{"input_tokens": 1, "output_tokens": 1},
-		})
-		_, _ = w.Write(out)
+		// Return SSE with max_tokens stop_reason (truncation).
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"cut o\"}}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":1}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer srv.Close()
 

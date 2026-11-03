@@ -100,6 +100,8 @@
   "_comment_mashura_roles": "Per-role overrides for Mashūra counsel reasoning, keyed by role name ('reviewer' or 'check'). When a role's reasoning is set, it applies to all calls dispatched under that role. Per-model reasoning (in mashura_models above) takes precedence for the reviewer role. For the check role, the role-level setting is the only source. Example: \"mashura_roles\": {\"reviewer\": {\"reasoning\": {\"effort\": \"medium\", \"max_tokens\": 4096}}, \"check\": {\"reasoning\": {\"effort\": \"low\"}}}",
   "mashura_roles": {},
 
+  "_comment_reasoning_defaults": "Built-in reasoning defaults when no explicit setting is configured: main model = medium, Mashūra reviewer = medium (max_tokens 8192), Mashūra check = none (disabled), subagent = low. Use /thinking off or --think off to explicitly disable. See docs/configuration.md.",
+
   "mashura_panels": {
     "default": {
       "models": ["anthropic:claude-sonnet-4-6"],

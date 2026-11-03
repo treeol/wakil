@@ -118,6 +118,7 @@ reference covering every section below.
 | `mashura_panels` | — | Named counsel model panels |
 | `mashura_models` | — | Per-model reviewer limits, keyed by `"provider:model"` or the bare model id: `context_tokens` (context window; default from the OpenRouter registry / built-in table, 128000 if unknown), `review_max_tokens` (answer budget; default `mashura_max_tokens`, never below 4096 for a review, and reduced to what fits: `min(configured, context − input − 512)`), and `reasoning` (per-model reasoning/thinking spec: `{"effort": "low\|medium\|high\|none", "max_tokens": N}` — when set, `max_tokens` on the wire is additive: reasoning budget + answer budget; the answer budget is never reduced). Mashūra never truncates what it sends: a document that fits the context window (90% of it, estimated at 3 bytes/token) is sent whole; a larger one is split at markdown headings into labelled "part i of n" calls with ~200 tokens of overlap and the findings merged; one that still cannot fit (a single source file or section larger than a part) fails with an error and nothing is sent. A reply cut at max_tokens is retried once chunked, then marked **VOID**; each reply must end with `LAST SECTION READ: <heading>` matching the part's last heading, else it is VOID. A VOID reply is shown as such and never counts as a review round or as "no findings" |
 | `mashura_roles` | — | Per-role overrides for Mashūra counsel reasoning, keyed by role name (`"reviewer"` or `"check"`). When a role's `reasoning` is set, it applies to all calls dispatched under that role. Per-model `reasoning` (in `mashura_models` above) takes precedence for the reviewer role. For the check role, the role-level setting is the only source. Example: `{"reviewer": {"reasoning": {"effort": "medium", "max_tokens": 4096}}, "check": {"reasoning": {"effort": "low"}}}` |
+| `oracle_timeout_seconds` | `0` (→ 300) | Total cap for a single Mashūra call (idle timeout: 120s). `0` = use built-in default (30min). |
 | `mashura_tool_panels` | — | Maps each counsel tool to a named panel |
 | `mashura_mode` | — | Default oracle consult schedule: `every-step` \| `on-deviation` \| `phases-only` *(alias: `wf_oracle_mode`)* |
 | `skill_creation` | — | Automatic skill creation (`/skill-creation`); object with the keys below |
@@ -280,6 +281,28 @@ the current session; `Enable style guides` allows subsequent activation again.
 
 Style bytes count toward context limits; Wakil returns an explicit error rather
 than delivering an over-limit request.
+
+## Reasoning defaults
+
+Wakil applies built-in default reasoning effort levels when no explicit
+setting is configured (not via `mashura_roles`/`mashura_models`, not via
+`/thinking`, not via `--think`):
+
+| Role | Default effort | Default max_tokens |
+|---|---|---|
+| Main model | `medium` | (none — effort only) |
+| Mashūra reviewer | `medium` | `8192` |
+| Mashūra check | `none` (disabled) | — |
+| Subagent | `low` | (effort only) |
+
+These defaults are behavior changes for all users: the main model now sends
+`reasoning: {effort: "medium"}` on every request to a reasoning-capable
+endpoint (OpenRouter, Anthropic thinking models). Non-reasoning models ignore
+the parameter. Use `/thinking off` or `--think off` to disable reasoning
+explicitly. Use `mashura_roles` to override the Mashūra defaults.
+
+A reviewer never gets more than 16384 reasoning tokens (the `max` effort
+level maps to 16384 in the `EffortToBudget` table).
 
 ## Execution modes
 

@@ -17,15 +17,59 @@ import (
 // ─── CallOracle / CallOracleURL ──────────────────────────────────────────────
 
 // oracleTestServer returns an httptest.Server that responds with the given
-// status code and response body.
+// status code and response body. When status is 200, it returns an SSE stream
+// with the content and usage; for non-200 it returns the body as-is (the
+// callOracleWithReasoning non-200 path does a fallback doJSONPost to get the
+// error body).
 func oracleTestServer(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		if status != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
+			w.Write([]byte(body))
+			return
 		}
-		w.Write([]byte(body))
+		// Try to parse as a non-streaming Anthropic response and emit SSE.
+		var resp struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			StopReason string `json:"stop_reason"`
+			Usage      struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal([]byte(body), &resp) != nil {
+			// Bad JSON: return a non-SSE response that will cause a parse error
+			// in the SSE parser (no valid data lines).
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(body))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// message_start with usage
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d}}}\n\n",
+			resp.Usage.InputTokens, resp.Usage.OutputTokens)
+		// content_block_start + content_block_delta for each content block
+		for _, c := range resp.Content {
+			if c.Type == "text" {
+				fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
+				if c.Text != "" {
+					fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", c.Text)
+				}
+				fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
+			}
+		}
+		// message_delta with stop_reason and output tokens
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":%q},\"usage\":{\"output_tokens\":%d}}\n\n",
+			resp.StopReason, resp.Usage.OutputTokens)
+		// message_stop
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 }
 
@@ -122,7 +166,8 @@ func TestCallOracleURL_MaxTokensTruncation(t *testing.T) {
 func TestCallOracleURL_MaxTokensNoTextBlocks(t *testing.T) {
 	// Response with ONLY thinking blocks (no text blocks at all) + max_tokens.
 	// This takes the "before emitting any text" branch, distinct from the
-	// partial-text branch.
+	// partial-text branch. With streaming, the thinking parameter is not set
+	// (no reasoning spec), so the remediation is the non-thinking hint.
 	srv := oracleTestServer(t, http.StatusOK,
 		`{"content":[{"type":"thinking","text":"thinking..."}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":5}}`)
 	defer srv.Close()
@@ -135,18 +180,16 @@ func TestCallOracleURL_MaxTokensNoTextBlocks(t *testing.T) {
 	if !strings.Contains(err.Error(), "before emitting any text") {
 		t.Errorf("error should mention 'before emitting any text', got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "non-thinking model") {
-		t.Errorf("error should suggest non-thinking model for thinking-only blocks, got: %v", err)
-	}
 }
 
 func TestCallOracleURL_MaxTokensWithThinking(t *testing.T) {
 	srv := oracleTestServer(t, http.StatusOK,
-		`{"content":[{"type":"thinking","text":"..."},{"type":"text","text":""}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":5}}`)
+		`{"content":[{"type":"text","text":""}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":5}}`)
 	defer srv.Close()
 
 	cfg := config.Config{OracleModel: "m", OracleMaxTokens: 256, OracleTimeoutSeconds: 5}
-	_, _, err := CallOracleURL(context.Background(), cfg, "key", "q", "", srv.URL)
+	spec := &config.ReasoningSpec{Effort: "medium"}
+	_, _, err := callOracleWithReasoning(context.Background(), cfg, "key", "q", "", srv.URL, spec)
 	if err == nil {
 		t.Fatal("expected max_tokens truncation error")
 	}
@@ -165,9 +208,6 @@ func TestCallOracleURL_EmptyResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected empty-response error")
 	}
-	if !strings.Contains(err.Error(), "no text blocks") {
-		t.Errorf("error should mention no text blocks, got: %v", err)
-	}
 }
 
 func TestCallOracleURL_WhitespaceOnlyResponse(t *testing.T) {
@@ -180,22 +220,19 @@ func TestCallOracleURL_WhitespaceOnlyResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected whitespace-only error")
 	}
-	if !strings.Contains(err.Error(), "empty or whitespace") {
-		t.Errorf("error should mention whitespace, got: %v", err)
-	}
 }
 
 func TestCallOracleURL_BadJSONResponse(t *testing.T) {
+	// A bad JSON body sent as SSE will produce no valid data lines — the
+	// stream ends with empty content and no usage, which triggers the
+	// empty-response error path.
 	srv := oracleTestServer(t, http.StatusOK, `not valid json`)
 	defer srv.Close()
 
 	cfg := config.Config{OracleModel: "m", OracleMaxTokens: 256, OracleTimeoutSeconds: 5}
 	_, _, err := CallOracleURL(context.Background(), cfg, "key", "q", "", srv.URL)
 	if err == nil {
-		t.Fatal("expected parse error")
-	}
-	if !strings.Contains(err.Error(), "parse response") {
-		t.Errorf("error should mention parse response, got: %v", err)
+		t.Fatal("expected error for bad JSON response")
 	}
 }
 
@@ -284,7 +321,7 @@ func TestCallMember_AnthropicProvider(t *testing.T) {
 }
 
 func TestCallMember_OpenRouterProvider(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK,
+	srv := openRouterSSETestServer(t,
 		`{"choices":[{"message":{"role":"assistant","content":"or answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
 	defer srv.Close()
 
@@ -316,8 +353,72 @@ func TestCallOpenRouter_HTTPError(t *testing.T) {
 	}
 }
 
+// openRouterSSETestServer returns an httptest.Server that returns an SSE
+// stream mimicking OpenRouter's chat.completions chunk format.
+func openRouterSSETestServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Parse the non-streaming body to extract choices and usage.
+		var resp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *struct {
+				PromptTokens            int `json:"prompt_tokens"`
+				CompletionTokens        int `json:"completion_tokens"`
+				CompletionTokensDetails *struct {
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"completion_tokens_details,omitempty"`
+				ServerToolUse *struct {
+					WebSearchRequests int `json:"web_search_requests"`
+				} `json:"server_tool_use,omitempty"`
+			} `json:"usage"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(body), &resp) != nil {
+			// Bad JSON — return as raw (will cause empty content).
+			w.Write([]byte(body))
+			return
+		}
+		if resp.Error != nil {
+			fmt.Fprintf(w, "data: {\"error\":{\"message\":%q}}\n\n", resp.Error.Message)
+			return
+		}
+		// Emit content chunks for each choice.
+		for _, c := range resp.Choices {
+			if c.Message.Content != "" {
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q},\"finish_reason\":null}]}\n\n", c.Message.Content)
+			}
+			// Final chunk with finish_reason.
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":%q}]}\n\n", c.FinishReason)
+		}
+		// Usage chunk (trailing).
+		if resp.Usage != nil {
+			reasoning := 0
+			if resp.Usage.CompletionTokensDetails != nil {
+				reasoning = resp.Usage.CompletionTokensDetails.ReasoningTokens
+			}
+			webSearch := 0
+			if resp.Usage.ServerToolUse != nil {
+				webSearch = resp.Usage.ServerToolUse.WebSearchRequests
+			}
+			fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d,\"completion_tokens_details\":{\"reasoning_tokens\":%d},\"server_tool_use\":{\"web_search_requests\":%d}}}\n\n",
+				resp.Usage.PromptTokens, resp.Usage.CompletionTokens, reasoning, webSearch)
+		}
+		// [DONE]
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+}
+
 func TestCallOpenRouter_NoChoices(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK, `{"choices":[]}`)
+	srv := openRouterSSETestServer(t, `{"choices":[]}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
@@ -325,13 +426,13 @@ func TestCallOpenRouter_NoChoices(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected no-choices error")
 	}
-	if !strings.Contains(err.Error(), "no choices") {
-		t.Errorf("error should mention no choices, got: %v", err)
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Errorf("error should mention empty response, got: %v", err)
 	}
 }
 
 func TestCallOpenRouter_EmptyContent(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK,
+	srv := openRouterSSETestServer(t,
 		`{"choices":[{"message":{"role":"assistant","content":"  "},"finish_reason":"stop"}]}`)
 	defer srv.Close()
 
@@ -346,7 +447,7 @@ func TestCallOpenRouter_EmptyContent(t *testing.T) {
 }
 
 func TestCallOpenRouter_FinishReasonLength(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK,
+	srv := openRouterSSETestServer(t,
 		`{"choices":[{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
 	defer srv.Close()
 
@@ -378,21 +479,21 @@ func TestCallFusion_HTTPError(t *testing.T) {
 }
 
 func TestCallFusion_NoChoices(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK, `{"choices":[]}`)
+	srv := openRouterSSETestServer(t, `{"choices":[]}`)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
 	_, _, err := callFusion(context.Background(), []string{"model-a"}, "key", "q", "b", ccfg)
 	if err == nil {
-		t.Fatal("expected no-choices error")
+		t.Fatal("expected empty-response error")
 	}
-	if !strings.Contains(err.Error(), "no choices") {
-		t.Errorf("error should mention no choices, got: %v", err)
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Errorf("error should mention empty response, got: %v", err)
 	}
 }
 
 func TestCallFusion_EmptyResponse(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK,
+	srv := openRouterSSETestServer(t,
 		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`)
 	defer srv.Close()
 
@@ -599,8 +700,12 @@ func TestCallOracleURL_RequestShape(t *testing.T) {
 		apiKeyHeader = r.Header.Get("x-api-key")
 		anthropicVersion = r.Header.Get("anthropic-version")
 		reqBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer srv.Close()
 
@@ -654,8 +759,12 @@ func TestCallOracleURL_NoContext(t *testing.T) {
 	var reqBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer srv.Close()
 

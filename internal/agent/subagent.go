@@ -1297,8 +1297,16 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	// the child's prepareTurn → applyReasoningToClientLocked derives
 	// Client.Reasoning from these fields — setting Client.Reasoning directly
 	// would be overwritten to nil on the child's first prepareTurn.
+	//
+	// When the parent has no explicit reasoning setting (both fields zero),
+	// the subagent uses its own default ("low") rather than inheriting the
+	// parent's built-in default ("medium") — subagents are lightweight workers
+	// that don't need the same reasoning intensity as the main model.
 	parentReasoningEffort := a.ReasoningEffortLocked()
 	parentReasoningMaxTokens := a.ReasoningMaxTokensLocked()
+	if parentReasoningEffort == "" && parentReasoningMaxTokens == 0 {
+		parentReasoningEffort = "low"
+	}
 
 	// Select the executor for the child App. When using worktree isolation,
 	// the child gets an executor rooted at the worktree directory so its

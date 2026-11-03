@@ -120,7 +120,7 @@ func TestRunPanelObserver_PanickingObserver(t *testing.T) {
 // with the fusion model label.
 func TestRunPanelObserver_FusionMode(t *testing.T) {
 	// Fusion uses OpenRouter endpoint.
-	srv := oracleTestServer(t, http.StatusOK,
+	srv := openRouterSSETestServer(t,
 		`{"choices":[{"message":{"role":"assistant","content":"fusion answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 	defer srv.Close()
 

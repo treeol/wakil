@@ -293,22 +293,42 @@ func (a *App) SetMaxParallel(n int) {
 	a.stateMu.Unlock()
 }
 
+// DefaultReasoningEffort is the built-in default reasoning effort for the
+// main model when no explicit setting is configured (not via config, not via
+// /thinking, not via --think). This is a behavior change for all users —
+// see docs/configuration.md ("Reasoning defaults").
+const DefaultReasoningEffort = "medium"
+
 // applyReasoningToClientLocked updates Client.Reasoning from the session-scoped
 // ReasoningEffort and ReasoningMaxTokens fields. Caller MUST hold stateMu.Lock.
-// When both fields are zero/empty, Client.Reasoning is set to nil (omitted from
-// the request body entirely — the model's default behavior applies).
+// When both fields are zero/empty, the built-in default (medium) is applied so
+// reasoning-capable models use extended thinking by default. "none" effort
+// explicitly disables reasoning (Client.Reasoning = nil). The session-scoped
+// fields are NOT mutated — the default is derived without writing it back, so
+// callers that check ReasoningEffort for "not set" (e.g. subagent dispatch)
+// still see the original empty value.
 func (a *App) applyReasoningToClientLocked() {
-	if a.ReasoningEffort == "" && a.ReasoningMaxTokens == 0 {
+	effort := a.ReasoningEffort
+	maxTok := a.ReasoningMaxTokens
+	if effort == "" && maxTok == 0 {
+		// No explicit setting: apply the built-in default. The effort is
+		// "medium" — only meaningful for reasoning-capable models. The
+		// session fields stay empty so subagent dispatch can apply its own
+		// default ("low") rather than inheriting "medium".
+		effort = DefaultReasoningEffort
+	}
+	if effort == "none" || effort == "off" {
+		a.Client.Reasoning = nil
+		return
+	}
+	if effort == "" && maxTok == 0 {
 		a.Client.Reasoning = nil
 		return
 	}
 	rc := &proxy.ReasoningConfig{
-		Effort:    a.ReasoningEffort,
-		MaxTokens: a.ReasoningMaxTokens,
+		Effort:    effort,
+		MaxTokens: maxTok,
 	}
-	// When only max_tokens is set (no effort), OpenRouter interprets it as a
-	// direct token budget. When only effort is set, it controls the reasoning
-	// intensity. Both together is valid per the API docs.
 	a.Client.Reasoning = rc
 }
 

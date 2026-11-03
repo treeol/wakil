@@ -1081,7 +1081,9 @@ func (a *App) mashuraMaxTokensFor(name string) int {
 // tool call. Per-model reasoning is resolved per-member in counsel.runMember
 // (via ModelLimits); this method provides the role-level default. The role is
 // derived from the tool short name: "review"/"debug"/"decide" → "reviewer",
-// "check" → "check". Returns nil when no role-level reasoning is configured.
+// "check" → "check". When no role-level reasoning is configured, built-in
+// defaults apply: reviewer = medium (max_tokens 8192), check = none (disabled).
+// A reviewer never gets more than 16k reasoning tokens.
 func (a *App) mashuraReasoningFor(name string) *config.ReasoningSpec {
 	short := strings.TrimPrefix(name, "mashura__")
 	if name == "oracle__ask" {
@@ -1093,6 +1095,14 @@ func (a *App) mashuraReasoningFor(name string) *config.ReasoningSpec {
 	}
 	if rc, ok := a.Cfg.MashuraRoles[role]; ok && rc.Reasoning != nil && !rc.Reasoning.IsZero() {
 		return rc.Reasoning
+	}
+	// Built-in defaults: reviewer = medium (max 8192), check = none.
+	// These are behavior changes — documented in docs/configuration.md.
+	switch role {
+	case "reviewer":
+		return &config.ReasoningSpec{Effort: "medium", MaxTokens: 8192}
+	case "check":
+		return &config.ReasoningSpec{Effort: "none"}
 	}
 	return nil
 }

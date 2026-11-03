@@ -84,6 +84,11 @@ type oracleReq struct {
 	// The caller makes max_tokens = budget_tokens + answer_budget so the total
 	// is additive and the answer budget is never reduced for reasoning.
 	Thinking *oracleThinking `json:"thinking,omitempty"`
+	// Stream enables SSE streaming. When true, the response is a stream of
+	// events (message_start, content_block_start, content_block_delta,
+	// content_block_stop, message_delta, message_stop) rather than a single
+	// JSON body.
+	Stream bool `json:"stream"`
 }
 
 // oracleThinking is the Anthropic-native thinking parameter.
@@ -95,6 +100,94 @@ type oracleThinking struct {
 type oracleMsg struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// anthropicSSEEvent is the envelope for Anthropic SSE events.
+type anthropicSSEEvent struct {
+	Type    string          `json:"type"`
+	Delta   json.RawMessage `json:"delta,omitempty"`
+	Message *struct {
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+		StopReason string `json:"stop_reason"`
+	} `json:"message,omitempty"`
+	// content_block_start carries the block type (text/thinking).
+	ContentBlock *struct {
+		Type string `json:"type"`
+	} `json:"content_block,omitempty"`
+	// Error carries mid-stream error events (overloaded_error, etc.).
+	Error *struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+// anthropicSSEDelta is the delta in content_block_delta / message_delta.
+type anthropicSSEDelta struct {
+	Type       string `json:"type"` // "text_delta" | "thinking_delta" | "message_delta"
+	Text       string `json:"text,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
+}
+
+// anthropicMessageDelta carries the final usage in message_delta events.
+type anthropicMessageDelta struct {
+	Type  string `json:"type"`
+	Delta struct {
+		StopReason   string `json:"stop_reason,omitempty"`
+		OutputTokens int    `json:"output_tokens,omitempty"`
+	} `json:"delta"`
+	Usage *struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage,omitempty"`
+}
+
+// parseAnthropicSSE parses one Anthropic SSE data line and returns the text
+// content, usage (when available), and whether the stream is done.
+func parseAnthropicSSE(data []byte) (string, *streamUsage, bool) {
+	var ev anthropicSSEEvent
+	if err := json.Unmarshal(data, &ev); err != nil {
+		return "", nil, false
+	}
+	switch ev.Type {
+	case "message_start":
+		if ev.Message != nil {
+			return "", &streamUsage{
+				InputTokens:  int64(ev.Message.Usage.InputTokens),
+				OutputTokens: int64(ev.Message.Usage.OutputTokens),
+			}, false
+		}
+	case "content_block_delta":
+		var d anthropicSSEDelta
+		if json.Unmarshal(ev.Delta, &d) == nil && d.Type == "text_delta" {
+			return d.Text, nil, false
+		}
+	case "message_delta":
+		var md anthropicMessageDelta
+		if json.Unmarshal(data, &md) == nil {
+			u := &streamUsage{
+				FinishReason: md.Delta.StopReason,
+			}
+			if md.Usage != nil {
+				u.OutputTokens = int64(md.Usage.OutputTokens)
+			}
+			if md.Delta.OutputTokens > 0 {
+				u.OutputTokens = int64(md.Delta.OutputTokens)
+			}
+			return "", u, false
+		}
+	case "message_stop":
+		return "", nil, true
+	case "error":
+		// Mid-stream error (overloaded_error, etc.) — surface it.
+		msg := "unknown error"
+		if ev.Error != nil && ev.Error.Message != "" {
+			msg = ev.Error.Message
+		}
+		return "", &streamUsage{FinishReason: "error", ErrorMsg: msg}, true
+	}
+	return "", nil, false
 }
 
 // oracleResp is the relevant subset of the Anthropic Messages API response body.
@@ -201,109 +294,87 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 		System:    oracleSystemPrompt,
 		Messages:  []oracleMsg{{Role: "user", Content: userContent}},
 		Thinking:  thinking,
+		Stream:    true,
 	})
 	if err != nil {
 		return "", OracleUsage{}, fmt.Errorf("marshal: %w", err)
 	}
 
 	// Derive a child context so Ctrl-C (parent cancel) and the configured
-	// timeout both terminate. Default is 300s (Anthropic non-streaming calls
-	// with large max_tokens can legitimately take several minutes).
+	// timeout both terminate. The timeout is the total cap (default 30min);
+	// the idle timeout (120s) catches stalled streams within that cap.
+	// A length stop still goes through the truncation/VOID path.
 	timeout := time.Duration(cfg.OracleTimeoutSeconds) * time.Second
 	if timeout <= 0 {
-		timeout = 300 * time.Second
+		timeout = counselStreamTotalCap
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	raw, status, err := doJSONPost(tctx, endpoint, map[string]string{
+	content, sUsage, status, err := streamRequest(tctx, endpoint, map[string]string{
 		"x-api-key":         apiKey,
 		"anthropic-version": "2023-06-01",
-	}, body)
+	}, body, counselStreamIdleTimeout, timeout, parseAnthropicSSE)
 	if err != nil {
 		return "", OracleUsage{}, err
 	}
 
 	if status != http.StatusOK {
+		// Non-200: the streamRequest already read the body; parse it as an error.
 		var apiErr oracleResp
-		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error != nil {
+		if json.Unmarshal([]byte(content), &apiErr) == nil && apiErr.Error != nil {
 			msg := apiErr.Error.Message
-			// Anthropic rejects non-streaming requests whose response would exceed
-			// an internal size threshold. Streaming the oracle call is the proper
-			// long-term fix; for now surface a clear hint rather than a raw 400.
 			if status == 400 && strings.Contains(msg, "max_tokens") {
-				msg += " (API rejected large non-streaming request; reduce oracle_max_tokens or stream the call)"
+				msg += " (API rejected large request; reduce oracle_max_tokens)"
 			}
 			return "", OracleUsage{}, fmt.Errorf("anthropic: HTTP %d: %s", status, msg)
 		}
 		return "", OracleUsage{}, fmt.Errorf("anthropic: HTTP %d", status)
 	}
 
+	// Build usage from the streamed data.
 	var result oracleResp
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", OracleUsage{}, fmt.Errorf("parse response: %w", err)
+	if sUsage != nil {
+		result.StopReason = sUsage.FinishReason
+		result.Usage.InputTokens = int(sUsage.InputTokens)
+		result.Usage.OutputTokens = int(sUsage.OutputTokens)
 	}
 
-	// Classify content blocks and collect debug info.
-	var textParts []string
-	var blockTypes []string
-	for _, c := range result.Content {
-		blockTypes = append(blockTypes, c.Type)
-		if c.Type == "text" {
-			textParts = append(textParts, c.Text)
-		}
-	}
-
-	// Debug log: write raw response structure to the diagnostic sink when
-	// WAKIL_DEBUG is set.
+	text := strings.TrimSpace(content)
 	if os.Getenv("WAKIL_DEBUG") != "" {
-		diag.Printf("[oracle debug] stop_reason=%q blocks=[%s] input=%d output=%d\n",
-			result.StopReason,
-			strings.Join(blockTypes, ","),
-			result.Usage.InputTokens,
-			result.Usage.OutputTokens,
-		)
+		diag.Printf("[oracle debug] streamed stop_reason=%q input=%d output=%d content_len=%d\n",
+			result.StopReason, result.Usage.InputTokens, result.Usage.OutputTokens, len(text))
 	}
 
-	// max_tokens check runs FIRST so the actionable remediation hint wins even
-	// when conditions co-occur (e.g. thinking model emits only whitespace before
-	// hitting the limit — that is still a truncation, not an empty-response).
-	//
-	// Both sub-cases (no text / partial text) route to ok=false at the call site;
-	// partial text is not salvaged — a truncated oracle answer is as unreliable
-	// as no answer at all.
+	// max_tokens check runs FIRST so the actionable remediation hint wins.
 	if result.StopReason == "max_tokens" {
-		var hasThinking bool
-		for _, t := range blockTypes {
-			if t == "thinking" {
-				hasThinking = true
-			}
-		}
 		remediation := "; raise oracle_max_tokens to avoid truncation"
-		if hasThinking {
+		if thinking != nil {
 			remediation = "; raise oracle_max_tokens or use a non-thinking model"
 		}
-		// Return actual usage even on truncation — the API call was billed.
 		truncUsage := OracleUsage{
 			InputTokens:  int64(result.Usage.InputTokens),
 			OutputTokens: int64(result.Usage.OutputTokens),
 			FinishReason: result.StopReason,
 		}
-		if len(textParts) == 0 {
+		if text == "" {
 			return "", truncUsage, &IncompleteReplyError{Length: true, Msg: fmt.Sprintf("oracle hit max_tokens before emitting any text%s", remediation)}
 		}
-		joined := strings.Join(textParts, "\n")
-		return "", truncUsage, &IncompleteReplyError{Length: true, Msg: fmt.Sprintf("oracle response truncated at max_tokens (%d chars received)%s", len(joined), remediation)}
+		return "", truncUsage, &IncompleteReplyError{Length: true, Msg: fmt.Sprintf("oracle response truncated at max_tokens (%d chars received)%s", len(text), remediation)}
+	}
+	// Mid-stream error (overloaded_error, etc.).
+	if result.StopReason == "error" {
+		errMsg := "provider error"
+		if sUsage != nil && sUsage.ErrorMsg != "" {
+			errMsg = sUsage.ErrorMsg
+		}
+		billed := OracleUsage{InputTokens: int64(result.Usage.InputTokens), OutputTokens: int64(result.Usage.OutputTokens), FinishReason: result.StopReason}
+		return "", billed, fmt.Errorf("anthropic: %s", errMsg)
 	}
 
-	// Reject empty or whitespace-only text (stop_reason is not max_tokens here).
 	billed := OracleUsage{InputTokens: int64(result.Usage.InputTokens), OutputTokens: int64(result.Usage.OutputTokens), FinishReason: result.StopReason}
-	if len(textParts) == 0 {
-		return "", billed, &IncompleteReplyError{Msg: fmt.Sprintf("oracle response contains no text blocks (blocks=%v, stop_reason=%q)", blockTypes, result.StopReason)}
-	}
-	joined := strings.Join(textParts, "\n")
-	if strings.TrimSpace(joined) == "" {
-		return "", billed, &IncompleteReplyError{Msg: "oracle response is empty or whitespace-only"}
+	if text == "" {
+		return "", billed, &IncompleteReplyError{Msg: fmt.Sprintf("oracle response is empty (stop_reason=%q)", result.StopReason)}
 	}
 
 	usage := OracleUsage{
@@ -311,7 +382,7 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 		OutputTokens: int64(result.Usage.OutputTokens),
 		FinishReason: result.StopReason,
 	}
-	return joined, usage, nil
+	return text, usage, nil
 }
 
 // OracleDetail builds the human-readable detail shown in the confirm-gate
@@ -738,6 +809,9 @@ type orReq struct {
 	// Reasoning is the OpenRouter reasoning parameter, sent when the panel
 	// call config specifies a reasoning spec. nil = omit entirely.
 	Reasoning *config.ReasoningSpec `json:"reasoning,omitempty"`
+	// Stream enables SSE streaming. When true, the response is a stream of
+	// chat.completion.chunk events rather than a single JSON body.
+	Stream bool `json:"stream"`
 }
 
 // orServerTool is one OpenRouter server-side tool entry. OpenRouter executes
@@ -775,6 +849,70 @@ type orResp struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
+}
+
+// orSSEChunk is the SSE streaming chunk for OpenRouter (OpenAI chat.completions).
+type orSSEChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *struct {
+		PromptTokens            int `json:"prompt_tokens"`
+		CompletionTokens        int `json:"completion_tokens"`
+		CompletionTokensDetails *struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details,omitempty"`
+		ServerToolUse *struct {
+			WebSearchRequests int `json:"web_search_requests"`
+		} `json:"server_tool_use,omitempty"`
+	} `json:"usage"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// parseOpenRouterSSE parses one OpenRouter SSE data line and returns the text
+// content, usage (when available), and whether the stream is done.
+func parseOpenRouterSSE(data []byte) (string, *streamUsage, bool) {
+	var chunk orSSEChunk
+	if err := json.Unmarshal(data, &chunk); err != nil {
+		return "", nil, false
+	}
+	var content string
+	var finishReason string
+	if len(chunk.Choices) > 0 {
+		c := chunk.Choices[0]
+		content = c.Delta.Content
+		finishReason = c.FinishReason
+	}
+	var u *streamUsage
+	if chunk.Usage != nil {
+		u = &streamUsage{
+			InputTokens:  int64(chunk.Usage.PromptTokens),
+			OutputTokens: int64(chunk.Usage.CompletionTokens),
+			FinishReason: finishReason,
+		}
+		if chunk.Usage.CompletionTokensDetails != nil {
+			u.ReasoningTokens = int64(chunk.Usage.CompletionTokensDetails.ReasoningTokens)
+		}
+		if chunk.Usage.ServerToolUse != nil {
+			u.WebSearchRequests = int64(chunk.Usage.ServerToolUse.WebSearchRequests)
+		}
+	} else if finishReason != "" {
+		u = &streamUsage{FinishReason: finishReason}
+	}
+	if chunk.Error != nil {
+		// Mid-stream error — return as an error finish reason with the message.
+		return "", &streamUsage{FinishReason: "error", ErrorMsg: chunk.Error.Message}, true
+	}
+	// Don't stop on finish_reason — the usage chunk may follow. Only [DONE]
+	// (handled by streamRequest) ends the stream.
+	return content, u, false
 }
 
 // orRespMessage tolerantly decodes the response message — content may be a
@@ -866,6 +1004,7 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 			{Role: "user", Content: userContent},
 		},
 		Reasoning: reasoning,
+		Stream:    true,
 	}
 
 	// Wire server-side tools when configured. OpenRouter executes these
@@ -917,20 +1056,23 @@ func callFusion(ctx context.Context, analysisModels []string, apiKey, question, 
 			{Role: "user", Content: userContent},
 		},
 		Plugins: []orFusionPlugin{plugin},
+		Stream:  true,
 	}
 	return orChat(ctx, req, apiKey, "openrouter/fusion", ccfg)
 }
 
 // orChat is the shared OpenRouter HTTP + response-parsing helper used by both
-// callOpenRouter and callFusion. It handles: timeout setup, HTTP POST, error
-// parsing (non-200, 200-with-error-body), response decoding, usage extraction
-// (preserved on all error paths), truncation check, tool_calls check, and
-// empty-content check. The label is used in error messages for identification.
+// callOpenRouter and callFusion. It streams the response via SSE with an idle
+// timeout (120s) + total cap (30min), replacing the 300s total timeout. A
+// length stop still goes through the truncation/VOID path.
 func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCallConfig) (string, OracleUsage, error) {
 	endpoint := openRouterEndpoint
 	if ccfg.OpenRouterEndpoint != "" {
 		endpoint = ccfg.OpenRouterEndpoint
 	}
+
+	// Ensure streaming is enabled.
+	req.Stream = true
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -939,68 +1081,49 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 
 	timeout := time.Duration(ccfg.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
-		timeout = 300 * time.Second
+		timeout = counselStreamTotalCap
 	}
-	tctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
-	raw, status, err := doJSONPost(tctx, endpoint, map[string]string{
+	content, sUsage, status, err := streamRequest(ctx, endpoint, map[string]string{
 		"Authorization": "Bearer " + apiKey,
-	}, body)
+	}, body, counselStreamIdleTimeout, timeout, parseOpenRouterSSE)
 	if err != nil {
 		return "", OracleUsage{}, err
 	}
 
 	if status != http.StatusOK {
+		// Non-200: the streamRequest already read the body; parse it as an error.
 		var apiErr orResp
-		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error != nil {
+		if json.Unmarshal([]byte(content), &apiErr) == nil && apiErr.Error != nil {
 			return "", OracleUsage{}, fmt.Errorf("%s: HTTP %d: %s", label, status, apiErr.Error.Message)
 		}
 		return "", OracleUsage{}, fmt.Errorf("%s: HTTP %d", label, status)
 	}
 
-	var result orResp
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", OracleUsage{}, fmt.Errorf("parse response: %w", err)
-	}
-
-	// Extract usage immediately after successful decode — preserve it on all
-	// subsequent error paths so billed calls are accounted for.
+	// Build usage from the streamed data.
 	var usage OracleUsage
-	if result.Usage != nil {
-		usage.InputTokens = int64(result.Usage.PromptTokens)
-		usage.OutputTokens = int64(result.Usage.CompletionTokens)
-		if result.Usage.ServerToolUse != nil {
-			usage.WebSearchRequests = int64(result.Usage.ServerToolUse.WebSearchRequests)
-		}
-		if result.Usage.CompletionTokensDetails != nil {
-			usage.ReasoningTokens = int64(result.Usage.CompletionTokensDetails.ReasoningTokens)
-		}
+	if sUsage != nil {
+		usage.InputTokens = sUsage.InputTokens
+		usage.OutputTokens = sUsage.OutputTokens
+		usage.ReasoningTokens = sUsage.ReasoningTokens
+		usage.WebSearchRequests = sUsage.WebSearchRequests
+		usage.FinishReason = sUsage.FinishReason
 	}
 
-	// Check for error object in 200 response (provider failures can return
-	// HTTP 200 with an error body).
-	if result.Error != nil {
-		return "", usage, fmt.Errorf("%s: %s", label, result.Error.Message)
-	}
-
-	if len(result.Choices) == 0 {
-		return "", usage, fmt.Errorf("%s: no choices in response", label)
-	}
-	usage.FinishReason = result.Choices[0].FinishReason
-	// Check truncation before empty-text: a length-truncated response may
-	// have empty content (e.g. budget consumed by reasoning), but the call
-	// was still billed — return usage so cost is recorded.
-	if result.Choices[0].FinishReason == "length" {
+	text := strings.TrimSpace(content)
+	if usage.FinishReason == "length" {
 		return "", usage, &IncompleteReplyError{Length: true, Msg: fmt.Sprintf("%s: response truncated at max_tokens; raise max_tokens to avoid truncation", label)}
 	}
-	// Handle unfinished tool calls: the model returned tool_calls without a
-	// final text answer. This may indicate the tool budget was exhausted
-	// or the model is requesting a client-side tool loop (not supported here).
-	if result.Choices[0].FinishReason == "tool_calls" {
+	if usage.FinishReason == "tool_calls" {
 		return "", usage, fmt.Errorf("%s: response ended with tool_calls (no final text answer)", label)
 	}
-	text := strings.TrimSpace(result.Choices[0].Message.Content)
+	if usage.FinishReason == "error" {
+		msg := "provider error"
+		if sUsage != nil && sUsage.ErrorMsg != "" {
+			msg = sUsage.ErrorMsg
+		}
+		return "", usage, fmt.Errorf("%s: %s", label, msg)
+	}
 	if text == "" {
 		return "", usage, &IncompleteReplyError{Msg: fmt.Sprintf("%s: empty response content", label)}
 	}

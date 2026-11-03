@@ -387,24 +387,35 @@ only**. Mashūra calls do not write trace records with reasoning tokens
 - **D5 fix**: `citationMatches` strips all trailing parenthetical groups,
   not just one, so range-labelled sources match correctly.
 
-### Not yet implemented (deferred)
+### Mashūra round 3: streaming + defaults (this iteration)
 
-- **Streaming + idle timeout** for Mashūra reviewer/subagent calls: the
-  non-streaming `doJSONPost` 4MB cap remains. Streaming with an idle reader
-  (no bytes for 120s) + total cap (30 min) is a larger change that requires
-  Anthropic SSE parsing (message_start, content_block_delta, message_delta,
-  message_stop) and updating all deadline layers (orChat, CallOracleURL,
-  runDebate ×2, async worker, watchdog).
+- **Streaming implemented**: `callOracleWithReasoning` and `orChat` now send
+  `stream: true` and parse SSE responses (Anthropic: message_start,
+  content_block_delta, message_delta, message_stop; OpenRouter:
+  chat.completion.chunk with trailing usage). The 300s total timeout is
+  replaced by an idle deadline (120s) + total cap (30min). A length stop still
+  goes through the existing truncation/VOID path. Test:
+  `TestDebugSSE` (Anthropic SSE parsing), `TestCallOracleURL_*` (all updated
+  to SSE), `TestCallOpenRouter_*` (all updated to SSE).
+- **Defaults implemented**: Built-in default effort levels are applied when
+  no explicit setting is configured: main = `medium`, reviewer = `medium`
+  (max 8192), check = `none`, subagent = `low`. The main model default is
+  applied in `applyReasoningToClientLocked`; the Mashūra defaults in
+  `mashuraReasoningFor`; the subagent default in `subagent.go`. `/thinking off`
+  sets effort to `"none"` to explicitly disable. Documented in
+  `docs/configuration.md` ("Reasoning defaults").
+
+### Still deferred
+
 - **OpenAI-native `reasoning_effort`** mapping: only OpenRouter and
   Anthropic-native are mapped today. OpenAI-native would need a separate
   wire field.
+- **D1 (context-window overflow from additive budget)**: the 10%
+  `contextHeadroom` masks this for typical models/budgets, but a formal fix
+  (passing the reasoning budget into `dispatchReview`'s partition sizing) is
+  still deferred.
 - **Cost accounting for reasoning tokens**: `RecordOracleCostFor` passes
   `OutputTokens` (which includes reasoning for Anthropic, or separately for
   OpenRouter) to `MashuraCost`. No separate reasoning pricing is applied — the
   output rate covers it. This avoids double-counting (Anthropic) but does not
   split reasoning vs answer for per-token pricing (OpenRouter).
-- **Defaults**: no built-in default effort levels are applied (main medium,
-  reviewer medium, subagent low, check none) — this is a behavior change for
-  all users and requires a capability source to detect reasoning-capable
-  models. Users must configure `mashura_roles` or `mashura_models.<model>.
-  reasoning` explicitly.

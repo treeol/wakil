@@ -1118,7 +1118,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			effort := app.ReasoningEffortLocked()
 			maxTok := app.ReasoningMaxTokensLocked()
 			if effort == "" && maxTok == 0 {
-				return true, false, note("thinking: not set (model default)")
+				return true, false, note("thinking: not set (default: " + DefaultReasoningEffort + ")")
 			}
 			msg := "thinking:"
 			if effort != "" {
@@ -1136,18 +1136,20 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			"medium": true, "low": true, "minimal": true, "none": true,
 		}
 		arg := fields[1]
-		if arg == "off" {
-			// Clear all reasoning settings.
+		if arg == "off" || arg == "none" {
+			// Explicitly disable reasoning — "off"/"none" sets effort to "none"
+			// so applyReasoningToClientLocked sets Client.Reasoning = nil,
+			// overriding the built-in default.
 			app.stateMu.Lock()
-			app.ReasoningEffort = ""
+			app.ReasoningEffort = "none"
 			app.ReasoningMaxTokens = 0
 			app.applyReasoningToClientLocked()
 			app.stateMu.Unlock()
 			app.saveRepoState(func(s *RepoState) {
-				s.ReasoningEffort = ""
+				s.ReasoningEffort = "none"
 				s.ReasoningMaxTokens = 0
 			})
-			return true, false, note("thinking: off (model default)")
+			return true, false, note("thinking: off (reasoning disabled)")
 		}
 		effort := ""
 		maxTok := 0

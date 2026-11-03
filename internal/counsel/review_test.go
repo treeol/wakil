@@ -55,13 +55,15 @@ func newFakeReviewer(t *testing.T) *fakeReviewer {
 		} else {
 			text = "Finding: nothing blocking.\nLAST SECTION READ: " + lastSection(rec.User)
 		}
-		out, _ := json.Marshal(map[string]any{
-			"content":     []map[string]string{{"type": "text", "text": text}},
-			"stop_reason": stop,
-			"usage":       map[string]int{"input_tokens": len(rec.User) / 4, "output_tokens": 10},
-		})
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(out)
+		// Return SSE format (Anthropic Messages API streaming).
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n", len(rec.User)/4)
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", text)
+		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":%q},\"usage\":{\"output_tokens\":10}}\n\n", stop)
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -610,11 +612,7 @@ func TestReviewTruncatedThenRetryFailsStaysVoid(t *testing.T) {
 					http.Error(w, `{"error":{"message":"overloaded"}}`, 529)
 					return
 				}
-				out, _ := json.Marshal(map[string]any{
-					"content":     []map[string]string{{"type": "text", "text": "cut o"}},
-					"stop_reason": "max_tokens", "usage": map[string]int{"input_tokens": 1, "output_tokens": 1},
-				})
-				_, _ = w.Write(out)
+				writeAnthropicSSE(w, "cut o", "max_tokens", 1, 1)
 			})
 			model := "anthropic:test-model"
 			if c.lim != nil {
@@ -679,11 +677,7 @@ func TestReviewInterruptedChunkedReviewIsVoid(t *testing.T) {
 			http.Error(w, `{"error":{"message":"overloaded"}}`, 529)
 			return
 		}
-		out, _ := json.Marshal(map[string]any{
-			"content":     []map[string]string{{"type": "text", "text": "finding from part one\nLAST SECTION READ: " + lastSection(user)}},
-			"stop_reason": "end_turn", "usage": map[string]int{"input_tokens": 1, "output_tokens": 1},
-		})
-		_, _ = w.Write(out)
+		writeAnthropicSSE(w, "finding from part one\nLAST SECTION READ: "+lastSection(user), "end_turn", 1, 1)
 	})
 	doc, _ := buildDoc(40, 3000)
 	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}

@@ -184,8 +184,11 @@ func TestPlanHostPassWithOracle(t *testing.T) {
 	oracleCalls := 0
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCalls++
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"content":[{"type":"text","text":"looks good\nVERDICT: PASS\nLAST SECTION READ: Question"}],"stop_reason":"end_turn","usage":{}}`)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", "looks good\nVERDICT: PASS\nLAST SECTION READ: Question")
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer oracleSrv.Close()
 
