@@ -27,6 +27,9 @@ func (f *fakeEnv) hasSocket(id string) bool {
 func (b *Backend) supOf() *supervisorProc {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if b.cur == nil {
+		return nil
+	}
 	return b.cur.sup
 }
 

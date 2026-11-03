@@ -201,6 +201,25 @@ func TestWaitAfterKillReturnsLatchedExit(t *testing.T) {
 	}
 }
 
+// output returns stdout-only on success so a stderr warning (e.g. "GOCOVERDIR
+// not set" from a coverage-instrumented test binary whose env was scrubbed)
+// cannot corrupt the JSON on stdout. On error, stderr is included so
+// diagnostic checks (isConnRefused) still see it.
+func TestOutputSplitsStdoutStderr(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, _ := Open(ctxT(t), fe.options())
+	defer b.Close(context.Background())
+	// The fake --version prints "hisn 0.2.1\n" to stdout and nothing to stderr.
+	// A clean stdout is what listSessions and verifyInstance parse.
+	out, err := b.output(ctxT(t), false, "--version")
+	if err != nil {
+		t.Fatalf("output: %v: %s", err, out)
+	}
+	if strings.TrimSpace(out) != "hisn 0.2.1" {
+		t.Fatalf("stdout = %q, want clean version line (no stderr noise)", out)
+	}
+}
+
 // Wait and Kill racing from two goroutines both return, with the same result:
 // neither may steal the other's exit.
 func TestWaitAndKillConcurrentAgree(t *testing.T) {

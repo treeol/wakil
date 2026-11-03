@@ -4,6 +4,7 @@
 package hisn
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -73,10 +74,29 @@ func (b *Backend) baseEnv() []string {
 	return os.Environ()
 }
 
-// output runs a hisn command to completion and returns its combined output.
+// output runs a hisn command to completion and returns its stdout. On success
+// only stdout is returned, so JSON parsing (listSessions, verifyInstance) is
+// not corrupted by a warning on stderr (e.g. "GOCOVERDIR not set" from a
+// coverage-instrumented test binary whose env was scrubbed). On error,
+// stdout and stderr are returned combined so callers that inspect the output
+// for diagnostics (noteRefused, isConnRefused) still see stderr.
 func (b *Backend) output(ctx context.Context, withPass bool, args ...string) (string, error) {
-	out, err := b.command(ctx, withPass, args...).CombinedOutput()
-	return string(out), err
+	var stdout, stderr bytes.Buffer
+	cmd := b.command(ctx, withPass, args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		combined := stdout.String()
+		if s := stderr.String(); s != "" {
+			if combined != "" {
+				combined += "\n"
+			}
+			combined += s
+		}
+		return combined, err
+	}
+	return stdout.String(), nil
 }
 
 // supervisorStderrCap bounds the in-memory copy of the supervisor's output.
