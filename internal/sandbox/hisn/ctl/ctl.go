@@ -390,9 +390,12 @@ func (c *Client) StartExec(ctx context.Context, argv []string, cwd string, env m
 	return ec, &a.res, nil
 }
 
-// closeLost closes the connection and latches a lost terminal event.
+// closeLost closes the connection and latches a lost terminal event. The kept
+// stdio ends are closed too: a caller that cancels before acceptance will never
+// read from them, and leaking the pipe fds would keep the pipe open until GC.
 func (ec *ExecConn) closeLost() {
 	_ = ec.conn.Close()
+	ec.stdio.closeKept()
 	ec.latchExit(&ExitPayload{Lost: true})
 }
 

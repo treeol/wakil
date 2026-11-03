@@ -380,17 +380,23 @@ func (b *Backend) waitReady(ctx context.Context, id string, sup *supervisorProc,
 		return ok, why
 	}
 	var last string
+	gotReady := false // latch: the "ready\n" line was received once; don't re-read the pipe
 	for {
 		if sup.hasExited() {
 			return fmt.Errorf("hisn run --detach exited before the session was ready (last probe: %s)", orNone(last))
 		}
-		ok, _, why := readReady()
-		if !ok && why != "" {
-			last = why
+		if !gotReady {
+			ok, _, why := readReady()
+			if !ok && why != "" {
+				last = why
+			}
+			if ok {
+				gotReady = true
+			}
 		}
-		if ok {
+		if gotReady {
 			// Confirm: `live` now, and still live one interval later.
-			ok, why = probe()
+			ok, why := probe()
 			if !ok {
 				if why != "" {
 					last = why

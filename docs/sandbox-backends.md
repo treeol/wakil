@@ -7,8 +7,9 @@ Wakil runs every tool call inside a sandbox. Two backends exist:
 | `docker` | default (`sandbox.backend: "docker"`) | production, behaviour unchanged |
 | `hisn` | `sandbox.backend: "hisn"` | second backend, opt-in, needs hisn >= 0.2.1 |
 
-`exec_mode: "direct"` (no sandbox at all) is a separate, explicit opt-out and is
-**not** a backend. Combining it with `backend: "hisn"` is a configuration error.
+`exec_mode: "direct"` (no sandbox at all) is a separate, explicit opt-out. It is
+also accepted as `sandbox.backend: "direct"`. Combining `exec_mode: direct`
+with `backend: "hisn"` is a configuration error.
 
 ## Invariants
 
@@ -108,7 +109,8 @@ same name. Therefore:
    the host regardless of backend. Unchanged from docker mode.
 2. **Browser**: `browser.NewManager` launches Chromium on the host when
    `ContainerName() == ""`. For hisn `ContainerName()` is `""`, so
-   `browser_enabled` is rejected in config validation **and**
+   `browser_enabled` is forced off in config validation (sets
+   `BrowserForcedOff` for the startup banner) **and**
    `HostBrowserAllowed()` returns `false`. No runtime enable path exists.
    Chromium inside hisn is future work.
 3. **Worktree isolation** (edit subagents): the worktree lives in the
@@ -322,10 +324,10 @@ the leftover stays tracked, and the new session starts anyway.
 ### Grant replay on replacement
 
 After a dead-session replacement (`Start` over a stale dir), the active
-grants are replayed: rw grants are re-issued through `hisn grant --rw` so
-Landlock is updated; ro grants are re-added to the path map. The policy
-(and thus `grantable_rw`) does not change across replacements of the same
-session, so replay always succeeds for the same set. A failed rw replay is
+grants are replayed: both RO and RW grants are re-issued through
+`hisn grant` so Landlock is updated, and re-added to the path map. The
+policy (and thus `grantable_rw`) does not change across replacements of the
+same session, so replay always succeeds for the same set. A failed replay is
 best-effort: logged, not a start failure; the user re-grants if needed.
 
 `TestStartReplaysGrantsOnReplacement` covers this.
@@ -439,8 +441,8 @@ tmp_size = 1024         # sandbox.hisn.tmp_size_mb (MiB, 16..65536)
 [mounts]
 grantable_rw = [ ... ]  # sandbox.hisn.grantable_rw
 [env]
-pass = [GOFLAGS, GOCACHE, GOMODCACHE, CARGO_HOME, RUSTFLAGS,
-        npm_config_cache, PIP_CACHE_DIR, CI]   # sandbox.hisn.env_pass
+pass = ["GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTFLAGS",
+        "npm_config_cache", "PIP_CACHE_DIR", "CI"]   # sandbox.hisn.env_pass
 ```
 
 `network = "host"` has no filtering; this is the decided trade-off (builds
@@ -502,7 +504,7 @@ hisn itself inside the sandbox and are rejected in per-exec env.
 * Soft revoke only (see Grants): already-open descriptors may survive.
 * Toolchains installed under the host `$HOME` (rustup, nvm) are not mounted;
   hisn's `mounts.ro` is not exposed.
-* Browser tools unavailable (`browser_enabled` rejected).
+* Browser tools unavailable (`browser_enabled` forced off).
 * Worktree dirs live in the session `/tmp` tmpfs; the size is configurable
   (`tmp_size_mb`, default 1024 MiB) but bounded.
 * Instance verification relies on `session.hostname` carrying a random token

@@ -290,19 +290,21 @@ func (b *Backend) Start(ctx context.Context, s sandbox.Session) error {
 	b.cur = l
 	b.epoch++
 	b.pm.ResetGrants()
-	// Replay grants on the replacement session. rw grants are re-issued
-	// through hisn so Landlock is updated; the policy (and thus
+	// Replay grants on the replacement session. Both RO and RW grants are
+	// re-issued through hisn so Landlock is updated; the policy (and thus
 	// grantable_rw) does not change across replacements of the same session,
 	// so this always succeeds for the same set.
 	for _, g := range grants {
+		args := []string{"grant", "--session", l.id}
 		if g.RW {
-			args := []string{"grant", "--session", l.id, "--rw", "--", g.Path}
-			if _, err := b.output(ctx, false, args...); err != nil {
-				// Best-effort: a failed replay is a missing grant, not a
-				// start failure. The user re-grants if needed.
-				fmt.Fprintf(errWriter, "hisn: grant replay for %s failed: %v\n", g.Path, err)
-				continue
-			}
+			args = append(args, "--rw")
+		}
+		args = append(args, "--", g.Path)
+		if _, err := b.output(ctx, false, args...); err != nil {
+			// Best-effort: a failed replay is a missing grant, not a
+			// start failure. The user re-grants if needed.
+			fmt.Fprintf(errWriter, "hisn: grant replay for %s failed: %v\n", g.Path, err)
+			continue
 		}
 		b.pm.AddGrant(g.Path, g.RW)
 	}
