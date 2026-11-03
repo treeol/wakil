@@ -44,6 +44,9 @@
       "tmp_size_mb": 1024,
       "shm_size_mb": 64,
       "exec_via_cli": false
+    },
+    "docker": {
+      "allow_userns": false
     }
   },
 
@@ -53,7 +56,6 @@
   "docker_pids_limit": 512,
   "docker_tmpfs_size": "4g",
   "docker_io_uring": false,
-  "docker_allow_userns": false,
 
   "_comment_subagents": "Subagent dispatch: dispatch_subagent spawns a read-only discovery worker. dispatch_subagents fans out several in parallel. max_parallel_subagents bounds concurrency. subagent_endpoint / subagent_backend route children to a different endpoint or backend than the parent.",
 

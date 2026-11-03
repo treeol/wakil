@@ -152,9 +152,11 @@ sandbox.hisn.exec_via_cli    = false // CLI exec fallback, one release
 sandbox.docker.allow_userns = false // hisn development only
 ```
 
-`allow_userns = true` appends `--security-opt seccomp=unconfined
---security-opt apparmor=unconfined --security-opt systempaths=unconfined`
-to the docker run. Default false = docker behaviour identical. Startup
+`allow_userns = true` gives the container Wakil's seccomp profile variant
+that allows the namespace/mount syscalls for the unprivileged uid (not
+`seccomp=unconfined`) and appends `--security-opt apparmor=unconfined
+--security-opt systempaths=unconfined`; `no-new-privileges` stays. The
+legacy top-level `docker_allow_userns` is an alias. Default false = docker behaviour identical. Startup
 prints one warning when true:
 `docker sandbox isolation reduced: user namespaces enabled`.
 

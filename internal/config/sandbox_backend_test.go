@@ -223,3 +223,22 @@ func TestSandboxHisnEnvPassOverride(t *testing.T) {
 		t.Errorf("grantable_rw = %v (must be cleaned)", got)
 	}
 }
+
+// TestAllowUsernsBothKeys: the documented sandbox.docker.allow_userns and the
+// legacy top-level docker_allow_userns both enable the flag (the documented
+// key used to be silently ignored).
+func TestAllowUsernsBothKeys(t *testing.T) {
+	for _, js := range []string{`{"sandbox":{"docker":{"allow_userns":true}}}`, `{"docker_allow_userns":true}`} {
+		cfg, err := loadSandboxCfg(t, js, "--host-workdir", t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.DockerAllowUserns || !cfg.Sandbox.Docker.AllowUserns {
+			t.Errorf("%s: DockerAllowUserns=%v Sandbox.Docker.AllowUserns=%v", js, cfg.DockerAllowUserns, cfg.Sandbox.Docker.AllowUserns)
+		}
+	}
+	cfg, _ := loadSandboxCfg(t, `{}`, "--host-workdir", t.TempDir())
+	if cfg.DockerAllowUserns {
+		t.Error("default must be off")
+	}
+}

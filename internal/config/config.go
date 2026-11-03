@@ -259,13 +259,14 @@ type Config struct {
 	// Docker-only; ignored in direct mode. No CLI flag or env var (config-file only,
 	// matching DockerCaps/DockerMemory/DockerPidsLimit/DockerTmpfsSize).
 	DockerIOUring bool `json:"docker_io_uring,omitempty"`
-	// DockerAllowUserns adds --security-opt seccomp=unconfined,
-	// apparmor=unconfined, systempaths=unconfined to the docker run of the
-	// sandbox container, so unprivileged user namespaces work INSIDE it
-	// (needed to develop/run the hisn sandbox inside Wakil's docker sandbox).
-	// Default false: the flags WEAKEN the sandbox container's isolation.
-	// When true, startup prints one warning line. Docker-only, config-file
-	// only. Never combined with backend "hisn" (hisn runs on the host).
+	// DockerAllowUserns (legacy key; canonical "sandbox.docker.allow_userns")
+	// makes unprivileged user namespaces work INSIDE the docker sandbox
+	// container (needed to develop/run hisn inside Wakil's docker sandbox):
+	// a variant of Wakil's seccomp profile that allows the namespace/mount
+	// syscalls without CAP_SYS_ADMIN, plus apparmor=unconfined and
+	// systempaths=unconfined; no-new-privileges and cap-drop=ALL stay.
+	// Default false: it WEAKENS the container's isolation. When true, startup
+	// prints one warning line. Docker-only, config-file only.
 	DockerAllowUserns bool `json:"docker_allow_userns,omitempty"`
 	// DockerStartTimeoutSec bounds the docker run command in the constructor
 	// (container creation). Default 120s — generous because SELinux :z
@@ -1019,10 +1020,21 @@ type SandboxConfig struct {
 	Backend string `json:"backend,omitempty"`
 	// Hisn configures the hisn backend (ignored for docker).
 	Hisn HisnConfig `json:"hisn,omitempty"`
+	// Docker configures the docker backend (config key "sandbox.docker").
+	Docker DockerSandboxConfig `json:"docker,omitempty"`
 	// Image overrides the sandbox image (config key "sandbox.image"). Takes
 	// precedence over the legacy top-level "image" key and the image pinned
 	// into release binaries; env vars and --sandbox-image override it.
 	Image string `json:"image,omitempty"`
+}
+
+// DockerSandboxConfig groups docker-backend settings under "sandbox.docker".
+type DockerSandboxConfig struct {
+	// AllowUserns ("sandbox.docker.allow_userns") lets unprivileged user
+	// namespaces work INSIDE the docker sandbox container (hisn development).
+	// The legacy top-level "docker_allow_userns" is an alias; either one set
+	// enables it. LoadConfig folds both into Config.DockerAllowUserns.
+	AllowUserns bool `json:"allow_userns,omitempty"`
 }
 
 // Sandbox backend names.
@@ -1288,6 +1300,14 @@ func LoadConfig(argv []string) (Config, error) {
 			return cfg, fmt.Errorf("parsing %s: %w", cfgPath, err)
 		}
 	}
+
+	// sandbox.docker.allow_userns is the documented key; the top-level
+	// docker_allow_userns is its legacy alias. Before this fold the documented
+	// key was silently ignored (the flag then had no effect).
+	if cfg.Sandbox.Docker.AllowUserns {
+		cfg.DockerAllowUserns = true
+	}
+	cfg.Sandbox.Docker.AllowUserns = cfg.DockerAllowUserns
 
 	// sandbox.image (config file) wins over the legacy top-level "image" key.
 	if cfg.Sandbox.Image != "" {

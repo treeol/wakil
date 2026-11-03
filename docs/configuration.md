@@ -154,7 +154,7 @@ reference covering every section below.
 | `docker_pids_limit` | `512` | Max processes in the sandbox container *(0 = no limit)* |
 | `docker_tmpfs_size` | `""` (→ 4g) | Size of the sandbox `/tmp` tmpfs *(empty uses built-in default)* |
 | `docker_io_uring` | `false` | Enable io_uring via custom seccomp profile *(increases kernel attack surface — see [SECURITY.md](../SECURITY.md#seccomp))* |
-| `docker_allow_userns` | `false` | Add `--security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined` to the sandbox container so unprivileged user namespaces work inside it *(weakens the container's isolation — hisn development only; startup prints a one-line warning when set)* |
+| `sandbox.docker.allow_userns` *(legacy alias `docker_allow_userns`)* | `false` | Let unprivileged user namespaces work inside the sandbox container (hisn development): Wakil's seccomp profile variant that allows `unshare`, `clone`/`clone3` with `CLONE_NEW*`, `setns`, `mount`, `umount2`, `pivot_root`, `open_tree`, `move_mount`, `mount_setattr`, `fsopen`/`fsconfig`/`fsmount`/`fspick` for the unprivileged uid (everything else unchanged — never `seccomp=unconfined`), plus `--security-opt apparmor=unconfined` and `--security-opt systempaths=unconfined` (unmasked `/proc`, needed to mount procfs in the userns). `no-new-privileges` and `--cap-drop=ALL` stay. *Weakens the container's isolation; startup prints a one-line warning when set* |
 | `agent_prompt_path` | `agent.txt` next to config | System prompt file path |
 | `backend_max_retries` | `3` | Max retries for transient backend failures (unattended) |
 | `compact_at_frac` | `0.75` | Compact at 75% of effective context |

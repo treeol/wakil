@@ -250,16 +250,17 @@ type DockerOpts struct {
 	// profile. When true, NewDockerExecutor materializes the profile to a temp
 	// file and sets IOUringProfilePath. Docker-only; ignored in direct mode.
 	DockerIOUring bool
-	// DockerAllowUserns adds --security-opt seccomp=unconfined,
-	// apparmor=unconfined, systempaths=unconfined to the sandbox container so
-	// unprivileged user namespaces work inside it (hisn development).
-	// Default false — the flags WEAKEN the container's isolation.
+	// DockerAllowUserns makes unprivileged user namespaces work inside the
+	// sandbox (hisn development): a seccomp variant allowing the namespace
+	// and mount syscalls (see buildSeccompProfile) plus
+	// apparmor=unconfined and systempaths=unconfined. no-new-privileges and
+	// cap-drop=ALL stay. Default false — it WEAKENS the container's isolation.
 	DockerAllowUserns bool
-	// IOUringProfilePath is the host path to a custom seccomp profile that
-	// allows io_uring. When non-empty, dockerHardeningArgs emits
-	// --security-opt=seccomp=<path>. Set by NewDockerExecutor when
-	// Config.DockerIOUring is true; the temp file is stored on
-	// DockerExecutor and cleaned up in Close().
+	// IOUringProfilePath is the host path to Wakil's custom seccomp profile
+	// (io_uring and/or allow_userns variant). When non-empty,
+	// dockerHardeningArgs emits --security-opt=seccomp=<path>. Set by
+	// NewDockerExecutor when DockerIOUring or DockerAllowUserns is true; the
+	// temp file is stored on DockerExecutor and cleaned up in Close().
 	IOUringProfilePath string
 	// BrowserEnabled controls whether the container publishes a CDP port
 	// (127.0.0.1::9222) for the host-side browser manager to connect to
@@ -414,12 +415,15 @@ func dockerHardeningArgs(opts DockerOpts) []string {
 	if opts.IOUringProfilePath != "" {
 		args = append(args, "--security-opt=seccomp="+opts.IOUringProfilePath)
 	}
-	// User namespaces inside the sandbox (hisn development). This WEAKENS the
-	// container: seccomp and AppArmor are unconfined and the host's system
-	// paths are visible. Only ever on explicit config; startup warns once.
+	// User namespaces inside the sandbox (hisn development). The seccomp side
+	// is the allow_userns variant profile emitted above (IOUringProfilePath
+	// carries it; NOT seccomp=unconfined). AppArmor is unconfined (its
+	// default docker profile denies mount) and /proc is unmasked
+	// (systempaths=unconfined) so procfs can be mounted inside the userns.
+	// no-new-privileges and cap-drop=ALL stay. Only ever on explicit config;
+	// startup warns once.
 	if opts.DockerAllowUserns {
 		args = append(args,
-			"--security-opt=seccomp=unconfined",
 			"--security-opt=apparmor=unconfined",
 			"--security-opt=systempaths=unconfined")
 	}
@@ -698,22 +702,29 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// CLI reads and inlines the profile at container-create time (verified via
 	// docker inspect — the full JSON blob appears in HostConfig.SecurityOpt).
 	// The temp file is stored on DockerExecutor and cleaned up in Close().
-	if opts.DockerIOUring {
-		tf, err := os.CreateTemp("", "wakil-seccomp-iouring-*.json")
+	// allow_userns uses the same mechanism with a variant profile (namespace
+	// and mount syscalls allowed for the unprivileged uid) — never
+	// seccomp=unconfined.
+	if profile, err := buildSeccompProfile(opts.DockerIOUring, opts.DockerAllowUserns); err != nil {
+		return nil, err
+	} else if profile != nil {
+		tf, err := os.CreateTemp("", "wakil-seccomp-*.json")
 		if err != nil {
-			return nil, fmt.Errorf("docker_io_uring: failed to create seccomp profile temp file: %w", err)
+			return nil, fmt.Errorf("sandbox seccomp: failed to create profile temp file: %w", err)
 		}
-		if _, err := tf.Write(seccompIOUringProfile); err != nil {
+		if _, err := tf.Write(profile); err != nil {
 			_ = tf.Close()
 			_ = os.Remove(tf.Name())
-			return nil, fmt.Errorf("docker_io_uring: failed to write seccomp profile: %w", err)
+			return nil, fmt.Errorf("sandbox seccomp: failed to write profile: %w", err)
 		}
 		if err := tf.Close(); err != nil {
 			_ = os.Remove(tf.Name())
-			return nil, fmt.Errorf("docker_io_uring: failed to close seccomp profile: %w", err)
+			return nil, fmt.Errorf("sandbox seccomp: failed to close profile: %w", err)
 		}
 		opts.IOUringProfilePath = tf.Name()
-		fmt.Fprintf(os.Stderr, "warning: docker_io_uring: io_uring enabled in sandbox seccomp profile — increases host-kernel attack surface\n")
+		if opts.DockerIOUring {
+			fmt.Fprintf(os.Stderr, "warning: docker_io_uring: io_uring enabled in sandbox seccomp profile — increases host-kernel attack surface\n")
+		}
 	}
 
 	// cleanupProfile removes the seccomp profile temp file on constructor
