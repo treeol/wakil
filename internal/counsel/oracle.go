@@ -414,7 +414,7 @@ func OracleDetail(model, question, oracleCtx string) string {
 // PanelCallConfig carries per-call parameters shared by all providers in a panel.
 type PanelCallConfig struct {
 	MaxTokens          int
-	TimeoutSeconds     int    // 0 → 300s default
+	TimeoutSeconds     int    // 0 → counselStreamTotalCap (30min) default
 	AnthropicEndpoint  string // "" = production; override in tests
 	OpenRouterEndpoint string // "" = "https://openrouter.ai/api/v1/chat/completions"
 	FusionJudge        string // fusion mode: judge model; "" = OpenRouter default

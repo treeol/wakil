@@ -167,6 +167,28 @@ COPY --from=golangci/golangci-lint:v2.11.1@sha256:906ae07afe01a069637a7e91e92c20
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
 RUN go install golang.org/x/tools/gopls@v0.22.0
 
+# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.2.2).
+# Installed into the wakil-dev image so the allow_userns acceptance test can
+# run `hisn check` for real instead of skipping. The binary is multi-arch
+# (amd64/arm64), downloaded from the GitHub release and SHA256-verified.
+#
+# Bump HISN_VERSION and both arch SHA256s together when updating. The
+# checksums are published at the release page as SHA256SUMS.
+ARG TARGETARCH
+RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+      amd64) HISN_ARCH=x86_64-linux-gnu; \
+             HISN_SHA256=6bfc31e3cac714ef4f7d9f81f81a45fed14fecd985756f6c2226ee0c33991092 ;; \
+      arm64) HISN_ARCH=aarch64-linux-gnu; \
+             HISN_SHA256=36378faac920a22b405fc42dd030a22d37f4457231877b7d786626dd5a6625ba ;; \
+      *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && HISN_VERSION=0.2.2 \
+    && curl -fsSL -o /tmp/hisn \
+       "https://github.com/treeol/hisn/releases/download/v${HISN_VERSION}/hisn-${HISN_ARCH}" \
+    && echo "${HISN_SHA256}  /tmp/hisn" | sha256sum -c - \
+    && chmod +x /tmp/hisn \
+    && mv /tmp/hisn /usr/local/bin/hisn
+
 # Language servers for LSP code intelligence (match defaultLSPServer mappings):
 #   - pyright-langserver: Python type checker + LSP server (npm package)
 #   - typescript-language-server: TypeScript/JavaScript LSP wrapper (npm package)

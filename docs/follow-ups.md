@@ -70,3 +70,27 @@ proposal and what remains.
   the **served artifact** (GET /v1/contract, sha-pinned) must be regenerated
   in lockstep — updating the repo copy alone does not change what the
   endpoint serves.
+
+## Truncation audit
+
+- **Mashūra review token accounting** (A.8, truncation-damage audit): the
+  review footer line (`[mashūra: … — ~N tokens sent, M part(s), …]`) reports
+  tokens sent to each reviewer, not tokens in the document being reviewed.
+  A reviewer that errors (rate-limit, 400) still reports its token count;
+  the count is the question+context tokens, not the answer. The first session
+  where this was observable was the design-note-a1-a6.md round 1
+  (2026-11-03): gpt-6-astra errored (rate-limited) and its footer reported
+  ~2141 tokens sent; claude-fable-5.1 succeeded with ~2141 tokens sent. The
+  prior sandbox-backends.md round (same session) reported ~11479 tokens sent.
+  No evidence of under-counting — the footer accurately reflects the tokens
+  dispatched.
+
+## Sandbox (hisn)
+
+- **A.9: hisn policy configurability** — `buildPolicy`
+  (`internal/sandbox/hisn/policy.go:40`) hardcodes `Network: "host"` and
+  `Shm: true`. These are correct defaults for Wakil's use case (builds need
+  network; Chrome/Node need /dev/shm) but could be made configurable via
+  `sandbox.hisn.network` and `sandbox.hisn.shm` keys if a use case arises.
+  Currently only `shm_size_mb`, `tmp_size_mb`, `env_pass`, `grantable_rw`,
+  `binary`, `home_root`, and `exec_via_cli` are configurable.
