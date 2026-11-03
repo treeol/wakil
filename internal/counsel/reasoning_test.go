@@ -290,3 +290,48 @@ func TestReviewCodeOnlyCitationWrongPathVoid(t *testing.T) {
 		t.Errorf("expected empty answer on VOID, got %q", out.Answer)
 	}
 }
+
+// TestLogFooterShowsReasoningAnswerSplit verifies that the footer line
+// shows "reasoning N / answer M" when the provider reports reasoning tokens
+// separately (OpenRouter), and omits the split when it does not (Anthropic).
+func TestLogFooterShowsReasoningAnswerSplit(t *testing.T) {
+	// OpenRouter-style: ReasoningTokens > 0, AnswerTokens = Output - Reasoning.
+	r1 := PanelMemberResult{
+		Model:  "openrouter:test-model",
+		Answer: "ok",
+		Usage:  OracleUsage{InputTokens: 100, OutputTokens: 50, ReasoningTokens: 30, FinishReason: "stop"},
+		Log: &ReviewLog{
+			Model:           "openrouter:test-model",
+			TokensSent:      100,
+			Parts:           1,
+			ContextTokens:   128000,
+			ReasoningTokens: 30,
+			AnswerTokens:    20,
+			FinishReasons:   []string{"stop"},
+		},
+	}
+	footer := logFooter(r1)
+	if !strings.Contains(footer, "reasoning 30 / answer 20") {
+		t.Errorf("OpenRouter footer should show reasoning/answer split, got: %s", footer)
+	}
+
+	// Anthropic-style: ReasoningTokens = 0 (included in OutputTokens).
+	r2 := PanelMemberResult{
+		Model:  "anthropic:test-model",
+		Answer: "ok",
+		Usage:  OracleUsage{InputTokens: 100, OutputTokens: 50, FinishReason: "end_turn"},
+		Log: &ReviewLog{
+			Model:           "anthropic:test-model",
+			TokensSent:      100,
+			Parts:           1,
+			ContextTokens:   128000,
+			ReasoningTokens: 0,
+			AnswerTokens:    0,
+			FinishReasons:   []string{"end_turn"},
+		},
+	}
+	footer2 := logFooter(r2)
+	if strings.Contains(footer2, "reasoning") {
+		t.Errorf("Anthropic footer should NOT show reasoning/answer split, got: %s", footer2)
+	}
+}

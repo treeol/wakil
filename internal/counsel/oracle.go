@@ -27,21 +27,16 @@ const oracleEndpoint = "https://api.anthropic.com/v1/messages"
 // adds dial and TLS-handshake deadlines so a hung connection is caught even
 // if the context timeout is removed.
 //
-// ResponseHeaderTimeout is intentionally NOT set: for non-streaming calls,
-// the server can't send response headers until the full response is ready.
-// Mashūra calls with server-side tools (web_search, web_fetch) can legitimately
-// take several minutes. The context deadline (default 300s, configurable via
-// oracle_timeout_seconds) is the proper upper bound.
+// ResponseHeaderTimeout is intentionally NOT set: Mashūra calls with
+// server-side tools (web_search, web_fetch) can delay response headers for
+// several minutes while the panel computes. The request context deadline
+// (default counselStreamTotalCap = 30 min, configurable via
+// oracle_timeout_seconds) is the proper upper bound — a transport-level
+// header timeout would cut legitimate long calls short.
 var counselClient = func() *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	tr.TLSHandshakeTimeout = 10 * time.Second
-	// ResponseHeaderTimeout is intentionally NOT set: Mashūra calls with
-	// server-side tools (web_search, web_fetch) can delay response headers
-	// for several minutes while the panel computes. The context deadline
-	// (default 300s, configurable via oracle_timeout_seconds) is the
-	// proper upper bound — a transport-level header timeout would cut those
-	// legitimate long calls short.
 	return &http.Client{Transport: tr}
 }()
 
@@ -316,7 +311,17 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 		"anthropic-version": "2023-06-01",
 	}, body, counselStreamIdleTimeout, timeout, parseAnthropicSSE)
 	if err != nil {
-		return "", OracleUsage{}, err
+		// Preserve partial usage from the stream even on error — the
+		// provider bills for tokens already generated before the failure.
+		var partial OracleUsage
+		if sUsage != nil {
+			partial.InputTokens = sUsage.InputTokens
+			partial.OutputTokens = sUsage.OutputTokens
+			partial.ReasoningTokens = sUsage.ReasoningTokens
+			partial.WebSearchRequests = sUsage.WebSearchRequests
+			partial.FinishReason = sUsage.FinishReason
+		}
+		return "", partial, err
 	}
 
 	if status != http.StatusOK {
@@ -660,7 +665,7 @@ func runDebate(ctx context.Context, models []string, question, briefing string, 
 	// Overall debate deadline: 2× per-call timeout.
 	perCallTimeout := time.Duration(ccfg.TimeoutSeconds) * time.Second
 	if perCallTimeout <= 0 {
-		perCallTimeout = 300 * time.Second
+		perCallTimeout = counselStreamTotalCap
 	}
 	debateCtx, debateCancel := context.WithTimeout(ctx, 2*perCallTimeout)
 	defer debateCancel()
@@ -812,6 +817,15 @@ type orReq struct {
 	// Stream enables SSE streaming. When true, the response is a stream of
 	// chat.completion.chunk events rather than a single JSON body.
 	Stream bool `json:"stream"`
+	// StreamOptions requests the trailing usage chunk when streaming. OpenRouter
+	// follows the OpenAI streaming spec: without include_usage, the stream ends
+	// with [DONE] and no usage — cost accounting would silently skip the call.
+	StreamOptions *orStreamOptions `json:"stream_options,omitempty"`
+}
+
+// orStreamOptions controls what extra data is included in the SSE stream.
+type orStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // orServerTool is one OpenRouter server-side tool entry. OpenRouter executes
@@ -1003,8 +1017,9 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 			{Role: "system", Content: oracleSystemPrompt},
 			{Role: "user", Content: userContent},
 		},
-		Reasoning: reasoning,
-		Stream:    true,
+		Reasoning:     reasoning,
+		Stream:        true,
+		StreamOptions: &orStreamOptions{IncludeUsage: true},
 	}
 
 	// Wire server-side tools when configured. OpenRouter executes these
@@ -1055,8 +1070,9 @@ func callFusion(ctx context.Context, analysisModels []string, apiKey, question, 
 			{Role: "system", Content: oracleSystemPrompt},
 			{Role: "user", Content: userContent},
 		},
-		Plugins: []orFusionPlugin{plugin},
-		Stream:  true,
+		Plugins:       []orFusionPlugin{plugin},
+		Stream:        true,
+		StreamOptions: &orStreamOptions{IncludeUsage: true},
 	}
 	return orChat(ctx, req, apiKey, "openrouter/fusion", ccfg)
 }
@@ -1088,7 +1104,17 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 		"Authorization": "Bearer " + apiKey,
 	}, body, counselStreamIdleTimeout, timeout, parseOpenRouterSSE)
 	if err != nil {
-		return "", OracleUsage{}, err
+		// Preserve partial usage from the stream even on error — the
+		// provider bills for tokens already generated before the failure.
+		var partial OracleUsage
+		if sUsage != nil {
+			partial.InputTokens = sUsage.InputTokens
+			partial.OutputTokens = sUsage.OutputTokens
+			partial.ReasoningTokens = sUsage.ReasoningTokens
+			partial.WebSearchRequests = sUsage.WebSearchRequests
+			partial.FinishReason = sUsage.FinishReason
+		}
+		return "", partial, err
 	}
 
 	if status != http.StatusOK {

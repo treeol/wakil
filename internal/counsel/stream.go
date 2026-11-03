@@ -106,10 +106,6 @@ func (r *streamIdleReader) Close() error {
 	return r.src.Close()
 }
 
-// ErrCounselStreamStall is returned when a streaming Mashūra call stalls
-// (no bytes for the idle timeout). It is retryable.
-var ErrCounselStreamStall = errors.New("counsel stream stalled")
-
 // streamRequest sends a POST request with streaming and returns the full
 // response body (collected from SSE events), status code, and error. The
 // request is sent with "stream": true in the body; the SSE response is
