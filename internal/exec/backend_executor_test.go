@@ -221,7 +221,7 @@ func TestBackendExecutorOutputCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "bytes of output omitted") {
+	if !strings.Contains(out, "[truncated,") {
 		t.Errorf("cap not applied: len=%d", len(out))
 	}
 }

@@ -64,9 +64,6 @@ fi`
 	return fmt.Sprintf(base, dockerCase, dockerTool, dockerDaemon)
 }
 
-// probeScript is the docker-backend probe script (backward compat).
-var probeScript = probeScriptFor("docker")
-
 // probeTools runs the probe via the supplied runner and returns the formatted
 // "Sandbox tools: …" line, or empty string on failure / all absent.
 // backend is the sandbox backend label ("docker", "hisn", "direct"); when

@@ -879,7 +879,7 @@ func TestConnectionRefusedMeansDeadAndIsReplaced(t *testing.T) {
 // Start replaces a dead session: the active grants must be replayed on the
 // replacement so a stale-session replacement does not silently drop access.
 func TestStartReplaysGrantsOnReplacement(t *testing.T) {
-	b, fe := openFake(t)
+	fe := newFakeEnv(t)
 	opts := fe.options()
 	opts.GrantableRW = []string{"/srv/out"}
 	b, err := New(opts)

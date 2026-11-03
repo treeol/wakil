@@ -1039,42 +1039,6 @@ func (a *App) collapseFinishedTurns() {
 // maxNoticeToolIDs bounds how many tool-result ids the collapse notice lists.
 const maxNoticeToolIDs = 8
 
-// collapseDroppedDetail names exactly what a collapse removed from the sent
-// context so the user can see it: the message range in the transcript, the
-// tool-result ids, byte and ~token counts, and where the full copy is archived.
-// first is the transcript index of dropped[0]. Returns "" when nothing was
-// dropped.
-func collapseDroppedDetail(dropped []proxy.Message, first int, archive string) string {
-	if len(dropped) == 0 {
-		return ""
-	}
-	var ids []string
-	size := 0
-	for _, m := range dropped {
-		size += messageSize(m)
-		if m.Role == "tool" && m.ToolCallID != "" {
-			ids = append(ids, m.ToolCallID)
-		}
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, " · dropped messages %d–%d (%d msgs, %d bytes ≈ %d tokens)",
-		first, first+len(dropped)-1, len(dropped), size, size/charsPerToken)
-	if len(ids) > 0 {
-		shown := ids
-		if len(shown) > maxNoticeToolIDs {
-			shown = shown[:maxNoticeToolIDs]
-		}
-		fmt.Fprintf(&b, " · tool results: %s", strings.Join(shown, ", "))
-		if len(ids) > len(shown) {
-			fmt.Fprintf(&b, " +%d more", len(ids)-len(shown))
-		}
-	}
-	if archive != "" {
-		fmt.Fprintf(&b, " · archive: %s", archive)
-	}
-	return b.String()
-}
-
 // formatCollapseNotice renders the A.7 unified collapse notice: one line
 // with prior tokens, sent tokens, archive path, and what was dropped (msgs
 // range + tool results). Replaces the old two-part format ("· collapsed
