@@ -40,6 +40,22 @@ jobs:
             exit 1
           fi
 
+      # Releases come from master only. The binary version is injected from the
+      # tag itself (goreleaser {{ .Tag }}), so a tag/version mismatch cannot
+      # happen; what can happen is a tag on a side-branch or unmerged commit.
+      - name: require tagged commit on master
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          # compare master...SHA: "behind"/"identical" => SHA is an ancestor of master.
+          status=$(gh api "repos/${REPO}/compare/master...${SHA}" --jq .status)
+          case "$status" in
+            behind|identical) echo "tagged commit ${SHA} is on master (${status})" ;;
+            *) echo "::error::tagged commit ${SHA} is not on master (compare status: '${status}')"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -167,8 +183,11 @@ jobs:
 
       - name: fedora — rpm -i
         run: |
+          # The rpm is unsigned (integrity comes from the cosign-signed
+          # checksums.txt); rpm 6 on current Fedora rejects unsigned packages by
+          # default, so skip the signature check (digests are still verified).
           docker run --rm -e TAG -e DIGEST -v "$PWD/pkg:/pkg:ro" fedora:latest bash -euxc '
-            rpm -i /pkg/*_linux_amd64.rpm
+            rpm -i --nosignature /pkg/*_linux_amd64.rpm
             out=$(wakil version)
             echo "$out"
             grep -qF "$TAG" <<<"$out"
