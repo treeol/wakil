@@ -295,7 +295,7 @@ func (e *BackendExecutor) run(ctx context.Context, argv []string, o runOpts) (re
 	ctx = e.withScope(ctx) // one identity for admission AND a dead-session verdict
 	var h sandbox.ExecHandle
 	err := e.admit(ctx, func() (err error) {
-		h, err = e.b.Exec(ctx, sandbox.ExecSpec{Argv: argv, Stdin: o.stdin, Stdout: w})
+		h, err = e.b.Exec(ctx, sandbox.ExecSpec{Argv: argv, Stdin: o.stdin, Stdout: w, Stderr: w})
 		return err
 	})
 	if err != nil {
