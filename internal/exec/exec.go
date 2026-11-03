@@ -1339,6 +1339,9 @@ func (d *DockerExecutor) ListDir(ctx context.Context, path string) (string, erro
 }
 
 func (d *DockerExecutor) WriteFile(ctx context.Context, path, content string) (string, error) {
+	if err := guardWrite(d.workspaceRoot, path); err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", d.container, "sh", "-c",
 		"cd "+shQuote(d.workspaceRoot)+` && mkdir -p "$(dirname -- "$1")" && cat > "$1"`, "sh", path)
 	cmd.Stdin = strings.NewReader(content)
@@ -1353,6 +1356,9 @@ func (d *DockerExecutor) WriteFile(ctx context.Context, path, content string) (s
 // Binary-safe: the bytes are streamed through docker exec -i, not interpolated
 // into a shell command. Creates parent directories.
 func (d *DockerExecutor) WriteFileBytes(ctx context.Context, path string, content []byte) (string, error) {
+	if err := guardWrite(d.workspaceRoot, path); err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", d.container, "sh", "-c",
 		"cd "+shQuote(d.workspaceRoot)+` && mkdir -p "$(dirname -- "$1")" && cat > "$1"`, "sh", path)
 	cmd.Stdin = bytes.NewReader(content)
@@ -1660,6 +1666,9 @@ func (e *DirectExecutor) ListDir(_ context.Context, path string) (string, error)
 
 func (e *DirectExecutor) WriteFile(_ context.Context, path, content string) (string, error) {
 	full := e.resolve(path)
+	if err := resolvedGuard(e.root, false, full); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "", err
 	}
@@ -1673,6 +1682,9 @@ func (e *DirectExecutor) WriteFile(_ context.Context, path, content string) (str
 // Binary-safe: uses os.WriteFile directly, no string conversion.
 func (e *DirectExecutor) WriteFileBytes(_ context.Context, path string, content []byte) (string, error) {
 	full := e.resolve(path)
+	if err := resolvedGuard(e.root, false, full); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "", err
 	}

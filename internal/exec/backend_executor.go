@@ -431,6 +431,9 @@ func (e *BackendExecutor) ListDir(ctx context.Context, path string) (string, err
 }
 
 func (e *BackendExecutor) write(ctx context.Context, path string, content io.Reader, n int) (string, error) {
+	if err := guardWrite(e.root, path); err != nil {
+		return "", err
+	}
 	script := "cd " + shQuote(e.root) + ` && mkdir -p "$(dirname -- "$1")" && cat > "$1"`
 	r, _, err := e.run(ctx, []string{"sh", "-c", script, "sh", path}, runOpts{stdin: content})
 	if err != nil {
@@ -486,6 +489,9 @@ func (e *BackendExecutor) ConfinePath(ctx context.Context, path string) (string,
 
 // DeletePath implements Executor.
 func (e *BackendExecutor) DeletePath(ctx context.Context, path string) error {
+	if err := guardRemove(e.root, path); err != nil {
+		return err
+	}
 	script := fmt.Sprintf(
 		`if [ -d %[1]s ] && [ ! -L %[1]s ]; then rmdir -- %[1]s 2>&1; else rm -- %[1]s 2>&1; fi`, shQuote(path))
 	out, err := e.sh(ctx, script)
@@ -507,6 +513,9 @@ func (e *BackendExecutor) DeletePath(ctx context.Context, path string) error {
 
 // MovePath implements Executor.
 func (e *BackendExecutor) MovePath(ctx context.Context, src, dst string) error {
+	if err := guardRemove(e.root, src, dst); err != nil {
+		return err
+	}
 	ctx = e.withScope(ctx) // check and mutation must hit the same session
 	chk, cerr := e.sh(ctx, fmt.Sprintf(`[ ! -e %[1]s ] && [ ! -L %[1]s ] && echo ok || echo exists`, shQuote(dst)))
 	if cerr == nil && strings.TrimSpace(chk) == "exists" {

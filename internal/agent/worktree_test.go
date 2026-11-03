@@ -1420,3 +1420,27 @@ func TestDirtyParent_EndToEnd_SiblingPatchVisibleToNextChild(t *testing.T) {
 			string(content), "sibling 1 edit\n")
 	}
 }
+
+// TestApplyPatch_RefusesSandboxConfig: a worktree child must not be able to
+// change the user's sandbox configuration through its patch (new file, edit,
+// or rename onto/away from it).
+func TestApplyPatch_RefusesSandboxConfig(t *testing.T) {
+	dir := setupGitRepo(t)
+	app := newWorktreeTestApp(t, dir)
+
+	patches := map[string]string{
+		"create": "diff --git a/.wakil/sandbox.json b/.wakil/sandbox.json\nnew file mode 100644\n--- /dev/null\n+++ b/.wakil/sandbox.json\n@@ -0,0 +1 @@\n+{}\n",
+		"rename": "diff --git a/hello.txt b/.wakil/sandbox.json\nsimilarity index 100%\nrename from hello.txt\nrename to .wakil/sandbox.json\n",
+	}
+	for name, p := range patches {
+		patchApplyMu.Lock()
+		applied, _, msg := applyPatch(context.Background(), app, p)
+		patchApplyMu.Unlock()
+		if applied || !strings.Contains(msg, "sandbox configuration") {
+			t.Errorf("%s: patch touching .wakil/sandbox.json must be refused, applied=%v msg=%q", name, applied, msg)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".wakil", "sandbox.json")); err == nil {
+		t.Error("the file must not have been created")
+	}
+}

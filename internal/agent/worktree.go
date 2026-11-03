@@ -505,6 +505,16 @@ func applyPatch(ctx context.Context, a *App, patch string) (applied bool, confli
 
 	repoRoot := a.Exec.WorkspaceRoot()
 
+	// The user's sandbox configuration is never changed by an agent, and a
+	// worktree child's patch is a way around the executor-level guard: refuse
+	// any patch that touches it (either side of a rename/copy included), or
+	// that moves its directory.
+	for _, p := range patchFilePaths(patch) {
+		if exec.IsProtectedPath(repoRoot, p) {
+			return false, false, "patch refused: it modifies " + exec.ProtectedSandboxFile + ", the user's sandbox configuration (edit it yourself, then run `wakil sandbox trust`)"
+		}
+	}
+
 	// Write the patch to a temp file so we can pass it to git apply via file
 	// path (avoids shell-quoting issues with the diff content).
 	//

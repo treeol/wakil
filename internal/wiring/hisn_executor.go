@@ -38,6 +38,10 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		}
 		home = filepath.Join(state, "hisn-home", key)
 	}
+	surface, _, err := loadProjectSurface(cfg)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	hisn.SetDiagnostics(os.Stderr)
@@ -51,6 +55,7 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		TmpSizeMB:   h.TmpSizeMB,
 		ShmSizeMB:   h.ShmSizeMB,
 		ExecViaCLI:  h.ExecViaCLI,
+		Surface:     surface,
 	})
 	if err != nil {
 		return nil, err

@@ -32,6 +32,21 @@ func main() {
 		}
 	}
 
+	// "wakil sandbox trust [dir]": the user approves the project's
+	// .wakil/sandbox.json. Interactive only (reads /dev/tty); never reachable
+	// with a flag that skips the question.
+	if len(os.Args) >= 3 && os.Args[1] == "sandbox" && os.Args[2] == "trust" {
+		dir := ""
+		if len(os.Args) > 3 {
+			dir = os.Args[3]
+		}
+		if err := wiring.SandboxTrust(os.Stdout, dir, wiring.OpenControllingTTY); err != nil {
+			fmt.Fprintln(os.Stderr, "sandbox trust:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// "wakil run" subcommand: headless, non-interactive, exits with a code.
 	if len(os.Args) >= 2 && os.Args[1] == "run" {
 		cfg, err := config.LoadConfig(nil) // flags after "run" are for RunHeadless, not LoadConfig

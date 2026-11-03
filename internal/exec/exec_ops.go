@@ -260,6 +260,9 @@ func isShellNotFound(msg string) bool {
 }
 
 func (d *DockerExecutor) DeletePath(ctx context.Context, path string) error {
+	if err := guardRemove(d.workspaceRoot, path); err != nil {
+		return err
+	}
 	// For directories use rmdir (fails on non-empty); for files/symlinks use rm.
 	script := fmt.Sprintf(
 		`if [ -d %[1]s ] && [ ! -L %[1]s ]; then rmdir -- %[1]s 2>&1; else rm -- %[1]s 2>&1; fi`,
@@ -282,6 +285,9 @@ func (d *DockerExecutor) DeletePath(ctx context.Context, path string) error {
 }
 
 func (e *DirectExecutor) DeletePath(_ context.Context, path string) error {
+	if err := resolvedGuard(e.root, true, path); err != nil {
+		return err
+	}
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%w: %s", ErrFileNotFound, path)
@@ -298,6 +304,9 @@ func (e *DirectExecutor) DeletePath(_ context.Context, path string) error {
 // ── B2: move/rename ───────────────────────────────────────────────────────────
 
 func (d *DockerExecutor) MovePath(ctx context.Context, src, dst string) error {
+	if err := guardRemove(d.workspaceRoot, src, dst); err != nil {
+		return err
+	}
 	// Explicit existence check before mv so the error message is actionable.
 	checkOut, checkErr := d.execCtx(ctx, false, "sh", "-c",
 		fmt.Sprintf(`[ ! -e %[1]s ] && [ ! -L %[1]s ] && echo ok || echo exists`, shQuote(dst)))
@@ -313,6 +322,9 @@ func (d *DockerExecutor) MovePath(ctx context.Context, src, dst string) error {
 }
 
 func (e *DirectExecutor) MovePath(_ context.Context, src, dst string) error {
+	if err := resolvedGuard(e.root, true, src, dst); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(dst); err == nil {
 		return fmt.Errorf("destination already exists: %s — delete it first if you intended to overwrite", dst)
 	}

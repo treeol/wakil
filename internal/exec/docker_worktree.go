@@ -130,6 +130,9 @@ func (w *dockerWorktreeExecutor) ListDir(ctx context.Context, path string) (stri
 
 // WriteFile writes string content to a file in the worktree.
 func (w *dockerWorktreeExecutor) WriteFile(ctx context.Context, path, content string) (string, error) {
+	if err := guardWrite(w.wtRoot, path); err != nil {
+		return "", err
+	}
 	cmd := osexec.CommandContext(ctx, "docker", "exec", "-i", w.container, "sh", "-c",
 		"cd "+shQuote(w.wtRoot)+` && mkdir -p "$(dirname -- "$1")" && cat > "$1"`, "sh", path)
 	cmd.Stdin = strings.NewReader(content)
@@ -142,6 +145,9 @@ func (w *dockerWorktreeExecutor) WriteFile(ctx context.Context, path, content st
 
 // WriteFileBytes writes raw bytes to a file in the worktree via stdin pipe.
 func (w *dockerWorktreeExecutor) WriteFileBytes(ctx context.Context, path string, content []byte) (string, error) {
+	if err := guardWrite(w.wtRoot, path); err != nil {
+		return "", err
+	}
 	cmd := osexec.CommandContext(ctx, "docker", "exec", "-i", w.container, "sh", "-c",
 		"cd "+shQuote(w.wtRoot)+` && mkdir -p "$(dirname -- "$1")" && cat > "$1"`, "sh", path)
 	cmd.Stdin = bytes.NewReader(content)
