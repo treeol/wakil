@@ -38,8 +38,6 @@ type policyEnv struct {
 }
 
 // buildPolicy renders the session policy. network is "host" by decision:
-// builds need the network and hisn offers no filtering in between.
-// buildPolicy renders the session policy. network is "host" by decision:
 // builds need the network and hisn offers no filtering in between. shm is
 // true by decision: /dev/shm is needed by real toolchains (Chrome, Node,
 // POSIX shm), and hisn mounts it with /dev's flags, not /tmp's.

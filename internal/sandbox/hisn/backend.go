@@ -258,6 +258,11 @@ func (b *Backend) Start(ctx context.Context, s sandbox.Session) error {
 	if b.cur != nil && b.cur.id == s.ID && len(b.orphans) == 0 && !b.cur.dead() {
 		return nil
 	}
+	// Snapshot active grants before the replacement: the old session's grants
+	// must be replayed on the replacement so a stale-session replacement does
+	// not silently drop access the user already granted. stopAllLocked clears
+	// the grants, so the snapshot must happen first.
+	grants := b.pm.Grants()
 	if err := b.stopAllLocked(ctx); err != nil {
 		// A tool call is never failed because the PREVIOUS session would not stop:
 		// the new session is started regardless (a conflict on the SAME id is
@@ -285,6 +290,22 @@ func (b *Backend) Start(ctx context.Context, s sandbox.Session) error {
 	b.cur = l
 	b.epoch++
 	b.pm.ResetGrants()
+	// Replay grants on the replacement session. rw grants are re-issued
+	// through hisn so Landlock is updated; the policy (and thus
+	// grantable_rw) does not change across replacements of the same session,
+	// so this always succeeds for the same set.
+	for _, g := range grants {
+		if g.RW {
+			args := []string{"grant", "--session", l.id, "--rw", "--", g.Path}
+			if _, err := b.output(ctx, false, args...); err != nil {
+				// Best-effort: a failed replay is a missing grant, not a
+				// start failure. The user re-grants if needed.
+				fmt.Fprintf(errWriter, "hisn: grant replay for %s failed: %v\n", g.Path, err)
+				continue
+			}
+		}
+		b.pm.AddGrant(g.Path, g.RW)
+	}
 	return nil
 }
 
@@ -414,7 +435,7 @@ func (b *Backend) Grant(ctx context.Context, path string, rw bool) error {
 	if !b.stillCurrent(l) {
 		return sandbox.ErrNoSession
 	}
-	b.pm.AddGrant(path)
+	b.pm.AddGrant(path, false)
 	return nil
 }
 

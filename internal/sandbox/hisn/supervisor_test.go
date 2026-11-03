@@ -876,6 +876,51 @@ func TestConnectionRefusedMeansDeadAndIsReplaced(t *testing.T) {
 	}
 }
 
+// Start replaces a dead session: the active grants must be replayed on the
+// replacement so a stale-session replacement does not silently drop access.
+func TestStartReplaysGrantsOnReplacement(t *testing.T) {
+	b, fe := openFake(t)
+	opts := fe.options()
+	opts.GrantableRW = []string{"/srv/out"}
+	b, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Preflight(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "replay", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	// Grant a ro path and a rw path.
+	if err := b.Grant(ctxT(t), "/srv/ref", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Grant(ctxT(t), "/srv/out/sub", true); err != nil {
+		t.Fatal(err)
+	}
+	// Verify the grants are in the path map.
+	if _, err := b.pm.MapPath("/srv/ref/x"); err != nil {
+		t.Fatalf("ro grant not in path map: %v", err)
+	}
+	if _, err := b.pm.MapPath("/srv/out/sub/x"); err != nil {
+		t.Fatalf("rw grant not in path map: %v", err)
+	}
+	// Kill the supervisor → session is dead.
+	killSupervisorHard(t, b)
+	// Start replaces the dead session; grants must be replayed.
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "replay", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("replacement start failed: %v", err)
+	}
+	// The grants must survive the replacement.
+	if _, err := b.pm.MapPath("/srv/ref/x"); err != nil {
+		t.Errorf("ro grant lost on replacement: %v", err)
+	}
+	if _, err := b.pm.MapPath("/srv/out/sub/x"); err != nil {
+		t.Errorf("rw grant lost on replacement: %v", err)
+	}
+}
+
 // Start never fails because the PREVIOUS session would not stop.
 func TestStartNeverFailsOnUnstoppablePreviousSession(t *testing.T) {
 	var diag strings.Builder

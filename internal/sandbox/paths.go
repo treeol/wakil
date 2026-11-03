@@ -38,8 +38,9 @@ type PathMap struct {
 	AgentRoot string   // same workspace as the agent sees it
 	Private   []string // sandbox-private prefixes (execution-only), e.g. /tmp
 
-	mu     sync.RWMutex
-	grants map[string]bool // active grant paths (identical on host and agent side)
+	mu      sync.RWMutex
+	grants  map[string]bool // active grant paths (identical on host and agent side)
+	grantRW map[string]bool // true if the grant was rw (for replay)
 }
 
 // NewPathMap returns a PathMap with cleaned roots.
@@ -49,13 +50,17 @@ func NewPathMap(hostRoot, agentRoot string, private ...string) *PathMap {
 		AgentRoot: filepath.Clean(agentRoot),
 		Private:   private,
 		grants:    map[string]bool{},
+		grantRW:   map[string]bool{},
 	}
 }
 
-// AddGrant records an active grant (identity-mapped host path).
-func (m *PathMap) AddGrant(p string) {
+// AddGrant records an active grant (identity-mapped host path). The rw
+// flag is recorded so the grant can be replayed with the same mode after a
+// session replacement.
+func (m *PathMap) AddGrant(p string, rw bool) {
 	m.mu.Lock()
 	m.grants[filepath.Clean(p)] = true
+	m.grantRW[filepath.Clean(p)] = rw
 	m.mu.Unlock()
 }
 
@@ -63,6 +68,7 @@ func (m *PathMap) AddGrant(p string) {
 func (m *PathMap) RemoveGrant(p string) {
 	m.mu.Lock()
 	delete(m.grants, filepath.Clean(p))
+	delete(m.grantRW, filepath.Clean(p))
 	m.mu.Unlock()
 }
 
@@ -70,7 +76,25 @@ func (m *PathMap) RemoveGrant(p string) {
 func (m *PathMap) ResetGrants() {
 	m.mu.Lock()
 	m.grants = map[string]bool{}
+	m.grantRW = map[string]bool{}
 	m.mu.Unlock()
+}
+
+// Grants returns a snapshot of the active grant paths and their rw mode.
+func (m *PathMap) Grants() []grantEntry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]grantEntry, 0, len(m.grants))
+	for g := range m.grants {
+		out = append(out, grantEntry{Path: g, RW: m.grantRW[g]})
+	}
+	return out
+}
+
+// grantEntry is one active grant with its rw mode.
+type grantEntry struct {
+	Path string
+	RW   bool
 }
 
 func (m *PathMap) granted(p string) bool {

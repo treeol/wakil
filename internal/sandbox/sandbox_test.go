@@ -64,7 +64,7 @@ func TestPathMapGrants(t *testing.T) {
 	if _, err := m.MapPath("/srv/ref/x"); !errors.Is(err, sandbox.ErrNotVisible) {
 		t.Fatalf("ungranted path: %v", err)
 	}
-	m.AddGrant("/srv/ref")
+	m.AddGrant("/srv/ref", false)
 	if h, err := m.MapPath("/srv/ref/x"); err != nil || h != "/srv/ref/x" {
 		t.Fatalf("granted path: %q %v", h, err)
 	}

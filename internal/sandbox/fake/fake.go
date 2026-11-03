@@ -89,7 +89,7 @@ func (b *Backend) Grant(_ context.Context, path string, rw bool) error {
 		return b.GrantErr
 	}
 	b.Grants[path] = rw
-	b.AddGrant(path)
+	b.AddGrant(path, rw)
 	return nil
 }
 
