@@ -93,3 +93,5 @@ Core packages (`internal/`):
 - Config: every key in `config.example.json` must be documented in `docs/configuration.md` (CI-enforced)
 - Proto: wire-compatible changes only — `buf breaking` runs in CI
 - Dependencies: Dependabot opens weekly PRs with `deps:` prefix; SHAs are pinned in CI workflows
+- Release tags: annotated (`git tag -a vX.Y.Z -m "wakil X.Y.Z" <sha>`), created only on a green master commit, and pushed individually by name (`git push origin vX.Y.Z`). Never use `git push --tags`: GitHub creates no push event when more than three tags are pushed at once, so the Release workflow silently does not run
+- Snapshot/backup refs go under `refs/archive/`, not `refs/tags/`. Never push `refs/archive/*` to `origin`; back it up with `git bundle create <file> --glob='refs/archive/*'`
