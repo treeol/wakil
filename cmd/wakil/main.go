@@ -39,6 +39,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "config error:", err)
 			os.Exit(ExitError)
 		}
+		fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 		os.Exit(RunHeadless(cfg, os.Args[2:]))
 	}
 
@@ -76,6 +77,7 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "ctx limits: compactAt=%d hardMax=%d keep=%d summary=%d\n",
 		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
+	fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 
 	// Resolve --resume / --resume-id to a session id/prefix (global search —
 	// the same rule the TUI's /resume <id> follows). Bare --resume (no id)

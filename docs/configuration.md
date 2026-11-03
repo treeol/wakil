@@ -139,7 +139,7 @@ reference covering every section below.
 | `lsp_servers` | — | Maps language → server command |
 | `style_guides_enabled` | `false` | Enable built-in and user-configured language style guides |
 | `style_guide_paths` | `{}` | Map language ID → replacement or custom host-side guide file; paths relative to the config file, `~/` expanded |
-| `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium) |
+| `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium). Forced off (with a startup line) under `sandbox.backend: hisn` |
 | `memory_preflight_recall` | `true` | Turn-entry memory/skill retrieval: one FTS query per user request; injects top hits as a delimited untrusted-data block. Set `false` to disable. |
 | `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
 | `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
@@ -334,7 +334,10 @@ limits: [sandbox-backends.md](sandbox-backends.md).
 With `hisn`: startup requires `hisn --version` >= 0.2.1 and `hisn check` exit
 0, otherwise Wakil refuses to start (no fallback). The workspace is mounted at
 its identical host path (`--workdir` is rejected); `kvr` staging is disabled;
-`browser_enabled` and `--exec direct` are rejected. One hisn session per chat,
+`browser_enabled` is forced off with one startup line (so one config serves
+both backends), and the deprecated `exec_mode: direct` conflicts with it. The
+startup line `sandbox: backend=<b> · browser tools: on|off` states the active
+backend and whether browser tools are available. One hisn session per chat,
 stopped on `/new`, `/resume`, handoff, `/rewind` and exit.
 
 ## Sessions

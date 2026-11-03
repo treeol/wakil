@@ -667,6 +667,9 @@ type Config struct {
 	// visual verification, DOM inspection, interaction testing. Off by default.
 	// When enabled, chromium must be installed in the sandbox image.
 	BrowserEnabled bool `json:"browser_enabled,omitempty"`
+	// BrowserForcedOff is the reason browser_enabled was switched off at load
+	// time (e.g. sandbox backend hisn); "" when it was not. Not a config key.
+	BrowserForcedOff string `json:"-"`
 
 	// BrowserPath overrides the Chromium/Chrome binary path. When empty,
 	// chromedp searches PATH for google-chrome, chromium, etc. Set this to
@@ -2158,6 +2161,28 @@ func hostStartupEnv(name string) bool {
 		strings.HasPrefix(name, "XDG_")
 }
 
+// StartupBanner is the one-line startup statement of where tool calls run and
+// whether browser tools are available, e.g.
+//
+//	sandbox: backend=hisn · browser tools: off (browser_enabled ignored: …)
+//
+// The browser state is the configured one; a browser manager that fails to
+// start later prints its own error.
+func (c Config) StartupBanner() string {
+	backend := c.Sandbox.Backend
+	if backend == "" {
+		backend = SandboxBackendDocker
+	}
+	browser := "off"
+	switch {
+	case c.BrowserForcedOff != "":
+		browser = "off (" + c.BrowserForcedOff + ")"
+	case c.BrowserEnabled:
+		browser = "on"
+	}
+	return "sandbox: backend=" + backend + " · browser tools: " + browser
+}
+
 // resolveBackend makes sandbox.backend the single source of truth and maps the
 // deprecated exec_mode (config key, ILM_/WAKIL_EXEC_MODE, --exec) onto it.
 // It returns a one-line deprecation warning when exec_mode was used. Afterwards
@@ -2215,7 +2240,11 @@ func validateSandboxConfig(cfg *Config) error {
 		return fmt.Errorf("invalid sandbox backend %q (want docker|hisn|direct)", sb.Backend)
 	}
 	if cfg.BrowserEnabled {
-		return fmt.Errorf("browser_enabled is not supported with sandbox backend hisn (the browser would launch on the host, outside the sandbox)")
+		// One config serves both backends: under hisn the browser would launch
+		// on the host, outside the sandbox, so it is forced off (one startup
+		// line, see StartupBanner) instead of being a config error.
+		cfg.BrowserEnabled = false
+		cfg.BrowserForcedOff = "browser_enabled ignored: not supported under sandbox backend hisn (the browser would run on the host, outside the sandbox)"
 	}
 	h := &sb.Hisn
 	if strings.TrimSpace(h.Binary) == "" {

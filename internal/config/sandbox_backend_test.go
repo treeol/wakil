@@ -100,7 +100,6 @@ func TestSandboxHisnRejections(t *testing.T) {
 		args            []string
 	}{
 		{"direct mode", `{"sandbox":{"backend":"hisn"}}`, "conflicts with exec mode", []string{"--exec", "direct"}},
-		{"browser", `{"browser_enabled":true,"sandbox":{"backend":"hisn"}}`, "browser_enabled", nil},
 		{"workdir flag", `{"sandbox":{"backend":"hisn"}}`, "conflicts with sandbox backend hisn", []string{"--workdir", "/mnt/x"}},
 		{"relative home_root", `{"sandbox":{"backend":"hisn","hisn":{"home_root":"rel"}}}`, "home_root", nil},
 		{"grantable root", `{"sandbox":{"backend":"hisn","hisn":{"grantable_rw":["/"]}}}`, "grantable_rw", nil},
@@ -167,6 +166,34 @@ func TestExecModeDeprecatedAlias(t *testing.T) {
 		if _, err := resolveBackend(&cfg); err == nil || !strings.Contains(err.Error(), bad.want) {
 			t.Errorf("%q/%q: want error %q, got %v", bad.mode, bad.backend, bad.want, err)
 		}
+	}
+}
+
+// TestSandboxHisnForcesBrowserOff: one config serves both backends — under
+// hisn browser_enabled is switched off with a reason, not a config error;
+// under docker it stays on. The banner states backend + browser state.
+func TestSandboxHisnForcesBrowserOff(t *testing.T) {
+	cfg, err := loadSandboxCfg(t, `{"browser_enabled":true,"sandbox":{"backend":"hisn"}}`, "--host-workdir", t.TempDir())
+	if err != nil {
+		t.Fatalf("browser_enabled under hisn must not be an error: %v", err)
+	}
+	if cfg.BrowserEnabled || cfg.BrowserForcedOff == "" {
+		t.Errorf("BrowserEnabled=%v ForcedOff=%q, want false + reason", cfg.BrowserEnabled, cfg.BrowserForcedOff)
+	}
+	b := cfg.StartupBanner()
+	if !strings.Contains(b, "backend=hisn") || !strings.Contains(b, "browser tools: off (") || strings.Contains(b, "\n") {
+		t.Errorf("banner = %q", b)
+	}
+
+	cfg, err = loadSandboxCfg(t, `{"browser_enabled":true}`, "--host-workdir", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.BrowserEnabled || cfg.BrowserForcedOff != "" {
+		t.Errorf("docker: BrowserEnabled=%v ForcedOff=%q, want unchanged", cfg.BrowserEnabled, cfg.BrowserForcedOff)
+	}
+	if b := cfg.StartupBanner(); b != "sandbox: backend=docker · browser tools: on" {
+		t.Errorf("docker banner = %q", b)
 	}
 }
 
