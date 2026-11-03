@@ -1030,9 +1030,9 @@ func (a *App) collapseFinishedTurns() {
 		// first fix, which counted the uncapped answer.
 		projectedContent := projectTailAnswerContent(convSnap[s.last].Content, rec, a.Cfg.ContextTailAnswerBytes)
 		projected := messageSize(convSnap[s.first]) + len(*projectedContent)
-		fmt.Fprintln(a.Out, Dim(fmt.Sprintf(
-			"· collapsed request %d — %dk → %dk sent (archived)", t, wSize/1024, projected/1024)+
-			collapseDroppedDetail(wOnly, s.first+1, archive)))
+		// A.7: unified one-line format: prior tokens, sent tokens, archive
+		// path, and what was dropped (msgs range + tool results) in one line.
+		fmt.Fprintln(a.Out, Dim(formatCollapseNotice(t, wSize, projected, wOnly, s.first+1, archive)))
 	}
 }
 
@@ -1071,6 +1071,41 @@ func collapseDroppedDetail(dropped []proxy.Message, first int, archive string) s
 	}
 	if archive != "" {
 		fmt.Fprintf(&b, " · archive: %s", archive)
+	}
+	return b.String()
+}
+
+// formatCollapseNotice renders the A.7 unified collapse notice: one line
+// with prior tokens, sent tokens, archive path, and what was dropped (msgs
+// range + tool results). Replaces the old two-part format ("· collapsed
+// request N — Xk → Yk sent (archived)" + collapseDroppedDetail).
+func formatCollapseNotice(turn, priorBytes, sentBytes int, dropped []proxy.Message, first int, archive string) string {
+	priorTokens := priorBytes / charsPerToken
+	sentTokens := sentBytes / charsPerToken
+	var b strings.Builder
+	fmt.Fprintf(&b, "· collapsed request %d: %d tokens → %d sent", turn, priorTokens, sentTokens)
+	if len(dropped) > 0 {
+		fmt.Fprintf(&b, " (msgs %d–%d", first, first+len(dropped)-1)
+		var ids []string
+		for _, m := range dropped {
+			if m.Role == "tool" && m.ToolCallID != "" {
+				ids = append(ids, m.ToolCallID)
+			}
+		}
+		if len(ids) > 0 {
+			shown := ids
+			if len(shown) > maxNoticeToolIDs {
+				shown = shown[:maxNoticeToolIDs]
+			}
+			fmt.Fprintf(&b, ", tool results: %s", strings.Join(shown, ", "))
+			if len(ids) > len(shown) {
+				fmt.Fprintf(&b, " +%d more", len(ids)-len(shown))
+			}
+		}
+		b.WriteString(")")
+	}
+	if archive != "" {
+		fmt.Fprintf(&b, " → %s", archive)
 	}
 	return b.String()
 }
@@ -1297,8 +1332,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	a.collapsed[a.curTurn] = rec
 	a.stateMu.Unlock()
 
-	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· collapsed request %d working set (mid-turn) — %dk → %.1fk sent (archived)",
-		a.curTurn, wSize/1024, float64(cpLen)/1024)+collapseDroppedDetail(w, s.first+1, archive)))
+	fmt.Fprintln(a.Out, Dim(formatCollapseNotice(a.curTurn, wSize, cpLen, w, s.first+1, archive)))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "collapsed request %d working set (%d bytes → %d bytes checkpoint; full record at %s — host-side path: read it with read_file, a sandbox-shell \"not found\" does not mean it is gone)",

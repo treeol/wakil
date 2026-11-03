@@ -49,34 +49,33 @@ func TestCollapseNoticeReportsProjectedSize(t *testing.T) {
 		t.Fatal("turn 1 should have collapsed")
 	}
 
-	// Notice arithmetic: U + projected A content (capped answer + note),
-	// via the shared helper — identical to what the projection emits.
-	projectedContent := projectTailAnswerContent(app.Conv[len(app.Conv)-1].Content, rec, app.Cfg.ContextTailAnswerBytes)
-	projected := messageSize(app.Conv[0]) + len(*projectedContent)
-	wantLine := fmt.Sprintf("· collapsed request 1 — %dk → %dk sent (archived)", rec.WBytes/1024, projected/1024)
-	// The line also names what was dropped: message range, byte/token counts
-	// and the archive location.
-	for _, want := range []string{"dropped messages 1–", "bytes ≈", "tokens)", "archive: " + rec.Archive} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("collapse notice missing %q:\n%s", want, out.String())
+	// A.7 format: "· collapsed request N: X tokens → Y sent (msgs a–b, …) → <archive>"
+	notice := out.String()
+	for _, want := range []string{
+		"collapsed request 1:",
+		"tokens → ",
+		" sent",
+		"msgs 1–",
+		"→ " + rec.Archive,
+	} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("collapse notice missing %q:\n%s", want, notice)
 		}
 	}
-
-	if !strings.Contains(out.String(), wantLine) {
-		t.Errorf("notice mismatch.\nwant: %s\ngot:  %s", wantLine, out.String())
-	}
-	if strings.Contains(out.String(), "0.4k sent") {
+	if strings.Contains(notice, "0.4k sent") {
 		t.Error("notice still reports the old hardcoded 0.4k value")
 	}
 
-	// Non-vacuous cross-check: the notice's number matches the ACTUAL
-	// projection bytes for the turn (the cap fired — the projected A is
-	// ~500 bytes, not 5.5k).
+	// Non-vacuous cross-check: the notice's sent-token count matches the
+	// ACTUAL projection bytes for the turn (the cap fired — the projected A
+	// is ~500 bytes, not 5.5k).
 	proj := app.contextProjection()
 	if len(proj) != 2 {
 		t.Fatalf("projection: want U+A (2 msgs), got %d", len(proj))
 	}
 	projBytes := messageSize(proj[0]) + messageSize(proj[1])
+	projectedContent := projectTailAnswerContent(app.Conv[len(app.Conv)-1].Content, rec, app.Cfg.ContextTailAnswerBytes)
+	projected := messageSize(app.Conv[0]) + len(*projectedContent)
 	if abs(projBytes-projected) > 2 { // "\n\n" join already counted by both
 		t.Errorf("notice disagrees with projection: notice=%d proj=%d (cap should make both ~%d)",
 			projected, projBytes, messageSize(app.Conv[0])+500+len(rec.Note))
@@ -128,9 +127,9 @@ func TestCollapseNoticeSummaryWrapperCounted(t *testing.T) {
 		t.Fatalf("projected content missing summary wrapper: %q", *projectedContent)
 	}
 	projected := messageSize(app.Conv[0]) + len(*projectedContent)
-	wantLine := fmt.Sprintf("→ %dk sent", projected/1024)
-	if !strings.Contains(out.String(), wantLine) {
-		t.Errorf("notice with summary wrapper mismatch: want %q in %q", wantLine, out.String())
+	wantTokenCount := fmt.Sprintf("→ %d sent", projected/charsPerToken)
+	if !strings.Contains(out.String(), wantTokenCount) {
+		t.Errorf("notice with summary wrapper mismatch: want %q in %q", wantTokenCount, out.String())
 	}
 }
 
@@ -158,7 +157,7 @@ func TestCollapseNoticeSmallTurnZeroK(t *testing.T) {
 	}
 	projectedContent := projectTailAnswerContent(app.Conv[len(app.Conv)-1].Content, rec, app.Cfg.ContextTailAnswerBytes)
 	projected := messageSize(app.Conv[0]) + len(*projectedContent)
-	want := fmt.Sprintf("→ %dk sent", projected/1024)
+	want := fmt.Sprintf("→ %d sent", projected/charsPerToken)
 	if !strings.Contains(out.String(), want) {
 		t.Errorf("small-turn notice mismatch: want %q in %q", want, out.String())
 	}
