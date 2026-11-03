@@ -207,6 +207,14 @@ type App struct {
 	// Atomic: parallel subagent workers latch it from their goroutines.
 	touchedExternal atomic.Bool
 
+	// taintReasons records the distinct external-content exposures that
+	// latched touchedExternal, for the /taint command (A.6). Diagnostic
+	// only — not used by computeTainted. Mutex-protected; the sticky bool
+	// stays atomic. Dedup key is (Source, Label); bounded at
+	// maxTaintReasons to prevent unbounded growth from many distinct URLs.
+	taintMu      sync.Mutex
+	taintReasons []taintReason
+
 	// Hooks is the lifecycle hook engine. nil when no hooks are configured
 	// (the hot path skips all hook checks). Set once at construction via
 	// the wiring layer.
@@ -1648,6 +1656,7 @@ func (a *App) buildPreamble(today string) string {
 	if agentsMD := loadAgentsMD(cwd, wsRoot); agentsMD != "" {
 		parts = append(parts, agentsMD)
 		a.touchedExternal.Store(true)
+		a.recordTaintReason("agentsmd", "AGENTS.md")
 	}
 	parts = append(parts, date)
 	if cwd != "" {

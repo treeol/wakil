@@ -1126,6 +1126,7 @@ func (a *App) commitAsyncGrounding(op *asyncOp) {
 	if a.opIsCrossSession(op) {
 		if len(okModels) > 0 {
 			a.touchedExternal.Store(true)
+			a.recordTaintReason("async", "oracle-cross-session")
 		}
 		return
 	}
@@ -1180,6 +1181,7 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 			// the new session, so the taint signal is still set.
 			if len(s.Grounding) > 0 {
 				a.touchedExternal.Store(true)
+				a.recordTaintReason("async", "subagent-cross-session")
 			}
 		} else {
 			for _, g := range s.Grounding {

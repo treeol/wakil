@@ -22,6 +22,21 @@ const (
 	memoryTTMax = 604800 // 7 days
 )
 
+// taintReason records one distinct external-content exposure for /taint (A.6).
+// Source is "web", "oracle", "agentsmd", or "async". Label is the URL, model
+// name, or "AGENTS.md". When is the exposure time. Diagnostic only — not used
+// by computeTainted.
+type taintReason struct {
+	Source string
+	Label  string
+	When   time.Time
+}
+
+// maxTaintReasons bounds the taintReasons slice to prevent unbounded growth
+// from many distinct URLs/models. The list is diagnostic (/taint only);
+// on overflow the oldest entry is dropped.
+const maxTaintReasons = 64
+
 // getMemoryStore returns the memory store, or nil if unavailable.
 func (a *App) getMemoryStore() *memory.Store {
 	return a.MemoryStore
@@ -458,7 +473,32 @@ func (a *App) addExternalGrounding(e proxy.GroundingEntry) {
 	}
 	if e.Type == "web" || e.Type == "oracle" {
 		a.touchedExternal.Store(true)
+		a.recordTaintReason(e.Type, e.Label)
 	}
+}
+
+// recordTaintReason appends a taint reason (A.6) if it's not a duplicate
+// (dedup key: Source+Label). The slice is bounded at maxTaintReasons; on
+// overflow the oldest entry is dropped. Called from addExternalGrounding
+// and the async/AGENTS.md paths. Diagnostic only — the sticky bool is the
+// authoritative signal.
+func (a *App) recordTaintReason(source, label string) {
+	a.taintMu.Lock()
+	defer a.taintMu.Unlock()
+	for _, r := range a.taintReasons {
+		if r.Source == source && r.Label == label {
+			return // dedup: already recorded
+		}
+	}
+	if len(a.taintReasons) >= maxTaintReasons {
+		// Drop oldest to make room.
+		a.taintReasons = a.taintReasons[1:]
+	}
+	a.taintReasons = append(a.taintReasons, taintReason{
+		Source: source,
+		Label:  label,
+		When:   time.Now(),
+	})
 }
 
 // computeTainted returns the taint value for a memory write based on the
@@ -479,4 +519,28 @@ func (a *App) computeTainted() int {
 		return memory.TaintTrue
 	}
 	return memory.TaintUnknown
+}
+
+// renderTaintState renders the /taint command output (A.6). Shows the
+// taint state and the distinct external-content exposures. Non-tainted
+// says "no known external exposure" — NOT "not tainted", because
+// computeTainted returns TaintUnknown (absence of known exposure), not
+// TaintFalse (proven clean).
+func (a *App) renderTaintState() string {
+	a.taintMu.Lock()
+	reasons := make([]taintReason, len(a.taintReasons))
+	copy(reasons, a.taintReasons)
+	a.taintMu.Unlock()
+
+	if len(reasons) == 0 {
+		return "taint: no known external exposure (0 exposures)"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "taint: tainted (%d exposures)", len(reasons))
+	for _, r := range reasons {
+		fmt.Fprintf(&b, "\n  • %s: %s — %s", r.Source, r.Label,
+			r.When.Format("2006-01-02 15:04"))
+	}
+	return b.String()
 }

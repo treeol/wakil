@@ -928,6 +928,18 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		return true, false, note(msg)
 
+	case "/taint":
+		// /taint — show the session's taint state and the distinct
+		// external-content exposures that latched the taint signal (A.6).
+		// No arguments; any argument is rejected with usage. The non-tainted
+		// state is "no known external exposure" (computeTainted returns
+		// TaintUnknown, not TaintFalse — the command must not assert a state
+		// the system doesn't track).
+		if len(fields) > 1 {
+			return true, false, note("usage: /taint")
+		}
+		return true, false, note(app.renderTaintState())
+
 	case "/model":
 		// /model [<name>] — set or show the model override for this session.
 		// Unlike /backend <name/model>, /model acts on the model field only,
@@ -1633,6 +1645,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /backend <name>      set the backend for this session (X-Ilm-Backend header)
 /backend <name/model> set backend + model (e.g. openrouter/anthropic/claude-opus-4-8)
 /backend             show current backend selection and last-used backend
+/taint               show session taint state and external-content exposures
 /model <name>        set the model for this session (overrides backend default)
 /model               show current model
 /subagent <name>     set which endpoint dispatch_subagent targets this session
