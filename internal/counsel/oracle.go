@@ -1001,11 +1001,19 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 		// "off"/"none" effort means omit reasoning entirely — do not send
 		// the reasoning parameter or add a budget to max_tokens.
 		if ccfg.Reasoning.Effort != "off" && ccfg.Reasoning.Effort != "none" {
-			reasoning = ccfg.Reasoning
-			// Additive: max_tokens = reasoning budget + answer budget.
-			budget := config.ReasoningBudgetFor(reasoning)
+			budget := config.ReasoningBudgetFor(ccfg.Reasoning)
 			if budget > 0 {
 				maxTokens = budget + maxTokens
+			}
+			// OpenRouter rejects requests that specify both reasoning.effort
+			// and reasoning.max_tokens (HTTP 400). When a numeric budget
+			// exists (MaxTokens > 0), send only reasoning.max_tokens. When
+			// only Effort is set (MaxTokens == 0), send only reasoning.effort.
+			// Never send both.
+			if ccfg.Reasoning.MaxTokens > 0 {
+				reasoning = &config.ReasoningSpec{MaxTokens: ccfg.Reasoning.MaxTokens}
+			} else {
+				reasoning = &config.ReasoningSpec{Effort: ccfg.Reasoning.Effort}
 			}
 		}
 	}

@@ -135,6 +135,11 @@ func TestCallOpenRouter_ReasoningParameter(t *testing.T) {
 	if req.Reasoning.Effort != "medium" {
 		t.Errorf("reasoning.effort = %q, want %q", req.Reasoning.Effort, "medium")
 	}
+	// When only Effort is set (MaxTokens == 0), reasoning.max_tokens must
+	// not be sent — only reasoning.effort. OpenRouter rejects both together.
+	if req.Reasoning.MaxTokens != 0 {
+		t.Errorf("reasoning.max_tokens = %d, want 0 (effort-only spec must not send max_tokens)", req.Reasoning.MaxTokens)
+	}
 	// max_tokens must be additive: budget + answer.
 	budget := config.ReasoningBudgetFor(&config.ReasoningSpec{Effort: "medium"})
 	expectedMax := budget + 4096
@@ -144,6 +149,54 @@ func TestCallOpenRouter_ReasoningParameter(t *testing.T) {
 	// Verify reasoning tokens are parsed from the response usage.
 	if usage.ReasoningTokens != 15 {
 		t.Errorf("usage.ReasoningTokens = %d, want 15", usage.ReasoningTokens)
+	}
+}
+
+// TestCallOpenRouter_ReasoningMaxTokensOnly verifies that when a reasoning spec
+// has both Effort and MaxTokens set (the default reviewer spec: Effort="medium",
+// MaxTokens=8192), only reasoning.max_tokens is sent — not reasoning.effort.
+// OpenRouter rejects requests that specify both with HTTP 400.
+func TestCallOpenRouter_ReasoningMaxTokensOnly(t *testing.T) {
+	var reqBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	ccfg := PanelCallConfig{
+		MaxTokens:          4096,
+		TimeoutSeconds:     5,
+		OpenRouterEndpoint: srv.URL,
+		Reasoning:          &config.ReasoningSpec{Effort: "medium", MaxTokens: 8192},
+	}
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", ccfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var req orReq
+	if err := json.Unmarshal(reqBody, &req); err != nil {
+		t.Fatalf("request body not valid JSON: %v", err)
+	}
+	if req.Reasoning == nil {
+		t.Fatal("reasoning parameter not sent")
+	}
+	// When MaxTokens > 0, only reasoning.max_tokens must be sent — not effort.
+	if req.Reasoning.MaxTokens != 8192 {
+		t.Errorf("reasoning.max_tokens = %d, want 8192", req.Reasoning.MaxTokens)
+	}
+	if req.Reasoning.Effort != "" {
+		t.Errorf("reasoning.effort = %q, want empty (max_tokens spec must not send effort)", req.Reasoning.Effort)
+	}
+	// max_tokens must be additive: budget (8192) + answer (4096).
+	if req.MaxTokens != 8192+4096 {
+		t.Errorf("max_tokens = %d, want %d (budget 8192 + answer 4096)", req.MaxTokens, 8192+4096)
 	}
 }
 
