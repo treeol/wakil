@@ -140,7 +140,6 @@ reference covering every section below.
 | `style_guides_enabled` | `false` | Enable built-in and user-configured language style guides |
 | `style_guide_paths` | `{}` | Map language ID → replacement or custom host-side guide file; paths relative to the config file, `~/` expanded |
 | `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium). Forced off (with a startup line) under `sandbox.backend: hisn` |
-| `memory_preflight_recall` | `true` | Turn-entry memory/skill retrieval: one FTS query per user request; injects top hits as a delimited untrusted-data block. Set `false` to disable. |
 | `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
 | `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
 | `external_backends` | — | Backend names known to route to external providers |
@@ -182,8 +181,13 @@ reference covering every section below.
 | `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |
 | `openrouter_api_key_env` | `"OPENROUTER_API_KEY"` | Env var for the OpenRouter API key *(used by mashura panel calls routed through OpenRouter)* |
 | `subagent_max_tool_iterations` | `0` (→ 40) | Cap on tool round-trips per subagent dispatch; `0` = use built-in default |
-| `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(auto-clamped to 35% of active hardMax)* |
+| `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(auto-clamped to the class-based work budget)* |
 | `subagent_tool_result_cap` | `0` (→ 12000) | Per-result char cap for subagents; `0` = use built-in default |
+| `subagents.budget.read` | `0` (→ 40) | Budget % for `read` class subagents; `0` = use built-in default |
+| `subagents.budget.search` | `0` (→ 25) | Budget % for `search` class subagents; `0` = use built-in default |
+| `subagents.budget.edit` | `0` (→ 60) | Budget % for `edit` class subagents; `0` = use built-in default |
+| `subagents.budget.verify` | `0` (→ 40) | Budget % for `verify` class subagents; `0` = use built-in default |
+| `subagents.budget.reserve` | `0` (→ 8) | Reserve % held back for the forced final report turn; `0` = use built-in default |
 | `stream_idle_timeout_seconds` | `0` (→ 120) | Max seconds between SSE bytes from the backend before the stream is declared stalled and retried; `0` = use built-in default |
 | `bg_shell_timeout_seconds` | `0` (→ 3600) | Watchdog timeout for `notify_on_exit` background shells (async ops); `0` = use built-in default |
 | `hooks` | — | Lifecycle hooks block (pre_tool, post_tool, session_start, session_end, on_stop) — see [features](features.md#lifecycle-hooks) |

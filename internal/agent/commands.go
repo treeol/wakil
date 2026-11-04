@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/policy"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
@@ -1414,7 +1415,13 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 		if app.Workflow == nil {
 			return true, false, note("no active workflow")
 		}
-		return true, false, note("workflow:\n" + app.Workflow.StatusString())
+		statusNote := "workflow:\n" + app.Workflow.StatusString()
+		// Plan quarantine: in a tainted session, the plan can't be handed off
+		// (writes to plan/current are redirected to plan/tainted/<chatID>/).
+		if app.computeTainted() == memory.TaintTrue {
+			statusNote += "\ntainted — not handed off"
+		}
+		return true, false, note(statusNote)
 
 	case "abort":
 		app.SetWorkflow(nil)

@@ -66,6 +66,12 @@ func main() {
 		os.Exit(runDaemon())
 	}
 
+	// "wakil plan gc" subcommand: list and optionally delete dead plan/current
+	// (and plan/tainted/) memory entries whose owning session no longer exists.
+	if len(os.Args) >= 2 && os.Args[1] == "plan" && len(os.Args) >= 3 && os.Args[2] == "gc" {
+		os.Exit(runPlanGC(os.Args[3:]))
+	}
+
 	// --list-sessions short-circuits before config resolution so it works even
 	// without a configured proxy. Scoped to the launch cwd by default (no config
 	// has been loaded yet, so cwd is the only workspace identity available);

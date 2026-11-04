@@ -43,6 +43,12 @@ func sessionsDir() string {
 	return resolveDataDir("WAKIL_SESSIONS_DIR", "sessions")
 }
 
+// SessionsDir is the exported form of sessionsDir, for use by the CLI
+// (wakil plan gc liveness check).
+func SessionsDir() string {
+	return sessionsDir()
+}
+
 func sessionPath(chatID string) string {
 	dir := sessionsDir()
 	if dir == "" {

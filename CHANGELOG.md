@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - Unreleased
+
+### Changed
+
+- **Subagent dispatch requires a `class` parameter** (`read`, `search`, `edit`, `verify`) on `dispatch_subagent` and `dispatch_subagents`. The class determines the subagent's token budget as a percentage of its context window: `read` 40%, `search` 25%, `edit` 60%, `verify` 40%. A reserve (default 8%) is held back for the final report turn and never spent on work. Work budget = `hardMax × (classPct − reservePct) / 100`; reserve = `hardMax × reservePct / 100`. Overrides via `subagents.budget.{read,search,edit,verify,reserve}` in the config file. Existing callers that omit `class` get a compile-time error (the parameter is required in the tool schema and in every dispatch function signature).
+
+- **Structured partial results on budget exhaustion.** When a subagent exhausts its work budget, the harness stops dispatching tool calls and forces exactly one final turn with the reserve budget, injecting a fixed instruction to emit a structured partial (`status`, `files_covered`, `files_not_read`, `findings`, `remaining_scope`, `budget`). "Ran out of budget" alone is never the result — a subagent that fails to produce the structure still returns a partial with empty findings and the raw tail in `remaining_scope`. The parent may re-dispatch only with a strictly smaller scope (proper file subset + different task text), one split level; a second partial or a partial with no findings and no `files_not_read` is surfaced to the user as a one-line notice and the parent stops auto-dispatching.
+
+- **Per-file read ledger (off-task rejection).** When a dispatch carries an explicit `files` list, the harness records every `read_file` / `read_file_full` / `search_files`-with-path call and derives `files_covered` / `files_not_read` / `files_extra` from actual tool calls — never from the subagent's text. Zero listed files read → the result is `rejected:off-task` and its findings are discarded; the parent re-dispatches once with the ledger appended, and a second rejection is surfaced to the user (the parent never silently takes over).
+
+- **Collapse line aggregates by tool name.** The collapsed-request line and compaction notices now aggregate dropped tool results by tool name (`read_file ×40, run_shell ×20, … (+N more tools)`), sorted by count descending, top 4 shown. `call_…` tool-result IDs are never printed in user-facing output (TUI, daemon web console, info logs); they remain in the trace.
+
+- **`plan/current` quarantine in tainted sessions.** In a tainted session (taint guard active or `/taint` set), writes to `plan/current` are redirected to `plan/tainted/<chatID>/current`; the handoff reader ignores `plan/tainted/` entirely, so a plan from a session that touched external content is never handed off. `/plan` status says "tainted — not handed off" when it applies.
+
+### Added
+
+- **`wakil plan gc`** (CLI): lists `plan/current` and `plan/tainted/*/current` entries whose owning session no longer has a session file on disk (same liveness check `/resume` uses). `--apply` deletes the dead entries; default is dry-run with counts.
+
+- Optional `files` parameter on `dispatch_subagent` / `dispatch_subagents` for the explicit-file-list read ledger and off-task rejection.
+
+### Removed
+
+- `memory_preflight_recall` config key, `MemoryPreflightRecall` field, and its docs entry — the field was a no-op (never read outside its declaration; `retrieveMemoryContext` runs unconditionally). Confirmed and removed.
+
 ## [0.4.0] - Unreleased
 
 ### Changed

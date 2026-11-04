@@ -130,7 +130,6 @@
   "_comment_browser": "Headless-browser tools (chromedp + Chromium) for visual verification, DOM inspection, interaction testing. Off by default. Requires chromium in the sandbox image (included in the default Dockerfile). Set browser_path to a specific Chromium binary when it's not in PATH (e.g. on a bare host).",
 
   "browser_enabled": false,
-  "memory_preflight_recall": true,
   "browser_path": "",
 
   "_comment_mcp": "MCP tool servers. Each entry is a named server with stdio or http transport. Tools appear automatically when configured.",
@@ -174,6 +173,13 @@
   "subagent_max_tool_iterations": 0,
   "subagent_turn_tool_budget": 0,
   "subagent_tool_result_cap": 0,
+
+  "_comment_subagent_budget_class": "Per-class subagent budget percentages of the context window. 0 = use built-in defaults (read=40, search=25, edit=60, verify=40). subagents.budget.reserve is held back for the forced final report turn (default 8). Work budget = hardMax * (classPct - reservePct) / 100.",
+  "subagents.budget.read": 0,
+  "subagents.budget.search": 0,
+  "subagents.budget.edit": 0,
+  "subagents.budget.verify": 0,
+  "subagents.budget.reserve": 0,
 
   "compact_at_frac": 0.75,
   "keep_bytes_frac": 0.60,

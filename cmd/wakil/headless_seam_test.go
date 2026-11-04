@@ -60,7 +60,7 @@ func TestHeadlessNoAgentImport(t *testing.T) {
 		}
 		for _, imp := range node.Imports {
 			path := strings.Trim(imp.Path.Value, `"`)
-			if path == "github.com/treeol/wakil/internal/agent" && f != "daemon_server.go" {
+			if path == "github.com/treeol/wakil/internal/agent" && f != "daemon_server.go" && f != "plan_gc.go" {
 				violations = append(violations,
 					f+":"+fset.Position(imp.Pos()).String()+": imports "+path)
 			}

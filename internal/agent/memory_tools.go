@@ -74,6 +74,16 @@ func (a *App) handleMemoryPut(ctx context.Context, tc proxy.ToolCall) string {
 
 	tainted := a.computeTainted()
 
+	// Plan quarantine: in a tainted session, writes to plan/current are
+	// redirected to plan/tainted/<chatID>/current so the handoff reader
+	// (which ignores plan/tainted/) never picks up a plan from a session
+	// that touched external content. This keeps the plan/current handoff
+	// protocol working for untainted sessions while preventing a tainted
+	// session from poisoning the handoff.
+	if strings.HasPrefix(args.Key, "plan/current") && tainted == memory.TaintTrue {
+		args.Key = "plan/tainted/" + a.chatID() + "/current"
+	}
+
 	if args.TTLSeconds != nil {
 		// Mid-tier: TTL required, bounds enforced.
 		if *args.TTLSeconds < memoryTTMin || *args.TTLSeconds > memoryTTMax {
@@ -192,6 +202,14 @@ func (a *App) handleMemoryGet(ctx context.Context, tc proxy.ToolCall) string {
 		return "ERROR: key is required"
 	}
 
+	// Plan quarantine read-redirect: in a tainted session, reads of
+	// plan/current are redirected to plan/tainted/<chatID>/current so the
+	// session can read its own quarantined plan (writes were redirected
+	// there by handleMemoryPut).
+	if strings.HasPrefix(args.Key, "plan/current") && a.computeTainted() == memory.TaintTrue {
+		args.Key = "plan/tainted/" + a.chatID() + "/current"
+	}
+
 	entry, err := s.Get(ctx, args.Key)
 	if errors.Is(err, memory.ErrNotFound) {
 		return "not found: " + args.Key + " (memory is scoped to the current workspace — entries from other workspaces are not visible here)"
@@ -232,6 +250,16 @@ func (a *App) handleMemorySearch(ctx context.Context, tc proxy.ToolCall) string 
 	entries, err := s.Search(ctx, args.Query, args.Tier, includeProposed)
 	if err != nil {
 		return fmt.Sprintf("ERROR: memory search: %v", err)
+	}
+	// Untainted sessions never see plan/tainted/ entries (plan quarantine).
+	if a.computeTainted() != memory.TaintTrue {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Key, "plan/tainted/") {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
 	}
 	if len(entries) == 0 {
 		return "(no matches — memory is scoped to the current workspace; entries from other workspaces are not visible here)"
@@ -275,6 +303,16 @@ func (a *App) handleMemoryList(ctx context.Context, tc proxy.ToolCall) string {
 	entries, err := s.List(ctx, args.Prefix, args.Tier, args.Status)
 	if err != nil {
 		return fmt.Sprintf("ERROR: memory list: %v", err)
+	}
+	// Untainted sessions never see plan/tainted/ entries (plan quarantine).
+	if a.computeTainted() != memory.TaintTrue {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Key, "plan/tainted/") {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
 	}
 	if len(entries) == 0 {
 		return "(no entries found — memory is scoped to the current workspace; entries from other workspaces are not visible here)"
