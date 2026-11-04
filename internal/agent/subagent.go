@@ -69,6 +69,9 @@ type SubagentSummary struct {
 	SpillRefs     []SpillRef       `json:"spill_refs,omitempty"`
 	FilesChanged  []string         `json:"files_changed,omitempty"`  // model self-report for edit-tier; mechanical record is ground truth
 	ExternalCalls []ExternalAction `json:"external_calls,omitempty"` // mechanical record of MCP tool calls (tools-tier)
+	// FileReadLedger is the harness-derived per-file read ledger (item 2).
+	// Only populated when the dispatch carries an explicit files list.
+	FileReadLedger *FileLedger `json:"file_ledger,omitempty"`
 	// SubagentClass is the task class used for budget sizing (item 1).
 	SubagentClass string `json:"subagent_class,omitempty"`
 }
@@ -154,6 +157,86 @@ func (s SubagentSummary) Render() string {
 		// of truncating bytes (which would produce invalid JSON).
 		return `{"objective":"` + escapeJSONString(s.Objective) + `","status":"incomplete","findings":[{"summary":"summary truncated — too large for 4k limit","location":"","kind":"error","weight":"low"}],"uncertainty":["render overflow — full summary could not be rendered within 4000 chars"]}`
 	}
+}
+
+// FileLedger records which files a subagent actually read during its run,
+// derived from actual tool calls (read_file, read_file_full, search_files
+// with a path). Never from the subagent's text. Listed = files the dispatch
+// explicitly asked for. Read = listed files actually read. NotRead = listed
+// files not read. Extra = files read that were not in the listed set.
+type FileLedger struct {
+	Listed  []string // files the dispatch explicitly asked for
+	Read    []string // listed files that were actually read (subset of Listed)
+	NotRead []string // listed files that were NOT read (subset of Listed)
+	Extra   []string // files read that were NOT in the listed set
+}
+
+// fileReadRecorder tracks canonical paths the subagent read via read_file,
+// read_file_full, or search_files (with a path). It mirrors the
+// filesChangedRecorder pattern: carried on the child App, populated during
+// the child's tool-execution loop. Deduplicated, order-preserving.
+type fileReadRecorder struct {
+	paths map[string]bool // dedup set
+	list  []string        // order-preserving
+}
+
+func newFileReadRecorder() *fileReadRecorder {
+	return &fileReadRecorder{paths: map[string]bool{}}
+}
+
+// record appends a path if it is not already recorded. Nil-safe.
+func (r *fileReadRecorder) record(path string) {
+	if r == nil || path == "" || r.paths[path] {
+		return
+	}
+	r.paths[path] = true
+	r.list = append(r.list, path)
+}
+
+// snapshot returns the deduplicated, order-preserving list of read paths.
+// Nil-safe: returns nil when the recorder is nil or empty.
+func (r *fileReadRecorder) snapshot() []string {
+	if r == nil || len(r.list) == 0 {
+		return nil
+	}
+	return r.list
+}
+
+// deriveLedger computes the FileLedger from the listed files and the
+// recorder's actual reads. Listed files in the recorder's read set go to
+// Read; listed files not in the read set go to NotRead; recorded reads not
+// in the listed set go to Extra.
+func (r *fileReadRecorder) deriveLedger(listed []string) FileLedger {
+	if len(listed) == 0 {
+		// No explicit list — no rejection possible; Extra is still useful.
+		return FileLedger{Listed: nil, Read: nil, NotRead: nil, Extra: r.snapshot()}
+	}
+	listedSet := map[string]bool{}
+	for _, f := range listed {
+		listedSet[f] = true
+	}
+	readSet := map[string]bool{}
+	if r != nil {
+		for _, p := range r.list {
+			readSet[p] = true
+		}
+	}
+	var read, notRead, extra []string
+	for _, f := range listed {
+		if readSet[f] {
+			read = append(read, f)
+		} else {
+			notRead = append(notRead, f)
+		}
+	}
+	if r != nil {
+		for _, p := range r.list {
+			if !listedSet[p] {
+				extra = append(extra, p)
+			}
+		}
+	}
+	return FileLedger{Listed: listed, Read: read, NotRead: notRead, Extra: extra}
 }
 
 // BudgetInfo reports the subagent's budget usage.
@@ -1414,6 +1497,11 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		extRecorder = newExternalActionsRecorder()
 	}
 
+	// fileReadRecorder tracks every file path the subagent reads via
+	// read_file, read_file_full, or search_files (with a path). Always
+	// present for subagents — used to derive the per-file read ledger.
+	readRecorder := newFileReadRecorder()
+
 	// Snapshot the parent's reasoning config (set by /thinking) so the child
 	// inherits it. Copied as App-level fields (not Client.Reasoning) because
 	// the child's prepareTurn → applyReasoningToClientLocked derives
@@ -1494,6 +1582,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 	sub.filesChanged = fileRecorder
 	sub.externalActions = extRecorder
+	sub.fileReads = readRecorder
 	// The catalog is immutable; selection is a child-local copy. The child can
 	// activate another language for its own task without mutating its parent.
 	snapshot := a.styleSnapshot()
@@ -1726,6 +1815,15 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 				summary.Uncertainty = append(summary.Uncertainty, "reserve turn produced no valid JSON — raw: "+Truncate(reserveRaw, 200))
 			}
 		}
+	}
+
+	// Derive the per-file read ledger from the recorder and the explicit
+	// files list. The ledger is harness-derived from actual tool calls,
+	// never from the subagent's text.
+	if len(files) > 0 {
+		ledger := readRecorder.deriveLedger(files)
+		summary.FileReadLedger = &ledger
+		summary.SubagentClass = class
 	}
 
 	// Snapshot AFTER the retry Send (if any) so a retry's RecordInferenceCost

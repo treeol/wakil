@@ -2099,6 +2099,17 @@ func (a *App) recordFileChanged(canonical string) {
 	}
 }
 
+// recordFileRead appends a path to the fileReads recorder for the subagent's
+// per-file read ledger. Called from ExecuteToolCall for read_file,
+// read_file_full, and search_files (with a path). No-op for the parent
+// (fileReads is nil). The path is recorded as-is (the path the model
+// requested); the ledger derives Read/NotRead/Extra from the listed set.
+func (a *App) recordFileRead(path string) {
+	if a.fileReads != nil {
+		a.fileReads.record(path)
+	}
+}
+
 // captureFileOriginal snapshots the pre-edit state of a file for restore.
 // Called by edit tool handlers BEFORE the mutation — copy-on-first-write:
 // only the first capture for a path is stored. No-op for the parent and
@@ -2632,6 +2643,27 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 	if a.Workflow != nil {
 		if msg := a.wfPhaseBlock(name, tc.Function.Arguments); msg != "" {
 			return errResult(msg)
+		}
+	}
+
+	// Record file reads for the subagent's per-file read ledger. The recorder
+	// is nil for the parent; it is only set on child Apps (see dispatchSubagent).
+	if a.fileReads != nil {
+		switch name {
+		case "read_file", "read_file_full":
+			var args struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal([]byte(tc.Function.Arguments), &args) == nil && args.Path != "" {
+				a.recordFileRead(args.Path)
+			}
+		case "search_files":
+			var args struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal([]byte(tc.Function.Arguments), &args) == nil && args.Path != "" {
+				a.recordFileRead(args.Path)
+			}
 		}
 	}
 

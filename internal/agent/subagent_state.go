@@ -44,6 +44,13 @@ type subagentState struct {
 	// files_changed list on the done message.
 	filesChanged *filesChangedRecorder
 
+	// fileReads is the recorder for all-tier subagents: tracks every file
+	// path read by the child via read_file, read_file_full, or search_files
+	// (with a path). nil for the parent. Populated during the child's Send
+	// loop; read by dispatchSubagent after Send returns to derive the
+	// per-file read ledger (files_covered, files_not_read, files_extra).
+	fileReads *fileReadRecorder
+
 	// pendingRestore holds the fileRecorder from a failed edit-tier subagent
 	// dispatch, for /restore to use. Set by dispatchSubagent when the child
 	// returns incomplete/exhausted. Cleared on successful /restore or on the
