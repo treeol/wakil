@@ -167,7 +167,8 @@ COPY --from=golangci/golangci-lint:v2.11.1@sha256:906ae07afe01a069637a7e91e92c20
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
 RUN go install golang.org/x/tools/gopls@v0.22.0
 
-# hisn — rootless sandbox backend (the default backend when usable) (github.com/treeol/hisn, pinned to v0.3.1).
+# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.3.1;
+# the default backend of release builds when usable).
 # Installed into the wakil-dev image so the allow_userns acceptance test can
 # run `hisn check` for real instead of skipping. The binary is multi-arch
 # (amd64/arm64), downloaded from the GitHub release and SHA256-verified.

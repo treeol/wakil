@@ -93,4 +93,35 @@ proposal and what remains.
   network; Chrome/Node need /dev/shm) but could be made configurable via
   `sandbox.hisn.network` and `sandbox.hisn.shm` keys if a use case arises.
   Currently only `shm_size_mb`, `tmp_size_mb`, `env_pass`, `grantable_rw`,
-  `binary`, `home_root`, and `exec_via_cli` are configurable.
+  `binary`, `home_root`, `kvr_binary` and `exec_via_cli` are configurable.
+
+## hisn 0.3.1 integration (v0.4.0)
+
+Deferred from Mashūra round 1/2 of the 0.3.1 integration (non-blocking):
+
+- **N1 — `.wakil` parent rename vs. the mask.** `mounts.mask` of
+  `.wakil/sandbox.json` makes the file unwritable inside the sandbox, but
+  whether a sandboxed command can `rename(".wakil", …)` (moving the mask with
+  it) and create a fresh file is not verified against a real hisn. The approval
+  gate (a changed file is unapproved) is the actual control; verify the mask
+  behaviour in a real session.
+- **N4 — dropping `--network host` from the CLI.** In profile mode the network
+  comes from the profile's `[policy]`. Confirm on a host that a generated
+  profile session really has host networking (the integration tests do not
+  assert it).
+- **N7 — peer-credential check for the kvr socket.** After `connect`, compare
+  `SO_PEERCRED` (uid, and pid against the service pid in `inspect --json
+  services[]`) to close the symlink-swap window the path guard only narrows.
+- **One `risk_ack` per project.** The string is copied into every
+  `[[forward]]`/`[[host_services]]`; labels that differ per entry need a named
+  profile (`hisn.profile`).
+- **Named-profile mode** has no mask for the project file, no kvr service, and
+  identifies the instance by supervisor pid + start time.
+- **Built-in profile names** need a `profiles/` directory next to the hisn
+  binary; the release binary ships none, so `hisn.profile` names resolve only
+  via `$HISN_PROFILES`.
+- **`kvr-server` discovery** only looks at `PATH`/`sandbox.hisn.kvr_binary`; a
+  binary outside `/usr`, `/opt`, `/nix` (e.g. `~/.cargo/bin`) needs its
+  directory in `hisn.mounts_ro`.
+- **Single-pass risk labels.** `risk_ack` and the label check run at start; a
+  profile edited while a session runs is not re-checked until the next start.

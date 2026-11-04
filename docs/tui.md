@@ -40,6 +40,7 @@ opens a picker to attach a file or folder for context.
 ```
 /cwd                 show executor working directory
 /mode                show execution backend · context mode
+/sandbox             show the sandbox: backend, profile, risk label, capabilities, services, forwards, grants, staging (kvr)
 /mode standard       set context mode: full history sent (persisted per repo; status line shows "std")
 /mode long-session   set long-session mode (default): finished requests collapse to question + answer + note (alias: /mode long; status line shows "long")
 /mode status         show context mode, collapsed/kept counts, sent vs full sizes, archive dir

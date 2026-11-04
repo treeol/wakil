@@ -1,21 +1,52 @@
 # Sandbox backends
 
-Wakil runs every tool call inside a sandbox. Two backends exist:
+Wakil runs every tool call inside a sandbox. Backends:
 
-| backend | selected by | status |
+| backend | selected by | notes |
 |---|---|---|
-| `docker` | default (`sandbox.backend: "docker"`) | production, behaviour unchanged |
-| `hisn` | `sandbox.backend: "hisn"` | second backend, opt-in, needs hisn >= 0.2.1 |
+| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.3.1 for profiles/services/risk labels (>= 0.2.1 still works as an explicit choice, without them) |
+| `docker` | `sandbox.backend: "docker"`, or the fallback when hisn is not usable | behaviour unchanged |
+| `direct` | `sandbox.backend: "direct"` (or the deprecated `exec_mode: "direct"`) | no sandbox at all: explicit opt-out |
 
-`exec_mode: "direct"` (no sandbox at all) is a separate, explicit opt-out. It is
-also accepted as `sandbox.backend: "direct"`. Combining `exec_mode: direct`
-with `backend: "hisn"` is a configuration error.
+Combining `exec_mode: direct` with `backend: "hisn"` is a configuration error.
+
+## Choosing the backend
+
+Since v0.4.0 hisn is the default **only when all three hold**:
+
+1. nothing chose a backend — no `sandbox.backend` in the config file, no
+   `WAKIL_SANDBOX_BACKEND`, no `--sandbox`/`--exec`, no `exec_mode`;
+2. `hisn check` passes;
+3. hisn >= 0.3.1 is in `PATH`.
+
+Otherwise the backend is docker, and the startup banner says why:
+
+```
+sandbox: backend=docker · browser tools: on · default: docker (hisn 0.2.2 is older than 0.3.1)
+sandbox: backend=hisn · browser tools: off (...) · default: hisn 0.3.1 (hisn check ok)
+```
+
+A host without hisn therefore sees no behaviour change. Further reasons that
+keep docker (never a hard error through the default alone): an explicit
+`--workdir` (docker-only), an unapproved or malformed `.wakil/sandbox.json`,
+or a workspace that contains Wakil's state directory (hisn would refuse the
+generated profile). An **explicit** choice is never second-guessed in either
+direction: `sandbox.backend: "docker"` always means docker, and an explicit
+`hisn` with an unusable hisn is an error (no fallback).
+
+`LoadConfig` is pure (it resolves to docker and records `BackendDefaulted`);
+`wiring.ResolveSandbox` settles the default once in the TUI, `wakil run` and
+daemon entry points, and the resolved config is what everything else sees.
+Docker-only startup probes (`docker version`/`docker info`, image checks) run
+only for backend docker; `wakil doctor` reports the default and no longer
+fails for a missing docker runtime when hisn will run.
 
 ## Invariants
 
-1. Docker behaviour is unchanged and stays the default. `DockerExecutor` is not
-   rewritten; it is only extended with additive, optional interfaces.
-2. No silent fallback from hisn to docker or to no sandbox. Every hisn failure
+1. Docker behaviour is unchanged. `DockerExecutor` is not rewritten; it is only
+   extended with additive, optional interfaces. Docker stays the fallback when
+   hisn is not usable and the choice is not explicit.
+2. No silent fallback from an EXPLICIT hisn to docker or to no sandbox. Every hisn failure
    (preflight, policy, session start, exec) is surfaced as an error. A tool
    call is never executed on the host because a check failed.
 3. The tool layer (`internal/agent`, `internal/tools`, `internal/lsp`,
@@ -175,13 +206,21 @@ be safe for concurrent `Exec` calls.
 
 `Open` calls `Preflight`: `hisn --version` parses and is >= `MinVersion`
 ("0.2.1"), and `hisn check` exits 0. Otherwise `Open` returns an error and
-Wakil exits. No fallback. Unknown `sandbox.backend` values are a config
-error.
+Wakil exits. No fallback for an explicit hisn. Unknown `sandbox.backend` values
+are a config error. The version also selects the start path
+(`ProfileMinVersion` "0.3.1": profile mode, else bare `--policy`); requested
+0.3-only features on an older hisn fail here. Then `Open` plans the session
+once, before any session or UI exists: the kvr service decision, then the risk
+check (see Risk labels) — a refusal is a hard error here.
+
+The **default-backend probe** (`hisn.Probe`: `--version` and `check`, nothing
+else; read-only) is separate and runs before the executor exists, see
+[Choosing the backend](#choosing-the-backend).
 
 ### Command factory
 
-Every `hisn` invocation (version, check, policy validate, run, exec, grant,
-revoke, ls, kill, inspect) is built by `Backend.command`, which sets a
+Every `hisn` invocation (version, check, policy/profile validate and explain,
+run, exec, grant, revoke, ls, kill, inspect) is built by `Backend.command`, which sets a
 scrubbed environment: `PATH`, `HOME`, `XDG_RUNTIME_DIR`, `LANG`, `LC_*`,
 `TZ`, `TERM`. Only `hisn run` additionally receives the `env_pass` names
 (hisn copies them from the client environment at session start). A test
@@ -445,11 +484,45 @@ exit line (ctl, session still reachable): the program may still be
 running. The result says so, the executor records it, and the session is
 stopped at chat end.
 
-## Policy generation
+## Profiles (hisn >= 0.3.1)
 
-A Go struct (`policyFile`) is marshalled with `github.com/BurntSushi/toml`
-into `<state>/hisn/sessions/<id>.toml`, then checked with
-`hisn policy validate`. Contents:
+From hisn 0.3.1 Wakil starts sessions from a **`hisn-profile/v1`** file instead
+of a bare policy: the envelope's `[policy]` is exactly the policy Wakil always
+generated (content unchanged), plus optional `[[services]]`, `[[forward]]` and
+`[[host_services]]` tables from the project file.
+
+```
+hisn run --detach -v --session-id <chatID> --profile <state>/hisn/<chatID>.profile.toml \
+         --cwd <hostcwd> --ready-fd 3
+```
+
+* The file is validated with `hisn profile validate` before `hisn run`.
+* **Where it lives.** `~/.local/share/wakil/hisn/<chatID>.profile.toml` — never
+  under the project. hisn refuses a profile that lies under the process cwd,
+  the session cwd, a rw grant or the persistent home (`E_PROFILE_UNTRUSTED`:
+  the sandbox could rewrite it and acknowledge its own risk). Wakil therefore
+  also runs the supervisor in a neutral cwd (`<state>/hisn/proc-cwd`) and
+  checks the rule up front, naming what to move (typical trigger: running
+  Wakil with `$HOME` as the workspace). The file is removed when the session
+  ends.
+* The network (`host`), `shm`, tmpfs sizes, `grantable_rw` and `env.pass` come
+  from `[policy]`, not from the CLI.
+* **Version gate.** On hisn 0.2.x (>= 0.2.1) Wakil keeps the old
+  `--policy` + `--network host` path with `hisn policy validate`; `env_set` and
+  `mounts_*` work there too. Features that need the 0.3 surface (`hisn.services`,
+  `hisn.forward`, `hisn.host_services`, `hisn.profile`, risk labels) are a hard
+  error naming the feature and `0.3.1`, never silently dropped.
+* A named profile (`hisn.profile`) is used **as is**: Wakil does not generate a
+  file and only adds `--grant PATH:ro|rw` for `mounts_ro`/`mounts_rw`
+  (`hisn.services|forward|host_services|env_set` next to it is an error).
+  Such a session has no instance token in its policy, so it is identified by
+  the supervisor process Wakil spawned (pid + start time, kept in the owner
+  record), also for orphan reconcile. Built-in names (`base`, `wakil`) only
+  resolve if a `profiles/` directory sits next to the hisn binary — the release
+  binary ships none — so use `$HISN_PROFILES` (passed through to hisn) or a
+  path-installed copy.
+
+The legacy bare policy (0.2.x path) still looks like:
 
 ```toml
 version = "hisn-policy/v1"
@@ -471,6 +544,149 @@ pass = ["GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTFLAGS",
 `network = "host"` has no filtering; this is the decided trade-off (builds
 need the network) and is called out in Known limits. `shm = true` is always
 set (Chrome, Node, POSIX shm users need `/dev/shm`).
+
+## Per-project overrides: `.wakil/sandbox.json`
+
+The project asks for more than the defaults in `<workspace>/.wakil/sandbox.json`.
+Absent file = nothing extra. Unknown keys are errors (the message names the key).
+
+| key | type | meaning |
+|---|---|---|
+| `hisn.services[]` | `{name, exec[], socket?, ready_socket?, ready_timeout?, stop_signal?, stop_grace?}` | processes started INSIDE the sandbox (`[[services]]`, label `none`). Relative `socket`/`ready_socket` are resolved against the workspace (hisn stats them as written). `restart` is always `none` |
+| `hisn.forward[]` | `{name, socket, expose, risk?}` | expose an existing HOST unix socket inside, read-only (`[[forward]]`). Label from the socket (docker → `root-equivalent`, ssh-agent → `signing`, D-Bus → `host-exec`); an unrecognised socket needs an explicit `risk` |
+| `hisn.host_services[]` | `{name, exec[], socket, expose, ready_socket?, ready_timeout?, stop_signal?, stop_grace?, risk?}` | a process that runs **on the host as you**, its socket forwarded in (`[[host_services]]`, at least `host-exec`) |
+| `hisn.env_set{}` | name → value | literal environment variables inside the sandbox (`env.set`; not `HOME`) |
+| `hisn.mounts_ro[]` | absolute paths | extra read-only binds (`mounts.ro`); with `hisn.profile`: initial `--grant PATH:ro` |
+| `hisn.mounts_rw[]` | absolute paths | extra read-write binds (`mounts.rw`); with `hisn.profile`: initial `--grant PATH:rw` (bounded by that profile's `grantable_rw`) |
+| `hisn.risk_ack` | string | **your** acknowledgement, verbatim as hisn expects it (`"root-equivalent"`, `"signing"`, `"host-exec"`, `"data"`, ...). Copied into every `[[forward]]`/`[[host_services]]` entry; Wakil never writes one itself. One string means one label: a project mixing capabilities with different labels uses `hisn.profile` |
+| `hisn.profile` | name | a built-in or `$HISN_PROFILES` profile used instead of generation; Wakil then only adds grants |
+
+One complete example (a project that runs a database inside the sandbox, reads
+reference data, and uses the host docker daemon for deploys):
+
+```json
+{
+  "hisn": {
+    "services": [
+      {"name": "db", "exec": ["/usr/bin/pg_ctl", "-D", "/work/app/.wakil/pgdata", "start", "-w"],
+       "socket": ".wakil/db.sock", "ready_socket": ".wakil/db.sock", "ready_timeout": 30,
+       "stop_signal": "TERM", "stop_grace": 10}
+    ],
+    "forward": [
+      {"name": "docker", "socket": "/var/run/docker.sock", "expose": "/run/docker.sock"}
+    ],
+    "env_set": {"APP_ENV": "dev"},
+    "mounts_ro": ["/opt/reference-data"],
+    "mounts_rw": ["/srv/out"],
+    "risk_ack": "root-equivalent"
+  }
+}
+```
+
+**Precedence with `sandbox.hisn.*` config:** the project file *adds*; it never
+replaces. `grantable_rw`, `env_pass`, `home_root`, sizes and the binary always
+come from the config; `env_set`, mounts, services, forwards and the
+acknowledgement only from the project file. A project `mounts_rw` is a static
+rw bind, separate from `grantable_rw` (which only bounds dynamic grants).
+
+### The agent cannot change it, and a changed file needs your approval
+
+* **Executor guard.** Every mutating executor operation — write, write-bytes,
+  delete, move (either end) and removal/rename of the `.wakil` directory —
+  refuses `.wakil/sandbox.json`. File tools and edit-tier subagents all go
+  through the executor, so one choke point covers them; reads stay allowed. A
+  worktree child's patch that touches the file is refused in `applyPatch`.
+  Under hisn the file is also masked inside the sandbox (reads as empty), so
+  `run_shell` cannot edit it either — defence in depth only.
+* **Approval gate (the real control).** A shell-capable agent could still write
+  a new file that would take effect at the next start. So a file that asks for
+  anything is honoured only when its sha256 matches the one **you** approved,
+  stored in Wakil's state directory (outside every sandbox):
+
+  ```
+  wakil sandbox trust [dir]     # shows the file and what it asks for; type "yes"
+  ```
+
+  There is no flag that skips the question and no non-terminal path (it reads
+  `/dev/tty`). Any change to the file — by anyone — makes it unapproved again;
+  Wakil then refuses to start the hisn session ("run `wakil sandbox trust`
+  yourself — an agent cannot approve it"). A file that asks for nothing needs
+  no approval. When the backend was only the *default*, an unapproved file
+  keeps docker instead of failing.
+
+## Risk labels
+
+hisn computes a label for everything a profile widens: `none`, `data`,
+`signing`, `host-exec`, `root-equivalent`, `kernel-surface`. Wakil surfaces it:
+
+* **Plan time, before any session or UI exists:** `hisn profile explain` of the
+  profile exactly as sessions will start it. A label above `none` needs the
+  project's own `hisn.risk_ack` with exactly that label (hisn demands one only
+  for `signing`, `host-exec` and `root-equivalent`; Wakil also asks for `data`
+  and `kernel-surface`). Missing or wrong is a **hard error naming the key**:
+
+  ```
+  sandbox: hisn.risk_ack in .wakil/sandbox.json is missing or does not match (label root-equivalent) — Wakil never writes an acknowledgement for you; the profile's risk is "root-equivalent"; set hisn.risk_ack to "root-equivalent" once you have reviewed it
+  ```
+
+  `hisn profile validate` is a second net (`E_RISK_ACK_REQUIRED`/`_MISMATCH`
+  map to the same error).
+* **After start:** the running session's own snapshot (`hisn inspect --json`,
+  `risk[]`) must not exceed what was acknowledged, else the session is stopped.
+* **Banner:** `sandbox: backend=hisn · risk=<label>` in the TUI startup note,
+  `wakil run` and the daemon.
+* **`/sandbox`** (TUI) prints backend, mode (generated profile / named profile /
+  bare policy), the profile file, the risk and each capability with its label,
+  services with live state, forwards, host services, env names, grants, kvr and
+  hisn's notes.
+
+## Staging (kvr) as an in-sandbox service
+
+With hisn >= 0.3.1 the staging store runs **inside** the sandbox as a
+`[[services]]` entry — the same confinement as every tool call — and the tools
+reach it through its socket under `<workspace>/.wakil/` (the workspace is
+bound at its identical path, so host and sandbox see the same socket).
+
+* **Which service.** The project's own `hisn.services` entry named `kvr` (its
+  `socket` is required, must be directly under `<workspace>/.wakil/`, and
+  `ready_socket`, if set, must equal it); otherwise Wakil's default, built from
+  `sandbox.hisn.kvr_binary` or `kvr-server` in `PATH` plus `kvr_max_entries`,
+  `kvr_sweep_interval_secs`, `kvr_snapshot_interval_secs` (socket and snapshot
+  `<workspace>/.wakil/kvr.sock` / `staging.kvr`).
+* **No binary, no staging.** The binary must be visible inside the sandbox
+  (symlinks resolved first): under `/usr`, `/opt`, `/nix`, … or a directory the
+  project lists in `hisn.mounts_ro`. Without one — or with `kvr_disabled`, hisn
+  < 0.3.1, a named profile, or `direct` — the staging tools stay off and the
+  reason is in `/sandbox`. There is **no fallback to a host-side kvr**.
+* **A broken kvr never fails the session.** Wakil's default service has no
+  `ready` (hisn fails the whole session closed on a readiness timeout); Wakil
+  PINGs the socket itself and disables staging with the reason if it does not
+  answer.
+* **The socket is writable by the sandbox**, so a hostile command could replace
+  it. Before every (re)connect the host client therefore requires `.wakil` to be
+  a plain directory and the socket a plain unix socket owned by you, directly in
+  it (no symlinks) — otherwise it refuses to dial. Wakil removes a stale socket
+  file of a dead session before the next start (hisn does not). The kvr protocol
+  has no authentication; see Known limits.
+
+## Docker work under hisn: `profiles/deploy-smaragd.toml`
+
+The repository ships `profiles/deploy-smaragd.toml`: host networking, `cwd` rw,
+`grantable_rw = ["/srv/out"]` and a **forward of the host docker socket**
+(hisn "Docker T2"). That is **root-equivalent** on the host: the sandbox can ask
+the daemon to start a privileged container mounting any host path, and
+containers outlive the session. It ships disabled — both `risk_ack` lines are
+commented out — and is not loaded automatically. To use it:
+
+1. copy it to a directory in `$HISN_PROFILES` (outside any project);
+2. in that copy uncomment the two lines `# risk_ack = "root-equivalent"`;
+3. in the project: `{"hisn": {"profile": "deploy-smaragd", "risk_ack": "root-equivalent"}}`
+   in `.wakil/sandbox.json`, then `wakil sandbox trust`.
+
+hisn checks the acknowledgement in the profile, Wakil checks the one in the
+project file; both are yours. Make sure `/srv/out` exists (or edit
+`grantable_rw`). Wakil uses the profile as is (named-profile mode: grants only,
+no kvr service).
 
 ## Grants (tier mapping)
 
@@ -503,15 +719,20 @@ integration tests).
                  "npm_config_cache","PIP_CACHE_DIR","CI"],
     "tmp_size_mb": 1024,
     "shm_size_mb": 64,
+    "kvr_binary": "",
     "exec_via_cli": false
   }
 }
 ```
 
-Flag `--sandbox docker|hisn|direct`, env `WAKIL_SANDBOX_BACKEND`. Empty
-`home_root` means `<wakil state dir>/hisn-home/<workspace-hash>`. With
-`hisn`: `kvr` is forced off (docker-only), `browser_enabled` is rejected,
-`docker_*` keys are ignored, `WorkDir == HostWorkDir`.
+Flag `--sandbox docker|hisn|direct`, env `WAKIL_SANDBOX_BACKEND`. Omit all of
+them to get the default described in [Choosing the backend](#choosing-the-backend)
+(the `"backend": "docker"` above is only what you write to PIN docker). Empty
+`home_root` means `<wakil state dir>/hisn-home/<workspace-hash>`.
+`kvr_binary` empty means `kvr-server` from `PATH`. With `hisn`:
+`browser_enabled` is forced off with one startup line, `docker_*` keys are
+ignored, `WorkDir == HostWorkDir`, and `kvr` runs as an in-sandbox service
+when a binary is available (otherwise it stays off with the reason).
 
 `env_pass` entries that can alter host process startup (`LD_*`,
 `GCONV_PATH`, `LOCPATH`, `NLSPATH`, `HOSTALIASES`, `RES_OPTIONS`,
@@ -554,7 +775,25 @@ hisn itself inside the sandbox and are rejected in per-exec env.
 * Host<->URI mapping (LSP) is refused for paths that resolve outside the
   workspace on the host (e.g. `ws/link -> /tmp/x`), because the same name
   can be a different object inside the sandbox.
+* **kvr protocol has no authentication.** The staging socket sits in the
+  workspace, which the sandbox can write: a hostile command can kill the
+  service and bind a replacement, and the host client only checks the path (a
+  plain directory and socket owned by you, re-checked before every connect) —
+  that narrows the window, it does not close it. Staging content is untrusted
+  anyway (Wakil never executes it). A peer-credential check on the connection
+  is a follow-up.
+* **A named profile is a weaker mode.** Wakil adds only grants; the project file
+  is not masked, there is no kvr service, and the instance is identified by the
+  supervisor process, not a token.
+* **`.wakil/sandbox.json` created later.** The mask only covers a file that
+  exists when the session starts; the approval gate (a changed file is
+  unapproved) is what stops an agent-authored file from taking effect. Whether
+  a sandboxed command can rename the `.wakil` directory (taking the mask with
+  it) has not been verified against a real hisn.
+* The label vocabulary is hisn's: `RISK: none` means "no 0.3 surface widening",
+  not "no widening" — `mounts_rw`, host networking and the project's own mounts
+  are not labelled by hisn. The banner shows what hisn labels.
 * The hisn integration tests skip when `hisn check` fails (no unprivileged
   user namespaces); they have not been run in the build sandbox. Run on a
-  host with hisn >= 0.2.1:
-  `go test -count=1 -v -timeout 5m -run TestIntegration ./internal/sandbox/hisn/`
+  host with hisn >= 0.3.1:
+  `go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`

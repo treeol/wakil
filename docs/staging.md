@@ -5,6 +5,13 @@ that agents use for scratch space and subagent handoffs. It is backed by
 [kvr](https://github.com/treeol/kvrust), a Rust UDS KV server running as a background process
 inside the sandbox container.
 
+Under the **docker** backend kvr runs as a background process in the sandbox
+container. Under **hisn** (>= 0.3.1) it runs as an in-sandbox service whose
+socket and snapshot live in `<workspace>/.wakil/`; it needs a `kvr-server`
+binary the sandbox can run (`sandbox.hisn.kvr_binary` or `PATH`), otherwise
+staging stays off and `/sandbox` says why — there is never a host-side kvr. See
+[sandbox-backends.md](sandbox-backends.md#staging-kvr-as-an-in-sandbox-service).
+
 ## What staging is
 
 - **Fast in-sandbox scratch memory.** Agents can store intermediate

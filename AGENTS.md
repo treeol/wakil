@@ -13,7 +13,7 @@
 
 - `go test ./...`
 - `go test -race ./...` — race detector (CI runs this on the full suite)
-- hisn backend integration tests (`go test -count=1 -v -timeout 5m -run TestIntegration ./internal/sandbox/hisn/`) skip unless `hisn` >= 0.2.1 is installed and `hisn check` passes; set `WAKIL_HISN_BIN` to pick a binary
+- hisn backend integration tests (`go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`) skip unless `hisn` is installed and `hisn check` passes (profile/risk/kvr/override tests additionally need >= 0.3.1); set `WAKIL_HISN_BIN` to pick a binary
 - `go vet ./...`
 
 ## Lint
@@ -52,7 +52,7 @@ Core packages (`internal/`):
 - `crypto/` — cryptographic utilities
 - `diag/` — diagnostics
 - `exec/` — sandboxed execution (Docker + direct modes; `BackendExecutor` for pluggable sandbox backends; optional capability interfaces in `capabilities.go`)
-- `sandbox/` — backend-neutral sandbox contract (`Backend`, `PathMap`, `GrantManager`); `sandbox/hisn/` is the hisn backend, `sandbox/fake/` a test double. The tool layer (agent, tools, lsp, browser, tui) must not import a concrete backend — enforced by `internal/agent/no_backend_import_test.go`. Design: `docs/sandbox-backends.md`
+- `sandbox/` — backend-neutral sandbox contract (`Backend`, `PathMap`, `GrantManager`); `sandbox/hisn/` is the hisn backend, `sandbox/project/` loads `.wakil/sandbox.json` and the user's approval of it, `sandbox/fake/` a test double. The tool layer (agent, tools, lsp, browser, tui) must not import a concrete backend — enforced by `internal/agent/no_backend_import_test.go`. Design: `docs/sandbox-backends.md`
 - `ilm/` — ILM (in-context learning memory) stack
 - `lsp/` — language server protocol integration
 - `memory/` — durable memory store
