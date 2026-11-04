@@ -540,11 +540,11 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 	a.lastCompactNote = ""
 	if len(summarizable) > 0 {
 		size := 0
-		var ids []string
+		toolCounts := map[string]int{}
 		for _, m := range summarizable {
 			size += messageSize(m)
-			if m.Role == "tool" && m.ToolCallID != "" {
-				ids = append(ids, m.ToolCallID)
+			if m.Role == "tool" && m.Name != "" {
+				toolCounts[m.Name]++
 			}
 		}
 		first, last := summarizable[0].Turn, summarizable[len(summarizable)-1].Turn
@@ -552,15 +552,8 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 		if first > 0 && last > 0 {
 			note += fmt.Sprintf(" from request %d–%d", first, last)
 		}
-		if len(ids) > 0 {
-			shown := ids
-			if len(shown) > maxNoticeToolIDs {
-				shown = shown[:maxNoticeToolIDs]
-			}
-			note += " · tool results: " + strings.Join(shown, ", ")
-			if len(ids) > len(shown) {
-				note += fmt.Sprintf(" +%d more", len(ids)-len(shown))
-			}
+		if len(toolCounts) > 0 {
+			note += " · " + formatToolAggregation(toolCounts)
 		}
 		arch := a.archiveTranscript(fmt.Sprintf("compact-%d", a.compactSeq+1), renderWorkingSet(summarizable))
 		if arch == "" {

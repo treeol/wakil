@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
 )
 
@@ -327,5 +329,135 @@ func TestFileReadRecorderEmptyString(t *testing.T) {
 	rec.record("") // empty path → ignored
 	if len(rec.snapshot()) != 0 {
 		t.Errorf("empty path should be ignored, got %v", rec.snapshot())
+	}
+}
+
+// --- Item 3: Collapse line formatting ---
+
+func TestFormatToolAggregationSorting(t *testing.T) {
+	counts := map[string]int{
+		"read_file":    40,
+		"run_shell":    20,
+		"search_files": 9,
+		"grep":         5,
+		"edit_file":    3,
+	}
+	got := formatToolAggregation(counts)
+	// Top 4 by count desc: read_file×40, run_shell×20, search_files×9, grep×5
+	// Then "… (+1 more tools)" for edit_file.
+	if !strings.Contains(got, "read_file ×40") {
+		t.Errorf("expected 'read_file ×40' in %q", got)
+	}
+	if !strings.Contains(got, "run_shell ×20") {
+		t.Errorf("expected 'run_shell ×20' in %q", got)
+	}
+	if !strings.Contains(got, "search_files ×9") {
+		t.Errorf("expected 'search_files ×9' in %q", got)
+	}
+	if !strings.Contains(got, "grep ×5") {
+		t.Errorf("expected 'grep ×5' in %q", got)
+	}
+	if !strings.Contains(got, "… (+1 more tools)") {
+		t.Errorf("expected '… (+1 more tools)' in %q", got)
+	}
+}
+
+func TestFormatToolAggregationTieBreak(t *testing.T) {
+	// Same count → sort by name ascending.
+	counts := map[string]int{
+		"bbb": 5,
+		"aaa": 5,
+		"ccc": 5,
+	}
+	got := formatToolAggregation(counts)
+	// All 3 fit within top 4, so no "…" suffix.
+	// Tie-break: name ascending → aaa, bbb, ccc.
+	if !strings.Contains(got, "aaa ×5, bbb ×5, ccc ×5") {
+		t.Errorf("expected name-ascending tie-break in %q", got)
+	}
+}
+
+func TestFormatToolAggregationFewTools(t *testing.T) {
+	counts := map[string]int{
+		"read_file": 3,
+	}
+	got := formatToolAggregation(counts)
+	if !strings.Contains(got, "read_file ×3") {
+		t.Errorf("expected 'read_file ×3' in %q", got)
+	}
+	if strings.Contains(got, "…") {
+		t.Errorf("should not contain '…' for single tool: %q", got)
+	}
+}
+
+func TestFormatToolAggregationEmpty(t *testing.T) {
+	got := formatToolAggregation(map[string]int{})
+	if got != "" {
+		t.Errorf("empty aggregation = %q, want empty string", got)
+	}
+}
+
+func TestAggregateToolResults(t *testing.T) {
+	msgs := []proxy.Message{
+		{Role: "tool", Name: "read_file", Content: StrPtr("content1")},
+		{Role: "tool", Name: "read_file", Content: StrPtr("content2")},
+		{Role: "tool", Name: "search_files", Content: StrPtr("content3")},
+		{Role: "assistant", Content: StrPtr("not a tool result")},
+		{Role: "tool", Name: "", Content: StrPtr("tool with empty name")},
+	}
+	counts := aggregateToolResults(msgs)
+	if counts["read_file"] != 2 {
+		t.Errorf("read_file count = %d, want 2", counts["read_file"])
+	}
+	if counts["search_files"] != 1 {
+		t.Errorf("search_files count = %d, want 1", counts["search_files"])
+	}
+	// Only tool-role messages with non-empty Name are counted.
+	if len(counts) != 2 {
+		t.Errorf("total tools = %d, want 2 (only tool-role with Name)", len(counts))
+	}
+}
+
+func TestFormatCollapseNoticeNoIDs(t *testing.T) {
+	dropped := []proxy.Message{
+		{Role: "tool", ToolCallID: "call_abc123", Name: "read_file", Content: StrPtr("content")},
+		{Role: "tool", ToolCallID: "call_def456", Name: "read_file", Content: StrPtr("content2")},
+	}
+	notice := formatCollapseNotice(1, 10000, 2000, dropped, 5, "/archive/path")
+	// Must not contain call_ IDs.
+	if strings.Contains(notice, "call_") {
+		t.Errorf("notice should not contain call_ ids: %q", notice)
+	}
+	// Must contain tool aggregation.
+	if !strings.Contains(notice, "read_file") {
+		t.Errorf("notice should mention read_file: %q", notice)
+	}
+	if !strings.Contains(notice, "×2") {
+		t.Errorf("notice should show count ×2: %q", notice)
+	}
+}
+
+func TestBuildCollapseNoteSortByCountDesc(t *testing.T) {
+	w := []proxy.Message{
+		tcMsg("tc1", "read_file", `{"path":"a.go"}`),
+		trMsg("tc1", "read_file", bigContent),
+		tcMsg("tc2", "read_file", `{"path":"b.go"}`),
+		trMsg("tc2", "read_file", bigContent),
+		tcMsg("tc3", "search_files", `{"pattern":"x"}`),
+		trMsg("tc3", "search_files", bigContent),
+	}
+	note := buildCollapseNote(1, w, "/fake/archive")
+	// read_file has count 2, search_files has count 1.
+	// read_file×2 should appear before search_files×1 (count desc).
+	idxRF := strings.Index(note, "read_file×2")
+	idxSF := strings.Index(note, "search_files×1")
+	if idxRF < 0 {
+		t.Error("note should contain 'read_file×2'")
+	}
+	if idxSF < 0 {
+		t.Error("note should contain 'search_files×1'")
+	}
+	if idxRF > idxSF {
+		t.Errorf("read_file×2 should appear before search_files×1 in:\n%s", note)
 	}
 }

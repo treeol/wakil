@@ -151,7 +151,6 @@ const maxNotePaths = 12
 // spend bytes exactly where the cap is trying to save them.
 func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	toolCounts := map[string]int{}
-	var order []string
 	writeTargets := []string{}
 	reads := []string{}
 	seenWrite, seenRead := map[string]bool{}, map[string]bool{}
@@ -159,9 +158,6 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	for _, m := range w {
 		for _, tc := range m.ToolCalls {
 			name := tc.Function.Name
-			if _, ok := toolCounts[name]; !ok {
-				order = append(order, name)
-			}
 			toolCounts[name]++
 			isWrite := writeTargetTools[name]
 			seen := seenWrite
@@ -183,13 +179,25 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	}
 
 	var toolParts []string
-	for _, name := range order {
-		toolParts = append(toolParts, fmt.Sprintf("%s×%d", name, toolCounts[name]))
+	for name := range toolCounts {
+		toolParts = append(toolParts, name)
 	}
+	// Sort by count descending, then by name for ties.
+	sort.Slice(toolParts, func(i, j int) bool {
+		if toolCounts[toolParts[i]] != toolCounts[toolParts[j]] {
+			return toolCounts[toolParts[i]] > toolCounts[toolParts[j]]
+		}
+		return toolParts[i] < toolParts[j]
+	})
+	var parts []string
+	for _, name := range toolParts {
+		parts = append(parts, fmt.Sprintf("%s×%d", name, toolCounts[name]))
+	}
+	toolSummary := strings.Join(parts, ", ")
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "[request %d working set collapsed — %d tool calls: %s · %dkb]\n",
-		turn, sumCounts(toolCounts), strings.Join(toolParts, ", "), renderWorkingSetBytes(w)/1024)
+		turn, sumCounts(toolCounts), toolSummary, renderWorkingSetBytes(w)/1024)
 	writeTargets, reads, hiddenWrite, hiddenRead := fitNotePaths(writeTargets, reads)
 	if len(writeTargets) > 0 {
 		b.WriteString("write targets: ")
@@ -1036,13 +1044,57 @@ func (a *App) collapseFinishedTurns() {
 	}
 }
 
-// maxNoticeToolIDs bounds how many tool-result ids the collapse notice lists.
-const maxNoticeToolIDs = 8
+// aggregateToolResults counts tool results by tool name from a slice of
+// dropped messages. Tool-role messages carry the tool name in m.Name. Returns
+// a map[name]count and a stable ordering slice (sorted by count desc, then name).
+func aggregateToolResults(msgs []proxy.Message) map[string]int {
+	counts := map[string]int{}
+	for _, m := range msgs {
+		if m.Role == "tool" && m.Name != "" {
+			counts[m.Name]++
+		}
+	}
+	return counts
+}
+
+// formatToolAggregation renders a tool-name → count map as a sorted, capped
+// summary string: top 4 tools by count desc, then "… (+N more tools)".
+// Example: "read_file ×40, run_shell ×20, grep ×9, … (+2 more tools)".
+func formatToolAggregation(counts map[string]int) string {
+	type toolCount struct {
+		Name  string
+		Count int
+	}
+	var entries []toolCount
+	for name, c := range counts {
+		entries = append(entries, toolCount{name, c})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Count != entries[j].Count {
+			return entries[i].Count > entries[j].Count
+		}
+		return entries[i].Name < entries[j].Name
+	})
+	const maxAggTools = 4
+	var parts []string
+	shown := 0
+	for _, e := range entries {
+		if shown >= maxAggTools {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s ×%d", e.Name, e.Count))
+		shown++
+	}
+	summary := strings.Join(parts, ", ")
+	if remaining := len(entries) - shown; remaining > 0 {
+		summary += fmt.Sprintf(", … (+%d more tools)", remaining)
+	}
+	return summary
+}
 
 // formatCollapseNotice renders the A.7 unified collapse notice: one line
 // with prior tokens, sent tokens, archive path, and what was dropped (msgs
-// range + tool results). Replaces the old two-part format ("· collapsed
-// request N — Xk → Yk sent (archived)" + collapseDroppedDetail).
+// range + tool results aggregated by tool name, never call_ ids).
 func formatCollapseNotice(turn, priorBytes, sentBytes int, dropped []proxy.Message, first int, archive string) string {
 	priorTokens := priorBytes / charsPerToken
 	sentTokens := sentBytes / charsPerToken
@@ -1050,21 +1102,9 @@ func formatCollapseNotice(turn, priorBytes, sentBytes int, dropped []proxy.Messa
 	fmt.Fprintf(&b, "· collapsed request %d: %d tokens → %d sent", turn, priorTokens, sentTokens)
 	if len(dropped) > 0 {
 		fmt.Fprintf(&b, " (msgs %d–%d", first, first+len(dropped)-1)
-		var ids []string
-		for _, m := range dropped {
-			if m.Role == "tool" && m.ToolCallID != "" {
-				ids = append(ids, m.ToolCallID)
-			}
-		}
-		if len(ids) > 0 {
-			shown := ids
-			if len(shown) > maxNoticeToolIDs {
-				shown = shown[:maxNoticeToolIDs]
-			}
-			fmt.Fprintf(&b, ", tool results: %s", strings.Join(shown, ", "))
-			if len(ids) > len(shown) {
-				fmt.Fprintf(&b, " +%d more", len(ids)-len(shown))
-			}
+		toolAgg := aggregateToolResults(dropped)
+		if len(toolAgg) > 0 {
+			fmt.Fprintf(&b, ", %s", formatToolAggregation(toolAgg))
 		}
 		b.WriteString(")")
 	}
