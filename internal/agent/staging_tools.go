@@ -17,7 +17,7 @@ const stagingListCap = 200
 
 // stagingUnavailable is the response for all staging tools when kvr is not
 // available (disabled, direct mode, or failed readiness).
-const stagingUnavailable = "staging unavailable (requires docker mode with kvr enabled)"
+const stagingUnavailable = "staging unavailable (needs the kvr store: docker mode, or hisn with a kvr-server binary the sandbox can run; see /sandbox)"
 
 // getStagingClient returns the staging client, or nil if unavailable.
 func (a *App) getStagingClient() *staging.Client {

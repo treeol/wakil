@@ -628,3 +628,18 @@ func TestValueTooLarge(t *testing.T) {
 		t.Fatal("expected error for oversized value")
 	}
 }
+
+func TestPathGuardRefusesEveryConnect(t *testing.T) {
+	c := NewClient(filepath.Join(t.TempDir(), "never.sock"))
+	calls := 0
+	c.SetPathGuard(func() error { calls++; return errors.New("swapped") })
+	for i := 0; i < 2; i++ {
+		err := c.Ping(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "refused") || !strings.Contains(err.Error(), "swapped") {
+			t.Fatalf("guard error must surface: %v", err)
+		}
+	}
+	if calls != 2 {
+		t.Errorf("guard must run before every connect attempt, ran %d times", calls)
+	}
+}

@@ -49,6 +49,13 @@ func (s Status) Banner() string {
 	return b
 }
 
+// KVRProvider is implemented by backends that run the staging store (kvr)
+// INSIDE the sandbox and can say where its socket is (a host path; "" while it
+// is not up).
+type KVRProvider interface {
+	KVRSocket() string
+}
+
 // StatusReporter is implemented by backends that can describe themselves.
 type StatusReporter interface {
 	SandboxStatus(ctx context.Context) Status

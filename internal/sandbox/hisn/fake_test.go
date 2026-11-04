@@ -222,6 +222,10 @@ func fakeRun(state string, args []string) int {
 		ln.(*net.UnixListener).SetUnlinkOnClose(false)
 		_ = ln.Close()
 	}
+	if hasFlag(args, "--profile") {
+		// hisn starts [[services]] before the session is ready.
+		defer fakeServices(string(pol))()
+	}
 	fakeCtlServe(ln, dir) // §7 protocol: exec/signal/grant/revoke/list/inspect/kill
 	if mode == "flood" {  // ready, floods stderr (to jam a stalled log), then dies
 		fmt.Fprint(os.Stderr, strings.Repeat("hisn: flood line\n", 20000))

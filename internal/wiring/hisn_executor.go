@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"time"
 
@@ -56,6 +57,7 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		ShmSizeMB:   h.ShmSizeMB,
 		ExecViaCLI:  h.ExecViaCLI,
 		Surface:     surface,
+		KVR:         kvrOptions(cfg, h),
 	})
 	if err != nil {
 		return nil, err
@@ -77,4 +79,24 @@ func hisnStateDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".local", "share", "wakil")
+}
+
+// kvrOptions derives the in-sandbox staging service settings: enabled unless
+// kvr_disabled, binary from sandbox.hisn.kvr_binary or PATH (it must run
+// inside the sandbox; the backend checks that and says why when not).
+func kvrOptions(cfg config.Config, h config.HisnConfig) hisn.KVROptions {
+	o := hisn.KVROptions{Enabled: !cfg.KVRDisabled, MaxEntries: cfg.KVRMaxEntries,
+		SweepIntervalSecs: cfg.KVRSweepIntervalSecs, SnapshotSecs: cfg.KVRSnapshotIntervalSecs}
+	if !o.Enabled {
+		return o
+	}
+	switch {
+	case h.KVRBinary != "":
+		o.Binary = h.KVRBinary
+	default:
+		if p, err := osexec.LookPath("kvr-server"); err == nil {
+			o.Binary = p
+		}
+	}
+	return o
 }

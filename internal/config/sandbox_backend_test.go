@@ -66,8 +66,8 @@ func TestSandboxHisnWorkdirIsHostPath(t *testing.T) {
 	if cfg.WorkDir != real || cfg.HostWorkDir != real {
 		t.Errorf("WorkDir=%q HostWorkDir=%q, want both %q", cfg.WorkDir, cfg.HostWorkDir, real)
 	}
-	if !cfg.KVRDisabled {
-		t.Error("kvr is docker-only and must be disabled under hisn")
+	if cfg.KVRDisabled {
+		t.Error("under hisn kvr is decided when the backend is planned (in-sandbox service), not forced off by config")
 	}
 	if got := cfg.Sandbox.Hisn.Binary; got != "hisn" {
 		t.Errorf("binary default = %q", got)

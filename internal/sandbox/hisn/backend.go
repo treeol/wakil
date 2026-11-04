@@ -52,6 +52,8 @@ type Options struct {
 	// Surface is the per-project request from .wakil/sandbox.json (services,
 	// forwards, env, mounts, risk_ack, named profile). Zero = nothing extra.
 	Surface Surface
+	// KVR configures the in-sandbox staging store service (zero = off).
+	KVR KVROptions
 }
 
 // live is one running session instance.
@@ -70,6 +72,8 @@ type live struct {
 	// refused is set when a control request found the session's socket refusing
 	// connections: whatever the process table says, the session is dead.
 	refused atomic.Bool
+	// kvr is the staging socket once the service answered; "" otherwise.
+	kvr string
 	// ctl is the session's control-socket client (lazily built).
 	ctlOnce sync.Once
 	ctlCli  *ctl.Client
@@ -130,6 +134,8 @@ type Backend struct {
 	planned explainDoc
 	// kvrNote is the one-line state of the in-sandbox staging store.
 	kvrNote string
+	// kvrSocket is the host path of the staging socket ("" = staging off).
+	kvrSocket string
 
 	mu      sync.RWMutex
 	cur     *live
@@ -216,6 +222,9 @@ func Open(ctx context.Context, opts Options) (*Backend, error) {
 	}
 	// Plan-time risk check: a label above `none` without the project's own
 	// acknowledgement is a hard error HERE, before any session or UI exists.
+	if err := b.planKVR(); err != nil {
+		return nil, err
+	}
 	if err := b.plan(ctx); err != nil {
 		return nil, err
 	}

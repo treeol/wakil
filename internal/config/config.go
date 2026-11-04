@@ -1077,6 +1077,12 @@ type HisnConfig struct {
 	// ShmSizeMB sizes /dev/shm (MiB, 1..65536; default 64; hisn 0.2.1
 	// `session.shm_size` — Wakil always sets `session.shm = true`).
 	ShmSizeMB int64 `json:"shm_size_mb,omitempty"`
+	// KVRBinary is the kvr-server executable run INSIDE the sandbox as the
+	// staging service (hisn >= 0.3.1). Empty = look up "kvr-server" in PATH.
+	// It must live under a directory the sandbox exposes (/usr, /opt, /nix, a
+	// project mounts_ro). Without one, staging stays off (never a host-side
+	// kvr).
+	KVRBinary string `json:"kvr_binary,omitempty"`
 	// ExecViaCLI keeps the per-tool-call `hisn exec` CLI path alongside the
 	// control-socket client, as a fallback for one release. Default false.
 	ExecViaCLI bool `json:"exec_via_cli,omitempty"`
@@ -1583,12 +1589,14 @@ func LoadConfig(argv []string) (Config, error) {
 	}
 
 	// Resolve kvr effective state. KVRDisabled is the single opt-out
-	// (default: false = enabled). Also auto-disabled in direct mode
-	// (staging is docker-only in this ticket).
+	// (default: false = enabled). Auto-disabled in direct mode (no sandbox to
+	// run it in). Under hisn the store runs INSIDE the sandbox as a service;
+	// whether it can (hisn version, a kvr-server binary the sandbox can run) is
+	// decided when the backend is planned, with the reason in the banner.
 	if cfg.KVRDisabled {
 		// explicit opt-out
-	} else if cfg.ExecMode != "docker" || cfg.Sandbox.Backend != SandboxBackendDocker {
-		cfg.KVRDisabled = true // staging is docker-only
+	} else if cfg.ExecMode != "docker" || cfg.Sandbox.Backend == SandboxBackendDirect {
+		cfg.KVRDisabled = true // no sandbox, no staging store
 	}
 	// Normalize context_mode: "long" → "long-session", "" → "standard".
 	// Done here (not inside validateContextLimits) because validateContextLimits

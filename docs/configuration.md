@@ -329,11 +329,12 @@ limits: [sandbox-backends.md](sandbox-backends.md).
 | `sandbox.hisn.env_pass` | `GOFLAGS GOCACHE GOMODCACHE CARGO_HOME RUSTFLAGS npm_config_cache PIP_CACHE_DIR CI` | environment variable names copied into the sandbox; nothing else of the host environment enters. Names that alter host process startup (`LD_*`, `PATH`, `HOME`, `GODEBUG`, …) are rejected |
 | `sandbox.hisn.tmp_size_mb` | `1024` | Size (MiB, 16..=65536) of the session-private `/tmp` tmpfs *(hisn 0.2.1 `session.tmp_size`)* |
 | `sandbox.hisn.shm_size_mb` | `64` | Size (MiB, 1..=65536) of `/dev/shm` *(Wakil always sets `session.shm = true`)* |
+| `sandbox.hisn.kvr_binary` | `kvr-server` from `PATH` | kvr-server executable run INSIDE the sandbox as the staging service *(hisn >= 0.3.1; must live under a directory the sandbox sees: `/usr`, `/opt`, `/nix` or a project `mounts_ro`; otherwise staging stays off and the banner says why — there is no host-side kvr)* |
 | `sandbox.hisn.exec_via_cli` | `false` | Run tool-call execs through the `hisn exec` CLI (one client process per call) instead of the control-socket client. Fallback, one release |
 
 With `hisn`: startup requires `hisn --version` >= 0.2.1 and `hisn check` exit
 0, otherwise Wakil refuses to start (no fallback). The workspace is mounted at
-its identical host path (`--workdir` is rejected); `kvr` staging is disabled;
+its identical host path (`--workdir` is rejected); `kvr` staging runs as an in-sandbox service when a `kvr-server` binary is available (see `sandbox.hisn.kvr_binary`);
 `browser_enabled` is forced off with one startup line (so one config serves
 both backends), and the deprecated `exec_mode: direct` conflicts with it. The
 startup line `sandbox: backend=<b> · browser tools: on|off` states the active

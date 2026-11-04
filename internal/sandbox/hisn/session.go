@@ -189,7 +189,9 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 		}
 		return nil, fmt.Errorf("hisn: updating owner record: %w", err)
 	}
-	return b.newLive(rec, sup), nil
+	l := b.newLive(rec, sup)
+	b.awaitKVR(l)
+	return l, nil
 }
 
 func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
@@ -258,6 +260,13 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 			return launch{}, fmt.Errorf("hisn policy validate failed: %w: %s", err, strings.TrimSpace(out))
 		}
 		return launch{args: supervisorArgs(rec.ID, path, rec.Cwd), mode: "policy"}, nil
+	}
+	if b.kvrSocket != "" && b.opts.Surface.Profile == "" {
+		// The socket directory must be a plain directory Wakil owns and no
+		// stale socket may linger (hisn does not clean it).
+		if err := PrepareKVRDir(rec.Cwd, b.kvrSocket); err != nil {
+			return launch{}, fmt.Errorf("staging (kvr): %w", err)
+		}
 	}
 	prof, err := buildProfile(pp, s)
 	if err != nil {

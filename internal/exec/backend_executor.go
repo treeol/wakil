@@ -25,9 +25,6 @@ type BackendOptions struct {
 	GrantableRW []string
 	// ShellOutputCap bounds RunShell's retained output; <= 0 = default.
 	ShellOutputCap int64
-	// KVRNote is the one-line state of the staging store for /sandbox and the
-	// banner ("" = not applicable).
-	KVRNote string
 }
 
 // shared is the state common to a BackendExecutor and its worktree children.
@@ -687,11 +684,18 @@ func (e *BackendExecutor) Describe() string {
 	return fmt.Sprintf("%s[%s]", e.opts.Label, e.root)
 }
 
-// KVRSocketPath implements Executor (staging is docker-only).
-func (e *BackendExecutor) KVRSocketPath() string { return "" }
+// KVRSocketPath implements Executor: the host path of an in-sandbox staging
+// service's socket when the backend runs one and it answered (hisn), else ""
+// — never a host-side kvr. A worktree child shares the parent's service.
+func (e *BackendExecutor) KVRSocketPath() string {
+	if k, ok := e.b.(sandbox.KVRProvider); ok {
+		return k.KVRSocket()
+	}
+	return ""
+}
 
 // KVRAvailable implements Executor.
-func (e *BackendExecutor) KVRAvailable() bool { return false }
+func (e *BackendExecutor) KVRAvailable() bool { return e.KVRSocketPath() != "" }
 
 // ContainerName implements Executor: there is no container.
 func (e *BackendExecutor) ContainerName() string { return "" }
@@ -841,11 +845,7 @@ func (e *BackendExecutor) noteDead(ctx context.Context, err error) error {
 // it has one, else just its name.
 func (e *BackendExecutor) SandboxStatus(ctx context.Context) sandbox.Status {
 	if r, ok := e.b.(sandbox.StatusReporter); ok {
-		st := r.SandboxStatus(ctx)
-		if e.opts.KVRNote != "" {
-			st.KVR = e.opts.KVRNote
-		}
-		return st
+		return r.SandboxStatus(ctx)
 	}
 	return sandbox.Status{Backend: e.opts.Label, Risk: "none"}
 }

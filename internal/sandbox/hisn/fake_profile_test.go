@@ -3,9 +3,13 @@ package hisn
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"testing"
 
 	"github.com/BurntSushi/toml"
 )
@@ -232,4 +236,85 @@ func overrideRisk(state string, risks []fakeRisk) []fakeRisk {
 		return append(append([]fakeRisk(nil), risks...), fakeRisk{"surprise", strings.TrimSpace(string(b))})
 	}
 	return risks
+}
+
+// fakeServices starts the profile's [[services]] the way hisn would: it binds
+// each service's socket (a PING-answering kvr stand-in) unless the exec is
+// "broken-kvr" (binds nothing, like a service that failed to start). It
+// returns the sockets it created so the supervisor can remove them at exit.
+func fakeServices(profile string) (stop func()) {
+	var doc map[string]any
+	var closers []func()
+	stop = func() {
+		for _, c := range closers {
+			c()
+		}
+	}
+	if _, err := toml.Decode(profile, &doc); err != nil {
+		return stop
+	}
+	for _, sv := range tables(doc, "services") {
+		sock := str(sv, "socket")
+		ex, _ := sv["exec"].([]any)
+		if sock == "" || len(ex) == 0 {
+			continue
+		}
+		last, _ := ex[len(ex)-1].(string)
+		if strings.HasSuffix(last, "broken-kvr") {
+			continue
+		}
+		if filepath.Base(last) == "kvr-server" {
+			// A real kvr-server: run the service's exec for real (that is what
+			// hisn does), so a staging round trip goes through a real store.
+			var argv []string
+			for _, e := range ex {
+				argv = append(argv, e.(string))
+			}
+			cmd := exec.Command(argv[0], argv[1:]...)
+			cmd.Stdout, cmd.Stderr = nil, nil
+			if err := cmd.Start(); err == nil {
+				closers = append(closers, func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+			}
+			continue
+		}
+		_ = os.Remove(sock)
+		ln, err := net.Listen("unix", sock)
+		if err != nil {
+			continue
+		}
+		go serveFakeKVR(ln)
+		closers = append(closers, func() { _ = ln.Close() })
+	}
+	return stop
+}
+
+// serveFakeKVR answers the wire PING (len 1, op 3) with RESP_OK (len 1, 0x10).
+func serveFakeKVR(ln net.Listener) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer c.Close()
+			buf := make([]byte, 5)
+			for {
+				if _, err := io.ReadFull(c, buf); err != nil {
+					return
+				}
+				if buf[4] == 3 {
+					_, _ = c.Write([]byte{0, 0, 0, 1, 0x10})
+				}
+			}
+		}()
+	}
+}
+
+func listenUnix(t testing.TB, path string) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ln
 }

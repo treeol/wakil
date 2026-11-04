@@ -62,8 +62,21 @@ type Client struct {
 	socketPath string
 	timeout    time.Duration
 
+	// guard, when set, vets the socket path before EVERY (re)connect. It exists
+	// for sockets inside a sandbox's writable tree, where the sandboxed command
+	// could replace the socket with a symlink to some other host socket.
+	guard func() error
+
 	mu   sync.Mutex
 	conn net.Conn
+}
+
+// SetPathGuard installs a check run before every (re)connect; a non-nil error
+// refuses the dial. Call it before the client is used.
+func (c *Client) SetPathGuard(g func() error) {
+	c.mu.Lock()
+	c.guard = g
+	c.mu.Unlock()
 }
 
 // NewClient creates a staging client that connects to the given UDS path.
@@ -101,6 +114,11 @@ func (c *Client) Close() error {
 func (c *Client) connect() error {
 	if c.conn != nil {
 		return nil
+	}
+	if c.guard != nil {
+		if err := c.guard(); err != nil {
+			return fmt.Errorf("staging socket refused: %w", err)
+		}
 	}
 	conn, err := net.DialTimeout("unix", c.socketPath, c.timeout)
 	if err != nil {
