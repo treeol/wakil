@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
@@ -102,15 +103,16 @@ func (b *Backend) execCLI(ctx context.Context, l *live, release func(), spec san
 	if spec.Stdout != nil {
 		out = spec.Stdout
 	}
-	sw := &syncWriter{w: out}
-	dw := &diagWriter{w: sw}
+	// One gate for both streams: Stdout and Stderr are routinely the same writer.
+	var gate copyGate
+	dw := &diagWriter{w: gate.wrap(out)}
 	cmd := b.command(cctx, false, args...)
 	cmd.Stdin = spec.Stdin
-	cmd.Stdout = sw
+	cmd.Stdout = gate.wrap(out)
 	cmd.Stderr = dw
 	if spec.Stderr != nil {
-		cmd.Stderr = &diagWriter{w: &syncWriter{w: spec.Stderr}}
-		dw = cmd.Stderr.(*diagWriter)
+		dw = &diagWriter{w: gate.wrap(spec.Stderr)}
+		cmd.Stderr = dw
 	}
 	h, err := sandbox.StartCmd(cmd)
 	if err != nil {
@@ -255,6 +257,7 @@ func (b *Backend) execCtl(ctx context.Context, l *live, release func(), spec san
 	// The exec connection dies with the caller's ctx AND with the session
 	// epoch (bindCtx): a session replacement tears it down; hisn then TERMs
 	// (then KILLs after 5 s) whatever remains of the program.
+	callerCtx := ctx
 	ctx, done := bindCtx(ctx, l)
 	ec, res, err := l.ctl().StartExec(ctx, spec.Argv, cwd, env, stdio)
 	if err != nil {
@@ -285,7 +288,7 @@ func (b *Backend) execCtl(ctx context.Context, l *live, release func(), spec san
 		return nil, fmt.Errorf("hisn exec: %w", err)
 	}
 	_ = res
-	eh := &ctlExecHandle{b: b, l: l, ec: ec, argv: spec.Argv, done: done, release: release}
+	eh := &ctlExecHandle{b: b, l: l, ec: ec, argv: spec.Argv, done: done, release: release, callerCtx: callerCtx}
 	eh.startCopiers(spec)
 	eh.watchCancel(ctx)
 	return eh, nil
@@ -304,6 +307,11 @@ type ctlExecHandle struct {
 	info sandbox.ExitInfo
 	err  error
 	wg   sync.WaitGroup
+	out  copyGate // serialises the stdout/stderr copiers; tracks their progress
+
+	// callerCtx is the CALLER's context (not the session-bound one, which
+	// finish cancels): the drain after the exit never outlives it.
+	callerCtx context.Context
 
 	cancelOnce sync.Once
 	cancelErr  error
@@ -351,16 +359,88 @@ func (e *ctlExecHandle) startCopiers(spec sandbox.ExecSpec) {
 	if spec.Stdout != nil {
 		out = spec.Stdout
 	}
-	var errw io.Writer = io.Discard // nil Stderr merges stderr into stdout? No —
-	// ExitInfo contract: nil Stderr means merged via one pipe in CLI mode;
-	// the ctl mode cannot merge (two distinct fds passed), so a nil Stderr
-	// discards stderr, exactly like a nil Stdout would.
+	// A nil Stderr discards stderr: the ctl mode passes two distinct fds and
+	// cannot merge them itself (BackendExecutor passes the SAME writer for both).
+	var errw io.Writer = io.Discard
 	if spec.Stderr != nil {
 		errw = spec.Stderr
 	}
+	// Both copiers write through ONE gate: the caller's writer is routinely the
+	// same buffer for both streams, and an unsynchronised bytes.Buffer corrupts
+	// itself (an idle stderr copier's ReadFrom rewinds the length over what the
+	// stdout copier appended — output, and the exit marker at its end, vanish).
+	ow, ew := e.out.wrap(out), e.out.wrap(errw)
 	e.wg.Add(2)
-	go func() { defer e.wg.Done(); _, _ = io.Copy(out, s.OutR) }()
-	go func() { defer e.wg.Done(); _, _ = io.Copy(errw, s.ErrR) }()
+	go func() { defer e.wg.Done(); _, _ = io.Copy(ow, s.OutR) }()
+	go func() { defer e.wg.Done(); _, _ = io.Copy(ew, s.ErrR) }()
+}
+
+// Bounds of the drain after the program exited. The exit status is reported
+// only once both pipes reached EOF, so no output the program wrote is lost to
+// a copier that is still catching up. The wait ends early only when a stray
+// child that inherited the pipes holds them open: no progress for drainIdle,
+// drainMax in total, or the caller's own context (the tool call's timeout or
+// cancellation) — whichever comes first.
+const (
+	drainIdle = 2 * time.Second
+	drainMax  = 30 * time.Second
+)
+
+// copyGate serialises writes of several copiers to caller-supplied writers and
+// records the last time any of them made progress.
+type copyGate struct {
+	mu   sync.Mutex
+	last atomic.Int64 // unix nanos of the last write start/end
+}
+
+func (g *copyGate) wrap(w io.Writer) io.Writer { return &gatedWriter{g: g, w: w} }
+
+type gatedWriter struct {
+	g *copyGate
+	w io.Writer
+}
+
+func (gw *gatedWriter) Write(p []byte) (int, error) {
+	gw.g.last.Store(time.Now().UnixNano())
+	gw.g.mu.Lock()
+	n, err := gw.w.Write(p)
+	gw.g.mu.Unlock()
+	gw.g.last.Store(time.Now().UnixNano())
+	return n, err
+}
+
+// drain waits until every copier has reached EOF, bounded as described at
+// drainIdle. A large or slowly consumed output is never cut while it makes
+// progress (up to drainMax).
+func (g *copyGate) drain(wg *sync.WaitGroup, ctx context.Context) {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	start := time.Now()
+	tick := time.NewTicker(25 * time.Millisecond)
+	defer tick.Stop()
+	var ctxDone <-chan struct{}
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
+	for {
+		select {
+		case <-done:
+			return
+		case <-ctxDone:
+			return
+		case <-tick.C:
+			if time.Since(start) > drainMax {
+				return
+			}
+			since := start
+			if l := time.Unix(0, g.last.Load()); l.After(since) {
+				since = l
+			}
+			if time.Since(since) > drainIdle {
+				return
+			}
+		}
+	}
 }
 
 func (e *ctlExecHandle) Pid() int    { return e.ec.Pid() }
@@ -432,11 +512,14 @@ func (e *ctlExecHandle) Wait() (sandbox.ExitInfo, error) {
 }
 
 func (e *ctlExecHandle) finish() {
-	e.ec.Close()
+	// Close only the connection: closing a kept read end would DISCARD output
+	// still buffered in its pipe (the exit line routinely arrives before the
+	// copiers have read the last of it).
+	e.ec.CloseConn()
 	e.done()
 	e.release()
-	// Bounded drain: a background child holding stdout must not hang Wait.
-	waitTimeout(&e.wg, 2*time.Second)
+	e.out.drain(&e.wg, e.callerCtx)
+	e.ec.Close()
 }
 
 // translate maps the exit payload into the ExitInfo contract.

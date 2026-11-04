@@ -546,15 +546,3 @@ func classifyControlError(op, path, out string, err error) error {
 	}
 	return fmt.Errorf("hisn %s %s: %w: %s", op, path, err, msg)
 }
-
-// syncWriter serialises concurrent writes from the stdout and stderr copiers.
-type syncWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func (s *syncWriter) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.w.Write(p)
-}

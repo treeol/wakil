@@ -565,8 +565,14 @@ func (ec *ExecConn) Signal(ctx context.Context, signal string) error {
 	return nil
 }
 
+// CloseConn closes only the exec connection (hisn cancels the exec if still
+// running: TERM, then KILL after 5 s), leaving the kept stdio ends open so a
+// caller can drain what the program already wrote. Close the ends with Close.
+func (ec *ExecConn) CloseConn() { _ = ec.conn.Close() }
+
 // Close closes the exec connection (hisn cancels the exec if still running:
-// TERM, then KILL after 5 s) and the kept stdio ends.
+// TERM, then KILL after 5 s) and the kept stdio ends. Closing a kept read end
+// DISCARDS whatever is still buffered in its pipe: drain the copiers first.
 func (ec *ExecConn) Close() {
 	_ = ec.conn.Close()
 	ec.stdio.closeKept()

@@ -152,6 +152,12 @@ func (c *fakeCtl) serveExec(uc *net.UnixConn, req struct {
 	done := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
+		// Like real hisn: the supervisor's own copies of the program's stdio
+		// are not kept, so the pipes reach EOF when the program (and any
+		// children holding them) are gone.
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
 		close(done)
 	}()
 	// Closing the connection cancels: TERM then KILL after 5 s (protocol §7);
