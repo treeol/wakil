@@ -156,7 +156,7 @@ func TestAsyncDiscoveryCapacityRejectNoSilentSync(t *testing.T) {
 	}()
 
 	block := []proxy.ToolCall{
-		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
+		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A","class":"read"}`}},
 	}
 	results := app.runParallelSubagentBlock(context.Background(), block)
 	if len(results) != 1 {
@@ -178,8 +178,8 @@ func TestPrepareSubagentBlockMixedStaysSync(t *testing.T) {
 	app.SetAutoApprove(true) // session write consent for the edit child
 
 	block := []proxy.ToolCall{
-		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"read"}`}},
-		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"write","capability":"edit"}`}},
+		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"read","class":"read"}`}},
+		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"write","capability":"edit","class":"edit"}`}},
 	}
 	_, _, _, pureDiscovery, prepared := app.prepareSubagentBlock(block)
 	if !prepared {

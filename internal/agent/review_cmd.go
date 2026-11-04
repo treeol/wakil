@@ -123,7 +123,7 @@ func handleReviewCommand(ctx context.Context, app *App, ref string) (string, err
 	defer cancel()
 
 	summary, _, _, _, costRows, _ := app.dispatchSubagentGated(
-		reviewCtx, task, io.Discard, "", wtools.CapabilityDiscovery, "",
+		reviewCtx, task, io.Discard, "", wtools.CapabilityDiscovery, "", wtools.SubagentClassRead, nil,
 	)
 
 	// 5. Render the review report.

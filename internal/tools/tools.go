@@ -28,7 +28,9 @@ func DefaultTools(cwd string) []proxy.Tool {
 				"task":       StrProp("Specific discovery objective, e.g. 'find where ToolResultCap is configured across the repo'."),
 				"capability": EnumProp("Capability tier: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto).", CapabilityDiscovery, CapabilityEdit, CapabilityTools),
 				"model":      StrProp("Optional per-dispatch model override. Accepts short names (e.g. \"fable\" matches \"anthropic/claude-fable-5\" via substring). Overrides /submodel and the endpoint's model for this one dispatch. Omit or empty = use session-global routing."),
-			}, "task"),
+				"class":      EnumProp("Task class for budget sizing: \"read\" (code reading), \"search\" (pattern/location search), \"edit\" (file mutation), \"verify\" (build/test/lint). Determines the subagent's token budget. Required.", SubagentClassRead, SubagentClassSearch, SubagentClassEdit, SubagentClassVerify),
+				"files":      ArrProp("Explicit file list for the dispatch. The harness records which listed files were actually read and rejects off-task dispatches (zero listed files read)."),
+			}, "task", "class"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "dispatch_subagents",
@@ -46,7 +48,9 @@ func DefaultTools(cwd string) []proxy.Tool {
 				},
 				"capability": EnumProp("Capability tier for all tasks: \"discovery\" (default, read-only), \"edit\" (adds file mutation tools; requires /auto or --auto), or \"tools\" (adds MCP/LSP/web search; requires /auto or --auto).", CapabilityDiscovery, CapabilityEdit, CapabilityTools),
 				"model":      StrProp("Optional per-batch model override. Accepts short names (e.g. \"fable\" matches \"anthropic/claude-fable-5\" via substring). Overrides /submodel and the endpoint's model for all tasks in this batch. Omit or empty = use session-global routing."),
-			}, "tasks"),
+				"class":      EnumProp("Task class for budget sizing: \"read\" (code reading), \"search\" (pattern/location search), \"edit\" (file mutation), \"verify\" (build/test/lint). Determines the subagent's token budget. Required.", SubagentClassRead, SubagentClassSearch, SubagentClassEdit, SubagentClassVerify),
+				"files":      ArrProp("Explicit file list shared by all tasks in this batch. The harness records which listed files were actually read and rejects off-task dispatches (zero listed files read)."),
+			}, "tasks", "class"),
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name: "run_shell",
@@ -314,6 +318,29 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 	// structured git access without a raw run_shell escape hatch.
 	tools = append(tools, GitTools()...)
 	return tools
+}
+
+// SubagentClass* are task-class values for budget sizing on dispatch_subagent(s).
+// The class determines the subagent's token budget as a percentage of its context
+// window (see subagents.budget.* config keys). Required on every dispatch.
+const (
+	SubagentClassRead   = "read"
+	SubagentClassSearch = "search"
+	SubagentClassEdit   = "edit"
+	SubagentClassVerify = "verify"
+)
+
+// validSubagentClasses is the exhaustive set of accepted class values.
+var validSubagentClasses = map[string]bool{
+	SubagentClassRead:   true,
+	SubagentClassSearch: true,
+	SubagentClassEdit:   true,
+	SubagentClassVerify: true,
+}
+
+// ValidSubagentClass reports whether class is a recognized subagent task class.
+func ValidSubagentClass(class string) bool {
+	return validSubagentClasses[class]
 }
 
 // CapabilityDiscovery is the default read-only subagent capability.

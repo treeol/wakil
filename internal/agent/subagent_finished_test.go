@@ -73,7 +73,7 @@ func TestWorkerEmitsFinishedBeforeDone(t *testing.T) {
 	app.EventSink = collector.sink
 
 	block := []proxy.ToolCall{
-		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
+		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A","class":"read"}`}},
 	}
 	// Pure-discovery block routes ASYNC (Phase 1): returns placeholders
 	// immediately; Start (A) on this goroutine, Finished (B) on a worker, Done (C)
@@ -117,7 +117,7 @@ func TestFinishedCarriesDisplayData(t *testing.T) {
 	app.EventSink = collector.sink
 
 	block := []proxy.ToolCall{
-		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
+		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A","class":"read"}`}},
 	}
 	app.runParallelSubagentBlock(context.Background(), block)
 	waitAsyncOps(t, app)
@@ -180,8 +180,8 @@ func TestFastChildFinishedWhileSlowRuns(t *testing.T) {
 	}
 
 	block := []proxy.ToolCall{
-		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
-		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-B"}`}},
+		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A","class":"read"}`}},
+		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-B","class":"read"}`}},
 	}
 	app.runParallelSubagentBlock(context.Background(), block) // async: returns immediately
 
@@ -238,7 +238,7 @@ func TestSequentialPathEmitsFinishedBeforeDone(t *testing.T) {
 			return
 		}
 		// Parent: emit one dispatch_subagent call, then a final answer.
-		writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A"}`)...)
+		writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A","class":"read"}`)...)
 	}))
 	defer srv.Close()
 
@@ -249,7 +249,7 @@ func TestSequentialPathEmitsFinishedBeforeDone(t *testing.T) {
 	// Run through ExecuteToolCall so the sequential dispatch_subagent handler runs.
 	tc := proxy.ToolCall{
 		ID:       "d1",
-		Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`},
+		Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A","class":"read"}`},
 	}
 	app.ExecuteToolCall(context.Background(), tc)
 	// Async discovery routing: await the worker + commit Done events at drain.

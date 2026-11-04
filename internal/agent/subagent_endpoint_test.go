@@ -120,7 +120,7 @@ func TestGoldenInheritRequestShape(t *testing.T) {
 	// /model or /backend switch) — the golden no-op must reuse this directly.
 	app.CtxLimit = ContextLimit{NCtx: 99999, Source: "backend"}
 
-	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "", "", nil)
 
 	if lastModel != "parent-model" {
 		t.Errorf("request model = %q, want parent-model (inherited)", lastModel)
@@ -163,7 +163,7 @@ func TestSubagentInheritsSwitchedEndpointStillGreen(t *testing.T) {
 	_, _, cmd := HandleTUICommand("/backend b", app)
 	runCmd(cmd)
 
-	app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
+	app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "", "", nil)
 
 	raw, _ := subBody.Load().([]byte)
 	if raw == nil {
@@ -216,7 +216,7 @@ func TestOverrideOpenAIChildFromProxyParent(t *testing.T) {
 	app.Client.Kind = proxy.KindIlmProxy
 	app.Client.Model = "ilm"
 
-	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "", "", nil)
 
 	if capturedBody == nil {
 		t.Fatal("subagent request did not reach the openai override endpoint")
@@ -305,7 +305,7 @@ func TestOverrideProxyChildFromOpenAIParent(t *testing.T) {
 		t.Fatalf("resolved backend = %q, want llama (subagent_backend applies for ilm-proxy child)", backend)
 	}
 
-	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, backend, "", "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, backend, "", "", "", nil)
 
 	if capturedBody == nil {
 		t.Fatal("subagent request did not reach the ilm-proxy override endpoint")
@@ -458,7 +458,7 @@ func TestChildLimitsSingleflightAcrossParallelDispatches(t *testing.T) {
 	done := make(chan struct{}, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
+			app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "", "", nil)
 			done <- struct{}{}
 		}()
 	}
@@ -499,7 +499,7 @@ func TestCostFoldSequentialDispatchViaAppHandleToolCall(t *testing.T) {
 
 	// Call dispatchSubagent directly (as a worker would) — this must NOT fold
 	// into the parent tracker by itself.
-	_, _, _, _, costRows, _ := app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
+	_, _, _, _, costRows, _ := app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "", "", nil)
 	totalAfterDispatchOnly, _ := app.Costs.Snapshot()
 	if totalAfterDispatchOnly != 0 {
 		t.Errorf("parent tracker changed by dispatchSubagent alone (got %v) — fold must happen only at the join point", totalAfterDispatchOnly)
@@ -874,7 +874,7 @@ func TestOverrideCarriesCacheControl(t *testing.T) {
 		t.Errorf("view.cacheControl = %v, want *true (from named endpoint config)", view.cacheControl)
 	}
 
-	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
+	_, _, _, _, _, _ = app.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "", "", nil)
 
 	if capturedBody == nil {
 		t.Fatal("subagent request did not reach the openai override endpoint")

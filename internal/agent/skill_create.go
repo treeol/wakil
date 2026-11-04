@@ -194,7 +194,7 @@ func handleSkillCreateCommand(ctx context.Context, app *App, topic string) (stri
 	researchCtx, cancel := context.WithTimeout(ctx, skillCreateTimeout)
 	defer cancel()
 	summary, _, _, _, costRows, _ := app.dispatchSubagentGated(
-		researchCtx, task, io.Discard, "", wtools.CapabilityTools, "",
+		researchCtx, task, io.Discard, "", wtools.CapabilityTools, "", wtools.SubagentClassSearch, nil,
 	)
 
 	draft, err := extractSkillDraft(summary)

@@ -430,6 +430,17 @@ type Config struct {
 	// prevent the patch from being applied.
 	SubagentEditVerifyCommand string `json:"subagent_edit_verify_command,omitempty"`
 
+	// Subagent budget percentages — each overrides the per-class budget
+	// percentage of the subagent's context window. 0 = use the built-in
+	// default (40, 25, 60, 40 respectively). Reserve is held back for the
+	// final report and never spent on work. Budget = hardMax * (classPct -
+	// reservePct) / 100; reserve = hardMax * reservePct / 100.
+	SubagentBudgetRead    int `json:"subagents.budget.read,omitempty"`
+	SubagentBudgetSearch  int `json:"subagents.budget.search,omitempty"`
+	SubagentBudgetEdit    int `json:"subagents.budget.edit,omitempty"`
+	SubagentBudgetVerify  int `json:"subagents.budget.verify,omitempty"`
+	SubagentBudgetReserve int `json:"subagents.budget.reserve,omitempty"`
+
 	ReadFileSizeLimit   int               `json:"read_file_size_limit,omitempty"`   // max bytes read_file accepts before refusing; default 1048576 (1 MB); 0 = use default
 	MaxFullReadBytes    int               `json:"max_full_read_bytes,omitempty"`    // max bytes read_file_full accepts before refusing; default 262144 (256 KB); 0 = use default
 	MaxBinaryWriteBytes int               `json:"max_binary_write_bytes,omitempty"` // max decoded bytes write_binary_file accepts; default 10485760 (10 MB); 0 = use default
@@ -1173,6 +1184,11 @@ func DefaultConfig() Config {
 		MaxParallelSubagents:       2,
 		SubagentTimeoutSeconds:     360, // must match agent.defaultSubagentTimeoutSeconds (raised from 180s: 40 iterations × ~6s + wrap-up + retry margin)
 		SubagentSyncTimeoutSeconds: 600, // generous for edit tasks; bounds edit/tools children that previously had no per-child timeout
+		SubagentBudgetRead:         40,
+		SubagentBudgetSearch:       25,
+		SubagentBudgetEdit:         60,
+		SubagentBudgetVerify:       40,
+		SubagentBudgetReserve:      8,
 		OracleModel:                "claude-sonnet-4-6",
 		OracleMaxTokens:            4096,
 		OracleAPIKeyEnv:            "ANTHROPIC_API_KEY",
@@ -2061,6 +2077,25 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.SubagentSyncTimeoutSeconds < 0 {
 		return fmt.Errorf("subagent_sync_timeout_seconds must be >= 0 (got %d; 0 = use default 600s)", cfg.SubagentSyncTimeoutSeconds)
+	}
+	// Subagent budget percentages: reject negative and > 100. Zero means
+	// "use built-in default" (which is set in DefaultConfig).
+	for _, b := range []struct {
+		name string
+		val  int
+	}{
+		{"subagents.budget.read", cfg.SubagentBudgetRead},
+		{"subagents.budget.search", cfg.SubagentBudgetSearch},
+		{"subagents.budget.edit", cfg.SubagentBudgetEdit},
+		{"subagents.budget.verify", cfg.SubagentBudgetVerify},
+		{"subagents.budget.reserve", cfg.SubagentBudgetReserve},
+	} {
+		if b.val < 0 {
+			return fmt.Errorf("%s must be >= 0 (got %d; 0 = use default)", b.name, b.val)
+		}
+		if b.val > 100 {
+			return fmt.Errorf("%s must be <= 100 (got %d)", b.name, b.val)
+		}
 	}
 	if cfg.StreamIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("stream_idle_timeout_seconds must be >= 0 (got %d; 0 = use default 120s)", cfg.StreamIdleTimeoutSeconds)

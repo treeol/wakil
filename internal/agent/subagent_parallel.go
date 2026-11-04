@@ -37,7 +37,9 @@ type subagentJob struct {
 	Task       string
 	ChatID     string
 	Capability string
-	Model      string // per-dispatch model override ("" or "inherit" = use session-global routing)
+	Model      string   // per-dispatch model override ("" or "inherit" = use session-global routing)
+	Class      string   // task class for budget sizing (required: read|search|edit|verify)
+	Files      []string // explicit file list for the dispatch (optional)
 }
 
 // subagentJobResult carries one worker's outcome back to the main goroutine.
@@ -233,7 +235,7 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 				execCtx = childCtx
 			}
 			summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(
-				execCtx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].Model, jobs[i].ChatID)
+				execCtx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].Model, jobs[i].Class, jobs[i].Files, jobs[i].ChatID)
 			accepted := checkpointResult(subagentJobResult{
 				Summary:      summary,
 				Grounding:    grounding,
@@ -315,9 +317,11 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 	pureDiscovery := true
 	for i, tc := range block {
 		var args struct {
-			Task       string `json:"task"`
-			Capability string `json:"capability"`
-			Model      string `json:"model"`
+			Task       string   `json:"task"`
+			Capability string   `json:"capability"`
+			Model      string   `json:"model"`
+			Class      string   `json:"class"`
+			Files      []string `json:"files"`
 		}
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			out[i] = fmt.Sprintf("ERROR: could not parse arguments: %v", err)
@@ -326,6 +330,17 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 		}
 		if strings.TrimSpace(args.Task) == "" {
 			out[i] = "ERROR: task is required"
+			pureDiscovery = false
+			continue
+		}
+		if args.Class == "" {
+			out[i] = "ERROR: class is required (read|search|edit|verify)"
+			pureDiscovery = false
+			continue
+		}
+		if !wtools.ValidSubagentClass(args.Class) {
+			out[i] = fmt.Sprintf("ERROR: unknown class %q — valid values: %q, %q, %q, %q",
+				args.Class, wtools.SubagentClassRead, wtools.SubagentClassSearch, wtools.SubagentClassEdit, wtools.SubagentClassVerify)
 			pureDiscovery = false
 			continue
 		}
@@ -366,7 +381,7 @@ func (a *App) prepareSubagentBlock(block []proxy.ToolCall) ([]subagentJob, []str
 		if capability != wtools.CapabilityDiscovery {
 			pureDiscovery = false
 		}
-		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability, Model: resolvedModel})
+		jobs = append(jobs, subagentJob{Index: i, Task: args.Task, ChatID: NewChatID(), Capability: capability, Model: resolvedModel, Class: args.Class, Files: args.Files})
 	}
 	if len(jobs) == 0 {
 		return nil, out, "", pureDiscovery, false

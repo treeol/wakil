@@ -29,7 +29,7 @@ func TestCapabilityToolsWithoutConsent(t *testing.T) {
 	// AutoApprove = false (no consent)
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
-	tc := makeEditToolCall("dispatch_subagent", `{"task":"use tools","capability":"tools"}`)
+	tc := makeEditToolCall("dispatch_subagent", `{"task":"use tools","capability":"tools","class":"read"}`)
 	result := parent.ExecuteToolCall(context.Background(), tc)
 
 	if !strings.Contains(result.text, "ERROR: tools capability requires") {
@@ -59,7 +59,7 @@ func TestCapabilityToolsWithAutoApprove(t *testing.T) {
 	parent.SetAutoApprove(true) // session consent
 
 	summary, _, _, _, _, _ := parent.dispatchSubagent(
-		context.Background(), "use tools task", io.Discard, "", wtools.CapabilityTools, "")
+		context.Background(), "use tools task", io.Discard, "", wtools.CapabilityTools, "", "", nil)
 
 	if summary.Objective != "tools done" {
 		t.Errorf("objective = %q, want 'tools done'", summary.Objective)
@@ -219,7 +219,7 @@ func TestExternalCallsFoldedIntoSummary(t *testing.T) {
 	// Since there's no real MCPManager, extRecorder is empty, so the model's
 	// self-reported external_calls should be overridden to nil.
 	summary, _, _, _, _, _ := parent.dispatchSubagent(
-		context.Background(), "task", io.Discard, "", wtools.CapabilityTools, "")
+		context.Background(), "task", io.Discard, "", wtools.CapabilityTools, "", "", nil)
 
 	// Mechanical record is ground truth — model's self-report is overridden.
 	// With no MCP manager, no external actions were recorded, so ExternalCalls
@@ -276,7 +276,7 @@ func TestCapabilityValidationNamesTools(t *testing.T) {
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
-	tc := makeEditToolCall("dispatch_subagent", `{"task":"test","capability":"exec"}`)
+	tc := makeEditToolCall("dispatch_subagent", `{"task":"test","capability":"exec","class":"read"}`)
 	result := parent.ExecuteToolCall(context.Background(), tc)
 
 	if !strings.Contains(result.text, "ERROR: unknown capability") {

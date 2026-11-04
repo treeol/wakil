@@ -396,7 +396,7 @@ func TestStyleGuideSubagentSnapshot(t *testing.T) {
 	defer srv.Close()
 	app := enabledStyleApp(t, srv.URL)
 	app.prepareStyleGuides("Implement a Python function")
-	app.dispatchSubagent(context.Background(), "inspect", io.Discard, "", "", "")
+	app.dispatchSubagent(context.Background(), "inspect", io.Discard, "", "", "", "", nil)
 	if !subStyle.Load() {
 		t.Fatal("child did not inherit active style guide")
 	}

@@ -36,7 +36,7 @@ func TestSendSuspendsWhenAsyncPending(t *testing.T) {
 		}
 		switch parentCalls.Add(1) {
 		case 1:
-			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A"}`)...)
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A","class":"read"}`)...)
 		default:
 			writeSSE(w, contentChunk("all done"))
 		}
@@ -201,7 +201,7 @@ func TestSendFinalWhenAsyncCompletedDuringStream(t *testing.T) {
 		switch parentCalls.Add(1) {
 		case 1:
 			// First parent call: dispatch a discovery subagent.
-			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A"}`)...)
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A","class":"read"}`)...)
 		case 2:
 			// Wait for the subagent to have completed before responding,
 			// so asyncActive == 0 and inbox > 0 when the model finishes.

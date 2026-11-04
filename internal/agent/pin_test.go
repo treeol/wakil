@@ -135,7 +135,7 @@ func TestPinnedMessageSurvivesEnforceHardMax(t *testing.T) {
 		// Turn 2: contains pinned subagent summary — must NOT be dropped.
 		{Role: "user", Content: StrPtr("dispatch subagent")},
 		{Role: "assistant", ToolCalls: []proxy.ToolCall{
-			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find"}`}},
+			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find","class":"read"}`}},
 		}},
 		{Role: "tool", ToolCallID: "s1", Name: "dispatch_subagent", Content: StrPtr(`{"objective":"find","findings":[]}`), Pinned: true},
 		{Role: "assistant", Content: StrPtr("found it")},
@@ -332,7 +332,7 @@ func TestExhaustedSubagentReturnsIncompleteStatusRealPath(t *testing.T) {
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	parent.subMaxToolIter = 1 // force exhaustion after 1 tool iteration
 
-	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find things", io.Discard, "", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find things", io.Discard, "", "", "", "", nil)
 
 	if summary.Status != "incomplete" {
 		t.Errorf("status = %q, want 'incomplete' (subagent hit MaxToolIterations=1)", summary.Status)
@@ -378,7 +378,7 @@ func TestExhaustionSurvivesRetryRealPath(t *testing.T) {
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	parent.subMaxToolIter = 1 // force exhaustion on first Send
 
-	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find", io.Discard, "", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find", io.Discard, "", "", "", "", nil)
 
 	// Despite the retry producing valid JSON, the first-Send exhaustion must
 	// be captured and produce Status:"incomplete".
@@ -469,7 +469,7 @@ func TestPinnedBreadcrumbSurvivesParentCompact(t *testing.T) {
 	app.Conv = []proxy.Message{
 		{Role: "user", Content: StrPtr("find things")},
 		{Role: "assistant", ToolCalls: []proxy.ToolCall{
-			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find"}`}},
+			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find","class":"read"}`}},
 		}},
 		{Role: "tool", ToolCallID: "s1", Name: "dispatch_subagent", Content: StrPtr(breadcrumb), Pinned: true},
 		{Role: "assistant", Content: StrPtr("found it")},
@@ -513,7 +513,7 @@ func TestIncompleteStatusWarningSurfaced(t *testing.T) {
 
 	srv := sseServer(t,
 		// call 0 — parent: dispatch_subagent tool call
-		toolCallFrames("d1", "dispatch_subagent", `{"task":"find things"}`),
+		toolCallFrames("d1", "dispatch_subagent", `{"task":"find things","class":"read"}`),
 		// call 1 — subagent: returns JSON summary (no tools → exits)
 		[]string{contentChunk(summaryJSON)},
 		// call 2 — parent: final text
@@ -580,7 +580,7 @@ func TestPinnedToolMessageKeepsParentAssistant(t *testing.T) {
 		// Turn 1: contains pinned dispatch_subagent tool result.
 		{Role: "user", Content: StrPtr("find things")},
 		{Role: "assistant", ToolCalls: []proxy.ToolCall{
-			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find"}`}},
+			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find","class":"read"}`}},
 		}},
 		{Role: "tool", ToolCallID: "s1", Name: "dispatch_subagent", Content: StrPtr(breadcrumb), Pinned: true},
 		{Role: "assistant", Content: StrPtr("found")},
@@ -685,7 +685,7 @@ func TestMultiToolCallSiblingPreservation(t *testing.T) {
 		// Turn with an assistant message that has TWO tool calls — one pinned, one not.
 		{Role: "user", Content: StrPtr("find things")},
 		{Role: "assistant", ToolCalls: []proxy.ToolCall{
-			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find"}`}},
+			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find","class":"read"}`}},
 			{ID: "r1", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"b.go"}`}},
 		}},
 		{Role: "tool", ToolCallID: "s1", Name: "dispatch_subagent", Content: StrPtr(`{"objective":"find"}`), Pinned: true},

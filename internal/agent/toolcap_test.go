@@ -188,7 +188,7 @@ func TestTurnContainsSubagent(t *testing.T) {
 	conv := []proxy.Message{
 		{Role: "user", Content: StrPtr("find it")},
 		{Role: "assistant", ToolCalls: []proxy.ToolCall{
-			{Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"x"}`}},
+			{Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"x","class":"read"}`}},
 		}},
 		{Role: "tool", Name: "dispatch_subagent", Content: StrPtr(`{"objective":"x"}`)},
 	}
@@ -226,7 +226,7 @@ func TestEnforceHardMaxAtomicTurn(t *testing.T) {
 		{Role: "assistant", Content: StrPtr("first answer")},
 		{Role: "user", Content: StrPtr("find the config")},
 		{Role: "assistant", ToolCalls: []proxy.ToolCall{
-			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find x"}`}},
+			{ID: "s1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"find x","class":"read"}`}},
 		}},
 		{Role: "tool", ToolCallID: "s1", Name: "dispatch_subagent", Content: StrPtr(`{"objective":"find x","findings":[]}`)},
 		{Role: "assistant", Content: StrPtr("found it")},

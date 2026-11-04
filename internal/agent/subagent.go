@@ -38,6 +38,24 @@ const (
 	subagentMaxToolIter         = 40      // RAISED from 30: more room for broad exploration without exhaustion
 )
 
+// Default subagent budget percentages per task class. Each is a percentage of
+// the subagent's context window (activeHardMax). The reserve is held back
+// for the final report turn and never spent on work. Work budget =
+// hardMax * (classPct - reservePct) / 100; reserve budget = hardMax *
+// reservePct / 100. Override via config (subagents.budget.*).
+const (
+	subagentBudgetReadDefault    = 40
+	subagentBudgetSearchDefault  = 25
+	subagentBudgetEditDefault    = 60
+	subagentBudgetVerifyDefault  = 40
+	subagentBudgetReserveDefault = 8
+)
+
+// subagentReservePrompt is injected when the work budget is exhausted. It
+// forces the model to emit a structured partial — its findings, files
+// read/not read, and remaining scope — without any further tool calls.
+const subagentReservePrompt = `Your tool budget is exhausted. Respond with ONLY the JSON object — no prose, no tool calls. Report what you established (findings), what files you did and did not read, and your remaining scope in your own words.`
+
 // SubagentSummary is the structured return value of dispatchSubagent.
 // The parent acts on this blind to raw content, so every gap must be visible.
 type SubagentSummary struct {
@@ -51,6 +69,8 @@ type SubagentSummary struct {
 	SpillRefs     []SpillRef       `json:"spill_refs,omitempty"`
 	FilesChanged  []string         `json:"files_changed,omitempty"`  // model self-report for edit-tier; mechanical record is ground truth
 	ExternalCalls []ExternalAction `json:"external_calls,omitempty"` // mechanical record of MCP tool calls (tools-tier)
+	// SubagentClass is the task class used for budget sizing (item 1).
+	SubagentClass string `json:"subagent_class,omitempty"`
 }
 
 // Finding is one discrete result the parent should consider acting on.
@@ -136,7 +156,109 @@ func (s SubagentSummary) Render() string {
 	}
 }
 
-// escapeJSONString escapes a string for safe embedding inside a JSON string
+// BudgetInfo reports the subagent's budget usage.
+type BudgetInfo struct {
+	Used  int    `json:"used"`
+	Limit int    `json:"limit"`
+	Class string `json:"class"`
+}
+
+// SubagentResult is the structured return from a dispatch. Both complete
+// and partial results use this shape. The parent uses it to decide whether
+// to re-dispatch, split, or surface a notice to the user.
+type SubagentResult struct {
+	Status         string     `json:"status"`         // "complete" | "partial" | "rejected:off-task"
+	FilesCovered   []string   `json:"files_covered"`  // from the harness ledger (item 2)
+	FilesNotRead   []string   `json:"files_not_read"` // explicit-list dispatches only
+	Findings       []Finding  `json:"findings"`
+	RemainingScope string     `json:"remaining_scope"` // subagent's own words; may be empty
+	Budget         BudgetInfo `json:"budget"`
+	// Legacy fields carried for back-compat with existing callers.
+	Objective     string           `json:"objective,omitempty"`
+	Uncertainty   []string         `json:"uncertainty,omitempty"`
+	FilesChanged  []string         `json:"files_changed,omitempty"`
+	ExternalCalls []ExternalAction `json:"external_calls,omitempty"`
+}
+
+// subagentBudgetForClass returns the budget percentage for the given class,
+// using config overrides when non-zero, falling back to the built-in defaults.
+func (a *App) subagentBudgetForClass(class string) int {
+	switch class {
+	case wtools.SubagentClassRead:
+		if a.Cfg.SubagentBudgetRead > 0 {
+			return a.Cfg.SubagentBudgetRead
+		}
+		return subagentBudgetReadDefault
+	case wtools.SubagentClassSearch:
+		if a.Cfg.SubagentBudgetSearch > 0 {
+			return a.Cfg.SubagentBudgetSearch
+		}
+		return subagentBudgetSearchDefault
+	case wtools.SubagentClassEdit:
+		if a.Cfg.SubagentBudgetEdit > 0 {
+			return a.Cfg.SubagentBudgetEdit
+		}
+		return subagentBudgetEditDefault
+	case wtools.SubagentClassVerify:
+		if a.Cfg.SubagentBudgetVerify > 0 {
+			return a.Cfg.SubagentBudgetVerify
+		}
+		return subagentBudgetVerifyDefault
+	default:
+		return subagentBudgetReadDefault
+	}
+}
+
+// subagentReservePct returns the reserve budget percentage (config override
+// or built-in default).
+func (a *App) subagentReservePct() int {
+	if a.Cfg.SubagentBudgetReserve > 0 {
+		return a.Cfg.SubagentBudgetReserve
+	}
+	return subagentBudgetReserveDefault
+}
+
+// computeSubagentBudgets derives the work and reserve byte budgets from the
+// active hardMax and the class/reserve percentages.
+func computeSubagentBudgets(activeHardMax, classPct, reservePct int) (workBudget, reserveBudget int) {
+	if activeHardMax <= 0 {
+		return 0, 0
+	}
+	workBudget = activeHardMax * (classPct - reservePct) / 100
+	if workBudget < 0 {
+		workBudget = 0
+	}
+	reserveBudget = activeHardMax * reservePct / 100
+	return workBudget, reserveBudget
+}
+
+// isStrictlySmallerScope reports whether the re-dispatch's file set and task
+// text are strictly smaller than the original. Compares file sets (proper
+// subset) and a hash of the task text (must differ). The off-task rejection
+// re-dispatch is exempt (it appends to the same file list, not shrinks it).
+func isStrictlySmallerScope(origFiles, newFiles []string, origTaskHash, newTaskHash string) bool {
+	if origTaskHash == newTaskHash {
+		return false
+	}
+	orig := toStrSet(origFiles)
+	new := toStrSet(newFiles)
+	for f := range new {
+		if !orig[f] {
+			return false
+		}
+	}
+	return len(new) < len(orig)
+}
+
+// toStrSet converts a slice to a set for subset checks.
+func toStrSet(ss []string) map[string]bool {
+	m := make(map[string]bool, len(ss))
+	for _, s := range ss {
+		m[s] = true
+	}
+	return m
+}
+
 // literal (used by Render's fallback path which builds JSON manually).
 func escapeJSONString(s string) string {
 	if s == "" {
@@ -1052,11 +1174,11 @@ func foldSubagentCost(tracker *proxy.CostTracker, rows []proxy.CostRow) float64 
 // MAIN GOROUTINE ONLY (it calls ensureSubagentConsent). The parallel path
 // must instead call ensureSubagentConsent once in its prepare phase and then
 // invoke dispatchSubagent directly from workers.
-func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, model string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
+func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, model string, class string, files []string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
 	if !a.ensureSubagentConsent(resolvedBackend) {
 		return declinedSubagentSummary(task, resolvedBackend), nil, 0, "", nil, nil
 	}
-	return a.dispatchSubagent(ctx, task, progressOut, resolvedBackend, capability, model, chatID...)
+	return a.dispatchSubagent(ctx, task, progressOut, resolvedBackend, capability, model, class, files, chatID...)
 }
 
 // dispatchSubagent runs a bounded subagent for task and returns a structured
@@ -1103,7 +1225,7 @@ func (a *App) dispatchSubagentGated(ctx context.Context, task string, progressOu
 // model. Empty or "inherit" = use the session-global routing (no-op, same as
 // before). The model never touches shared App state — it is a dispatch-local
 // value applied to a dispatch-local view copy.
-func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, model string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
+func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.Writer, resolvedBackend string, capability string, model string, class string, files []string, chatID ...string) (SubagentSummary, []proxy.GroundingEntry, int, string, []proxy.CostRow, []string) {
 	subChatID := NewChatID()
 	if len(chatID) > 0 && chatID[0] != "" {
 		subChatID = chatID[0]
@@ -1411,20 +1533,23 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(childPrompt), Pinned: true}}
 
-	// Clamp TurnToolBudget to a safe fraction of the active hardMax. This
-	// prevents the budget from exceeding the context ceiling on small-context
-	// backends (e.g., 32k tokens → ~78k hardMax → clamp to ~27k). The 35%
-	// fraction leaves room for the system prompt, conversation history, and
-	// model output. Must run AFTER sub is constructed (when CtxLimit is known).
-	// Floor at subagentTurnToolBudgetFloor so the clamp never cuts below the
-	// previous 50k default — a cut would be a regression on fallback paths.
+	// Clamp TurnToolBudget to the class-based work budget. This replaces the
+	// fixed 35% clamp with a per-class budget: workBudget = hardMax *
+	// (classPct - reservePct) / 100, where the reserve is held back for the
+	// forced final report turn (see the exhaustion handling below). The work
+	// budget is the maximum bytes the subagent may spend on tool calls + tool
+	// results before exhaustion kicks in. Must run AFTER sub is constructed
+	// (when CtxLimit is known). Floor at subagentTurnToolBudgetFloor so the
+	// clamp never cuts below the previous 50k default.
 	_, _, activeHardMax := sub.activeThresholds()
-	clampedBudget := activeHardMax * 35 / 100
-	if clampedBudget < subagentTurnToolBudgetFloor {
-		clampedBudget = subagentTurnToolBudgetFloor
+	classPct := a.subagentBudgetForClass(class)
+	reservePct := a.subagentReservePct()
+	workBudget, _ := computeSubagentBudgets(activeHardMax, classPct, reservePct)
+	if workBudget < subagentTurnToolBudgetFloor {
+		workBudget = subagentTurnToolBudgetFloor
 	}
-	if activeHardMax > 0 && sub.Cfg.TurnToolBudget > clampedBudget {
-		sub.Cfg.TurnToolBudget = clampedBudget
+	if activeHardMax > 0 {
+		sub.Cfg.TurnToolBudget = workBudget
 	}
 
 	// Edit-tier children are serialized by the writer lock: at most one edit
@@ -1570,6 +1695,37 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// starved of content, producing a complete-looking but potentially
 		// incomplete summary. Surface this so the parent can judge.
 		summary.StopReason = "turn_budget_exhausted"
+	}
+
+	// Reserve turn: when the subagent exhausted its work budget, inject the
+	// reserve prompt and force one final Send with tools stripped. The model
+	// must emit a structured partial (findings, files read/not read, remaining
+	// scope). If the reserve turn also fails to produce valid JSON, the raw
+	// output is placed in remaining_scope. "Ran out of budget" alone is never
+	// the result — the reserve turn always yields a structured partial.
+	if (exhaustedFirstSend || sub.exhausted) && summary.Status == "incomplete" {
+		sub.Tools = nil
+		reserveRaw, reserveErr := sub.Send(ctx, subagentReservePrompt)
+		if reserveErr == nil {
+			var reserveSummary SubagentSummary
+			if json.Unmarshal([]byte(extractJSON(reserveRaw)), &reserveSummary) == nil {
+				// Merge the reserve summary's findings into the existing
+				// summary, preserving any findings from the first Send.
+				if len(reserveSummary.Findings) > 0 {
+					summary.Findings = append(summary.Findings, reserveSummary.Findings...)
+				}
+				if len(reserveSummary.Uncertainty) > 0 {
+					summary.Uncertainty = append(summary.Uncertainty, reserveSummary.Uncertainty...)
+				}
+				if len(reserveSummary.Skipped) > 0 {
+					summary.Skipped = append(summary.Skipped, reserveSummary.Skipped...)
+				}
+			} else {
+				// Reserve turn produced garbage — put the raw tail in
+				// remaining_scope via Uncertainty so it is not lost.
+				summary.Uncertainty = append(summary.Uncertainty, "reserve turn produced no valid JSON — raw: "+Truncate(reserveRaw, 200))
+			}
+		}
 	}
 
 	// Snapshot AFTER the retry Send (if any) so a retry's RecordInferenceCost

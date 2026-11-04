@@ -622,7 +622,7 @@ func TestSkillTurnEndHook_FiresOnceAfterSuspendResume(t *testing.T) {
 		}
 		switch parentCalls.Add(1) {
 		case 1:
-			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A"}`)...)
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A","class":"read"}`)...)
 		case 2:
 			writeSSE(w, contentChunk("waiting"))
 		default:

@@ -47,7 +47,7 @@ func TestAsyncSubagentCooperativeTimeout(t *testing.T) {
 		switch parentCalls.Add(1) {
 		case 1:
 			// Parent: dispatch one subagent.
-			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A"}`)...)
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"TASK-A","class":"read"}`)...)
 		default:
 			// Second call: final text (no more tool calls).
 			writeSSE(w, contentChunk("done"))
@@ -207,8 +207,8 @@ func TestAsyncRegistryRefusalSendsDoneEvents(t *testing.T) {
 
 	// Prepare a pure-discovery block with 2 children.
 	block := []proxy.ToolCall{
-		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
-		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-B"}`}},
+		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A","class":"read"}`}},
+		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-B","class":"read"}`}},
 	}
 	// Run the block — should be refused (registry full).
 	results := app.runParallelSubagentBlock(context.Background(), block)

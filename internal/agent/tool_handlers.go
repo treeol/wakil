@@ -1656,15 +1656,24 @@ func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) strin
 // handleDispatchSubagent dispatches a single subagent sequentially.
 func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) string {
 	var args struct {
-		Task       string `json:"task"`
-		Capability string `json:"capability"`
-		Model      string `json:"model"`
+		Task       string   `json:"task"`
+		Capability string   `json:"capability"`
+		Model      string   `json:"model"`
+		Class      string   `json:"class"`
+		Files      []string `json:"files"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
 	if strings.TrimSpace(args.Task) == "" {
 		return "ERROR: task is required"
+	}
+	if args.Class == "" {
+		return "ERROR: class is required (read|search|edit|verify)"
+	}
+	if !wtools.ValidSubagentClass(args.Class) {
+		return fmt.Sprintf("ERROR: unknown class %q — valid values: %q, %q, %q, %q",
+			args.Class, wtools.SubagentClassRead, wtools.SubagentClassSearch, wtools.SubagentClassEdit, wtools.SubagentClassVerify)
 	}
 	// Normalize capability: empty = discovery (the default, golden no-op).
 	capability := args.Capability
@@ -1752,7 +1761,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 		// summary is injected into context at the next drain. This keeps the
 		// sequential read-only path non-blocking like the batch path.
 		block := []proxy.ToolCall{tc}
-		jobs := []subagentJob{{Index: 0, Task: args.Task, ChatID: subChatID, Capability: capability, Model: resolvedModel}}
+		jobs := []subagentJob{{Index: 0, Task: args.Task, ChatID: subChatID, Capability: capability, Model: resolvedModel, Class: args.Class, Files: args.Files}}
 		results, ok := a.queueAsyncDiscoveryBlock(block, jobs, subBackend)
 		if ok {
 			return results[0]
@@ -1762,7 +1771,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	}
 	// Sequential path: the dispatch begins immediately, no queue wait.
 	a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
-	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, resolvedModel, subChatID)
+	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, resolvedModel, args.Class, args.Files, subChatID)
 	// Early display-only completion event: emitted at child return, before
 	// the cost fold, keeping the parallel and sequential paths symmetric.
 	// SubagentDoneMsg below remains the authoritative event carrying the
@@ -1829,12 +1838,21 @@ func (a *App) handleDispatchSubagents(ctx context.Context, tc proxy.ToolCall) st
 		Tasks      []string `json:"tasks"`
 		Capability string   `json:"capability"`
 		Model      string   `json:"model"`
+		Class      string   `json:"class"`
+		Files      []string `json:"files"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
 	if len(args.Tasks) == 0 {
 		return "ERROR: tasks is required (1–8 discovery objectives)"
+	}
+	if args.Class == "" {
+		return "ERROR: class is required (read|search|edit|verify)"
+	}
+	if !wtools.ValidSubagentClass(args.Class) {
+		return fmt.Sprintf("ERROR: unknown class %q — valid values: %q, %q, %q, %q",
+			args.Class, wtools.SubagentClassRead, wtools.SubagentClassSearch, wtools.SubagentClassEdit, wtools.SubagentClassVerify)
 	}
 	const maxBatchTasks = 8
 	if len(args.Tasks) > maxBatchTasks {
@@ -1880,10 +1898,12 @@ func (a *App) handleDispatchSubagents(ctx context.Context, tc proxy.ToolCall) st
 	block := make([]proxy.ToolCall, len(args.Tasks))
 	for i, task := range args.Tasks {
 		taskJSON, _ := json.Marshal(struct {
-			Task       string `json:"task"`
-			Capability string `json:"capability"`
-			Model      string `json:"model"`
-		}{task, capability, resolvedModel})
+			Task       string   `json:"task"`
+			Capability string   `json:"capability"`
+			Model      string   `json:"model"`
+			Class      string   `json:"class"`
+			Files      []string `json:"files"`
+		}{task, capability, resolvedModel, args.Class, args.Files})
 		block[i] = proxy.ToolCall{
 			ID:       fmt.Sprintf("%s-b%d", tc.ID, i),
 			Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: string(taskJSON)},

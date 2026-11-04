@@ -24,7 +24,7 @@ import (
 // dispatch_subagent tool calls in one turn (indexes 0 and 1).
 func twoDispatchFrames(taskA, taskB string) []string {
 	f := func(idx int, id, task string) string {
-		args, _ := json.Marshal(fmt.Sprintf(`{"task":%q}`, task))
+		args, _ := json.Marshal(fmt.Sprintf(`{"task":%q,"class":"read"}`, task))
 		return fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":%d,"id":%q,"type":"function","function":{"name":"dispatch_subagent","arguments":%s}}]},"finish_reason":null}]}`, idx, id, args)
 	}
 	return []string{
@@ -267,8 +267,8 @@ func TestParallelBlockConsentDeclineAnswersAll(t *testing.T) {
 	app.SelectedBackend = "openrouter"
 
 	block := []proxy.ToolCall{
-		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A"}`}},
-		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-B"}`}},
+		{ID: "d1", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-A","class":"read"}`}},
+		{ID: "d2", Function: proxy.FunctionCall{Name: "dispatch_subagent", Arguments: `{"task":"TASK-B","class":"read"}`}},
 	}
 	out := app.runParallelSubagentBlock(context.Background(), block)
 	if len(out) != 2 {
@@ -365,7 +365,7 @@ func TestBatchToolAggregatesInOrder(t *testing.T) {
 
 	tc := proxy.ToolCall{
 		ID:       "batch1",
-		Function: proxy.FunctionCall{Name: "dispatch_subagents", Arguments: `{"tasks":["TASK-A","TASK-B"]}`},
+		Function: proxy.FunctionCall{Name: "dispatch_subagents", Arguments: `{"tasks":["TASK-A","TASK-B"],"class":"read"}`},
 	}
 	result := app.ExecuteToolCall(context.Background(), tc)
 
@@ -394,10 +394,10 @@ func TestBatchToolValidation(t *testing.T) {
 		args string
 		want string
 	}{
-		{`{}`, "ERROR: tasks is required"},
-		{`{"tasks":[]}`, "ERROR: tasks is required"},
-		{`{"tasks":["a","b","c","d","e","f","g","h","i"]}`, "too many tasks"},
-		{`{"tasks":["ok",""]}`, "task 2 is empty"},
+		{`{"class":"read"}`, "ERROR: tasks is required"},
+		{`{"tasks":[],"class":"read"}`, "ERROR: tasks is required"},
+		{`{"tasks":["a","b","c","d","e","f","g","h","i"],"class":"read"}`, "too many tasks"},
+		{`{"tasks":["ok",""],"class":"read"}`, "task 2 is empty"},
 		{`not json`, "could not parse"},
 	}
 	for _, c := range cases {

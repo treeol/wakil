@@ -41,7 +41,7 @@ func TestDispatchSubagentParentCtxIsolated(t *testing.T) {
 		}
 		switch parentCalls.Add(1) {
 		case 1:
-			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"find where ToolResultCap is configured"}`)...)
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"find where ToolResultCap is configured","class":"read"}`)...)
 		default:
 			writeSSE(w, contentChunk("Found it in config.go:55."))
 		}
@@ -96,7 +96,7 @@ func TestDispatchSubagentMalformedJSON(t *testing.T) {
 	exec := newFakeExecutor()
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
-	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find something", io.Discard, "", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find something", io.Discard, "", "", "", "", nil)
 
 	if len(summary.Findings) == 0 {
 		t.Fatal("expected a degraded finding, got empty Findings")
@@ -131,7 +131,7 @@ func TestDispatchSubagentDirectly(t *testing.T) {
 	exec.files["config.go"] = fileContent
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
-	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find CompactAt", io.Discard, "", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find CompactAt", io.Discard, "", "", "", "", nil)
 
 	if summary.Objective == "" {
 		t.Error("objective not populated")
@@ -265,7 +265,7 @@ func TestDispatchSubagentNoMemoryWrite(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 	}
 
-	parent.dispatchSubagent(context.Background(), "check something", io.Discard, "", "", "")
+	parent.dispatchSubagent(context.Background(), "check something", io.Discard, "", "", "", "", nil)
 
 	if capturedNoMemHeader != "true" {
 		t.Errorf("X-Ilm-No-Memory-Write = %q, want %q", capturedNoMemHeader, "true")
@@ -333,7 +333,7 @@ func TestSubagentBackendHeaderPropagates(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 	}
 
-	parent.dispatchSubagent(context.Background(), "check", io.Discard, "openrouter", "", "")
+	parent.dispatchSubagent(context.Background(), "check", io.Discard, "openrouter", "", "", "", nil)
 
 	if capturedHeader != "openrouter" {
 		t.Errorf("X-Ilm-Backend = %q, want %q (backend not propagated)", capturedHeader, "openrouter")
@@ -362,7 +362,7 @@ func TestSubagentHeaderOmittedWhenEmpty(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 	}
 
-	parent.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "")
+	parent.dispatchSubagent(context.Background(), "check", io.Discard, "", "", "", "", nil)
 
 	if capturedHeader != "" {
 		t.Errorf("X-Ilm-Backend should be absent for empty backend; got %q", capturedHeader)
@@ -390,7 +390,7 @@ func TestSubagentUsedBackendReturned(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return true },
 	}
 
-	_, _, _, usedBackend, _, _ := parent.dispatchSubagent(context.Background(), "check", io.Discard, "openrouter", "", "")
+	_, _, _, usedBackend, _, _ := parent.dispatchSubagent(context.Background(), "check", io.Discard, "openrouter", "", "", "", nil)
 	if usedBackend != "openrouter" {
 		t.Errorf("usedBackend = %q, want %q", usedBackend, "openrouter")
 	}
@@ -426,12 +426,12 @@ func TestSubagentEgressGateFiresForExternal(t *testing.T) {
 		},
 	}
 
-	parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter", "", "")
+	parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter", "", "", "", nil)
 	if prompts != 1 {
 		t.Errorf("expected 1 egress prompt for external subagent backend; got %d", prompts)
 	}
 	// Second dispatch: already consented, no new prompt.
-	parent.dispatchSubagentGated(context.Background(), "check again", io.Discard, "openrouter", "", "")
+	parent.dispatchSubagentGated(context.Background(), "check again", io.Discard, "openrouter", "", "", "", nil)
 	if prompts != 1 {
 		t.Errorf("second dispatch to same consented backend should not re-prompt; got %d total prompts", prompts)
 	}
@@ -461,7 +461,7 @@ func TestSubagentEgressDeclineReturnsUncertainty(t *testing.T) {
 		Confirm: func(_, _, _ string, _ bool) bool { return false }, // always decline
 	}
 
-	summary, _, _, _, _, _ := parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagentGated(context.Background(), "check", io.Discard, "openrouter", "", "", "", nil)
 	if requestCount != 0 {
 		t.Errorf("no request should be sent after egress decline; got %d", requestCount)
 	}
@@ -500,7 +500,7 @@ func TestSubagentInheritFromMain(t *testing.T) {
 	}
 
 	subBackend := ResolveSubagentBackend(parent.SelectedBackend, parent.Cfg.SubagentBackend)
-	parent.dispatchSubagent(context.Background(), "check", io.Discard, subBackend, "", "")
+	parent.dispatchSubagent(context.Background(), "check", io.Discard, subBackend, "", "", "", nil)
 
 	if len(capturedHeaders) == 0 {
 		t.Fatal("no request made")
@@ -536,7 +536,7 @@ func TestSubagentPinnedIgnoresMain(t *testing.T) {
 	}
 
 	subBackend := ResolveSubagentBackend(parent.SelectedBackend, parent.Cfg.SubagentBackend)
-	parent.dispatchSubagent(context.Background(), "check", io.Discard, subBackend, "", "")
+	parent.dispatchSubagent(context.Background(), "check", io.Discard, subBackend, "", "", "", nil)
 
 	if capturedHeader != "llama" {
 		t.Errorf("pinned subagent backend: X-Ilm-Backend = %q, want \"llama\"", capturedHeader)

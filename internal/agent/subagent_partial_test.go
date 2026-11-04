@@ -211,7 +211,7 @@ func TestDispatchSubagentErrorFlushesPartialTranscript(t *testing.T) {
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
-	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find main", io.Discard, "", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find main", io.Discard, "", "", "", "", nil)
 
 	if summary.Status != "incomplete" {
 		t.Errorf("status = %q, want 'incomplete' on error", summary.Status)
@@ -267,7 +267,7 @@ func TestDispatchSubagentErrorMidStreamDisconnect(t *testing.T) {
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
-	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find X", io.Discard, "", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find X", io.Discard, "", "", "", "", nil)
 
 	if summary.Status != "incomplete" || summary.StopReason != "error" {
 		t.Errorf("status/stop_reason = %q/%q, want incomplete/error", summary.Status, summary.StopReason)
@@ -295,7 +295,7 @@ func TestDispatchSubagentErrorNoToolWorkNoSpill(t *testing.T) {
 
 	parent := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 
-	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find main", io.Discard, "", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find main", io.Discard, "", "", "", "", nil)
 
 	if summary.Status != "incomplete" || summary.StopReason != "error" {
 		t.Errorf("status/stop_reason = %q/%q, want incomplete/error", summary.Status, summary.StopReason)
@@ -347,7 +347,7 @@ func TestDispatchSubagentErrorSpillWriteFailure(t *testing.T) {
 
 	parent := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 
-	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find main", io.Discard, "", "", "")
+	summary, _, _, _, _, _ := parent.dispatchSubagent(context.Background(), "find main", io.Discard, "", "", "", "", nil)
 
 	if len(summary.Findings) == 0 {
 		t.Fatal("expected an error finding")
