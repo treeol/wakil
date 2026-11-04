@@ -1,3 +1,5 @@
+//go:build !leanfake
+
 package hisn
 
 // toolpath_test.go: the run_shell TOOL path (agent.App.ExecuteToolCall →

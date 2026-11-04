@@ -26,7 +26,9 @@ func TestMain(m *testing.M) {
 	if os.Getenv(parentHelperEnv) != "" {
 		os.Exit(parentHelperMain())
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	removeLeanFake()
+	os.Exit(code)
 }
 
 // sessRoot is where the fake keeps its sessions: hisn's own runtime directory
@@ -520,10 +522,7 @@ func newFakeEnv(t *testing.T) *fakeEnv {
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	self := fakeBinary(t)
 	bin := filepath.Join(root, "hisn")
 	// GORACE: a -race binary sleeps 1 s at exit by default; every fake hisn call
 	// is such a process, and readiness makes several per probe. The real hisn
