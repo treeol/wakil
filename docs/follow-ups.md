@@ -125,3 +125,12 @@ Deferred from Mashūra round 1/2 of the 0.3.1 integration (non-blocking):
   directory in `hisn.mounts_ro`.
 - **Single-pass risk labels.** `risk_ack` and the label check run at start; a
   profile edited while a session runs is not re-checked until the next start.
+- **Round-2 non-blocking items** (design note §11): the docker/backend executors'
+  protected-file guard is lexical (a `run_shell` symlink could alias the path;
+  the approval gate holds); `wakil doctor` says hisn "will run" without
+  checking the project-file/`--workdir`/state-dir reasons that keep docker at
+  start; `project.Load` Lstats only the leaf (a symlinked `.wakil` directory is
+  accepted, the hash gate still applies); `hisn check` runs twice at startup
+  (default probe + preflight); a `$HISN_PROFILES` directory inside the
+  workspace would let the agent edit a named profile (whether hisn applies
+  `E_PROFILE_UNTRUSTED` to names is unknown).

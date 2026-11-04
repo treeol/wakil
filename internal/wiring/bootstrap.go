@@ -30,7 +30,6 @@ import (
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
-	"github.com/treeol/wakil/internal/sandbox/hisn"
 	"github.com/treeol/wakil/internal/sessionhistory"
 	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/styleguide"
@@ -278,13 +277,15 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	appendStartupNote(app, SandboxBanner(exe))
 
 	// Staging client
-	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
+	if planned := plannedKVR(exe); planned != "" {
+		// An in-sandbox store: its session starts lazily, so the client exists
+		// from the plan and the guard (run before EVERY connect) starts the
+		// session if needed, requires the service to be up, and vets the
+		// socket (a directory the sandbox can write: no symlink swaps).
+		app.StagingClient = staging.NewClient(planned)
+		app.StagingClient.SetPathGuard(inSandboxKVRGuard(exe, planned))
+	} else if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
 		app.StagingClient = staging.NewClient(kvrSocket)
-		// An in-sandbox store's socket sits in a directory the sandbox can
-		// write: vet it before every connect (no symlink swaps).
-		if _, inSandbox := exe.(exec.SandboxStatuser); inSandbox {
-			app.StagingClient.SetPathGuard(func() error { return hisn.GuardKVRSocket(exe.WorkspaceRoot(), kvrSocket) })
-		}
 	}
 
 	// Memory store

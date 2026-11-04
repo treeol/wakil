@@ -265,7 +265,13 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 		// The socket directory must be a plain directory Wakil owns and no
 		// stale socket may linger (hisn does not clean it).
 		if err := PrepareKVRDir(rec.Cwd, b.kvrSocket); err != nil {
-			return launch{}, fmt.Errorf("staging (kvr): %w", err)
+			if !errors.Is(err, ErrKVRInUse) {
+				return launch{}, fmt.Errorf("staging (kvr): %w", err)
+			}
+			// A project-declared socket that another Wakil still serves: do
+			// not unlink it and do not start a second server on it.
+			b.dropKVRService()
+			b.setKVRNote("off (" + err.Error() + ")")
 		}
 	}
 	prof, err := buildProfile(pp, s)

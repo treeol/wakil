@@ -278,3 +278,16 @@ Reviewers: claude-fable-5.1 answered; gpt-6-astra was rate-limited upstream (no 
 | N8/N10 symlink/Lstat | folded | §5 |
 | N9 default flip / wrapper | folded | §7 |
 | N11 wording | §4 plans from a template profile; the per-session file differs only by token/id | |
+
+## 11. Mashūra round 2 — disposition (full diff 5d738b9..HEAD)
+
+Only claude-fable-5.1 completed (gpt-6-astra's reply was VOID: it did not cite the end of the
+document, so it is not a review round). No third round, per the brief.
+
+| finding | verdict | action |
+|---|---|---|
+| B1 staging unreachable (lazy session vs eager client) | BLOCKING, real, folded | client built from the *planned* socket; its connect guard starts the session, requires the service up, vets the socket (`SessionEnsurer`, `KVRPlanner`); test drives App-side client over a lazily started executor, mutation-checked |
+| B2 fixed socket + unconditional unlink across processes | BLOCKING, real, folded | per-process socket `kvr-<inst>.sock`; never unlink a socket that answers PING; sweep dead `kvr-*.sock` |
+| B3 state dir reachable via grantable_rw / mounts_rw / home_root | BLOCKING, real, folded | `StateGuard` at backend construction + on every rw grant; docs soften the `/dev/tty` claim |
+| B4 contract only checked against a hand-written fake | BLOCKING as stated; folded as far as offline can | `TestRealHisn*` run Wakil's generated profiles through the real 0.3.1 `profile validate`/`explain` (ack matrix incl. superfluous acks, full surface, mutation-checked). The *session* tests still need a host (`hisn check` fails here) — listed in the report |
+| non-blocking: worktree executor guards, symlink resolution on docker/backend, doctor ignores project-file reasons, vacuous tests, `Load` Lstats leaf only, reconcileNamed with SupPid 0, hisn check run twice, `$HISN_PROFILES` in workspace | not folded | docs/follow-ups.md where relevant |

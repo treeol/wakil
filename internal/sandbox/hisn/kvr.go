@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/treeol/wakil/internal/sandbox"
 )
@@ -60,7 +61,12 @@ type kvrPlan struct {
 
 // planKVR decides how staging runs. There is NO fallback to a host-side kvr:
 // without a runnable in-sandbox binary, staging stays off with the reason.
-func planKVR(cwd string, s Surface, o KVROptions, profileMode bool, extraVisible []string) (kvrPlan, error) {
+//
+// inst is this Wakil process's instance id: the default socket is
+// <cwd>/.wakil/kvr-<inst>.sock, so two Wakil processes on one workspace never
+// share (or unlink) each other's socket. A project-declared socket is the
+// user's choice and used as written.
+func planKVR(cwd string, s Surface, o KVROptions, profileMode bool, extraVisible []string, inst string) (kvrPlan, error) {
 	off := func(why string) (kvrPlan, error) { return kvrPlan{Note: "off (" + why + ")"}, nil }
 	if !o.Enabled {
 		return off("kvr_disabled")
@@ -97,6 +103,9 @@ func planKVR(cwd string, s Surface, o KVROptions, profileMode bool, extraVisible
 		return off(fmt.Sprintf("kvr binary %s is not visible inside the sandbox: install it under /usr or /opt, or list its directory in hisn.mounts_ro", real))
 	}
 	sock := filepath.Join(dir, "kvr.sock")
+	if inst != "" {
+		sock = filepath.Join(dir, "kvr-"+inst+".sock")
+	}
 	args := []string{"/usr/bin/env",
 		"KVR_SOCKET_PATH=" + sock,
 		"KVR_SNAPSHOT_PATH=" + filepath.Join(dir, "staging.kvr"),
@@ -144,10 +153,16 @@ func GuardKVRSocket(cwd, sock string) error {
 	return checkOwner(si)
 }
 
+// ErrKVRInUse means another process answers on the staging socket: it is not
+// stale and must not be unlinked.
+var ErrKVRInUse = errors.New("another process is serving this staging socket")
+
 // PrepareKVRDir creates <cwd>/.wakil (plain directory, never through a
-// symlink) and removes a stale socket file left by a previous session — hisn
-// does not (WAKIL-INTEGRATION §5). A stale path that is not a socket is
-// refused, never unlinked.
+// symlink) and removes a STALE socket file left by a previous session — hisn
+// does not (WAKIL-INTEGRATION §5). A socket that still answers a PING is a
+// live server of another Wakil process and is never unlinked (ErrKVRInUse);
+// a path that is not a socket is refused. Stale per-process sockets
+// (kvr-<id>.sock) of dead Wakil processes are swept as well.
 func PrepareKVRDir(cwd, sock string) error {
 	dir := filepath.Join(cwd, kvrDirName)
 	if fi, err := os.Lstat(dir); err == nil {
@@ -164,22 +179,49 @@ func PrepareKVRDir(cwd, sock string) error {
 	fi, err := os.Lstat(sock)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
+		sweepStaleKVR(dir, sock)
 		return nil
 	case err != nil:
 		return err
 	case fi.Mode()&os.ModeSymlink != 0 || fi.Mode()&os.ModeSocket == 0:
 		return fmt.Errorf("%s exists and is not a unix socket; not removing it", sock)
 	}
+	if pingOnce(sock) == nil {
+		return fmt.Errorf("%w: %s", ErrKVRInUse, sock)
+	}
 	if err := os.Remove(sock); err != nil {
 		return fmt.Errorf("removing stale kvr socket: %w", err)
 	}
+	sweepStaleKVR(dir, sock)
 	return nil
+}
+
+// sweepStaleKVR removes dead per-process sockets (kvr-*.sock that no longer
+// answer) next to keep. Best effort; live ones and non-sockets are left alone.
+func sweepStaleKVR(dir, keep string) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		n := e.Name()
+		p := filepath.Join(dir, n)
+		if p == keep || !strings.HasPrefix(n, "kvr-") || !strings.HasSuffix(n, ".sock") {
+			continue
+		}
+		if fi, err := os.Lstat(p); err != nil || fi.Mode()&os.ModeSymlink != 0 || fi.Mode()&os.ModeSocket == 0 {
+			continue
+		}
+		if pingOnce(p) != nil {
+			_ = os.Remove(p)
+		}
+	}
 }
 
 // planKVR decides, once, whether the staging service runs and adds it to the
 // surface so the risk check sees exactly the profile that will start.
 func (b *Backend) planKVR() error {
-	p, err := planKVR(b.opts.HostCwd, b.opts.Surface, b.opts.KVR, b.profileMode(), b.opts.Surface.MountsRO)
+	p, err := planKVR(b.opts.HostCwd, b.opts.Surface, b.opts.KVR, b.profileMode(), b.opts.Surface.MountsRO, b.inst)
 	if err != nil {
 		return err
 	}
@@ -189,6 +231,10 @@ func (b *Backend) planKVR() error {
 	}
 	return nil
 }
+
+// PlannedKVRSocket implements sandbox.KVRPlanner: the staging socket this
+// backend will run, known at Open (before any session). "" = staging is off.
+func (b *Backend) PlannedKVRSocket() string { return b.kvrSocket }
 
 // KVRSocket returns the host path of the staging socket once the session is
 // running and the service answered a PING, else "". The path is the same
@@ -232,3 +278,18 @@ func (b *Backend) setKVRNote(n string) {
 }
 
 var _ sandbox.KVRProvider = (*Backend)(nil)
+
+var _ sandbox.KVRPlanner = (*Backend)(nil)
+
+// dropKVRService removes the kvr service from this session's surface and turns
+// staging off (the socket belongs to another live process).
+func (b *Backend) dropKVRService() {
+	var keep []Service
+	for _, v := range b.opts.Surface.Services {
+		if v.Name != KVRService {
+			keep = append(keep, v)
+		}
+	}
+	b.opts.Surface.Services = keep
+	b.kvrSocket = ""
+}

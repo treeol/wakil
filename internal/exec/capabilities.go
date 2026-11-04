@@ -53,6 +53,20 @@ type SandboxResetter interface {
 	ResetSandbox(ctx context.Context) error
 }
 
+// SessionEnsurer is implemented by executors whose sandbox session starts
+// lazily: EnsureSession starts the session for the bound chat if it is not
+// running (the staging client uses it so the first staging call works even
+// before any tool call has run).
+type SessionEnsurer interface {
+	EnsureSession(ctx context.Context) error
+}
+
+// KVRPlanner is implemented by executors whose in-sandbox staging store has a
+// planned socket path before the session exists ("" = staging is off).
+type KVRPlanner interface {
+	PlannedKVRSocket() string
+}
+
 // SandboxStatuser is implemented by executors that can describe their sandbox
 // (profile, risk label, capabilities, services, grants) for the startup banner
 // and /sandbox.

@@ -64,6 +64,8 @@ var (
 	_ SandboxResetter = (*BackendExecutor)(nil)
 	_ AccessGranter   = (*BackendExecutor)(nil)
 	_ SandboxStatuser = (*BackendExecutor)(nil)
+	_ SessionEnsurer  = (*BackendExecutor)(nil)
+	_ KVRPlanner      = (*BackendExecutor)(nil)
 )
 
 // NewBackendExecutor wraps b. The session is started lazily on the first call
@@ -848,4 +850,18 @@ func (e *BackendExecutor) SandboxStatus(ctx context.Context) sandbox.Status {
 		return r.SandboxStatus(ctx)
 	}
 	return sandbox.Status{Backend: e.opts.Label, Risk: "none"}
+}
+
+// EnsureSession implements SessionEnsurer: start the session for the bound
+// chat if it is not running yet.
+func (e *BackendExecutor) EnsureSession(ctx context.Context) error {
+	return e.admit(ctx, func() error { return nil })
+}
+
+// PlannedKVRSocket implements KVRPlanner.
+func (e *BackendExecutor) PlannedKVRSocket() string {
+	if k, ok := e.b.(sandbox.KVRPlanner); ok {
+		return k.PlannedKVRSocket()
+	}
+	return ""
 }

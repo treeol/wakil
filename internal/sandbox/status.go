@@ -56,6 +56,13 @@ type KVRProvider interface {
 	KVRSocket() string
 }
 
+// KVRPlanner is implemented by backends that know, before any session exists,
+// where their in-sandbox staging socket will be ("" = staging is off). The
+// socket only answers once the session runs.
+type KVRPlanner interface {
+	PlannedKVRSocket() string
+}
+
 // StatusReporter is implemented by backends that can describe themselves.
 type StatusReporter interface {
 	SandboxStatus(ctx context.Context) Status

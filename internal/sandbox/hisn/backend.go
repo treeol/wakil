@@ -136,6 +136,9 @@ type Backend struct {
 	kvrNote string
 	// kvrSocket is the host path of the staging socket ("" = staging off).
 	kvrSocket string
+	// inst identifies THIS Wakil process in per-process names (the default kvr
+	// socket), so concurrent Wakil processes on one workspace never collide.
+	inst string
 
 	mu      sync.RWMutex
 	cur     *live
@@ -199,7 +202,25 @@ func New(opts Options) (*Backend, error) {
 		return nil, fmt.Errorf("hisn backend: %w", err)
 	}
 	opts.Surface = surf
+	// The state directory is the user's trust root (approvals, profiles, owner
+	// records): no writable surface may reach it, whatever put it there.
+	for _, g := range opts.GrantableRW {
+		if err := StateGuard(opts.StateDir, "sandbox.hisn.grantable_rw entry", g); err != nil {
+			return nil, fmt.Errorf("hisn backend: %w", err)
+		}
+	}
+	for _, m := range opts.Surface.MountsRW {
+		if err := StateGuard(opts.StateDir, "hisn.mounts_rw entry", m); err != nil {
+			return nil, fmt.Errorf("hisn backend: %w", err)
+		}
+	}
+	if opts.HomeRoot != "" {
+		if err := StateGuard(opts.StateDir, "sandbox.hisn.home_root", opts.HomeRoot); err != nil {
+			return nil, fmt.Errorf("hisn backend: %w", err)
+		}
+	}
 	return &Backend{
+		inst:         newToken()[:8],
 		opts:         opts,
 		readyTimeout: readyCap,
 		stopWait:     stopCap,
@@ -460,6 +481,11 @@ func (b *Backend) Grant(ctx context.Context, path string, rw bool) error {
 	defer done()
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("hisn grant: path %q is not absolute", path)
+	}
+	if rw {
+		if err := b.guardStateNotWritable("rw grant", path); err != nil {
+			return err
+		}
 	}
 	args := []string{"grant", "--session", l.id}
 	if rw {

@@ -472,3 +472,59 @@ func TestExplainParsing(t *testing.T) {
 		t.Error("highestOf")
 	}
 }
+
+// Mashūra R2 B3: the state directory (approvals!) must never become writable
+// from the sandbox, however the writable surface is configured.
+func TestStateDirNeverWritableFromSandbox(t *testing.T) {
+	fe := newFakeEnv(t)
+	setVersion(t, fe, "0.3.1")
+	home := filepath.Dir(fe.sdir) // a prefix that CONTAINS the state dir
+	cases := map[string]func(*Options){
+		"grantable_rw containing it": func(o *Options) { o.GrantableRW = []string{home} },
+		"grantable_rw equal to it":   func(o *Options) { o.GrantableRW = []string{fe.sdir} },
+		"grantable_rw below it":      func(o *Options) { o.GrantableRW = []string{filepath.Join(fe.sdir, "approved")} },
+		"mounts_rw below it":         func(o *Options) { o.Surface = Surface{MountsRW: []string{filepath.Join(fe.sdir, "approved")}} },
+		"mounts_rw containing it":    func(o *Options) { o.Surface = Surface{MountsRW: []string{home}} },
+		"home_root containing it":    func(o *Options) { o.HomeRoot = home },
+	}
+	for name, mut := range cases {
+		if _, err := openWith(t, fe, mut); !errors.Is(err, ErrStateReachable) {
+			t.Errorf("%s: must be refused with ErrStateReachable, got %v", name, err)
+		}
+	}
+	// Unrelated writable surfaces are untouched.
+	ok := t.TempDir()
+	if _, err := openWith(t, newFakeEnvVersioned(t, "0.3.1"), func(o *Options) { o.GrantableRW = []string{ok}; o.Surface = Surface{MountsRW: []string{ok}} }); err != nil {
+		t.Errorf("an unrelated rw surface must still work: %v", err)
+	}
+}
+
+func newFakeEnvVersioned(t *testing.T, v string) *fakeEnv {
+	t.Helper()
+	fe := newFakeEnv(t)
+	setVersion(t, fe, v)
+	return fe
+}
+
+// A dynamic rw grant over the state directory is refused too (the manager's
+// prefix list can only be as wide as config allows, but the backend is the last
+// line).
+func TestDynamicRWGrantOverStateDirRefused(t *testing.T) {
+	fe := newFakeEnv(t)
+	setVersion(t, fe, "0.3.1")
+	b, err := openWith(t, fe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := startChat(t, b, fe, "gs"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{fe.sdir, filepath.Join(fe.sdir, "approved"), filepath.Dir(fe.sdir)} {
+		if err := b.Grant(ctxT(t), p, true); !errors.Is(err, ErrStateReachable) {
+			t.Errorf("rw grant of %s must be refused, got %v", p, err)
+		}
+	}
+	if strings.Contains(calls(t, fe), "grant --session gs --rw") {
+		t.Error("hisn must never even be asked")
+	}
+}

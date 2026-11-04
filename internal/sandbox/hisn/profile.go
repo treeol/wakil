@@ -411,3 +411,29 @@ func resolveDeepest(p string) string {
 		rest = filepath.Join(filepath.Base(dir), rest)
 	}
 }
+
+// ErrStateReachable means a writable surface (a grantable prefix, an rw mount
+// or an rw grant) would contain Wakil's state directory. That directory holds
+// the user's approval of .wakil/sandbox.json, generated profiles and owner
+// records: it is the trust root and must never be writable from the sandbox.
+var ErrStateReachable = errors.New("would make Wakil's state directory writable from the sandbox")
+
+// guardStateNotWritable refuses an rw path (or grantable prefix) that is, lies
+// under, or CONTAINS the state directory (symlinks resolved on both sides).
+func (b *Backend) guardStateNotWritable(what, path string) error {
+	return StateGuard(b.opts.StateDir, what, path)
+}
+
+// StateGuard is guardStateNotWritable for a given state directory (also used
+// by config validation, before any backend exists).
+func StateGuard(stateDir, what, path string) error {
+	if stateDir == "" || path == "" {
+		return nil
+	}
+	st := resolveDeepest(stateDir)
+	p := resolveDeepest(path)
+	if sandbox.Within(p, st) || sandbox.Within(st, p) {
+		return fmt.Errorf("%w: %s %s overlaps %s (the user's approvals live there)", ErrStateReachable, what, path, stateDir)
+	}
+	return nil
+}

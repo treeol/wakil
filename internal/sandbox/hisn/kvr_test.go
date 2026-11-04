@@ -1,6 +1,7 @@
 package hisn
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,12 +21,15 @@ func kvrOpts(bin string) KVROptions {
 
 func TestPlanKVRDefaultService(t *testing.T) {
 	bin, _ := filepath.EvalSymlinks("/bin/sh") // under /usr or /bin: visible
-	p, err := planKVR("/w", Surface{}, kvrOpts(bin), true, nil)
+	p, err := planKVR("/w", Surface{}, kvrOpts(bin), true, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !p.Add || p.Socket != "/w/.wakil/kvr.sock" {
 		t.Fatalf("%+v", p)
+	}
+	if q, _ := planKVR("/w", Surface{}, kvrOpts(bin), true, nil, "ab12cd34"); q.Socket != "/w/.wakil/kvr-ab12cd34.sock" {
+		t.Errorf("a per-process instance gets its own socket: %q", q.Socket)
 	}
 	ex := strings.Join(p.Service.Exec, " ")
 	for _, want := range []string{"/usr/bin/env", "KVR_SOCKET_PATH=/w/.wakil/kvr.sock", "KVR_SNAPSHOT_PATH=/w/.wakil/staging.kvr",
@@ -54,14 +58,14 @@ func TestPlanKVROffReasons(t *testing.T) {
 		"not visible":   {Surface{}, kvrOpts(writeExe(t, t.TempDir())), true, "not visible inside the sandbox"},
 	}
 	for name, c := range cases {
-		p, err := planKVR("/w", c.s, c.o, c.profile, nil)
+		p, err := planKVR("/w", c.s, c.o, c.profile, nil, "")
 		if err != nil || p.Socket != "" || p.Add || !strings.Contains(p.Note, c.want) {
 			t.Errorf("%s: %+v %v (want note containing %q)", name, p, err, c.want)
 		}
 	}
 	// A binary in a directory the project lists under mounts_ro IS visible.
 	dir := t.TempDir()
-	if p, err := planKVR("/w", Surface{}, kvrOpts(writeExe(t, dir)), true, []string{dir}); err != nil || !p.Add {
+	if p, err := planKVR("/w", Surface{}, kvrOpts(writeExe(t, dir)), true, []string{dir}, ""); err != nil || !p.Add {
 		t.Errorf("mounts_ro dir must make the binary visible: %+v %v", p, err)
 	}
 }
@@ -90,7 +94,7 @@ func TestPlanKVRSymlinkedBinaryResolved(t *testing.T) {
 
 func TestPlanKVRProjectService(t *testing.T) {
 	good := Surface{Services: []Service{{Name: "kvr", Exec: []string{"x"}, Socket: "/w/.wakil/k.sock", ReadySocket: "/w/.wakil/k.sock"}}}
-	if p, err := planKVR("/w", good, kvrOpts(""), true, nil); err != nil || p.Socket != "/w/.wakil/k.sock" || p.Add {
+	if p, err := planKVR("/w", good, kvrOpts(""), true, nil, ""); err != nil || p.Socket != "/w/.wakil/k.sock" || p.Add {
 		t.Fatalf("project kvr is used as is: %+v %v", p, err)
 	}
 	bad := map[string]Surface{
@@ -101,7 +105,7 @@ func TestPlanKVRProjectService(t *testing.T) {
 		"ready differs": {Services: []Service{{Name: "kvr", Exec: []string{"x"}, Socket: "/w/.wakil/k.sock", ReadySocket: "/w/.wakil/o.sock"}}},
 	}
 	for name, s := range bad {
-		if _, err := planKVR("/w", s, kvrOpts(""), true, nil); err == nil {
+		if _, err := planKVR("/w", s, kvrOpts(""), true, nil, ""); err == nil {
 			t.Errorf("%s must be refused", name)
 		}
 	}
@@ -204,8 +208,8 @@ func TestKVRServiceRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	sock := b.KVRSocket()
-	if sock != filepath.Join(fe.cwd, ".wakil", "kvr.sock") {
-		t.Fatalf("socket = %q", sock)
+	if sock != filepath.Join(fe.cwd, ".wakil", "kvr-"+b.inst+".sock") || b.PlannedKVRSocket() != sock {
+		t.Fatalf("socket = %q (planned %q, instance %q)", sock, b.PlannedKVRSocket(), b.inst)
 	}
 	if err := PingKVR(sock, 2*time.Second); err != nil {
 		t.Fatalf("the service must answer through the socket: %v", err)
@@ -273,7 +277,7 @@ func TestKVRRefusesSwappedSocket(t *testing.T) {
 	ln := listenUnix(t, other)
 	defer ln.Close()
 	b.afterSpawn = func(*supervisorProc) {
-		sock := filepath.Join(fe.cwd, ".wakil", "kvr.sock")
+		sock := b.kvrSocket
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			if _, err := os.Lstat(sock); err == nil {
@@ -335,5 +339,87 @@ func TestKVRStagingRoundTripThroughServiceSocket(t *testing.T) {
 	// The snapshot lives under the workspace's .wakil, not on the host's /run.
 	if _, err := os.Stat(filepath.Join(fe.cwd, ".wakil")); err != nil {
 		t.Errorf(".wakil: %v", err)
+	}
+}
+
+// Mashūra R2 B2: two Wakil processes on one workspace must not unlink or share
+// each other's live staging socket.
+func TestPrepareKVRDirNeverUnlinksALiveServer(t *testing.T) {
+	cwd, _ := filepath.EvalSymlinks(t.TempDir())
+	sock := filepath.Join(cwd, ".wakil", "kvr.sock")
+	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln := listenUnix(t, sock)
+	defer ln.Close()
+	go serveFakeKVR(ln)
+	err := PrepareKVRDir(cwd, sock)
+	if !errors.Is(err, ErrKVRInUse) {
+		t.Fatalf("a live server's socket must be refused, got %v", err)
+	}
+	if _, err := os.Lstat(sock); err != nil {
+		t.Errorf("the live socket was removed: %v", err)
+	}
+}
+
+func TestPrepareKVRDirSweepsDeadInstanceSockets(t *testing.T) {
+	cwd, _ := filepath.EvalSymlinks(t.TempDir())
+	dir := filepath.Join(cwd, ".wakil")
+	_ = os.MkdirAll(dir, 0o700)
+	dead := filepath.Join(dir, "kvr-deadbeef.sock")
+	l := listenUnix(t, dead)
+	l.(interface{ SetUnlinkOnClose(bool) }).SetUnlinkOnClose(false)
+	_ = l.Close()
+	live := filepath.Join(dir, "kvr-livelive.sock")
+	ll := listenUnix(t, live)
+	defer ll.Close()
+	go serveFakeKVR(ll)
+	other := filepath.Join(dir, "unrelated.sock")
+	ol := listenUnix(t, other)
+	ol.(interface{ SetUnlinkOnClose(bool) }).SetUnlinkOnClose(false)
+	_ = ol.Close()
+	if err := PrepareKVRDir(cwd, filepath.Join(dir, "kvr-mine.sock")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dead); !os.IsNotExist(err) {
+		t.Error("a dead instance's socket must be swept")
+	}
+	if _, err := os.Lstat(live); err != nil {
+		t.Error("a live instance's socket must stay")
+	}
+	if _, err := os.Lstat(other); err != nil {
+		t.Error("only kvr-*.sock names are Wakil's to sweep")
+	}
+}
+
+func TestTwoBackendsOnOneWorkspaceKeepSeparateStores(t *testing.T) {
+	fe1, fe2 := newFakeEnv(t), newFakeEnv(t)
+	bin, _ := filepath.EvalSymlinks("/bin/sh")
+	b1 := kvrBackend(t, fe1, bin, nil)
+	b2 := kvrBackend(t, fe2, bin, func(o *Options) { o.HostCwd = fe1.cwd }) // same workspace
+	if err := startChat(t, b1, fe1, "w1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b2.Start(ctxT(t), sandbox.Session{ID: "w2", HostCwd: fe1.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	s1, s2 := b1.KVRSocket(), b2.KVRSocket()
+	if s1 == "" || s2 == "" || s1 == s2 {
+		t.Fatalf("each process needs its own live socket: %q vs %q", s1, s2)
+	}
+	if err := PingKVR(s1, time.Second); err != nil {
+		t.Errorf("the first instance's socket must survive the second's start: %v", err)
+	}
+}
+
+func TestPlannedKVRSocketKnownBeforeSession(t *testing.T) {
+	fe := newFakeEnv(t)
+	bin, _ := filepath.EvalSymlinks("/bin/sh")
+	b := kvrBackend(t, fe, bin, nil)
+	if b.PlannedKVRSocket() == "" {
+		t.Fatal("planned at Open, before any session exists (the staging client needs it)")
+	}
+	if b.KVRSocket() != "" {
+		t.Error("but not reachable until the service answered")
 	}
 }

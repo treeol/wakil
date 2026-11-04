@@ -608,11 +608,25 @@ rw bind, separate from `grantable_rw` (which only bounds dynamic grants).
   ```
 
   There is no flag that skips the question and no non-terminal path (it reads
-  `/dev/tty`). Any change to the file — by anyone — makes it unapproved again;
+  `/dev/tty`; see the note on the state directory below). Any change to the file — by anyone — makes it unapproved again;
   Wakil then refuses to start the hisn session ("run `wakil sandbox trust`
   yourself — an agent cannot approve it"). A file that asks for nothing needs
   no approval. When the backend was only the *default*, an unapproved file
   keeps docker instead of failing.
+
+## Wakil's state directory is never writable from the sandbox
+
+`~/.local/share/wakil/hisn/` holds your approval of `.wakil/sandbox.json`,
+generated profiles and owner records — the trust root. Wakil refuses to start
+the hisn backend when any writable surface would contain, equal or lie under it:
+`sandbox.hisn.grantable_rw`, `hisn.mounts_rw`, `sandbox.hisn.home_root`
+(`would make Wakil's state directory writable from the sandbox`), and refuses a
+dynamic rw grant over it. A broad `grantable_rw` such as your whole home
+directory therefore has to exclude the Wakil data directory (move it with
+`XDG_DATA_HOME`, or narrow the prefix). Be aware that a process that can open
+its own pseudo-terminal could answer the `wakil sandbox trust` prompt: the
+protection is that the sandbox cannot reach the state directory, not the
+terminal check.
 
 ## Risk labels
 
@@ -651,8 +665,16 @@ bound at its identical path, so host and sandbox see the same socket).
   `socket` is required, must be directly under `<workspace>/.wakil/`, and
   `ready_socket`, if set, must equal it); otherwise Wakil's default, built from
   `sandbox.hisn.kvr_binary` or `kvr-server` in `PATH` plus `kvr_max_entries`,
-  `kvr_sweep_interval_secs`, `kvr_snapshot_interval_secs` (socket and snapshot
-  `<workspace>/.wakil/kvr.sock` / `staging.kvr`).
+  `kvr_sweep_interval_secs`, `kvr_snapshot_interval_secs` (socket
+  `<workspace>/.wakil/kvr-<instance>.sock`, snapshot `staging.kvr`). The socket
+  name carries a per-process instance id so two Wakil processes on one
+  workspace never share or unlink each other's live store; Wakil never
+  unlinks a socket that still answers a PING, and sweeps dead `kvr-*.sock`
+  files. (The snapshot file is shared per workspace, as before.)
+* **Lazy session.** The hisn session starts on the first tool call, so the
+  staging client exists from the plan and its connect guard starts the session
+  if needed, requires the service to be up, and vets the socket — the first
+  staging call works even before any other tool has run.
 * **No binary, no staging.** The binary must be visible inside the sandbox
   (symlinks resolved first): under `/usr`, `/opt`, `/nix`, … or a directory the
   project lists in `hisn.mounts_ro`. Without one — or with `kvr_disabled`, hisn
@@ -794,6 +816,9 @@ hisn itself inside the sandbox and are rejected in per-exec env.
   not "no widening" — `mounts_rw`, host networking and the project's own mounts
   are not labelled by hisn. The banner shows what hisn labels.
 * The hisn integration tests skip when `hisn check` fails (no unprivileged
-  user namespaces); they have not been run in the build sandbox. Run on a
-  host with hisn >= 0.3.1:
+  user namespaces); they have not been run in the build sandbox. The profiles
+  Wakil generates ARE checked against a real hisn >= 0.3.1 wherever the binary
+  exists (`TestRealHisn*`: `profile validate`/`explain` are file checks and need
+  no user namespaces), so the contract does not rest on the test fake alone.
+  Run the session tests on a host with hisn >= 0.3.1:
   `go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`
