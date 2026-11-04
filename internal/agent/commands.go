@@ -928,6 +928,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		return true, false, note(msg)
 
+	case "/sandbox":
+		// /sandbox — what the sandbox is: backend, profile, risk label,
+		// services, forwards, grants (read-only; it changes nothing).
+		if len(fields) > 1 {
+			return true, false, note("usage: /sandbox")
+		}
+		return true, false, note(app.renderSandboxState())
+
 	case "/taint":
 		// /taint — show the session's taint state and the distinct
 		// external-content exposures that latched the taint signal (A.6).
@@ -1645,6 +1653,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /backend <name>      set the backend for this session (X-Ilm-Backend header)
 /backend <name/model> set backend + model (e.g. openrouter/anthropic/claude-opus-4-8)
 /backend             show current backend selection and last-used backend
+/sandbox             show the sandbox: backend, profile, risk label, services, grants
 /taint               show session taint state and external-content exposures
 /model <name>        set the model for this session (overrides backend default)
 /model               show current model

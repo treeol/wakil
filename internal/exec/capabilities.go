@@ -53,6 +53,13 @@ type SandboxResetter interface {
 	ResetSandbox(ctx context.Context) error
 }
 
+// SandboxStatuser is implemented by executors that can describe their sandbox
+// (profile, risk label, capabilities, services, grants) for the startup banner
+// and /sandbox.
+type SandboxStatuser interface {
+	SandboxStatus(ctx context.Context) sandbox.Status
+}
+
 // AccessGranter is implemented by executors that can make host paths outside
 // the workspace visible inside the sandbox (hisn grants). Docker mounts are
 // fixed at start and do not implement it.

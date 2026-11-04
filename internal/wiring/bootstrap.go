@@ -272,6 +272,10 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	app.AgentCorePrompt = strings.TrimRight(prompts.EmbeddedCorePrompt, "\n")
 	app.AgentExtensionPrompt = strings.TrimRight(prompts.EmbeddedExtensionPrompt, "\n")
 
+	// The sandbox's own risk statement (hisn: label + capabilities) is the first
+	// thing the user sees in the session.
+	appendStartupNote(app, SandboxBanner(exe))
+
 	// Staging client
 	if kvrSocket := exe.KVRSocketPath(); kvrSocket != "" {
 		app.StagingClient = staging.NewClient(kvrSocket)

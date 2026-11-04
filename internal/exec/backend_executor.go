@@ -25,6 +25,9 @@ type BackendOptions struct {
 	GrantableRW []string
 	// ShellOutputCap bounds RunShell's retained output; <= 0 = default.
 	ShellOutputCap int64
+	// KVRNote is the one-line state of the staging store for /sandbox and the
+	// banner ("" = not applicable).
+	KVRNote string
 }
 
 // shared is the state common to a BackendExecutor and its worktree children.
@@ -63,6 +66,7 @@ var (
 	_ ChatBinder      = (*BackendExecutor)(nil)
 	_ SandboxResetter = (*BackendExecutor)(nil)
 	_ AccessGranter   = (*BackendExecutor)(nil)
+	_ SandboxStatuser = (*BackendExecutor)(nil)
 )
 
 // NewBackendExecutor wraps b. The session is started lazily on the first call
@@ -831,4 +835,17 @@ func (e *BackendExecutor) noteDead(ctx context.Context, err error) error {
 		e.markDead(sc)
 	}
 	return err
+}
+
+// SandboxStatus implements SandboxStatuser: the backend's own description when
+// it has one, else just its name.
+func (e *BackendExecutor) SandboxStatus(ctx context.Context) sandbox.Status {
+	if r, ok := e.b.(sandbox.StatusReporter); ok {
+		st := r.SandboxStatus(ctx)
+		if e.opts.KVRNote != "" {
+			st.KVR = e.opts.KVRNote
+		}
+		return st
+	}
+	return sandbox.Status{Backend: e.opts.Label, Risk: "none"}
 }

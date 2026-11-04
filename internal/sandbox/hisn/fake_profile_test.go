@@ -85,7 +85,7 @@ func fakeProfileRisks(text string) ([]fakeRisk, error) {
 				return nil, fmt.Errorf("E_RISK_ACK_REQUIRED: [[forward]] %s: unknown socket %s — set `risk` explicitly", str(f, "name"), str(f, "socket"))
 			}
 		}
-		if err := checkAck("[[forward]] "+str(f, "name"), label, str(f, "risk_ack"), label == "signing" || label == "host-exec" || label == "root-equivalent"); err != nil {
+		if err := fakeCheckAck("[[forward]] "+str(f, "name"), label, str(f, "risk_ack"), label == "signing" || label == "host-exec" || label == "root-equivalent"); err != nil {
 			return nil, err
 		}
 		risks = append(risks, fakeRisk{"forward:" + str(f, "name"), label})
@@ -98,13 +98,13 @@ func fakeProfileRisks(text string) ([]fakeRisk, error) {
 		if label == "" || riskOrder[label] < riskOrder["host-exec"] {
 			label = "host-exec"
 		}
-		if err := checkAck("[[host_services]] "+str(h, "name"), label, str(h, "risk_ack"), true); err != nil {
+		if err := fakeCheckAck("[[host_services]] "+str(h, "name"), label, str(h, "risk_ack"), true); err != nil {
 			return nil, err
 		}
 		risks = append(risks, fakeRisk{"host_service:" + str(h, "name"), label})
 	}
 	if d, ok := doc["docker"].(map[string]any); ok && str(d, "tier") == "socket" {
-		if err := checkAck("[docker]", "root-equivalent", str(d, "risk_ack"), true); err != nil {
+		if err := fakeCheckAck("[docker]", "root-equivalent", str(d, "risk_ack"), true); err != nil {
 			return nil, err
 		}
 		risks = append(risks, fakeRisk{"docker:socket", "root-equivalent"})
@@ -112,7 +112,7 @@ func fakeProfileRisks(text string) ([]fakeRisk, error) {
 	return risks, nil
 }
 
-func checkAck(what, label, ack string, required bool) error {
+func fakeCheckAck(what, label, ack string, required bool) error {
 	switch {
 	case required && ack == "":
 		return fmt.Errorf("E_RISK_ACK_REQUIRED: %s requires risk_ack = %q", what, label)
@@ -224,3 +224,12 @@ func fakeRunProfile(state string, args []string) (text string, risks []fakeRisk,
 }
 
 func mustGetwd() string { d, _ := os.Getwd(); return d }
+
+// overrideRisk is a test hook: $state/inspect_risk makes `inspect --json`
+// report an extra capability at that label (a session riskier than planned).
+func overrideRisk(state string, risks []fakeRisk) []fakeRisk {
+	if b, err := os.ReadFile(filepath.Join(state, "inspect_risk")); err == nil {
+		return append(append([]fakeRisk(nil), risks...), fakeRisk{"surprise", strings.TrimSpace(string(b))})
+	}
+	return risks
+}

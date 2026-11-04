@@ -2,6 +2,7 @@ package hisn
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -341,6 +342,11 @@ func (b *Backend) profilePath(id string) string {
 // also checks the profile against ITS process cwd).
 func (b *Backend) procCwd() string { return filepath.Join(b.opts.StateDir, "proc-cwd") }
 
+// ErrProfileUntrusted marks a generated profile hisn would refuse with
+// E_PROFILE_UNTRUSTED (the state directory lies under the workspace, the home
+// or an rw mount).
+var ErrProfileUntrusted = errors.New("E_PROFILE_UNTRUSTED")
+
 // checkProfileTrust reproduces hisn's E_PROFILE_UNTRUSTED rule up front, so the
 // error can say what to move instead of a bare hisn code.
 func checkProfileTrust(profile, cwd, home string, rw []string) error {
@@ -358,7 +364,7 @@ func checkProfileTrust(profile, cwd, home string, rw []string) error {
 			r = filepath.Clean(root)
 		}
 		if sandbox.Within(r, p) {
-			return fmt.Errorf("hisn would reject the generated profile (E_PROFILE_UNTRUSTED): it lies under the %s %s, where the sandbox could rewrite it; the profile lives in Wakil's state directory, so move the workspace/home outside %s", what, r, pdir)
+			return fmt.Errorf("%w: hisn would reject the generated profile: it lies under the %s %s, where the sandbox could rewrite it; the profile lives in Wakil's state directory, so move the workspace/home outside %s", ErrProfileUntrusted, what, r, pdir)
 		}
 		return nil
 	}

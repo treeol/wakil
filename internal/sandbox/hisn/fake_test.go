@@ -343,7 +343,7 @@ func fakeInspect(state string, args []string) int {
 		_ = json.Unmarshal(rj, &risks)
 	}
 	b, _ := json.Marshal(map[string]any{"ok": true, "mountinfo": "", "policy": string(pol),
-		"risk": nonNilRisks(risks), "services": []any{}})
+		"risk": nonNilRisks(overrideRisk(state, risks)), "services": []any{}})
 	fmt.Println(string(b))
 	return 0
 }

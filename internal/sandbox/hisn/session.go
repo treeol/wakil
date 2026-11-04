@@ -330,18 +330,23 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 		b.reapSupervisor(sup)
 		return sup, b.withSupervisorStderr(err, sup)
 	}
-	if l.mode == "named" {
-		// A named profile brings its own hostname, so the token cannot prove
-		// the instance; the supervisor process handle (exact, unreaped) and
-		// the --ready-fd line do. The owner record keeps pid+starttime for
-		// Reconcile.
-		return sup, nil
+	var err2 error
+	if l.mode != "named" {
+		// (A named profile brings its own hostname, so the token cannot prove
+		// the instance there; the supervisor process handle (exact, unreaped)
+		// and the --ready-fd line do. The owner record keeps pid+starttime for
+		// Reconcile.)
+		var ok bool
+		ok, err2 = b.verifyInstance(ctx, rec.ID, rec.Token)
+		if err2 == nil && !ok {
+			err2 = fmt.Errorf("hisn session %s is not the instance Wakil created", rec.ID)
+		}
 	}
-	ok, err := b.verifyInstance(ctx, rec.ID, rec.Token)
-	if err == nil && !ok {
-		err = fmt.Errorf("hisn session %s is not the instance Wakil created", rec.ID)
+	if err2 == nil && l.mode != "policy" {
+		// The running session must not be riskier than what the user acknowledged.
+		_, err2 = b.verifyRisk(ctx, rec.ID)
 	}
-	if err != nil {
+	if err := err2; err != nil {
 		b.reapSupervisor(sup)
 		return sup, b.withSupervisorStderr(err, sup)
 	}

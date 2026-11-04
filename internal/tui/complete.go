@@ -115,6 +115,7 @@ var allTUICommands = []candidate{
 	{name: "/subagent", hasArgs: true},
 	{name: "/submodel", hasArgs: true},
 	{name: "/styles", hasArgs: true},
+	{name: "/sandbox"},
 	{name: "/taint"},
 	{name: "/thinking", hasArgs: true},
 	{name: "/think", hasArgs: true},

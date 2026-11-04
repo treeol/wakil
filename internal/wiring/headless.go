@@ -238,6 +238,9 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 		return ExitError
 	}
 	defer exe.Close()
+	if b := SandboxBanner(exe); b != "" {
+		fmt.Fprintln(os.Stderr, b)
+	}
 
 	app, res, err := BuildApp(cfg, exe, BuildAppOpts{
 		IsHeadless:  true,

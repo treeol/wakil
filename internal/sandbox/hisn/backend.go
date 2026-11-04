@@ -126,6 +126,10 @@ type Backend struct {
 	// ver is the hisn version seen by Preflight (zero until then); it selects
 	// profile mode (>= ProfileMinVersion) or the bare --policy path.
 	ver [3]int
+	// planned is the plan-time risk evaluation (hisn profile explain).
+	planned explainDoc
+	// kvrNote is the one-line state of the in-sandbox staging store.
+	kvrNote string
 
 	mu      sync.RWMutex
 	cur     *live
@@ -208,6 +212,11 @@ func Open(ctx context.Context, opts Options) (*Backend, error) {
 		return nil, err
 	}
 	if err := b.Preflight(ctx); err != nil {
+		return nil, err
+	}
+	// Plan-time risk check: a label above `none` without the project's own
+	// acknowledgement is a hard error HERE, before any session or UI exists.
+	if err := b.plan(ctx); err != nil {
 		return nil, err
 	}
 	if err := b.Reconcile(ctx); err != nil {

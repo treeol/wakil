@@ -292,13 +292,13 @@ func TestNamedProfile(t *testing.T) {
 func TestNamedProfileNotFoundSurfacesHisn(t *testing.T) {
 	fe := newFakeEnv(t)
 	setVersion(t, fe, "0.3.1")
-	b, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Profile: "nope"} })
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = startChat(t, b, fe, "nm2")
+	// Caught at plan time, in Open, before any session: hisn's own error text.
+	_, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Profile: "nope"} })
 	if err == nil || !strings.Contains(err.Error(), "E_PROFILE_NOTFOUND") {
 		t.Fatalf("hisn's own error must reach the user, got %v", err)
+	}
+	if strings.Contains(calls(t, fe), "run --detach") {
+		t.Error("no session may be attempted")
 	}
 }
 
@@ -322,37 +322,153 @@ func TestReconcileNamedUsesSupervisorHandle(t *testing.T) {
 	}
 }
 
-// ---- risk errors ----
+// ---- risk labels ----
 
-func TestRiskAckErrorsFromValidate(t *testing.T) {
+var dockerFwd = []Forward{{Name: "docker", Socket: "/var/run/docker.sock", Expose: "/run/docker.sock"}}
+
+func TestRiskRefusedBeforeAnySession(t *testing.T) {
+	for name, ack := range map[string]string{"missing": "", "mismatch": "signing"} {
+		fe := newFakeEnv(t)
+		setVersion(t, fe, "0.3.1")
+		_, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: dockerFwd, RiskAck: ack} })
+		var re *RiskAckError
+		if !errors.As(err, &re) || !strings.Contains(err.Error(), "hisn.risk_ack") {
+			t.Fatalf("%s: want a RiskAckError naming hisn.risk_ack, got %v", name, err)
+		}
+		if got := fe.sessionIDs(); len(got) != 0 {
+			t.Errorf("%s: no session may exist after a refusal: %v", name, got)
+		}
+		if strings.Contains(calls(t, fe), "run --detach") {
+			t.Errorf("%s: hisn run must not even be attempted", name)
+		}
+		if _, err := os.Stat(filepath.Join(fe.sdir, "plan.profile.toml")); !os.IsNotExist(err) {
+			t.Errorf("%s: the plan-time profile must be cleaned up", name)
+		}
+	}
+}
+
+func TestRiskAckAccepted(t *testing.T) {
 	fe := newFakeEnv(t)
 	setVersion(t, fe, "0.3.1")
-	fwd := []Forward{{Name: "docker", Socket: "/var/run/docker.sock", Expose: "/run/docker.sock"}}
-	b, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: fwd} })
+	b, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: dockerFwd, RiskAck: "root-equivalent"} })
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = startChat(t, b, fe, "r1")
-	var re *RiskAckError
-	if !errors.As(err, &re) || !strings.Contains(err.Error(), "hisn.risk_ack") {
-		t.Fatalf("missing ack must be a RiskAckError naming hisn.risk_ack, got %v", err)
+	if err := startChat(t, b, fe, "ok1"); err != nil {
+		t.Fatal(err)
 	}
-	if got := fe.sessionIDs(); len(got) != 0 {
-		t.Errorf("no session may exist after a refused start: %v", got)
+	st := b.SandboxStatus(ctxT(t))
+	if st.Risk != "root-equivalent" || st.Mode != "generated profile" || len(st.Forwards) != 1 || st.Backend != "hisn" {
+		t.Errorf("status: %+v", st)
 	}
-	if strings.Contains(calls(t, fe), "run --detach") {
-		t.Error("hisn run must not even be attempted")
+	if st.ProfilePath != filepath.Join(fe.sdir, "ok1.profile.toml") {
+		t.Errorf("profile path: %q", st.ProfilePath)
+	}
+	if got := st.Banner(); got != "sandbox: backend=hisn · risk=root-equivalent" {
+		t.Errorf("banner = %q", got)
+	}
+}
+
+// hisn only demands an ack for signing/host-exec/root-equivalent; Wakil also
+// demands one for `data`.
+func TestDataLabelNeedsAckInWakil(t *testing.T) {
+	fwd := []Forward{{Name: "x", Socket: "/run/user/1/x.sock", Expose: "/run/x.sock", Risk: "data"}}
+	fe := newFakeEnv(t)
+	setVersion(t, fe, "0.3.1")
+	if _, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: fwd} }); err == nil {
+		t.Fatal("a data label without hisn.risk_ack must be refused")
 	}
 	fe2 := newFakeEnv(t)
 	setVersion(t, fe2, "0.3.1")
-	b2, _ := openWith(t, fe2, func(o *Options) { o.Surface = Surface{Forward: fwd, RiskAck: "signing"} })
-	if err := startChat(t, b2, fe2, "r2"); !errors.As(err, &re) {
-		t.Fatalf("mismatched ack must be refused, got %v", err)
+	if _, err := openWith(t, fe2, func(o *Options) { o.Surface = Surface{Forward: fwd, RiskAck: "data"} }); err != nil {
+		t.Fatalf("data with matching ack: %v", err)
 	}
-	fe3 := newFakeEnv(t)
-	setVersion(t, fe3, "0.3.1")
-	b3, _ := openWith(t, fe3, func(o *Options) { o.Surface = Surface{Forward: fwd, RiskAck: "root-equivalent"} })
-	if err := startChat(t, b3, fe3, "r3"); err != nil {
-		t.Fatalf("matching ack must start: %v", err)
+}
+
+func TestNoSurfaceNoRiskQuestions(t *testing.T) {
+	fe := newFakeEnv(t)
+	setVersion(t, fe, "0.3.1")
+	b, err := openWith(t, fe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(calls(t, fe), "profile explain") {
+		t.Error("without a 0.3 surface nothing is explained")
+	}
+	if st := b.SandboxStatus(ctxT(t)); st.Risk != "none" {
+		t.Errorf("risk = %q", st.Risk)
+	}
+	fe2 := newFakeEnv(t)
+	setVersion(t, fe2, "0.2.2")
+	b2, _ := openWith(t, fe2, nil)
+	if st := b2.SandboxStatus(ctxT(t)); st.Risk != "none" || !strings.Contains(st.Mode, "bare policy") {
+		t.Errorf("0.2.x status: %+v", st)
+	}
+}
+
+func TestNamedProfileRiskExplainedByName(t *testing.T) {
+	pdir := t.TempDir()
+	body := "version = \"hisn-profile/v1\"\n[policy]\nversion = \"hisn-policy/v1\"\n[[forward]]\nname = \"docker\"\nsocket = \"/var/run/docker.sock\"\nexpose = \"/run/docker.sock\"\nrisk_ack = \"root-equivalent\"\n"
+	if err := os.WriteFile(filepath.Join(pdir, "dk.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, ack := range []string{"", "root-equivalent"} {
+		fe := newFakeEnv(t)
+		setVersion(t, fe, "0.3.1")
+		o := fe.options()
+		o.Env = append(o.Env, "HISN_PROFILES="+pdir)
+		o.Surface = Surface{Profile: "dk", RiskAck: ack}
+		b, err := Open(ctxT(t), o)
+		if ack == "" {
+			var re *RiskAckError
+			if !errors.As(err, &re) {
+				t.Fatalf("a named profile above none needs the project's ack too: %v", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = b.Close(context.Background()) })
+		if st := b.SandboxStatus(ctxT(t)); st.Risk != "root-equivalent" || st.Profile != "dk" || st.Mode != "named profile" {
+			t.Errorf("status: %+v", st)
+		}
+	}
+}
+
+// If the running session turns out riskier than planned, it is stopped.
+func TestPostStartRiskMismatchStopsSession(t *testing.T) {
+	fe := newFakeEnv(t)
+	setVersion(t, fe, "0.3.1")
+	b, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: dockerFwd, RiskAck: "root-equivalent"} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// hisn reports a label the plan never saw (e.g. a profile edited between
+	// plan and start).
+	_ = os.WriteFile(filepath.Join(fe.state, "inspect_risk"), []byte("kernel-surface"), 0o600)
+	err = startChat(t, b, fe, "pm9")
+	var re *RiskAckError
+	if !errors.As(err, &re) || re.Label != "kernel-surface" {
+		t.Fatalf("want a kernel-surface RiskAckError, got %v", err)
+	}
+	if got := fe.sessionIDs(); len(got) != 0 {
+		t.Errorf("a session riskier than acknowledged must not survive: %v", got)
+	}
+}
+
+func TestExplainParsing(t *testing.T) {
+	if _, err := parseExplain(`{"risk":"bogus","capabilities":[]}`); err == nil {
+		t.Error("unknown label must be an error")
+	}
+	if _, err := parseExplain(`nope`); err == nil {
+		t.Error("garbage must be an error")
+	}
+	d, err := parseExplain(`{"risk":"data","capabilities":[{"capability":"forward:x","label":"data"}],"notes":["n"]}`)
+	if err != nil || d.Risk != "data" || len(d.Capabilities) != 1 {
+		t.Errorf("%+v %v", d, err)
+	}
+	if highestOf(d.Capabilities) != "data" || highestOf(nil) != "none" {
+		t.Error("highestOf")
 	}
 }
