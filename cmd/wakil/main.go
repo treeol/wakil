@@ -54,6 +54,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "config error:", err)
 			os.Exit(ExitError)
 		}
+		cfg = wiring.ResolveSandbox(context.Background(), cfg)
 		fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 		os.Exit(RunHeadless(cfg, os.Args[2:]))
 	}
@@ -92,6 +93,9 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "ctx limits: compactAt=%d hardMax=%d keep=%d summary=%d\n",
 		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
+	// Settle the backend (the default may flip to hisn) BEFORE anything else
+	// reads it, and state it with its reason.
+	cfg = wiring.ResolveSandbox(context.Background(), cfg)
 	fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 
 	// Resolve --resume / --resume-id to a session id/prefix (global search —

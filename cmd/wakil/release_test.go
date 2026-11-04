@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -125,5 +126,64 @@ func TestDoctorRuntimeAndMissingImage(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("doctor output missing %q:\n%s", want, b.String())
 		}
+	}
+}
+
+// fakeHisnDir returns a PATH directory holding a `hisn` that reports ver and
+// whose `check` exits checkRC.
+func fakeHisnDir(t *testing.T, ver string, checkRC int) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$1\" in\n--version) echo 'hisn " + ver + "';;\ncheck) " +
+		"[ " + strconv.Itoa(checkRC) + " -ne 0 ] && echo '[FAIL] user namespaces' ; exit " + strconv.Itoa(checkRC) + ";;\nesac\n"
+	if err := os.WriteFile(filepath.Join(dir, "hisn"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestDoctorHisnDefaultNeedsNoDocker(t *testing.T) {
+	t.Setenv("PATH", fakeHisnDir(t, "0.3.1", 0)) // no docker/podman, hisn usable
+	for _, k := range []string{"WAKIL_SANDBOX_BACKEND", "WAKIL_EXEC_MODE", "ILM_EXEC_MODE"} {
+		t.Setenv(k, "")
+	}
+	cfgFile := filepath.Join(t.TempDir(), "c.json")
+	_ = os.WriteFile(cfgFile, []byte(`{"base_url":"http://x:1"}`), 0o600)
+	var b bytes.Buffer
+	run := func(context.Context, string, ...string) (string, error) { return "", errors.New("unexpected") }
+	if rc := runDoctor(&b, []string{"--config", cfgFile}, run); rc != 0 {
+		t.Fatalf("with hisn as the default sandbox a missing docker is not fatal, rc=%d:\n%s", rc, b.String())
+	}
+	for _, want := range []string{"hisn 0.3.1", "the default sandbox backend", "[warn] no usable container runtime"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("doctor output missing %q:\n%s", want, b.String())
+		}
+	}
+}
+
+func TestDoctorExplicitDockerStillNeedsDocker(t *testing.T) {
+	t.Setenv("PATH", fakeHisnDir(t, "0.3.1", 0))
+	for _, k := range []string{"WAKIL_SANDBOX_BACKEND", "WAKIL_EXEC_MODE", "ILM_EXEC_MODE"} {
+		t.Setenv(k, "")
+	}
+	cfgFile := filepath.Join(t.TempDir(), "c.json")
+	_ = os.WriteFile(cfgFile, []byte(`{"base_url":"http://x:1","sandbox":{"backend":"docker"}}`), 0o600)
+	var b bytes.Buffer
+	run := func(context.Context, string, ...string) (string, error) { return "", errors.New("unexpected") }
+	if rc := runDoctor(&b, []string{"--config", cfgFile}, run); rc == 0 || !strings.Contains(b.String(), "[FAIL] no usable container runtime") {
+		t.Fatalf("an explicit docker backend still needs docker, rc=%d:\n%s", rc, b.String())
+	}
+}
+
+func TestDoctorHisnTooOldFallsBackToDockerRequirement(t *testing.T) {
+	t.Setenv("PATH", fakeHisnDir(t, "0.2.2", 0))
+	t.Setenv("WAKIL_CONFIG", filepath.Join(t.TempDir(), "none.json"))
+	var b bytes.Buffer
+	run := func(context.Context, string, ...string) (string, error) { return "", errors.New("unexpected") }
+	if rc := runDoctor(&b, nil, run); rc == 0 {
+		t.Fatalf("hisn 0.2.2 is not the default, so docker is required:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "not the default sandbox backend") || !strings.Contains(b.String(), "older than 0.3.1") {
+		t.Errorf("the reason must be printed:\n%s", b.String())
 	}
 }

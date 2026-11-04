@@ -115,7 +115,6 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, httpA
 	if b := wiring.SandboxBanner(exe); b != "" {
 		fmt.Fprintln(os.Stderr, b)
 	}
-
 	app, res, err := wiring.BuildApp(cfg, exe, wiring.BuildAppOpts{
 		IsHeadless: true, // no TUI callbacks; the daemon is headless
 	})

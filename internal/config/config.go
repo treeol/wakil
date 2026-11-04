@@ -1020,6 +1020,17 @@ type SandboxConfig struct {
 	Backend string `json:"backend,omitempty"`
 	// Hisn configures the hisn backend (ignored for docker).
 	Hisn HisnConfig `json:"hisn,omitempty"`
+	// BackendDefaulted is true when NOTHING chose the backend (no
+	// sandbox.backend in the file, env or flag, and no exec_mode): the docker
+	// value is then only the fallback of ApplyDefaultBackend, which may switch
+	// to hisn when it is usable. Never read from the config file.
+	BackendDefaulted bool `json:"-"`
+	// WorkDirExplicit is true when --workdir / WAKIL_WORKDIR / workdir set the
+	// in-sandbox path (docker-only): the default never flips such a setup.
+	WorkDirExplicit bool `json:"-"`
+	// DefaultNote is the one-line reason of the default-backend decision, for
+	// the startup banner ("" when the backend was explicit).
+	DefaultNote string `json:"-"`
 	// Docker configures the docker backend (config key "sandbox.docker").
 	Docker DockerSandboxConfig `json:"docker,omitempty"`
 	// Image overrides the sandbox image (config key "sandbox.image"). Takes
@@ -1630,6 +1641,7 @@ func LoadConfig(argv []string) (Config, error) {
 		workspace = abs
 	}
 
+	cfg.Sandbox.WorkDirExplicit = cfg.WorkDir != ""
 	switch cfg.ExecMode {
 	case "docker":
 		if workspace != "" {
@@ -2208,7 +2220,64 @@ func (c Config) StartupBanner() string {
 	case c.BrowserEnabled:
 		browser = "on"
 	}
-	return "sandbox: backend=" + backend + " · browser tools: " + browser
+	b := "sandbox: backend=" + backend + " · browser tools: " + browser
+	if c.Sandbox.DefaultNote != "" {
+		b += " · " + c.Sandbox.DefaultNote
+	}
+	return b
+}
+
+// HisnAvailability is what a probe of the hisn binary found. Reason is empty
+// exactly when hisn is usable as the default backend.
+type HisnAvailability struct {
+	// Version is the parsed `hisn --version` ("0.3.1") when known.
+	Version string
+	// Reason says why hisn cannot be the default ("hisn not found in PATH",
+	// "hisn 0.2.2 is older than 0.3.1", "hisn check failed: ..."), or "".
+	Reason string
+}
+
+// MinHisnDefaultVersion is the first hisn release that may become the default
+// backend (profiles, services, risk labels). An explicit sandbox.backend: hisn
+// still works from MinHisnVersion.
+const MinHisnDefaultVersion = "0.3.1"
+
+// ApplyDefaultBackend decides the backend when NOTHING chose one. The default
+// becomes hisn only when ALL hold: the backend was not set explicitly (file,
+// env, flag, exec_mode), `hisn check` passes and hisn >= 0.3.1 is in PATH
+// (avail.Reason == ""), and the setup does not depend on docker-only features
+// (an explicit --workdir). Otherwise it stays docker and DefaultNote says why,
+// so a host without hisn sees no silent behaviour change. extra is a further
+// reason to stay on docker computed by the caller (e.g. an unapproved
+// .wakil/sandbox.json); "" means none.
+func ApplyDefaultBackend(cfg Config, avail HisnAvailability, extra string) Config {
+	if !cfg.Sandbox.BackendDefaulted || cfg.ExecMode == "direct" {
+		return cfg
+	}
+	stay := func(why string) Config {
+		cfg.Sandbox.DefaultNote = "default: docker (" + why + ")"
+		return cfg
+	}
+	switch {
+	case avail.Reason != "":
+		return stay(avail.Reason)
+	case cfg.Sandbox.WorkDirExplicit:
+		return stay("--workdir is docker-only")
+	case extra != "":
+		return stay(extra)
+	}
+	flipped := cfg
+	flipped.Sandbox.Backend = SandboxBackendHisn
+	wd, err := resolveHisnWorkspace(flipped.HostWorkDir)
+	if err != nil {
+		return stay("workspace not usable by hisn: " + err.Error())
+	}
+	flipped.HostWorkDir, flipped.WorkDir = wd, wd
+	if err := validateSandboxConfig(&flipped); err != nil {
+		return stay("sandbox.hisn config: " + err.Error())
+	}
+	flipped.Sandbox.DefaultNote = "default: hisn " + avail.Version + " (hisn check ok)"
+	return flipped
 }
 
 // resolveBackend makes sandbox.backend the single source of truth and maps the
@@ -2220,6 +2289,7 @@ func (c Config) StartupBanner() string {
 // silent pick.
 func resolveBackend(cfg *Config) (warning string, err error) {
 	mode, backend := cfg.ExecMode, cfg.Sandbox.Backend
+	cfg.Sandbox.BackendDefaulted = mode == "" && backend == ""
 	switch mode {
 	case "", "docker", "direct":
 	default:

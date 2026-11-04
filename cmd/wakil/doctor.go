@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/sandbox/hisn"
 )
 
 // cmdRunner runs a container-runtime CLI command and returns its combined
@@ -35,6 +36,20 @@ func runDoctor(w io.Writer, argv []string, run cmdRunner) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	// 0. The default sandbox: hisn when it is usable and nothing in the config
+	// chose a backend, else docker. Reported first; a docker runtime is only
+	// REQUIRED when docker is the backend that would run.
+	ctxH, cancelH := context.WithTimeout(ctx, 30*time.Second)
+	hv, hwhy := hisn.Probe(ctxH, "", config.MinHisnDefaultVersion)
+	cancelH()
+	hisnUsable := hwhy == ""
+	if hisnUsable {
+		fmt.Fprintf(w, "[ ok ] hisn %s: `hisn check` passes — the default sandbox backend (set sandbox.backend: docker to opt out)\n", hv)
+	} else {
+		fmt.Fprintf(w, "[info] hisn is not the default sandbox backend: %s\n", hwhy)
+	}
+	hisnWillRun := hisnUsable && backendIsDefaulted(*cfgPath)
+
 	// 1. Container runtime: docker or podman, binary + reachable daemon.
 	runtime := ""
 	for _, bin := range []string{"docker", "podman"} {
@@ -51,7 +66,11 @@ func runDoctor(w io.Writer, argv []string, run cmdRunner) int {
 		break
 	}
 	if runtime == "" {
-		fmt.Fprintln(w, "[FAIL] no usable container runtime (install docker or podman and start its daemon, or run wakil with --exec direct)")
+		if hisnWillRun {
+			fmt.Fprintln(w, "[warn] no usable container runtime — not needed while hisn is the sandbox (docker is only used with sandbox.backend: docker)")
+		} else {
+			fmt.Fprintln(w, "[FAIL] no usable container runtime (install docker or podman and start its daemon, or run wakil with --sandbox hisn|direct)")
+		}
 	}
 
 	// 2. Config file: path and whether it loaded. Missing is fine (defaults).
@@ -73,8 +92,15 @@ func runDoctor(w io.Writer, argv []string, run cmdRunner) int {
 			fmt.Fprintf(w, "[ ok ] sandbox image present: %s\n", image)
 		}
 	}
-	if runtime == "" {
+	if runtime == "" && !hisnWillRun {
 		return 1
 	}
 	return 0
+}
+
+// backendIsDefaulted reports whether the config at path (plus env and defaults)
+// leaves the backend to the default resolution.
+func backendIsDefaulted(path string) bool {
+	cfg, err := config.LoadConfig([]string{"--config", path})
+	return err == nil && cfg.Sandbox.BackendDefaulted
 }

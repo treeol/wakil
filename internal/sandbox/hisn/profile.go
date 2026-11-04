@@ -350,10 +350,10 @@ var ErrProfileUntrusted = errors.New("E_PROFILE_UNTRUSTED")
 // checkProfileTrust reproduces hisn's E_PROFILE_UNTRUSTED rule up front, so the
 // error can say what to move instead of a bare hisn code.
 func checkProfileTrust(profile, cwd, home string, rw []string) error {
-	pdir, err := filepath.EvalSymlinks(filepath.Dir(profile))
-	if err != nil {
-		return nil // cannot resolve: hisn decides
-	}
+	// The state dir may not exist yet (first run): resolve its deepest
+	// EXISTING ancestor and re-join the rest, so the comparison is on real
+	// paths either way.
+	pdir := resolveDeepest(filepath.Dir(profile))
 	p := filepath.Join(pdir, filepath.Base(profile))
 	check := func(what, root string) error {
 		if root == "" {
@@ -386,4 +386,28 @@ func checkProfileTrust(profile, cwd, home string, rw []string) error {
 func featureError(features []string, got [3]int) error {
 	return fmt.Errorf("%s need hisn >= %s (found %d.%d.%d): upgrade hisn or remove them from .wakil/sandbox.json",
 		strings.Join(features, ", "), ProfileMinVersion, got[0], got[1], got[2])
+}
+
+// CheckStateOutside reports (as an E_PROFILE_UNTRUSTED error) whether the
+// profile directory state would lie under the workspace or an explicit home:
+// the check the backend repeats per session, available before any backend
+// exists (default-backend resolution).
+func CheckStateOutside(state, cwd, home string) error {
+	return checkProfileTrust(filepath.Join(state, "x.profile.toml"), cwd, home, nil)
+}
+
+// resolveDeepest resolves symlinks in the deepest existing ancestor of p and
+// re-joins the missing tail.
+func resolveDeepest(p string) string {
+	p = filepath.Clean(p)
+	rest := ""
+	for dir := p; ; dir = filepath.Dir(dir) {
+		if r, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(r, rest)
+		}
+		if filepath.Dir(dir) == dir {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+	}
 }
