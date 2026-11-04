@@ -1,0 +1,51 @@
+version = "hisn-profile/v1"
+
+# deploy-smaragd — docker work under hisn (compose / swarm deploys).
+#
+# Gives the sandbox the HOST's docker daemon through a forwarded socket
+# (hisn "Docker T2"). That is ROOT-EQUIVALENT on the host: the sandbox can ask
+# the daemon to start a privileged container that mounts any host path. A
+# container the daemon starts is not a child of the sandbox and survives it.
+# Treat everything inside this session as having root on this machine.
+#
+# This is why it ships DISABLED: hisn refuses to load it until you, the user,
+# acknowledge the risk. Wakil never writes that acknowledgement for you.
+#
+# Setup (once):
+#   1. Install the profile where hisn trusts it (NOT inside a project; hisn
+#      rejects profiles under the workspace, E_PROFILE_UNTRUSTED):
+#        mkdir -p ~/.config/hisn/profiles && export HISN_PROFILES=~/.config/hisn/profiles
+#        cp profiles/deploy-smaragd.toml "$HISN_PROFILES/"
+#   2. In the installed copy, uncomment the two risk_ack lines below.
+#   3. In your project, create .wakil/sandbox.json (then approve it yourself
+#      with `wakil sandbox trust`):
+#        { "hisn": { "profile": "deploy-smaragd", "risk_ack": "root-equivalent" } }
+#      The same acknowledgement goes in BOTH places: hisn checks the profile,
+#      Wakil checks the project file and refuses to start without it.
+#   4. Make sure /srv/out exists (or change grantable_rw) and the docker
+#      daemon socket is /var/run/docker.sock.
+#
+# Wakil uses this profile as is and only adds grants (hisn.mounts_ro /
+# hisn.mounts_rw). It does not start the kvr staging service in this mode.
+
+[policy]
+version = "hisn-policy/v1"
+session.cwd = "."
+# Compose services need host networking. Host networking needs Landlock ABI >= 6
+# (kernel >= 6.10); on an older kernel use "none": the daemon socket is a mount
+# and works without a network namespace of its own.
+session.network = "host"
+session.shm = true
+mounts.grantable_rw = ["/srv/out"]
+env.pass = ["GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTFLAGS", "npm_config_cache", "PIP_CACHE_DIR", "CI"]
+
+[[forward]]
+name = "docker"
+socket = "/var/run/docker.sock"
+expose = "/run/docker.sock"
+risk = "root-equivalent"
+# risk_ack = "root-equivalent"    # <- uncomment this line after reading the header
+
+[docker]
+tier = "socket"
+# risk_ack = "root-equivalent"    # <- and this one
