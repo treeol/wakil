@@ -22,7 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store, prints `store: <absolute path>` first, and exits with an error when the store is
   missing. `--project <dir>` selects another project and `--store <path>` names a database
   explicitly. Entries whose owner session cannot be checked (a stat error other than "not
-  found") are kept, not marked dead.
+  found") are kept, not marked dead. If the sessions directory itself is missing (for
+  example a wrong `WAKIL_SESSIONS_DIR`), every owner is treated as unknown and `--apply`
+  rejects nothing. Unknown or incomplete flags are a usage error (exit non-zero), so a
+  misspelled `--apply` no longer runs as a silent dry run. A partial rejection failure exits
+  non-zero.
 
 ## [0.4.2] - Unreleased
 
