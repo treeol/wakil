@@ -563,26 +563,81 @@ func (a *App) announceShellDone(bgID string, e *bgEntry, result, errStr string) 
 // inbox as a shell-typed asyncOp record. The record carries the log tail so the
 // model can act without an extra poll; full output stays in read_process_log.
 // Called from the reaper goroutine — never touches Conv (funnel drains it).
-// shellTailPreview reads the TAIL of a detached shell's log (multi-GB safe —
-// never loads the whole file) and returns the exit-status line plus the bounded
-// tail preview. Shared by the tab-Done path and the model inbox notice so both
+// shellTailPreview reads a bounded view of a detached shell's log (multi-GB
+// safe — never loads the whole file) and returns the exit-status line plus the
+// output preview. Shared by the tab-Done path and the model inbox notice so both
 // report the same exit status. The wrapper's exit marker is parsed and stripped
 // (follow-up); a self-backgrounded child writing after the marker can
 // push it out of the window or break end-anchoring → known=false → honest
 // "code unknown". context.Background: the reaper/notice runs async and must not
 // be cancelled by a turn ending.
+//
+// The preview carries the output itself, not a hint: the whole output when it
+// is at most asyncShellWholeMax bytes, otherwise its first asyncShellHeadBytes
+// and last asyncShellTailBytes joined by an explicit "N bytes omitted, full
+// log: <path>" marker (see shellOutputPreview).
 func (a *App) shellTailPreview(e *bgEntry) (statusLine, tail string) {
 	statusLine = exec.ExitStatusLine(0, false)
-	if out, err := a.Exec.ReadFileTail(context.Background(), e.logPath, 8*1024); err == nil {
-		cleaned, code, known := exec.ParseExitMarker(out, e.exitNonce)
-		statusLine = exec.ExitStatusLine(code, known)
-		lines := strings.Split(strings.TrimRight(cleaned, "\n"), "\n")
-		if n := len(lines); n > asyncShellNotifyTail {
-			lines = lines[n-asyncShellNotifyTail:]
-		}
-		tail = strings.Join(lines, "\n")
+	ctx := context.Background()
+	raw, err := a.Exec.ReadFileTail(ctx, e.logPath, shellPreviewReadTail)
+	if err != nil {
+		return statusLine, ""
 	}
-	return statusLine, tail
+	cleaned, code, known := exec.ParseExitMarker(raw, e.exitNonce)
+	statusLine = exec.ExitStatusLine(code, known)
+	// Size of everything before the bytes already read (0 when the whole log
+	// fit in the tail read, or when the size is unavailable).
+	var before int64
+	if size, serr := a.Exec.StatFile(ctx, e.logPath); serr == nil && size > int64(len(raw)) {
+		before = size - int64(len(raw))
+	}
+	var head string
+	if before > 0 {
+		if h, _, herr := a.Exec.ReadFileBounded(ctx, e.logPath, asyncShellHeadBytes); herr == nil {
+			head = h
+		}
+	}
+	return statusLine, shellOutputPreview(head, before, cleaned, e.logPath)
+}
+
+// Preview budgets for a finished detached shell. The whole rendered completion
+// message (header, digest, status, preview, hint) must stay below
+// asyncEnvelopeOpCap and asyncJobTabPreviewMaxBytes (8000); head+tail+marker is
+// at most ~6.3 KB, leaving room for the surrounding text.
+const (
+	shellPreviewReadTail = 8 * 1024
+	asyncShellWholeMax   = 6 * 1024
+	asyncShellHeadBytes  = 2 * 1024
+	asyncShellTailBytes  = 4 * 1024
+)
+
+// shellOutputPreview builds the bounded output preview. head is the first bytes
+// of the log (only needed when before > 0), before the number of log bytes that
+// precede cleaned (the marker-stripped tail read), cleaned the tail read with
+// the exit marker removed. Cuts are UTF-8 safe.
+func shellOutputPreview(head string, before int64, cleaned, logPath string) string {
+	cleaned = strings.TrimRight(cleaned, "\n")
+	if before == 0 && len(cleaned) <= asyncShellWholeMax {
+		return cleaned
+	}
+	tailPart := cleaned
+	if len(tailPart) > asyncShellTailBytes {
+		tailPart = tailPart[len(tailPart)-asyncShellTailBytes:]
+		for len(tailPart) > 0 && !utf8.RuneStart(tailPart[0]) {
+			tailPart = tailPart[1:]
+		}
+	}
+	if before == 0 {
+		// Whole log was read: the head is its own first bytes.
+		head = truncateUTF8(cleaned, asyncShellHeadBytes)
+	} else {
+		head = truncateUTF8(head, asyncShellHeadBytes)
+	}
+	omitted := before + int64(len(cleaned)) - int64(len(head)) - int64(len(tailPart))
+	if omitted <= 0 {
+		return cleaned
+	}
+	return fmt.Sprintf("%s\n[… %d bytes omitted, full log: %s …]\n%s", head, omitted, logPath, tailPart)
 }
 
 func (a *App) notifyDetachedShellExit(bgID string, e *bgEntry) {

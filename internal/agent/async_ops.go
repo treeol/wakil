@@ -50,10 +50,6 @@ const (
 	asyncEnvelopeOpCap    = 8000
 	asyncEnvelopeTotalCap = 16000
 
-	// asyncShellNotifyTail is how many trailing log lines ride along in a
-	// detached-shell completion notification.
-	asyncShellNotifyTail = 2
-
 	// asyncJobTabPreviewMaxBytes is the byte cap for the Result preview carried
 	// in AsyncJobDoneMsg and rendered in the async-job tab. UTF-8-safe truncation
 	// is applied (existing truncateUTF8); the full result is never truncated —
