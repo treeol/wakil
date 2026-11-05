@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - unreleased
+
+### Fixed
+
+- **Completion envelopes carry the exit code and the output.** The notice for a finished
+  `notify_on_exit` / auto-backgrounded shell showed only the last two log lines and a
+  `read_process_log` hint. It now carries the status (`exited with code N`) and the output:
+  everything up to 6 KiB, otherwise the first 2 KiB, an explicit `N bytes omitted, full log:
+  <path>` marker and the last 4 KiB. The rendered message stays under the 8000-byte envelope
+  and tab caps.
+- **`read_process_log` finds finished background jobs.** Finished jobs are kept for the rest of
+  the chat (last 32 jobs / 64 MiB of log, oldest first; a log being read is never evicted;
+  logs are removed at shutdown). An evicted job reports `evicted` with the bound instead of
+  "no background process with id".
+- **`read_file` / `read_file_full` can read the sandbox's own `/tmp`** (docker and hisn
+  backends; read-only; fail-closed canonicalisation inside the sandbox). Writes, edits, moves,
+  deletes, `list_dir` and `search_files` stay confined to the workspace; the direct executor,
+  where `/tmp` is the host's, keeps rejecting.
+- **`run_shell` / `run_background` run under bash when the sandbox has it** (`sh` otherwise;
+  the tool descriptions say which). Bash constructs such as `${PIPESTATUS[0]}` or `[[ ]]` work
+  and detached jobs report their real exit code; a bash syntax error is exit status 2 instead
+  of "code unknown". Helper commands Wakil builds itself stay `sh`.
+- **Collapse never inflates the request.** If the collapsed form of a turn (or the
+  `collapse_context` checkpoint) would not be smaller than the original, the original is kept
+  and the notice / tool result says so.
+
 ## [0.4.3] - 2026-11-05
 
 ### Fixed

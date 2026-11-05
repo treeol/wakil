@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -960,6 +961,16 @@ func (a *App) collapseFinishedTurns() {
 			}
 		}
 
+		// T5: size of the turn as it stands (U + W + A). A turn already found
+		// not to shrink at exactly this size is not re-archived on every sweep.
+		origBytes := messageSize(convSnap[s.first]) + wSize + messageSize(convSnap[s.last])
+		a.stateMu.RLock()
+		skippedAt, wasSkipped := a.collapseSkipped[t]
+		a.stateMu.RUnlock()
+		if wasSkipped && skippedAt == origBytes {
+			continue
+		}
+
 		// Rule 7: archive to disk. On failure, skip this turn (one warning per session);
 		// if upgrading from a partial collapse, the existing partial record is retained.
 		// The archive carries the FULL turn (U + W + A): the tier-2 degrade later
@@ -995,6 +1006,24 @@ func (a *App) collapseFinishedTurns() {
 			// passed isCleanAnswer above). Never overwrites Summary — the
 			// model-authored field stays separate.
 			AnswerExcerpt: extractAnswerExcerpt(lastMsg),
+		}
+		// T5: a collapse must never inflate the request. Compare the exact
+		// projected form (the SAME rendering contextProjection uses) with the
+		// original BEFORE any side effect (memory index, record). If it is not
+		// smaller, keep the original turn, drop the archive just written, say so
+		// once, and remember the size so the sweep does not retry it.
+		projectedContent := projectTailAnswerContent(convSnap[s.last].Content, rec, a.Cfg.ContextTailAnswerBytes)
+		projected := messageSize(convSnap[s.first]) + len(*projectedContent)
+		if projected >= origBytes {
+			_ = os.Remove(archive)
+			a.stateMu.Lock()
+			if a.collapseSkipped == nil {
+				a.collapseSkipped = map[int]int{}
+			}
+			a.collapseSkipped[t] = origBytes
+			a.stateMu.Unlock()
+			fmt.Fprintln(a.Out, Dim(formatCollapseSkipNotice(t, projected, origBytes)))
+			continue
 		}
 		// Upgrading from a mid-turn partial collapse: preserve the model's
 		// checkpoint metadata (stash pointer, next steps) and the existing
@@ -1036,8 +1065,6 @@ func (a *App) collapseFinishedTurns() {
 		// (tail-answer cap, checkpoint-summary wrapper, note join). The
 		// old hardcoded "0.4k sent" overstated the shrink; so did the
 		// first fix, which counted the uncapped answer.
-		projectedContent := projectTailAnswerContent(convSnap[s.last].Content, rec, a.Cfg.ContextTailAnswerBytes)
-		projected := messageSize(convSnap[s.first]) + len(*projectedContent)
 		// A.7: unified one-line format: prior tokens, sent tokens, archive
 		// path, and what was dropped (msgs range + tool results) in one line.
 		fmt.Fprintln(a.Out, Dim(formatCollapseNotice(t, wSize, projected, wOnly, s.first+1, archive)))
@@ -1112,6 +1139,14 @@ func formatCollapseNotice(turn, priorBytes, sentBytes int, dropped []proxy.Messa
 		fmt.Fprintf(&b, " → %s", archive)
 	}
 	return b.String()
+}
+
+// formatCollapseSkipNotice is the one-line notice printed when a collapse is
+// skipped because the collapsed form would not be smaller than the original
+// (T5): the original is sent unchanged.
+func formatCollapseSkipNotice(turn, collapsedBytes, origBytes int) string {
+	return fmt.Sprintf("· collapse skipped for request %d: collapsed form would be %d bytes, not smaller than the %d-byte original — original kept",
+		turn, collapsedBytes, origBytes)
 }
 
 // stashFailureReason describes why the requested stash was not written, for
@@ -1291,6 +1326,25 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		BoundaryCallID: tc.ID,
 		Summary:        args.Summary,
 		NextSteps:      args.NextSteps,
+	}
+	// T5: never inflate. The checkpoint block replaces the working set in the
+	// projection; if it (plus the stash line it would gain) is not smaller than
+	// the working set, keep the original, remove the archive just written, and
+	// say so — before the stash/index side effects.
+	cpEstimate := len(buildPartialCheckpointBlock(rec))
+	if args.MemoryKey != "" {
+		cpEstimate += len("memory: ") + len(args.MemoryKey) + len(" — ") + len(args.Description) + 1
+	}
+	if cpEstimate >= wSize {
+		_ = os.Remove(archive)
+		res := fmt.Sprintf("collapse_context: skipped — the checkpoint would be %d bytes, not smaller than the %d-byte working set, so the original was kept unchanged", cpEstimate, wSize)
+		if priorCollapsed > 0 {
+			res = fmt.Sprintf("collapsed %d prior request(s); ", priorCollapsed) + res
+		}
+		if args.NextSteps != "" {
+			res += "\nNext steps: " + args.NextSteps
+		}
+		return res
 	}
 	if args.MemoryKey != "" {
 		key, desc, refused := a.stashCollapse(rec, args.MemoryKey, args.Description)

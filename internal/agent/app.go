@@ -294,6 +294,9 @@ type App struct {
 	keep                  map[int]bool
 	collapseArchiveFailed bool
 	collapseMemoryFailed  bool
+	// collapseSkipped: turn -> original byte size at which a collapse was
+	// skipped because it would not have shrunk the turn (T5). stateMu.
+	collapseSkipped map[int]int
 	// indexReconciled: reconcileArchiveIndexes has run once this session
 	// (bounded cleanup trigger — never repeated in-process).
 	indexReconciled bool
