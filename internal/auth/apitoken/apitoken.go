@@ -205,7 +205,3 @@ func (i *Issuer) GetByID(ctx context.Context, id, tenantID string) (*tokenstore.
 	return i.store.GetAPITokenByID(ctx, id, tenantID)
 }
 
-// IsNotFound returns true if the error indicates the token was not found.
-func IsNotFound(err error) bool {
-	return errors.Is(err, tokenstore.ErrAPITokenNotFound)
-}
