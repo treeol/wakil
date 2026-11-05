@@ -15,11 +15,17 @@ import (
 func (a *App) renderSandboxState() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	st, ok := sandboxStatus(ctx, a.Exec)
-	if !ok {
-		return "sandbox: " + a.Exec.Describe()
+	var out string
+	if st, ok := sandboxStatus(ctx, a.Exec); ok {
+		out = FormatSandboxStatus(st)
+	} else {
+		out = "sandbox: " + a.Exec.Describe()
 	}
-	return FormatSandboxStatus(st)
+	// D3: when WAKIL_WORKSPACE_PATH pins the project identity, /sandbox says so.
+	if line := ResolveWorkspaceKeys(a.Cfg).EnvOverrideLine(); line != "" {
+		out += "\n  " + line
+	}
+	return out
 }
 
 func sandboxStatus(ctx context.Context, e exec.Executor) (sandbox.Status, bool) {

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/treeol/wakil/internal/agent"
@@ -58,6 +59,25 @@ func TestResolveProjectMatchesChatForCwd(t *testing.T) {
 				t.Fatalf("mode=%s cwd=%s: chat key %s != gc key %s",
 					mode, c, agent.WorkspaceKey(chat), agent.WorkspaceKey(gc))
 			}
+		}
+	}
+}
+
+func TestStripFlag(t *testing.T) {
+	cases := []struct {
+		in    []string
+		want  []string
+		found bool
+	}{
+		{[]string{"--print-workspace-key"}, nil, true},
+		{[]string{"--exec", "direct", "-print-workspace-key", "/p"}, []string{"--exec", "direct", "/p"}, true},
+		{[]string{"--exec", "direct"}, []string{"--exec", "direct"}, false},
+		{nil, nil, false},
+	}
+	for _, c := range cases {
+		got, found := stripFlag(c.in, "print-workspace-key")
+		if found != c.found || strings.Join(got, " ") != strings.Join(c.want, " ") {
+			t.Errorf("stripFlag(%v) = %v,%v want %v,%v", c.in, got, found, c.want, c.found)
 		}
 	}
 }

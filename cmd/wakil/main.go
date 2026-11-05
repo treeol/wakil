@@ -92,6 +92,20 @@ func main() {
 		return
 	}
 
+	// --print-workspace-key: report the store keys this launch directory and
+	// config would use, then exit (documented in docker-compose.yml). Read-only:
+	// no executor, no stores, no network. The flag is removed from argv before
+	// the normal flag parse, which does not know it.
+	if args, printKeys := stripFlag(os.Args[1:], "print-workspace-key"); printKeys {
+		cfg, err := config.LoadConfig(args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "config error:", err)
+			os.Exit(2)
+		}
+		fmt.Print(wiring.WorkspaceKeysReport(cfg))
+		return
+	}
+
 	cfg, err := config.LoadConfig(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
@@ -103,6 +117,11 @@ func main() {
 	// reads it, and state it with its reason.
 	cfg = wiring.ResolveSandbox(context.Background(), cfg)
 	fmt.Fprintln(os.Stderr, cfg.StartupBanner())
+	// D3: WAKIL_WORKSPACE_PATH silently replaces the launch directory as the
+	// project identity; say so once, with the resulting store keys.
+	if line := wiring.WorkspaceEnvOverrideLine(cfg); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
 
 	// Resolve --resume / --resume-id to a session id/prefix (global search —
 	// the same rule the TUI's /resume <id> follows). Bare --resume (no id)
@@ -522,4 +541,19 @@ func panelsUseOpenRouter(cfg config.Config) bool {
 		}
 	}
 	return false
+}
+
+// stripFlag removes every occurrence of --name / -name (a boolean flag) from
+// args and reports whether it was present.
+func stripFlag(args []string, name string) ([]string, bool) {
+	var out []string
+	found := false
+	for _, a := range args {
+		if a == "--"+name || a == "-"+name {
+			found = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, found
 }
