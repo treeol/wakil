@@ -2213,14 +2213,10 @@ func validateEnums(cfg Config) error {
 	default:
 		return fmt.Errorf("wf_oracle_mode must be one of: every-step, on-deviation, phases-only (got %q)", cfg.WFOracleMode)
 	}
-	switch cfg.OutputMode {
-	case OutputModeDebug, OutputModeSimple:
-	default:
+	if !OutputModeIsValid(cfg.OutputMode) {
 		return fmt.Errorf("output_mode must be one of: debug, simple (got %q)", cfg.OutputMode)
 	}
-	switch cfg.ClipboardMode {
-	case ClipboardModeAuto, ClipboardModeNative, ClipboardModeOSC52:
-	default:
+	if !ClipboardModeIsValid(cfg.ClipboardMode) {
 		return fmt.Errorf("clipboard_mode must be one of: auto, native, osc52 (got %q)", cfg.ClipboardMode)
 	}
 	switch cfg.SubagentBackend {
