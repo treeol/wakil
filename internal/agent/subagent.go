@@ -243,17 +243,22 @@ func (r *fileReadRecorder) snapshot() []string {
 }
 
 // deriveLedger computes the FileLedger from the listed files and the
-// recorder's actual reads. Listed files in the recorder's read set go to
+// recorder's actual (successful, canonical) reads. canon maps a listed name to
+// the same canonical form the recorder stores. Listed files in the recorder's read set go to
 // Read; listed files not in the read set go to NotRead; recorded reads not
 // in the listed set go to Extra.
-func (r *fileReadRecorder) deriveLedger(listed []string) FileLedger {
+func (r *fileReadRecorder) deriveLedger(listed []string, canon func(string) string) FileLedger {
+	if canon == nil {
+		canon = filepath.Clean
+	}
 	if len(listed) == 0 {
 		// No explicit list — no rejection possible; Extra is still useful.
 		return FileLedger{Listed: nil, Read: nil, NotRead: nil, Extra: r.snapshot()}
 	}
-	listedSet := map[string]bool{}
+	// Compare on canonical paths; report the names exactly as listed.
+	listedCanon := map[string]bool{}
 	for _, f := range listed {
-		listedSet[f] = true
+		listedCanon[canon(f)] = true
 	}
 	readSet := map[string]bool{}
 	if r != nil {
@@ -263,7 +268,7 @@ func (r *fileReadRecorder) deriveLedger(listed []string) FileLedger {
 	}
 	var read, notRead, extra []string
 	for _, f := range listed {
-		if readSet[f] {
+		if readSet[canon(f)] {
 			read = append(read, f)
 		} else {
 			notRead = append(notRead, f)
@@ -271,7 +276,7 @@ func (r *fileReadRecorder) deriveLedger(listed []string) FileLedger {
 	}
 	if r != nil {
 		for _, p := range r.list {
-			if !listedSet[p] {
+			if !listedCanon[p] {
 				extra = append(extra, p)
 			}
 		}
@@ -1692,6 +1697,9 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		sub.Cfg.TurnToolBudget = capSubagentWorkBudget(workBudget, a.Cfg.SubagentTurnToolBudget)
 	}
 	budgetInfo := &BudgetInfo{Limit: sub.Cfg.TurnToolBudget, Class: class}
+	// canonRead maps a listed file name to the canonical path the child's
+	// executor resolves it to — the form fileReadRecorder stores.
+	canonRead := func(p string) string { return sub.canonicalReadPath(ctx, p) }
 
 	// Edit-tier children are serialized by the writer lock: at most one edit
 	// child executing at a time. Discovery children are unaffected. The lock
@@ -1759,9 +1767,10 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// child may have made MCP calls before the error, and the parent must
 		// know what happened.
 		errSummary.ExternalCalls = extRecorder.snapshot()
+		budgetInfo.Used = sub.turnToolBytesUsed
 		errSummary.Budget = budgetInfo
 		if len(files) > 0 {
-			ledger := readRecorder.deriveLedger(files)
+			ledger := readRecorder.deriveLedger(files, canonRead)
 			errSummary.FileReadLedger = &ledger
 		}
 		applyResult(&errSummary, files, class)
@@ -1842,7 +1851,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// first Send or the retry, override the status to "incomplete". The
 		// model's response may look normal but be based on a lobotomized
 		// context. The parent must know the subagent ran out of budget so it
-		// can re-dispatch narrower or take over, rather than trusting
+		// can follow up on a strictly smaller scope, rather than trusting
 		// potentially-incomplete findings.
 		summary.Status = "incomplete"
 		// Determine the stop reason with explicit precedence across both Sends:
@@ -1871,7 +1880,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	budgetInfo.Used = sub.turnToolBytesUsed
 	summary.Budget = budgetInfo
 	if len(files) > 0 {
-		ledger := readRecorder.deriveLedger(files)
+		ledger := readRecorder.deriveLedger(files, canonRead)
 		summary.FileReadLedger = &ledger
 	}
 	applyResult(&summary, files, class)

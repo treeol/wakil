@@ -231,7 +231,7 @@ func TestDeriveLedgerAllRead(t *testing.T) {
 	rec.record("b.go")
 	rec.record("c.go")
 
-	ledger := rec.deriveLedger([]string{"a.go", "b.go", "c.go"})
+	ledger := rec.deriveLedger([]string{"a.go", "b.go", "c.go"}, nil)
 	if len(ledger.Read) != 3 {
 		t.Errorf("Read = %v, want 3 entries", ledger.Read)
 	}
@@ -249,7 +249,7 @@ func TestDeriveLedgerPartialRead(t *testing.T) {
 	rec.record("c.go") // not in listed set → extra
 	// b.go listed but not read
 
-	ledger := rec.deriveLedger([]string{"a.go", "b.go"})
+	ledger := rec.deriveLedger([]string{"a.go", "b.go"}, nil)
 	if len(ledger.Read) != 1 || ledger.Read[0] != "a.go" {
 		t.Errorf("Read = %v, want [a.go]", ledger.Read)
 	}
@@ -267,7 +267,7 @@ func TestDeriveLedgerZeroListedRead(t *testing.T) {
 	rec.record("y.go")
 	// None of the listed files were read.
 
-	ledger := rec.deriveLedger([]string{"a.go", "b.go"})
+	ledger := rec.deriveLedger([]string{"a.go", "b.go"}, nil)
 	if len(ledger.Read) != 0 {
 		t.Errorf("Read = %v, want empty (off-task)", ledger.Read)
 	}
@@ -284,7 +284,7 @@ func TestDeriveLedgerEmptyList(t *testing.T) {
 	rec.record("a.go")
 	rec.record("b.go")
 
-	ledger := rec.deriveLedger(nil)
+	ledger := rec.deriveLedger(nil, nil)
 	// No explicit list → no rejection; Extra is still populated.
 	if ledger.Listed != nil {
 		t.Errorf("Listed = %v, want nil", ledger.Listed)
@@ -300,7 +300,7 @@ func TestDeriveLedgerEmptyList(t *testing.T) {
 func TestDeriveLedgerNilRecorder(t *testing.T) {
 	var rec *fileReadRecorder
 	// Nil-safe: should not panic, returns empty ledger with listed set.
-	ledger := rec.deriveLedger([]string{"a.go", "b.go"})
+	ledger := rec.deriveLedger([]string{"a.go", "b.go"}, nil)
 	if len(ledger.Read) != 0 {
 		t.Errorf("Read = %v, want empty for nil recorder", ledger.Read)
 	}

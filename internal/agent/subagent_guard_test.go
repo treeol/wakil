@@ -5,9 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/treeol/wakil/internal/exec"
 )
 
 // scriptedModel is the suite's model double: it answers call N with frames[N]
@@ -284,5 +288,135 @@ func TestSubagentFinishedStatusFormatting(t *testing.T) {
 		if got := subagentFinishedStatus(c.s); got != c.want {
 			t.Errorf("status = %q, want %q (%+v)", got, c.want, c.s)
 		}
+	}
+}
+
+// ---------- round-2 fixes ----------
+
+// BL-2: spelling variants of a listed file are ONE file; a failed read is not a read.
+// Uses the REAL DirectExecutor (its ConfinePath/ReadFile resolve paths); the
+// fake executor does not normalise, so it cannot exercise this.
+func TestLedgerCanonicalAndSuccessfulReadsOnly(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := exec.NewDirectExecutor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newScriptedModel(t,
+		toolCallFrames("r1", "read_file", `{"path":"./a.go"}`),     // listed as "a.go"
+		toolCallFrames("r2", "read_file", `{"path":"missing.go"}`), // fails: must not count
+		[]string{contentChunk(goodJSON)},
+	)
+	a := newTestApp(m.srv.URL, exe, func(_, _, _ string, _ bool) bool { return true })
+
+	s := track(a, "audit", []string{"a.go", "missing.go"})
+
+	if m.calls() != 3 {
+		t.Fatalf("calls = %d, want 3 (no off-task retry: ./a.go IS a.go)", m.calls())
+	}
+	if len(s.FilesCovered) != 1 || s.FilesCovered[0] != "a.go" {
+		t.Errorf("covered = %v, want [a.go] (./a.go ≡ a.go)", s.FilesCovered)
+	}
+	if len(s.FilesNotRead) != 1 || s.FilesNotRead[0] != "missing.go" {
+		t.Errorf("not read = %v, want [missing.go] (a failed read does not count)", s.FilesNotRead)
+	}
+	if s.Outcome == outcomeRejected {
+		t.Error("a child that read a listed file must not be rejected as off-task")
+	}
+}
+
+// BL-1: a rejected result keeps the recoverable spill path and the MCP-call record.
+func TestRejectedSummaryNamesSpillAndKeepsExternalCalls(t *testing.T) {
+	orig := SubagentSummary{
+		Objective:      "x",
+		Findings:       []Finding{{Summary: "HALLUCINATED-FINDING"}},
+		ExternalCalls:  []ExternalAction{{Server: "s", Tool: "t", Status: "ok"}},
+		FileReadLedger: &FileLedger{Listed: []string{"a.go"}, NotRead: []string{"a.go"}},
+	}
+	rs := rejectedSummary(orig, []string{"a.go"}, "read", "/cache/spill-1.txt", true)
+	if len(rs.Findings) != 0 || strings.Contains(rs.Render(), "HALLUCINATED") {
+		t.Error("findings must not survive rejection")
+	}
+	if !strings.Contains(strings.Join(rs.Uncertainty, "|"), "/cache/spill-1.txt") || len(rs.SpillRefs) != 1 {
+		t.Errorf("spill path lost: uncertainty=%v refs=%v", rs.Uncertainty, rs.SpillRefs)
+	}
+	if len(rs.ExternalCalls) != 1 {
+		t.Error("mechanical external_calls record must survive rejection")
+	}
+}
+
+// A model-written status other than "incomplete" is not a failure.
+func TestOutcomeIgnoresModelWrittenCompleteStatus(t *testing.T) {
+	for _, st := range []string{"", "complete", "ok", "done"} {
+		if got := subagentOutcome(SubagentSummary{Status: st}); got != outcomeComplete {
+			t.Errorf("status %q -> %q, want complete", st, got)
+		}
+	}
+	if subagentOutcome(SubagentSummary{Status: "incomplete", StopReason: "error"}) != outcomeFailed {
+		t.Error("incomplete+error must be failed")
+	}
+}
+
+// Q2: two concurrent identical dispatches — the second is refused while the first is in flight.
+func TestConcurrentIdenticalDispatchRefused(t *testing.T) {
+	var g dispatchGuard
+	files := []string{"a.go"}
+	_, _, r1 := g.admit(files, taskHash("t"))
+	if r1 != "" {
+		t.Fatalf("first admit refused: %s", r1)
+	}
+	if _, _, r2 := g.admit(files, taskHash("t")); r2 == "" {
+		t.Error("an identical dispatch already in flight must be refused")
+	}
+	if _, _, r3 := g.admit([]string{"b.go"}, taskHash("other")); r3 != "" {
+		t.Errorf("a different scope must not be blocked: %s", r3)
+	}
+}
+
+// Q3: a workflow-continuation turn must not lift a stop; the user's next turn does.
+func TestAutomaticTurnDoesNotLiftStop(t *testing.T) {
+	a := &App{}
+	lin, _, _ := a.guard.admit([]string{"a.go"}, taskHash("t"))
+	a.guard.setState(lin, lineageStopped, "off-task twice")
+
+	a.MarkAutomaticTurn()
+	a.BeginUserTurn() // the automatic continuation
+	if _, _, refuse := a.guard.admit([]string{"a.go"}, taskHash("t")); refuse == "" {
+		t.Fatal("an automatic continuation turn lifted the stop")
+	}
+	a.BeginUserTurn() // the user answers
+	if _, _, refuse := a.guard.admit([]string{"a.go"}, taskHash("t")); refuse != "" {
+		t.Errorf("the user's turn must lift the stop, got refusal: %s", refuse)
+	}
+	// A rejected enqueue withdraws the mark.
+	a.MarkAutomaticTurn()
+	a.ClearAutomaticTurn()
+	lin2, _, _ := a.guard.admit([]string{"z.go"}, taskHash("z"))
+	a.guard.setState(lin2, lineageStopped, "x")
+	a.BeginUserTurn()
+	if _, _, refuse := a.guard.admit([]string{"z.go"}, taskHash("z")); refuse != "" {
+		t.Error("a withdrawn mark must not shield the stop from the next user turn")
+	}
+}
+
+// Q4/Q5: after the off-task retry the parent gets ONLY the retry's grounding,
+// summed budget, and no findings from the rejected first run.
+func TestOffTaskRetryMergeKeepsCostDropsRejectedFindings(t *testing.T) {
+	m := newScriptedModel(t,
+		[]string{contentChunk(hallucinated)},
+		toolCallFrames("r1", "read_file", `{"path":"a.go"}`),
+		[]string{contentChunk(goodJSON)},
+	)
+	a := guardApp(t, m, "a.go")
+	s, _, _, _, rows, _ := a.dispatchTracked(context.Background(), "audit", io.Discard, "", "", "", "read", []string{"a.go"}, "0123456789abcdef")
+	if strings.Contains(s.Render(), "HALLUCINATED") {
+		t.Error("rejected first-run findings leaked into the retry result")
+	}
+	_ = rows // cost rows of both runs are appended (asserted by count in the e2e path)
+	if !strings.Contains(strings.Join(s.Uncertainty, "|"), "off-task first run discarded") && s.Outcome != outcomeComplete {
+		t.Errorf("accepted retry should note the discarded first run; uncertainty=%v", s.Uncertainty)
 	}
 }

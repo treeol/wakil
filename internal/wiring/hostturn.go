@@ -887,7 +887,11 @@ func (ht *hostTurn) resolveAfterTurn(ctx context.Context, app *agent.App, in ses
 			}
 		}
 		// Engine-requested continuation: enqueue + audit marker on success.
+		// The continuation is an AUTOMATIC turn: mark it so BeginUserTurn does
+		// not treat it as the user answering a dispatch-stop notice.
+		app.MarkAutomaticTurn()
 		if err := in.EnqueueInput(wfNext.UserText); err != nil {
+			app.ClearAutomaticTurn()
 			if ht.planAutoAdvance {
 				return fmt.Errorf("%w: workflow continuation enqueue failed: %w", sessionhost.ErrInternal, err)
 			}

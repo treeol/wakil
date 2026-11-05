@@ -450,8 +450,8 @@ Status after the finishing session. Items 1–6 below are the previous session's
 
 ### Round 1 — open points (not fixed)
 
-7. **Ledger = attempted reads.** `ExecuteToolCall` records before `ConfinePath`/execution (`app.go` ~2649), so a denied or failed read counts as read; `search_files path:"."` records `.`. Off-task detection (zero reads) is still sound for the "never opened anything" case; "covered" can over-count.
-8. **Exact-string path match** in `deriveLedger`: `./a.go`, `a.go` and an absolute path are different files. A child that reads by a different spelling is scored NotRead (and can be rejected off-task). Normalize against the workspace root.
+7. **Ledger granularity.** Reads are recorded after the call succeeds, under the canonical path (round-2 fix; was: attempted, raw string). A `search_files` on a directory records that directory, which never matches a listed file — a child that only greps a directory can still be judged off-task.
+8. **Canonicalisation depends on the executor's `ConfinePath`.** The real executors resolve relative/`./`/absolute spellings to one path (tested with DirectExecutor); symlinks resolved differently by two spellings are not specially handled.
 9. **`dispatch_subagents` shares one `files` list across all tasks** (`tool_handlers.go` batch form) — per-task ledgers are meaningless for heterogeneous tasks. Use `dispatch_subagent` per task for list-bearing dispatches.
 10. **Ledger can crowd the 4 KB render** (`SubagentSummary.Render` does not trim `files_covered/not_read/extra`); a very long list can push the JSON over 4000 and trigger the overflow fallback that drops findings.
 11. **Error / cancel / panic results** (`cancelledJobResult`, `panicJobResult`) carry no ledger and no `budget`; they classify as `failed`, never `partial`, so they neither retry nor stop (they cannot be "off-task").
@@ -463,3 +463,24 @@ Status after the finishing session. Items 1–6 below are the previous session's
 17. **`aggregateToolResults` keys on `m.Name`.** Verified populated in `turn_phases.go` for production tool results; messages restored from old session files without `Name` aggregate to nothing.
 18. **Rejected-run spill** is written before the retry; if the retry also fails the first run's findings exist only in the spill.
 19. **Reviewer coverage.** Round 1: `claude-fable-5.1` delivered; `gpt-6-astra` returned 429, retried once (both reviewers returned VOID on the retry — see the close-out). Open points above come from the one reviewer that delivered plus own verification against source.
+
+### Round 2 (Mashūra) — see the close-out for who delivered
+
+Fixed after the delivered review (`claude-fable-5.1`; `gpt-6-astra` returned VOID on both attempts, so this is a single-reviewer round):
+
+- BL-1 rejected result lost the spill path and the `external_calls` record → now names the spill (uncertainty + `spill_refs`) and keeps `external_calls`; the first run's spill is named too.
+- BL-2 ledger compared raw model-supplied strings → reads recorded after success under the canonical path, listed names canonicalised the same way (was a false off-task → extra child run → false stop).
+- Q2 two identical concurrent dispatches were both admitted → a `running` lineage state refuses the duplicate.
+- Q3 workflow-engine `continue` turns reached `BeginUserTurn` and would lift a stop → the host marks the continuation automatic; `BeginUserTurn` consumes the mark and keeps the stop.
+- Q4 rejected first run's grounding was merged → only the retry's grounding is kept; `Budget.Used` sums both runs; error-path `Budget.Used` set.
+- `subagentOutcome` treated any non-empty model-written `status` as failed → only `"incomplete"` is non-complete.
+
+Round-2 open points (not fixed):
+
+20. `reserveBudget` is computed and unused: the reserve only reduces the work budget; the single reserve turn has no byte bound of its own.
+21. An explicit `subagent_turn_tool_budget` below the 50 KB floor wins over the floor (operator cap by design).
+22. A stopped lineage blocks any dispatch whose files are a subset of the stopped set, whatever the task text (over-blocking until the user's next message — intentional).
+23. Parallel halves: a batch that splits an open partial into two halves gets the first admitted and the second refused (one split per partial).
+24. The off-task retry reuses the child chat ID (progress/trace of the two runs share one tab).
+25. `review_cmd.go` and `skill_create.go` call `dispatchSubagentGated` (consent only, no lineage guard): user-slash-command driven, not model-callable.
+26. The harness cannot stop the parent model from doing the work itself after a notice; it only refuses further dispatch and tells the user.

@@ -2102,8 +2102,8 @@ func (a *App) recordFileChanged(canonical string) {
 // recordFileRead appends a path to the fileReads recorder for the subagent's
 // per-file read ledger. Called from ExecuteToolCall for read_file,
 // read_file_full, and search_files (with a path). No-op for the parent
-// (fileReads is nil). The path is recorded as-is (the path the model
-// requested); the ledger derives Read/NotRead/Extra from the listed set.
+// (fileReads is nil). The caller passes the CANONICAL path (see
+// canonicalReadPath); the ledger canonicalizes the listed set the same way.
 func (a *App) recordFileRead(path string) {
 	if a.fileReads != nil {
 		a.fileReads.record(path)
@@ -2635,6 +2635,38 @@ func (a *App) wfPhaseBlock(toolName, argsJSON string) string {
 // at this dispatch boundary. Callers classify success/failure via result.ok,
 // never by prefix-sniffing "ERROR:".
 func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult {
+	res := a.executeToolCall(ctx, tc)
+	// Per-file read ledger (children only; the recorder is nil for the parent):
+	// record a read only when the tool call SUCCEEDED, under the canonical path
+	// the executor resolves it to — so a denied/not-found read does not count
+	// and `./a.go` / `a.go` / `/abs/a.go` are one file.
+	if a.fileReads != nil && res.ok {
+		switch tc.Function.Name {
+		case "read_file", "read_file_full", "search_files":
+			var args struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal([]byte(tc.Function.Arguments), &args) == nil && args.Path != "" {
+				a.recordFileRead(a.canonicalReadPath(ctx, args.Path))
+			}
+		}
+	}
+	return res
+}
+
+// canonicalReadPath resolves p to the executor's canonical absolute path
+// (ConfinePath), falling back to filepath.Clean when it cannot be resolved.
+func (a *App) canonicalReadPath(ctx context.Context, p string) string {
+	if a.Exec != nil {
+		if c, err := a.Exec.ConfinePath(ctx, p); err == nil && c != "" {
+			return filepath.Clean(c)
+		}
+	}
+	return filepath.Clean(p)
+}
+
+// executeToolCall is the dispatch switch behind ExecuteToolCall.
+func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult {
 	name := tc.Function.Name
 
 	// Phase enforcement: reject tool calls that violate the workflow write-containment
@@ -2643,27 +2675,6 @@ func (a *App) ExecuteToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 	if a.Workflow != nil {
 		if msg := a.wfPhaseBlock(name, tc.Function.Arguments); msg != "" {
 			return errResult(msg)
-		}
-	}
-
-	// Record file reads for the subagent's per-file read ledger. The recorder
-	// is nil for the parent; it is only set on child Apps (see dispatchSubagent).
-	if a.fileReads != nil {
-		switch name {
-		case "read_file", "read_file_full":
-			var args struct {
-				Path string `json:"path"`
-			}
-			if json.Unmarshal([]byte(tc.Function.Arguments), &args) == nil && args.Path != "" {
-				a.recordFileRead(args.Path)
-			}
-		case "search_files":
-			var args struct {
-				Path string `json:"path"`
-			}
-			if json.Unmarshal([]byte(tc.Function.Arguments), &args) == nil && args.Path != "" {
-				a.recordFileRead(args.Path)
-			}
 		}
 	}
 

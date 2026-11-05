@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
@@ -41,6 +42,7 @@ const (
 	lineageOpen    = "open"    // has an unresolved partial; one strictly smaller split allowed
 	lineageStopped = "stopped" // notice shown; refuses dispatch until the next user message
 	lineageDone    = "done"
+	lineageRunning = "running" // a dispatch for this exact scope is in flight
 )
 
 // dispatchLineage is one task as the harness tracks it: the scope of its first
@@ -57,6 +59,7 @@ type dispatchLineage struct {
 type dispatchGuard struct {
 	mu       sync.Mutex
 	lineages []*dispatchLineage
+	autoNext atomic.Bool // next turn is harness-initiated (workflow continuation)
 }
 
 // reset forgets all lineages and lifts every stop. Called when the USER sends
@@ -108,6 +111,10 @@ func (g *dispatchGuard) admit(files []string, hash string) (l *dispatchLineage, 
 		same := cand.hash == hash && sameFileSet(cand.files, files)
 		contained := len(files) > 0 && subsetOf(files, cand.files)
 		switch cand.state {
+		case lineageRunning:
+			if same {
+				return nil, false, "an identical dispatch is already in flight — wait for its result instead of running the same scope twice"
+			}
 		case lineageStopped:
 			if same || cand.hash == hash || contained {
 				return nil, false, "this task was stopped (" + cand.stopReason + ") — the user must decide; no further automatic dispatch for it"
@@ -134,7 +141,7 @@ func (g *dispatchGuard) admit(files []string, hash string) (l *dispatchLineage, 
 			}
 		}
 	}
-	nl := &dispatchLineage{files: append([]string(nil), files...), hash: hash, state: lineageDone}
+	nl := &dispatchLineage{files: append([]string(nil), files...), hash: hash, state: lineageRunning}
 	g.lineages = append(g.lineages, nl)
 	return nl, false, ""
 }
@@ -151,7 +158,10 @@ func subagentOutcome(s SubagentSummary) string {
 	if s.Outcome != "" {
 		return s.Outcome
 	}
-	if s.Status == "" {
+	// Only "incomplete" is a non-complete status; the child schema says "omit
+	// unless incomplete", and a model-written "complete"/"ok" must not turn a
+	// good result into a failure.
+	if s.Status != "incomplete" {
 		return outcomeComplete
 	}
 	switch s.StopReason {
@@ -227,13 +237,19 @@ func (s SubagentSummary) Result() SubagentResult {
 	return r
 }
 
-// rejectedSummary replaces an off-task result: the child's findings are spilled
-// to the trace cache and NOT carried into the parent context.
-func rejectedSummary(a *App, orig SubagentSummary, files []string, class string, retried bool) SubagentSummary {
-	if full := orig.Render(); full != "" {
-		if p := wtools.SpillToCache(a.chatID(), "dispatch_subagent_rejected", full); p != "" {
-			orig.Uncertainty = append(orig.Uncertainty, "discarded off-task findings spilled to "+p)
-		}
+// spillRejected writes a rejected run's full result to the tool cache (the
+// trace) and returns its path ("" when nothing was written).
+func spillRejected(a *App, orig SubagentSummary) string {
+	return wtools.SpillToCache(a.chatID(), "dispatch_subagent_rejected", orig.Render())
+}
+
+// rejectedSummary replaces an off-task result: the child's findings are NOT
+// carried into the parent context; spillPath (if any) is named so they stay
+// recoverable from the trace.
+func rejectedSummary(orig SubagentSummary, files []string, class, spillPath string, retried bool) SubagentSummary {
+	unc := []string{fmt.Sprintf("rejected: off-task — read 0/%d assigned files; findings discarded", len(files))}
+	if spillPath != "" {
+		unc = append(unc, "discarded findings spilled to "+spillPath)
 	}
 	rs := SubagentSummary{
 		Objective:      orig.Objective,
@@ -242,10 +258,14 @@ func rejectedSummary(a *App, orig SubagentSummary, files []string, class string,
 		Outcome:        outcomeRejected,
 		RejectReason:   "off-task",
 		Retry:          retried,
-		Uncertainty:    []string{fmt.Sprintf("rejected: off-task — read 0/%d assigned files; findings discarded", len(files))},
+		Uncertainty:    unc,
+		ExternalCalls:  orig.ExternalCalls, // mechanical record — the parent must still know what the child did
 		FileReadLedger: orig.FileReadLedger,
 		SubagentClass:  class,
 		Budget:         orig.Budget,
+	}
+	if spillPath != "" {
+		rs.SpillRefs = []SpillRef{{ToolName: "dispatch_subagent_rejected", Path: spillPath}}
 	}
 	applyResult(&rs, files, class)
 	return rs
@@ -339,21 +359,36 @@ func (a *App) dispatchTracked(ctx context.Context, task string, progressOut io.W
 	retried := false
 	if offTask(summary, files) {
 		// Single, harness-performed retry: identical scope on purpose, so it
-		// bypasses admit/isStrictlySmallerScope. Findings of the rejected run
-		// are spilled, not returned.
-		_ = rejectedSummary(a, summary, files, class, false) // spills the first run's findings
+		// bypasses admit/isStrictlySmallerScope. The first run's findings are
+		// spilled (trace), never returned; its cost and file changes are real
+		// and are kept, its grounding is not.
+		firstSpill := spillRejected(a, summary)
+		firstUsed := 0
+		if summary.Budget != nil {
+			firstUsed = summary.Budget.Used
+		}
 		retried = true
 		s2, g2, c2, ub2, rows2, ch2 := a.dispatchSubagent(ctx, offTaskRetryText(task, files), progressOut, resolvedBackend, capability, model, class, files, chatID)
-		grounding = append(grounding, g2...)
+		grounding = g2
 		costRows = append(costRows, rows2...)
-		changed = append(changed, ch2...)
+		changed = dedupStrings(append(changed, ch2...))
 		ctxSize, usedBackend = c2, ub2
 		summary = s2
+		if summary.Budget != nil {
+			summary.Budget.Used += firstUsed
+		}
 		if offTask(summary, files) {
-			summary = rejectedSummary(a, summary, files, class, true)
+			secondSpill := spillRejected(a, summary)
+			summary = rejectedSummary(summary, files, class, secondSpill, true)
+			if firstSpill != "" {
+				summary.Uncertainty = append(summary.Uncertainty, "first run's findings spilled to "+firstSpill)
+			}
 			summary.Notice = offTaskNotice(chatID, len(files))
 			a.guard.setState(lin, lineageStopped, "off-task twice")
 			return summary, grounding, ctxSize, usedBackend, costRows, changed
+		}
+		if firstSpill != "" {
+			summary.Uncertainty = append(summary.Uncertainty, "off-task first run discarded (retried once); its findings spilled to "+firstSpill)
 		}
 	}
 	applyResult(&summary, files, class)
@@ -378,8 +413,34 @@ func (a *App) dispatchTracked(ctx context.Context, task string, progressOut io.W
 	return summary, grounding, ctxSize, usedBackend, costRows, changed
 }
 
-// BeginUserTurn lifts every dispatch stop and forgets lineages. Called once per
-// genuine USER turn (TUI RunTurn, host turn) — never from async-wake Resume or
-// the internal stream/empty-response retries, so a stop survives until the
-// user has actually answered the notice.
-func (a *App) BeginUserTurn() { a.guard.reset() }
+// MarkAutomaticTurn tells the guard that the NEXT turn is harness-initiated
+// (the workflow engine's "continue"), not an answer from the user. The host
+// calls it when it enqueues a continuation. BeginUserTurn consumes the mark and
+// leaves the stop in place, so an automatic turn can never lift it.
+func (a *App) MarkAutomaticTurn() { a.guard.autoNext.Store(true) }
+
+// BeginUserTurn lifts every dispatch stop and forgets lineages — unless the
+// turn was marked automatic. Called once per turn from the TUI RunTurn and the
+// host turn; never from async-wake Resume or the internal stream/empty-response
+// retries, so a stop survives until the user has actually answered the notice.
+func (a *App) BeginUserTurn() {
+	if a.guard.autoNext.Swap(false) {
+		return
+	}
+	a.guard.reset()
+}
+
+// ClearAutomaticTurn withdraws a MarkAutomaticTurn whose enqueue was rejected.
+func (a *App) ClearAutomaticTurn() { a.guard.autoNext.Store(false) }
+
+func dedupStrings(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}

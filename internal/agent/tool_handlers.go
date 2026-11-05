@@ -1818,7 +1818,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 
 	// Loud warning on exhaustion — not a dim tool-line. The main agent must
 	// know the subagent ran out of budget so it can re-dispatch narrower or
-	// take over, rather than trusting potentially-incomplete findings.
+	// follow up on a strictly smaller scope, rather than trusting potentially-incomplete findings.
 	if summary.Notice != "" {
 		a.printSubagentNotice(summary.Notice)
 	} else if summary.Status == "incomplete" {
