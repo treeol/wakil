@@ -11,6 +11,7 @@ import (
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/browser"
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 )
@@ -65,5 +66,19 @@ func TestWiringFacadeClose_ReachesBrowserStop(t *testing.T) {
 	}
 	if mgr.Running() || cl.teardowns.Load() != 1 {
 		t.Fatalf("Facade.Close left the browser running (running=%v teardowns=%d)", mgr.Running(), cl.teardowns.Load())
+	}
+}
+
+// The sessionhost workspace id the report prints is the one the conversation
+// manager really uses (the agent package duplicates the 3-line derivation
+// because wiring imports agent).
+func TestWorkspaceIDMatchesAgentReport(t *testing.T) {
+	for _, ws := range []string{"/mnt/wakil", "/home/u/proj", ""} {
+		cfg := config.DefaultConfig()
+		cfg.ExecMode = "direct"
+		cfg.WorkDir = ws
+		if got, want := string(WorkspaceIDFromConfig(cfg)), agent.SessionHostWorkspaceID(ws); got != want {
+			t.Errorf("ws %q: WorkspaceIDFromConfig = %q, agent report = %q", ws, got, want)
+		}
 	}
 }
