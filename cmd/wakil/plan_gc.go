@@ -173,9 +173,10 @@ func agentWorkspace(_ config.Config, projectDir string) (string, error) {
 	return ResolveProject(projectDir)
 }
 
-// ResolveProject returns the canonical project directory and the store key for
-// the CLI's cwd-based identity (flagDir, else cwd): Abs then EvalSymlinks, then
-// agent.WorkspaceKey. It is the gc source of truth. It deliberately ignores
+// ResolveProject returns the canonical project directory for the CLI's
+// cwd-based identity (flagDir, else cwd): Abs then EvalSymlinks. Store keys are
+// derived from it by agent.WorkspaceKey / agent.MemoryDBPath. It is the gc
+// source of truth. It deliberately ignores
 // WAKIL_WORKSPACE_PATH and the config workspace; chat keys by
 // config.Config.WorkspacePath() instead (see agent.ChatProjectPath). With
 // WAKIL_WORKSPACE_PATH unset, both resolve to the same store for the same

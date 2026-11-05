@@ -133,14 +133,8 @@ var defaultGenerator = New()
 // NewSessionID returns a fresh prefixed UUIDv7 session id.
 func NewSessionID() (event.SessionID, error) { return defaultGenerator.SessionID() }
 
-// NewToolCallID returns a fresh prefixed UUIDv7 tool-call id.
-func NewToolCallID() (event.ToolCallID, error) { return defaultGenerator.ToolCallID() }
-
 // NewApprovalID returns a fresh prefixed UUIDv7 approval id.
 func NewApprovalID() (event.ApprovalID, error) { return defaultGenerator.ApprovalID() }
-
-// NewSubagentID returns a fresh prefixed UUIDv7 subagent id.
-func NewSubagentID() (event.SubagentID, error) { return defaultGenerator.SubagentID() }
 
 // NewOpID returns a fresh prefixed UUIDv7 detached-operation id.
 func NewOpID() (event.OpID, error) { return defaultGenerator.OpID() }
