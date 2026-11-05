@@ -613,6 +613,14 @@ type bgEntry struct {
 	// collisions and leaks.
 	lastLogSize   int64
 	lastLogGrowth time.Time
+
+	// Retention (T2), all guarded by bgMu. retired: moved to bgFinished.
+	// readers: in-flight read_process_log calls, which block eviction of the log.
+	retired      bool
+	detached     bool // run_shell auto-backgrounded at its deadline
+	readers      int
+	logSize      int64
+	logSizeKnown bool
 }
 
 // CounselCallsCount returns how many auto-counsel calls have fired this session.
@@ -2840,6 +2848,7 @@ func (a *App) StopAllBackgroundProcs() {
 	empty := len(a.bgProcs) == 0
 	a.bgMu.RUnlock()
 	if empty {
+		a.removeFinishedBgLogs()
 		return
 	}
 	// Copy entries under lock, then operate outside lock to avoid
@@ -2910,6 +2919,8 @@ func (a *App) StopAllBackgroundProcs() {
 			a.cancelBgAsyncOp(entry.asyncOp, entry.id, "stopped (shutdown)")
 		}
 	}
+	// Retained logs of finished jobs are removed with the session.
+	a.removeFinishedBgLogs()
 }
 
 // renderFilesChanged appends the mechanical files_changed list (ground truth) to

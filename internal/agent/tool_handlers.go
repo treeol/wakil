@@ -204,8 +204,9 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 				a.bgMu.Lock()
 				op := entry.asyncOp
 				tabStarted := entry.tabStarted
-				delete(a.bgProcs, bgID)
+				a.finishBgLocked(entry)
 				a.bgMu.Unlock()
+				a.trimBgFinished()
 				if op != nil {
 					a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
 				}
@@ -263,8 +264,9 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 				// IDs are monotonic (bgCounter never rolls back), so deleting
 				// by bgID is safe — the entry can never be a re-used slot.
 				a.bgMu.Lock()
-				delete(a.bgProcs, bgID)
+				a.finishBgLocked(entry)
 				a.bgMu.Unlock()
+				a.trimBgFinished()
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -324,7 +326,8 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			a.LSP.MarkOpenFilesDirty()
 			a.LSP.BatchNotifyWatchedFiles(ctx)
 		}
-		// Clean up the bg entry — the process is done.
+		// Clean up the bg entry — the process is done and its output was
+		// returned inline, so nothing is retained for read_process_log.
 		a.bgMu.Lock()
 		delete(a.bgProcs, bgID)
 		a.bgMu.Unlock()
@@ -359,6 +362,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		a.bgMu.Lock()
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
+			e.detached = true
 			if regOp != nil {
 				e.asyncOp = regOp
 			}
@@ -442,6 +446,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		a.bgMu.Lock()
 		if e := a.bgProcs[bgID]; e != nil {
 			e.notifyOnExit = true
+			e.detached = true
 			if regOp != nil {
 				e.asyncOp = regOp
 			}
@@ -1529,8 +1534,9 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 				a.bgMu.Lock()
 				op := entry.asyncOp
 				tabStarted := entry.tabStarted
-				delete(a.bgProcs, bgID)
+				a.finishBgLocked(entry)
 				a.bgMu.Unlock()
+				a.trimBgFinished()
 				if op != nil {
 					a.cancelBgAsyncOp(op, bgID, "reaper abandoned after 24h")
 				}
@@ -1560,8 +1566,9 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 				a.announceShellDone(bgID, entry, statusLine+"\n"+tail, "")
 				// H7: Remove the entry from the registry on natural exit.
 				a.bgMu.Lock()
-				delete(a.bgProcs, bgID)
+				a.finishBgLocked(entry)
 				a.bgMu.Unlock()
+				a.trimBgFinished()
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -1586,11 +1593,14 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	entry, ok := a.bgProcs[args.ID]
 	a.bgMu.RUnlock()
 	if !ok {
-		return fmt.Sprintf("ERROR: no background process with id %q", args.ID)
+		if a.finishedBg(args.ID) != nil {
+			return fmt.Sprintf("[%s] already exited", args.ID)
+		}
+		return a.missingBgMessage(args.ID)
 	}
 	if entry.generation != a.Exec.Generation() {
 		a.bgMu.Lock()
-		delete(a.bgProcs, args.ID)
+		delete(a.bgProcs, args.ID) // logs died with the old executor: nothing to retain
 		asyncOp := entry.asyncOp
 		a.bgMu.Unlock()
 		if asyncOp != nil {
@@ -1604,11 +1614,12 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	if !a.Exec.IsProcessGroupAlive(ctx, entry.pgid) {
 		a.bgMu.Lock()
-		delete(a.bgProcs, args.ID)
+		a.retireBgLocked(args.ID)
 		// Capture and clear the async op so the reaper won't double-publish.
 		asyncOp := entry.asyncOp
 		entry.notifyOnExit = false
 		a.bgMu.Unlock()
+		a.trimBgFinished()
 		if asyncOp != nil {
 			a.cancelBgAsyncOp(asyncOp, args.ID, "already exited")
 		}
@@ -1635,8 +1646,9 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 		}
 		if !a.Exec.IsProcessGroupAlive(ctx, entry.pgid) {
 			a.bgMu.Lock()
-			delete(a.bgProcs, args.ID)
+			a.retireBgLocked(args.ID)
 			a.bgMu.Unlock()
+			a.trimBgFinished()
 			if asyncOp != nil {
 				a.cancelBgAsyncOp(asyncOp, args.ID, "killed (SIGTERM)")
 			}
@@ -1645,15 +1657,31 @@ func (a *App) handleKillProcess(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	_ = a.Exec.KillPgid(ctx, entry.pgid, 9) // SIGKILL
 	a.bgMu.Lock()
-	delete(a.bgProcs, args.ID)
+	a.retireBgLocked(args.ID)
 	a.bgMu.Unlock()
+	a.trimBgFinished()
 	if asyncOp != nil {
 		a.cancelBgAsyncOp(asyncOp, args.ID, "killed (SIGKILL after 5s timeout)")
 	}
 	return fmt.Sprintf("[%s] killed (SIGKILL after 5s timeout)", args.ID)
 }
 
-// handleReadProcessLog reads the tail of a background process's log file.
+// missingBgMessage is the error for an id that is in neither bgProcs nor
+// bgFinished: "evicted" for a retained job whose log was dropped, otherwise the
+// id was never started (declined and failed launches also consume ids).
+func (a *App) missingBgMessage(id string) string {
+	a.bgMu.RLock()
+	_, evicted := a.bgEvicted[id]
+	a.bgMu.RUnlock()
+	if evicted {
+		return fmt.Sprintf("ERROR: background job %s was evicted — finished-job logs are kept for the rest of the chat, bounded to the last %d jobs / %d MiB (oldest first)", id, bgFinishedMaxJobs, bgFinishedMaxBytes>>20)
+	}
+	return fmt.Sprintf("ERROR: no background process with id %q", id)
+}
+
+// handleReadProcessLog reads the tail of a background process's log file. It
+// also serves finished jobs retained in bgFinished (T2): their status is
+// "exited (code N)" from the exit marker.
 func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) string {
 	var args struct {
 		ID string `json:"id"`
@@ -1661,15 +1689,32 @@ func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) strin
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
-	a.bgMu.RLock()
+	// Look the entry up and, if it is retained, take a reader reference in the
+	// same critical section so eviction cannot delete the log under us.
+	a.bgMu.Lock()
 	entry, ok := a.bgProcs[args.ID]
-	a.bgMu.RUnlock()
+	finished := false
 	if !ok {
-		return fmt.Sprintf("ERROR: no background process with id %q", args.ID)
+		if entry = a.finishedBgLocked(args.ID); entry != nil {
+			ok, finished = true, true
+			entry.readers++
+		}
+	}
+	a.bgMu.Unlock()
+	if !ok {
+		return a.missingBgMessage(args.ID)
+	}
+	if finished {
+		defer func() {
+			a.bgMu.Lock()
+			entry.readers--
+			a.bgMu.Unlock()
+			a.trimBgFinished()
+		}()
 	}
 	if entry.generation != a.Exec.Generation() {
 		a.bgMu.Lock()
-		delete(a.bgProcs, args.ID)
+		delete(a.bgProcs, args.ID) // logs died with the old executor: nothing to retain
 		asyncOp := entry.asyncOp
 		a.bgMu.Unlock()
 		if asyncOp != nil {
@@ -1677,7 +1722,7 @@ func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) strin
 		}
 		return fmt.Sprintf("[%s] process lost (container restarted)", args.ID)
 	}
-	alive := a.Exec.IsProcessGroupAlive(ctx, entry.pgid)
+	alive := !finished && a.Exec.IsProcessGroupAlive(ctx, entry.pgid)
 	status := "running"
 	if !alive {
 		status = "exited"
