@@ -341,34 +341,6 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 	return RestoreRepoStateApply(app, st)
 }
 
-// RestoreRepoStateResume restores endpoint-independent settings from repo-state
-// on session resume. Unlike RestoreRepoState (fresh conversation), it skips
-// model/backend changes to avoid silently changing the model mid-transcript of
-// a resumed session. AutoApprove is restored (subject to AutoExplicit) because
-// it is endpoint-independent and the user explicitly toggled it.
-//
-// AllowDestructive and AllowReads are NOT restored here — they are ephemeral
-// per-session grants that must not survive across sessions.
-//
-// Backward-compatible wrapper: Read + Apply.
-func RestoreRepoStateResume(app *App) RestoreRepoStateResult {
-	st, err := RestoreRepoStateRead(app)
-	if err != nil || st == nil {
-		// Even with no saved state, apply the --think CLI flag so it works
-		// on a fresh workspace.
-		if app.Cfg.ThinkExplicit && app.Cfg.ThinkEffort != "" {
-			app.stateMu.Lock()
-			applied := app.applyThinkFlagLocked()
-			app.stateMu.Unlock()
-			if len(applied) > 0 {
-				return RestoreRepoStateResult{Note: strings.Join(applied, ", ")}
-			}
-		}
-		return RestoreRepoStateResult{}
-	}
-	return RestoreRepoStateResumeApply(app, st)
-}
-
 // restoreEndpointIndependentLocked applies endpoint-independent settings
 // from the repo-state to the App. Caller MUST hold stateMu.Lock.
 // These are settings that don't depend on which endpoint is active and are
