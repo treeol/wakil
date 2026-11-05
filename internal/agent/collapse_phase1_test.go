@@ -70,6 +70,9 @@ func TestRecollapseFailedIndexKeepsPriorKey(t *testing.T) {
 	app.MemoryStore = failedStore(t)
 	call2 := proxy.ToolCall{ID: "cc2", Type: "function", Function: proxy.FunctionCall{
 		Name: "collapse_context", Arguments: `{"summary":"phase one and two done"}`}}
+	// A completed tool round before the boundary is the working set this second
+	// collapse reduces. Small on purpose would be skipped by the size gate (T5).
+	app.appendConv(tcMsg("cc1x", "read_file", `{"path":"big.go"}`), trMsg("cc1x", "read_file", bigContent))
 	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{call2}, Turn: 1})
 	app.appendConv(trMsg("cc1", "collapse_context", "ok")) // boundary-adjacent filler
 	app.appendConv(proxy.Message{Role: "user", Content: StrPtr("continue"), Turn: 1})
@@ -270,7 +273,7 @@ func TestRefusedStashReplacementKeepsPrior(t *testing.T) {
 	// Second collapse requests a foreign key → refused → keep the first.
 	call2 := proxy.ToolCall{ID: "cc2", Type: "function", Function: proxy.FunctionCall{
 		Name: "collapse_context", Arguments: `{"summary":"phase two","memory_key":"ctx/other/x"}`}}
-	app.appendConv(trMsg("cc1", "collapse_context", "ok"))
+	app.appendConv(trMsg("cc1", "collapse_context", bigContent))
 	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{call2}, Turn: 1})
 	res := app.handleCollapseContext(call2)
 	if strings.HasPrefix(res, "ERROR") {
@@ -376,7 +379,7 @@ func TestStashWriteFailureKeepsPrior(t *testing.T) {
 			}
 			call2 := proxy.ToolCall{ID: "cc2", Type: "function", Function: proxy.FunctionCall{
 				Name: "collapse_context", Arguments: `{"summary":"phase two","memory_key":"second-key"}`}}
-			app.appendConv(trMsg("cc1", "collapse_context", "ok"))
+			app.appendConv(trMsg("cc1", "collapse_context", bigContent))
 			app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{call2}, Turn: 1})
 			res := app.handleCollapseContext(call2)
 			if strings.HasPrefix(res, "ERROR") {
@@ -436,7 +439,7 @@ func TestSuccessfulStashReplacementClearsFlags(t *testing.T) {
 	app.MemoryStore = failedStore(t)
 	call2 := proxy.ToolCall{ID: "cc2", Type: "function", Function: proxy.FunctionCall{
 		Name: "collapse_context", Arguments: `{"summary":"phase two","memory_key":"second-key"}`}}
-	app.appendConv(trMsg("cc1", "collapse_context", "ok"))
+	app.appendConv(trMsg("cc1", "collapse_context", bigContent))
 	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{call2}, Turn: 1})
 	if res := app.handleCollapseContext(call2); strings.HasPrefix(res, "ERROR") {
 		t.Fatalf("second collapse failed: %s", res)
@@ -453,7 +456,7 @@ func TestSuccessfulStashReplacementClearsFlags(t *testing.T) {
 	app.MemoryStore = testStore(t)
 	call3 := proxy.ToolCall{ID: "cc3", Type: "function", Function: proxy.FunctionCall{
 		Name: "collapse_context", Arguments: `{"summary":"phase three","memory_key":"third-key"}`}}
-	app.appendConv(trMsg("cc2", "collapse_context", "ok"))
+	app.appendConv(trMsg("cc2", "collapse_context", bigContent))
 	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{call3}, Turn: 1})
 	if res := app.handleCollapseContext(call3); strings.HasPrefix(res, "ERROR") {
 		t.Fatalf("third collapse failed: %s", res)
@@ -594,7 +597,7 @@ func TestUpgradeCarriesStashAttemptFlags(t *testing.T) {
 	// Second collapse: refused key → prior stash retained, flags set.
 	call2 := proxy.ToolCall{ID: "cc2", Type: "function", Function: proxy.FunctionCall{
 		Name: "collapse_context", Arguments: `{"summary":"phase two","memory_key":"ctx/other/x"}`}}
-	app.appendConv(trMsg("cc1", "collapse_context", "ok"))
+	app.appendConv(trMsg("cc1", "collapse_context", bigContent))
 	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{call2}, Turn: 1})
 	if res := app.handleCollapseContext(call2); strings.HasPrefix(res, "ERROR") {
 		t.Fatalf("second collapse failed: %s", res)

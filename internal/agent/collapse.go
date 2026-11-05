@@ -1331,13 +1331,16 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	// projection; if it (plus the stash line it would gain) is not smaller than
 	// the working set, keep the original, remove the archive just written, and
 	// say so — before the stash/index side effects.
-	cpEstimate := len(buildPartialCheckpointBlock(rec))
-	if args.MemoryKey != "" {
-		cpEstimate += len("memory: ") + len(args.MemoryKey) + len(" — ") + len(args.Description) + 1
-	}
-	if cpEstimate >= wSize {
+	// Measure what would actually be stored and projected: the qualified stash
+	// key and the default description that stashCollapse applies, and the
+	// "\n\n" separator contextProjection puts before the checkpoint. The working
+	// set compared against is the span still VISIBLE in the projection — an
+	// earlier partial record may already have elided its head.
+	cpEstimate := len(projectedCheckpointForGate(rec, a.chatID(), args.MemoryKey, args.Description))
+	visible := a.visibleWorkingSetBytes(s, curAsstIdx, tc.ID)
+	if cpEstimate >= visible {
 		_ = os.Remove(archive)
-		res := fmt.Sprintf("collapse_context: skipped — the checkpoint would be %d bytes, not smaller than the %d-byte working set, so the original was kept unchanged", cpEstimate, wSize)
+		res := fmt.Sprintf("collapse_context: skipped — the checkpoint would be %d bytes, not smaller than the %d-byte working set still in context, so the original was kept unchanged", cpEstimate, visible)
 		if priorCollapsed > 0 {
 			res = fmt.Sprintf("collapsed %d prior request(s); ", priorCollapsed) + res
 		}
@@ -1612,4 +1615,45 @@ func (a *App) restoreTurnStateLocked(s *Session) {
 	}
 	a.convMu.RUnlock()
 	a.turnSeq = maxTurn
+}
+
+// projectedCheckpointForGate returns the checkpoint text the projection would
+// carry for rec once stored under the given stash key and description: the
+// key is namespaced the way stashCollapse namespaces it, an empty description
+// takes stashCollapse's default, and the block is joined to the user message
+// with the "\n\n" separator contextProjection uses. Used only to decide
+// whether a collapse shrinks the request; it writes nothing.
+func projectedCheckpointForGate(rec CollapseRecord, chatID, memoryKey, description string) string {
+	if memoryKey != "" {
+		key := memoryKey
+		if !strings.Contains(key, "/") {
+			key = "ctx/" + chatID + "/" + key
+		}
+		if description == "" {
+			description = "model stash of collapsed working set (request " + fmt.Sprint(rec.Turn) + ")"
+		}
+		rec.StashKey, rec.StashDesc = key, description
+	}
+	return "\n\n" + buildPartialCheckpointBlock(rec)
+}
+
+// visibleWorkingSetBytes is the size of the current turn's working set that the
+// projection still sends: messages after the turn's user message up to the
+// boundary, minus anything an existing partial record for this turn already
+// elided (its head up to that record's boundary is not in the projection).
+func (a *App) visibleWorkingSetBytes(s span, curAsstIdx int, _ string) int {
+	from := s.first + 1
+	a.stateMu.RLock()
+	prior, hadPrior := a.collapsed[a.curTurn]
+	a.stateMu.RUnlock()
+	if hadPrior && prior.Partial && prior.BoundaryCallID != "" {
+		if b := findBoundaryAssistantIdx(a.Conv, s, prior.BoundaryCallID); b > from {
+			from = b
+		}
+	}
+	n := 0
+	for i := from; i < curAsstIdx; i++ {
+		n += messageSize(a.Conv[i])
+	}
+	return n
 }
