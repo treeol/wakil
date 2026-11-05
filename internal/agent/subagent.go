@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/exec"
@@ -51,10 +52,27 @@ const (
 	subagentBudgetReserveDefault = 8
 )
 
-// subagentReservePrompt is injected when the work budget is exhausted. It
-// forces the model to emit a structured partial — its findings, files
-// read/not read, and remaining scope — without any further tool calls.
-const subagentReservePrompt = `Your tool budget is exhausted. Respond with ONLY the JSON object — no prose, no tool calls. Report what you established (findings), what files you did and did not read, and your remaining scope in your own words.`
+// subagentReservePrompt is the ONE extra turn an exhausted child gets, and only
+// when its forced final answer (streamTurn's forceFinish turn, tools already
+// stripped) was not parseable. It replaces — never adds to — the generic JSON
+// retry, so an exhausted dispatch costs at most one extra full-context request.
+const subagentReservePrompt = `Your tool budget is exhausted. Respond with ONLY the JSON object in the schema you were given — no prose, no tool calls. Report what you established (findings) and add a "remaining_scope" string: what is still unexamined, in your own words.`
+
+// subagentRemainingScopeCap bounds the raw tail kept in remaining_scope when
+// the forced final turn is unparseable.
+const subagentRemainingScopeCap = 2048
+
+// tailBytes returns the last max bytes of s, cut on a rune boundary.
+func tailBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	s = s[len(s)-max:]
+	for len(s) > 0 && !utf8.RuneStart(s[0]) {
+		s = s[1:]
+	}
+	return s
+}
 
 // SubagentSummary is the structured return value of dispatchSubagent.
 // The parent acts on this blind to raw content, so every gap must be visible.
@@ -72,6 +90,10 @@ type SubagentSummary struct {
 	// FileReadLedger is the harness-derived per-file read ledger (item 2).
 	// Only populated when the dispatch carries an explicit files list.
 	FileReadLedger *FileLedger `json:"file_ledger,omitempty"`
+	// RemainingScope is what the child says is still unexamined (its own
+	// words), or the raw tail of an unparseable forced final turn. Capped at
+	// subagentRemainingScopeCap bytes.
+	RemainingScope string `json:"remaining_scope,omitempty"`
 	// SubagentClass is the task class used for budget sizing (item 1).
 	SubagentClass string `json:"subagent_class,omitempty"`
 }
@@ -313,6 +335,16 @@ func computeSubagentBudgets(activeHardMax, classPct, reservePct int) (workBudget
 	}
 	reserveBudget = activeHardMax * reservePct / 100
 	return workBudget, reserveBudget
+}
+
+// capSubagentWorkBudget applies the operator's explicit subagent_turn_tool_budget
+// (0 = unset) to the class-derived work budget. The explicit value is a CAP: it
+// may lower the class budget, never raise it.
+func capSubagentWorkBudget(workBudget, explicit int) int {
+	if explicit > 0 && explicit < workBudget {
+		return explicit
+	}
+	return workBudget
 }
 
 // isStrictlySmallerScope reports whether the re-dispatch's file set and task
@@ -1622,14 +1654,15 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	}
 	sub.Conv = []proxy.Message{{Role: "system", Content: StrPtr(childPrompt), Pinned: true}}
 
-	// Clamp TurnToolBudget to the class-based work budget. This replaces the
-	// fixed 35% clamp with a per-class budget: workBudget = hardMax *
-	// (classPct - reservePct) / 100, where the reserve is held back for the
-	// forced final report turn (see the exhaustion handling below). The work
-	// budget is the maximum bytes the subagent may spend on tool calls + tool
-	// results before exhaustion kicks in. Must run AFTER sub is constructed
-	// (when CtxLimit is known). Floor at subagentTurnToolBudgetFloor so the
-	// clamp never cuts below the previous 50k default.
+	// Size TurnToolBudget from the task class: workBudget = hardMax *
+	// (classPct - reservePct) / 100, floored at subagentTurnToolBudgetFloor.
+	// The class percentage is the operator-visible budget (subagents.budget.*);
+	// the reserve is the share of the window the child's forced final answer
+	// may still use, so it is excluded from the work budget. An explicit
+	// subagent_turn_tool_budget is an operator CAP: it can lower the class
+	// budget but never raise it. Must run AFTER sub is constructed (when
+	// CtxLimit is known); with no known context limit the configured/default
+	// TurnToolBudget stands untouched.
 	_, _, activeHardMax := sub.activeThresholds()
 	classPct := a.subagentBudgetForClass(class)
 	reservePct := a.subagentReservePct()
@@ -1638,7 +1671,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		workBudget = subagentTurnToolBudgetFloor
 	}
 	if activeHardMax > 0 {
-		sub.Cfg.TurnToolBudget = workBudget
+		sub.Cfg.TurnToolBudget = capSubagentWorkBudget(workBudget, a.Cfg.SubagentTurnToolBudget)
 	}
 
 	// Edit-tier children are serialized by the writer lock: at most one edit
@@ -1717,15 +1750,35 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// Drop tools for the retry: it asks only for clean JSON, so the model must
 		// not be able to spin up another tool loop instead of answering.
 		sub.Tools = nil
-		retryRaw, retryErr := sub.Send(ctx, subagentRetryPrompt)
+		// An exhausted child already had its tools-off final turn (forceFinish).
+		// If that answer is unparseable it gets exactly ONE more turn, and that
+		// turn is the reserve prompt (which also asks for remaining_scope) in
+		// place of — not on top of — the generic JSON retry.
+		retryPrompt := subagentRetryPrompt
+		if exhaustedFirstSend {
+			retryPrompt = subagentReservePrompt
+		}
+		retryRaw, retryErr := sub.Send(ctx, retryPrompt)
+		lastRaw := raw
 		if retryErr == nil {
+			lastRaw = retryRaw
 			parseErr = json.Unmarshal([]byte(extractJSON(retryRaw)), &summary)
 		}
 		if retryErr != nil || parseErr != nil {
-			summary = SubagentSummary{
-				Objective:   task,
-				Findings:    []Finding{{Summary: Truncate(raw, 200), Kind: "parse-error", Weight: "low"}},
-				Uncertainty: []string{"summary schema not followed"},
+			if exhaustedFirstSend || sub.exhausted {
+				// Budget ran out AND the final turn is garbage: a partial with
+				// no findings and the raw tail (2 KB) in remaining_scope. The
+				// tail is kept out of Uncertainty and findings on purpose.
+				summary = SubagentSummary{
+					Objective:      task,
+					RemainingScope: tailBytes(strings.TrimSpace(lastRaw), subagentRemainingScopeCap),
+				}
+			} else {
+				summary = SubagentSummary{
+					Objective:   task,
+					Findings:    []Finding{{Summary: Truncate(raw, 200), Kind: "parse-error", Weight: "low"}},
+					Uncertainty: []string{"summary schema not followed"},
+				}
 			}
 		}
 	}
@@ -1784,37 +1837,6 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// starved of content, producing a complete-looking but potentially
 		// incomplete summary. Surface this so the parent can judge.
 		summary.StopReason = "turn_budget_exhausted"
-	}
-
-	// Reserve turn: when the subagent exhausted its work budget, inject the
-	// reserve prompt and force one final Send with tools stripped. The model
-	// must emit a structured partial (findings, files read/not read, remaining
-	// scope). If the reserve turn also fails to produce valid JSON, the raw
-	// output is placed in remaining_scope. "Ran out of budget" alone is never
-	// the result — the reserve turn always yields a structured partial.
-	if (exhaustedFirstSend || sub.exhausted) && summary.Status == "incomplete" {
-		sub.Tools = nil
-		reserveRaw, reserveErr := sub.Send(ctx, subagentReservePrompt)
-		if reserveErr == nil {
-			var reserveSummary SubagentSummary
-			if json.Unmarshal([]byte(extractJSON(reserveRaw)), &reserveSummary) == nil {
-				// Merge the reserve summary's findings into the existing
-				// summary, preserving any findings from the first Send.
-				if len(reserveSummary.Findings) > 0 {
-					summary.Findings = append(summary.Findings, reserveSummary.Findings...)
-				}
-				if len(reserveSummary.Uncertainty) > 0 {
-					summary.Uncertainty = append(summary.Uncertainty, reserveSummary.Uncertainty...)
-				}
-				if len(reserveSummary.Skipped) > 0 {
-					summary.Skipped = append(summary.Skipped, reserveSummary.Skipped...)
-				}
-			} else {
-				// Reserve turn produced garbage — put the raw tail in
-				// remaining_scope via Uncertainty so it is not lost.
-				summary.Uncertainty = append(summary.Uncertainty, "reserve turn produced no valid JSON — raw: "+Truncate(reserveRaw, 200))
-			}
-		}
 	}
 
 	// Derive the per-file read ledger from the recorder and the explicit

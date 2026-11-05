@@ -2088,6 +2088,32 @@ func validateContextLimits(cfg Config) error {
 			return fmt.Errorf("%s must be <= 100 (got %d)", b.name, b.val)
 		}
 	}
+	// The reserve is carved out of each class budget; a class percentage that
+	// does not exceed it would leave no work budget (the dispatch would fall
+	// back to the floor, silently ignoring the configured number). Compare the
+	// EFFECTIVE values (0 = built-in default 40/25/60/40, reserve 8).
+	effReserve := cfg.SubagentBudgetReserve
+	if effReserve == 0 {
+		effReserve = 8
+	}
+	for _, c := range []struct {
+		name string
+		val  int
+		def  int
+	}{
+		{"subagents.budget.read", cfg.SubagentBudgetRead, 40},
+		{"subagents.budget.search", cfg.SubagentBudgetSearch, 25},
+		{"subagents.budget.edit", cfg.SubagentBudgetEdit, 60},
+		{"subagents.budget.verify", cfg.SubagentBudgetVerify, 40},
+	} {
+		eff := c.val
+		if eff == 0 {
+			eff = c.def
+		}
+		if eff <= effReserve {
+			return fmt.Errorf("%s (%d) must be greater than subagents.budget.reserve (%d): the reserve is carved out of every class budget", c.name, eff, effReserve)
+		}
+	}
 	if cfg.StreamIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("stream_idle_timeout_seconds must be >= 0 (got %d; 0 = use default 120s)", cfg.StreamIdleTimeoutSeconds)
 	}

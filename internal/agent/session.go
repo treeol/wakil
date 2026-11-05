@@ -43,10 +43,17 @@ func sessionsDir() string {
 	return resolveDataDir("WAKIL_SESSIONS_DIR", "sessions")
 }
 
-// SessionsDir is the exported form of sessionsDir, for use by the CLI
-// (wakil plan gc liveness check).
+// SessionsDir is the exported form of sessionsDir, for use by the CLI.
 func SessionsDir() string {
 	return sessionsDir()
+}
+
+// SessionFilePath is the exported form of sessionPath: the one place that
+// knows how a chat ID maps to its session file. "" when no sessions dir is
+// configured. The `wakil plan gc` liveness check goes through this instead of
+// re-deriving the file name.
+func SessionFilePath(chatID string) string {
+	return sessionPath(chatID)
 }
 
 func sessionPath(chatID string) string {

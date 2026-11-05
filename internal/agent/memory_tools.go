@@ -80,7 +80,7 @@ func (a *App) handleMemoryPut(ctx context.Context, tc proxy.ToolCall) string {
 	// that touched external content. This keeps the plan/current handoff
 	// protocol working for untainted sessions while preventing a tainted
 	// session from poisoning the handoff.
-	if strings.HasPrefix(args.Key, "plan/current") && tainted == memory.TaintTrue {
+	if args.Key == "plan/current" && tainted == memory.TaintTrue {
 		args.Key = "plan/tainted/" + a.chatID() + "/current"
 	}
 
@@ -206,11 +206,26 @@ func (a *App) handleMemoryGet(ctx context.Context, tc proxy.ToolCall) string {
 	// plan/current are redirected to plan/tainted/<chatID>/current so the
 	// session can read its own quarantined plan (writes were redirected
 	// there by handleMemoryPut).
-	if strings.HasPrefix(args.Key, "plan/current") && a.computeTainted() == memory.TaintTrue {
+	quarantinedRead := false
+	if args.Key == "plan/current" && a.computeTainted() == memory.TaintTrue {
 		args.Key = "plan/tainted/" + a.chatID() + "/current"
+		quarantinedRead = true
 	}
 
 	entry, err := s.Get(ctx, args.Key)
+	if errors.Is(err, memory.ErrNotFound) && quarantinedRead {
+		// Quarantined writes land as PROPOSED mid-tier entries (never active
+		// until promoted), so Get — active only — cannot see them. The session
+		// reads back its OWN quarantined plan from the proposed set.
+		if props, lerr := s.List(ctx, args.Key, "", memory.StatusProposed); lerr == nil {
+			for _, p := range props {
+				if p.Key == args.Key {
+					entry, err = p, nil
+					break
+				}
+			}
+		}
+	}
 	if errors.Is(err, memory.ErrNotFound) {
 		return "not found: " + args.Key + " (memory is scoped to the current workspace — entries from other workspaces are not visible here)"
 	}

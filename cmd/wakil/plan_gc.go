@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/treeol/wakil/internal/agent"
@@ -12,17 +11,55 @@ import (
 	"github.com/treeol/wakil/internal/memory"
 )
 
-// runPlanGC runs the `wakil plan gc` subcommand: lists memory entries under
-// plan/current (and plan/tainted/) whose owning session no longer has a
-// session file on disk, and optionally deletes them.
+// planGCVerdict classifies one quarantined plan entry for `wakil plan gc`.
+type planGCVerdict int
+
+const (
+	planGCSkip  planGCVerdict = iota // not a plan key this command handles
+	planGCAlive                      // owning session file exists
+	planGCDead                       // owning session file is gone
+	planGCKeep                       // owner unknown — never delete what we cannot attribute
+)
+
+// classifyPlanEntry decides the fate of one PROPOSED plan entry. sessionExists
+// is the liveness probe (the session file for a chat ID); it is injected so
+// the policy is testable without a sessions directory.
 //
-// Dry-run (default): prints counts and the dead entry keys.
-// --apply: deletes the dead entries via MemoryStore.Forget.
+// Policy (data-loss guard, Mashūra round 1):
+//   - only plan/current and plan/tainted/<chatID>/current are considered;
+//   - the owner is the chat ID in the key for plan/tainted/*, else the
+//     entry's SessionID; an entry with no attributable owner is KEPT;
+//   - liveness is "the session file exists" — nothing else.
+func classifyPlanEntry(key, sessionID string, sessionExists func(chatID string) bool) planGCVerdict {
+	owner := sessionID
+	switch {
+	case key == "plan/current":
+	case strings.HasPrefix(key, "plan/tainted/"):
+		parts := strings.Split(key, "/")
+		if len(parts) != 4 || parts[3] != "current" {
+			return planGCSkip
+		}
+		owner = parts[2]
+	default:
+		return planGCSkip
+	}
+	if owner == "" {
+		return planGCKeep
+	}
+	if sessionExists(owner) {
+		return planGCAlive
+	}
+	return planGCDead
+}
+
+// runPlanGC runs the `wakil plan gc` subcommand.
 //
-// The liveness check is the same /resume uses: the session file exists and
-// is loadable from the sessions directory. A plan/current entry is dead when
-// its SessionID's session file no longer exists. A plan/tainted/<chatID>/
-// entry is dead when <chatID>'s session file no longer exists.
+// It looks ONLY at PROPOSED (quarantined) entries under plan/current and
+// plan/tainted/<chatID>/current whose owning session no longer has a session
+// file. An ACTIVE plan/current — the one a handoff reads — is never listed
+// and never touched. Dry-run by default; --apply rejects the dead entries via
+// MemoryStore.Reject (status → rejected, recoverable in the DB; nothing is
+// hard-deleted and the key is not forgotten).
 func runPlanGC(args []string) int {
 	apply := false
 	for _, a := range args {
@@ -51,62 +88,55 @@ func runPlanGC(args []string) int {
 
 	ctx := context.Background()
 
-	// List all plan/ entries (plan/current and plan/tainted/).
-	entries, err := store.List(ctx, "plan/", "", memory.StatusActive)
+	entries, err := store.List(ctx, "plan/", "", memory.StatusProposed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "memory list error:", err)
 		return ExitError
 	}
 
-	sessDir := agent.SessionsDir()
-	var dead, alive []*memory.Entry
+	exists := func(chatID string) bool {
+		p := agent.SessionFilePath(chatID)
+		if p == "" {
+			return true // no sessions dir configured: cannot prove death
+		}
+		_, err := os.Stat(p)
+		return err == nil
+	}
+
+	var dead []*memory.Entry
+	alive, kept := 0, 0
 	for _, e := range entries {
-		// Only consider plan/current and plan/tainted/<chatID>/current keys.
-		if e.Key != "plan/current" && !strings.HasPrefix(e.Key, "plan/tainted/") {
-			continue
-		}
-		// Determine the owning chatID for the session-file liveness check.
-		chatID := e.SessionID
-		if strings.HasPrefix(e.Key, "plan/tainted/") {
-			// plan/tainted/<chatID>/current — extract chatID from the key.
-			parts := strings.SplitN(e.Key, "/", 4)
-			if len(parts) >= 3 {
-				chatID = parts[2]
-			}
-		}
-		if chatID == "" {
-			// No sessionID and no chatID in key — treat as dead.
+		switch classifyPlanEntry(e.Key, e.SessionID, exists) {
+		case planGCDead:
 			dead = append(dead, e)
-			continue
-		}
-		path := filepath.Join(sessDir, chatID+".json")
-		if _, err := os.Stat(path); err != nil {
-			dead = append(dead, e)
-		} else {
-			alive = append(alive, e)
+		case planGCAlive:
+			alive++
+		case planGCKeep:
+			kept++
 		}
 	}
 
-	fmt.Fprintf(os.Stdout, "plan gc: %d entries, %d dead, %d alive\n", len(dead)+len(alive), len(dead), len(alive))
+	fmt.Fprintf(os.Stdout, "plan gc: %d quarantined plan entries, %d dead, %d alive, %d kept (owner unknown)\n",
+		len(dead)+alive+kept, len(dead), alive, kept)
 	for _, e := range dead {
 		fmt.Fprintf(os.Stdout, "  dead: %s [id: %d]\n", e.Key, e.ID)
 	}
 
 	if !apply {
 		if len(dead) > 0 {
-			fmt.Fprintf(os.Stdout, "dry run — %d dead entries would be deleted (pass --apply)\n", len(dead))
+			fmt.Fprintf(os.Stdout, "dry run — %d dead entries would be rejected (pass --apply)\n", len(dead))
 		}
 		return ExitOK
 	}
 
-	deleted := 0
+	rejected := 0
 	for _, e := range dead {
-		if err := store.Forget(ctx, e.Key); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: forget %s: %v\n", e.Key, err)
+		if err := store.Reject(ctx, e.ID, "plan gc: owning session no longer exists"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: reject %s [id: %d]: %v\n", e.Key, e.ID, err)
 			continue
 		}
-		deleted++
+		rejected++
 	}
-	fmt.Fprintf(os.Stdout, "plan gc: deleted %d of %d dead entries\n", deleted, len(dead))
+	fmt.Fprintf(os.Stdout, "plan gc: rejected %d of %d dead entries\n", rejected, len(dead))
 	return ExitOK
 }
