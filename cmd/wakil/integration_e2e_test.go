@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -92,13 +93,45 @@ func startTestDaemon(t *testing.T, turn sessionhost.TurnFunc) (socketPath string
 	go httpSrv.Serve(listener)
 
 	cleanup = func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 		defer cancel()
 		_ = httpSrv.Shutdown(ctx)
 		_ = host.Close(ctx)
 		listener.Close()
 	}
+
+	// Readiness: Serve runs in a goroutine, so the socket may accept before
+	// the mux is serving. Wait for a real Health round-trip on the socket
+	// before returning, so the first RPC never races server startup.
+	waitForDaemonReady(t, socketPath)
 	return socketPath, cleanup, host
+}
+
+// waitForDaemonReady polls the daemon with a real Health RPC over the socket
+// until it answers, with a bounded retry. No fixed sleeps: each attempt is a
+// full round-trip, and the loop gives up after the deadline.
+func waitForDaemonReady(t *testing.T, socketPath string) {
+	t.Helper()
+	deadline := time.Now().Add(e2eReadyTimeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		clients, err := remote.Dial(socketPath)
+		if err != nil {
+			lastErr = err
+			runtime.Gosched()
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), e2eReadyAttempt)
+		err = remote.CheckHealth(ctx, clients)
+		cancel()
+		clients.Close()
+		if err == nil {
+			return
+		}
+		lastErr = err
+		runtime.Gosched()
+	}
+	t.Fatalf("daemon not ready on %s after %v: %v", socketPath, e2eReadyTimeout, lastErr)
 }
 
 // waitForSessionIdle polls the host until the session returns to idle (or the
@@ -135,7 +168,7 @@ func TestE2E_CreateSession(t *testing.T) {
 	sock, cleanup, _ := startTestDaemon(t, quickTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	rt, rtCleanup, err := remote.BootstrapRemote(ctx, sock, event.WorkspaceID("wsp_test"), "", nil)
@@ -170,7 +203,7 @@ func TestE2E_SubmitInputAndListEvents(t *testing.T) {
 	sock, cleanup, host := startTestDaemon(t, quickTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	rt, rtCleanup, err := remote.BootstrapRemote(ctx, sock, event.WorkspaceID("wsp_test"), "", nil)
@@ -235,7 +268,7 @@ func TestE2E_SessionSnapshot(t *testing.T) {
 	sock, cleanup, host := startTestDaemon(t, quickTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	rt, rtCleanup, err := remote.BootstrapRemote(ctx, sock, event.WorkspaceID("wsp_test"), "", nil)
@@ -278,7 +311,7 @@ func TestE2E_CloseSession(t *testing.T) {
 	sock, cleanup, host := startTestDaemon(t, stubTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	rt, rtCleanup, err := remote.BootstrapRemote(ctx, sock, event.WorkspaceID("wsp_test"), "", nil)
@@ -340,7 +373,7 @@ func TestE2E_Interrupt(t *testing.T) {
 	sock, cleanup, host := startTestDaemon(t, stubTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	rt, rtCleanup, err := remote.BootstrapRemote(ctx, sock, event.WorkspaceID("wsp_test"), "", nil)
@@ -396,7 +429,7 @@ func TestE2E_ResumeSession(t *testing.T) {
 	sock, cleanup, host := startTestDaemon(t, quickTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	// Create the first session.
@@ -485,7 +518,7 @@ func TestE2E_DeleteSession(t *testing.T) {
 	sock, cleanup, _ := startTestDaemon(t, quickTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	rt, rtCleanup, err := remote.BootstrapRemote(ctx, sock, event.WorkspaceID("wsp_test"), "", nil)
@@ -529,7 +562,7 @@ func TestE2E_StreamEvents(t *testing.T) {
 	sock, cleanup, host := startTestDaemon(t, quickTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	rt, rtCleanup, err := remote.BootstrapRemote(ctx, sock, event.WorkspaceID("wsp_test"), "", nil)
@@ -612,7 +645,7 @@ func TestE2E_NewConversation(t *testing.T) {
 	sock, cleanup, _ := startTestDaemon(t, quickTurnFunc)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eRPCTimeout)
 	defer cancel()
 
 	rt, rtCleanup, err := remote.BootstrapRemote(ctx, sock, event.WorkspaceID("wsp_test"), "", nil)
@@ -650,3 +683,9 @@ func TestE2E_NewConversation(t *testing.T) {
 		t.Error("second session missing from ListSessions")
 	}
 }
+
+// Readiness budget for startTestDaemon: bounded, not a sleep.
+const (
+	e2eReadyTimeout = 10 * time.Second
+	e2eReadyAttempt = 2 * time.Second
+)
