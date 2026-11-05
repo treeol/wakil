@@ -471,9 +471,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// the breadcrumb — the model must always be able to read_file the
 			// full structured findings from the path marker in the content.
 			pinned := wtools.IsSubagentResult(tc.Function.Name)
-			// Skill suggestion (Part B1+B2): feed the tracker; the returned
-			// text (possibly with an appended in-band hint) is what the model
-			// sees. Same pattern as load_skill's refinement hint.
+			// Skill suggestion (Part B1+B2): feed the tracker. Since 0.4.4 (D2)
+			// the returned text is always the unchanged tool result; the
+			// suggestion is a status notice at turn end, never in-band.
 			text = a.appendSkillHint(tc.Function.Name, result.ok, text)
 			a.appendConv(proxy.Message{
 				Role:       "tool",

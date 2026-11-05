@@ -13,12 +13,11 @@ package agent
 //     opening of a previous qualifying turn (current is a prefix of that
 //     turn's sequence). B2 takes precedence over B1 when both fire.
 //   - B1 (long workflow): ≥8 successful calls with ≥1 non-read tool.
-//   - Delivery: the hint is appended to the tool result text that crossed the
-//     threshold — the same in-band pattern as load_skill's refinement hint
-//     (B3). No synthetic user message, no extra model call, no turn-end
-//     timing problem. The hint is non-blocking ("when the task is done,
-//     consider...") so the model doesn't interleave skill drafting into
-//     in-flight work.
+//   - Delivery (0.4.4, D2): when a trigger fires the detector records the
+//     signal, and the end-of-turn hook shows the user a status notice (mode
+//     "on" only). Nothing is appended to a tool result any more: an "[app
+//     note]" inside a tool result was read by the model as instructions. The
+//     notice is non-blocking, so drafting never interleaves with in-flight work.
 //   - Names-only matching is a WEAK candidate signal (both panels said so);
 //     the hint wording reflects that — it invites judgment, never asserts a
 //     reusable workflow exists.
