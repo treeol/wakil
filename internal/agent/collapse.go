@@ -1014,7 +1014,16 @@ func (a *App) collapseFinishedTurns() {
 		// once, and remember the size so the sweep does not retry it.
 		projectedContent := projectTailAnswerContent(convSnap[s.last].Content, rec, a.Cfg.ContextTailAnswerBytes)
 		projected := messageSize(convSnap[s.first]) + len(*projectedContent)
-		if projected >= origBytes {
+		// The form this collapse REPLACES: for a full collapse, the original
+		// turn; for a partial upgrade, the partial form the projection sends
+		// now (the first mid-turn record's elided span is already out of the
+		// request). Measuring a partial upgrade against the original turn let an
+		// upgrade grow the request (review T5/fable).
+		baseline := origBytes
+		if existingRec.Partial {
+			baseline = projectedTurnBytes(a.contextProjection(), t)
+		}
+		if projected >= baseline {
 			_ = os.Remove(archive)
 			a.stateMu.Lock()
 			if a.collapseSkipped == nil {
@@ -1022,7 +1031,7 @@ func (a *App) collapseFinishedTurns() {
 			}
 			a.collapseSkipped[t] = origBytes
 			a.stateMu.Unlock()
-			fmt.Fprintln(a.Out, Dim(formatCollapseSkipNotice(t, projected, origBytes)))
+			fmt.Fprintln(a.Out, Dim(formatCollapseSkipNotice(t, projected, baseline)))
 			continue
 		}
 		// Upgrading from a mid-turn partial collapse: preserve the model's
@@ -1654,6 +1663,19 @@ func (a *App) visibleWorkingSetBytes(s span, curAsstIdx int, _ string) int {
 	n := 0
 	for i := from; i < curAsstIdx; i++ {
 		n += messageSize(a.Conv[i])
+	}
+	return n
+}
+
+// projectedTurnBytes is the size turn t carries in the projection proj: the
+// bytes of the messages the request would send for it. The gate for a partial
+// upgrade uses this so the comparison is against what is actually sent now.
+func projectedTurnBytes(proj []proxy.Message, t int) int {
+	n := 0
+	for _, m := range proj {
+		if m.Turn == t {
+			n += messageSize(m)
+		}
 	}
 	return n
 }
