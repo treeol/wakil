@@ -241,7 +241,8 @@ func RestoreRepoStateRead(app *App) (*RepoState, error) {
 // were actually applied. Use app.SetCtxLimit(cl) for the locked write.
 func RestoreRepoStateApply(app *App, st *RepoState) RestoreRepoStateResult {
 	if st == nil {
-		return RestoreRepoStateResult{}
+		// No saved state for this workspace: the --think CLI flag still applies.
+		return app.applyThinkFlagOnly()
 	}
 	var applied []string
 	var result RestoreRepoStateResult
@@ -281,7 +282,9 @@ func RestoreRepoStateApply(app *App, st *RepoState) RestoreRepoStateResult {
 // of a resumed session.
 func RestoreRepoStateResumeApply(app *App, st *RepoState) RestoreRepoStateResult {
 	if st == nil {
-		return RestoreRepoStateResult{}
+		// No saved state for this workspace: the --think CLI flag still applies
+		// (it does on /new; /resume must honour it too).
+		return app.applyThinkFlagOnly()
 	}
 	app.stateMu.Lock()
 	defer app.stateMu.Unlock()
@@ -328,15 +331,7 @@ func RestoreRepoState(app *App) RestoreRepoStateResult {
 	if err != nil || st == nil {
 		// Even with no saved state, apply the --think CLI flag so it works
 		// on a fresh workspace.
-		if app.Cfg.ThinkExplicit && app.Cfg.ThinkEffort != "" {
-			app.stateMu.Lock()
-			applied := app.applyThinkFlagLocked()
-			app.stateMu.Unlock()
-			if len(applied) > 0 {
-				return RestoreRepoStateResult{Note: strings.Join(applied, ", ")}
-			}
-		}
-		return RestoreRepoStateResult{}
+		return app.applyThinkFlagOnly()
 	}
 	return RestoreRepoStateApply(app, st)
 }
@@ -474,6 +469,23 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 	applied = append(applied, a.applyThinkFlagLocked()...)
 
 	return applied
+}
+
+// applyThinkFlagOnly applies just the --think CLI flag (taking stateMu) and
+// returns the result with a note naming it; the zero result when --think was
+// not passed. It is the whole restore when a workspace has no saved repo-state,
+// for /new, /resume and the daemon's restore RPCs alike.
+func (a *App) applyThinkFlagOnly() RestoreRepoStateResult {
+	if !a.Cfg.ThinkExplicit || a.Cfg.ThinkEffort == "" {
+		return RestoreRepoStateResult{}
+	}
+	a.stateMu.Lock()
+	applied := a.applyThinkFlagLocked()
+	a.stateMu.Unlock()
+	if len(applied) == 0 {
+		return RestoreRepoStateResult{}
+	}
+	return RestoreRepoStateResult{Note: strings.Join(applied, ", ")}
 }
 
 // applyThinkFlagLocked applies the --think CLI flag to the session's reasoning

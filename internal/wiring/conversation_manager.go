@@ -120,9 +120,12 @@ func NewConversationManager(cfg config.Config, exe exec.Executor, principal core
 //
 // Returns a human-readable note string ("") if nothing was restored.
 func (cm *conversationManager) restoreRepoState(ctx context.Context, app *agent.App, resume bool) string {
+	// A missing or unreadable file means "no saved state" (st == nil): the Apply
+	// functions then apply only the per-chat CLI flags (--think), on /new and
+	// /resume alike.
 	st, err := agent.RestoreRepoStateRead(app)
-	if err != nil || st == nil {
-		return ""
+	if err != nil {
+		st = nil
 	}
 	// Phase 2: clear explicit flags on the App's config copy so the restore
 	// guard fires when the user has overridden mid-session. The config is

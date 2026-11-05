@@ -608,11 +608,8 @@ func (h *SessionStateHandler) RestoreRepoState(ctx context.Context, req *connect
 
 	// Phase 1: Load from disk (no lock).
 	st, err := agent.RestoreRepoStateRead(app)
-	if err != nil || st == nil {
-		// Missing/unreadable file counts as done — there's nothing to apply.
-		h.restoreDone = true
-		h.restoreMu.Unlock()
-		return connect.NewResponse(&v1alpha1.RestoreRepoStateResponse{}), nil
+	if err != nil {
+		st = nil // unreadable counts as "no saved state": only --think applies
 	}
 	h.restoreDone = true
 	h.restoreMu.Unlock()
@@ -651,8 +648,8 @@ func (h *SessionStateHandler) RestoreRepoStateResume(ctx context.Context, req *c
 	// Split: Read (I/O) → Apply (lock). No network probe needed (no
 	// model/backend change).
 	st, err := agent.RestoreRepoStateRead(app)
-	if err != nil || st == nil {
-		return connect.NewResponse(&v1alpha1.RestoreRepoStateResumeResponse{}), nil
+	if err != nil {
+		st = nil // unreadable counts as "no saved state": only --think applies
 	}
 	result := agent.RestoreRepoStateResumeApply(app, st)
 
