@@ -134,20 +134,8 @@ func (g *Generator) OpID() (event.OpID, error) {
 // defaultGenerator backs the package-level New*ID helpers with crypto/rand.
 var defaultGenerator = New()
 
-// NewTenantID returns a fresh prefixed UUIDv7 tenant id (see Generator.TenantID).
-func NewTenantID() (event.TenantID, error) { return defaultGenerator.TenantID() }
-
-// NewUserID returns a fresh prefixed UUIDv7 user id.
-func NewUserID() (event.UserID, error) { return defaultGenerator.UserID() }
-
-// NewWorkspaceID returns a fresh prefixed UUIDv7 workspace id.
-func NewWorkspaceID() (event.WorkspaceID, error) { return defaultGenerator.WorkspaceID() }
-
 // NewSessionID returns a fresh prefixed UUIDv7 session id.
 func NewSessionID() (event.SessionID, error) { return defaultGenerator.SessionID() }
-
-// NewTurnID returns a fresh prefixed UUIDv7 turn id.
-func NewTurnID() (event.TurnID, error) { return defaultGenerator.TurnID() }
 
 // NewToolCallID returns a fresh prefixed UUIDv7 tool-call id.
 func NewToolCallID() (event.ToolCallID, error) { return defaultGenerator.ToolCallID() }

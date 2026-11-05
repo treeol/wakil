@@ -162,11 +162,6 @@ func (s *Server) Agent() *AgentHandler {
 	return s.agent
 }
 
-// SessionState returns the SessionStateHandler if configured, or nil.
-func (s *Server) SessionState() *SessionStateHandler {
-	return s.sessionState
-}
-
 // WithSessionState attaches a SessionStateHandler to the server. The handler
 // is created by the daemon (which owns the *agent.App) and set on both the
 // Unix-socket and TCP Connect servers.

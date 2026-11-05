@@ -70,15 +70,6 @@ func stagingDataRoot() string {
 	return filepath.Dir(rsd)
 }
 
-// StagingSocketPath returns the host-side path to the kvr UDS socket for
-// the given workspace's staging directory.
-func StagingSocketPath(ws string) string {
-	sp := StagingPath(ws)
-	if sp == "" {
-		return ""
-	}
-	return filepath.Join(sp, "kvr.sock")
-}
 
 // MemoryDBPath returns the host-side path to the durable memory SQLite
 // database for the given workspace. Reuses the same workspace-key derivation

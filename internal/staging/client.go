@@ -705,14 +705,6 @@ func statusByte(resp []byte) byte {
 	return resp[0]
 }
 
-// MaxKeyLen returns the maximum key length in bytes.
-func MaxKeyLen() int { return maxKeyLen }
-
-// MaxMGetKeys returns the maximum number of keys per MGET.
-func MaxMGetKeys() int { return maxMgetKeys }
-
-// MaxFrameSize returns the maximum frame size in bytes.
-func MaxFrameSize() int { return maxFrameSize }
 
 // IsServerUnavailable reports whether err indicates the kvr server is not
 // reachable (connection refused, no such file, etc.). Used by the tool

@@ -78,14 +78,6 @@ func NewAuthHandlerWithOIDC(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer
 	return h
 }
 
-// NewAuthHandlerWithOIDCAndSecureCookies creates an auth handler with OIDC
-// support and the Secure flag on session cookies when secureCookies is true.
-func NewAuthHandlerWithOIDCAndSecureCookies(issuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, store *tokenstore.Store, resolver principalResolver, oidcCfg OIDCConfig, secureCookies bool) *AuthHandler {
-	h := NewAuthHandlerWithOIDC(issuer, apiIssuer, store, resolver, oidcCfg)
-	h.secureCookies = secureCookies
-	return h
-}
-
 // CreateJoinToken issues a new join token. Owner/admin only.
 func (h *AuthHandler) CreateJoinToken(ctx context.Context, req *connect.Request[v1alpha1.CreateJoinTokenRequest]) (*connect.Response[v1alpha1.CreateJoinTokenResponse], error) {
 	p, err := resolvePrincipal(ctx, h.resolver)

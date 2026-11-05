@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -206,8 +205,6 @@ func (b *Backend) recordLost(argv []string) {
 	b.lostMu.Unlock()
 }
 
-// DefaultStateDir returns <base>/hisn for owner records and policies.
-func DefaultStateDir(base string) string { return filepath.Join(base, "hisn") }
 
 // ---- ctl path ----
 

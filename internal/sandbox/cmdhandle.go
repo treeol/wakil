@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -104,11 +103,3 @@ func (h *CmdHandle) Pid() int {
 
 var _ ExecHandle = (*CmdHandle)(nil)
 
-// Run is a convenience: build and start cmd under ctx and wait for it.
-func Run(ctx context.Context, cmd *osexec.Cmd) (ExitInfo, error) {
-	h, err := StartCmd(cmd)
-	if err != nil {
-		return ExitInfo{}, err
-	}
-	return h.Wait()
-}

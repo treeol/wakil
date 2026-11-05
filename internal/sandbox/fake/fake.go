@@ -5,7 +5,6 @@ package fake
 import (
 	"context"
 	"errors"
-	"io"
 	"sync"
 
 	"github.com/treeol/wakil/internal/sandbox"
@@ -124,13 +123,3 @@ func (b *Backend) SandboxTempDir() string          { return "/tmp" }
 // Live reports whether a session is running.
 func (b *Backend) Live() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.live }
 
-// Echo is a RunFunc that writes its argv to stdout and exits 0.
-func Echo(spec sandbox.ExecSpec) int {
-	for i, a := range spec.Argv {
-		if i > 0 {
-			_, _ = io.WriteString(spec.Stdout, " ")
-		}
-		_, _ = io.WriteString(spec.Stdout, a)
-	}
-	return 0
-}
