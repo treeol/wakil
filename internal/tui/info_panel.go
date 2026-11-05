@@ -113,6 +113,9 @@ func (m tuiModel) infoSubSegments(tab *subTab) []string {
 			ts = " " + tab.finishedAt.Format("15:04:05")
 		}
 		statusStr = "✓ finished" + ts
+		if label := finishedStatusLabel(tab.finStatus); label != "" {
+			statusStr = label + ts
+		}
 	}
 
 	info := m.facade.Info()
@@ -376,4 +379,36 @@ func formatCacheStats(rows []proxy.CostRow) string {
 	}
 	ratio := float64(totalCached) / float64(totalInput)
 	return sprint("%.1f%%", ratio*100)
+}
+
+// finishedStatusLabel renders the live child-completion status. The agent
+// encodes it as "<word>[ files <read>/<listed>]" in the finished-status field
+// (see agent.subagentFinishedStatus): <word> is ok/incomplete/failed/declined
+// or the harness words partial / rejected / refused. "" means "no extra
+// information" — the caller keeps the plain "✓ finished" label.
+func finishedStatusLabel(status string) string {
+	word, files, _ := strings.Cut(status, " files ")
+	var label string
+	switch word {
+	case "partial":
+		label = "◐ partial"
+	case "rejected":
+		label = "✗ rejected"
+	case "refused":
+		label = "✗ refused"
+	case "", "ok":
+		if files == "" {
+			return ""
+		}
+		label = "✓ finished"
+	default:
+		if files == "" {
+			return ""
+		}
+		label = word
+	}
+	if files != "" {
+		label += " · files " + files
+	}
+	return label
 }
