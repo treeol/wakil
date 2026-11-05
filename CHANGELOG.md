@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   misspelled `--apply` no longer runs as a silent dry run. A partial rejection failure exits
   non-zero.
 
-## 0.4.2 — not released separately; included in 0.4.3
+## [0.4.2] — not released separately; included in 0.4.3
 
 ### Changed
 
@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `memory_preflight_recall` config key, `MemoryPreflightRecall` field and docs entry — a confirmed no-op (never read; `retrieveMemoryContext` runs unconditionally).
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-11-04
 
 ### Changed
 
