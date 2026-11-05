@@ -460,6 +460,12 @@ func isWithinWorkspace(root, target string) bool {
 	}
 	if realTarget, err := filepath.EvalSymlinks(absTarget); err == nil {
 		absTarget = realTarget
+	} else if resolved, rerr := resolveExistingAncestor(absTarget); rerr == nil {
+		// Target does not exist yet: resolve its deepest existing ancestor so a
+		// symlinked parent cannot smuggle a missing file outside the root.
+		absTarget = resolved
+	} else {
+		return false
 	}
 	rel, err := filepath.Rel(absRoot, absTarget)
 	if err != nil {
@@ -467,6 +473,35 @@ func isWithinWorkspace(root, target string) bool {
 	}
 	// If the relative path starts with "..", it's outside the root.
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolveExistingAncestor resolves symlinks in the deepest existing ancestor of
+// an absolute cleaned path and re-joins the non-existent remainder. A dangling
+// symlink on the path is an error (its target is unknown). Mirrors
+// exec.resolveExistingAncestor; the resolution strategy stays per layer.
+func resolveExistingAncestor(path string) (string, error) {
+	dir, rest := path, ""
+	for {
+		if _, err := os.Lstat(dir); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path, nil
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	if rest == "" {
+		return resolved, nil
+	}
+	return filepath.Join(resolved, rest), nil
 }
 
 // checkAnchorStaleness recomputes hashes for the stored anchors and returns

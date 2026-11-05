@@ -22,6 +22,13 @@ func DockerAgentRoot(hostDir string) string {
 // Within reports whether p equals root or lies below it (lexically; both are
 // cleaned first).
 func Within(root, p string) bool {
+	return WithinLexical(root, p)
+}
+
+// WithinLexical is the shared lexical containment rule: both paths are cleaned,
+// then p must equal root or sit below it. It performs no symlink resolution;
+// each layer resolves paths itself before calling it.
+func WithinLexical(root, p string) bool {
 	root, p = filepath.Clean(root), filepath.Clean(p)
 	return p == root || strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/")
 }

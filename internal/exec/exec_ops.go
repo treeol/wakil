@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/treeol/wakil/internal/safe"
+	"github.com/treeol/wakil/internal/sandbox"
 )
 
 // validateReadFileTailMaxBytes checks the maxBytes parameter for ReadFileTail
@@ -165,9 +166,7 @@ func resolvePathError(path, out string, err error) error {
 
 // isInsideWorkspace returns true if p equals root or is directly nested inside it.
 func isInsideWorkspace(p, root string) bool {
-	root = filepath.Clean(root)
-	p = filepath.Clean(p)
-	return p == root || strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/")
+	return sandbox.WithinLexical(root, p)
 }
 
 func (d *DockerExecutor) ConfinePath(ctx context.Context, path string) (string, error) {
