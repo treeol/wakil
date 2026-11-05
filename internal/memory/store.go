@@ -191,6 +191,21 @@ func Open(dbPath, workspaceRoot string) (*Store, error) {
 	}, nil
 }
 
+// OpenExisting opens an existing store at dbPath. For a missing store it returns
+// an error and creates nothing: no directory, no sql.Open, no pragma, no schema
+// write. For an existing store it delegates to Open, which still sets
+// PRAGMA journal_mode = WAL and runs schema migration. So it may write, and it
+// is NOT a read-only open. Use Open for paths that may be created.
+func OpenExisting(dbPath, workspaceRoot string) (*Store, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("memory: no store at %s: %w", dbPath, err)
+		}
+		return nil, fmt.Errorf("memory: cannot access store %s: %w", dbPath, err)
+	}
+	return Open(dbPath, workspaceRoot)
+}
+
 // Close closes the underlying database handle.
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {

@@ -1,8 +1,9 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 
 	"github.com/treeol/wakil/internal/memory"
 )
@@ -23,14 +24,11 @@ func PlanGCStore(ws, storePath string) (*memory.Store, string, error) {
 	if path == "" {
 		return nil, "", fmt.Errorf("plan gc: cannot determine memory store path")
 	}
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
+	store, err := memory.OpenExisting(path, ws)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, path, fmt.Errorf("plan gc: no memory store for workspace %q at %s; nothing to do", ws, path)
 		}
-		return nil, path, fmt.Errorf("plan gc: cannot access store %s: %w", path, err)
-	}
-	store, err := memory.Open(path, ws)
-	if err != nil {
 		return nil, path, fmt.Errorf("plan gc: memory open error: %w", err)
 	}
 	return store, path, nil
