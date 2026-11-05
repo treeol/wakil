@@ -179,6 +179,7 @@ reference covering every section below.
 | `prompt_mode` | `"full"` | Prompt mode: `full` (complete system prompt always loaded; default) \| `core` (lean preamble with identity + safety gates only; the workflow extension is lazy-loaded as a second system message when the classifier detects a task). Persisted per repo; flag `--prompt-mode`, env `WAKIL_PROMPT_MODE`. A custom `agent_prompt_path` bypasses the split (the full file is used) |
 | `max_tool_iterations` | `0` | Hard cap on tool round-trips per turn; `0` = unlimited |
 | `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |
+| `browser_idle_timeout_seconds` | `0` (→ 600) | Stop the headless browser after this many seconds without a `browser_*` call; the next call starts a fresh one. The browser is also stopped on `/new`, chat end and exit. It is started lazily on the first call, never with the container |
 | `openrouter_api_key_env` | `"OPENROUTER_API_KEY"` | Env var for the OpenRouter API key *(used by mashura panel calls routed through OpenRouter)* |
 | `subagent_max_tool_iterations` | `0` (→ 40) | Cap on tool round-trips per subagent dispatch; `0` = use built-in default |
 | `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(an operator cap on the class-based work budget: lowers it, never raises it)* |

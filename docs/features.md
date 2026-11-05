@@ -62,8 +62,22 @@ DOM inspection, interaction testing, and responsive layout checks.
 
 The browser runs inside the sandbox container — `chromium` is installed in the
 `Dockerfile` image. It uses `--no-sandbox` (required inside the container's
-capability-dropped environment) and `--disable-gpu`. All navigation targets
-localhost or `file://` URLs; the sandbox's network namespace controls egress.
+capability-dropped environment), `--disable-gpu`, `--disable-crash-reporter` and
+`--disable-breakpad`. All navigation targets localhost or `file://` URLs; the
+sandbox's network namespace controls egress.
+
+**Lifecycle (0.4.4).** Nothing is started with the container. Chromium launches
+on the first `browser_*` call, as a direct child of a `docker exec` session
+(its own process group), with a per-launch profile directory
+`/tmp/wakil-chrome-<random>` (also its `HOME`, so crashpad's files live under
+it). It stops — process group TERMed, KILLed after 3 s, stragglers swept, profile
+directory removed — after `browser_idle_timeout_seconds` (default 600) without a
+call, on `/new` and chat end, and when Wakil exits; the next call starts a fresh
+browser. The DevTools endpoint is Chromium-chosen and loopback-only inside the
+container; Wakil reaches it through a `127.0.0.1` listener on the host that pipes
+each connection through `docker exec -i … python3` — no port is published and
+nothing listens on a non-loopback address. Under the `hisn` backend the browser
+stays off.
 
 ```json
 {

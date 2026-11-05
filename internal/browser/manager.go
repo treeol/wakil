@@ -2,15 +2,17 @@
 // DOM inspection, and interaction testing via chromedp (Chrome DevTools Protocol).
 //
 // It mirrors the lsp_enabled pattern: off by default, gated behind
-// browser_enabled in config.json. When enabled, the browser manager creates
-// a headless Chromium context (launched eagerly at startup) and exposes
-// browser_* tools to the agent.
+// browser_enabled in config.json. When enabled, the browser manager exposes
+// browser_* tools to the agent. Chromium is NOT started with the container or
+// at startup: it is launched on the first browser tool call, stopped after
+// browser_idle_timeout_seconds without use, and on /new, chat end and exit.
 //
-// In docker exec mode, Chromium is launched INSIDE the sandbox container (via
-// docker exec) and controlled from the host via remote.NewAllocator
-// (CDP over WebSocket). This reuses the chromium installed in the Docker image.
-// In direct mode, Chromium is launched as a child of the wakil process on the
-// host via chromedp.NewExecAllocator.
+// In docker exec mode, Chromium is launched INSIDE the sandbox container as a
+// direct child of a `docker exec` session (own process group, per-launch
+// profile dir) and controlled from the host via remote.NewAllocator (CDP over
+// WebSocket) through a loopback-only stdio tunnel; nothing listens on a
+// non-loopback address. In direct mode, Chromium is launched as a child of the
+// wakil process on the host via chromedp.NewExecAllocator.
 //
 // Navigation is unrestricted — the browser can reach any URL accessible from
 // its network namespace (localhost dev servers, file:// paths, or external URLs
@@ -22,7 +24,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,20 +32,17 @@ import (
 
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/chromedp"
-	"github.com/chromedp/chromedp/remote"
 	"github.com/treeol/wakil/internal/safe"
 )
 
 // SandboxExecutor is the minimal subset of exec.Executor that the browser
-// manager needs. Defined here (not imported from internal/exec) to avoid a
-// circular dependency. In docker mode, RunShell executes inside the container,
-// ContainerName returns the container name, and CDPPort returns the host-side
-// port published for the container's CDP endpoint. In direct mode,
-// ContainerName returns "" and CDPPort returns 0.
+// manager needs. Defined here (not imported from internal/exec) to keep the
+// package light. In docker mode, RunShell executes inside the container and
+// ContainerName returns the container name; in direct mode ContainerName
+// returns "".
 type SandboxExecutor interface {
 	RunShell(ctx context.Context, command string) (string, error)
 	ContainerName() string
-	CDPPort() int
 }
 
 // defaultTimeout is the per-operation timeout for browser actions. Without
@@ -53,347 +51,90 @@ type SandboxExecutor interface {
 // prevents indefinite hangs when the caller has no deadline).
 const defaultTimeout = 30 * time.Second
 
-// Manager owns a headless Chromium browser context and provides the tool
+// DefaultIdleTimeout is how long the browser may sit unused before it is
+// stopped (browser_idle_timeout_seconds, default 600).
+const DefaultIdleTimeout = 10 * time.Minute
+
+// Manager owns a lazily launched headless Chromium and provides the tool
 // handlers for browser_* operations. It is nil when BrowserEnabled is false
-// or when browser launch failed at startup.
+// or when the browser cannot be used at all (preflight failed).
 //
-// The manager eagerly launches Chromium in NewManager (see the doc comment
-// there for why the first chromedp.Run must use m.ctx directly). All
-// operations reuse the default tab; the agent can set viewport, emulate
-// media features, click, evaluate JS, extract text/HTML, and capture
-// screenshots.
+// The browser is launched by the first operation (beginOp), reused by later
+// ones, and stopped by the idle timer, Stop, or Close; the next operation after
+// a stop launches a fresh one in a new profile dir. All operations reuse the
+// default tab; the agent can set viewport, emulate media features, click,
+// evaluate JS, extract text/HTML, and capture screenshots.
 type Manager struct {
-	// allocCtx is the browser allocator context (one browser process).
-	allocCtx context.Context
-	// allocCancel cancels the allocator (shuts down the browser).
-	allocCancel context.CancelFunc
+	// lifeMu serialises launch and stop. Operations hold it only while they are
+	// admitted (launch included), never while they run.
+	lifeMu sync.Mutex
 
-	// ctx is the default browser context. All operations run against the
-	// tab/target this context represents.
-	ctx       context.Context
-	ctxCancel context.CancelFunc
+	// mu guards everything below.
+	mu       sync.Mutex
+	sess     *session
+	ctx      context.Context // the running browser's context; nil when stopped
+	inflight int             // operations currently running
+	idle     *time.Timer
+	closed   bool
 
-	// userDataDir is the writable temp directory passed to Chromium via
-	// --user-data-dir. Required on a --read-only sandbox rootfs (see
-	// NewManager). Removed on Close.
-	userDataDir string
-
-	// dockerExe and dockerContainer are set when the browser runs inside a
-	// Docker container. Close() uses them to kill the container-side chromium
-	// process (the remote allocator does not own the process lifecycle).
-	dockerExe       SandboxExecutor
-	dockerContainer string
+	launcher    launcher
+	idleTimeout time.Duration
 
 	// screenshots tracks temp screenshot files for cleanup on Close.
 	screenshots  []string
 	screenshotMu sync.Mutex
 }
 
-// NewManager creates a browser Manager and eagerly launches a headless Chromium
-// instance. In docker mode (exe.ContainerName() != ""), Chromium is launched
-// INSIDE the container via docker exec, using the image's installed chromium.
-// In direct mode (ContainerName() == ""), Chromium is launched as a child of
-// the wakil process on the host.
+// Option configures NewManager.
+type Option func(*Manager)
+
+// WithIdleTimeout sets how long the browser may sit unused before it is
+// stopped. d <= 0 selects DefaultIdleTimeout.
+func WithIdleTimeout(d time.Duration) Option {
+	return func(m *Manager) {
+		if d > 0 {
+			m.idleTimeout = d
+		}
+	}
+}
+
+// NewManager creates a browser Manager. Nothing is launched: Chromium starts on
+// the first tool call. It only checks that a browser can plausibly be launched
+// (docker mode: chromium exists in the container; direct mode: a Chrome/
+// Chromium binary is on PATH or at browserPath), so a missing browser still
+// disables the tools at startup instead of failing every call.
 //
 // The browserPath argument, when non-empty, overrides the Chromium binary
-// location. In docker mode this is passed to the container's chromium invocation.
-// In direct mode it is passed to chromedp.ExecPath.
-//
-// Returns an error if Chromium cannot start (missing binary, missing shared
-// libraries, etc.) so the caller can log a clear message at startup instead
-// of masking the failure as "context canceled" on every tool call.
-func NewManager(exe SandboxExecutor, browserPath string) (*Manager, error) {
+// location (docker: the in-container command; direct: the host path).
+func NewManager(exe SandboxExecutor, browserPath string, opts ...Option) (*Manager, error) {
 	// An executor that is neither a container nor the host (a sandbox backend
 	// such as hisn) must never fall through to the host launcher below: that
 	// would run Chromium outside the sandbox.
 	if g, ok := exe.(interface{ HostBrowserAllowed() bool }); ok && !g.HostBrowserAllowed() {
 		return nil, fmt.Errorf("browser tools are not supported by this sandbox backend")
 	}
+	m := &Manager{idleTimeout: DefaultIdleTimeout}
+	for _, o := range opts {
+		o(m)
+	}
 	if exe != nil && exe.ContainerName() != "" {
-		return newDockerManager(exe, browserPath)
-	}
-	return newLocalManager(browserPath)
-}
-
-// cdpReady checks if the CDP HTTP endpoint responds at the given URL.
-func cdpReady(cdpURL string) bool {
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(cdpURL + "/json/version")
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == 200
-}
-
-// newDockerManager launches Chromium inside the Docker container and connects
-// to it via remote.NewAllocator (CDP over WebSocket). The container
-// publishes port 9222 to an ephemeral host port (via -p 127.0.0.1::9222 at
-// container creation), which the host-side browser manager connects to via
-// localhost. This avoids container-IP routing issues (Docker Desktop, rootless
-// Docker, firewalls) and works regardless of whether chromium honors
-// --remote-debugging-address=0.0.0.0.
-func newDockerManager(exe SandboxExecutor, browserPath string) (*Manager, error) {
-	container := exe.ContainerName()
-	hostPort := exe.CDPPort()
-	if hostPort == 0 {
-		return nil, fmt.Errorf("container %s did not publish CDP port 9222 — ensure BrowserEnabled is true in DockerOpts", container)
-	}
-	chromiumBin := browserPath
-	if chromiumBin == "" {
-		chromiumBin = "chromium"
-	}
-
-	// Preflight: verify the chromium binary exists inside the container.
-	checkCtx, checkCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer checkCancel()
-	if _, err := exe.RunShell(checkCtx, fmt.Sprintf("command -v %s", chromiumBin)); err != nil {
-		return nil, fmt.Errorf("chromium binary %q not found in container %s — set browser_enabled:false or install chromium in the image", chromiumBin, container)
-	}
-
-	// Chromium in --headless=new mode ignores --remote-debugging-address=0.0.0.0
-	// and binds to 127.0.0.1 only (confirmed empirically on Debian Chromium 150).
-	// Docker's -p port forwarding enters via the bridge interface, so it cannot
-	// reach a loopback-only listener. We need a TCP relay inside the container:
-	// listen on 0.0.0.0:9223 (bridge-facing) and forward to 127.0.0.1:9222.
-	// The container has python3 (installed in the Dockerfile).
-	const cdpRelayPort = 9223
-	const cdpContainerPort = 9222
-	const profileDir = "/tmp/wakil-chrome-profile"
-	const logFile = "/tmp/wakil-chrome.log"
-	// shellQuote escapes a string for safe use as a single shell argument.
-	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
-	startCmd := fmt.Sprintf(
-		"HOME=/tmp %s --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage"+
-			" --remote-debugging-port=%d"+
-			" --user-data-dir=%s >%s 2>&1 &",
-		quote(chromiumBin), cdpContainerPort, profileDir, logFile)
-	startCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer startCancel()
-	if _, err := exe.RunShell(startCtx, startCmd); err != nil {
-		return nil, fmt.Errorf("cannot start Chromium in container %s (%w) — set browser_enabled:false or install chromium in the image", container, err)
-	}
-
-	// Start the TCP relay inside the container. It listens on 0.0.0.0:9223
-	// (accessible via the Docker bridge) and forwards bidirectionally to
-	// 127.0.0.1:9222 (where chromium is actually listening). Using python3
-	// because it's guaranteed to be in the image (unlike socat or ncat).
-	// select-based single-threaded loop — handles multiple connections.
-	relayCmd := fmt.Sprintf(
-		`python3 -c '
-import socket,select,os
-ls=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-ls.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-ls.bind(("0.0.0.0",%d))
-ls.listen(5)
-pairs={}
-socks=[ls]
-while True:
-  r,_,_=select.select(socks,[],[],1)
-  for s in r:
-    if s is ls:
-      c,_=ls.accept()
-      t=socket.create_connection(("127.0.0.1",%d))
-      t.setblocking(False)
-      c.setblocking(False)
-      pairs[c]=t
-      pairs[t]=c
-      socks.extend([c,t])
-    else:
-      d=pairs.get(s)
-      if not d: continue
-      try:
-        data=s.recv(65536)
-      except:
-        data=b""
-      if not data:
-        if s in socks: socks.remove(s)
-        if d in socks: socks.remove(d)
-        del pairs[s]
-        del pairs[d]
-        s.close()
-        d.close()
-      else:
-        d.sendall(data)
-' &`,
-		cdpRelayPort, cdpContainerPort)
-	relayCtx, relayCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer relayCancel()
-	if _, err := exe.RunShell(relayCtx, relayCmd); err != nil {
-		return nil, fmt.Errorf("cannot start CDP relay in container %s (%w)", container, err)
-	}
-
-	// Connect via the published host port (127.0.0.1:<hostPort>). Poll the
-	// CDP /json/version endpoint until it responds — chromium needs a moment
-	// to start, and chromedp.Run fails fast on connection refused.
-	cdpURL := fmt.Sprintf("http://127.0.0.1:%d", hostPort)
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if cdpReady(cdpURL) {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	if !cdpReady(cdpURL) {
-		// Chromium didn't start — gather diagnostics: logs, listener state,
-		// and the exact chromium process command line.
-		diagCtx, diagCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer diagCancel()
-		logOut, _ := exe.RunShell(diagCtx, "tail -20 "+logFile)
-		listenerOut, _ := exe.RunShell(diagCtx, "grep -E '2406|2407' /proc/net/tcp /proc/net/tcp6 2>/dev/null; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\" {print $2}' 2>/dev/null; true")
-		chromiumCmdline, _ := exe.RunShell(diagCtx, "cat /proc/*/cmdline 2>/dev/null | tr '\\0' ' ' | grep chromium 2>/dev/null | head -3; true")
-		return nil, fmt.Errorf("Chromium did not start in container %s (port %d not responding after 15s).\n"+
-			"Logs:\n%s\n\nListeners:\n%s\n\nChromium processes:\n%s",
-			container, cdpRelayPort,
-			strings.TrimSpace(logOut), strings.TrimSpace(listenerOut), strings.TrimSpace(chromiumCmdline))
-	}
-
-	// Connect via remote.NewAllocator.
-	allocCtx, allocCancel := remote.NewAllocator(context.Background(), cdpURL)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-
-	m := &Manager{
-		allocCtx:    allocCtx,
-		allocCancel: allocCancel,
-		ctx:         browserCtx,
-		ctxCancel:   browserCancel,
-		// Store the executor + container name so Close() can kill the
-		// container-side chromium process and relay.
-		dockerExe:       exe,
-		dockerContainer: container,
-	}
-
-	// Verify the CDP connection works by running a no-op action.
-	launchDone := make(chan error, 1)
-	safe.Go("browser-launch", func() { _, err := chromedp.Run(browserCtx, chromedp.Navigate("about:blank")); launchDone <- err })
-	select {
-	case err := <-launchDone:
+		l, err := newDockerLauncher(exe, browserPath)
 		if err != nil {
-			m.Close()
-			return nil, fmt.Errorf("cannot connect to Chromium in container %s at %s (%w) — ensure chromium is installed in the image", container, cdpURL, err)
+			return nil, err
 		}
-	case <-time.After(15 * time.Second):
-		m.Close()
-		return nil, fmt.Errorf("timed out connecting to Chromium in container %s at %s after 15s", container, cdpURL)
+		m.launcher = l
+		return m, nil
 	}
-
+	l, err := newLocalLauncher(browserPath)
+	if err != nil {
+		return nil, err
+	}
+	m.launcher = l
 	return m, nil
 }
 
-// newLocalManager launches Chromium as a child of the wakil process (host-side)
-// using chromedp.NewExecAllocator. Used in direct mode or when no executor
-// is available.
-//
-// Eager launch is critical: chromedp ties the browser process's lifetime to
-// whichever context is used for the FIRST chromedp.Run call. If that first call
-// uses a context derived with context.WithTimeout/WithCancel, canceling that
-// derived context later kills the browser process outright. The eager launch
-// below uses m.ctx DIRECTLY, with no derived timeout/cancel wrapping it.
-//
-// A writable user-data-dir + HOME are required on a --read-only sandbox rootfs:
-// Chromium's crashpad crash-handler needs a writable directory for its database,
-// and it reads $HOME for its own state. /tmp is writable (tmpfs) in the sandbox,
-// so both point there. This was empirically verified against the sandbox's exact
-// hardening flags (--read-only, --cap-drop=ALL, --security-opt=no-new-privileges,
-// --tmpfs=/tmp, --tmpfs=/etc).
-func newLocalManager(browserPath string) (*Manager, error) {
-	userDataDir, err := os.MkdirTemp("", "wakil-chrome-profile-")
-	if err != nil {
-		return nil, fmt.Errorf("create user-data-dir: %w", err)
-	}
-
-	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", "new"),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.UserDataDir(userDataDir),
-		chromedp.Env("HOME="+os.TempDir()),
-	)
-	if browserPath != "" {
-		allocOpts = append(allocOpts, chromedp.ExecPath(browserPath))
-	}
-
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
-	ctx, ctxCancel := chromedp.NewContext(allocCtx)
-
-	m := &Manager{
-		allocCtx:    allocCtx,
-		allocCancel: allocCancel,
-		ctx:         ctx,
-		ctxCancel:   ctxCancel,
-		userDataDir: userDataDir,
-	}
-
-	// triedMsg returns a human-readable description of what binary was attempted.
-	triedMsg := "PATH search (google-chrome, chromium, etc.)"
-	if browserPath != "" {
-		triedMsg = fmt.Sprintf("browser_path=%q", browserPath)
-	}
-
-	// Eager launch: run a no-op action to start the browser process now,
-	// using m.ctx DIRECTLY (see the doc comment above — this is the critical
-	// part, not just "eager"). The 15s timeout is enforced by racing against
-	// a timer in a goroutine, NOT by deriving a cancelable context from ctx,
-	// because canceling any context used for chromedp's first Run call kills
-	// the browser process. On timeout or launch error, m.Close() tears down
-	// the (failed or hung) allocator — that is a deliberate full abort, not
-	// a mid-session op cancellation, so canceling ctx there is correct.
-	launchDone := make(chan error, 1)
-	safe.Go("browser-launch", func() { _, err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); launchDone <- err })
-	select {
-	case err := <-launchDone:
-		if err != nil {
-			m.Close()
-			return nil, fmt.Errorf("cannot start Chromium, tried %s (%w) — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg, err)
-		}
-	case <-time.After(15 * time.Second):
-		m.Close()
-		return nil, fmt.Errorf("timed out launching Chromium after 15s, tried %s — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg)
-	}
-
-	return m, nil
-}
-
-// Close shuts down the browser process, releases all resources, and removes
-// the temporary user-data-dir. For docker-mode managers, also kills the
-// container-side chromium process (the remote allocator does not own the process
-// lifecycle, so canceling the chromedp context only closes the WebSocket —
-// the chromium process would otherwise leak until the container is destroyed).
-func (m *Manager) Close() error {
-	if m == nil {
-		return nil
-	}
-	if m.ctxCancel != nil {
-		m.ctxCancel()
-	}
-	if m.allocCancel != nil {
-		m.allocCancel()
-	}
-	if m.userDataDir != "" {
-		os.RemoveAll(m.userDataDir)
-	}
-	// Docker mode: kill the chromium process AND the CDP relay inside the container.
-	if m.dockerExe != nil && m.dockerContainer != "" {
-		killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer killCancel()
-		// Kill both chromium (remote-debugging-port=9222) and the python CDP
-		// relay (port 9223). The relay is started with python3 -c ... & so
-		// pkill on the python3 relay script cleans it up.
-		_, _ = m.dockerExe.RunShell(killCtx,
-			"pkill -f 'remote-debugging-port=9222' 2>/dev/null; "+
-				"pkill -f '0.0.0.0.*9223' 2>/dev/null; "+
-				"rm -rf /tmp/wakil-chrome-profile /tmp/wakil-chrome.log")
-	}
-	// Clean up tracked screenshot temp files.
-	m.screenshotMu.Lock()
-	for _, p := range m.screenshots {
-		_ = os.Remove(p)
-	}
-	m.screenshots = nil
-	m.screenshotMu.Unlock()
-	return nil
-}
+// quoteSh single-quotes s for use as one shell word.
+func quoteSh(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
 // opCtx derives a per-operation context from the caller's ctx and the
 // manager's browser ctx. The caller's ctx provides cancellation (e.g., user
@@ -405,7 +146,25 @@ func (m *Manager) Close() error {
 // context, ensuring the goroutine that bridges caller cancellation exits
 // cleanly (no leak).
 func (m *Manager) opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	parent := m.ctx
+	return deriveOpCtx(m.ctx, ctx)
+}
+
+// begin admits one operation: it launches the browser if it is not running
+// (first call, or first call after an idle/`/new` stop), pins it against the
+// idle timer, and returns the operation context. The returned cancel ends the
+// operation (and re-arms the idle timer).
+func (m *Manager) begin(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	parent, end, err := m.beginOp()
+	if err != nil {
+		return nil, nil, err
+	}
+	octx, cancel := deriveOpCtx(parent, ctx)
+	return octx, func() { cancel(); end() }, nil
+}
+
+// deriveOpCtx builds the per-operation context from the browser context
+// (parent) and the caller's ctx; see opCtx.
+func deriveOpCtx(parent, ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		// No caller ctx — just use a timeout on the browser ctx.
 		return context.WithTimeout(parent, defaultTimeout)
@@ -430,13 +189,33 @@ func (m *Manager) opCtx(ctx context.Context) (context.Context, context.CancelFun
 	}
 }
 
+// Close stops the browser, removes its profile dir and any screenshot temp
+// files, and makes the manager refuse further operations. It is the Wakil-exit
+// and chat-end hook. Safe on a nil Manager and idempotent.
+func (m *Manager) Close() error {
+	if m == nil {
+		return nil
+	}
+	err := m.stop(true)
+	m.screenshotMu.Lock()
+	for _, p := range m.screenshots {
+		_ = os.Remove(p)
+	}
+	m.screenshots = nil
+	m.screenshotMu.Unlock()
+	return err
+}
+
 // Navigate opens a URL in the browser and waits for the page to load.
 // Returns the page title and final URL (after redirects).
 func (m *Manager) Navigate(ctx context.Context, url string) (title, finalURL string, err error) {
 	if m == nil {
 		return "", "", fmt.Errorf("browser: manager is not initialized")
 	}
-	octx, cancel := m.opCtx(ctx)
+	octx, cancel, err := m.begin(ctx)
+	if err != nil {
+		return "", "", err
+	}
 	defer cancel()
 	if err := chromedp.Do(octx,
 		chromedp.Navigate(url),
@@ -462,10 +241,12 @@ func (m *Manager) Screenshot(ctx context.Context, fullPage bool) (string, error)
 	if m == nil {
 		return "", fmt.Errorf("browser: manager is not initialized")
 	}
-	octx, cancel := m.opCtx(ctx)
+	octx, cancel, err := m.begin(ctx)
+	if err != nil {
+		return "", err
+	}
 	defer cancel()
 	var buf []byte
-	var err error
 	if fullPage {
 		buf, err = chromedp.Run(octx, chromedp.FullScreenshot(90))
 		if err != nil {
@@ -503,7 +284,10 @@ func (m *Manager) SetViewport(ctx context.Context, width, height int) error {
 	if m == nil {
 		return fmt.Errorf("browser: manager is not initialized")
 	}
-	octx, cancel := m.opCtx(ctx)
+	octx, cancel, err := m.begin(ctx)
+	if err != nil {
+		return err
+	}
 	defer cancel()
 	return chromedp.Do(octx,
 		chromedp.EmulateViewport(int64(width), int64(height)),
@@ -521,7 +305,10 @@ func (m *Manager) EmulateReducedMotion(ctx context.Context, enable bool) error {
 	if enable {
 		value = "reduce"
 	}
-	octx, cancel := m.opCtx(ctx)
+	octx, cancel, err := m.begin(ctx)
+	if err != nil {
+		return err
+	}
 	defer cancel()
 	return chromedp.Do(octx,
 		chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
@@ -542,7 +329,10 @@ func (m *Manager) Click(ctx context.Context, selector string) error {
 	if m == nil {
 		return fmt.Errorf("browser: manager is not initialized")
 	}
-	octx, cancel := m.opCtx(ctx)
+	octx, cancel, err := m.begin(ctx)
+	if err != nil {
+		return err
+	}
 	defer cancel()
 	return chromedp.Do(octx,
 		chromedp.WaitVisible(selector),
@@ -557,7 +347,10 @@ func (m *Manager) EvalJS(ctx context.Context, expr string) (string, error) {
 	if m == nil {
 		return "", fmt.Errorf("browser: manager is not initialized")
 	}
-	octx, cancel := m.opCtx(ctx)
+	octx, cancel, err := m.begin(ctx)
+	if err != nil {
+		return "", err
+	}
 	defer cancel()
 	// Evaluate into any to handle arbitrary return types (string, number,
 	// boolean, object, null). chromedp JSON-decodes the CDP result.
@@ -586,7 +379,10 @@ func (m *Manager) GetText(ctx context.Context, selector string) (string, error) 
 	if m == nil {
 		return "", fmt.Errorf("browser: manager is not initialized")
 	}
-	octx, cancel := m.opCtx(ctx)
+	octx, cancel, err := m.begin(ctx)
+	if err != nil {
+		return "", err
+	}
 	defer cancel()
 	return chromedp.Run(octx, chromedp.Text(selector))
 }
@@ -598,7 +394,10 @@ func (m *Manager) GetHTML(ctx context.Context, selector string) (string, error) 
 	if m == nil {
 		return "", fmt.Errorf("browser: manager is not initialized")
 	}
-	octx, cancel := m.opCtx(ctx)
+	octx, cancel, err := m.begin(ctx)
+	if err != nil {
+		return "", err
+	}
 	defer cancel()
 	target := "html"
 	if selector != "" {

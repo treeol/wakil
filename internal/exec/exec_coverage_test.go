@@ -34,9 +34,6 @@ func TestDirectExecutorGetters(t *testing.T) {
 	if got := ex.ContainerName(); got != "" {
 		t.Errorf("ContainerName() = %q, want empty", got)
 	}
-	if got := ex.CDPPort(); got != 0 {
-		t.Errorf("CDPPort() = %d, want 0", got)
-	}
 	desc := ex.Describe()
 	if !strings.Contains(desc, "direct[") {
 		t.Errorf("Describe() = %q, want to contain 'direct['", desc)
@@ -302,7 +299,6 @@ func TestDockerExecutorGetters(t *testing.T) {
 		generation:    5,
 		kvrSocket:     "/run/kvr-staging/kvr.sock",
 		kvrAvailable:  true,
-		cdpPort:       32768,
 		hostMount:     "/host/project",
 	}
 	if got := d.Cwd(); got != "/workspace" {
@@ -322,9 +318,6 @@ func TestDockerExecutorGetters(t *testing.T) {
 	}
 	if got := d.ContainerName(); got != "wakil-session-123" {
 		t.Errorf("ContainerName() = %q, want wakil-session-123", got)
-	}
-	if got := d.CDPPort(); got != 32768 {
-		t.Errorf("CDPPort() = %d, want 32768", got)
 	}
 }
 

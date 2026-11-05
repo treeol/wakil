@@ -31,6 +31,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `collapse_context` checkpoint) would not be smaller than the original, the original is kept
   and the notice / tool result says so.
 
+- **The headless browser starts on first use, stops when idle, and listens only on loopback**
+  (docker backend). Previously the browser and a CDP relay were started with the container
+  whether or not the browser was used; the relay bound `0.0.0.0:9223`, the profile dir was the
+  fixed `/tmp/wakil-chrome-profile`, and stopping was a `pkill -f`. Now Chromium launches on the
+  first `browser_*` call as a direct child of a `docker exec` session (own process group, a
+  per-launch profile dir that is also `HOME`, `--disable-crash-reporter --disable-breakpad`,
+  Chromium-chosen debugging port) and is stopped by TERM on the group, KILL after 3 s, a sweep
+  of stragglers that carry the profile dir, and removal of the dir. It stops after
+  `browser_idle_timeout_seconds` (new, default 600; flat key like the other `*_seconds` keys,
+  not a nested `browser.idle_timeout`), on `/new`/`/handoff`, chat end and exit; the idle timer
+  never fires under a running call. The container no longer publishes a CDP port (the
+  `Executor.CDPPort` method and `DockerOpts.BrowserEnabled` are gone) and the python relay is
+  removed: the host opens a `127.0.0.1` listener whose connections are piped through
+  `docker exec -i … python3`. Direct mode keeps chromedp's own launcher, now lazy with the same
+  lifecycle. Under hisn the browser stays off. Chromium may still start `chrome_crashpad_handler`
+  despite the flags (observed on the image's Chromium 156); those processes carry the profile
+  dir and are swept on stop.
+- **Helper commands no longer depend on the locale (L).** Executors parse the output and stderr
+  of their own helper commands; under a German shell "Datei oder Verzeichnis nicht gefunden"
+  was never recognised as "not found" (`TestBackendExecutorLazyStartAndFileOps` failed, and
+  `apply_skill_template` into an empty directory failed with "cannot inspect existing
+  target"). Helpers now run with `LC_ALL=C LANG=C`, and "not found" is decided by a `test(1)`
+  exit status after a failed read. The model's own commands keep the user's locale.
+- **Tests no longer write to the real user data dirs (H1).** `internal/testutil.Main` points
+  HOME and the XDG dirs at temp dirs and fails the package if anything is created or appended
+  under the real `~/.local/share/wakil` or `~/.config/wakil` (the wiring and tui packages leaked
+  memory directories and `input_history` lines). `WAKIL_TEST_ALLOW_REAL_DIR_CHANGES=1` skips the
+  check.
+
 ## [0.4.3] - 2026-11-05
 
 ### Fixed

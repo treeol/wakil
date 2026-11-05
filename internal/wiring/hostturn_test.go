@@ -64,7 +64,6 @@ func (fakeExec) Generation() int                                 { return 1 }
 func (fakeExec) KVRSocketPath() string                           { return "" }
 func (fakeExec) KVRAvailable() bool                              { return false }
 func (fakeExec) ContainerName() string                           { return "" }
-func (fakeExec) CDPPort() int                                    { return 0 }
 
 // ---- fake SSE backend (mirrors agent.sseServer helpers, unexported there) ----
 

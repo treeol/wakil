@@ -721,9 +721,6 @@ func (e *BackendExecutor) KVRAvailable() bool { return e.KVRSocketPath() != "" }
 // ContainerName implements Executor: there is no container.
 func (e *BackendExecutor) ContainerName() string { return "" }
 
-// CDPPort implements Executor.
-func (e *BackendExecutor) CDPPort() int { return 0 }
-
 // SandboxTmpReadable reports that /tmp is the backend sandbox's own, not the
 // host's (see SandboxTmpReader).
 func (e *BackendExecutor) SandboxTmpReadable() bool { return true }

@@ -356,7 +356,7 @@ func TestBackendExecutorWorktreeChild(t *testing.T) {
 
 func TestBackendExecutorDeclaresNoBrowserNoKVR(t *testing.T) {
 	ex, _ := newTestBackendExec(t)
-	if ex.ContainerName() != "" || ex.CDPPort() != 0 || ex.KVRAvailable() || ex.KVRSocketPath() != "" {
+	if ex.ContainerName() != "" || ex.KVRAvailable() || ex.KVRSocketPath() != "" {
 		t.Error("backend executor must not advertise container/kvr features")
 	}
 	if ex.HostBrowserAllowed() {

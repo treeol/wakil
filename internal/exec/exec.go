@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -175,11 +174,6 @@ type Executor interface {
 	// decide whether to launch Chromium inside the container (docker mode)
 	// or on the host (direct mode).
 	ContainerName() string
-
-	// CDPPort returns the host-side port published for the container's CDP
-	// endpoint (chromium remote debugging), or 0 if not published. The browser
-	// manager uses this to connect via remote.NewAllocator.
-	CDPPort() int
 }
 
 // SandboxTmpReader is an optional capability of executors whose /tmp is the
@@ -240,9 +234,6 @@ type DockerExecutor struct {
 	// memory (H4); <= 0 means DefaultShellOutputCap.
 	ShellOutputCap int64
 	kvrAvailable   bool // kvr started and PING succeeded
-	// cdpPort is the host-side port published for chromium's CDP endpoint,
-	// or 0 if not published.
-	cdpPort int
 	// iouring tracks whether the custom seccomp profile allowing io_uring
 	// was applied to this container.
 	iouring bool
@@ -301,10 +292,6 @@ type DockerOpts struct {
 	// NewDockerExecutor when DockerIOUring or DockerAllowUserns is true; the
 	// temp file is stored on DockerExecutor and cleaned up in Close().
 	IOUringProfilePath string
-	// BrowserEnabled controls whether the container publishes a CDP port
-	// (127.0.0.1::9222) for the host-side browser manager to connect to
-	// chromium running inside the container. When false, no port is published.
-	BrowserEnabled bool
 	// DockerStartTimeout bounds the docker run command. Default 120s.
 	DockerStartTimeout int // seconds; 0 = default
 	// DockerStopTimeout bounds each teardown command (stop, rm). Default 30s.
@@ -826,15 +813,6 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 		)
 	}
 
-	// Publish the CDP port for the browser manager when browser is enabled.
-	// We publish to 127.0.0.1 with an ephemeral host port (::9222) so the
-	// host-side browser manager can connect to chromium inside the container
-	// via remote.NewAllocator. The actual host port is resolved via
-	// docker port after the container starts.
-	if opts.BrowserEnabled {
-		args = append(args, "-p", "127.0.0.1::9223")
-	}
-
 	// Run as the current host user so files written to the mounted workspace
 	// are owned correctly. A persistent directory on the host serves as HOME
 	// so Go/Cargo module caches survive across sessions.
@@ -918,10 +896,6 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// the early-exit path above, or the container is alive and DockerExecutor.Close()
 	// will call it. No assignment needed here — the variable is not read again.
 
-	// Resolve the published CDP port (ephemeral host port → actual port number).
-	if opts.BrowserEnabled {
-		d.cdpPort = resolveCDPPort(name)
-	}
 	if hostMount == "" {
 		// Docker auto-creates the -w workdir at container start even under
 		// --read-only, so this mkdir is a safety net that detects a missing
@@ -1086,28 +1060,6 @@ func getContainerLogs(name string, lines int) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
-}
-
-// resolveCDPPort resolves the ephemeral host port Docker assigned to the
-// container's published CDP port (9222). Returns 0 if the port couldn't be
-// resolved.
-func resolveCDPPort(container string) int {
-	out, _, err := dockerCmd(5*time.Second, "port", container, "9223")
-	if err != nil {
-		return 0
-	}
-	// Output format: "0.0.0.0:32768\n" or "127.0.0.1:32768\n"
-	s := strings.TrimSpace(out)
-	// Extract the port number after the last colon.
-	idx := strings.LastIndex(s, ":")
-	if idx < 0 || idx == len(s)-1 {
-		return 0
-	}
-	port, err := strconv.Atoi(s[idx+1:])
-	if err != nil {
-		return 0
-	}
-	return port
 }
 
 // ensurePasswdEntry appends an /etc/passwd entry for the mapped host uid if
@@ -1408,7 +1360,6 @@ func (d *DockerExecutor) Generation() int       { return d.generation }
 func (d *DockerExecutor) KVRSocketPath() string { return d.kvrSocket }
 func (d *DockerExecutor) KVRAvailable() bool    { return d.kvrAvailable }
 func (d *DockerExecutor) ContainerName() string { return d.container }
-func (d *DockerExecutor) CDPPort() int          { return d.cdpPort }
 
 // stopTimeout returns the per-command teardown deadline in seconds (H5).
 // Enforces a minimum of 15s — the docker stop -t 10 grace period needs the
@@ -1742,7 +1693,6 @@ func (e *DirectExecutor) Generation() int       { return e.generation }
 func (e *DirectExecutor) KVRSocketPath() string { return "" }
 func (e *DirectExecutor) KVRAvailable() bool    { return false }
 func (e *DirectExecutor) ContainerName() string { return "" }
-func (e *DirectExecutor) CDPPort() int          { return 0 }
 func (e *DirectExecutor) Describe() string      { return "direct[" + e.root + "]" }
 func (e *DirectExecutor) Close() error          { return nil }
 

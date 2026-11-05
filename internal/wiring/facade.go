@@ -1045,6 +1045,13 @@ func (f *wiringFacade) Close() error {
 		f.resources.MCPMgr.Close()
 	}
 
+	// Stop this conversation's browser (/new, /handoff, chat end): the
+	// headless Chromium it launched lazily, its process group and its profile
+	// dir. Per-facade like MCPMgr — each BuildApp builds its own browser
+	// Manager, so this cannot touch a sibling session. Close is idempotent and
+	// nil-safe; the final-exit path (CloseResources) closes it again harmlessly.
+	closeFacadeBrowser(f)
+
 	// Persist the session transcript on close — belt-and-suspenders for state
 	// mutated after the last turn's defer SaveSession (e.g. /label, /model,
 	// repo-state). SaveSession is a no-op when app.Session is nil (no
@@ -1166,5 +1173,12 @@ func workflowSnapshot(wf *workflow.WorkflowState) *sessionclient.WorkflowSnapsho
 		StepCount: wf.StepCount,
 		StepIdx:   wf.StepIdx,
 		PlanPath:  wf.PlanPath,
+	}
+}
+
+// closeFacadeBrowser stops the conversation's browser (nil-safe, idempotent).
+func closeFacadeBrowser(f *wiringFacade) {
+	if f != nil && f.resources != nil && f.resources.BrowserMgr != nil {
+		_ = f.resources.BrowserMgr.Close()
 	}
 }

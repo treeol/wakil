@@ -144,7 +144,11 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// Browser manager
 	var browserMgr *browser.Manager
 	if cfg.BrowserEnabled {
-		mgr, err := browser.NewManager(exe, cfg.BrowserPath)
+		var idleOpt browser.Option = browser.WithIdleTimeout(0)
+		if cfg.BrowserIdleTimeoutSeconds > 0 {
+			idleOpt = browser.WithIdleTimeout(time.Duration(cfg.BrowserIdleTimeoutSeconds) * time.Second)
+		}
+		mgr, err := browser.NewManager(exe, cfg.BrowserPath, idleOpt)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "browser:", err)
 			// Disable browser tools so BuildTools doesn't advertise them
@@ -510,7 +514,6 @@ func NewExecutor(cfg config.Config) (exec.Executor, error) {
 			DockerTmpfsSize:         cfg.DockerTmpfsSize,
 			DockerIOUring:           cfg.DockerIOUring,
 			DockerAllowUserns:       cfg.DockerAllowUserns,
-			BrowserEnabled:          cfg.BrowserEnabled,
 			DockerStartTimeout:      cfg.DockerStartTimeoutSec,
 			DockerStopTimeout:       cfg.DockerStopTimeoutSec,
 		})

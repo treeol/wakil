@@ -688,6 +688,11 @@ type Config struct {
 	// point to a specific binary (e.g. "/usr/bin/chromium") when the browser
 	// is installed at a non-standard location or not in PATH.
 	BrowserPath string `json:"browser_path,omitempty"`
+	// BrowserIdleTimeoutSeconds stops the browser after this many seconds
+	// without a browser_* call (it starts again on the next call). 0 = default
+	// 600; negative is rejected. The browser is also stopped on /new, chat end
+	// and exit.
+	BrowserIdleTimeoutSeconds int `json:"browser_idle_timeout_seconds,omitempty"`
 
 	// ilm-stack shadow-mode emitter (v0: shadow only, no write-back).
 	// mode=off (default): zero behaviour change, zero network calls.
@@ -2144,6 +2149,9 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.ContextTailAnswerBytes < 0 {
 		return fmt.Errorf("context_tail_answer_bytes must be >= 0 (got %d)", cfg.ContextTailAnswerBytes)
+	}
+	if cfg.BrowserIdleTimeoutSeconds < 0 {
+		return fmt.Errorf("browser_idle_timeout_seconds must be >= 0 (got %d)", cfg.BrowserIdleTimeoutSeconds)
 	}
 	for name, lim := range cfg.MashuraModels {
 		if lim.ContextTokens < 0 || lim.ReviewMaxTokens < 0 {

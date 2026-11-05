@@ -31,7 +31,7 @@ import (
 //     if they ever do, these would need override — see comment on each method)
 //   - KillPgid, IsProcessAlive, IsProcessGroupAlive (pid-based, path-agnostic)
 //   - SandboxTools (probe runs in the container, not workspace-specific)
-//   - Generation, KVRSocketPath, KVRAvailable, ContainerName, CDPPort (container-level)
+//   - Generation, KVRSocketPath, KVRAvailable, ContainerName (container-level)
 type dockerWorktreeExecutor struct {
 	*DockerExecutor        // delegate container-level methods
 	wtRoot          string // container-internal worktree root (e.g. /tmp/wakil-wt-XXX)

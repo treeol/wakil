@@ -338,6 +338,7 @@ func TestValidateContextLimitsRejects(t *testing.T) {
 		{"fallback zero", func(c *Config) { c.ContextTokensFallback = 0 }, "context_tokens_fallback"},
 		{"negative reasoning budget", func(c *Config) { c.ReasoningBudgetTokens = -1 }, "reasoning_budget_tokens"},
 		{"negative answer margin", func(c *Config) { c.AnswerMarginTokens = -1 }, "answer_margin_tokens"},
+		{"negative browser idle timeout", func(c *Config) { c.BrowserIdleTimeoutSeconds = -1 }, "browser_idle_timeout_seconds"},
 		{"reservations eat fallback", func(c *Config) {
 			c.ReasoningBudgetTokens = c.ContextTokensFallback
 		}, "no prompt budget"},
