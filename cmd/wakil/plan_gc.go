@@ -65,14 +65,24 @@ func runPlanGC(args []string) int {
 	var projectDir, storePath string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
-		case a == "--apply" || a == "-apply":
+		case a == "--apply":
 			apply = true
-		case a == "--project" && i+1 < len(args):
-			projectDir = args[i+1]
+		case a == "--project" || a == "--store":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+				fmt.Fprintf(os.Stderr, "plan gc: %s needs a value\n", a)
+				return ExitError
+			}
+			if a == "--project" {
+				projectDir = args[i+1]
+			} else {
+				storePath = args[i+1]
+			}
 			i++
-		case a == "--store" && i+1 < len(args):
-			storePath = args[i+1]
-			i++
+		default:
+			// An unknown or misspelled flag must fail, not fall back to a dry
+			// run that looks like a normal result.
+			fmt.Fprintf(os.Stderr, "plan gc: unknown argument %q (usage: wakil plan gc [--apply] [--project <dir>] [--store <path>])\n", a)
+			return ExitError
 		}
 	}
 
@@ -130,14 +140,20 @@ func runPlanGC(args []string) int {
 	}
 
 	rejected := 0
+	failed := 0
 	for _, e := range dead {
 		if err := store.Reject(ctx, e.ID, "plan gc: owning session no longer exists"); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: reject %s [id: %d]: %v\n", e.Key, e.ID, err)
+			failed++
 			continue
 		}
 		rejected++
 	}
 	fmt.Fprintf(os.Stdout, "plan gc: rejected %d of %d dead entries\n", rejected, len(dead))
+	if failed > 0 {
+		// A partial failure is not success: the caller must see a non-zero exit.
+		return ExitError
+	}
 	return ExitOK
 }
 
@@ -155,10 +171,27 @@ func agentWorkspace(cfg config.Config, projectDir string) string {
 // Only a confirmed ENOENT returns false (the owner is provably gone). Any
 // other stat error returns true: an unreadable owner is unknown, not dead.
 func planGCSessionExists(chatID string) bool {
+	if !planGCSessionsDirPresent() {
+		return true // no sessions directory to check against: cannot prove death
+	}
 	p := agent.SessionFilePath(chatID)
 	if p == "" {
 		return true // no sessions dir configured: cannot prove death
 	}
 	_, err := os.Stat(p)
 	return err == nil || !os.IsNotExist(err)
+}
+
+// planGCSessionsDirPresent reports whether the sessions directory exists. If it
+// is missing (for example WAKIL_SESSIONS_DIR points at the wrong place), every
+// session file would look absent and --apply would reject every quarantined
+// plan. A missing directory proves nothing about any owner, so gc treats all
+// owners as unknown instead.
+func planGCSessionsDirPresent() bool {
+	dir := agent.SessionsDir()
+	if dir == "" {
+		return false
+	}
+	fi, err := os.Stat(dir)
+	return err == nil && fi.IsDir()
 }

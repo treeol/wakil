@@ -28,3 +28,36 @@ func TestPlanGCOwnerStatErrorKeepsEntry(t *testing.T) {
 		t.Fatalf("confirmed absence should be dead, got %v", got)
 	}
 }
+
+// A sessions directory that does not exist (wrong WAKIL_SESSIONS_DIR) must not
+// make every owner dead: each session file would be ENOENT, and --apply would
+// reject every quarantined plan. The real planGCSessionExists is used, with no
+// skip, so this runs in every environment.
+func TestPlanGCMissingSessionsDirKeepsAllOwners(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-sessions")
+	t.Setenv("WAKIL_SESSIONS_DIR", missing)
+	if agent.SessionsDir() != missing {
+		t.Fatalf("SessionsDir = %q, want %q (WAKIL_SESSIONS_DIR must be honoured)", agent.SessionsDir(), missing)
+	}
+	for _, owner := range []string{"chat-a", "chat-b"} {
+		if got := classifyPlanEntry("plan/current", owner, planGCSessionExists); got == planGCDead {
+			t.Errorf("owner %q classified dead although the sessions directory is absent; --apply would reject it", owner)
+		}
+	}
+}
+
+// Unknown or incomplete arguments must fail, not run a dry-run that looks like a
+// normal result (e.g. a misspelled --apply).
+func TestPlanGCRejectsUnknownAndIncompleteArgs(t *testing.T) {
+	for _, args := range [][]string{
+		{"--aply"},
+		{"-apply"},
+		{"--project"},
+		{"--store", "--apply"},
+		{"--bogus"},
+	} {
+		if got := runPlanGC(args); got != ExitError {
+			t.Errorf("runPlanGC(%q) = %d, want ExitError (%d)", args, got, ExitError)
+		}
+	}
+}
