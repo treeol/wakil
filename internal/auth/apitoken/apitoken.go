@@ -204,4 +204,3 @@ var (
 func (i *Issuer) GetByID(ctx context.Context, id, tenantID string) (*tokenstore.APITokenRow, error) {
 	return i.store.GetAPITokenByID(ctx, id, tenantID)
 }
-

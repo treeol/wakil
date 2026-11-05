@@ -122,4 +122,3 @@ func (b *Backend) SandboxTempDir() string          { return "/tmp" }
 
 // Live reports whether a session is running.
 func (b *Backend) Live() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.live }
-

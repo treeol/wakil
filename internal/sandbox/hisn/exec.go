@@ -205,7 +205,6 @@ func (b *Backend) recordLost(argv []string) {
 	b.lostMu.Unlock()
 }
 
-
 // ---- ctl path ----
 
 // ctlLostHandle is a failed ctl launch (ambiguous or refused): Exec succeeds

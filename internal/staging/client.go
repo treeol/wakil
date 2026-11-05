@@ -705,7 +705,6 @@ func statusByte(resp []byte) byte {
 	return resp[0]
 }
 
-
 // IsServerUnavailable reports whether err indicates the kvr server is not
 // reachable (connection refused, no such file, etc.). Used by the tool
 // layer to report "staging unavailable".

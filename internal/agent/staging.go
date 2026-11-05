@@ -70,7 +70,6 @@ func stagingDataRoot() string {
 	return filepath.Dir(rsd)
 }
 
-
 // MemoryDBPath returns the host-side path to the durable memory SQLite
 // database for the given workspace. Reuses the same workspace-key derivation
 // as StagingPath (16 hex chars of the SHA-256 of the canonical workspace path).
