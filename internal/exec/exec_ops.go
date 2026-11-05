@@ -141,7 +141,9 @@ func (d *DockerExecutor) SandboxTools() string {
 func (e *DirectExecutor) SandboxTools() string {
 	e.toolsOnce.Do(func() {
 		e.sandboxTools = probeTools("direct", func(script string) string {
-			out, _ := exec.Command("sh", "-c", script).CombinedOutput()
+			cmd := exec.Command("sh", "-c", script)
+			cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C") // helper probe: parsed output
+			out, _ := cmd.CombinedOutput()
 			return string(out)
 		})
 	})
@@ -243,6 +245,27 @@ func (e *DirectExecutor) ConfinePath(_ context.Context, path string) (string, er
 }
 
 // ── B1: delete ────────────────────────────────────────────────────────────────
+
+// helperLocaleEnv is prepended to helper scripts run through a plain `sh -c`
+// (backend executors, where the per-exec env map is the backend's allowlist,
+// not ours): helper output/stderr is parsed, so it must not be localized.
+const helperLocaleEnv = "export LC_ALL=C LANG=C; "
+
+// entryMissingScript exits 1 iff path (relative to root, or absolute) has no
+// directory entry; 2 if root itself cannot be entered; 0 if it exists. Decided
+// by exit status only — no stderr text, so it holds under any locale.
+func entryMissingScript(root string) string {
+	return "cd " + shQuote(root) + ` 2>/dev/null || exit 2; [ -e "$1" ] || [ -L "$1" ]`
+}
+
+// entryMissing reports whether path provably does not exist, by the exit
+// status of a test(1) probe — the locale-independent complement to
+// isShellNotFound's text match, consulted only after a read already failed.
+func (d *DockerExecutor) entryMissing(ctx context.Context, root, path string) bool {
+	_, err := d.execCtx(ctx, false, "sh", "-c", entryMissingScript(root), "sh", path)
+	var ee interface{ ExitCode() int }
+	return err != nil && errors.As(err, &ee) && ee.ExitCode() == 1
+}
 
 // isShellNotFound reports whether msg is a shell-level "No such file or
 // directory" error from cat, rm, rmdir, or stat inside the container. This is
@@ -372,7 +395,7 @@ func (d *DockerExecutor) StartBackground(ctx context.Context, command, logPath s
 	script := fmt.Sprintf(
 		`setsid nohup sh -c %s > %s 2>&1 & echo $!`,
 		shQuote(command), shQuote(logPath))
-	out, execErr := d.execCtx(ctx, false, "sh", "-c", script)
+	out, execErr := d.execUser(ctx, "sh", "-c", script) // carries the model's command: user locale
 	if execErr != nil {
 		return 0, 0, fmt.Errorf("starting background process: %s", strings.TrimSpace(out))
 	}

@@ -345,6 +345,10 @@ func (e *BackendExecutor) exitErr(r result) error {
 
 // sh runs `sh -c script args...` and returns the combined output.
 func (e *BackendExecutor) sh(ctx context.Context, script string, args ...string) (string, error) {
+	// Helper script: its output and stderr are parsed, so it runs under
+	// LC_ALL=C (set in the script text — the exec env map is the backend's
+	// allowlist). User commands go through RunShell/StartBackground, not here.
+	script = helperLocaleEnv + script
 	argv := append([]string{"sh", "-c", script, "sh"}, args...)
 	if len(args) == 0 {
 		argv = []string{"sh", "-c", script}
@@ -373,25 +377,33 @@ func (e *BackendExecutor) ShellOutputCap() int64 { return e.opts.ShellOutputCap 
 func (e *BackendExecutor) ReadFile(ctx context.Context, path string) (string, error) {
 	out, err := e.sh(ctx, "cd "+shQuote(e.root)+` && cat -- "$1"`, path)
 	if err != nil {
-		return "", e.fileErr(out, path, err)
+		return "", e.fileErr(ctx, out, path, err)
 	}
 	return out, nil
 }
 
 // fileErr maps shell-level failures onto the docker executor's error shapes.
-func (e *BackendExecutor) fileErr(out, path string, err error) error {
+func (e *BackendExecutor) fileErr(ctx context.Context, out, path string, err error) error {
 	var es *ExitStatusError
 	if !errors.As(err, &es) {
 		return err // backend / lost / transport error: keep its own text
 	}
 	msg := strings.TrimSpace(out)
-	if isShellNotFound(msg) {
+	if isShellNotFound(msg) || e.entryMissing(ctx, e.root, path) {
 		return fmt.Errorf("%w: %s", ErrFileNotFound, path)
 	}
 	if msg == "" {
 		return err
 	}
 	return fmt.Errorf("%s", msg)
+}
+
+// entryMissing is the exit-status existence probe (see DockerExecutor's): true
+// only when test(1) exits 1, so a localized "not found" message cannot hide a
+// missing file.
+func (e *BackendExecutor) entryMissing(ctx context.Context, root, path string) bool {
+	r, _, err := e.run(ctx, []string{"sh", "-c", entryMissingScript(root), "sh", path}, runOpts{})
+	return err == nil && r.info.Code == 1 && !r.info.Lost && !r.info.BackendError
 }
 
 // ReadFileBounded implements Executor.
@@ -401,7 +413,7 @@ func (e *BackendExecutor) ReadFileBounded(ctx context.Context, path string, maxB
 	}
 	out, err := e.sh(ctx, fmt.Sprintf("cd %s && head -c %d -- \"$1\"", shQuote(e.root), maxBytes+1), path)
 	if err != nil {
-		return "", false, e.fileErr(out, path, err)
+		return "", false, e.fileErr(ctx, out, path, err)
 	}
 	truncated := int64(len(out)) > maxBytes
 	if truncated {
@@ -414,7 +426,7 @@ func (e *BackendExecutor) ReadFileBounded(ctx context.Context, path string, maxB
 func (e *BackendExecutor) StatFile(ctx context.Context, path string) (int64, error) {
 	out, err := e.sh(ctx, "cd "+shQuote(e.root)+` && stat -c %s -- "$1"`, path)
 	if err != nil {
-		return 0, e.fileErr(out, path, err)
+		return 0, e.fileErr(ctx, out, path, err)
 	}
 	var size int64
 	if _, scanErr := fmt.Sscan(strings.TrimSpace(out), &size); scanErr != nil {
@@ -538,7 +550,12 @@ func (e *BackendExecutor) MovePath(ctx context.Context, src, dst string) error {
 // StartBackground implements Executor.
 func (e *BackendExecutor) StartBackground(ctx context.Context, command, logPath string) (pid, pgid int, err error) {
 	script := fmt.Sprintf(`setsid nohup sh -c %s > %s 2>&1 & echo $!`, shQuote(command), shQuote(logPath))
-	out, serr := e.sh(ctx, script)
+	// The script carries the model's command: no helper locale pin.
+	r, _, rerr := e.run(ctx, []string{"sh", "-c", script}, runOpts{})
+	out, serr := r.out, rerr
+	if serr == nil {
+		serr = e.exitErr(r)
+	}
 	if serr != nil {
 		return 0, 0, fmt.Errorf("starting background process: %s", strings.TrimSpace(out))
 	}
@@ -631,13 +648,13 @@ func closeAll(fs ...*os.File) {
 
 // FileMode implements FileModer.
 func (e *BackendExecutor) FileMode(ctx context.Context, path string) (fs.FileMode, error) {
-	r, _, err := e.run(ctx, []string{"stat", "-L", "-c", "%f", "--", path}, runOpts{})
+	r, _, err := e.run(ctx, []string{"sh", "-c", helperLocaleEnv + `exec stat -L -c %f -- "$1"`, "sh", path}, runOpts{})
 	if err == nil {
 		err = e.exitErr(r)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(r.out)
-		if isShellNotFound(msg) {
+		if isShellNotFound(msg) || e.entryMissing(ctx, "/", path) {
 			return 0, fmt.Errorf("%w: %s", ErrFileNotFound, path)
 		}
 		return 0, fmt.Errorf("stat %s: %s", path, msg)
@@ -659,7 +676,7 @@ func (e *BackendExecutor) Chmod(ctx context.Context, path string, mode fs.FileMo
 
 // EntryExists implements FileModer.
 func (e *BackendExecutor) EntryExists(ctx context.Context, path string) (bool, error) {
-	r, _, err := e.run(ctx, []string{"sh", "-c", `[ -e "$1" ] || [ -L "$1" ]`, "sh", path}, runOpts{})
+	r, _, err := e.run(ctx, []string{"sh", "-c", helperLocaleEnv + `[ -e "$1" ] || [ -L "$1" ]`, "sh", path}, runOpts{})
 	if err != nil {
 		return false, fmt.Errorf("probe %s: %w", path, err)
 	}

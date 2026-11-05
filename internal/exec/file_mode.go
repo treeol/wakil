@@ -87,7 +87,7 @@ func (d *DockerExecutor) FileMode(ctx context.Context, path string) (fs.FileMode
 	out, err := d.execCtx(ctx, false, "stat", "-L", "-c", "%f", "--", path)
 	if err != nil {
 		msg := strings.TrimSpace(out)
-		if isShellNotFound(msg) {
+		if isShellNotFound(msg) || d.entryMissing(ctx, "/", path) {
 			return 0, fmt.Errorf("%w: %s", ErrFileNotFound, path)
 		}
 		return 0, fmt.Errorf("stat %s: %s", path, msg)

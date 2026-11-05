@@ -1224,8 +1224,8 @@ func ensureDockerCLI(container string) error {
 func checkInContainerDockerSocket(container string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "docker", "exec", container,
-		"docker", "info").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "docker", dockerExecArgv(container, false, true,
+		[]string{"docker", "info"})...).CombinedOutput()
 	if err == nil {
 		return "" // socket reachable, no problem
 	}
@@ -1249,14 +1249,34 @@ func checkInContainerDockerSocket(container string) string {
 // call is cancelled when ctx is. All DockerExecutor methods that shell into
 // the container go through this helper.
 func (d *DockerExecutor) execCtx(ctx context.Context, interactive bool, args ...string) (string, error) {
-	prefix := []string{"exec"}
-	if interactive {
-		prefix = append(prefix, "-i")
-	}
-	full := append(prefix, append([]string{d.container}, args...)...)
-	cmd := exec.CommandContext(ctx, "docker", full...)
+	cmd := exec.CommandContext(ctx, "docker", dockerExecArgv(d.container, interactive, true, args)...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// execUser is execCtx for commands that carry the MODEL's own command (the
+// background start): same plumbing, but the container's/user's locale is left
+// alone — only helpers Wakil parses run under LC_ALL=C.
+func (d *DockerExecutor) execUser(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", dockerExecArgv(d.container, false, false, args)...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// dockerExecArgv builds the `docker exec` argv. helper=true pins LC_ALL=C and
+// LANG=C for the exec: executors match and parse the text of helper commands
+// (cat/stat/readlink/ls/...), which must not depend on the user's locale
+// (a German "Datei oder Verzeichnis nicht gefunden" is not "No such file").
+func dockerExecArgv(container string, interactive, helper bool, args []string) []string {
+	argv := []string{"exec"}
+	if interactive {
+		argv = append(argv, "-i")
+	}
+	if helper {
+		argv = append(argv, "-e", "LC_ALL=C", "-e", "LANG=C")
+	}
+	argv = append(argv, container)
+	return append(argv, args...)
 }
 
 // SandboxTmpReadable reports that /tmp is the container's own tmpfs.
@@ -1286,7 +1306,7 @@ func (d *DockerExecutor) ReadFile(ctx context.Context, path string) (string, err
 	out, err := d.execCtx(ctx, false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && cat -- "$1"`, "sh", path)
 	if err != nil {
 		msg := strings.TrimSpace(out)
-		if isShellNotFound(msg) {
+		if isShellNotFound(msg) || d.entryMissing(ctx, d.workspaceRoot, path) {
 			return "", fmt.Errorf("%w: %s", ErrFileNotFound, path)
 		}
 		return "", fmt.Errorf("%s", msg)
@@ -1308,7 +1328,7 @@ func (d *DockerExecutor) ReadFileBounded(ctx context.Context, path string, maxBy
 		fmt.Sprintf("cd %s && head -c %d -- \"$1\"", shQuote(d.workspaceRoot), maxBytes+1), "sh", path)
 	if err != nil {
 		msg := strings.TrimSpace(out)
-		if isShellNotFound(msg) {
+		if isShellNotFound(msg) || d.entryMissing(ctx, d.workspaceRoot, path) {
 			return "", false, fmt.Errorf("%w: %s", ErrFileNotFound, path)
 		}
 		return "", false, fmt.Errorf("%s", msg)
@@ -1324,7 +1344,7 @@ func (d *DockerExecutor) StatFile(ctx context.Context, path string) (int64, erro
 	out, err := d.execCtx(ctx, false, "sh", "-c", "cd "+shQuote(d.workspaceRoot)+` && stat -c %s -- "$1"`, "sh", path)
 	if err != nil {
 		msg := strings.TrimSpace(out)
-		if isShellNotFound(msg) {
+		if isShellNotFound(msg) || d.entryMissing(ctx, d.workspaceRoot, path) {
 			return 0, fmt.Errorf("%w: %s", ErrFileNotFound, path)
 		}
 		if msg != "" {
