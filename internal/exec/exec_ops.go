@@ -262,9 +262,25 @@ func entryMissingScript(root string) string {
 // status of a test(1) probe — the locale-independent complement to
 // isShellNotFound's text match, consulted only after a read already failed.
 func (d *DockerExecutor) entryMissing(ctx context.Context, root, path string) bool {
-	_, err := d.execCtx(ctx, false, "sh", "-c", entryMissingScript(root), "sh", path)
+	out, err := d.execCtx(ctx, false, "sh", "-c", entryMissingScript(root), "sh", path)
 	var ee interface{ ExitCode() int }
-	return err != nil && errors.As(err, &ee) && ee.ExitCode() == 1
+	if err == nil || !errors.As(err, &ee) || ee.ExitCode() != 1 {
+		return false
+	}
+	// `docker exec` itself also exits 1 when the container is gone ("Error
+	// response from daemon: No such container") — that is a transport failure,
+	// not a missing file. Only the probe's own exit (no daemon/CLI text in the
+	// output) counts as "missing".
+	return !isDockerExecError(out)
+}
+
+// isDockerExecError reports whether a `docker exec` output is the CLI/daemon
+// speaking rather than the container's shell.
+func isDockerExecError(out string) bool {
+	return strings.Contains(out, "Error response from daemon") ||
+		strings.Contains(out, "No such container") ||
+		strings.Contains(out, "Cannot connect to the Docker daemon") ||
+		strings.Contains(out, "is not running")
 }
 
 // isShellNotFound reports whether msg is a shell-level "No such file or

@@ -110,3 +110,21 @@ func TestBackendExecutor_NotFoundUnderGermanStderr(t *testing.T) {
 		t.Errorf("ReadFile(dir) must not be ErrFileNotFound: %v", err)
 	}
 }
+
+// A dead container makes `docker exec` exit 1 too. That must stay a transport
+// error, not ErrFileNotFound (the reviewer's point; checked against the CLI:
+// "Error response from daemon: No such container").
+func TestIsDockerExecError(t *testing.T) {
+	for _, out := range []string{
+		"Error response from daemon: No such container: wakil-x",
+		"Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+		"Error: container wakil-x is not running",
+	} {
+		if !isDockerExecError(out) {
+			t.Errorf("%q must count as a docker exec error", out)
+		}
+	}
+	if isDockerExecError("") {
+		t.Error("an empty probe output is the container's shell, not the CLI")
+	}
+}
