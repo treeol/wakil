@@ -73,6 +73,10 @@ jobs:
       - name: config-doc consistency
         run: scripts/check_config_docs.sh
 
+      # Dockerfile golang pins must equal go.mod's `go` directive.
+      - name: Dockerfile Go version pins
+        run: scripts/check_go_version_pins.sh
+
       - name: coverage artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
