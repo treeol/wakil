@@ -44,10 +44,18 @@ type PathMap struct {
 	grantRW map[string]bool // true if the grant was rw (for replay)
 }
 
-// NewPathMap returns a PathMap with cleaned roots.
+// NewPathMap returns a PathMap with cleaned roots. HostRoot is the HOST side
+// of the workspace and is symlink-resolved once here: UnmapPath compares
+// host-resolved candidates against it, so an unresolved mount source (a
+// symlinked project directory) would otherwise miss every workspace path.
+// AgentRoot is a sandbox path and is deliberately NOT host-resolved.
 func NewPathMap(hostRoot, agentRoot string, private ...string) *PathMap {
+	host := filepath.Clean(hostRoot)
+	if r, err := filepath.EvalSymlinks(host); err == nil {
+		host = r
+	}
 	return &PathMap{
-		HostRoot:  filepath.Clean(hostRoot),
+		HostRoot:  host,
 		AgentRoot: filepath.Clean(agentRoot),
 		Private:   private,
 		grants:    map[string]bool{},

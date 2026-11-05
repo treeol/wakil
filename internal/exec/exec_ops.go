@@ -167,7 +167,7 @@ func resolvePathError(path, out string, err error) error {
 func isInsideWorkspace(p, root string) bool {
 	root = filepath.Clean(root)
 	p = filepath.Clean(p)
-	return p == root || strings.HasPrefix(p, root+"/")
+	return p == root || strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/")
 }
 
 func (d *DockerExecutor) ConfinePath(ctx context.Context, path string) (string, error) {

@@ -1547,7 +1547,15 @@ func NewDirectExecutor(workdir string) (*DirectExecutor, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, err
 	}
-	return &DirectExecutor{root: abs, generation: 1}, nil
+	// Resolve the root once. ConfinePath compares the SYMLINK-RESOLVED
+	// candidate against this root, so an unresolved root (e.g. ~/coding when
+	// ~/coding -> ~/Coding) rejects every in-workspace path. Keep the resolved
+	// form as the single containment root.
+	root := abs
+	if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+		root = resolved
+	}
+	return &DirectExecutor{root: root, generation: 1}, nil
 }
 
 func (e *DirectExecutor) RunShell(ctx context.Context, command string) (string, error) {

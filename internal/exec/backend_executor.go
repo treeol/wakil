@@ -763,6 +763,21 @@ func (e *BackendExecutor) URIToHostPath(uri string) (string, error) {
 	return host, nil
 }
 
+// hostRootResolved returns the workspace's HOST directory with symlinks
+// resolved, for host-side containment checks. e.root is a sandbox path and
+// must not be compared with host paths. ok is false when the backend has no
+// host mount (the check then falls through to the grant/UnmapPath test).
+func (e *BackendExecutor) hostRootResolved() (string, bool) {
+	ws, err := e.b.UnmapPath(e.root)
+	if err != nil {
+		return "", false
+	}
+	if r, rerr := filepath.EvalSymlinks(ws); rerr == nil {
+		return r, true
+	}
+	return filepath.Clean(ws), true
+}
+
 // hostIdentity refuses a host path whose real location (after resolving
 // symlinks on the HOST) lies outside the workspace: a symlink such as
 // ws/link -> /tmp/x names a HOST object when opened by Wakil but the
@@ -774,7 +789,7 @@ func (e *BackendExecutor) hostIdentity(hostPath string) error {
 	if err != nil {
 		return fmt.Errorf("path %q cannot be resolved on the host: %w", hostPath, err)
 	}
-	if isInsideWorkspace(real, e.root) {
+	if hr, ok := e.hostRootResolved(); ok && isInsideWorkspace(real, hr) {
 		return nil
 	}
 	if _, err := e.b.UnmapPath(real); err == nil {

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -366,5 +367,54 @@ func TestGitToolsLiveIntegration(t *testing.T) {
 	diff := app.handleGitDiff(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{Name: "git_diff", Arguments: "{}"}})
 	if strings.HasPrefix(diff, "ERROR:") {
 		t.Errorf("git_diff failed: %s", diff)
+	}
+}
+
+// B1: the git tools must work when the repository is reached through a
+// symlinked workspace root. The repo is built in a temp dir (not the host
+// layout), and the executor is opened through a symlink alias — the spelling
+// that the unresolved-root bug rejected as "outside workspace".
+func TestGitToolsThroughSymlinkedWorkspaceRoot(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "Coding", "proj")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun := func(args ...string) {
+		t.Helper()
+		cmd := osexec.Command("git", append([]string{"-C", real}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable or failed (%v): %s", err, out)
+		}
+	}
+	gitRun("init", "-q")
+	if err := os.WriteFile(filepath.Join(real, "a.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun("add", "a.txt")
+	gitRun("commit", "-q", "-m", "init")
+
+	alias := filepath.Join(base, "coding")
+	if err := os.Symlink(filepath.Join(base, "Coding"), alias); err != nil {
+		t.Fatal(err)
+	}
+	ex, err := exec.NewDirectExecutor(filepath.Join(alias, "proj"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+	app := &App{Cfg: config.DefaultConfig(), Exec: ex, Out: io.Discard}
+
+	show := app.handleGitShow(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{Name: "git_show", Arguments: "{}"}})
+	if strings.HasPrefix(show, "ERROR:") || strings.Contains(show, "outside workspace") {
+		t.Fatalf("git_show through symlinked root failed: %s", show)
+	}
+	if !strings.Contains(show, "commit ") {
+		t.Errorf("git_show should contain the commit header, got: %.200s", show)
+	}
+	blame := app.handleGitBlame(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{Name: "git_blame", Arguments: `{"path":"a.txt"}`}})
+	if strings.Contains(blame, "outside workspace") || strings.HasPrefix(blame, "ERROR:") {
+		t.Fatalf("git_blame through symlinked root failed: %s", blame)
 	}
 }
