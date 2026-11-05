@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
 )
 
 // Only a confirmed ENOENT may make an owner dead. A stat error that is not
@@ -59,5 +60,46 @@ func TestPlanGCRejectsUnknownAndIncompleteArgs(t *testing.T) {
 		if got := runPlanGC(args); got != ExitError {
 			t.Errorf("runPlanGC(%q) = %d, want ExitError (%d)", args, got, ExitError)
 		}
+	}
+}
+
+// B2 (default store): with no --project, gc must resolve the CURRENT directory,
+// not cfg.WorkspacePath(). A stale WAKIL_WORKSPACE_PATH (another project) must
+// not change the answer. The default must equal --project <cwd> exactly, also
+// when the cwd is reached through a symlink.
+func TestPlanGCDefaultWorkspaceIsCwdAndMatchesProject(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "Coding", "wakil")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "coding")
+	if err := os.Symlink(filepath.Join(base, "Coding"), alias); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	other := t.TempDir()
+	t.Setenv("WAKIL_WORKSPACE_PATH", other) // the wrong project, as on the host
+	cwd := filepath.Join(alias, "wakil")
+	t.Chdir(cwd)
+
+	def, err := agentWorkspace(config.Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := agentWorkspace(config.Config{}, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def != proj {
+		t.Errorf("default workspace %q != --project <cwd> %q", def, proj)
+	}
+	wantReal, _ := filepath.EvalSymlinks(real)
+	if def != wantReal {
+		t.Errorf("default workspace = %q, want the resolved cwd %q (not WAKIL_WORKSPACE_PATH %q)", def, wantReal, other)
+	}
+	// Both spellings must produce the same store key as the session.
+	if agent.MemoryDBPath(def) != agent.MemoryDBPath(real) {
+		t.Errorf("store path differs for the symlinked and resolved spellings: %q vs %q",
+			agent.MemoryDBPath(def), agent.MemoryDBPath(real))
 	}
 }

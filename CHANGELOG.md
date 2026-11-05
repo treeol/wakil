@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mode it derived the memory store from the container path, so it read a store that did not
   exist, and it printed `0 … 0 dead` without an error. It now resolves the host workspace's
   store, prints `store: <absolute path>` first, and exits with an error when the store is
-  missing. `--project <dir>` selects another project and `--store <path>` names a database
+  missing. With no `--project`, the store is the **current directory's** project (the same key a
+  chat started there gets); it no longer follows `WAKIL_WORKSPACE_PATH` or the config workspace. `--project <dir>` selects another project and `--store <path>` names a database
   explicitly. Entries whose owner session cannot be checked (a stat error other than "not
   found") are kept, not marked dead. If the sessions directory itself is missing (for
   example a wrong `WAKIL_SESSIONS_DIR`), every owner is treated as unknown and `--apply`

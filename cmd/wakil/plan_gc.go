@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/treeol/wakil/internal/agent"
@@ -92,7 +93,12 @@ func runPlanGC(args []string) int {
 		return ExitError
 	}
 
-	store, memDBPath, err := agent.PlanGCStore(agentWorkspace(cfg, projectDir), storePath)
+	ws, err := agentWorkspace(cfg, projectDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return ExitError
+	}
+	store, memDBPath, err := agent.PlanGCStore(ws, storePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return ExitError
@@ -157,14 +163,29 @@ func runPlanGC(args []string) int {
 	return ExitOK
 }
 
-// agentWorkspace picks the workspace gc resolves the store for: an explicit
-// --project directory, else the host workspace the session itself uses. Never
-// cfg.WorkDir (the container path in docker mode).
-func agentWorkspace(cfg config.Config, projectDir string) string {
-	if projectDir != "" {
-		return projectDir
+// agentWorkspace picks the workspace gc resolves the store for. Without
+// --project it is the current directory, made absolute and symlink-resolved —
+// the same key a chat started in that directory gets (workspaceKey canonicalizes
+// with Abs+EvalSymlinks). It deliberately does NOT use cfg.WorkspacePath():
+// that honours WAKIL_WORKSPACE_PATH and the config workspace, so gc could open
+// the store of a different project than the one the user is standing in.
+func agentWorkspace(_ config.Config, projectDir string) (string, error) {
+	dir := projectDir
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("plan gc: cannot determine current directory: %w", err)
+		}
+		dir = wd
 	}
-	return cfg.WorkspacePath()
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("plan gc: resolving %q: %w", dir, err)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	return abs, nil
 }
 
 // planGCSessionExists reports whether a session file for chatID may exist.
