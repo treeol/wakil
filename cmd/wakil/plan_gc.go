@@ -170,7 +170,18 @@ func runPlanGC(args []string) int {
 // that honours WAKIL_WORKSPACE_PATH and the config workspace, so gc could open
 // the store of a different project than the one the user is standing in.
 func agentWorkspace(_ config.Config, projectDir string) (string, error) {
-	dir := projectDir
+	return ResolveProject(projectDir)
+}
+
+// ResolveProject returns the canonical project directory and the store key for
+// the CLI's cwd-based identity (flagDir, else cwd): Abs then EvalSymlinks, then
+// agent.WorkspaceKey. It is the gc source of truth. It deliberately ignores
+// WAKIL_WORKSPACE_PATH and the config workspace; chat keys by
+// config.Config.WorkspacePath() instead (see agent.ChatProjectPath). With
+// WAKIL_WORKSPACE_PATH unset, both resolve to the same store for the same
+// directory (locked by TestResolveProjectMatchesChatForCwd).
+func ResolveProject(flagDir string) (string, error) {
+	dir := flagDir
 	if dir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
