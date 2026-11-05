@@ -271,9 +271,8 @@ func (a *App) queueAsyncDiscoveryBlock(block []proxy.ToolCall, jobs []subagentJo
 				CtxSize:      r.CtxSize,
 				UsedBackend:  r.UsedBackend,
 			}
-			if r.Summary.Status == "incomplete" {
-				s.Err = "subagent incomplete (budget/cancelled)"
-			}
+			s.Err = subagentDoneErr(r.Summary)
+			s.Notice = r.Summary.Notice
 			if s.Err != "" && firstFailed == "" {
 				firstFailed = s.Err
 			}

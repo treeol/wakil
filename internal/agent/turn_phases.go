@@ -153,6 +153,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 	var suspended bool    // Phase 2: true when the turn idled with async work pending
 	var wantsSuspend bool // wait_for_completion requested a suspension this round
 	var turnToolBytes int
+	// Subagents report their spend as Budget.Used; accumulate across Sends
+	// (first answer + retry) in the same dispatch.
+	defer func() {
+		if a.IsSubagent {
+			a.turnToolBytesUsed += turnToolBytes
+		}
+	}()
 	var msg proxy.Message
 	var err error
 	firstStream := true

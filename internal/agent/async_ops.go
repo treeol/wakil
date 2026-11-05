@@ -134,6 +134,7 @@ type asyncSubagentResult struct {
 	CtxSize      int
 	UsedBackend  string
 	Err          string // error text if the child failed; "" on success
+	Notice       string // harness notice (off-task twice / unsplittable partial); printed at drain on the main goroutine
 }
 
 // asyncOp tracks one in-flight or terminal async operation.
@@ -1198,21 +1199,23 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 			FilesChanged: s.FilesChanged,
 			Err:          s.Err,
 		})
-		if s.Err != "" {
+		if s.Notice != "" {
+			a.printSubagentNotice(s.Notice)
+		} else if s.Err != "" {
 			// Distinguish error types for accurate warnings.
 			switch {
 			case strings.Contains(s.Err, "timed out"):
 				fmt.Fprintln(a.Out, Yellow("⚠ subagent timed out on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  the child did not return within the configured timeout — consider re-dispatching or taking over"))
+				fmt.Fprintln(a.Out, Yellow("  the child did not return within the configured timeout"))
 			case strings.Contains(s.Err, "panicked"):
 				fmt.Fprintln(a.Out, Yellow("⚠ subagent panicked on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  the child worker crashed — consider re-dispatching or taking over"))
+				fmt.Fprintln(a.Out, Yellow("  the child worker crashed"))
 			case strings.Contains(s.Err, "incomplete"):
 				fmt.Fprintln(a.Out, Yellow("⚠ subagent incomplete on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — consider re-dispatching narrower or taking over"))
+				fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — a follow-up must cover a strictly smaller scope"))
 			default:
 				fmt.Fprintln(a.Out, Yellow("⚠ subagent failed on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  error: "+s.Err+" — consider re-dispatching or taking over"))
+				fmt.Fprintln(a.Out, Yellow("  error: "+s.Err))
 			}
 		}
 	}

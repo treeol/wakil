@@ -90,6 +90,24 @@ type SubagentSummary struct {
 	// FileReadLedger is the harness-derived per-file read ledger (item 2).
 	// Only populated when the dispatch carries an explicit files list.
 	FileReadLedger *FileLedger `json:"file_ledger,omitempty"`
+	// Outcome is the harness-derived result class: complete | partial |
+	// rejected | refused | failed (see subagent_guard.go). Mechanically set.
+	Outcome string `json:"outcome,omitempty"`
+	// FilesCovered / FilesNotRead / FilesExtra / FilesListedN project the
+	// harness read ledger (never subagent text) for explicit-list dispatches.
+	FilesCovered []string `json:"files_covered,omitempty"`
+	FilesNotRead []string `json:"files_not_read,omitempty"`
+	FilesExtra   []string `json:"files_extra,omitempty"`
+	FilesListedN int      `json:"files_listed,omitempty"`
+	// Budget reports class + the work budget the child ran under.
+	Budget *BudgetInfo `json:"budget,omitempty"`
+	// RejectReason is "off-task" on a rejected result; Retry marks the single
+	// harness-performed off-task retry.
+	RejectReason string `json:"reject_reason,omitempty"`
+	Retry        bool   `json:"retry,omitempty"`
+	// Notice is the user-visible one-liner the CALLER prints on the main
+	// goroutine (workers never write a.Out).
+	Notice string `json:"-"`
 	// RemainingScope is what the child says is still unexamined (its own
 	// words), or the raw tail of an unparseable forced final turn. Capped at
 	// subagentRemainingScopeCap bytes.
@@ -1673,6 +1691,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 	if activeHardMax > 0 {
 		sub.Cfg.TurnToolBudget = capSubagentWorkBudget(workBudget, a.Cfg.SubagentTurnToolBudget)
 	}
+	budgetInfo := &BudgetInfo{Limit: sub.Cfg.TurnToolBudget, Class: class}
 
 	// Edit-tier children are serialized by the writer lock: at most one edit
 	// child executing at a time. Discovery children are unaffected. The lock
@@ -1692,7 +1711,7 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		defer subagentWriterMu.Unlock()
 	}
 
-	raw, err := sub.Send(ctx, task)
+	raw, err := sub.Send(ctx, task+assignedFilesBlock(files))
 	grounding := sub.Client.Grounding()
 	ctxSize := sub.sentSize(sub.Conv)
 	usedBackend := sub.Client.LastUsedBackend()
@@ -1740,6 +1759,12 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// child may have made MCP calls before the error, and the parent must
 		// know what happened.
 		errSummary.ExternalCalls = extRecorder.snapshot()
+		errSummary.Budget = budgetInfo
+		if len(files) > 0 {
+			ledger := readRecorder.deriveLedger(files)
+			errSummary.FileReadLedger = &ledger
+		}
+		applyResult(&errSummary, files, class)
 		return errSummary, grounding, ctxSize, usedBackend, costRows, fileRecorder.snapshot()
 	}
 
@@ -1841,12 +1866,15 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 
 	// Derive the per-file read ledger from the recorder and the explicit
 	// files list. The ledger is harness-derived from actual tool calls,
-	// never from the subagent's text.
+	// never from the subagent's text. Every completion carries class + budget.
+	summary.SubagentClass = class
+	budgetInfo.Used = sub.turnToolBytesUsed
+	summary.Budget = budgetInfo
 	if len(files) > 0 {
 		ledger := readRecorder.deriveLedger(files)
 		summary.FileReadLedger = &ledger
-		summary.SubagentClass = class
 	}
+	applyResult(&summary, files, class)
 
 	// Snapshot AFTER the retry Send (if any) so a retry's RecordInferenceCost
 	// call is included — the child's Costs tracker accumulates across both

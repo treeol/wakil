@@ -51,6 +51,14 @@ type subagentState struct {
 	// per-file read ledger (files_covered, files_not_read, files_extra).
 	fileReads *fileReadRecorder
 
+	// turnToolBytesUsed is the tool-output bytes the child spent in its last
+	// Send (set by streamTurn at turn end; reported as Budget.Used).
+	turnToolBytesUsed int
+
+	// guard is the harness registry of dispatch lineages (retry count, stop
+	// state). Zero value ready; reset on every USER turn (BeginUserTurn).
+	guard dispatchGuard
+
 	// pendingRestore holds the fileRecorder from a failed edit-tier subagent
 	// dispatch, for /restore to use. Set by dispatchSubagent when the child
 	// returns incomplete/exhausted. Cleared on successful /restore or on the

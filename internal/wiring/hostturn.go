@@ -466,6 +466,7 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 
 	// Per-turn resets the TUI path performs before the turn (tui_cmds.go RunTurn).
 	app.ToolCache = nil
+	app.BeginUserTurn()
 	app.WorkflowStepTrace = nil
 	app.Client.ResetGrounding()
 

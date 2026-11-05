@@ -185,9 +185,8 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 					CtxSize:      r.CtxSize,
 					UsedBackend:  r.UsedBackend,
 				}
-				if r.Summary.Status == "incomplete" {
-					sub.Err = "subagent incomplete (budget/cancelled)"
-				}
+				sub.Err = subagentDoneErr(r.Summary)
+				sub.Notice = r.Summary.Notice
 				return checkpoint(i, sub)
 			}
 			defer func() {
@@ -234,7 +233,7 @@ func (a *App) runSubagentJobs(ctx context.Context, jobs []subagentJob, backend s
 				defer stop()
 				execCtx = childCtx
 			}
-			summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(
+			summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchTracked(
 				execCtx, jobs[i].Task, subagentProgressOut(a, jobs[i].ChatID), backend, jobs[i].Capability, jobs[i].Model, jobs[i].Class, jobs[i].Files, jobs[i].ChatID)
 			accepted := checkpointResult(subagentJobResult{
 				Summary:      summary,
@@ -455,10 +454,7 @@ func (a *App) finalizeSubagentBlock(jobs []subagentJob, results []subagentJobRes
 	for k, j := range jobs {
 		r := results[k]
 		subagentCostUSD := foldSubagentCost(a.Costs, r.CostRows)
-		doneErr := ""
-		if r.Summary.Status == "incomplete" {
-			doneErr = "subagent incomplete (budget/cancelled)"
-		}
+		doneErr := subagentDoneErr(r.Summary)
 		a.sendEvent(SubagentDoneMsg{
 			ChatID:       j.ChatID,
 			Grounding:    r.Grounding,
@@ -493,13 +489,20 @@ func renderSubagentResult(a *App, task string, summary SubagentSummary, filesCha
 }
 
 // warnSubagentIncomplete prints the loud incomplete warning. MAIN
-// GOROUTINE ONLY (writes a.Out — must not run on a worker).
+// GOROUTINE ONLY (writes a.Out — must not run on a worker). A harness notice
+// (off-task twice / partial that cannot be split further) replaces the generic
+// line: it names the decision the USER has to make. The wording never invites
+// the parent to take the work over.
 func warnSubagentIncomplete(a *App, task string, summary SubagentSummary) {
+	if summary.Notice != "" {
+		a.printSubagentNotice(summary.Notice)
+		return
+	}
 	if summary.Status != "incomplete" {
 		return
 	}
 	fmt.Fprintln(a.Out, Yellow("⚠ subagent incomplete on task: "+Truncate(task, 80)))
-	fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — consider re-dispatching narrower or taking over"))
+	fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — a follow-up must cover a strictly smaller scope; the harness refuses identical re-dispatch"))
 }
 
 // sendSubagentFinished emits the display-only early completion event from the
@@ -517,7 +520,7 @@ func warnSubagentIncomplete(a *App, task string, summary SubagentSummary) {
 func (a *App) sendSubagentFinished(chatID string, r subagentJobResult) {
 	a.sendEvent(SubagentFinishedMsg{
 		ChatID:         chatID,
-		Status:         r.Summary.Status,
+		Status:         subagentFinishedStatus(r.Summary),
 		CostUSD:        sumPricedRows(r.CostRows),
 		FilesChanged:   r.FilesChanged,
 		SummaryPreview: summaryPreview(r.Summary),

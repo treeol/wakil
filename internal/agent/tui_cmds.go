@@ -57,6 +57,7 @@ func RunTurn(app *App, ctx context.Context, userText string) Cmd {
 		// agent is interactive — the user can cancel loops via Ctrl+C, and
 		// legitimate re-reads of the same file must not be silently suppressed.
 		app.ToolCache = nil
+		app.BeginUserTurn()
 		// Reset per-turn step evidence so each IMPLEMENT turn starts with a
 		// clean trace. Consumed by handleWorkflowTransition on %%STEP_DONE%%.
 		app.WorkflowStepTrace = nil

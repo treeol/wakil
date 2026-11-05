@@ -1771,7 +1771,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	}
 	// Sequential path: the dispatch begins immediately, no queue wait.
 	a.sendEvent(SubagentActiveMsg{ChatID: subChatID})
-	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchSubagent(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, resolvedModel, args.Class, args.Files, subChatID)
+	summary, grounding, ctxSize, usedBackend, costRows, filesChanged := a.dispatchTracked(ctx, args.Task, subagentProgressOut(a, subChatID), subBackend, capability, resolvedModel, args.Class, args.Files, subChatID)
 	// Early display-only completion event: emitted at child return, before
 	// the cost fold, keeping the parallel and sequential paths symmetric.
 	// SubagentDoneMsg below remains the authoritative event carrying the
@@ -1787,10 +1787,7 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// dispatchSubagent. The child's fresh CostTracker never touches a.Costs
 	// directly; this is the only place its rows are merged in.
 	subagentCostUSD := foldSubagentCost(a.Costs, costRows)
-	doneErr := ""
-	if summary.Status == "incomplete" {
-		doneErr = "subagent incomplete (budget/cancelled)"
-	}
+	doneErr := subagentDoneErr(summary)
 	a.sendEvent(SubagentDoneMsg{
 		ChatID:       subChatID,
 		Grounding:    grounding,
@@ -1822,9 +1819,11 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// Loud warning on exhaustion — not a dim tool-line. The main agent must
 	// know the subagent ran out of budget so it can re-dispatch narrower or
 	// take over, rather than trusting potentially-incomplete findings.
-	if summary.Status == "incomplete" {
+	if summary.Notice != "" {
+		a.printSubagentNotice(summary.Notice)
+	} else if summary.Status == "incomplete" {
 		fmt.Fprintln(a.Out, Yellow("⚠ subagent ran out of budget on task: "+Truncate(args.Task, 80)))
-		fmt.Fprintln(a.Out, Yellow("  partial findings returned — consider re-dispatching narrower or taking over"))
+		fmt.Fprintln(a.Out, Yellow("  partial findings returned — a follow-up must cover a strictly smaller scope; the harness refuses identical re-dispatch"))
 	}
 	return result
 }
