@@ -92,10 +92,7 @@ func TestManager_opCtx_NilCallerCtx(t *testing.T) {
 	// opCtx with nil caller ctx should still produce a usable context.
 	// We can't fully test this without a real browser ctx, but we can
 	// verify it doesn't panic when m.ctx is a valid context.
-	m := &Manager{
-		ctx: context.Background(),
-	}
-	octx, cancel := m.opCtx(context.Background())
+	octx, cancel := deriveOpCtx(context.Background(), context.Background())
 	defer cancel()
 	if octx == nil {
 		t.Fatal("opCtx returned nil context")
@@ -107,13 +104,10 @@ func TestManager_opCtx_NilCallerCtx(t *testing.T) {
 }
 
 func TestManager_opCtx_WithCallerCtx(t *testing.T) {
-	m := &Manager{
-		ctx: context.Background(),
-	}
 	callerCtx, callerCancel := context.WithCancel(context.Background())
 	defer callerCancel()
 
-	octx, cancel := m.opCtx(callerCtx)
+	octx, cancel := deriveOpCtx(context.Background(), callerCtx)
 	defer cancel()
 	if octx == nil {
 		t.Fatal("opCtx returned nil context")
@@ -126,12 +120,8 @@ func TestManager_opCtx_WithCallerCtx(t *testing.T) {
 }
 
 func TestManager_opCtx_CallerCancelPropagates(t *testing.T) {
-	m := &Manager{
-		ctx: context.Background(),
-	}
-
 	callerCtx, callerCancel := context.WithCancel(context.Background())
-	octx, cancel := m.opCtx(callerCtx)
+	octx, cancel := deriveOpCtx(context.Background(), callerCtx)
 	defer cancel()
 
 	// The opCtx should not be done yet.

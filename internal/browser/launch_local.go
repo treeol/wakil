@@ -9,6 +9,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -53,7 +57,10 @@ func (l *localLauncher) launch(_ context.Context) (string, func() error, *sessio
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("create user-data-dir: %w", err)
 	}
-	teardown := func() error { return os.RemoveAll(userDataDir) }
+	// teardown (R3) is set below, once the allocator exists: it cancels the
+	// allocator, waits (bounded) for Chromium to exit, KILLs whatever still
+	// carries this launch's --user-data-dir, and only then removes the dir.
+	var teardown func() error
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", "new"),
@@ -70,6 +77,13 @@ func (l *localLauncher) launch(_ context.Context) (string, func() error, *sessio
 	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
+	teardown = func() error {
+		ctxCancel()
+		allocCancel()
+		waitGoneBounded(userDataDir, localExitWait)
+		killUsingDir(userDataDir)
+		return os.RemoveAll(userDataDir)
+	}
 	sess := &session{ctx: ctx, ctxCancel: ctxCancel, allocCancel: allocCancel, teardown: teardown}
 
 	triedMsg := "PATH search (google-chrome, chromium, etc.)"
@@ -89,4 +103,65 @@ func (l *localLauncher) launch(_ context.Context) (string, func() error, *sessio
 		return "", nil, nil, fmt.Errorf("timed out launching Chromium after 15s, tried %s — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg)
 	}
 	return "", nil, sess, nil
+}
+
+// localExitWait bounds how long direct-mode teardown waits for Chromium to exit
+// on its own before it is KILLed (R3).
+const localExitWait = 3 * time.Second
+
+// waitGoneBounded polls until no process carries --user-data-dir=dir, or the
+// bound expires. It never kills; the caller decides what to do afterwards.
+func waitGoneBounded(dir string, bound time.Duration) {
+	deadline := time.Now().Add(bound)
+	for time.Now().Before(deadline) {
+		if countUsingDir(dir) == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// countUsingDir counts processes whose argv carries --user-data-dir=dir,
+// excluding this process.
+func countUsingDir(dir string) int {
+	return scanUsingDir(dir, false)
+}
+
+// killUsingDir SIGKILLs every process whose argv carries --user-data-dir=dir
+// (the wakil process itself is excluded) and returns how many it signalled.
+func killUsingDir(dir string) int {
+	return scanUsingDir(dir, true)
+}
+
+// scanUsingDir walks /proc for processes whose argv contains --user-data-dir=dir.
+// With kill, each match gets SIGKILL. The chromedp allocator does the same on
+// Linux; this makes the rule explicit and covers platforms where it does not.
+func scanUsingDir(dir string, kill bool) int {
+	want := "--user-data-dir=" + dir
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	self := os.Getpid()
+	n := 0
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == self {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		for _, arg := range strings.Split(string(b), "\x00") {
+			if arg == want {
+				n++
+				if kill {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+				break
+			}
+		}
+	}
+	return n
 }

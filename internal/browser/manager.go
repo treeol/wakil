@@ -136,19 +136,6 @@ func NewManager(exe SandboxExecutor, browserPath string, opts ...Option) (*Manag
 // quoteSh single-quotes s for use as one shell word.
 func quoteSh(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
-// opCtx derives a per-operation context from the caller's ctx and the
-// manager's browser ctx. The caller's ctx provides cancellation (e.g., user
-// cancels the turn); the timeout prevents indefinite hangs on slow pages or
-// missing elements. The browser ctx is the parent so chromedp can track the
-// operation against the right browser target.
-//
-// The returned cancel function cancels BOTH the timeout and the merged
-// context, ensuring the goroutine that bridges caller cancellation exits
-// cleanly (no leak).
-func (m *Manager) opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	return deriveOpCtx(m.ctx, ctx)
-}
-
 // begin admits one operation: it launches the browser if it is not running
 // (first call, or first call after an idle/`/new` stop), pins it against the
 // idle timer, and returns the operation context. The returned cancel ends the
@@ -163,7 +150,11 @@ func (m *Manager) begin(ctx context.Context) (context.Context, context.CancelFun
 }
 
 // deriveOpCtx builds the per-operation context from the browser context
-// (parent) and the caller's ctx; see opCtx.
+// (parent) and the caller's ctx. The caller's cancellation (user cancels the
+// turn) is bridged in; defaultTimeout bounds slow pages and missing elements.
+// The browser ctx is the parent so chromedp tracks the operation against the
+// right browser target. The returned cancel ends the timeout and the merged
+// context, so the bridging goroutine exits (no leak).
 func deriveOpCtx(parent, ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		// No caller ctx — just use a timeout on the browser ctx.

@@ -82,15 +82,17 @@ func TestIdleStop_StopsAfterTimeoutAndRestartsOnNextCall(t *testing.T) {
 	m, fl := newFakeManager(60 * time.Millisecond)
 	_, end, _ := m.beginOp()
 	end()
+	// The idle stop clears the session first and tears it down afterwards (in
+	// its own goroutine): wait for the teardown itself, not for Running().
 	deadline := time.Now().Add(3 * time.Second)
-	for m.Running() && time.Now().Before(deadline) {
+	for {
+		if _, td := fl.counts(); td == 1 && !m.Running() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("idle stop did not tear the browser down (running=%v)", m.Running())
+		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	if m.Running() {
-		t.Fatal("browser still running long after the idle timeout")
-	}
-	if _, td := fl.counts(); td != 1 {
-		t.Errorf("teardowns = %d, want 1", td)
 	}
 	_, end, err := m.beginOp()
 	if err != nil {
@@ -254,7 +256,7 @@ func TestTunnel_LoopbackOnlyAndTransparent(t *testing.T) {
 	}()
 	port := srv.Addr().(*net.TCPAddr).Port
 
-	tun, url, err := startTunnel(localForwarder{}, port)
+	tun, url, err := startTunnel(localForwarder{}, port, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +311,7 @@ func TestTunnel_CloseEndsConnections(t *testing.T) {
 			_, _ = io.Copy(io.Discard, c)
 		}
 	}()
-	tun, _, err := startTunnel(localForwarder{}, srv.Addr().(*net.TCPAddr).Port)
+	tun, _, err := startTunnel(localForwarder{}, srv.Addr().(*net.TCPAddr).Port, "")
 	if err != nil {
 		t.Fatal(err)
 	}

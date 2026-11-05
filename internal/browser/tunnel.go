@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -63,23 +62,24 @@ type interactiveStarter interface {
 
 // tunnel is one loopback listener and its live forwarders.
 type tunnel struct {
-	ln    net.Listener
-	exe   interactiveStarter
-	port  int // the in-container CDP port
-	wg    sync.WaitGroup
-	mu    sync.Mutex
-	conns map[net.Conn]struct{}
-	done  bool
+	ln     net.Listener
+	exe    interactiveStarter
+	port   int    // the in-container CDP port
+	marker string // container name; the host docker exec client carries it in argv
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{}
+	done   bool
 }
 
 // startTunnel listens on 127.0.0.1:0 and forwards each connection to the
 // in-container 127.0.0.1:port. The returned URL is "http://127.0.0.1:<hostport>".
-func startTunnel(exe interactiveStarter, port int) (*tunnel, string, error) {
+func startTunnel(exe interactiveStarter, port int, marker string) (*tunnel, string, error) {
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, "", fmt.Errorf("browser tunnel: listen: %w", err)
 	}
-	t := &tunnel{ln: ln, exe: exe, port: port, conns: map[net.Conn]struct{}{}}
+	t := &tunnel{ln: ln, exe: exe, port: port, marker: marker, conns: map[net.Conn]struct{}{}}
 	t.wg.Add(1)
 	safe.Go("browser-tunnel-accept", func() { defer t.wg.Done(); t.acceptLoop() })
 	return t, "http://" + ln.Addr().String(), nil
@@ -150,18 +150,20 @@ func (t *tunnel) serve(c net.Conn) {
 	cw.Wait()
 	_ = stdin.Close()
 	_ = stdout.Close()
-	killHostPid(pid)
+	// The forwarder's host-side client is ended only if it is still ours.
+	killHostPid(pid, t.marker, nil)
 }
 
-// killHostPid ends the host-side `docker exec` client; the in-container
+// killHostPid ends the host-side `docker exec` client when it is still the
+// process started for this tunnel (start time and container name match);
+// otherwise it logs (when logf is set) and does nothing. The in-container
 // forwarder exits on its own when its stdin closes.
-func killHostPid(pid int) {
-	if pid <= 0 {
+func killHostPid(pid int, marker string, logf func(string, ...any)) {
+	h, ok := recordHostProcess(pid, marker)
+	if !ok {
 		return
 	}
-	if p, err := os.FindProcess(pid); err == nil {
-		_ = p.Kill()
-	}
+	killOwned(h, logf)
 }
 
 // close stops accepting, closes every live connection and waits for every

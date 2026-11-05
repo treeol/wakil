@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/safe"
 )
 
@@ -106,6 +107,9 @@ func (l *dockerLauncher) launch(ctx context.Context) (string, func() error, *ses
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("cannot start Chromium in container %s (%w) — set browser_enabled:false or install chromium in the image", l.exe.ContainerName(), err)
 	}
+	// Identity of the host-side docker exec client, taken now, before anything
+	// else can happen to its pid (R2: teardown signals it only if still ours).
+	hostID, hostOK := recordHostProcess(hostPid, l.exe.ContainerName())
 	ring := &ringBuffer{n: 8 << 10}
 	var drain sync.WaitGroup
 	drain.Add(2)
@@ -120,7 +124,9 @@ func (l *dockerLauncher) launch(ctx context.Context) (string, func() error, *ses
 			tun.close()
 			_ = stdin.Close()
 			teardownErr = l.stopBrowser(suffix)
-			killHostPid(hostPid)
+			if hostOK {
+				killOwned(hostID, diagf)
+			}
 			waitTimeout(&drain, 5*time.Second)
 		})
 		return teardownErr
@@ -136,7 +142,7 @@ func (l *dockerLauncher) launch(ctx context.Context) (string, func() error, *ses
 		return "", nil, nil, fmt.Errorf("Chromium did not start in container %s: %w", l.exe.ContainerName(), err)
 	}
 	var url string
-	tun, url, err = startTunnel(l.exe, port)
+	tun, url, err = startTunnel(l.exe, port, l.exe.ContainerName())
 	if err != nil {
 		_ = teardown()
 		return "", nil, nil, err
@@ -220,6 +226,12 @@ func (l *dockerLauncher) stopBrowser(suffix string) error {
 		return fmt.Errorf("browser stop: %s", got)
 	}
 	return nil
+}
+
+// diagf routes ownership mismatches to the diagnostic sink (the TUI-safe seam;
+// direct os.Stderr writes are forbidden outside the seam packages).
+func diagf(format string, args ...any) {
+	diag.Printf(format+"\n", args...)
 }
 
 // waitTimeout waits for wg for at most d.
