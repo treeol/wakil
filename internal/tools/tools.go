@@ -57,7 +57,8 @@ func DefaultTools(cwd string) []proxy.Tool {
 			Description: "Run a shell command in the working directory and return combined stdout/stderr. Requires user confirmation. " +
 				"Long-running commands (exceeding shell_timeout_sec, default 10s) are automatically backgrounded — " +
 				"the tool returns 'still running as bgN' and you get a notification injected into context when the command " +
-				"finishes; you can also poll read_process_log(bgN) for output at any time. " + cwdNote,
+				"finishes; you can also poll read_process_log(bgN) for output at any time. " +
+				"Runs under bash when the sandbox has bash, otherwise sh. " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"command": StrProp("The shell command to run"),
 			}, "command"),
@@ -182,6 +183,7 @@ func DefaultTools(cwd string) []proxy.Tool {
 			Description: "Start a command in the background, detached from the current shell. " +
 				"Returns an id and log path; use read_process_log to check output and kill_process to stop it. " +
 				"Maximum 5 concurrent background processes. " +
+				"Runs under bash when the sandbox has bash, otherwise sh. " +
 				"Requires user confirmation.",
 			Parameters: SchemaObj(map[string]interface{}{
 				"command":        StrProp("Shell command to run in the background."),

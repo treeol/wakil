@@ -29,9 +29,10 @@ type BackendOptions struct {
 
 // shared is the state common to a BackendExecutor and its worktree children.
 type shared struct {
-	b      sandbox.Backend
-	opts   BackendOptions
-	grants *sandbox.GrantManager
+	userShell userShellCache // bash-or-sh probe for user commands (T4); per sandbox, not per child
+	b         sandbox.Backend
+	opts      BackendOptions
+	grants    *sandbox.GrantManager
 
 	// life serialises lifecycle transitions (bind, reset, close, start) with
 	// ADMISSION: an exec holds it shared only while it is handed to the backend
@@ -58,6 +59,7 @@ type BackendExecutor struct {
 
 var (
 	_ Executor        = (*BackendExecutor)(nil)
+	_ UserShellProber = (*BackendExecutor)(nil)
 	_ FileModer       = (*BackendExecutor)(nil)
 	_ WorktreeHost    = (*BackendExecutor)(nil)
 	_ ChatBinder      = (*BackendExecutor)(nil)

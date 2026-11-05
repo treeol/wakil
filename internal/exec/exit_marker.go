@@ -20,7 +20,7 @@ import (
 // WrapExitMarker appends a sentinel to the command so the exit code lands at
 // the very end of the log file, where ParseExitMarker recovers it. The
 // sentinel is POSIX-sh-only (no bash-isms), so it works in both the direct
-// and docker executors.
+// and docker executors; the command inside it may be bash (see UserCommand).
 //
 // SECURITY: the sentinel carries a per-call random nonce so a different
 // process writing to the same log file cannot forge a success marker without
@@ -60,6 +60,11 @@ import (
 //     "code unknown"), never silent success.
 //   - A shell syntax error in the user command fails the whole wrapped
 //     script's parse — the marker is never written; callers fail closed.
+//     This holds when the command reaches the wrapper bare (sh parses it). The
+//     run_shell / run_background handlers hand the wrapper `bash -c '<cmd>'`
+//     when the sandbox has bash (UserCommand), so there sh only ever parses a
+//     quoted string, bash reports the syntax error itself (exit 2), and the
+//     marker records 2.
 //   - A command that backgrounds its OWN children (`some_server & echo done`)
 //     keeps the process GROUP alive until those children exit — the reaper
 //     and liveness checks wait for the whole group (the wrapper only exits

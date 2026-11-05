@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/treeol/wakil/internal/exec"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // confineReadPath is ConfinePath for the READ tools (read_file, read_file_full)
@@ -66,4 +67,40 @@ func isSandboxTmpPath(p string) bool {
 	}
 	c := path.Clean(p)
 	return c == "/tmp" || strings.HasPrefix(c, "/tmp/")
+}
+
+// toolsWithShellNote returns tools with the concrete shell appended to the
+// run_shell / run_background descriptions once it is known (T4). It never
+// probes: before the first user command the generic "bash when available,
+// otherwise sh" wording stands, so a lazily started sandbox is not started
+// early. a.Tools is not modified; the slice is copied only when a description
+// changes.
+func (a *App) toolsWithShellNote(tools []proxy.Tool) []proxy.Tool {
+	p, ok := a.Exec.(exec.UserShellProber)
+	if !ok {
+		return tools
+	}
+	sh := p.PeekUserShell()
+	if sh == "" {
+		return tools
+	}
+	note := " [This sandbox runs commands under " + sh + ".]"
+	var out []proxy.Tool
+	for i, t := range tools {
+		n := t.Function.Name
+		if n != "run_shell" && n != "run_background" {
+			continue
+		}
+		if strings.HasSuffix(t.Function.Description, note) {
+			continue
+		}
+		if out == nil {
+			out = append([]proxy.Tool(nil), tools...)
+		}
+		out[i].Function.Description = t.Function.Description + note
+	}
+	if out == nil {
+		return tools
+	}
+	return out
 }

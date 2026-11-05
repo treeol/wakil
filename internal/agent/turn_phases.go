@@ -231,7 +231,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		stopOnStub := a.IsSubagent && a.turnBudgetStubbed && a.turnBudgetStubbedIter >= 0 &&
 			iter >= a.turnBudgetStubbedIter+stopOnStubGrace+1
 		forceFinish := (a.Cfg.MaxToolIterations > 0 && iter >= a.Cfg.MaxToolIterations) || confinementTrip || stopOnStub
-		tools := a.Tools
+		tools := a.toolsWithShellNote(a.Tools)
 		if forceFinish {
 			tools = nil
 			a.exhausted = true // signal to dispatchSubagent: turn ended forcibly

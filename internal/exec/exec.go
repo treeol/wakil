@@ -223,6 +223,7 @@ func randSuffix(n int) string {
 // the process lifetime. If hostMount is set, that host path is bind-mounted to
 // workdir so files written inside the container appear on the host filesystem.
 type DockerExecutor struct {
+	userShell     userShellCache // bash-or-sh probe for user commands (T4)
 	container     string
 	image         string
 	workspaceRoot string    // project root; immutable; all commands and file ops start here
@@ -1535,7 +1536,8 @@ func (d *DockerExecutor) URIToHostPath(uri string) (string, error) {
 
 // DirectExecutor runs commands directly on the host. Still fully gated.
 type DirectExecutor struct {
-	root         string // project root; immutable; all commands and file ops start here
+	userShell    userShellCache // bash-or-sh probe for user commands (T4)
+	root         string         // project root; immutable; all commands and file ops start here
 	sandboxTools string
 	toolsOnce    sync.Once // guards the probe: executor is shared with concurrent subagents
 	generation   int

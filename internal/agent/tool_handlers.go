@@ -83,7 +83,7 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 	if !readAction {
 		a.markCheckpointShell()
 	}
-	out, err := a.Exec.RunShell(ctx, args.Command)
+	out, err := a.Exec.RunShell(ctx, exec.UserCommand(ctx, a.Exec, args.Command))
 	// LSP file-sync: after a non-read-only run_shell, mark open files dirty
 	// for lazy resync (R3). The next LSP query touching a dirty file will
 	// stat it and didChange if mtime+size changed.
@@ -138,7 +138,8 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 	logPath := a.bgLogPath(n)
 	bgID := fmt.Sprintf("bg%d", n)
 
-	wrapped, nonce := exec.WrapExitMarker(command, logPath)
+	userCmd := exec.UserCommand(ctx, a.Exec, command)
+	wrapped, nonce := exec.WrapExitMarker(userCmd, logPath)
 	pid, pgid, err := a.Exec.StartBackground(ctx, wrapped, logPath)
 	if err != nil {
 		// NOTE: the counter slot is deliberately NOT rolled back — IDs stay
@@ -148,7 +149,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		// or container quirk); erroring here would make EVERY shell command
 		// unrunnable. Loud blocking fallback instead — never silent.
 		fmt.Fprintln(a.Out, Yellow("⚠ auto-background unavailable ("+err.Error()+") — running synchronously"))
-		out, runErr := a.Exec.RunShell(ctx, command)
+		out, runErr := a.Exec.RunShell(ctx, userCmd)
 		if runErr == nil && a.LSP != nil && !readAction {
 			a.LSP.MarkOpenFilesDirty()
 			a.LSP.BatchNotifyWatchedFiles(ctx)
@@ -1465,7 +1466,7 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 		// No counter rollback: IDs stay monotonic (no future bgN collision).
 		return "[declined by user]"
 	}
-	wrapped, nonce := exec.WrapExitMarker(args.Command, logPath)
+	wrapped, nonce := exec.WrapExitMarker(exec.UserCommand(ctx, a.Exec, args.Command), logPath)
 	pid, pgid, err := a.Exec.StartBackground(ctx, wrapped, logPath)
 	if err != nil {
 		// No counter rollback: IDs stay monotonic (no future bgN collision).

@@ -59,6 +59,14 @@ and the `lsp_*` code-intelligence tools. All structured, argument-constrained
 calls: they read file contents, listings, and symbol data, but none of them
 can execute arbitrary commands.
 
+`run_shell` and `run_background` run the model's command under **bash** when the
+sandbox has bash (probed once per sandbox, cached per generation) and under `sh`
+otherwise; the tool descriptions say which once the probe has run. Helper commands
+Wakil builds itself always use `sh`. The command is passed as `bash -c '<command>'`,
+so bash-only syntax (`[[ ]]`, arrays, `${PIPESTATUS[@]}`) works and the exit code
+reported for detached jobs is the real one; a bash syntax error is reported as exit
+status 2.
+
 `run_shell` is gated even for pure reads — `cat ~/.ssh/id_rsa` or `env` is
 gated the same as any other call. `a` at a prompt auto-approves read-only
 tools for the rest of the session; gated tools keep prompting unless you flip
