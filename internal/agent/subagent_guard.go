@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"sync"
 
@@ -377,13 +376,6 @@ func (a *App) dispatchTracked(ctx context.Context, task string, progressOut io.W
 		a.guard.setState(lin, lineageDone, "")
 	}
 	return summary, grounding, ctxSize, usedBackend, costRows, changed
-}
-
-// sortedCopy returns a sorted copy (test helper / stable notices).
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	return out
 }
 
 // BeginUserTurn lifts every dispatch stop and forgets lineages. Called once per
