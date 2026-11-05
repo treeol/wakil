@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	osexec "os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,7 +20,11 @@ import (
 // can assert on it. It is a test double only; production never runs on the host.
 type shBackend struct {
 	root string
-	pm   *sandbox.PathMap
+	// agentRoot, when set, is the workspace as the agent sees it. Empty means
+	// the same as root (the default test layout). A different value gives
+	// disjoint host and agent namespaces.
+	agentRoot string
+	pm        *sandbox.PathMap
 
 	mu         sync.Mutex
 	started    []string
@@ -118,11 +123,20 @@ func (b *shBackend) pathMap() *sandbox.PathMap {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.pm == nil {
-		b.pm = sandbox.NewPathMap(b.root, b.root, "/tmp")
+		agent := b.agentRoot
+		if agent == "" {
+			agent = b.root
+		}
+		b.pm = sandbox.NewPathMap(b.root, agent, "/tmp")
 	}
 	return b.pm
 }
-func (b *shBackend) AgentRoot() string      { return b.root }
+func (b *shBackend) AgentRoot() string {
+	if b.agentRoot != "" {
+		return b.agentRoot
+	}
+	return b.root
+}
 func (b *shBackend) SandboxTempDir() string { return "/tmp" }
 
 func newTestBackendExec(t *testing.T) (*BackendExecutor, *shBackend) {
@@ -571,5 +585,55 @@ func TestBackendExecutorDeathInFlightRestartsOnNextCall(t *testing.T) {
 	}
 	if len(sb.started) != 2 {
 		t.Errorf("fresh session not started: %v", sb.started)
+	}
+}
+
+// B1 regression: hostRootResolved must map the AGENT root to the HOST root
+// (MapPath is agent→host). With disjoint namespaces the previous UnmapPath call
+// could not map the agent root and silently skipped the workspace shortcut.
+func TestBackendHostRootResolvedUsesMapPathDirection(t *testing.T) {
+	host := t.TempDir()
+	agent := "/agent-ws-" + filepath.Base(host)
+	sb := &shBackend{root: host, agentRoot: agent}
+	ex := NewBackendExecutor(sb, BackendOptions{Label: "fake"})
+	t.Cleanup(func() { _ = ex.Close() })
+	ws, ok := ex.hostRootResolved()
+	if !ok {
+		t.Fatalf("hostRootResolved failed with disjoint host/agent roots (agent=%q host=%q)", agent, host)
+	}
+	wantReal, _ := filepath.EvalSymlinks(host)
+	if ws != wantReal {
+		t.Errorf("hostRootResolved = %q, want host root %q", ws, wantReal)
+	}
+}
+
+// B1: a host path given through a symlinked alias of the (host) workspace must
+// map to the same agent path as the canonical spelling, not be refused.
+func TestBackendHostPathAliasMapsToAgentPath(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "Coding", "proj")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "coding")
+	if err := os.Symlink(filepath.Join(base, "Coding"), alias); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	sb := &shBackend{root: filepath.Join(alias, "proj"), agentRoot: "/agent-ws"}
+	ex := NewBackendExecutor(sb, BackendOptions{Label: "fake"})
+	t.Cleanup(func() { _ = ex.Close() })
+	if err := os.WriteFile(filepath.Join(real, "f.go"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canon, err := ex.HostPathToURI(filepath.Join(real, "f.go"))
+	if err != nil {
+		t.Fatalf("canonical spelling refused: %v", err)
+	}
+	viaAlias, err := ex.HostPathToURI(filepath.Join(alias, "proj", "f.go"))
+	if err != nil {
+		t.Fatalf("alias spelling refused (false refusal): %v", err)
+	}
+	if viaAlias != canon {
+		t.Errorf("alias URI = %q, canonical = %q; must map to the same agent path", viaAlias, canon)
 	}
 }

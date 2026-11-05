@@ -737,7 +737,14 @@ func (e *BackendExecutor) HostPathToURI(hostPath string) (string, error) {
 	if err := e.hostIdentity(hostPath); err != nil {
 		return "", err
 	}
-	agent, err := e.b.UnmapPath(hostPath)
+	// Map the host-resolved spelling: hostIdentity verified that spelling, and
+	// it is the one that lies under the (resolved) host workspace. The alias
+	// spelling would not, so UnmapPath would wrongly report it not visible.
+	resolved := hostPath
+	if r, rerr := resolveExistingAncestor(filepath.Clean(hostPath)); rerr == nil {
+		resolved = r
+	}
+	agent, err := e.b.UnmapPath(resolved)
 	if err != nil {
 		return "", fmt.Errorf("path %q has no sandbox mapping: %w", hostPath, err)
 	}
@@ -768,7 +775,8 @@ func (e *BackendExecutor) URIToHostPath(uri string) (string, error) {
 // must not be compared with host paths. ok is false when the backend has no
 // host mount (the check then falls through to the grant/UnmapPath test).
 func (e *BackendExecutor) hostRootResolved() (string, bool) {
-	ws, err := e.b.UnmapPath(e.root)
+	// e.root is an AGENT path; MapPath is agent→host, UnmapPath is host→agent.
+	ws, err := e.b.MapPath(e.root)
 	if err != nil {
 		return "", false
 	}
