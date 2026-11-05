@@ -213,7 +213,12 @@ func isSessionStateUnavailable(err error) bool {
 	if code == connect.CodeUnimplemented {
 		return true
 	}
-	if code == connect.CodeUnavailable && strings.Contains(err.Error(), "broken pipe") {
+	// The daemon's mux 404s an unmounted path and closes the connection. If
+	// that happens while the client is still writing, the write fails with
+	// EPIPE and Connect reports CodeCanceled (or CodeUnavailable, depending on
+	// timing). Both mean the same thing here, so match on the write error.
+	if (code == connect.CodeUnavailable || code == connect.CodeCanceled) &&
+		strings.Contains(err.Error(), "broken pipe") {
 		return true
 	}
 	return false
