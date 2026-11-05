@@ -104,6 +104,10 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 // as a parseable marker (wrapExitMarker). Without it, a backgrounded command
 // that finished within the deadline — or one announced by the completion
 // notice — could fail with a non-zero exit code completely invisibly.
+// shellDeadlineHook runs when a shell's deadline timer fires, before the
+// registry is consulted. Nil in production; tests set it (see bg_deadline_test.go).
+var shellDeadlineHook func(bgID string)
+
 func (a *App) runShellWithDeadline(ctx context.Context, command string, readAction bool) string {
 	deadline := time.Duration(a.Cfg.ShellTimeoutSec) * time.Second
 
@@ -334,10 +338,17 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 		// left a /tmp/wakil-bg-*.log behind).
 		a.bgMu.Lock()
 		delete(a.bgProcs, bgID)
+		a.dropFinishedLocked(bgID)
 		a.bgMu.Unlock()
 		a.removeBgLog(logPath)
 		return formatResult(out, runErr)
 	case <-timer.C:
+		// Test seam (nil in production): lets a test complete the job exactly
+		// as the deadline fires, to cover the window between the timer and the
+		// bgMu section below.
+		if shellDeadlineHook != nil {
+			shellDeadlineHook(bgID)
+		}
 		// Deadline reached — the process is still running. Leave it
 		// registered for read_process_log polling, and arm the push
 		// notification: the reaper will announce the exit.
@@ -365,7 +376,15 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			a.armShellWatchdog(regOp, a.bgShellTimeout())
 		}
 		a.bgMu.Lock()
-		if e := a.bgProcs[bgID]; e != nil {
+		e := a.bgProcs[bgID]
+		if e == nil {
+			// The reaper may have finished the job and retired it between the
+			// timer firing and this lock. A job that completed AT the deadline
+			// is still a job: take it from the retained list, not "no longer
+			// tracked" (review T2 astra-4).
+			e = a.finishedBgLocked(bgID)
+		}
+		if e != nil {
 			e.notifyOnExit = true
 			e.detached = true
 			if regOp != nil {
@@ -405,6 +424,13 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			} else {
 				a.notifyDetachedShellExit(bgID, notifyEntry)
 			}
+			// The output is returned in this result (and in the queued notice),
+			// so the job is consumed: release its registry entry and retained log
+			// rather than leave a finished job behind for a read nobody will make.
+			a.bgMu.Lock()
+			delete(a.bgProcs, bgID)
+			a.dropFinishedLocked(bgID)
+			a.bgMu.Unlock()
 			// If stopping, the inbox notice was suppressed — return the
 			// output inline so it is not lost.
 			if regReason == "stopping" {
@@ -412,7 +438,7 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			}
 			// Process already exited and the completion was published.
 			// Do NOT say "still running" — the process is done.
-			return fmt.Sprintf("command %s (\"%s\") %s — last output:\n%s\ncompletion notice queued; use read_process_log(%s) for the full output", bgID, notifyEntry.cmdDigest, statusLine, tail, bgID)
+			return fmt.Sprintf("command %s (\"%s\") %s — last output:\n%s\ncompletion notice queued", bgID, notifyEntry.cmdDigest, statusLine, tail)
 		}
 		// Entry gone (killed/generation-lost during the deadline wait).
 		if detachEntry == nil {

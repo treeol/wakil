@@ -61,11 +61,27 @@ func (a *App) retireBgLocked(id string) {
 // retained; a run_shell that finished inside its deadline already returned its
 // output inline and is simply dropped. Caller holds bgMu (write).
 func (a *App) finishBgLocked(e *bgEntry) {
-	if e.detached || e.toolName == "run_background" {
+	// A run_shell job that is not (yet) detached may still be waited on by its
+	// own deadline branch, which reads the output inline. Retain it until that
+	// branch has read it — it drops the entry itself on both paths — so a job
+	// that completes exactly at the deadline is never reported as lost.
+	if e.detached || e.toolName == "run_background" || e.toolName == "run_shell" {
 		a.retireBgLocked(e.id)
 		return
 	}
 	delete(a.bgProcs, e.id)
+}
+
+// dropFinishedLocked removes id from the retained list without marking it
+// evicted: the entry was consumed by its own deadline branch, not evicted by the
+// retention bound. Caller holds bgMu.
+func (a *App) dropFinishedLocked(id string) {
+	for i, e := range a.bgFinished {
+		if e.id == id {
+			a.bgFinished = append(a.bgFinished[:i:i], a.bgFinished[i+1:]...)
+			return
+		}
+	}
 }
 
 // finishedBgLocked returns the retained entry for id, or nil. Caller holds bgMu.
