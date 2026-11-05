@@ -314,22 +314,26 @@ func TestSkillDetector_SignalAndModeSuppression(t *testing.T) {
 		}
 		return out
 	}
-	app.setSkillCreationMode("off", false)
-	if h := run(); strings.Contains(h, "app note") {
-		t.Error("off must suppress the model hint")
+	// 0.4.4 (D2): in no mode does the suggestion enter a tool result any more.
+	for _, mode := range []string{"off", "on", "auto"} {
+		app.skillSuggest = nil
+		app.setSkillCreationMode(mode, false)
+		if h := run(); h != "r" {
+			t.Errorf("mode %s: tool result must be unchanged, got %q", mode, h)
+		}
 	}
-	if app.takeSkillSignal() == "" {
-		t.Error("detector signal should still be recorded")
-	}
+	// The signal is still recorded for the end-of-turn notice in "on".
 	app.skillSuggest = nil
 	app.setSkillCreationMode("on", false)
-	if h := run(); !strings.Contains(h, "app note") {
-		t.Error("on must keep the model hint")
+	run()
+	if app.takeSkillSignal() == "" {
+		t.Error("detector signal should still be recorded in on")
 	}
 	app.skillSuggest = nil
-	app.setSkillCreationMode("auto", false)
-	if h := run(); strings.Contains(h, "app note") {
-		t.Error("auto must suppress the model hint")
+	app.setSkillCreationMode("off", false)
+	run()
+	if app.takeSkillSignal() == "" {
+		t.Error("detector signal should still be recorded in off")
 	}
 }
 

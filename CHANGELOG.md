@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.4] - unreleased
 
+### Deprecated
+
+- **The daemon, the remote TUI and the web console.** `wakil daemon`, the remote TUI
+  (`--daemon`) and the web console (`wakil daemon --http-addr`) print one line on start —
+  "will be removed in a future release" — and otherwise work as before. Nothing is removed
+  in 0.4.4. (The user's host data shows no sessions created through them.)
+- **Skill auto-creation** (`/skill-creation`) is deprecated. Its default mode is now `off`
+  (see Changed); an explicit `skill_creation` setting still wins. Skill templates, the
+  skills store and `load_skill` are unchanged.
+
+### Changed
+
+- **`skill_creation` defaults to `off`.** Suggestions used to be on by default and were
+  appended to tool results as "[app note]" text; when a suggestion is enabled it is now a
+  status notice and no longer enters a tool result.
+
 ### Fixed
 
 - **Completion envelopes carry the exit code and the output.** The notice for a finished
@@ -54,6 +70,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `apply_skill_template` into an empty directory failed with "cannot inspect existing
   target"). Helpers now run with `LC_ALL=C LANG=C`, and "not found" is decided by a `test(1)`
   exit status after a failed read. The model's own commands keep the user's locale.
+- **`wakil --print-workspace-key` exists** (docker-compose.yml already told operators to run it).
+  It prints the workspace path, the memory store key and db path, the workspace key, the
+  sessionhost id/key and what `wakil plan gc` would resolve from the current directory, each with
+  its source (cwd, `WAKIL_WORKSPACE_PATH`, config, `WAKIL_WORKSPACE_KEY`), and warns when a chat
+  and `plan gc` would use different stores. It only reports: no key derivation changed and it
+  creates no files.
+- **`WAKIL_WORKSPACE_PATH` is announced.** When it is set, Wakil prints one startup line naming
+  the path, the resulting memory and sessionhost keys and that it overrides the working
+  directory (and, if it differs, which key `plan gc` would read); `/sandbox` shows the same line.
+  No key changed: the variable stays supported.
 - **Tests no longer write to the real user data dirs (H1).** `internal/testutil.Main` points
   HOME and the XDG dirs at temp dirs and fails the package if anything is created or appended
   under the real `~/.local/share/wakil` or `~/.config/wakil` (the wiring and tui packages leaked

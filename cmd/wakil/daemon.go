@@ -164,6 +164,11 @@ high-entropy detection; off disables scrubbing.
 
 // runDaemon is the entry point for `wakil daemon`. It parses flags, loads
 // config, constructs the daemon server, and serves until signal.
+// deprecatedDaemonLine is printed once when the daemon, the remote TUI or the
+// web console starts (0.4.4, D1). The features keep working; they are slated
+// for removal in a future release.
+const deprecatedDaemonLine = "wakil: the daemon, the remote TUI (--daemon) and the web console are deprecated — will be removed in a future release"
+
 func runDaemon() int {
 	flags, err := parseDaemonFlags(os.Args[2:])
 	if err != nil {
@@ -238,6 +243,7 @@ func execDaemon(flags daemonFlags) error {
 		return err
 	}
 
+	fmt.Fprintln(os.Stderr, deprecatedDaemonLine)
 	fmt.Fprintf(os.Stderr, "wakil daemon: listening on %s (ephemeral=%v, workspace=%s, path=%s)\n",
 		socketPath, flags.ephemeral, wsID, cfg.WorkspacePath())
 	if flags.httpAddr != "" {

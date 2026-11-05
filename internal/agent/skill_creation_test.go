@@ -15,8 +15,9 @@ import (
 
 func TestSkillCreationMode_Precedence(t *testing.T) {
 	app := skillTestApp(t, false, nil)
-	if m, src := app.SkillCreationMode(); m != "on" || src != "config" {
-		t.Fatalf("default = %q/%q, want on/config", m, src)
+	// 0.4.4 (D2): the default is off.
+	if m, src := app.SkillCreationMode(); m != "off" || src != "config" {
+		t.Fatalf("default = %q/%q, want off/config", m, src)
 	}
 	app.Cfg.SkillCreation.Mode = "off"
 	if m, src := app.SkillCreationMode(); m != "off" || src != "config" {
@@ -56,7 +57,7 @@ func TestSkillCreationCommand(t *testing.T) {
 	if _, src := app.SkillCreationMode(); src != "config" {
 		t.Errorf("source after default = %q", src)
 	}
-	if out := run("/skill-creation"); !strings.Contains(out, "skill creation: on") {
+	if out := run("/skill-creation"); !strings.Contains(out, "skill creation: off") {
 		t.Errorf("describe: %q", out)
 	}
 }

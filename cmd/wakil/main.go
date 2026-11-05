@@ -162,6 +162,7 @@ func main() {
 	// Checking BEFORE NewExecutor avoids paying full Docker container startup
 	// and then leaking the container via os.Exit (runDaemonMode takes no exe).
 	if cfg.DaemonMode {
+		fmt.Fprintln(os.Stderr, deprecatedDaemonLine)
 		if cfg.AttachImage != "" {
 			fmt.Fprintln(os.Stderr, "warning: --attach-image is not supported in daemon mode — ignored")
 		}

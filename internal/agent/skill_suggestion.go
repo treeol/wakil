@@ -106,8 +106,7 @@ func (s *skillSuggestionState) recordSkillToolCall(name string, ok bool) string 
 		s.hintedThisTurn = true
 		s.hintsUsed++
 		s.signal = "repeat"
-		return "\n\n[app note — not from the user: this turn's tool sequence so far matches an earlier turn this session (tool names only — arguments may differ)" +
-			". If the procedure behind this turn is reusable reference material, consider drafting it as a skill (skill_search first for near-duplicates, then save_skill or update_skill). This is a weak signal — skip it if the work is one-off. Finish the user's task first; the skill draft can happen after.]"
+		return triggerRepeat
 	}
 	// B1: long sequence with at least one state-changing tool — length alone
 	// is the signal, distinctness not required.
@@ -115,11 +114,18 @@ func (s *skillSuggestionState) recordSkillToolCall(name string, ok bool) string 
 		s.hintedThisTurn = true
 		s.hintsUsed++
 		s.signal = "long"
-		return "\n\n[app note — not from the user: this turn has run a long multi-step sequence of tool calls" +
-			". If the procedure behind this turn is reusable reference material, consider drafting it as a skill (skill_search first for near-duplicates, then save_skill or update_skill). This is a weak signal — skip it if the work is one-off. Finish the user's task first; the skill draft can happen after.]"
+		return triggerLong
 	}
 	return ""
 }
+
+// The detector returns the trigger that fired ("" when none). 0.4.4 (D2): no
+// text is put into a tool result; the user-facing suggestion is the end-of-turn
+// status notice (onTurnEndSkillCreation), built from the signal.
+const (
+	triggerRepeat = "repeat" // B2: the turn replays an earlier turn's opening
+	triggerLong   = "long"   // B1: a long sequence with a state-changing tool
+)
 
 // skillTurnQualifies reports whether a sequence is a B2 candidate: long
 // enough, varied enough, and containing at least one state-changing tool.
@@ -189,9 +195,14 @@ func (s *skillSuggestionState) commitSkillTurn() {
 	s.hintedThisTurn = false
 }
 
-// appendSkillHint is called from finalizeToolResult: record the call and, if
-// a trigger fired, append the hint to the result text before it enters the
-// transcript.
+// appendSkillHint is called from finalizeToolResult: it records the call and,
+// when a trigger fires, hands the signal to the end-of-turn hook.
+//
+// 0.4.4 (D2): the suggestion is NO LONGER appended to the tool result text. An
+// "[app note]" inside a tool result is untrusted-looking content the model may
+// act on (observed in practice). The suggestion now reaches the user as a
+// status notice from onTurnEndSkillCreation (mode "on" only). The returned text
+// is therefore always the unchanged tool result.
 func (a *App) appendSkillHint(tcName string, ok bool, text string) string {
 	if a.IsSubagent || a.SkillStore == nil {
 		return text
@@ -201,13 +212,7 @@ func (a *App) appendSkillHint(tcName string, ok bool, text string) string {
 	}
 	a.skillSuggest.signal = ""
 	if hint := a.skillSuggest.recordSkillToolCall(tcName, ok); hint != "" {
-		// The detector fired: remember it for the end-of-turn hook, and only
-		// show the in-band model hint in the default "on" mode (off suppresses
-		// it; auto modes build the skill themselves).
 		a.setSkillSignal(a.skillSuggest.signal)
-		if mode, _ := a.SkillCreationMode(); mode == "on" {
-			return text + hint
-		}
 	}
 	return text
 }

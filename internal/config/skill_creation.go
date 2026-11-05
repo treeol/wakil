@@ -33,7 +33,7 @@ var defaultSkillCreationAllowedFiles = []string{
 // SkillCreationConfig holds the knobs for automatic skill creation. Every
 // limit is configurable; zero values select the documented defaults.
 type SkillCreationConfig struct {
-	// Mode is the default mode: off | on | auto | auto-mashura. Empty = "on".
+	// Mode is the default mode: off | on | auto | auto-mashura. Empty = "off" (0.4.4).
 	// A per-repo saved setting and a per-session override take precedence.
 	Mode string `json:"mode,omitempty"`
 	// MaxAutoPerDay caps automatically created skills/drafts per UTC day.
@@ -99,10 +99,11 @@ func posOr(v, def int) int {
 	return def
 }
 
-// ModeOrDefault returns the configured default mode ("on" when unset).
+// ModeOrDefault returns the configured default mode ("off" when unset).
+// 0.4.4 (D2): the default moved from "on" to "off"; an explicit setting still wins.
 func (c SkillCreationConfig) ModeOrDefault() string {
 	if c.Mode == "" {
-		return SkillCreationOn
+		return SkillCreationOff
 	}
 	return c.Mode
 }

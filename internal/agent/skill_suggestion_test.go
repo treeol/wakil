@@ -3,6 +3,7 @@ package agent
 // skill_suggestion_test.go — tests for the B1/B2 workflow-suggestion tracker.
 
 import (
+	"github.com/treeol/wakil/internal/config"
 	"strings"
 	"testing"
 )
@@ -23,11 +24,8 @@ func TestRecordSkillToolCall_B1LongWorkflowFires(t *testing.T) {
 	if hint == "" {
 		t.Fatal("expected B1 hint after 8 successful run_shell calls")
 	}
-	if !strings.Contains(hint, "app note") {
-		t.Errorf("hint must be marked as app-generated, got: %s", hint)
-	}
-	if !strings.Contains(hint, "skip it if the work is one-off") {
-		t.Errorf("hint must be framed as a weak signal, got: %s", hint)
+	if hint != triggerLong {
+		t.Errorf("B1 must report the long trigger, got %q", hint)
 	}
 }
 
@@ -62,8 +60,8 @@ func TestRecordSkillToolCall_B2RepetitionFires(t *testing.T) {
 	if hint == "" {
 		t.Fatal("expected B2 hint on repeated sequence")
 	}
-	if !strings.Contains(hint, "matches an earlier turn") {
-		t.Errorf("B2 hint should mention repetition, got: %s", hint)
+	if hint != triggerRepeat {
+		t.Errorf("B2 must report the repeat trigger, got %q", hint)
 	}
 }
 
@@ -171,8 +169,8 @@ func TestRecordSkillToolCall_B2PrecedenceOverB1(t *testing.T) {
 	if len(hints) != 1 {
 		t.Fatalf("expected exactly 1 hint (B2), got %d", len(hints))
 	}
-	if !strings.Contains(hints[0], "matches an earlier turn") {
-		t.Errorf("the fired hint should be B2 (repetition), got: %s", hints[0])
+	if hints[0] != triggerRepeat {
+		t.Errorf("the fired trigger should be B2 (repetition), got %q", hints[0])
 	}
 }
 
@@ -234,8 +232,14 @@ func TestAppendSkillHint_FiresAndPersistsAcrossCalls(t *testing.T) {
 	for i := 0; i < b1MinCalls; i++ {
 		last = app.appendSkillHint("run_shell", true, "ok")
 	}
-	if !strings.Contains(last, "app note") {
-		t.Fatalf("expected hint in result text, got: %q", last)
+	// 0.4.4 (D2): the suggestion is no longer injected into the tool result.
+	if last != "ok" || strings.Contains(last, "app note") {
+		t.Fatalf("tool result must stay unchanged, got: %q", last)
+	}
+	// The tracker still fired (hint counted) and the signal is pending for the
+	// end-of-turn notice.
+	if app.takeSkillSignal() == "" {
+		t.Error("the detector signal must still reach the end-of-turn notice")
 	}
 	// State persisted on the App.
 	if app.skillSuggest == nil || app.skillSuggest.hintsUsed != 1 {
@@ -246,5 +250,51 @@ func TestAppendSkillHint_FiresAndPersistsAcrossCalls(t *testing.T) {
 func TestFormatSkillSequence(t *testing.T) {
 	if got := formatSkillSequence(seq("a", "b")); got != "a → b" {
 		t.Errorf("formatSkillSequence = %q", got)
+	}
+}
+
+// D2: a fresh config defaults to skill auto-creation "off".
+func TestSkillCreationDefaultIsOff(t *testing.T) {
+	var c config.SkillCreationConfig
+	if got := c.ModeOrDefault(); got != config.SkillCreationOff {
+		t.Errorf("default mode = %q, want off", got)
+	}
+	c.Mode = config.SkillCreationOn
+	if got := c.ModeOrDefault(); got != config.SkillCreationOn {
+		t.Errorf("an explicit mode must win: %q", got)
+	}
+}
+
+// D2: in mode "on" the suggestion reaches the user as a status notice at the
+// end of the turn (SysNoteMsg through the event sink), and nothing enters a
+// tool result. Uses the real end-of-turn hook.
+func TestSkillSuggestionNoticeInOnMode(t *testing.T) {
+	app, _ := scApp(t) // a store, a workspace with files written this session
+	app.setSkillCreationMode("on", false)
+	var notes []string
+	app.EventSink = func(msg interface{}) {
+		if n, ok := msg.(SysNoteMsg); ok {
+			notes = append(notes, n.Text)
+		}
+	}
+	app.setSkillSignal(triggerLong) // what the detector leaves behind
+	app.onTurnEndSkillCreation()
+	if len(notes) != 1 || !strings.Contains(notes[0], "/skill-creation now") {
+		t.Fatalf("on: want one status notice naming /skill-creation now, got %q", notes)
+	}
+
+	// off: the signal is consumed silently.
+	app2, _ := scApp(t)
+	app2.setSkillCreationMode("off", false)
+	var notes2 []string
+	app2.EventSink = func(msg interface{}) {
+		if n, ok := msg.(SysNoteMsg); ok {
+			notes2 = append(notes2, n.Text)
+		}
+	}
+	app2.setSkillSignal(triggerLong)
+	app2.onTurnEndSkillCreation()
+	if len(notes2) != 0 {
+		t.Errorf("off must not notify, got %q", notes2)
 	}
 }

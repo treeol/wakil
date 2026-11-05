@@ -30,6 +30,7 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--trace` | `WAKIL_TRACE_SESSIONS` | `false` | enable JSONL trace capture for this session |
 | `--trace-dir` | `WAKIL_TRACE_DIR` | `~/.local/share/wakil/traces` | directory for trace files |
 | `--list-sessions` | — | — | list saved sessions for this workspace and exit |
+| `--print-workspace-key` | — | — | print the workspace path, memory-store key, workspace key, sessionhost id/key and what `wakil plan gc` would resolve from this directory, each with its source (cwd / `WAKIL_WORKSPACE_PATH` / config / `WAKIL_WORKSPACE_KEY`), then exit. Read-only; creates no files |
 | `--all` | — | — | with `--resume`/`--list-sessions`: search all workspaces |
 | `--ssh-signing` | — | `off` | SSH commit signing in the sandbox: `off`\|`auto`\|`<path>` |
 | `--config` | `WAKIL_CONFIG` | `~/.config/wakil/config.json` | JSON config file path |
@@ -122,7 +123,7 @@ reference covering every section below.
 | `mashura_tool_panels` | — | Maps each counsel tool to a named panel |
 | `mashura_mode` | — | Default oracle consult schedule: `every-step` \| `on-deviation` \| `phases-only` *(alias: `wf_oracle_mode`)* |
 | `skill_creation` | — | Automatic skill creation (`/skill-creation`); object with the keys below |
-| `skill_creation.mode` | `"on"` | Default mode: `off`, `on` (hint + suggestion), `auto` (builds drafts), `auto-mashura` (Mashūra review, then activates new skills; setting it here is the standing opt-in to send sanitized drafts to the Mashūra panel). Numeric `skill_creation.*` limits must be >= 0 (0 = default) and `allowed_files` globs must be valid, or the config is rejected at load. A per-repo `/skill-creation` setting and a per-session override take precedence |
+| `skill_creation.mode` | `"off"` | Default mode: `off`, `on` (a status notice suggests a skill; never added to tool results), `auto` (builds drafts), `auto-mashura` (Mashūra review, then activates new skills; setting it here is the standing opt-in to send sanitized drafts to the Mashūra panel). Numeric `skill_creation.*` limits must be >= 0 (0 = default) and `allowed_files` globs must be valid, or the config is rejected at load. A per-repo `/skill-creation` setting and a per-session override take precedence | *(0.4.4: default changed from `on`; automatic skill creation is deprecated and will be removed in a future release)*
 | `skill_creation.max_auto_per_day` | `3` | Cap on automatically triggered runs per UTC day |
 | `skill_creation.max_drafts` | `10` | Pending drafts allowed; further runs stop until drafts are reviewed |
 | `skill_creation.draft_ttl_days` | `30` | Pending drafts older than this are rejected |
