@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"sync"
 	"time"
@@ -32,14 +33,23 @@ type userShellCache struct {
 
 // get returns the cached shell for generation gen, probing with probe on a miss
 // or when the generation changed (e.g. the container was recreated).
-func (c *userShellCache) get(gen int, probe func() bool) string {
+//
+// probe returns (hasBash, ok). Only a conclusive answer is cached: ok=false
+// (timeout, cancelled context, transport error) yields "sh" for this call alone
+// and leaves the cache empty, so one slow probe on a starting container cannot
+// pin every later command to sh for the whole generation.
+func (c *userShellCache) get(gen int, probe func() (hasBash, ok bool)) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.val != "" && c.gen == gen {
 		return c.val
 	}
+	hasBash, ok := probe()
+	if !ok {
+		return "sh"
+	}
 	c.val = "sh"
-	if probe() {
+	if hasBash {
 		c.val = "bash"
 	}
 	c.gen = gen
@@ -60,11 +70,11 @@ const userShellProbeCmd = "command -v bash >/dev/null 2>&1"
 
 // UserShell implements UserShellProber.
 func (d *DockerExecutor) UserShell(ctx context.Context) string {
-	return d.userShell.get(d.Generation(), func() bool {
+	return d.userShell.get(d.Generation(), func() (bool, bool) {
 		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		_, err := d.execCtx(pctx, false, "sh", "-c", userShellProbeCmd)
-		return err == nil
+		return probeVerdict(pctx, err)
 	})
 }
 
@@ -79,19 +89,43 @@ func (e *BackendExecutor) PeekUserShell() string { return e.userShell.peek(e.Gen
 
 // UserShell implements UserShellProber.
 func (e *DirectExecutor) UserShell(_ context.Context) string {
-	return e.userShell.get(e.Generation(), func() bool {
+	return e.userShell.get(e.Generation(), func() (bool, bool) {
 		_, err := exec.LookPath("bash")
-		return err == nil
+		return err == nil, true // LookPath is local and conclusive
 	})
+}
+
+// probeVerdict turns the outcome of userShellProbeCmd into (hasBash, ok).
+// `command -v bash` exits 1 when bash is absent: that is a conclusive "no".
+// Success is "yes". Anything else — a cancelled or timed-out probe, a transport
+// error, the container not running — is inconclusive and must not be cached.
+func probeVerdict(pctx context.Context, err error) (hasBash, ok bool) {
+	if err == nil {
+		return true, true
+	}
+	if pctx.Err() != nil {
+		return false, false
+	}
+	// Two shapes carry the exit status: ExitStatusError (backend exec) and the
+	// os/exec ExitError that docker exec returns (execCtx).
+	var se *ExitStatusError
+	if errors.As(err, &se) {
+		return false, se.Code == 1
+	}
+	var xe interface{ ExitCode() int }
+	if errors.As(err, &xe) {
+		return false, xe.ExitCode() == 1
+	}
+	return false, false
 }
 
 // UserShell implements UserShellProber.
 func (e *BackendExecutor) UserShell(ctx context.Context) string {
-	return e.userShell.get(e.Generation(), func() bool {
+	return e.userShell.get(e.Generation(), func() (bool, bool) {
 		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		_, err := e.sh(pctx, userShellProbeCmd)
-		return err == nil
+		return probeVerdict(pctx, err)
 	})
 }
 
