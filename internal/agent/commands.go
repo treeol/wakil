@@ -11,16 +11,11 @@ import (
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/memory"
-	"github.com/treeol/wakil/internal/policy"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
 )
 
-// tuiConfirmer pauses the agent goroutine and posts a ConfirmReqMsg into the
-// TUI event loop. It blocks on the response channel until the user answers.
-// Picking "allow all reads" flips app.AllowReads so later read-only commands
-// skip the gate. Safe: runs in the agent goroutine, not in the event loop.
 // suspendAuto returns a human-readable reason string when auto mode must be
 // suspended for this tool call and the interactive gate must fire instead.
 // Returns "" when auto mode may proceed without gating.
@@ -88,90 +83,6 @@ func SuspendAuto(toolName string, app *App, detail string) string {
 // for callers that only need a boolean.
 func ShouldGateEvenWithAutoApprove(toolName string, app *App, detail string) bool {
 	return SuspendAuto(toolName, app, detail) != ""
-}
-
-func tuiConfirmer(app *App) Confirmer {
-	return func(toolName, headline, detail string, readAction bool) bool {
-		// ── Policy evaluation (before legacy consent path) ────────────────
-		// If a policy is active, evaluate it first. Policy allow behaves like
-		// AutoApprove — but SuspendAuto carve-outs (egress, destructive) still
-		// fire on top, so "allow" never bypasses hard safety gates. Policy deny
-		// blocks the call with a reason. Policy ask falls through to the
-		// existing confirm path (prompt or AutoApprove).
-		if pol := app.Policy(); pol != nil {
-			input := buildPolicyInput(toolName, detail, readAction)
-			result := pol.Evaluate(input)
-			switch result.Decision {
-			case policy.Deny:
-				app.sendEvent(SysNoteMsg{Text: "🚫 blocked by policy: " + result.Reason +
-					" (rule: " + result.RuleName + ")"})
-				return false
-			case policy.Allow:
-				// SuspendAuto still fires on top — egress gate, destructive gate.
-				// If SuspendAuto returns "", the allow proceeds without prompt.
-				reason := SuspendAuto(toolName, app, detail)
-				if reason == "" {
-					app.sendEvent(SysNoteMsg{Text: "⚡ policy allow: " + headline + "\n" + Indent(detail)})
-					return true
-				}
-				// Auto suspended — the policy said allow, but a hard safety gate
-				// requires confirmation. Fall through to the interactive prompt.
-				headline = "⚡ auto suspended: " + reason + " — " + headline
-			case policy.Ask:
-				// Policy says ask — fall through to the existing confirm path.
-				// If AutoApprove is on, the existing SuspendAuto logic decides.
-			}
-		}
-
-		if app.Consent().AutoApprove {
-			reason := SuspendAuto(toolName, app, detail)
-			if reason == "" {
-				app.sendEvent(SysNoteMsg{Text: "⚡ auto: " + headline + "\n" + Indent(detail)})
-				return true
-			}
-			// Auto suspended — prefix the headline so the first line of the
-			// confirm prompt states the cause. headline is a local copy; the
-			// tool name and detail passed to the gate are unchanged.
-			headline = "⚡ auto suspended: " + reason + " — " + headline
-		}
-
-		// Session grant check: if a grant exists for this tool and it's
-		// eligible (read-only built-in), auto-approve without prompting.
-		// SuspendAuto carve-outs (destructive, external) still fire on top
-		// — grants never bypass hard safety gates.
-		if IsGrantEligible(toolName) && app.HasGrant(toolName) {
-			reason := SuspendAuto(toolName, app, detail)
-			if reason == "" {
-				app.sendEvent(SysNoteMsg{Text: "⚡ granted: " + headline + "\n" + Indent(detail)})
-				return true
-			}
-			// Grant exists but SuspendAuto fires — fall through to prompt.
-			headline = "⚡ auto suspended: " + reason + " — " + headline
-		}
-
-		ch := make(chan ConfirmChoice, 1)
-		app.sendEvent(ConfirmReqMsg{
-			ToolName:   toolName,
-			Headline:   headline,
-			Detail:     detail,
-			ReadAction: readAction,
-			RespCh:     ch,
-		})
-		switch <-ch {
-		case ChoiceAllowReads:
-			app.SetAllowReads(true)
-			return true
-		case ChoiceGrantTool:
-			if IsGrantEligible(toolName) {
-				app.AddGrant(toolName)
-			}
-			return true
-		case ChoiceApprove:
-			return true
-		default:
-			return false
-		}
-	}
 }
 
 // handleEndpointSwitch switches the session to the named endpoint from

@@ -2,11 +2,8 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/treeol/wakil/internal/proxy"
 )
 
 // TakeLearnNudge computes and clears the end-of-turn learn nudge (7b3 m4).
@@ -40,101 +37,6 @@ func (a *App) TakeLearnNudge() string {
 		}
 	}
 	return ""
-}
-
-// RunTurn returns a Cmd that runs the agent turn. When the TUI executes it
-// (via AdaptCmd → tea.Cmd), the body runs off the event loop — all progress
-// is posted into the TUI via EventSink (sendEvent), and the Cmd itself
-// returns nil (no message). Safe because it runs outside the Bubble Tea
-// event loop.
-func RunTurn(app *App, ctx context.Context, userText string) Cmd {
-	return func() Msg {
-		app.Out = NewProgWriter(func(m StreamChunkMsg) { app.sendEvent(m) })
-		app.Confirm = tuiConfirmer(app)
-		app.SetOnTokRate(func(tps float64) { app.sendEvent(TokRateMsg{Tps: tps}) })
-		app.OnReasoning = func(s string) { app.sendEvent(ReasoningChunkMsg{Text: s}) }
-		// Dedup cache is for subagents only (dispatchSubagent sets it). The main
-		// agent is interactive — the user can cancel loops via Ctrl+C, and
-		// legitimate re-reads of the same file must not be silently suppressed.
-		app.ToolCache = nil
-		app.BeginUserTurn()
-		// Reset per-turn step evidence so each IMPLEMENT turn starts with a
-		// clean trace. Consumed by handleWorkflowTransition on %%STEP_DONE%%.
-		app.WorkflowStepTrace = nil
-		// Clear grounding so proxy entries from the previous turn don't persist.
-		// Header entries for this turn land at first Stream; client-side entries
-		// (web/oracle) accumulate during tool execution.
-		app.Client.ResetGrounding()
-
-		// Phase 2: run the turn to its FINAL outcome, transparently
-		// resuming through suspensions (pending async work) so the TUI doesn't end
-		// the turn / fire AgentDoneMsg while background work is still running.
-		_, err := runTurnToFinal(ctx, app, userText) // Retry transient backend failures in auto mode; surface fatal errors and
-		// exhausted-retry state as tidy ⚠ lines rather than raw error traces.
-		err = HandleStreamError(ctx, app, err)
-		streamWarn := ""
-		if errors.Is(err, proxy.ErrBackendStream) {
-			streamWarn = "⚠ backend unreachable"
-			if app.NearContextLimit() {
-				streamWarn += " (near context limit — try /compact)"
-			}
-			if id := ShortID(app.Client.ChatID); id != "" {
-				streamWarn += " — session saved, /resume " + id + " to continue"
-			}
-		} else if errors.Is(err, proxy.ErrBackendFatal) {
-			// 4xx: surface the full message so the user can diagnose (bad request,
-			// auth failure, etc.) — not a stream warn, it needs the detail.
-			streamWarn = "⚠ " + err.Error()
-			err = nil // don't double-render as AgentDoneMsg.Err
-		}
-
-		// Detect empty completions (no content, no tool calls) — likely token-limit
-		// truncation. In IMPLEMENT phases retry once automatically; otherwise just
-		// warn. Must run before handleWorkflowTransition so the transition sees the
-		// retry response rather than the empty one.
-		if err == nil {
-			HandleEmptyResponse(ctx, app)
-		}
-
-		// Workflow phase detection: check for completion sentinels in the last
-		// assistant message. All transitions run here in the goroutine so that
-		// oracle calls can use the normal confirm gate before AgentDoneMsg fires.
-		var wfNext *WFStartTurnMsg
-		if app.Workflow != nil && err == nil {
-			wfNext = HandleWorkflowTransition(ctx, app)
-		}
-
-		// Build end-of-turn nudge when: (a) the learn-candidate log fired this
-		// turn, (b) at least one web or oracle grounding entry was added client-
-		// side, and (c) this query hasn't been nudged already this session.
-		nudge := ""
-		pendingQuery := app.learnNudgePending
-		app.learnNudgePending = "" // always clear
-		if pendingQuery != "" && err == nil {
-			for _, e := range app.Client.Grounding() {
-				if e.Type == "web" || e.Type == "oracle" {
-					if app.learnNudgedQueries == nil {
-						app.learnNudgedQueries = make(map[string]bool)
-					}
-					if !app.learnNudgedQueries[pendingQuery] {
-						app.learnNudgedQueries[pendingQuery] = true
-						nudge = "· low grounding + external sources used — /learn to save this for next time"
-					}
-					break
-				}
-			}
-		}
-		// A surfaced stream error renders as the tidy warn line, not a raw err.
-		doneErr := err
-		if streamWarn != "" {
-			doneErr = nil
-		}
-		app.sendEvent(AgentDoneMsg{Err: doneErr, LearnNudge: nudge, Warn: streamWarn, WorkflowWillContinue: wfNext != nil})
-		if wfNext != nil {
-			app.sendEvent(*wfNext)
-		}
-		return nil
-	}
 }
 
 // runTurnToFinal drives one user turn to its FINAL outcome, transparently
