@@ -63,7 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docker exec -i … python3`. Direct mode keeps chromedp's own launcher, now lazy with the same
   lifecycle. Under hisn the browser stays off. Chromium may still start `chrome_crashpad_handler`
   despite the flags (observed on the image's Chromium 156); those processes carry the profile
-  dir and are swept on stop.
+  dir and are swept on stop. Ownership is checked before any signal (a host pid is killed
+  only if its start time and cmdline still match what was recorded at start; a reused pid is
+  left alone and one line is logged). The browser belongs to the manager, not to the tool call
+  that launched it: it survives the end of that call and stops only on idle, `/new`, chat end or
+  exit. Direct-mode teardown waits a bounded 3 s for Chromium to exit, KILLs what still carries
+  the launch's `--user-data-dir`, then removes the directory.
 - **Helper commands no longer depend on the locale (L).** Executors parse the output and stderr
   of their own helper commands; under a German shell "Datei oder Verzeichnis nicht gefunden"
   was never recognised as "not found" (`TestBackendExecutorLazyStartAndFileOps` failed, and

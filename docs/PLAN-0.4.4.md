@@ -1,3 +1,43 @@
+# Wakil 0.4.4 — what was built
+
+This file records what 0.4.4 contains. The per-item plan and the review rounds are
+kept below it for the record; where they differ from the code, the code is right.
+
+## Built, by item
+
+- **T1–T5 (tool layer):** completion envelopes carry the status and the output (whole up to 6 KiB,
+  else head 2 KiB + marker + tail 4 KiB); finished background jobs are retained for
+  `read_process_log` (last 32 / 64 MiB, oldest first, evictions reported); `read_file` and
+  `read_file_full` read the sandbox's own `/tmp` in docker and backend executors only; user
+  commands run under bash when the sandbox has it; collapses that would not shrink a turn are
+  skipped.
+- **H1 (test isolation):** `internal/testutil.Main` redirects HOME/XDG/sessions to temp dirs
+  and fails a package that changes the real Wakil directories.
+- **L1–L2 (locale):** helper commands run under `LC_ALL=C LANG=C`; not-found is decided by
+  exit status after a failed read. The German-stderr shim tests are the effective coverage here;
+  a real de_CH run needs a host with the locale generated.
+- **B1–B3 (browser, docker backend):** lazy launch on first use; a direct child of a `docker exec`
+  session in its own process group with a per-launch profile dir (also `HOME`); stop on idle
+  (`browser_idle_timeout_seconds`), `/new`, chat end and exit; stop = TERM group, 3 s, KILL,
+  straggler sweep, rm; loopback-only tunnel; no published CDP port. Review fixes R1–R3:
+  ownership check before signalling, lifetime tied to the manager, bounded exit wait in direct
+  mode. Live check against the hardened `wakil-dev` image (`WAKIL_BROWSER_LIVE_IMAGE`).
+- **M1–M2:** `wakil --print-workspace-key`; `--think` applies on `/new` and `/resume` without
+  saved repo-state.
+- **D1–D3:** deprecation lines for daemon / `--remote` / web; skill auto-creation default `off`
+  and its notices leave tool results; `WAKIL_WORKSPACE_PATH` announced at startup and in `/sandbox`.
+
+## Not built (remains open)
+
+- A true read-only store open (`mode=ro`) for inspect callers.
+- `plan gc` still loads config it does not use (changing that changes the broken-config exit).
+- Browser state after a crashed Wakil stays until the container is removed (no startup reap).
+- The R-group items are closed for the code paths above; no other review point is open.
+
+---
+
+# Planning record (as written before the build)
+
 # Wakil 0.4.4 — plan
 
 Items T1–T5 (tool layer), H1 (test hygiene), L1–L2 (locale), B1–B3 (browser
