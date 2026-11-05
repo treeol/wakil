@@ -20,7 +20,7 @@
 #
 # kvr-server (staging KV store) is NOT included — staging degrades
 # gracefully without it. If staging is needed, run kvr-server as a sidecar
-# and set WAKIL_STAGING_DIR to the shared volume.
+# and mount the shared volume.
 
 ###############################################################################
 # Stage 1: Build the wakil binary

@@ -89,8 +89,7 @@ services:
 
       # Socket directory: exposed to the host so the TUI can connect.
       # The daemon creates wakil.sock inside /run/wakil (XDG_RUNTIME_DIR).
-      # On the host, point the TUI at this socket via --socket or
-      # WAKIL_DAEMON_SOCKET environment variable.
+      # On the host, point the TUI at this socket via --socket.
       - ${XDG_RUNTIME_DIR:-/tmp}/wakil-daemon:/run/wakil:z
 
       # Workspace mount: the project directory the daemon operates on.
