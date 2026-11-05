@@ -293,12 +293,6 @@ func WithQueueDepth(n int) Option { return func(o *Options) { o.QueueDepth = n }
 // does NOT bound replay: replayed history is staged separately.
 func WithSubBuffer(n int) Option { return func(o *Options) { o.SubBuffer = n } }
 
-// WithNow injects the clock (tests).
-func WithNow(f func() time.Time) Option { return func(o *Options) { o.Now = f } }
-
-// WithIDGenerator injects the id source (tests; deterministic via id.NewFromReader).
-func WithIDGenerator(g *id.Generator) Option { return func(o *Options) { o.IDs = g } }
-
 // WithStore injects the backing store (tests).
 func WithStore(s Store) Option { return func(o *Options) { o.Store = s } }
 

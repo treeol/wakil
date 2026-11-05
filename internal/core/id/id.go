@@ -34,10 +34,6 @@ type Generator struct {
 // New returns a Generator backed by crypto/rand.Reader.
 func New() *Generator { return &Generator{r: rand.Reader} }
 
-// NewFromReader returns a Generator using r as its entropy source. Intended
-// for deterministic tests; production code should use New.
-func NewFromReader(r io.Reader) *Generator { return &Generator{r: r} }
-
 // raw builds a "<prefix><uuidv7>" string from the generator's entropy source.
 func (g *Generator) raw(prefix string) (string, error) {
 	if g == nil || g.r == nil {
