@@ -22,6 +22,19 @@ kept below it for the record; where they differ from the code, the code is right
   straggler sweep, rm; loopback-only tunnel; no published CDP port. Review fixes R1–R3:
   ownership check before signalling, lifetime tied to the manager, bounded exit wait in direct
   mode. Live check against the hardened `wakil-dev` image (`WAKIL_BROWSER_LIVE_IMAGE`).
+- **Post-review items 1–4 (Mashūra T2/T5/B3 findings):**
+  1. T2 astra-3 (`0bbe130`): `read_process_log` pins its entry for the whole read; retirement and
+     eviction skip a pinned entry and the bound is re-applied on release. Barrier test.
+  2. T2 astra-4 (`bb54e67`): the deadline branch re-checks completion under the reaper's lock; a
+     job completing at the deadline is reported finished and leaves nothing behind. Barrier test
+     with a seam (nil in production).
+  3. T5 partial upgrade (`33d47ae`): the size gate compares with the form being replaced; a
+     non-shrinking upgrade keeps the previous form. Stuck-partial test.
+  4. B3 disconnect (`ba515b5`): tests for abrupt forwarder death (client sees EOF/reset, tunnel
+     closes, stop path reaps the browser group). No production change was needed.
+  Each has a mutation check recorded in its commit message and passes under `-race`.
+  Open for item 4: only the forwarder's exec client on disconnect paths other than close/kill is
+  covered indirectly (the stop path sweeps by profile dir), not by a dedicated test.
 - **M1–M2:** `wakil --print-workspace-key`; `--think` applies on `/new` and `/resume` without
   saved repo-state.
 - **D1–D3:** deprecation lines for daemon / `--remote` / web; skill auto-creation default `off`

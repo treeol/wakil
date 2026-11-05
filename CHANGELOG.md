@@ -45,7 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of "code unknown". Helper commands Wakil builds itself stay `sh`.
 - **Collapse never inflates the request.** If the collapsed form of a turn (or the
   `collapse_context` checkpoint) would not be smaller than the original, the original is kept
-  and the notice / tool result says so.
+  and the notice / tool result says so. A partial collapse that is upgraded later is measured
+  against the form it replaces (what the request carries for that turn now), not against the
+  original turn; an upgrade that would grow the request is refused and the previous form stays.
+- **A read of a background job pins its log.** `read_process_log` holds a reference on the job's
+  entry for the whole read, so retirement and eviction cannot delete the log mid-read; the entry
+  is retired or evicted when the last reader releases it.
+- **A `run_shell` that finishes exactly at its deadline is reported as finished.** The deadline
+  timer used to race the reaper and could report "entry no longer tracked" for a completed job;
+  completion is now re-checked under the same lock the reaper takes.
 
 - **The headless browser starts on first use, stops when idle, and listens only on loopback**
   (docker backend). Previously the browser and a CDP relay were started with the container
