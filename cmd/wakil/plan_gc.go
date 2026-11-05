@@ -62,9 +62,17 @@ func classifyPlanEntry(key, sessionID string, sessionExists func(chatID string) 
 // hard-deleted and the key is not forgotten).
 func runPlanGC(args []string) int {
 	apply := false
-	for _, a := range args {
-		if a == "--apply" || a == "-apply" {
+	var projectDir, storePath string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--apply" || a == "-apply":
 			apply = true
+		case a == "--project" && i+1 < len(args):
+			projectDir = args[i+1]
+			i++
+		case a == "--store" && i+1 < len(args):
+			storePath = args[i+1]
+			i++
 		}
 	}
 
@@ -74,16 +82,12 @@ func runPlanGC(args []string) int {
 		return ExitError
 	}
 
-	memDBPath := agent.MemoryDBPath(cfg.WorkDir)
-	if memDBPath == "" {
-		fmt.Fprintln(os.Stderr, "cannot determine memory DB path")
-		return ExitError
-	}
-	store, err := memory.Open(memDBPath, cfg.WorkDir)
+	store, memDBPath, err := agent.PlanGCStore(agentWorkspace(cfg, projectDir), storePath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "memory open error:", err)
+		fmt.Fprintln(os.Stderr, err)
 		return ExitError
 	}
+	fmt.Fprintf(os.Stdout, "store: %s\n", memDBPath)
 	defer store.Close()
 
 	ctx := context.Background()
@@ -94,14 +98,10 @@ func runPlanGC(args []string) int {
 		return ExitError
 	}
 
-	exists := func(chatID string) bool {
-		p := agent.SessionFilePath(chatID)
-		if p == "" {
-			return true // no sessions dir configured: cannot prove death
-		}
-		_, err := os.Stat(p)
-		return err == nil
-	}
+	// Only a confirmed absence (ENOENT) counts as death. Any other stat error
+	// (permissions, I/O) means the session state is unknown, so the entry is
+	// kept: --apply must never reject a row whose owner we could not check.
+	exists := planGCSessionExists
 
 	var dead []*memory.Entry
 	alive, kept := 0, 0
@@ -139,4 +139,26 @@ func runPlanGC(args []string) int {
 	}
 	fmt.Fprintf(os.Stdout, "plan gc: rejected %d of %d dead entries\n", rejected, len(dead))
 	return ExitOK
+}
+
+// agentWorkspace picks the workspace gc resolves the store for: an explicit
+// --project directory, else the host workspace the session itself uses. Never
+// cfg.WorkDir (the container path in docker mode).
+func agentWorkspace(cfg config.Config, projectDir string) string {
+	if projectDir != "" {
+		return projectDir
+	}
+	return cfg.WorkspacePath()
+}
+
+// planGCSessionExists reports whether a session file for chatID may exist.
+// Only a confirmed ENOENT returns false (the owner is provably gone). Any
+// other stat error returns true: an unreadable owner is unknown, not dead.
+func planGCSessionExists(chatID string) bool {
+	p := agent.SessionFilePath(chatID)
+	if p == "" {
+		return true // no sessions dir configured: cannot prove death
+	}
+	_, err := os.Stat(p)
+	return err == nil || !os.IsNotExist(err)
 }
