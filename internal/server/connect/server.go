@@ -7,7 +7,6 @@ import (
 	"github.com/treeol/wakil/internal/auth/apitoken"
 	"github.com/treeol/wakil/internal/auth/jointoken"
 	"github.com/treeol/wakil/internal/auth/tokenstore"
-	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 )
 
@@ -133,20 +132,6 @@ func NewServerWithAuthAndOIDC(host *sessionhost.Host, ephemeral bool, resolver p
 	return s
 }
 
-// NewServerFromInterfaces creates a Connect server from explicit interface
-// implementations. Useful for testing with mocks.
-func NewServerFromInterfaces(svc core.SessionService, reader core.EventReader, snap core.SessionReader, ephemeral bool, resolver principalResolver) *Server {
-	if resolver == nil {
-		panic("connect: NewServerFromInterfaces requires a non-nil principal resolver")
-	}
-	return &Server{
-		session:  NewSessionHandler(svc, snap, resolver),
-		event:    NewEventHandler(reader, snap, resolver),
-		system:   NewSystemHandler(ephemeral),
-		resolver: resolver,
-	}
-}
-
 // Backend returns the BackendHandler if configured, or nil.
 func (s *Server) Backend() *BackendHandler {
 	return s.backend
@@ -168,41 +153,6 @@ func (s *Server) Agent() *AgentHandler {
 func (s *Server) WithSessionState(h *SessionStateHandler) *Server {
 	s.sessionState = h
 	return s
-}
-
-// NewServerFromInterfacesWithAuth creates a Connect server with auth support
-// from explicit interface implementations. Useful for testing with mocks.
-func NewServerFromInterfacesWithAuth(svc core.SessionService, reader core.EventReader, snap core.SessionReader, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store) *Server {
-	if resolver == nil {
-		panic("connect: NewServerFromInterfacesWithAuth requires a non-nil principal resolver")
-	}
-	return &Server{
-		session:    NewSessionHandler(svc, snap, resolver),
-		event:      NewEventHandler(reader, snap, resolver),
-		system:     NewSystemHandler(ephemeral),
-		resolver:   resolver,
-		authIssuer: authIssuer,
-		apiIssuer:  apiIssuer,
-		auth:       NewAuthHandler(authIssuer, apiIssuer, tokenStore, resolver),
-	}
-}
-
-// NewServerFromInterfacesWithAuthAndOIDC creates a Connect server with auth
-// and OIDC support from explicit interface implementations. Useful for
-// testing with mocks.
-func NewServerFromInterfacesWithAuthAndOIDC(svc core.SessionService, reader core.EventReader, snap core.SessionReader, ephemeral bool, resolver principalResolver, authIssuer *jointoken.Issuer, apiIssuer *apitoken.Issuer, tokenStore *tokenstore.Store, oidcCfg OIDCConfig) *Server {
-	if resolver == nil {
-		panic("connect: NewServerFromInterfacesWithAuthAndOIDC requires a non-nil principal resolver")
-	}
-	return &Server{
-		session:    NewSessionHandler(svc, snap, resolver),
-		event:      NewEventHandler(reader, snap, resolver),
-		system:     NewSystemHandler(ephemeral),
-		resolver:   resolver,
-		authIssuer: authIssuer,
-		apiIssuer:  apiIssuer,
-		auth:       NewAuthHandlerWithOIDC(authIssuer, apiIssuer, tokenStore, resolver, oidcCfg),
-	}
 }
 
 // Handler returns an http.Handler that serves all Connect services,
