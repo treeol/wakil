@@ -213,6 +213,21 @@ A lightweight file-tree outline is built at session start and injected into the 
 
 Edit-tier subagents in git repos (direct mode) run in isolated `git worktree add --detach` working directories. After a child finishes, its changes are diffed and applied as a patch to the parent workspace (serialized by a patch-apply lock). Disjoint edits from parallel children apply cleanly; conflicting patches are detected and the second child's changes are not applied (with a warning). Non-git directories and Docker mode fall back to the serialized writer-lock behavior.
 
+## Subagent dispatch discipline
+
+`dispatch_subagent` / `dispatch_subagents` take a required **`class`** (`read`, `search`, `edit`, `verify`) that sizes the child's per-turn tool-output budget (`subagents.budget.*`, see [configuration](configuration.md); an explicit `subagent_turn_tool_budget` caps it), and an optional **`files`** list.
+
+Every dispatch returns a harness-built result: `outcome` (`complete` / `partial` / `rejected` / `refused` / `failed`), `files_covered`, `files_not_read`, `files_extra`, `files_listed`, `remaining_scope`, `budget`. The file ledger is recorded from the child's actual read calls, never from what it says it did.
+
+- **Budget exhaustion → `partial`.** The child's tools-off final answer is used; if unparseable it gets one reserve turn; if that fails too, `findings` is empty and `remaining_scope` holds the raw tail (≤ 2 KB).
+- **Off-task.** An explicit `files` list with zero listed files read is `rejected` (findings spilled, not returned) and re-run once with the ledger appended; a second rejection prints `subagent <id> off-task twice: read 0/<N> assigned files — assign differently or take over?`.
+- **Partial follow-up.** Only a strictly smaller file set with different task text is accepted, once; the same scope is refused without a model call. A second partial, or a partial with nothing left to split, prints `subagent <id> partial: <read>/<listed> files, <K> findings — split or take over?`.
+- **Stop rule.** After either notice the task is stopped: further dispatch for it is refused by the harness until you send your next message. The agent does not take the work over on its own.
+
+## Plan quarantine and `wakil plan gc`
+
+In a tainted session, `memory_put plan/current` is redirected to `plan/tainted/<chatID>/current` (quarantined, never handed off; `/plan status` says so). `wakil plan gc` lists quarantined plan entries whose session file is gone (dry run); `wakil plan gc --apply` rejects them. It never touches an active `plan/current`.
+
 ## Correction capture
 
 Wakil automatically detects when you correct its work and proposes storing a memory entry:

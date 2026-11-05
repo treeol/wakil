@@ -432,9 +432,34 @@ Add one line to `docs/inventory-decisions.md` under the `memory_preflight_recall
 
 ## Open points — not done
 
-1. **`stringSet` vs `toStrSet` naming**: Mashūra noted `stringSet` could shadow a builtin. Renamed to `toStrSet` — no shadowing risk.
-2. **Config JSON tags with dots**: Go json tags with dots (`subagents.budget.read`) work as literal key names — confirmed, no issue.
-3. **`MemoryPreflightRecall` removal**: Confirmed no-op — field, config key, and docs entry deleted. `retrieveMemoryContext` runs unconditionally regardless. Note added to `docs/inventory-decisions.md`.
-4. **Format discrepancy**: `grep ×9, …` vs `, … (+N more tools)` — resolved: the `formatToolAggregation` helper uses `, … (+N more tools)` consistently. `buildCollapseNote` uses `name×count` (no space) which is a different display context (the inline working-set note).
-5. **Integration test**: one end-to-end dispatch with an explicit file list against the real tool path — not yet written; the existing integration harness (`subagent_readfile_full_e2e_test.go`) covers the dispatch path but not the `files` parameter or budget exhaustion. The unit tests cover the logic; the integration test is a follow-up.
-6. **Reserve turn + Anthropic API**: the reserve turn strips tools (`sub.Tools = nil`) and does one more `Send`. The existing JSON retry path (`subagent.go:1505`) already does this for malformed-JSON retries — the same pattern is reused. If the Anthropic API rejects a tool_use message without a tools param, it would have already failed on the retry path; no new issue introduced.
+Status after the finishing session. Items 1–6 below are the previous session's list, updated; items 7+ are Mashūra round-1 open points (non-blocking) not fixed in 0.4.2.
+
+1. **`stringSet` vs `toStrSet`**: renamed to `toStrSet`. Closed.
+2. **Config JSON tags with dots** (`subagents.budget.read`): literal key names, work as-is. Closed.
+3. **`MemoryPreflightRecall`**: confirmed no-op, removed. Closed.
+4. **Collapse format**: the per-request and compaction notices aggregate by tool name (top 4, `… (+N more tools)`); `buildCollapseNote` is sorted by count but **not capped** (inline working-set note — different context). Open, by design.
+5. **Integration test**: CLOSED — `subagent_dispatch_e2e_test.go` drives the real dispatch handler, async worker, `read_file` tool path (DirectExecutor on a temp repo), ledger, guard and notices; only the model is scripted (httptest SSE double). Exhaustion is forced via the real config key `subagent_max_tool_iterations`, because the class byte budget has a 50 KB floor.
+6. **Reserve turn + Anthropic API**: superseded — the separate reserve block was removed (round-1 B1); the single reserve turn reuses the JSON-retry call shape (tools stripped, one `Send`).
+
+### Round 1 (Mashūra) — fixed
+
+- B1 reserve turn fired on every exhaustion and stacked on the JSON retry → one extra turn max, replaces the retry, unparseable → `remaining_scope` (2 KB).
+- B2 class budget replaced `TurnToolBudget` (raising it) and the override key was dead → explicit `subagent_turn_tool_budget` is a cap; validation: reserve < every class %; `BudgetInfo` populated.
+- B3 silent takeover / harness text recommending it → guard + notices + stop; wording removed.
+- B4 `plan gc` listed only ACTIVE entries and `Forget`-ed by key → now lists PROPOSED quarantined plans only, `Reject`s by id, keeps unattributable entries, liveness via `SessionFilePath`.
+
+### Round 1 — open points (not fixed)
+
+7. **Ledger = attempted reads.** `ExecuteToolCall` records before `ConfinePath`/execution (`app.go` ~2649), so a denied or failed read counts as read; `search_files path:"."` records `.`. Off-task detection (zero reads) is still sound for the "never opened anything" case; "covered" can over-count.
+8. **Exact-string path match** in `deriveLedger`: `./a.go`, `a.go` and an absolute path are different files. A child that reads by a different spelling is scored NotRead (and can be rejected off-task). Normalize against the workspace root.
+9. **`dispatch_subagents` shares one `files` list across all tasks** (`tool_handlers.go` batch form) — per-task ledgers are meaningless for heterogeneous tasks. Use `dispatch_subagent` per task for list-bearing dispatches.
+10. **Ledger can crowd the 4 KB render** (`SubagentSummary.Render` does not trim `files_covered/not_read/extra`); a very long list can push the JSON over 4000 and trigger the overflow fallback that drops findings.
+11. **Error / cancel / panic results** (`cancelledJobResult`, `panicJobResult`) carry no ledger and no `budget`; they classify as `failed`, never `partial`, so they neither retry nor stop (they cannot be "off-task").
+12. **Guard linking is by file set + task-text hash.** A dispatch with no `files` can only be linked to a partial by identical text; a re-worded no-file re-dispatch is treated as new work. The model-visible schema says so; a stronger link needs a task id on the tool.
+13. **The guard is in-memory per `App`.** Resume/`/new` start with no lineages (intended: a new conversation), but a daemon that rotates the App mid-task also forgets a stop.
+14. **`/taint` is display-only**; "tainted" for the quarantine means `computeTainted()==TaintTrue` (touched external content). A user cannot force quarantine.
+15. **`plan/currentfoo`** is no longer redirected (exact key only); the handoff reader still relies on key absence rather than an explicit `plan/tainted/` filter.
+16. **Collapse `call_` audit** covered `collapse.go`/`compact.go` only; the daemon web console and info-level logs were not audited.
+17. **`aggregateToolResults` keys on `m.Name`.** Verified populated in `turn_phases.go` for production tool results; messages restored from old session files without `Name` aggregate to nothing.
+18. **Rejected-run spill** is written before the retry; if the retry also fails the first run's findings exist only in the spill.
+19. **Reviewer coverage.** Round 1: `claude-fable-5.1` delivered; `gpt-6-astra` returned 429, retried once (both reviewers returned VOID on the retry — see the close-out). Open points above come from the one reviewer that delivered plus own verification against source.

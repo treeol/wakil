@@ -181,13 +181,13 @@ reference covering every section below.
 | `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |
 | `openrouter_api_key_env` | `"OPENROUTER_API_KEY"` | Env var for the OpenRouter API key *(used by mashura panel calls routed through OpenRouter)* |
 | `subagent_max_tool_iterations` | `0` (→ 40) | Cap on tool round-trips per subagent dispatch; `0` = use built-in default |
-| `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(auto-clamped to the class-based work budget)* |
+| `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(an operator cap on the class-based work budget: lowers it, never raises it)* |
 | `subagent_tool_result_cap` | `0` (→ 12000) | Per-result char cap for subagents; `0` = use built-in default |
 | `subagents.budget.read` | `0` (→ 40) | Budget % for `read` class subagents; `0` = use built-in default |
 | `subagents.budget.search` | `0` (→ 25) | Budget % for `search` class subagents; `0` = use built-in default |
 | `subagents.budget.edit` | `0` (→ 60) | Budget % for `edit` class subagents; `0` = use built-in default |
 | `subagents.budget.verify` | `0` (→ 40) | Budget % for `verify` class subagents; `0` = use built-in default |
-| `subagents.budget.reserve` | `0` (→ 8) | Reserve % held back for the forced final report turn; `0` = use built-in default |
+| `subagents.budget.reserve` | `0` (→ 8) | Reserve % carved out of every class budget (work budget = hardMax × (class − reserve) / 100); every effective class % must be greater than it; `0` = use built-in default |
 | `stream_idle_timeout_seconds` | `0` (→ 120) | Max seconds between SSE bytes from the backend before the stream is declared stalled and retried; `0` = use built-in default |
 | `bg_shell_timeout_seconds` | `0` (→ 3600) | Watchdog timeout for `notify_on_exit` background shells (async ops); `0` = use built-in default |
 | `hooks` | — | Lifecycle hooks block (pre_tool, post_tool, session_start, session_end, on_stop) — see [features](features.md#lifecycle-hooks) |
