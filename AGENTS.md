@@ -15,6 +15,7 @@
 - `go test -race ./...` — race detector (CI runs this on the full suite)
 - hisn backend integration tests (`go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`) skip unless `hisn` is installed and `hisn check` passes (profile/risk/kvr/override tests additionally need >= 0.3.1); set `WAKIL_HISN_BIN` to pick a binary
 - `go vet ./...`
+- Test isolation: packages whose tests touch Wakil data/config call `testutil.Main` from `TestMain` (`internal/testutil`): HOME and the XDG dirs point at a temp tree, and the package FAILS if anything was created or appended under the real `~/.local/share/wakil` / `~/.config/wakil`. Set `WAKIL_TEST_ALLOW_REAL_DIR_CHANGES=1` to skip that check while a real chat is running on the same machine
 
 ## Lint
 
