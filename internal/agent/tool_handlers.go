@@ -1696,29 +1696,17 @@ func (a *App) handleReadProcessLog(ctx context.Context, tc proxy.ToolCall) strin
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
-	// Look the entry up and, if it is retained, take a reader reference in the
-	// same critical section so eviction cannot delete the log under us.
+	// Look the entry up (running or retained) and take a read reference in the
+	// same critical section: eviction cannot delete the log under this read,
+	// whichever state the job is in.
 	a.bgMu.Lock()
-	entry, ok := a.bgProcs[args.ID]
-	finished := false
-	if !ok {
-		if entry = a.finishedBgLocked(args.ID); entry != nil {
-			ok, finished = true, true
-			entry.readers++
-		}
-	}
+	entry := a.pinBgLocked(args.ID)
+	finished := entry != nil && a.bgProcs[args.ID] != entry
 	a.bgMu.Unlock()
-	if !ok {
+	if entry == nil {
 		return a.missingBgMessage(args.ID)
 	}
-	if finished {
-		defer func() {
-			a.bgMu.Lock()
-			entry.readers--
-			a.bgMu.Unlock()
-			a.trimBgFinished()
-		}()
-	}
+	defer a.unpinBg(entry)
 	if entry.generation != a.Exec.Generation() {
 		a.bgMu.Lock()
 		delete(a.bgProcs, args.ID) // logs died with the old executor: nothing to retain

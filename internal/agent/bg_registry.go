@@ -85,6 +85,36 @@ func (a *App) finishedBg(id string) *bgEntry {
 	return a.finishedBgLocked(id)
 }
 
+// pinBgLocked takes a read reference on the entry registered under id, whether
+// it is still running (bgProcs) or retained (bgFinished). It returns nil when
+// the id is unknown. Caller holds bgMu (write). The reference keeps the log
+// from eviction until unpinBg releases it; it does not keep the entry in the
+// registry, so a pinned entry can still be retired by its reaper. Every read of
+// a log goes through here, so no read can outlive its log: the lookup and the
+// reference are taken in one critical section.
+func (a *App) pinBgLocked(id string) *bgEntry {
+	e := a.bgProcs[id]
+	if e == nil {
+		e = a.finishedBgLocked(id)
+	}
+	if e != nil {
+		e.readers++
+	}
+	return e
+}
+
+// unpinBg releases a reference taken by pinBgLocked. When the last reference
+// goes, a retired entry may now be evicted, so the retention bounds are applied
+// again.
+func (a *App) unpinBg(e *bgEntry) {
+	a.bgMu.Lock()
+	if e.readers > 0 {
+		e.readers--
+	}
+	a.bgMu.Unlock()
+	a.trimBgFinished()
+}
+
 // trimBgFinished enforces the retention bounds: oldest-first eviction by job
 // count and by total retained log bytes. An entry with active readers is never
 // evicted (its log may be mid-read): eviction waits for it and happens at the
