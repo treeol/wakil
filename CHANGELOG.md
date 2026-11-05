@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - Unreleased
+
+### Fixed
+
+- **Workspace roots reached through a symlink were rejected.** When the project
+  directory is a symlink (for example `~/coding` → `~/Coding`), every in-workspace path
+  failed with `path … is outside workspace …`, and git tools (`git_blame`, `git_show`)
+  failed. Workspace roots are now resolved once, before containment is checked, in the
+  direct executor, the sandbox backend's host-side identity check, and the path map. Escape
+  protection is unchanged: a symlink inside the workspace that points outside is still
+  refused, both with a plain and a symlinked root.
+- **`wakil plan gc` reported zeros on a machine that had quarantined plans.** Under docker
+  mode it derived the memory store from the container path, so it read a store that did not
+  exist, and it printed `0 … 0 dead` without an error. It now resolves the host workspace's
+  store, prints `store: <absolute path>` first, and exits with an error when the store is
+  missing. `--project <dir>` selects another project and `--store <path>` names a database
+  explicitly. Entries whose owner session cannot be checked (a stat error other than "not
+  found") are kept, not marked dead.
+
 ## [0.4.2] - Unreleased
 
 ### Changed
