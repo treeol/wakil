@@ -705,6 +705,10 @@ func (e *BackendExecutor) ContainerName() string { return "" }
 // CDPPort implements Executor.
 func (e *BackendExecutor) CDPPort() int { return 0 }
 
+// SandboxTmpReadable reports that /tmp is the backend sandbox's own, not the
+// host's (see SandboxTmpReader).
+func (e *BackendExecutor) SandboxTmpReadable() bool { return true }
+
 // HostBrowserAllowed is false: with ContainerName() == "" a browser manager
 // would otherwise launch Chromium on the HOST, outside the sandbox.
 func (e *BackendExecutor) HostBrowserAllowed() bool { return false }

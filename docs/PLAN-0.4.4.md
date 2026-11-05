@@ -82,9 +82,11 @@ declined launch id is "no background process", not "evicted"; retire racing the 
 branch; shutdown with retired entries.
 
 ### T3 read_file may read the sandbox's /tmp (read-only)
-Scope statement: this adds **no new confinement boundary**. The sandbox is the boundary;
-`run_shell cat /tmp/x` already reads these files. The exception only lets the dedicated
-read tools do what the model can already do, read-only. Mechanism, fail-closed: if
+Scope statement (corrected during implementation): `run_shell cat /tmp/x` already reads
+these files in a sandbox, but `run_shell` is gated and `read_file` is not. So the exception
+applies only where `/tmp` is the sandbox's own (optional `exec.SandboxTmpReader`, implemented
+by the docker and backend executors); under the direct executor `/tmp` is the host's and
+stays rejected. Mechanism, fail-closed: if
 `ConfinePath` rejects and the path is absolute, contains no `..` after `Clean`, and is
 `/tmp` or lexically under `/tmp/` (component boundary), canonicalise inside the sandbox
 with a single quoted `readlink -f -- <path>` through `RunShell` (error, empty or ambiguous

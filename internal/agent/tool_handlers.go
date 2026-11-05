@@ -855,8 +855,9 @@ func (a *App) handleReadFile(ctx context.Context, tc proxy.ToolCall) string {
 		}
 		return formatFileView(out, args.Offset, args.Limit)
 	}
-	// Confine the path to the workspace (P0-3: path confinement).
-	canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+	// Confine the path to the workspace (P0-3: path confinement). Reads (only
+	// reads) may also reach the sandbox's own /tmp — see confineReadPath.
+	canonical, err := a.confineReadPath(ctx, args.Path)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -930,8 +931,9 @@ func (a *App) handleReadFileFull(ctx context.Context, tc proxy.ToolCall) string 
 		}
 		return formatFileView(out, 0, 0)
 	}
-	// Confine the path to the workspace (P0-3: path confinement).
-	canonical, err := a.Exec.ConfinePath(ctx, args.Path)
+	// Confine the path to the workspace (P0-3: path confinement). Reads (only
+	// reads) may also reach the sandbox's own /tmp — see confineReadPath.
+	canonical, err := a.confineReadPath(ctx, args.Path)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}

@@ -5,8 +5,8 @@
 | Tool | Gated | Description |
 |---|---|---|
 | `run_shell` | yes | Run a shell command; cwd persists across calls |
-| `read_file` | no | Read a file with line numbers; supports offset/limit |
-| `read_file_full` | no | Read an entire file (up to ~256 KB) in one call |
+| `read_file` | no | Read a file with line numbers; supports offset/limit. Also reads absolute paths under the sandbox's own `/tmp` (docker and hisn backends; read-only; not in direct mode, where `/tmp` is the host's) |
+| `read_file_full` | no | Read an entire file (up to ~256 KB) in one call; same `/tmp` read exception (docker/hisn only) |
 | `write_file` | yes | Write/overwrite a file |
 | `edit_file` | yes | Replace an exact substring in a file *(shows diff preview)* |
 | `delete_file` | yes | Delete a file or empty directory |

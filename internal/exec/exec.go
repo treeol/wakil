@@ -182,6 +182,15 @@ type Executor interface {
 	CDPPort() int
 }
 
+// SandboxTmpReader is an optional capability of executors whose /tmp is the
+// sandbox's own (a container tmpfs, a backend sandbox) and not the host's. The
+// read tools use it to decide whether /tmp may be read outside the workspace:
+// DirectExecutor deliberately does not implement it, because there /tmp is the
+// host's and read_file is ungated.
+type SandboxTmpReader interface {
+	SandboxTmpReadable() bool
+}
+
 // runFromRoot starts a shell command from root (the workspace root).
 // In-command directory changes work normally but are not tracked between calls.
 // A trailing newline after the command body prevents a trailing # comment from
@@ -1248,6 +1257,9 @@ func (d *DockerExecutor) execCtx(ctx context.Context, interactive bool, args ...
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
+
+// SandboxTmpReadable reports that /tmp is the container's own tmpfs.
+func (d *DockerExecutor) SandboxTmpReadable() bool { return true }
 
 func (d *DockerExecutor) RunShell(ctx context.Context, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", "exec", d.container, "sh", "-c", runFromRoot(d.workspaceRoot, command))

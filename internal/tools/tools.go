@@ -67,7 +67,8 @@ func DefaultTools(cwd string) []proxy.Tool {
 			Description: "Read a file and return its contents with line numbers. Reads the whole file by default; " +
 				"pass offset/limit to read only a line range (cheaper for large files). " +
 				"Files that look generated or noisy (minified, very long lines, .git/, node_modules/, vendor/) " +
-				"return a warn-prefixed preview instead of full content — pass limit to override. " + cwdNote,
+				"return a warn-prefixed preview instead of full content — pass limit to override. " +
+				"In a sandboxed backend (docker, hisn), absolute paths under the sandbox's own /tmp are also readable (read-only; writes stay confined to the workspace). " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path":   StrProp("Path to the file to read (relative paths resolve from the working directory)"),
 				"offset": IntProp("Optional 1-based line number to start reading from."),
@@ -79,7 +80,8 @@ func DefaultTools(cwd string) []proxy.Tool {
 			Description: "Read an entire file in one call and return its complete contents with line numbers. " +
 				"Use read_file_full when you need the complete contents of a normal source file (up to ~256 KB); " +
 				"use read_file for large files or targeted ranges (offset/limit). " +
-				"Prefer read_file_full over repeated read_file calls with different offsets on the same file. " + cwdNote,
+				"Prefer read_file_full over repeated read_file calls with different offsets on the same file. " +
+				"In a sandboxed backend (docker, hisn), absolute paths under the sandbox's own /tmp are also readable (read-only). " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path": StrProp("Path to the file to read (relative paths resolve from the working directory)"),
 			}, "path"),
@@ -262,7 +264,8 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 			Description: "Read a file and return its contents with line numbers. Reads the whole file by default; " +
 				"pass offset/limit to read only a line range. " +
 				"Files that look generated or noisy (minified, very long lines, .git/, node_modules/, vendor/) " +
-				"return a warn-prefixed preview instead of full content — pass limit to override. " + cwdNote,
+				"return a warn-prefixed preview instead of full content — pass limit to override. " +
+				"In a sandboxed backend (docker, hisn), absolute paths under the sandbox's own /tmp are also readable (read-only; writes stay confined to the workspace). " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path":   StrProp("Path to the file to read."),
 				"offset": IntProp("Optional 1-based line number to start reading from."),
@@ -274,7 +277,8 @@ func DiscoveryTools(cwd string) []proxy.Tool {
 			Description: "Read an entire file in one call and return its complete contents with line numbers. " +
 				"Use read_file_full when you need the complete contents of a normal source file (up to ~256 KB); " +
 				"use read_file for large files or targeted ranges (offset/limit). " +
-				"Prefer read_file_full over repeated read_file calls with different offsets on the same file. " + cwdNote,
+				"Prefer read_file_full over repeated read_file calls with different offsets on the same file. " +
+				"In a sandboxed backend (docker, hisn), absolute paths under the sandbox's own /tmp are also readable (read-only). " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path": StrProp("Path to the file to read."),
 			}, "path"),
@@ -391,7 +395,8 @@ func EditTools(cwd string) []proxy.Tool {
 			Description: "Read a file and return its contents with line numbers. Reads the whole file by default; " +
 				"pass offset/limit to read only a line range. " +
 				"Files that look generated or noisy (minified, very long lines, .git/, node_modules/, vendor/) " +
-				"return a warn-prefixed preview instead of full content — pass limit to override. " + cwdNote,
+				"return a warn-prefixed preview instead of full content — pass limit to override. " +
+				"In a sandboxed backend (docker, hisn), absolute paths under the sandbox's own /tmp are also readable (read-only; writes stay confined to the workspace). " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path":   StrProp("Path to the file to read."),
 				"offset": IntProp("Optional 1-based line number to start reading from."),
@@ -403,7 +408,8 @@ func EditTools(cwd string) []proxy.Tool {
 			Description: "Read an entire file in one call and return its complete contents with line numbers. " +
 				"Use read_file_full when you need the complete contents of a normal source file (up to ~256 KB); " +
 				"use read_file for large files or targeted ranges (offset/limit). " +
-				"Prefer read_file_full over repeated read_file calls with different offsets on the same file. " + cwdNote,
+				"Prefer read_file_full over repeated read_file calls with different offsets on the same file. " +
+				"In a sandboxed backend (docker, hisn), absolute paths under the sandbox's own /tmp are also readable (read-only). " + cwdNote,
 			Parameters: SchemaObj(map[string]interface{}{
 				"path": StrProp("Path to the file to read."),
 			}, "path"),
