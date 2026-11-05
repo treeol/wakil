@@ -328,10 +328,14 @@ func (a *App) runShellWithDeadline(ctx context.Context, command string, readActi
 			a.LSP.BatchNotifyWatchedFiles(ctx)
 		}
 		// Clean up the bg entry — the process is done and its output was
-		// returned inline, so nothing is retained for read_process_log.
+		// returned inline, so nothing is retained for read_process_log. The log
+		// is removed too: the output has been read and nothing else refers to
+		// it (before 0.4.4 every run_shell that finished inside its deadline
+		// left a /tmp/wakil-bg-*.log behind).
 		a.bgMu.Lock()
 		delete(a.bgProcs, bgID)
 		a.bgMu.Unlock()
+		a.removeBgLog(logPath)
 		return formatResult(out, runErr)
 	case <-timer.C:
 		// Deadline reached — the process is still running. Leave it
