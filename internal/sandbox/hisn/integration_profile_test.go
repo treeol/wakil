@@ -75,7 +75,7 @@ func TestIntegrationProfileStart(t *testing.T) {
 	if out, info := irun(t, b, cwd, "sh", "-c", "echo ok && pwd"); info.Code != 0 || !strings.Contains(out, cwd) {
 		t.Fatalf("exec in a profile session: %q %+v", out, info)
 	}
-	if st := b.SandboxStatus(ictx(t)); st.Risk != "none" || st.Mode != "generated profile" {
+	if st := b.SandboxStatus(ictx(t)); st.Risk != "data" || st.Mode != "generated profile" || len(st.Capabilities) != 1 || st.Capabilities[0].Capability != "home-persist" {
 		t.Errorf("status: %+v", st)
 	}
 }
