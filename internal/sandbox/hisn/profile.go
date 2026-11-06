@@ -56,6 +56,12 @@ const (
 	HomeTmpfs   = "tmpfs"   // no persistent home: a fresh tmpfs $HOME
 )
 
+// SandboxHome is the in-sandbox mount point of the persistent home directory.
+// hisn always mounts the [home] persist path (or the tmpfs home) at this path
+// inside the sandbox, regardless of profile or policy mode. See hisn's own
+// mounts.rs (SANDBOX_HOME = "/run/hisn/home").
+const SandboxHome = "/run/hisn/home"
+
 // ---- Surface: what a project asks for beyond the base policy ----
 
 // Service is one in-sandbox [[services]] entry. The JSON form is the schema of

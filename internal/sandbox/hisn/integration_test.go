@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -308,44 +307,30 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		t.Errorf("host SSH_AUTH_SOCK path leaked into the sandbox: %s appears in:\n%s", socket, out)
 	}
 
-	// F5: make a signed commit inside the session and verify the signature on
-	// the host side. The session gitconfig carries user.signingkey,
-	// gpg.format=ssh, commit.gpgsign=true, and the allowed_signers file; the
-	// agent proxy forwards the key.
-	//
-	// NOTE: GIT_CONFIG_GLOBAL points at the host home root path, which hisn
-	// remounts at $HOME=/run/hisn/home inside the sandbox. The session
-	// gitconfig may not be visible at that path in profile mode (hisn >= 0.3.2).
-	// Set the signing config directly inside the session to test the F5 flow
-	// (fingerprint in the allowlist, key forwarded through the agent proxy).
+	// F5+F8: make a signed commit inside the session and verify the signature on
+	// the host side. The session gitconfig (written by withGitConfig under
+	// HomeRoot on the host, pointed at by GIT_CONFIG_GLOBAL=<SandboxHome>/.wakil-gitconfig
+	// inside the session) carries user.signingkey, gpg.format=ssh,
+	// commit.gpgsign=true, and the allowed_signers file. The agent proxy
+	// forwards the key. Nothing is set inside the session by the test — the
+	// product path (host file + in-session env) is what is tested.
 	if _, info := irun(t, b, cwd, "git", "init", "-q"); info.Code != 0 {
 		t.Fatalf("git init inside session failed: %+v", info)
 	}
-	if _, info := irun(t, b, cwd, "git", "config", "user.name", "Wakil Test"); info.Code != 0 {
-		t.Fatalf("git config user.name inside session failed: %+v", info)
+	// Verify the session gitconfig is visible at the in-session path.
+	gcOut, gcInfo := irun(t, b, cwd, "git", "config", "--show-origin", "--get", "user.signingkey")
+	if gcInfo.Code != 0 {
+		t.Fatalf("git config --show-origin --get user.signingkey inside session failed: %q %+v", gcOut, gcInfo)
 	}
-	if _, info := irun(t, b, cwd, "git", "config", "user.email", "test@wakil.test"); info.Code != 0 {
-		t.Fatalf("git config user.email inside session failed: %+v", info)
+	if !strings.Contains(gcOut, "file:"+SandboxHome+"/.wakil-gitconfig") {
+		t.Errorf("user.signingkey not reported from the in-session gitconfig:\n%s", gcOut)
 	}
-	if _, info := irun(t, b, cwd, "git", "config", "gpg.format", "ssh"); info.Code != 0 {
-		t.Fatalf("git config gpg.format inside session failed: %+v", info)
+	if !strings.Contains(gcOut, "key::") {
+		t.Errorf("user.signingkey value is not a key:: literal:\n%s", gcOut)
 	}
-	if _, info := irun(t, b, cwd, "git", "config", "user.signingkey", "key::"+pubKeyLine); info.Code != 0 {
-		t.Fatalf("git config user.signingkey inside session failed: %+v", info)
-	}
-	if _, info := irun(t, b, cwd, "git", "config", "commit.gpgsign", "true"); info.Code != 0 {
-		t.Fatalf("git config commit.gpgsign inside session failed: %+v", info)
-	}
-	// Write the allowed_signers file inside the session home.
-	allowedSigners := "/run/hisn/home/.wakil-allowed-signers"
-	if _, info := irun(t, b, cwd, "sh", "-c", fmt.Sprintf("echo 'test@wakil.test %s' > %s", pubKeyLine, allowedSigners)); info.Code != 0 {
-		t.Fatalf("write allowed_signers inside session failed: %+v", info)
-	}
-	if _, info := irun(t, b, cwd, "git", "config", "gpg.ssh.allowedSignersFile", allowedSigners); info.Code != 0 {
-		t.Fatalf("git config gpg.ssh.allowedSignersFile inside session failed: %+v", info)
-	}
-	if _, info := irun(t, b, cwd, "git", "config", "user.email", "test@wakil.test"); info.Code != 0 {
-		t.Fatalf("git config user.email inside session failed: %+v", info)
+	gpgOut, gpgInfo := irun(t, b, cwd, "git", "config", "--get", "commit.gpgsign")
+	if gpgInfo.Code != 0 || strings.TrimSpace(gpgOut) != "true" {
+		t.Fatalf("commit.gpgsign inside session = %q (code %d), want true", gpgOut, gpgInfo.Code)
 	}
 	if _, info := irun(t, b, cwd, "sh", "-c", "echo test > file.txt"); info.Code != 0 {
 		t.Fatalf("write file inside session failed: %+v", info)

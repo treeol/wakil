@@ -79,6 +79,12 @@ func renderGitConfig(id GitIdentity, sg GitSigning) ([]byte, error) {
 // git at it with GIT_CONFIG_GLOBAL. Only the public key and identity are
 // written; the agent socket is reached through the [ssh] table, never a raw
 // path. It returns the surface with the env the session needs.
+//
+// F8: the file is written on the HOST under HomeRoot, but GIT_CONFIG_GLOBAL must
+// point at the in-session path — hisn remounts the persist dir at SandboxHome
+// (/run/hisn/home), so the host path does not exist inside the sandbox. The
+// GIT_SSH_COMMAND UserKnownHostsFile is a same-path RO mount (the host path IS
+// valid inside the sandbox), so it stays as is.
 func (b *Backend) withGitConfig(s Surface) (Surface, error) {
 	env := map[string]string{}
 	for k, v := range s.EnvSet {
@@ -91,7 +97,8 @@ func (b *Backend) withGitConfig(s Surface) (Surface, error) {
 		if err != nil {
 			return s, err
 		}
-		env["GIT_CONFIG_GLOBAL"] = p
+		_ = p // host path (written there); GIT_CONFIG_GLOBAL uses the in-session path
+		env["GIT_CONFIG_GLOBAL"] = filepath.Join(SandboxHome, ".wakil-gitconfig")
 	}
 	// An ssh transport (agent on) pins known_hosts to the host file, read-only,
 	// and refuses unknown hosts. hisn's mounts are same-path only (a
