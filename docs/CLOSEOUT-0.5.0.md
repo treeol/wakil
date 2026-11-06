@@ -37,8 +37,13 @@ Host-verified defects (F5–F6):
 - `12eee6c` F5: signing key fingerprint must be in sandbox.hisn.ssh_keys (not auto-added)
 - `2249d4a` F6: refuse signing bypass in enforced sessions (tool guard + prompt rule)
 - `e6f6a8e` docs: add DNS known limitation to 0.5.0 changelog
-- `9d4744d` F5: fix integration test — set signing config inside session, verify on host
+- `9d4744d` F5: fix integration test — set signing config inside session, verify on host (reverted by `826b7ca` — see F8)
 - `480ed65` F5+F6 review fixes: guard run_background, case-insensitive keys, read-only config, --config-env
+
+Host-verified defects (F7–F8):
+- `9396cb7` F8: GIT_CONFIG_GLOBAL must point at the in-session home path (not the host HomeRoot)
+- `1076721` F7: signing guard must allow reads with any read flag, not just --get first
+- `826b7ca` F7+F8 review fixes: allowedSignersFile in-session path, --null bypass, --type/--default space form, bare key=value, --git-dir walk-back
 
 ## Review status
 
@@ -48,15 +53,16 @@ Host-verified defects (F5–F6):
 - P4: reviewed (one reader). Findings fixed in `32f34f5`. Q1 found no spurious start.
 - F1+F4+F2: reviewed (two readers). Two BLOCKING findings fixed in `a8c2ffa`: slice aliasing in `command()` (copy `EnvPass` before appending), and `SSH_AUTH_SOCK` rejected in `env_pass` validation (would leak the host socket path into the sandbox). Open (non-blocking): reader 1 notes the F1 docstring overstates the guarantee scope (a broken/unapproved sandbox.json is an error only when hisn would have been chosen — i.e. when hisn is usable and the backend is defaulted); reader 2 notes `workspaceFitsState` became fatal (intended — a workspace containing the state dir is a startup error, not a docker fallback). Both are documented in the F1 commit message.
 - F5+F6: reviewed (two readers, gpt-6-astra + fable-5.1). Three BLOCKING findings fixed in `480ed65`: (1) `handleRunBackground` skipped the guard — a command refused by `handleRunShell` could reach execution through `run_background`; (2) git config keys are case-insensitive — `git -c Commit.GpgSign=false` bypassed the guard; (3) `git config --get commit.gpgsign` (a read) was refused. Additional fixes: `--no-gpg-sign` only on git commands, `--config-env` form, `git -C . config` and `git -c core.pager=cat config` forms, multiple `config` tokens, `GIT_CONFIG_VALUE_<n>` prefix, error message no longer double-prefixes "ERROR:". Open (non-blocking): shell quoting/indirection (`$K`, `$(which git)`), `env -u`, section operations (`--remove-section`), `--config-env` abbreviation, and `git commit-tree`/`fast-import` are out of scope for a direct-command guard — the audit trail (an unsigned commit) catches the rest.
+- F7+F8: reviewed (two readers, gpt-6-astra + fable-5.1). Five BLOCKING findings fixed in `826b7ca`: (1) `allowedSignersFile` in the rendered gitconfig used the host HomeRoot path — same bug class as F8's `GIT_CONFIG_GLOBAL`; now uses `SandboxHome`; (2) `--null`/`-z`/`--name-only` are output modifiers, not read actions — `git config --null commit.gpgsign false` was a real bypass; (3) `--type`/`--default` space form was not consumed as a two-token pair — the value leaked as the key; (4) bare `key=value` was not split; (5) `--git-dir`/`--work-tree` were not in the walk-back list. Additional fixes: a bare `git config <key>` (one non-flag token) is a get (read) — allowed; `git config <key> <value>` (two non-flag tokens) is a set (write) — checked. Integration test host-side `git log` now passes `-c gpg.format=ssh -c gpg.ssh.allowedSignersFile=<HomeRoot>/.wakil-allowed-signers` so the host git can verify the SSH signature without a global allowed_signers config. Open (non-blocking): `9d4744d`'s test workaround (set signing config inside the session instead of going through `GIT_CONFIG_GLOBAL`) was reverted — it hid the F8 bug; `git config set/unset/edit/remove-section/rename-section` subcommand syntax (git >= 2.46) is not handled — the `config` token is treated as the `config` subcommand and `set`/etc. as the key; `git --git-dir=X` joined form is handled but `git --git-dir X` (space, before the `config` token) is not in the walk-back for `config` tokens after the first.
 
 ## Verification run here (sandbox)
 
 - `go vet ./...`: clean.
 - `golangci-lint run`: 0 issues.
-- `go test ./... -count=1`: all packages pass except `internal/agent` (pre-existing test timeout in `ListSessions` unmarshal fixture — unrelated to F1–F4).
+- `go test ./... -count=1`: all packages pass.
 - `LC_ALL=C go test ./... -count=1`: same result as above.
-- `go test -race -count=1` on `internal/sandbox`, `internal/sandbox/hisn`, `internal/sandbox/hisn/ctl`, `internal/sandbox/project`, `internal/browser`, `internal/wiring`, `internal/config`: all pass.
-- Real-hisn integration tests (`TestIntegration*` in `internal/sandbox/hisn`) skip in this sandbox (hisn 0.2.2, needs >= 0.3.2 for `ssh_agent`/`rootfs`/`home`/`[ssh]`).
+- `go test -race -count=1` on `internal/sandbox/hisn`, `internal/exec`, `internal/tools`, `internal/agent`, `internal/wiring`: all pass.
+- Real-hisn integration tests (`TestIntegration*` in `internal/sandbox/hisn`) **ran** (hisn 0.3.2 available in this sandbox) — all pass, including `TestIntegrationSSHAgentForwarded` with the signed commit verified on the host side.
 
 ## Host results (rubin, hisn 0.3.2, wakil-dev rootfs, real ssh-agent)
 
@@ -77,6 +83,28 @@ Steps 1–13 of the host sequence: **green.** Steps 14–16 were blocked by F4
 
 Stale-test commit: `ab6899d` (TestIntegrationProfileStart: Risk is "data" with
 home-persist since 0.5.0).
+
+F7–F8 with commit hashes:
+- F8 `9396cb7`: `GIT_CONFIG_GLOBAL` and `allowedSignersFile` in the rendered
+  gitconfig now use the in-session path (`SandboxHome` = `/run/hisn/home`), not
+  the host `HomeRoot`. The file is still written under `HomeRoot` on the host;
+  hisn bind-mounts it at `SandboxHome`. `GIT_SSH_COMMAND`'s
+  `UserKnownHostsFile` keeps the host path (same-path RO mount). `9d4744d`'s
+  integration test workaround (set signing config inside the session) was
+  reverted — it hid this bug. `SandboxHome` constant added to `profile.go`.
+- F7 `1076721`: `checkGitConfigSub` now allows reads when ANY read action
+  (`--get`, `--get-all`, `--get-regexp`, `--list`, `-l`, `--get-urlmatch`) is
+  present and no write form (`--add`, `--unset`, `--unset-all`, `--replace-all`,
+  `--rename-section`, `--remove-section`, `--edit`, `-e`, bare key=value) is.
+  Output modifiers (`--show-origin`, `--show-scope`, `--name-only`, `--null`,
+  `-z`, `--type`, `--default`) are neutral — they neither make a write into a
+  read nor vice versa. `--remove-section`/`--rename-section` take a section
+  name: refuse when the section covers any signing key. `--edit`/`-e` always
+  refused. Bare `git config <key>` (one non-flag token) is a get (read) —
+  allowed. `git config <key> <value>` (two non-flag tokens) is a set (write).
+- `826b7ca`: F7+F8 review fixes — `allowedSignersFile` in-session path,
+  `--null`/`-z`/`--name-only` bypass, `--type`/`--default` space form, bare
+  `key=value` split, `--git-dir`/`--work-tree` walk-back.
 
 F1–F4 with commit hashes:
 - F1 `80fdaa2`: broken/unapproved `.wakil/sandbox.json` is now a startup error
@@ -108,11 +136,7 @@ F5–F6 with commit hashes:
   `SigningEnforcer` interface; `BackendOptions.SigningEnforced` set by
   `newHisnExecutor`; `DockerExecutor.SigningEnforced()` returns `d.signing`.
   System prompt rule added in the Shell section of `prompts/agent.txt`.
-- `9d4744d`: F5 integration test fix — the session gitconfig (`GIT_CONFIG_GLOBAL`)
-  points at the host home root path, which hisn remounts at `$HOME=/run/hisn/home`
-  inside the sandbox (profile mode, hisn >= 0.3.2). The signing config is set
-  directly inside the session and verified on the host side. Also removes the
-  unused `formatSigningBypassResult` from the F6 guard.
+- `9d4744d`: F5 integration test fix — set signing config inside the session instead of going through `GIT_CONFIG_GLOBAL`. **Reverted by `826b7ca`** (F8): the workaround hid the F8 bug (`GIT_CONFIG_GLOBAL` pointed at the host HomeRoot path, which hisn remounts at `SandboxHome`). The integration test now verifies the product path: the session gitconfig is visible at the in-session file, reports a `key::` value, `commit.gpgsign` is true, and a commit made inside the session verifies on the host side with `git log --format=%G? = G` — with nothing set inside the session by the test.
 
 ## Open items
 
@@ -128,18 +152,24 @@ F5–F6 with commit hashes:
   - crashpad handlers still start despite `--disable-crash-reporter` — add `--disable-features=Crashpad` or a `/tmp` crash-dumps dir.
   - `migrate --from-legacy` dry-run offers `--apply` with 0 copyable.
   - `ctl` JSON flake; `internal/config` temp-dir flake.
-  - F3 if open (preflight `SSH_AUTH_SOCK`).
+  - F3 if open (preflight `SSH_AUTH_SOCK`) — **done** (`69bc01b`).
   - P4 Option 2: control-socket ownership protocol to replace the CLI exec transport for the browser.
   - P3 review gaps: `[ssh]` rendering in `buildPolicy`, `ssh_keys` entry validation, `EnvPass` vs `EnvSet` precedence.
   - named-profile `[ssh]` behaviour (`hisn profile explain`) not yet confirmed.
+  - F7 review gaps: `git config set/unset/edit/remove-section/rename-section` subcommand syntax (git >= 2.46) not handled; `git --git-dir X` (space, before the `config` token) not in the walk-back for `config` tokens after the first.
 
 ## Remaining host steps (14–16)
 
-After the F1–F4 fixes, re-run on rubin:
+After the F1–F8 fixes, re-run on rubin:
 
 14. Browser screenshot under hisn (was blocked by F2 — now fixed in `d95e5b7`).
+    **P4 host result: Chromium ran inside the session on real hisn 0.3.2.**
 15. `hisn exec <session> pgrep -fa chrom` after `/new` (was blocked by F2 — now fixed).
-16. Signed commit (was blocked by F4 — now fixed in `7bf319f`).
+16. Signed commit (was blocked by F4/F5/F6/F7/F8 — now fixed). The session
+    gitconfig (`GIT_CONFIG_GLOBAL=<SandboxHome>/.wakil-gitconfig`) carries
+    `user.signingkey`, `gpg.format=ssh`, `commit.gpgsign=true`, and
+    `gpg.ssh.allowedSignersFile=<SandboxHome>/.wakil-allowed-signers`; the
+    agent proxy forwards the key; the signing guard refuses bypasses.
 
 If all pass: push, then tag `v0.5.0`.
 
