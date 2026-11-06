@@ -103,3 +103,47 @@ func TestNoStrayExecCommand(t *testing.T) {
 		}
 	}
 }
+
+// F9: validateExecEnv allows GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, and
+// GIT_CONFIG_VALUE_* when the session carries signing (SigningKey != ""). They
+// are Wakil's own process environment (not command text), so the F6 guard is
+// unaffected. When signing is off, they are rejected like any other
+// non-allowlisted env var.
+func TestValidateExecEnvSigningConfig(t *testing.T) {
+	// Signing on: GIT_CONFIG_* env vars are allowed.
+	b := &Backend{opts: Options{
+		SigningKey: "ssh-ed25519 AAAA test",
+		EnvPass:    []string{"CI"},
+	}}
+	env := map[string]string{
+		"GIT_CONFIG_COUNT":   "5",
+		"GIT_CONFIG_KEY_0":   "user.signingkey",
+		"GIT_CONFIG_VALUE_0": "key::ssh-ed25519 AAAA test",
+	}
+	out, err := b.validateExecEnv(env)
+	if err != nil {
+		t.Fatalf("signing on: validateExecEnv failed: %v", err)
+	}
+	for k, v := range env {
+		if out[k] != v {
+			t.Errorf("signing on: out[%q] = %q, want %q", k, out[k], v)
+		}
+	}
+
+	// Signing off: GIT_CONFIG_* env vars are rejected.
+	b2 := &Backend{opts: Options{
+		EnvPass: []string{"CI"},
+	}}
+	_, err = b2.validateExecEnv(env)
+	if err == nil {
+		t.Fatal("signing off: GIT_CONFIG_* should be rejected")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Errorf("signing off: error should say 'not allowed', got: %v", err)
+	}
+}
+
+// F9: TestIntegrationEnvIsAllowlisted must still pass with GIT_CONFIG_* env
+// vars injected — they are allowed by validateExecEnv when signing is on, and
+// the in-sandbox env stays allowlisted (the host socket path must not appear).
+// This is verified by the existing TestIntegrationEnvIsAllowlisted test.

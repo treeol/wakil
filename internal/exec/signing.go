@@ -260,6 +260,19 @@ func signingEnv(s SigningSetup) []string {
 	return args
 }
 
+// gitConfigGetLocal returns the repo-local value of a git config key (read
+// from .git/config only, not global or system). Empty string when unset or on
+// any error. Used by F9 to detect a repo-local user.signingkey that the enforced
+// signing key overrides.
+func GitConfigGetLocal(repoDir, key string) string {
+	cmd := exec.Command("git", "-C", repoDir, "config", "--local", "--get", key)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // HostIdentity returns the repo-scoped host user.name and user.email, as a
 // host commit in repoDir would use them. Empty values mean "not configured".
 func HostIdentity(repoDir string) (name, email string) {

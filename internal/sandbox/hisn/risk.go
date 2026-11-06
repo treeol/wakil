@@ -182,7 +182,7 @@ func (b *Backend) plan(ctx context.Context) error {
 			return fmt.Errorf("hisn state dir: %w", err)
 		}
 		pp := policyParams{Cwd: b.opts.HostCwd, Home: b.opts.HomeRoot, Hostname: "wakil-plan",
-			GrantableRW: b.opts.GrantableRW, EnvPass: b.opts.EnvPass, ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
+			GrantableRW: b.opts.GrantableRW, EnvPass: b.signingEnvPass(), ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
 		if err := checkProfileTrust(b.profilePath("plan"), pp.Cwd, pp.Home, s.MountsRW); err != nil {
 			return err
 		}
@@ -213,6 +213,9 @@ func (b *Backend) SandboxStatus(ctx context.Context) sandbox.Status {
 	st := sandbox.Status{Backend: "hisn", Risk: b.planned.Risk, Capabilities: b.planned.Capabilities, Notes: b.planned.Notes}
 	if st.Risk == "" {
 		st.Risk = "none"
+	}
+	if b.opts.SigningNote != "" {
+		st.Notes = append(st.Notes, b.opts.SigningNote)
 	}
 	switch {
 	case s.Profile != "":

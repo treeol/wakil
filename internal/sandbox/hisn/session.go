@@ -255,7 +255,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 		return launch{}, err
 	}
 	pp := policyParams{Cwd: rec.Cwd, Home: b.opts.HomeRoot, Hostname: hostnameFor(rec.Token),
-		GrantableRW: b.opts.GrantableRW, EnvPass: b.opts.EnvPass, ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
+		GrantableRW: b.opts.GrantableRW, EnvPass: b.signingEnvPass(), ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
 	vctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if !b.profileMode() {

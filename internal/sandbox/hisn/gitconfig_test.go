@@ -30,6 +30,10 @@ func TestRenderGitConfigSigningOffHasNoGPG(t *testing.T) {
 	}
 }
 
+// F9: renderGitConfig carries identity AND signing settings (defense-in-depth
+// fallback for git < 2.31). Signing settings are ALSO injected at COMMAND
+// scope via GIT_CONFIG_* env (see BackendExecutor.signingEnv), which wins on
+// git >= 2.31 — so a repo-local .git/config cannot shadow them.
 func TestRenderGitConfigSigning(t *testing.T) {
 	out, err := renderGitConfig(GitIdentity{Name: "A", Email: "a@x.test"},
 		GitSigning{Key: testPubKey, AllowedSigner: SandboxHome + "/.wakil-allowed-signers"})
@@ -100,9 +104,10 @@ func TestWriteSessionGitConfigModes(t *testing.T) {
 	if err != nil || !strings.HasPrefix(string(signers), "a@x.test ssh-ed25519 ") {
 		t.Fatalf("allowed signers: %q %v", signers, err)
 	}
-	// F8: the allowedSignersFile value in the gitconfig must use the in-session
-	// path (SandboxHome), not the host HomeRoot — hisn remounts the persist dir
-	// at SandboxHome, so the host path does not exist inside the sandbox.
+	// F8+F9: the allowedSignersFile value in the gitconfig must use the
+	// in-session path (SandboxHome), not the host HomeRoot. Signing settings
+	// are in the gitconfig as a defense-in-depth fallback (F9); COMMAND-scope
+	// GIT_CONFIG_* env wins on git >= 2.31.
 	gc, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatal(err)

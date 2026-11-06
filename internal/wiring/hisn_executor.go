@@ -52,13 +52,17 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 	if err != nil {
 		return nil, err
 	}
-	gitName, gitEmail, signingKey, sshKeys, err := hisnGitSetup(cfg, h)
+	gitName, gitEmail, signingKey, sshKeys, signingNote, err := hisnGitSetup(cfg, h)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	hisn.SetDiagnostics(os.Stderr)
+	allowedSignersPath := ""
+	if signingKey != "" {
+		allowedSignersPath = filepath.Join(hisn.SandboxHome, ".wakil-allowed-signers")
+	}
 	b, err := hisn.Open(ctx, hisn.Options{
 		Binary:      h.Binary,
 		StateDir:    filepath.Join(state, "hisn"),
@@ -70,6 +74,7 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		GitName:     gitName,
 		GitEmail:    gitEmail,
 		SigningKey:  signingKey,
+		SigningNote: signingNote,
 		KnownHosts:  knownHostsPath(h.SSHAgent),
 		HostCwd:     cfg.HostWorkDir,
 		GrantableRW: h.GrantableRW,
@@ -84,9 +89,11 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		return nil, err
 	}
 	return exec.NewBackendExecutor(b, exec.BackendOptions{
-		Label:           "hisn",
-		GrantableRW:     h.GrantableRW,
-		SigningEnforced: signingKey != "",
+		Label:              "hisn",
+		GrantableRW:        h.GrantableRW,
+		SigningEnforced:    signingKey != "",
+		SigningKey:         signingKey,
+		AllowedSignersPath: allowedSignersPath,
 	}), nil
 }
 
@@ -133,10 +140,14 @@ func kvrOptions(cfg config.Config, h config.HisnConfig) hisn.KVROptions {
 // never auto-added. Wakil signs through the agent proxy only, never with a
 // private key, so the fingerprint the host agent holds must match a key the
 // user explicitly allowed.
-func hisnGitSetup(cfg config.Config, h config.HisnConfig) (name, email, signingKey string, sshKeys []string, err error) {
+//
+// F9: if the repo-local .git/config sets user.signingkey, a note is returned
+// so the banner says it is ignored — Wakil signs with the configured key only,
+// enforced at COMMAND scope via GIT_CONFIG_* env vars.
+func hisnGitSetup(cfg config.Config, h config.HisnConfig) (name, email, signingKey string, sshKeys []string, signingNote string, err error) {
 	sshKeys = append([]string(nil), h.SSHKeys...)
 	if !h.SSHAgent && (cfg.SSHSigning != "" && cfg.SSHSigning != "off") {
-		return "", "", "", nil, fmt.Errorf("ssh_signing needs sandbox.hisn.ssh_agent = true under hisn")
+		return "", "", "", nil, "", fmt.Errorf("ssh_signing needs sandbox.hisn.ssh_agent = true under hisn")
 	}
 	name, email = h.GitIdentityName, h.GitIdentityEmail
 	if name == "" || email == "" {
@@ -149,16 +160,16 @@ func hisnGitSetup(cfg config.Config, h config.HisnConfig) (name, email, signingK
 		}
 	}
 	if cfg.SSHSigning == "" || cfg.SSHSigning == "off" {
-		return name, email, "", sshKeys, nil
+		return name, email, "", sshKeys, "", nil
 	}
 	// Trusted scope only: a repo-local signing key is writable from the sandbox
 	// and would otherwise widen the host agent allowlist (review B1).
 	setup, skip := exec.DetectSigningTrusted(cfg.SSHSigning, cfg.HostWorkDir)
 	if skip != "" || !setup.Enabled {
-		return "", "", "", nil, fmt.Errorf("ssh_signing under hisn cannot be enabled: %s", skip)
+		return "", "", "", nil, "", fmt.Errorf("ssh_signing under hisn cannot be enabled: %s", skip)
 	}
 	if email == "" {
-		return "", "", "", nil, fmt.Errorf("ssh_signing needs a git identity email (sandbox.hisn.git_identity_email or host user.email)")
+		return "", "", "", nil, "", fmt.Errorf("ssh_signing needs a git identity email (sandbox.hisn.git_identity_email or host user.email)")
 	}
 	// F5: the signing key's fingerprint must be in sandbox.hisn.ssh_keys. It is
 	// never auto-added — Wakil signs through the agent proxy, so the key the
@@ -166,12 +177,18 @@ func hisnGitSetup(cfg config.Config, h config.HisnConfig) (name, email, signingK
 	// allowlist keeps the fingerprint so the session agent can sign with it.
 	fp, err := hisn.PublicKeyLineFingerprint(setup.PublicKey)
 	if err != nil {
-		return "", "", "", nil, err
+		return "", "", "", nil, "", err
 	}
 	if !containsStr(h.SSHKeys, fp) {
-		return "", "", "", nil, fmt.Errorf("ssh_signing: the signing key %q (fingerprint %s) is not in sandbox.hisn.ssh_keys — add it to the allowlist or use a different key", setup.SigningKeyValue, fp)
+		return "", "", "", nil, "", fmt.Errorf("ssh_signing: the signing key %q (fingerprint %s) is not in sandbox.hisn.ssh_keys — add it to the allowlist or use a different key", setup.SigningKeyValue, fp)
 	}
-	return name, email, setup.PublicKey, sshKeys, nil
+	// F9: detect a repo-local user.signingkey. Wakil signs with the
+	// global/system key only (enforced at COMMAND scope); a repo-local key is
+	// ignored and reported once in the banner.
+	if localKey := exec.GitConfigGetLocal(cfg.HostWorkDir, "user.signingkey"); localKey != "" {
+		signingNote = "repo-local signingkey ignored (wakil signs with the configured key)"
+	}
+	return name, email, setup.PublicKey, sshKeys, signingNote, nil
 }
 
 // knownHostsPath is the host ~/.ssh/known_hosts, mounted read-only only when

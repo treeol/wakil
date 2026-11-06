@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -105,6 +106,47 @@ func irun(t *testing.T, b *Backend, cwd string, argv ...string) (string, sandbox
 		t.Fatal(err)
 	}
 	return out.String(), info
+}
+
+// irunSign is irun with the signing env injected (F9). The BackendExecutor
+// layer injects GIT_CONFIG_* at COMMAND scope on every exec; the integration
+// test talks to the Backend directly, so the env must be passed explicitly.
+func irunSign(t *testing.T, b *Backend, cwd string, argv ...string) (string, sandbox.ExitInfo) {
+	t.Helper()
+	var out bytes.Buffer
+	h, err := b.Exec(ictx(t), sandbox.ExecSpec{Argv: argv, Cwd: cwd, Stdout: &out, Env: signingExecEnv(b)})
+	if err != nil {
+		t.Fatalf("exec %v: %v", argv, err)
+	}
+	info, err := h.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out.String(), info
+}
+
+// signingExecEnv builds the GIT_CONFIG_* env map that BackendExecutor.signingEnv
+// would inject (F9). Used by the integration test to simulate the
+// BackendExecutor layer when calling the Backend directly.
+func signingExecEnv(b *Backend) map[string]string {
+	if b.opts.SigningKey == "" {
+		return nil
+	}
+	type kv struct{ k, v string }
+	pairs := []kv{
+		{"user.signingkey", "key::" + b.opts.SigningKey},
+		{"gpg.format", "ssh"},
+		{"gpg.ssh.allowedSignersFile", filepath.Join(SandboxHome, ".wakil-allowed-signers")},
+		{"gpg.ssh.program", "ssh-keygen"},
+		{"commit.gpgsign", "true"},
+		{"tag.gpgsign", "true"},
+	}
+	env := map[string]string{"GIT_CONFIG_COUNT": fmt.Sprintf("%d", len(pairs))}
+	for i, p := range pairs {
+		env[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)] = p.k
+		env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)] = p.v
+	}
+	return env
 }
 
 func TestIntegrationStartExec(t *testing.T) {
@@ -307,38 +349,50 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		t.Errorf("host SSH_AUTH_SOCK path leaked into the sandbox: %s appears in:\n%s", socket, out)
 	}
 
-	// F5+F8: make a signed commit inside the session and verify the signature on
-	// the host side. The session gitconfig (written by withGitConfig under
-	// HomeRoot on the host, pointed at by GIT_CONFIG_GLOBAL=<SandboxHome>/.wakil-gitconfig
-	// inside the session) carries user.signingkey, gpg.format=ssh,
-	// commit.gpgsign=true, and the allowed_signers file. The agent proxy
-	// forwards the key. Nothing is set inside the session by the test — the
-	// product path (host file + in-session env) is what is tested.
-	if _, info := irun(t, b, cwd, "git", "init", "-q"); info.Code != 0 {
+	// F5+F8+F9: make a signed commit inside the session and verify the signature
+	// on the host side. The session gitconfig (written by withGitConfig under
+	// HomeRoot on the host, pointed at by GIT_CONFIG_GLOBAL=<SandboxHome>/.wakil-
+	// gitconfig inside the session) carries user.name and user.email. Signing
+	// settings are injected at COMMAND scope via GIT_CONFIG_* env vars (F9) so a
+	// repo-local .git/config cannot shadow them. The agent proxy forwards the
+	// key. Nothing is set inside the session by the test — the product path
+	// (host file + in-session env) is what is tested.
+	if _, info := irunSign(t, b, cwd, "git", "init", "-q"); info.Code != 0 {
 		t.Fatalf("git init inside session failed: %+v", info)
 	}
-	// Verify the session gitconfig is visible at the in-session path.
-	gcOut, gcInfo := irun(t, b, cwd, "git", "config", "--show-origin", "--get", "user.signingkey")
+
+	// F9: set a repo-local user.signingkey to a nonexistent path. The COMMAND-
+	// scope GIT_CONFIG_* env must override it.
+	if _, info := irunSign(t, b, cwd, "git", "config", "--local", "user.signingkey", "/nonexistent/path/key.pub"); info.Code != 0 {
+		t.Fatalf("git config --local user.signingkey failed: %+v", info)
+	}
+
+	// Verify the enforced signing key is visible at command scope, not the
+	// repo-local one.
+	gcOut, gcInfo := irunSign(t, b, cwd, "git", "config", "--show-origin", "--get", "user.signingkey")
 	if gcInfo.Code != 0 {
 		t.Fatalf("git config --show-origin --get user.signingkey inside session failed: %q %+v", gcOut, gcInfo)
 	}
-	if !strings.Contains(gcOut, "file:"+SandboxHome+"/.wakil-gitconfig") {
-		t.Errorf("user.signingkey not reported from the in-session gitconfig:\n%s", gcOut)
+	if !strings.Contains(gcOut, "command line:") {
+		t.Errorf("user.signingkey not reported from command line:\n%s", gcOut)
 	}
 	if !strings.Contains(gcOut, "key::") {
 		t.Errorf("user.signingkey value is not a key:: literal:\n%s", gcOut)
 	}
-	gpgOut, gpgInfo := irun(t, b, cwd, "git", "config", "--get", "commit.gpgsign")
+	if strings.Contains(gcOut, "/nonexistent/path/key.pub") {
+		t.Errorf("repo-local signingkey leaked past the command-scope override:\n%s", gcOut)
+	}
+	gpgOut, gpgInfo := irunSign(t, b, cwd, "git", "config", "--get", "commit.gpgsign")
 	if gpgInfo.Code != 0 || strings.TrimSpace(gpgOut) != "true" {
 		t.Fatalf("commit.gpgsign inside session = %q (code %d), want true", gpgOut, gpgInfo.Code)
 	}
-	if _, info := irun(t, b, cwd, "sh", "-c", "echo test > file.txt"); info.Code != 0 {
+	if _, info := irunSign(t, b, cwd, "sh", "-c", "echo test > file.txt"); info.Code != 0 {
 		t.Fatalf("write file inside session failed: %+v", info)
 	}
-	if _, info := irun(t, b, cwd, "git", "add", "file.txt"); info.Code != 0 {
+	if _, info := irunSign(t, b, cwd, "git", "add", "file.txt"); info.Code != 0 {
 		t.Fatalf("git add inside session failed: %+v", info)
 	}
-	commitOut, commitInfo := irun(t, b, cwd, "git", "commit", "-m", "test signed commit")
+	commitOut, commitInfo := irunSign(t, b, cwd, "git", "commit", "-m", "test signed commit")
 	if commitInfo.Code != 0 {
 		t.Fatalf("git commit inside session failed: %q %+v", commitOut, commitInfo)
 	}

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,13 @@ type BackendOptions struct {
 	// (SSH commit signing). When true, the agent's shell and git tool paths
 	// refuse commands that would disable or bypass signing (F6).
 	SigningEnforced bool
+	// SigningKey is the literal public key for SSH commit signing (F9).
+	// When non-empty, every exec carries GIT_CONFIG_* env vars at COMMAND
+	// scope so a repo-local .git/config cannot shadow the enforced key.
+	SigningKey string
+	// AllowedSignersPath is the in-session path of the allowed_signers file
+	// (F9). Used as gpg.ssh.allowedSignersFile in the GIT_CONFIG_* env.
+	AllowedSignersPath string
 }
 
 // shared is the state common to a BackendExecutor and its worktree children.
@@ -312,7 +320,13 @@ func (e *BackendExecutor) run(ctx context.Context, argv []string, o runOpts) (re
 	ctx = e.withScope(ctx) // one identity for admission AND a dead-session verdict
 	var h sandbox.ExecHandle
 	err := e.admit(ctx, func() (err error) {
-		h, err = e.b.Exec(ctx, sandbox.ExecSpec{Argv: argv, Stdin: o.stdin, Stdout: w, Stderr: w})
+		spec := sandbox.ExecSpec{Argv: argv, Stdin: o.stdin, Stdout: w, Stderr: w}
+		// F9: inject signing settings at COMMAND scope so a repo-local
+		// .git/config cannot shadow the enforced signing key.
+		if se := e.signingEnv(); se != nil {
+			spec.Env = se
+		}
+		h, err = e.b.Exec(ctx, spec)
 		return err
 	})
 	if err != nil {
@@ -381,6 +395,36 @@ func (e *BackendExecutor) ShellOutputCap() int64 { return e.opts.ShellOutputCap 
 // (F6). When true, the agent's shell and git tool paths refuse commands that
 // would disable or bypass signing.
 func (e *BackendExecutor) SigningEnforced() bool { return e.opts.SigningEnforced }
+
+// signingEnv returns the GIT_CONFIG_* environment map that injects signing
+// settings at COMMAND scope for every exec (F9). Command scope beats local and
+// global, so a repo-local .git/config with its own user.signingkey cannot
+// shadow the enforced key. The map is empty when signing is off.
+//
+// gpg.ssh.program is pinned too: a repo-local .git/config could otherwise set
+// it to a wrapper that signs with a different key (same threat class as F9).
+func (e *BackendExecutor) signingEnv() map[string]string {
+	if e.opts.SigningKey == "" {
+		return nil
+	}
+	type kv struct{ k, v string }
+	pairs := []kv{
+		{"user.signingkey", "key::" + e.opts.SigningKey},
+		{"gpg.format", "ssh"},
+		{"gpg.ssh.allowedSignersFile", e.opts.AllowedSignersPath},
+		{"gpg.ssh.program", "ssh-keygen"},
+		{"commit.gpgsign", "true"},
+		{"tag.gpgsign", "true"},
+	}
+	env := map[string]string{
+		"GIT_CONFIG_COUNT": strconv.Itoa(len(pairs)),
+	}
+	for i, p := range pairs {
+		env[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)] = p.k
+		env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)] = p.v
+	}
+	return env
+}
 
 // ReadFile implements Executor.
 func (e *BackendExecutor) ReadFile(ctx context.Context, path string) (string, error) {
@@ -625,10 +669,14 @@ func (e *BackendExecutor) StartInteractive(ctx context.Context, command string) 
 	}
 	var h sandbox.ExecHandle
 	err = e.admit(ctx, func() (err error) {
-		h, err = e.b.Exec(ctx, sandbox.ExecSpec{
+		spec := sandbox.ExecSpec{
 			Argv: []string{"sh", "-c", command}, Cwd: e.root,
 			Stdin: inR, Stdout: outW, Stderr: errW,
-		})
+		}
+		if se := e.signingEnv(); se != nil {
+			spec.Env = se
+		}
+		h, err = e.b.Exec(ctx, spec)
 		return err
 	})
 	if err != nil {
@@ -782,10 +830,14 @@ func (e *BackendExecutor) StartInteractiveCLI(ctx context.Context, command strin
 	}
 	var h sandbox.ExecHandle
 	err = e.admit(ctx, func() (err error) {
-		h, err = c.ExecCLI(ctx, sandbox.ExecSpec{
+		spec := sandbox.ExecSpec{
 			Argv: []string{"sh", "-c", command}, Cwd: e.root,
 			Stdin: inR, Stdout: outW, Stderr: errW,
-		})
+		}
+		if se := e.signingEnv(); se != nil {
+			spec.Env = se
+		}
+		h, err = c.ExecCLI(ctx, spec)
 		return err
 	})
 	if err != nil {

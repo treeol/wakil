@@ -56,6 +56,13 @@ func (b *Backend) Exec(ctx context.Context, spec sandbox.ExecSpec) (sandbox.Exec
 
 // validateExecEnv builds the per-exec env map: every key must be in
 // sandbox.hisn.env_pass and not computed by hisn, else the WHOLE call fails.
+//
+// F9: GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, and GIT_CONFIG_VALUE_* are allowed
+// when the session carries signing (opts.SigningKey != ""). They are
+// Wakil's own process environment that inject signing settings at COMMAND
+// scope so a repo-local .git/config cannot shadow the enforced key. They are
+// not command text, so the F6 guard (which refuses GIT_CONFIG_* in the command
+// line) is unaffected.
 func (b *Backend) validateExecEnv(e map[string]string) (map[string]string, error) {
 	allowed := map[string]bool{}
 	for _, n := range b.opts.EnvPass {
@@ -63,7 +70,10 @@ func (b *Backend) validateExecEnv(e map[string]string) (map[string]string, error
 	}
 	keys := make([]string, 0, len(e))
 	for k := range e {
-		if !allowed[k] || isComputedEnv(k) {
+		if isComputedEnv(k) {
+			return nil, fmt.Errorf("hisn exec: env %q is computed by hisn", k)
+		}
+		if !allowed[k] && !isSigningConfigEnv(k, b.opts.SigningKey != "") {
 			return nil, fmt.Errorf("hisn exec: env %q is not allowed (not in sandbox.hisn.env_pass or computed by hisn)", k)
 		}
 		keys = append(keys, k)
@@ -74,6 +84,23 @@ func (b *Backend) validateExecEnv(e map[string]string) (map[string]string, error
 		out[k] = e[k]
 	}
 	return out, nil
+}
+
+// isSigningConfigEnv reports whether k is a GIT_CONFIG_* env var that Wakil
+// injects for signing (F9). GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n>, and
+// GIT_CONFIG_VALUE_<n> are allowed only when signing is on; they are
+// Wakil's own process environment, never command text.
+func isSigningConfigEnv(k string, signing bool) bool {
+	if !signing {
+		return false
+	}
+	if k == "GIT_CONFIG_COUNT" {
+		return true
+	}
+	if strings.HasPrefix(k, "GIT_CONFIG_KEY_") || strings.HasPrefix(k, "GIT_CONFIG_VALUE_") {
+		return true
+	}
+	return false
 }
 
 // resolveExecCwd maps the AGENT-side Cwd to the execution path.

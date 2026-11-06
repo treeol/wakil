@@ -45,6 +45,9 @@ type Options struct {
 	GitName    string
 	GitEmail   string
 	SigningKey string
+	// SigningNote is a one-line note shown in the sandbox status when signing
+	// is on (e.g. a repo-local signingkey that is ignored). "" = no note.
+	SigningNote string
 	// KnownHosts is the host known_hosts file, mounted read-only when the
 	// agent (ssh transport) is on. "" = none.
 	KnownHosts  string
@@ -318,6 +321,28 @@ func SetDiagnostics(w io.Writer) { errWriter = w }
 // Grants returns the active grants of the current session: the backend's
 // ledger, which is the single source of truth for what the sandbox can reach.
 func (b *Backend) Grants() []sandbox.GrantEntry { return b.pm.Grants() }
+
+// signingEnvPass returns the env_pass list extended with GIT_CONFIG_* names
+// when signing is on (F9). GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n>, and
+// GIT_CONFIG_VALUE_<n> are added so hisn's per-exec env validation accepts
+// them. They are Wakil's own process environment that inject signing settings
+// at COMMAND scope so a repo-local .git/config cannot shadow the enforced key.
+// The F6 guard (which refuses GIT_CONFIG_* in command text) is unaffected:
+// these are process env, never command text.
+func (b *Backend) signingEnvPass() []string {
+	pass := append([]string(nil), b.opts.EnvPass...)
+	if b.opts.SigningKey == "" {
+		return pass
+	}
+	pass = append(pass, "GIT_CONFIG_COUNT")
+	for i := 0; i < 6; i++ {
+		pass = append(pass,
+			fmt.Sprintf("GIT_CONFIG_KEY_%d", i),
+			fmt.Sprintf("GIT_CONFIG_VALUE_%d", i),
+		)
+	}
+	return pass
+}
 
 var _ sandbox.GrantLister = (*Backend)(nil)
 

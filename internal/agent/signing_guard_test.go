@@ -174,3 +174,33 @@ func TestSigningPromptRulePresent(t *testing.T) {
 		}
 	}
 }
+
+// F9: Wakil's own GIT_CONFIG_* env (process environment, not command text)
+// passes the F6 guard, while a user-typed GIT_CONFIG_COUNT=… prefix in command
+// text is still refused. The guard inspects command text only; Wakil's env is
+// never in command text, so both hold at once.
+func TestSigningGuardF9Compat(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want bool // true = should refuse
+	}{
+		{"user-typed GIT_CONFIG_COUNT", "GIT_CONFIG_COUNT=1 git commit -m test", true},
+		{"user-typed GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_0=commit.gpgsign git commit", true},
+		{"user-typed GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_0=false git commit", true},
+		{"user-typed GIT_CONFIG_GLOBAL", "GIT_CONFIG_GLOBAL=/dev/null git commit", true},
+		{"benign git log", "git log --oneline", false},
+		{"benign git config --get", "git config --get user.signingkey", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := checkSigningBypass(tt.cmd)
+			if tt.want && got == "" {
+				t.Errorf("checkSigningBypass(%q): expected refusal", tt.cmd)
+			}
+			if !tt.want && got != "" {
+				t.Errorf("checkSigningBypass(%q): expected pass, got: %s", tt.cmd, got)
+			}
+		})
+	}
+}

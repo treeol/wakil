@@ -607,6 +607,51 @@ func TestBackendHostRootResolvedUsesMapPathDirection(t *testing.T) {
 	}
 }
 
+// F9: BackendExecutor.signingEnv returns the GIT_CONFIG_* pairs at COMMAND
+// scope so a repo-local .git/config cannot shadow the enforced signing key.
+func TestBackendExecutorSigningEnvDisabled(t *testing.T) {
+	ex, _ := newTestBackendExec(t)
+	if env := ex.signingEnv(); env != nil {
+		t.Errorf("signingEnv with no SigningKey should be nil, got %v", env)
+	}
+}
+
+func TestBackendExecutorSigningEnvEnabled(t *testing.T) {
+	sb := &shBackend{root: t.TempDir()}
+	ex := NewBackendExecutor(sb, BackendOptions{
+		Label:              "test",
+		SigningKey:         "ssh-ed25519 AAAATEST test@example",
+		AllowedSignersPath: "/run/hisn/home/.wakil-allowed-signers",
+	})
+	defer ex.Close()
+	env := ex.signingEnv()
+	if env == nil {
+		t.Fatal("signingEnv with SigningKey should not be nil")
+	}
+	if env["GIT_CONFIG_COUNT"] != "6" {
+		t.Errorf("GIT_CONFIG_COUNT = %q, want 6", env["GIT_CONFIG_COUNT"])
+	}
+	want := map[string]string{
+		"GIT_CONFIG_KEY_0":   "user.signingkey",
+		"GIT_CONFIG_VALUE_0": "key::ssh-ed25519 AAAATEST test@example",
+		"GIT_CONFIG_KEY_1":   "gpg.format",
+		"GIT_CONFIG_VALUE_1": "ssh",
+		"GIT_CONFIG_KEY_2":   "gpg.ssh.allowedSignersFile",
+		"GIT_CONFIG_VALUE_2": "/run/hisn/home/.wakil-allowed-signers",
+		"GIT_CONFIG_KEY_3":   "gpg.ssh.program",
+		"GIT_CONFIG_VALUE_3": "ssh-keygen",
+		"GIT_CONFIG_KEY_4":   "commit.gpgsign",
+		"GIT_CONFIG_VALUE_4": "true",
+		"GIT_CONFIG_KEY_5":   "tag.gpgsign",
+		"GIT_CONFIG_VALUE_5": "true",
+	}
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("signingEnv[%q] = %q, want %q", k, env[k], v)
+		}
+	}
+}
+
 // B1: a host path given through a symlinked alias of the (host) workspace must
 // map to the same agent path as the canonical spelling, not be refused.
 func TestBackendHostPathAliasMapsToAgentPath(t *testing.T) {

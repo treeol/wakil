@@ -27,7 +27,7 @@ func TestKnownHostsPathGatedOnAgent(t *testing.T) {
 // ssh_signing under hisn with the agent off is an error, never a silent skip.
 func TestHisnGitSetupSigningNeedsAgent(t *testing.T) {
 	cfg := config.Config{SSHSigning: "/tmp/nope.pub"}
-	_, _, _, _, err := hisnGitSetup(cfg, config.HisnConfig{SSHAgent: false})
+	_, _, _, _, _, err := hisnGitSetup(cfg, config.HisnConfig{SSHAgent: false})
 	if err == nil {
 		t.Fatal("ssh_signing without the agent must fail under hisn")
 	}
@@ -36,7 +36,7 @@ func TestHisnGitSetupSigningNeedsAgent(t *testing.T) {
 // Off signing + no agent: no error, identity from the explicit override.
 func TestHisnGitSetupIdentityOverride(t *testing.T) {
 	cfg := config.Config{SSHSigning: "off", HostWorkDir: t.TempDir()}
-	name, email, key, keys, err := hisnGitSetup(cfg, config.HisnConfig{
+	name, email, key, keys, _, err := hisnGitSetup(cfg, config.HisnConfig{
 		GitIdentityName: "Ada", GitIdentityEmail: "ada@example.test"})
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestHisnGitSetupFingerprintInAllowlist(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", sock)
 
 	cfg := config.Config{SSHSigning: "auto", HostWorkDir: dir}
-	_, _, key, keys, err := hisnGitSetup(cfg, config.HisnConfig{
+	_, _, key, keys, _, err := hisnGitSetup(cfg, config.HisnConfig{
 		SSHAgent:         true,
 		SSHKeys:          []string{fp},
 		GitIdentityName:  "Test",
@@ -170,7 +170,7 @@ func TestHisnGitSetupFingerprintNotInAllowlist(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", sock)
 
 	cfg := config.Config{SSHSigning: "auto", HostWorkDir: dir}
-	_, _, _, _, err := hisnGitSetup(cfg, config.HisnConfig{
+	_, _, _, _, _, err := hisnGitSetup(cfg, config.HisnConfig{
 		SSHAgent:         true,
 		SSHKeys:          []string{"SHA256:differentFingerprint"},
 		GitIdentityName:  "Test",
@@ -209,7 +209,7 @@ func TestHisnGitSetupSigningKeyUnsetWithIdentity(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", sock)
 
 	cfg := config.Config{SSHSigning: "auto", HostWorkDir: dir}
-	_, _, _, _, err := hisnGitSetup(cfg, config.HisnConfig{
+	_, _, _, _, _, err := hisnGitSetup(cfg, config.HisnConfig{
 		SSHAgent:         true,
 		SSHKeys:          []string{"SHA256:something"},
 		GitIdentityName:  "Test",

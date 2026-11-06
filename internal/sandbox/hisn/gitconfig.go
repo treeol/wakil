@@ -44,6 +44,15 @@ func ValidateGitIdentity(id GitIdentity) error {
 
 // renderGitConfig returns the session gitconfig. It is written into the
 // persisted home (never the repository) and selected with GIT_CONFIG_GLOBAL.
+//
+// F9: signing settings are injected at COMMAND scope via GIT_CONFIG_* env
+// vars on every exec (see BackendExecutor.signingEnv), so a repo-local
+// .git/config with its own user.signingkey cannot shadow them — command scope
+// beats local and global. The session gitconfig carries identity AND signing
+// settings as a defense-in-depth fallback: on git < 2.31 (which does not
+// support GIT_CONFIG_COUNT), the gitconfig still enforces signing. On git >=
+// 2.31, the COMMAND-scope env wins, so the gitconfig signing settings are
+// redundant but harmless.
 func renderGitConfig(id GitIdentity, sg GitSigning) ([]byte, error) {
 	if err := ValidateGitIdentity(id); err != nil {
 		return nil, err
@@ -76,14 +85,17 @@ func renderGitConfig(id GitIdentity, sg GitSigning) ([]byte, error) {
 }
 
 // withGitConfig writes the session gitconfig into the persisted home and points
-// git at it with GIT_CONFIG_GLOBAL. Only the public key and identity are
-// written; the agent socket is reached through the [ssh] table, never a raw
-// path. It returns the surface with the env the session needs.
+// git at it with GIT_CONFIG_GLOBAL. Only identity (user.name, user.email) is
+// written to the gitconfig — signing settings are injected at COMMAND scope
+// via GIT_CONFIG_* env vars on every exec (F9, see BackendExecutor.signingEnv),
+// so a repo-local .git/config cannot shadow the enforced signing key. The
+// allowed_signers file is still written under HomeRoot so the in-session agent
+// can verify SSH signatures.
 //
-// F8: the file is written on the HOST under HomeRoot, but GIT_CONFIG_GLOBAL and
-// the allowedSignersFile value in the gitconfig must point at in-session paths
-// — hisn remounts the persist dir at SandboxHome (/run/hisn/home), so the host
-// path does not exist inside the sandbox. The GIT_SSH_COMMAND
+// F8: the file is written on the HOST under HomeRoot, but GIT_CONFIG_GLOBAL
+// and the allowedSignersFile value in the gitconfig must point at in-session
+// paths — hisn remounts the persist dir at SandboxHome (/run/hisn/home), so
+// the host path does not exist inside the sandbox. The GIT_SSH_COMMAND
 // UserKnownHostsFile is a same-path RO mount (the host path IS valid inside the
 // sandbox), so it stays as is.
 func (b *Backend) withGitConfig(s Surface) (Surface, error) {
@@ -116,10 +128,11 @@ func (b *Backend) withGitConfig(s Surface) (Surface, error) {
 
 // writeSessionGitConfig writes .wakil-gitconfig (and the allowed_signers file
 // when signing) into home (host HomeRoot), mode 0600. It returns the gitconfig
-// path. The allowed_signers file is written at <home>/.wakil-allowed-signers
-// (host), but the gitconfig's allowedSignersFile value uses the in-session
-// path (<SandboxHome>/.wakil-allowed-signers) — hisn remounts the persist dir
-// at SandboxHome, so the host path does not exist inside the sandbox.
+// path. The gitconfig carries identity only (F9); the allowed_signers file is
+// written so the in-session agent can verify SSH signatures. The
+// allowedSignersFile value uses the in-session path (<SandboxHome>/.wakil-
+// allowed-signers) — hisn remounts the persist dir at SandboxHome, so the host
+// path does not exist inside the sandbox.
 func writeSessionGitConfig(home string, id GitIdentity, sg GitSigning) (string, error) {
 	if sg.Key != "" {
 		sg.AllowedSigner = filepath.Join(SandboxHome, ".wakil-allowed-signers")
@@ -134,7 +147,9 @@ func writeSessionGitConfig(home string, id GitIdentity, sg GitSigning) (string, 
 	if sg.Key != "" {
 		// allowed_signers: "<identity> <key>". Identity is the commit email.
 		// Written at the HOST path (<home>/.wakil-allowed-signers); the
-		// gitconfig value points at the in-session path.
+		// gitconfig value points at the in-session path. Signing settings are
+		// also injected at COMMAND scope via GIT_CONFIG_* env (F9) — the
+		// gitconfig is a defense-in-depth fallback for git < 2.31.
 		hostSigner := filepath.Join(home, ".wakil-allowed-signers")
 		line := fmt.Sprintf("%s %s\n", id.Email, sg.Key)
 		if err := os.WriteFile(hostSigner, []byte(line), 0o600); err != nil {
