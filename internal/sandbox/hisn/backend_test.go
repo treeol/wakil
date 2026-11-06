@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,52 @@ func TestPreflight(t *testing.T) {
 		o.Binary = filepath.Join(t.TempDir(), "nope")
 		if _, err := Open(ctxT(t), o); err == nil {
 			t.Fatal("missing hisn must be an error, never a fallback")
+		}
+	})
+	t.Run("ssh_agent unset", func(t *testing.T) {
+		fe := newFakeEnv(t)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.3.2"), 0o600)
+		o := fe.options()
+		o.SSHAgent = true
+		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
+		t.Setenv("SSH_AUTH_SOCK", "")
+		_, err := Open(ctxT(t), o)
+		if err == nil || !strings.Contains(err.Error(), "ssh_agent") || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
+			t.Fatalf("want ssh_agent/SSH_AUTH_SOCK error, got %v", err)
+		}
+	})
+	t.Run("ssh_agent not a socket", func(t *testing.T) {
+		fe := newFakeEnv(t)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.3.2"), 0o600)
+		o := fe.options()
+		o.SSHAgent = true
+		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
+		// Point SSH_AUTH_SOCK at a regular file, not a socket.
+		notSock := filepath.Join(t.TempDir(), "not-a-socket")
+		_ = os.WriteFile(notSock, []byte("x"), 0o600)
+		t.Setenv("SSH_AUTH_SOCK", notSock)
+		_, err := Open(ctxT(t), o)
+		if err == nil || !strings.Contains(err.Error(), "not a socket") {
+			t.Fatalf("want not-a-socket error, got %v", err)
+		}
+	})
+	t.Run("ssh_agent ok", func(t *testing.T) {
+		fe := newFakeEnv(t)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.3.2"), 0o600)
+		o := fe.options()
+		o.SSHAgent = true
+		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
+		// Create a real Unix socket.
+		sock := filepath.Join(t.TempDir(), "agent.sock")
+		_ = os.Remove(sock)
+		l, err := net.Listen("unix", sock)
+		if err != nil {
+			t.Skipf("cannot create unix socket: %v", err)
+		}
+		defer l.Close()
+		t.Setenv("SSH_AUTH_SOCK", sock)
+		if _, err := Open(ctxT(t), o); err != nil {
+			t.Fatalf("ssh_agent with a valid socket must pass preflight: %v", err)
 		}
 	})
 }

@@ -3,6 +3,7 @@ package hisn
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,6 +39,10 @@ func VersionAtLeast(got, want [3]int) bool {
 // Preflight verifies that the hisn binary exists, is at least MinVersion and
 // that the host can run sandboxes (`hisn check` exits 0). Any failure is an
 // error: there is no fallback to another backend or to running unsandboxed.
+//
+// When sandbox.hisn.ssh_agent is true, SSH_AUTH_SOCK must be set and point at a
+// socket — the host-side supervisor needs it (F4), and failing here (plan time)
+// is earlier and clearer than exit 125 at the first tool call.
 func (b *Backend) Preflight(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -68,6 +73,29 @@ func (b *Backend) Preflight(ctx context.Context) error {
 	}
 	if out, err := b.output(ctx, false, "check"); err != nil {
 		return fmt.Errorf("sandbox backend hisn: `hisn check` failed — this host cannot run hisn sessions:\n%s", tailLines(out, 12))
+	}
+	if b.opts.SSHAgent {
+		if err := preflightSSHAgent(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// preflightSSHAgent checks that SSH_AUTH_SOCK is set and points at a socket.
+// The host-side hisn supervisor needs it (F4); failing here is earlier and
+// clearer than exit 125 at the first tool call.
+func preflightSSHAgent() error {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return fmt.Errorf("sandbox.hisn.ssh_agent: SSH_AUTH_SOCK is not set (ssh_agent = true requires a host agent; start one with `ssh-agent` and add a key with `ssh-add`)")
+	}
+	fi, err := os.Stat(sock)
+	if err != nil {
+		return fmt.Errorf("sandbox.hisn.ssh_agent: SSH_AUTH_SOCK %q: %w (ssh_agent = true requires a host agent socket)", sock, err)
+	}
+	if fi.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("sandbox.hisn.ssh_agent: SSH_AUTH_SOCK %q is not a socket (ssh_agent = true requires a host agent socket)", sock)
 	}
 	return nil
 }
