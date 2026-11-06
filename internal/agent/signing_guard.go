@@ -259,8 +259,3 @@ func (a *App) signingBypassMsg(cmd string) string {
 	}
 	return checkSigningBypass(cmd)
 }
-
-// formatSigningBypassResult is the tool-result string for a refused command.
-func formatSigningBypassResult() string {
-	return signingGuardError
-}
