@@ -171,6 +171,12 @@ func Summary(l Loaded) []string {
 	if s.Profile != "" {
 		out = append(out, fmt.Sprintf("uses hisn profile %q as is (Wakil adds only the grants below)", s.Profile))
 	}
+	if s.Rootfs != "" {
+		out = append(out, fmt.Sprintf("runs the session on rootfs %q (its binaries replace the host toolchain)", s.Rootfs))
+	}
+	if s.Home != "" {
+		out = append(out, fmt.Sprintf("sets the session $HOME mode to %q for this project (overrides sandbox.hisn.home)", s.Home))
+	}
 	for _, v := range s.Services {
 		out = append(out, fmt.Sprintf("service %q runs INSIDE the sandbox: %s", v.Name, strings.Join(v.Exec, " ")))
 	}

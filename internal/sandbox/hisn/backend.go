@@ -237,6 +237,18 @@ func New(opts Options) (*Backend, error) {
 	if opts.SigningKey != "" && !opts.SSHAgent {
 		return nil, fmt.Errorf("hisn backend: ssh signing needs sandbox.hisn.ssh_agent = true")
 	}
+	// A named profile is used as is and cannot carry Wakil's [home] fragment,
+	// so an effective tmpfs home (the global mode when the project sets none)
+	// cannot be honoured. Refuse, naming the key; never drop it silently.
+	if surf.Profile != "" {
+		effHome := opts.Home
+		if surf.Home != "" {
+			effHome = surf.Home
+		}
+		if effHome == HomeTmpfs {
+			return nil, fmt.Errorf("hisn backend: sandbox.hisn.home = \"tmpfs\" cannot apply to hisn.profile %q (a named profile is used as is and cannot carry the [home] fragment): set sandbox.hisn.home to \"persist\" or drop hisn.profile", surf.Profile)
+		}
+	}
 	opts.Surface = surf
 	// The state directory is the user's trust root (approvals, profiles, owner
 	// records): no writable surface may reach it, whatever put it there.
