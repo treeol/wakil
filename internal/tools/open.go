@@ -1,11 +1,18 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
+	"testing"
 )
+
+// errHostOpenInTest is returned instead of launching anything when the process
+// is a test binary: a test must never open a URL or file on the developer's
+// desktop (it once opened https://example.com in a running browser).
+var errHostOpenInTest = errors.New("refusing to open anything on the host desktop from a test binary")
 
 // OpenOnHost opens a URL or file path in the user's default application on the
 // host — the machine wakil runs on, in the user's desktop session — regardless
@@ -21,6 +28,9 @@ func OpenOnHost(target string) (string, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return "", fmt.Errorf("no URL or path given")
+	}
+	if testing.Testing() {
+		return "", errHostOpenInTest
 	}
 	cmd := hostOpenCmd(target)
 	if err := cmd.Start(); err != nil {
