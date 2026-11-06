@@ -168,17 +168,18 @@ func (k WorkspaceKeys) Format() string {
 	if k.ChatPath == "" {
 		b.WriteString("NOTE: no workspace path (direct mode without a workdir argument): a chat started with this config keys no per-project store; pass the project directory as an argument or set WAKIL_WORKSPACE_PATH.\n")
 	}
-	if k.LegacyKey != "" {
-		if k.LegacyEntries >= 0 {
-			fmt.Fprintf(&b, "legacy store:       %s   [pre-0.5.0 shared store, read-only: %d active entries]\n", k.LegacyKey, k.LegacyEntries)
-			fmt.Fprintf(&b, "  legacy db:        %s\n", k.LegacyDBPath)
-		} else {
-			fmt.Fprintf(&b, "legacy store:       %s   [pre-0.5.0 shared store: none on this host]\n", k.LegacyKey)
-		}
-	}
-	if k.Diverges {
-		fmt.Fprintf(&b, "WARNING: a chat started here keys its memory by %s but `wakil plan gc` from this directory reads %s — see %s\n",
-			k.MemoryKey, k.GCMemoryKey, "docs/DECISIONS-2026-11.md (C4)")
+	// The legacy key is the 0.4.x shared-store key (WorkspaceKey of the old
+	// WorkspacePath()), independent of the project. When it equals this chat's
+	// project key there is no separate legacy store: report none, never the
+	// project's own store as if it were legacy.
+	switch {
+	case k.LegacyKey == "" || k.LegacyKey == k.MemoryKey:
+		b.WriteString("legacy store:       none (no pre-0.5.0 shared store distinct from this project)\n")
+	case k.LegacyEntries >= 0:
+		fmt.Fprintf(&b, "legacy store:       %s   [pre-0.5.0 shared store, read-only: %d active entries]\n", k.LegacyKey, k.LegacyEntries)
+		fmt.Fprintf(&b, "  legacy db:        %s\n", k.LegacyDBPath)
+	default:
+		fmt.Fprintf(&b, "legacy store:       %s   [pre-0.5.0 shared store: none on this host]\n", k.LegacyKey)
 	}
 	return b.String()
 }
@@ -192,9 +193,6 @@ func (k WorkspaceKeys) EnvOverrideLine() string {
 	}
 	s := fmt.Sprintf("workspace: WAKIL_WORKSPACE_PATH=%s is IGNORED for store keys since 0.5.0 — keys follow the working directory %s: memory key %s, sessionhost key %s (id %s)",
 		os.Getenv("WAKIL_WORKSPACE_PATH"), k.ChatPath, orNone(k.MemoryKey), orNone(k.SessionHostKey), orNone(k.SessionHostID))
-	if k.Diverges {
-		s += fmt.Sprintf("; `wakil plan gc` from %s would read memory key %s", k.Cwd, orNone(k.GCMemoryKey))
-	}
 	return s
 }
 

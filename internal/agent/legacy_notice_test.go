@@ -101,3 +101,61 @@ func TestWorkspaceKeysReportShowsLegacy(t *testing.T) {
 		t.Fatalf("report must show the legacy count:\n%s", out)
 	}
 }
+
+// 0.5.0 review: the legacy key is the old WorkspacePath() derivation, independent
+// of the project. When it equals the project's own key, the report says none; it
+// never shows the project store as legacy.
+func TestLegacyKeyIsOldDerivationAndNoneWhenEqual(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("WAKIL_WORKSPACE_KEY", "")
+	proj := t.TempDir()
+	legacyWS := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.ExecMode = "direct"
+	cfg.WorkDir = proj
+
+	// Old derivation: WAKIL_WORKSPACE_PATH wins; it is not the project.
+	t.Setenv("WAKIL_WORKSPACE_PATH", legacyWS)
+	k := ResolveWorkspaceKeys(cfg).WithLegacy(cfg)
+	if want := WorkspaceKey(legacyWS)[:16]; k.LegacyKey != want {
+		t.Fatalf("legacy key %s, want old derivation %s", k.LegacyKey, want)
+	}
+	if k.LegacyKey == k.MemoryKey {
+		t.Fatal("legacy must differ from the project key here")
+	}
+
+	// Legacy workspace equal to the project (the chat's cwd): report none, not a
+	// legacy store. The project is the cwd now, so chdir there.
+	oldwd, _ := os.Getwd()
+	if err := os.Chdir(proj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	t.Setenv("WAKIL_WORKSPACE_PATH", proj)
+	k = ResolveWorkspaceKeys(cfg).WithLegacy(cfg)
+	out := k.Format()
+	if !strings.Contains(out, "legacy store:       none") {
+		t.Fatalf("equal legacy/project must report none:\n%s", out)
+	}
+	if strings.Contains(out, "read-only:") {
+		t.Fatalf("project store must not be reported as legacy:\n%s", out)
+	}
+}
+
+// 0.5.0 review: the WARNING about plan gc divergence is gone (keys agree by
+// construction); the WAKIL_WORKSPACE_PATH line remains.
+func TestNoDivergenceWarningAndEnvLineKept(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("WAKIL_WORKSPACE_KEY", "")
+	t.Setenv("WAKIL_WORKSPACE_PATH", t.TempDir())
+	cfg := config.DefaultConfig()
+	cfg.ExecMode = "direct"
+	cfg.WorkDir = t.TempDir()
+	k := ResolveWorkspaceKeys(cfg)
+	if strings.Contains(k.Format(), "WARNING") {
+		t.Fatal("divergence WARNING must not be printed")
+	}
+	if !strings.Contains(k.EnvOverrideLine(), "IGNORED") {
+		t.Fatalf("env override notice missing: %q", k.EnvOverrideLine())
+	}
+}
