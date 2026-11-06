@@ -14,12 +14,13 @@ import (
 // it: the host ssh-agent socket (bind-mounted) and the literal public key
 // (injected via GIT_CONFIG_* env, "key::" form — see git-config(1)).
 type SigningSetup struct {
-	Enabled   bool
-	AgentSock string // resolved host SSH_AUTH_SOCK path
-	PublicKey string // literal public key, e.g. "ssh-ed25519 AAAA… comment"
-	AutoSign  bool   // host-effective commit.gpgsign for the workspace repo
-	UserName  string // host-effective user.name (empty = don't inject)
-	UserEmail string // host-effective user.email (empty = don't inject)
+	Enabled        bool
+	AgentSock      string // resolved host SSH_AUTH_SOCK path
+	PublicKey      string // literal public key, e.g. "ssh-ed25519 AAAA… comment"
+	AutoSign       bool   // host-effective commit.gpgsign for the workspace repo
+	UserName       string // host-effective user.name (empty = don't inject)
+	UserEmail      string // host-effective user.email (empty = don't inject)
+	SigningKeyValue string // raw user.signingkey value (for error messages); "" when unset
 }
 
 // DetectSigning resolves the SSH-signing setup from the host git config.
@@ -82,7 +83,12 @@ func detectSigning(mode, repoDir string, trustedOnly bool) (SigningSetup, string
 		return SigningSetup{}, "ssh_signing=auto: " + reason
 	}
 
-	return finishSetup(pub, repoDir)
+	s, finishReason := finishSetup(pub, repoDir)
+	if finishReason != "" {
+		return SigningSetup{}, finishReason
+	}
+	s.SigningKeyValue = signingKey
+	return s, ""
 }
 
 // detectWithExplicitKey handles the "ssh_signing: <path>" form: the key comes
@@ -92,7 +98,12 @@ func detectWithExplicitKey(path, repoDir string) (SigningSetup, string) {
 	if reason != "" {
 		return SigningSetup{}, "ssh_signing: " + reason
 	}
-	return finishSetup(pub, repoDir)
+	s, finishReason := finishSetup(pub, repoDir)
+	if finishReason != "" {
+		return SigningSetup{}, finishReason
+	}
+	s.SigningKeyValue = path
+	return s, ""
 }
 
 // finishSetup validates the agent socket and fills the identity fields.

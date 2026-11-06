@@ -127,6 +127,11 @@ func kvrOptions(cfg config.Config, h config.HisnConfig) hisn.KVROptions {
 // host user.name / user.email. Signing: ssh_signing through exec.DetectSigning,
 // which reads only the PUBLIC key. A signing setup that cannot be resolved is an
 // error under hisn: it is never skipped silently (the docker path logs a skip).
+//
+// F5: the signing key's fingerprint must be in sandbox.hisn.ssh_keys — it is
+// never auto-added. Wakil signs through the agent proxy only, never with a
+// private key, so the fingerprint the host agent holds must match a key the
+// user explicitly allowed.
 func hisnGitSetup(cfg config.Config, h config.HisnConfig) (name, email, signingKey string, sshKeys []string, err error) {
 	sshKeys = append([]string(nil), h.SSHKeys...)
 	if !h.SSHAgent && (cfg.SSHSigning != "" && cfg.SSHSigning != "off") {
@@ -154,14 +159,16 @@ func hisnGitSetup(cfg config.Config, h config.HisnConfig) (name, email, signingK
 	if email == "" {
 		return "", "", "", nil, fmt.Errorf("ssh_signing needs a git identity email (sandbox.hisn.git_identity_email or host user.email)")
 	}
-	// The signing key's fingerprint joins the agent allowlist, so the session
-	// agent can sign with it. An explicit ssh_keys list is kept as well.
+	// F5: the signing key's fingerprint must be in sandbox.hisn.ssh_keys. It is
+	// never auto-added — Wakil signs through the agent proxy, so the key the
+	// host agent holds must match one the user explicitly allowed. The session
+	// allowlist keeps the fingerprint so the session agent can sign with it.
 	fp, err := hisn.PublicKeyLineFingerprint(setup.PublicKey)
 	if err != nil {
 		return "", "", "", nil, err
 	}
-	if !containsStr(sshKeys, fp) {
-		sshKeys = append(sshKeys, fp)
+	if !containsStr(h.SSHKeys, fp) {
+		return "", "", "", nil, fmt.Errorf("ssh_signing: the signing key %q (fingerprint %s) is not in sandbox.hisn.ssh_keys — add it to the allowlist or use a different key", setup.SigningKeyValue, fp)
 	}
 	return name, email, setup.PublicKey, sshKeys, nil
 }

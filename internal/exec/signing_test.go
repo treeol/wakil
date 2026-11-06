@@ -212,6 +212,11 @@ func TestDetectSigningExplicitKeyWithAgent(t *testing.T) {
 	if s.AgentSock == "" {
 		t.Error("agent sock empty")
 	}
+	// F5: SigningKeyValue carries the raw user.signingkey value (the explicit
+	// path in this case).
+	if s.SigningKeyValue != pub {
+		t.Errorf("SigningKeyValue = %q, want %q", s.SigningKeyValue, pub)
+	}
 }
 
 // B1: under hisn the signing key comes from global/system scope only. A key

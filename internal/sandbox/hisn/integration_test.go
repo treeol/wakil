@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -229,6 +230,13 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	}
 	fp := fields[1]
 
+	// Read the .pub file content (the public key line) for the signing key.
+	pubBytes, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		t.Skipf("reading .pub file: %v", err)
+	}
+	pubKeyLine := strings.TrimSpace(string(pubBytes))
+
 	// Build a backend with ssh_agent=true and that one fingerprint allowed.
 	bin := os.Getenv("WAKIL_HISN_BIN")
 	if bin == "" {
@@ -258,6 +266,9 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		SSHKeys:   []string{fp},
 		EnvPass:   []string{"CI", "GOFLAGS"},
 		Surface:   Surface{RiskAck: "signing"},
+		SigningKey: pubKeyLine,  // F5: signing key for the session gitconfig
+		GitName:   "Wakil Test",
+		GitEmail:  "test@wakil.test",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -295,6 +306,51 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	if strings.Contains(out, socket) {
 		t.Errorf("host SSH_AUTH_SOCK path leaked into the sandbox: %s appears in:\n%s", socket, out)
 	}
+
+	// F5: make a signed commit inside the session and verify the signature on
+	// the host side. The session gitconfig carries user.signingkey,
+	// gpg.format=ssh, commit.gpgsign=true, and the allowed_signers file; the
+	// agent proxy forwards the key.
+	if _, info := irun(t, b, cwd, "git", "init", "-q"); info.Code != 0 {
+		t.Fatalf("git init inside session failed: %+v", info)
+	}
+	if _, info := irun(t, b, cwd, "git", "config", "user.name", "Wakil Test"); info.Code != 0 {
+		t.Fatalf("git config user.name inside session failed: %+v", info)
+	}
+	if _, info := irun(t, b, cwd, "git", "config", "user.email", "test@wakil.test"); info.Code != 0 {
+		t.Fatalf("git config user.email inside session failed: %+v", info)
+	}
+	if _, info := irun(t, b, cwd, "sh", "-c", "echo test > file.txt"); info.Code != 0 {
+		t.Fatalf("write file inside session failed: %+v", info)
+	}
+	if _, info := irun(t, b, cwd, "git", "add", "file.txt"); info.Code != 0 {
+		t.Fatalf("git add inside session failed: %+v", info)
+	}
+	commitOut, commitInfo := irun(t, b, cwd, "git", "commit", "-m", "test signed commit")
+	if commitInfo.Code != 0 {
+		t.Fatalf("git commit inside session failed: %q %+v", commitOut, commitInfo)
+	}
+	// Verify the commit is signed on the host side.
+	signOut, err := osexec.Command("git", "-C", cwd, "log", "--show-signature", "-1", "--format=%G?").Output()
+	if err != nil {
+		t.Fatalf("git log --show-signature on host failed: %v", err)
+	}
+	// %G? = G for a good signature, B for a bad signature, U for a good
+	// signature with unknown validity, N for no signature.
+	signStatus := strings.TrimSpace(string(signOut))
+	if signStatus != "G" && signStatus != "U" {
+		t.Errorf("signed commit not verified on host: %%G?=%q (want G or U)\nfull log:\n%s", signStatus,
+			string(mustRunGitLog(t, cwd)))
+	}
+}
+
+func mustRunGitLog(t *testing.T, cwd string) []byte {
+	t.Helper()
+	out, err := osexec.Command("git", "-C", cwd, "log", "--show-signature", "-1").Output()
+	if err != nil {
+		return []byte(fmt.Sprintf("git log failed: %v", err))
+	}
+	return out
 }
 
 func TestIntegrationGrantRevokeVisibility(t *testing.T) {
