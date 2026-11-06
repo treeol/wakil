@@ -223,6 +223,9 @@ type launch struct {
 	args []string
 	dir  string // supervisor process cwd ("" = inherit)
 	mode string // "policy" | "profile" | "named"
+	// persist is the generated profile's [home] persist path ("" when none, or
+	// for a named profile, which Wakil does not generate).
+	persist string
 }
 
 // prepareLaunch renders and validates what hisn is started with. Three modes:
@@ -298,7 +301,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 	if out, err := b.output(vctx, false, "profile", "validate", b.profilePath(rec.ID)); err != nil {
 		return launch{}, rootfsError(validateError(err, out), s.Rootfs)
 	}
-	return launch{args: profileArgs(rec.ID, b.profilePath(rec.ID), rec.Cwd), dir: b.procCwd(), mode: "profile"}, nil
+	return launch{args: profileArgs(rec.ID, b.profilePath(rec.ID), rec.Cwd), dir: b.procCwd(), mode: "profile", persist: homeP}, nil
 }
 
 // validateError turns `hisn profile validate` output into an error; the risk
@@ -382,7 +385,7 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 	}
 	if err2 == nil && l.mode != "policy" {
 		// The running session must not be riskier than what the user acknowledged.
-		_, err2 = b.verifyRisk(ctx, rec.ID)
+		_, err2 = b.verifyRisk(ctx, rec.ID, l.persist)
 	}
 	if err := err2; err != nil {
 		b.reapSupervisor(sup)

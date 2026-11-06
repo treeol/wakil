@@ -113,6 +113,10 @@ func fakeProfileRisks(text string) ([]fakeRisk, error) {
 		}
 		risks = append(risks, fakeRisk{"docker:socket", "root-equivalent"})
 	}
+	// hisn 0.3.2 [home]: persist is home-persist, label data (Data, medium).
+	if h, ok := doc["home"].(map[string]any); ok && str(h, "persist") != "" {
+		risks = append(risks, fakeRisk{"home-persist", "data"})
+	}
 	return risks, nil
 }
 

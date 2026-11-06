@@ -145,6 +145,9 @@ type Backend struct {
 	ver [3]int
 	// planned is the plan-time risk evaluation (hisn profile explain).
 	planned explainDoc
+	// planPersist is the plan-time [home] persist path (the wakil default
+	// home root for a generated profile, "" otherwise).
+	planPersist string
 	// kvrNote is the one-line state of the in-sandbox staging store.
 	kvrNote string
 	// kvrSocket is the host path of the staging socket ("" = staging off).
