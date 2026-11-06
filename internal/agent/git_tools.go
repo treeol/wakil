@@ -310,7 +310,7 @@ func (a *App) gitRunCapped(ctx context.Context, cmd, label string, capBytes int)
 		cmd, capBytes+1)
 	// F6: signing enforcement guard.
 	if msg := a.signingBypassMsg(full); msg != "" {
-		return msg
+		return "ERROR: " + msg
 	}
 	out, err := a.Exec.RunShell(ctx, full)
 	if err != nil {

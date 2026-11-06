@@ -19,6 +19,8 @@ import (
 
 // signingBypassKeys are the git config keys that control signing. Setting or
 // unsetting any of them in a signing-enforced session is a bypass attempt.
+// Git config keys are case-insensitive (section and variable names), so
+// comparisons use strings.ToLower.
 var signingBypassKeys = []string{
 	"commit.gpgsign",
 	"gpg.format",
@@ -33,8 +35,8 @@ var signingBypassKeyPrefixes = []string{
 }
 
 // signingBypassEnvVars are the environment variables that can override or
-// inject git config at runtime; their presence in a command line (as NAME=VALUE
-// or `NAME VALUE`) is a bypass vector when the value targets a signing key.
+// inject git config at runtime. Their presence in a command line as NAME=VALUE
+// is a bypass vector.
 var signingBypassEnvVars = []string{
 	"GIT_CONFIG_PARAMETERS",
 	"GIT_CONFIG_GLOBAL",
@@ -43,25 +45,36 @@ var signingBypassEnvVars = []string{
 	"GIT_CONFIG_COUNT",
 }
 
-// signingBypassEnvKeyPrefixes matches the per-index env var form
-// GIT_CONFIG_KEY_<n> used by git to inject config via the environment.
-const signingBypassEnvKeyPrefix = "GIT_CONFIG_KEY_"
+// signingBypassEnvKeyPrefixes match the per-index env var forms
+// GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n> used by git to inject config
+// via the environment.
+var signingBypassEnvKeyPrefixes = []string{
+	"GIT_CONFIG_KEY_",
+	"GIT_CONFIG_VALUE_",
+}
 
 // signingGuardError is the refusal message returned to the agent when a command
-// attempts to bypass signing.
-const signingGuardError = "ERROR: signing is enforced for this session — a signing failure must be reported to the user, not worked around. Do not set or unset commit.gpgsign, gpg.format, user.signingkey, gpg.ssh.*, tag.gpgsign, --no-gpg-sign, or GIT_CONFIG_* in a signing-enforced session."
+// attempts to bypass signing. No "ERROR: " prefix — callers add it.
+const signingGuardError = "signing is enforced for this session — a signing failure must be reported to the user, not worked around. Do not set or unset commit.gpgsign, gpg.format, user.signingkey, gpg.ssh.*, tag.gpgsign, --no-gpg-sign, or GIT_CONFIG_* in a signing-enforced session."
 
 // checkSigningBypass inspects a command line for forms that would disable or
 // bypass signing. Returns a non-empty error message string when a bypass is
 // detected, "" when the command is safe.
 //
 // It checks:
+//   - `--no-gpg-sign` flag (as a whitespace-delimited token, ignoring trailing
+//     punctuation like `;` or `&&`)
 //   - `git -c <key>=<val>` where <key> is a signing key (benign -c uses like
 //     `core.pager=cat` stay allowed)
+//   - `git --config-env=<key>=<envvar>` where <key> is a signing key
 //   - `git config <key> <val>` (any scope, including --global/--system/--local)
-//   - `--no-gpg-sign` flag
+//     — but NOT read-only subcommands (--get, --get-all, --get-regexp, --list,
+//     --show-origin, --show-scope)
 //   - GIT_CONFIG_* environment variables in the command line (NAME=VALUE form)
-//   - GIT_CONFIG_KEY_<n> env vars
+//   - GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n> env var prefixes
+//
+// Git config keys are case-insensitive: `Commit.GpgSign` matches
+// `commit.gpgsign`.
 //
 // A determined bypass through a script file is out of scope: the guard catches
 // the direct forms; the audit trail (an unsigned commit) catches the rest.
@@ -69,11 +82,12 @@ func checkSigningBypass(cmd string) string {
 	if cmd == "" {
 		return ""
 	}
-	// --no-gpg-sign flag.
-	if containsToken(cmd, "--no-gpg-sign") {
+	// --no-gpg-sign flag (only on git commands — `echo --no-gpg-sign` is
+	// benign).
+	if isGitCommand(cmd) && containsToken(cmd, "--no-gpg-sign") {
 		return signingGuardError
 	}
-	// `git -c <key>=<val>` forms: scan for -c followed by a signing key.
+	// `git -c <key>=<val>` and `git --config-env=<key>=<val>` forms.
 	if msg := checkGitDashC(cmd); msg != "" {
 		return msg
 	}
@@ -88,10 +102,30 @@ func checkSigningBypass(cmd string) string {
 	return ""
 }
 
+// isGitCommand reports whether the command starts with `git` or `<path>/git`.
+func isGitCommand(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for _, f := range fields {
+		if f == "git" || strings.HasSuffix(f, "/git") {
+			return true
+		}
+		// Skip env vars (NAME=VALUE) that precede git.
+		if strings.Contains(f, "=") && !strings.HasPrefix(f, "-") {
+			continue
+		}
+		// First non-env, non-flag token that isn't git — not a git command.
+		if !strings.HasPrefix(f, "-") {
+			return false
+		}
+	}
+	return false
+}
+
 // containsToken reports whether s contains the token as a whitespace-delimited
-// word (not a substring of a longer word).
+// word (not a substring of a longer word), ignoring trailing punctuation.
 func containsToken(s, token string) bool {
 	for _, f := range strings.Fields(s) {
+		f = strings.TrimRight(f, ";&|")
 		if f == token {
 			return true
 		}
@@ -100,7 +134,9 @@ func containsToken(s, token string) bool {
 }
 
 // isSigningKey reports whether key is a signing-related config key.
+// Case-insensitive (git config section/variable names are case-insensitive).
 func isSigningKey(key string) bool {
+	key = strings.ToLower(key)
 	for _, k := range signingBypassKeys {
 		if key == k {
 			return true
@@ -114,9 +150,8 @@ func isSigningKey(key string) bool {
 	return false
 }
 
-// checkGitDashC scans for `-c <key>=<val>` or `-c<key>=<val>` forms where key is
-// a signing key. It handles both the separated (`-c key=val`) and joined
-// (`-ckey=val`) forms, and quotes.
+// checkGitDashC scans for `-c <key>=<val>`, `-c<key>=<val>`, and
+// `--config-env=<key>=<envvar>` forms where key is a signing key.
 func checkGitDashC(cmd string) string {
 	fields := strings.Fields(cmd)
 	for i, f := range fields {
@@ -124,10 +159,23 @@ func checkGitDashC(cmd string) string {
 		switch {
 		case f == "-c" && i+1 < len(fields):
 			val = fields[i+1]
-		case strings.HasPrefix(f, "-c") && len(f) > 2:
+		case strings.HasPrefix(f, "-c") && len(f) > 2 && f[2] != '-':
+			// Joined form: -ckey=val. But not -c<dash> which could be a
+			// different flag like --config.
 			val = f[2:]
 		case f == "-c":
-			// -c at the end with no argument — nothing to check.
+			continue
+		case strings.HasPrefix(f, "--config-env="):
+			// --config-env=<key>=<envvar> form.
+			val = strings.TrimPrefix(f, "--config-env=")
+			val = strings.Trim(val, `"'`)
+			key := val
+			if idx := strings.IndexByte(val, '='); idx >= 0 {
+				key = val[:idx]
+			}
+			if isSigningKey(key) {
+				return signingGuardError
+			}
 			continue
 		default:
 			continue
@@ -146,64 +194,96 @@ func checkGitDashC(cmd string) string {
 	return ""
 }
 
+// gitConfigReadOnlyFlags are `git config` flags that read config without
+// modifying it. When present, the command is allowed even if it names a
+// signing key.
+var gitConfigReadOnlyFlags = map[string]bool{
+	"--get":          true,
+	"--get-all":      true,
+	"--get-regexp":   true,
+	"--get-urlmatch": true,
+	"--list":         true,
+	"--show-origin":  true,
+	"--show-scope":   true,
+	"--name-only":    true,
+	"--null":         true,
+}
+
 // checkGitConfigSub detects `git config <scope> <key> <value>` where key is a
-// signing key. It handles --global, --system, --local, --file, --blob and the
-// bare `git config <key> <value>` form.
+// signing key. It handles --global, --system, --local, --file, --blob, -C, -c
+// (with their arguments) and the bare `git config <key> <value>` form.
+// Read-only subcommands (--get, --get-all, --get-regexp, --list, --show-origin,
+// --show-scope) are allowed — the guard refuses sets and unsets, not reads.
+// All `config` tokens in the command are checked (not just the first).
 func checkGitConfigSub(cmd string) string {
 	fields := strings.Fields(cmd)
 	if len(fields) < 2 {
 		return ""
 	}
-	// Find `git` ... `config`.
-	var configIdx int = -1
-	for i, f := range fields {
-		if f == "config" && i > 0 && (fields[i-1] == "git" || strings.HasSuffix(fields[i-1], "/git")) {
-			configIdx = i
-			break
+	// Scan all `config` tokens. For each, walk FORWARD from the preceding
+	// `git` to confirm it's a `git ... config` invocation, then check the
+	// key after `config`.
+	for start := 0; start < len(fields); start++ {
+		if fields[start] != "config" {
+			continue
 		}
-		// Also match `git -c ... config` (with flags between git and config).
-		if f == "config" && i > 0 {
-			// Walk back past flags to find `git`.
-			j := i - 1
-			for j >= 0 && strings.HasPrefix(fields[j], "-") {
-				j--
+		// Walk back to find `git`, skipping flags and their arguments.
+		// The token right before `config` could be an argument to a flag
+		// (e.g. `git -C . config` → `.` is the arg to `-C`).
+		j := start - 1
+		// If the token right before config is not a flag, it might be an
+		// argument to a preceding flag. Walk back past it.
+		if j >= 0 && !strings.HasPrefix(fields[j], "-") {
+			// Check if the token before this one is a flag that takes an arg.
+			if j-1 >= 0 {
+				prev := fields[j-1]
+				if prev == "-C" || prev == "-c" || prev == "--file" || prev == "--blob" || prev == "-f" {
+					j -= 2 // skip the arg and the flag
+				}
 			}
-			if j >= 0 && (fields[j] == "git" || strings.HasSuffix(fields[j], "/git")) {
-				configIdx = i
+		}
+		// Now walk back past any remaining flags.
+		for j >= 0 && strings.HasPrefix(fields[j], "-") {
+			f := fields[j]
+			if f == "-C" || f == "-c" || f == "--file" || f == "--blob" || f == "-f" {
+				j -= 2 // skip the flag AND its argument
+				continue
+			}
+			j--
+		}
+		if j < 0 || (fields[j] != "git" && !strings.HasSuffix(fields[j], "/git")) {
+			continue
+		}
+		// Found `git ... config`. Check the tokens after `config`.
+		i := start + 1
+		for i < len(fields) {
+			f := fields[i]
+			if !strings.HasPrefix(f, "-") {
 				break
 			}
+			// Read-only flag: allow this config invocation.
+			if gitConfigReadOnlyFlags[f] {
+				break
+			}
+			// --file, --blob, -f, -C, -c take an argument.
+			if f == "--file" || f == "--blob" || f == "-f" || f == "-C" || f == "-c" {
+				i += 2
+				continue
+			}
+			// --type=X (read modifier).
+			if strings.HasPrefix(f, "--type=") {
+				i++
+				continue
+			}
+			i++
 		}
-	}
-	if configIdx < 0 {
-		return ""
-	}
-	// After `config`, skip flags (--global, --system, --local, --file, --blob,
-	// --get, --set, --unset, --unset-all, --replace-all, --get-all, --get-regexp,
-	// --add, etc.) and the --file/--blob argument, then the key.
-	i := configIdx + 1
-	for i < len(fields) {
-		f := fields[i]
-		if !strings.HasPrefix(f, "-") {
-			break
-		}
-		// --file and --blob take an argument.
-		if f == "--file" || f == "--blob" {
-			i += 2 // skip the flag and its argument
+		if i >= len(fields) {
 			continue
 		}
-		// -f <file> (short form) — but only skip if there's a next field.
-		if f == "-f" {
-			i += 2
-			continue
+		key := strings.ToLower(strings.Trim(fields[i], `"'`))
+		if isSigningKey(key) {
+			return signingGuardError
 		}
-		i++
-	}
-	if i >= len(fields) {
-		return ""
-	}
-	key := strings.Trim(fields[i], `"'`)
-	if isSigningKey(key) {
-		return signingGuardError
 	}
 	return ""
 }
@@ -215,16 +295,15 @@ func checkGitConfigEnv(cmd string) string {
 		// NAME=VALUE form.
 		if idx := strings.IndexByte(f, '='); idx > 0 {
 			name := f[:idx]
-			// GIT_CONFIG_COUNT, GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM,
-			// GIT_CONFIG_NOSYSTEM, GIT_CONFIG_PARAMETERS.
 			for _, v := range signingBypassEnvVars {
 				if name == v {
 					return signingGuardError
 				}
 			}
-			// GIT_CONFIG_KEY_<n> form.
-			if strings.HasPrefix(name, signingBypassEnvKeyPrefix) {
-				return signingGuardError
+			for _, p := range signingBypassEnvKeyPrefixes {
+				if strings.HasPrefix(name, p) {
+					return signingGuardError
+				}
 			}
 		}
 	}

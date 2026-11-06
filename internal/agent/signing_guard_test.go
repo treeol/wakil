@@ -15,6 +15,7 @@ func TestCheckSigningBypass(t *testing.T) {
 		// --no-gpg-sign flag
 		{"no-gpg-sign flag", "git commit --no-gpg-sign -m test", true},
 		{"no-gpg-sign flag standalone", "git --no-gpg-sign commit", true},
+		{"no-gpg-sign with semicolon", "git commit --no-gpg-sign; true", true},
 
 		// git -c with signing keys
 		{"-c commit.gpgsign=false", "git -c commit.gpgsign=false commit -m test", true},
@@ -24,6 +25,11 @@ func TestCheckSigningBypass(t *testing.T) {
 		{"-c user.signingkey=key", "git -c user.signingkey=key::ssh-ed25519 AAAA commit", true},
 		{"-c tag.gpgsign=false", "git -c tag.gpgsign=false tag v1", true},
 		{"-c gpg.ssh.allowedSignersFile", "git -c gpg.ssh.allowedSignersFile=/x commit", true},
+		{"-c case-insensitive", "git -c Commit.GpgSign=false commit", true},
+		{"-c GPG.FORMAT=ssh", "git -c GPG.FORMAT=ssh commit", true},
+
+		// --config-env
+		{"--config-env commit.gpgsign", "git --config-env=commit.gpgsign=MY_VAR commit", true},
 
 		// benign -c (must pass)
 		{"benign -c core.pager=cat", "git -c core.pager=cat log", false},
@@ -37,10 +43,22 @@ func TestCheckSigningBypass(t *testing.T) {
 		{"config --unset commit.gpgsign", "git config --unset commit.gpgsign", true},
 		{"config --unset-all user.signingkey", "git config --unset-all user.signingkey", true},
 		{"config gpg.ssh.allowedSignersFile", "git config gpg.ssh.allowedSignersFile /x", true},
+		{"config case-insensitive", "git config COMMIT.GPGSIGN false", true},
+
+		// git -C . config (flags between git and config with args)
+		{"-C . config commit.gpgsign", "git -C . config commit.gpgsign false", true},
+		{"-c core.pager=cat config commit.gpgsign", "git -c core.pager=cat config commit.gpgsign false", true},
+
+		// multiple config subcommands (second one is a bypass)
+		{"two configs second bypass", "git config user.name Alice; git config commit.gpgsign false", true},
 
 		// benign git config (must pass)
 		{"config user.name", "git config user.name Ada", false},
 		{"config --get core.pager", "git config --get core.pager", false},
+		{"config --get commit.gpgsign", "git config --get commit.gpgsign", false},
+		{"config --get user.signingkey", "git config --get user.signingkey", false},
+		{"config --list", "git config --list", false},
+		{"config --show-origin --show-scope user.signingkey", "git config --show-origin --show-scope user.signingkey", false},
 
 		// GIT_CONFIG_* env vars
 		{"GIT_CONFIG_GLOBAL env", "GIT_CONFIG_GLOBAL=/dev/null git commit -m test", true},
@@ -49,6 +67,7 @@ func TestCheckSigningBypass(t *testing.T) {
 		{"GIT_CONFIG_PARAMETERS env", "GIT_CONFIG_PARAMETERS='commit.gpgsign=false' git commit", true},
 		{"GIT_CONFIG_NOSYSTEM env", "GIT_CONFIG_NOSYSTEM=1 git log", true},
 		{"GIT_CONFIG_KEY_0 env", "GIT_CONFIG_KEY_0=commit.gpgsign git commit", true},
+		{"GIT_CONFIG_VALUE_0 env", "GIT_CONFIG_VALUE_0=false git commit", true},
 
 		// benign commands (must pass)
 		{"plain echo", "echo hello", false},
@@ -56,6 +75,7 @@ func TestCheckSigningBypass(t *testing.T) {
 		{"git status", "git status --porcelain", false},
 		{"make test", "make test", false},
 		{"empty command", "", false},
+		{"echo --no-gpg-sign", "echo --no-gpg-sign", false},
 
 		// joined -c form (no space after -c)
 		{"joined -ccommit.gpgsign=false", "git -ccommit.gpgsign=false commit", true},
@@ -74,6 +94,9 @@ func TestCheckSigningBypass(t *testing.T) {
 			if tt.want && !strings.Contains(got, "signing is enforced") {
 				t.Errorf("checkSigningBypass(%q): refusal message missing 'signing is enforced': %s", tt.cmd, got)
 			}
+			if tt.want && strings.HasPrefix(got, "ERROR:") {
+				t.Errorf("checkSigningBypass(%q): should not start with ERROR: (callers add it): %s", tt.cmd, got)
+			}
 		})
 	}
 }
@@ -91,17 +114,6 @@ func TestSigningEnforcedNotEnforced(t *testing.T) {
 // TestSigningPromptRulePresent: the agent prompt carries the signing-enforcement
 // rule text so the model sees it at runtime (F6, system prompt layer).
 func TestSigningPromptRulePresent(t *testing.T) {
-	// Read prompts/agent.txt — the rule names the enforced keys and
-	// --no-gpg-sign. We check the key phrases are all present.
-	// This test is in the agent package so it can use the test helpers; the
-	// prompt file is loaded at runtime and its content is static.
-	// The rule was added in the Shell section of prompts/agent.txt.
-	// We verify via a runtime read in the test binary that would fail
-	// if the text was removed. Since the prompt is not loaded into the
-	// test binary, we check the file content directly.
-	//
-	// This is a static-file check: it verifies the rule text is present in
-	// the committed prompt file, not that it was loaded at runtime.
 	data, err := os.ReadFile("../../prompts/agent.txt")
 	if err != nil {
 		t.Skipf("could not read prompts/agent.txt: %v", err)

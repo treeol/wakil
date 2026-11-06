@@ -50,7 +50,7 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 	// command that would disable or bypass signing — a signing failure is
 	// reported to the user, not worked around.
 	if msg := a.signingBypassMsg(args.Command); msg != "" {
-		return msg
+		return "ERROR: " + msg
 	}
 	// Read-only commands are auto-approved once the user has allowed reads;
 	// otherwise prompt, offering the "allow all reads" choice for reads.
@@ -1464,6 +1464,11 @@ func (a *App) handleRunBackground(ctx context.Context, tc proxy.ToolCall) string
 	}
 	if args.Command == "" {
 		return "ERROR: command is required"
+	}
+	// F6: signing enforcement guard (same as handleRunShell — a command
+	// rejected there must not reach execution through run_background).
+	if msg := a.signingBypassMsg(args.Command); msg != "" {
+		return "ERROR: " + msg
 	}
 	if args.Label == "" {
 		args.Label = "bg"
