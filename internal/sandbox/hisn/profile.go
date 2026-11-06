@@ -113,13 +113,17 @@ type Surface struct {
 	// Home is the project's home override ("persist" | "tmpfs"); "" means the
 	// global sandbox.hisn.home decides (Options.Home).
 	Home string
+	// Rootfs names a hisn rootfs (store name) or an absolute path. Empty =
+	// the host toolchain. Name form is the project-level value; path form is
+	// global only (the project loader rejects it).
+	Rootfs string
 }
 
 // Empty reports whether the surface asks for nothing.
 func (s Surface) Empty() bool {
 	return len(s.Services) == 0 && len(s.Forward) == 0 && len(s.HostServices) == 0 &&
 		len(s.EnvSet) == 0 && len(s.MountsRO) == 0 && len(s.MountsRW) == 0 &&
-		len(s.Mask) == 0 && s.Profile == "" && s.Home == ""
+		len(s.Mask) == 0 && s.Profile == "" && s.Home == "" && s.Rootfs == ""
 }
 
 // needs03 names the requested features that exist only in hisn >= 0.3.1.
@@ -136,6 +140,9 @@ func (s Surface) needs03() []string {
 	}
 	if len(s.HostServices) > 0 {
 		f = append(f, "hisn.host_services")
+	}
+	if s.Rootfs != "" {
+		f = append(f, "hisn.rootfs")
 	}
 	return f
 }
@@ -163,6 +170,14 @@ func (s Surface) Normalize(cwd string) (Surface, error) {
 		}
 		if len(out.Services)+len(out.Forward)+len(out.HostServices)+len(out.EnvSet) > 0 || len(out.Mask) > 0 {
 			return out, fmt.Errorf("hisn.profile %q is used as is: Wakil only adds grants (hisn.mounts_ro/hisn.mounts_rw); remove hisn.services, hisn.forward, hisn.host_services and hisn.env_set", out.Profile)
+		}
+		// A named profile is never generated, so Wakil's [rootfs]/[home]/[ssh]
+		// fragments cannot be added to it. Refuse, never drop silently.
+		if out.Rootfs != "" {
+			return out, fmt.Errorf("hisn.rootfs cannot be combined with hisn.profile %q: a named profile is used as is and cannot carry the rootfs; remove one of them", out.Profile)
+		}
+		if out.Home != "" && out.Home != HomePersist {
+			return out, fmt.Errorf("sandbox.hisn.home %q cannot be combined with hisn.profile %q: a named profile is used as is; remove one of them", out.Home, out.Profile)
 		}
 	}
 	seen := map[string]bool{}
@@ -258,6 +273,48 @@ type profileFile struct {
 	Forward      []forwardTOML     `toml:"forward,omitempty"`
 	HostServices []hostServiceTOML `toml:"host_services,omitempty"`
 	Home         *homeTOML         `toml:"home,omitempty"`
+	Rootfs       *rootfsTOML       `toml:"rootfs,omitempty"`
+}
+
+// rootfsTOML is hisn 0.3.2's [rootfs] table: exactly one of name (a store
+// rootfs) or path (an absolute directory). Never emitted empty.
+type rootfsTOML struct {
+	Name string `toml:"name,omitempty"`
+	Path string `toml:"path,omitempty"`
+}
+
+// rootfsFor returns the [rootfs] table for a Rootfs value, or nil when unset.
+// A path value must be absolute; the caller validates the form.
+func rootfsFor(r string) *rootfsTOML {
+	switch {
+	case r == "":
+		return nil
+	case filepath.IsAbs(r):
+		return &rootfsTOML{Path: filepath.Clean(r)}
+	default:
+		return &rootfsTOML{Name: r}
+	}
+}
+
+// rootfsNameRe is the store-name form accepted for a rootfs.
+var rootfsNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// ValidateRootfs checks a rootfs value: "" | a store name | an absolute path.
+// allowPath is false for the project file (path form is global only).
+func ValidateRootfs(r string, allowPath bool) error {
+	switch {
+	case r == "":
+		return nil
+	case filepath.IsAbs(r):
+		if !allowPath {
+			return errors.New("the rootfs path form is global only (sandbox.hisn.rootfs); the project file takes a store name")
+		}
+		return nil
+	case rootfsNameRe.MatchString(r):
+		return nil
+	default:
+		return fmt.Errorf("rootfs %q: want a store name ([A-Za-z0-9._-]{1,64}) or an absolute path", r)
+	}
 }
 
 // homeTOML is hisn 0.3.2's [home] table: the host directory bind-mounted rw as
@@ -332,6 +389,7 @@ func profileFor(pol policyFile, s Surface, homePersist string) profileFile {
 	if homePersist != "" {
 		pf.Home = &homeTOML{Persist: homePersist}
 	}
+	pf.Rootfs = rootfsFor(s.Rootfs)
 	for _, v := range s.Services {
 		t := serviceTOML{Name: v.Name, Exec: v.Exec, Socket: v.Socket,
 			Ready: readyFor(v.ReadySocket, v.ReadyTimeout), Stop: stopFor(v.StopSignal, v.StopGrace), Restart: "none"}

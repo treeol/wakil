@@ -1095,6 +1095,11 @@ type HisnConfig struct {
 	// tmpfs $HOME per session; needs hisn >= 0.3.2). Project override:
 	// .wakil/sandbox.json "hisn": {"home": "tmpfs"}.
 	Home string `json:"home,omitempty"`
+	// Rootfs selects the session root filesystem (hisn >= 0.3.2): a rootfs
+	// store name (e.g. "wakil-dev", imported with `hisn rootfs import`) or an
+	// absolute directory. Empty = the host toolchain. Project override:
+	// .wakil/sandbox.json "hisn": {"rootfs": "<name>"} (name only).
+	Rootfs string `json:"rootfs,omitempty"`
 	// GrantableRW lists absolute host prefixes under which read-write grants
 	// outside the workspace are allowed (Landlock cannot widen later).
 	GrantableRW []string `json:"grantable_rw,omitempty"`
@@ -2405,6 +2410,22 @@ func resolveBackend(cfg *Config) (warning string, err error) {
 
 // validateSandboxConfig validates sandbox.backend and sandbox.hisn.*. An
 // unknown backend is an error: there is no implicit fallback to docker.
+// validateHisnRootfs checks sandbox.hisn.rootfs: "" | a store name | an
+// absolute path (global config accepts both forms).
+func validateHisnRootfs(r string) error {
+	switch {
+	case r == "", filepath.IsAbs(r):
+		return nil
+	case rootfsStoreName.MatchString(r):
+		return nil
+	default:
+		return fmt.Errorf("sandbox.hisn.rootfs %q: want a store name ([A-Za-z0-9._-]{1,64}) or an absolute path", r)
+	}
+}
+
+// rootfsStoreName is the hisn rootfs store-name form.
+var rootfsStoreName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
 func validateSandboxConfig(cfg *Config) error {
 	sb := &cfg.Sandbox
 	if sb.Backend == "" {
@@ -2433,6 +2454,9 @@ func validateSandboxConfig(cfg *Config) error {
 	}
 	if h.HomeRoot != "" && !filepath.IsAbs(h.HomeRoot) {
 		return fmt.Errorf("sandbox.hisn.home_root %q must be an absolute path", h.HomeRoot)
+	}
+	if err := validateHisnRootfs(h.Rootfs); err != nil {
+		return err
 	}
 	for i, g := range h.GrantableRW {
 		if !filepath.IsAbs(g) || filepath.Clean(g) == "/" {

@@ -47,6 +47,9 @@ type HisnSection struct {
 	// Home overrides sandbox.hisn.home for this project ("persist" | "tmpfs").
 	// Name only: the persistent path is never set per project.
 	Home string `json:"home,omitempty"`
+	// Rootfs names a hisn rootfs for this project (store name only; the
+	// absolute path form is global-only, sandbox.hisn.rootfs).
+	Rootfs string `json:"rootfs,omitempty"`
 	// Profile names a hisn profile (built-in or $HISN_PROFILES) used instead
 	// of generation; Wakil then only adds grants.
 	Profile string `json:"profile,omitempty"`
@@ -95,7 +98,7 @@ func Load(cwd string) (Loaded, error) {
 	l.Surface = hisn.Surface{
 		Services: h.Services, Forward: h.Forward, HostServices: h.HostServices,
 		EnvSet: h.EnvSet, MountsRO: h.MountsRO, MountsRW: h.MountsRW,
-		RiskAck: h.RiskAck, Profile: h.Profile, Home: h.Home,
+		RiskAck: h.RiskAck, Profile: h.Profile, Home: h.Home, Rootfs: h.Rootfs,
 	}
 	return l, nil
 }
@@ -114,6 +117,9 @@ func Parse(raw []byte) (File, error) {
 	}
 	if f.Hisn.Home != "" && f.Hisn.Home != "persist" && f.Hisn.Home != "tmpfs" {
 		return f, fmt.Errorf("hisn.home %q: want \"persist\" or \"tmpfs\"", f.Hisn.Home)
+	}
+	if err := hisn.ValidateRootfs(f.Hisn.Rootfs, false); err != nil {
+		return f, fmt.Errorf("hisn.rootfs: %w", err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return f, errors.New("invalid JSON: unexpected data after the document")

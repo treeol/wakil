@@ -131,3 +131,19 @@ func TestApprovalLifecycle(t *testing.T) {
 		t.Error("the error must point at the user-run command")
 	}
 }
+
+// TestRootfsProjectNameOnly: the project file takes a rootfs store name only;
+// the absolute path form is global-only and is refused by the loader.
+func TestRootfsProjectNameOnly(t *testing.T) {
+	if _, err := Parse([]byte(`{"hisn":{"rootfs":"wakil-dev"}}`)); err != nil {
+		t.Fatalf("store name must parse: %v", err)
+	}
+	_, err := Parse([]byte(`{"hisn":{"rootfs":"/srv/rootfs"}}`))
+	if err == nil || !strings.Contains(err.Error(), "global only") {
+		t.Fatalf("path form must be refused in the project file, got %v", err)
+	}
+	_, err = Parse([]byte(`{"hisn":{"rootfs":"bad name!"}}`))
+	if err == nil || !strings.Contains(err.Error(), "hisn.rootfs") {
+		t.Fatalf("invalid name must be refused, got %v", err)
+	}
+}

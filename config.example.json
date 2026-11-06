@@ -38,6 +38,8 @@
     "hisn": {
       "binary": "hisn",
       "home_root": "",
+      "home": "persist",
+      "rootfs": "",
       "grantable_rw": [],
       "env_pass": ["GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTFLAGS", "npm_config_cache", "PIP_CACHE_DIR", "CI"],
       "tmp_size_mb": 1024,

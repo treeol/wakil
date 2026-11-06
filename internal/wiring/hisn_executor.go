@@ -17,6 +17,16 @@ import (
 // newHisnExecutor builds the executor for sandbox.backend "hisn". Every
 // failure is returned: there is no fallback to docker and never an unsandboxed
 // executor. The session itself starts lazily, once a chat is bound.
+// rootfsFor returns the session rootfs: the project's store name wins over
+// sandbox.hisn.rootfs; "" = host toolchain. Only the global config may name a
+// path (the loader rejects it in the project file).
+func rootfsFor(global string, s hisn.Surface) string {
+	if s.Rootfs != "" {
+		return s.Rootfs
+	}
+	return global
+}
+
 func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 	// Defence in depth for hand-built configs (LoadConfig already resolves
 	// the backend and forces browser_enabled off under hisn).
@@ -53,6 +63,7 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		StateDir:    filepath.Join(state, "hisn"),
 		HomeRoot:    home,
 		Home:        h.Home,
+		Rootfs:      rootfsFor(h.Rootfs, surface),
 		HostCwd:     cfg.HostWorkDir,
 		GrantableRW: h.GrantableRW,
 		EnvPass:     h.EnvPass,

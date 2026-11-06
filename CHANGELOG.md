@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **hisn rootfs (P2).** `sandbox.hisn.rootfs` (store name or absolute path) and the project override `"hisn": {"rootfs": "<name>"}` (name only) select the session root filesystem; the generated profile carries `[rootfs]`. Needs hisn >= 0.3.2. A missing store rootfs fails at session start with the `hisn rootfs import` fix. Not combinable with `hisn.profile`.
 - **Legacy shared store is readable (C2).** The pre-0.5.0 shared memory store is opened
   read-only (`mode=ro`) and read after the project store: `memory_get` and `memory_search`
   fall through to it and mark results `[legacy]`. Sessions recorded under the old shared path

@@ -292,7 +292,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 		return launch{}, fmt.Errorf("writing hisn profile: %w", err)
 	}
 	if out, err := b.output(vctx, false, "profile", "validate", b.profilePath(rec.ID)); err != nil {
-		return launch{}, validateError(err, out)
+		return launch{}, rootfsError(validateError(err, out), s.Rootfs)
 	}
 	return launch{args: profileArgs(rec.ID, b.profilePath(rec.ID), rec.Cwd), dir: b.procCwd(), mode: "profile"}, nil
 }
@@ -305,6 +305,21 @@ func validateError(err error, out string) error {
 		return &RiskAckError{Detail: strings.TrimSpace(msg[i:])}
 	}
 	return fmt.Errorf("hisn profile validate failed: %w: %s", err, msg)
+}
+
+// rootfsError maps hisn's missing-rootfs failure to the actionable fix from
+// the plan. Other errors pass through unchanged.
+func rootfsError(err error, rootfs string) error {
+	if rootfs == "" || err == nil {
+		return err
+	}
+	if strings.Contains(err.Error(), "rootfs.path") && strings.Contains(err.Error(), "No such file") {
+		if filepath.IsAbs(rootfs) {
+			return fmt.Errorf("rootfs %q is not a directory: %w", rootfs, err)
+		}
+		return fmt.Errorf("rootfs %q is not in the hisn store; fix: hisn rootfs import %s --from-image %s: %w", rootfs, rootfs, rootfs, err)
+	}
+	return err
 }
 
 // RiskAckError means the profile needs a risk acknowledgement the project file

@@ -37,6 +37,7 @@ type Options struct {
 	StateDir    string   // owner records, policies, lock (required)
 	HomeRoot    string   // persistent sandbox $HOME on the host (required)
 	Home        string   // sandbox.hisn.home: "persist" (default) | "tmpfs"
+	Rootfs      string   // sandbox.hisn.rootfs (store name or abs path); "" = host toolchain
 	HostCwd     string   // absolute, symlink-free workspace (required)
 	GrantableRW []string // prefixes allowed for rw grants
 	EnvPass     []string // names passed into the sandbox
@@ -200,6 +201,14 @@ func New(opts Options) (*Backend, error) {
 	opts.HostCwd = filepath.Clean(opts.HostCwd)
 	surf, err := opts.Surface.Normalize(opts.HostCwd)
 	if err != nil {
+		return nil, fmt.Errorf("hisn backend: %w", err)
+	}
+	// The global sandbox.hisn.rootfs applies unless the project names one
+	// (its name form was checked by the loader). Path form is global-only.
+	if surf.Rootfs == "" {
+		surf.Rootfs = opts.Rootfs
+	}
+	if err := ValidateRootfs(surf.Rootfs, true); err != nil {
 		return nil, fmt.Errorf("hisn backend: %w", err)
 	}
 	opts.Surface = surf

@@ -60,6 +60,12 @@ func (b *Backend) Preflight(ctx context.Context) error {
 	if f := b.opts.Surface.needs03(); len(f) > 0 && !b.profileMode() {
 		return fmt.Errorf("sandbox backend hisn: %w", featureError(f, got))
 	}
+	if b.opts.Surface.Rootfs != "" {
+		want032, _ := ParseVersion(ProfileHomeMinVersion)
+		if !VersionAtLeast(got, want032) {
+			return fmt.Errorf("sandbox backend hisn: sandbox.hisn.rootfs needs hisn >= %s (found %d.%d.%d): upgrade hisn or unset rootfs", ProfileHomeMinVersion, got[0], got[1], got[2])
+		}
+	}
 	if out, err := b.output(ctx, false, "check"); err != nil {
 		return fmt.Errorf("sandbox backend hisn: `hisn check` failed — this host cannot run hisn sessions:\n%s", tailLines(out, 12))
 	}

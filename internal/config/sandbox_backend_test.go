@@ -108,6 +108,8 @@ func TestSandboxHisnRejections(t *testing.T) {
 		{"env PATH", `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["PATH"]}}}`, "not allowed", nil},
 		{"env bad name", `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["A=B"]}}}`, "invalid name", nil},
 		{"env dup", `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["CI","CI"]}}}`, "duplicate", nil},
+		{"rootfs bad form", `{"sandbox":{"backend":"hisn","hisn":{"rootfs":"has space"}}}`, "sandbox.hisn.rootfs", nil},
+		{"rootfs relative path", `{"sandbox":{"backend":"hisn","hisn":{"rootfs":"rel/dir"}}}`, "sandbox.hisn.rootfs", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{}, tc.args...)
