@@ -54,7 +54,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "config error:", err)
 			os.Exit(ExitError)
 		}
-		cfg = wiring.ResolveSandbox(context.Background(), cfg)
+		cfg, err = wiring.ResolveSandbox(context.Background(), cfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "startup error:", err)
+			os.Exit(ExitError)
+		}
 		fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 		os.Exit(RunHeadless(cfg, os.Args[2:]))
 	}
@@ -120,8 +124,13 @@ func main() {
 	fmt.Fprintf(os.Stderr, "ctx limits: compactAt=%d hardMax=%d keep=%d summary=%d\n",
 		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
 	// Settle the backend (the default may flip to hisn) BEFORE anything else
-	// reads it, and state it with its reason.
-	cfg = wiring.ResolveSandbox(context.Background(), cfg)
+	// reads it, and state it with its reason. A broken or unapproved
+	// .wakil/sandbox.json is a startup error — no fallback, no session.
+	cfg, rerr := wiring.ResolveSandbox(context.Background(), cfg)
+	if rerr != nil {
+		fmt.Fprintln(os.Stderr, "startup error:", rerr)
+		os.Exit(ExitError)
+	}
 	fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 	// D4 (0.5.0): once per project, point at the read-only legacy store and the
 	// migrate command. Then the WAKIL_WORKSPACE_PATH line (warning only, since

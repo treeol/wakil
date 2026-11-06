@@ -225,7 +225,10 @@ func execDaemon(flags daemonFlags) error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	cfg = wiring.ResolveSandbox(context.Background(), cfg)
+	cfg, err = wiring.ResolveSandbox(context.Background(), cfg)
+	if err != nil {
+		return fmt.Errorf("startup: %w", err)
+	}
 	fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 
 	wsID := wiring.WorkspaceIDFromConfig(cfg)

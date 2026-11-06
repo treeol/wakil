@@ -25,24 +25,29 @@ func defaultedCfg(t *testing.T, ws string) config.Config {
 	return cfg
 }
 
-var (
-	hisnOK  = func() config.HisnAvailability { return config.HisnAvailability{Version: "0.3.1"} }
-	hisnOld = func() config.HisnAvailability {
-		return config.HisnAvailability{Version: "0.2.2", Reason: "hisn 0.2.2 is older than 0.3.1"}
-	}
-	hisnMissing = func() config.HisnAvailability { return config.HisnAvailability{Reason: "hisn not found in PATH"} }
-)
-
 func TestResolveSandboxFlipsOnlyWhenAllHold(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	ws := t.TempDir()
 	cfg := defaultedCfg(t, ws)
 
-	if got := resolveSandbox(cfg, hisnOK); got.Sandbox.Backend != config.SandboxBackendHisn {
-		t.Fatalf("hisn 0.3.1 + check ok + nothing explicit must flip, got %q (%s)", got.Sandbox.Backend, got.StartupBanner())
+	got, err := resolveSandbox(cfg, func() (config.HisnAvailability, error) {
+		return config.HisnAvailability{Version: "0.3.1"}, nil
+	})
+	if err != nil || got.Sandbox.Backend != config.SandboxBackendHisn {
+		t.Fatalf("hisn 0.3.1 + check ok + nothing explicit must flip, got %q err=%v (%s)", got.Sandbox.Backend, err, got.StartupBanner())
 	}
-	for name, probe := range map[string]func() config.HisnAvailability{"too old": hisnOld, "missing": hisnMissing} {
-		got := resolveSandbox(cfg, probe)
+	for name, probe := range map[string]func() (config.HisnAvailability, error){
+		"too old": func() (config.HisnAvailability, error) {
+			return config.HisnAvailability{Version: "0.2.2", Reason: "hisn 0.2.2 is older than 0.3.1"}, nil
+		},
+		"missing": func() (config.HisnAvailability, error) {
+			return config.HisnAvailability{Reason: "hisn not found in PATH"}, nil
+		},
+	} {
+		got, err := resolveSandbox(cfg, probe)
+		if err != nil {
+			t.Fatalf("%s: must not error on a hisn-availability reason: %v", name, err)
+		}
 		if got.Sandbox.Backend != config.SandboxBackendDocker {
 			t.Errorf("%s: must stay docker", name)
 		}
@@ -61,15 +66,20 @@ func TestResolveSandboxNeverProbesWhenExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	probed := false
-	got := resolveSandbox(cfg, func() config.HisnAvailability { probed = true; return config.HisnAvailability{Version: "0.3.1"} })
-	if probed || got.Sandbox.Backend != config.SandboxBackendDocker || got.Sandbox.DefaultNote != "" {
-		t.Errorf("an explicit backend is never second-guessed (probed=%v backend=%q note=%q)", probed, got.Sandbox.Backend, got.Sandbox.DefaultNote)
+	got, err := resolveSandbox(cfg, func() (config.HisnAvailability, error) {
+		probed = true
+		return config.HisnAvailability{Version: "0.3.1"}, nil
+	})
+	if err != nil || probed || got.Sandbox.Backend != config.SandboxBackendDocker || got.Sandbox.DefaultNote != "" {
+		t.Errorf("an explicit backend is never second-guessed (probed=%v backend=%q note=%q err=%v)", probed, got.Sandbox.Backend, got.Sandbox.DefaultNote, err)
 	}
 }
 
-// An unapproved .wakil/sandbox.json must not turn a working docker setup into
-// a hard error through the default alone: stay docker, say why.
-func TestResolveSandboxUnapprovedProjectFileKeepsDocker(t *testing.T) {
+// An unapproved .wakil/sandbox.json is a startup error: the config is returned
+// unchanged (no backend fallback, no browser) and the error names the file and
+// `wakil sandbox trust`. The chosen backend never differs from the global
+// default on the error path.
+func TestResolveSandboxUnapprovedProjectFileIsStartupError(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	ws, _ := filepath.EvalSymlinks(t.TempDir())
 	if err := os.MkdirAll(filepath.Join(ws, ".wakil"), 0o755); err != nil {
@@ -79,39 +89,75 @@ func TestResolveSandboxUnapprovedProjectFileKeepsDocker(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := defaultedCfg(t, ws)
-	got := resolveSandbox(cfg, hisnOK)
-	if got.Sandbox.Backend != config.SandboxBackendDocker || !strings.Contains(got.StartupBanner(), "not approved") {
-		t.Errorf("unapproved file: %q", got.StartupBanner())
+
+	// unapproved file → startup error, backend unchanged (docker default).
+	got, err := resolveSandbox(cfg, func() (config.HisnAvailability, error) {
+		return config.HisnAvailability{Version: "0.3.1"}, nil
+	})
+	if err == nil {
+		t.Fatalf("unapproved file: must be a startup error, got backend=%q (%s)", got.Sandbox.Backend, got.StartupBanner())
 	}
+	if got.Sandbox.Backend != config.SandboxBackendDocker {
+		t.Errorf("unapproved file: backend must stay docker on the error path, got %q", got.Sandbox.Backend)
+	}
+	if !strings.Contains(err.Error(), "approved") || !strings.Contains(err.Error(), "wakil sandbox trust") {
+		t.Errorf("unapproved file: error must name `approved` and `wakil sandbox trust`: %q", err)
+	}
+
 	// Once the user approves it, the default flips.
 	if err := SandboxTrust(nopWriter{}, ws, tty("yes\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got := resolveSandbox(cfg, hisnOK); got.Sandbox.Backend != config.SandboxBackendHisn {
-		t.Errorf("approved file: %q", got.StartupBanner())
+	got, err = resolveSandbox(cfg, func() (config.HisnAvailability, error) {
+		return config.HisnAvailability{Version: "0.3.1"}, nil
+	})
+	if err != nil || got.Sandbox.Backend != config.SandboxBackendHisn {
+		t.Errorf("approved file: %q err=%v", got.StartupBanner(), err)
 	}
 }
 
-// A malformed project file also keeps docker rather than aborting the start.
-func TestResolveSandboxBrokenProjectFileKeepsDocker(t *testing.T) {
+// A malformed .wakil/sandbox.json is also a startup error (never a docker
+// fallback). The backend stays unchanged from the global default.
+func TestResolveSandboxBrokenProjectFileIsStartupError(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	ws, _ := filepath.EvalSymlinks(t.TempDir())
 	_ = os.MkdirAll(filepath.Join(ws, ".wakil"), 0o755)
 	_ = os.WriteFile(filepath.Join(ws, ".wakil", "sandbox.json"), []byte(`{"nope":1}`), 0o644)
-	got := resolveSandbox(defaultedCfg(t, ws), hisnOK)
-	if got.Sandbox.Backend != config.SandboxBackendDocker || !strings.Contains(got.StartupBanner(), "sandbox.json") {
-		t.Errorf("banner: %q", got.StartupBanner())
+	cfg := defaultedCfg(t, ws)
+
+	// broken file + global default docker → startup error, backend docker.
+	got, err := resolveSandbox(cfg, func() (config.HisnAvailability, error) {
+		return config.HisnAvailability{Version: "0.3.1"}, nil
+	})
+	if err == nil {
+		t.Fatalf("broken file: must be a startup error, got %q (%s)", got.Sandbox.Backend, got.StartupBanner())
+	}
+	if got.Sandbox.Backend != config.SandboxBackendDocker {
+		t.Errorf("broken file: backend must stay docker on the error path, got %q", got.Sandbox.Backend)
+	}
+	if !strings.Contains(err.Error(), "sandbox.json") {
+		t.Errorf("broken file: error must name sandbox.json: %q", err)
 	}
 }
 
 // A workspace that contains Wakil's state directory (e.g. $HOME) would get its
-// generated profile refused by hisn: stay docker.
+// generated profile refused by hisn: that is a startup error, not a docker
+// fallback.
 func TestResolveSandboxWorkspaceContainingStateDir(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	got := resolveSandbox(defaultedCfg(t, home), hisnOK)
-	if got.Sandbox.Backend != config.SandboxBackendDocker || !strings.Contains(got.StartupBanner(), "state directory") {
-		t.Errorf("banner: %q", got.StartupBanner())
+	cfg := defaultedCfg(t, home)
+	got, err := resolveSandbox(cfg, func() (config.HisnAvailability, error) {
+		return config.HisnAvailability{Version: "0.3.1"}, nil
+	})
+	if err == nil {
+		t.Fatalf("workspace containing state dir: must be a startup error, got %q (%s)", got.Sandbox.Backend, got.StartupBanner())
+	}
+	if got.Sandbox.Backend != config.SandboxBackendDocker {
+		t.Errorf("backend must stay docker on the error path, got %q", got.Sandbox.Backend)
+	}
+	if !strings.Contains(err.Error(), "state directory") {
+		t.Errorf("error must name the state directory: %q", err)
 	}
 }
 
