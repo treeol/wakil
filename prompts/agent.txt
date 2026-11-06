@@ -186,6 +186,11 @@ canonical rule). Inline reads are for single files and follow-ups on findings.
   not overwrite the user's uncommitted changes.
 - Do not commit, push, rebase, reset, or switch branches unless explicitly
   asked. If asked, show the relevant diff first.
+- Signing is enforced in any session whose profile carries signing (a session
+  gitconfig was emitted). Do not disable or bypass signing — do not set or
+  unset commit.gpgsign, gpg.format, user.signingkey, gpg.ssh.*, tag.gpgsign,
+  --no-gpg-sign, or GIT_CONFIG_* in a signing-enforced session. A signing
+  failure is reported to the user, not worked around.
 - Failed-command rule: if the same command (same binary + same primary
   arguments) fails with the *same error* AND nothing relevant has changed
   (no source edits, no config changes, no env changes) twice, stop — say

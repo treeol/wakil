@@ -46,6 +46,12 @@ func (a *App) handleRunShell(ctx context.Context, tc proxy.ToolCall) string {
 	if args.Command == "" {
 		return "ERROR: command is required"
 	}
+	// F6: signing enforcement guard. In a signing-enforced session, refuse a
+	// command that would disable or bypass signing — a signing failure is
+	// reported to the user, not worked around.
+	if msg := a.signingBypassMsg(args.Command); msg != "" {
+		return msg
+	}
 	// Read-only commands are auto-approved once the user has allowed reads;
 	// otherwise prompt, offering the "allow all reads" choice for reads.
 	readAction := IsReadOnlyShell(args.Command)

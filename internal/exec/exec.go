@@ -185,6 +185,15 @@ type SandboxTmpReader interface {
 	SandboxTmpReadable() bool
 }
 
+// SigningEnforcer is an optional capability of executors whose session
+// carries a signing gitconfig (SSH commit signing). When SigningEnforced()
+// returns true, the agent's shell and git tool paths refuse commands that
+// would disable or bypass signing — a signing failure is reported to the
+// user, not worked around (F6).
+type SigningEnforcer interface {
+	SigningEnforced() bool
+}
+
 // runFromRoot starts a shell command from root (the workspace root).
 // In-command directory changes work normally but are not tracked between calls.
 // A trailing newline after the command body prevents a trailing # comment from
@@ -1360,6 +1369,11 @@ func (d *DockerExecutor) Generation() int       { return d.generation }
 func (d *DockerExecutor) KVRSocketPath() string { return d.kvrSocket }
 func (d *DockerExecutor) KVRAvailable() bool    { return d.kvrAvailable }
 func (d *DockerExecutor) ContainerName() string { return d.container }
+
+// SigningEnforced reports whether the docker executor carries SSH signing
+// (F6). When true, the agent's shell and git tool paths refuse commands that
+// would disable or bypass signing.
+func (d *DockerExecutor) SigningEnforced() bool { return d.signing }
 
 // stopTimeout returns the per-command teardown deadline in seconds (H5).
 // Enforces a minimum of 15s — the docker stop -t 10 grace period needs the

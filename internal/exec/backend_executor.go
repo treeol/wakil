@@ -25,6 +25,10 @@ type BackendOptions struct {
 	GrantableRW []string
 	// ShellOutputCap bounds RunShell's retained output; <= 0 = default.
 	ShellOutputCap int64
+	// SigningEnforced reports whether the session carries a signing gitconfig
+	// (SSH commit signing). When true, the agent's shell and git tool paths
+	// refuse commands that would disable or bypass signing (F6).
+	SigningEnforced bool
 }
 
 // shared is the state common to a BackendExecutor and its worktree children.
@@ -372,6 +376,11 @@ func (e *BackendExecutor) RunShell(ctx context.Context, command string) (string,
 
 // ShellOutputCap returns the configured cap (0 = default).
 func (e *BackendExecutor) ShellOutputCap() int64 { return e.opts.ShellOutputCap }
+
+// SigningEnforced reports whether the session carries a signing gitconfig
+// (F6). When true, the agent's shell and git tool paths refuse commands that
+// would disable or bypass signing.
+func (e *BackendExecutor) SigningEnforced() bool { return e.opts.SigningEnforced }
 
 // ReadFile implements Executor.
 func (e *BackendExecutor) ReadFile(ctx context.Context, path string) (string, error) {

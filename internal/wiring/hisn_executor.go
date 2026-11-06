@@ -84,8 +84,9 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		return nil, err
 	}
 	return exec.NewBackendExecutor(b, exec.BackendOptions{
-		Label:       "hisn",
-		GrantableRW: h.GrantableRW,
+		Label:           "hisn",
+		GrantableRW:     h.GrantableRW,
+		SigningEnforced: signingKey != "",
 	}), nil
 }
 

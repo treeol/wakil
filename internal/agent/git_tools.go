@@ -98,6 +98,10 @@ func classifyGitError(out string, err error) string {
 // is the reliable failure signal — success output is never content-matched.
 func (a *App) gitRun(ctx context.Context, cmd string) (string, error) {
 	full := gitBaseEnv() + "git " + cmd
+	// F6: signing enforcement guard.
+	if msg := a.signingBypassMsg(full); msg != "" {
+		return "", fmt.Errorf("%s", msg)
+	}
 	out, err := a.Exec.RunShell(ctx, full)
 	if err != nil {
 		return "", fmt.Errorf("%s", classifyGitError(out, err))
@@ -304,6 +308,10 @@ func (a *App) gitRunCapped(ctx context.Context, cmd, label string, capBytes int)
 	full := gitBaseEnv() + fmt.Sprintf(
 		`tmp=$(mktemp) && git %s > "$tmp" 2>&1; rc=$?; head -c %d "$tmp"; rm -f "$tmp"; exit $rc`,
 		cmd, capBytes+1)
+	// F6: signing enforcement guard.
+	if msg := a.signingBypassMsg(full); msg != "" {
+		return msg
+	}
 	out, err := a.Exec.RunShell(ctx, full)
 	if err != nil {
 		// git failed; out holds git's stderr (trimmed to cap+1 bytes). Classify
