@@ -32,12 +32,17 @@ func TestRenderGitConfigSigningOffHasNoGPG(t *testing.T) {
 
 func TestRenderGitConfigSigning(t *testing.T) {
 	out, err := renderGitConfig(GitIdentity{Name: "A", Email: "a@x.test"},
-		GitSigning{Key: testPubKey, AllowedSigner: "/home/x/.wakil-allowed-signers"})
+		GitSigning{Key: testPubKey, AllowedSigner: SandboxHome + "/.wakil-allowed-signers"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(out)
-	for _, want := range []string{`signingkey = "key::ssh-ed25519 `, "format = ssh", `allowedSignersFile = "/home/x/.wakil-allowed-signers"`, "gpgsign = true"} {
+	for _, want := range []string{
+		`signingkey = "key::ssh-ed25519 `,
+		"format = ssh",
+		`allowedSignersFile = "` + SandboxHome + `/.wakil-allowed-signers"`,
+		"gpgsign = true",
+	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("want %q:\n%s", want, s)
 		}
@@ -94,6 +99,19 @@ func TestWriteSessionGitConfigModes(t *testing.T) {
 	signers, err := os.ReadFile(filepath.Join(home, ".wakil-allowed-signers"))
 	if err != nil || !strings.HasPrefix(string(signers), "a@x.test ssh-ed25519 ") {
 		t.Fatalf("allowed signers: %q %v", signers, err)
+	}
+	// F8: the allowedSignersFile value in the gitconfig must use the in-session
+	// path (SandboxHome), not the host HomeRoot — hisn remounts the persist dir
+	// at SandboxHome, so the host path does not exist inside the sandbox.
+	gc, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gc), `"`+SandboxHome+`/.wakil-allowed-signers"`) {
+		t.Errorf("allowedSignersFile in gitconfig does not use the in-session path:\n%s", gc)
+	}
+	if strings.Contains(string(gc), `"`+home) {
+		t.Errorf("allowedSignersFile in gitconfig uses the host HomeRoot path:\n%s", gc)
 	}
 }
 

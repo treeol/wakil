@@ -194,20 +194,29 @@ func checkGitDashC(cmd string) string {
 	return ""
 }
 
-// gitConfigReadOnlyFlags are `git config` flags that read config without
+// gitConfigReadOnlyActions are `git config` flags that read config without
 // modifying it. When any of these is present (and no write form is), the
 // invocation is a read and allowed even if it names a signing key.
-var gitConfigReadOnlyFlags = map[string]bool{
+// --show-origin, --show-scope, --name-only, --null, --type, --default are
+// output modifiers, NOT read actions — they do not make a write into a read.
+var gitConfigReadOnlyActions = map[string]bool{
 	"--get":          true,
 	"--get-all":      true,
 	"--get-regexp":   true,
 	"--get-urlmatch": true,
 	"--list":         true,
 	"-l":             true,
-	"--show-origin":  true,
-	"--show-scope":   true,
-	"--name-only":    true,
-	"--null":         true,
+}
+
+// gitConfigOutputModifiers are flags that modify output format but do not
+// change a write into a read. They are neutral: neither set hasRead nor
+// hasWrite. Present alongside a read action → read; alongside a write → write.
+var gitConfigOutputModifiers = map[string]bool{
+	"--show-origin": true,
+	"--show-scope":  true,
+	"--name-only":   true,
+	"--null":        true,
+	"-z":            true,
 }
 
 // isSigningSection reports whether section is the section part of any
@@ -236,10 +245,10 @@ var gitConfigWriteFlags = map[string]bool{
 	"--unset":          true,
 	"--unset-all":      true,
 	"--replace-all":    true,
-	"--rename-section":  true,
-	"--remove-section":  true,
-	"--edit":            true,
-	"-e":                true,
+	"--rename-section": true,
+	"--remove-section": true,
+	"--edit":           true,
+	"-e":               true,
 }
 
 // gitConfigSectionFlags take a section name (not a key) as their argument.
@@ -248,15 +257,43 @@ var gitConfigSectionFlags = map[string]bool{
 	"--rename-section": true,
 }
 
+// gitConfigArgTakingFlags take the next token as an argument (skipped in the
+// key scan). Both the space form (`-f X`) and the joined form (`-f=X`,
+// `--file=X`) are handled.
+var gitConfigArgTakingFlags = map[string]bool{
+	"--file":      true,
+	"--blob":      true,
+	"-f":          true,
+	"-C":          true,
+	"-c":          true,
+	"--git-dir":   true,
+	"--work-tree": true,
+}
+
+// gitConfigArgTakingLongFlags are arg-taking flags whose value may be joined
+// with `=` (e.g., `--file=/path`). Checked by prefix.
+var gitConfigArgTakingLongFlagPrefixes = []string{
+	"--file=",
+	"--blob=",
+	"--git-dir=",
+	"--work-tree=",
+}
+
 // checkGitConfigSub detects `git config <key> <value>` where key is a signing
 // key. It handles --global, --system, --local, --file, --blob, -C, -c (with
 // their arguments) and the bare `git config <key> <value>` form.
 //
 // F7: a git config invocation is a read, and allowed, when it contains any
-// read flag (--get, --get-all, --get-regexp, --list, -l, --show-origin,
-// --show-scope, --get-urlmatch) and no write form (--add, --unset,
-// --unset-all, --replace-all, --rename-section, --remove-section, --edit, -e,
-// or a bare key value pair). A write on a signing key is refused.
+// read action (--get, --get-all, --get-regexp, --list, -l, --get-urlmatch)
+// and no write form (--add, --unset, --unset-all, --replace-all,
+// --rename-section, --remove-section, --edit, -e, or a bare key value pair).
+// Output modifiers (--show-origin, --show-scope, --name-only, --null, -z,
+// --type, --default) are neutral — they neither make a write into a read nor
+// vice versa. A write on a signing key is refused.
+//
+// --remove-section and --rename-section take a section name: refuse when the
+// section covers any signing key. --edit / -e opens the whole config file:
+// always refuse.
 //
 // All `config` tokens in the command are checked (not just the first).
 func checkGitConfigSub(cmd string) string {
@@ -272,40 +309,55 @@ func checkGitConfigSub(cmd string) string {
 		if j >= 0 && !strings.HasPrefix(fields[j], "-") {
 			if j-1 >= 0 {
 				prev := fields[j-1]
-				if prev == "-C" || prev == "-c" || prev == "--file" || prev == "--blob" || prev == "-f" {
+				if gitConfigArgTakingFlags[prev] {
 					j -= 2
 				}
 			}
 		}
 		for j >= 0 && strings.HasPrefix(fields[j], "-") {
 			f := fields[j]
-			if f == "-C" || f == "-c" || f == "--file" || f == "--blob" || f == "-f" {
+			if gitConfigArgTakingFlags[f] {
 				j -= 2
 				continue
 			}
+			// Also skip --git-dir=X / --work-tree=X (joined form).
+			handled := false
+			for _, p := range gitConfigArgTakingLongFlagPrefixes {
+				if strings.HasPrefix(f, p) {
+					handled = true
+					break
+				}
+			}
+			_ = handled
 			j--
 		}
 		if j < 0 || (fields[j] != "git" && !strings.HasSuffix(fields[j], "/git")) {
 			continue
 		}
 		// Found `git ... config`. Scan ALL tokens after `config`: classify
-		// as read or write and capture the first non-flag key.
+		// as read or write and capture the non-flag tokens (key, optional
+		// value). A bare `git config <key>` (one non-flag token) is a get
+		// (read); `git config <key> <value>` (two non-flag tokens) is a set
+		// (write).
 		hasRead := false
 		hasExplicitWrite := false
 		hasSectionWrite := false
 		hasEdit := false
 		var section string
 		var key string
+		var nonFlagTokens int
 		i := start + 1
 		for i < len(fields) {
 			f := fields[i]
 			if !strings.HasPrefix(f, "-") {
+				nonFlagTokens++
 				if key == "" {
 					key = strings.ToLower(strings.Trim(f, `"'`))
 				}
-				break
+				i++
+				continue
 			}
-			if gitConfigReadOnlyFlags[f] {
+			if gitConfigReadOnlyActions[f] {
 				hasRead = true
 				i++
 				continue
@@ -314,7 +366,6 @@ func checkGitConfigSub(cmd string) string {
 				hasExplicitWrite = true
 				if gitConfigSectionFlags[f] {
 					hasSectionWrite = true
-					// The next token is the section name.
 					if i+1 < len(fields) {
 						section = strings.ToLower(strings.Trim(fields[i+1], `"'`))
 					}
@@ -327,15 +378,29 @@ func checkGitConfigSub(cmd string) string {
 				i++
 				continue
 			}
-			if f == "--file" || f == "--blob" || f == "-f" || f == "-C" || f == "-c" {
-				i += 2
-				continue
-			}
-			if strings.HasPrefix(f, "--type=") {
+			if gitConfigOutputModifiers[f] {
 				i++
 				continue
 			}
+			if gitConfigArgTakingFlags[f] {
+				i += 2
+				continue
+			}
+			if strings.HasPrefix(f, "--type=") || strings.HasPrefix(f, "--default=") {
+				i++
+				continue
+			}
+			for _, p := range gitConfigArgTakingLongFlagPrefixes {
+				if strings.HasPrefix(f, p) {
+					goto next
+				}
+			}
+			if f == "--type" || f == "--default" {
+				i += 2
+				continue
+			}
 			i++
+		next:
 		}
 		// --edit / -e opens the whole config file for editing — refuse.
 		if hasEdit {
@@ -354,14 +419,34 @@ func checkGitConfigSub(cmd string) string {
 			}
 			continue
 		}
-		// Read flag and no explicit write → read; allowed.
-		if hasRead && !hasExplicitWrite {
+		// A bare `git config <key>` (one non-flag token, no read action, no
+		// explicit write) is a get (read) — allowed. But if the token contains
+		// `=` (e.g., `commit.gpgsign=false`), it is a set (write) — split and
+		// check the key.
+		if hasRead {
 			continue
 		}
-		// No read flag and no explicit write: a bare key (with or without a
-		// value) is a write form. Check the key.
-		if key != "" && isSigningKey(key) {
-			return signingGuardError
+		if nonFlagTokens <= 1 {
+			if key != "" && strings.Contains(key, "=") {
+				if idx := strings.IndexByte(key, '='); idx >= 0 {
+					key = key[:idx]
+				}
+				if isSigningKey(key) {
+					return signingGuardError
+				}
+				continue
+			}
+			continue // get/read: allowed
+		}
+		// Two non-flag tokens (key + value) and no read action: a set (write).
+		// Split key=value to extract the key.
+		if key != "" {
+			if idx := strings.IndexByte(key, '='); idx >= 0 {
+				key = key[:idx]
+			}
+			if isSigningKey(key) {
+				return signingGuardError
+			}
 		}
 	}
 	return ""

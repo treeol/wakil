@@ -80,24 +80,25 @@ func renderGitConfig(id GitIdentity, sg GitSigning) ([]byte, error) {
 // written; the agent socket is reached through the [ssh] table, never a raw
 // path. It returns the surface with the env the session needs.
 //
-// F8: the file is written on the HOST under HomeRoot, but GIT_CONFIG_GLOBAL must
-// point at the in-session path — hisn remounts the persist dir at SandboxHome
-// (/run/hisn/home), so the host path does not exist inside the sandbox. The
-// GIT_SSH_COMMAND UserKnownHostsFile is a same-path RO mount (the host path IS
-// valid inside the sandbox), so it stays as is.
+// F8: the file is written on the HOST under HomeRoot, but GIT_CONFIG_GLOBAL and
+// the allowedSignersFile value in the gitconfig must point at in-session paths
+// — hisn remounts the persist dir at SandboxHome (/run/hisn/home), so the host
+// path does not exist inside the sandbox. The GIT_SSH_COMMAND
+// UserKnownHostsFile is a same-path RO mount (the host path IS valid inside the
+// sandbox), so it stays as is.
 func (b *Backend) withGitConfig(s Surface) (Surface, error) {
 	env := map[string]string{}
 	for k, v := range s.EnvSet {
 		env[k] = v
 	}
 	if b.opts.GitName != "" || b.opts.GitEmail != "" || b.opts.SigningKey != "" {
-		p, err := writeSessionGitConfig(b.opts.HomeRoot,
+		if _, err := writeSessionGitConfig(b.opts.HomeRoot,
 			GitIdentity{Name: b.opts.GitName, Email: b.opts.GitEmail},
-			GitSigning{Key: b.opts.SigningKey})
-		if err != nil {
+			GitSigning{Key: b.opts.SigningKey}); err != nil {
 			return s, err
 		}
-		_ = p // host path (written there); GIT_CONFIG_GLOBAL uses the in-session path
+		// GIT_CONFIG_GLOBAL uses the in-session path (F8): hisn remounts the
+		// persist dir at SandboxHome, so the host path does not exist there.
 		env["GIT_CONFIG_GLOBAL"] = filepath.Join(SandboxHome, ".wakil-gitconfig")
 	}
 	// An ssh transport (agent on) pins known_hosts to the host file, read-only,
@@ -114,10 +115,14 @@ func (b *Backend) withGitConfig(s Surface) (Surface, error) {
 }
 
 // writeSessionGitConfig writes .wakil-gitconfig (and the allowed_signers file
-// when signing) into home, mode 0600. It returns the gitconfig path.
+// when signing) into home (host HomeRoot), mode 0600. It returns the gitconfig
+// path. The allowed_signers file is written at <home>/.wakil-allowed-signers
+// (host), but the gitconfig's allowedSignersFile value uses the in-session
+// path (<SandboxHome>/.wakil-allowed-signers) — hisn remounts the persist dir
+// at SandboxHome, so the host path does not exist inside the sandbox.
 func writeSessionGitConfig(home string, id GitIdentity, sg GitSigning) (string, error) {
 	if sg.Key != "" {
-		sg.AllowedSigner = filepath.Join(home, ".wakil-allowed-signers")
+		sg.AllowedSigner = filepath.Join(SandboxHome, ".wakil-allowed-signers")
 	}
 	if sg.Key != "" && id.Email == "" {
 		return "", fmt.Errorf("ssh signing needs git.identity email for the allowed signers file")
@@ -128,8 +133,11 @@ func writeSessionGitConfig(home string, id GitIdentity, sg GitSigning) (string, 
 	}
 	if sg.Key != "" {
 		// allowed_signers: "<identity> <key>". Identity is the commit email.
+		// Written at the HOST path (<home>/.wakil-allowed-signers); the
+		// gitconfig value points at the in-session path.
+		hostSigner := filepath.Join(home, ".wakil-allowed-signers")
 		line := fmt.Sprintf("%s %s\n", id.Email, sg.Key)
-		if err := os.WriteFile(sg.AllowedSigner, []byte(line), 0o600); err != nil {
+		if err := os.WriteFile(hostSigner, []byte(line), 0o600); err != nil {
 			return "", fmt.Errorf("writing allowed signers: %w", err)
 		}
 	}

@@ -58,7 +58,6 @@ func TestCheckSigningBypass(t *testing.T) {
 		{"config --get commit.gpgsign", "git config --get commit.gpgsign", false},
 		{"config --get user.signingkey", "git config --get user.signingkey", false},
 		{"config --list", "git config --list", false},
-		{"config --show-origin --show-scope user.signingkey", "git config --show-origin --show-scope user.signingkey", false},
 
 		// F7: read flags in any position (not just first after config) are allowed.
 		{"config --show-origin --get user.signingkey", "git config --show-origin --get user.signingkey", false},
@@ -66,6 +65,10 @@ func TestCheckSigningBypass(t *testing.T) {
 		{"config --show-scope --get-regexp gpg", "git config --show-scope --get-regexp gpg", false},
 		{"config -l", "git config -l", false},
 		{"config --get-urlmatch gpg.ssh", "git config --get-urlmatch gpg.ssh", false},
+
+		// F7: bare key (one non-flag token, no value) is a get (read) — allowed.
+		{"config --show-origin --show-scope user.signingkey", "git config --show-origin --show-scope user.signingkey", false},
+		{"bare config user.signingkey", "git config user.signingkey", false},
 
 		// F7: write forms on a signing key still refused.
 		{"config --add commit.gpgsign true", "git config --add commit.gpgsign true", true},
@@ -76,6 +79,26 @@ func TestCheckSigningBypass(t *testing.T) {
 
 		// F7: --no-gpg-sign on a git command still refused.
 		{"-c commit.gpgsign=false log", "git -c commit.gpgsign=false log", true},
+
+		// F7 review: output modifiers do NOT make a write into a read.
+		{"config --null commit.gpgsign false", "git config --null commit.gpgsign false", true},
+		{"config -z commit.gpgsign false", "git config -z commit.gpgsign false", true},
+		{"config --name-only commit.gpgsign false", "git config --name-only commit.gpgsign false", true},
+		{"config --show-origin commit.gpgsign false", "git config --show-origin commit.gpgsign false", true},
+
+		// F7 review: --type/--default space form does not leak the value as key.
+		{"config --type bool commit.gpgsign false", "git config --type bool commit.gpgsign false", true},
+		{"config --default x commit.gpgsign false", "git config --default x commit.gpgsign false", true},
+
+		// F7 review: key=value joined in a bare write.
+		{"bare config commit.gpgsign=false", "git config commit.gpgsign=false", true},
+
+		// F7 review: --git-dir space form does not leak the path as key.
+		{"--git-dir . config commit.gpgsign false", "git --git-dir . config commit.gpgsign false", true},
+
+		// F7 review: benign writes that must pass.
+		{"config --unset core.pager", "git config --unset core.pager", false},
+		{"config --remove-section core", "git config --remove-section core", false},
 
 		// GIT_CONFIG_* env vars
 		{"GIT_CONFIG_GLOBAL env", "GIT_CONFIG_GLOBAL=/dev/null git commit -m test", true},

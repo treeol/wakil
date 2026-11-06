@@ -342,8 +342,13 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	if commitInfo.Code != 0 {
 		t.Fatalf("git commit inside session failed: %q %+v", commitOut, commitInfo)
 	}
-	// Verify the commit is signed on the host side.
-	signOut, err := osexec.Command("git", "-C", cwd, "log", "-1", "--format=%G?").Output()
+	// Verify the commit is signed on the host side. The host git needs
+	// gpg.ssh.allowedSignersFile to verify SSH signatures; point it at the
+	// allowed_signers file written under HomeRoot (the host copy).
+	signOut, err := osexec.Command("git", "-C", cwd,
+		"-c", "gpg.format=ssh",
+		"-c", "gpg.ssh.allowedSignersFile="+filepath.Join(b.opts.HomeRoot, ".wakil-allowed-signers"),
+		"log", "-1", "--format=%G?").Output()
 	if err != nil {
 		t.Fatalf("git log on host failed: %v", err)
 	}
