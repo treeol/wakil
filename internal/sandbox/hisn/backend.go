@@ -38,6 +38,8 @@ type Options struct {
 	HomeRoot    string   // persistent sandbox $HOME on the host (required)
 	Home        string   // sandbox.hisn.home: "persist" (default) | "tmpfs"
 	Rootfs      string   // sandbox.hisn.rootfs (store name or abs path); "" = host toolchain
+	SSHAgent    bool     // sandbox.hisn.ssh_agent: expose the host agent ([ssh], global only)
+	SSHKeys     []string // sandbox.hisn.ssh_keys + ssh_signing key fingerprints (SHA256:…)
 	HostCwd     string   // absolute, symlink-free workspace (required)
 	GrantableRW []string // prefixes allowed for rw grants
 	EnvPass     []string // names passed into the sandbox
@@ -210,6 +212,15 @@ func New(opts Options) (*Backend, error) {
 	}
 	if err := ValidateRootfs(surf.Rootfs, true); err != nil {
 		return nil, fmt.Errorf("hisn backend: %w", err)
+	}
+	// Global ssh settings (never from the project file): the agent and its
+	// allowed fingerprints are the same switch for signing and transports.
+	surf.SSHAgent = opts.SSHAgent
+	surf.SSHKeys = append([]string(nil), opts.SSHKeys...)
+	if surf.SSHAgent && len(surf.SSHKeys) == 0 {
+		// [ssh] needs a non-empty allowlist (plan D7); an agent with no keys
+		// would forward whatever the host agent holds.
+		return nil, fmt.Errorf("hisn backend: sandbox.hisn.ssh_agent = true needs sandbox.hisn.ssh_keys (SHA256:… fingerprints) or ssh_signing with a .pub key")
 	}
 	opts.Surface = surf
 	// The state directory is the user's trust root (approvals, profiles, owner

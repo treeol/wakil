@@ -117,6 +117,12 @@ type Surface struct {
 	// the host toolchain. Name form is the project-level value; path form is
 	// global only (the project loader rejects it).
 	Rootfs string
+	// SSHAgent exposes the host ssh-agent to the session (hisn [ssh]). Global
+	// only (sandbox.hisn.ssh_agent): a cloned repo must not switch it on.
+	SSHAgent bool
+	// SSHKeys are the public-key fingerprints the agent may use (hisn [ssh]
+	// keys). Computed by Wakil from .pub files; never a private key.
+	SSHKeys []string
 }
 
 // Empty reports whether the surface asks for nothing.
@@ -143,6 +149,9 @@ func (s Surface) needs03() []string {
 	}
 	if s.Rootfs != "" {
 		f = append(f, "hisn.rootfs")
+	}
+	if s.SSHAgent {
+		f = append(f, "sandbox.hisn.ssh_agent")
 	}
 	return f
 }
@@ -274,6 +283,15 @@ type profileFile struct {
 	HostServices []hostServiceTOML `toml:"host_services,omitempty"`
 	Home         *homeTOML         `toml:"home,omitempty"`
 	Rootfs       *rootfsTOML       `toml:"rootfs,omitempty"`
+	SSH          *sshTOML          `toml:"ssh,omitempty"`
+}
+
+// sshTOML is hisn 0.3.2's [ssh] table. Emitted only when the agent is on AND
+// at least one key fingerprint is allowed (plan D7): an agent with no allowed
+// keys would forward every key the host agent holds.
+type sshTOML struct {
+	Agent bool     `toml:"agent"`
+	Keys  []string `toml:"keys"`
 }
 
 // rootfsTOML is hisn 0.3.2's [rootfs] table: exactly one of name (a store
@@ -390,6 +408,9 @@ func profileFor(pol policyFile, s Surface, homePersist string) profileFile {
 		pf.Home = &homeTOML{Persist: homePersist}
 	}
 	pf.Rootfs = rootfsFor(s.Rootfs)
+	if s.SSHAgent && len(s.SSHKeys) > 0 {
+		pf.SSH = &sshTOML{Agent: true, Keys: append([]string(nil), s.SSHKeys...)}
+	}
 	for _, v := range s.Services {
 		t := serviceTOML{Name: v.Name, Exec: v.Exec, Socket: v.Socket,
 			Ready: readyFor(v.ReadySocket, v.ReadyTimeout), Stop: stopFor(v.StopSignal, v.StopGrace), Restart: "none"}

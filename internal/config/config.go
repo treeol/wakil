@@ -1100,6 +1100,13 @@ type HisnConfig struct {
 	// absolute directory. Empty = the host toolchain. Project override:
 	// .wakil/sandbox.json "hisn": {"rootfs": "<name>"} (name only).
 	Rootfs string `json:"rootfs,omitempty"`
+	// SSHAgent exposes the host ssh-agent socket inside the session (hisn
+	// [ssh], hisn >= 0.3.2). Global only: the project file cannot switch it on.
+	// Needed for ssh_signing and for ssh git transports. Default false.
+	SSHAgent bool `json:"ssh_agent,omitempty"`
+	// SSHKeys are extra public-key fingerprints (SHA256:…) the agent may use
+	// inside the session, in addition to keys named by ssh_signing. Global only.
+	SSHKeys []string `json:"ssh_keys,omitempty"`
 	// GrantableRW lists absolute host prefixes under which read-write grants
 	// outside the workspace are allowed (Landlock cannot widen later).
 	GrantableRW []string `json:"grantable_rw,omitempty"`
@@ -2457,6 +2464,16 @@ func validateSandboxConfig(cfg *Config) error {
 	}
 	if err := validateHisnRootfs(h.Rootfs); err != nil {
 		return err
+	}
+	for i, k := range h.SSHKeys {
+		if !strings.HasPrefix(k, "SHA256:") || len(k) < len("SHA256:")+10 {
+			return fmt.Errorf("sandbox.hisn.ssh_keys[%d] %q: want a SHA256:… fingerprint", i, k)
+		}
+	}
+	// Signing needs the agent socket inside the session; a signing key with no
+	// agent would make git sign-on with nothing to sign with. Refuse at load.
+	if cfg.SSHSigning != "" && cfg.SSHSigning != "off" && !h.SSHAgent {
+		return fmt.Errorf("ssh_signing needs the agent under sandbox backend hisn: set sandbox.hisn.ssh_agent = true or ssh_signing = off")
 	}
 	for i, g := range h.GrantableRW {
 		if !filepath.IsAbs(g) || filepath.Clean(g) == "/" {

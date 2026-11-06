@@ -64,6 +64,8 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		HomeRoot:    home,
 		Home:        h.Home,
 		Rootfs:      rootfsFor(h.Rootfs, surface),
+		SSHAgent:    h.SSHAgent,
+		SSHKeys:     h.SSHKeys,
 		HostCwd:     cfg.HostWorkDir,
 		GrantableRW: h.GrantableRW,
 		EnvPass:     h.EnvPass,

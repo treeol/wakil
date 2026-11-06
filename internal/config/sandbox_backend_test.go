@@ -244,3 +244,24 @@ func TestAllowUsernsBothKeys(t *testing.T) {
 		t.Error("default must be off")
 	}
 }
+
+// P3: signing needs the agent under hisn; the agent needs a fingerprint list.
+func TestSandboxHisnSSHSigningNeedsAgent(t *testing.T) {
+	ws := t.TempDir()
+	cfg := `{"sandbox":{"backend":"hisn"}}`
+	_, err := loadSandboxCfg(t, cfg, "--host-workdir", ws, "--ssh-signing", "/tmp/k.pub")
+	if err == nil || !strings.Contains(err.Error(), "ssh_signing needs the agent") {
+		t.Fatalf("signing without agent must be a load error, got %v", err)
+	}
+	if _, err := loadSandboxCfg(t, `{"sandbox":{"backend":"hisn","hisn":{"ssh_agent":true,"ssh_keys":["SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"]}}}`, "--host-workdir", ws, "--ssh-signing", "/tmp/k.pub"); err != nil {
+		t.Fatalf("signing with agent+key must load: %v", err)
+	}
+}
+
+func TestSandboxHisnSSHKeyFormat(t *testing.T) {
+	ws := t.TempDir()
+	_, err := loadSandboxCfg(t, `{"sandbox":{"backend":"hisn","hisn":{"ssh_keys":["ssh-ed25519 AAAA"]}}}`, "--host-workdir", ws)
+	if err == nil || !strings.Contains(err.Error(), "SHA256") {
+		t.Fatalf("ssh_keys must be fingerprints, got %v", err)
+	}
+}

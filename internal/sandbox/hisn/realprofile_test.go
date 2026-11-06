@@ -246,3 +246,26 @@ func mustVersion(t *testing.T, bin string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// TestRealHisnAcceptsSSHTable (P3): the generated [ssh] table validates on the
+// real hisn >= 0.3.2. Skips with the reason on older hisn.
+func TestRealHisnAcceptsSSHTable(t *testing.T) {
+	bin := realHisnOffline(t)
+	if v, err := ParseVersion(mustVersion(t, bin)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 2}) {
+		t.Skipf("[ssh] needs hisn >= %s; this hisn is %q", ProfileHomeMinVersion, mustVersion(t, bin))
+	}
+	d := realDirs(t, "ws", "home", "out")
+	prof, err := buildProfile(policyParams{Cwd: d[0], Home: d[1], Hostname: "wakil-0123456789abcdef",
+		GrantableRW: []string{d[2]}, EnvPass: []string{"CI"}, ShmSize: 64, TmpSize: 1024},
+		Surface{SSHAgent: true, SSHKeys: []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(filepath.Dir(d[0]), "ssh.profile.toml")
+	if err := os.WriteFile(p, prof, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := hisnRun(t, bin, "profile", "validate", p); err != nil {
+		t.Fatalf("real hisn rejects the [ssh] profile: %v\n%s\n%s", err, out, prof)
+	}
+}

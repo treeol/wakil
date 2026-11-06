@@ -147,3 +147,16 @@ func TestRootfsProjectNameOnly(t *testing.T) {
 		t.Fatalf("invalid name must be refused, got %v", err)
 	}
 }
+
+// P3: the ssh settings are global-only; the strict project schema refuses them,
+// so a cloned repo cannot switch on the host agent.
+func TestProjectRejectsGlobalSSHKeys(t *testing.T) {
+	for _, raw := range []string{
+		`{"hisn":{"ssh_agent":true}}`,
+		`{"hisn":{"ssh_keys":["SHA256:x"]}}`,
+	} {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("project file must refuse global ssh setting: %s", raw)
+		}
+	}
+}
