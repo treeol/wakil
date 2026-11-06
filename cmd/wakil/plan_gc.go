@@ -64,10 +64,18 @@ func classifyPlanEntry(key, sessionID string, sessionExists func(chatID string) 
 func runPlanGC(args []string) int {
 	apply := false
 	var projectDir, storePath string
+	var workDirArgs []string // --workdir forwarded to LoadConfig (chat rule)
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--apply":
 			apply = true
+		case a == "--workdir":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+				fmt.Fprintf(os.Stderr, "plan gc: %s needs a value\n", a)
+				return ExitError
+			}
+			workDirArgs = []string{"--workdir", args[i+1]}
+			i++
 		case a == "--project" || a == "--store":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
 				fmt.Fprintf(os.Stderr, "plan gc: %s needs a value\n", a)
@@ -87,7 +95,7 @@ func runPlanGC(args []string) int {
 		}
 	}
 
-	cfg, err := config.LoadConfig(nil)
+	cfg, err := config.LoadConfig(workDirArgs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		return ExitError
@@ -169,8 +177,17 @@ func runPlanGC(args []string) int {
 // with Abs+EvalSymlinks). It deliberately does NOT use cfg.WorkspacePath():
 // that honours WAKIL_WORKSPACE_PATH and the config workspace, so gc could open
 // the store of a different project than the one the user is standing in.
-func agentWorkspace(_ config.Config, projectDir string) (string, error) {
-	return ResolveProject(projectDir)
+// agentWorkspace is the project plan gc keys by. An explicit --project wins;
+// otherwise an explicit --workdir (the same rule as a chat, see
+// agent.ProjectDir); otherwise the cwd. The config file and env never choose.
+func agentWorkspace(cfg config.Config, projectDir string) (string, error) {
+	if projectDir != "" {
+		return ResolveProject(projectDir)
+	}
+	if cfg.WorkDirFlag {
+		return ResolveProject(cfg.WorkDir)
+	}
+	return ResolveProject("")
 }
 
 // ResolveProject returns the canonical project directory for the CLI's

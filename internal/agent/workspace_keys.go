@@ -23,6 +23,7 @@ const (
 	SourceEnvPath       = "WAKIL_WORKSPACE_PATH"
 	SourceConfig        = "config"
 	SourceEnvKey        = "WAKIL_WORKSPACE_KEY"
+	SourceWorkDirFlag   = "--workdir flag"
 	sourceConfigHost    = "config host_workdir (docker mode)"
 	sourceConfigWorkDir = "config workdir (direct mode)"
 )
@@ -72,6 +73,9 @@ func ResolveWorkspaceKeys(cfg config.Config) WorkspaceKeys {
 	var k WorkspaceKeys
 	k.ChatPath = ProjectDir(cfg)
 	switch {
+	case cfg.WorkDirFlag:
+		// --workdir on the command line is the explicit project (0.5.0).
+		k.ChatPathSource = SourceWorkDirFlag
 	case cfg.ExecMode == "direct" && cfg.WorkDir != "":
 		k.ChatPathSource = sourceConfigWorkDir
 	case cfg.ExecMode != "direct" && cfg.HostWorkDir != "":
@@ -79,8 +83,9 @@ func ResolveWorkspaceKeys(cfg config.Config) WorkspaceKeys {
 	default:
 		k.ChatPathSource = SourceCwd
 	}
-	// When the config itself defaulted the directory to the cwd, say so.
-	if wd, err := os.Getwd(); err == nil && sameDir(k.ChatPath, wd) {
+	// When the config itself defaulted the directory to the cwd, say so. An
+	// explicit --workdir keeps its label even when it is the cwd.
+	if wd, err := os.Getwd(); err == nil && !cfg.WorkDirFlag && sameDir(k.ChatPath, wd) {
 		k.ChatPathSource = SourceCwd
 	}
 
@@ -98,7 +103,12 @@ func ResolveWorkspaceKeys(cfg config.Config) WorkspaceKeys {
 
 	if wd, err := os.Getwd(); err == nil {
 		k.Cwd = canonicalDir(wd)
+		// plan gc resolves the same project a chat does: an explicit --workdir
+		// wins over the cwd (agent.ProjectDir rule), else the cwd.
 		k.GCPath = k.Cwd
+		if cfg.WorkDirFlag {
+			k.GCPath = canonicalDir(cfg.WorkDir)
+		}
 		if p := MemoryDBPath(k.GCPath); p != "" {
 			k.GCMemoryKey = filepath.Base(filepath.Dir(p))
 		}
@@ -164,7 +174,11 @@ func (k WorkspaceKeys) Format() string {
 	fmt.Fprintf(&b, "sessionhost id:     %s   [source: sha256(canonical path) first 8 bytes]\n", orNone(k.SessionHostID))
 	fmt.Fprintf(&b, "sessionhost key:    %s   [source: %s, truncated to 16 hex]\n", orNone(k.SessionHostKey), keySrc)
 	fmt.Fprintf(&b, "  sessionhost db:   %s\n", orNone(k.SessionHostDBPath))
-	fmt.Fprintf(&b, "plan gc from here:  %s   [source: %s]  memory key %s\n", orNone(k.GCPath), SourceCwd, orNone(k.GCMemoryKey))
+	gcSource := SourceCwd
+	if k.GCPath != k.Cwd {
+		gcSource = SourceWorkDirFlag
+	}
+	fmt.Fprintf(&b, "plan gc from here:  %s   [source: %s]  memory key %s\n", orNone(k.GCPath), gcSource, orNone(k.GCMemoryKey))
 	if k.ChatPath == "" {
 		b.WriteString("NOTE: no workspace path (direct mode without a workdir argument): a chat started with this config keys no per-project store; pass the project directory as an argument or set WAKIL_WORKSPACE_PATH.\n")
 	}

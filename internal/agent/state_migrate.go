@@ -30,6 +30,7 @@ type MigrationPlan struct {
 	Total        int
 	Unattributed int            // no attribution: stays legacy
 	Ambiguous    int            // subset of Unattributed: evidence under 2+ projects
+	SharedWriter int            // subset of Unattributed: writer recorded the shared store path
 	AlreadyTotal int            // attributable but already copied (sidecar)
 	PerProject   map[string]int // project dir -> entries to copy
 	Already      map[string]int // project dir -> entries already migrated
@@ -103,9 +104,17 @@ func sessionWorkspaces() map[string]string {
 
 // attributeByWriter returns the project of the session that wrote e, when that
 // session's workspace is exactly one known project ("" otherwise).
-func attributeByWriter(e *memory.Entry, sessWS map[string]string, projects []string) string {
+//
+// A recorded workspace equal to the legacy shared store's own path (legacyWS,
+// the old WorkspacePath()) is not evidence: every 0.4.x session recorded it,
+// so it names the shared store, not a project. Such entries fall back to
+// anchors.
+func attributeByWriter(e *memory.Entry, sessWS map[string]string, projects []string, legacyWS string) string {
 	ws, ok := sessWS[e.SessionID]
 	if !ok {
+		return ""
+	}
+	if legacyWS != "" && sameWorkspace(ws, legacyWS) {
 		return ""
 	}
 	for _, p := range projects {
@@ -117,8 +126,8 @@ func attributeByWriter(e *memory.Entry, sessWS map[string]string, projects []str
 }
 
 // attributeFor is the full rule: writer session first, then absolute anchors.
-func attributeFor(e *memory.Entry, sessWS map[string]string, projects []string) (string, bool) {
-	if p := attributeByWriter(e, sessWS, projects); p != "" {
+func attributeFor(e *memory.Entry, sessWS map[string]string, projects []string, legacyWS string) (string, bool) {
+	if p := attributeByWriter(e, sessWS, projects, legacyWS); p != "" {
 		return p, false
 	}
 	return attributeEntry(e, projects)
@@ -127,7 +136,9 @@ func attributeFor(e *memory.Entry, sessWS map[string]string, projects []string) 
 // PlanLegacyMigration classifies every active legacy entry against the known
 // project directories. It opens the legacy store read-only and writes nothing.
 // alreadyMigrated maps project dir -> legacy IDs already copied (from sidecars).
-func PlanLegacyMigration(ctx context.Context, legacyDB string, projects []string, alreadyMigrated map[string]map[int64]bool) (MigrationPlan, error) {
+//
+// legacyWS is the legacy shared store's workspace path (see attributeByWriter).
+func PlanLegacyMigration(ctx context.Context, legacyDB, legacyWS string, projects []string, alreadyMigrated map[string]map[int64]bool) (MigrationPlan, error) {
 	plan := MigrationPlan{LegacyDB: legacyDB, PerProject: map[string]int{}, Already: map[string]int{}}
 	ls, err := memory.OpenReadOnly(legacyDB, "")
 	if err != nil {
@@ -142,11 +153,14 @@ func PlanLegacyMigration(ctx context.Context, legacyDB string, projects []string
 	sessWS := sessionWorkspaces()
 	plan.Total = len(entries)
 	for _, e := range entries {
-		proj, ambiguous := attributeFor(e, sessWS, projects)
+		proj, ambiguous := attributeFor(e, sessWS, projects, legacyWS)
 		if proj == "" {
 			plan.Unattributed++
 			if ambiguous {
 				plan.Ambiguous++
+			}
+			if ws, ok := sessWS[e.SessionID]; ok && legacyWS != "" && sameWorkspace(ws, legacyWS) {
+				plan.SharedWriter++
 			}
 			continue
 		}

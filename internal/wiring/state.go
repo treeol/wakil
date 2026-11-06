@@ -63,7 +63,7 @@ func runStateMigrate(args []string, out, errw io.Writer) int {
 		already[p] = m
 	}
 	ctx := context.Background()
-	plan, err := agent.PlanLegacyMigration(ctx, legacyDB, projects, already)
+	plan, err := agent.PlanLegacyMigration(ctx, legacyDB, agent.LegacyWorkspacePath(cfg), projects, already)
 	if err != nil {
 		fmt.Fprintln(errw, "state migrate:", err)
 		return 1
@@ -79,6 +79,9 @@ func runStateMigrate(args []string, out, errw io.Writer) int {
 	}
 	fmt.Fprintf(out, "legacy entries: %d active; %d to copy, %d already copied, %d stay legacy (%d with conflicting evidence)\n",
 		plan.Total, toCopy, plan.AlreadyTotal, plan.Unattributed, plan.Ambiguous)
+	if plan.SharedWriter > 0 {
+		fmt.Fprintf(out, "%d stay legacy (writer workspace was the shared store)\n", plan.SharedWriter)
+	}
 	projs := make([]string, 0, len(plan.PerProject))
 	for p := range plan.PerProject {
 		projs = append(projs, p)

@@ -89,7 +89,7 @@ func TestLegacyMigrationDryRunAndApply(t *testing.T) {
 	projects := []string{projA, projB}
 
 	// Dry-run: counts, nothing written to any project store.
-	plan, err := PlanLegacyMigration(ctx, legacyDB, projects, nil)
+	plan, err := PlanLegacyMigration(ctx, legacyDB, "", projects, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestLegacyMigrationDryRunAndApply(t *testing.T) {
 		m, _ := LoadMigrationMarkers(p)
 		already[p] = m
 	}
-	again, err := PlanLegacyMigration(ctx, legacyDB, projects, already)
+	again, err := PlanLegacyMigration(ctx, legacyDB, "", projects, already)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestLegacyMigrationDryRunAndApply(t *testing.T) {
 // C3: a missing legacy store is an error and creates nothing.
 func TestLegacyMigrationMissingStore(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "none.db")
-	if _, err := PlanLegacyMigration(context.Background(), missing, []string{"/x"}, nil); err == nil {
+	if _, err := PlanLegacyMigration(context.Background(), missing, "", []string{"/x"}, nil); err == nil {
 		t.Fatal("missing legacy store must be an error")
 	}
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
@@ -189,7 +189,7 @@ func TestLegacyMigrationAttributesByWriterSession(t *testing.T) {
 	}
 	lw.Close()
 
-	plan, err := PlanLegacyMigration(ctx, legacyDB, []string{projA}, nil)
+	plan, err := PlanLegacyMigration(ctx, legacyDB, "", []string{projA}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,5 +198,55 @@ func TestLegacyMigrationAttributesByWriterSession(t *testing.T) {
 	}
 	if len(plan.Moves) != 1 || plan.Moves[0].Entry.Key != "by/session" {
 		t.Fatalf("wrong entry moved: %+v", plan.Moves)
+	}
+}
+
+// Host finding (0.5.0 review): every 0.4.x writer recorded the shared store's
+// own path as its workspace, so that recorded workspace is not evidence. The
+// writer rule must skip it; only absolute anchors under a project attribute.
+func TestLegacyMigrationIgnoresSharedStoreWriterWorkspace(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("WAKIL_WORKSPACE_KEY", "")
+	t.Setenv("WAKIL_SESSIONS_DIR", t.TempDir())
+	ctx := context.Background()
+
+	projA := t.TempDir()
+	legacyWS := t.TempDir() // the old shared host_workdir
+	writeSess := func(chat, ws string) {
+		b := []byte(`{"chat_id":"` + chat + `","model":"m","workspace":"` + ws + `","conv":[]}`)
+		if err := os.WriteFile(filepath.Join(os.Getenv("WAKIL_SESSIONS_DIR"), chat+".json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSess("chat-shared", legacyWS) // writer recorded the shared path
+
+	legacyDB := filepath.Join(t.TempDir(), "legacy.db")
+	lw, err := memory.Open(legacyDB, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Writer recorded the shared path, but an absolute anchor names projA:
+	// attributed by anchors.
+	if _, err := lw.PutActive(ctx, "anchored", "A", "note", "durable", "t", "chat-shared", 0, nil,
+		[]string{filepath.Join(projA, "a.go")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Writer recorded the shared path and no anchor: stays legacy.
+	if _, err := lw.PutActive(ctx, "bare", "B", "note", "durable", "t", "chat-shared", 0, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	lw.Close()
+
+	plan, err := PlanLegacyMigration(ctx, legacyDB, legacyWS, []string{projA}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the anchored entry attributes (by its absolute anchor); the bare
+	// entry written from the shared path stays legacy.
+	if plan.PerProject[projA] != 1 || len(plan.Moves) != 1 || plan.Moves[0].Entry.Key != "anchored" {
+		t.Fatalf("expected only 'anchored' to attribute: per=%v moves=%d", plan.PerProject, len(plan.Moves))
+	}
+	if plan.Unattributed != 1 {
+		t.Fatalf("the bare entry must stay legacy, unattributed=%d", plan.Unattributed)
 	}
 }

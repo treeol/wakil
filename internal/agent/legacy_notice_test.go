@@ -159,3 +159,30 @@ func TestNoDivergenceWarningAndEnvLineKept(t *testing.T) {
 		t.Fatalf("env override notice missing: %q", k.EnvOverrideLine())
 	}
 }
+
+// Host finding (0.5.0 review): an explicit --workdir is labelled as the flag
+// (not as config host_workdir), and plan gc's project is that same directory.
+func TestWorkDirFlagSourceAndGCAgree(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("WAKIL_WORKSPACE_KEY", "")
+	proj := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.ExecMode = "docker"
+	cfg.HostWorkDir = t.TempDir() // a stale host_workdir must not win
+	cfg.WorkDir = proj
+	cfg.WorkDirFlag = true
+
+	k := ResolveWorkspaceKeys(cfg)
+	if k.ChatPathSource != SourceWorkDirFlag {
+		t.Fatalf("source = %q, want %q", k.ChatPathSource, SourceWorkDirFlag)
+	}
+	if k.ChatPath != canonicalWorkspace(proj) {
+		t.Fatalf("chat path %q, want the flag dir", k.ChatPath)
+	}
+	if k.GCPath != canonicalWorkspace(proj) || k.GCMemoryKey != k.MemoryKey {
+		t.Fatalf("plan gc must resolve the flag dir: gc=%q key=%s chat=%s", k.GCPath, k.GCMemoryKey, k.MemoryKey)
+	}
+	if !strings.Contains(k.Format(), "plan gc from here:  "+canonicalWorkspace(proj)+"   [source: --workdir flag]") {
+		t.Fatalf("report must show the flag as the gc source:\n%s", k.Format())
+	}
+}
