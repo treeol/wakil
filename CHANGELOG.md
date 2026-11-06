@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy attributable entries. Legacy entries that cannot be attributed stay in the legacy store.
 - Sessions are not moved; they stay listed under "legacy".
 
+### Known limitations
+
+- **Browser under hisn: name resolution fails on hosts where `/etc/resolv.conf` only lists
+  the systemd-resolved stub (127.0.0.53); hisn 0.3.2 drops loopback resolvers and leaves
+  none. Fixed in hisn 0.3.3.** Host evidence: network reachable by IP, `getent` fails,
+  `/etc/resolv.conf` empty inside the session.
+
 ## [0.4.5] - 2026-11-06
 
 ### Fixed
