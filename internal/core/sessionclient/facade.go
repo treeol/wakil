@@ -76,6 +76,9 @@ type OpID string
 // resume path restores it through the facade, not by reading the field
 // directly — that lands in 7b3).
 type SessionSummary struct {
+	// Legacy marks a session recorded under the pre-0.5.0 shared store path
+	// (read-only listing, 0.5.0 C2).
+	Legacy    bool
 	ChatID    string
 	Model     string
 	Label     string

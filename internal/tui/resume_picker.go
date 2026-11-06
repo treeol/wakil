@@ -180,7 +180,15 @@ func (m tuiModel) renderResumePicker() string {
 		if s.Label != "" {
 			id += " [" + s.Label + "]"
 		}
+		// 0.5.0 (C2): legacy shared-store sessions are listed after the
+		// project's own, under a heading, and are read-only.
+		if s.Legacy && (i == 0 || !sessions[i-1].Legacy) {
+			b.WriteString("\n" + dim2("  ── legacy (shared store, read-only) ──"))
+		}
 		line := sprint("%-24s  %s  %2d turns  %s", id, s.Updated.Format("01-02 15:04"), turns, first)
+		if s.Legacy {
+			line += "  (legacy)"
+		}
 		var row string
 		if i == m.resumePicker.sel {
 			row = lipgloss.NewStyle().Reverse(true).Render(" " + line + " ")

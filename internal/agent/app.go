@@ -161,6 +161,9 @@ type App struct {
 	// subagents (thread-safe via internal mutex). Set by the host startup
 	// code after the workspace is resolved.
 	MemoryStore *memory.Store
+	// LegacyMemory is the read-only pre-0.5.0 shared store (0.5.0, C2), or nil.
+	// memory_get/memory_search fall through to it after the project store.
+	LegacyMemory *memory.Store
 
 	// SkillStore is the durable host-side skills profile, or nil if
 	// unavailable (init failed). When nil, all *_skill(s) tools return

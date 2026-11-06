@@ -113,6 +113,10 @@ type Entry struct {
 	SupersededBy *int64
 	PromotedBy   string
 
+	// Legacy is set by the agent read-through when the entry came from the
+	// read-only pre-0.5.0 shared store. It is never stored.
+	Legacy bool
+
 	// StaleAnchors and TotalAnchors are computed at read time.
 	StaleAnchors int
 	TotalAnchors int
@@ -133,6 +137,8 @@ type Stats struct {
 
 // Store is the durable host-side memory store.
 type Store struct {
+	// readOnly is set by OpenReadOnly (legacy store read-through, 0.5.0).
+	readOnly      bool
 	db            *sql.DB
 	mu            sync.Mutex // single-writer discipline
 	workspaceRoot string
@@ -205,6 +211,9 @@ func OpenExisting(dbPath, workspaceRoot string) (*Store, error) {
 	}
 	return Open(dbPath, workspaceRoot)
 }
+
+// timeNowMilli is the wall clock in epoch milliseconds (read-only stores).
+func timeNowMilli() int64 { return time.Now().UnixMilli() }
 
 // Close closes the underlying database handle.
 func (s *Store) Close() error {

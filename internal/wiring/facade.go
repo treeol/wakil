@@ -628,23 +628,45 @@ func (f *wiringFacade) CancelSideQuestion(opID sessionclient.OpID) {
 
 // ---- Session listing ----
 
+// legacyWorkspace is the pre-0.5.0 shared workspace path for this facade's
+// config (agent.LegacyWorkspacePath), or "" when the app is not set up.
+func (f *wiringFacade) legacyWorkspace() string {
+	if f.app == nil {
+		return ""
+	}
+	return agent.LegacyWorkspacePath(f.app.Cfg)
+}
+
+func toSummary(sess agent.Session, legacy bool) sessionclient.SessionSummary {
+	return sessionclient.SessionSummary{
+		Legacy:    legacy,
+		ChatID:    sess.ChatID,
+		Model:     sess.Model,
+		Label:     sess.Label,
+		Workspace: sess.Workspace,
+		Created:   sess.Created,
+		Updated:   sess.Updated,
+		Conv:      sess.Conv,
+	}
+}
+
 func (f *wiringFacade) ListSessions(scope sessionclient.SessionScope) ([]sessionclient.SessionSummary, int, error) {
-	s := agent.SessionScope{Workspace: scope.Workspace, All: scope.All, IncludeLegacy: true}
+	s := agent.SessionScope{Workspace: scope.Workspace, All: scope.All, IncludeLegacy: true, LegacyWorkspace: f.legacyWorkspace()}
 	sessions, hidden, err := agent.ListSessionsScoped(s)
 	if err != nil {
 		return nil, 0, err
 	}
-	out := make([]sessionclient.SessionSummary, len(sessions))
-	for i, sess := range sessions {
-		out[i] = sessionclient.SessionSummary{
-			ChatID:    sess.ChatID,
-			Model:     sess.Model,
-			Label:     sess.Label,
-			Workspace: sess.Workspace,
-			Created:   sess.Created,
-			Updated:   sess.Updated,
-			Conv:      sess.Conv,
-		}
+	legacy, err := agent.ListLegacySessions(s)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]sessionclient.SessionSummary, 0, len(sessions)+len(legacy))
+	for _, sess := range sessions {
+		out = append(out, toSummary(sess, false))
+	}
+	// 0.5.0 (C2): legacy shared-store sessions come last, flagged.
+	for _, sess := range legacy {
+		out = append(out, toSummary(sess, true))
 	}
 	return out, hidden, nil
 }

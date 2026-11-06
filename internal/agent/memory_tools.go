@@ -226,14 +226,32 @@ func (a *App) handleMemoryGet(ctx context.Context, tc proxy.ToolCall) string {
 			}
 		}
 	}
+	if errors.Is(err, memory.ErrNotFound) && a.LegacyMemory != nil {
+		// 0.5.0 (D2): the project store missed; read the legacy shared store.
+		if le, lerr := a.LegacyMemory.Get(ctx, args.Key); lerr == nil {
+			le.Legacy = true
+			entry, err = le, nil
+		}
+	}
 	if errors.Is(err, memory.ErrNotFound) {
 		return "not found: " + args.Key + " (memory is scoped to the current workspace — entries from other workspaces are not visible here)"
 	}
 	if err != nil {
 		return fmt.Sprintf("ERROR: memory get: %v", err)
 	}
-	history := renderSupersedesHistory(ctx, s, entry)
-	return fmt.Sprintf("%s [id: %d]\n%s%s\n%s", args.Key, entry.ID, renderProvenance(entry), history, entry.Value)
+	history := ""
+	if !entry.Legacy {
+		history = renderSupersedesHistory(ctx, s, entry)
+	}
+	return fmt.Sprintf("%s [id: %d]%s\n%s%s\n%s", args.Key, entry.ID, legacyMarker(entry), renderProvenance(entry), history, entry.Value)
+}
+
+// legacyMarker tags a result that came from the read-only legacy store (0.5.0).
+func legacyMarker(e *memory.Entry) string {
+	if e.Legacy {
+		return " [legacy: shared pre-0.5.0 store, read-only]"
+	}
+	return ""
 }
 
 // handleMemorySearch handles memory_search: available to all tiers.
@@ -280,12 +298,26 @@ func (a *App) handleMemorySearch(ctx context.Context, tc proxy.ToolCall) string 
 		return "(no matches — memory is scoped to the current workspace; entries from other workspaces are not visible here)"
 	}
 
+	// 0.5.0 (D2): project hits first, then legacy hits (read-only shared
+	// store), each legacy hit marked. Legacy is consulted only when the
+	// project store has fewer than the result cap.
+	if a.LegacyMemory != nil && len(entries) < 20 {
+		if le, lerr := a.LegacyMemory.Search(ctx, args.Query, args.Tier, includeProposed); lerr == nil {
+			for _, e := range le {
+				if a.computeTainted() != memory.TaintTrue && strings.HasPrefix(e.Key, "plan/tainted/") {
+					continue
+				}
+				e.Legacy = true
+				entries = append(entries, e)
+			}
+		}
+	}
 	var b strings.Builder
 	for i, e := range entries {
 		if i > 0 {
 			b.WriteString("\n---\n")
 		}
-		fmt.Fprintf(&b, "%s [id: %d]\n%s\n%s", e.Key, e.ID, renderProvenance(e), e.Value)
+		fmt.Fprintf(&b, "%s [id: %d]%s\n%s\n%s", e.Key, e.ID, legacyMarker(e), renderProvenance(e), e.Value)
 	}
 	if len(entries) >= 20 {
 		// Only show truncation marker if we might have more results.

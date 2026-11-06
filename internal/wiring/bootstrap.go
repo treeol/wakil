@@ -299,6 +299,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
 		} else {
+			app.LegacyMemory = agent.OpenLegacyMemory(app.Cfg, memDBPath)
 			// Sweep runs in the background — it expires stale mid-tier
 			// entries and is not on the critical path. The store is
 			// usable immediately after Open; Sweep just reclaims space.

@@ -161,6 +161,10 @@ type SessionScope struct {
 	// reconciliation must not set this flag (an unknown-workspace transcript
 	// belongs to no folder).
 	IncludeLegacy bool
+	// LegacyWorkspace is the pre-0.5.0 shared workspace path (see
+	// LegacyWorkspacePath). Sessions recorded under it, and not under
+	// Workspace, are returned separately as legacy (0.5.0, C2) instead of hidden.
+	LegacyWorkspace string
 }
 
 // ListSessionsScoped returns saved sessions filtered by scope, most-recently-
@@ -196,10 +200,36 @@ func ListSessionsScoped(scope SessionScope) (matched []Session, hidden int, err 
 			legacy = append(legacy, s)
 			continue
 		}
+		// 0.5.0: sessions recorded under the legacy shared path are not hidden;
+		// they are listed as legacy (ListLegacySessions) and not counted here.
+		if scope.LegacyWorkspace != "" && sameWorkspace(s.Workspace, scope.LegacyWorkspace) {
+			continue
+		}
 		hidden++
 	}
 	matched = append(matched, legacy...)
 	return matched, hidden, nil
+}
+
+// ListLegacySessions returns the sessions recorded under the pre-0.5.0 shared
+// workspace path (scope.LegacyWorkspace), most-recently-updated first, when
+// that path is not the project itself (0.5.0, C2). They are read-only in the
+// resume picker's "legacy (shared store)" section; nothing is moved or rewritten.
+func ListLegacySessions(scope SessionScope) ([]Session, error) {
+	if scope.LegacyWorkspace == "" || sameWorkspace(scope.LegacyWorkspace, scope.Workspace) {
+		return nil, nil
+	}
+	all, err := ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	var out []Session
+	for _, s := range all {
+		if sameWorkspace(s.Workspace, scope.LegacyWorkspace) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 // LoadSessionScoped resolves idOrPrefix the same way LoadSession does, with
