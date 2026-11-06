@@ -13,19 +13,14 @@ import (
 	"time"
 )
 
-// startIgnoringTerm starts a shell that traps TERM and sleeps, with dir in its
-// argv (as Chromium's children carry --user-data-dir).
+// startIgnoringTerm starts a process that ignores SIGTERM, with dir in its argv
+// (as Chromium's children carry --user-data-dir). No shell is involved.
 func startIgnoringTerm(t *testing.T, dir string) int {
 	t.Helper()
-	cmd := osexec.Command("sh", "-c", "trap '' TERM; sleep 300", "sh", "--user-data-dir="+dir)
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot start: %v", err)
-	}
-	go func() { _ = cmd.Wait() }()
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
-	for i := 0; i < 100; i++ {
+	pid := startHelper(t, "ignore-term", "--user-data-dir="+dir)
+	for i := 0; i < 300; i++ {
 		if countUsingDir(dir) > 0 {
-			return cmd.Process.Pid
+			return pid
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -70,6 +65,9 @@ func TestLocalTeardown_WaitIsBounded(t *testing.T) {
 // Teardown of a real direct-mode launch leaves nothing behind: the profile dir
 // is gone and no process carries it. Needs a Chromium binary (skipped otherwise).
 func TestLocalTeardown_RealChromiumLeavesNothing(t *testing.T) {
+	if os.Getenv(liveEnv) != "1" {
+		t.Skipf("set %s=1 to launch a real headless Chromium on a private profile", liveEnv)
+	}
 	if _, err := osexec.LookPath("chromium"); err != nil {
 		if _, err := osexec.LookPath("google-chrome"); err != nil {
 			t.Skip("no chromium on PATH")

@@ -5,33 +5,25 @@ package browser
 
 import (
 	"os"
-	osexec "os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-// startSleeper runs `sleep` with marker in its argv and returns its pid and a
-// reaper-free cleanup.
+// startSleeper starts a process with marker in its argv (no shell involved: see
+// helper_proc_test.go) and waits until /proc shows it.
 func startSleeper(t *testing.T, marker string) int {
 	t.Helper()
-	// sh keeps the marker in its argv: `sh -c 'sleep 300' <marker>` makes the
-	// marker $0 and sleep is the foreground child.
-	cmd := osexec.Command("sh", "-c", "sleep 300", marker)
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot start sleep: %v", err)
-	}
-	go func() { _ = cmd.Wait() }()
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
-	// Wait until /proc shows it (exec has happened).
-	for i := 0; i < 100; i++ {
-		if strings.Contains(procCmdline(cmd.Process.Pid), marker) {
-			return cmd.Process.Pid
+	pid := startHelper(t, "", marker)
+	for i := 0; i < 300; i++ {
+		if strings.Contains(procCmdline(pid), marker) {
+			return pid
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("sleeper never showed its marker in cmdline")
+	t.Fatal("helper never showed its marker in cmdline")
 	return 0
 }
 
@@ -113,5 +105,63 @@ func TestProcStartTimeMatchesStatField22(t *testing.T) {
 	}
 	if _, err := strconv.ParseUint(st, 10, 64); err != nil {
 		t.Errorf("start time %q is not numeric", st)
+	}
+}
+
+// On Linux the identity is a pidfd taken at spawn, and the signal goes through
+// it.
+func TestKillOwned_UsesPidfdOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("pidfd is Linux only")
+	}
+	marker := "wakil-pidfd-" + strconv.Itoa(os.Getpid())
+	pid := startSleeper(t, marker)
+	h, ok := recordHostProcess(pid, marker)
+	if !ok {
+		t.Fatal("cannot record the test process")
+	}
+	if !h.hasFD {
+		h.release()
+		t.Skip("kernel offers no pidfd here")
+	}
+	if !killOwned(h, nil) {
+		t.Fatal("the recorded process must be signalled through its pidfd")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for procStartTime(pid) != "" && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if procStartTime(pid) != "" {
+		t.Error("process survived the pidfd signal")
+	}
+}
+
+// A process that already exited is not signalled, quietly — through the pidfd
+// it is the recorded process or nothing, whatever the pid is now.
+func TestKillOwned_ExitedProcessIsNotSignalled(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("pidfd is Linux only")
+	}
+	marker := "wakil-exited-" + strconv.Itoa(os.Getpid())
+	pid := startSleeper(t, marker)
+	h, ok := recordHostProcess(pid, marker)
+	if !ok || !h.hasFD {
+		if ok {
+			h.release()
+		}
+		t.Skip("no pidfd here")
+	}
+	p, _ := os.FindProcess(pid)
+	_ = p.Kill()
+	deadline := time.Now().Add(3 * time.Second)
+	for procStartTime(pid) != "" && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	var logged []string
+	if killOwned(h, func(f string, a ...any) { logged = append(logged, f) }) {
+		t.Fatal("an exited process must not be signalled")
+	}
+	if len(logged) != 0 {
+		t.Errorf("an exited process is not a mismatch: %v", logged)
 	}
 }
