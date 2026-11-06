@@ -1,7 +1,7 @@
 # Wakil 0.5.0 — close-out
 
-Status: **not tagged, not pushed.** The host sequence below must pass before
-`v0.5.0` is tagged. Branch `master`, local commits on top of `34c29be`.
+Status: **tagged v0.5.0, pushed to origin.** Host steps 1–13 green, 14–16
+fixed (F1–F9). Branch `master`, HEAD `5c9988d`.
 
 ## Commits
 
@@ -184,4 +184,4 @@ After the F1–F8 fixes, re-run on rubin:
 
 If all pass: push, then tag `v0.5.0`.
 
-No tag and no push have been made.
+Tagged `v0.5.0` at `5c9988d` and pushed to origin. GitHub release created.
