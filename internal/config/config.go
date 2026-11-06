@@ -687,7 +687,7 @@ type Config struct {
 	// When enabled, chromium must be installed in the sandbox image.
 	BrowserEnabled bool `json:"browser_enabled,omitempty"`
 	// BrowserForcedOff is the reason browser_enabled was switched off at load
-	// time (e.g. sandbox backend hisn); "" when it was not. Not a config key.
+	// time; "" when it was not. Not a config key.
 	BrowserForcedOff string `json:"-"`
 
 	// BrowserPath overrides the Chromium/Chrome binary path. When empty,
@@ -2349,9 +2349,9 @@ const MinHisnDefaultVersion = "0.3.1"
 // env, flag, exec_mode), `hisn check` passes and hisn >= 0.3.1 is in PATH
 // (avail.Reason == ""), and the setup does not depend on docker-only features
 // (an explicit --workdir). Otherwise it stays docker and DefaultNote says why,
-// so a host without hisn sees no silent behaviour change. extra is a further
-// reason to stay on docker computed by the caller (e.g. an unapproved
-// .wakil/sandbox.json); "" means none.
+// so a host without hisn sees no silent behaviour change. extra is kept for
+// callers that compute a further stay-on-docker reason; resolveSandbox passes
+// "" (project-file errors are startup errors there, not stay-docker reasons).
 func ApplyDefaultBackend(cfg Config, avail HisnAvailability, extra string) Config {
 	if !cfg.Sandbox.BackendDefaulted || cfg.ExecMode == "direct" {
 		return cfg
@@ -2510,6 +2510,8 @@ func validateSandboxConfig(cfg *Config) error {
 			return fmt.Errorf("sandbox.hisn.env_pass[%d]: invalid name %q", i, n)
 		case hostStartupEnv(n):
 			return fmt.Errorf("sandbox.hisn.env_pass[%d]: %q is not allowed (it changes how host processes start)", i, n)
+		case n == "SSH_AUTH_SOCK":
+			return fmt.Errorf("sandbox.hisn.env_pass[%d]: %q is reserved (sandbox.hisn.ssh_agent forwards the host agent; adding it to env_pass would leak the host socket path into the sandbox)", i, n)
 		case seen[n]:
 			return fmt.Errorf("sandbox.hisn.env_pass[%d]: duplicate name %q", i, n)
 		}

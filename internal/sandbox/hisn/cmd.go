@@ -65,16 +65,9 @@ func (b *Backend) command(ctx context.Context, withPass bool, args ...string) *o
 	cmd := osexec.CommandContext(ctx, b.opts.Binary, args...)
 	var pass []string
 	if withPass {
-		pass = b.opts.EnvPass
-		// SSH_AUTH_SOCK is needed by the host-side hisn supervisor (hisn run)
-		// to forward the host agent into the session. It is passed ONLY to the
-		// supervisor (withPass=true), never to exec clients (withPass=false):
-		// the in-sandbox environment stays allowlisted (hisn's proxy provides
-		// the in-sandbox socket). The host socket path never appears inside
-		// the sandbox.
-		if b.opts.SSHAgent {
-			pass = append(pass, "SSH_AUTH_SOCK")
-		}
+		// Copy EnvPass into a fresh slice before appending: append may
+		// write into the backing array, and EnvPass is shared state.
+		pass = append(append([]string(nil), b.opts.EnvPass...), "SSH_AUTH_SOCK")
 	}
 	cmd.Env = scrubbedEnv(b.baseEnv(), pass)
 	return cmd

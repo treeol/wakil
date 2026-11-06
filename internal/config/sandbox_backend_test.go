@@ -227,6 +227,15 @@ func TestSandboxHisnEnvPassOverride(t *testing.T) {
 	}
 }
 
+// TestSandboxHisnEnvPassRejectsSSHAuthSock: SSH_AUTH_SOCK is reserved for the
+// host-side supervisor (F4); a user listing it in env_pass must be rejected.
+func TestSandboxHisnEnvPassRejectsSSHAuthSock(t *testing.T) {
+	_, err := loadSandboxCfg(t, `{"sandbox":{"backend":"hisn","hisn":{"env_pass":["SSH_AUTH_SOCK"]}}}`, "--host-workdir", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
+		t.Fatalf("want SSH_AUTH_SOCK rejection error, got %v", err)
+	}
+}
+
 // TestAllowUsernsBothKeys: the documented sandbox.docker.allow_userns and the
 // legacy top-level docker_allow_userns both enable the flag (the documented
 // key used to be silently ignored).
