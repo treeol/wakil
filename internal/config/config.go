@@ -1110,7 +1110,10 @@ type HisnConfig struct {
 	// Needed for ssh_signing and for ssh git transports. Default false.
 	SSHAgent bool `json:"ssh_agent,omitempty"`
 	// SSHKeys are extra public-key fingerprints (SHA256:…) the agent may use
-	// inside the session, in addition to keys named by ssh_signing. Global only.
+	// inside the session — the agent-forwarding allowlist ONLY. Since 0.5.1
+	// they do not gate signing: the signing key is resolved per repo on the
+	// host at plan time and its fingerprint is appended to the session
+	// allowlist. Global only.
 	SSHKeys []string `json:"ssh_keys,omitempty"`
 	// GrantableRW lists absolute host prefixes under which read-write grants
 	// outside the workspace are allowed (Landlock cannot widen later).

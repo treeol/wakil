@@ -361,9 +361,27 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		t.Fatalf("git init inside session failed: %+v", info)
 	}
 
-	// F9: set a repo-local user.signingkey to a nonexistent path. The COMMAND-
-	// scope GIT_CONFIG_* env must override it.
-	if _, info := irunSign(t, b, cwd, "git", "config", "--local", "user.signingkey", "/nonexistent/path/key.pub"); info.Code != 0 {
+	// 0.5.1 per-repo point: a repo-local user.signingkey naming a REAL, different
+	// key. The repo's key is resolved on the HOST at plan time (wiring), and the
+	// session signs with the resolved key at COMMAND scope — the repo-local
+	// setting inside the session cannot change it. Generate a second throwaway
+	// key and set IT as the repo-local signingkey AFTER the session key was
+	// resolved (the session carries the first key); the signature must come from
+	// the session key, never the repo-local one.
+	otherKey := filepath.Join(keyDir, "other_ed25519")
+	if _, err := osexec.Command(keygenPath, "-t", "ed25519", "-N", "", "-f", otherKey).Output(); err != nil {
+		t.Skipf("ssh-keygen failed (second key): %v", err)
+	}
+	otherFpOut, err := osexec.Command(keygenPath, "-lf", otherKey+".pub").Output()
+	if err != nil {
+		t.Skipf("ssh-keygen -lf failed (second key): %v", err)
+	}
+	otherFields := strings.Fields(strings.TrimSpace(string(otherFpOut)))
+	if len(otherFields) < 2 || !strings.HasPrefix(otherFields[1], "SHA256:") {
+		t.Skipf("could not parse second key fingerprint from %q", string(otherFpOut))
+	}
+	otherFp := otherFields[1]
+	if _, info := irunSign(t, b, cwd, "git", "config", "--local", "user.signingkey", otherKey+".pub"); info.Code != 0 {
 		t.Fatalf("git config --local user.signingkey failed: %+v", info)
 	}
 
@@ -381,6 +399,9 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	}
 	if strings.Contains(gcOut, "/nonexistent/path/key.pub") {
 		t.Errorf("repo-local signingkey leaked past the command-scope override:\n%s", gcOut)
+	}
+	if strings.Contains(gcOut, otherKey+".pub") {
+		t.Errorf("repo-local signingkey %s leaked past the command-scope override:\n%s", otherKey+".pub", gcOut)
 	}
 	gpgOut, gpgInfo := irunSign(t, b, cwd, "git", "config", "--get", "commit.gpgsign")
 	if gpgInfo.Code != 0 || strings.TrimSpace(gpgOut) != "true" {
@@ -409,8 +430,27 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	// %G? = G for a good signature, B for a bad signature, U for a good
 	// signature with unknown validity, N for no signature.
 	signStatus := strings.TrimSpace(string(signOut))
-	if signStatus != "G" && signStatus != "U" {
-		t.Errorf("signed commit not verified on host: %%G?=%q (want G or U)", signStatus)
+	if signStatus != "G" {
+		t.Errorf("signed commit not verified on host: %%G?=%q (want G — the allowed-signers file names exactly this key principal)", signStatus)
+	}
+	// 0.5.1: the signature must be made by the RESOLVED session key (the
+	// repo's key at plan time), not the repo-local key set inside the session.
+	keyOut, err := osexec.Command("git", "-C", cwd,
+		"-c", "gpg.format=ssh",
+		"-c", "gpg.ssh.allowedSignersFile="+filepath.Join(b.opts.HomeRoot, ".wakil-allowed-signers"),
+		"log", "-1", "--format=%GK").Output()
+	if err != nil {
+		t.Fatalf("git log %%GK on host failed: %v", err)
+	}
+	signingKeyFp := strings.TrimSpace(string(keyOut))
+	if signingKeyFp == "" {
+		t.Fatal("commit carries no signature key fingerprint (percent-GK empty)")
+	}
+	if signingKeyFp == otherFp {
+		t.Errorf("commit signed by the repo-local key %s, not the resolved session key %s", otherFp, fp)
+	}
+	if signingKeyFp != fp {
+		t.Errorf("commit signed by %s, want the resolved session key %s", signingKeyFp, fp)
 	}
 }
 

@@ -45,9 +45,6 @@ type Options struct {
 	GitName    string
 	GitEmail   string
 	SigningKey string
-	// SigningNote is a one-line note shown in the sandbox status when signing
-	// is on (e.g. a repo-local signingkey that is ignored). "" = no note.
-	SigningNote string
 	// KnownHosts is the host known_hosts file, mounted read-only when the
 	// agent (ssh transport) is on. "" = none.
 	KnownHosts  string
@@ -234,8 +231,10 @@ func New(opts Options) (*Backend, error) {
 	surf.SSHKeys = append([]string(nil), opts.SSHKeys...)
 	if surf.SSHAgent && len(surf.SSHKeys) == 0 {
 		// [ssh] needs a non-empty allowlist (plan D7); an agent with no keys
-		// would forward whatever the host agent holds.
-		return nil, fmt.Errorf("hisn backend: sandbox.hisn.ssh_agent = true needs sandbox.hisn.ssh_keys (SHA256:… fingerprints) or ssh_signing with a .pub key")
+		// would forward whatever the host agent holds. Under 0.5.1 the
+		// signing key's fingerprint is appended to the session allowlist at
+		// plan time (wiring), so a signing repo satisfies this on its own.
+		return nil, fmt.Errorf("hisn backend: sandbox.hisn.ssh_agent = true needs sandbox.hisn.ssh_keys (SHA256:… fingerprints), or a repo that signs (commit.gpgsign=true resolves its key at plan time)")
 	}
 	if opts.SigningKey != "" && !opts.SSHAgent {
 		return nil, fmt.Errorf("hisn backend: ssh signing needs sandbox.hisn.ssh_agent = true")

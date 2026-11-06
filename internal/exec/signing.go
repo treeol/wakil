@@ -1,11 +1,14 @@
 package exec
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // SigningSetup is resolved on the HOST before the sandbox container starts and
@@ -34,23 +37,12 @@ type SigningSetup struct {
 // signing cannot or should not be enabled. Never returns an error: signing is
 // best-effort and must not block startup.
 func DetectSigning(mode, repoDir string) (SigningSetup, string) {
-	return detectSigning(mode, repoDir, false)
+	return detectSigning(mode, repoDir)
 }
 
-// DetectSigningTrusted is DetectSigning for callers whose sandbox can write
-// the workspace (hisn). The signing key and gpg.format come from the user's
-// global and system git config only: a repo-local .git/config is writable from
-// the sandbox, and a key read from it would join the host agent allowlist.
-// Explicit .pub paths are unaffected.
-func DetectSigningTrusted(mode, repoDir string) (SigningSetup, string) {
-	return detectSigning(mode, repoDir, true)
-}
-
-func detectSigning(mode, repoDir string, trustedOnly bool) (SigningSetup, string) {
+// detectSigning resolves the SSH-signing setup from the host git config.
+func detectSigning(mode, repoDir string) (SigningSetup, string) {
 	get := func(key string) string { return gitConfigGet(repoDir, key) }
-	if trustedOnly {
-		get = func(key string) string { return gitConfigGetScope(key, "--global", "--system") }
-	}
 	switch mode {
 	case "", "off":
 		return SigningSetup{}, "" // feature off; no reason to log
@@ -123,7 +115,7 @@ func finishSetup(pub, repoDir string) (SigningSetup, string) {
 		Enabled:   true,
 		AgentSock: sock,
 		PublicKey: pub,
-		AutoSign:  gitConfigGetBool(repoDir, "commit.gpgsign"),
+		AutoSign:  func() bool { v, _, _ := gitConfigProbeBool(repoDir, "commit.gpgsign"); return v }(),
 		UserName:  gitConfigGet(repoDir, "user.name"),
 		UserEmail: gitConfigGet(repoDir, "user.email"),
 	}, ""
@@ -173,43 +165,194 @@ func readPublicKeyFile(path string) (string, string) {
 	return line, ""
 }
 
+// RepoSigning is the per-repository signing decision, resolved on the HOST at
+// plan time (0.5.1). The sandbox never decides or changes the signing key: it
+// only receives the resolved public literal (at COMMAND scope, see
+// signingEnv) and the agent-forwarded private key. PrivatePath is a HOST path
+// and never crosses into the sandbox.
+type RepoSigning struct {
+	Signing         bool   // repo commits are signed (commit.gpgsign true)
+	PublicKey       string // literal public key line; "" when !Signing
+	PrivateKeyPath  string // host path of the private key when known; "" otherwise
+	SigningKeyValue string // raw user.signingkey value (for error messages)
+}
+
+// ResolveRepoSigning reads the repo's effective git config ON THE HOST — with
+// repoDir as the working directory, so a repo-local .git/config wins over the
+// user's global config, exactly as a commit on the host would resolve it
+// (0.5.1: per-repo resolution).
+//
+// commit.gpgsign not true (false or unset) means signing is OFF: nothing is
+// injected and no error is returned. commit.gpgsign=true is a HARD requirement:
+// an unset user.signingkey or a key that cannot be resolved is an error that
+// fails the plan (never a silent unsigned start).
+//
+// explicitKey (non-empty) overrides the repo's user.signingkey (the
+// ssh_signing "<path to a .pub file>" form). It is resolved the same way.
+//
+// Fail-closed: a git invocation that itself fails (exit code other than 1 =
+// unset: missing git, dubious ownership, corrupt config) is an ERROR that
+// fails the plan — it is never mistaken for "signing is off" (a silent
+// unsigned start).
+func ResolveRepoSigning(repoDir, explicitKey string) (RepoSigning, error) {
+	v, set, err := gitConfigProbeBool(repoDir, "commit.gpgsign")
+	if err != nil {
+		return RepoSigning{}, fmt.Errorf("repo %s: reading commit.gpgsign: %w", repoDir, err)
+	}
+	if !set || !v {
+		return RepoSigning{}, nil
+	}
+	key := explicitKey
+	if key == "" {
+		key, set, err = gitConfigProbe(repoDir, "user.signingkey")
+		if err != nil {
+			return RepoSigning{}, fmt.Errorf("repo %s: reading user.signingkey: %w", repoDir, err)
+		}
+		if !set {
+			return RepoSigning{}, fmt.Errorf("repo %s: commit.gpgsign is true but user.signingkey is unset — set it (or set commit.gpgsign false), or turn wakil ssh_signing off", repoDir)
+		}
+	}
+	format, fset, err := gitConfigProbe(repoDir, "gpg.format")
+	if err != nil {
+		return RepoSigning{}, fmt.Errorf("repo %s: reading gpg.format: %w", repoDir, err)
+	}
+	if fset && format != "" && format != "ssh" {
+		return RepoSigning{}, fmt.Errorf("repo %s: gpg.format is %q — only ssh signing is supported", repoDir, format)
+	}
+	// gpg.format unset is treated as ssh intent: wakil signs with ssh keys only,
+	// and signing is required either way (commit.gpgsign=true).
+	pub, priv, reason := resolveSigningKey(key, repoDir)
+	if reason != "" {
+		return RepoSigning{}, fmt.Errorf("repo %s: resolving user.signingkey %q: %s", repoDir, key, reason)
+	}
+	return RepoSigning{Signing: true, PublicKey: pub, PrivateKeyPath: priv, SigningKeyValue: key}, nil
+}
+
+// resolveSigningKey turns a user.signingkey value into a literal public key and
+// the private-key path when the value names one. repoDir is the repository
+// directory the config was read WITH (`git -C repoDir`): a relative path is
+// resolved against it, exactly as a host commit in that repo would resolve it
+// (git runs with the repo as cwd), never against wakil's own process cwd.
+// Accepted forms (git-config(1) gpg.ssh / user.signingKey):
+//   - "key::ssh-ed25519 AAAA…"       → literal, use as-is (prefix stripped)
+//   - "ssh-ed25519 AAAA…"            → already a literal key
+//   - "/path/to/key.pub"             → read the file; private key is the .pub-
+//     less sibling
+//   - "/path/to/key" (private path)  → read "<path>.pub" if present, never
+//     open the private key file itself
+func resolveSigningKey(v, repoDir string) (pub, priv, reason string) {
+	if strings.HasPrefix(v, "key::") {
+		return strings.TrimSpace(strings.TrimPrefix(v, "key::")), "", ""
+	}
+	if strings.HasPrefix(v, "ssh-") || strings.HasPrefix(v, "sk-ssh-") {
+		return strings.TrimSpace(v), "", ""
+	}
+	path := expandHome(v)
+	if !filepath.IsAbs(path) && repoDir != "" {
+		// git resolves a relative user.signingkey against the repo's cwd;
+		// mirror that, never wakil's process cwd.
+		path = filepath.Join(repoDir, path)
+	}
+	if strings.HasSuffix(path, ".pub") {
+		// user.signingkey often points at the PRIVATE key; use the .pub
+		// sibling and never read the private file.
+		pub, reason = readPublicKeyFile(path)
+		return pub, strings.TrimSuffix(path, ".pub"), reason
+	}
+	pub, reason = readPublicKeyFile(path + ".pub")
+	return pub, path, reason
+}
+
+// AgentFingerprints lists the SHA256 fingerprints the HOST ssh-agent holds
+// (ssh-add -l). An unreachable agent, or one holding nothing, yields an empty
+// list — never an error: the caller decides whether a missing key is fatal.
+func AgentFingerprints() []string {
+	out, err := exec.Command("ssh-add", "-l").Output()
+	if err != nil {
+		return nil
+	}
+	var fps []string
+	for _, line := range strings.Split(string(out), "\n") {
+		// "<bits> SHA256:… <comment> (<type>)"
+		f := strings.Fields(line)
+		if len(f) >= 2 && strings.HasPrefix(f[1], "SHA256:") {
+			fps = append(fps, f[1])
+		}
+	}
+	return fps
+}
+
+// AgentHoldsFingerprint reports whether the host ssh-agent holds fp.
+func AgentHoldsFingerprint(fp string) bool {
+	for _, f := range AgentFingerprints() {
+		if f == fp {
+			return true
+		}
+	}
+	return false
+}
+
+// AgentAddKey loads a private key into the HOST ssh-agent, one bounded
+// attempt. A passphrase-protected key with no askpass fails here (and the
+// plan fails loud with that context). The key enters the agent on the host;
+// it is never copied anywhere else.
+func AgentAddKey(path string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ssh-add", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ssh-add %s: %w: %s", path, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // gitConfigGet returns the host-effective value of a git config key for the
 // given repo directory (repo-local wins over global, matching host behavior).
 // Empty string when unset or on any error.
 func gitConfigGet(repoDir, key string) string {
-	cmd := exec.Command("git", "-C", repoDir, "config", "--get", key)
-	out, err := cmd.Output()
-	if err != nil {
+	v, set, err := gitConfigProbe(repoDir, key)
+	if err != nil || !set {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return v
 }
 
-// gitConfigGetScope reads a key only from the given git scopes (for example
-// --global, --system). With no repo directory, git ignores the workspace's
-// .git/config. An unset key returns "".
-func gitConfigGetScope(key string, scopes ...string) string {
-	for _, sc := range scopes {
-		cmd := exec.Command("git", "config", sc, "--get", key)
-		out, err := cmd.Output()
-		if err == nil {
-			if v := strings.TrimSpace(string(out)); v != "" {
-				return v
-			}
-		}
-	}
-	return ""
-}
-
-// gitConfigGetBool reads a boolean key with git's own canonicalization
-// (--type=bool maps yes/on/1 → "true"), so all spellings are honored.
-func gitConfigGetBool(repoDir, key string) bool {
-	cmd := exec.Command("git", "-C", repoDir, "config", "--get", "--type=bool", key)
+// gitConfigProbe reads a git config key with the repo as cwd (host-effective:
+// repo-local wins over global). set is false only for a confirmed unset key
+// (git exit 1). Every other git failure is an ERROR — a missing git binary,
+// dubious ownership, a corrupt config must never be mistaken for "unset"
+// (fail-closed: a gpgsign=true repo must not silently start unsigned).
+func gitConfigProbe(repoDir, key string) (value string, set bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "config", "--get", key)
 	out, err := cmd.Output()
 	if err != nil {
-		return false
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return "", false, nil // confirmed unset
+		}
+		return "", false, fmt.Errorf("git config --get %s: %w", key, err)
 	}
-	return strings.TrimSpace(string(out)) == "true"
+	return strings.TrimSpace(string(out)), true, nil
+}
+
+// gitConfigProbeBool reads a boolean key with git's own canonicalization
+// (--type=bool maps yes/on/1 → "true"), so all spellings are honored. A git
+// failure is an error, never a silent "false" (see gitConfigProbe).
+func gitConfigProbeBool(repoDir, key string) (value bool, set bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "config", "--get", "--type=bool", key)
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return false, false, nil // confirmed unset
+		}
+		return false, false, fmt.Errorf("git config --get --type=bool %s: %w", key, err)
+	}
+	return strings.TrimSpace(string(out)) == "true", true, nil
 }
 
 // expandHome replaces a leading "~/" with the user's home directory.
@@ -258,19 +401,6 @@ func signingEnv(s SigningSetup) []string {
 		)
 	}
 	return args
-}
-
-// gitConfigGetLocal returns the repo-local value of a git config key (read
-// from .git/config only, not global or system). Empty string when unset or on
-// any error. Used by F9 to detect a repo-local user.signingkey that the enforced
-// signing key overrides.
-func GitConfigGetLocal(repoDir, key string) string {
-	cmd := exec.Command("git", "-C", repoDir, "config", "--local", "--get", key)
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // HostIdentity returns the repo-scoped host user.name and user.email, as a

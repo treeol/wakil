@@ -214,9 +214,6 @@ func (b *Backend) SandboxStatus(ctx context.Context) sandbox.Status {
 	if st.Risk == "" {
 		st.Risk = "none"
 	}
-	if b.opts.SigningNote != "" {
-		st.Notes = append(st.Notes, b.opts.SigningNote)
-	}
 	switch {
 	case s.Profile != "":
 		st.Mode, st.Profile = "named profile", s.Profile

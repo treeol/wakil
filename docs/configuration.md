@@ -32,7 +32,7 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--list-sessions` | — | — | list saved sessions for this workspace and exit |
 | `--print-workspace-key` | — | — | print the workspace path, memory-store key, workspace key, sessionhost id/key and what `wakil plan gc` would resolve from this directory, each with its source (cwd / `WAKIL_WORKSPACE_PATH` / config / `WAKIL_WORKSPACE_KEY`), then exit. Read-only; creates no files |
 | `--all` | — | — | with `--resume`/`--list-sessions`: search all workspaces |
-| `--ssh-signing` | — | `off` | SSH commit signing in the sandbox: `off`\|`auto`\|`<path>` |
+| `--ssh-signing` | — | `off` | SSH commit signing in the sandbox: `off`\|`auto`\|`<path>`. Under `sandbox.hisn`: `auto` resolves the key **per repo, on the host, at plan time** — the repo's effective `commit.gpgsign`/`user.signingkey` decide (repo-local config wins, exactly as a host commit would); `commit.gpgsign` not true → no signing injected; `true` with an unset or unloadable key fails the plan. `sandbox.hisn.ssh_keys` gates only agent *forwarding*, not signing |
 | `--config` | `WAKIL_CONFIG` | `~/.config/wakil/config.json` | JSON config file path |
 | `--context-mode` | `WAKIL_CONTEXT_MODE` | `long-session` | context mode: `standard` (full history sent) \| `long-session` (collapse finished requests to question + answer + note); persisted per repo, beats the config file |
 

@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-11-06
+
+### Changed
+
+- **Per-repo signing-key resolution (P3).** `ssh_signing = auto` under
+  `sandbox.hisn` now resolves WHICH key per repository, on the host, at plan
+  time — reading the repo's effective git config with the repo as cwd, so a
+  repo-local `.git/config` wins over global, exactly as a host commit would
+  resolve it. `commit.gpgsign` not true → signing is OFF for the session
+  (nothing injected, no allowed-signers file, no `[ssh]`-signing config);
+  `commit.gpgsign` = true → the repo's `user.signingkey` is resolved
+  (`key::` literal, `.pub` path, or private path + `.pub` sibling — relative
+  paths resolve against the repo), its fingerprint must be holdable by the
+  host ssh-agent (`ssh-add` attempted once when a private path is known), and
+  the plan FAILS loud — naming the repo, key, and fingerprint — if the key is
+  unset or cannot be loaded. A git invocation that itself fails (missing git,
+  unreadable repo) fails the plan too: never a silent unsigned start. The
+  anti-shadowing guarantee is unchanged: the resolved key is injected at
+  COMMAND scope via `GIT_CONFIG_*`, so a repo-local `.git/config` or a
+  user-typed command still cannot change the signing choice.
+
+### Removed
+
+- **`sandbox.hisn.ssh_keys` no longer gates signing.** The signing key's
+  fingerprint was previously required to be in `ssh_keys` (the 0.5.0 F5 check,
+  global-scope resolution). `ssh_keys` is now purely the agent-forwarding
+  allowlist — which keys the proxy exposes in-session — and the resolved
+  signing fingerprint is appended to it automatically. The per-repo resolution
+  replaced the global-only `DetectSigningTrusted` path.
+
+### Migration
+
+- A signing repo needs `sandbox.hisn.ssh_agent = true` (unchanged). Nothing
+  else to migrate: repos that don't sign now simply start unsigned instead of
+  demanding a global signing key.
+
 ## [0.5.0] - 2026-11-06
 
 ### Review status
