@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] - unreleased
 
+### Review status
+
+- P3 (hisn git identity and ssh signing) was reviewed by one reader only; its
+  two blocking items are fixed in `374dd66`. The rest of P3 was not reviewed.
+  Two review attempts failed; see `docs/PLAN-0.5.0.md`.
+
 ### Changed
 
 - **Per-project identity (C1).** Chat stores (memory, session host, session history,

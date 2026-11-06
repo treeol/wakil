@@ -429,3 +429,15 @@ PLAN-0.5.md items B1–B4 (rename migration, state merge, locale, browser reapin
 for docker/direct) are not part of this plan. B3 (locale) and B4 (reaping) appear
 to be covered by the 0.4.4/0.4.5 CHANGELOG entries; verify before dropping them
 from the backlog.
+
+## Phase 3 review status (2026-11-06)
+
+- **P3:** partly reviewed. One reader (claude-fable-5.1) returned a usable review
+  on the source files; its two BLOCKING items were verified and fixed in `374dd66`
+  (repo-local signing key widening the agent allowlist; named profile silently
+  dropping identity/signing). Not obtained: `[ssh]` rendering in `buildPolicy`,
+  validation of `ssh_keys` entries, and `EnvPass` vs `EnvSet` precedence for
+  `GIT_SSH_COMMAND`. Two attempts with gpt-6-astra failed (content filter, then peak
+  load); the retry used a different reader. P3 is not fully reviewed.
+- **P4 option 2** (control-socket ownership protocol) is the 0.5.x follow-up; the
+  CLI exec path stays the browser ownership transport until then.
