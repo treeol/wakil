@@ -33,6 +33,13 @@ Host-verified defects (F1–F4):
 - `69bc01b` F3: preflight SSH_AUTH_SOCK when sandbox.hisn.ssh_agent is true
 - `a8c2ffa` F4+F2 review fixes: slice aliasing, SSH_AUTH_SOCK reserved in env_pass, stale docs
 
+Host-verified defects (F5–F6):
+- `12eee6c` F5: signing key fingerprint must be in sandbox.hisn.ssh_keys (not auto-added)
+- `2249d4a` F6: refuse signing bypass in enforced sessions (tool guard + prompt rule)
+- `e6f6a8e` docs: add DNS known limitation to 0.5.0 changelog
+- `9d4744d` F5: fix integration test — set signing config inside session, verify on host
+- `480ed65` F5+F6 review fixes: guard run_background, case-insensitive keys, read-only config, --config-env
+
 ## Review status
 
 - C: reviewed (one reader). Findings fixed in `3f1fbd8`.
@@ -40,6 +47,7 @@ Host-verified defects (F1–F4):
 - P3: **partly reviewed.** One reader returned a usable review; its two blocking items are fixed in `374dd66`. Not obtained: `[ssh]` rendering in `buildPolicy`, `ssh_keys` entry validation, `EnvPass` vs `EnvSet` precedence. Two attempts failed (content filter, peak load).
 - P4: reviewed (one reader). Findings fixed in `32f34f5`. Q1 found no spurious start.
 - F1+F4+F2: reviewed (two readers). Two BLOCKING findings fixed in `a8c2ffa`: slice aliasing in `command()` (copy `EnvPass` before appending), and `SSH_AUTH_SOCK` rejected in `env_pass` validation (would leak the host socket path into the sandbox). Open (non-blocking): reader 1 notes the F1 docstring overstates the guarantee scope (a broken/unapproved sandbox.json is an error only when hisn would have been chosen — i.e. when hisn is usable and the backend is defaulted); reader 2 notes `workspaceFitsState` became fatal (intended — a workspace containing the state dir is a startup error, not a docker fallback). Both are documented in the F1 commit message.
+- F5+F6: reviewed (two readers, gpt-6-astra + fable-5.1). Three BLOCKING findings fixed in `480ed65`: (1) `handleRunBackground` skipped the guard — a command refused by `handleRunShell` could reach execution through `run_background`; (2) git config keys are case-insensitive — `git -c Commit.GpgSign=false` bypassed the guard; (3) `git config --get commit.gpgsign` (a read) was refused. Additional fixes: `--no-gpg-sign` only on git commands, `--config-env` form, `git -C . config` and `git -c core.pager=cat config` forms, multiple `config` tokens, `GIT_CONFIG_VALUE_<n>` prefix, error message no longer double-prefixes "ERROR:". Open (non-blocking): shell quoting/indirection (`$K`, `$(which git)`), `env -u`, section operations (`--remove-section`), `--config-env` abbreviation, and `git commit-tree`/`fast-import` are out of scope for a direct-command guard — the audit trail (an unsigned commit) catches the rest.
 
 ## Verification run here (sandbox)
 
@@ -59,11 +67,13 @@ Steps 1–13 of the host sequence: **green.** Steps 14–16 were blocked by F4
   `--print-workspace-key`, `wakil state migrate --from-legacy` dry run,
   config lines, real-chat checklist items 9a–9d).
 - Step 14: browser screenshot under hisn — blocked by F2 (browser reported off
-  under hisn). Fixed in `d95e5b7`.
+  under hisn). Fixed in `d95e5b7`. **P4 host result: Chromium ran inside the
+  session on real hisn 0.3.2.**
 - Step 15: `hisn exec <session> pgrep -fa chrom` after `/new` — blocked by F2
   (browser never started). Fixed.
 - Step 16: signed commit — blocked by F4 (SSH_AUTH_SOCK not forwarded). Fixed
-  in `7bf319f`.
+  in `7bf319f`. F5 (`12eee6c`) and F6 (`2249d4a`) fix the remaining signing
+  defects found at step 16 (fingerprint not checked, bypass not refused).
 
 Stale-test commit: `ab6899d` (TestIntegrationProfileStart: Risk is "data" with
 home-persist since 0.5.0).
@@ -82,14 +92,46 @@ F1–F4 with commit hashes:
 - F3 `69bc01b`: `SSH_AUTH_SOCK` checked at preflight when `ssh_agent=true`
   (set + socket); error names `sandbox.hisn.ssh_agent`.
 
+F5–F6 with commit hashes:
+- F5 `12eee6c`: the signing key fingerprint must be in `sandbox.hisn.ssh_keys` —
+  it is never auto-added. `hisnGitSetup` checks the fingerprint against
+  `h.SSHKeys` and fails with an error naming the key, the fingerprint, and
+  `sandbox.hisn.ssh_keys`. `SigningSetup.SigningKeyValue` carries the raw
+  `user.signingkey` value for error messages. Integration test extended: a
+  throwaway key whose `.pub` path is the signing key, a commit made inside the
+  session verifies with `git log --format=%G?` on the host side.
+- F6 `2249d4a`: in a signing-enforced session (profile carries signing), the
+  shell tool and every git tool refuse commands that would disable or bypass
+  signing — `git -c <signing_key>=…`, `git config <signing_key> …`, `--no-gpg-sign`,
+  `GIT_CONFIG_*` env vars. The guard catches the direct forms; a determined
+  bypass through a script file is out of scope (the audit trail catches it).
+  `SigningEnforcer` interface; `BackendOptions.SigningEnforced` set by
+  `newHisnExecutor`; `DockerExecutor.SigningEnforced()` returns `d.signing`.
+  System prompt rule added in the Shell section of `prompts/agent.txt`.
+- `9d4744d`: F5 integration test fix — the session gitconfig (`GIT_CONFIG_GLOBAL`)
+  points at the host home root path, which hisn remounts at `$HOME=/run/hisn/home`
+  inside the sandbox (profile mode, hisn >= 0.3.2). The signing config is set
+  directly inside the session and verified on the host side. Also removes the
+  unused `formatSigningBypassResult` from the F6 guard.
+
 ## Open items
 
+- **DNS limitation (known):** browser under hisn: name resolution fails on hosts
+  where `/etc/resolv.conf` only lists the systemd-resolved stub (127.0.0.53);
+  hisn 0.3.2 drops loopback resolvers and leaves none. Fixed in hisn 0.3.3.
+  Host evidence: network reachable by IP, `getent` fails, `/etc/resolv.conf`
+  empty inside the session.
 - **Flake, `ctl`:** `TestSignalRequestJSONByteForByte` failed once under full-suite load. Passes on reruns. Cause not found.
 - **Flake, `internal/config`:** one run wrote a temp dir into the real `repo-state` directory; the testutil guard caught it. Did not reproduce. Cause not found.
-- **Flake, `internal/agent`:** `ListSessions` unmarshal test times out under full-suite load (pre-existing, unrelated to F1–F4).
-- **P4 option 2 (0.5.x):** control-socket ownership protocol to replace the CLI exec transport for the browser.
-- **P3 review gaps:** see Review status above.
-- **0.5.1 list:** anything the P3 review gaps turn up; named-profile `[ssh]` behaviour (`hisn profile explain`) not yet confirmed.
+- **Flake, `internal/agent`:** `ListSessions` unmarshal test times out under full-suite load (pre-existing, unrelated to F1–F6).
+- **0.5.1 list:**
+  - crashpad handlers still start despite `--disable-crash-reporter` — add `--disable-features=Crashpad` or a `/tmp` crash-dumps dir.
+  - `migrate --from-legacy` dry-run offers `--apply` with 0 copyable.
+  - `ctl` JSON flake; `internal/config` temp-dir flake.
+  - F3 if open (preflight `SSH_AUTH_SOCK`).
+  - P4 Option 2: control-socket ownership protocol to replace the CLI exec transport for the browser.
+  - P3 review gaps: `[ssh]` rendering in `buildPolicy`, `ssh_keys` entry validation, `EnvPass` vs `EnvSet` precedence.
+  - named-profile `[ssh]` behaviour (`hisn profile explain`) not yet confirmed.
 
 ## Remaining host steps (14–16)
 
