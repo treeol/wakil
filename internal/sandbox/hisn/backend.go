@@ -32,14 +32,22 @@ func isComputedEnv(name string) bool {
 
 // Options configures a Backend.
 type Options struct {
-	Binary      string   // hisn executable; default "hisn"
-	MinVersion  string   // default MinVersion
-	StateDir    string   // owner records, policies, lock (required)
-	HomeRoot    string   // persistent sandbox $HOME on the host (required)
-	Home        string   // sandbox.hisn.home: "persist" (default) | "tmpfs"
-	Rootfs      string   // sandbox.hisn.rootfs (store name or abs path); "" = host toolchain
-	SSHAgent    bool     // sandbox.hisn.ssh_agent: expose the host agent ([ssh], global only)
-	SSHKeys     []string // sandbox.hisn.ssh_keys + ssh_signing key fingerprints (SHA256:…)
+	Binary     string   // hisn executable; default "hisn"
+	MinVersion string   // default MinVersion
+	StateDir   string   // owner records, policies, lock (required)
+	HomeRoot   string   // persistent sandbox $HOME on the host (required)
+	Home       string   // sandbox.hisn.home: "persist" (default) | "tmpfs"
+	Rootfs     string   // sandbox.hisn.rootfs (store name or abs path); "" = host toolchain
+	SSHAgent   bool     // sandbox.hisn.ssh_agent: expose the host agent ([ssh], global only)
+	SSHKeys    []string // sandbox.hisn.ssh_keys + ssh_signing key fingerprints (SHA256:…)
+	// Git identity and SSH signing for the session gitconfig (P3). Identity
+	// empty = no [user]; SigningKey is a PUBLIC key line, "" = signing off.
+	GitName    string
+	GitEmail   string
+	SigningKey string
+	// KnownHosts is the host known_hosts file, mounted read-only when the
+	// agent (ssh transport) is on. "" = none.
+	KnownHosts  string
 	HostCwd     string   // absolute, symlink-free workspace (required)
 	GrantableRW []string // prefixes allowed for rw grants
 	EnvPass     []string // names passed into the sandbox
@@ -221,6 +229,9 @@ func New(opts Options) (*Backend, error) {
 		// [ssh] needs a non-empty allowlist (plan D7); an agent with no keys
 		// would forward whatever the host agent holds.
 		return nil, fmt.Errorf("hisn backend: sandbox.hisn.ssh_agent = true needs sandbox.hisn.ssh_keys (SHA256:… fingerprints) or ssh_signing with a .pub key")
+	}
+	if opts.SigningKey != "" && !opts.SSHAgent {
+		return nil, fmt.Errorf("hisn backend: ssh signing needs sandbox.hisn.ssh_agent = true")
 	}
 	opts.Surface = surf
 	// The state directory is the user's trust root (approvals, profiles, owner

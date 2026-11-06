@@ -215,3 +215,9 @@ func signingEnv(s SigningSetup) []string {
 	}
 	return args
 }
+
+// HostIdentity returns the repo-scoped host user.name and user.email, as a
+// host commit in repoDir would use them. Empty values mean "not configured".
+func HostIdentity(repoDir string) (name, email string) {
+	return gitConfigGet(repoDir, "user.name"), gitConfigGet(repoDir, "user.email")
+}

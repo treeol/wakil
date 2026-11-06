@@ -160,3 +160,15 @@ func TestProjectRejectsGlobalSSHKeys(t *testing.T) {
 		}
 	}
 }
+
+// P3: git identity is global-only; the project file refuses it.
+func TestProjectRejectsGlobalGitIdentity(t *testing.T) {
+	for _, raw := range []string{
+		`{"hisn":{"git_identity_email":"a@x.test"}}`,
+		`{"hisn":{"git_identity_name":"A"}}`,
+	} {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("project file must refuse global identity key: %s", raw)
+		}
+	}
+}

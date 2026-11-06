@@ -1100,6 +1100,11 @@ type HisnConfig struct {
 	// absolute directory. Empty = the host toolchain. Project override:
 	// .wakil/sandbox.json "hisn": {"rootfs": "<name>"} (name only).
 	Rootfs string `json:"rootfs,omitempty"`
+	// GitIdentity overrides the commit identity written into the session
+	// gitconfig. Empty fields default to the host's repo-scoped user.name /
+	// user.email (read at session start). Global only.
+	GitIdentityName  string `json:"git_identity_name,omitempty"`
+	GitIdentityEmail string `json:"git_identity_email,omitempty"`
 	// SSHAgent exposes the host ssh-agent socket inside the session (hisn
 	// [ssh], hisn >= 0.3.2). Global only: the project file cannot switch it on.
 	// Needed for ssh_signing and for ssh git transports. Default false.

@@ -55,6 +55,10 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 	if err != nil {
 		return nil, err
 	}
+	gitName, gitEmail, signingKey, sshKeys, err := hisnGitSetup(cfg, h)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	hisn.SetDiagnostics(os.Stderr)
@@ -65,7 +69,11 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		Home:        h.Home,
 		Rootfs:      rootfsFor(h.Rootfs, surface),
 		SSHAgent:    h.SSHAgent,
-		SSHKeys:     h.SSHKeys,
+		SSHKeys:     sshKeys,
+		GitName:     gitName,
+		GitEmail:    gitEmail,
+		SigningKey:  signingKey,
+		KnownHosts:  knownHostsPath(h.SSHAgent),
 		HostCwd:     cfg.HostWorkDir,
 		GrantableRW: h.GrantableRW,
 		EnvPass:     h.EnvPass,
@@ -115,4 +123,68 @@ func kvrOptions(cfg config.Config, h config.HisnConfig) hisn.KVROptions {
 		}
 	}
 	return o
+}
+
+// hisnGitSetup resolves the session git identity and SSH signing (P3) on the
+// host. Identity: sandbox.hisn.git_identity_* override, else the repo-scoped
+// host user.name / user.email. Signing: ssh_signing through exec.DetectSigning,
+// which reads only the PUBLIC key. A signing setup that cannot be resolved is an
+// error under hisn: it is never skipped silently (the docker path logs a skip).
+func hisnGitSetup(cfg config.Config, h config.HisnConfig) (name, email, signingKey string, sshKeys []string, err error) {
+	sshKeys = append([]string(nil), h.SSHKeys...)
+	if !h.SSHAgent && (cfg.SSHSigning != "" && cfg.SSHSigning != "off") {
+		return "", "", "", nil, fmt.Errorf("ssh_signing needs sandbox.hisn.ssh_agent = true under hisn")
+	}
+	name, email = h.GitIdentityName, h.GitIdentityEmail
+	if name == "" || email == "" {
+		hn, he := exec.HostIdentity(cfg.HostWorkDir)
+		if name == "" {
+			name = hn
+		}
+		if email == "" {
+			email = he
+		}
+	}
+	if cfg.SSHSigning == "" || cfg.SSHSigning == "off" {
+		return name, email, "", sshKeys, nil
+	}
+	setup, skip := exec.DetectSigning(cfg.SSHSigning, cfg.HostWorkDir)
+	if skip != "" || !setup.Enabled {
+		return "", "", "", nil, fmt.Errorf("ssh_signing under hisn cannot be enabled: %s", skip)
+	}
+	if email == "" {
+		return "", "", "", nil, fmt.Errorf("ssh_signing needs a git identity email (sandbox.hisn.git_identity_email or host user.email)")
+	}
+	// The signing key's fingerprint joins the agent allowlist, so the session
+	// agent can sign with it. An explicit ssh_keys list is kept as well.
+	fp, err := hisn.PublicKeyLineFingerprint(setup.PublicKey)
+	if err != nil {
+		return "", "", "", nil, err
+	}
+	if !containsStr(sshKeys, fp) {
+		sshKeys = append(sshKeys, fp)
+	}
+	return name, email, setup.PublicKey, sshKeys, nil
+}
+
+// knownHostsPath is the host ~/.ssh/known_hosts, mounted read-only only when
+// the agent (an ssh transport) is on. "" = none.
+func knownHostsPath(agent bool) string {
+	if !agent {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "known_hosts")
+}
+
+func containsStr(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
