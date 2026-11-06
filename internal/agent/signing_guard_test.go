@@ -60,6 +60,23 @@ func TestCheckSigningBypass(t *testing.T) {
 		{"config --list", "git config --list", false},
 		{"config --show-origin --show-scope user.signingkey", "git config --show-origin --show-scope user.signingkey", false},
 
+		// F7: read flags in any position (not just first after config) are allowed.
+		{"config --show-origin --get user.signingkey", "git config --show-origin --get user.signingkey", false},
+		{"config --show-origin --get-all commit.gpgsign", "git config --show-origin --get-all commit.gpgsign", false},
+		{"config --show-scope --get-regexp gpg", "git config --show-scope --get-regexp gpg", false},
+		{"config -l", "git config -l", false},
+		{"config --get-urlmatch gpg.ssh", "git config --get-urlmatch gpg.ssh", false},
+
+		// F7: write forms on a signing key still refused.
+		{"config --add commit.gpgsign true", "git config --add commit.gpgsign true", true},
+		{"config --replace-all gpg.format ssh", "git config --replace-all gpg.format ssh", true},
+		{"config --rename-section gpg", "git config --rename-section gpg", true},
+		{"config --remove-section gpg", "git config --remove-section gpg", true},
+		{"config -e", "git config -e", true},
+
+		// F7: --no-gpg-sign on a git command still refused.
+		{"-c commit.gpgsign=false log", "git -c commit.gpgsign=false log", true},
+
 		// GIT_CONFIG_* env vars
 		{"GIT_CONFIG_GLOBAL env", "GIT_CONFIG_GLOBAL=/dev/null git commit -m test", true},
 		{"GIT_CONFIG_SYSTEM env", "GIT_CONFIG_SYSTEM=/x git log", true},

@@ -195,58 +195,92 @@ func checkGitDashC(cmd string) string {
 }
 
 // gitConfigReadOnlyFlags are `git config` flags that read config without
-// modifying it. When present, the command is allowed even if it names a
-// signing key.
+// modifying it. When any of these is present (and no write form is), the
+// invocation is a read and allowed even if it names a signing key.
 var gitConfigReadOnlyFlags = map[string]bool{
 	"--get":          true,
 	"--get-all":      true,
 	"--get-regexp":   true,
 	"--get-urlmatch": true,
 	"--list":         true,
+	"-l":             true,
 	"--show-origin":  true,
 	"--show-scope":   true,
 	"--name-only":    true,
 	"--null":         true,
 }
 
-// checkGitConfigSub detects `git config <scope> <key> <value>` where key is a
-// signing key. It handles --global, --system, --local, --file, --blob, -C, -c
-// (with their arguments) and the bare `git config <key> <value>` form.
-// Read-only subcommands (--get, --get-all, --get-regexp, --list, --show-origin,
-// --show-scope) are allowed — the guard refuses sets and unsets, not reads.
+// isSigningSection reports whether section is the section part of any
+// signing key (e.g., "gpg" covers "gpg.format" and "gpg.ssh.*"). Used for
+// --remove-section and --rename-section, whose argument is a section name.
+func isSigningSection(section string) bool {
+	section = strings.ToLower(section)
+	prefix := section + "."
+	for _, k := range signingBypassKeys {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	for _, p := range signingBypassKeyPrefixes {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitConfigWriteFlags are `git config` flags that modify config. Their presence
+// makes the invocation a write regardless of any read flags.
+var gitConfigWriteFlags = map[string]bool{
+	"--add":            true,
+	"--unset":          true,
+	"--unset-all":      true,
+	"--replace-all":    true,
+	"--rename-section":  true,
+	"--remove-section":  true,
+	"--edit":            true,
+	"-e":                true,
+}
+
+// gitConfigSectionFlags take a section name (not a key) as their argument.
+var gitConfigSectionFlags = map[string]bool{
+	"--remove-section": true,
+	"--rename-section": true,
+}
+
+// checkGitConfigSub detects `git config <key> <value>` where key is a signing
+// key. It handles --global, --system, --local, --file, --blob, -C, -c (with
+// their arguments) and the bare `git config <key> <value>` form.
+//
+// F7: a git config invocation is a read, and allowed, when it contains any
+// read flag (--get, --get-all, --get-regexp, --list, -l, --show-origin,
+// --show-scope, --get-urlmatch) and no write form (--add, --unset,
+// --unset-all, --replace-all, --rename-section, --remove-section, --edit, -e,
+// or a bare key value pair). A write on a signing key is refused.
+//
 // All `config` tokens in the command are checked (not just the first).
 func checkGitConfigSub(cmd string) string {
 	fields := strings.Fields(cmd)
 	if len(fields) < 2 {
 		return ""
 	}
-	// Scan all `config` tokens. For each, walk FORWARD from the preceding
-	// `git` to confirm it's a `git ... config` invocation, then check the
-	// key after `config`.
 	for start := 0; start < len(fields); start++ {
 		if fields[start] != "config" {
 			continue
 		}
-		// Walk back to find `git`, skipping flags and their arguments.
-		// The token right before `config` could be an argument to a flag
-		// (e.g. `git -C . config` → `.` is the arg to `-C`).
 		j := start - 1
-		// If the token right before config is not a flag, it might be an
-		// argument to a preceding flag. Walk back past it.
 		if j >= 0 && !strings.HasPrefix(fields[j], "-") {
-			// Check if the token before this one is a flag that takes an arg.
 			if j-1 >= 0 {
 				prev := fields[j-1]
 				if prev == "-C" || prev == "-c" || prev == "--file" || prev == "--blob" || prev == "-f" {
-					j -= 2 // skip the arg and the flag
+					j -= 2
 				}
 			}
 		}
-		// Now walk back past any remaining flags.
 		for j >= 0 && strings.HasPrefix(fields[j], "-") {
 			f := fields[j]
 			if f == "-C" || f == "-c" || f == "--file" || f == "--blob" || f == "-f" {
-				j -= 2 // skip the flag AND its argument
+				j -= 2
 				continue
 			}
 			j--
@@ -254,34 +288,79 @@ func checkGitConfigSub(cmd string) string {
 		if j < 0 || (fields[j] != "git" && !strings.HasSuffix(fields[j], "/git")) {
 			continue
 		}
-		// Found `git ... config`. Check the tokens after `config`.
+		// Found `git ... config`. Scan ALL tokens after `config`: classify
+		// as read or write and capture the first non-flag key.
+		hasRead := false
+		hasExplicitWrite := false
+		hasSectionWrite := false
+		hasEdit := false
+		var section string
+		var key string
 		i := start + 1
 		for i < len(fields) {
 			f := fields[i]
 			if !strings.HasPrefix(f, "-") {
+				if key == "" {
+					key = strings.ToLower(strings.Trim(f, `"'`))
+				}
 				break
 			}
-			// Read-only flag: allow this config invocation.
 			if gitConfigReadOnlyFlags[f] {
-				break
+				hasRead = true
+				i++
+				continue
 			}
-			// --file, --blob, -f, -C, -c take an argument.
+			if gitConfigWriteFlags[f] {
+				hasExplicitWrite = true
+				if gitConfigSectionFlags[f] {
+					hasSectionWrite = true
+					// The next token is the section name.
+					if i+1 < len(fields) {
+						section = strings.ToLower(strings.Trim(fields[i+1], `"'`))
+					}
+					i += 2
+					continue
+				}
+				if f == "--edit" || f == "-e" {
+					hasEdit = true
+				}
+				i++
+				continue
+			}
 			if f == "--file" || f == "--blob" || f == "-f" || f == "-C" || f == "-c" {
 				i += 2
 				continue
 			}
-			// --type=X (read modifier).
 			if strings.HasPrefix(f, "--type=") {
 				i++
 				continue
 			}
 			i++
 		}
-		if i >= len(fields) {
+		// --edit / -e opens the whole config file for editing — refuse.
+		if hasEdit {
+			return signingGuardError
+		}
+		// --remove-section / --rename-section on a section that contains
+		// signing keys — refuse.
+		if hasSectionWrite && section != "" && isSigningSection(section) {
+			return signingGuardError
+		}
+		// Other explicit write flag (--add, --unset, --unset-all,
+		// --replace-all) → check the key.
+		if hasExplicitWrite && !hasSectionWrite {
+			if key != "" && isSigningKey(key) {
+				return signingGuardError
+			}
 			continue
 		}
-		key := strings.ToLower(strings.Trim(fields[i], `"'`))
-		if isSigningKey(key) {
+		// Read flag and no explicit write → read; allowed.
+		if hasRead && !hasExplicitWrite {
+			continue
+		}
+		// No read flag and no explicit write: a bare key (with or without a
+		// value) is a write form. Check the key.
+		if key != "" && isSigningKey(key) {
 			return signingGuardError
 		}
 	}
