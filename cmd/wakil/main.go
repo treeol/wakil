@@ -123,8 +123,12 @@ func main() {
 	// reads it, and state it with its reason.
 	cfg = wiring.ResolveSandbox(context.Background(), cfg)
 	fmt.Fprintln(os.Stderr, cfg.StartupBanner())
-	// D3: WAKIL_WORKSPACE_PATH silently replaces the launch directory as the
-	// project identity; say so once, with the resulting store keys.
+	// D4 (0.5.0): once per project, point at the read-only legacy store and the
+	// migrate command. Then the WAKIL_WORKSPACE_PATH line (warning only, since
+	// 0.5.0 the variable no longer changes store keys).
+	if line := wiring.LegacyNotice(cfg); line != "" {
+		fmt.Fprintln(os.Stderr, "notice:", line)
+	}
 	if line := wiring.WorkspaceEnvOverrideLine(cfg); line != "" {
 		fmt.Fprintln(os.Stderr, line)
 	}

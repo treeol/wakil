@@ -4,6 +4,7 @@ package agent
 // derivations — nothing here changes how a store key is computed.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"encoding/hex"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/memory"
 )
 
 // Identity source labels.
@@ -55,6 +57,12 @@ type WorkspaceKeys struct {
 	// Diverges is true when the chat's memory key differs from the one plan gc
 	// resolves from the same directory (the 0.4.3 / C4 situation).
 	Diverges bool
+	// LegacyKey is the pre-0.5.0 shared store key (the old derivation from the
+	// legacy workspace path), and LegacyEntries the active entries it holds
+	// (-1 when the store does not exist). Read-only: the count never creates it.
+	LegacyKey     string
+	LegacyDBPath  string
+	LegacyEntries int
 }
 
 // ResolveWorkspaceKeys computes the report for cfg. The working directory and
@@ -96,6 +104,30 @@ func ResolveWorkspaceKeys(cfg config.Config) WorkspaceKeys {
 		}
 	}
 	k.Diverges = k.MemoryKey != "" && k.GCMemoryKey != "" && k.MemoryKey != k.GCMemoryKey
+	k.LegacyEntries = -1
+	return k
+}
+
+// WithLegacy fills the legacy fields for cfg. It opens the legacy store
+// read-only and only when the file exists, so it never creates a store.
+func (k WorkspaceKeys) WithLegacy(cfg config.Config) WorkspaceKeys {
+	p := LegacyMemoryDBPath(cfg)
+	if p == "" {
+		return k
+	}
+	k.LegacyDBPath = p
+	k.LegacyKey = filepath.Base(filepath.Dir(p))
+	if _, err := os.Stat(p); err != nil {
+		return k
+	}
+	ls, err := memory.OpenReadOnly(p, "")
+	if err != nil {
+		return k
+	}
+	defer ls.Close()
+	if es, err := ls.List(context.Background(), "", "", "active"); err == nil {
+		k.LegacyEntries = len(es)
+	}
 	return k
 }
 
@@ -135,6 +167,14 @@ func (k WorkspaceKeys) Format() string {
 	fmt.Fprintf(&b, "plan gc from here:  %s   [source: %s]  memory key %s\n", orNone(k.GCPath), SourceCwd, orNone(k.GCMemoryKey))
 	if k.ChatPath == "" {
 		b.WriteString("NOTE: no workspace path (direct mode without a workdir argument): a chat started with this config keys no per-project store; pass the project directory as an argument or set WAKIL_WORKSPACE_PATH.\n")
+	}
+	if k.LegacyKey != "" {
+		if k.LegacyEntries >= 0 {
+			fmt.Fprintf(&b, "legacy store:       %s   [pre-0.5.0 shared store, read-only: %d active entries]\n", k.LegacyKey, k.LegacyEntries)
+			fmt.Fprintf(&b, "  legacy db:        %s\n", k.LegacyDBPath)
+		} else {
+			fmt.Fprintf(&b, "legacy store:       %s   [pre-0.5.0 shared store: none on this host]\n", k.LegacyKey)
+		}
 	}
 	if k.Diverges {
 		fmt.Fprintf(&b, "WARNING: a chat started here keys its memory by %s but `wakil plan gc` from this directory reads %s — see %s\n",
