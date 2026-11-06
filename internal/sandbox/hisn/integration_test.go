@@ -9,6 +9,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -150,6 +151,149 @@ func TestIntegrationEnvIsAllowlisted(t *testing.T) {
 	}
 	if !strings.Contains(out, "CI=1") {
 		t.Errorf("allowlisted CI missing:\n%s", out)
+	}
+}
+
+// TestIntegrationSSHAgentForwarded: when sandbox.hisn.ssh_agent is true,
+// SSH_AUTH_SOCK reaches the host-side hisn supervisor so the session agent
+// can see the allowlisted keys. The in-sandbox environment stays allowlisted:
+// the host socket path must not appear inside the sandbox (hisn's proxy
+// provides the in-sandbox socket).
+//
+// A throwaway agent is started in the test (ssh-agent -s with a t.TempDir
+// socket, ssh-keygen ed25519 temp key, ssh-add), allowlisting only that key's
+// fingerprint. Inside the session, `ssh-add -l` must list exactly that one
+// fingerprint. Skips when ssh-agent or ssh-keygen is missing.
+func TestIntegrationSSHAgentForwarded(t *testing.T) {
+	// Find ssh-agent and ssh-keygen.
+	agentPath, err := osexec.LookPath("ssh-agent")
+	if err != nil {
+		t.Skip("ssh-agent not found on PATH")
+	}
+	keygenPath, err := osexec.LookPath("ssh-keygen")
+	if err != nil {
+		t.Skip("ssh-keygen not found on PATH")
+	}
+
+	// Generate a throwaway ed25519 key.
+	keyDir := t.TempDir()
+	keyPath := filepath.Join(keyDir, "id_ed25519")
+	if _, err := osexec.Command(keygenPath, "-t", "ed25519", "-N", "", "-f", keyPath).Output(); err != nil {
+		t.Skipf("ssh-keygen failed: %v", err)
+	}
+
+	// Start a throwaway ssh-agent with a temp-dir socket.
+	socket := filepath.Join(t.TempDir(), "agent.sock")
+	agentOut, err := osexec.Command(agentPath, "-s", "-a", socket).Output()
+	if err != nil {
+		t.Skipf("ssh-agent failed: %v", err)
+	}
+	// Parse the agent output to get SSH_AUTH_SOCK and SSH_AGENT_PID.
+	// Format: "SSH_AUTH_SOCK=/path; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=123; export SSH_AGENT_PID;"
+	var agentSock, agentPid string
+	for _, line := range strings.Split(string(agentOut), "\n") {
+		line = strings.TrimSpace(line)
+		if kv := strings.SplitN(line, ";", 2); len(kv) > 0 {
+			if strings.HasPrefix(kv[0], "SSH_AUTH_SOCK=") {
+				agentSock = strings.TrimPrefix(kv[0], "SSH_AUTH_SOCK=")
+			}
+			if strings.HasPrefix(kv[0], "SSH_AGENT_PID=") {
+				agentPid = strings.TrimPrefix(kv[0], "SSH_AGENT_PID=")
+			}
+		}
+	}
+	if agentSock == "" || agentPid == "" {
+		t.Fatalf("could not parse ssh-agent output: %s", agentOut)
+	}
+	pid, _ := strconv.Atoi(agentPid)
+	if pid > 0 {
+		t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
+	}
+
+	// Add the throwaway key to the agent. SSH_AUTH_SOCK must point at our
+	// throwaway agent, not whatever the test runner happened to inherit.
+	t.Setenv("SSH_AUTH_SOCK", agentSock)
+	if err := osexec.Command("ssh-add", keyPath).Run(); err != nil {
+		t.Skipf("ssh-add failed: %v", err)
+	}
+	// Get the fingerprint of the throwaway key.
+	pubFp, err := osexec.Command("ssh-keygen", "-lf", keyPath+".pub").Output()
+	if err != nil {
+		t.Skipf("ssh-keygen -lf failed: %v", err)
+	}
+	// Format: "<bits> SHA256:... <path>"
+	fpLine := strings.TrimSpace(string(pubFp))
+	fields := strings.Fields(fpLine)
+	if len(fields) < 2 || !strings.HasPrefix(fields[1], "SHA256:") {
+		t.Skipf("could not parse fingerprint from %q", fpLine)
+	}
+	fp := fields[1]
+
+	// Build a backend with ssh_agent=true and that one fingerprint allowed.
+	bin := os.Getenv("WAKIL_HISN_BIN")
+	if bin == "" {
+		p, err := osexec.LookPath("hisn")
+		if err != nil {
+			t.Skip("hisn not found on PATH")
+		}
+		bin = p
+	}
+	if out, err := osexec.Command(bin, "--version").Output(); err != nil {
+		t.Skipf("hisn unusable: %v", err)
+	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 2}) {
+		t.Skipf("hisn >= 0.3.2 required for ssh_agent (got %q)", strings.TrimSpace(string(out)))
+	}
+	root := t.TempDir()
+	cwd := filepath.Join(root, "ws")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd, _ = filepath.EvalSymlinks(cwd)
+	b, err := New(Options{
+		Binary:    bin,
+		StateDir:  filepath.Join(root, "state"),
+		HomeRoot:  filepath.Join(root, "home"),
+		HostCwd:   cwd,
+		SSHAgent:  true,
+		SSHKeys:   []string{fp},
+		EnvPass:   []string{"CI", "GOFLAGS"},
+		Surface:   Surface{RiskAck: "signing"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := b.Preflight(ctx); err != nil {
+		t.Skipf("hisn unusable on this host: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+
+	if err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-ssh-agent", HostCwd: cwd}); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Inside the session: ssh-add -l must list exactly that one fingerprint.
+	out, info := irun(t, b, "", "sh", "-c", "ssh-add -l 2>&1")
+	if info.Code != 0 {
+		t.Fatalf("ssh-add -l failed inside the session: %q %+v", out, info)
+	}
+	// ssh-add -l output: "<n> SHA256:... <comment> (<type>)"
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var found bool
+	for _, l := range lines {
+		if strings.Contains(l, fp) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ssh-add -l inside the session does not list the allowlisted fingerprint %s:\n%s", fp, out)
+	}
+
+	// The host socket path must not appear inside the sandbox.
+	if strings.Contains(out, socket) {
+		t.Errorf("host SSH_AUTH_SOCK path leaked into the sandbox: %s appears in:\n%s", socket, out)
 	}
 }
 
