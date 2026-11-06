@@ -94,12 +94,12 @@ func runStateMigrate(args []string, out, errw io.Writer) int {
 		fmt.Fprintln(out, "run with --apply to copy these (the legacy store is kept).")
 		return 0
 	}
-	copied, err := agent.ApplyLegacyMigration(ctx, plan)
+	copied, newer, err := agent.ApplyLegacyMigration(ctx, plan)
 	if err != nil {
 		fmt.Fprintf(errw, "state migrate: copied %d before the error: %v\n", copied, err)
 		return 1
 	}
-	fmt.Fprintf(out, "copied %d entries. The legacy store is unchanged.\n", copied)
+	fmt.Fprintf(out, "copied %d entries; skipped %d where the project already holds a newer value. The legacy store is unchanged.\n", copied, newer)
 	return 0
 }
 

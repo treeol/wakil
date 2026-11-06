@@ -197,11 +197,18 @@ func LoadMigrationMarkers(project string) (map[int64]bool, error) {
 	return out, nil
 }
 
-// ApplyLegacyMigration copies the planned entries into their project stores
-// with PutActive and records their legacy IDs in each project's sidecar. It
-// never deletes and never writes the legacy store. A failure stops the run;
-// entries already copied stay copied and recorded.
-func ApplyLegacyMigration(ctx context.Context, plan MigrationPlan) (copied int, err error) {
+// ApplyLegacyMigration copies the planned entries into their project stores.
+// Each copy goes through memory.Store.PutMigrated, which keeps anchors, hashes,
+// provenance and created_at, and never overwrites a project entry that is at
+// least as new. The legacy ID is recorded in the project's sidecar right after
+// its row commits, so a crash leaves a consistent, re-runnable state (a rerun
+// reports already-copied entries as skipped, never duplicates them). It never
+// deletes and never writes the legacy store.
+//
+// Returns the number of entries copied and the number skipped because the
+// project already held a newer active value for the key.
+func ApplyLegacyMigration(ctx context.Context, plan MigrationPlan) (copied, newer int, err error) {
+	legacyAbs, _ := filepath.Abs(plan.LegacyDB)
 	byProject := map[string][]MigrationMove{}
 	for _, m := range plan.Moves {
 		byProject[m.Project] = append(byProject[m.Project], m)
@@ -214,36 +221,45 @@ func ApplyLegacyMigration(ctx context.Context, plan MigrationPlan) (copied int, 
 	for _, proj := range projects {
 		db := MemoryDBPath(proj)
 		if db == "" {
-			return copied, fmt.Errorf("no store path for %s", proj)
+			return copied, newer, fmt.Errorf("no store path for %s", proj)
+		}
+		// Identity guard: never open a writable store on the legacy file itself.
+		if dbAbs, _ := filepath.Abs(db); dbAbs == legacyAbs {
+			return copied, newer, fmt.Errorf("refusing to migrate into the legacy store %s", db)
 		}
 		ps, oerr := memory.Open(db, proj)
 		if oerr != nil {
-			return copied, oerr
+			return copied, newer, oerr
 		}
 		marked, merr := LoadMigrationMarkers(proj)
 		if merr != nil {
 			ps.Close()
-			return copied, merr
+			return copied, newer, merr
 		}
 		for _, m := range byProject[proj] {
 			e := m.Entry
-			paths := make([]string, 0, len(e.Anchors))
-			for _, a := range e.Anchors {
-				paths = append(paths, a.Path)
-			}
-			if _, perr := ps.PutActive(ctx, e.Key, e.Value, e.Kind, e.Tier, e.Writer, e.SessionID, e.Tainted, e.ExpiresAt, paths, e.Note); perr != nil {
+			outcome, perr := ps.PutMigrated(ctx, e)
+			if perr != nil {
 				ps.Close()
-				return copied, fmt.Errorf("copy %s: %w", e.Key, perr)
+				return copied, newer, fmt.Errorf("copy %s: %w", e.Key, perr)
 			}
+			if outcome == memory.MigratedNewer {
+				newer++
+			} else {
+				copied++
+			}
+			// Mark the legacy ID as handled for both outcomes: a newer project
+			// value means the legacy entry is superseded in intent and must not
+			// be reconsidered on the next run.
 			marked[e.ID] = true
-			copied++
+			if werr := writeMigrationMarkers(proj, marked); werr != nil {
+				ps.Close()
+				return copied, newer, werr
+			}
 		}
 		ps.Close()
-		if werr := writeMigrationMarkers(proj, marked); werr != nil {
-			return copied, werr
-		}
 	}
-	return copied, nil
+	return copied, newer, nil
 }
 
 func writeMigrationMarkers(project string, marked map[int64]bool) error {

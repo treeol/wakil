@@ -104,7 +104,7 @@ func TestLegacyMigrationDryRunAndApply(t *testing.T) {
 	}
 
 	// Apply: copies the two attributable entries.
-	copied, err := ApplyLegacyMigration(ctx, plan)
+	copied, _, err := ApplyLegacyMigration(ctx, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
