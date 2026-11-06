@@ -19,6 +19,43 @@ import (
 // error, never silently dropped.
 const ProfileMinVersion = "0.3.1"
 
+// homePersistFor returns the [home] persist path for a session: the root when
+// the mode is persist and hisn supports [home] (>= ProfileHomeMinVersion), or
+// "" (no table) for tmpfs. A tmpfs request on hisn < 0.3.2 is an error (D10):
+// the old home mount cannot be removed without losing what the user asked
+// for, so it never falls back silently.
+func homePersistFor(mode, root string, ver [3]int) (string, error) {
+	switch mode {
+	case "", HomePersist:
+		if root == "" {
+			return "", nil
+		}
+		want, _ := ParseVersion(ProfileHomeMinVersion)
+		if !VersionAtLeast(ver, want) {
+			return "", nil // hisn < 0.3.2: the 0.4.x home mount stays (caller)
+		}
+		return root, nil
+	case HomeTmpfs:
+		want, _ := ParseVersion(ProfileHomeMinVersion)
+		if !VersionAtLeast(ver, want) {
+			return "", fmt.Errorf("sandbox.hisn.home = \"tmpfs\" needs hisn >= %s (found %d.%d.%d): upgrade hisn or set home to \"persist\"", ProfileHomeMinVersion, ver[0], ver[1], ver[2])
+		}
+		return "", nil
+	default:
+		return "", fmt.Errorf("sandbox.hisn.home %q: want \"persist\" or \"tmpfs\"", mode)
+	}
+}
+
+// ProfileHomeMinVersion is the first hisn release whose profile accepts the
+// [home] table (persist = "<abs path>"). Older hisn rejects the key outright.
+const ProfileHomeMinVersion = "0.3.2"
+
+// Home modes for sandbox.hisn.home and the project override.
+const (
+	HomePersist = "persist" // host dir as the session $HOME (default)
+	HomeTmpfs   = "tmpfs"   // no persistent home: a fresh tmpfs $HOME
+)
+
 // ---- Surface: what a project asks for beyond the base policy ----
 
 // Service is one in-sandbox [[services]] entry. The JSON form is the schema of
@@ -73,13 +110,16 @@ type Surface struct {
 	RiskAck string
 	// Profile, when non-empty, is the name of a hisn profile to use as is.
 	Profile string
+	// Home is the project's home override ("persist" | "tmpfs"); "" means the
+	// global sandbox.hisn.home decides (Options.Home).
+	Home string
 }
 
 // Empty reports whether the surface asks for nothing.
 func (s Surface) Empty() bool {
 	return len(s.Services) == 0 && len(s.Forward) == 0 && len(s.HostServices) == 0 &&
 		len(s.EnvSet) == 0 && len(s.MountsRO) == 0 && len(s.MountsRW) == 0 &&
-		len(s.Mask) == 0 && s.Profile == ""
+		len(s.Mask) == 0 && s.Profile == "" && s.Home == ""
 }
 
 // needs03 names the requested features that exist only in hisn >= 0.3.1.
@@ -217,6 +257,13 @@ type profileFile struct {
 	Services     []serviceTOML     `toml:"services,omitempty"`
 	Forward      []forwardTOML     `toml:"forward,omitempty"`
 	HostServices []hostServiceTOML `toml:"host_services,omitempty"`
+	Home         *homeTOML         `toml:"home,omitempty"`
+}
+
+// homeTOML is hisn 0.3.2's [home] table: the host directory bind-mounted rw as
+// the session $HOME (label home-persist, Data, medium).
+type homeTOML struct {
+	Persist string `toml:"persist"`
 }
 
 type readyTOML struct {
@@ -280,8 +327,11 @@ func stopFor(sig string, grace uint64) *stopTOML {
 // profileFor builds the hisn-profile/v1 envelope: [policy] is the session
 // policy (unchanged content), the 0.3 tables come from the surface. risk_ack
 // is only ever copied from s.RiskAck.
-func profileFor(pol policyFile, s Surface) profileFile {
+func profileFor(pol policyFile, s Surface, homePersist string) profileFile {
 	pf := profileFile{Version: "hisn-profile/v1", Policy: pol}
+	if homePersist != "" {
+		pf.Home = &homeTOML{Persist: homePersist}
+	}
 	for _, v := range s.Services {
 		t := serviceTOML{Name: v.Name, Exec: v.Exec, Socket: v.Socket,
 			Ready: readyFor(v.ReadySocket, v.ReadyTimeout), Stop: stopFor(v.StopSignal, v.StopGrace), Restart: "none"}
@@ -301,11 +351,14 @@ func profileFor(pol policyFile, s Surface) profileFile {
 }
 
 // buildProfile renders the profile for one session.
-func buildProfile(p policyParams, s Surface) ([]byte, error) {
+//
+// homePersist is the [home] persist path ("" = no [home] table); see
+// homePersistFor for how the caller decides it.
+func buildProfile(p policyParams, s Surface, homePersist string) ([]byte, error) {
 	p.EnvSet = s.EnvSet
 	p.MountsRO, p.MountsRW, p.Mask = s.MountsRO, s.MountsRW, s.Mask
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(profileFor(policyFor(p), s)); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(profileFor(policyFor(p), s, homePersist)); err != nil {
 		return nil, fmt.Errorf("encoding hisn profile: %w", err)
 	}
 	return buf.Bytes(), nil

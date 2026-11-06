@@ -70,7 +70,7 @@ func renderForReal(t *testing.T, ws, home, grant string, s Surface) string {
 		t.Fatal(err)
 	}
 	prof, err := buildProfile(policyParams{Cwd: ws, Home: home, Hostname: "wakil-0123456789abcdef", GrantableRW: []string{grant},
-		EnvPass: []string{"GOFLAGS", "CI"}, ShmSize: 64, TmpSize: 1024}, surf)
+		EnvPass: []string{"GOFLAGS", "CI"}, ShmSize: 64, TmpSize: 1024}, surf, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -147,7 +147,7 @@ func TestProfileEncodingKeepsPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prof, err := buildProfile(pp, Surface{})
+	prof, err := buildProfile(pp, Surface{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestProfileSurfaceAndAckVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := buildProfile(policyParams{Cwd: "/work", Home: "/h", Hostname: "wakil-x", ShmSize: 64, TmpSize: 1024}, s)
+	out, err := buildProfile(policyParams{Cwd: "/work", Home: "/h", Hostname: "wakil-x", ShmSize: 64, TmpSize: 1024}, s, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestProfileSurfaceAndAckVerbatim(t *testing.T) {
 	}
 	// Without an ack in the project, Wakil writes none.
 	s.RiskAck = ""
-	out, _ = buildProfile(policyParams{Cwd: "/work", Home: "/h", Hostname: "wakil-x", ShmSize: 64, TmpSize: 1024}, s)
+	out, _ = buildProfile(policyParams{Cwd: "/work", Home: "/h", Hostname: "wakil-x", ShmSize: 64, TmpSize: 1024}, s, "")
 	if strings.Contains(string(out), "risk_ack") {
 		t.Errorf("Wakil must never write a risk_ack on its own:\n%s", out)
 	}

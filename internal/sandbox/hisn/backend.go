@@ -36,6 +36,7 @@ type Options struct {
 	MinVersion  string   // default MinVersion
 	StateDir    string   // owner records, policies, lock (required)
 	HomeRoot    string   // persistent sandbox $HOME on the host (required)
+	Home        string   // sandbox.hisn.home: "persist" (default) | "tmpfs"
 	HostCwd     string   // absolute, symlink-free workspace (required)
 	GrantableRW []string // prefixes allowed for rw grants
 	EnvPass     []string // names passed into the sandbox

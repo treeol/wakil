@@ -44,6 +44,9 @@ type HisnSection struct {
 	// RiskAck is the user's acknowledgement, verbatim as hisn expects it
 	// (e.g. "root-equivalent"). Wakil never writes it.
 	RiskAck string `json:"risk_ack,omitempty"`
+	// Home overrides sandbox.hisn.home for this project ("persist" | "tmpfs").
+	// Name only: the persistent path is never set per project.
+	Home string `json:"home,omitempty"`
 	// Profile names a hisn profile (built-in or $HISN_PROFILES) used instead
 	// of generation; Wakil then only adds grants.
 	Profile string `json:"profile,omitempty"`
@@ -92,7 +95,7 @@ func Load(cwd string) (Loaded, error) {
 	l.Surface = hisn.Surface{
 		Services: h.Services, Forward: h.Forward, HostServices: h.HostServices,
 		EnvSet: h.EnvSet, MountsRO: h.MountsRO, MountsRW: h.MountsRW,
-		RiskAck: h.RiskAck, Profile: h.Profile,
+		RiskAck: h.RiskAck, Profile: h.Profile, Home: h.Home,
 	}
 	return l, nil
 }
@@ -108,6 +111,9 @@ func Parse(raw []byte) (File, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		return f, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if f.Hisn.Home != "" && f.Hisn.Home != "persist" && f.Hisn.Home != "tmpfs" {
+		return f, fmt.Errorf("hisn.home %q: want \"persist\" or \"tmpfs\"", f.Hisn.Home)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return f, errors.New("invalid JSON: unexpected data after the document")

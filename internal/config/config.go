@@ -1090,6 +1090,11 @@ type HisnConfig struct {
 	// HomeRoot is the persistent host directory used as the sandbox $HOME.
 	// Empty = <wakil state dir>/hisn-home/<workspace-hash>.
 	HomeRoot string `json:"home_root,omitempty"`
+	// Home selects the sandbox $HOME: "persist" (default; the host dir
+	// HomeRoot, bind-mounted rw, survives across chats) or "tmpfs" (a fresh
+	// tmpfs $HOME per session; needs hisn >= 0.3.2). Project override:
+	// .wakil/sandbox.json "hisn": {"home": "tmpfs"}.
+	Home string `json:"home,omitempty"`
 	// GrantableRW lists absolute host prefixes under which read-write grants
 	// outside the workspace are allowed (Landlock cannot widen later).
 	GrantableRW []string `json:"grantable_rw,omitempty"`
@@ -2422,6 +2427,9 @@ func validateSandboxConfig(cfg *Config) error {
 	h := &sb.Hisn
 	if strings.TrimSpace(h.Binary) == "" {
 		h.Binary = "hisn"
+	}
+	if h.Home != "" && h.Home != "persist" && h.Home != "tmpfs" {
+		return fmt.Errorf("sandbox.hisn.home %q: want \"persist\" or \"tmpfs\"", h.Home)
 	}
 	if h.HomeRoot != "" && !filepath.IsAbs(h.HomeRoot) {
 		return fmt.Errorf("sandbox.hisn.home_root %q must be an absolute path", h.HomeRoot)

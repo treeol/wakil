@@ -136,7 +136,11 @@ func (b *Backend) plan(ctx context.Context) error {
 		if err := checkProfileTrust(b.profilePath("plan"), pp.Cwd, pp.Home, s.MountsRW); err != nil {
 			return err
 		}
-		prof, err := buildProfile(pp, s)
+		homeP, err := b.homePersist(s)
+		if err != nil {
+			return err
+		}
+		prof, err := buildProfile(pp, s, homeP)
 		if err != nil {
 			return err
 		}

@@ -52,6 +52,7 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		Binary:      h.Binary,
 		StateDir:    filepath.Join(state, "hisn"),
 		HomeRoot:    home,
+		Home:        h.Home,
 		HostCwd:     cfg.HostWorkDir,
 		GrantableRW: h.GrantableRW,
 		EnvPass:     h.EnvPass,

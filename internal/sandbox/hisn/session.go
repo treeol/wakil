@@ -274,7 +274,11 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 			b.setKVRNote("off (" + err.Error() + ")")
 		}
 	}
-	prof, err := buildProfile(pp, s)
+	homeP, err := b.homePersist(s)
+	if err != nil {
+		return launch{}, err
+	}
+	prof, err := buildProfile(pp, s, homeP)
 	if err != nil {
 		return launch{}, err
 	}
@@ -745,4 +749,14 @@ func (b *Backend) reconcileNamedLocked(ctx context.Context, r record) error {
 	cancel()
 	b.removeRecord(r.ID)
 	return nil
+}
+
+// homePersist returns the [home] persist path for this launch (see
+// homePersistFor). The project override wins over sandbox.hisn.home.
+func (b *Backend) homePersist(s Surface) (string, error) {
+	mode := b.opts.Home
+	if s.Home != "" {
+		mode = s.Home
+	}
+	return homePersistFor(mode, b.opts.HomeRoot, b.ver)
 }
