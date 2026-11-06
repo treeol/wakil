@@ -35,6 +35,26 @@ kept below it for the record; where they differ from the code, the code is right
   Each has a mutation check recorded in its commit message and passes under `-race`.
   Open for item 4: only the forwarder's exec client on disconnect paths other than close/kill is
   covered indirectly (the stop path sweeps by profile dir), not by a dedicated test.
+- **First host run (rubin, Fedora):** two regressions fixed after it.
+  1. `example.com` opened in the user's desktop Chromium. Not the browser launcher: the agent
+     test `TestExecuteToolCall_OpenURL` called the real `xdg-open` (since v0.4.3).
+     `tools.OpenOnHost` now refuses in a test binary (`testing.Testing()`). Direct-mode browser
+     launch also refuses in a test binary unless `WAKIL_BROWSER_LIVE=1`. Independently, direct
+     mode now starts the real Chromium binary (not a distro wrapper script found on PATH), on a
+     DevTools pipe (no TCP port), `--headless=new`, a fresh `--user-data-dir`, `--no-first-run`;
+     after launch the process must be alive and ours, otherwise the launch fails with an error
+     (a handoff to a running instance is "exited immediately").
+  2. Ownership uses a pidfd taken at spawn (Linux; signal through it, so a reused pid cannot be
+     hit) plus the recorded start time; the cmdline check stays as an extra guard where
+     readable. Tests: sleepers are this test binary re-run as a helper (marker in argv, no
+     shell), because Fedora's `/bin/sh` is bash, which execs a single command in place.
+  3. `TestIntegrationStopKillsSleeper` (hisn, host-wide `pgrep -f "sleep 300"`): the
+     package's own code did not change since `34c29be`. Two other test fixtures also ran
+     `sleep 300` on the host, in parallel packages (`go test -p 2`): the browser stop-script
+     fixtures and an agent `run_background` test. Both now use another sleep value. Sampling
+     the host during a full run: matches in 92 of 3,780 samples at `34c29be`, 3,496 of 3,646
+     before the fix, 0 of 3,644 after. **Not confirmed on the host:** whether `Stop` itself
+     returns before the processes are dead; run the test alone on rubin.
 - **M1–M2:** `wakil --print-workspace-key`; `--think` applies on `/new` and `/resume` without
   saved repo-state.
 - **D1–D3:** deprecation lines for daemon / `--remote` / web; skill auto-creation default `off`

@@ -83,6 +83,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `apply_skill_template` into an empty directory failed with "cannot inspect existing
   target"). Helpers now run with `LC_ALL=C LANG=C`, and "not found" is decided by a `test(1)`
   exit status after a failed read. The model's own commands keep the user's locale.
+- **Tests can no longer open anything on the desktop or start a real browser by accident.**
+  `OpenOnHost` refuses in a test binary; direct-mode browser launch refuses in a test binary
+  unless `WAKIL_BROWSER_LIVE=1` (headless, private profile). A test used to run the real
+  `xdg-open` for `https://example.com`.
+- **Direct-mode browser launch is private and checked.** It starts the real Chromium binary
+  rather than a distro wrapper script, on a DevTools pipe (no TCP port) with a fresh profile,
+  and fails with a clear error when the process it started exits at once (a handoff to an
+  already-running browser) instead of reporting success.
+- **Process ownership uses a pidfd** on Linux (taken at spawn, signalled through), with the
+  start time and, where readable, the cmdline as extra guards.
 - **`wakil --print-workspace-key` exists** (docker-compose.yml already told operators to run it).
   It prints the workspace path, the memory store key and db path, the workspace key, the
   sessionhost id/key and what `wakil plan gc` would resolve from the current directory, each with
