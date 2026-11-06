@@ -210,3 +210,39 @@ func TestRealHisnAckMatrix(t *testing.T) {
 		}
 	}
 }
+
+// TestRealHisnAcceptsPersistentHome (P1): a profile carrying the [home] persist
+// table must pass the real hisn >= 0.3.2 `profile validate`. Older hisn rejects
+// the key, so the test skips there with the reason rather than failing.
+func TestRealHisnAcceptsPersistentHome(t *testing.T) {
+	bin := realHisnOffline(t)
+	if v, err := ParseVersion(mustVersion(t, bin)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 2}) {
+		t.Skipf("[home] needs hisn >= %s; this hisn is %q", ProfileHomeMinVersion, mustVersion(t, bin))
+	}
+	d := realDirs(t, "ws", "state-home", "out")
+	ws, home := d[0], d[1]
+	prof, err := buildProfile(policyParams{Cwd: ws, Home: home, Hostname: "wakil-0123456789abcdef",
+		GrantableRW: []string{d[2]}, EnvPass: []string{"CI"}, ShmSize: 64, TmpSize: 1024}, Surface{}, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prof), "[home]") {
+		t.Fatalf("expected [home] in generated profile:\n%s", prof)
+	}
+	p := filepath.Join(filepath.Dir(ws), "home.profile.toml")
+	if err := os.WriteFile(p, prof, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := hisnRun(t, bin, "profile", "validate", p); err != nil {
+		t.Fatalf("real hisn rejects the [home] profile: %v\n%s\n--- profile\n%s", err, out, prof)
+	}
+}
+
+func mustVersion(t *testing.T, bin string) string {
+	t.Helper()
+	out, err := osexec.Command(bin, "--version").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
