@@ -76,7 +76,7 @@ func newDaemonServer(cfg config.Config, socketPath string, ephemeral bool, httpA
 	// (the bug fixed in this commit).
 	var store *sqlstore.SQLiteStore
 	if !ephemeral {
-		dbPath := agent.SessionHostDBPath(cfg.WorkspacePath())
+		dbPath := agent.SessionHostDBPath(agent.ProjectDir(cfg))
 		if dbPath == "" {
 			return nil, fmt.Errorf("wakil daemon: cannot derive session-host DB path for workspace %q (no data directory?)", cfg.WorkspacePath())
 		}

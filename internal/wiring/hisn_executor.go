@@ -33,9 +33,11 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 	}
 	home := h.HomeRoot
 	if home == "" {
-		key := agent.WorkspaceKey(cfg.WorkspacePath())
+		// 0.5.0 (D1/D5): keyed by the project's store key, one per repository.
+		// Old hisn-home/<64-hex> dirs are left in place and no longer used.
+		key := agent.StoreKey(agent.ProjectDir(cfg))
 		if key == "" {
-			return nil, fmt.Errorf("sandbox backend hisn: cannot derive a workspace key for home_root")
+			return nil, fmt.Errorf("sandbox backend hisn: cannot derive a project key for home")
 		}
 		home = filepath.Join(state, "hisn-home", key)
 	}

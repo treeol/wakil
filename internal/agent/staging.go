@@ -70,6 +70,14 @@ func stagingDataRoot() string {
 	return filepath.Dir(rsd)
 }
 
+// StoreKey is the 16-hex per-project key that names a project's store
+// directories (memory, sessionhistory, sessionhost, hisn home). ws is
+// canonicalised by workspaceKey, so a symlinked path yields the same key.
+// Returns "" for an empty ws.
+func StoreKey(ws string) string {
+	return stagingKey(ws)
+}
+
 // MemoryDBPath returns the host-side path to the durable memory SQLite
 // database for the given workspace. Reuses the same workspace-key derivation
 // as StagingPath (16 hex chars of the SHA-256 of the canonical workspace path).

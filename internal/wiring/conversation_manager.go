@@ -10,8 +10,6 @@ package wiring
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -80,7 +78,7 @@ func NewConversationManager(cfg config.Config, exe exec.Executor, principal core
 	// Pass the raw workspace PATH (not the wsp_ ID) to SessionHostDBPath —
 	// the storage functions hash the path internally, so passing the ID
 	// would double-hash and produce a cwd-dependent key.
-	wsPath := cfg.WorkspacePath()
+	wsPath := agent.ProjectDir(cfg)
 	if dbPath := agent.SessionHostDBPath(wsPath); dbPath != "" {
 		store, err := sqlstore.NewSQLiteStore(context.Background(), dbPath)
 		if err != nil {
@@ -488,11 +486,9 @@ func (cm *conversationManager) SetModelUserOverridden() {
 // independent of path length. An empty effective workdir (a hand-built test
 // config) derives the zero-value hash of "" — still a valid, stable ID.
 //
-// Uses Config.WorkspacePath() (which respects WAKIL_WORKSPACE_PATH) so the ID
-// is stable across processes with different cwd — critical for the daemon
-// to see the same workspace identity as the TUI.
+// Since 0.5.0 it hashes the symlink-resolved project directory (agent.ProjectDir),
+// the same directory the store keys use, so a symlinked and a real path give one
+// id and it agrees with agent.SessionHostWorkspaceID.
 func WorkspaceIDFromConfig(cfg config.Config) event.WorkspaceID {
-	ws := cfg.WorkspacePath()
-	sum := sha256.Sum256([]byte(ws))
-	return event.WorkspaceID("wsp_" + hex.EncodeToString(sum[:8]))
+	return event.WorkspaceID(agent.SessionHostWorkspaceID(agent.ProjectDir(cfg)))
 }

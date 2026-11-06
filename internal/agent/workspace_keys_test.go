@@ -109,18 +109,20 @@ func TestResolveWorkspaceKeys_EnvPathOverrides(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(old) })
 	t.Setenv("WAKIL_WORKSPACE_PATH", "/mnt/wakil")
 
+	// 0.5.0 (D1): WAKIL_WORKSPACE_PATH no longer feeds store keys. The chat
+	// keys the working directory, equal to plan gc, so there is no divergence.
 	k := ResolveWorkspaceKeys(directCfg(cwd))
-	if k.ChatPath != "/mnt/wakil" || k.ChatPathSource != SourceEnvPath {
-		t.Fatalf("path/source = %q / %q", k.ChatPath, k.ChatPathSource)
+	if k.ChatPath != cwd {
+		t.Fatalf("path = %q, want cwd %q", k.ChatPath, cwd)
 	}
-	if k.MemoryKey != "f3fa3243c6fc07e5" {
-		t.Errorf("memory key = %q", k.MemoryKey)
+	if k.MemoryKey != StoreKey(cwd) {
+		t.Errorf("memory key = %q, want the cwd key", k.MemoryKey)
 	}
-	if !k.Diverges || k.GCMemoryKey == k.MemoryKey || k.GCPath != cwd {
-		t.Errorf("must report divergence from plan gc (gc %q key %q, diverges=%v)", k.GCPath, k.GCMemoryKey, k.Diverges)
+	if k.Diverges || k.GCMemoryKey != k.MemoryKey {
+		t.Errorf("chat and plan gc must agree (gc %q key %q, diverges=%v)", k.GCMemoryKey, k.MemoryKey, k.Diverges)
 	}
 	line := k.EnvOverrideLine()
-	for _, want := range []string{"WAKIL_WORKSPACE_PATH=/mnt/wakil", "overrides the working directory", "memory key f3fa3243c6fc07e5", "sessionhost key f3fa3243c6fc07e5", "plan gc"} {
+	for _, want := range []string{"WAKIL_WORKSPACE_PATH=/mnt/wakil", "IGNORED for store keys", "memory key " + k.MemoryKey, "sessionhost key " + k.SessionHostKey} {
 		if !strings.Contains(line, want) {
 			t.Errorf("startup line lacks %q: %s", want, line)
 		}
@@ -129,10 +131,13 @@ func TestResolveWorkspaceKeys_EnvPathOverrides(t *testing.T) {
 		t.Errorf("startup line must be one line: %q", line)
 	}
 	out := k.Format()
-	for _, want := range []string{"[source: WAKIL_WORKSPACE_PATH]", "[source: cwd]", "WARNING:", "memory store key:", "sessionhost id:"} {
+	for _, want := range []string{"[source: cwd]", "memory store key:", "sessionhost id:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Format lacks %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "WARNING:") {
+		t.Errorf("no divergence warning expected since 0.5.0:\n%s", out)
 	}
 }
 
@@ -149,12 +154,11 @@ func TestResolveWorkspaceKeys_KeyOverrideAndEmpty(t *testing.T) {
 	}
 
 	t.Setenv("WAKIL_WORKSPACE_KEY", "")
-	k = ResolveWorkspaceKeys(directCfg("")) // direct mode, no workdir: what a chat sees too
-	if k.ChatPath != "" || k.MemoryKey != "" {
-		t.Errorf("empty workspace must yield no keys: %+v", k)
-	}
-	if !strings.Contains(k.Format(), "NOTE: no workspace path") {
-		t.Errorf("empty case must be explained:\n%s", k.Format())
+	// 0.5.0: an empty direct workdir falls back to the process cwd (ProjectDir),
+	// so a chat always keys a project; the empty-path NOTE is no longer reachable.
+	k = ResolveWorkspaceKeys(directCfg(""))
+	if k.ChatPath == "" || k.MemoryKey == "" {
+		t.Errorf("empty workdir must key the cwd: %+v", k)
 	}
 }
 
@@ -171,7 +175,7 @@ func TestSandboxCommandShowsWorkspaceOverride(t *testing.T) {
 	}
 	t.Setenv("WAKIL_WORKSPACE_PATH", "/mnt/wakil")
 	got := app.renderSandboxState()
-	if !strings.Contains(got, "WAKIL_WORKSPACE_PATH=/mnt/wakil") || !strings.Contains(got, "overrides the working directory") {
+	if !strings.Contains(got, "WAKIL_WORKSPACE_PATH=/mnt/wakil") || !strings.Contains(got, "IGNORED for store keys") {
 		t.Errorf("/sandbox must show the override: %s", got)
 	}
 }

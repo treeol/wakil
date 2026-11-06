@@ -5,6 +5,7 @@ package wiring
 
 import (
 	"context"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,8 +78,13 @@ func TestWorkspaceIDMatchesAgentReport(t *testing.T) {
 		cfg := config.DefaultConfig()
 		cfg.ExecMode = "direct"
 		cfg.WorkDir = ws
-		if got, want := string(WorkspaceIDFromConfig(cfg)), agent.SessionHostWorkspaceID(ws); got != want {
-			t.Errorf("ws %q: WorkspaceIDFromConfig = %q, agent report = %q", ws, got, want)
+		// 0.5.0: the id hashes the project directory; an empty workdir is the cwd.
+		want := ws
+		if ws == "" {
+			want, _ = os.Getwd()
+		}
+		if got, wantID := string(WorkspaceIDFromConfig(cfg)), agent.SessionHostWorkspaceID(want); got != wantID {
+			t.Errorf("ws %q: WorkspaceIDFromConfig = %q, agent report = %q", ws, got, wantID)
 		}
 	}
 }

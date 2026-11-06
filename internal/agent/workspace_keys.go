@@ -28,7 +28,7 @@ const (
 // WorkspaceKeys is what a chat started with cfg keys its per-project state by,
 // next to what `plan gc` from the same directory would use.
 type WorkspaceKeys struct {
-	// Chat path: cfg.WorkspacePath(), the input to every chat store key.
+	// Chat path: agent.ProjectDir(cfg), the input to every chat store key.
 	ChatPath       string
 	ChatPathSource string
 	// MemoryKey is the memory store key (directory name under memory/): the
@@ -39,7 +39,7 @@ type WorkspaceKeys struct {
 	// FullKey is the untruncated workspace key (repo-state, session scoping).
 	FullKey string
 	// SessionHostID is the sessionhost workspace id (wsp_<16 hex>, hashed from
-	// the RAW ChatPath, not the canonical one) and SessionHostKey the directory
+	// the canonical ChatPath) and SessionHostKey the directory
 	// under sessionhost/ holding its database.
 	SessionHostID     string
 	SessionHostKey    string
@@ -62,22 +62,18 @@ type WorkspaceKeys struct {
 // time.
 func ResolveWorkspaceKeys(cfg config.Config) WorkspaceKeys {
 	var k WorkspaceKeys
-	k.ChatPath = ChatProjectPath(cfg)
+	k.ChatPath = ProjectDir(cfg)
 	switch {
-	case os.Getenv("WAKIL_WORKSPACE_PATH") != "":
-		k.ChatPathSource = SourceEnvPath
 	case cfg.ExecMode == "direct" && cfg.WorkDir != "":
 		k.ChatPathSource = sourceConfigWorkDir
 	case cfg.ExecMode != "direct" && cfg.HostWorkDir != "":
 		k.ChatPathSource = sourceConfigHost
 	default:
-		k.ChatPathSource = SourceConfig
+		k.ChatPathSource = SourceCwd
 	}
 	// When the config itself defaulted the directory to the cwd, say so.
-	if k.ChatPathSource != SourceEnvPath {
-		if wd, err := os.Getwd(); err == nil && sameDir(k.ChatPath, wd) {
-			k.ChatPathSource = SourceCwd
-		}
+	if wd, err := os.Getwd(); err == nil && sameDir(k.ChatPath, wd) {
+		k.ChatPathSource = SourceCwd
 	}
 
 	k.KeyOverride = os.Getenv("WAKIL_WORKSPACE_KEY") != ""
@@ -103,12 +99,22 @@ func ResolveWorkspaceKeys(cfg config.Config) WorkspaceKeys {
 	return k
 }
 
-// SessionHostWorkspaceID is the sessionhost workspace id for a workspace path:
-// "wsp_" + the first 8 bytes of sha256(raw path), hex. wiring.WorkspaceIDFromConfig
-// computes the same value (locked by TestWorkspaceIDMatchesAgentReport); it is
-// duplicated here only because wiring imports agent, not the other way round.
+// SessionHostWorkspaceID is the sessionhost workspace id for a project
+// directory: "wsp_" + the first 8 bytes of sha256(canonical path), hex. The
+// path is canonicalised first, so a symlinked and a real path give the same id
+// and the id agrees with the store key (0.5.0, C1). wiring.WorkspaceIDFromConfig
+// computes the same value (locked by TestWorkspaceIDMatchesAgentReport).
+// Sessions written before 0.5.0 carry the raw-path id (see LegacySessionHostWorkspaceID).
 func SessionHostWorkspaceID(ws string) string {
-	sum := sha256.Sum256([]byte(ws))
+	sum := sha256.Sum256([]byte(canonicalWorkspace(ws)))
+	return "wsp_" + hex.EncodeToString(sum[:8])
+}
+
+// LegacySessionHostWorkspaceID is the pre-0.5.0 id: sha256 of the RAW path. It
+// is computed only to find sessions recorded under it (read-through, C2); it is
+// never written.
+func LegacySessionHostWorkspaceID(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
 	return "wsp_" + hex.EncodeToString(sum[:8])
 }
 
@@ -123,7 +129,7 @@ func (k WorkspaceKeys) Format() string {
 	fmt.Fprintf(&b, "memory store key:   %s   [source: %s, truncated to 16 hex]\n", orNone(k.MemoryKey), keySrc)
 	fmt.Fprintf(&b, "  memory db:        %s\n", orNone(k.MemoryDBPath))
 	fmt.Fprintf(&b, "workspace key:      %s   [source: %s]\n", orNone(k.FullKey), keySrc)
-	fmt.Fprintf(&b, "sessionhost id:     %s   [source: sha256(raw workspace path) first 8 bytes]\n", orNone(k.SessionHostID))
+	fmt.Fprintf(&b, "sessionhost id:     %s   [source: sha256(canonical path) first 8 bytes]\n", orNone(k.SessionHostID))
 	fmt.Fprintf(&b, "sessionhost key:    %s   [source: %s, truncated to 16 hex]\n", orNone(k.SessionHostKey), keySrc)
 	fmt.Fprintf(&b, "  sessionhost db:   %s\n", orNone(k.SessionHostDBPath))
 	fmt.Fprintf(&b, "plan gc from here:  %s   [source: %s]  memory key %s\n", orNone(k.GCPath), SourceCwd, orNone(k.GCMemoryKey))
@@ -144,8 +150,8 @@ func (k WorkspaceKeys) EnvOverrideLine() string {
 	if os.Getenv("WAKIL_WORKSPACE_PATH") == "" {
 		return ""
 	}
-	s := fmt.Sprintf("workspace: WAKIL_WORKSPACE_PATH=%s overrides the working directory — memory key %s, sessionhost key %s (id %s)",
-		k.ChatPath, orNone(k.MemoryKey), orNone(k.SessionHostKey), orNone(k.SessionHostID))
+	s := fmt.Sprintf("workspace: WAKIL_WORKSPACE_PATH=%s is IGNORED for store keys since 0.5.0 — keys follow the working directory %s: memory key %s, sessionhost key %s (id %s)",
+		os.Getenv("WAKIL_WORKSPACE_PATH"), k.ChatPath, orNone(k.MemoryKey), orNone(k.SessionHostKey), orNone(k.SessionHostID))
 	if k.Diverges {
 		s += fmt.Sprintf("; `wakil plan gc` from %s would read memory key %s", k.Cwd, orNone(k.GCMemoryKey))
 	}

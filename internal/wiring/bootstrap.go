@@ -484,13 +484,13 @@ func NewExecutor(cfg config.Config) (exec.Executor, error) {
 
 		// Staging dir: per-repo, host-side. Reuses workspaceKey via the
 		// exported agent.StagingPath helper (same identity as repo-state).
-		// Uses cfg.WorkspacePath() (respects WAKIL_WORKSPACE_PATH) for the key
-		// so staging matches memory/history/session-host storage identity.
+		// Keyed by agent.ProjectDir (0.5.0), the same identity as memory,
+		// history and session-host storage.
 		var stagingMount string
 		kvrEnabled := !cfg.KVRDisabled
 		if kvrEnabled {
 			var err error
-			stagingMount, err = agent.EnsureStagingDir(cfg.WorkspacePath())
+			stagingMount, err = agent.EnsureStagingDir(agent.ProjectDir(cfg))
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "kvr: staging dir error (staging unavailable): %v\n", err)
 				kvrEnabled = false

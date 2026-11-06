@@ -266,13 +266,12 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	}
 
 	// Headless session: construct inline (no resume support in headless mode).
-	// Use cfg.WorkspacePath() (not exe.WorkspaceRoot()) so the session's
-	// recorded workspace matches the storage key derivation — they share the
-	// same source of truth via Config.WorkspacePath().
+	// The recorded workspace is the project directory the store keys use
+	// (agent.ProjectDir, 0.5.0), so the session is found by the same key.
 	app.Session = &agent.Session{
 		ChatID:    app.Client.ChatID,
 		Model:     app.Client.Model,
-		Workspace: cfg.WorkspacePath(),
+		Workspace: agent.ProjectDir(cfg),
 	}
 
 	// Load --attach-image into PendingImages so the first Send attaches them.

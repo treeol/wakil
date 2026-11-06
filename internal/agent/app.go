@@ -797,12 +797,12 @@ func findLastCompleteBoundary(conv []proxy.Message) []proxy.Message {
 	return result
 }
 
-// sessionWorkspace is the host directory associated with this session: the bind
-// mount in docker mode, or the working directory in direct mode. Delegates to
-// Config.WorkspacePath() (which respects WAKIL_WORKSPACE_PATH) so the daemon
-// and TUI resolve the same workspace identity regardless of cwd.
+// SessionWorkspace is the project directory this session belongs to: the
+// symlink-resolved launch directory (ProjectDir, 0.5.0). Every per-project
+// store (memory, session history, sessionhost, repo state, staging, hisn home)
+// keys by it, so it does not depend on WAKIL_WORKSPACE_PATH or host_workdir.
 func (a *App) SessionWorkspace() string {
-	return a.Cfg.WorkspacePath()
+	return ProjectDir(a.Cfg)
 }
 
 // chatID returns the current session's chat ID. When Session is nil (e.g.
