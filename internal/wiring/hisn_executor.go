@@ -29,12 +29,9 @@ func rootfsFor(global string, s hisn.Surface) string {
 
 func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 	// Defence in depth for hand-built configs (LoadConfig already resolves
-	// the backend and forces browser_enabled off under hisn).
+	// the backend).
 	if cfg.ExecMode != "docker" {
 		return nil, fmt.Errorf("sandbox backend hisn cannot be combined with exec mode %q", cfg.ExecMode)
-	}
-	if cfg.BrowserEnabled {
-		return nil, fmt.Errorf("browser_enabled is not supported with sandbox backend hisn")
 	}
 	h := cfg.Sandbox.Hisn
 	state := hisnStateDir()

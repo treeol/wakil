@@ -171,19 +171,20 @@ func TestExecModeDeprecatedAlias(t *testing.T) {
 	}
 }
 
-// TestSandboxHisnForcesBrowserOff: one config serves both backends — under
-// hisn browser_enabled is switched off with a reason, not a config error;
-// under docker it stays on. The banner states backend + browser state.
-func TestSandboxHisnForcesBrowserOff(t *testing.T) {
+// TestSandboxHisnBrowserOn: under hisn, browser_enabled stays true and the
+// banner reports "on (inside hisn session)" — the browser runs inside the
+// session through the backend's CLI transport (P4). Under docker it stays on
+// with the plain banner.
+func TestSandboxHisnBrowserOn(t *testing.T) {
 	cfg, err := loadSandboxCfg(t, `{"browser_enabled":true,"sandbox":{"backend":"hisn"}}`, "--host-workdir", t.TempDir())
 	if err != nil {
 		t.Fatalf("browser_enabled under hisn must not be an error: %v", err)
 	}
-	if cfg.BrowserEnabled || cfg.BrowserForcedOff == "" {
-		t.Errorf("BrowserEnabled=%v ForcedOff=%q, want false + reason", cfg.BrowserEnabled, cfg.BrowserForcedOff)
+	if !cfg.BrowserEnabled || cfg.BrowserForcedOff != "" {
+		t.Errorf("BrowserEnabled=%v ForcedOff=%q, want true + empty (P4: browser runs inside the session)", cfg.BrowserEnabled, cfg.BrowserForcedOff)
 	}
 	b := cfg.StartupBanner()
-	if !strings.Contains(b, "backend=hisn") || !strings.Contains(b, "browser tools: off (") || strings.Contains(b, "\n") {
+	if !strings.Contains(b, "backend=hisn") || !strings.Contains(b, "browser tools: on (inside hisn session)") || strings.Contains(b, "\n") {
 		t.Errorf("banner = %q", b)
 	}
 

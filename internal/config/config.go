@@ -2302,8 +2302,10 @@ func hostStartupEnv(name string) bool {
 // StartupBanner is the one-line startup statement of where tool calls run and
 // whether browser tools are available, e.g.
 //
-//	sandbox: backend=hisn · browser tools: off (browser_enabled ignored: …)
+//	sandbox: backend=hisn · browser tools: on (inside hisn session)
 //
+// Under hisn the browser runs inside the session through the backend's CLI
+// transport (P4); the session starts lazily on the first browser tool call.
 // The browser state is the configured one; a browser manager that fails to
 // start later prints its own error.
 func (c Config) StartupBanner() string {
@@ -2315,6 +2317,8 @@ func (c Config) StartupBanner() string {
 	switch {
 	case c.BrowserForcedOff != "":
 		browser = "off (" + c.BrowserForcedOff + ")"
+	case c.BrowserEnabled && backend == SandboxBackendHisn:
+		browser = "on (inside hisn session)"
 	case c.BrowserEnabled:
 		browser = "on"
 	}
@@ -2448,15 +2452,12 @@ func validateSandboxConfig(cfg *Config) error {
 	case SandboxBackendDocker, SandboxBackendDirect:
 		return nil
 	case SandboxBackendHisn:
+		// Browser support under hisn (P4): the browser runs inside the hisn
+		// session through the backend's CLI transport. BrowserEnabled stays
+		// true; the startup banner reports "on (inside hisn session)". The
+		// session starts lazily on the first browser tool call.
 	default:
 		return fmt.Errorf("invalid sandbox backend %q (want docker|hisn|direct)", sb.Backend)
-	}
-	if cfg.BrowserEnabled {
-		// One config serves both backends: under hisn the browser would launch
-		// on the host, outside the sandbox, so it is forced off (one startup
-		// line, see StartupBanner) instead of being a config error.
-		cfg.BrowserEnabled = false
-		cfg.BrowserForcedOff = "browser_enabled ignored: not supported under sandbox backend hisn (the browser would run on the host, outside the sandbox)"
 	}
 	h := &sb.Hisn
 	if strings.TrimSpace(h.Binary) == "" {
