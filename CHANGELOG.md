@@ -5,7 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - unreleased
+
+### Changed
+
+- **Per-project identity (C1).** Chat stores (memory, session host, session history,
+  staging, hisn home) are keyed by the project directory (`ResolveProject`, symlink-resolved),
+  the same key `wakil plan gc` uses. `host_workdir` now only sets the docker bind mount, and
+  `WAKIL_WORKSPACE_PATH` no longer changes store keys (startup line says IGNORED).
+  The sandbox trust approval key is unchanged (it is a security approval, not a store key).
+
+### Added
+
+- **Legacy shared store is readable (C2).** The pre-0.5.0 shared memory store is opened
+  read-only (`mode=ro`) and read after the project store: `memory_get` and `memory_search`
+  fall through to it and mark results `[legacy]`. Sessions recorded under the old shared path
+  appear in the resume picker under a "legacy (shared store, read-only)" heading.
+- **`wakil state migrate --from-legacy [--apply]` (C3).** Copies legacy entries whose writer
+  session or absolute anchors place them in exactly one known project. Dry-run by default;
+  `--apply` only adds. Nothing is deleted and the legacy file is not written.
+- **First-start notice and legacy count (C4).** One notice line per project when a legacy
+  store has entries. `--print-workspace-key` shows the legacy key and its active-entry count.
+
+### Migration
+
+- On first start, each project with a legacy store prints one notice line. Nothing is moved.
+- Run `wakil state migrate --from-legacy` to see the counts (dry-run), then add `--apply` to
+  copy attributable entries. Legacy entries that cannot be attributed stay in the legacy store.
+- Sessions are not moved; they stay listed under "legacy".
+
+## [0.4.5] - 2026-11-06
+
+### Fixed
+
+- **Test isolation.** `internal/config` and `internal/exec` tests now run under the isolated
+  HOME (`testutil.Main`), like the other packages. Before, `LoadConfig(nil)` in config tests
+  created `~/.config/wakil/config.json` in the real home, and the H1 guard in `internal/agent`
+  reported those writes as its own under `go test -p N`.
+
 ## [0.4.4] - unreleased
+
+> Release state not confirmed. Local tag `v0.4.4` (commit `b41c750`) exists and
+> `git ls-remote --tags origin` lists it, so this section may have been published.
+> Verify with `git ls-remote --tags origin v0.4.4` before treating it as unpublished.
 
 ### Deprecated
 
