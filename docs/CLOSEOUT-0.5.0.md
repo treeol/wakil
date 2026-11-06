@@ -45,6 +45,9 @@ Host-verified defects (F7–F8):
 - `1076721` F7: signing guard must allow reads with any read flag, not just --get first
 - `826b7ca` F7+F8 review fixes: allowedSignersFile in-session path, --null bypass, --type/--default space form, bare key=value, --git-dir walk-back
 
+Host-verified defect (F9):
+- `14c386e` F9: inject signing settings at command scope via GIT_CONFIG_* env — a repo-local .git/config with its own user.signingkey can shadow the session gitconfig (GIT_CONFIG_GLOBAL) because local scope beats global. The fix injects user.signingkey, gpg.format, gpg.ssh.allowedSignersFile, gpg.ssh.program, commit.gpgsign, tag.gpgsign at COMMAND scope via GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n on every exec. Command scope beats local and global. gpg.ssh.program is pinned to ssh-keygen (review fix: without it, a repo-local .git/config could set it to a wrapper that signs with a different key — same threat class). The session gitconfig carries signing settings as a defense-in-depth fallback for git < 2.31 (which does not support GIT_CONFIG_COUNT). The GIT_CONFIG_* names are added to env_pass when signing is on. A repo-local signingkey is reported in the banner. Mashūra review (two readers): two BLOCKING findings fixed.
+
 ## Review status
 
 - C: reviewed (one reader). Findings fixed in `3f1fbd8`.
@@ -54,6 +57,7 @@ Host-verified defects (F7–F8):
 - F1+F4+F2: reviewed (two readers). Two BLOCKING findings fixed in `a8c2ffa`: slice aliasing in `command()` (copy `EnvPass` before appending), and `SSH_AUTH_SOCK` rejected in `env_pass` validation (would leak the host socket path into the sandbox). Open (non-blocking): reader 1 notes the F1 docstring overstates the guarantee scope (a broken/unapproved sandbox.json is an error only when hisn would have been chosen — i.e. when hisn is usable and the backend is defaulted); reader 2 notes `workspaceFitsState` became fatal (intended — a workspace containing the state dir is a startup error, not a docker fallback). Both are documented in the F1 commit message.
 - F5+F6: reviewed (two readers, gpt-6-astra + fable-5.1). Three BLOCKING findings fixed in `480ed65`: (1) `handleRunBackground` skipped the guard — a command refused by `handleRunShell` could reach execution through `run_background`; (2) git config keys are case-insensitive — `git -c Commit.GpgSign=false` bypassed the guard; (3) `git config --get commit.gpgsign` (a read) was refused. Additional fixes: `--no-gpg-sign` only on git commands, `--config-env` form, `git -C . config` and `git -c core.pager=cat config` forms, multiple `config` tokens, `GIT_CONFIG_VALUE_<n>` prefix, error message no longer double-prefixes "ERROR:". Open (non-blocking): shell quoting/indirection (`$K`, `$(which git)`), `env -u`, section operations (`--remove-section`), `--config-env` abbreviation, and `git commit-tree`/`fast-import` are out of scope for a direct-command guard — the audit trail (an unsigned commit) catches the rest.
 - F7+F8: reviewed (two readers, gpt-6-astra + fable-5.1). Five BLOCKING findings fixed in `826b7ca`: (1) `allowedSignersFile` in the rendered gitconfig used the host HomeRoot path — same bug class as F8's `GIT_CONFIG_GLOBAL`; now uses `SandboxHome`; (2) `--null`/`-z`/`--name-only` are output modifiers, not read actions — `git config --null commit.gpgsign false` was a real bypass; (3) `--type`/`--default` space form was not consumed as a two-token pair — the value leaked as the key; (4) bare `key=value` was not split; (5) `--git-dir`/`--work-tree` were not in the walk-back list. Additional fixes: a bare `git config <key>` (one non-flag token) is a get (read) — allowed; `git config <key> <value>` (two non-flag tokens) is a set (write) — checked. Integration test host-side `git log` now passes `-c gpg.format=ssh -c gpg.ssh.allowedSignersFile=<HomeRoot>/.wakil-allowed-signers` so the host git can verify the SSH signature without a global allowed_signers config. Open (non-blocking): `9d4744d`'s test workaround (set signing config inside the session instead of going through `GIT_CONFIG_GLOBAL`) was reverted — it hid the F8 bug; `git config set/unset/edit/remove-section/rename-section` subcommand syntax (git >= 2.46) is not handled — the `config` token is treated as the `config` subcommand and `set`/etc. as the key; `git --git-dir=X` joined form is handled but `git --git-dir X` (space, before the `config` token) is not in the walk-back for `config` tokens after the first.
+- F9: reviewed (two readers, gpt-6-astra + fable-5.1). Two BLOCKING findings fixed: (1) `gpg.ssh.program` was not pinned at COMMAND scope — a repo-local `.git/config` could set it to a wrapper that signs with a different key (same threat class as F9); now pinned to `ssh-keygen`; (2) fail-open on git < 2.31 — `GIT_CONFIG_COUNT` is not supported, and signing settings were removed from the session gitconfig, so commits would be unsigned; signing settings restored to the session gitconfig as a defense-in-depth fallback (COMMAND-scope env still wins on git >= 2.31). Open (non-blocking): `validateExecEnv` accepts any `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` with any value (only internal callers, but wider than needed); `signingEnvPass()` hardcodes the pair count (6) separately from `signingEnv()`'s `pairs` slice — brittle but tested.
 
 ## Verification run here (sandbox)
 
@@ -157,6 +161,9 @@ F5–F6 with commit hashes:
   - P3 review gaps: `[ssh]` rendering in `buildPolicy`, `ssh_keys` entry validation, `EnvPass` vs `EnvSet` precedence.
   - named-profile `[ssh]` behaviour (`hisn profile explain`) not yet confirmed.
   - F7 review gaps: `git config set/unset/edit/remove-section/rename-section` subcommand syntax (git >= 2.46) not handled; `git --git-dir X` (space, before the `config` token) not in the walk-back for `config` tokens after the first.
+  - F9 review gaps: `validateExecEnv` accepts any `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` with any value (wider than needed — only internal callers); `signingEnvPass()` hardcodes the pair count separately from `signingEnv()`'s `pairs` slice (brittle but tested).
+  - Browser tunnel attached to a stale session once (seen after old sessions were left running — investigate ownership on attach).
+  - Screenshots land in host `/tmp` and are unreachable from the sandbox (write them to the session `/tmp` or the workspace).
 
 ## Remaining host steps (14–16)
 
@@ -165,11 +172,15 @@ After the F1–F8 fixes, re-run on rubin:
 14. Browser screenshot under hisn (was blocked by F2 — now fixed in `d95e5b7`).
     **P4 host result: Chromium ran inside the session on real hisn 0.3.2.**
 15. `hisn exec <session> pgrep -fa chrom` after `/new` (was blocked by F2 — now fixed).
-16. Signed commit (was blocked by F4/F5/F6/F7/F8 — now fixed). The session
+16. Signed commit (was blocked by F4/F5/F6/F7/F8/F9 — now fixed). The session
     gitconfig (`GIT_CONFIG_GLOBAL=<SandboxHome>/.wakil-gitconfig`) carries
-    `user.signingkey`, `gpg.format=ssh`, `commit.gpgsign=true`, and
-    `gpg.ssh.allowedSignersFile=<SandboxHome>/.wakil-allowed-signers`; the
-    agent proxy forwards the key; the signing guard refuses bypasses.
+    identity AND signing settings (defense-in-depth fallback for git < 2.31);
+    COMMAND-scope `GIT_CONFIG_*` env vars on every exec enforce
+    `user.signingkey`, `gpg.format=ssh`, `gpg.ssh.program=ssh-keygen`,
+    `gpg.ssh.allowedSignersFile=<SandboxHome>/.wakil-allowed-signers`,
+    `commit.gpgsign=true`, `tag.gpgsign=true`. A repo-local `.git/config`
+    signingkey is overridden and reported in the banner. The agent proxy
+    forwards the key; the signing guard refuses bypasses.
 
 If all pass: push, then tag `v0.5.0`.
 

@@ -300,17 +300,17 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	cwd, _ = filepath.EvalSymlinks(cwd)
 
 	b, err := New(Options{
-		Binary:    bin,
-		StateDir:  filepath.Join(root, "state"),
-		HomeRoot:  filepath.Join(root, "home"),
-		HostCwd:   cwd,
-		SSHAgent:  true,
-		SSHKeys:   []string{fp},
-		EnvPass:   []string{"CI", "GOFLAGS"},
-		Surface:   Surface{RiskAck: "signing"},
+		Binary:     bin,
+		StateDir:   filepath.Join(root, "state"),
+		HomeRoot:   filepath.Join(root, "home"),
+		HostCwd:    cwd,
+		SSHAgent:   true,
+		SSHKeys:    []string{fp},
+		EnvPass:    []string{"CI", "GOFLAGS"},
+		Surface:    Surface{RiskAck: "signing"},
 		SigningKey: pubKeyLine, // F5: signing key for the session gitconfig
-		GitName:   "Wakil Test",
-		GitEmail:  "test@wakil.test",
+		GitName:    "Wakil Test",
+		GitEmail:   "test@wakil.test",
 	})
 	if err != nil {
 		t.Fatal(err)
