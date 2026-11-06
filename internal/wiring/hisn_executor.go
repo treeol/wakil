@@ -148,7 +148,9 @@ func hisnGitSetup(cfg config.Config, h config.HisnConfig) (name, email, signingK
 	if cfg.SSHSigning == "" || cfg.SSHSigning == "off" {
 		return name, email, "", sshKeys, nil
 	}
-	setup, skip := exec.DetectSigning(cfg.SSHSigning, cfg.HostWorkDir)
+	// Trusted scope only: a repo-local signing key is writable from the sandbox
+	// and would otherwise widen the host agent allowlist (review B1).
+	setup, skip := exec.DetectSigningTrusted(cfg.SSHSigning, cfg.HostWorkDir)
 	if skip != "" || !setup.Enabled {
 		return "", "", "", nil, fmt.Errorf("ssh_signing under hisn cannot be enabled: %s", skip)
 	}

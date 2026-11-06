@@ -33,6 +33,23 @@ type SigningSetup struct {
 // signing cannot or should not be enabled. Never returns an error: signing is
 // best-effort and must not block startup.
 func DetectSigning(mode, repoDir string) (SigningSetup, string) {
+	return detectSigning(mode, repoDir, false)
+}
+
+// DetectSigningTrusted is DetectSigning for callers whose sandbox can write
+// the workspace (hisn). The signing key and gpg.format come from the user's
+// global and system git config only: a repo-local .git/config is writable from
+// the sandbox, and a key read from it would join the host agent allowlist.
+// Explicit .pub paths are unaffected.
+func DetectSigningTrusted(mode, repoDir string) (SigningSetup, string) {
+	return detectSigning(mode, repoDir, true)
+}
+
+func detectSigning(mode, repoDir string, trustedOnly bool) (SigningSetup, string) {
+	get := func(key string) string { return gitConfigGet(repoDir, key) }
+	if trustedOnly {
+		get = func(key string) string { return gitConfigGetScope(key, "--global", "--system") }
+	}
 	switch mode {
 	case "", "off":
 		return SigningSetup{}, "" // feature off; no reason to log
@@ -48,7 +65,7 @@ func DetectSigning(mode, repoDir string) (SigningSetup, string) {
 	}
 
 	// gpg.format must be ssh — GPG/x509 passthrough is out of scope.
-	format := gitConfigGet(repoDir, "gpg.format")
+	format := get("gpg.format")
 	if format != "ssh" {
 		if format == "" {
 			return SigningSetup{}, "ssh_signing=auto: host git has no gpg.format configured"
@@ -56,7 +73,7 @@ func DetectSigning(mode, repoDir string) (SigningSetup, string) {
 		return SigningSetup{}, fmt.Sprintf("ssh_signing=auto: host gpg.format is %q, not ssh", format)
 	}
 
-	signingKey := gitConfigGet(repoDir, "user.signingkey")
+	signingKey := get("user.signingkey")
 	if signingKey == "" {
 		return SigningSetup{}, "ssh_signing=auto: host git has no user.signingkey configured"
 	}
@@ -155,6 +172,22 @@ func gitConfigGet(repoDir, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// gitConfigGetScope reads a key only from the given git scopes (for example
+// --global, --system). With no repo directory, git ignores the workspace's
+// .git/config. An unset key returns "".
+func gitConfigGetScope(key string, scopes ...string) string {
+	for _, sc := range scopes {
+		cmd := exec.Command("git", "config", sc, "--get", key)
+		out, err := cmd.Output()
+		if err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 // gitConfigGetBool reads a boolean key with git's own canonicalization

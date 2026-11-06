@@ -240,6 +240,11 @@ type launch struct {
 func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error) {
 	s := b.opts.Surface
 	if s.Profile != "" {
+		// A named profile gets no session gitconfig. Signing or identity that
+		// Wakil was asked for would be dropped silently, so refuse (review B2a).
+		if b.opts.GitName != "" || b.opts.GitEmail != "" || b.opts.SigningKey != "" {
+			return launch{}, fmt.Errorf("hisn named profile %q cannot carry git identity or ssh signing; drop sandbox.hisn.profile or unset ssh_signing and git_identity_*", s.Profile)
+		}
 		if err := os.MkdirAll(b.procCwd(), 0o700); err != nil {
 			return launch{}, fmt.Errorf("hisn supervisor cwd: %w", err)
 		}

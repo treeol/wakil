@@ -2,6 +2,7 @@ package exec
 
 import (
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -210,5 +211,35 @@ func TestDetectSigningExplicitKeyWithAgent(t *testing.T) {
 	}
 	if s.AgentSock == "" {
 		t.Error("agent sock empty")
+	}
+}
+
+// B1: under hisn the signing key comes from global/system scope only. A key
+// set in the workspace's repo-local config (writable from the sandbox) must
+// not reach the agent allowlist.
+func TestDetectSigningTrustedIgnoresRepoLocalKey(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := osexec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	run("config", "--local", "gpg.format", "ssh")
+	run("config", "--local", "user.signingkey", testPubKey)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	s, reason := DetectSigningTrusted("auto", dir)
+	if s.Enabled || s.PublicKey != "" {
+		t.Fatalf("repo-local signing key leaked into trusted detection: enabled=%v key=%q", s.Enabled, s.PublicKey)
+	}
+	if reason == "" {
+		t.Error("expected a skip reason when only repo-local config sets the key")
 	}
 }
