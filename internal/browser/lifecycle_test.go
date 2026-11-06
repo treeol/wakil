@@ -351,6 +351,7 @@ func TestStopScript_KillsGroupSweepsStragglersRemovesDir(t *testing.T) {
 		t.Skipf("cannot create %s: %v", dir, err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	reapFixtureSleepers(t)
 	_ = base
 
 	// A "browser" in its own session: a leader shell (argv carries the dir)
@@ -358,8 +359,8 @@ func TestStopScript_KillsGroupSweepsStragglersRemovesDir(t *testing.T) {
 	// group that only carries the dir in its argv (like crashpad's handler).
 	// `: "$0"` after the sleep keeps each sh alive as the argv-carrying parent.
 	start := `set -e; cd ` + quoteSh(dir) + `
-setsid sh -c 'echo $$ > pid; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > pgid; sleep 300 & sleep 300; : "$0"' ` + quoteSh(dir+"/leader") + ` >/dev/null 2>&1 &
-setsid sh -c 'sleep 300; : "$0"' ` + quoteSh(dir+"/home") + ` >/dev/null 2>&1 &
+setsid sh -c 'echo $$ > pid; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > pgid; sleep 2718 & sleep 2718; : "$0"' ` + quoteSh(dir+"/leader") + ` >/dev/null 2>&1 &
+setsid sh -c 'sleep 2718; : "$0"' ` + quoteSh(dir+"/home") + ` >/dev/null 2>&1 &
 sleep 0.6`
 	if out, err := osexec.Command("sh", "-c", start).CombinedOutput(); err != nil {
 		t.Fatalf("start: %v: %s", err, out)

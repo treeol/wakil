@@ -164,13 +164,14 @@ func TestAbruptForwarderDeath_StopPathReapsBrowser(t *testing.T) {
 		t.Skipf("cannot create %s: %v", dir, err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	reapFixtureSleepers(t)
 
 	// A browser stand-in with the same shape as the stop-script test: a leader
 	// in its own session with two sleeping children in the group, plus a
 	// straggler in another group, all carrying the profile dir in argv.
 	start := `set -e; cd ` + quoteSh(dir) + `
-setsid sh -c 'echo $$ > pid; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > pgid; sleep 300 & sleep 300; : "$0"' ` + quoteSh(dir+"/leader") + ` >/dev/null 2>&1 &
-setsid sh -c 'sleep 300; : "$0"' ` + quoteSh(dir+"/home") + ` >/dev/null 2>&1 &
+setsid sh -c 'echo $$ > pid; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > pgid; sleep 2718 & sleep 2718; : "$0"' ` + quoteSh(dir+"/leader") + ` >/dev/null 2>&1 &
+setsid sh -c 'sleep 2718; : "$0"' ` + quoteSh(dir+"/home") + ` >/dev/null 2>&1 &
 sleep 0.8`
 	if out, err := osexec.Command("sh", "-c", start).CombinedOutput(); err != nil {
 		t.Fatalf("start: %v: %s", err, out)
@@ -186,7 +187,7 @@ sleep 0.8`
 	// Abrupt forwarder death: a forwarder process is SIGKILLed while the tunnel
 	// is up (exercised above); here the teardown runs afterwards, as the idle
 	// or /new path does.
-	fwd := osexec.Command("sleep", "300")
+	fwd := osexec.Command("sleep", "2718")
 	if err := fwd.Start(); err != nil {
 		t.Fatal(err)
 	}

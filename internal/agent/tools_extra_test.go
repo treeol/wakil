@@ -437,13 +437,13 @@ func TestSIGKILLEscalation(t *testing.T) {
 		Cfg:     config.Config{ExecMode: "direct"},
 	}
 
-	// "trap '' TERM; sleep 300" sets SIG_IGN before exec-ing sleep, so the whole
+	// "trap '' TERM; sleep 2719" sets SIG_IGN before exec-ing sleep, so the whole
 	// process group ignores SIGTERM. We sleep 100 ms after starting to let the
 	// shell install the trap before we send SIGTERM — without this there is a
 	// race between process start and trap installation.
 	startRes := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
 		Name:      "run_background",
-		Arguments: `{"command":"trap '' TERM; sleep 300","label":"sigterm-immune"}`,
+		Arguments: `{"command":"trap '' TERM; sleep 2719","label":"sigterm-immune"}`,
 	}})
 	time.Sleep(100 * time.Millisecond)
 	if strings.HasPrefix(startRes.text, "ERROR:") {
@@ -656,7 +656,7 @@ func TestStopAllBackgroundProcs_SIGKILLTimeout(t *testing.T) {
 		Cfg:     config.DefaultConfig(),
 	}
 	// Start a process that ignores SIGTERM at the shell level.
-	// Using "trap '' TERM; exec sleep 300" makes the shell exec into sleep,
+	// Using "trap '' TERM; exec sleep 2719" makes the shell exec into sleep,
 	// so there's only one process. But sleep itself doesn't trap TERM.
 	// Instead, use a subshell that traps TERM and waits — the subshell
 	// process is what we signal, and it ignores TERM.
