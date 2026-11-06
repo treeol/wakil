@@ -16,6 +16,27 @@ import (
 	"time"
 )
 
+// privateTmp points TMPDIR at a fresh per-test directory and returns it. A launch
+// creates its profile dir with os.MkdirTemp("", ...), which follows TMPDIR, so the
+// only profile dirs that can appear there are the ones this test's launch made; a
+// stale /tmp/wakil-chrome-profile-* from an earlier run, or one a concurrent
+// process creates, cannot be mistaken for them.
+func privateTmp(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	return tmp
+}
+
+func profileDirsIn(t *testing.T, tmp string) []string {
+	t.Helper()
+	dirs, err := filepath.Glob(filepath.Join(tmp, "wakil-chrome-profile-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dirs
+}
+
 // Without WAKIL_BROWSER_LIVE=1 a test binary cannot start any browser.
 func TestLocalLaunch_RefusedInTestBinaryWithoutOptIn(t *testing.T) {
 	dir := t.TempDir()
@@ -25,6 +46,7 @@ func TestLocalLaunch_RefusedInTestBinaryWithoutOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(liveEnv, "")
+	tmp := privateTmp(t)
 	l := &localLauncher{browserPath: fake}
 	_, _, _, err := l.launch(context.Background())
 	if err == nil || !strings.Contains(err.Error(), liveEnv) {
@@ -34,7 +56,7 @@ func TestLocalLaunch_RefusedInTestBinaryWithoutOptIn(t *testing.T) {
 	if _, err := os.Stat(log); err == nil {
 		t.Fatal("the browser binary was started")
 	}
-	if left, _ := filepath.Glob(filepath.Join(os.TempDir(), "wakil-chrome-profile-*")); len(left) > 0 {
+	if left := profileDirsIn(t, tmp); len(left) > 0 {
 		t.Errorf("a profile dir was created before the refusal: %v", left)
 	}
 }
@@ -55,7 +77,7 @@ func TestLocalLaunch_ImmediateExitIsAFailureNotASuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(liveEnv, "1")
-	before, _ := filepath.Glob(filepath.Join(os.TempDir(), "wakil-chrome-profile-*"))
+	tmp := privateTmp(t)
 	l := &localLauncher{browserPath: fake}
 	start := time.Now()
 	_, _, sess, err := l.launch(context.Background())
@@ -79,15 +101,14 @@ func TestLocalLaunch_ImmediateExitIsAFailureNotASuccess(t *testing.T) {
 			t.Errorf("launch args lack %s:\n%s", want, args)
 		}
 	}
-	if !strings.Contains(args, "--user-data-dir="+os.TempDir()+"/wakil-chrome-profile-") {
+	if !strings.Contains(args, "--user-data-dir="+tmp+"/wakil-chrome-profile-") {
 		t.Errorf("launch did not pass a fresh private --user-data-dir:\n%s", args)
 	}
 	if strings.Contains(args, "--remote-debugging-port") {
 		t.Errorf("a TCP debugging port was requested:\n%s", args)
 	}
-	after, _ := filepath.Glob(filepath.Join(os.TempDir(), "wakil-chrome-profile-*"))
-	if len(after) > len(before) {
-		t.Errorf("a failed launch left its profile dir behind: %v", after)
+	if left := profileDirsIn(t, tmp); len(left) > 0 {
+		t.Errorf("a failed launch left its profile dir behind: %v", left)
 	}
 }
 
