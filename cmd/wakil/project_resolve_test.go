@@ -35,9 +35,16 @@ func TestResolveProjectGoldenKeys(t *testing.T) {
 // Invariant (0.4.3 guarantee): with WAKIL_WORKSPACE_PATH unset, a chat started
 // in directory C and plan gc run in C resolve to the same store, including when
 // C is reached through a symlink, in docker and direct mode.
+// 0.5.0 (C1 fix, review on rubin): a chat's project key is the working directory,
+// whatever the config says. The config's host_workdir / workdir / WAKIL_*_WORKDIR
+// may point at another repository (the rubin host had a stale /home/valon/wakil-work
+// from the environment); they must not key any store. With no project argument,
+// the chat key equals ResolveProject(cwd) for every backend, and so does plan gc.
 func TestResolveProjectMatchesChatForCwd(t *testing.T) {
 	t.Setenv("WAKIL_WORKSPACE_KEY", "")
 	t.Setenv("WAKIL_WORKSPACE_PATH", "")
+	t.Setenv("WAKIL_HOST_WORKDIR", "")
+	t.Setenv("ILM_HOST_WORKDIR", "")
 	dir := t.TempDir()
 	real := filepath.Join(dir, "proj")
 	if err := os.MkdirAll(real, 0o755); err != nil {
@@ -47,17 +54,30 @@ func TestResolveProjectMatchesChatForCwd(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
+	stale := filepath.Join(dir, "stale-other-repo") // a host_workdir pointing elsewhere
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
 	for _, c := range []string{real, link} {
+		if err := os.Chdir(c); err != nil {
+			t.Fatal(err)
+		}
+		gc, err := ResolveProject("")
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, mode := range []string{"direct", "docker"} {
-			cfg := config.Config{ExecMode: mode, WorkDir: c, HostWorkDir: c}
-			chat := agent.ChatProjectPath(cfg)
-			gc, err := ResolveProject(c)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if agent.WorkspaceKey(chat) != agent.WorkspaceKey(gc) {
-				t.Fatalf("mode=%s cwd=%s: chat key %s != gc key %s",
-					mode, c, agent.WorkspaceKey(chat), agent.WorkspaceKey(gc))
+			for _, cfg := range []config.Config{
+				{ExecMode: mode},                     // no host_workdir set
+				{ExecMode: mode, HostWorkDir: stale}, // stale host_workdir: never keys a store
+			} {
+				chat := agent.ChatProjectPath(cfg)
+				if agent.WorkspaceKey(chat) != agent.WorkspaceKey(gc) {
+					t.Fatalf("mode=%s cwd=%s cfg.HostWorkDir=%q: chat key %s != gc key %s",
+						mode, c, cfg.HostWorkDir, agent.WorkspaceKey(chat), agent.WorkspaceKey(gc))
+				}
 			}
 		}
 	}

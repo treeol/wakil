@@ -193,9 +193,16 @@ func NormalizeContextMode(s string) (string, bool) {
 // base_url takes precedence over host+port; if only host (and optionally port)
 // are set, the URL is constructed as http://{host}:{port}.
 type Config struct {
-	BaseURL string `json:"base_url"` // full URL, e.g. "http://proxy-host:11400"
-	Host    string `json:"host"`     // alternative to base_url: just the hostname/IP
-	Port    int    `json:"port"`     // port for host (default 11400)
+	// WorkDirFlag is true only when --workdir was passed on the command line.
+	// It, and a WorkDir set on a Config that did not come from LoadConfig, are
+	// the explicit project choice (0.5.0): file and env values never are.
+	WorkDirFlag bool `json:"-"`
+	// workDirLoaded marks a Config produced by LoadConfig, so an unloaded
+	// literal's WorkDir can be told apart from a file/env-derived one.
+	workDirLoaded bool
+	BaseURL       string `json:"base_url"` // full URL, e.g. "http://proxy-host:11400"
+	Host          string `json:"host"`     // alternative to base_url: just the hostname/IP
+	Port          int    `json:"port"`     // port for host (default 11400)
 
 	// Endpoints is the named-endpoint block. When present it supersedes the
 	// legacy top-level base_url/model fields: DefaultEndpoint selects the
@@ -1532,6 +1539,13 @@ func LoadConfig(argv []string) (Config, error) {
 	if err := fs.Parse(argv); err != nil {
 		return cfg, err
 	}
+	// --workdir on the command line is the explicit project (0.5.0); a value
+	// from the file or WAKIL_WORKDIR is not (see ProjectDir).
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "workdir" {
+			cfg.WorkDirFlag = true
+		}
+	})
 
 	// Record which flags were explicitly passed — needed to distinguish
 	// "user set --model/--base-url" (overrides the selected endpoint) from
@@ -1759,6 +1773,7 @@ func LoadConfig(argv []string) (Config, error) {
 		return cfg, err
 	}
 
+	cfg.workDirLoaded = true
 	return cfg, nil
 }
 
@@ -1910,6 +1925,10 @@ func validateSubagentEndpoint(cfg Config) error {
 // workspaceKey. An explicit WAKIL_WORKSPACE_PATH env var overrides both
 // WorkDir and HostWorkDir so containers can pin the workspace identity
 // regardless of cwd or mount path.
+// WorkDirLoaded reports whether c came from LoadConfig. A false value with a
+// non-empty WorkDir means a programmatic or literal config set it explicitly.
+func (c Config) WorkDirLoaded() bool { return c.workDirLoaded }
+
 func (c Config) WorkspacePath() string {
 	if env := os.Getenv("WAKIL_WORKSPACE_PATH"); env != "" {
 		return env

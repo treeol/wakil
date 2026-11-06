@@ -6,27 +6,28 @@ import (
 	"github.com/treeol/wakil/internal/config"
 )
 
-// ProjectDir is the directory a chat keys its per-project stores by, for every
-// backend (0.5.0, D1): the launch directory, symlink-resolved. It is the same
-// value `wakil plan gc` resolves from the same directory, so one repository
-// has one store key. Neither WAKIL_WORKSPACE_PATH nor the config's host_workdir
-// feeds it; host_workdir remains the docker bind mount only.
+// ProjectDir is the project identity a chat keys every per-project store by
+// (0.5.0, D1), for every backend, symlink-resolved, equal to ResolveProject(dir)
+// in cmd/wakil (the `plan gc` key):
 //
-// The launch directory is the config's workdir: WorkDir in direct mode,
-// HostWorkDir otherwise (the hisn and docker backends, which set HostWorkDir to
-// the directory the user ran wakil in). An empty value falls back to the
-// process working directory.
+//   - an explicit project directory is the project: the --workdir flag, or a
+//     WorkDir set on a Config that did not come from LoadConfig (programmatic
+//     callers and test literals);
+//   - otherwise the process working directory.
+//
+// A WorkDir that came from the config file, WAKIL_WORKDIR / ILM_WORKDIR, or
+// a derived default never keys a store: it is not an explicit choice. Neither
+// host_workdir nor WAKIL_WORKSPACE_PATH nor WAKIL_HOST_WORKDIR feeds it (the
+// bind mount only). A stale environment value previously keyed rubin's store.
 func ProjectDir(cfg config.Config) string {
-	dir := cfg.HostWorkDir
-	if cfg.ExecMode == "direct" {
-		dir = cfg.WorkDir
+	if cfg.WorkDirFlag || (cfg.WorkDir != "" && !cfg.WorkDirLoaded()) {
+		return canonicalWorkspace(cfg.WorkDir)
 	}
-	if dir == "" {
-		if wd, err := os.Getwd(); err == nil {
-			dir = wd
-		}
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
 	}
-	return canonicalWorkspace(dir)
+	return canonicalWorkspace(wd)
 }
 
 // ChatProjectPath is kept for callers that name the chat's store directory. It

@@ -54,13 +54,17 @@ func TestRepoStateMaxParallelSubagentsZeroOmitted(t *testing.T) {
 // TestDescribeRepoStateIncludesMaxPar verifies that /repostate output
 // includes the max parallel subagents line when set.
 func TestDescribeRepoStateIncludesMaxPar(t *testing.T) {
+	// Chat stores are keyed by ProjectDir (cwd when no explicit WorkDir), so
+	// isolate the cwd and the data dir and write/read through the same key.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Chdir(t.TempDir())
 	cfg := config.DefaultConfig()
 	cfg.HostWorkDir = "/tmp/test-wakil-maxpar-describe"
 	app := &App{
 		Cfg:     cfg,
 		Session: nil,
 	}
-	_ = updateRepoState(cfg.HostWorkDir, func(s *RepoState) {
+	_ = updateRepoState(ProjectDir(cfg), func(s *RepoState) {
 		s.MaxParallelSubagents = 8
 	})
 	desc := DescribeRepoState(app)
@@ -79,13 +83,13 @@ func TestRestoreRepoStateMaxParallelSubagents(t *testing.T) {
 
 	cfg := config.DefaultConfig() // default maxpar = 2
 	cfg.HostWorkDir = ws
+	// Set the workspace before the App copies the config: SessionWorkspace is
+	// ProjectDir(app.Cfg), and a WorkDir set on a literal config is explicit.
+	cfg.ExecMode = "direct"
+	cfg.WorkDir = ws
 	app := &App{
 		Cfg: cfg,
 	}
-	// Set the workspace so SessionWorkspace resolves to ws.
-	// In direct mode, SessionWorkspace returns Cfg.WorkDir.
-	cfg.ExecMode = "direct"
-	cfg.WorkDir = ws
 
 	result := RestoreRepoState(app)
 	if app.Cfg.MaxParallelSubagents != 6 {
