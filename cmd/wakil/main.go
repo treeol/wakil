@@ -72,6 +72,12 @@ func main() {
 		os.Exit(runPlanGC(os.Args[3:]))
 	}
 
+	// "wakil state migrate --from-legacy [--apply]" (0.5.0, C3): copy legacy
+	// shared-store memory entries into their project's store. Dry-run by default.
+	if len(os.Args) >= 2 && os.Args[1] == "state" {
+		os.Exit(wiring.RunState(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	// --list-sessions short-circuits before config resolution so it works even
 	// without a configured proxy. Scoped to the launch cwd by default (no config
 	// has been loaded yet, so cwd is the only workspace identity available);
