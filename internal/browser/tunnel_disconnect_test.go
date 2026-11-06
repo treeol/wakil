@@ -170,7 +170,7 @@ func TestAbruptForwarderDeath_StopPathReapsBrowser(t *testing.T) {
 	// in its own session with two sleeping children in the group, plus a
 	// straggler in another group, all carrying the profile dir in argv.
 	start := `set -e; cd ` + quoteSh(dir) + `
-setsid sh -c 'echo $$ > pid; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > pgid; sleep 2718 & sleep 2718; : "$0"' ` + quoteSh(dir+"/leader") + ` >/dev/null 2>&1 &
+setsid sh -c 'echo $$ > pid; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > pgid; echo ${20} > start; sleep 2718 & sleep 2718; : "$0"' ` + quoteSh(dir+"/leader") + ` >/dev/null 2>&1 &
 setsid sh -c 'sleep 2718; : "$0"' ` + quoteSh(dir+"/home") + ` >/dev/null 2>&1 &
 sleep 0.8`
 	if out, err := osexec.Command("sh", "-c", start).CombinedOutput(); err != nil {

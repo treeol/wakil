@@ -359,7 +359,7 @@ func TestStopScript_KillsGroupSweepsStragglersRemovesDir(t *testing.T) {
 	// group that only carries the dir in its argv (like crashpad's handler).
 	// `: "$0"` after the sleep keeps each sh alive as the argv-carrying parent.
 	start := `set -e; cd ` + quoteSh(dir) + `
-setsid sh -c 'echo $$ > pid; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > pgid; sleep 2718 & sleep 2718; : "$0"' ` + quoteSh(dir+"/leader") + ` >/dev/null 2>&1 &
+setsid sh -c 'echo $$ > pid; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > pgid; echo ${20} > start; sleep 2718 & sleep 2718; : "$0"' ` + quoteSh(dir+"/leader") + ` >/dev/null 2>&1 &
 setsid sh -c 'sleep 2718; : "$0"' ` + quoteSh(dir+"/home") + ` >/dev/null 2>&1 &
 sleep 0.6`
 	if out, err := osexec.Command("sh", "-c", start).CombinedOutput(); err != nil {

@@ -84,6 +84,11 @@ func sessionProbe(ctx context.Context, exe SandboxExecutor, bin string) error {
 	if _, err := exe.RunShell(ctx, "command -v "+quoteSh(bin)); err != nil {
 		return fmt.Errorf("chromium binary %q not found in the sandbox session — set browser_enabled:false or add chromium to the sandbox rootfs", bin)
 	}
+	// The CDP tunnel forwards through `python3` inside the session; without
+	// it the browser starts but no connection can ever reach it.
+	if _, err := exe.RunShell(ctx, "command -v python3"); err != nil {
+		return fmt.Errorf("python3 not found in the sandbox session — the browser tunnel needs it; add python3 to the sandbox rootfs or set browser_enabled:false")
+	}
 	return nil
 }
 
@@ -148,6 +153,7 @@ func startScript(dir, chromium string) string {
 	return "set -e; umask 077; mkdir -p " + quoteSh(dir+"/home") +
 		"; echo $$ > " + quoteSh(dir+"/pid") +
 		"; s=$(cat /proc/$$/stat); rest=${s##*) }; set -- $rest; echo $3 > " + quoteSh(dir+"/pgid") +
+		"; echo ${20} > " + quoteSh(dir+"/start") +
 		"; HOME=" + quoteSh(dir+"/home") + " exec " + quoteSh(chromium) +
 		" --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage" +
 		" --disable-crash-reporter --disable-breakpad" +
@@ -166,7 +172,10 @@ func (l *dockerLauncher) launch(ctx context.Context) (string, func() error, *ses
 	if l.sess != nil && marker == "" {
 		return "", nil, nil, fmt.Errorf("browser: no running sandbox session to own Chromium")
 	}
-	stdin, stdout, stderr, hostPid, err := l.exe.StartInteractive(ctx, startScript(dir, l.chromium))
+	// The host exec client must outlive this launch: it is the browser's
+	// process, torn down by the session's teardown, not by launchTimeout. Its
+	// start is bound to the launch deadline only for the probe above.
+	stdin, stdout, stderr, hostPid, err := l.exe.StartInteractive(context.WithoutCancel(ctx), startScript(dir, l.chromium))
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("cannot start Chromium in %s (%w) — set browser_enabled:false or install chromium in the image", l.where(), err)
 	}
@@ -266,6 +275,15 @@ func stopScript(grace time.Duration) string {
 pids() { grep -l -a -- "wakil-chrom[e]-$S" /proc/[0-9]*/cmdline 2>/dev/null | sed 's#/proc/\([0-9]*\)/cmdline#\1#'; }
 pg=$(cat "$D/pgid" 2>/dev/null || true)
 case "$pg" in ''|*[!0-9]*|0|1) pg= ;; esac
+# Signal the recorded group only if its leader is still the recorded browser
+# (pid and start time): a reused pid must never direct a group kill at
+# unrelated processes.
+lp=$(cat "$D/pid" 2>/dev/null || true); ls=$(cat "$D/start" 2>/dev/null || true)
+if [ -n "$pg" ]; then
+  cur=$(cat /proc/$lp/stat 2>/dev/null) || cur=
+  rest=${cur##*) }; set -- $rest; cs=${20:-}
+  [ -n "$cur" ] && [ "$cs" = "$ls" ] && [ -n "$ls" ] || pg=
+fi
 [ -n "$pg" ] && kill -TERM -$pg 2>/dev/null
 i=0; while [ $i -lt ` + ticks + ` ]; do [ -z "$(pids)" ] && break; sleep 0.1; i=$((i+1)); done
 [ -n "$pg" ] && kill -KILL -$pg 2>/dev/null
