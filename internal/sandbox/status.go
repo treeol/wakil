@@ -67,3 +67,16 @@ type KVRPlanner interface {
 type StatusReporter interface {
 	SandboxStatus(ctx context.Context) Status
 }
+
+// CLIExecer is implemented by a backend whose long-lived host-side processes
+// (the browser's in-session Chromium and its CDP tunnel) must carry the
+// session id in their host argv, so Wakil can prove ownership by cmdline
+// before signalling them. ExecCLI runs spec exactly like Exec but through the
+// backend's CLI transport, whose host client argv names the session. Only the
+// browser uses it; every tool call stays on Exec. Backends without it (direct,
+// docker) keep their own ownership markers.
+type CLIExecer interface {
+	ExecCLI(ctx context.Context, spec ExecSpec) (ExecHandle, error)
+	// ActiveSessionID is the id of the running session ("" when none).
+	ActiveSessionID() string
+}

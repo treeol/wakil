@@ -721,13 +721,78 @@ func (e *BackendExecutor) KVRAvailable() bool { return e.KVRSocketPath() != "" }
 // ContainerName implements Executor: there is no container.
 func (e *BackendExecutor) ContainerName() string { return "" }
 
+// cliExecer is the backend's CLI transport, when it has one (hisn).
+func (e *BackendExecutor) cliExecer() (sandbox.CLIExecer, bool) {
+	c, ok := e.b.(sandbox.CLIExecer)
+	return c, ok
+}
+
+// HostBrowserAllowed reports whether the browser may run in this sandbox: the
+// backend has a CLI transport whose host client carries the session id (the
+// ownership marker, see StartInteractiveCLI). A backend without it stays off:
+// a browser manager would otherwise launch Chromium on the HOST.
+func (e *BackendExecutor) HostBrowserAllowed() bool {
+	_, ok := e.cliExecer()
+	return ok
+}
+
+// BrowserSessionID is the id of the running session that browser processes
+// belong to ("" when none is running).
+func (e *BackendExecutor) BrowserSessionID() string {
+	if c, ok := e.cliExecer(); ok {
+		return c.ActiveSessionID()
+	}
+	return ""
+}
+
+// StartInteractiveCLI is StartInteractive through the backend's CLI transport:
+// the same admission and pipes, but the host client's argv carries the session
+// id, so the caller can prove ownership of that process by its cmdline. The
+// returned pid is the host client's; it is valid only for that ownership check
+// and never for a pid operation inside the sandbox.
+func (e *BackendExecutor) StartInteractiveCLI(ctx context.Context, command string) (
+	stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, pid int, err error,
+) {
+	c, ok := e.cliExecer()
+	if !ok {
+		return nil, nil, nil, 0, errors.New("sandbox backend has no CLI transport")
+	}
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		return nil, nil, nil, 0, fmt.Errorf("stdin pipe: %w", err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		closeAll(inR, inW)
+		return nil, nil, nil, 0, fmt.Errorf("stdout pipe: %w", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		closeAll(inR, inW, outR, outW)
+		return nil, nil, nil, 0, fmt.Errorf("stderr pipe: %w", err)
+	}
+	var h sandbox.ExecHandle
+	err = e.admit(ctx, func() (err error) {
+		h, err = c.ExecCLI(ctx, sandbox.ExecSpec{
+			Argv: []string{"sh", "-c", command}, Cwd: e.root,
+			Stdin: inR, Stdout: outW, Stderr: errW,
+		})
+		return err
+	})
+	if err != nil {
+		closeAll(inR, inW, outR, outW, errR, errW)
+		return nil, nil, nil, 0, fmt.Errorf("starting interactive process: %w", err)
+	}
+	go func() {
+		_, _ = h.Wait()
+		closeAll(inR, outW, errW)
+	}()
+	return inW, outR, errR, h.Pid(), nil
+}
+
 // SandboxTmpReadable reports that /tmp is the backend sandbox's own, not the
 // host's (see SandboxTmpReader).
 func (e *BackendExecutor) SandboxTmpReadable() bool { return true }
-
-// HostBrowserAllowed is false: with ContainerName() == "" a browser manager
-// would otherwise launch Chromium on the HOST, outside the sandbox.
-func (e *BackendExecutor) HostBrowserAllowed() bool { return false }
 
 // SandboxTools implements Executor: probed once, inside the sandbox.
 func (e *BackendExecutor) SandboxTools() string {

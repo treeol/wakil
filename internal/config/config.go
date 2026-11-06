@@ -1130,8 +1130,9 @@ type HisnConfig struct {
 	// project mounts_ro). Without one, staging stays off (never a host-side
 	// kvr).
 	KVRBinary string `json:"kvr_binary,omitempty"`
-	// ExecViaCLI keeps the per-tool-call `hisn exec` CLI path alongside the
-	// control-socket client, as a fallback for one release. Default false.
+	// ExecViaCLI runs the per-tool-call `hisn exec` CLI path instead of the
+	// control-socket client. Default false. The browser always uses the CLI
+	// transport for its ownership marker, whatever this is set to (0.5.0 P4).
 	ExecViaCLI bool `json:"exec_via_cli,omitempty"`
 }
 

@@ -397,6 +397,24 @@ Not confirmed by any reader and therefore not acted on: `OpenExisting` racing
   - The decision runs **after** `ApplyDefaultBackend`'s flip (Fable's point).
 - Tests: decision table across explicit/auto hisn, `browser_path` set, named profile, unsupported hisn, injected exec failure (no local launch in each); host-run: screenshot, `pgrep` in-session only.
 
+### P4 as implemented (status)
+
+- Ownership transport: under hisn the browser's long-lived host exec client
+  (tunnel and launch) runs through `hisn exec --session <id>` via the optional
+  `sandbox.CLIExecer` interface. Its argv carries the session id as the ownership
+  marker, and the pid and start time are recorded. This CLI path is the ownership
+  transport for 0.5.0, not a fallback; it stays until option 2 below replaces it.
+- Guard: `HostBrowserAllowed()` is true only when the backend implements
+  `CLIExecer` and has an active session id. Direct and docker are unchanged.
+- Chromium probe runs at launch because the hisn session may start lazily.
+- Tests: guard decision table, probe refusal, no-session refusal, start/stop/sweep
+  against a fake session (the fake execs in its own process group, as a real
+  session leader does), and marker ownership. The real-hisn cmdline check and the
+  real-rootfs launch skip here and are listed in the host sequence.
+- **0.5.x follow-up (option 2):** a control-socket ownership protocol, where the
+  in-session launch reports pid and start time over the socket, so the CLI
+  transport can be removed.
+
 ## Open points (known before implementation)
 
 - C2 read-only open and the `sessionhost` read-only path are new code; the tests above are the acceptance.

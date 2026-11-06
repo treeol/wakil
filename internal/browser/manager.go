@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,10 +40,20 @@ import (
 // manager needs. Defined here (not imported from internal/exec) to keep the
 // package light. In docker mode, RunShell executes inside the container and
 // ContainerName returns the container name; in direct mode ContainerName
-// returns "".
+// returns "". A sandbox backend with a CLI transport (hisn) reports
+// ContainerName "" and is served by the in-session launcher instead.
 type SandboxExecutor interface {
 	RunShell(ctx context.Context, command string) (string, error)
 	ContainerName() string
+}
+
+// sessionExecutor is implemented by a sandbox backend that runs the browser
+// inside its session (hisn). BrowserSessionID names the running session ("" =
+// none yet); StartInteractiveCLI starts a process inside it whose host client
+// carries that id in argv (the ownership marker).
+type sessionExecutor interface {
+	BrowserSessionID() string
+	StartInteractiveCLI(ctx context.Context, command string) (stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, pid int, err error)
 }
 
 // defaultTimeout is the per-operation timeout for browser actions. Without
@@ -116,6 +127,17 @@ func NewManager(exe SandboxExecutor, browserPath string, opts ...Option) (*Manag
 	m := &Manager{idleTimeout: DefaultIdleTimeout}
 	for _, o := range opts {
 		o(m)
+	}
+	if se, ok := exe.(sessionExecutor); ok {
+		// Sandbox backend (hisn): the browser runs in the session. The session
+		// may not be up yet (it starts on the first call), so the probe runs
+		// when the browser launches, not here.
+		l, err := newSessionLauncher(exe, se, browserPath)
+		if err != nil {
+			return nil, err
+		}
+		m.launcher = l
+		return m, nil
 	}
 	if exe != nil && exe.ContainerName() != "" {
 		l, err := newDockerLauncher(exe, browserPath)

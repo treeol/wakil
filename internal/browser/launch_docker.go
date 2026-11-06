@@ -32,6 +32,59 @@ type dockerSandbox interface {
 type dockerLauncher struct {
 	exe      dockerSandbox
 	chromium string
+	// sess is set for a sandbox session (hisn): the transport is the session's
+	// CLI starter and the ownership marker is the session id. Nil for docker,
+	// where the marker is the container name.
+	sess sessionExecutor
+}
+
+// newSessionLauncher builds the in-session launcher for a sandbox backend with
+// a CLI transport (hisn). The session may not be running yet, so the chromium
+// probe runs at launch (sessionProbe), and the marker is taken per launch.
+func newSessionLauncher(exe SandboxExecutor, se sessionExecutor, browserPath string) (launcher, error) {
+	bin := browserPath
+	if bin == "" {
+		bin = "chromium"
+	}
+	return &dockerLauncher{exe: sessionShell{exe, se}, chromium: bin, sess: se}, nil
+}
+
+// sessionShell adapts a session executor to dockerSandbox: RunShell and the
+// CLI starter go through the session; ContainerName is unused (the marker
+// comes from the session id, see markerOf).
+type sessionShell struct {
+	SandboxExecutor
+	se sessionExecutor
+}
+
+func (s sessionShell) StartInteractive(ctx context.Context, command string) (io.WriteCloser, io.ReadCloser, io.ReadCloser, int, error) {
+	return s.se.StartInteractiveCLI(ctx, command)
+}
+
+// markerOf is the ownership marker for host-side processes of this launcher:
+// the container name for docker, the running session id for a session.
+func (l *dockerLauncher) markerOf() string {
+	if l.sess != nil {
+		return l.sess.BrowserSessionID()
+	}
+	return l.exe.ContainerName()
+}
+
+// where names the sandbox for messages: the container, or the session.
+func (l *dockerLauncher) where() string {
+	if l.sess != nil {
+		return "session " + l.sess.BrowserSessionID()
+	}
+	return "container " + l.exe.ContainerName()
+}
+
+// sessionProbe checks chromium inside a running session. Called at launch,
+// because a session starts lazily on the first call.
+func sessionProbe(ctx context.Context, exe SandboxExecutor, bin string) error {
+	if _, err := exe.RunShell(ctx, "command -v "+quoteSh(bin)); err != nil {
+		return fmt.Errorf("chromium binary %q not found in the sandbox session — set browser_enabled:false or add chromium to the sandbox rootfs", bin)
+	}
+	return nil
 }
 
 // newDockerLauncher checks that chromium exists in the container; it launches
@@ -103,13 +156,23 @@ func startScript(dir, chromium string) string {
 
 func (l *dockerLauncher) launch(ctx context.Context) (string, func() error, *session, error) {
 	dir, suffix := profileDirName()
+	if l.sess != nil {
+		// Session (hisn): probe chromium at launch, the session may only start now.
+		if err := sessionProbe(ctx, l.exe, l.chromium); err != nil {
+			return "", nil, nil, err
+		}
+	}
+	marker := l.markerOf()
+	if l.sess != nil && marker == "" {
+		return "", nil, nil, fmt.Errorf("browser: no running sandbox session to own Chromium")
+	}
 	stdin, stdout, stderr, hostPid, err := l.exe.StartInteractive(ctx, startScript(dir, l.chromium))
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("cannot start Chromium in container %s (%w) — set browser_enabled:false or install chromium in the image", l.exe.ContainerName(), err)
+		return "", nil, nil, fmt.Errorf("cannot start Chromium in %s (%w) — set browser_enabled:false or install chromium in the image", l.where(), err)
 	}
-	// Identity of the host-side docker exec client, taken now, before anything
-	// else can happen to its pid (R2: teardown signals it only if still ours).
-	hostID, hostOK := recordHostProcess(hostPid, l.exe.ContainerName())
+	// Identity of the host-side exec client, taken now, before anything else
+	// can happen to its pid (R2: teardown signals it only if still ours).
+	hostID, hostOK := recordHostProcess(hostPid, marker)
 	ring := &ringBuffer{n: 8 << 10}
 	var drain sync.WaitGroup
 	drain.Add(2)
@@ -137,12 +200,12 @@ func (l *dockerLauncher) launch(ctx context.Context) (string, func() error, *ses
 		diag := strings.TrimSpace(ring.String())
 		_ = teardown()
 		if diag != "" {
-			return "", nil, nil, fmt.Errorf("Chromium did not start in container %s: %w\nbrowser output:\n%s", l.exe.ContainerName(), err, diag)
+			return "", nil, nil, fmt.Errorf("Chromium did not start in %s: %w\nbrowser output:\n%s", l.where(), err, diag)
 		}
-		return "", nil, nil, fmt.Errorf("Chromium did not start in container %s: %w", l.exe.ContainerName(), err)
+		return "", nil, nil, fmt.Errorf("Chromium did not start in %s: %w", l.where(), err)
 	}
 	var url string
-	tun, url, err = startTunnel(l.exe, port, l.exe.ContainerName())
+	tun, url, err = startTunnel(l.exe, port, marker)
 	if err != nil {
 		_ = teardown()
 		return "", nil, nil, err

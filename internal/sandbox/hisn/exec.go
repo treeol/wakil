@@ -19,7 +19,9 @@ import (
 //   - ctl (default): the control-socket client (internal/sandbox/hisn/ctl);
 //     exec_id-signalled, one connection per exec, stdio over SCM_RIGHTS.
 //   - CLI (sandbox.hisn.exec_via_cli = true): `hisn exec --session ID …`,
-//     one client process per call — kept one release as a fallback.
+//     one client process per call. It is also the ownership transport for
+//     the browser (ExecCLI), so it stays until a control-socket ownership
+//     protocol replaces it (0.5.x).
 func (b *Backend) Exec(ctx context.Context, spec sandbox.ExecSpec) (sandbox.ExecHandle, error) {
 	if len(spec.Argv) == 0 {
 		return nil, fmt.Errorf("hisn exec: empty argv")
@@ -82,7 +84,42 @@ func (b *Backend) resolveExecCwd(cwd string) (string, error) {
 	return b.pm.ResolveExecCwd(cwd)
 }
 
-// execCLI is the fallback path: one `hisn exec` client process per call.
+// ExecCLI implements sandbox.CLIExecer: it runs spec through the `hisn exec
+// --session <id>` client, so the host process carries the session id in its
+// argv (the ownership marker for long-lived processes such as the browser).
+// The CLI path is NOT a fallback for this use: it is the ownership transport
+// until a control-socket ownership protocol replaces it (0.5.x, see
+// docs/PLAN-0.5.0.md). Tool calls keep the control socket.
+func (b *Backend) ExecCLI(ctx context.Context, spec sandbox.ExecSpec) (sandbox.ExecHandle, error) {
+	if len(spec.Argv) == 0 {
+		return nil, fmt.Errorf("hisn exec: empty argv")
+	}
+	cwd, err := b.resolveExecCwd(spec.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	env, err := b.validateExecEnv(spec.Env)
+	if err != nil {
+		return nil, err
+	}
+	l, release, err := b.admit()
+	if err != nil {
+		return nil, err
+	}
+	if l.ctx.Err() != nil {
+		release()
+		if l.dead() {
+			return nil, l.deadErr()
+		}
+		return nil, sandbox.ErrNoSession
+	}
+	return b.execCLI(ctx, l, release, spec, cwd, env)
+}
+
+// ActiveSessionID implements sandbox.CLIExecer.
+func (b *Backend) ActiveSessionID() string { return b.ActiveID() }
+
+// execCLI runs one `hisn exec --session <id>` client process for spec.
 func (b *Backend) execCLI(ctx context.Context, l *live, release func(), spec sandbox.ExecSpec, cwd string, env map[string]string) (sandbox.ExecHandle, error) {
 	args := []string{"exec", "--session", l.id}
 	if cwd != "" {

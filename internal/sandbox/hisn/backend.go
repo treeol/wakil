@@ -58,8 +58,9 @@ type Options struct {
 	TmpSizeMB int64
 	ShmSizeMB int64
 	// ExecViaCLI runs tool-call execs through the `hisn exec` CLI (one client
-	// process per call) instead of the control-socket client. Fallback for
-	// one release; default false (ctl path).
+	// process per call) instead of the control-socket client. Default false
+	// (ctl path). The browser always uses the CLI transport (ExecCLI) for its
+	// ownership marker, whatever this is set to.
 	ExecViaCLI bool
 	// Surface is the per-project request from .wakil/sandbox.json (services,
 	// forwards, env, mounts, risk_ack, named profile). Zero = nothing extra.
