@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/sandbox/hisn"
 	"github.com/treeol/wakil/internal/sandbox/project"
+	"golang.org/x/term"
 )
 
 // loadProjectSurface reads <workspace>/.wakil/sandbox.json and returns the
@@ -65,7 +68,13 @@ func SandboxTrust(out io.Writer, dir string, openTTY func() (io.ReadCloser, erro
 		return err
 	}
 	if !l.Present || bootstrapEligible(l.Raw) {
-		return trustBootstrap(out, cfg0(ws), l, openTTY, productionRisk)
+		cfg, err := loadTrustConfig(ws)
+		if err != nil {
+			return err
+		}
+		return trustBootstrap(out, cfg, l, openTTY, func(c config.Config, sf hisn.Surface) (hisn.Risk, error) {
+			return productionRisk(c, sf)
+		})
 	}
 	if !l.Needs() {
 		fmt.Fprintf(out, "%s needs no approval (absent, empty or asks for nothing).\n", project.RelPath)
@@ -142,7 +151,7 @@ func bootstrapBytes(ack string) []byte {
 
 // riskFunc computes the generated profile's risk for a config (injected so
 // tests need no hisn). It is hisn.PlannedRisk in production.
-type riskFunc func(cfg config.Config) (hisn.Risk, error)
+type riskFunc func(cfg config.Config, surface hisn.Surface) (hisn.Risk, error)
 
 // fileAck returns hisn.risk_ack of a file that already parsed (project.Load is
 // strict and refuses anything else first), or "" when absent.
@@ -161,19 +170,40 @@ func bootstrapEligible(raw []byte) bool {
 	return ok
 }
 
-// cfg0 is the minimal config the trust command needs for a workspace: the
-// same fields LoadConfig resolves for a docker-mode hisn start in ws.
-func cfg0(ws string) config.Config {
-	return config.Config{ExecMode: "docker", HostWorkDir: ws, WorkDir: ws}
+// loadTrustConfig returns the config startup would use in ws: the real global
+// configuration (LoadConfig with ws as the working directory, exactly as
+// `wakil run` run from that repo resolves it), so the trust-time risk is the
+// startup risk. The working directory is restored before returning.
+func loadTrustConfig(ws string) (config.Config, error) {
+	prev, err := os.Getwd()
+	if err != nil {
+		return config.Config{}, err
+	}
+	if err := os.Chdir(ws); err != nil {
+		return config.Config{}, err
+	}
+	defer func() { _ = os.Chdir(prev) }()
+	cfg, err := config.LoadConfig(nil)
+	if err != nil {
+		return config.Config{}, err
+	}
+	return cfg, nil
 }
 
 // productionRisk is the real plan-time risk: hisn.PlannedRisk over the same
 // options startup builds (hisnOptions), so the labels match what startup
 // would refuse without an ack.
-var productionRiskFn riskFunc = productionRisk
+var productionRiskFn = func(cfg config.Config) (hisn.Risk, error) {
+	surface, _, err := loadProjectSurface(cfg)
+	if err != nil {
+		return hisn.Risk{}, err
+	}
+	return productionRisk(cfg, surface)
+}
 
-func productionRisk(cfg config.Config) (hisn.Risk, error) {
-	opts, err := hisnOptions(cfg)
+// productionRisk is the plan-time risk of cfg with the given project surface.
+func productionRisk(cfg config.Config, surface hisn.Surface) (hisn.Risk, error) {
+	opts, err := hisnOptionsWith(cfg, surface)
 	if err != nil {
 		return hisn.Risk{}, err
 	}
@@ -184,10 +214,11 @@ func productionRisk(cfg config.Config) (hisn.Risk, error) {
 
 // trustBootstrap is the no-file / bootstrap-form path of `wakil sandbox trust`.
 // It shows the labels and the risk, asks for an explicit yes, and only then
-// writes the ack and approves it. Any other answer removes the file it wrote.
+// writes the ack and approves it. Nothing is written before the answer, so any
+// other answer leaves the workspace untouched.
 // A bootstrap-form file whose ack already matches the risk needs nothing.
 func trustBootstrap(out io.Writer, cfg config.Config, l project.Loaded, openTTY func() (io.ReadCloser, error), risk riskFunc) error {
-	r, err := risk(cfg)
+	r, err := risk(cfg, l.Surface)
 	if err != nil {
 		return err
 	}
@@ -197,8 +228,8 @@ func trustBootstrap(out io.Writer, cfg config.Config, l project.Loaded, openTTY 
 	}
 	if l.Present {
 		cur, _ := bootstrapFormOK(l.Raw)
-		if cur == r.Ack {
-			fmt.Fprintf(out, "%s already acknowledges %q.\n", project.RelPath, r.Ack)
+		if cur == r.Ack && approvedNow(cfg, l) {
+			fmt.Fprintf(out, "%s already acknowledges %q and is approved.\n", project.RelPath, r.Ack)
 			return nil
 		}
 	}
@@ -225,20 +256,53 @@ func trustBootstrap(out io.Writer, cfg config.Config, l project.Loaded, openTTY 
 	defer tty.Close()
 	line, _ := bufio.NewReader(tty).ReadString('\n')
 	if strings.TrimSpace(line) != "yes" {
-		if !l.Present {
-			_ = os.Remove(path)
-		}
 		fmt.Fprintln(out, "not approved; nothing was written.")
 		return fmt.Errorf("not approved")
 	}
 	content := bootstrapBytes(r.Ack)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := writeAndApprove(out, cfg, path, content, l); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	return nil
+}
+
+// approvedNow reports whether the loaded file is already approved for this
+// workspace under the key startup checks (WorkspacePath, as loadProjectSurface).
+func approvedNow(cfg config.Config, l project.Loaded) bool {
+	key := agent.WorkspaceKey(cfg.WorkspacePath())
+	return project.Approved(filepath.Join(hisnStateDir(), "hisn"), key, l.Hash)
+}
+
+// writeAndApprove writes content (only when it differs from what is on disk),
+// then approves EXACTLY those bytes: the approval hash is sha256(content), and
+// the reloaded file must hash to it, or the write is refused and nothing is
+// approved. The approval key is WorkspacePath, the one startup checks.
+func writeAndApprove(out io.Writer, cfg config.Config, path string, content []byte, prior project.Loaded) error {
+	if !prior.Present || !bytes.Equal(prior.Raw, content) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			return err
+		}
+	}
+	got, err := project.Load(cfg.HostWorkDir)
+	if err != nil {
 		return err
 	}
-	return approveWritten(out, cfg, path)
+	sum := sha256.Sum256(content)
+	if got.Hash != hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("%s changed while it was being written; nothing was approved — run `wakil sandbox trust` again", project.RelPath)
+	}
+	key := agent.WorkspaceKey(cfg.WorkspacePath())
+	if key == "" {
+		return fmt.Errorf("cannot derive a workspace key for %s", path)
+	}
+	if err := project.Approve(filepath.Join(hisnStateDir(), "hisn"), key, got.Hash); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "approved.")
+	return nil
 }
 
 // printLabels shows the capability labels and the resulting risk.
@@ -250,35 +314,11 @@ func printLabels(out io.Writer, r hisn.Risk) {
 	fmt.Fprintf(out, "→ risk: %s (acknowledge with hisn.risk_ack %q)\n", r.Label, r.Ack)
 }
 
-// approveWritten records the approval of the file just written (same sha256
-// store as the existing approval path).
-func approveWritten(out io.Writer, cfg config.Config, path string) error {
-	l, err := project.Load(cfg.HostWorkDir)
-	if err != nil {
-		return err
-	}
-	key := agent.WorkspaceKey(cfg.HostWorkDir)
-	stateDir := filepath.Join(hisnStateDir(), "hisn")
-	if key == "" || !l.Present {
-		return fmt.Errorf("cannot approve %s", path)
-	}
-	if err := project.Approve(stateDir, key, l.Hash); err != nil {
-		return err
-	}
-	fmt.Fprintln(out, "approved.")
-	return nil
-}
-
 // IsInteractiveTUI reports whether this process may ask the user an inline
 // acknowledgement question: stdin AND stdout are terminals. Any other run
 // (wakil run, --print-*, scheduled) is non-interactive and never prompts.
 func IsInteractiveTUI() bool {
-	in, err1 := os.Stdin.Stat()
-	out, err2 := os.Stdout.Stat()
-	if err1 != nil || err2 != nil {
-		return false
-	}
-	return in.Mode()&os.ModeCharDevice != 0 && out.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // AckOffer is the inline first-run offer the TUI shows when startup hits a
@@ -311,14 +351,7 @@ func AckOffer(cfg config.Config, in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "not acknowledged; nothing was written.")
 		return fmt.Errorf("risk %q is not acknowledged (run `wakil sandbox trust` to review it)", r.Label)
 	}
-	path := l.Path
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, bootstrapBytes(r.Ack), 0o644); err != nil {
-		return err
-	}
-	return approveWritten(out, cfg, path)
+	return writeAndApprove(out, cfg, l.Path, bootstrapBytes(r.Ack), l)
 }
 
 // OpenControllingTTY opens /dev/tty for the approval answer.

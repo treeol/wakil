@@ -32,6 +32,17 @@ func rootfsFor(global string, s hisn.Surface) string {
 // trust command so the risk shown at trust time is the risk startup computes.
 // It reads the project file (loadProjectSurface) and so enforces F1 too.
 func hisnOptions(cfg config.Config) (hisn.Options, error) {
+	surface, _, err := loadProjectSurface(cfg)
+	if err != nil {
+		return hisn.Options{}, err
+	}
+	return hisnOptionsWith(cfg, surface)
+}
+
+// hisnOptionsWith is hisnOptions with the project surface supplied by the
+// caller. Only `wakil sandbox trust` uses it, to review an unapproved file
+// (trust IS the approval step); startup always goes through hisnOptions.
+func hisnOptionsWith(cfg config.Config, surface hisn.Surface) (hisn.Options, error) {
 	h := cfg.Sandbox.Hisn
 	state := hisnStateDir()
 	if state == "" {
@@ -46,10 +57,6 @@ func hisnOptions(cfg config.Config) (hisn.Options, error) {
 			return hisn.Options{}, fmt.Errorf("sandbox backend hisn: cannot derive a project key for home")
 		}
 		home = filepath.Join(state, "hisn-home", key)
-	}
-	surface, _, err := loadProjectSurface(cfg)
-	if err != nil {
-		return hisn.Options{}, err
 	}
 	gitName, gitEmail, signingKey, sshKeys, err := hisnGitSetup(cfg, h)
 	if err != nil {

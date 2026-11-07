@@ -6,13 +6,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/sandbox/hisn"
+	"golang.org/x/term"
 )
 
 // stubRisk makes productionRisk return a fixed profile risk for AckOffer tests.
 func withStubRisk(t *testing.T, label, ack string) {
 	t.Helper()
 	prev := productionRiskFn
-	productionRiskFn = fakeRisk(label, ack)
+	productionRiskFn = func(config.Config) (hisn.Risk, error) {
+		return hisn.Risk{Label: label, Ack: ack}, nil
+	}
 	t.Cleanup(func() { productionRiskFn = prev })
 }
 
@@ -88,5 +94,18 @@ func TestIsInteractiveTUIFalseUnderTest(t *testing.T) {
 	// `go test` never runs with both stdin and stdout on a terminal here.
 	if IsInteractiveTUI() {
 		t.Skip("run in a non-terminal to check the non-interactive rule")
+	}
+}
+
+// /dev/null is a character device but not a terminal: it must not count as
+// interactive (a scheduled run with stdout/stdin on /dev/null must never prompt).
+func TestIsInteractiveTUIRejectsDevNull(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skip(err)
+	}
+	defer f.Close()
+	if term.IsTerminal(int(f.Fd())) {
+		t.Fatal("/dev/null must not be a terminal")
 	}
 }
