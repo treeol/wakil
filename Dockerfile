@@ -175,8 +175,10 @@ RUN go install golang.org/x/tools/gopls@v0.22.0
 # 0.3.3 (profiles, services, risk labels, [home]/[rootfs]/[ssh], src:dst
 # known_hosts mounts) is the minimum for hisn to be the default backend.
 #
-# Bump HISN_VERSION and both arch SHA256s together when updating. The
-# checksums are published at the release page as SHA256SUMS.
+# This file is the single place the sandbox image's hisn version lives
+# (CONTRIBUTING.md points here). Bump HISN_VERSION and both arch SHA256s
+# together when updating. The checksums are published at the release page as
+# SHA256SUMS.
 ARG TARGETARCH
 RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
       amd64) HISN_ARCH=x86_64-linux-gnu; \

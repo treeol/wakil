@@ -15,12 +15,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the image` instead of a startup crash. The rootfs name is omitted as "host
   toolchain" when the executor runs outside a named rootfs. Installing the
   binary and retrying works without restarting Wakil.
+- **hisn is auto-selected only when it passes the explicit-backend gate.**
+  The default-backend version floor is now the same as the explicit floor,
+  0.3.3 (`MinHisnDefaultVersion = MinHisnVersion`). Previously 0.3.1 could be
+  chosen as the default and then refused at startup. A host with hisn 0.3.1 or
+  0.3.2 now gets Docker or Podman by default, as it would for a missing hisn.
+  Set `sandbox.backend: hisn` only with 0.3.3 or newer.
 
 ### Removed
 
+- **Daemon, remote TUI, web console and Connect API** (`wakil daemon`,
+  `--daemon`, `--socket`, `DaemonMode`/`DaemonSocket`). Evidence and decision
+  in `docs/adr/0001`: no web sessions and no API tokens in use. The local TUI,
+  `wakil run` and the hisn backend are unchanged. Removed with the transport:
+  `internal/remote`, `internal/server/connect`, `internal/protoconv`,
+  `internal/auth` (apitoken, jointoken, oidcresolver, tokenresolver,
+  tokenstore, peercred), `api/`, `web/`, `docker-compose.yml`,
+  `Dockerfile.daemon`, `buf.yaml`, `buf.gen.yaml`, `docs/remote-provisioning.md`.
+  Dead code the removal left behind was deleted in the same change.
 - Process records no longer kept in `docs/`: the 0.4.x and 0.5.x plan and close-out
   documents, the November cleanup and decision sheets, the inventories, and
   `design-note-a1-a6.md`. Their decisions are in `docs/adr/`; the text stays in git history.
+
+### Kept
+
+- **Skill auto-creation** (`/skill-creation`, the `skill_creation` config,
+  suggestions, and every `/skills` subcommand) is kept. Suggestions are off by
+  default; the user opts in. See `docs/adr/0002`.
 
 ## [0.5.2] - 2026-11-07
 
@@ -154,6 +175,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Skill auto-creation** (`/skill-creation`): the default mode is `off`
   (see Changed); an explicit `skill_creation` setting still wins. Skill templates, the
   skills store and `load_skill` are unchanged.
+  - *Correction (2026-11-07):* this entry's "Deprecated" heading is withdrawn.
+    Skill auto-creation is not deprecated; it stays, off by default. See
+    `docs/adr/0002`.
 
 ### Changed
 

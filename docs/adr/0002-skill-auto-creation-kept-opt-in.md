@@ -29,8 +29,9 @@ subcommand.
 
 The default is unchanged: `skill_creation.mode` is `off`, and suggestions only
 appear in mode `on`. A user opts in with `/skill-creation on` (for the repo, or
-`session` for one session) or with the config key. The feature is not described
-as deprecated anywhere in code or docs.
+`session` for one session) or with the config key. The 0.4.4 changelog once
+listed the feature under "Deprecated"; a dated correction in that entry withdraws
+it (2026-11-07). The feature is kept.
 
 Stored auto-created skills keep their existing gating (unconfirmed skills are
 listed but not injected or loaded until `/skills confirm`). That gating is part
