@@ -380,7 +380,7 @@ Not confirmed by any reader and therefore not acted on: `OpenExisting` racing
 - `ssh_signing != off` with `ssh_agent=false` is a **load-time error** ("signing needs the agent: set sandbox.hisn.ssh_agent = true or ssh_signing = off"). Avoids a silent "gpgsign on, no agent".
 - `[ssh]` table only when `ssh_agent` = true **and** the fingerprint list is non-empty (D7). Version gate: `[ssh]` requires hisn ≥ 0.3.2; older → hard error when ssh_agent is true.
 - Fingerprints: computed in Go from the `.pub` (`x/crypto/ssh` if in `go.mod`; else refuse and report). No `ssh-keygen` fallback.
-- `known_hosts` mounted ro under a neutral path (`/run/wakil/known_hosts`), **only** when an ssh transport is used (`ssh_agent` true). Not under `/home/<user>/.ssh`.
+- `known_hosts` mounted ro under a neutral path, **only** when an ssh transport is used (`ssh_agent` true). Not under `/home/<user>/.ssh`. (0.5.2: `src:dst` form, destination `/wakil/ssh/known_hosts` — hisn 0.3.3 refuses destinations under `/run`.)
 - Allowed-key vs disallowed-key behaviour is a **hisn test** (host-run): an allowed key signs, a disallowed key is refused, no raw agent-socket bypass. Wakil does not claim this without that test.
 
 ### Browser (P4, revised)

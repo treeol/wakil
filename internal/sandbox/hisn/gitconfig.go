@@ -96,8 +96,8 @@ func renderGitConfig(id GitIdentity, sg GitSigning) ([]byte, error) {
 // and the allowedSignersFile value in the gitconfig must point at in-session
 // paths — hisn remounts the persist dir at SandboxHome (/run/hisn/home), so
 // the host path does not exist inside the sandbox. The GIT_SSH_COMMAND
-// UserKnownHostsFile is a same-path RO mount (the host path IS valid inside the
-// sandbox), so it stays as is.
+// UserKnownHostsFile points at the in-session RO mount KnownHostsMount (hisn
+// "src:dst", 0.3.3); the host path does not exist inside the sandbox.
 func (b *Backend) withGitConfig(s Surface) (Surface, error) {
 	env := map[string]string{}
 	for k, v := range s.EnvSet {
@@ -114,11 +114,12 @@ func (b *Backend) withGitConfig(s Surface) (Surface, error) {
 		env["GIT_CONFIG_GLOBAL"] = filepath.Join(SandboxHome, ".wakil-gitconfig")
 	}
 	// An ssh transport (agent on) pins known_hosts to the host file, read-only,
-	// and refuses unknown hosts. hisn's mounts are same-path only (a
-	// source:target form is rejected), so the file keeps its host path.
+	// and refuses unknown hosts. The host file is mounted at KnownHostsMount
+	// inside the session ("src:dst", hisn 0.3.3) and GIT_SSH_COMMAND names that
+	// in-session path.
 	if s.SSHAgent && b.opts.KnownHosts != "" {
-		env["GIT_SSH_COMMAND"] = "ssh -o UserKnownHostsFile=" + b.opts.KnownHosts + " -o StrictHostKeyChecking=yes"
-		s.MountsRO = append(append([]string(nil), s.MountsRO...), b.opts.KnownHosts)
+		env["GIT_SSH_COMMAND"] = "ssh -o UserKnownHostsFile=" + KnownHostsMount + " -o StrictHostKeyChecking=yes"
+		s.MountsRO = append(append([]string(nil), s.MountsRO...), b.opts.KnownHosts+":"+KnownHostsMount)
 	}
 	if len(env) > 0 {
 		s.EnvSet = env

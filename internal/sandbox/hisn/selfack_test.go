@@ -85,7 +85,7 @@ func capsOf(capability, label string) []sandbox.Capability {
 // acknowledgement: its only label is Wakil's own home-persist mount.
 func TestDefaultProfileStartsWithoutAck(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.3.2")
+	setVersion(t, fe, "0.3.3")
 	_ = os.WriteFile(filepath.Join(fe.state, "explain_risk"), []byte("data"), 0o600)
 	b, err := openWith(t, fe, nil)
 	if err != nil {

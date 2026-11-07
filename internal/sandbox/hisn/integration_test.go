@@ -289,8 +289,8 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	}
 	if out, err := osexec.Command(bin, "--version").Output(); err != nil {
 		t.Skipf("hisn unusable: %v", err)
-	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 2}) {
-		t.Skipf("hisn >= 0.3.2 required for ssh_agent (got %q)", strings.TrimSpace(string(out)))
+	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 3}) {
+		t.Skipf("hisn >= 0.3.3 required for ssh_agent (got %q)", strings.TrimSpace(string(out)))
 	}
 	root := t.TempDir()
 	cwd := filepath.Join(root, "ws")
@@ -298,6 +298,14 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		t.Fatal(err)
 	}
 	cwd, _ = filepath.EvalSymlinks(cwd)
+
+	// A host known_hosts with a marker line: inside the session the file at
+	// KnownHostsMount must show exactly this content (src:dst mount, 0.3.3).
+	const khMarker = "wakil-it-known-hosts-marker ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMARKER"
+	khHost := filepath.Join(root, "known_hosts")
+	if err := os.WriteFile(khHost, []byte(khMarker+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	b, err := New(Options{
 		Binary:     bin,
@@ -311,6 +319,7 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		SigningKey: pubKeyLine, // F5: signing key for the session gitconfig
 		GitName:    "Wakil Test",
 		GitEmail:   "test@wakil.test",
+		KnownHosts: khHost,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -342,6 +351,19 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("ssh-add -l inside the session does not list the allowlisted fingerprint %s:\n%s", fp, out)
+	}
+
+	// known_hosts is mounted read-only at the in-session path: the host file's
+	// content must be readable there, and GIT_SSH_COMMAND must name that path.
+	kh, khInfo := irun(t, b, "", "sh", "-c", "cat "+KnownHostsMount+" 2>&1; echo; echo \"$GIT_SSH_COMMAND\"")
+	if khInfo.Code != 0 {
+		t.Fatalf("reading %s inside the session failed: %q %+v", KnownHostsMount, kh, khInfo)
+	}
+	if !strings.Contains(kh, khMarker) {
+		t.Errorf("in-session %s does not carry the host known_hosts content %q:\n%s", KnownHostsMount, khMarker, kh)
+	}
+	if !strings.Contains(kh, "UserKnownHostsFile="+KnownHostsMount) {
+		t.Errorf("GIT_SSH_COMMAND inside the session does not name %s:\n%s", KnownHostsMount, kh)
 	}
 
 	// The host socket path must not appear inside the sandbox.

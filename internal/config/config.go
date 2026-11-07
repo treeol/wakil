@@ -1071,9 +1071,9 @@ const (
 	SandboxBackendDirect = "direct"
 )
 
-// MinHisnVersion is the oldest hisn release the backend supports: 0.2.1
-// (--ready-fd, exec_id, --prune, stale-kill, session.shm/tmp_size).
-const MinHisnVersion = "0.2.1"
+// MinHisnVersion is the oldest hisn release the backend supports: 0.3.3
+// (profiles, risk labels, [home]/[rootfs]/[ssh], "src:dst" read-only mounts).
+const MinHisnVersion = "0.3.3"
 
 // DefaultHisnEnvPass is the set of variable names allowed through into hisn
 // execs by default: toolchain knobs Wakil's tools need, none that carry
@@ -1092,10 +1092,10 @@ type HisnConfig struct {
 	HomeRoot string `json:"home_root,omitempty"`
 	// Home selects the sandbox $HOME: "persist" (default; the host dir
 	// HomeRoot, bind-mounted rw, survives across chats) or "tmpfs" (a fresh
-	// tmpfs $HOME per session; needs hisn >= 0.3.2). Project override:
+	// tmpfs $HOME per session; needs hisn >= 0.3.3). Project override:
 	// .wakil/sandbox.json "hisn": {"home": "tmpfs"}.
 	Home string `json:"home,omitempty"`
-	// Rootfs selects the session root filesystem (hisn >= 0.3.2): a rootfs
+	// Rootfs selects the session root filesystem (hisn >= 0.3.3): a rootfs
 	// store name (e.g. "wakil-dev", imported with `hisn rootfs import`) or an
 	// absolute directory. Empty = the host toolchain. Project override:
 	// .wakil/sandbox.json "hisn": {"rootfs": "<name>"} (name only).
@@ -1106,7 +1106,7 @@ type HisnConfig struct {
 	GitIdentityName  string `json:"git_identity_name,omitempty"`
 	GitIdentityEmail string `json:"git_identity_email,omitempty"`
 	// SSHAgent exposes the host ssh-agent socket inside the session (hisn
-	// [ssh], hisn >= 0.3.2). Global only: the project file cannot switch it on.
+	// [ssh], hisn >= 0.3.3). Global only: the project file cannot switch it on.
 	// Needed for ssh_signing and for ssh git transports. Default false.
 	SSHAgent bool `json:"ssh_agent,omitempty"`
 	// SSHKeys are extra public-key fingerprints (SHA256:…) the agent may use

@@ -21,7 +21,7 @@ const ProfileMinVersion = "0.3.1"
 
 // homePersistFor returns the [home] persist path for a session: the root when
 // the mode is persist and hisn supports [home] (>= ProfileHomeMinVersion), or
-// "" (no table) for tmpfs. A tmpfs request on hisn < 0.3.2 is an error (D10):
+// "" (no table) for tmpfs. A tmpfs request on hisn < 0.3.3 is an error (D10):
 // the old home mount cannot be removed without losing what the user asked
 // for, so it never falls back silently.
 func homePersistFor(mode, root string, ver [3]int) (string, error) {
@@ -32,7 +32,7 @@ func homePersistFor(mode, root string, ver [3]int) (string, error) {
 		}
 		want, _ := ParseVersion(ProfileHomeMinVersion)
 		if !VersionAtLeast(ver, want) {
-			return "", nil // hisn < 0.3.2: the 0.4.x home mount stays (caller)
+			return "", nil // hisn < 0.3.3: the 0.4.x home mount stays (caller)
 		}
 		return root, nil
 	case HomeTmpfs:
@@ -46,9 +46,18 @@ func homePersistFor(mode, root string, ver [3]int) (string, error) {
 	}
 }
 
-// ProfileHomeMinVersion is the first hisn release whose profile accepts the
-// [home] table (persist = "<abs path>"). Older hisn rejects the key outright.
-const ProfileHomeMinVersion = "0.3.2"
+// ProfileHomeMinVersion is the minimum hisn release Wakil supports for the 0.3
+// surface: [home], [rootfs], [ssh], and read-only host files mounted at a
+// different in-session path ("src:dst", hisn 0.3.3). Older hisn is refused
+// with a message naming this version; there is no same-path fallback.
+const ProfileHomeMinVersion = "0.3.3"
+
+// KnownHostsMount is the in-session destination of the host ~/.ssh/known_hosts
+// (read-only, "src:dst" form). It lives under /wakil/<purpose>/ — hisn 0.3.3
+// refuses destinations under /run, and copying the file into the persistent
+// home would make it writable from inside the sandbox. Future read-only host
+// files Wakil exposes follow the same /wakil/<purpose>/<name> convention.
+const KnownHostsMount = "/wakil/ssh/known_hosts"
 
 // Home modes for sandbox.hisn.home and the project override.
 const (
@@ -292,7 +301,7 @@ type profileFile struct {
 	SSH          *sshTOML          `toml:"ssh,omitempty"`
 }
 
-// sshTOML is hisn 0.3.2's [ssh] table. Emitted only when the agent is on AND
+// sshTOML is hisn 0.3.3's [ssh] table. Emitted only when the agent is on AND
 // at least one key fingerprint is allowed (plan D7): an agent with no allowed
 // keys would forward every key the host agent holds.
 type sshTOML struct {
@@ -300,7 +309,7 @@ type sshTOML struct {
 	Keys  []string `toml:"keys"`
 }
 
-// rootfsTOML is hisn 0.3.2's [rootfs] table: exactly one of name (a store
+// rootfsTOML is hisn 0.3.3's [rootfs] table: exactly one of name (a store
 // rootfs) or path (an absolute directory). Never emitted empty.
 type rootfsTOML struct {
 	Name string `toml:"name,omitempty"`
@@ -341,7 +350,7 @@ func ValidateRootfs(r string, allowPath bool) error {
 	}
 }
 
-// homeTOML is hisn 0.3.2's [home] table: the host directory bind-mounted rw as
+// homeTOML is hisn 0.3.3's [home] table: the host directory bind-mounted rw as
 // the session $HOME (label home-persist, Data, medium).
 type homeTOML struct {
 	Persist string `toml:"persist"`

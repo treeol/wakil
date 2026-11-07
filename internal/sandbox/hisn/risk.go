@@ -168,7 +168,7 @@ func (b *Backend) plan(ctx context.Context) error {
 		return nil // no 0.3 surface: the 0.2 sandbox or bare policy, label none
 	}
 	// A generated profile with no requested surface still carries Wakil's own
-	// [home] persist on hisn >= 0.3.2; explain it only then. Without [home]
+	// [home] persist on hisn >= 0.3.3; explain it only then. Without [home]
 	// (hisn 0.3.1) there is nothing to explain and the old no-question path holds.
 	if s.Empty() {
 		if hp, err := b.homePersist(s); err != nil || hp == "" {

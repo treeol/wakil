@@ -15,9 +15,11 @@ import (
 	"github.com/treeol/wakil/internal/sandbox/hisn/ctl"
 )
 
-// MinVersion is the oldest supported hisn release: 0.2.1 (ready-fd,
-// exec_id, prune, stale-kill, session.shm/tmp_size, frozen --json schemas).
-const MinVersion = "0.2.1"
+// MinVersion is the oldest supported hisn release: 0.3.3 (profiles, services,
+// risk labels, [home]/[rootfs]/[ssh], and read-only "src:dst" mounts for the
+// known_hosts file). Older hisn is refused at startup with a message naming
+// this version; there is no fallback to the same-path form.
+const MinVersion = "0.3.3"
 
 // computedEnv names hisn always sets itself inside the sandbox; an exec may
 // not override them (hisn rejects the whole request if it tries).

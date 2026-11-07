@@ -155,9 +155,10 @@ func TestWithGitConfigInSessionPath(t *testing.T) {
 }
 
 // TestWithGitConfigSSHCommandKeepsHostPath (F8): GIT_SSH_COMMAND's
-// UserKnownHostsFile is a same-path RO mount — the host path IS valid inside
-// the sandbox. The env value must keep it.
-func TestWithGitConfigSSHCommandKeepsHostPath(t *testing.T) {
+// The known_hosts file is mounted read-only at KnownHostsMount inside the
+// session ("src:dst", hisn 0.3.3). GIT_SSH_COMMAND names the in-session path,
+// never the host path, and no same-path entry is emitted.
+func TestWithGitConfigSSHCommandUsesInSessionPath(t *testing.T) {
 	home := t.TempDir()
 	kh := filepath.Join(home, "known_hosts")
 	if err := os.WriteFile(kh, []byte{}, 0o600); err != nil {
@@ -175,7 +176,29 @@ func TestWithGitConfigSSHCommandKeepsHostPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	sshCmd := s.EnvSet["GIT_SSH_COMMAND"]
-	if !strings.Contains(sshCmd, kh) {
-		t.Errorf("GIT_SSH_COMMAND must keep the host known_hosts path %q, got %q", kh, sshCmd)
+	want := "ssh -o UserKnownHostsFile=" + KnownHostsMount + " -o StrictHostKeyChecking=yes"
+	if sshCmd != want {
+		t.Errorf("GIT_SSH_COMMAND = %q, want %q", sshCmd, want)
 	}
+	if strings.Contains(sshCmd, kh) {
+		t.Errorf("GIT_SSH_COMMAND must not name the host path %q: %q", kh, sshCmd)
+	}
+	wantMount := kh + ":" + KnownHostsMount
+	if !containsString(s.MountsRO, wantMount) {
+		t.Errorf("MountsRO = %v, want the src:dst entry %q", s.MountsRO, wantMount)
+	}
+	for _, m := range s.MountsRO {
+		if m == kh {
+			t.Errorf("MountsRO carries a same-path known_hosts entry %q", m)
+		}
+	}
+}
+
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

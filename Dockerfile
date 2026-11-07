@@ -167,25 +167,25 @@ COPY --from=golangci/golangci-lint:v2.11.1@sha256:906ae07afe01a069637a7e91e92c20
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
 RUN go install golang.org/x/tools/gopls@v0.22.0
 
-# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.3.2;
+# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.3.3;
 # the default backend of release builds when usable).
 # Installed into the wakil-dev image so the allow_userns acceptance test can
 # run `hisn check` for real instead of skipping. The binary is multi-arch
 # (amd64/arm64), downloaded from the GitHub release and SHA256-verified.
-# 0.3.2 (profiles, services, risk labels) is the minimum for hisn to be the
-# default backend.
+# 0.3.3 (profiles, services, risk labels, [home]/[rootfs]/[ssh], src:dst
+# known_hosts mounts) is the minimum for hisn to be the default backend.
 #
 # Bump HISN_VERSION and both arch SHA256s together when updating. The
 # checksums are published at the release page as SHA256SUMS.
 ARG TARGETARCH
 RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
       amd64) HISN_ARCH=x86_64-linux-gnu; \
-             HISN_SHA256=3dceac042a30fd07472620d0bf9b88d09ddfdccabccf5b4417128a34932ddce4 ;; \
+             HISN_SHA256=b5370c45a3fc38c1c990197648c28c518af71723e46d17da47c756187e864c3e ;; \
       arm64) HISN_ARCH=aarch64-linux-gnu; \
-             HISN_SHA256=79c092d674198876811f4abd99ae21a99baa579cfb56e7008fd7f7a67621de16 ;; \
+             HISN_SHA256=5a56b69394c066a2f953e31a2bb801b42bf2259ead5e048513881069f8b421d3 ;; \
       *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && HISN_VERSION=0.3.2 \
+    && HISN_VERSION=0.3.3 \
     && curl -fsSL -o /tmp/hisn \
        "https://github.com/treeol/hisn/releases/download/v${HISN_VERSION}/hisn-${HISN_ARCH}" \
     && echo "${HISN_SHA256}  /tmp/hisn" | sha256sum -c - \

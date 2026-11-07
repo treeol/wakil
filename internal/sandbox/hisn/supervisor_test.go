@@ -61,9 +61,9 @@ func TestStartReturnsWhileSupervisorKeepsRunning(t *testing.T) {
 	}
 	// The supervisor was started verbose and with the documented arguments.
 	calls, _ := os.ReadFile(filepath.Join(fe.state, "calls.log"))
-	if !strings.Contains(string(calls), "run --detach -v --session-id blk --policy ") ||
-		!strings.Contains(string(calls), "--cwd "+fe.cwd+" --network host") {
-		t.Fatalf("hisn run invocation wrong:\n%s", calls)
+	if !strings.Contains(string(calls), "run --detach -v --session-id blk --profile ") ||
+		!strings.Contains(string(calls), "--cwd "+fe.cwd) {
+		t.Fatalf("hisn run invocation wrong (profile mode):\n%s", calls)
 	}
 }
 

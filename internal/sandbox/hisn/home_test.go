@@ -11,18 +11,18 @@ import (
 func TestHomePersistDecisionTable(t *testing.T) {
 	const root = "/state/hisn-home/abc"
 	old := [3]int{0, 3, 1}
-	newer := [3]int{0, 3, 2}
+	newer := [3]int{0, 3, 3}
 	cases := []struct {
 		name, mode string
 		ver        [3]int
 		want       string
 		wantErr    string
 	}{
-		{"persist on 0.3.2 emits", "persist", newer, root, ""},
+		{"persist on 0.3.3 emits", "persist", newer, root, ""},
 		{"default mode is persist", "", newer, root, ""},
 		{"persist on 0.3.1 omits, mount stays", "persist", old, "", ""},
-		{"tmpfs on 0.3.2 omits table", "tmpfs", newer, "", ""},
-		{"tmpfs on 0.3.1 is a hard error", "tmpfs", old, "", "needs hisn >= 0.3.2"},
+		{"tmpfs on 0.3.3 omits table", "tmpfs", newer, "", ""},
+		{"tmpfs on 0.3.1 is a hard error", "tmpfs", old, "", "needs hisn >= 0.3.3"},
 		{"unknown mode is an error", "shared", newer, "", "want \"persist\" or \"tmpfs\""},
 	}
 	for _, c := range cases {

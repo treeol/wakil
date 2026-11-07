@@ -93,7 +93,10 @@ F7–F8 with commit hashes:
   gitconfig now use the in-session path (`SandboxHome` = `/run/hisn/home`), not
   the host `HomeRoot`. The file is still written under `HomeRoot` on the host;
   hisn bind-mounts it at `SandboxHome`. `GIT_SSH_COMMAND`'s
-  `UserKnownHostsFile` keeps the host path (same-path RO mount). `9d4744d`'s
+  `UserKnownHostsFile` was left on the host path (same-path RO mount) in 0.5.0;
+  **0.5.2 removed that deviation** (see CHANGELOG 0.5.2): known_hosts is now
+  mounted `src:dst` at `/wakil/ssh/known_hosts` and `GIT_SSH_COMMAND` names that
+  in-session path. `9d4744d`'s
   integration test workaround (set signing config inside the session) was
   reverted — it hid this bug. `SandboxHome` constant added to `profile.go`.
 - F7 `1076721`: `checkGitConfigSub` now allows reads when ANY read action
