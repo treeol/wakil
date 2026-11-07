@@ -15,6 +15,7 @@ import (
 	glamourstyles "github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 // mdCache memoizes a glamour renderer per width. The TUI runs single-threaded
@@ -187,6 +188,7 @@ func brailleMeter(used, total int, color lipgloss.Color, half int, leftLabel, ri
 // agree on layout math: both derive the status height from statusLines() —
 // reflow() via sizes() → effectiveStatusRows(), View() directly via len().
 func (m tuiModel) View() string {
+	defer timeline.Accum("tui view (render a frame)")()
 	if !m.ready {
 		return "initializing…\n"
 	}
@@ -931,8 +933,11 @@ func (m tuiModel) beginRotation(req rotationRequest) tea.Cmd {
 		}
 		// Old facade teardown AFTER the replacement exists (build-new-first).
 		if old != nil {
+			endOld := timeline.Begin("tear down old conversation")
 			_ = old.Close()
+			endOld()
 		}
+		timeline.Event("rotation done off the event loop; message sent to the tui")
 		return rotationMsg{facade: f, kind: req.kind}
 	}
 }

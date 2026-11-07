@@ -13,6 +13,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/sandbox/hisn"
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 // newHisnExecutor builds the executor for sandbox.backend "hisn". Every
@@ -32,6 +33,7 @@ func rootfsFor(global string, s hisn.Surface) string {
 // trust command so the risk shown at trust time is the risk startup computes.
 // It reads the project file (loadProjectSurface) and so enforces F1 too.
 func hisnOptions(cfg config.Config) (hisn.Options, error) {
+	defer timeline.Begin("hisn options (project file + signing + identity)")()
 	surface, _, err := loadProjectSurface(cfg)
 	if err != nil {
 		return hisn.Options{}, err
@@ -52,13 +54,17 @@ func hisnOptionsWith(cfg config.Config, surface hisn.Surface) (hisn.Options, err
 	if home == "" {
 		// 0.5.0 (D1/D5): keyed by the project's store key, one per repository.
 		// Old hisn-home/<64-hex> dirs are left in place and no longer used.
+		endKey := timeline.Accum("project dir + store key (EvalSymlinks, sha256)")
 		key := agent.StoreKey(agent.ProjectDir(cfg))
+		endKey()
 		if key == "" {
 			return hisn.Options{}, fmt.Errorf("sandbox backend hisn: cannot derive a project key for home")
 		}
 		home = filepath.Join(state, "hisn-home", key)
 	}
+	endGit := timeline.Begin("signing resolution (git config, ssh key, agent)")
 	gitName, gitEmail, signingKey, sshKeys, err := hisnGitSetup(cfg, h)
+	endGit()
 	if err != nil {
 		return hisn.Options{}, err
 	}
@@ -104,7 +110,9 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	hisn.SetDiagnostics(os.Stderr)
+	endOpen := timeline.Begin("hisn.Open (preflight, plan, reconcile)")
 	b, err := hisn.Open(ctx, opts)
+	endOpen()
 	if err != nil {
 		return nil, err
 	}

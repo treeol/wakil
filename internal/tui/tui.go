@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"github.com/treeol/wakil/internal/timeline"
 	"strconv"
 	"strings"
 	"time"
@@ -758,6 +759,9 @@ func (m tuiModel) Init() tea.Cmd {
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if timeline.Enabled() {
+		defer timeline.Accum(fmt.Sprintf("tui update: %T", msg))()
+	}
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -768,6 +772,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sel = selection{} // re-wrap invalidates selection coordinates
 		m = m.reflow()
 		m.ready = true
+		timelineOnce("first-frame", "prompt ready (first window size handled)")
 
 	case tea.MouseMsg:
 		// Fast-path: cell-motion events with no active selection press are
@@ -1212,6 +1217,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			// Double-press gate: first press arms quit, second (same key,
 			// within the window) quits. Any other key dismissed the arm earlier.
 			if m.armConfirms("ctrl+c") {
+				timeline.EnterOnce("exit")
 				return m, []tea.Cmd{tea.Quit}, true
 			}
 			before := m.statusRows()
@@ -1275,6 +1281,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 		if m.state == stateIdle {
 			// Double-press gate, same as idle ctrl+c but with its own key.
 			if m.armConfirms("ctrl+d") {
+				timeline.EnterOnce("exit")
 				return m, []tea.Cmd{tea.Quit}, true
 			}
 			before := m.statusRows()
@@ -2424,6 +2431,7 @@ func (m tuiModel) sizesWithStatusHeight(statusH int) (vpW, vpH, inputOuterH int)
 }
 
 func (m tuiModel) reflow() tuiModel {
+	defer timeline.Accum("tui reflow (re-wrap + viewport refresh)")()
 	vpW, vpH, _ := m.sizes()
 	m.vp.Width = vpW
 	m.vp.Height = vpH

@@ -14,6 +14,7 @@ import (
 
 	"github.com/treeol/wakil/internal/sandbox"
 	"github.com/treeol/wakil/internal/sandbox/hisn/ctl"
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 // MinVersion is the oldest supported hisn release: 0.4.0 (named sessions,
@@ -365,7 +366,10 @@ func Open(ctx context.Context, opts Options) (*Backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := b.Preflight(ctx); err != nil {
+	endPre := timeline.Begin("hisn preflight (--version, check, ssh-agent)")
+	err = b.Preflight(ctx)
+	endPre()
+	if err != nil {
 		return nil, err
 	}
 	// Plan-time risk check: a label above `none` without the project's own
@@ -373,10 +377,16 @@ func Open(ctx context.Context, opts Options) (*Backend, error) {
 	if err := b.planKVR(); err != nil {
 		return nil, err
 	}
-	if err := b.plan(ctx); err != nil {
+	endPlan := timeline.Begin("hisn plan (profile build, validate, explain)")
+	err = b.plan(ctx)
+	endPlan()
+	if err != nil {
 		return nil, err
 	}
-	if err := b.Reconcile(ctx); err != nil {
+	endRec := timeline.Begin("hisn reconcile (ls --prune, orphans)")
+	err = b.Reconcile(ctx)
+	endRec()
+	if err != nil {
 		// Reconcile problems are reported, never fatal: they must not block a
 		// working session.
 		fmt.Fprintf(errWriter, "hisn: orphan reconcile: %v\n", err)
@@ -476,7 +486,10 @@ func (b *Backend) Start(ctx context.Context, s sandbox.Session) error {
 			fmt.Fprintf(errWriter, "hisn: not carrying %d grant(s) over to session %s (they belonged to another session)\n", len(held), s.ID)
 		}
 	}
-	if err := b.stopAllLocked(ctx); err != nil {
+	endPrev := timeline.Begin("stop previous hisn session")
+	prevErr := b.stopAllLocked(ctx)
+	endPrev()
+	if err := prevErr; err != nil {
 		// A tool call is never failed because the PREVIOUS session would not stop:
 		// the new session is started regardless (a conflict on the SAME id is
 		// still caught by startLocked) and the leftover stays tracked and is

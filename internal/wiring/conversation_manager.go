@@ -24,6 +24,7 @@ import (
 	"github.com/treeol/wakil/internal/core/sessionhost/sqlstore"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 // Compile-time proof that conversationManager satisfies the interface.
@@ -80,7 +81,9 @@ func NewConversationManager(cfg config.Config, exe exec.Executor, principal core
 	// would double-hash and produce a cwd-dependent key.
 	wsPath := agent.ProjectDir(cfg)
 	if dbPath := agent.SessionHostDBPath(wsPath); dbPath != "" {
+		endStore := timeline.Begin("open session-host store (sqlite)")
 		store, err := sqlstore.NewSQLiteStore(context.Background(), dbPath)
+		endStore()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "sessionhost: failed to open SQLite store, using in-memory:", err)
 		} else {
@@ -144,10 +147,12 @@ func (cm *conversationManager) restoreRepoState(ctx context.Context, app *agent.
 		// Apply actually used (not raw RepoState values that may have been
 		// skipped by eligibility guards). 5s timeout — best-effort probe.
 		if (result.Model != "" || result.Backend != "") && app.Client != nil && app.Client.HTTP != nil {
+			endCl := timeline.Begin("context-limit probe after repo-state restore (network)")
 			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			cl := agent.ResolveContextLimitForBackendModel(probeCtx, app.Client.HTTP, app.Cfg, result.Backend, result.Model, os.Stderr)
 			cancel()
 			app.SetCtxLimit(cl)
+			endCl()
 		}
 	}
 	return result.Note
@@ -190,6 +195,7 @@ func appendStartupNote(app *agent.App, note string) {
 
 // newConversation creates a fresh App + host + facade and creates a session.
 func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFacade, error) {
+	defer timeline.Begin("new conversation (app + host + session)")()
 	app, res, err := BuildApp(cm.cfg, cm.exe, BuildAppOpts{})
 	if err != nil {
 		return nil, err
@@ -215,9 +221,11 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 	}
 	host := sessionhost.New(handle.Turn, hostOpts...)
 
+	endSess := timeline.Begin("host create session")
 	sess, err := host.CreateSession(ctx, cm.principal, core.CreateSessionRequest{
 		Workspace: WorkspaceIDFromConfig(cm.cfg),
 	})
+	endSess()
 	if err != nil {
 		CloseResources(app, res)
 		return nil, fmt.Errorf("conversation manager: %w", err)
@@ -275,8 +283,13 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 // entry first (m4b: replaces HandleTUICommand's /new-side finalize, which
 // mutated the old App).
 func (cm *conversationManager) NewConversation(ctx context.Context, principal core.Principal, current sessionclient.Facade) (sessionclient.Facade, error) {
+	if current != nil { // a rotation, not the first conversation of the process
+		timeline.Enter("/new")
+	}
 	if wf, ok := current.(*wiringFacade); ok && wf != nil && wf.app != nil {
+		endFin := timeline.Begin("finalize old conversation (history + summary)")
 		cm.finalizeOldConversation(ctx, wf.app)
+		endFin()
 	}
 	f, err := cm.newConversation(ctx)
 	if err != nil {
@@ -286,7 +299,9 @@ func (cm *conversationManager) NewConversation(ctx context.Context, principal co
 	// /counsel, /mashura, etc. survive /new. This was previously only done
 	// at first boot (BootstrapTUI); moving it here ensures rotation paths
 	// also restore. Fresh conversation — resume=false (model/backend restored).
+	endRestore := timeline.Begin("restore repo state")
 	note := cm.restoreRepoState(ctx, f.app, false)
+	endRestore()
 	appendStartupNote(f.app, note)
 	return f, nil
 }
@@ -312,7 +327,12 @@ func (cm *conversationManager) finalizeOldConversation(ctx context.Context, app 
 // ResumeConversation loads an existing session by ID or prefix and returns
 // a facade backed by a fresh App with the loaded conversation state.
 func (cm *conversationManager) ResumeConversation(ctx context.Context, principal core.Principal, idOrPrefix string) (sessionclient.Facade, error) {
+	if cm.resources != nil { // a rotation, not --resume at process start
+		timeline.Enter("/resume")
+	}
+	endLoad := timeline.Begin("load session transcript")
 	s, err := agent.LoadSessionScoped(idOrPrefix, agent.SessionScope{All: true})
+	endLoad()
 	if err != nil {
 		return nil, fmt.Errorf("resume: %w", err)
 	}
@@ -338,7 +358,9 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 	// /counsel, /mashura, etc.) — resume=true so model/backend are NOT
 	// changed (avoid silently changing the model mid-transcript of a
 	// resumed session).
+	endRestoreR := timeline.Begin("restore repo state (resume)")
 	note := cm.restoreRepoState(ctx, f.app, true)
+	endRestoreR()
 	appendStartupNote(f.app, note)
 
 	// Apply the saved session's model on resume, with an endpoint-match
@@ -350,13 +372,17 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 	if s.Model != "" && !f.app.Cfg.ModelExplicit {
 		endpointMatches := s.EndpointName == "" || s.EndpointName == f.app.Cfg.EndpointName
 		if endpointMatches {
+			endOv := timeline.Begin("apply saved model (resume)")
 			agent.ApplyModelOverride(f.app, s.Model)
+			endOv()
 			// Re-resolve context limits for the restored model (5s probe).
 			if f.app.Client != nil && f.app.Client.HTTP != nil {
+				endCl := timeline.Begin("context-limit probe for the saved model (network)")
 				probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				cl := agent.ResolveContextLimitForBackendModel(probeCtx, f.app.Client.HTTP, f.app.Cfg, f.app.SelectedBackend, s.Model, os.Stderr)
 				cancel()
 				f.app.SetCtxLimit(cl)
+				endCl()
 			}
 		}
 	}
@@ -387,6 +413,7 @@ func (cm *conversationManager) HandoffConversation(ctx context.Context, principa
 	if !ok || wf == nil || wf.app == nil {
 		return nil, fmt.Errorf("handoff: invalid wiring facade")
 	}
+	timeline.Enter("/handoff")
 
 	// Snapshot the old consent BEFORE RunHandoffPipeline so we can transfer
 	// the AllowDestructive grant to the new App for /handoff proceed. The

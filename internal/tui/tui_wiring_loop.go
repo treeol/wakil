@@ -13,6 +13,7 @@ import (
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
+	"github.com/treeol/wakil/internal/timeline"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -41,6 +42,7 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 		return m, cmds, false
 	}
 	if cr.Quit {
+		timeline.EnterOnce("exit")
 		return m, append(cmds, tea.Quit), true
 	}
 	if cr.Notice != "" {
@@ -143,6 +145,8 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 //     after the swap, so the session guard accepts the new session's events
 //     (op-32 review: events delivered before the swap would be dropped).
 func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea.Cmd, bool) {
+	timeline.Event("tui received the rotation message")
+	defer timeline.Event("rotation applied in tui (view rebuilt, ready for input)")
 	// Snapshot BEFORE clearing rotating: the rotation label may currently
 	// force the status zone visible; the snapshot must reflect the
 	// pre-apply (rotating) effective height or the shrink to a hidden zone
@@ -215,7 +219,9 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	}
 	// Resume path: rebuild the conversation view from the new snapshot.
 	if len(snap.Conv) > 0 {
+		endItems := timeline.Begin("rebuild transcript view items")
 		*m.items = convItemsFrom(snap.Conv)
+		endItems()
 	}
 	m.prefixDirty = true
 	// Reset the textarea and reapply its dimensions. Without this the

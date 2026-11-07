@@ -17,6 +17,7 @@ import (
 
 	"github.com/treeol/wakil/internal/sandbox"
 	"github.com/treeol/wakil/internal/sandbox/hisn/ctl"
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 func newToken() string {
@@ -500,8 +501,11 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 	if err := os.WriteFile(b.profilePath(rec.ID), prof, 0o600); err != nil {
 		return launch{}, fmt.Errorf("writing hisn profile: %w", err)
 	}
-	if out, err := b.output(vctx, false, "profile", "validate", b.profilePath(rec.ID)); err != nil {
-		return launch{}, rootfsError(validateError(err, out), s.Rootfs)
+	endVal := timeline.Begin("hisn profile validate (+ rootfs lookup)")
+	out, verr := b.output(vctx, false, "profile", "validate", b.profilePath(rec.ID))
+	endVal()
+	if verr != nil {
+		return launch{}, rootfsError(validateError(verr, out), s.Rootfs)
 	}
 	return launch{args: profileArgs(rec.ID, rec.Name, b.profilePath(rec.ID), rec.Cwd), dir: b.procCwd(), mode: "profile", persist: homeP}, nil
 }
@@ -561,7 +565,9 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 	if err != nil {
 		return nil, err
 	}
+	endSpawn := timeline.Begin("hisn run --detach (spawn supervisor)")
 	sup, readyR, err := b.startSupervisor(b.supervisorLogPath(rec.ID), l.dir, notes, l.args...)
+	endSpawn()
 	if err != nil {
 		return nil, fmt.Errorf("hisn run --detach: %w", err)
 	}
@@ -569,7 +575,10 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 	if b.afterSpawn != nil {
 		b.afterSpawn(sup)
 	}
-	if err := b.waitReady(ctx, rec.ID, rec.Name, sup, readyR); err != nil {
+	endReady := timeline.Begin("hisn session ready (ready line + 2 probes)")
+	rerr := b.waitReady(ctx, rec.ID, rec.Name, sup, readyR)
+	endReady()
+	if err := rerr; err != nil {
 		b.reapSupervisor(sup)
 		return sup, b.withSupervisorStderr(err, sup)
 	}
@@ -580,14 +589,18 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 		// and the --ready-fd line do. The owner record keeps pid+starttime for
 		// Reconcile.)
 		var ok bool
+		endVer := timeline.Begin("hisn verify instance (inspect)")
 		ok, err2 = b.verifyInstance(ctx, rec.ID, rec.Token)
+		endVer()
 		if err2 == nil && !ok {
 			err2 = fmt.Errorf("hisn session %s is not the instance Wakil created", rec.ID)
 		}
 	}
 	if err2 == nil && l.mode != "policy" {
 		// The running session must not be riskier than what the user acknowledged.
+		endRisk := timeline.Begin("hisn verify risk (inspect)")
 		_, err2 = b.verifyRisk(ctx, rec.ID, l.persist)
+		endRisk()
 	}
 	if err := err2; err != nil {
 		b.reapSupervisor(sup)
@@ -838,10 +851,16 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 		// terminated, the directory is kept as "stopped" and the stop is
 		// audited. The supervisor exits on its own within milliseconds. Its
 		// outcome is irrelevant: the exit of OUR supervisor is what counts.
+		endStop := timeline.Begin("hisn stop (client round trip)")
 		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
 		_, _ = b.output(kctx, false, "stop", "--session", l.id)
 		cancel()
-		if !l.sup.waitExit(b.stopWait) {
+		endStop()
+		endWait := timeline.Begin("supervisor exit wait")
+		exited := l.sup.waitExit(b.stopWait)
+		endWait()
+		if !exited {
+			defer timeline.Detail("supervisor KILL grace expired", "SIGKILL sent")()
 			l.sup.kill()
 			if !l.sup.waitExit(b.stopWait) {
 				return fmt.Errorf("hisn stop: supervisor of session %s (pid %d) did not exit after SIGKILL", l.id, l.sup.pid())

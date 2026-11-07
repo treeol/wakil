@@ -33,6 +33,7 @@ import (
 	"github.com/treeol/wakil/internal/sessionhistory"
 	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/styleguide"
+	"github.com/treeol/wakil/internal/timeline"
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
 	"github.com/treeol/wakil/prompts"
@@ -87,10 +88,13 @@ type AppResources struct {
 // to its cause. Callers must treat this as fatal and close any executor they had
 // already opened.
 func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.App, *AppResources, error) {
+	defer timeline.Begin("build app")()
 	var res AppResources
 
 	// Validate user-owned style files before endpoint probes or tool managers.
+	endGuides := timeline.Begin("style guides")
 	guides, err := styleguide.NewCatalog(cfg.StyleGuidesEnabled, cfg.StyleGuidePaths)
+	endGuides()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,7 +133,9 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// MCP manager
 	var mcpMgr *agent.MCPManager
 	if len(cfg.MCPServers) > 0 {
+		endMCP := timeline.Begin("mcp servers connect")
 		mcpMgr = agent.NewMCPManager(context.Background(), cfg.MCPServers)
+		endMCP()
 	}
 	res.MCPMgr = mcpMgr
 
@@ -148,7 +154,9 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		if cfg.BrowserIdleTimeoutSeconds > 0 {
 			idleOpt = browser.WithIdleTimeout(time.Duration(cfg.BrowserIdleTimeoutSeconds) * time.Second)
 		}
+		endBr := timeline.Begin("browser manager (probe chromium)")
 		mgr, err := browser.NewManager(exe, cfg.BrowserPath, idleOpt)
+		endBr()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "browser:", err)
 			// Disable browser tools so BuildTools doesn't advertise them
@@ -175,19 +183,24 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	)
 	var wg sync.WaitGroup
 	wg.Add(3)
+	endProbes := timeline.Begin("provider probes (3 in parallel, 6s ceiling)")
 	go func() {
 		defer wg.Done()
+		defer timeline.BeginConcurrent("provider probe: context limit")()
 		ctxLimit = agent.ResolveContextLimit(probeCtx, client.HTTP, cfg, os.Stderr)
 	}()
 	go func() {
 		defer wg.Done()
+		defer timeline.BeginConcurrent("provider probe: backend list")()
 		backendList = agent.FetchBackendListWithFallback(probeCtx, client.HTTP, cfg, os.Stderr)
 	}()
 	go func() {
 		defer wg.Done()
+		defer timeline.BeginConcurrent("provider probe: model list")()
 		modelList = agent.FetchModelListForEndpoint(probeCtx, client.HTTP, cfg)
 	}()
 	wg.Wait()
+	endProbes()
 	probeCancel()
 
 	// Load the agent prompt. The full prompt is used as AgentPrompt (the
@@ -295,11 +308,15 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// Memory store
 	memDBPath := agent.MemoryDBPath(app.SessionWorkspace())
 	if memDBPath != "" {
+		endMem := timeline.Begin("open memory store")
 		memStore, err := memory.Open(memDBPath, app.SessionWorkspace())
+		endMem()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
 		} else {
+			endLegacy := timeline.Begin("open legacy memory store (read-through)")
 			app.LegacyMemory = agent.OpenLegacyMemory(app.Cfg, memDBPath)
+			endLegacy()
 			// Sweep runs in the background — it expires stale mid-tier
 			// entries and is not on the critical path. The store is
 			// usable immediately after Open; Sweep just reclaims space.
@@ -325,7 +342,9 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// pass "" as the workspace root.
 	skillDBPath := agent.SkillDBPath()
 	if skillDBPath != "" {
+		endSk := timeline.Begin("open skill store")
 		skillStore, err := memory.Open(skillDBPath, "")
+		endSk()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "skills: failed to open store:", err)
 		} else {
@@ -339,7 +358,9 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// indexing are unavailable, never that the session breaks.
 	sessionHistPath := agent.SessionHistoryDBPath(app.SessionWorkspace())
 	if sessionHistPath != "" {
+		endSH := timeline.Begin("open session-history store")
 		shStore, err := sessionhistory.Open(sessionHistPath)
+		endSH()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "session history: failed to open store:", err)
 		} else {
@@ -350,7 +371,9 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 
 	// Trace store
 	if cfg.Trace {
+		endTr := timeline.Begin("open trace store")
 		ts, err := trace.Open(cfg.TraceDir, client.ChatID, client.Model, app.Exec.WorkspaceRoot())
+		endTr()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "trace: failed to open store:", err)
 		} else {
@@ -412,6 +435,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 // never followed by a normal return that would fire resource defers again —
 // avoiding any double-close.
 func CloseResources(app *agent.App, res *AppResources) {
+	defer timeline.Begin("close resources")()
 	// ilm-stack: emit session_end before closing the emitter. This fires
 	// OnStop which emits the event, then Close flushes it.
 	app.OnStop()

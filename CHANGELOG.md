@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0-dev] - unreleased
 
+### Added
+
+- **Phase timeline: `WAKIL_TRACE=1` and `--trace`.** Writes the milliseconds each
+  phase of start, `/new`, `/resume`, `/handoff` and exit takes
+  (`timeline-<stamp>-<pid>.json` in the trace directory; the path is printed
+  after the terminal is restored, never during the alternate screen). Covers
+  config load, the hisn probes, project-file hash and approval, signing
+  resolution, every store open, the provider probes, the lazy sandbox session
+  start, session stop and the history flush, and the time between the kernel
+  starting the process and `main` (package initialisation). `--trace` keeps its
+  JSONL capture and now also writes the timeline; the standing `trace_sessions`
+  setting does not. `scripts/perf/run.sh` drives a scripted session through a
+  pty against a local stub provider and summarises the numbers; results are in
+  `docs/PERF-0.6.md`.
+
 ### Changed
 
 - **hisn 0.4.0 is the minimum, and the session model follows it** (ADR 0012).

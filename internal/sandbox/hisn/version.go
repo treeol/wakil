@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 var versionRe = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
@@ -46,7 +48,9 @@ func VersionAtLeast(got, want [3]int) bool {
 func (b *Backend) Preflight(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	endV := timeline.Begin("hisn --version")
 	out, err := b.output(ctx, false, "--version")
+	endV()
 	if err != nil {
 		return fmt.Errorf("sandbox backend hisn: cannot run %q --version: %w (install hisn >= %s or set sandbox.backend to docker)", b.opts.Binary, err, b.opts.MinVersion)
 	}
@@ -71,7 +75,10 @@ func (b *Backend) Preflight(ctx context.Context) error {
 			return fmt.Errorf("sandbox backend hisn: sandbox.hisn.rootfs needs hisn >= %s (found %d.%d.%d): upgrade hisn or unset rootfs", ProfileHomeMinVersion, got[0], got[1], got[2])
 		}
 	}
-	if out, err := b.output(ctx, false, "check"); err != nil {
+	endCheck := timeline.Begin("hisn check")
+	out, err = b.output(ctx, false, "check")
+	endCheck()
+	if err != nil {
 		return fmt.Errorf("sandbox backend hisn: `hisn check` failed — this host cannot run hisn sessions:\n%s", tailLines(out, 12))
 	}
 	if b.opts.SSHAgent {

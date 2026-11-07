@@ -27,7 +27,8 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--mention-base` | — | current directory | base directory for `@` file mentions |
 | `--host` | `ILM_HOST` / `WAKIL_HOST` | — | ilm proxy host *(alternative to `--base-url`)* |
 | `--port` | `ILM_PORT` / `WAKIL_PORT` | `11400` | ilm proxy port *(used with `--host`)* |
-| `--trace` | `WAKIL_TRACE_SESSIONS` | `false` | enable JSONL trace capture for this session |
+| `--trace` | `WAKIL_TRACE_SESSIONS` | `false` | enable JSONL trace capture for this session; also writes the phase timeline (below) |
+| — | `WAKIL_TRACE` | `false` | `1`/`true`/`yes`/`on`: write the phase timeline for this run — milliseconds per phase of start, `/new`, `/resume`, `/handoff` and exit — to `timeline-<UTC stamp>-<pid>.json` in the trace directory (`--trace-dir`, `WAKIL_TRACE_DIR`, default `~/.local/share/wakil/traces`). Read before the config is loaded, so config load is timed. `trace_sessions` does **not** enable it. Off, it costs one nil check per phase. See [PERF-0.6.md](PERF-0.6.md) |
 | `--trace-dir` | `WAKIL_TRACE_DIR` | `~/.local/share/wakil/traces` | directory for trace files |
 | `--list-sessions` | — | — | list saved sessions for this workspace and exit |
 | `--print-workspace-key` | — | — | print the workspace path, memory-store key, workspace key, sessionhost id/key and what `wakil plan gc` would resolve from this directory, each with its source (cwd / `WAKIL_WORKSPACE_PATH` / config / `WAKIL_WORKSPACE_KEY`), then exit. Read-only; creates no files |

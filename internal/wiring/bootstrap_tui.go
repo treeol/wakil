@@ -24,6 +24,7 @@ import (
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 // TUIRuntime bundles what the TUI bootstrap needs from wiring. The TUI holds
@@ -124,6 +125,8 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		// Run both scans concurrently (each has a 3s timeout) instead of
 		// sequentially — cuts worst-case 6s to 3s.
 		if opts.ComposeStartupNotes {
+			endNotes := timeline.Begin("startup notes (staging + memory scans, may start the sandbox)")
+			defer endNotes()
 			var stagingNote, memNote string
 			var noteWG sync.WaitGroup
 			if app.StagingClient != nil {
@@ -150,6 +153,7 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 				}()
 			}
 			noteWG.Wait()
+			endNotes()
 			appendStartupNote(app, stagingNote)
 			appendStartupNote(app, memNote)
 		}

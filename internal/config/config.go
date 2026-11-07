@@ -714,6 +714,11 @@ type Config struct {
 	AllSessions  bool   `json:"-"` // --all: ignore workspace scoping for --resume/--list-sessions
 	AutoApprove  bool   `json:"-"` // skip all confirmation prompts
 	Trace        bool   `json:"-"` // tracing enabled for this run (TraceSessions || --trace flag)
+	// TraceTimeline is set by the explicit --trace flag only (not by
+	// trace_sessions): the millisecond phase timeline of start, /new, /resume
+	// and exit (internal/timeline). WAKIL_TRACE=1 enables it too, read before
+	// the config is loaded so config load itself is timed.
+	TraceTimeline bool `json:"-"`
 
 	// ModelExplicit and AutoExplicit record whether THIS run's invocation
 	// explicitly set --model/ILM_MODEL or --auto, as opposed to picking up a
@@ -1543,7 +1548,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.BoolVar(&cfg.AllSessions, "all", false, "with --resume/--list-sessions: ignore workspace scoping, use every folder")
 	fs.BoolVar(&cfg.AutoApprove, "auto", false, "auto-approve all tool calls without prompting")
 	var traceFlag bool
-	fs.BoolVar(&traceFlag, "trace", false, "enable rich JSONL trace capture for this session (overrides trace_sessions config)")
+	fs.BoolVar(&traceFlag, "trace", false, "enable rich JSONL trace capture for this session (overrides trace_sessions config); also writes the phase timeline (see WAKIL_TRACE)")
 	fs.StringVar(&cfg.TraceDir, "trace-dir", cfg.TraceDir, "directory for trace files (default ~/.local/share/wakil/traces)")
 	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: long-session (default, finished requests collapsed to Q+A with archive pointers) | standard (full history sent)")
 	fs.StringVar(&cfg.PromptMode, "prompt-mode", cfg.PromptMode, "prompt mode: full (default, complete system prompt) | core (core-only preamble, extension lazy-loaded on task detection)")
@@ -1597,6 +1602,7 @@ func LoadConfig(argv []string) (Config, error) {
 	// Resolve trace: --trace flag enables for this run; config trace_sessions makes
 	// it the standing default. Either way cfg.Trace is the single bit callers check.
 	cfg.Trace = cfg.TraceSessions || traceFlag
+	cfg.TraceTimeline = traceFlag
 
 	// Derive a default trace directory when tracing is enabled but none was set.
 	// Follows the same XDG convention as the session store.

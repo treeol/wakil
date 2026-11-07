@@ -148,6 +148,39 @@ func TestTraceConfig(t *testing.T) {
 	}
 }
 
+// The phase timeline (internal/timeline) is switched on by the explicit --trace
+// flag, never by the standing trace_sessions setting: a user who set "always
+// capture JSONL" must not silently gain a timeline file on every run.
+func TestTraceTimelineFollowsTheExplicitFlagOnly(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("WAKIL_TRACE_SESSIONS", "")
+	cfg, err := config.LoadConfig([]string{"--base-url", "http://x:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TraceTimeline || cfg.Trace {
+		t.Errorf("no flag: Trace=%v TraceTimeline=%v, want both off", cfg.Trace, cfg.TraceTimeline)
+	}
+	cfg, err = config.LoadConfig([]string{"--base-url", "http://x:1", "--trace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TraceTimeline || !cfg.Trace {
+		t.Errorf("--trace: Trace=%v TraceTimeline=%v, want both on", cfg.Trace, cfg.TraceTimeline)
+	}
+	t.Setenv("WAKIL_TRACE_SESSIONS", "true")
+	cfg, err = config.LoadConfig([]string{"--base-url", "http://x:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Trace {
+		t.Error("trace_sessions must still enable JSONL capture")
+	}
+	if cfg.TraceTimeline {
+		t.Error("trace_sessions must NOT enable the timeline")
+	}
+}
+
 func TestResumeAndAllSessionsFlags(t *testing.T) {
 	isolateConfig(t)
 	cfg, err := config.LoadConfig([]string{"--base-url", "http://x:1", "--resume", "--all"})

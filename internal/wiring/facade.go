@@ -34,6 +34,7 @@ import (
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/timeline"
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
 )
@@ -963,6 +964,7 @@ func (f *wiringFacade) dispatchHandoff(fields []string) sessionclient.CommandRes
 // ---- Lifecycle ----
 
 func (f *wiringFacade) Close() error {
+	defer timeline.Begin("close old facade")()
 	f.mu.Lock()
 	if f.closed {
 		f.mu.Unlock()
@@ -1010,9 +1012,11 @@ func (f *wiringFacade) Close() error {
 	// emit TurnCompleted{cancelled} + SessionClosed. The 10s bound covers a
 	// turn that ignores cancellation.
 	if f.host != nil && sessionID != "" {
+		endHost := timeline.Begin("close host session (cancel turn)")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_ = f.host.CloseSession(ctx, principal, sessionID)
 		cancel()
+		endHost()
 	}
 
 	// Stop the event pump and DRAIN it: a non-blocking probe lets events be
@@ -1020,11 +1024,13 @@ func (f *wiringFacade) Close() error {
 	// once the subscription Next fails (Close'd above) or Stop wins; Done
 	// is closed either way. Bounded wait so a wedged pump can't hang Close.
 	if pump != nil {
+		endPump := timeline.Begin("stop event pump")
 		pump.Stop()
 		select {
 		case <-pump.Done():
 		case <-time.After(5 * time.Second):
 		}
+		endPump()
 	} else if sub != nil {
 		_ = sub.Close()
 	}
@@ -1037,8 +1043,10 @@ func (f *wiringFacade) Close() error {
 	}
 
 	// Cancel detached async jobs (detached-job policy: cancel on close).
+	endJobs := timeline.Begin("stop async ops + background processes")
 	f.app.StopAllAsyncOps()
 	f.app.StopAllBackgroundProcs()
+	endJobs()
 
 	// Release this facade's MCP server connections — the stdio child processes
 	// this App spawned in BuildApp.
@@ -1064,7 +1072,9 @@ func (f *wiringFacade) Close() error {
 	// CloseResources directly (cmd/wakil/daemon_server.go), never the
 	// ConversationManager, so its manager is still released exactly once.
 	if f.resources != nil && f.resources.MCPMgr != nil {
+		endMCP := timeline.Begin("close mcp servers")
 		f.resources.MCPMgr.Close()
+		endMCP()
 	}
 
 	// Stop this conversation's browser (/new, /handoff, chat end): the
@@ -1072,13 +1082,17 @@ func (f *wiringFacade) Close() error {
 	// dir. Per-facade like MCPMgr — each BuildApp builds its own browser
 	// Manager, so this cannot touch a sibling session. Close is idempotent and
 	// nil-safe; the final-exit path (CloseResources) closes it again harmlessly.
+	endBr := timeline.Begin("stop browser")
 	closeFacadeBrowser(f)
+	endBr()
 
 	// Persist the session transcript on close — belt-and-suspenders for state
 	// mutated after the last turn's defer SaveSession (e.g. /label, /model,
 	// repo-state). SaveSession is a no-op when app.Session is nil (no
 	// conversation was started) or when Conv is empty (nothing to save).
+	endSave := timeline.Begin("save session + history flush")
 	f.app.SaveSession()
+	endSave()
 
 	// ilm-stack: close the emitter. OnStop (called above) already emitted
 	// session_end; Close flushes the pending event through the channel and

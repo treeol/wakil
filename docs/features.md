@@ -181,6 +181,15 @@ for the session. Traces are written to `~/.local/share/wakil/traces` (or
 `trace_dir` if set). Each trace file records the full conversation flow —
 useful for debugging, auditing, and reproducing issues.
 
+### Phase timeline
+
+`WAKIL_TRACE=1` (or `--trace`) also writes how long each phase of start, `/new`,
+`/resume`, `/handoff` and exit took, in milliseconds, to
+`timeline-<UTC stamp>-<pid>.json` in the same directory. The file name is
+printed after the terminal is restored — never during the alternate screen. The
+standing `trace_sessions` setting does not turn it on. Measuring a repository
+end to end: `scripts/perf/run.sh` (see [PERF-0.6.md](PERF-0.6.md)).
+
 ## Checkpoint/Rewind
 
 Every turn starts a checkpoint that captures the pre-mutation state of files the agent touches. `/rewind` (or `/rewind <N>`) restores files to their pre-edit state and truncates the conversation — undo the last turn or the last N turns. Checkpoints are in-memory and per-session (cleared on compaction, session rotation, and resume). Shell command side effects are not reliably reverted; the rewind summary warns which turns had shell commands.

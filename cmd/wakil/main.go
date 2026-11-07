@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/treeol/wakil/internal/buildinfo"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/timeline"
 	"github.com/treeol/wakil/internal/tui"
 	"github.com/treeol/wakil/internal/wiring"
 
@@ -20,6 +23,17 @@ import (
 )
 
 func main() {
+	// The phase timeline (WAKIL_TRACE=1) starts before anything else so config
+	// load is timed too; --trace joins it once the flags are parsed.
+	mainBegan := time.Now()
+	processStart := timeline.ProcessStart(mainBegan)
+	if timeline.EnvEnabled() {
+		timeline.Start("", "start", processStart)
+		// Everything between the kernel starting the process and main
+		// beginning: runtime and package initialisation, including any
+		// terminal-capability query a dependency makes from an init function.
+		timeline.Record("process start to main (runtime + package init)", processStart, mainBegan)
+	}
 	// "wakil version" / "wakil doctor": no config load, no side effects.
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
@@ -108,17 +122,32 @@ func main() {
 		return
 	}
 
+	endCfg := timeline.Begin("config load")
+	cfgStart := time.Now()
 	cfg, err := config.LoadConfig(os.Args[1:])
+	cfgDur := time.Since(cfgStart)
+	endCfg()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(2)
+	}
+	if cfg.TraceTimeline && !timeline.Enabled() {
+		timeline.Start("", "start", processStart) // --trace without the env var
+		timeline.Record("process start to main (runtime + package init)", processStart, mainBegan)
+		timeline.Record("config load", mainBegan, mainBegan.Add(cfgDur))
+	}
+	if timeline.Enabled() {
+		timeline.SetDir(cfg.TraceDir) // honours --trace-dir / trace_dir when set
+		timeline.SetMeta(buildinfo.ResolvedVersion(), filepath.Base(cfg.WorkDir), hostName())
 	}
 	fmt.Fprintf(os.Stderr, "ctx limits: compactAt=%d hardMax=%d keep=%d summary=%d\n",
 		cfg.CompactAt, cfg.HardMaxBytes, cfg.KeepBytes, cfg.SummaryBytes)
 	// Settle the backend (the default may flip to hisn) BEFORE anything else
 	// reads it, and state it with its reason. A broken or unapproved
 	// .wakil/sandbox.json is a startup error — no fallback, no session.
+	endRes := timeline.Begin("resolve sandbox (hisn probe, project file)")
 	cfg, rerr := wiring.ResolveSandbox(context.Background(), cfg)
+	endRes()
 	if rerr != nil {
 		fmt.Fprintln(os.Stderr, "startup error:", rerr)
 		os.Exit(ExitError)
@@ -138,12 +167,14 @@ func main() {
 	// D4 (0.5.0): once per project, point at the read-only legacy store and the
 	// migrate command. Then the WAKIL_WORKSPACE_PATH line (warning only, since
 	// 0.5.0 the variable no longer changes store keys).
+	endNotice := timeline.Begin("legacy notice + workspace env line")
 	if line := wiring.LegacyNotice(cfg); line != "" {
 		fmt.Fprintln(os.Stderr, "notice:", line)
 	}
 	if line := wiring.WorkspaceEnvOverrideLine(cfg); line != "" {
 		fmt.Fprintln(os.Stderr, line)
 	}
+	endNotice()
 
 	// Resolve --resume / --resume-id to a session id/prefix (global search —
 	// the same rule the TUI's /resume <id> follows). Bare --resume (no id)
@@ -161,7 +192,9 @@ func main() {
 			if cfg.ExecMode != "direct" {
 				ws = cfg.HostWorkDir
 			}
+			endRecent := timeline.Begin("resolve recent session")
 			resolved, err := wiring.ResolveRecentSession(ws, cfg.AllSessions)
+			endRecent()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "resume error:", err)
 				os.Exit(1)
@@ -232,7 +265,9 @@ func main() {
 		} else {
 			tui.SendLoadingProgress("starting container…")
 		}
+		endExe := timeline.Begin("new executor (sandbox backend)")
 		exe, err := wiring.NewExecutor(cfg)
+		endExe()
 		if err != nil {
 			r := bootstrapDoneMsg{err: fmt.Errorf("executor: %w", err)}
 			bsResultMu.Lock()
@@ -271,6 +306,7 @@ func main() {
 		} else {
 			tui.SendLoadingProgress("creating session…")
 		}
+		endBoot := timeline.Begin("bootstrap tui (manager + first conversation)")
 		rt, cleanup, err := wiring.BootstrapTUI(cfg, exe, resumeID, nil, wiring.BootstrapTUIOpts{
 			AttachImages:        attach,
 			RestoreRepoState:    true,
@@ -278,6 +314,7 @@ func main() {
 			CounselMax:          counselMax,
 			ComposeStartupNotes: true,
 		})
+		endBoot()
 		if err != nil {
 			exe.Close()
 			r := bootstrapDoneMsg{err: fmt.Errorf("bootstrap: %w", err)}
@@ -335,11 +372,14 @@ func main() {
 		}
 
 		// Build the real TUI model.
+		endModel := timeline.Begin("build tui model")
 		model := tui.NewTUIModelWithFacade(done.rt.Facade, done.rt.Manager, done.rt.Principal)
+		endModel()
 
 		// Wire up event delivery. progRef is set before prog.Run() so this
 		// is never nil. SubscribeLive registers the deliver callback; the
 		// pump is started immediately after.
+		endSub := timeline.Begin("subscribe + event pump")
 		if err := done.rt.SubscribeLive(context.Background(), func(ev event.Event) {
 			progRef.Send(ev)
 		}); err != nil {
@@ -352,6 +392,7 @@ func main() {
 			return nil, tea.Quit
 		}
 		done.rt.StartEventPump(context.Background())
+		endSub()
 
 		// Compose cleanup: runtime cleanup + session log teardown.
 		// Both run after prog.Run() returns, in the right order
@@ -396,6 +437,7 @@ func main() {
 	)
 	progRef = prog
 	tui.SetProgramSend(prog.Send)
+	timeline.Event("tui program starting (alt screen)")
 
 	if _, err := prog.Run(); err != nil {
 		restoreStderr()
@@ -457,11 +499,24 @@ func main() {
 
 	// Normal teardown: close the facade (host session, pump, detached jobs)
 	// then the executor-owned resources.
+	timeline.EnterOnce("exit")
+	timeline.Event("tui program returned (terminal restored)")
 	if postRunCleanup != nil {
+		endClean := timeline.Begin("facade cleanup (host session, jobs, stores)")
 		postRunCleanup()
+		endClean()
 	}
 	if postRunExeClose != nil {
+		endExeClose := timeline.Begin("executor close (sandbox session stop)")
 		_ = postRunExeClose()
+		endExeClose()
+	}
+	if p, err := timeline.Flush(); p != "" {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "timeline: cannot write", p+":", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "timeline:", p)
+		}
 	}
 
 	// End-of-session cost summary (printed to stderr after terminal is restored).
@@ -515,4 +570,10 @@ func stripFlag(args []string, name string) ([]string, bool) {
 		out = append(out, a)
 	}
 	return out, found
+}
+
+// hostName is the machine name written in the timeline header ("" if unknown).
+func hostName() string {
+	h, _ := os.Hostname()
+	return h
 }

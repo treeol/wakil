@@ -19,6 +19,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/sandbox/hisn"
 	"github.com/treeol/wakil/internal/sandbox/project"
+	"github.com/treeol/wakil/internal/timeline"
 	"golang.org/x/term"
 )
 
@@ -29,13 +30,18 @@ import (
 // when it exists (defence in depth; the executor refuses writes to it too).
 func loadProjectSurface(cfg config.Config) (hisn.Surface, project.Loaded, error) {
 	ws := cfg.HostWorkDir
+	endLoad := timeline.Accum("project file load + sha256 (.wakil/sandbox.json)")
 	l, err := project.Load(ws)
+	endLoad()
 	if err != nil {
 		return hisn.Surface{}, l, err
 	}
 	if l.Needs() {
+		endAppr := timeline.Accum("project file approval check")
 		key := agent.WorkspaceKey(cfg.WorkspacePath())
-		if !project.Approved(filepath.Join(hisnStateDir(), "hisn"), key, l.Hash) {
+		approved := project.Approved(filepath.Join(hisnStateDir(), "hisn"), key, l.Hash)
+		endAppr()
+		if !approved {
 			return hisn.Surface{}, l, &project.ErrNotApproved{Path: l.Path}
 		}
 	}

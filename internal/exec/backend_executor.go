@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 // BackendOptions configures NewBackendExecutor.
@@ -155,7 +156,14 @@ func (s *shared) startSession(ctx context.Context, sc *callScope) error {
 	if s.startedID == s.chatID {
 		return nil
 	}
-	if err := s.b.Start(ctx, sandbox.Session{ID: s.chatID, HostCwd: s.b.AgentRoot()}); err != nil {
+	// The session starts lazily, at the first call that needs it. That is
+	// usually the first exec of a chat, but anything that reaches the sandbox
+	// first (the staging scan at startup) pays it, so it is a phase of
+	// whatever transition is running, not a transition of its own.
+	endStart := timeline.Begin("sandbox session start (lazy, first use)")
+	startErr := s.b.Start(ctx, sandbox.Session{ID: s.chatID, HostCwd: s.b.AgentRoot()})
+	endStart()
+	if err := startErr; err != nil {
 		return fmt.Errorf("starting %s sandbox session: %w", s.opts.Label, err)
 	}
 	s.startedID = s.chatID
