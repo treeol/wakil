@@ -115,8 +115,8 @@ func (b *Backend) resolveExecCwd(cwd string) (string, error) {
 // --session <id>` client, so the host process carries the session id in its
 // argv (the ownership marker for long-lived processes such as the browser).
 // The CLI path is NOT a fallback for this use: it is the ownership transport
-// until a control-socket ownership protocol replaces it (0.5.x, see
-// docs/PLAN-0.5.0.md). Tool calls keep the control socket.
+// until a control-socket ownership protocol replaces it (open item in
+// docs/adr/0010-open-items-carried-forward.md). Tool calls keep the control socket.
 func (b *Backend) ExecCLI(ctx context.Context, spec sandbox.ExecSpec) (sandbox.ExecHandle, error) {
 	if len(spec.Argv) == 0 {
 		return nil, fmt.Errorf("hisn exec: empty argv")

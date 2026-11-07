@@ -10,7 +10,7 @@ import (
 	"github.com/treeol/wakil/internal/config"
 )
 
-// Golden keys frozen at baseline (docs/CLEANUP-2026-11.md, A1). A change here
+// Golden keys frozen at baseline (see docs/adr/0004-workspace-identity-env-var.md). A change here
 // orphans every existing store for /mnt/wakil and is a behaviour release.
 const (
 	goldenWsKey  = "f3fa3243c6fc07e588a42f82ee6ea59ba4d2c27cb028afbbbba79a0283a11ffb"

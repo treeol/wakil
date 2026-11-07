@@ -62,3 +62,7 @@ master.key
 
 # GoReleaser output
 /dist/
+
+# cleanup: local done/ records and docs logs
+done/
+docs/*.log

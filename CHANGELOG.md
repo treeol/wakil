@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.3-dev] - unreleased
+## [0.6.0-dev] - unreleased
 
 ### Changed
 
@@ -16,7 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   toolchain" when the executor runs outside a named rootfs. Installing the
   binary and retrying works without restarting Wakil.
 
-## [0.5.2] - unreleased
+### Removed
+
+- Process records no longer kept in `docs/`: the 0.4.x and 0.5.x plan and close-out
+  documents, the November cleanup and decision sheets, the inventories, and
+  `design-note-a1-a6.md`. Their decisions are in `docs/adr/`; the text stays in git history.
+
+## [0.5.2] - 2026-11-07
 
 ### Changed
 
@@ -86,7 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - P3 (hisn git identity and ssh signing) was reviewed by one reader only; its
   two blocking items are fixed in `374dd66`. The rest of P3 was not reviewed.
-  Two review attempts failed; see `docs/PLAN-0.5.0.md`.
+  Two review attempts failed; the plan record was removed in the 0.6.0-dev
+  cleanup and its open items are in `docs/adr/0010-open-items-carried-forward.md`.
 
 ### Changed
 
