@@ -40,6 +40,11 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: deadcode (test roots)
+        run: |
+          go install golang.org/x/tools/cmd/deadcode@v0.52.0
+          deadcode -test ./...
+
       - name: build
         run: go build ./...
 

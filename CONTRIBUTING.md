@@ -17,7 +17,7 @@ for getting a patch ready for review.
 go build -o wakil ./cmd/wakil          # build
 go vet ./...                            # vet
 golangci-lint run                       # lint (0 issues; see .golangci.yml)
-deadcode ./...                          # dead code (go install golang.org/x/tools/cmd/deadcode@latest)
+deadcode -test ./...                    # dead code, test files as roots (go install golang.org/x/tools/cmd/deadcode@v0.52.0)
 gofmt -l .                              # must print nothing
 go test -count=1 -cover ./...           # tests with coverage, like CI
 LC_ALL=C go test -count=1 ./...         # locale-sensitive path, like CI
@@ -94,7 +94,7 @@ Before opening a PR, verify each item:
 - [ ] `LC_ALL=C go test -count=1 ./...` passes
 - [ ] `go test -race -count=1` passes on the packages listed in Build & Test
 - [ ] `go vet ./...` passes
-- [ ] `golangci-lint run` passes (0 issues) and `deadcode ./...` is clean
+- [ ] `golangci-lint run` passes (0 issues) and `deadcode -test ./...` is clean
 - [ ] `gofmt -l .` returns nothing
 - [ ] Commit messages are descriptive and reference the relevant WP/issue if applicable
 - [ ] No secrets, API keys, or credentials in the diff
