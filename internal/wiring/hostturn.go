@@ -91,10 +91,6 @@ type adapterConfig struct {
 	// noOracle mirrors HeadlessOptions.NoOracle for the review-skip reason
 	// (legacy parity: "oracle disabled by flag (--no-oracle)").
 	noOracle bool
-	// coordinator serializes turn starts against session transitions
-	// (LoadSession, InitNewSession). The daemon path sets this; the
-	// headless path leaves it nil (single turn, no transitions).
-	coordinator *TransitionCoordinator
 }
 
 // AdapterOption configures the HostTurnFunc adapter.
@@ -112,14 +108,6 @@ func WithResolver(r ApprovalResolver) AdapterOption {
 // headless path does not (keeps sync inline resolution for parity).
 func WithAsyncApproval() AdapterOption {
 	return func(c *adapterConfig) { c.asyncApproval = true }
-}
-
-// WithCoordinator sets the transition coordinator that serializes turn starts
-// against session transitions (LoadSession, InitNewSession, Compact). The
-// daemon path sets this; the headless path does not (single turn, no
-// transitions).
-func WithCoordinator(coord *TransitionCoordinator) AdapterOption {
-	return func(c *adapterConfig) { c.coordinator = coord }
 }
 
 // WithPlanAutoAdvance enables the headless --plan after-turn resolver (7c).
@@ -167,10 +155,9 @@ var ErrTurnActive = errors.New("wiring: cannot release App while a turn is activ
 type hostTurn struct {
 	app             *agent.App
 	resolver        ApprovalResolver
-	asyncApproval   bool                   // 7b2: use ParkApproval instead of inline resolver
-	planAutoAdvance bool                   // 7c: headless --plan after-turn resolver
-	noOracle        bool                   // 7c: legacy review-skip reason parity
-	coordinator     *TransitionCoordinator // serializes turn-start vs transitions
+	asyncApproval   bool // 7b2: use ParkApproval instead of inline resolver
+	planAutoAdvance bool // 7c: headless --plan after-turn resolver
+	noOracle        bool // 7c: legacy review-skip reason parity
 
 	// declineLatch captures the reason of the first declined approval
 	// resolution this session (7c). It is the CONTROL function the legacy
@@ -297,7 +284,7 @@ func NewHostTurnHandle(app *agent.App, opts ...AdapterOption) (*HostTurnHandle, 
 	for _, o := range opts {
 		o(&c)
 	}
-	ht := &hostTurn{app: app, resolver: c.resolver, asyncApproval: c.asyncApproval, planAutoAdvance: c.planAutoAdvance, noOracle: c.noOracle, coordinator: c.coordinator}
+	ht := &hostTurn{app: app, resolver: c.resolver, asyncApproval: c.asyncApproval, planAutoAdvance: c.planAutoAdvance, noOracle: c.noOracle}
 
 	appOwnersMu.Lock()
 	if _, claimed := appOwners[app]; claimed {
@@ -339,29 +326,14 @@ func (ht *hostTurn) Release() error {
 
 // run executes one turn on the bound App.
 func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text string, retErr error) {
-	// Turn-start: claim + activate atomically under the coordinator lock so
-	// no transition (LoadSession, InitNewSession) interleaves. If the
-	// coordinator is nil (headless path), run without it — single turn, no
-	// transitions possible.
-	if ht.coordinator != nil {
-		if err := ht.coordinator.WithTurnStart(func() error {
-			return ht.claimAndActivate(in.SessionID)
-		}); err != nil {
-			return "", err
-		}
-	} else {
-		if err := ht.claimAndActivate(in.SessionID); err != nil {
-			return "", err
-		}
+	if err := ht.claimAndActivate(in.SessionID); err != nil {
+		return "", err
 	}
 
 	defer func() {
 		ht.mu.Lock()
 		ht.turnActive = false
 		ht.mu.Unlock()
-		if ht.coordinator != nil {
-			ht.coordinator.ClearTurnActive()
-		}
 	}()
 
 	app := ht.app
@@ -541,9 +513,7 @@ func (ht *hostTurn) IsTurnActive() bool {
 	return active
 }
 
-// claimAndActivate claims the session and sets turnActive under ht.mu. This
-// runs inside the coordinator lock (if configured) so no transition
-// interleaves with the claim + activate.
+// claimAndActivate claims the session and sets turnActive under ht.mu.
 func (ht *hostTurn) claimAndActivate(sid event.SessionID) error {
 	if err := ht.claimSession(sid); err != nil {
 		return err
