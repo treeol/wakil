@@ -133,3 +133,13 @@ func TestApplyDefaultBackendKeepsKVRState(t *testing.T) {
 		t.Error("under hisn kvr is decided by the backend plan, not disabled by config")
 	}
 }
+
+// TestMinHisnDefaultVersionNotBelowMinHisnVersion pins the invariant that a
+// host can never be auto-selected as the hisn default and then refused by the
+// explicit-backend version gate.
+func TestMinHisnDefaultVersionNotBelowMinHisnVersion(t *testing.T) {
+	if MinHisnDefaultVersion != MinHisnVersion {
+		t.Fatalf("MinHisnDefaultVersion %q must equal MinHisnVersion %q",
+			MinHisnDefaultVersion, MinHisnVersion)
+	}
+}

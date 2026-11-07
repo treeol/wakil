@@ -2335,9 +2335,9 @@ type HisnAvailability struct {
 }
 
 // MinHisnDefaultVersion is the first hisn release that may become the default
-// backend (profiles, services, risk labels). An explicit sandbox.backend: hisn
-// still works from MinHisnVersion.
-const MinHisnDefaultVersion = "0.3.1"
+// backend. It equals MinHisnVersion so a host can never be auto-selected and
+// then refused at startup.
+const MinHisnDefaultVersion = MinHisnVersion
 
 // ApplyDefaultBackend decides the backend when NOTHING chose one. The default
 // becomes hisn only when ALL hold: the backend was not set explicitly (file,
