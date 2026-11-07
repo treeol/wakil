@@ -64,6 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           go test -count=1 -cover ./... | tee cover.txt
+          LC_ALL=C go test -count=1 ./...
 
       - name: coverage floors (agent/tools/exec/proxy)
         run: scripts/check_coverage.sh cover.txt
@@ -193,3 +194,24 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  hisn-integration:
+    name: real-hisn integration (skips cleanly without hisn)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: run real-hisn tests if hisn is present
+        run: |
+          set -euo pipefail
+          if ! command -v hisn >/dev/null 2>&1; then
+            echo "hisn not on PATH: real-hisn integration tests are skipped in this job"
+            exit 0
+          fi
+          if ! hisn check >/dev/null 2>&1; then
+            echo "hisn present but 'hisn check' fails on this runner: skipping real-hisn tests"
+            exit 0
+          fi
+          go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/
