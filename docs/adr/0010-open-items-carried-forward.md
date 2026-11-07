@@ -33,6 +33,14 @@
 10. **Deferred items in `docs/follow-ups.md`**, moved there from the plan files.
     That file stays in `docs/` until its items are closed or moved to issues.
 
+- **Auto-default hisn version gate is below the explicit gate.**
+  `config.MinHisnDefaultVersion` is `0.3.1` (`internal/config/config.go`),
+  but `MinHisnVersion` is `0.3.3`. A hisn 0.3.1 or 0.3.2 host can be chosen
+  as the default and then refused at startup. The 0.5.2 CHANGELOG says 0.3.2
+  is refused. Pre-existing at a18447e, unchanged by the cleanup. Fix in 0.6:
+  raise the default gate to `MinHisnVersion` (behaviour change, so it is not
+  part of this pass).
+
 ## Consequences
 
 Each item stays open until it is built, verified, or moved to an issue. The

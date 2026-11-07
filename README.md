@@ -100,8 +100,6 @@ See [docs/endpoints.md](docs/endpoints.md) for other providers and
   with keys read at call time and never stored.
 - **Plays well with your stack** — MCP tools, `AGENTS.md` conventions, repo
   map injection, lifecycle hooks, cost tracking, and full JSONL traces.
-- **Scales to a daemon** — `./wakil daemon` serves multiple clients with a
-  built-in web console ([docs/remote-provisioning.md](docs/remote-provisioning.md)).
 
 ## Security
 
@@ -121,7 +119,6 @@ checklist.
 | Tools & subagents | [docs/tools.md](docs/tools.md) · [docs/features.md](docs/features.md) |
 | TUI commands | [docs/tui.md](docs/tui.md) · type `/` in the TUI for the command picker, `/help` for the full list |
 | Memory & context modes | [docs/memory.md](docs/memory.md) · [context modes](docs/configuration.md#config-only-fields) (`context_mode`, `/mode`) |
-| Daemon | [docs/remote-provisioning.md](docs/remote-provisioning.md) |
 | Security | [SECURITY.md](SECURITY.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
