@@ -152,14 +152,6 @@ func SessionHostWorkspaceID(ws string) string {
 	return "wsp_" + hex.EncodeToString(sum[:8])
 }
 
-// LegacySessionHostWorkspaceID is the pre-0.5.0 id: sha256 of the RAW path. It
-// is computed only to find sessions recorded under it (read-through, C2); it is
-// never written.
-func LegacySessionHostWorkspaceID(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return "wsp_" + hex.EncodeToString(sum[:8])
-}
-
 // Format renders the multi-line report printed by --print-workspace-key.
 func (k WorkspaceKeys) Format() string {
 	var b strings.Builder
