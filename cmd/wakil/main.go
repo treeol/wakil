@@ -131,6 +131,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "startup error:", rerr)
 		os.Exit(ExitError)
 	}
+	// First-run acknowledgement (interactive TUI only): a missing or mismatched
+	// risk ack is offered inline. y writes and approves exactly as
+	// `wakil sandbox trust`; N exits with the error. Any other run keeps the
+	// hard error from NewExecutor.
+	if !cfg.DaemonMode && wiring.IsInteractiveTUI() && cfg.ExecMode != "direct" &&
+		cfg.Sandbox.Backend == config.SandboxBackendHisn {
+		if ferr := wiring.AckOffer(cfg, os.Stdin, os.Stdout); ferr != nil {
+			fmt.Fprintln(os.Stderr, "startup error:", ferr)
+			os.Exit(ExitError)
+		}
+	}
 	fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 	// D4 (0.5.0): once per project, point at the read-only legacy store and the
 	// migrate command. Then the WAKIL_WORKSPACE_PATH line (warning only, since

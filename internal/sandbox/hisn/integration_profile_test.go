@@ -88,8 +88,8 @@ func TestIntegrationRiskRefusal(t *testing.T) {
 		o.Surface = Surface{Forward: []Forward{{Name: "docker", Socket: "/var/run/docker.sock", Expose: "/run/docker.sock"}}}
 	})
 	var re *RiskAckError
-	if !errors.As(err, &re) || !strings.Contains(err.Error(), "hisn.risk_ack") {
-		t.Fatalf("want a RiskAckError naming hisn.risk_ack, got %v", err)
+	if !errors.As(err, &re) || !strings.Contains(err.Error(), "wakil sandbox trust") {
+		t.Fatalf("want a RiskAckError naming `wakil sandbox trust`, got %v", err)
 	}
 }
 

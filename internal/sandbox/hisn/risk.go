@@ -46,9 +46,9 @@ func checkAck(need, ack, top string) error {
 		return nil
 	}
 	if ack == "" {
-		return &RiskAckError{Label: top, Detail: fmt.Sprintf("the profile's risk is %q; set hisn.risk_ack to %q once you have reviewed it", top, top)}
+		return &RiskAckError{Label: top, Detail: fmt.Sprintf("the profile's risk is %q; run `wakil sandbox trust` to review and acknowledge it", top)}
 	}
-	return &RiskAckError{Label: top, Detail: fmt.Sprintf("hisn.risk_ack is %q but the profile's risk is %q", ack, top)}
+	return &RiskAckError{Label: top, Detail: fmt.Sprintf("the acknowledged risk is %q but the profile's risk is %q; run `wakil sandbox trust` to review and acknowledge it", ack, top)}
 }
 
 // selfAckedHome reports whether the only thing lifting the profile above

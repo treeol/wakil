@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -280,6 +281,67 @@ func New(opts Options) (*Backend, error) {
 		// private /tmp: host /tmp is NOT the sandbox /tmp.
 		pm: sandbox.NewPathMap(opts.HostCwd, opts.HostCwd, "/tmp"),
 	}, nil
+}
+
+// PlannedRisk is the plan-time label set of the generated profile for opts,
+// computed exactly as Open computes it, but WITHOUT comparing it to the
+// project's acknowledgement. `wakil sandbox trust` uses it to show the user
+// what they are about to acknowledge. Ack is the label Wakil asks the project
+// to carry (ackFor: "none" when the only surface is Wakil's own home mount).
+// It never starts a session.
+func PlannedRisk(ctx context.Context, opts Options) (Risk, error) {
+	b, err := New(opts)
+	if err != nil {
+		return Risk{}, err
+	}
+	if err := b.Preflight(ctx); err != nil {
+		return Risk{}, err
+	}
+	if !b.profileMode() {
+		return Risk{Label: "none", Ack: "none"}, nil
+	}
+	s := b.opts.Surface
+	target := ""
+	planPersist := ""
+	if s.Profile == "" {
+		if err := os.MkdirAll(b.opts.StateDir, 0o700); err != nil {
+			return Risk{}, fmt.Errorf("hisn state dir: %w", err)
+		}
+		pp := policyParams{Cwd: b.opts.HostCwd, Home: b.opts.HomeRoot, Hostname: "wakil-plan",
+			GrantableRW: b.opts.GrantableRW, EnvPass: b.signingEnvPass(), ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
+		homeP, err := b.homePersist(s)
+		if err != nil {
+			return Risk{}, err
+		}
+		planPersist = homeP
+		prof, err := buildProfile(pp, s, homeP)
+		if err != nil {
+			return Risk{}, err
+		}
+		target = filepath.Join(b.opts.StateDir, "plan-trust.profile.toml")
+		if err := os.WriteFile(target, prof, 0o600); err != nil {
+			return Risk{}, fmt.Errorf("writing hisn profile: %w", err)
+		}
+		defer func() { _ = os.Remove(target) }()
+	} else {
+		target = s.Profile
+	}
+	out, err := b.output(ctx, false, "profile", "explain", target)
+	if err != nil {
+		return Risk{}, validateError(err, out)
+	}
+	d, err := parseExplain(out)
+	if err != nil {
+		return Risk{}, err
+	}
+	return Risk{Label: d.Risk, Ack: ackFor(d, planPersist, b.opts.HomeRoot), Capabilities: d.Capabilities}, nil
+}
+
+// Risk is the result of PlannedRisk.
+type Risk struct {
+	Label        string // the profile's highest label (hisn's risk)
+	Ack          string // the label the project must acknowledge ("none" = nothing)
+	Capabilities []sandbox.Capability
 }
 
 // Open is New plus the mandatory startup checks: preflight (version + host

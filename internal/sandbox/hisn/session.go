@@ -314,7 +314,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 func validateError(err error, out string) error {
 	msg := strings.TrimSpace(out)
 	if i := strings.Index(msg, "E_RISK_ACK_"); i >= 0 {
-		return &RiskAckError{Detail: strings.TrimSpace(msg[i:])}
+		return &RiskAckError{Detail: strings.TrimSpace(msg[i:]) + "; run `wakil sandbox trust` to review and acknowledge it"}
 	}
 	return fmt.Errorf("hisn profile validate failed: %w: %s", err, msg)
 }
@@ -346,8 +346,8 @@ func (e *RiskAckError) Error() string {
 	if e.Label != "" {
 		l = " (label " + e.Label + ")"
 	}
-	return "sandbox: hisn.risk_ack in .wakil/sandbox.json is missing or does not match" + l +
-		" — Wakil never writes an acknowledgement for you; " + e.Detail
+	return "sandbox: this workspace's sandbox risk is not acknowledged" + l +
+		" — " + e.Detail + " (Wakil never acknowledges a risk on your behalf)"
 }
 
 // runSession prepares + validates the launch, spawns the supervisor (which IS

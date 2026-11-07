@@ -28,16 +28,14 @@ func rootfsFor(global string, s hisn.Surface) string {
 	return global
 }
 
-func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
-	// Defence in depth for hand-built configs (LoadConfig already resolves
-	// the backend).
-	if cfg.ExecMode != "docker" {
-		return nil, fmt.Errorf("sandbox backend hisn cannot be combined with exec mode %q", cfg.ExecMode)
-	}
+// hisnOptions builds the hisn.Options for cfg. Shared by the executor and the
+// trust command so the risk shown at trust time is the risk startup computes.
+// It reads the project file (loadProjectSurface) and so enforces F1 too.
+func hisnOptions(cfg config.Config) (hisn.Options, error) {
 	h := cfg.Sandbox.Hisn
 	state := hisnStateDir()
 	if state == "" {
-		return nil, fmt.Errorf("sandbox backend hisn: cannot determine the Wakil state directory")
+		return hisn.Options{}, fmt.Errorf("sandbox backend hisn: cannot determine the Wakil state directory")
 	}
 	home := h.HomeRoot
 	if home == "" {
@@ -45,26 +43,19 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		// Old hisn-home/<64-hex> dirs are left in place and no longer used.
 		key := agent.StoreKey(agent.ProjectDir(cfg))
 		if key == "" {
-			return nil, fmt.Errorf("sandbox backend hisn: cannot derive a project key for home")
+			return hisn.Options{}, fmt.Errorf("sandbox backend hisn: cannot derive a project key for home")
 		}
 		home = filepath.Join(state, "hisn-home", key)
 	}
 	surface, _, err := loadProjectSurface(cfg)
 	if err != nil {
-		return nil, err
+		return hisn.Options{}, err
 	}
 	gitName, gitEmail, signingKey, sshKeys, err := hisnGitSetup(cfg, h)
 	if err != nil {
-		return nil, err
+		return hisn.Options{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	hisn.SetDiagnostics(os.Stderr)
-	allowedSignersPath := ""
-	if signingKey != "" {
-		allowedSignersPath = filepath.Join(hisn.SandboxHome, ".wakil-allowed-signers")
-	}
-	b, err := hisn.Open(ctx, hisn.Options{
+	return hisn.Options{
 		Binary:      h.Binary,
 		StateDir:    filepath.Join(state, "hisn"),
 		HomeRoot:    home,
@@ -84,10 +75,32 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		ExecViaCLI:  h.ExecViaCLI,
 		Surface:     surface,
 		KVR:         kvrOptions(cfg, h),
-	})
+	}, nil
+}
+
+func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
+	// Defence in depth for hand-built configs (LoadConfig already resolves
+	// the backend).
+	if cfg.ExecMode != "docker" {
+		return nil, fmt.Errorf("sandbox backend hisn cannot be combined with exec mode %q", cfg.ExecMode)
+	}
+	opts, err := hisnOptions(cfg)
 	if err != nil {
 		return nil, err
 	}
+	signingKey := opts.SigningKey
+	allowedSignersPath := ""
+	if signingKey != "" {
+		allowedSignersPath = filepath.Join(hisn.SandboxHome, ".wakil-allowed-signers")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	hisn.SetDiagnostics(os.Stderr)
+	b, err := hisn.Open(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	h := cfg.Sandbox.Hisn
 	return exec.NewBackendExecutor(b, exec.BackendOptions{
 		Label:              "hisn",
 		GrantableRW:        h.GrantableRW,

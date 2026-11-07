@@ -297,8 +297,8 @@ func TestRiskRefusedBeforeAnySession(t *testing.T) {
 		setVersion(t, fe, "0.3.3")
 		_, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: dockerFwd, RiskAck: ack} })
 		var re *RiskAckError
-		if !errors.As(err, &re) || !strings.Contains(err.Error(), "hisn.risk_ack") {
-			t.Fatalf("%s: want a RiskAckError naming hisn.risk_ack, got %v", name, err)
+		if !errors.As(err, &re) || !strings.Contains(err.Error(), "wakil sandbox trust") {
+			t.Fatalf("%s: want a RiskAckError naming `wakil sandbox trust`, got %v", name, err)
 		}
 		if got := fe.sessionIDs(); len(got) != 0 {
 			t.Errorf("%s: no session may exist after a refusal: %v", name, got)

@@ -640,8 +640,17 @@ hisn computes a label for everything a profile widens: `none`, `data`,
   and `kernel-surface`). Missing or wrong is a **hard error naming the key**:
 
   ```
-  sandbox: hisn.risk_ack in .wakil/sandbox.json is missing or does not match (label root-equivalent) — Wakil never writes an acknowledgement for you; the profile's risk is "root-equivalent"; set hisn.risk_ack to "root-equivalent" once you have reviewed it
+  sandbox: this workspace's sandbox risk is not acknowledged (label root-equivalent) — the profile's risk is "root-equivalent"; run `wakil sandbox trust` to review and acknowledge it (Wakil never acknowledges a risk on your behalf)
   ```
+
+  Run `wakil sandbox trust` in the repo: it lists the capability labels, the
+  resulting risk, and asks `Approve this exact content for this workspace? Type 'yes'`.
+  Without a `.wakil/sandbox.json` it writes `{"hisn":{"risk_ack":"<risk>"}}` only
+  after `yes`, and deletes it on any other answer. A bootstrap-form file whose ack
+  no longer matches is updated the same way; a hand-written file is never rewritten
+  (the command names the key to change). In the interactive TUI the same offer
+  appears inline (`acknowledge now? [y/N]`); `wakil run` and other non-interactive
+  runs never prompt.
 
   `hisn profile validate` is a second net (`E_RISK_ACK_REQUIRED`/`_MISMATCH`
   map to the same error).
