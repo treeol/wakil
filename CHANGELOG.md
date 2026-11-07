@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3-dev] - unreleased
+
+### Changed
+
+- **LSP servers are probed before launch.** When a language server binary is
+  missing from the sandbox (for example `gopls` in the hisn rootfs), the LSP
+  tool reports `gopls not found in the sandbox (rootfs <name>); install it in
+  the image` instead of a startup crash. The rootfs name is omitted as "host
+  toolchain" when the executor runs outside a named rootfs. Installing the
+  binary and retrying works without restarting Wakil.
+
 ## [0.5.2] - unreleased
 
 ### Changed

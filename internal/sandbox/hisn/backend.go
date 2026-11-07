@@ -585,6 +585,10 @@ func (b *Backend) UnmapPath(hostPath string) (string, error) { return b.pm.Unmap
 // AgentRoot implements sandbox.Backend (identical to the host path).
 func (b *Backend) AgentRoot() string { return b.opts.HostCwd }
 
+// SandboxRootfs is the resolved sandbox.hisn.rootfs (store name or absolute
+// path), or "" for the host toolchain. Used in tool-facing error messages.
+func (b *Backend) SandboxRootfs() string { return b.opts.Surface.Rootfs }
+
 // SandboxTempDir implements sandbox.Backend: the session-private /tmp.
 func (b *Backend) SandboxTempDir() string { return "/tmp" }
 

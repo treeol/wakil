@@ -961,6 +961,16 @@ func (e *BackendExecutor) WorktreeKind() WorktreeKind { return WorktreeSandboxTm
 // IsWorktreeChild implements WorktreeHost.
 func (e *BackendExecutor) IsWorktreeChild() bool { return e.child }
 
+// SandboxRootfs names the session's rootfs when the backend reports one
+// (hisn: sandbox.hisn.rootfs). "" when unknown or the host toolchain is used.
+// Optional: callers type-assert it, so Executor is unchanged.
+func (e *BackendExecutor) SandboxRootfs() string {
+	if r, ok := e.b.(interface{ SandboxRootfs() string }); ok {
+		return r.SandboxRootfs()
+	}
+	return ""
+}
+
 // SandboxTempDir implements WorktreeHost.
 func (e *BackendExecutor) SandboxTempDir() string { return e.b.SandboxTempDir() }
 

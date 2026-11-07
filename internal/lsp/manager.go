@@ -238,6 +238,22 @@ func (s *Server) spawn(ctx context.Context) error {
 		s.mu.Unlock()
 		return s.deadErr
 	}
+
+	// Probe for the binary before launching it, so a missing server reads as
+	// "not installed" rather than "crashed on startup". The probe runs through
+	// the same executor, i.e. inside the sandbox session when there is one.
+	// It runs under s.mu: spawn is the only writer of a fresh Server, and a
+	// concurrent caller blocks here instead of double-launching.
+	if err := s.probeBinary(ctx); err != nil {
+		// Dead, so EnsureServer discards it and the next call probes again:
+		// installing the binary and retrying works without a restart.
+		s.state = StateDead
+		s.deadErr = err
+		close(s.deadCh)
+		s.mu.Unlock()
+		return err
+	}
+
 	stdin, stdout, stderr, pid, err := s.mgr.exec.StartInteractive(ctx, cmdStr)
 	if err != nil {
 		s.state = StateDead
@@ -283,6 +299,43 @@ func (s *Server) spawn(ctx context.Context) error {
 	s.resetIdleTimer()
 
 	return nil
+}
+
+// probeBinary checks that the server's command exists in the executor's
+// environment (the sandbox session when there is one). It returns a
+// user-facing error naming the missing binary and, when the backend reports
+// one, the sandbox rootfs to fix. A missing binary is reported as such, not
+// as a startup crash.
+func (s *Server) probeBinary(ctx context.Context) error {
+	if _, err := s.mgr.exec.RunShell(ctx, "command -v "+shellQuote(s.cmd)); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return &missingBinaryError{cmd: s.cmd, where: s.mgr.sandboxLabel()}
+	}
+	return nil
+}
+
+// missingBinaryError is returned when a language server binary is absent from
+// the sandbox. Its text is the contract the LLM sees via failureContract.
+type missingBinaryError struct {
+	cmd   string
+	where string
+}
+
+func (e *missingBinaryError) Error() string {
+	return fmt.Sprintf("%s not found in the sandbox (%s); install it in the image", e.cmd, e.where)
+}
+
+// sandboxLabel names the execution environment for error messages. When the
+// executor reports a sandbox rootfs, it is included, so the fix is obvious.
+func (m *Manager) sandboxLabel() string {
+	if r, ok := m.exec.(interface{ SandboxRootfs() string }); ok {
+		if name := r.SandboxRootfs(); name != "" {
+			return "rootfs " + name
+		}
+	}
+	return "host toolchain"
 }
 
 // initialize sends the initialize request and reads the result, storing
