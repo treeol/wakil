@@ -33,7 +33,7 @@ var defaultSkillCreationAllowedFiles = []string{
 // SkillCreationConfig holds the knobs for automatic skill creation. Every
 // limit is configurable; zero values select the documented defaults.
 type SkillCreationConfig struct {
-	// Mode is the default mode: off | on | auto | auto-mashura. Empty = "off" (0.4.4).
+	// Mode is the default mode: off | on | auto | auto-mashura. Empty = "off": the user opts in with `/skill-creation on` or this key.
 	// A per-repo saved setting and a per-session override take precedence.
 	Mode string `json:"mode,omitempty"`
 	// MaxAutoPerDay caps automatically created skills/drafts per UTC day.

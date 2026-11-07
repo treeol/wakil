@@ -151,7 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`--daemon`) and the web console (`wakil daemon --http-addr`) print one line on start —
   "will be removed in a future release" — and otherwise work as before. Nothing is removed
   in 0.4.4. (The user's host data shows no sessions created through them.)
-- **Skill auto-creation** (`/skill-creation`) is deprecated. Its default mode is now `off`
+- **Skill auto-creation** (`/skill-creation`): the default mode is `off`
   (see Changed); an explicit `skill_creation` setting still wins. Skill templates, the
   skills store and `load_skill` are unchanged.
 

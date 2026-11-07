@@ -9,7 +9,7 @@ such.
 |---|---|---|
 | [0000](0000-adr-format.md) | ADR format and convention | Accepted |
 | [0001](0001-deprecate-daemon-remote-web-stack.md) | Remove the daemon, remote, and web stack | Accepted |
-| [0002](0002-remove-skill-auto-creation.md) | Remove skill auto-creation; keep skill store and templates | Accepted |
+| [0002](0002-skill-auto-creation-kept-opt-in.md) | Skill auto-creation is kept; suggestions are off by default | Accepted |
 | [0003](0003-keep-plan-workflow-engine.md) | Keep the `/plan` workflow engine | Accepted |
 | [0004](0004-workspace-identity-env-var.md) | `WAKIL_WORKSPACE_PATH` and workspace store identity | Accepted |
 | [0005](0005-fail-closed-project-sandbox-file.md) | Project sandbox file fails closed | Accepted |
