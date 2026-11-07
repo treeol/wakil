@@ -75,6 +75,7 @@ func hisnOptionsWith(cfg config.Config, surface hisn.Surface) (hisn.Options, err
 		SigningKey:  signingKey,
 		KnownHosts:  knownHostsPath(h.SSHAgent),
 		HostCwd:     cfg.HostWorkDir,
+		ProjectKey:  agent.StoreKey(agent.ProjectDir(cfg)),
 		GrantableRW: h.GrantableRW,
 		EnvPass:     h.EnvPass,
 		TmpSizeMB:   h.TmpSizeMB,

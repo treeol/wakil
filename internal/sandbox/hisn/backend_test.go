@@ -87,7 +87,7 @@ func TestPreflight(t *testing.T) {
 	})
 	t.Run("ssh_agent unset", func(t *testing.T) {
 		fe := newFakeEnv(t)
-		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.3.3"), 0o600)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.0"), 0o600)
 		o := fe.options()
 		o.SSHAgent = true
 		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
@@ -99,7 +99,7 @@ func TestPreflight(t *testing.T) {
 	})
 	t.Run("ssh_agent not a socket", func(t *testing.T) {
 		fe := newFakeEnv(t)
-		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.3.3"), 0o600)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.0"), 0o600)
 		o := fe.options()
 		o.SSHAgent = true
 		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
@@ -114,7 +114,7 @@ func TestPreflight(t *testing.T) {
 	})
 	t.Run("ssh_agent ok", func(t *testing.T) {
 		fe := newFakeEnv(t)
-		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.3.3"), 0o600)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.0"), 0o600)
 		o := fe.options()
 		o.SSHAgent = true
 		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
@@ -167,8 +167,16 @@ func TestStartExecStop(t *testing.T) {
 	if err := b.Stop(ctxT(t)); err != nil {
 		t.Fatal(err)
 	}
-	if got := fe.sessionIDs(); len(got) != 0 {
+	if got := fe.servedIDs(); len(got) != 0 {
 		t.Fatalf("session survived Stop: %v", got)
+	}
+	// hisn 0.4.0: Wakil ends a session with `hisn stop` (audited, directory
+	// kept as "stopped"), never with a kill.
+	if got := fe.stoppedIDs(); len(got) != 1 || got[0] != "chat-1" {
+		t.Fatalf("the stopped directory must stay for hisn's audit: %v", got)
+	}
+	if c := calls(t, fe); !strings.Contains(c, "stop --session chat-1") || strings.Contains(c, "kill --session chat-1") {
+		t.Fatalf("Stop must use `hisn stop` and not `hisn kill`:\n%s", c)
 	}
 	if ids := b.listRecordIDs(); len(ids) != 0 {
 		t.Fatalf("owner record survived Stop: %v", ids)
@@ -370,7 +378,7 @@ func TestRebindReplacesSession(t *testing.T) {
 	if b.Epoch() == e1 {
 		t.Error("epoch must advance on every replacement")
 	}
-	if got := fe.sessionIDs(); len(got) != 1 || got[0] != "b" {
+	if got := fe.servedIDs(); len(got) != 1 || got[0] != "b" {
 		t.Fatalf("old session not stopped: %v", got)
 	}
 }
@@ -470,7 +478,7 @@ func TestReconcileKillsOnlyDeadOwnersOrphans(t *testing.T) {
 	if err := b2.Reconcile(ctxT(t)); err != nil {
 		t.Fatal(err)
 	}
-	ids := fe.sessionIDs()
+	ids := fe.servedIDs()
 	if contains(ids, "orphan") {
 		t.Errorf("dead owner's session not reaped: %v", ids)
 	}
@@ -518,14 +526,14 @@ func TestReconcileIDReuseNotKilled(t *testing.T) {
 	}
 }
 
-// A failing `hisn kill` is not fatal: the supervisor handle is authoritative, so
+// A failing `hisn stop` is not fatal: the supervisor handle is authoritative, so
 // Stop falls back to SIGKILL on the supervisor and still ends the session.
 func TestFailedHisnKillFallsBackToSupervisorKill(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, _ := Open(ctxT(t), fe.options())
 	b.stopWait = 400 * time.Millisecond
 	_ = b.Start(ctxT(t), sandbox.Session{ID: "stuck", HostCwd: fe.cwd})
-	_ = os.WriteFile(filepath.Join(fe.state, "kill_fail"), nil, 0o600)
+	_ = os.WriteFile(filepath.Join(fe.state, "stop_fail"), nil, 0o600)
 	sup := b.supOf()
 	if err := b.Stop(ctxT(t)); err != nil {
 		t.Fatalf("Stop must succeed through the SIGKILL fallback: %v", err)
@@ -533,7 +541,7 @@ func TestFailedHisnKillFallsBackToSupervisorKill(t *testing.T) {
 	if !sup.hasExited() || !strings.Contains(sup.exitStatus(), "killed") {
 		t.Fatalf("supervisor not SIGKILLed: %s", sup.exitStatus())
 	}
-	if len(b.listRecordIDs()) != 0 || contains(fe.sessionIDs(), "stuck") {
+	if len(b.listRecordIDs()) != 0 || contains(fe.servedIDs(), "stuck") {
 		t.Fatal("leftovers after a forced stop")
 	}
 }
@@ -564,7 +572,7 @@ func TestUnreapableSupervisorKeepsRecoveryUntilRetry(t *testing.T) {
 	if err := b.Close(ctxT(t)); err != nil {
 		t.Fatalf("retry after failed stop: %v", err)
 	}
-	if contains(fe.sessionIDs(), "stuck") || len(b.listRecordIDs()) != 0 || !sup.hasExited() {
+	if contains(fe.servedIDs(), "stuck") || len(b.listRecordIDs()) != 0 || !sup.hasExited() {
 		t.Fatal("retry did not clean up")
 	}
 }

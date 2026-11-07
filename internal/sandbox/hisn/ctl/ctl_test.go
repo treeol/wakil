@@ -30,6 +30,8 @@ type fakeServer struct {
 	// signalLines are the raw request lines of every signal connection, in
 	// arrival order — for the byte-for-byte spec pin.
 	signalLines []string
+	// lines are the raw first request lines of every connection, in order.
+	lines []string
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -70,6 +72,9 @@ func (f *fakeServer) serveConn(t *testing.T, conn net.Conn) {
 	if err != nil {
 		return
 	}
+	f.mu.Lock()
+	f.lines = append(f.lines, string(line))
+	f.mu.Unlock()
 	var req struct {
 		Op     string            `json:"op"`
 		Argv   []string          `json:"argv"`
@@ -499,5 +504,117 @@ func TestDialClassification(t *testing.T) {
 	c2 := New(sock)
 	if err := c2.call(context.Background(), "list", nil); !errors.Is(err, ErrSessionDead) {
 		t.Fatalf("refused dial = %v, want ErrSessionDead", err)
+	}
+}
+
+// ---- the client record (hisn 0.4.0) ----
+
+func reqLines(f *fakeServer) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, l := range f.lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(l), &m); err == nil {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// Without an identity the request carries no client object at all: hisn then
+// derives the label itself, and a client that never opted in is unchanged.
+func TestNoIdentitySendsNoClientObject(t *testing.T) {
+	f := newFakeServer(t)
+	go f.serve(t)
+	c := New(f.sock)
+	ctx, cancel := ctxT(t, 5*time.Second)
+	defer cancel()
+	if err := c.Grant(ctx, "/x", "ro"); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range reqLines(f) {
+		if _, has := m["client"]; has {
+			t.Fatalf("request carries a client object without an identity: %v", m)
+		}
+	}
+}
+
+// Every request carries {label, req_id}: grant, revoke, kill, inspect, exec and
+// the signal on its own connection. The req_id is unique per request and
+// carries the instance prefix; nothing but label and req_id is ever sent (hisn
+// refuses any other key, uid included, as E_BAD_REQUEST).
+func TestIdentityOnEveryRequest(t *testing.T) {
+	f := newFakeServer(t)
+	go f.serve(t)
+	c := New(f.sock).WithIdentity("wakil@rubin", "inst1")
+	ctx, cancel := ctxT(t, 5*time.Second)
+	defer cancel()
+	if err := c.Grant(ctx, "/x", "rw"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Revoke(ctx, "/x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Kill(ctx, "TERM"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = c.Inspect(ctx)
+	stdio, err := NewStdio()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ec, _, err := c.StartExec(ctx, []string{"cat"}, "", nil, stdio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ec.Signal(ctx, "TERM"); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	_ = stdio.InW.Close()
+	if _, err := ec.WaitExit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ec.Close()
+
+	seen := map[string]bool{}
+	got := reqLines(f)
+	if len(got) < 6 {
+		t.Fatalf("only %d request lines recorded: %v", len(got), got)
+	}
+	for _, m := range got {
+		cl, ok := m["client"].(map[string]any)
+		if !ok {
+			t.Fatalf("op %v has no client object: %v", m["op"], m)
+		}
+		if cl["label"] != "wakil@rubin" {
+			t.Errorf("op %v label = %v", m["op"], cl["label"])
+		}
+		id, _ := cl["req_id"].(string)
+		if !strings.HasPrefix(id, "inst1-") || seen[id] {
+			t.Errorf("op %v req_id %q is not a fresh inst1-<n>", m["op"], id)
+		}
+		seen[id] = true
+		for k := range cl {
+			if k != "label" && k != "req_id" {
+				t.Errorf("op %v sends client key %q hisn refuses", m["op"], k)
+			}
+		}
+	}
+}
+
+// A label longer than MaxLabel is cut, never sent whole.
+func TestIdentityLabelIsBounded(t *testing.T) {
+	f := newFakeServer(t)
+	go f.serve(t)
+	c := New(f.sock).WithIdentity(strings.Repeat("h", 500), "i")
+	ctx, cancel := ctxT(t, 5*time.Second)
+	defer cancel()
+	if err := c.Grant(ctx, "/x", "ro"); err != nil {
+		t.Fatal(err)
+	}
+	cl := reqLines(f)[0]["client"].(map[string]any)
+	if n := len(cl["label"].(string)); n != MaxLabel {
+		t.Fatalf("label length %d, want %d", n, MaxLabel)
 	}
 }

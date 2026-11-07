@@ -460,15 +460,15 @@ func buildProfile(p policyParams, s Surface, homePersist string) ([]byte, error)
 
 // profileArgs is the `hisn run --detach` command line in profile mode. The
 // network comes from the profile's [policy], not from a CLI override.
-func profileArgs(id, profile, cwd string) []string {
+func profileArgs(id, name, profile, cwd string) []string {
 	return []string{"run", "--detach", "-v", "--session-id", id,
-		"--profile", profile, "--cwd", cwd, "--ready-fd", "3"}
+		"--profile", profile, "--cwd", cwd, "--ready-fd", "3", "--name", name}
 }
 
 // namedArgs is the command line for a named hisn profile: Wakil adds nothing
 // but initial grants.
-func namedArgs(id, name, cwd string, ro, rw []string) []string {
-	a := profileArgs(id, name, cwd)
+func namedArgs(id, sessName, profile, cwd string, ro, rw []string) []string {
+	a := profileArgs(id, sessName, profile, cwd)
 	for _, p := range ro {
 		a = append(a, "--grant", p+":ro")
 	}

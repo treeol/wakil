@@ -19,8 +19,9 @@ import (
 type record struct {
 	ID       string `json:"id"`
 	Pid      int    `json:"pid"`
-	PidStart string `json:"pid_start"` // /proc start time of Pid; "" if unknown
-	Token    string `json:"token"`     // random; becomes the session hostname
+	PidStart string `json:"pid_start"`      // /proc start time of Pid; "" if unknown
+	Token    string `json:"token"`          // random; becomes the session hostname
+	Name     string `json:"name,omitempty"` // hisn --name of the session (0.4.0)
 	Cwd      string `json:"cwd"`
 	Started  bool   `json:"started"`
 	// Mode is "named" for a session started from a hisn-named profile (no

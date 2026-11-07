@@ -170,7 +170,7 @@ func TestReadinessNeedsLsAnswerNotJustSocketFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = readyR.Close() // no "ready\n" will ever arrive: this supervisor has no socket
-	err = b.waitReady(ctxT(t), id, sup, readyR)
+	err = b.waitReady(ctxT(t), id, "", sup, readyR)
 	b.reapSupervisor(sup)
 	if err == nil {
 		t.Fatal("a stale socket file with no listener must not count as ready")
@@ -204,8 +204,8 @@ func TestStopEndsSupervisorAndCleansUp(t *testing.T) {
 	if !sup.hasExited() {
 		t.Fatal("Stop returned while the supervisor was still running")
 	}
-	if len(fe.sessionIDs()) != 0 || len(b.listRecordIDs()) != 0 {
-		t.Fatalf("leftovers: sessions=%v records=%v", fe.sessionIDs(), b.listRecordIDs())
+	if len(fe.servedIDs()) != 0 || len(b.listRecordIDs()) != 0 {
+		t.Fatalf("leftovers: sessions=%v records=%v", fe.servedIDs(), b.listRecordIDs())
 	}
 	if err := b.Stop(ctxT(t)); err != nil { // idempotent
 		t.Fatalf("second Stop: %v", err)
@@ -233,8 +233,8 @@ func TestStopKillsStubbornSupervisorAndFreesTheID(t *testing.T) {
 	if !sup.hasExited() || !strings.Contains(sup.exitStatus(), "killed") {
 		t.Fatalf("supervisor not SIGKILLed: %s", sup.exitStatus())
 	}
-	if len(fe.sessionIDs()) != 0 {
-		t.Fatalf("SIGKILLed supervisor's directory not cleaned: %v", fe.sessionIDs())
+	if len(fe.servedIDs()) != 0 {
+		t.Fatalf("SIGKILLed supervisor's session still served: %v", fe.servedIDs())
 	}
 	fe.setMode("")
 	if err := b.Start(ctxT(t), sandbox.Session{ID: "stub", HostCwd: fe.cwd}); err != nil {
@@ -549,7 +549,7 @@ func TestStopWithCancelledContext(t *testing.T) {
 	if err := b.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !sup.hasExited() || len(fe.sessionIDs()) != 0 {
+	if !sup.hasExited() || len(fe.servedIDs()) != 0 {
 		t.Fatal("Stop with a cancelled ctx did not end the session")
 	}
 }
@@ -587,8 +587,9 @@ func readLog(t *testing.T, b *Backend, id string) string {
 	return string(data)
 }
 
-// `stale` is not ready, ever: the supervisor runs, the socket FILE exists, but
-// nothing accepts, so `hisn ls` says stale and Start must fail with the log path.
+// A dead directory is not ready, ever: the supervisor runs, the socket FILE
+// exists, but nothing accepts, so `hisn ls` says crashed (v2; v1 said stale)
+// and Start must fail with the log path.
 func TestReadinessRejectsStale(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, _ := Open(ctxT(t), fe.options())
@@ -597,9 +598,9 @@ func TestReadinessRejectsStale(t *testing.T) {
 	fe.setMode("stale")
 	err := b.Start(ctxT(t), sandbox.Session{ID: "stl", HostCwd: fe.cwd})
 	if err == nil {
-		t.Fatal("a session that `hisn ls` reports stale must NOT be ready")
+		t.Fatal("a session that `hisn ls` reports crashed must NOT be ready")
 	}
-	for _, w := range []string{"not ready after", "hisn ls reports the session stale", "stl.supervisor.log", "init pid"} {
+	for _, w := range []string{"not ready after", "hisn ls reports the session crashed", "stl.supervisor.log", "init pid"} {
 		if !strings.Contains(err.Error(), w) {
 			t.Errorf("error lacks %q:\n%v", w, err)
 		}
@@ -965,8 +966,8 @@ func TestStopIgnoresRefusedAndRemovesDir(t *testing.T) {
 	if err := b.Stop(ctxT(t)); err != nil {
 		t.Fatalf("Stop must tolerate a refusing socket: %v", err)
 	}
-	if len(fe.sessionIDs()) != 0 || len(b.listRecordIDs()) != 0 {
-		t.Fatalf("leftovers: %v %v", fe.sessionIDs(), b.listRecordIDs())
+	if len(fe.servedIDs()) != 0 || len(b.listRecordIDs()) != 0 {
+		t.Fatalf("leftovers: %v %v", fe.servedIDs(), b.listRecordIDs())
 	}
 }
 

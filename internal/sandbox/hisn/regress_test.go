@@ -109,7 +109,7 @@ func TestFailedStartCleanupIsTrackedAndRetried(t *testing.T) {
 	if err := b.Close(ctxT(t)); err != nil {
 		t.Fatalf("Close must retry the stranded cleanup: %v", err)
 	}
-	if !sup.hasExited() || contains(fe.sessionIDs(), "half") || len(b.listRecordIDs()) != 0 {
+	if !sup.hasExited() || contains(fe.servedIDs(), "half") || len(b.listRecordIDs()) != 0 {
 		t.Fatal("stranded session not cleaned by Close")
 	}
 }
@@ -209,13 +209,13 @@ func TestOutputSplitsStdoutStderr(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, _ := Open(ctxT(t), fe.options())
 	defer b.Close(context.Background())
-	// The fake --version prints "hisn 0.3.3\n" to stdout and nothing to stderr.
+	// The fake --version prints "hisn 0.4.0\n" to stdout and nothing to stderr.
 	// A clean stdout is what listSessions and verifyInstance parse.
 	out, err := b.output(ctxT(t), false, "--version")
 	if err != nil {
 		t.Fatalf("output: %v: %s", err, out)
 	}
-	if strings.TrimSpace(out) != "hisn 0.3.3" {
+	if strings.TrimSpace(out) != "hisn 0.4.0" {
 		t.Fatalf("stdout = %q, want clean version line (no stderr noise)", out)
 	}
 }

@@ -9,8 +9,9 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// The minimum-version check refuses hisn 0.3.2 and names 0.3.3: the src:dst
-// known_hosts mount needs 0.3.3 and there is no same-path fallback.
+// The minimum-version check refuses hisn 0.3.2 and names the minimum (0.4.0;
+// the src:dst known_hosts mount it needs arrived in 0.3.3, and there is no
+// same-path fallback).
 func TestPreflightRefusesHisn032NamingMinimum(t *testing.T) {
 	fe := newFakeEnv(t)
 	setVersion(t, fe, "0.3.2")
@@ -18,8 +19,8 @@ func TestPreflightRefusesHisn032NamingMinimum(t *testing.T) {
 	if err == nil {
 		t.Fatal("hisn 0.3.2 must be refused")
 	}
-	if !strings.Contains(err.Error(), "0.3.3") || !strings.Contains(err.Error(), "too old") {
-		t.Fatalf("refusal must say too old and name 0.3.3, got: %v", err)
+	if !strings.Contains(err.Error(), MinVersion) || !strings.Contains(err.Error(), "too old") {
+		t.Fatalf("refusal must say too old and name %s, got: %v", MinVersion, err)
 	}
 }
 

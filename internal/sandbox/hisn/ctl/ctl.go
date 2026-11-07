@@ -26,8 +26,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // ErrAmbiguousLaunch reports that the connection dropped before the exec was
@@ -65,10 +67,57 @@ func (e *Error) IsNotFound() bool { return e.Code == "E_NOT_FOUND" }
 // short-lived connection except exec, which holds one for the program's life.
 type Client struct {
 	sockPath string
+	// label and inst identify this client in hisn's per-client audit (hisn
+	// 0.4.0). An empty label sends no client object, which hisn answers with
+	// its own derived label.
+	label string
+	inst  string
+	seq   atomic.Uint64
 }
 
 // New builds a Client for the session's control socket path.
 func New(sockPath string) *Client { return &Client{sockPath: sockPath} }
+
+// MaxLabel is the longest client label sent, in bytes. hisn accepts longer
+// ones, but a label is a diagnostic aid, not a place for an unbounded hostname.
+const MaxLabel = 64
+
+// TruncateLabel cuts label to MaxLabel bytes on a rune boundary and replaces
+// invalid UTF-8, so the wire label is always valid and never longer than the
+// limit (a byte slice through a multibyte rune would become U+FFFD and grow).
+func TruncateLabel(label string) string {
+	label = strings.ToValidUTF8(label, "?")
+	if len(label) <= MaxLabel {
+		return label
+	}
+	cut := MaxLabel
+	for cut > 0 && !utf8.RuneStart(label[cut]) {
+		cut--
+	}
+	return label[:cut]
+}
+
+// WithIdentity makes every request carry {"client":{"label":label,
+// "req_id":"<inst>-<n>"}} (hisn >= 0.4.0 audits both). inst names this client
+// instance, so request ids stay unique across Wakil processes. An empty label
+// turns the client object off. It returns c.
+func (c *Client) WithIdentity(label, inst string) *Client {
+	c.label, c.inst = TruncateLabel(label), inst
+	return c
+}
+
+// clientField is the "client" object of the next request, or nil when no
+// identity is set. Each call yields a fresh req_id.
+func (c *Client) clientField() map[string]any {
+	if c.label == "" {
+		return nil
+	}
+	f := map[string]any{"label": c.label}
+	if c.inst != "" {
+		f["req_id"] = fmt.Sprintf("%s-%d", c.inst, c.seq.Add(1))
+	}
+	return f
+}
 
 // dialConn dials the control socket with ctx. ECONNREFUSED is ErrSessionDead
 // (the socket is there, nobody accepts: the supervisor is gone). ENOENT is
@@ -101,16 +150,19 @@ func (c *Client) call(ctx context.Context, op string, body map[string]any) error
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
-	if err := writeLine(conn, op, body); err != nil {
+	if err := writeLine(conn, op, body, c.clientField()); err != nil {
 		return err
 	}
 	return readResponse(conn, op, body == nil)
 }
 
-func writeLine(conn net.Conn, op string, body map[string]any) error {
+func writeLine(conn net.Conn, op string, body map[string]any, client map[string]any) error {
 	m := map[string]any{"op": op}
 	for k, v := range body {
 		m[k] = v
+	}
+	if client != nil {
+		m["client"] = client
 	}
 	line, err := json.Marshal(m)
 	if err != nil {
@@ -183,7 +235,7 @@ func (c *Client) Inspect(ctx context.Context) (mountinfo, policy string, err err
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
-	if err := writeLine(conn, "inspect", nil); err != nil {
+	if err := writeLine(conn, "inspect", nil, c.clientField()); err != nil {
 		return "", "", err
 	}
 	br := bufio.NewReaderSize(conn, maxLine+1)
@@ -279,10 +331,12 @@ func (s *Stdio) closeKept() {
 // the accepted exec_id, and the kept stdio ends. Signals open their OWN
 // short-lived connections (see Signal).
 type ExecConn struct {
-	conn  net.Conn
-	dial  func(ctx context.Context) (net.Conn, error) // the client's dialer, for signal connections
-	wmu   sync.Mutex                                  // serializes signal requests
-	stdio *Stdio
+	conn net.Conn
+	dial func(ctx context.Context) (net.Conn, error) // the client's dialer, for signal connections
+	// client yields the client object of a signal request (nil = none).
+	client func() map[string]any
+	wmu    sync.Mutex // serializes signal requests
+	stdio  *Stdio
 
 	execIDMu sync.RWMutex
 	execID   string
@@ -336,6 +390,9 @@ func (c *Client) StartExec(ctx context.Context, argv []string, cwd string, env m
 		return nil, nil, err
 	}
 	req := map[string]any{"op": "exec", "argv": argv, "tty": false}
+	if cf := c.clientField(); cf != nil {
+		req["client"] = cf
+	}
 	if cwd != "" {
 		req["cwd"] = cwd
 	}
@@ -373,7 +430,7 @@ func (c *Client) StartExec(ctx context.Context, argv []string, cwd string, env m
 	// Transfer succeeded: hisn owns the passed ends now. Close ours.
 	stdio.closePassed()
 
-	ec := &ExecConn{conn: conn, dial: c.dialConn, stdio: stdio, acceptDone: make(chan struct{}), exitDone: make(chan struct{})}
+	ec := &ExecConn{conn: conn, dial: c.dialConn, client: c.clientField, stdio: stdio, acceptDone: make(chan struct{}), exitDone: make(chan struct{})}
 	go ec.dispatch()
 
 	// Wait for the latched acceptance under ctx.
@@ -534,7 +591,13 @@ func (ec *ExecConn) Signal(ctx context.Context, signal string) error {
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
-	line, err := json.Marshal(map[string]any{"op": "signal", "exec_id": id, "signal": signal})
+	sreq := map[string]any{"op": "signal", "exec_id": id, "signal": signal}
+	if ec.client != nil {
+		if cf := ec.client(); cf != nil {
+			sreq["client"] = cf
+		}
+	}
+	line, err := json.Marshal(sreq)
 	if err != nil {
 		return err
 	}

@@ -65,7 +65,7 @@ func fakeMain(state string, args []string) int {
 	case "--version":
 		v, err := os.ReadFile(filepath.Join(state, "version"))
 		if err != nil {
-			v = []byte("0.3.3")
+			v = []byte("0.4.0")
 		}
 		fmt.Printf("hisn %s\n", strings.TrimSpace(string(v)))
 		return 0
@@ -87,6 +87,8 @@ func fakeMain(state string, args []string) int {
 		return fakeInspect(state, args[1:])
 	case "kill":
 		return fakeKill(state, args[1:])
+	case "stop":
+		return fakeStop(state, args[1:])
 	case "exec":
 		return fakeExec(state, args[1:])
 	case "grant", "revoke":
@@ -150,6 +152,7 @@ func fakeRun(state string, args []string) int {
 	modeB, _ := os.ReadFile(filepath.Join(state, "run_mode"))
 	mode, arg, _ := strings.Cut(strings.TrimSpace(string(modeB)), ":")
 	dir := filepath.Join(sessRoot(state), id)
+	name := flagVal(args, "--name")
 	if mode == "fail" {
 		fmt.Fprintln(os.Stderr, "hisn: injected failure: cannot create sandbox")
 		return 125
@@ -194,6 +197,19 @@ func fakeRun(state string, args []string) int {
 		}
 		_ = os.RemoveAll(dir)
 	}
+	// hisn 0.4.0: a name is unique per user and stays reserved by a stopped or
+	// crashed directory until `hisn ls --prune` removes it (measured against
+	// the real binary). A name equal to an existing id is refused too.
+	if name != "" {
+		if !validFakeName(name) {
+			fmt.Fprintf(os.Stderr, "hisn: invalid session name %q: use letters, digits, '.', '_' or '-' (no leading '.')\n", name)
+			return 125
+		}
+		if owner := fakeNameOwner(state, name); owner != "" {
+			fmt.Fprintf(os.Stderr, "hisn: name %q is already in use\n", name)
+			return 125
+		}
+	}
 	if err := os.Mkdir(dir, 0o700); err != nil { // fails only in a genuine race
 		fmt.Fprintln(os.Stderr, "hisn: session id in use")
 		return 125
@@ -205,6 +221,9 @@ func fakeRun(state string, args []string) int {
 	// uses it (carrying the instance hostname token) as proof of ownership.
 	_ = os.WriteFile(filepath.Join(dir, "policy.resolved.toml"), pol, 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "cwd"), []byte(flagVal(args, "--cwd")), 0o600)
+	if name != "" {
+		_ = os.WriteFile(filepath.Join(dir, "name"), []byte(name), 0o600)
+	}
 	_ = os.WriteFile(filepath.Join(dir, "sup.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	logf("session %s init pid %d", id, os.Getpid())
 	if mode == "nosock" { // dir but no socket, ever
@@ -220,7 +239,7 @@ func fakeRun(state string, args []string) int {
 		fmt.Fprintf(os.Stderr, "hisn: binding control socket: %v\n", err)
 		return 125
 	}
-	if mode == "stale" { // socket file exists, nobody accepts: `hisn ls` says "stale"
+	if mode == "stale" { // socket file exists, nobody accepts: `hisn ls` says "crashed"
 		ln.(*net.UnixListener).SetUnlinkOnClose(false)
 		_ = ln.Close()
 	}
@@ -253,7 +272,10 @@ func fakeRun(state string, args []string) int {
 		}
 		killRecordedPids(dir) // init dying takes the whole sandbox with it
 		_ = ln.Close()
-		_ = os.RemoveAll(dir) // an orderly supervisor removes its own directory
+		if exists(filepath.Join(dir, "stopped")) {
+			return 0 // `hisn stop`: the directory is kept, state stopped (0.4.0)
+		}
+		_ = os.RemoveAll(dir) // a TERM'd supervisor removes its own directory
 		return 0
 	}
 	return 0
@@ -290,21 +312,88 @@ func readyWrite(args []string) {
 	_ = syscall.Close(n)
 }
 
+// fakeResolve maps a session reference (a name or an id) to its directory id.
+// An exact id wins; a name resolves to the session that holds it (a stopped
+// directory no longer does, 0.4.0). "" = no such session.
+func fakeResolve(state, ref string) string {
+	if ref == "" {
+		return ""
+	}
+	if exists(filepath.Join(sessRoot(state), ref)) {
+		return ref
+	}
+	if id := fakeNameOwner(state, ref); id != "" {
+		return id
+	}
+	return ""
+}
+
+// fakeNameOwner returns the id of the session directory that holds name ("" if
+// none). Measured against hisn 0.4.0: running and CRASHED directories hold a
+// name (a crashed one until `hisn ls --prune`); a directory ended with `hisn
+// stop` releases it at once.
+func fakeNameOwner(state, name string) string {
+	ents, _ := os.ReadDir(sessRoot(state))
+	for _, e := range ents {
+		d := filepath.Join(sessRoot(state), e.Name())
+		if fakeState(d) == "stopped" {
+			continue
+		}
+		if n, _ := os.ReadFile(filepath.Join(d, "name")); strings.TrimSpace(string(n)) == name {
+			return e.Name()
+		}
+	}
+	return ""
+}
+
+func validFakeName(n string) bool {
+	if n == "" || len(n) > 64 || n[0] == '.' {
+		return false
+	}
+	for _, r := range n {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// fakeState is the hisn-ls/v2 state of a session directory. A directory with a
+// supervisor pid file that nobody answers is "crashed", unless `hisn stop`
+// marked it. A foreign fixture (no pid file) is running.
+func fakeState(d string) string {
+	if v, err := os.ReadFile(filepath.Join(d, "state")); err == nil { // test hook: any v2 state word
+		return strings.TrimSpace(string(v))
+	}
+	if exists(filepath.Join(d, "stopped")) {
+		return "stopped"
+	}
+	if exists(filepath.Join(d, "sup.pid")) && !dialable(d) {
+		return "crashed"
+	}
+	return "running"
+}
+
 func fakeLs(state string, args []string) int {
-	if id := flagVal(args, "--session"); id != "" {
-		if !dialable(filepath.Join(sessRoot(state), id)) {
-			fmt.Fprintf(os.Stderr, "hisn: no such session %s\n", id)
+	if raw, err := os.ReadFile(filepath.Join(state, "ls_raw")); err == nil && hasFlag(args, "--json") { // test hook: verbatim document
+		fmt.Println(strings.TrimSpace(string(raw)))
+		return 0
+	}
+	if ref := flagVal(args, "--session"); ref != "" {
+		id := fakeResolve(state, ref)
+		if id == "" || !dialable(filepath.Join(sessRoot(state), id)) {
+			fmt.Fprintf(os.Stderr, "hisn: no such session %s\n", ref)
 			return 125
 		}
 		fmt.Println(`{"ok":true,"grants":[]}`)
 		return 0
 	}
-	if hasFlag(args, "--prune") { // 0.2.1: remove stale dirs (socket refused AND supervisor gone)
+	if hasFlag(args, "--prune") { // remove dead dirs (stopped/crashed: socket refused AND supervisor gone)
 		ents, _ := os.ReadDir(sessRoot(state))
 		for _, e := range ents {
 			d := filepath.Join(sessRoot(state), e.Name())
 			if exists(filepath.Join(d, "sup.pid")) && !dialable(d) {
-				fmt.Fprintf(os.Stderr, "hisn: pruned stale session %s\n", e.Name())
+				fmt.Fprintf(os.Stderr, "hisn: %s stale; archived and removed\n", e.Name())
 				_ = os.RemoveAll(d)
 			}
 		}
@@ -314,22 +403,28 @@ func fakeLs(state string, args []string) int {
 	sessions := []map[string]any{}
 	for _, e := range ents {
 		d := filepath.Join(sessRoot(state), e.Name())
-		// A session without a supervisor pid file is a foreign fixture: live.
-		live := true
-		if exists(filepath.Join(d, "sup.pid")) {
-			live = dialable(d)
-		}
-		st := "stale"
-		if live {
-			st = "live"
-		}
 		cwd := ""
 		if b, err := os.ReadFile(filepath.Join(d, "cwd")); err == nil {
 			cwd = string(b)
 		}
-		sessions = append(sessions, map[string]any{"id": e.Name(), "state": st, "cwd": cwd, "execs": []any{}})
+		name := ""
+		if b, err := os.ReadFile(filepath.Join(d, "name")); err == nil {
+			name = strings.TrimSpace(string(b))
+		}
+		row := map[string]any{"id": e.Name(), "name": name, "state": fakeState(d), "cwd": cwd, "dir": d, "execs": []any{}}
+		if exists(filepath.Join(state, "ls_v1")) { // pre-0.4.0 shape, for the v1 tests
+			row = map[string]any{"id": e.Name(), "state": map[bool]string{true: "live", false: "stale"}[fakeState(d) == "running"], "cwd": cwd, "execs": []any{}}
+		}
+		sessions = append(sessions, row)
 	}
-	b, _ := json.Marshal(map[string]any{"schema": "hisn-ls/v1", "sessions": sessions})
+	schema := "hisn-ls/v2"
+	if exists(filepath.Join(state, "ls_v1")) {
+		schema = "hisn-ls/v1"
+	}
+	if v, err := os.ReadFile(filepath.Join(state, "ls_schema")); err == nil { // test hook: any schema string
+		schema = strings.TrimSpace(string(v))
+	}
+	b, _ := json.Marshal(map[string]any{"schema": schema, "sessions": sessions})
 	fmt.Println(string(b))
 	return 0
 }
@@ -339,13 +434,14 @@ func fakeInspect(state string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: inspect failed")
 		return 125
 	}
-	pol, err := os.ReadFile(filepath.Join(sessRoot(state), flagVal(args, "--session"), "policy"))
+	sid := fakeResolve(state, flagVal(args, "--session"))
+	pol, err := os.ReadFile(filepath.Join(sessRoot(state), sid, "policy"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")
 		return 125
 	}
 	var risks []fakeRisk
-	if rj, err := os.ReadFile(filepath.Join(sessRoot(state), flagVal(args, "--session"), "risk.json")); err == nil {
+	if rj, err := os.ReadFile(filepath.Join(sessRoot(state), sid, "risk.json")); err == nil {
 		_ = json.Unmarshal(rj, &risks)
 	}
 	b, _ := json.Marshal(map[string]any{"ok": true, "mountinfo": "", "policy": string(pol),
@@ -354,7 +450,36 @@ func fakeInspect(state string, args []string) int {
 	return 0
 }
 
+// fakeStop is `hisn stop`: mark the directory stopped, end the supervisor, keep
+// the directory and its name (0.4.0). A session whose supervisor is already
+// dead is reported stopped too (measured).
+func fakeStop(state string, args []string) int {
+	id := fakeResolve(state, flagVal(args, "--session"))
+	dir := filepath.Join(sessRoot(state), id)
+	if id == "" || !exists(dir) {
+		fmt.Fprintf(os.Stderr, "hisn: no such session %s\n", flagVal(args, "--session"))
+		return 125
+	}
+	if exists(filepath.Join(state, "stop_fail")) {
+		fmt.Fprintln(os.Stderr, "hisn: stop failed")
+		return 125
+	}
+	_ = os.WriteFile(filepath.Join(dir, "stopped"), nil, 0o600)
+	if b, err := os.ReadFile(filepath.Join(dir, "sup.pid")); err == nil {
+		if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+		}
+	} else {
+		killRecordedPids(dir)
+	}
+	fmt.Printf("session %s stopped\n", flagVal(args, "--session"))
+	return 0
+}
+
 func fakeKill(state string, args []string) int {
+	if id := fakeResolve(state, flagVal(args, "--session")); id != "" {
+		args = append(append([]string(nil), args...), "--session", id)
+	}
 	dir := filepath.Join(sessRoot(state), flagVal(args, "--session"))
 	// 0.2.1: kill on a STALE session (socket refused) removes the dir and
 	// exits 0 — even under kill_fail (a live-session kill failure injection).
@@ -392,7 +517,7 @@ func fakeKill(state string, args []string) int {
 }
 
 func fakeGrant(state, op string, args []string) int {
-	id := flagVal(args, "--session")
+	id := fakeResolve(state, flagVal(args, "--session"))
 	dir := filepath.Join(sessRoot(state), id)
 	if !exists(dir) {
 		fmt.Fprintln(os.Stderr, "hisn: no such session")
@@ -432,7 +557,7 @@ func fakeGrant(state, op string, args []string) int {
 }
 
 func fakeExec(state string, args []string) int {
-	id := flagVal(args, "--session")
+	id := fakeResolve(state, flagVal(args, "--session"))
 	dir := filepath.Join(sessRoot(state), id)
 	if !exists(dir) {
 		fmt.Fprintln(os.Stderr, "hisn: exec: E_NOT_FOUND: no such session")
@@ -446,7 +571,7 @@ func fakeExec(state string, args []string) int {
 	cwd := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--session":
+		case "--session", "--client":
 			i++
 		case "--cwd":
 			i++
@@ -567,6 +692,30 @@ func (f *fakeEnv) setMode(m string) {
 	if err := os.WriteFile(filepath.Join(f.state, "run_mode"), []byte(m), 0o600); err != nil {
 		f.t.Fatal(err)
 	}
+}
+
+// servedIDs are the session directories that are not ended: everything except
+// the "stopped" ones `hisn stop` leaves behind (0.4.0 keeps them, audited,
+// until `hisn ls --prune`).
+func (f *fakeEnv) servedIDs() []string {
+	var ids []string
+	for _, id := range f.sessionIDs() {
+		if !exists(filepath.Join(f.rt(), id, "stopped")) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// stoppedIDs are the directories ended with `hisn stop`.
+func (f *fakeEnv) stoppedIDs() []string {
+	var ids []string
+	for _, id := range f.sessionIDs() {
+		if exists(filepath.Join(f.rt(), id, "stopped")) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func (f *fakeEnv) sessionIDs() []string {

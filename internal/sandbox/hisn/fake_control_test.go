@@ -22,9 +22,46 @@ import (
 )
 
 type fakeCtl struct {
+	dir   string // session directory (the clients.jsonl record lives here)
 	mu    sync.Mutex
 	next  int64                   // exec counter
 	execs map[string]*fakeExecRec // exec_id → exec (finished ones kept: signal → E_NOT_FOUND)
+}
+
+// fakeClientField is the "client" object of a request, as hisn 0.4.0 parses it
+// (deny_unknown_fields: `uid` or any other key is E_BAD_REQUEST).
+type fakeClientField struct {
+	Label  *string `json:"label"`
+	Source *string `json:"label_source"`
+	ReqID  *string `json:"req_id"`
+}
+
+// fakeClientErr validates a request's client object the way hisn does and
+// returns its E_BAD_REQUEST message, or "". It records each valid client
+// record in <dir>/clients.jsonl (op, label, req_id) for the tests.
+func fakeClientErr(dir, op string, raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	var cf fakeClientField
+	if err := dec.Decode(&cf); err != nil {
+		return "bad client object: " + err.Error()
+	}
+	rec := map[string]any{"op": op, "label": "", "req_id": ""}
+	if cf.Label != nil {
+		rec["label"] = *cf.Label
+	}
+	if cf.ReqID != nil {
+		rec["req_id"] = *cf.ReqID
+	}
+	if f, err := os.OpenFile(filepath.Join(dir, "clients.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		b, _ := json.Marshal(rec)
+		_, _ = f.Write(append(b, '\n'))
+		_ = f.Close()
+	}
+	return ""
 }
 
 type fakeExecRec struct {
@@ -33,7 +70,7 @@ type fakeExecRec struct {
 }
 
 func fakeCtlServe(ln net.Listener, dir string) {
-	c := &fakeCtl{execs: map[string]*fakeExecRec{}}
+	c := &fakeCtl{execs: map[string]*fakeExecRec{}, dir: dir}
 	go func() {
 		if exists(filepath.Join(dir, "refuse")) { // test hook: stop accepting (dial still works on a stream socket until the listener closes, so close it outright)
 			_ = ln.Close()
@@ -75,10 +112,15 @@ func (c *fakeCtl) serve(conn net.Conn) {
 			ExecID string            `json:"exec_id"`
 			Path   string            `json:"path"`
 			Mode   string            `json:"mode"`
+			Client json.RawMessage   `json:"client"`
 			Row    json.RawMessage   `json:"-"`
 		}
 		if err := json.Unmarshal(line, &req); err != nil {
 			writeLine(uc, map[string]any{"ok": false, "error": "E_BAD_REQUEST", "message": "malformed line"})
+			return
+		}
+		if msg := fakeClientErr(c.dir, req.Op, req.Client); msg != "" {
+			writeLine(uc, map[string]any{"ok": false, "error": "E_BAD_REQUEST", "message": msg})
 			return
 		}
 		switch req.Op {
@@ -115,6 +157,7 @@ func (c *fakeCtl) serveExec(uc *net.UnixConn, req struct {
 	ExecID string            `json:"exec_id"`
 	Path   string            `json:"path"`
 	Mode   string            `json:"mode"`
+	Client json.RawMessage   `json:"client"`
 	Row    json.RawMessage   `json:"-"`
 }, fds []int) {
 	if len(fds) != 3 || len(req.Argv) == 0 {

@@ -20,8 +20,18 @@ import (
 //
 // Set WAKIL_HISN_BIN to test a specific binary.
 
+// minVersionTriple is MinVersion parsed; it panics on a malformed constant.
+func minVersionTriple() [3]int {
+	s := MinVersion
+	v, err := ParseVersion(s)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 // realProfileBackend opens a Backend (full Open: preflight + plan) over a real
-// hisn >= 0.3.1 with surface s.
+// hisn >= MinVersion with surface s.
 func realProfileBackend(t *testing.T, mut func(*Options)) (*Backend, string, error) {
 	t.Helper()
 	bin := os.Getenv("WAKIL_HISN_BIN")
@@ -36,8 +46,8 @@ func realProfileBackend(t *testing.T, mut func(*Options)) (*Backend, string, err
 	if err != nil {
 		t.Skipf("hisn unusable: %v", err)
 	}
-	if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 1}) {
-		t.Skipf("hisn >= 0.3.1 required (got %q)", strings.TrimSpace(string(out)))
+	if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, minVersionTriple()) {
+		t.Skipf("hisn >= %s required (got %q)", MinVersion, strings.TrimSpace(string(out)))
 	}
 	if err := osexec.Command(bin, "check").Run(); err != nil {
 		t.Skipf("hisn check fails on this host: %v", err)

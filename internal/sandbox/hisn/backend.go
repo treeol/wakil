@@ -16,11 +16,12 @@ import (
 	"github.com/treeol/wakil/internal/sandbox/hisn/ctl"
 )
 
-// MinVersion is the oldest supported hisn release: 0.3.3 (profiles, services,
-// risk labels, [home]/[rootfs]/[ssh], and read-only "src:dst" mounts for the
-// known_hosts file). Older hisn is refused at startup with a message naming
-// this version; there is no fallback to the same-path form.
-const MinVersion = "0.3.3"
+// MinVersion is the oldest supported hisn release: 0.4.0 (named sessions,
+// hisn-ls/v2 states running/stopped/crashed, the client record on control
+// requests, `hisn stop`; on top of 0.3.3's profiles, services, risk labels,
+// [home]/[rootfs]/[ssh] and "src:dst" known_hosts mounts). Older hisn is
+// refused at startup with a message naming this version; there is no fallback.
+const MinVersion = "0.4.0"
 
 // computedEnv names hisn always sets itself inside the sandbox; an exec may
 // not override them (hisn rejects the whole request if it tries).
@@ -50,8 +51,15 @@ type Options struct {
 	SigningKey string
 	// KnownHosts is the host known_hosts file, mounted read-only when the
 	// agent (ssh transport) is on. "" = none.
-	KnownHosts  string
-	HostCwd     string   // absolute, symlink-free workspace (required)
+	KnownHosts string
+	HostCwd    string // absolute, symlink-free workspace (required)
+	// ProjectKey is the project's store key (agent.StoreKey of the project
+	// directory). It names sessions "wakil-<ProjectKey>-<chat id>". Empty =
+	// derived from HostCwd.
+	ProjectKey string
+	// ClientLabel labels this Wakil in hisn's per-client audit. Empty =
+	// "wakil@<hostname>".
+	ClientLabel string
 	GrantableRW []string // prefixes allowed for rw grants
 	EnvPass     []string // names passed into the sandbox
 	Env         []string // base environment for hisn clients; nil = os.Environ()
@@ -93,6 +101,11 @@ type live struct {
 	// ctl is the session's control-socket client (lazily built).
 	ctlOnce sync.Once
 	ctlCli  *ctl.Client
+	// name is the session's hisn name; label and inst identify this Wakil
+	// instance on every control request (the "client" record, hisn 0.4.0).
+	name  string
+	label string
+	inst  string
 }
 
 // dead reports whether the session's supervisor has exited. A dead session can
@@ -132,7 +145,7 @@ func (l *live) noteRefused(out string) bool {
 // socket of THIS instance's session directory under hisn's runtime root.
 func (l *live) ctl() *ctl.Client {
 	l.ctlOnce.Do(func() {
-		l.ctlCli = ctl.New(ctl.SocketPath(l.runtimeRoot, l.id))
+		l.ctlCli = ctl.New(ctl.SocketPath(l.runtimeRoot, l.id)).WithIdentity(l.label, l.inst)
 	})
 	return l.ctlCli
 }

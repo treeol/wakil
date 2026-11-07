@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
+	"github.com/treeol/wakil/internal/sandbox/hisn/ctl"
 )
 
 func newToken() string {
@@ -69,6 +71,119 @@ type lsLease struct {
 // created is not ready, one that is stopping or stopped will not take execs.
 func (e lsEntry) Live() bool { return e.State == "live" || e.State == "running" }
 
+// rawState is the state word hisn reported ("stale" when it reported none).
+func (e lsEntry) rawState() string {
+	if e.State == "" {
+		return "stale"
+	}
+	return e.State
+}
+
+// clientsNote names the clients attached to a live session (hisn >= 0.4.1
+// lists them; 0.4.0 does not, then the note is empty).
+func clientsNote(e lsEntry) string {
+	var labels []string
+	for _, c := range e.Clients {
+		if c.Label != "" {
+			labels = append(labels, c.Label)
+		}
+	}
+	if len(labels) == 0 {
+		return ""
+	}
+	return " (clients: " + strings.Join(labels, ", ") + ")"
+}
+
+// Ended reports a session that is provably over: its directory is kept but
+// nothing serves it — "stopped" (`hisn stop`), "crashed" (the supervisor died),
+// or v1's "stale". "creating" and "stopping" are TRANSITIONAL, not ended: such a
+// session may still come up or still hold its processes, and is never treated
+// as dead.
+func (e lsEntry) Ended() bool {
+	return e.State == "stopped" || e.State == "crashed" || e.State == "stale"
+}
+
+// heldDesc names how a session that is not ours holds an id or a name: "LIVE"
+// for a served one, else hisn's own state word (creating, stopping).
+func (e lsEntry) heldDesc() string {
+	if e.Live() {
+		return "LIVE"
+	}
+	return e.rawState()
+}
+
+// transitional reports a session that is being created or stopped.
+func (e lsEntry) transitional() bool { return e.State == "creating" || e.State == "stopping" }
+
+// Stopped reports a session that was ended in order (`hisn stop`): its
+// directory is kept until `hisn ls --prune` archives it.
+func (e lsEntry) Stopped() bool { return e.State == "stopped" }
+
+// maxSessionName is the longest name Wakil gives a session. hisn 0.4.0
+// accepts 64 characters and refuses 80 (letters, digits, '.', '_', '-').
+const maxSessionName = 64
+
+// sessionName is "wakil-<project key>-<chat id>", the hisn name of the chat's
+// session. Characters hisn refuses become '-'; a name that would exceed
+// maxSessionName keeps its prefix and ends in a hash of the whole name, so it
+// stays deterministic and unique.
+func sessionName(projectKey, chatID string) string {
+	clean := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+				return r
+			}
+			return '-'
+		}, s)
+	}
+	name := "wakil-" + clean(projectKey) + "-" + clean(chatID)
+	if len(name) <= maxSessionName {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return name[:maxSessionName-9] + "-" + hex.EncodeToString(sum[:4])
+}
+
+// sessionName is the hisn name of chat id's session under this backend.
+func (b *Backend) sessionName(id string) string {
+	key := b.opts.ProjectKey
+	if key == "" {
+		sum := sha256.Sum256([]byte(b.opts.HostCwd))
+		key = hex.EncodeToString(sum[:8])
+	}
+	return sessionName(key, id)
+}
+
+// clientLabel is how this Wakil appears in hisn's per-client audit.
+func (b *Backend) clientLabel() string {
+	if b.opts.ClientLabel != "" {
+		return ctl.TruncateLabel(b.opts.ClientLabel)
+	}
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		h = "unknown"
+	}
+	return ctl.TruncateLabel("wakil@" + h)
+}
+
+// lsSchemas are the `hisn ls --json` schemas this Wakil can read. An unknown
+// OR MISSING schema is an error, not a guess: a silent misparse of the state
+// field made every start time out against hisn 0.4.0 before v2 was understood,
+// and an empty document would otherwise read as "every session vanished".
+var lsSchemas = map[string]bool{"hisn-ls/v1": true, "hisn-ls/v2": true}
+
+// byName returns the sessions carrying name.
+func byName(m map[string]lsEntry, name string) []lsEntry {
+	var out []lsEntry
+	for _, e := range m {
+		if e.Name == name {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // listSessions parses `hisn ls --json` (schemas hisn-ls/v1 and hisn-ls/v2).
 func (b *Backend) listSessions(ctx context.Context) (map[string]lsEntry, error) {
 	out, err := b.output(ctx, false, "ls", "--json")
@@ -81,6 +196,9 @@ func (b *Backend) listSessions(ctx context.Context) (map[string]lsEntry, error) 
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rows); err != nil {
 		return nil, fmt.Errorf("hisn ls: unexpected output %q: %w", strings.TrimSpace(out), err)
+	}
+	if !lsSchemas[rows.Schema] {
+		return nil, fmt.Errorf("hisn ls: unsupported schema %q (this Wakil reads hisn-ls/v1 and hisn-ls/v2)", rows.Schema)
 	}
 	m := make(map[string]lsEntry, len(rows.Sessions))
 	for _, r := range rows.Sessions {
@@ -118,13 +236,15 @@ func (b *Backend) verifyInstance(ctx context.Context, id, token string) (verifie
 	return false, nil
 }
 
-// waitGone polls `hisn ls` until id disappears or the deadline passes.
-func (b *Backend) waitGone(ctx context.Context, id string, d time.Duration) bool {
+// waitEnded polls `hisn ls` until id is provably over — gone (0.3) or
+// stopped/crashed (0.4: the directory stays) — or the deadline passes. A
+// session that is still "stopping" or "creating" is NOT over.
+func (b *Backend) waitEnded(ctx context.Context, id string, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for {
 		m, err := b.listSessions(ctx)
 		if err == nil {
-			if _, ok := m[id]; !ok {
+			if e, ok := m[id]; !ok || e.Ended() {
 				return true
 			}
 		}
@@ -135,17 +255,22 @@ func (b *Backend) waitGone(ctx context.Context, id string, d time.Duration) bool
 	}
 }
 
-// killSession ends session id: TERM, then KILL, waiting for it to vanish. The
-// instance is re-verified immediately before EACH signal, so an id that was
-// reused by a foreign session between steps is never signalled. hisn offers no
-// instance-bound kill, so a residual window of a single CLI round trip remains
-// (a foreign session would need to reuse a UUID-sized id in that window).
+// killSession ends session id: `hisn stop` (audited, directory kept), then a
+// KILL signal if it is still served. The instance is re-verified immediately
+// before EACH step, so an id that was reused by a foreign session between
+// steps is never touched. hisn offers no instance-bound stop, so a residual
+// window of a single CLI round trip remains: another session would have to take
+// the same id inside it. The id is the chat id, which Wakil chooses, so the
+// instance token (re-verified before each step) is the protection, not the size
+// of the id space. It works on the ID, never the name: the id is what the owner
+// record and the instance token were verified for.
 func (b *Backend) killSession(ctx context.Context, id, token string) error {
-	for _, sig := range []string{"TERM", "KILL"} {
+	steps := [][]string{{"stop", "--session", id}, {"kill", "--session", id, "--signal", "KILL"}}
+	for _, step := range steps {
 		ok, err := b.verifyInstance(ctx, id, token)
 		if err != nil {
 			// inspect fails once the session is gone; that is success.
-			if b.waitGone(ctx, id, time.Second) {
+			if b.waitEnded(ctx, id, time.Second) {
 				return nil
 			}
 			return err
@@ -153,12 +278,23 @@ func (b *Backend) killSession(ctx context.Context, id, token string) error {
 		if !ok {
 			return fmt.Errorf("hisn session %s is no longer the instance Wakil created; not signalling it", id)
 		}
-		_, _ = b.output(ctx, false, "kill", "--session", id, "--signal", sig)
-		if b.waitGone(ctx, id, 5*time.Second) {
+		_, _ = b.output(ctx, false, step...)
+		if b.waitEnded(ctx, id, 5*time.Second) {
 			return nil
 		}
 	}
 	return fmt.Errorf("hisn session %s did not terminate", id)
+}
+
+// prune runs `hisn ls --prune`: hisn itself archives and removes every
+// provably dead session directory (stopped or crashed: socket refused AND
+// supervisor gone, checked twice) and repairs its name index. No live session
+// is touched. Best effort and bounded: a failure only leaves a directory for
+// the next prune.
+func (b *Backend) prune(ctx context.Context) {
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	_, _ = b.output(pctx, false, "ls", "--prune")
 }
 
 // startLocked creates the session. Caller holds the state lock.
@@ -177,23 +313,47 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 	if err != nil {
 		return nil, err
 	}
+	name := b.sessionName(s.ID)
+	// A name is unique per user. A session that Wakil did not create (no owner
+	// record, checked above) and that is live OR being created/stopped holds
+	// it: refuse and say who is in it. A crashed leftover also holds the name
+	// but is pruned below; a stopped one has released it.
+	for _, e := range byName(sessions, name) {
+		if e.ID != s.ID && (e.Live() || e.transitional()) {
+			return nil, fmt.Errorf("%w: hisn session name %q is held by the %s session %s%s", sandbox.ErrSessionInUse, name, e.heldDesc(), e.ID, clientsNote(e))
+		}
+	}
 	var notes []string
 	if ent, taken := sessions[s.ID]; taken {
-		if ent.Live() {
-			return nil, fmt.Errorf("%w: a LIVE hisn session %q already exists and was not created by this Wakil", sandbox.ErrSessionInUse, s.ID)
+		if ent.Live() || ent.transitional() {
+			return nil, fmt.Errorf("%w: a %s hisn session %q already exists and was not created by this Wakil%s", sandbox.ErrSessionInUse, ent.heldDesc(), s.ID, clientsNote(ent))
 		}
-		// `stale` (0.2.1): the directory is there but provably dead (hisn's
-		// own staleness check: socket refused AND supervisor pid gone or
-		// starttime-mismatched). `hisn run --session-id` replaces it itself;
-		// Wakil only says so in one line. No live Wakil owns this chat
-		// (checked above, under the state lock), so a dead leftover of this
-		// very chat id is replaced, never an obstacle.
+		// The directory is there and provably over (hisn's own check: socket
+		// refused AND supervisor pid gone or starttime-mismatched): "stopped"
+		// (`hisn stop`, kept for the audit) or "crashed" (v1: "stale"). `hisn
+		// run --session-id` replaces it itself; Wakil only says so in one
+		// line. No live Wakil owns this chat (checked above, under the state
+		// lock), so a dead leftover of this very chat id is replaced, never an
+		// obstacle.
 		note := fmt.Sprintf("replacing stale session directory for %s (hisn %s removes it: nothing answered on its control socket)", s.ID, b.opts.Binary)
 		fmt.Fprintf(errWriter, "hisn: %s\n", note)
 		notes = append(notes, note)
 	}
+	// A CRASHED leftover (hisn 0.4.0) keeps its name reserved until pruned, so
+	// `hisn run --name` would refuse. `hisn ls --prune` archives it and frees
+	// the name; it removes provably dead directories only (every dead
+	// directory of this user, as it always has — see ADR 0012).
+	needPrune := false
+	for _, e := range sessions {
+		if (e.ID == s.ID || e.Name == name) && e.Ended() && !e.Stopped() {
+			needPrune = true
+		}
+	}
+	if needPrune {
+		b.prune(ctx)
+	}
 
-	rec := record{ID: s.ID, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), Token: newToken(), Cwd: s.HostCwd}
+	rec := record{ID: s.ID, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), Token: newToken(), Name: name, Cwd: s.HostCwd}
 	if err := b.createRecord(rec); err != nil {
 		if errors.Is(err, errSessionInUse) {
 			return nil, fmt.Errorf("%w: %w", sandbox.ErrSessionInUse, err)
@@ -232,7 +392,8 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 
 func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 	lctx, cancel := context.WithCancel(context.Background())
-	l := &live{id: rec.ID, token: rec.Token, runtimeRoot: b.primaryRuntimeRoot(), ctx: lctx, cancel: cancel, sup: sup}
+	l := &live{id: rec.ID, token: rec.Token, runtimeRoot: b.primaryRuntimeRoot(), ctx: lctx, cancel: cancel, sup: sup,
+		name: rec.Name, label: b.clientLabel(), inst: b.inst + "." + rec.Token[:6]}
 	// When the supervisor dies the session is over: end every in-flight hisn
 	// client bound to it (they would otherwise be talking to a dead socket).
 	go func() {
@@ -248,9 +409,9 @@ func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 // "ready\n" to fd 3 once the session is live — the write end of the readiness
 // pipe, passed as the child's fd 3 via ExtraFiles. Nothing weaker than that line
 // plus a `live` confirm passes.
-func supervisorArgs(id, policy, cwd string) []string {
+func supervisorArgs(id, name, policy, cwd string) []string {
 	return []string{"run", "--detach", "-v", "--session-id", id,
-		"--policy", policy, "--cwd", cwd, "--network", "host", "--ready-fd", "3"}
+		"--policy", policy, "--cwd", cwd, "--network", "host", "--ready-fd", "3", "--name", name}
 }
 
 // launch is everything needed to start one session: the supervisor command
@@ -284,7 +445,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 		if err := os.MkdirAll(b.procCwd(), 0o700); err != nil {
 			return launch{}, fmt.Errorf("hisn supervisor cwd: %w", err)
 		}
-		return launch{args: namedArgs(rec.ID, s.Profile, rec.Cwd, s.MountsRO, s.MountsRW), dir: b.procCwd(), mode: "named"}, nil
+		return launch{args: namedArgs(rec.ID, rec.Name, s.Profile, rec.Cwd, s.MountsRO, s.MountsRW), dir: b.procCwd(), mode: "named"}, nil
 	}
 	s, err := b.withGitConfig(s)
 	if err != nil {
@@ -307,7 +468,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 		if out, err := b.output(vctx, false, "policy", "validate", path); err != nil {
 			return launch{}, fmt.Errorf("hisn policy validate failed: %w: %s", err, strings.TrimSpace(out))
 		}
-		return launch{args: supervisorArgs(rec.ID, path, rec.Cwd), mode: "policy"}, nil
+		return launch{args: supervisorArgs(rec.ID, rec.Name, path, rec.Cwd), mode: "policy"}, nil
 	}
 	if b.kvrSocket != "" && b.opts.Surface.Profile == "" {
 		// The socket directory must be a plain directory Wakil owns and no
@@ -342,7 +503,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 	if out, err := b.output(vctx, false, "profile", "validate", b.profilePath(rec.ID)); err != nil {
 		return launch{}, rootfsError(validateError(err, out), s.Rootfs)
 	}
-	return launch{args: profileArgs(rec.ID, b.profilePath(rec.ID), rec.Cwd), dir: b.procCwd(), mode: "profile", persist: homeP}, nil
+	return launch{args: profileArgs(rec.ID, rec.Name, b.profilePath(rec.ID), rec.Cwd), dir: b.procCwd(), mode: "profile", persist: homeP}, nil
 }
 
 // validateError turns `hisn profile validate` output into an error; the risk
@@ -408,7 +569,7 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 	if b.afterSpawn != nil {
 		b.afterSpawn(sup)
 	}
-	if err := b.waitReady(ctx, rec.ID, sup, readyR); err != nil {
+	if err := b.waitReady(ctx, rec.ID, rec.Name, sup, readyR); err != nil {
 		b.reapSupervisor(sup)
 		return sup, b.withSupervisorStderr(err, sup)
 	}
@@ -463,9 +624,11 @@ func (b *Backend) runtimeRoots() []string {
 func (b *Backend) primaryRuntimeRoot() string { return b.runtimeRoots()[0] }
 
 // sessionState classifies id as hisn itself does: "live" (something answers on
-// the control socket), "stale" (the directory exists, nothing answers) or
-// "missing". `hisn ls --session ID` prints no state word (it lists grants), so
-// the state comes from `hisn ls --json`.
+// the control socket), "missing" (no directory), or the not-live state hisn
+// reports: "stopped" (ended with `hisn stop`, directory kept), "crashed",
+// "creating", "stopping" (hisn-ls/v2) or "stale" (v1: the directory exists,
+// nothing answers). `hisn ls --session ID` prints no state word (it lists
+// grants), so the state comes from `hisn ls --json`.
 func (b *Backend) sessionState(ctx context.Context, id string) (string, error) {
 	m, err := b.listSessions(ctx)
 	if err != nil {
@@ -478,19 +641,27 @@ func (b *Backend) sessionState(ctx context.Context, id string) (string, error) {
 	case ent.Live():
 		return "live", nil
 	}
-	return "stale", nil
+	return ent.rawState(), nil
 }
 
 // ready is one readiness probe: the session must be reported `live` by `hisn ls`
 // AND answer `hisn ls --session ID`. Anything else, including an error, is "not
 // ready" with the reason.
-func (b *Backend) ready(ctx context.Context, id string) (bool, string) {
-	state, err := b.sessionState(ctx, id)
+func (b *Backend) ready(ctx context.Context, id, name string) (bool, string) {
+	m, err := b.listSessions(ctx)
 	if err != nil {
 		return false, err.Error() // already prefixed "hisn ls: ..."
 	}
-	if state != "live" {
-		return false, fmt.Sprintf("hisn ls reports the session %s", state)
+	ent, ok := m[id]
+	switch {
+	case !ok:
+		return false, "hisn ls reports the session missing"
+	case !ent.Live():
+		return false, fmt.Sprintf("hisn ls reports the session %s", ent.rawState())
+	case name != "" && ent.Name != name:
+		// The name is how the session is found by other clients (attach, a
+		// second Wakil): it must point at THIS session.
+		return false, fmt.Sprintf("hisn ls reports the session as %q, want %q", ent.Name, name)
 	}
 	if out, err := b.output(ctx, false, "ls", "--session", id); err != nil {
 		return false, fmt.Sprintf("hisn ls --session: %v: %s", err, strings.TrimSpace(out))
@@ -505,7 +676,7 @@ func (b *Backend) ready(ctx context.Context, id string) (bool, string) {
 // interval later (confirm probe). There is no weaker path: a partial line
 // without "\n", `stale`, missing, an error, an exited supervisor or a timeout
 // is "not ready". The 0.2.0 polling loop is gone: the pipe read replaces it.
-func (b *Backend) waitReady(ctx context.Context, id string, sup *supervisorProc, readyR *os.File) error {
+func (b *Backend) waitReady(ctx context.Context, id, name string, sup *supervisorProc, readyR *os.File) error {
 	deadline := time.Now().Add(b.readyTimeout)
 	// readyLine reads the one "ready\n" line hisn writes to fd 3, with the
 	// remaining budget. An EOF (all writers gone: supervisor exited or never
@@ -550,7 +721,7 @@ func (b *Backend) waitReady(ctx context.Context, id string, sup *supervisorProc,
 		}
 		pctx, cancel := context.WithTimeout(ctx, min(remaining, 2*time.Second))
 		defer cancel()
-		ok, why := b.ready(pctx, id)
+		ok, why := b.ready(pctx, id, name)
 		if !ok && pctx.Err() != nil {
 			// The probe was cut short by the deadline: its failure says nothing
 			// about the session, so it must not replace the last real reason.
@@ -639,13 +810,12 @@ func (b *Backend) abortStartLocked(rec record, sup *supervisorProc) bool {
 	if !b.reapSupervisor(sup) {
 		return false
 	}
-	// 0.2.1: after the reap the dir is stale by construction (socket refused,
-	// supervisor gone); `hisn kill --session` removes it and exits 0 even on
-	// a dir that never became live. Best effort here: a leftover is caught by
-	// the next Start (hisn run replaces stale) or `ls --prune` at Reconcile.
-	kctx, cancel := context.WithTimeout(context.Background(), b.stopWait)
-	_, _ = b.output(kctx, false, "kill", "--session", rec.ID)
-	cancel()
+	// After the reap the dir is dead by construction (socket refused,
+	// supervisor gone): hisn 0.4.0 reports it crashed and keeps its name
+	// reserved. `hisn ls --prune` archives and removes it and frees the name.
+	// Best effort here: a leftover is also caught by the next Start and
+	// Reconcile, both of which prune.
+	b.prune(context.Background())
 	b.removeRecord(rec.ID)
 	return true
 }
@@ -664,8 +834,12 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 		// residual window is the CLI round trip after the exit check). The
 		// request has its OWN bound and survives a cancelled caller ctx; its
 		// outcome is irrelevant: the exit of the supervisor is what counts.
+		// `hisn stop` (0.4.0) ends the session in order: its execs are
+		// terminated, the directory is kept as "stopped" and the stop is
+		// audited. The supervisor exits on its own within milliseconds. Its
+		// outcome is irrelevant: the exit of OUR supervisor is what counts.
 		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
-		_, _ = b.output(kctx, false, "kill", "--session", l.id)
+		_, _ = b.output(kctx, false, "stop", "--session", l.id)
 		cancel()
 		if !l.sup.waitExit(b.stopWait) {
 			l.sup.kill()
@@ -685,26 +859,22 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 	default:
 		return fmt.Errorf("hisn stop: owner record for %s unreadable: %w", l.id, err)
 	}
-	// 0.2.1: the runtime directory is hisn's to clean. After OUR supervisor is
-	// reaped, a `live` socket on the id is a REPLACEMENT by a foreign session:
-	// leave it alone (the id is no longer ours). A `stale` dir is removed by
-	// `hisn kill --session id` itself (stale-kill: remove + exit 0). The
-	// residual window is the one CLI round trip killSession already documents.
-	if l.sup != nil && !l.sup.hasExited() {
-		// unreachable (reaped above), kept for clarity
-		_ = l.sup
-	}
+	// After OUR supervisor is reaped, a `live` socket on the id is a
+	// REPLACEMENT by a foreign session: leave it alone (the id is no longer
+	// ours). A "stopped" directory is the intended end state of `hisn stop`:
+	// it stays, audited, until `hisn ls --prune` archives it (next Start or
+	// Reconcile). Only a CRASHED directory (the supervisor died before it could
+	// record the stop) is pruned now, so its name is free for the next session;
+	// a "stopping" one is hisn's own transition and is left alone.
 	sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
 	state, serr := b.sessionState(sctx, l.id)
 	scancel()
 	if serr == nil {
 		switch state {
-		case "stale":
-			kctx, kcancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
-			_, _ = b.output(kctx, false, "kill", "--session", l.id)
-			kcancel()
 		case "live":
 			fmt.Fprintf(errWriter, "hisn: session %s answers on its socket after our supervisor exited; a foreign session, not touched\n", l.id)
+		case "crashed", "stale":
+			b.prune(ctx)
 		}
 	}
 	b.removeRecord(l.id)
@@ -720,9 +890,7 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 // owner record whose process is gone are touched; sessions without a record
 // (other tools, other users of hisn) are never killed.
 func (b *Backend) Reconcile(ctx context.Context) error {
-	pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
-	_, _ = b.output(pctx, false, "ls", "--prune")
-	pcancel()
+	b.prune(ctx)
 	return b.withLock(func() error {
 		var errs []error
 		for _, id := range b.listRecordIDs() {
@@ -766,8 +934,9 @@ func (b *Backend) reconcileOneLocked(ctx context.Context, r record) error {
 	if !present || !ent.Live() {
 		// Deliberately NOT removing a non-live directory here: unlike Stop, no
 		// supervisor of ours was reaped in this process, so it could belong to a
-		// foreign session that is still starting (no socket yet). A stale
-		// directory therefore blocks the id until removed (see Known limits).
+		// foreign session that is still starting (no socket yet). `hisn ls
+		// --prune` (Reconcile) removes directories hisn itself proves dead; a
+		// stopped one waits for it, and the next Start of the id replaces it.
 		b.removeRecord(r.ID)
 		return nil
 	}
@@ -806,10 +975,9 @@ func (b *Backend) reconcileNamedLocked(ctx context.Context, r record) error {
 			}
 		}
 	}
-	// The supervisor is gone: a stale directory is removed by hisn itself.
-	kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
-	_, _ = b.output(kctx, false, "kill", "--session", r.ID)
-	cancel()
+	// The supervisor is gone: its directory is dead, and `hisn ls --prune`
+	// archives and removes it (provably dead directories only).
+	b.prune(ctx)
 	b.removeRecord(r.ID)
 	return nil
 }

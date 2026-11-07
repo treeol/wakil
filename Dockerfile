@@ -167,13 +167,15 @@ COPY --from=golangci/golangci-lint:v2.11.1@sha256:906ae07afe01a069637a7e91e92c20
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
 RUN go install golang.org/x/tools/gopls@v0.22.0
 
-# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.3.3;
+# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.4.0;
 # the default backend of release builds when usable).
 # Installed into the wakil-dev image so the allow_userns acceptance test can
 # run `hisn check` for real instead of skipping. The binary is multi-arch
 # (amd64/arm64), downloaded from the GitHub release and SHA256-verified.
-# 0.3.3 (profiles, services, risk labels, [home]/[rootfs]/[ssh], src:dst
-# known_hosts mounts) is the minimum for hisn to be the default backend.
+# 0.4.0 (named sessions, hisn-ls/v2 states, the client record on control
+# requests, `hisn stop`; on top of 0.3.3's profiles, services, risk labels,
+# [home]/[rootfs]/[ssh], src:dst known_hosts mounts) is the minimum for hisn
+# to be the default backend.
 #
 # This file is the single place the sandbox image's hisn version lives
 # (CONTRIBUTING.md points here). Bump HISN_VERSION and both arch SHA256s
@@ -182,12 +184,12 @@ RUN go install golang.org/x/tools/gopls@v0.22.0
 ARG TARGETARCH
 RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
       amd64) HISN_ARCH=x86_64-linux-gnu; \
-             HISN_SHA256=b5370c45a3fc38c1c990197648c28c518af71723e46d17da47c756187e864c3e ;; \
+             HISN_SHA256=b2fe06ce98a0363f02248af295acc963e09d5806c0c61f4ede8bb5746d1d0fc9 ;; \
       arm64) HISN_ARCH=aarch64-linux-gnu; \
-             HISN_SHA256=5a56b69394c066a2f953e31a2bb801b42bf2259ead5e048513881069f8b421d3 ;; \
+             HISN_SHA256=a77216da116b60e04430459d69cb8aeb7ab7d8ee22758096b36095430c78269d ;; \
       *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && HISN_VERSION=0.3.3 \
+    && HISN_VERSION=0.4.0 \
     && curl -fsSL -o /tmp/hisn \
        "https://github.com/treeol/hisn/releases/download/v${HISN_VERSION}/hisn-${HISN_ARCH}" \
     && echo "${HISN_SHA256}  /tmp/hisn" | sha256sum -c - \

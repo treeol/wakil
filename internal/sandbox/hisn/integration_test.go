@@ -537,8 +537,16 @@ func TestIntegrationStopKillsSleeper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, still := sessions["wakil-it-kill"]; still {
-		t.Fatal("session survived Stop")
+	// hisn 0.4.0 keeps the directory of a stopped session (audited) until
+	// `hisn ls --prune`: ended means not live and state stopped.
+	if e, still := sessions["wakil-it-kill"]; still && (e.Live() || !e.Stopped()) {
+		t.Fatalf("session survived Stop: %+v", e)
+	}
+	b.prune(ictx(t))
+	if sessions, err = b.listSessions(ictx(t)); err != nil {
+		t.Fatal(err)
+	} else if _, still := sessions["wakil-it-kill"]; still {
+		t.Fatal("hisn ls --prune left the stopped session behind")
 	}
 	// Nothing named sleep 300 may remain on the host.
 	if o, _ := osexec.Command("pgrep", "-f", "sleep 300").Output(); strings.TrimSpace(string(o)) != "" {
@@ -580,8 +588,14 @@ func TestIntegrationOrphanReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, still := sessions["wakil-it-orphan"]; still {
-		t.Fatal("orphan session was not reaped")
+	if e, still := sessions["wakil-it-orphan"]; still && (e.Live() || !e.Stopped()) {
+		t.Fatalf("orphan session was not reaped: %+v", e)
+	}
+	b2.prune(ictx(t))
+	if sessions, err = b2.listSessions(ictx(t)); err != nil {
+		t.Fatal(err)
+	} else if _, still := sessions["wakil-it-orphan"]; still {
+		t.Fatal("hisn ls --prune left the stopped orphan behind")
 	}
 }
 
@@ -733,8 +747,10 @@ func TestIntegrationStaleDirReplaced(t *testing.T) {
 			break
 		}
 	}
-	if st != "stale" {
-		t.Skipf("hisn left no stale directory after SIGKILL (state %q); nothing to replace", st)
+	// hisn 0.4.0 reports a SIGKILLed supervisor's directory as "crashed"
+	// (0.3.x: "stale"); either way it is dead and replaceable.
+	if st != "crashed" && st != "stale" {
+		t.Skipf("hisn left no dead directory after SIGKILL (state %q); nothing to replace", st)
 	}
 	// A restarted Wakil knows nothing of the old process or its record.
 	b.mu.Lock()
@@ -890,5 +906,32 @@ func TestIntegrationCancelAfterAccept(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("session missing from hisn ls --json: %q", raw)
+	}
+}
+
+// Stop (hisn stop, directory kept as "stopped") followed by a Start of the SAME
+// chat id and name works against the real hisn: the stopped directory is
+// replaced, the name is free, and the session is addressable by id and by name.
+func TestIntegrationRestartAfterStop(t *testing.T) {
+	b, cwd := realBackend(t)
+	const id = "wakil-it-restart"
+	istart(t, b, id, cwd)
+	name := b.sessionName(id)
+	if m, err := b.listSessions(ictx(t)); err != nil || m[id].Name != name || !m[id].Live() {
+		t.Fatalf("listing after start: %+v err %v (want name %q live)", m[id], err, name)
+	}
+	if err := b.Stop(ictx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := b.listSessions(ictx(t)); !m[id].Stopped() {
+		t.Fatalf("state after Stop = %+v, want stopped", m[id])
+	}
+	istart(t, b, id, cwd)
+	if out, info := irun(t, b, "", "sh", "-c", "echo again"); info.Code != 0 || strings.TrimSpace(out) != "again" {
+		t.Fatalf("restarted session unusable: %q %+v", out, info)
+	}
+	// By name too, through the hisn CLI (what attach and a second client use).
+	if out, err := b.output(ictx(t), false, "ls", "--session", name); err != nil {
+		t.Fatalf("ls --session %s: %v: %s", name, err, out)
 	}
 }

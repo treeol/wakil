@@ -146,9 +146,14 @@ func (b *Backend) ExecCLI(ctx context.Context, spec sandbox.ExecSpec) (sandbox.E
 // ActiveSessionID implements sandbox.CLIExecer.
 func (b *Backend) ActiveSessionID() string { return b.ActiveID() }
 
-// execCLI runs one `hisn exec --session <id>` client process for spec.
+// execCLI runs one `hisn exec --session <id>` client process for spec. The
+// session is addressed by its ID — the identity the owner record and the
+// browser's argv ownership check are bound to; a name can be released and
+// reused, an id cannot — and the client labels itself, so hisn's audit shows
+// which Wakil ran the command. (grant, revoke and ls take no --client flag in
+// 0.4.0; hisn derives their label.)
 func (b *Backend) execCLI(ctx context.Context, l *live, release func(), spec sandbox.ExecSpec, cwd string, env map[string]string) (sandbox.ExecHandle, error) {
-	args := []string{"exec", "--session", l.id}
+	args := []string{"exec", "--session", l.id, "--client", l.label}
 	if cwd != "" {
 		args = append(args, "--cwd", cwd)
 	}
