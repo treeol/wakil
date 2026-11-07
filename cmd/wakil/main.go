@@ -13,7 +13,6 @@ import (
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/proxy"
-	"github.com/treeol/wakil/internal/remote"
 	"github.com/treeol/wakil/internal/tui"
 	"github.com/treeol/wakil/internal/wiring"
 
@@ -61,13 +60,6 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, cfg.StartupBanner())
 		os.Exit(RunHeadless(cfg, os.Args[2:]))
-	}
-
-	// "wakil daemon" subcommand: run the daemon server (card #149). Listens on
-	// a Unix socket, serves Connect RPCs, and optionally a web UI on TCP.
-	// Previously a separate `wakild` binary; merged into `wakil` for simplicity.
-	if len(os.Args) >= 2 && os.Args[1] == "daemon" {
-		os.Exit(runDaemon())
 	}
 
 	// "wakil plan gc" subcommand: list and optionally delete dead plan/current
@@ -135,7 +127,7 @@ func main() {
 	// risk ack is offered inline. y writes and approves exactly as
 	// `wakil sandbox trust`; N exits with the error. Any other run keeps the
 	// hard error from NewExecutor.
-	if !cfg.DaemonMode && wiring.IsInteractiveTUI() && cfg.ExecMode != "direct" &&
+	if wiring.IsInteractiveTUI() && cfg.ExecMode != "direct" &&
 		cfg.Sandbox.Backend == config.SandboxBackendHisn {
 		if ferr := wiring.AckOffer(cfg, os.Stdin, os.Stdout); ferr != nil {
 			fmt.Fprintln(os.Stderr, "startup error:", ferr)
@@ -184,20 +176,7 @@ func main() {
 	// Background tool-cache retention sweep (once per process; 0 = off).
 	// A resumed chat (exact id) is exempt even if its spill files are older
 	// than the retention window — its transcript still points at them.
-	if !cfg.DaemonMode {
-		wiring.SweepToolCacheOnce(cfg.ToolCacheRetentionDays, resumeID)
-	}
-
-	// Daemon mode: remote TUI dials the daemon — no local executor needed.
-	// Checking BEFORE NewExecutor avoids paying full Docker container startup
-	// and then leaking the container via os.Exit (runDaemonMode takes no exe).
-	if cfg.DaemonMode {
-		fmt.Fprintln(os.Stderr, deprecatedDaemonLine)
-		if cfg.AttachImage != "" {
-			fmt.Fprintln(os.Stderr, "warning: --attach-image is not supported in daemon mode — ignored")
-		}
-		os.Exit(runDaemonMode(cfg, resumeID))
-	}
+	wiring.SweepToolCacheOnce(cfg.ToolCacheRetentionDays, resumeID)
 
 	// Redirect os.Stderr to a temp file so any fmt.Fprintln(os.Stderr, ...)
 	// during the async bootstrap (NewExecutor, BuildApp, BootstrapTUI) cannot
@@ -503,57 +482,6 @@ func main() {
 			}
 		}
 	}
-}
-
-// runDaemonMode dials the wakil daemon and runs the TUI in remote mode
-// (card #148 P2e). When the user runs `wakil --daemon`, the TUI dials the
-// daemon over its Unix socket and drives the session remotely instead of
-// embedding the agent loop. This mirrors main.go's embedded bootstrap path
-// but uses the remote package.
-func runDaemonMode(cfg config.Config, resumeID string) int {
-	socketPath := cfg.DaemonSocket
-	if socketPath == "" {
-		socketPath = remote.DefaultSocketPath()
-	}
-
-	// Derive the workspace ID from the config (same derivation as the daemon).
-	ws := wiring.WorkspaceIDFromConfig(cfg)
-
-	ctx := context.Background()
-	rt, cleanup, err := remote.BootstrapRemote(ctx, socketPath, ws, resumeID, nil)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "daemon error:", err)
-		return ExitError
-	}
-	defer cleanup()
-
-	model := tui.NewTUIModelWithFacade(rt.Facade, rt.Manager, rt.Principal)
-	prog := tea.NewProgram(model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
-	tui.SetProgramSend(prog.Send)
-	if err := rt.SubscribeLive(ctx, func(ev event.Event) {
-		prog.Send(ev)
-	}); err != nil {
-		fmt.Fprintln(os.Stderr, "subscribe error:", err)
-		return ExitError
-	}
-	rt.StartEventPump(ctx)
-
-	// Redirect raw diagnostics to a session log file (mirrors the embedded path).
-	if snap := rt.Facade.Snapshot(); snap.ChatID != "" {
-		if f := diag.OpenSessionLog(snap.ChatID); f != nil {
-			defer f.Close()
-			defer diag.Redirect(nil)
-		}
-	}
-
-	if _, err := prog.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "tui error:", err)
-		return ExitError
-	}
-	return ExitOK
 }
 
 // panelsUseOpenRouter reports whether any configured mashura panel routes

@@ -3,7 +3,6 @@ module github.com/treeol/wakil
 go 1.26.10
 
 require (
-	connectrpc.com/connect v1.21.1
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/glamour v1.0.0
@@ -15,7 +14,6 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/sys v0.49.0
-	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.61.0
 )
 

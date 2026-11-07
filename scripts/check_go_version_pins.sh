@@ -11,7 +11,7 @@
 set -eu
 
 gomod="go.mod"
-dockerfiles="Dockerfile Dockerfile.daemon"
+dockerfiles="Dockerfile"
 
 if [ ! -f "$gomod" ]; then
 	echo "check_go_version_pins: $gomod not found (run from repo root)"

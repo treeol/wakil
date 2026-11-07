@@ -728,12 +728,6 @@ type Config struct {
 	PromptModeExplicit  bool `json:"-"` // set when --prompt-mode was passed
 	ThinkExplicit       bool `json:"-"` // set when --think was passed
 
-	// DaemonMode selects remote daemon mode (P2e): the TUI dials the wakil
-	// daemon over its Unix socket instead of embedding the agent loop.
-	// DaemonSocket overrides the default socket path.
-	DaemonMode   bool   `json:"-"`
-	DaemonSocket string `json:"-"`
-
 	// ThinkEffort is the reasoning effort level set by the --think CLI flag.
 	// Applied to the main model's session ReasoningEffort at startup. Empty = no
 	// override (use config file / repo-state / /thinking session value).
@@ -1549,8 +1543,6 @@ func LoadConfig(argv []string) (Config, error) {
 	var traceFlag bool
 	fs.BoolVar(&traceFlag, "trace", false, "enable rich JSONL trace capture for this session (overrides trace_sessions config)")
 	fs.StringVar(&cfg.TraceDir, "trace-dir", cfg.TraceDir, "directory for trace files (default ~/.local/share/wakil/traces)")
-	fs.BoolVar(&cfg.DaemonMode, "daemon", false, "connect to a running wakil daemon over its Unix socket (remote mode)")
-	fs.StringVar(&cfg.DaemonSocket, "socket", "", "path to the wakil daemon's Unix socket (default: $XDG_RUNTIME_DIR/wakil.sock or ~/.local/share/wakil/wakil.sock)")
 	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: long-session (default, finished requests collapsed to Q+A with archive pointers) | standard (full history sent)")
 	fs.StringVar(&cfg.PromptMode, "prompt-mode", cfg.PromptMode, "prompt mode: full (default, complete system prompt) | core (core-only preamble, extension lazy-loaded on task detection)")
 	fs.StringVar(&cfg.ThinkEffort, "think", "", "set the reasoning/thinking effort level for the main model: off|none|minimal|low|medium|high|xhigh|max (session-scoped; overrides config and /think)")

@@ -46,10 +46,7 @@ func cmdNonTestFiles(t *testing.T) []string {
 // internal/agent (Gate #1, cmd half — closed by the wiring sessions wrappers),
 // and that internal/tui appears in main.go alone.
 //
-// daemon_server.go is excepted from the internal/agent rule: it is the daemon
-// server's server-side code (previously a separate cmd/wakild binary) and genuinely
-// needs agent.App and agent.SessionHostDBPath. The headless shim (run.go) and
-// the TUI entry (main.go) remain agent-free.
+// The headless shim (run.go) and the TUI entry (main.go) remain agent-free.
 func TestHeadlessNoAgentImport(t *testing.T) {
 	fset := token.NewFileSet()
 	var violations []string
@@ -60,7 +57,7 @@ func TestHeadlessNoAgentImport(t *testing.T) {
 		}
 		for _, imp := range node.Imports {
 			path := strings.Trim(imp.Path.Value, `"`)
-			if path == "github.com/treeol/wakil/internal/agent" && f != "daemon_server.go" && f != "plan_gc.go" {
+			if path == "github.com/treeol/wakil/internal/agent" && f != "plan_gc.go" {
 				violations = append(violations,
 					f+":"+fset.Position(imp.Pos()).String()+": imports "+path)
 			}
@@ -118,8 +115,6 @@ func TestGoListCoreIsClean(t *testing.T) {
 			`"github.com/treeol/wakil/internal/agent"`,
 			`"github.com/treeol/wakil/internal/tui"`,
 			`"github.com/charmbracelet/bubbletea"`,
-			`"github.com/treeol/wakil/api/gen"`,
-			`"github.com/treeol/wakil/internal/server"`,
 		} {
 			if strings.Contains(string(b), forbidden) {
 				violations = append(violations, path+": imports "+forbidden)
