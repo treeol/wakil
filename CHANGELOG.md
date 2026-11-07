@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **hisn 0.4.0 is the minimum, and the session model follows it** (ADR 0012).
+  Against hisn 0.4.0 every session start timed out after 10 s although the
+  session was up: `hisn ls --json` now reports schema `hisn-ls/v2` with state
+  `running` where 0.3.x said `live`, and Wakil only accepted `live`. Wakil now
+  reads both schemas (and refuses an unknown one) and treats `creating`,
+  `stopping`, `stopped`, `crashed` and `stale` as not live. Sessions are created
+  with `--name wakil-<project key>-<chat id>` and addressed by that name; every
+  control request carries a client record (`label` `wakil@<host>`, a `req_id`
+  unique per request) so hisn's per-client audit shows which Wakil acted; a
+  session ends with `hisn stop` (directory kept, audited) and `hisn ls --prune`
+  archives it; a `crashed` leftover that holds the chat's name is pruned before
+  the next start. The doctor, the default-backend gate, the sandbox image pin
+  (Dockerfile, SHA256s from the v0.4.0 release) and the fixtures moved to 0.4.0.
+  hisn 0.3.x is refused with a message naming 0.4.0.
+
 - **LSP servers are probed before launch.** When a language server binary is
   missing from the sandbox (for example `gopls` in the hisn rootfs), the LSP
   tool reports `gopls not found in the sandbox (rootfs <name>); install it in
@@ -16,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   toolchain" when the executor runs outside a named rootfs. Installing the
   binary and retrying works without restarting Wakil.
 - **hisn is auto-selected only when it passes the explicit-backend gate.**
-  The default-backend version floor is now the same as the explicit floor,
-  0.3.3 (`MinHisnDefaultVersion = MinHisnVersion`). Previously 0.3.1 could be
+  The default-backend version floor is now the same as the explicit floor
+  (`MinHisnDefaultVersion = MinHisnVersion`, 0.3.3 when this was written, 0.4.0
+  now). Previously 0.3.1 could be
   chosen as the default and then refused at startup. A host with hisn 0.3.1 or
   0.3.2 now gets Docker or Podman by default, as it would for a missing hisn.
   Set `sandbox.backend: hisn` only with 0.3.3 or newer.

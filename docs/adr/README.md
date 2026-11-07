@@ -19,3 +19,4 @@ such.
 | [0009](0009-first-run-risk-acknowledgement.md) | First-run risk acknowledgement | Accepted |
 | [0010](0010-open-items-carried-forward.md) | Open items carried forward from the process records | Accepted |
 | [0011](0011-cleanup-pass-invariants.md) | Cleanup-pass invariants A1–A3 and their status | Accepted |
+| [0012](0012-hisn-0.4.0-session-model.md) | hisn 0.4.0 session model | Accepted |

@@ -4,7 +4,7 @@ Wakil runs every tool call inside a sandbox. Backends:
 
 | backend | selected by | notes |
 |---|---|---|
-| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.3.1 for profiles/services/risk labels (>= 0.2.1 still works as an explicit choice, without them) |
+| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.4.0 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`) |
 | `docker` | `sandbox.backend: "docker"`, or the fallback when hisn is not usable | behaviour unchanged |
 | `direct` | `sandbox.backend: "direct"` (or the deprecated `exec_mode: "direct"`) | no sandbox at all: explicit opt-out |
 
@@ -17,13 +17,13 @@ Since v0.4.0 hisn is the default **only when all three hold**:
 1. nothing chose a backend — no `sandbox.backend` in the config file, no
    `WAKIL_SANDBOX_BACKEND`, no `--sandbox`/`--exec`, no `exec_mode`;
 2. `hisn check` passes;
-3. hisn >= 0.3.1 is in `PATH`.
+3. hisn >= 0.4.0 is in `PATH`.
 
 Otherwise the backend is docker, and the startup banner says why:
 
 ```
-sandbox: backend=docker · browser tools: on · default: docker (hisn 0.2.2 is older than 0.3.1)
-sandbox: backend=hisn · browser tools: off (...) · default: hisn 0.3.1 (hisn check ok)
+sandbox: backend=docker · browser tools: on · default: docker (hisn 0.3.3 is older than 0.4.0)
+sandbox: backend=hisn · browser tools: off (...) · default: hisn 0.4.0 (hisn check ok)
 ```
 
 A host without hisn therefore sees no behaviour change. Further reasons that
@@ -205,7 +205,7 @@ be safe for concurrent `Exec` calls.
 ### Preflight
 
 `Open` calls `Preflight`: `hisn --version` parses and is >= `MinVersion`
-("0.2.1"), and `hisn check` exits 0. Otherwise `Open` returns an error and
+("0.4.0"), and `hisn check` exits 0. Otherwise `Open` returns an error and
 Wakil exits. No fallback for an explicit hisn. Unknown `sandbox.backend` values
 are a config error. The version also selects the start path
 (`ProfileMinVersion` "0.3.1": profile mode, else bare `--policy`); requested
@@ -268,10 +268,13 @@ hisn run --detach -v --session-id <id> --policy <file> --cwd <hostcwd> --network
   with the write end of a pipe as fd 3; Wakil closes its copy right after
   the spawn. Ready means, all at once, within a **10 s** budget
   (`readyCap`): the supervisor has not exited, the whole `"ready\n"` line
-  arrived on the pipe, `hisn ls --json` (schema `hisn-ls/v1`, field
-  `state`) reports **`live`**, and the same holds again one poll interval
-  (`readyPoll` = 100 ms) later. A partial line, EOF, `stale`, missing, an
-  error, an exited supervisor, or a timeout is *not ready*. On timeout the
+  arrived on the pipe, `hisn ls --json` (schemas `hisn-ls/v1` and `hisn-ls/v2`,
+  field `state`) reports the session **live** (`running`; v1 said `live`) under
+  the name Wakil gave it, and the same holds again one poll interval
+  (`readyPoll` = 100 ms) later. A partial line, EOF, `creating`, `stopping`,
+  `stopped`, `crashed` (v1: `stale`), missing, a name that points elsewhere, an
+  error, an exited supervisor, or a timeout is *not ready*. An `ls` schema
+  Wakil does not know is an error, not a guess. On timeout the
   supervisor is SIGKILLed, reaped, and the error carries the last probe's
   reason, the stderr, and the log path. A half-started session never
   receives a tool call: it is published (`cur`) only after readiness *and*
@@ -298,15 +301,23 @@ A clash on the *same* id is still caught by `startLocked`.
 
 1. Reconciles a record left by a dead owner; a live owner means the chat is
    active elsewhere (`ErrSessionInUse`).
-2. `hisn ls --json`: if the id is present and **`live`**, refuse
+2. `hisn ls --json`: if the id is present and **live**, refuse
    (`session id in use`) — Wakil never adopts or kills a session it did not
-   create. If it is present but **`stale`** and no live Wakil owns the chat,
-   it is a dead leftover of this chat id: `hisn run --session-id` (0.2.1)
-   replaces it itself. One line is logged.
-3. Creates the owner record with `O_EXCL`: `{pid, pid_start, token, cwd}`
-   where `token` is a fresh 128-bit hex value.
-4. Spawns the supervisor with `session.hostname = "wakil-<token[:16]>"`
-   in the policy and waits for readiness.
+   create; the same if a LIVE session that Wakil did not create already holds
+   the chat's *name* (the refusal names the holder and, from hisn 0.4.1 on,
+   its clients). If the id is present but not live (`stopped`, `crashed`;
+   v1 `stale`) and no live Wakil owns the chat, it is a dead leftover of this
+   chat id: `hisn run --session-id` replaces it itself and one line is
+   logged. A `crashed` leftover of this id or holding this name is pruned
+   first (`hisn ls --prune` archives it and frees the name, which hisn keeps
+   reserved until then). A `stopped` directory does not hold a name.
+3. Creates the owner record with `O_EXCL`: `{pid, pid_start, token, name,
+   cwd}` where `token` is a fresh 128-bit hex value.
+4. Spawns the supervisor with `--name wakil-<project key>-<chat id>` (letters,
+   digits, `.`, `_`, `-`; at most 64 characters, a longer name keeps its prefix
+   and ends in a hash) and `session.hostname = "wakil-<token[:16]>"` in the
+   policy, and waits for readiness. Every later `hisn exec`, `grant`,
+   `revoke`, `inspect` and `ls --session` addresses the session by that name.
 5. Verifies the instance (`hisn inspect --session ID --json` → resolved
    policy contains the token hostname) and marks the record `started`. On
    any failure the supervisor Wakil spawned is killed and reaped. This is
@@ -319,8 +330,10 @@ A failed start that left a possibly-running supervisor keeps it in the
 ### Stop
 
 `Stop` reaps the supervisor Wakil spawned **unconditionally**: it is an
-exact process handle. `hisn kill --session <id>` (its own 5 s bound,
-independent of the caller's context) asks the session to end, then
+exact process handle. `hisn stop --session <id>` (hisn 0.4.0; its own 5 s
+bound, independent of the caller's context) ends the session in order: its
+execs are terminated, the directory is kept as `stopped` and the stop is
+audited. The supervisor exits within milliseconds; then
 `cmd.Wait()` is capped at **5 s** (`stopCap`); on the cap the supervisor is
 SIGKILLed and waited for again. Idempotent and tolerant of "session not
 found": the supervisor having exited is what counts. Only the *bookkeeping*
@@ -328,8 +341,10 @@ is gated on the owner record (a record belonging to another instance is
 left in place and reported).
 
 After the supervisor is reaped, a `live` socket on the id is a replacement
-by a foreign session: left alone and reported. A `stale` dir is removed by
-`hisn kill --session <id>` itself (stale-kill: remove + exit 0).
+by a foreign session: left alone and reported. A `stopped` dir is the
+intended end state: it stays for hisn's audit and `hisn ls --prune` (next
+Start, Reconcile) archives and removes it. A `crashed` dir (the supervisor
+died before it could record the stop) is pruned at once, so its name is free.
 
 A supervisor that cannot be reaped (uninterruptible sleep) keeps the owner
 record and stays in the `orphans` list; Start/Stop/Close retry it.
@@ -337,7 +352,7 @@ record and stays in the `orphans` list; Start/Stop/Close retry it.
 ### Kill safety
 
 While Wakil holds its own unreaped supervisor, that process is the only
-owner of the id, so `hisn kill --session <id>` in Stop cannot hit a foreign
+owner of the id, so `hisn stop --session <id>` in Stop cannot hit a foreign
 session (a supervisor Wakil has reaped is never signalled again). The
 token re-verification (`hisn inspect`) before each signal remains for the
 *reconcile* path, where Wakil has no process handle. hisn offers no
@@ -407,15 +422,18 @@ It still runs for the cases the kernel cannot cover (SIGKILL of a hisn
 child, a non-Linux build, an upgrade from a build without the supervisor
 handle).
 
-1. `hisn ls --prune` (0.2.1): hisn itself removes every provably stale dir
-   (socket refused AND supervisor pid gone or starttime-mismatched, twice
-   300 ms apart; removal fd-relative, owner-checked, runtime-root confined).
-   No live session is touched; no owner record is needed.
+1. `hisn ls --prune`: hisn itself archives (0.4.0: `grants.jsonl` and
+   `session.json` to `$XDG_STATE_HOME/hisn/audit/<id>.jsonl`) and removes every
+   provably dead dir, `stopped` or `crashed` (socket refused AND supervisor pid
+   gone or starttime-mismatched, twice 300 ms apart; removal fd-relative,
+   owner-checked, runtime-root confined) and repairs its name index. No live
+   session is touched; no owner record is needed.
 2. Under the lock: for each record whose owner process is gone (pid absent
    or start time differs) — re-read-and-compare under the lock first, so a
    session replaced by a new owner is left alone. If the id is absent from
    `hisn ls`, drop the record. If it is present and the instance token
-   verifies, `hisn kill` + wait. If present but unverifiable, keep the
+   verifies, `hisn stop` (then a KILL signal if it is still served) + wait. If
+   present but unverifiable, keep the
    record and log. Sessions without a record are never touched. Errors are
    logged, never fatal.
 
