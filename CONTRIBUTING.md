@@ -7,36 +7,50 @@ for getting a patch ready for review.
 
 - **Go 1.26+** (see `go.mod` for the canonical minimum; the Dockerfile may use
   a newer builder toolchain)
-- A working `docker` setup if you want to test the sandbox mode (optional —
-  `direct` mode works without Docker)
+- hisn 0.3.3 or newer for real-hisn tests (optional — they skip without it)
+- A working `docker` setup only if you test the Docker backend (opt-in; hisn
+  is the default when usable, and `--sandbox direct` needs neither)
 
 ## Build & Test
 
 ```sh
-# Build the binary
-go build -o wakil ./cmd/wakil
-
-# Run all tests (with coverage, like CI)
-go test -count=1 -cover ./...
-
-# Check coverage floors on damage-critical packages
-go test -count=1 -cover ./... | scripts/check_coverage.sh
-
-# Run the race detector (all packages except internal/lsp, which has a known
-# pre-existing race — see .github/workflows/ci.yml)
-go test -race -count=1 $(go list ./... | grep -v /internal/lsp)
-
-# Check formatting (whole tree, like CI)
-gofmt -l .
-
-# Vet
-go vet ./...
-
-# Lint (matches CI — same golangci-lint v2.10.0, same .golangci.yml config)
-golangci-lint run
+go build -o wakil ./cmd/wakil          # build
+go vet ./...                            # vet
+golangci-lint run                       # lint (0 issues; see .golangci.yml)
+deadcode ./...                          # dead code (go install golang.org/x/tools/cmd/deadcode@latest)
+gofmt -l .                              # must print nothing
+go test -count=1 -cover ./...           # tests with coverage, like CI
+LC_ALL=C go test -count=1 ./...         # locale-sensitive path, like CI
+go test -race -count=1 ./internal/agent/ ./internal/exec/ \
+  ./internal/sandbox/hisn/ ./internal/wiring/ ./internal/tui/ ./cmd/wakil/
+scripts/check_coverage.sh               # coverage floors (reads the cover output)
+scripts/check_config_docs.sh            # every config.example.json key documented
 ```
 
-All of the above must pass before you send a patch.
+The `-race` run covers the packages that own concurrency. CI runs `-race` over
+the whole tree; run the full set before a release.
+
+### Real-hisn integration tests
+
+The hisn tests need a real hisn binary and skip without one. To run them:
+
+```sh
+hisn --version                          # must report 0.3.3 or newer
+hisn check                              # must pass on this host
+go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/
+```
+
+They also need a `wakil-dev` image pinned as in `Dockerfile`. The CI job
+`hisn-integration` runs them only when hisn is on `PATH` and `hisn check`
+passes; otherwise it logs why and exits clean.
+
+### Host-log rule
+
+Tests that write to a user's real data directory fail. `testutil.Main` points
+HOME and the XDG dirs at a temp tree and fails the package if anything lands
+under the real `~/.local/share/wakil` or `~/.config/wakil`. If you run the
+suite while a real Wakil chat is open on the same machine, set
+`WAKIL_TEST_ALLOW_REAL_DIR_CHANGES=1` for that run only.
 
 ## Sandboxed environments with a small `/tmp`
 
@@ -67,7 +81,7 @@ export TMPDIR=$PWD/.tmp-gocache \
 
 - `gofmt` is authoritative — no unformatted code is merged.
 - Follow standard Go conventions: effective Go, package naming, etc.
-- Linting uses `golangci-lint` v2.10.0 (see `.golangci.yml`); CI runs it
+- Linting uses `golangci-lint` v2.11.1 (see `.golangci.yml`); CI runs it
   automatically, and the same binary is installed in the sandbox for local
   pre-push runs: `golangci-lint run`.
 
@@ -77,9 +91,10 @@ Before opening a PR, verify each item:
 
 - [ ] `go build ./...` passes
 - [ ] `go test -count=1 -cover ./...` passes and `scripts/check_coverage.sh` is green
-- [ ] `go test -race -count=1 $(go list ./... | grep -v /internal/lsp)` passes
+- [ ] `LC_ALL=C go test -count=1 ./...` passes
+- [ ] `go test -race -count=1` passes on the packages listed in Build & Test
 - [ ] `go vet ./...` passes
-- [ ] `golangci-lint run` passes (see `.golangci.yml`; CI runs the same)
+- [ ] `golangci-lint run` passes (0 issues) and `deadcode ./...` is clean
 - [ ] `gofmt -l .` returns nothing
 - [ ] Commit messages are descriptive and reference the relevant WP/issue if applicable
 - [ ] No secrets, API keys, or credentials in the diff
@@ -91,45 +106,41 @@ Before opening a PR, verify each item:
 The codebase is organized into focused packages under `internal/`:
 
 ```
-cmd/wakil/         main package — entry point, CLI, TUI wiring, daemon subcommand
-api/proto/         Connect/gRPC service definitions (session, event, auth, backend, …)
-api/gen/           generated Go from proto (connectrpc)
+cmd/wakil/         main package — entry point, CLI, TUI wiring
 internal/
-  agent/           the agent loop and tool-call assembly
-  auth/            authentication — join tokens, web sessions, API tokens, OIDC, peer creds
+  agent/           the agent loop, turn phases, tool dispatch, subagents
+  auth/            peer-credential checks for local socket use
   browser/         headless browser integration
   config/          flag/env/file config resolution
-  core/            transport-free domain core — session service, event model, session host
-  counsel/         mashūra — external-model counsel (review/debug/decide/check)
-  crypto/          envelope encryption for secrets at rest (AES-256-GCM)
-  diag/            diagnostic output seam (prevents TUI garble from raw stderr writes)
-  exec/            executor backends (docker, direct) + cwd tracking
-  lsp/             language-server client — manager, JSON-RPC transport, tools
-  memory/          durable memory store — SQLite, two tiers, FTS5, provenance
-  orregistry/      OpenRouter model registry fetch + cache (context lengths)
-  policy/          policy evaluation for auto-approve and consent gating
-  protoconv/       shared proto↔domain event conversion (32-kind switch)
-  proxy/           chat endpoint HTTP client (openai + ilm-proxy kinds)
-  remote/          remote facade — Connect RPC client for daemon mode
-  safe/            path confinement and safety checks
-  scrub/           secret scrubbing for tool output and traces
-  server/connect/  Connect HTTP server — handlers, auth interceptor, origin validation
-  sessionhistory/  searchable session transcript index (SQLite + FTS5)
-  staging/         kvr client — in-sandbox ephemeral KV store (UDS wire protocol)
-  store/           SQLite migrations and per-domain stores (agent, backend, workspace)
+  core/            session host and domain types
+  counsel/         Mashūra — external-model counsel (review/debug/decide/check)
+  exec/            sandbox executors (hisn, docker, direct) + cwd tracking
+  lsp/             language-server client
+  memory/          durable memory store — SQLite, two tiers, FTS5
+  sandbox/         backend-neutral sandbox contract; sandbox/hisn is the hisn backend
+  staging/         kvr client — in-sandbox ephemeral KV store
   tools/           the tool set (run_shell, read_file, edit_file, …)
-  trace/           execution tracing
-  tui/             terminal UI
-  verify/          deterministic workflow verification (test/build/lint detection)
-  wiring/          bootstrap, conversation manager, facade, host turn, headless runner
+  tui/             terminal UI (Bubble Tea)
+  wiring/          bootstrap, conversation manager, host turn
   workflow/        /plan gather→plan→review→implement state machine
-web/               embedded web console (vanilla JS, served by the daemon)
-Dockerfile         sandbox image — Go, Node, Rust, Python toolchains, gopls, docker CLI + compose, gh, golangci-lint
-Dockerfile.daemon  minimal daemon image (distroless, non-root, pure-Go SQLite)
-docker-compose.yml daemon as a Docker service with volume mounts for data/config/socket
+Dockerfile         sandbox image; the hisn version pin lives here (single place)
 ```
 
-See `docs/features.md` for feature documentation.
+Design notes: `docs/sandbox-backends.md`, `docs/features.md`.
+
+## Decisions (ADRs)
+
+Architecture decisions live in `docs/adr/`, one Markdown file per decision,
+numbered sequentially. Format and the convention are in
+`docs/adr/0000-adr-format.md`; the index is `docs/adr/README.md`. Add a row to
+the index when you add an ADR. Do not record decisions only in commit
+messages or in process logs.
+
+## Single source of the image version
+
+`Dockerfile` is the only place the sandbox image's hisn version and its SHA256
+checksums live. Bump `HISN_VERSION` and both arch checksums together, in that
+file, and nowhere else.
 
 ## Security
 
