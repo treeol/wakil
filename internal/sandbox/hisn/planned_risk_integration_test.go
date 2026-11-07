@@ -3,6 +3,7 @@ package hisn
 import (
 	"context"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,11 +13,16 @@ import (
 // a signing-key configuration (ssh-agent forwarded): the label must be
 // "signing" and the ack the same, with the ssh-agent capability listed. This is
 // the label `wakil sandbox trust` shows and the one startup refuses without an
-// ack. Requires WAKIL_HISN_BIN pointing at hisn >= 0.3.3.
+// ack. Uses WAKIL_HISN_BIN, else the hisn on PATH (>= 0.3.3).
 func TestIntegrationPlannedRiskSigning(t *testing.T) {
 	bin := os.Getenv("WAKIL_HISN_BIN")
 	if bin == "" {
-		t.Skip("set WAKIL_HISN_BIN to a hisn >= 0.3.3 binary")
+		// Same resolution as realBackend: the hisn on PATH when unset.
+		p, err := osexec.LookPath("hisn")
+		if err != nil {
+			t.Skip("hisn not found on PATH (set WAKIL_HISN_BIN to pick a binary)")
+		}
+		bin = p
 	}
 	root := t.TempDir()
 	cwd := filepath.Join(root, "ws")

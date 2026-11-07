@@ -876,8 +876,8 @@ func TestIntegrationCancelAfterAccept(t *testing.T) {
 		}
 		found = true
 		_ = json.Unmarshal(row["state"], &state)
-		if state != "live" {
-			t.Fatalf("session state = %q after cancel, want live", state)
+		if !(lsEntry{State: state}).Live() {
+			t.Fatalf("session state = %q after cancel, want live (v1) or running (v2)", state)
 		}
 		for _, k := range []string{"execs", "running_execs", "exec_ids"} {
 			if v, ok := row[k]; ok {

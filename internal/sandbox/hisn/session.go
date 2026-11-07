@@ -26,14 +26,50 @@ func newToken() string {
 // hostnameFor is the in-sandbox hostname that carries the instance token.
 func hostnameFor(token string) string { return "wakil-" + token[:16] }
 
+// lsEntry is one row of `hisn ls --json`. Schema hisn-ls/v1 (hisn <= 0.3.3)
+// reports state "live" | "stale"; hisn-ls/v2 (0.4.0) reports "creating" |
+// "running" | "stopping" | "stopped" | "crashed" and keeps every v1 field.
 type lsEntry struct {
-	ID    string `json:"id"`
-	State string `json:"state"` // "live" | "stale" (0.2.1 frozen schema)
+	ID      string     `json:"id"`
+	Name    string     `json:"name"`
+	State   string     `json:"state"`
+	Dir     string     `json:"dir"`
+	Cwd     string     `json:"cwd"`
+	Lease   *lsLease   `json:"lease"`
+	Members []lsMember `json:"members"`
+	// Clients is the connected-client list. hisn 0.4.0 does not emit it yet
+	// (its changelog lists the gap); it is parsed so a later release works.
+	Clients []lsClient `json:"clients"`
 }
 
-func (e lsEntry) Live() bool { return e.State == "live" }
+// lsMember is one append-only member of a session (a client seen at least once).
+type lsMember struct {
+	UID       int    `json:"uid"`
+	Label     string `json:"label"`
+	FirstSeen string `json:"first_seen"`
+	LastSeen  string `json:"last_seen"`
+}
 
-// listSessions parses `hisn ls --json` (schema "hisn-ls/v1").
+// lsClient is one currently connected client.
+type lsClient struct {
+	UID   int    `json:"uid"`
+	PID   int    `json:"pid"`
+	Label string `json:"label"`
+}
+
+// lsLease is the idle lease of a session.
+type lsLease struct {
+	IdleTimeout string `json:"idle_timeout"`
+	Remaining   string `json:"remaining"`
+}
+
+// Live reports whether something is serving the session: "running" (v2) or
+// "live" (v1). Every other state — "stale" (v1), "stopped", "stopping",
+// "crashed" and "creating" (v2) — is not live: a session that is still being
+// created is not ready, one that is stopping or stopped will not take execs.
+func (e lsEntry) Live() bool { return e.State == "live" || e.State == "running" }
+
+// listSessions parses `hisn ls --json` (schemas hisn-ls/v1 and hisn-ls/v2).
 func (b *Backend) listSessions(ctx context.Context) (map[string]lsEntry, error) {
 	out, err := b.output(ctx, false, "ls", "--json")
 	if err != nil {
