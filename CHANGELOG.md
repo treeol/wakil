@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - unreleased
+
+### Changed
+
+- **Sandbox image pins hisn 0.3.3.** `Dockerfile` pins the 0.3.3 release for
+  the variants it already used (amd64, arm64), SHA256-verified. The hisn
+  minimum is 0.3.3 everywhere it is checked (startup refusal, profile feature
+  gates, docs); hisn 0.3.2 is refused with a message naming 0.3.3.
+- **known_hosts mount uses `src:dst` (deviation removed).** The P3 profile
+  mounts the host `~/.ssh/known_hosts` read-only at `/wakil/ssh/known_hosts`
+  inside the session, and `GIT_SSH_COMMAND` pins `UserKnownHostsFile` to that
+  in-session path. The same-path form and its deviation note are gone.
+- **First-run acknowledgement without hand-written JSON.** `wakil sandbox trust`
+  with no `.wakil/sandbox.json` shows the capability labels and the resulting
+  risk and writes `{"hisn":{"risk_ack":"<risk>"}}` only after an explicit `yes`
+  (anything else deletes the file it wrote). A bootstrap-form file whose ack no
+  longer matches is updated the same way. A hand-written file is never rewritten;
+  the command names the key to change. In the interactive TUI, a missing or
+  mismatched ack is offered inline (`acknowledge now? [y/N]`). Non-interactive
+  runs (`wakil run`, `--print-*`, scheduled) never prompt and keep the hard error.
+  The startup error now names `wakil sandbox trust` and the labels.
+
+### Unchanged
+
+- No acknowledgement is written without an explicit `yes`/`y` in that invocation.
+- F1 stays fail-closed for unparseable and unapproved project files.
+- Home-persist under Wakil's own root stays self-acknowledged.
+
 ## [0.5.1] - 2026-11-06
 
 ### Changed
