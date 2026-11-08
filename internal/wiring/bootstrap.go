@@ -130,10 +130,13 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		StreamIdleTimeout: time.Duration(cfg.StreamIdleTimeoutSeconds) * time.Second,
 	}
 
-	// MCP manager
+	// MCP manager. Servers connect in the BACKGROUND (concurrently), so this
+	// span measures only manager construction — the connects no longer block
+	// the first prompt. Tools appear as each server becomes ready; a call to a
+	// still-connecting server waits only on that server. See NewMCPManager.
 	var mcpMgr *agent.MCPManager
 	if len(cfg.MCPServers) > 0 {
-		endMCP := timeline.Begin("mcp servers connect")
+		endMCP := timeline.Begin("mcp manager (background connect)")
 		mcpMgr = agent.NewMCPManager(context.Background(), cfg.MCPServers)
 		endMCP()
 	}

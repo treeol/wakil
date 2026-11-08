@@ -46,11 +46,9 @@ func testManagerConfig(t *testing.T, url string) config.Config {
 //
 // Regression: every conversation rotation builds a fresh App (newConversation
 // → BuildApp → NewMCPManager connects to every configured stdio server), but
-// nothing tore the old manager down. Each orphaned telegram-mcp kept its own
-// GetUpdates long-poll running, and since Telegram delivers every update to
-// exactly ONE poller, the user's button press landed in a process that wasn't
-// holding the prompt — the real one then waited out its full
-// TELEGRAM_APPROVAL_TIMEOUT and reported "timeout".
+// nothing tore the old manager down, leaking the orphaned stdio child
+// processes (and, for a long-polling bridge server, its polling loop) until the
+// process exited.
 func TestFacadeCloseReapsMCPManager(t *testing.T) {
 	srv := sseServer(t, []string{contentChunk("done")})
 	defer srv.Close()

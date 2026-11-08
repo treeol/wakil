@@ -83,12 +83,6 @@ type wiringFacade struct {
 	// closed is true after Close; subsequent calls return ErrSessionClosed.
 	closed bool
 
-	// telegramConsumer is the optional Telegram approval consumer. nil when
-	// the telegram-bridge MCP server is not configured or not connected.
-	// Started by the ConversationManager after session creation; stopped and
-	// drained in Close.
-	telegramConsumer *telegramApprovalConsumer
-
 	// pendingContinuation is the continuation prompt for /handoff proceed.
 	// Set by HandoffConversation instead of calling SubmitInput directly,
 	// so the TUI can submit it AFTER subscribing to the new session's event
@@ -361,11 +355,11 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 
 	// MCP servers.
 	if app.MCP != nil {
-		servers := app.MCP.Servers()
+		servers := app.MCP.SnapshotServers()
 		mcpInfo := make([]sessionclient.MCPServerInfo, 0, len(servers))
 		for _, srv := range servers {
 			mcpInfo = append(mcpInfo, sessionclient.MCPServerInfo{
-				Name:   srv.Cfg.Name,
+				Name:   srv.Name,
 				Status: srv.Status,
 				ToolN:  len(srv.Tools),
 			})
@@ -994,27 +988,6 @@ func (f *wiringFacade) Close() error {
 	// had swapped facades, so nobody could answer the old session's approval)
 	// and lets the executor emit TurnCompleted{cancelled} + SessionClosed.
 	// The 10s bound covers a turn that ignores cancellation.
-
-	// Stop the Telegram approval consumer BEFORE closing the host session.
-	// The consumer's goroutine may be blocked on an MCP CallTool
-	// (long-polling Telegram). Cancelling its context first ensures it
-	// exits promptly and does not race with the host session teardown.
-	// Stop is bounded by consumerStopTimeout so a hung transport cannot
-	// delay the host session close (below) indefinitely.
-	if f.telegramConsumer != nil {
-		endTG := timeline.Begin("stop telegram consumer")
-		f.telegramConsumer.Stop()
-		f.telegramConsumer = nil
-		endTG()
-	}
-
-	// Close the host session: requestClose cancels the in-flight turn ctx,
-	// which unblocks a Parked approval with a forced decline (m4b review
-	// finding — without this, a rotation while an approval was parked left
-	// the turn goroutine blocked forever: the TUI had swapped facades, so
-	// nobody could answer the old session's approval) and lets the executor
-	// emit TurnCompleted{cancelled} + SessionClosed. The 10s bound covers a
-	// turn that ignores cancellation.
 	if f.host != nil && sessionID != "" {
 		endHost := timeline.Begin("close host session (cancel turn)")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1057,22 +1030,14 @@ func (f *wiringFacade) Close() error {
 	// Release this facade's MCP server connections — the stdio child processes
 	// this App spawned in BuildApp.
 	//
-	// This is the fix for the leaked telegram-bridge processes: every
-	// conversation rotation builds a fresh App (newConversation → BuildApp →
-	// NewMCPManager connects to every configured server), but nothing tore the
-	// old manager down, so each /new and /handoff left an orphaned
-	// telegram-mcp alive. Each one independently long-polls Telegram's
-	// GetUpdates, and Telegram delivers every update to exactly ONE poller —
-	// so with N strays the user's button press landed in a pending map that
-	// wasn't the one holding the prompt. HandleCallback then took the
-	// !exists branch and answered "Expired", while the correct process waited
-	// out its full TELEGRAM_APPROVAL_TIMEOUT and returned "timeout".
+	// Every conversation rotation builds a fresh App (newConversation →
+	// BuildApp → NewMCPManager connects to every configured server), so the
+	// OLD manager must be torn down here or each /new and /handoff leaks the
+	// stdio children it spawned.
 	//
 	// Safe here because f.resources is per-facade: each newConversation calls
 	// BuildApp, which constructs a fresh MCPManager. Closing it cannot affect
-	// a sibling session. This runs AFTER telegramConsumer.Stop() above, so
-	// the consumer's in-flight CallTool has already been cancelled and
-	// drained — Close would otherwise block on that call's sessionMu.
+	// a sibling session.
 	//
 	// The daemon path is unaffected: it owns its App and calls
 	// CloseResources directly (cmd/wakil/daemon_server.go), never the

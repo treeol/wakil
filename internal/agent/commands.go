@@ -1535,20 +1535,20 @@ func mcpStatus(args []string, app *App) string {
 
 	var sb strings.Builder
 	if app.MCP != nil {
-		for _, srv := range app.MCP.Servers() {
+		for _, srv := range app.MCP.SnapshotServers() {
 			icon := "✓"
 			if srv.Status == "failed" {
 				icon = "✗"
 			} else if srv.Status == "connecting" {
 				icon = "…"
 			}
-			sb.WriteString(fmt.Sprintf("%s %s [%s] (mcp)", icon, srv.Cfg.Name, srv.Status))
+			sb.WriteString(fmt.Sprintf("%s %s [%s] (mcp)", icon, srv.Name, srv.Status))
 			if srv.Err != nil {
 				sb.WriteString(": " + srv.Err.Error())
 			}
 			sb.WriteByte('\n')
 			for _, t := range srv.Tools {
-				sb.WriteString(fmt.Sprintf("    • %s%s%s: %s\n", srv.Cfg.Name, mcpNS, t.Name, t.Description))
+				sb.WriteString(fmt.Sprintf("    • %s%s%s: %s\n", srv.Name, mcpNS, t.Name, t.Description))
 			}
 		}
 	}

@@ -498,9 +498,8 @@ func (h *Host) RespondToApproval(ctx context.Context, principal core.Principal, 
 // subscribers (projected by the TUI as a dimmed system item).
 //
 // This is the out-of-band diagnostic channel for actors that run OUTSIDE the
-// turn goroutine and therefore have no Emitter to hand — notably the Telegram
-// approval consumer (internal/wiring/telegram_consumer.go), which must report
-// bridge failures without writing to os.Stderr. In TUI mode os.Stderr is the
+// turn goroutine and therefore have no Emitter to hand, so they can report
+// without writing to os.Stderr. In TUI mode os.Stderr is the
 // live alt-screen terminal (restoreStderr runs at cmd/wakil/main.go:235 before
 // the real model is installed), so a raw Fprintf injects bytes into the middle
 // of Bubble Tea's frame and corrupts the display until a resize forces a full

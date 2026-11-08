@@ -16,6 +16,7 @@ import (
 	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/safe"
 	wtools "github.com/treeol/wakil/internal/tools"
 
 	gosdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -43,6 +44,14 @@ type MCPServer struct {
 	Tools   []*gosdkmcp.Tool // tools listed at connect time
 	Status  string           // "connecting" | "connected" | "failed" | "closed"
 	Err     error
+
+	// ready is closed when the initial background connect for this server has
+	// finished (success, failure, or shutdown). A tool call routed to a server
+	// that is still "connecting" waits on its OWN ready channel, so a slow
+	// server never blocks a call to an already-connected one. Always non-nil
+	// (installed at construction). Closed exactly once via readyOnce.
+	ready     chan struct{}
+	readyOnce sync.Once
 
 	// sessionMu serializes CallTool (RLock) against Reconnect/Close (Lock)
 	// on the same session. CallTool holds RLock for the duration of
@@ -84,8 +93,7 @@ func (s *MCPServer) drainAndClose(session mcpSession, timeout time.Duration) boo
 // built it. Each stdio server is a child process, so Close is mandatory for
 // every owner: the daemon releases it via CloseResources, and the TUI's
 // wiringFacade.Close releases it on close/rotation. Skipping Close orphans the
-// child process — see the telegram-bridge GetUpdates contention described in
-// internal/wiring/facade.go.
+// child process.
 type MCPManager struct {
 	mu      sync.RWMutex
 	servers []*MCPServer
@@ -106,17 +114,54 @@ func (m *MCPManager) connectOrDefault() func(ctx context.Context, srv *MCPServer
 
 // NewMCPManager connects to every configured MCP server. Failures are
 // recorded per-server; they never crash wakil.
+//
+// Connections run in the BACKGROUND, concurrently, so startup and the first
+// prompt are not blocked on a slow or unreachable server (a stdio spawn or an
+// HTTP connect can take up to 30s each). Each server starts in "connecting";
+// its ready channel closes when its connect finishes, and readers that need
+// the server (CallTool, /mcp) wait on that channel only for the server they
+// touch. Tools become visible to the model as each server connects
+// (OpenAITools reads live Status/Tools each turn — see MCPManager.ToolsSnapshot).
+//
+// The caller must Close the manager to stop servers that are still connecting;
+// Close marks them "closed" and a late successful connect is discarded.
 func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManager {
 	m := &MCPManager{}
 	m.connectFn = m.connect
 	for _, cfg := range cfgs {
-		srv := &MCPServer{Cfg: cfg, Status: "connecting"}
+		srv := &MCPServer{Cfg: cfg, Status: "connecting", ready: make(chan struct{})}
 		m.servers = append(m.servers, srv)
-		// Connect synchronously so tools are available before first user turn.
-		if err := m.connectOrDefault()(ctx, srv); err != nil {
-			srv.Status = "failed"
-			srv.Err = err
-		}
+		safe.Go("mcp-connect", func() {
+			// Connect into a TEMP server: connect() mutates the *MCPServer it
+			// is given, and readers (OpenAITools, CallTool, Servers) run
+			// concurrently once the manager is published. Publishing under
+			// m.mu.Lock keeps every read under RLock race-free, exactly like
+			// Reconnect's temp-server pattern.
+			tmp := &MCPServer{Cfg: cfg, Status: "connecting"}
+			err := m.connectOrDefault()(ctx, tmp)
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			defer srv.readyOnce.Do(func() { close(srv.ready) })
+			if srv.Status == "closed" {
+				// Close ran while we were connecting: discard the session.
+				if tmp.Session != nil {
+					_ = tmp.Session.Close()
+				}
+				return
+			}
+			if err != nil {
+				srv.Status = "failed"
+				srv.Err = err
+				return
+			}
+			srv.Session = tmp.Session
+			srv.Tools = tmp.Tools
+			srv.Status = tmp.Status
+			if srv.Status == "" {
+				srv.Status = "connected"
+			}
+			srv.Err = nil
+		})
 	}
 	return m
 }
@@ -180,6 +225,34 @@ func (m *MCPManager) Servers() []*MCPServer {
 	defer m.mu.RUnlock()
 	out := make([]*MCPServer, len(m.servers))
 	copy(out, m.servers)
+	return out
+}
+
+// MCPServerSnapshot is a race-free copy of one server's display state, taken
+// under the manager lock. Callers that render server status (the /mcp listing,
+// the info panel) must use SnapshotServers rather than reading fields off the
+// *MCPServer returned by Servers — background connects mutate Status/Tools/Err
+// under m.mu, so an unlocked field read is a data race.
+type MCPServerSnapshot struct {
+	Name   string
+	Status string
+	Err    error
+	Tools  []*gosdkmcp.Tool
+}
+
+// SnapshotServers returns a race-free copy of every server's display state.
+func (m *MCPManager) SnapshotServers() []MCPServerSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]MCPServerSnapshot, 0, len(m.servers))
+	for _, s := range m.servers {
+		out = append(out, MCPServerSnapshot{
+			Name:   s.Cfg.Name,
+			Status: s.Status,
+			Err:    s.Err,
+			Tools:  s.Tools,
+		})
+	}
 	return out
 }
 
@@ -291,25 +364,40 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 	}
 	isRead := IsMCPReadTool(toolName)
 
-	// Phase 1: brief read lock to check server exists and is connected.
-	// We don't hold the session lock yet — the confirm prompt may block
-	// indefinitely on user input, and we don't want to block Reconnect.
+	// Phase 1: brief read lock to find the server. We don't hold the session
+	// lock yet — the confirm prompt may block indefinitely on user input, and
+	// we don't want to block Reconnect.
 	m.mu.RLock()
-	var status, srvErrStr string
+	var srv *MCPServer
 	for _, s := range m.servers {
 		if s.Cfg.Name == serverName {
-			status = s.Status
-			if s.Err != nil {
-				srvErrStr = s.Err.Error()
-			}
+			srv = s
 			break
 		}
 	}
 	m.mu.RUnlock()
 
-	if status == "" {
+	if srv == nil {
 		return fmt.Sprintf("ERROR: no MCP server named %q", serverName)
 	}
+
+	// A server still connecting holds this tool call only for ITSELF: wait on
+	// that server's ready signal, never on the others. The wait is bounded by
+	// the call ctx (turn cancellation) and by the connect's own 30s timeout.
+	if srv.ready != nil {
+		select {
+		case <-srv.ready:
+		case <-ctx.Done():
+			return fmt.Sprintf("ERROR: MCP server %q still connecting: %v", serverName, ctx.Err())
+		}
+	}
+
+	m.mu.RLock()
+	status, srvErrStr := srv.Status, ""
+	if srv.Err != nil {
+		srvErrStr = srv.Err.Error()
+	}
+	m.mu.RUnlock()
 	if status != "connected" {
 		return fmt.Sprintf("ERROR: MCP server %q is %s: %s", serverName, status, srvErrStr)
 	}
@@ -338,30 +426,18 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 		}
 	}
 
-	// Phase 2: re-acquire under both locks. m.mu.RLock finds the server and
-	// re-checks status (may have changed during the confirm prompt). While
-	// still under m.mu.RLock, acquire sessionMu.RLock — this prevents
-	// Reconnect from closing the session until CallTool finishes. Then
-	// release m.mu.RLock and call session.CallTool with sessionMu.RLock held.
+	// Phase 2: re-acquire under both locks. m.mu.RLock re-checks status (it may
+	// have changed during the confirm prompt, or the manager may have closed).
+	// While still under m.mu.RLock, acquire sessionMu.RLock — this prevents
+	// Reconnect from closing the session until CallTool finishes. Then release
+	// m.mu.RLock and call session.CallTool with sessionMu.RLock held.
 	m.mu.RLock()
-	var srv *MCPServer
-	found := false
-	for _, s := range m.servers {
-		if s.Cfg.Name == serverName {
-			found = true
-			srv = s
-			status = s.Status
-			if s.Err != nil {
-				srvErrStr = s.Err.Error()
-			}
-			break
-		}
+	status, srvErrStr = srv.Status, ""
+	if srv.Err != nil {
+		srvErrStr = srv.Err.Error()
 	}
-	if !found || srv.Status != "connected" || srv.Session == nil {
+	if status != "connected" || srv.Session == nil {
 		m.mu.RUnlock()
-		if !found {
-			return fmt.Sprintf("ERROR: no MCP server named %q", serverName)
-		}
 		return fmt.Sprintf("ERROR: MCP server %q is %s: %s", serverName, status, srvErrStr)
 	}
 	// Acquire the session lock while still under m.mu.RLock so Reconnect
@@ -493,6 +569,13 @@ func (m *MCPManager) Close() {
 	var targets []srvSession
 	for _, srv := range m.servers {
 		srv.Status = "closed"
+		// Unblock any CallTool waiting on a still-connecting server: after
+		// Close the server will never become ready, so the waiter must not
+		// block until its ctx expires. Test-constructed servers may have a nil
+		// ready channel — skip them.
+		if srv.ready != nil {
+			srv.readyOnce.Do(func() { close(srv.ready) })
+		}
 		if srv.Session != nil {
 			targets = append(targets, srvSession{srv: srv, session: srv.Session})
 			srv.Session = nil
@@ -628,8 +711,52 @@ func collapseContextToolDef() proxy.Tool {
 	}}
 }
 
-// BuildTools assembles the full tool list in stable groups:
-// built-ins → searxng → google → MCP → oracle → LSP → browser.
+// toolsForTurn returns the tool list for one turn. MCP servers connect in the
+// background, so their tools appear as each server becomes ready; this replaces
+// the MCP group captured at construction with the live snapshot, keeping the
+// MCP tools in their original slot (so the built-in / search / oracle / LSP /
+// browser cache prefix is unchanged). When no MCP tools were present at
+// construction (every server was still connecting), the live set is appended
+// where the MCP group would have been — but we cannot know that slot, so it is
+// appended at the end; MCP tools are the only group whose membership changes
+// mid-session, so this is the least-disruptive placement.
+//
+// MCP tools are identified by the mcpNS namespace ("server__tool") in their
+// name — the same discriminator CallTool uses. Built-in tools never contain "__".
+func (a *App) toolsForTurn() []proxy.Tool {
+	if a.MCP == nil || len(a.MCP.Servers()) == 0 {
+		return a.Tools
+	}
+	live := a.MCP.OpenAITools()
+	// Find the construction-time MCP slot (first MCP tool).
+	firstMCP := -1
+	for i, t := range a.Tools {
+		if strings.Contains(t.Function.Name, mcpNS) {
+			firstMCP = i
+			break
+		}
+	}
+	if firstMCP < 0 {
+		// No MCP tools at construction: append the live set.
+		out := make([]proxy.Tool, 0, len(a.Tools)+len(live))
+		out = append(out, a.Tools...)
+		out = append(out, live...)
+		return out
+	}
+	// Replace the contiguous MCP block starting at firstMCP.
+	out := make([]proxy.Tool, 0, len(a.Tools)+len(live))
+	out = append(out, a.Tools[:firstMCP]...)
+	out = append(out, live...)
+	for _, t := range a.Tools[firstMCP:] {
+		if strings.Contains(t.Function.Name, mcpNS) {
+			continue // drop the stale MCP block
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// BuildTools assembles the full tool list in stable groups:// built-ins → searxng → google → MCP → oracle → LSP → browser.
 // Within each group, tools are sorted by name for prompt-cache stability
 // : tool schemas are part of the cache prefix, so non-deterministic
 // ordering within a group (e.g., MCP servers returning tools in a different
