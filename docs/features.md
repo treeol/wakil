@@ -123,7 +123,18 @@ Fusion. `mashura_tool_panels` maps individual tools to panels.
 
 wakil reads evidence files from disk on the model's behalf — the model
 supplies **paths**, never content. Directory paths expand via `git ls-files`;
-`path_ranges` scopes to specific line spans.
+`path_ranges` scopes to specific line spans; `commit_range` (e.g. `a..b` or
+`HEAD~3`) attaches the `git diff` of a revision range as one labelled block, so
+a change set is reviewed as a whole rather than a HEAD snapshot.
+
+A document is sent whole when it fits the reviewer's context, and as clearly
+labelled parts (with a small overlap) when it does not — never silently cut. An
+oversize **source file** is split into labelled line-range chunks and a final
+synthesis call merges the per-chunk reviews. A reply that hit `max_tokens`, came
+back empty, or mis-cites the last section it claims to have read is **VOID**: it
+is retried once automatically, and if it is still VOID the round is reported as
+**not obtained** — never merged, never counted as a review round, never "no
+findings".
 
 ## Web search
 

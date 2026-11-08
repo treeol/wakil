@@ -99,6 +99,7 @@ func mashuraToolDefs() []proxy.Tool {
 
 	panelParam := str("Optional: named panel to use for this call (overrides the default panel configured for this tool). Omit unless the user explicitly named a panel.")
 	pathsParam := strArr("Optional: file or directory paths for Wakil to read from disk and attach as sources. Wakil reads current bytes — never paste content yourself.")
+	commitRangeParam := str("Optional: a git revision range (e.g. \"a..b\", \"HEAD~3\", or a single ref) whose `git diff` Wakil attaches as one source block. Use this to review a COMMIT RANGE rather than the files' current (HEAD) contents.")
 	pathRangesParam := map[string]interface{}{
 		"type":        "array",
 		"description": "Optional: line ranges to read. Each selects a span of one file — use when only part of a large file is relevant.",
@@ -116,35 +117,39 @@ func mashuraToolDefs() []proxy.Tool {
 		tool("mashura__review",
 			"Get counsel on the current plan and work against the task. Wakil reads the named paths from disk and attaches them alongside task, findings, plan, and step log."+shared,
 			obj(map[string]interface{}{
-				"focus":       str("Optional: what to focus the review on. Defaults to a full review against the task."),
-				"paths":       pathsParam,
-				"path_ranges": pathRangesParam,
-				"panel":       panelParam,
+				"focus":        str("Optional: what to focus the review on. Defaults to a full review against the task."),
+				"paths":        pathsParam,
+				"path_ranges":  pathRangesParam,
+				"commit_range": commitRangeParam,
+				"panel":        panelParam,
 			})),
 		tool("mashura__debug",
 			"Diagnose the root cause of a failure. Wakil reads the named paths from disk and attaches them alongside the recent tool calls."+shared,
 			obj(map[string]interface{}{
-				"symptom":     str("What is going wrong — the error, the unexpected behavior, and what you expected instead."),
-				"paths":       pathsParam,
-				"path_ranges": pathRangesParam,
-				"panel":       panelParam,
+				"symptom":      str("What is going wrong — the error, the unexpected behavior, and what you expected instead."),
+				"paths":        pathsParam,
+				"path_ranges":  pathRangesParam,
+				"commit_range": commitRangeParam,
+				"panel":        panelParam,
 			}, "symptom")),
 		tool("mashura__decide",
 			"Get counsel on a decision. Wakil attaches the task and findings as the constraints the decision lives under."+shared,
 			obj(map[string]interface{}{
-				"question":    str("The decision to make."),
-				"options":     str("The options you are weighing, one per line or comma-separated."),
-				"paths":       pathsParam,
-				"path_ranges": pathRangesParam,
-				"panel":       panelParam,
+				"question":     str("The decision to make."),
+				"options":      str("The options you are weighing, one per line or comma-separated."),
+				"paths":        pathsParam,
+				"path_ranges":  pathRangesParam,
+				"commit_range": commitRangeParam,
+				"panel":        panelParam,
 			}, "question", "options")),
 		tool("mashura__check",
 			"Lightweight single-claim verification — cheaper and lower max_tokens than a full review. Wakil reads the evidence files from disk."+shared,
 			obj(map[string]interface{}{
-				"claim":       str("The single claim to verify."),
-				"paths":       pathsParam,
-				"path_ranges": pathRangesParam,
-				"panel":       panelParam,
+				"claim":        str("The single claim to verify."),
+				"paths":        pathsParam,
+				"path_ranges":  pathRangesParam,
+				"commit_range": commitRangeParam,
+				"panel":        panelParam,
 			}, "claim")),
 	}
 }
@@ -692,10 +697,11 @@ func mashuraCheckSize(briefing string) error {
 // + Wakil-read sources. The model supplies a focus; Wakil fetches the evidence.
 func (a *App) mashuraReview(ctx context.Context, tc proxy.ToolCall) (question, briefing string, receipts []mashuraSourceMeta, err error) {
 	var args struct {
-		Focus      string      `json:"focus"`
-		Question   string      `json:"question"` // legacy oracle__ask alias
-		Paths      []string    `json:"paths"`
-		PathRanges []PathRange `json:"path_ranges"`
+		Focus       string      `json:"focus"`
+		Question    string      `json:"question"` // legacy oracle__ask alias
+		Paths       []string    `json:"paths"`
+		PathRanges  []PathRange `json:"path_ranges"`
+		CommitRange string      `json:"commit_range"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
 		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
@@ -705,11 +711,11 @@ func (a *App) mashuraReview(ctx context.Context, tc proxy.ToolCall) (question, b
 		focus = strings.TrimSpace(args.Question)
 	}
 	findings, plan := a.mashuraPlanSections(ctx)
-	if focus == "" && plan == "" && len(args.Paths) == 0 && len(args.PathRanges) == 0 {
-		return "", "", nil, fmt.Errorf("nothing to review: provide a focus, paths, or run inside a workflow with a plan")
+	if focus == "" && plan == "" && len(args.Paths) == 0 && len(args.PathRanges) == 0 && strings.TrimSpace(args.CommitRange) == "" {
+		return "", "", nil, fmt.Errorf("nothing to review: provide a focus, paths, a commit_range, or run inside a workflow with a plan")
 	}
 
-	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges)
+	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges, args.CommitRange)
 	if srcErr != nil {
 		return "", "", nil, srcErr
 	}
@@ -738,9 +744,10 @@ func (a *App) mashuraReview(ctx context.Context, tc proxy.ToolCall) (question, b
 // Wakil-read sources.
 func (a *App) mashuraDebug(ctx context.Context, tc proxy.ToolCall) (question, briefing string, receipts []mashuraSourceMeta, err error) {
 	var args struct {
-		Symptom    string      `json:"symptom"`
-		Paths      []string    `json:"paths"`
-		PathRanges []PathRange `json:"path_ranges"`
+		Symptom     string      `json:"symptom"`
+		Paths       []string    `json:"paths"`
+		PathRanges  []PathRange `json:"path_ranges"`
+		CommitRange string      `json:"commit_range"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
 		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
@@ -750,7 +757,7 @@ func (a *App) mashuraDebug(ctx context.Context, tc proxy.ToolCall) (question, br
 		return "", "", nil, fmt.Errorf("symptom is required")
 	}
 
-	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges)
+	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges, args.CommitRange)
 	if srcErr != nil {
 		return "", "", nil, srcErr
 	}
@@ -791,16 +798,21 @@ func (a *App) mashuraDebugTraces() string {
 	return strings.Join(lines, "\n")
 }
 
-// mashuraReadSources reads paths (files or directories) and path_ranges from the
-// executor and assembles a ## Sources section. Returns the section text, per-file
-// receipts, and a pre-API error for bad (not found) paths.
+// mashuraReadSources reads paths (files or directories), path_ranges, and an
+// optional commit range from the executor and assembles a ## Sources section.
+// commitRange ("" = none) is a git revision range such as "a..b" or "HEAD~3";
+// its `git diff` is included as one labelled block so the reviewer sees the
+// CHANGES rather than a HEAD snapshot. Returns the section text, per-file
+// receipts, and a pre-API error for bad (not found) paths or a bad range.
 //
 // Capping rules:
 //   - Files are included WHOLE (or the requested line range, whole). Nothing is
 //     clipped or omitted; an oversized total fails the call (mashuraCheckSize)
 //     and the reviewer dispatcher decides whole / labelled parts / error.
-func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []PathRange) (section string, receipts []mashuraSourceMeta, err error) {
-	if len(paths) == 0 && len(ranges) == 0 {
+//   - A commit range's diff is one block; a diff past the per-block sanity bound
+//     fails the call rather than being cut (the reviewer must see every hunk).
+func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []PathRange, commitRange string) (section string, receipts []mashuraSourceMeta, err error) {
+	if len(paths) == 0 && len(ranges) == 0 && strings.TrimSpace(commitRange) == "" {
 		return "", nil, nil
 	}
 	if a.Exec == nil {
@@ -900,10 +912,71 @@ func (a *App) mashuraReadSources(ctx context.Context, paths []string, ranges []P
 		fmt.Fprintf(&sb, "── %s (%d lines) ──\n%s\n\n", label, len(shownLines), shownBody)
 	}
 
+	// Commit range: the diff of a..b as one labelled block. Reviewing a range
+	// (not a HEAD snapshot) is what lets a reviewer see a change set as a whole.
+	if cr := strings.TrimSpace(commitRange); cr != "" {
+		diff, diffTrunc, diffErr := a.mashuraCommitDiff(ctx, cr)
+		if diffErr != nil {
+			return "", nil, fmt.Errorf("commit_range %q: %w", cr, diffErr)
+		}
+		if diffTrunc {
+			// Never cut a diff: a partial diff reviewed silently is worse than
+			// a loud failure. The sanity bound below covers the same ground for
+			// the total; this specific error names the range.
+			return "", nil, fmt.Errorf("commit_range %q diff exceeds the %d-byte limit — nothing was sent; narrow the range (e.g. a..b for a smaller span)",
+				cr, mashuraBriefingSanity)
+		}
+		total += len(diff)
+		if total > mashuraBriefingSanity {
+			return "", nil, fmt.Errorf("commit_range %q diff plus sources exceed the %d-byte sanity limit — nothing was sent; narrow the range or attach fewer sources", cr, mashuraBriefingSanity)
+		}
+		lines := strings.Count(diff, "\n") + 1
+		receipts = append(receipts, mashuraSourceMeta{
+			Path:  "diff " + cr,
+			Bytes: len(diff),
+			Lines: lines,
+			Total: lines,
+		})
+		fmt.Fprintf(&sb, "── diff %s (%d lines) ──\n%s\n\n", cr, lines, diff)
+	}
+
 	if len(receipts) == 0 {
 		return "", nil, nil
 	}
 	return sb.String(), receipts, nil
+}
+
+// mashuraCommitDiff returns `git diff <range>` for a commit range. It reuses the
+// same hardening as the interactive git_diff (no external diff, no textconv, no
+// pager, no hooks). range must be validated by validateGitRef-style checks; this
+// helper rejects whitespace/NUL and a leading '-', ':' or '^' so a range can
+// never smuggle an option. truncated is true when the diff passed the sane bound.
+func (a *App) mashuraCommitDiff(ctx context.Context, commitRange string) (diff string, truncated bool, err error) {
+	if strings.ContainsAny(commitRange, " \t\n\r\x00") {
+		return "", false, fmt.Errorf("range must not contain whitespace or NUL")
+	}
+	if strings.HasPrefix(commitRange, "-") || strings.HasPrefix(commitRange, ":") || strings.HasPrefix(commitRange, "^") {
+		return "", false, fmt.Errorf("range must not start with '-', ':' or '^'")
+	}
+	// Validate through the same gate the git tools use (defence in depth).
+	if err := validateGitRef(commitRange); err != nil {
+		return "", false, err
+	}
+	cmd := gitBaseArgs() + " diff --no-ext-diff --no-textconv " + shellQuote(commitRange)
+	full := gitBaseEnv() + fmt.Sprintf(
+		`tmp=$(mktemp) && git %s > "$tmp" 2>&1; rc=$?; head -c %d "$tmp"; rm -f "$tmp"; exit $rc`,
+		cmd, mashuraBriefingSanity+1)
+	out, runErr := a.Exec.RunShell(ctx, full)
+	if runErr != nil {
+		return "", false, fmt.Errorf("%s", classifyGitError(out, runErr))
+	}
+	if len(out) > mashuraBriefingSanity {
+		return "", true, nil
+	}
+	if strings.ContainsRune(out, 0) {
+		return "", false, fmt.Errorf("binary content in diff — not reviewable")
+	}
+	return out, false, nil
 }
 
 // mashuraExpandPath returns the file paths for a given path:
@@ -986,10 +1059,11 @@ func (a *App) mashuraLogReceipts(ctx context.Context, receipts []mashuraSourceMe
 // + options + Wakil-read sources.
 func (a *App) mashuraDecide(ctx context.Context, tc proxy.ToolCall) (question, briefing string, receipts []mashuraSourceMeta, err error) {
 	var args struct {
-		Question   string      `json:"question"`
-		Options    string      `json:"options"`
-		Paths      []string    `json:"paths"`
-		PathRanges []PathRange `json:"path_ranges"`
+		Question    string      `json:"question"`
+		Options     string      `json:"options"`
+		Paths       []string    `json:"paths"`
+		PathRanges  []PathRange `json:"path_ranges"`
+		CommitRange string      `json:"commit_range"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
 		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
@@ -1003,7 +1077,7 @@ func (a *App) mashuraDecide(ctx context.Context, tc proxy.ToolCall) (question, b
 		return "", "", nil, fmt.Errorf("options are required")
 	}
 
-	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges)
+	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges, args.CommitRange)
 	if srcErr != nil {
 		return "", "", nil, srcErr
 	}
@@ -1028,9 +1102,10 @@ func (a *App) mashuraDecide(ctx context.Context, tc proxy.ToolCall) (question, b
 // Wakil-read evidence sources.
 func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, briefing string, receipts []mashuraSourceMeta, err error) {
 	var args struct {
-		Claim      string      `json:"claim"`
-		Paths      []string    `json:"paths"`
-		PathRanges []PathRange `json:"path_ranges"`
+		Claim       string      `json:"claim"`
+		Paths       []string    `json:"paths"`
+		PathRanges  []PathRange `json:"path_ranges"`
+		CommitRange string      `json:"commit_range"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
 		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
@@ -1040,7 +1115,7 @@ func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, br
 		return "", "", nil, fmt.Errorf("claim is required")
 	}
 
-	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges)
+	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges, args.CommitRange)
 	if srcErr != nil {
 		return "", "", nil, srcErr
 	}

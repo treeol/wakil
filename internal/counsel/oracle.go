@@ -1189,7 +1189,7 @@ func FormatPanelResult(results []PanelMemberResult) string {
 		r := results[0]
 		switch {
 		case r.Void:
-			sb.WriteString("[" + r.Err.Error() + "]")
+			sb.WriteString("[review NOT obtained — " + r.Err.Error() + "]")
 		case r.Err != nil:
 			sb.WriteString("[mashūra error: " + r.Err.Error() + "]")
 		default:
@@ -1205,7 +1205,7 @@ func FormatPanelResult(results []PanelMemberResult) string {
 		fmt.Fprintf(&sb, "── %s ──\n", r.Model)
 		switch {
 		case r.Void:
-			fmt.Fprintf(&sb, "[%s]", r.Err.Error())
+			fmt.Fprintf(&sb, "[review NOT obtained — %s]", r.Err.Error())
 		case r.Err != nil:
 			fmt.Fprintf(&sb, "[error: %s]", r.Err.Error())
 		default:
@@ -1216,16 +1216,25 @@ func FormatPanelResult(results []PanelMemberResult) string {
 	return sb.String()
 }
 
-// VoidHeader is the panel-wide banner printed when any reply is VOID.
+// VoidHeader is the panel-wide banner printed when any reply is VOID. A reply
+// that stayed VOID through the automatic retry is reported as "not obtained".
 func VoidHeader(results []PanelMemberResult) string {
 	var models []string
+	notObtained := false
 	for _, r := range results {
 		if r.Void {
 			models = append(models, r.PrefixedModel)
+			if r.Log != nil && r.Log.VoidNotObtained {
+				notObtained = true
+			}
 		}
 	}
-	return fmt.Sprintf("[mashūra round NOT COMPLETED — VOID reply from %s; this is not a review round and not \"no findings\" — the document was not reviewed by every reviewer; do not count it]",
-		strings.Join(models, ", "))
+	verb := "was not reviewed by every reviewer"
+	if notObtained {
+		verb = "was NOT obtained (VOID on the automatic retry)"
+	}
+	return fmt.Sprintf("[mashūra round NOT COMPLETED — VOID reply from %s; the review %s — this is not a review round and not \"no findings\"; do not count it]",
+		strings.Join(models, ", "), verb)
 }
 
 // logFooter renders the per-reviewer "what was sent" line ("" without a Log).
@@ -1375,6 +1384,45 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 	}
 	ctxTokens, configuredMax := limitsFor(ctx, ccfg, prefixed, model)
 	out := dispatchReview(ctx, prefixed, ctxTokens, configuredMax, ccfg.MinAnswerTokens, question, briefing, appendix, send)
+	// A VOID reply is retried ONCE automatically before it is reported: a
+	// single re-dispatch (same member, same document, one more attempt) often
+	// clears a transient empty/truncated/missed-citation reply. Only a SECOND
+	// VOID is reported, and it is reported as "not obtained" — never merged,
+	// never a round, never "no findings". A hard provider error (HTTP 4xx/5xx)
+	// is not retried here: withProviderRetry already retried 429/5xx once, and
+	// a 4xx can never succeed.
+	if isVoid(out.Err) {
+		first := out
+		firstReason := out.Err.Error()
+		second := dispatchReview(ctx, prefixed, ctxTokens, configuredMax, ccfg.MinAnswerTokens, question, briefing, appendix, send)
+		// Fold the first attempt's usage into the second's so billing reflects
+		// every call made.
+		second.Usage.InputTokens += first.Usage.InputTokens
+		second.Usage.OutputTokens += first.Usage.OutputTokens
+		second.Usage.ReasoningTokens += first.Usage.ReasoningTokens
+		second.Usage.WebSearchRequests += first.Usage.WebSearchRequests
+		if second.Log != nil {
+			second.Log.VoidRetried = true
+			second.Log.ReasoningTokens += first.Usage.ReasoningTokens
+			if first.Log != nil {
+				second.Log.FinishReasons = append(append([]string(nil), first.Log.FinishReasons...), second.Log.FinishReasons...)
+			}
+		}
+		if second.Err == nil {
+			out = second // the retry produced a review
+		} else {
+			// Still not obtained. The member stays VOID even if the retry
+			// returned a hard provider error (it is not a review outcome): the
+			// report names BOTH — the first reply's reason (the more
+			// diagnostic one) and that the automatic retry also failed.
+			why := second.Err.Error()
+			out = second
+			out.Err = &VoidError{Reason: fmt.Sprintf("%s; the automatic retry also failed (%s)", firstReason, why)}
+			if out.Log != nil {
+				out.Log.VoidNotObtained = true
+			}
+		}
+	}
 	if out.Log != nil {
 		out.Log.ReasoningTokens = out.Usage.ReasoningTokens
 		// AnswerTokens = output minus reasoning, only when the provider

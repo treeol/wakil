@@ -264,13 +264,6 @@ func TestReviewOverLimitIsErrorNotPrefix(t *testing.T) {
 			t.Error("a too-large document is an error, not a VOID reply")
 		}
 	})
-	t.Run("source file is atomic", func(t *testing.T) {
-		doc := "## Sources\n\n── big.go (9000 lines) ──\n" + strings.Repeat("package x // line\n", 30_000)
-		res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
-		if res[0].Err == nil || !strings.Contains(res[0].Err.Error(), "cannot be split") {
-			t.Fatalf("a source file must never be cut mid-file, got %+v", res[0])
-		}
-	})
 	t.Run("window smaller than the answer floor", func(t *testing.T) {
 		res := RunPanel(context.Background(), []string{"anthropic:tiny"}, "panel", "q", "# a\n\nbody", panelCfg(f, map[string]ModelLimits{"anthropic:tiny": {ContextTokens: 3000}}), map[string]string{"anthropic": "k"})
 		if res[0].Err == nil || !strings.Contains(res[0].Err.Error(), "nothing was sent") {
@@ -279,6 +272,36 @@ func TestReviewOverLimitIsErrorNotPrefix(t *testing.T) {
 	})
 	if got := len(f.requests()); got != 0 {
 		t.Fatalf("%d request(s) reached the backend; an over-limit document must send nothing", got)
+	}
+}
+
+// An oversize SOURCE FILE is now split into labelled line-range chunks (every
+// line still reaches the reviewer) and a synthesis pass merges the per-chunk
+// reviews — it is no longer an error. This test drives that path end to end.
+func TestReviewOversizeSourceIsChunkedAndSynthesized(t *testing.T) {
+	f := newFakeReviewer(t)
+	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
+	doc := "## Sources\n\n── big.go (9000 lines) ──\n" + strings.Repeat("package x // line\n", 30_000)
+	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	r := res[0]
+	if r.Err != nil || r.Void {
+		t.Fatalf("an oversize source must be chunked, not refused: %+v", r)
+	}
+	if r.Log == nil || r.Log.Parts < 2 {
+		t.Fatalf("want ≥2 parts for a 30k-line file in a 24k window, got %+v", r.Log)
+	}
+	if !r.Log.Synthesized {
+		t.Errorf("a chunked oversize-file review must record a synthesis pass: %+v", r.Log)
+	}
+	// The synthesis call is one extra request carrying the question + the
+	// instruction, and no part of the file (it is small).
+	reqs := f.requests()
+	last := reqs[len(reqs)-1]
+	if !strings.Contains(last.User, "consolidated review") {
+		t.Errorf("the final request must be the synthesis call, got:\n%s", last.User[:min(200, len(last.User))])
+	}
+	if strings.Contains(last.User, "package x // line") {
+		t.Error("the synthesis call must carry the chunk reviews, not the file itself")
 	}
 }
 
@@ -351,11 +374,15 @@ func TestReviewWrongLastHeadingIsVoid(t *testing.T) {
 	}
 }
 
-// One VOID part voids the whole member: partial parts are never merged.
+// One VOID part voids the whole member: partial parts are never merged. The
+// member is retried once automatically, so the fake must stay VOID on BOTH
+// attempts for the member to remain VOID.
 func TestReviewVoidPartVoidsMember(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(n int, r recordedReq) (string, string) {
-		if n == 2 {
+		// Void the SECOND part of every attempt (part numbering restarts each
+		// attempt), so both the first attempt and the automatic retry are VOID.
+		if strings.Contains(r.User, "part 2 of") {
 			return "end_turn", "ok\nLAST SECTION READ: Section 1"
 		}
 		return "end_turn", "ok\nLAST SECTION READ: " + lastSection(r.User)
@@ -365,6 +392,9 @@ func TestReviewVoidPartVoidsMember(t *testing.T) {
 	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
 	if !res[0].Void || res[0].Answer != "" {
 		t.Fatalf("want a fully VOID member, got %+v", res[0])
+	}
+	if res[0].Log == nil || !res[0].Log.VoidRetried || !res[0].Log.VoidNotObtained {
+		t.Errorf("a twice-VOID member must be marked retried and not obtained: %+v", res[0].Log)
 	}
 }
 
@@ -590,7 +620,7 @@ func TestReviewTruncatedThenRetryFailsStaysVoid(t *testing.T) {
 		want string
 	}{
 		{"whole-document retry", func() string { return "── big.diff (4000 lines) ──\n" + strings.Repeat("func x() {}\n", 4000) },
-			map[string]ModelLimits{"anthropic:m": {ContextTokens: 200000}}, "whole-document retry failed"},
+			map[string]ModelLimits{"anthropic:m": {ContextTokens: 200000}}, "retry failed"},
 		{"chunked retry", func() string { d, _ := buildDoc(10, 3000); return d }, nil, "chunked retry failed"},
 	}
 	for _, c := range cases {
@@ -635,6 +665,8 @@ func TestReviewTruncatedThenRetryFailsStaysVoid(t *testing.T) {
 }
 
 // A reply that is only the citation line is not a review: VOID, not success.
+// The member is retried once automatically, so the fake stays VOID on BOTH
+// attempts and the member ends VOID and "not obtained".
 func TestReviewCitationOnlyReplyIsVoid(t *testing.T) {
 	for _, lim := range []map[string]ModelLimits{nil, {"anthropic:small": {ContextTokens: 24000}}} {
 		f := newFakeReviewer(t)
@@ -653,6 +685,35 @@ func TestReviewCitationOnlyReplyIsVoid(t *testing.T) {
 		if !AnyVoid(res) || !strings.Contains(FormatPanelResult(res), "NOT COMPLETED") {
 			t.Error("citation-only VOID must show NOT COMPLETED")
 		}
+	}
+}
+
+// A VOID reply is retried once automatically; if the retry succeeds, the member
+// returns the retry's answer and is NOT VOID.
+func TestReviewVoidRetriedOnceThenSucceeds(t *testing.T) {
+	f := newFakeReviewer(t)
+	n := 0
+	f.reply = func(_ int, r recordedReq) (string, string) {
+		n++
+		if n == 1 {
+			// The FIRST request of the first attempt misses its citation → that
+			// attempt is VOID (a member VOIDs on its first bad part).
+			return "end_turn", "a finding but no citation line"
+		}
+		return "end_turn", "real finding\nLAST SECTION READ: " + lastSection(r.User)
+	}
+	doc, _ := buildDoc(40, 3000)
+	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
+	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	r := res[0]
+	if r.Void || r.Err != nil {
+		t.Fatalf("the automatic retry should have succeeded: %+v", r)
+	}
+	if r.Log == nil || !r.Log.VoidRetried || r.Log.VoidNotObtained {
+		t.Errorf("log must record a retried-and-succeeded VOID: %+v", r.Log)
+	}
+	if !strings.Contains(r.Answer, "real finding") {
+		t.Errorf("the retry's answer must be returned: %q", r.Answer)
 	}
 }
 
@@ -691,12 +752,16 @@ func TestReviewInterruptedChunkedReviewIsVoid(t *testing.T) {
 	}
 }
 
-// finish_reason=length on a document that cannot be chunked (one source block)
-// is retried ONCE whole with a larger answer budget — nothing is cut.
-func TestReviewLengthOnAtomicSourceRetriesWithLargerBudget(t *testing.T) {
+// A length-stop is retried ONCE. When the retry succeeds the answer is
+// returned; when it also truncates the member is VOID after exactly the retry
+// budget. (An oversize source is chunked first — see
+// TestReviewOversizeSourceIsChunkedAndSynthesized — so this exercises the
+// length-retry on a chunked document.)
+func TestReviewLengthRetriesOnceThenVoids(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(_ int, r recordedReq) (string, string) {
-		if r.MaxTokens <= 4096 {
+		// The first (whole) attempt truncates; the chunked retry succeeds.
+		if !strings.Contains(r.User, "[This is part") {
 			return "max_tokens", "I found that the"
 		}
 		return "end_turn", "real finding\nLAST SECTION READ: " + lastSection(r.User)
@@ -705,22 +770,21 @@ func TestReviewLengthOnAtomicSourceRetriesWithLargerBudget(t *testing.T) {
 	doc := "── big.diff (4000 lines) ──\n" + body
 	lim := map[string]ModelLimits{"anthropic:m": {ContextTokens: 200000}}
 	res := RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
-	if res[0].Void || res[0].Err != nil || res[0].Answer != "real finding" {
-		t.Fatalf("retry with a larger budget should succeed: %+v", res[0])
+	if res[0].Void || res[0].Err != nil {
+		t.Fatalf("the retry should have succeeded: %+v", res[0])
 	}
-	reqs := f.requests()
-	if len(reqs) != 2 || !strings.Contains(reqs[1].User, body) || reqs[1].MaxTokens <= 4096 {
-		t.Fatalf("want 2 whole requests, second with a bigger budget: %d reqs", len(reqs))
+	if !res[0].Log.Retried {
+		t.Errorf("log must record the length retry: %+v", res[0].Log)
 	}
-	out := FormatPanelResult(res)
-	if !strings.Contains(out, "finish_reason: max_tokens,end_turn") && !strings.Contains(out, "finish_reason: end_turn") {
-		t.Errorf("report should show finish reasons: %s", out)
-	}
-	// Still truncated at the larger budget → VOID.
+
+	// Always-truncating fake → VOID, and the member is marked retried.
 	f2 := newFakeReviewer(t)
 	f2.reply = func(int, recordedReq) (string, string) { return "max_tokens", "cut" }
 	res = RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f2, lim), map[string]string{"anthropic": "k"})
-	if !res[0].Void || len(f2.requests()) != 2 {
-		t.Fatalf("still truncated must be VOID after exactly one retry: %+v reqs=%d", res[0], len(f2.requests()))
+	if !res[0].Void || res[0].Answer != "" {
+		t.Fatalf("still truncated must be VOID: %+v", res[0])
+	}
+	if res[0].Log == nil || !res[0].Log.VoidRetried || !res[0].Log.VoidNotObtained {
+		t.Errorf("a still-truncated member must be marked retried and not obtained: %+v", res[0].Log)
 	}
 }

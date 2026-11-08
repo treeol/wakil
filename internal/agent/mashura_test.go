@@ -321,6 +321,62 @@ func TestSourcesReadFromDisk(t *testing.T) {
 	}
 }
 
+// A commit_range arg attaches the `git diff <range>` output as one labelled
+// source block, so the reviewer sees a change set rather than a HEAD snapshot.
+func TestMashuraCommitRangeAttachesDiff(t *testing.T) {
+	app, fe := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	fe.shellResult = "diff --git a/x.go b/x.go\n+added line\n-removed line\n"
+
+	_, briefing, receipts, err := app.mashuraReview(context.Background(),
+		tcArgs("mashura__review", `{"focus":"review the range","commit_range":"a1b2c3..d4e5f6"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(briefing, "── diff a1b2c3..d4e5f6 (") {
+		t.Errorf("briefing must carry the diff under a labelled block:\n%s", briefing)
+	}
+	if !strings.Contains(briefing, "+added line") || !strings.Contains(briefing, "-removed line") {
+		t.Error("the diff body must be included whole")
+	}
+	if len(receipts) != 1 || receipts[0].Path != "diff a1b2c3..d4e5f6" {
+		t.Errorf("expected one receipt for the diff, got %v", receipts)
+	}
+	// The command actually ran must be the hardened git diff on the range.
+	var ran bool
+	for _, c := range fe.shellCalls {
+		if strings.Contains(c, "diff --no-ext-diff --no-textconv") && strings.Contains(c, "a1b2c3..d4e5f6") {
+			ran = true
+		}
+	}
+	if !ran {
+		t.Errorf("no hardened git diff ran for the range; calls: %v", fe.shellCalls)
+	}
+}
+
+// A commit_range with leading '-' never runs — it must not smuggle a git option.
+func TestMashuraCommitRangeRejectsOptionLike(t *testing.T) {
+	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	_, _, _, err := app.mashuraReview(context.Background(),
+		tcArgs("mashura__review", `{"focus":"x","commit_range":"--upload-pack=evil"}`))
+	if err == nil || !strings.Contains(err.Error(), "range must not start with") {
+		t.Fatalf("an option-like range must be rejected, got %v", err)
+	}
+}
+
+// A bare focus with no paths still builds a briefing (the commit-range arg is
+// optional and must not be required for the plain review path).
+func TestMashuraReviewWithoutCommitRange(t *testing.T) {
+	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	_, briefing, receipts, err := app.mashuraReview(context.Background(),
+		tcArgs("mashura__review", `{"focus":"check it"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(briefing, "── diff ") || len(receipts) != 0 {
+		t.Errorf("no commit_range → no diff block: receipts=%v", receipts)
+	}
+}
+
 // A free-text "context" field in the tool args (legacy / model hallucination)
 // is silently ignored — it never appears in the briefing as a Sources section.
 func TestContextFieldIgnoredNotSources(t *testing.T) {

@@ -11,8 +11,8 @@ Rubin timeline deltas (`rubin-khatam.json` = B1, `rubin-khatam-b2.json` = B2):
 | start to prompt | 2990 ms | **149 ms** | probes, hisn reconcile and sandbox start deferred past the prompt |
 | exit | 2780 ms | 5132 ms | B2 traced the ilm `close` at **5002 ms** |
 
-The B1 exit did not instrument the ilm emitter close (that span was added in B1's
-own instrumentation), so the split between the `Release` poll and the ilm flush
+The B1 exit did not instrument the ilm emitter close (that span was added in B2's
+instrumentation), so the split between the `Release` poll and the ilm flush
 in B1 is not observable from the B1 file. In B2 the ilm `close` step is
 **5002 ms** of the 5132 ms exit — a flush to an unreachable ilm endpoint hitting
 the sender's 5 s stop cap. Removing the emitter (ADR 0013) drops that step

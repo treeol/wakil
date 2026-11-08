@@ -84,6 +84,19 @@ type ReviewLog struct {
 	AnswerTokens int64
 	// ProviderRetried is true when a 429/5xx provider error was retried once.
 	ProviderRetried bool
+	// VoidRetried is true when the member's reply was VOID and was retried once
+	// automatically before being reported.
+	VoidRetried bool
+	// VoidNotObtained is true when even the automatic retry stayed VOID: the
+	// review was NOT obtained. It is reported as such (never merged, never a
+	// round, never "no findings").
+	VoidNotObtained bool
+	// Synthesized is true when an oversize source was split into line-range
+	// chunks and a final synthesis call merged the per-chunk reviews.
+	Synthesized bool
+	// SynthesisTokensSent is the estimated input tokens of the synthesis call
+	// (0 when no synthesis ran).
+	SynthesisTokensSent int
 	// ProviderError is the provider's non-200 refusal (e.g. "HTTP 400: …")
 	// when the call ended with one. It is a hard error — not VOID and not a
 	// review outcome — and is stated in the footer.
@@ -173,6 +186,56 @@ func AnyVoid(results []PanelMemberResult) bool {
 		}
 	}
 	return false
+}
+
+// isVoid reports whether err is a *VoidError (a reply that must not be trusted).
+func isVoid(err error) bool {
+	var v *VoidError
+	return errors.As(err, &v)
+}
+
+// anyOversizeFile reports whether any part carries a line-range chunk of an
+// oversize source file, warranting a synthesis pass.
+func anyOversizeFile(parts []part) bool {
+	for _, p := range parts {
+		if p.oversizeFile {
+			return true
+		}
+	}
+	return false
+}
+
+// synthesizeInstruction is appended to the question for the synthesis call so
+// the model produces ONE review of the document from the per-chunk reviews,
+// not a repeat of them.
+const synthesizeInstruction = "The document was too large to send in one call, so it was split into labelled line-range chunks and each chunk was reviewed separately. The reviews of those chunks were merged above. Produce a SINGLE consolidated review of the whole document: deduplicate, resolve contradictions, and keep every distinct finding with its location. Do not re-review the document; consolidate the chunk reviews."
+
+// synthesizeReview merges the per-part answers of a chunked oversize-file review
+// with one more call to the same model. The input is the merged chunk answers
+// (small), so it fits; the reply is checked for emptiness and returned.
+func synthesizeReview(ctx context.Context, question, merged string, usable, floor, reserve int, send sendFunc, log *ReviewLog) (reviewOutcome, error) {
+	if strings.TrimSpace(merged) == "" {
+		return reviewOutcome{}, errors.New("no chunk answers to synthesize")
+	}
+	q := question
+	// The wrapper framing tells the model this is a synthesis of prior reviews.
+	briefing := merged
+	inChars := len(oracleSystemPrompt) + len(q) + len(synthesizeInstruction) + len("\n\nContext:\n") + len(briefing)
+	inTok := estTokens(inChars)
+	if inTok+floor+reserve > usable {
+		return reviewOutcome{}, fmt.Errorf("the merged chunk reviews are ~%d tokens, too large to synthesize in a %d-token window", inTok, usable)
+	}
+	want := max(min(floor*4, usable-inTok-reserve), floor)
+	log.SynthesisTokensSent = inTok
+	q += "\n\n" + synthesizeInstruction
+	ans, usage, err := send(ctx, q, briefing, want)
+	if err != nil {
+		return reviewOutcome{}, err
+	}
+	if strings.TrimSpace(ans) == "" {
+		return reviewOutcome{}, errors.New("the synthesis reply was empty")
+	}
+	return reviewOutcome{Answer: ans, Usage: usage}, nil
 }
 
 // sendFunc performs ONE provider call with an explicit answer budget.
@@ -405,6 +468,10 @@ type piece struct {
 	text  string
 	label string // owning block label ("" for preamble)
 	cont  bool   // continuation of a split block (gets a "(continued)" header)
+	// fileSplit is true when this piece is one line-range chunk of an oversize
+	// SOURCE FILE (not a markdown section). Such a document gets a synthesis
+	// pass so the per-chunk findings are merged into one review.
+	fileSplit bool
 }
 
 // part is one request's worth of briefing.
@@ -413,6 +480,9 @@ type part struct {
 	body        string // new (non-overlap) material only
 	lastHeading string // last markdown heading in body ("" if none)
 	lastLabel   string // last block label in body ("" if none)
+	// oversizeFile is true when the body contains a line-range chunk of an
+	// oversize source file. The dispatcher then runs a synthesis pass.
+	oversizeFile bool
 }
 
 func pieceText(p piece) string {
@@ -446,8 +516,20 @@ func planParts(briefing string, budgetChars int) ([]part, error) {
 			continue
 		}
 		if unitAtomic(u) {
-			return nil, fmt.Errorf("source %q is %d bytes (~%d tokens) and cannot be split (limit %d bytes per part); source files are never cut mid-file",
-				u.label, len(u.text), estTokens(len(u.text)), bodyMax)
+			// An oversize SOURCE FILE is split into line-range chunks rather
+			// than refused: the reviewer sees every line, each chunk labelled
+			// with the file and its range, and a synthesis pass merges the
+			// per-chunk findings. This is a labelled partition of the file, not
+			// a silent truncation.
+			chunks, err := splitByLines(u.text, bodyMax-len(u.label)-48)
+			if err != nil {
+				return nil, fmt.Errorf("source %q is %d bytes (~%d tokens) and cannot be split (limit %d bytes per part): %w",
+					u.label, len(u.text), estTokens(len(u.text)), bodyMax, err)
+			}
+			for i, c := range chunks {
+				pieces = append(pieces, piece{text: c.text, label: u.label, cont: i > 0, fileSplit: true})
+			}
+			continue
 		}
 		// Splittable (markdown/text): headings. Reserve room for a
 		// continuation header on every non-first piece.
@@ -467,6 +549,7 @@ func planParts(briefing string, budgetChars int) ([]part, error) {
 	var parts []part
 	var cur strings.Builder
 	var prevBody string
+	curOversize := false
 	flush := func() {
 		if cur.Len() == 0 {
 			return
@@ -477,9 +560,11 @@ func planParts(briefing string, budgetChars int) ([]part, error) {
 			overlap = tailOverlap(prevBody, overlapChars)
 		}
 		p := makePart(body, nil, overlap)
+		p.oversizeFile = curOversize
 		parts = append(parts, p)
 		prevBody = body
 		cur.Reset()
+		curOversize = false
 	}
 	for _, pc := range pieces {
 		t := pieceText(pc)
@@ -487,12 +572,46 @@ func planParts(briefing string, budgetChars int) ([]part, error) {
 			flush()
 		}
 		cur.WriteString(t)
+		if pc.fileSplit {
+			curOversize = true
+		}
 	}
 	flush()
 	if len(parts) > maxPartsPerMember {
 		return nil, fmt.Errorf("the document needs %d parts (limit %d) for this model's context window", len(parts), maxPartsPerMember)
 	}
 	return parts, nil
+}
+
+// splitByLines partitions text into contiguous line-range chunks of at most max
+// bytes each. Used only for oversize SOURCE FILES, where a heading split is not
+// available: every line still reaches the reviewer, in a labelled chunk, and a
+// synthesis pass merges the chunks' findings. Returns an error only when a
+// single line exceeds max (impossible for real source; a 4 MB log line, say),
+// so a genuinely unsplittable blob still fails loudly.
+func splitByLines(text string, max int) ([]piece, error) {
+	if max < 200 {
+		return nil, fmt.Errorf("the context window leaves only %d bytes per chunk — too small to split a file", max)
+	}
+	var out []piece
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, piece{text: cur.String()})
+			cur.Reset()
+		}
+	}
+	for _, line := range strings.SplitAfter(text, "\n") {
+		if len(line) > max {
+			return nil, fmt.Errorf("a %d-byte line exceeds the %d-byte chunk limit", len(line), max)
+		}
+		if cur.Len() > 0 && cur.Len()+len(line) > max {
+			flush()
+		}
+		cur.WriteString(line)
+	}
+	flush()
+	return out, nil
 }
 
 // tailOverlap returns up to maxChars from the end of prev, starting at a line
@@ -681,8 +800,8 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 		parts, planErr = planParts(briefing, docBudgetChars)
 	}
 	if planErr != nil {
-		return reviewOutcome{Log: log, Err: fmt.Errorf("document does not fit %s (context %d tokens, ~%d tokens needed): %w — nothing was sent",
-			label, ctxTokens, estTokens(len(briefing)+overheadChars), planErr)}
+		return reviewOutcome{Log: log, Err: fmt.Errorf("document does not fit %s (input ~%d tokens needed vs %d-token context window; usable input budget ~%d tokens after the %d-token answer floor and reserve): %w — nothing was sent",
+			label, estTokens(len(briefing)+overheadChars), ctxTokens, inputBudget, floor, planErr)}
 	}
 
 	run := func(parts []part, want int) (reviewOutcome, bool) {
@@ -834,6 +953,26 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 	out.Log = log
 	if out.Err != nil {
 		out.Answer = "" // never merge or show a partial reply
+	}
+	// Synthesis pass: when an oversize SOURCE FILE was split into line-range
+	// chunks, the per-chunk findings are merged by one more call to the SAME
+	// model — the chunks are a labelled partition, and the reader is asked to
+	// produce a single review of the file from all of them. The synthesis input
+	// is the merged per-part answers (far smaller than the document), so it
+	// fits; a synthesis failure keeps the merged parts (they are each a real
+	// review of a real range) and says so.
+	if out.Err == nil && len(parts) > 1 && anyOversizeFile(parts) {
+		synth, serr := synthesizeReview(ctx, question, out.Answer, usable, floor, answerReserveTokens, send, log)
+		if serr != nil {
+			log.Why = "synthesis pass failed (" + serr.Error() + "); showing the per-part reviews"
+		} else {
+			out.Answer = synth.Answer
+			out.Usage.InputTokens += synth.Usage.InputTokens
+			out.Usage.OutputTokens += synth.Usage.OutputTokens
+			out.Usage.ReasoningTokens += synth.Usage.ReasoningTokens
+			out.Usage.WebSearchRequests += synth.Usage.WebSearchRequests
+			log.Synthesized = true
+		}
 	}
 	diag.Printf("mashura: %s sent ~%d tokens in %d part(s), context %d, finish_reason %v, read through %q, err=%v\n", label, log.TokensSent, log.Parts, ctxTokens, log.FinishReasons, log.ReadThrough, out.Err)
 	return out

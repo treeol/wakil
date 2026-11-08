@@ -1004,7 +1004,7 @@ func (f *wiringFacade) Close() error {
 	f.mu.Unlock()
 
 	// Fire on_stop lifecycle hooks before tearing down.
-	endStop := timeline.Begin("app on_stop hooks + session_end")
+	endStop := timeline.Begin("app on_stop hooks")
 	if app != nil {
 		app.OnStop()
 	}
@@ -1068,9 +1068,9 @@ func (f *wiringFacade) Close() error {
 	// BuildApp, which constructs a fresh MCPManager. Closing it cannot affect
 	// a sibling session.
 	//
-	// The daemon path is unaffected: it owns its App and calls
-	// CloseResources directly (cmd/wakil/daemon_server.go), never the
-	// ConversationManager, so its manager is still released exactly once.
+	// The headless path is separate: it owns its App and calls CloseResources
+	// directly (internal/wiring/headless.go), never the ConversationManager, so
+	// its manager is still released exactly once.
 	if f.resources != nil && f.resources.MCPMgr != nil {
 		endMCP := timeline.Begin("close mcp servers")
 		f.resources.MCPMgr.Close()
