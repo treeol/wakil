@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 )
@@ -130,21 +129,8 @@ func (b *Backend) listRecordIDs() []string {
 // procStart returns the kernel start time (clock ticks since boot) of pid from
 // /proc, or "" when it cannot be read (non-Linux, process gone).
 func procStart(pid int) string {
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return ""
-	}
-	s := string(data)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 {
-		return ""
-	}
-	f := strings.Fields(s[i+1:])
-	// Fields after the comm: state is field 3, starttime is field 22.
-	if len(f) < 20 {
-		return ""
-	}
-	return f[19]
+	_, start, _ := realProcOps.stat(pid)
+	return start
 }
 
 // ownerAlive reports whether the process that wrote r is still the same

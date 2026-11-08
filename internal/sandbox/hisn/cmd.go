@@ -452,41 +452,97 @@ func (p *supervisorProc) stderrText() string {
 }
 
 // procAlive reports whether pid is running AND its /proc start time matches
-// start (when start is non-empty). A pid of 0 is not alive. When start is empty
-// (non-Linux, or the process is gone and /proc cannot be read), the pid is
-// considered alive only if kill(pid, 0) succeeds — we cannot prove it is gone.
-// This mirrors ownerAlive's conservative handling.
-func procAlive(pid int, start string) bool {
+// start (when start is non-empty). A pid of 0 is not alive. A zombie (exited,
+// not yet reaped) is not alive. When the pid's /proc entry cannot be read for a
+// reason that does not prove the process is gone (no procfs, a pid namespace
+// mismatch, permissions), it is considered alive: we cannot prove otherwise.
+// This mirrors ownerAlive's conservative handling, except for one case that IS
+// provable: see procOps.alive.
+func procAlive(pid int, start string) bool { return realProcOps.alive(pid, start) }
+
+// procOps are the two kernel reads procAlive depends on, injectable so a test
+// can pin the window in which a zombie is reaped between them.
+type procOps struct {
+	signal0  func(pid int) error               // kill(pid, 0)
+	readFile func(path string) ([]byte, error) // os.ReadFile
+}
+
+var realProcOps = procOps{
+	signal0:  func(pid int) error { return syscall.Kill(pid, 0) },
+	readFile: os.ReadFile,
+}
+
+// alive implements procAlive. kill(pid, 0) alone cannot tell a zombie from a
+// running process, so /proc/<pid>/stat is read next; a zombie's reparented
+// init may reap it between the two. That leaves kill(0) saying "exists" and the
+// stat entry missing, which must NOT read as "cannot prove it is gone": with a
+// working procfs (/proc/self/stat readable), a vanished entry (ENOENT, or ESRCH
+// when the reap lands between open and read) plus a second kill(0) answering
+// ESRCH proves the process is gone.
+func (o procOps) alive(pid int, start string) bool {
 	if pid <= 0 {
 		return false
 	}
-	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
+	if err := o.signal0(pid); err != nil && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
-	if procZombie(pid) {
-		return false // exited, not yet reaped by its (new) parent
-	}
-	if start == "" {
+	state, cur, err := o.stat(pid)
+	if err != nil {
+		if procEntryGone(err) && o.procfsReadable() && errors.Is(o.signal0(pid), syscall.ESRCH) {
+			return false // reaped between kill(0) and the stat read
+		}
 		return true // cannot prove it is gone
 	}
-	cur := procStart(pid)
-	return cur == "" || cur == start
+	if state == 'Z' || state == 'X' {
+		return false // exited, not yet reaped by its (new) parent
+	}
+	return start == "" || cur == "" || cur == start
+}
+
+// procEntryGone reports whether err from reading /proc/<pid>/stat says the
+// process no longer exists: ENOENT when the entry is already gone at open, ESRCH
+// when the open succeeded on a task that was reaped before the read.
+func procEntryGone(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
+// procfsReadable reports whether a procfs is mounted at /proc, so that a
+// missing /proc/<pid> entry means the pid is gone rather than that /proc is
+// absent.
+func (o procOps) procfsReadable() bool {
+	_, err := o.readFile("/proc/self/stat")
+	return err == nil
+}
+
+// stat reads /proc/<pid>/stat: the process state letter (field 3) and the
+// start time in clock ticks (field 22, "" if the line is too short). A
+// malformed line is an error that is not ErrNotExist.
+func (o procOps) stat(pid int) (state byte, start string, err error) {
+	data, err := o.readFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, "", err
+	}
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return 0, "", errors.New("malformed /proc stat line")
+	}
+	f := strings.Fields(s[i+1:])
+	if len(f) == 0 {
+		return 0, "", errors.New("malformed /proc stat line")
+	}
+	if len(f) >= 20 {
+		start = f[19]
+	}
+	return f[0][0], start, nil
 }
 
 // procZombie reports whether pid is a zombie (/proc/<pid>/stat state Z or X).
 // A detached supervisor is reparented; until its new parent reaps it, a
 // finished one still answers kill(pid, 0).
 func procZombie(pid int) bool {
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return false
-	}
-	s := string(data)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 || i+2 >= len(s) {
-		return false
-	}
-	return s[i+2] == 'Z' || s[i+2] == 'X'
+	state, _, err := realProcOps.stat(pid)
+	return err == nil && (state == 'Z' || state == 'X')
 }
 
 // trackSupervisor finds the real supervisor process for a 0.4.1 detach session
