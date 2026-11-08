@@ -4,6 +4,21 @@ Status: **sandbox numbers, not rubin.** The "Baseline" section is B1 (measured
 before any optimisation, for reference); the "After B2" section is the same
 harness on the same host after B2. The rubin re-run is still owed.
 
+Rubin timeline deltas (`rubin-khatam.json` = B1, `rubin-khatam-b2.json` = B2):
+
+| transition | rubin B1 | rubin B2 | note |
+|---|---:|---:|---|
+| start to prompt | 2990 ms | **149 ms** | probes, hisn reconcile and sandbox start deferred past the prompt |
+| exit | 2780 ms | 5132 ms | B2 traced the ilm `close` at **5002 ms** |
+
+The B1 exit did not instrument the ilm emitter close (that span was added in B1's
+own instrumentation), so the split between the `Release` poll and the ilm flush
+in B1 is not observable from the B1 file. In B2 the ilm `close` step is
+**5002 ms** of the 5132 ms exit — a flush to an unreachable ilm endpoint hitting
+the sender's 5 s stop cap. Removing the emitter (ADR 0013) drops that step
+entirely, leaving the terminal restore plus `hisn stop`; that is measured in the
+sandbox below (116.7 ms). Rubin's post-removal exit is owed.
+
 | transition | target | where it is measured |
 |---|---:|---|
 | warm start to prompt | < 200 ms | `start`: offset of `prompt ready` |
@@ -77,7 +92,7 @@ the background once the prompt is up. Same host and harness as the baseline.
 | start | 669 ms | **51–58 ms** | < 200 ms |
 | /new | 109 ms | 107 ms | < 150 ms |
 | /resume | 87 ms | 48–63 ms | < 300 ms |
-| exit | 12 ms | 12 ms | < 300 ms |
+| exit | 12 ms | 12 ms (no live session) / 117 ms (live session) | < 300 ms |
 
 **start now meets its target** (about 12x faster). The rubin baseline put
 2990 ms on start (923 ms of it the MCP + probe + reconcile block); the same
@@ -103,10 +118,21 @@ What B2 changed, and why the *timeline still shows* the deferred phases:
 - **The Telegram approval bridge** was removed (it was the only consumer of the
   MCP long-poll teardown path the old `Close` comment guarded).
 
-`exit` also gained a fix from the rubin timeline: the 50 ms x N `Release` retry
-loop inside `close old facade` (about 2.6 s on rubin when a turn was still
-winding down) is gone. Exit now makes one release attempt and, if a turn is
-still cancelling, releases in the background rather than blocking the terminal.
+`exit` gained two fixes from the rubin timeline:
+1. The 50 ms x N `Release` retry loop inside `close old facade` (about 2.6 s on
+   rubin when a turn was still winding down) is gone. Exit now makes one release
+   attempt and, if a turn is still cancelling, releases in the background rather
+   than blocking the terminal.
+2. The ilm emitter is **removed entirely** (ADR 0013). Its `close ilm emitter`
+   step was **5002 ms of the 5132 ms rubin exit** — a flush to an unreachable
+   ilm endpoint hitting the sender's 5 s stop cap. With the emitter gone the
+   step no longer exists; `close old facade` is 0.04 ms in the sandbox.
+
+Sandbox exit after the removal, measured with a live hisn session and no
+preceding `/new` (so the `hisn stop` is included): **116.7 ms** — 12 ms to the
+terminal restore, 104.6 ms `hisn stop` (the client round trip), 0.05 ms facade
+cleanup. The standard harness reports 12 ms because it stops the session with
+the preceding `/new`, leaving nothing to stop at exit.
 
 ### Top five costs after B2 (warm median)
 
