@@ -59,6 +59,9 @@ type shared struct {
 
 	toolsOnce    sync.Once
 	sandboxTools string
+	// deferredReconcile is the startup reconcile the wiring layer runs after
+	// the first prompt (hisn orphan sweep). nil when none is installed.
+	deferredReconcile func(context.Context)
 }
 
 // BackendExecutor is an Executor built on any sandbox.Backend. It runs the
@@ -292,6 +295,20 @@ func (e *BackendExecutor) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	return s.b.Close(ctx)
+}
+
+// SetDeferredReconcile installs a closure the wiring layer runs after the first
+// prompt, off the start path (hisn's orphan reconcile). Stored on the shared
+// executor so a child executor sees it too.
+func (e *BackendExecutor) SetDeferredReconcile(fn func(context.Context)) {
+	e.shared.deferredReconcile = fn
+}
+
+// RunDeferredReconcile runs the installed deferred reconcile, if any.
+func (e *BackendExecutor) RunDeferredReconcile(ctx context.Context) {
+	if fn := e.shared.deferredReconcile; fn != nil {
+		fn(ctx)
+	}
 }
 
 // Generation implements Executor.

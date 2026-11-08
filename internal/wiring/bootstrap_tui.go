@@ -121,41 +121,49 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 			app.SetCounselMode(opts.CounselMode)
 			app.MaxCounsel = opts.CounselMax
 		}
-		// Compose staging/memory notes onto whatever exists.
-		// Run both scans concurrently (each has a 3s timeout) instead of
-		// sequentially — cuts worst-case 6s to 3s.
+		// Startup notes (staging + memory scans). This is DEFERRED off the
+		// start path: the staging scan starts the sandbox session (lazy, first
+		// use), so running it here would put the sandbox start and the scans on
+		// the first-prompt path. Instead it is appended to the facade's
+		// deferred-startup work and the note is surfaced by the
+		// deferredStartupDoneMsg repaint.
 		if opts.ComposeStartupNotes {
-			endNotes := timeline.Begin("startup notes (staging + memory scans, may start the sandbox)")
-			defer endNotes()
-			var stagingNote, memNote string
-			var noteWG sync.WaitGroup
-			if app.StagingClient != nil {
-				noteWG.Add(1)
-				go func() {
-					defer noteWG.Done()
-					scanCtx, scanCancel := context.WithTimeout(ctx, 3*time.Second)
-					if res, err := app.StagingClient.Scan(scanCtx, "", 1, ""); err == nil && len(res.Keys) > 0 {
-						stagingNote = "staging: entries restored"
-					}
-					scanCancel()
-				}()
+			prev := wf.resources.DeferredStartup
+			wf.resources.DeferredStartup = func(dctx context.Context) {
+				if prev != nil {
+					prev(dctx)
+				}
+				endNotes := timeline.Begin("startup notes (staging + memory scans, may start the sandbox)")
+				var stagingNote, memNote string
+				var noteWG sync.WaitGroup
+				if app.StagingClient != nil {
+					noteWG.Add(1)
+					go func() {
+						defer noteWG.Done()
+						scanCtx, scanCancel := context.WithTimeout(dctx, 3*time.Second)
+						if res, err := app.StagingClient.Scan(scanCtx, "", 1, ""); err == nil && len(res.Keys) > 0 {
+							stagingNote = "staging: entries restored"
+						}
+						scanCancel()
+					}()
+				}
+				if app.MemoryStore != nil {
+					noteWG.Add(1)
+					go func() {
+						defer noteWG.Done()
+						statsCtx, statsCancel := context.WithTimeout(dctx, 3*time.Second)
+						stats, _ := app.MemoryStore.Stats(statsCtx, 5)
+						statsCancel()
+						if stats != nil && stats.PendingProposed > 0 {
+							memNote = fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
+						}
+					}()
+				}
+				noteWG.Wait()
+				endNotes()
+				appendStartupNote(app, stagingNote)
+				appendStartupNote(app, memNote)
 			}
-			if app.MemoryStore != nil {
-				noteWG.Add(1)
-				go func() {
-					defer noteWG.Done()
-					statsCtx, statsCancel := context.WithTimeout(ctx, 3*time.Second)
-					stats, _ := app.MemoryStore.Stats(statsCtx, 5)
-					statsCancel()
-					if stats != nil && stats.PendingProposed > 0 {
-						memNote = fmt.Sprintf("memory: %d proposals pending", stats.PendingProposed)
-					}
-				}()
-			}
-			noteWG.Wait()
-			endNotes()
-			appendStartupNote(app, stagingNote)
-			appendStartupNote(app, memNote)
 		}
 	}
 

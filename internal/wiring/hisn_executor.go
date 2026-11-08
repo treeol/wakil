@@ -110,20 +110,36 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	hisn.SetDiagnostics(os.Stderr)
-	endOpen := timeline.Begin("hisn.Open (preflight, plan, reconcile)")
+	// Reconcile is deferred: Open skips it, and the returned closure runs it
+	// after the first prompt (the ~608ms `hisn ls --prune` round trip is off
+	// the start path). Preflight, plan and the risk check still run here.
+	opts.SkipReconcile = true
+	endOpen := timeline.Begin("hisn.Open (preflight, plan)")
 	b, err := hisn.Open(ctx, opts)
 	endOpen()
 	if err != nil {
 		return nil, err
 	}
 	h := cfg.Sandbox.Hisn
-	return exec.NewBackendExecutor(b, exec.BackendOptions{
+	be := exec.NewBackendExecutor(b, exec.BackendOptions{
 		Label:              "hisn",
 		GrantableRW:        h.GrantableRW,
 		SigningEnforced:    signingKey != "",
 		SigningKey:         signingKey,
 		AllowedSignersPath: allowedSignersPath,
-	}), nil
+	})
+	// Stash the deferred reconcile on the executor so the caller can run it
+	// after the first prompt. Best-effort; errors go to stderr (the wiring
+	// layer's errWriter is the hisn package's, not reachable here).
+	be.SetDeferredReconcile(func(rctx context.Context) {
+		end := timeline.Begin("hisn reconcile (ls --prune, orphans)")
+		err := b.Reconcile(rctx)
+		end()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hisn: orphan reconcile: %v\n", err)
+		}
+	})
+	return be, nil
 }
 
 // hisnStateDir is Wakil's per-user state root (same resolution as the other

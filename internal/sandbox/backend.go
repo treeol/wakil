@@ -114,3 +114,14 @@ type Backend interface {
 	// Close releases the backend for good (retrying any failed stop).
 	Close(ctx context.Context) error
 }
+
+// Reconciler is an optional Backend capability: a startup reconcile that can be
+// deferred off the start path (called after the first prompt). A backend that
+// supports it implements this interface; callers type-assert. hisn uses it for
+// its `ls --prune` sweep plus the owner-record orphan pass.
+type Reconciler interface {
+	// Reconcile sweeps provably-stale session directories and dead owner
+	// records. It must not disturb a live session. Failure is reported, never
+	// fatal to a working session.
+	Reconcile(ctx context.Context) error
+}

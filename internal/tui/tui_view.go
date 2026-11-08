@@ -612,6 +612,10 @@ func statusSegments(in statusLineInput) []string {
 	// (toolActivityRow), not as a segment inside it.
 	if in.model != "" {
 		segs = append(segs, dim2(in.model))
+	} else if in.modelPending {
+		// The endpoint probe has not resolved a model yet (deferred startup):
+		// show "…" so the field is visibly pending rather than absent.
+		segs = append(segs, dim2("…"))
 	}
 	if in.submodel != "" && in.submodel != in.model {
 		segs = append(segs, dim2("sub:"+in.submodel))
@@ -786,6 +790,7 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 		backendDefault:          info.ConfigBackend,
 		model:                   info.EffectiveModel,
 		submodel:                info.SubagentModel,
+		modelPending:            m.deferredPending,
 		arm:                     m.armNotice(),
 		queueLen:                len(m.queuedPrompts),
 		runningTool:             runningTool,
@@ -969,9 +974,11 @@ type statusLineInput struct {
 	backendDefault   string
 	// model and submodel are the effective main and subagent models (WP-9.1),
 	// shown so the most-glanceable former-sidebar fields survive without opening
-	// the info panel. Empty = omitted.
-	model    string
-	submodel string
+	// the info panel. Empty = omitted. modelPending means the deferred startup
+	// (endpoint probe) has not finished, so an empty model shows "…".
+	model        string
+	submodel     string
+	modelPending bool
 	// arm is the rendered double-press confirmation notice (quit/cancel), "" when
 	// no arm is active. Rendered from arm state (not m.flash, which clears on key).
 	arm string

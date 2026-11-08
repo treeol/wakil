@@ -83,6 +83,10 @@ type wiringFacade struct {
 	// closed is true after Close; subsequent calls return ErrSessionClosed.
 	closed bool
 
+	// deferredOnce guards RunDeferredStartup so it runs at most once per
+	// facade (the TUI calls it after the first prompt).
+	deferredOnce sync.Once
+
 	// pendingContinuation is the continuation prompt for /handoff proceed.
 	// Set by HandoffConversation instead of calling SubmitInput directly,
 	// so the TUI can submit it AFTER subscribing to the new session's event
@@ -495,6 +499,30 @@ func (f *wiringFacade) ConsumeStartupNote() string {
 	note := f.app.StartupNote
 	f.app.StartupNote = ""
 	return note
+}
+
+// RunDeferredStartup runs the startup work BuildApp kept off the start path:
+// the provider probes, the hisn orphan reconcile, and the sandbox session
+// start (via the startup-note scans). The TUI calls it once after the first
+// prompt; it runs in a goroutine so the prompt is never blocked. Idempotent.
+// done (optional) fires on the goroutine once the work finishes, so the
+// caller can repaint with the freshly-resolved model/backend/context info.
+func (f *wiringFacade) RunDeferredStartup(done func()) {
+	f.deferredOnce.Do(func() {
+		if f.resources == nil || f.resources.DeferredStartup == nil {
+			if done != nil {
+				done()
+			}
+			return
+		}
+		fn := f.resources.DeferredStartup
+		go func() {
+			fn(context.Background())
+			if done != nil {
+				done()
+			}
+		}()
+	})
 }
 
 func (f *wiringFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {

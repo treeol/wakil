@@ -79,6 +79,10 @@ type Options struct {
 	Surface Surface
 	// KVR configures the in-sandbox staging store service (zero = off).
 	KVR KVROptions
+	// SkipReconcile defers Open's orphan reconcile to a later caller-invoked
+	// b.Reconcile (off the start path). The caller is responsible for running
+	// it. Preflight, plan and the risk check still run at Open.
+	SkipReconcile bool
 }
 
 // live is one running session instance.
@@ -361,6 +365,12 @@ type Risk struct {
 // Open is New plus the mandatory startup checks: preflight (version + host
 // capability) and reconciliation of orphaned sessions. A failed preflight is
 // an error; there is never a fallback.
+//
+// opts.SkipReconcile defers the orphan reconcile (the `hisn ls --prune` sweep
+// plus the owner-record pass): the caller runs b.Reconcile later, after the
+// first prompt, so the sweep is off the start path. Failed preflight still
+// aborts — that check is cheap and mandatory. Reconcile itself never blocks a
+// working session, so deferring it is safe.
 func Open(ctx context.Context, opts Options) (*Backend, error) {
 	b, err := New(opts)
 	if err != nil {
@@ -382,6 +392,9 @@ func Open(ctx context.Context, opts Options) (*Backend, error) {
 	endPlan()
 	if err != nil {
 		return nil, err
+	}
+	if opts.SkipReconcile {
+		return b, nil
 	}
 	endRec := timeline.Begin("hisn reconcile (ls --prune, orphans)")
 	err = b.Reconcile(ctx)

@@ -131,6 +131,14 @@ func (a *App) SetModelList(models []string) {
 	a.stateMu.Unlock()
 }
 
+// SetBackendList replaces the backend list used for external-backend detection
+// and the info panel. Acquires stateMu so concurrent readers are synchronized.
+func (a *App) SetBackendList(backends []BackendInfo) {
+	a.stateMu.Lock()
+	a.BackendList = backends
+	a.stateMu.Unlock()
+}
+
 // SetTools replaces the tool list (e.g. after an MCP reconnect rebuilds it).
 // Acquires stateMu so concurrent readers (Snapshot) are synchronized.
 func (a *App) SetTools(tools []proxy.Tool) {

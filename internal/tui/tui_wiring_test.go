@@ -39,6 +39,11 @@ type fakeFacade struct {
 func (f *fakeFacade) Snapshot() sessionclient.ClientSnapshot { return f.snap }
 func (f *fakeFacade) Info() sessionclient.InfoSnapshot       { return f.info }
 func (f *fakeFacade) Consent() sessionclient.Consent         { return f.consent }
+func (f *fakeFacade) RunDeferredStartup(done func()) {
+	if done != nil {
+		done()
+	}
+}
 func (f *fakeFacade) ConsumeStartupNote() string {
 	if len(f.notes) == 0 {
 		return ""

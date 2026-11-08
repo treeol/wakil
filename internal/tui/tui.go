@@ -472,6 +472,11 @@ type tuiModel struct {
 	// "awaiting input" instead of silent idle.
 	hadTurn bool
 
+	// deferredPending is true from the first prompt until the deferred startup
+	// (endpoint probe + hisn reconcile) finishes. While it is true and the
+	// effective model is empty, the status line shows "…" for the model field.
+	deferredPending bool
+
 	// refreshDirty marks that the streaming tail has grown since the last
 	// refreshViewport() call. Delta handlers (KindMessageDelta,
 	// KindReasoningDelta) set this and arm a refresh tick instead of calling
@@ -773,6 +778,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.reflow()
 		m.ready = true
 		timelineOnce("first-frame", "prompt ready (first window size handled)")
+		// The prompt is up: run the deferred startup work (provider probes,
+		// hisn reconcile) in the background, then repaint when it lands.
+		// Idempotent per facade. Guard against a nil facade (tests construct
+		// the model without one).
+		if m.facade != nil {
+			m.deferredPending = true
+			m.facade.RunDeferredStartup(func() {
+				if programSend != nil {
+					programSend(deferredStartupDoneMsg{})
+				}
+			})
+		}
 
 	case tea.MouseMsg:
 		// Fast-path: cell-motion events with no active selection press are

@@ -58,6 +58,14 @@ type AppResources struct {
 	MemStore         *memory.Store
 	SkillStore       *memory.Store
 	SessionHistStore *sessionhistory.Store
+
+	// DeferredStartup runs the startup work that BuildApp kept OFF the start
+	// path: the three provider probes (model list, backend list, context
+	// limit), the hisn orphan reconcile, and the spring startup-note scans.
+	// Headless callers invoke it immediately (no prompt to return to); the TUI
+	// invokes it once after the first prompt, in the background. nil when
+	// there is nothing to defer.
+	DeferredStartup func(ctx context.Context)
 }
 
 // BuildApp constructs a *agent.App from config, executor, and entry-point
@@ -172,39 +180,45 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	}
 	res.BrowserMgr = browserMgr
 
-	// Parallelize the three independent network probes (context limits,
-	// backend list, model list). Each has its own 5s timeout internally;
-	// running them concurrently cuts the worst-case 15s serial wait to 5s.
-	// A shared 6s outer context provides a hard ceiling so a slow endpoint
-	// can't stall startup indefinitely even if an individual call's timeout
-	// is slightly longer than expected.
-	probeCtx, probeCancel := context.WithTimeout(context.Background(), 6*time.Second)
-	var (
-		ctxLimit    agent.ContextLimit
-		backendList []agent.BackendInfo
-		modelList   []string
-	)
-	var wg sync.WaitGroup
-	wg.Add(3)
-	endProbes := timeline.Begin("provider probes (3 in parallel, 6s ceiling)")
-	go func() {
-		defer wg.Done()
-		defer timeline.BeginConcurrent("provider probe: context limit")()
-		ctxLimit = agent.ResolveContextLimit(probeCtx, client.HTTP, cfg, os.Stderr)
-	}()
-	go func() {
-		defer wg.Done()
-		defer timeline.BeginConcurrent("provider probe: backend list")()
-		backendList = agent.FetchBackendListWithFallback(probeCtx, client.HTTP, cfg, os.Stderr)
-	}()
-	go func() {
-		defer wg.Done()
-		defer timeline.BeginConcurrent("provider probe: model list")()
-		modelList = agent.FetchModelListForEndpoint(probeCtx, client.HTTP, cfg)
-	}()
-	wg.Wait()
-	endProbes()
-	probeCancel()
+	// Provider probes (context limit, backend list, model list) are DEFERRED:
+	// BuildApp leaves CtxLimit/BackendList/ModelList at zero and records a
+	// closure that runs the three probes with the same 6s ceiling, applying
+	// each result through the App setters. The TUI runs it after the first
+	// prompt, so the probe round trip is off the start path. Headless callers
+	// run it immediately (they have no prompt to return to).
+	var appRef *agent.App
+	runProbes := func(ctx context.Context) {
+		probeCtx, probeCancel := context.WithTimeout(ctx, 6*time.Second)
+		defer probeCancel()
+		var (
+			ctxLimit    agent.ContextLimit
+			backendList []agent.BackendInfo
+			modelList   []string
+		)
+		var wg sync.WaitGroup
+		wg.Add(3)
+		endProbes := timeline.Begin("provider probes (3 in parallel, 6s ceiling)")
+		go func() {
+			defer wg.Done()
+			defer timeline.BeginConcurrent("provider probe: context limit")()
+			ctxLimit = agent.ResolveContextLimit(probeCtx, client.HTTP, cfg, os.Stderr)
+		}()
+		go func() {
+			defer wg.Done()
+			defer timeline.BeginConcurrent("provider probe: backend list")()
+			backendList = agent.FetchBackendListWithFallback(probeCtx, client.HTTP, cfg, os.Stderr)
+		}()
+		go func() {
+			defer wg.Done()
+			defer timeline.BeginConcurrent("provider probe: model list")()
+			modelList = agent.FetchModelListForEndpoint(probeCtx, client.HTTP, cfg)
+		}()
+		wg.Wait()
+		endProbes()
+		appRef.SetCtxLimit(ctxLimit)
+		appRef.SetBackendList(backendList)
+		appRef.SetModelList(modelList)
+	}
 
 	// Load the agent prompt. The full prompt is used as AgentPrompt (the
 	// preamble in full mode, or as the fallback when split prompts aren't
@@ -221,10 +235,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		LSP:                          lspMgr,
 		Browser:                      browserMgr,
 		Tools:                        agent.BuildTools(cfg, exe.Cwd(), mcpMgr),
-		CtxLimit:                     ctxLimit,
 		AgentPrompt:                  promptForApp,
-		BackendList:                  backendList,
-		ModelList:                    modelList,
 		SelectedBackend:              cfg.Backend,
 		AgentPrefix:                  "main",
 		Out:                          os.Stderr,
@@ -232,6 +243,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		InjectDate:                   true,
 		EffectiveCtxMaxCharsOverride: -1, // -1 = not set → use config value
 	}
+	appRef = app
 	// Deferred fields (slated for sub-struct extraction) are set via options,
 	// not composite-literal keys — this is the WP-6.3-followup construction API.
 	// Once all cross-package construction goes through options/setters, these
@@ -419,6 +431,19 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 				app.AssistEnabled = true
 				app.AssistAuto = cfg.ILMStack.AssistAuto
 			}
+		}
+	}
+
+	// Deferred startup: everything BuildApp kept off the start path. Order:
+	// probes first (they populate the model/backend/context info the TUI
+	// shows), then the deferred hisn orphan reconcile. The closure captures
+	// app/exe/cfg.
+	res.DeferredStartup = func(ctx context.Context) {
+		runProbes(ctx)
+		if be, ok := exe.(interface {
+			RunDeferredReconcile(context.Context)
+		}); ok {
+			be.RunDeferredReconcile(ctx)
 		}
 	}
 

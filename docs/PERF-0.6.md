@@ -65,6 +65,64 @@ repo.
 Against the targets: **start misses by 3.4x; `/new`, `/resume` and exit meet
 them** in this environment.
 
+## After B2 — build sandbox
+
+B2 moves the startup work that does not need to block the first prompt off the
+start path. `prompt ready` now arrives before the provider probes, the hisn
+`ls --prune` reconcile, and the lazy sandbox session start, all of which run in
+the background once the prompt is up. Same host and harness as the baseline.
+
+| transition | before (warm median) | after (warm median) | target |
+|---|---:|---:|---:|
+| start | 669 ms | **57 ms** | < 200 ms |
+| /new | 109 ms | 108 ms | < 150 ms |
+| /resume | 87 ms | 60 ms | < 300 ms |
+| exit | 12 ms | 12 ms | < 300 ms |
+
+**start now meets its target** (57 ms, ~12x faster). The rubin baseline put
+2990 ms on start (923 ms of it the MCP + probe + reconcile block); the same
+deferrals apply there. On rubin the largest start cost was the MCP connect
+block (1226 ms) and the provider probes (735 ms); both are now off the prompt
+path.
+
+What B2 changed, and why the *timeline still shows* the deferred phases:
+
+- **Provider probes** (model list, backend list, context limit) run after the
+  prompt; the status line shows `…` for the model until the probe resolves it.
+- **hisn reconcile** (`ls --prune`) runs after the prompt. It is still traced
+  under the `start` transition window (the transition stays open until the
+  timeline is flushed at exit), so it still appears in the top-five list — but
+  `prompt ready` no longer waits for it. `hisn ls --prune` in 0.4.0 has no
+  name/prefix filter, so the sweep cannot yet be scoped to `wakil-<projectkey>-`
+  directories; that needs a hisn-side change and is recorded as an open item.
+- **MCP servers** connect concurrently in the background; their tools appear as
+  each connects, and a tool call to a server still connecting waits only on that
+  server.
+- **The lazy sandbox session start** and the startup-note scans moved into the
+  same deferred phase.
+- **The Telegram approval bridge** was removed (it was the only consumer of the
+  MCP long-poll teardown path the old `Close` comment guarded).
+
+`exit` also gained a fix from the rubin timeline: the 50 ms x N `Release` retry
+loop inside `close old facade` (about 2.6 s on rubin when a turn was still
+winding down) is gone. Exit now makes one release attempt and, if a turn is
+still cancelling, releases in the background rather than blocking the terminal.
+
+### Top five costs after B2 (warm median)
+
+`start` — all but `process start to main` now run AFTER `prompt ready`:
+
+- 302 ms  hisn reconcile (`ls --prune`) — deferred, off the prompt path
+- 117 ms  hisn session ready (deferred with the startup notes)
+- 35 ms   process start to main (runtime + package init) — still before the prompt
+- 25 ms   tui view (render a frame)
+- 3 ms    signing resolution
+
+`/new` 103 ms (`hisn stop`), `/resume` 60 ms (reflow + the deferred probes now
+land here when the first prompt's deferrals overlap), `exit` 12 ms. All three
+meet their targets.
+
+
 ### Top five costs per transition (warm median)
 
 **start** (683 ms). Both repos agree to within 1 ms per phase.

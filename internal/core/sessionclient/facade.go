@@ -429,6 +429,13 @@ type Facade interface {
 	SaveRepoState(mutate func(*RepoStateMutator))
 	SetInfoPanelOpen(open bool)
 
+	// RunDeferredStartup runs the work BuildApp moved off the start path: the
+	// provider probes (model list, backend list, context limit), the hisn
+	// orphan reconcile, and the sandbox session start + startup-note scans.
+	// The TUI calls it once, after the first prompt is shown, in the
+	// background. done fires when the work finishes (the caller repaints).
+	RunDeferredStartup(done func())
+
 	SetCtxLimit(lim ContextLimit)
 	SetModelList(models []string)
 	SetTools(tools []proxy.Tool)

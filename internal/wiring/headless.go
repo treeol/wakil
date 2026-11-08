@@ -261,6 +261,14 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 		CloseResources(app, res)
 	}()
 
+	// Headless has no prompt to return to: run the deferred startup now
+	// (provider probes, hisn reconcile) so the first turn sees the resolved
+	// context limit, model list and backend list. For the TUI the same work
+	// runs after the first prompt (facade.RunDeferredStartup).
+	if res.DeferredStartup != nil {
+		res.DeferredStartup(context.Background())
+	}
+
 	if opts.Verify {
 		app.VerifyEnabled = true
 	}

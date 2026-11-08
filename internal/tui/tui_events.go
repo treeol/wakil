@@ -44,6 +44,13 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		return m.applyCommandResult(lm.result, cmds)
 	case rotationMsg:
 		return m.applyRotation(lm, cmds)
+	case deferredStartupDoneMsg:
+		// The post-prompt provider probes / hisn reconcile finished. Force a
+		// repaint so the status line shows the resolved model/context info.
+		// No state to copy — the TUI reads Info() on demand.
+		m.deferredPending = false
+		m = m.reflow()
+
 	case startupNoteMsg:
 		// While the splash is showing (no conversation yet), suppress
 		// the startup note item — the info is already available in the
