@@ -87,6 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The hisn integration tests stop and prune the sessions they create, and
     `TestMain` sweeps `wakil-it-*` and `toolpath-*` sessions before and after
     an integration run.
+  - `procAlive` no longer reads a reaped supervisor as alive. A detached
+    supervisor that died was a zombie until init reaped it; if the reap landed
+    between `kill(pid, 0)` and the `/proc/<pid>/stat` read, the unreadable entry
+    counted as "cannot prove it is gone", so `Start` kept the dead session and
+    the next exec failed with `ErrSessionDead`. That failure reached the caller
+    as one failed tool call (the call is not retried, and the following call
+    started a fresh session), so a user-visible failure was possible, though
+    only in that narrow window. A vanished entry (`ENOENT`, or `ESRCH` when the
+    reap lands between open and read) with a readable `/proc` and a second
+    `kill(pid, 0)` answering `ESRCH` now reads as gone; any other unreadable
+    case still reads as alive.
   The minimum supported hisn is now 0.4.1: `MinHisnVersion`,
   `MinHisnDefaultVersion` and the hisn backend's `MinVersion` are 0.4.1, the
   sandbox image pin (`Dockerfile`, with the amd64 and arm64 SHA256s of the
