@@ -7,7 +7,7 @@ for getting a patch ready for review.
 
 - **Go 1.26+** (see `go.mod` for the canonical minimum; the Dockerfile may use
   a newer builder toolchain)
-- hisn 0.4.0 or newer for real-hisn tests (optional — they skip without it)
+- hisn 0.4.1 or newer for real-hisn tests (optional — they skip without it)
 - A working `docker` setup only if you test the Docker backend (opt-in; hisn
   is the default when usable, and `--sandbox direct` needs neither)
 
@@ -35,7 +35,7 @@ the whole tree; run the full set before a release.
 The hisn tests need a real hisn binary and skip without one. To run them:
 
 ```sh
-hisn --version                          # must report 0.4.0 or newer
+hisn --version                          # must report 0.4.1 or newer
 hisn check                              # must pass on this host
 go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/
 ```

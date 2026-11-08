@@ -80,7 +80,7 @@ EOF
 ./wakil ~/projects/myapp
 ```
 
-Wakil uses [hisn](https://github.com/treeol/hisn) (rootless, no daemon) as the sandbox when it is usable — hisn >= 0.4.0 in `PATH` and `hisn check` passes, and you did not choose a backend — and Docker or Podman otherwise; the startup banner says which and why (see [docs/sandbox-backends.md](docs/sandbox-backends.md)). No Docker and no hisn? Run with `--sandbox direct` — the confirmation gate stays on.
+Wakil uses [hisn](https://github.com/treeol/hisn) (rootless, no daemon) as the sandbox when it is usable — hisn >= 0.4.1 in `PATH` and `hisn check` passes, and you did not choose a backend — and Docker or Podman otherwise; the startup banner says which and why (see [docs/sandbox-backends.md](docs/sandbox-backends.md)). No Docker and no hisn? Run with `--sandbox direct` — the confirmation gate stays on.
 See [docs/endpoints.md](docs/endpoints.md) for other providers and
 [config.example.json](config.example.json) for all options.
 

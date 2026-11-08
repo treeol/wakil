@@ -4,7 +4,7 @@ Wakil runs every tool call inside a sandbox. Backends:
 
 | backend | selected by | notes |
 |---|---|---|
-| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.4.0 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`) |
+| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.4.1 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`, the 0.4.1 `run --detach` contract) |
 | `docker` | `sandbox.backend: "docker"`, or the fallback when hisn is not usable | behaviour unchanged |
 | `direct` | `sandbox.backend: "direct"` (or the deprecated `exec_mode: "direct"`) | no sandbox at all: explicit opt-out |
 
@@ -17,13 +17,13 @@ Since v0.4.0 hisn is the default **only when all three hold**:
 1. nothing chose a backend — no `sandbox.backend` in the config file, no
    `WAKIL_SANDBOX_BACKEND`, no `--sandbox`/`--exec`, no `exec_mode`;
 2. `hisn check` passes;
-3. hisn >= 0.4.0 is in `PATH`.
+3. hisn >= 0.4.1 is in `PATH`.
 
 Otherwise the backend is docker, and the startup banner says why:
 
 ```
-sandbox: backend=docker · browser tools: on · default: docker (hisn 0.3.3 is older than 0.4.0)
-sandbox: backend=hisn · browser tools: off (...) · default: hisn 0.4.0 (hisn check ok)
+sandbox: backend=docker · browser tools: on · default: docker (hisn 0.3.3 is older than 0.4.1)
+sandbox: backend=hisn · browser tools: off (...) · default: hisn 0.4.1 (hisn check ok)
 ```
 
 A host without hisn therefore sees no behaviour change. Further reasons that
@@ -205,7 +205,7 @@ be safe for concurrent `Exec` calls.
 ### Preflight
 
 `Open` calls `Preflight`: `hisn --version` parses and is >= `MinVersion`
-("0.4.0"), and `hisn check` exits 0. Otherwise `Open` returns an error and
+("0.4.1"), and `hisn check` exits 0. Otherwise `Open` returns an error and
 Wakil exits. No fallback for an explicit hisn. Unknown `sandbox.backend` values
 are a config error. The version also selects the start path
 (`ProfileMinVersion` "0.3.1": profile mode, else bare `--policy`); requested

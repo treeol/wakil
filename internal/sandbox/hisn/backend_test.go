@@ -87,7 +87,7 @@ func TestPreflight(t *testing.T) {
 	})
 	t.Run("ssh_agent unset", func(t *testing.T) {
 		fe := newFakeEnv(t)
-		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.0"), 0o600)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.1"), 0o600)
 		o := fe.options()
 		o.SSHAgent = true
 		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
@@ -99,7 +99,7 @@ func TestPreflight(t *testing.T) {
 	})
 	t.Run("ssh_agent not a socket", func(t *testing.T) {
 		fe := newFakeEnv(t)
-		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.0"), 0o600)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.1"), 0o600)
 		o := fe.options()
 		o.SSHAgent = true
 		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
@@ -114,7 +114,7 @@ func TestPreflight(t *testing.T) {
 	})
 	t.Run("ssh_agent ok", func(t *testing.T) {
 		fe := newFakeEnv(t)
-		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.0"), 0o600)
+		_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.1"), 0o600)
 		o := fe.options()
 		o.SSHAgent = true
 		o.SSHKeys = []string{"SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}

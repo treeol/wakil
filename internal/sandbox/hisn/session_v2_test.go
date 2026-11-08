@@ -169,11 +169,18 @@ func TestStopUsesHisnStopAndKeepsTheDirectory(t *testing.T) {
 	}
 }
 
-// A stopped session releases its name at once: the next chat session of the
+// On hisn 0.4.0 a stopped session releases its name at once: the next chat session of the
 // same name starts, and neither the Stop nor the second Start prunes (the
 // stopped directory stays for hisn's audit). Open prunes once, before either.
 func TestStartAfterStopReusesTheNameWithoutPruning(t *testing.T) {
-	b, fe := openFake(t)
+	// This is the 0.4.0 behavior, which is below the supported floor now, so the
+	// test lowers MinVersion to keep the version-keyed branch covered.
+	fe := newFakeEnv(t)
+	setVersion(t, fe, "0.4.0")
+	b, err := openWith(t, fe, func(o *Options) { o.MinVersion = "0.4.0" })
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := strings.Count(calls(t, fe), "ls --prune")
 	for i := 0; i < 2; i++ {
 		if err := b.Start(ctxT(t), sandbox.Session{ID: "reuse", HostCwd: fe.cwd}); err != nil {

@@ -1051,11 +1051,13 @@ const (
 	SandboxBackendDirect = "direct"
 )
 
-// MinHisnVersion is the oldest hisn release the backend supports: 0.4.0
-// (named sessions, hisn-ls/v2 states, the client record on control requests,
-// `hisn stop`; on top of 0.3.3's profiles, risk labels, [home]/[rootfs]/[ssh]
+// MinHisnVersion is the oldest hisn release the backend supports: 0.4.1
+// (the `run --detach` contract that returns once the session is up,
+// supervisor.pid as "<pid> <starttime>", `ls --prune --name-prefix`; on top
+// of 0.4.0's named sessions, hisn-ls/v2 states, the client record on control
+// requests, `hisn stop`, and 0.3.3's profiles, risk labels, [home]/[rootfs]/[ssh]
 // and "src:dst" read-only mounts).
-const MinHisnVersion = "0.4.0"
+const MinHisnVersion = "0.4.1"
 
 // DefaultHisnEnvPass is the set of variable names allowed through into hisn
 // execs by default: toolchain knobs Wakil's tools need, none that carry

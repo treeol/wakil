@@ -342,7 +342,7 @@ limits: [sandbox-backends.md](sandbox-backends.md).
 | `sandbox.hisn.kvr_binary` | `kvr-server` from `PATH` | kvr-server executable run INSIDE the sandbox as the staging service *(hisn >= 0.3.1; must live under a directory the sandbox sees: `/usr`, `/opt`, `/nix` or a project `mounts_ro`; otherwise staging stays off and the banner says why — there is no host-side kvr)* |
 | `sandbox.hisn.exec_via_cli` | `false` | Run tool-call execs through the `hisn exec` CLI (one client process per call) instead of the control-socket client. Fallback, one release |
 
-With an explicit `hisn`: startup requires `hisn --version` >= 0.4.0 and `hisn check` exit
+With an explicit `hisn`: startup requires `hisn --version` >= 0.4.1 and `hisn check` exit
 0, otherwise Wakil refuses to start (no fallback). Per-project additions (services, forwards, mounts, `risk_ack`, named profile) live in `.wakil/sandbox.json`, which only takes effect after `wakil sandbox trust`; see [sandbox-backends.md](sandbox-backends.md). The workspace is mounted at
 its identical host path (`--workdir` is rejected); `kvr` staging runs as an in-sandbox service when a `kvr-server` binary is available (see `sandbox.hisn.kvr_binary`);
 `browser_enabled` is forced off with one startup line (so one config serves
