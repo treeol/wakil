@@ -301,9 +301,18 @@ func (b *Backend) prune(ctx context.Context) {
 // startLocked creates the session. Caller holds the state lock.
 func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, error) {
 	// A record left by a dead owner is reconciled first; a live owner (or an
-	// unreconcilable record) means the chat is active elsewhere.
+	// unreconcilable record) means the chat is active elsewhere — unless the
+	// record carries OUR instance token (0.4.1: the run process exited but the
+	// supervisor lives on; a second Wakil with the same instance adopts it).
 	if r, err := b.readRecord(s.ID); err == nil {
 		if ownerAlive(r) {
+			if r.Inst == b.inst {
+				// Same instance, live owner: the session is ours and running.
+				// This happens in 0.4.1 where the run process exited but the
+				// supervisor lives on, and a new Wakil in the same instance
+				// adopts the session. Build a live from the record.
+				return b.adoptLocked(ctx, r)
+			}
 			return nil, fmt.Errorf("%w: chat %s is active in Wakil process %d", sandbox.ErrSessionInUse, s.ID, r.Pid)
 		}
 		if err := b.reconcileOneLocked(ctx, r); err != nil {
@@ -354,7 +363,7 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 		b.prune(ctx)
 	}
 
-	rec := record{ID: s.ID, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), Token: newToken(), Name: name, Cwd: s.HostCwd}
+	rec := record{ID: s.ID, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), Token: newToken(), Name: name, Cwd: s.HostCwd, Inst: b.inst}
 	if err := b.createRecord(rec); err != nil {
 		if errors.Is(err, errSessionInUse) {
 			return nil, fmt.Errorf("%w: %w", sandbox.ErrSessionInUse, err)
@@ -391,6 +400,37 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 	return l, nil
 }
 
+// adoptLocked adopts a live session whose owner record carries this Wakil's
+// instance token. This is the 0.4.1 recovery path: the run process exited but
+// the supervisor lives on; a second Wakil in the same instance finds the
+// session via `hisn ls --json`, reads the supervisor pid, and tracks it.
+func (b *Backend) adoptLocked(ctx context.Context, r record) (*live, error) {
+	sessions, err := b.listSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ent, ok := sessions[r.ID]
+	if !ok || !ent.Live() {
+		// The session is gone; report it as in-use so startLocked's caller
+		// can retry or report the error.
+		return nil, fmt.Errorf("%w: adopt: session %s is not live", sandbox.ErrSessionInUse, r.ID)
+	}
+	sup := &supervisorProc{
+		stderr:    newRingBuffer(supervisorStderrCap),
+		logPath:   b.supervisorLogPath(r.ID),
+		exited:    make(chan struct{}),
+		logged:    make(chan struct{}),
+		supExited: make(chan struct{}),
+	}
+	close(sup.exited)
+	close(sup.logged) // nothing to log — the run process is long gone
+	if err := b.trackSupervisor(ctx, sup, r.ID); err != nil {
+		return nil, err
+	}
+	l := b.newLive(r, sup)
+	return l, nil
+}
+
 func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 	lctx, cancel := context.WithCancel(context.Background())
 	l := &live{id: rec.ID, token: rec.Token, runtimeRoot: b.primaryRuntimeRoot(), ctx: lctx, cancel: cancel, sup: sup,
@@ -398,7 +438,11 @@ func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 	// When the supervisor dies the session is over: end every in-flight hisn
 	// client bound to it (they would otherwise be talking to a dead socket).
 	go func() {
-		<-sup.exited
+		if sup.detachExited {
+			<-sup.supExited
+		} else {
+			<-sup.exited
+		}
 		cancel()
 	}()
 	return l
@@ -689,6 +733,14 @@ func (b *Backend) ready(ctx context.Context, id, name string) (bool, string) {
 // interval later (confirm probe). There is no weaker path: a partial line
 // without "\n", `stale`, missing, an error, an exited supervisor or a timeout
 // is "not ready". The 0.2.0 polling loop is gone: the pipe read replaces it.
+//
+// In 0.4.1 the run process exits 0 right after printing the ready line. That
+// exit is SUCCESS, not death: the supervisor lives on. The run-exit is detected
+// by sup.hasExited() being true right after the ready line arrives — in that
+// case the supervisor is found by `hisn ls --json` and its pid is read from
+// <session-dir>/supervisor.pid; the session is tracked by that pid, not the
+// run process. In 0.4.0 the run process stays alive (it IS the supervisor), so
+// sup.hasExited() stays false and the behavior is unchanged.
 func (b *Backend) waitReady(ctx context.Context, id, name string, sup *supervisorProc, readyR *os.File) error {
 	deadline := time.Now().Add(b.readyTimeout)
 	// readyLine reads the one "ready\n" line hisn writes to fd 3, with the
@@ -745,7 +797,7 @@ func (b *Backend) waitReady(ctx context.Context, id, name string, sup *superviso
 	var last string
 	gotReady := false // latch: the "ready\n" line was received once; don't re-read the pipe
 	for {
-		if sup.hasExited() {
+		if !gotReady && sup.hasExited() && !sup.detachExited {
 			return fmt.Errorf("hisn run --detach exited before the session was ready (last probe: %s)", orNone(last))
 		}
 		if !gotReady {
@@ -755,6 +807,30 @@ func (b *Backend) waitReady(ctx context.Context, id, name string, sup *superviso
 			}
 			if ok {
 				gotReady = true
+				// 0.4.1: the run process exits 0 right after the ready line.
+				// Wait briefly for it to exit; if it does (exit 0), find and
+				// track the real supervisor. If it stays alive, it is 0.4.0
+				// (the process IS the supervisor) and we proceed as before.
+				// Use the remaining readiness budget, capped at 500ms — the
+				// run process should exit within milliseconds of the ready line.
+				waitBudget := time.Until(deadline)
+				if waitBudget < 0 {
+					waitBudget = 0
+				}
+				if waitBudget > 500*time.Millisecond {
+					waitBudget = 500 * time.Millisecond
+				}
+				if sup.waitExit(waitBudget) {
+					if sup.waitErr == nil {
+						if err := b.trackSupervisor(ctx, sup, id); err != nil {
+							return err
+						}
+					} else if !sup.detachExited {
+						// The run process exited non-zero before the session
+						// was ready — a genuine start failure.
+						return fmt.Errorf("hisn run --detach exited before the session was ready: %s", sup.exitStatus())
+					}
+				}
 			}
 		}
 		if gotReady {
@@ -764,21 +840,28 @@ func (b *Backend) waitReady(ctx context.Context, id, name string, sup *superviso
 				if why != "" {
 					last = why
 				}
-				if sup.hasExited() {
+				if sup.hasExited() && !sup.detachExited {
 					return fmt.Errorf("hisn run --detach exited right after the readiness line")
 				}
 			} else {
-				select {
-				case <-sup.exited:
-					return fmt.Errorf("hisn run --detach exited right after the session became ready")
-				case <-ctx.Done():
-					return fmt.Errorf("waiting for hisn session %s: %w", id, ctx.Err())
-				case <-time.After(readyPoll):
+				// In 0.4.0: wait for the supervisor to stay alive through one
+				// poll interval. In 0.4.1: the run process already exited, so
+				// the second probe IS the confirmation.
+				if !sup.detachExited {
+					select {
+					case <-sup.exited:
+						return fmt.Errorf("hisn run --detach exited right after the session became ready")
+					case <-ctx.Done():
+						return fmt.Errorf("waiting for hisn session %s: %w", id, ctx.Err())
+					case <-time.After(readyPoll):
+					}
 				}
 				if ok2, why2 := probe(); ok2 && !sup.hasExited() {
 					return nil
-				} else if sup.hasExited() {
+				} else if sup.hasExited() && !sup.detachExited {
 					return fmt.Errorf("hisn run --detach exited right after the session became ready")
+				} else if sup.hasExited() && sup.detachExited {
+					return fmt.Errorf("hisn supervisor for session %s exited after the session became ready", id)
 				} else if why2 != "" {
 					last = "second probe failed: " + why2
 				}
@@ -791,6 +874,9 @@ func (b *Backend) waitReady(ctx context.Context, id, name string, sup *superviso
 		case <-ctx.Done():
 			return fmt.Errorf("waiting for hisn session %s: %w", id, ctx.Err())
 		case <-sup.exited:
+			if sup.detachExited {
+				continue
+			}
 		case <-time.After(readyPoll):
 		}
 	}
@@ -834,23 +920,19 @@ func (b *Backend) abortStartLocked(rec record, sup *supervisorProc) bool {
 }
 
 // stopLocked ends the session described by l. Caller holds the state lock.
-// The supervisor handle is exact and Wakil spawned it, so it is reaped
-// UNCONDITIONALLY: `hisn kill` asks the session to end, then the handle proves
-// it (wait capped, SIGKILL on the cap, wait again). Only the bookkeeping is
-// gated on the owner record: a record that belongs to another instance is left
-// alone and reported. Idempotent: a session that is already gone (supervisor
-// exited, or `hisn kill` reporting "no such session") is a finished stop.
+// In 0.4.0 the supervisor handle is exact and Wakil spawned it, so it is
+// reaped UNCONDITIONALLY: `hisn stop` ends the session in order, then the
+// handle proves it (wait capped, SIGKILL on the cap, wait again). In 0.4.1
+// the run process already exited; the supervisor lives on, so `hisn stop`
+// is sent and the session's liveness is checked via `hisn ls --json` (state
+// running → stopped/crashed/gone).
+// Only the bookkeeping is gated on the owner record: a record that belongs
+// to another instance is left alone and reported. Idempotent: a session that
+// is already gone (supervisor exited, or `hisn kill` reporting "no such
+// session") is a finished stop.
 func (b *Backend) stopLocked(ctx context.Context, l *live) error {
-	if l.sup != nil && !l.sup.hasExited() {
-		// While OUR supervisor is unreaped it holds the id, so a duplicate `hisn
-		// run` for it fails and `hisn kill --session id` can only reach it (the
-		// residual window is the CLI round trip after the exit check). The
-		// request has its OWN bound and survives a cancelled caller ctx; its
-		// outcome is irrelevant: the exit of the supervisor is what counts.
-		// `hisn stop` (0.4.0) ends the session in order: its execs are
-		// terminated, the directory is kept as "stopped" and the stop is
-		// audited. The supervisor exits on its own within milliseconds. Its
-		// outcome is irrelevant: the exit of OUR supervisor is what counts.
+	if l.sup != nil && !l.sup.detachExited && !l.sup.hasExited() {
+		// 0.4.0: the run process IS the supervisor. Reap it.
 		endStop := timeline.Begin("hisn stop (client round trip)")
 		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
 		_, _ = b.output(kctx, false, "stop", "--session", l.id)
@@ -861,6 +943,23 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 		endWait()
 		if !exited {
 			defer timeline.Detail("supervisor KILL grace expired", "SIGKILL sent")()
+			l.sup.kill()
+			if !l.sup.waitExit(b.stopWait) {
+				return fmt.Errorf("hisn stop: supervisor of session %s (pid %d) did not exit after SIGKILL", l.id, l.sup.pid())
+			}
+		}
+	} else if l.sup != nil && l.sup.detachExited {
+		// 0.4.1: the run process already exited; the supervisor lives on.
+		// `hisn stop` ends it; wait for the session to no longer be running.
+		endStop := timeline.Begin("hisn stop (client round trip)")
+		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
+		_, _ = b.output(kctx, false, "stop", "--session", l.id)
+		cancel()
+		endStop()
+		endWait := timeline.Begin("supervisor exit wait")
+		exited := l.sup.waitExit(b.stopWait)
+		endWait()
+		if !exited {
 			l.sup.kill()
 			if !l.sup.waitExit(b.stopWait) {
 				return fmt.Errorf("hisn stop: supervisor of session %s (pid %d) did not exit after SIGKILL", l.id, l.sup.pid())

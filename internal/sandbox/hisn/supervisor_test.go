@@ -751,25 +751,27 @@ func TestStopCancelsSessionOwnedContext(t *testing.T) {
 	}
 }
 
-// stdin and stdout are /dev/null: no descriptor of Wakil's terminal can reach hisn.
+// stdin is /dev/null: no descriptor of Wakil's terminal can reach hisn.
+// stdout is captured (0.4.1: the run process prints "<id> <name|-> ready"); in
+// 0.4.0 nothing is printed, so the capture is harmless. stderr is the
+// diagnostics pipe.
 func TestSupervisorStdioIsDevNull(t *testing.T) {
 	b, fe := openFake(t)
 	_ = b.Start(ctxT(t), sandbox.Session{ID: "io", HostCwd: fe.cwd})
 	sup := b.supOf()
-	if sup.cmd.Stdin != nil || sup.cmd.Stdout != nil {
-		t.Fatalf("stdin/stdout must be nil (/dev/null): %v %v", sup.cmd.Stdin, sup.cmd.Stdout)
+	if sup.cmd.Stdin != nil {
+		t.Fatalf("stdin must be nil (/dev/null): %v", sup.cmd.Stdin)
 	}
 	if sup.cmd.Stderr == nil {
 		t.Fatal("stderr must be the diagnostics pipe")
 	}
-	for _, fd := range []string{"0", "1"} {
-		l, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(sup.pid()), "fd", fd))
-		if err != nil {
-			t.Skip("no /proc/<pid>/fd")
-		}
-		if l != "/dev/null" {
-			t.Errorf("supervisor fd %s -> %s, want /dev/null", fd, l)
-		}
+	// fd 0 (stdin) must be /dev/null; fd 1 (stdout) is a capture pipe.
+	l, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(sup.pid()), "fd", "0"))
+	if err != nil {
+		t.Skip("no /proc/<pid>/fd")
+	}
+	if l != "/dev/null" {
+		t.Errorf("supervisor fd 0 -> %s, want /dev/null", l)
 	}
 	if a := supervisorSysProcAttr(); a == nil || !a.Setsid {
 		t.Error("the supervisor must run in its own session (no controlling terminal)")
@@ -1076,5 +1078,152 @@ func TestRefusedGrantAndRevokeMarkSessionDead(t *testing.T) {
 				t.Errorf("Exec after a refused %s = %v, want ErrSessionDead", op, err)
 			}
 		})
+	}
+}
+
+// ---- 0.4.1 detach mode ----
+
+// In 0.4.1 the run process exits 0 after printing the ready line; the
+// supervisor lives on as a separate process. Start must succeed and the
+// session must be usable.
+func TestStartDetach041Succeeds(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, err := Open(ctxT(t), fe.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+	fe.setMode("detach041")
+	start := time.Now()
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "d41", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("Start in 0.4.1 detach mode failed: %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("Start took %v; the run process should exit fast", d)
+	}
+	sup := b.supOf()
+	if sup == nil {
+		t.Fatal("no supervisor after Start")
+	}
+	if !sup.detachExited {
+		t.Fatal("detachExited must be true after a 0.4.1 start")
+	}
+	if sup.supPid <= 0 {
+		t.Fatal("supPid must be set after a 0.4.1 start")
+	}
+	if out, info := run(t, b, "echo", "ok"); strings.TrimSpace(out) != "ok" || info.Code != 0 {
+		t.Fatalf("0.4.1 session unusable: %q %+v", out, info)
+	}
+}
+
+// Stop in 0.4.1 ends the supervisor (not the run process, which already exited).
+func TestStopDetach041EndsSupervisor(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, err := Open(ctxT(t), fe.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+	fe.setMode("detach041")
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "d41s", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	sup := b.supOf()
+	if err := b.Stop(ctxT(t)); err != nil {
+		t.Fatalf("Stop in 0.4.1 failed: %v", err)
+	}
+	if !sup.hasExited() {
+		t.Fatal("supervisor not dead after Stop")
+	}
+	if len(fe.servedIDs()) != 0 {
+		t.Fatalf("session survived Stop: %v", fe.servedIDs())
+	}
+	if len(b.listRecordIDs()) != 0 {
+		t.Fatalf("record survived Stop: %v", b.listRecordIDs())
+	}
+}
+
+// A dead supervisor in 0.4.1 (the run process exited, then the supervisor dies)
+// is detected and the session is replaced.
+func TestDeadSupervisorDetach041IsReplaced(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, err := Open(ctxT(t), fe.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+	fe.setMode("detach041")
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "d41d", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	sup := b.supOf()
+	_ = syscall.Kill(sup.supPid, syscall.SIGKILL)
+	if !sup.waitExit(5 * time.Second) {
+		t.Fatal("supervisor did not die after SIGKILL")
+	}
+	_, err = b.Exec(ctxT(t), sandbox.ExecSpec{Argv: []string{"true"}})
+	if !errors.Is(err, sandbox.ErrSessionDead) {
+		t.Fatalf("Exec on a dead 0.4.1 session = %v, want ErrSessionDead", err)
+	}
+	fe.setMode("")
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "d41d", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("replacement start failed: %v", err)
+	}
+	if out, info := run(t, b, "echo", "fresh"); strings.TrimSpace(out) != "fresh" || info.Code != 0 {
+		t.Fatalf("replacement session unusable: %q %+v", out, info)
+	}
+}
+
+// ---- adopt-vs-refuse (0.4.1 recovery) ----
+
+// A live session whose owner record carries THIS Wakil's instance token is
+// adopted (0.4.1: the run process exited, the supervisor lives on; a second
+// Wakil with the same instance finds and reuses the session).
+func TestAdoptLiveSessionWithSameInstance(t *testing.T) {
+	fe := newFakeEnv(t)
+	b1, err := Open(ctxT(t), fe.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b1.Close(context.Background()) })
+	fe.setMode("detach041")
+	if err := b1.Start(ctxT(t), sandbox.Session{ID: "adopt", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	b2, err := New(fe.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2.inst = b1.inst
+	if err := b2.Start(ctxT(t), sandbox.Session{ID: "adopt", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("adopt should succeed for the same instance: %v", err)
+	}
+	if out, info := run(t, b2, "echo", "adopted"); strings.TrimSpace(out) != "adopted" || info.Code != 0 {
+		t.Fatalf("adopted session unusable: %q %+v", out, info)
+	}
+}
+
+// A live session whose owner record carries a FOREIGN instance token is
+// refused (the 0.4.0 behavior stays for a genuinely foreign owner).
+func TestRefuseLiveSessionWithForeignInstance(t *testing.T) {
+	fe := newFakeEnv(t)
+	b1, err := Open(ctxT(t), fe.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b1.Close(context.Background()) })
+	if err := b1.Start(ctxT(t), sandbox.Session{ID: "foreign", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	b2, err := New(fe.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2.inst = "different"
+	if err := b2.Start(ctxT(t), sandbox.Session{ID: "foreign", HostCwd: fe.cwd}); !errors.Is(err, sandbox.ErrSessionInUse) {
+		t.Fatalf("a foreign instance must be refused, got %v", err)
+	}
+	if !contains(fe.sessionIDs(), "foreign") {
+		t.Fatal("the foreign session was killed")
 	}
 }

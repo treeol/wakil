@@ -113,9 +113,13 @@ type live struct {
 	inst  string
 }
 
-// dead reports whether the session's supervisor has exited. A dead session can
-// never come back: the supervisor holds the namespaces and the control socket.
-func (l *live) dead() bool { return l.refused.Load() || (l.sup != nil && l.sup.hasExited()) }
+// dead reports whether the session's supervisor has exited. A dead session
+// can never come back: the supervisor holds the namespaces and the control
+// socket. In 0.4.1 the run process exited 0 (detachExited); the supervisor
+// is tracked by supPid, and dead() checks that pid via procAlive.
+func (l *live) dead() bool {
+	return l.refused.Load() || (l.sup != nil && l.sup.hasExited())
+}
 
 // deadErr describes a dead session, with the supervisor's captured stderr and
 // the path of its log.
@@ -127,9 +131,17 @@ func (l *live) deadErr() error {
 	if msg == "" {
 		msg = "(no output; hisn prints diagnostics only with -v)"
 	}
-	state := "exited (" + l.sup.exitStatus() + ")"
-	if !l.sup.hasExited() {
+	var state string
+	if l.sup.detachExited {
+		if l.sup.supPid > 0 {
+			state = fmt.Sprintf("supervisor pid %d exited", l.sup.supPid)
+		} else {
+			state = "exited (" + l.sup.exitStatus() + ")"
+		}
+	} else if !l.sup.hasExited() {
 		state = "is running but its control socket refuses connections; it will be replaced"
+	} else {
+		state = "exited (" + l.sup.exitStatus() + ")"
 	}
 	return fmt.Errorf("%w: hisn supervisor for session %s %s; log %s; stderr: %s",
 		sandbox.ErrSessionDead, l.id, state, l.sup.logPath, msg)

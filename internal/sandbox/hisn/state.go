@@ -30,6 +30,11 @@ type record struct {
 	Mode     string `json:"mode,omitempty"`
 	SupPid   int    `json:"sup_pid,omitempty"`
 	SupStart string `json:"sup_start,omitempty"`
+	// Inst is the Wakil instance token (b.inst) that created this record. A
+	// live session whose record's Inst matches this Wakil's instance is
+	// adopted (0.4.1: the run process exited, the supervisor lives on); a
+	// foreign Inst stays refused.
+	Inst string `json:"inst,omitempty"`
 }
 
 func (b *Backend) sessionsDir() string         { return filepath.Join(b.opts.StateDir, "sessions") }

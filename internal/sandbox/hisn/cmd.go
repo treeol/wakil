@@ -7,14 +7,17 @@ package hisn
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -185,15 +188,26 @@ func (t *teeWriter) close() {
 	}
 }
 
-// supervisorProc is the long-lived `hisn run --detach` process. In hisn the
-// supervisor IS the session: it holds the namespace fds and the control socket,
-// and `--detach` only means "no main command". It is therefore the session's
-// lifetime handle and, because it is the exact process Wakil spawned, an
-// instance-bound identity (no pid or id can have been reused while it is
-// unreaped).
+// supervisorProc is the `hisn run --detach` process. In hisn <= 0.4.0 the
+// supervisor IS the process: it holds the namespace fds and the control
+// socket, and `--detach` only means "no main command". The process is the
+// session's lifetime handle and, because it is the exact process Wakil
+// spawned, an instance-bound identity (no pid or id can have been reused
+// while it is unreaped).
+//
+// In hisn >= 0.4.1 the run process writes "ready\n" (and RISK lines on
+// stderr), then EXITS 0: the supervisor lives on as a separate process.
+// Its pid is <session-dir>/supervisor.pid (its log
+// <session-dir>/supervisor.log). The run process's exit-0 is therefore a
+// SUCCESS, not death; the supervisor is found by `hisn ls --json` (field
+// dir → the session directory) and tracked by its own pid. The liveness
+// methods below detect which mode is active: if the run process exits
+// within the ready wait, the session is 0.4.1-style (detachExited=true); if
+// it stays alive, it is 0.4.0-style (the process IS the supervisor).
 type supervisorProc struct {
 	cmd     *osexec.Cmd
 	stderr  *ringBuffer
+	stdout  string             // run process stdout (0.4.1: "<id> <name|-> ready")
 	logPath string             // per-chat supervisor log (truncated at every start)
 	cancel  context.CancelFunc // cancels the SESSION-OWNED context of cmd
 	exited  chan struct{}      // closed as soon as cmd.Wait returned (no log I/O before it)
@@ -202,6 +216,15 @@ type supervisorProc struct {
 	// killFn delivers SIGKILL. A field only so tests can simulate a supervisor
 	// that cannot be killed (uninterruptible sleep); production never sets it.
 	killFn func()
+
+	// detachExited is true when the run process exited 0 (success) and the
+	// supervisor lives on as a separate process (hisn >= 0.4.1). When true,
+	// liveness is tracked by supPid/supStart (the REAL supervisor), not by
+	// the run process's exited channel.
+	detachExited bool
+	supPid       int           // the real supervisor's pid (read from <dir>/supervisor.pid)
+	supStart     string        // /proc start time of supPid; "" if unknown
+	supExited    chan struct{} // closed when the real supervisor is confirmed gone
 }
 
 // supervisorLogPath is where chat id's supervisor output goes.
@@ -220,6 +243,9 @@ func (b *Backend) supervisorLogPath(id string) string {
 // (truncated per start, so it always holds exactly the latest supervisor).
 // notes are written first, as "wakil: ..." lines.
 //
+// In 0.4.1 stdout is NOT nil: the run process prints "<id> <name|-> ready"
+// on stdout before exiting. It is captured into p.stdout for diagnostics.
+//
 // Readiness (hisn >= 0.2.1): `--ready-fd 3` with the WRITE end of a pipe as the
 // child's fd 3 (ExtraFiles); hisn writes "ready\n" there once the session is
 // live. Wakil closes its own write end immediately after a successful Start —
@@ -231,8 +257,6 @@ func (b *Backend) startSupervisor(logPath, dir string, notes []string, args ...s
 	}
 	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		// Diagnostics are not optional: a supervisor whose stderr vanishes with
-		// the process is exactly what made earlier failures undiagnosable.
 		return nil, nil, fmt.Errorf("supervisor log %s: %w", logPath, err)
 	}
 	ring := newRingBuffer(supervisorStderrCap)
@@ -253,19 +277,18 @@ func (b *Backend) startSupervisor(logPath, dir string, notes []string, args ...s
 	// supervisor's PROCESS cwd (E_PROFILE_UNTRUSTED), and Wakil's own cwd is
 	// normally the project. Empty = inherit (legacy --policy path).
 	cmd.Dir = dir
-	cmd.Stdin = nil  // /dev/null
-	cmd.Stdout = nil // /dev/null; hisn run prints nothing on stdout
+	cmd.Stdin = nil // /dev/null
+	// stdout is captured: in 0.4.1 the run process prints "<id> <name|-> ready".
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = tee
 	cmd.WaitDelay = supervisorWaitDelay
 	cmd.ExtraFiles = []*os.File{readyW} // fd 3: --ready-fd 3
-	p := &supervisorProc{cmd: cmd, stderr: ring, logPath: logPath, cancel: supCancel, exited: make(chan struct{}), logged: make(chan struct{})}
+	p := &supervisorProc{cmd: cmd, stderr: ring, logPath: logPath, cancel: supCancel,
+		exited: make(chan struct{}), logged: make(chan struct{}),
+		supExited: make(chan struct{})}
 	started := make(chan error, 1)
 	go func() {
-		// Pdeathsig is delivered when the OS THREAD that forked the child
-		// exits, not when the process does, and the Go runtime may retire an
-		// idle thread at any time. Pin this goroutine (and so its thread) for
-		// the supervisor's whole life: the same goroutine starts and reaps it,
-		// blocked in cmd.Wait, and only then lets the thread go.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		err := cmd.Start()
@@ -278,10 +301,7 @@ func (b *Backend) startSupervisor(logPath, dir string, notes []string, args ...s
 			return
 		}
 		p.waitErr = cmd.Wait()
-		// Publish the death FIRST: health checks read `exited`, and no log I/O
-		// (a stalled disk, a full volume) may delay them or the cleanup that
-		// follows. The exit note goes to the log afterwards; error messages that
-		// quote the log wait for `logged` with a short bound.
+		p.stdout = stdout.String()
 		supCancel()
 		close(p.exited)
 		_, _ = fmt.Fprintf(tee, "wakil: supervisor exited: %s\n", exitText(p.waitErr))
@@ -293,10 +313,6 @@ func (b *Backend) startSupervisor(logPath, dir string, notes []string, args ...s
 		_ = readyW.Close()
 		return nil, nil, err
 	}
-	// Start succeeded: our copy of the write end goes away NOW, so a read of
-	// EOF proves hisn's copy (the only other writer) was closed — supervisor
-	// exited or exec failed before writing. hisn also closes it after writing
-	// "ready\n", so EOF is not itself "not ready".
 	_ = readyW.Close()
 	return p, readyR, nil
 }
@@ -309,6 +325,14 @@ func exitText(err error) string {
 }
 
 func (p *supervisorProc) hasExited() bool {
+	if p.detachExited {
+		// The run process exited (0.4.1). The session lives on as the
+		// supervisor process; liveness is tracked by supPid/supExited.
+		if p.supPid > 0 && procAlive(p.supPid, p.supStart) {
+			return false
+		}
+		return true
+	}
 	select {
 	case <-p.exited:
 		return true
@@ -317,8 +341,20 @@ func (p *supervisorProc) hasExited() bool {
 	}
 }
 
-// waitExit reports whether the supervisor exited within d.
+// waitExit reports whether the run process (0.4.0: the supervisor) exited
+// within d. In 0.4.1 the run process already exited (detachExited), so
+// liveness is the supervisor's: check it via supExited.
 func (p *supervisorProc) waitExit(d time.Duration) bool {
+	if p.detachExited {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-p.supExited:
+			return true
+		case <-t.C:
+			return false
+		}
+	}
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
@@ -329,32 +365,56 @@ func (p *supervisorProc) waitExit(d time.Duration) bool {
 	}
 }
 
-// kill SIGKILLs the supervisor: cancelling its session-owned context makes the
-// runtime kill it, and the explicit Kill makes that independent of scheduling.
-// Its init dies through its own PDEATHSIG. Killing an already-reaped process is
-// a harmless no-op.
+// kill SIGKILLs the supervisor. In 0.4.0 this is the run process (it IS the
+// supervisor). In 0.4.1 the run process already exited; the supervisor is a
+// separate process found by pid. Killing an already-reaped process is a
+// harmless no-op.
 func (p *supervisorProc) kill() {
 	if p.killFn != nil {
 		p.killFn()
 		return
 	}
-	p.cancel()
-	_ = p.cmd.Process.Kill()
+	if p.detachExited && p.supPid > 0 {
+		_ = syscall.Kill(p.supPid, syscall.SIGKILL)
+		return
+	}
+	if p.cmd != nil && p.cmd.Process != nil {
+		p.cancel()
+		_ = p.cmd.Process.Kill()
+	}
 }
 
-// exitStatus describes how the supervisor ended ("exit status 125",
-// "signal: killed", "exit status 0"), or "still running".
+// exitStatus describes how the run process or the real supervisor ended
+// ("exit status 125", "signal: killed", "exit status 0"), or "still running".
+// In 0.4.1 "still running" means the real supervisor is still alive.
 func (p *supervisorProc) exitStatus() string {
+	if p.detachExited {
+		if p.supPid > 0 && procAlive(p.supPid, p.supStart) {
+			return "still running"
+		}
+		if p.supPid > 0 {
+			return fmt.Sprintf("supervisor pid %d exited", p.supPid)
+		}
+		return exitText(p.waitErr)
+	}
 	if !p.hasExited() {
 		return "still running"
 	}
 	return exitText(p.waitErr)
 }
 
-func (p *supervisorProc) pid() int { return p.cmd.Process.Pid }
+func (p *supervisorProc) pid() int {
+	if p.detachExited && p.supPid > 0 {
+		return p.supPid
+	}
+	if p.cmd != nil && p.cmd.Process != nil {
+		return p.cmd.Process.Pid
+	}
+	return 0
+}
 
-// stderrText returns the captured stderr. After an exit it waits briefly (bounded;
-// the log may be stalled) so the exit note is included.
+// stderrText returns the captured stderr. After an exit it waits briefly
+// (bounded; the log may be stalled) so the exit note is included.
 func (p *supervisorProc) stderrText() string {
 	if p.hasExited() {
 		t := time.NewTimer(500 * time.Millisecond)
@@ -365,4 +425,82 @@ func (p *supervisorProc) stderrText() string {
 		t.Stop()
 	}
 	return p.stderr.String()
+}
+
+// procAlive reports whether pid is running AND its /proc start time matches
+// start (when start is non-empty). A pid of 0 is not alive. When start is empty
+// (non-Linux, or the process is gone and /proc cannot be read), the pid is
+// considered alive only if kill(pid, 0) succeeds — we cannot prove it is gone.
+// This mirrors ownerAlive's conservative handling.
+func procAlive(pid int, start string) bool {
+	if pid <= 0 {
+		return false
+	}
+	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	if start == "" {
+		return true // cannot prove it is gone
+	}
+	cur := procStart(pid)
+	return cur == "" || cur == start
+}
+
+// trackSupervisor finds the real supervisor process for a 0.4.1 detach session
+// and arms the supervisorProc to track it. The session directory comes from
+// `hisn ls --json` (field dir); the supervisor pid is read from
+// <dir>/supervisor.pid. A background goroutine polls the supervisor pid and
+// closes supExited when it is gone. Call this after waitReady detects the
+// run process has exited (detachExited).
+func (b *Backend) trackSupervisor(ctx context.Context, p *supervisorProc, id string) error {
+	dir, err := b.sessionDir(ctx, id)
+	if err != nil {
+		return fmt.Errorf("hisn 0.4.1: cannot find session directory for %s: %w", id, err)
+	}
+	pidFile := filepath.Join(dir, "supervisor.pid")
+	var pidBytes []byte
+	deadline := time.Now().Add(min(b.readyTimeout, 2*time.Second))
+	for {
+		pidBytes, err = os.ReadFile(pidFile)
+		if err == nil && len(strings.TrimSpace(string(pidBytes))) > 0 {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			if err != nil {
+				return fmt.Errorf("hisn 0.4.1: reading supervisor.pid for %s: %w", id, err)
+			}
+			return fmt.Errorf("hisn 0.4.1: supervisor.pid for %s is empty: %w", id, ctx.Err())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil || pid <= 0 {
+		return fmt.Errorf("hisn 0.4.1: invalid supervisor pid %q for %s", strings.TrimSpace(string(pidBytes)), id)
+	}
+	p.detachExited = true
+	p.supPid = pid
+	p.supStart = procStart(pid)
+	go func() {
+		for {
+			if !procAlive(p.supPid, p.supStart) {
+				close(p.supExited)
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	return nil
+}
+
+// sessionDir returns the session directory for id from `hisn ls --json`.
+func (b *Backend) sessionDir(ctx context.Context, id string) (string, error) {
+	m, err := b.listSessions(ctx)
+	if err != nil {
+		return "", err
+	}
+	e, ok := m[id]
+	if !ok {
+		return "", fmt.Errorf("session %s not found", id)
+	}
+	return e.Dir, nil
 }

@@ -16,11 +16,12 @@ import (
 	"time"
 )
 
-// The fake hisn is this test binary re-executed through a one-line shell
-// wrapper (which carries HISN_FAKE_STATE, since Wakil scrubs the client env).
-// State lives under $HISN_FAKE_STATE/s/<id>/.
+// TestMain dispatches the fake hisn and its detach041 child supervisor.
 func TestMain(m *testing.M) {
 	if st := os.Getenv("HISN_FAKE_STATE"); st != "" {
+		if supervisor := os.Getenv("HISN_FAKE_SUPERVISOR"); supervisor != "" {
+			os.Exit(fakeSupervisorMain(supervisor, st, os.Args[1:]))
+		}
 		os.Exit(fakeMain(st, os.Args[1:]))
 	}
 	if os.Getenv(parentHelperEnv) != "" {
@@ -139,8 +140,11 @@ func hasFlag(args []string, name string) bool {
 }
 
 // fakeRun is the supervisor: like the real `hisn run --detach` it does NOT
-// return while the session lives. run_mode (a file in the fake state) selects a
-// failure to inject: fail | hang | nosock | late:<ms> | crash:<ms> | ignoreterm.
+// return while the session lives (0.4.0). 0.4.1: the run process exits 0
+// after printing the ready line; the supervisor lives on as a child that
+// serves the control socket. run_mode (a file in the fake state) selects a
+// failure to inject: fail | hang | nosock | late:<ms> | crash:<ms> | ignoreterm
+// | detach041.
 func fakeRun(state string, args []string) int {
 	id := flagVal(args, "--session-id")
 	verbose := hasFlag(args, "-v")
@@ -263,6 +267,23 @@ func fakeRun(state string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: injected crash: supervisor lost its init")
 		return 125
 	}
+	if mode == "detach041" {
+		// 0.4.1: the run process forks a child "supervisor" that serves the
+		// control socket, writes "ready\n" to --ready-fd, prints "<id> <name>-
+		// ready" on stdout, writes supervisor.pid with the CHILD's pid, and
+		// exits 0. The child keeps the socket alive until SIGTERM (or
+		// `hisn stop`), then exits.
+		supPid := fakeForkSupervisor(ln, dir, args)
+		_ = os.WriteFile(filepath.Join(dir, "sup.pid"), []byte(strconv.Itoa(supPid)), 0o600)
+		_ = os.WriteFile(filepath.Join(dir, "supervisor.pid"), []byte(strconv.Itoa(supPid)), 0o600)
+		readyWrite(args)
+		sname := name
+		if sname == "" {
+			sname = "-"
+		}
+		fmt.Printf("%s %s ready\n", id, sname)
+		return 0
+	}
 	sig := make(chan os.Signal, 4)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	readyWrite(args) // 0.2.1: the session is live — announce it on the ready fd
@@ -276,6 +297,69 @@ func fakeRun(state string, args []string) int {
 			return 0 // `hisn stop`: the directory is kept, state stopped (0.4.0)
 		}
 		_ = os.RemoveAll(dir) // a TERM'd supervisor removes its own directory
+		return 0
+	}
+	return 0
+}
+
+// fakeForkSupervisor forks a child process (this test binary re-exec'd) that
+// becomes the 0.4.1 supervisor: it serves the control socket and handles
+// SIGTERM. Returns the child's pid. The child inherits the listener fd; the
+// parent must NOT close it before the child has taken it (the child gets it
+// via the fork).
+func fakeForkSupervisor(ln net.Listener, dir string, args []string) int {
+	self, _ := os.Executable()
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(),
+		"HISN_FAKE_STATE="+os.Getenv("HISN_FAKE_STATE"),
+		"HISN_FAKE_SUPERVISOR="+dir,
+	)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.ExtraFiles = []*os.File{lnFile(ln)} // fd 3: the listener
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "hisn: fork supervisor: %v\n", err)
+		return 0
+	}
+	return cmd.Process.Pid
+}
+
+// lnFile extracts the underlying *os.File from a net.Listener (unix socket).
+func lnFile(ln net.Listener) *os.File {
+	type fileLike interface {
+		File() (*os.File, error)
+	}
+	if fl, ok := ln.(fileLike); ok {
+		f, _ := fl.File()
+		return f
+	}
+	return nil
+}
+
+// fakeSupervisorMain is the 0.4.1 child supervisor: it serves the control
+// socket (passed as ExtraFiles fd 3) and handles SIGTERM. When `hisn stop`
+// writes "stopped" to the session dir, it exits 0 (keeping the directory);
+// otherwise it exits 0 on TERM too (removing the directory, like the 0.4.0
+// supervisor).
+func fakeSupervisorMain(dir, state string, args []string) int {
+	f := os.NewFile(3, "control.sock")
+	ln, err := net.FileListener(f)
+	_ = f.Close()
+	if err != nil {
+		return 1
+	}
+	defer ln.Close()
+	fakeCtlServe(ln, dir)
+	sig := make(chan os.Signal, 4)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	for range sig {
+		killRecordedPids(dir)
+		_ = ln.Close()
+		if exists(filepath.Join(dir, "stopped")) {
+			return 0
+		}
+		_ = os.RemoveAll(dir)
 		return 0
 	}
 	return 0
