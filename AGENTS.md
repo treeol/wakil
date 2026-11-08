@@ -52,7 +52,7 @@ Core packages (`internal/`):
 - `core/` — core domain types and interfaces
 - `counsel/` — external AI counsel (oracle) HTTP calls, panel execution, response parsing
 - `diag/` — diagnostics
-- `exec/` — sandboxed execution (Docker + direct modes; `BackendExecutor` for pluggable sandbox backends; optional capability interfaces in `capabilities.go`)
+- `exec/` — sandboxed execution (hisn, Docker, and direct modes; `BackendExecutor` for pluggable sandbox backends; optional capability interfaces in `capabilities.go`)
 - `sandbox/` — backend-neutral sandbox contract (`Backend`, `PathMap`, `GrantManager`); `sandbox/hisn/` is the hisn backend, `sandbox/project/` loads `.wakil/sandbox.json` and the user's approval of it, `sandbox/fake/` a test double. The tool layer (agent, tools, lsp, browser, tui) must not import a concrete backend — enforced by `internal/agent/no_backend_import_test.go`. Design: `docs/sandbox-backends.md`
 - `lsp/` — language server protocol integration
 - `memory/` — durable memory store

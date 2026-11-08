@@ -14,7 +14,7 @@ import (
 // ResolveSandbox settles the backend once, before an executor exists. When
 // nothing chose a backend (no sandbox.backend in file/env/flag, no exec_mode)
 // it flips the default to hisn only if ALL hold: `hisn check` passes, hisn >=
-// 0.3.1 is in PATH, and the project's .wakil/sandbox.json (if it asks for
+// config.MinHisnDefaultVersion is in PATH, and the project's .wakil/sandbox.json (if it asks for
 // anything) is approved. Otherwise the backend stays docker and the reason is
 // in cfg.StartupBanner(). An explicit backend is returned untouched. The three
 // entry points (TUI, `wakil run`, daemon) call this right after LoadConfig and

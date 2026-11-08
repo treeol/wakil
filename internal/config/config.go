@@ -1008,8 +1008,8 @@ type MashuraPanelConfig struct {
 
 // SandboxConfig groups sandbox-related config-file settings.
 type SandboxConfig struct {
-	// Backend selects the sandbox implementation: "docker" (default), "hisn",
-	// or "direct" (no sandbox). An unknown value is a config error, never a
+	// Backend selects the sandbox implementation: "docker", "hisn", or "direct".
+	// Unset means hisn when usable, else docker (see ApplyDefaultBackend) (no sandbox). An unknown value is a config error, never a
 	// fallback. The deprecated top-level exec_mode is mapped onto it.
 	Backend string `json:"backend,omitempty"`
 	// Hisn configures the hisn backend (ignored for docker).
@@ -1112,7 +1112,7 @@ type HisnConfig struct {
 	// `session.shm_size` — Wakil always sets `session.shm = true`).
 	ShmSizeMB int64 `json:"shm_size_mb,omitempty"`
 	// KVRBinary is the kvr-server executable run INSIDE the sandbox as the
-	// staging service (hisn >= 0.3.1). Empty = look up "kvr-server" in PATH.
+	// staging service (hisn >= MinHisnVersion). Empty = look up "kvr-server" in PATH.
 	// It must live under a directory the sandbox exposes (/usr, /opt, /nix, a
 	// project mounts_ro). Without one, staging stays off (never a host-side
 	// kvr).
@@ -1266,7 +1266,7 @@ const defaultConfigTemplate = `{
 
   "_comment_endpoints": "REQUIRED: set at least one endpoint. Either add an \"endpoints\" block here (see config.example.json) or set the ILM_BASE_URL env var. Example: \"endpoints\": {\"local\": {\"kind\": \"openai\", \"base_url\": \"http://localhost:8080\", \"model\": \"qwen3.6-35b\"}}, \"default_endpoint\": \"local\"",
 
-  "_comment_sandbox": "sandbox.backend: \"docker\" (default, needs the wakil-dev image — build with: docker build -t wakil-dev .), \"hisn\" (rootless, opt-in) or \"direct\" (bare-metal, no sandbox). The old top-level exec_mode still works but is deprecated."
+  "_comment_sandbox": "sandbox.backend: unset means hisn when usable, else \"docker\" (needs the wakil-dev image — build with: docker build -t wakil-dev .), \"hisn\" (rootless, opt-in) or \"direct\" (bare-metal, no sandbox). The old top-level exec_mode still works but is deprecated."
 }
 `
 
@@ -1506,7 +1506,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key (sent as Bearer token)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "DEPRECATED alias of --sandbox: docker|direct")
-	fs.StringVar(&cfg.Sandbox.Backend, "sandbox", cfg.Sandbox.Backend, "sandbox backend: docker (default)|hisn|direct (direct = no sandbox)")
+	fs.StringVar(&cfg.Sandbox.Backend, "sandbox", cfg.Sandbox.Backend, "sandbox backend: hisn when usable, else docker|hisn|direct (direct = no sandbox)")
 	fs.StringVar((*string)(&cfg.OutputMode), "output-mode", string(cfg.OutputMode), "TUI output mode: debug|simple")
 	fs.StringVar(&cfg.Image, "sandbox-image", cfg.Image, "sandbox container image (docker mode); overrides config sandbox.image and the image pinned into release builds")
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "alias of --sandbox-image")
@@ -2303,10 +2303,10 @@ func (c Config) StartupBanner() string {
 // HisnAvailability is what a probe of the hisn binary found. Reason is empty
 // exactly when hisn is usable as the default backend.
 type HisnAvailability struct {
-	// Version is the parsed `hisn --version` ("0.3.1") when known.
+	// Version is the parsed `hisn --version` (e.g. "0.4.1") when known.
 	Version string
 	// Reason says why hisn cannot be the default ("hisn not found in PATH",
-	// "hisn 0.2.2 is older than 0.3.1", "hisn check failed: ..."), or "".
+	// "hisn 0.3.3 is older than 0.4.1", "hisn check failed: ..."), or "".
 	Reason string
 }
 
@@ -2317,7 +2317,7 @@ const MinHisnDefaultVersion = MinHisnVersion
 
 // ApplyDefaultBackend decides the backend when NOTHING chose one. The default
 // becomes hisn only when ALL hold: the backend was not set explicitly (file,
-// env, flag, exec_mode), `hisn check` passes and hisn >= 0.3.1 is in PATH
+// env, flag, exec_mode), `hisn check` passes and hisn >= MinHisnDefaultVersion is in PATH
 // (avail.Reason == ""), and the setup does not depend on docker-only features
 // (an explicit --workdir). Otherwise it stays docker and DefaultNote says why,
 // so a host without hisn sees no silent behaviour change. extra is kept for

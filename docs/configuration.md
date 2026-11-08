@@ -14,7 +14,7 @@ exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
 | `--api-key` | `ILM_API_KEY` / `WAKIL_API_KEY` | — | sent as `Authorization: Bearer <key>` *(endpoint-level `auth_header` wins)* |
 | `--model` | `ILM_MODEL` / `WAKIL_MODEL` | `ilm` | model name; overrides the selected endpoint's `model` |
 | `--exec` *(deprecated)* | `ILM_EXEC_MODE` / `WAKIL_EXEC_MODE` | — | deprecated alias of `--sandbox` (`docker` \| `direct`); prints a one-line warning. Config key `exec_mode` likewise maps onto `sandbox.backend`; an explicit contradiction (e.g. `exec_mode: direct` + `sandbox.backend: hisn`) is an error |
-| `--sandbox` | `WAKIL_SANDBOX_BACKEND` | `docker` | sandbox backend: `docker` \| `hisn` \| `direct` (no sandbox — commands run on the host). Unknown values are an error (no silent fallback). See [Sandbox backends](#sandbox-backends) |
+| `--sandbox` | `WAKIL_SANDBOX_BACKEND` | *unset* → hisn when usable, else `docker` | sandbox backend: `docker` \| `hisn` \| `direct` (no sandbox — commands run on the host). Unknown values are an error (no silent fallback). See [Sandbox backends](#sandbox-backends) |
 | `--sandbox-image` *(alias `--image`)* | `ILM_CONTAINER_IMAGE` / `WAKIL_IMAGE` | image pinned into the release binary *(`ghcr.io/treeol/wakil-sandbox@sha256:…`; see `wakil version`)*; dev builds fall back to `wakil-dev` with a warning | sandbox image. Resolution order: flag → env → config `sandbox.image` → legacy `image` → pinned digest → dev fallback. Release binaries pull the pinned image on first run. Build your own with `docker build -t wakil-dev .` |
 | `--workdir` | `ILM_WORKDIR` / `WAKIL_WORKDIR` | `/mnt/<dirname>` | working dir inside the container |
 | `--host-workdir` | `ILM_HOST_WORKDIR` / `WAKIL_HOST_WORKDIR` | cwd *(auto-detected)* | host path bind-mounted into the container |
@@ -321,7 +321,7 @@ runs on the host instead, no container.
 
 `sandbox.backend` selects where tool calls run: two sandbox backends exist, plus
 `direct` (no sandbox, explicit opt-out). `docker`
-(default) is the production sandbox and is unchanged. `hisn`
+is the fallback when hisn is not usable, and the production sandbox otherwise. `hisn`
 ([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.4.1) is a
 rootless, daemonless alternative. Design, path model, lifecycle and known
 limits: [sandbox-backends.md](sandbox-backends.md).

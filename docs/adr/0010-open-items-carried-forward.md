@@ -46,3 +46,11 @@
 Each item stays open until it is built, verified, or moved to an issue. The
 process records that listed them are removed in this cleanup. Their text remains
 in git history.
+
+## Status note (2026-11-09)
+
+The version values quoted in the "Auto-default hisn version gate" item above
+are historical. Current values, from `internal/config/config.go`:
+`MinHisnVersion` = `0.4.1` and `MinHisnDefaultVersion` = `0.4.1`
+(`MinHisnDefaultVersion` equals `MinHisnVersion`). The gate mismatch described
+in that item no longer exists.
