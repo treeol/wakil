@@ -49,14 +49,28 @@ endpoint are likewise unrelated and stay.
 
 ## Consequences
 
-- Exit no longer has an ilm flush step. The remaining `facade.Close` and
-  `CloseResources` teardown paths were audited for fixed network timeouts: MCP
-  server close is ~9 ms on the rubin timeline and the host-session close is
-  bounded by a 10 s context that returns as soon as the cancel is acknowledged;
-  no other exit-path step waits on a network timeout > 200 ms.
+- Exit no longer has an ilm flush step. `facade.Close` makes one bounded
+  `hisn stop` round trip (~105 ms in the sandbox) plus the terminal restore;
+  the ilm flush that cost 5002 ms on rubin is gone. The other teardown steps
+  (MCP server close, browser stop, event-pump stop, background-process stop)
+  were inspected: MCP close measured ~9 ms on rubin; the event pump and
+  background-process waits are bounded by 5 s and 2 s timers but are **not**
+  network waits and, with no live turn or process, return immediately. This is
+  not a blanket "every teardown step is fast" guarantee — it is that no step
+  waits on a network timeout > 200 ms, and MCP close is the only network step
+  and measured ~9 ms. A user with a wedged MCP transport could still hit the
+  MCP drain bound; that predates this change.
 - The assist mode (server-proposed tool calls before the model runs) is gone with
   the package. It was reachable only through `ilm_stack.mode=assist`, which the
   ilm-stack service no longer serves.
 - `deadcode -test ./...` returns to 0; the removal does not leave orphaned
   helpers (the package's exports were used only by the package and the removed
-  call sites).
+  call sites — verified by a repository-wide search for `internal/ilm` and its
+  symbols, and by the green build/vet/lint/deadcode gate on the removal commit).
+- **Old configs and commands**: an `ilm_stack` block in a user config is now
+  ignored (Go's JSON decoding ignores unknown struct fields), and the
+  `ILM_STACK_*` / `ILM_MODE` / `ILM_QUEUE_PATH` / `ILM_BATCH_SIZE` /
+  `ILM_OUTPUT_LIMIT` / `ILM_ASSIST_AUTO` env vars are no longer read (silently
+  inert). `/assist` is now an unknown command and returns the usual
+  unknown-command notice. No removal warning is emitted; the fields were opt-in
+  and their absence changes nothing.

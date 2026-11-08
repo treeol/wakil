@@ -70,11 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary and retrying works without restarting Wakil.
 - **hisn is auto-selected only when it passes the explicit-backend gate.**
   The default-backend version floor is now the same as the explicit floor
-  (`MinHisnDefaultVersion = MinHisnVersion`, 0.3.3 when this was written, 0.4.0
-  now). Previously 0.3.1 could be
-  chosen as the default and then refused at startup. A host with hisn 0.3.1 or
-  0.3.2 now gets Docker or Podman by default, as it would for a missing hisn.
-  Set `sandbox.backend: hisn` only with 0.3.3 or newer.
+  (`MinHisnDefaultVersion = MinHisnVersion`, both 0.4.0). Previously 0.3.1 could
+  be chosen as the default and then refused at startup. A host with hisn older
+  than 0.4.0 now gets Docker or Podman by default, as it would for a missing
+  hisn. Set `sandbox.backend: hisn` only with 0.4.0 or newer.
 
 ### Removed
 

@@ -271,7 +271,7 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 
 	// Read stateMu-guarded fields under a single RLock to avoid racing
 	// with RPC writers (SetSelectedBackend, SetRawToolsValue,
-	// SetInfoPanelOpen, /assist toggle). Costs is a *proxy.CostTracker
+	// SetInfoPanelOpen). Costs is a *proxy.CostTracker
 	// pointer set once at construction and never reassigned — safe to
 	// read without a lock. EffectiveModel() and EffectiveSubagentModel()
 	// acquire stateMu.RLock internally.
