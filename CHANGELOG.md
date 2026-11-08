@@ -62,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archives it; a `crashed` leftover that holds the chat's name is pruned before
   the next start. The doctor, the default-backend gate, the sandbox image pin
   (Dockerfile, SHA256s from the v0.4.0 release) and the fixtures moved to 0.4.0.
-  hisn 0.3.x is refused with a message naming 0.4.0.
+  hisn 0.3.x is refused with a message naming 0.4.0. (The minimum was raised
+  again to 0.4.1; see the next entry.)
 - **hisn 0.4.1 compatibility.** In 0.4.1 `hisn run --detach` prints the ready
   line and exits 0; the supervisor lives on as a separate process, so
   `Pdeathsig` no longer ties it to Wakil (`f352d56`). Wakil tells the two modes
@@ -86,7 +87,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The hisn integration tests stop and prune the sessions they create, and
     `TestMain` sweeps `wakil-it-*` and `toolpath-*` sessions before and after
     an integration run.
-  The minimum supported hisn stays 0.4.0 (see Known follow-ups).
+  The minimum supported hisn is now 0.4.1: `MinHisnVersion`,
+  `MinHisnDefaultVersion` and the hisn backend's `MinVersion` are 0.4.1, the
+  sandbox image pin (`Dockerfile`, with the amd64 and arm64 SHA256s of the
+  v0.4.1 release) is 0.4.1, and the README, `CONTRIBUTING.md`,
+  `docs/configuration.md` and `docs/sandbox-backends.md` state it. A host with
+  hisn 0.4.0 is refused with a message naming 0.4.1 (explicit backend) or gets
+  Docker or Podman by default. The 0.4.0-only code paths remain and are still
+  tested with the floor lowered in the test.
 
 - **LSP servers are probed before launch.** When a language server binary is
   missing from the sandbox (for example `gopls` in the hisn rootfs), the LSP
@@ -96,10 +104,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary and retrying works without restarting Wakil.
 - **hisn is auto-selected only when it passes the explicit-backend gate.**
   The default-backend version floor is now the same as the explicit floor
-  (`MinHisnDefaultVersion = MinHisnVersion`, both 0.4.0). Previously 0.3.1 could
+  (`MinHisnDefaultVersion = MinHisnVersion`, both 0.4.1). Previously 0.3.1 could
   be chosen as the default and then refused at startup. A host with hisn older
-  than 0.4.0 now gets Docker or Podman by default, as it would for a missing
-  hisn. Set `sandbox.backend: hisn` only with 0.4.0 or newer.
+  than 0.4.1 now gets Docker or Podman by default, as it would for a missing
+  hisn. Set `sandbox.backend: hisn` only with 0.4.1 or newer.
 
 ### Removed
 
@@ -165,10 +173,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plain `hisn ls --prune`, which archives every provably dead session on the
   host. Only the integration-test sweep scopes its prune with
   `--name-prefix` (when hisn is 0.4.1 or newer).
-- **The hisn minimum is still 0.4.0.** `MinHisnVersion`, `MinHisnDefaultVersion`
-  and the sandbox image pin (`Dockerfile`, hisn 0.4.0) have not been raised to
-  0.4.1. The 0.4.1-specific paths are gated on the detected mode or version, so
-  0.4.0 keeps working.
 - **hisn integration runs must not overlap on one host.** The suite uses fixed
   ids (`wakil-it-*`, `toolpath-*`) and its `TestMain` stops and prunes every
   session with those prefixes, so two concurrent runs stop each other's
