@@ -215,6 +215,11 @@ func looksLikeBinaryPaste(runes []rune) bool {
 
 // containsBinary is the legacy name for looksLikeBinaryPaste, kept so the
 // call site in tui.go and existing tests read naturally.
+//
+// Known false positive, accepted on purpose: prose that begins with "PNG"
+// (at rune 0 or 1) and mentions "IHDR" within the first 64 runes is classified
+// as binary. Such input is pathological for a chat prompt, and the failure mode
+// is a dropped clipboard paste, not data loss.
 func containsBinary(runes []rune) bool {
 	return looksLikeBinaryPaste(runes)
 }

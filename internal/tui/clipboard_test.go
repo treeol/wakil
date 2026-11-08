@@ -173,17 +173,6 @@ func TestContainsBinary_TextMentioningPNG(t *testing.T) {
 	}
 }
 
-// TestContainsBinary_PNGWordAtStartWithIHDRLater is the deliberate edge: text
-// starting with "PNG" AND containing "IHDR" within 64 runes will false-
-// positive. Document the tradeoff — this is pathological input for a chat
-// prompt, and the failure mode is a clipboard read, not data loss.
-func TestContainsBinary_PNGWordAtStartWithIHDRLater(t *testing.T) {
-	s := "PNG files contain IHDR chunks"
-	if !containsBinary([]rune(s)) {
-		t.Skip("documented false-positive case no longer triggers — detection tightened")
-	}
-}
-
 // TestBinaryPasteInterception verifies that a binary paste — with the runes
 // mangled exactly as bubbletea + a control-stripping terminal would deliver
 // them — triggers the clipboard read and does not insert into the textarea.
