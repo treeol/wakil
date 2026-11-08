@@ -11,13 +11,15 @@
 # the numbers; the first run of each repo is reported as "cold" (new stores,
 # new hisn home) and the rest as "warm".
 #
-# The run READS two things from your real environment, read-only:
-#   - the hisn trust store ($XDG_DATA_HOME/wakil/hisn): the approvals for a
-#     repo's .wakil/sandbox.json live there, and a private tree has none — so
-#     startup would refuse the repo with "has not been approved" and no
-#     timeline would be written. The store is linked into the private tree
-#     (never copied or modified).
-#   - the repo's own .wakil/sandbox.json (read by wakil itself, unchanged).
+# The run READS one directory from your real environment, read-only: the hisn
+# project approvals ($XDG_DATA_HOME/wakil/hisn/approved). A repo's
+# .wakil/sandbox.json approval lives there, and a private tree has none — so
+# startup would refuse the repo with "has not been approved" and no timeline
+# would be written. Only the `approved/` subdirectory is linked into the private
+# tree; hisn's StateDir is the parent, where hisn writes its own runtime state
+# (owner records, sessions, lock), so it MUST stay private — a symlink does not
+# enforce read-only, and linking the whole dir would let hisn write into the real
+# tree. The repo's own .wakil/sandbox.json is read by wakil itself, unchanged.
 #
 # If a run produces no timeline, run.sh says why (approval missing, non-zero
 # exit, or a logline the driver printed) instead of silently reporting nothing.
@@ -61,16 +63,21 @@ rootfs_json=""
 if [ -n "${ROOTFS:-}" ]; then rootfs_json=",\"rootfs\":\"$ROOTFS\""; fi
 sandbox="{\"backend\":\"hisn\",\"hisn\":{\"binary\":\"$HISN_BIN\"$rootfs_json}}"
 
-# link_real_readonly SRC DST: symlink SRC at DST only when SRC exists and DST
-# does not. Never writes through the link (the private tree only accumulates
-# new session data beside it) — this is the read side of "use the real trust
-# store read-only".
-link_real_readonly() {
-  local src=$1 dst=$2
-  [ -e "$src" ] || return 0
-  [ -e "$dst" ] && return 0
-  mkdir -p "$(dirname "$dst")"
-  ln -s "$src" "$dst"
+# link_approved_readonly: make the REAL hisn trust records visible read-only at
+#   $ws/data/wakil/hisn/approved
+# while leaving StateDir itself a real, writable, private directory. Only the
+# project approvals live under `approved/`; hisn's own runtime state (owner
+# records, sessions, lock, profile TOMLs) shares the parent StateDir and MUST
+# be private — symlinking the whole state dir would let hisn write its runtime
+# state into the real tree. A symlink does not enforce read-only, so we link
+# ONLY the approvals subdirectory, which wakil reads (never writes) at startup.
+link_approved_readonly() {
+  local real_hisn=$1 dst_hisn=$2
+  local src="$real_hisn/approved"
+  [ -d "$src" ] || return 0
+  mkdir -p "$dst_hisn"
+  rm -rf "$dst_hisn/approved"
+  ln -s "$src" "$dst_hisn/approved"
 }
 
 # count_timelines WS: number of timeline files a workspace has so far. Tolerates
@@ -86,8 +93,10 @@ for repo in "$@"; do
   name=$(basename "$repo")
   ws="$PERF_DIR/$name"
   rm -rf "$ws"; mkdir -p "$ws/data" "$ws/cfg" "$ws/home"
-  # The real hisn trust store (approvals for .wakil/sandbox.json) — read-only.
-  link_real_readonly "$REAL_XDG_DATA/wakil/hisn" "$ws/data/wakil/hisn"
+  # The real hisn project approvals (for .wakil/sandbox.json) — linked as the
+  # `approved/` subdirectory only; the state dir itself stays private so hisn's
+  # runtime writes never touch the real tree.
+  link_approved_readonly "$REAL_XDG_DATA/wakil/hisn" "$ws/data/wakil/hisn"
   if [ -n "${ROOTFS:-}" ] && [ -d "$REAL_HOME/.local/share/hisn" ]; then
     ln -s "$REAL_HOME/.local/share/hisn" "$ws/data/hisn"
   fi
@@ -95,8 +104,8 @@ for repo in "$@"; do
 {"endpoints":{"local":{"kind":"openai","base_url":"http://127.0.0.1:$PORT","model":"fake-model"}},
  "default_endpoint":"local","sandbox":$sandbox}
 JSON
-  if [ ! -e "$ws/data/wakil/hisn" ] && [ -f "$repo/.wakil/sandbox.json" ]; then
-    echo "== $name: note — $repo has .wakil/sandbox.json but no hisn trust store was found at $REAL_XDG_DATA/wakil/hisn;" >&2
+  if [ ! -e "$ws/data/wakil/hisn/approved" ] && [ -f "$repo/.wakil/sandbox.json" ]; then
+    echo "== $name: note — $repo has .wakil/sandbox.json but no hisn approvals were found at $REAL_XDG_DATA/wakil/hisn/approved;" >&2
     echo "   startup will refuse it with 'has not been approved' unless the repo needs no approval. Run 'wakil sandbox trust' in it first." >&2
   fi
   echo "== $name: $RUNS runs (run 1 is cold)" >&2

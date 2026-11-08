@@ -260,15 +260,22 @@ func (h *HostTurnHandle) WaitTurnDone(ctx context.Context) { h.ht.waitTurnDone(c
 // ReleaseWhenTurnDone releases the App ownership claim in the background, once
 // the in-flight turn (if any) has finished winding down. Called by the facade's
 // Close when a turn is still active so exit is never held hostage by a slow
-// cancel path: the wait is bounded by the turn's own cancellation (the signal
-// turnDone), not a fixed timeout. The claim is best-effort, so if the process
-// exits before the goroutine runs, nothing is lost (a leaked appOwners entry is
-// harmless — rotation builds a fresh App pointer that never collides with it).
+// cancel path.
+//
+// HONEST BOUND: the wait is the turnDone signal, which normally fires when the
+// tool's own cancellation completes. A tool that ignores ctx cancellation
+// entirely would leave this goroutine (and the appOwners entry) alive for the
+// process lifetime — that is an accepted, bounded-cost trade: the goroutine is
+// one blocked select, and the entry is one map slot retained until exit. It
+// never delays the terminal or the exit sequence (Close does not join it), and
+// a leaked appOwners entry is inert for rotation (a fresh App pointer never
+// collides with it). If a process is long-lived and churns many stuck turns,
+// the map can grow — an accepted wart, not a leak on the normal path.
 func (h *HostTurnHandle) ReleaseWhenTurnDone() {
 	go func() {
-		// Wait on the turn-done signal with no deadline: the tool's own cancel
-		// path (ctx cancellation) bounds it. Using a fresh background context
-		// keeps the wait independent of any caller-scoped cancellation.
+		// Wait on the turn-done signal. No deadline by design: a fixed timeout
+		// would be the very poll this replaced. The tool's cancel path is the
+		// real bound; see the honest-bound note above.
 		h.ht.waitTurnDone(context.Background())
 		_ = h.ht.Release()
 	}()

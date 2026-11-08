@@ -24,6 +24,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Startup no longer blocks the first prompt (B2).** The three provider probes
+  (model list, backend list, context limit), the hisn orphan reconcile
+  (`ls --prune`) and the lazy sandbox session start — with the staging/memory
+  startup-note scans — now run in the background *after* the prompt is shown,
+  instead of before it. In the build sandbox warm start to prompt went from
+  669 ms to 57 ms (target < 200 ms); on the rubin timeline the deferred blocks
+  were 1226 ms (MCP), 735 ms (probes) and 608 ms (reconcile). The status line
+  shows `…` for the model until the context probe resolves it. Headless runs
+  (`wakil run`) still do this work up front — they have no prompt to return to.
+  `hisn ls --prune` in 0.4.0 has no name filter, so the prune cannot yet be
+  scoped to `wakil-<projectkey>-` directories (open item).
+- **MCP servers connect in the background, concurrently.** `NewMCPManager`
+  starts every connect at once and returns immediately; tools appear as each
+  server becomes ready, and a tool call to a server that is still connecting
+  waits only on that server's own readiness (bounded by the call context). The
+  `/mcp` listing and info panel read status through a locked snapshot
+  (`SnapshotServers`) instead of unlocked field reads. This removes the block
+  that dominated the rubin start timeline.
+- **Exit never waits on a winding-down turn.** The `50 ms x N` retry loop in
+  `facade.Close` (about 2.6 s on the rubin timeline when a turn was still
+  cancelling) is replaced by a turn-`done` signal: exit makes one release
+  attempt and, if the turn is still winding down, releases in the background and
+  returns. The wait is bounded by the tool's own cancellation, not a fixed sleep.
 - **hisn 0.4.0 is the minimum, and the session model follows it** (ADR 0012).
   Against hisn 0.4.0 every session start timed out after 10 s although the
   session was up: `hisn ls --json` now reports schema `hisn-ls/v2` with state

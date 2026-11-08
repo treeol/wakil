@@ -188,6 +188,10 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// run it immediately (they have no prompt to return to).
 	var appRef *agent.App
 	runProbes := func(ctx context.Context) {
+		// Capture the endpoint generation BEFORE probing; publish only if it is
+		// unchanged, so a probe in flight during a /backend or /model switch
+		// cannot overwrite the newer endpoint's resolved info with stale data.
+		gen := appRef.EndpointGen()
 		probeCtx, probeCancel := context.WithTimeout(ctx, 6*time.Second)
 		defer probeCancel()
 		var (
@@ -215,9 +219,12 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		}()
 		wg.Wait()
 		endProbes()
-		appRef.SetCtxLimit(ctxLimit)
-		appRef.SetBackendList(backendList)
-		appRef.SetModelList(modelList)
+		// Publish only if the endpoint did not change while probing.
+		if appRef.EndpointGen() == gen {
+			appRef.SetCtxLimit(ctxLimit)
+			appRef.SetBackendList(backendList)
+			appRef.SetModelList(modelList)
+		}
 	}
 
 	// Load the agent prompt. The full prompt is used as AgentPrompt (the

@@ -128,6 +128,9 @@ func handleEndpointSwitch(app *App, name string, note func(string) Cmd) (handled
 	app.Cfg.EndpointName = name
 	app.Cfg.BaseURL = ep.BaseURL
 	app.Cfg.Model = ep.Model
+	// New endpoint: invalidate any in-flight startup probe so it cannot publish
+	// stale context/model info over this switch.
+	app.endpointGen.Add(1)
 
 	app.Client.BaseURL = strings.TrimRight(ep.BaseURL, "/")
 	app.Client.Kind = ep.Kind

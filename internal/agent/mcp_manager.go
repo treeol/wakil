@@ -45,13 +45,14 @@ type MCPServer struct {
 	Status  string           // "connecting" | "connected" | "failed" | "closed"
 	Err     error
 
-	// ready is closed when the initial background connect for this server has
-	// finished (success, failure, or shutdown). A tool call routed to a server
-	// that is still "connecting" waits on its OWN ready channel, so a slow
-	// server never blocks a call to an already-connected one. Always non-nil
-	// (installed at construction). Closed exactly once via readyOnce.
-	ready     chan struct{}
-	readyOnce sync.Once
+	// readyCh/readyMu implement per-connection readiness. readyCh is closed
+	// when the CURRENT connect attempt finishes (success, failure, or
+	// shutdown); a fresh channel is installed at the start of every connect
+	// (initial and Reconnect), so a call during a reconnect waits for that
+	// reconnect rather than seeing a stale closed channel. waitReady blocks on
+	// the current channel only. Guarded by readyMu.
+	readyCh chan struct{}
+	readyMu sync.Mutex
 
 	// sessionMu serializes CallTool (RLock) against Reconnect/Close (Lock)
 	// on the same session. CallTool holds RLock for the duration of
@@ -69,10 +70,17 @@ type MCPServer struct {
 // finish, short enough that a wedged transport cannot hang teardown.
 const closeDrainTimeout = 5 * time.Second
 
-// drainAndClose waits for in-flight CallTool calls to release sessionMu,
-// then closes the session. It reports whether the close actually happened;
-// false means the drain timed out and the session was left untouched (the
-// caller must not then force-close it).
+// drainAndClose waits for in-flight CallTool calls to release sessionMu, then
+// closes the session WHILE still holding the write lock, so no new CallTool can
+// start on a session being closed. It reports whether the close happened; false
+// means the drain timed out and the session was LEFT OPEN (the caller must not
+// force-close it — that would race a live RPC; the manager has already marked
+// the server "closed" so no new call can reach it).
+//
+// On timeout the drain goroutine is left blocked on Lock() until the live
+// calls finish; it then releases the lock and exits without closing. That is a
+// bounded-cost wart (one goroutine per abandoned session), not a leak on the
+// normal path.
 func (s *MCPServer) drainAndClose(session mcpSession, timeout time.Duration) bool {
 	acquired := make(chan struct{})
 	go func() {
@@ -82,7 +90,10 @@ func (s *MCPServer) drainAndClose(session mcpSession, timeout time.Duration) boo
 	}()
 	select {
 	case <-acquired:
+		// Re-acquire and hold through Close so no CallTool interleaves.
+		s.sessionMu.Lock()
 		_ = session.Close()
+		s.sessionMu.Unlock()
 		return true
 	case <-time.After(timeout):
 		return false
@@ -104,6 +115,40 @@ type MCPManager struct {
 	connectFn func(ctx context.Context, srv *MCPServer) error
 }
 
+// currentReady returns the current readiness channel, or nil if none.
+func (s *MCPServer) currentReady() chan struct{} {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	return s.readyCh
+}
+
+// signalReady closes the current readiness channel exactly once (idempotent:
+// closing an already-closed channel is not attempted because readyMu guards a
+// fresh-channel install; a second signal on the same channel is a no-op).
+func (s *MCPServer) signalReady() {
+	s.readyMu.Lock()
+	ch := s.readyCh
+	s.readyCh = nil
+	s.readyMu.Unlock()
+	if ch != nil {
+		select {
+		case <-ch:
+			// already closed
+		default:
+			close(ch)
+		}
+	}
+}
+
+// replaceReady installs a fresh channel (start of a connect) and returns it.
+func (s *MCPServer) replaceReady() chan struct{} {
+	ch := make(chan struct{})
+	s.readyMu.Lock()
+	s.readyCh = ch
+	s.readyMu.Unlock()
+	return ch
+}
+
 // connectOrDefault returns m.connectFn, defaulting to m.connect when unset.
 func (m *MCPManager) connectOrDefault() func(ctx context.Context, srv *MCPServer) error {
 	if m.connectFn != nil {
@@ -121,7 +166,8 @@ func (m *MCPManager) connectOrDefault() func(ctx context.Context, srv *MCPServer
 // its ready channel closes when its connect finishes, and readers that need
 // the server (CallTool, /mcp) wait on that channel only for the server they
 // touch. Tools become visible to the model as each server connects
-// (OpenAITools reads live Status/Tools each turn — see MCPManager.ToolsSnapshot).
+// (OpenAITools reads live Status/Tools under the manager lock each turn — see
+// App.toolsForTurn).
 //
 // The caller must Close the manager to stop servers that are still connecting;
 // Close marks them "closed" and a late successful connect is discarded.
@@ -129,9 +175,15 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 	m := &MCPManager{}
 	m.connectFn = m.connect
 	for _, cfg := range cfgs {
-		srv := &MCPServer{Cfg: cfg, Status: "connecting", ready: make(chan struct{})}
+		srv := &MCPServer{Cfg: cfg, Status: "connecting"}
+		srv.replaceReady()
 		m.servers = append(m.servers, srv)
 		safe.Go("mcp-connect", func() {
+			// Serialize with Reconnect (same per-server lock): the initial
+			// connect and a user-triggered /mcp reconnect must not race, or
+			// whichever finishes second clobbers/leaks the other's session.
+			srv.reconnectMu.Lock()
+			defer srv.reconnectMu.Unlock()
 			// Connect into a TEMP server: connect() mutates the *MCPServer it
 			// is given, and readers (OpenAITools, CallTool, Servers) run
 			// concurrently once the manager is published. Publishing under
@@ -141,9 +193,19 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 			err := m.connectOrDefault()(ctx, tmp)
 			m.mu.Lock()
 			defer m.mu.Unlock()
-			defer srv.readyOnce.Do(func() { close(srv.ready) })
+			defer srv.signalReady()
 			if srv.Status == "closed" {
-				// Close ran while we were connecting: discard the session.
+				// Close, or a Reconnect that already published, took over:
+				// discard this session.
+				if tmp.Session != nil {
+					_ = tmp.Session.Close()
+				}
+				return
+			}
+			// A Reconnect may have published while this initial connect was
+			// running (it held reconnectMu, so not in this branch, but belt
+			// and suspenders): don't overwrite a non-connecting status.
+			if srv.Status != "connecting" {
 				if tmp.Session != nil {
 					_ = tmp.Session.Close()
 				}
@@ -219,7 +281,9 @@ func buildTransport(cfg config.MCPServerConfig) (gosdkmcp.Transport, error) {
 	}
 }
 
-// Servers returns a snapshot of all servers (safe to read, do not mutate).
+// Servers returns the live server pointers (safe to copy the slice, NOT to
+// read fields off the entries without the manager lock — background connects
+// mutate Status/Tools/Err under m.mu). Prefer SnapshotServers for display.
 func (m *MCPManager) Servers() []*MCPServer {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -382,11 +446,20 @@ func (m *MCPManager) CallTool(ctx context.Context, name string, argsJSON string,
 	}
 
 	// A server still connecting holds this tool call only for ITSELF: wait on
-	// that server's ready signal, never on the others. The wait is bounded by
-	// the call ctx (turn cancellation) and by the connect's own 30s timeout.
-	if srv.ready != nil {
+	// its CURRENT connect attempt's ready signal, never on the others. Because
+	// Reconnect installs a fresh channel while connecting, a call during a
+	// reconnect waits for that reconnect. Bounded by the call ctx (turn
+	// cancellation) and by the connect's own 30s timeout.
+	for {
+		ch := srv.currentReady()
+		if ch == nil {
+			break // not connecting: check status below
+		}
 		select {
-		case <-srv.ready:
+		case <-ch:
+			// This attempt finished; loop to re-check (a new attempt may have
+			// started a fresh channel).
+			continue
 		case <-ctx.Done():
 			return fmt.Sprintf("ERROR: MCP server %q still connecting: %v", serverName, ctx.Err())
 		}
@@ -495,6 +568,10 @@ func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
 	srv.Tools = nil
 	srv.Session = nil
 	m.mu.Unlock()
+	// Fresh readiness channel: a CallTool arriving during this reconnect waits
+	// for THIS attempt, not the already-closed initial channel.
+	srv.replaceReady()
+	defer srv.signalReady()
 
 	// Phase 3: drain in-flight calls and close old session — outside m.mu.
 	// sessionMu.Lock blocks until all CallTool RLock holders release, then
@@ -571,11 +648,9 @@ func (m *MCPManager) Close() {
 		srv.Status = "closed"
 		// Unblock any CallTool waiting on a still-connecting server: after
 		// Close the server will never become ready, so the waiter must not
-		// block until its ctx expires. Test-constructed servers may have a nil
-		// ready channel — skip them.
-		if srv.ready != nil {
-			srv.readyOnce.Do(func() { close(srv.ready) })
-		}
+		// block until its ctx expires. signalReady is a no-op when no channel
+		// is installed (test-constructed servers).
+		srv.signalReady()
 		if srv.Session != nil {
 			targets = append(targets, srvSession{srv: srv, session: srv.Session})
 			srv.Session = nil
@@ -583,13 +658,23 @@ func (m *MCPManager) Close() {
 	}
 	m.mu.Unlock()
 
-	// Drain in-flight calls and close sessions — outside m.mu.
+	// Drain in-flight calls and close sessions — outside m.mu, and CONCURRENTLY
+	// across servers: each drain can wait up to closeDrainTimeout, so doing them
+	// sequentially would multiply the worst case by the server count. A single
+	// slow server must not delay the others.
+	var wg sync.WaitGroup
 	for _, t := range targets {
-		if !t.srv.drainAndClose(t.session, closeDrainTimeout) {
-			diag.Printf("mcp: drain timed out after %v closing %q; session abandoned",
-				closeDrainTimeout, t.srv.Cfg.Name)
-		}
+		wg.Add(1)
+		srv, session := t.srv, t.session
+		safe.Go("mcp-close-drain", func() {
+			defer wg.Done()
+			if !srv.drainAndClose(session, closeDrainTimeout) {
+				diag.Printf("mcp: drain timed out after %v closing %q; session abandoned",
+					closeDrainTimeout, srv.Cfg.Name)
+			}
+		})
 	}
+	wg.Wait()
 }
 
 // --- helpers ---

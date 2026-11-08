@@ -433,8 +433,10 @@ type Facade interface {
 	// provider probes (model list, backend list, context limit), the hisn
 	// orphan reconcile, and the sandbox session start + startup-note scans.
 	// The TUI calls it once, after the first prompt is shown, in the
-	// background. done fires when the work finishes (the caller repaints).
-	RunDeferredStartup(done func())
+	// background. It returns true only on the call that started the work (a
+	// later call is a no-op); done fires when the work finishes (the caller
+	// repaints).
+	RunDeferredStartup(done func()) bool
 
 	SetCtxLimit(lim ContextLimit)
 	SetModelList(models []string)

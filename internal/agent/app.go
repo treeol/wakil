@@ -98,6 +98,14 @@ type App struct {
 	// sidebar and pressure checks always have a positive ceiling (tests, subagents).
 	CtxLimit ContextLimit
 
+	// endpointGen increments on every endpoint/model switch (handleEndpointSwitch,
+	// /model, repo-state restore that changes the endpoint). The deferred startup
+	// probes capture it before probing and only publish their results if it is
+	// unchanged — a probe in flight when the user switches endpoints must not
+	// overwrite the newer endpoint's resolved context/model info with stale data.
+	// Atomic: bumped by the TUI/RPC goroutine, read by the probe goroutine.
+	endpointGen atomic.Uint64
+
 	// Consent state (AutoApprove, AllowDestructive, AllowReads) is stored
 	// atomically as a single ConsentSnapshot via a.consent (see consent.go).
 	// Read with Consent(); mutate with SetAutoApprove/SetAllowDestructive/

@@ -135,6 +135,8 @@ func (a *App) SetModelOverride(model string) {
 // already hold stateMu. This is the existing ApplyModelOverride logic
 // moved under the lock.
 func (a *App) applyModelOverrideLocked(model string) {
+	// New model: invalidate any in-flight startup probe (see endpointGen).
+	a.endpointGen.Add(1)
 	if a.Cfg.ActiveEndpoint().Kind == "openai" {
 		a.Client.ConfiguredModel = model
 		a.Client.Model = model
