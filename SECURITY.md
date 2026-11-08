@@ -3,7 +3,7 @@
 ## Threat model
 
 Wakil is a terminal coding agent that executes shell commands, reads/writes
-files, and optionally runs inside a Docker sandbox. The primary attack
+files, and by default runs inside a sandbox (hisn when usable, otherwise Docker). The primary attack
 surface is **tool execution**: the model can request arbitrary shell
 commands, file writes, and background processes.
 
@@ -76,7 +76,15 @@ content. See [docs/memory.md](docs/memory.md) for the full memory design.
   raises the bar for casual escapes, but is **not** adversarial-grade.
   Optional host integrations (Docker socket, SSH signing socket, io_uring)
   materially weaken isolation when enabled.
-- **Direct mode** (`--exec direct`) runs on the host with no container
+- **hisn mode** (the default when hisn >= 0.4.1 is usable) runs tool calls in a
+  rootless hisn session with no daemon. It is not a hardened boundary either:
+  the network is the host's (`network = "host"`, no filtering), every exec can
+  read every file in the workspace, and revoking a grant is soft (descriptors
+  that are already open may survive). Project additions in `.wakil/sandbox.json`
+  take effect only after you approve them with `wakil sandbox trust`, and a
+  risk label hisn reports is never acknowledged on your behalf. See
+  [docs/sandbox-backends.md](docs/sandbox-backends.md) (Known limits).
+- **Direct mode** (`--sandbox direct`) runs on the host with no container
   isolation. The confirmation gate is the only defense.
 
 Even hardened, the sandbox is **not** a substitute for the confirmation gate
@@ -210,7 +218,7 @@ responsibly:
 ## Hardening checklist for untrusted tasks
 
 - [ ] Keep the confirmation gate **on** (do not use `--auto` unattended)
-- [ ] Use `--exec direct` in a disposable VM, or hardened Docker mode
+- [ ] Use `--sandbox direct` in a disposable VM, or the hisn or hardened Docker sandbox
 - [ ] Do **not** enable `docker_socket` unless you need Docker access
 - [ ] Audit memory entries (`memory_list`) after operating on untrusted content
 - [ ] Run against an endpoint and model you trust

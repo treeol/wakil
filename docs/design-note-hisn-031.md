@@ -1,5 +1,7 @@
 # Design note: Wakil ⇄ hisn 0.3.1 (profiles, services, risk labels, hisn as default)
 
+> Historical — describes the state as of 0.4.0 (the hisn 0.3.1 integration design); superseded by [sandbox-backends.md](sandbox-backends.md) and [ADR 0014](adr/0014-hisn-minimum-0.4.1.md) where applicable.
+
 Target tag **v0.4.0** (the default flip is a behaviour change). Baseline: master `5d738b9`.
 Sources read: hisn v0.3.1 `DESIGN.md` §15–§19, `WAKIL-INTEGRATION.md`, `profiles/*.toml`,
 `src/profile.rs`, `src/supervisor.rs`, and the 0.3.1 binary's offline `profile validate|explain`

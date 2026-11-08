@@ -41,10 +41,13 @@ opens a picker to attach a file or folder for context.
 /cwd                 show executor working directory
 /mode                show execution backend · context mode
 /sandbox             show the sandbox: backend, profile, risk label, capabilities, services, forwards, grants, staging (kvr)
+/taint               show session taint state and external-content exposures
 /mode standard       set context mode: full history sent (persisted per repo; status line shows "std")
 /mode long-session   set long-session mode (default): finished requests collapse to question + answer + note (alias: /mode long; status line shows "long")
 /mode status         show context mode, collapsed/kept counts, sent vs full sizes, archive dir
 /prompt [full|core|status]  show/set prompt mode: full (default) or core (lean preamble, extension lazy-loaded; status line shows "core")
+/styles              show loaded style guides and actual session state
+/styles enable|disable <language|all>  control this session (no config changes)
 /keep <n>            exempt request n from collapse; /keep off <n> removes the exemption
 /grants              list session-scoped tool grants; /grants clear removes them
 /mcp                 list connected MCP servers and their tools
@@ -57,6 +60,31 @@ opens a picker to attach a file or folder for context.
 /backend             ilm-proxy: show backend selection · openai: list configured endpoints
 /backend <name>      ilm-proxy: set proxy backend · openai: switch to named endpoint
 /model <name>        switch model (re-resolves context limits); tab-completes from the server's model list
+/model               show current model
+/subagent <name>     set which endpoint dispatch_subagent targets this session
+/subagent inherit    reset dispatch_subagent to follow the parent's endpoint
+/subagent            show current subagent endpoint selection
+/submodel <name>     set the model for dispatch_subagent (overrides endpoint model)
+/submodel inherit    reset subagent model to the endpoint's configured model
+/submodel            show current subagent model
+/maxpar <N>          set max concurrent dispatch_subagent workers (1 = sequential, max 64)
+/maxpar              show current max parallel subagents
+/thinking [effort] [max_tokens]  show/set reasoning (off|max|xhigh|high|medium|low|minimal|none); /think is an alias
+```
+
+**Counsel**
+
+```
+/counsel auto|suggest|off  auto-counsel mode: auto = fire mashura__debug on struggle, suggest = hint, off = silent
+/counsel                   show current counsel mode and per-turn cap
+/mashura                   show mashura panel/model/limit status
+/mashura panel add <name> <models> [--mode panel|fallback|fusion|debate]  create a panel
+/mashura panel rm <name>   remove a panel
+/mashura panel <name> [--mode <mode>]  show or set panel mode
+/mashura map <tool> <panel>  map a counsel tool (review|debug|decide|check) to a panel
+/mashura model <model-id>  set the default mashura model
+/mashura maxtokens <N>     set max tokens for mashura responses
+/mashura timeout <seconds> set timeout for mashura calls
 ```
 
 **Meta**
@@ -66,6 +94,8 @@ opens a picker to attach a file or folder for context.
                      refuses client-side on openai endpoints instead of faking success)
 /auto                toggle auto-approve (shown as AUTO in status bar)
 /rawtools            toggle full tool output in context (default: capped at tool_result_cap)
+/repostate           show terminal settings remembered for this folder (model/backend/auto/…)
+/repostate clear     delete the remembered settings for this folder
 /maxctx <chars>      cap effective context for large models (e.g. 200000 = ~200k chars; 0 = disabled)
 /maxctx              show current effective context cap and resulting compaction thresholds
 /init                detect project conventions and create AGENTS.md if absent
@@ -83,7 +113,21 @@ opens a picker to attach a file or folder for context.
 /help                full command list
 ```
 
-See also the [`/plan` workflow](workflows.md) documentation.
+### Using skills
+
+There is no per-skill slash command. A skill is a stored reference document;
+the model reads it, not you. Three things put one in front of the model:
+
+- **Automatic retrieval.** Before each turn Wakil searches memory and the skill
+  store for the words in your message and injects up to 2 matching skills (and
+  up to 3 memory entries) into the turn, capped at 2 KiB, as a block marked
+  untrusted. Auto-created skills are left out until you run `/skills confirm <key>`.
+- **Asking for one.** Name it in your message ("use the deploy-stack skill").
+  The model can then call `list_skills`, `skill_search` and `load_skill`
+  ([tools](tools.md#tool-reference)).
+- **Creating and managing them.** `/skill-create <topic>` researches a topic and
+  saves it after you confirm. `/skill-creation` and `/skills` control and review
+  automatic creation, see [tools.md](tools.md#automatic-skill-creation).
 
 **Lifecycle hooks**
 
@@ -94,6 +138,47 @@ Paste from the conversation pane is blocked while a rotation operation
 label + elapsed timer in the status zone (`beginRotate`, `internal/tui/tui.go`),
 and plain sends print a deduped "· rotation in progress — please wait" note.
 Slash commands are ignored during rotation; ctrl+c semantics are unchanged.
+
+## `/plan` workflow
+
+Gather → plan → review → implement, with an optional AI counsel checkpoint
+between phases.
+
+### Phases
+
+| Phase | Description |
+|---|---|
+| **Gather** | Read-only investigation — the agent surveys the codebase and writes findings. |
+| **Plan** | The agent writes a numbered implementation plan. |
+| **Review** | Optional AI counsel (Mashūra) reviews the plan before implementation. |
+| **Present** | Plan shown to the user; waits for `/plan approve`. |
+| **Implement** | The agent executes the plan step by step, logging each step. |
+| **Verify** | After all steps, a final review checks whether the criteria are met. |
+
+### Commands
+
+```
+/plan <task>         start a gather→plan→review→implement workflow for <task>
+/plan --oracle=MODE  set per-run review schedule (every-step|on-deviation|phases-only)
+/plan status         show current workflow phase and step
+/plan approve        approve the plan; force-skip review (logged); advance past pauses
+/plan review         retry the counsel plan review (when review is pending/unavailable)
+/plan verify         re-run the final review (in verify state after gaps flagged)
+/plan abort          cancel the active workflow
+```
+
+### Oracle review schedule
+
+The `--oracle` flag controls when AI counsel is consulted:
+
+| Mode | Behaviour |
+|---|---|
+| `every-step` | Counsel reviews every implementation step. |
+| `on-deviation` | Counsel reviews when a step deviates from the plan. *(default)* |
+| `phases-only` | Counsel reviews only at phase transitions (plan review + final review). |
+
+The schedule can also be set via `mashura_mode` in the config file. See
+[Configuration](configuration.md#config-only-fields).
 
 ## Layout
 

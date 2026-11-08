@@ -1,5 +1,7 @@
 # Turn Outcome Contract
 
+> Historical — describes the state as of 0.3.0 (the turn-outcome contract for a future continuous coordinator). A bounded, experimental `wakil run --continue` exists since then, see [headless.md](headless.md); the later coordinator stages named below are not built.
+
 This documents the implemented turn-outcome contract that current
 TUI/headless/subagent callers rely on, and that a future continuous-mode
 coordinator will consume. (Continuous mode itself is not implemented — see

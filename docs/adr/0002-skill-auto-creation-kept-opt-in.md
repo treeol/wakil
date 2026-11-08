@@ -44,5 +44,8 @@ of the feature, not a separate removal.
 - No model-visible text is injected into tool output by skill logic (removed in
   0.4.4).
 - Users who want a skill without the pipeline use `/skill` or `save_skill`.
+  (Corrected 2026-11-08: there is no `/skill` command. The commands are
+  `/skill-create <topic>`, `/skill-creation` and `/skills`; the `save_skill` tool
+  is unchanged.)
 - Revisit only if the review data changes; a future removal would need its own
   ADR and must still record this decision.

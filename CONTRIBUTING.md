@@ -109,7 +109,6 @@ The codebase is organized into focused packages under `internal/`:
 cmd/wakil/         main package — entry point, CLI, TUI wiring
 internal/
   agent/           the agent loop, turn phases, tool dispatch, subagents
-  auth/            peer-credential checks for local socket use
   browser/         headless browser integration
   config/          flag/env/file config resolution
   core/            session host and domain types

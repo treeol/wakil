@@ -18,7 +18,9 @@ Harm observed: on the user's host the variable pointed `plan gc` at another
 workspace's store until 0.4.3 made `plan gc` ignore it. Frozen store keys
 (for example `/mnt/wakil` → `f3fa3243c6fc07e5`) must not change without a
 migration. `docker-compose.yml` also documents a `--print-workspace-key` flag
-that no Go code implements.
+that no Go code implements. (Corrected 2026-11-08: `docker-compose.yml` no longer
+exists, and `--print-workspace-key` is implemented in `cmd/wakil/main.go`; see
+`docs/configuration.md`.)
 
 Options considered: (1) keep both sources; (2) make `plan gc` honour the
 variable (rejected: it reintroduces the 0.4.3 failure); (3) use cwd identity
@@ -32,6 +34,7 @@ Option 4, staged. First, add a startup warning when `WAKIL_WORKSPACE_PATH` is
 set and differs from the cwd identity. Then deprecate it for identity in favour
 of `WAKIL_WORKSPACE_KEY`. Do not do option 3 without a store migration. Remove
 or correct the `--print-workspace-key` reference in `docker-compose.yml`.
+(Corrected 2026-11-08: that file is gone, so the reference no longer exists.)
 
 The staged warning is not part of the 0.6.0-dev cleanup. The cleanup changes no
 identity behaviour.

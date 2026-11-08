@@ -1,5 +1,7 @@
 # Performance of start, /new, /resume and exit — 0.6.0
 
+> Historical — describes the state as of 0.6.0 (a measurement record; the rubin re-run after the ilm emitter removal is still owed); no successor document.
+
 Status: **sandbox numbers, not rubin.** The "Baseline" section is B1 (measured
 before any optimisation, for reference); the "After B2" section is the same
 harness on the same host after B2. The rubin re-run is still owed.

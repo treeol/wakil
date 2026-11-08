@@ -40,9 +40,6 @@ proposal and what remains.
 
 ## Long-session mode
 
-- **Daemon parity**: `context_mode` in the proto `SessionState`, a
-  `SetContextMode` RPC, `RemoteFacade.Info()` filling `ContextMode` (note:
-  the same `Info()` currently omits `RawTools` too).
 - **Tool-cache retention**: age-based retention exists
   (`tool_cache_retention_days`, default 30, pruned once at startup; 0 =
   never). Size-based cleanup of the tool cache remains open.
@@ -58,8 +55,6 @@ proposal and what remains.
 - CM2 (coordinator-owned goal completion), CM3 (durable state, leases,
   reconciliation), CM4 (dispatch-time side-effect ledger) — see
   [continuous-mode.md](continuous-mode.md).
-- Remote `SaveSession` is a no-op in `internal/remote/facade.go` — needs a
-  focused follow-up before remote/daemon scope.
 
 ## Truncation audit
 
@@ -87,7 +82,7 @@ proposal and what remains.
 
 ## hisn 0.3.1 integration (v0.4.0)
 
-Deferred from Mashūra round 1/2 of the 0.3.1 integration (non-blocking):
+These items predate the 0.4.1 minimum and are carried as written. Deferred from Mashūra round 1/2 of the 0.3.1 integration (non-blocking):
 
 - **N1 — `.wakil` parent rename vs. the mask.** `mounts.mask` of
   `.wakil/sandbox.json` makes the file unwritable inside the sandbox, but

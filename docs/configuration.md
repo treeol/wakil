@@ -120,7 +120,7 @@ reference covering every section below.
 | `mashura_panels` | — | Named counsel model panels |
 | `mashura_models` | — | Per-model reviewer limits, keyed by `"provider:model"` or the bare model id: `context_tokens` (context window; default from the OpenRouter registry / built-in table, 128000 if unknown), `review_max_tokens` (answer budget; default `mashura_max_tokens`, never below 4096 for a review, and reduced to what fits: `min(configured, context − input − 512)`), and `reasoning` (per-model reasoning/thinking spec: `{"effort": "low\|medium\|high\|none", "max_tokens": N}` — when set, `max_tokens` on the wire is additive: reasoning budget + answer budget; the answer budget is never reduced). Mashūra never truncates what it sends: a document that fits the context window (90% of it, estimated at 3 bytes/token) is sent whole; a larger one is split at markdown headings into labelled "part i of n" calls with ~200 tokens of overlap and the findings merged; one that still cannot fit (a single source file or section larger than a part) fails with an error and nothing is sent. A reply cut at max_tokens is retried once chunked, then marked **VOID**; each reply must end with `LAST SECTION READ: <heading>` matching the part's last heading, else it is VOID. A VOID reply is shown as such and never counts as a review round or as "no findings" |
 | `mashura_roles` | — | Per-role overrides for Mashūra counsel reasoning, keyed by role name (`"reviewer"` or `"check"`). When a role's `reasoning` is set, it applies to all calls dispatched under that role. Per-model `reasoning` (in `mashura_models` above) takes precedence for the reviewer role. For the check role, the role-level setting is the only source. Example: `{"reviewer": {"reasoning": {"effort": "medium", "max_tokens": 4096}}, "check": {"reasoning": {"effort": "low"}}}` |
-| `oracle_timeout_seconds` | `0` (→ 300) | Total cap for a single Mashūra call (idle timeout: 120s). `0` = use built-in default (30min). |
+| `oracle_timeout_seconds` | `300` | Total cap in seconds for a single Mashūra call (a stream that delivers no bytes for 120 s is also treated as stalled). The built-in config default is 300; an explicit `0` is accepted by validation and makes the counsel code fall back to a 30 min cap. Alias `mashura_timeout_seconds`; `/mashura timeout <seconds>` sets it for the repo |
 | `mashura_tool_panels` | — | Maps each counsel tool to a named panel |
 | `mashura_mode` | — | Default oracle consult schedule: `every-step` \| `on-deviation` \| `phases-only` *(alias: `wf_oracle_mode`)* |
 | `skill_creation` | — | Automatic skill creation (`/skill-creation`); object with the keys below |
@@ -173,7 +173,7 @@ reference covering every section below.
 | `turn_tool_budget` | `40000` | Per-turn cumulative tool output budget |
 | `tool_result_cap` | `8000` | Max chars kept in context per tool result; `0` = unlimited |
 | `tool_result_ttl` | `3` | Evict large tool results after N completed turns; `-1` = never |
-| `tool_cache_retention_days` | `30` | Once per process at startup (TUI and daemon), delete per-chat tool-cache dirs (spilled results, collapse archives, subagent summaries) whose newest file is older than N days; `0` = never. A session resumed later than that keeps its transcript, but its `full content at:` pointers will be gone (the chat resumed at launch via `--resume` is exempt) |
+| `tool_cache_retention_days` | `30` | Once per process at startup, delete per-chat tool-cache dirs (spilled results, collapse archives, subagent summaries) whose newest file is older than N days; `0` = never. A session resumed later than that keeps its transcript, but its `full content at:` pointers will be gone (the chat resumed at launch via `--resume` is exempt) |
 | `context_mode` | `"long-session"` | Context mode: `long-session` (default; after a request finishes, its working set is archived to disk and no longer sent; later requests see only the user message + final answer + a one-line note) \| `standard` (full history sent). Persisted per repo (beats the config file); flag `--context-mode`, env `WAKIL_CONTEXT_MODE`; `long` is an alias for `long-session`. Subagents always run in `standard` |
 | `context_collapse_min_bytes` | `2000` | Min working-set size for a finished request to be collapsed in `long-session` mode; smaller turns aren't worth a note |
 | `context_tail_turns` | `20` | In `long-session` mode, requests older than the N most recent degrade to a single pointer line (archive path + memory key); `0` = never degrade (sent size grows with session length) |
@@ -314,7 +314,7 @@ level maps to 16384 in the `EffortToBudget` table).
 
 Tool calls run inside one persistent Docker container for the process
 lifetime by default. The workspace directory — positional arg, or cwd if
-omitted — bind-mounts into the container at `/mnt/<dirname>`. `--exec direct`
+omitted — bind-mounts into the container at `/mnt/<dirname>`. `--sandbox direct`
 runs on the host instead, no container.
 
 ## Sandbox backends
@@ -322,34 +322,50 @@ runs on the host instead, no container.
 `sandbox.backend` selects where tool calls run: two sandbox backends exist, plus
 `direct` (no sandbox, explicit opt-out). `docker`
 (default) is the production sandbox and is unchanged. `hisn`
-([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.2.1) is a
+([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.4.1) is a
 rootless, daemonless alternative. Design, path model, lifecycle and known
 limits: [sandbox-backends.md](sandbox-backends.md).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sandbox.backend` | *unset* → **hisn when usable, else docker** | `docker` \| `hisn` \| `direct`. Unset means: hisn if no backend is chosen anywhere (file, env, flag, `exec_mode`), `hisn check` passes and hisn >= 0.4.0 is in `PATH`; otherwise docker, with the reason in the startup banner. Setting it pins the choice. Flag `--sandbox`, env `WAKIL_SANDBOX_BACKEND`. Replaces the deprecated top-level `exec_mode` |
+| `sandbox.backend` | *unset* → **hisn when usable, else docker** | `docker` \| `hisn` \| `direct`. Unset means: hisn if no backend is chosen anywhere (file, env, flag, `exec_mode`), `hisn check` passes and hisn >= 0.4.1 is in `PATH`; otherwise docker, with the reason in the startup banner. Setting it pins the choice. Flag `--sandbox`, env `WAKIL_SANDBOX_BACKEND`. Replaces the deprecated top-level `exec_mode` |
 | `sandbox.hisn.binary` | `hisn` | hisn executable (name on `PATH` or absolute path) |
 | `sandbox.hisn.home_root` | `<state dir>/hisn-home/<workspace-hash>` | persistent host directory used as the sandbox `$HOME` *(absolute path)* |
-| `sandbox.hisn.home` | `persist` | `persist`: the home directory is kept across chats (`[home]`, hisn >= 0.3.3; older hisn keeps the 0.4.x mount). `tmpfs`: a fresh tmpfs `$HOME` per session (needs hisn >= 0.3.3; a hard error on older hisn). Project override: `.wakil/sandbox.json` `"hisn": {"home": "tmpfs"}` |
-| `sandbox.hisn.rootfs` | *unset* → host toolchain | session root filesystem (hisn >= 0.3.3): a rootfs store name such as `wakil-dev` (import with `hisn rootfs import wakil-dev --from-image wakil-dev`) or an absolute directory. Project override: `.wakil/sandbox.json` `"hisn": {"rootfs": "<name>"}` (name only). Cannot be combined with `hisn.profile` |
+| `sandbox.hisn.home` | `persist` | `persist`: the home directory is kept across chats (`[home]`). `tmpfs`: a fresh tmpfs `$HOME` per session. Project override: `.wakil/sandbox.json` `"hisn": {"home": "tmpfs"}` |
+| `sandbox.hisn.rootfs` | *unset* → host toolchain | session root filesystem: a rootfs store name such as `wakil-dev` (import with `hisn rootfs import wakil-dev --from-image wakil-dev`) or an absolute directory. Project override: `.wakil/sandbox.json` `"hisn": {"rootfs": "<name>"}` (name only). Cannot be combined with `hisn.profile` |
 | `sandbox.hisn.grantable_rw` | `[]` | absolute host prefixes under which read-write grants outside the workspace are allowed *(fixed at session start; cannot be `/`)* |
 | `sandbox.hisn.env_pass` | `GOFLAGS GOCACHE GOMODCACHE CARGO_HOME RUSTFLAGS npm_config_cache PIP_CACHE_DIR CI` | environment variable names copied into the sandbox; nothing else of the host environment enters. Names that alter host process startup (`LD_*`, `PATH`, `HOME`, `GODEBUG`, …) are rejected |
 | `sandbox.hisn.ssh_agent` | `false` | Forward the host ssh-agent socket into the session. Required for `ssh_signing` and for ssh git transports. The socket path is reserved: it cannot be added to `env_pass` |
 | `sandbox.hisn.ssh_signing` | `off` | Signing mode for the hisn session (`off`\|`auto`\|`<path>`). Requires `sandbox.hisn.ssh_agent = true` unless `off`; the private key never enters the sandbox. See `--ssh-signing` above |
-| `sandbox.hisn.tmp_size_mb` | `1024` | Size (MiB, 16..=65536) of the session-private `/tmp` tmpfs *(hisn 0.2.1 `session.tmp_size`)* |
+| `sandbox.hisn.ssh_keys` | `[]` | Extra public-key fingerprints (`SHA256:…`) the agent may use inside the session: the agent-forwarding allowlist only. Since 0.5.1 it does not gate signing (the signing key is resolved per repo on the host at plan time and its fingerprint is added to the session allowlist). Global only; an entry that is not a `SHA256:` fingerprint is a config error |
+| `sandbox.hisn.git_identity_name` / `sandbox.hisn.git_identity_email` | *unset* → the host repo's `user.name` / `user.email` | Commit identity written into the session gitconfig. Global only |
+| `sandbox.hisn.tmp_size_mb` | `1024` | Size (MiB, 16..=65536) of the session-private `/tmp` tmpfs *(`session.tmp_size`)* |
 | `sandbox.hisn.shm_size_mb` | `64` | Size (MiB, 1..=65536) of `/dev/shm` *(Wakil always sets `session.shm = true`)* |
-| `sandbox.hisn.kvr_binary` | `kvr-server` from `PATH` | kvr-server executable run INSIDE the sandbox as the staging service *(hisn >= 0.3.1; must live under a directory the sandbox sees: `/usr`, `/opt`, `/nix` or a project `mounts_ro`; otherwise staging stays off and the banner says why — there is no host-side kvr)* |
+| `sandbox.hisn.kvr_binary` | `kvr-server` from `PATH` | kvr-server executable run INSIDE the sandbox as the staging service *(must live under a directory the sandbox sees: `/usr`, `/opt`, `/nix` or a project `mounts_ro`; otherwise staging stays off and the banner says why — there is no host-side kvr)* |
 | `sandbox.hisn.exec_via_cli` | `false` | Run tool-call execs through the `hisn exec` CLI (one client process per call) instead of the control-socket client. Fallback, one release |
 
 With an explicit `hisn`: startup requires `hisn --version` >= 0.4.1 and `hisn check` exit
-0, otherwise Wakil refuses to start (no fallback). Per-project additions (services, forwards, mounts, `risk_ack`, named profile) live in `.wakil/sandbox.json`, which only takes effect after `wakil sandbox trust`; see [sandbox-backends.md](sandbox-backends.md). The workspace is mounted at
+0, otherwise Wakil refuses to start (no fallback). How a session is started, tracked and stopped (`run --detach`, `supervisor.pid`, `hisn stop`) is described once, in [sandbox-backends.md](sandbox-backends.md#supervisor-and-the-detach-contract). Per-project additions (services, forwards, mounts, `risk_ack`, named profile) live in `.wakil/sandbox.json`, which only takes effect after `wakil sandbox trust`; see [sandbox-backends.md](sandbox-backends.md). The workspace is mounted at
 its identical host path (`--workdir` is rejected); `kvr` staging runs as an in-sandbox service when a `kvr-server` binary is available (see `sandbox.hisn.kvr_binary`);
 `browser_enabled` is forced off with one startup line (so one config serves
 both backends), and the deprecated `exec_mode: direct` conflicts with it. The
 startup line `sandbox: backend=<b> · browser tools: on|off` states the active
 backend and whether browser tools are available. One hisn session per chat,
 stopped on `/new`, `/resume`, handoff, `/rewind` and exit.
+
+## Subcommands and run-time flags
+
+| Command | Meaning |
+|---|---|
+| `wakil run [flags] "<task>"` | headless, non-interactive run; exits with a code. Flags and exit codes: [headless.md](headless.md) |
+| `wakil sandbox trust [dir]` | approve the project's `.wakil/sandbox.json` (interactive: reads `/dev/tty`; no flag skips the question). Until it is approved the file does not take effect, see [sandbox-backends.md](sandbox-backends.md#per-project-overrides-wakilsandboxjson) |
+| `wakil state migrate --from-legacy [--apply]` | copy attributable legacy shared-store memory entries into their project's store. Dry run unless `--apply`; never deletes and never writes the legacy store |
+| `wakil plan gc [--apply]` | list, and with `--apply` reject, dead quarantined `plan/current` entries (see [features.md](features.md#plan-quarantine-and-wakil-plan-gc)) |
+| `wakil doctor` | check the container runtime, config and image |
+| `wakil version` | print version and the pinned sandbox image |
+
+`--attach-image <path>` (also a flag of the interactive command) attaches an image
+file (png, jpeg, gif, webp; comma-separate several) to the first message.
 
 ## Sessions
 

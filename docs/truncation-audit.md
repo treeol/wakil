@@ -1,5 +1,7 @@
 # Truncation audit: content cut before a model call
 
+> Historical — describes the state as of 0.3.1 (an audit of content truncated before model calls, with line numbers from before its fix); no successor document.
+
 Scope: everything Wakil does that shortens content before a model request
 (main agent path and Mashūra/counsel). Line numbers are for the tree before the
 fix (baseline `master`). "Visible" = the user sees a notice that names the cut.

@@ -1,5 +1,7 @@
 # hisn 0.2.1 control-socket client — design note (final)
 
+> Historical — describes the state as of 0.3.1 (a hisn 0.2.1 design note); superseded by [sandbox-backends.md](sandbox-backends.md) where applicable.
+
 Wakil-side client for the hisn session control socket
 (`$XDG_RUNTIME_DIR/hisn/<id>/control.sock`, fallback `/tmp/hisn-$UID/<id>/control.sock`,
 0600, owner = our uid). Protocol (POLICY-SPEC §7): one JSON object per line,

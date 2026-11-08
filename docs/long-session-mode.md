@@ -145,4 +145,3 @@ between the first message and the `collapse_context` call.
 - Answers in the tail are kept whole by default; `context_tail_answer_bytes` > 0 opts in to a cap;
   answers outside the tail are never collapsed. Very long base growth still
   ends in compaction, just much later.
-- Daemon parity: mode switching over the remote facade is not supported yet.

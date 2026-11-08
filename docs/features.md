@@ -13,7 +13,7 @@ file or the matching flags/env vars (see [Configuration](configuration.md)).
 | Web search | `searxng_url` / `google_api_key` | [↓](#web-search) |
 | Cost sidebar | `costs` | [↓](#cost-sidebar) |
 | Memory and staging | built-in | [↓](#memory-and-staging) |
-| `/plan` workflow | built-in | [workflows.md](workflows.md) |
+| `/plan` workflow | built-in | [tui.md](tui.md#plan-workflow) |
 | Trace capture | `trace_sessions` | [↓](#trace-capture) |
 | Checkpoint/Rewind | built-in | [↓](#checkpointrewind) |
 | AGENTS.md ingestion | built-in | [↓](#agentsmd-ingestion) |

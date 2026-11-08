@@ -1,5 +1,7 @@
 # Reasoning / Thinking Budget Audit
 
+> Historical — describes the state as of 0.3.1 (a per-call-site reasoning audit); see [configuration.md](configuration.md#reasoning-defaults) for the current defaults.
+
 Per-call-site audit of how reasoning/thinking fields, max_tokens, and usage
 are sent and parsed today. Covers the main LLM client (proxy), the Mashūra
 counsel path (oracle + review dispatcher), config, the agent session layer,
@@ -315,11 +317,11 @@ only**. Mashūra calls do not write trace records with reasoning tokens
 
 | Concept | Location | Status |
 |---|---|---|
-| `--think` CLI flag | `cmd/` | **does not exist** |
-| `/think` alias | TUI | **does not exist** (only `/thinking`) |
+| `--think` CLI flag | `cmd/` | ~~**does not exist**~~ (corrected 2026-11-08: it exists, see `config.go:1529`) |
+| `/think` alias | TUI | ~~**does not exist** (only `/thinking`)~~ (corrected 2026-11-08: it exists, see `commands.go:1005`) |
 | `/thinking` completion | `tui/complete.go:118, :325` | registered |
-| Reasoning in `config.example.json` | — | **absent** |
-| Reasoning in `docs/configuration.md` | — | **absent** |
+| Reasoning in `config.example.json` | — | **absent** (corrected 2026-11-08: `_comment_reasoning_defaults` now documents it) |
+| Reasoning in `docs/configuration.md` | — | **absent** (corrected 2026-11-08: see "Reasoning defaults") |
 | Reasoning in `AGENTS.md` | — | **absent** |
 
 ---
