@@ -69,11 +69,8 @@ check "internal/exec" "53.6"
 check "internal/proxy" "79.2"
 check "internal/counsel" "90.0"
 
-# Added 2026-08-29 (agentstore_test.go, backendstore_test.go, workspacestore_test.go).
-check "internal/store/agentstore" "80.7"
-check "internal/store/backendstore" "82.0"
-check "internal/store/workspacestore" "83.8"
-
+# The internal/store/{agentstore,backendstore,workspacestore} floors were
+# removed with the packages (daemon removal, commit 18c171d).
 
 if [ "$fail" -ne 0 ]; then
 	echo "check_coverage: coverage floor violated — see above"
