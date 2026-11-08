@@ -29,12 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ls --prune`) and the lazy sandbox session start — with the staging/memory
   startup-note scans — now run in the background *after* the prompt is shown,
   instead of before it. In the build sandbox warm start to prompt went from
-  669 ms to 57 ms (target < 200 ms); on the rubin timeline the deferred blocks
-  were 1226 ms (MCP), 735 ms (probes) and 608 ms (reconcile). The status line
+  669 ms to 51-58 ms (target < 200 ms); on the rubin timeline start to prompt
+  went from 2990 ms to 149 ms, and the deferred blocks were 1226 ms (MCP),
+  735 ms (probes) and 608 ms (reconcile) (`docs/PERF-0.6.md`). The status line
   shows `…` for the model until the context probe resolves it. Headless runs
   (`wakil run`) still do this work up front — they have no prompt to return to.
-  `hisn ls --prune` in 0.4.0 has no name filter, so the prune cannot yet be
-  scoped to `wakil-<projectkey>-` directories (open item).
+  `hisn ls --prune` in 0.4.0 has no name filter, so the prune cannot be scoped
+  to `wakil-<projectkey>-` directories there; hisn 0.4.1 adds `--name-prefix`,
+  which Wakil's own prune does not use yet (see Known follow-ups).
 - **MCP servers connect in the background, concurrently.** `NewMCPManager`
   starts every connect at once and returns immediately; tools appear as each
   server becomes ready, and a tool call to a server that is still connecting
@@ -61,6 +63,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the next start. The doctor, the default-backend gate, the sandbox image pin
   (Dockerfile, SHA256s from the v0.4.0 release) and the fixtures moved to 0.4.0.
   hisn 0.3.x is refused with a message naming 0.4.0.
+- **hisn 0.4.1 compatibility.** In 0.4.1 `hisn run --detach` prints the ready
+  line and exits 0; the supervisor lives on as a separate process, so
+  `Pdeathsig` no longer ties it to Wakil (`f352d56`). Wakil tells the two modes
+  apart at start (the run process exits after the ready line, or it does not),
+  and in the detached mode tracks the supervisor by its own pid. Four
+  follow-on fixes (`fc0a1e3`):
+  - `supervisor.pid` is parsed as `<pid> <starttime>`, the 0.4.1 format. The
+    previous bare-pid parse failed every 0.4.1 start after the session was
+    already up, and the failed-start path then reaped only the already-exited run
+    process, leaving the session running (the session leak seen in the hisn
+    integration run).
+  - `Close`, `Stop` and a failed start now stop the real supervisor: its
+    identity is established first (tracked pid and start time, otherwise the
+    instance token), then `hisn stop`, then Wakil waits on the supervisor pid
+    (or on `hisn ls` when the pid is not tracked). A foreign or unverifiable
+    session is never stopped. Signals go only to the exact tracked process, and
+    a zombie counts as exited.
+  - On hisn 0.4.1 a `stopped` session keeps its name reserved (`hisn run --name`
+    exits 125, `name ... is already in use`). On 0.4.1 or newer, `Start` prunes
+    a stopped leftover of the chat before starting; 0.4.0 behaviour is unchanged.
+  - The hisn integration tests stop and prune the sessions they create, and
+    `TestMain` sweeps `wakil-it-*` and `toolpath-*` sessions before and after
+    an integration run.
+  The minimum supported hisn stays 0.4.0 (see Known follow-ups).
 
 - **LSP servers are probed before launch.** When a language server binary is
   missing from the sandbox (for example `gopls` in the hisn rootfs), the LSP
@@ -84,7 +110,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exit on the rubin timeline — a flush to an unreachable ilm endpoint hitting its
   fixed timeout — and the ilm-stack ingestion path is no longer used. See
   `docs/adr/0013`. `sessionhost.Host.NotifySessionNote` is removed with it (no
-  caller since the Telegram bridge removal).
+  caller since the Telegram bridge removal). In the build sandbox, exit with a
+  live hisn session after the removal measured 116.7 ms (12 ms to terminal
+  restore, 104.6 ms `hisn stop`); the post-removal exit on rubin has not been
+  re-measured (`docs/PERF-0.6.md`). Old configs keep loading: an `ilm_stack`
+  block is ignored and the `ILM_STACK_*` variables are no longer read.
 - **Telegram approval bridge.** The `telegram-bridge` MCP integration — the
   TUI-side approval consumer (`internal/wiring/telegram_consumer.go`) that
   mirrored `ApprovalRequested` events to a Telegram message with inline buttons
@@ -98,9 +128,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wakil run` and the hisn backend are unchanged. Removed with the transport:
   `internal/remote`, `internal/server/connect`, `internal/protoconv`,
   `internal/auth` (apitoken, jointoken, oidcresolver, tokenresolver,
-  tokenstore, peercred), `api/`, `web/`, `docker-compose.yml`,
-  `Dockerfile.daemon`, `buf.yaml`, `buf.gen.yaml`, `docs/remote-provisioning.md`.
-  Dead code the removal left behind was deleted in the same change.
+  tokenstore, peercred), `api/` (including the generated `api/gen`), `web/`,
+  `docker-compose.yml`, `Dockerfile.daemon`, `buf.yaml`, `buf.gen.yaml`,
+  `docs/remote-provisioning.md`. Code orphaned by the removal was deleted
+  afterwards (`18c171d`). Measured from `v0.5.2` to this tree (`git diff
+  --shortstat`): 269 files changed, 7016 insertions and 48094 deletions in
+  total; Go files 5447 insertions and 40921 deletions, of which non-test Go is
+  2821 and 26437 and tests 2626 and 14484 (these cover everything since
+  `v0.5.2`, including the timeline, perf and hisn 0.4.x work, so they are not
+  the size of the removed stack alone). `go.mod` drops its
+  `connectrpc.com/connect` and `google.golang.org/protobuf` requirements (two
+  lines; four `go.sum` lines). Binary size, `go build ./cmd/wakil` with the same
+  Go 1.26.10 toolchain and no extra flags, built from `v0.5.2` and from this
+  tree on one machine: 51,469,635 bytes to 41,040,625 bytes (10.4 MB, about
+  20% smaller). This is the plain build, not a release (goreleaser) build.
 - Process records no longer kept in `docs/`: the 0.4.x and 0.5.x plan and close-out
   documents, the November cleanup and decision sheets, the inventories, and
   `design-note-a1-a6.md`. Their decisions are in `docs/adr/`; the text stays in git history.
@@ -110,6 +151,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Skill auto-creation** (`/skill-creation`, the `skill_creation` config,
   suggestions, and every `/skills` subcommand) is kept. Suggestions are off by
   default; the user opts in. See `docs/adr/0002`.
+
+### Known follow-ups
+
+- **hisn 0.4.1 is detected by behaviour in one place and by version in
+  another.** Whether a session is detached is decided by whether the run
+  process exits within the remaining readiness budget, capped at 500 ms, after
+  the ready line (`internal/sandbox/hisn/session.go`). The stopped-name
+  handling is keyed on the hisn version (`VersionAtLeast(0.4.1)`). A 0.4.1 run
+  process that takes longer than 500 ms to exit would be treated as the 0.4.0
+  mode. The two should be unified on one signal.
+- **Wakil's own prune does not use `--name-prefix`.** Startup reconcile runs
+  plain `hisn ls --prune`, which archives every provably dead session on the
+  host. Only the integration-test sweep scopes its prune with
+  `--name-prefix` (when hisn is 0.4.1 or newer).
+- **The hisn minimum is still 0.4.0.** `MinHisnVersion`, `MinHisnDefaultVersion`
+  and the sandbox image pin (`Dockerfile`, hisn 0.4.0) have not been raised to
+  0.4.1. The 0.4.1-specific paths are gated on the detected mode or version, so
+  0.4.0 keeps working.
+- **hisn integration runs must not overlap on one host.** The suite uses fixed
+  ids (`wakil-it-*`, `toolpath-*`) and its `TestMain` stops and prunes every
+  session with those prefixes, so two concurrent runs stop each other's
+  sessions.
+- **Rubin exit is not re-measured** after the ilm emitter removal; see
+  `docs/PERF-0.6.md`.
 
 ## [0.5.2] - 2026-11-07
 
