@@ -13,7 +13,7 @@
 
 - `go test ./...`
 - `go test -race ./...` — race detector (CI runs this on the full suite)
-- hisn backend integration tests (`go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`) skip unless `hisn` is installed and `hisn check` passes (profile/risk/kvr/override tests additionally need >= 0.3.1); set `WAKIL_HISN_BIN` to pick a binary
+- hisn backend integration tests (`go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`) skip unless `hisn` is installed and `hisn check` passes; the backend itself requires hisn >= 0.4.1 (`config.MinHisnVersion`); set `WAKIL_HISN_BIN` to pick a binary
 - `go vet ./...`
 - Test isolation: packages whose tests touch Wakil data/config call `testutil.Main` from `TestMain` (`internal/testutil`): HOME and the XDG dirs point at a temp tree, and the package FAILS if anything was created or appended under the real `~/.local/share/wakil` / `~/.config/wakil`. Set `WAKIL_TEST_ALLOW_REAL_DIR_CHANGES=1` to skip that check while a real chat is running on the same machine
 
@@ -32,9 +32,10 @@ Beyond build/test/lint, CI enforces:
 - **race detector** — `go test -race ./...`
 - **coverage floors** — `scripts/check_coverage.sh` (agent/tools/exec/proxy)
 - **config-doc consistency** — `scripts/check_config_docs.sh` (config.example.json ↔ docs/configuration.md)
-- **buf breaking** — proto schema breaking-change detection against base branch
+- **deadcode** — `deadcode -test ./...`
+- **Dockerfile Go version pins** — `scripts/check_go_version_pins.sh`
 - **darwin cross-compile** — GOOS=darwin amd64 + arm64 build & vet
-- **docker build** — Dockerfile + Dockerfile.daemon build gates
+- **docker build** — `Dockerfile` build gate
 - **goreleaser snapshot** — `goreleaser build --snapshot --clean` (no publish/sign)
 - **sandbox image multi-arch** — buildx linux/amd64+arm64 of `Dockerfile`, `push: false`
 
@@ -45,29 +46,27 @@ Entry point:
 
 Core packages (`internal/`):
 - `agent/` — agent loop, turn phases, tool dispatch, subagents, Mashūra counsel tools
-- `auth/` — authentication
 - `browser/` — headless browser integration
+- `buildinfo/` — build-time metadata injected via ldflags
 - `config/` — configuration structures and loading
 - `core/` — core domain types and interfaces
 - `counsel/` — external AI counsel (oracle) HTTP calls, panel execution, response parsing
-- `crypto/` — cryptographic utilities
 - `diag/` — diagnostics
 - `exec/` — sandboxed execution (Docker + direct modes; `BackendExecutor` for pluggable sandbox backends; optional capability interfaces in `capabilities.go`)
 - `sandbox/` — backend-neutral sandbox contract (`Backend`, `PathMap`, `GrantManager`); `sandbox/hisn/` is the hisn backend, `sandbox/project/` loads `.wakil/sandbox.json` and the user's approval of it, `sandbox/fake/` a test double. The tool layer (agent, tools, lsp, browser, tui) must not import a concrete backend — enforced by `internal/agent/no_backend_import_test.go`. Design: `docs/sandbox-backends.md`
-- `ilm/` — ILM (in-context learning memory) stack
 - `lsp/` — language server protocol integration
 - `memory/` — durable memory store
 - `orregistry/` — OpenRouter registry
 - `policy/` — policy enforcement
-- `protoconv/` — protobuf conversion
 - `proxy/` — proxy client (Anthropic, OpenRouter)
-- `remote/` — remote provisioning
 - `safe/` — safety utilities
 - `scrub/` — secret scrubbing
-- `server/` — server
 - `sessionhistory/` — session history persistence
 - `staging/` — ephemeral KV store
 - `store/` — storage layer
+- `styleguide/` — embedded language style guides
+- `testutil/` — test isolation from the real Wakil data/config dirs
+- `timeline/` — phase timeline for start, `/new`, `/resume` and exit (`--trace`)
 - `tools/` — built-in tool definitions
 - `trace/` — tracing
 - `tui/` — terminal UI (Bubble Tea)
@@ -77,12 +76,11 @@ Core packages (`internal/`):
 
 ## Infrastructure
 
-- Docker (`Dockerfile` — sandbox image, `Dockerfile.daemon` — daemon image)
+- Docker (`Dockerfile` — sandbox image)
 - GitHub Actions CI (`.github/workflows/ci.yml`)
 - Release (`.github/workflows/release.yml`, `.goreleaser.yaml`) — tag `v*` only: sandbox image → ghcr.io (digest) → goreleaser (digest injected via `SANDBOX_IMAGE`) → package smoke test. Local dry run: `goreleaser release --snapshot --clean --skip=sign,publish`
 - Dependabot (gomod + github-actions, weekly)
-- Proto schema (`buf.yaml`, `buf.lock`)
-- `scripts/` — `check_coverage.sh`, `check_config_docs.sh`
+- `scripts/` — `check_coverage.sh`, `check_config_docs.sh`, `check_go_version_pins.sh`
 - `docs/` — project documentation
 
 ## Conventions
@@ -92,7 +90,6 @@ Core packages (`internal/`):
 - TUI: Bubble Tea architecture — `View()` must be cheap; expensive computations deduped or throttled
 - Secrets: never hardcode, never pass to external tools; `.env` and credential files are toxic payload
 - Config: every key in `config.example.json` must be documented in `docs/configuration.md` (CI-enforced)
-- Proto: wire-compatible changes only — `buf breaking` runs in CI
 - Dependencies: Dependabot opens weekly PRs with `deps:` prefix; SHAs are pinned in CI workflows
 - Release tags: annotated (`git tag -a vX.Y.Z -m "wakil X.Y.Z" <sha>`), created only on a green master commit, and pushed individually by name (`git push origin vX.Y.Z`). Never use `git push --tags`: GitHub creates no push event when more than three tags are pushed at once, so the Release workflow silently does not run
 - Snapshot/backup refs go under `refs/archive/`, not `refs/tags/`. Never push `refs/archive/*` to `origin`; back it up with `git bundle create <file> --glob='refs/archive/*'`
