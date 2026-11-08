@@ -3,6 +3,7 @@ package hisn
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -27,7 +28,17 @@ func TestMain(m *testing.M) {
 	if os.Getenv(parentHelperEnv) != "" {
 		os.Exit(parentHelperMain())
 	}
+	flag.Parse() // integrationRun reads -test.run
+	if left, err := sweepITSessions(); err != nil || len(left) > 0 {
+		fmt.Fprintf(os.Stderr, "hisn: integration leftovers before the run: %v %v\n", left, err)
+	}
 	code := m.Run()
+	if left, err := sweepITSessions(); err != nil || len(left) > 0 {
+		fmt.Fprintf(os.Stderr, "FAIL: hisn sessions left after the run: %v %v\n", left, err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	removeLeanFake()
 	os.Exit(code)
 }
@@ -267,7 +278,7 @@ func fakeRun(state string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: injected crash: supervisor lost its init")
 		return 125
 	}
-	if mode == "detach041" {
+	if mode == "detach041" || mode == "detach041badpid" {
 		// 0.4.1: the run process forks a child "supervisor" that serves the
 		// control socket, writes "ready\n" to --ready-fd, prints "<id> <name>-
 		// ready" on stdout, writes supervisor.pid with the CHILD's pid, and
@@ -275,7 +286,12 @@ func fakeRun(state string, args []string) int {
 		// `hisn stop`), then exits.
 		supPid := fakeForkSupervisor(ln, dir, args)
 		_ = os.WriteFile(filepath.Join(dir, "sup.pid"), []byte(strconv.Itoa(supPid)), 0o600)
-		_ = os.WriteFile(filepath.Join(dir, "supervisor.pid"), []byte(strconv.Itoa(supPid)), 0o600)
+		// Real 0.4.1 format: "<pid> <starttime>".
+		pidLine := fmt.Sprintf("%d %s\n", supPid, procStart(supPid))
+		if mode == "detach041badpid" { // a format Wakil cannot parse: tracking fails
+			pidLine = "garbage\n"
+		}
+		_ = os.WriteFile(filepath.Join(dir, "supervisor.pid"), []byte(pidLine), 0o600)
 		readyWrite(args)
 		sname := name
 		if sname == "" {
@@ -353,14 +369,11 @@ func fakeSupervisorMain(dir, state string, args []string) int {
 	fakeCtlServe(ln, dir)
 	sig := make(chan os.Signal, 4)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	for range sig {
-		killRecordedPids(dir)
-		_ = ln.Close()
-		if exists(filepath.Join(dir, "stopped")) {
-			return 0
-		}
+	<-sig
+	killRecordedPids(dir)
+	_ = ln.Close()
+	if !exists(filepath.Join(dir, "stopped")) {
 		_ = os.RemoveAll(dir)
-		return 0
 	}
 	return 0
 }

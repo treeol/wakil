@@ -346,13 +346,22 @@ func (p *supervisorProc) hasExited() bool {
 // liveness is the supervisor's: check it via supExited.
 func (p *supervisorProc) waitExit(d time.Duration) bool {
 	if p.detachExited {
-		t := time.NewTimer(d)
-		defer t.Stop()
-		select {
-		case <-p.supExited:
-			return true
-		case <-t.C:
-			return false
+		// Poll the pid directly (not only supExited, whose watcher polls
+		// slowly): a stopped supervisor is seen within a few milliseconds.
+		deadline := time.Now().Add(d)
+		for {
+			if !procAlive(p.supPid, p.supStart) {
+				return true
+			}
+			select {
+			case <-p.supExited:
+				return true
+			default:
+			}
+			if !time.Now().Before(deadline) {
+				return false
+			}
+			time.Sleep(2 * time.Millisecond)
 		}
 	}
 	t := time.NewTimer(d)
@@ -361,6 +370,17 @@ func (p *supervisorProc) waitExit(d time.Duration) bool {
 	case <-p.exited:
 		return true
 	case <-t.C:
+		return false
+	}
+}
+
+// runExitedOK reports whether the run process has exited with status 0 (the
+// hisn >= 0.4.1 "supervisor is up" signal), whether or not it is tracked yet.
+func (p *supervisorProc) runExitedOK() bool {
+	select {
+	case <-p.exited:
+		return p.cmd != nil && p.waitErr == nil
+	default:
 		return false
 	}
 }
@@ -374,8 +394,12 @@ func (p *supervisorProc) kill() {
 		p.killFn()
 		return
 	}
-	if p.detachExited && p.supPid > 0 {
-		_ = syscall.Kill(p.supPid, syscall.SIGKILL)
+	if p.detachExited {
+		// Signal only the exact process tracked: a pid whose start time is
+		// unknown (or no longer matches) is never signalled.
+		if p.supPid > 0 && p.supStart != "" && procStart(p.supPid) == p.supStart {
+			_ = syscall.Kill(p.supPid, syscall.SIGKILL)
+		}
 		return
 	}
 	if p.cmd != nil && p.cmd.Process != nil {
@@ -439,11 +463,30 @@ func procAlive(pid int, start string) bool {
 	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
+	if procZombie(pid) {
+		return false // exited, not yet reaped by its (new) parent
+	}
 	if start == "" {
 		return true // cannot prove it is gone
 	}
 	cur := procStart(pid)
 	return cur == "" || cur == start
+}
+
+// procZombie reports whether pid is a zombie (/proc/<pid>/stat state Z or X).
+// A detached supervisor is reparented; until its new parent reaps it, a
+// finished one still answers kill(pid, 0).
+func procZombie(pid int) bool {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 || i+2 >= len(s) {
+		return false
+	}
+	return s[i+2] == 'Z' || s[i+2] == 'X'
 }
 
 // trackSupervisor finds the real supervisor process for a 0.4.1 detach session
@@ -473,13 +516,18 @@ func (b *Backend) trackSupervisor(ctx context.Context, p *supervisorProc, id str
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil || pid <= 0 {
-		return fmt.Errorf("hisn 0.4.1: invalid supervisor pid %q for %s", strings.TrimSpace(string(pidBytes)), id)
+	pid, start, err := parseSupervisorPid(string(pidBytes))
+	if err != nil {
+		return fmt.Errorf("hisn 0.4.1: %w for %s", err, id)
+	}
+	if cur := procStart(pid); start == "" {
+		start = cur
+	} else if cur != "" && cur != start {
+		return fmt.Errorf("hisn 0.4.1: supervisor pid %d for %s was reused (start time %s, file says %s)", pid, id, cur, start)
 	}
 	p.detachExited = true
 	p.supPid = pid
-	p.supStart = procStart(pid)
+	p.supStart = start
 	go func() {
 		for {
 			if !procAlive(p.supPid, p.supStart) {
@@ -490,6 +538,27 @@ func (b *Backend) trackSupervisor(ctx context.Context, p *supervisorProc, id str
 		}
 	}()
 	return nil
+}
+
+// parseSupervisorPid parses <session-dir>/supervisor.pid. hisn 0.4.1 writes
+// "<pid> <starttime>" (starttime is /proc/<pid>/stat field 22, the same value
+// procStart returns); a bare "<pid>" is accepted too, with start "".
+func parseSupervisorPid(s string) (pid int, start string, err error) {
+	f := strings.Fields(s)
+	if len(f) == 0 || len(f) > 2 {
+		return 0, "", fmt.Errorf("invalid supervisor pid %q", strings.TrimSpace(s))
+	}
+	pid, err = strconv.Atoi(f[0])
+	if err != nil || pid <= 0 {
+		return 0, "", fmt.Errorf("invalid supervisor pid %q", strings.TrimSpace(s))
+	}
+	if len(f) == 2 {
+		if _, err := strconv.ParseUint(f[1], 10, 64); err != nil {
+			return 0, "", fmt.Errorf("invalid supervisor start time %q", strings.TrimSpace(s))
+		}
+		start = f[1]
+	}
+	return pid, start, nil
 }
 
 // sessionDir returns the session directory for id from `hisn ls --json`.

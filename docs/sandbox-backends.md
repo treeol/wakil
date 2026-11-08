@@ -310,7 +310,9 @@ A clash on the *same* id is still caught by `startLocked`.
    chat id: `hisn run --session-id` replaces it itself and one line is
    logged. A `crashed` leftover of this id or holding this name is pruned
    first (`hisn ls --prune` archives it and frees the name, which hisn keeps
-   reserved until then). A `stopped` directory does not hold a name.
+   reserved until then). On hisn 0.4.0 a `stopped` directory does not hold a
+   name; from 0.4.1 on it does (`name ... is already in use`, exit 125), so a
+   `stopped` leftover is pruned first too.
 3. Creates the owner record with `O_EXCL`: `{pid, pid_start, token, name,
    cwd}` where `token` is a fresh 128-bit hex value.
 4. Spawns the supervisor with `--name wakil-<project key>-<chat id>` (letters,
@@ -416,11 +418,14 @@ restarts lazily for the same chat once the id has disappeared from
 
 ### Reconcile
 
-At construction (`Open`), reconcile is a *fallback* — normally the
+At construction (`Open`), reconcile is a *fallback* on hisn 0.4.0 — there the
 supervisor dies with Wakil through `Pdeathsig` and nothing is left to reap.
 It still runs for the cases the kernel cannot cover (SIGKILL of a hisn
 child, a non-Linux build, an upgrade from a build without the supervisor
-handle).
+handle). From hisn 0.4.1 on, `hisn run --detach` exits once the detached
+supervisor is up, so `Pdeathsig` no longer reaches it: a Wakil that crashes
+leaves its session running, and step 2 below (the dead owner's record) is
+what stops it at the next start.
 
 1. `hisn ls --prune`: hisn itself archives (0.4.0: `grants.jsonl` and
    `session.json` to `$XDG_STATE_HOME/hisn/audit/<id>.jsonl`) and removes every

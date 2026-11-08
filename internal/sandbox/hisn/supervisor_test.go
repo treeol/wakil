@@ -1227,3 +1227,99 @@ func TestRefuseLiveSessionWithForeignInstance(t *testing.T) {
 		t.Fatal("the foreign session was killed")
 	}
 }
+
+func TestParseSupervisorPid(t *testing.T) {
+	for _, tc := range []struct {
+		in        string
+		pid       int
+		start     string
+		wantError bool
+	}{
+		{"28 26697400\n", 28, "26697400", false},
+		{"28", 28, "", false},
+		{" 28 \n", 28, "", false},
+		{"", 0, "", true},
+		{"x 1", 0, "", true},
+		{"0 1", 0, "", true},
+		{"28 abc", 0, "", true},
+		{"28 1 2", 0, "", true},
+	} {
+		pid, start, err := parseSupervisorPid(tc.in)
+		if (err != nil) != tc.wantError || pid != tc.pid || start != tc.start {
+			t.Errorf("parseSupervisorPid(%q) = %d, %q, %v; want %d, %q, error %v", tc.in, pid, start, err, tc.pid, tc.start, tc.wantError)
+		}
+	}
+}
+
+// 0.4.1: when tracking the detached supervisor fails AFTER the session came up
+// (here: an unparseable supervisor.pid, the format mismatch that leaked every
+// integration session), the failed Start must still end the session it
+// created — it is verified by instance token, then `hisn stop`ped — instead of
+// reaping the long-exited run process and forgetting a running session.
+func TestDetach041FailedTrackingStopsTheSession(t *testing.T) {
+	b, fe := openFake(t)
+	fe.setMode("detach041badpid")
+	err := b.Start(ctxT(t), sandbox.Session{ID: "badpid", HostCwd: fe.cwd})
+	if err == nil || !strings.Contains(err.Error(), "invalid supervisor pid") {
+		t.Fatalf("Start = %v, want the supervisor.pid error", err)
+	}
+	if got := fe.servedIDs(); len(got) != 0 {
+		t.Fatalf("a failed 0.4.1 start left sessions running: %v", got)
+	}
+	if !strings.Contains(calls(t, fe), "stop --session badpid") {
+		t.Fatalf("the failed start did not stop its session:\n%s", calls(t, fe))
+	}
+	if _, err := b.readRecord("badpid"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owner record after a cleaned-up failed start: %v", err)
+	}
+}
+
+// stopDetached never stops a session that is provably not ours: the tracked
+// supervisor is gone and the id now answers with a foreign instance.
+func TestStopDetachedLeavesAForeignReplacement(t *testing.T) {
+	b, fe := openFake(t)
+	fe.setMode("detach041")
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "repl", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	sup := b.supOf()
+	// Our supervisor dies; a foreign session takes the id (its policy names
+	// another hostname).
+	_ = syscall.Kill(sup.supPid, syscall.SIGKILL)
+	if !sup.waitExit(5 * time.Second) {
+		t.Fatal("supervisor did not die")
+	}
+	_ = os.WriteFile(filepath.Join(fe.rt(), "repl", "policy"), []byte(`hostname = "someone-else"`), 0o600)
+	before := strings.Count(calls(t, fe), "stop --session repl")
+	b.mu.RLock()
+	l := b.cur
+	b.mu.RUnlock()
+	if err := b.stopDetached(ctxT(t), l.id, l.token, sup); err != nil {
+		t.Fatalf("stopDetached on a foreign replacement = %v, want nil (finished, not ours)", err)
+	}
+	if got := strings.Count(calls(t, fe), "stop --session repl"); got != before {
+		t.Fatalf("stopDetached stopped a foreign session (%d stop call(s))", got-before)
+	}
+}
+
+func TestProcZombie(t *testing.T) {
+	cmd := osexec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	deadline := time.Now().Add(5 * time.Second)
+	for !procZombie(pid) {
+		if time.Now().After(deadline) {
+			t.Fatal("an exited, unreaped child must read as a zombie")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if procAlive(pid, procStart(pid)) {
+		t.Fatal("procAlive must report a zombie as gone")
+	}
+	_ = cmd.Wait()
+	if procZombie(os.Getpid()) {
+		t.Fatal("this process is not a zombie")
+	}
+}

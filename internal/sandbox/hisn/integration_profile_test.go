@@ -1,6 +1,7 @@
 package hisn
 
 import (
+	"context"
 	"errors"
 	"os"
 	osexec "os/exec"
@@ -65,7 +66,8 @@ func realProfileBackend(t *testing.T, mut func(*Options)) (*Backend, string, err
 	}
 	b, err := Open(ictx(t), o)
 	if err == nil {
-		t.Cleanup(func() { _ = b.Close(t.Context()) })
+		cleanupSessions(t, b)
+		t.Cleanup(func() { _ = b.Close(context.Background()) })
 	}
 	return b, cwd, err
 }

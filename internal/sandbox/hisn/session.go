@@ -242,6 +242,8 @@ func (b *Backend) verifyInstance(ctx context.Context, id, token string) (verifie
 // session that is still "stopping" or "creating" is NOT over.
 func (b *Backend) waitEnded(ctx context.Context, id string, d time.Duration) bool {
 	deadline := time.Now().Add(d)
+	ctx, cancel := context.WithDeadline(ctx, deadline.Add(2*time.Second)) // one ls may not outlive the budget
+	defer cancel()
 	for {
 		m, err := b.listSessions(ctx)
 		if err == nil {
@@ -327,7 +329,7 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 	// A name is unique per user. A session that Wakil did not create (no owner
 	// record, checked above) and that is live OR being created/stopped holds
 	// it: refuse and say who is in it. A crashed leftover also holds the name
-	// but is pruned below; a stopped one has released it.
+	// but is pruned below, and so is a stopped one on hisn >= 0.4.1.
 	for _, e := range byName(sessions, name) {
 		if e.ID != s.ID && (e.Live() || e.transitional()) {
 			return nil, fmt.Errorf("%w: hisn session name %q is held by the %s session %s%s", sandbox.ErrSessionInUse, name, e.heldDesc(), e.ID, clientsNote(e))
@@ -350,12 +352,16 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 		notes = append(notes, note)
 	}
 	// A CRASHED leftover (hisn 0.4.0) keeps its name reserved until pruned, so
-	// `hisn run --name` would refuse. `hisn ls --prune` archives it and frees
-	// the name; it removes provably dead directories only (every dead
-	// directory of this user, as it always has — see ADR 0012).
+	// `hisn run --name` would refuse; from hisn 0.4.1 a STOPPED one does too
+	// ("name ... is already in use", exit 125), while 0.4.0 frees it at stop
+	// and the stopped directory stays for the audit until Reconcile. `hisn ls
+	// --prune` archives it and frees the name; it removes provably dead
+	// directories only (every dead directory of this user, as it always has —
+	// see ADR 0012).
+	stoppedHoldsName := VersionAtLeast(b.ver, [3]int{0, 4, 1})
 	needPrune := false
 	for _, e := range sessions {
-		if (e.ID == s.ID || e.Name == name) && e.Ended() && !e.Stopped() {
+		if (e.ID == s.ID || e.Name == name) && e.Ended() && (stoppedHoldsName || !e.Stopped()) {
 			needPrune = true
 		}
 	}
@@ -595,8 +601,9 @@ func (e *RiskAckError) Error() string {
 		" — " + e.Detail + " (Wakil never acknowledges a risk on your behalf)"
 }
 
-// runSession prepares + validates the launch, spawns the supervisor (which IS
-// the session and never returns while it lives), waits until the session is
+// runSession prepares + validates the launch, spawns the supervisor (0.4.0: it
+// IS the session and never returns while it lives; >= 0.4.1: it exits 0 once
+// the detached supervisor is up, see waitReady), waits until the session is
 // provably ready and verifies it is the instance we just created. The returned
 // supervisor is non-nil whenever one was spawned, success or not, so the caller
 // can reap it. On any error after the spawn the supervisor is already killed
@@ -900,12 +907,21 @@ func (b *Backend) reapSupervisor(sup *supervisorProc) bool {
 	return sup.waitExit(b.stopWait)
 }
 
-// abortStartLocked cleans up after a failed start. The supervisor handle makes
-// this exact: the process Wakil spawned is killed and reaped, never a session
-// found by id. The runtime directory is hisn's to clean (0.2.1: `hisn kill` on
-// a stale dir removes it, exit 0). It reports whether nothing of ours is left
-// running (true) or a cleanup obligation remains (false; the record is kept).
+// abortStartLocked cleans up after a failed start. On hisn 0.4.0 the
+// supervisor handle makes this exact: the process Wakil spawned is killed and
+// reaped, never a session found by id. On hisn >= 0.4.1 the run process has
+// already exited 0 and the session is ended through stopDetached (identity
+// proven first). The runtime directory is hisn's to clean (0.2.1: `hisn kill`
+// on a stale dir removes it, exit 0). It reports whether nothing of ours is
+// left running (true) or a cleanup obligation remains (false; the record is
+// kept).
 func (b *Backend) abortStartLocked(rec record, sup *supervisorProc) bool {
+	if sup.detachExited || sup.runExitedOK() {
+		if err := b.stopDetached(context.Background(), rec.ID, rec.Token, sup); err != nil {
+			fmt.Fprintf(errWriter, "hisn: failed start of %s: %v\n", rec.ID, err)
+			return false
+		}
+	}
 	if !b.reapSupervisor(sup) {
 		return false
 	}
@@ -948,22 +964,11 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 				return fmt.Errorf("hisn stop: supervisor of session %s (pid %d) did not exit after SIGKILL", l.id, l.sup.pid())
 			}
 		}
-	} else if l.sup != nil && l.sup.detachExited {
-		// 0.4.1: the run process already exited; the supervisor lives on.
-		// `hisn stop` ends it; wait for the session to no longer be running.
-		endStop := timeline.Begin("hisn stop (client round trip)")
-		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.stopWait)
-		_, _ = b.output(kctx, false, "stop", "--session", l.id)
-		cancel()
-		endStop()
-		endWait := timeline.Begin("supervisor exit wait")
-		exited := l.sup.waitExit(b.stopWait)
-		endWait()
-		if !exited {
-			l.sup.kill()
-			if !l.sup.waitExit(b.stopWait) {
-				return fmt.Errorf("hisn stop: supervisor of session %s (pid %d) did not exit after SIGKILL", l.id, l.sup.pid())
-			}
+	} else if l.sup != nil && (l.sup.detachExited || l.sup.runExitedOK()) {
+		// hisn >= 0.4.1: the run process already exited 0; the detached
+		// supervisor (tracked, or untracked after a failed tracking) lives on.
+		if err := b.stopDetached(ctx, l.id, l.token, l.sup); err != nil {
+			return err
 		}
 	}
 	r, err := b.readRecord(l.id)
@@ -996,6 +1001,57 @@ func (b *Backend) stopLocked(ctx context.Context, l *live) error {
 		}
 	}
 	b.removeRecord(l.id)
+	return nil
+}
+
+// stopDetached ends a hisn >= 0.4.1 session whose run process already exited
+// 0: `hisn stop --session id`, then a wait on the supervisor pid (SIGKILL on
+// the cap) when it is tracked, else on `hisn ls` reporting the session over.
+// Identity is proven before the stop, since hisn offers no instance-bound one:
+// the tracked supervisor (pid AND start time) is alive, or — untracked or
+// already gone — the instance token matches (verifyInstance). A session that
+// is provably not ours, or whose identity cannot be checked, is never
+// stopped: the first is a finished stop, the second an error (the caller
+// keeps the obligation). A session that is already over is a finished stop.
+func (b *Backend) stopDetached(ctx context.Context, id, token string, sup *supervisorProc) error {
+	ctx = context.WithoutCancel(ctx)
+	tracked := sup.detachExited && sup.supPid > 0 && sup.supStart != ""
+	if !tracked || !procAlive(sup.supPid, sup.supStart) {
+		vctx, cancel := context.WithTimeout(ctx, b.stopWait)
+		ok, err := b.verifyInstance(vctx, id, token)
+		cancel()
+		if err != nil {
+			// inspect fails once the session is gone; that is a finished stop.
+			if b.waitEnded(ctx, id, time.Second) {
+				return nil
+			}
+			return fmt.Errorf("hisn stop: cannot verify session %s before stopping it: %w", id, err)
+		}
+		if !ok {
+			return nil // the id now belongs to another session: not ours to stop
+		}
+	}
+	endStop := timeline.Begin("hisn stop (client round trip)")
+	kctx, cancel := context.WithTimeout(ctx, b.stopWait)
+	_, _ = b.output(kctx, false, "stop", "--session", id)
+	cancel()
+	endStop()
+	if !tracked {
+		if !b.waitEnded(ctx, id, b.stopWait) {
+			return fmt.Errorf("hisn stop: session %s (supervisor not tracked) still running after `hisn stop`", id)
+		}
+		return nil
+	}
+	endWait := timeline.Begin("supervisor exit wait")
+	exited := sup.waitExit(b.stopWait)
+	endWait()
+	if !exited {
+		defer timeline.Detail("supervisor KILL grace expired", "SIGKILL sent")()
+		sup.kill()
+		if !sup.waitExit(b.stopWait) {
+			return fmt.Errorf("hisn stop: supervisor of session %s (pid %d) did not exit after SIGKILL", id, sup.pid())
+		}
+	}
 	return nil
 }
 

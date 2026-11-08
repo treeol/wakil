@@ -452,3 +452,31 @@ func TestListSessionsStillReadsV1(t *testing.T) {
 		t.Fatalf("v1 row = %+v", e)
 	}
 }
+
+// hisn >= 0.4.1 keeps a stopped session's name reserved (`hisn run --name`
+// fails with "name ... is already in use"), so a Start over a stopped
+// directory of this chat prunes first. 0.4.0 keeps the stopped directory
+// (TestStartAfterStopReusesTheNameWithoutPruning).
+func TestStartAfterStopPrunesOn041(t *testing.T) {
+	fe := newFakeEnv(t)
+	_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.1"), 0o600)
+	b, err := Open(ctxT(t), fe.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+	fe.setMode("detach041")
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "reuse41", HostCwd: fe.cwd}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Stop(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	before := strings.Count(calls(t, fe), "ls --prune")
+	if err := b.Start(ctxT(t), sandbox.Session{ID: "reuse41", HostCwd: fe.cwd}); err != nil {
+		t.Fatalf("restart over a stopped directory: %v", err)
+	}
+	if got := strings.Count(calls(t, fe), "ls --prune"); got != before+1 {
+		t.Errorf("0.4.1 restart over a stopped directory pruned %d time(s), want 1", got-before)
+	}
+}

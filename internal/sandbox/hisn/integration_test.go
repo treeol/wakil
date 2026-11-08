@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/sandbox"
+	"github.com/treeol/wakil/internal/timeline"
 )
 
 // Integration tests against a REAL hisn. They SKIP (never fail) when hisn is
@@ -28,9 +29,11 @@ import (
 //
 //	go test -count=1 -v -timeout 5m -run TestIntegration ./internal/sandbox/hisn/
 //
-// `hisn run --detach` does NOT return: its supervisor IS the session. Start
-// therefore spawns it, waits for readiness (control socket + `hisn ls
-// --session`) and keeps the process as the session's lifetime handle. Every
+// On hisn 0.4.0 `hisn run --detach` does NOT return: its supervisor IS the
+// session, and Start keeps the process as the session's lifetime handle. From
+// 0.4.1 on it exits 0 once the detached supervisor is up, and Start tracks the
+// pid in <session-dir>/supervisor.pid instead. Every test stops and prunes its
+// sessions (cleanupSessions) and TestMain sweeps leftovers. Every
 // Start error carries the supervisor's stderr (captured with `-v`) and names
 // <state>/<chat>.supervisor.log, which holds it for every start.
 //
@@ -74,6 +77,7 @@ func realBackend(t *testing.T, grantable ...string) (*Backend, string) {
 	if err := b.Preflight(ctx); err != nil {
 		t.Skipf("hisn unusable on this host: %v", err)
 	}
+	cleanupSessions(t, b)
 	t.Cleanup(func() { _ = b.Close(context.Background()) })
 	return b, cwd
 }
@@ -329,6 +333,7 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	if err := b.Preflight(ctx); err != nil {
 		t.Skipf("hisn unusable on this host: %v", err)
 	}
+	cleanupSessions(t, b)
 	t.Cleanup(func() { _ = b.Close(context.Background()) })
 
 	if err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-ssh-agent", HostCwd: cwd}); err != nil {
@@ -611,15 +616,17 @@ func TestIntegrationStartRefusesForeignSession(t *testing.T) {
 		t.Skipf("cannot create a foreign session: %v", err)
 	}
 	fdone := make(chan struct{})
-	go func() { _ = foreign.Wait(); close(fdone) }()
+	var fwait error
+	go func() { fwait = foreign.Wait(); close(fdone) }()
 	t.Cleanup(func() {
-		_ = osexec.Command(b.opts.Binary, "kill", "--session", "wakil-it-foreign").Run()
+		_ = osexec.Command(b.opts.Binary, "stop", "--session", "wakil-it-foreign").Run()
 		select {
 		case <-fdone:
 		case <-time.After(5 * time.Second):
 			_ = foreign.Process.Kill()
 			<-fdone
 		}
+		_ = osexec.Command(b.opts.Binary, "ls", "--prune").Run()
 	})
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -629,7 +636,11 @@ func TestIntegrationStartRefusesForeignSession(t *testing.T) {
 		}
 		select {
 		case <-fdone:
-			t.Skipf("cannot create a foreign session: supervisor exited: %s", ferr.String())
+			// hisn >= 0.4.1: the run process exits 0 once the detached
+			// supervisor is up; only a failed start is a reason to skip.
+			if fwait != nil {
+				t.Skipf("cannot create a foreign session: supervisor exited: %v: %s", fwait, ferr.String())
+			}
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -678,8 +689,32 @@ func TestIntegrationSupervisorDiesWithParent(t *testing.T) {
 		t.Fatalf("helper could not start a session: %q stderr: %s", line, herr.String())
 	}
 	t.Cleanup(func() { // belt and braces: never leave it behind if the assertion fails
+		_ = osexec.Command(b.opts.Binary, "stop", "--session", "wakil-it-parent").Run()
 		_ = osexec.Command(b.opts.Binary, "kill", "--session", "wakil-it-parent", "--signal", "KILL").Run()
 	})
+	if VersionAtLeast(b.ver, [3]int{0, 4, 1}) {
+		// hisn >= 0.4.1 detaches the supervisor (reparented, no Pdeathsig
+		// from Wakil): it outlives the crashed Wakil by design. The dead
+		// owner's record is what cleans it up: the next Reconcile stops it.
+		if m, err := b.listSessions(ictx(t)); err != nil || !m["wakil-it-parent"].Live() {
+			t.Fatalf("0.4.1: the detached session must survive its Wakil: %+v err %v", m["wakil-it-parent"], err)
+		}
+		b2, err := New(b.opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b2.Reconcile(ictx(t)); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		m, err := b.listSessions(ictx(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e, ok := m["wakil-it-parent"]; ok && !e.Ended() {
+			t.Fatalf("Reconcile left the dead owner's session %s: %+v", e.State, e)
+		}
+		return
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		m, err := b.listSessions(ictx(t))
@@ -933,5 +968,70 @@ func TestIntegrationRestartAfterStop(t *testing.T) {
 	// By name too, through the hisn CLI (what attach and a second client use).
 	if out, err := b.output(ictx(t), false, "ls", "--session", name); err != nil {
 		t.Fatalf("ls --session %s: %v: %s", name, err, out)
+	}
+}
+
+// The real shutdown path ends the session: Start, one exec, Close, and `hisn ls
+// --json` must no longer show it running (stopped is fine). Against hisn >=
+// 0.4.1 the run process exited long before Close, so this proves stopLocked
+// ends the detached supervisor itself, not a process that was already gone.
+func TestIntegrationCloseStopsSession(t *testing.T) {
+	b, cwd := realBackend(t)
+	const id = "wakil-it-close"
+	istart(t, b, id, cwd)
+	sup := b.supOf()
+	if out, info := irun(t, b, "", "sh", "-c", "echo up"); info.Code != 0 || strings.TrimSpace(out) != "up" {
+		t.Fatalf("exec: %q %+v", out, info)
+	}
+	supPid := sup.pid()
+	if err := b.Close(ictx(t)); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	m, err := b.listSessions(ictx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, ok := m[id]; ok && (e.Live() || e.transitional()) {
+		t.Fatalf("session still %s after Close: %+v", e.State, e)
+	}
+	if sup.detachExited && procAlive(supPid, sup.supStart) {
+		t.Fatalf("detached supervisor pid %d still alive after Close", supPid)
+	}
+}
+
+// The phase timeline of one real start/exec/stop, for the lifecycle numbers
+// ("hisn session ready", "hisn stop"). Opt-in: WAKIL_TRACE=1. It prints the
+// hisn spans and leaves the timeline file in the test's temp dir.
+func TestIntegrationTraceTimeline(t *testing.T) {
+	if !timeline.EnvEnabled() {
+		t.Skip("set WAKIL_TRACE=1 to record the hisn timeline")
+	}
+	b, cwd := realBackend(t)
+	timeline.Reset()
+	path := timeline.Start(filepath.Join(t.TempDir(), "timeline.json"), "start", time.Now())
+	t.Cleanup(timeline.Reset)
+	istart(t, b, "wakil-it-trace", cwd)
+	irun(t, b, "", "true")
+	timeline.Enter("exit")
+	if err := b.Close(ictx(t)); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := timeline.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc timeline.Doc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range doc.Transitions {
+		for _, s := range tr.Spans {
+			if strings.HasPrefix(s.Name, "hisn ") || strings.HasPrefix(s.Name, "supervisor ") {
+				t.Logf("TRACE %-6s %-45s %8.2f ms", tr.Name, s.Name, s.DurMS)
+			}
+		}
 	}
 }
