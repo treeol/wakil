@@ -981,9 +981,11 @@ func (f *wiringFacade) Close() error {
 	f.mu.Unlock()
 
 	// Fire on_stop lifecycle hooks before tearing down.
+	endStop := timeline.Begin("app on_stop hooks + session_end")
 	if app != nil {
 		app.OnStop()
 	}
+	endStop()
 
 	// Close the host session FIRST when one exists: requestClose cancels the
 	// in-flight turn ctx, which unblocks a Parked approval with a forced
@@ -1000,8 +1002,10 @@ func (f *wiringFacade) Close() error {
 	// Stop is bounded by consumerStopTimeout so a hung transport cannot
 	// delay the host session close (below) indefinitely.
 	if f.telegramConsumer != nil {
+		endTG := timeline.Begin("stop telegram consumer")
 		f.telegramConsumer.Stop()
 		f.telegramConsumer = nil
+		endTG()
 	}
 
 	// Close the host session: requestClose cancels the in-flight turn ctx,
@@ -1036,11 +1040,13 @@ func (f *wiringFacade) Close() error {
 	}
 
 	// Cancel any running side questions (detached-job policy: cancel on close).
+	endSQ := timeline.Begin("cancel side questions")
 	for _, cancel := range sideQuestions {
 		if cancel != nil {
 			cancel()
 		}
 	}
+	endSQ()
 
 	// Cancel detached async jobs (detached-job policy: cancel on close).
 	endJobs := timeline.Begin("stop async ops + background processes")
@@ -1098,9 +1104,11 @@ func (f *wiringFacade) Close() error {
 	// session_end; Close flushes the pending event through the channel and
 	// sender before stopping the goroutine, so session_end reaches the
 	// stack even during a rotation. Without this, the sender goroutine leaks.
+	endILM := timeline.Begin("close ilm emitter")
 	if f.app.ILM != nil {
 		_ = f.app.ILM.Close()
 	}
+	endILM()
 
 	// Release the App ownership claim. The turn may still be winding down
 	// from the CloseSession cancellation above (the executor goroutine clears
@@ -1110,6 +1118,7 @@ func (f *wiringFacade) Close() error {
 	// fresh App; the claim only prevents THIS App from being re-hosted), but
 	// the map entry leaks, so log-worthy in principle. Best-effort.
 	if f.handle != nil {
+		endRel := timeline.Begin("release app ownership (poll for turn wind-down)")
 		deadline := time.Now().Add(5 * time.Second)
 		for {
 			err := f.handle.Release()
@@ -1118,6 +1127,7 @@ func (f *wiringFacade) Close() error {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		endRel()
 	}
 	return nil
 }
