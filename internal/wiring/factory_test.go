@@ -115,6 +115,75 @@ func TestReleaseRejectsActiveTurn(t *testing.T) {
 	}
 }
 
+// TestWaitTurnDoneSignalsOnTurnEnd verifies the signal-based wind-down wait that
+// replaced the facade's 50ms Release poll: WaitTurnDone blocks while a turn is
+// active and returns as soon as turnDone is closed (the turn's cancel path
+// completing), and returns immediately with no turn active.
+func TestWaitTurnDoneSignalsOnTurnEnd(t *testing.T) {
+	appOwnersMu.Lock()
+	appOwners = map[*agent.App]*hostTurn{}
+	appOwnersMu.Unlock()
+
+	app := testApp()
+	h, err := NewHostTurnHandle(app)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	defer h.Release()
+
+	// No active turn: the wait returns immediately.
+	done := make(chan struct{})
+	go func() { h.WaitTurnDone(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitTurnDone blocked with no active turn")
+	}
+
+	// Simulate an in-flight turn: claimAndActivate installs a fresh turnDone.
+	h.ht.mu.Lock()
+	h.ht.turnActive = true
+	h.ht.turnDone = make(chan struct{})
+	h.ht.mu.Unlock()
+
+	released := make(chan struct{})
+	go func() { h.WaitTurnDone(context.Background()); close(released) }()
+	select {
+	case <-released:
+		t.Fatal("WaitTurnDone returned while the turn was still active")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// The turn's defer would do exactly this; the waiter must proceed at once.
+	h.ht.mu.Lock()
+	h.ht.turnActive = false
+	close(h.ht.turnDone)
+	h.ht.mu.Unlock()
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitTurnDone did not return after the turn ended")
+	}
+
+	// Cancellation unblocks the wait even without a turn end.
+	h.ht.mu.Lock()
+	h.ht.turnActive = true
+	h.ht.turnDone = make(chan struct{})
+	h.ht.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	released2 := make(chan struct{})
+	go func() { h.WaitTurnDone(ctx); close(released2) }()
+	cancel()
+	select {
+	case <-released2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitTurnDone did not return on ctx cancellation")
+	}
+	h.ht.mu.Lock()
+	h.ht.turnActive = false
+	h.ht.mu.Unlock()
+}
+
 // TestRunRejectsReleasedTurn verifies that a TurnFunc whose handle was released
 // before the turn started returns an internal error (the turn goroutine must
 // not run against a freed App).

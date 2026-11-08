@@ -199,6 +199,15 @@ type hostTurn struct {
 	sessionID  event.SessionID // first session this turn served; zero until first use
 	turnActive bool            // true while the TurnFunc is executing a turn
 	released   bool            // true after Release; prevents re-entry
+
+	// turnDone is closed when the turn currently in flight finishes (its
+	// turnActive flag clears). Release drops its 50ms poll for this signal:
+	// the facade's Close cancels the turn via CloseSession and then WAITS on
+	// turnDone instead of retrying Release on a fixed interval. nil until the
+	// first turn claims the handle; claimAndActivate installs a fresh channel
+	// per turn, so a waiter that arrives between turns (nil or already closed)
+	// proceeds immediately. Guarded by mu.
+	turnDone chan struct{}
 }
 
 // recordDecline latches a declined approval reason (7c control latch).
@@ -241,6 +250,29 @@ type HostTurnHandle struct {
 // App or close the host (that is the facade's job in 7b3). It only removes the
 // ownership claim so the wiring layer knows the App is no longer in use.
 func (h *HostTurnHandle) Release() error { return h.ht.Release() }
+
+// WaitTurnDone blocks until the bound hostTurn has no turn in flight (or ctx is
+// done). Between turns it returns immediately. CloseSession cancels an in-flight
+// turn but does not wait for it; this waits for the executor to acknowledge
+// cancellation — a real signal, never a fixed sleep.
+func (h *HostTurnHandle) WaitTurnDone(ctx context.Context) { h.ht.waitTurnDone(ctx) }
+
+// ReleaseWhenTurnDone releases the App ownership claim in the background, once
+// the in-flight turn (if any) has finished winding down. Called by the facade's
+// Close when a turn is still active so exit is never held hostage by a slow
+// cancel path: the wait is bounded by the turn's own cancellation (the signal
+// turnDone), not a fixed timeout. The claim is best-effort, so if the process
+// exits before the goroutine runs, nothing is lost (a leaked appOwners entry is
+// harmless — rotation builds a fresh App pointer that never collides with it).
+func (h *HostTurnHandle) ReleaseWhenTurnDone() {
+	go func() {
+		// Wait on the turn-done signal with no deadline: the tool's own cancel
+		// path (ctx cancellation) bounds it. Using a fresh background context
+		// keeps the wait independent of any caller-scoped cancellation.
+		h.ht.waitTurnDone(context.Background())
+		_ = h.ht.Release()
+	}()
+}
 
 // App returns the bound *agent.App. Used by the factory/facade to access the
 // App for snapshot construction and direct reads (until 7b3 removes those).
@@ -333,6 +365,9 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	defer func() {
 		ht.mu.Lock()
 		ht.turnActive = false
+		if ht.turnDone != nil {
+			close(ht.turnDone)
+		}
 		ht.mu.Unlock()
 	}()
 
@@ -527,7 +562,28 @@ func (ht *hostTurn) claimAndActivate(sid event.SessionID) error {
 		return fmt.Errorf("%w: hostTurn already has an active turn", sessionhost.ErrInternal)
 	}
 	ht.turnActive = true
+	// Fresh signal per turn: a waiter that arrives after this turn ends (the
+	// defer closes the channel) proceeds immediately; a waiter that arrives
+	// mid-turn blocks until the turn goroutine clears turnActive.
+	ht.turnDone = make(chan struct{})
 	return nil
+}
+
+// waitTurnDone blocks until no turn is in flight, or ctx is done. Between turns
+// (turnDone nil or already closed) it returns immediately. This is the
+// signal-based replacement for the facade's 50ms Release retry loop.
+func (ht *hostTurn) waitTurnDone(ctx context.Context) {
+	ht.mu.Lock()
+	done := ht.turnDone
+	active := ht.turnActive
+	ht.mu.Unlock()
+	if !active || done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // claimSession binds the App to a single session ID and rejects a second.

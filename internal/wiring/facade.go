@@ -1110,22 +1110,28 @@ func (f *wiringFacade) Close() error {
 	}
 	endILM()
 
-	// Release the App ownership claim. The turn may still be winding down
-	// from the CloseSession cancellation above (the executor goroutine clears
-	// turnActive in its defer after finishTurn); retry briefly so a normal
-	// rotation doesn't leak the appOwners entry on a lost race. After the
-	// retries the App pointer stays claimed — harmless (rotation builds a
-	// fresh App; the claim only prevents THIS App from being re-hosted), but
-	// the map entry leaks, so log-worthy in principle. Best-effort.
+	// Release the App ownership claim. CloseSession above cancelled the
+	// in-flight turn (if any), but the turn goroutine clears turnActive only
+	// when it actually returns — which can lag cancellation by the tool's own
+	// cancel path (a blocking shell, a hisn exec drain). The old code retried
+	// Release every 50ms for up to 5s; on rubin that untraced poll cost ~2.6s
+	// (53 iterations) and dominated exit. Do NOT block exit on a winding-down
+	// turn: make one Release attempt and, if a turn is still active, hand the
+	// wait to a bounded background goroutine that releases once the turn's own
+	// cancel path completes (no fixed sleep, no polling loop). The claim is
+	// best-effort — a leaked appOwners entry is harmless (rotation builds a
+	// fresh App pointer that never collides with it) — so a slow wind-down must
+	// never hold the terminal or the exit sequence.
 	if f.handle != nil {
-		endRel := timeline.Begin("release app ownership (poll for turn wind-down)")
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			err := f.handle.Release()
-			if err == nil || time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
+		endRel := timeline.Begin("release app ownership")
+		if err := f.handle.Release(); err != nil {
+			// A turn is still winding down (its cancel path — a blocking shell,
+			// a hisn exec TERM/drain — has not yet returned). Do NOT block exit
+			// on it: release in the background once the turn's own cancellation
+			// completes, and say so. No fixed sleep, no polling loop.
+			timeline.Event("release deferred: turn still winding down")
+			fmt.Fprintln(os.Stderr, "· exit: a turn was still winding down; app ownership released in the background")
+			f.handle.ReleaseWhenTurnDone()
 		}
 		endRel()
 	}
