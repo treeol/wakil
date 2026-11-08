@@ -78,15 +78,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **ilm-stack emitter.** The `internal/ilm` package (the shadow/assist emitter
+  and its assist client), the `ilm_stack` config block and its env vars, the
+  `/assist` command, and the emitter call sites in the agent and wiring layers
+  are gone. The emitter's `close ilm emitter` step cost 5002 ms of a 5132 ms
+  exit on the rubin timeline — a flush to an unreachable ilm endpoint hitting its
+  fixed timeout — and the ilm-stack ingestion path is no longer used. See
+  `docs/adr/0013`. `sessionhost.Host.NotifySessionNote` is removed with it (no
+  caller since the Telegram bridge removal).
 - **Telegram approval bridge.** The `telegram-bridge` MCP integration — the
   TUI-side approval consumer (`internal/wiring/telegram_consumer.go`) that
   mirrored `ApprovalRequested` events to a Telegram message with inline buttons
   and fed the button press back through `RespondToApproval` — is gone. The TUI
-  keypress is the only approval path again. The consumer was the only caller of
-  `sessionhost.Host.NotifySessionNote`, which remains as a public host API
-  (with its tests) but is no longer wired into a client. This removes the
-  long-polling contention the `MCPManager` `Close` path was written to guard
-  against; the manager teardown itself is unchanged.
+  keypress is the only approval path again. This removes the long-polling
+  contention the `MCPManager` `Close` path was written to guard against; the
+  manager teardown itself is unchanged.
 - **Daemon, remote TUI, web console and Connect API** (`wakil daemon`,
   `--daemon`, `--socket`, `DaemonMode`/`DaemonSocket`). Evidence and decision
   in `docs/adr/0001`: no web sessions and no API tokens in use. The local TUI,

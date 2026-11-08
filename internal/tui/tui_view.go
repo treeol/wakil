@@ -637,15 +637,6 @@ func statusSegments(in statusLineInput) []string {
 	if in.promptMode == "core" {
 		segs = append(segs, dim2("core"))
 	}
-	if in.AssistEnabled {
-		label := "assist"
-		if in.AssistAuto {
-			label = "assist:auto"
-			segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true).Render(label))
-		} else {
-			segs = append(segs, lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(label))
-		}
-	}
 	if in.backendUsed != "" {
 		isDefault := in.backendUsed == in.backendDefault
 		isOverridden := in.backendRequested != "" && in.backendUsed != in.backendRequested
@@ -797,8 +788,6 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 		lastToolText:            lastToolText,
 		lastLatencyMs:           info.LastLatencyMs,
 		lastTps:                 m.lastTps,
-		AssistEnabled:           info.AssistEnabled,
-		AssistAuto:              info.AssistAuto,
 		asyncProgress:           m.asyncProgress,
 		rotating:                m.rotating,
 		rotationKind:            m.rotationKind,
@@ -1003,12 +992,6 @@ type statusLineInput struct {
 	// lastTps is the last measured t/s from a previous turn. Shown at idle
 	// when tps (live) is 0. 0 = no measurement yet.
 	lastTps float64
-
-	// AssistEnabled is true when /assist is ON (querying /v1/assist before
-	// tool decisions). Renders "assist" (green) or "assist:auto" (green bold)
-	// in the status line so the mode is never silent.
-	AssistEnabled bool
-	AssistAuto    bool
 
 	// asyncProgress is the latest progress snapshot for pending async ops
 	// while the turn is suspended (stateWaiting). Renders a dynamic "waiting"

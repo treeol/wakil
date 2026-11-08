@@ -74,12 +74,6 @@ type InfoSnapshot struct {
 	// status line shows a "core" segment when the lean preamble is active.
 	PromptMode string
 
-	// AssistEnabled reports whether /assist is ON (querying /v1/assist before
-	// tool decisions). AssistAuto reports whether proposals auto-execute.
-	// Both are per-session toggles; the TUI seeds from config ilm_stack.mode.
-	AssistEnabled bool
-	AssistAuto    bool
-
 	// MCP servers: name → status string ("up", "down", …) plus tool count.
 	MCPServers []MCPServerInfo
 

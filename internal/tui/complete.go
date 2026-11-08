@@ -72,7 +72,6 @@ type compSources struct {
 var allTUICommands = []candidate{
 	{name: "/ask", hasArgs: true},
 	{name: "/auto", hasArgs: true},
-	{name: "/assist", hasArgs: true},
 	{name: "/backend", hasArgs: true},
 	{name: "/compact", hasArgs: true},
 	{name: "/counsel", hasArgs: true},
@@ -345,8 +344,6 @@ func computeSlashCompletion(ta textarea.Model, src compSources, fetchSessions fu
 		cands = listNameCandidates(argLeaf, []string{"off"})
 	case "/compact":
 		cands = listNameCandidates(argLeaf, []string{"force"})
-	case "/assist":
-		cands = listNameCandidates(argLeaf, []string{"auto"})
 	case "/queue":
 		cands = listNameCandidates(argLeaf, []string{"clear", "drop"})
 	case "/image":

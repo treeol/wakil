@@ -665,22 +665,6 @@ func (a *App) ModelListLocked() []string {
 	return append([]string(nil), a.ModelList...)
 }
 
-// AssistEnabledLocked returns AssistEnabled under stateMu.RLock.
-// The field is toggled by the TUI (/assist command) and read by the turn
-// goroutine (assist.go) — the lock prevents the race.
-func (a *App) AssistEnabledLocked() bool {
-	a.stateMu.RLock()
-	defer a.stateMu.RUnlock()
-	return a.AssistEnabled
-}
-
-// AssistAutoLocked returns AssistAuto under stateMu.RLock.
-func (a *App) AssistAutoLocked() bool {
-	a.stateMu.RLock()
-	defer a.stateMu.RUnlock()
-	return a.AssistAuto
-}
-
 // StateRLock acquires stateMu.RLock. Exported for cross-package callers
 // (wiringFacade) that need to read multiple stateMu-guarded fields
 // atomically under a single lock acquisition. Must not be held across

@@ -8,11 +8,9 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/treeol/wakil/internal/ilm"
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
@@ -273,59 +271,28 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 
 		sink := a.streamSink()
 
-		// ASSIST-1: before calling the main model, query /v1/assist for a
-		// candidate next action. If the server returns an action that passes
-		// Wakil's allowlist, we return a synthetic assistant message with the
-		// proposed tool call. The normal dispatch path in streamTurn then
-		// executes it exactly once (append to Conv, emit tool_call, handleToolCall,
-		// finalizeToolResult, emit tool_result) — the same path as a
-		// model-initiated tool call. tryAssist does NOT execute or append.
-		//
-		// On any error, abstain, or allowlist failure, we fall through to the
-		// normal model call — the assist path is strictly an optimization.
-		// Assist is skipped when forceFinish is active (tools stripped).
-		//
-		// ASSIST-1 call-count contract: exactly one assist call per assistant
-		// turn that could produce a tool call. The gate is iter==0 — assist
-		// runs once at the top of the turn, before the first model call. On
-		// subsequent iterations (after tool results are fed back), assist is
-		// NOT called again; the model drives the rest of the turn. This
-		// prevents N+1 assist calls for a turn with N tool-call iterations.
-		// forceFinish is always false on iter 0 (budget exhaustion returns
-		// early, MaxToolIterations > 0 means iter 0 < limit), but the
-		// assistCanAct guard is retained as defense-in-depth.
-		var assistTookThisIter bool
-		if iter == 0 && a.assistCanAct(forceFinish) {
-			assistMsg, took := a.tryAssist(ctx)
-			assistTookThisIter = took
-			if took {
-				msg = assistMsg
-			}
+		msg, err = a.Client.Stream(ctx, msgs, tools, sink, rsink)
+		if err != nil {
+			return "", false, err
 		}
-		if !assistTookThisIter {
-			msg, err = a.Client.Stream(ctx, msgs, tools, sink, rsink)
-			if err != nil {
-				return "", false, err
+		a.RecordInferenceCost() // main inference for this iteration
+		// Budget enforcement (soft cutoff): check after recording cost. If the
+		// session's total priced cost has exceeded BudgetUSD, force-finish this
+		// turn and prevent further inference in subsequent turns. The check is
+		// after RecordInferenceCost — the breaching call has already incurred
+		// its cost, so overshoot is bounded by one turn's inference spend.
+		if a.checkBudgetExhausted() {
+			forceFinish = true
+		}
+		if firstStream {
+			// Retrieval telemetry for the user's query is set by this first call;
+			// log a learn candidate if retrieval ran but coverage was low.
+			attempted, maxScore, _ := a.Client.GroundingState()
+			if a.maybeLogLearnCandidate(userText, attempted, maxScore) {
+				// Store the normalised query so runTurn can decide whether to nudge.
+				a.learnNudgePending = strings.Join(strings.Fields(wtools.UserQueryText(userText)), " ")
 			}
-			a.RecordInferenceCost() // main inference for this iteration
-			// Budget enforcement (soft cutoff): check after recording cost. If the
-			// session's total priced cost has exceeded BudgetUSD, force-finish this
-			// turn and prevent further inference in subsequent turns. The check is
-			// after RecordInferenceCost — the breaching call has already incurred
-			// its cost, so overshoot is bounded by one turn's inference spend.
-			if a.checkBudgetExhausted() {
-				forceFinish = true
-			}
-			if firstStream {
-				// Retrieval telemetry for the user's query is set by this first call;
-				// log a learn candidate if retrieval ran but coverage was low.
-				attempted, maxScore, _ := a.Client.GroundingState()
-				if a.maybeLogLearnCandidate(userText, attempted, maxScore) {
-					// Store the normalised query so runTurn can decide whether to nudge.
-					a.learnNudgePending = strings.Join(strings.Fields(wtools.UserQueryText(userText)), " ")
-				}
-				firstStream = false
-			}
+			firstStream = false
 		}
 		if DerefStr(msg.Content) != "" {
 			fmt.Fprintln(a.Out)
@@ -337,14 +304,6 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		}
 		a.appendConv(msg)
 		final = DerefStr(msg.Content)
-
-		// ilm-stack: emit assistant_turn with the full text.
-		if a.ILM != nil {
-			a.ILM.Emit(ilm.EventAssistantTurn, ilm.AssistantTurnPayload{
-				Text:    DerefStr(msg.Content),
-				ModelID: a.Client.Model,
-			})
-		}
 
 		if len(msg.ToolCalls) == 0 || forceFinish {
 			// Phase 2: a genuine idle point is when the model produced
@@ -482,24 +441,6 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				Content:    StrPtr(text),
 				Pinned:     pinned,
 			})
-
-			// ilm-stack: emit tool_result with the full (pre-cap) output,
-			// bounded to max_output_bytes with truncated flag, full_hash,
-			// and full_size.
-			if a.ILM != nil {
-				bounded, truncated, fullHash, fullSize := ilm.BoundOutput(
-					result.text, a.ILM.MaxOutputBytes())
-				okVal := result.ok
-				a.ILM.Emit(ilm.EventToolResult, ilm.ToolResultPayload{
-					Tool:      tc.Function.Name,
-					CallID:    tc.ID,
-					OK:        &okVal,
-					Output:    bounded,
-					Truncated: truncated,
-					FullHash:  fullHash,
-					FullSize:  fullSize,
-				})
-			}
 		}
 
 		// Walk tool calls in order. A maximal contiguous run of ≥2
@@ -523,14 +464,6 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				// synchronously. Returns one result per call in block order.
 				blockResults := a.runParallelSubagentBlock(ctx, block)
 				for bi, btc := range block {
-					// ilm-stack: emit tool_call for parallel subagent block.
-					if a.ILM != nil {
-						a.ILM.Emit(ilm.EventToolCall, ilm.ToolCallPayload{
-							Tool:   btc.Function.Name,
-							Args:   json.RawMessage(btc.Function.Arguments),
-							CallID: btc.ID,
-						})
-					}
 					br := stringToToolResult(blockResults[bi])
 					a.captureToolTrace(btc, br)
 					a.recordRecentTrace(btc, br)
@@ -538,14 +471,6 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				}
 				ti = tj
 				continue
-			}
-			// ilm-stack: emit tool_call before dispatch.
-			if a.ILM != nil {
-				a.ILM.Emit(ilm.EventToolCall, ilm.ToolCallPayload{
-					Tool:   tc.Function.Name,
-					Args:   json.RawMessage(tc.Function.Arguments),
-					CallID: tc.ID,
-				})
 			}
 			result := a.handleToolCall(ctx, tc)
 			if result.text == waitForCompletionToken {

@@ -19,7 +19,6 @@ import (
 	"github.com/treeol/wakil/internal/core/format"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/exec"
-	"github.com/treeol/wakil/internal/ilm"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/orregistry"
@@ -192,24 +191,6 @@ type App struct {
 	// a journal of record. Set by the host startup code after the workspace
 	// is resolved. Thread-safe via its internal mutex.
 	SessionHistory *sessionhistory.Store
-
-	// ILM is the ilm-stack shadow-mode emitter. nil when mode=off (the
-	// default) or when initialization failed. When non-nil, the emitter
-	// captures events at each write-path call site and sends them to the
-	// ilm-stack via a background sender. Never on the critical path —
-	// Emit is a non-blocking channel send. Set by the host startup code.
-	ILM        *ilm.Emitter
-	ilmStarted bool // guards session_start emit (once per session)
-	ilmEnded   bool // guards session_end emit (once per session)
-
-	// Assist is the ilm-stack assist client for synchronous /v1/assist calls.
-	// nil when mode != "assist". When non-nil, the agent queries the assist
-	// server before each model call in the tool-decision loop; a proposal that
-	// passes the allowlist is either executed directly (assist_auto=true) or
-	// shown as a y/n prompt to the user (assist_auto=false).
-	Assist        *ilm.AssistClient
-	AssistEnabled bool // per-session toggle (C4): /assist on|off
-	AssistAuto    bool // per-session toggle (C4): /assist auto on|off
 
 	// touchedExternal is a sticky per-App flag set when the agent's
 	// grounding records web/oracle content. Used for the session-cumulative
@@ -920,37 +901,6 @@ func (a *App) SaveSession() {
 	}
 }
 
-// ilmEmitMemoryOp emits a memory_op event for staging/memory tool calls.
-// No-op when the emitter is nil (mode=off).
-func (a *App) ilmEmitMemoryOp(op string, tc proxy.ToolCall) {
-	if a.ILM == nil {
-		return
-	}
-	a.ILM.Emit(ilm.EventMemoryOp, ilm.MemoryOpPayload{
-		Op:  op,
-		Key: tc.Function.Arguments,
-	})
-}
-
-// ilmSessionStartOnce emits the ilm-stack session_start event on the first
-// Send of a session. The system prompt is captured here.
-func (a *App) ilmSessionStartOnce() {
-	if a.ILM == nil || a.ilmStarted {
-		return
-	}
-	a.ilmStarted = true
-	system := []string{}
-	if a.AgentPrompt != "" {
-		system = append(system, a.AgentPrompt)
-	}
-	a.ILM.Emit(ilm.EventSessionStart, ilm.SessionStartPayload{
-		Source:    "live",
-		Workspace: a.SessionWorkspace(),
-		Model:     a.Client.Model,
-		System:    system,
-	})
-}
-
 // SummarizeFn returns the active summarizer for the session: the injected
 // Summarize if non-nil, otherwise the proxy summarizer. Exported so the
 // daemon's SessionStateHandler can call Compact with the correct summarizer
@@ -968,22 +918,9 @@ func (a *App) summarizeFn() summarizer {
 
 // OnStop fires on_stop lifecycle hooks. Called at process exit, before
 // the executor is closed. Safe to call when no hooks are configured (no-op).
-//
-// ilm-stack: emits session_end for the current session here, not in
-// NewConversation. NewConversation is called on the NEW app (with a NEW
-// emitter), so emitting there would attribute the old session's end to the
-// new session's id. OnStop fires on the OLD app during facade.Close() —
-// the correct session id and the correct emitter. Idempotent: guarded by
-// ilmEnded so calling OnStop twice (e.g. facade.Close + CloseResources)
-// does not produce a duplicate session_end.
 func (a *App) OnStop() {
 	if a.Hooks != nil {
 		a.Hooks.RunSessionHooks(context.Background(), hookOnStop)
-	}
-	// ilm-stack: emit session_end for the ending session.
-	if a.ILM != nil && !a.ilmEnded {
-		a.ilmEnded = true
-		a.ILM.Emit(ilm.EventSessionEnd, ilm.SessionEndPayload{})
 	}
 }
 
@@ -1086,8 +1023,6 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.preambleDay = ""
 	// Reset session-started flag so session_start hooks fire for the new session.
 	a.sessionStarted = false
-	a.ilmStarted = false
-	a.ilmEnded = false
 	a.setChatID(chatID)
 	a.Session = &Session{
 		ChatID:       chatID,
@@ -1151,9 +1086,6 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 		a.Hooks.RunSessionHooks(ctx, hookSessionStart)
 	}
 
-	// ilm-stack: emit session_start on the first Send of a session.
-	a.ilmSessionStartOnce()
-
 	a.prepareTurn()
 	a.prepareStyleGuides(userText)
 
@@ -1211,11 +1143,6 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 	}
 	a.stateMu.Unlock()
 	a.appendConv(userMsg)
-
-	// ilm-stack: emit user_turn with the full user text.
-	if a.ILM != nil {
-		a.ILM.Emit(ilm.EventUserTurn, ilm.UserTurnPayload{Text: userText})
-	}
 
 	// Start a checkpoint for this turn. Captures pre-mutation file state as
 	// tools run during the turn, enabling /rewind to undo file changes.
@@ -2779,13 +2706,6 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 	// assembles the briefing. Each is gated through the normal confirm flow
 	// (auto-approved in /auto mode with a visible ⚡ auto note).
 	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask":
-		// ilm-stack: emit mashura_call.
-		if a.ILM != nil {
-			a.ILM.Emit(ilm.EventMashuraCall, ilm.MashuraCallPayload{
-				Tool: name,
-				Args: json.RawMessage(tc.Function.Arguments),
-			})
-		}
 		return stringToToolResult(a.handleMashura(ctx, name, tc))
 	// LSP code-intelligence tools (read-only, no confirmation needed).
 	case "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols":
@@ -2798,44 +2718,31 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleBrowserTool(ctx, tc))
 	// Staging tools (ungated by design — the gate lives at promotion).
 	case "staging_put":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleStagingPut(ctx, tc))
 	case "staging_get":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleStagingGet(ctx, tc))
 	case "staging_delete":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleStagingDelete(ctx, tc))
 	case "staging_list":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleStagingList(ctx, tc))
 	case "staging_get_many":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleStagingGetMany(ctx, tc))
 	// Memory tools (tier-gating at dispatch time via a.IsSubagent).
 	case "memory_put":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleMemoryPut(ctx, tc))
 	case "memory_promote":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleMemoryPromote(ctx, tc))
 	case "memory_reject":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleMemoryReject(ctx, tc))
 	case "memory_get":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleMemoryGet(ctx, tc))
 	case "memory_search":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleMemorySearch(ctx, tc))
 	case "memory_list":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleMemoryList(ctx, tc))
 	case "memory_forget":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleMemoryForget(ctx, tc))
 	case "memory_promote_from_staging":
-		a.ilmEmitMemoryOp(name, tc)
 		return stringToToolResult(a.handleMemoryPromoteFromStaging(ctx, tc))
 		// Skill tools (global store). Read tools ungated; write tools are
 	// main-agent-only (a.IsSubagent checked inside the handler, before Confirm).

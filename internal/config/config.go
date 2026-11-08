@@ -701,12 +701,6 @@ type Config struct {
 	// and exit.
 	BrowserIdleTimeoutSeconds int `json:"browser_idle_timeout_seconds,omitempty"`
 
-	// ilm-stack shadow-mode emitter (v0: shadow only, no write-back).
-	// mode=off (default): zero behaviour change, zero network calls.
-	// mode=shadow: emit events to the ilm-stack endpoint via a local durable
-	// queue + background sender. Never on the critical path.
-	ILMStack ILMStackConfig `json:"ilm_stack,omitempty"`
-
 	// Runtime-only flags (never read from / written to the JSON config file).
 	Resume       bool   `json:"-"` // resume the most recent session
 	ResumeID     string `json:"-"` // resume a session by chat_id or unique prefix
@@ -737,19 +731,6 @@ type Config struct {
 	// Applied to the main model's session ReasoningEffort at startup. Empty = no
 	// override (use config file / repo-state / /thinking session value).
 	ThinkEffort string `json:"-"`
-}
-
-// ILMStackConfig configures the ilm-stack shadow-mode emitter.
-// mode=off (default): zero behaviour change, zero network calls.
-// mode=shadow: emit events to the ilm-stack endpoint.
-type ILMStackConfig struct {
-	Endpoint       string `json:"endpoint"`
-	Token          string `json:"token"`
-	Mode           string `json:"mode"` // "off" (default) | "shadow" | "assist"
-	QueuePath      string `json:"queue_path"`
-	BatchMS        int    `json:"batch_ms"`         // default 500
-	MaxOutputBytes int    `json:"max_output_bytes"` // default 65536
-	AssistAuto     bool   `json:"assist_auto"`      // assist mode: auto-execute proposals without y/n prompt (default false)
 }
 
 // CostsConfig is the [costs] pricing block consumed by the CostTracker. Rates
@@ -1512,15 +1493,6 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.ContextMode, "WAKIL_CONTEXT_MODE")
 	envStr(&cfg.PromptMode, "WAKIL_PROMPT_MODE")
 
-	// ilm-stack emitter env vars.
-	envStr(&cfg.ILMStack.Endpoint, "ILM_STACK_URL")
-	envStr(&cfg.ILMStack.Token, "ILM_STACK_TOKEN")
-	envStr(&cfg.ILMStack.Mode, "ILM_MODE")
-	envStr(&cfg.ILMStack.QueuePath, "ILM_QUEUE_PATH")
-	envInt(&cfg.ILMStack.BatchMS, "ILM_BATCH_SIZE")
-	envInt(&cfg.ILMStack.MaxOutputBytes, "ILM_OUTPUT_LIMIT")
-	envBool(&cfg.ILMStack.AssistAuto, "ILM_ASSIST_AUTO")
-
 	// 3) flags (highest precedence)
 	fs := flag.NewFlagSet("wakil", flag.ContinueOnError)
 	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "ilm proxy base URL (overrides host/port)")
@@ -2244,12 +2216,6 @@ func validateReasoningSpec(label string, spec ReasoningSpec) error {
 // validateEnums checks that string-enum config fields have valid values.
 // Unknown values are startup errors, not silent degradation.
 func validateEnums(cfg Config) error {
-	// ilm-stack mode validation.
-	switch cfg.ILMStack.Mode {
-	case "", "off", "shadow", "assist":
-	default:
-		return fmt.Errorf("ilm_stack.mode must be one of: off, shadow, assist (got %q)", cfg.ILMStack.Mode)
-	}
 	switch cfg.AutoCounsel {
 	case "", "suggest", "auto", "off":
 	default:

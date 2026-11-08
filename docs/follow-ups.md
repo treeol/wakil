@@ -61,16 +61,6 @@ proposal and what remains.
 - Remote `SaveSession` is a no-op in `internal/remote/facade.go` — needs a
   focused follow-up before remote/daemon scope.
 
-## ILM emitter
-
-- `wakil-emitter.md` (the served-contract reference) has no substantive
-  **assist-mode section**: the shadow-mode guarantee ("no proposal reaches
-  Wakil") does not hold in assist mode, where the AssistClient reads
-  proposals (`internal/ilm/assist.go`). When updating the contract, remember
-  the **served artifact** (GET /v1/contract, sha-pinned) must be regenerated
-  in lockstep — updating the repo copy alone does not change what the
-  endpoint serves.
-
 ## Truncation audit
 
 - **Mashūra review token accounting** (A.8, truncation-damage audit): the

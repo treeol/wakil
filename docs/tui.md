@@ -45,7 +45,6 @@ opens a picker to attach a file or folder for context.
 /mode long-session   set long-session mode (default): finished requests collapse to question + answer + note (alias: /mode long; status line shows "long")
 /mode status         show context mode, collapsed/kept counts, sent vs full sizes, archive dir
 /prompt [full|core|status]  show/set prompt mode: full (default) or core (lean preamble, extension lazy-loaded; status line shows "core")
-/assist              toggle assist mode (requires ilm_stack.mode="assist"); /assist auto toggles auto-execution
 /keep <n>            exempt request n from collapse; /keep off <n> removes the exemption
 /grants              list session-scoped tool grants; /grants clear removes them
 /mcp                 list connected MCP servers and their tools

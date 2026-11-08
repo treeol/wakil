@@ -443,35 +443,6 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		return true, false, note(fmt.Sprintf("raw tool results: OFF — results capped at %d chars", cap))
 
-	case "/assist":
-		// /assist — toggle assist mode on/off (per-session).
-		// /assist auto — toggle auto-execution of proposals on/off.
-		// Requires ilm_stack.mode="assist" in config; otherwise it's a no-op.
-		if app.Assist == nil {
-			return true, false, note("assist: not configured (ilm_stack.mode must be \"assist\")")
-		}
-		if len(fields) > 1 {
-			if fields[1] != "auto" {
-				return true, false, note("usage: /assist | /assist auto")
-			}
-			app.stateMu.Lock()
-			app.AssistAuto = !app.AssistAuto
-			auto := app.AssistAuto
-			app.stateMu.Unlock()
-			if auto {
-				return true, false, note("assist auto: ON — proposals executed without prompting")
-			}
-			return true, false, note("assist auto: OFF — proposals require y/n confirmation")
-		}
-		app.stateMu.Lock()
-		app.AssistEnabled = !app.AssistEnabled
-		enabled := app.AssistEnabled
-		app.stateMu.Unlock()
-		if enabled {
-			return true, false, note("assist: ON — querying /v1/assist before tool decisions")
-		}
-		return true, false, note("assist: OFF — main model only")
-
 	case "/compact":
 		// Long-session gate (plan 2.1a): a forced /compact in long mode
 		// MATERIALIZES all collapsed turns back into Conv and destroys the
@@ -1618,7 +1589,6 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /mashura timeout <seconds> set timeout for mashura calls
 /thinking [effort] [max_tokens]  show/set reasoning (off|max|xhigh|high|medium|low|minimal|none)
 /think                alias for /thinking
-/assist              toggle assist mode (ilm_stack.mode="assist"); /assist auto toggles auto-execution
 /auto                toggle: auto-approve tool calls without prompting (shown as AUTO in status)
                      still confirmed: destructive shell commands, external-backend egress
                      in /plan: a successful review auto-approves the plan and starts implementation

@@ -278,8 +278,6 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 	app.StateRLock()
 	selectedBackend := app.SelectedBackend
 	rawTools := app.RawTools
-	assistEnabled := app.AssistEnabled
-	assistAuto := app.AssistAuto
 	infoPanelOpen := app.InfoPanelOpen
 	wf := app.Workflow
 	// Copy config fields needed by mashuraPanelLabelFromFields under the lock to
@@ -328,8 +326,6 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 		RawTools:        rawTools,
 		ContextMode:     contextMode,
 		PromptMode:      promptMode,
-		AssistEnabled:   assistEnabled,
-		AssistAuto:      assistAuto,
 	}
 
 	if workflowLabel != "" {
@@ -1097,16 +1093,6 @@ func (f *wiringFacade) Close() error {
 	endSave := timeline.Begin("save session + history flush")
 	f.app.SaveSession()
 	endSave()
-
-	// ilm-stack: close the emitter. OnStop (called above) already emitted
-	// session_end; Close flushes the pending event through the channel and
-	// sender before stopping the goroutine, so session_end reaches the
-	// stack even during a rotation. Without this, the sender goroutine leaks.
-	endILM := timeline.Begin("close ilm emitter")
-	if f.app.ILM != nil {
-		_ = f.app.ILM.Close()
-	}
-	endILM()
 
 	// Release the App ownership claim. CloseSession above cancelled the
 	// in-flight turn (if any), but the turn goroutine clears turnActive only
