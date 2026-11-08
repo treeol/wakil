@@ -33,9 +33,11 @@ type startupNoteMsg struct {
 
 // deferredStartupDoneMsg is sent after RunDeferredStartup (the post-prompt
 // provider probes and hisn reconcile) finishes, so the model repaints with the
-// freshly-resolved model/backend/context info. It carries no data — the TUI
-// reads through Info() on demand.
-type deferredStartupDoneMsg struct{}
+// freshly-resolved model/backend/context info. note carries any startup note
+// the deferred work composed (empty for none).
+type deferredStartupDoneMsg struct {
+	note string
+}
 
 // applyCommandResult interprets a CommandResult on the event loop: notices,
 // submits, rotations, the resume picker, clipboard requests, compaction

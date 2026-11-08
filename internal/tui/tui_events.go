@@ -46,9 +46,14 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		return m.applyRotation(lm, cmds)
 	case deferredStartupDoneMsg:
 		// The post-prompt provider probes / hisn reconcile finished. Force a
-		// repaint so the status line shows the resolved model/context info.
-		// No state to copy — the TUI reads Info() on demand.
+		// repaint so the status line shows the resolved model/context info, and
+		// render any startup note the deferred work composed (it could not go
+		// through ConsumeStartupNote — the TUI consumed that at Init, before
+		// this work ran).
 		m.deferredPending = false
+		if lm.note != "" {
+			m.addItem(iSys, dim2(lm.note))
+		}
 		m = m.reflow()
 
 	case startupNoteMsg:

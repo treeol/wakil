@@ -61,11 +61,12 @@ type AppResources struct {
 
 	// DeferredStartup runs the startup work that BuildApp kept OFF the start
 	// path: the three provider probes (model list, backend list, context
-	// limit), the hisn orphan reconcile, and the spring startup-note scans.
-	// Headless callers invoke it immediately (no prompt to return to); the TUI
-	// invokes it once after the first prompt, in the background. nil when
-	// there is nothing to defer.
-	DeferredStartup func(ctx context.Context)
+	// limit), the hisn orphan reconcile, and the staging/memory startup-note
+	// scans. It returns a note to show the user (e.g. "memory: N proposals
+	// pending") — empty for none. Headless callers invoke it immediately (no
+	// prompt to return to); the TUI invokes it once after the first prompt, in
+	// the background. nil when there is nothing to defer.
+	DeferredStartup func(ctx context.Context) (note string)
 }
 
 // BuildApp constructs a *agent.App from config, executor, and entry-point
@@ -443,15 +444,18 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 
 	// Deferred startup: everything BuildApp kept off the start path. Order:
 	// probes first (they populate the model/backend/context info the TUI
-	// shows), then the deferred hisn orphan reconcile. The closure captures
+	// shows), then the deferred hisn orphan reconcile. The startup-note scans
+	// (AppResources closure set in BootstrapTUI) chain on top of this one. It
+	// returns a note for the user (empty for none); the closure captures
 	// app/exe/cfg.
-	res.DeferredStartup = func(ctx context.Context) {
+	res.DeferredStartup = func(ctx context.Context) (note string) {
 		runProbes(ctx)
 		if be, ok := exe.(interface {
 			RunDeferredReconcile(context.Context)
 		}); ok {
 			be.RunDeferredReconcile(ctx)
 		}
+		return ""
 	}
 
 	return app, &res, nil

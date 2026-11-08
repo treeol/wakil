@@ -143,10 +143,6 @@ func (a *App) SetBackendList(backends []BackendInfo) {
 // probes capture it before probing and re-check it before publishing results.
 func (a *App) EndpointGen() uint64 { return a.endpointGen.Load() }
 
-// BumpEndpointGen increments the endpoint generation. Called on any endpoint or
-// model switch so an in-flight startup probe does not overwrite newer info.
-func (a *App) BumpEndpointGen() { a.endpointGen.Add(1) }
-
 // SetTools replaces the tool list (e.g. after an MCP reconnect rebuilds it).
 // Acquires stateMu so concurrent readers (Snapshot) are synchronized.
 func (a *App) SetTools(tools []proxy.Tool) {

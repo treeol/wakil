@@ -783,9 +783,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Idempotent per facade. Guard against a nil facade (tests construct
 		// the model without one).
 		if m.facade != nil {
-			if m.facade.RunDeferredStartup(func() {
+			if m.facade.RunDeferredStartup(func(note string) {
 				if programSend != nil {
-					programSend(deferredStartupDoneMsg{})
+					programSend(deferredStartupDoneMsg{note: note})
 				}
 			}) {
 				m.deferredPending = true

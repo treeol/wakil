@@ -97,7 +97,12 @@ for repo in "$@"; do
   # `approved/` subdirectory only; the state dir itself stays private so hisn's
   # runtime writes never touch the real tree.
   link_approved_readonly "$REAL_XDG_DATA/wakil/hisn" "$ws/data/wakil/hisn"
-  if [ -n "${ROOTFS:-}" ] && [ -d "$REAL_HOME/.local/share/hisn" ]; then
+  # ROOTFS links hisn's own rootfs store so a named rootfs resolves. Unlike the
+  # trust store, this is hisn's tool store and hisn may write into it (e.g. a
+  # rootfs pull). It is linked only when ROOTFS is set (opt-in) and it is a
+  # symlink, so it is NOT read-only — do not point this at a store you cannot
+  # afford to mutate. Set NOLINK_ROOTFS=1 to skip it.
+  if [ -n "${ROOTFS:-}" ] && [ -z "${NOLINK_ROOTFS:-}" ] && [ -d "$REAL_HOME/.local/share/hisn" ]; then
     ln -s "$REAL_HOME/.local/share/hisn" "$ws/data/hisn"
   fi
   cat > "$ws/cfg/wakil.json" <<JSON

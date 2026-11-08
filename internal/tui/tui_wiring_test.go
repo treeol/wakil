@@ -39,9 +39,9 @@ type fakeFacade struct {
 func (f *fakeFacade) Snapshot() sessionclient.ClientSnapshot { return f.snap }
 func (f *fakeFacade) Info() sessionclient.InfoSnapshot       { return f.info }
 func (f *fakeFacade) Consent() sessionclient.Consent         { return f.consent }
-func (f *fakeFacade) RunDeferredStartup(done func()) bool {
+func (f *fakeFacade) RunDeferredStartup(done func(note string)) bool {
 	if done != nil {
-		done()
+		done("")
 	}
 	return true
 }

@@ -72,15 +72,10 @@ const closeDrainTimeout = 5 * time.Second
 
 // drainAndClose waits for in-flight CallTool calls to release sessionMu, then
 // closes the session WHILE still holding the write lock, so no new CallTool can
-// start on a session being closed. It reports whether the close happened; false
-// means the drain timed out and the session was LEFT OPEN (the caller must not
-// force-close it — that would race a live RPC; the manager has already marked
-// the server "closed" so no new call can reach it).
-//
-// On timeout the drain goroutine is left blocked on Lock() until the live
-// calls finish; it then releases the lock and exits without closing. That is a
-// bounded-cost wart (one goroutine per abandoned session), not a leak on the
-// normal path.
+// start on a session being closed. It reports whether the close happened
+// synchronously; false means the drain timed out and the close was handed to a
+// background goroutine that closes the session once the in-flight calls release
+// the lock (so a wedged RPC cannot block teardown, but the child is not leaked).
 func (s *MCPServer) drainAndClose(session mcpSession, timeout time.Duration) bool {
 	acquired := make(chan struct{})
 	go func() {
@@ -96,6 +91,17 @@ func (s *MCPServer) drainAndClose(session mcpSession, timeout time.Duration) boo
 		s.sessionMu.Unlock()
 		return true
 	case <-time.After(timeout):
+		// The drain timed out. Rather than abandon the session (and leak its
+		// stdio child permanently), close it in the BACKGROUND once the
+		// in-flight calls release the lock: at that point no RPC is live and
+		// the status is already "closed", so Close is safe. The original probe
+		// goroutine only locks/unlocks to detect the drain (it never closes),
+		// so there is no double-close.
+		go func() {
+			s.sessionMu.Lock()
+			_ = session.Close()
+			s.sessionMu.Unlock()
+		}()
 		return false
 	}
 }
@@ -122,31 +128,54 @@ func (s *MCPServer) currentReady() chan struct{} {
 	return s.readyCh
 }
 
-// signalReady closes the current readiness channel exactly once (idempotent:
-// closing an already-closed channel is not attempted because readyMu guards a
-// fresh-channel install; a second signal on the same channel is a no-op).
+// replaceReady installs a fresh readiness channel for a new connect attempt and
+// returns it, closing any prior channel (releasing waiters on the superseded
+// attempt so they re-check and wait on the new one).
+func (s *MCPServer) replaceReady() chan struct{} {
+	ch := make(chan struct{})
+	s.readyMu.Lock()
+	old := s.readyCh
+	s.readyCh = ch
+	s.readyMu.Unlock()
+	if old != nil {
+		safeCloseChan(old)
+	}
+	return ch
+}
+
+// finishReady closes the channel belonging to one connect attempt. If it is
+// still the current channel it is cleared first, so a later CallTool sees nil
+// (not connecting) rather than a closed channel. Closing the attempt's OWN
+// channel (not "whatever is current") means a superseded attempt still releases
+// its waiters.
+func (s *MCPServer) finishReady(ch chan struct{}) {
+	s.readyMu.Lock()
+	if s.readyCh == ch {
+		s.readyCh = nil
+	}
+	s.readyMu.Unlock()
+	safeCloseChan(ch)
+}
+
+// signalReady closes the CURRENT channel and clears it (close/shutdown path).
 func (s *MCPServer) signalReady() {
 	s.readyMu.Lock()
 	ch := s.readyCh
 	s.readyCh = nil
 	s.readyMu.Unlock()
 	if ch != nil {
-		select {
-		case <-ch:
-			// already closed
-		default:
-			close(ch)
-		}
+		safeCloseChan(ch)
 	}
 }
 
-// replaceReady installs a fresh channel (start of a connect) and returns it.
-func (s *MCPServer) replaceReady() chan struct{} {
-	ch := make(chan struct{})
-	s.readyMu.Lock()
-	s.readyCh = ch
-	s.readyMu.Unlock()
-	return ch
+// safeCloseChan closes ch unless it is already closed (idempotent).
+func safeCloseChan(ch chan struct{}) {
+	select {
+	case <-ch:
+		// already closed
+	default:
+		close(ch)
+	}
 }
 
 // connectOrDefault returns m.connectFn, defaulting to m.connect when unset.
@@ -176,7 +205,7 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 	m.connectFn = m.connect
 	for _, cfg := range cfgs {
 		srv := &MCPServer{Cfg: cfg, Status: "connecting"}
-		srv.replaceReady()
+		ch := srv.replaceReady()
 		m.servers = append(m.servers, srv)
 		safe.Go("mcp-connect", func() {
 			// Serialize with Reconnect (same per-server lock): the initial
@@ -193,7 +222,7 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 			err := m.connectOrDefault()(ctx, tmp)
 			m.mu.Lock()
 			defer m.mu.Unlock()
-			defer srv.signalReady()
+			defer srv.finishReady(ch)
 			if srv.Status == "closed" {
 				// Close, or a Reconnect that already published, took over:
 				// discard this session.
@@ -202,10 +231,9 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 				}
 				return
 			}
-			// A Reconnect may have published while this initial connect was
-			// running (it held reconnectMu, so not in this branch, but belt
-			// and suspenders): don't overwrite a non-connecting status.
-			if srv.Status != "connecting" {
+			// A Reconnect superseded this attempt (new channel installed):
+			// don't overwrite its status or leave a stale session.
+			if srv.currentReady() != ch {
 				if tmp.Session != nil {
 					_ = tmp.Session.Close()
 				}
@@ -563,15 +591,16 @@ func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
 		return fmt.Errorf("MCP server %q is closed", name)
 	}
 	oldSession := srv.Session
+	// Install the fresh readiness channel BEFORE making "connecting" visible,
+	// so a CallTool that observes "connecting" always finds a channel to wait
+	// on (no window where status is connecting but readyCh is nil).
+	ch := srv.replaceReady()
 	srv.Status = "connecting"
 	srv.Err = nil
 	srv.Tools = nil
 	srv.Session = nil
 	m.mu.Unlock()
-	// Fresh readiness channel: a CallTool arriving during this reconnect waits
-	// for THIS attempt, not the already-closed initial channel.
-	srv.replaceReady()
-	defer srv.signalReady()
+	defer srv.finishReady(ch)
 
 	// Phase 3: drain in-flight calls and close old session — outside m.mu.
 	// sessionMu.Lock blocks until all CallTool RLock holders release, then
@@ -802,21 +831,21 @@ func collapseContextToolDef() proxy.Tool {
 // MCP tools in their original slot (so the built-in / search / oracle / LSP /
 // browser cache prefix is unchanged). When no MCP tools were present at
 // construction (every server was still connecting), the live set is appended
-// where the MCP group would have been — but we cannot know that slot, so it is
-// appended at the end; MCP tools are the only group whose membership changes
-// mid-session, so this is the least-disruptive placement.
+// at the end.
 //
-// MCP tools are identified by the mcpNS namespace ("server__tool") in their
-// name — the same discriminator CallTool uses. Built-in tools never contain "__".
+// MCP membership is matched by the REAL server-name prefix ("<server>__tool"),
+// NOT by the __ separator alone: built-in tools such as mashura__review and
+// oracle__ask also contain "__" and must never be mistaken for MCP.
 func (a *App) toolsForTurn() []proxy.Tool {
-	if a.MCP == nil || len(a.MCP.Servers()) == 0 {
+	if a.MCP == nil || len(a.MCP.ServerNames()) == 0 {
 		return a.Tools
 	}
+	servers := a.MCP.ServerNames()
 	live := a.MCP.OpenAITools()
 	// Find the construction-time MCP slot (first MCP tool).
 	firstMCP := -1
 	for i, t := range a.Tools {
-		if strings.Contains(t.Function.Name, mcpNS) {
+		if isMCPToolName(t.Function.Name, servers) {
 			firstMCP = i
 			break
 		}
@@ -833,7 +862,7 @@ func (a *App) toolsForTurn() []proxy.Tool {
 	out = append(out, a.Tools[:firstMCP]...)
 	out = append(out, live...)
 	for _, t := range a.Tools[firstMCP:] {
-		if strings.Contains(t.Function.Name, mcpNS) {
+		if isMCPToolName(t.Function.Name, servers) {
 			continue // drop the stale MCP block
 		}
 		out = append(out, t)
@@ -841,7 +870,32 @@ func (a *App) toolsForTurn() []proxy.Tool {
 	return out
 }
 
-// BuildTools assembles the full tool list in stable groups:// built-ins → searxng → google → MCP → oracle → LSP → browser.
+// ServerNames returns the configured MCP server names. Used to identify MCP
+// tools by their real "{server}__{tool}" prefix — a tool named "mashura__review"
+// is a BUILT-IN that shares the __ separator and must not be mistaken for MCP.
+func (m *MCPManager) ServerNames() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, 0, len(m.servers))
+	for _, s := range m.servers {
+		out = append(out, s.Cfg.Name)
+	}
+	return out
+}
+
+// isMCPToolName reports whether name belongs to one of the given MCP servers,
+// i.e. starts with "<server><mcpNS>".
+func isMCPToolName(name string, servers []string) bool {
+	for _, s := range servers {
+		if strings.HasPrefix(name, s+mcpNS) {
+			return true
+		}
+	}
+	return false
+}
+
+// BuildTools assembles the full tool list in stable groups: built-ins → searxng
+// → google → MCP → oracle → LSP → browser.
 // Within each group, tools are sorted by name for prompt-cache stability
 // : tool schemas are part of the cache prefix, so non-deterministic
 // ordering within a group (e.g., MCP servers returning tools in a different

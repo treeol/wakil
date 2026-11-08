@@ -266,7 +266,11 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	// context limit, model list and backend list. For the TUI the same work
 	// runs after the first prompt (facade.RunDeferredStartup).
 	if res.DeferredStartup != nil {
-		res.DeferredStartup(context.Background())
+		// Headless: no prompt to return to, so run it now. Its note (staging /
+		// memory proposals) goes to stderr — headless has no note surface.
+		if note := res.DeferredStartup(context.Background()); note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
 	}
 
 	if opts.Verify {

@@ -129,9 +129,9 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		// deferredStartupDoneMsg repaint.
 		if opts.ComposeStartupNotes {
 			prev := wf.resources.DeferredStartup
-			wf.resources.DeferredStartup = func(dctx context.Context) {
+			wf.resources.DeferredStartup = func(dctx context.Context) (note string) {
 				if prev != nil {
-					prev(dctx)
+					note = prev(dctx)
 				}
 				endNotes := timeline.Begin("startup notes (staging + memory scans, may start the sandbox)")
 				var stagingNote, memNote string
@@ -161,8 +161,10 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 				}
 				noteWG.Wait()
 				endNotes()
-				appendStartupNote(app, stagingNote)
-				appendStartupNote(app, memNote)
+				// Compose onto the returned note rather than mutating
+				// app.StartupNote: the TUI consumed that at Init (before this
+				// deferred work ran), so a late append would never surface.
+				return joinNotes(note, stagingNote, memNote)
 			}
 		}
 	}

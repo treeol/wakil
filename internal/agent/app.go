@@ -1362,7 +1362,9 @@ func (a *App) WarnContextPressure() {
 	usable := lim.Usable()
 	used := a.ContextTokensUsed()
 	if usable <= 0 || used < usable {
+		a.stateMu.Lock()
 		a.CtxPressureWarned = false
+		a.stateMu.Unlock()
 		return
 	}
 	// Only warn on a measured occupancy, not the ~4-chars/token fallback estimate.
@@ -1372,10 +1374,15 @@ func (a *App) WarnContextPressure() {
 	if a.Client == nil || !a.Client.LastUsage().Exact || a.Client.LastUsage().InputTok == 0 {
 		return
 	}
+	// CtxPressureWarned is guarded by stateMu (SetCtxLimit, a background writer
+	// since the deferred probes, also touches it).
+	a.stateMu.Lock()
 	if a.CtxPressureWarned {
+		a.stateMu.Unlock()
 		return
 	}
 	a.CtxPressureWarned = true
+	a.stateMu.Unlock()
 	fmt.Fprintln(a.Out, Yellow(fmt.Sprintf(
 		"⚠ context pressure: ~%dk of %dk usable tokens in use (n_ctx %dk) — consider /compact or a fresh chat",
 		used/1000, usable/1000, lim.NCtx/1000)))
@@ -1491,7 +1498,11 @@ func (a *App) RecordInferenceCost() {
 	}
 
 	usedBackend := a.Client.LastUsedBackend()
-	isExternal := usedBackend != "" && IsExternalBackend(a.BackendList, a.Cfg, usedBackend)
+	// BackendList is replaced under stateMu by the deferred startup probes; read
+	// it under the lock. This function runs on the turn goroutine (and the RPC
+	// path), so the unlocked read races the probe goroutine.
+	backendList := a.BackendListLocked()
+	isExternal := usedBackend != "" && IsExternalBackend(backendList, a.Cfg, usedBackend)
 
 	// Direct OpenRouter endpoints (kind=openai, base_url on openrouter.ai) have
 	// no proxy X-Ilm-Backend-Used header, so usedBackend is empty and the call

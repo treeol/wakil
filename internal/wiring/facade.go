@@ -507,23 +507,23 @@ func (f *wiringFacade) ConsumeStartupNote() string {
 // start (via the startup-note scans). The TUI calls it once after the first
 // prompt; it runs in a goroutine so the prompt is never blocked. Returns true
 // if THIS call started the work (false on a later call, already done). done
-// (optional) fires on the goroutine once the work finishes, so the caller can
-// repaint with the freshly-resolved model/backend/context info.
-func (f *wiringFacade) RunDeferredStartup(done func()) bool {
+// (optional) fires on the goroutine once the work finishes, with any note to
+// show the user, so the caller can repaint.
+func (f *wiringFacade) RunDeferredStartup(done func(note string)) bool {
 	started := false
 	f.deferredOnce.Do(func() {
 		started = true
 		if f.resources == nil || f.resources.DeferredStartup == nil {
 			if done != nil {
-				done()
+				done("")
 			}
 			return
 		}
 		fn := f.resources.DeferredStartup
 		go func() {
-			fn(context.Background())
+			note := fn(context.Background())
 			if done != nil {
-				done()
+				done(note)
 			}
 		}()
 	})
@@ -909,20 +909,20 @@ func (f *wiringFacade) interpretAgentMsg(msg any, quit bool) sessionclient.Comma
 		// its MCPReconnectedMsg handler). No event carries it — the TUI
 		// re-reads Snapshot() after every DispatchCommand and would otherwise
 		// see stale Tools.
-		f.bumpVersion()
 		f.app.SetTools(m.Tools)
+		f.bumpVersion()
 		cr.Notice = "mcp reconnected: " + m.Name
 	case agent.BackendCtxLimitMsg:
 		// D24 query-state: applied facade-side, no event. The TUI re-reads
 		// Snapshot() after the command completes.
-		f.bumpVersion()
 		f.app.SetCtxLimit(m.Limit)
+		f.bumpVersion()
 		if m.Note != "" {
 			cr.Notice = m.Note
 		}
 	case agent.ModelListUpdatedMsg:
-		f.bumpVersion()
 		f.app.SetModelList(m.Models)
+		f.bumpVersion()
 	default:
 		// Clipboard sentinel VALUE: agent.ClipboardImageRequest is a var of an
 		// unexported struct type, so a type switch cannot case on it — match

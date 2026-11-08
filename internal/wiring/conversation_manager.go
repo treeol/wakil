@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -176,6 +177,17 @@ func transferDestructive(oldConsent agent.ConsentSnapshot, newApp *agent.App) {
 	if oldConsent.AutoApprove && oldConsent.AllowDestructive && newConsent.AutoApprove {
 		newApp.SetAllowDestructive(true)
 	}
+}
+
+// joinNotes joins non-empty notes with " | " (appendStartupNote's separator).
+func joinNotes(notes ...string) string {
+	var parts []string
+	for _, n := range notes {
+		if n != "" {
+			parts = append(parts, n)
+		}
+	}
+	return strings.Join(parts, " | ")
 }
 
 // appendStartupNote composes note into app.StartupNote: sets it if empty,

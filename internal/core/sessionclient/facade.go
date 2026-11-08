@@ -434,9 +434,9 @@ type Facade interface {
 	// orphan reconcile, and the sandbox session start + startup-note scans.
 	// The TUI calls it once, after the first prompt is shown, in the
 	// background. It returns true only on the call that started the work (a
-	// later call is a no-op); done fires when the work finishes (the caller
-	// repaints).
-	RunDeferredStartup(done func()) bool
+	// later call is a no-op); done fires when the work finishes, with any note
+	// to show the user (the caller repaints).
+	RunDeferredStartup(done func(note string)) bool
 
 	SetCtxLimit(lim ContextLimit)
 	SetModelList(models []string)
