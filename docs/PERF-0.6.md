@@ -1,8 +1,8 @@
 # Performance of start, /new, /resume and exit — 0.6.0
 
-Status: **baseline, measured in the build sandbox, not on rubin.** Nothing here
-has been optimised yet (Phase B2 waits for the rubin numbers). The targets of
-Phase B stand unchanged:
+Status: **sandbox numbers, not rubin.** The "Baseline" section is B1 (measured
+before any optimisation, for reference); the "After B2" section is the same
+harness on the same host after B2. The rubin re-run is still owed.
 
 | transition | target | where it is measured |
 |---|---:|---|
@@ -74,12 +74,12 @@ the background once the prompt is up. Same host and harness as the baseline.
 
 | transition | before (warm median) | after (warm median) | target |
 |---|---:|---:|---:|
-| start | 669 ms | **57 ms** | < 200 ms |
-| /new | 109 ms | 108 ms | < 150 ms |
-| /resume | 87 ms | 60 ms | < 300 ms |
+| start | 669 ms | **51–58 ms** | < 200 ms |
+| /new | 109 ms | 107 ms | < 150 ms |
+| /resume | 87 ms | 48–63 ms | < 300 ms |
 | exit | 12 ms | 12 ms | < 300 ms |
 
-**start now meets its target** (57 ms, ~12x faster). The rubin baseline put
+**start now meets its target** (about 12x faster). The rubin baseline put
 2990 ms on start (923 ms of it the MCP + probe + reconcile block); the same
 deferrals apply there. On rubin the largest start cost was the MCP connect
 block (1226 ms) and the provider probes (735 ms); both are now off the prompt
