@@ -220,3 +220,80 @@ jobs:
             exit 0
           fi
           go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/
+
+  # Quick installer (install.sh): shellcheck, then a real install of a published
+  # release in a clean container per distro. The quickstart config does not exist
+  # in v0.6.0, which is fine: the job passes --no-config. hisn check is allowed to
+  # fail here (containers lack user namespaces); what is asserted is that the
+  # right hisn variant was picked and that the installed binaries run.
+  installer:
+    name: installer (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:22.04
+            prep: apt-get update -qq && apt-get install -y -qq curl ca-certificates tar >/dev/null
+            hisn: hisn-x86_64-linux-gnu
+          - image: debian:12
+            prep: apt-get update -qq && apt-get install -y -qq curl ca-certificates tar >/dev/null
+            hisn: hisn-x86_64-linux-gnu
+          - image: fedora:latest
+            prep: dnf install -y -q curl tar gawk >/dev/null
+            hisn: hisn-x86_64-linux-gnu
+          - image: alpine:latest
+            prep: apk add --no-cache curl tar >/dev/null
+            hisn: hisn-x86_64-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: shellcheck install.sh
+        run: shellcheck -s sh install.sh
+
+      - name: install v0.6.0 in ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          PREP: ${{ matrix.prep }}
+          WANT_HISN: ${{ matrix.hisn }}
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/bin"
+          docker run --rm -e PREFIX="$prefix" -e WANT_HISN -e PREP \
+            -v "$PWD/install.sh:/install.sh:ro" -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            "$IMAGE" sh -eu -c '
+              sh -c "$PREP"
+              out=$(sh /install.sh --version v0.6.0 --no-config --prefix "$PREFIX" 2>&1) || { echo "$out"; exit 1; }
+              echo "$out"
+              # The right hisn variant was chosen for this libc.
+              printf "%s\n" "$out" | grep -qF "hisn: $WANT_HISN" || { echo "::error::expected hisn variant $WANT_HISN"; exit 1; }
+              # The binaries run. hisn check may fail in a container, hisn --version may not.
+              "$PREFIX/wakil" version | grep -qF "wakil v0.6.0" || { echo "::error::wakil version"; exit 1; }
+              "$PREFIX/hisn" --version | grep -qF "hisn 0.4.1" || { echo "::error::hisn --version"; exit 1; }
+              # Root in the container, so kvr-server goes to /usr/local/bin.
+              test -x /usr/local/bin/kvr-server || { echo "::error::kvr-server not installed"; exit 1; }
+              # Uninstall removes what was installed, nothing else.
+              sh /install.sh --uninstall --prefix "$PREFIX"
+              test ! -e "$PREFIX/wakil" && test ! -e "$PREFIX/hisn" && test ! -e /usr/local/bin/kvr-server
+            '
+
+      - name: tampered download aborts before installing
+        env:
+          IMAGE: ${{ matrix.image }}
+          PREP: ${{ matrix.prep }}
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/bin-tamper"
+          docker run --rm -e PREFIX="$prefix" -e PREP \
+            -v "$PWD/install.sh:/install.sh:ro" -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            "$IMAGE" sh -eu -c '
+              sh -c "$PREP"
+              if WAKIL_INSTALL_TEST_CORRUPT=1 sh /install.sh --version v0.6.0 --no-config --prefix "$PREFIX"; then
+                echo "::error::install succeeded with a corrupted download"; exit 1
+              fi
+              test -z "$(ls -A "$PREFIX" 2>/dev/null)" || { echo "::error::files were installed despite the mismatch"; exit 1; }
+              test ! -e /usr/local/bin/kvr-server
+            '
