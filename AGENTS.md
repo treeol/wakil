@@ -38,6 +38,7 @@ Beyond build/test/lint, CI enforces:
 - **docker build** — `Dockerfile` build gate
 - **goreleaser snapshot** — `goreleaser build --snapshot --clean` (no publish/sign)
 - **sandbox image multi-arch** — buildx linux/amd64+arm64 of `Dockerfile`, `push: false`
+- **installer** — shellcheck of `install.sh`, then `sh install.sh --version v0.6.0 --no-config` in ubuntu:22.04, debian:12, fedora:latest, alpine:latest (hisn variant, `wakil version`, uninstall, tampered-download abort). `HISN_VERSION` in `install.sh` must equal `MinVersion` in `internal/sandbox/hisn/backend.go` (`go test ./internal/sandbox/hisn/`)
 
 ## Architecture
 
@@ -81,6 +82,7 @@ Core packages (`internal/`):
 - Release (`.github/workflows/release.yml`, `.goreleaser.yaml`) — tag `v*` only: sandbox image → ghcr.io (digest) → goreleaser (digest injected via `SANDBOX_IMAGE`) → package smoke test. Local dry run: `goreleaser release --snapshot --clean --skip=sign,publish`
 - Dependabot (gomod + github-actions, weekly)
 - `scripts/` — `check_coverage.sh`, `check_config_docs.sh`, `check_go_version_pins.sh`
+- `install.sh`, `config.quickstart.json` — quick installer and its OpenRouter starter config; attached to releases via goreleaser `extra_files` (`install.sh` is POSIX sh, `shellcheck -s sh install.sh` must be clean; test-only env `WAKIL_INSTALL_TEST_CORRUPT=1` corrupts downloads to prove checksum aborts)
 - `docs/` — project documentation
 
 ## Conventions

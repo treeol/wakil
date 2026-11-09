@@ -39,6 +39,30 @@ flowchart LR
 - **Memory and skills:** `internal/memory` is the durable store (memory entries and the skill store); `internal/staging` is the ephemeral key-value store.
 - **LLM providers:** `internal/proxy` is the model client; `internal/orregistry` supplies model metadata.
 
+## Quick install
+
+For the impatient (Linux and macOS, amd64 and arm64). Download the script, read it if you like, then run it:
+
+```sh
+curl -fsSL https://github.com/treeol/wakil/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
+
+The shorter piped form does the same, but you run the script without reading it first:
+
+```sh
+curl -fsSL https://github.com/treeol/wakil/releases/latest/download/install.sh | sh
+```
+
+What `install.sh` does:
+
+- Installs the latest Wakil release (or `--version vX.Y.Z`) into `~/.local/bin` (or `--prefix DIR` / `$WAKIL_INSTALL_DIR`) and warns if that directory is not on your `PATH`. It never edits your shell rc files.
+- Verifies every download against the sha256 sums published with its release **before** anything is extracted or made executable, and aborts with nothing installed on a mismatch. If `cosign` is installed it also verifies the signature of `checksums.txt`; `--require-signature` makes that mandatory.
+- On Linux, installs hisn 0.4.1 (the `gnu` build when glibc is 2.35 or newer, else the x86_64 `musl` build, which is not leak-tested) unless a new enough hisn is already on your `PATH`, and runs `hisn check`. If hisn cannot run here, Wakil falls back to Docker.
+- On Linux with root (or `sudo`, or `--sudo`), also installs the optional kvr-server 0.2.0 into `/usr/local/bin`, where the hisn sandbox can see it; without root it is skipped and staging stays off.
+- If `~/.config/wakil/config.json` does not exist, offers a quickstart OpenRouter config (`config.quickstart.json`) using `$OPENROUTER_API_KEY`, or a key typed at the prompt (hidden, written with mode 0600). It never overwrites an existing config; `--no-config` skips it. The quickstart model is a free one: it shows that Wakil runs, but is weak at tool calling.
+
+Then `cd your-project && wakil .`. `sh install.sh --help` lists all options; `--uninstall` removes only what the script installed and leaves your config and data. The manual steps below remain the reference path.
+
 ## Quickstart
 
 **1. Install Wakil** (Linux and macOS, amd64 and arm64). Take a `.tar.gz`, `.deb`, `.rpm` or `.apk` from the [releases page](https://github.com/treeol/wakil/releases), or build with Go:

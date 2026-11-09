@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`install.sh`: one-command installer.** `curl -fsSL
+  https://github.com/treeol/wakil/releases/latest/download/install.sh -o install.sh
+  && sh install.sh` installs Wakil, hisn 0.4.1 and (with root or sudo) kvr-server
+  0.2.0, verifying every download against the release's sha256 sums before
+  anything is extracted or installed. It verifies the cosign signature when
+  `cosign` is present (`--require-signature` makes that mandatory), picks the
+  glibc or musl hisn build, never overwrites an existing config and supports
+  `--uninstall`. The manual install in the README stays as it was. It is attached
+  to releases from the next tag on.
+- **`config.quickstart.json`.** A minimal OpenRouter config with a free,
+  tool-capable model, written by `install.sh` with your key (mode 0600) when you
+  have no config yet. `config.example.json` is unchanged.
+
 ### Changed
 
 - **Sandbox image ships kvr-server 0.2.0.** The Dockerfile pins kvrust at
