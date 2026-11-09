@@ -1,0 +1,14 @@
+{
+  "_comment": "Wakil quickstart config for OpenRouter, written by install.sh. The default model was chosen on 2026-11-09 from GET https://openrouter.ai/api/v1/models (no key needed) by this rule: ids ending in ':free' whose supported_parameters include 'tools', largest context_length first, then largest top_provider.max_completion_tokens, then id. A free model shows that Wakil runs, but it is weak at tool calling: for real work point 'model' at a paid model (for example anthropic/claude-sonnet-4-6) or add your own endpoint. Reference with every option: config.example.json.",
+
+  "endpoints": {
+    "openrouter": {
+      "kind": "openai",
+      "base_url": "https://openrouter.ai/api",
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "auth_header": "Bearer REPLACE_WITH_OPENROUTER_API_KEY",
+      "app_title": "wakil"
+    }
+  },
+  "default_endpoint": "openrouter"
+}

@@ -45,6 +45,12 @@ archives:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+  # install.sh verifies config.quickstart.json against this file, so it must be
+  # listed here (and thus covered by the cosign signature). install.sh is listed
+  # too so a downloaded copy can be checked against the signed sums.
+  extra_files:
+    - glob: ./install.sh
+    - glob: ./config.quickstart.json
 
 nfpms:
   - id: packages
@@ -90,6 +96,11 @@ release:
     name: wakil
   draft: false
   prerelease: auto
+  # Attached so https://github.com/treeol/wakil/releases/latest/download/install.sh
+  # exists, and so the installer can fetch the quickstart config from the same tag.
+  extra_files:
+    - glob: ./install.sh
+    - glob: ./config.quickstart.json
 
 changelog:
   sort: asc
