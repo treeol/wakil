@@ -200,6 +200,46 @@ func TestNormalizeErrors(t *testing.T) {
 	}
 }
 
+func TestNormalizeRejectsOversizeDurations(t *testing.T) {
+	cases := []struct {
+		name string
+		s    Surface
+		want string
+	}{
+		{"service ready_timeout", Surface{Services: []Service{{Name: "a", Exec: []string{"x"}, ReadyTimeout: 86401}}}, "ready_timeout"},
+		{"service stop_grace", Surface{Services: []Service{{Name: "a", Exec: []string{"x"}, StopGrace: 90000}}}, "stop_grace"},
+		{"host ready_timeout", Surface{HostServices: []HostService{{Name: "h", Exec: []string{"x"}, Socket: "/s", Expose: "/e", ReadyTimeout: 86401}}}, "ready_timeout"},
+		{"host stop_grace", Surface{HostServices: []HostService{{Name: "h", Exec: []string{"x"}, Socket: "/s", Expose: "/e", StopGrace: 86401}}}, "stop_grace"},
+	}
+	for _, tc := range cases {
+		if _, err := tc.s.Normalize("/w"); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want error naming %q, got %v", tc.name, tc.want, err)
+		}
+	}
+	// Exactly 86400 is allowed.
+	if _, err := (Surface{Services: []Service{{Name: "a", Exec: []string{"x"}, ReadyTimeout: 86400, StopGrace: 86400}}}).Normalize("/w"); err != nil {
+		t.Errorf("86400 must be allowed: %v", err)
+	}
+}
+
+func TestNormalizeRejectsNUL(t *testing.T) {
+	cases := []struct {
+		name string
+		s    Surface
+	}{
+		{"service exec", Surface{Services: []Service{{Name: "a", Exec: []string{"x\x00y"}}}}},
+		{"service socket", Surface{Services: []Service{{Name: "a", Exec: []string{"x"}, Socket: "/a\x00b"}}}},
+		{"service ready_socket", Surface{Services: []Service{{Name: "a", Exec: []string{"x"}, ReadySocket: "/a\x00b"}}}},
+		{"host exec", Surface{HostServices: []HostService{{Name: "h", Exec: []string{"a\x00"}, Socket: "/s", Expose: "/e"}}}},
+		{"env_set value", Surface{EnvSet: map[string]string{"K": "v\x00"}}},
+	}
+	for _, tc := range cases {
+		if _, err := tc.s.Normalize("/w"); err == nil || !strings.Contains(err.Error(), "NUL") {
+			t.Errorf("%s: want NUL error, got %v", tc.name, err)
+		}
+	}
+}
+
 func TestTrustPrecheck(t *testing.T) {
 	state := t.TempDir()
 	prof := filepath.Join(state, "x.profile.toml")

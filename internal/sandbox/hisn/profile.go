@@ -177,6 +177,38 @@ var (
 	entryNameRe   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 )
 
+// maxDurationSecs is hisn's upper bound for `grace` (stop) and readiness
+// `timeout`: hisn 0.4.2 rejects values above it at profile load time, so
+// Wakil validates them up front with a clear error naming the key.
+const maxDurationSecs = 86400
+
+// noNUL rejects a string containing a NUL byte, which hisn 0.4.2 rejects at
+// load time in exec/argv/ready-command strings.
+func noNUL(kind, field, name, s string) error {
+	if strings.IndexByte(s, 0) >= 0 {
+		return fmt.Errorf("%s: %s[%s]: %s contains a NUL byte (hisn rejects it)", kind, kind, name, field)
+	}
+	return nil
+}
+
+// checkExecNUL reports whether any element of argv contains a NUL byte.
+func checkExecNUL(kind, name string, argv []string) error {
+	for _, a := range argv {
+		if err := noNUL(kind, "exec", name, a); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkTimeout reports whether v exceeds hisn's maximum duration.
+func checkTimeout(kind, name, field string, v uint64) error {
+	if v > maxDurationSecs {
+		return fmt.Errorf("%s[%s]: %s %d exceeds the maximum of %d seconds", kind, name, field, v, maxDurationSecs)
+	}
+	return nil
+}
+
 // Normalize validates the surface and resolves relative service paths against
 // cwd (hisn does not: it stats ready sockets with the path as written). It
 // returns a copy; s is left untouched.
@@ -224,6 +256,21 @@ func (s Surface) Normalize(cwd string) (Surface, error) {
 		if len(v.Exec) == 0 || v.Exec[0] == "" {
 			return out, fmt.Errorf("hisn.services[%s]: exec must not be empty", v.Name)
 		}
+		if err := checkExecNUL("hisn.services", v.Name, v.Exec); err != nil {
+			return out, err
+		}
+		if err := checkTimeout("hisn.services", v.Name, "ready_timeout", v.ReadyTimeout); err != nil {
+			return out, err
+		}
+		if err := checkTimeout("hisn.services", v.Name, "stop_grace", v.StopGrace); err != nil {
+			return out, err
+		}
+		if err := noNUL("hisn.services", "socket", v.Name, v.Socket); err != nil {
+			return out, err
+		}
+		if err := noNUL("hisn.services", "ready_socket", v.Name, v.ReadySocket); err != nil {
+			return out, err
+		}
 		if v.Socket != "" {
 			v.Socket = abs(v.Socket)
 		}
@@ -250,6 +297,15 @@ func (s Surface) Normalize(cwd string) (Surface, error) {
 		if len(v.Exec) == 0 || v.Exec[0] == "" {
 			return out, fmt.Errorf("hisn.host_services[%s]: exec must not be empty", v.Name)
 		}
+		if err := checkExecNUL("hisn.host_services", v.Name, v.Exec); err != nil {
+			return out, err
+		}
+		if err := checkTimeout("hisn.host_services", v.Name, "ready_timeout", v.ReadyTimeout); err != nil {
+			return out, err
+		}
+		if err := checkTimeout("hisn.host_services", v.Name, "stop_grace", v.StopGrace); err != nil {
+			return out, err
+		}
 		if !filepath.IsAbs(v.Socket) || !filepath.IsAbs(v.Expose) {
 			return out, fmt.Errorf("hisn.host_services[%s]: socket and expose must be absolute paths", v.Name)
 		}
@@ -257,9 +313,15 @@ func (s Surface) Normalize(cwd string) (Surface, error) {
 			return out, fmt.Errorf("hisn.host_services[%s]: ready_socket must be an absolute path", v.Name)
 		}
 	}
-	for k := range s.EnvSet {
+	for k, v := range s.EnvSet {
 		if !envSetNameRe.MatchString(k) || k == "HOME" {
 			return out, fmt.Errorf("hisn.env_set: invalid or forbidden name %q", k)
+		}
+		if err := noNUL("hisn.env_set", "value", k, v); err != nil {
+			return out, err
+		}
+		if err := noNUL("hisn.env_set", "name", k, k); err != nil {
+			return out, err
 		}
 	}
 	for _, list := range []struct {
