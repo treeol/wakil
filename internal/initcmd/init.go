@@ -292,7 +292,7 @@ func (s *session) run(ctx context.Context) error {
 		s.printf("  key: read from $%s at run time (not stored in the file)\n", p.KeyEnv)
 		s.printf("  note: %s must also be set in the environment when you run wakil\n", p.KeyEnv)
 	case p.KeyHeader != "":
-		s.printf("  key: stored in the file as auth_header (mode 0600; shown fully redacted by `wakil config show`)\n")
+		s.printf("  key: stored in the file as auth_header (mode 0600; `wakil config show` shows only that it is set)\n")
 	default:
 		s.printf("  key: none\n")
 	}

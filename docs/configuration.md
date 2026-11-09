@@ -47,8 +47,8 @@ Without any config, `wakil` on a terminal asks "No config found. Run setup now?
 ### `wakil config show`
 
 Prints the effective configuration with each value's source (`default`, `file`,
-`env`, `flag`). Secrets are redacted to their last 4 characters; `auth_header` is
-redacted fully. `--json` gives machine output. Flags that wakil itself takes
+`env`, `flag`). Secrets (`api_key`, `auth_header`) are never shown, not even in
+part: the row reads `set (<N> chars)` or `unset`. `--json` gives machine output. Flags that wakil itself takes
 (`--config`, `--model`, `--sandbox`, ...) may follow, so you can see what they
 change. Nothing is written.
 
@@ -105,8 +105,9 @@ the file; the variable must be set whenever you run wakil), then the legacy
 top-level `api_key`.
 
 `approval` (top level, `"ask"` default or `"auto"`) is the standing approval
-mode: `"auto"` is the same as `--auto` for the interactive TUI. `wakil run` does
-not read it.
+mode: `"auto"` is the same as `--auto` for the interactive TUI. **`wakil run`
+(headless) ignores it**: unattended runs never widen their approvals from a file
+written for interactive use. `wakil init` writes it.
 
 ```json
 {

@@ -41,8 +41,8 @@ func TestConfigShowRedactsAndShowsSources(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"endpoint.auth_header  [redacted]  [file]",
-		"api_key               …1234  [file]",
+		"endpoint.auth_header  set (27 chars)  [file]",
+		"api_key               set (20 chars)  [file]",
 		"endpoint.model        m2  [flag]",
 		"endpoint.base_url     http://x:1  [file]",
 		"approval              auto  [file]",
@@ -100,8 +100,76 @@ func TestConfigShowWritesNothing(t *testing.T) {
 	}
 }
 
-func TestRedactTail(t *testing.T) {
-	if redactTail("abcdefghijkl") != "…ijkl" || redactTail("short") != "[redacted]" || redactTail("") != "" {
-		t.Error("redactTail")
+func TestRedactSecretShowsOnlyPresenceAndLength(t *testing.T) {
+	if redactSecret("") != "unset" || redactSecret("abcdefghijkl") != "set (12 chars)" || redactSecret("äöü") != "set (3 chars)" {
+		t.Error("redactSecret")
+	}
+}
+
+// TestConfigShowNeverPrintsAnySecretCharacter: for a secret that comes from the
+// file, the environment and a flag, in text and JSON output, no fragment of it
+// (of 3 or more characters, from any position) may appear.
+func TestConfigShowNeverPrintsAnySecretCharacter(t *testing.T) {
+	const apiKey = "sk-Zq7Xvb-QRSTUVWX1234"
+	const header = "Bearer sk-Mw3Kd8-JKLMNOPQ9999"
+	check := func(t *testing.T, name, out string, secrets ...string) {
+		t.Helper()
+		// The config_path row holds the random temp-dir name, whose digits can
+		// coincide with a fragment; it is not a secret-bearing row.
+		var kept []string
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(l, "config_path") || strings.Contains(l, `"config_path"`) {
+				continue
+			}
+			kept = append(kept, l)
+		}
+		out = strings.Join(kept, "\n")
+		for _, sec := range secrets {
+			for i := 0; i+4 <= len(sec); i++ {
+				for j := i + 4; j <= len(sec); j++ {
+					if frag := sec[i:j]; strings.Contains(out, frag) {
+						t.Fatalf("%s: fragment %q of a secret appears in:\n%s", name, frag, out)
+					}
+				}
+			}
+		}
+	}
+	base := func(extra string) string {
+		return `{` + extra + `"endpoints":{"e":{"kind":"openai","base_url":"http://x:1","model":"m","auth_header":"` + header + `"}},"default_endpoint":"e"}`
+	}
+	cases := []struct {
+		name string
+		body string
+		env  map[string]string
+		args []string
+	}{
+		{"file", base(`"api_key":"` + apiKey + `",`), nil, nil},
+		{"env", base(``), map[string]string{"WAKIL_API_KEY": apiKey}, nil},
+		{"flag", base(``), nil, []string{"--api-key", apiKey}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("ILM_API_KEY", "")
+			t.Setenv("WAKIL_API_KEY", "")
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			p := writeTestCfg(t, c.body)
+			for _, asJSON := range []bool{false, true} {
+				args := append([]string{"--config", p, "--sandbox", "direct"}, c.args...)
+				if asJSON {
+					args = append([]string{"--json"}, args...)
+				}
+				var out, errb bytes.Buffer
+				if code := runConfigShow(&out, &errb, args, os.Getenv); code != 0 {
+					t.Fatalf("exit %d: %s", code, errb.String())
+				}
+				check(t, c.name, out.String()+errb.String(), apiKey, header)
+				if !strings.Contains(out.String(), "set (22 chars)") {
+					t.Errorf("%s: api_key row should read set (22 chars):\n%s", c.name, out.String())
+				}
+			}
+		})
 	}
 }

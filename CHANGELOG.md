@@ -18,11 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --skip-test --force --yes`). There is no flag for the key itself. An existing
   config is refused unless `--force`, which backs it up first (0600).
 - **`wakil config show [--json]`** prints the effective config with each value's
-  source (default, file, env, flag); secrets are redacted.
+  source (default, file, env, flag). Secrets are never shown, not even in part:
+  `set (<N> chars)` or `unset`.
 - Endpoint field **`api_key_env`**: the name of an environment variable read at
   request time; an explicit `auth_header` wins over it.
 - Top-level config key **`approval`** (`ask`/`auto`); `auto` is `--auto` for the
-  interactive TUI (`wakil run` ignores it).
+  interactive TUI (**`wakil run` ignores it**).
 
 ### Changed
 

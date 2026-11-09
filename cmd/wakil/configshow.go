@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/treeol/wakil/internal/config"
 )
@@ -18,24 +19,13 @@ type showRow struct {
 	Source string `json:"source"` // default | file | env | flag
 }
 
-// redactTail keeps the last 4 characters of a secret; anything shorter than 9
-// characters is redacted entirely so a short secret is not mostly revealed.
-func redactTail(s string) string {
+// redactSecret is the only way config show prints a secret: whether it is set
+// and how long it is, never any of its characters.
+func redactSecret(s string) string {
 	if s == "" {
-		return ""
+		return "unset"
 	}
-	if len(s) < 9 {
-		return "[redacted]"
-	}
-	return "…" + s[len(s)-4:]
-}
-
-// redactAuthHeader redacts an Authorization value fully.
-func redactAuthHeader(s string) string {
-	if s == "" {
-		return ""
-	}
-	return "[redacted]"
+	return fmt.Sprintf("set (%d chars)", utf8.RuneCountInString(s))
 }
 
 func hasFlag(argv []string, name string) bool {
@@ -140,16 +130,16 @@ func buildShowRows(argv []string, getenv func(string) string) ([]showRow, error)
 		add("endpoint.api_key_env", cfg.Endpoint.APIKeyEnv+" ("+set+")", "file")
 	}
 	if cfg.Endpoint.AuthHeader != "" {
-		add("endpoint.auth_header", redactAuthHeader(cfg.Endpoint.AuthHeader), "file")
+		add("endpoint.auth_header", redactSecret(cfg.Endpoint.AuthHeader), "file")
 	}
 	if cfg.APIKey != "" {
 		switch {
 		case hasFlag(argv, "api-key"):
-			add("api_key", redactTail(cfg.APIKey), "flag")
+			add("api_key", redactSecret(cfg.APIKey), "flag")
 		case envSet(getenv, "ILM_API_KEY", "WAKIL_API_KEY"):
-			add("api_key", redactTail(cfg.APIKey), "env")
+			add("api_key", redactSecret(cfg.APIKey), "env")
 		default:
-			add("api_key", redactTail(cfg.APIKey), "file")
+			add("api_key", redactSecret(cfg.APIKey), "file")
 		}
 	}
 
