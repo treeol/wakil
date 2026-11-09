@@ -23,7 +23,7 @@ Otherwise the backend is docker, and the startup banner says why:
 
 ```
 sandbox: backend=docker · browser tools: on · default: docker (hisn 0.3.3 is older than 0.4.1)
-sandbox: backend=hisn · browser tools: off (...) · default: hisn 0.4.1 (hisn check ok)
+sandbox: backend=hisn · browser tools: on (inside hisn session) · default: hisn 0.4.1 (hisn check ok)
 ```
 
 A host without hisn therefore sees no behaviour change. Further reasons that
@@ -136,14 +136,28 @@ same name. Therefore:
 
 ### Escape audit
 
-1. **Host-side children** (hooks, MCP servers, `open_url`, clipboard) run on
-   the host regardless of backend. Unchanged from docker mode.
-2. **Browser**: `browser.NewManager` launches Chromium on the host when
-   `ContainerName() == ""`. For hisn `ContainerName()` is `""`, so
-   `browser_enabled` is forced off in config validation (sets
-   `BrowserForcedOff` for the startup banner) **and**
-   `HostBrowserAllowed()` returns `false`. No runtime enable path exists.
-   Chromium inside hisn is future work.
+1. **Host-side children**: the exceptions to "every tool call runs in the
+   sandbox" are open_url (opens in your host browser), lifecycle hooks, MCP servers and the clipboard. They run on the host regardless of backend
+   (`open_url`: `internal/tools/open.go`; hooks: `internal/agent/hooks.go`,
+   `sh -c` with the host environment; MCP servers: `internal/agent/mcp_manager.go`,
+   where a stdio server is a host child process with the host environment and an
+   HTTP server is reached over HTTP by Wakil's own process; clipboard:
+   `internal/tui/clipboard.go` and `internal/tui/tui_select.go`, host clipboard
+   commands, or terminal OSC 52 escape bytes in `osc52` mode).
+2. **Browser**: under hisn, Chromium runs inside the hisn session, not on the
+   host. `browser.NewManager` refuses an executor whose `HostBrowserAllowed()`
+   is false; for the backend executor that holds exactly when the backend has a
+   CLI transport (`sandbox.CLIExecer`; hisn has one). Chromium is started
+   in the session through `StartInteractiveCLI`; the host client's argv carries
+   the session id, which is the ownership marker for teardown. The DevTools
+   port is chosen by Chromium (`--remote-debugging-port=0`) and is
+   loopback-only inside the session. Wakil reaches it through a listener on
+   `127.0.0.1` on the host that pipes each connection through `python3` in the
+   session; no port is published. `browser_enabled` is not forced off under
+   hisn; when it is set, the banner reads `browser tools: on (inside hisn
+   session)`. Chromium (`chromium`, or `browser_path`) and `python3` must exist
+   inside the session (probed at launch). A backend executor without a CLI
+   transport keeps the browser off.
 3. **Worktree isolation** (edit subagents): the worktree lives in the
    session's `/tmp` and the child executor re-roots via `hisn exec --cwd`.
    `WorktreeHost.WorktreeKind()` (`SandboxTmp`) routes every `os.*` site to
@@ -802,7 +816,7 @@ them to get the default described in [Choosing the backend](#choosing-the-backen
 (the `"backend": "docker"` above is only what you write to PIN docker). Empty
 `home_root` means `<wakil state dir>/hisn-home/<workspace-hash>`.
 `kvr_binary` empty means `kvr-server` from `PATH`. With `hisn`:
-`browser_enabled` is forced off with one startup line, `docker_*` keys are
+`browser_enabled` is not forced off (Chromium and `python3` must be in the session), `docker_*` keys are
 ignored, `WorkDir == HostWorkDir`, and `kvr` runs as an in-sandbox service
 when a binary is available (otherwise it stays off with the reason).
 
@@ -820,7 +834,7 @@ hisn itself inside the sandbox and are rejected in per-exec env.
 * Soft revoke only (see Grants): already-open descriptors may survive.
 * Toolchains installed under the host `$HOME` (rustup, nvm) are not mounted;
   hisn's `mounts.ro` is not exposed.
-* Browser tools unavailable (`browser_enabled` forced off).
+* Browser tools need Chromium (`chromium`, or `browser_path`) and `python3` inside the session; without them the first `browser_*` call fails with an error naming the missing binary.
 * Worktree dirs live in the session `/tmp` tmpfs; the size is configurable
   (`tmp_size_mb`, default 1024 MiB) but bounded.
 * Instance verification relies on `session.hostname` carrying a random token

@@ -141,7 +141,7 @@ reference covering every section below.
 | `lsp_servers` | — | Maps language → server command |
 | `style_guides_enabled` | `false` | Enable built-in and user-configured language style guides |
 | `style_guide_paths` | `{}` | Map language ID → replacement or custom host-side guide file; paths relative to the config file, `~/` expanded |
-| `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium). Forced off (with a startup line) under `sandbox.backend: hisn` |
+| `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium). Not forced off under `sandbox.backend: hisn`: Chromium runs inside the hisn session (needs Chromium and `python3` in it) |
 | `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
 | `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
 | `external_backends` | — | Backend names known to route to external providers |
@@ -347,8 +347,7 @@ limits: [sandbox-backends.md](sandbox-backends.md).
 With an explicit `hisn`: startup requires `hisn --version` >= 0.4.1 and `hisn check` exit
 0, otherwise Wakil refuses to start (no fallback). How a session is started, tracked and stopped (`run --detach`, `supervisor.pid`, `hisn stop`) is described once, in [sandbox-backends.md](sandbox-backends.md#supervisor-and-the-detach-contract). Per-project additions (services, forwards, mounts, `risk_ack`, named profile) live in `.wakil/sandbox.json`, which only takes effect after `wakil sandbox trust`; see [sandbox-backends.md](sandbox-backends.md). The workspace is mounted at
 its identical host path (`--workdir` is rejected); `kvr` staging runs as an in-sandbox service when a `kvr-server` binary is available (see `sandbox.hisn.kvr_binary`);
-`browser_enabled` is forced off with one startup line (so one config serves
-both backends), and the deprecated `exec_mode: direct` conflicts with it. The
+`browser_enabled` is not forced off and Chromium runs inside the hisn session (needs Chromium and `python3` in it), and the deprecated `exec_mode: direct` conflicts with it. The
 startup line `sandbox: backend=<b> · browser tools: on|off` states the active
 backend and whether browser tools are available. One hisn session per chat,
 stopped on `/new`, `/resume`, handoff, `/rewind` and exit.

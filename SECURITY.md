@@ -194,8 +194,10 @@ configured inference endpoint and any optional external services:
 - **Web search** — when enabled, search queries are sent to SearXNG or Google.
 - **MCP servers** — when configured, tool-call arguments are sent to the
   configured MCP server (stdio or HTTP).
-- **`open_url`** — opens a URL or file on the **host** machine, not the
-  sandbox.
+- **Host-side exceptions** — open_url (opens in your host browser), lifecycle hooks, MCP servers and the clipboard run on the **host** machine, not the
+  sandbox. `open_url` opens a URL or file there; hooks and stdio MCP servers run
+  with your user's privileges and environment, and HTTP MCP servers are reached
+  from the host process.
 
 Endpoint `auth_header` values are stored in plaintext in `config.json` —
 `chmod 600` it. Session transcripts and trace files (`~/.local/share/wakil/`)

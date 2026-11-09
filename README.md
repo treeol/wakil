@@ -14,7 +14,7 @@ Wakil is a terminal agentic coding assistant. It runs its tools in a [hisn](http
 
 ## Why
 
-By default every tool call runs in a sandbox, and shell commands and workspace writes ask for confirmation unless you turn on auto-approval; destructive commands stay gated even then. Second opinions come from Mashūra, which sends reviews, debugging questions and decisions to other models you configure. Memory persists per project and skills are shared across projects, so a new session starts with what earlier ones learned. Start is fast: 149 ms from launch to prompt (rubin, khatam repo, [docs/PERF-0.6.md](docs/PERF-0.6.md)), and exit has been near-instant since the ilm emitter was removed.
+By default every tool call runs in a sandbox. The exceptions are the things that have to touch your machine: open_url (opens in your host browser), lifecycle hooks, MCP servers and the clipboard. The headless-browser tools (`browser_*`) are not an exception — Chromium runs inside the sandbox. Shell commands and workspace writes ask for confirmation unless you turn on auto-approval; destructive commands stay gated even then. Second opinions come from Mashūra, which sends reviews, debugging questions and decisions to other models you configure. Memory persists per project and skills are shared across projects, so a new session starts with what earlier ones learned. Start is fast: 149 ms from launch to prompt (rubin, khatam repo, [docs/PERF-0.6.md](docs/PERF-0.6.md)), and exit has been near-instant since the ilm emitter was removed.
 
 ## Architecture
 

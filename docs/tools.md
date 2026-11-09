@@ -2,6 +2,10 @@
 
 ## Tool reference
 
+### What runs on the host
+
+By default every tool call runs in the sandbox. The exceptions are the things that have to touch your machine: open_url (opens in your host browser), lifecycle hooks, MCP servers and the clipboard. The headless-browser tools (`browser_*`) are not an exception — Chromium runs inside the sandbox. See the [escape audit](sandbox-backends.md#escape-audit).
+
 | Tool | Gated | Description |
 |---|---|---|
 | `run_shell` | yes | Run a shell command; cwd persists across calls |

@@ -76,8 +76,12 @@ call, on `/new` and chat end, and when Wakil exits; the next call starts a fresh
 browser. The DevTools endpoint is Chromium-chosen and loopback-only inside the
 container; Wakil reaches it through a `127.0.0.1` listener on the host that pipes
 each connection through `docker exec -i … python3` — no port is published and
-nothing listens on a non-loopback address. Under the `hisn` backend the browser
-stays off.
+nothing listens on a non-loopback address. Under the `hisn` backend Chromium runs
+the same way inside the hisn session, started through the backend's CLI
+transport; the DevTools endpoint is again Chromium-chosen and loopback-only in
+the session, and Wakil reaches it through a `127.0.0.1` listener on the host that
+pipes each connection through `python3` in the session. Chromium (`chromium`, or
+`browser_path`) and `python3` must be present in the session.
 
 ```json
 {
