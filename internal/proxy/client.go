@@ -395,7 +395,7 @@ const (
 )
 
 const (
-	defaultAppReferer    = "https://github.com/treeol/wakil"
+	defaultAppReferer    = "https://wakil.pro"
 	defaultAppTitle      = "wakil"
 	defaultAppCategories = "cli-agent"
 )

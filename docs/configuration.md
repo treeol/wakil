@@ -88,7 +88,7 @@ body. For `openai`-kind endpoints, `app_title`
 sets the OpenRouter `X-Title` attribution header; when unset, it defaults to
 `wakil` for openrouter.ai hosts and is omitted for any other host. Set to `""` to opt out.
 The `HTTP-Referer` and `X-OpenRouter-Categories` headers are always the
-hardcoded project defaults (`https://github.com/treeol/wakil` and `cli-agent`)
+hardcoded project defaults (`https://wakil.pro` and `cli-agent`)
 for openrouter.ai hosts and are **not** user-configurable — wakil always
 identifies itself.
 

@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **OpenRouter app attribution now uses `https://wakil.pro`** (HTTP-Referer; was
+  the GitHub repo URL). OpenRouter treats this as a new app page; the app name
+  (`X-Title: wakil`) and categories (`cli-agent`) are unchanged.
 - **Sandbox image ships kvr-server 0.2.0.** The Dockerfile pins kvrust at
   v0.2.0 (commit `9b4c0f9…`, tag `v0.2.0`). v0.2.0 renamed the cargo binary
   from `server` to `kvr-server`; the build and COPY use the new name. The wire
