@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-09
+
 ### Added
 
 - **`install.sh`: one-command installer.** `curl -fsSL
@@ -16,11 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anything is extracted or installed. It verifies the cosign signature when
   `cosign` is present (`--require-signature` makes that mandatory), picks the
   glibc or musl hisn build, never overwrites an existing config and supports
-  `--uninstall`. The manual install in the README stays as it was. It is attached
-  to releases from the next tag on.
+  `--uninstall`. Every download is https-only. The manual install in the README
+  stays as it was. It is attached as a release asset from this release on, so
+  `releases/latest/download/install.sh` resolves.
 - **`config.quickstart.json`.** A minimal OpenRouter config with a free,
   tool-capable model, written by `install.sh` with your key (mode 0600) when you
-  have no config yet. `config.example.json` is unchanged.
+  have no config yet. It is a release asset, checksummed in `checksums.txt`.
+  `config.example.json` is unchanged.
 
 ### Changed
 
@@ -36,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marker no longer overcounts omitted files when the byte budget is hit, and an
   oversized single file now gets a `(truncated)` note instead of an "N files
   omitted" marker with a wrong count.
+
+### Fixed
+
+- **`install.sh` refuses non-https downloads.** curl runs with
+  `--proto '=https' --proto-redir '=https'` and wget with `--https-only`; a wget
+  that cannot enforce this (BusyBox) is refused.
 
 ## [0.6.0] - 2026-11-08
 
