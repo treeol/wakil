@@ -464,6 +464,15 @@ func TestExtractEvidenceAndMatch(t *testing.T) {
 		{"Safety risks", "Safety", false},        // and the reverse
 		{"big.go", "big.go (120 lines)", true},   // label with a line count
 		{"`big.go (120 lines)`", "big.go", true}, // formatting is normalised
+		// Block-label header decoration (the false-VOID regression).
+		{"── diff 593d536..HEAD (1008 lines) ──", "diff 593d536..HEAD (1008 lines)", true},
+		{"── diff 593d536..HEAD ──", "diff 593d536..HEAD (1008 lines)", true},
+		{"-- diff 593d536..HEAD (1008 lines) --", "diff 593d536..HEAD (1008 lines)", true},
+		{"— diff 593d536..HEAD —", "diff 593d536..HEAD (1008 lines)", true},
+		{"──   diff 593d536..HEAD   ──", "diff 593d536..HEAD (1008 lines)", true},
+		{"── ## diff 593d536..HEAD ──", "diff 593d536..HEAD (1008 lines)", true},
+		{"── earlier label ──", "diff 593d536..HEAD (1008 lines)", false},
+		{"", "diff 593d536..HEAD (1008 lines)", false},
 	} {
 		if got := citationMatches(c.cited, c.actual); got != c.ok {
 			t.Errorf("citationMatches(%q, %q) = %v, want %v", c.cited, c.actual, got, c.ok)
@@ -786,5 +795,22 @@ func TestReviewLengthRetriesOnceThenVoids(t *testing.T) {
 	}
 	if res[0].Log == nil || !res[0].Log.VoidRetried || !res[0].Log.VoidNotObtained {
 		t.Errorf("a still-truncated member must be marked retried and not obtained: %+v", res[0].Log)
+	}
+}
+
+// A stop reply ending with the full decorated block header
+// ("── label ──") must count, not VOID (the 2026-11-09 false-VOID).
+func TestReviewDecoratedBlockLabelCitationCounts(t *testing.T) {
+	f := newFakeReviewer(t)
+	f.reply = func(_ int, _ recordedReq) (string, string) {
+		return "end_turn", "Finding: nothing blocking.\nLAST SECTION READ: ── diff 593d536..HEAD (1008 lines) ──"
+	}
+	doc := "── diff 593d536..HEAD (1008 lines) ──\n" + strings.Repeat("line of diff\n", 200)
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	if res[0].Void || res[0].Err != nil {
+		t.Fatalf("decorated citation must count, got %+v", res[0])
+	}
+	if res[0].Answer != "Finding: nothing blocking." {
+		t.Errorf("evidence line must be stripped, got %q", res[0].Answer)
 	}
 }

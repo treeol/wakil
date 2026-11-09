@@ -675,10 +675,15 @@ var (
 	normDropRe  = regexp.MustCompile("[#*`\\[\\]()_\"']")
 	normLeadRe  = regexp.MustCompile(`^[§\d.\s:)\-–—]+`)
 	normSpaceRe = regexp.MustCompile(`\s+`)
+	// normDecorRe matches a run of header-decoration characters: box-drawing
+	// (U+2500–U+257F), em/en dashes and ASCII '-'/'='. Added so a reviewer
+	// citing the full "── label ──" header line matches the stored label.
+	normDecorRe = regexp.MustCompile(`^[\s─-╿—–=\-]+|[\s─-╿—–=\-]+$`)
 )
 
 func normHeading(s string) string {
 	s = strings.ToLower(normDropRe.ReplaceAllString(s, " "))
+	s = normDecorRe.ReplaceAllString(s, "")
 	s = normSpaceRe.ReplaceAllString(strings.TrimSpace(s), " ")
 	if t := strings.TrimSpace(normLeadRe.ReplaceAllString(s, "")); t != "" {
 		s = t
@@ -701,6 +706,9 @@ func citationMatches(cited string, expected ...string) bool {
 		// groups — a range label like "foo.go (lines 10–20) (15 lines)"
 		// needs both groups removed so the citation "foo.go" matches.
 		s := strings.Trim(strings.TrimSpace(x), "*`_# ")
+		// Strip block-header decoration before the paren loop, so a cited
+		// "── label (N lines) ──" still has its line count stripped.
+		s = normDecorRe.ReplaceAllString(s, "")
 		for {
 			stripped := trailingParenRe.ReplaceAllString(s, "")
 			if stripped == s {
@@ -876,7 +884,7 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 					return out, false
 				}
 				if !citationMatches(cited, exp...) {
-					out.Err = &VoidError{Reason: fmt.Sprintf("part %d of %d: reply cited %q as the last section read but the part ends at %q — the reviewer did not read it all", i+1, n, cited, exp[0])}
+					out.Err = &VoidError{Reason: fmt.Sprintf("part %d of %d: reply cited %q (normalized %q) as the last section read but the part ends at %q (normalized %q) — the reviewer did not read it all", i+1, n, cited, normHeading(cited), exp[0], normHeading(exp[0]))}
 					return out, false
 				}
 				if strings.TrimSpace(clean) == "" {
