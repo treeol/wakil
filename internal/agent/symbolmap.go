@@ -27,6 +27,14 @@ import (
 	wtools "github.com/treeol/wakil/internal/tools"
 )
 
+// fileSymbols holds one file's document symbols, from either the hierarchical
+// or the flat LSP response.
+type fileSymbols struct {
+	path    string
+	symbols []lsp.DocumentSymbol
+	flat    []lsp.SymbolInformation
+}
+
 // SymbolMapResult holds the built symbol outline and metadata.
 type SymbolMapResult struct {
 	Outline    string
@@ -75,11 +83,6 @@ func BuildSymbolMap(ctx context.Context, exe fileLister, mgr *lsp.Manager, lang 
 
 	// Phase 3: Call documentSymbol per file.
 	// Short-circuit on server-level failure (spawn/capability) — don't retry 100 times.
-	type fileSymbols struct {
-		path    string
-		symbols []lsp.DocumentSymbol
-		flat    []lsp.SymbolInformation
-	}
 
 	results := make([]fileSymbols, 0, len(files))
 	serverUnavailable := false
@@ -130,40 +133,11 @@ func BuildSymbolMap(ctx context.Context, exe fileLister, mgr *lsp.Manager, lang 
 	}
 
 	// Phase 4: Render the outline, file by file, with marker-inclusive budget.
-	var b strings.Builder
-	dropped := 0
-	markerBudget := 100 // reserve space for truncation marker
-	fileBudget := symbolMapMaxBytes - markerBudget
-
-	for _, r := range results {
-		section := renderFileSection(r.path, r.symbols, r.flat)
-		if b.Len()+len(section) > fileBudget {
-			dropped = len(results) - len(results[:0]) // will count below
-			// Count remaining files that would have been rendered.
-			remaining := 0
-			for _, r2 := range results {
-				_ = r2
-				remaining++
-			}
-			// Actually count how many we haven't rendered yet.
-			// b.Len() already has the rendered ones. Count from current position.
-			break
-		}
-		b.WriteString(section)
+	outline, dropped, truncated := renderOutlineBudget(results, symbolMapMaxBytes)
+	if dropped > 0 {
+		outline += fmt.Sprintf("\n… [%d files omitted — byte cap %d]", dropped, symbolMapMaxBytes)
 	}
-
-	outline := b.String()
-	if len(results) > 0 && b.Len() == 0 {
-		// First file was too large — include it truncated.
-		section := renderFileSection(results[0].path, results[0].symbols, results[0].flat)
-		if len(section) > fileBudget {
-			section = truncateUTF8(section[:fileBudget], fileBudget)
-		}
-		outline = section
-	}
-
-	if dropped > 0 || len(results) > 0 && b.Len() == 0 {
-		outline += fmt.Sprintf("\n… [%d files omitted — byte cap %d]", dropped+1, symbolMapMaxBytes)
+	if dropped > 0 || truncated {
 		result.Partial = true
 		if result.Status == "success" {
 			result.Status = "partial"
@@ -201,6 +175,39 @@ func renderFileSection(path string, docSyms []lsp.DocumentSymbol, flatSyms []lsp
 		}
 	}
 	return b.String()
+}
+
+// renderOutlineBudget renders file sections in rank order until the next
+// section would push the output past the budget (budget minus a fixed marker
+// reserve). It returns the outline, the number of files dropped by that cut,
+// and whether the first file was included truncated because it alone exceeded
+// the budget. In that case nothing is counted as dropped. Byte-cap drops do
+// not feed result.Omitted.
+func renderOutlineBudget(results []fileSymbols, maxBytes int) (outline string, dropped int, truncated bool) {
+	const markerBudget = 100 // reserve space for truncation marker
+	fileBudget := maxBytes - markerBudget
+
+	var b strings.Builder
+	rendered := 0
+	for _, r := range results {
+		section := renderFileSection(r.path, r.symbols, r.flat)
+		if b.Len()+len(section) > fileBudget {
+			break
+		}
+		b.WriteString(section)
+		rendered++
+	}
+
+	if rendered == 0 && len(results) > 0 {
+		// First file was too large — include it truncated, marked on that file only.
+		section := renderFileSection(results[0].path, results[0].symbols, results[0].flat)
+		if len(section) > fileBudget {
+			section = truncateUTF8(section[:fileBudget], fileBudget) + "\n  (truncated)\n"
+			return section, 0, true
+		}
+		return section, 0, false
+	}
+	return b.String(), len(results) - rendered, false
 }
 
 // discoverSourceFiles walks the filesystem and returns source file paths,
