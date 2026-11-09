@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`wakil init`** creates the config: provider (OpenRouter or any
+  OpenAI-compatible server), credentials, model list, one test call with a tool,
+  approval mode and the sandbox probe. Interactive on a terminal, flags
+  otherwise (`--provider --base-url --model --key-env --approval --sandbox
+  --skip-test --force --yes`). There is no flag for the key itself. An existing
+  config is refused unless `--force`, which backs it up first (0600).
+- **`wakil config show [--json]`** prints the effective config with each value's
+  source (default, file, env, flag); secrets are redacted.
+- Endpoint field **`api_key_env`**: the name of an environment variable read at
+  request time; an explicit `auth_header` wins over it.
+- Top-level config key **`approval`** (`ask`/`auto`); `auto` is `--auto` for the
+  interactive TUI (`wakil run` ignores it).
+
+### Changed
+
+- **First start no longer writes an endpoint-less stub.** On a terminal wakil asks
+  "No config found. Run setup now? [Y/n]"; otherwise it prints
+  `no config: run `wakil init``. Existing configs, including stubs written by
+  older versions, load exactly as before.
+- **`install.sh` writes no config and handles no key.** It keeps an existing
+  config, or runs `wakil init` (non-interactively with `--key-env
+  OPENROUTER_API_KEY` when that variable is set, so the key never lands in the
+  file), or prints `next: run `wakil init``. Checksum and tamper checks are
+  unchanged. `config.quickstart.json` remains a release asset and is now embedded
+  in the binary as the single source of the default OpenRouter model.
+
+### Fixed
+
+- Error messages suggested the deprecated `--exec direct`; they now say
+  `--sandbox direct`.
+- An OpenRouter 404 `free-model-training-violation` (your privacy settings
+  exclude the model's only provider) is shown as one line with the settings URL
+  instead of raw JSON, in `wakil init` and in chat; the raw body goes to the
+  session log.
+- In a container, when hisn fails on user namespaces, the startup banner and
+  `wakil init` explain that Docker's default seccomp profile blocks them and what
+  to do.
+
 ## [0.6.2] - 2026-11-09
 
 ### Changed

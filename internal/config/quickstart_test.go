@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -74,13 +75,21 @@ func TestQuickstartConfigIsMinimal(t *testing.T) {
 	}
 }
 
-// TestInstallScriptConfigPlaceholderMatches guards the contract between
-// install.sh (which substitutes the key) and the quickstart template.
-func TestInstallScriptConfigPlaceholderMatches(t *testing.T) {
+// TestInstallScriptNeverHandlesTheKey: since 0.6.3 install.sh writes no config
+// and never reads, stores or passes on the API key; it only tests whether
+// OPENROUTER_API_KEY is set and hands the variable NAME to `wakil init`.
+func TestInstallScriptNeverHandlesTheKey(t *testing.T) {
 	script := readRepoFile(t, "install.sh")
-	want := `CONFIG_PLACEHOLDER="` + quickstartPlaceholder + `"`
-	if !strings.Contains(script, want) {
-		t.Fatalf("install.sh must define %s", want)
+	for _, banned := range []string{"KEY_FROM_ENV", "read_key_from_tty", "write_config", "CONFIG_PLACEHOLDER", "stty", "config.quickstart.json"} {
+		if strings.Contains(script, banned) {
+			t.Errorf("install.sh still contains %q: key handling and config writing moved into `wakil init`", banned)
+		}
+	}
+	if !strings.Contains(script, `init --provider openrouter --key-env OPENROUTER_API_KEY --yes`) {
+		t.Error("install.sh must run `wakil init --provider openrouter --key-env OPENROUTER_API_KEY --yes` when the variable is set")
+	}
+	if strings.Contains(script, `$OPENROUTER_API_KEY`) || strings.Contains(script, `${OPENROUTER_API_KEY}`) {
+		t.Error("install.sh must not expand OPENROUTER_API_KEY (only test it with ${OPENROUTER_API_KEY:-})")
 	}
 }
 
@@ -95,5 +104,61 @@ func TestInstallScriptKvrVersionMatchesDockerfile(t *testing.T) {
 	docker := readRepoFile(t, "Dockerfile")
 	if !strings.Contains(docker, "v"+m[1]) {
 		t.Errorf("Dockerfile does not mention kvrust v%s (install.sh KVR_VERSION)", m[1])
+	}
+}
+
+// TestQuickstartModelIsEmbedded: init and the docs read the default model from
+// the embedded config.quickstart.json, the same bytes as the file on disk.
+func TestQuickstartModelIsEmbedded(t *testing.T) {
+	m, err := QuickstartModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(m, ":free") {
+		t.Errorf("QuickstartModel = %q, want a :free model", m)
+	}
+	if !strings.Contains(readRepoFile(t, "config.quickstart.json"), `"model": "`+m+`"`) {
+		t.Errorf("embedded model %q is not the one in config.quickstart.json", m)
+	}
+}
+
+// TestInstallScriptTracedRunNeverPrintsTheKey runs install.sh's setup_config
+// under `sh -x` with a sentinel key and a fake wakil: the sentinel must appear
+// nowhere in the trace or the output, and the fake wakil must receive only the
+// variable NAME.
+func TestInstallScriptTracedRunNeverPrintsTheKey(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	_ = os.MkdirAll(bin, 0o755)
+	logf := filepath.Join(dir, "args.log")
+	fake := "#!/bin/sh\necho \"ARGS: $*\" >> \"$FAKE_LOG\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "wakil"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := readRepoFile(t, "install.sh")
+	i := strings.Index(script, "tty_usable() {")
+	j := strings.Index(script, "# ── uninstall")
+	if i < 0 || j < i {
+		t.Fatal("cannot extract the config functions from install.sh")
+	}
+	harness := script[i:j] + "\nCONFIG_RESULT=\"\"\nsetup_config\necho \"RESULT: $CONFIG_RESULT\"\n"
+	hp := filepath.Join(dir, "h.sh")
+	_ = os.WriteFile(hp, []byte(harness), 0o644)
+	const sentinel = "SENTINEL-KEY-do-not-print-0123456789"
+	cmd := exec.Command("sh", "-x", hp)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "DIR=" + bin, "FAKE_LOG=" + logf, "OPENROUTER_API_KEY=" + sentinel}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("harness: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), sentinel) {
+		t.Errorf("the key appeared in the traced output:\n%s", out)
+	}
+	args, _ := os.ReadFile(logf)
+	if strings.Contains(string(args), sentinel) || !strings.Contains(string(args), "--key-env OPENROUTER_API_KEY") {
+		t.Errorf("wakil init must receive the NAME only: %q", args)
 	}
 }

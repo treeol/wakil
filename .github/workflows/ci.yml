@@ -222,8 +222,9 @@ jobs:
           go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/
 
   # Quick installer (install.sh): shellcheck, then a real install of a published
-  # release in a clean container per distro. The quickstart config does not exist
-  # in v0.6.0, which is fine: the job passes --no-config. hisn check is allowed to
+  # release in a clean container per distro. The job passes --no-config (the
+  # installed release predates `wakil init`); the init step below uses the
+  # binary built from this commit. hisn check is allowed to
   # fail here (containers lack user namespaces); what is asserted is that the
   # right hisn variant was picked and that the installed binaries run.
   installer:
@@ -250,6 +251,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
 
       - name: shellcheck install.sh
         run: shellcheck -s sh install.sh
@@ -278,6 +283,28 @@ jobs:
               # Uninstall removes what was installed, nothing else.
               sh /install.sh --uninstall --prefix "$PREFIX"
               test ! -e "$PREFIX/wakil" && test ! -e "$PREFIX/hisn" && test ! -e /usr/local/bin/kvr-server
+            '
+
+      - name: wakil init and config show (binary built from this commit)
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/wakil-init" ./cmd/wakil
+          model=$(jq -r '.endpoints.openrouter.model' config.quickstart.json)
+          docker run --rm -e MODEL="$model" \
+            -v "$RUNNER_TEMP/wakil-init:/wakil:ro" \
+            "$IMAGE" sh -eu -c '
+              export HOME=/tmp/h DUMMY=x
+              mkdir -p "$HOME"
+              /wakil init --provider openrouter --key-env DUMMY --model "$MODEL" --skip-test --yes
+              out=$(/wakil config show)
+              echo "$out"
+              printf "%s\n" "$out" | grep -q "endpoint.base_url *https://openrouter.ai/api" || { echo "::error::endpoint missing"; exit 1; }
+              printf "%s\n" "$out" | grep -q "endpoint.api_key_env *DUMMY" || { echo "::error::api_key_env missing"; exit 1; }
+              f="$HOME/.config/wakil/config.json"
+              grep -q "\"api_key_env\": \"DUMMY\"" "$f" || { echo "::error::api_key_env not in the file"; exit 1; }
+              [ "$(stat -c %a "$f")" = 600 ] || { echo "::error::config mode is not 0600"; exit 1; }
             '
 
       - name: tampered download aborts before installing

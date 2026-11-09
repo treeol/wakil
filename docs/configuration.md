@@ -1,10 +1,56 @@
 # Configuration
 
 Precedence: **defaults < config file < env < flags**. Config file is JSON at
-`~/.config/wakil/config.json`, overridable via `WAKIL_CONFIG` / `--config`. On
-first run, wakil auto-creates this file with a minimal template if it doesn't
-exist — edit it to set your endpoint. Env vars use `WAKIL_*` (preferred) or
-`ILM_*` (legacy aliases, same precedence).
+`~/.config/wakil/config.json`, overridable via `WAKIL_CONFIG` / `--config`.
+**Run `wakil init` to create it** (see [Setup: `wakil init`](#setup-wakil-init));
+since 0.6.3 wakil no longer writes a stub file on first start. Env vars use
+`WAKIL_*` (preferred) or `ILM_*` (legacy aliases, same precedence).
+
+## Setup: `wakil init`
+
+`wakil init` creates the config without hand-editing JSON. On a terminal it asks;
+otherwise it takes flags. Steps: provider (`openrouter` or `openai-compatible`,
+e.g. Ollama at `http://localhost:11434`), credentials, model (listed from the
+endpoint's model list, at most 15, tool-capable first, with context length and
+price per 1M tokens when known), one **test call** with a trivial tool (success
+means a tool call came back), approval mode, and the sandbox probe.
+
+- **The key is never a flag.** It enters only as hidden terminal input (init
+  refuses to read it if echo cannot be turned off) or through an environment
+  variable named with `--key-env NAME`, in which case the file stores only the
+  name (`api_key_env`).
+- Failures of the test call are one-liners: `401/403` key rejected; `404` with
+  OpenRouter's `free-model-training-violation` means your OpenRouter privacy
+  settings exclude the model's only provider (allow it at
+  <https://openrouter.ai/settings/privacy> or pick another model); other `404`
+  model not found; `429` rate limited (free models: 50 requests/day without
+  credits); a reply without a tool call means tool calling may be unsupported.
+  Interactively you may pick another model, save anyway, or abort.
+- An existing config is **never touched** unless `--force`; then it is first
+  copied to `config.json.bak-<UTC timestamp>` (mode 0600).
+- The file holds only what you chose (`endpoints.<name>`, `default_endpoint`,
+  `approval`, and `sandbox.backend` only when you did not take the automatic
+  choice), mode 0600 in a 0700 directory. Other config keys keep their defaults.
+
+Flags for scripts: `--provider openrouter|openai-compatible`, `--base-url URL`,
+`--model ID`, `--key-env NAME`, `--approval ask|auto`,
+`--sandbox hisn|docker|direct`, `--skip-test`, `--force`, `--yes` (accept
+defaults; also save when the test call fails, with a warning). Example:
+
+```sh
+OPENROUTER_API_KEY=... wakil init --provider openrouter --key-env OPENROUTER_API_KEY --yes
+```
+
+Without any config, `wakil` on a terminal asks "No config found. Run setup now?
+[Y/n]"; without a terminal it prints `no config: run `wakil init``.
+
+### `wakil config show`
+
+Prints the effective configuration with each value's source (`default`, `file`,
+`env`, `flag`). Secrets are redacted to their last 4 characters; `auth_header` is
+redacted fully. `--json` gives machine output. Flags that wakil itself takes
+(`--config`, `--model`, `--sandbox`, ...) may follow, so you can see what they
+change. Nothing is written.
 
 ## Flags and environment variables
 
@@ -51,6 +97,17 @@ The `endpoints` block names each server wakil can talk to;
 - `ilm-proxy` — the ilm proxy with memory/grounding. `model` defaults to the
   proxy alias `ilm`; backend prefix-routing and `X-Ilm-*` headers apply.
 
+Credentials per endpoint, in order of precedence: `auth_header` (the verbatim
+`Authorization` value, e.g. `"Bearer sk-or-..."`; an explicit `auth_header`
+always wins), then `api_key_env` (the **name** of an environment variable,
+read at request time and sent as `Bearer <value>`; the key never has to be in
+the file; the variable must be set whenever you run wakil), then the legacy
+top-level `api_key`.
+
+`approval` (top level, `"ask"` default or `"auto"`) is the standing approval
+mode: `"auto"` is the same as `--auto` for the interactive TUI. `wakil run` does
+not read it.
+
 ```json
 {
   "endpoints": {
@@ -63,7 +120,7 @@ The `endpoints` block names each server wakil can talk to;
       "kind": "openai",
       "base_url": "https://openrouter.ai/api",
       "model": "anthropic/claude-sonnet-4-6",
-      "auth_header": "Bearer sk-or-..."
+      "api_key_env": "OPENROUTER_API_KEY"
     },
     "ilm": {
       "kind": "ilm-proxy",
@@ -360,6 +417,8 @@ stopped on `/new`, `/resume`, handoff, `/rewind` and exit.
 | `wakil sandbox trust [dir]` | approve the project's `.wakil/sandbox.json` (interactive: reads `/dev/tty`; no flag skips the question). Until it is approved the file does not take effect, see [sandbox-backends.md](sandbox-backends.md#per-project-overrides-wakilsandboxjson) |
 | `wakil state migrate --from-legacy [--apply]` | copy attributable legacy shared-store memory entries into their project's store. Dry run unless `--apply`; never deletes and never writes the legacy store |
 | `wakil plan gc [--apply]` | list, and with `--apply` reject, dead quarantined `plan/current` entries (see [features.md](features.md#plan-quarantine-and-wakil-plan-gc)) |
+| `wakil init [flags]` | create the config (interactive on a terminal, flags otherwise); see [Setup: `wakil init`](#setup-wakil-init) |
+| `wakil config show [--json]` | the effective config with each value's source (default / file / env / flag); secrets redacted; writes nothing |
 | `wakil doctor` | check the container runtime, config and image |
 | `wakil version` | print version and the pinned sandbox image |
 

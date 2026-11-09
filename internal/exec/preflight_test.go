@@ -58,8 +58,8 @@ func TestDockerPreflight_NoDockerBinary(t *testing.T) {
 	if !strings.Contains(err.Error(), "docker not found") {
 		t.Errorf("error should mention 'docker not found', got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--exec direct") {
-		t.Errorf("error should suggest --exec direct, got: %v", err)
+	if !strings.Contains(err.Error(), "--sandbox direct") {
+		t.Errorf("error should suggest --sandbox direct, got: %v", err)
 	}
 }
 
@@ -84,8 +84,8 @@ func TestCheckDockerImage_MissingImage(t *testing.T) {
 	if !strings.Contains(err.Error(), "docker build") {
 		t.Errorf("error should suggest 'docker build', got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--exec direct") {
-		t.Errorf("error should suggest --exec direct, got: %v", err)
+	if !strings.Contains(err.Error(), "--sandbox direct") {
+		t.Errorf("error should suggest --sandbox direct, got: %v", err)
 	}
 }
 
@@ -149,8 +149,8 @@ exit 1
 	if !strings.Contains(err.Error(), "daemon is not running") {
 		t.Errorf("error should mention 'daemon is not running', got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--exec direct") {
-		t.Errorf("error should suggest --exec direct, got: %v", err)
+	if !strings.Contains(err.Error(), "--sandbox direct") {
+		t.Errorf("error should suggest --sandbox direct, got: %v", err)
 	}
 }
 
@@ -239,8 +239,8 @@ exit 1
 	if !strings.Contains(msg, "ausearch") {
 		t.Errorf("error should suggest checking audit logs with ausearch, got: %v", err)
 	}
-	if !strings.Contains(msg, "--exec direct") {
-		t.Errorf("error should suggest --exec direct, got: %v", err)
+	if !strings.Contains(msg, "--sandbox direct") {
+		t.Errorf("error should suggest --sandbox direct, got: %v", err)
 	}
 	// Host-side preflight should NOT emit the specific container_t hint —
 	// the container doesn't exist yet at this point.
@@ -340,8 +340,8 @@ func TestSELinuxDockerSocketHint_Enforcing(t *testing.T) {
 	if !strings.Contains(hint, "wakil_dockersock") {
 		t.Errorf("hint should name wakil_dockersock module, got: %q", hint)
 	}
-	if !strings.Contains(hint, "--exec direct") {
-		t.Errorf("hint should suggest --exec direct, got: %q", hint)
+	if !strings.Contains(hint, "--sandbox direct") {
+		t.Errorf("hint should suggest --sandbox direct, got: %q", hint)
 	}
 }
 

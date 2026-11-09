@@ -1,0 +1,14 @@
+{
+  "endpoints": {
+    "local": {
+      "kind": "openai",
+      "base_url": "http://localhost:11434",
+      "model": "qwen3"
+    }
+  },
+  "default_endpoint": "local",
+  "approval": "auto",
+  "sandbox": {
+    "backend": "direct"
+  }
+}

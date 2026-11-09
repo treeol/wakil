@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -35,10 +36,15 @@ const (
 // request body entirely and the server's own defaults stay authoritative —
 // Wakil never invents sampling defaults.
 type EndpointConfig struct {
-	Kind        string   `json:"kind,omitempty"`        // "openai" (default) | "ilm-proxy"
-	BaseURL     string   `json:"base_url"`              // full URL, e.g. "http://llama-host:11400"
-	Model       string   `json:"model,omitempty"`       // required for kind=openai; defaults to "ilm" for kind=ilm-proxy
-	AuthHeader  string   `json:"auth_header,omitempty"` // verbatim Authorization value; empty = fall back to api_key
+	Kind       string `json:"kind,omitempty"`        // "openai" (default) | "ilm-proxy"
+	BaseURL    string `json:"base_url"`              // full URL, e.g. "http://llama-host:11400"
+	Model      string `json:"model,omitempty"`       // required for kind=openai; defaults to "ilm" for kind=ilm-proxy
+	AuthHeader string `json:"auth_header,omitempty"` // verbatim Authorization value; empty = fall back to api_key_env, then api_key
+	// APIKeyEnv names an environment variable holding the API key. When the
+	// variable is set the request carries "Authorization: Bearer <value>".
+	// An explicit auth_header wins over it. The key itself never has to be
+	// written to the config file. Written by `wakil init --key-env`.
+	APIKeyEnv   string   `json:"api_key_env,omitempty"`
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
 	// MaxTokens is unset by default; kind=openai then falls back to a
@@ -221,6 +227,12 @@ type Config struct {
 
 	APIKey string `json:"api_key"` // sent as "Authorization: Bearer <key>"
 	Model  string `json:"model"`
+	// Approval is the standing tool-approval mode: "ask" (default, the user
+	// confirms) or "auto" (same as --auto: tool calls are approved without
+	// prompting; destructive and egress actions are still gated). Written by
+	// `wakil init`. Applied by the interactive TUI start only
+	// (ApplyConfigApproval); `wakil run` ignores it.
+	Approval string `json:"approval,omitempty"`
 	// ExecMode is DEPRECATED as an input (use sandbox.backend). After
 	// LoadConfig it is derived from Sandbox.Backend: "direct" for backend
 	// direct, "docker" otherwise.
@@ -1255,47 +1267,52 @@ func defaultConfigPath() string {
 	return filepath.Join(home, ".config", "wakil", "config.json")
 }
 
-// defaultConfigTemplate is the minimal config written on first run. It contains
-// only _comment keys so built-in defaults stay authoritative until the user edits
-// it. No placeholder endpoints or fake secrets — the user fills in their own.
-// Without an "endpoints" block, resolveEndpoint falls back to the legacy path
-// (base_url/model top-level fields or ILM_BASE_URL env var), so the user can
-// either add an endpoints block or set ILM_BASE_URL — whichever they prefer.
-const defaultConfigTemplate = `{
-  "_comment": "Wakil config — edit this file to set your endpoint. You MUST provide at least one endpoint (see below); other fields are optional and use built-in defaults when unset. Precedence: defaults < this file < env < flags. See config.example.json in the repo for a fully commented reference.",
-
-  "_comment_endpoints": "REQUIRED: set at least one endpoint. Either add an \"endpoints\" block here (see config.example.json) or set the ILM_BASE_URL env var. Example: \"endpoints\": {\"local\": {\"kind\": \"openai\", \"base_url\": \"http://localhost:8080\", \"model\": \"qwen3.6-35b\"}}, \"default_endpoint\": \"local\"",
-
-  "_comment_sandbox": "sandbox.backend: unset means hisn when usable, else \"docker\" (needs the wakil-dev image — build with: docker build -t wakil-dev .), \"hisn\" (rootless, opt-in) or \"direct\" (bare-metal, no sandbox). The old top-level exec_mode still works but is deprecated."
+// NoConfigError reports that there is no usable configuration: the default
+// config file is missing (FileExists false), or it exists but defines no
+// endpoint (FileExists true, e.g. the endpoint-less stub that 0.6.2 and older
+// wrote on first start). The caller decides what to offer; LoadConfig never
+// writes a file.
+type NoConfigError struct {
+	Path       string
+	FileExists bool
 }
-`
 
-// maybeCreateDefaultConfig writes a minimal default config file to cfgPath when
-// the file doesn't exist. It creates parent directories with 0o700 and the
-// file with 0o600 (config can hold API keys). Uses O_CREATE|O_EXCL to avoid a
-// race between concurrent first runs. Errors are printed to stderr and swallowed
-// — the caller proceeds with built-in defaults regardless.
-func maybeCreateDefaultConfig(cfgPath string) {
-	dir := filepath.Dir(cfgPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "config: cannot create config dir %s: %v\n", dir, err)
-		return
+func (e *NoConfigError) Error() string {
+	if e.FileExists {
+		return fmt.Sprintf("no endpoint configured in %s: run `wakil init --force` (the file is backed up first), or add an \"endpoints\" block (README Quickstart)", e.Path)
 	}
-	f, err := os.OpenFile(cfgPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		// Race: another process created it, or it appeared between the
-		// IsNotExist check and here. Either way, not our file to write.
-		if !os.IsExist(err) {
-			fmt.Fprintf(os.Stderr, "config: cannot create default config %s: %v\n", cfgPath, err)
+	return "no config: run `wakil init` (or see README Quickstart)"
+}
+
+// ApplyConfigApproval applies the standing "approval": "auto" config setting
+// to a Config produced by LoadConfig. Only the interactive TUI start calls it:
+// `wakil run` (headless, scripts) must never widen its approvals from a file
+// written for interactive use. An explicit --auto already set AutoApprove.
+// The setting counts as explicit for this run, so a remembered per-folder
+// preference does not switch it off.
+func ApplyConfigApproval(cfg *Config) {
+	if cfg.Approval == "auto" && !cfg.AutoApprove {
+		cfg.AutoApprove = true
+		cfg.AutoExplicit = true
+	}
+}
+
+// ConfigPathFromArgs returns the config file path LoadConfig would read for
+// argv (the --config flag, else WAKIL_CONFIG, else ~/.config/wakil/config.json)
+// and whether it was given explicitly with --config.
+func ConfigPathFromArgs(argv []string) (path string, explicit bool) {
+	path = defaultConfigPath()
+	for i := 0; i < len(argv); i++ {
+		switch {
+		case (argv[i] == "--config" || argv[i] == "-config") && i+1 < len(argv):
+			path, explicit = argv[i+1], true
+		case strings.HasPrefix(argv[i], "--config="):
+			path, explicit = argv[i][len("--config="):], true
+		case strings.HasPrefix(argv[i], "-config="):
+			path, explicit = argv[i][len("-config="):], true
 		}
-		return
 	}
-	defer f.Close()
-	if _, err := f.WriteString(defaultConfigTemplate); err != nil {
-		fmt.Fprintf(os.Stderr, "config: cannot write default config %s: %v\n", cfgPath, err)
-		return
-	}
-	fmt.Fprintf(os.Stderr, "config: created default config at %s — edit it to set your endpoint, then re-run.\n", cfgPath)
+	return path, explicit
 }
 
 // LoadConfig resolves configuration from all sources.
@@ -1310,40 +1327,21 @@ func LoadConfig(argv []string) (Config, error) {
 	cfg.Sandbox.Backend = ""
 
 	// 1) config file (explicit --config handled by pre-scan; else default path)
-	cfgPath := defaultConfigPath()
-	cfgPathExplicit := false // true when --config flag was used
-	for i := 0; i < len(argv); i++ {
-		switch {
-		case (argv[i] == "--config" || argv[i] == "-config") && i+1 < len(argv):
-			cfgPath = argv[i+1]
-			cfgPathExplicit = true
-		case strings.HasPrefix(argv[i], "--config="):
-			cfgPath = argv[i][len("--config="):]
-			cfgPathExplicit = true
-		case strings.HasPrefix(argv[i], "-config="):
-			cfgPath = argv[i][len("-config="):]
-			cfgPathExplicit = true
-		}
-	}
+	cfgPath, cfgPathExplicit := ConfigPathFromArgs(argv)
+	cfgFileExists := false
 	if cfgPath != "" {
 		b, err := os.ReadFile(cfgPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
 				return cfg, fmt.Errorf("reading %s: %w", cfgPath, err)
 			}
-			// First run: the default config file doesn't exist. Create a minimal
-			// default so the user has a starting point to edit. The file contains
-			// only _comment keys — built-in defaults from DefaultConfig() remain
-			// authoritative until the user edits it.
-			//
-			// Only auto-create for the default config path. If the user passed
-			// --config explicitly, the path might be a typo — erroring is better
-			// than silently creating a file at the wrong location.
-			if !cfgPathExplicit {
-				maybeCreateDefaultConfig(cfgPath)
-			}
+			// No file: nothing is written. Built-in defaults, env and flags
+			// still apply; if they name no endpoint either, resolveEndpoint
+			// fails and the error becomes a NoConfigError below.
 		} else if err := json.Unmarshal(b, &cfg); err != nil {
 			return cfg, fmt.Errorf("parsing %s: %w", cfgPath, err)
+		} else {
+			cfgFileExists = true
 		}
 	}
 
@@ -1370,6 +1368,12 @@ func LoadConfig(argv []string) (Config, error) {
 	}
 	if cfg.MashuraMode != "" {
 		cfg.WFOracleMode = cfg.MashuraMode
+	}
+
+	switch cfg.Approval {
+	case "", "ask", "auto":
+	default:
+		return cfg, fmt.Errorf("approval must be \"ask\" or \"auto\" (got %q)", cfg.Approval)
 	}
 
 	// Validate MashuraFallbackModel: if set, it must have a supported provider
@@ -1608,6 +1612,9 @@ func LoadConfig(argv []string) (Config, error) {
 	// legacy fields (exact pre-endpoints behavior). Env/flag overrides for
 	// model and base_url apply on top of the selected endpoint.
 	if err := resolveEndpoint(&cfg, flagsSet); err != nil {
+		if errors.Is(err, errNoEndpoint) && !cfgPathExplicit && cfgPath != "" {
+			return cfg, &NoConfigError{Path: cfgPath, FileExists: cfgFileExists}
+		}
 		return cfg, err
 	}
 	if err := validateSubagentEndpoint(cfg); err != nil {
@@ -1831,6 +1838,10 @@ func envInt(dst *int, key string) {
 // ILM_BASE_URL/WAKIL_BASE_URL/--base-url) and mirrors the result into the
 // legacy cfg.BaseURL/cfg.Model fields so existing call sites keep reading
 // one source of truth.
+// errNoEndpoint is the legacy "no endpoint at all" failure; its text is the
+// pre-0.6.3 message and stays the one shown for an explicit --config file.
+var errNoEndpoint = errors.New("proxy address required — set base_url (or host+port) in config, ILM_BASE_URL, or --base-url")
+
 func resolveEndpoint(cfg *Config, flagsSet map[string]bool) error {
 	modelOverridden := flagsSet["model"] || os.Getenv("ILM_MODEL") != "" || os.Getenv("WAKIL_MODEL") != ""
 	baseURLOverridden := flagsSet["base-url"] || os.Getenv("ILM_BASE_URL") != "" || os.Getenv("WAKIL_BASE_URL") != ""
@@ -1840,7 +1851,7 @@ func resolveEndpoint(cfg *Config, flagsSet map[string]bool) error {
 		// top-level fields. Behavior must be byte-identical to pre-endpoints
 		// Wakil, including the original missing-URL error.
 		if cfg.BaseURL == "" {
-			return fmt.Errorf("proxy address required — set base_url (or host+port) in config, ILM_BASE_URL, or --base-url")
+			return errNoEndpoint
 		}
 		cfg.Endpoint = EndpointConfig{
 			Kind:    EndpointKindIlmProxy,
@@ -1967,6 +1978,11 @@ func (c Config) AuthHeader() string {
 func (c Config) AuthHeaderFor(ep EndpointConfig) string {
 	if ep.AuthHeader != "" {
 		return ep.AuthHeader
+	}
+	if ep.APIKeyEnv != "" {
+		if v := strings.TrimSpace(os.Getenv(ep.APIKeyEnv)); v != "" {
+			return "Bearer " + v
+		}
 	}
 	if c.APIKey == "" {
 		return ""

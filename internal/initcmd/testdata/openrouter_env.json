@@ -1,0 +1,12 @@
+{
+  "endpoints": {
+    "openrouter": {
+      "kind": "openai",
+      "base_url": "https://openrouter.ai/api",
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "api_key_env": "OPENROUTER_API_KEY"
+    }
+  },
+  "default_endpoint": "openrouter",
+  "approval": "ask"
+}

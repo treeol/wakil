@@ -343,7 +343,7 @@ func (m *Manager) failureContract(toolName, lang string, err error, phase string
 
 	// Binary not found.
 	if strings.Contains(errStr, "spawn failed") || strings.Contains(errStr, "not found in PATH") || strings.Contains(errStr, "no such file") {
-		return fmt.Sprintf("[lsp: server binary for %q not found or spawn failed — %v. Install it or use --exec direct. Fell back to text search: no]", lang, err)
+		return fmt.Sprintf("[lsp: server binary for %q not found or spawn failed — %v. Install it or use --sandbox direct. Fell back to text search: no]", lang, err)
 	}
 
 	// Initialize failed.

@@ -11,7 +11,14 @@
 # fails nothing is installed. It never edits shell rc files, never calls a
 # package manager and never starts a service.
 #
-# Do not run it under `sh -x`: tracing would print the OpenRouter key.
+# Do not run it under `sh -x`: tracing prints expanded values. The script itself
+# never expands OPENROUTER_API_KEY (it tests with ${VAR:+set}, which traces as
+# the word "set"), but other tools would show your environment.
+#
+# Config: it never writes a config itself. After the install it keeps an
+# existing config, or runs `wakil init` (see "config" below), or prints the next
+# step. The API key never passes through this script: OPENROUTER_API_KEY is only
+# tested for being set, and `wakil init --key-env` records the variable NAME.
 #
 # Test-only: WAKIL_INSTALL_TEST_CORRUPT=1 corrupts every downloaded artifact
 # (a value other than 1 corrupts only artifacts whose file name contains it),
@@ -34,12 +41,10 @@ MANUAL_URL="https://github.com/treeol/wakil#quickstart"
 COSIGN_IDENTITY_RE='^https://github.com/treeol/wakil/\.github/workflows/release\.yml@refs/tags/v'
 COSIGN_ISSUER='https://token.actions.githubusercontent.com'
 KVR_DEST="/usr/local/bin/kvr-server"
-CONFIG_PLACEHOLDER="REPLACE_WITH_OPENROUTER_API_KEY"
 MANIFEST_NAME=".wakil-install.manifest"
 
 # Globals set while running.
 TMP=""
-STTY_SAVED=""
 CUR_NEW=""
 KVR_TMP=""
 DL=""
@@ -72,10 +77,6 @@ die() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 cleanup() {
-	if [ -n "$STTY_SAVED" ]; then
-		stty "$STTY_SAVED" </dev/tty 2>/dev/null || true
-		STTY_SAVED=""
-	fi
 	if [ -n "$CUR_NEW" ]; then
 		rm -f "$CUR_NEW" 2>/dev/null || true
 		CUR_NEW=""
@@ -101,7 +102,7 @@ Options:
   --prefix DIR        install directory (default: $WAKIL_INSTALL_DIR, else ~/.local/bin)
   --no-hisn           do not install hisn (Wakil then uses Docker)
   --no-kvr            do not install kvr-server (staging stays off)
-  --no-config         do not offer the quickstart OpenRouter config
+  --no-config         do not run `wakil init` after installing
   --sudo              allow sudo (may prompt) to place kvr-server in /usr/local/bin
   --require-signature fail unless the release signature was verified with cosign
   --uninstall         remove what this script installed (config and data are kept)
@@ -496,109 +497,37 @@ tty_usable() {
 	[ -r /dev/tty ] && [ -w /dev/tty ] && (: </dev/tty) 2>/dev/null
 }
 
-# read_key_from_tty sets KEY_TTY. It runs in the current shell (not in a command
-# substitution) so the trap can restore the terminal, and it refuses to read
-# anything when echo cannot be turned off.
-KEY_TTY=""
-read_key_from_tty() {
-	KEY_TTY=""
-	STTY_SAVED=$(stty -g </dev/tty 2>/dev/null) || STTY_SAVED=""
-	if [ -z "$STTY_SAVED" ]; then
-		return 1
-	fi
-	if ! stty -echo </dev/tty 2>/dev/null; then
-		STTY_SAVED=""
-		return 1
-	fi
-	printf 'OpenRouter API key for the quickstart config (input hidden, Enter to skip): ' >/dev/tty
-	IFS= read -r KEY_TTY </dev/tty || KEY_TTY=""
-	stty "$STTY_SAVED" </dev/tty 2>/dev/null || true
-	STTY_SAVED=""
-	printf '\n' >/dev/tty
-}
-
 CONFIG_RESULT=""
 
-write_config() {
-	_cfgdir=$HOME/.config/wakil
-	_cfg=$_cfgdir/config.json
-	_tpl=$TMP/config.quickstart.json
+# setup_config: keep an existing config; else run `wakil init` (non-interactive
+# when OPENROUTER_API_KEY is set, interactive when a terminal exists); else say
+# what to run next. The key is never read, stored or passed on by this script.
+setup_config() {
+	_cfg=${WAKIL_CONFIG:-$HOME/.config/wakil/config.json}
 	if [ -e "$_cfg" ] || [ -L "$_cfg" ]; then
 		CONFIG_RESULT="kept your existing $_cfg"
 		return 0
 	fi
-	if [ ! -f "$_tpl" ]; then
-		CONFIG_RESULT="no quickstart config in this release; configure $_cfg yourself (README Quickstart step 3)"
-		return 0
-	fi
-	_key=${KEY_FROM_ENV:-}
-	if [ -z "$_key" ]; then
-		if tty_usable; then
-			if read_key_from_tty; then
-				_key=$KEY_TTY
-				KEY_TTY=""
-			else
-				CONFIG_RESULT="no config written (cannot hide typed input on this terminal; set OPENROUTER_API_KEY instead)"
-				return 0
-			fi
+	# ${VAR:+set} expands to the word "set", never the value, so a traced run
+	# (sh -x) cannot print the key from this test.
+	if [ "${OPENROUTER_API_KEY:+set}" = set ]; then
+		# --key-env records only the variable NAME; the key stays in the environment.
+		if "$DIR/wakil" init --provider openrouter --key-env OPENROUTER_API_KEY --yes </dev/null; then
+			CONFIG_RESULT="note: OPENROUTER_API_KEY must also be set whenever you run wakil"
 		else
-			CONFIG_RESULT="no config written (no OPENROUTER_API_KEY and no terminal to ask); see README Quickstart step 3"
-			return 0
+			CONFIG_RESULT="wakil init did not finish; run \`wakil init\` yourself"
 		fi
-	fi
-	_key=$(printf '%s' "$_key" | tr -d ' \t\r\n')
-	if [ -z "$_key" ]; then
-		CONFIG_RESULT="no config written (no key given); see README Quickstart step 3"
 		return 0
 	fi
-	case $_key in
-	*[!A-Za-z0-9._~+/=-]*)
-		_key=""
-		CONFIG_RESULT="no config written (the key has unexpected characters)"
-		return 0
-		;;
-	esac
-	grep -q "$CONFIG_PLACEHOLDER" "$_tpl" || {
-		_key=""
-		CONFIG_RESULT="no config written (quickstart template has no key placeholder)"
-		return 0
-	}
-	if [ ! -d "$_cfgdir" ]; then
-		(umask 077 && mkdir -p "$_cfgdir") || die "could not create $_cfgdir"
-		chmod 700 "$_cfgdir" 2>/dev/null || true
-	fi
-	# mktemp creates the file exclusively with mode 0600, so a planted file or
-	# symlink with a guessable name cannot capture the key.
-	_tmpcfg=$(mktemp "$_cfgdir/.config.json.XXXXXX") || die "could not create a temp file in $_cfgdir"
-	CUR_NEW=$_tmpcfg
-	# The key only ever lives in shell variables and builtins (printf, read),
-	# never in the argument list of a started process.
-	(
-		umask 077
-		: >"$_tmpcfg"
-		while IFS= read -r _line || [ -n "$_line" ]; do
-			case $_line in
-			*"$CONFIG_PLACEHOLDER"*) _line=${_line%%"$CONFIG_PLACEHOLDER"*}$_key${_line#*"$CONFIG_PLACEHOLDER"} ;;
-			esac
-			printf '%s\n' "$_line"
-		done <"$_tpl" >>"$_tmpcfg"
-	) || die "could not write the config"
-	_key=""
-	# ln fails if the target exists: never overwrite a config that appeared meanwhile.
-	if ln "$_tmpcfg" "$_cfg" 2>/dev/null; then
-		rm -f "$_tmpcfg"
-		CUR_NEW=""
-		chmod 600 "$_cfg"
-		CONFIG_RESULT="wrote $_cfg (mode 0600, OpenRouter, free model: weak at tool calling, see its _comment)"
-	else
-		rm -f "$_tmpcfg"
-		CUR_NEW=""
-		if [ -e "$_cfg" ] || [ -L "$_cfg" ]; then
-			CONFIG_RESULT="kept your existing $_cfg"
+	if tty_usable; then
+		if "$DIR/wakil" init </dev/tty; then
+			CONFIG_RESULT=""
 		else
-			CONFIG_RESULT="could not create $_cfg; no config written"
+			CONFIG_RESULT="wakil init did not finish; run \`wakil init\` yourself"
 		fi
+		return 0
 	fi
+	CONFIG_RESULT="next: run \`wakil init\`"
 }
 
 # ── uninstall ─────────────────────────────────────────────────────────────
@@ -643,9 +572,6 @@ main() {
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 	trap 'exit 129' HUP
-	KEY_FROM_ENV=${OPENROUTER_API_KEY:-}
-	unset OPENROUTER_API_KEY
-
 	resolve_install_dir
 	if [ "$OPT_UNINSTALL" = 1 ]; then
 		do_uninstall
@@ -700,16 +626,6 @@ main() {
 		fetch "$_kb/SHA256SUMS" "$TMP/kvr.SHA256SUMS" || die "could not download kvr-server SHA256SUMS"
 		get_verified "$_kb/$KVR_ASSET" "$KVR_ASSET" "$TMP/kvr.SHA256SUMS"
 	fi
-	if [ "$OPT_NO_CONFIG" = 0 ] && [ ! -e "$HOME/.config/wakil/config.json" ] && [ ! -L "$HOME/.config/wakil/config.json" ]; then
-		# Older releases (before the quickstart config existed) have no entry:
-		# that is the only case that skips. A duplicate entry is ambiguous and aborts.
-		case $(entry_count config.quickstart.json "$TMP/checksums.txt") in
-		0) say "$TAG has no checksummed quickstart config; skipping the config step" ;;
-		1) get_verified "$_base/config.quickstart.json" config.quickstart.json "$TMP/checksums.txt" ;;
-		*) die "checksums.txt lists config.quickstart.json more than once: nothing installed" ;;
-		esac
-	fi
-
 	mkdir -p "$TMP/x"
 	# The archive is already sha256-verified; still refuse odd member names.
 	_members=$(tar -tzf "$TMP/$_wasset") || die "could not list $_wasset"
@@ -791,8 +707,8 @@ main() {
 	CONFIG_RESULT=""
 	if [ "$OPT_NO_CONFIG" = 0 ]; then
 		step "Config"
-		write_config
-		say "$CONFIG_RESULT"
+		setup_config
+		[ -z "$CONFIG_RESULT" ] || say "$CONFIG_RESULT"
 	fi
 
 	step "Installed"

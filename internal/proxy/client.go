@@ -32,6 +32,24 @@ var ErrBackendStream = errors.New("backend stream error")
 // failure, etc.). Retrying a malformed request fails identically every time.
 var ErrBackendFatal = errors.New("backend fatal error")
 
+// PrivacyPolicyMarker is the ineligibility reason OpenRouter reports (inside a
+// 404 body) when the account's privacy settings exclude every provider of a
+// model, typically a free one whose provider may train on prompts.
+const PrivacyPolicyMarker = "free-model-training-violation"
+
+// PrivacySettingsURL is where the user can allow such providers.
+const PrivacySettingsURL = "https://openrouter.ai/settings/privacy"
+
+// PrivacyPolicyMessage is the one-line replacement for the raw 404 JSON.
+const PrivacyPolicyMessage = "your OpenRouter privacy settings exclude this model's only provider (it may train on prompts). " +
+	"Allow it at " + PrivacySettingsURL + " or pick another model"
+
+// IsPrivacyPolicyError reports whether an HTTP status and body are
+// OpenRouter's privacy-settings 404.
+func IsPrivacyPolicyError(status int, body string) bool {
+	return status == http.StatusNotFound && strings.Contains(body, PrivacyPolicyMarker)
+}
+
 // wrapStreamErr tags cause as a retryable backend stream error.
 func wrapStreamErr(cause error) error {
 	return fmt.Errorf("%w: %w", ErrBackendStream, cause)
@@ -1052,6 +1070,12 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		msg := strings.TrimSpace(string(body))
 		if isFatalStatus(resp.StatusCode) {
 			// Non-retryable request error — retrying will fail identically.
+			if IsPrivacyPolicyError(resp.StatusCode, msg) {
+				// One line plus the settings URL instead of the raw JSON; the
+				// raw body goes to the session log only.
+				diag.Printf("proxy: %s: %s\n", resp.Status, msg)
+				return Message{}, fmt.Errorf("%w: %s: %s", ErrBackendFatal, resp.Status, PrivacyPolicyMessage)
+			}
 			return Message{}, fmt.Errorf("%w: %s: %s", ErrBackendFatal, resp.Status, msg)
 		}
 		// Transient failure (5xx, 429 rate limit, 408 timeout, 529 overloaded,

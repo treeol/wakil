@@ -1,7 +1,7 @@
 package config
 
 import (
-	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -689,155 +689,92 @@ func TestValidateExternalCommands_LSPWithCommand(t *testing.T) {
 	}
 }
 
-// ---------------- config auto-create on first run ----------------
+// ---------------- first run: no config, nothing written ----------------
 
-// TestMaybeCreateDefaultConfig_CreatesFile verifies that a missing config file
-// is created with the default template content and correct permissions.
-func TestMaybeCreateDefaultConfig_CreatesFile(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-
-	maybeCreateDefaultConfig(cfgPath)
-
-	// File should exist.
-	b, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatalf("config file not created: %v", err)
-	}
-
-	// Content should be the default template (contains _comment keys, no endpoints).
-	content := string(b)
-	if !strings.Contains(content, "_comment") {
-		t.Error("created config should contain _comment keys")
-	}
-	if strings.Contains(content, "\"endpoints\"") {
-		t.Error("created config should NOT contain an endpoints block — let the user add their own")
-	}
-
-	// File permissions should be 0600.
-	info, err := os.Stat(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("config file permissions = %o, want 0600", perm)
-	}
-
-	// Dir permissions: t.TempDir() creates the top-level dir with 0755, so
-	// only check permissions on a subdir that maybeCreateDefaultConfig creates
-	// itself. Use a nested path for this.
-	nestedDir := filepath.Join(dir, "nested", "config.json")
-	maybeCreateDefaultConfig(nestedDir)
-	nestedParent := filepath.Dir(nestedDir)
-	dirInfo, err := os.Stat(nestedParent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := dirInfo.Mode().Perm(); perm != 0o700 {
-		t.Errorf("config dir permissions = %o, want 0700", perm)
-	}
-
-	// The created file should be valid JSON (parses without error).
-	var cfg Config
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		t.Fatalf("created config is not valid JSON: %v", err)
+func clearEndpointEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"ILM_BASE_URL", "WAKIL_BASE_URL", "ILM_HOST", "WAKIL_HOST", "ILM_MODEL", "WAKIL_MODEL"} {
+		t.Setenv(k, "")
 	}
 }
 
-// TestMaybeCreateDefaultConfig_NoOverwrite verifies that an existing config
-// file is never overwritten.
-func TestMaybeCreateDefaultConfig_NoOverwrite(t *testing.T) {
+// TestLoadConfig_MissingConfigWritesNothing: a missing default config yields a
+// NoConfigError and no file (0.6.2 and older wrote an endpoint-less stub).
+func TestLoadConfig_MissingConfigWritesNothing(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-
-	// Write an existing config.
-	existing := `{"base_url":"http://my-endpoint:11400"}`
-	if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	maybeCreateDefaultConfig(cfgPath)
-
-	// Content should be unchanged.
-	b, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != existing {
-		t.Error("maybeCreateDefaultConfig overwrote an existing config file")
-	}
-}
-
-// TestMaybeCreateDefaultConfig_CreatesParentDir verifies that parent directories
-// are created when they don't exist.
-func TestMaybeCreateDefaultConfig_CreatesParentDir(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "subdir", "deeper", "config.json")
-
-	maybeCreateDefaultConfig(cfgPath)
-
-	if _, err := os.Stat(cfgPath); err != nil {
-		t.Fatalf("config file not created in nested dir: %v", err)
-	}
-}
-
-// TestMaybeCreateDefaultConfig_TemplateParsesAsConfig verifies the generated
-// template parses as a valid Config and does not set any endpoint (so defaults
-// stay authoritative).
-func TestMaybeCreateDefaultConfig_TemplateParsesAsConfig(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-
-	maybeCreateDefaultConfig(cfgPath)
-
-	b, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg Config
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		t.Fatalf("template does not parse as Config: %v", err)
-	}
-	// No endpoints should be set — the user must fill them in.
-	if len(cfg.Endpoints) != 0 {
-		t.Errorf("template should not set endpoints, got %d entries", len(cfg.Endpoints))
-	}
-	// base_url should be empty — so resolveEndpoint will produce the "proxy
-	// address required" error (same as before, but now the user has a file to edit).
-	if cfg.BaseURL != "" {
-		t.Errorf("template should not set base_url, got %q", cfg.BaseURL)
-	}
-}
-
-// TestLoadConfig_FirstRunCreatesConfig verifies the full integration: LoadConfig
-// with a missing config file creates it and fails with the expected endpoint
-// error (since the template has no endpoints).
-func TestLoadConfig_FirstRunCreatesConfig(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
+	cfgPath := filepath.Join(dir, "sub", "config.json")
 	t.Setenv("WAKIL_CONFIG", cfgPath)
-	// Clear endpoint-related env vars so the test is deterministic.
-	t.Setenv("ILM_BASE_URL", "")
-	t.Setenv("WAKIL_BASE_URL", "")
-	t.Setenv("ILM_HOST", "")
-	t.Setenv("WAKIL_HOST", "")
-	t.Setenv("ILM_MODEL", "")
-	t.Setenv("WAKIL_MODEL", "")
+	clearEndpointEnv(t)
 
-	// LoadConfig will find the file missing, create it, then proceed to
-	// resolveEndpoint which should fail with "proxy address required" since
-	// the template has no endpoints or base_url.
 	_, err := LoadConfig(nil)
-	if err == nil {
-		t.Fatal("expected 'proxy address required' error, got nil")
+	var nc *NoConfigError
+	if !errors.As(err, &nc) {
+		t.Fatalf("want *NoConfigError, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "proxy address required") {
-		t.Fatalf("expected 'proxy address required' error, got: %v", err)
+	if nc.FileExists || nc.Path != cfgPath {
+		t.Errorf("NoConfigError = %+v", nc)
 	}
+	if !strings.Contains(err.Error(), "wakil init") {
+		t.Errorf("error should point at `wakil init`: %v", err)
+	}
+	if _, serr := os.Stat(filepath.Dir(cfgPath)); !os.IsNotExist(serr) {
+		t.Errorf("LoadConfig must not create the config dir or file; stat err=%v", serr)
+	}
+}
 
-	// The config file should now exist.
-	if _, err := os.Stat(cfgPath); err != nil {
-		t.Fatalf("config file was not created by LoadConfig: %v", err)
+// TestLoadConfig_EndpointlessStubIsNoConfig: a 0.6.2-style commented stub still
+// loads exactly as before (no parse error, nothing rewritten) and reports that
+// no endpoint is configured.
+func TestLoadConfig_EndpointlessStubIsNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	stub := `{
+  "_comment": "Wakil config - edit this file",
+  "_comment_endpoints": "REQUIRED: set at least one endpoint.",
+  "_comment_sandbox": "sandbox.backend: unset means hisn when usable"
+}
+`
+	if err := os.WriteFile(cfgPath, []byte(stub), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WAKIL_CONFIG", cfgPath)
+	clearEndpointEnv(t)
+
+	_, err := LoadConfig(nil)
+	var nc *NoConfigError
+	if !errors.As(err, &nc) || !nc.FileExists {
+		t.Fatalf("want NoConfigError{FileExists:true}, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("error should mention `wakil init --force`: %v", err)
+	}
+	if b, _ := os.ReadFile(cfgPath); string(b) != stub {
+		t.Error("the stub was modified")
+	}
+	// The same stub plus an env endpoint loads as it always did.
+	t.Setenv("ILM_BASE_URL", "http://proxy:11400")
+	if _, err := LoadConfig([]string{"--sandbox", "direct"}); err != nil {
+		t.Fatalf("stub + ILM_BASE_URL must load: %v", err)
+	}
+}
+
+// TestLoadConfig_ExampleConfigLoadsUnchanged: config.example.json (which has
+// an endpoints block) loads and resolves its default endpoint.
+func TestLoadConfig_ExampleConfigLoadsUnchanged(t *testing.T) {
+	raw := readRepoFile(t, "config.example.json")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	clearEndpointEnv(t)
+	cfg, err := LoadConfig([]string{"--config", cfgPath, "--sandbox", "direct"})
+	if err != nil {
+		t.Fatalf("config.example.json must load: %v", err)
+	}
+	if cfg.EndpointName == "" || cfg.Endpoint.BaseURL == "" {
+		t.Errorf("example config resolved no endpoint: %+v", cfg.Endpoint)
 	}
 }
 
@@ -1175,5 +1112,57 @@ func TestLoadConfig_ValidServerTools(t *testing.T) {
 	}
 	if p.ServerToolMaxCalls != 15 {
 		t.Errorf("ServerToolMaxCalls = %d, want 15", p.ServerToolMaxCalls)
+	}
+}
+
+// Configs that loaded in 0.6.2 must never turn into a NoConfigError: that
+// error is what makes first start offer to replace a file.
+func TestNoConfigErrorOnlyWhenNoEndpointAnywhere(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for name, body := range map[string]string{
+		"legacy base_url":   `{"base_url":"http://proxy:11400"}`,
+		"legacy host+port":  `{"host":"proxy","port":11400}`,
+		"endpoints block":   `{"endpoints":{"e":{"kind":"openai","base_url":"http://x:1","model":"m"}}}`,
+		"commented example": `{"_comment":"x","base_url":"http://proxy:11400","model":"ilm"}`,
+	} {
+		p := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("WAKIL_CONFIG", p)
+		clearEndpointEnv(t)
+		cfg, err := LoadConfig([]string{"--sandbox", "direct"})
+		if err != nil {
+			t.Errorf("%s: must load as before, got %v", name, err)
+			continue
+		}
+		if cfg.Endpoint.BaseURL == "" {
+			t.Errorf("%s: no endpoint resolved", name)
+		}
+		if b, _ := os.ReadFile(p); string(b) != body {
+			t.Errorf("%s: file was modified", name)
+		}
+	}
+	// No endpoint in the file but one from the environment: loads (0.6.2 did).
+	p := filepath.Join(t.TempDir(), "config.json")
+	_ = os.WriteFile(p, []byte(`{"_comment":"stub"}`), 0o600)
+	t.Setenv("WAKIL_CONFIG", p)
+	t.Setenv("WAKIL_BASE_URL", "http://env:1")
+	if _, err := LoadConfig([]string{"--sandbox", "direct"}); err != nil {
+		t.Errorf("env endpoint must load: %v", err)
+	}
+}
+
+// An explicit --config path never yields NoConfigError (it keeps the old text),
+// so first start cannot offer to replace a file the user named.
+func TestExplicitConfigNeverYieldsNoConfigError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	clearEndpointEnv(t)
+	p := filepath.Join(t.TempDir(), "mine.json")
+	_ = os.WriteFile(p, []byte(`{"_comment":"stub"}`), 0o600)
+	_, err := LoadConfig([]string{"--config", p, "--sandbox", "direct"})
+	var nc *NoConfigError
+	if err == nil || errors.As(err, &nc) || !strings.Contains(err.Error(), "proxy address required") {
+		t.Fatalf("want the old error text, got %v", err)
 	}
 }

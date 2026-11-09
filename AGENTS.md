@@ -53,6 +53,7 @@ Core packages (`internal/`):
 - `core/` — core domain types and interfaces
 - `counsel/` — external AI counsel (oracle) HTTP calls, panel execution, response parsing
 - `diag/` — diagnostics
+- `initcmd/` — `wakil init` (interactive/flag setup, test call, minimal config writer with 0600 backup); `cmd/wakil/configshow.go` is `wakil config show`
 - `exec/` — sandboxed execution (hisn, Docker, and direct modes; `BackendExecutor` for pluggable sandbox backends; optional capability interfaces in `capabilities.go`)
 - `sandbox/` — backend-neutral sandbox contract (`Backend`, `PathMap`, `GrantManager`); `sandbox/hisn/` is the hisn backend, `sandbox/project/` loads `.wakil/sandbox.json` and the user's approval of it, `sandbox/fake/` a test double. The tool layer (agent, tools, lsp, browser, tui) must not import a concrete backend — enforced by `internal/agent/no_backend_import_test.go`. Design: `docs/sandbox-backends.md`
 - `lsp/` — language server protocol integration
@@ -82,7 +83,7 @@ Core packages (`internal/`):
 - Release (`.github/workflows/release.yml`, `.goreleaser.yaml`) — tag `v*` only: sandbox image → ghcr.io (digest) → goreleaser (digest injected via `SANDBOX_IMAGE`) → package smoke test. Local dry run: `goreleaser release --snapshot --clean --skip=sign,publish`
 - Dependabot (gomod + github-actions, weekly)
 - `scripts/` — `check_coverage.sh`, `check_config_docs.sh`, `check_go_version_pins.sh`
-- `install.sh`, `config.quickstart.json` — quick installer and its OpenRouter starter config; attached to releases via goreleaser `extra_files` (`install.sh` is POSIX sh, `shellcheck -s sh install.sh` must be clean; test-only env `WAKIL_INSTALL_TEST_CORRUPT=1` corrupts downloads to prove checksum aborts)
+- `install.sh`, `config.quickstart.json` — quick installer (writes no config; runs `wakil init`) and the OpenRouter starter config, which is embedded in the binary (`quickstart.go`) as the single source of the default model; both attached to releases via goreleaser `extra_files` (`install.sh` is POSIX sh, `shellcheck -s sh install.sh` must be clean; test-only env `WAKIL_INSTALL_TEST_CORRUPT=1` corrupts downloads to prove checksum aborts)
 - `docs/` — project documentation
 
 ## Conventions

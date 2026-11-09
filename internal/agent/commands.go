@@ -1631,7 +1631,7 @@ sessions are saved automatically; resume with: wakil --resume  (or --resume-id <
 or switch sessions mid-run with /resume inside the TUI
 
 @path                attach a file/folder for context (picker pops up after "@")
-                     reads host files for context; editing them needs --exec direct
+                     reads host files for context; editing them needs --sandbox direct
                      paste an image directly into the terminal to attach it
                      /image clipboard reads the system clipboard image
 

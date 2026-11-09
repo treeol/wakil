@@ -521,7 +521,7 @@ func selinuxDockerHint() string {
 //	sudo ausearch -m avc -ts recent | grep connectto | audit2allow -M wakil_dockersock
 //	sudo semodule -i wakil_dockersock.pp
 //
-// Or run wakil with --exec direct on SELinux hosts.
+// Or run wakil with --sandbox direct on SELinux hosts.
 func selinuxDockerSocketHint() string {
 	if !selinuxEnforceReader() {
 		return "" // not Enforcing → no SELinux hint
@@ -531,7 +531,7 @@ func selinuxDockerSocketHint() string {
 		"Fix on host:\n" +
 		"  sudo ausearch -m avc -ts recent | grep connectto | audit2allow -M wakil_dockersock\n" +
 		"  sudo semodule -i wakil_dockersock.pp\n" +
-		"Or run wakil with --exec direct on SELinux hosts."
+		"Or run wakil with --sandbox direct on SELinux hosts."
 }
 
 // dockerCmd runs a docker CLI command with a bounded context. It replaces bare
@@ -591,7 +591,7 @@ func dockerCmdRun(timeout time.Duration, args ...string) (timedOut bool, err err
 // denied, or DOCKER_HOST unreachable.
 func dockerPreflight() error {
 	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("docker not found — install Docker or use --exec direct for bare-metal execution")
+		return fmt.Errorf("docker not found — install Docker or use --sandbox direct for bare-metal execution")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -606,10 +606,10 @@ func dockerPreflight() error {
 			return fmt.Errorf("docker daemon not responding (timed out after 5s) — is the Docker daemon running?")
 		}
 		if strings.Contains(msg, "Cannot connect to the Docker daemon") || strings.Contains(msg, "Is the docker daemon running") {
-			return fmt.Errorf("docker daemon is not running — start it (e.g. systemctl start docker) or use --exec direct")
+			return fmt.Errorf("docker daemon is not running — start it (e.g. systemctl start docker) or use --sandbox direct")
 		}
 		if strings.Contains(msg, "permission denied") || strings.Contains(msg, "Got permission denied") {
-			return fmt.Errorf("docker permission denied — add your user to the docker group (sudo usermod -aG docker $USER) or use --exec direct%s", selinuxDockerHint())
+			return fmt.Errorf("docker permission denied — add your user to the docker group (sudo usermod -aG docker $USER) or use --sandbox direct%s", selinuxDockerHint())
 		}
 		if msg == "" {
 			return fmt.Errorf("docker info failed: %w (is the Docker daemon running?)", err)
@@ -653,12 +653,12 @@ func checkDockerImage(image string) error {
 	if strings.Contains(image, "/") {
 		return fmt.Errorf("docker image %q not found locally — pull it with:\n"+
 			"    docker pull %s\n"+
-			"Alternatively, use --exec direct for bare-metal execution (no Docker needed).", image, image)
+			"Alternatively, use --sandbox direct for bare-metal execution (no Docker needed).", image, image)
 	}
 	return fmt.Errorf("docker image %q not found locally — build it with:\n"+
 		"    docker build -t %s .\n"+
 		"Run from the wakil repository root where the Dockerfile lives.\n"+
-		"Alternatively, use --exec direct for bare-metal execution (no Docker needed).", image, image)
+		"Alternatively, use --sandbox direct for bare-metal execution (no Docker needed).", image, image)
 }
 
 // pullPinnedImage pulls a digest-pinned sandbox image. Progress goes to
@@ -671,7 +671,7 @@ func pullPinnedImage(image string) error {
 	cmd := exec.CommandContext(ctx, "docker", "pull", image)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker pull %s failed: %w — fix connectivity, or pull it manually, or use --exec direct", image, err)
+		return fmt.Errorf("docker pull %s failed: %w — fix connectivity, or pull it manually, or use --sandbox direct", image, err)
 	}
 	return nil
 }
@@ -694,7 +694,7 @@ func NewDockerExecutor(opts DockerOpts) (*DockerExecutor, error) {
 	// This catches "docker not installed" before checkDockerImage, which
 	// would misclassify an empty-output exec failure as "image not found".
 	if _, err := exec.LookPath("docker"); err != nil {
-		return nil, fmt.Errorf("docker not found — install Docker or use --exec direct for bare-metal execution")
+		return nil, fmt.Errorf("docker not found — install Docker or use --sandbox direct for bare-metal execution")
 	}
 
 	// Check the image exists locally. A missing image produces a confusing
@@ -1202,7 +1202,7 @@ func checkInContainerDockerSocket(container string) string {
 		// Fall back to the standard group-membership guidance.
 		return "in-container docker socket access denied — " +
 			"add your user to the docker group (sudo usermod -aG docker $USER) " +
-			"or use --exec direct"
+			"or use --sandbox direct"
 	}
 	return "in-container docker socket access denied — " + hint
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,9 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/counsel"
 	"github.com/treeol/wakil/internal/diag"
+	"github.com/treeol/wakil/internal/initcmd"
 	"github.com/treeol/wakil/internal/proxy"
+	"github.com/treeol/wakil/internal/sandbox"
 	"github.com/treeol/wakil/internal/timeline"
 	"github.com/treeol/wakil/internal/tui"
 	"github.com/treeol/wakil/internal/wiring"
@@ -45,6 +48,16 @@ func main() {
 		}
 	}
 
+	// "wakil init": create the config (interactive or by flags).
+	if len(os.Args) >= 2 && os.Args[1] == "init" {
+		os.Exit(runInit(os.Args[2:]))
+	}
+
+	// "wakil config show [--json]": the effective config with sources.
+	if len(os.Args) >= 3 && os.Args[1] == "config" && os.Args[2] == "show" {
+		os.Exit(runConfigShow(os.Stdout, os.Stderr, os.Args[3:], os.Getenv))
+	}
+
 	// "wakil sandbox trust [dir]": the user approves the project's
 	// .wakil/sandbox.json. Interactive only (reads /dev/tty); never reachable
 	// with a flag that skips the question.
@@ -64,6 +77,11 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "run" {
 		cfg, err := config.LoadConfig(nil) // flags after "run" are for RunHeadless, not LoadConfig
 		if err != nil {
+			var nc *config.NoConfigError
+			if errors.As(err, &nc) {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(ExitError)
+			}
 			fmt.Fprintln(os.Stderr, "config error:", err)
 			os.Exit(ExitError)
 		}
@@ -125,12 +143,26 @@ func main() {
 	endCfg := timeline.Begin("config load")
 	cfgStart := time.Now()
 	cfg, err := config.LoadConfig(os.Args[1:])
+	var noCfg *config.NoConfigError
+	if errors.As(err, &noCfg) {
+		// First start without a usable config: offer setup on a terminal,
+		// otherwise point at `wakil init`. Nothing is written by LoadConfig.
+		retry, code := firstRun(noCfg, stdioIsTerminal(), os.Stdin, os.Stdout, os.Stderr, func(o initcmd.Options) int {
+			return initcmd.Run(context.Background(), o, initEnv(os.Stdin, os.Stdout, true, noCfg.Path))
+		})
+		if !retry {
+			os.Exit(code)
+		}
+		cfg, err = config.LoadConfig(os.Args[1:])
+	}
 	cfgDur := time.Since(cfgStart)
 	endCfg()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(2)
 	}
+	// "approval": "auto" in the config file is the standing --auto (TUI only).
+	config.ApplyConfigApproval(&cfg)
 	if cfg.TraceTimeline && !timeline.Enabled() {
 		timeline.Start("", "start", processStart) // --trace without the env var
 		timeline.Record("process start to main (runtime + package init)", processStart, mainBegan)
@@ -164,6 +196,9 @@ func main() {
 		}
 	}
 	fmt.Fprintln(os.Stderr, cfg.StartupBanner())
+	if hint := sandbox.ContainerHintFor(cfg.Sandbox.DefaultNote); hint != "" {
+		fmt.Fprintln(os.Stderr, hint)
+	}
 	// D4 (0.5.0): once per project, point at the read-only legacy store and the
 	// migrate command. Then the WAKIL_WORKSPACE_PATH line (warning only, since
 	// 0.5.0 the variable no longer changes store keys).

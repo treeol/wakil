@@ -13,6 +13,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,6 +39,10 @@ type entry struct {
 	ID            string        `json:"id"`
 	ContextLength int           `json:"context_length"`
 	Pricing       pricingFields `json:"pricing"`
+	// SupportedParameters lists the request parameters the model accepts
+	// ("tools" among them when it can call tools). Absent on servers that are
+	// not OpenRouter.
+	SupportedParameters []string `json:"supported_parameters"`
 }
 
 // pricingFields mirrors OpenRouter's per-model "pricing" object. All values
@@ -227,31 +232,9 @@ func fetchModels(ctx context.Context) (map[string]int, map[string]Pricing, error
 	fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(fctx, http.MethodGet, modelsURL, nil)
+	result, err := getModels(fctx, &http.Client{}, modelsURL, "")
 	if err != nil {
-		return nil, nil, fmt.Errorf("build models request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("fetch models: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("fetch models: %s", resp.Status)
-	}
-
-	// The models list is large (~hundreds of entries) but well under 16 MB.
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return nil, nil, fmt.Errorf("read models response: %w", err)
-	}
-
-	var result response
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, nil, fmt.Errorf("parse models response: %w", err)
+		return nil, nil, err
 	}
 
 	entries := make(map[string]int, len(result.Data))
@@ -267,6 +250,87 @@ func fetchModels(ctx context.Context) (map[string]int, map[string]Pricing, error
 		}
 	}
 	return entries, pricing, nil
+}
+
+// getModels GETs and parses a models list. authHeader, when set, is sent as
+// the Authorization value (never included in an error).
+func getModels(ctx context.Context, hc *http.Client, url, authHeader string) (response, error) {
+	var result response
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return result, fmt.Errorf("build models request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return result, fmt.Errorf("fetch models: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("fetch models: %s", resp.Status)
+	}
+	// The models list is large (~hundreds of entries) but well under 16 MB.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return result, fmt.Errorf("read models response: %w", err)
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return result, fmt.Errorf("parse models response: %w", err)
+	}
+	return result, nil
+}
+
+// Model is one entry of a models list, as `wakil init` shows it.
+type Model struct {
+	ID            string
+	ContextLength int     // 0 when the server does not say
+	Pricing       Pricing // Valid false when unknown or dynamic
+	// ToolsKnown is true when the server lists supported parameters (OpenRouter);
+	// Tools is then whether "tools" is among them.
+	ToolsKnown bool
+	Tools      bool
+}
+
+// Free reports whether the model is an OpenRouter ":free" variant.
+func (m Model) Free() bool { return strings.HasSuffix(m.ID, ":free") }
+
+// ListModels fetches a models list from url (an OpenRouter-style
+// /v1/models, which OpenAI-compatible servers such as Ollama and vLLM also
+// serve) without touching the shared cache. authHeader may be empty. Entries
+// keep the server's order.
+func ListModels(ctx context.Context, hc *http.Client, url, authHeader string) ([]Model, error) {
+	if hc == nil {
+		hc = &http.Client{}
+	}
+	fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+	result, err := getModels(fctx, hc, url, authHeader)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Model, 0, len(result.Data))
+	for _, e := range result.Data {
+		if e.ID == "" {
+			continue
+		}
+		m := Model{ID: e.ID, ContextLength: e.ContextLength}
+		if p, ok := parsePricing(e.Pricing); ok {
+			m.Pricing = p
+		}
+		if e.SupportedParameters != nil {
+			m.ToolsKnown = true
+			for _, sp := range e.SupportedParameters {
+				if sp == "tools" {
+					m.Tools = true
+				}
+			}
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }
 
 // parsePricing resolves OpenRouter's string-valued, USD-per-token pricing into
