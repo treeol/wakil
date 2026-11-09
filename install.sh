@@ -117,7 +117,7 @@ EOF
 fetch() {
 	case $DL in
 	curl) curl -fsSL --proto '=https' --proto-redir '=https' --retry 2 -o "$2" "$1" ;;
-	wget) wget -q -O "$2" "$1" ;;
+	wget) wget -q --https-only -O "$2" "$1" ;;
 	esac
 }
 
@@ -262,6 +262,10 @@ check_tools() {
 	if have curl; then
 		DL=curl
 	elif have wget; then
+		# Every download must be https-only; a wget that cannot enforce that
+		# (BusyBox) is refused rather than trusted.
+		wget --help 2>&1 | grep -q -e '--https-only' ||
+			die "this wget cannot restrict downloads to https (--https-only); install curl or GNU wget"
 		DL=wget
 	else
 		die "need curl or wget"
@@ -322,8 +326,8 @@ resolve_version() {
 	else
 		_url="https://github.com/$WAKIL_REPO/releases/latest"
 		case $DL in
-		curl) _loc=$(curl -fsS --proto '=https' -o /dev/null -w '%{redirect_url}' "$_url") || _loc="" ;;
-		wget) _loc=$(wget -S --max-redirect=0 -O /dev/null "$_url" 2>&1 | sed -n 's/^ *[Ll]ocation: *//p' | head -n 1) || _loc="" ;;
+		curl) _loc=$(curl -fsS --proto '=https' --proto-redir '=https' -o /dev/null -w '%{redirect_url}' "$_url") || _loc="" ;;
+		wget) _loc=$(wget -S --https-only --max-redirect=0 -O /dev/null "$_url" 2>&1 | sed -n 's/^ *[Ll]ocation: *//p' | head -n 1) || _loc="" ;;
 		esac
 		_loc=$(printf '%s' "$_loc" | tr -d '\r\n ')
 		case $_loc in
@@ -439,7 +443,7 @@ plan_kvr() {
 	if [ -z "$PRIV" ]; then
 		_kv="https://github.com/$KVR_REPO/releases/download/v$KVR_VERSION"
 		KVR_NOTE="kvr-server skipped: /usr/local/bin needs root (re-run with --sudo, or as root). Staging stays off. To add it later:
-      curl -fsSLO $_kv/$KVR_ASSET && curl -fsSLO $_kv/SHA256SUMS && grep -F '  $KVR_ASSET' SHA256SUMS | sha256sum --check - && sudo install -m 0755 $KVR_ASSET $KVR_DEST"
+      curl -fsSLO --proto '=https' --proto-redir '=https' $_kv/$KVR_ASSET && curl -fsSLO --proto '=https' --proto-redir '=https' $_kv/SHA256SUMS && grep -F '  $KVR_ASSET' SHA256SUMS | sha256sum --check - && sudo install -m 0755 $KVR_ASSET $KVR_DEST"
 		KVR_ASSET=""
 	fi
 }
