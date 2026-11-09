@@ -3,12 +3,12 @@
 # Stage 1a: Build kvr-server from the kvrust repository (pinned to a specific
 # commit for supply-chain integrity — a compromised upstream repo would be
 # built into every image. Bump the commit when updating kvr-server).
-# Last verified: 2026-08-16, commit 08c4b9130f442228004c6c6c5c4fbfcc9eeabe3b
+# Last verified: 2026-11-09, commit 9b4c0f9… (tag v0.2.0)
 FROM rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS kvr-builder
 WORKDIR /build
 RUN git clone https://github.com/treeol/kvrust.git . \
-    && git checkout 08c4b9130f442228004c6c6c5c4fbfcc9eeabe3b
-RUN cargo build --release --bin server
+    && git checkout 9b4c0f95923b5b50fde8e9c004b656af8ab2c7b7
+RUN cargo build --release --locked --bin kvr-server
 
 # Sandbox runtime Go toolchain. go.mod (minimum 1.25.0) governs building
 # wakil on the host/CI; this image provides the Go toolchain used inside the
@@ -23,7 +23,7 @@ FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf8
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 
 # Copy the pre-built kvr-server binary.
-COPY --from=kvr-builder /build/target/release/server /usr/local/bin/kvr-server
+COPY --from=kvr-builder /build/target/release/kvr-server /usr/local/bin/kvr-server
 
 # Single apt layer: bootstrap curl/gnupg, add NodeSource 20 LTS repo, the
 # Docker apt repo (docker-cli + compose plugin), and the GitHub CLI apt repo,

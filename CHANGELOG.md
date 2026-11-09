@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Sandbox image ships kvr-server 0.2.0.** The Dockerfile pins kvrust at
+  v0.2.0 (commit `9b4c0f9…`, tag `v0.2.0`). v0.2.0 renamed the cargo binary
+  from `server` to `kvr-server`; the build and COPY use the new name. The wire
+  protocol, snapshot format KVR1 and the 1 MiB frame limit are unchanged;
+  Wakil's staging client needs no change.
+- **Symbol-map omitted-files count is fixed** (`ea4cdbe`). The `/repomap --symbols`
+  marker no longer overcounts omitted files when the byte budget is hit, and an
+  oversized single file now gets a `(truncated)` note instead of an "N files
+  omitted" marker with a wrong count.
+
 ## [0.6.0] - 2026-11-08
 
 ### Added
