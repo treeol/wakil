@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **OpenRouter attribution now uses `https://wakiil.pro`** (HTTP-Referer; 0.6.1
+  sent a wrong referer domain). OpenRouter treats this as a new app page; the
+  app name (`X-Title: wakil`) and categories (`cli-agent`) are unchanged.
+
 ## [0.6.1] - 2026-11-09
 
 ### Added
@@ -28,9 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **OpenRouter app attribution now uses `https://wakil.pro`** (HTTP-Referer; was
-  the GitHub repo URL). OpenRouter treats this as a new app page; the app name
-  (`X-Title: wakil`) and categories (`cli-agent`) are unchanged.
+- **OpenRouter attribution referer set to a domain the project does not own
+  (corrected in 0.6.2).**
 - **Sandbox image ships kvr-server 0.2.0.** The Dockerfile pins kvrust at
   v0.2.0 (commit `9b4c0f9…`, tag `v0.2.0`). v0.2.0 renamed the cargo binary
   from `server` to `kvr-server`; the build and COPY use the new name. The wire

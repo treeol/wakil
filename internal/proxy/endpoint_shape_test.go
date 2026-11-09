@@ -323,8 +323,8 @@ func TestOpenAIAttributionHeadersDefaultOnOpenRouter(t *testing.T) {
 	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if v := (*hdr).Get("HTTP-Referer"); v != "https://wakil.pro" {
-		t.Errorf("HTTP-Referer = %q, want default https://wakil.pro", v)
+	if v := (*hdr).Get("HTTP-Referer"); v != "https://wakiil.pro" {
+		t.Errorf("HTTP-Referer = %q, want default https://wakiil.pro", v)
 	}
 	if v := (*hdr).Get("X-Title"); v != "wakil" {
 		t.Errorf("X-Title = %q, want default wakil", v)
@@ -347,7 +347,7 @@ func TestOpenAIAttributionHeadersTitleOptOut(t *testing.T) {
 	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if v := (*hdr).Get("HTTP-Referer"); v != "https://wakil.pro" {
+	if v := (*hdr).Get("HTTP-Referer"); v != "https://wakiil.pro" {
 		t.Errorf("HTTP-Referer = %q, want hardcoded default (not user-configurable)", v)
 	}
 	if v := (*hdr).Get("X-Title"); v != "" {
@@ -371,7 +371,7 @@ func TestOpenAIAttributionHeadersExplicitPassthrough(t *testing.T) {
 	if _, err := c.Stream(t.Context(), []Message{{Role: "user", Content: strPtr("hi")}}, nil, nil, nil); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if v := (*hdr).Get("HTTP-Referer"); v != "https://wakil.pro" {
+	if v := (*hdr).Get("HTTP-Referer"); v != "https://wakiil.pro" {
 		t.Errorf("HTTP-Referer = %q, want hardcoded default (not user-configurable)", v)
 	}
 	if v := (*hdr).Get("X-Title"); v != "my-agent" {

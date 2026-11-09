@@ -395,7 +395,7 @@ const (
 )
 
 const (
-	defaultAppReferer    = "https://wakil.pro"
+	defaultAppReferer    = "https://wakiil.pro"
 	defaultAppTitle      = "wakil"
 	defaultAppCategories = "cli-agent"
 )
