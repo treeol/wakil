@@ -143,7 +143,7 @@ func fakeHisnDir(t *testing.T, ver string, checkRC int) string {
 }
 
 func TestDoctorHisnDefaultNeedsNoDocker(t *testing.T) {
-	t.Setenv("PATH", fakeHisnDir(t, "0.4.1", 0)) // no docker/podman, hisn usable
+	t.Setenv("PATH", fakeHisnDir(t, "0.4.2", 0)) // no docker/podman, hisn usable
 	for _, k := range []string{"WAKIL_SANDBOX_BACKEND", "WAKIL_EXEC_MODE", "ILM_EXEC_MODE"} {
 		t.Setenv(k, "")
 	}
@@ -154,7 +154,7 @@ func TestDoctorHisnDefaultNeedsNoDocker(t *testing.T) {
 	if rc := runDoctor(&b, []string{"--config", cfgFile}, run); rc != 0 {
 		t.Fatalf("with hisn as the default sandbox a missing docker is not fatal, rc=%d:\n%s", rc, b.String())
 	}
-	for _, want := range []string{"hisn 0.4.1", "the default sandbox backend", "[warn] no usable container runtime"} {
+	for _, want := range []string{"hisn 0.4.2", "the default sandbox backend", "[warn] no usable container runtime"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("doctor output missing %q:\n%s", want, b.String())
 		}
@@ -162,7 +162,7 @@ func TestDoctorHisnDefaultNeedsNoDocker(t *testing.T) {
 }
 
 func TestDoctorExplicitDockerStillNeedsDocker(t *testing.T) {
-	t.Setenv("PATH", fakeHisnDir(t, "0.4.1", 0))
+	t.Setenv("PATH", fakeHisnDir(t, "0.4.2", 0))
 	for _, k := range []string{"WAKIL_SANDBOX_BACKEND", "WAKIL_EXEC_MODE", "ILM_EXEC_MODE"} {
 		t.Setenv(k, "")
 	}
@@ -183,7 +183,7 @@ func TestDoctorHisnTooOldFallsBackToDockerRequirement(t *testing.T) {
 	if rc := runDoctor(&b, nil, run); rc == 0 {
 		t.Fatalf("hisn 0.2.2 is not the default, so docker is required:\n%s", b.String())
 	}
-	if !strings.Contains(b.String(), "not the default sandbox backend") || !strings.Contains(b.String(), "older than 0.4.1") {
+	if !strings.Contains(b.String(), "not the default sandbox backend") || !strings.Contains(b.String(), "older than 0.4.2") {
 		t.Errorf("the reason must be printed:\n%s", b.String())
 	}
 }

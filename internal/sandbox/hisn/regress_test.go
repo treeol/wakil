@@ -209,13 +209,13 @@ func TestOutputSplitsStdoutStderr(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, _ := Open(ctxT(t), fe.options())
 	defer b.Close(context.Background())
-	// The fake --version prints "hisn 0.4.1\n" to stdout and nothing to stderr.
+	// The fake --version prints "hisn 0.4.2\n" to stdout and nothing to stderr.
 	// A clean stdout is what listSessions and verifyInstance parse.
 	out, err := b.output(ctxT(t), false, "--version")
 	if err != nil {
 		t.Fatalf("output: %v: %s", err, out)
 	}
-	if strings.TrimSpace(out) != "hisn 0.4.1" {
+	if strings.TrimSpace(out) != "hisn 0.4.2" {
 		t.Fatalf("stdout = %q, want clean version line (no stderr noise)", out)
 	}
 }

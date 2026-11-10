@@ -57,7 +57,7 @@ What `install.sh` does:
 
 - Installs the latest Wakil release (or `--version vX.Y.Z`) into `~/.local/bin` (or `--prefix DIR` / `$WAKIL_INSTALL_DIR`) and warns if that directory is not on your `PATH`. It never edits your shell rc files.
 - Verifies every download against the sha256 sums published with its release **before** anything is extracted or made executable, and aborts with nothing installed on a mismatch. If `cosign` is installed it also verifies the signature of `checksums.txt`; `--require-signature` makes that mandatory.
-- On Linux, installs hisn 0.4.1 (the `gnu` build when glibc is 2.35 or newer, else the x86_64 `musl` build, which is not leak-tested) unless a new enough hisn is already on your `PATH`, and runs `hisn check`. If hisn cannot run here, Wakil falls back to Docker.
+- On Linux, installs hisn 0.4.2 (the `gnu` build when glibc is 2.35 or newer, else the x86_64 `musl` build, which is not leak-tested) unless a new enough hisn is already on your `PATH`, and runs `hisn check`. If hisn cannot run here, Wakil falls back to Docker.
 - On Linux with root (or `sudo`, or `--sudo`), also installs the optional kvr-server 0.2.0 into `/usr/local/bin`, where the hisn sandbox can see it; without root it is skipped and staging stays off.
 - Writes **no config itself**. If `~/.config/wakil/config.json` exists it is kept. Otherwise, when `OPENROUTER_API_KEY` is set it runs `wakil init --provider openrouter --key-env OPENROUTER_API_KEY --yes` (the file stores only the variable name, never the key; the variable must also be set when you run wakil); else, with a terminal, it runs `wakil init` interactively; else it prints `next: run `wakil init``. `--no-config` skips this step.
 
@@ -81,17 +81,17 @@ cosign verify-blob checksums.txt \
 sha256sum --check --ignore-missing checksums.txt
 ```
 
-**2. Install hisn 0.4.1**, the minimum Wakil supports. hisn publishes Linux binaries on its [v0.4.1 release](https://github.com/treeol/hisn/releases/tag/v0.4.1); use `hisn-aarch64-linux-gnu` on arm64.
+**2. Install hisn 0.4.2**, the minimum Wakil supports. hisn publishes Linux binaries on its [v0.4.2 release](https://github.com/treeol/hisn/releases/tag/v0.4.2); use `hisn-aarch64-linux-gnu` on arm64.
 
 ```sh
-V=https://github.com/treeol/hisn/releases/download/v0.4.1
+V=https://github.com/treeol/hisn/releases/download/v0.4.2
 curl -fsSLO "$V/hisn-x86_64-linux-gnu" && curl -fsSLO "$V/SHA256SUMS"
 sha256sum --check --ignore-missing SHA256SUMS
 sudo install -m 0755 hisn-x86_64-linux-gnu /usr/local/bin/hisn
 hisn check
 ```
 
-Wakil uses hisn when it is 0.4.1 or newer, `hisn check` passes and you chose no backend; otherwise it falls back to Docker, and the startup banner says why. `--sandbox direct` runs with no sandbox at all, and the confirmation prompt stays on.
+Wakil uses hisn when it is 0.4.2 or newer, `hisn check` passes and you chose no backend; otherwise it falls back to Docker, and the startup banner says why. `--sandbox direct` runs with no sandbox at all, and the confirmation prompt stays on.
 
 **3. Run `wakil init`.** It asks for a provider (OpenRouter, or any OpenAI-compatible server such as Ollama), your key (hidden input, or the name of an environment variable), and a model; it makes one test call and writes `~/.config/wakil/config.json` (mode 0600). `wakil config show` prints the result with each value's source. Details: [docs/configuration.md](docs/configuration.md#setup-wakil-init).
 

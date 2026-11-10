@@ -64,7 +64,7 @@ func newEnv(t *testing.T, interactive bool, input string) (Env, *bytes.Buffer, s
 		Now:         func() time.Time { return time.Date(2026, 11, 9, 12, 30, 0, 0, time.UTC) },
 		Getenv:      func(k string) string { return map[string]string{"MY_KEY": fakeKey}[k] },
 		ProbeSandbox: func(context.Context) (string, string) {
-			return "0.4.1", ""
+			return "0.4.2", ""
 		},
 		DockerAvailable: func() bool { return true },
 		InContainer:     func() bool { return false },
@@ -417,7 +417,7 @@ func TestSandboxStepContainerHintAndChoice(t *testing.T) {
 	srv, _ := fakeServer(t, 200, toolCallReply)
 	env, out, _ := newEnv(t, true, "2\n"+srv.URL+"\nnone\n1\n\ndirect\n")
 	env.ProbeSandbox = func(context.Context) (string, string) {
-		return "0.4.1", "hisn check failed: [FAIL] user namespaces"
+		return "0.4.2", "hisn check failed: [FAIL] user namespaces"
 	}
 	env.InContainer = func() bool { return true }
 	if code := Run(context.Background(), Options{SkipTest: true}, env); code != 0 {

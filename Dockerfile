@@ -167,12 +167,12 @@ COPY --from=golangci/golangci-lint:v2.11.1@sha256:906ae07afe01a069637a7e91e92c20
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
 RUN go install golang.org/x/tools/gopls@v0.22.0
 
-# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.4.1;
+# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.4.2;
 # the default backend of release builds when usable).
 # Installed into the wakil-dev image so the allow_userns acceptance test can
 # run `hisn check` for real instead of skipping. The binary is multi-arch
 # (amd64/arm64), downloaded from the GitHub release and SHA256-verified.
-# 0.4.1 (the `run --detach` contract that returns once the session is up,
+# 0.4.2 (the `run --detach` contract that returns once the session is up,
 # supervisor.pid as "<pid> <starttime>", `ls --prune --name-prefix`; on top of
 # 0.4.0's named sessions, hisn-ls/v2 states, the client record on control
 # requests, `hisn stop`, and 0.3.3's profiles, services, risk labels,
@@ -186,12 +186,12 @@ RUN go install golang.org/x/tools/gopls@v0.22.0
 ARG TARGETARCH
 RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
       amd64) HISN_ARCH=x86_64-linux-gnu; \
-             HISN_SHA256=749d2aa80db71f88e76648d444541cbef3d9bc0849afa72d45fee294bd34c77e ;; \
+             HISN_SHA256=7a2e201b11843e0b95857e52133a3a32d88bda7c4bfdd4b9ae44166ba31729c9 ;; \
       arm64) HISN_ARCH=aarch64-linux-gnu; \
-             HISN_SHA256=43269ee771c385de6b09ebccd0a36c3d1041e972e71618c86f5ff5db1f784264 ;; \
+             HISN_SHA256=92f68f17df576d13c76410952e8fd237bfc39bda7bc77fc94e5d17ffdc749757 ;; \
       *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && HISN_VERSION=0.4.1 \
+    && HISN_VERSION=0.4.2 \
     && curl -fsSL -o /tmp/hisn \
        "https://github.com/treeol/hisn/releases/download/v${HISN_VERSION}/hisn-${HISN_ARCH}" \
     && echo "${HISN_SHA256}  /tmp/hisn" | sha256sum -c - \

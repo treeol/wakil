@@ -380,13 +380,13 @@ runs on the host instead, no container.
 `sandbox.backend` selects where tool calls run: two sandbox backends exist, plus
 `direct` (no sandbox, explicit opt-out). `docker`
 is the fallback when hisn is not usable, and the production sandbox otherwise. `hisn`
-([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.4.1) is a
+([github.com/treeol/hisn](https://github.com/treeol/hisn) >= 0.4.2) is a
 rootless, daemonless alternative. Design, path model, lifecycle and known
 limits: [sandbox-backends.md](sandbox-backends.md).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sandbox.backend` | *unset* → **hisn when usable, else docker** | `docker` \| `hisn` \| `direct`. Unset means: hisn if no backend is chosen anywhere (file, env, flag, `exec_mode`), `hisn check` passes and hisn >= 0.4.1 is in `PATH`; otherwise docker, with the reason in the startup banner. Setting it pins the choice. Flag `--sandbox`, env `WAKIL_SANDBOX_BACKEND`. Replaces the deprecated top-level `exec_mode` |
+| `sandbox.backend` | *unset* → **hisn when usable, else docker** | `docker` \| `hisn` \| `direct`. Unset means: hisn if no backend is chosen anywhere (file, env, flag, `exec_mode`), `hisn check` passes and hisn >= 0.4.2 is in `PATH`; otherwise docker, with the reason in the startup banner. Setting it pins the choice. Flag `--sandbox`, env `WAKIL_SANDBOX_BACKEND`. Replaces the deprecated top-level `exec_mode` |
 | `sandbox.hisn.binary` | `hisn` | hisn executable (name on `PATH` or absolute path) |
 | `sandbox.hisn.home_root` | `<state dir>/hisn-home/<workspace-hash>` | persistent host directory used as the sandbox `$HOME` *(absolute path)* |
 | `sandbox.hisn.home` | `persist` | `persist`: the home directory is kept across chats (`[home]`). `tmpfs`: a fresh tmpfs `$HOME` per session. Project override: `.wakil/sandbox.json` `"hisn": {"home": "tmpfs"}` |
@@ -402,7 +402,7 @@ limits: [sandbox-backends.md](sandbox-backends.md).
 | `sandbox.hisn.kvr_binary` | `kvr-server` from `PATH` | kvr-server executable run INSIDE the sandbox as the staging service *(must live under a directory the sandbox sees: `/usr`, `/opt`, `/nix` or a project `mounts_ro`; otherwise staging stays off and the banner says why — there is no host-side kvr)* |
 | `sandbox.hisn.exec_via_cli` | `false` | Run tool-call execs through the `hisn exec` CLI (one client process per call) instead of the control-socket client. Fallback, one release |
 
-With an explicit `hisn`: startup requires `hisn --version` >= 0.4.1 and `hisn check` exit
+With an explicit `hisn`: startup requires `hisn --version` >= 0.4.2 and `hisn check` exit
 0, otherwise Wakil refuses to start (no fallback). How a session is started, tracked and stopped (`run --detach`, `supervisor.pid`, `hisn stop`) is described once, in [sandbox-backends.md](sandbox-backends.md#supervisor-and-the-detach-contract). Per-project additions (services, forwards, mounts, `risk_ack`, named profile) live in `.wakil/sandbox.json`, which only takes effect after `wakil sandbox trust`; see [sandbox-backends.md](sandbox-backends.md). The workspace is mounted at
 its identical host path (`--workdir` is rejected); `kvr` staging runs as an in-sandbox service when a `kvr-server` binary is available (see `sandbox.hisn.kvr_binary`);
 `browser_enabled` is not forced off and Chromium runs inside the hisn session (needs Chromium and `python3` in it), and the deprecated `exec_mode: direct` conflicts with it. The

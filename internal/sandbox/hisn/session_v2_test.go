@@ -466,7 +466,7 @@ func TestListSessionsStillReadsV1(t *testing.T) {
 // (TestStartAfterStopReusesTheNameWithoutPruning).
 func TestStartAfterStopPrunesOn041(t *testing.T) {
 	fe := newFakeEnv(t)
-	_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.1"), 0o600)
+	_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.2"), 0o600)
 	b, err := Open(ctxT(t), fe.options())
 	if err != nil {
 		t.Fatal(err)

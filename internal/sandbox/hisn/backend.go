@@ -17,14 +17,14 @@ import (
 	"github.com/treeol/wakil/internal/timeline"
 )
 
-// MinVersion is the oldest supported hisn release: 0.4.1 (the `run --detach`
+// MinVersion is the oldest supported hisn release: 0.4.2 (the `run --detach`
 // contract that returns once the session is up, supervisor.pid as
 // "<pid> <starttime>", `ls --prune --name-prefix`; on top of 0.4.0's named
 // sessions, hisn-ls/v2 states running/stopped/crashed, the client record on
 // control requests, `hisn stop`, and 0.3.3's profiles, services, risk labels,
 // [home]/[rootfs]/[ssh] and "src:dst" known_hosts mounts). Older hisn is
 // refused at startup with a message naming this version; there is no fallback.
-const MinVersion = "0.4.1"
+const MinVersion = "0.4.2"
 
 // computedEnv names hisn always sets itself inside the sandbox; an exec may
 // not override them (hisn rejects the whole request if it tries).

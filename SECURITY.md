@@ -76,7 +76,7 @@ content. See [docs/memory.md](docs/memory.md) for the full memory design.
   raises the bar for casual escapes, but is **not** adversarial-grade.
   Optional host integrations (Docker socket, SSH signing socket, io_uring)
   materially weaken isolation when enabled.
-- **hisn mode** (the default when hisn >= 0.4.1 is usable) runs tool calls in a
+- **hisn mode** (the default when hisn >= 0.4.2 is usable) runs tool calls in a
   rootless hisn session with no daemon. It is not a hardened boundary either:
   the network is the host's (`network = "host"`, no filtering), every exec can
   read every file in the workspace, and revoking a grant is soft (descriptors

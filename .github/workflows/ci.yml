@@ -277,7 +277,7 @@ jobs:
               printf "%s\n" "$out" | grep -qF "hisn: $WANT_HISN" || { echo "::error::expected hisn variant $WANT_HISN"; exit 1; }
               # The binaries run. hisn check may fail in a container, hisn --version may not.
               "$PREFIX/wakil" version | grep -qF "wakil v0.6.0" || { echo "::error::wakil version"; exit 1; }
-              "$PREFIX/hisn" --version | grep -qF "hisn 0.4.1" || { echo "::error::hisn --version"; exit 1; }
+              "$PREFIX/hisn" --version | grep -qF "hisn 0.4.2" || { echo "::error::hisn --version"; exit 1; }
               # Root in the container, so kvr-server goes to /usr/local/bin.
               test -x /usr/local/bin/kvr-server || { echo "::error::kvr-server not installed"; exit 1; }
               # Uninstall removes what was installed, nothing else.

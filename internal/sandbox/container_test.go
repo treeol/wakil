@@ -45,7 +45,7 @@ func TestIsUsernsFailure(t *testing.T) {
 		"hisn check failed: [FAIL] user namespaces":           true,
 		"hisn check failed: unshare: Operation not permitted": true,
 		"hisn not found in PATH":                              false,
-		"hisn 0.3.0 is older than 0.4.1":                      false,
+		"hisn 0.3.0 is older than 0.4.2":                      false,
 		"":                                                    false,
 	} {
 		if IsUsernsFailure(r) != want {

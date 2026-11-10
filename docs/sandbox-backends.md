@@ -4,7 +4,7 @@ Wakil runs every tool call inside a sandbox. Backends:
 
 | backend | selected by | notes |
 |---|---|---|
-| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.4.1 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`, the `run --detach` contract described [below](#supervisor-and-the-detach-contract)) |
+| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.4.2 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`, the `run --detach` contract described [below](#supervisor-and-the-detach-contract)) |
 | `docker` | `sandbox.backend: "docker"`, or the fallback when hisn is not usable | behaviour unchanged |
 | `direct` | `sandbox.backend: "direct"` (or the deprecated `exec_mode: "direct"`) | no sandbox at all: explicit opt-out |
 
@@ -17,13 +17,13 @@ Since v0.4.0 hisn is the default **only when all three hold**:
 1. nothing chose a backend — no `sandbox.backend` in the config file, no
    `WAKIL_SANDBOX_BACKEND`, no `--sandbox`/`--exec`, no `exec_mode`;
 2. `hisn check` passes;
-3. hisn >= 0.4.1 is in `PATH`.
+3. hisn >= 0.4.2 is in `PATH`.
 
 Otherwise the backend is docker, and the startup banner says why:
 
 ```
-sandbox: backend=docker · browser tools: on · default: docker (hisn 0.3.3 is older than 0.4.1)
-sandbox: backend=hisn · browser tools: on (inside hisn session) · default: hisn 0.4.1 (hisn check ok)
+sandbox: backend=docker · browser tools: on · default: docker (hisn 0.3.3 is older than 0.4.2)
+sandbox: backend=hisn · browser tools: on (inside hisn session) · default: hisn 0.4.2 (hisn check ok)
 ```
 
 A host without hisn therefore sees no behaviour change. Further reasons that
@@ -219,7 +219,7 @@ be safe for concurrent `Exec` calls.
 ### Preflight
 
 `Open` calls `Preflight`: `hisn --version` parses and is >= `MinVersion`
-("0.4.1"), and `hisn check` exits 0. Otherwise `Open` returns an error and
+("0.4.2"), and `hisn check` exits 0. Otherwise `Open` returns an error and
 Wakil exits. No fallback for an explicit hisn. Unknown `sandbox.backend` values
 are a config error. Then `Open` plans the session
 once, before any session or UI exists: the kvr service decision, then the risk
@@ -246,8 +246,8 @@ One session per chat, `session-id = chatID` (UUID, valid for hisn's
 ### Supervisor and the detach contract
 
 This section is the one description of the contract; other documents link
-here. Wakil requires **hisn >= 0.4.1** (`MinVersion`). An older hisn is refused
-at preflight with a message naming 0.4.1, and there is no compatibility path
+here. Wakil requires **hisn >= 0.4.2** (`MinVersion`). An older hisn is refused
+at preflight with a message naming 0.4.2, and there is no compatibility path
 for it ([ADR 0014](adr/0014-hisn-minimum-0.4.1.md)).
 
 `hisn run --detach` starts a session with no main command (PID 1 sleeps until
@@ -879,8 +879,8 @@ hisn itself inside the sandbox and are rejected in per-exec env.
   are not labelled by hisn. The banner shows what hisn labels.
 * The hisn integration tests skip when `hisn check` fails (no unprivileged
   user namespaces); they have not been run in the build sandbox. The profiles
-  Wakil generates ARE checked against a real hisn >= 0.4.1 wherever the binary
+  Wakil generates ARE checked against a real hisn >= 0.4.2 wherever the binary
   exists (`TestRealHisn*`: `profile validate`/`explain` are file checks and need
   no user namespaces), so the contract does not rest on the test fake alone.
-  Run the session tests on a host with hisn >= 0.4.1:
+  Run the session tests on a host with hisn >= 0.4.2:
   `go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`

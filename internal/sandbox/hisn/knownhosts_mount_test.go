@@ -9,7 +9,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// The minimum-version check refuses hisn 0.3.2 and names the minimum (0.4.1;
+// The minimum-version check refuses hisn 0.3.2 and names the minimum (0.4.2;
 // the src:dst known_hosts mount it needs arrived in 0.3.3, and there is no
 // same-path fallback).
 func TestPreflightRefusesHisn032NamingMinimum(t *testing.T) {
