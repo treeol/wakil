@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-10
+
 ### Changed
 
 - Requires hisn 0.4.2: `MinHisnVersion`/`MinHisnDefaultVersion` (config) and the hisn backend's `MinVersion` are 0.4.2; `install.sh` `HISN_VERSION` and the `Dockerfile` wakil-dev image pin (amd64/arm64 SHA256s from the v0.4.2 `SHA256SUMS`) are 0.4.2.
-- Generated profiles are validated against hisn 0.4.2 strictness: service/host-service `ready_timeout` and `stop_grace` above 86400 seconds and NUL bytes in exec/argv/socket/env strings are now refused with a clear error naming the key (hisn 0.4.2 rejects them at load time).
+
+### Fixed
+
+- Generated profiles are validated against hisn 0.4.2 strictness: service/host-service `ready_timeout` and `stop_grace` above 86400 seconds are now refused with a clear error naming the key.
+- NUL bytes in generated-profile exec/argv/socket/env strings are now refused with a clear error naming the key.
 
 ## [0.6.4] - 2026-11-10
 
