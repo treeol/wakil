@@ -308,9 +308,12 @@ type App struct {
 	// because it is read on the turn goroutine while /prune toggles it from the
 	// command goroutine; under stateMu (save/load) it is accessed via pruneOverrideStr.
 	pruneOverride atomic.Int32
-	pruneRounds   map[int]RoundRecord
-	prunedRounds  map[int]bool
-	roundSeq      int
+	// tagBuf holds a rating tag split across SSE deltas; the stream sink
+	// fills it and drainTagBuffer flushes its unclosed tail.
+	tagBuf       tagBuffer
+	pruneRounds  map[int]RoundRecord
+	prunedRounds map[int]bool
+	roundSeq     int
 	// pruneBytesSaved accumulates original tool-result bytes removed by
 	// pruning; pruneArchiveFailed makes the archive-failure warning once per
 	// session.
@@ -1870,8 +1873,9 @@ func (a *App) streamSink() proxy.Sink {
 	var start, lastEmit time.Time
 	// Layer 3: buffer text from "[[" until the matching "]]" (or 200
 	// chars, then flush verbatim) so a rating tag split across SSE
-	// deltas never flickers to the user. disable flushes the tail.
-	buf := &tagBuffer{}
+	// deltas never flickers to the user. drainTagBuffer flushes the tail.
+	a.tagBuf.reset()
+	buf := &a.tagBuf
 	return func(s string) {
 		// Rating-tag buffering only when prune is on; otherwise verbatim.
 		out := s

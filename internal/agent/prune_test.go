@@ -1218,6 +1218,30 @@ func TestTagBufferSplitTag(t *testing.T) {
 	}
 }
 
+func TestTagBufferEdgeCases(t *testing.T) {
+	// Several tags in one chunk are all dropped, prose is kept.
+	b := &tagBuffer{}
+	if got := b.push("a [[drop]] b [[keep]] c"); got != "a  b  c" {
+		t.Errorf("multi-tag = %q", got)
+	}
+	// Double brackets that are not a rating tag are shown verbatim.
+	b = &tagBuffer{}
+	if got := b.push("see [[notes]] here"); got != "see [[notes]] here" {
+		t.Errorf("prose brackets = %q", got)
+	}
+	// An unclosed tail is held back, then returned by drain.
+	b = &tagBuffer{}
+	if got := b.push("done [[sta"); got != "done " {
+		t.Errorf("held = %q", got)
+	}
+	if got := b.drain(); got != "[[sta" {
+		t.Errorf("drain = %q", got)
+	}
+	if got := b.drain(); got != "" {
+		t.Errorf("second drain = %q", got)
+	}
+}
+
 // --- 18c. Toggle regression via the real dispatch path (§1) ---
 
 func TestPruneToggleViaDispatchPath(t *testing.T) {
@@ -2530,21 +2554,6 @@ func immediateApp(t *testing.T) *App {
 	return app
 }
 
-// projectionHasRound reports whether the projection shows round id stripped
-// (stubbed) or original for callID.
-func roundShownAs(app *App, callID, prefix string) (stub, orig bool) {
-	for _, m := range app.contextProjection() {
-		c := DerefStr(m.Content)
-		if m.ToolCallID == callID {
-			if strings.HasPrefix(c, prefix) && strings.Contains(c, "pruned") {
-				return true, false
-			}
-			return false, strings.HasPrefix(c, prefix)
-		}
-	}
-	return false, false
-}
-
 func TestImmediateStubAppliesNextRequest(t *testing.T) {
 	app := immediateApp(t)
 	content := strings.Repeat("f", 10000) // 10 KB read round (r3)
@@ -2583,9 +2592,6 @@ func TestImmediateStubAppliesNextRequest(t *testing.T) {
 		}
 		if m.Role == "tool" && DerefStr(m.Content) == content {
 			t.Fatal("Conv original leaked into projection")
-		}
-		if m.Role == "tool" && strings.HasPrefix(DerefStr(m.Content), "[r1]") && strings.Contains(DerefStr(m.Content), "aaa") {
-			// unmarked r1 stays a prefixed original
 		}
 	}
 	if !found {

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/proxy"
@@ -229,16 +230,6 @@ func (a *App) setPruneOverride(s string) {
 	default:
 		a.pruneOverride.Store(0)
 	}
-}
-
-func pruneOverrideCode(s string) int32 {
-	switch s {
-	case "on":
-		return 1
-	case "off":
-		return 2
-	}
-	return 0
 }
 
 /* RECORDING (called from appendConv; all under stateMu). */
@@ -839,10 +830,6 @@ func (a *App) pruneEmergency(convSnap []proxy.Message, rounds map[int]RoundRecor
 // both re-derive the same order from the same Conv.
 func roundOrderFromConv(conv []proxy.Message, rounds map[int]RoundRecord) (order []int, turnOfRound map[int]int) {
 	turnOfRound = map[int]int{}
-	var ids []int
-	for id := range rounds {
-		ids = append(ids, id)
-	}
 	// Order by scanning Conv: a round's position is where its FirstCall
 	// appears in Conv — never the stored ConvIdx, which compaction,
 	// materialization, and rewind can shift. Records whose FirstCall is
@@ -1468,23 +1455,6 @@ func (a *App) recordPrevRating(prevValues []string, priorMax int) {
 	a.stateMu.Unlock()
 }
 
-// pruneEnabledOverride is the /prune per-chat state. pruneOverride is the
-// per-chat value ("on"/"off"); when empty the Cfg value governs.
-func (a *App) pruneEnabledOverride() (string, bool) {
-	s := a.pruneOverrideStr()
-	return s, s != ""
-}
-
-// effectivePrune reports whether pruning is active for this chat, honoring
-// the /prune per-chat override before the config default.
-func (a *App) effectivePrune() bool {
-	override, set := a.pruneEnabledOverride()
-	if set {
-		return override == "on"
-	}
-	return a.Cfg.ContextPrune == "on"
-}
-
 // ---------------------------------------------------------------------------
 // strip helpers used by turn_phases.go / app.go
 // ---------------------------------------------------------------------------
@@ -1532,18 +1502,6 @@ func (a *App) checkPrevMissing(prevValues []string, toolCalls []proxy.ToolCall) 
 	return fmt.Sprintf("(prune: previous round r%d unrated — include prev next time)", prior-1)
 }
 
-// stripPrevFromToolCallsBatch strips "prev" from a batch of tool calls and
-// returns the prev values in call order.
-func stripPrevFromToolCallsBatch(tcs []proxy.ToolCall) []string {
-	var prevs []string
-	for i := range tcs {
-		if prev := stripPrevFromToolCall(&tcs[i]); prev != "" {
-			prevs = append(prevs, prev)
-		}
-	}
-	return prevs
-}
-
 // stripFinalTags removes all [[...]] rating tags from the final-answer text
 // so the returned/stored/displayed final carries no tags. Layer 3.
 func (a *App) stripFinalTags(s string) string {
@@ -1559,87 +1517,75 @@ func (a *App) stripFinalTags(s string) string {
 
 // tagBuffer accumulates assistant-text chunks when pruning is on so a
 // [[...]] rating tag split across SSE deltas never reaches the user. Text
-// from "[[" is buffered until the matching "]]" arrives (then dropped —
-// it is a rating tag) or 200 chars accumulate (then flushed verbatim —
-// the model typed "[[" as prose, not a tag). The tail is flushed via
-// drain() at turn end.
+// from "[[" is buffered until the matching "]]" arrives (then dropped if it
+// is a rating tag, emitted verbatim otherwise) or 200 chars accumulate
+// (then flushed verbatim: the model typed "[[" as prose). The unclosed tail
+// is flushed via drain() at the end of the stream.
 type tagBuffer struct {
+	mu      sync.Mutex
 	pending string // bytes from the most recent "[[" not yet closed
 }
 
+// push consumes one chunk and returns the text that is safe to display.
 func (b *tagBuffer) push(s string) string {
-	if b.pending == "" {
-		// Fast path: no open tag. Only buffer if this chunk contains "[[".
-		if !strings.Contains(s, "[[") {
-			return s
-		}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pending == "" && !strings.Contains(s, "[[") {
+		return s
 	}
 	b.pending += s
+	var out strings.Builder
 	for {
-		// Find the close.
-		if i := strings.Index(b.pending, "]]"); i >= 0 {
-			// Drop everything up to and including the tag.
-			left := b.pending[:i]
-			rest := b.pending[i+2:]
-			// Any "[[" in 'left' is prose before the tag — keep it.
-			// The tag itself (from its "[[" to "]]") is dropped.
-			if j := strings.LastIndex(left, "[["); j >= 0 {
-				// Prose before the tag: keep bytes before the tag.
-				// The tag spanned from j to i — drop those bytes.
-				left = left[:j]
-			}
-			b.pending = rest
-			// Emit left, then continue with rest (which may contain
-			// further tags).
-			// Note: if rest itself contains "[[" without "]]" yet,
-			// it will be re-buffered on the next push; but if rest
-			// contains MORE text we must emit now.
-			merged := left + rest
-			// Re-check: does merged contain another "[[...]]"?
-			if !strings.Contains(merged, "[") {
-				return merged
-			}
-			// Simplest correct path: emit left and continue buffering
-			// rest on the next iteration via the accumulated pending.
-			// Return left and keep rest pending — BUT we already
-			// concatenated; fix by only emitting when no tag remains.
-			// Fall through to the result below.
-		}
-		break
-	}
-	// No complete tag: only emit up to the last incomplete "[[".
-	if i := strings.LastIndex(b.pending, "[["); i >= 0 {
-		if len(b.pending)-i > 200 {
-			// Over 200 chars without a close: not a tag, flush verbatim.
-			flush := b.pending
+		open := strings.Index(b.pending, "[[")
+		if open < 0 {
+			out.WriteString(b.pending)
 			b.pending = ""
-			return flush
+			return out.String()
 		}
-		// Keep the tag fragment buffered; emit only what precedes it.
-		emit := b.pending[:i]
-		b.pending = b.pending[i:]
-		return emit
+		// Everything before the "[[" is plain prose.
+		out.WriteString(b.pending[:open])
+		b.pending = b.pending[open:]
+		end := strings.Index(b.pending, "]]")
+		if end < 0 {
+			if len(b.pending) > 200 {
+				// Over 200 chars without a close: not a tag, flush verbatim.
+				out.WriteString(b.pending)
+				b.pending = ""
+			}
+			return out.String()
+		}
+		cand := b.pending[:end+2]
+		b.pending = b.pending[end+2:]
+		if pruneTagRe.FindString(cand) != cand {
+			// Not a rating tag (for example prose in double brackets).
+			out.WriteString(cand)
+		}
 	}
-	flush := b.pending
-	b.pending = ""
-	return flush
 }
 
-// drain returns and clears any buffered tail.
+// drain returns and clears any buffered unclosed tail.
 func (b *tagBuffer) drain() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	s := b.pending
 	b.pending = ""
 	return s
 }
 
-// drainTagBuffer is a no-op in this build: the sink's buffer is per-call,
-// so there is nothing session-scoped to drain. Kept for symmetry with the
-// sink design; retained so turn_phases can flush a future shared buffer.
-func (a *App) drainTagBuffer() {}
+// reset discards buffered bytes before a new stream starts.
+func (b *tagBuffer) reset() {
+	b.mu.Lock()
+	b.pending = ""
+	b.mu.Unlock()
+}
 
-// hasTag checks whether s contains a rating tag (used by tests/diagnostics).
-func hasTag(s string) bool {
-	return pruneTagRe.MatchString(s)
+// drainTagBuffer flushes the unclosed tail of the stream sink's tag buffer
+// to the output, so text after a stray "[[" is not lost at end of stream.
+// It writes nothing when pruning is off or nothing is buffered.
+func (a *App) drainTagBuffer() {
+	if tail := a.tagBuf.drain(); tail != "" && a.pruneEnabled() {
+		fmt.Fprint(a.Out, tail)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2105,13 +2051,6 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string) {
 		cur.MarkedBy = "context_mark"
 		a.pruneRounds[id] = cur
 	}
-}
-
-// pruneMarks returns the count of context_mark calls this chat.
-func (a *App) pruneMarks() int {
-	a.stateMu.RLock()
-	defer a.stateMu.RUnlock()
-	return a.pruneMarkCount
 }
 
 // contextMarkTool is the context_mark tool definition, registered only when
