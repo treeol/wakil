@@ -36,9 +36,9 @@ func TestPruneResultLinePresentAndStable(t *testing.T) {
 	appendRound(app, 1, "c2", "read_file", `{"path":"b.go"}`, strings.Repeat("b", 4000))
 	first := app.requestMessages()
 	got := toolResultOf(first, "c1")
-	want := "[r1] " + strings.Repeat("a", 4000) + "\n[r1 · ~1000 tokens · done with this? context_mark it: stub with the facts you still need, or drop]"
+	want := "[r1] " + strings.Repeat("a", 4000) + "\n[r1 · ~1000 tokens · done with this? context_mark it: stub (only your note remains: facts with file:line) or drop]"
 	if got != want {
-		t.Fatalf("r1 result:\n got tail %q\nwant tail %q", got[len(got)-130:], want[len(want)-130:])
+		t.Fatalf("r1 result:\n got tail %q\nwant tail %q", got[len(got)-140:], want[len(want)-140:])
 	}
 	// More rounds arrive: the line of r1 must not change, byte for byte.
 	appendRound(app, 1, "c3", "read_file", `{"path":"c.go"}`, strings.Repeat("c", 3000))
@@ -81,7 +81,7 @@ func TestPruneResultLineAbsentOnRatedPrunedProtectedTiny(t *testing.T) {
 	appendRound(app, 3, "cl", "read_file", `{"path":"cl.go"}`, big) // r7, turn 3 collapsed
 	appendRound(app, 4, "pr", "read_file", `{"path":"pr.go"}`, big) // r8 pruned
 	appendRound(app, 4, "ok", "read_file", `{"path":"ok.go"}`, big) // r9 control: still prunable
-	app.recordMarkRatings([]int{3}, []int{1}, map[int]string{2: "facts"})
+	app.recordMarkRatings([]int{3}, []int{1}, map[int]string{2: "facts"}, 0)
 	app.keep = map[int]bool{2: true}
 	app.collapsed = map[int]CollapseRecord{3: {Turn: 3}}
 	app.stateMu.Lock()
@@ -125,7 +125,7 @@ func TestPruneResultLineWriteRoundWording(t *testing.T) {
 	app := lineTestApp(t)
 	appendRound(app, 1, "w1", "edit_file", `{"path":"a.go","old_string":"x","new_string":"y"}`, strings.Repeat("w", 4000))
 	r := toolResultOf(app.requestMessages(), "w1")
-	if !strings.HasSuffix(r, "[r1 · ~1000 tokens · done with this? context_mark it: stub with the facts you still need]") {
+	if !strings.HasSuffix(r, "[r1 · ~1000 tokens · done with this? context_mark it: stub (only your note remains: facts with file:line)]") {
 		t.Errorf("write round line: %q", r[len(r)-120:])
 	}
 	if strings.Contains(r, "or drop") {
@@ -183,7 +183,7 @@ func TestPruneResultLineDisappearsAfterMark(t *testing.T) {
 	if !strings.Contains(toolResultOf(app.requestMessages(), "c1"), lineMarker) {
 		t.Fatal("precondition: r1 should carry the line")
 	}
-	app.recordMarkRatings(nil, []int{1}, nil) // keep: the model decided, line goes away
+	app.recordMarkRatings(nil, []int{1}, nil, 0) // keep: the model decided, line goes away
 	if strings.Contains(toolResultOf(app.requestMessages(), "c1"), lineMarker) {
 		t.Error("rated round still carries the line")
 	}

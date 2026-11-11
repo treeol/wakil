@@ -387,8 +387,10 @@ type Config struct {
 	ContextPruneTarget  float64 `json:"context_prune_target,omitempty"`  // default 0.55
 	ContextPruneProtect int     `json:"context_prune_protect,omitempty"` // default 3
 	// ContextPruneMarks: "immediate" (default) | "on-trigger". Immediate
-	// prunes rounds marked drop/stub via context_mark on the next request
-	// build, regardless of the trigger — the model's explicit decision wins
+	// prunes rounds marked drop/stub via context_mark regardless of the
+	// trigger, at the first request build after the model's next real tool
+	// call (a mark made right before the final answer prunes nothing while
+	// that answer is written) — the model's explicit decision wins
 	// over the last-N protection (never annotate that). On-trigger (the
 	// earlier behaviour) waits until the projected size crosses the trigger.
 	// Only context_mark marks are immediate; prev/tags/rater-pass ratings
