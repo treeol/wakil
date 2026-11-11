@@ -233,11 +233,13 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   and budget footers, collapsed turns, collapse pointer lines and handoff
   seeds are skipped). The stored conversation, session file and TUI keep the
   user's original text. The reminder says that `[rN]` results are re-sent in
-  full on every step until marked and asks the model to call `context_mark`
-  right after it has what it needs, while it keeps working. It says what a
-  stub is (it replaces the result; only the note remains), what goes in the
-  note (every fact still to be used, per file, with file:line), and not to
-  mark results still needed for the answer about to be written. It is about
+  full on every step until marked and asks the model to mark results once
+  it no longer needs them. It says the cost of marking too early (rereading
+  a stubbed file means paying for it twice) and says to keep a result the
+  model will still cite if the note cannot carry what is needed. It says
+  what a stub is (it replaces the result; only the note remains), what goes
+  in the note (every fact still to be used, per file, with file:line), and
+  not to mark results still needed for the answer about to be written. It is about
   170 tokens per live user
   prompt and byte-identical on every request, so it does not disturb the
   prompt-cache prefix. It only reminds: the model alone decides what is kept,
@@ -245,37 +247,47 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   below the existing trigger. There is no config key; it follows
   `context_prune`.
 - **System prompt section**: while pruning is on, the preamble carries its
-  own `## Context pruning: mark rounds as you go` section, placed right after
-  Wakil's own instructions (before AGENTS.md and the runtime context). It
-  leads with `context_mark`, says that `[rN]` results are re-sent in full on
-  every step until marked, and asks the model to mark as it goes. It uses the
-  same terms as the shorter texts: a stub replaces the result and only the
-  note remains, the note carries every fact still to be used per file with
-  file:line, a thin note for a large result is rejected, and results still
-  needed for the answer about to be written are not marked. One sentence says
-  when a mark takes effect and follows `context_prune_marks`: after the next
-  tool call at the earliest (`immediate`), or when the context fills up
-  (`on-trigger`). The `context_mark` tool description ends with the same
-  sentence. `prev` is
+  own `## Context pruning: mark rounds once you are done with them` section,
+  placed right after Wakil's own instructions (before AGENTS.md and the
+  runtime context). It says that `[rN]` results are re-sent in full on every
+  step until marked, and asks the model to mark results once it no longer
+  needs them. Marking too early is stated to cost more than keeping it
+  (rereading a stubbed file means paying for it twice); if the model will
+  cite a result later and cannot carry what it needs in a note, it keeps
+  the result until then. It uses the same terms as the shorter texts: a
+  stub replaces the result and only the note remains, the note carries
+  every fact still to be used per file with file:line, a thin note for a
+  large result is rejected, and results still needed for the answer about
+  to be written are not marked. A sentence points the model at the newest
+  tool result's line. One sentence says when a mark takes effect and
+  follows `context_prune_marks`: after the next tool call at the earliest
+  (`immediate`), or when the context fills up (`on-trigger`). The
+  `context_mark` tool description ends with the same sentence. `prev` is
   described as a secondary channel whose one-line stub is not enough for a
-  large result. The sentence about a later rating pass
-  appears only when `context_prune_rater` is not `"off"`. `/prune on` and
-  `/prune off` refresh the preamble on the next turn.
-- **Tool-result line**: while pruning is on, the last tool result of every
-  still-prunable round ends with one line, in the request projection only:
-  `[rN · ~X tokens · done with this? context_mark it: stub (only your note
-  remains: facts with file:line) or drop]` (write rounds omit `or drop`). `N`
-  and `X` come from
-  the round record (fixed when the round is recorded), so the line is
-  byte-identical on every request for as long as it is present. A rating
-  removes it; a `context_mark` drop/stub mark that is still pending leaves it
-  in place until the round is actually replaced, so the round's bytes change
-  once. There is no line on `context_mark` results, rated or pruned
-  rounds, `/keep`, pinned or collapsed rounds, or results so small that a stub
-  would not be shorter (never-inflate). A round with several results carries
-  it once, on its last result. The line is never stored in the conversation,
-  never written to the archive and never shown in the TUI. It reminds only;
-  nothing is pruned unless the model marks it.
+  large result. The sentence about a later rating pass appears only when
+  `context_prune_rater` is not `"off"`. `/prune on` and `/prune off`
+  refresh the preamble on the next turn.
+- **Backlog line and reread line (tool results)**: while pruning is on, each round's last tool result may carry one fixed line, in the request
+  projection only, computed once when that round is recorded (a round
+  carries one only while it is the newest at recording time, so old
+  backlog lines accumulate on older results):
+  `[context · unmarked for 3+ steps: r4 (~10k tokens), r5 (~4k tokens) · if you
+  are done with one, context_mark it: stub (only your note remains: facts
+  with file:line) or drop. Keep what you will still cite]` when rounds
+  unmarked and at least 3 real rounds old exist (the same exclusions as
+  before: rated, pruned, `/keep`, pinned, collapsed, `context_mark`
+  results, too small for never-inflate). At most 6 rounds are named,
+  largest first, then `+N more`. Because the line is stored on the record
+  at recording time, it never changes afterwards, even if a listed round
+  is marked later. A round that rereads a path an earlier model-marked
+  pruned round had read carries instead the reread line:
+  `[reread · you stubbed this file in r8 and are reading it again: your
+  note did not carry what you needed. Keep this result until you no
+  longer need the file, or stub it with a fuller note]` (`dropped` for a
+  drop). A reread never follows a superseded/emergency prune by Wakil
+  itself, and a round with the reread line never also carries the
+  backlog line. Neither line is stored in the conversation, written to
+  the archive, or shown in the TUI; both are absent with prune off.
 - **Mixed messages**: an assistant message that mixes `context_mark` with
   other tool calls registers a normal round for the other calls (so their
   results get an `[rN]` id and can be marked); only the `context_mark` call

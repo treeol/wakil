@@ -220,8 +220,10 @@ func TestMarkPendingHeldAtTriggerImmediateOnly(t *testing.T) {
 					t.Errorf("immediate: r%d pruned at the trigger while marks are pending", i)
 				}
 			}
-			if toolResultOf(app.requestMessages(), "t1") != "[r1] "+big+"\n[r1 · ~2250 tokens · done with this? context_mark it: stub (only your note remains: facts with file:line) or drop]" {
-				t.Error("immediate: pending round is not sent in full with its line")
+			// r1 was recorded first, so it never carried a stored line; while
+			// its mark is pending its bytes are the full original.
+			if toolResultOf(app.requestMessages(), "t1") != "[r1] "+big {
+				t.Errorf("immediate: pending round is not sent in full: %.80q", toolResultOf(app.requestMessages(), "t1"))
 			}
 		case "on-trigger":
 			if res != "marked: drop r1,r2,r3,r4" {
@@ -257,32 +259,29 @@ func TestMarkPendingReleasedBeforeEmergency(t *testing.T) {
 	}
 }
 
-// A round that was already rated (so it carried no reminder line) and is then
-// marked with a lone context_mark keeps its bytes while the mark is pending:
-// the line must not appear and vanish again.
+// A round that was already rated (so it never carried a tool-result line) and
+// is then marked with a lone context_mark keeps its bytes while the mark is
+// pending: no line appears and vanishes again.
 func TestMarkPendingKeepsBytesOfRatedRound(t *testing.T) {
 	app := immediateApp(t)
 	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 6000))
+	for i := 0; i < 3; i++ {
+		appendRound(app, 1, "c"+string(rune('x'+i)), "read_file", `{"path":"x.go"}`, strings.Repeat("x", 6000))
+	}
 	appendRound(app, 1, "c2", "read_file", `{"path":"b.go"}`, strings.Repeat("b", 6000))
 	loneMark(app, 1, "m0", `{"keep":["r1"]}`)
 	before := toolResultOf(app.requestMessages(), "c1")
-	if strings.Contains(before, lineMarker) {
+	if strings.Contains(before, "[context · unmarked") || strings.Contains(before, "[reread") {
 		t.Fatal("precondition: a kept round carries no line")
 	}
 	loneMark(app, 1, "m1", `{"drop":["r1"]}`)
 	if got := toolResultOf(app.requestMessages(), "c1"); got != before {
 		t.Errorf("pending mark changed the bytes of a rated round: tail %q", got[len(got)-60:])
 	}
-	// Re-marking while pending keeps the recorded pre-mark state.
+	// Re-marking while pending keeps the pre-mark state.
 	loneMark(app, 1, "m2", markArgs(t, nil, map[string]string{"r1": longNote("a.go:3", 220)}))
 	if got := toolResultOf(app.requestMessages(), "c1"); got != before {
 		t.Error("second pending mark changed the bytes of a rated round")
-	}
-	// An unrated round keeps its line while pending.
-	withLine := toolResultOf(app.requestMessages(), "c2")
-	loneMark(app, 1, "m3", `{"drop":["r2"]}`)
-	if got := toolResultOf(app.requestMessages(), "c2"); got != withLine || !strings.Contains(got, lineMarker) {
-		t.Error("pending mark changed the bytes of an unrated round")
 	}
 }
 
@@ -479,13 +478,13 @@ func TestPruneTextsCoherent(t *testing.T) {
 	sec := app.pruneSystemSection()
 	desc := contextMarkTool(true).Function.Description
 	for name, text := range map[string]string{"system section": sec, "user suffix": pruneReminder, "tool description": desc} {
-		for _, s := range []string{"only", "note remains", "every fact you will still use", "file:line", "per file", "while you keep working", "marking right before the final answer saves nothing"} {
+		for _, s := range []string{"only", "note remains", "every fact you will still use", "file:line", "per file", "costs more than keeping it", "marking right before the final answer saves nothing"} {
 			if !strings.Contains(text, s) {
 				t.Errorf("%s lacks %q", name, s)
 			}
 		}
-		if strings.Contains(text, "on the next step") || strings.Contains(text, "one-line") {
-			t.Errorf("%s still promises next-step effect or a one-line note", name)
+		if strings.Contains(text, "on the next step") || strings.Contains(text, "one-line") || strings.Contains(text, "right after") || strings.Contains(text, "as you go") {
+			t.Errorf("%s still promises next-step effect, a one-line note, or marker-by-marker marking", name)
 		}
 	}
 	// The sentence about when a mark takes effect follows the mode, in the
@@ -505,8 +504,18 @@ func TestPruneTextsCoherent(t *testing.T) {
 	if !strings.Contains(sec, "one line is not enough for a large result") {
 		t.Errorf("section offers the prev one-liner without the limit: %s", sec)
 	}
-	line, ok := pruneResultLine(RoundRecord{ID: 12, CallIDs: []string{"x"}, BytesLost: 4000, ToolName: "read_file"})
-	if !ok || line != "[r12 · ~1000 tokens · done with this? context_mark it: stub (only your note remains: facts with file:line) or drop]" {
-		t.Errorf("line = %q", line)
+	// The tool-result line is stored on the round record, fixed at recording.
+	// The backlog line names its stale rounds in the same form the docs
+	// quote: "r4 (~10k tokens)".
+	for i := 1; i <= 3; i++ {
+		appendRound(app, 1, "f"+itoa(i), "read_file", `{"path":"f.go"}`, strings.Repeat("f", 40000-i*3000))
+	}
+	appendRound(app, 1, "g1", "read_file", `{"path":"a.go"}`, strings.Repeat("g", 4000))
+	appendRound(app, 1, "h1", "read_file", `{"path":"h.go"}`, strings.Repeat("h", 4000))
+	appendRound(app, 1, "h2", "read_file", `{"path":"h.go"}`, strings.Repeat("h", 4000))
+	// r6 is the newest; 3 real rounds older are r1..r3, largest first.
+	got := toolResultOf(app.requestMessages(), "h2")
+	if !strings.Contains(got, "r1 (~9k tokens)") || !strings.Contains(got, "[context · unmarked for 3+ steps:") {
+		t.Errorf("backlog line: %q", got[:min(200, len(got))])
 	}
 }

@@ -112,11 +112,19 @@ type RoundRecord struct {
 	// (the model made another real tool call after marking). Zero means the
 	// mark is effective at once (records written before this field existed).
 	MarkSeq int `json:"mark_seq,omitempty"`
-	// MarkPrevRated records that the round already carried a rating (and so
-	// no reminder line) when the still-pending mark was made. While the mark
-	// is pending the round is projected as it was before the mark: with its
-	// line if it was unrated, without one if it was rated.
+	// MarkPrevRated records that the round already carried a rating when
+	// the still-pending mark was made. It is read only while re-marking a
+	// pending round (recordMarkRatings): a later pending mark keeps the
+	// pre-mark answer, so the round's visible state does not flip-flop.
 	MarkPrevRated bool `json:"mark_prev_rated,omitempty"`
+	// RereadLine / BacklogLine are the two tool-result lines a round's last
+	// result can carry, fixed once when the round is recorded (Change 1/2).
+	// The projection appends them verbatim, so the round's bytes never change
+	// afterwards. RereadLine: this round rereads a file an earlier
+	// model-marked pruned round had read. BacklogLine: staler unmarked
+	// prunable rounds exist. Mutually exclusive (reread wins).
+	RereadLine  string `json:"reread_line,omitempty"`
+	BacklogLine string `json:"backlog_line,omitempty"`
 }
 
 // stubTextMaxChars caps the model-supplied stub line of the prev, [[...]] and
@@ -333,6 +341,9 @@ func (a *App) recordAssistantRound(msgs []proxy.Message, convIdx int) {
 		if len(callIDs) == 0 {
 			continue // only context_mark calls: no round.
 		}
+		a.convMu.RLock()
+		convSnap := append([]proxy.Message(nil), a.Conv...)
+		a.convMu.RUnlock()
 		a.stateMu.Lock()
 		if a.pruneRounds == nil {
 			a.pruneRounds = map[int]RoundRecord{}
@@ -342,7 +353,7 @@ func (a *App) recordAssistantRound(msgs []proxy.Message, convIdx int) {
 			id = maxID + 1
 		}
 		a.roundSeq = id
-		a.pruneRounds[id] = RoundRecord{
+		rec := RoundRecord{
 			ID:          id,
 			CallIDs:     callIDs,
 			FirstCall:   callIDs[0],
@@ -356,6 +367,13 @@ func (a *App) recordAssistantRound(msgs []proxy.Message, convIdx int) {
 			ToolName:    toolName,
 			ArgsText:    truncateChars(argsText, 200),
 		}
+		// Change 1/2: fix this round's appended line once, now, from
+		// everything known at recording time. Never recomputed later, so
+		// the round's bytes stay identical on every later request. The
+		// new round is inserted first so the backlog pass can position it.
+		a.pruneRounds[id] = rec
+		a.computeRoundLinesLocked(&rec, convSnap)
+		a.pruneRounds[id] = rec
 		a.stateMu.Unlock()
 	}
 }
@@ -427,6 +445,141 @@ func (a *App) recordToolResultBytes(msgs []proxy.Message) {
 
 /* PROJECTION. */
 
+// computeRoundLinesLocked fixes the tool-result line of a just-recorded round
+// (rec is already in the map, so it can be positioned). Caller holds stateMu.
+// Reread wins over backlog when both apply. The pending-mark case is
+// deliberately not covered here: a mark made by the round being recorded
+// itself has no rating yet, so a reread inside that same round cannot be
+// attributed to the mark (Change 1 needs the round to be pruned first).
+func (a *App) computeRoundLinesLocked(rec *RoundRecord, convSnap []proxy.Message) {
+	if a.pruneRounds == nil {
+		return
+	}
+	// Change 1: reread of a path read by an earlier model-marked pruned round.
+	if len(rec.ReadPaths) > 0 {
+		for _, pid := range sortedRoundIDs(a.pruneRounds) {
+			old := a.pruneRounds[pid]
+			if pid >= rec.ID || !old.Pruned || !modelMarkedPruned(old) {
+				continue
+			}
+			for _, p := range rec.ReadPaths {
+				if containsPath(old.ReadPaths, p) {
+					verb := "stubbed"
+					if old.Rating == RatingDrop {
+						verb = "dropped"
+					}
+					rec.RereadLine = fmt.Sprintf("[reread · you %s this file in r%d and are reading it again: your note did not carry what you needed. Keep this result until you no longer need the file, or stub it with a fuller note]", verb, pid)
+					return
+				}
+			}
+		}
+	}
+	// Change 2: backlog of stale unmarked prunable rounds.
+	rec.BacklogLine = a.backlogLineLocked(rec.ID, convSnap)
+}
+
+// modelMarkedPruned reports whether rec was pruned by a model rating
+// (drop/stub via context_mark, prev or tag), not by Wakil itself
+// (superseded / emergency / auto).
+func modelMarkedPruned(rec RoundRecord) bool {
+	switch rec.Rating {
+	case RatingDrop, RatingStub:
+		return true
+	case RatingSuperseded, RatingEmergency, RatingAuto:
+		return false
+	}
+	return false
+}
+
+// backlogStaleAfter is how many real rounds back a round must sit before it
+// counts as stale for the backlog line, and the most rounds the line names.
+const backlogStaleAfter = 3
+
+const backlogMaxListed = 6
+
+// backlogLineLocked renders the backlog line for the round being recorded
+// (newestID), listing unmarked prunable rounds at least backlogStaleAfter
+// real rounds older than it. Caller holds stateMu; convSnap is a copy of
+// Conv taken before the caller's lock (read here for the pinned check).
+func (a *App) backlogLineLocked(newestID int, convSnap []proxy.Message) string {
+	if len(a.pruneRounds) == 0 {
+		return ""
+	}
+	ids := sortedRoundIDs(a.pruneRounds)
+	pos := map[int]int{}
+	for i, id := range ids {
+		pos[id] = i
+	}
+	cur, ok := pos[newestID]
+	if !ok {
+		return ""
+	}
+	var stale []RoundRecord
+	for _, id := range ids {
+		p, ok := pos[id]
+		if !ok || p >= cur || cur-p < backlogStaleAfter {
+			continue
+		}
+		rec := a.pruneRounds[id]
+		if !a.backlogEligible(rec, id, convSnap) {
+			continue
+		}
+		stale = append(stale, rec)
+	}
+	if len(stale) == 0 {
+		return ""
+	}
+	sort.SliceStable(stale, func(i, j int) bool {
+		if stale[i].BytesLost != stale[j].BytesLost {
+			return stale[i].BytesLost > stale[j].BytesLost
+		}
+		return stale[i].ID < stale[j].ID
+	})
+	listed := stale
+	if len(listed) > backlogMaxListed {
+		listed = listed[:backlogMaxListed]
+	}
+	parts := make([]string, 0, len(listed))
+	for _, rec := range listed {
+		parts = append(parts, fmt.Sprintf("r%d (~%dk tokens)", rec.ID, rec.BytesLost/charsPerToken/1000))
+	}
+	line := fmt.Sprintf("[context · unmarked for %d+ steps: %s", backlogStaleAfter, strings.Join(parts, ", "))
+	if len(stale) > len(listed) {
+		line += fmt.Sprintf(", +%d more", len(stale)-len(listed))
+	}
+	line += " · if you are done with one, context_mark it: stub (only your note remains: facts with file:line) or drop. Keep what you will still cite]"
+	return line
+}
+
+// backlogEligible reports whether an older round counts in the backlog
+// line: unmarked, unpruned, not protected, and big enough to stub.
+func (a *App) backlogEligible(rec RoundRecord, id int, convSnap []proxy.Message) bool {
+	if rec.Rating != RatingNone || rec.Pruned || len(rec.CallIDs) == 0 {
+		return false
+	}
+	if rec.Turn > 0 && a.keep[rec.Turn] {
+		return false
+	}
+	if _, coll := a.collapsed[rec.Turn]; coll && rec.Turn > 0 {
+		return false
+	}
+	if roundHasPinned(convSnap, rec) {
+		return false
+	}
+	est := rec
+	est.Rating = RatingDrop
+	return len(stubLine(est, rec.ToolName, pruneArchivePathEstimate)) < rec.BytesLost
+}
+
+func sortedRoundIDs(rounds map[int]RoundRecord) []int {
+	ids := make([]int, 0, len(rounds))
+	for id := range rounds {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
 // pruneProjection wraps the collapse projection: it replaces the CONTENT of
 // each tool-result message of a pruned round with a one-line stub, and
 // prefixes every other tool-result content with its round id "[rN] " so the
@@ -443,8 +596,12 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 	callToRound := map[string]int{}       // call_id -> round id, for ALL rounds (prefixing)
 	prunedCallToRound := map[string]int{} // call_id -> round id, for pruned rounds only (stubbing)
 	recs := make(map[int]RoundRecord, len(a.prunedRounds))
-	markLine := map[int]string{} // round id -> reminder line, for rounds that still carry one
-	immediate, lastRound := a.pruneMarksImmediate(), maxRoundIDLocked(a.pruneRounds)
+	// A round's own tool-result line (reread or backlog) is stored on its
+	// record, fixed when the round was recorded while it was newest. The
+	// projection only appends it, so the round's bytes never change
+	// afterwards — including across a pending mark, whose only effect is
+	// to replace the whole round when it finally applies.
+	markLine := map[int]string{} // round id -> stored tool-result line
 	for id, rec := range a.pruneRounds {
 		for _, cid := range rec.CallIDs {
 			callToRound[cid] = id
@@ -456,20 +613,9 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 			}
 			continue
 		}
-		if rec.Turn > 0 && a.keep[rec.Turn] {
-			continue
-		}
-		if _, coll := a.collapsed[rec.Turn]; coll && rec.Turn > 0 {
-			continue
-		}
-		// A mark that has not taken effect yet changes nothing in the
-		// request: the round keeps the bytes it had before the mark (its
-		// reminder line if it was unrated, none if it was already rated),
-		// so the prompt-cache prefix holds until the round is replaced.
-		if immediate && markPending(rec, lastRound) && !rec.MarkPrevRated {
-			rec.Rating = RatingNone
-		}
-		if line, ok := pruneResultLine(rec); ok {
+		if line := rec.RereadLine; line != "" {
+			markLine[id] = line
+		} else if line := rec.BacklogLine; line != "" {
 			markLine[id] = line
 		}
 	}
@@ -546,12 +692,14 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 // rating-pass sentence is included only when a rating pass is configured.
 func (a *App) pruneSystemSection() string {
 	var b strings.Builder
-	b.WriteString("## Context pruning: mark rounds as you go\n")
-	b.WriteString("Call context_mark right after you have what you need from a tool result, while you keep working. ")
-	b.WriteString("Tool results are tagged [rN] and are re-sent in full on every step until you mark them, so every unmarked result costs tokens on every later step. ")
+	b.WriteString("## Context pruning: mark rounds once you are done with them\n")
+	b.WriteString("Tool results are tagged [rN] and are re-sent in full on every step until you mark them with context_mark. ")
+	b.WriteString("Marking is for results you are finished with, not a step to perform after every result: once you no longer need a result, call context_mark to stub or drop it. ")
+	b.WriteString("Marking too early costs more than keeping it: reading a file again after stubbing it means paying for the file twice. If you will cite a result later and cannot carry what you need in a note, keep it until then. ")
 	b.WriteString("A stub replaces the result, and afterwards only your note remains: put every fact you will still use into the note, per file and with file:line (names, paths, values and line numbers). A note too thin for a large result is rejected. ")
 	b.WriteString("Drop a result if nothing in it is needed; keep it verbatim only if you are about to quote or edit it. ")
 	b.WriteString("Do not mark results you still need for the answer you are about to write: marking right before the final answer saves nothing. ")
+	b.WriteString("Watch the line on the newest tool result: it names your stale unmarked rounds, and it warns you when you reread a file you stubbed or dropped. ")
 	b.WriteString(markEffectSentence(a.pruneMarksImmediate()))
 	b.WriteString(" The full result stays retrievable from the archive path in its stub. Write rounds are only stubbed, never dropped. ")
 	b.WriteString(`The "prev" argument on any tool call is a secondary channel that rates the previous round (keep, drop, or "stub: <one line>"); one line is not enough for a large result, so stub large results with context_mark.`)
@@ -578,7 +726,7 @@ func markEffectSentence(immediate bool) string {
 // step and that marking is its call. It says nothing about when a mark takes
 // effect (that depends on context_prune_marks and is in the system section),
 // so it holds in both modes. The stored conversation never carries it.
-const pruneReminder = "\n\n[Wakil context upkeep, applies to this whole task] Tool results are tagged [rN] and are re-sent in full on every step until you mark them. Right after you have what you need from a result, while you keep working, call context_mark: stub it or drop it. A stub replaces the result, and afterwards only your note remains: put every fact you will still use into the note, per file and with file:line (the stub keeps a path to the full result). Do this as you go, not at the end of the task: do not mark results you still need for the answer you are about to write; marking right before the final answer saves nothing. Keep a result verbatim only if you are about to quote or edit it."
+const pruneReminder = "\n\n[Wakil context upkeep, applies to this whole task] Tool results are tagged [rN] and are re-sent in full on every step until you mark them with context_mark. Marking is for results you are finished with, not a step after every result: once you no longer need a result, call context_mark to stub it or drop it. Marking too early costs more than keeping it — reading a file again after stubbing it means paying for the file twice. If you will cite a result later and cannot carry what you need in a note, keep it until then. A stub replaces the result, and afterwards only your note remains: put every fact you will still use into the note, per file and with file:line (the stub keeps a path to the full result). Do not mark results you still need for the answer you are about to write; marking right before the final answer saves nothing. Keep a result verbatim only if you are about to quote or edit it."
 
 // withPruneReminder returns msgs with pruneReminder appended to the content of
 // each real user prompt: the first user message of every request (Turn > 0).
@@ -623,35 +771,8 @@ func (a *App) withPruneReminder(msgs []proxy.Message) []proxy.Message {
 }
 
 // pruneArchivePathEstimate stands in for the archive path (unknown until the
-// round is archived) when pruneResultLine applies the never-inflate rule.
+// round is archived) when the backlog line applies the never-inflate rule.
 const pruneArchivePathEstimate = "/home/user/.local/share/wakil/toolcache/00000000-0000-0000-0000-000000000000/round-000-0000000000.txt"
-
-// pruneResultLine renders the reminder line appended to the last tool result
-// of a round that is still prunable, and reports whether the round carries
-// one. It is computed only from the round record (id, byte count, write flag,
-// tool name) and the rating. The byte count is complete once all of the
-// round's results have arrived, and the caller emits the line only then, so
-// the same record yields the same bytes on every request and the
-// prompt-cache prefix stays stable until the round's state changes (the model
-// rates it, or it is pinned, kept, collapsed or pruned). Rated, pruned
-// and results too small for a stub to be shorter (the never-inflate rule)
-// carry no line. /keep, collapsed and pinned rounds are excluded by the
-// caller, which holds the state those checks need.
-func pruneResultLine(rec RoundRecord) (string, bool) {
-	if rec.Rating != RatingNone || rec.Pruned || len(rec.CallIDs) == 0 {
-		return "", false
-	}
-	est := rec
-	est.Rating = RatingDrop
-	if len(stubLine(est, rec.ToolName, pruneArchivePathEstimate)) >= rec.BytesLost {
-		return "", false
-	}
-	tail := "done with this? context_mark it: stub (only your note remains: facts with file:line) or drop"
-	if rec.Write {
-		tail = "done with this? context_mark it: stub (only your note remains: facts with file:line)"
-	}
-	return fmt.Sprintf("[r%d · ~%d tokens · %s]", rec.ID, rec.BytesLost/charsPerToken, tail), true
-}
 
 // stubInflates reports whether replacing the round's results with stub would
 // not shrink the request (the never-inflate rule). Every result of a round is
@@ -2281,7 +2402,7 @@ func roundResultSnippet(conv []proxy.Message, rec RoundRecord) string {
 // contextMarkDescription is the mode-independent part of the context_mark
 // tool description. contextMarkTool appends markEffectSentence, which says
 // when a mark takes effect in the configured context_prune_marks mode.
-const contextMarkDescription = "Mark earlier tool rounds you are done with so they are trimmed from context. Unmarked results are re-sent in full on every step. drop = nothing in the result is needed any more. stub = replace the result with your note; afterwards only the note remains, so put every fact you will still use into it, per file and with file:line (a note too thin for a large result is rejected). keep = still needed verbatim. Mark right after you have what you need from a result, while you keep working. Do not mark results you still need for the answer you are about to write; marking right before the final answer saves nothing."
+const contextMarkDescription = "Mark earlier tool rounds you are done with so they are trimmed from context. Marking is for results you are finished with, not a step to perform after every result. Unmarked results are re-sent in full on every step. Marking too early costs more than keeping it: reading a file again after stubbing it means paying for the file twice. If you will cite a result later and cannot carry what you need in a note, keep it until then. drop = nothing in the result is needed any more. stub = replace the result with your note; afterwards only the note remains, so put every fact you will still use into it, per file and with file:line (a note too thin for a large result is rejected). keep = still needed verbatim. Do not mark results you still need for the answer you are about to write; marking right before the final answer saves nothing."
 
 // roundFiles returns the distinct file paths the round read or wrote, reads
 // first, each in call order.
