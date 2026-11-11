@@ -1840,21 +1840,22 @@ func (a *App) ensurePreamble() {
 func (a *App) streamSink() proxy.Sink {
 	var chars int
 	var start, lastEmit time.Time
+	// Layer 3: buffer text from "[[" until the matching "]]" (or 200
+	// chars, then flush verbatim) so a rating tag split across SSE
+	// deltas never flickers to the user. disable flushes the tail.
+	buf := &tagBuffer{}
 	return func(s string) {
-		// Layer 3: rating tags must never reach the user-visible stream.
-		// A chunk is one SSE delta; a tag split across chunks could
-		// escape the regex, but the stored/returned final is stripped
-		// in turn_phases.go regardless. Suppress complete tags here.
+		// Rating-tag buffering only when prune is on; otherwise verbatim.
+		out := s
 		if a.pruneEnabled() {
-			if stripped := stripPruneTags(s); stripped != s {
-				fmt.Fprint(a.Out, stripped)
-				s = stripped
-			} else {
-				fmt.Fprint(a.Out, s)
-			}
-		} else {
-			fmt.Fprint(a.Out, s)
+			out = buf.push(s)
 		}
+		// When prune is on the buffer strips complete tags; otherwise
+		// out == s.
+		fmt.Fprint(a.Out, out)
+		// Recompute the delta for throughput accounting: only bytes
+		// actually shown count.
+		s = out
 		a.callbackMu.Lock()
 		onTokRate := a.OnTokRate
 		a.callbackMu.Unlock()

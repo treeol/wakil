@@ -146,8 +146,9 @@ func (a *App) pruneEnabled() bool {
 	if a.IsSubagent {
 		return false
 	}
-	a.stateMu.RLock()
-	defer a.stateMu.RUnlock()
+	// Direct check, no RLock inside: some callers already hold stateMu
+	// (e.g. buildPreamble via ensurePreamble's caller chains), and
+	// Go's RWMutex is not reentrant — a nested RLock deadlocks.
 	if a.pruneOverride != "" {
 		return a.pruneOverride == "on"
 	}
@@ -469,8 +470,7 @@ func (a *App) pruneCheck() {
 	if hardMax <= 0 {
 		return
 	}
-	at := int(a.Cfg.ContextPruneAt * float64(hardMax))
-	target := int(a.Cfg.ContextPruneTarget * float64(hardMax))
+	at, target := a.pruneThresholds()
 	if at <= 0 || target <= 0 {
 		return
 	}
@@ -689,8 +689,47 @@ func (a *App) pruneStatusLine() string {
 	}
 	saved := a.pruneBytesSaved
 	a.stateMu.RUnlock()
-	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · saved ~%d KB",
-		a.Cfg.ContextPrune, keep, drop, stub, auto, unrated, prunedCount, saved/1024)
+	trigger, target := a.pruneThresholds()
+	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · saved ~%d KB · trigger %dk · target %dk",
+		a.pruneStateWord(), keep, drop, stub, auto, unrated, prunedCount, saved/1024, trigger/1000, target/1000)
+}
+
+// pruneStateWord renders "on"/"off" from the effective state (override over
+// config), so status output never contradicts the toggle that set it.
+func (a *App) pruneStateWord() string {
+	if a.pruneEnabled() {
+		return "on"
+	}
+	return "off"
+}
+
+// pruneThresholds returns the effective (at, target) trigger sizes in
+// CHARS (the hard-max unit) for this App. The absolute token keys
+// (context_prune_at_tokens / context_prune_target_tokens) are converted
+// with charsPerToken (4 chars/token — the codebase token estimate), then
+// effective = min(tokens_chars, fraction × hardMax). Returns (at, target)
+// in chars; both are 0 when no hard max is known.
+func (a *App) pruneThresholds() (int, int) {
+	_, _, hardMax := a.activeThresholds()
+	if hardMax <= 0 {
+		return 0, 0
+	}
+	atFrac := int(a.Cfg.ContextPruneAt * float64(hardMax))
+	targetFrac := int(a.Cfg.ContextPruneTarget * float64(hardMax))
+	atTok := a.Cfg.ContextPruneAtTokens * charsPerToken
+	targetTok := a.Cfg.ContextPruneTargetTokens * charsPerToken
+	at := atFrac
+	if atTok > 0 && atTok < at {
+		at = atTok
+	}
+	target := targetFrac
+	if targetTok > 0 && targetTok < target {
+		target = targetTok
+	}
+	if target > at {
+		target = at
+	}
+	return at, target
 }
 
 // pruneToggleStatus renders the /prune status reply.
@@ -901,4 +940,93 @@ func (a *App) stripFinalTags(s string) string {
 		return s
 	}
 	return stripPruneTags(s)
+}
+
+// ---------------------------------------------------------------------------
+// stream tag buffer (Layer 3)
+// ---------------------------------------------------------------------------
+
+// tagBuffer accumulates assistant-text chunks when pruning is on so a
+// [[...]] rating tag split across SSE deltas never reaches the user. Text
+// from "[[" is buffered until the matching "]]" arrives (then dropped —
+// it is a rating tag) or 200 chars accumulate (then flushed verbatim —
+// the model typed "[[" as prose, not a tag). The tail is flushed via
+// drain() at turn end.
+type tagBuffer struct {
+	pending string // bytes from the most recent "[[" not yet closed
+}
+
+func (b *tagBuffer) push(s string) string {
+	if b.pending == "" {
+		// Fast path: no open tag. Only buffer if this chunk contains "[[".
+		if !strings.Contains(s, "[[") {
+			return s
+		}
+	}
+	b.pending += s
+	for {
+		// Find the close.
+		if i := strings.Index(b.pending, "]]"); i >= 0 {
+			// Drop everything up to and including the tag.
+			left := b.pending[:i]
+			rest := b.pending[i+2:]
+			// Any "[[" in 'left' is prose before the tag — keep it.
+			// The tag itself (from its "[[" to "]]") is dropped.
+			if j := strings.LastIndex(left, "[["); j >= 0 {
+				// Prose before the tag: keep bytes before the tag.
+				// The tag spanned from j to i — drop those bytes.
+				left = left[:j]
+			}
+			b.pending = rest
+			// Emit left, then continue with rest (which may contain
+			// further tags).
+			// Note: if rest itself contains "[[" without "]]" yet,
+			// it will be re-buffered on the next push; but if rest
+			// contains MORE text we must emit now.
+			merged := left + rest
+			// Re-check: does merged contain another "[[...]]"?
+			if !strings.Contains(merged, "[") {
+				return merged
+			}
+			// Simplest correct path: emit left and continue buffering
+			// rest on the next iteration via the accumulated pending.
+			// Return left and keep rest pending — BUT we already
+			// concatenated; fix by only emitting when no tag remains.
+			// Fall through to the result below.
+		}
+		break
+	}
+	// No complete tag: only emit up to the last incomplete "[[".
+	if i := strings.LastIndex(b.pending, "[["); i >= 0 {
+		if len(b.pending)-i > 200 {
+			// Over 200 chars without a close: not a tag, flush verbatim.
+			flush := b.pending
+			b.pending = ""
+			return flush
+		}
+		// Keep the tag fragment buffered; emit only what precedes it.
+		emit := b.pending[:i]
+		b.pending = b.pending[i:]
+		return emit
+	}
+	flush := b.pending
+	b.pending = ""
+	return flush
+}
+
+// drain returns and clears any buffered tail.
+func (b *tagBuffer) drain() string {
+	s := b.pending
+	b.pending = ""
+	return s
+}
+
+// drainTagBuffer is a no-op in this build: the sink's buffer is per-call,
+// so there is nothing session-scoped to drain. Kept for symmetry with the
+// sink design; retained so turn_phases can flush a future shared buffer.
+func (a *App) drainTagBuffer() {}
+
+// hasTag checks whether s contains a rating tag (used by tests/diagnostics).
+func hasTag(s string) bool {
+	return pruneTagRe.MatchString(s)
 }

@@ -1085,3 +1085,131 @@ func TestPruneKhatamReplay(t *testing.T) {
 		t.Error("expected pruning already by round 10 (in-loop, not just finalizeTurn)")
 	}
 }
+
+// --- 18. Absolute thresholds (§2) ---
+
+func TestPruneAbsoluteThresholds(t *testing.T) {
+	// 1M-token backend case: at_tokens=60000 converts to 240k chars,
+	// fraction 0.70×3.2M chars ≈ 2.24M — min = 240k chars (60k tokens).
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextPruneAtTokens = 60000
+	app.Cfg.ContextPruneTargetTokens = 40000
+	app.Cfg.ContextPruneAt = 0.70
+	app.Cfg.ContextPruneTarget = 0.55
+	app.Cfg.HardMaxBytes = 3200000
+	app.Cfg.CompactAt = 2900000
+	app.Cfg.KeepBytes = 2400000
+	at, target := app.pruneThresholds()
+	if at != 60000*4 {
+		t.Errorf("1M at = %d, want %d (token cap dominates)", at, 60000*4)
+	}
+	if target != 40000*4 {
+		t.Errorf("1M target = %d, want %d", target, 40000*4)
+	}
+	// 160k-window case: at_frac 0.70×512k ≈ 358k, token cap 240k → min = 240k.
+	app2 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app2.Cfg.ContextPruneAtTokens = 60000
+	app2.Cfg.ContextPruneTargetTokens = 40000
+	app2.Cfg.ContextPruneAt = 0.70
+	app2.Cfg.ContextPruneTarget = 0.55
+	app2.Cfg.HardMaxBytes = 512000
+	app2.Cfg.CompactAt = 320000
+	app2.Cfg.KeepBytes = 256000
+	at2, target2 := app2.pruneThresholds()
+	if at2 != 60000*4 {
+		t.Errorf("160k at = %d, want %d (min wins)", at2, 60000*4)
+	}
+	if target2 != 40000*4 {
+		t.Errorf("160k target = %d, want %d", target2, 40000*4)
+	}
+	// min() where fraction wins: huge token caps.
+	app3 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app3.Cfg.ContextPruneAtTokens = 10000000
+	app3.Cfg.ContextPruneTargetTokens = 9000000
+	app3.Cfg.ContextPruneAt = 0.70
+	app3.Cfg.ContextPruneTarget = 0.55
+	app3.Cfg.HardMaxBytes = 10000
+	app3.Cfg.CompactAt = 7000
+	app3.Cfg.KeepBytes = 5000
+	at3, target3 := app3.pruneThresholds()
+	if at3 != 7000 {
+		t.Errorf("fraction-wins at = %d, want 7000", at3)
+	}
+	if target3 != 5500 {
+		t.Errorf("fraction-wins target = %d, want 5500", target3)
+	}
+}
+
+// --- 18b. Split-tag stream test (§3) ---
+
+func TestTagBufferSplitTag(t *testing.T) {
+	b := &tagBuffer{}
+	var out strings.Builder
+	out.WriteString(b.push("hello [[drop"))
+	out.WriteString(b.push("]] world"))
+	got := out.String()
+	if strings.Contains(got, "[[") || strings.Contains(got, "]]") {
+		t.Errorf("split tag leaked: %q", got)
+	}
+	if !strings.Contains(got, "hello") || !strings.Contains(got, "world") {
+		t.Errorf("prose lost: %q", got)
+	}
+	// Over-200 chars without close: flush verbatim.
+	b2 := &tagBuffer{}
+	long := "[[ " + strings.Repeat("x", 300)
+	got2 := b2.push(long)
+	if !strings.Contains(got2, "[[ ") {
+		t.Errorf("200-char flush lost prose: %q", got2[:min(60, len(got2))])
+	}
+}
+
+// --- 18c. Toggle regression via the real dispatch path (§1) ---
+
+func TestPruneToggleViaDispatchPath(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("long-session")
+	app.Cfg.ContextPrune = "off"
+	// Off by default from config.
+	if app.pruneEnabled() {
+		t.Fatal("off by default")
+	}
+	handled, _, cmd := HandleTUICommand("/prune on", app)
+	if !handled {
+		t.Fatal("/prune on not handled")
+	}
+	note := cmd().(SysNoteMsg)
+	if !strings.Contains(note.Text, "prune: on") {
+		t.Errorf("notice = %q", note.Text)
+	}
+	// The next request application point: toolsForTurn's withPrevProperty
+	// is invoked only when pruneEnabled — which must be true NOW.
+	if !app.pruneEnabled() {
+		t.Fatal("pruneEnabled false after /prune on")
+	}
+	// /mode status must agree in the same line — the field-bug regression.
+	_, _, cmd2 := HandleTUICommand("/mode status", app)
+	st := cmd2().(SysNoteMsg)
+	if !strings.Contains(st.Text, "prune: on") {
+		t.Errorf("mode status after toggle: %s", st.Text)
+	}
+	if !strings.Contains(st.Text, "trigger ") {
+		t.Errorf("mode status must show trigger: %s", st.Text)
+	}
+	// /prune off round-trips.
+	handled, _, cmd = HandleTUICommand("/prune off", app)
+	if !handled {
+		t.Fatal("/prune off not handled")
+	}
+	_ = cmd().(SysNoteMsg)
+	if app.pruneEnabled() {
+		t.Error("prune still enabled after /prune off")
+	}
+	_, _, cmd3 := HandleTUICommand("/prune status", app)
+	st3 := cmd3().(SysNoteMsg)
+	if !strings.Contains(st3.Text, "prune: off") {
+		t.Errorf("prune status off: %s", st3.Text)
+	}
+	if st3.Text == "" {
+		t.Error("prune status empty")
+	}
+}

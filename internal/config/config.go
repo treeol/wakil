@@ -386,6 +386,15 @@ type Config struct {
 	ContextPruneAt      float64 `json:"context_prune_at,omitempty"`      // default 0.70
 	ContextPruneTarget  float64 `json:"context_prune_target,omitempty"`  // default 0.55
 	ContextPruneProtect int     `json:"context_prune_protect,omitempty"` // default 3
+	// ContextPruneAtTokens / ContextPruneTargetTokens are absolute TOKEN
+	// thresholds (converted to chars with charsPerToken). Effective
+	// trigger = min(at_tokens_chars, context_prune_at × hard_max) and
+	// effective target = min(target_tokens_chars, target × hard_max), so a
+	// 1M-token backend triggers at the absolute 60k tokens even though the
+	// fraction never fires there, and a 160k backend uses min(). Defaults:
+	// 60000 / 40000 tokens. Validated target < at (in token space).
+	ContextPruneAtTokens     int `json:"context_prune_at_tokens,omitempty"`     // default 60000
+	ContextPruneTargetTokens int `json:"context_prune_target_tokens,omitempty"` // default 40000
 
 	// Prompt mode: "full" (default) sends the complete system prompt as today;
 	// "core" sends only the safety-critical core prompt, and lazy-loads the
@@ -1203,14 +1212,16 @@ func DefaultConfig() Config {
 		HardMaxFrac:             0.95,   // hard ceiling at 95% of effective context
 		ContextCapacityFrac:     0.80,   // use 80% of proxy's usable_ctx as the working budget
 
-		ContextMode:             DefaultContextMode, // long-session default; "standard" opts out
-		ContextCollapseMinBytes: 2000,               // turns under 2k are not worth collapsing
-		ContextTailTurns:        20,                 // keep last 20 requests at full size before pointer degrade
-		ContextTailAnswerBytes:  0,                  // prior assistant reports are kept whole (>0 caps them + archive pointer)
-		ContextPrune:            "off",              // per-round value pruning; "on" enables model-rated round stubs
-		ContextPruneAt:          0.70,               // fraction of hard max that triggers pruning
-		ContextPruneTarget:      0.55,               // fraction of hard max pruning aims to reach
-		ContextPruneProtect:     3,                  // most recent rounds never pruned
+		ContextMode:              DefaultContextMode, // long-session default; "standard" opts out
+		ContextCollapseMinBytes:  2000,               // turns under 2k are not worth collapsing
+		ContextTailTurns:         20,                 // keep last 20 requests at full size before pointer degrade
+		ContextTailAnswerBytes:   0,                  // prior assistant reports are kept whole (>0 caps them + archive pointer)
+		ContextPrune:             "off",              // per-round value pruning; "on" enables model-rated round stubs
+		ContextPruneAt:           0.70,               // fraction of hard max that triggers pruning
+		ContextPruneTarget:       0.55,               // fraction of hard max pruning aims to reach
+		ContextPruneProtect:      3,                  // most recent rounds never pruned
+		ContextPruneAtTokens:     60000,              // absolute trigger in tokens (chars = tokens × 4)
+		ContextPruneTargetTokens: 40000,              // absolute target in tokens
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
@@ -2219,6 +2230,12 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.ContextPruneProtect < 1 {
 		return fmt.Errorf("context_prune_protect must be >= 1 (got %d)", cfg.ContextPruneProtect)
+	}
+	if cfg.ContextPruneAtTokens <= 0 {
+		return fmt.Errorf("context_prune_at_tokens must be > 0 (got %d)", cfg.ContextPruneAtTokens)
+	}
+	if cfg.ContextPruneTargetTokens <= 0 || cfg.ContextPruneTargetTokens >= cfg.ContextPruneAtTokens {
+		return fmt.Errorf("context_prune_target_tokens (%d) must be in (0, context_prune_at_tokens=%d)", cfg.ContextPruneTargetTokens, cfg.ContextPruneAtTokens)
 	}
 	if cfg.BrowserIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("browser_idle_timeout_seconds must be >= 0 (got %d)", cfg.BrowserIdleTimeoutSeconds)

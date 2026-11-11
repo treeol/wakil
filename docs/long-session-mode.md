@@ -180,8 +180,14 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
 
 Config keys: `context_prune` (`off` | `on`, default `off`),
 `context_prune_at` (0.70), `context_prune_target` (0.55),
-`context_prune_protect` (3). Validated to satisfy
-`0 < target < at < 1` and `protect >= 1`.
+`context_prune_protect` (3), `context_prune_at_tokens` (60000),
+`context_prune_target_tokens` (40000). Effective trigger/target in
+chars are `min(tokens × charsPerToken(4), fraction × hard_max)`, so a
+1M-token backend triggers at the absolute 60k tokens even when the
+fraction never fires there, and a 160k backend takes the min; `/prune
+status` shows `trigger <N>k · target <M>k`. Validated
+`0 < target < at < 1`, `protect >= 1`, and
+`0 < target_tokens < at_tokens`.
 
 ## Commands
 

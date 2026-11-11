@@ -240,6 +240,8 @@ reference covering every section below.
 | `context_prune_at` | `0.70` | Fraction of the existing hard max (`hard_max_bytes`) that triggers pruning. Must be in `(0, 1)`. Default `0.70` |
 | `context_prune_target` | `0.55` | Fraction of the hard max that pruning aims to reach (stops when the projected request is ≤ this). Must satisfy `0 < context_prune_target < context_prune_at < 1`. Default `0.55` |
 | `context_prune_protect` | `3` | The most recent tool rounds that are never pruned, regardless of rating. Must be ≥ 1. Default `3` |
+| `context_prune_at_tokens` | `60000` | Absolute trigger in tokens. Converted with the codebase token estimate (4 chars/token) to chars; effective trigger = `min(context_prune_at_tokens × 4, context_prune_at × hard_max)`. With the default, a 1M-token backend triggers at 60k tokens even when the fraction never fires; a 160k backend takes the min. Default `60000` |
+| `context_prune_target_tokens` | `40000` | Absolute target in tokens (same conversion). Must satisfy `0 < context_prune_target_tokens < context_prune_at_tokens`. Default `40000` |
 | `prompt_mode` | `"full"` | Prompt mode: `full` (complete system prompt always loaded; default) \| `core` (lean preamble with identity + safety gates only; the workflow extension is lazy-loaded as a second system message when the classifier detects a task). Persisted per repo; flag `--prompt-mode`, env `WAKIL_PROMPT_MODE`. A custom `agent_prompt_path` bypasses the split (the full file is used) |
 | `max_tool_iterations` | `0` | Hard cap on tool round-trips per turn; `0` = unlimited |
 | `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |

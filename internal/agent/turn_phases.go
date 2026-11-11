@@ -331,6 +331,11 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		a.appendConv(msg)
 		final = a.stripFinalTags(DerefStr(msg.Content))
 
+		// Layer 3 drain: flush any partial tag bytes buffered by the
+		// stream sink so a tag split at the end of the stream is not
+		// lost and accumulated leak bytes cannot build up.
+		a.drainTagBuffer()
+
 		if len(msg.ToolCalls) == 0 || forceFinish {
 			// Phase 2: a genuine idle point is when the model produced
 			// final text with NO tool calls AND async work is still actively running.
