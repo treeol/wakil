@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -292,5 +293,49 @@ func TestOnlyContextMarkMessageRegistersNoRound(t *testing.T) {
 	}})
 	if len(app.pruneRounds) != before || app.roundSeq != before {
 		t.Errorf("only-context_mark message registered a round: %d → %d (seq %d)", before, len(app.pruneRounds), app.roundSeq)
+	}
+}
+
+func TestPruneResultLineWaitsForAllResultsOfRound(t *testing.T) {
+	app := lineTestApp(t)
+	app.curTurn = 1
+	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{
+		{ID: "p1", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a"}`}},
+		{ID: "p2", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"b"}`}},
+	}})
+	app.appendConv(trMsg("p1", "read_file", strings.Repeat("a", 3000)))
+	partial := app.requestMessages()
+	if strings.Contains(toolResultOf(partial, "p1"), lineMarker) {
+		t.Error("partial round carries the line")
+	}
+	app.appendConv(trMsg("p2", "read_file", strings.Repeat("b", 3000)))
+	full := app.requestMessages()
+	// The earlier result's bytes did not change once the round completed.
+	if toolResultOf(full, "p1") != toolResultOf(partial, "p1") {
+		t.Error("first result changed when the round completed")
+	}
+	if !strings.Contains(toolResultOf(full, "p2"), "[r1 · ~1500 tokens") {
+		t.Errorf("complete round lacks the line: %q", toolResultOf(full, "p2")[3000:])
+	}
+}
+
+func TestMixedContextMarkCannotMarkItsOwnRound(t *testing.T) {
+	app := lineTestApp(t)
+	app.curTurn = 1
+	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 4000))
+	call := proxy.ToolCall{ID: "mx", Type: "function", Function: proxy.FunctionCall{Name: "context_mark", Arguments: `{"drop":["r2","r1"]}`}}
+	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{
+		call,
+		{ID: "rf", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"b.go"}`}},
+	}})
+	res := app.handleContextMark(context.Background(), call)
+	if !strings.Contains(res, "r2") || !strings.Contains(res, "current round") {
+		t.Errorf("own round r2 not rejected: %q", res)
+	}
+	if ratingOf(app, 1) != RatingDrop {
+		t.Errorf("r1 = %q, want drop", ratingOf(app, 1))
+	}
+	if ratingOf(app, 2) != RatingNone {
+		t.Errorf("r2 = %q, want none", ratingOf(app, 2))
 	}
 }

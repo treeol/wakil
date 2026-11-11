@@ -444,6 +444,7 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 	// reminder line) and whether any of its results is pinned.
 	lastResult := map[int]int{}
 	pinned := map[int]bool{}
+	haveResults := map[int]int{}
 	if len(markLine) > 0 {
 		for i, m := range in {
 			if m.Role != "tool" || m.ToolCallID == "" {
@@ -451,11 +452,23 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 			}
 			if id, ok := callToRound[m.ToolCallID]; ok {
 				lastResult[id] = i
+				haveResults[id]++
 				if m.Pinned {
 					pinned[id] = true
 				}
 			}
 		}
+		// A round carries the line only when every one of its results is
+		// present in this projection. A partial round (results still
+		// arriving, or one hidden upstream) would put the line on a result
+		// that stops being the last one, moving it and changing its bytes.
+		a.stateMu.RLock()
+		for id := range markLine {
+			if haveResults[id] != len(a.pruneRounds[id].CallIDs) {
+				delete(markLine, id)
+			}
+		}
+		a.stateMu.RUnlock()
 	}
 	changed := false
 	out := make([]proxy.Message, 0, len(in))
@@ -562,10 +575,12 @@ const pruneArchivePathEstimate = "/home/user/.local/share/wakil/toolcache/000000
 
 // pruneResultLine renders the reminder line appended to the last tool result
 // of a round that is still prunable, and reports whether the round carries
-// one. It is computed ONLY from values fixed when the round was recorded (id,
-// byte count, write flag, tool name) and the rating: the same record yields
-// the same bytes on every request, so the prompt-cache prefix stays stable
-// until the model rates the round (which removes the line). Rated, pruned
+// one. It is computed only from the round record (id, byte count, write flag,
+// tool name) and the rating. The byte count is complete once all of the
+// round's results have arrived, and the caller emits the line only then, so
+// the same record yields the same bytes on every request and the
+// prompt-cache prefix stays stable until the round's state changes (the model
+// rates it, or it is pinned, kept, collapsed or pruned). Rated, pruned
 // and results too small for a stub to be shorter (the never-inflate rule)
 // carry no line. /keep, collapsed and pinned rounds are excluded by the
 // caller, which holds the state those checks need.
@@ -2145,6 +2160,48 @@ func (a *App) validateMarkIDs(ids []string, currentRound int) (accepted []int, r
 	return accepted, rejected
 }
 
+// siblingRoundOf returns the round registered for the other tool calls of the
+// assistant message that carries callID, if any (a mixed context_mark message).
+func (a *App) siblingRoundOf(callID string) (int, bool) {
+	var siblings []string
+	a.convMu.RLock()
+	for _, m := range a.Conv {
+		if m.Role != "assistant" {
+			continue
+		}
+		found := false
+		for _, tc := range m.ToolCalls {
+			if tc.ID == callID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID != callID {
+				siblings = append(siblings, tc.ID)
+			}
+		}
+		break
+	}
+	a.convMu.RUnlock()
+	if len(siblings) == 0 {
+		return 0, false
+	}
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	for id, rec := range a.pruneRounds {
+		for _, cid := range rec.CallIDs {
+			if cid == siblings[0] {
+				return id, true
+			}
+		}
+	}
+	return 0, false
+}
+
 func parseRoundID(s string) (int, bool) {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "r") || len(s) < 2 {
@@ -2251,6 +2308,12 @@ func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
 	currentRound := a.roundSeq + 1
 	a.pruneMarkCount++
 	a.stateMu.Unlock()
+	// A message that mixes context_mark with other calls registers a round for
+	// those calls before this handler runs; that sibling round is the current
+	// round and cannot be marked either.
+	if sib, ok := a.siblingRoundOf(tc.ID); ok {
+		currentRound = sib
+	}
 
 	dropIDs, rejDrop := a.validateMarkIDs(args.Drop, currentRound)
 	keepIDs, rejKeep := a.validateMarkIDs(args.Keep, currentRound)
