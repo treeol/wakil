@@ -29,6 +29,7 @@ func TestValidatePruneKeys(t *testing.T) {
 		"target neg":   func(c *Config) { c.ContextPruneTarget = -0.1 },
 		"protect zero": func(c *Config) { c.ContextPruneProtect = 0 },
 		"protect neg":  func(c *Config) { c.ContextPruneProtect = -1 },
+		"marks bogus":  func(c *Config) { c.ContextPruneMarks = "later" },
 	} {
 		c := DefaultConfig()
 		c.ContextPrune = "on"
@@ -53,6 +54,9 @@ func TestPruneDefaults(t *testing.T) {
 	}
 	if cfg.ContextPruneRater != "off" {
 		t.Errorf("ContextPruneRater = %q, want off", cfg.ContextPruneRater)
+	}
+	if cfg.ContextPruneMarks != "immediate" {
+		t.Errorf("ContextPruneMarks = %q, want immediate", cfg.ContextPruneMarks)
 	}
 }
 

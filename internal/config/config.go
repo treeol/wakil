@@ -386,6 +386,14 @@ type Config struct {
 	ContextPruneAt      float64 `json:"context_prune_at,omitempty"`      // default 0.70
 	ContextPruneTarget  float64 `json:"context_prune_target,omitempty"`  // default 0.55
 	ContextPruneProtect int     `json:"context_prune_protect,omitempty"` // default 3
+	// ContextPruneMarks: "immediate" (default) | "on-trigger". Immediate
+	// prunes rounds marked drop/stub via context_mark on the next request
+	// build, regardless of the trigger — the model's explicit decision wins
+	// over the last-N protection (never annotate that). On-trigger (the
+	// earlier behaviour) waits until the projected size crosses the trigger.
+	// Only context_mark marks are immediate; prev/tags/rater-pass ratings
+	// keep trigger-based behaviour.
+	ContextPruneMarks string `json:"context_prune_marks,omitempty"` // default "immediate"
 	// ContextPruneAtTokens / ContextPruneTargetTokens are absolute TOKEN
 	// thresholds (converted to chars with charsPerToken). Default 0 = not
 	// set: only the fractions (context_prune_at / context_prune_target ×
@@ -1232,6 +1240,7 @@ func DefaultConfig() Config {
 		ContextPruneAt:             0.70,               // fraction of hard max that triggers pruning
 		ContextPruneTarget:         0.55,               // fraction of hard max pruning aims to reach
 		ContextPruneProtect:        3,                  // most recent rounds never pruned
+		ContextPruneMarks:          "immediate",        // immediate | on-trigger
 		ContextPruneAtTokens:       0,                  // 0 = not set (fractions only); absolute trigger in tokens otherwise
 		ContextPruneTargetTokens:   0,                  // 0 = not set; absolute target in tokens otherwise
 		ContextPruneRater:          "off",              // "off" (no pass) | "main" (session model) | endpoint name
@@ -2245,6 +2254,14 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.ContextPruneProtect < 1 {
 		return fmt.Errorf("context_prune_protect must be >= 1 (got %d)", cfg.ContextPruneProtect)
+	}
+	switch cfg.ContextPruneMarks {
+	case "", "immediate", "on-trigger":
+	default:
+		return fmt.Errorf("context_prune_marks must be one of: immediate, on-trigger (got %q)", cfg.ContextPruneMarks)
+	}
+	if cfg.ContextPruneMarks == "" {
+		cfg.ContextPruneMarks = "immediate"
 	}
 	// Token thresholds: 0 means "not set" — only the fractions apply. When
 	// set, the existing min() rule applies. Both must be set together

@@ -2504,3 +2504,299 @@ func a_toolsForTurnForTest(app *App) []proxy.Tool {
 	}
 	return tools
 }
+
+// --- 23. Immediate mode (context_prune_marks = immediate) ---
+
+func immediateApp(t *testing.T) *App {
+	t.Helper()
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.70
+	app.Cfg.ContextPruneTarget = 0.55
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.ContextPruneMarks = "immediate"
+	app.Cfg.HardMaxBytes = 100000
+	app.Cfg.CompactAt = 80000
+	app.Cfg.KeepBytes = 60000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	app.curTurn = 1
+	return app
+}
+
+// projectionHasRound reports whether the projection shows round id stripped
+// (stubbed) or original for callID.
+func roundShownAs(app *App, callID, prefix string) (stub, orig bool) {
+	for _, m := range app.contextProjection() {
+		c := DerefStr(m.Content)
+		if m.ToolCallID == callID {
+			if strings.HasPrefix(c, prefix) && strings.Contains(c, "pruned") {
+				return true, false
+			}
+			return false, strings.HasPrefix(c, prefix)
+		}
+	}
+	return false, false
+}
+
+func TestImmediateStubAppliesNextRequest(t *testing.T) {
+	app := immediateApp(t)
+	content := strings.Repeat("f", 10000) // 10 KB read round (r3)
+	appendRound(app, 1, "i1", "read_file", `{"path":"f1.go"}`, strings.Repeat("a", 3000))
+	appendRound(app, 1, "i2", "read_file", `{"path":"f2.go"}`, strings.Repeat("b", 3000))
+	appendRound(app, 1, "i3", "read_file", `{"path":"f3.go"}`, content)
+	res := app.HandleContextMarkForTest(`{"stub":{"r3":"fact A; fact B"}}`)
+	if !strings.Contains(res, "stub r3") {
+		t.Fatalf("result = %q", res)
+	}
+	// Next request build: pruneCheck applies the marked stub even though
+	// the size (16 KB) is far below the trigger (0.70 × 100000).
+	proj1 := app.contextProjection()
+	for _, m := range proj1 {
+		if m.ToolCallID == "i3" {
+			if strings.Contains(DerefStr(m.Content), "pruned: fact A; fact B") {
+				t.Fatalf("r3 pruned before pruneCheck: %.60q", DerefStr(m.Content))
+			}
+			if !strings.HasPrefix(DerefStr(m.Content), "[r3] ") {
+				t.Fatalf("r3 not prefixed before pruneCheck: %.60q", DerefStr(m.Content))
+			}
+		}
+	}
+	app.pruneCheck()
+	proj := app.contextProjection()
+	// a.Conv keeps the original; the projection carries the stub with the
+	// model's facts.
+	found := false
+	for _, m := range proj {
+		if m.ToolCallID == "i3" {
+			c := DerefStr(m.Content)
+			if !strings.Contains(c, "pruned: fact A; fact B — full result:") {
+				t.Fatalf("r3 stub = %.100q", c)
+			}
+			found = true
+		}
+		if m.Role == "tool" && DerefStr(m.Content) == content {
+			t.Fatal("Conv original leaked into projection")
+		}
+		if m.Role == "tool" && strings.HasPrefix(DerefStr(m.Content), "[r1]") && strings.Contains(DerefStr(m.Content), "aaa") {
+			// unmarked r1 stays a prefixed original
+		}
+	}
+	if !found {
+		t.Fatal("r3 not in projection")
+	}
+	// Conv still has all three originals.
+	convOrig := 0
+	for _, m := range app.Conv {
+		if m.Role == "tool" {
+			convOrig++
+		}
+	}
+	if convOrig != 3 {
+		t.Fatalf("Conv tool results = %d, want 3", convOrig)
+	}
+	for _, m := range app.Conv {
+		if m.ToolCallID == "i3" && DerefStr(m.Content) != content {
+			t.Fatal("a.Conv original mutated")
+		}
+	}
+	if !strings.Contains(app.pruneToggleStatus(), "marks: immediate") {
+		t.Fatalf("status = %q", app.pruneToggleStatus())
+	}
+	assertPairing(t, proj)
+}
+
+func TestImmediateDropRemoves(t *testing.T) {
+	app := immediateApp(t)
+	content := strings.Repeat("d", 4000)
+	appendRound(app, 1, "id1", "read_file", `{"path":"g.go"}`, content)
+	app.HandleContextMarkForTest(`{"drop":["r1"]}`)
+	app.pruneCheck()
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "id1" {
+			c := DerefStr(m.Content)
+			if !strings.Contains(c, "pruned (drop): read_file") {
+				t.Fatalf("r1 drop stub = %.100q", c)
+			}
+			if len(c) >= len(content) {
+				t.Fatalf("drop did not shrink: %d", len(c))
+			}
+			return
+		}
+	}
+	t.Fatal("r1 not in projection")
+}
+
+func TestImmediateLastNDoesNotBlock(t *testing.T) {
+	// protect=3 and a single round: marked rounds in immediate mode ignore
+	// the last-N protection — the model's explicit decision wins.
+	app := immediateApp(t)
+	content := strings.Repeat("p", 5000)
+	appendRound(app, 1, "lp1", "read_file", `{"path":"h.go"}`, content)
+	app.HandleContextMarkForTest(`{"stub":{"r1":"takeaway"}}`)
+	app.pruneCheck()
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "lp1" {
+			c := DerefStr(m.Content)
+			if !strings.Contains(c, "takeaway") {
+				t.Fatalf("protected marked round not pruned: %.60q", c)
+			}
+			return
+		}
+	}
+	t.Fatal("r1 not in projection")
+}
+
+func TestImmediateKeepPinnedNotPruned(t *testing.T) {
+	app := immediateApp(t)
+	app.Cfg.ContextPruneProtect = 1 // so kp3 (the newest) is the only protected one
+	content := strings.Repeat("k", 4000)
+	appendRound(app, 1, "kp1", "read_file", `{"path":"keep.go"}`, content)
+	appendRound(app, 1, "kp2", "read_file", `{"path":"pin.go"}`, content)
+	// kp3 lives in a different turn so only kp1/r1 is protected by /keep.
+	appendRound(app, 2, "kp3", "read_file", `{"path":"norm.go"}`, content)
+	// Mark all three. /keep protects round 1's turn; a Pinned tool result
+	// protects round 2; round 3 is pruned (in immediate mode, past the
+	// last-1 protection — the model's explicit decision wins).
+	app.HandleContextMarkForTest(`{"drop":["r1","r2","r3"]}`)
+	// Round 1 belongs to keep turn 1.
+	app.stateMu.Lock()
+	if app.keep == nil {
+		app.keep = map[int]bool{}
+	}
+	app.keep[app.pruneRounds[1].Turn] = true
+	// Pin round 2's tool result.
+	for i := range app.Conv {
+		if app.Conv[i].ToolCallID == "kp2" {
+			app.Conv[i].Pinned = true
+		}
+	}
+	app.stateMu.Unlock()
+	app.pruneCheck()
+	kept := false
+	pinnedIntact := false
+	pruned := false
+	for _, m := range app.contextProjection() {
+		c := DerefStr(m.Content)
+		if m.ToolCallID == "kp1" && !strings.Contains(c, "pruned") {
+			kept = true
+		}
+		if m.ToolCallID == "kp2" && !strings.Contains(c, "pruned") {
+			pinnedIntact = true
+		}
+		if m.ToolCallID == "kp3" && strings.Contains(c, "pruned") {
+			pruned = true
+		}
+	}
+	if !kept {
+		t.Error("/keep turn round was pruned")
+	}
+	if !pinnedIntact {
+		t.Error("pinned round was pruned")
+	}
+	if !pruned {
+		t.Error("normal marked round not pruned")
+	}
+}
+
+func TestImmediateWriteDropBecomesStub(t *testing.T) {
+	app := immediateApp(t)
+	content := strings.Repeat("w", 4000)
+	appendRound(app, 1, "wd1", "edit_file", `{"path":"edited.go"}`, content)
+	app.HandleContextMarkForTest(`{"drop":["r1"]}`)
+	app.pruneCheck()
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "wd1" {
+			c := DerefStr(m.Content)
+			if !strings.Contains(c, "write round pruned: edit_file edited.go") && !strings.Contains(c, "write round: edited.go") {
+				t.Fatalf("write drop→stub = %.100q", c)
+			}
+			return
+		}
+	}
+	t.Fatal("r1 not in projection")
+}
+
+func TestImmediateArchiveFailureNotPruned(t *testing.T) {
+	app := immediateApp(t)
+	// Force SpillToCache to fail: empty chatID → toolCacheDir returns "".
+	app.Client.ChatID = ""
+	content := strings.Repeat("x", 4000)
+	appendRound(app, 1, "af1", "read_file", `{"path":"z.go"}`, content)
+	app.HandleContextMarkForTest(`{"drop":["r1"]}`)
+	app.pruneCheck()
+	app.stateMu.RLock()
+	_, pruned := app.prunedRounds[1]
+	app.stateMu.RUnlock()
+	if pruned {
+		t.Error("round pruned after archive failure")
+	}
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "af1" && strings.Contains(DerefStr(m.Content), "pruned") {
+			t.Error("stub shown after archive failure")
+		}
+	}
+}
+
+func TestImmediateNeverInflate(t *testing.T) {
+	app := immediateApp(t)
+	tiny := "ok" // 2 bytes: the stub line (~100+) is longer
+	appendRound(app, 1, "nf1", "read_file", `{"path":"tiny.go"}`, tiny)
+	app.HandleContextMarkForTest(`{"stub":{"r1":"tiny takeaway"}}`)
+	app.pruneCheck()
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "nf1" {
+			c := DerefStr(m.Content)
+			if !strings.HasPrefix(c, "[r1] ") {
+				t.Fatalf("tiny round pruned despite never-inflate: %.60q", c)
+			}
+			if c != "[r1] "+tiny {
+				t.Fatalf("tiny round content = %q", c)
+			}
+			return
+		}
+	}
+	t.Fatal("r1 not in projection")
+}
+
+func TestOnTriggerKeepsOldBehaviour(t *testing.T) {
+	// Same shape with on-trigger: below the trigger nothing prunes; at
+	// the trigger the marked round prunes (existing tests cover 5/5).
+	app := immediateApp(t)
+	app.Cfg.ContextPruneMarks = "on-trigger"
+	content := strings.Repeat("o", 4000)
+	appendRound(app, 1, "ot1", "read_file", `{"path":"k.go"}`, content)
+	app.HandleContextMarkForTest(`{"stub":{"r1":"note"}}`)
+	app.pruneCheck()
+	for _, m := range app.contextProjection() {
+		if strings.Contains(DerefStr(m.Content), "note") {
+			t.Error("on-trigger pruned below the trigger")
+		}
+	}
+	if !strings.Contains(app.pruneToggleStatus(), "marks: on-trigger") {
+		t.Fatalf("status = %q", app.pruneToggleStatus())
+	}
+}
+
+func TestImmediateUnmarkedUntouchedBelowTrigger(t *testing.T) {
+	app := immediateApp(t)
+	content := strings.Repeat("u", 4000)
+	appendRound(app, 1, "uu1", "read_file", `{"path":"u.go"}`, content)
+	app.pruneCheck()
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "uu1" {
+			c := DerefStr(m.Content)
+			if !strings.HasPrefix(c, "[r1] "+content) {
+				t.Fatalf("unmarked round pruned below trigger: %.60q", c)
+			}
+			return
+		}
+	}
+	t.Fatal("r1 not in projection")
+}

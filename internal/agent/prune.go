@@ -98,6 +98,11 @@ type RoundRecord struct {
 	// superseded detection.
 	HasShellCmd bool   `json:"has_shell_cmd,omitempty"`
 	CmdText     string `json:"cmd_text,omitempty"`
+	// MarkedBy records whether the round was marked via context_mark
+	// (RatingDrop/RatingStub via the context_mark tool) vs the other
+	// rating channels (prev/tags/rater pass). In immediate mode only
+	// context_mark-marked rounds prune between triggers.
+	MarkedBy string `json:"marked_by,omitempty"` // "context_mark" | ""
 }
 
 // stubTextMaxChars caps the model-supplied stub line.
@@ -593,6 +598,14 @@ func roundHasPinned(conv []proxy.Message, rec RoundRecord) bool {
 }
 
 func pruneCandidates(rounds map[int]RoundRecord, order []int, collapsedTurns, keepTurns map[int]bool, turnOfRound map[int]int, protect int, roundHasPinnedKeep map[int]bool) []int {
+	return pruneCandidatesOpts(rounds, order, collapsedTurns, keepTurns, turnOfRound, protect, roundHasPinnedKeep, false)
+}
+
+// pruneCandidatesOpts selects candidates; ignoreProtect, when true, lets
+// explicitly model-marked drop/stub rounds prune even inside the last-N
+// protection (context_mark immediate mode: the model's explicit decision
+// wins — the caller supplies the protection map separately).
+func pruneCandidatesOpts(rounds map[int]RoundRecord, order []int, collapsedTurns, keepTurns map[int]bool, turnOfRound map[int]int, protect int, roundHasPinnedKeep map[int]bool, ignoreProtect bool) []int {
 	protected := map[int]bool{}
 	if len(order) > protect {
 		for _, id := range order[len(order)-protect:] {
@@ -608,11 +621,15 @@ func pruneCandidates(rounds map[int]RoundRecord, order []int, collapsedTurns, ke
 
 	var drops, stubs, supers []int
 	for _, id := range order {
-		if protected[id] {
-			continue
-		}
 		rec, ok := rounds[id]
 		if !ok || rec.Pruned {
+			continue
+		}
+		// In immediate mode, a context_mark-marked drop/stub round ignores
+		// the last-N protection. Other channels never do. A null record
+		// check, pinning, /keep, and collapsed-exemption (below) already
+		// ran before this line.
+		if protected[id] && !(ignoreProtect && rec.MarkedBy == "context_mark") {
 			continue
 		}
 		// Pinned rounds are never candidates (checked by the caller too,
@@ -853,6 +870,113 @@ func roundOrderFromConv(conv []proxy.Message, rounds map[int]RoundRecord) (order
 
 /* TRIGGER. */
 
+// pruneMarksImmediate reports whether context_mark marks apply on the next
+// request build rather than at the trigger.
+func (a *App) pruneMarksImmediate() bool {
+	return a.Cfg.ContextPruneMarks != "on-trigger"
+}
+
+// pruneImmediateMarks applies context_mark-marked drop/stub rounds now,
+// regardless of the projected size / trigger. Only rounds with
+// MarkedBy == "context_mark" and Rating drop/stub are taken; unmarked
+// rounds are untouched. Protections: /keep, pinned, collapsed, already
+// pruned, archive-failure (inside the loop). The last-N protection does
+// NOT apply to marked rounds (the model's explicit decision wins). The
+// never-inflate rule still applies.
+func (a *App) pruneImmediateMarks() {
+	a.convMu.RLock()
+	convSnap := append([]proxy.Message(nil), a.Conv...)
+	a.convMu.RUnlock()
+	a.stateMu.RLock()
+	if len(a.pruneRounds) == 0 {
+		a.stateMu.RUnlock()
+		return
+	}
+	rounds := make(map[int]RoundRecord, len(a.pruneRounds))
+	for id, rec := range a.pruneRounds {
+		rounds[id] = rec
+	}
+	collapsedTurns := map[int]bool{}
+	for t := range a.collapsed {
+		collapsedTurns[t] = true
+	}
+	keepTurns := map[int]bool{}
+	for t := range a.keep {
+		keepTurns[t] = true
+	}
+	a.stateMu.RUnlock()
+	order, turnOfRound := roundOrderFromConv(convSnap, rounds)
+	// By-turn protection is keyed by the stored record's Turn when the
+	// live message carries a Turn for the round's first call.
+	if len(order) == 0 { // fallback: sort by id
+		for id := range rounds {
+			order = append(order, id)
+		}
+		sort.Ints(order)
+		for id := range rounds {
+			turnOfRound[id] = rounds[id].Turn
+		}
+	}
+	pinnedRounds := make(map[int]bool, len(rounds))
+	for id, rec := range rounds {
+		if roundHasPinned(convSnap, rec) {
+			pinnedRounds[id] = true
+		}
+	}
+	candidates := pruneCandidatesOpts(rounds, order, collapsedTurns, keepTurns, turnOfRound, a.Cfg.ContextPruneProtect, pinnedRounds, true)
+	var marked []int
+	for _, id := range candidates {
+		rec := rounds[id]
+		if rec.MarkedBy == "context_mark" && (rec.Rating == RatingDrop || rec.Rating == RatingStub) {
+			marked = append(marked, id)
+		}
+	}
+	if len(marked) == 0 {
+		return
+	}
+	// Apply with the same loop; prune without a target stop (no trigger
+	// logic here), so pass target = 0 and skip the size check by passing a
+	// huge target... pruneCandidatesLoop breaks when size <= target, so it
+	// must be told "no target". Use a dedicated loop below instead.
+	for _, id := range marked {
+		rec := rounds[id]
+		if rec.Pruned {
+			continue
+		}
+		archive := wtools.SpillToCache(a.chatID(), fmt.Sprintf("round-%d", id), renderRoundArchive(convSnap, rec))
+		if archive == "" {
+			if !a.pruneArchiveFailed {
+				a.pruneArchiveFailed = true
+				fmt.Fprintln(a.Out, Yellow("⚠ prune: archive write failed for round "+fmt.Sprint(id)+" — round kept in context"))
+			}
+			continue
+		}
+		if stubLen := len(stubLine(rec, archiveToolName(convSnap, rec), archive)); stubLen >= rec.BytesLost {
+			continue // never-inflate
+		}
+		a.stateMu.Lock()
+		if a.prunedRounds == nil {
+			a.prunedRounds = map[int]bool{}
+		}
+		a.prunedRounds[id] = true
+		if cur, ok := a.pruneRounds[id]; ok {
+			cur.Pruned = true
+			cur.Archive = archive
+			cur.PrunedAt = time.Now()
+			a.pruneRounds[id] = cur
+			rec = cur
+		}
+		a.pruneBytesSaved += rec.BytesLost
+		a.stateMu.Unlock()
+		rounds[id] = rec
+		kind := "stub"
+		if rec.Rating == RatingDrop && !rec.Write {
+			kind = "drop"
+		}
+		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· pruned r%d (%s, %s)", id, kind, formatKB(rec.BytesLost))))
+	}
+}
+
 // pruneCheck runs after tool results are appended and before the next model
 // request is built (invoked from the tool loop and, via the projection path,
 // at request boundaries). It prunes candidates until the projected size is
@@ -871,6 +995,17 @@ func (a *App) pruneCheck() {
 	_, _, hardMax := a.activeThresholds()
 	if hardMax <= 0 {
 		return
+	}
+	if a.pruneMarksImmediate() {
+		// Immediate mode: apply marked drop/stub rounds NOW, regardless of
+		// the projected size / trigger. Protections that still apply:
+		// /keep, pinned, collapsed, already pruned, archive-failure. The
+		// only protection that does NOT apply to marked rounds is the
+		// last-N protection — the model's explicit decision wins. The
+		// never-inflate rule still applies (inside pruneCandidatesLoop).
+		// Ratings from prev/tags/the rating pass keep their trigger-based
+		// behaviour below.
+		a.pruneImmediateMarks()
 	}
 	at, target := a.pruneThresholds()
 	if at <= 0 || target <= 0 {
@@ -1180,10 +1315,14 @@ func (a *App) pruneToggleStatus() string {
 	if rater == "" {
 		rater = "main"
 	}
-	if a.pruneEnabled() {
-		return fmt.Sprintf("prune: on (schema property + prompt active from next request; existing stubs stay) · rater: %s", rater)
+	marks := a.Cfg.ContextPruneMarks
+	if marks == "" {
+		marks = "immediate"
 	}
-	return fmt.Sprintf("prune: off (no new pruning; existing stubs stay; prompt paragraph off from next request) · rater: %s", rater)
+	if a.pruneEnabled() {
+		return fmt.Sprintf("prune: on (schema property + prompt active from next request; existing stubs stay) · marks: %s · rater: %s", marks, rater)
+	}
+	return fmt.Sprintf("prune: off (no new pruning; existing stubs stay; prompt paragraph off from next request) · marks: %s · rater: %s", marks, rater)
 }
 
 // ---------------------------------------------------------------------------
@@ -1862,7 +2001,7 @@ func roundResultSnippet(conv []proxy.Message, rec RoundRecord) string {
 // ---------------------------------------------------------------------------
 
 // contextMarkDescription is the tool description for context_mark.
-const contextMarkDescription = "Mark earlier tool rounds you are done with so they can be trimmed from context when it gets full. drop = no longer needed. stub = replace with your one-line note (put names, paths, routes, values you still need). keep = still needed verbatim. Unmarked rounds are left as they are."
+const contextMarkDescription = "Mark earlier tool rounds you are done with so they can be trimmed from context. Marks apply on the next step, not only when the context is full. drop = no longer needed. stub = replace with your one-line note (put names, paths, routes, values you still need). keep = still needed verbatim. Unmarked rounds are left as they are."
 
 // validateMarkIDs partitions ids into accepted (exists, not current round, not
 // already pruned) and rejected (all others). It reports, per rejected id, a
@@ -1937,6 +2076,7 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string) {
 			cur.Rating = RatingDrop
 			cur.StubText = ""
 		}
+		cur.MarkedBy = "context_mark"
 		a.pruneRounds[id] = cur
 	}
 	for id, note := range stub {
@@ -1946,6 +2086,7 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string) {
 		}
 		cur.Rating = RatingStub
 		cur.StubText = truncateChars(sanitizeStub(note), stubTextMaxChars)
+		cur.MarkedBy = "context_mark"
 		a.pruneRounds[id] = cur
 	}
 	for _, id := range keep {
@@ -1955,6 +2096,10 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string) {
 		}
 		cur.Rating = RatingKeep
 		cur.StubText = ""
+		// A keep mark records the model decision and seals the round
+		// against immediate pruning (it is not MarkedBy — keep never
+		// leaves the context).
+		cur.MarkedBy = "context_mark"
 		a.pruneRounds[id] = cur
 	}
 }
@@ -1978,7 +2123,9 @@ func contextMarkTool() proxy.Tool {
 
 // handleContextMark is the context_mark tool handler. It records model
 // ratings onto earlier rounds. Unknown/invalid ids are reported without
-// failing the call. Marking never prunes by itself.
+// failing the call. Marks apply on the next request build (immediate mode)
+// or at the trigger (on-trigger mode). Marking round generation uses
+// roundSeq+1 seen here as the mark round itself (not registered).
 func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
 	var args struct {
 		Drop []string          `json:"drop"`

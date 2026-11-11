@@ -1795,9 +1795,7 @@ func (a *App) buildPreamble(today string) string {
 			"functions, or a decision). Prefer stub over keep for file reads you have understood: "+
 			"the stub keeps your takeaway in context, so you will not need to re-read. "+
 			"If you omit a rating this round, a later pass will rate it when pruning is needed. "+
-			"Tool results start with their round id [rN]. When you are done with something — a file you have understood, a dead end, an outdated test run — call context_mark. "+
-			"Use stub to keep what you still need (identifiers, paths, values). "+
-			"Keep anything you will need verbatim for your final answer. Rounds you don't mark stay untouched. "+
+			"Tool results start with their round id [rN]. As soon as you have taken what you need from a result, call context_mark: stub it with exactly the facts you extracted (names, paths, routes, values, line numbers), or drop it if nothing is needed. It leaves the context on the next step; the stub stays. Keep only what you still need verbatim. You can read the archive path in a stub if you need the full result again. "+
 			"As a secondary channel you may also end an assistant message with [[keep]], [[drop]], "+
 			"or [[stub: …]] — that rates the previous round too. Ratings are stripped before storing "+
 			"and never reach the wire. Write rounds are never dropped.")

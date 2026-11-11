@@ -170,6 +170,7 @@
   "context_prune_at": 0.70,
   "context_prune_target": 0.55,
   "context_prune_protect": 3,
+  "context_prune_marks": "immediate",
   "context_prune_at_tokens": 0,
   "context_prune_target_tokens": 0,
   "context_prune_rater": "off",

@@ -154,7 +154,11 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
 - **Order**: `drop` rounds first (oldest first), then `stub` rounds
   (oldest first). `keep` and unrated rounds are never pruned.
 - **Fixed rules**: the `context_prune_protect` (default 3) most recent
-  rounds are never pruned. A round with write-class tool calls (the same
+  rounds are never pruned — except in `immediate` mode (default; see
+  `context_prune_marks`), where a round marked drop/stub via `context_mark`
+  is pruned on the next request build regardless of the trigger and the
+  last-N protection does not apply to it (the model explicitly decided).
+  A round with write-class tool calls (the same
   classification as the collapse note's "write targets") rated `drop` is
   pruned as a stub instead: `[rN write round pruned: <tool> <paths>; archive: …]`.
   Rounds in turns exempted by `/keep` are never pruned. Rounds already
