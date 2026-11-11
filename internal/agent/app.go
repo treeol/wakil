@@ -322,6 +322,15 @@ type App struct {
 	pruneMissingPrev int
 	// pruneReread counts reads of a path already read in a pruned round.
 	pruneReread int
+	// Rater-pass counters: pruneRaterPasses = number of successful passes;
+	// pruneRaterFailures = number of failed passes (invalid JSON/timeout/
+	// error); raterPassUsed gates at most one pass per model request.
+	pruneRaterPasses   int
+	pruneRaterFailures int
+	raterPassUsed      bool
+	raterPassDone      bool
+	// pruneRaterNow is unused; elapsed uses time.Since directly (kept for
+	// future test injection points but has no reader yet).
 
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly
@@ -1771,15 +1780,18 @@ func (a *App) buildPreamble(today string) string {
 	// Context pruning: one short paragraph telling the model to rate the
 	// previous round. Only when enabled — with the feature off the preamble
 	// is byte-identical to master. The PRIMARY rating channel is the
-	// required "prev" tool-argument property (works on tool-call-only
-	// replies); the [[...]] text tag stays as the secondary channel. Rated
-	// stubs carry the takeaway, so a good stub means no re-reads.
+	// OPTIONAL "prev" tool-argument property (works on tool-call-only
+	// replies, unburdensome to omit); the [[...]] text tag stays as the
+	// secondary channel. When pruning is needed, a one-shot rating pass
+	// rates unrated rounds in one small request. Rated stubs carry the
+	// takeaway, so a good stub means no re-reads.
 	if a.pruneEnabled() {
-		parts = append(parts, "Context pruning (per-round value): every tool call requires a "+
-			`"prev" property rating the PREVIOUS tool round: "keep" (still needed), "drop" `+
+		parts = append(parts, "Context pruning (per-round value): every tool call carries an "+
+			`optional "prev" property rating the PREVIOUS tool round: "keep" (still needed), "drop" `+
 			`"(no longer needed), or "stub: <one line, max 200 chars>" (your takeaway — key facts, `+
 			"functions, or a decision). Prefer stub over keep for file reads you have understood: "+
 			"the stub keeps your takeaway in context, so you will not need to re-read. "+
+			"If you omit a rating this round, a later pass will rate it when pruning is needed. "+
 			"As a secondary channel you may also end an assistant message with [[keep]], [[drop]], "+
 			"or [[stub: …]] — that rates the previous round too. Ratings are stripped before storing "+
 			"and never reach the wire. Write rounds are never dropped.")

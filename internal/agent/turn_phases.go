@@ -276,6 +276,8 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// hard max. This is the user-required placement — pruning only at
 		// finalizeTurn/SendOutcome boundaries never touches the current
 		// request, which is where the bytes accumulate mid-request.
+		// Rating pass: once per model request (reset before each request build).
+		a.raterPassResetForRequest(len(a.Conv))
 		a.pruneCheck()
 		msgs := a.requestMessages()
 		if !a.IsSubagent {
@@ -328,18 +330,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// [[...]] channel and is stripped inside appendConv; the
 		// returned final is stripped here for display parity.
 		a.stripPrevFromMessage(&msg)
-		// "prev" now required in schema: count calls that omitted it.
-		prevMissingHint := ""
-		if len(msg.ToolCalls) > 0 && a.pruneEnabled() {
-			// prevValues for this message were consumed inside
-			// stripPrevFromMessage; re-check: if none carried prev and
-			// we're past round 1, append the hint + count it.
-			// (stripPrevFromMessages already ran; args are clean — a
-			// present prev would have been stripped. Absence is both a
-			// schema violation and our missing signal.)
-			prevMissingHint = a.checkPrevMissing(nil, msg.ToolCalls)
-		}
-		_ = prevMissingHint
+		// prev is OPTIONAL: the rating pass supersedes it as the primary
+		// rating channel. checkPrevMissing is diagnostics-only and is not
+		// called on the hot path (calling it with nil always increments
+		// the counter regardless of what the model actually sent; that
+		// noise was removed per the user's "unburden the tool calls"
+		// direction). prev still binds when present via
+		// stripPrevFromMessage above.
 		a.appendConv(msg)
 		final = a.stripFinalTags(DerefStr(msg.Content))
 
@@ -395,7 +392,6 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// goroutine: progress line, breaker check, cap/stub, trace, budget, Conv
 		// append.
 		// hint for the first result of this message when prev was missing
-		firstOfMessage := true
 		finalizeToolResult := func(tc proxy.ToolCall, result toolResult) {
 			// One-line summary (path/command + result digest). Delivery differs
 			// by consumer: the TUI path renders it from the ToolResultMsg event
@@ -479,12 +475,6 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// the returned text is always the unchanged tool result; the
 			// suggestion is a status notice at turn end, never in-band.
 			text = a.appendSkillHint(tc.Function.Name, result.ok, text)
-			// Context pruning: missing-prev hint is appended once per
-			// missing message (first result only).
-			if firstOfMessage && prevMissingHint != "" {
-				text = text + "\n" + prevMissingHint
-				firstOfMessage = false
-			}
 			a.appendConv(proxy.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,

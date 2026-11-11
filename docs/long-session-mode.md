@@ -182,6 +182,7 @@ Config keys: `context_prune` (`off` | `on`, default `off`),
 `context_prune_at` (0.70), `context_prune_target` (0.55),
 `context_prune_protect` (3), `context_prune_at_tokens` (60000),
 `context_prune_target_tokens` (40000). Effective trigger/target in
+- `context_prune_rater` (`"main"`): model for the one-shot rating pass that rates unrated rounds when pruning is triggered — a separate request, recorded in cost totals, never appended to the transcript. `context_prune_rater_max_rounds` (`40`) caps how many rounds one pass rates; `context_prune_rater_timeout` (`60`s) bounds it. `/mode status` shows `passes N`; `/prune status` shows the rater model.
 chars are `min(tokens × charsPerToken(4), fraction × hard_max)`, so a
 1M-token backend triggers at the absolute 60k tokens even when the
 fraction never fires there, and a 160k backend takes the min; `/prune
