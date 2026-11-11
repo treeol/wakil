@@ -2260,9 +2260,6 @@ func validateContextLimits(cfg Config) error {
 	default:
 		return fmt.Errorf("context_prune_marks must be one of: immediate, on-trigger (got %q)", cfg.ContextPruneMarks)
 	}
-	if cfg.ContextPruneMarks == "" {
-		cfg.ContextPruneMarks = "immediate"
-	}
 	// Token thresholds: 0 means "not set" — only the fractions apply. When
 	// set, the existing min() rule applies. Both must be set together
 	// (target < at) when either is set.

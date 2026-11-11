@@ -2800,3 +2800,27 @@ func TestImmediateUnmarkedUntouchedBelowTrigger(t *testing.T) {
 	}
 	t.Fatal("r1 not in projection")
 }
+
+func TestImmediateKeepMarkNotOverriddenByPrev(t *testing.T) {
+	app := immediateApp(t)
+	app.Cfg.ContextPruneProtect = 1
+	content := strings.Repeat("p", 4000)
+	appendRound(app, 1, "pk1", "read_file", `{"path":"a.go"}`, content)
+	appendRound(app, 2, "pk2", "read_file", `{"path":"b.go"}`, content)
+	app.HandleContextMarkForTest(`{"keep":["r1"]}`)
+	// A later prev rating on r1 must not turn the keep mark into an
+	// immediate prune; r1 stays a normal on-trigger candidate at most.
+	app.recordPrevRating([]string{"drop"}, 1)
+	app.pruneCheck()
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "pk1" && strings.Contains(DerefStr(m.Content), "pruned") {
+			t.Fatal("r1 was pruned immediately after context_mark keep + prev drop")
+		}
+	}
+	app.stateMu.RLock()
+	rec := app.pruneRounds[1]
+	app.stateMu.RUnlock()
+	if rec.Pruned {
+		t.Fatal("r1 record marked pruned")
+	}
+}

@@ -358,6 +358,7 @@ func (a *App) recordRoundRating(msgs []proxy.Message, priorMax int) {
 		if rec, ok := a.pruneRounds[priorMax]; ok && rec.Rating == RatingNone {
 			rec.Rating = rating
 			rec.StubText = stubText
+			rec.MarkedBy = ""
 			a.pruneRounds[priorMax] = rec
 		}
 		a.stateMu.Unlock()
@@ -1461,6 +1462,7 @@ func (a *App) recordPrevRating(prevValues []string, priorMax int) {
 	if rec, ok := a.pruneRounds[priorMax]; ok && rec.Rating == RatingNone {
 		rec.Rating = rating
 		rec.StubText = stubText
+		rec.MarkedBy = ""
 		a.pruneRounds[priorMax] = rec
 	}
 	a.stateMu.Unlock()
@@ -1901,6 +1903,7 @@ func (a *App) rateUnratedRounds(ids []int, rounds map[int]RoundRecord, conv []pr
 			cur.StubText = sanitizeStub(stubs[id])
 			stub++
 		}
+		cur.MarkedBy = ""
 		a.pruneRounds[id] = cur
 		rounds[id] = cur
 	}
