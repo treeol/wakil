@@ -126,3 +126,52 @@ func TestPruneReminderTextMentionsMarkingContract(t *testing.T) {
 		t.Error("forbidden domain")
 	}
 }
+
+func TestPruneMarksCounterSurvivesResume(t *testing.T) {
+	app := pruneTestApp()
+	app.pruneMarkCount = 3
+	s := &Session{PruneMarkCount: app.pruneMarkCount}
+	app2 := pruneTestApp()
+	app2.RestoreTurnState(s)
+	if app2.pruneMarkCount != 3 {
+		t.Errorf("marks after resume = %d, want 3", app2.pruneMarkCount)
+	}
+	if !strings.Contains(app2.pruneStatusLine(), "marks 3") {
+		t.Errorf("status: %s", app2.pruneStatusLine())
+	}
+}
+
+func TestPruneMissingPrevCountsRepliesWithoutPrev(t *testing.T) {
+	app := pruneTestApp()
+	app.curTurn = 1
+	// Two earlier rounds so the obligation applies.
+	appendRound(app, 1, "c1", "read_file", `{"path":"a"}`, "x")
+	appendRound(app, 1, "c2", "read_file", `{"path":"b"}`, "x")
+
+	call := func(name, args string) proxy.Message {
+		return proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: "n", Type: "function", Function: proxy.FunctionCall{Name: name, Arguments: args}}}}
+	}
+	// A reply without prev counts once.
+	m := call("read_file", `{"path":"c"}`)
+	app.stripPrevFromMessage(&m)
+	if app.pruneMissingPrev != 1 {
+		t.Fatalf("missing = %d, want 1", app.pruneMissingPrev)
+	}
+	// A reply carrying prev does not count.
+	m = call("read_file", `{"path":"d","prev":"drop"}`)
+	app.stripPrevFromMessage(&m)
+	if app.pruneMissingPrev != 1 {
+		t.Errorf("reply with prev counted: %d", app.pruneMissingPrev)
+	}
+	// A pure context_mark reply owes no rating.
+	m = call("context_mark", `{"drop":["r1"]}`)
+	app.stripPrevFromMessage(&m)
+	if app.pruneMissingPrev != 1 {
+		t.Errorf("context_mark reply counted: %d", app.pruneMissingPrev)
+	}
+	// A final answer with no tool calls is not a tool reply.
+	app.stripPrevFromMessage(&proxy.Message{Role: "assistant", Content: StrPtr("done")})
+	if app.pruneMissingPrev != 1 {
+		t.Errorf("final answer counted: %d", app.pruneMissingPrev)
+	}
+}

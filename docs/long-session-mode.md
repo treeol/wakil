@@ -179,6 +179,10 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
 - **Visibility**: a TUI line per pruned round (`· pruned r12 (drop, 14 KB)`);
   `/mode status` adds the rated counts (keep/drop/stub/unrated), the
   pruned round count and the bytes saved.
+  `marks N` counts `context_mark` calls and persists with the session.
+  `prev missing N` counts assistant replies with tool calls that carried no
+  `prev` (replies made only of `context_mark` calls are not counted);
+  `unrated N` counts rounds no channel has rated, so the two differ.
 - **Reminder**: while pruning is on, Wakil appends one fixed reminder to the
   end of every live user prompt in the request projection (the first user
   message of each request; injected user-role messages such as async results

@@ -44,6 +44,7 @@ type Session struct {
 	PruneArchiveFailed bool          `json:"prune_archive_failed,omitempty"`
 	PruneMissingPrev   int           `json:"prune_missing_prev,omitempty"`
 	PruneReread        int           `json:"prune_reread,omitempty"`
+	PruneMarkCount     int           `json:"prune_mark_count,omitempty"`
 	PruneOverride      string        `json:"prune_override,omitempty"` // "on"|"off" per-chat /prune toggle; "" = inherit config
 }
 

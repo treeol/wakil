@@ -1273,6 +1273,7 @@ func (a *App) restorePruneState(s *Session) {
 	a.pruneArchiveFailed = s.PruneArchiveFailed
 	a.pruneMissingPrev = s.PruneMissingPrev
 	a.pruneReread = s.PruneReread
+	a.pruneMarkCount = s.PruneMarkCount
 }
 
 // pruneStatusLine renders the /mode status addition.
@@ -1516,6 +1517,11 @@ func (a *App) stripPrevFromMessage(msg *proxy.Message) {
 		return
 	}
 	prevs := stripPrevFromMessages([]proxy.Message{*msg})
+	// Diagnostics only (the returned hint is not shown): count tool-call
+	// replies that carried no prev, for /mode status.
+	if len(msg.ToolCalls) > 0 {
+		a.checkPrevMissing(prevs, msg.ToolCalls)
+	}
 	if len(prevs) == 0 {
 		return
 	}
@@ -1525,12 +1531,27 @@ func (a *App) stripPrevFromMessage(msg *proxy.Message) {
 	a.recordPrevRating(prevs, priorMax)
 }
 
-// checkPrevMissing marks calls that omitted the required prev property
-// (round > 1) and returns the hint line to append to a tool result.
-// It increments pruneMissingPrev once per missing call in the batch.
+// checkPrevMissing counts tool-call replies that omitted the optional prev
+// property (round > 1) and returns a hint line. It increments pruneMissingPrev
+// once per such reply (not per call). A reply made only of context_mark calls
+// owes no rating and is not counted. The count is "replies without prev", so
+// it differs from the status "unrated" count (rounds no channel has rated:
+// context_mark, [[...]] tags and the rating pass also rate rounds).
 func (a *App) checkPrevMissing(prevValues []string, toolCalls []proxy.ToolCall) string {
 	if !a.pruneEnabled() {
 		return ""
+	}
+	if len(toolCalls) > 0 {
+		onlyMark := true
+		for _, tc := range toolCalls {
+			if tc.Function.Name != "context_mark" {
+				onlyMark = false
+				break
+			}
+		}
+		if onlyMark {
+			return ""
+		}
 	}
 	a.stateMu.RLock()
 	prior := a.roundSeq

@@ -320,8 +320,8 @@ type App struct {
 	pruneBytesSaved    int
 	pruneArchiveFailed bool
 	pruneAutoCount     int
-	// pruneMissingPrev counts tool calls with round>1 that omitted the
-	// required prev property (hint appended to the result).
+	// pruneMissingPrev counts assistant replies with tool calls (round>1,
+	// not only context_mark) that omitted the optional prev property.
 	pruneMissingPrev int
 	// pruneReread counts reads of a path already read in a pruned round.
 	pruneReread int
@@ -941,6 +941,7 @@ func (a *App) SaveSession() {
 		snap.PruneReread = a.pruneReread
 		snap.PruneArchiveFailed = a.pruneArchiveFailed
 	}
+	snap.PruneMarkCount = a.pruneMarkCount
 	if s := a.pruneOverrideStr(); s != "" {
 		snap.PruneOverride = s
 	}

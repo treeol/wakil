@@ -130,6 +130,7 @@ func RunHandoffPipeline(ctx context.Context, app *App) (HandoffResult, error) {
 	app.Session.PruneBytesSaved = app.pruneBytesSaved
 	app.Session.PruneMissingPrev = app.pruneMissingPrev
 	app.Session.PruneReread = app.pruneReread
+	app.Session.PruneMarkCount = app.pruneMarkCount
 	if s := app.pruneOverrideStr(); s != "" {
 		app.Session.PruneOverride = s
 	}

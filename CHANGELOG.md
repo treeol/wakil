@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `/mode status` `marks` now survives a session resume and `/handoff` (it was reset to 0 while `pruned`/`stub`/`saved` survived).
+- `/mode status` `prev missing` was always 0: its counter was no longer called anywhere. It now counts assistant replies with tool calls (after round 1) that carried no `prev`; a reply made only of `context_mark` calls is not counted. It counts replies, while `unrated` counts rounds that no channel (`prev`, `[[...]]` tags, `context_mark`, rating pass) has rated, so the two numbers measure different things and need not be equal.
 - The stream tag buffer now drains an unclosed `[[` tail at end of stream, and double brackets that are not a rating tag, such as `[[notes]]`, are shown verbatim.
 
 ### Security

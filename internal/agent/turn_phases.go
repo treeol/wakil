@@ -332,12 +332,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// returned final is stripped here for display parity.
 		a.stripPrevFromMessage(&msg)
 		// prev is OPTIONAL: the rating pass supersedes it as the primary
-		// rating channel. checkPrevMissing is diagnostics-only and is not
-		// called on the hot path (calling it with nil always increments
-		// the counter regardless of what the model actually sent; that
-		// noise was removed per the user's "unburden the tool calls"
-		// direction). prev still binds when present via
-		// stripPrevFromMessage above.
+		// rating channel. stripPrevFromMessage binds prev when present and
+		// counts replies without it (diagnostics only; no hint is added to
+		// any tool result).
 		a.appendConv(msg)
 		final = a.stripFinalTags(DerefStr(msg.Content))
 
