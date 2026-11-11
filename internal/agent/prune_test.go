@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -785,13 +786,16 @@ func TestPruneAutoStubEligible(t *testing.T) {
 	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
 
 	big := strings.Repeat("y", 4000)
-	// r1 unrated 4KB read → auto-stub eligible; r2 unrated 4KB read;
-	// r3/r4/r5 protected buffer.
+	// Superseded auto-stub: r1 is unrated ≥2KB whose same path "x" is
+	// re-read by r2 (later). Prior to the thrash-field fix, size alone
+	// (autoStubMinBytes) made ALL unrated ≥2KB rounds eligible; now only
+	// superseded (re-read/edit/same-command) rounds qualify.
+	// Round ids: r1 c1, r2 c2 (superseder), r3/r4/r5 protected buffer.
 	appendRound(app, 1, "c1", "read_file", `{"path":"x"}`, big)
 	appendRound(app, 1, "c2", "read_file", `{"path":"x"}`, big)
-	appendRound(app, 1, "c3", "read_file", `{"path":"x"}`, big)
-	appendRound(app, 1, "c4", "read_file", `{"path":"x"}`, big)
-	appendRound(app, 1, "c5", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c3", "read_file", `{"path":"y"}`, big)
+	appendRound(app, 1, "c4", "read_file", `{"path":"z"}`, big)
+	appendRound(app, 1, "c5", "read_file", `{"path":"w"}`, big)
 	// Force the trigger: make at/target tiny so the initial size check
 	// fires, then pruneCheck prunes until size <= target.
 	app.Cfg.ContextPruneAt = 0.001
@@ -802,7 +806,7 @@ func TestPruneAutoStubEligible(t *testing.T) {
 	app.pruneCheck()
 	found := false
 	for _, m := range app.contextProjection() {
-		if m.ToolCallID == "c1" && strings.Contains(DerefStr(m.Content), "auto-pruned") {
+		if m.ToolCallID == "c1" && strings.Contains(DerefStr(m.Content), "superseded") {
 			found = true
 		}
 		if m.ToolCallID == "c5" && strings.Contains(DerefStr(m.Content), "pruned") {
@@ -810,7 +814,7 @@ func TestPruneAutoStubEligible(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("unrated ≥2KB read round should be auto-stubbed")
+		t.Error("unrated ≥2KB superseded read round should be auto-stubbed (superseded)")
 	}
 }
 
@@ -953,7 +957,7 @@ func TestPruneToggleAndResume(t *testing.T) {
 	}
 	// /prune off via override, persisted.
 	app.stateMu.Lock()
-	app.pruneOverride = "off"
+	app.setPruneOverride("off")
 	app.stateMu.Unlock()
 	if app.pruneEnabled() {
 		t.Error("/prune off must disable pruning")
@@ -1012,13 +1016,19 @@ func TestPruneKhatamReplay(t *testing.T) {
 	os.Setenv("XDG_DATA_HOME", tmp)
 	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
 
+	big := strings.Repeat("k", 6000)
+	// --- (a) no ratings anywhere → no thrash: superseded-only pruning,
+	// and below the 90% emergency level no bulk auto-prune at all. ---
+	// Each read is a DIFFERENT path here (a real read-all-of-internal/web
+	// shape: 29 reads, 29 different files). With no supersede (paths do
+	// not repeat) and no ratings, prune candidates are empty.
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 3
-	app.Cfg.HardMaxBytes = 160000 // 29 reads × ~6KB ≈ 174KB crosses 0.15×160000=24KB quickly
+	app.Cfg.HardMaxBytes = 160000
 	app.Cfg.CompactAt = 145000
 	app.Cfg.KeepBytes = 120000
 	app.Cfg.MaxChars = 0
@@ -1026,32 +1036,27 @@ func TestPruneKhatamReplay(t *testing.T) {
 	app.Cfg.KeepBytesFrac = 0
 	app.Cfg.HardMaxFrac = 0
 	app.curTurn = 1
-	big := strings.Repeat("k", 6000)
 	for i := 1; i <= 29; i++ {
-		id := "k" + strings.Repeat("a", i) // unique-ish ids
-		id = "k" + string(rune('a'+i)) + string(rune('0'+i%10))
-		app.appendConv(tcMsg(id, "read_file", `{"path":"x"}`))
+		id := "k" + string(rune('a'+i)) + string(rune('0'+i%10))
+		path := "f" + string(rune('a'+i)) + ".go"
+		app.appendConv(tcMsg(id, "read_file", `{"path":"`+path+`"}`))
 		app.appendConv(trMsg(id, "read_file", big))
-		// Zero ratings (no prev, no tags) — the khatam shape.
 		app.pruneCheck()
 	}
-	// Pruning must have happened before the 29th append (mid-request),
-	// not just at finalizeTurn: rounds 1..N-3 are gone from projection.
 	pruned := 0
 	for _, m := range app.contextProjection() {
 		if strings.Contains(DerefStr(m.Content), "pruned") {
 			pruned++
 		}
 	}
-	if pruned == 0 {
-		t.Error("khatam replay: no pruning happened with at=0.15")
+	// Distinct paths → no superseded candidates → 0 pruned.
+	if pruned != 0 {
+		t.Errorf("no-ratings khatam: expected 0 pruned (no superseded, below emergency), got %d", pruned)
 	}
-	assertNoOrphanedToolCalls(t, app.contextProjection())
 	assertPairing(t, app.contextProjection())
 
-	// In-loop proof: pruneCheck at each append mirrors streamTurn, so a
-	// pruned round must already exist by the time we finish appending
-	// round 10 (not only after all 29).
+	// --- (b) same path re-read → the earlier unrated round is superseded
+	// and pruned (its content is no longer needed — a later read has it).
 	app2 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app2.SetContextMode("standard")
 	app2.Cfg.ContextPrune = "on"
@@ -1066,23 +1071,69 @@ func TestPruneKhatamReplay(t *testing.T) {
 	app2.Cfg.KeepBytesFrac = 0
 	app2.Cfg.HardMaxFrac = 0
 	app2.curTurn = 1
-	os.Setenv("XDG_DATA_HOME", tmp)
-	early := 0
 	for i := 1; i <= 10; i++ {
-		id := "e" + string(rune('a'+i)) + string(rune('0'+i%10))
+		id := "s" + string(rune('a'+i)) + string(rune('0'+i%10))
 		app2.appendConv(tcMsg(id, "read_file", `{"path":"x"}`))
 		app2.appendConv(trMsg(id, "read_file", big))
 		app2.pruneCheck()
-		if i == 10 {
-			for _, m := range app2.contextProjection() {
-				if strings.Contains(DerefStr(m.Content), "pruned") {
-					early++
-				}
-			}
+	}
+	// Last 3 protected → rounds 1..7 are superseded (same path "x").
+	pruned2 := 0
+	for _, m := range app2.contextProjection() {
+		c := DerefStr(m.Content)
+		if strings.Contains(c, "superseded") || strings.Contains(c, "pruned") {
+			pruned2++
 		}
 	}
-	if early == 0 {
-		t.Error("expected pruning already by round 10 (in-loop, not just finalizeTurn)")
+	if pruned2 == 0 {
+		t.Error("superseded replay: expected superseded pruning of earlier same-path rounds")
+	}
+	assertPairing(t, app2.contextProjection())
+
+	// --- (c) emergency: push past 90% of hard max with unrated, distinct-
+	// path rounds → oldest unrated pruned as emergency.
+	app3 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app3.SetContextMode("standard")
+	app3.Cfg.ContextPrune = "on"
+	app3.Cfg.ContextPruneAt = 0.15
+	app3.Cfg.ContextPruneTarget = 0.10
+	app3.Cfg.ContextPruneProtect = 3
+	app3.Cfg.HardMaxBytes = 20000 // 90% = 18000
+	app3.Cfg.CompactAt = 19000
+	app3.Cfg.KeepBytes = 15000
+	app3.Cfg.MaxChars = 0
+	app3.Cfg.CompactAtFrac = 0
+	app3.Cfg.KeepBytesFrac = 0
+	app3.Cfg.HardMaxFrac = 0
+	app3.curTurn = 1
+	for i := 1; i <= 6; i++ {
+		id := "e" + string(rune('a'+i)) + string(rune('0'+i%10))
+		path := "e" + string(rune('a'+i)) + ".go"
+		app3.appendConv(tcMsg(id, "read_file", `{"path":"`+path+`"}`))
+		app3.appendConv(trMsg(id, "read_file", big))
+		app3.pruneCheck()
+	}
+	// 6 × 6KB = 36KB ≥ 90% of 20KB → emergency pruning of oldest unrated
+	// (rounds 1..3, since protect=3) must have fired.
+	emergency := 0
+	for _, m := range app3.contextProjection() {
+		if strings.Contains(DerefStr(m.Content), "auto-emergency") {
+			emergency++
+		}
+	}
+	if emergency == 0 {
+		t.Error("emergency replay: no emergency pruning above 90% of hard max")
+	}
+	assertPairing(t, app3.contextProjection())
+	// The pruned ones are logged as emergency in the rate-mapped count.
+	em := 0
+	for _, rec := range app3.pruneRounds {
+		if rec.Rating == RatingEmergency {
+			em++
+		}
+	}
+	if em == 0 {
+		t.Error("emergency replay: no record rated emergency")
 	}
 }
 
@@ -1212,4 +1263,204 @@ func TestPruneToggleViaDispatchPath(t *testing.T) {
 	if st3.Text == "" {
 		t.Error("prune status empty")
 	}
+}
+
+// --- 19. Required prev + missing hint + counters + race ---
+
+func TestPrunePrevRequiredInSchema(t *testing.T) {
+	tools := []proxy.Tool{{Type: "function", Function: proxy.ToolFunction{
+		Name:       "read_file",
+		Parameters: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+	}}}
+	out := withPrevProperty(tools)
+	if len(out) != 1 {
+		t.Fatalf("tools len = %d", len(out))
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(out[0].Function.Parameters, &obj); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	props, _ := obj["properties"].(map[string]interface{})
+	if _, ok := props["prev"]; !ok {
+		t.Error("prev missing from schema")
+	}
+	req, _ := obj["required"].([]interface{})
+	found := false
+	for _, r := range req {
+		if r == "prev" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("prev not in required[]")
+	}
+	// Off-mode: withPrevProperty is never called — golden test asserts
+	// wire identity; here assert the injector itself is offline-safe on
+	// empty params.
+	empty := withPrevProperty([]proxy.Tool{{Type: "function", Function: proxy.ToolFunction{Name: "x"}}})
+	if len(empty) != 1 {
+		t.Fatal("empty tools")
+	}
+}
+
+func TestPruneMissingPrevHintAndCounter(t *testing.T) {
+	// Build an app past round 1 with prune on.
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.HardMaxBytes = 160000
+	app.Cfg.CompactAt = 145000
+	app.Cfg.KeepBytes = 120000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	app.curTurn = 1
+	big := strings.Repeat("z", 4)
+	// Go through appendConv (which assigns round ids) so roundSeq > 1.
+	app.appendConv(tcMsg("h1", "read_file", `{"path":"a.go"}`))
+	app.appendConv(trMsg("h1", "read_file", big))
+	app.appendConv(tcMsg("h2", "read_file", `{"path":"b.go"}`))
+	app.appendConv(trMsg("h2", "read_file", big))
+	// Simulate a message with NO prev at round ≥2: hint + counter.
+	hint := app.checkPrevMissing(nil, []proxy.ToolCall{{ID: "h3"}})
+	if hint == "" {
+		t.Fatal("missing prev should produce a hint")
+	}
+	if !strings.Contains(hint, "unrated") {
+		t.Errorf("hint = %q", hint)
+	}
+	if hint == "" || app.pruneMissingPrev == 0 {
+		t.Error("missing counter not incremented")
+	}
+	if app.pruneMissingPrev != 1 {
+		t.Errorf("pruneMissingPrev = %d, want 1", app.pruneMissingPrev)
+	}
+	// Round 1: no obligation.
+	app2 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app2.SetContextMode("standard")
+	app2.Cfg.ContextPrune = "on"
+	app2.curTurn = 1
+	if h := app2.checkPrevMissing(nil, []proxy.ToolCall{{ID: "x"}}); h != "" {
+		t.Errorf("round 1 must not hint, got %q", h)
+	}
+}
+
+func TestPruneSupersededDetection(t *testing.T) {
+	// Direct unit test of findSuperseded via synthetic rounds.
+	rounds := map[int]RoundRecord{
+		1: {ID: 1, Rating: RatingNone, ReadPaths: []string{"a.go"}, BytesLost: 4000},
+		2: {ID: 2, Rating: RatingNone, ReadPaths: []string{"a.go"}, BytesLost: 4000},
+		3: {ID: 3, Rating: RatingNone, ReadPaths: []string{"b.go"}, HasShellCmd: true, CmdText: "ls", BytesLost: 4000},
+		4: {ID: 4, Rating: RatingNone, ReadPaths: []string{"b.go"}, Write: true, HasShellCmd: true, CmdText: "ls", BytesLost: 4000},
+	}
+	order := []int{1, 2, 3, 4}
+	sup := findSuperseded(order, rounds)
+	if _, ok := sup[1]; !ok {
+		t.Error("r1 should be superseded by r2 (same path read again)")
+	}
+	if _, ok := sup[3]; !ok {
+		t.Error("r3 should be superseded by r4 (edit/same-command)")
+	}
+	if got := len(sup); got != 2 {
+		t.Errorf("superseded count = %d, want 2", got)
+	}
+}
+
+func TestPruneNoAutoPruneOfUnratedBelowEmergency(t *testing.T) {
+	// Unrated distinct-path rounds, well below 90% of hard max: no pruning.
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.15
+	app.Cfg.ContextPruneTarget = 0.10
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.HardMaxBytes = 160000
+	app.Cfg.CompactAt = 145000
+	app.Cfg.KeepBytes = 120000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	app.curTurn = 1
+	big := strings.Repeat("q", 6000)
+	for i := 1; i <= 6; i++ {
+		id := "n" + string(rune('a'+i))
+		path := "n" + string(rune('a'+i)) + ".go"
+		appendRound(app, 1, id, "read_file", `{"path":"`+path+`"}`, big)
+		app.pruneCheck()
+	}
+	// 36KB total < 90% of 160k (144k) → no emergency, no superseded
+	// (distinct paths) → 0 pruned.
+	for _, m := range app.contextProjection() {
+		if strings.Contains(DerefStr(m.Content), "pruned") || strings.Contains(DerefStr(m.Content), "superseded") || strings.Contains(DerefStr(m.Content), "auto-emergency") {
+			t.Errorf("unrated non-superseded round pruned below emergency: %q", DerefStr(m.Content))
+		}
+	}
+}
+
+func TestPruneRereadCounter(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.001
+	app.Cfg.ContextPruneTarget = 0.0001
+	app.Cfg.ContextPruneProtect = 1
+	app.Cfg.HardMaxBytes = 100000
+	app.Cfg.CompactAt = 70000
+	app.Cfg.KeepBytes = 50000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	big := strings.Repeat("r", 4000)
+	// r1 reads a.go (rated drop via text tag) → pruned.
+	appendRound(app, 1, "rc1", "read_file", `{"path":"a.go"}`, big)
+	ratePrevious(app, 1, "[[drop]]")
+	appendRound(app, 1, "rc2", "read_file", `{"path":"b.go"}`, big)
+	app.pruneCheck() // r1 pruned (drop, oldest non-protected)
+	// Now re-read a.go — matches the pruned r1's path → counter + line.
+	appendRound(app, 1, "rc3", "read_file", `{"path":"a.go"}`, big)
+	if app.pruneReread == 0 {
+		t.Error("reread counter not incremented for a path whose round was pruned")
+	}
+	if !strings.Contains(app.pruneStatusLine(), "rereads") {
+		t.Errorf("status missing rereads: %s", app.pruneStatusLine())
+	}
+	if !strings.Contains(app.pruneStatusLine(), "prev missing") {
+		t.Errorf("status missing prev missing: %s", app.pruneStatusLine())
+	}
+}
+
+func TestPruneOverrideRaceWithStream(t *testing.T) {
+	// -race target: toggle /prune from one goroutine while pruneEnabled is
+	// read from another (turn streaming). The override is atomic, so this
+	// must not race.
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "off"
+	done := make(chan struct{})
+	start := make(chan struct{})
+	// toggler
+	go func() {
+		<-start
+		for i := 0; i < 200; i++ {
+			if i%2 == 0 {
+				app.setPruneOverride("on")
+			} else {
+				app.setPruneOverride("off")
+			}
+		}
+		close(done)
+	}()
+	// reader (mirrors the turn goroutine)
+	close(start)
+	for i := 0; i < 200; i++ {
+		_ = app.pruneEnabled()
+	}
+	<-done
 }

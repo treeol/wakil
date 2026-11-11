@@ -47,6 +47,40 @@ func (a *App) appendConv(msgs ...proxy.Message) {
 	if a.pruneEnabled() {
 		a.recordAssistantRound(msgs, convIdx)
 		a.recordToolResultBytes(msgs)
+		a.recordReread(msgs)
+	}
+}
+
+// recordReread counts reads (read_file/read_file_full) whose path was
+// already read in a pruned round of the same chat, and logs a TUI line.
+func (a *App) recordReread(msgs []proxy.Message) {
+	a.stateMu.RLock()
+	pruned := map[string]int{} // path -> round id
+	for id, rec := range a.pruneRounds {
+		if rec.Pruned {
+			for _, p := range rec.ReadPaths {
+				pruned[p] = id
+			}
+		}
+	}
+	a.stateMu.RUnlock()
+	if len(pruned) == 0 {
+		return
+	}
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			if !readToolNames[tc.Function.Name] {
+				continue
+			}
+			for _, p := range extractPaths(tc.Function.Arguments) {
+				if roundID, ok := pruned[p]; ok {
+					a.stateMu.Lock()
+					a.pruneReread++
+					a.stateMu.Unlock()
+					fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· reread %s (was pruned in r%d)", p, roundID)))
+				}
+			}
+		}
 	}
 }
 
@@ -1704,7 +1738,7 @@ func (a *App) restoreTurnStateLocked(s *Session) {
 
 	// Layer 5: restore the per-chat /prune override (persists with
 	// the session; no config write).
-	a.pruneOverride = s.PruneOverride
+	a.setPruneOverride(s.PruneOverride)
 	// Resume: pruned state and round ids restored.
 	a.restorePruneState(s)
 }

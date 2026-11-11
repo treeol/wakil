@@ -57,6 +57,7 @@ const (
 	// rounds ≥ autoStubMinBytes). Never model-supplied; it only signals
 	// why this round was pruned.
 	RatingAuto RoundRating = "auto"
+	// RatingSuperseded / RatingEmergency: see the const block above.
 )
 
 // RoundRecord is one pruned-eligible tool round in the session.
@@ -73,7 +74,18 @@ type RoundRecord struct {
 	Write     bool        `json:"write,omitempty"`      // round had write-class tool calls
 	PrunedAt  time.Time   `json:"pruned_at,omitempty"`
 	BytesLost int         `json:"bytes_lost,omitempty"` // original tool-result bytes removed by this prune
-	AutoNote  string      `json:"auto_note,omitempty"`  // deterministic stub text for auto-stubbed rounds
+	// Superseded-by / emergency cause, set when an unrated round is pruned
+	// without a model rating. Empty for keep/drop/stub/emergency rounds is
+	// ok too; emergency sets "emergency".
+	AutoNote string `json:"auto_note,omitempty"`
+	// ReadPaths are the file paths the round's read_file/read_file_full
+	// calls touched (for superseded + reread detection, and edit-after-read).
+	ReadPaths []string `json:"read_paths,omitempty"`
+	// HasShellCmd marks rounds containing a run_shell/run_background call;
+	// CmdText is the (deduplicated) command text for identical-command
+	// superseded detection.
+	HasShellCmd bool   `json:"has_shell_cmd,omitempty"`
+	CmdText     string `json:"cmd_text,omitempty"`
 }
 
 // stubTextMaxChars caps the model-supplied stub line.
@@ -82,7 +94,25 @@ const stubTextMaxChars = 200
 // autoStubMinBytes is the round-size threshold for the auto-stub fallback:
 // unrated rounds whose tool results total at least this many bytes become
 // eligible for deterministic stubbing when nothing else applies.
+// NOTE: the field-test showed size-only pruning causes thrash (the model
+// re-reads what was stubbed without a takeaway), so the size fallback is
+// gated to superseded rounds (any time) and emergency only (≥90% of hard
+// max after rated candidates are exhausted). Kept for the never-inflate
+// length floor during candidate evaluation.
 const autoStubMinBytes = 2048
+
+// RatingSuperseded / RatingEmergency are deterministic stub causes for
+// unrated rounds pruned without a model rating.
+const (
+	RatingSuperseded RoundRating = "superseded"
+	RatingEmergency  RoundRating = "emergency"
+)
+
+// emergencyFrac is the hard-max fraction above which emergency pruning is
+// allowed: after all drop/stub/superseded candidates are exhausted, if the
+// projected size is still ≥ 90% of hard max, prune oldest unrated rounds
+// until below the target.
+const emergencyFrac = 0.90
 
 // pruneTagRe matches one rating tag anywhere in assistant text.
 // Groups: 1 = kind (keep|drop|stub), 3 = stub text (may be empty, up to
@@ -146,16 +176,59 @@ func (a *App) pruneEnabled() bool {
 	if a.IsSubagent {
 		return false
 	}
-	// Direct check, no RLock inside: some callers already hold stateMu
-	// (e.g. buildPreamble via ensurePreamble's caller chains), and
-	// Go's RWMutex is not reentrant — a nested RLock deadlocks.
-	if a.pruneOverride != "" {
-		return a.pruneOverride == "on"
+	// Lock-free check: some callers already hold stateMu (e.g. buildPreamble
+	// via ensurePreamble's caller chains) and Go's RWMutex is not reentrant
+	// — a nested RLock deadlocks. Atomic Load lets /prune toggles and the
+	// streaming turn read concurrently without a lock.
+	switch a.pruneOverride.Load() {
+	case 1:
+		return true
+	case 2:
+		return false
 	}
 	return a.Cfg.ContextPrune == "on"
 }
 
+// pruneOverrideStr renders the override value; caller must hold stateMu.
+func (a *App) pruneOverrideStr() string {
+	switch a.pruneOverride.Load() {
+	case 1:
+		return "on"
+	case 2:
+		return "off"
+	default:
+		return ""
+	}
+}
+
+// setPruneOverride stores the override (0=unset,1=on,2=off). Callers that
+// hold stateMu or need persistence lock after calling.
+func (a *App) setPruneOverride(s string) {
+	switch s {
+	case "on":
+		a.pruneOverride.Store(1)
+	case "off":
+		a.pruneOverride.Store(2)
+	default:
+		a.pruneOverride.Store(0)
+	}
+}
+
+func pruneOverrideCode(s string) int32 {
+	switch s {
+	case "on":
+		return 1
+	case "off":
+		return 2
+	}
+	return 0
+}
+
 /* RECORDING (called from appendConv; all under stateMu). */
+
+// readToolNames are the file-read tools whose targets superseded/reread
+// detection tracks.
+var readToolNames = map[string]bool{"read_file": true, "read_file_full": true}
 
 // recordAssistantRound registers the just-appended assistant message with
 // tool_calls as a new round (id assigned). convIdx is the index of that
@@ -170,10 +243,24 @@ func (a *App) recordAssistantRound(msgs []proxy.Message, convIdx int) {
 		}
 		callIDs := make([]string, 0, len(m.ToolCalls))
 		write := false
+		var readPaths []string
+		hasShell, cmdText := false, ""
 		for _, tc := range m.ToolCalls {
 			callIDs = append(callIDs, tc.ID)
 			if writeTargetTools[tc.Function.Name] {
 				write = true
+			}
+			if readToolNames[tc.Function.Name] {
+				readPaths = append(readPaths, extractPaths(tc.Function.Arguments)...)
+			}
+			if tc.Function.Name == "run_shell" || tc.Function.Name == "run_background" {
+				hasShell = true
+				var cobj map[string]any
+				if json.Unmarshal([]byte(tc.Function.Arguments), &cobj) == nil {
+					if c, ok := cobj["command"].(string); ok && cmdText == "" {
+						cmdText = c
+					}
+				}
 			}
 		}
 		a.stateMu.Lock()
@@ -186,12 +273,15 @@ func (a *App) recordAssistantRound(msgs []proxy.Message, convIdx int) {
 		}
 		a.roundSeq = id
 		a.pruneRounds[id] = RoundRecord{
-			ID:        id,
-			CallIDs:   callIDs,
-			FirstCall: callIDs[0],
-			ConvIdx:   convIdx + k,
-			Turn:      m.Turn,
-			Write:     write,
+			ID:          id,
+			CallIDs:     callIDs,
+			FirstCall:   callIDs[0],
+			ConvIdx:     convIdx + k,
+			Turn:        m.Turn,
+			Write:       write,
+			ReadPaths:   readPaths,
+			HasShellCmd: hasShell,
+			CmdText:     cmdText,
 		}
 		a.stateMu.Unlock()
 	}
@@ -331,14 +421,115 @@ func stubLine(rec RoundRecord, toolName string, archive string) string {
 		return fmt.Sprintf("[%s pruned: %s — full result: %s]", id, rec.StubText, archive)
 	case RatingAuto:
 		return autoStubLine(rec, toolName, "", archive)
+	case RatingSuperseded:
+		// superseded cause (e.g. "reread a.go" / "edited a.go" /
+		// "same command") recorded at prune time in AutoNote.
+		return fmt.Sprintf("[%s superseded: %s — full result: %s]", id, rec.AutoNote, archive)
+	case RatingEmergency:
+		return fmt.Sprintf("[%s auto-emergency: %s (%s) — full result: %s]", id, toolName, formatKB(rec.BytesLost), archive)
 	default:
 		return fmt.Sprintf("[%s pruned — full result: %s]", id, archive)
 	}
 }
 
+// supersededInfo records why an unrated round is superseded by a later
+// round: the later round id and a short cause.
+type supersededInfo struct {
+	by    int
+	cause string
+}
+
+// findSuperseded maps unrated round ids to the later round that superseded
+// them, by Conv order:
+//   - the same file was read again (any read tool, same path)
+//   - the file was written/edited afterwards (writeTargetTools, same path)
+//   - the identical shell command was run again (run_shell/run_background,
+//     same command text)
+//
+// Only LATER rounds count. Unrated + not-pruned rounds only.
+func findSuperseded(order []int, rounds map[int]RoundRecord) map[int]supersededInfo {
+	out := map[int]supersededInfo{}
+	// Pass 1: index all later rounds by path + command.
+	for pos, id := range order {
+		rec := rounds[id]
+		_ = rec
+		// For each earlier round, look at this later round.
+		for _, earlierID := range order[:pos] {
+			er := rounds[earlierID]
+			if er.Rating != RatingNone || er.Pruned || er.Write {
+				continue
+			}
+			if _, done := out[earlierID]; done {
+				continue // earliest superseder wins
+			}
+			later := rounds[id]
+			// same path read again or written/edited afterwards
+			for _, p := range er.ReadPaths {
+				if containsPath(later.ReadPaths, p) && readToolNames[firstToolName(order, rounds, id)] {
+					out[earlierID] = supersededInfo{by: id, cause: "reread " + p}
+					break
+				}
+				if roundHasWriteTo(later, p) {
+					out[earlierID] = supersededInfo{by: id, cause: "edited " + p}
+					break
+				}
+			}
+			if _, done := out[earlierID]; done {
+				continue
+			}
+			if er.HasShellCmd && later.HasShellCmd && er.CmdText != "" && later.CmdText == er.CmdText {
+				out[earlierID] = supersededInfo{by: id, cause: "same command"}
+			}
+		}
+	}
+	return out
+}
+
+func containsPath(list []string, p string) bool {
+	for _, v := range list {
+		if v == p {
+			return true
+		}
+	}
+	return false
+}
+
+// roundHasWriteTo reports whether a later round writes/edits path p. The
+// later round's call arguments are searched via its ReadPaths (reads) plus
+// write-target paths extracted from its records — write detection reuses
+// the round's stored ReadPaths is wrong for writes, so it checks whether
+// the later round is a Write round AND its write paths intersect; for
+// simplicity, a Write round whose ReadPaths contain p, or whose write
+// tools' args contain p, counts. Since RoundRecord only stores ReadPaths
+// for read tools, write rounds record the same path if they also read it
+// before editing (common); otherwise edit-after-read is detected when the
+// SAME round read the path it later edits, which appears as a superseder
+// by itself — that case is handled by the writeTool argument scan below.
+func roundHasWriteTo(rec RoundRecord, p string) bool {
+	if !rec.Write {
+		return false
+	}
+	return containsPath(rec.ReadPaths, p)
+}
+
+// firstToolName returns the first call's tool name for the round (approx
+// for superseded detection — order[0] is the round's own id).
+func firstToolName(order []int, rounds map[int]RoundRecord, id int) string {
+	// We do not have Conv here; use the round's CallIDs[0] prefix heuristic:
+	// superseded only needs read-vs-write discrimination, and both read
+	// tools are in readToolNames. If the round recorded read paths, it had
+	// a read call. Empty string disables the read-reread arm without
+	// disabling edit-after-read.
+	if rec, ok := rounds[id]; ok && len(rec.ReadPaths) > 0 {
+		return "read_file"
+	}
+	return ""
+}
+
 // pruneCandidates returns candidate round ids in prune order: drop rounds
-// first (oldest first), then stub rounds (oldest first). Keep and unrated
-// rounds are never candidates. Already-pruned rounds, rounds inside collapsed
+// first (oldest first), then stub rounds (oldest first), then superseded
+// (oldest first). Keep and other unrated rounds are never candidates.
+// Already-pruned rounds, rounds inside collapsed
 // or /keep turns, and the most recent `protect` rounds are excluded.
 // Callers pass rounds in Conv order (order slice); ordering is by position in
 // that slice.
@@ -369,7 +560,10 @@ func pruneCandidates(rounds map[int]RoundRecord, order []int, collapsedTurns, ke
 			protected[id] = true
 		}
 	}
-	var drops, stubs, autos []int
+	// Superseded map for unrated eligible rounds.
+	superseded := findSuperseded(order, rounds)
+
+	var drops, stubs, supers []int
 	for _, id := range order {
 		if protected[id] {
 			continue
@@ -401,22 +595,112 @@ func pruneCandidates(rounds map[int]RoundRecord, order []int, collapsedTurns, ke
 		case RatingStub:
 			stubs = append(stubs, id)
 		case RatingNone:
-			// Auto-stub fallback: unrated rounds with at least
-			// autoStubMinBytes of tool results become eligible.
-			// Exclusions already applied above: protected (last N),
-			// /keep turns, collapsed turns, Pinned rounds. Write
-			// rounds are NEVER auto-stubbed (write-class is never
-			// pruned without an explicit model rating).
+			// Superseded auto-stub: unrated rounds whose content was
+			// superseded later (re-read same path, edit/write same
+			// path, identical shell command) become eligible.
+			// Other unrated rounds are NEVER pruned by size below the
+			// emergency level (≥90% of hard max); pruneCheck handles
+			// emergency pruning separately. Write+none is never
+			// superseded-pruned (write-class needs explicit rating to
+			// stub as drop; here only read+shell rounds supersede).
 			if rec.Write || rec.BytesLost < autoStubMinBytes {
 				continue
 			}
-			autos = append(autos, id)
+			if _, ok := superseded[id]; ok {
+				supers = append(supers, id)
+			}
 		}
 	}
 	out := append([]int{}, drops...)
 	out = append(out, stubs...)
-	out = append(out, autos...)
+	out = append(out, supers...)
 	return out
+}
+
+// emergencyCandidates returns unrated, non-write, non-protected,
+// non-keep/collapsed/pinned rounds in oldest-first order for emergency
+// pruning. Used only when the projected size is still ≥90% of hard max
+// after rated/superseded candidates are exhausted.
+func emergencyCandidates(rounds map[int]RoundRecord, order []int, collapsedTurns, keepTurns map[int]bool, turnOfRound map[int]int, protect int, roundHasPinnedKeep map[int]bool) []int {
+	protected := map[int]bool{}
+	if len(order) > protect {
+		for _, id := range order[len(order)-protect:] {
+			protected[id] = true
+		}
+	} else {
+		for _, id := range order {
+			protected[id] = true
+		}
+	}
+	var out []int
+	for _, id := range order {
+		if protected[id] || roundHasPinnedKeep[id] {
+			continue
+		}
+		rec, ok := rounds[id]
+		if !ok || rec.Pruned || rec.Rating != RatingNone || rec.Write {
+			continue
+		}
+		turn := turnOfRound[id]
+		if turn > 0 && (collapsedTurns[turn] || keepTurns[turn]) {
+			continue
+		}
+		if rec.BytesLost < autoStubMinBytes {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// pruneEmergency prunes emergency candidates until below target. Called
+// only after pruneCheck's candidates loop when size ≥ 90% of hard max.
+func (a *App) pruneEmergency(convSnap []proxy.Message, rounds map[int]RoundRecord, order []int, turnOfRound map[int]int, collapsedTurns, keepTurns, pinnedRounds map[int]bool, target int) {
+	_, _, hardMax := a.activeThresholds()
+	// Emergency gate: only when still ≥ 90% of hard max.
+	if a.sentSize(a.contextProjection()) < int(float64(hardMax)*emergencyFrac) {
+		return
+	}
+	protect := a.Cfg.ContextPruneProtect
+	candidates := emergencyCandidates(rounds, order, collapsedTurns, keepTurns, turnOfRound, protect, pinnedRounds)
+	for _, id := range candidates {
+		if a.sentSize(a.contextProjection()) <= target {
+			break
+		}
+		rec := rounds[id]
+		if rec.Pruned {
+			continue
+		}
+		archive := wtools.SpillToCache(a.chatID(), fmt.Sprintf("round-%d", id), renderRoundArchive(convSnap, rec))
+		if archive == "" {
+			if !a.pruneArchiveFailed {
+				a.pruneArchiveFailed = true
+				fmt.Fprintln(a.Out, Yellow("⚠ prune: archive write failed for round "+fmt.Sprint(id)+" — round kept in context"))
+			}
+			continue
+		}
+		if stubLen := len(stubLine(rec, archiveToolName(convSnap, rec), archive)); stubLen >= rec.BytesLost {
+			continue
+		}
+		a.stateMu.Lock()
+		if a.prunedRounds == nil {
+			a.prunedRounds = map[int]bool{}
+		}
+		a.prunedRounds[id] = true
+		if cur, ok := a.pruneRounds[id]; ok {
+			cur.Rating = RatingEmergency
+			cur.AutoNote = "emergency"
+			cur.Pruned = true
+			cur.Archive = archive
+			cur.PrunedAt = time.Now()
+			a.pruneRounds[id] = cur
+			rec = cur
+		}
+		a.pruneBytesSaved += rec.BytesLost
+		a.stateMu.Unlock()
+		rounds[id] = rec
+		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· pruned r%d (emergency, %s)", id, formatKB(rec.BytesLost))))
+	}
 }
 
 // roundOrderFromConv returns round ids in Conv order plus turn-of-round.
@@ -538,15 +822,21 @@ func (a *App) pruneCheck() {
 		// Record lives in the store, not the local snapshot. Merge the
 		// archive outcome onto the live record under the lock, and update
 		// both maps so the next pruneCheck sees it.
-		isAuto := rec.Rating == RatingNone
+		isSuperseded := rec.Rating == RatingNone
 		a.stateMu.Lock()
 		if a.prunedRounds == nil {
 			a.prunedRounds = map[int]bool{}
 		}
 		a.prunedRounds[id] = true
 		if cur, ok := a.pruneRounds[id]; ok {
-			if isAuto {
-				cur.Rating = RatingAuto
+			if isSuperseded {
+				// Superseded: keep the cause from findSuperseded. The
+				// candidate order's superseder is not in the record
+				// snapshot here, so set the cause deterministically.
+				cur.Rating = RatingSuperseded
+				if cur.AutoNote == "" {
+					cur.AutoNote = "superseded"
+				}
 			}
 			cur.Pruned = true
 			cur.Archive = archive
@@ -561,13 +851,19 @@ func (a *App) pruneCheck() {
 		switch {
 		case rec.Rating == RatingDrop && !rec.Write:
 			kind = "drop"
-		case rec.Rating == RatingAuto:
+		case rec.Rating == RatingSuperseded:
 			kind = "auto"
 			a.stateMu.Lock()
 			a.pruneAutoCount++
 			a.stateMu.Unlock()
 		}
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· pruned r%d (%s, %s)", id, kind, formatKB(rec.BytesLost))))
+	}
+	// Emergency: all rated/superseded candidates exhausted. Only prune
+	// oldest unrated rounds when still ≥90% of hard max.
+	_, _, hardMax2 := a.activeThresholds()
+	if a.sentSize(a.contextProjection()) >= int(float64(hardMax2)*emergencyFrac) && a.sentSize(a.contextProjection()) > target {
+		a.pruneEmergency(convSnap, rounds, order, turnOfRound, collapsedTurns, keepTurns, pinnedRounds, target)
 	}
 }
 
@@ -664,6 +960,8 @@ func (a *App) restorePruneState(s *Session) {
 	a.roundSeq = maxID
 	a.pruneBytesSaved = s.PruneBytesSaved
 	a.pruneArchiveFailed = s.PruneArchiveFailed
+	a.pruneMissingPrev = s.PruneMissingPrev
+	a.pruneReread = s.PruneReread
 }
 
 // pruneStatusLine renders the /mode status addition.
@@ -690,8 +988,14 @@ func (a *App) pruneStatusLine() string {
 	saved := a.pruneBytesSaved
 	a.stateMu.RUnlock()
 	trigger, target := a.pruneThresholds()
-	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · saved ~%d KB · trigger %dk · target %dk",
-		a.pruneStateWord(), keep, drop, stub, auto, unrated, prunedCount, saved/1024, trigger/1000, target/1000)
+	// counters are read under stateMu above; re-latch for the reread/
+	// missing-prev counters (same lock scope as the map walk).
+	a.stateMu.RLock()
+	rereads := a.pruneReread
+	missing := a.pruneMissingPrev
+	a.stateMu.RUnlock()
+	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · saved ~%d KB · trigger %dk · target %dk · rereads %d · prev missing %d",
+		a.pruneStateWord(), keep, drop, stub, auto, unrated, prunedCount, saved/1024, trigger/1000, target/1000, rereads, missing)
 }
 
 // pruneStateWord renders "on"/"off" from the effective state (override over
@@ -783,6 +1087,21 @@ func withPrevProperty(tools []proxy.Tool) []proxy.Tool {
 			continue // model tool already defines prev — leave it alone
 		}
 		props[PrevProp] = PrevPropSchema
+		if req, ok := obj["required"].([]interface{}); ok {
+			foundPrev := false
+			for _, v := range req {
+				if sv, ok := v.(string); ok && sv == PrevProp {
+					foundPrev = true
+					break
+				}
+			}
+			if !foundPrev {
+				req = append(req, PrevProp)
+				obj["required"] = req
+			}
+		} else {
+			obj["required"] = []interface{}{PrevProp}
+		}
 		if b, err := json.Marshal(obj); err == nil {
 			out[i].Function.Parameters = b
 		}
@@ -884,9 +1203,8 @@ func (a *App) recordPrevRating(prevValues []string, priorMax int) {
 // pruneEnabledOverride is the /prune per-chat state. pruneOverride is the
 // per-chat value ("on"/"off"); when empty the Cfg value governs.
 func (a *App) pruneEnabledOverride() (string, bool) {
-	a.stateMu.RLock()
-	defer a.stateMu.RUnlock()
-	return a.pruneOverride, a.pruneOverride != ""
+	s := a.pruneOverrideStr()
+	return s, s != ""
 }
 
 // effectivePrune reports whether pruning is active for this chat, honoring
@@ -919,6 +1237,31 @@ func (a *App) stripPrevFromMessage(msg *proxy.Message) {
 	priorMax := a.roundSeq
 	a.stateMu.RUnlock()
 	a.recordPrevRating(prevs, priorMax)
+}
+
+// checkPrevMissing marks calls that omitted the required prev property
+// (round > 1) and returns the hint line to append to a tool result.
+// It increments pruneMissingPrev once per missing call in the batch.
+func (a *App) checkPrevMissing(prevValues []string, toolCalls []proxy.ToolCall) string {
+	if !a.pruneEnabled() {
+		return ""
+	}
+	a.stateMu.RLock()
+	prior := a.roundSeq
+	a.stateMu.RUnlock()
+	if prior <= 1 {
+		// Round 1 has no rating obligation.
+		return ""
+	}
+	// If any call in the batch carried prev, the rating obligation was met
+	// (last-wins). Otherwise this whole assistant message missed.
+	if len(prevValues) > 0 {
+		return ""
+	}
+	a.stateMu.Lock()
+	a.pruneMissingPrev++
+	a.stateMu.Unlock()
+	return fmt.Sprintf("(prune: previous round r%d unrated — include prev next time)", prior-1)
 }
 
 // stripPrevFromToolCallsBatch strips "prev" from a batch of tool calls and

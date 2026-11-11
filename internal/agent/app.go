@@ -304,8 +304,10 @@ type App struct {
 	// config write, persisted with Session): "" = inherit Cfg.ContextPrune,
 	// "on" = enabled, "off" = disabled for this chat only. Takes precedence
 	// over Cfg when non-empty; takes effect from the next request after the
-	// toggle command is issued.
-	pruneOverride string
+	// toggle command is issued. Stored as an atomic int32 (0=unset, 1=on, 2=off)
+	// because it is read on the turn goroutine while /prune toggles it from the
+	// command goroutine; under stateMu (save/load) it is accessed via pruneOverrideStr.
+	pruneOverride atomic.Int32
 	pruneRounds   map[int]RoundRecord
 	prunedRounds  map[int]bool
 	roundSeq      int
@@ -315,6 +317,11 @@ type App struct {
 	pruneBytesSaved    int
 	pruneArchiveFailed bool
 	pruneAutoCount     int
+	// pruneMissingPrev counts tool calls with round>1 that omitted the
+	// required prev property (hint appended to the result).
+	pruneMissingPrev int
+	// pruneReread counts reads of a path already read in a pruned round.
+	pruneReread int
 
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly
@@ -916,10 +923,12 @@ func (a *App) SaveSession() {
 			snap.PruneRecords = append(snap.PruneRecords, rec)
 		}
 		snap.PruneBytesSaved = a.pruneBytesSaved
+		snap.PruneMissingPrev = a.pruneMissingPrev
+		snap.PruneReread = a.pruneReread
 		snap.PruneArchiveFailed = a.pruneArchiveFailed
 	}
-	if a.pruneOverride != "" {
-		snap.PruneOverride = a.pruneOverride
+	if s := a.pruneOverrideStr(); s != "" {
+		snap.PruneOverride = s
 	}
 
 	a.convMu.RUnlock()
@@ -1762,15 +1771,18 @@ func (a *App) buildPreamble(today string) string {
 	// Context pruning: one short paragraph telling the model to rate the
 	// previous round. Only when enabled — with the feature off the preamble
 	// is byte-identical to master. The PRIMARY rating channel is the
-	// "prev" tool-argument property (works on tool-call-only replies);
-	// the [[...]] text tag stays as the secondary channel.
+	// required "prev" tool-argument property (works on tool-call-only
+	// replies); the [[...]] text tag stays as the secondary channel. Rated
+	// stubs carry the takeaway, so a good stub means no re-reads.
 	if a.pruneEnabled() {
-		parts = append(parts, "Context pruning (per-round value): every tool call carries an optional "+
-			`"prev" property rating the PREVIOUS tool round: "keep" (still matters), "drop" `+
-			`"(replace with a stub), or "stub: <one line, max 200 chars>" (reduce to your one line; `+
-			"say what to remember — file, finding, decision). As a secondary channel you may also "+
-			"end an assistant message with [[keep]], [[drop]], or [[stub: …]] — that rates the previous "+
-			"round too. Ratings are stripped before storing and never reach the wire.")
+		parts = append(parts, "Context pruning (per-round value): every tool call requires a "+
+			`"prev" property rating the PREVIOUS tool round: "keep" (still needed), "drop" `+
+			`"(no longer needed), or "stub: <one line, max 200 chars>" (your takeaway — key facts, `+
+			"functions, or a decision). Prefer stub over keep for file reads you have understood: "+
+			"the stub keeps your takeaway in context, so you will not need to re-read. "+
+			"As a secondary channel you may also end an assistant message with [[keep]], [[drop]], "+
+			"or [[stub: …]] — that rates the previous round too. Ratings are stripped before storing "+
+			"and never reach the wire. Write rounds are never dropped.")
 	}
 	return strings.Join(parts, "\n")
 }
