@@ -6,14 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.7.0] - 2026-11-11
+
+### Added
+
+- **Context pruning is new and off by default.** Enable it per chat with `/prune on` (`/prune off`, `/prune status`) or globally with `context_prune: "on"`. With it off, tool schemas, arguments and wire bytes are identical to 0.6.5.
+- **Dynamic context pruning by per-round value** (Wakil 0.7 feature, behind a switch). New config keys `context_prune` (`off` default | `on`), `context_prune_at` (0.70), `context_prune_target` (0.55), `context_prune_protect` (3), validated to satisfy `0 < target < at < 1` and `protect >= 1`. When on, the model rates the previous tool round with `[[keep]]` / `[[drop]]` / `[[stub: <one line>]]`; tags are stripped before storing. When the projected request exceeds `context_prune_at` × the existing hard max, lowest-value rounds (drop before stub, oldest first) are replaced in the projection by one-line stubs; the original round is archived first (`round-<N>` in the tool cache). With `context_prune: off` (default), behaviour and wire bytes are identical to master. See `docs/long-session-mode.md` and `docs/configuration.md`.
 - **context_prune_marks**: new key — `immediate` (default): rounds marked drop/stub via `context_mark` are pruned on the next request build regardless of the trigger (the last-N protection does not apply to marked rounds; `/keep`, pinned, collapsed, archive-failure and never-inflate protections still apply). `on-trigger`: the earlier behaviour. Only `context_mark` marks are immediate; `prev`/`[[...]]`/rater-pass ratings keep trigger-based behaviour.
 - **Prune defaults**: `context_prune_at_tokens`/`context_prune_target_tokens` now default to `0` (fractions only — set both to enable absolute triggers) and `context_prune_rater` defaults to `"off"` (no rating pass; set `"main"` or an endpoint name to opt in).
 - **context_mark**: the model now marks earlier tool rounds by `[rN]` id (drop/stub/keep) so they can be trimmed when context is full; marking never prunes by itself. `/mode status` shows `marks N`.
 - **Prune rating pass**: when pruning is triggered with unrated rounds, one LLM call rates them (keep/drop/stub with a takeaway) so stubs carry what to remember — no re-reads. `prev` stays as an optional fast path; the pass is a separate request (cost counted normally) and never enters the transcript. New config: `context_prune_rater` (`"main"` or an endpoint name), `context_prune_rater_max_rounds` (`40`), `context_prune_rater_timeout` (`60`s). `/mode status` adds `passes N`; `/prune status` shows the rater model.
-
-### Added
-
-- **Dynamic context pruning by per-round value** (Wakil 0.7 feature, behind a switch). New config keys `context_prune` (`off` default | `on`), `context_prune_at` (0.70), `context_prune_target` (0.55), `context_prune_protect` (3), validated to satisfy `0 < target < at < 1` and `protect >= 1`. When on, the model rates the previous tool round with `[[keep]]` / `[[drop]]` / `[[stub: <one line>]]`; tags are stripped before storing. When the projected request exceeds `context_prune_at` × the existing hard max, lowest-value rounds (drop before stub, oldest first) are replaced in the projection by one-line stubs; the original round is archived first (`round-<N>` in the tool cache). With `context_prune: off` (default), behaviour and wire bytes are identical to master. See `docs/long-session-mode.md` and `docs/configuration.md`.
 
 ## [0.6.5] - 2026-11-10
 
