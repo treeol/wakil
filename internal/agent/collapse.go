@@ -1702,6 +1702,9 @@ func (a *App) restoreTurnStateLocked(s *Session) {
 	a.convMu.RUnlock()
 	a.turnSeq = maxTurn
 
+	// Layer 5: restore the per-chat /prune override (persists with
+	// the session; no config write).
+	a.pruneOverride = s.PruneOverride
 	// Resume: pruned state and round ids restored.
 	a.restorePruneState(s)
 }

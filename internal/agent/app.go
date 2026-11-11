@@ -297,16 +297,24 @@ type App struct {
 	// under stateMu.RLock. pruneRounds maps round id r<N> → its record (rating,
 	// stub text, archive path, write flag, byte count); prunedRounds is the set
 	// of rounds projected with stubs. roundSeq is the per-chat id counter.
+	// pruneOverride is the /prune per-chat override from SaveSession/load path.
 	// consult pruneEnabled() (Cfg.ContextPrune == "on"): when off, nothing
 	// populates these maps and the projection is byte-identical to master.
-	pruneRounds  map[int]RoundRecord
-	prunedRounds map[int]bool
-	roundSeq     int
+	// pruneOverride is the /prune runtime toggle for the current chat (no
+	// config write, persisted with Session): "" = inherit Cfg.ContextPrune,
+	// "on" = enabled, "off" = disabled for this chat only. Takes precedence
+	// over Cfg when non-empty; takes effect from the next request after the
+	// toggle command is issued.
+	pruneOverride string
+	pruneRounds   map[int]RoundRecord
+	prunedRounds  map[int]bool
+	roundSeq      int
 	// pruneBytesSaved accumulates original tool-result bytes removed by
 	// pruning; pruneArchiveFailed makes the archive-failure warning once per
 	// session.
 	pruneBytesSaved    int
 	pruneArchiveFailed bool
+	pruneAutoCount     int
 
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly
@@ -909,6 +917,9 @@ func (a *App) SaveSession() {
 		}
 		snap.PruneBytesSaved = a.pruneBytesSaved
 		snap.PruneArchiveFailed = a.pruneArchiveFailed
+	}
+	if a.pruneOverride != "" {
+		snap.PruneOverride = a.pruneOverride
 	}
 
 	a.convMu.RUnlock()
@@ -1750,14 +1761,16 @@ func (a *App) buildPreamble(today string) string {
 	}
 	// Context pruning: one short paragraph telling the model to rate the
 	// previous round. Only when enabled — with the feature off the preamble
-	// is byte-identical to master.
+	// is byte-identical to master. The PRIMARY rating channel is the
+	// "prev" tool-argument property (works on tool-call-only replies);
+	// the [[...]] text tag stays as the secondary channel.
 	if a.pruneEnabled() {
-		parts = append(parts, "Context pruning (per-round value): after each round of tool calls, "+
-			"end your next assistant message with exactly one tag rating the PREVIOUS round: "+
-			"[[keep]] means it still matters, [[drop]] means it can be replaced by a stub, "+
-			"[[stub: <one line, max 200 chars>]] means it can be reduced to your one line. "+
-			"For stub, say what to remember (file, finding, decision). The tag is stripped before "+
-			"storing; it never reaches the wire.")
+		parts = append(parts, "Context pruning (per-round value): every tool call carries an optional "+
+			`"prev" property rating the PREVIOUS tool round: "keep" (still matters), "drop" `+
+			`"(replace with a stub), or "stub: <one line, max 200 chars>" (reduce to your one line; `+
+			"say what to remember — file, finding, decision). As a secondary channel you may also "+
+			"end an assistant message with [[keep]], [[drop]], or [[stub: …]] — that rates the previous "+
+			"round too. Ratings are stripped before storing and never reach the wire.")
 	}
 	return strings.Join(parts, "\n")
 }
@@ -1828,7 +1841,20 @@ func (a *App) streamSink() proxy.Sink {
 	var chars int
 	var start, lastEmit time.Time
 	return func(s string) {
-		fmt.Fprint(a.Out, s)
+		// Layer 3: rating tags must never reach the user-visible stream.
+		// A chunk is one SSE delta; a tag split across chunks could
+		// escape the regex, but the stored/returned final is stripped
+		// in turn_phases.go regardless. Suppress complete tags here.
+		if a.pruneEnabled() {
+			if stripped := stripPruneTags(s); stripped != s {
+				fmt.Fprint(a.Out, stripped)
+				s = stripped
+			} else {
+				fmt.Fprint(a.Out, s)
+			}
+		} else {
+			fmt.Fprint(a.Out, s)
+		}
 		a.callbackMu.Lock()
 		onTokRate := a.OnTokRate
 		a.callbackMu.Unlock()
@@ -2196,6 +2222,14 @@ func (a *App) subagentToolNames(capability string) []string {
 
 func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult {
 	name := tc.Function.Name
+	// Context pruning defense: "prev" must never reach tool execution.
+	// It was stripped after Stream when the assistant message was
+	// appended, but a defensive strip here guarantees it never reaches
+	// hooks, validation, or execution even for calls that bypass that
+	// path (e.g. tests, parallel subagent blocks).
+	if prev := stripPrevFromToolCall(&tc); prev != "" {
+		_ = prev // rating already bound via the pre-append strip
+	}
 
 	// Dedup: if an equivalent (tool, args) pair has been called before in this
 	// session, skip re-execution. Prevents infinite loops in subagents where the

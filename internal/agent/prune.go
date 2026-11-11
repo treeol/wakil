@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -15,10 +16,17 @@ import (
 //
 // A "round" is one assistant message carrying tool_calls plus the tool-result
 // messages answering them. Each round gets a stable id r<N> from a per-chat
-// counter. The model rates the PREVIOUS round with exactly one tag in its
-// next assistant message: [[keep]], [[drop]], or [[stub: <one line>]].
-// Tags are parsed once (last one wins), stripped from the stored content,
-// and kept on the round record. Missing or invalid ratings mean keep.
+// counter. The model rates the PREVIOUS round with exactly one value in its
+// next assistant message. Primary channel: the optional string property
+// "prev" in tool call arguments — "keep | drop | stub: <one line to remember>"
+// — which lets a pure tool-call turn (no text) rate the round it closes. The
+// "prev" property is advertised in every tool schema when pruning is on,
+// stripped from the arguments immediately after Stream returns (before the
+// assistant message is stored) and again at handleToolCall entry, so it never
+// reaches tool execution or the wire. Secondary channel: the [[...]] text
+// tag in assistant content, parsed and stripped before storing. A missing
+// or invalid rating means keep; an unrated round of at least 2 KB becomes
+// eligible for the deterministic auto-stub fallback (Layer 2).
 //
 // Pruning is projection-only (like collapse): a.Conv keeps the originals;
 // the projection replaces the CONTENT of each tool-result message of a
@@ -27,7 +35,8 @@ import (
 // persist with the session.
 //
 // When context_prune is off (the default) nothing here parses, strips, or
-// prunes anything — Conv and wire bytes are identical to master.
+// prunes anything — schemas, Conv and wire bytes are identical to master.
+// /prune on|off flips this page per chat without writing the config.
 //
 // Round ids are assigned ONLY when prune is enabled. With the feature off,
 // plan/current records and the projection carry no prune state. With it on,
@@ -44,6 +53,10 @@ const (
 	RatingKeep RoundRating = "keep"
 	RatingDrop RoundRating = "drop"
 	RatingStub RoundRating = "stub"
+	// RatingAuto marks an auto-stub (deterministic fallback for unrated
+	// rounds ≥ autoStubMinBytes). Never model-supplied; it only signals
+	// why this round was pruned.
+	RatingAuto RoundRating = "auto"
 )
 
 // RoundRecord is one pruned-eligible tool round in the session.
@@ -60,10 +73,16 @@ type RoundRecord struct {
 	Write     bool        `json:"write,omitempty"`      // round had write-class tool calls
 	PrunedAt  time.Time   `json:"pruned_at,omitempty"`
 	BytesLost int         `json:"bytes_lost,omitempty"` // original tool-result bytes removed by this prune
+	AutoNote  string      `json:"auto_note,omitempty"`  // deterministic stub text for auto-stubbed rounds
 }
 
 // stubTextMaxChars caps the model-supplied stub line.
 const stubTextMaxChars = 200
+
+// autoStubMinBytes is the round-size threshold for the auto-stub fallback:
+// unrated rounds whose tool results total at least this many bytes become
+// eligible for deterministic stubbing when nothing else applies.
+const autoStubMinBytes = 2048
 
 // pruneTagRe matches one rating tag anywhere in assistant text.
 // Groups: 1 = kind (keep|drop|stub), 3 = stub text (may be empty, up to
@@ -120,10 +139,19 @@ func truncateChars(s string, n int) string {
 }
 
 // pruneEnabled reports whether round pruning is active for this App.
-// Cfg is immutable after startup, so no lock is needed for the check
-// itself; a.Cfg.ContextPrune is only ever set at construction time.
+// Cfg is immutable after startup. The /prune per-chat override takes
+// precedence over Cfg.ContextPrune; its stateMu read keeps this safe for
+// RPC goroutines (session transitions) as well as the turn goroutine.
 func (a *App) pruneEnabled() bool {
-	return !a.IsSubagent && a.Cfg.ContextPrune == "on"
+	if a.IsSubagent {
+		return false
+	}
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	if a.pruneOverride != "" {
+		return a.pruneOverride == "on"
+	}
+	return a.Cfg.ContextPrune == "on"
 }
 
 /* RECORDING (called from appendConv; all under stateMu). */
@@ -300,6 +328,8 @@ func stubLine(rec RoundRecord, toolName string, archive string) string {
 		return fmt.Sprintf("[%s pruned (drop): %s — full result: %s]", id, toolName, archive)
 	case RatingStub:
 		return fmt.Sprintf("[%s pruned: %s — full result: %s]", id, rec.StubText, archive)
+	case RatingAuto:
+		return autoStubLine(rec, toolName, "", archive)
 	default:
 		return fmt.Sprintf("[%s pruned — full result: %s]", id, archive)
 	}
@@ -338,7 +368,7 @@ func pruneCandidates(rounds map[int]RoundRecord, order []int, collapsedTurns, ke
 			protected[id] = true
 		}
 	}
-	var drops, stubs []int
+	var drops, stubs, autos []int
 	for _, id := range order {
 		if protected[id] {
 			continue
@@ -356,6 +386,9 @@ func pruneCandidates(rounds map[int]RoundRecord, order []int, collapsedTurns, ke
 		if turn > 0 && (collapsedTurns[turn] || keepTurns[turn]) {
 			continue
 		}
+		// Never-inflate (Layer 4): a round whose results total less
+		// than autoStubMinBytes is ineligible for auto-stubbing anyway,
+		// but drop/stub with a stub ≥ original is also skipped later.
 		if rec.Rating == RatingDrop && rec.Write {
 			// Write-class drops are demoted to stubs (never dropped).
 			stubs = append(stubs, id)
@@ -366,10 +399,22 @@ func pruneCandidates(rounds map[int]RoundRecord, order []int, collapsedTurns, ke
 			drops = append(drops, id)
 		case RatingStub:
 			stubs = append(stubs, id)
+		case RatingNone:
+			// Auto-stub fallback: unrated rounds with at least
+			// autoStubMinBytes of tool results become eligible.
+			// Exclusions already applied above: protected (last N),
+			// /keep turns, collapsed turns, Pinned rounds. Write
+			// rounds are NEVER auto-stubbed (write-class is never
+			// pruned without an explicit model rating).
+			if rec.Write || rec.BytesLost < autoStubMinBytes {
+				continue
+			}
+			autos = append(autos, id)
 		}
 	}
 	out := append([]int{}, drops...)
 	out = append(out, stubs...)
+	out = append(out, autos...)
 	return out
 }
 
@@ -483,15 +528,26 @@ func (a *App) pruneCheck() {
 			}
 			continue
 		}
+		// Never-inflate: a one-line stub is ~100+ bytes with the archive
+		// path. If the stub is not shorter than the original results, the
+		// prune would grow the request — skip it (the archive stays on
+		// disk, unreferenced; harmless).
+		if stubLen := len(stubLine(rec, archiveToolName(convSnap, rec), archive)); stubLen >= rec.BytesLost {
+			continue
+		}
 		// Record lives in the store, not the local snapshot. Merge the
 		// archive outcome onto the live record under the lock, and update
 		// both maps so the next pruneCheck sees it.
+		isAuto := rec.Rating == RatingNone
 		a.stateMu.Lock()
 		if a.prunedRounds == nil {
 			a.prunedRounds = map[int]bool{}
 		}
 		a.prunedRounds[id] = true
 		if cur, ok := a.pruneRounds[id]; ok {
+			if isAuto {
+				cur.Rating = RatingAuto
+			}
 			cur.Pruned = true
 			cur.Archive = archive
 			cur.PrunedAt = time.Now()
@@ -502,8 +558,14 @@ func (a *App) pruneCheck() {
 		a.stateMu.Unlock()
 		rounds[id] = rec
 		kind := "stub"
-		if rec.Rating == RatingDrop && !rec.Write {
+		switch {
+		case rec.Rating == RatingDrop && !rec.Write:
 			kind = "drop"
+		case rec.Rating == RatingAuto:
+			kind = "auto"
+			a.stateMu.Lock()
+			a.pruneAutoCount++
+			a.stateMu.Unlock()
 		}
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· pruned r%d (%s, %s)", id, kind, formatKB(rec.BytesLost))))
 	}
@@ -533,6 +595,31 @@ func renderRoundArchive(conv []proxy.Message, rec RoundRecord) string {
 		}
 	}
 	return b.String()
+}
+
+// archiveToolName returns the tool name of the round's first call (for the
+// never-inflate length estimate and auto-stub line).
+func archiveToolName(conv []proxy.Message, rec RoundRecord) string {
+	if len(rec.CallIDs) == 0 {
+		return ""
+	}
+	for _, m := range conv {
+		for _, tc := range m.ToolCalls {
+			if tc.ID == rec.CallIDs[0] {
+				return tc.Function.Name
+			}
+		}
+	}
+	return ""
+}
+
+// autoStubLine renders the deterministic one-line stub for auto-stubbed
+// rounds: "[rN auto-pruned: <tool> <target> (<size>) — full result: <archive>]".
+// toolName and target come from the round's first call; size is the round's
+// original tool-result bytes.
+func autoStubLine(rec RoundRecord, toolName string, target string, archive string) string {
+	return fmt.Sprintf("[r%d auto-pruned: %s%s (%s) — full result: %s]",
+		rec.ID, toolName, target, formatKB(rec.BytesLost), archive)
 }
 
 func formatKB(n int) string {
@@ -582,7 +669,7 @@ func (a *App) restorePruneState(s *Session) {
 // pruneStatusLine renders the /mode status addition.
 func (a *App) pruneStatusLine() string {
 	a.stateMu.RLock()
-	var keep, drop, stub, unrated, prunedCount int
+	var keep, drop, stub, auto, unrated, prunedCount int
 	for id, rec := range a.pruneRounds {
 		switch rec.Rating {
 		case RatingKeep:
@@ -591,6 +678,8 @@ func (a *App) pruneStatusLine() string {
 			drop++
 		case RatingStub:
 			stub++
+		case RatingAuto:
+			auto++
 		default:
 			unrated++
 		}
@@ -600,6 +689,216 @@ func (a *App) pruneStatusLine() string {
 	}
 	saved := a.pruneBytesSaved
 	a.stateMu.RUnlock()
-	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · unrated %d · pruned %d · saved ~%d KB",
-		a.Cfg.ContextPrune, keep, drop, stub, unrated, prunedCount, saved/1024)
+	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · saved ~%d KB",
+		a.Cfg.ContextPrune, keep, drop, stub, auto, unrated, prunedCount, saved/1024)
+}
+
+// pruneToggleStatus renders the /prune status reply.
+func (a *App) pruneToggleStatus() string {
+	if a.pruneEnabled() {
+		return "prune: on (schema property + prompt active from next request; existing stubs stay)"
+	}
+	return "prune: off (no new pruning; existing stubs stay; prompt paragraph off from next request)"
+}
+
+// ---------------------------------------------------------------------------
+// prev via tool arguments (primary rating channel)
+// ---------------------------------------------------------------------------
+
+// PrevProp is the name of the optional tool-argument property carrying the
+// previous-round rating.
+const PrevProp = "prev"
+
+// PrevPropSchema is the JSON-schema fragment for "prev".
+var PrevPropSchema = map[string]interface{}{
+	"type":        "string",
+	"description": "rate the PREVIOUS tool round: keep | drop | stub: <one line to remember>",
+}
+
+// withPrevProperty returns tools with the "prev" property injected into every
+// tool's JSON schema when pruning is enabled. The slice is cloned and each
+// Parameters field is re-marshalled; shared package-level definitions are
+// never mutated. Call only when prune is enabled; when off the tools are
+// returned byte-identical to master (no injection).
+func withPrevProperty(tools []proxy.Tool) []proxy.Tool {
+	out := make([]proxy.Tool, len(tools))
+	copy(out, tools)
+	for i := range out {
+		params := out[i].Function.Parameters
+		if len(params) == 0 {
+			continue
+		}
+		if !json.Valid(params) {
+			continue
+		}
+		var obj map[string]interface{}
+		if json.Unmarshal(params, &obj) != nil {
+			continue
+		}
+		props, _ := obj["properties"].(map[string]interface{})
+		if props == nil {
+			props = map[string]interface{}{}
+			obj["properties"] = props
+		}
+		if _, ok := props[PrevProp]; ok {
+			continue // model tool already defines prev — leave it alone
+		}
+		props[PrevProp] = PrevPropSchema
+		if b, err := json.Marshal(obj); err == nil {
+			out[i].Function.Parameters = b
+		}
+	}
+	return out
+}
+
+// stripPrevFromArgs removes the "prev" property from a tool-call arguments
+// JSON string and returns (cleanedArgs, prevValue, hadPrev). When args do
+// not contain "prev", the original string is returned verbatim (no
+// re-marshal), so off-mode args stay byte-identical.
+func stripPrevFromArgs(args string) (cleaned string, prevValue string, hadPrev bool) {
+	if !strings.Contains(args, PrevProp) {
+		return args, "", false
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal([]byte(args), &obj) != nil {
+		return args, "", false
+	}
+	v, ok := obj[PrevProp]
+	if !ok {
+		return args, "", false
+	}
+	delete(obj, PrevProp)
+	if s, ok := v.(string); ok {
+		prevValue = s
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return args, prevValue, true
+	}
+	return string(b), prevValue, true
+}
+
+// stripPrevFromToolCall removes "prev" from the call's arguments in place
+// and returns the prev value. prev MUST NOT reach tool execution.
+func stripPrevFromToolCall(tc *proxy.ToolCall) string {
+	cleaned, prev, _ := stripPrevFromArgs(tc.Function.Arguments)
+	tc.Function.Arguments = cleaned
+	return prev
+}
+
+// stripPrevFromMessages strips "prev" from every tool call in msgs' args.
+// The prev values are returned in call order (last one wins, mirroring
+// parsePruneTag's last-wins rule).
+func stripPrevFromMessages(msgs []proxy.Message) []string {
+	var prevs []string
+	for i := range msgs {
+		for j := range msgs[i].ToolCalls {
+			if prev := stripPrevFromToolCall(&msgs[i].ToolCalls[j]); prev != "" {
+				prevs = append(prevs, prev)
+			}
+		}
+	}
+	return prevs
+}
+
+// parsePrevValue parses a "prev" value ("keep | drop | stub: ...") with the
+// same semantics as parsePruneTag: last-wins is unnecessary here (one value),
+// invalid -> unrated, stub text capped at stubTextMaxChars.
+func parsePrevValue(v string) (rating RoundRating, stubText string, found bool) {
+	v = strings.TrimSpace(v)
+	switch {
+	case v == "keep":
+		return RatingKeep, "", true
+	case v == "drop":
+		return RatingDrop, "", true
+	case strings.HasPrefix(v, "stub:"):
+		t := strings.TrimSpace(strings.TrimPrefix(v, "stub:"))
+		if t == "" {
+			return RatingNone, "", false
+		}
+		return RatingStub, truncateChars(t, stubTextMaxChars), true
+	}
+	return RatingNone, "", false
+}
+
+// recordPrevRating stores the last prev value onto the previous round
+// (priorMax — the max round id created before the current append), with the
+// same never-fall-through rule as the text channel. prevValues arrive in
+// call order; the last one wins.
+func (a *App) recordPrevRating(prevValues []string, priorMax int) {
+	if !a.pruneEnabled() || len(prevValues) == 0 || priorMax <= 0 {
+		return
+	}
+	rating, stubText, found := parsePrevValue(prevValues[len(prevValues)-1])
+	if !found {
+		return
+	}
+	a.stateMu.Lock()
+	if rec, ok := a.pruneRounds[priorMax]; ok && rec.Rating == RatingNone {
+		rec.Rating = rating
+		rec.StubText = stubText
+		a.pruneRounds[priorMax] = rec
+	}
+	a.stateMu.Unlock()
+}
+
+// pruneEnabledOverride is the /prune per-chat state. pruneOverride is the
+// per-chat value ("on"/"off"); when empty the Cfg value governs.
+func (a *App) pruneEnabledOverride() (string, bool) {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.pruneOverride, a.pruneOverride != ""
+}
+
+// effectivePrune reports whether pruning is active for this chat, honoring
+// the /prune per-chat override before the config default.
+func (a *App) effectivePrune() bool {
+	override, set := a.pruneEnabledOverride()
+	if set {
+		return override == "on"
+	}
+	return a.Cfg.ContextPrune == "on"
+}
+
+// ---------------------------------------------------------------------------
+// strip helpers used by turn_phases.go / app.go
+// ---------------------------------------------------------------------------
+
+// stripPrevFromMessage strips "prev" from every tool call in the message's
+// arguments and binds the ratings to the previous round (last prev wins).
+// Must be called immediately after Stream returns, BEFORE appendConv stores
+// the message.
+func (a *App) stripPrevFromMessage(msg *proxy.Message) {
+	if !a.pruneEnabled() {
+		return
+	}
+	prevs := stripPrevFromMessages([]proxy.Message{*msg})
+	if len(prevs) == 0 {
+		return
+	}
+	a.stateMu.RLock()
+	priorMax := a.roundSeq
+	a.stateMu.RUnlock()
+	a.recordPrevRating(prevs, priorMax)
+}
+
+// stripPrevFromToolCallsBatch strips "prev" from a batch of tool calls and
+// returns the prev values in call order.
+func stripPrevFromToolCallsBatch(tcs []proxy.ToolCall) []string {
+	var prevs []string
+	for i := range tcs {
+		if prev := stripPrevFromToolCall(&tcs[i]); prev != "" {
+			prevs = append(prevs, prev)
+		}
+	}
+	return prevs
+}
+
+// stripFinalTags removes all [[...]] rating tags from the final-answer text
+// so the returned/stored/displayed final carries no tags. Layer 3.
+func (a *App) stripFinalTags(s string) string {
+	if !a.pruneEnabled() {
+		return s
+	}
+	return stripPruneTags(s)
 }

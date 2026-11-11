@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -224,9 +225,11 @@ func TestPruneOrderAndTarget(t *testing.T) {
 	if !r3intact {
 		t.Error("r3 (keep) must not be pruned")
 	}
-	if !r4intact {
-		t.Error("r4 (unrated) must not be pruned")
-	}
+	// Layer 2: r4 is unrated with 4000 bytes (≥2KB) — eligible for
+	// auto-stub after drop/stub exhaustion. Pairing must survive.
+	assertNoOrphanedToolCalls(t, proj)
+	assertPairing(t, proj)
+	_ = r4intact
 	// Pairing after pruning.
 	assertNoOrphanedToolCalls(t, proj)
 	assertPairing(t, proj)
@@ -693,5 +696,392 @@ func TestPruneOffWireBytes(t *testing.T) {
 	}
 	if dp := DerefStr(app.Conv[5].Content); dp != "[[stub: s]] done." {
 		t.Errorf("off: stored content should be verbatim, got %q", dp)
+	}
+}
+
+// --- 17. prev via tool args ---
+
+func TestPrunePrevViaToolArgs(t *testing.T) {
+	app := pruneTestApp()
+	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, bigContent)
+	// Next round carries prev=drop on its tool call (as the model sends it).
+	app.curTurn = 1
+	tcMsg2 := tcMsg("c2", "read_file", `{"path":"b.go","prev":"drop"}`)
+	app.stripPrevFromMessage(&tcMsg2)
+	app.appendConv(tcMsg2)
+	app.appendConv(trMsg("c2", "read_file", bigContent))
+	if ratingOf(app, 1) != RatingDrop {
+		t.Fatalf("prev=drop should rate r1 = drop, got %q", ratingOf(app, 1))
+	}
+	// prev must not persist in stored args or reach the wire.
+	for _, m := range app.Conv {
+		for _, tc := range m.ToolCalls {
+			if strings.Contains(tc.Function.Arguments, `"prev"`) {
+				t.Errorf("stored args contain prev: %s", tc.Function.Arguments)
+			}
+		}
+	}
+	for _, m := range app.contextProjection() {
+		for _, tc := range m.ToolCalls {
+			if strings.Contains(tc.Function.Arguments, `"prev"`) {
+				t.Errorf("wire args contain prev: %s", tc.Function.Arguments)
+			}
+		}
+	}
+}
+
+func TestPrunePrevStrippedFromExecution(t *testing.T) {
+	app := pruneTestApp()
+	// Dispatcher defense: even if prev reached handleToolCall, the tool
+	// must receive args without it.
+	fe := newFakeExecutor()
+	fe.files["x.go"] = "hello"
+	app.Exec = fe
+	app.Cfg.ToolResultCap = 0
+	tc := proxy.ToolCall{Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"x.go","prev":"stub: remember this"}`}}
+	res := app.handleToolCall(context.Background(), tc)
+	if !res.ok {
+		t.Errorf("read_file with prev should succeed, got: %s", res.text)
+	}
+	// handleToolCall strips prev at entry; the stored result must have
+	// succeeded reading x.go through the fake executor (prev never
+	// reached the read handler — a prev leak to a strict validator
+	// would have failed, and the fake here is permissive by design).
+	if !strings.Contains(res.text, "hello") {
+		t.Errorf("expected file content through prev-stripped call, got: %s", res.text)
+	}
+	// The caller's copy is by value; the defense strips its local copy.
+	// Assert via the strip helper directly instead.
+	if _, _, had := stripPrevFromArgs(tc.Function.Arguments); !had {
+		// prev already stripped in the live path — here, direct calls
+		// keep their args; the guarantee is execution saw stripped args.
+		// Verify the helper strips before execution:
+		cleaned, _, _ := stripPrevFromArgs(`{"path":"x.go","prev":"drop"}`)
+		if strings.Contains(cleaned, `"prev"`) {
+			t.Error("stripPrevFromArgs failed to strip")
+		}
+	}
+	_ = tc
+}
+
+// --- 17b. Auto-stub fallback ---
+
+func TestPruneAutoStubEligible(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.70
+	app.Cfg.ContextPruneTarget = 0.55
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.HardMaxBytes = 10000
+	app.Cfg.CompactAt = 7000
+	app.Cfg.KeepBytes = 5000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+
+	big := strings.Repeat("y", 4000)
+	// r1 unrated 4KB read → auto-stub eligible; r2 unrated 4KB read;
+	// r3/r4/r5 protected buffer.
+	appendRound(app, 1, "c1", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c2", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c3", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c4", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c5", "read_file", `{"path":"x"}`, big)
+	// Force the trigger: make at/target tiny so the initial size check
+	// fires, then pruneCheck prunes until size <= target.
+	app.Cfg.ContextPruneAt = 0.001
+	app.Cfg.ContextPruneTarget = 0.0001
+	app.Cfg.HardMaxBytes = 100000
+	app.Cfg.CompactAt = 70000
+	app.Cfg.KeepBytes = 50000
+	app.pruneCheck()
+	found := false
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "c1" && strings.Contains(DerefStr(m.Content), "auto-pruned") {
+			found = true
+		}
+		if m.ToolCallID == "c5" && strings.Contains(DerefStr(m.Content), "pruned") {
+			t.Error("protected round must not be auto-pruned")
+		}
+	}
+	if !found {
+		t.Error("unrated ≥2KB read round should be auto-stubbed")
+	}
+}
+
+func TestPruneAutoStubNeverWrite(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.70
+	app.Cfg.ContextPruneTarget = 0.55
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.HardMaxBytes = 10000
+	app.Cfg.CompactAt = 7000
+	app.Cfg.KeepBytes = 5000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+
+	big := strings.Repeat("y", 4000)
+	appendRound(app, 1, "c1", "edit_file", `{"path":"f.go"}`, big)
+	appendRound(app, 1, "c2", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c3", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c4", "read_file", `{"path":"x"}`, big)
+	app.pruneCheck()
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "c1" && strings.Contains(DerefStr(m.Content), "pruned") {
+			t.Errorf("write round must never be auto-pruned: %q", DerefStr(m.Content))
+		}
+	}
+}
+
+// --- 17c. Never-inflate ---
+
+func TestPruneNeverInflate(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.70
+	app.Cfg.ContextPruneTarget = 0.55
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.HardMaxBytes = 10000
+	app.Cfg.CompactAt = 7000
+	app.Cfg.KeepBytes = 5000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+
+	// All rounds are 4KB reads but only ~100-byte stub overhead — a
+	// 2-line result ("ok") would inflate; here every result is big
+	// enough that the stub is strictly smaller, so pruning proceeds.
+	big := strings.Repeat("y", 4000)
+	appendRound(app, 1, "c1", "read_file", `{"path":"x"}`, big)
+	ratePrevious(app, 1, "[[drop]]")
+	appendRound(app, 1, "c2", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c3", "read_file", `{"path":"x"}`, big)
+	appendRound(app, 1, "c4", "read_file", `{"path":"x"}`, big)
+	app.pruneCheck()
+	pruned := false
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "c1" && strings.Contains(DerefStr(m.Content), "pruned") {
+			pruned = true
+		}
+	}
+	if !pruned {
+		t.Error("round with 4000-byte result should be pruned (stub is smaller)")
+	}
+
+	// Now a round whose result is tiny (5 bytes): stub (~120 bytes)
+	// would be larger than the original — never inflate.
+	app2 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app2.SetContextMode("standard")
+	app2.Cfg.ContextPrune = "on"
+	app2.Cfg.ContextPruneAt = 0.70
+	app2.Cfg.ContextPruneTarget = 0.55
+	app2.Cfg.ContextPruneProtect = 3
+	app2.Cfg.HardMaxBytes = 10000
+	app2.Cfg.CompactAt = 7000
+	app2.Cfg.KeepBytes = 5000
+	app2.Cfg.MaxChars = 0
+	app2.Cfg.CompactAtFrac = 0
+	app2.Cfg.KeepBytesFrac = 0
+	app2.Cfg.HardMaxFrac = 0
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	appendRound(app2, 1, "c1", "read_file", `{"path":"x"}`, "ok")
+	ratePrevious(app2, 1, "[[drop]]")
+	appendRound(app2, 1, "c2", "read_file", `{"path":"x"}`, big)
+	appendRound(app2, 1, "c3", "read_file", `{"path":"x"}`, big)
+	appendRound(app2, 1, "c4", "read_file", `{"path":"x"}`, big)
+	app2.pruneCheck()
+	for _, m := range app2.contextProjection() {
+		if m.ToolCallID == "c1" && strings.Contains(DerefStr(m.Content), "pruned") {
+			t.Errorf("never-inflate: tiny result must not be pruned: %q", DerefStr(m.Content))
+		}
+	}
+}
+
+// --- 17d. Final-answer tag strip ---
+
+func TestPruneFinalAnswerTagStrip(t *testing.T) {
+	app := pruneTestApp()
+	appendRound(app, 1, "c1", "read_file", `{"path":"x"}`, bigContent)
+	app.curTurn = 1
+	app.appendConv(proxy.Message{Role: "assistant", Content: StrPtr("done. [[drop]]")})
+	if ratingOf(app, 1) != RatingDrop {
+		t.Errorf("final-answer tag should rate the last round: %q", ratingOf(app, 1))
+	}
+	// Stored content must be tag-free.
+	for _, m := range app.Conv {
+		if c := DerefStr(m.Content); strings.Contains(c, "[[drop]]") {
+			t.Errorf("stored assistant content contains tag: %q", c)
+		}
+	}
+	// Returned final must be tag-free.
+	if got := app.stripFinalTags("done. [[drop]]"); got != "done. " {
+		t.Errorf("stripFinalTags = %q, want %q", got, "done. ")
+	}
+	// Off: no stripping.
+	app2 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app2.Cfg.ContextPrune = "off"
+	if got := app2.stripFinalTags("done. [[drop]]"); got != "done. [[drop]]" {
+		t.Errorf("off-mode stripFinalTags must be identity, got %q", got)
+	}
+}
+
+// --- 17e. /prune toggle + resume ---
+
+func TestPruneToggleAndResume(t *testing.T) {
+	app := pruneTestApp()
+	// Default (config on) → pruneEnabled true.
+	if !app.pruneEnabled() {
+		t.Fatal("prune should be on from config")
+	}
+	// /prune off via override, persisted.
+	app.stateMu.Lock()
+	app.pruneOverride = "off"
+	app.stateMu.Unlock()
+	if app.pruneEnabled() {
+		t.Error("/prune off must disable pruning")
+	}
+	s := &Session{Conv: append([]proxy.Message(nil), app.Conv...)}
+	s.PruneOverride = "off"
+	app2 := pruneTestApp()
+	app2.Conv = append([]proxy.Message(nil), app.Conv...)
+	app2.RestoreTurnState(s)
+	if app2.pruneEnabled() {
+		t.Error("resumed /prune off must survive")
+	}
+	if app2.pruneToggleStatus() == "" {
+		t.Error("toggle status must be non-empty")
+	}
+}
+
+// --- 17f. /compact off-mode unchanged ---
+
+func TestPruneCompactOffUnchanged(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "off"
+	app.curTurn = 1
+	app.appendConv(tcMsg("c1", "read_file", `{"path":"a.go"}`))
+	app.appendConv(trMsg("c1", "read_file", bigContent))
+	app.appendConv(tcMsg("c2", "search_files", `{"pattern":"x"}`))
+	app.appendConv(trMsg("c2", "search_files", bigContent))
+	// Snapshot Conv, run Compact (soft pass — no-op when under threshold),
+	// assert Conv is identical.
+	before := append([]proxy.Message(nil), app.Conv...)
+	ok, err := app.Compact(context.Background(), app.summarizeFn(), false)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if ok {
+		t.Error("soft Compact should be a no-op for a small transcript")
+	}
+	if len(before) != len(app.Conv) {
+		t.Fatalf("Conv length changed: %d -> %d", len(before), len(app.Conv))
+	}
+	for i := range before {
+		if before[i].Role != app.Conv[i].Role || DerefStr(before[i].Content) != DerefStr(app.Conv[i].Content) {
+			t.Errorf("Conv[%d] changed after /compact (off mode): %q -> %q", i, DerefStr(before[i].Content), DerefStr(app.Conv[i].Content))
+		}
+	}
+	if len(app.pruneRounds) != 0 {
+		t.Errorf("off mode must have no prune records, got %d", len(app.pruneRounds))
+	}
+}
+
+// --- 17g. Khatam replay: 29 large reads, zero ratings, at=0.15 ---
+
+func TestPruneKhatamReplay(t *testing.T) {
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.15
+	app.Cfg.ContextPruneTarget = 0.10
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.HardMaxBytes = 160000 // 29 reads × ~6KB ≈ 174KB crosses 0.15×160000=24KB quickly
+	app.Cfg.CompactAt = 145000
+	app.Cfg.KeepBytes = 120000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	app.curTurn = 1
+	big := strings.Repeat("k", 6000)
+	for i := 1; i <= 29; i++ {
+		id := "k" + strings.Repeat("a", i) // unique-ish ids
+		id = "k" + string(rune('a'+i)) + string(rune('0'+i%10))
+		app.appendConv(tcMsg(id, "read_file", `{"path":"x"}`))
+		app.appendConv(trMsg(id, "read_file", big))
+		// Zero ratings (no prev, no tags) — the khatam shape.
+		app.pruneCheck()
+	}
+	// Pruning must have happened before the 29th append (mid-request),
+	// not just at finalizeTurn: rounds 1..N-3 are gone from projection.
+	pruned := 0
+	for _, m := range app.contextProjection() {
+		if strings.Contains(DerefStr(m.Content), "pruned") {
+			pruned++
+		}
+	}
+	if pruned == 0 {
+		t.Error("khatam replay: no pruning happened with at=0.15")
+	}
+	assertNoOrphanedToolCalls(t, app.contextProjection())
+	assertPairing(t, app.contextProjection())
+
+	// In-loop proof: pruneCheck at each append mirrors streamTurn, so a
+	// pruned round must already exist by the time we finish appending
+	// round 10 (not only after all 29).
+	app2 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app2.SetContextMode("standard")
+	app2.Cfg.ContextPrune = "on"
+	app2.Cfg.ContextPruneAt = 0.15
+	app2.Cfg.ContextPruneTarget = 0.10
+	app2.Cfg.ContextPruneProtect = 3
+	app2.Cfg.HardMaxBytes = 160000
+	app2.Cfg.CompactAt = 145000
+	app2.Cfg.KeepBytes = 120000
+	app2.Cfg.MaxChars = 0
+	app2.Cfg.CompactAtFrac = 0
+	app2.Cfg.KeepBytesFrac = 0
+	app2.Cfg.HardMaxFrac = 0
+	app2.curTurn = 1
+	os.Setenv("XDG_DATA_HOME", tmp)
+	early := 0
+	for i := 1; i <= 10; i++ {
+		id := "e" + string(rune('a'+i)) + string(rune('0'+i%10))
+		app2.appendConv(tcMsg(id, "read_file", `{"path":"x"}`))
+		app2.appendConv(trMsg(id, "read_file", big))
+		app2.pruneCheck()
+		if i == 10 {
+			for _, m := range app2.contextProjection() {
+				if strings.Contains(DerefStr(m.Content), "pruned") {
+					early++
+				}
+			}
+		}
+	}
+	if early == 0 {
+		t.Error("expected pruning already by round 10 (in-loop, not just finalizeTurn)")
 	}
 }

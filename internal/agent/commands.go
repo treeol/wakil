@@ -276,6 +276,31 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 	case "/cwd":
 		return true, false, note("cwd: " + app.Exec.Cwd())
 
+	case "/prune":
+		// /prune on|off|stat us — per-chat runtime toggle for per-round
+		// value pruning. No config write; persisted with the session.
+		if len(fields) > 1 {
+			switch fields[1] {
+			case "on":
+				app.stateMu.Lock()
+				app.pruneOverride = "on"
+				app.stateMu.Unlock()
+				app.SaveSession()
+				return true, false, note("prune: on (schema property + prompt from next request; older rounds unrated — auto-stub only)")
+			case "off":
+				app.stateMu.Lock()
+				app.pruneOverride = "off"
+				app.stateMu.Unlock()
+				app.SaveSession()
+				return true, false, note("prune: off (no new pruning; existing stubs stay)")
+			case "status":
+				return true, false, note(app.pruneToggleStatus() + " · " + app.pruneStatusLine())
+			default:
+				return true, false, note("usage: /prune [on|off|status]")
+			}
+		}
+		return true, false, note(app.pruneToggleStatus())
+
 	case "/mode":
 		if len(fields) > 1 {
 			arg := fields[1]
@@ -1607,6 +1632,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /prompt [full|core|status]  show/set prompt mode (core = lean preamble, extension lazy-loaded)
 /styles              show loaded style guides and actual session state
 /styles enable|disable <language|all>  control this session (no config changes)
+/prune [on|off|status]  toggle per-round value pruning for this chat (schema + prompt from next request; persisted with session)
 /keep <n>            keep request n in full context (exempt from long-session collapse)
 /keep off <n>        remove the keep exemption for request n
 /history             transcript size

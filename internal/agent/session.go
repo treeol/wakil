@@ -42,6 +42,7 @@ type Session struct {
 	PruneRecords       []RoundRecord `json:"prune_records,omitempty"`
 	PruneBytesSaved    int           `json:"prune_bytes_saved,omitempty"`
 	PruneArchiveFailed bool          `json:"prune_archive_failed,omitempty"`
+	PruneOverride      string        `json:"prune_override,omitempty"` // "on"|"off" per-chat /prune toggle; "" = inherit config
 }
 
 // sessionsDir is where transcripts live: $WAKIL_SESSIONS_DIR, else

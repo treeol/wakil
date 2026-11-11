@@ -238,6 +238,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			iter >= a.turnBudgetStubbedIter+stopOnStubGrace+1
 		forceFinish := (a.Cfg.MaxToolIterations > 0 && iter >= a.Cfg.MaxToolIterations) || confinementTrip || stopOnStub
 		tools := a.toolsWithShellNote(a.toolsForTurn())
+		if a.pruneEnabled() {
+			tools = withPrevProperty(tools)
+		}
 		if forceFinish {
 			tools = nil
 			a.exhausted = true // signal to dispatchSubagent: turn ended forcibly
@@ -318,8 +321,15 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// no dangling tool_calls (without responses) are left in the transcript.
 			msg.ToolCalls = nil
 		}
+		// Context pruning: the "prev" property was advertised in every
+		// tool schema; strip it from the raw tool-call arguments BEFORE it
+		// is stored (never reaches Conv or the wire) and bind the rating
+		// to the previous round. Final-answer text rides the secondary
+		// [[...]] channel and is stripped inside appendConv; the
+		// returned final is stripped here for display parity.
+		a.stripPrevFromMessage(&msg)
 		a.appendConv(msg)
-		final = DerefStr(msg.Content)
+		final = a.stripFinalTags(DerefStr(msg.Content))
 
 		if len(msg.ToolCalls) == 0 || forceFinish {
 			// Phase 2: a genuine idle point is when the model produced
