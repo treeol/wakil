@@ -2529,7 +2529,7 @@ func a_toolsForTurnForTest(app *App) []proxy.Tool {
 	tools := app.toolsWithShellNote(app.toolsForTurn())
 	if app.pruneEnabled() && !app.IsSubagent {
 		tools = withPrevProperty(tools)
-		tools = append(tools, contextMarkTool())
+		tools = append(tools, contextMarkTool(app.pruneMarksImmediate()))
 	}
 	return tools
 }

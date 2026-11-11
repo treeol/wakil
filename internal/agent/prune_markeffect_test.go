@@ -205,30 +205,84 @@ func TestMarkPendingHeldAtTriggerImmediateOnly(t *testing.T) {
 		app := immediateApp(t)
 		app.Cfg.ContextPruneMarks = mode
 		big := strings.Repeat("t", 9000)
-		for i := 1; i <= 10; i++ { // 90 KB > trigger 0.70 × 100000
+		for i := 1; i <= 8; i++ { // 72 KB: above the trigger (0.70 × 100000), below the emergency level
 			appendRound(app, 1, "t"+itoa(i), "read_file", `{"path":"t`+itoa(i)+`.go"}`, big)
 		}
-		res := loneMark(app, 1, "m1", `{"drop":["r1","r2","r3","r4","r5"]}`)
+		res := loneMark(app, 1, "m1", `{"drop":["r1","r2","r3","r4"]}`)
 		app.pruneCheck()
 		switch mode {
 		case "immediate":
 			if !strings.Contains(res, "takes effect after your next tool call") {
 				t.Errorf("immediate: result = %q", res)
 			}
-			if isPruned(app, 1) {
-				t.Error("immediate: trigger applied a pending mark")
+			for i := 1; i <= 8; i++ {
+				if isPruned(app, i) {
+					t.Errorf("immediate: r%d pruned at the trigger while marks are pending", i)
+				}
 			}
 			if toolResultOf(app.requestMessages(), "t1") != "[r1] "+big+"\n[r1 · ~2250 tokens · done with this? context_mark it: stub (only your note remains: facts with file:line) or drop]" {
 				t.Error("immediate: pending round is not sent in full with its line")
 			}
 		case "on-trigger":
-			if strings.Contains(res, "takes effect") || res != "marked: drop r1,r2,r3,r4,r5" {
+			if res != "marked: drop r1,r2,r3,r4" {
 				t.Errorf("on-trigger: result = %q, want the plain text", res)
 			}
 			if !isPruned(app, 1) {
 				t.Error("on-trigger: marked round not pruned at the trigger")
 			}
 		}
+	}
+}
+
+// At the emergency level (≥ 90% of hard max) Wakil would stub unmarked rounds
+// without a note. The rounds the model marked go first, pending or not, so no
+// unmarked round is pruned while a marked one is held.
+func TestMarkPendingReleasedBeforeEmergency(t *testing.T) {
+	app := immediateApp(t)
+	big := strings.Repeat("t", 9000)
+	for i := 1; i <= 10; i++ { // 90 KB + overhead: at the emergency level
+		appendRound(app, 1, "t"+itoa(i), "read_file", `{"path":"t`+itoa(i)+`.go"}`, big)
+	}
+	loneMark(app, 1, "m1", `{"drop":["r1","r2","r3","r4","r5"]}`)
+	app.pruneCheck()
+	for i := 1; i <= 5; i++ {
+		if !isPruned(app, i) || ratingOf(app, i) != RatingDrop {
+			t.Errorf("r%d: pruned=%v rating=%q, want the model's drop applied", i, isPruned(app, i), ratingOf(app, i))
+		}
+	}
+	for i := 6; i <= 10; i++ {
+		if isPruned(app, i) || ratingOf(app, i) != RatingNone {
+			t.Errorf("unmarked r%d: pruned=%v rating=%q, want untouched", i, isPruned(app, i), ratingOf(app, i))
+		}
+	}
+}
+
+// A round that was already rated (so it carried no reminder line) and is then
+// marked with a lone context_mark keeps its bytes while the mark is pending:
+// the line must not appear and vanish again.
+func TestMarkPendingKeepsBytesOfRatedRound(t *testing.T) {
+	app := immediateApp(t)
+	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 6000))
+	appendRound(app, 1, "c2", "read_file", `{"path":"b.go"}`, strings.Repeat("b", 6000))
+	loneMark(app, 1, "m0", `{"keep":["r1"]}`)
+	before := toolResultOf(app.requestMessages(), "c1")
+	if strings.Contains(before, lineMarker) {
+		t.Fatal("precondition: a kept round carries no line")
+	}
+	loneMark(app, 1, "m1", `{"drop":["r1"]}`)
+	if got := toolResultOf(app.requestMessages(), "c1"); got != before {
+		t.Errorf("pending mark changed the bytes of a rated round: tail %q", got[len(got)-60:])
+	}
+	// Re-marking while pending keeps the recorded pre-mark state.
+	loneMark(app, 1, "m2", markArgs(t, nil, map[string]string{"r1": longNote("a.go:3", 220)}))
+	if got := toolResultOf(app.requestMessages(), "c1"); got != before {
+		t.Error("second pending mark changed the bytes of a rated round")
+	}
+	// An unrated round keeps its line while pending.
+	withLine := toolResultOf(app.requestMessages(), "c2")
+	loneMark(app, 1, "m3", `{"drop":["r2"]}`)
+	if got := toolResultOf(app.requestMessages(), "c2"); got != withLine || !strings.Contains(got, lineMarker) {
+		t.Error("pending mark changed the bytes of an unrated round")
 	}
 }
 
@@ -370,6 +424,44 @@ func TestStubNoteNeverInflateStillApplies(t *testing.T) {
 	}
 }
 
+// A long context_mark note on a round with several results is written into
+// each of them, so never-inflate counts it once per result.
+func TestStubNoteNeverInflateCountsEveryResult(t *testing.T) {
+	app := immediateApp(t)
+	app.curTurn = 1
+	var calls []proxy.ToolCall
+	for i := 0; i < 5; i++ {
+		calls = append(calls, proxy.ToolCall{ID: "p" + itoa(i), Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"f` + itoa(i) + `.go"}`}})
+	}
+	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: calls})
+	for i := 0; i < 5; i++ {
+		app.appendConv(trMsg("p"+itoa(i), "read_file", strings.Repeat("s", 1024)))
+	}
+	sizeBefore := TranscriptSize(app.requestMessages())
+	note := longNote("f0.go:1 f1.go:2 f2.go:3 f3.go:4 f4.go:5", 1200) // 5 × (1200 + stub frame) > 5 KB
+	res := loneMark(app, 1, "m1", markArgs(t, nil, map[string]string{"r1": note}))
+	if !strings.HasPrefix(res, "marked: stub r1") {
+		t.Fatalf("note not accepted: %q", res)
+	}
+	appendRound(app, 1, "c2", "read_file", `{"path":"z.go"}`, "z")
+	app.pruneCheck()
+	if isPruned(app, 1) {
+		t.Errorf("stub replaced the round although it grows the request (before %d, after %d)", sizeBefore, TranscriptSize(app.requestMessages()))
+	}
+}
+
+// The note is checked as it will be stored: a file name beyond the stored
+// length does not count.
+func TestStubNoteCheckedAfterTruncation(t *testing.T) {
+	app := immediateApp(t)
+	multiFileRound(app)
+	note := longNote("invite.go:40; export.go:88; authz.go:17", markNoteMaxChars+50) + " web.go:120"
+	res := loneMark(app, 1, "m1", markArgs(t, nil, map[string]string{"r1": note}))
+	if !strings.HasPrefix(res, "r1 not stubbed:") || !strings.Contains(res, "(missing: web.go)") {
+		t.Errorf("result = %q", res[:min(len(res), 200)])
+	}
+}
+
 // A write round cannot be dropped, so its rejection does not offer drop.
 func TestStubNoteWriteRoundRejectionOmitsDrop(t *testing.T) {
 	app := immediateApp(t)
@@ -385,7 +477,8 @@ func TestStubNoteWriteRoundRejectionOmitsDrop(t *testing.T) {
 func TestPruneTextsCoherent(t *testing.T) {
 	app := immediateApp(t)
 	sec := app.pruneSystemSection()
-	for name, text := range map[string]string{"system section": sec, "user suffix": pruneReminder, "tool description": contextMarkDescription} {
+	desc := contextMarkTool(true).Function.Description
+	for name, text := range map[string]string{"system section": sec, "user suffix": pruneReminder, "tool description": desc} {
 		for _, s := range []string{"only", "note remains", "every fact you will still use", "file:line", "per file", "while you keep working", "marking right before the final answer saves nothing"} {
 			if !strings.Contains(text, s) {
 				t.Errorf("%s lacks %q", name, s)
@@ -395,12 +488,22 @@ func TestPruneTextsCoherent(t *testing.T) {
 			t.Errorf("%s still promises next-step effect or a one-line note", name)
 		}
 	}
-	if !strings.Contains(sec, "A mark takes effect after your next tool call at the earliest") {
-		t.Errorf("immediate section: %s", sec)
+	// The sentence about when a mark takes effect follows the mode, in the
+	// system section and in the tool description alike.
+	for name, text := range map[string]string{"system section": sec, "tool description": desc} {
+		if !strings.Contains(text, "A mark takes effect after your next tool call at the earliest") {
+			t.Errorf("immediate %s: %s", name, text)
+		}
 	}
 	app.Cfg.ContextPruneMarks = "on-trigger"
-	if s := app.pruneSystemSection(); !strings.Contains(s, "A mark takes effect when the context fills up") || strings.Contains(s, "after your next tool call") {
-		t.Errorf("on-trigger section: %s", s)
+	for name, text := range map[string]string{"system section": app.pruneSystemSection(), "tool description": contextMarkTool(false).Function.Description} {
+		if !strings.Contains(text, "A mark takes effect when the context fills up") || strings.Contains(text, "after your next tool call") {
+			t.Errorf("on-trigger %s: %s", name, text)
+		}
+	}
+	// The section does not offer the one-line prev stub for large results.
+	if !strings.Contains(sec, "one line is not enough for a large result") {
+		t.Errorf("section offers the prev one-liner without the limit: %s", sec)
 	}
 	line, ok := pruneResultLine(RoundRecord{ID: 12, CallIDs: []string{"x"}, BytesLost: 4000, ToolName: "read_file"})
 	if !ok || line != "[r12 · ~1000 tokens · done with this? context_mark it: stub (only your note remains: facts with file:line) or drop]" {

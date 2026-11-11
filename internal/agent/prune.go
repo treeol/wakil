@@ -112,6 +112,11 @@ type RoundRecord struct {
 	// (the model made another real tool call after marking). Zero means the
 	// mark is effective at once (records written before this field existed).
 	MarkSeq int `json:"mark_seq,omitempty"`
+	// MarkPrevRated records that the round already carried a rating (and so
+	// no reminder line) when the still-pending mark was made. While the mark
+	// is pending the round is projected as it was before the mark: with its
+	// line if it was unrated, without one if it was rated.
+	MarkPrevRated bool `json:"mark_prev_rated,omitempty"`
 }
 
 // stubTextMaxChars caps the model-supplied stub line of the prev, [[...]] and
@@ -458,10 +463,10 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 			continue
 		}
 		// A mark that has not taken effect yet changes nothing in the
-		// request: the round keeps the bytes it had before the mark,
-		// including its reminder line, so the prompt-cache prefix holds
-		// until the round is actually replaced.
-		if immediate && markPending(rec, lastRound) {
+		// request: the round keeps the bytes it had before the mark (its
+		// reminder line if it was unrated, none if it was already rated),
+		// so the prompt-cache prefix holds until the round is replaced.
+		if immediate && markPending(rec, lastRound) && !rec.MarkPrevRated {
 			rec.Rating = RatingNone
 		}
 		if line, ok := pruneResultLine(rec); ok {
@@ -549,7 +554,7 @@ func (a *App) pruneSystemSection() string {
 	b.WriteString("Do not mark results you still need for the answer you are about to write: marking right before the final answer saves nothing. ")
 	b.WriteString(markEffectSentence(a.pruneMarksImmediate()))
 	b.WriteString(" The full result stays retrievable from the archive path in its stub. Write rounds are only stubbed, never dropped. ")
-	b.WriteString(`The "prev" argument on any tool call is a secondary channel that rates the previous round (keep, drop, or "stub: <one line>").`)
+	b.WriteString(`The "prev" argument on any tool call is a secondary channel that rates the previous round (keep, drop, or "stub: <one line>"); one line is not enough for a large result, so stub large results with context_mark.`)
 	if r := a.Cfg.ContextPruneRater; r != "" && r != "off" {
 		b.WriteString(" A round you leave unmarked may be rated by a later pass when pruning is needed.")
 	}
@@ -562,7 +567,7 @@ func (a *App) pruneSystemSection() string {
 // the prune trigger.
 func markEffectSentence(immediate bool) string {
 	if immediate {
-		return "A mark takes effect after your next tool call at the earliest (a tool call sent in the same message as context_mark counts); until then the result stays in full."
+		return "A mark takes effect after your next tool call at the earliest (a tool call sent in the same message as context_mark counts); until then the result stays in full, unless the context is almost full."
 	}
 	return "A mark takes effect when the context fills up, not before; until then the result stays in full."
 }
@@ -646,6 +651,20 @@ func pruneResultLine(rec RoundRecord) (string, bool) {
 		tail = "done with this? context_mark it: stub (only your note remains: facts with file:line)"
 	}
 	return fmt.Sprintf("[r%d · ~%d tokens · %s]", rec.ID, rec.BytesLost/charsPerToken, tail), true
+}
+
+// stubInflates reports whether replacing the round's results with stub would
+// not shrink the request (the never-inflate rule). Every result of a round is
+// replaced by the same stub. For the short stubs of the other channels the
+// rule compares one stub with the round total, as it always has. A
+// context_mark note longer than stubTextMaxChars is counted once per result,
+// so a long note on a round with several results cannot grow the request.
+func stubInflates(rec RoundRecord, stub string) bool {
+	n := 1
+	if rec.MarkedBy == "context_mark" && rec.Rating == RatingStub && utf8.RuneCountInString(rec.StubText) > stubTextMaxChars {
+		n = max(1, len(rec.CallIDs))
+	}
+	return len(stub)*n >= rec.BytesLost
 }
 
 // stubLine renders the projection content for one pruned tool result.
@@ -933,7 +952,7 @@ func (a *App) pruneCandidatesLoop(candidates []int, rounds map[int]RoundRecord, 
 		// path. If the stub is not shorter than the original results, the
 		// prune would grow the request — skip it (the archive stays on
 		// disk, unreferenced; harmless).
-		if stubLen := len(stubLine(rec, archiveToolName(convSnap, rec), archive)); stubLen >= rec.BytesLost {
+		if stubInflates(rec, stubLine(rec, archiveToolName(convSnap, rec), archive)) {
 			continue
 		}
 		// Record lives in the store, not the local snapshot. Merge the
@@ -1092,7 +1111,44 @@ func markPending(rec RoundRecord, lastRound int) bool {
 // pruned, archive-failure (inside the loop). The last-N protection does
 // NOT apply to marked rounds (the model's explicit decision wins). The
 // never-inflate rule still applies.
-func (a *App) pruneImmediateMarks() {
+func (a *App) pruneImmediateMarks() { a.applyContextMarks(marksEffective) }
+
+// Which context_mark marks applyContextMarks takes.
+const (
+	marksEffective    = iota // marks that have taken effect (the normal case)
+	marksPendingDrops        // also pending drop marks (emergency only)
+	marksPendingAll          // also pending stub marks (emergency only)
+)
+
+// releasePendingMarksForEmergency applies context_mark marks that are still
+// pending, in immediate mode, when the projected size is at the emergency
+// level (≥ emergencyFrac of hard max) and above target. The emergency pass
+// stubs rounds the model did not mark, without a note; the rounds the model
+// itself marked go first, even though no real tool call has followed the
+// mark yet: pending drops, and pending stubs only if the size is still at
+// the emergency level after the drops. Below the emergency level pending
+// marks stay held.
+func (a *App) releasePendingMarksForEmergency(target int) {
+	if !a.pruneMarksImmediate() {
+		return
+	}
+	_, _, hardMax := a.activeThresholds()
+	atEmergency := func() bool {
+		size := a.sentSize(a.contextProjection())
+		return size >= int(float64(hardMax)*emergencyFrac) && size > target
+	}
+	if !atEmergency() {
+		return
+	}
+	a.applyContextMarks(marksPendingDrops)
+	if atEmergency() {
+		a.applyContextMarks(marksPendingAll)
+	}
+}
+
+// applyContextMarks is pruneImmediateMarks with a switch: which also applies
+// marks that have not taken effect yet (emergency only).
+func (a *App) applyContextMarks(which int) {
 	a.convMu.RLock()
 	convSnap := append([]proxy.Message(nil), a.Conv...)
 	a.convMu.RUnlock()
@@ -1137,7 +1193,10 @@ func (a *App) pruneImmediateMarks() {
 	var marked []int
 	for _, id := range candidates {
 		rec := rounds[id]
-		if rec.MarkedBy == "context_mark" && (rec.Rating == RatingDrop || rec.Rating == RatingStub) && !markPending(rec, lastRound) {
+		if rec.MarkedBy == "context_mark" && (rec.Rating == RatingDrop || rec.Rating == RatingStub) {
+			if markPending(rec, lastRound) && (which == marksEffective || (which == marksPendingDrops && rec.Rating != RatingDrop)) {
+				continue
+			}
 			marked = append(marked, id)
 		}
 	}
@@ -1161,7 +1220,7 @@ func (a *App) pruneImmediateMarks() {
 			}
 			continue
 		}
-		if stubLen := len(stubLine(rec, archiveToolName(convSnap, rec), archive)); stubLen >= rec.BytesLost {
+		if stubInflates(rec, stubLine(rec, archiveToolName(convSnap, rec), archive)) {
 			continue // never-inflate
 		}
 		a.stateMu.Lock()
@@ -1260,7 +1319,10 @@ func (a *App) pruneCheck() {
 	// Immediate mode: a context_mark mark that has not taken effect yet (no
 	// real tool round since the mark) is held back here as well, so the
 	// trigger cannot apply it while the model writes the answer it marked
-	// for. On-trigger mode keeps its behaviour: marks apply at the trigger.
+	// for. The one exception is the emergency level, where pending marks are
+	// released before any unmarked round is pruned
+	// (releasePendingMarksForEmergency). On-trigger mode keeps its
+	// behaviour: marks apply at the trigger.
 	if a.pruneMarksImmediate() {
 		for id, rec := range rounds {
 			if markPending(rec, lastRound) {
@@ -1331,6 +1393,7 @@ func (a *App) pruneCheck() {
 				// any newly rated rounds are honored and unrated-skipped
 				// rounds fall back to existing rules.
 				if a.sentSize(a.contextProjection()) > target {
+					a.releasePendingMarksForEmergency(target)
 					_, _, hardMax2 := a.activeThresholds()
 					if a.sentSize(a.contextProjection()) >= int(float64(hardMax2)*emergencyFrac) {
 						a.pruneEmergency(convSnap, rounds, order, turnOfRound, collapsedTurns, keepTurns, pinnedRounds, target)
@@ -1348,7 +1411,9 @@ func (a *App) pruneCheck() {
 
 	a.pruneCandidatesLoop(candidates, rounds, convSnap, target)
 	// Emergency: all rated/superseded candidates exhausted. Only prune
-	// oldest unrated rounds when still ≥90% of hard max.
+	// oldest unrated rounds when still ≥90% of hard max, and only after the
+	// rounds the model marked itself (pending marks) have gone first.
+	a.releasePendingMarksForEmergency(target)
 	_, _, hardMax2 := a.activeThresholds()
 	if a.sentSize(a.contextProjection()) >= int(float64(hardMax2)*emergencyFrac) && a.sentSize(a.contextProjection()) > target {
 		a.pruneEmergency(convSnap, rounds, order, turnOfRound, collapsedTurns, keepTurns, pinnedRounds, target)
@@ -2213,10 +2278,10 @@ func roundResultSnippet(conv []proxy.Message, rec RoundRecord) string {
 // context_mark: the model marks earlier rounds by id
 // ---------------------------------------------------------------------------
 
-// contextMarkDescription is the tool description for context_mark. It holds
-// in both context_prune_marks modes: "at the earliest" covers on-trigger,
-// where a mark waits for the prune trigger.
-const contextMarkDescription = "Mark earlier tool rounds you are done with so they are trimmed from context. Unmarked results are re-sent in full on every step. drop = nothing in the result is needed any more. stub = replace the result with your note; afterwards only the note remains, so put every fact you will still use into it, per file and with file:line (a note too thin for a large result is rejected). keep = still needed verbatim. Mark right after you have what you need from a result, while you keep working. Do not mark results you still need for the answer you are about to write; marking right before the final answer saves nothing. A mark takes effect after your next tool call at the earliest."
+// contextMarkDescription is the mode-independent part of the context_mark
+// tool description. contextMarkTool appends markEffectSentence, which says
+// when a mark takes effect in the configured context_prune_marks mode.
+const contextMarkDescription = "Mark earlier tool rounds you are done with so they are trimmed from context. Unmarked results are re-sent in full on every step. drop = nothing in the result is needed any more. stub = replace the result with your note; afterwards only the note remains, so put every fact you will still use into it, per file and with file:line (a note too thin for a large result is rejected). keep = still needed verbatim. Mark right after you have what you need from a result, while you keep working. Do not mark results you still need for the answer you are about to write; marking right before the final answer saves nothing."
 
 // roundFiles returns the distinct file paths the round read or wrote, reads
 // first, each in call order.
@@ -2403,11 +2468,22 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string, markSeq i
 	if a.pruneRounds == nil {
 		a.pruneRounds = map[int]RoundRecord{}
 	}
+	// prevRated reports whether the round carried a rating before this mark.
+	// A round whose earlier mark is still pending keeps the answer recorded
+	// with that mark: its visible state has not changed since.
+	lastRound := maxRoundIDLocked(a.pruneRounds)
+	prevRated := func(cur RoundRecord) bool {
+		if markPending(cur, lastRound) {
+			return cur.MarkPrevRated
+		}
+		return cur.Rating != RatingNone
+	}
 	for _, id := range drop {
 		cur, ok := a.pruneRounds[id]
 		if !ok {
 			continue
 		}
+		cur.MarkPrevRated = prevRated(cur)
 		if cur.Write {
 			paths := cur.WritePaths
 			if len(paths) == 0 {
@@ -2428,6 +2504,7 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string, markSeq i
 		if !ok {
 			continue
 		}
+		cur.MarkPrevRated = prevRated(cur)
 		cur.Rating = RatingStub
 		cur.StubText = truncateChars(sanitizeStub(note), markNoteMaxChars)
 		cur.MarkedBy = "context_mark"
@@ -2446,16 +2523,18 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string, markSeq i
 		// leaves the context).
 		cur.MarkedBy = "context_mark"
 		cur.MarkSeq = 0
+		cur.MarkPrevRated = false
 		a.pruneRounds[id] = cur
 	}
 }
 
 // contextMarkTool is the context_mark tool definition, registered only when
 // pruning is on. Parameters: drop/stub/keep (all optional, ≥1 non-empty).
-func contextMarkTool() proxy.Tool {
+// immediate selects the sentence that says when a mark takes effect.
+func contextMarkTool(immediate bool) proxy.Tool {
 	return proxy.Tool{Type: "function", Function: proxy.ToolFunction{
 		Name:        "context_mark",
-		Description: contextMarkDescription,
+		Description: contextMarkDescription + " " + markEffectSentence(immediate),
 		Parameters:  []byte(`{"type":"object","properties":{"drop":{"type":"array","items":{"type":"string"},"description":"Round ids to drop (e.g. [\"r3\"])."},"stub":{"type":"object","additionalProperties":{"type":"string"},"description":"Map of round id to your note (up to 4000 characters). The note replaces the result: put every fact you will still use into it, per file and with file:line."},"keep":{"type":"array","items":{"type":"string"},"description":"Round ids to keep verbatim."}}}`),
 	}}
 }
@@ -2524,7 +2603,9 @@ func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
 	}
 	a.stateMu.RUnlock()
 	for _, id := range stubValid {
-		note := args.Stub[fmt.Sprintf("r%d", id)]
+		// Check the note as it will be stored: a file name past the cap
+		// must not pass the check and then be cut off.
+		note := truncateChars(sanitizeStub(args.Stub[fmt.Sprintf("r%d", id)]), markNoteMaxChars)
 		if msg := thinStubNote(stubRecs[id], note); msg != "" {
 			thin = append(thin, msg)
 			continue

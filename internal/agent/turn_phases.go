@@ -240,7 +240,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		tools := a.toolsWithShellNote(a.toolsForTurn())
 		if a.pruneEnabled() && !a.IsSubagent {
 			tools = withPrevProperty(tools)
-			tools = append(tools, contextMarkTool())
+			tools = append(tools, contextMarkTool(a.pruneMarksImmediate()))
 		}
 		if forceFinish {
 			tools = nil

@@ -198,10 +198,14 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   (`mark_seq` in the round record, persisted with the session and handoff)
   and apply under the same rule in a later request, unless collapse has
   replaced those rounds by then. While a mark is pending the marked result
-  is sent exactly as before the mark, including its reminder line, and the
-  size trigger does not apply it either. The tool result of a lone mark says
-  so: `marked: drop r1 · stub r2 · takes effect after your next tool call`.
-  `on-trigger` mode is unchanged: marks apply at the trigger.
+  is sent exactly as before the mark (with its reminder line if the round was
+  unrated, without one if it already carried a rating), and the size trigger
+  does not apply it either. One exception: at the emergency level (≥ 90% of
+  hard max, where Wakil would stub unmarked rounds without a note) pending
+  marks are released first, drops before stubs, so no unmarked round is
+  pruned while a round the model marked is held. The tool result of a lone
+  mark says: `marked: drop r1 · stub r2 · takes effect after your next tool
+  call`. `on-trigger` mode is unchanged: marks apply at the trigger.
 - **Stub notes**: a stub replaces the result, and afterwards the model has
   only its note. When `context_mark` stubs a round whose results total 4 KB
   or more, the note must be at least `clamp(result bytes / 64, 200, 1200)`
@@ -215,7 +219,12 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   with file:line, per file (missing: authz.go, web.go), or drop it.` Drops
   and rounds under 4 KB are not checked, and the never-inflate rule still
   applies afterwards. `context_mark` notes are stored up to 4000 characters
-  (the `prev`, `[[stub: …]]` and rating-pass channels keep their 200). The
+  (the `prev`, `[[stub: …]]` and rating-pass channels keep their 200); the
+  note is checked as stored, so a file name beyond 4000 characters does not
+  count. Every result of a round is replaced by the same stub, so a
+  `context_mark` note longer than 200 characters is counted once per result
+  by never-inflate (shorter stubs compare one stub with the round total, as
+  before). The
   limits are constants, not config keys. The check only decides whether the
   model's own stub is accepted; Wakil never writes or extends a note.
 - **Reminder**: while pruning is on, Wakil appends one fixed reminder to the
@@ -246,8 +255,10 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   needed for the answer about to be written are not marked. One sentence says
   when a mark takes effect and follows `context_prune_marks`: after the next
   tool call at the earliest (`immediate`), or when the context fills up
-  (`on-trigger`). `prev` is
-  described as a secondary channel. The sentence about a later rating pass
+  (`on-trigger`). The `context_mark` tool description ends with the same
+  sentence. `prev` is
+  described as a secondary channel whose one-line stub is not enough for a
+  large result. The sentence about a later rating pass
   appears only when `context_prune_rater` is not `"off"`. `/prune on` and
   `/prune off` refresh the preamble on the next turn.
 - **Tool-result line**: while pruning is on, the last tool result of every
