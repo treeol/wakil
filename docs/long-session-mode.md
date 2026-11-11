@@ -179,6 +179,19 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
 - **Visibility**: a TUI line per pruned round (`· pruned r12 (drop, 14 KB)`);
   `/mode status` adds the rated counts (keep/drop/stub/unrated), the
   pruned round count and the bytes saved.
+- **Reminder**: while pruning is on, Wakil appends one fixed reminder to the
+  end of every live user prompt in the request projection (the first user
+  message of each request; injected user-role messages such as async results
+  and budget footers, collapsed turns, collapse pointer lines and handoff
+  seeds are skipped). The stored conversation, session file and TUI keep the
+  user's original text. The reminder says that `[rN]` results are re-sent in
+  full on every step until marked and asks the model to call `context_mark`
+  as soon as it has what it needs. It is about 112 tokens per live user
+  prompt and byte-identical on every request, so it does not disturb the
+  prompt-cache prefix. It only reminds: the model alone decides what is kept,
+  stubbed or dropped, and unmarked rounds are never pruned by size or age
+  below the existing trigger. There is no config key; it follows
+  `context_prune`.
 - **Off**: with `context_prune: off` (the default), nothing is parsed or
   stripped — behaviour and wire bytes are identical to master (golden-tested).
 

@@ -410,7 +410,7 @@ func (a *App) resetStyleGuides() {
 // the optional core extension. It never changes Conv or collapse records. The
 // returned slice owns its backing array whenever a guide is active.
 func (a *App) requestMessages() []proxy.Message {
-	projection := a.contextProjection()
+	projection := a.withPruneReminder(a.contextProjection())
 	text := a.styleSelection().Text()
 	if text == "" {
 		return projection

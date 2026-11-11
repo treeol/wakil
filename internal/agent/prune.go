@@ -445,6 +445,54 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 	return out
 }
 
+// pruneReminder is appended to the end of every real user prompt in the
+// request projection while pruning is on. It is the one place that tells the
+// model, at the point of decision, that unmarked results are re-sent on every
+// step and that marking is its call. The stored conversation never carries it.
+const pruneReminder = "\n\n[Wakil context upkeep, applies to this whole task] Tool results are tagged [rN] and are re-sent in full on every step until you mark them. As soon as you have what you need from a result, call context_mark: stub it with the facts you still need (names, paths, values, line numbers) or drop it; the stub keeps a path to the full result. Do this as you go, not at the end of the task. Keep a result verbatim only if you are about to quote or edit it."
+
+// withPruneReminder returns msgs with pruneReminder appended to the content of
+// each real user prompt: the first user message of every request (Turn > 0).
+// Injected user-role messages (async envelopes, budget footers, limit prompts)
+// come later in a turn and are left alone, as are collapse pointer lines,
+// handoff seeds (Turn 0) and fully collapsed turns. Messages are copied, never
+// mutated, so a.Conv and the session record keep the user's original text.
+// With pruning off it returns msgs unchanged (byte-identical wire).
+func (a *App) withPruneReminder(msgs []proxy.Message) []proxy.Message {
+	if !a.pruneEnabled() {
+		return msgs
+	}
+	a.stateMu.RLock()
+	done := make(map[int]bool, len(a.collapsed))
+	for t, rec := range a.collapsed {
+		if !rec.Partial {
+			done[t] = true
+		}
+	}
+	a.stateMu.RUnlock()
+	var out []proxy.Message
+	seen := map[int]bool{}
+	for i, m := range msgs {
+		if m.Role != "user" || m.Turn <= 0 || seen[m.Turn] {
+			continue
+		}
+		seen[m.Turn] = true
+		if done[m.Turn] || m.Content == nil || strings.HasPrefix(*m.Content, "[older request") {
+			continue
+		}
+		if out == nil {
+			out = make([]proxy.Message, len(msgs))
+			copy(out, msgs)
+		}
+		c := *m.Content + pruneReminder
+		out[i].Content = &c
+	}
+	if out == nil {
+		return msgs
+	}
+	return out
+}
+
 // stubLine renders the projection content for one pruned tool result.
 func stubLine(rec RoundRecord, toolName string, archive string) string {
 	id := fmt.Sprintf("r%d", rec.ID)
