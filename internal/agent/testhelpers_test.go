@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -265,4 +266,71 @@ func toolCallFrames(id, name string, argParts ...string) []string {
 		frames = append(frames, fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":%q}}]},"finish_reason":null}]}`, p))
 	}
 	return append(frames, `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)
+}
+
+// TestPruneMidRequest: a single long request with many large tool rounds
+// crosses context_prune_at mid-request; pruning happens before the next
+// model call (inside the tool loop), not only at finalizeTurn. The in-loop
+// pruneCheck — exactly the call streamTurn makes before each
+// requestMessages() — prunes the oldest droppables, and the following request
+// body (requestMessages) carries the stubs. (A full SSE Send path cannot
+// deliver content+tool_calls in one response through sseServer, so the
+// rated rounds are constructed through the same appendConv path the live
+// loop uses.)
+func TestPruneMidRequest(t *testing.T) {
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+
+	big := strings.Repeat("y", 4000)
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.70
+	app.Cfg.ContextPruneTarget = 0.55
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.HardMaxBytes = 10000
+	app.Cfg.CompactAt = 7000
+	app.Cfg.KeepBytes = 5000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	app.curTurn = 1
+	// Six droppable rounds, each rated by an assistant text append — the
+	// same appendConv path the live tool loop uses.
+	for i := 1; i <= 6; i++ {
+		id := fmt.Sprint(i)
+		app.appendConv(tcMsg("c"+id, "read_file", `{"path":"x"}`))
+		app.appendConv(trMsg("c"+id, "read_file", big))
+		app.appendConv(proxy.Message{Role: "assistant", Content: StrPtr("[[drop]]")})
+	}
+	if got := ratingOf(app, 1); got != RatingDrop {
+		t.Fatalf("ratingOf(r1) = %q, want drop", got)
+	}
+	// Mirror the in-loop trigger: pruneCheck runs before each
+	// requestMessages() in streamTurn.
+	app.pruneCheck()
+	proj := app.contextProjection()
+	pruned := 0
+	for _, m := range proj {
+		if strings.Contains(DerefStr(m.Content), "pruned") {
+			pruned++
+		}
+	}
+	if pruned == 0 {
+		t.Fatal("seeded drop rounds were not pruned in-loop")
+	}
+	// The following request body carries the stubs (pairing intact).
+	req := app.requestMessages()
+	assertPairing(t, req)
+	assertNoOrphanedToolCalls(t, req)
+	// Protected recent rounds (last 3) must never be pruned.
+	for _, m := range app.contextProjection() {
+		if m.ToolCallID == "c4" || m.ToolCallID == "c5" || m.ToolCallID == "c6" {
+			if strings.Contains(DerefStr(m.Content), "pruned") {
+				t.Errorf("protected round %s was pruned", m.ToolCallID)
+			}
+		}
+	}
 }

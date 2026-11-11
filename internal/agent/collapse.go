@@ -19,15 +19,57 @@ import (
 // appendConv appends msgs to a.Conv under convMu, stamping Turn=a.curTurn on
 // any message that has Turn==0. All in-turn appends go through here so every
 // message of a request carries the same turn number.
+//
+// When context pruning is enabled, the copies stored in Conv have every
+// rating tag stripped from assistant content, and prune bookkeeping is
+// recorded against the appended messages (round ids, ratings, bytes). When
+// pruning is off, the append is exactly the master append: content verbatim,
+// no bookkeeping.
 func (a *App) appendConv(msgs ...proxy.Message) {
+	raw := msgs
+	if a.pruneEnabled() {
+		a.stateMu.RLock()
+		priorMax := a.roundSeq
+		a.stateMu.RUnlock()
+		// Parse ratings from the ORIGINAL content, then strip for storage.
+		a.recordRoundRating(raw, priorMax)
+		msgs = stripAssistantTags(msgs)
+	}
 	for i := range msgs {
 		if msgs[i].Turn == 0 {
 			msgs[i].Turn = a.curTurn
 		}
 	}
 	a.convMu.Lock()
+	convIdx := len(a.Conv)
 	a.Conv = append(a.Conv, msgs...)
 	a.convMu.Unlock()
+	if a.pruneEnabled() {
+		a.recordAssistantRound(msgs, convIdx)
+		a.recordToolResultBytes(msgs)
+	}
+}
+
+// stripAssistantTags removes every rating tag from assistant content so tags
+// never reach Conv or the wire. Only tool-call rounds' assistant text is
+// affected; the call itself is untouched.
+func stripAssistantTags(msgs []proxy.Message) []proxy.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	out := make([]proxy.Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		if out[i].Role != "assistant" || out[i].Content == nil || *out[i].Content == "" {
+			continue
+		}
+		stripped := stripPruneTags(*out[i].Content)
+		if stripped != *out[i].Content {
+			c := stripped
+			out[i].Content = &c
+		}
+	}
+	return out
 }
 
 // CollapseRecord records that a finished request's working set (or a mid-turn
@@ -621,6 +663,11 @@ func degradePointerLine(rec CollapseRecord, u []proxy.Message) string {
 // and pass through curAsstIdx .. s.last verbatim. The returned slice is a
 // fresh copy when records exist; otherwise it is a.Conv (zero cost,
 // byte-identical).
+//
+// Round pruning (prune.go) composes on top: after collapse, the projection
+// replaces tool-result CONTENT of pruned rounds with a one-line stub. When
+// pruning is off (or nothing is pruned), the result is byte-identical to
+// the pre-prune projection.
 func (a *App) contextProjection() []proxy.Message {
 	if !a.IsLongSession() {
 		// Standard mode: return a.Conv under convMu.RLock for a consistent
@@ -629,6 +676,18 @@ func (a *App) contextProjection() []proxy.Message {
 		a.convMu.RLock()
 		conv := a.Conv
 		a.convMu.RUnlock()
+		return a.pruneProjection(conv)
+	}
+	base := a.collapseProjection(a.Conv)
+	return a.pruneProjection(base)
+}
+
+// collapseProjection is the master collapse logic: in standard mode or when
+// no collapse records exist it returns conv; otherwise it builds the
+// collapsed view. Factored out so contextProjection can layer pruning on
+// top without changing collapse's behaviour when pruning is off.
+func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
+	if !a.IsLongSession() {
 		return conv
 	}
 	// Copy collapse records under stateMu so we can iterate them without
@@ -640,9 +699,6 @@ func (a *App) contextProjection() []proxy.Message {
 	}
 	a.stateMu.RUnlock()
 	if len(collapsedCopy) == 0 {
-		a.convMu.RLock()
-		conv := a.Conv
-		a.convMu.RUnlock()
 		return conv
 	}
 
@@ -1465,7 +1521,10 @@ func (a *App) materializeCollapsed() {
 	}
 	a.stateMu.RUnlock()
 
-	proj := a.contextProjection()
+	// Materialize from the collapse projection only: the prune layer
+	// stays a pure projection on top of Conv (a.Conv keeps originals;
+	// pruning stubs never bake into Conv).
+	proj := a.collapseProjection(a.Conv)
 	// Clear checkpoints before restructuring a.Conv so early returns in
 	// Compact() never leave stale ConvLen indices pointing into a shortened Conv.
 	// Lock order: clearCheckpoints acquires cpMu (before convMu).
@@ -1524,6 +1583,24 @@ func (a *App) pruneCollapseOnRewind() {
 		for t := range a.keep {
 			if _, exists := turnLastMsg[t]; !exists {
 				delete(a.keep, t)
+			}
+		}
+	}
+	// Rewind: records of removed rounds are deleted by presence in Conv
+	// (the surviving messages), never by the stored ConvIdx — that index
+	// is stale across rewind/compaction and must not let a surviving round
+	// lose its record.
+	if a.pruneRounds != nil {
+		present := make(map[string]bool, len(convSnap))
+		for _, m := range convSnap {
+			for _, tc := range m.ToolCalls {
+				present[tc.ID] = true
+			}
+		}
+		for id, rec := range a.pruneRounds {
+			if rec.FirstCall != "" && !present[rec.FirstCall] {
+				delete(a.pruneRounds, id)
+				delete(a.prunedRounds, id)
 			}
 		}
 	}
@@ -1624,6 +1701,9 @@ func (a *App) restoreTurnStateLocked(s *Session) {
 	}
 	a.convMu.RUnlock()
 	a.turnSeq = maxTurn
+
+	// Resume: pruned state and round ids restored.
+	a.restorePruneState(s)
 }
 
 // projectedCheckpointForGate returns the checkpoint text the projection would

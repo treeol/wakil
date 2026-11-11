@@ -371,6 +371,22 @@ type Config struct {
 	// count, degrade, and compaction thresholds together.
 	ContextTailAnswerBytes int `json:"context_tail_answer_bytes,omitempty"` // default 0 = keep full answers
 
+	// ContextPrune enables per-round value pruning (default off). When on, the
+	// model rates the previous tool round with a [[keep]]/[[drop]]/[[stub: ...]]
+	// tag in its next assistant message; tag-stripped content is stored. When
+	// the projected request exceeds ContextPruneAt × the hard max, lowest-
+	// value rounds (drop before stub, oldest first) are replaced in the
+	// projection by a one-line stub pointing at the archived round.
+	ContextPrune string `json:"context_prune,omitempty"` // "off" (default) | "on"
+
+	// ContextPruneAt: fraction of the hard max that triggers pruning. Default
+	// 0.70. ContextPruneTarget: fraction pruning aims to reach. Default 0.55.
+	// Must satisfy 0 < target < at < 1. ContextPruneProtect: the most recent
+	// rounds never pruned. Default 3, must be >= 1.
+	ContextPruneAt      float64 `json:"context_prune_at,omitempty"`      // default 0.70
+	ContextPruneTarget  float64 `json:"context_prune_target,omitempty"`  // default 0.55
+	ContextPruneProtect int     `json:"context_prune_protect,omitempty"` // default 3
+
 	// Prompt mode: "full" (default) sends the complete system prompt as today;
 	// "core" sends only the safety-critical core prompt, and lazy-loads the
 	// extension (workflow guidance) as a second system message when the
@@ -1191,6 +1207,10 @@ func DefaultConfig() Config {
 		ContextCollapseMinBytes: 2000,               // turns under 2k are not worth collapsing
 		ContextTailTurns:        20,                 // keep last 20 requests at full size before pointer degrade
 		ContextTailAnswerBytes:  0,                  // prior assistant reports are kept whole (>0 caps them + archive pointer)
+		ContextPrune:            "off",              // per-round value pruning; "on" enables model-rated round stubs
+		ContextPruneAt:          0.70,               // fraction of hard max that triggers pruning
+		ContextPruneTarget:      0.55,               // fraction of hard max pruning aims to reach
+		ContextPruneProtect:     3,                  // most recent rounds never pruned
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
@@ -2184,6 +2204,21 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.ContextTailAnswerBytes < 0 {
 		return fmt.Errorf("context_tail_answer_bytes must be >= 0 (got %d)", cfg.ContextTailAnswerBytes)
+	}
+	// Context prune: off|on; fractions must satisfy 0 < target < at < 1.
+	switch cfg.ContextPrune {
+	case "", "off", "on":
+	default:
+		return fmt.Errorf("context_prune must be one of: off, on (got %q)", cfg.ContextPrune)
+	}
+	if cfg.ContextPruneAt <= 0 || cfg.ContextPruneAt >= 1 {
+		return fmt.Errorf("context_prune_at must be in (0, 1), got %g", cfg.ContextPruneAt)
+	}
+	if cfg.ContextPruneTarget <= 0 || cfg.ContextPruneTarget >= cfg.ContextPruneAt {
+		return fmt.Errorf("context_prune_target (%g) must be in (0, context_prune_at=%g)", cfg.ContextPruneTarget, cfg.ContextPruneAt)
+	}
+	if cfg.ContextPruneProtect < 1 {
+		return fmt.Errorf("context_prune_protect must be >= 1 (got %d)", cfg.ContextPruneProtect)
 	}
 	if cfg.BrowserIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("browser_idle_timeout_seconds must be >= 0 (got %d)", cfg.BrowserIdleTimeoutSeconds)

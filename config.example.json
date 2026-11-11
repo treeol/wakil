@@ -160,12 +160,16 @@
   "tool_cache_retention_days": 30,
   "effective_ctx_max_chars": 0,
 
-  "_comment_context_mode": "Long-session mode. context_mode: standard (full conversation sent) | long-session (default — finished requests are collapsed to question + answer, working set archived to the tool cache). context_collapse_min_bytes: turns smaller than this are never collapsed (not worth a note). context_tail_turns: requests older than this many most-recent requests degrade to a single pointer line (archive path + memory key) instead of staying at full size — the soft middle cut that keeps sent context from growing with session length; 0 disables (older requests stay at full size forever). context_tail_answer_bytes: cap on the final answer retained for tail turns; default 0 keeps full answers; a positive value truncates longer answers with an archive pointer appended. Flag: --context-mode. Env: WAKIL_CONTEXT_MODE. Subagents always run in standard.",
+  "_comment_context_mode": "Long-session mode. context_mode: standard (full conversation sent) | long-session (default — finished requests are collapsed to question + answer, working set archived to the tool cache). context_collapse_min_bytes: turns smaller than this are never collapsed (not worth a note). context_tail_turns: requests older than this many most-recent requests degrade to a single pointer line (archive path + memory key) instead of staying at full size — the soft middle cut that keeps sent context from growing with session length; 0 disables (older requests stay at full size forever). context_tail_answer_bytes: cap on the final answer retained for tail turns; default 0 keeps full answers; a positive value truncates longer answers with an archive pointer appended. context_prune: off (default) | on (model rates each tool round keep/drop/stub; low-value rounds have their tool results stubbed in the projection once projected size exceeds context_prune_at × hard max). context_prune_at: fraction of hard max that triggers pruning (default 0.70). context_prune_target: fraction of hard max pruning aims to reach (default 0.55). context_prune_protect: most recent rounds always kept (default 3). Flag: --context-mode. Env: WAKIL_CONTEXT_MODE. Subagents always run in standard.",
 
   "context_mode": "long-session",
   "context_collapse_min_bytes": 2000,
   "context_tail_turns": 20,
   "context_tail_answer_bytes": 0,
+  "context_prune": "off",
+  "context_prune_at": 0.70,
+  "context_prune_target": 0.55,
+  "context_prune_protect": 3,
 
   "_comment_prompt_mode": "Split system prompt. prompt_mode: full (default — complete system prompt always loaded) | core (lean preamble with identity + safety gates only; the workflow extension is lazy-loaded as a second system message when the classifier detects a task). Flag: --prompt-mode. Env: WAKIL_PROMPT_MODE. A custom agent_prompt_path bypasses the split (the full file is used).",
   "prompt_mode": "full",

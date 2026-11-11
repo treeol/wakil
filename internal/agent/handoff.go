@@ -125,6 +125,8 @@ func RunHandoffPipeline(ctx context.Context, app *App) (HandoffResult, error) {
 	// reflects the projection that was in use.
 	app.Session.Collapsed = app.collapsedRecords()
 	app.Session.Keep = app.keepSlice()
+	// Persist prune state so the session record reflects the projection in use.
+	app.Session.PruneRecords = app.pruneRecordsSlice()
 	if err := WriteSession(app.Session); err != nil {
 		return HandoffResult{}, fmt.Errorf("could not save old session: %w", err)
 	}

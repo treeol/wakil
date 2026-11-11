@@ -5,6 +5,14 @@ package agent
 //
 // The defers (SaveSession, flushTraceTurn) remain in Send because they are
 // function-scoped and need to see retErr and the trace accumulators.
+//
+// Round-pruning integration: the prune check is invoked inside the tool
+// loop — after tool results are appended and BEFORE every subsequent model
+// request is built (see the call site right before `msgs := a.requestMessages()`)
+// — and once per request via finalizeTurn (alongside collapseFinishedTurns).
+// Pruning only at finalizeTurn/SendOutcome boundaries would never touch the
+// current request, which is where the request bytes accumulate mid-request.
+// Collapse's hooks are untouched.
 
 import (
 	"context"
@@ -258,6 +266,14 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// once at Send entry) when InjectDate is on — no per-iteration rebuild.
 		// In long-session mode, contextProjection returns the collapsed view
 		// (U + A + note per finished turn). In standard mode it returns a.Conv.
+		//
+		// Round pruning: inside the tool loop, after tool results are appended
+		// and before every subsequent model request is built, prune lowest-
+		// value rounds when the projected size exceeds context_prune_at ×
+		// hard max. This is the user-required placement — pruning only at
+		// finalizeTurn/SendOutcome boundaries never touches the current
+		// request, which is where the bytes accumulate mid-request.
+		a.pruneCheck()
 		msgs := a.requestMessages()
 		if !a.IsSubagent {
 			var gerr error
@@ -520,6 +536,12 @@ func (a *App) finalizeTurn(ctx context.Context) {
 	// This must run first so the just-finished working set doesn't count
 	// toward compactAt and trigger compaction before it can be collapsed.
 	a.collapseFinishedTurns()
+
+	// Round pruning: once per request, alongside collapse — prune lowest-
+	// value rounds when the projected size exceeds context_prune_at × hard
+	// max. The in-loop check (streamTurn) is the primary trigger; this is
+	// the request-boundary backstop.
+	a.pruneCheck()
 
 	// Proactively evict stale tool results before compaction. This prevents
 	// verbose old tool output from consuming context budget between turns

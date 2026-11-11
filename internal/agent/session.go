@@ -35,6 +35,13 @@ type Session struct {
 	// turns exempted from collapse by /keep.
 	Collapsed []CollapseRecord `json:"collapsed,omitempty"`
 	Keep      []int            `json:"keep,omitempty"`
+
+	// Round-pruning state (prune.go), persisted next to Collapsed/Keep.
+	// Present only when context_prune was on; old sessions have none and
+	// resume with an empty prune state.
+	PruneRecords       []RoundRecord `json:"prune_records,omitempty"`
+	PruneBytesSaved    int           `json:"prune_bytes_saved,omitempty"`
+	PruneArchiveFailed bool          `json:"prune_archive_failed,omitempty"`
 }
 
 // sessionsDir is where transcripts live: $WAKIL_SESSIONS_DIR, else

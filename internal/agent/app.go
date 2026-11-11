@@ -293,6 +293,21 @@ type App struct {
 	// (bounded cleanup trigger — never repeated in-process).
 	indexReconciled bool
 
+	// Round-pruning state (prune.go). Turn goroutine writes; projection reads
+	// under stateMu.RLock. pruneRounds maps round id r<N> → its record (rating,
+	// stub text, archive path, write flag, byte count); prunedRounds is the set
+	// of rounds projected with stubs. roundSeq is the per-chat id counter.
+	// consult pruneEnabled() (Cfg.ContextPrune == "on"): when off, nothing
+	// populates these maps and the projection is byte-identical to master.
+	pruneRounds  map[int]RoundRecord
+	prunedRounds map[int]bool
+	roundSeq     int
+	// pruneBytesSaved accumulates original tool-result bytes removed by
+	// pruning; pruneArchiveFailed makes the archive-failure warning once per
+	// session.
+	pruneBytesSaved    int
+	pruneArchiveFailed bool
+
 	// EffectiveCtxMaxCharsOverride is the /maxctx session override for
 	// EffectiveCtxMaxChars. -1 = not set (use config value); 0 = explicitly
 	// disabled (no cap); >0 = cap at this many chars. Applied live in
@@ -884,6 +899,16 @@ func (a *App) SaveSession() {
 		for t := range a.keep {
 			snap.Keep = append(snap.Keep, t)
 		}
+	}
+	// Persist round-pruning state (under stateMu, same lock as the fields
+	// it guards). Empty when pruning was never enabled.
+	if len(a.pruneRounds) > 0 {
+		snap.PruneRecords = make([]RoundRecord, 0, len(a.pruneRounds))
+		for _, rec := range a.pruneRounds {
+			snap.PruneRecords = append(snap.PruneRecords, rec)
+		}
+		snap.PruneBytesSaved = a.pruneBytesSaved
+		snap.PruneArchiveFailed = a.pruneArchiveFailed
 	}
 
 	a.convMu.RUnlock()
@@ -1722,6 +1747,17 @@ func (a *App) buildPreamble(today string) string {
 			memLine += " Use memory_search or memory_get to retrieve entries."
 			parts = append(parts, memLine)
 		}
+	}
+	// Context pruning: one short paragraph telling the model to rate the
+	// previous round. Only when enabled — with the feature off the preamble
+	// is byte-identical to master.
+	if a.pruneEnabled() {
+		parts = append(parts, "Context pruning (per-round value): after each round of tool calls, "+
+			"end your next assistant message with exactly one tag rating the PREVIOUS round: "+
+			"[[keep]] means it still matters, [[drop]] means it can be replaced by a stub, "+
+			"[[stub: <one line, max 200 chars>]] means it can be reduced to your one line. "+
+			"For stub, say what to remember (file, finding, decision). The tag is stripped before "+
+			"storing; it never reaches the wire.")
 	}
 	return strings.Join(parts, "\n")
 }

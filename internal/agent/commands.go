@@ -300,8 +300,12 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				}
 				_, sentSize := app.ConvStats()
 				_, fullSize := app.ConvStatsFull()
-				return true, false, note(fmt.Sprintf("context mode: %s · %d collapsed · sent ~%dk · full ~%dk",
-					app.ContextMode(), collapsedCount, sentSize/1024, fullSize/1024))
+				msg := fmt.Sprintf("context mode: %s · %d collapsed · sent ~%dk · full ~%dk",
+					app.ContextMode(), collapsedCount, sentSize/1024, fullSize/1024)
+				if app.pruneEnabled() {
+					msg += " · " + app.pruneStatusLine()
+				}
+				return true, false, note(msg)
 			default:
 				return true, false, note("usage: /mode [standard|long-session|status]")
 			}

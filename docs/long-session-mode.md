@@ -125,13 +125,75 @@ between the first message and the `collapse_context` call.
 - **Rewind**: truncation prunes collapse/keep entries whose turn no longer
   exists and resets the turn sequence.
 
+## Per-round value pruning (`context_prune`, default `off`)
+
+A second, orthogonal mechanism: **value-based pruning of tool rounds**,
+behind the `context_prune` switch (Wakil 0.7 feature). It composes with
+collapse — it only prunes rounds that are NOT inside a collapsed turn.
+
+- **Round**: one assistant message that has tool_calls, plus the tool-result
+  messages answering those calls. Every round gets a stable id `r<N>` from
+  a per-chat counter, assigned when the assistant message is appended
+  (`appendConv`). The id, rating, stub text and prune state persist with
+  the session (`Session.PruneRecords`); on rewind, records of removed
+  rounds are deleted.
+- **Rating**: the model rates the PREVIOUS round with exactly one tag in
+  its next assistant message: `[[keep]]`, `[[drop]]`, or
+  `[[stub: <one line, max 200 chars, what mattered>]]`. Parsed with one
+  regex anywhere in the assistant content (which may sit alongside
+  tool_calls); the last tag wins; a missing or invalid tag means keep.
+  Tags are stripped from the stored content before `appendConv`, so
+  neither `Conv` nor the wire ever contains them.
+- **Trigger**: inside the tool loop, after tool results are appended and
+  before every subsequent model request is built (it also runs once per
+  request alongside collapse in `finalizeTurn`). When the projected
+  request size exceeds `context_prune_at` (default 0.70) × the existing
+  hard max, prune candidates until the size is ≤
+  `context_prune_target` (default 0.55) × hard max, or no candidates
+  remain.
+- **Order**: `drop` rounds first (oldest first), then `stub` rounds
+  (oldest first). `keep` and unrated rounds are never pruned.
+- **Fixed rules**: the `context_prune_protect` (default 3) most recent
+  rounds are never pruned. A round with write-class tool calls (the same
+  classification as the collapse note's "write targets") rated `drop` is
+  pruned as a stub instead: `[rN write round pruned: <tool> <paths>; archive: …]`.
+  Rounds in turns exempted by `/keep` are never pruned. Rounds already
+  inside a collapsed turn are left to collapse.
+- **Stub line**: each tool-result message of a pruned round has its content
+  replaced in the projection only — assistant messages, tool_calls and
+  ids are untouched, so call/result pairing is always valid:
+  - drop: `[rN pruned (drop): <tool> <short target> — full result: <archive path>]`
+  - stub: `[rN pruned: <model's stub line> — full result: <archive path>]`
+- **Archive**: the full round (assistant message incl. tool_call ids + all
+  results) is written with the existing `SpillToCache` as `round-<N>`.
+  If the archive write fails, the round is NOT pruned; one warning is
+  shown per session.
+- **Projection only**: `a.Conv` keeps the originals. Compaction and
+  materialization behave the same as collapse; after materialization the
+  stubs simply become the history. Recovery: the model can `read_file`
+  the archive path from the stub. No new tools.
+- **Visibility**: a TUI line per pruned round (`· pruned r12 (drop, 14 KB)`);
+  `/mode status` adds the rated counts (keep/drop/stub/unrated), the
+  pruned round count and the bytes saved.
+- **Off**: with `context_prune: off` (the default), nothing is parsed or
+  stripped — behaviour and wire bytes are identical to master (golden-tested).
+
+Config keys: `context_prune` (`off` | `on`, default `off`),
+`context_prune_at` (0.70), `context_prune_target` (0.55),
+`context_prune_protect` (3). Validated to satisfy
+`0 < target < at < 1` and `protect >= 1`.
+
 ## Commands
 
 - `/mode standard | long-session | status` — switch or inspect (persisted per
-  repo; the status line shows `long` / `std`).
+  repo; the status line shows `long` / `std`). With pruning on,
+  `/mode status` also shows `prune: on · keep N · drop N · stub N ·
+  unrated N · pruned N · saved ~M KB`.
 - `/keep <n>` / `/keep off <n>` — exempt request n from collapse or remove the
-  exemption (a kept turn is restored into what is sent).
-- `/mode status` — collapsed/kept counts, sent vs full sizes, archive dir.
+  exemption (a kept turn is restored into what is sent). Kept turns are
+  never pruned either.
+- `/mode status` — collapsed/kept counts, sent vs full sizes, archive dir,
+  plus the prune counts above when pruning is enabled.
 
 ## Known limits
 

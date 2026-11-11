@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dynamic context pruning by per-round value** (Wakil 0.7 feature, behind a switch). New config keys `context_prune` (`off` default | `on`), `context_prune_at` (0.70), `context_prune_target` (0.55), `context_prune_protect` (3), validated to satisfy `0 < target < at < 1` and `protect >= 1`. When on, the model rates the previous tool round with `[[keep]]` / `[[drop]]` / `[[stub: <one line>]]`; tags are stripped before storing. When the projected request exceeds `context_prune_at` × the existing hard max, lowest-value rounds (drop before stub, oldest first) are replaced in the projection by one-line stubs; the original round is archived first (`round-<N>` in the tool cache). With `context_prune: off` (default), behaviour and wire bytes are identical to master. See `docs/long-session-mode.md` and `docs/configuration.md`.
+
 ## [0.6.5] - 2026-11-10
 
 ### Changed
