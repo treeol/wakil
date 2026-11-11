@@ -533,6 +533,7 @@ func TestSSEMultiLineDataEvent(t *testing.T) {
 	}
 	if usage == nil {
 		t.Fatal("usage is nil")
+		return
 	}
 	if usage.InputTokens != 42 {
 		t.Errorf("InputTokens = %d, want 42 (from multi-line data: event)", usage.InputTokens)
@@ -675,6 +676,7 @@ func TestParseAnthropicSSEErrorEvent(t *testing.T) {
 	}
 	if u == nil {
 		t.Fatal("usage is nil")
+		return
 	}
 	if u.FinishReason != "error" {
 		t.Errorf("FinishReason = %q, want 'error'", u.FinishReason)

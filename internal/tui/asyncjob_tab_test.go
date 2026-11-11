@@ -76,6 +76,7 @@ func TestAsyncJobStartCreatesTab(t *testing.T) {
 	tab := findJobTab(m, "op_op-1")
 	if tab == nil {
 		t.Fatal("async-job tab not created for op_op-1")
+		return
 	}
 	if tab.kind != subTabAsyncJob {
 		t.Errorf("kind = %v, want subTabAsyncJob", tab.kind)
