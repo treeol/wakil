@@ -232,6 +232,21 @@ func (a *App) setPruneOverride(s string) {
 	}
 }
 
+// preambleRefreshSentinel marks the cached preamble stale without clearing
+// preambleDay: ensurePreamble then refreshes Conv[0] in place (the day-rollover
+// path) instead of inserting a second system message.
+const preambleRefreshSentinel = "prune-toggle"
+
+// invalidatePreambleForPruneLocked makes the next turn rebuild the system
+// message, so the pruning section appears or disappears when /prune toggles
+// mid-session. A session that has not built a preamble yet needs nothing.
+// Caller holds stateMu.
+func (a *App) invalidatePreambleForPruneLocked() {
+	if a.preambleDay != "" {
+		a.preambleDay = preambleRefreshSentinel
+	}
+}
+
 /* RECORDING (called from appendConv; all under stateMu). */
 
 // readToolNames are the file-read tools whose targets superseded/reread
@@ -254,20 +269,16 @@ func (a *App) recordAssistantRound(msgs []proxy.Message, convIdx int) {
 		var readPaths, writePaths []string
 		hasShell, cmdText := false, ""
 		toolName, argsText := "", ""
-		// The context_mark round itself is never a prune candidate and
-		// gets no rating prompt: a marking round carries no app-data
-		// result worth keeping.
-		isMarkRound := false
+		// The context_mark call itself is never a prune candidate and gets
+		// no rating prompt: it carries no app-data result worth keeping.
+		// The other calls of the same message (marking while moving on to
+		// the next read) form a normal round, so their results carry an
+		// [rN] id and can be marked later. A message made only of
+		// context_mark calls registers no round.
 		for _, tc := range m.ToolCalls {
 			if tc.Function.Name == "context_mark" {
-				isMarkRound = true
-				break
+				continue
 			}
-		}
-		if isMarkRound {
-			continue
-		}
-		for _, tc := range m.ToolCalls {
 			callIDs = append(callIDs, tc.ID)
 			if writeTargetTools[tc.Function.Name] {
 				write = true
@@ -289,6 +300,9 @@ func (a *App) recordAssistantRound(msgs []proxy.Message, convIdx int) {
 					}
 				}
 			}
+		}
+		if len(callIDs) == 0 {
+			continue // only context_mark calls: no round.
 		}
 		a.stateMu.Lock()
 		if a.pruneRounds == nil {
@@ -400,6 +414,7 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 	callToRound := map[string]int{}       // call_id -> round id, for ALL rounds (prefixing)
 	prunedCallToRound := map[string]int{} // call_id -> round id, for pruned rounds only (stubbing)
 	recs := make(map[int]RoundRecord, len(a.prunedRounds))
+	markLine := map[int]string{} // round id -> reminder line, for rounds that still carry one
 	for id, rec := range a.pruneRounds {
 		for _, cid := range rec.CallIDs {
 			callToRound[cid] = id
@@ -409,15 +424,42 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 			for _, cid := range rec.CallIDs {
 				prunedCallToRound[cid] = id
 			}
+			continue
+		}
+		if rec.Turn > 0 && a.keep[rec.Turn] {
+			continue
+		}
+		if _, coll := a.collapsed[rec.Turn]; coll && rec.Turn > 0 {
+			continue
+		}
+		if line, ok := pruneResultLine(rec); ok {
+			markLine[id] = line
 		}
 	}
 	a.stateMu.RUnlock()
 	if len(callToRound) == 0 {
 		return in
 	}
+	// Per round: the index of its last tool result (the one that carries the
+	// reminder line) and whether any of its results is pinned.
+	lastResult := map[int]int{}
+	pinned := map[int]bool{}
+	if len(markLine) > 0 {
+		for i, m := range in {
+			if m.Role != "tool" || m.ToolCallID == "" {
+				continue
+			}
+			if id, ok := callToRound[m.ToolCallID]; ok {
+				lastResult[id] = i
+				if m.Pinned {
+					pinned[id] = true
+				}
+			}
+		}
+	}
 	changed := false
 	out := make([]proxy.Message, 0, len(in))
-	for _, m := range in {
+	for idx, m := range in {
 		id, isTool := callToRound[m.ToolCallID]
 		if !isTool || m.ToolCallID == "" || m.Role != "tool" {
 			out = append(out, m)
@@ -434,6 +476,9 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 		}
 		// Unpruned tool result: prefix with its round id for context_mark.
 		prefixed := fmt.Sprintf("[r%d] %s", id, DerefStr(m.Content))
+		if line, ok := markLine[id]; ok && !pinned[id] && lastResult[id] == idx {
+			prefixed += "\n" + line
+		}
 		c := m
 		c.Content = &prefixed
 		out = append(out, c)
@@ -443,6 +488,24 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 		return in
 	}
 	return out
+}
+
+// pruneSystemSection is the prominent system-prompt section for pruning. It
+// leads with context_mark, states that unmarked results are re-sent on every
+// step, and describes prev as a secondary channel in one sentence. The
+// rating-pass sentence is included only when a rating pass is configured.
+func (a *App) pruneSystemSection() string {
+	var b strings.Builder
+	b.WriteString("## Context pruning: mark rounds as you go\n")
+	b.WriteString("Call context_mark as soon as you have what you need from a tool result. ")
+	b.WriteString("Tool results are tagged [rN] and are re-sent in full on every step until you mark them, so every unmarked result costs tokens on every later step. ")
+	b.WriteString("Mark right after you have what you need, not at the end of the task: stub it with the names, paths, values and line numbers you still need, or drop it if nothing is needed; keep a result verbatim only if you are about to quote or edit it. ")
+	b.WriteString("A marked result leaves the context on the next step; the full result stays retrievable from the archive path in its stub. Write rounds are only stubbed, never dropped. ")
+	b.WriteString(`The "prev" argument on any tool call is a secondary channel that rates the previous round (keep, drop, or "stub: <one line>").`)
+	if r := a.Cfg.ContextPruneRater; r != "" && r != "off" {
+		b.WriteString(" A round you leave unmarked may be rated by a later pass when pruning is needed.")
+	}
+	return b.String()
 }
 
 // pruneReminder is appended to the end of every real user prompt in the
@@ -491,6 +554,35 @@ func (a *App) withPruneReminder(msgs []proxy.Message) []proxy.Message {
 		return msgs
 	}
 	return out
+}
+
+// pruneArchivePathEstimate stands in for the archive path (unknown until the
+// round is archived) when pruneResultLine applies the never-inflate rule.
+const pruneArchivePathEstimate = "/home/user/.local/share/wakil/toolcache/00000000-0000-0000-0000-000000000000/round-000-0000000000.txt"
+
+// pruneResultLine renders the reminder line appended to the last tool result
+// of a round that is still prunable, and reports whether the round carries
+// one. It is computed ONLY from values fixed when the round was recorded (id,
+// byte count, write flag, tool name) and the rating: the same record yields
+// the same bytes on every request, so the prompt-cache prefix stays stable
+// until the model rates the round (which removes the line). Rated, pruned
+// and results too small for a stub to be shorter (the never-inflate rule)
+// carry no line. /keep, collapsed and pinned rounds are excluded by the
+// caller, which holds the state those checks need.
+func pruneResultLine(rec RoundRecord) (string, bool) {
+	if rec.Rating != RatingNone || rec.Pruned || len(rec.CallIDs) == 0 {
+		return "", false
+	}
+	est := rec
+	est.Rating = RatingDrop
+	if len(stubLine(est, rec.ToolName, pruneArchivePathEstimate)) >= rec.BytesLost {
+		return "", false
+	}
+	tail := "done with this? context_mark it: stub with the facts you still need, or drop"
+	if rec.Write {
+		tail = "done with this? context_mark it: stub with the facts you still need"
+	}
+	return fmt.Sprintf("[r%d · ~%d tokens · %s]", rec.ID, rec.BytesLost/charsPerToken, tail), true
 }
 
 // stubLine renders the projection content for one pruned tool result.
@@ -2019,7 +2111,7 @@ func roundResultSnippet(conv []proxy.Message, rec RoundRecord) string {
 // ---------------------------------------------------------------------------
 
 // contextMarkDescription is the tool description for context_mark.
-const contextMarkDescription = "Mark earlier tool rounds you are done with so they can be trimmed from context. Marks apply on the next step, not only when the context is full. drop = no longer needed. stub = replace with your one-line note (put names, paths, routes, values you still need). keep = still needed verbatim. Unmarked rounds are left as they are."
+const contextMarkDescription = "Mark earlier tool rounds you are done with so they can be trimmed from context. Marks apply on the next step, not only when the context is full. drop = no longer needed. stub = replace with your one-line note (put names, paths, routes, values you still need). keep = still needed verbatim. Unmarked results are re-sent in full on every step."
 
 // validateMarkIDs partitions ids into accepted (exists, not current round, not
 // already pruned) and rejected (all others). It reports, per rejected id, a

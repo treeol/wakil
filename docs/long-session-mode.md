@@ -196,6 +196,31 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   stubbed or dropped, and unmarked rounds are never pruned by size or age
   below the existing trigger. There is no config key; it follows
   `context_prune`.
+- **System prompt section**: while pruning is on, the preamble carries its
+  own `## Context pruning: mark rounds as you go` section, placed right after
+  Wakil's own instructions (before AGENTS.md and the runtime context). It
+  leads with `context_mark`, says that `[rN]` results are re-sent in full on
+  every step until marked, and asks the model to mark as it goes. `prev` is
+  described as a secondary channel. The sentence about a later rating pass
+  appears only when `context_prune_rater` is not `"off"`. `/prune on` and
+  `/prune off` refresh the preamble on the next turn.
+- **Tool-result line**: while pruning is on, the last tool result of every
+  still-prunable round ends with one line, in the request projection only:
+  `[rN · ~X tokens · done with this? context_mark it: stub with the facts you
+  still need, or drop]` (write rounds omit `or drop`). `N` and `X` come from
+  the round record (fixed when the round is recorded), so the line is
+  byte-identical on every request until the model rates the round, which
+  removes it. There is no line on `context_mark` results, rated or pruned
+  rounds, `/keep`, pinned or collapsed rounds, or results so small that a stub
+  would not be shorter (never-inflate). A round with several results carries
+  it once, on its last result. The line is never stored in the conversation,
+  never written to the archive and never shown in the TUI. It reminds only;
+  nothing is pruned unless the model marks it.
+- **Mixed messages**: an assistant message that mixes `context_mark` with
+  other tool calls registers a normal round for the other calls (so their
+  results get an `[rN]` id and can be marked); only the `context_mark` call
+  itself is excluded. A message made only of `context_mark` calls registers
+  no round.
 - **Off**: with `context_prune: off` (the default), nothing is parsed or
   stripped — behaviour and wire bytes are identical to master (golden-tested).
 

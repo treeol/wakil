@@ -284,12 +284,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			case "on":
 				app.stateMu.Lock()
 				app.setPruneOverride("on")
+				app.invalidatePreambleForPruneLocked()
 				app.stateMu.Unlock()
 				app.SaveSession()
 				return true, false, note("prune: on (schema property + prompt from next request; older rounds unrated — auto-stub only)")
 			case "off":
 				app.stateMu.Lock()
 				app.setPruneOverride("off")
+				app.invalidatePreambleForPruneLocked()
 				app.stateMu.Unlock()
 				app.SaveSession()
 				return true, false, note("prune: off (no new pruning; existing stubs stay)")

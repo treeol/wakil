@@ -1662,6 +1662,13 @@ func (a *App) buildPreamble(today string) string {
 	} else {
 		parts = append(parts, corePrompt)
 	}
+	// Context pruning: its own prominent section, first among the context
+	// rules (right after Wakil's own instructions, before AGENTS.md and the
+	// runtime context). Only when enabled — with the feature off the preamble
+	// is byte-identical to master. See pruneSystemSection.
+	if a.pruneEnabled() {
+		parts = append(parts, a.pruneSystemSection())
+	}
 	// AGENTS.md (advisory project instructions) — loaded from the workspace
 	// root and ancestor directories (bounded by the workspace root, never
 	// walking above it). Inserted AFTER Wakil's own instructions and BEFORE
@@ -1782,27 +1789,6 @@ func (a *App) buildPreamble(today string) string {
 			memLine += " Use memory_search or memory_get to retrieve entries."
 			parts = append(parts, memLine)
 		}
-	}
-	// Context pruning: one short paragraph telling the model to rate the
-	// previous round. Only when enabled — with the feature off the preamble
-	// is byte-identical to master. The PRIMARY rating channel is the
-	// OPTIONAL "prev" tool-argument property (works on tool-call-only
-	// replies, unburdensome to omit); the [[...]] text tag stays as the
-	// secondary channel. When pruning is needed, a one-shot rating pass
-	// rates unrated rounds in one small request. The context_mark tool is
-	// the explicit model channel: it marks earlier rounds by id. Rated
-	// stubs carry the takeaway, so a good stub means no re-reads.
-	if a.pruneEnabled() {
-		parts = append(parts, "Context pruning (per-round value): every tool call carries an "+
-			`optional "prev" property rating the PREVIOUS tool round: "keep" (still needed), "drop" `+
-			`"(no longer needed), or "stub: <one line, max 200 chars>" (your takeaway — key facts, `+
-			"functions, or a decision). Prefer stub over keep for file reads you have understood: "+
-			"the stub keeps your takeaway in context, so you will not need to re-read. "+
-			"If you omit a rating this round, a later pass will rate it when pruning is needed. "+
-			"Tool results start with their round id [rN]. As soon as you have taken what you need from a result, call context_mark: stub it with exactly the facts you extracted (names, paths, routes, values, line numbers), or drop it if nothing is needed. It leaves the context on the next step; the stub stays. Keep only what you still need verbatim. You can read the archive path in a stub if you need the full result again. "+
-			"As a secondary channel you may also end an assistant message with [[keep]], [[drop]], "+
-			"or [[stub: …]] — that rates the previous round too. Ratings are stripped before storing "+
-			"and never reach the wire. Write rounds are never dropped.")
 	}
 	return strings.Join(parts, "\n")
 }
