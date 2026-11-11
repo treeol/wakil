@@ -214,10 +214,10 @@ func TestPruneOrderAndTarget(t *testing.T) {
 		if m.ToolCallID == "c1" && strings.Contains(c, "[r1 pruned: s1") {
 			r1stubbed = true
 		}
-		if m.ToolCallID == "c3" && c == big {
+		if m.ToolCallID == "c3" && c == "[r3] "+big {
 			r3intact = true
 		}
-		if m.ToolCallID == "c4" && c == big {
+		if m.ToolCallID == "c4" && c == "[r4] "+big {
 			r4intact = true
 		}
 	}
@@ -428,8 +428,8 @@ func TestPruneArchiveFailure(t *testing.T) {
 	}
 	// Original content still in Conv and projection.
 	for _, m := range app.contextProjection() {
-		if m.ToolCallID == "c1" && DerefStr(m.Content) != big {
-			t.Errorf("failed-archive round should stay intact, got %q", DerefStr(m.Content))
+		if m.ToolCallID == "c1" && DerefStr(m.Content) != "[r1] "+big {
+			t.Errorf("failed-archive round should stay intact, got %.60q", DerefStr(m.Content))
 		}
 	}
 }
@@ -553,8 +553,8 @@ func TestPrunePinnedNeverPruned(t *testing.T) {
 	}
 	app.pruneCheck()
 	for _, m := range app.contextProjection() {
-		if m.ToolCallID == "c1" && DerefStr(m.Content) != big {
-			t.Errorf("Pinned result must not be stubbed, got %q", DerefStr(m.Content))
+		if m.ToolCallID == "c1" && DerefStr(m.Content) != "[r1] "+big {
+			t.Errorf("Pinned result must not be stubbed, got %.60q", DerefStr(m.Content))
 		}
 		if strings.Contains(DerefStr(m.Content), "pruned") && m.ToolCallID == "c1" {
 			t.Errorf("Pinned round was pruned: %q", DerefStr(m.Content))
@@ -1484,6 +1484,7 @@ func TestPrunePassRunsAtTrigger(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -1568,6 +1569,7 @@ func TestPrunePassSkipsPrevRatedRounds(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 3
@@ -1613,6 +1615,7 @@ func TestPrunePassMaxRoundsRespected(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -1653,6 +1656,7 @@ func TestPrunePassOncePerModelRequest(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -1694,6 +1698,7 @@ func TestPrunePassFailureFallback(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 3
@@ -1735,6 +1740,7 @@ func TestPrunePassWriteDropDemoted(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -1769,6 +1775,7 @@ func TestPrunePassNeverInConvOrWire(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -1807,6 +1814,7 @@ func TestPrunePassEndpointName(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneRater = "cheap"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
@@ -1851,6 +1859,7 @@ func TestPrunePassKhatamReplay(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 3
@@ -1987,6 +1996,7 @@ func TestPrunePassStubSanitized(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -2025,6 +2035,7 @@ func TestPrunePassWriteStubHasPaths(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -2070,6 +2081,7 @@ func TestPrunePassNoPassWhenAlreadyRatedReachTarget(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -2113,6 +2125,7 @@ func TestPrunePassFailureNotPerIteration(t *testing.T) {
 	app := newTestApp(server.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -2145,6 +2158,7 @@ func TestPrunePassReasoningRestored(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	_ = app.SetContextMode("standard")
 	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneRater = "main"
 	app.Cfg.ContextPruneAt = 0.15
 	app.Cfg.ContextPruneTarget = 0.10
 	app.Cfg.ContextPruneProtect = 1
@@ -2192,4 +2206,301 @@ func TestPrunePassAdversarialStub(t *testing.T) {
 	if sanitized := sanitizeStub(stubs[1]); sanitized != stubs[1] {
 		t.Errorf("sanitize changed single-line stub: %q", sanitized)
 	}
+}
+
+// --- 22. context_mark tool ---
+
+func TestPruneWirePrefixesRoundIDs(t *testing.T) {
+	// With pruning on, wire/projection results are "[rN] <content>";
+	// a.Conv stays prefix-free.
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.curTurn = 1
+	appendRound(app, 1, "pf1", "read_file", `{"path":"a.go"}`, "content-a")
+	appendRound(app, 1, "pf2", "read_file", `{"path":"b.go"}`, "content-b")
+	proj := app.contextProjection()
+	for _, m := range proj {
+		c := DerefStr(m.Content)
+		switch m.ToolCallID {
+		case "pf1":
+			if !strings.HasPrefix(c, "[r1] ") {
+				t.Errorf("pf1 wire = %q, want [r1] prefix", c)
+			}
+		case "pf2":
+			if !strings.HasPrefix(c, "[r2] ") {
+				t.Errorf("pf2 wire = %q, want [r2] prefix", c)
+			}
+		}
+	}
+	for _, m := range app.Conv {
+		if m.Role == "tool" {
+			if strings.HasPrefix(DerefStr(m.Content), "[r") && strings.Contains(DerefStr(m.Content), "] ") {
+				t.Errorf("Conv tool result has prefix: %q", DerefStr(m.Content))
+			}
+		}
+	}
+}
+
+func TestContextMarkRecords(t *testing.T) {
+	// context_mark records drop/stub/keep; the latest mark wins over
+	// prev/tag/pass; a write round marked drop becomes stub with its path.
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.15
+	app.Cfg.ContextPruneTarget = 0.10
+	app.Cfg.ContextPruneProtect = 1
+	app.Cfg.HardMaxBytes = 160000
+	app.Cfg.CompactAt = 145000
+	app.Cfg.KeepBytes = 120000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	app.curTurn = 1
+	big := strings.Repeat("s", 9000)
+	appendRound(app, 1, "cm1", "edit_file", `{"path":"w.go"}`, big) // r1 write
+	appendRound(app, 1, "cm2", "read_file", `{"path":"a.go"}`, big) // r2
+	ratePrevious(app, 1, "[[keep]]")                                // r1 keep (will be overwritten)
+	appendRound(app, 1, "cm3", "read_file", `{"path":"b.go"}`, big) // r3
+	appendRound(app, 1, "cm4", "read_file", `{"path":"c.go"}`, big) // r4 (protected at 1)
+	lines := app.HandleContextMarkForTest(`{"drop":["r1","r2"],"stub":{"r3":"stub-note on r3"},"keep":["r2"]}`)
+	_ = lines
+	// r1: write+drop → stub (write round rule); stub has w.go
+	app.stateMu.RLock()
+	r1 := app.pruneRounds[1]
+	r2 := app.pruneRounds[2]
+	r3 := app.pruneRounds[3]
+	app.stateMu.RUnlock()
+	if r1.Rating != RatingStub || runtime_is_not_auto(r1.StubText, "w.go") {
+		t.Errorf("r1 (write+drop→stub) = %q %q", r1.Rating, r1.StubText)
+	}
+	if r2.Rating != RatingKeep {
+		t.Errorf("r2 (last wins: keep over drop) = %q, want keep", r2.Rating)
+	}
+	if r3.Rating != RatingStub || r3.StubText != "stub-note on r3" {
+		t.Errorf("r3 = %q %q", r3.Rating, r3.StubText)
+	}
+	// Trigger above threshold → only marked rounds are pruned; r4 unmarked stays.
+	app.pruneCheck()
+	var r1stubbed, r4intact bool
+	for _, m := range app.contextProjection() {
+		c := DerefStr(m.Content)
+		if m.ToolCallID == "cm1" && strings.Contains(c, "[r1 pruned: write round: w.go") {
+			r1stubbed = true
+		}
+		if m.ToolCallID == "cm4" && strings.Contains(c, "[r4] ") {
+			r4intact = true
+		}
+	}
+	if !r1stubbed {
+		t.Error("r1 marked stub not pruned with its note")
+	}
+	if !r4intact {
+		t.Error("unmarked r4 pruned at trigger — should stay")
+	}
+	// Status shows marks N.
+	if !strings.Contains(app.pruneStatusLine(), "marks 1") {
+		t.Errorf("status missing marks 1: %s", app.pruneStatusLine())
+	}
+}
+
+func TestContextMarkRejects(t *testing.T) {
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneProtect = 1
+	app.Cfg.HardMaxBytes = 160000
+	app.Cfg.CompactAt = 145000
+	app.Cfg.KeepBytes = 120000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	app.curTurn = 1
+	big := strings.Repeat("s", 9000)
+	appendRound(app, 1, "rj1", "read_file", `{"path":"a.go"}`, big) // r1
+	appendRound(app, 1, "rj2", "read_file", `{"path":"b.go"}`, big) // r2
+	appendRound(app, 1, "rj3", "read_file", `{"path":"c.go"}`, big) // r3
+	// Unknown ids, invalid ids, current-round ids are rejected without
+	// failing the call; the valid r1 is marked.
+	res := app.HandleContextMarkForTest(`{"drop":["r99","bogus","r1"],"keep":["r4"]}`)
+	if !strings.Contains(res, "rejected r99") {
+		t.Errorf("result missing r99 rejection: %q", res)
+	}
+	if !strings.Contains(res, "rejected bogus") {
+		t.Errorf("result missing bogus rejection: %q", res)
+	}
+	if !strings.Contains(res, "drop r1") {
+		t.Errorf("result missing r1 mark: %q", res)
+	}
+	if !strings.Contains(res, "rejected r4") {
+		t.Errorf("result missing current-round rejection: %q", res)
+	}
+	if ratingOf(app, 1) != RatingDrop {
+		t.Errorf("r1 = %q, want drop", ratingOf(app, 1))
+	}
+}
+
+func TestContextMarkRoundNotCandidate(t *testing.T) {
+	// A context_mark round is never created as a prune candidate and gets
+	// no [rN] prefix path: the round count does not advance for it.
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.curTurn = 1
+	big := strings.Repeat("s", 100)
+	appendRound(app, 1, "nc1", "read_file", `{"path":"a.go"}`, big)
+	// appendConv with a context_mark tool call — must not register a round.
+	before := len(app.pruneRounds)
+	app.appendConv(tcMsg("mark1", "context_mark", `{"drop":["r1"]}`))
+	app.appendConv(trMsg("mark1", "context_mark", "marked: drop r1"))
+	if len(app.pruneRounds) != before {
+		t.Errorf("context_mark created a round record: %d → %d", before, len(app.pruneRounds))
+	}
+	// Any recorded round with context_mark as first tool name must not be candidate-eligible.
+	for id, rec := range app.pruneRounds {
+		if rec.ToolName == "context_mark" {
+			t.Errorf("context_mark round r%d recorded", id)
+		}
+	}
+}
+
+func TestContextMarkNotRegisteredOffOrSubagent(t *testing.T) {
+	// The tool is registered only when pruning is on AND for the parent
+	// (not for subagents).
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	// Off: no registration.
+	app.Cfg.ContextPrune = "off"
+	tools := a_toolsForTurnForTest(app)
+	for _, tc := range tools {
+		if tc.Function.Name == "context_mark" {
+			t.Fatal("context_mark registered while prune off")
+		}
+	}
+	// On, parent: registered.
+	app.Cfg.ContextPrune = "on"
+	tools = a_toolsForTurnForTest(app)
+	found := false
+	for _, tc := range tools {
+		if tc.Function.Name == "context_mark" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("context_mark not registered when prune on")
+	}
+	// On, subagent: not offered.
+	app.IsSubagent = true
+	for _, tc := range a_toolsForTurnForTest(app) {
+		if tc.Function.Name == "context_mark" {
+			t.Fatal("context_mark offered to subagent")
+		}
+	}
+}
+
+func TestContextMarkKhatamReplay(t *testing.T) {
+	// Khatam-shaped: model marks rounds via context_mark; only marked
+	// rounds are pruned at the trigger; unmarked rounds stay. No rater.
+	tmp := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmp)
+	t.Cleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	_ = app.SetContextMode("standard")
+	app.Cfg.ContextPrune = "on"
+	app.Cfg.ContextPruneAt = 0.15
+	app.Cfg.ContextPruneTarget = 0.10
+	app.Cfg.ContextPruneProtect = 3
+	app.Cfg.HardMaxBytes = 200000
+	app.Cfg.CompactAt = 180000
+	app.Cfg.KeepBytes = 160000
+	app.Cfg.MaxChars = 0
+	app.Cfg.CompactAtFrac = 0
+	app.Cfg.KeepBytesFrac = 0
+	app.Cfg.HardMaxFrac = 0
+	app.curTurn = 1
+	big := strings.Repeat("k", 8000) // 30 × 8KB = 240KB ≥ trigger 0.15×200k
+	for i := 1; i <= 30; i++ {
+		id := "k" + itoa(i)
+		path := "kf" + itoa(i) + ".go"
+		appendRound(app, 1, id, "read_file", `{"path":"`+path+`"}`, big)
+	}
+	// Model marks r1..r10 only.
+	drops := ""
+	stubs := ""
+	for i := 1; i <= 10; i++ {
+		if i > 1 {
+			drops += ","
+			stubs += ","
+		}
+		drops += `"r` + itoa(i) + `"`
+		stubs += `"r` + itoa(i) + `":"note ` + itoa(i) + `"`
+	}
+	// Model mixes drop+stub: 5 drop (r1-5), 5 stub (r6-10).
+	args := `{"drop":["r1","r2","r3","r4","r5"],"stub":{"r6":"note 6","r7":"note 7","r8":"note 8","r9":"note 9","r10":"note 10"}}`
+	res := app.HandleContextMarkForTest(args)
+	if !strings.Contains(res, "marked:") {
+		t.Fatalf("result = %q", res)
+	}
+	// Marking alone prunes nothing below the trigger... the size IS above
+	// the trigger here; pruneCheck below performs the prune.
+	app.pruneCheck()
+	pruned, stubbed, intact := 0, 0, 0
+	for _, m := range app.contextProjection() {
+		c := DerefStr(m.Content)
+		if strings.Contains(c, "pruned (drop)") {
+			pruned++
+		} else if strings.Contains(c, "note ") {
+			stubbed++
+		} else if strings.HasPrefix(c, "[r") && !strings.Contains(c, "pruned") {
+			intact++
+		}
+	}
+	if pruned != 5 || stubbed != 5 {
+		t.Errorf("at trigger: drop pruned %d (want 5), stub %d (want 5)", pruned, stubbed)
+	}
+	if intact == 0 {
+		t.Error("unmarked rounds were pruned at trigger — should stay (superseded only)")
+	}
+	if app.pruneRaterPasses != 0 {
+		t.Errorf("rater off: pruneRaterPasses = %d, want 0", app.pruneRaterPasses)
+	}
+	assertPairing(t, app.contextProjection())
+}
+
+// --- test helpers for context_mark ---
+
+func runtime_is_not_auto(got, want string) bool {
+	return !strings.Contains(got, want)
+}
+
+func (a *App) HandleContextMarkForTest(argsJSON string) string {
+	tc := proxy.ToolCall{Function: proxy.FunctionCall{Name: "context_mark", Arguments: argsJSON}}
+	return a.handleContextMark(context.Background(), tc)
+}
+
+func a_toolsForTurnForTest(app *App) []proxy.Tool {
+	tools := app.toolsWithShellNote(app.toolsForTurn())
+	if app.pruneEnabled() && !app.IsSubagent {
+		tools = withPrevProperty(tools)
+		tools = append(tools, contextMarkTool())
+	}
+	return tools
 }

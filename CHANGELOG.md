@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+- **Prune defaults**: `context_prune_at_tokens`/`context_prune_target_tokens` now default to `0` (fractions only — set both to enable absolute triggers) and `context_prune_rater` defaults to `"off"` (no rating pass; set `"main"` or an endpoint name to opt in).
+- **context_mark**: the model now marks earlier tool rounds by `[rN]` id (drop/stub/keep) so they can be trimmed when context is full; marking never prunes by itself. `/mode status` shows `marks N`.
 - **Prune rating pass**: when pruning is triggered with unrated rounds, one LLM call rates them (keep/drop/stub with a takeaway) so stubs carry what to remember — no re-reads. `prev` stays as an optional fast path; the pass is a separate request (cost counted normally) and never enters the transcript. New config: `context_prune_rater` (`"main"` or an endpoint name), `context_prune_rater_max_rounds` (`40`), `context_prune_rater_timeout` (`60`s). `/mode status` adds `passes N`; `/prune status` shows the rater model.
 
 ### Added

@@ -387,19 +387,20 @@ type Config struct {
 	ContextPruneTarget  float64 `json:"context_prune_target,omitempty"`  // default 0.55
 	ContextPruneProtect int     `json:"context_prune_protect,omitempty"` // default 3
 	// ContextPruneAtTokens / ContextPruneTargetTokens are absolute TOKEN
-	// thresholds (converted to chars with charsPerToken). Effective
-	// trigger = min(at_tokens_chars, context_prune_at × hard_max) and
-	// effective target = min(target_tokens_chars, target × hard_max), so a
-	// 1M-token backend triggers at the absolute 60k tokens even though the
-	// fraction never fires there, and a 160k backend uses min(). Defaults:
-	// 60000 / 40000 tokens. Validated target < at (in token space).
-	ContextPruneAtTokens     int `json:"context_prune_at_tokens,omitempty"`     // default 60000
-	ContextPruneTargetTokens int `json:"context_prune_target_tokens,omitempty"` // default 40000
+	// thresholds (converted to chars with charsPerToken). Default 0 = not
+	// set: only the fractions (context_prune_at / context_prune_target ×
+	// hard max) apply. When set, effective trigger = min(at_tokens_chars,
+	// context_prune_at × hard_max) and effective target = min(target_tokens_
+	// chars, target × hard_max), so a 1M-token backend triggers at the
+	// absolute tokens even though the fraction never fires there, and a 160k
+	// backend uses min(). Both must be set together (target < at).
+	ContextPruneAtTokens     int `json:"context_prune_at_tokens,omitempty"`     // default 0 (fractions only)
+	ContextPruneTargetTokens int `json:"context_prune_target_tokens,omitempty"` // default 0 (fractions only)
 	// ContextPruneRater: model for the one-shot rating pass that rates
 	// unrated rounds when pruning is needed. "main" (default) uses the
 	// session's current endpoint/model. Any other value is an endpoint name
 	// from the endpoints block (e.g. a cheap fast model).
-	ContextPruneRater string `json:"context_prune_rater,omitempty"` // default "main"
+	ContextPruneRater string `json:"context_prune_rater,omitempty"` // default "off" ("main" or an endpoint name)
 	// ContextPruneRaterMaxRounds caps how many unrated rounds a single
 	// rating pass rates (oldest first). Default 40.
 	ContextPruneRaterMaxRounds int `json:"context_prune_rater_max_rounds,omitempty"` // default 40
@@ -1231,9 +1232,9 @@ func DefaultConfig() Config {
 		ContextPruneAt:             0.70,               // fraction of hard max that triggers pruning
 		ContextPruneTarget:         0.55,               // fraction of hard max pruning aims to reach
 		ContextPruneProtect:        3,                  // most recent rounds never pruned
-		ContextPruneAtTokens:       60000,              // absolute trigger in tokens (chars = tokens × 4)
-		ContextPruneTargetTokens:   40000,              // absolute target in tokens
-		ContextPruneRater:          "main",             // "main" = session model, or an endpoint name
+		ContextPruneAtTokens:       0,                  // 0 = not set (fractions only); absolute trigger in tokens otherwise
+		ContextPruneTargetTokens:   0,                  // 0 = not set; absolute target in tokens otherwise
+		ContextPruneRater:          "off",              // "off" (no pass) | "main" (session model) | endpoint name
 		ContextPruneRaterMaxRounds: 40,                 // max unrated rounds rated per pass
 		ContextPruneRaterTimeout:   60,                 // rating pass timeout in seconds
 
@@ -2245,15 +2246,18 @@ func validateContextLimits(cfg Config) error {
 	if cfg.ContextPruneProtect < 1 {
 		return fmt.Errorf("context_prune_protect must be >= 1 (got %d)", cfg.ContextPruneProtect)
 	}
-	if cfg.ContextPruneAtTokens <= 0 {
-		return fmt.Errorf("context_prune_at_tokens must be > 0 (got %d)", cfg.ContextPruneAtTokens)
+	// Token thresholds: 0 means "not set" — only the fractions apply. When
+	// set, the existing min() rule applies. Both must be set together
+	// (target < at) when either is set.
+	if (cfg.ContextPruneAtTokens == 0) != (cfg.ContextPruneTargetTokens == 0) {
+		return fmt.Errorf("context_prune_at_tokens and context_prune_target_tokens must both be set or both be 0 (got %d / %d)", cfg.ContextPruneAtTokens, cfg.ContextPruneTargetTokens)
 	}
-	if cfg.ContextPruneTargetTokens <= 0 || cfg.ContextPruneTargetTokens >= cfg.ContextPruneAtTokens {
+	if cfg.ContextPruneAtTokens > 0 && cfg.ContextPruneTargetTokens >= cfg.ContextPruneAtTokens {
 		return fmt.Errorf("context_prune_target_tokens (%d) must be in (0, context_prune_at_tokens=%d)", cfg.ContextPruneTargetTokens, cfg.ContextPruneAtTokens)
 	}
 	if cfg.ContextPruneRater == "" {
-		cfg.ContextPruneRater = "main"
-	} else if cfg.ContextPruneRater != "main" {
+		cfg.ContextPruneRater = "off"
+	} else if cfg.ContextPruneRater != "main" && cfg.ContextPruneRater != "off" {
 		if _, err := cfg.NormalizeEndpoint(cfg.ContextPruneRater); err != nil {
 			return err
 		}

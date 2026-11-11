@@ -258,6 +258,19 @@ func (a *App) recordAssistantRound(msgs []proxy.Message, convIdx int) {
 		var readPaths, writePaths []string
 		hasShell, cmdText := false, ""
 		toolName, argsText := "", ""
+		// The context_mark round itself is never a prune candidate and
+		// gets no rating prompt: a marking round carries no app-data
+		// result worth keeping.
+		isMarkRound := false
+		for _, tc := range m.ToolCalls {
+			if tc.Function.Name == "context_mark" {
+				isMarkRound = true
+				break
+			}
+		}
+		if isMarkRound {
+			continue
+		}
 		for _, tc := range m.ToolCalls {
 			callIDs = append(callIDs, tc.ID)
 			if writeTargetTools[tc.Function.Name] {
@@ -375,33 +388,30 @@ func (a *App) recordToolResultBytes(msgs []proxy.Message) {
 /* PROJECTION. */
 
 // pruneProjection wraps the collapse projection: it replaces the CONTENT of
-// each tool-result message of a pruned round with a one-line stub. Only
-// tool-result contents change; assistant messages, tool_calls and ids are
-// untouched, so call/result pairing stays valid. When nothing is pruned it
-// returns the input unchanged (slice identity preserved).
+// each tool-result message of a pruned round with a one-line stub, and
+// prefixes every other tool-result content with its round id "[rN] " so the
+// model can reference rounds by id (context_mark). Only tool-result
+// contents change; assistant messages, tool_calls and ids are untouched, so
+// call/result pairing stays valid. a.Conv keeps the originals (no prefix
+// there). Stubs keep their existing format (they already start with rN).
+// When pruning is off it returns the input unchanged (byte-identical).
 func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 	if !a.pruneEnabled() {
 		return in
 	}
 	a.stateMu.RLock()
-	if len(a.prunedRounds) == 0 {
-		a.stateMu.RUnlock()
-		return in
-	}
-	callToRound := map[string]int{}
+	callToRound := map[string]int{}       // call_id -> round id, for ALL rounds (prefixing)
+	prunedCallToRound := map[string]int{} // call_id -> round id, for pruned rounds only (stubbing)
+	recs := make(map[int]RoundRecord, len(a.prunedRounds))
 	for id, rec := range a.pruneRounds {
-		if !a.prunedRounds[id] && !rec.Pruned {
-			continue
-		}
 		for _, cid := range rec.CallIDs {
 			callToRound[cid] = id
 		}
-	}
-	// Copy records for the rounds being projected.
-	recs := make(map[int]RoundRecord, len(a.prunedRounds))
-	for id, rec := range a.pruneRounds {
 		if a.prunedRounds[id] || rec.Pruned {
 			recs[id] = rec
+			for _, cid := range rec.CallIDs {
+				prunedCallToRound[cid] = id
+			}
 		}
 	}
 	a.stateMu.RUnlock()
@@ -416,10 +426,19 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 			out = append(out, m)
 			continue
 		}
-		rec := recs[id]
-		stub := stubLine(rec, m.Name, rec.Archive)
+		if pid, ok := prunedCallToRound[m.ToolCallID]; ok {
+			rec := recs[pid]
+			stub := stubLine(rec, m.Name, rec.Archive)
+			c := m
+			c.Content = &stub
+			out = append(out, c)
+			changed = true
+			continue
+		}
+		// Unpruned tool result: prefix with its round id for context_mark.
+		prefixed := fmt.Sprintf("[r%d] %s", id, DerefStr(m.Content))
 		c := m
-		c.Content = &stub
+		c.Content = &prefixed
 		out = append(out, c)
 		changed = true
 	}
@@ -940,7 +959,7 @@ func (a *App) pruneCheck() {
 					}
 				}
 				model := a.Cfg.ContextPruneRater
-				if model == "" {
+				if model == "" || model == "off" {
 					model = "main"
 				}
 				if a.Client != nil && (model == "main") && a.Client.Model != "" {
@@ -1110,10 +1129,11 @@ func (a *App) pruneStatusLine() string {
 	rereads := a.pruneReread
 	missing := a.pruneMissingPrev
 	passes := a.pruneRaterPasses
+	marks := a.pruneMarkCount
 	a.stateMu.RUnlock()
 	trigger, target := a.pruneThresholds()
-	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · saved ~%d KB · trigger %dk · target %dk · rereads %d · prev missing %d · passes %d",
-		a.pruneStateWord(), keep, drop, stub, auto, unrated, prunedCount, saved/1024, trigger/1000, target/1000, rereads, missing, passes)
+	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · saved ~%d KB · trigger %dk · target %dk · rereads %d · prev missing %d · passes %d · marks %d",
+		a.pruneStateWord(), keep, drop, stub, auto, unrated, prunedCount, saved/1024, trigger/1000, target/1000, rereads, missing, passes, marks)
 }
 
 // pruneStateWord renders "on"/"off" from the effective state (override over
@@ -1671,7 +1691,7 @@ func (a *App) rateUnratedRounds(ids []int, rounds map[int]RoundRecord, conv []pr
 	}
 	client := a.raterClient()
 	if client == nil {
-		return nil, nil, fmt.Errorf("no rater client available")
+		return nil, nil, fmt.Errorf("rating pass is off (context_prune_rater=off or unset)")
 	}
 	// Bound the rater's output tokens (the client copy or the probe client
 	// handles sizing; the live client is shared, so only set when the
@@ -1774,7 +1794,12 @@ func currentTaskText(conv []proxy.Message) string {
 // never mutates the live a.Client — the named client is a fresh struct.
 func (a *App) raterClient() *proxy.Client {
 	name := a.Cfg.ContextPruneRater
-	if name == "" || name == "main" {
+	if name == "" || name == "off" {
+		// The rating pass is OFF by default. An explicit "main" or an
+		// endpoint name opts in; "off" (the default) never runs a pass.
+		return nil
+	}
+	if name == "main" {
 		return a.Client
 	}
 	ep, err := a.Cfg.NormalizeEndpoint(name)
@@ -1830,4 +1855,200 @@ func roundResultSnippet(conv []proxy.Message, rec RoundRecord) string {
 		}
 	}
 	return ""
+}
+
+// ---------------------------------------------------------------------------
+// context_mark: the model marks earlier rounds by id
+// ---------------------------------------------------------------------------
+
+// contextMarkDescription is the tool description for context_mark.
+const contextMarkDescription = "Mark earlier tool rounds you are done with so they can be trimmed from context when it gets full. drop = no longer needed. stub = replace with your one-line note (put names, paths, routes, values you still need). keep = still needed verbatim. Unmarked rounds are left as they are."
+
+// validateMarkIDs partitions ids into accepted (exists, not current round, not
+// already pruned) and rejected (all others). It reports, per rejected id, a
+// human-readable reason.
+func (a *App) validateMarkIDs(ids []string, currentRound int) (accepted []int, rejected map[string]string) {
+	rejected = map[string]string{}
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	for _, idStr := range ids {
+		id, ok := parseRoundID(idStr)
+		if !ok {
+			rejected[idStr] = "not a round id"
+			continue
+		}
+		rec, ok := a.pruneRounds[id]
+		if !ok {
+			rejected[idStr] = "unknown round"
+			continue
+		}
+		if id == currentRound {
+			reqed := idStr
+			rejected[reqed] = "the current round"
+			continue
+		}
+		if rec.Pruned || a.prunedRounds[id] {
+			rejected[idStr] = "already pruned"
+			continue
+		}
+		accepted = append(accepted, id)
+	}
+	return accepted, rejected
+}
+
+func parseRoundID(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "r") || len(s) < 2 {
+		return 0, false
+	}
+	var n int
+	for _, ch := range s[1:] {
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n, true
+}
+
+// recordMarkRatings applies context_mark ratings onto round records. The
+// latest mark wins — including over earlier prev/tag/pass ratings — so a
+// marked round is (re)rated. A write round marked drop becomes stub with
+// its paths (the existing demotion rule).
+func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.pruneRounds == nil {
+		a.pruneRounds = map[int]RoundRecord{}
+	}
+	for _, id := range drop {
+		cur, ok := a.pruneRounds[id]
+		if !ok {
+			continue
+		}
+		if cur.Write {
+			paths := cur.WritePaths
+			if len(paths) == 0 {
+				paths = cur.ReadPaths
+			}
+			cur.Rating = RatingStub
+			cur.StubText = truncateChars(fmt.Sprintf("write round: %s", strings.Join(paths, ", ")), stubTextMaxChars)
+		} else {
+			cur.Rating = RatingDrop
+			cur.StubText = ""
+		}
+		a.pruneRounds[id] = cur
+	}
+	for id, note := range stub {
+		cur, ok := a.pruneRounds[id]
+		if !ok {
+			continue
+		}
+		cur.Rating = RatingStub
+		cur.StubText = truncateChars(sanitizeStub(note), stubTextMaxChars)
+		a.pruneRounds[id] = cur
+	}
+	for _, id := range keep {
+		cur, ok := a.pruneRounds[id]
+		if !ok {
+			continue
+		}
+		cur.Rating = RatingKeep
+		cur.StubText = ""
+		a.pruneRounds[id] = cur
+	}
+}
+
+// pruneMarks returns the count of context_mark calls this chat.
+func (a *App) pruneMarks() int {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.pruneMarkCount
+}
+
+// contextMarkTool is the context_mark tool definition, registered only when
+// pruning is on. Parameters: drop/stub/keep (all optional, ≥1 non-empty).
+func contextMarkTool() proxy.Tool {
+	return proxy.Tool{Type: "function", Function: proxy.ToolFunction{
+		Name:        "context_mark",
+		Description: contextMarkDescription,
+		Parameters:  []byte(`{"type":"object","properties":{"drop":{"type":"array","items":{"type":"string"},"description":"Round ids to drop (e.g. [\"r3\"])."},"stub":{"type":"object","additionalProperties":{"type":"string"},"description":"Map of round id to one-line note (max 200 chars) with what the model still needs to remember."},"keep":{"type":"array","items":{"type":"string"},"description":"Round ids to keep verbatim."}}}`),
+	}}
+}
+
+// handleContextMark is the context_mark tool handler. It records model
+// ratings onto earlier rounds. Unknown/invalid ids are reported without
+// failing the call. Marking never prunes by itself.
+func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
+	var args struct {
+		Drop []string          `json:"drop"`
+		Stub map[string]string `json:"stub"`
+		Keep []string          `json:"keep"`
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return fmt.Sprintf("context_mark: invalid arguments: %v", err)
+	}
+	if len(args.Drop) == 0 && len(args.Stub) == 0 && len(args.Keep) == 0 {
+		return "context_mark: nothing to mark (pass drop, stub or keep)"
+	}
+	// The current round is the round this call will belong to, i.e. the
+	// max round id + 1, or roundSeq+1 if next. Markers cannot mark it.
+	a.stateMu.Lock()
+	// The model marks rounds it already saw, i.e. id < roundSeq (roundSeq is
+	// the current round count). The round this tool call itself creates is
+	// (roundSeq + 1) when it lands the assistant message; treat that as
+	// "current" too.
+	currentRound := a.roundSeq + 1
+	a.pruneMarkCount++
+	a.stateMu.Unlock()
+
+	dropIDs, rejDrop := a.validateMarkIDs(args.Drop, currentRound)
+	keepIDs, rejKeep := a.validateMarkIDs(args.Keep, currentRound)
+	stubMap := map[int]string{}
+	stubIDs := map[string]struct{}{}
+	for idStr := range args.Stub {
+		stubIDs[idStr] = struct{}{}
+	}
+	var stubNames []string
+	for k := range args.Stub {
+		stubNames = append(stubNames, k)
+	}
+	_ = stubIDs
+	stubOK, rejStub := a.validateMarkIDs(stubNames, currentRound)
+	for _, id := range stubOK {
+		stubMap[id] = args.Stub[fmt.Sprintf("r%d", id)]
+	}
+	a.recordMarkRatings(dropIDs, keepIDs, stubMap)
+
+	// One-line result.
+	var parts []string
+	if len(dropIDs) > 0 {
+		parts = append(parts, "drop "+joinRoundIDs(dropIDs))
+	}
+	if len(stubOK) > 0 {
+		parts = append(parts, "stub "+joinRoundIDs(stubOK))
+	}
+	if len(keepIDs) > 0 {
+		parts = append(parts, "keep "+joinRoundIDs(keepIDs))
+	}
+	for idStr, reason := range rejDrop {
+		parts = append(parts, fmt.Sprintf("rejected %s (%s)", idStr, reason))
+	}
+	for idStr, reason := range rejKeep {
+		parts = append(parts, fmt.Sprintf("rejected %s (%s)", idStr, reason))
+	}
+	for idStr, reason := range rejStub {
+		parts = append(parts, fmt.Sprintf("rejected %s (%s)", idStr, reason))
+	}
+	line := "marked: " + strings.Join(parts, " · ")
+	fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· marked drop %d · stub %d · keep %d", len(dropIDs), len(stubOK), len(keepIDs))))
+	return line
+}
+
+func joinRoundIDs(ids []int) string {
+	ss := make([]string, len(ids))
+	for i, id := range ids {
+		ss[i] = fmt.Sprintf("r%d", id)
+	}
+	return strings.Join(ss, ",")
 }

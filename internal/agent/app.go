@@ -322,6 +322,8 @@ type App struct {
 	pruneMissingPrev int
 	// pruneReread counts reads of a path already read in a pruned round.
 	pruneReread int
+	// pruneMarkCount counts context_mark tool calls this chat.
+	pruneMarkCount int
 	// Rater-pass counters: pruneRaterPasses = number of successful passes;
 	// pruneRaterFailures = number of failed passes (invalid JSON/timeout/
 	// error); raterPassUsed gates at most one pass per model request.
@@ -1783,8 +1785,9 @@ func (a *App) buildPreamble(today string) string {
 	// OPTIONAL "prev" tool-argument property (works on tool-call-only
 	// replies, unburdensome to omit); the [[...]] text tag stays as the
 	// secondary channel. When pruning is needed, a one-shot rating pass
-	// rates unrated rounds in one small request. Rated stubs carry the
-	// takeaway, so a good stub means no re-reads.
+	// rates unrated rounds in one small request. The context_mark tool is
+	// the explicit model channel: it marks earlier rounds by id. Rated
+	// stubs carry the takeaway, so a good stub means no re-reads.
 	if a.pruneEnabled() {
 		parts = append(parts, "Context pruning (per-round value): every tool call carries an "+
 			`optional "prev" property rating the PREVIOUS tool round: "keep" (still needed), "drop" `+
@@ -1792,6 +1795,9 @@ func (a *App) buildPreamble(today string) string {
 			"functions, or a decision). Prefer stub over keep for file reads you have understood: "+
 			"the stub keeps your takeaway in context, so you will not need to re-read. "+
 			"If you omit a rating this round, a later pass will rate it when pruning is needed. "+
+			"Tool results start with their round id [rN]. When you are done with something — a file you have understood, a dead end, an outdated test run — call context_mark. "+
+			"Use stub to keep what you still need (identifiers, paths, values). "+
+			"Keep anything you will need verbatim for your final answer. Rounds you don't mark stay untouched. "+
 			"As a secondary channel you may also end an assistant message with [[keep]], [[drop]], "+
 			"or [[stub: …]] — that rates the previous round too. Ratings are stripped before storing "+
 			"and never reach the wire. Write rounds are never dropped.")
@@ -2778,6 +2784,8 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleWaitForCompletion())
 	case "collapse_context":
 		return stringToToolResult(a.handleCollapseContext(tc))
+	case "context_mark":
+		return stringToToolResult(a.handleContextMark(ctx, tc))
 	case "kill_process":
 		return stringToToolResult(a.handleKillProcess(ctx, tc))
 	case "read_process_log":

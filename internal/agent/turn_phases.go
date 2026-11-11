@@ -238,8 +238,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			iter >= a.turnBudgetStubbedIter+stopOnStubGrace+1
 		forceFinish := (a.Cfg.MaxToolIterations > 0 && iter >= a.Cfg.MaxToolIterations) || confinementTrip || stopOnStub
 		tools := a.toolsWithShellNote(a.toolsForTurn())
-		if a.pruneEnabled() {
+		if a.pruneEnabled() && !a.IsSubagent {
 			tools = withPrevProperty(tools)
+			tools = append(tools, contextMarkTool())
 		}
 		if forceFinish {
 			tools = nil

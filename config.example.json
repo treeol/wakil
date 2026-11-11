@@ -170,9 +170,9 @@
   "context_prune_at": 0.70,
   "context_prune_target": 0.55,
   "context_prune_protect": 3,
-  "context_prune_at_tokens": 60000,
-  "context_prune_target_tokens": 40000,
-  "context_prune_rater": "main",
+  "context_prune_at_tokens": 0,
+  "context_prune_target_tokens": 0,
+  "context_prune_rater": "off",
   "context_prune_rater_max_rounds": 40,
   "context_prune_rater_timeout": 60,
 
