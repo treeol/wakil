@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **context_mark**: the model now marks earlier tool rounds by `[rN]` id (drop/stub/keep) so they can be trimmed when context is full; marking never prunes by itself. `/mode status` shows `marks N`.
 - **Prune rating pass**: when pruning is triggered with unrated rounds, one LLM call rates them (keep/drop/stub with a takeaway) so stubs carry what to remember — no re-reads. `prev` stays as an optional fast path; the pass is a separate request (cost counted normally) and never enters the transcript. New config: `context_prune_rater` (`"main"` or an endpoint name), `context_prune_rater_max_rounds` (`40`), `context_prune_rater_timeout` (`60`s). `/mode status` adds `passes N`; `/prune status` shows the rater model.
 
+### Fixed
+
+- The stream tag buffer now drains an unclosed `[[` tail at end of stream, and double brackets that are not a rating tag, such as `[[notes]]`, are shown verbatim.
+
+### Security
+
+- Go toolchain bumped to 1.26.11 (GO-2026-6859, `net/http`).
+
 ## [0.6.5] - 2026-11-10
 
 ### Changed
