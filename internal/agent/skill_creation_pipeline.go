@@ -107,6 +107,10 @@ type skillReviewResult struct {
 	Model  string
 	Answer string
 	Err    error
+	// CoverageNotConfirmed marks an accepted reply whose last-section
+	// citation was missing or wrong (review content present). Such a verdict
+	// must not auto-approve: runSkillReview forces 'unclear' for it.
+	CoverageNotConfirmed bool
 }
 
 // skillCreationOutcome is what a pipeline run reports.
@@ -588,12 +592,16 @@ func (a *App) runSkillReview(ctx context.Context, h skillCreationHooks, d *autoS
 		return "", nil, nil, nil, err
 	}
 	var vs []*skillVerdict
+	var anyCoverage bool
 	for _, r := range results {
 		if r.Err != nil {
 			if panelMode != "fallback" {
 				return "", nil, nil, nil, fmt.Errorf("reviewer %s failed: %w", r.Model, r.Err)
 			}
 			continue
+		}
+		if r.CoverageNotConfirmed {
+			anyCoverage = true
 		}
 		v, perr := parseSkillVerdict(r.Answer)
 		if perr != nil {
@@ -621,6 +629,12 @@ func (a *App) runSkillReview(ctx context.Context, h skillCreationHooks, d *autoS
 				changes = v
 			}
 		}
+	}
+	if verdict == "approve" && anyCoverage {
+		// A coverage-unconfirmed reply (missing/wrong citation with content)
+		// must not auto-approve: an unverified-coverage verdict requires a
+		// human, never the auto-activation path.
+		return "unclear", nil, reasons, models, nil
 	}
 	return verdict, changes, reasons, models, nil
 }
@@ -726,17 +740,30 @@ func (a *App) defaultSkillReview(ctx context.Context, question, briefing string)
 		FusionJudge:        panel.FusionJudge,
 		FusionMaxToolCalls: panel.FusionMaxToolCalls,
 		ModelLimits:        a.mashuraModelLimits(),
+		ReviewBudgetUSD:    a.Cfg.MashuraReviewBudgetUSD,
+		SessionBudgetUSD:   a.BudgetUSD,
+		SessionCostFunc:    func() float64 { return a.SessionCostTotal() },
 		// Server tools (web search/fetch) are deliberately NOT forwarded: the
 		// reviewer sees only the sanitized draft and must not be able to send
 		// any of it to a third-party search.
 	}
 	raw := counsel.RunPanel(ctx, panel.Models, panel.Mode, question, briefing, ccfg, keys)
+	for _, r := range raw {
+		if r.Void {
+			fmt.Fprintln(a.Out, counsel.VoidLine(r))
+		}
+		if r.BudgetStopped {
+			fmt.Fprintln(a.Out, fmt.Sprintf("NOT COMPLETED %s review budget reached — what was obtained is kept", r.PrefixedModel))
+		}
+	}
+	fmt.Fprintln(a.Out, counsel.PanelOpCostLine(raw))
 	var out []skillReviewResult
 	for _, r := range raw {
 		a.RecordOracleCostFor(r.Model, r.Usage)
 		// A VOID reply keeps its Err (VoidError): it is never an empty "approved"
 		// answer, so the pipeline cannot read it as a clean review.
-		out = append(out, skillReviewResult{Model: r.Model, Answer: r.Answer, Err: r.Err})
+		coverage := r.Log != nil && r.Log.CoverageNotConfirmed
+		out = append(out, skillReviewResult{Model: r.Model, Answer: r.Answer, Err: r.Err, CoverageNotConfirmed: coverage})
 	}
 	return out, panel.Mode, nil
 }

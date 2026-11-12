@@ -550,9 +550,13 @@ type Config struct {
 	// Canonical mashura_* aliases. Empty/zero means "unset, fall back to oracle_*".
 	// Merged into the Oracle* fields in LoadConfig so the rest of the code reads
 	// one set of fields.
-	MashuraMaxTokens      int    `json:"mashura_max_tokens,omitempty"`      // canonical alias of oracle_max_tokens
-	MashuraTimeoutSeconds int    `json:"mashura_timeout_seconds,omitempty"` // canonical alias of oracle_timeout_seconds
-	MashuraMode           string `json:"mashura_mode,omitempty"`            // canonical alias of wf_oracle_mode
+	MashuraMaxTokens      int `json:"mashura_max_tokens,omitempty"`      // canonical alias of oracle_max_tokens
+	MashuraTimeoutSeconds int `json:"mashura_timeout_seconds,omitempty"` // canonical alias of oracle_timeout_seconds
+	// MashuraReviewBudgetUSD caps provider-reported spend for one panel
+	// operation, in USD. 0 (default) = off — no review-budget guard. The
+	// session budget (BudgetUSD) is respected in addition when set.
+	MashuraReviewBudgetUSD float64 `json:"mashura_review_budget_usd,omitempty"`
+	MashuraMode            string  `json:"mashura_mode,omitempty"` // canonical alias of wf_oracle_mode
 
 	// MashuraToolMaxTokens overrides max_tokens per counsel tool, keyed by short
 	// name ("review"|"debug"|"decide"|"check"). Unset tools fall back to a tool
@@ -574,6 +578,8 @@ type Config struct {
 	// Per-model reasoning takes precedence over role reasoning for the reviewer
 	// role (the model-specific setting is more specific). For the check role,
 	// the role-level setting is the only source (check has no per-model entry).
+	// Built-in defaults when unset: reviewer = medium (max_tokens 8192),
+	// check = low (no max_tokens, budget derived from effort).
 	MashuraRoles map[string]MashuraRoleConfig `json:"mashura_roles,omitempty"`
 
 	// AutoCounsel controls the TUI session counsel mode: "suggest" (default,
@@ -1425,6 +1431,9 @@ func LoadConfig(argv []string) (Config, error) {
 	}
 	if cfg.MashuraMode != "" {
 		cfg.WFOracleMode = cfg.MashuraMode
+	}
+	if cfg.MashuraReviewBudgetUSD < 0 {
+		return cfg, fmt.Errorf("mashura_review_budget_usd must be >= 0 (got %g; 0 = off)", cfg.MashuraReviewBudgetUSD)
 	}
 
 	switch cfg.Approval {

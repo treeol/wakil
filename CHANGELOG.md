@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `WAKIL_DEBUG_REQUESTS` also writes one `panel-*.json` capture per Mashūra/counsel call (raw usage objects, served model, status; no headers or keys).
+- New config key `mashura_review_budget_usd` (`0` = off): USD cap on one panel operation (members, rounds, retries, parts), checked before each retry, debate round 2 and next fallback member; on stop remaining work is NOT COMPLETED with reason "review budget reached" and obtained reviews are kept. The session `--budget` is respected the same way. Per-operation cost line always printed.
+- Panel prompts are now a 7-line skeleton (instructions, material, `<<document>>`, question, `<<question>>`, format instructions, `LAST SECTION READ:` citation), evidence instruction last in the user message, appendix after the document. Answer budget floor 4096 for every tool incl. check; wire `max_tokens` = reasoning + answer budget, reasoning reserved from usable context. Uniform `VOID <model> cause=<c> finish=<f> reasoning=<n> answer=<n> attempts=<n> cost=<usd|unpriced>` line always on, plus `panel-void-<label>-*.json` debug captures.
+
+### Changed
+- Missing/wrong `LAST SECTION READ:` citation with non-empty review content is now accepted, flagged coverage not confirmed (obtained review, not VOID); VOID only for empty/citation-only/limit (reasoning ≥80% of total → "reasoning used the budget"). VOID retry by cause (limit → doubled answer budget bounded by model/context + reasoning one step down; empty → reasoning one step down; citation/other → none; at most 2 attempts per member per part; 429/5xx keep single retry). Coverage-not-confirmed members are skipped as responders in final-review gap check and do not auto-advance plan review.
+- Mashūra check reasoning default is `low` (was `none`). Budget-stopped and VOID keep workflow unavailable (`available=false`, NOT COMPLETED banner, auto-counsel cap refund).
 
 ### Added
 

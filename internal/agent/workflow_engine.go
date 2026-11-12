@@ -143,7 +143,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 					"Critique the outcome of step %d/%d before proceeding. "+
 						"Is the change correct and complete? Flag any issue to address.",
 					completedStep, wf.StepCount)
-				oracleResult, oracleAvail := doWFOracle(ctx, app, stepQ)
+				oracleResult, _, oracleAvail := doWFOracle(ctx, app, stepQ)
 				if oracleAvail {
 					wfProgNote(app, fmt.Sprintf("step %d oracle:\n%s", completedStep, oracleResult))
 					if workflow.WFEverystepCritical(oracleResult) {
@@ -172,7 +172,7 @@ func HandleWorkflowTransition(ctx context.Context, app *App) *WFStartTurnMsg {
 				"Step %d/%d failed or required a deviation. Advise on how to proceed: "+
 					"should the plan be revised, or can the step be retried differently?",
 				wf.StepIdx, wf.StepCount)
-			oracleResult, oracleAvail := doWFOracle(ctx, app, deviationQ)
+			oracleResult, _, oracleAvail := doWFOracle(ctx, app, deviationQ)
 			if oracleAvail {
 				wfProgNote(app, "oracle deviation advice:\n"+oracleResult)
 			} else {
@@ -199,6 +199,12 @@ func panelFlagsGaps(results []counsel.PanelMemberResult) bool {
 	for _, r := range results {
 		if r.Err != nil {
 			continue // errored member excluded from verdict; not counted as a responder
+		}
+		// Budget-stopped or coverage-unconfirmed members are not responders:
+		// skip them like errored members so a coverage-unconfirmed PASS
+		// cannot close the workflow.
+		if r.BudgetStopped || (r.Log != nil && r.Log.CoverageNotConfirmed) {
+			continue
 		}
 		anyResponded = true
 		if workflow.WFFlagsGaps(r.Answer) {
@@ -232,8 +238,20 @@ func runWFPanel(ctx context.Context, app *App, headline, question, briefing, pan
 		WebSearchEngine:    panel.WebSearchEngine,
 		ServerToolMaxCalls: panel.ServerToolMaxCalls,
 		ModelLimits:        app.mashuraModelLimits(),
+		ReviewBudgetUSD:    app.Cfg.MashuraReviewBudgetUSD,
+		SessionBudgetUSD:   app.BudgetUSD,
+		SessionCostFunc:    func() float64 { return app.SessionCostTotal() },
 	}
 	results := counsel.RunPanel(ctx, panel.Models, panel.Mode, question, briefing, ccfg, apiKeys)
+	for _, r := range results {
+		if r.Void {
+			fmt.Fprintln(app.Out, counsel.VoidLine(r))
+		}
+		if r.BudgetStopped {
+			fmt.Fprintln(app.Out, fmt.Sprintf("NOT COMPLETED %s review budget reached — what was obtained is kept", r.PrefixedModel))
+		}
+	}
+	fmt.Fprintln(app.Out, counsel.PanelOpCostLine(results))
 	for _, r := range results {
 		app.RecordOracleCostFor(r.Model, r.Usage) // billed even when VOID; every call counts
 		if r.Err == nil {
@@ -241,7 +259,7 @@ func runWFPanel(ctx context.Context, app *App, headline, question, briefing, pan
 		}
 	}
 	formatted := counsel.FormatPanelResult(results)
-	if counsel.AnyVoid(results) {
+	if counsel.AnyVoid(results) || counsel.AnyBudgetStopped(results) {
 		// A VOID reply means a reviewer did not (fully) read the briefing. The
 		// consult is NOT completed: it must neither pass as "no gaps" nor be
 		// counted as a review round. The caller treats available=false as
@@ -265,36 +283,35 @@ func runWFPanel(ctx context.Context, app *App, headline, question, briefing, pan
 // Returns (result, true) when the oracle ran successfully, (reason, false) when
 // it could not run (disabled, no key, declined, or call error). The caller must
 // treat false as "oracle unavailable" and not silently advance the workflow.
-func doWFOracle(ctx context.Context, app *App, question string) (string, bool) {
+func doWFOracle(ctx context.Context, app *App, question string) (string, []counsel.PanelMemberResult, bool) {
 	if !app.Cfg.OracleEnabled {
-		return "oracle not enabled in config", false
+		return "oracle not enabled in config", nil, false
 	}
 	if app.Exec == nil {
-		return "briefing incomplete: no executor", false
+		return "briefing incomplete: no executor", nil, false
 	}
 	planContent, err := app.Exec.ReadFile(ctx, app.Workflow.PlanPath)
 	if err != nil {
-		return "briefing incomplete: plan file unreadable", false
+		return "briefing incomplete: plan file unreadable", nil, false
 	}
 	return doWFOracleOnPlan(ctx, app, question, planContent)
 }
 
 // doWFOracleOnPlan is doWFOracle on an already-read plan, so a caller can bind
 // the oracle verdict to exactly the content it hashed (HandleReviewOracle).
-func doWFOracleOnPlan(ctx context.Context, app *App, question, planContent string) (string, bool) {
+func doWFOracleOnPlan(ctx context.Context, app *App, question, planContent string) (string, []counsel.PanelMemberResult, bool) {
 	if !app.Cfg.OracleEnabled {
-		return "oracle not enabled in config", false
+		return "oracle not enabled in config", nil, false
 	}
 	briefing := workflow.BuildOracleBriefing(app.Workflow.Task, planContent, question)
 	if reason := workflow.ValidateBriefing(briefing, false); reason != "" {
-		return "briefing incomplete: " + reason, false
+		return "briefing incomplete: " + reason, nil, false
 	}
 	panelName, panel, panelOK := app.defaultPanel()
 	if !panelOK {
-		return "oracle unavailable: default panel not configured", false
+		return "oracle unavailable: default panel not configured", nil, false
 	}
-	result, _, ok := runWFPanel(ctx, app, "Workflow mashūra check?", question, briefing, panelName, panel)
-	return result, ok
+	return runWFPanel(ctx, app, "Workflow mashūra check?", question, briefing, panelName, panel)
 }
 
 // wfAppendStepLogEntry appends a step-log entry extracted from the model's output
@@ -485,6 +502,7 @@ func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 	// detected as stale (at approve time, and before auto-advance below).
 	var oracleResult, reviewedHash string
 	var oracleAvail bool
+	var panelResults []counsel.PanelMemberResult
 	switch {
 	case !app.Cfg.OracleEnabled:
 		oracleResult = "oracle not enabled in config"
@@ -495,7 +513,7 @@ func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 			oracleResult = "briefing incomplete: plan file unreadable"
 		} else {
 			reviewedHash = workflow.HashPlanSection(content)
-			oracleResult, oracleAvail = doWFOracleOnPlan(ctx, app, reviewQ, content)
+			oracleResult, panelResults, oracleAvail = doWFOracleOnPlan(ctx, app, reviewQ, content)
 		}
 	}
 
@@ -519,6 +537,17 @@ func HandleReviewOracle(ctx context.Context, app *App) *WFStartTurnMsg {
 	// StepCount==0 (empty plan section) never auto-advances — that state needs
 	// a human decision.
 	autoAdvance := autoApprove && wf.StepCount > 0
+	// Coverage not confirmed (accepted reply with missing/wrong citation)
+	// never auto-advances: the review is obtained but coverage is unproven.
+	for _, r := range panelResults {
+		if r.Log != nil && r.Log.CoverageNotConfirmed {
+			if autoAdvance {
+				autoAdvance = false
+				wfProgNote(app, "⚠ coverage not confirmed — not auto-approving; /plan review or /plan approve")
+			}
+			break
+		}
+	}
 	if autoAdvance {
 		if content, err := app.Exec.ReadFile(ctx, wf.PlanPath); err != nil || workflow.HashPlanSection(content) != reviewedHash {
 			autoAdvance = false

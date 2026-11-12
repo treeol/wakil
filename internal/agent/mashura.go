@@ -253,14 +253,23 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		ServerTools:        panel.ServerTools,
 		WebSearchEngine:    panel.WebSearchEngine,
 		ServerToolMaxCalls: panel.ServerToolMaxCalls,
-		ModelLimits:        a.mashuraModelLimits(),
-		MinAnswerTokens:    a.mashuraMinAnswerTokens(name),
-		Reasoning:          a.mashuraReasoningFor(name),
+		// MinAnswerTokens 0 → dispatcher floor 4096 for every tool (incl.
+		// check). Reasoning is the role default (check: low, no max_tokens);
+		// its budget (2048) is stored as the reserve the dispatcher subtracts
+		// from usable so the additive wire total fits the window.
+		ModelLimits:           a.mashuraModelLimits(),
+		MinAnswerTokens:       a.mashuraMinAnswerTokens(name),
+		Reasoning:             a.mashuraReasoningFor(name),
+		ReasoningBudgetTokens: config.ReasoningBudgetFor(a.mashuraReasoningFor(name)),
+		ReviewBudgetUSD:       a.Cfg.MashuraReviewBudgetUSD,
+		SessionBudgetUSD:      a.BudgetUSD,
+		SessionCostFunc:       func() float64 { return a.SessionCostTotal() },
 	}
 	models, mode := panel.Models, panel.Mode
 
 	if sync {
 		results := counsel.RunPanel(ctx, models, mode, question, briefing, ccfg, apiKeys)
+		printMashuraPanelOutcome(a, results)
 		a.recordMashuraResults(results)
 		a.lastPanelVoid = counsel.AnyVoid(results)
 		return counsel.FormatPanelResult(results)
@@ -353,6 +362,7 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		}
 
 		results := counsel.RunPanel(callCtx, models, mode, question, briefing, liveCfg, apiKeys)
+		printMashuraPanelOutcome(a, results)
 		// Deferred cleanup (close + bounded drain) runs here on the way out,
 		// guaranteeing all accepted Chunk sends happen-before terminalization.
 
@@ -389,12 +399,32 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		fbCtx, cancel := context.WithTimeout(context.Background(), a.mashuraCallTimeout(mode))
 		defer cancel()
 		results := counsel.RunPanel(fbCtx, models, mode, question, briefing, ccfg, apiKeys)
+		printMashuraPanelOutcome(a, results)
 		a.recordMashuraResults(results)
 		a.lastPanelVoid = counsel.AnyVoid(results)
 		return counsel.FormatPanelResult(results)
 	}
 	return fmt.Sprintf("queued as %s (%s, panel %s) — the panel is running now; once it completes, its result will be injected into context at the next model request while this turn continues. Keep working; call check_pending(%q) any time to retrieve it early.",
 		op.id, name, panelName, op.id)
+}
+
+// printMashuraPanelOutcome prints one VOID line per VOID member, one
+// NOT COMPLETED line per budget-stopped member (always, not debug-only),
+// and the per-operation cost line, after every RunPanel call in
+// runMashuraCore (sync branch, async worker, sync fallback branch).
+func printMashuraPanelOutcome(a *App, results []counsel.PanelMemberResult) {
+	if a == nil || a.Out == nil {
+		return
+	}
+	for _, r := range results {
+		if r.Void {
+			fmt.Fprintln(a.Out, counsel.VoidLine(r))
+		}
+		if r.BudgetStopped {
+			fmt.Fprintln(a.Out, fmt.Sprintf("NOT COMPLETED %s review budget reached — what was obtained is kept", r.PrefixedModel))
+		}
+	}
+	fmt.Fprintln(a.Out, counsel.PanelOpCostLine(results))
 }
 
 // recordMashuraResults commits cost + grounding for a synchronously-run panel
@@ -427,12 +457,14 @@ func (a *App) mashuraModelLimits() map[string]counsel.ModelLimits {
 	return out
 }
 
-// mashuraMinAnswerTokens is the answer-budget floor: 4096 for a review (the
-// dispatcher default), the lightweight check tool keeps its own small floor.
+// mashuraMinAnswerTokens returns 0 for every tool, including check: the
+// dispatcher's 4096 answer floor (defaultMinAnswerTokens) applies to all
+// counsel tools, so check gets the same 4096 floor as a review. The check
+// MaxTokens cap (mashuraCheckMaxTokens, 1024) still applies in
+// mashuraMaxTokensFor; the floor only raises the dispatched answer budget
+// (max(configuredMax, 4096)), so the wire max_tokens for check is at
+// least 4096 plus any reasoning budget.
 func (a *App) mashuraMinAnswerTokens(name string) int {
-	if strings.TrimPrefix(name, "mashura__") == "check" {
-		return mashuraCheckMaxTokens
-	}
 	return 0
 }
 
@@ -1153,8 +1185,9 @@ func (a *App) mashuraMaxTokensFor(name string) int {
 // (via ModelLimits); this method provides the role-level default. The role is
 // derived from the tool short name: "review"/"debug"/"decide" → "reviewer",
 // "check" → "check". When no role-level reasoning is configured, built-in
-// defaults apply: reviewer = medium (max_tokens 8192), check = none (disabled).
-// A reviewer never gets more than 16k reasoning tokens.
+// defaults apply: reviewer = medium (max_tokens 8192), check = low (no
+// max_tokens; the budget is derived from the effort). A reviewer never gets
+// more than 16k reasoning tokens.
 func (a *App) mashuraReasoningFor(name string) *config.ReasoningSpec {
 	short := strings.TrimPrefix(name, "mashura__")
 	if name == "oracle__ask" {
@@ -1167,13 +1200,14 @@ func (a *App) mashuraReasoningFor(name string) *config.ReasoningSpec {
 	if rc, ok := a.Cfg.MashuraRoles[role]; ok && rc.Reasoning != nil && !rc.Reasoning.IsZero() {
 		return rc.Reasoning
 	}
-	// Built-in defaults: reviewer = medium (max 8192), check = none.
+	// Built-in defaults: reviewer = medium (max 8192), check = low (no
+	// max_tokens, budget derived from effort).
 	// These are behavior changes — documented in docs/configuration.md.
 	switch role {
 	case "reviewer":
 		return &config.ReasoningSpec{Effort: "medium", MaxTokens: 8192}
 	case "check":
-		return &config.ReasoningSpec{Effort: "none"}
+		return &config.ReasoningSpec{Effort: "low"}
 	}
 	return nil
 }

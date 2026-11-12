@@ -103,7 +103,10 @@
   "_comment_mashura_roles": "Per-role overrides for Mashūra counsel reasoning, keyed by role name ('reviewer' or 'check'). When a role's reasoning is set, it applies to all calls dispatched under that role. Per-model reasoning (in mashura_models above) takes precedence for the reviewer role. For the check role, the role-level setting is the only source. Example: \"mashura_roles\": {\"reviewer\": {\"reasoning\": {\"effort\": \"medium\", \"max_tokens\": 4096}}, \"check\": {\"reasoning\": {\"effort\": \"low\"}}}",
   "mashura_roles": {},
 
-  "_comment_reasoning_defaults": "Built-in reasoning defaults when no explicit setting is configured: main model = medium, Mashūra reviewer = medium (max_tokens 8192), Mashūra check = none (disabled), subagent = low. Use /thinking off or --think off to explicitly disable. See docs/configuration.md.",
+  "_comment_mashura_review_budget": "Cap in USD on one panel operation (all members, rounds, retries, parts); 0 = off. Checked before each retry, debate round 2 and next fallback member; on stop remaining work is NOT COMPLETED with reason 'review budget reached' and obtained reviews are kept. The session --budget is respected the same way before retries and debate round 2.",
+  "mashura_review_budget_usd": 0,
+
+  "_comment_reasoning_defaults": "Built-in reasoning defaults when no explicit setting is configured: main model = medium, Mashūra reviewer = medium (max_tokens 8192), Mashūra check = low (no max_tokens, budget 2048 derived from effort), subagent = low. Use /thinking off or --think off to explicitly disable. See docs/configuration.md.",
 
   "mashura_panels": {
     "default": {
