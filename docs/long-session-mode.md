@@ -247,43 +247,38 @@ collapsed turn.
   message of each request; injected user-role messages such as async results
   and budget footers, collapsed turns, collapse pointer lines and handoff
   seeds are skipped). The stored conversation, session file and TUI keep the
-  user's original text. The reminder says that `[rN]` results are re-sent in
-  full on every step until marked and asks the model to mark results once
-  it no longer needs them. It says the cost of marking too early (rereading
-  a stubbed file means paying for it twice) and says to keep a result the
-  model will still cite if the note cannot carry what is needed. It says
-  what a stub is (it replaces the result; only the note remains), what goes
-  in the note (every fact still to be used, per file, with file:line), and
-  not to mark results still needed for the answer about to be written. It is about
-  170 tokens per live user
-  prompt and byte-identical on every request, so it does not disturb the
-  prompt-cache prefix. It only reminds: the model alone decides what is
-  kept, stubbed or dropped (apart from superseded rounds and the emergency
-  level), and unmarked rounds are never pruned by size or age;
-  superseded rounds are stubbed when the trigger runs, and only the
-  emergency level stubs other unmarked rounds. There is no config key; it
-  follows `context_prune`.
-- **System prompt section**: while pruning is on, the preamble carries its
-  own `## Context pruning: mark rounds once you are done with them` section,
-  placed right after Wakil's own instructions (before AGENTS.md and the
-  runtime context). It says that `[rN]` results are re-sent in full on every
-  step until marked, and asks the model to mark results once it no longer
-  needs them. Marking too early is stated to cost more than keeping it
-  (rereading a stubbed file means paying for it twice); if the model will
-  cite a result later and cannot carry what it needs in a note, it keeps
-  the result until then. It uses the same terms as the shorter texts: a
-  stub replaces the result and only the note remains, the note carries
-  every fact still to be used per file with file:line, a thin note for a
-  large result is rejected, and results still needed for the answer about
-  to be written are not marked. A sentence points the model at the newest
-  tool result's line. One sentence says when a mark takes effect and
-  follows `context_prune_marks`: after the next tool call at the earliest
-  (`immediate`), or when the context fills up (`on-trigger`). The
-  `context_mark` tool description ends with the same sentence. `prev` is
-  described as a secondary channel whose one-line stub is not enough for a
-  large result. The sentence about a later rating pass appears only when
-  `context_prune_rater` is not `"off"`. `/prune on` and `/prune off`
-  refresh the preamble on the next turn.
+  user's original text. The reminder is now three sentences (296 chars):
+  `[Wakil context upkeep] Tool results are tagged [rN] and are re-sent in full
+  on every step until you mark them. When you are done with a result, mark it
+  with context_mark: drop it, or stub it with the facts you still need, with
+  file:line. Do this while you work, and keep what you are still using.` It is
+  byte-identical on every request, so it does not disturb the prompt-cache
+  prefix. It only reminds: the model alone decides what is kept, stubbed or
+  dropped (apart from superseded rounds and the emergency level), and
+  unmarked rounds are never pruned by size or age; superseded rounds are
+  stubbed when the trigger runs, and only the emergency level stubs other
+  unmarked rounds. There is no config key; it follows `context_prune`.
+- **System prompt section**: while pruning is on, the preamble carries its own
+  `## Context upkeep: pruning is on` section as the **first** section of the
+  system prompt — before the agent operating instructions, in full mode and
+  in core mode alike — instead of after them. Full mode puts it (1126 chars,
+  measured) in front of the 51179-char operating instructions, core mode in
+  front of the 17183-char core prompt. It says that `[rN]` results are
+  re-sent in full on every step until marked, and asks the model to mark
+  finished results while it works (finished searches, files read to find one
+  thing, replaced test output), that marking is part of the task, and to keep
+  results still being worked with or cited. One sentence says when a mark
+  takes effect and follows `context_prune_marks`: after the next tool call at
+  the earliest (`immediate`), or when the context fills up (`on-trigger`).
+  The `context_mark` tool description is now the one place that keeps the
+  cautions: drop/stub/keep meanings, that a stub replaces the result so only
+  the note remains and carries every fact still needed per file with
+  file:line (a thin note for a large result is rejected), that reading a
+  file again after stubbing it costs more than keeping it (keep what you
+  will still cite and cannot carry in a note), and that marking right before
+  the final answer saves nothing. The sentence about a later rating pass
+  appears only when `context_prune_rater` is not `"off"`. `/prune on` and
+  `/prune off` refresh the preamble on the next turn.
 - **Backlog line and reread line (tool results)**: while pruning is on, each round's last tool result may carry one fixed line, in the request
   projection only, computed once when that round is recorded (a round
   carries one only while it is the newest at recording time, so old

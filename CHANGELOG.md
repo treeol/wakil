@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pruning prominence and balance.** With pruning on, the pruning section (1126 chars) is now the FIRST section of the system prompt, before the agent operating instructions (full mode: 51179 chars, core mode: 17183 chars, measured), in full mode and core mode alike. The system section and the user-prompt suffix (296 chars) now say: tool results are re-sent in full until marked, mark finished results while you work, keep what you are still using. The cautions moved to the one place that keeps them — the `context_mark` tool description (736 chars): what drop/stub/keep mean, that a stub replaces the result so only the note remains and a thin note is rejected, that reading a file again after stubbing it costs more than keeping it, and that marking right before the final answer saves nothing. The backlog line and the reread line keep their text. Prune mechanics are unchanged; with prune off the wire is byte-identical.
+- **Request debug dump (`WAKIL_DEBUG_REQUESTS`).** Debug aid (see `docs/configuration.md`): one JSON file per model request (<session id>-NNNNNN-<timestamp>.json, 0600 in a 0700 directory), messages and tool definitions as sent, no header and no key material; failure logs one warning and continues.
+
 ## [0.7.0] - 2026-11-12
 
 ### Added
