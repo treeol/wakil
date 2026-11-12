@@ -128,8 +128,13 @@ between the first message and the `collapse_context` call.
 ## Per-round value pruning (`context_prune`, default `off`)
 
 A second, orthogonal mechanism: **value-based pruning of tool rounds**,
-behind the `context_prune` switch (Wakil 0.7 feature). It composes with
-collapse — it only prunes rounds that are NOT inside a collapsed turn.
+behind the `context_prune` switch (Wakil 0.7 feature). Pruning is
+experimental and model-dependent: apart from superseded rounds and the
+emergency level (≥ 90% of hard max), results are pruned only following
+a model rating (`context_mark`, `prev`/`[[…]]` tags, or the optional
+rating pass), so how much gets pruned depends on the model. Pruning
+composes with collapse — it only prunes rounds that are NOT inside a
+collapsed turn.
 
 - **Round**: one assistant message that has tool_calls, plus the tool-result
   messages answering those calls. Every round gets a stable id `r<N>` from
@@ -141,7 +146,9 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   its next assistant message: `[[keep]]`, `[[drop]]`, or
   `[[stub: <one line, max 200 chars, what mattered>]]`. Parsed with one
   regex anywhere in the assistant content (which may sit alongside
-  tool_calls); the last tag wins; a missing or invalid tag means keep.
+  tool_calls); the last tag wins; a missing or invalid tag leaves the round
+  unrated (treated as keep everywhere except the superseded/emergency
+  cases).
   Tags are stripped from the stored content before `appendConv`, so
   neither `Conv` nor the wire ever contains them.
 - **Trigger**: inside the tool loop, after tool results are appended and
@@ -152,7 +159,9 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   `context_prune_target` (default 0.55) × hard max, or no candidates
   remain.
 - **Order**: `drop` rounds first (oldest first), then `stub` rounds
-  (oldest first). `keep` and unrated rounds are never pruned.
+  (oldest first), then superseded rounds, then at the emergency level the
+  oldest unrated ones. `keep` rounds are never pruned; unrated rounds are
+  only pruned when superseded or at the emergency level.
 - **Fixed rules**: the `context_prune_protect` (default 3) most recent
   rounds are never pruned — except in `immediate` mode (default; see
   `context_prune_marks`), where a round marked drop/stub via `context_mark`
@@ -169,6 +178,11 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   ids are untouched, so call/result pairing is always valid:
   - drop: `[rN pruned (drop): <tool> <short target> — full result: <archive path>]`
   - stub: `[rN pruned: <model's stub line> — full result: <archive path>]`
+  - superseded: `[rN superseded: <cause — reread/edited/written path or
+    same command> — full result: <archive path>]` (automatic, no model
+    rating; only when the round's results total at least 2048 bytes)
+  - emergency: `[rN auto-emergency: <tool name> (<size>) — full result:
+    <archive path>]` (automatic at the emergency level, no note)
 - **Archive**: the full round (assistant message incl. tool_call ids + all
   results) is written with the existing `SpillToCache` as `round-<N>`.
   If the archive write fails, the round is NOT pruned; one warning is
@@ -176,7 +190,8 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
 - **Projection only**: `a.Conv` keeps the originals. Compaction and
   materialization behave the same as collapse; after materialization the
   stubs simply become the history. Recovery: the model can `read_file`
-  the archive path from the stub. No new tools.
+  the archive path from the stub. The only new tool is `context_mark`
+  itself.
 - **Visibility**: a TUI line per pruned round (`· pruned r12 (drop, 14 KB)`);
   `/mode status` adds the rated counts (keep/drop/stub/unrated), the
   pruned round count and the bytes saved.
@@ -242,10 +257,12 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   not to mark results still needed for the answer about to be written. It is about
   170 tokens per live user
   prompt and byte-identical on every request, so it does not disturb the
-  prompt-cache prefix. It only reminds: the model alone decides what is kept,
-  stubbed or dropped, and unmarked rounds are never pruned by size or age
-  below the existing trigger. There is no config key; it follows
-  `context_prune`.
+  prompt-cache prefix. It only reminds: the model alone decides what is
+  kept, stubbed or dropped (apart from superseded rounds and the emergency
+  level), and unmarked rounds are never pruned by size or age;
+  superseded rounds are stubbed when the trigger runs, and only the
+  emergency level stubs other unmarked rounds. There is no config key; it
+  follows `context_prune`.
 - **System prompt section**: while pruning is on, the preamble carries its
   own `## Context pruning: mark rounds once you are done with them` section,
   placed right after Wakil's own instructions (before AGENTS.md and the
@@ -294,31 +311,34 @@ collapse — it only prunes rounds that are NOT inside a collapsed turn.
   itself is excluded. A message made only of `context_mark` calls registers
   no round.
 - **Off**: with `context_prune: off` (the default), nothing is parsed or
-  stripped — behaviour and wire bytes are identical to master (golden-tested).
+  stripped — behaviour and wire bytes are identical to 0.6.5 (golden-tested).
 
 Config keys: `context_prune` (`off` | `on`, default `off`),
 `context_prune_at` (0.70), `context_prune_target` (0.55),
-`context_prune_protect` (3), `context_prune_at_tokens` (60000),
-`context_prune_target_tokens` (40000). Effective trigger/target in
+`context_prune_protect` (3), `context_prune_marks` (`immediate`, default),
+`context_prune_at_tokens` (0 — fractions only; set both token keys to
+enable the absolute trigger), `context_prune_target_tokens` (0). Effective
+trigger/target in chars are `min(tokens × charsPerToken(4), fraction ×
+hard_max)` when both token keys are set, so a backend whose effective hard
+max is large can trigger at its absolute tokens even when the fraction
+never fires there, and a backend with a small effective hard max takes
+the min. Validated `0 < target < at < 1`, `protect >= 1`, and, when both
+token keys are set, `0 < target_tokens < at_tokens`.
 - `context_prune_rater` (`"off"`): model for the one-shot rating pass that rates unrated rounds when pruning is triggered — a separate request, recorded in cost totals, never appended to the transcript. `context_prune_rater_max_rounds` (`40`) caps how many rounds one pass rates; `context_prune_rater_timeout` (`60`s) bounds it. `/mode status` shows `passes N`; `/prune status` shows the rater model.
-chars are `min(tokens × charsPerToken(4), fraction × hard_max)`, so a
-1M-token backend triggers at the absolute 60k tokens even when the
-fraction never fires there, and a 160k backend takes the min; `/prune
-status` shows `trigger <N>k · target <M>k`. Validated
-`0 < target < at < 1`, `protect >= 1`, and
-`0 < target_tokens < at_tokens`.
 
 ## Commands
 
 - `/mode standard | long-session | status` — switch or inspect (persisted per
   repo; the status line shows `long` / `std`). With pruning on,
   `/mode status` also shows `prune: on · keep N · drop N · stub N ·
-  unrated N · pruned N · saved ~M KB`.
+  unrated N · pruned N · saved ~M KB` plus the `marks N`, `passes N` and
+  `prev missing N` counts.
 - `/keep <n>` / `/keep off <n>` — exempt request n from collapse or remove the
   exemption (a kept turn is restored into what is sent). Kept turns are
   never pruned either.
-- `/mode status` — collapsed/kept counts, sent vs full sizes, archive dir,
-  plus the prune counts above when pruning is enabled.
+- `/prune on | off | status` — switch context pruning on or off for this
+  chat (or inspect the effective setting). `/prune status` shows whether it
+  is on, the marks mode and the rating-pass model.
 
 ## Known limits
 
