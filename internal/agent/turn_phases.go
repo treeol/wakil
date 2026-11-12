@@ -293,6 +293,11 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 
 		sink := a.streamSink()
 
+		// Debug dump (WAKIL_DEBUG_REQUESTS): writes the exact request body
+		// right before the client call. Unset means no dump and no cost;
+		// a write failure logs once and never fails the request.
+		a.dumpDebugRequest(msgs, tools)
+
 		msg, err = a.Client.Stream(ctx, msgs, tools, sink, rsink)
 		if err != nil {
 			return "", false, err

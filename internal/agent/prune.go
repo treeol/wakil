@@ -692,17 +692,17 @@ func (a *App) pruneProjection(in []proxy.Message) []proxy.Message {
 // rating-pass sentence is included only when a rating pass is configured.
 func (a *App) pruneSystemSection() string {
 	var b strings.Builder
-	b.WriteString("## Context pruning: mark rounds once you are done with them\n")
-	b.WriteString("Tool results are tagged [rN] and are re-sent in full on every step until you mark them with context_mark. ")
-	b.WriteString("Marking is for results you are finished with, not a step to perform after every result: once you no longer need a result, call context_mark to stub or drop it. ")
-	b.WriteString("Marking too early costs more than keeping it: reading a file again after stubbing it means paying for the file twice. If you will cite a result later and cannot carry what you need in a note, keep it until then. ")
-	b.WriteString("A stub replaces the result, and afterwards only your note remains: put every fact you will still use into the note, per file and with file:line (names, paths, values and line numbers). A note too thin for a large result is rejected. ")
-	b.WriteString("Drop a result if nothing in it is needed; keep it verbatim only if you are about to quote or edit it. ")
-	b.WriteString("Do not mark results you still need for the answer you are about to write: marking right before the final answer saves nothing. ")
-	b.WriteString("Watch the line on the newest tool result: it names your stale unmarked rounds, and it warns you when you reread a file you stubbed or dropped. ")
+	b.WriteString("## Context upkeep: pruning is on\n")
+	b.WriteString("Tool results are tagged [rN] and are re-sent in full on every step until you mark them. ")
+	b.WriteString("When you are done with a result, mark it with context_mark: drop it if nothing in it is needed any more, or stub it with a note that carries every fact you will still use, per file and with file:line. ")
+	b.WriteString("Do this while you work: finished searches, files you read to find one thing, test output that a later run has replaced. ")
+	b.WriteString("Marking finished results is part of the task, not an extra action. ")
+	b.WriteString("Keep results you are still working with or will cite. ")
 	b.WriteString(markEffectSentence(a.pruneMarksImmediate()))
-	b.WriteString(" The full result stays retrievable from the archive path in its stub. Write rounds are only stubbed, never dropped. ")
-	b.WriteString(`The "prev" argument on any tool call is a secondary channel that rates the previous round (keep, drop, or "stub: <one line>"); one line is not enough for a large result, so stub large results with context_mark.`)
+	b.WriteString(" The full result stays retrievable from the archive path in its stub. ")
+	b.WriteString("Write rounds are only stubbed, never dropped. ")
+	b.WriteString("The line on the newest tool result names results that have been unmarked for a while, and warns you when you reread something you marked. ")
+	b.WriteString(`The "prev" argument on any tool call can rate the previous round in one line; for large results use context_mark.`)
 	if r := a.Cfg.ContextPruneRater; r != "" && r != "off" {
 		b.WriteString(" A round you leave unmarked may be rated by a later pass when pruning is needed.")
 	}
@@ -726,7 +726,7 @@ func markEffectSentence(immediate bool) string {
 // step and that marking is its call. It says nothing about when a mark takes
 // effect (that depends on context_prune_marks and is in the system section),
 // so it holds in both modes. The stored conversation never carries it.
-const pruneReminder = "\n\n[Wakil context upkeep, applies to this whole task] Tool results are tagged [rN] and are re-sent in full on every step until you mark them with context_mark. Marking is for results you are finished with, not a step after every result: once you no longer need a result, call context_mark to stub it or drop it. Marking too early costs more than keeping it — reading a file again after stubbing it means paying for the file twice. If you will cite a result later and cannot carry what you need in a note, keep it until then. A stub replaces the result, and afterwards only your note remains: put every fact you will still use into the note, per file and with file:line (the stub keeps a path to the full result). Do not mark results you still need for the answer you are about to write; marking right before the final answer saves nothing. Keep a result verbatim only if you are about to quote or edit it."
+const pruneReminder = "\n\n[Wakil context upkeep] Tool results are tagged [rN] and are re-sent in full on every step until you mark them. When you are done with a result, mark it with context_mark: drop it, or stub it with the facts you still need, with file:line. Do this while you work, and keep what you are still using."
 
 // withPruneReminder returns msgs with pruneReminder appended to the content of
 // each real user prompt: the first user message of every request (Turn > 0).
@@ -2402,7 +2402,10 @@ func roundResultSnippet(conv []proxy.Message, rec RoundRecord) string {
 // contextMarkDescription is the mode-independent part of the context_mark
 // tool description. contextMarkTool appends markEffectSentence, which says
 // when a mark takes effect in the configured context_prune_marks mode.
-const contextMarkDescription = "Mark earlier tool rounds you are done with so they are trimmed from context. Marking is for results you are finished with, not a step to perform after every result. Unmarked results are re-sent in full on every step. Marking too early costs more than keeping it: reading a file again after stubbing it means paying for the file twice. If you will cite a result later and cannot carry what you need in a note, keep it until then. drop = nothing in the result is needed any more. stub = replace the result with your note; afterwards only the note remains, so put every fact you will still use into it, per file and with file:line (a note too thin for a large result is rejected). keep = still needed verbatim. Do not mark results you still need for the answer you are about to write; marking right before the final answer saves nothing."
+// This is the one place that keeps the cautions: what a stub replaces,
+// what a note must carry, what a reread costs, and that marking right
+// before the final answer saves nothing.
+const contextMarkDescription = "Mark earlier tool rounds you are done with so they are trimmed from context. drop = nothing in the result is needed any more. stub = the note replaces the result and afterwards only the note remains, so the note carries every fact you will still use, per file and with file:line (a note too thin for a large result is rejected). keep = still needed verbatim. Reading a file again after stubbing it costs more than keeping it, so keep what you will still cite and cannot carry in a note. Marking right before the final answer saves nothing."
 
 // roundFiles returns the distinct file paths the round read or wrote, reads
 // first, each in call order.

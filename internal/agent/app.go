@@ -1649,6 +1649,15 @@ func (a *App) buildPreamble(today string) string {
 	}
 
 	var parts []string
+	// Context pruning: the FIRST section of the system prompt, before the
+	// agent operating instructions, in full and core mode alike — it is the
+	// only text that tells the model its tool results are re-sent until
+	// marked, so it must not sit behind the operating instructions
+	// (prompts/agent.txt, tens of KB). Only when enabled — with the feature
+	// off the preamble is byte-identical to master. See pruneSystemSection.
+	if a.pruneEnabled() {
+		parts = append(parts, a.pruneSystemSection())
+	}
 	// In core prompt mode, use the leaner AgentCorePrompt (safety + identity +
 	// protocol). The extension (AgentExtensionPrompt) is lazy-loaded as a
 	// second system message by maybeActivateExtension. In full mode (default),
@@ -1661,13 +1670,6 @@ func (a *App) buildPreamble(today string) string {
 		}
 	} else {
 		parts = append(parts, corePrompt)
-	}
-	// Context pruning: its own prominent section, first among the context
-	// rules (right after Wakil's own instructions, before AGENTS.md and the
-	// runtime context). Only when enabled — with the feature off the preamble
-	// is byte-identical to master. See pruneSystemSection.
-	if a.pruneEnabled() {
-		parts = append(parts, a.pruneSystemSection())
 	}
 	// AGENTS.md (advisory project instructions) — loaded from the workspace
 	// root and ancestor directories (bounded by the workspace root, never
@@ -1838,6 +1840,12 @@ func (a *App) ensurePreamble() {
 	defer a.convMu.Unlock()
 	if a.preambleDay != "" && len(a.Conv) > 0 && a.Conv[0].Role == "system" {
 		// Same session, day rolled over — refresh the existing slot in place.
+		a.Conv[0].Content = StrPtr(text)
+	} else if a.preambleDay == "" && len(a.Conv) > 0 && a.Conv[0].Role == "system" {
+		// Resumed session: Conv[0] is the stored preamble. Refresh it in
+		// place under the new text (e.g. a session saved before the pruning
+		// section moved first must not keep sending the old text beneath the
+		// new one as a second system message).
 		a.Conv[0].Content = StrPtr(text)
 	} else {
 		// First turn this session, or Conv was just reset (NewConversation) —

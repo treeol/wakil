@@ -472,20 +472,33 @@ func TestStubNoteWriteRoundRejectionOmitsDrop(t *testing.T) {
 	}
 }
 
-// The four texts use the same terms and do not contradict each other.
+// The three texts use the same terms and do not contradict each other.
+// The cautions live only in the tool description; the system section and
+// the user suffix stay two to three sentences of instruction each.
 func TestPruneTextsCoherent(t *testing.T) {
 	app := immediateApp(t)
 	sec := app.pruneSystemSection()
 	desc := contextMarkTool(true).Function.Description
-	for name, text := range map[string]string{"system section": sec, "user suffix": pruneReminder, "tool description": desc} {
-		for _, s := range []string{"only", "note remains", "every fact you will still use", "file:line", "per file", "costs more than keeping it", "marking right before the final answer saves nothing"} {
+	for name, text := range map[string]string{"system section": sec, "user suffix": pruneReminder} {
+		for _, s := range []string{"[rN]", "re-sent in full on every step", "context_mark", "file:line"} {
 			if !strings.Contains(text, s) {
 				t.Errorf("%s lacks %q", name, s)
 			}
 		}
+		if strings.Contains(text, "not a step to perform after every result") {
+			t.Errorf("%s still carries the discouraging sentence", name)
+		}
 		if strings.Contains(text, "on the next step") || strings.Contains(text, "one-line") || strings.Contains(text, "right after") || strings.Contains(text, "as you go") {
 			t.Errorf("%s still promises next-step effect, a one-line note, or marker-by-marker marking", name)
 		}
+	}
+	for _, s := range []string{"drop", "stub", "keep", "only the note remains", "every fact you will still use", "per file", "file:line", "a note too thin for a large result is rejected", "costs more than keeping it", "Marking right before the final answer saves nothing"} {
+		if !strings.Contains(desc, s) {
+			t.Errorf("tool description lacks %q", s)
+		}
+	}
+	if strings.Contains(desc, "not a step to perform after every result") {
+		t.Error("tool description still carries the discouraging sentence")
 	}
 	// The sentence about when a mark takes effect follows the mode, in the
 	// system section and in the tool description alike.
@@ -500,9 +513,10 @@ func TestPruneTextsCoherent(t *testing.T) {
 			t.Errorf("on-trigger %s: %s", name, text)
 		}
 	}
-	// The section does not offer the one-line prev stub for large results.
-	if !strings.Contains(sec, "one line is not enough for a large result") {
-		t.Errorf("section offers the prev one-liner without the limit: %s", sec)
+	// The section points large results at context_mark rather than offering
+	// the one-line prev stub for them.
+	if !strings.Contains(sec, "for large results use context_mark") {
+		t.Errorf("section does not point large results at context_mark: %s", sec)
 	}
 	// The tool-result line is stored on the round record, fixed at recording.
 	// The backlog line names its stale rounds in the same form the docs

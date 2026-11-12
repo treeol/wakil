@@ -117,7 +117,7 @@ func TestPruneReminderSkipsCollapsedAndHandoffMessages(t *testing.T) {
 }
 
 func TestPruneReminderTextMentionsMarkingContract(t *testing.T) {
-	for _, s := range []string{"context_mark", "[rN]", "stub", "drop", "costs more than keeping it"} {
+	for _, s := range []string{"context_mark", "[rN]", "stub", "drop"} {
 		if !strings.Contains(pruneReminder, s) {
 			t.Errorf("reminder lacks %q", s)
 		}
