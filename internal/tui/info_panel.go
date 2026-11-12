@@ -248,10 +248,10 @@ func (m tuiModel) costSegments() []string {
 	ct, _ := costs.SnapshotDetail()
 	if ct.Total > 0 {
 		segs = append(segs, dimStyle.Render("split")+" "+
-			dimStyle.Render("main")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDCompact(ct.Main))+" · "+
-			dimStyle.Render("sub")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDCompact(ct.Subagent))+" · "+
-			dimStyle.Render("mash")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDCompact(ct.Mashura))+" · "+
-			dimStyle.Render("aux")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDCompact(ct.Aux)))
+			dimStyle.Render("main")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDSplit(ct.Main))+" · "+
+			dimStyle.Render("sub")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDSplit(ct.Subagent))+" · "+
+			dimStyle.Render("mash")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDSplit(ct.Mashura))+" · "+
+			dimStyle.Render("aux")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDSplit(ct.Aux)))
 	}
 	for _, r := range rows {
 		glyph, color := proxy.CostGlyphStyle(r.Confidence)
@@ -281,7 +281,7 @@ func (m tuiModel) costSegments() []string {
 func billedCell(billedTotal float64) string {
 	cell, color := "—", "240"
 	if billedTotal > 0 {
-		cell = proxy.FmtUSDCompact(billedTotal)
+		cell = proxy.FmtUSDSplit(billedTotal)
 		color = "2"
 	}
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))

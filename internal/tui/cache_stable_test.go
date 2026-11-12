@@ -117,3 +117,19 @@ func TestFormatCacheStatsMixedRows(t *testing.T) {
 		t.Errorf("expected '40.0%%' (800/2000 including cache-miss rows), got %q", got)
 	}
 }
+
+// TestCostSplitFourDecimalsBelowDollar: a small subagent cost renders with four
+// decimals in the split segment, so it stays visible in the info panel.
+func TestCostSplitFourDecimalsBelowDollar(t *testing.T) {
+	costs := proxy.NewCostTracker()
+	costs.RecordCategorized("subagent·m", proxy.CostCatSubagent, 10, 5, 0.0034, true, proxy.ConfExact)
+
+	f := &fakeFacade{sid: "sess_split_test", chatID: "chat_split"}
+	f.info.Costs = costs
+	m := tuiModel{facade: f}
+	joined := strings.Join(m.costSegments(), "\n")
+
+	if !strings.Contains(joined, "$0.0034") {
+		t.Errorf("expected sub-dollar split amount $0.0034, got:\n%s", joined)
+	}
+}

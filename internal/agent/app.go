@@ -1752,18 +1752,20 @@ func (a *App) RecordSearchCost() {
 
 // costStatusLine renders the /mode status cost breakdown (B6): billed total,
 // provider-reported vs estimated, cache-read share, and the per-source split.
-// Empty (nil tracker / no priced rows) → "$0.00 provider $0.00 / est $0.00 ·
+// Empty (nil tracker / no priced rows) → "$0.0000 provider $0.0000 / est $0.0000 ·
 // ... zeroed shape so the status line is stable.
 func (a *App) costStatusLine() string {
 	if a.Costs == nil {
-		return "$0.00 provider $0.00 / est $0.00 · main $0.00 / sub $0.00 / mash $0.00 / aux $0.00 · cache 0.0%"
+		return "$0.0000 provider $0.0000 / est $0.0000 · main $0.0000 / sub $0.0000 / mash $0.0000 / aux $0.0000 · cache 0.0%"
 	}
 	ct, _ := a.Costs.SnapshotDetail()
 	if ct.Total == 0 && ct.InputTok == 0 {
-		return "$0.00 provider $0.00 / est $0.00 · main $0.00 / sub $0.00 / mash $0.00 / aux $0.00 · cache 0.0%"
+		return "$0.0000 provider $0.0000 / est $0.0000 · main $0.0000 / sub $0.0000 / mash $0.0000 / aux $0.0000 · cache 0.0%"
 	}
-	return fmt.Sprintf("$%.2f provider $%.2f / est $%.2f · main $%.2f / sub $%.2f / mash $%.2f / aux $%.2f · cache %.1f%%",
-		ct.Billed, ct.Provider, ct.Estimated, ct.Main, ct.Subagent, ct.Mashura, ct.Aux, ct.CacheShare*100)
+	return fmt.Sprintf("%s provider %s / est %s · main %s / sub %s / mash %s / aux %s · cache %.1f%%",
+		proxy.FmtUSDSplit(ct.Billed), proxy.FmtUSDSplit(ct.Provider), proxy.FmtUSDSplit(ct.Estimated),
+		proxy.FmtUSDSplit(ct.Main), proxy.FmtUSDSplit(ct.Subagent), proxy.FmtUSDSplit(ct.Mashura),
+		proxy.FmtUSDSplit(ct.Aux), ct.CacheShare*100)
 }
 
 // buildPreamble builds the day-stable system message stored at Conv[0] (see

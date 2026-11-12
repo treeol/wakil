@@ -110,3 +110,24 @@ func TestCategoryTotalsAndExportRestore(t *testing.T) {
 		t.Errorf("restore mismatch: %+v vs %+v", ct2, ct)
 	}
 }
+
+// TestFmtUSDSplitBoundary pins the split format: four decimals below $1 so
+// small subagent and Mashūra costs stay visible, two decimals from $1 up.
+func TestFmtUSDSplitBoundary(t *testing.T) {
+	cases := []struct {
+		v    float64
+		want string
+	}{
+		{0, "$0.0000"},
+		{0.0034, "$0.0034"},
+		{0.99995, "$1.00"}, // rounds to $1.0000 — shown as $1.00
+		{0.9999, "$0.9999"},
+		{1, "$1.00"},
+		{12.345, "$12.35"},
+	}
+	for _, c := range cases {
+		if got := FmtUSDSplit(c.v); got != c.want {
+			t.Errorf("FmtUSDSplit(%v) = %q, want %q", c.v, got, c.want)
+		}
+	}
+}

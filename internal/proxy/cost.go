@@ -496,6 +496,21 @@ func FmtUSDCompact(v float64) string {
 	}
 }
 
+// FmtUSDSplit formats the per-source split and the billed totals: four decimals
+// below $1 so small subagent and Mashūra costs stay visible ($0.0034), two
+// decimals from $1 up. Other sidebar cells keep FmtUSDCompact.
+func FmtUSDSplit(v float64) string {
+	// Decide the precision on the value as it will be printed, so a value that
+	// rounds up to $1.0000 uses the two-decimal form instead.
+	if s := fmt.Sprintf("$%.4f", v); s != "$1.0000" && v < 1 {
+		return s
+	}
+	if v < 1 {
+		return "$1.00"
+	}
+	return fmt.Sprintf("$%.2f", v)
+}
+
 // CostGlyphStyle is the glyph and 256-colour code for a confidence tier. A solid
 // dot marks exact (billed-grade); hollow dots mark modeled (amber) and approx
 // (dim grey) so neither can be mistaken for a billed figure.

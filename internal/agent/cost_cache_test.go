@@ -97,11 +97,14 @@ func TestCostStatusLine(t *testing.T) {
 	app.Costs.RecordCategorized("search", proxy.CostCatAux, 0, 0, 0.01, true, proxy.ConfModeled)
 	line := app.costStatusLine()
 	// billed = exact total = 0.32; provider = 0.32; est = 0.01; cache = 40/110.
-	if !strings.Contains(line, "$0.32") || !strings.Contains(line, "cache 36.4%") {
+	if !strings.Contains(line, "$0.3200 provider") || !strings.Contains(line, "cache 36.4%") {
 		t.Errorf("costStatusLine = %q", line)
 	}
-	if !strings.Contains(line, "main $0.30") || !strings.Contains(line, "mash $0.02") || !strings.Contains(line, "aux $0.01") {
+	if !strings.Contains(line, "main $0.3000") || !strings.Contains(line, "mash $0.0200") || !strings.Contains(line, "aux $0.0100") {
 		t.Errorf("costStatusLine split missing in %q", line)
+	}
+	if want := "$0.3200 provider $0.3200 / est $0.0100 · main $0.3000 / sub $0.0000 / mash $0.0200 / aux $0.0100 · cache 36.4%"; line != want {
+		t.Errorf("costStatusLine =\n  %q\nwant\n  %q", line, want)
 	}
 }
 
