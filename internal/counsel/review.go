@@ -833,10 +833,7 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 			log.MaxTokens = maxTok
 			diag.Printf("mashura: %s part %d/%d ~%d input tokens, max_tokens %d, context %d\n", label, i+1, n, inTok, maxTok, ctxTokens)
 			ans, usage, err := send(ctx, q, text, maxTok)
-			out.Usage.InputTokens += usage.InputTokens
-			out.Usage.OutputTokens += usage.OutputTokens
-			out.Usage.ReasoningTokens += usage.ReasoningTokens
-			out.Usage.WebSearchRequests += usage.WebSearchRequests
+			out.Usage = addUsage(out.Usage, usage)
 			log.ReasoningTokens += usage.ReasoningTokens
 			fr := usage.FinishReason
 			if fr == "" {
@@ -934,10 +931,7 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 				log.Why = "finish_reason=length; chunking impossible (" + why + "); retried whole with max_tokens " + fmt.Sprint(bigger)
 				usage := out.Usage
 				out, _ = run(parts, bigger)
-				out.Usage.InputTokens += usage.InputTokens
-				out.Usage.OutputTokens += usage.OutputTokens
-				out.Usage.ReasoningTokens += usage.ReasoningTokens
-				out.Usage.WebSearchRequests += usage.WebSearchRequests
+				out.Usage = addUsage(out.Usage, usage)
 				out.Log = log
 				out.Err = voidAfterTruncation(out.Err, "whole-document retry")
 				if out.Err != nil {
@@ -952,10 +946,7 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 		}
 		usage := out.Usage
 		out, _ = run(retryParts, answerWant)
-		out.Usage.InputTokens += usage.InputTokens
-		out.Usage.OutputTokens += usage.OutputTokens
-		out.Usage.ReasoningTokens += usage.ReasoningTokens
-		out.Usage.WebSearchRequests += usage.WebSearchRequests
+		out.Usage = addUsage(out.Usage, usage)
 		out.Err = voidAfterTruncation(out.Err, "chunked retry")
 	}
 	out.Log = log
@@ -975,10 +966,7 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 			log.Why = "synthesis pass failed (" + serr.Error() + "); showing the per-part reviews"
 		} else {
 			out.Answer = synth.Answer
-			out.Usage.InputTokens += synth.Usage.InputTokens
-			out.Usage.OutputTokens += synth.Usage.OutputTokens
-			out.Usage.ReasoningTokens += synth.Usage.ReasoningTokens
-			out.Usage.WebSearchRequests += synth.Usage.WebSearchRequests
+			out.Usage = addUsage(out.Usage, synth.Usage)
 			log.Synthesized = true
 		}
 	}

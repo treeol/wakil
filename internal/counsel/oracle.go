@@ -239,6 +239,19 @@ type OracleUsage struct {
 	ServedModel string
 }
 
+// addUsage returns u with b added in full: tokens, reasoning and web-search
+// counts, and the provider-reported cost. Every place that folds one call's
+// usage into another's must use this; copying only the token fields drops the
+// provider dollars, which is how a review round lost its cost. The served model
+// keeps the latest non-empty value.
+func addUsage(u, b OracleUsage) OracleUsage {
+	u.InputTokens += b.InputTokens
+	u.OutputTokens += b.OutputTokens
+	u.ReasoningTokens += b.ReasoningTokens
+	u.WebSearchRequests += b.WebSearchRequests
+	return addProviderCost(u, b)
+}
+
 // addProviderCost returns u with b's provider-reported cost added. Usage
 // merges (VOID retry, debate round 2) sum tokens; without this the dollar
 // figure would reflect only one attempt. HasProviderCost stays true when
