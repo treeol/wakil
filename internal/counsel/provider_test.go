@@ -68,7 +68,7 @@ func TestOpenRouterRequestShape(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	answer, usage, err := callOpenRouter(context.Background(), "google/gemini-2.5-pro", "test-api-key", "question text?", "some context", ccfg)
+	answer, usage, err := callOpenRouter(context.Background(), "google/gemini-2.5-pro", "test-api-key", "question text?", "some context", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestOpenRouterTruncationReturnsUsage(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Fatal("expected truncation error")
 	}
@@ -148,7 +148,7 @@ func TestOpenRouterTruncationEmptyContentReturnsUsage(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Fatal("expected truncation error")
 	}
@@ -755,9 +755,10 @@ func TestPanelDetailDebateMode(t *testing.T) {
 // individual HTTP call is separately capped at perCall (CallOracle's
 // WithTimeout), so the meaningful effect of the fix is on the OVERALL budget:
 // when round 1's call consumes ~perCall, round 2 must still get its own perCall
-// budget. With a 1× outer deadline (the pre-fix clip) round 2 is cancelled;
-// with a 2× outer deadline (what mashuraCallTimeout("debate") now provides)
-// round 2 survives.
+// budget. With a 1× outer deadline (the pre-fix clip) round 2 is cancelled —
+// and since the R1-keeps-R1 fix below keeps the usable round-1 answer, the run
+// now returns that answer (Err nil) instead of an error; the observable
+// difference is the answer's content (round-2 \"answer\" vs round-1 answer).
 func TestRunPanelDebateRound2SurvivesWith2xDeadline(t *testing.T) {
 	const perCall = 1 // seconds
 	runScenario := func(outerDeadline time.Duration) (answer string, err error) {
@@ -773,17 +774,14 @@ func TestRunPanelDebateRound2SurvivesWith2xDeadline(t *testing.T) {
 			modelCalls[req.Model]++
 			n := modelCalls[req.Model]
 			mu.Unlock()
-			if n == 1 {
-				// Round 1: consume nearly the full perCall budget (~950ms of 1s),
-				// leaving only ~50ms in the pre-fix 1× outer deadline.
-				time.Sleep(950 * time.Millisecond)
-			} else {
-				// Round 2: a real call (~500ms). Well under perCall (1s) so it
-				// survives with a 2× outer deadline (~1.05s left), but far beyond
-				// the ~50ms that remain under the pre-fix 1× clip.
-				time.Sleep(500 * time.Millisecond)
+			deadline := 950 * time.Millisecond
+			text := "round-1 answer"
+			if n > 1 {
+				deadline = 500 * time.Millisecond
+				text = "answer"
 			}
-			writeAnthropicSSE(w, "answer", "end_turn", 3, 2)
+			time.Sleep(deadline)
+			writeAnthropicSSE(w, text, "end_turn", 3, 2)
 		}))
 		defer srv.Close()
 
@@ -807,9 +805,18 @@ func TestRunPanelDebateRound2SurvivesWith2xDeadline(t *testing.T) {
 		return "", results[0].Err
 	}
 
-	// Pre-fix behavior (outer deadline clipped to 1×): round 2 is cancelled.
-	if _, err := runScenario(1 * time.Duration(perCall) * time.Second); err == nil {
-		t.Error("1× outer deadline: expected round-2 cancellation (the pre-fix clip), but it succeeded")
+	// Pre-fix behavior (outer deadline clipped to 1×): round 2 is cancelled —
+	// with the R1-keeps-R1 fix the surviving answer is the ROUND-1 answer,
+	// never round 2's "answer".
+	clipAns, clipErr := runScenario(1 * time.Duration(perCall) * time.Second)
+	if clipErr != nil {
+		t.Errorf("1× outer deadline: expected kept round-1 answer, got err=%v", clipErr)
+	}
+	if clipAns == "answer" {
+		t.Error("1× outer deadline: round 2 must be cancelled (got the round-2 answer)")
+	}
+	if !strings.Contains(clipAns, "round-1") {
+		t.Errorf("1× outer deadline: expected the kept round-1 answer, got %q", clipAns)
 	}
 
 	// Fixed behavior (2× outer deadline): round 2 survives with ~1× budget left.
@@ -847,7 +854,7 @@ func TestOpenRouterServerToolsInRequest(t *testing.T) {
 		WebSearchEngine:    "exa",
 		ServerToolMaxCalls: 10,
 	}
-	answer, usage, err := callOpenRouter(context.Background(), "google/gemini-2.5-pro", "key", "q", "ctx", ccfg)
+	answer, usage, err := callOpenRouter(context.Background(), "google/gemini-2.5-pro", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
 	}
@@ -900,7 +907,7 @@ func TestOpenRouterNoServerToolsOmitsFields(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
 	}
@@ -932,7 +939,7 @@ func TestOpenRouterServerToolsArrayContent(t *testing.T) {
 		OpenRouterEndpoint: srv.URL,
 		ServerTools:        []string{"openrouter:web_search"},
 	}
-	answer, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	answer, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter with array content: %v", err)
 	}
@@ -955,7 +962,7 @@ func TestOpenRouterServerToolsNullContent(t *testing.T) {
 		OpenRouterEndpoint: srv.URL,
 		ServerTools:        []string{"openrouter:web_search"},
 	}
-	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Error("expected error for null content")
 	}
@@ -982,7 +989,7 @@ func TestOpenRouterToolCallsFinishReason(t *testing.T) {
 		OpenRouterEndpoint: srv.URL,
 		ServerTools:        []string{"openrouter:web_search"},
 	}
-	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Error("expected error for tool_calls finish_reason")
 	}
@@ -1033,7 +1040,7 @@ func TestOpenRouterServerToolsMixedArray(t *testing.T) {
 		OpenRouterEndpoint: srv.URL,
 		ServerTools:        []string{"openrouter:web_search"},
 	}
-	answer, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	answer, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter with mixed array: %v", err)
 	}
@@ -1055,7 +1062,7 @@ func TestOpenRouter200WithErrorBody(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", ccfg)
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Fatal("expected error for 200-with-error-body")
 	}

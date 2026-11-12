@@ -16,6 +16,27 @@ import (
 
 // ─── CallOracle / CallOracleURL ──────────────────────────────────────────────
 
+// decodeOracleContent flattens an Anthropic message Content (plain string or
+// content-block array) to its text for assertions, in order.
+func decodeOracleContent(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var blocks []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		t.Fatalf("message content is neither string nor blocks: %s", raw)
+	}
+	var parts []string
+	for _, b := range blocks {
+		parts = append(parts, b.Text)
+	}
+	return strings.Join(parts, "\n")
+}
+
 // oracleTestServer returns an httptest.Server that responds with the given
 // status code and response body. When status is 200, it returns an SSE stream
 // with the content and usage; for non-200 it returns the body as-is (the
@@ -295,7 +316,7 @@ func TestCallOracle_ZeroTimeoutDoesNotPanic(t *testing.T) {
 
 func TestCallMember_UnknownProvider(t *testing.T) {
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5}
-	_, _, err := callMember(context.Background(), "unknown", "model", "q", "b", ccfg, map[string]string{})
+	_, _, err := callMember(context.Background(), "unknown", "model", "q", "b", "", ccfg, map[string]string{})
 	if err == nil {
 		t.Fatal("expected unknown provider error")
 	}
@@ -310,7 +331,7 @@ func TestCallMember_AnthropicProvider(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL}
-	answer, _, err := callMember(context.Background(), "anthropic", "test-model", "q", "b", ccfg,
+	answer, _, err := callMember(context.Background(), "anthropic", "test-model", "q", "b", "", ccfg,
 		map[string]string{"anthropic": "key"})
 	if err != nil {
 		t.Fatalf("callMember anthropic: %v", err)
@@ -326,7 +347,7 @@ func TestCallMember_OpenRouterProvider(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	answer, _, err := callMember(context.Background(), "openrouter", "model", "q", "b", ccfg,
+	answer, _, err := callMember(context.Background(), "openrouter", "model", "q", "b", "", ccfg,
 		map[string]string{"openrouter": "key"})
 	if err != nil {
 		t.Fatalf("callMember openrouter: %v", err)
@@ -344,7 +365,7 @@ func TestCallOpenRouter_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, _, err := callOpenRouter(context.Background(), "model", "key", "q", "b", ccfg)
+	_, _, err := callOpenRouter(context.Background(), "model", "key", "q", "b", "", ccfg)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -422,7 +443,7 @@ func TestCallOpenRouter_NoChoices(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, _, err := callOpenRouter(context.Background(), "model", "key", "q", "b", ccfg)
+	_, _, err := callOpenRouter(context.Background(), "model", "key", "q", "b", "", ccfg)
 	if err == nil {
 		t.Fatal("expected no-choices error")
 	}
@@ -437,7 +458,7 @@ func TestCallOpenRouter_EmptyContent(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, _, err := callOpenRouter(context.Background(), "model", "key", "q", "b", ccfg)
+	_, _, err := callOpenRouter(context.Background(), "model", "key", "q", "b", "", ccfg)
 	if err == nil {
 		t.Fatal("expected empty-content error")
 	}
@@ -452,7 +473,7 @@ func TestCallOpenRouter_FinishReasonLength(t *testing.T) {
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, _, err := callOpenRouter(context.Background(), "model", "key", "q", "b", ccfg)
+	_, _, err := callOpenRouter(context.Background(), "model", "key", "q", "b", "", ccfg)
 	if err == nil {
 		t.Fatal("expected length-truncation error")
 	}
@@ -741,7 +762,7 @@ func TestCallOracleURL_RequestShape(t *testing.T) {
 	if req.Messages[0].Role != "user" {
 		t.Errorf("messages[0].role = %q, want 'user'", req.Messages[0].Role)
 	}
-	content := req.Messages[0].Content
+	content := decodeOracleContent(t, req.Messages[0].Content)
 	if !strings.Contains(content, "the question?") {
 		t.Errorf("user message missing question: %q", content)
 	}
@@ -778,7 +799,7 @@ func TestCallOracleURL_NoContext(t *testing.T) {
 	if e := json.Unmarshal(reqBody, &req); e != nil {
 		t.Fatalf("request body not valid JSON: %v", e)
 	}
-	content := req.Messages[0].Content
+	content := decodeOracleContent(t, req.Messages[0].Content)
 	if content != "just a question" {
 		t.Errorf("user message should be just the question, got: %q", content)
 	}

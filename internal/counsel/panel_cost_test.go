@@ -36,7 +36,7 @@ func TestPanelStreamCostAndServedModelNormalCompletion(t *testing.T) {
 	)
 	defer srv.Close()
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestPanelStreamCostOnUsageOnlyChunk(t *testing.T) {
 	)
 	defer srv.Close()
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestPanelStreamNoCostReportedIsNotProviderCost(t *testing.T) {
 	)
 	defer srv.Close()
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestPanelDebugCaptureWritesFile(t *testing.T) {
 	)
 	defer srv.Close()
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	if _, _, err := callOpenRouter(context.Background(), "openrouter/auto", secret, "q", "ctx", ccfg); err != nil {
+	if _, _, err := callOpenRouter(context.Background(), "openrouter/auto", secret, "q", "ctx", "", ccfg); err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
 	}
 	matches, _ := filepath.Glob(filepath.Join(dir, "panel-*.json"))
@@ -152,7 +152,7 @@ func TestPanelDebugCaptureOffWritesNothing(t *testing.T) {
 	srv := rawSSEServer(t, `{"model":"`+servedModel+`","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`)
 	defer srv.Close()
 	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
-	_, _, _ = callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", ccfg)
+	_, _, _ = callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", "", ccfg)
 	if m, _ := filepath.Glob(filepath.Join(dir, "*")); len(m) != 0 {
 		t.Errorf("capture off but files written: %v", m)
 	}

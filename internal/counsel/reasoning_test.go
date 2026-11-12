@@ -120,7 +120,7 @@ func TestCallOpenRouter_ReasoningParameter(t *testing.T) {
 		OpenRouterEndpoint: srv.URL,
 		Reasoning:          &config.ReasoningSpec{Effort: "medium"},
 	}
-	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", "", ccfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestCallOpenRouter_ReasoningMaxTokensOnly(t *testing.T) {
 		OpenRouterEndpoint: srv.URL,
 		Reasoning:          &config.ReasoningSpec{Effort: "medium", MaxTokens: 8192},
 	}
-	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", ccfg)
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", "", ccfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestCallOpenRouter_NoReasoningWhenUnset(t *testing.T) {
 		TimeoutSeconds:     5,
 		OpenRouterEndpoint: srv.URL,
 	}
-	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", ccfg)
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", "", ccfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestCallOpenRouter_ReasoningTokensParsed(t *testing.T) {
 		TimeoutSeconds:     5,
 		OpenRouterEndpoint: srv.URL,
 	}
-	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", ccfg)
+	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", "", ccfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestReviewCodeOnlyCitationNotVoid(t *testing.T) {
 	cited := "utils.go"
 	answer := "Looks good.\n" + evidencePrefix + " " + cited
 
-	send := func(ctx context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
+	send := func(ctx context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
 		return answer, OracleUsage{InputTokens: 10, OutputTokens: 20, FinishReason: "stop"}, nil
 	}
 
@@ -306,7 +306,7 @@ func TestReviewCodeOnlyRangeLabelCitation(t *testing.T) {
 	cited := "utils.go"
 	answer := "Looks good.\n" + evidencePrefix + " " + cited
 
-	send := func(ctx context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
+	send := func(ctx context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
 		return answer, OracleUsage{InputTokens: 10, OutputTokens: 20, FinishReason: "stop"}, nil
 	}
 
@@ -320,7 +320,8 @@ func TestReviewCodeOnlyRangeLabelCitation(t *testing.T) {
 	}
 }
 
-// path produces a VOID result — the evidence check catches it.
+// path is now ACCEPTED with coverage flagged (content present, citation wrong:
+// obtained review, not VOID). Only empty/citation-only replies stay VOID.
 func TestReviewCodeOnlyCitationWrongPathVoid(t *testing.T) {
 	briefing := "── main.go (10 lines) ──\npackage main\n── utils.go (15 lines) ──\npackage main\n"
 
@@ -328,20 +329,20 @@ func TestReviewCodeOnlyCitationWrongPathVoid(t *testing.T) {
 	cited := "main.go"
 	answer := "Looks good.\n" + evidencePrefix + " " + cited
 
-	send := func(ctx context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
+	send := func(ctx context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
 		return answer, OracleUsage{InputTokens: 10, OutputTokens: 20, FinishReason: "stop"}, nil
 	}
 
 	ctx := context.Background()
 	out := dispatchReview(ctx, "test-model", 128000, 4096, 4096, "Review this code.", briefing, "", send)
-	if out.Err == nil {
-		t.Fatal("expected VOID error for wrong citation, got nil")
+	if out.Err != nil {
+		t.Fatalf("a wrong citation with content must be accepted (coverage flagged), got: %v", out.Err)
 	}
-	if !errorsAsVoid(out.Err) {
-		t.Fatalf("expected *VoidError, got %T: %v", out.Err, out.Err)
+	if out.Log == nil || !out.Log.CoverageNotConfirmed {
+		t.Errorf("wrong citation must set CoverageNotConfirmed: %+v", out.Log)
 	}
-	if out.Answer != "" {
-		t.Errorf("expected empty answer on VOID, got %q", out.Answer)
+	if strings.TrimSpace(out.Answer) == "" {
+		t.Error("accepted review must keep its content")
 	}
 }
 

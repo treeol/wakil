@@ -138,6 +138,85 @@ func (c *panelCapture) write(status int, served string, err error) {
 	}
 }
 
+// writeVoidCapture stores one VOID member's diagnostics as one 0600 file
+// (no request body, no headers/key). It no-ops when the debug variable is
+// unset or when the result is not VOID. Failures log one warning per
+// directory and never fail the call.
+func writeVoidCapture(res PanelMemberResult) {
+	if !res.Void {
+		return
+	}
+	dir := strings.TrimSpace(os.Getenv(panelDebugEnvVar))
+	if dir == "" {
+		return
+	}
+	n := panelDebugCounter.Add(1)
+	doc := struct {
+		Label                string  `json:"label"`
+		Cause                string  `json:"cause"`
+		FinishReason         string  `json:"finish_reason"`
+		ReasoningTokens      int64   `json:"reasoning_tokens"`
+		AnswerTokens         int64   `json:"answer_tokens"`
+		Attempts             int     `json:"attempts"`
+		CostUSD              float64 `json:"cost_usd"`
+		HasProviderCost      bool    `json:"has_provider_cost"`
+		FinalTextLength      int     `json:"final_text_length"`
+		CoverageNotConfirmed bool    `json:"coverage_not_confirmed"`
+		BudgetStop           string  `json:"budget_stop"`
+		ServedModel          string  `json:"served_model"`
+	}{
+		Label:           res.PrefixedModel,
+		CostUSD:         res.Usage.ProviderCostUSD,
+		HasProviderCost: res.Usage.HasProviderCost,
+		FinalTextLength: len(res.Answer),
+		ServedModel:     res.Usage.ServedModel,
+	}
+	doc.Attempts = 1
+	doc.ReasoningTokens = res.Usage.ReasoningTokens
+	doc.AnswerTokens = max(res.Usage.OutputTokens-res.Usage.ReasoningTokens, 0)
+	doc.Cause, doc.FinishReason = "unknown", "unknown"
+	if res.Log != nil {
+		if res.Log.VoidCause != "" {
+			doc.Cause = res.Log.VoidCause
+		}
+		if res.Log.VoidFinish != "" {
+			doc.FinishReason = res.Log.VoidFinish
+		}
+		if res.Log.VoidReasoning != 0 {
+			doc.ReasoningTokens = res.Log.VoidReasoning
+		}
+		if res.Log.VoidAnswer != 0 {
+			doc.AnswerTokens = res.Log.VoidAnswer
+		}
+		if res.Log.VoidAttempts > 0 {
+			doc.Attempts = res.Log.VoidAttempts
+		}
+		doc.CoverageNotConfirmed = res.Log.CoverageNotConfirmed
+		doc.BudgetStop = res.Log.BudgetStop
+	}
+	raw, merr := json.MarshalIndent(doc, "", "  ")
+	if merr != nil {
+		panelDebugWarn(dir, "void marshal: %v", merr)
+		return
+	}
+	if merr := os.MkdirAll(dir, 0o700); merr != nil {
+		panelDebugWarn(dir, "void mkdir: %v", merr)
+		return
+	}
+	name := fmt.Sprintf("panel-void-%s-%06d-%s.json", safeLabel(res.PrefixedModel), n, time.Now().UTC().Format("20060102T150405.000000000"))
+	path := filepath.Join(dir, name)
+	f, ferr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if ferr != nil {
+		panelDebugWarn(dir, "void create: %v", ferr)
+		return
+	}
+	_, werr := f.Write(append(raw, '\n'))
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		panelDebugWarn(dir, "void write: %v", firstErr(werr, cerr))
+	}
+}
+
 func panelDebugWarn(dir, format string, args ...any) {
 	if _, loaded := panelDebugWarned.LoadOrStore(dir, true); loaded {
 		return

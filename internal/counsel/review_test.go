@@ -16,6 +16,11 @@ import (
 type recordedReq struct {
 	MaxTokens int
 	User      string // full user message (question + "Context:" + briefing)
+	// Reason captures the request body's thinking/reasoning parameter as raw
+	// JSON ("" when absent or {}). The Anthropic path sends
+	// "thinking":{"type":"enabled","budget_tokens":N}; the empty-retry test
+	// asserts it is lowered between attempts.
+	Reason string
 }
 
 // fakeReviewer is a fake LLM backend that records EXACTLY what it receives and
@@ -35,16 +40,43 @@ func newFakeReviewer(t *testing.T) *fakeReviewer {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var body struct {
-			MaxTokens int `json:"max_tokens"`
+			MaxTokens int             `json:"max_tokens"`
+			Thinking  json.RawMessage `json:"thinking"`
+			Reasoning json.RawMessage `json:"reasoning"`
 			Messages  []struct {
-				Content string `json:"content"`
+				Content json.RawMessage `json:"content"`
 			} `json:"messages"`
 		}
 		if err := json.Unmarshal(raw, &body); err != nil || len(body.Messages) == 0 {
 			http.Error(w, "bad request", 400)
 			return
 		}
-		rec := recordedReq{MaxTokens: body.MaxTokens, User: body.Messages[0].Content}
+		userText := ""
+		var s string
+		if err := json.Unmarshal(body.Messages[0].Content, &s); err == nil {
+			userText = s
+		} else {
+			var blocks []struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(body.Messages[0].Content, &blocks); err != nil {
+				http.Error(w, "bad request", 400)
+				return
+			}
+			parts := make([]string, 0, len(blocks))
+			for _, b := range blocks {
+				parts = append(parts, b.Text)
+			}
+			userText = strings.Join(parts, "\n")
+		}
+		reason := string(body.Thinking)
+		if reason == "" || reason == "{}" || reason == "null" {
+			reason = string(body.Reasoning)
+		}
+		if reason == "{}" || reason == "null" {
+			reason = ""
+		}
+		rec := recordedReq{MaxTokens: body.MaxTokens, User: userText, Reason: reason}
 		f.mu.Lock()
 		f.reqs = append(f.reqs, rec)
 		n := len(f.reqs)
@@ -354,36 +386,48 @@ func TestReviewLengthTwiceIsVoid(t *testing.T) {
 	}
 }
 
-// A reply that cites the wrong last section is VOID.
+// A reply with real content but a wrong (or missing) last-section citation
+// is ACCEPTED but flagged: coverage is not confirmed. It is no longer VOID —
+// the finding text is kept and the banner is a flag, not NOT COMPLETED.
 func TestReviewWrongLastHeadingIsVoid(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(int, recordedReq) (string, string) {
 		return "end_turn", "all fine\nLAST SECTION READ: 4. Something I invented"
 	}
-	doc, heads := buildDoc(6, 800)
+	doc, _ := buildDoc(6, 800)
 	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
-	if !res[0].Void || !strings.Contains(res[0].Err.Error(), heads[len(heads)-1]) {
-		t.Fatalf("want VOID naming the real last heading %q, got %+v", heads[len(heads)-1], res[0])
+	if res[0].Void || res[0].Err != nil {
+		t.Fatalf("a wrong citation with content must be accepted, got %+v", res[0])
 	}
-	// Missing citation is VOID too.
+	if res[0].Log == nil || !res[0].Log.CoverageNotConfirmed {
+		t.Errorf("coverage must be flagged not confirmed: %+v", res[0].Log)
+	}
+	if !strings.Contains(res[0].Answer, "all fine") {
+		t.Errorf("the finding text must be kept, got %q", res[0].Answer)
+	}
+	if out := FormatPanelResult(res); !strings.Contains(out, "coverage not confirmed") {
+		t.Errorf("flagged output must say coverage not confirmed, got:\n%s", out)
+	}
+	// Missing citation is accepted+flagged too.
 	f2 := newFakeReviewer(t)
 	f2.reply = func(int, recordedReq) (string, string) { return "end_turn", "looks fine, no findings" }
 	res = RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f2, nil), map[string]string{"anthropic": "k"})
-	if !res[0].Void {
-		t.Fatalf("a reply without a citation must be VOID: %+v", res[0])
+	if res[0].Void || res[0].Err != nil || res[0].Log == nil || !res[0].Log.CoverageNotConfirmed {
+		t.Fatalf("a reply without a citation must be accepted+flagged: %+v", res[0])
 	}
 }
 
 // One VOID part voids the whole member: partial parts are never merged. The
-// member is retried once automatically, so the fake must stay VOID on BOTH
-// attempts for the member to remain VOID.
+// part-2 reply is citation-ONLY (the bare citation line), so the member
+// stays VOID under the citation-only rule — cause=citation is never
+// retried, so VoidRetried stays false and the member is "not obtained".
 func TestReviewVoidPartVoidsMember(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(n int, r recordedReq) (string, string) {
 		// Void the SECOND part of every attempt (part numbering restarts each
-		// attempt), so both the first attempt and the automatic retry are VOID.
+		// attempt) with a citation-only reply, so the member is VOID.
 		if strings.Contains(r.User, "part 2 of") {
-			return "end_turn", "ok\nLAST SECTION READ: Section 1"
+			return "end_turn", "LAST SECTION READ: " + lastSection(r.User)
 		}
 		return "end_turn", "ok\nLAST SECTION READ: " + lastSection(r.User)
 	}
@@ -393,8 +437,11 @@ func TestReviewVoidPartVoidsMember(t *testing.T) {
 	if !res[0].Void || res[0].Answer != "" {
 		t.Fatalf("want a fully VOID member, got %+v", res[0])
 	}
-	if res[0].Log == nil || !res[0].Log.VoidRetried || !res[0].Log.VoidNotObtained {
-		t.Errorf("a twice-VOID member must be marked retried and not obtained: %+v", res[0].Log)
+	if res[0].Log == nil || res[0].Log.VoidRetried || res[0].Log.VoidNotObtained {
+		t.Errorf("a citation-only VOID must NOT be retried and stays 1 attempt (not obtained only after a changed retry): %+v", res[0].Log)
+	}
+	if got := res[0].Log.VoidAttempts; got != 1 {
+		t.Errorf("VoidAttempts = %d, want 1 (citation cause is never retried)", got)
 	}
 }
 
@@ -544,6 +591,8 @@ func TestReviewLengthRetryWhenAlreadyChunked(t *testing.T) {
 // reviewed against ITS OWN last heading. The appendix is carried explicitly,
 // so the quoted marker is just text; a reply citing an earlier heading is VOID
 // and the correct citation passes — in round 1 and in the debate round 2.
+// A wrong citation with content is accepted+flagged now (coverage not
+// confirmed), not VOID, so the "bad" member is obtained but flagged.
 func TestAppendixMarkerQuotedInDocumentDoesNotMoveEvidenceTarget(t *testing.T) {
 	doc := "# Intro\n\nSome text.\n\n```\n" + critiqueMarker + "\n── fake ──\n```\n\n## Final Section\n\nEnd.\n"
 	models := []string{"anthropic:a", "anthropic:b"}
@@ -568,8 +617,11 @@ func TestAppendixMarkerQuotedInDocumentDoesNotMoveEvidenceTarget(t *testing.T) {
 	}
 	res = RunPanel(context.Background(), models, "panel", "q", doc, panelCfg(bad, nil), map[string]string{"anthropic": "k"})
 	for _, r := range res {
-		if !r.Void {
-			t.Fatalf("citing a heading before the document end must be VOID: %+v", r)
+		if r.Void || r.Err != nil || r.Log == nil || !r.Log.CoverageNotConfirmed {
+			t.Fatalf("a wrong citation with content must be accepted+flagged (not VOID): %+v", r)
+		}
+		if !strings.Contains(r.Answer, "Finding: ok") {
+			t.Fatalf("the flagged review must keep its content: %+v", r)
 		}
 	}
 }
@@ -597,6 +649,11 @@ func TestDebateAppendixSpanningPartsIsIdenticalInEveryPart(t *testing.T) {
 	}
 	var appendix string
 	r2 := 0
+	// The appendix sits after the document inside the Material section, so the
+	// slice from the appendix marker to the end of the Material section (up to
+	// the Question header) is the identical appendix in every part. The tail
+	// after the appendix (Question + Format instructions) is per-part framing
+	// and must be excluded from the comparison.
 	for _, rq := range f.requests() {
 		i := strings.Index(rq.User, "\n\n"+critiqueMarker+"\n")
 		if i < 0 {
@@ -607,6 +664,9 @@ func TestDebateAppendixSpanningPartsIsIdenticalInEveryPart(t *testing.T) {
 			t.Fatalf("appendix must appear exactly once per part")
 		}
 		ap := rq.User[i:]
+		if j := strings.Index(ap, "\n"+skeletonQuestion+"\n"); j >= 0 {
+			ap = ap[:j]
+		}
 		if appendix == "" {
 			appendix = ap
 		} else if ap != appendix {
@@ -697,32 +757,34 @@ func TestReviewCitationOnlyReplyIsVoid(t *testing.T) {
 	}
 }
 
-// A VOID reply is retried once automatically; if the retry succeeds, the member
-// returns the retry's answer and is NOT VOID.
-func TestReviewVoidRetriedOnceThenSucceeds(t *testing.T) {
+// A citation-only reply is VOID with cause=citation, which is NEVER
+// retried (the same request cannot fix it): the member stays VOID after
+// exactly one attempt and the request count is one dispatch's parts.
+func TestReviewCitationOnlyNotRetried(t *testing.T) {
 	f := newFakeReviewer(t)
-	n := 0
 	f.reply = func(_ int, r recordedReq) (string, string) {
-		n++
-		if n == 1 {
-			// The FIRST request of the first attempt misses its citation → that
-			// attempt is VOID (a member VOIDs on its first bad part).
-			return "end_turn", "a finding but no citation line"
-		}
-		return "end_turn", "real finding\nLAST SECTION READ: " + lastSection(r.User)
+		return "end_turn", "LAST SECTION READ: " + lastSection(r.User)
 	}
 	doc, _ := buildDoc(40, 3000)
 	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
 	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
 	r := res[0]
-	if r.Void || r.Err != nil {
-		t.Fatalf("the automatic retry should have succeeded: %+v", r)
+	if !r.Void || r.Err == nil {
+		t.Fatalf("a citation-only reply must be VOID: %+v", r)
 	}
-	if r.Log == nil || !r.Log.VoidRetried || r.Log.VoidNotObtained {
-		t.Errorf("log must record a retried-and-succeeded VOID: %+v", r.Log)
+	if r.Log == nil || r.Log.VoidRetried || r.Log.VoidNotObtained {
+		t.Errorf("citation-only VOID must not be retried (1 attempt, not obtained is only set after a changed retry): %+v", r.Log)
 	}
-	if !strings.Contains(r.Answer, "real finding") {
-		t.Errorf("the retry's answer must be returned: %q", r.Answer)
+	if got := r.Log.VoidAttempts; got != 1 {
+		t.Errorf("VoidAttempts = %d, want 1", got)
+	}
+	// Exactly one dispatch's parts reached the backend — no automatic retry.
+	// The member voids on part 1 of 3, so only part-1's request was sent.
+	if n := len(f.requests()); n != 1 {
+		t.Errorf("citation-only VOID voids on part 1: want 1 request, got %d", n)
+	}
+	if n := len(f.requests()); n > 10 {
+		t.Errorf("a retry would double the parts; got %d requests", n)
 	}
 }
 
@@ -786,15 +848,21 @@ func TestReviewLengthRetriesOnceThenVoids(t *testing.T) {
 		t.Errorf("log must record the length retry: %+v", res[0].Log)
 	}
 
-	// Always-truncating fake → VOID, and the member is marked retried.
+	// Always-truncating fake → VOID. Dispatch already retried once
+	// internally (whole + bigger); runMember does NOT re-retry when dispatch
+	// already retried (canDouble=false), so VoidAttempts==1 and VoidRetried
+	// stays false — updated to match runMember code.
 	f2 := newFakeReviewer(t)
 	f2.reply = func(int, recordedReq) (string, string) { return "max_tokens", "cut" }
 	res = RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f2, lim), map[string]string{"anthropic": "k"})
 	if !res[0].Void || res[0].Answer != "" {
 		t.Fatalf("still truncated must be VOID: %+v", res[0])
 	}
-	if res[0].Log == nil || !res[0].Log.VoidRetried || !res[0].Log.VoidNotObtained {
-		t.Errorf("a still-truncated member must be marked retried and not obtained: %+v", res[0].Log)
+	if res[0].Log == nil || res[0].Log.VoidRetried {
+		t.Errorf("dispatch-retried VOID must not set VoidRetried in runMember: %+v", res[0].Log)
+	}
+	if res[0].Log == nil || res[0].Log.VoidAttempts != 1 {
+		t.Errorf("VoidAttempts must be 1 when dispatch already retried: %+v", res[0].Log)
 	}
 }
 

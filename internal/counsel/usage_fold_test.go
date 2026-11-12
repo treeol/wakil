@@ -21,7 +21,7 @@ func TestReviewKeepsProviderCostAndServedModel(t *testing.T) {
 	if parsed == nil || !parsed.HasProviderCost {
 		t.Fatalf("parser did not read the cost from the real chunk shape: %+v", parsed)
 	}
-	send := func(ctx context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
+	send := func(ctx context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
 		return "Looks fine. No findings.", OracleUsage{
 			InputTokens:     parsed.InputTokens,
 			OutputTokens:    parsed.OutputTokens,

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -93,8 +94,32 @@ type oracleThinking struct {
 }
 
 type oracleMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+// oracleCacheControl marks an Anthropic prompt-cache breakpoint.
+type oracleCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
+// oracleContentBlock is one Anthropic text content block.
+type oracleContentBlock struct {
+	Type         string              `json:"type"` // "text"
+	Text         string              `json:"text"`
+	CacheControl *oracleCacheControl `json:"cache_control,omitempty"`
+}
+
+// oracleTextContent marshals a plain-string message content.
+func oracleTextContent(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return b
+}
+
+// oracleBlocksContent marshals a content-block array message content.
+func oracleBlocksContent(blocks []oracleContentBlock) json.RawMessage {
+	b, _ := json.Marshal(blocks)
+	return b
 }
 
 // anthropicSSEEvent is the envelope for Anthropic SSE events.
@@ -298,6 +323,13 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 	if oracleCtx != "" {
 		userContent += "\n\nContext:\n" + oracleCtx
 	}
+	return callOracleWithContent(ctx, cfg, apiKey, oracleTextContent(userContent), endpoint, reasoning)
+}
+
+// callOracleWithContent is the Anthropic Messages call with pre-built
+// message content (plain string or content blocks). callOracleWithReasoning
+// and callAnthropic (debate cache path) both funnel here.
+func callOracleWithContent(ctx context.Context, cfg config.Config, apiKey string, content json.RawMessage, endpoint string, reasoning *config.ReasoningSpec) (string, OracleUsage, error) {
 
 	maxTokens := cfg.OracleMaxTokens
 	var thinking *oracleThinking
@@ -324,7 +356,7 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 		Model:     cfg.OracleModel,
 		MaxTokens: maxTokens,
 		System:    oracleSystemPrompt,
-		Messages:  []oracleMsg{{Role: "user", Content: userContent}},
+		Messages:  []oracleMsg{{Role: "user", Content: content}},
 		Thinking:  thinking,
 		Stream:    true,
 	})
@@ -343,7 +375,7 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	content, sUsage, status, err := streamRequest(tctx, endpoint, map[string]string{
+	reply, sUsage, status, err := streamRequest(tctx, endpoint, map[string]string{
 		"x-api-key":         apiKey,
 		"anthropic-version": "2023-06-01",
 	}, body, counselStreamIdleTimeout, timeout, parseAnthropicSSE)
@@ -368,7 +400,7 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 		// Non-200: the streamRequest already read the body; parse it as an error.
 		var apiErr oracleResp
 		msg := ""
-		if json.Unmarshal([]byte(content), &apiErr) == nil && apiErr.Error != nil {
+		if json.Unmarshal([]byte(reply), &apiErr) == nil && apiErr.Error != nil {
 			msg = apiErr.Error.Message
 			if status == 400 && strings.Contains(msg, "max_tokens") {
 				msg += " (API rejected large request; reduce oracle_max_tokens)"
@@ -385,7 +417,7 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 		result.Usage.OutputTokens = int(sUsage.OutputTokens)
 	}
 
-	text := strings.TrimSpace(content)
+	text := strings.TrimSpace(reply)
 	if os.Getenv("WAKIL_DEBUG") != "" {
 		diag.Printf("[oracle debug] streamed stop_reason=%q input=%d output=%d content_len=%d\n",
 			result.StopReason, result.Usage.InputTokens, result.Usage.OutputTokens, len(text))
@@ -502,9 +534,10 @@ type PanelCallConfig struct {
 	// or the bare model id. Missing entries fall back to the provider table.
 	ModelLimits map[string]ModelLimits
 
-	// MinAnswerTokens is the answer-budget floor for the call; 0 = 4096 (a
-	// review). The lightweight check tool sets its own lower floor. A floor
-	// that does not fit forces chunking or an error — never input truncation.
+	// MinAnswerTokens is the answer-budget floor for the call; 0 (or any
+	// value below 4096) = 4096 for every counsel tool, including check. A
+	// floor that does not fit forces chunking or an error — never input
+	// truncation.
 	MinAnswerTokens int
 
 	// Reasoning is the per-role reasoning/thinking spec for this panel call.
@@ -514,6 +547,39 @@ type PanelCallConfig struct {
 	// (MaxTokens) is never reduced to make room for reasoning — max_tokens on
 	// the wire is additive (reasoning budget + answer budget).
 	Reasoning *config.ReasoningSpec
+
+	// ReasoningBudgetTokens is the reasoning-token reserve derived from
+	// Reasoning (see reasoningBudgetTokens). The dispatcher subtracts it
+	// from the usable context when sizing the answer budget, so the wire
+	// total (reasoning + answer) fits the window; the provider layer still
+	// sends them additively. 0 = no reserve (no reasoning, or derived in
+	// runMember from the effective per-model reasoning).
+	ReasoningBudgetTokens int
+
+	// ReviewBudgetUSD caps provider-reported spend for this panel operation;
+	// <=0 = no review-budget guard.
+	ReviewBudgetUSD float64
+	// SessionBudgetUSD caps (session spend since the base captured at
+	// BudgetState construction) + (panel spend); <=0 = no session guard.
+	SessionBudgetUSD float64
+	// SessionCostFunc reports the current session spend in USD (nil = none).
+	SessionCostFunc func() float64
+	// BudgetState is the shared budget guard for the operation; nil until
+	// RunPanel sets it (internal).
+	BudgetState *BudgetState
+	// OperationID identifies the panel operation (set in RunPanel when
+	// empty); SessionID is the debate session id set per member in buildSend
+	// (OperationID + "/" + prefixed model) for OpenRouter session affinity.
+	OperationID string
+	SessionID   string
+	// UseCache enables debate-only prompt caching: Anthropic cache_control on
+	// the briefing block and OpenRouter session_id. Set by RunPanel only for
+	// debate mode; all other modes and fusion leave it false.
+	UseCache bool
+	// IsFusion marks the fusion member (set in RunPanel's fusion branch).
+	// A fusion VOID is never retried by runMember: an empty/limit retry
+	// would send an identical request to the same judge.
+	IsFusion bool
 }
 
 // PanelMemberEventKind discriminates async-job progress events.
@@ -579,10 +645,18 @@ type PanelMemberResult struct {
 	// empty, or failing the last-section check. Err is a *VoidError then. A
 	// VOID result is never a review round and never "no findings".
 	Void bool
+	// BudgetStopped is true when the budget guard stopped this member before
+	// (or instead of) a reply. Err is a *BudgetError then (never VOID).
+	BudgetStopped bool
+	// BudgetNote carries the budget-stop reason on BudgetStopped members.
+	BudgetNote string
 	// Log records what this reviewer was sent (tokens, parts, context size,
 	// read-through section). Nil for results not produced by the dispatcher.
 	Log *ReviewLog
 }
+
+// panelOperationCounter numbers panel operations for OperationID.
+var panelOperationCounter atomic.Int64
 
 // RunPanel executes the panel according to its mode.
 //
@@ -614,13 +688,26 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 		return results
 	}
 
+	if ccfg.BudgetState == nil {
+		ccfg.BudgetState = newBudgetState(ccfg)
+	}
+	if ccfg.OperationID == "" {
+		ccfg.OperationID = fmt.Sprintf("panel-%d", panelOperationCounter.Add(1))
+	}
+	// Debate-only caching/session affinity (item 5): only debate mode sets
+	// UseCache; panel/fallback/fusion stay on the uncached single-string path.
+	if mode == "debate" {
+		ccfg.UseCache = true
+	}
+
 	if mode == "fusion" {
 		// Single OpenRouter Fusion call; models become the analysis panel.
+		ccfg.IsFusion = true
 		notifyMemberEvent(ccfg, PanelMemberEvent{Slot: 0, Model: "openrouter:openrouter/fusion", Kind: PanelMemberStart})
-		res := runMember(ctx, "openrouter:openrouter/fusion", "openrouter", "openrouter/fusion", question, briefing, "", ccfg, apiKeys, func(c context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
+		res := runMember(ctx, "openrouter:openrouter/fusion", "openrouter", "openrouter/fusion", question, briefing, "", ccfg, apiKeys, func(c context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
 			fc := ccfg
 			fc.MaxTokens = maxTok
-			return callFusion(c, models, apiKeys["openrouter"], q, b, fc)
+			return callFusion(c, models, apiKeys["openrouter"], q, b+ap, fc)
 		})
 		kind := PanelMemberDone
 		if res.Err != nil {
@@ -640,6 +727,12 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 		results := make([]PanelMemberResult, 0, len(models))
 		for slot, pm := range models {
 			prov, model := ParseModelPrefix(pm)
+			if slot > 0 {
+				if reason, stop := ccfg.BudgetState.shouldStop(); stop {
+					results = append(results, PanelMemberResult{PrefixedModel: pm, Model: model, Err: &BudgetError{Reason: reason}, BudgetStopped: true, BudgetNote: reason, Log: &ReviewLog{Model: pm, BudgetStop: reason}})
+					break
+				}
+			}
 			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: slot, Model: pm, Kind: PanelMemberStart})
 			res := runMember(ctx, pm, prov, model, question, briefing, "", ccfg, apiKeys, nil)
 			err := res.Err
@@ -755,6 +848,18 @@ func runDebate(ctx context.Context, models []string, question, briefing string, 
 		}
 	}
 
+	// Budget guard: do not start round 2 when the budget is reached; the
+	// obtained round-1 answers are kept and reported NOT COMPLETED.
+	if reason, stop := ccfg.BudgetState.shouldStop(); stop {
+		for i := range r1Results {
+			if r1Results[i].Log == nil {
+				r1Results[i].Log = &ReviewLog{Model: r1Results[i].PrefixedModel}
+			}
+			r1Results[i].Log.BudgetStop = reason
+		}
+		return r1Results
+	}
+
 	// If all members failed in round 1, return round-1 results.
 	if len(successes) == 0 {
 		return r1Results
@@ -782,6 +887,26 @@ func runDebate(ctx context.Context, models []string, question, briefing string, 
 			prov, model := ParseModelPrefix(models[s.index])
 			notifyMemberEvent(ccfg, PanelMemberEvent{Slot: s.index, Round: 2, Model: models[s.index], Kind: PanelMemberStart})
 			res := runMember(debateCtx, models[s.index], prov, model, question, briefing, r2Appendix, ccfg, apiKeys, nil)
+			// Round-2 failure keeps the usable round-1 answer: the member
+			// still produced a review, it just did not refine it. Err is
+			// cleared (usable) while BudgetStopped/BudgetNote are preserved
+			// so the budget banner still fires.
+			if res.Err != nil && r1Results[s.index].Err == nil && r1Results[s.index].Answer != "" {
+				r2err := res.Err.Error()
+				budgetStopped, budgetNote := res.BudgetStopped, res.BudgetNote
+				res.Answer = r1Results[s.index].Answer
+				res.Err = nil
+				res.Void = false
+				res.BudgetStopped = budgetStopped
+				res.BudgetNote = budgetNote
+				if res.Log == nil {
+					res.Log = &ReviewLog{Model: models[s.index]}
+				}
+				res.Log.R1Kept = true
+				res.Log.Round2KeptR1 = true
+				res.Log.Round2Failed = true
+				res.Log.Why = "round 2 failed (" + r2err + "); round 1 kept"
+			}
 			kind := PanelMemberDone
 			if res.Err != nil {
 				kind = PanelMemberError
@@ -822,22 +947,26 @@ func buildCritiqueAppendix(successes []debateRound1Result) string {
 }
 
 // callMember dispatches a single consultation to the right provider.
-func callMember(ctx context.Context, prov, model, question, briefing string, ccfg PanelCallConfig, apiKeys map[string]string) (string, OracleUsage, error) {
+func callMember(ctx context.Context, prov, model, question, briefing, appendix string, ccfg PanelCallConfig, apiKeys map[string]string) (string, OracleUsage, error) {
 	key := apiKeys[prov]
 	switch prov {
 	case "anthropic":
-		return callAnthropic(ctx, model, key, question, briefing, ccfg)
+		return callAnthropic(ctx, model, key, question, briefing, appendix, ccfg)
 	case "openrouter":
-		return callOpenRouter(ctx, model, key, question, briefing, ccfg)
+		return callOpenRouter(ctx, model, key, question, briefing, appendix, ccfg)
 	default:
 		return "", OracleUsage{}, fmt.Errorf("unknown provider %q", prov)
 	}
 }
 
 // callAnthropic wraps the existing Anthropic path with a synthetic config.
-func callAnthropic(ctx context.Context, model, apiKey, question, briefing string, ccfg PanelCallConfig) (string, OracleUsage, error) {
-	// The dispatcher (runMember) has already sized question+briefing against
-	// the model's context window and chosen MaxTokens; nothing is cut here.
+// question is the raw question (+ part framing), briefing is the part text
+// (no appendix), appendix is the debate round-2 material ("" in round 1).
+// Single-string path builds the skeleton exactly as dispatch did before.
+// Debate cache path (UseCache, briefing >= 1024 tokens): block 0 is the
+// briefing alone with an ephemeral cache marker (stable R1/R2), block 1 is
+// the skeleton rebuilt with appendix-only material (question + format side).
+func callAnthropic(ctx context.Context, model, apiKey, question, briefing, appendix string, ccfg PanelCallConfig) (string, OracleUsage, error) {
 	synCfg := config.Config{
 		OracleModel:          model,
 		OracleMaxTokens:      ccfg.MaxTokens,
@@ -848,7 +977,15 @@ func callAnthropic(ctx context.Context, model, apiKey, question, briefing string
 	if synCfg.OracleEndpoint != "" {
 		endpoint = synCfg.OracleEndpoint
 	}
-	return callOracleWithReasoning(ctx, synCfg, apiKey, question, briefing, endpoint, ccfg.Reasoning)
+	if ccfg.UseCache && estTokens(len(briefing)) >= 1024 {
+		blocks := []oracleContentBlock{
+			{Type: "text", Text: briefing, CacheControl: &oracleCacheControl{Type: "ephemeral"}},
+			{Type: "text", Text: buildUserMessage(appendix, question)},
+		}
+		return callOracleWithContent(ctx, synCfg, apiKey, oracleBlocksContent(blocks), endpoint, ccfg.Reasoning)
+	}
+	userMsg := buildUserMessage(briefing+appendix, question)
+	return callOracleWithContent(ctx, synCfg, apiKey, oracleTextContent(userMsg), endpoint, ccfg.Reasoning)
 }
 
 // orFusionPlugin is the "fusion" plugin block sent in the OpenRouter request.
@@ -877,6 +1014,9 @@ type orReq struct {
 	// follows the OpenAI streaming spec: without include_usage, the stream ends
 	// with [DONE] and no usage — cost accounting would silently skip the call.
 	StreamOptions *orStreamOptions `json:"stream_options,omitempty"`
+	// SessionID gives OpenRouter session affinity for debate R1/R2 caching.
+	// Set only in debate (UseCache); omitted otherwise.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // orStreamOptions controls what extra data is included in the SSE stream.
@@ -1058,11 +1198,12 @@ func (m *orRespMessage) UnmarshalJSON(data []byte) error {
 // OpenRouter server-side tools (web_search, web_fetch, etc.) are enabled — the
 // model decides when to call them, OpenRouter executes server-side, and the
 // final text is returned.
-func callOpenRouter(ctx context.Context, model, apiKey, question, briefing string, ccfg PanelCallConfig) (string, OracleUsage, error) {
-	userContent := question
-	if briefing != "" {
-		userContent += "\n\nContext:\n" + briefing
-	}
+func callOpenRouter(ctx context.Context, model, apiKey, question, briefing, appendix string, ccfg PanelCallConfig) (string, OracleUsage, error) {
+	// Skeleton path (byte-identical to dispatch's former buildUserMessage):
+	// question is the raw question, briefing the part text, appendix the
+	// debate material. Direct test callers passing a plain briefing get the
+	// same skeleton with that briefing as the material.
+	userContent := buildUserMessage(briefing+appendix, question)
 
 	maxTokens := ccfg.MaxTokens
 	var reasoning *config.ReasoningSpec
@@ -1098,6 +1239,13 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 		Stream:        true,
 		StreamOptions: &orStreamOptions{IncludeUsage: true},
 	}
+	if ccfg.UseCache {
+		if ccfg.SessionID != "" {
+			req.SessionID = ccfg.SessionID
+		} else if ccfg.OperationID != "" {
+			req.SessionID = ccfg.OperationID + "/" + model
+		}
+	}
 
 	// Wire server-side tools when configured. OpenRouter executes these
 	// server-side; the model decides when to call them.
@@ -1124,10 +1272,7 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing strin
 // as "analysis_models" in the plugin block; OpenRouter runs them in parallel
 // and the judge synthesizes their responses. Returns the judge's analysis text.
 func callFusion(ctx context.Context, analysisModels []string, apiKey, question, briefing string, ccfg PanelCallConfig) (string, OracleUsage, error) {
-	userContent := question
-	if briefing != "" {
-		userContent += "\n\nContext:\n" + briefing
-	}
+	userContent := buildUserMessage(briefing, question)
 
 	plugin := orFusionPlugin{ID: "fusion"}
 	if len(analysisModels) > 0 {
@@ -1268,15 +1413,24 @@ func FormatPanelResult(results []PanelMemberResult) string {
 		sb.WriteString(VoidHeader(results))
 		sb.WriteString("\n\n")
 	}
+	if AnyBudgetStopped(results) {
+		sb.WriteString("[mashūra round NOT COMPLETED — review budget reached; what was obtained is kept — this is not a review round and not \"no findings\"]")
+		sb.WriteString("\n\n")
+	}
 	if len(results) == 1 {
 		r := results[0]
 		switch {
+		case r.BudgetStopped:
+			sb.WriteString("[NOT COMPLETED — review budget reached]")
 		case r.Void:
 			sb.WriteString("[review NOT obtained — " + r.Err.Error() + "]")
 		case r.Err != nil:
 			sb.WriteString("[mashūra error: " + r.Err.Error() + "]")
 		default:
 			sb.WriteString(r.Answer)
+			if r.Log != nil && r.Log.CoverageNotConfirmed && r.Err == nil {
+				sb.WriteString(" — coverage not confirmed")
+			}
 		}
 		sb.WriteString(logFooter(r))
 		return sb.String()
@@ -1287,16 +1441,65 @@ func FormatPanelResult(results []PanelMemberResult) string {
 		}
 		fmt.Fprintf(&sb, "── %s ──\n", r.Model)
 		switch {
+		case r.BudgetStopped:
+			fmt.Fprintf(&sb, "[NOT COMPLETED — review budget reached]")
 		case r.Void:
 			fmt.Fprintf(&sb, "[review NOT obtained — %s]", r.Err.Error())
 		case r.Err != nil:
 			fmt.Fprintf(&sb, "[error: %s]", r.Err.Error())
 		default:
 			sb.WriteString(r.Answer)
+			if r.Log != nil && r.Log.CoverageNotConfirmed && r.Err == nil {
+				sb.WriteString(" — coverage not confirmed")
+			}
 		}
 		sb.WriteString(logFooter(r))
 	}
 	return sb.String()
+}
+
+// PanelOpCostLine renders the panel operation's total provider-reported
+// cost and call count.
+func PanelOpCostLine(results []PanelMemberResult) string {
+	total := 0.0
+	priced := false
+	for _, r := range results {
+		if r.Usage.HasProviderCost {
+			priced = true
+			total += r.Usage.ProviderCostUSD
+		}
+	}
+	if priced {
+		return fmt.Sprintf("mashūra panel: $%.4f total (%d calls)", total, len(results))
+	}
+	return fmt.Sprintf("mashūra panel: unpriced (%d calls)", len(results))
+}
+
+// VoidLine renders one VOID member's diagnostics in one line.
+func VoidLine(r PanelMemberResult) string {
+	cause, finish := "unknown", "unknown"
+	reasoning := r.Usage.ReasoningTokens
+	attempts := 1
+	if r.Log != nil {
+		if r.Log.VoidCause != "" {
+			cause = r.Log.VoidCause
+		}
+		if r.Log.VoidFinish != "" {
+			finish = r.Log.VoidFinish
+		}
+		if r.Log.VoidReasoning != 0 {
+			reasoning = r.Log.VoidReasoning
+		}
+		if r.Log.VoidAttempts > 0 {
+			attempts = r.Log.VoidAttempts
+		}
+	}
+	answer := max(r.Usage.OutputTokens-reasoning, 0)
+	cost := "unpriced"
+	if r.Usage.HasProviderCost {
+		cost = fmt.Sprintf("$%.4f", r.Usage.ProviderCostUSD)
+	}
+	return fmt.Sprintf("VOID %s cause=%s finish=%s reasoning=%d answer=%d attempts=%d cost=%s", r.PrefixedModel, cause, finish, reasoning, answer, attempts, cost)
 }
 
 // VoidHeader is the panel-wide banner printed when any reply is VOID. A reply
@@ -1352,6 +1555,12 @@ func logFooter(r PanelMemberResult) string {
 		s += "; " + l.Why
 	} else if l.Retried {
 		s += "; retried chunked after finish_reason=length"
+	}
+	if l.CoverageNotConfirmed {
+		s += "; coverage not confirmed"
+	}
+	if l.BudgetStop != "" {
+		s += "; review budget reached"
 	}
 	return s + "]"
 }
@@ -1437,6 +1646,49 @@ func clampReviewerReasoning(spec *config.ReasoningSpec) *config.ReasoningSpec {
 	return spec
 }
 
+// buildSend returns the provider send for one member with the given
+// reasoning spec, each call's provider-reported cost folded into the shared
+// budget guard (when set). An explicit send (fusion, tests) is wrapped the
+// same way, so budget accounting covers every call.
+func buildSend(prefixed, prov, model string, ccfg PanelCallConfig, apiKeys map[string]string, explicit sendFunc, reasoning *config.ReasoningSpec) sendFunc {
+	if explicit == nil {
+		explicit = func(c context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
+			mc := ccfg
+			mc.MaxTokens = maxTok
+			mc.Reasoning = reasoning
+			if ccfg.UseCache && prov == "openrouter" && ccfg.OperationID != "" {
+				mc.SessionID = ccfg.OperationID + "/" + prefixed
+			}
+			return callMember(c, prov, model, q, b, ap, mc, apiKeys)
+		}
+	}
+	if ccfg.BudgetState == nil {
+		return explicit
+	}
+	orig := explicit
+	return func(c context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
+		ans, u, err := orig(c, q, b, ap, maxTok)
+		ccfg.BudgetState.add(u)
+		return ans, u, err
+	}
+}
+
+// ReviewUsableForVerdict reports whether a panel result may be counted as a
+// usable verdict input: a clean success with an answer whose coverage was
+// confirmed (no coverage-not-confirmed flag).
+func ReviewUsableForVerdict(r PanelMemberResult) bool {
+	return r.Err == nil && r.Answer != "" && !(r.Log != nil && r.Log.CoverageNotConfirmed)
+}
+
+// firstFinishReasons returns the first attempt's finish reasons (for the
+// merged retry log).
+func firstFinishReasons(o reviewOutcome) []string {
+	if o.Log == nil {
+		return nil
+	}
+	return o.Log.FinishReasons
+}
+
 // runMember sends the review to one panel member through the whole-or-fail
 // dispatcher and converts the outcome to a PanelMemberResult. send may be nil
 // (the member's provider call is used).
@@ -1457,54 +1709,133 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 	// overrides and the role-level default.
 	effectiveReasoning = clampReviewerReasoning(effectiveReasoning)
 
-	if send == nil {
-		send = func(c context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
-			mc := ccfg
-			mc.MaxTokens = maxTok
-			mc.Reasoning = effectiveReasoning
-			return callMember(c, prov, model, q, b, mc, apiKeys)
-		}
-	}
+	origSend := send
+	send = buildSend(prefixed, prov, model, ccfg, apiKeys, origSend, effectiveReasoning)
+	attemptReasoning := effectiveReasoning
 	ctxTokens, configuredMax := limitsFor(ctx, ccfg, prefixed, model)
-	out := dispatchReview(ctx, prefixed, ctxTokens, configuredMax, ccfg.MinAnswerTokens, question, briefing, appendix, send)
-	// A VOID reply is retried ONCE automatically before it is reported: a
-	// single re-dispatch (same member, same document, one more attempt) often
-	// clears a transient empty/truncated/missed-citation reply. Only a SECOND
-	// VOID is reported, and it is reported as "not obtained" — never merged,
-	// never a round, never "no findings". A hard provider error (HTTP 4xx/5xx)
-	// is not retried here: withProviderRetry already retried 429/5xx once, and
-	// a 4xx can never succeed.
-	if isVoid(out.Err) {
+	// Reasoning reserve: prefer the explicit PanelCallConfig value, else
+	// derive it from the effective per-model reasoning. dispatchReview
+	// subtracts it from usable so the wire total (reasoning + answer, sent
+	// additively by the provider layer) fits the context window.
+	reasoningReserve := ccfg.ReasoningBudgetTokens
+	if reasoningReserve <= 0 {
+		reasoningReserve = config.ReasoningBudgetFor(effectiveReasoning)
+	}
+	out := dispatchReviewWithReasoning(ctx, prefixed, ctxTokens, configuredMax, ccfg.MinAnswerTokens, reasoningReserve, question, briefing, appendix, send, ccfg.BudgetState)
+	var berr *BudgetError
+	budgetStopped := errors.As(out.Err, &berr)
+	if budgetStopped {
+		reason := berr.Reason
+		if reason == "" {
+			reason = budgetReachedReason
+		}
+		if out.Log == nil {
+			out.Log = &ReviewLog{Model: prefixed}
+		}
+		out.Log.BudgetStop = reason
+	} else if isVoid(out.Err) {
+		// A VOID reply is retried ONCE automatically before it is reported,
+		// but only with a CHANGED request (cause-based retry): limit needs a
+		// larger answer budget (and lowers reasoning when possible), empty
+		// needs lower reasoning, citation/other are never retried. A hard
+		// provider error (HTTP 4xx/5xx) is not retried here: withProviderRetry
+		// already retried 429/5xx once, and a 4xx can never succeed.
+		//
+		// Bound: at most 2 dispatches per member (this dispatch + at most
+		// one runMember retry), each dispatch at most 24 parts +
+		// synthesis, each send doubled only by the 429/5xx provider retry.
 		first := out
 		firstReason := out.Err.Error()
-		second := dispatchReview(ctx, prefixed, ctxTokens, configuredMax, ccfg.MinAnswerTokens, question, briefing, appendix, send)
-		// Fold the first attempt's usage into the second's so billing reflects
-		// every call made.
-		second.Usage.InputTokens += first.Usage.InputTokens
-		second.Usage.OutputTokens += first.Usage.OutputTokens
-		second.Usage.ReasoningTokens += first.Usage.ReasoningTokens
-		second.Usage.WebSearchRequests += first.Usage.WebSearchRequests
-		second.Usage = addProviderCost(second.Usage, first.Usage)
-		if second.Log != nil {
-			second.Log.VoidRetried = true
-			second.Log.ReasoningTokens += first.Usage.ReasoningTokens
-			if first.Log != nil {
-				second.Log.FinishReasons = append(append([]string(nil), first.Log.FinishReasons...), second.Log.FinishReasons...)
-			}
+		cause := voidCauseFrom(out.Err, out.Usage, out.Log)
+		finish := voidFinishFrom(out.Usage, out.Log)
+		doubledMax := max(configuredMax*2, 4096)
+		maxAllowed := int(float64(ctxTokens)*contextHeadroom) - reasoningReserve - estTokens(len(briefing)) - answerReserveTokens
+		doubledMax = min(doubledMax, maxAllowed)
+		// The doubled budget must clear the 4096 ANSWER floor, not just the
+		// configured max (a tiny configured max must still gain room).
+		canDouble := doubledMax > max(configuredMax, 4096)
+		// A larger-budget whole retry inside dispatch already ran when the
+		// first dispatch retried: only retry the budget here when dispatch
+		// did NOT retry.
+		if first.Log != nil && first.Log.Retried {
+			canDouble = false
 		}
-		if second.Err == nil {
-			out = second // the retry produced a review
-		} else {
-			// Still not obtained. The member stays VOID even if the retry
-			// returned a hard provider error (it is not a review outcome): the
-			// report names BOTH — the first reply's reason (the more
-			// diagnostic one) and that the automatic retry also failed.
-			why := second.Err.Error()
-			out = second
-			out.Err = &VoidError{Reason: fmt.Sprintf("%s; the automatic retry also failed (%s)", firstReason, why)}
-			if out.Log != nil {
-				out.Log.VoidNotObtained = true
+		// No runMember retry at all when dispatch already retried, or for
+		// fusion (an identical judge call cannot fix an empty/limit reply).
+		alreadyRetried := first.Log != nil && first.Log.Retried
+		lowerSpec, canLower := lowerReasoningSpec(effectiveReasoning)
+		canLower = canLower && effectiveReasoning != nil
+		budgetStop := false
+		if ccfg.BudgetState != nil {
+			_, budgetStop = ccfg.BudgetState.shouldStop()
+		}
+		if !alreadyRetried && !ccfg.IsFusion && !budgetStop && retryVoidDecision(cause, canDouble, canLower) {
+			retryConfiguredMax := configuredMax
+			if cause == "limit" {
+				retryConfiguredMax = doubledMax
 			}
+			retryReasoning := effectiveReasoning
+			if canLower {
+				retryReasoning = lowerSpec
+			}
+			retryReserve := config.ReasoningBudgetFor(retryReasoning)
+			attemptReasoning = retryReasoning
+			// Rebuild from the unwrapped origSend so the retry (incl. fusion)
+			// uses the same provider path and cost is folded once per call.
+			retrySend := buildSend(prefixed, prov, model, ccfg, apiKeys, origSend, retryReasoning)
+			second := dispatchReviewWithReasoning(ctx, prefixed, ctxTokens, retryConfiguredMax, ccfg.MinAnswerTokens, retryReserve, question, briefing, appendix, retrySend, ccfg.BudgetState)
+			var berr2 *BudgetError
+			if errors.As(second.Err, &berr2) {
+				// Budget stopped mid-retry: report the budget outcome (not
+				// VOID), folding the first attempt's usage.
+				second.Usage = addUsage(second.Usage, first.Usage)
+				if second.Log == nil {
+					second.Log = &ReviewLog{Model: prefixed}
+				}
+				second.Log.FinishReasons = append(append([]string(nil), firstFinishReasons(first)...), second.Log.FinishReasons...)
+				second.Log.VoidAttempts = 2
+				second.Log.VoidCause, second.Log.VoidFinish = cause, finish
+				reason := berr2.Reason
+				if reason == "" {
+					reason = budgetReachedReason
+				}
+				second.Log.BudgetStop = reason
+				out = second
+				budgetStopped = true
+			} else {
+				// Fold the first attempt's usage into the second's so
+				// billing reflects every call made.
+				second.Usage = addUsage(second.Usage, first.Usage)
+				if second.Log != nil {
+					second.Log.VoidRetried = true
+					if first.Log != nil {
+						second.Log.CallCount += first.Log.CallCount
+					}
+					second.Log.ReasoningTokens += first.Usage.ReasoningTokens
+					second.Log.FinishReasons = append(append([]string(nil), firstFinishReasons(first)...), second.Log.FinishReasons...)
+					second.Log.VoidAttempts = 2
+					second.Log.VoidCause, second.Log.VoidFinish = cause, finish
+				}
+				if second.Err == nil {
+					out = second // the retry produced a review
+				} else {
+					// Still not obtained. The member stays VOID even if the
+					// retry returned a hard provider error (it is not a
+					// review outcome): the report names BOTH — the first
+					// reply's reason (the more diagnostic one) and that the
+					// automatic retry also failed.
+					why := second.Err.Error()
+					out = second
+					out.Err = &VoidError{Reason: fmt.Sprintf("%s; the automatic retry also failed (%s)", firstReason, why)}
+					if out.Log != nil {
+						out.Log.VoidNotObtained = true
+						out.Log.VoidCause, out.Log.VoidFinish = cause, finish
+					}
+				}
+			}
+		} else if out.Log != nil {
+			out.Log.VoidAttempts = 1
+			out.Log.VoidCause, out.Log.VoidFinish = cause, finish
 		}
 	}
 	if out.Log != nil {
@@ -1519,6 +1850,16 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 				out.Log.AnswerTokens = 0
 			}
 		}
+		// VOID/budget attempt diagnostics for every outcome.
+		if isVoid(out.Err) || budgetStopped {
+			if out.Log.VoidAttempts == 0 {
+				out.Log.VoidAttempts = 1
+			}
+			out.Log.VoidReasoning = out.Usage.ReasoningTokens
+			out.Log.VoidAnswer = max(out.Usage.OutputTokens-out.Usage.ReasoningTokens, 0)
+			out.Log.AttemptBudget = out.Log.MaxTokens
+			out.Log.AttemptReasoning = reasoningSpecString(attemptReasoning)
+		}
 	}
 	res := PanelMemberResult{
 		PrefixedModel: prefixed,
@@ -1531,6 +1872,17 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 	var v *VoidError
 	if errors.As(out.Err, &v) {
 		res.Void = true
+	}
+	var be *BudgetError
+	if errors.As(out.Err, &be) {
+		res.BudgetStopped = true
+		res.BudgetNote = be.Reason
+		if res.BudgetNote == "" {
+			res.BudgetNote = budgetReachedReason
+		}
+	}
+	if res.Void {
+		writeVoidCapture(res)
 	}
 	return res
 }

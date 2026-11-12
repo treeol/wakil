@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -101,6 +102,35 @@ type ReviewLog struct {
 	// when the call ended with one. It is a hard error — not VOID and not a
 	// review outcome — and is stated in the footer.
 	ProviderError string
+	// CoverageNotConfirmed is true when a reply with non-empty review content
+	// was accepted without a matching last-section citation (missing or wrong).
+	// The reply is obtained (not VOID) but coverage is not confirmed.
+	CoverageNotConfirmed bool
+
+	// VOID diagnostics for the (last) VOID attempt: the classified cause
+	// (limit/empty/citation/other), the provider finish reason, the attempt
+	// count, and the reasoning/answer token split. AttemptBudget and
+	// AttemptReasoning record the last attempt's answer budget and reasoning
+	// spec string. BudgetStop carries the budget-guard reason when the
+	// budget stopped further calls. Populated by runMember.
+	VoidCause        string // limit | empty | citation | other
+	VoidFinish       string
+	VoidAttempts     int
+	VoidReasoning    int64
+	VoidAnswer       int64
+	AttemptBudget    int
+	AttemptReasoning string
+	BudgetStop       string
+	// CallCount is the total number of sends attempted for this member
+	// across every dispatch (including any internal truncated retry and
+	// any runMember retry). Each run-loop iteration counts once.
+	CallCount int
+	// R1Kept / Round2KeptR1 / Round2Failed mark a debate round-2 failure
+	// where the round-1 answer was kept as the member's usable result.
+	// All three are set together (aliases for the same outcome).
+	R1Kept       bool
+	Round2KeptR1 bool
+	Round2Failed bool
 }
 
 // ProviderHTTPError is a non-200 answer from the provider API. It is a HARD
@@ -138,8 +168,8 @@ var retryBackoff = func() time.Duration {
 // failed attempt is folded into the result (failed calls can still bill).
 // retried reports whether the retry happened.
 func withProviderRetry(send sendFunc, retried *bool) sendFunc {
-	return func(ctx context.Context, q, b string, maxTok int) (string, OracleUsage, error) {
-		ans, usage, err := send(ctx, q, b, maxTok)
+	return func(ctx context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
+		ans, usage, err := send(ctx, q, b, ap, maxTok)
 		var pe *ProviderHTTPError
 		if err == nil || !errors.As(err, &pe) || !pe.Retryable() {
 			return ans, usage, err
@@ -153,20 +183,152 @@ func withProviderRetry(send sendFunc, retried *bool) sendFunc {
 		}
 		*retried = true
 		diag.Printf("mashura: provider %s — retrying once\n", pe.Error())
-		ans2, usage2, err2 := send(ctx, q, b, maxTok)
+		ans2, usage2, err2 := send(ctx, q, b, ap, maxTok)
 		usage2.InputTokens += usage.InputTokens
 		usage2.OutputTokens += usage.OutputTokens
 		usage2.ReasoningTokens += usage.ReasoningTokens
 		usage2.WebSearchRequests += usage.WebSearchRequests
+		usage2 = addProviderCost(usage2, usage)
 		return ans2, usage2, err2
 	}
 }
 
 // VoidError marks a reviewer reply that must not be trusted: truncated,
-// empty, or failing the last-section check.
-type VoidError struct{ Reason string }
+// empty, or a bare citation with no review content. Cause and Finish carry
+// the classified retry cause (limit/empty/citation/other) and the provider
+// finish reason when known (set by runMember, which classifies the outcome).
+type VoidError struct {
+	Reason string
+	Cause  string
+	Finish string
+}
 
 func (e *VoidError) Error() string { return "VOID: " + e.Reason }
+
+// BudgetError marks a round stopped by the review/session budget guard. It
+// is NOT a VOID: no reply was judged, and Err is a BudgetError (never a
+// *VoidError) on BudgetStopped members.
+type BudgetError struct{ Reason string }
+
+func (e *BudgetError) Error() string {
+	if e.Reason == "" {
+		return "NOT COMPLETED: review budget reached"
+	}
+	return "NOT COMPLETED: " + e.Reason
+}
+
+// budgetReachedReason is the sole budget-stop reason string.
+const budgetReachedReason = "review budget reached"
+
+// BudgetState is the shared budget guard for one panel operation. spent is
+// the sum of provider-reported costs of calls made under this operation;
+// the session budget additionally counts spend outside the panel via
+// sessionCost (relative to the base captured at construction).
+//
+// Accounting is post-call: a call's cost is folded in only after it returns,
+// so parallel members can each spend one in-flight call before the guard
+// trips. Worst-case overshoot is roughly one in-flight call per concurrent
+// member. Calls without a provider-reported cost are estimated at the last
+// observed per-token rate (lastRate); unpriced counts the calls that had to
+// be estimated (or had no rate to estimate from).
+type BudgetState struct {
+	mu            sync.Mutex
+	spent         float64
+	reviewBudget  float64
+	sessionBudget float64
+	sessionCost   func() float64
+	sessionBase   float64
+	stopped       bool
+	reason        string
+	lastRate      float64
+	unpriced      int
+}
+
+// newBudgetState builds a BudgetState from the panel call config,
+// capturing the session-cost base once when a session cost func is set.
+func newBudgetState(ccfg PanelCallConfig) *BudgetState {
+	bs := &BudgetState{
+		reviewBudget:  ccfg.ReviewBudgetUSD,
+		sessionBudget: ccfg.SessionBudgetUSD,
+		sessionCost:   ccfg.SessionCostFunc,
+	}
+	if bs.sessionCost != nil {
+		bs.sessionBase = bs.sessionCost()
+	}
+	return bs
+}
+
+// add folds one call's cost into spent. Priced calls add their
+// provider-reported cost and update the per-token rate estimate; unpriced
+// calls are estimated at that rate when one is known.
+func (b *BudgetState) add(u OracleUsage) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	tokens := u.InputTokens + u.OutputTokens
+	if u.HasProviderCost {
+		b.spent += u.ProviderCostUSD
+		if tokens > 0 {
+			b.lastRate = u.ProviderCostUSD / float64(tokens)
+		}
+	} else if tokens > 0 && b.lastRate > 0 {
+		b.spent += float64(tokens) * b.lastRate
+		b.unpriced++
+	} else {
+		b.unpriced++
+	}
+}
+
+// spentUSD returns the accumulated spend estimate (priced + estimated).
+func (b *BudgetState) spentUSD() float64 {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.spent
+}
+
+// shouldStop reports whether the budget guard has stopped further calls,
+// marking the state stopped (sticky) when a budget is reached.
+func (b *BudgetState) shouldStop() (string, bool) {
+	if b == nil {
+		return "", false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.stopped {
+		return b.reason, true
+	}
+	if b.reviewBudget > 0 && b.spent >= b.reviewBudget {
+		b.stopped, b.reason = true, budgetReachedReason
+		return b.reason, true
+	}
+	if b.sessionBudget > 0 {
+		if b.sessionCost != nil {
+			if (b.sessionCost()-b.sessionBase)+b.spent >= b.sessionBudget {
+				b.stopped, b.reason = true, budgetReachedReason
+				return b.reason, true
+			}
+		} else if b.spent >= b.sessionBudget {
+			b.stopped, b.reason = true, budgetReachedReason
+			return b.reason, true
+		}
+	}
+	return "", false
+}
+
+// stopReason returns the recorded budget-stop reason ("" when not stopped).
+func (b *BudgetState) stopReason() string {
+	if b == nil {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reason
+}
 
 // IncompleteReplyError is returned by the provider layer when a reply is cut
 // off (Length=true: finish_reason=length / stop_reason=max_tokens) or empty.
@@ -188,10 +350,152 @@ func AnyVoid(results []PanelMemberResult) bool {
 	return false
 }
 
+// AnyBudgetStopped reports whether any panel member was stopped by the
+// budget guard (a BudgetError, never VOID).
+func AnyBudgetStopped(results []PanelMemberResult) bool {
+	for _, r := range results {
+		if r.BudgetStopped {
+			return true
+		}
+	}
+	return false
+}
+
 // isVoid reports whether err is a *VoidError (a reply that must not be trusted).
 func isVoid(err error) bool {
 	var v *VoidError
 	return errors.As(err, &v)
+}
+
+// voidCauseFrom classifies a VOID outcome for the cause-based retry:
+// limit (answer budget), empty, citation (citation-only / citation
+// failure), or other. The provider finish reason and the dispatch log are
+// consulted so a length stop is classified as limit even when the error
+// text does not say so.
+func voidCauseFrom(err error, usage OracleUsage, log *ReviewLog) string {
+	var inc *IncompleteReplyError
+	if errors.As(err, &inc) && inc.Length {
+		return "limit"
+	}
+	if usage.FinishReason == "length" || usage.FinishReason == "max_tokens" {
+		return "limit"
+	}
+	if log != nil {
+		for _, fr := range log.FinishReasons {
+			if fr == "length" || fr == "max_tokens" {
+				return "limit"
+			}
+		}
+	}
+	if errors.As(err, &inc) {
+		low := strings.ToLower(inc.Msg)
+		if strings.TrimSpace(inc.Msg) == "" || strings.HasPrefix(low, "empty") {
+			return "empty"
+		}
+	}
+	if err != nil {
+		msg := err.Error()
+		msg = strings.TrimPrefix(msg, "VOID: ")
+		low := strings.ToLower(msg)
+		// Exact prefix checks only: a wrapped error whose text merely
+		// mentions max_tokens/empty elsewhere must not be classified as a
+		// limit/empty VOID (that would wrongly trigger a retry).
+		if strings.HasPrefix(low, "reply hit max_tokens") || strings.HasPrefix(low, "the first reply hit max_tokens") || strings.HasPrefix(low, "reply hit max_tokens and") {
+			return "limit"
+		}
+		if strings.HasPrefix(low, "empty reply") || strings.HasPrefix(low, "empty or interrupted") {
+			return "empty"
+		}
+		if strings.Contains(low, "last section") || strings.Contains(low, "citation") || strings.Contains(low, "cite") {
+			return "citation"
+		}
+	}
+	return "other"
+}
+
+// voidFinishFrom returns the last reported provider finish reason (the
+// log's per-part record, else the final usage), skipping "?"/empty.
+func voidFinishFrom(usage OracleUsage, log *ReviewLog) string {
+	if log != nil {
+		for i := len(log.FinishReasons) - 1; i >= 0; i-- {
+			if fr := log.FinishReasons[i]; fr != "" && fr != "?" {
+				return fr
+			}
+		}
+	}
+	return usage.FinishReason
+}
+
+// retryVoidDecision reports whether a VOID member may be retried once with
+// a CHANGED request: limit requires a larger answer budget (canDouble;
+// lowering reasoning is optional), empty requires a lower reasoning spec
+// (canLower), and citation/other are never retried — the same request
+// cannot fix them.
+func retryVoidDecision(cause string, canDouble, canLower bool) bool {
+	switch cause {
+	case "limit":
+		return canDouble
+	case "empty":
+		return canLower
+	default:
+		return false
+	}
+}
+
+// reasoningEffortLadder is the effort ladder lowerReasoningSpec steps down.
+var reasoningEffortLadder = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+// lowerReasoningSpec returns a copy of spec with one step less reasoning:
+// the effort ladder moves one step down, or an explicit MaxTokens is halved
+// (floor 1024, effort kept). none/off (or an unset spec) is already lowest:
+// it only changes when MaxTokens > 0. The bool reports whether the spec
+// changed; the original is never mutated.
+func lowerReasoningSpec(spec *config.ReasoningSpec) (*config.ReasoningSpec, bool) {
+	if spec == nil {
+		return nil, false
+	}
+	out := *spec
+	if out.MaxTokens > 0 {
+		halved := max(out.MaxTokens/2, 1024)
+		if halved == out.MaxTokens {
+			return spec, false
+		}
+		out.MaxTokens = halved
+		return &out, true
+	}
+	for i, e := range reasoningEffortLadder {
+		if out.Effort == e {
+			if i == 0 {
+				return spec, false
+			}
+			out.Effort = reasoningEffortLadder[i-1]
+			return &out, true
+		}
+	}
+	return spec, false
+}
+
+// doubleBudget returns the doubled answer budget for a limit retry: twice
+// the wanted budget, capped by what the window leaves after the input and
+// the answer reserve, with the 4096 floor.
+func doubleBudget(answerWant, usableForAnswer, inTok int) int {
+	return max(min(answerWant*2, usableForAnswer-inTok-answerReserveTokens), defaultMinAnswerTokens)
+}
+
+// reasoningSpecString renders a reasoning spec for the attempt log
+// ("effort/max_tokens", just one of them, or "none").
+func reasoningSpecString(spec *config.ReasoningSpec) string {
+	if spec == nil || spec.IsZero() {
+		return "none"
+	}
+	switch {
+	case spec.Effort != "" && spec.MaxTokens > 0:
+		return fmt.Sprintf("%s/%d", spec.Effort, spec.MaxTokens)
+	case spec.Effort != "":
+		return spec.Effort
+	default:
+		return fmt.Sprintf("%d", spec.MaxTokens)
+	}
 }
 
 // anyOversizeFile reports whether any part carries a line-range chunk of an
@@ -228,7 +532,7 @@ func synthesizeReview(ctx context.Context, question, merged string, usable, floo
 	want := max(min(floor*4, usable-inTok-reserve), floor)
 	log.SynthesisTokensSent = inTok
 	q += "\n\n" + synthesizeInstruction
-	ans, usage, err := send(ctx, q, briefing, want)
+	ans, usage, err := send(ctx, q, briefing, "", want)
 	if err != nil {
 		return reviewOutcome{}, err
 	}
@@ -239,7 +543,10 @@ func synthesizeReview(ctx context.Context, question, merged string, usable, floo
 }
 
 // sendFunc performs ONE provider call with an explicit answer budget.
-type sendFunc func(ctx context.Context, question, briefing string, maxTokens int) (string, OracleUsage, error)
+// question is the raw question (+ part framing), briefing the part text
+// (no appendix), appendix the debate round-2 material ("" otherwise).
+// The provider layer builds the skeleton message from these parts.
+type sendFunc func(ctx context.Context, question, briefing, appendix string, maxTokens int) (string, OracleUsage, error)
 
 // reviewOutcome is dispatchReview's result for one member.
 type reviewOutcome struct {
@@ -743,7 +1050,54 @@ func (p part) expectedEvidence() []string {
 
 // ── dispatch ────────────────────────────────────────────────────────────────
 
-const evidenceInstruction = "Finish your reply with one final line, exactly: `" + evidencePrefix + " <the heading (or `── label ──` block label — for a source file, cite its path) of the LAST section of the document above that you actually read (ignore quoted answers of other models)>`. This is checked mechanically; a wrong or missing citation voids your reply."
+// Prompt skeleton (items 3+6). The user message is these seven lines in this
+// order; between lines 2 and 4 is exactly the briefing text (parts/appendix),
+// between 5 the Question is the question (+ part framing), and line 7 is the
+// format instruction. Nothing else is sent. Order is load-bearing for the
+// model: instructions first, then the material, then the question, then the
+// format instruction last.
+const (
+	skeletonPrefix      = "Instructions follow the material below; this is the first and only instruction block."
+	skeletonMaterial    = "Material under review (the document):"
+	skeletonQuestion    = "Question:"
+	skeletonFormat      = "Format instructions:"
+	skeletonLastSection = "LAST SECTION READ: <<the heading or block label of the LAST section of the material above>>"
+)
+
+const evidenceInstruction = "Finish your reply with one final line, exactly: `" + evidencePrefix + " <the heading (or `── label ──` block label — for a source file, cite its path) of the LAST section of the document above that you actually read (ignore quoted answers of other models)>`. This is checked mechanically; a missing citation is flagged as coverage not confirmed."
+
+// buildUserMessage assembles the seven-line skeleton: prefix, material
+// header, part text (document + appendix), Question header, question (+ part
+// framing inside the Question section only), Format header, and the evidence
+// instruction as the last line.
+func buildUserMessage(partText, question string) string {
+	return skeletonPrefix + "\n" +
+		skeletonMaterial + "\n" +
+		partText + "\n" +
+		skeletonQuestion + "\n" +
+		question + "\n" +
+		skeletonFormat + "\n" +
+		evidenceInstruction
+}
+
+// cleanedOrWhole returns the reply with its trailing citation line stripped
+// when present, otherwise the reply itself. Used by the citation-accept branch
+// to keep the review content without the citation line.
+func cleanedOrWhole(ans string) string {
+	clean, cited := extractEvidence(ans)
+	if cited != "" {
+		return clean
+	}
+	return ans
+}
+
+// hasReviewContent reports whether a reply carries any review content once a
+// trailing citation line (if any) is stripped. An empty reply, or a bare
+// citation with nothing else, has no review content.
+func hasReviewContent(ans string) bool {
+	clean, _ := extractEvidence(ans)
+	return strings.TrimSpace(clean) != ""
+}
 
 func partFraming(i, n int, hasOverlap bool) string {
 	var b strings.Builder
@@ -777,7 +1131,16 @@ func voidAfterTruncation(err error, what string) error {
 // target), enforcing the answer budget, the retry-once
 // chunked path on truncation, and the last-section evidence check.
 func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax int, floor int, question, briefing, appendix string, send sendFunc) reviewOutcome {
-	if floor <= 0 {
+	return dispatchReviewWithReasoning(ctx, label, ctxTokens, configuredMax, floor, 0, question, briefing, appendix, send, nil)
+}
+
+// dispatchReviewWithReasoning is dispatchReview with an explicit reasoning
+// reserve: reasoningBudget tokens are subtracted from the usable context
+// when sizing the answer budget, so the additive wire total (reasoning +
+// answer) fits the window. The answer floor is 4096 for every tool — a
+// floor below it (including 0 and the old check floor) is raised to it.
+func dispatchReviewWithReasoning(ctx context.Context, label string, ctxTokens, configuredMax int, floor int, reasoningBudget int, question, briefing, appendix string, send sendFunc, budget *BudgetState) reviewOutcome {
+	if floor < defaultMinAnswerTokens {
 		floor = defaultMinAnswerTokens
 	}
 	if configuredMax <= 0 {
@@ -785,19 +1148,22 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 	}
 	answerWant := max(configuredMax, floor)
 	usable := int(float64(ctxTokens) * contextHeadroom)
+	// Reserve explicit reasoning tokens from the usable window so the
+	// additive wire total (reasoning + answer) fits: usable − reasoning
+	// − input − reserve ≥ floor. The answer floor is never reduced for
+	// reasoning. (Floorless callers pass 0; runMember passes the effective
+	// per-model reasoning budget.)
+	usableForAnswer := usable - reasoningBudget
 	// Largest input (tokens) that still leaves room for the floor answer.
-	inputBudget := usable - floor - answerReserveTokens
+	inputBudget := usableForAnswer - floor - answerReserveTokens
 	log := &ReviewLog{Model: label, ContextTokens: ctxTokens}
 	send = withProviderRetry(send, &log.ProviderRetried)
 
 	doc := briefing
 	hasStructure := len(headingsOf(doc)) > 0 || strings.Contains(doc, "\n── ") || strings.HasPrefix(doc, "── ")
-	instr := ""
-	if hasStructure {
-		instr = "\n\n" + evidenceInstruction
-	}
-	// Fixed cost of one request besides the document body.
-	overheadChars := len(oracleSystemPrompt) + len(question) + len(instr) + len("\n\nContext:\n") + len(appendix) + 220 // part framing
+	// Fixed cost of one request besides the document body: skeleton header
+	// lines + question + evidence instruction + appendix + part framing slack.
+	overheadChars := len(skeletonPrefix) + len(skeletonMaterial) + len(skeletonQuestion) + len(skeletonFormat) + len(question) + len(evidenceInstruction) + len(appendix) + 220
 	docBudgetChars := inputBudget*reviewCharsPerToken - overheadChars
 
 	var parts []part
@@ -823,17 +1189,27 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 			if n > 1 {
 				q += "\n\n" + partFraming(i+1, n, p.text != p.body)
 			}
-			q += instr
 			text := p.text + appendix
-			inChars := len(oracleSystemPrompt) + len(q) + len("\n\nContext:\n") + len(text)
+			userMsg := buildUserMessage(text, q)
+			inChars := len(oracleSystemPrompt) + len(userMsg)
 			inTok := estTokens(inChars)
 			log.TokensSent += inTok
-			maxTok := min(want, usable-inTok-answerReserveTokens)
+			maxTok := min(want, usableForAnswer-inTok-answerReserveTokens)
 			maxTok = max(maxTok, floor) // floor is guaranteed by the input budget
 			log.MaxTokens = maxTok
 			diag.Printf("mashura: %s part %d/%d ~%d input tokens, max_tokens %d, context %d\n", label, i+1, n, inTok, maxTok, ctxTokens)
-			ans, usage, err := send(ctx, q, text, maxTok)
+			if budget != nil {
+				if reason, stop := budget.shouldStop(); stop {
+					// Budget guard: stop BEFORE this part send with a
+					// BudgetError (never VOID) so the member is not
+					// retried and no further calls are made.
+					out.Err = &BudgetError{Reason: reason}
+					return out, false
+				}
+			}
+			ans, usage, err := send(ctx, q, p.text, appendix, maxTok)
 			out.Usage = addUsage(out.Usage, usage)
+			log.CallCount++
 			log.ReasoningTokens += usage.ReasoningTokens
 			fr := usage.FinishReason
 			if fr == "" {
@@ -854,7 +1230,11 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 				}
 				if errors.As(err, &inc) {
 					if inc.Length {
-						out.Err = &VoidError{Reason: fmt.Sprintf("reply hit max_tokens (%d) on part %d of %d", maxTok, i+1, n)}
+						reason := fmt.Sprintf("reply hit max_tokens (%d) on part %d of %d", maxTok, i+1, n)
+						if usage.ReasoningTokens*5 >= int64(maxTok)*4 {
+							reason = fmt.Sprintf("reply hit max_tokens (%d); reasoning used the budget (%d of %d) on part %d of %d", maxTok, usage.ReasoningTokens, maxTok, i+1, n)
+						}
+						out.Err = &VoidError{Reason: reason}
 						return out, true // truncated
 					}
 					out.Err = &VoidError{Reason: fmt.Sprintf("empty or interrupted reply on part %d of %d", i+1, n)}
@@ -876,23 +1256,35 @@ func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax 
 			}
 			if exp := p.expectedEvidence(); hasStructure && len(exp) > 0 {
 				clean, cited := extractEvidence(ans)
-				if cited == "" {
-					out.Err = &VoidError{Reason: fmt.Sprintf("part %d of %d: reply did not cite the last section it read (expected %q)", i+1, n, exp[0])}
-					return out, false
+				if cited == "" || !citationMatches(cited, exp...) {
+					if hasReviewContent(cleanedOrWhole(ans)) {
+						// Missing or wrong citation with real content: accept
+						// the review, flag coverage as not confirmed. The
+						// reply is obtained (not VOID).
+						log.CoverageNotConfirmed = true
+						if cited != "" {
+							ans = clean
+						}
+						// else keep ans as the whole non-empty reply text
+					} else {
+						reason := fmt.Sprintf("part %d of %d: reply did not cite the last section it read (expected %q)", i+1, n, exp[0])
+						if cited != "" {
+							reason = fmt.Sprintf("part %d of %d: reply cited %q (normalized %q) as the last section read but the part ends at %q (normalized %q) — the reviewer did not read it all", i+1, n, cited, normHeading(cited), exp[0], normHeading(exp[0]))
+						}
+						if strings.TrimSpace(clean) == "" && cited != "" {
+							reason = fmt.Sprintf("part %d of %d: the reply contained only the last-section citation and no review", i+1, n)
+						}
+						out.Err = &VoidError{Reason: reason}
+						return out, false
+					}
+				} else {
+					if strings.TrimSpace(clean) == "" {
+						out.Err = &VoidError{Reason: fmt.Sprintf("part %d of %d: the reply contained only the last-section citation and no review", i+1, n)}
+						return out, false
+					}
+					ans = clean
+					log.ReadThrough = cited
 				}
-				if !citationMatches(cited, exp...) {
-					out.Err = &VoidError{Reason: fmt.Sprintf("part %d of %d: reply cited %q (normalized %q) as the last section read but the part ends at %q (normalized %q) — the reviewer did not read it all", i+1, n, cited, normHeading(cited), exp[0], normHeading(exp[0]))}
-					return out, false
-				}
-				if strings.TrimSpace(clean) == "" {
-					// A bare citation is not a review: with the evidence line
-					// removed nothing is left, which must never read as a
-					// completed review with "no findings".
-					out.Err = &VoidError{Reason: fmt.Sprintf("part %d of %d: the reply contained only the last-section citation and no review", i+1, n)}
-					return out, false
-				}
-				ans = clean
-				log.ReadThrough = cited
 			}
 			if n > 1 {
 				answers = append(answers, fmt.Sprintf("── part %d of %d ──\n%s", i+1, n, strings.TrimSpace(ans)))
