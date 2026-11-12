@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **OpenRouter session stickiness and no silent compression.** OpenRouter requests now carry `session_id` (the session's chat id; each subagent's own) and `plugins: [{"id":"context-compression","enabled":false}]`, so one provider serves a whole session and OpenRouter never silently drops middle messages. Non-OpenRouter requests stay byte-identical.
+- **Budget breach uses the same forced final step.** A session that exceeds its `--budget` now takes the same path as the step limit (tools kept, one "answer now" message, tool calls discarded, one tool-less fallback) instead of stripping tools mid-turn; calls that fail mid-stream remain uncounted.
 - **Forced final step keeps the prompt cache.** Reaching `max_tool_iterations` keeps the tool list and `tool_choice` on the last request (with an injected "answer now" message) instead of stripping tools, which invalidated the whole prompt cache; if the model still answers with tool calls, they are discarded and exactly one tool-less fallback ends the turn. The forced step still always terminates.
 
 ## [0.7.1] - 2026-11-12

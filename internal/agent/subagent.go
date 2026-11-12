@@ -53,9 +53,11 @@ const (
 )
 
 // subagentReservePrompt is the ONE extra turn an exhausted child gets, and only
-// when its forced final answer (streamTurn's forceFinish turn, tools already
-// stripped) was not parseable. It replaces — never adds to — the generic JSON
-// retry, so an exhausted dispatch costs at most one extra full-context request.
+// when its forced final answer (streamTurn's forceFinish turn, tools kept on the
+// wire with ForcedFinalPrompt) was not parseable. It replaces — never adds to —
+// the generic JSON retry. An exhausted child can therefore make up to three
+// full-context requests: the forced request, at most one tools-off fallback if
+// that answer carried tool calls, and this single reserve retry.
 const subagentReservePrompt = `Your tool budget is exhausted. Respond with ONLY the JSON object in the schema you were given — no prose, no tool calls. Report what you established (findings) and add a "remaining_scope" string: what is still unexamined, in your own words.`
 
 // subagentRemainingScopeCap bounds the raw tail kept in remaining_scope when
@@ -1781,8 +1783,8 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		// Drop tools for the retry: it asks only for clean JSON, so the model must
 		// not be able to spin up another tool loop instead of answering.
 		sub.Tools = nil
-		// An exhausted child already had its tools-off final turn (forceFinish).
-		// If that answer is unparseable it gets exactly ONE more turn, and that
+		// An exhausted child already had its forced final turn (forceFinish, tools
+		// kept with ForcedFinalPrompt; see streamTurn). If that answer is unparseable it gets exactly ONE more turn, and that
 		// turn is the reserve prompt (which also asks for remaining_scope) in
 		// place of — not on top of — the generic JSON retry.
 		retryPrompt := subagentRetryPrompt

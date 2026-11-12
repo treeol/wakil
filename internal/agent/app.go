@@ -1595,19 +1595,20 @@ func (a *App) RecordInferenceCost() {
 // usage under the aux category, with the same provider-cost-wins rule as
 // RecordInferenceCost. client is the client that serviced the call (may be a
 // different instance from a.Client for named-endpoint rater / cloned aux
-// clients); nil falls back to a.Client. sourceKey is the caller's source;
+// clients). A nil client records nothing: there is no fallback to a.Client, so
+// main-turn usage can never be re-counted as aux. sourceKey is the caller's source;
 // empty means the standard inference source. nil tracker/client → no-op.
 func (a *App) RecordAuxInferenceCost(client *proxy.Client, sourceKey string) {
 	if a.Costs == nil {
 		return
 	}
-	c := client
-	if c == nil {
-		c = a.Client
-	}
-	if c == nil {
+	// No fallback to a.Client: a nil client means the caller did not pass the
+	// client that serviced the call, and reading the main client's last usage
+	// would re-count main-turn tokens under the aux category.
+	if client == nil {
 		return
 	}
+	c := client
 	u := c.LastUsage()
 	if u.InputTok == 0 && u.OutputTok == 0 {
 		return

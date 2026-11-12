@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // recordedRequest is the subset of a chat-completions body these tests inspect.
@@ -189,5 +191,56 @@ func TestForcedFinal_ToolCallAnswerSingleFallback(t *testing.T) {
 	}
 	if !strings.Contains(out, "fallback answer") {
 		t.Errorf("final = %q, want the fallback answer", out)
+	}
+}
+
+// budgetOverApp returns an app whose session cost tracker already exceeds
+// BudgetUSD, so the budget breach is hit at the top of the first iteration.
+func budgetOverApp(t *testing.T, url string) *App {
+	t.Helper()
+	app := newTestApp(url, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.BudgetUSD = 0.10
+	app.Costs = proxy.NewCostTracker()
+	app.Costs.RecordCategorized("inference·openrouter/m", proxy.CostCatMain, 1, 1, 0.50, true, proxy.ConfExact)
+	return app
+}
+
+// TestBudgetForcedFinal_SameContractAsStepLimit: a breached budget takes the
+// forced-final path: tools kept, ForcedFinalPrompt appended, tool-call answer
+// discarded (no execution), exactly one tools-off fallback, turn ends.
+func TestBudgetForcedFinal_SameContractAsStepLimit(t *testing.T) {
+	// Budget is already breached, so the first request is the forced one and
+	// its tool-call answer is discarded; the single fallback then answers in text.
+	srv, reqs := recordingSSE(t,
+		toolCallFrames("c1", "run_shell", `{"command":"echo hi"}`),
+		contentFrames("budget answer"),
+	)
+	defer srv.Close()
+
+	app := budgetOverApp(t, srv.URL)
+	exec := app.Exec.(*fakeExecutor)
+	out := runSendWithin(t, app, 5*time.Second)
+
+	got := reqs()
+	if len(got) != 2 {
+		t.Fatalf("requests = %d, want 2 (forced request + one tools-off fallback)", len(got))
+	}
+	if len(got[0].Tools) == 0 || string(got[0].Tools) == "null" {
+		t.Error("budget-forced request must keep tools on the wire (cache preservation)")
+	}
+	if got[0].lastUserText() != ForcedFinalPrompt {
+		t.Errorf("budget-forced last user message = %q, want ForcedFinalPrompt", got[0].lastUserText())
+	}
+	if len(got[1].Tools) != 0 && string(got[1].Tools) != "null" {
+		t.Errorf("fallback must be tools-off, got tools=%s", got[1].Tools)
+	}
+	if len(exec.shellCalls) != 0 {
+		t.Errorf("forced tool calls executed %d times, want 0", len(exec.shellCalls))
+	}
+	if !strings.Contains(out, "budget answer") {
+		t.Errorf("final = %q, want the fallback answer", out)
+	}
+	if app.stopReason != "cost_budget_exhausted" {
+		t.Errorf("stopReason = %q, want cost_budget_exhausted", app.stopReason)
 	}
 }

@@ -239,7 +239,12 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// human-level steering and MaxToolIterations==0 by default.
 		stopOnStub := a.IsSubagent && a.turnBudgetStubbed && a.turnBudgetStubbedIter >= 0 &&
 			iter >= a.turnBudgetStubbedIter+stopOnStubGrace+1
-		forceFinish := (a.Cfg.MaxToolIterations > 0 && iter >= a.Cfg.MaxToolIterations) || confinementTrip || stopOnStub
+		// Budget-triggered force-finish (BudgetUSD breached) is evaluated here,
+		// before the request is built, so it takes exactly the same forced-final
+		// path as the step limit: ForcedFinalPrompt, tools kept, tool-call answer
+		// discarded, one tools-off fallback. Sticky, so later turns stop here too.
+		budgetStop := a.checkBudgetExhausted()
+		forceFinish := (a.Cfg.MaxToolIterations > 0 && iter >= a.Cfg.MaxToolIterations) || confinementTrip || stopOnStub || budgetStop
 		tools := a.toolsWithShellNote(a.toolsForTurn())
 		if a.pruneEnabled() && !a.IsSubagent {
 			tools = withPrevProperty(tools)
@@ -268,6 +273,11 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				// knows this was budget exhaustion, not iteration limit.
 				a.stopReason = "turn_budget_exhausted"
 				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(BudgetExhaustedPrompt)})
+			} else if budgetStop {
+				// Session cost budget breached: same forced-final contract as the
+				// step limit, under its own stop reason.
+				a.stopReason = "cost_budget_exhausted"
+				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(ForcedFinalPrompt)})
 			} else {
 				a.stopReason = "iteration_limit"
 				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(ForcedFinalPrompt)})
@@ -334,13 +344,15 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			msg.ToolCalls = nil
 			// Fall through to the normal append/final/break path.
 		}
-		// Budget enforcement (soft cutoff): check after recording cost. If the
-		// session's total priced cost has exceeded BudgetUSD, force-finish this
-		// turn and prevent further inference in subsequent turns. The check is
-		// after RecordInferenceCost — the breaching call has already incurred
-		// its cost, so overshoot is bounded by one turn's inference spend.
-		if a.checkBudgetExhausted() {
+		// Budget breach by THIS call: the cost is recorded above. The current
+		// answer's text is kept, and any tool calls it carries are NOT executed:
+		// the turn ends here so no further spend follows the breach. This does
+		// not issue another request, so the overshoot is bounded by this call.
+		budgetBreachedNow := !budgetStop && a.checkBudgetExhausted()
+		if budgetBreachedNow {
+			msg.ToolCalls = nil
 			forceFinish = true
+			a.stopReason = "cost_budget_exhausted"
 		}
 		if firstStream {
 			// Retrieval telemetry for the user's query is set by this first call;

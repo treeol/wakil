@@ -157,6 +157,9 @@ sends byte-identical requests. Costs: when the provider reports `usage.cost`,
 that is the billed amount for the request; the local price table stays the
 fallback. `/mode status` shows the session totals (billed, provider-reported vs
 estimated, cache-read share, and the main / subagents / Mashūra / aux split).
+**Calls that fail mid-stream are not counted** (a connection drop, a provider
+error, or a truncated stream): tokens the provider may already have billed for
+such a call are not recorded. This is a known, deliberate limit for now.
 
 **Backward compatibility:** configs without an `endpoints` block keep working
 unchanged — the top-level `base_url` (or `host`+`port`) synthesizes a single

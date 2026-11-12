@@ -177,3 +177,40 @@ func TestForceFinishToolAnswerSingleFallback(t *testing.T) {
 // (provider-cost parse on the OpenRouter SSE path is covered by
 // counsel.TestParseOpenRouterSSECost; here we assert the agent-side hop:
 // an OracleUsage with HasProviderCost records provider USD, above. ---
+
+// TestAuxRecordNeverRecountsMain: an aux record must count only the client it
+// was handed. A nil client records nothing, and a separate aux client's usage
+// lands once under the aux category without touching the main row.
+func TestAuxRecordNeverRecountsMain(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Costs = proxy.NewCostTracker()
+	app.Client.Model = "m"
+	app.Client.SetUsage(proxy.UsageStat{InputTok: 100, OutputTok: 50, Exact: true, ProviderCostUSD: 0.40, HasProviderCost: true})
+	app.RecordInferenceCost()
+
+	// Nil client: must not fall back to the main client's usage.
+	app.RecordAuxInferenceCost(nil, proxy.CostSourceInference)
+	ct, _ := app.Costs.SnapshotDetail()
+	if ct.Aux != 0 || ct.Total != 0.40 {
+		t.Fatalf("nil aux client re-counted main: %+v (want aux 0, total 0.40)", ct)
+	}
+
+	// Separate aux client, usage recorded once.
+	aux := newTestClient("http://unused")
+	aux.Model = "m"
+	aux.SetUsage(proxy.UsageStat{InputTok: 10, OutputTok: 5, Exact: true, ProviderCostUSD: 0.05, HasProviderCost: true})
+	app.RecordAuxInferenceCost(aux, proxy.CostSourceInference)
+	ct, rows := app.Costs.SnapshotDetail()
+	if ct.Aux != 0.05 || ct.Main != 0.40 || ct.Total != 0.45 {
+		t.Fatalf("aux split = %+v, want main 0.40 aux 0.05 total 0.45", ct)
+	}
+	var auxRows int
+	for _, r := range rows {
+		if r.Category == proxy.CostCatAux {
+			auxRows++
+		}
+	}
+	if auxRows == 0 {
+		t.Error("aux call did not land under the aux category")
+	}
+}
