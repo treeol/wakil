@@ -135,6 +135,13 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		HTTP:              newHTTPClient(),
 		MaxRequestBytes:   cfg.MaxRequestBytes,
 		StreamIdleTimeout: time.Duration(cfg.StreamIdleTimeoutSeconds) * time.Second,
+		// Data policy: the effective switches (user config, overridable
+		// per-repo via /zdr and /region) are enforced by the proxy client
+		// itself on every outgoing request. ZDR defaults off everywhere,
+		// so existing setups send byte-identical requests.
+		ZDR:               cfg.ZDR,
+		Region:            cfg.Region,
+		TrustedLocalHosts: cfg.TrustedLocalHosts,
 	}
 
 	// MCP manager. Servers connect in the BACKGROUND (concurrently), so this
@@ -261,6 +268,14 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		agent.WithVerifyEnabled(len(cfg.Verify) > 0),
 	)
 	app.SetStyleGuideCatalog(guides)
+	// Data policy: wire the once-per-model zdr auto notice onto the
+	// session transport. The effective switches were set into the client
+	// at construction; RestoreRepoState later applies any per-repo
+	// override on top.
+	app.WireNoZDRNotice()
+	// Bind the sandbox session to this conversation's chat (no-op for
+	// executors without per-chat sessions). The session starts lazily.
+	app.SetChatID(client.ChatID)
 	// Bind the sandbox session to this conversation's chat (no-op for
 	// executors without per-chat sessions). The session starts lazily.
 	app.SetChatID(client.ChatID)

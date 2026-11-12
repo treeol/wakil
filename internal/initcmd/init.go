@@ -21,6 +21,7 @@ import (
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/orregistry"
+	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/sandbox"
 )
 
@@ -99,6 +100,10 @@ type Env struct {
 	ReadSecret func(prompt string) (string, error)
 	Getenv     func(string) string
 	HTTP       *http.Client
+	// Transport is the single transport for the init test call (the data
+	// policy applies to it like every other model call). Nil = build one
+	// from HTTP at call time with the data-policy settings off.
+	Transport  *proxy.Client
 	Now        func() time.Time
 	ConfigPath string
 	// OpenRouterBase overrides https://openrouter.ai/api (tests).
@@ -430,7 +435,13 @@ func (s *session) modelAndTest(ctx context.Context, provider string, p *plan, au
 			return nil
 		}
 		s.printf("\nTest call: one chat request with a trivial tool to %s ...\n", model)
-		ok, msg := testCall(ctx, e.HTTP, p.BaseURL, model, authHeader)
+		transport := e.Transport
+		if transport == nil {
+			// The init path has no user config yet; the defaults-off policy
+			// keeps the wire bytes identical to the old direct POST.
+			transport = &proxy.Client{HTTP: e.HTTP}
+		}
+		ok, msg := testCall(ctx, transport, p.BaseURL, model, authHeader)
 		if ok {
 			s.printf("  ok: the model called the tool.\n")
 			return nil

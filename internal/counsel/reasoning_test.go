@@ -15,78 +15,77 @@ import (
 	"github.com/treeol/wakil/internal/config"
 )
 
-// TestCallOracleURL_ThinkingParameter verifies that when a reasoning spec is
-// set, the Anthropic-native thinking parameter is sent with budget_tokens and
-// max_tokens is additive (budget + answer). The answer budget must never be
-// reduced for reasoning.
-func TestCallOracleURL_ThinkingParameter(t *testing.T) {
+// TestReasoningParameter verifies that when a reasoning spec is set, the
+// OpenRouter reasoning parameter is sent with budget_tokens and max_tokens is
+// additive (budget + answer). The answer budget must never be reduced for
+// reasoning. (The direct Anthropic "thinking" parameter is gone with the
+// direct path; the OpenRouter reasoning object is the surviving shape.)
+func TestReasoningParameter(t *testing.T) {
 	var reqBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "ok"}, "finish_reason": "stop"}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20}}))
+		w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
 
-	cfg := config.Config{OracleModel: "test-model", OracleMaxTokens: 4096, OracleTimeoutSeconds: 5}
-	spec := &config.ReasoningSpec{Effort: "medium"}
-	_, _, err := callOracleWithReasoning(context.Background(), cfg, "key", "q", "ctx", srv.URL, spec)
+	ccfg := PanelCallConfig{
+		MaxTokens:      4096,
+		TimeoutSeconds: 5,
+		Transport:      transportForTest(srv),
+		Reasoning:      &config.ReasoningSpec{Effort: "medium", MaxTokens: 8192},
+	}
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", "", ccfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var req oracleReq
+	var req orReq
 	if err := json.Unmarshal(reqBody, &req); err != nil {
 		t.Fatalf("request body not valid JSON: %v", err)
 	}
-	if req.Thinking == nil {
-		t.Fatal("thinking parameter not sent")
+	if req.Reasoning == nil {
+		t.Fatal("reasoning parameter not sent")
 	}
-	if req.Thinking.Type != "enabled" {
-		t.Errorf("thinking.type = %q, want %q", req.Thinking.Type, "enabled")
-	}
-	if req.Thinking.BudgetTokens < 1024 {
-		t.Errorf("thinking.budget_tokens = %d, must be >= 1024", req.Thinking.BudgetTokens)
+	if req.Reasoning.MaxTokens != 8192 {
+		t.Errorf("reasoning.max_tokens = %d, want 8192", req.Reasoning.MaxTokens)
 	}
 	// max_tokens must be additive: budget + answer (4096).
-	expectedMax := req.Thinking.BudgetTokens + 4096
+	expectedMax := req.Reasoning.MaxTokens + 4096
 	if req.MaxTokens != expectedMax {
-		t.Errorf("max_tokens = %d, want %d (budget %d + answer 4096)", req.MaxTokens, expectedMax, req.Thinking.BudgetTokens)
+		t.Errorf("max_tokens = %d, want %d (budget %d + answer 4096)", req.MaxTokens, expectedMax, req.Reasoning.MaxTokens)
 	}
 }
 
-// TestCallOracleURL_NoThinkingWhenUnset verifies that when no reasoning spec
-// is set, the thinking parameter is omitted and max_tokens equals the answer
-// budget — byte-identical to the original CallOracleURL behavior.
-func TestCallOracleURL_NoThinkingWhenUnset(t *testing.T) {
+// TestNoReasoningWhenUnset verifies that when no reasoning spec is set, the
+// reasoning parameter is omitted and max_tokens equals the answer budget.
+func TestNoReasoningWhenUnset(t *testing.T) {
 	var reqBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "ok"}, "finish_reason": "stop"}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20}}))
+		w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
 
-	cfg := config.Config{OracleModel: "test-model", OracleMaxTokens: 512, OracleTimeoutSeconds: 5}
-	_, _, err := callOracleWithReasoning(context.Background(), cfg, "key", "q", "ctx", srv.URL, nil)
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "briefing", "", ccfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var req oracleReq
+	var req orReq
 	if err := json.Unmarshal(reqBody, &req); err != nil {
 		t.Fatalf("request body not valid JSON: %v", err)
 	}
-	if req.Thinking != nil {
-		t.Errorf("thinking parameter sent when spec is nil: %+v", req.Thinking)
+	if req.Reasoning != nil {
+		t.Errorf("reasoning parameter sent when spec is nil: %+v", req.Reasoning)
 	}
 	if req.MaxTokens != 512 {
 		t.Errorf("max_tokens = %d, want 512 (answer budget only)", req.MaxTokens)
@@ -368,7 +367,7 @@ func TestLogFooterShowsReasoningAnswerSplit(t *testing.T) {
 	r2 := PanelMemberResult{
 		Model:  "anthropic:test-model",
 		Answer: "ok",
-		Usage:  OracleUsage{InputTokens: 100, OutputTokens: 50, FinishReason: "end_turn"},
+		Usage:  OracleUsage{InputTokens: 100, OutputTokens: 50, FinishReason: "stop"},
 		Log: &ReviewLog{
 			Model:           "anthropic:test-model",
 			TokensSent:      100,
@@ -376,7 +375,7 @@ func TestLogFooterShowsReasoningAnswerSplit(t *testing.T) {
 			ContextTokens:   128000,
 			ReasoningTokens: 0,
 			AnswerTokens:    0,
-			FinishReasons:   []string{"end_turn"},
+			FinishReasons:   []string{"stop"},
 		},
 	}
 	footer2 := logFooter(r2)
@@ -432,7 +431,7 @@ func TestClampReviewerReasoning(t *testing.T) {
 
 // TestRunMemberReviewerReasoningCeiling verifies that a per-model reasoning
 // spec with max_tokens above the 16384 ceiling is clamped in the request
-// sent to the provider. The Anthropic thinking budget_tokens must not exceed
+// sent to the provider. The OpenRouter reasoning.max_tokens must not exceed
 // maxReviewerReasoningTokens.
 func TestRunMemberReviewerReasoningCeiling(t *testing.T) {
 	var reqBody []byte
@@ -440,10 +439,9 @@ func TestRunMemberReviewerReasoningCeiling(t *testing.T) {
 		reqBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "ok"}, "finish_reason": "stop"}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20}}))
+		w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
 
@@ -455,91 +453,41 @@ func TestRunMemberReviewerReasoningCeiling(t *testing.T) {
 		},
 	}
 	ccfg := PanelCallConfig{
-		MaxTokens:         4096,
-		TimeoutSeconds:    5,
-		AnthropicEndpoint: srv.URL,
-		ModelLimits:       lim,
-		MinAnswerTokens:   4096,
+		MaxTokens:       4096,
+		TimeoutSeconds:  5,
+		Transport:       transportForTest(srv),
+		ModelLimits:     lim,
+		MinAnswerTokens: 4096,
 	}
 
 	res := runMember(context.Background(), "anthropic:big-model", "anthropic", "big-model",
-		"q", "briefing", "", ccfg, map[string]string{"anthropic": "key"}, nil)
+		"q", "briefing", "", ccfg, map[string]string{"openrouter": "key"}, nil)
 	if res.Err != nil {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
 
-	var req oracleReq
+	var req orReq
 	if err := json.Unmarshal(reqBody, &req); err != nil {
 		t.Fatalf("request body not valid JSON: %v", err)
 	}
-	if req.Thinking == nil {
-		t.Fatal("thinking parameter not sent")
+	if req.Reasoning == nil {
+		t.Fatal("reasoning parameter not sent")
 	}
-	if req.Thinking.BudgetTokens > maxReviewerReasoningTokens {
-		t.Errorf("thinking.budget_tokens = %d, must be <= %d (reviewer ceiling)", req.Thinking.BudgetTokens, maxReviewerReasoningTokens)
+	if req.Reasoning.MaxTokens > maxReviewerReasoningTokens {
+		t.Errorf("reasoning.max_tokens = %d, must be <= %d (reviewer ceiling)", req.Reasoning.MaxTokens, maxReviewerReasoningTokens)
 	}
 	// max_tokens must be additive: clamped budget + answer (4096).
-	expectedMax := req.Thinking.BudgetTokens + 4096
+	expectedMax := req.Reasoning.MaxTokens + 4096
 	if req.MaxTokens != expectedMax {
-		t.Errorf("max_tokens = %d, want %d (clamped budget %d + answer 4096)", req.MaxTokens, expectedMax, req.Thinking.BudgetTokens)
+		t.Errorf("max_tokens = %d, want %d (clamped budget %d + answer 4096)", req.MaxTokens, expectedMax, req.Reasoning.MaxTokens)
 	}
 }
 
-// TestSSEMultiLineDataEvent verifies that the SSE parser correctly assembles
-// multi-line data: events per the SSE spec. A single event whose data spans
-// two data: lines must be joined with \n before dispatching to the parser.
-// The Anthropic SSE stream sometimes sends JSON payloads that span multiple
-// data: lines (e.g. large usage objects).
-func TestSSEMultiLineDataEvent(t *testing.T) {
-	// We test streamRequest directly with a custom server that sends a
-	// two-line data: event. The parser must join them with \n and parse
-	// the resulting JSON.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		// A two-line data: event. The JSON is split across two lines.
-		// The parser joins them with \n and must parse the complete JSON.
-		fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":\n")
-		fmt.Fprint(w, "data: {\"usage\":{\"input_tokens\":42,\"output_tokens\":0}}}\n\n")
-		// content + stop to make it a complete stream
-		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
-		fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n")
-		fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
-	}))
-	defer srv.Close()
-
-	content, usage, status, err := streamRequest(
-		context.Background(),
-		srv.URL,
-		map[string]string{"x-api-key": "key", "anthropic-version": "2023-06-01"},
-		[]byte(`{"model":"m","max_tokens":256,"messages":[{"role":"user","content":"q"}],"stream":true}`),
-		5*time.Second,
-		10*time.Second,
-		parseAnthropicSSE,
-	)
-	if err != nil {
-		t.Fatalf("streamRequest error: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Errorf("status = %d, want %d", status, http.StatusOK)
-	}
-	if content != "ok" {
-		t.Errorf("content = %q, want %q", content, "ok")
-	}
-	if usage == nil {
-		t.Fatal("usage is nil")
-		return
-	}
-	if usage.InputTokens != 42 {
-		t.Errorf("InputTokens = %d, want 42 (from multi-line data: event)", usage.InputTokens)
-	}
-}
-
-// TestStreamRequestIdleTimeout verifies that a server that accepts the
-// connection, sends SSE headers, and then stalls forever is aborted by the
-// streamIdleReader's idle timeout, surfacing a *streamIdleErr (retryable via
-// ErrBackendStream) rather than hanging until the total cap.
-func TestStreamRequestIdleTimeout(t *testing.T) {
+// TestTransportExecIdleTimeout verifies that a stalled stream is aborted by
+// the transport's total timeout. The transport's idle reader (120s) is the
+// production stall detector; this test uses a 5s total cap so the stall is
+// caught promptly instead of waiting out the idle window.
+func TestTransportExecIdleTimeout(t *testing.T) {
 	stalled := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Send SSE headers, then never write a body: stall forever.
@@ -554,186 +502,23 @@ func TestStreamRequestIdleTimeout(t *testing.T) {
 	defer close(stalled)
 
 	start := time.Now()
-	_, _, _, err := streamRequest(
-		context.Background(),
-		srv.URL,
-		map[string]string{"x-api-key": "key"},
-		[]byte(`{"model":"m","max_tokens":256,"messages":[{"role":"user","content":"q"}],"stream":true}`),
-		100*time.Millisecond,
-		5*time.Second,
-		parseAnthropicSSE,
-	)
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
-		t.Fatal("expected an error from the idle timeout, got nil")
+		t.Fatal("expected an error from the stalled stream, got nil")
 	}
-	var idleErr *streamIdleErr
-	if !errors.As(err, &idleErr) {
-		t.Fatalf("expected *streamIdleErr in the chain, got %T: %v", err, err)
-	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Errorf("idle timeout fired late: %v elapsed (want ~100ms)", elapsed)
+	if elapsed := time.Since(start); elapsed > 8*time.Second {
+		t.Errorf("stall was not aborted promptly: %v elapsed (want ≤ total cap + slack)", elapsed)
 	}
 }
 
-// TestStreamIdleReaderDoubleClose verifies that a second Close on an
-// already-closed streamIdleReader is a no-op (the already-closed branch).
-func TestStreamIdleReaderDoubleClose(t *testing.T) {
-	rc := &closeOnlyReader{}
-	r := newStreamIdleReader(rc, time.Hour)
-	if err := r.Close(); err != nil {
-		t.Fatalf("first Close: %v", err)
-	}
-	if rc.closes != 1 {
-		t.Errorf("underlying Close calls = %d, want 1", rc.closes)
-	}
-	// Second Close hits the already-closed branch: no-op, no panic.
-	if err := r.Close(); err != nil {
-		t.Errorf("second Close should return nil, got %v", err)
-	}
-	if rc.closes != 1 {
-		t.Errorf("underlying Close calls after double Close = %d, want 1", rc.closes)
-	}
-}
-
-type closeOnlyReader struct{ closes int }
-
-func (c *closeOnlyReader) Read(p []byte) (int, error) { return 0, io.EOF }
-func (c *closeOnlyReader) Close() error {
-	c.closes++
-	return nil
-}
-
-// TestStreamRequestJSONFallback covers the application/json content-type path
-// (a server that returns JSON instead of SSE) and the non-data: line branch.
-func TestStreamRequestJSONFallback(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"choices":[{"delta":{"content":"ok"}}]}`)
-	}))
-	defer srv.Close()
-
-	content, _, status, err := streamRequest(
-		context.Background(),
-		srv.URL,
-		map[string]string{"x-api-key": "key"},
-		[]byte(`{"model":"m","max_tokens":256,"stream":true}`),
-		5*time.Second,
-		10*time.Second,
-		parseOpenRouterSSE,
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Errorf("status = %d, want 200", status)
-	}
-	if content != "ok" {
-		t.Errorf("content = %q, want 'ok'", content)
-	}
-}
-
-// TestStreamRequestJSONFallbackReadError covers the application/json path where
-// the body read fails (a server that sets application/json and then drops the
-// connection).
-func TestStreamRequestJSONFallbackReadError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		// Hijack and close immediately to cause a read error on the body.
-		if hijacker, ok := w.(http.Hijacker); ok {
-			conn, _, _ := hijacker.Hijack()
-			conn.Close()
-		}
-	}))
-	defer srv.Close()
-
-	_, _, _, err := streamRequest(
-		context.Background(),
-		srv.URL,
-		map[string]string{"x-api-key": "key"},
-		[]byte(`{"model":"m","max_tokens":256,"stream":true}`),
-		5*time.Second,
-		10*time.Second,
-		parseAnthropicSSE,
-	)
-	if err == nil {
-		t.Fatal("expected an error for a dropped JSON response, got nil")
-	}
-}
-
-// TestParseAnthropicSSEErrorEvent verifies the mid-stream error event is
-// surfaced as an error finish reason with the error message.
-func TestParseAnthropicSSEErrorEvent(t *testing.T) {
-	_, u, done := parseAnthropicSSE([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`))
-	if !done {
-		t.Error("expected done=true for error event")
-	}
-	if u == nil {
-		t.Fatal("usage is nil")
-		return
-	}
-	if u.FinishReason != "error" {
-		t.Errorf("FinishReason = %q, want 'error'", u.FinishReason)
-	}
-	if u.ErrorMsg != "overloaded" {
-		t.Errorf("ErrorMsg = %q, want 'overloaded'", u.ErrorMsg)
-	}
-}
-
-// TestParseAnthropicSSEBadJSON verifies the JSON-unmarshal-failure path returns
-// no content and not-done.
-func TestParseAnthropicSSEBadJSON(t *testing.T) {
-	content, u, done := parseAnthropicSSE([]byte(`not valid json`))
-	if content != "" {
-		t.Errorf("content = %q, want empty", content)
-	}
-	if u != nil {
-		t.Errorf("usage = %v, want nil", u)
-	}
-	if done {
-		t.Error("done = true, want false")
-	}
-}
-
-// TestStreamRequestNoTerminalEvent verifies that a stream that sends content
-// but no [DONE] or terminal event is rejected as an error (not accepted as a
-// complete answer).
-func TestStreamRequestNoTerminalEvent(t *testing.T) {
+// TestTransportExecContextCancelled verifies the transport surfaces a
+// context cancellation (not a retryable stall) when the caller cancels.
+func TestTransportExecContextCancelled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		// Send a content line but NO [DONE] — the stream ends cleanly (EOF)
-		// without a terminal event.
-		fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
-	}))
-	defer srv.Close()
-
-	_, _, _, err := streamRequest(
-		context.Background(),
-		srv.URL,
-		map[string]string{"x-api-key": "key"},
-		[]byte(`{"model":"m","max_tokens":256,"messages":[{"role":"user","content":"q"}],"stream":true}`),
-		5*time.Second,
-		10*time.Second,
-		parseAnthropicSSE,
-	)
-	if err == nil {
-		t.Fatal("expected an error for stream without terminal event, got nil")
-	}
-	if !strings.Contains(err.Error(), "without a terminal event") {
-		t.Errorf("error should mention 'without a terminal event', got: %v", err)
-	}
-}
-
-// TestStreamRequestContextCancelled covers the streamRequest path where the
-// context is cancelled (not idle timeout) — the scanner.Err() + tctx.Err()
-// branch at line 247-249.
-func TestStreamRequestContextCancelled(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		// Stall forever — the context will cancel before the idle timeout.
+		// Stall forever — the context will cancel first.
 		<-time.After(10 * time.Second)
 	}))
 	defer srv.Close()
@@ -743,32 +528,29 @@ func TestStreamRequestContextCancelled(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		cancel()
 	}()
-	_, _, _, err := streamRequest(
-		ctx,
-		srv.URL,
-		map[string]string{"x-api-key": "key"},
-		[]byte(`{"model":"m","max_tokens":256,"stream":true}`),
-		5*time.Second,
-		2*time.Second,
-		parseAnthropicSSE,
-	)
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
+	_, _, err := callOpenRouter(ctx, "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Fatal("expected a context-cancelled error, got nil")
 	}
 }
 
-// TestStreamIdleErrErrorUnwrap verifies the streamIdleErr error text and its
-// unwrap to ErrBackendStream (the retryable sentinel).
-func TestStreamIdleErrErrorUnwrap(t *testing.T) {
-	e := &streamIdleErr{d: 5 * time.Second}
-	if msg := e.Error(); !strings.Contains(msg, "counsel stream idle") {
-		t.Errorf("Error() = %q, want it to contain %q", msg, "counsel stream idle")
-	}
-	if got := e.Unwrap(); !errors.Is(got, ErrBackendStream) {
-		t.Errorf("Unwrap() = %v, want ErrBackendStream", got)
-	}
-	if !errors.Is(e, ErrBackendStream) {
-		t.Errorf("errors.Is(streamIdleErr, ErrBackendStream) = false, want true")
+// TestTransportExecNoTerminalEvent verifies that a stream that sends content
+// but no [DONE] is rejected as an error (not accepted as a complete answer).
+func TestTransportExecNoTerminalEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Send a content line but NO [DONE] — the stream ends cleanly (EOF)
+		// without a terminal event.
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "ok"}}}}))
+	}))
+	defer srv.Close()
+
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
+	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
+	if err == nil {
+		t.Fatal("expected an error for stream without terminal event, got nil")
 	}
 }
 
@@ -873,7 +655,7 @@ func TestRunMemberDefaultReviewerSpecOpenRouterBody(t *testing.T) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	}))
 	defer srv.Close()
-	ccfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL,
+	ccfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 5, Transport: transportForTest(srv),
 		Reasoning:   &config.ReasoningSpec{Effort: "medium", MaxTokens: 8192},
 		ModelLimits: map[string]ModelLimits{"openrouter:m": {ContextTokens: 200000}}}
 	res := runMember(context.Background(), "openrouter:m", "openrouter", "m", "q", "doc", "", ccfg, map[string]string{"openrouter": "k"}, nil)

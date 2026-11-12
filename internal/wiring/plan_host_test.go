@@ -187,10 +187,10 @@ func TestPlanHostPassWithOracle(t *testing.T) {
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oracleCalls++
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", "looks good\nVERDICT: PASS\nLAST SECTION READ: Question")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"looks good\nVERDICT: PASS\nLAST SECTION READ: Question"}}]}`)
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20}}`)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -204,8 +204,10 @@ func TestPlanHostPassWithOracle(t *testing.T) {
 	app, _ := planApp(t, srv.URL, plan)
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("TEST_OR_KEY", "fake-key")
 	app.Workflow = &workflow.WorkflowState{Task: "t", Phase: workflow.WFGather, PlanPath: ".wakil/plan.md"}
 
 	code, out := runPlan(t, app, HeadlessOptions{Auto: true})

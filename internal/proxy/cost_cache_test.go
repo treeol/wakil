@@ -24,6 +24,12 @@ func TestOpenRouterHostGate(t *testing.T) {
 	if !isOpenRouterHost("https://openrouter.ai/api") {
 		t.Error("openrouter.ai must be recognised")
 	}
+	if !isOpenRouterHost("https://eu.openrouter.ai/api") {
+		t.Error("eu.openrouter.ai must be recognised (regional host)")
+	}
+	if !isOpenRouterHost("https://us.openrouter.ai/api") {
+		t.Error("us.openrouter.ai must be recognised (regional host)")
+	}
 	if !isOpenRouterHost("https://api.openrouter.ai/v1") {
 		t.Error("api.openrouter.ai subdomain must be recognised")
 	}

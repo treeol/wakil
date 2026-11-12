@@ -498,6 +498,13 @@ type App struct {
 	// Set by /counsel command; initialized from cfg.AutoCounsel at startup.
 	CounselMode string
 
+	// ZDROverride / RegionOverride are the per-repo data-policy overrides
+	// (/zdr, /region): "" = use the user config; otherwise the repo value
+	// wins. They mirror RepoState.ZDR / RepoState.Region, which persist
+	// them on the user's side (a cloned repo must never control them).
+	ZDROverride    string
+	RegionOverride string
+
 	// Unexported auto-counsel bookkeeping (counselCalls, autoCounselSkipGate).
 	// Extracted to counsel_state.go (WP-6.3); embedded here so selector access
 	// is unchanged. The exported counsel fields above stay flat because they are

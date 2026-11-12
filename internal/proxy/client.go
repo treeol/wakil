@@ -368,6 +368,11 @@ type streamChunk struct {
 		// models. Zero when absent (non-Anthropic models, older servers).
 		CacheCreationInputTokens int64    `json:"cache_creation_input_tokens"`
 		Cost                     *float64 `json:"cost,omitempty"`
+		// ServerToolUse carries server-side tool accounting (OpenRouter
+		// server tools): web_search_requests counts billed search calls.
+		ServerToolUse *struct {
+			WebSearchRequests int64 `json:"web_search_requests"`
+		} `json:"server_tool_use,omitempty"`
 	} `json:"usage"`
 	// Error is OpenRouter's mid-stream error shape: a chunk carrying
 	// {"error": {...}} instead of choices. Surfacing it beats letting the
@@ -392,6 +397,12 @@ type UsageStat struct {
 	// reports it (usage.cost). 0 / HasProviderCost=false = absent.
 	ProviderCostUSD float64
 	HasProviderCost bool
+	// ServedModel is the model the backend reports it actually served (the
+	// chunk "model" field). Empty when the backend did not report one.
+	ServedModel string
+	// WebSearchRequests is the number of OpenRouter server-side web-search
+	// requests. 0 when server tools were not used or not reported.
+	WebSearchRequests int64
 }
 
 // GroundingEntry is one provenance record attached to a turn. Proxy-sourced
@@ -441,8 +452,12 @@ func (c *Client) appAttributionHeaders() (referer, title, categories string) {
 	return referer, title, categories
 }
 
-// isOpenRouterHost reports whether the base URL's host is openrouter.ai or a
-// subdomain of it.
+// isOpenRouterHost reports whether the base URL's host is one of the three
+// exact OpenRouter hosts — the global openrouter.ai plus the two regional
+// hosts eu.openrouter.ai and us.openrouter.ai — or a subdomain of them.
+// Attribution headers, session_id, the context-compression plugin entry and
+// usage.cost handling all treat the regional hosts exactly like the global
+// one (they serve the same API on a regional origin).
 func isOpenRouterHost(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Host == "" {
@@ -450,6 +465,23 @@ func isOpenRouterHost(baseURL string) bool {
 	}
 	h := u.Hostname()
 	return h == "openrouter.ai" || strings.HasSuffix(h, ".openrouter.ai")
+}
+
+// isExactOpenRouterHost reports whether the base URL's host is exactly one of
+// the three OpenRouter hosts. The data policy only rewrites, pins, or
+// refuses traffic on these exact hosts; a subdomain like foo.openrouter.ai
+// is attribution-marked by isOpenRouterHost but never treated as the
+// OpenRouter origin for policy purposes.
+func isExactOpenRouterHost(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
+		return true
+	}
+	return false
 }
 
 // ResolveCwd returns the session's working directory as the value for
@@ -648,12 +680,186 @@ type Client struct {
 	// (120s). Set by the wiring layer from config.StreamIdleTimeoutSeconds.
 	StreamIdleTimeout time.Duration
 
+	// ZDR is the zero-data-retention switch for OpenRouter traffic:
+	// "off" (default, send unchanged), "auto" (try to enforce, fall back to
+	// an unenforced send when the provider has no ZDR endpoint for the model),
+	// or "on" (enforce or fail before sending). Set at construction (user
+	// config) or per-repo via /zdr; the per-repo override wins. Guarded by
+	// policyMu — mutate only through SetDataPolicy.
+	ZDR string
+
+	// Region pins OpenRouter traffic to a regional host: "off" (default),
+	// "eu" → eu.openrouter.ai, "us" → us.openrouter.ai. Only applies when the
+	// configured host is exactly openrouter.ai; never falls back to the
+	// global host. Guarded by policyMu.
+	Region string
+
+	// TrustedLocalHosts lists non-IP host names treated as local for data
+	// policy classification (in addition to loopback/RFC 1918/link-local/ULA
+	// literals). No DNS lookup is made. Empty (default) = only literals.
+	// Guarded by policyMu.
+	TrustedLocalHosts []string
+
 	// malformedChunks counts SSE data chunks that failed to parse as JSON.
 	// Each one aborts its stream as ErrBackendStream and is logged to stderr
 	// with its byte offset (fail-fast — a lost chunk corrupts the accumulated
 	// tool-call arguments). Atomic — written from the stream loop, readable
 	// for diagnostics.
 	malformedChunks int64
+
+	// Policy state for the data-policy layer (policy.go + transport.go).
+	// mu guards lastDecision, noZDRModels and noticedNoZDR. Records are
+	// per-client, which for a live session is per-endpoint; a per-repo switch
+	// change replaces the client (see the TUI switch handlers), so stale
+	// records never leak across repos or endpoints.
+	policyMu      sync.Mutex
+	lastDecision  string
+	lastModel     string
+	noZDRModels   map[string]bool
+	noticedNoZDR  map[string]bool
+	onNoZDRNotice func(model string)
+}
+
+// SetNoZDRNoticeHook registers the callback fired once per model per session
+// when zdr auto falls back to an unenforced send. The callback must be fast
+// and must not block; a nil hook disables the notice.
+func (c *Client) SetNoZDRNoticeHook(fn func(model string)) {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	c.onNoZDRNotice = fn
+}
+
+// LastPolicyDecision returns the decision recorded for the most recent
+// outgoing request, and the model it was taken for. Empty before the first
+// request or when both switches are off.
+func (c *Client) LastPolicyDecision() (decision, model string) {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	return c.lastDecision, c.lastModel
+}
+
+// ResetPolicyState clears the recorded decision and the learned no-ZDR model
+// set. Used when the effective switches change mid-session.
+func (c *Client) ResetPolicyState() {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	c.lastDecision = ""
+	c.lastModel = ""
+	c.noZDRModels = nil
+	c.noticedNoZDR = nil
+}
+
+func (c *Client) recordDecision(decision, model string) {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	c.lastDecision = decision
+	c.lastModel = model
+}
+
+func (c *Client) hasNoZDR(model string) bool {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	return c.noZDRModels[model]
+}
+
+func (c *Client) markNoZDR(model string) (firstNotice bool) {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	if c.noZDRModels == nil {
+		c.noZDRModels = map[string]bool{}
+	}
+	c.noZDRModels[model] = true
+	if c.noticedNoZDR == nil {
+		c.noticedNoZDR = map[string]bool{}
+	}
+	if !c.noticedNoZDR[model] {
+		c.noticedNoZDR[model] = true
+		return true
+	}
+	return false
+}
+
+func (c *Client) noZDRNoticeHook() func(model string) {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	return c.onNoZDRNotice
+}
+
+// DataPolicy returns the current data-policy switches.
+func (c *Client) DataPolicy() (zdr, region string, trusted []string) {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	return c.ZDR, c.Region, append([]string(nil), c.TrustedLocalHosts...)
+}
+
+// SetDataPolicy atomically replaces the data-policy switches under policyMu
+// and resets the learned no-ZDR model set. All policy reads go through
+// DataPolicy, so a /zdr change mid-flight is race-free.
+func (c *Client) SetDataPolicy(zdr, region string, trusted []string) {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	c.ZDR, c.Region, c.TrustedLocalHosts = zdr, region, trusted
+	c.lastDecision = ""
+	c.lastModel = ""
+	c.noZDRModels = nil
+	c.noticedNoZDR = nil
+}
+
+// applyStreamPolicy applies the data policy for one Stream request and
+// returns the (possibly rewritten) output plus the effective base URL the
+// request must target.
+func (c *Client) applyStreamPolicy(model string, raw []byte) (PolicyOutput, string) {
+	effectiveBase := c.BaseURL
+	zdr, region, trusted := c.DataPolicy()
+	pol := ApplyPolicy(PolicyInput{
+		Host:              hostOfBaseURL(c.BaseURL),
+		Model:             model,
+		ZDR:               zdr,
+		Region:            region,
+		TrustedLocalHosts: trusted,
+	}, raw)
+	if pol.Host != hostOfBaseURL(c.BaseURL) {
+		effectiveBase = withHost(c.BaseURL, pol.Host)
+	}
+	if pol.Decision != "" {
+		c.recordDecision(pol.Decision, model)
+	}
+	return pol, effectiveBase
+}
+
+// CloneForBaseURL returns a shallow copy of the client pointing at
+// baseURL, sharing the HTTP transport and policy settings. It is the one
+// sanctioned way to re-target a client without copying its locks by value.
+func (c *Client) CloneForBaseURL(baseURL string) *Client {
+	n := &Client{
+		BaseURL:           baseURL,
+		Model:             c.Model,
+		ChatID:            c.ChatID,
+		AuthHeader:        c.AuthHeader,
+		NoMemoryWrite:     c.NoMemoryWrite,
+		HTTP:              c.HTTP,
+		Kind:              c.Kind,
+		Cwd:               c.Cwd,
+		ConfiguredModel:   c.ConfiguredModel,
+		Temperature:       c.Temperature,
+		TopP:              c.TopP,
+		MaxTokens:         c.MaxTokens,
+		Reasoning:         c.Reasoning,
+		CachePrompt:       c.CachePrompt,
+		ToolChoice:        c.ToolChoice,
+		CacheControl:      c.CacheControl,
+		AppTitle:          c.AppTitle,
+		Backend:           c.Backend,
+		AuxModel:          c.AuxModel,
+		MaxRequestBytes:   c.MaxRequestBytes,
+		StreamIdleTimeout: c.StreamIdleTimeout,
+	}
+	zdr, region, trusted := c.DataPolicy()
+	n.SetDataPolicy(zdr, region, trusted)
+	n.policyMu.Lock()
+	n.onNoZDRNotice = c.onNoZDRNotice
+	n.policyMu.Unlock()
+	return n
 }
 
 // LastUsage returns the token usage recorded by the most recent Stream call.
@@ -1020,7 +1226,29 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/chat/completions", bytes.NewReader(raw))
+	// Data policy, applied right before the request is built: the exact
+	// model as sent on the wire is the classification unit (an
+	// openrouter/auto-routed call is classified by the requested id, which
+	// is the id the user picked). With both switches off ApplyPolicy is a
+	// pass-through and raw is used verbatim, so the wire bytes are identical
+	// to the unguarded path. Applied AFTER the byte guard so the provider
+	// fields are always present on the sent bytes.
+	pol, effectiveBase := c.applyStreamPolicy(model, raw)
+	if pol.EnforcementErr != nil {
+		return Message{}, pol.EnforcementErr
+	}
+	raw = pol.Body
+
+	// zdr auto with a learned no-ZDR model: send without the fields from the
+	// start (same rule as Exec).
+	zdr, _, _ := c.DataPolicy()
+	if zdr == "auto" && pol.WithZDRFields && model != "" && c.hasNoZDR(model) {
+		raw = withoutZDRFields(raw)
+		pol.WithZDRFields = false
+		c.recordDecision("sent without ZDR (not available)", model)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, effectiveBase+"/v1/chat/completions", bytes.NewReader(raw))
 	if err != nil {
 		return Message{}, err
 	}
@@ -1083,6 +1311,56 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	var firstByteRecorded bool
 
 	resp, err := c.HTTP.Do(req)
+
+	// zdr auto: a 404 before any stream data retries once without the
+	// provider fields, exactly like Exec. Any other status keeps the
+	// original (fatal/retryable) classification below.
+	if err == nil && resp.StatusCode == http.StatusNotFound && pol.WithZDRFields && zdr == "auto" {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		retryRaw := withoutZDRFields(raw)
+		first := c.markNoZDR(model)
+		c.recordDecision("sent without ZDR (not available)", model)
+		if first {
+			if hook := c.noZDRNoticeHook(); hook != nil {
+				hook(model)
+			}
+		}
+		req2, err2 := http.NewRequestWithContext(ctx, http.MethodPost, effectiveBase+"/v1/chat/completions", bytes.NewReader(retryRaw))
+		if err2 != nil {
+			return Message{}, err2
+		}
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Accept", "text/event-stream")
+		if c.AuthHeader != "" {
+			req2.Header.Set("Authorization", c.AuthHeader)
+		}
+		if proxyShape {
+			if c.NoMemoryWrite {
+				req2.Header.Set("X-Ilm-No-Memory-Write", "true")
+			}
+			if c.Backend != "" {
+				req2.Header.Set("X-Ilm-Backend", c.Backend)
+			}
+			if c.AuxModel != "" {
+				req2.Header.Set("X-Ilm-Aux-Model", c.AuxModel)
+			}
+		}
+		if !proxyShape {
+			referer, title, categories := c.appAttributionHeaders()
+			if referer != "" {
+				req2.Header.Set("HTTP-Referer", referer)
+			}
+			if title != "" {
+				req2.Header.Set("X-Title", title)
+				req2.Header.Set("X-OpenRouter-Title", title)
+			}
+			if categories != "" {
+				req2.Header.Set("X-OpenRouter-Categories", categories)
+			}
+		}
+		resp, err = c.HTTP.Do(req2)
+	}
 	if err != nil {
 		// A cancelled context surfaces from Do as a wrapped ctx.Err() — the
 		// user aborted before any response arrived. Never wrap it retryable:

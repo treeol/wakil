@@ -29,6 +29,8 @@ func newAnthropicFormEndpoint(t *testing.T) *httptest.Server {
 func TestMashuraAsyncEmitsChunks(t *testing.T) {
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
+	os.Setenv("MASHURA_TEST_OR_KEY", "x")
+	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 
 	srv := newAnthropicFormEndpoint(t)
 	defer srv.Close()
@@ -108,6 +110,8 @@ func TestMashuraAsyncEmitsChunks(t *testing.T) {
 func TestMashuraSyncFallbackEmitsNoChunks(t *testing.T) {
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
+	os.Setenv("MASHURA_TEST_OR_KEY", "x")
+	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 
 	srv := newAnthropicFormEndpoint(t)
 	defer srv.Close()

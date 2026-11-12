@@ -144,12 +144,14 @@ func reviewOracleApp(t *testing.T, onCall func()) (*App, *fakeExecutor) {
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("MASHURA_TEST_KEY", "x")
+	t.Setenv("MASHURA_TEST_OR_KEY", "x")
 
 	fe := newFakeExecutor()
 	fe.files[".wakil/plan.md"] = "## Task\n\nt\n\n## Plan\n\n1. one\n2. two\n"
 	app := &App{
 		Cfg: config.Config{
 			OracleAPIKeyEnv:      "MASHURA_TEST_KEY",
+			OpenRouterAPIKeyEnv:  "MASHURA_TEST_OR_KEY",
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      256,
 			OracleEnabled:        true,

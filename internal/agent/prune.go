@@ -2532,6 +2532,9 @@ func (a *App) raterClient() *proxy.Client {
 		HTTP:              a.Client.HTTP,
 		MaxRequestBytes:   a.Client.MaxRequestBytes,
 		StreamIdleTimeout: a.Client.StreamIdleTimeout,
+		ZDR:               a.EffectiveZDR(),
+		Region:            a.EffectiveRegion(),
+		TrustedLocalHosts: a.Cfg.TrustedLocalHosts,
 	}
 }
 

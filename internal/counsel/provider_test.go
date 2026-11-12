@@ -14,20 +14,50 @@ import (
 )
 
 // writeAnthropicSSE writes an Anthropic Messages API SSE stream carrying one
-// text block with the given stop reason and usage.
+// text block with the given stop reason and usage. (Historic name kept: the
+// shape is now read by the OpenRouter chunk parser in the transport, which
+// only needs the content and usage fields this helper emits.)
 func writeAnthropicSSE(w http.ResponseWriter, text, stopReason string, in, out int) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n", in)
-	fmt.Fprint(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
-	fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", text)
-	fmt.Fprint(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
-	fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":%q},\"usage\":{\"output_tokens\":%d}}\n\n", stopReason, out)
-	fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": text}, "finish_reason": nil}}}))
+	finish := stopReason
+	if finish == "stop" {
+		finish = "stop"
+	}
+	fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": finish}}}))
+	fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": in, "completion_tokens": out}}))
+	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
-// TestParseModelPrefix verifies that the provider prefix is correctly split from
-// the model ID, and that bare names (no colon) default to "anthropic".
+// toolCallsTestServer answers with finish_reason=tool_calls and server-tool
+// usage, as a server-tools-exhausted reply does.
+func toolCallsTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": "tool_calls"}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "server_tool_use": map[string]any{"web_search_requests": 5}}}))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+}
+
+// midStreamErrorTestServer answers with a mid-stream error chunk (the
+// OpenRouter error-object shape with HTTP 200).
+func midStreamErrorTestServer(t *testing.T, msg string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"error": map[string]any{"message": msg}}))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+}
+
+// TestParseModelPrefix verifies that the provider prefix is correctly split
+// from the model ID, and that bare names (no colon) default to "openrouter"
+// (the only transport since the direct Anthropic path was removed).
 func TestParseModelPrefix(t *testing.T) {
 	cases := []struct {
 		in    string
@@ -36,9 +66,9 @@ func TestParseModelPrefix(t *testing.T) {
 	}{
 		{"anthropic:claude-opus-4-8", "anthropic", "claude-opus-4-8"},
 		{"openrouter:google/gemini-2.5-pro", "openrouter", "google/gemini-2.5-pro"},
-		{"claude-opus-4-8", "anthropic", "claude-opus-4-8"}, // bare name → anthropic
+		{"claude-opus-4-8", "openrouter", "claude-opus-4-8"}, // bare name → openrouter
 		{"openrouter:anthropic/claude-3.7-sonnet", "openrouter", "anthropic/claude-3.7-sonnet"},
-		{"claude-fable-5", "anthropic", "claude-fable-5"}, // bare name, no slash
+		{"claude-fable-5", "openrouter", "claude-fable-5"}, // bare name, no slash
 	}
 	for _, c := range cases {
 		prov, model := ParseModelPrefix(c.in)
@@ -67,7 +97,7 @@ func TestOpenRouterRequestShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	answer, usage, err := callOpenRouter(context.Background(), "google/gemini-2.5-pro", "test-api-key", "question text?", "some context", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
@@ -121,11 +151,10 @@ func TestOpenRouterRequestShape(t *testing.T) {
 // response with empty content still returns usage.
 func TestOpenRouterTruncationReturnsUsage(t *testing.T) {
 	// Truncated response with non-empty content.
-	srv := openRouterSSETestServer(t,
-		`{"choices":[{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}],"usage":{"prompt_tokens":15,"completion_tokens":8}}`)
+	srv := lengthTestServer(t, "partial")
 	defer srv.Close()
 
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Fatal("expected truncation error")
@@ -133,8 +162,8 @@ func TestOpenRouterTruncationReturnsUsage(t *testing.T) {
 	if !strings.Contains(err.Error(), "truncated at max_tokens") {
 		t.Errorf("error = %v, want truncation message", err)
 	}
-	if usage.InputTokens != 15 || usage.OutputTokens != 8 {
-		t.Errorf("truncation usage = %+v, want {15, 8}", usage)
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
+		t.Errorf("truncation usage = %+v, want {10, 5}", usage)
 	}
 }
 
@@ -143,11 +172,10 @@ func TestOpenRouterTruncationReturnsUsage(t *testing.T) {
 // This is the ordering bug Mashūra caught: the empty-text check must not
 // run before the finish_reason check.
 func TestOpenRouterTruncationEmptyContentReturnsUsage(t *testing.T) {
-	srv := openRouterSSETestServer(t,
-		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":15,"completion_tokens":8}}`)
+	srv := lengthTestServer(t, "")
 	defer srv.Close()
 
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Fatal("expected truncation error")
@@ -155,19 +183,18 @@ func TestOpenRouterTruncationEmptyContentReturnsUsage(t *testing.T) {
 	if !strings.Contains(err.Error(), "truncated at max_tokens") {
 		t.Errorf("error = %v, want truncation message (not empty-content)", err)
 	}
-	if usage.InputTokens != 15 || usage.OutputTokens != 8 {
-		t.Errorf("truncation usage = %+v, want {15, 8}", usage)
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
+		t.Errorf("truncation usage = %+v, want {10, 5}", usage)
 	}
 }
 
 // TestFusionTruncationReturnsUsage verifies that a length-truncated fusion
 // response returns actual usage.
 func TestFusionTruncationReturnsUsage(t *testing.T) {
-	srv := openRouterSSETestServer(t,
-		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":20,"completion_tokens":10}}`)
+	srv := lengthTestServer(t, "")
 	defer srv.Close()
 
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, usage, err := callFusion(context.Background(), []string{"~anthropic/claude"}, "key", "q", "ctx", ccfg)
 	if err == nil {
 		t.Fatal("expected truncation error")
@@ -175,8 +202,8 @@ func TestFusionTruncationReturnsUsage(t *testing.T) {
 	if !strings.Contains(err.Error(), "truncated at max_tokens") {
 		t.Errorf("error = %v, want truncation message", err)
 	}
-	if usage.InputTokens != 20 || usage.OutputTokens != 10 {
-		t.Errorf("truncation usage = %+v, want {20, 10}", usage)
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
+		t.Errorf("truncation usage = %+v, want {10, 5}", usage)
 	}
 }
 
@@ -191,9 +218,11 @@ func TestRunPanelModeCollectsAll(t *testing.T) {
 			Model string `json:"model"`
 		}
 		json.Unmarshal(body, &req)
-		if req.Model == "model-a" {
-			// First member: success.
-			writeAnthropicSSE(w, "first answer", "end_turn", 10, 5)
+		if req.Model == "anthropic/model-a" {
+			// First member: success. The member is configured as
+			// "anthropic:model-a", which is mapped to the OpenRouter slug
+			// "anthropic/model-a" before it goes on the wire.
+			writeAnthropicSSE(w, "first answer", "stop", 10, 5)
 		} else {
 			// Second member: API error.
 			w.WriteHeader(http.StatusInternalServerError)
@@ -203,8 +232,8 @@ func TestRunPanelModeCollectsAll(t *testing.T) {
 	defer srv.Close()
 
 	models := []string{"anthropic:model-a", "anthropic:model-b"}
-	apiKeys := map[string]string{"anthropic": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+	apiKeys := map[string]string{"openrouter": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "panel", "question?", "briefing", ccfg, apiKeys)
 
@@ -246,14 +275,14 @@ func TestRunPanelFallbackStopsOnSuccess(t *testing.T) {
 			w.Write([]byte(`{"error":{"type":"authentication_error","message":"bad key"}}`))
 		} else {
 			// Second member: success.
-			writeAnthropicSSE(w, "fallback answer", "end_turn", 8, 4)
+			writeAnthropicSSE(w, "fallback answer", "stop", 8, 4)
 		}
 	}))
 	defer srv.Close()
 
 	models := []string{"anthropic:primary", "anthropic:secondary", "anthropic:tertiary"}
-	apiKeys := map[string]string{"anthropic": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+	apiKeys := map[string]string{"openrouter": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "fallback", "question?", "briefing", ccfg, apiKeys)
 
@@ -312,7 +341,7 @@ func TestFusionRequestShape(t *testing.T) {
 	ccfg := PanelCallConfig{
 		MaxTokens:          1024,
 		TimeoutSeconds:     5,
-		OpenRouterEndpoint: srv.URL,
+		Transport:          transportForTest(srv),
 		FusionJudge:        "~anthropic/claude-opus-latest",
 		FusionMaxToolCalls: 4,
 	}
@@ -387,7 +416,7 @@ func TestRunPanelFusionMode(t *testing.T) {
 
 	models := []string{"~anthropic/claude-opus-latest", "~openai/gpt-latest"}
 	apiKeys := map[string]string{"openrouter": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "fusion", "question?", "briefing", ccfg, apiKeys)
 
@@ -492,16 +521,16 @@ func TestRunPanelDebateBasic(t *testing.T) {
 		mu.Unlock()
 		// First call per model = round 1, second call = round 2.
 		if n == 1 {
-			writeAnthropicSSE(w, "round1 answer from "+req.Model, "end_turn", 10, 5)
+			writeAnthropicSSE(w, "round1 answer from "+req.Model, "stop", 10, 5)
 		} else {
-			writeAnthropicSSE(w, "round2 refined answer from "+req.Model, "end_turn", 20, 8)
+			writeAnthropicSSE(w, "round2 refined answer from "+req.Model, "stop", 20, 8)
 		}
 	}))
 	defer srv.Close()
 
 	models := []string{"anthropic:model-a", "anthropic:model-b"}
-	apiKeys := map[string]string{"anthropic": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+	apiKeys := map[string]string{"openrouter": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
 
@@ -510,8 +539,8 @@ func TestRunPanelDebateBasic(t *testing.T) {
 	}
 	// Each model should be called twice (round 1 + round 2).
 	mu.Lock()
-	callsA := modelCalls["model-a"]
-	callsB := modelCalls["model-b"]
+	callsA := modelCalls["anthropic/model-a"]
+	callsB := modelCalls["anthropic/model-b"]
 	mu.Unlock()
 	if callsA != 2 {
 		t.Errorf("model-a: expected 2 calls, got %d", callsA)
@@ -551,20 +580,20 @@ func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
 		mu.Lock()
 		modelCalls[req.Model]++
 		mu.Unlock()
-		if req.Model == "model-a" {
-			// model-a always fails with a final (non-retryable) error.
+		if req.Model == "anthropic/model-a" {
+			// anthropic/model-a always fails with a final (non-retryable) error.
 			w.WriteHeader(http.StatusForbidden)
 			w.Write([]byte(`{"error":{"type":"permission_error","message":"simulated failure"}}`))
 		} else {
 			// model-b succeeds in both rounds.
-			writeAnthropicSSE(w, "answer from model-b", "end_turn", 10, 5)
+			writeAnthropicSSE(w, "answer from model-b", "stop", 10, 5)
 		}
 	}))
 	defer srv.Close()
 
 	models := []string{"anthropic:model-a", "anthropic:model-b"}
-	apiKeys := map[string]string{"anthropic": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+	apiKeys := map[string]string{"openrouter": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
 
@@ -573,8 +602,8 @@ func TestRunPanelDebateRound1FailureDropsMember(t *testing.T) {
 	}
 	// model-a should be called only once (round 1 — it failed, so it drops out).
 	mu.Lock()
-	callsA := modelCalls["model-a"]
-	callsB := modelCalls["model-b"]
+	callsA := modelCalls["anthropic/model-a"]
+	callsB := modelCalls["anthropic/model-b"]
 	mu.Unlock()
 	if callsA != 1 {
 		t.Errorf("model-a: expected 1 call (round 1 only, failed), got %d", callsA)
@@ -613,8 +642,8 @@ func TestRunPanelDebateAllFailRound1(t *testing.T) {
 	defer srv.Close()
 
 	models := []string{"anthropic:model-a", "anthropic:model-b"}
-	apiKeys := map[string]string{"anthropic": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+	apiKeys := map[string]string{"openrouter": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
 
@@ -648,8 +677,8 @@ func TestRunPanelDebateMaxParticipants(t *testing.T) {
 	for i := range models {
 		models[i] = "anthropic:model-" + string(rune('a'+i))
 	}
-	apiKeys := map[string]string{"anthropic": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+	apiKeys := map[string]string{"openrouter": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
 
@@ -673,13 +702,13 @@ func TestRunPanelDebateSingleMember(t *testing.T) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
-		writeAnthropicSSE(w, "initial answer", "end_turn", 10, 5)
+		writeAnthropicSSE(w, "initial answer", "stop", 10, 5)
 	}))
 	defer srv.Close()
 
 	models := []string{"anthropic:single-model"}
-	apiKeys := map[string]string{"anthropic": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+	apiKeys := map[string]string{"openrouter": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "debate", "question?", "briefing", ccfg, apiKeys)
 
@@ -711,8 +740,8 @@ func TestRunPanelUnknownModeFailsClosed(t *testing.T) {
 	defer srv.Close()
 
 	models := []string{"anthropic:model-a", "anthropic:model-b"}
-	apiKeys := map[string]string{"anthropic": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL + "/v1/messages"}
+	apiKeys := map[string]string{"openrouter": "test-key"}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 
 	results := RunPanel(context.Background(), models, "debtae", "question?", "briefing", ccfg, apiKeys)
 
@@ -781,14 +810,14 @@ func TestRunPanelDebateRound2SurvivesWith2xDeadline(t *testing.T) {
 				text = "answer"
 			}
 			time.Sleep(deadline)
-			writeAnthropicSSE(w, text, "end_turn", 3, 2)
+			writeAnthropicSSE(w, text, "stop", 3, 2)
 		}))
 		defer srv.Close()
 
 		// Two models are needed to trigger round 2 (with n=1, round 2 is skipped).
 		models := []string{"anthropic:model-a", "anthropic:model-b"}
-		apiKeys := map[string]string{"anthropic": "test-key"}
-		ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: perCall, AnthropicEndpoint: srv.URL + "/v1/messages"}
+		apiKeys := map[string]string{"openrouter": "test-key"}
+		ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: perCall, Transport: transportForTest(srv)}
 
 		parent, cancel := context.WithTimeout(context.Background(), outerDeadline)
 		defer cancel()
@@ -849,7 +878,7 @@ func TestOpenRouterServerToolsInRequest(t *testing.T) {
 	ccfg := PanelCallConfig{
 		MaxTokens:          512,
 		TimeoutSeconds:     5,
-		OpenRouterEndpoint: srv.URL,
+		Transport:          transportForTest(srv),
 		ServerTools:        []string{"openrouter:web_search", "openrouter:web_fetch"},
 		WebSearchEngine:    "exa",
 		ServerToolMaxCalls: 10,
@@ -906,7 +935,7 @@ func TestOpenRouterNoServerToolsOmitsFields(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
@@ -929,15 +958,14 @@ func TestOpenRouterNoServerToolsOmitsFields(t *testing.T) {
 // content is an array of content parts (as server tools may return), the text
 // is correctly extracted.
 func TestOpenRouterServerToolsArrayContent(t *testing.T) {
-	srv := openRouterSSETestServer(t,
-		`{"choices":[{"message":{"role":"assistant","content":"Based on search results: \nthe answer is 42"},"finish_reason":"stop"}]}`)
+	srv := openRouterSSETestServer(t, "Based on search results: \nthe answer is 42", 10, 5)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{
-		MaxTokens:          512,
-		TimeoutSeconds:     5,
-		OpenRouterEndpoint: srv.URL,
-		ServerTools:        []string{"openrouter:web_search"},
+		MaxTokens:      512,
+		TimeoutSeconds: 5,
+		Transport:      transportForTest(srv),
+		ServerTools:    []string{"openrouter:web_search"},
 	}
 	answer, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err != nil {
@@ -952,15 +980,20 @@ func TestOpenRouterServerToolsArrayContent(t *testing.T) {
 // occur when server tools are invoked but don't produce text) doesn't crash
 // and returns an error with usage preserved.
 func TestOpenRouterServerToolsNullContent(t *testing.T) {
-	srv := openRouterSSETestServer(t,
-		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":0,"server_tool_use":{"web_search_requests":3}}}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": "stop"}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 0, "server_tool_use": map[string]any{"web_search_requests": 3}}}))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{
-		MaxTokens:          512,
-		TimeoutSeconds:     5,
-		OpenRouterEndpoint: srv.URL,
-		ServerTools:        []string{"openrouter:web_search"},
+		MaxTokens:      512,
+		TimeoutSeconds: 5,
+		Transport:      transportForTest(srv),
+		ServerTools:    []string{"openrouter:web_search"},
 	}
 	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
@@ -979,15 +1012,14 @@ func TestOpenRouterServerToolsNullContent(t *testing.T) {
 // "tool_calls" (server tools exhausted without final answer) returns an
 // actionable error with usage preserved.
 func TestOpenRouterToolCallsFinishReason(t *testing.T) {
-	srv := openRouterSSETestServer(t,
-		`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"server_tool_use":{"web_search_requests":5}}}`)
+	srv := toolCallsTestServer(t)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{
-		MaxTokens:          512,
-		TimeoutSeconds:     5,
-		OpenRouterEndpoint: srv.URL,
-		ServerTools:        []string{"openrouter:web_search"},
+		MaxTokens:      512,
+		TimeoutSeconds: 5,
+		Transport:      transportForTest(srv),
+		ServerTools:    []string{"openrouter:web_search"},
 	}
 	_, usage, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
@@ -1030,15 +1062,14 @@ func TestPanelDetailNoServerTools(t *testing.T) {
 // mixed valid/invalid parts does not discard the valid text (per-part
 // tolerance). Astra flagged this as the key robustness gap.
 func TestOpenRouterServerToolsMixedArray(t *testing.T) {
-	srv := openRouterSSETestServer(t,
-		`{"choices":[{"message":{"role":"assistant","content":"useful answer second part"},"finish_reason":"stop"}]}`)
+	srv := openRouterSSETestServer(t, "useful answer second part", 10, 5)
 	defer srv.Close()
 
 	ccfg := PanelCallConfig{
-		MaxTokens:          512,
-		TimeoutSeconds:     5,
-		OpenRouterEndpoint: srv.URL,
-		ServerTools:        []string{"openrouter:web_search"},
+		MaxTokens:      512,
+		TimeoutSeconds: 5,
+		Transport:      transportForTest(srv),
+		ServerTools:    []string{"openrouter:web_search"},
 	}
 	answer, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err != nil {
@@ -1057,11 +1088,10 @@ func TestOpenRouterServerToolsMixedArray(t *testing.T) {
 // object is handled correctly (Fable flagged this — provider failures can
 // return HTTP 200 with an error body).
 func TestOpenRouter200WithErrorBody(t *testing.T) {
-	srv := openRouterSSETestServer(t,
-		`{"choices":[],"error":{"message":"provider overloaded","type":"server_error"}}`)
+	srv := midStreamErrorTestServer(t, "provider overloaded")
 	defer srv.Close()
 
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, _, err := callOpenRouter(context.Background(), "test-model", "key", "q", "ctx", "", ccfg)
 	if err == nil {
 		t.Fatal("expected error for 200-with-error-body")

@@ -634,6 +634,25 @@ type Config struct {
 	Backend          string   `json:"backend,omitempty"`
 	ExternalBackends []string `json:"external_backends,omitempty"`
 
+	// Data policy (Step 4): what Wakil may send to a model host.
+	//
+	// ZDR is the zero-data-retention switch for OpenRouter traffic:
+	// "off" (default), "auto", or "on". With both switches off the bytes on
+	// the wire are identical to the unguarded path. A per-repo override
+	// (/zdr) wins over this user config.
+	ZDR string `json:"zdr,omitempty"`
+
+	// Region pins OpenRouter traffic to a regional host: "off" (default),
+	// "eu" (eu.openrouter.ai), or "us" (us.openrouter.ai). Only applies when
+	// the configured host is exactly openrouter.ai. A per-repo override
+	// (/region) wins over this user config.
+	Region string `json:"openrouter_region,omitempty"`
+
+	// TrustedLocalHosts lists non-IP host names treated as local for the
+	// data policy (in addition to loopback/RFC 1918/link-local/ULA
+	// literals). No DNS lookup is made for classification.
+	TrustedLocalHosts []string `json:"trusted_local_hosts,omitempty"`
+
 	// AuxModel pins the X-Ilm-Aux-Model header sent on every chat request.
 	// Empty (default) = send the main model so aux always follows main.
 	// Set to a specific model ID (e.g. "anthropic/claude-haiku-4-5-20251001")
@@ -1055,9 +1074,34 @@ type MashuraRoleConfig struct {
 	Reasoning *ReasoningSpec `json:"reasoning,omitempty"`
 }
 
-// MashuraPanelConfig defines one named panel: a list of prefixed model strings
-// and the panel execution mode.
-//
+// NormalizedModels maps every member of the panel to the model id actually
+// sent over the wire. Direct Anthropic access is removed: an "anthropic:<id>"
+// member is served through OpenRouter with the slug "anthropic/<id>", a bare
+// name is treated as a bare id, and an "openrouter:<id>" member passes
+// through unchanged. The mapping is purely mechanical: the id after the
+// prefix is never reformatted, so a configured "anthropic:claude-opus-4-8"
+// and an OpenRouter "anthropic/claude-opus-4-8" converge on the same slug.
+func OpenRouterSlug(prefixedModel string) (slug string, ok bool) {
+	i := strings.IndexByte(prefixedModel, ':')
+	if i < 0 {
+		return prefixedModel, true
+	}
+	prov, model := prefixedModel[:i], prefixedModel[i+1:]
+	switch prov {
+	case "openrouter":
+		return model, true
+	case "anthropic":
+		if model == "" {
+			return "", false
+		}
+		if strings.HasPrefix(model, "anthropic/") {
+			return model, true
+		}
+		return "anthropic/" + model, true
+	}
+	return "", false
+}
+
 // mode "fusion": a single OpenRouter Fusion call where Models becomes the
 // analysis panel; FusionJudge is the judge that synthesizes their responses.
 // All models use the ~ prefix syntax (e.g. "~anthropic/claude-opus-latest").
@@ -1283,6 +1327,8 @@ func DefaultConfig() Config {
 		OpenRouterAPIKeyEnv:        "OPENROUTER_API_KEY",
 		OracleTimeoutSeconds:       300,
 		WFFinalReview:              true,
+		ZDR:                        "off",
+		Region:                     "off",
 	}
 }
 
@@ -2373,6 +2419,29 @@ func validateEnums(cfg Config) error {
 		if strings.ContainsAny(cfg.SubagentBackend, " \t\n") {
 			return fmt.Errorf("subagent_backend must not contain whitespace (got %q)", cfg.SubagentBackend)
 		}
+	}
+	// Data policy switches are load-time validated here (and again at policy
+	// time in internal/proxy, so programmatically built clients cannot
+	// smuggle an invalid mode past the gate).
+	if err := ValidateDataPolicy(cfg.ZDR, cfg.Region); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateDataPolicy checks the data-policy switch spellings. It is shared
+// with internal/proxy at policy time; config keeps the load-time copy so a
+// typo fails the config load with a clear field name.
+func ValidateDataPolicy(zdr, region string) error {
+	switch zdr {
+	case "", "off", "auto", "on":
+	default:
+		return fmt.Errorf("zdr must be one of: off, auto, on (got %q)", zdr)
+	}
+	switch region {
+	case "", "off", "eu", "us":
+	default:
+		return fmt.Errorf("openrouter_region must be one of: off, eu, us (got %q)", region)
 	}
 	return nil
 }

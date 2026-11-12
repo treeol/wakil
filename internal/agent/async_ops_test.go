@@ -486,6 +486,8 @@ func TestAsyncShutdownCommitsCostAndReportsDrops(t *testing.T) {
 func TestAsyncMashuraPlaceholderFastAndDrained(t *testing.T) {
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
+	os.Setenv("MASHURA_TEST_OR_KEY", "x")
+	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 	srv, count := counselServer(t)
 	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
@@ -525,6 +527,8 @@ func TestAsyncMashuraPlaceholderFastAndDrained(t *testing.T) {
 func TestAsyncMashuraDeclineStartsNothing(t *testing.T) {
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
+	os.Setenv("MASHURA_TEST_OR_KEY", "x")
+	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 	srv, count := counselServer(t)
 	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
@@ -554,6 +558,8 @@ func TestAsyncMashuraDeclineStartsNothing(t *testing.T) {
 func TestAsyncAutoCounselStaysSync(t *testing.T) {
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
+	os.Setenv("MASHURA_TEST_OR_KEY", "x")
+	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 	srv, _ := counselServer(t)
 	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
@@ -616,6 +622,8 @@ func TestAsyncWorkerPanicTerminalizes(t *testing.T) {
 func TestAsyncRegistryFullFallbackThroughHandleMashura(t *testing.T) {
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
+	os.Setenv("MASHURA_TEST_OR_KEY", "x")
+	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 	srv, count := counselServer(t)
 	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{

@@ -100,6 +100,7 @@ var allTUICommands = []candidate{
 	{name: "/quit"},
 	{name: "/rawtools"},
 	{name: "/recall", hasArgs: true},
+	{name: "/region", hasArgs: true},
 	{name: "/remember", hasArgs: true},
 	{name: "/repostate", hasArgs: true},
 	{name: "/repomap", hasArgs: true},
@@ -120,6 +121,7 @@ var allTUICommands = []candidate{
 	{name: "/thinking", hasArgs: true},
 	{name: "/think", hasArgs: true},
 	{name: "/verify"},
+	{name: "/zdr", hasArgs: true},
 }
 
 // freeFormArgCommands take either a keyword or free text (a task, a path, a

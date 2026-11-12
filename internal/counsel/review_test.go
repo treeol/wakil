@@ -44,6 +44,7 @@ func newFakeReviewer(t *testing.T) *fakeReviewer {
 			Thinking  json.RawMessage `json:"thinking"`
 			Reasoning json.RawMessage `json:"reasoning"`
 			Messages  []struct {
+				Role    string          `json:"role"`
 				Content json.RawMessage `json:"content"`
 			} `json:"messages"`
 		}
@@ -52,14 +53,17 @@ func newFakeReviewer(t *testing.T) *fakeReviewer {
 			return
 		}
 		userText := ""
+		// Messages[0] is the system prompt; the reviewer payload is the last
+		// user message (the part text + framing).
+		userContent := body.Messages[len(body.Messages)-1].Content
 		var s string
-		if err := json.Unmarshal(body.Messages[0].Content, &s); err == nil {
+		if err := json.Unmarshal(userContent, &s); err == nil {
 			userText = s
 		} else {
 			var blocks []struct {
 				Text string `json:"text"`
 			}
-			if err := json.Unmarshal(body.Messages[0].Content, &blocks); err != nil {
+			if err := json.Unmarshal(userContent, &blocks); err != nil {
 				http.Error(w, "bad request", 400)
 				return
 			}
@@ -81,21 +85,26 @@ func newFakeReviewer(t *testing.T) *fakeReviewer {
 		f.reqs = append(f.reqs, rec)
 		n := len(f.reqs)
 		f.mu.Unlock()
-		stop, text := "end_turn", ""
+		stop, text := "stop", ""
 		if f.reply != nil {
 			stop, text = f.reply(n, rec)
 		} else {
 			text = "Finding: nothing blocking.\nLAST SECTION READ: " + lastSection(rec.User)
 		}
-		// Return SSE format (Anthropic Messages API streaming).
+		// Return SSE format (OpenRouter chat.completions streaming). The
+		// fake previously used the Anthropic Messages shape; the single
+		// transport reads the OpenRouter chunk shape, so the fake answers
+		// with it now.
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n", len(rec.User)/4)
-		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", text)
-		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":%q},\"usage\":{\"output_tokens\":10}}\n\n", stop)
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": text}, "finish_reason": nil}}}))
+		finish := stop
+		if finish == "stop" {
+			finish = "stop"
+		}
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": finish}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": len(rec.User) / 4, "completion_tokens": 10}}))
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -157,7 +166,7 @@ func buildDoc(n, bytes int) (string, []string) {
 }
 
 func panelCfg(f *fakeReviewer, lim map[string]ModelLimits) PanelCallConfig {
-	return PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, AnthropicEndpoint: f.srv.URL, ModelLimits: lim}
+	return PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, Transport: transportForTest(f.srv), ModelLimits: lim}
 }
 
 // A document of ~30k tokens fits a 128k-context model and must reach the
@@ -168,7 +177,7 @@ func TestReviewWholeDocumentArrivesComplete(t *testing.T) {
 	if len(doc) < 100_000 {
 		t.Fatalf("test doc too small: %d", len(doc))
 	}
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "Review this.", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "Review this.", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	if len(res) != 1 || res[0].Err != nil || res[0].Void {
 		t.Fatalf("result: %+v", res)
 	}
@@ -195,27 +204,27 @@ func TestReviewWholeDocumentArrivesComplete(t *testing.T) {
 		t.Errorf("evidence line must be stripped from the answer, got %q", res[0].Answer)
 	}
 	// The provider's stop signal is surfaced per reviewer in the round report.
-	if got := l.FinishReasons; len(got) != 1 || got[0] != "end_turn" {
+	if got := l.FinishReasons; len(got) != 1 || got[0] != "stop" {
 		t.Errorf("FinishReasons = %v, want [end_turn]", got)
 	}
-	if out := FormatPanelResult(res); !strings.Contains(out, "finish_reason: end_turn") {
+	if out := FormatPanelResult(res); !strings.Contains(out, "finish_reason: stop") {
 		t.Errorf("round report must show finish_reason, got:\n%s", out)
 	}
 }
 
-// A length-truncated reply shows finish_reason=max_tokens in the VOID report,
+// A length-truncated reply shows finish_reason=length in the VOID report,
 // not just a missing citation.
 func TestReviewFinishReasonShownForTruncation(t *testing.T) {
 	f := newFakeReviewer(t)
-	f.reply = func(int, recordedReq) (string, string) { return "max_tokens", "I found that the" }
+	f.reply = func(int, recordedReq) (string, string) { return "length", "I found that the" }
 	doc, _ := buildDoc(10, 3000)
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	if !res[0].Void {
 		t.Fatalf("want VOID, got %+v", res[0])
 	}
 	out := FormatPanelResult(res)
-	if !strings.Contains(out, "finish_reason: max_tokens") || !strings.Contains(out, "NOT COMPLETED") {
-		t.Errorf("VOID report must show finish_reason=max_tokens, got:\n%s", out)
+	if !strings.Contains(out, "finish_reason: length") || !strings.Contains(out, "NOT COMPLETED") {
+		t.Errorf("VOID report must show finish_reason=length, got:\n%s", out)
 	}
 }
 
@@ -227,7 +236,7 @@ func TestReviewChunkedCoversEverythingWithOverlap(t *testing.T) {
 	doc, heads := buildDoc(40, 3000)
 	const q = "QUESTION: is the design sound?"
 	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
-	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", q, doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", q, doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	if res[0].Err != nil || res[0].Void {
 		t.Fatalf("result: %+v", res[0])
 	}
@@ -288,7 +297,7 @@ func TestReviewOverLimitIsErrorNotPrefix(t *testing.T) {
 	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
 	t.Run("one huge section", func(t *testing.T) {
 		doc := "# Big\n\n" + strings.Repeat("x", 400_000)
-		res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+		res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 		if res[0].Err == nil || !strings.Contains(res[0].Err.Error(), "nothing was sent") {
 			t.Fatalf("want a loud error, got %+v", res[0])
 		}
@@ -297,7 +306,7 @@ func TestReviewOverLimitIsErrorNotPrefix(t *testing.T) {
 		}
 	})
 	t.Run("window smaller than the answer floor", func(t *testing.T) {
-		res := RunPanel(context.Background(), []string{"anthropic:tiny"}, "panel", "q", "# a\n\nbody", panelCfg(f, map[string]ModelLimits{"anthropic:tiny": {ContextTokens: 3000}}), map[string]string{"anthropic": "k"})
+		res := RunPanel(context.Background(), []string{"anthropic:tiny"}, "panel", "q", "# a\n\nbody", panelCfg(f, map[string]ModelLimits{"anthropic:tiny": {ContextTokens: 3000}}), map[string]string{"openrouter": "k"})
 		if res[0].Err == nil || !strings.Contains(res[0].Err.Error(), "nothing was sent") {
 			t.Fatalf("floor that does not fit must error, got %+v", res[0])
 		}
@@ -314,7 +323,7 @@ func TestReviewOversizeSourceIsChunkedAndSynthesized(t *testing.T) {
 	f := newFakeReviewer(t)
 	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
 	doc := "## Sources\n\n── big.go (9000 lines) ──\n" + strings.Repeat("package x // line\n", 30_000)
-	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	r := res[0]
 	if r.Err != nil || r.Void {
 		t.Fatalf("an oversize source must be chunked, not refused: %+v", r)
@@ -342,12 +351,12 @@ func TestReviewLengthRetriesChunked(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(n int, r recordedReq) (string, string) {
 		if !strings.Contains(r.User, "part ") || !strings.Contains(r.User, " of ") || !strings.Contains(r.User, "[This is part") {
-			return "max_tokens", "partial answer cut o"
+			return "length", "partial answer cut o"
 		}
-		return "end_turn", "ok\nLAST SECTION READ: " + lastSection(r.User)
+		return "stop", "ok\nLAST SECTION READ: " + lastSection(r.User)
 	}
 	doc, _ := buildDoc(10, 3000)
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	if res[0].Err != nil || res[0].Void {
 		t.Fatalf("retry should have succeeded: %+v", res[0])
 	}
@@ -366,9 +375,9 @@ func TestReviewLengthRetriesChunked(t *testing.T) {
 // Truncated again after the retry → VOID: no answer, flagged, never "no findings".
 func TestReviewLengthTwiceIsVoid(t *testing.T) {
 	f := newFakeReviewer(t)
-	f.reply = func(int, recordedReq) (string, string) { return "max_tokens", "I found that the" }
+	f.reply = func(int, recordedReq) (string, string) { return "length", "I found that the" }
 	doc, _ := buildDoc(10, 3000)
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	r := res[0]
 	if !r.Void || r.Err == nil || r.Answer != "" {
 		t.Fatalf("want VOID with no answer, got %+v", r)
@@ -392,10 +401,10 @@ func TestReviewLengthTwiceIsVoid(t *testing.T) {
 func TestReviewWrongLastHeadingIsVoid(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(int, recordedReq) (string, string) {
-		return "end_turn", "all fine\nLAST SECTION READ: 4. Something I invented"
+		return "stop", "all fine\nLAST SECTION READ: 4. Something I invented"
 	}
 	doc, _ := buildDoc(6, 800)
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	if res[0].Void || res[0].Err != nil {
 		t.Fatalf("a wrong citation with content must be accepted, got %+v", res[0])
 	}
@@ -410,8 +419,8 @@ func TestReviewWrongLastHeadingIsVoid(t *testing.T) {
 	}
 	// Missing citation is accepted+flagged too.
 	f2 := newFakeReviewer(t)
-	f2.reply = func(int, recordedReq) (string, string) { return "end_turn", "looks fine, no findings" }
-	res = RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f2, nil), map[string]string{"anthropic": "k"})
+	f2.reply = func(int, recordedReq) (string, string) { return "stop", "looks fine, no findings" }
+	res = RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f2, nil), map[string]string{"openrouter": "k"})
 	if res[0].Void || res[0].Err != nil || res[0].Log == nil || !res[0].Log.CoverageNotConfirmed {
 		t.Fatalf("a reply without a citation must be accepted+flagged: %+v", res[0])
 	}
@@ -427,13 +436,13 @@ func TestReviewVoidPartVoidsMember(t *testing.T) {
 		// Void the SECOND part of every attempt (part numbering restarts each
 		// attempt) with a citation-only reply, so the member is VOID.
 		if strings.Contains(r.User, "part 2 of") {
-			return "end_turn", "LAST SECTION READ: " + lastSection(r.User)
+			return "stop", "LAST SECTION READ: " + lastSection(r.User)
 		}
-		return "end_turn", "ok\nLAST SECTION READ: " + lastSection(r.User)
+		return "stop", "ok\nLAST SECTION READ: " + lastSection(r.User)
 	}
 	doc, _ := buildDoc(40, 3000)
 	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
-	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	if !res[0].Void || res[0].Answer != "" {
 		t.Fatalf("want a fully VOID member, got %+v", res[0])
 	}
@@ -450,20 +459,20 @@ func TestReviewAnswerBudget(t *testing.T) {
 	f := newFakeReviewer(t)
 	doc, _ := buildDoc(4, 2000)
 	cfg := panelCfg(f, map[string]ModelLimits{"anthropic:m": {ContextTokens: 200000, ReviewMaxTokens: 100}})
-	RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, cfg, map[string]string{"anthropic": "k"})
+	RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, cfg, map[string]string{"openrouter": "k"})
 	if got := f.requests()[0].MaxTokens; got != 4096 {
 		t.Errorf("a configured 100 must be raised to the 4096 review floor, got %d", got)
 	}
 	f2 := newFakeReviewer(t)
 	cfg = panelCfg(f2, map[string]ModelLimits{"anthropic:m": {ContextTokens: 200000, ReviewMaxTokens: 16000}})
-	RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, cfg, map[string]string{"anthropic": "k"})
+	RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, cfg, map[string]string{"openrouter": "k"})
 	if got := f2.requests()[0].MaxTokens; got != 16000 {
 		t.Errorf("configured 16000 fits and must be used, got %d", got)
 	}
 	f3 := newFakeReviewer(t)
 	big, _ := buildDoc(12, 3000) // ≈ 9k tokens in a 20k window
 	cfg = panelCfg(f3, map[string]ModelLimits{"anthropic:m": {ContextTokens: 20000, ReviewMaxTokens: 30000}})
-	RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", big, cfg, map[string]string{"anthropic": "k"})
+	RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", big, cfg, map[string]string{"openrouter": "k"})
 	r := f3.requests()[0]
 	want := 18000 - estTokens(len(oracleSystemPrompt)+len(r.User)) - 512 // usable − input − reserve
 	if r.MaxTokens > want+60 || r.MaxTokens < 4096 {
@@ -476,7 +485,7 @@ func TestReviewAnswerBudget(t *testing.T) {
 func TestReviewDebateRound2Evidence(t *testing.T) {
 	f := newFakeReviewer(t)
 	doc, _ := buildDoc(5, 1000)
-	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	for _, r := range res {
 		if r.Err != nil || r.Void {
 			t.Fatalf("debate member failed: %+v", r)
@@ -558,11 +567,11 @@ func TestReviewLengthRetryWhenAlreadyChunked(t *testing.T) {
 	f.reply = func(n int, r recordedReq) (string, string) {
 		if n == 2 && first == 0 { // 2nd request of the initial chunked run is cut
 			first = len(r.User)
-			return "max_tokens", "cut o"
+			return "length", "cut o"
 		}
-		return "end_turn", "ok\nLAST SECTION READ: " + lastSection(r.User)
+		return "stop", "ok\nLAST SECTION READ: " + lastSection(r.User)
 	}
-	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	if res[0].Err != nil || res[0].Void || !res[0].Log.Retried {
 		t.Fatalf("a chunked review must get its one smaller retry: %+v", res[0])
 	}
@@ -579,8 +588,8 @@ func TestReviewLengthRetryWhenAlreadyChunked(t *testing.T) {
 	}
 
 	f2 := newFakeReviewer(t)
-	f2.reply = func(int, recordedReq) (string, string) { return "max_tokens", "cut" }
-	res = RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f2, lim), map[string]string{"anthropic": "k"})
+	f2.reply = func(int, recordedReq) (string, string) { return "length", "cut" }
+	res = RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f2, lim), map[string]string{"openrouter": "k"})
 	if !res[0].Void || res[0].Answer != "" {
 		t.Fatalf("truncated twice must be VOID: %+v", res[0])
 	}
@@ -599,9 +608,9 @@ func TestAppendixMarkerQuotedInDocumentDoesNotMoveEvidenceTarget(t *testing.T) {
 
 	good := newFakeReviewer(t)
 	good.reply = func(_ int, _ recordedReq) (string, string) {
-		return "end_turn", "Finding: ok.\nLAST SECTION READ: Final Section"
+		return "stop", "Finding: ok.\nLAST SECTION READ: Final Section"
 	}
-	res := RunPanel(context.Background(), models, "debate", "q", doc, panelCfg(good, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), models, "debate", "q", doc, panelCfg(good, nil), map[string]string{"openrouter": "k"})
 	for _, r := range res {
 		if r.Void || r.Err != nil {
 			t.Fatalf("correct citation must pass: %+v", r)
@@ -613,9 +622,9 @@ func TestAppendixMarkerQuotedInDocumentDoesNotMoveEvidenceTarget(t *testing.T) {
 
 	bad := newFakeReviewer(t)
 	bad.reply = func(_ int, _ recordedReq) (string, string) {
-		return "end_turn", "Finding: ok.\nLAST SECTION READ: Intro"
+		return "stop", "Finding: ok.\nLAST SECTION READ: Intro"
 	}
-	res = RunPanel(context.Background(), models, "panel", "q", doc, panelCfg(bad, nil), map[string]string{"anthropic": "k"})
+	res = RunPanel(context.Background(), models, "panel", "q", doc, panelCfg(bad, nil), map[string]string{"openrouter": "k"})
 	for _, r := range res {
 		if r.Void || r.Err != nil || r.Log == nil || !r.Log.CoverageNotConfirmed {
 			t.Fatalf("a wrong citation with content must be accepted+flagged (not VOID): %+v", r)
@@ -633,12 +642,12 @@ func TestAppendixMarkerQuotedInDocumentDoesNotMoveEvidenceTarget(t *testing.T) {
 func TestDebateAppendixSpanningPartsIsIdenticalInEveryPart(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(_ int, r recordedReq) (string, string) {
-		return "end_turn", "Finding " + strings.Repeat("y", 1500) + "\nLAST SECTION READ: " + lastSection(r.User)
+		return "stop", "Finding " + strings.Repeat("y", 1500) + "\nLAST SECTION READ: " + lastSection(r.User)
 	}
 	doc, _ := buildDoc(40, 3000)
 	models := []string{"anthropic:s1", "anthropic:s2"}
 	lim := map[string]ModelLimits{"anthropic:s1": {ContextTokens: 24000}, "anthropic:s2": {ContextTokens: 24000}}
-	res := RunPanel(context.Background(), models, "debate", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), models, "debate", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	for _, r := range res {
 		if r.Void || r.Err != nil {
 			t.Fatalf("debate member failed: %+v", r)
@@ -711,13 +720,13 @@ func TestReviewTruncatedThenRetryFailsStaysVoid(t *testing.T) {
 					http.Error(w, `{"error":{"message":"overloaded"}}`, 529)
 					return
 				}
-				writeAnthropicSSE(w, "cut o", "max_tokens", 1, 1)
+				writeAnthropicSSE(w, "cut o", "length", 1, 1)
 			})
 			model := "anthropic:test-model"
 			if c.lim != nil {
 				model = "anthropic:m"
 			}
-			res := RunPanel(context.Background(), []string{model}, "panel", "q", c.doc(), panelCfg(f, c.lim), map[string]string{"anthropic": "k"})
+			res := RunPanel(context.Background(), []string{model}, "panel", "q", c.doc(), panelCfg(f, c.lim), map[string]string{"openrouter": "k"})
 			r := res[0]
 			if !r.Void || r.Answer != "" || r.Err == nil || !strings.Contains(r.Err.Error(), c.want) {
 				t.Fatalf("want VOID mentioning %q, got %+v", c.want, r)
@@ -740,14 +749,14 @@ func TestReviewCitationOnlyReplyIsVoid(t *testing.T) {
 	for _, lim := range []map[string]ModelLimits{nil, {"anthropic:small": {ContextTokens: 24000}}} {
 		f := newFakeReviewer(t)
 		f.reply = func(_ int, r recordedReq) (string, string) {
-			return "end_turn", "LAST SECTION READ: " + lastSection(r.User)
+			return "stop", "LAST SECTION READ: " + lastSection(r.User)
 		}
 		doc, _ := buildDoc(40, 3000)
 		model := "anthropic:test-model"
 		if lim != nil {
 			model = "anthropic:small"
 		}
-		res := RunPanel(context.Background(), []string{model}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+		res := RunPanel(context.Background(), []string{model}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 		if !res[0].Void || res[0].Err == nil || res[0].Answer != "" {
 			t.Fatalf("limits=%v: a citation-only reply must be VOID, got %+v", lim, res[0])
 		}
@@ -763,11 +772,11 @@ func TestReviewCitationOnlyReplyIsVoid(t *testing.T) {
 func TestReviewCitationOnlyNotRetried(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(_ int, r recordedReq) (string, string) {
-		return "end_turn", "LAST SECTION READ: " + lastSection(r.User)
+		return "stop", "LAST SECTION READ: " + lastSection(r.User)
 	}
 	doc, _ := buildDoc(40, 3000)
 	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
-	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	r := res[0]
 	if !r.Void || r.Err == nil {
 		t.Fatalf("a citation-only reply must be VOID: %+v", r)
@@ -809,11 +818,11 @@ func TestReviewInterruptedChunkedReviewIsVoid(t *testing.T) {
 			http.Error(w, `{"error":{"message":"overloaded"}}`, 529)
 			return
 		}
-		writeAnthropicSSE(w, "finding from part one\nLAST SECTION READ: "+lastSection(user), "end_turn", 1, 1)
+		writeAnthropicSSE(w, "finding from part one\nLAST SECTION READ: "+lastSection(user), "stop", 1, 1)
 	})
 	doc, _ := buildDoc(40, 3000)
 	lim := map[string]ModelLimits{"anthropic:small": {ContextTokens: 24000}}
-	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:small"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	r := res[0]
 	if !r.Void || r.Answer != "" || strings.Contains(FormatPanelResult(res), "finding from part one") {
 		t.Fatalf("an interrupted chunked review must be VOID with nothing merged, got %+v", r)
@@ -823,24 +832,24 @@ func TestReviewInterruptedChunkedReviewIsVoid(t *testing.T) {
 	}
 }
 
-// A length-stop is retried ONCE. When the retry succeeds the answer is
-// returned; when it also truncates the member is VOID after exactly the retry
-// budget. (An oversize source is chunked first — see
-// TestReviewOversizeSourceIsChunkedAndSynthesized — so this exercises the
-// length-retry on a chunked document.)
+// TestReviewLengthRetriesOnceThenVoids verifies the length-retry contract on
+// the surviving transport: a length stop triggers exactly one chunked retry,
+// and a retry that still truncates ends VOID.
 func TestReviewLengthRetriesOnceThenVoids(t *testing.T) {
 	f := newFakeReviewer(t)
-	f.reply = func(_ int, r recordedReq) (string, string) {
-		// The first (whole) attempt truncates; the chunked retry succeeds.
-		if !strings.Contains(r.User, "[This is part") {
-			return "max_tokens", "I found that the"
-		}
-		return "end_turn", "real finding\nLAST SECTION READ: " + lastSection(r.User)
-	}
 	body := strings.Repeat("func x() {}\n", 4000)
 	doc := "── big.diff (4000 lines) ──\n" + body
+	// The 200k-window model fits the whole doc, so the first attempt is
+	// whole and the length retry must chunk it. A chunked retry probes the
+	// model on parts; its citations are against each part's own tail.
 	lim := map[string]ModelLimits{"anthropic:m": {ContextTokens: 200000}}
-	res := RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	f.reply = func(n int, r recordedReq) (string, string) {
+		if n == 1 {
+			return "length", "I found that the"
+		}
+		return "stop", "real finding\nLAST SECTION READ: " + lastSection(r.User)
+	}
+	res := RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	if res[0].Void || res[0].Err != nil {
 		t.Fatalf("the retry should have succeeded: %+v", res[0])
 	}
@@ -848,13 +857,9 @@ func TestReviewLengthRetriesOnceThenVoids(t *testing.T) {
 		t.Errorf("log must record the length retry: %+v", res[0].Log)
 	}
 
-	// Always-truncating fake → VOID. Dispatch already retried once
-	// internally (whole + bigger); runMember does NOT re-retry when dispatch
-	// already retried (canDouble=false), so VoidAttempts==1 and VoidRetried
-	// stays false — updated to match runMember code.
 	f2 := newFakeReviewer(t)
-	f2.reply = func(int, recordedReq) (string, string) { return "max_tokens", "cut" }
-	res = RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f2, lim), map[string]string{"anthropic": "k"})
+	f2.reply = func(int, recordedReq) (string, string) { return "length", "cut" }
+	res = RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f2, lim), map[string]string{"openrouter": "k"})
 	if !res[0].Void || res[0].Answer != "" {
 		t.Fatalf("still truncated must be VOID: %+v", res[0])
 	}
@@ -871,10 +876,10 @@ func TestReviewLengthRetriesOnceThenVoids(t *testing.T) {
 func TestReviewDecoratedBlockLabelCitationCounts(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(_ int, _ recordedReq) (string, string) {
-		return "end_turn", "Finding: nothing blocking.\nLAST SECTION READ: ── diff 593d536..HEAD (1008 lines) ──"
+		return "stop", "Finding: nothing blocking.\nLAST SECTION READ: ── diff 593d536..HEAD (1008 lines) ──"
 	}
 	doc := "── diff 593d536..HEAD (1008 lines) ──\n" + strings.Repeat("line of diff\n", 200)
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	if res[0].Void || res[0].Err != nil {
 		t.Fatalf("decorated citation must count, got %+v", res[0])
 	}

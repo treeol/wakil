@@ -5,21 +5,18 @@ import (
 	"testing"
 )
 
-// realShapeUsageChunk is the usage event of a captured OpenRouter stream for
-// openrouter/auto (the router resolved to a different model). Values are
-// rounded and identifiers are generic; only the structure the parser reads is
-// kept: the final chunk has finish_reason "stop", an empty choices-free usage
-// object, a numeric usage.cost, and the served model on the chunk.
-const realShapeUsageChunk = `{"model":"anthropic/served-model","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":4193,"completion_tokens":3288,"cost":0.002168025,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`
-
 // TestReviewKeepsProviderCostAndServedModel is the regression for the lost
 // panel cost: dispatchReview used to copy only token fields from each send, so
 // usage.cost and the served model never reached the review outcome. The usage
-// here is parsed from the real chunk shape, not hand-built.
+// here mirrors the real captured OpenRouter stream shape (openrouter/auto).
 func TestReviewKeepsProviderCostAndServedModel(t *testing.T) {
-	_, parsed, _ := parseOpenRouterSSE([]byte(realShapeUsageChunk))
-	if parsed == nil || !parsed.HasProviderCost {
-		t.Fatalf("parser did not read the cost from the real chunk shape: %+v", parsed)
+	parsed := OracleUsage{
+		InputTokens:     4193,
+		OutputTokens:    3288,
+		ProviderCostUSD: 0.002168025,
+		HasProviderCost: true,
+		ServedModel:     "anthropic/served-model",
+		FinishReason:    "stop",
 	}
 	send := func(ctx context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
 		return "Looks fine. No findings.", OracleUsage{

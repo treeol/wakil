@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -17,6 +18,48 @@ import (
 	"github.com/treeol/wakil/internal/safe"
 	"github.com/treeol/wakil/internal/workflow"
 )
+
+// transportClient returns the single transport for Mashūra calls. The
+// session's proxy client carries the OpenRouter origin, so Mashūra calls
+// always target OpenRouter regardless of the session's main endpoint.
+// Tests that inject an endpoint via OracleEndpoint get a client for that
+// endpoint (the explicit test hook, never used in production).
+func (a *App) transportClient() *proxy.Client {
+	if a.Client != nil {
+		if a.Cfg.OracleEndpoint != "" {
+			c := a.Client.CloneForBaseURL(a.Cfg.OracleEndpoint)
+			return c
+		}
+		c := a.Client.CloneForBaseURL("https://openrouter.ai/api/v1/chat/completions")
+		return c
+	}
+	if a.Cfg.OracleEndpoint != "" {
+		return &proxy.Client{BaseURL: a.Cfg.OracleEndpoint}
+	}
+	return &proxy.Client{BaseURL: "https://openrouter.ai/api/v1/chat/completions", ZDR: a.EffectiveZDR(), Region: a.EffectiveRegion(), TrustedLocalHosts: a.Cfg.TrustedLocalHosts}
+}
+
+// AnthropicRemovedNotice is the one-line notice shown once per session when a
+// configured Anthropic API key is present. Direct Anthropic access was removed:
+// Mashūra uses the configured backend (OpenRouter), so the key is ignored.
+const AnthropicRemovedNotice = "direct Anthropic access was removed; the key is ignored, Mashūra uses the configured backend"
+
+// anthropicNoticeOnce guarantees the notice fires at most once per process
+// (one session). The value is never printed or logged.
+var anthropicNoticeOnce sync.Once
+
+// NoteAnthropicKeyIgnored checks whether an Anthropic API key is configured
+// (a variable naming a non-empty env value) and, if so, prints the removal
+// notice once to out. It NEVER prints the key or the env var's value. Callers
+// invoke it the first time a panel resolves an anthropic: member.
+func NoteAnthropicKeyIgnored(out interface{ Write([]byte) (int, error) }, envVar string) {
+	if envVar == "" || os.Getenv(envVar) == "" {
+		return
+	}
+	anthropicNoticeOnce.Do(func() {
+		fmt.Fprintln(out, AnthropicRemovedNotice)
+	})
+}
 
 // Mashūra counsel tools. The single oracle__ask tool became this family: each
 // tool differs only in how Wakil deterministically assembles the briefing from
@@ -248,12 +291,12 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 	ccfg := counsel.PanelCallConfig{
 		MaxTokens:          maxTokens,
 		TimeoutSeconds:     a.Cfg.OracleTimeoutSeconds,
-		AnthropicEndpoint:  a.Cfg.OracleEndpoint,
 		FusionJudge:        panel.FusionJudge,
 		FusionMaxToolCalls: panel.FusionMaxToolCalls,
 		ServerTools:        panel.ServerTools,
 		WebSearchEngine:    panel.WebSearchEngine,
 		ServerToolMaxCalls: panel.ServerToolMaxCalls,
+		Transport:          a.transportClient(),
 		// MinAnswerTokens 0 → dispatcher floor 4096 for every tool (incl.
 		// check). Reasoning is the role default (check: low, no max_tokens);
 		// its budget (2048) is stored as the reserve the dispatcher subtracts
@@ -598,14 +641,13 @@ func (a *App) fallbackModel() string {
 	if strings.HasPrefix(a.Cfg.OracleModel, "anthropic:") || strings.HasPrefix(a.Cfg.OracleModel, "openrouter:") {
 		return a.Cfg.OracleModel
 	}
-	// Auto-detect based on available keys.
-	hasAnthropic := os.Getenv(a.Cfg.OracleAPIKeyEnv) != ""
-	hasOpenRouter := os.Getenv(a.Cfg.OpenRouterAPIKeyEnv) != ""
-	if !hasAnthropic && hasOpenRouter {
-		// OpenRouter-only: use the OpenRouter default model.
+	// Auto-detect based on the OpenRouter key: before the direct Anthropic
+	// path was removed, an Anthropic key could select the direct path. Now
+	// Anthropic members are served through OpenRouter, so the OpenRouter key
+	// is the only signal; without it the preflight fails closed.
+	if os.Getenv(a.Cfg.OpenRouterAPIKeyEnv) != "" {
 		return "openrouter:" + defaultOpenRouterModel
 	}
-	// Anthropic key present (or neither) → backward-compatible Anthropic fallback.
 	return "anthropic:" + a.Cfg.OracleModel
 }
 
@@ -620,41 +662,24 @@ func (a *App) defaultPanel() (string, config.MashuraPanelConfig, bool) {
 	return a.resolvePanel("", "")
 }
 
-// mashuraPanelKeys collects the API key for each provider referenced by the
-// panel, checking that every required key is present before the gate fires.
-// anthropic → OracleAPIKeyEnv (default: ANTHROPIC_API_KEY)
-// openrouter → OpenRouterAPIKeyEnv (default: OPENROUTER_API_KEY)
-// fusion  → only OpenRouterAPIKeyEnv (all analysis models route through OpenRouter)
+// mashuraPanelKeys collects the OpenRouter API key for the panel, checking it
+// is present before the gate fires. Every member routes through OpenRouter
+// now: a configured "anthropic:<model>" member is mapped mechanically to the
+// OpenRouter slug "anthropic/<model>" and uses the OpenRouter key. (The
+// direct Anthropic path is gone; an Anthropic key, if set, is ignored — see
+// NoteAnthropicKeyIgnored.)
 func (a *App) mashuraPanelKeys(panel config.MashuraPanelConfig) (map[string]string, error) {
-	if panel.Mode == "fusion" {
-		key := os.Getenv(a.Cfg.OpenRouterAPIKeyEnv)
-		if key == "" {
-			return nil, fmt.Errorf("mashūra API key not set (%s) for fusion mode", a.Cfg.OpenRouterAPIKeyEnv)
-		}
-		return map[string]string{"openrouter": key}, nil
-	}
-	keys := map[string]string{}
 	for _, model := range panel.Models {
-		prov, _ := counsel.ParseModelPrefix(model)
-		if _, already := keys[prov]; already {
-			continue
+		if prov, _ := counsel.ParseModelPrefix(model); prov == "anthropic" {
+			NoteAnthropicKeyIgnored(a.Out, a.Cfg.OracleAPIKeyEnv)
+			break
 		}
-		var envVar string
-		switch prov {
-		case "anthropic":
-			envVar = a.Cfg.OracleAPIKeyEnv
-		case "openrouter":
-			envVar = a.Cfg.OpenRouterAPIKeyEnv
-		default:
-			return nil, fmt.Errorf("unknown provider %q in model %q", prov, model)
-		}
-		key := os.Getenv(envVar)
-		if key == "" {
-			return nil, fmt.Errorf("mashūra API key not set (%s) for provider %q", envVar, prov)
-		}
-		keys[prov] = key
 	}
-	return keys, nil
+	key := os.Getenv(a.Cfg.OpenRouterAPIKeyEnv)
+	if key == "" {
+		return nil, fmt.Errorf("mashūra API key not set (%s)", a.Cfg.OpenRouterAPIKeyEnv)
+	}
+	return map[string]string{"openrouter": key}, nil
 }
 
 // mashuraCore returns the authoritative context shared by every mashura tool,

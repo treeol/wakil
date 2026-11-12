@@ -1456,6 +1456,11 @@ func (a *App) dispatchSubagent(ctx context.Context, task string, progressOut io.
 		Backend:           backend,       // propagate X-Ilm-Backend (the P31 bug fix) — gated above by the child's own kind
 		MaxRequestBytes:   a.Client.MaxRequestBytes,
 		StreamIdleTimeout: a.Client.StreamIdleTimeout,
+		// Data policy: subagents inherit the session's effective switches
+		// (per-repo override or user config), resolved from the parent.
+		ZDR:               a.EffectiveZDR(),
+		Region:            a.EffectiveRegion(),
+		TrustedLocalHosts: a.Cfg.TrustedLocalHosts,
 	}
 
 	cfg := config.DefaultConfig()

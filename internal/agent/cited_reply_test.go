@@ -26,7 +26,9 @@ func writeCitedReply(w http.ResponseWriter, r *http.Request, text, usageJSON str
 	_ = json.Unmarshal(raw, &body)
 	user := ""
 	if len(body.Messages) > 0 {
-		user = body.Messages[0].Content
+		// The reviewer payload is the last user message (Messages[0] is the
+		// system prompt on the single-transport wire shape).
+		user = body.Messages[len(body.Messages)-1].Content
 	}
 	if i := strings.Index(user, "── Round 1 responses from other panel members ──"); i >= 0 {
 		user = user[:i]
@@ -57,10 +59,15 @@ func writeCitedReply(w http.ResponseWriter, r *http.Request, text, usageJSON str
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n", usage.InputTokens)
-	fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
-	fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", text)
-	fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
-	fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":%d}}\n\n", usage.OutputTokens)
-	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	// OpenRouter chat.completions streaming shape (the single transport reads
+	// this): content chunks, a finish chunk, then the trailing usage.
+	fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": text}, "finish_reason": nil}}}))
+	fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": "stop"}}}))
+	fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": usage.InputTokens, "completion_tokens": usage.OutputTokens}}))
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+func mustJSONChunk(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }

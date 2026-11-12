@@ -4,7 +4,6 @@ package counsel
 
 import (
 	"context"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,14 +38,13 @@ func (c *panelEventCollector) sink() func(PanelMemberEvent) {
 // nondeterministic (parallel goroutines) — only each member's own start→terminal
 // order and event totals are asserted.
 func TestRunPanelObserver_PanelMode(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK,
-		`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	srv := openRouterSSETestServer(t, "ok", 1, 1)
 	defer srv.Close()
 
 	col := &panelEventCollector{}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL, OnMemberEvent: col.sink()}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv), OnMemberEvent: col.sink()}
 	models := []string{"a", "b", "c"}
-	res := RunPanel(context.Background(), models, "panel", "q", "b", ccfg, map[string]string{"anthropic": "key"})
+	res := RunPanel(context.Background(), models, "panel", "q", "b", ccfg, map[string]string{"openrouter": "key"})
 	if len(res) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(res))
 	}
@@ -78,13 +76,12 @@ func TestRunPanelObserver_PanelMode(t *testing.T) {
 // TestRunPanelObserver_NilIsNoop verifies a nil observer is safe (no panic) and
 // produces identical results.
 func TestRunPanelObserver_NilIsNoop(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK,
-		`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	srv := openRouterSSETestServer(t, "ok", 1, 1)
 	defer srv.Close()
 
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL} // nil observer
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)} // nil observer
 	models := []string{"a"}
-	res := RunPanel(context.Background(), models, "panel", "q", "b", ccfg, map[string]string{"anthropic": "key"})
+	res := RunPanel(context.Background(), models, "panel", "q", "b", ccfg, map[string]string{"openrouter": "key"})
 	if len(res) != 1 || res[0].Err != nil || res[0].Answer != "ok" {
 		t.Fatalf("nil-observer panel wrong result: %+v", res)
 	}
@@ -93,20 +90,19 @@ func TestRunPanelObserver_NilIsNoop(t *testing.T) {
 // TestRunPanelObserver_PanickingObserver is isolated: a panicking observer must
 // not alter the returned panel results.
 func TestRunPanelObserver_PanickingObserver(t *testing.T) {
-	srv := oracleTestServer(t, http.StatusOK,
-		`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	srv := openRouterSSETestServer(t, "ok", 1, 1)
 	defer srv.Close()
 
 	var panicked int32
 	ccfg := PanelCallConfig{
-		MaxTokens: 256, TimeoutSeconds: 5, AnthropicEndpoint: srv.URL,
+		MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv),
 		OnMemberEvent: func(PanelMemberEvent) {
 			atomic.AddInt32(&panicked, 1)
 			panic("observer boom")
 		},
 	}
 	models := []string{"a", "b"}
-	res := RunPanel(context.Background(), models, "panel", "q", "b", ccfg, map[string]string{"anthropic": "key"})
+	res := RunPanel(context.Background(), models, "panel", "q", "b", ccfg, map[string]string{"openrouter": "key"})
 	if len(res) != 2 {
 		t.Fatalf("expected 2 results despite panicking observer, got %d", len(res))
 	}
@@ -120,12 +116,11 @@ func TestRunPanelObserver_PanickingObserver(t *testing.T) {
 // with the fusion model label.
 func TestRunPanelObserver_FusionMode(t *testing.T) {
 	// Fusion uses OpenRouter endpoint.
-	srv := openRouterSSETestServer(t,
-		`{"choices":[{"message":{"role":"assistant","content":"fusion answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	srv := openRouterSSETestServer(t, "fusion answer", 1, 1)
 	defer srv.Close()
 
 	col := &panelEventCollector{}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL, OnMemberEvent: col.sink()}
+	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv), OnMemberEvent: col.sink()}
 	RunPanel(context.Background(), []string{"a", "b"}, "fusion", "q", "b", ccfg, map[string]string{"openrouter": "key"})
 
 	evs := col.snapshot()

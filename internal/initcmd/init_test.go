@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,11 +46,64 @@ func fakeServer(t *testing.T, status int, chatBody string) (*httptest.Server, *[
 			t.Error("test call must carry a tool definition")
 		}
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(chatBody))
+		// The init test call goes through the single transport, which
+		// streams: answer with an SSE tool-call stream (the JSON the old
+		// direct POST expected is re-serialized for the transport).
+		if status != 200 {
+			_, _ = w.Write([]byte(chatBody))
+			return
+		}
+		// toolCallReply/textReply are JSON shapes; the transport accepts
+		// them as non-streaming JSON, but a chat-completions JSON body
+		// without Content-Type: application/json is collected via SSE.
+		// Answer with SSE chunks carrying the tool call.
+		w.Header().Set("Content-Type", "text/event-stream")
+		var out struct {
+			Choices []struct {
+				Message struct {
+					Content   *string `json:"content"`
+					ToolCalls []struct {
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(chatBody), &out); err != nil {
+			_, _ = w.Write([]byte(chatBody))
+			return
+		}
+		for _, c := range out.Choices {
+			for _, tc := range c.Message.ToolCalls {
+				tc := tc
+				fmt.Fprintf(w, "data: %s\n\n", mustJSON(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": tc.ID, "type": tc.Type, "function": map[string]any{"name": tc.Function.Name, "arguments": tc.Function.Arguments}}}}}}}))
+			}
+			if c.Message.Content != nil && *c.Message.Content != "" {
+				fmt.Fprintf(w, "data: %s\n\n", mustJSON(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": *c.Message.Content}}}}))
+			}
+		}
+		if len(out.Choices) > 0 {
+			fmt.Fprintf(w, "data: %s\n\n", mustJSON(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": "stop"}}}))
+		}
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(t, map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1}}))
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, &auths
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func newEnv(t *testing.T, interactive bool, input string) (Env, *bytes.Buffer, string) {
@@ -346,7 +400,13 @@ func TestInteractiveFailureThenPickAnother(t *testing.T) {
 			_, _ = w.Write([]byte(privacy404Body))
 			return
 		}
-		_, _ = w.Write([]byte(toolCallReply))
+		// Second call succeeds with an SSE tool-call stream.
+		w.Header().Set("Content-Type", "text/event-stream")
+		toolCall := map[string]any{"index": 0, "id": "c1", "type": "function", "function": map[string]any{"name": "ping", "arguments": "{}"}}
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{toolCall}}}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": "stop"}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSON(t, map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1}}))
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

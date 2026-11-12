@@ -404,3 +404,46 @@ func TestHeadlessPathNeverReferencesRepoStateAutoRestore(t *testing.T) {
 		}
 	}
 }
+
+// TestPerRepoDataPolicyOverrideIsKeyedByRepo verifies that two repo paths
+// hold independent /zdr and /region overrides, and that the effective values
+// (repo override if set, else user config) reach the session proxy client.
+func TestPerRepoDataPolicyOverrideIsKeyedByRepo(t *testing.T) {
+	withRepoStateDir(t)
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+
+	if err := updateRepoState(repoA, func(s *RepoState) { s.ZDR = "on"; s.Region = "eu" }); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRepoState(repoB, func(s *RepoState) { s.ZDR = "auto" }); err != nil {
+		t.Fatal(err)
+	}
+
+	// Repo A: both switches overridden.
+	appA := &App{Cfg: config.Config{WorkDir: repoA, ZDR: "off", Region: "off"}, Client: &proxy.Client{}}
+	RestoreRepoStateApply(appA, mustLoadRepoState(t, repoA))
+	if appA.EffectiveZDR() != "on" || appA.EffectiveRegion() != "eu" {
+		t.Errorf("repoA effective = %q/%q, want on/eu", appA.EffectiveZDR(), appA.EffectiveRegion())
+	}
+	if appA.Client.ZDR != "on" || appA.Client.Region != "eu" {
+		t.Errorf("repoA client = %q/%q, want on/eu", appA.Client.ZDR, appA.Client.Region)
+	}
+
+	// Repo B: zdr overridden, region falls back to user config.
+	appB := &App{Cfg: config.Config{WorkDir: repoB, ZDR: "off", Region: "us"}, Client: &proxy.Client{}}
+	RestoreRepoStateApply(appB, mustLoadRepoState(t, repoB))
+	if appB.EffectiveZDR() != "auto" || appB.EffectiveRegion() != "us" {
+		t.Errorf("repoB effective = %q/%q, want auto/us", appB.EffectiveZDR(), appB.EffectiveRegion())
+	}
+	if appB.Client.ZDR != "auto" || appB.Client.Region != "us" {
+		t.Errorf("repoB client = %q/%q, want auto/us", appB.Client.ZDR, appB.Client.Region)
+	}
+
+	// Repo with nothing stored: user config wins (defaults off here).
+	appC := &App{Cfg: config.Config{WorkDir: t.TempDir(), ZDR: "off", Region: "off"}, Client: &proxy.Client{}}
+	RestoreRepoStateApply(appC, nil)
+	if appC.EffectiveZDR() != "off" || appC.EffectiveRegion() != "off" {
+		t.Errorf("repoC effective = %q/%q, want off/off", appC.EffectiveZDR(), appC.EffectiveRegion())
+	}
+}

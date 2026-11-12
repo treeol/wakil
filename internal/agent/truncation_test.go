@@ -257,6 +257,7 @@ func TestOutboundReportReachesUserWhole(t *testing.T) {
 // workflow consult does not consume its one consultation.
 func TestVoidReplyNeverCountsAsARound(t *testing.T) {
 	t.Setenv("MASHURA_TEST_KEY", "x")
+	t.Setenv("MASHURA_TEST_OR_KEY", "x")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Every call after the first is an HTTP error: tests the
 		// max_tokens → retry fails → still VOID path.
@@ -265,18 +266,19 @@ func TestVoidReplyNeverCountsAsARound(t *testing.T) {
 			http.Error(w, `{"error":{"message":"overloaded"}}`, 529)
 			return
 		}
-		// Return SSE with max_tokens stop_reason (truncation).
+		// Return OpenRouter SSE: a length truncation with partial text.
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"cut o\"}}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":1}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"cut o"},"finish_reason":null}]}`)
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{},"finish_reason":"length"}]}`)
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
 	app, _ := mashuraTestApp(t, strings.Repeat("## Section\nbody text here\n\n", 800), "1. step", "done")
 	app.Cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
 	app.Cfg.OracleEndpoint = srv.URL
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
 		"default": {Models: []string{"anthropic:test-model"}, Mode: "panel"},

@@ -88,6 +88,16 @@ type RepoState struct {
 	// (disabled) and must be distinguishable from "not set". Restored outside
 	// the endpointMatches guard — it's endpoint-independent.
 	EffectiveCtxMaxChars *int `json:"effective_ctx_max_chars,omitempty"`
+
+	// ZDR is the per-repo zero-data-retention override (/zdr on|off|auto;
+	// "" = use the user config). The data policy's committed-project-config
+	// analogue — a cloned repo must never be able to set this — lives only
+	// here, on the user's side, keyed by the workspace.
+	ZDR string `json:"zdr,omitempty"`
+
+	// Region is the per-repo OpenRouter region override (/region eu|us|off;
+	// "" = use the user config).
+	Region string `json:"openrouter_region,omitempty"`
 }
 
 const repoStateSchemaVersion = 1
@@ -468,19 +478,38 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 	// it always wins over a saved preference.
 	applied = append(applied, a.applyThinkFlagLocked()...)
 
+	// Data policy per-repo overrides (endpoint-independent): the effective
+	// switches are written into the session proxy client at the end of
+	// restore, so every call path (main loop, subagents, Mashūra) enforces
+	// the same policy from the first request.
+	if st.ZDR != "" {
+		if config.ValidateDataPolicy(st.ZDR, "off") == nil {
+			a.ZDROverride = st.ZDR
+			applied = append(applied, "zdr="+st.ZDR)
+		}
+	}
+	if st.Region != "" {
+		if config.ValidateDataPolicy("off", st.Region) == nil {
+			a.RegionOverride = st.Region
+			applied = append(applied, "region="+st.Region)
+		}
+	}
+	if st.ZDR != "" || st.Region != "" {
+		a.applyDataPolicyToClientLocked()
+	}
+
 	return applied
 }
 
 // applyThinkFlagOnly applies just the --think CLI flag (taking stateMu) and
 // returns the result with a note naming it; the zero result when --think was
 // not passed. It is the whole restore when a workspace has no saved repo-state,
-// for /new, /resume and the daemon's restore RPCs alike.
+// for /new, /resume and the daemon's restore RPCs alike. It also applies the
+// data policy (config defaults + any per-repo override already in memory).
 func (a *App) applyThinkFlagOnly() RestoreRepoStateResult {
-	if !a.Cfg.ThinkExplicit || a.Cfg.ThinkEffort == "" {
-		return RestoreRepoStateResult{}
-	}
 	a.stateMu.Lock()
 	applied := a.applyThinkFlagLocked()
+	a.applyDataPolicyToClientLocked()
 	a.stateMu.Unlock()
 	if len(applied) == 0 {
 		return RestoreRepoStateResult{}
@@ -488,11 +517,41 @@ func (a *App) applyThinkFlagOnly() RestoreRepoStateResult {
 	return RestoreRepoStateResult{Note: strings.Join(applied, ", ")}
 }
 
+// applyDataPolicyToClientLocked writes the effective data-policy switches
+// (per-repo override if set, else user config) into the session proxy
+// client, so every call path (main loop, subagents, Mashūra, aux) enforces
+// the same policy from the next request. Caller MUST hold stateMu.Lock.
+// It is a no-op when the session client is nil (headless construction).
+func (a *App) applyDataPolicyToClientLocked() {
+	if a.Client == nil {
+		return
+	}
+	a.Client.SetDataPolicy(a.EffectiveZDR(), a.EffectiveRegion(), a.Cfg.TrustedLocalHosts)
+}
+
+// EffectiveZDR returns the per-repo override if set, else the user config.
+func (a *App) EffectiveZDR() string {
+	if a.ZDROverride != "" {
+		return a.ZDROverride
+	}
+	if a.Cfg.ZDR != "" {
+		return a.Cfg.ZDR
+	}
+	return "off"
+}
+
+// EffectiveRegion returns the per-repo override if set, else the user config.
+func (a *App) EffectiveRegion() string {
+	if a.RegionOverride != "" {
+		return a.RegionOverride
+	}
+	if a.Cfg.Region != "" {
+		return a.Cfg.Region
+	}
+	return "off"
+}
+
 // applyThinkFlagLocked applies the --think CLI flag to the session's reasoning
-// settings. Called from restoreEndpointIndependentLocked (after the repo-state
-// restore) AND from RestoreRepoState/RestoreRepoStateResume when st is nil
-// (fresh workspace with no saved state). Returns the applied settings labels.
-// Caller MUST hold stateMu.Lock.
 func (a *App) applyThinkFlagLocked() []string {
 	if !a.Cfg.ThinkExplicit || a.Cfg.ThinkEffort == "" {
 		return nil
@@ -600,6 +659,12 @@ func DescribeRepoState(app *App) string {
 	}
 	if st.AutoApprove {
 		b.WriteString("  auto: on\n")
+	}
+	if st.ZDR != "" {
+		b.WriteString("  zdr: " + st.ZDR + "\n")
+	}
+	if st.Region != "" {
+		b.WriteString("  region: " + st.Region + "\n")
 	}
 	if st.InfoPanelOpen {
 		b.WriteString("  info panel: open\n")

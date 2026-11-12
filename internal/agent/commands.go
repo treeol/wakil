@@ -333,13 +333,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 					msg += " · " + app.pruneStatusLine()
 				}
 				msg += " · billed " + app.costStatusLine()
+				msg += "\n" + app.dataPolicyStatusLines()
 				return true, false, note(msg)
 			default:
 				return true, false, note("usage: /mode [standard|long-session|status]")
 			}
 		}
 		// Bare /mode: show both exec backend and context mode.
-		return true, false, note("exec: " + app.Exec.Describe() + " · context: " + app.ContextMode())
+		return true, false, note("exec: " + app.Exec.Describe() + " · context: " + app.ContextMode() + "\n" + app.dataPolicyStatusLines())
 
 	case "/styles":
 		return true, false, note(app.HandleStyleCommand(fields))
@@ -1173,6 +1174,12 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 	case "/mashura":
 		return handleMashuraCommand(fields, app)
 
+	case "/zdr":
+		return handleDataSwitchCommand(fields, app, "zdr")
+
+	case "/region":
+		return handleDataSwitchCommand(fields, app, "region")
+
 	case "/plan":
 		return HandlePlanCommand(fields, app)
 
@@ -1202,11 +1209,19 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 
 	case "/repostate":
 		// /repostate [clear] — show or clear the per-folder terminal settings
-		// remembered for this workspace (model/backend/subagent/rawtools/auto).
+		// remembered for this workspace (model/backend/subagent/rawtools/auto,
+		// plus the per-repo /zdr and /region overrides).
 		if len(fields) >= 2 && fields[1] == "clear" {
 			if err := ClearRepoState(app); err != nil {
 				return true, false, note("repostate: clear failed: " + err.Error())
 			}
+			// In-memory overrides track the deleted file: a clear that left
+			// them set would silently re-persist on the next /zdr write.
+			app.stateMu.Lock()
+			app.ZDROverride = ""
+			app.RegionOverride = ""
+			app.applyDataPolicyToClientLocked()
+			app.stateMu.Unlock()
 			return true, false, note("repostate: cleared for " + app.SessionWorkspace() +
 				" (this session's current values are unchanged)")
 		}
@@ -1611,6 +1626,8 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /learn               send "learn this for next time" — proxy synthesises a fact to save (ilm-proxy only; use memory_put on OpenAI endpoints)
 /counsel auto|suggest|off  auto-counsel mode: auto=fire mashura__debug on struggle, suggest=hint, off=silent
 /counsel                   show current counsel mode and per-turn cap
+/zdr [on|off|auto|reset]   show/set the per-repo zero-data-retention switch (enforced on OpenRouter)
+/region [eu|us|off|reset]  show/set the per-repo OpenRouter region pin (eu.openrouter.ai / us.openrouter.ai)
 /mashura                   show mashura panel/model/limit status
 /mashura panel add <name> <models> [--mode panel|fallback|fusion|debate]  create a panel
 /mashura panel rm <name>   remove a panel

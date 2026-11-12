@@ -97,6 +97,9 @@ func (a *App) cloneClientForSideQuestion() *proxy.Client {
 		NoMemoryWrite:     true,
 		MaxRequestBytes:   a.Client.MaxRequestBytes,
 		StreamIdleTimeout: a.Client.StreamIdleTimeout,
+		ZDR:               a.Client.ZDR,
+		Region:            a.Client.Region,
+		TrustedLocalHosts: a.Client.TrustedLocalHosts,
 		ChatID:            NewChatID(),
 	}
 }

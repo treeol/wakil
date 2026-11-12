@@ -1,12 +1,10 @@
 package initcmd
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -17,13 +15,13 @@ import (
 // message init shows. key (may be "") is scrubbed from any server text.
 func mapTestFailure(status int, body, key string) string {
 	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case status == 401 || status == 403:
 		return fmt.Sprintf("key rejected (HTTP %d)", status)
 	case proxy.IsPrivacyPolicyError(status, body):
 		return proxy.PrivacyPolicyMessage
-	case status == http.StatusNotFound:
+	case status == 404:
 		return "model not found (HTTP 404)"
-	case status == http.StatusTooManyRequests:
+	case status == 429:
 		return "rate limited (HTTP 429; free models: 50 requests/day without credits)"
 	}
 	return fmt.Sprintf("HTTP %d: %s", status, oneLine(scrub(body, key), 200))
@@ -48,7 +46,13 @@ func scrub(s, secret string) string {
 // testCall sends one chat request with a trivial tool definition and reports
 // whether a tool call came back. msg is the one-line failure reason. Nothing
 // the server says is shown without scrubbing the key from it.
-func testCall(ctx context.Context, hc *http.Client, baseURL, model, authHeader string) (ok bool, msg string) {
+//
+// The request goes through the single transport (proxy.Exec), so the data
+// policy applies to init-time test calls exactly as it does to live calls:
+// with both switches off the wire bytes are identical to the old direct
+// POST, and with zdr/region on the init test call is enforced (or refused
+// before sending) like every other call.
+func testCall(ctx context.Context, client *proxy.Client, baseURL, model, authHeader string) (ok bool, msg string) {
 	key := strings.TrimPrefix(authHeader, "Bearer ")
 	body, _ := json.Marshal(map[string]any{
 		"model":      model,
@@ -56,6 +60,7 @@ func testCall(ctx context.Context, hc *http.Client, baseURL, model, authHeader s
 		"messages": []map[string]any{
 			{"role": "user", "content": "Call the ping tool now. Do not answer in text."},
 		},
+		"stream": true, // the transport streams; a JSON-answering server is still handled (parseChatChunk)
 		"tools": []map[string]any{{
 			"type": "function",
 			"function": map[string]any{
@@ -67,43 +72,31 @@ func testCall(ctx context.Context, hc *http.Client, baseURL, model, authHeader s
 	})
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return false, "cannot build the request: " + oneLine(scrub(err.Error(), key), 200)
-	}
-	req.Header.Set("Content-Type", "application/json")
+
+	headers := map[string]string{}
 	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
+		headers["Authorization"] = authHeader
 	}
-	resp, err := hc.Do(req)
+	res, err := client.Exec(ctx, proxy.ChatRequest{
+		BaseURL:      baseURL + "/v1/chat/completions",
+		Model:        model,
+		Body:         body,
+		Headers:      headers,
+		TotalTimeout: 90 * time.Second,
+	})
 	if err != nil {
+		var hsErr *proxy.HTTPStatusError
+		if errors.As(err, &hsErr) {
+			return false, mapTestFailure(hsErr.StatusCode, hsErr.Body, key)
+		}
+		var pref *proxy.PolicyRefusedError
+		if errors.As(err, &pref) {
+			return false, "the data policy refused the request: " + pref.Err.Error()
+		}
 		return false, "cannot reach the endpoint: " + oneLine(scrub(err.Error(), key), 200)
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return false, mapTestFailure(resp.StatusCode, string(raw), key)
-	}
-	var out struct {
-		Choices []struct {
-			Message struct {
-				ToolCalls []json.RawMessage `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return false, "the endpoint did not answer with an OpenAI-style JSON reply"
-	}
-	if len(out.Choices) == 0 && out.Error != nil {
-		return false, "the provider returned an error: " + oneLine(scrub(out.Error.Message, key), 200)
-	}
-	for _, c := range out.Choices {
-		if len(c.Message.ToolCalls) > 0 {
-			return true, ""
-		}
+	if len(res.ToolCalls) > 0 {
+		return true, ""
 	}
 	return false, "model did not call the tool; tool calling may be unsupported"
 }

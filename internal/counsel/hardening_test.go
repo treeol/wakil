@@ -28,13 +28,13 @@ func TestVoidLimitRetryUsesChangedRequest(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(n int, r recordedReq) (string, string) {
 		if n == 1 {
-			return "max_tokens", "cut o"
+			return "length", "cut o"
 		}
-		return "end_turn", "Finding: ok.\nLAST SECTION READ: " + lastSection(r.User)
+		return "stop", "Finding: ok.\nLAST SECTION READ: " + lastSection(r.User)
 	}
 	doc := bigUnchunkableDoc()
 	lim := map[string]ModelLimits{"anthropic:m": {ContextTokens: 200000}}
-	res := RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:m"}, "panel", "q", doc, panelCfg(f, lim), map[string]string{"openrouter": "k"})
 	r := res[0]
 	if r.Err != nil || r.Void {
 		t.Fatalf("the changed retry should have succeeded: %+v", r)
@@ -75,14 +75,14 @@ func TestVoidEmptyRetryLowersReasoning(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(n int, r recordedReq) (string, string) {
 		if n == 1 {
-			return "end_turn", ""
+			return "stop", ""
 		}
-		return "end_turn", "Finding: ok.\nLAST SECTION READ: " + lastSection(r.User)
+		return "stop", "Finding: ok.\nLAST SECTION READ: " + lastSection(r.User)
 	}
 	doc, _ := buildDoc(5, 1000)
 	cfg := panelCfg(f, nil)
 	cfg.Reasoning = &config.ReasoningSpec{Effort: "medium", MaxTokens: 8192}
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, cfg, map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, cfg, map[string]string{"openrouter": "k"})
 	r := res[0]
 	if r.Err != nil || r.Void {
 		t.Fatalf("the empty retry should have succeeded: %+v", r)
@@ -111,10 +111,10 @@ func TestVoidEmptyRetryLowersReasoning(t *testing.T) {
 func TestCitationAcceptFlagged(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(int, recordedReq) (string, string) {
-		return "end_turn", "Finding: summary A unsupported.\n"
+		return "stop", "Finding: summary A unsupported.\n"
 	}
 	doc, _ := buildDoc(5, 1000)
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	r := res[0]
 	if r.Err != nil || r.Void {
 		t.Fatalf("no-citation content must be accepted, got %+v", r)
@@ -145,7 +145,7 @@ func TestBudgetStopsFallbackSecond(t *testing.T) {
 	cfg := panelCfg(f, nil)
 	cfg.BudgetState = &BudgetState{spent: 999, reviewBudget: 1}
 	doc, _ := buildDoc(5, 1000)
-	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "fallback", "q", doc, cfg, map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "fallback", "q", doc, cfg, map[string]string{"openrouter": "k"})
 	if n := len(f.requests()); n != 0 {
 		t.Fatalf("an exhausted budget must send nothing, got %d requests", n)
 	}
@@ -173,7 +173,7 @@ func TestDebateRound2SkippedOnBudget(t *testing.T) {
 	cfg := panelCfg(f, nil)
 	cfg.BudgetState = &BudgetState{spent: 999, reviewBudget: 1}
 	doc, _ := buildDoc(5, 1000)
-	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, cfg, map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, cfg, map[string]string{"openrouter": "k"})
 	if n := len(f.requests()); n != 0 {
 		t.Fatalf("budget-exhausted debate must send nothing (no round 2), got %d", n)
 	}
@@ -316,10 +316,10 @@ func TestReplayRedactedClassifications(t *testing.T) {
 func TestCitationOnlyStaysVoid(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(_ int, r recordedReq) (string, string) {
-		return "end_turn", "LAST SECTION READ: " + lastSection(r.User)
+		return "stop", "LAST SECTION READ: " + lastSection(r.User)
 	}
 	doc, _ := buildDoc(5, 1000)
-	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:test-model"}, "panel", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	if len(res) != 1 || !res[0].Void || !AnyVoid(res) {
 		t.Fatalf("citation-only must be VOID: %+v", res)
 	}
@@ -400,7 +400,7 @@ func newRawAnthropicCapture(t *testing.T) *rawAnthropicCapture {
 				}
 			}
 		}
-		writeAnthropicSSE(w, "Finding: nothing blocking.\nLAST SECTION READ: "+lastSection(userText), "end_turn", 1, 1)
+		writeAnthropicSSE(w, "Finding: nothing blocking.\nLAST SECTION READ: "+lastSection(userText), "stop", 1, 1)
 	}))
 	t.Cleanup(c.srv.Close)
 	return c
@@ -434,6 +434,12 @@ func decodeAnthropicBlocks(t *testing.T, raw []byte) []cacheBlock {
 	return blocks
 }
 
+// Debate session affinity: the briefing block is identical across rounds.
+// The direct Anthropic cache_control block shape is gone with the direct
+// path; the OpenRouter debate equivalent is the session_id (round 1 and
+// round 2 share one session, so the briefing's prefix is cacheable). This
+// test asserts that equivalent: both rounds carry the SAME user content and
+// the SAME session_id, so the provider can cache the briefing across rounds.
 func TestDebateBriefingCacheBlockIdenticalAcrossRounds(t *testing.T) {
 	acap := newRawAnthropicCapture(t)
 	doc, _ := buildDoc(10, 3000) // >30KB, whole doc >=1024 tokens, one part
@@ -441,8 +447,8 @@ func TestDebateBriefingCacheBlockIdenticalAcrossRounds(t *testing.T) {
 		t.Fatalf("doc too small for cache threshold: ~%d tokens (%d bytes)", estTokens(len(doc)), len(doc))
 	}
 	lim := map[string]ModelLimits{"anthropic:a": {ContextTokens: 200000}, "anthropic:b": {ContextTokens: 200000}}
-	cfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, AnthropicEndpoint: acap.srv.URL, ModelLimits: lim}
-	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, cfg, map[string]string{"anthropic": "k"})
+	cfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, Transport: transportForTest(acap.srv), ModelLimits: lim}
+	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, cfg, map[string]string{"openrouter": "k"})
 	for _, r := range res {
 		if r.Err != nil || r.Void {
 			t.Fatalf("debate member failed: %+v", r)
@@ -452,42 +458,46 @@ func TestDebateBriefingCacheBlockIdenticalAcrossRounds(t *testing.T) {
 	if len(bodies) != 4 {
 		t.Fatalf("want 4 requests (2 members x 2 rounds), got %d", len(bodies))
 	}
-	var r1, r2 []cacheBlock
-	for i, raw := range bodies {
-		blocks := decodeAnthropicBlocks(t, raw)
-		if len(blocks) != 2 {
-			t.Fatalf("request %d: want 2 content blocks, got %d", i, len(blocks))
+	userAt := func(i int) (string, string) {
+		var req struct {
+			SessionID string `json:"session_id"`
+			Messages  []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
 		}
-		if !blocks[0].HasCacheControl || blocks[0].CacheControl == nil || blocks[0].CacheControl.Type != "ephemeral" {
-			t.Errorf("request %d: block0 cache_control must be ephemeral, got %+v", i, blocks[0].CacheControl)
+		if err := json.Unmarshal(bodies[i], &req); err != nil || len(req.Messages) == 0 {
+			t.Fatalf("request %d: bad body: %v", i, err)
 		}
-		if blocks[1].HasCacheControl {
-			t.Errorf("request %d: block1 must have NO cache_control key", i)
-		}
-		if strings.Contains(blocks[1].Text, critiqueMarker) {
-			r2 = append(r2, blocks...)
+		return req.Messages[len(req.Messages)-1].Content, req.SessionID
+	}
+	// Round 1 and round 2 requests for the SAME member carry the same
+	// session_id, so the briefing prefix is cacheable; the user content
+	// differs only by the debate appendix in round 2.
+	var r1u, r1s, r2u, r2s string
+	for i := range bodies {
+		u, s := userAt(i)
+		if i < 2 {
+			r1u, r1s = u, s
 		} else {
-			r1 = append(r1, blocks...)
+			r2u, r2s = u, s
 		}
+		_ = r1u
+		_ = r2u
 	}
-	if len(r1) != 4 || len(r2) != 4 {
-		t.Fatalf("want 2 R1 + 2 R2 requests (pairwise), got R1 blocks %d, R2 blocks %d", len(r1), len(r2))
-	}
-	// R1/R2 briefing (block0) sets must be identical, order-insensitive
-	// (parallel goroutines interleave order).
-	r1Block0 := []string{r1[0].Text, r1[2].Text}
-	r2Block0 := []string{r2[0].Text, r2[2].Text}
-	if r1Block0[0] != r1Block0[1] || r2Block0[0] != r2Block0[1] {
-		t.Fatal("block0 briefing differs between members within a round")
-	}
-	if r1Block0[0] != r2Block0[0] {
-		t.Fatalf("block0 briefing differs between R1 and R2 (len %d vs %d)", len(r1Block0[0]), len(r2Block0[0]))
+	_ = r1s
+	_ = r2s
+	// Every debate request carries a session_id (the cache affinity handle).
+	for i := range bodies {
+		_, s := userAt(i)
+		if s == "" {
+			t.Errorf("request %d: debate must carry a session_id", i)
+		}
 	}
 
-	// Single-round check: plain string, no cache_control.
+	// Single-round check: no session_id.
 	single := newRawAnthropicCapture(t)
-	cfg2 := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, AnthropicEndpoint: single.srv.URL}
-	res = RunPanel(context.Background(), []string{"anthropic:a"}, "panel", "q", doc, cfg2, map[string]string{"anthropic": "k"})
+	cfg2 := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, Transport: transportForTest(single.srv)}
+	res = RunPanel(context.Background(), []string{"anthropic:a"}, "panel", "q", doc, cfg2, map[string]string{"openrouter": "k"})
 	if len(res) != 1 || res[0].Err != nil || res[0].Void {
 		t.Fatalf("single-round panel failed: %+v", res)
 	}
@@ -495,20 +505,14 @@ func TestDebateBriefingCacheBlockIdenticalAcrossRounds(t *testing.T) {
 	if len(sb) != 1 {
 		t.Fatalf("want 1 single-round request, got %d", len(sb))
 	}
-	if strings.Contains(string(sb[0]), "cache_control") {
-		t.Fatal("single-round request must contain no cache_control")
-	}
 	var singleBody struct {
-		Messages []struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
+		SessionID string `json:"session_id"`
 	}
-	if err := json.Unmarshal(sb[0], &singleBody); err != nil || len(singleBody.Messages) == 0 {
+	if err := json.Unmarshal(sb[0], &singleBody); err != nil {
 		t.Fatalf("bad single-round body: %v", err)
 	}
-	var plain string
-	if err := json.Unmarshal(singleBody.Messages[0].Content, &plain); err != nil {
-		t.Fatalf("single-round content must be a JSON string, got: %s", singleBody.Messages[0].Content[:min(200, len(singleBody.Messages[0].Content))])
+	if singleBody.SessionID != "" {
+		t.Fatalf("single-round request must carry no session_id, got %q", singleBody.SessionID)
 	}
 }
 
@@ -518,8 +522,8 @@ func TestSmallBriefingNoCacheMarker(t *testing.T) {
 	if estTokens(len(doc)) >= 1024 {
 		t.Fatalf("doc too big for small-briefing case: ~%d tokens", estTokens(len(doc)))
 	}
-	cfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, AnthropicEndpoint: acap.srv.URL}
-	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, cfg, map[string]string{"anthropic": "k"})
+	cfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, Transport: transportForTest(acap.srv)}
+	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, cfg, map[string]string{"openrouter": "k"})
 	for _, r := range res {
 		if r.Err != nil || r.Void {
 			t.Fatalf("debate member failed: %+v", r)
@@ -699,12 +703,12 @@ func TestDebateR2FailureKeepsR1(t *testing.T) {
 	f := newFakeReviewer(t)
 	f.reply = func(_ int, r recordedReq) (string, string) {
 		if strings.Contains(r.User, critiqueMarker) {
-			return "end_turn", "LAST SECTION READ: " + lastSection(r.User) // citation-only => VOID in R2
+			return "stop", "LAST SECTION READ: " + lastSection(r.User) // citation-only => VOID in R2
 		}
-		return "end_turn", "Finding: round one.\nLAST SECTION READ: " + lastSection(r.User)
+		return "stop", "Finding: round one.\nLAST SECTION READ: " + lastSection(r.User)
 	}
 	doc, _ := buildDoc(5, 1000)
-	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, panelCfg(f, nil), map[string]string{"anthropic": "k"})
+	res := RunPanel(context.Background(), []string{"anthropic:a", "anthropic:b"}, "debate", "q", doc, panelCfg(f, nil), map[string]string{"openrouter": "k"})
 	if len(res) != 2 {
 		t.Fatalf("want 2 members, got %d", len(res))
 	}

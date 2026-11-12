@@ -1,7 +1,6 @@
 package counsel
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,15 +29,30 @@ var panelDebugCounter atomic.Int64
 var panelDebugWarned sync.Map
 
 // panelCapture gathers the raw facts of one panel call. It never holds headers
-// or the API key: only the request body as sent, and what came back.
+// or the API key. The request body is replaced after Exec with the body as
+// actually sent (the data policy may have added the provider ZDR fields, or
+// the auto fallback may have stripped them) via withSentBody; the capture's
+// initial body is only what orChat built pre-policy.
 type panelCapture struct {
 	dir    string
 	label  string
-	body   []byte
+	body   []byte // pre-policy body; replaced by sentBody on write
+	sentBody []byte // the body as sent, recorded via observeSent
 	usages []string // raw JSON of every data line that contains "usage", in order
 	tail   []string // the last panelDebugTail raw data lines (any content)
 	served string
 	status int
+}
+
+// withSentBody replaces the capture's request body with the body as sent
+// (i.e. after the data policy ran). Called by orChat from the wire body
+// Exec actually transmitted.
+func (c *panelCapture) withSentBody(b []byte) *panelCapture {
+	if c == nil {
+		return nil
+	}
+	c.sentBody = append([]byte(nil), b...)
+	return c
 }
 
 // newPanelCapture returns a capture for one call, or nil when the debug
@@ -52,7 +66,8 @@ func newPanelCapture(label string, body []byte) *panelCapture {
 }
 
 // observe records one raw SSE data line (already joined, before parsing).
-// It is safe to call on a nil capture.
+// It is safe to call on a nil capture. The served model is taken from the
+// stream's model field (the provider reports it on every chunk).
 func (c *panelCapture) observe(raw string) {
 	if c == nil {
 		return
@@ -60,26 +75,16 @@ func (c *panelCapture) observe(raw string) {
 	if strings.Contains(raw, `"usage"`) {
 		c.usages = append(c.usages, raw)
 	}
+	var model struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal([]byte(raw), &model) == nil && model.Model != "" {
+		c.served = model.Model
+	}
 	c.tail = append(c.tail, raw)
 	if len(c.tail) > panelDebugTail {
 		c.tail = c.tail[len(c.tail)-panelDebugTail:]
 	}
-}
-
-// panelCaptureKey carries the capture through the request context, so
-// streamRequest's parser hook reaches the capture of its own call only.
-type panelCaptureKey struct{}
-
-func withPanelCapture(ctx context.Context, c *panelCapture) context.Context {
-	if c == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, panelCaptureKey{}, c)
-}
-
-func panelCaptureFrom(ctx context.Context) *panelCapture {
-	c, _ := ctx.Value(panelCaptureKey{}).(*panelCapture)
-	return c
 }
 
 // write stores the capture as one 0600 file named
@@ -90,7 +95,10 @@ func (c *panelCapture) write(status int, served string, err error) {
 		return
 	}
 	c.status = status
-	c.served = served
+	if served != "" {
+		c.served = served
+	}
+	served = c.served
 	n := panelDebugCounter.Add(1)
 	doc := struct {
 		Label       string          `json:"label"`
@@ -110,8 +118,12 @@ func (c *panelCapture) write(status int, served string, err error) {
 	if err != nil {
 		doc.Error = err.Error()
 	}
-	if json.Valid(c.body) {
-		doc.RequestBody = json.RawMessage(c.body)
+	wireBody := c.body
+	if len(c.sentBody) > 0 {
+		wireBody = c.sentBody
+	}
+	if json.Valid(wireBody) {
+		doc.RequestBody = json.RawMessage(wireBody)
 	} else {
 		doc.RequestBody = json.RawMessage(`"<non-json body>"`)
 	}

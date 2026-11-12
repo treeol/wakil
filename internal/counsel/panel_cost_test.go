@@ -35,7 +35,7 @@ func TestPanelStreamCostAndServedModelNormalCompletion(t *testing.T) {
 		`{"model":"`+servedModel+`","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"cost":0.0042}}`,
 	)
 	defer srv.Close()
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
@@ -55,7 +55,7 @@ func TestPanelStreamCostOnUsageOnlyChunk(t *testing.T) {
 		`{"model":"`+servedModel+`","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"cost":0.0042}}`,
 	)
 	defer srv.Close()
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
@@ -74,7 +74,7 @@ func TestPanelStreamNoCostReportedIsNotProviderCost(t *testing.T) {
 		`{"model":"`+servedModel+`","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}`,
 	)
 	defer srv.Close()
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, usage, err := callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", "", ccfg)
 	if err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
@@ -99,7 +99,7 @@ func TestPanelDebugCaptureWritesFile(t *testing.T) {
 		`{"model":"`+servedModel+`","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"cost":0.0042}}`,
 	)
 	defer srv.Close()
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	if _, _, err := callOpenRouter(context.Background(), "openrouter/auto", secret, "q", "ctx", "", ccfg); err != nil {
 		t.Fatalf("callOpenRouter: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestPanelDebugCaptureOffWritesNothing(t *testing.T) {
 	t.Setenv(panelDebugEnvVar, "")
 	srv := rawSSEServer(t, `{"model":"`+servedModel+`","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`)
 	defer srv.Close()
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, OpenRouterEndpoint: srv.URL}
+	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
 	_, _, _ = callOpenRouter(context.Background(), "openrouter/auto", "key", "q", "ctx", "", ccfg)
 	if m, _ := filepath.Glob(filepath.Join(dir, "*")); len(m) != 0 {
 		t.Errorf("capture off but files written: %v", m)

@@ -736,13 +736,13 @@ func (a *App) defaultSkillReview(ctx context.Context, question, briefing string)
 	ccfg := counsel.PanelCallConfig{
 		MaxTokens:          a.mashuraMaxTokensFor("mashura__review"),
 		TimeoutSeconds:     a.Cfg.OracleTimeoutSeconds,
-		AnthropicEndpoint:  a.Cfg.OracleEndpoint,
 		FusionJudge:        panel.FusionJudge,
 		FusionMaxToolCalls: panel.FusionMaxToolCalls,
 		ModelLimits:        a.mashuraModelLimits(),
 		ReviewBudgetUSD:    a.Cfg.MashuraReviewBudgetUSD,
 		SessionBudgetUSD:   a.BudgetUSD,
 		SessionCostFunc:    func() float64 { return a.SessionCostTotal() },
+		Transport:          a.transportClient(),
 		// Server tools (web search/fetch) are deliberately NOT forwarded: the
 		// reviewer sees only the sanitized draft and must not be able to send
 		// any of it to a third-party search.

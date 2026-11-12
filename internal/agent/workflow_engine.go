@@ -231,12 +231,12 @@ func runWFPanel(ctx context.Context, app *App, headline, question, briefing, pan
 	ccfg := counsel.PanelCallConfig{
 		MaxTokens:          app.Cfg.OracleMaxTokens,
 		TimeoutSeconds:     app.Cfg.OracleTimeoutSeconds,
-		AnthropicEndpoint:  app.Cfg.OracleEndpoint,
 		FusionJudge:        panel.FusionJudge,
 		FusionMaxToolCalls: panel.FusionMaxToolCalls,
 		ServerTools:        panel.ServerTools,
 		WebSearchEngine:    panel.WebSearchEngine,
 		ServerToolMaxCalls: panel.ServerToolMaxCalls,
+		Transport:          app.transportClient(),
 		ModelLimits:        app.mashuraModelLimits(),
 		ReviewBudgetUSD:    app.Cfg.MashuraReviewBudgetUSD,
 		SessionBudgetUSD:   app.BudgetUSD,

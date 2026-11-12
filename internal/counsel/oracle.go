@@ -1,15 +1,11 @@
 package counsel
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,198 +13,36 @@ import (
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/diag"
+	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/safe"
 )
 
-const oracleEndpoint = "https://api.anthropic.com/v1/messages"
+// chatModelEndpoint is the default OpenRouter chat-completions endpoint. The
+// data policy may rewrite its host (regional pinning); the path is fixed.
+const chatModelEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 
-// counselClient is a shared HTTP client with transport-level timeouts. The
-// request context carries the primary deadline (context.WithTimeout), which
-// bounds the full request including server-side tool execution. The transport
-// adds dial and TLS-handshake deadlines so a hung connection is caught even
-// if the context timeout is removed.
-//
-// ResponseHeaderTimeout is intentionally NOT set: Mashūra calls with
-// server-side tools (web_search, web_fetch) can delay response headers for
-// several minutes while the panel computes. The request context deadline
-// (default counselStreamTotalCap = 30 min, configurable via
-// oracle_timeout_seconds) is the proper upper bound — a transport-level
-// header timeout would cut legitimate long calls short.
-var counselClient = func() *http.Client {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
-	tr.TLSHandshakeTimeout = 10 * time.Second
-	return &http.Client{Transport: tr}
-}()
+// transportClient is the single transport every model call in this package
+// goes through: internal/proxy. It is a package variable so tests can point
+// it at an httptest server; production wiring always uses a Client with the
+// session's data-policy settings.
+var transportClient = &proxy.Client{}
 
-// doJSONPost sends a POST request with the given body and headers, reads
-// the response (capped at 4 MB), and returns the raw bytes, status code,
-// and error. The response body is always closed.
-func doJSONPost(ctx context.Context, endpoint string, headers map[string]string, body []byte) ([]byte, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, 0, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-
-	resp, err := counselClient.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
-	}
-	return raw, resp.StatusCode, nil
+// NewTransportClient builds the transport client for one session, carrying the
+// configured data-policy switches (effective values, i.e. user config with
+// any per-repo override already applied). All counsel calls in that session
+// route through it.
+func NewTransportClient(zdr, region string, trusted []string) *proxy.Client {
+	c := &proxy.Client{}
+	c.SetDataPolicy(zdr, region, trusted)
+	return c
 }
 
 const oracleSystemPrompt = "You are consulted for a second opinion by a local agent. Be direct and concise. Distinguish explicitly between (a) what the provided context shows and (b) what you recall from training. Never state a version-dependent or environment-dependent claim as confirmed — name what file or output would confirm it. Flag uncertainty plainly."
 
-// oracleReq is the Anthropic Messages API request body.
-type oracleReq struct {
-	Model     string      `json:"model"`
-	MaxTokens int         `json:"max_tokens"`
-	System    string      `json:"system"`
-	Messages  []oracleMsg `json:"messages"`
-	// Thinking enables extended thinking (Anthropic-native). When non-nil,
-	// MaxTokens MUST be > budget_tokens (Anthropic requires this strictly).
-	// The caller makes max_tokens = budget_tokens + answer_budget so the total
-	// is additive and the answer budget is never reduced for reasoning.
-	Thinking *oracleThinking `json:"thinking,omitempty"`
-	// Stream enables SSE streaming. When true, the response is a stream of
-	// events (message_start, content_block_start, content_block_delta,
-	// content_block_stop, message_delta, message_stop) rather than a single
-	// JSON body.
-	Stream bool `json:"stream"`
-}
-
-// oracleThinking is the Anthropic-native thinking parameter.
-type oracleThinking struct {
-	Type         string `json:"type"`          // "enabled"
-	BudgetTokens int    `json:"budget_tokens"` // reasoning token budget
-}
-
-type oracleMsg struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-}
-
-// oracleCacheControl marks an Anthropic prompt-cache breakpoint.
-type oracleCacheControl struct {
-	Type string `json:"type"` // "ephemeral"
-}
-
-// oracleContentBlock is one Anthropic text content block.
-type oracleContentBlock struct {
-	Type         string              `json:"type"` // "text"
-	Text         string              `json:"text"`
-	CacheControl *oracleCacheControl `json:"cache_control,omitempty"`
-}
-
-// oracleTextContent marshals a plain-string message content.
-func oracleTextContent(s string) json.RawMessage {
-	b, _ := json.Marshal(s)
-	return b
-}
-
-// oracleBlocksContent marshals a content-block array message content.
-func oracleBlocksContent(blocks []oracleContentBlock) json.RawMessage {
-	b, _ := json.Marshal(blocks)
-	return b
-}
-
-// anthropicSSEEvent is the envelope for Anthropic SSE events.
-type anthropicSSEEvent struct {
-	Type    string          `json:"type"`
-	Delta   json.RawMessage `json:"delta,omitempty"`
-	Message *struct {
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-		StopReason string `json:"stop_reason"`
-	} `json:"message,omitempty"`
-	// content_block_start carries the block type (text/thinking).
-	ContentBlock *struct {
-		Type string `json:"type"`
-	} `json:"content_block,omitempty"`
-	// Error carries mid-stream error events (overloaded_error, etc.).
-	Error *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
-}
-
-// anthropicSSEDelta is the delta in content_block_delta / message_delta.
-type anthropicSSEDelta struct {
-	Type       string `json:"type"` // "text_delta" | "thinking_delta" | "message_delta"
-	Text       string `json:"text,omitempty"`
-	StopReason string `json:"stop_reason,omitempty"`
-}
-
-// anthropicMessageDelta carries the final usage in message_delta events.
-type anthropicMessageDelta struct {
-	Type  string `json:"type"`
-	Delta struct {
-		StopReason   string `json:"stop_reason,omitempty"`
-		OutputTokens int    `json:"output_tokens,omitempty"`
-	} `json:"delta"`
-	Usage *struct {
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage,omitempty"`
-}
-
-// parseAnthropicSSE parses one Anthropic SSE data line and returns the text
-// content, usage (when available), and whether the stream is done.
-func parseAnthropicSSE(data []byte) (string, *streamUsage, bool) {
-	var ev anthropicSSEEvent
-	if err := json.Unmarshal(data, &ev); err != nil {
-		return "", nil, false
-	}
-	switch ev.Type {
-	case "message_start":
-		if ev.Message != nil {
-			return "", &streamUsage{
-				InputTokens:  int64(ev.Message.Usage.InputTokens),
-				OutputTokens: int64(ev.Message.Usage.OutputTokens),
-			}, false
-		}
-	case "content_block_delta":
-		var d anthropicSSEDelta
-		if json.Unmarshal(ev.Delta, &d) == nil && d.Type == "text_delta" {
-			return d.Text, nil, false
-		}
-	case "message_delta":
-		var md anthropicMessageDelta
-		if json.Unmarshal(data, &md) == nil {
-			u := &streamUsage{
-				FinishReason: md.Delta.StopReason,
-			}
-			if md.Usage != nil {
-				u.OutputTokens = int64(md.Usage.OutputTokens)
-			}
-			if md.Delta.OutputTokens > 0 {
-				u.OutputTokens = int64(md.Delta.OutputTokens)
-			}
-			return "", u, false
-		}
-	case "message_stop":
-		return "", nil, true
-	case "error":
-		// Mid-stream error (overloaded_error, etc.) — surface it.
-		msg := "unknown error"
-		if ev.Error != nil && ev.Error.Message != "" {
-			msg = ev.Error.Message
-		}
-		return "", &streamUsage{FinishReason: "error", ErrorMsg: msg}, true
-	}
-	return "", nil, false
-}
+// OracleUsage is the exact token usage reported by the model backend for one
+// call, surfaced to the caller so the cost tracker can record a billed-grade
+// (exact) figure. Tokens and the provider-reported cost are always carried
+// together (addUsage); see its contract.
 
 // oracleResp is the relevant subset of the Anthropic Messages API response body.
 type oracleResp struct {
@@ -292,192 +126,6 @@ func addProviderCost(u, b OracleUsage) OracleUsage {
 	return u
 }
 
-// CallOracle sends question and (optionally) oracleCtx to the Anthropic Messages
-// API and returns the assistant text plus the call's token usage. ctx is the
-// turn context; an additional timeout is layered so a slow response cannot stall
-// indefinitely.
-func CallOracle(ctx context.Context, cfg config.Config, apiKey, question, oracleCtx string) (string, OracleUsage, error) {
-	endpoint := oracleEndpoint
-	if cfg.OracleEndpoint != "" {
-		endpoint = cfg.OracleEndpoint
-	}
-	return CallOracleURL(ctx, cfg, apiKey, question, oracleCtx, endpoint)
-}
-
-// CallOracleURL is the implementation of CallOracle with an explicit endpoint,
-// used in tests to point at a local httptest.Server instead of the live API.
-// When cfg's reasoning spec is set (via the panel call config), the Anthropic
-// thinking parameter is sent with a budget derived from the spec, and
-// max_tokens is made additive (budget + answer). The answer budget is never
-// reduced for reasoning.
-func CallOracleURL(ctx context.Context, cfg config.Config, apiKey, question, oracleCtx, endpoint string) (string, OracleUsage, error) {
-	return callOracleWithReasoning(ctx, cfg, apiKey, question, oracleCtx, endpoint, nil)
-}
-
-// callOracleWithReasoning is the reasoning-aware implementation of CallOracleURL.
-// When reasoning is non-nil, the Anthropic-native thinking parameter is sent
-// with budget_tokens = reasoningBudget, and max_tokens = budget + answerBudget.
-// When nil, behavior is byte-identical to the original CallOracleURL.
-func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, question, oracleCtx, endpoint string, reasoning *config.ReasoningSpec) (string, OracleUsage, error) {
-	userContent := question
-	if oracleCtx != "" {
-		userContent += "\n\nContext:\n" + oracleCtx
-	}
-	return callOracleWithContent(ctx, cfg, apiKey, oracleTextContent(userContent), endpoint, reasoning)
-}
-
-// callOracleWithContent is the Anthropic Messages call with pre-built
-// message content (plain string or content blocks). callOracleWithReasoning
-// and callAnthropic (debate cache path) both funnel here.
-func callOracleWithContent(ctx context.Context, cfg config.Config, apiKey string, content json.RawMessage, endpoint string, reasoning *config.ReasoningSpec) (string, OracleUsage, error) {
-
-	maxTokens := cfg.OracleMaxTokens
-	var thinking *oracleThinking
-	if reasoning != nil && !reasoning.IsZero() {
-		// "off"/"none" effort means omit reasoning entirely — do not send
-		// thinking or add a budget to max_tokens.
-		if reasoning.Effort != "off" && reasoning.Effort != "none" {
-			budget := config.ReasoningBudgetFor(reasoning)
-			if budget > 0 {
-				// Anthropic requires budget_tokens >= 1024 and < max_tokens (strict).
-				// Ensure at least 1024 and that max_tokens exceeds the budget by the
-				// answer budget.
-				if budget < 1024 {
-					budget = 1024
-				}
-				thinking = &oracleThinking{Type: "enabled", BudgetTokens: budget}
-				// Additive: max_tokens = budget + answer. Never reduce the answer.
-				maxTokens = budget + maxTokens
-			}
-		}
-	}
-
-	body, err := json.Marshal(oracleReq{
-		Model:     cfg.OracleModel,
-		MaxTokens: maxTokens,
-		System:    oracleSystemPrompt,
-		Messages:  []oracleMsg{{Role: "user", Content: content}},
-		Thinking:  thinking,
-		Stream:    true,
-	})
-	if err != nil {
-		return "", OracleUsage{}, fmt.Errorf("marshal: %w", err)
-	}
-
-	// Derive a child context so Ctrl-C (parent cancel) and the configured
-	// timeout both terminate. The timeout is the total cap (default 30min);
-	// the idle timeout (120s) catches stalled streams within that cap.
-	// A length stop still goes through the truncation/VOID path.
-	timeout := time.Duration(cfg.OracleTimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = counselStreamTotalCap
-	}
-	tctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	reply, sUsage, status, err := streamRequest(tctx, endpoint, map[string]string{
-		"x-api-key":         apiKey,
-		"anthropic-version": "2023-06-01",
-	}, body, counselStreamIdleTimeout, timeout, parseAnthropicSSE)
-	if err != nil {
-		// Preserve partial usage from the stream even on error — the
-		// provider bills for tokens already generated before the failure.
-		var partial OracleUsage
-		if sUsage != nil {
-			partial.InputTokens = sUsage.InputTokens
-			partial.OutputTokens = sUsage.OutputTokens
-			partial.ReasoningTokens = sUsage.ReasoningTokens
-			partial.WebSearchRequests = sUsage.WebSearchRequests
-			partial.FinishReason = sUsage.FinishReason
-			partial.ProviderCostUSD = sUsage.ProviderCostUSD
-			partial.HasProviderCost = sUsage.HasProviderCost
-			partial.ServedModel = sUsage.ServedModel
-		}
-		return "", partial, err
-	}
-
-	if status != http.StatusOK {
-		// Non-200: the streamRequest already read the body; parse it as an error.
-		var apiErr oracleResp
-		msg := ""
-		if json.Unmarshal([]byte(reply), &apiErr) == nil && apiErr.Error != nil {
-			msg = apiErr.Error.Message
-			if status == 400 && strings.Contains(msg, "max_tokens") {
-				msg += " (API rejected large request; reduce oracle_max_tokens)"
-			}
-		}
-		return "", OracleUsage{}, &ProviderHTTPError{Label: "anthropic", Status: status, Msg: msg}
-	}
-
-	// Build usage from the streamed data.
-	var result oracleResp
-	if sUsage != nil {
-		result.StopReason = sUsage.FinishReason
-		result.Usage.InputTokens = int(sUsage.InputTokens)
-		result.Usage.OutputTokens = int(sUsage.OutputTokens)
-	}
-
-	text := strings.TrimSpace(reply)
-	if os.Getenv("WAKIL_DEBUG") != "" {
-		diag.Printf("[oracle debug] streamed stop_reason=%q input=%d output=%d content_len=%d\n",
-			result.StopReason, result.Usage.InputTokens, result.Usage.OutputTokens, len(text))
-	}
-
-	// max_tokens check runs FIRST so the actionable remediation hint wins.
-	if result.StopReason == "max_tokens" {
-		remediation := "; raise oracle_max_tokens to avoid truncation"
-		if thinking != nil {
-			remediation = "; raise oracle_max_tokens or use a non-thinking model"
-		}
-		truncUsage := OracleUsage{
-			InputTokens:  int64(result.Usage.InputTokens),
-			OutputTokens: int64(result.Usage.OutputTokens),
-			FinishReason: result.StopReason,
-		}
-		if sUsage != nil {
-			truncUsage.ProviderCostUSD = sUsage.ProviderCostUSD
-			truncUsage.HasProviderCost = sUsage.HasProviderCost
-		}
-		if text == "" {
-			return "", truncUsage, &IncompleteReplyError{Length: true, Msg: fmt.Sprintf("oracle hit max_tokens before emitting any text%s", remediation)}
-		}
-		return "", truncUsage, &IncompleteReplyError{Length: true, Msg: fmt.Sprintf("oracle response truncated at max_tokens (%d chars received)%s", len(text), remediation)}
-	}
-	// Mid-stream error (overloaded_error, etc.).
-	if result.StopReason == "error" {
-		errMsg := "provider error"
-		if sUsage != nil && sUsage.ErrorMsg != "" {
-			errMsg = sUsage.ErrorMsg
-		}
-		billed := OracleUsage{InputTokens: int64(result.Usage.InputTokens), OutputTokens: int64(result.Usage.OutputTokens), FinishReason: result.StopReason}
-		if sUsage != nil {
-			billed.ProviderCostUSD = sUsage.ProviderCostUSD
-			billed.HasProviderCost = sUsage.HasProviderCost
-		}
-		return "", billed, fmt.Errorf("anthropic: %s", errMsg)
-	}
-
-	billed := OracleUsage{InputTokens: int64(result.Usage.InputTokens), OutputTokens: int64(result.Usage.OutputTokens), FinishReason: result.StopReason}
-	if sUsage != nil {
-		billed.ProviderCostUSD = sUsage.ProviderCostUSD
-		billed.HasProviderCost = sUsage.HasProviderCost
-	}
-	if text == "" {
-		return "", billed, &IncompleteReplyError{Msg: fmt.Sprintf("oracle response is empty (stop_reason=%q)", result.StopReason)}
-	}
-
-	usage := OracleUsage{
-		InputTokens:  int64(result.Usage.InputTokens),
-		OutputTokens: int64(result.Usage.OutputTokens),
-		FinishReason: result.StopReason,
-	}
-	if sUsage != nil {
-		usage.ProviderCostUSD = sUsage.ProviderCostUSD
-		usage.HasProviderCost = sUsage.HasProviderCost
-	}
-	return text, usage, nil
-}
-
 // OracleDetail builds the human-readable detail shown in the confirm-gate
 // prompt. The full payload (model + question + context) is shown, but truncated
 // at ~2000 display chars with a "(+N chars)" suffix — the actual HTTP call uses
@@ -500,11 +148,13 @@ func OracleDetail(model, question, oracleCtx string) string {
 // ── Multi-model panel support ─────────────────────────────────────────────────
 
 // PanelCallConfig carries per-call parameters shared by all providers in a panel.
+// All members route through OpenRouter; the transport is the single
+// internal/proxy transport, which applies the data policy.
 type PanelCallConfig struct {
 	MaxTokens          int
 	TimeoutSeconds     int    // 0 → counselStreamTotalCap (30min) default
-	AnthropicEndpoint  string // "" = production; override in tests
 	OpenRouterEndpoint string // "" = "https://openrouter.ai/api/v1/chat/completions"
+	Transport          *proxy.Client
 	FusionJudge        string // fusion mode: judge model; "" = OpenRouter default
 	FusionMaxToolCalls int    // fusion mode: tool-call steps per model (1–16); 0 = default (8)
 
@@ -622,15 +272,14 @@ func notifyMemberEvent(ccfg PanelCallConfig, ev PanelMemberEvent) {
 	ccfg.OnMemberEvent(ev)
 }
 
-const openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
-
 // ParseModelPrefix splits "provider:model-id" into provider and model.
-// A bare name without a colon defaults to the "anthropic" provider.
+// A bare name without a colon defaults to the "openrouter" provider (the
+// only transport since the direct Anthropic path was removed).
 func ParseModelPrefix(s string) (provider, model string) {
 	if i := strings.IndexByte(s, ':'); i >= 0 {
 		return s[:i], s[i+1:]
 	}
-	return "anthropic", s
+	return "openrouter", s
 }
 
 // PanelMemberResult holds one panel member's outcome.
@@ -946,46 +595,106 @@ func buildCritiqueAppendix(successes []debateRound1Result) string {
 	return sb.String()
 }
 
-// callMember dispatches a single consultation to the right provider.
+// callMember dispatches a single consultation. Every member goes through
+// OpenRouter: an "anthropic:<id>" member is mapped mechanically to the slug
+// "anthropic/<id>"; a bare id or an "openrouter:<id>" member passes through.
+// prov is kept for the call sites that resolve it via ParseModelPrefix;
+// anything that is not "anthropic" or "openrouter" fails closed.
 func callMember(ctx context.Context, prov, model, question, briefing, appendix string, ccfg PanelCallConfig, apiKeys map[string]string) (string, OracleUsage, error) {
-	key := apiKeys[prov]
+	var slug string
+	var ok bool
 	switch prov {
-	case "anthropic":
-		return callAnthropic(ctx, model, key, question, briefing, appendix, ccfg)
-	case "openrouter":
-		return callOpenRouter(ctx, model, key, question, briefing, appendix, ccfg)
+	case "anthropic", "openrouter":
+		slug, ok = config.OpenRouterSlug(prov + ":" + model)
 	default:
 		return "", OracleUsage{}, fmt.Errorf("unknown provider %q", prov)
 	}
+	if !ok {
+		return "", OracleUsage{}, fmt.Errorf("unknown provider %q", prov)
+	}
+	key := apiKeys["openrouter"]
+	if key == "" {
+		// Members that were configured against a direct Anthropic key keep
+		// reading it from the openrouter slot (mashuraPanelKeys maps both
+		// onto the OpenRouter key); a missing key here is a wiring error.
+		key = apiKeys[prov]
+	}
+	return callOpenRouter(ctx, slug, key, question, briefing, appendix, ccfg)
 }
 
-// callAnthropic wraps the existing Anthropic path with a synthetic config.
-// question is the raw question (+ part framing), briefing is the part text
-// (no appendix), appendix is the debate round-2 material ("" in round 1).
-// Single-string path builds the skeleton exactly as dispatch did before.
-// Debate cache path (UseCache, briefing >= 1024 tokens): block 0 is the
-// briefing alone with an ephemeral cache marker (stable R1/R2), block 1 is
-// the skeleton rebuilt with appendix-only material (question + format side).
-func callAnthropic(ctx context.Context, model, apiKey, question, briefing, appendix string, ccfg PanelCallConfig) (string, OracleUsage, error) {
-	synCfg := config.Config{
-		OracleModel:          model,
-		OracleMaxTokens:      ccfg.MaxTokens,
-		OracleTimeoutSeconds: ccfg.TimeoutSeconds,
-		OracleEndpoint:       ccfg.AnthropicEndpoint,
-	}
-	endpoint := oracleEndpoint
-	if synCfg.OracleEndpoint != "" {
-		endpoint = synCfg.OracleEndpoint
-	}
-	if ccfg.UseCache && estTokens(len(briefing)) >= 1024 {
-		blocks := []oracleContentBlock{
-			{Type: "text", Text: briefing, CacheControl: &oracleCacheControl{Type: "ephemeral"}},
-			{Type: "text", Text: buildUserMessage(appendix, question)},
+// callOpenRouter sends a consultation via OpenRouter (the only transport).
+// question is the raw question, briefing the part text, appendix the debate
+// material. When ccfg.ServerTools is non-empty, OpenRouter server-side tools
+// (web_search, web_fetch, etc.) are enabled — the model decides when to call
+// them, OpenRouter executes server-side, and the final text is returned.
+func callOpenRouter(ctx context.Context, model, apiKey, question, briefing, appendix string, ccfg PanelCallConfig) (string, OracleUsage, error) {
+	// Skeleton path (byte-identical to dispatch's former buildUserMessage):
+	// question is the raw question, briefing the part text, appendix the
+	// debate material. Direct test callers passing a plain briefing get the
+	// same skeleton with that briefing as the material.
+	userContent := buildUserMessage(briefing+appendix, question)
+
+	maxTokens := ccfg.MaxTokens
+	var reasoning *config.ReasoningSpec
+	if ccfg.Reasoning != nil && !ccfg.Reasoning.IsZero() {
+		// "off"/"none" effort means omit reasoning entirely — do not send
+		// the reasoning parameter or add a budget to max_tokens.
+		if ccfg.Reasoning.Effort != "off" && ccfg.Reasoning.Effort != "none" {
+			budget := config.ReasoningBudgetFor(ccfg.Reasoning)
+			if budget > 0 {
+				maxTokens = budget + maxTokens
+			}
+			// OpenRouter rejects requests that specify both reasoning.effort
+			// and reasoning.max_tokens (HTTP 400). When a numeric budget
+			// exists (MaxTokens > 0), send only reasoning.max_tokens. When
+			// only Effort is set (MaxTokens == 0), send only reasoning.effort.
+			// Never send both.
+			if ccfg.Reasoning.MaxTokens > 0 {
+				reasoning = &config.ReasoningSpec{MaxTokens: ccfg.Reasoning.MaxTokens}
+			} else {
+				reasoning = &config.ReasoningSpec{Effort: ccfg.Reasoning.Effort}
+			}
 		}
-		return callOracleWithContent(ctx, synCfg, apiKey, oracleBlocksContent(blocks), endpoint, ccfg.Reasoning)
 	}
-	userMsg := buildUserMessage(briefing+appendix, question)
-	return callOracleWithContent(ctx, synCfg, apiKey, oracleTextContent(userMsg), endpoint, ccfg.Reasoning)
+
+	req := orReq{
+		Model:     model,
+		MaxTokens: maxTokens,
+		Messages: []orMsg{
+			{Role: "system", Content: oracleSystemPrompt},
+			{Role: "user", Content: userContent},
+		},
+		Reasoning:     reasoning,
+		Stream:        true,
+		StreamOptions: &orStreamOptions{IncludeUsage: true},
+	}
+	if ccfg.UseCache {
+		if ccfg.SessionID != "" {
+			req.SessionID = ccfg.SessionID
+		} else if ccfg.OperationID != "" {
+			req.SessionID = ccfg.OperationID + "/" + model
+		}
+	}
+
+	// Wire server-side tools when configured. OpenRouter executes these
+	// server-side; the model decides when to call them.
+	if len(ccfg.ServerTools) > 0 {
+		for _, toolType := range ccfg.ServerTools {
+			tool := orServerTool{Type: toolType}
+			// web_search supports an engine parameter.
+			if toolType == "openrouter:web_search" && ccfg.WebSearchEngine != "" {
+				tool.Parameters = map[string]interface{}{
+					"engine": ccfg.WebSearchEngine,
+				}
+			}
+			req.Tools = append(req.Tools, tool)
+		}
+		if ccfg.ServerToolMaxCalls > 0 {
+			req.MaxToolCalls = ccfg.ServerToolMaxCalls
+		}
+	}
+
+	return orChat(ctx, req, apiKey, "openrouter", ccfg)
 }
 
 // orFusionPlugin is the "fusion" plugin block sent in the OpenRouter request.
@@ -1061,83 +770,6 @@ type orResp struct {
 	} `json:"error"`
 }
 
-// orSSEChunk is the SSE streaming chunk for OpenRouter (OpenAI chat.completions).
-type orSSEChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			Reasoning        string `json:"reasoning"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage *struct {
-		PromptTokens            int `json:"prompt_tokens"`
-		CompletionTokens        int `json:"completion_tokens"`
-		CompletionTokensDetails *struct {
-			ReasoningTokens int `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details,omitempty"`
-		ServerToolUse *struct {
-			WebSearchRequests int `json:"web_search_requests"`
-		} `json:"server_tool_use,omitempty"`
-		Cost *float64 `json:"cost"`
-	} `json:"usage"`
-	// Model is the served model, reported on every chunk by OpenRouter.
-	Model string `json:"model"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// parseOpenRouterSSE parses one OpenRouter SSE data line and returns the text
-// content, usage (when available), and whether the stream is done.
-func parseOpenRouterSSE(data []byte) (string, *streamUsage, bool) {
-	var chunk orSSEChunk
-	if err := json.Unmarshal(data, &chunk); err != nil {
-		return "", nil, false
-	}
-	var content string
-	var finishReason string
-	if len(chunk.Choices) > 0 {
-		c := chunk.Choices[0]
-		content = c.Delta.Content
-		finishReason = c.FinishReason
-	}
-	var u *streamUsage
-	if chunk.Usage != nil {
-		u = &streamUsage{
-			InputTokens:  int64(chunk.Usage.PromptTokens),
-			OutputTokens: int64(chunk.Usage.CompletionTokens),
-			FinishReason: finishReason,
-		}
-		if chunk.Usage.CompletionTokensDetails != nil {
-			u.ReasoningTokens = int64(chunk.Usage.CompletionTokensDetails.ReasoningTokens)
-		}
-		if chunk.Usage.ServerToolUse != nil {
-			u.WebSearchRequests = int64(chunk.Usage.ServerToolUse.WebSearchRequests)
-		}
-		if chunk.Usage.Cost != nil {
-			u.ProviderCostUSD = *chunk.Usage.Cost
-			u.HasProviderCost = true
-		}
-	} else if finishReason != "" {
-		u = &streamUsage{FinishReason: finishReason}
-	}
-	if chunk.Model != "" {
-		if u == nil {
-			u = &streamUsage{}
-		}
-		u.ServedModel = chunk.Model
-	}
-	if chunk.Error != nil {
-		// Mid-stream error — return as an error finish reason with the message.
-		return "", &streamUsage{FinishReason: "error", ErrorMsg: chunk.Error.Message}, true
-	}
-	// Don't stop on finish_reason — the usage chunk may follow. Only [DONE]
-	// (handled by streamRequest) ends the stream.
-	return content, u, false
-}
-
 // orRespMessage tolerantly decodes the response message — content may be a
 // string, null, or an array of content parts (when server tools are used).
 type orRespMessage struct {
@@ -1193,81 +825,6 @@ func (m *orRespMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// callOpenRouter sends a consultation to https://openrouter.ai/api/v1 using the
-// OpenAI-compatible chat completions format. When ccfg.ServerTools is non-empty,
-// OpenRouter server-side tools (web_search, web_fetch, etc.) are enabled — the
-// model decides when to call them, OpenRouter executes server-side, and the
-// final text is returned.
-func callOpenRouter(ctx context.Context, model, apiKey, question, briefing, appendix string, ccfg PanelCallConfig) (string, OracleUsage, error) {
-	// Skeleton path (byte-identical to dispatch's former buildUserMessage):
-	// question is the raw question, briefing the part text, appendix the
-	// debate material. Direct test callers passing a plain briefing get the
-	// same skeleton with that briefing as the material.
-	userContent := buildUserMessage(briefing+appendix, question)
-
-	maxTokens := ccfg.MaxTokens
-	var reasoning *config.ReasoningSpec
-	if ccfg.Reasoning != nil && !ccfg.Reasoning.IsZero() {
-		// "off"/"none" effort means omit reasoning entirely — do not send
-		// the reasoning parameter or add a budget to max_tokens.
-		if ccfg.Reasoning.Effort != "off" && ccfg.Reasoning.Effort != "none" {
-			budget := config.ReasoningBudgetFor(ccfg.Reasoning)
-			if budget > 0 {
-				maxTokens = budget + maxTokens
-			}
-			// OpenRouter rejects requests that specify both reasoning.effort
-			// and reasoning.max_tokens (HTTP 400). When a numeric budget
-			// exists (MaxTokens > 0), send only reasoning.max_tokens. When
-			// only Effort is set (MaxTokens == 0), send only reasoning.effort.
-			// Never send both.
-			if ccfg.Reasoning.MaxTokens > 0 {
-				reasoning = &config.ReasoningSpec{MaxTokens: ccfg.Reasoning.MaxTokens}
-			} else {
-				reasoning = &config.ReasoningSpec{Effort: ccfg.Reasoning.Effort}
-			}
-		}
-	}
-
-	req := orReq{
-		Model:     model,
-		MaxTokens: maxTokens,
-		Messages: []orMsg{
-			{Role: "system", Content: oracleSystemPrompt},
-			{Role: "user", Content: userContent},
-		},
-		Reasoning:     reasoning,
-		Stream:        true,
-		StreamOptions: &orStreamOptions{IncludeUsage: true},
-	}
-	if ccfg.UseCache {
-		if ccfg.SessionID != "" {
-			req.SessionID = ccfg.SessionID
-		} else if ccfg.OperationID != "" {
-			req.SessionID = ccfg.OperationID + "/" + model
-		}
-	}
-
-	// Wire server-side tools when configured. OpenRouter executes these
-	// server-side; the model decides when to call them.
-	if len(ccfg.ServerTools) > 0 {
-		for _, toolType := range ccfg.ServerTools {
-			tool := orServerTool{Type: toolType}
-			// web_search supports an engine parameter.
-			if toolType == "openrouter:web_search" && ccfg.WebSearchEngine != "" {
-				tool.Parameters = map[string]interface{}{
-					"engine": ccfg.WebSearchEngine,
-				}
-			}
-			req.Tools = append(req.Tools, tool)
-		}
-		if ccfg.ServerToolMaxCalls > 0 {
-			req.MaxToolCalls = ccfg.ServerToolMaxCalls
-		}
-	}
-
-	return orChat(ctx, req, apiKey, "openrouter", ccfg)
-}
-
 // callFusion sends a single OpenRouter Fusion request. analysisModels are sent
 // as "analysis_models" in the plugin block; OpenRouter runs them in parallel
 // and the judge synthesizes their responses. Returns the judge's analysis text.
@@ -1300,13 +857,29 @@ func callFusion(ctx context.Context, analysisModels []string, apiKey, question, 
 }
 
 // orChat is the shared OpenRouter HTTP + response-parsing helper used by both
-// callOpenRouter and callFusion. It streams the response via SSE with an idle
-// timeout (120s) + total cap (30min), replacing the 300s total timeout. A
-// length stop still goes through the truncation/VOID path.
+// callOpenRouter and callFusion. It marshals the request and sends it through
+// the single transport (proxy.Exec), which streams the response via SSE with
+// an idle timeout (120s) + total cap (30min). A length stop still goes
+// through the truncation/VOID path.
 func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCallConfig) (string, OracleUsage, error) {
-	endpoint := openRouterEndpoint
+	endpoint := chatModelEndpoint
 	if ccfg.OpenRouterEndpoint != "" {
 		endpoint = ccfg.OpenRouterEndpoint
+	}
+	// Test seam: when the injected transport client targets the test server
+	// directly (its BaseURL is the server URL, not an OpenRouter origin),
+	// that BaseURL is the endpoint. Production clients carry the OpenRouter
+	// origin, so the endpoint stays the production chat URL and only the
+	// policy (which classifies the origin) decides host rewriting.
+	if ccfg.Transport != nil && ccfg.Transport.BaseURL != "" && ccfg.OpenRouterEndpoint == "" {
+		endpoint = ccfg.Transport.BaseURL
+	}
+
+	// Test seam: an injected transport client targeting a test server is
+	// used verbatim (its BaseURL is the test URL); the policy it carries is
+	// the test's policy (defaults off).
+	if ccfg.Transport != nil && ccfg.Transport.BaseURL != "" && ccfg.OpenRouterEndpoint == "" {
+		endpoint = ccfg.Transport.BaseURL
 	}
 
 	// Ensure streaming is enabled.
@@ -1323,57 +896,89 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 	}
 
 	capture := newPanelCapture(label, body)
-	content, sUsage, status, err := streamRequest(withPanelCapture(ctx, capture), endpoint, map[string]string{
-		"Authorization": "Bearer " + apiKey,
-	}, body, counselStreamIdleTimeout, timeout, parseOpenRouterSSE)
+
+	client := ccfg.Transport
+	if client == nil {
+		client = transportClient
+	}
+
+	// The transport is the single seam: its BaseURL's host is what the data
+	// policy classifies. In production the session client carries the
+	// OpenRouter origin; in tests the injected client targets the httptest
+	// server (whose host classifies local, so both switches off keep the
+	// wire bytes identical).
+	chatReq := proxy.ChatRequest{
+		BaseURL:      endpoint,
+		Model:        req.Model,
+		Body:         body,
+		Headers:      map[string]string{"Authorization": "Bearer " + apiKey},
+		IdleTimeout:  counselStreamIdleTimeout,
+		TotalTimeout: timeout,
+		Observe:      nil,
+	}
 	if capture != nil {
-		served := ""
-		if sUsage != nil {
-			served = sUsage.ServedModel
+		chatReq.Observe = capture.observe
+	}
+
+	// Keep the capture's request body honest: SentBody is what was actually
+	// sent after the data policy ran.
+	res, err := client.Exec(ctx, chatReq)
+	if capture != nil {
+		if len(res.SentBody) > 0 {
+			capture.withSentBody(res.SentBody)
 		}
-		capture.write(status, served, err)
+		served := res.Usage.ServedModel
+		if served == "" {
+			served = capture.served
+		}
+		st := res.StatusCode
+		if st == 0 && err == nil {
+			st = http.StatusOK
+		}
+		capture.write(st, served, err)
 	}
 	if err != nil {
 		// Preserve partial usage from the stream even on error — the
 		// provider bills for tokens already generated before the failure.
-		var partial OracleUsage
-		if sUsage != nil {
-			partial.InputTokens = sUsage.InputTokens
-			partial.OutputTokens = sUsage.OutputTokens
-			partial.ReasoningTokens = sUsage.ReasoningTokens
-			partial.WebSearchRequests = sUsage.WebSearchRequests
-			partial.FinishReason = sUsage.FinishReason
-			partial.ProviderCostUSD = sUsage.ProviderCostUSD
-			partial.HasProviderCost = sUsage.HasProviderCost
-			partial.ServedModel = sUsage.ServedModel
+		partial := OracleUsage{
+			InputTokens:     res.Usage.InputTok,
+			OutputTokens:    res.Usage.OutputTok,
+			ReasoningTokens: res.Usage.ReasoningTok,
+			FinishReason:    res.FinishReason,
+			ProviderCostUSD: res.Usage.ProviderCostUSD,
+			HasProviderCost: res.Usage.HasProviderCost,
+			ServedModel:     res.Usage.ServedModel,
+		}
+		var hsErr *proxy.HTTPStatusError
+		if errors.As(err, &hsErr) {
+			// Non-200: the transport already read the body; parse it as an error.
+			var apiErr orResp
+			msg := ""
+			if json.Unmarshal([]byte(hsErr.Body), &apiErr) == nil && apiErr.Error != nil {
+				msg = apiErr.Error.Message
+			}
+			return "", OracleUsage{}, &ProviderHTTPError{Label: label, Status: hsErr.StatusCode, Msg: msg}
+		}
+		var pref *proxy.PolicyRefusedError
+		if errors.As(err, &pref) {
+			return "", OracleUsage{}, pref.Err
 		}
 		return "", partial, err
 	}
 
-	if status != http.StatusOK {
-		// Non-200: the streamRequest already read the body; parse it as an error.
-		var apiErr orResp
-		msg := ""
-		if json.Unmarshal([]byte(content), &apiErr) == nil && apiErr.Error != nil {
-			msg = apiErr.Error.Message
-		}
-		return "", OracleUsage{}, &ProviderHTTPError{Label: label, Status: status, Msg: msg}
-	}
-
-	// Build usage from the streamed data.
+	// Build usage from the streamed data. UsageStat already carries the
+	// provider-reported cost, the raw token counts, and the served model.
 	var usage OracleUsage
-	if sUsage != nil {
-		usage.InputTokens = sUsage.InputTokens
-		usage.OutputTokens = sUsage.OutputTokens
-		usage.ReasoningTokens = sUsage.ReasoningTokens
-		usage.WebSearchRequests = sUsage.WebSearchRequests
-		usage.FinishReason = sUsage.FinishReason
-		usage.ProviderCostUSD = sUsage.ProviderCostUSD
-		usage.HasProviderCost = sUsage.HasProviderCost
-		usage.ServedModel = sUsage.ServedModel
-	}
+	usage.InputTokens = res.Usage.InputTok
+	usage.OutputTokens = res.Usage.OutputTok
+	usage.ReasoningTokens = res.Usage.ReasoningTok
+	usage.WebSearchRequests = res.Usage.WebSearchRequests
+	usage.FinishReason = res.FinishReason
+	usage.ProviderCostUSD = res.Usage.ProviderCostUSD
+	usage.HasProviderCost = res.Usage.HasProviderCost
+	usage.ServedModel = res.Usage.ServedModel
 
-	text := strings.TrimSpace(content)
+	text := strings.TrimSpace(res.Content)
 	if usage.FinishReason == "length" {
 		return "", usage, &IncompleteReplyError{Length: true, Msg: fmt.Sprintf("%s: response truncated at max_tokens; raise max_tokens to avoid truncation", label)}
 	}
@@ -1381,11 +986,7 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 		return "", usage, fmt.Errorf("%s: response ended with tool_calls (no final text answer)", label)
 	}
 	if usage.FinishReason == "error" {
-		msg := "provider error"
-		if sUsage != nil && sUsage.ErrorMsg != "" {
-			msg = sUsage.ErrorMsg
-		}
-		return "", usage, fmt.Errorf("%s: %s", label, msg)
+		return "", usage, fmt.Errorf("%s: provider error", label)
 	}
 	if text == "" {
 		return "", usage, &IncompleteReplyError{Msg: fmt.Sprintf("%s: empty response content", label)}

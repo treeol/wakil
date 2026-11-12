@@ -19,6 +19,11 @@ import (
 	"github.com/treeol/wakil/internal/workflow"
 )
 
+// counselTestTransport builds the single transport for a test server.
+func counselTestTransport(srv *httptest.Server) *proxy.Client {
+	return &proxy.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+}
+
 // --- unit tests: pure workflow logic ---
 
 func TestCountPlanSteps(t *testing.T) {
@@ -404,6 +409,7 @@ func TestReviewOracleCallFailure(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "WAKIL_TEST_ORACLE_KEY"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
 	app.Cfg.OracleModel = "test-model"
 	t.Setenv("WAKIL_TEST_ORACLE_KEY", "fake-key")
 
@@ -466,7 +472,9 @@ func TestWorkflowStepFailure(t *testing.T) {
 	})
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "WAKIL_TEST_ORACLE_KEY"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
 	t.Setenv("WAKIL_TEST_ORACLE_KEY", "fake-key-for-test")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key-for-test")
 
 	planContent := "## Task\n\nmy task\n\n## Plan\n\n1. step one\n2. step two\n\n" +
 		"## Step log\n\nStep 1: attempt | outcome: fail | deviation: none"
@@ -683,6 +691,8 @@ func TestImplementDirectiveNoStepLogWrite(t *testing.T) {
 
 // TestOracleEmptyResponseRoutesUnavailable verifies that an empty/whitespace-only
 // oracle text response routes through the unavailable path (ok=false from doWFOracle).
+// The direct Anthropic path is gone; this now exercises the OpenRouter member
+// path through counsel.RunPanel with an SSE server.
 func TestOracleEmptyResponseRoutesUnavailable(t *testing.T) {
 	// Oracle server that returns a valid HTTP 200 with no text blocks.
 	srv := sseServer(t, []string{contentChunk("plan written\n" + workflow.WFPhaseDone)})
@@ -705,47 +715,50 @@ func TestOracleEmptyResponseRoutesUnavailable(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "WAKIL_TEST_ORACLE_KEY"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
 	app.Cfg.OracleModel = "test"
 	t.Setenv("WAKIL_TEST_ORACLE_KEY", "fake")
 
-	// Patch callOracle to use our fake server.
-	// We can't easily patch callOracle, so test doWFOracle indirectly via
-	// the transition logic. Instead, test counsel.CallOracleURL directly.
-	_, _, err := counsel.CallOracleURL(context.Background(), app.Cfg, "fake", "question", "", oracleSrv.URL+"/v1/messages")
-	if err == nil {
-		t.Error("expected error for whitespace-only oracle response")
+	// The direct Anthropic path is gone; the OpenRouter member path goes
+	// through counsel.RunPanel. An empty reply is VOID there.
+	_ = app
+	results := counsel.RunPanel(context.Background(), []string{"openrouter:test"}, "panel", "q", "brief", counsel.PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: counselTestTransport(oracleSrv)}, map[string]string{"openrouter": "fake"})
+	found := false
+	for _, r := range results {
+		if r.Void || r.Err != nil {
+			found = true
+		}
 	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("wrong error: %v", err)
+	if !found {
+		t.Error("expected VOID/error for whitespace-only oracle response")
 	}
 }
 
 // TestOracleNoTextBlocks verifies no-text-block responses produce an error.
+// The direct Anthropic path is gone; this now exercises the OpenRouter member
+// path, where a length stop is an IncompleteReplyError mentioning max_tokens.
 func TestOracleNoTextBlocks(t *testing.T) {
 	oracleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		// Only a thinking block, hit max_tokens (no text delta emitted).
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":50}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		// No text delta, finish_reason=length.
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":50}}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer oracleSrv.Close()
 
-	cfg := config.DefaultConfig()
-	cfg.OracleModel = "test"
-	_, _, err := counsel.CallOracleURL(context.Background(), cfg, "key", "q", "", oracleSrv.URL+"/v1/messages")
-	if err == nil {
-		t.Fatal("expected error for thinking-only + max_tokens response")
+	results := counsel.RunPanel(context.Background(), []string{"openrouter:test"}, "panel", "q", "brief", counsel.PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: counselTestTransport(oracleSrv)}, map[string]string{"openrouter": "key"})
+	if len(results) == 0 || results[0].Err == nil {
+		t.Fatal("expected error for no-text + length response")
 	}
-	if !strings.Contains(err.Error(), "max_tokens") {
-		t.Errorf("error should mention max_tokens, got: %v", err)
+	if !strings.Contains(results[0].Err.Error(), "max_tokens") {
+		t.Errorf("error should mention max_tokens, got: %v", results[0].Err)
 	}
 }
 
-// TestOracleTimeoutConfigFlowsThrough: oracle_timeout_seconds in config is
-// applied as the context deadline inside counsel.CallOracleURL. We set a 1s timeout
-// and point the call at a server that stalls — the call must return a
-// deadline error well within the test's own budget.
+// TestOracleTimeoutConfigFlowsThrough: the panel timeout config is applied
+// as the context deadline inside counsel.RunPanel (via the transport). We set
+// a 1s timeout and point the call at a server that stalls — the call must
+// return a deadline error well within the test's own budget.
 func TestOracleTimeoutConfigFlowsThrough(t *testing.T) {
 	// done is closed before slow.Close() so the handler goroutine can exit
 	// promptly; httptest.Server.Close() would otherwise hang waiting for it.
@@ -761,20 +774,17 @@ func TestOracleTimeoutConfigFlowsThrough(t *testing.T) {
 		slow.Close()
 	}()
 
-	cfg := config.DefaultConfig()
-	cfg.OracleModel = "test"
-	cfg.OracleTimeoutSeconds = 1 // 1-second deadline
-
 	start := time.Now()
-	_, _, err := counsel.CallOracleURL(context.Background(), cfg, "key", "q", "", slow.URL+"/v1/messages")
+	results := counsel.RunPanel(context.Background(), []string{"openrouter:test"}, "panel", "q", "brief", counsel.PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 1, Transport: counselTestTransport(slow)}, map[string]string{"openrouter": "key"})
 	elapsed := time.Since(start)
 
-	if err == nil {
+	if len(results) == 0 || results[0].Err == nil {
 		t.Fatal("expected timeout error")
 	}
 	if elapsed > 10*time.Second {
 		t.Errorf("call took too long (%v); timeout not applied", elapsed)
 	}
+	err := results[0].Err
 	if !strings.Contains(err.Error(), "context") && !strings.Contains(err.Error(), "deadline") &&
 		!strings.Contains(err.Error(), "canceled") && !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("expected timeout/deadline error, got: %v", err)
@@ -853,6 +863,7 @@ func TestAutoModeGatesDestructiveShell(t *testing.T) {
 // ---- P13e tests ----
 
 // oracleServer builds a test HTTP server that returns the given oracle text.
+// It answers in the OpenRouter SSE shape the single transport reads.
 func oracleServer(t *testing.T, text string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -861,13 +872,20 @@ func oracleServer(t *testing.T, text string) *httptest.Server {
 		cited := text + "\nLAST SECTION READ: Question"
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", cited)
-		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": cited}, "finish_reason": nil}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": "stop"}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(t, map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20}}))
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
+}
+
+func mustJSONChunk(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 // wfImplementApp builds a test App already inside IMPLEMENT with N steps.
@@ -899,9 +917,11 @@ func TestFinalReviewFiresAfterLastStep(t *testing.T) {
 	app := wfImplementApp(t, srv.URL, 2)
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	ctx := context.Background()
 	if _, err := app.Send(ctx, "continue"); err != nil {
@@ -930,9 +950,11 @@ func TestFinalReviewFlaggedGapsKeepsWorkflowOpen(t *testing.T) {
 	app := wfImplementApp(t, srv.URL, 2)
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	ctx := context.Background()
 	if _, err := app.Send(ctx, "continue"); err != nil {
@@ -1072,9 +1094,11 @@ func TestEverystepOracleCalledPerStep(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = false // isolate every-step from final review
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	app.Workflow = &workflow.WorkflowState{
 		Task:       "t",
@@ -1160,11 +1184,11 @@ func TestRemediationTurnRetriggersVerification(t *testing.T) {
 			verdict = "VERDICT: GAPS"
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		txt, _ := json.Marshal("Remediation complete.\n" + verdict + "\nLAST SECTION READ: Question")
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%s}}\n\n", string(txt))
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		answer := "Remediation complete.\n" + verdict + "\nLAST SECTION READ: Question"
+		fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": answer}, "finish_reason": nil}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(t, map[string]any{"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": "stop"}}}))
+		fmt.Fprintf(w, "data: %s\n\n", mustJSONChunk(t, map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20}}))
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer oracleSrv.Close()
 
@@ -1179,9 +1203,11 @@ func TestRemediationTurnRetriggersVerification(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 	app.Workflow = &workflow.WorkflowState{
 		Task: "t", Phase: workflow.WFImplement,
 		PlanPath: ".wakil/plan.md", StepCount: 1, StepIdx: 1,
@@ -1328,9 +1354,11 @@ func TestCwdChangedMidWorkflowBriefingComplete(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	// Use handlePlanCommand to set an absolute PlanPath.
 	fields := strings.Fields("/plan write unit tests for foo")
@@ -1408,9 +1436,11 @@ func TestFailedPlanReadRoutesUnavailable(t *testing.T) {
 	})
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	agent.HandleFinalReview(context.Background(), app)
 
@@ -1869,9 +1899,11 @@ func TestRemediationEvidenceAppendsToStepLog(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	app.Workflow = &workflow.WorkflowState{
 		Task:      "fix auth",
@@ -2077,9 +2109,11 @@ func TestRunHeadlessDefaultInvokesOracle(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = false
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	// Start at workflow.WFReview so the oracle is invoked in the first loop iteration.
 	app.Workflow = &workflow.WorkflowState{
@@ -2129,9 +2163,11 @@ func TestRunHeadlessNoOracleFlag(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true // would be used if --no-oracle weren't set
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	app.Cfg.WFFinalReview = false
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	flags := RunFlags{Auto: true, NoOracle: true}
 	// --no-oracle disables oracle before the loop.
@@ -2831,8 +2867,10 @@ func TestReReviewClearsStaleFlag(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	app.Workflow = &workflow.WorkflowState{
 		Task:              "t",
@@ -2880,8 +2918,10 @@ func TestAutoModeAdvancesPastSuccessfulReview(t *testing.T) {
 	app.SetAutoApprove(true)
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	app.Workflow = &workflow.WorkflowState{
 		Task:      "t",
@@ -2954,8 +2994,10 @@ func TestAutoModeStopsAtZeroStepPlan(t *testing.T) {
 	app.SetAutoApprove(true)
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	app.Workflow = &workflow.WorkflowState{
 		Task:      "t",
@@ -2991,8 +3033,10 @@ func TestPlanReviewFromPresent(t *testing.T) {
 	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	t.Setenv("TEST_KEY", "fake-key")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
 	app.Workflow = &workflow.WorkflowState{
 		Task:              "t",
@@ -3079,57 +3123,51 @@ func TestHashPlanSection(t *testing.T) {
 
 // ---- P13c item 4 tests ----
 
-// TestOracleMaxTokensThinkingError: stop_reason=max_tokens + thinking block +
-// whitespace text must surface the max_tokens error (not empty-response), include
-// the thinking hint, and the caller receives ok=false.
+// TestOracleMaxTokensThinkingError: finish_reason=length with whitespace text
+// must surface the max_tokens error (not empty-response). The direct Anthropic
+// path is gone; this now exercises the OpenRouter member path.
 func TestOracleMaxTokensThinkingError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		// thinking block present, text block is whitespace-only, stop_reason=max_tokens
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"   \"}}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":50}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		// Whitespace text, finish_reason=length.
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"   \"},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":50}}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
-	cfg := config.DefaultConfig()
-	cfg.OracleModel = "test"
-	_, _, err := counsel.CallOracleURL(context.Background(), cfg, "key", "q", "", srv.URL+"/v1/messages")
-	if err == nil {
+	results := counsel.RunPanel(context.Background(), []string{"openrouter:test"}, "panel", "q", "brief", counsel.PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: counselTestTransport(srv)}, map[string]string{"openrouter": "key"})
+	if len(results) == 0 || results[0].Err == nil {
 		t.Fatal("expected error")
 	}
-	msg := err.Error()
+	msg := results[0].Err.Error()
 	// Must be the max_tokens path, not "empty or whitespace-only".
 	if strings.Contains(msg, "empty or whitespace") {
-		t.Errorf("wrong error: whitespace path won instead of max_tokens path: %v", err)
+		t.Errorf("wrong error: whitespace path won instead of max_tokens path: %v", results[0].Err)
 	}
 	if !strings.Contains(msg, "max_tokens") {
-		t.Errorf("error should mention max_tokens, got: %v", err)
+		t.Errorf("error should mention max_tokens, got: %v", results[0].Err)
 	}
 }
 
-// TestOracleTruncatedTextRoutesUnavailable: stop_reason=max_tokens + non-empty
+// TestOracleTruncatedTextRoutesUnavailable: finish_reason=length with non-empty
 // text must return an error (not succeed), and error must mention "truncated".
 func TestOracleTruncatedTextRoutesUnavailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		// Partial non-empty text, stop_reason=max_tokens.
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"This answer was cut off mid-senten\"}}\n\n")
-		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":20}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		// Partial non-empty text, finish_reason=length.
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"This answer was cut off mid-senten\"},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
-	cfg := config.DefaultConfig()
-	cfg.OracleModel = "test"
-	_, _, err := counsel.CallOracleURL(context.Background(), cfg, "key", "q", "", srv.URL+"/v1/messages")
-	if err == nil {
+	results := counsel.RunPanel(context.Background(), []string{"openrouter:test"}, "panel", "q", "brief", counsel.PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: counselTestTransport(srv)}, map[string]string{"openrouter": "key"})
+	if len(results) == 0 || results[0].Err == nil {
 		t.Fatal("expected error for truncated oracle response")
 	}
-	if !strings.Contains(err.Error(), "truncated") {
-		t.Errorf("error should mention 'truncated', got: %v", err)
+	// A length stop is an IncompleteReplyError mentioning max_tokens; the
+	// dispatcher never merges the partial text.
+	if !strings.Contains(results[0].Err.Error(), "max_tokens") {
+		t.Errorf("error should mention max_tokens, got: %v", results[0].Err)
 	}
 }
 
@@ -3477,8 +3515,10 @@ func TestReviewRetryOnTurnCompletion(t *testing.T) {
 	})
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL + "/v1/messages"
+	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
+	app.Cfg.OracleEndpoint = oracleSrv.URL
 	t.Setenv("TEST_KEY", "fake")
+	t.Setenv("WAKIL_TEST_OR_KEY", "fake")
 
 	app.Workflow = &workflow.WorkflowState{
 		Task:             "t",
