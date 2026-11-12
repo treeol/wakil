@@ -320,16 +320,6 @@ func (b *BudgetState) shouldStop() (string, bool) {
 	return "", false
 }
 
-// stopReason returns the recorded budget-stop reason ("" when not stopped).
-func (b *BudgetState) stopReason() string {
-	if b == nil {
-		return ""
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.reason
-}
-
 // IncompleteReplyError is returned by the provider layer when a reply is cut
 // off (Length=true: finish_reason=length / stop_reason=max_tokens) or empty.
 // Error() keeps the original message text.

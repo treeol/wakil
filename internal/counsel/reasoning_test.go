@@ -15,12 +15,6 @@ import (
 	"github.com/treeol/wakil/internal/config"
 )
 
-// errorsAsVoid reports whether err or its chain is a *VoidError.
-func errorsAsVoid(err error) bool {
-	var ve *VoidError
-	return errors.As(err, &ve)
-}
-
 // TestCallOracleURL_ThinkingParameter verifies that when a reasoning spec is
 // set, the Anthropic-native thinking parameter is sent with budget_tokens and
 // max_tokens is additive (budget + answer). The answer budget must never be
