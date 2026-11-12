@@ -1082,9 +1082,7 @@ func (a *App) commitAsyncCost(op *asyncOp) {
 	op.mu.Unlock()
 
 	for _, u := range usage {
-		if u.Usage.InputTokens > 0 || u.Usage.OutputTokens > 0 {
-			a.RecordOracleCostFor(u.Model, u.Usage)
-		}
+		a.RecordOracleCostFor(u.Model, u.Usage)
 	}
 	for _, s := range subs {
 		if len(s.CostRows) > 0 && a.Costs != nil {

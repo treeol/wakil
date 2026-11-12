@@ -151,6 +151,10 @@ func streamRequest(ctx context.Context, endpoint string, headers map[string]stri
 		if rerr != nil {
 			return "", nil, http.StatusOK, fmt.Errorf("read response: %w", rerr)
 		}
+		if cap := panelCaptureFrom(ctx); cap != nil {
+			// Non-SSE body: the whole JSON response is one "line" for the capture.
+			cap.observe(string(raw))
+		}
 		c, u, _ := parseSSE(raw)
 		return c, u, http.StatusOK, nil
 	}
@@ -178,6 +182,9 @@ func streamRequest(ctx context.Context, endpoint string, headers map[string]stri
 		}
 		data := strings.Join(dataLines, "\n")
 		dataLines = nil
+		if cap := panelCaptureFrom(ctx); cap != nil && data != "[DONE]" {
+			cap.observe(data)
+		}
 		if data == "[DONE]" {
 			gotTerminal = true
 			return true
@@ -217,6 +224,9 @@ func streamRequest(ctx context.Context, endpoint string, headers map[string]stri
 				if u.HasProviderCost {
 					usage.ProviderCostUSD = u.ProviderCostUSD
 					usage.HasProviderCost = true
+				}
+				if u.ServedModel != "" {
+					usage.ServedModel = u.ServedModel
 				}
 			}
 		}
@@ -282,4 +292,8 @@ type streamUsage struct {
 	// when present. HasProviderCost distinguishes absent from a genuine $0.
 	ProviderCostUSD float64
 	HasProviderCost bool
+	// ServedModel is the model the provider reports it actually served
+	// (the response's "model" field). It matters for routers such as
+	// openrouter/auto, where the requested id is not the priced model.
+	ServedModel string
 }

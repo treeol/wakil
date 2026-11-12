@@ -235,9 +235,7 @@ func runWFPanel(ctx context.Context, app *App, headline, question, briefing, pan
 	}
 	results := counsel.RunPanel(ctx, panel.Models, panel.Mode, question, briefing, ccfg, apiKeys)
 	for _, r := range results {
-		if r.Usage.InputTokens > 0 || r.Usage.OutputTokens > 0 {
-			app.RecordOracleCostFor(r.Model, r.Usage) // billed even when VOID
-		}
+		app.RecordOracleCostFor(r.Model, r.Usage) // billed even when VOID; every call counts
 		if r.Err == nil {
 			app.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}

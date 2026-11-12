@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -252,6 +253,12 @@ func (m tuiModel) costSegments() []string {
 			dimStyle.Render("sub")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDSplit(ct.Subagent))+" · "+
 			dimStyle.Render("mash")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDSplit(ct.Mashura))+" · "+
 			dimStyle.Render("aux")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDSplit(ct.Aux)))
+	}
+	// Unpriced calls are shown as a count, never folded into a dollar figure:
+	// a call with no cost and no price entry must not read as free.
+	if ct.Unpriced > 0 {
+		segs = append(segs, dimStyle.Render("unpriced")+" "+
+			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(fmt.Sprintf("%d", ct.Unpriced)))
 	}
 	for _, r := range rows {
 		glyph, color := proxy.CostGlyphStyle(r.Confidence)

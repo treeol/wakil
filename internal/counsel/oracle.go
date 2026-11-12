@@ -233,6 +233,10 @@ type OracleUsage struct {
 	// when present. HasProviderCost distinguishes absent from a genuine $0.
 	ProviderCostUSD float64
 	HasProviderCost bool
+
+	// ServedModel is the model the provider reports it served (OpenRouter
+	// chunk "model" field). Empty when the endpoint did not report one.
+	ServedModel string
 }
 
 // addProviderCost returns u with b's provider-reported cost added. Usage
@@ -243,6 +247,9 @@ func addProviderCost(u, b OracleUsage) OracleUsage {
 	if b.HasProviderCost {
 		u.ProviderCostUSD += b.ProviderCostUSD
 		u.HasProviderCost = true
+	}
+	if b.ServedModel != "" {
+		u.ServedModel = b.ServedModel
 	}
 	return u
 }
@@ -339,6 +346,7 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 			partial.FinishReason = sUsage.FinishReason
 			partial.ProviderCostUSD = sUsage.ProviderCostUSD
 			partial.HasProviderCost = sUsage.HasProviderCost
+			partial.ServedModel = sUsage.ServedModel
 		}
 		return "", partial, err
 	}
@@ -921,6 +929,8 @@ type orSSEChunk struct {
 		} `json:"server_tool_use,omitempty"`
 		Cost *float64 `json:"cost"`
 	} `json:"usage"`
+	// Model is the served model, reported on every chunk by OpenRouter.
+	Model string `json:"model"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
@@ -959,6 +969,12 @@ func parseOpenRouterSSE(data []byte) (string, *streamUsage, bool) {
 		}
 	} else if finishReason != "" {
 		u = &streamUsage{FinishReason: finishReason}
+	}
+	if chunk.Model != "" {
+		if u == nil {
+			u = &streamUsage{}
+		}
+		u.ServedModel = chunk.Model
 	}
 	if chunk.Error != nil {
 		// Mid-stream error — return as an error finish reason with the message.
@@ -1148,9 +1164,17 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 		timeout = counselStreamTotalCap
 	}
 
-	content, sUsage, status, err := streamRequest(ctx, endpoint, map[string]string{
+	capture := newPanelCapture(label, body)
+	content, sUsage, status, err := streamRequest(withPanelCapture(ctx, capture), endpoint, map[string]string{
 		"Authorization": "Bearer " + apiKey,
 	}, body, counselStreamIdleTimeout, timeout, parseOpenRouterSSE)
+	if capture != nil {
+		served := ""
+		if sUsage != nil {
+			served = sUsage.ServedModel
+		}
+		capture.write(status, served, err)
+	}
 	if err != nil {
 		// Preserve partial usage from the stream even on error — the
 		// provider bills for tokens already generated before the failure.
@@ -1163,6 +1187,7 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 			partial.FinishReason = sUsage.FinishReason
 			partial.ProviderCostUSD = sUsage.ProviderCostUSD
 			partial.HasProviderCost = sUsage.HasProviderCost
+			partial.ServedModel = sUsage.ServedModel
 		}
 		return "", partial, err
 	}
@@ -1187,6 +1212,7 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 		usage.FinishReason = sUsage.FinishReason
 		usage.ProviderCostUSD = sUsage.ProviderCostUSD
 		usage.HasProviderCost = sUsage.HasProviderCost
+		usage.ServedModel = sUsage.ServedModel
 	}
 
 	text := strings.TrimSpace(content)

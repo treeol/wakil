@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Mashūra panel calls are always recorded: provider-reported `usage.cost` wins; otherwise the price table for the served model (for `openrouter/auto`, the model OpenRouter resolved); otherwise the call is counted as **unpriced** (shown as `unpriced N` in `/mode status` and the info panel) instead of a silent `$0.0000`.
+- Zero-token panel results are recorded as calls too.
+
+### Added
+- `WAKIL_DEBUG_REQUESTS` also writes one `panel-*.json` capture per Mashūra/counsel call (raw usage objects, served model, status; no headers or keys).
+
 ### Added
 
 - **Provider-reported cost and per-source cost split.** When the provider reports `usage.cost` (OpenRouter), that number is the billed amount for that request — the local price table stays as the fallback for backends that report no cost. Costs are split by source (`main` / `subagents` / `Mashūra` / `aux`, where aux covers compaction, the prune rating pass, side questions, and skill planning). `/mode status` shows the session totals (billed, provider-reported vs estimated, cache-read share, split), the TUI info panel shows the same split, and the totals survive save/`/resume`.

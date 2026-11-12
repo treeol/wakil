@@ -80,6 +80,10 @@ type costEntry struct {
 	Category   string
 	Priced     bool   // false → render "—" rather than a fake "$0.00"
 	Confidence string // ConfExact | ConfModeled | ConfApprox (weakest seen wins)
+	// UnpricedCalls counts calls with neither a provider-reported cost nor a
+	// price entry. They add tokens and a call, but no dollars: an unpriced call
+	// must never read as a free one.
+	UnpricedCalls int
 }
 
 // CostTracker accumulates per-source cost estimates for one session. It lives on
@@ -142,6 +146,9 @@ func (t *CostTracker) RecordCategorized(source, category string, inTok, outTok i
 	e.CachedTok += d.CachedTok
 	e.CacheWriteTok += d.CacheWriteTok
 	e.CostUSD += costUSD
+	if !priced {
+		e.UnpricedCalls++
+	}
 	if priced {
 		e.Priced = true
 		if confidence == ConfExact {
@@ -194,6 +201,7 @@ func (t *CostTracker) RecordRow(r CostRow, categoryOverride string) {
 		e.ProviderPriced = true
 	}
 	e.EstimatedUSD += r.EstimatedUSD
+	e.UnpricedCalls += r.UnpricedCalls
 	if r.Priced {
 		e.Priced = true
 	}
@@ -221,6 +229,8 @@ type CostRow struct {
 	CatUSD     map[string]float64
 	Priced     bool
 	Confidence string
+	// UnpricedCalls is the number of calls in this row that had no cost.
+	UnpricedCalls int
 }
 
 // mergeCatUSD adds usd to the category bucket on e. A row restored or folded
@@ -266,7 +276,7 @@ func rowFromEntry(name string, e *costEntry) CostRow {
 			cats[c] = v
 		}
 	}
-	return CostRow{Source: name, Category: cat, Calls: e.Calls, InputTok: e.InputTok, OutputTok: e.OutputTok, CachedTok: e.CachedTok, CacheWriteTok: e.CacheWriteTok, CostUSD: e.CostUSD, ProviderUSD: prov, ProviderPriced: e.ProviderPriced || (e.Confidence == ConfExact && e.Priced), EstimatedUSD: est, CatUSD: cats, Priced: e.Priced, Confidence: e.Confidence}
+	return CostRow{Source: name, Category: cat, Calls: e.Calls, InputTok: e.InputTok, OutputTok: e.OutputTok, CachedTok: e.CachedTok, CacheWriteTok: e.CacheWriteTok, CostUSD: e.CostUSD, ProviderUSD: prov, ProviderPriced: e.ProviderPriced || (e.Confidence == ConfExact && e.Priced), EstimatedUSD: est, CatUSD: cats, Priced: e.Priced, Confidence: e.Confidence, UnpricedCalls: e.UnpricedCalls}
 }
 
 // CategoryTotals aggregates priced USD by category and provider vs estimated.
@@ -276,6 +286,9 @@ type CategoryTotals struct {
 	Billed, Total                float64
 	InputTok, CachedTok          int64
 	CacheShare                   float64
+	// Unpriced counts calls across all sources that had no cost. They are
+	// excluded from every dollar figure above and shown separately.
+	Unpriced int
 }
 
 // SnapshotDetail returns category/provider totals plus rows.
@@ -286,6 +299,7 @@ func (t *CostTracker) SnapshotDetail() (CategoryTotals, []CostRow) {
 	}
 	_, rows := t.Snapshot()
 	for _, r := range rows {
+		ct.Unpriced += r.UnpricedCalls
 		if !r.Priced {
 			continue
 		}
@@ -346,7 +360,7 @@ func (t *CostTracker) RestoreRows(rows []CostRow) {
 		t.src = map[string]*costEntry{}
 	}
 	for _, r := range rows {
-		e := &costEntry{Calls: r.Calls, InputTok: r.InputTok, OutputTok: r.OutputTok, CachedTok: r.CachedTok, CacheWriteTok: r.CacheWriteTok, CostUSD: r.CostUSD, ProviderUSD: r.ProviderUSD, ProviderPriced: r.ProviderPriced, EstimatedUSD: r.EstimatedUSD, Category: r.Category, Priced: r.Priced, Confidence: r.Confidence}
+		e := &costEntry{Calls: r.Calls, InputTok: r.InputTok, OutputTok: r.OutputTok, CachedTok: r.CachedTok, CacheWriteTok: r.CacheWriteTok, CostUSD: r.CostUSD, ProviderUSD: r.ProviderUSD, ProviderPriced: r.ProviderPriced, EstimatedUSD: r.EstimatedUSD, Category: r.Category, Priced: r.Priced, Confidence: r.Confidence, UnpricedCalls: r.UnpricedCalls}
 		if e.Category == "" {
 			e.Category = CategoryForSource(r.Source)
 		}
@@ -365,6 +379,7 @@ func (t *CostTracker) RestoreRows(rows []CostRow) {
 			existing.CostUSD += e.CostUSD
 			existing.ProviderUSD += e.ProviderUSD
 			existing.EstimatedUSD += e.EstimatedUSD
+			existing.UnpricedCalls += e.UnpricedCalls
 			if e.Priced {
 				existing.Priced = true
 			}

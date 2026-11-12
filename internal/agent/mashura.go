@@ -360,9 +360,7 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		var okModels []string
 		allErr := true
 		for _, r := range results {
-			if r.Usage.InputTokens > 0 || r.Usage.OutputTokens > 0 {
-				recs = append(recs, counselUsageRec{Model: r.Model, Usage: r.Usage})
-			}
+			recs = append(recs, counselUsageRec{Model: r.Model, Usage: r.Usage})
 			if r.Err == nil {
 				okModels = append(okModels, r.Model)
 				allErr = false
@@ -406,9 +404,7 @@ func (a *App) recordMashuraResults(results []counsel.PanelMemberResult) {
 	// Record cost per model; add grounding entry per successful member.
 	// Record usage even on error — providers bill for truncated/failed calls.
 	for _, r := range results {
-		if r.Usage.InputTokens > 0 || r.Usage.OutputTokens > 0 {
-			a.RecordOracleCostFor(r.Model, r.Usage)
-		}
+		a.RecordOracleCostFor(r.Model, r.Usage)
 		if r.Err == nil {
 			a.addExternalGrounding(proxy.GroundingEntry{Type: "oracle", Label: r.Model})
 		}

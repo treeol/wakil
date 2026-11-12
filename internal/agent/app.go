@@ -1724,23 +1724,64 @@ func (a *App) isOpenRouterRoute(usedBackend string) bool {
 	return isOpenRouterHost(a.Cfg.ActiveEndpoint().BaseURL)
 }
 
-// RecordOracleCostFor records one panel member's exact token usage under the
-// per-model source key "mashura·<model>". Usage is exact (from the API
-// response), so confidence is always ConfExact even when no rate is configured
-// (cost then renders "—"). When the provider reports reasoning tokens
-// separately (OpenRouter), they are included in the token counts but not
-// double-counted in cost (OutputTokens already includes them for billing).
-// nil tracker → no-op.
+// RecordOracleCostFor records one panel member's usage under the per-model
+// source key "mashura·<model>". The model key is the served model when the
+// provider reports one (openrouter/auto resolves to the model it actually ran),
+// else the requested model. Cost precedence: the provider-reported usage.cost
+// (exact), else the configured Mashūra price table for the served or requested
+// id, else the OpenRouter registry for an OpenRouter route, else the call is
+// recorded as unpriced: it counts in tokens and calls and in the "unpriced N"
+// figure, never as a silent $0. Every call is recorded, including zero-token
+// calls, so a failed or empty reply still shows up. nil tracker → no-op.
 func (a *App) RecordOracleCostFor(model string, u counsel.OracleUsage) {
-	usd, priced := a.Cfg.Costs.MashuraCost(model, u.InputTokens, u.OutputTokens)
-	// Provider-reported cost wins (B3, counsel path): usage.cost when the
-	// OpenRouter path reports it is the billed amount.
-	if u.HasProviderCost {
-		usd = u.ProviderCostUSD
-		priced = true
+	key := model
+	if u.ServedModel != "" {
+		key = u.ServedModel
 	}
-	source := proxy.CostSourceMashuraPrefix + model
+	usd, priced := a.mashuraCostFor(key, model, u)
+	source := proxy.CostSourceMashuraPrefix + key
+	// Confidence stays exact for every Mashūra call, as before: the token
+	// counts are exact, and "billed" keeps counting these rows.
 	a.Costs.RecordCategorized(source, proxy.CostCatMashura, u.InputTokens, u.OutputTokens, usd, priced, proxy.ConfExact)
+}
+
+// mashuraCostFor prices one panel call. It returns priced=false when neither a
+// provider cost, a configured rate, nor a registry rate is known.
+func (a *App) mashuraCostFor(served, requested string, u counsel.OracleUsage) (float64, bool) {
+	if u.HasProviderCost {
+		return u.ProviderCostUSD, true
+	}
+	for _, id := range []string{served, requested} {
+		if id == "" {
+			continue
+		}
+		if usd, ok := a.Cfg.Costs.MashuraCost(id, u.InputTokens, u.OutputTokens); ok {
+			return usd, true
+		}
+	}
+	// OpenRouter registry: an openrouter/* request, or any served model when
+	// the call went through OpenRouter (the panel path always does).
+	if !strings.HasPrefix(requested, "openrouter/") && !isOpenRouterHost(a.Cfg.ActiveEndpoint().BaseURL) {
+		return 0, false
+	}
+	warmCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	orregistry.Warm(warmCtx)
+	cancel()
+	for _, id := range []string{served, strings.TrimPrefix(requested, "openrouter/")} {
+		if id == "" || id == "auto" {
+			continue
+		}
+		p, ok := orregistry.LookupPricing(id)
+		if !ok {
+			continue
+		}
+		rate := config.ModelRate{
+			InputUSDPer1M:  p.Prompt,
+			OutputUSDPer1M: p.Completion,
+		}
+		return config.ModelRateCost(rate, u.InputTokens, u.OutputTokens, config.TokenDetail{}), true
+	}
+	return 0, false
 }
 
 // RecordSearchCost records one search query against the "search" source, priced
@@ -1762,10 +1803,15 @@ func (a *App) costStatusLine() string {
 	if ct.Total == 0 && ct.InputTok == 0 {
 		return "$0.0000 provider $0.0000 / est $0.0000 · main $0.0000 / sub $0.0000 / mash $0.0000 / aux $0.0000 · cache 0.0%"
 	}
-	return fmt.Sprintf("%s provider %s / est %s · main %s / sub %s / mash %s / aux %s · cache %.1f%%",
+	line := fmt.Sprintf("%s provider %s / est %s · main %s / sub %s / mash %s / aux %s · cache %.1f%%",
 		proxy.FmtUSDSplit(ct.Billed), proxy.FmtUSDSplit(ct.Provider), proxy.FmtUSDSplit(ct.Estimated),
 		proxy.FmtUSDSplit(ct.Main), proxy.FmtUSDSplit(ct.Subagent), proxy.FmtUSDSplit(ct.Mashura),
 		proxy.FmtUSDSplit(ct.Aux), ct.CacheShare*100)
+	if ct.Unpriced > 0 {
+		// Unpriced calls are counted, never shown as $0.0000.
+		line += fmt.Sprintf(" · unpriced %d", ct.Unpriced)
+	}
+	return line
 }
 
 // buildPreamble builds the day-stable system message stored at Conv[0] (see
