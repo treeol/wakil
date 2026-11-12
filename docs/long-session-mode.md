@@ -293,13 +293,30 @@ collapsed turn.
   at recording time, it never changes afterwards, even if a listed round
   is marked later. A round that rereads a path an earlier model-marked
   pruned round had read carries instead the reread line:
-  `[reread · you stubbed this file in r8 and are reading it again: your
-  note did not carry what you needed. Keep this result until you no
-  longer need the file, or stub it with a fuller note]` (`dropped` for a
-  drop). A reread never follows a superseded/emergency prune by Wakil
+  `[reread · you dropped this file in r8 and are reading it again. It now
+  stays in context and can no longer be marked]` (`stubbed` for a stub).
+  A reread never follows a superseded/emergency prune by Wakil
   itself, and a round with the reread line never also carries the
   backlog line. Neither line is stored in the conversation, written to
   the archive, or shown in the TUI; both are absent with prune off.
+- **Reread lock**: a file the model marked (drop or stub, any channel) and
+  then read again is locked for the rest of the session. A later drop or
+  stub on any round carrying that file is refused through every channel
+  (`context_mark`, `prev`, `[[drop]]`/`[[stub: …]]` tags); `keep` still
+  works, and other rounds in the same `context_mark` call are processed
+  normally. The refusal reads `r12 not marked: <path> was marked in r8
+  and read again in r12. It stays in context. Other results in this round
+  stay with it.` Locked rounds never appear in a backlog line. The lock is
+  keyed by cleaned, working-directory-resolved path, so `./a.go`, `a.go` and
+  the absolute path are one file. The lock survives session save, resume and
+  handoff (persisted like the other prune state), and `/mode status` shows
+  `locked N`. Wakil-only prunes (superseded, emergency, auto) never lock.
+- **Large drops need a reason** (`context_mark` `drop_reason`): dropping a
+  round whose results total 4 KB or more without a `drop_reason` of at
+  least 15 characters is refused for that round: `r3 not dropped: 22 KB.
+  Say in drop_reason why nothing in it is needed any more, or keep it.`
+  Small drops are unaffected. The reason is stored on the round record and
+  shown in the dropped round's stub line (`[r3 pruned (drop: <reason>): …]`).
 - **Mixed messages**: an assistant message that mixes `context_mark` with
   other tool calls registers a normal round for the other calls (so their
   results get an `[rN]` id and can be marked); only the `context_mark` call
@@ -326,7 +343,7 @@ token keys are set, `0 < target_tokens < at_tokens`.
 - `/mode standard | long-session | status` — switch or inspect (persisted per
   repo; the status line shows `long` / `std`). With pruning on,
   `/mode status` also shows `prune: on · keep N · drop N · stub N ·
-  unrated N · pruned N · saved ~M KB` plus the `marks N`, `passes N` and
+  unrated N · pruned N · locked N · saved ~M KB` plus the `marks N`, `passes N` and
   `prev missing N` counts.
 - `/keep <n>` / `/keep off <n>` — exempt request n from collapse or remove the
   exemption (a kept turn is restored into what is sent). Kept turns are

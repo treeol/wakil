@@ -80,7 +80,7 @@ func TestBacklogLineIgnoresMarkedRounds(t *testing.T) {
 	appendRound(app, 1, "c2", "read_file", `{"path":"b.go"}`, strings.Repeat("b", 4000))
 	appendRound(app, 1, "c3", "read_file", `{"path":"c.go"}`, strings.Repeat("c", 4000))
 	appendRound(app, 1, "c4", "read_file", `{"path":"d.go"}`, strings.Repeat("d", 4000))
-	app.recordMarkRatings(nil, []int{1}, nil, 0) // keep: no longer unmarked
+	app.recordMarkRatings(nil, []int{1}, nil, nil, 0) // keep: no longer unmarked
 	appendRound(app, 1, "c5", "read_file", `{"path":"e.go"}`, strings.Repeat("e", 4000))
 	got := toolResultOf(app.requestMessages(), "c5")
 	if strings.Contains(got, "r1 (") {
@@ -101,7 +101,7 @@ func TestBacklogLineFrozenWhenLaterMarked(t *testing.T) {
 	if !strings.Contains(before, "r1 (") {
 		t.Fatalf("precondition: r4 backlog should name r1: %q", before[max(0, len(before)-220):])
 	}
-	app.recordMarkRatings(nil, []int{1}, nil, 0)
+	app.recordMarkRatings(nil, []int{1}, nil, nil, 0)
 	after := toolResultOf(app.requestMessages(), "c4")
 	if after != before {
 		t.Error("marking a listed round changed the already-written backlog line")
@@ -171,7 +171,7 @@ func TestRereadLineOnStubThenReread(t *testing.T) {
 	appendRound(app, 1, "c3", "read_file", `{"path":"crypto.go"}`, strings.Repeat("c", 4000)) // r3 rereads
 	got := toolResultOf(app.requestMessages(), "c3")
 	want := "[r3] " + strings.Repeat("c", 4000) +
-		"\n[reread · you stubbed this file in r1 and are reading it again: your note did not carry what you needed. Keep this result until you no longer need the file, or stub it with a fuller note]"
+		"\n[reread · you stubbed this file in r1 and are reading it again. It now stays in context and can no longer be marked]"
 	if got != want {
 		t.Fatalf("reread result:\n got tail %q\nwant tail %q", got[max(0, len(got)-240):], want[max(0, len(want)-240):])
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -117,14 +118,16 @@ type RoundRecord struct {
 	// pending round (recordMarkRatings): a later pending mark keeps the
 	// pre-mark answer, so the round's visible state does not flip-flop.
 	MarkPrevRated bool `json:"mark_prev_rated,omitempty"`
-	// RereadLine / BacklogLine are the two tool-result lines a round's last
-	// result can carry, fixed once when the round is recorded (Change 1/2).
-	// The projection appends them verbatim, so the round's bytes never change
-	// afterwards. RereadLine: this round rereads a file an earlier
-	// model-marked pruned round had read. BacklogLine: staler unmarked
-	// prunable rounds exist. Mutually exclusive (reread wins).
+	// RereadLine: this round rereads a file an earlier model-marked pruned
+	// round had read; the round is locked (see pruneLocked) when its line
+	// says so. BacklogLine: staler unmarked prunable rounds exist. Mutually
+	// exclusive (reread wins).
 	RereadLine  string `json:"reread_line,omitempty"`
 	BacklogLine string `json:"backlog_line,omitempty"`
+	// DropReason is the model's stated reason for dropping this round
+	// (context_mark's drop_reason, or "" for other channels). Shown in the
+	// dropped round's stub line.
+	DropReason string `json:"drop_reason,omitempty"`
 }
 
 // stubTextMaxChars caps the model-supplied stub line of the prev, [[...]] and
@@ -393,7 +396,7 @@ func maxRoundIDLocked(rounds map[int]RoundRecord) int {
 // append. It never falls through to an older round — if the previous round
 // is already rated, the tag is ignored (the model emits at most one tag
 // per round; a stray prose tag in a later message must not re-rate an
-// older round).
+// older round). A drop/stub tag on a locked round is ignored.
 func (a *App) recordRoundRating(msgs []proxy.Message, priorMax int) {
 	if !a.pruneEnabled() {
 		return
@@ -408,6 +411,10 @@ func (a *App) recordRoundRating(msgs []proxy.Message, priorMax int) {
 		}
 		a.stateMu.Lock()
 		if rec, ok := a.pruneRounds[priorMax]; ok && rec.Rating == RatingNone {
+			if (rating == RatingDrop || rating == RatingStub) && a.lockedRoundsLocked()[priorMax] != (RereadLock{}) {
+				a.stateMu.Unlock()
+				continue
+			}
 			rec.Rating = rating
 			rec.StubText = stubText
 			rec.MarkedBy = ""
@@ -455,26 +462,35 @@ func (a *App) computeRoundLinesLocked(rec *RoundRecord, convSnap []proxy.Message
 	if a.pruneRounds == nil {
 		return
 	}
-	// Change 1: reread of a path read by an earlier model-marked pruned round.
+	// Reread: this round reads a path an earlier model-marked pruned round
+	// had read. The first such path locks the round (and the path) for the
+	// rest of the session.
 	if len(rec.ReadPaths) > 0 {
 		for _, pid := range sortedRoundIDs(a.pruneRounds) {
 			old := a.pruneRounds[pid]
 			if pid >= rec.ID || !old.Pruned || !modelMarkedPruned(old) {
 				continue
 			}
+			hit := ""
 			for _, p := range rec.ReadPaths {
-				if containsPath(old.ReadPaths, p) {
-					verb := "stubbed"
-					if old.Rating == RatingDrop {
-						verb = "dropped"
-					}
-					rec.RereadLine = fmt.Sprintf("[reread · you %s this file in r%d and are reading it again: your note did not carry what you needed. Keep this result until you no longer need the file, or stub it with a fuller note]", verb, pid)
-					return
+				if containsPath(old.ReadPaths, p, a) {
+					hit = p
+					break
 				}
 			}
+			if hit == "" {
+				continue
+			}
+			verb := "stubbed"
+			if old.Rating == RatingDrop {
+				verb = "dropped"
+			}
+			a.lockPathLocked(hit, a.canonPath(hit), pid)
+			rec.RereadLine = fmt.Sprintf("[reread · you %s this file in r%d and are reading it again. It now stays in context and can no longer be marked]", verb, pid)
+			return
 		}
 	}
-	// Change 2: backlog of stale unmarked prunable rounds.
+	// Backlog of stale unmarked prunable rounds.
 	rec.BacklogLine = a.backlogLineLocked(rec.ID, convSnap)
 }
 
@@ -552,9 +568,13 @@ func (a *App) backlogLineLocked(newestID int, convSnap []proxy.Message) string {
 }
 
 // backlogEligible reports whether an older round counts in the backlog
-// line: unmarked, unpruned, not protected, and big enough to stub.
+// line: unmarked, unpruned, not protected, locked rounds excluded, and
+// big enough to stub.
 func (a *App) backlogEligible(rec RoundRecord, id int, convSnap []proxy.Message) bool {
 	if rec.Rating != RatingNone || rec.Pruned || len(rec.CallIDs) == 0 {
+		return false
+	}
+	if _, ok := a.lockedRoundsLocked()[id]; ok {
 		return false
 	}
 	if rec.Turn > 0 && a.keep[rec.Turn] {
@@ -698,6 +718,7 @@ func (a *App) pruneSystemSection() string {
 	b.WriteString("Do this while you work: finished searches, files you read to find one thing, test output that a later run has replaced. ")
 	b.WriteString("Marking finished results is part of the task, not an extra action. ")
 	b.WriteString("Keep results you are still working with or will cite. ")
+	b.WriteString("Do not drop or stub a result you will need again: reading a file a second time costs more than keeping it, and a file you mark and then read again stays in context and can no longer be marked. ")
 	b.WriteString(markEffectSentence(a.pruneMarksImmediate()))
 	b.WriteString(" The full result stays retrievable from the archive path in its stub. ")
 	b.WriteString("Write rounds are only stubbed, never dropped. ")
@@ -726,7 +747,7 @@ func markEffectSentence(immediate bool) string {
 // step and that marking is its call. It says nothing about when a mark takes
 // effect (that depends on context_prune_marks and is in the system section),
 // so it holds in both modes. The stored conversation never carries it.
-const pruneReminder = "\n\n[Wakil context upkeep] Tool results are tagged [rN] and are re-sent in full on every step until you mark them. When you are done with a result, mark it with context_mark: drop it, or stub it with the facts you still need, with file:line. Do this while you work, and keep what you are still using."
+const pruneReminder = "\n\n[Wakil context upkeep] Tool results are tagged [rN] and are re-sent in full on every step until you mark them. When you are done with a result, mark it with context_mark: drop it, or stub it with the facts you still need, with file:line. Do this while you work, and keep what you are still using: a file you mark and then read again can no longer be marked."
 
 // withPruneReminder returns msgs with pruneReminder appended to the content of
 // each real user prompt: the first user message of every request (Turn > 0).
@@ -796,6 +817,9 @@ func stubLine(rec RoundRecord, toolName string, archive string) string {
 		if rec.Write {
 			return fmt.Sprintf("[%s write round pruned: %s — full result: %s]", id, toolName, archive)
 		}
+		if rec.DropReason != "" {
+			return fmt.Sprintf("[%s pruned (drop: %s): %s — full result: %s]", id, rec.DropReason, toolName, archive)
+		}
 		return fmt.Sprintf("[%s pruned (drop): %s — full result: %s]", id, toolName, archive)
 	case RatingStub:
 		return fmt.Sprintf("[%s pruned: %s — full result: %s]", id, rec.StubText, archive)
@@ -845,7 +869,7 @@ func findSuperseded(order []int, rounds map[int]RoundRecord) map[int]supersededI
 			later := rounds[id]
 			// same path read again or written/edited afterwards
 			for _, p := range er.ReadPaths {
-				if containsPath(later.ReadPaths, p) && readToolNames[firstToolName(order, rounds, id)] {
+				if containsPath(later.ReadPaths, p, nil) && readToolNames[firstToolName(order, rounds, id)] {
 					out[earlierID] = supersededInfo{by: id, cause: "reread " + p}
 					break
 				}
@@ -865,9 +889,20 @@ func findSuperseded(order []int, rounds map[int]RoundRecord) map[int]supersededI
 	return out
 }
 
-func containsPath(list []string, p string) bool {
+// containsPath reports whether list carries p, comparing cleaned,
+// cwd-resolved forms so ./a.go, a.go and the absolute path match.
+func containsPath(list []string, p string, a *App) bool {
+	if a == nil {
+		for _, v := range list {
+			if v == p {
+				return true
+			}
+		}
+		return false
+	}
+	canon := a.canonPath(p)
 	for _, v := range list {
-		if v == p {
+		if a.canonPath(v) == canon {
 			return true
 		}
 	}
@@ -889,10 +924,10 @@ func roundHasWriteTo(rec RoundRecord, p string) bool {
 	if !rec.Write {
 		return false
 	}
-	if containsPath(rec.ReadPaths, p) {
+	if containsPath(rec.ReadPaths, p, nil) {
 		return true
 	}
-	return containsPath(rec.WritePaths, p)
+	return containsPath(rec.WritePaths, p, nil)
 }
 
 // firstToolName returns the first call's tool name for the round (approx
@@ -1625,8 +1660,122 @@ func (a *App) pruneRecordsSlice() []RoundRecord {
 	return out
 }
 
-// restorePruneState rebuilds prune maps from a saved Session. Caller holds
-// stateMu (restoreTurnStateLocked) — this function does not lock.
+// RereadLock is one locked path: the file was pruned by a model mark in
+// MarkedRound and read again in RereadRound. Path is the cleaned,
+// cwd-resolved key; DisplayPath is the path as the model first typed it.
+type RereadLock struct {
+	Path        string `json:"path"`
+	DisplayPath string `json:"display_path,omitempty"`
+	MarkedRound int    `json:"marked_round"`
+	RereadRound int    `json:"reread_round"`
+}
+
+// canonPath cleans p and resolves it against the working directory.
+func (a *App) canonPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if !filepath.IsAbs(p) {
+		cwd := ""
+		if a.Exec != nil {
+			cwd = a.Exec.Cwd()
+		} else {
+			cwd = a.Cfg.WorkDir
+			if cwd == "" {
+				if wd, err := os.Getwd(); err == nil {
+					cwd = wd
+				}
+			}
+		}
+		if cwd != "" {
+			p = filepath.Join(cwd, p)
+		}
+	}
+	return filepath.Clean(p)
+}
+
+// roundPaths returns every distinct path a round carries (reads then writes).
+func roundPaths(rec RoundRecord) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range [][]string{rec.ReadPaths, rec.WritePaths} {
+		for _, p := range list {
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// RereadLocksSlice returns the reread lock set for persistence (sorted by
+// path for a stable session file).
+func (a *App) rereadLocksSlice() []RereadLock {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	if len(a.pruneLocked) == 0 {
+		return nil
+	}
+	out := make([]RereadLock, 0, len(a.pruneLocked))
+	for _, lock := range a.pruneLocked {
+		out = append(out, lock)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// lockPathLocked records a lock for canon; caller holds stateMu.
+func (a *App) lockPathLocked(displayPath, canon string, prunedRound int) bool {
+	if a.pruneLocked == nil {
+		a.pruneLocked = map[string]RereadLock{}
+	}
+	if _, ok := a.pruneLocked[canon]; ok {
+		return false
+	}
+	a.pruneLocked[canon] = RereadLock{Path: canon, DisplayPath: displayPath, MarkedRound: prunedRound, RereadRound: a.roundSeq}
+	return true
+}
+
+// lockPath records a lock for p (outside the locked-recording path).
+func (a *App) lockPath(p string, prunedRound int) bool {
+	canon := a.canonPath(p)
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.lockPathLocked(p, canon, prunedRound)
+}
+
+// RereadLocked reports the lock for a path, if any.
+func (a *App) rereadLocked(p string) (RereadLock, bool) {
+	canon := a.canonPath(p)
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	lock, ok := a.pruneLocked[canon]
+	return lock, ok
+}
+
+// lockRefusal is the context_mark/(prev)/tag refusal message for a round
+// that carries a locked result.
+func lockRefusal(rec RoundRecord, lock RereadLock) string {
+	return fmt.Sprintf("r%d not marked: %s was marked in r%d and read again in r%d. It stays in context. Other results in this round stay with it.", rec.ID, lock.DisplayPath, lock.MarkedRound, lock.RereadRound)
+}
+
+// lockedRoundsLocked maps locked round ids to their lock. Caller holds stateMu.
+func (a *App) lockedRoundsLocked() map[int]RereadLock {
+	out := map[int]RereadLock{}
+	for id, rec := range a.pruneRounds {
+		for _, p := range roundPaths(rec) {
+			if lock, ok := a.pruneLocked[a.canonPath(p)]; ok {
+				out[id] = lock
+				break
+			}
+		}
+	}
+	return out
+}
+
 func (a *App) restorePruneState(s *Session) {
 	a.pruneRounds = map[int]RoundRecord{}
 	a.prunedRounds = map[int]bool{}
@@ -1655,6 +1804,10 @@ func (a *App) restorePruneState(s *Session) {
 	a.pruneMissingPrev = s.PruneMissingPrev
 	a.pruneReread = s.PruneReread
 	a.pruneMarkCount = s.PruneMarkCount
+	a.pruneLocked = make(map[string]RereadLock, len(s.PruneLocked))
+	for _, lock := range s.PruneLocked {
+		a.pruneLocked[lock.Path] = lock
+	}
 }
 
 // pruneStatusLine renders the /mode status addition.
@@ -1683,10 +1836,11 @@ func (a *App) pruneStatusLine() string {
 	missing := a.pruneMissingPrev
 	passes := a.pruneRaterPasses
 	marks := a.pruneMarkCount
+	locked := len(a.pruneLocked)
 	a.stateMu.RUnlock()
 	trigger, target := a.pruneThresholds()
-	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · saved ~%d KB · trigger %dk · target %dk · rereads %d · prev missing %d · passes %d · marks %d",
-		a.pruneStateWord(), keep, drop, stub, auto, unrated, prunedCount, saved/1024, trigger/1000, target/1000, rereads, missing, passes, marks)
+	return fmt.Sprintf("prune: %s · keep %d · drop %d · stub %d · auto %d · unrated %d · pruned %d · locked %d · saved ~%d KB · trigger %dk · target %dk · rereads %d · prev missing %d · passes %d · marks %d",
+		a.pruneStateWord(), keep, drop, stub, auto, unrated, prunedCount, locked, saved/1024, trigger/1000, target/1000, rereads, missing, passes, marks)
 }
 
 // pruneStateWord renders "on"/"off" from the effective state (override over
@@ -1866,7 +2020,8 @@ func parsePrevValue(v string) (rating RoundRating, stubText string, found bool) 
 // recordPrevRating stores the last prev value onto the previous round
 // (priorMax — the max round id created before the current append), with the
 // same never-fall-through rule as the text channel. prevValues arrive in
-// call order; the last one wins.
+// call order; the last one wins. A drop/stub prev on a locked round is
+// ignored.
 func (a *App) recordPrevRating(prevValues []string, priorMax int) {
 	if !a.pruneEnabled() || len(prevValues) == 0 || priorMax <= 0 {
 		return
@@ -1877,6 +2032,10 @@ func (a *App) recordPrevRating(prevValues []string, priorMax int) {
 	}
 	a.stateMu.Lock()
 	if rec, ok := a.pruneRounds[priorMax]; ok && rec.Rating == RatingNone {
+		if (rating == RatingDrop || rating == RatingStub) && a.lockedRoundsLocked()[priorMax] != (RereadLock{}) {
+			a.stateMu.Unlock()
+			return
+		}
 		rec.Rating = rating
 		rec.StubText = stubText
 		rec.MarkedBy = ""
@@ -2405,7 +2564,7 @@ func roundResultSnippet(conv []proxy.Message, rec RoundRecord) string {
 // This is the one place that keeps the cautions: what a stub replaces,
 // what a note must carry, what a reread costs, and that marking right
 // before the final answer saves nothing.
-const contextMarkDescription = "Mark earlier tool rounds you are done with so they are trimmed from context. drop = nothing in the result is needed any more. stub = the note replaces the result and afterwards only the note remains, so the note carries every fact you will still use, per file and with file:line (a note too thin for a large result is rejected). keep = still needed verbatim. Reading a file again after stubbing it costs more than keeping it, so keep what you will still cite and cannot carry in a note. Marking right before the final answer saves nothing."
+const contextMarkDescription = "Mark earlier tool rounds you are done with so they are trimmed from context. drop = nothing in the result is needed any more. stub = the note replaces the result and afterwards only the note remains, so the note carries every fact you will still use, per file and with file:line (a note too thin for a large result is rejected). keep = still needed verbatim. Reading a file again after stubbing it costs more than keeping it, so keep what you will still cite and cannot carry in a note. A file you mark and then read again stays in context and can no longer be marked. Marking right before the final answer saves nothing. A large result (4 KB or more) can only be dropped with a drop_reason of at least 15 characters saying why nothing in it is needed any more."
 
 // roundFiles returns the distinct file paths the round read or wrote, reads
 // first, each in call order.
@@ -2484,11 +2643,31 @@ func thinStubNote(rec RoundRecord, note string) string {
 	return b.String()
 }
 
+// dropReasonRefusal reports whether a drop of rec needs a drop_reason.
+func dropReasonRefusal(rec RoundRecord, reason string) string {
+	if rec.BytesLost < markNoteCheckBytes {
+		return ""
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(reason)) >= dropReasonMinChars {
+		return ""
+	}
+	return fmt.Sprintf("r%d not dropped: %s. Say in drop_reason why nothing in it is needed any more, or keep it.", rec.ID, formatKB(rec.BytesLost))
+}
+
+// dropReasonMinChars is the minimum length of a drop_reason for a large round.
+const dropReasonMinChars = 15
+
+// dropReasonMaxChars caps the stored drop_reason.
+const dropReasonMaxChars = 200
+
 // validateMarkIDs partitions ids into accepted (exists, not current round, not
-// already pruned) and rejected (all others). It reports, per rejected id, a
-// human-readable reason.
-func (a *App) validateMarkIDs(ids []string, currentRound int) (accepted []int, rejected map[string]string) {
+// already pruned) and rejected (all others). Locked rounds are rejected for
+// drop/stub channels; keep is still accepted.
+func (a *App) validateMarkIDs(ids []string, currentRound int, channel RoundRating) (accepted []int, rejected map[string]string) {
 	rejected = map[string]string{}
+	a.stateMu.RLock()
+	locked := a.lockedRoundsLocked()
+	a.stateMu.RUnlock()
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
 	for _, idStr := range ids {
@@ -2509,6 +2688,10 @@ func (a *App) validateMarkIDs(ids []string, currentRound int) (accepted []int, r
 		}
 		if rec.Pruned || a.prunedRounds[id] {
 			rejected[idStr] = "already pruned"
+			continue
+		}
+		if (channel == RatingDrop || channel == RatingStub) && locked[id] != (RereadLock{}) {
+			rejected[idStr] = "locked: " + lockRefusal(rec, locked[id])
 			continue
 		}
 		accepted = append(accepted, id)
@@ -2585,8 +2768,9 @@ func parseRoundID(s string) (int, bool) {
 // marked round is (re)rated. A write round marked drop becomes stub with
 // its paths (the existing demotion rule). markSeq is the newest round id that
 // existed before the message carrying the mark (see RoundRecord.MarkSeq);
-// 0 makes drop/stub marks effective at once.
-func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string, markSeq int) {
+// 0 makes drop/stub marks effective at once. dropReasons carries the
+// per-round drop_reason (may be empty for a small round).
+func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string, dropReasons map[int]string, markSeq int) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	if a.pruneRounds == nil {
@@ -2618,6 +2802,9 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string, markSeq i
 		} else {
 			cur.Rating = RatingDrop
 			cur.StubText = ""
+		}
+		if dropReasons != nil {
+			cur.DropReason = truncateChars(sanitizeStub(dropReasons[id]), dropReasonMaxChars)
 		}
 		cur.MarkedBy = "context_mark"
 		cur.MarkSeq = markSeq
@@ -2653,13 +2840,14 @@ func (a *App) recordMarkRatings(drop, keep []int, stub map[int]string, markSeq i
 }
 
 // contextMarkTool is the context_mark tool definition, registered only when
-// pruning is on. Parameters: drop/stub/keep (all optional, ≥1 non-empty).
-// immediate selects the sentence that says when a mark takes effect.
+// pruning is on. Parameters: drop/stub/keep/drop_reason (all optional,
+// ≥1 of drop/stub/keep non-empty). immediate selects the sentence that says
+// when a mark takes effect.
 func contextMarkTool(immediate bool) proxy.Tool {
 	return proxy.Tool{Type: "function", Function: proxy.ToolFunction{
 		Name:        "context_mark",
 		Description: contextMarkDescription + " " + markEffectSentence(immediate),
-		Parameters:  []byte(`{"type":"object","properties":{"drop":{"type":"array","items":{"type":"string"},"description":"Round ids to drop (e.g. [\"r3\"])."},"stub":{"type":"object","additionalProperties":{"type":"string"},"description":"Map of round id to your note (up to 4000 characters). The note replaces the result: put every fact you will still use into it, per file and with file:line."},"keep":{"type":"array","items":{"type":"string"},"description":"Round ids to keep verbatim."}}}`),
+		Parameters:  []byte(`{"type":"object","properties":{"drop":{"type":"array","items":{"type":"string"},"description":"Round ids to drop (e.g. [\"r3\"])."},"drop_reason":{"type":"object","additionalProperties":{"type":"string"},"description":"Map of round id to a short reason (at least 15 characters) why nothing in the result is needed any more. Required for a large result (4 KB or more)."},"stub":{"type":"object","additionalProperties":{"type":"string"},"description":"Map of round id to your note (up to 4000 characters). The note replaces the result: put every fact you will still use into it, per file and with file:line."},"keep":{"type":"array","items":{"type":"string"},"description":"Round ids to keep verbatim."}}}`),
 	}}
 }
 
@@ -2671,9 +2859,10 @@ func contextMarkTool(immediate bool) proxy.Tool {
 // mode it applies at the trigger.
 func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
 	var args struct {
-		Drop []string          `json:"drop"`
-		Stub map[string]string `json:"stub"`
-		Keep []string          `json:"keep"`
+		Drop       []string          `json:"drop"`
+		DropReason map[string]string `json:"drop_reason"`
+		Stub       map[string]string `json:"stub"`
+		Keep       []string          `json:"keep"`
 	}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("context_mark: invalid arguments: %v", err)
@@ -2706,20 +2895,20 @@ func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
 		lone = false
 	}
 
-	dropIDs, rejDrop := a.validateMarkIDs(args.Drop, currentRound)
-	keepIDs, rejKeep := a.validateMarkIDs(args.Keep, currentRound)
+	dropIDs, rejDrop := a.validateMarkIDs(args.Drop, currentRound, RatingDrop)
+	keepIDs, rejKeep := a.validateMarkIDs(args.Keep, currentRound, RatingKeep)
 	stubMap := map[int]string{}
 	var stubNames []string
 	for k := range args.Stub {
 		stubNames = append(stubNames, k)
 	}
 	sort.Strings(stubNames)
-	stubValid, rejStub := a.validateMarkIDs(stubNames, currentRound)
-	// Thin notes: a stub replaces the result, so a note that cannot stand in
-	// for a large round is refused for that round only. The round keeps the
-	// state it had; the other rounds of the call are processed normally.
+	stubValid, rejStub := a.validateMarkIDs(stubNames, currentRound, RatingStub)
+	// Large drops need a drop_reason; a stub needs a note that can stand in
+	// for the result. Both checks are per-round: the round stays as it was,
+	// the other rounds of the call are processed normally.
 	var stubOK []int
-	var thin []string
+	var refusals []string
 	a.stateMu.RLock()
 	stubRecs := make(map[int]RoundRecord, len(stubValid))
 	for _, id := range stubValid {
@@ -2731,17 +2920,37 @@ func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
 		// must not pass the check and then be cut off.
 		note := truncateChars(sanitizeStub(args.Stub[fmt.Sprintf("r%d", id)]), markNoteMaxChars)
 		if msg := thinStubNote(stubRecs[id], note); msg != "" {
-			thin = append(thin, msg)
+			refusals = append(refusals, msg)
 			continue
 		}
 		stubOK = append(stubOK, id)
 		stubMap[id] = note
 	}
-	a.recordMarkRatings(dropIDs, keepIDs, stubMap, markSeq)
+	var dropOK []int
+	dropReasons := map[int]string{}
+	a.stateMu.RLock()
+	dropRecs := make(map[int]RoundRecord, len(dropIDs))
+	for _, id := range dropIDs {
+		dropRecs[id] = a.pruneRounds[id]
+	}
+	a.stateMu.RUnlock()
+	for _, id := range dropIDs {
+		reason := ""
+		if args.DropReason != nil {
+			reason = args.DropReason[fmt.Sprintf("r%d", id)]
+		}
+		if msg := dropReasonRefusal(dropRecs[id], reason); msg != "" {
+			refusals = append(refusals, msg)
+			continue
+		}
+		dropOK = append(dropOK, id)
+		dropReasons[id] = reason
+	}
+	a.recordMarkRatings(dropOK, keepIDs, stubMap, dropReasons, markSeq)
 
 	var parts []string
-	if len(dropIDs) > 0 {
-		parts = append(parts, "drop "+joinRoundIDs(dropIDs))
+	if len(dropOK) > 0 {
+		parts = append(parts, "drop "+joinRoundIDs(dropOK))
 	}
 	if len(stubOK) > 0 {
 		parts = append(parts, "stub "+joinRoundIDs(stubOK))
@@ -2764,16 +2973,16 @@ func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
 		// A lone mark prunes nothing until the model makes another real tool
 		// call (immediate mode). Say so, so the model does not assume the
 		// marked results are already gone.
-		if lone && a.pruneMarksImmediate() && len(dropIDs)+len(stubOK) > 0 {
+		if lone && a.pruneMarksImmediate() && len(dropOK)+len(stubOK) > 0 {
 			line += " · takes effect after your next tool call"
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, thin...)
+	lines = append(lines, refusals...)
 	line := strings.Join(lines, "\n")
-	status := fmt.Sprintf("· marked drop %d · stub %d · keep %d", len(dropIDs), len(stubOK), len(keepIDs))
-	if len(thin) > 0 {
-		status += fmt.Sprintf(" · %d thin stub note(s) rejected", len(thin))
+	status := fmt.Sprintf("· marked drop %d · stub %d · keep %d", len(dropOK), len(stubOK), len(keepIDs))
+	if len(refusals) > 0 {
+		status += fmt.Sprintf(" · %d mark refusal(s)", len(refusals))
 	}
 	fmt.Fprintln(a.Out, Dim(status))
 	return line

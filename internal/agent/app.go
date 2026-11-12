@@ -325,6 +325,11 @@ type App struct {
 	pruneMissingPrev int
 	// pruneReread counts reads of a path already read in a pruned round.
 	pruneReread int
+	// pruneLocked maps a cleaned, cwd-resolved path to the {markedRound,
+	// rereadRound} pair that locked it (see prune.go's lockRereadLocked).
+	// Locked rounds carry a line on their last result and are refused by
+	// later drop/stub marks through every channel.
+	pruneLocked map[string]RereadLock
 	// pruneMarkCount counts context_mark tool calls this chat.
 	pruneMarkCount int
 	// Rater-pass counters: pruneRaterPasses = number of successful passes;
@@ -942,6 +947,12 @@ func (a *App) SaveSession() {
 		snap.PruneArchiveFailed = a.pruneArchiveFailed
 	}
 	snap.PruneMarkCount = a.pruneMarkCount
+	if len(a.pruneLocked) > 0 {
+		snap.PruneLocked = make([]RereadLock, 0, len(a.pruneLocked))
+		for _, lock := range a.pruneLocked {
+			snap.PruneLocked = append(snap.PruneLocked, lock)
+		}
+	}
 	if s := a.pruneOverrideStr(); s != "" {
 		snap.PruneOverride = s
 	}

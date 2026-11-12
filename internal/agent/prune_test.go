@@ -2296,7 +2296,7 @@ func TestContextMarkRecords(t *testing.T) {
 	appendRound(app, 1, "cm3", "read_file", `{"path":"b.go"}`, big) // r3
 	appendRound(app, 1, "cm4", "read_file", `{"path":"c.go"}`, big) // r4 (protected at 1)
 	r3Note := thickNote("stub-note on r3")
-	lines := app.HandleContextMarkForTest(`{"drop":["r1","r2"],"stub":{"r3":"` + r3Note + `"},"keep":["r2"]}`)
+	lines := app.HandleContextMarkForTest(`{"drop":["r1","r2"],"drop_reason":{"r1":"write round, fully read","r2":"searched and nothing needed"},"stub":{"r3":"` + r3Note + `"},"keep":["r2"]}`)
 	_ = lines
 	// r1: write+drop → stub (write round rule); stub has w.go
 	app.stateMu.RLock()
@@ -2361,7 +2361,7 @@ func TestContextMarkRejects(t *testing.T) {
 	appendRound(app, 1, "rj3", "read_file", `{"path":"c.go"}`, big) // r3
 	// Unknown ids, invalid ids, current-round ids are rejected without
 	// failing the call; the valid r1 is marked.
-	res := app.HandleContextMarkForTest(`{"drop":["r99","bogus","r1"],"keep":["r4"]}`)
+	res := app.HandleContextMarkForTest(`{"drop":["r99","bogus","r1"],"drop_reason":{"r1":"searched and nothing needed"},"keep":["r4"]}`)
 	if !strings.Contains(res, "rejected r99") {
 		t.Errorf("result missing r99 rejection: %q", res)
 	}
@@ -2480,8 +2480,8 @@ func TestContextMarkKhatamReplay(t *testing.T) {
 		drops += `"r` + itoa(i) + `"`
 		stubs += `"r` + itoa(i) + `":"note ` + itoa(i) + `"`
 	}
-	// Model mixes drop+stub: 5 drop (r1-5), 5 stub (r6-10).
-	args := `{"drop":["r1","r2","r3","r4","r5"],"stub":{"r6":"` + thickNote("note 6") + `","r7":"` + thickNote("note 7") + `","r8":"` + thickNote("note 8") + `","r9":"` + thickNote("note 9") + `","r10":"` + thickNote("note 10") + `"}}`
+	// Model mixes drop+stub: 5 drop (r1-5), 5 stub (r6-10). Large drops carry reasons.
+	args := `{"drop":["r1","r2","r3","r4","r5"],"drop_reason":{"r1":"searched and nothing needed","r2":"searched and nothing needed","r3":"searched and nothing needed","r4":"searched and nothing needed","r5":"searched and nothing needed"},"stub":{"r6":"` + thickNote("note 6") + `","r7":"` + thickNote("note 7") + `","r8":"` + thickNote("note 8") + `","r9":"` + thickNote("note 9") + `","r10":"` + thickNote("note 10") + `"}}`
 	res := app.HandleContextMarkForTest(args)
 	if !strings.Contains(res, "marked:") {
 		t.Fatalf("result = %q", res)
@@ -2500,6 +2500,13 @@ func TestContextMarkKhatamReplay(t *testing.T) {
 			stubbed++
 		} else if strings.HasPrefix(c, "[r") && !strings.Contains(c, "pruned") {
 			intact++
+		}
+	}
+	// A drop with a reason renders "(drop: reason)", not "(drop)".
+	for _, m := range app.contextProjection() {
+		c := DerefStr(m.Content)
+		if strings.Contains(c, "[r") && strings.Contains(c, "pruned") && strings.Contains(c, "drop") {
+			pruned++
 		}
 	}
 	if pruned != 5 || stubbed != 5 {

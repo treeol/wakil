@@ -43,7 +43,16 @@ func longNote(facts string, n int) string {
 
 func markArgs(t *testing.T, drop []string, stub map[string]string) string {
 	t.Helper()
-	b, err := json.Marshal(map[string]any{"drop": drop, "stub": stub})
+	// Large drops now need drop_reason; these helpers must supply one.
+	args := map[string]any{"drop": drop, "stub": stub}
+	if len(drop) > 0 {
+		reasons := map[string]string{}
+		for _, id := range drop {
+			reasons[id] = "searched and nothing needed"
+		}
+		args["drop_reason"] = reasons
+	}
+	b, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +113,7 @@ func TestMarkLoneThenRealRoundPrunes(t *testing.T) {
 	appendRound(app, 1, "c3", "read_file", `{"path":"c.go"}`, "c")
 	app.pruneCheck()
 	msgs := app.requestMessages()
-	if got := toolResultOf(msgs, "c1"); !strings.Contains(got, "[r1 pruned (drop): read_file") {
+	if got := toolResultOf(msgs, "c1"); !strings.Contains(got, "[r1 pruned (drop") {
 		t.Errorf("r1 not dropped after the next real round: %.80q", got)
 	}
 	if got := toolResultOf(msgs, "c2"); !strings.Contains(got, "[r2 pruned: "+note+" — full result:") {
@@ -118,7 +127,7 @@ func TestMarkLoneThenRealRoundPrunes(t *testing.T) {
 func TestMarkMixedMessagePrunesNextBuild(t *testing.T) {
 	app := immediateApp(t)
 	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 6000))
-	call := proxy.ToolCall{ID: "mx", Type: "function", Function: proxy.FunctionCall{Name: "context_mark", Arguments: `{"drop":["r1"]}`}}
+	call := proxy.ToolCall{ID: "mx", Type: "function", Function: proxy.FunctionCall{Name: "context_mark", Arguments: `{"drop":["r1"],"drop_reason":{"r1":"searched and nothing needed"}}`}}
 	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{
 		call,
 		{ID: "rf", Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"b.go"}`}},
@@ -131,7 +140,7 @@ func TestMarkMixedMessagePrunesNextBuild(t *testing.T) {
 	app.appendConv(trMsg("rf", "read_file", strings.Repeat("b", 6000)))
 	app.pruneCheck()
 	msgs := app.requestMessages()
-	if got := toolResultOf(msgs, "c1"); !strings.Contains(got, "[r1 pruned (drop): read_file") {
+	if got := toolResultOf(msgs, "c1"); !strings.Contains(got, "[r1 pruned (drop") {
 		t.Errorf("r1 not pruned at the build after a mixed message: %.80q", got)
 	}
 	if got := toolResultOf(msgs, "rf"); !strings.HasPrefix(got, "[r2] ") {
@@ -144,7 +153,7 @@ func TestMarkMixedMessagePrunesNextBuild(t *testing.T) {
 func TestMarkPendingSurvivesRequestEndAndResume(t *testing.T) {
 	app := immediateApp(t)
 	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 6000))
-	loneMark(app, 1, "m1", `{"drop":["r1"]}`)
+	loneMark(app, 1, "m1", `{"drop":["r1"],"drop_reason":{"r1":"searched and nothing needed"}}`)
 	app.appendConv(proxy.Message{Role: "assistant", Content: StrPtr("final answer")})
 	app.pruneCheck() // request boundary
 
@@ -177,7 +186,7 @@ func TestMarkPendingSurvivesRequestEndAndResume(t *testing.T) {
 	// The first real tool call of the next request releases it.
 	appendRound(app2, 2, "c2", "read_file", `{"path":"b.go"}`, "b")
 	app2.pruneCheck()
-	if got := toolResultOf(app2.requestMessages(), "c1"); !strings.Contains(got, "[r1 pruned (drop): read_file") {
+	if got := toolResultOf(app2.requestMessages(), "c1"); !strings.Contains(got, "[r1 pruned (drop") {
 		t.Errorf("pending mark not applied in the next request: %.80q", got)
 	}
 }
@@ -187,7 +196,7 @@ func TestMarkPendingSurvivesRequestEndAndResume(t *testing.T) {
 func TestMarkPendingLeftToCollapse(t *testing.T) {
 	app := immediateApp(t)
 	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 6000))
-	loneMark(app, 1, "m1", `{"drop":["r1"]}`)
+	loneMark(app, 1, "m1", `{"drop":["r1"],"drop_reason":{"r1":"searched and nothing needed"}}`)
 	app.stateMu.Lock()
 	app.collapsed = map[int]CollapseRecord{1: {Turn: 1}}
 	app.stateMu.Unlock()
@@ -208,7 +217,7 @@ func TestMarkPendingHeldAtTriggerImmediateOnly(t *testing.T) {
 		for i := 1; i <= 8; i++ { // 72 KB: above the trigger (0.70 × 100000), below the emergency level
 			appendRound(app, 1, "t"+itoa(i), "read_file", `{"path":"t`+itoa(i)+`.go"}`, big)
 		}
-		res := loneMark(app, 1, "m1", `{"drop":["r1","r2","r3","r4"]}`)
+		res := loneMark(app, 1, "m1", `{"drop":["r1","r2","r3","r4"],"drop_reason":{"r1":"searched and nothing needed","r2":"searched and nothing needed","r3":"searched and nothing needed","r4":"searched and nothing needed"}}`)
 		app.pruneCheck()
 		switch mode {
 		case "immediate":
@@ -245,7 +254,7 @@ func TestMarkPendingReleasedBeforeEmergency(t *testing.T) {
 	for i := 1; i <= 10; i++ { // 90 KB + overhead: at the emergency level
 		appendRound(app, 1, "t"+itoa(i), "read_file", `{"path":"t`+itoa(i)+`.go"}`, big)
 	}
-	loneMark(app, 1, "m1", `{"drop":["r1","r2","r3","r4","r5"]}`)
+	loneMark(app, 1, "m1", `{"drop":["r1","r2","r3","r4","r5"],"drop_reason":{"r1":"searched and nothing needed","r2":"searched and nothing needed","r3":"searched and nothing needed","r4":"searched and nothing needed","r5":"searched and nothing needed"}}`)
 	app.pruneCheck()
 	for i := 1; i <= 5; i++ {
 		if !isPruned(app, i) || ratingOf(app, i) != RatingDrop {
@@ -274,7 +283,7 @@ func TestMarkPendingKeepsBytesOfRatedRound(t *testing.T) {
 	if strings.Contains(before, "[context · unmarked") || strings.Contains(before, "[reread") {
 		t.Fatal("precondition: a kept round carries no line")
 	}
-	loneMark(app, 1, "m1", `{"drop":["r1"]}`)
+	loneMark(app, 1, "m1", `{"drop":["r1"],"drop_reason":{"r1":"searched and nothing needed"}}`)
 	if got := toolResultOf(app.requestMessages(), "c1"); got != before {
 		t.Errorf("pending mark changed the bytes of a rated round: tail %q", got[len(got)-60:])
 	}

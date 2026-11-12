@@ -40,6 +40,7 @@ type Session struct {
 	// Present only when context_prune was on; old sessions have none and
 	// resume with an empty prune state.
 	PruneRecords       []RoundRecord `json:"prune_records,omitempty"`
+	PruneLocked        []RereadLock  `json:"prune_locked,omitempty"`
 	PruneBytesSaved    int           `json:"prune_bytes_saved,omitempty"`
 	PruneArchiveFailed bool          `json:"prune_archive_failed,omitempty"`
 	PruneMissingPrev   int           `json:"prune_missing_prev,omitempty"`

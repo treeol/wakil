@@ -52,12 +52,14 @@ func (a *App) appendConv(msgs ...proxy.Message) {
 }
 
 // recordReread counts reads (read_file/read_file_full) whose path was
-// already read in a pruned round of the same chat, and logs a TUI line.
+// already read in a pruned round of the same chat and logs a TUI line. A
+// read whose path was pruned by a MODEL mark becomes locked; a Wakil-only
+// prune (superseded, emergency, auto) does not lock.
 func (a *App) recordReread(msgs []proxy.Message) {
 	a.stateMu.RLock()
-	pruned := map[string]int{} // path -> round id
+	pruned := map[string]int{} // path -> round id (model-marked rounds only)
 	for id, rec := range a.pruneRounds {
-		if rec.Pruned {
+		if rec.Pruned && modelMarkedPruned(rec) {
 			for _, p := range rec.ReadPaths {
 				pruned[p] = id
 			}
@@ -67,6 +69,7 @@ func (a *App) recordReread(msgs []proxy.Message) {
 	if len(pruned) == 0 {
 		return
 	}
+	locked := false
 	for _, m := range msgs {
 		for _, tc := range m.ToolCalls {
 			if !readToolNames[tc.Function.Name] {
@@ -78,9 +81,18 @@ func (a *App) recordReread(msgs []proxy.Message) {
 					a.pruneReread++
 					a.stateMu.Unlock()
 					fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· reread %s (was pruned in r%d)", p, roundID)))
+					// A second reread of an already locked path is an
+					// ordinary reread: the lock already exists, so it
+					// prints no line and no new TUI entry.
+					if a.lockPath(p, roundID) {
+						locked = true
+					}
 				}
 			}
 		}
+	}
+	if locked {
+		fmt.Fprintln(a.Out, Dim("· locked (reread after prune — round stays in context)"))
 	}
 }
 
@@ -1635,6 +1647,11 @@ func (a *App) pruneCollapseOnRewind() {
 			if rec.FirstCall != "" && !present[rec.FirstCall] {
 				delete(a.pruneRounds, id)
 				delete(a.prunedRounds, id)
+			}
+		}
+		for path, lock := range a.pruneLocked {
+			if _, ok := a.pruneRounds[lock.MarkedRound]; !ok {
+				delete(a.pruneLocked, path)
 			}
 		}
 	}

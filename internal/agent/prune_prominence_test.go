@@ -138,6 +138,7 @@ func TestPruneProminenceTexts(t *testing.T) {
 		"Do this while you work",
 		"Marking finished results is part of the task, not an extra action",
 		"Keep results you are still working with or will cite.",
+		"Do not drop or stub a result you will need again: reading a file a second time costs more than keeping it, and a file you mark and then read again stays in context and can no longer be marked.",
 		"The full result stays retrievable from the archive path in its stub.",
 		"Write rounds are only stubbed, never dropped.",
 		"The line on the newest tool result names results that have been unmarked for a while, and warns you when you reread something you marked.",
@@ -147,7 +148,7 @@ func TestPruneProminenceTexts(t *testing.T) {
 			t.Errorf("system section lacks %q", s)
 		}
 	}
-	wantSuffix := "[Wakil context upkeep] Tool results are tagged [rN] and are re-sent in full on every step until you mark them. When you are done with a result, mark it with context_mark: drop it, or stub it with the facts you still need, with file:line. Do this while you work, and keep what you are still using."
+	wantSuffix := "[Wakil context upkeep] Tool results are tagged [rN] and are re-sent in full on every step until you mark them. When you are done with a result, mark it with context_mark: drop it, or stub it with the facts you still need, with file:line. Do this while you work, and keep what you are still using: a file you mark and then read again can no longer be marked."
 	if pruneReminder != "\n\n"+wantSuffix {
 		t.Errorf("user suffix:\n got %q\nwant %q", pruneReminder, "\n\n"+wantSuffix)
 	}
@@ -157,6 +158,8 @@ func TestPruneProminenceTexts(t *testing.T) {
 		"every fact you will still use, per file and with file:line",
 		"a note too thin for a large result is rejected",
 		"Reading a file again after stubbing it costs more than keeping it, so keep what you will still cite and cannot carry in a note.",
+		"A file you mark and then read again stays in context and can no longer be marked.",
+		"A large result (4 KB or more) can only be dropped with a drop_reason of at least 15 characters saying why nothing in it is needed any more.",
 		"Marking right before the final answer saves nothing.",
 	} {
 		if !strings.Contains(desc, s) {
