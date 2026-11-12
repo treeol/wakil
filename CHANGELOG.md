@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Missing/wrong `LAST SECTION READ:` citation with non-empty review content is now accepted, flagged coverage not confirmed (obtained review, not VOID); VOID only for empty/citation-only/limit (reasoning ≥80% of total → "reasoning used the budget"). VOID retry by cause (limit → doubled answer budget bounded by model/context + reasoning one step down; empty → reasoning one step down; citation/other → none; at most 2 attempts per member per part; 429/5xx keep single retry). Coverage-not-confirmed members are skipped as responders in final-review gap check and do not auto-advance plan review.
 - Mashūra check reasoning default is `low` (was `none`). Budget-stopped and VOID keep workflow unavailable (`available=false`, NOT COMPLETED banner, auto-counsel cap refund).
+- `mashura__check` now requires a companion `text_under_review` argument: the exact text whose accuracy should be checked, copied verbatim. The claim is one sentence about what must hold; Wakil rejects the call (no reviewer, no cost) when `text_under_review` is missing or empty. The text is placed as its own `## Text under review` block after `## Claim` and before `## Sources`, inside the material section.
 
 ### Added
 

@@ -145,12 +145,13 @@ func mashuraToolDefs() []proxy.Tool {
 		tool("mashura__check",
 			"Lightweight single-claim verification — cheaper and lower max_tokens than a full review. Wakil reads the evidence files from disk."+shared,
 			obj(map[string]interface{}{
-				"claim":        str("The single claim to verify."),
-				"paths":        pathsParam,
-				"path_ranges":  pathRangesParam,
-				"commit_range": commitRangeParam,
-				"panel":        panelParam,
-			}, "claim")),
+				"claim":             str("One sentence saying what must hold for the text under review."),
+				"text_under_review": str("The exact text whose accuracy should be checked, copied verbatim: the summary, report section, table or statement itself. The reviewers see only this text, the claim and the sources; nothing else from the conversation reaches them. If the claim is itself the complete statement to check, repeat it here."),
+				"paths":             pathsParam,
+				"path_ranges":       pathRangesParam,
+				"commit_range":      commitRangeParam,
+				"panel":             panelParam,
+			}, "claim", "text_under_review")),
 	}
 }
 
@@ -1126,14 +1127,15 @@ func (a *App) mashuraDecide(ctx context.Context, tc proxy.ToolCall) (question, b
 	return q, sb.String(), receipts, nil
 }
 
-// mashuraCheck builds the lightweight check briefing: core + the single claim +
-// Wakil-read evidence sources.
+// mashuraCheck builds the lightweight check briefing: core + the single claim
+// + the text under review + Wakil-read evidence sources.
 func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, briefing string, receipts []mashuraSourceMeta, err error) {
 	var args struct {
-		Claim       string      `json:"claim"`
-		Paths       []string    `json:"paths"`
-		PathRanges  []PathRange `json:"path_ranges"`
-		CommitRange string      `json:"commit_range"`
+		Claim           string      `json:"claim"`
+		TextUnderReview string      `json:"text_under_review"`
+		Paths           []string    `json:"paths"`
+		PathRanges      []PathRange `json:"path_ranges"`
+		CommitRange     string      `json:"commit_range"`
 	}
 	if e := json.Unmarshal([]byte(tc.Function.Arguments), &args); e != nil {
 		return "", "", nil, fmt.Errorf("could not parse arguments: %w", e)
@@ -1141,6 +1143,10 @@ func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, br
 	claim := strings.TrimSpace(args.Claim)
 	if claim == "" {
 		return "", "", nil, fmt.Errorf("claim is required")
+	}
+	textUnderReview := strings.TrimSpace(args.TextUnderReview)
+	if textUnderReview == "" {
+		return "", "", nil, fmt.Errorf("text_under_review is required: pass the exact text whose accuracy should be checked, copied verbatim (the summary, report section or statement itself). The reviewers see only this text, the claim and the sources; nothing else from the conversation reaches them. If the claim is itself the complete statement to check, repeat it in text_under_review.")
 	}
 
 	sourceSec, receipts, srcErr := a.mashuraReadSources(ctx, args.Paths, args.PathRanges, args.CommitRange)
@@ -1151,6 +1157,7 @@ func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, br
 	var sb strings.Builder
 	sb.WriteString(a.mashuraCore(ctx))
 	fmt.Fprintf(&sb, "## Claim\n\n%s\n\n", claim)
+	fmt.Fprintf(&sb, "## Text under review\n\n%s\n\n", textUnderReview)
 	if sourceSec != "" {
 		sb.WriteString(sourceSec)
 	}

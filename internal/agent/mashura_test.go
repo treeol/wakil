@@ -53,8 +53,8 @@ func TestMashuraBriefingsCarryCoreAndSpecificSection(t *testing.T) {
 			[]string{"## Findings", "## Plan", "## Focus", "check the migration"}},
 		{"mashura__decide", tcArgs("mashura__decide", `{"question":"which db","options":"Postgres\nMySQL"}`),
 			[]string{"## Findings", "## Decision", "## Options", "MySQL"}},
-		{"mashura__check", tcArgs("mashura__check", `{"claim":"step 1 is done"}`),
-			[]string{"## Claim", "step 1 is done"}},
+		{"mashura__check", tcArgs("mashura__check", `{"claim":"step 1 is done","text_under_review":"Step 1 wires the datastore (Postgres)."}`),
+			[]string{"## Claim", "step 1 is done", "## Text under review", "Step 1 wires the datastore (Postgres)."}},
 		{"mashura__debug", tcArgs("mashura__debug", `{"symptom":"tests hang"}`),
 			[]string{"## Symptom", "tests hang"}},
 	}
@@ -204,7 +204,7 @@ func TestMashuraGateDeclineShortCircuits(t *testing.T) {
 		"mashura__review": `{"focus":"x"}`,
 		"mashura__debug":  `{"symptom":"x"}`,
 		"mashura__decide": `{"question":"x","options":"a\nb"}`,
-		"mashura__check":  `{"claim":"x"}`,
+		"mashura__check":  `{"claim":"x","text_under_review":"y"}`,
 		"oracle__ask":     `{"question":"x"}`,
 	}
 	for name, args := range calls {
@@ -237,15 +237,46 @@ func TestMashuraFailsClosed(t *testing.T) {
 		return false
 	}
 	cases := map[string]string{
-		"mashura__debug":  `{"files":["x"]}`,       // no symptom
-		"mashura__decide": `{"question":"x"}`,      // no options
-		"mashura__check":  `{"evidence_file":"x"}`, // no claim
+		"mashura__debug":  `{"files":["x"]}`,                      // no symptom
+		"mashura__decide": `{"question":"x"}`,                     // no options
+		"mashura__check":  `{"evidence_file":"x"}`,                // no claim
+		"mashura__check2": `{"claim":"x"}`,                        // no text_under_review (rejected too)
+		"mashura__check3": `{"claim":"x","text_under_review":""}`, // empty text_under_review
 	}
 	for name, args := range cases {
-		got := app.handleMashura(context.Background(), name, tcArgs(name, args))
+		toolName := strings.TrimSuffix(name, "2")
+		toolName = strings.TrimSuffix(toolName, "3")
+		got := app.handleMashura(context.Background(), toolName, tcArgs(toolName, args))
 		if !strings.HasPrefix(got, "ERROR:") {
-			t.Errorf("%s with missing intent: got %q, want ERROR", name, got)
+			t.Errorf("%s with missing intent: got %q, want ERROR", toolName, got)
 		}
+		if toolName == "mashura__check" && !strings.Contains(got, "text_under_review") &&
+			!strings.Contains(got, "claim is required") {
+			t.Errorf("%s error should name the missing field: %q", toolName, got)
+		}
+	}
+}
+
+// The check briefing carries the verbatim text under review exactly once, in
+// its own block after the claim and before the sources.
+func TestMashuraCheckTextUnderReviewOnce(t *testing.T) {
+	app, _ := mashuraTestApp(t, "f", "p", "s")
+	const text = "Step 1 wires the datastore (Postgres)."
+	_, briefing, _, err := app.mashuraCheck(context.Background(), tcArgs("mashura__check",
+		`{"claim":"the summary is accurate","text_under_review":"Step 1 wires the datastore (Postgres)."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(briefing, text); got != 1 {
+		t.Errorf("text under review appears %d times in briefing, want exactly 1\n---\n%s", got, briefing)
+	}
+	if !strings.Contains(briefing, "## Text under review") {
+		t.Errorf("briefing missing '## Text under review'\n---\n%s", briefing)
+	}
+	claimPos := strings.Index(briefing, "## Claim")
+	textPos := strings.Index(briefing, "## Text under review")
+	if claimPos < 0 || textPos < 0 || textPos <= claimPos {
+		t.Errorf("text-under-review block must follow the claim (claim=%d text=%d)\n---\n%s", claimPos, textPos, briefing)
 	}
 }
 
