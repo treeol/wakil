@@ -95,6 +95,11 @@
   "oracle_api_key_env": "ANTHROPIC_API_KEY",
   "openrouter_api_key_env": "OPENROUTER_API_KEY",
 
+  "_comment_data_policy": "Data policy for model traffic. zdr controls zero-data-retention enforcement on OpenRouter (off|auto|on; off by default — bytes are identical to the unguarded path). openrouter_region pins OpenRouter traffic to a regional host (off|eu|us; off by default). trusted_local_hosts lists non-IP host names treated as local. Per-repo overrides via /zdr and /region win over these. The direct Anthropic path is removed: an Anthropic key, if set, is ignored (Mashura uses the configured backend).",
+  "zdr": "off",
+  "openrouter_region": "off",
+  "trusted_local_hosts": [],
+
   "mashura_fallback_model": "",
 
   "_comment_mashura_models": "Per-model reviewer limits, keyed by 'provider:model' or the bare model id. context_tokens overrides the built-in/OpenRouter context window; review_max_tokens is the answer budget (never below 4096 for a review). reasoning sets the per-model reasoning/thinking budget for reviewer calls to this model — max_tokens on the wire is additive (reasoning budget + answer budget); the answer budget is never reduced. A document that does not fit is sent in labelled parts or the call fails — it is never truncated.",

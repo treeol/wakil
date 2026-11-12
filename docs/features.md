@@ -10,6 +10,7 @@ file or the matching flags/env vars (see [Configuration](configuration.md)).
 | LSP code intelligence | `lsp_enabled` | [↓](#lsp-code-intelligence) |
 | Headless browser | `browser_enabled` | [↓](#headless-browser) |
 | Counsel (Mashūra) | `oracle_enabled` | [↓](#counsel-mashūra) |
+| Data policy (`/zdr`, `/region`) | `zdr`, `openrouter_region` | [↓](#data-policy) |
 | Web search | `searxng_url` / `google_api_key` | [↓](#web-search) |
 | Cost sidebar | `costs` | [↓](#cost-sidebar) |
 | Memory and staging | built-in | [↓](#memory-and-staging) |
@@ -139,6 +140,56 @@ back empty, or mis-cites the last section it claims to have read is **VOID**: it
 is retried once automatically, and if it is still VOID the round is reported as
 **not obtained** — never merged, never counted as a review round, never "no
 findings".
+
+## Data policy
+
+Two switches control what a request to a model host may carry: **`/zdr`**
+(zero-data-retention) and **`/region`** (OpenRouter region pinning), set per
+repo with `/zdr on|off|auto` / `/zdr reset` and `/region eu|us|off` /
+`/region reset` (bare `/zdr` shows the effective value, where it comes from,
+and the last request's decision; `/mode status` shows both lines). The
+defaults are `off` for both, and **with both off the bytes on the wire are
+identical to the unguarded path** — nothing changes for existing users.
+
+- **`zdr`** (`off` default, `auto`, `on`): on OpenRouter hosts, `on` and
+  `auto` add `"provider": {"zdr": true, "data_collection": "deny"}` (merged
+  with any existing provider object, never replacing it) to every model
+  request — main loop, subagents, Mashūra and aux calls all enforce it. On
+  any other non-local host, `zdr on` refuses before sending (the error names
+  the host and says Wakil cannot enforce the policy there — no silent
+  fallback); `zdr auto` proceeds unenforced there (`not enforced (<host>)`).
+  `auto` tolerates a provider without a ZDR endpoint: a 404 before any
+  stream data retries **once** without the two fields, the model is
+  remembered as no-ZDR for the session (later calls skip the first
+  attempt), and one transcript notice fires (`zdr auto: no ZDR endpoint for
+  <model>, sent without ZDR.`). Under `on` there is no silent fallback:
+  if the request cannot be served under ZDR, the user sees the error and
+  nothing is retried without ZDR. `/zdr off` reminds: *ZDR may still be
+  enforced by your OpenRouter account settings.*
+- **`openrouter_region`** (`off` default, `eu`, `us`): when the configured
+  host is exactly `openrouter.ai`, `eu` sends to `eu.openrouter.ai` and
+  `us` to `us.openrouter.ai` (same path, same key). Regional hosts in the
+  config are used verbatim, never rewritten. Errors from the regional host
+  are shown verbatim and there is **no fallback** to the global host.
+  *Needs an OpenRouter Business or Enterprise plan.* `/region eu|us` says so
+  on its output line.
+- **Local hosts** (`localhost`, loopback, RFC 1918, link-local and ULA IP
+  literals, plus any names in `trusted_local_hosts`) are always allowed,
+  with no policy fields added (`n/a (local)`).
+- **Per-repo overrides** (`/zdr`, `/region`) are stored on your side, keyed
+  by the workspace — never in a file inside the repository, so a cloned
+  repo cannot change them. User config provides the fallback through the
+  `zdr` and `openrouter_region` config keys; a value in a committed project
+  config is ignored.
+
+All model traffic goes through one transport (`internal/proxy`); no other
+package opens a connection to a model host. The **direct Anthropic path has
+been removed**: counsel, the main loop and the init test call all send
+through that transport, and a configured Anthropic key is ignored (Mashūra
+shows one notice per session: *direct Anthropic access was removed; the key
+is ignored, Mashūra uses the configured backend*). Configured
+`anthropic:<model>` panel members are served through OpenRouter as
+`anthropic/<model>`.
 
 ## Web search
 
