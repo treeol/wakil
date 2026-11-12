@@ -14,7 +14,7 @@ import (
 
 func proxyMessageForDump() []proxy.Message {
 	return []proxy.Message{
-		{Role: "system", Content: StrPtr("## Context upkeep: pruning is on\nDo this while you work. A mark takes effect after your next tool call at the earliest.")},
+		{Role: "system", Content: StrPtr("## Context upkeep: pruning is on\nDo this while you work. A mark takes effect after three further tool steps.")},
 		{Role: "user", Content: StrPtr("task [Wakil context upkeep] Do this while you work, and keep what you are still using.")},
 		{Role: "tool", ToolCallID: "c1", Content: StrPtr("[r1] result [context · unmarked for 3+ steps: r0 (~1k tokens)]")},
 	}
@@ -71,7 +71,7 @@ func TestPruneSectionFirstInPreamble(t *testing.T) {
 	if !strings.Contains(sec, "A mark takes effect when the context fills up, not before; until then the result stays in full.") {
 		t.Errorf("on-trigger section lacks the take-effect sentence: %s", sec)
 	}
-	if strings.Contains(sec, "after your next tool call") {
+	if strings.Contains(sec, "after three further tool steps") {
 		t.Errorf("on-trigger section has the immediate sentence: %s", sec)
 	}
 
@@ -335,7 +335,7 @@ func TestDebugRequestDumpWritesOneFilePerRequest(t *testing.T) {
 	if !strings.Contains(userText, "[Wakil context upkeep]") || !strings.Contains(userText, "keep what you are still using") {
 		t.Errorf("user suffix not in dump: %.200q", userText)
 	}
-	if !strings.Contains(sysText, "A mark takes effect after your next tool call") {
+	if !strings.Contains(sysText, "A mark takes effect after three further tool steps") {
 		t.Errorf("take-effect sentence not in dump")
 	}
 	// Running number is monotonic per request.

@@ -68,7 +68,7 @@ func TestMarkLoneThenFinalAnswerPrunesNothing(t *testing.T) {
 	appendRound(app, 1, "c2", "read_file", `{"path":"b.go"}`, b)
 	before := app.requestMessages()
 	res := loneMark(app, 1, "m1", markArgs(t, []string{"r1"}, map[string]string{"r2": longNote("b.go:10 handler", 220)}))
-	if !strings.HasPrefix(res, "marked: drop r1 · stub r2") || !strings.HasSuffix(res, " · takes effect after your next tool call") {
+	if !strings.HasPrefix(res, "marked: drop r1 · stub r2") || !strings.HasSuffix(res, " · takes effect after three further tool steps") {
 		t.Errorf("lone mark result = %q", res)
 	}
 	// The request that generates the final answer: pruneCheck, then build.
@@ -98,8 +98,8 @@ func TestMarkLoneThenFinalAnswerPrunesNothing(t *testing.T) {
 	}
 }
 
-// (b) [context_mark] alone, then a step with read_file: the marked rounds are
-// pruned at the request build after that read_file round is recorded.
+// (b) [context_mark] alone, then real rounds: the marks take effect
+// after three further real rounds, not after one or two.
 func TestMarkLoneThenRealRoundPrunes(t *testing.T) {
 	app := immediateApp(t)
 	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 6000))
@@ -110,20 +110,33 @@ func TestMarkLoneThenRealRoundPrunes(t *testing.T) {
 	if isPruned(app, 1) || isPruned(app, 2) {
 		t.Fatal("pruned before the next real tool call")
 	}
+	// One and two real rounds are not enough.
 	appendRound(app, 1, "c3", "read_file", `{"path":"c.go"}`, "c")
+	app.pruneCheck()
+	if isPruned(app, 1) || isPruned(app, 2) {
+		t.Fatal("pruned after only one further real round")
+	}
+	appendRound(app, 1, "c4", "read_file", `{"path":"d.go"}`, "d")
+	app.pruneCheck()
+	if isPruned(app, 1) || isPruned(app, 2) {
+		t.Fatal("pruned after only two further real rounds")
+	}
+	// The third further real round releases the marks.
+	appendRound(app, 1, "c5", "read_file", `{"path":"e.go"}`, "e")
 	app.pruneCheck()
 	msgs := app.requestMessages()
 	if got := toolResultOf(msgs, "c1"); !strings.Contains(got, "[r1 pruned (drop") {
-		t.Errorf("r1 not dropped after the next real round: %.80q", got)
+		t.Errorf("r1 not dropped after the third further real round: %.80q", got)
 	}
 	if got := toolResultOf(msgs, "c2"); !strings.Contains(got, "[r2 pruned: "+note+" — full result:") {
-		t.Errorf("r2 not stubbed after the next real round: %.80q", got)
+		t.Errorf("r2 not stubbed after the third further real round: %.80q", got)
 	}
 	assertPairing(t, msgs)
 }
 
-// (c) [context_mark, read_file] in one message: the read_file round is the
-// later real round, so the marks apply at the next request build.
+// (c) [context_mark, read_file] in one message: the read_file round counts
+// as the first of three further real rounds, so the marks take effect after
+// two more real rounds.
 func TestMarkMixedMessagePrunesNextBuild(t *testing.T) {
 	app := immediateApp(t)
 	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 6000))
@@ -138,10 +151,21 @@ func TestMarkMixedMessagePrunesNextBuild(t *testing.T) {
 	}
 	app.appendConv(trMsg("mx", "context_mark", res))
 	app.appendConv(trMsg("rf", "read_file", strings.Repeat("b", 6000)))
+	// The sibling round is the first of three further real rounds: not enough.
+	app.pruneCheck()
+	if isPruned(app, 1) {
+		t.Fatal("pruned after the mixed message alone")
+	}
+	appendRound(app, 1, "c3", "read_file", `{"path":"c.go"}`, "c")
+	app.pruneCheck()
+	if isPruned(app, 1) {
+		t.Fatal("pruned after only two further real rounds")
+	}
+	appendRound(app, 1, "c4", "read_file", `{"path":"d.go"}`, "d")
 	app.pruneCheck()
 	msgs := app.requestMessages()
 	if got := toolResultOf(msgs, "c1"); !strings.Contains(got, "[r1 pruned (drop") {
-		t.Errorf("r1 not pruned at the build after a mixed message: %.80q", got)
+		t.Errorf("r1 not pruned after the mixed message plus two more real rounds: %.80q", got)
 	}
 	if got := toolResultOf(msgs, "rf"); !strings.HasPrefix(got, "[r2] ") {
 		t.Errorf("sibling round touched: %.40q", got)
@@ -183,11 +207,17 @@ func TestMarkPendingSurvivesRequestEndAndResume(t *testing.T) {
 	if got := toolResultOf(app2.requestMessages(), "c1"); !strings.HasPrefix(got, "[r1] aaaa") {
 		t.Fatalf("r1 not in full at the start of the next request: %.40q", got)
 	}
-	// The first real tool call of the next request releases it.
+	// The third further real tool call of the next request releases it.
 	appendRound(app2, 2, "c2", "read_file", `{"path":"b.go"}`, "b")
+	appendRound(app2, 2, "c3", "read_file", `{"path":"c.go"}`, "c")
+	app2.pruneCheck()
+	if isPruned(app2, 1) {
+		t.Fatal("pending mark applied after only two further real tool calls")
+	}
+	appendRound(app2, 2, "c4", "read_file", `{"path":"d.go"}`, "d")
 	app2.pruneCheck()
 	if got := toolResultOf(app2.requestMessages(), "c1"); !strings.Contains(got, "[r1 pruned (drop") {
-		t.Errorf("pending mark not applied in the next request: %.80q", got)
+		t.Errorf("pending mark not applied after three further real tool calls: %.80q", got)
 	}
 }
 
@@ -221,7 +251,7 @@ func TestMarkPendingHeldAtTriggerImmediateOnly(t *testing.T) {
 		app.pruneCheck()
 		switch mode {
 		case "immediate":
-			if !strings.Contains(res, "takes effect after your next tool call") {
+			if !strings.Contains(res, "takes effect after three further tool steps") {
 				t.Errorf("immediate: result = %q", res)
 			}
 			for i := 1; i <= 8; i++ {
@@ -334,7 +364,7 @@ func TestStubNoteAccepted(t *testing.T) {
 	multiFileRound(app)
 	note := longNote("invite.go:40 token check; export.go:88 CSV writer; authz.go:17 four checks, MaxStateAge 30s is a constant at authz.go:9; web.go:120 routes", 608)
 	res := loneMark(app, 1, "m1", markArgs(t, nil, map[string]string{"r1": note}))
-	if res != "marked: stub r1 · takes effect after your next tool call" {
+	if res != "marked: stub r1 · takes effect after three further tool steps" {
 		t.Errorf("result = %q", res)
 	}
 	app.stateMu.RLock()
@@ -390,7 +420,7 @@ func TestStubNoteMixedCallOneRejectedOneAccepted(t *testing.T) {
 	good := longNote("b.go:10 handler", 220)
 	res := loneMark(app, 1, "m1", markArgs(t, []string{"r3"}, map[string]string{"r1": "one line", "r2": good}))
 	lines := strings.Split(res, "\n")
-	if len(lines) != 2 || lines[0] != "marked: drop r3 · stub r2 · takes effect after your next tool call" {
+	if len(lines) != 2 || lines[0] != "marked: drop r3 · stub r2 · takes effect after three further tool steps" {
 		t.Fatalf("result = %q", res)
 	}
 	if !strings.HasPrefix(lines[1], "r1 not stubbed: note too thin for 38 KB across 4 files (8 characters, at least 608 needed).") {
@@ -400,6 +430,8 @@ func TestStubNoteMixedCallOneRejectedOneAccepted(t *testing.T) {
 		t.Errorf("ratings r1=%q r2=%q r3=%q", ratingOf(app, 1), ratingOf(app, 2), ratingOf(app, 3))
 	}
 	appendRound(app, 1, "c4", "read_file", `{"path":"d.go"}`, "d")
+	appendRound(app, 1, "c5", "read_file", `{"path":"e.go"}`, "e")
+	appendRound(app, 1, "c6", "read_file", `{"path":"f.go"}`, "f")
 	app.pruneCheck()
 	if isPruned(app, 1) || !isPruned(app, 2) || !isPruned(app, 3) {
 		t.Errorf("pruned r1=%v r2=%v r3=%v, want false true true", isPruned(app, 1), isPruned(app, 2), isPruned(app, 3))
@@ -411,7 +443,7 @@ func TestStubNoteSmallRoundAndDropUnaffected(t *testing.T) {
 	appendRound(app, 1, "c1", "read_file", `{"path":"a.go"}`, strings.Repeat("a", 4000)) // r1 < 4 KB
 	multiFileRound(app)                                                                  // r2
 	res := loneMark(app, 1, "m1", markArgs(t, []string{"r2"}, map[string]string{"r1": "short"}))
-	if res != "marked: drop r2 · stub r1 · takes effect after your next tool call" {
+	if res != "marked: drop r2 · stub r1 · takes effect after three further tool steps" {
 		t.Errorf("result = %q", res)
 	}
 	if ratingOf(app, 1) != RatingStub || ratingOf(app, 2) != RatingDrop {
@@ -512,13 +544,13 @@ func TestPruneTextsCoherent(t *testing.T) {
 	// The sentence about when a mark takes effect follows the mode, in the
 	// system section and in the tool description alike.
 	for name, text := range map[string]string{"system section": sec, "tool description": desc} {
-		if !strings.Contains(text, "A mark takes effect after your next tool call at the earliest") {
+		if !strings.Contains(text, "A mark takes effect after three further tool steps") {
 			t.Errorf("immediate %s: %s", name, text)
 		}
 	}
 	app.Cfg.ContextPruneMarks = "on-trigger"
 	for name, text := range map[string]string{"system section": app.pruneSystemSection(), "tool description": contextMarkTool(false).Function.Description} {
-		if !strings.Contains(text, "A mark takes effect when the context fills up") || strings.Contains(text, "after your next tool call") {
+		if !strings.Contains(text, "A mark takes effect when the context fills up") || strings.Contains(text, "after three further tool steps") {
 			t.Errorf("on-trigger %s: %s", name, text)
 		}
 	}

@@ -109,9 +109,10 @@ type RoundRecord struct {
 	MarkedBy string `json:"marked_by,omitempty"` // "context_mark" | ""
 	// MarkSeq is the highest round id that existed before the assistant
 	// message carrying the context_mark call. In immediate mode a drop/stub
-	// mark takes effect only once a round with a higher id has been recorded
-	// (the model made another real tool call after marking). Zero means the
-	// mark is effective at once (records written before this field existed).
+	// mark takes effect only once markEffectDelayRounds further real rounds
+	// (rounds of non-context_mark calls, mixed messages included) have been
+	// recorded. MarkSeq 0 means the mark is effective at once (records
+	// written before this field existed).
 	MarkSeq int `json:"mark_seq,omitempty"`
 	// MarkPrevRated records that the round already carried a rating when
 	// the still-pending mark was made. It is read only while re-marking a
@@ -148,6 +149,13 @@ const (
 	markNoteMinCharsCap  = 1200
 	markNoteMaxChars     = 4000
 )
+
+// markEffectDelayRounds is how many further real tool rounds (rounds of
+// non-context_mark calls) must be recorded after a context_mark drop/stub
+// mark in immediate mode before the mark takes effect. The old delay of one
+// was satisfied too easily: a single trivial tool call released drops of the
+// main reads, and the final report was written without the sources.
+const markEffectDelayRounds = 3
 
 // autoStubMinBytes is the round-size threshold for the auto-stub fallback:
 // unrated rounds whose tool results total at least this many bytes become
@@ -732,11 +740,11 @@ func (a *App) pruneSystemSection() string {
 
 // markEffectSentence says when a context_mark mark takes effect, for the
 // system-prompt section and the tool description. In immediate mode a mark
-// waits for the model's next real tool call; in on-trigger mode it waits for
-// the prune trigger.
+// waits for markEffectDelayRounds further real tool calls; in on-trigger
+// mode it waits for the prune trigger.
 func markEffectSentence(immediate bool) string {
 	if immediate {
-		return "A mark takes effect after your next tool call at the earliest (a tool call sent in the same message as context_mark counts); until then the result stays in full, unless the context is almost full."
+		return "A mark takes effect after three further tool steps (a tool call sent in the same message as context_mark counts as the first); until then the result stays in full, unless the context is almost full."
 	}
 	return "A mark takes effect when the context fills up, not before; until then the result stays in full."
 }
@@ -1237,18 +1245,20 @@ func roundOrderFromConv(conv []proxy.Message, rounds map[int]RoundRecord) (order
 /* TRIGGER. */
 
 // pruneMarksImmediate reports whether context_mark marks apply between
-// triggers (after the model's next real tool call) rather than at the trigger.
+// triggers (after markEffectDelayRounds further real tool calls) rather than
+// at the trigger.
 func (a *App) pruneMarksImmediate() bool {
 	return a.Cfg.ContextPruneMarks != "on-trigger"
 }
 
 // markPending reports whether rec carries a context_mark drop/stub mark that
-// has not taken effect yet: no round has been recorded since the message that
-// carried the mark (lastRound is the newest existing round id, so a round
-// removed by a rewind no longer counts). A mark made right
-// before the final answer therefore prunes nothing while that answer is
-// written; it applies once the model makes another real tool call, in this
-// request or a later one. Only immediate mode consults this.
+// has not taken effect yet: fewer than markEffectDelayRounds real tool rounds
+// have been recorded since the message that carried the mark (MarkSeq is the
+// highest round id before that message; lastRound is the newest existing
+// round id, so a round removed by a rewind no longer counts). A mark made
+// right before the final answer therefore prunes nothing while that answer is
+// written; it applies after markEffectDelayRounds further real tool calls, in
+// this request or a later one. Only immediate mode consults this.
 func markPending(rec RoundRecord, lastRound int) bool {
 	if rec.MarkedBy != "context_mark" || rec.Pruned || rec.MarkSeq <= 0 {
 		return false
@@ -1256,17 +1266,17 @@ func markPending(rec RoundRecord, lastRound int) bool {
 	if rec.Rating != RatingDrop && rec.Rating != RatingStub {
 		return false
 	}
-	return lastRound <= rec.MarkSeq
+	return lastRound < rec.MarkSeq+markEffectDelayRounds
 }
 
 // pruneImmediateMarks applies context_mark-marked drop/stub rounds now,
 // regardless of the projected size / trigger. Only rounds with
-// MarkedBy == "context_mark" and Rating drop/stub are taken, and only once a
-// real tool round has been recorded after the mark (markPending); unmarked
-// rounds are untouched. Protections: /keep, pinned, collapsed, already
-// pruned, archive-failure (inside the loop). The last-N protection does
-// NOT apply to marked rounds (the model's explicit decision wins). The
-// never-inflate rule still applies.
+// MarkedBy == "context_mark" and Rating drop/stub are taken, and only once
+// markEffectDelayRounds further real tool rounds have been recorded after the
+// mark (markPending); unmarked rounds are untouched. Protections: /keep,
+// pinned, collapsed, already pruned, archive-failure (inside the loop). The
+// last-N protection does NOT apply to marked rounds (the model's explicit
+// decision wins). The never-inflate rule still applies.
 func (a *App) pruneImmediateMarks() { a.applyContextMarks(marksEffective) }
 
 // Which context_mark marks applyContextMarks takes.
@@ -2970,11 +2980,12 @@ func (a *App) handleContextMark(ctx context.Context, tc proxy.ToolCall) string {
 	var lines []string
 	if len(parts) > 0 {
 		line := "marked: " + strings.Join(parts, " · ")
-		// A lone mark prunes nothing until the model makes another real tool
-		// call (immediate mode). Say so, so the model does not assume the
-		// marked results are already gone.
+		// A lone mark prunes nothing until the model makes
+		// markEffectDelayRounds further real tool calls (immediate mode).
+		// Say so, so the model does not assume the marked results are
+		// already gone.
 		if lone && a.pruneMarksImmediate() && len(dropOK)+len(stubOK) > 0 {
-			line += " · takes effect after your next tool call"
+			line += " · takes effect after three further tool steps"
 		}
 		lines = append(lines, line)
 	}

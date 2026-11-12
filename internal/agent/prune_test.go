@@ -2314,8 +2314,10 @@ func TestContextMarkRecords(t *testing.T) {
 		t.Errorf("r3 = %q %q", r3.Rating, r3.StubText)
 	}
 	// Trigger above threshold → only marked rounds are pruned; r4 unmarked stays.
-	// A real tool call after the mark lets the marks take effect.
+	// Three further real tool calls after the mark let the marks take effect.
 	nextRealRound(app, 1, "cm5")
+	nextRealRound(app, 1, "cm6")
+	nextRealRound(app, 1, "cm7")
 	app.pruneCheck()
 	var r1stubbed, r4intact bool
 	for _, m := range app.contextProjection() {
@@ -2486,8 +2488,10 @@ func TestContextMarkKhatamReplay(t *testing.T) {
 	if !strings.Contains(res, "marked:") {
 		t.Fatalf("result = %q", res)
 	}
-	// A real tool call after the mark lets the marks take effect.
+	// Three further real tool calls after the mark let the marks take effect.
 	nextRealRound(app, 1, "k31")
+	nextRealRound(app, 1, "k32")
+	nextRealRound(app, 1, "k33")
 	// Marking alone prunes nothing below the trigger... the size IS above
 	// the trigger here; pruneCheck below performs the prune.
 	app.pruneCheck()
@@ -2572,8 +2576,9 @@ func thickNote(s string) string {
 	return s + strings.Repeat(" · detail at file.go:12", 10)
 }
 
-// nextRealRound records a small read round: the model's next real tool call
-// after a context_mark. Marks take effect only once such a round exists.
+// nextThreeRealRounds records a round of non-context_mark calls as the
+// further real rounds a mark needs; the callID param keeps historical
+// spelling.
 func nextRealRound(app *App, turn int, callID string) {
 	appendRound(app, turn, callID, "read_file", `{"path":"next.go"}`, "next")
 }
@@ -2589,8 +2594,10 @@ func TestImmediateStubAppliesNextRequest(t *testing.T) {
 	if !strings.Contains(res, "stub r3") {
 		t.Fatalf("result = %q", res)
 	}
-	// The model's next real tool call: the mark takes effect after it.
+	// The model's next three real tool calls: the mark takes effect after them.
 	nextRealRound(app, 1, "i4")
+	nextRealRound(app, 1, "i5")
+	nextRealRound(app, 1, "i6")
 	// Next request build: pruneCheck applies the marked stub even though
 	// the size (16 KB) is far below the trigger (0.70 × 100000).
 	proj1 := app.contextProjection()
@@ -2624,15 +2631,15 @@ func TestImmediateStubAppliesNextRequest(t *testing.T) {
 	if !found {
 		t.Fatal("r3 not in projection")
 	}
-	// Conv still has all originals (three rounds plus the next real round).
+	// Conv still has all originals (three rounds plus the next three real rounds).
 	convOrig := 0
 	for _, m := range app.Conv {
 		if m.Role == "tool" {
 			convOrig++
 		}
 	}
-	if convOrig != 4 {
-		t.Fatalf("Conv tool results = %d, want 4", convOrig)
+	if convOrig != 6 {
+		t.Fatalf("Conv tool results = %d, want 6", convOrig)
 	}
 	for _, m := range app.Conv {
 		if m.ToolCallID == "i3" && DerefStr(m.Content) != content {
@@ -2651,6 +2658,8 @@ func TestImmediateDropRemoves(t *testing.T) {
 	appendRound(app, 1, "id1", "read_file", `{"path":"g.go"}`, content)
 	app.HandleContextMarkForTest(`{"drop":["r1"]}`)
 	nextRealRound(app, 1, "id2")
+	nextRealRound(app, 1, "id3")
+	nextRealRound(app, 1, "id4")
 	app.pruneCheck()
 	for _, m := range app.contextProjection() {
 		if m.ToolCallID == "id1" {
@@ -2668,14 +2677,16 @@ func TestImmediateDropRemoves(t *testing.T) {
 }
 
 func TestImmediateLastNDoesNotBlock(t *testing.T) {
-	// protect=3 and two rounds (the marked one and the next real tool call):
-	// marked rounds in immediate mode ignore the last-N protection — the
-	// model's explicit decision wins.
+	// protect=3 and four rounds (the marked one and the next three real tool
+	// calls): marked rounds in immediate mode ignore the last-N protection —
+	// the model's explicit decision wins.
 	app := immediateApp(t)
 	content := strings.Repeat("p", 5000)
 	appendRound(app, 1, "lp1", "read_file", `{"path":"h.go"}`, content)
 	app.HandleContextMarkForTest(`{"stub":{"r1":"` + thickNote("takeaway") + `"}}`)
 	nextRealRound(app, 1, "lp2")
+	nextRealRound(app, 1, "lp3")
+	nextRealRound(app, 1, "lp4")
 	app.pruneCheck()
 	for _, m := range app.contextProjection() {
 		if m.ToolCallID == "lp1" {
@@ -2702,6 +2713,8 @@ func TestImmediateKeepPinnedNotPruned(t *testing.T) {
 	// last-N protection — the model's explicit decision wins).
 	app.HandleContextMarkForTest(`{"drop":["r1","r2","r3"]}`)
 	nextRealRound(app, 2, "kp4")
+	nextRealRound(app, 2, "kp5")
+	nextRealRound(app, 2, "kp6")
 	// Round 1 belongs to keep turn 1.
 	app.stateMu.Lock()
 	if app.keep == nil {
@@ -2748,6 +2761,8 @@ func TestImmediateWriteDropBecomesStub(t *testing.T) {
 	appendRound(app, 1, "wd1", "edit_file", `{"path":"edited.go"}`, content)
 	app.HandleContextMarkForTest(`{"drop":["r1"]}`)
 	nextRealRound(app, 1, "wd2")
+	nextRealRound(app, 1, "wd3")
+	nextRealRound(app, 1, "wd4")
 	app.pruneCheck()
 	for _, m := range app.contextProjection() {
 		if m.ToolCallID == "wd1" {
@@ -2769,6 +2784,8 @@ func TestImmediateArchiveFailureNotPruned(t *testing.T) {
 	appendRound(app, 1, "af1", "read_file", `{"path":"z.go"}`, content)
 	app.HandleContextMarkForTest(`{"drop":["r1"]}`)
 	nextRealRound(app, 1, "af2")
+	nextRealRound(app, 1, "af3")
+	nextRealRound(app, 1, "af4")
 	app.pruneCheck()
 	app.stateMu.RLock()
 	_, pruned := app.prunedRounds[1]
@@ -2789,6 +2806,8 @@ func TestImmediateNeverInflate(t *testing.T) {
 	appendRound(app, 1, "nf1", "read_file", `{"path":"tiny.go"}`, tiny)
 	app.HandleContextMarkForTest(`{"stub":{"r1":"tiny takeaway"}}`)
 	nextRealRound(app, 1, "nf2")
+	nextRealRound(app, 1, "nf3")
+	nextRealRound(app, 1, "nf4")
 	app.pruneCheck()
 	for _, m := range app.contextProjection() {
 		if m.ToolCallID == "nf1" {
