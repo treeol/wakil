@@ -467,23 +467,6 @@ func isOpenRouterHost(baseURL string) bool {
 	return h == "openrouter.ai" || strings.HasSuffix(h, ".openrouter.ai")
 }
 
-// isExactOpenRouterHost reports whether the base URL's host is exactly one of
-// the three OpenRouter hosts. The data policy only rewrites, pins, or
-// refuses traffic on these exact hosts; a subdomain like foo.openrouter.ai
-// is attribution-marked by isOpenRouterHost but never treated as the
-// OpenRouter origin for policy purposes.
-func isExactOpenRouterHost(baseURL string) bool {
-	u, err := url.Parse(baseURL)
-	if err != nil || u.Host == "" {
-		return false
-	}
-	switch strings.ToLower(u.Hostname()) {
-	case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
-		return true
-	}
-	return false
-}
-
 // ResolveCwd returns the session's working directory as the value for
 // Client.Cwd: the path the agent's own tools operate on, which is the
 // executor's root (internal/exec.NewDirectExecutor uses cfg.WorkDir) rather

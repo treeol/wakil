@@ -34,14 +34,14 @@ var panelDebugWarned sync.Map
 // the auto fallback may have stripped them) via withSentBody; the capture's
 // initial body is only what orChat built pre-policy.
 type panelCapture struct {
-	dir    string
-	label  string
-	body   []byte // pre-policy body; replaced by sentBody on write
-	sentBody []byte // the body as sent, recorded via observeSent
-	usages []string // raw JSON of every data line that contains "usage", in order
-	tail   []string // the last panelDebugTail raw data lines (any content)
-	served string
-	status int
+	dir      string
+	label    string
+	body     []byte   // pre-policy body; replaced by sentBody on write
+	sentBody []byte   // the body as sent, recorded via observeSent
+	usages   []string // raw JSON of every data line that contains "usage", in order
+	tail     []string // the last panelDebugTail raw data lines (any content)
+	served   string
+	status   int
 }
 
 // withSentBody replaces the capture's request body with the body as sent

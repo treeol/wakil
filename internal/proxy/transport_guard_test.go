@@ -135,35 +135,35 @@ func TestSingleTransportGuard(t *testing.T) {
 			return perr
 		}
 		// Which local names bind net/http and net in this file? Dot-imports are
-	// rejected outright: they would hide the qualifier the AST scan needs.
-	httpNames := map[string]bool{}
-	netNames := map[string]bool{}
-	for _, imp := range f.Imports {
-		p := strings.Trim(imp.Path.Value, `"`)
-		n := ""
-		if imp.Name != nil {
-			n = imp.Name.Name
-			if n == "." && (p == "net/http" || p == "net") {
-				violations = append(violations, rel+": dot-import of "+p)
-				return nil
+		// rejected outright: they would hide the qualifier the AST scan needs.
+		httpNames := map[string]bool{}
+		netNames := map[string]bool{}
+		for _, imp := range f.Imports {
+			p := strings.Trim(imp.Path.Value, `"`)
+			n := ""
+			if imp.Name != nil {
+				n = imp.Name.Name
+				if n == "." && (p == "net/http" || p == "net") {
+					violations = append(violations, rel+": dot-import of "+p)
+					return nil
+				}
+			}
+			switch p {
+			case "net/http":
+				if n == "" {
+					n = "http"
+				}
+				httpNames[n] = true
+			case "net":
+				if n == "" {
+					n = "net"
+				}
+				netNames[n] = true
 			}
 		}
-		switch p {
-		case "net/http":
-			if n == "" {
-				n = "http"
-			}
-			httpNames[n] = true
-		case "net":
-			if n == "" {
-				n = "net"
-			}
-			netNames[n] = true
+		if len(httpNames) == 0 && len(netNames) == 0 {
+			return nil
 		}
-	}
-	if len(httpNames) == 0 && len(netNames) == 0 {
-		return nil
-	}
 		// Client variables (locals, params, struct fields) of *http.Client
 		// type: client.Do / httpc.Do / hc.Do. &http.Client{} literals and
 		// `*http.Client` typed declarations mark them; the selector check
@@ -216,50 +216,50 @@ func TestSingleTransportGuard(t *testing.T) {
 			}
 			return true
 		})
-	ast.Inspect(f, func(n ast.Node) bool {
-		selExpr, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		if !shapes[selExpr.Sel.Name] {
-			return true
-		}
-		pos := fset.Position(selExpr.Pos())
-		emit := func(name string) {
-			entry := rel + ":" + strconv.Itoa(pos.Line) + ": " + name
-			if reason, ok := outboundAllowlist[rel]; ok {
-				allowed = append(allowed, entry+" — "+reason)
-			} else {
-				violations = append(violations, entry)
+		ast.Inspect(f, func(n ast.Node) bool {
+			selExpr, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
 			}
-		}
-		// Method call on a tracked *http.Client variable (client.Do, …).
-		if id, ok := selExpr.X.(*ast.Ident); ok && clientVars[id.Name] &&
-			(selExpr.Sel.Name == "Do" || selExpr.Sel.Name == "Get" || selExpr.Sel.Name == "Post" || selExpr.Sel.Name == "Head") {
-			emit(id.Name + "." + selExpr.Sel.Name)
-			return true
-		}
-		// Package-qualified call (http.NewRequest, http.DefaultClient.Do, net.Dial…).
-		if id, ok := selExpr.X.(*ast.Ident); ok {
-			if httpNames[id.Name] || netNames[id.Name] {
-				emit(id.Name + "." + selExpr.Sel.Name)
+			if !shapes[selExpr.Sel.Name] {
+				return true
 			}
-			return true
-		}
-		// Receiver is a call/paren expression: (&http.Client{}).Get(...).
-		// If the receiver's subtree mentions http.Client, flag it.
-		ast.Inspect(selExpr.X, func(m ast.Node) bool {
-			if sel2, ok := m.(*ast.SelectorExpr); ok {
-				if id2, ok := sel2.X.(*ast.Ident); ok && httpNames[id2.Name] && sel2.Sel.Name == "Client" {
-					emit("(&http.Client{})." + selExpr.Sel.Name)
+			pos := fset.Position(selExpr.Pos())
+			emit := func(name string) {
+				entry := rel + ":" + strconv.Itoa(pos.Line) + ": " + name
+				if reason, ok := outboundAllowlist[rel]; ok {
+					allowed = append(allowed, entry+" — "+reason)
+				} else {
+					violations = append(violations, entry)
 				}
 			}
+			// Method call on a tracked *http.Client variable (client.Do, …).
+			if id, ok := selExpr.X.(*ast.Ident); ok && clientVars[id.Name] &&
+				(selExpr.Sel.Name == "Do" || selExpr.Sel.Name == "Get" || selExpr.Sel.Name == "Post" || selExpr.Sel.Name == "Head") {
+				emit(id.Name + "." + selExpr.Sel.Name)
+				return true
+			}
+			// Package-qualified call (http.NewRequest, http.DefaultClient.Do, net.Dial…).
+			if id, ok := selExpr.X.(*ast.Ident); ok {
+				if httpNames[id.Name] || netNames[id.Name] {
+					emit(id.Name + "." + selExpr.Sel.Name)
+				}
+				return true
+			}
+			// Receiver is a call/paren expression: (&http.Client{}).Get(...).
+			// If the receiver's subtree mentions http.Client, flag it.
+			ast.Inspect(selExpr.X, func(m ast.Node) bool {
+				if sel2, ok := m.(*ast.SelectorExpr); ok {
+					if id2, ok := sel2.X.(*ast.Ident); ok && httpNames[id2.Name] && sel2.Sel.Name == "Client" {
+						emit("(&http.Client{})." + selExpr.Sel.Name)
+					}
+				}
+				return true
+			})
 			return true
 		})
-		return true
+		return nil
 	})
-	return nil
-})
 	if walkErr != nil {
 		t.Fatal(walkErr)
 	}

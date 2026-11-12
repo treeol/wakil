@@ -16,7 +16,6 @@ package proxy
 // is "off" (default), "eu", or "us".
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -286,16 +285,11 @@ func validateRegionMode(m string) error {
 	return fmt.Errorf("data policy: invalid openrouter_region %q (want off|eu|us)", m)
 }
 
-// ValidateDataPolicy checks the data-policy switch spellings at load time,
-// so a typo fails the config load with the field name. Config validates the
-// same spellings at LoadConfig; this package validates again at policy time
-// so programmatically built clients cannot smuggle an invalid mode.
-func ValidateDataPolicy(zdr, region string) error {
-	if err := validateZDRMode(zdr); err != nil {
-		return err
-	}
-	return validateRegionMode(region)
-}
+// ValidateDataPolicy checks the data-policy switch spellings. The config
+// package validates the same spellings at LoadConfig (so a typo fails the
+// load with the field name); the policy re-validates per request via the
+// internal validators, so a programmatically built Client cannot smuggle an
+// invalid mode past the gate.
 
 // hostOfBaseURL extracts the host from a base URL ("https://openrouter.ai/api"
 // → "openrouter.ai"). An unparsable or host-less base URL is returned as-is so
@@ -316,26 +310,4 @@ func withHost(baseURL, host string) string {
 	}
 	u.Host = host
 	return u.String()
-}
-
-// bodyHasZDRFields reports whether the body carries the provider ZDR fields.
-func bodyHasZDRFields(body []byte) bool {
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(body, &top); err != nil {
-		return false
-	}
-	raw, ok := top["provider"]
-	if !ok {
-		return false
-	}
-	var provider map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &provider); err != nil {
-		return false
-	}
-	_, hasZDR := provider["zdr"]
-	_, hasDC := provider["data_collection"]
-	if !hasZDR && !hasDC {
-		return false
-	}
-	return bytes.Contains(raw, []byte(`"zdr"`)) || bytes.Contains(raw, []byte(`"data_collection"`))
 }

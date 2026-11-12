@@ -21,59 +21,23 @@ import (
 // data policy may rewrite its host (regional pinning); the path is fixed.
 const chatModelEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 
-// transportClient is the single transport every model call in this package
-// goes through: internal/proxy. It is a package variable so tests can point
-// it at an httptest server; production wiring always uses a Client with the
-// session's data-policy settings.
+// transportClient is the package-default transport (used only when a call
+// site injects no client; production always sets PanelCallConfig.Transport).
 var transportClient = &proxy.Client{}
-
-// NewTransportClient builds the transport client for one session, carrying the
-// configured data-policy switches (effective values, i.e. user config with
-// any per-repo override already applied). All counsel calls in that session
-// route through it.
-func NewTransportClient(zdr, region string, trusted []string) *proxy.Client {
-	c := &proxy.Client{}
-	c.SetDataPolicy(zdr, region, trusted)
-	return c
-}
 
 const oracleSystemPrompt = "You are consulted for a second opinion by a local agent. Be direct and concise. Distinguish explicitly between (a) what the provided context shows and (b) what you recall from training. Never state a version-dependent or environment-dependent claim as confirmed — name what file or output would confirm it. Flag uncertainty plainly."
 
 // OracleUsage is the exact token usage reported by the model backend for one
 // call, surfaced to the caller so the cost tracker can record a billed-grade
-// (exact) figure. Tokens and the provider-reported cost are always carried
-// together (addUsage); see its contract.
-
-// oracleResp is the relevant subset of the Anthropic Messages API response body.
-type oracleResp struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	StopReason string `json:"stop_reason"`
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
-	Error *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// OracleUsage is the exact token usage reported by the Messages API, surfaced to
-// the caller so the cost tracker can record a billed-grade (exact) figure.
+// (exact) figure.
 type OracleUsage struct {
 	InputTokens  int64
 	OutputTokens int64
 
 	// ReasoningTokens is the count of tokens spent on extended thinking
-	// (reasoning/thinking). For OpenRouter this comes from
-	// completion_tokens_details.reasoning_tokens. For Anthropic-native,
-	// output_tokens already includes thinking tokens (no exact split), so
-	// ReasoningTokens is 0 and OutputTokens carries the combined count.
-	// Cost accounting uses ReasoningTokens only when the provider reports it
-	// separately — never double-counting.
+	// (reasoning/thinking). OpenRouter reports it separately as
+	// completion_tokens_details.reasoning_tokens; cost accounting uses it
+	// only when the provider reports it separately — never double-counting.
 	ReasoningTokens int64
 
 	// WebSearchRequests is the number of OpenRouter server-side web search

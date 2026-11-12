@@ -7,6 +7,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -475,19 +476,7 @@ func errorAs(err error, target any) bool {
 	switch target := target.(type) {
 	case **HTTPStatusError:
 		var e *HTTPStatusError
-		for err != nil {
-			if x, ok := err.(*HTTPStatusError); ok {
-				e = x
-				break
-			}
-			type unwrapper interface{ Unwrap() error }
-			u, ok := err.(unwrapper)
-			if !ok {
-				break
-			}
-			err = u.Unwrap()
-		}
-		if e != nil {
+		if errors.As(err, &e) {
 			*target = e
 			return true
 		}

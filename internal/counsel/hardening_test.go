@@ -330,37 +330,6 @@ func TestCitationOnlyStaysVoid(t *testing.T) {
 
 // ── cache/session_id tests ──────────────────────────────────────────────────
 
-type cacheBlock struct {
-	Type         string `json:"type"`
-	Text         string `json:"text"`
-	CacheControl *struct {
-		Type string `json:"type"`
-	} `json:"cache_control"`
-	HasCacheControl bool `json:"-"`
-}
-
-func (b *cacheBlock) UnmarshalJSON(data []byte) error {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(data, &m); err != nil {
-		return err
-	}
-	_, b.HasCacheControl = m["cache_control"]
-	var t struct {
-		Type         string `json:"type"`
-		Text         string `json:"text"`
-		CacheControl *struct {
-			Type string `json:"type"`
-		} `json:"cache_control"`
-	}
-	if err := json.Unmarshal(data, &t); err != nil {
-		return err
-	}
-	b.Type = t.Type
-	b.Text = t.Text
-	b.CacheControl = t.CacheControl
-	return nil
-}
-
 // rawAnthropicCapture records raw Anthropic request bodies and replies with
 // diligent SSE (citation from the blocks-joined user text, like fakeReviewer).
 type rawAnthropicCapture struct {
@@ -410,28 +379,6 @@ func (c *rawAnthropicCapture) bodiesCopy() [][]byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([][]byte(nil), c.bodies...)
-}
-
-func decodeAnthropicBlocks(t *testing.T, raw []byte) []cacheBlock {
-	t.Helper()
-	var body struct {
-		Messages []struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil || len(body.Messages) == 0 {
-		t.Fatalf("bad Anthropic request body: %v\n%s", err, raw[:min(500, len(raw))])
-	}
-	// Single-round path: plain string, not an array.
-	var s string
-	if err := json.Unmarshal(body.Messages[0].Content, &s); err == nil {
-		t.Fatalf("content is a JSON string, want block array: %q", s[:min(200, len(s))])
-	}
-	var blocks []cacheBlock
-	if err := json.Unmarshal(body.Messages[0].Content, &blocks); err != nil {
-		t.Fatalf("content is not a block array: %v", err)
-	}
-	return blocks
 }
 
 // Debate session affinity: the briefing block is identical across rounds.
