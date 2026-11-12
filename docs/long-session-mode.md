@@ -129,12 +129,16 @@ between the first message and the `collapse_context` call.
 
 A second, orthogonal mechanism: **value-based pruning of tool rounds**,
 behind the `context_prune` switch (Wakil 0.7 feature). Pruning is
-experimental and model-dependent: apart from superseded rounds and the
-emergency level (≥ 90% of hard max), results are pruned only following
-a model rating (`context_mark`, `prev`/`[[…]]` tags, or the optional
-rating pass), so how much gets pruned depends on the model. Pruning
-composes with collapse — it only prunes rounds that are NOT inside a
-collapsed turn.
+experimental: it is off by default, and in our own tests it gave no
+reliable saving on large-context models. This release makes it safe to
+turn on: marks take effect only after three further tool steps, reading a
+file again after marking it locks the file for the rest of the session,
+large drops need a stated reason, and thin stub notes are rejected.
+Apart from superseded rounds and the emergency level (≥ 90% of hard max),
+results are pruned only following a model rating (`context_mark`,
+`prev`/`[[…]]` tags, or the optional rating pass), so how much gets
+pruned still depends on the model. Pruning composes with collapse — it
+only prunes rounds that are NOT inside a collapsed turn.
 
 - **Round**: one assistant message that has tool_calls, plus the tool-result
   messages answering those calls. Every round gets a stable id `r<N>` from
@@ -201,15 +205,15 @@ collapsed turn.
   `unrated N` counts rounds no channel has rated, so the two differ.
 - **When a mark takes effect** (`context_prune_marks: immediate`): a round
   marked drop or stub with `context_mark` is pruned at a request build only
-  if at least one round made of other tool calls has been recorded after the
-  mark. A message made only of `context_mark` calls therefore prunes nothing
-  by itself: if the final answer follows, it is written with the full
-  results (pruning there would save nothing, because no step follows, and
-  the answer would be written from the notes instead of the results). The
-  marks apply at the first request build after the model's next real tool
-  call. In a mixed message such as `[context_mark, read_file]` the
-  `read_file` round is that later round, so the marks apply at the next
-  request build. Marks still pending when the request ends stay recorded
+  after **three** further real rounds (rounds made of non-`context_mark`
+  tool calls) have been recorded after the mark. A message made only of
+  `context_mark` calls therefore prunes nothing by itself: if the final
+  answer follows, it is written with the full results (pruning there would
+  save nothing, because no step follows, and the answer would be written
+  from the notes instead of the results). In a mixed message such as
+  `[context_mark, read_file]` the `read_file` round is the first of the
+  three, so the marks apply at the first request build after two more
+  real rounds. Marks still pending when the request ends stay recorded
   (`mark_seq` in the round record, persisted with the session and handoff)
   and apply under the same rule in a later request, unless collapse has
   replaced those rounds by then. While a mark is pending the marked result
@@ -219,8 +223,8 @@ collapsed turn.
   hard max, where Wakil would stub unmarked rounds without a note) pending
   marks are released first, drops before stubs, so no unmarked round is
   pruned while a round the model marked is held. The tool result of a lone
-  mark says: `marked: drop r1 · stub r2 · takes effect after your next tool
-  call`. `on-trigger` mode is unchanged: marks apply at the trigger.
+  mark says: `marked: drop r1 · stub r2 · takes effect after three further
+  tool steps`. `on-trigger` mode is unchanged: marks apply at the trigger.
 - **Stub notes**: a stub replaces the result, and afterwards the model has
   only its note. When `context_mark` stubs a round whose results total 4 KB
   or more, the note must be at least `clamp(result bytes / 64, 200, 1200)`
@@ -268,8 +272,8 @@ collapsed turn.
   finished results while it works (finished searches, files read to find one
   thing, replaced test output), that marking is part of the task, and to keep
   results still being worked with or cited. One sentence says when a mark
-  takes effect and follows `context_prune_marks`: after the next tool call at
-  the earliest (`immediate`), or when the context fills up (`on-trigger`).
+  takes effect and follows `context_prune_marks`: after three further tool
+  steps (`immediate`), or when the context fills up (`on-trigger`).
   The `context_mark` tool description is now the one place that keeps the
   cautions: drop/stub/keep meanings, that a stub replaces the result so only
   the note remains and carries every fact still needed per file with
