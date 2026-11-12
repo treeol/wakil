@@ -228,6 +228,23 @@ type OracleUsage struct {
 	// length truncation is visible in the round report, not only inferable from
 	// a missing citation.
 	FinishReason string
+
+	// ProviderCostUSD is the provider-reported cost (usage.cost, OpenRouter)
+	// when present. HasProviderCost distinguishes absent from a genuine $0.
+	ProviderCostUSD float64
+	HasProviderCost bool
+}
+
+// addProviderCost returns u with b's provider-reported cost added. Usage
+// merges (VOID retry, debate round 2) sum tokens; without this the dollar
+// figure would reflect only one attempt. HasProviderCost stays true when
+// either side reported a cost.
+func addProviderCost(u, b OracleUsage) OracleUsage {
+	if b.HasProviderCost {
+		u.ProviderCostUSD += b.ProviderCostUSD
+		u.HasProviderCost = true
+	}
+	return u
 }
 
 // CallOracle sends question and (optionally) oracleCtx to the Anthropic Messages
@@ -320,6 +337,8 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 			partial.ReasoningTokens = sUsage.ReasoningTokens
 			partial.WebSearchRequests = sUsage.WebSearchRequests
 			partial.FinishReason = sUsage.FinishReason
+			partial.ProviderCostUSD = sUsage.ProviderCostUSD
+			partial.HasProviderCost = sUsage.HasProviderCost
 		}
 		return "", partial, err
 	}
@@ -362,6 +381,10 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 			OutputTokens: int64(result.Usage.OutputTokens),
 			FinishReason: result.StopReason,
 		}
+		if sUsage != nil {
+			truncUsage.ProviderCostUSD = sUsage.ProviderCostUSD
+			truncUsage.HasProviderCost = sUsage.HasProviderCost
+		}
 		if text == "" {
 			return "", truncUsage, &IncompleteReplyError{Length: true, Msg: fmt.Sprintf("oracle hit max_tokens before emitting any text%s", remediation)}
 		}
@@ -374,10 +397,18 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 			errMsg = sUsage.ErrorMsg
 		}
 		billed := OracleUsage{InputTokens: int64(result.Usage.InputTokens), OutputTokens: int64(result.Usage.OutputTokens), FinishReason: result.StopReason}
+		if sUsage != nil {
+			billed.ProviderCostUSD = sUsage.ProviderCostUSD
+			billed.HasProviderCost = sUsage.HasProviderCost
+		}
 		return "", billed, fmt.Errorf("anthropic: %s", errMsg)
 	}
 
 	billed := OracleUsage{InputTokens: int64(result.Usage.InputTokens), OutputTokens: int64(result.Usage.OutputTokens), FinishReason: result.StopReason}
+	if sUsage != nil {
+		billed.ProviderCostUSD = sUsage.ProviderCostUSD
+		billed.HasProviderCost = sUsage.HasProviderCost
+	}
 	if text == "" {
 		return "", billed, &IncompleteReplyError{Msg: fmt.Sprintf("oracle response is empty (stop_reason=%q)", result.StopReason)}
 	}
@@ -386,6 +417,10 @@ func callOracleWithReasoning(ctx context.Context, cfg config.Config, apiKey, que
 		InputTokens:  int64(result.Usage.InputTokens),
 		OutputTokens: int64(result.Usage.OutputTokens),
 		FinishReason: result.StopReason,
+	}
+	if sUsage != nil {
+		usage.ProviderCostUSD = sUsage.ProviderCostUSD
+		usage.HasProviderCost = sUsage.HasProviderCost
 	}
 	return text, usage, nil
 }
@@ -737,7 +772,7 @@ func runDebate(ctx context.Context, models []string, question, briefing string, 
 			totalUsage.OutputTokens += res.Usage.OutputTokens
 			totalUsage.ReasoningTokens += res.Usage.ReasoningTokens
 			totalUsage.WebSearchRequests += res.Usage.WebSearchRequests
-			res.Usage = totalUsage
+			res.Usage = addProviderCost(totalUsage, res.Usage)
 			r2Results[s.index] = res
 		})
 	}
@@ -884,6 +919,7 @@ type orSSEChunk struct {
 		ServerToolUse *struct {
 			WebSearchRequests int `json:"web_search_requests"`
 		} `json:"server_tool_use,omitempty"`
+		Cost *float64 `json:"cost"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -916,6 +952,10 @@ func parseOpenRouterSSE(data []byte) (string, *streamUsage, bool) {
 		}
 		if chunk.Usage.ServerToolUse != nil {
 			u.WebSearchRequests = int64(chunk.Usage.ServerToolUse.WebSearchRequests)
+		}
+		if chunk.Usage.Cost != nil {
+			u.ProviderCostUSD = *chunk.Usage.Cost
+			u.HasProviderCost = true
 		}
 	} else if finishReason != "" {
 		u = &streamUsage{FinishReason: finishReason}
@@ -1121,6 +1161,8 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 			partial.ReasoningTokens = sUsage.ReasoningTokens
 			partial.WebSearchRequests = sUsage.WebSearchRequests
 			partial.FinishReason = sUsage.FinishReason
+			partial.ProviderCostUSD = sUsage.ProviderCostUSD
+			partial.HasProviderCost = sUsage.HasProviderCost
 		}
 		return "", partial, err
 	}
@@ -1143,6 +1185,8 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 		usage.ReasoningTokens = sUsage.ReasoningTokens
 		usage.WebSearchRequests = sUsage.WebSearchRequests
 		usage.FinishReason = sUsage.FinishReason
+		usage.ProviderCostUSD = sUsage.ProviderCostUSD
+		usage.HasProviderCost = sUsage.HasProviderCost
 	}
 
 	text := strings.TrimSpace(content)
@@ -1401,6 +1445,7 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 		second.Usage.OutputTokens += first.Usage.OutputTokens
 		second.Usage.ReasoningTokens += first.Usage.ReasoningTokens
 		second.Usage.WebSearchRequests += first.Usage.WebSearchRequests
+		second.Usage = addProviderCost(second.Usage, first.Usage)
 		if second.Log != nil {
 			second.Log.VoidRetried = true
 			second.Log.ReasoningTokens += first.Usage.ReasoningTokens

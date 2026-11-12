@@ -956,6 +956,12 @@ func (a *App) SaveSession() {
 	if s := a.pruneOverrideStr(); s != "" {
 		snap.PruneOverride = s
 	}
+	// Persist cost rows (outside the locks — the tracker is independently
+	// mutex-guarded and thread-safe; snapshot here so the row copy reflects
+	// the session up to this save).
+	if rows := a.Costs.ExportRows(); len(rows) > 0 {
+		snap.CostRows = rows
+	}
 
 	a.convMu.RUnlock()
 	a.stateMu.RUnlock()
@@ -1031,6 +1037,12 @@ func (a *App) InstallSession(s *Session) {
 	a.restoreTurnStateLocked(s)
 
 	a.Session = s
+	// Restore persisted cost totals (B6 persist half). The tracker is
+	// independently mutex-guarded; RestoreRows is nil-safe and merges, so
+	// this is safe outside any tracker lock.
+	if a.Costs != nil && len(s.CostRows) > 0 {
+		a.Costs.RestoreRows(s.CostRows)
+	}
 	a.resetStyleGuides()
 	a.resetBackendConsent()
 	a.preambleDay = ""
@@ -1386,6 +1398,12 @@ func (a *App) WarnContextPressure() {
 		used/1000, usable/1000, lim.NCtx/1000)))
 }
 
+// ForcedFinalPrompt is injected on the forced final request (iteration limit).
+// Tools stay in the request so the prompt-cache prefix is preserved; the model
+// is asked to answer in text. Any tool calls it still emits are discarded and
+// one tools-off fallback ends the turn.
+const ForcedFinalPrompt = "[Wakil] The step limit for this request is reached. Do not call any tools. Write your final answer now from what you already have."
+
 // ToolLimitPrompt is injected on the final allowed iteration when MaxToolIterations
 // is reached; tools are dropped for that turn so the model must answer with this.
 const ToolLimitPrompt = "You have reached the tool-call limit for this turn. Stop calling tools and produce your final response now, using only the information you already have."
@@ -1555,7 +1573,95 @@ func (a *App) RecordInferenceCost() {
 		conf = proxy.ConfApprox
 	}
 
-	a.Costs.Record(source, u.InputTok, u.OutputTok, usd, priced, conf, config.TokenDetail{
+	// Provider-reported cost wins (B3): when the backend reports usage.cost,
+	// that is the billed amount — exact, priced, regardless of local table.
+	if u.HasProviderCost {
+		usd = u.ProviderCostUSD
+		priced = true
+		conf = proxy.ConfExact
+	}
+
+	cat := proxy.CostCatMain
+	if a.IsSubagent {
+		cat = proxy.CostCatSubagent
+	}
+	a.Costs.RecordCategorized(source, cat, u.InputTok, u.OutputTok, usd, priced, conf, config.TokenDetail{
+		CachedTok:     u.CachedTok,
+		CacheWriteTok: u.CacheWriteTok,
+	})
+}
+
+// RecordAuxInferenceCost records one auxiliary (non-main-turn) Stream call's
+// usage under the aux category, with the same provider-cost-wins rule as
+// RecordInferenceCost. client is the client that serviced the call (may be a
+// different instance from a.Client for named-endpoint rater / cloned aux
+// clients); nil falls back to a.Client. sourceKey is the caller's source;
+// empty means the standard inference source. nil tracker/client → no-op.
+func (a *App) RecordAuxInferenceCost(client *proxy.Client, sourceKey string) {
+	if a.Costs == nil {
+		return
+	}
+	c := client
+	if c == nil {
+		c = a.Client
+	}
+	if c == nil {
+		return
+	}
+	u := c.LastUsage()
+	if u.InputTok == 0 && u.OutputTok == 0 {
+		return
+	}
+	source := sourceKey
+	if source == "" {
+		source = proxy.CostSourceInference
+	}
+	// Resolve pricing like RecordInferenceCost, but from the servicing
+	// client's last-used backend / model / endpoint host.
+	usedBackend := c.LastUsedBackend()
+	backendList := a.BackendListLocked()
+	isExternal := usedBackend != "" && IsExternalBackend(backendList, a.Cfg, usedBackend)
+	directOR := usedBackend == "" && isOpenRouterHost(a.Cfg.ActiveEndpoint().BaseURL)
+	if directOR {
+		usedBackend = "openrouter"
+		isExternal = true
+	}
+	modelForCost := c.Model
+	if isExternal && strings.HasPrefix(modelForCost, usedBackend+"/") {
+		modelForCost = strings.TrimPrefix(modelForCost, usedBackend+"/")
+	}
+	// Keep the caller's source key unless it is the bare aggregate and we
+	// resolved a more specific per-backend key (mirrors RecordInferenceCost).
+	if source == proxy.CostSourceInference && usedBackend != "" {
+		if isExternal {
+			source = proxy.CostSourceInfPrefix + usedBackend + "/" + modelForCost
+		} else {
+			source = proxy.CostSourceInfPrefix + usedBackend
+		}
+	}
+	var usd float64
+	var priced bool
+	if isExternal {
+		usd, priced = a.externalInferenceCost(usedBackend, modelForCost, u)
+	} else {
+		usd, priced = a.Cfg.Costs.InferenceCost(u.InputTok + u.OutputTok)
+	}
+	conf := proxy.ConfModeled
+	if isExternal {
+		if u.Exact {
+			conf = proxy.ConfExact
+		} else {
+			conf = proxy.ConfApprox
+		}
+	} else if !u.Exact {
+		conf = proxy.ConfApprox
+	}
+	if u.HasProviderCost {
+		usd = u.ProviderCostUSD
+		priced = true
+		conf = proxy.ConfExact
+	}
+	a.Costs.RecordCategorized(source, proxy.CostCatAux, u.InputTok, u.OutputTok, usd, priced, conf, config.TokenDetail{
 		CachedTok:     u.CachedTok,
 		CacheWriteTok: u.CacheWriteTok,
 	})
@@ -1626,15 +1732,37 @@ func (a *App) isOpenRouterRoute(usedBackend string) bool {
 // nil tracker → no-op.
 func (a *App) RecordOracleCostFor(model string, u counsel.OracleUsage) {
 	usd, priced := a.Cfg.Costs.MashuraCost(model, u.InputTokens, u.OutputTokens)
+	// Provider-reported cost wins (B3, counsel path): usage.cost when the
+	// OpenRouter path reports it is the billed amount.
+	if u.HasProviderCost {
+		usd = u.ProviderCostUSD
+		priced = true
+	}
 	source := proxy.CostSourceMashuraPrefix + model
-	a.Costs.Record(source, u.InputTokens, u.OutputTokens, usd, priced, proxy.ConfExact)
+	a.Costs.RecordCategorized(source, proxy.CostCatMashura, u.InputTokens, u.OutputTokens, usd, priced, proxy.ConfExact)
 }
 
 // RecordSearchCost records one search query against the "search" source, priced
 // per-query. Confidence is modeled. nil tracker → no-op.
 func (a *App) RecordSearchCost() {
 	usd, priced := a.Cfg.Costs.SearchCost()
-	a.Costs.Record(proxy.CostSourceSearch, 0, 0, usd, priced, proxy.ConfModeled)
+	a.Costs.RecordCategorized(proxy.CostSourceSearch, proxy.CostCatAux, 0, 0, usd, priced, proxy.ConfModeled)
+}
+
+// costStatusLine renders the /mode status cost breakdown (B6): billed total,
+// provider-reported vs estimated, cache-read share, and the per-source split.
+// Empty (nil tracker / no priced rows) → "$0.00 provider $0.00 / est $0.00 ·
+// ... zeroed shape so the status line is stable.
+func (a *App) costStatusLine() string {
+	if a.Costs == nil {
+		return "$0.00 provider $0.00 / est $0.00 · main $0.00 / sub $0.00 / mash $0.00 / aux $0.00 · cache 0.0%"
+	}
+	ct, _ := a.Costs.SnapshotDetail()
+	if ct.Total == 0 && ct.InputTok == 0 {
+		return "$0.00 provider $0.00 / est $0.00 · main $0.00 / sub $0.00 / mash $0.00 / aux $0.00 · cache 0.0%"
+	}
+	return fmt.Sprintf("$%.2f provider $%.2f / est $%.2f · main $%.2f / sub $%.2f / mash $%.2f / aux $%.2f · cache %.1f%%",
+		ct.Billed, ct.Provider, ct.Estimated, ct.Main, ct.Subagent, ct.Mashura, ct.Aux, ct.CacheShare*100)
 }
 
 // buildPreamble builds the day-stable system message stored at Conv[0] (see

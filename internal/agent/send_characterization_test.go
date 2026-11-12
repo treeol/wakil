@@ -229,7 +229,9 @@ func TestSend_StreamLoop_ToolCallThenAnswer(t *testing.T) {
 // ── Phase 4: Force-finish ────────────────────────────────────────────────────
 
 // TestSend_ForceFinish_IterationLimit verifies that MaxToolIterations forces
-// the model to answer without tools after the cap is reached.
+// the model to answer after the cap is reached (B2: tools are kept on the
+// forced request for prompt-cache preservation; a tool-call answer triggers
+// the single no-tools fallback — shell never executes on the forced turn).
 func TestSend_ForceFinish_IterationLimit(t *testing.T) {
 	// Server always returns a tool call — never stops on its own.
 	srv := sseServer(t, toolCallFrames("c1", "run_shell", `{"command":"echo hi"}`))
@@ -243,19 +245,21 @@ func TestSend_ForceFinish_IterationLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Tools run on iters 0,1; iter 2 is the forced tool-less finish.
+	// Tools run on iters 0,1; iter 2 is the forced finish (tools kept on
+	// the wire for cache; its tool-call answer is discarded, one no-tools
+	// fallback ends the turn — shell must not run a third time).
 	if len(fe.shellCalls) != 2 {
 		t.Errorf("shell executed %d times, want 2", len(fe.shellCalls))
 	}
-	// The ToolLimitPrompt must be injected.
+	// The ForcedFinalPrompt must be injected.
 	var injected bool
 	for _, m := range app.Conv {
-		if m.Role == "user" && DerefStr(m.Content) == ToolLimitPrompt {
+		if m.Role == "user" && DerefStr(m.Content) == ForcedFinalPrompt {
 			injected = true
 		}
 	}
 	if !injected {
-		t.Error("ToolLimitPrompt was not injected on force-finish")
+		t.Error("ForcedFinalPrompt was not injected on force-finish")
 	}
 	// exhausted flag must be set.
 	if !app.exhausted {

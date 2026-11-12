@@ -214,6 +214,10 @@ func streamRequest(ctx context.Context, endpoint string, headers map[string]stri
 				if u.ErrorMsg != "" {
 					usage.ErrorMsg = u.ErrorMsg
 				}
+				if u.HasProviderCost {
+					usage.ProviderCostUSD = u.ProviderCostUSD
+					usage.HasProviderCost = true
+				}
 			}
 		}
 		if done {
@@ -274,4 +278,8 @@ type streamUsage struct {
 	WebSearchRequests int64
 	FinishReason      string
 	ErrorMsg          string
+	// ProviderCostUSD is the provider-reported cost (usage.cost, OpenRouter)
+	// when present. HasProviderCost distinguishes absent from a genuine $0.
+	ProviderCostUSD float64
+	HasProviderCost bool
 }

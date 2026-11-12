@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Provider-reported cost and per-source cost split.** When the provider reports `usage.cost` (OpenRouter), that number is the billed amount for that request — the local price table stays as the fallback for backends that report no cost. Costs are split by source (`main` / `subagents` / `Mashūra` / `aux`, where aux covers compaction, the prune rating pass, side questions, and skill planning). `/mode status` shows the session totals (billed, provider-reported vs estimated, cache-read share, split), the TUI info panel shows the same split, and the totals survive save/`/resume`.
+
+### Changed
+
+- **OpenRouter session stickiness and no silent compression.** OpenRouter requests now carry `session_id` (the session's chat id; each subagent's own) and `plugins: [{"id":"context-compression","enabled":false}]`, so one provider serves a whole session and OpenRouter never silently drops middle messages. Non-OpenRouter requests stay byte-identical.
+- **Forced final step keeps the prompt cache.** Reaching `max_tool_iterations` keeps the tool list and `tool_choice` on the last request (with an injected "answer now" message) instead of stripping tools, which invalidated the whole prompt cache; if the model still answers with tool calls, they are discarded and exactly one tool-less fallback ends the turn. The forced step still always terminates.
+
 ## [0.7.1] - 2026-11-12
 
 ### Added

@@ -1296,10 +1296,7 @@ func (a *App) resolveChildCtxLimit(ctx context.Context, view subagentEndpointVie
 func foldSubagentCost(tracker *proxy.CostTracker, rows []proxy.CostRow) float64 {
 	var total float64
 	for _, r := range rows {
-		tracker.Record(r.Source, r.InputTok, r.OutputTok, r.CostUSD, r.Priced, r.Confidence, config.TokenDetail{
-			CachedTok:     r.CachedTok,
-			CacheWriteTok: r.CacheWriteTok,
-		})
+		tracker.RecordRow(r, proxy.CostCatSubagent)
 		if r.Priced {
 			total += r.CostUSD
 		}

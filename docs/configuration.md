@@ -149,7 +149,14 @@ sets the OpenRouter `X-Title` attribution header; when unset, it defaults to
 The `HTTP-Referer` and `X-OpenRouter-Categories` headers are always the
 hardcoded project defaults (`https://wakiil.pro` and `cli-agent`)
 for openrouter.ai hosts and are **not** user-configurable — wakil always
-identifies itself.
+identifies itself. OpenRouter requests also carry two body fields — `session_id`
+(the session's chat id; each subagent's own) for session stickiness, and
+`plugins: [{"id":"context-compression","enabled":false}]` so OpenRouter never
+silently drops middle messages. Both are OpenRouter-host only; every other host
+sends byte-identical requests. Costs: when the provider reports `usage.cost`,
+that is the billed amount for the request; the local price table stays the
+fallback. `/mode status` shows the session totals (billed, provider-reported vs
+estimated, cache-read share, and the main / subagents / Mashūra / aux split).
 
 **Backward compatibility:** configs without an `endpoints` block keep working
 unchanged — the top-level `base_url` (or `host`+`port`) synthesizes a single

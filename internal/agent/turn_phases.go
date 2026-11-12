@@ -169,6 +169,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 	var msg proxy.Message
 	var err error
 	firstStream := true
+	// forcedFallbackOnce bounds B2's single no-tools fallback: after it fires,
+	// the forced turn ends unconditionally — never loops.
+	forcedFallbackOnce := false
 	// Path-confinement circuit breaker state (see confinementBreakerThreshold):
 	// confinementFailures counts ConfinePath rejections per distinct path across
 	// the whole turn; confinementPaths preserves first-seen order for the honest
@@ -243,7 +246,12 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			tools = append(tools, contextMarkTool(a.pruneMarksImmediate()))
 		}
 		if forceFinish {
-			tools = nil
+			// B2: keep tools + tool_choice on the forced request so the prompt
+			// cache prefix survives. The injected user message tells the model
+			// to answer in text. If it still emits tool calls, they are
+			// discarded below and exactly one fallback (no tools) ends the
+			// turn — enforced by forcedFallbackOnce.
+			// tools stays as built above (not nil) on the forced request.
 			a.exhausted = true // signal to dispatchSubagent: turn ended forcibly
 			if confinementTrip {
 				// Precise, honest wrap-up: name the unreachable path(s) instead of
@@ -262,7 +270,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(BudgetExhaustedPrompt)})
 			} else {
 				a.stopReason = "iteration_limit"
-				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(ToolLimitPrompt)})
+				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(ForcedFinalPrompt)})
 			}
 		}
 
@@ -303,6 +311,29 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			return "", false, err
 		}
 		a.RecordInferenceCost() // main inference for this iteration
+		// B2: forced turn answered with tool calls despite the injected
+		// instruction — discard them (no execution, no dangling tool_calls)
+		// and send exactly one fallback request the old way (no tools) so
+		// the turn always ends. forcedFallbackOnce guarantees ≤1 fallback.
+		// The fallback flows through the normal store below (appendConv +
+		// forceFinish break) — its text becomes the final answer and its
+		// tool calls are discarded by the forceFinish discard at line ~340.
+		if forceFinish && len(msg.ToolCalls) > 0 && !forcedFallbackOnce {
+			forcedFallbackOnce = true
+			msg.ToolCalls = nil
+			// This msg is intentionally NOT stored: dropping the forced
+			// answer that contained tool calls keeps the transcript clean
+			// (no dangling tool_calls without responses). The fallback's
+			// text becomes the final answer via the normal store below.
+			msgs2 := a.requestMessages()
+			msg, err = a.Client.Stream(ctx, msgs2, nil, sink, rsink)
+			if err != nil {
+				return "", false, err
+			}
+			a.RecordInferenceCost()
+			msg.ToolCalls = nil
+			// Fall through to the normal append/final/break path.
+		}
 		// Budget enforcement (soft cutoff): check after recording cost. If the
 		// session's total priced cost has exceeded BudgetUSD, force-finish this
 		// turn and prevent further inference in subsequent turns. The check is
@@ -324,9 +355,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		if DerefStr(msg.Content) != "" {
 			fmt.Fprintln(a.Out)
 		}
-		if forceFinish {
-			// Tools were stripped this turn; discard any the model emitted anyway so
-			// no dangling tool_calls (without responses) are left in the transcript.
+		if forceFinish && !forcedFallbackOnce {
+			// B2: tools are KEPT on the forced request (cache preservation).
+			// A text answer ends the turn directly; a tool-call answer is
+			// handled by the single fallback above. Discarding here is only
+			// for the text path (no execution anyway since forceFinish
+			// breaks below) — clear to avoid dangling tool_calls if the
+			// answer was text-only it is already nil.
 			msg.ToolCalls = nil
 		}
 		// Context pruning: the "prev" property was advertised in every

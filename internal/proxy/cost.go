@@ -44,16 +44,42 @@ const (
 	ConfApprox  = "approx"  // counts estimated (e.g. from output length)
 )
 
+// Cost categories for the per-source split (B5).
+const (
+	CostCatMain     = "main"
+	CostCatSubagent = "subagent"
+	CostCatMashura  = "mashura"
+	CostCatAux      = "aux"
+)
+
+// CategoryForSource infers a category from a legacy source key.
+func CategoryForSource(source string) string {
+	switch {
+	case source == CostSourceMashura || len(source) >= len(CostSourceMashuraPrefix) && source[:len(CostSourceMashuraPrefix)] == CostSourceMashuraPrefix:
+		return CostCatMashura
+	default:
+		return CostCatMain
+	}
+}
+
 // costEntry accumulates one source's calls, tokens, and modeled spend.
 type costEntry struct {
-	Calls         int
-	InputTok      int64
-	OutputTok     int64
-	CachedTok     int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
-	CacheWriteTok int64 // tokens written to the cache this turn; 0 when never reported
-	CostUSD       float64
-	Priced        bool   // false → render "—" rather than a fake "$0.00"
-	Confidence    string // ConfExact | ConfModeled | ConfApprox (weakest seen wins)
+	Calls          int
+	InputTok       int64
+	OutputTok      int64
+	CachedTok      int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
+	CacheWriteTok  int64 // tokens written to the cache this turn; 0 when never reported
+	CostUSD        float64
+	ProviderUSD    float64
+	ProviderPriced bool
+	EstimatedUSD   float64
+	// CatUSD is the priced USD per category. A single source key can receive
+	// records from several categories (e.g. main and subagent inference share
+	// the inference source), so the split must be kept per record, not per key.
+	CatUSD     map[string]float64
+	Category   string
+	Priced     bool   // false → render "—" rather than a fake "$0.00"
+	Confidence string // ConfExact | ConfModeled | ConfApprox (weakest seen wins)
 }
 
 // CostTracker accumulates per-source cost estimates for one session. It lives on
@@ -77,12 +103,21 @@ func NewCostTracker() *CostTracker {
 // detail carries cache-read and cache-write token counts, purely additive
 // bookkeeping alongside the cost arithmetic the caller already computed.
 func (t *CostTracker) Record(source string, inTok, outTok int64, costUSD float64, priced bool, confidence string, detail ...config.TokenDetail) {
+	t.RecordCategorized(source, CategoryForSource(source), inTok, outTok, costUSD, priced, confidence, detail...)
+}
+
+// RecordCategorized is Record with an explicit category (main/subagent/mashura/aux).
+// Provider-reported (exact+priced) USD is tracked separately from estimated.
+func (t *CostTracker) RecordCategorized(source, category string, inTok, outTok int64, costUSD float64, priced bool, confidence string, detail ...config.TokenDetail) {
 	if t == nil {
 		return
 	}
 	var d config.TokenDetail
 	if len(detail) > 0 {
 		d = detail[0]
+	}
+	if category == "" {
+		category = CategoryForSource(source)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -91,8 +126,15 @@ func (t *CostTracker) Record(source string, inTok, outTok int64, costUSD float64
 	}
 	e := t.src[source]
 	if e == nil {
-		e = &costEntry{}
+		e = &costEntry{Category: category}
 		t.src[source] = e
+	}
+	// If same source seen with different category, keep first non-main? Prefer aux/mashura/subagent over main.
+	if e.Category == CostCatMain && category != CostCatMain {
+		e.Category = category
+	}
+	if e.Category == "" {
+		e.Category = category
 	}
 	e.Calls++
 	e.InputTok += inTok
@@ -102,21 +144,238 @@ func (t *CostTracker) Record(source string, inTok, outTok int64, costUSD float64
 	e.CostUSD += costUSD
 	if priced {
 		e.Priced = true
+		if confidence == ConfExact {
+			e.ProviderUSD += costUSD
+			e.ProviderPriced = true
+		} else {
+			e.EstimatedUSD += costUSD
+		}
+		if e.CatUSD == nil {
+			e.CatUSD = map[string]float64{}
+		}
+		e.CatUSD[category] += costUSD
 	}
 	e.Confidence = WeakerConfidence(e.Confidence, confidence)
 }
 
+// RecordRow merges a full CostRow preserving category/provider split (fold/restore).
+func (t *CostTracker) RecordRow(r CostRow, categoryOverride string) {
+	if t == nil {
+		return
+	}
+	cat := categoryOverride
+	if cat == "" {
+		cat = r.Category
+	}
+	if cat == "" {
+		cat = CategoryForSource(r.Source)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.src == nil {
+		t.src = map[string]*costEntry{}
+	}
+	e := t.src[r.Source]
+	if e == nil {
+		e = &costEntry{Category: cat}
+		t.src[r.Source] = e
+	}
+	if e.Category == CostCatMain && cat != CostCatMain {
+		e.Category = cat
+	}
+	e.Calls += r.Calls
+	e.InputTok += r.InputTok
+	e.OutputTok += r.OutputTok
+	e.CachedTok += r.CachedTok
+	e.CacheWriteTok += r.CacheWriteTok
+	e.CostUSD += r.CostUSD
+	e.ProviderUSD += r.ProviderUSD
+	if r.ProviderPriced {
+		e.ProviderPriced = true
+	}
+	e.EstimatedUSD += r.EstimatedUSD
+	if r.Priced {
+		e.Priced = true
+	}
+	mergeCatUSD(e, r.CatUSD, cat, r.CostUSD)
+	e.Confidence = WeakerConfidence(e.Confidence, r.Confidence)
+	if e.Confidence == "" && r.Confidence != "" {
+		e.Confidence = r.Confidence
+	}
+}
+
 // CostRow is one source's snapshot for rendering.
 type CostRow struct {
-	Source        string
-	Calls         int
-	InputTok      int64
-	OutputTok     int64
-	CachedTok     int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
-	CacheWriteTok int64 // tokens written to the cache; 0 when never reported
-	CostUSD       float64
-	Priced        bool
-	Confidence    string
+	Source         string
+	Category       string
+	Calls          int
+	InputTok       int64
+	OutputTok      int64
+	CachedTok      int64 // subset of InputTok served from the backend's prompt cache; 0 when never reported
+	CacheWriteTok  int64 // tokens written to the cache; 0 when never reported
+	CostUSD        float64
+	ProviderUSD    float64
+	ProviderPriced bool
+	EstimatedUSD   float64
+	// CatUSD is priced USD per category for this source (see costEntry.CatUSD).
+	CatUSD     map[string]float64
+	Priced     bool
+	Confidence string
+}
+
+// mergeCatUSD adds usd to the category bucket on e. A row restored or folded
+// without a per-category map is attributed wholly to fallbackCat.
+func mergeCatUSD(e *costEntry, src map[string]float64, fallbackCat string, usd float64) {
+	if len(src) == 0 {
+		if usd == 0 {
+			return
+		}
+		if e.CatUSD == nil {
+			e.CatUSD = map[string]float64{}
+		}
+		e.CatUSD[fallbackCat] += usd
+		return
+	}
+	if e.CatUSD == nil {
+		e.CatUSD = map[string]float64{}
+	}
+	for c, v := range src {
+		e.CatUSD[c] += v
+	}
+}
+
+// rowFromEntry converts an entry to a row.
+func rowFromEntry(name string, e *costEntry) CostRow {
+	cat := e.Category
+	if cat == "" {
+		cat = CategoryForSource(name)
+	}
+	prov, est := e.ProviderUSD, e.EstimatedUSD
+	// Backfill for rows recorded before split tracking (exact+priced legacy).
+	if prov == 0 && est == 0 && e.Priced && e.CostUSD != 0 {
+		if e.Confidence == ConfExact {
+			prov = e.CostUSD
+		} else {
+			est = e.CostUSD
+		}
+	}
+	var cats map[string]float64
+	if len(e.CatUSD) > 0 {
+		cats = make(map[string]float64, len(e.CatUSD))
+		for c, v := range e.CatUSD {
+			cats[c] = v
+		}
+	}
+	return CostRow{Source: name, Category: cat, Calls: e.Calls, InputTok: e.InputTok, OutputTok: e.OutputTok, CachedTok: e.CachedTok, CacheWriteTok: e.CacheWriteTok, CostUSD: e.CostUSD, ProviderUSD: prov, ProviderPriced: e.ProviderPriced || (e.Confidence == ConfExact && e.Priced), EstimatedUSD: est, CatUSD: cats, Priced: e.Priced, Confidence: e.Confidence}
+}
+
+// CategoryTotals aggregates priced USD by category and provider vs estimated.
+type CategoryTotals struct {
+	Main, Subagent, Mashura, Aux float64
+	Provider, Estimated          float64
+	Billed, Total                float64
+	InputTok, CachedTok          int64
+	CacheShare                   float64
+}
+
+// SnapshotDetail returns category/provider totals plus rows.
+func (t *CostTracker) SnapshotDetail() (CategoryTotals, []CostRow) {
+	var ct CategoryTotals
+	if t == nil {
+		return ct, nil
+	}
+	_, rows := t.Snapshot()
+	for _, r := range rows {
+		if !r.Priced {
+			continue
+		}
+		ct.Total += r.CostUSD
+		ct.Provider += r.ProviderUSD
+		ct.Estimated += r.EstimatedUSD
+		if r.Confidence == ConfExact {
+			ct.Billed += r.CostUSD
+		}
+		// Split by the per-record category buckets. A row without buckets
+		// (legacy or restored without them) is attributed to its own category.
+		cats := r.CatUSD
+		if len(cats) == 0 {
+			cats = map[string]float64{r.Category: r.CostUSD}
+		}
+		for c, v := range cats {
+			switch c {
+			case CostCatSubagent:
+				ct.Subagent += v
+			case CostCatMashura:
+				ct.Mashura += v
+			case CostCatAux:
+				ct.Aux += v
+			default:
+				ct.Main += v
+			}
+		}
+	}
+	// Cache share across all rows (including unpriced).
+	_, all := t.Snapshot()
+	for _, r := range all {
+		ct.InputTok += r.InputTok
+		ct.CachedTok += r.CachedTok
+	}
+	if ct.InputTok > 0 {
+		ct.CacheShare = float64(ct.CachedTok) / float64(ct.InputTok)
+	}
+	return ct, rows
+}
+
+// ExportRows returns rows for session persistence.
+func (t *CostTracker) ExportRows() []CostRow {
+	if t == nil {
+		return nil
+	}
+	_, rows := t.Snapshot()
+	return rows
+}
+
+// RestoreRows replaces tracker contents (used on resume; empty = no-op).
+func (t *CostTracker) RestoreRows(rows []CostRow) {
+	if t == nil || len(rows) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.src == nil {
+		t.src = map[string]*costEntry{}
+	}
+	for _, r := range rows {
+		e := &costEntry{Calls: r.Calls, InputTok: r.InputTok, OutputTok: r.OutputTok, CachedTok: r.CachedTok, CacheWriteTok: r.CacheWriteTok, CostUSD: r.CostUSD, ProviderUSD: r.ProviderUSD, ProviderPriced: r.ProviderPriced, EstimatedUSD: r.EstimatedUSD, Category: r.Category, Priced: r.Priced, Confidence: r.Confidence}
+		if e.Category == "" {
+			e.Category = CategoryForSource(r.Source)
+		}
+		e.CatUSD = nil
+		if r.Priced {
+			mergeCatUSD(e, r.CatUSD, e.Category, r.CostUSD)
+		}
+		if existing := t.src[r.Source]; existing != nil {
+			mergeCatUSD(existing, e.CatUSD, e.Category, 0)
+			// Merge to avoid double-count on repeated restore.
+			existing.Calls += e.Calls
+			existing.InputTok += e.InputTok
+			existing.OutputTok += e.OutputTok
+			existing.CachedTok += e.CachedTok
+			existing.CacheWriteTok += e.CacheWriteTok
+			existing.CostUSD += e.CostUSD
+			existing.ProviderUSD += e.ProviderUSD
+			existing.EstimatedUSD += e.EstimatedUSD
+			if e.Priced {
+				existing.Priced = true
+			}
+			if e.ProviderPriced {
+				existing.ProviderPriced = true
+			}
+			existing.Confidence = WeakerConfidence(existing.Confidence, e.Confidence)
+		} else {
+			t.src[r.Source] = e
+		}
+	}
 }
 
 // Snapshot returns the session total (sum of priced sources only — an unpriced
@@ -129,17 +388,7 @@ func (t *CostTracker) Snapshot() (total float64, rows []CostRow) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for name, e := range t.src {
-		rows = append(rows, CostRow{
-			Source:        name,
-			Calls:         e.Calls,
-			InputTok:      e.InputTok,
-			OutputTok:     e.OutputTok,
-			CachedTok:     e.CachedTok,
-			CacheWriteTok: e.CacheWriteTok,
-			CostUSD:       e.CostUSD,
-			Priced:        e.Priced,
-			Confidence:    e.Confidence,
-		})
+		rows = append(rows, rowFromEntry(name, e))
 		if e.Priced {
 			total += e.CostUSD
 		}
@@ -167,17 +416,7 @@ func (t *CostTracker) SnapshotSplit() (billedTotal, estimatedTotal float64, anyB
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for name, e := range t.src {
-		rows = append(rows, CostRow{
-			Source:        name,
-			Calls:         e.Calls,
-			InputTok:      e.InputTok,
-			OutputTok:     e.OutputTok,
-			CachedTok:     e.CachedTok,
-			CacheWriteTok: e.CacheWriteTok,
-			CostUSD:       e.CostUSD,
-			Priced:        e.Priced,
-			Confidence:    e.Confidence,
-		})
+		rows = append(rows, rowFromEntry(name, e))
 		if e.Confidence == ConfExact {
 			anyBilled = true
 			if e.Priced {

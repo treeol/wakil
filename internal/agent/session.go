@@ -47,6 +47,10 @@ type Session struct {
 	PruneReread        int           `json:"prune_reread,omitempty"`
 	PruneMarkCount     int           `json:"prune_mark_count,omitempty"`
 	PruneOverride      string        `json:"prune_override,omitempty"` // "on"|"off" per-chat /prune toggle; "" = inherit config
+
+	// CostRows persists the session cost totals so they survive save/restore
+	// (/resume). Empty on old sessions (resume with no prior cost history).
+	CostRows []proxy.CostRow `json:"cost_rows,omitempty"`
 }
 
 // sessionsDir is where transcripts live: $WAKIL_SESSIONS_DIR, else

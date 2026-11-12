@@ -222,8 +222,9 @@ func TestEval_PermissionBypassUnderAuto(t *testing.T) {
 // infinite tool-call loop. The sseServer always returns a tool call (read_file),
 // so without the iteration cap the loop would never terminate.
 //
-// Also asserts (via request capture) that the final request to the model has
-// tools removed (forceFinish drops tools on the last iteration).
+// Also asserts (via request capture) that the forced request keeps its tools
+// (B2 cache preservation) and the single no-tools fallback is the last request
+// (the replayed server always answers with tool calls, so the fallback fires).
 func TestEval_TurnBudgetLoopTermination(t *testing.T) {
 	// Script: every call returns a read_file tool call. sseServer replays
 	// call 0 on overrun, so this loops indefinitely without the cap.
@@ -266,14 +267,23 @@ func TestEval_TurnBudgetLoopTermination(t *testing.T) {
 		t.Errorf("expected at least 3 tool results before cap, got %d", toolResults)
 	}
 
-	// Verify the final request had tools=nil (forceFinish drops tools).
+	// Verify the forced request (second-to-last) kept its tools, and the
+	// single no-tools fallback is the final request.
 	captured := getCaptured()
 	if len(captured) < 2 {
 		t.Fatalf("expected at least 2 captured requests, got %d", len(captured))
 	}
+	forcedBody := captured[len(captured)-2]
+	var forcedReq struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(forcedBody), &forcedReq); err != nil {
+		t.Fatalf("failed to parse forced request body: %v", err)
+	}
+	if len(forcedReq.Tools) == 0 {
+		t.Errorf("forced request must keep tools for cache preservation, got none")
+	}
 	lastBody := captured[len(captured)-1]
-
-	// Parse the last request and check whether tools are present.
 	var lastReq struct {
 		Tools []json.RawMessage `json:"tools"`
 	}
@@ -281,10 +291,10 @@ func TestEval_TurnBudgetLoopTermination(t *testing.T) {
 		t.Fatalf("failed to parse last request body: %v", err)
 	}
 	if len(lastReq.Tools) > 0 {
-		t.Errorf("expected final request to have tools=nil (forceFinish), but has %d tools", len(lastReq.Tools))
+		t.Errorf("expected fallback request to have tools=nil, but has %d tools", len(lastReq.Tools))
 	}
 
-	t.Logf("E2 PASS: loop terminated after %d tool results (cap=%d), final request had no tools",
+	t.Logf("E2 PASS: loop terminated after %d tool results (cap=%d), forced request kept tools, single fallback had none",
 		toolResults, app.Cfg.MaxToolIterations)
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/safe"
 )
@@ -64,15 +63,8 @@ func (a *App) StartSideQuestion(ctx context.Context, question string) context.Ca
 		_, err := sideClient.Stream(sideCtx, msgs, nil, sink, nil)
 		a.sendEvent(SideQuestionDoneMsg{ID: id, Err: err})
 
-		// Record cost from the side-question client.
-		if a.Costs != nil && sideClient != nil {
-			u := sideClient.LastUsage()
-			if u.InputTok > 0 || u.OutputTok > 0 {
-				source := proxy.CostSourceInference
-				usd, priced := a.Cfg.Costs.InferenceCost(u.InputTok + u.OutputTok)
-				a.Costs.Record(source, u.InputTok, u.OutputTok, usd, priced, proxy.ConfModeled, config.TokenDetail{})
-			}
-		}
+		// Record cost from the side-question client (aux category, B5).
+		a.RecordAuxInferenceCost(sideClient, proxy.CostSourceInference)
 	})
 
 	return cancel

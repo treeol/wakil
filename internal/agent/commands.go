@@ -332,6 +332,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				if app.pruneEnabled() {
 					msg += " · " + app.pruneStatusLine()
 				}
+				msg += " · billed " + app.costStatusLine()
 				return true, false, note(msg)
 			default:
 				return true, false, note("usage: /mode [standard|long-session|status]")

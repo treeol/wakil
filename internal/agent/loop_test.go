@@ -45,7 +45,7 @@ func TestMaxToolIterationsForcesFinish(t *testing.T) {
 	}
 	var injected bool
 	for _, m := range app.Conv {
-		if m.Role == "user" && DerefStr(m.Content) == ToolLimitPrompt {
+		if m.Role == "user" && DerefStr(m.Content) == ForcedFinalPrompt {
 			injected = true
 		}
 	}

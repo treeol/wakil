@@ -366,7 +366,8 @@ type streamChunk struct {
 		// CacheCreationInputTokens is Anthropic's cache-write token count,
 		// surfaced by OpenRouter as a top-level usage field for Anthropic
 		// models. Zero when absent (non-Anthropic models, older servers).
-		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+		CacheCreationInputTokens int64    `json:"cache_creation_input_tokens"`
+		Cost                     *float64 `json:"cost,omitempty"`
 	} `json:"usage"`
 	// Error is OpenRouter's mid-stream error shape: a chunk carrying
 	// {"error": {...}} instead of choices. Surfacing it beats letting the
@@ -381,18 +382,16 @@ type streamChunk struct {
 // when the proxy reported usage; false when counts were estimated from payload
 // length (which downgrades the cost confidence from modeled to approx).
 type UsageStat struct {
-	InputTok     int64
-	OutputTok    int64
-	ReasoningTok int64
-	// CachedTok is the subset of InputTok served from the backend's prompt
-	// cache (prompt_tokens_details.cached_tokens). Zero when the backend
-	// doesn't report it — never estimated, unlike InputTok/OutputTok's
-	// length-based fallback.
-	CachedTok int64
-	// CacheWriteTok is the count of tokens written to the cache this turn
-	// (cache_creation_input_tokens). Zero when absent — never estimated.
+	InputTok      int64
+	OutputTok     int64
+	ReasoningTok  int64
+	CachedTok     int64
 	CacheWriteTok int64
 	Exact         bool
+	// ProviderCostUSD is the provider-reported cost when the proxy/backend
+	// reports it (usage.cost). 0 / HasProviderCost=false = absent.
+	ProviderCostUSD float64
+	HasProviderCost bool
 }
 
 // GroundingEntry is one provenance record attached to a turn. Proxy-sourced
@@ -492,6 +491,16 @@ func ResolveCwd(workdir string) (string, error) {
 		return "", fmt.Errorf("proxy: absolutize working directory %q: %w", workdir, err)
 	}
 	return abs, nil
+}
+
+// orWirePlugin is one OpenRouter plugin entry (id + enabled flag). We send
+// context-compression disabled to prevent OpenRouter from silently dropping
+// middle messages mid-session (Part B item 4). The struct is intentionally
+// minimal: openrouter ignores unknown plugin fields, but we emit exactly what
+// the API expects.
+type orWirePlugin struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
 }
 
 // Client is a thin HTTP client of an OpenAI-compatible chat endpoint —
@@ -897,6 +906,8 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		CachePrompt   *bool             `json:"cache_prompt,omitempty"`
 		ToolChoice    *string           `json:"tool_choice,omitempty"`
 		Reasoning     *ReasoningConfig  `json:"reasoning,omitempty"`
+		SessionID     string            `json:"session_id,omitempty"`
+		Plugins       []orWirePlugin    `json:"plugins,omitempty"`
 	}
 
 	// MaxTokens: use the configured value if set; otherwise apply a default
@@ -951,6 +962,25 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		}
 		if len(metadata) > 0 {
 			body.Metadata = metadata
+		}
+	}
+	// OpenRouter stickiness + compression-off (B1/B4). Gate: same host check as
+	// appAttributionHeaders. Non-OpenRouter stays byte-identical.
+	if isOpenRouterHost(c.BaseURL) {
+		if c.ChatID != "" {
+			body.SessionID = c.ChatID
+		}
+		// Add context-compression disabled; merge with any existing plugins
+		// (none on this path today, but keep the rule for future callers).
+		hasCompression := false
+		for _, p := range body.Plugins {
+			if p.ID == "context-compression" {
+				hasCompression = true
+				break
+			}
+		}
+		if !hasCompression {
+			body.Plugins = append(body.Plugins, orWirePlugin{ID: "context-compression", Enabled: false})
 		}
 	}
 	raw, err := json.Marshal(body)
@@ -1187,6 +1217,10 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 				usage.CachedTok = d.CachedTokens
 			}
 			usage.CacheWriteTok = chunk.Usage.CacheCreationInputTokens
+			if chunk.Usage.Cost != nil {
+				usage.ProviderCostUSD = *chunk.Usage.Cost
+				usage.HasProviderCost = true
+			}
 		}
 		if len(chunk.Choices) > 0 {
 			choice := chunk.Choices[0]

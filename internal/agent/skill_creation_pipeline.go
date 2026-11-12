@@ -336,12 +336,7 @@ func (a *App) defaultSkillPlan(ctx context.Context, prompt string) (string, erro
 		return "", fmt.Errorf("external backend %q not consented", a.SelectedBackend)
 	}
 	msg, err := cl.Stream(ctx, []proxy.Message{{Role: "user", Content: StrPtr(prompt)}}, nil, nil, nil)
-	if a.Costs != nil {
-		if u := cl.LastUsage(); u.InputTok > 0 || u.OutputTok > 0 {
-			usd, priced := a.Cfg.Costs.InferenceCost(u.InputTok + u.OutputTok)
-			a.Costs.Record(proxy.CostSourceInference, u.InputTok, u.OutputTok, usd, priced, proxy.ConfModeled, config.TokenDetail{})
-		}
-	}
+	a.RecordAuxInferenceCost(cl, proxy.CostSourceInference)
 	if err != nil {
 		return "", err
 	}

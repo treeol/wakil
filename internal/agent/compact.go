@@ -347,7 +347,7 @@ Transcript:
 	// have token data to record. Pre-publication failures (marshal, request-
 	// build) leave zero usage (Stream resets at entry), so RecordInferenceCost
 	// no-ops and no stale cost is recorded.
-	a.RecordInferenceCost() // aux inference: summarization/compaction
+	a.RecordAuxInferenceCost(a.Client, proxy.CostSourceInference) // aux inference: summarization/compaction
 	if err != nil {
 		return "", err
 	}

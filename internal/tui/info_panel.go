@@ -242,6 +242,17 @@ func (m tuiModel) costSegments() []string {
 		}
 		segs = append(segs, dimStyle.Render("est")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(cell))
 	}
+	// B6: per-category split (main / subagents / mashura / aux) from
+	// SnapshotDetail, rendered as one combined segment when any category
+	// has priced spend.
+	ct, _ := costs.SnapshotDetail()
+	if ct.Total > 0 {
+		segs = append(segs, dimStyle.Render("split")+" "+
+			dimStyle.Render("main")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDCompact(ct.Main))+" · "+
+			dimStyle.Render("sub")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDCompact(ct.Subagent))+" · "+
+			dimStyle.Render("mash")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDCompact(ct.Mashura))+" · "+
+			dimStyle.Render("aux")+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(proxy.FmtUSDCompact(ct.Aux)))
+	}
 	for _, r := range rows {
 		glyph, color := proxy.CostGlyphStyle(r.Confidence)
 		g := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(glyph)
@@ -288,11 +299,24 @@ func billedSegmentFromInfo(info sessionclient.InfoSnapshot) string {
 	if costs == nil {
 		return ""
 	}
-	billedTotal, _, anyBilled, _, _ := costs.SnapshotSplit()
+	ct, _ := costs.SnapshotDetail()
+	if ct.Billed <= 0 && ct.Total <= 0 && ct.Provider <= 0 {
+		_, _, anyBilled, _, _ := costs.SnapshotSplit()
+		if !anyBilled {
+			return ""
+		}
+		return billedCell(0)
+	}
+	if ct.Billed > 0 {
+		return billedCell(ct.Billed)
+	}
+	// No exact/confidence-billed rows but priced provider/estimated spend:
+	// fall back to the total so the paid figure is still visible.
+	_, _, anyBilled, _, _ := costs.SnapshotSplit()
 	if !anyBilled {
 		return ""
 	}
-	return billedCell(billedTotal)
+	return billedCell(ct.Total)
 }
 
 // shortSourceName derives a compact ≤9 visual-char display label for a source
