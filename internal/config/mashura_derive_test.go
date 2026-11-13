@@ -109,8 +109,8 @@ func TestDeriveMashuraFromLegacy(t *testing.T) {
 }
 
 // TestDeriveMashuraFromLegacyRoleEffort pins the role → override mapping:
-// none/low → low, medium → medium, high+ → high; a role with only a token
-// number creates no override.
+// none/low → low (check keeps its old low default), medium → medium, high+ →
+// high; a role with only a token number creates no override.
 func TestDeriveMashuraFromLegacyRoleEffort(t *testing.T) {
 	cases := []struct {
 		effort string
@@ -129,12 +129,14 @@ func TestDeriveMashuraFromLegacyRoleEffort(t *testing.T) {
 			t.Errorf("effort %s → review override = %+v, want level %s", tc.effort, ov, tc.want)
 		}
 	}
-	// Token-only role creates no override.
+	// Token-only role creates no override (the check default override is
+	// explicit in the derived block — see the check case below, which is
+	// the only override here).
 	cfg := DefaultConfig()
 	cfg.OracleEnabled = true
 	cfg.MashuraPanels = map[string]MashuraPanelConfig{"default": {Models: []string{"openrouter:a/b"}}}
 	cfg.MashuraRoles = map[string]MashuraRoleConfig{"reviewer": {Reasoning: &ReasoningSpec{MaxTokens: 4096}}}
-	if m := deriveMashuraFromLegacy(cfg); len(m.Overrides) != 0 {
-		t.Errorf("token-only role must create no override, got %+v", m.Overrides)
+	if m := deriveMashuraFromLegacy(cfg); len(m.Overrides) != 1 || m.Overrides["check"].Level != "low" {
+		t.Errorf("token-only role must create no reviewer override, got %+v", m.Overrides)
 	}
 }

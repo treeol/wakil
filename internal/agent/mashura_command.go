@@ -38,6 +38,13 @@ func handleMashuraCommand(fields []string, app *App) (handled, quit bool, cmd Cm
 		return true, false, note(mashuraStatus(app))
 	}
 
+	// With the new config block present, legacy panel/map/model/maxtokens/
+	// timeout commands would write values the block path ignores. Report the
+	// fact instead of appearing to succeed (round-2 finding).
+	legacyBlocked := func(sub string) bool {
+		return app.Cfg.Mashura != nil && (sub == "panel" || sub == "map" || sub == "model" || sub == "maxtokens" || sub == "timeout")
+	}
+
 	switch fields[1] {
 	case config.MashuraLevelOff, config.MashuraLevelLow, config.MashuraLevelMedium, config.MashuraLevelHigh:
 		level := fields[1]
@@ -48,13 +55,31 @@ func handleMashuraCommand(fields []string, app *App) (handled, quit bool, cmd Cm
 	case "reset":
 		prev := app.MashuraLevelOverride
 		app.MashuraLevelOverride = ""
-		app.saveRepoState(func(s *RepoState) { s.MashuraLevel = "" })
+		// Reset also clears the stale legacy RepoState mashura fields so a
+		// pre-block repo file cannot resurrect them later (round-2 finding).
+		app.saveRepoState(func(s *RepoState) {
+			s.MashuraLevel = ""
+			s.MashuraPanels = nil
+			s.MashuraToolPanels = nil
+			s.MashuraDefaultModel = ""
+			s.MashuraMaxTokens = 0
+			s.MashuraTimeoutSeconds = 0
+		})
 		return true, false, note(mashuraLevelSetNote(app, prev, ""))
 	case "panel":
+		if legacyBlocked("panel") {
+			return true, false, note("ignored: the new mashura config block is present; /mashura panel and friends do not affect calls while it is")
+		}
 		return handleMashuraPanel(fields, app)
 	case "map":
+		if legacyBlocked("map") {
+			return true, false, note("ignored: the new mashura config block is present; /mashura map does not affect calls while it is")
+		}
 		return handleMashuraMap(fields, app)
 	case "model":
+		if legacyBlocked("model") {
+			return true, false, note("ignored: the new mashura config block is present; /mashura model does not affect calls while it is")
+		}
 		if len(fields) < 3 {
 			return true, false, note("current default model: " + app.Cfg.OracleModel)
 		}
@@ -63,6 +88,9 @@ func handleMashuraCommand(fields []string, app *App) (handled, quit bool, cmd Cm
 		app.saveRepoState(func(s *RepoState) { s.MashuraDefaultModel = model })
 		return true, false, note("default model set: " + model)
 	case "maxtokens":
+		if legacyBlocked("maxtokens") {
+			return true, false, note("ignored: the new mashura config block is present; /mashura maxtokens does not affect calls while it is")
+		}
 		if len(fields) < 3 {
 			return true, false, note(fmt.Sprintf("current max tokens: %d", app.Cfg.OracleMaxTokens))
 		}
@@ -74,6 +102,9 @@ func handleMashuraCommand(fields []string, app *App) (handled, quit bool, cmd Cm
 		app.saveRepoState(func(s *RepoState) { s.MashuraMaxTokens = n })
 		return true, false, note(fmt.Sprintf("max tokens set: %d", n))
 	case "timeout":
+		if legacyBlocked("timeout") {
+			return true, false, note("ignored: the new mashura config block is present; /mashura timeout does not affect calls while it is")
+		}
 		if len(fields) < 3 {
 			return true, false, note(fmt.Sprintf("current timeout: %ds", app.Cfg.OracleTimeoutSeconds))
 		}

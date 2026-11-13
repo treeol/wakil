@@ -544,7 +544,7 @@ type Config struct {
 	// = stalled; total cap 30 minutes. Explicit 0 is preserved via
 	// OracleTimeoutExplicitZero (set in LoadConfig from the raw file probe).
 	OracleTimeoutSeconds      int  `json:"oracle_timeout_seconds,omitempty"` // 0 = idle+total (120s idle, 30min total)
-	OracleTimeoutExplicitZero bool // set in LoadConfig when the file sets the key to 0
+	OracleTimeoutExplicitZero bool `json:"-"`                                // set in LoadConfig when the file sets the key to 0
 	// OpenRouterAPIKeyEnv is the env var name for the OpenRouter API key.
 	// Defaults to "OPENROUTER_API_KEY". Used by mashura panel calls that route
 	// through OpenRouter (provider prefix "openrouter:").
@@ -1566,38 +1566,64 @@ func legacyMashuraKeysPresent(c Config) []string {
 //   - members: the panel the review tool points to; if there is no tool
 //     mapping, the default panel.
 //   - a tool that points to a different panel gets an override with that
-//     panel's members.
+//     panel's members. Tools with no mapping inherit the default panel
+//     (round-2 finding #5: debug/decide/check must not inherit review's
+//     members when review is the only mapped tool).
 //   - a role with an explicit reasoning effort becomes an override level for
-//     the matching tools: none/low → low, medium → medium, high and above →
-//     high. A role with only a token number and no effort creates no override.
+//     the matching tools: none → low, low → low (check's old default), medium
+//     → medium, high and above → high. A role with only a token number and no
+//     effort creates no override. Reviewer low previously sent reasoning;
+//     under the level it means no reasoning — B1's stated mapping, kept.
+//   - check's old default is explicit in the derived block ({low}) so the
+//     cost profile survives. The built-in medium default for reviewer is
+//     unchanged by derivation.
 //   - oracle_enabled: false → level off. Otherwise level medium.
-//   - a legacy panel in fusion (or fallback) mode is treated as a normal panel.
+//   - a legacy panel in fusion mode is treated as a normal panel. Its mode,
+//     server_tools, web_search_engine, server_tool_max_calls, and ~ prefixed
+//     members are NOT carried into the block (the block runs members as a
+//     plain panel); ParseModelPrefix rejects "~" members, so a legacy panel
+//     named in a tool mapping whose members cannot be served is skipped
+//     rather than copied.
 func deriveMashuraFromLegacy(c Config) *MashuraConfig {
 	m := &MashuraConfig{Level: MashuraLevelMedium}
 	if !c.OracleEnabled {
 		m.Level = MashuraLevelOff
 	}
+	servable := func(members []string) bool {
+		for _, mm := range members {
+			if strings.HasPrefix(mm, "~") {
+				return false
+			}
+		}
+		return true
+	}
 	// Members: panel the review tool points to, else the default panel.
 	panelMembers := func(name string) []string {
-		if p, ok := c.MashuraPanels[name]; ok && len(p.Models) > 0 {
+		if p, ok := c.MashuraPanels[name]; ok && len(p.Models) > 0 && servable(p.Models) {
 			return append([]string(nil), p.Models...)
 		}
 		return nil
 	}
+	// Unmapped tools must resolve to the default panel, exactly as before.
+	defaultMembers := panelMembers("default")
 	if name, ok := c.MashuraToolPanels["review"]; ok {
 		if members := panelMembers(name); len(members) > 0 {
 			m.Members = members
 		}
 	}
 	if len(m.Members) == 0 {
-		if members := panelMembers("default"); len(members) > 0 {
-			m.Members = members
-		}
+		m.Members = defaultMembers
 	}
 	// Per-tool member overrides: a tool pointing to a different panel.
 	m.Overrides = map[string]MashuraOverride{}
-	for tool, panelName := range c.MashuraToolPanels {
-		members := panelMembers(panelName)
+	for _, tool := range MashuraToolNames {
+		panelName, mapped := c.MashuraToolPanels[tool]
+		var members []string
+		if mapped {
+			members = panelMembers(panelName)
+		} else {
+			members = defaultMembers
+		}
 		if len(members) == 0 {
 			continue
 		}
@@ -1627,13 +1653,30 @@ func deriveMashuraFromLegacy(c Config) *MashuraConfig {
 		"check":    {"check"},
 	}
 	for role, tools := range toolsForRole {
+		if role == "check" {
+			if _, configured := c.MashuraRoles["check"]; !configured {
+				// Preserve check's old default explicitly so the derived
+				// block's check stays at low (amendment: check's cost profile).
+				for _, tool := range tools {
+					if ov, ok := m.Overrides[tool]; ok {
+						ov.Level = MashuraLevelLow
+						m.Overrides[tool] = ov
+					} else {
+						m.Overrides[tool] = MashuraOverride{Level: MashuraLevelLow}
+					}
+				}
+				continue
+			}
+		}
 		rc, ok := c.MashuraRoles[role]
 		if !ok || rc.Reasoning == nil || rc.Reasoning.Effort == "" {
 			continue // only effort creates an override
 		}
 		level := ""
 		switch rc.Reasoning.Effort {
-		case "none", "low", "minimal", "off":
+		case "none":
+			level = MashuraLevelLow
+		case "low", "minimal", "off":
 			level = MashuraLevelLow
 		case "medium":
 			level = MashuraLevelMedium
@@ -1790,7 +1833,8 @@ func LoadConfig(argv []string) (Config, error) {
 				}
 				// Explicit 0 in the file selects idle+total semantics; without
 				// this probe the merged value 0 is indistinguishable from
-				// DefaultConfig's 300.
+				// DefaultConfig's 300. A MashūraTimeoutSeconds: 0 in the file
+				// means the same via the canonical alias merge below.
 				if probe.OracleTimeoutSeconds != nil && *probe.OracleTimeoutSeconds == 0 {
 					cfg.OracleTimeoutExplicitZero = true
 				}

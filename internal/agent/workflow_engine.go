@@ -219,7 +219,13 @@ func panelFlagsGaps(results []counsel.PanelMemberResult) bool {
 // with a single confirm prompt, runs the panel, records per-model costs, and
 // returns (formatted string, raw results, available). available=false means the
 // oracle could not run (key missing, declined, all members errored).
+// Effective-level off (new block) closes this path too (A2).
 func runWFPanel(ctx context.Context, app *App, headline, question, briefing, panelName string, panel config.MashuraPanelConfig) (string, []counsel.PanelMemberResult, bool) {
+	if app.Cfg.Mashura != nil {
+		if level, _, _ := app.effectiveMashura("review"); level == config.MashuraLevelOff {
+			return "", nil, false
+		}
+	}
 	apiKeys, err := app.mashuraPanelKeys(panel)
 	if err != nil {
 		return err.Error(), nil, false

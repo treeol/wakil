@@ -722,7 +722,11 @@ func filterNames(in []string, keep map[string]bool) []string {
 
 // defaultSkillReview runs the configured Mashūra panel.
 func (a *App) defaultSkillReview(ctx context.Context, question, briefing string) ([]skillReviewResult, string, error) {
-	if !a.Cfg.OracleEnabled {
+	if a.Cfg.Mashura != nil {
+		if level, _, _ := a.effectiveMashura("review"); level == config.MashuraLevelOff {
+			return nil, "", errors.New("Mashūra is off (level off)")
+		}
+	} else if !a.Cfg.OracleEnabled {
 		return nil, "", errors.New("Mashūra is disabled")
 	}
 	_, panel, ok := a.resolvePanel("mashura__review", a.Cfg.SkillCreation.Panel)

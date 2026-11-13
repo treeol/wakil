@@ -780,6 +780,8 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				if err := app.MCP.Reconnect(context.Background(), name); err != nil {
 					return SysNoteMsg{Text: fmt.Sprintf("reconnect %q: %v", name, err)}
 				}
+				// The reconnect rebuilds with the per-repo level live (round-2
+				// finding #8: the gate must honor the restored override, not "").
 				toolList := BuildTools(app.Cfg, app.Exec.Cwd(), app.MCP, app.MashuraLevelOverride)
 				return MCPReconnectedMsg{Name: name, Tools: toolList}
 			}

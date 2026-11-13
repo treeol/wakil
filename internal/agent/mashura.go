@@ -612,6 +612,12 @@ func (a *App) resolvePanel(toolName, override string) (name string, panel config
 		if override != "" {
 			if a.Cfg.MashuraPanels != nil {
 				if p, exists := a.Cfg.MashuraPanels[override]; exists && len(p.Models) > 0 {
+					// Legacy fusion mode was removed: a named fusion panel is
+					// a normal panel (round-2 finding: must not fail with an
+					// unknown-mode error from RunPanel).
+					if p.Mode == "fusion" {
+						p.Mode = "panel"
+					}
 					if p.Mode == "" {
 						p.Mode = "panel"
 					}
@@ -1380,17 +1386,32 @@ func (a *App) mashuraAvailable() bool {
 
 // effectiveMashura returns the effective (level, members, source) for a tool
 // from the new config block and the per-repo level. With no block it returns
-// the default level (medium) and the legacy fallback member (caller may
-// ignore members).
+// the default level (medium) and the legacy fallback member. Fallback member
+// counts: an empty block members list resolves lazily via fallbackModel, so
+// oracle_enabled+key-only legacy configs keep their tools (round-2 finding #1).
 func (a *App) effectiveMashura(tool string) (string, []string, string) {
 	if a.Cfg.Mashura == nil {
-		return config.MashuraLevelDefault, nil, "default"
+		return config.MashuraLevelDefault, []string{a.fallbackModel()}, "default"
 	}
 	level, members, source := a.Cfg.ResolveEffective(tool, a.MashuraLevelOverride)
 	if len(members) == 0 {
 		members = []string{a.fallbackModel()}
 	}
 	return level, members, source
+}
+
+// ceilingRank orders auto-counsel modes for the level ceiling comparison:
+// off < suggest < auto.
+func ceilingRank(mode string) int {
+	switch mode {
+	case "off":
+		return 0
+	case "suggest":
+		return 1
+	case "auto":
+		return 2
+	}
+	return 0
 }
 
 // maybeSuggestDebug offers mashura__debug when the rolling trace shows a struggle
@@ -1408,6 +1429,12 @@ func (a *App) effectiveMashura(tool string) (string, []string, string) {
 func (a *App) maybeSuggestDebug(ctx context.Context) {
 	if !a.mashuraAvailable() {
 		return // no mashūra available
+	}
+	// Level ceiling (round-2 finding #11): off = silent, low = suggest only.
+	if a.Cfg.Mashura != nil {
+		if level, _, _ := a.effectiveMashura("review"); level == config.MashuraLevelOff {
+			return
+		}
 	}
 	symptom, ok := DetectStruggle(a.recentTraces)
 	if !ok {
@@ -1429,6 +1456,16 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			mode = "auto"
 		} else {
 			mode = "off"
+		}
+	}
+	// Level ceiling: the level caps the user's mode (off → silent,
+	// low → suggest at most, medium/high → as chosen).
+	if a.Cfg.Mashura != nil {
+		if level, _, _ := a.effectiveMashura("review"); level != "" {
+			ceiling := config.LevelAutoCounsel(level)
+			if ceilingRank(ceiling) < ceilingRank(mode) {
+				mode = ceiling
+			}
 		}
 	}
 

@@ -423,9 +423,14 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 	}
 
 	// Mashūra settings (TUI-only, endpoint-independent).
-	// When the new config block is present it wins: the five legacy RepoState
-	// mashura fields are skipped with one notice, so a stale repo file cannot
-	// resurrect legacy panels over the block.
+	// When the new config block is present it wins — EXCEPT the RepoState
+	// fields themselves are restored into the legacy Cfg fields first (the
+	// legacy fields are the internal representation when no block exists),
+	// and derivation in LoadConfig already read config, never RepoState.
+	// Skipping here would drop parameters the derivation left behind; so the
+	// skip applies RepoState→Cfg only when the block is present, exactly as
+	// before. (A derived block from config is indistinguishable from an
+	// authored one at this point — both win over RepoState.)
 	if a.Cfg.Mashura != nil {
 		if len(st.MashuraPanels) > 0 || len(st.MashuraToolPanels) > 0 || st.MashuraDefaultModel != "" || st.MashuraMaxTokens > 0 || st.MashuraTimeoutSeconds > 0 {
 			applied = append(applied, "mashura-legacy-repo ignored (config block present)")

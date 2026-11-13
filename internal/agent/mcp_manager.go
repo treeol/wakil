@@ -917,24 +917,31 @@ func mashuraGateEnabled(cfg config.Config, repoLevel string) bool {
 	return cfg.OracleEnabled
 }
 
-// memberNonEmpty reports the members half of the unified gate: the effective
-// member list is non-empty. With no new block, legacy behavior is that a
-// usable default panel (or built-in fallback, which always yields one member)
-// exists; BuildTools' legacy path is subsumed by the unified predicate, so
-// this returns true and the key check does the real gating, matching today
-// (fallback member counts).
+// memberNonEmpty reports the members half of the unified gate. With the new
+// block present, an empty members list means the built-in fallback member
+// (exactly what resolvePanel's fallback path yields — OracleModel default or
+// MashuraFallbackModel), which counts always. With no block, the legacy
+// default panel (or that same fallback) is the member set.
 func memberNonEmpty(cfg config.Config, repoLevel string) bool {
 	if cfg.Mashura != nil {
 		_, members, _ := cfg.ResolveEffective("review", repoLevel)
-		return len(members) > 0
+		if len(members) > 0 {
+			return true
+		}
+		// Lazy fallback member (fallbackModel logic cannot live here — it
+		// reads env and config only, exactly as in resolvePanel's fallback).
+		if cfg.MashuraFallbackModel != "" {
+			return true
+		}
+		return cfg.OracleModel != "" || cfg.Mashura != nil
 	}
 	return true
 }
 
-// keyPresent reports whether the OpenRouter key named by
-// openrouter_api_key_env is present. The legacy oracle_api_key_env is part
-// of the legacy gate only (preserved for old configs); the new path reads
-// only the OpenRouter key, as mashuraPanelKeys does.
+// keyPresent reports whether any API key the panel needs is present.
+// New block path: the OpenRouter key (named by openrouter_api_key_env) —
+// exactly what mashuraPanelKeys will require at call time. Legacy path:
+// either key, as before.
 func keyPresent(cfg config.Config) bool {
 	if cfg.Mashura != nil {
 		return os.Getenv(cfg.OpenRouterAPIKeyEnv) != ""

@@ -20,9 +20,9 @@ func hasMashuraTool(tools []proxy.Tool) bool {
 }
 
 // TestBuildToolsMashuraLevelGate pins Group C4's unified predicate: with the
-// new block, tools are offered iff effective level != off AND members
-// non-empty AND the OpenRouter key is present. oracle_api_key_env is not
-// part of it.
+// new block, tools are offered iff effective level != off AND effective member
+// list non-empty (fallback member counts) AND the OpenRouter key is present.
+// oracle_api_key_env is not part of it.
 func TestBuildToolsMashuraLevelGate(t *testing.T) {
 	// The gate reads the OpenRouter key named by the config's
 	// openrouter_api_key_env — the test configs below must name it, or the
@@ -40,7 +40,9 @@ func TestBuildToolsMashuraLevelGate(t *testing.T) {
 		{"level medium with key", keyEnvCfg(config.Config{Mashura: &config.MashuraConfig{Level: "medium", Members: members}}), "", true},
 		{"level off", keyEnvCfg(config.Config{Mashura: &config.MashuraConfig{Level: "off", Members: members}}), "", false},
 		{"repo off overrides config medium", keyEnvCfg(config.Config{Mashura: &config.MashuraConfig{Level: "medium", Members: members}}), "off", false},
-		{"empty members", keyEnvCfg(config.Config{Mashura: &config.MashuraConfig{Level: "medium"}}), "", false},
+		// Empty members falls back to the lazy fallback member (A4) — tools
+		// ARE offered, matching today's fallback-based behavior.
+		{"empty members (fallback counts)", keyEnvCfg(config.Config{Mashura: &config.MashuraConfig{Level: "medium"}}), "", true},
 		{"empty level defaults medium", keyEnvCfg(config.Config{Mashura: &config.MashuraConfig{Members: members}}), "", true},
 	}
 	for _, tc := range cases {
