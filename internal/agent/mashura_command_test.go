@@ -299,21 +299,21 @@ func TestMashuraCmdPanelSetMode(t *testing.T) {
 		"chg": {Models: []string{"anthropic:m"}, Mode: "panel"},
 	}
 	handled, _, cmd := handleMashuraCommand(
-		[]string{"/mashura", "panel", "chg", "--mode", "fusion"}, app)
+		[]string{"/mashura", "panel", "chg", "--mode", "fallback"}, app)
 	if !handled {
 		t.Fatal("not handled")
 	}
 	text := cmdNote(t, cmd)
-	if !strings.Contains(text, "fusion") {
+	if !strings.Contains(text, "fallback") {
 		t.Errorf("expected mode set confirmation: %q", text)
 	}
-	if p := app.Cfg.MashuraPanels["chg"]; p.Mode != "fusion" {
-		t.Errorf("mode = %q, want fusion", p.Mode)
+	if p := app.Cfg.MashuraPanels["chg"]; p.Mode != "fallback" {
+		t.Errorf("mode = %q, want fallback", p.Mode)
 	}
 	// Persisted.
 	st := mustLoadRepoState(t, app.SessionWorkspace())
-	if p := st.MashuraPanels["chg"]; p.Mode != "fusion" {
-		t.Errorf("persisted mode = %q, want fusion", p.Mode)
+	if p := st.MashuraPanels["chg"]; p.Mode != "fallback" {
+		t.Errorf("persisted mode = %q, want fallback", p.Mode)
 	}
 }
 

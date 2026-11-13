@@ -339,7 +339,7 @@ func TestMashuraCallTimeoutDebate(t *testing.T) {
 	if d := a.mashuraCallTimeout("debate"); d != 2*30*time.Second {
 		t.Errorf("mashuraCallTimeout(debate) = %v, want 60s (2×)", d)
 	}
-	for _, mode := range []string{"panel", "fallback", "fusion", ""} {
+	for _, mode := range []string{"panel", "fallback", ""} {
 		if d := a.mashuraCallTimeout(mode); d != 30*time.Second {
 			t.Errorf("mashuraCallTimeout(%q) = %v, want 30s (1×)", mode, d)
 		}

@@ -74,7 +74,7 @@ func NoteAnthropicKeyIgnored(out interface{ Write([]byte) (int, error) }, envVar
 	})
 }
 
-// Mashūra counsel tools. The single oracle__ask tool became this family: each
+// Mashūra counsel tools. Each
 // tool differs only in how Wakil deterministically assembles the briefing from
 // authoritative, Wakil-known context. The model supplies intent; Wakil supplies
 // the truth — counsel quality tracks briefing quality, not question phrasing.
@@ -218,7 +218,7 @@ func mashuraToolDefs() []proxy.Tool {
 // is injected into the conversation before the next model request, or can be
 // retrieved early via check_pending. Cost is committed at worker terminal
 // completion; grounding is committed at delivery (drain/check_pending) — both
-// exactly once. The legacy oracle__ask alias is handled as a review.
+// exactly once.
 //
 // Fallbacks that keep the call synchronous (loudly): the async registry is full
 // (asyncMaxActive reached) or stopping. Auto-counsel (maybeSuggestDebug) uses
@@ -275,7 +275,7 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		question, briefing, receipts, err = a.mashuraDecide(ctx, tc)
 	case "mashura__check":
 		question, briefing, receipts, err = a.mashuraCheck(ctx, tc)
-	default: // mashura__review and the legacy oracle__ask alias
+	default: // mashura__review
 		question, briefing, receipts, err = a.mashuraReview(ctx, tc)
 	}
 	if err != nil {
@@ -303,15 +303,13 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 	// Log read receipts now that the user approved (pre-panel, post-gate).
 	a.mashuraLogReceipts(ctx, receipts)
 
-	// Run panel; for fusion mode this is a single OpenRouter call.
+	// Run panel.
 	// Keys, briefing snapshot, and config are captured NOW (issue time) — the
 	// worker sends exactly what was approved (TOCTOU bound by the pre-gate
 	// briefing build).
 	ccfg := counsel.PanelCallConfig{
 		MaxTokens:          maxTokens,
 		TimeoutSeconds:     a.Cfg.OracleTimeoutSeconds,
-		FusionJudge:        panel.FusionJudge,
-		FusionMaxToolCalls: panel.FusionMaxToolCalls,
 		ServerTools:        panel.ServerTools,
 		WebSearchEngine:    panel.WebSearchEngine,
 		ServerToolMaxCalls: panel.ServerToolMaxCalls,
@@ -606,9 +604,6 @@ func (a *App) mashuraKeyErrorMessage(toolName, panelName string, keyErr error) s
 // because the fallback hardcoded "anthropic:" + OracleModel.
 func (a *App) resolvePanel(toolName, override string) (name string, panel config.MashuraPanelConfig, ok bool) {
 	short := strings.TrimPrefix(toolName, "mashura__")
-	if toolName == "oracle__ask" {
-		short = "review"
-	}
 	// New config block: the effective members come from the level resolver
 	// (lazy fallback — never frozen into a legacy "default" panel). The mode
 	// is panel (debate added by runMashuraCore at high level). Legacy panels
@@ -1253,9 +1248,6 @@ func (a *App) mashuraCheck(ctx context.Context, tc proxy.ToolCall) (question, br
 // the shared base (OracleMaxTokens).
 func (a *App) mashuraMaxTokensFor(name string) int {
 	short := strings.TrimPrefix(name, "mashura__")
-	if name == "oracle__ask" {
-		short = "review"
-	}
 	if v := a.Cfg.MashuraToolMaxTokens[short]; v > 0 {
 		return v
 	}
@@ -1279,9 +1271,6 @@ func (a *App) mashuraMaxTokensFor(name string) int {
 // more than 16k reasoning tokens.
 func (a *App) mashuraReasoningFor(name string) *config.ReasoningSpec {
 	short := strings.TrimPrefix(name, "mashura__")
-	if name == "oracle__ask" {
-		short = "review"
-	}
 	// New config block present: the level (with the check exception) owns
 	// reasoning. Per-model/per-role reasoning is ignored in this mode.
 	if a.Cfg.Mashura != nil {

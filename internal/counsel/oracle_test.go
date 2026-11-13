@@ -177,50 +177,6 @@ func TestCallOpenRouter_FinishReasonLength(t *testing.T) {
 	}
 }
 
-// ─── callFusion error paths ──────────────────────────────────────────────────
-
-func TestCallFusion_HTTPError(t *testing.T) {
-	srv := httpErrorTestServer(t, http.StatusInternalServerError, "fusion failed")
-	defer srv.Close()
-
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
-	_, _, err := callFusion(context.Background(), []string{"model-a"}, "key", "q", "b", ccfg)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "fusion failed") {
-		t.Errorf("error should contain fusion failed, got: %v", err)
-	}
-}
-
-func TestCallFusion_NoChoices(t *testing.T) {
-	srv := openRouterSSETestServer(t, "", 10, 5)
-	defer srv.Close()
-
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
-	_, _, err := callFusion(context.Background(), []string{"model-a"}, "key", "q", "b", ccfg)
-	if err == nil {
-		t.Fatal("expected empty-response error")
-	}
-	if !strings.Contains(err.Error(), "empty response") {
-		t.Errorf("error should mention empty response, got: %v", err)
-	}
-}
-
-func TestCallFusion_EmptyResponse(t *testing.T) {
-	srv := openRouterSSETestServer(t, "", 10, 5)
-	defer srv.Close()
-
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv)}
-	_, _, err := callFusion(context.Background(), []string{"model-a"}, "key", "q", "b", ccfg)
-	if err == nil {
-		t.Fatal("expected empty-response error")
-	}
-	if !strings.Contains(err.Error(), "empty response") {
-		t.Errorf("error should mention empty response, got: %v", err)
-	}
-}
-
 // ─── RunPanel error surfaces ─────────────────────────────────────────────────
 
 // TestRunPanelFallbackAllFail verifies that when ALL members fail in fallback

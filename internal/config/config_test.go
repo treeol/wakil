@@ -987,9 +987,10 @@ func TestLoadConfig_LegacyOracleEndpointIgnored(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_ServerToolsOnFusionRejected verifies that setting
-// server_tools on a fusion panel is rejected at load time.
-func TestLoadConfig_ServerToolsOnFusionRejected(t *testing.T) {
+// TestLoadConfig_ServerToolsOnFusionIgnored verifies that server_tools on a
+// legacy panel with mode "fusion" no longer errors: fusion was removed, so
+// the panel is treated as a normal panel and server tools are accepted.
+func TestLoadConfig_ServerToolsOnFusionIgnored(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	cfgContent := `{
@@ -997,7 +998,7 @@ func TestLoadConfig_ServerToolsOnFusionRejected(t *testing.T) {
 		"oracle_enabled": true,
 		"mashura_panels": {
 			"research": {
-				"models": ["~anthropic/claude"],
+				"models": ["openrouter:anthropic/claude-sonnet-4"],
 				"mode": "fusion",
 				"server_tools": ["openrouter:web_search"]
 			}
@@ -1006,12 +1007,12 @@ func TestLoadConfig_ServerToolsOnFusionRejected(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := LoadConfig([]string{"--config", cfgPath, "--exec", "direct"})
-	if err == nil {
-		t.Fatal("expected error for server_tools on fusion panel, got nil")
+	cfg, err := LoadConfig([]string{"--config", cfgPath, "--exec", "direct"})
+	if err != nil {
+		t.Fatalf("legacy fusion panel must load as a normal panel: %v", err)
 	}
-	if !strings.Contains(err.Error(), "fusion") {
-		t.Fatalf("expected fusion error, got: %v", err)
+	if p := cfg.MashuraPanels["research"]; len(p.ServerTools) != 1 || p.ServerTools[0] != "openrouter:web_search" {
+		t.Errorf("server tools = %+v", p)
 	}
 }
 

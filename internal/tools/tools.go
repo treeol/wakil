@@ -518,13 +518,12 @@ func IsEditTool(name string) bool {
 }
 
 // IsMashuraTool reports whether name is one of the mashūra counsel tools (the
-// mashura__* family) or the legacy oracle__ask alias kept for back-compat. Every
-// such tool goes through the confirm gate (auto-approved in /auto mode with a
-// visible ⚡ auto note), and its response is kept in full (capOrStub never
-// truncates it).
+// mashura__* family). Every such tool goes through the confirm gate
+// (auto-approved in /auto mode with a visible ⚡ auto note), and its response
+// is kept in full (capOrStub never truncates it).
 func IsMashuraTool(name string) bool {
 	switch name {
-	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask":
+	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check":
 		return true
 	}
 	return false

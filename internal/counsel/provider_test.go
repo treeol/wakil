@@ -188,25 +188,6 @@ func TestOpenRouterTruncationEmptyContentReturnsUsage(t *testing.T) {
 	}
 }
 
-// TestFusionTruncationReturnsUsage verifies that a length-truncated fusion
-// response returns actual usage.
-func TestFusionTruncationReturnsUsage(t *testing.T) {
-	srv := lengthTestServer(t, "")
-	defer srv.Close()
-
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
-	_, usage, err := callFusion(context.Background(), []string{"~anthropic/claude"}, "key", "q", "ctx", ccfg)
-	if err == nil {
-		t.Fatal("expected truncation error")
-	}
-	if !strings.Contains(err.Error(), "truncated at max_tokens") {
-		t.Errorf("error = %v, want truncation message", err)
-	}
-	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
-		t.Errorf("truncation usage = %+v, want {10, 5}", usage)
-	}
-}
-
 // TestRunPanelModeCollectsAll verifies that panel mode queries all members and
 // collects every result — including errors from failing members — without stopping.
 // With WP-7.7 parallelization, members run concurrently; the test server
@@ -312,146 +293,6 @@ func TestRunPanelFallbackStopsOnSuccess(t *testing.T) {
 	}
 	if results[1].Model != "secondary" {
 		t.Errorf("fallback: results[1].Model = %q, want 'secondary'", results[1].Model)
-	}
-}
-
-// TestFusionRequestShape verifies that callFusion sends the correct OpenRouter
-// Fusion request: model="openrouter/fusion", plugins block with analysis_models,
-// judge, max_tool_calls, and Bearer auth.
-func TestFusionRequestShape(t *testing.T) {
-	var reqBody []byte
-	var authHeader string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader = r.Header.Get("Authorization")
-		reqBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"fusion analysis\"},\"finish_reason\":null}]}\n\n")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
-		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":10,\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n")
-		fmt.Fprint(w, "data: [DONE]\n\n")
-	}))
-	defer srv.Close()
-
-	analysisModels := []string{
-		"~anthropic/claude-opus-latest",
-		"~openai/gpt-latest",
-		"~google/gemini-pro-latest",
-	}
-	ccfg := PanelCallConfig{
-		MaxTokens:          1024,
-		TimeoutSeconds:     5,
-		Transport:          transportForTest(srv),
-		FusionJudge:        "~anthropic/claude-opus-latest",
-		FusionMaxToolCalls: 4,
-	}
-
-	answer, usage, err := callFusion(context.Background(), analysisModels, "test-key", "question?", "ctx", ccfg)
-	if err != nil {
-		t.Fatalf("callFusion: %v", err)
-	}
-	if answer != "fusion analysis" {
-		t.Errorf("answer = %q", answer)
-	}
-	if usage.InputTokens != 20 || usage.OutputTokens != 10 {
-		t.Errorf("usage = %+v", usage)
-	}
-	if authHeader != "Bearer test-key" {
-		t.Errorf("Authorization = %q", authHeader)
-	}
-
-	// Decode and verify the request body.
-	var req orReq
-	if e := json.Unmarshal(reqBody, &req); e != nil {
-		t.Fatalf("request body not valid JSON: %v\n%s", e, reqBody)
-	}
-	if req.Model != "openrouter/fusion" {
-		t.Errorf("model = %q, want openrouter/fusion", req.Model)
-	}
-	if req.MaxTokens != 1024 {
-		t.Errorf("max_tokens = %d, want 1024", req.MaxTokens)
-	}
-	if len(req.Plugins) != 1 {
-		t.Fatalf("plugins count = %d, want 1", len(req.Plugins))
-	}
-	p := req.Plugins[0]
-	if p.ID != "fusion" {
-		t.Errorf("plugin id = %q, want fusion", p.ID)
-	}
-	if len(p.AnalysisModels) != 3 {
-		t.Errorf("analysis_models count = %d, want 3", len(p.AnalysisModels))
-	}
-	if p.AnalysisModels[0] != "~anthropic/claude-opus-latest" {
-		t.Errorf("analysis_models[0] = %q", p.AnalysisModels[0])
-	}
-	if p.Model != "~anthropic/claude-opus-latest" {
-		t.Errorf("judge model = %q, want ~anthropic/claude-opus-latest", p.Model)
-	}
-	if p.MaxToolCalls != 4 {
-		t.Errorf("max_tool_calls = %d, want 4", p.MaxToolCalls)
-	}
-	// Messages must be system + user.
-	if len(req.Messages) != 2 || req.Messages[0].Role != "system" || req.Messages[1].Role != "user" {
-		t.Errorf("messages = %+v", req.Messages)
-	}
-}
-
-// TestRunPanelFusionMode verifies that RunPanel with mode="fusion" makes exactly
-// one call and returns a single result labeled "openrouter/fusion".
-func TestRunPanelFusionMode(t *testing.T) {
-	var mu sync.Mutex
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"synthesized\"},\"finish_reason\":null}]}\n\n")
-		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
-		fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n")
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-	}))
-	defer srv.Close()
-
-	models := []string{"~anthropic/claude-opus-latest", "~openai/gpt-latest"}
-	apiKeys := map[string]string{"openrouter": "test-key"}
-	ccfg := PanelCallConfig{MaxTokens: 512, TimeoutSeconds: 5, Transport: transportForTest(srv)}
-
-	results := RunPanel(context.Background(), models, "fusion", "question?", "briefing", ccfg, apiKeys)
-
-	mu.Lock()
-	got := callCount
-	mu.Unlock()
-	if got != 1 {
-		t.Errorf("fusion mode: expected exactly 1 HTTP call, got %d", got)
-	}
-	if len(results) != 1 {
-		t.Fatalf("fusion mode: expected 1 result, got %d", len(results))
-	}
-	if results[0].Model != "openrouter/fusion" {
-		t.Errorf("result model = %q, want openrouter/fusion", results[0].Model)
-	}
-	if results[0].Answer != "synthesized" {
-		t.Errorf("result answer = %q", results[0].Answer)
-	}
-	if results[0].Err != nil {
-		t.Errorf("result error = %v", results[0].Err)
-	}
-}
-
-// TestPanelDetailFusionMode verifies the gate detail for fusion panels.
-func TestPanelDetailFusionMode(t *testing.T) {
-	models := []string{"~anthropic/claude-opus-latest", "~openai/gpt-latest"}
-	detail := PanelDetail("my-fusion", models, "fusion", "the question", "briefing ctx", nil)
-	if !strings.Contains(detail, "fusion") {
-		t.Error("fusion detail should mention fusion mode")
-	}
-	if !strings.Contains(detail, "~anthropic/claude-opus-latest") {
-		t.Error("fusion detail should list analysis models")
-	}
-	if !strings.Contains(detail, "the question") {
-		t.Error("fusion detail should include question")
 	}
 }
 
@@ -1098,16 +939,5 @@ func TestOpenRouter200WithErrorBody(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "provider overloaded") {
 		t.Errorf("error should contain provider message, got: %v", err)
-	}
-}
-
-// TestPanelDetailFusionNoToolsDisclosure verifies that PanelDetail does NOT
-// show a tools disclosure for fusion mode even when serverTools is non-empty
-// (the disclosure would be misleading — fusion doesn't use server tools).
-func TestPanelDetailFusionNoToolsDisclosure(t *testing.T) {
-	detail := PanelDetail("fusion-panel", []string{"~anthropic/claude"}, "fusion", "q", "ctx",
-		[]string{"openrouter:web_search"})
-	if strings.Contains(detail, "tools:") {
-		t.Error("fusion PanelDetail should NOT show tools disclosure (server tools not wired for fusion)")
 	}
 }

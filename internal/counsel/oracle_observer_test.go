@@ -111,26 +111,3 @@ func TestRunPanelObserver_PanickingObserver(t *testing.T) {
 		t.Errorf("observer called %d times, want 4 (panics recovered)", got)
 	}
 }
-
-// TestRunPanelObserver_FusionMode verifies fusion fires one Start + one Done
-// with the fusion model label.
-func TestRunPanelObserver_FusionMode(t *testing.T) {
-	// Fusion uses OpenRouter endpoint.
-	srv := openRouterSSETestServer(t, "fusion answer", 1, 1)
-	defer srv.Close()
-
-	col := &panelEventCollector{}
-	ccfg := PanelCallConfig{MaxTokens: 256, TimeoutSeconds: 5, Transport: transportForTest(srv), OnMemberEvent: col.sink()}
-	RunPanel(context.Background(), []string{"a", "b"}, "fusion", "q", "b", ccfg, map[string]string{"openrouter": "key"})
-
-	evs := col.snapshot()
-	if len(evs) != 2 {
-		t.Fatalf("expected 2 fusion events (start+done), got %d: %+v", len(evs), evs)
-	}
-	if evs[0].Kind != PanelMemberStart || evs[1].Kind != PanelMemberDone {
-		t.Errorf("fusion events should be [start done], got [%s %s]", evs[0].Kind, evs[1].Kind)
-	}
-	if evs[0].Model != "openrouter:openrouter/fusion" {
-		t.Errorf("fusion start model = %q", evs[0].Model)
-	}
-}

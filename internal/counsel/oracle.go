@@ -119,14 +119,12 @@ type PanelCallConfig struct {
 	TimeoutSeconds     int    // 0 → counselStreamTotalCap (30min) default
 	OpenRouterEndpoint string // "" = "https://openrouter.ai/api/v1/chat/completions"
 	Transport          *proxy.Client
-	FusionJudge        string // fusion mode: judge model; "" = OpenRouter default
-	FusionMaxToolCalls int    // fusion mode: tool-call steps per model (1–16); 0 = default (8)
 
 	// ServerTools enables OpenRouter server-side tools (web_search, web_fetch,
 	// etc.) for OpenRouter panel members. The model decides when to call them;
 	// OpenRouter executes server-side and returns the final text. No
-	// client-side tool loop is needed. Only applies to the callOpenRouter
-	// path (panel/fallback/debate modes), NOT to fusion.
+	// client-side tool loop is needed. Applies to the callOpenRouter path
+	// (panel/fallback/debate modes).
 	ServerTools        []string
 	WebSearchEngine    string // engine for openrouter:web_search; "" = "auto"
 	ServerToolMaxCalls int    // max server-tool steps per request; 0 = OpenRouter default (30)
@@ -188,12 +186,8 @@ type PanelCallConfig struct {
 	SessionID   string
 	// UseCache enables debate-only prompt caching: Anthropic cache_control on
 	// the briefing block and OpenRouter session_id. Set by RunPanel only for
-	// debate mode; all other modes and fusion leave it false.
+	// debate mode; all other modes leave it false.
 	UseCache bool
-	// IsFusion marks the fusion member (set in RunPanel's fusion branch).
-	// A fusion VOID is never retried by runMember: an empty/limit retry
-	// would send an identical request to the same judge.
-	IsFusion bool
 }
 
 // PanelMemberEventKind discriminates async-job progress events.
@@ -208,10 +202,10 @@ const (
 )
 
 // PanelMemberEvent is an optional observer event fired as panel members progress.
-// Round is 0 for panel/fallback/fusion, 1 or 2 for debate (debate reuses slot
+// Round is 0 for panel/fallback, 1 or 2 for debate (debate reuses slot
 // indices across rounds; round disambiguates a member's two calls). Model is the
-// "provider:model" prefix string (or "openrouter:openrouter/fusion" for fusion).
-// Text is currently empty and reserved for future delta/detail payloads.
+// "provider:model" prefix string. Text is currently empty and reserved for
+// future delta/detail payloads.
 type PanelMemberEvent struct {
 	Slot  int
 	Round int
@@ -275,10 +269,6 @@ var panelOperationCounter atomic.Int64
 //
 // panel mode: queries all members in parallel, collects all results.
 // fallback mode: queries in order, stops on first success.
-// fusion mode: sends ONE OpenRouter Fusion request (models → analysis_models);
-//
-//	OpenRouter runs the panel in parallel internally and returns the judge's
-//	structured analysis.
 //
 // Each member in panel/fallback receives an identical briefing — independent
 // opinions, never chained.
@@ -289,10 +279,10 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 	// Validate mode — fail closed instead of silently treating unknown modes
 	// as panel mode (a typo like "debtae" should not run a silent panel call).
 	switch mode {
-	case "fusion", "fallback", "panel", "debate", "":
+	case "fallback", "panel", "debate", "":
 		// valid
 	default:
-		err := fmt.Errorf("unknown panel mode %q (expected panel, fallback, fusion, or debate)", mode)
+		err := fmt.Errorf("unknown panel mode %q (expected panel, fallback, or debate)", mode)
 		results := make([]PanelMemberResult, len(models))
 		for i, pm := range models {
 			_, model := ParseModelPrefix(pm)
@@ -308,26 +298,9 @@ func RunPanel(ctx context.Context, models []string, mode, question, briefing str
 		ccfg.OperationID = fmt.Sprintf("panel-%d", panelOperationCounter.Add(1))
 	}
 	// Debate-only caching/session affinity (item 5): only debate mode sets
-	// UseCache; panel/fallback/fusion stay on the uncached single-string path.
+	// UseCache; panel/fallback stay on the uncached single-string path.
 	if mode == "debate" {
 		ccfg.UseCache = true
-	}
-
-	if mode == "fusion" {
-		// Single OpenRouter Fusion call; models become the analysis panel.
-		ccfg.IsFusion = true
-		notifyMemberEvent(ccfg, PanelMemberEvent{Slot: 0, Model: "openrouter:openrouter/fusion", Kind: PanelMemberStart})
-		res := runMember(ctx, "openrouter:openrouter/fusion", "openrouter", "openrouter/fusion", question, briefing, "", ccfg, apiKeys, func(c context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
-			fc := ccfg
-			fc.MaxTokens = maxTok
-			return callFusion(c, models, apiKeys["openrouter"], q, b+ap, fc)
-		})
-		kind := PanelMemberDone
-		if res.Err != nil {
-			kind = PanelMemberError
-		}
-		notifyMemberEvent(ccfg, PanelMemberEvent{Slot: 0, Model: "openrouter:openrouter/fusion", Kind: kind})
-		return []PanelMemberResult{res}
 	}
 
 	// Debate mode: two-round critique-of-critique.
@@ -661,22 +634,13 @@ func callOpenRouter(ctx context.Context, model, apiKey, question, briefing, appe
 	return orChat(ctx, req, apiKey, "openrouter", ccfg)
 }
 
-// orFusionPlugin is the "fusion" plugin block sent in the OpenRouter request.
-type orFusionPlugin struct {
-	ID             string   `json:"id"`
-	AnalysisModels []string `json:"analysis_models,omitempty"` // 1–8 models for the panel
-	Model          string   `json:"model,omitempty"`           // judge model; "" = OpenRouter default
-	MaxToolCalls   int      `json:"max_tool_calls,omitempty"`  // 1–16; 0 = default (8)
-}
-
 // orReq is the OpenAI-compatible chat completions request body used by OpenRouter.
 type orReq struct {
-	Model        string           `json:"model"`
-	MaxTokens    int              `json:"max_tokens"`
-	Messages     []orMsg          `json:"messages"`
-	Plugins      []orFusionPlugin `json:"plugins,omitempty"`
-	Tools        []orServerTool   `json:"tools,omitempty"`
-	MaxToolCalls int              `json:"max_tool_calls,omitempty"` // server-tool step budget; 0 = omit
+	Model        string         `json:"model"`
+	MaxTokens    int            `json:"max_tokens"`
+	Messages     []orMsg        `json:"messages"`
+	Tools        []orServerTool `json:"tools,omitempty"`
+	MaxToolCalls int            `json:"max_tool_calls,omitempty"` // server-tool step budget; 0 = omit
 	// Reasoning is the OpenRouter reasoning parameter, sent when the panel
 	// call config specifies a reasoning spec. nil = omit entirely.
 	Reasoning *config.ReasoningSpec `json:"reasoning,omitempty"`
@@ -789,39 +753,8 @@ func (m *orRespMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// callFusion sends a single OpenRouter Fusion request. analysisModels are sent
-// as "analysis_models" in the plugin block; OpenRouter runs them in parallel
-// and the judge synthesizes their responses. Returns the judge's analysis text.
-func callFusion(ctx context.Context, analysisModels []string, apiKey, question, briefing string, ccfg PanelCallConfig) (string, OracleUsage, error) {
-	userContent := buildUserMessage(briefing, question)
-
-	plugin := orFusionPlugin{ID: "fusion"}
-	if len(analysisModels) > 0 {
-		plugin.AnalysisModels = analysisModels
-	}
-	if ccfg.FusionJudge != "" {
-		plugin.Model = ccfg.FusionJudge
-	}
-	if ccfg.FusionMaxToolCalls > 0 {
-		plugin.MaxToolCalls = ccfg.FusionMaxToolCalls
-	}
-
-	req := orReq{
-		Model:     "openrouter/fusion",
-		MaxTokens: ccfg.MaxTokens,
-		Messages: []orMsg{
-			{Role: "system", Content: oracleSystemPrompt},
-			{Role: "user", Content: userContent},
-		},
-		Plugins:       []orFusionPlugin{plugin},
-		Stream:        true,
-		StreamOptions: &orStreamOptions{IncludeUsage: true},
-	}
-	return orChat(ctx, req, apiKey, "openrouter/fusion", ccfg)
-}
-
-// orChat is the shared OpenRouter HTTP + response-parsing helper used by both
-// callOpenRouter and callFusion. It marshals the request and sends it through
+// orChat is the shared OpenRouter HTTP + response-parsing helper used by
+// callOpenRouter. It marshals the request and sends it through
 // the single transport (proxy.Exec), which streams the response via SSE with
 // an idle timeout (120s) + total cap (30min). A length stop still goes
 // through the truncation/VOID path.
@@ -1170,7 +1103,7 @@ func logFooter(r PanelMemberResult) string {
 
 // PanelDetail builds the confirm-gate detail for a panel call. For a
 // single-model panel it falls back to OracleDetail-style formatting (backward
-// compat). For multi-model panels and fusion it shows the full configuration.
+// compat). For multi-model panels it shows the full configuration.
 // When serverTools is non-empty, a disclosure line is prepended so the user
 // knows the model may search the web / fetch URLs (egress to third-party
 // services). The disclosure is placed BEFORE question/context so the 2,000-byte
@@ -1179,9 +1112,7 @@ func PanelDetail(panelName string, models []string, mode, question, oracleCtx st
 	var sb strings.Builder
 
 	// Server-tool disclosure (before everything else — egress notice).
-	// Suppressed for fusion mode (server tools are not wired into the Fusion
-	// path — they use FusionMaxToolCalls in the plugin block).
-	if len(serverTools) > 0 && mode != "fusion" {
+	if len(serverTools) > 0 {
 		labels := make([]string, len(serverTools))
 		for i, t := range serverTools {
 			labels[i] = strings.TrimPrefix(t, "openrouter:")
@@ -1190,13 +1121,6 @@ func PanelDetail(panelName string, models []string, mode, question, oracleCtx st
 	}
 
 	switch {
-	case mode == "fusion":
-		fmt.Fprintf(&sb, "panel:    %s (fusion, %d analysis models)\n", panelName, len(models))
-		fmt.Fprintf(&sb, "analysis: %s\n", strings.Join(models, ", "))
-		fmt.Fprintf(&sb, "question: %s", question)
-		if oracleCtx != "" {
-			fmt.Fprintf(&sb, "\ncontext:  %s", oracleCtx)
-		}
 	case mode == "debate":
 		fmt.Fprintf(&sb, "panel:    %s (debate, %d members, 2 rounds)\n", panelName, len(models))
 		fmt.Fprintf(&sb, "models:   %s\n", strings.Join(models, ", "))
@@ -1251,8 +1175,8 @@ func clampReviewerReasoning(spec *config.ReasoningSpec) *config.ReasoningSpec {
 
 // buildSend returns the provider send for one member with the given
 // reasoning spec, each call's provider-reported cost folded into the shared
-// budget guard (when set). An explicit send (fusion, tests) is wrapped the
-// same way, so budget accounting covers every call.
+// budget guard (when set). An explicit send (tests) is wrapped the same way,
+// so budget accounting covers every call.
 func buildSend(prefixed, prov, model string, ccfg PanelCallConfig, apiKeys map[string]string, explicit sendFunc, reasoning *config.ReasoningSpec) sendFunc {
 	if explicit == nil {
 		explicit = func(c context.Context, q, b, ap string, maxTok int) (string, OracleUsage, error) {
@@ -1363,8 +1287,7 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 		if first.Log != nil && first.Log.Retried {
 			canDouble = false
 		}
-		// No runMember retry at all when dispatch already retried, or for
-		// fusion (an identical judge call cannot fix an empty/limit reply).
+		// No runMember retry at all when dispatch already retried.
 		alreadyRetried := first.Log != nil && first.Log.Retried
 		lowerSpec, canLower := lowerReasoningSpec(effectiveReasoning)
 		canLower = canLower && effectiveReasoning != nil
@@ -1372,7 +1295,7 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 		if ccfg.BudgetState != nil {
 			_, budgetStop = ccfg.BudgetState.shouldStop()
 		}
-		if !alreadyRetried && !ccfg.IsFusion && !budgetStop && retryVoidDecision(cause, canDouble, canLower) {
+		if !alreadyRetried && !budgetStop && retryVoidDecision(cause, canDouble, canLower) {
 			retryConfiguredMax := configuredMax
 			if cause == "limit" {
 				retryConfiguredMax = doubledMax
@@ -1383,8 +1306,8 @@ func runMember(ctx context.Context, prefixed, prov, model, question, briefing, a
 			}
 			retryReserve := config.ReasoningBudgetFor(retryReasoning)
 			attemptReasoning = retryReasoning
-			// Rebuild from the unwrapped origSend so the retry (incl. fusion)
-			// uses the same provider path and cost is folded once per call.
+			// Rebuild from the unwrapped origSend so the retry uses the same
+			// provider path and cost is folded once per call.
 			retrySend := buildSend(prefixed, prov, model, ccfg, apiKeys, origSend, retryReasoning)
 			second := dispatchReviewWithReasoning(ctx, prefixed, ctxTokens, retryConfiguredMax, ccfg.MinAnswerTokens, retryReserve, question, briefing, appendix, retrySend, ccfg.BudgetState)
 			var berr2 *BudgetError

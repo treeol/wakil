@@ -172,14 +172,14 @@ func TestMashuraCheckStaysUnderTokenCap(t *testing.T) {
 	}
 }
 
-// All four tools (and the legacy oracle__ask alias) are auto-approved in /auto
-// mode like any other tool call — opting into /auto covers counsel calls the
-// same way headless --auto does. Outside auto mode they still hit the gate
-// (covered by TestMashuraGateDeclineShortCircuits).
+// All four tools are auto-approved in /auto mode like any other tool call —
+// opting into /auto covers counsel calls the same way headless --auto does.
+// Outside auto mode they still hit the gate (covered by
+// TestMashuraGateDeclineShortCircuits).
 func TestMashuraToolsAutoApproveInAutoMode(t *testing.T) {
 	app := &App{}
 	app.SetAutoApprove(true)
-	for _, name := range []string{"mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask"} {
+	for _, name := range []string{"mashura__review", "mashura__debug", "mashura__decide", "mashura__check"} {
 		if reason := SuspendAuto(name, app, "detail"); reason != "" {
 			t.Errorf("%s: suspendAuto returned %q — mashūra must auto-approve in /auto mode", name, reason)
 		}
@@ -210,7 +210,6 @@ func TestMashuraGateDeclineShortCircuits(t *testing.T) {
 		"mashura__debug":  `{"symptom":"x"}`,
 		"mashura__decide": `{"question":"x","options":"a\nb"}`,
 		"mashura__check":  `{"claim":"x","text_under_review":"y"}`,
-		"oracle__ask":     `{"question":"x"}`,
 	}
 	for name, args := range calls {
 		got := app.handleMashura(context.Background(), name, tcArgs(name, args))

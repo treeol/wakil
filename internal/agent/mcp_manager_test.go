@@ -303,8 +303,8 @@ func toolNames(tools []proxy.Tool) []string {
 
 // TestToolsForTurn_PreservesBuiltinsSharingMCPNamespace is the regression test
 // for the bug where toolsForTurn identified MCP tools by the __ separator
-// alone: built-ins mashura__review / oracle__ask also contain "__" and were
-// dropped whenever any MCP server was configured.
+// alone: built-ins mashura__review also contains "__" and was dropped
+// whenever any MCP server was configured.
 func TestToolsForTurn_PreservesBuiltinsSharingMCPNamespace(t *testing.T) {
 	mcp := newFakeMCPManager(connectedServer("fs", &fakeMCPSession{}, "read_file"))
 	app := &App{
@@ -312,20 +312,19 @@ func TestToolsForTurn_PreservesBuiltinsSharingMCPNamespace(t *testing.T) {
 		Tools: []proxy.Tool{
 			{Function: proxy.ToolFunction{Name: "read_file"}},
 			{Function: proxy.ToolFunction{Name: "mashura__review"}},
-			{Function: proxy.ToolFunction{Name: "oracle__ask"}},
 			{Function: proxy.ToolFunction{Name: "fs__read_file"}},
 		},
 	}
 	got := toolNames(app.toolsForTurn())
-	want := map[string]bool{"read_file": true, "mashura__review": true, "oracle__ask": true, "fs__read_file": true}
+	want := map[string]bool{"read_file": true, "mashura__review": true, "fs__read_file": true}
 	for _, n := range got {
 		delete(want, n)
 	}
 	if len(want) != 0 {
 		t.Fatalf("toolsForTurn dropped built-ins or MCP tool: missing %v (got %v)", want, got)
 	}
-	if len(got) != 4 {
-		t.Fatalf("toolsForTurn returned %d tools, want 4: %v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("toolsForTurn returned %d tools, want 3: %v", len(got), got)
 	}
 }
 

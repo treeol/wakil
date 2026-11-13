@@ -834,8 +834,8 @@ func collapseContextToolDef() proxy.Tool {
 // at the end.
 //
 // MCP membership is matched by the REAL server-name prefix ("<server>__tool"),
-// NOT by the __ separator alone: built-in tools such as mashura__review and
-// oracle__ask also contain "__" and must never be mistaken for MCP.
+// NOT by the __ separator alone: built-in tools such as mashura__review
+// also contain "__" and must never be mistaken for MCP.
 func (a *App) toolsForTurn() []proxy.Tool {
 	if a.MCP == nil || len(a.MCP.ServerNames()) == 0 {
 		return a.Tools
@@ -905,6 +905,43 @@ func isMCPToolName(name string, servers []string) bool {
 // repoLevel is the per-repo Mashūra level override ("" = use config). It
 // threads through because cfg alone cannot see RepoState, which is restored
 // after App construction — and /mcp reconnect rebuilds with app.Cfg.
+
+// mashuraGateEnabled reports the level half of the unified gate: the
+// effective level is not off. With no new block, the legacy oracle_enabled
+// flag is the level (off when false).
+func mashuraGateEnabled(cfg config.Config, repoLevel string) bool {
+	if cfg.Mashura != nil {
+		level, _, _ := cfg.ResolveEffective("review", repoLevel)
+		return level != config.MashuraLevelOff
+	}
+	return cfg.OracleEnabled
+}
+
+// memberNonEmpty reports the members half of the unified gate: the effective
+// member list is non-empty. With no new block, legacy behavior is that a
+// usable default panel (or built-in fallback, which always yields one member)
+// exists; BuildTools' legacy path is subsumed by the unified predicate, so
+// this returns true and the key check does the real gating, matching today
+// (fallback member counts).
+func memberNonEmpty(cfg config.Config, repoLevel string) bool {
+	if cfg.Mashura != nil {
+		_, members, _ := cfg.ResolveEffective("review", repoLevel)
+		return len(members) > 0
+	}
+	return true
+}
+
+// keyPresent reports whether the OpenRouter key named by
+// openrouter_api_key_env is present. The legacy oracle_api_key_env is part
+// of the legacy gate only (preserved for old configs); the new path reads
+// only the OpenRouter key, as mashuraPanelKeys does.
+func keyPresent(cfg config.Config) bool {
+	if cfg.Mashura != nil {
+		return os.Getenv(cfg.OpenRouterAPIKeyEnv) != ""
+	}
+	return os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv(cfg.OpenRouterAPIKeyEnv) != ""
+}
+
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager, repoLevel string) []proxy.Tool {
 	// Group 1: built-ins (DefaultTools already has a fixed order).
 	t := wtools.DefaultTools(cwd)
@@ -934,15 +971,12 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager, repoLevel string
 	if mcp != nil {
 		t = append(t, mcp.OpenAITools()...)
 	}
-	// Group 4: oracle (conditional). New block: effective level != off AND
-	// effective members non-empty; the OpenRouter key check is the unified
-	// predicate shared with mashuraAvailable (no separate oracle_api_key_env
-	// gate). Legacy path keeps its original gate for byte-identical behavior.
-	if cfg.Mashura != nil {
-		if level, members, _ := cfg.ResolveEffective("review", repoLevel); level != config.MashuraLevelOff && len(members) > 0 && os.Getenv(cfg.OpenRouterAPIKeyEnv) != "" {
-			t = append(t, mashuraToolDefs()...)
-		}
-	} else if cfg.OracleEnabled && (os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv(cfg.OpenRouterAPIKeyEnv) != "") {
+	// Group 4: oracle (conditional). Unified predicate: effective level !=
+	// off AND effective members non-empty AND the OpenRouter key (named by
+	// openrouter_api_key_env) is present. No separate oracle_api_key_env
+	// gate — one predicate shared with mashuraAvailable.
+	if memberNonEmpty(cfg, repoLevel) && mashuraGateEnabled(cfg, repoLevel) &&
+		keyPresent(cfg) {
 		t = append(t, mashuraToolDefs()...)
 	}
 	// Group 5: LSP (conditional).

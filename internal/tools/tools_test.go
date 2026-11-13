@@ -124,13 +124,13 @@ func TestIsEditTool(t *testing.T) {
 
 // TestIsMashuraTool verifies mashura/oracle tool classification.
 func TestIsMashuraTool(t *testing.T) {
-	mashuraTools := []string{"mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask"}
+	mashuraTools := []string{"mashura__review", "mashura__debug", "mashura__decide", "mashura__check"}
 	for _, name := range mashuraTools {
 		if !IsMashuraTool(name) {
 			t.Errorf("IsMashuraTool(%q) = false, want true", name)
 		}
 	}
-	nonMashura := []string{"run_shell", "read_file", "dispatch_subagent", "mashura_other"}
+	nonMashura := []string{"run_shell", "read_file", "dispatch_subagent", "mashura_other", "oracle__ask"}
 	for _, name := range nonMashura {
 		if IsMashuraTool(name) {
 			t.Errorf("IsMashuraTool(%q) = true, want false", name)

@@ -18,8 +18,8 @@ import (
 //
 // Subcommands:
 //
-//	/mashura                        Show status (panels, tool mappings, limits)
-//	/mashura panel add <name> <models> [--mode panel|fallback|fusion|debate]
+//	/mashura                        Show status (level, members, per-tool table)
+//	/mashura panel add <name> <models> [--mode panel|fallback|debate]  (legacy)
 //	/mashura panel rm <name>         Remove a named panel
 //	/mashura panel <name>            Show panel details
 //	/mashura panel <name> --mode <mode>  Set panel mode
@@ -156,7 +156,7 @@ func handleMashuraPanel(fields []string, app *App) (handled, quit bool, cmd Cmd)
 	switch sub {
 	case "add":
 		if len(fields) < 5 {
-			return true, false, note("usage: /mashura panel add <name> <model1>[,model2,...] [--mode panel|fallback|fusion|debate]")
+			return true, false, note("usage: /mashura panel add <name> <model1>[,model2,...] [--mode panel|fallback|debate]")
 		}
 		name := fields[3]
 		modelsStr := fields[4]
@@ -170,9 +170,9 @@ func handleMashuraPanel(fields []string, app *App) (handled, quit bool, cmd Cmd)
 		}
 		// Validate mode
 		switch mode {
-		case "panel", "fallback", "fusion", "debate":
+		case "panel", "fallback", "debate":
 		default:
-			return true, false, note(fmt.Sprintf("invalid mode %q (expected panel, fallback, fusion, or debate)", mode))
+			return true, false, note(fmt.Sprintf("invalid mode %q (expected panel, fallback, or debate)", mode))
 		}
 		models := strings.Split(modelsStr, ",")
 		for i, m := range models {
@@ -241,9 +241,9 @@ func handleMashuraPanel(fields []string, app *App) (handled, quit bool, cmd Cmd)
 			if fields[i] == "--mode" && i+1 < len(fields) {
 				newMode := fields[i+1]
 				switch newMode {
-				case "panel", "fallback", "fusion", "debate":
+				case "panel", "fallback", "debate":
 				default:
-					return true, false, note(fmt.Sprintf("invalid mode %q (expected panel, fallback, fusion, or debate)", newMode))
+					return true, false, note(fmt.Sprintf("invalid mode %q (expected panel, fallback, or debate)", newMode))
 				}
 				panel.Mode = newMode
 				app.Cfg.MashuraPanels[name] = panel
@@ -305,7 +305,7 @@ const mashuraHelpText = `/mashura commands:
   /mashura                        Show status (level, members, per-tool table)
   /mashura off|low|medium|high    Set the per-repo level
   /mashura reset                  Remove the per-repo level
-  /mashura panel add <name> <models> [--mode panel|fallback|fusion|debate]  (legacy)
+  /mashura panel add <name> <models> [--mode panel|fallback|debate]  (legacy)
   /mashura panel rm <name>         Remove a named panel (legacy)
   /mashura panel <name>            Show panel details (legacy)
   /mashura panel <name> --mode <mode>  Set panel mode (legacy)

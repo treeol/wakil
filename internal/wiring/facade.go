@@ -337,7 +337,7 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 	// (env checks belong wiring-side, not in the render path).
 	if oracleEnabled {
 		anthropicOk := os.Getenv(oracleAPIKeyEnv) != ""
-		openrouterOk := os.Getenv("OPENROUTER_API_KEY") != ""
+		openrouterOk := os.Getenv(app.Cfg.OpenRouterAPIKeyEnv) != ""
 		if anthropicOk || openrouterOk {
 			info.OracleLabel = mashuraPanelLabelFromFields(mashuraToolPanels, mashuraPanels, oracleModel)
 		} else {
@@ -405,8 +405,6 @@ func mashuraPanelLabelFromFields(toolPanels map[string]string, panels map[string
 	if panels != nil {
 		if p, ok := panels[name]; ok && len(p.Models) > 0 {
 			switch p.Mode {
-			case "fusion":
-				return fmt.Sprintf("fusion (%d models)", len(p.Models))
 			case "fallback":
 				return fmt.Sprintf("%s +fallback", mashuraShortModel(p.Models[0]))
 			default:

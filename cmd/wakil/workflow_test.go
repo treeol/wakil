@@ -1466,13 +1466,9 @@ func TestAutoGateReasons(t *testing.T) {
 	app := &agent.App{}
 	app.SetAutoApprove(true)
 
-	// mashura__review (and the legacy oracle__ask alias) auto-approve in /auto —
-	// same trust level as headless --auto.
+	// mashura__review auto-approves in /auto — same trust level as headless --auto.
 	if reason := agent.SuspendAuto("mashura__review", app, "detail"); reason != "" {
 		t.Errorf("mashura: reason=%q, want auto-approve (empty)", reason)
-	}
-	if legacy := agent.SuspendAuto("oracle__ask", app, "detail"); legacy != "" {
-		t.Errorf("oracle__ask back-compat: reason=%q, want auto-approve (empty)", legacy)
 	}
 
 	// Destructive shell.
@@ -1549,8 +1545,8 @@ func TestAllowDestructiveGrant(t *testing.T) {
 func TestShouldGateEvenWithAutoApprove(t *testing.T) {
 	app := &agent.App{}
 	app.SetAutoApprove(true)
-	if agent.ShouldGateEvenWithAutoApprove("oracle__ask", app, "detail") {
-		t.Error("oracle__ask should auto-approve in auto mode (same trust as headless --auto)")
+	if agent.ShouldGateEvenWithAutoApprove("mashura__review", app, "detail") {
+		t.Error("mashura__review should auto-approve in auto mode (same trust as headless --auto)")
 	}
 	if agent.ShouldGateEvenWithAutoApprove("write_file", app, "detail") {
 		t.Error("write_file should not gate in auto mode")
@@ -2218,8 +2214,8 @@ func TestHeadlessConfirmerPolicy(t *testing.T) {
 		wantOK  bool
 		wantMsg string // substring expected in declinedReason when !wantOK
 	}{
-		{"oracle allowed with --auto", true, false, "oracle__ask", "model=x\nq=?", true, ""},
-		{"oracle declined without --auto", false, false, "oracle__ask", "", false, "confirmation required"},
+		{"oracle allowed with --auto", true, false, "mashura__review", "model=x\nq=?", true, ""},
+		{"oracle declined without --auto", false, false, "mashura__review", "", false, "confirmation required"},
 		{"destructive declined by default", true, false, "run_shell", "$ rm -rf /\n  (exec)", false, "destructive"},
 		{"destructive allowed with flag", true, true, "run_shell", "$ rm -rf /\n  (exec)", true, ""},
 		{"safe shell auto-approved", true, false, "run_shell", "$ go test ./...\n  (exec)", true, ""},

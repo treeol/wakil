@@ -230,9 +230,6 @@ func TestPanelDetailShapes(t *testing.T) {
 	if got := PanelDetail("p", []string{"openrouter:a"}, "debate", "q", "", nil); !strings.Contains(got, "debate") {
 		t.Errorf("debate detail = %q", got)
 	}
-	if got := PanelDetail("p", []string{"openrouter:a"}, "fusion", "q", "", nil); !strings.Contains(got, "fusion") {
-		t.Errorf("fusion detail = %q", got)
-	}
 	// Truncation branch.
 	long := PanelDetail("p", []string{"openrouter:a", "openrouter:b"}, "panel", strings.Repeat("q", 3000), "", nil)
 	if !strings.Contains(long, "(+") {

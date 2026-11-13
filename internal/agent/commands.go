@@ -1638,7 +1638,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /zdr [on|off|auto|reset]   show/set the per-repo zero-data-retention switch (enforced on OpenRouter)
 /region [eu|us|off|reset]  show/set the per-repo OpenRouter region pin (eu.openrouter.ai / us.openrouter.ai)
 /mashura                   show mashura panel/model/limit status
-/mashura panel add <name> <models> [--mode panel|fallback|fusion|debate]  create a panel
+/mashura panel add <name> <models> [--mode panel|fallback|debate]  create a panel
 /mashura panel rm <name>   remove a panel
 /mashura panel <name> [--mode <mode>]  show or set panel mode
 /mashura map <tool> <panel>  map a counsel tool (review|debug|decide|check) to a panel

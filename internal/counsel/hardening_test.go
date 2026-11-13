@@ -705,35 +705,3 @@ func TestCanDoubleBaseline(t *testing.T) {
 
 // Fusion sends the same 7-line skeleton as the other paths, so its replies
 // carry the evidence instruction.
-func TestFusionSkeleton(t *testing.T) {
-	cap := newRawOpenRouterCapture(t)
-	ccfg := PanelCallConfig{MaxTokens: 4096, TimeoutSeconds: 10, OpenRouterEndpoint: cap.srv.URL}
-	if _, _, err := callFusion(context.Background(), []string{"m1"}, "k", "q", "ctx", ccfg); err != nil {
-		t.Fatalf("callFusion: %v", err)
-	}
-	bodies := cap.bodiesCopy()
-	if len(bodies) != 1 {
-		t.Fatalf("want 1 fusion request, got %d", len(bodies))
-	}
-	var req struct {
-		Messages []struct {
-			Content string `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(bodies[0], &req); err != nil {
-		t.Fatalf("bad fusion body: %v", err)
-	}
-	if len(req.Messages) != 2 {
-		t.Fatalf("want 2 messages, got %d", len(req.Messages))
-	}
-	user := req.Messages[1].Content
-	if !strings.HasPrefix(user, skeletonPrefix+"\n") {
-		t.Errorf("fusion user must start with the skeleton prefix, got %.60q", user)
-	}
-	if !strings.Contains(user, skeletonMaterial+"\nctx\n") {
-		t.Errorf("fusion user must contain the skeleton material with the briefing, got %.120q", user)
-	}
-	if !strings.HasSuffix(user, evidenceInstruction) {
-		t.Errorf("fusion user must end with the format instructions, got tail %.120q", user[len(user)-120:])
-	}
-}

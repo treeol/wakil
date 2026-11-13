@@ -575,16 +575,13 @@ func main() {
 }
 
 // panelsUseOpenRouter reports whether any configured mashura panel routes
-// at least one model through OpenRouter ("openrouter:..." prefix or "~..." fusion
-// syntax). Used to decide whether priming the OpenRouter model-context cache
-// is worthwhile at startup.
+// at least one model through OpenRouter ("openrouter:..." prefix). Used to
+// decide whether priming the OpenRouter model-context cache is worthwhile
+// at startup.
 func panelsUseOpenRouter(cfg config.Config) bool {
 	for _, panel := range cfg.MashuraPanels {
-		if panel.Mode == "fusion" {
-			return true
-		}
 		for _, m := range panel.Models {
-			if strings.HasPrefix(m, "openrouter:") || strings.HasPrefix(m, "~") {
+			if strings.HasPrefix(m, "openrouter:") {
 				return true
 			}
 		}

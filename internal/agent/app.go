@@ -3056,11 +3056,11 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleDispatchSubagent(ctx, tc))
 	case "dispatch_subagents":
 		return stringToToolResult(a.handleDispatchSubagents(ctx, tc))
-	// The mashura__* counsel family (and the legacy oracle__ask alias) all route
-	// through one handler: the model supplies intent, Wakil deterministically
-	// assembles the briefing. Each is gated through the normal confirm flow
-	// (auto-approved in /auto mode with a visible ⚡ auto note).
-	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check", "oracle__ask":
+	// The mashura__* counsel family routes through one handler: the model
+	// supplies intent, Wakil deterministically assembles the briefing. Each
+	// is gated through the normal confirm flow (auto-approved in /auto mode
+	// with a visible ⚡ auto note).
+	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check":
 		return stringToToolResult(a.handleMashura(ctx, name, tc))
 	// LSP code-intelligence tools (read-only, no confirmation needed).
 	case "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols":

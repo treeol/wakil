@@ -542,7 +542,7 @@ type Config struct {
 	OracleTimeoutSeconds int    `json:"oracle_timeout_seconds,omitempty"` // HTTP timeout for mashūra calls; 0 = use default (300s)
 	// OpenRouterAPIKeyEnv is the env var name for the OpenRouter API key.
 	// Defaults to "OPENROUTER_API_KEY". Used by mashura panel calls that route
-	// through OpenRouter (provider prefix "openrouter:") and by Fusion mode.
+	// through OpenRouter (provider prefix "openrouter:").
 	OpenRouterAPIKeyEnv string `json:"openrouter_api_key_env,omitempty"` // env var that holds the OpenRouter API key
 
 	// MashuraFallbackModel is an explicitly prefixed model string (e.g.
@@ -1279,14 +1279,13 @@ func OpenRouterSlug(prefixedModel string) (slug string, ok bool) {
 	return "", false
 }
 
-// mode "fusion": a single OpenRouter Fusion call where Models becomes the
-// analysis panel; FusionJudge is the judge that synthesizes their responses.
-// All models use the ~ prefix syntax (e.g. "~anthropic/claude-opus-latest").
+// MashuraPanelConfig is one named counsel panel (legacy representation).
+// Fusion mode was removed: a legacy panel with mode "fusion" is treated as a
+// normal panel, and a 1-member panel is a single call (callMember sends
+// everything through OpenRouter).
 type MashuraPanelConfig struct {
-	Models             []string `json:"models"`                          // prefixed model strings, or ~ models for fusion
-	Mode               string   `json:"mode,omitempty"`                  // "panel" (default) | "fallback" | "fusion"
-	FusionJudge        string   `json:"fusion_judge,omitempty"`          // fusion: judge model; "" = OpenRouter default
-	FusionMaxToolCalls int      `json:"fusion_max_tool_calls,omitempty"` // fusion: 1–16 tool steps; 0 = default (8)
+	Models             []string `json:"models"`                          // prefixed model strings
+	Mode               string   `json:"mode,omitempty"`                  // "panel" (default) | "fallback"
 	ServerTools        []string `json:"server_tools,omitempty"`          // OpenRouter server tool types (e.g. "openrouter:web_search")
 	WebSearchEngine    string   `json:"web_search_engine,omitempty"`     // engine for web_search: auto|native|exa|firecrawl|parallel|perplexity
 	ServerToolMaxCalls int      `json:"server_tool_max_calls,omitempty"` // max server-tool steps per request; 0 = OpenRouter default (30)
@@ -1848,8 +1847,7 @@ func LoadConfig(argv []string) (Config, error) {
 	}
 
 	// Validate server tool types in named panels. Each must be a known
-	// OpenRouter server tool type. Fusion panels are skipped (server tools
-	// are not wired into the Fusion path — they use FusionMaxToolCalls).
+	// OpenRouter server tool type.
 	validServerTools := map[string]bool{
 		"openrouter:web_search": true,
 		"openrouter:web_fetch":  true,
@@ -1865,15 +1863,6 @@ func LoadConfig(argv []string) (Config, error) {
 		"perplexity": true,
 	}
 	for pname, p := range cfg.MashuraPanels {
-		// Server tools are not supported in Fusion mode (Fusion has its own
-		// tool-call budget in the plugin block). Reject rather than silently
-		// ignore — the disclosure would otherwise be misleading.
-		if p.Mode == "fusion" && len(p.ServerTools) > 0 {
-			return cfg, fmt.Errorf(
-				"mashura_panels.%s: server_tools are not supported in fusion mode "+
-					"(use fusion_max_tool_calls for the fusion plugin budget)",
-				pname)
-		}
 		for _, st := range p.ServerTools {
 			if !validServerTools[st] {
 				return cfg, fmt.Errorf(

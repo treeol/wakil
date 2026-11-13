@@ -23,12 +23,10 @@ const (
 
 // knownModelContexts is a small fallback table for common models when the
 // OpenRouter registry is unreachable or doesn't list the model. This covers
-// Anthropic direct calls (which don't go through OpenRouter's catalog) and
-// provides a sensible default for the fusion model.
+// Anthropic direct calls (which don't go through OpenRouter's catalog).
 //
 // Values are in tokens. Update when new model generations ship.
 var knownModelContexts = map[string]int{
-	"openrouter/fusion":           1_000_000,
 	"anthropic/claude-sonnet-4-6": 200_000,
 	"anthropic/claude-opus-4-8":   200_000,
 	"anthropic/claude-3.7-sonnet": 200_000,
@@ -59,7 +57,7 @@ func FetchModelContextLimits(ctx context.Context) (map[string]int, error) {
 // only reads what is already available. To prime the cache for OpenRouter
 // models, call FetchModelContextLimits explicitly at session start.
 func ResolveContextLength(_ context.Context, modelID string) int {
-	// 1. Static table — instant, covers all Anthropic and fusion models.
+	// 1. Static table — instant, covers all Anthropic models.
 	if cl, ok := knownModelContexts[modelID]; ok {
 		return cl
 	}
