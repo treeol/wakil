@@ -57,6 +57,10 @@ func renderConfig(p plan) ([]byte, error) {
 	case p.KeyEnv != "":
 		ep.APIKeyEnv = p.KeyEnv
 	}
+	// Fresh installs carry no members: Mashūra is identified only by its
+	// level, gated by the OpenRouter key the user supplies (amendment 4's
+	// fallback member). The example config (config.example.json) shows the
+	// member form for copying.
 	fc := fileConfig{
 		Endpoints:       map[string]fileEndpoint{p.EndpointName: ep},
 		DefaultEndpoint: p.EndpointName,
