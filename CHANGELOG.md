@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-13
+
+### Changed behaviour
+
+- **The direct Anthropic path for Mashūra is removed.** All model calls go through the configured transport; an Anthropic key in the config is ignored with a notice.
+- `oracle_endpoint` is no longer a config key.
+- Correction capture is off by default (`correction_capture`).
+
 ### Added
+
 - **Data policy layer (`/zdr`, `/region`) and single transport.** The direct Anthropic path is removed: every model call (main loop, subagents, Mashūra, aux, init test call) goes through `internal/proxy`, enforced by a `go/ast` guard test (`internal/proxy/transport_guard_test.go`) that fails on any outbound HTTP outside the transport. New switches `zdr` (`off` default) and `openrouter_region` (`off` default) with per-repo overrides (`/zdr on|off|auto|reset`, `/region eu|us|off|reset`); with both off the bytes on the wire are identical to the unguarded path. `zdr on` adds `"provider": {"zdr": true, "data_collection": "deny"}` on OpenRouter (merged, never replacing the provider object) and refuses non-local non-OpenRouter hosts before sending; `zdr auto` retries once without the fields on a 404 and remembers the model for the session. `openrouter_region` pins `openrouter.ai` to `eu.openrouter.ai` / `us.openrouter.ai` with no fallback. `trusted_local_hosts` extends the local classification. See `docs/features.md` (Data policy) and `docs/configuration.md` (`zdr`, `openrouter_region`, `trusted_local_hosts`).
 - An Anthropic API key, if configured, is now ignored: Mashūra shows one notice per session ("direct Anthropic access was removed; the key is ignored, Mashūra uses the configured backend"). Configured `anthropic:<model>` panel members are served through OpenRouter as `anthropic/<model>`.
 
