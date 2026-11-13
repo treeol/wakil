@@ -493,7 +493,8 @@ func TestAsyncMashuraPlaceholderFastAndDrained(t *testing.T) {
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
 		"default": {Models: []string{"anthropic:test-model"}, Mode: "panel"},
 	}
-	app.Cfg.OracleEndpoint = srv.URL + "/v1/messages"
+	SetOracleEndpointHook(srv.URL + "/v1/messages")
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app.Confirm = func(_, _, _ string, _ bool) bool { return true }
 	if app.Out == nil {
 		app.Out = io.Discard
@@ -534,7 +535,8 @@ func TestAsyncMashuraDeclineStartsNothing(t *testing.T) {
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
 		"default": {Models: []string{"anthropic:test-model"}, Mode: "panel"},
 	}
-	app.Cfg.OracleEndpoint = srv.URL + "/v1/messages"
+	SetOracleEndpointHook(srv.URL + "/v1/messages")
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app.Confirm = func(_, _, _ string, _ bool) bool { return false }
 
 	got := app.handleMashura(context.Background(), "mashura__review", tcArgs("mashura__review", `{"focus":"x"}`))
@@ -565,7 +567,8 @@ func TestAsyncAutoCounselStaysSync(t *testing.T) {
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
 		"default": {Models: []string{"anthropic:test-model"}, Mode: "panel"},
 	}
-	app.Cfg.OracleEndpoint = srv.URL + "/v1/messages"
+	SetOracleEndpointHook(srv.URL + "/v1/messages")
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app.Confirm = func(_, _, _ string, _ bool) bool { return true }
 	app.CounselMode = "auto"
 	app.MaxCounsel = 1
@@ -629,7 +632,8 @@ func TestAsyncRegistryFullFallbackThroughHandleMashura(t *testing.T) {
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
 		"default": {Models: []string{"anthropic:test-model"}, Mode: "panel"},
 	}
-	app.Cfg.OracleEndpoint = srv.URL + "/v1/messages"
+	SetOracleEndpointHook(srv.URL + "/v1/messages")
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app.Confirm = func(_, _, _ string, _ bool) bool { return true }
 	app.Costs = proxy.NewCostTracker()
 	app.asyncShutdownWait = 5 * time.Second

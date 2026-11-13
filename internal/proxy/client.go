@@ -55,6 +55,20 @@ func wrapStreamErr(cause error) error {
 	return fmt.Errorf("%w: %w", ErrBackendStream, cause)
 }
 
+// ErrPreStreamStatus marks an HTTP status error returned before any stream
+// data arrived (a non-200 response, including an unretried 404). Such a
+// request was refused, not billed: callers matching it with errors.Is must
+// record no cost for the attempt. It wraps ErrBackendFatal (4xx) or
+// ErrBackendStream (5xx/429/408/529) so the existing retry classification is
+// unchanged.
+var ErrPreStreamStatus = errors.New("HTTP status before stream data")
+
+// IsPreStreamStatus reports whether err is an HTTP status error returned
+// before any stream data arrived.
+func IsPreStreamStatus(err error) bool {
+	return errors.Is(err, ErrPreStreamStatus)
+}
+
 // isFatalStatus classifies a non-200 status as fatal (never retry). 3xx
 // redirects are fatal: the Go HTTP client follows redirects by default, so a
 // 3xx reaching this function means either a non-GET redirect, a redirect loop,
@@ -630,6 +644,28 @@ type Client struct {
 	// failed stream clobbers the provisional slot. 0 = none reported yet.
 	lastExactInputTok int64
 
+	// usageReqStamp identifies which Stream request the published lastUsage
+	// belongs to. Stream publishes its provisional estimate under a fresh
+	// stamp before sending and republishes the authoritative usage at stream
+	// end under a new stamp; either moves it, so a caller that captured the
+	// stamp before the call and reads it afterwards can tell whether THAT call
+	// published usage, or the slot only holds an earlier request's figure. Two
+	// consecutive successful calls never share a stamp — each takes two; a
+	// failed call takes one (the provisional only). Guarded by usageMu
+	// alongside lastUsage.
+	usageReqStamp uint64
+
+	// requestsSent counts HTTP requests actually dispatched by Stream over
+	// this client's lifetime. B5 uses the cumulative count to tell whether a
+	// session has already sent anything; B1's per-request decision uses
+	// usageReqStamp instead, so a refusal before sending never looks "sent".
+	// The provisional estimate is published — and the counter incremented —
+	// just before HTTP.Do; a request refused at the transport layer (DNS,
+	// connect, TLS) is still counted, which is fine for B5's "has the session
+	// sent anything" question and irrelevant to B1 (B1 keys on the stamp).
+	// Guarded by usageMu alongside lastUsage.
+	requestsSent uint64
+
 	// Calibration for the provisional prompt-token estimate (see
 	// estimatePromptTokens / learnCalibration), keyed by effective endpoint
 	// identity so a /model or /backend switch never reuses another tokenizer's
@@ -852,6 +888,25 @@ func (c *Client) LastUsage() UsageStat {
 	return c.lastUsage
 }
 
+// UsageStamp returns the stamp identifying the Stream request that produced
+// the currently published usage. A caller that captures the stamp before a
+// Stream call and compares it afterwards can tell whether the usage it reads
+// belongs to that call (stamp changed) or is stale from an earlier request
+// (stamp unchanged). Two consecutive calls never share a stamp.
+func (c *Client) UsageStamp() uint64 {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	return c.usageReqStamp
+}
+
+// RequestsSent returns the number of HTTP requests Stream has dispatched
+// over this client's lifetime. It only grows; it never resets.
+func (c *Client) RequestsSent() uint64 {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	return c.requestsSent
+}
+
 func (c *Client) SetUsage(u UsageStat) {
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
@@ -859,6 +914,31 @@ func (c *Client) SetUsage(u UsageStat) {
 	if u.Exact && u.InputTok > 0 {
 		c.lastExactInputTok = u.InputTok
 	}
+}
+
+// setUsageForRequest publishes u as this request's usage: it stamps the
+// publication with a fresh request id and, when sent is true, counts the
+// dispatched request. Stream calls it once for its provisional pre-send
+// estimate (sent=true) and once for its authoritative final usage
+// (sent=false), so a failed stream always leaves this request's best-known
+// usage — stamped identically — for the cost recorder to pick up.
+func (c *Client) setUsageForRequest(u UsageStat, sent bool) {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	c.usageReqStamp++
+	c.lastUsage = u
+	if u.Exact && u.InputTok > 0 {
+		c.lastExactInputTok = u.InputTok
+	}
+	if sent {
+		c.requestsSent++
+	}
+}
+
+// SetUsageForRequestForTest is the test-only twin of setUsageForRequest: it
+// lets tests drive the cumulative sent counter without a full Stream call.
+func (c *Client) SetUsageForRequestForTest(u UsageStat, sent bool) {
+	c.setUsageForRequest(u, sent)
 }
 
 // LastExactInputTokens returns the most recent authoritative prompt-token count
@@ -1287,7 +1367,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// vision tokens are counted by the provider under a completely different
 	// accounting than base64 payload bytes, so either basis would be wrong.
 	promptTok := estimatePromptTokens(len(raw), hasImages(messages), c.calibratedTokensPerByte())
-	c.SetUsage(UsageStat{InputTok: promptTok})
+	c.setUsageForRequest(UsageStat{InputTok: promptTok}, true)
 
 	// Track TTFB for the latency display in the status line.
 	requestStart := time.Now()
@@ -1365,13 +1445,13 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 				// One line plus the settings URL instead of the raw JSON; the
 				// raw body goes to the session log only.
 				diag.Printf("proxy: %s: %s\n", resp.Status, msg)
-				return Message{}, fmt.Errorf("%w: %s: %s", ErrBackendFatal, resp.Status, PrivacyPolicyMessage)
+				return Message{}, fmt.Errorf("%w: %w: %s: %s", ErrPreStreamStatus, ErrBackendFatal, resp.Status, PrivacyPolicyMessage)
 			}
-			return Message{}, fmt.Errorf("%w: %s: %s", ErrBackendFatal, resp.Status, msg)
+			return Message{}, fmt.Errorf("%w: %w: %s: %s", ErrPreStreamStatus, ErrBackendFatal, resp.Status, msg)
 		}
 		// Transient failure (5xx, 429 rate limit, 408 timeout, 529 overloaded,
 		// other non-success): retryable.
-		return Message{}, fmt.Errorf("%w: %s: %s", ErrBackendStream, resp.Status, msg)
+		return Message{}, fmt.Errorf("%w: %w: %s: %s", ErrPreStreamStatus, ErrBackendStream, resp.Status, msg)
 	}
 
 	// Retrieval telemetry. X-Ilm-Retrieval=="attempted" is the sentinel that the
@@ -1599,7 +1679,11 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 			OutputTok: ApproxTokens(content.Len() + reasoningChars),
 		}
 	}
-	c.SetUsage(usage)
+	// Stream end: the authoritative usage (exact when the provider reported
+	// it, otherwise the estimate-doc fallback computed above) is republished
+	// under a fresh stamp, so the cost recorder's per-request stamp check
+	// still fires while the usage itself is the final account.
+	c.setUsageForRequest(usage, false)
 
 	// Learn the tokens-per-byte calibration from authoritative usage so the
 	// NEXT turn's provisional estimate converges on the real prompt_tokens

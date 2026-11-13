@@ -1519,7 +1519,53 @@ func (a *App) RecordInferenceCost() {
 	if u.InputTok == 0 && u.OutputTok == 0 {
 		return // nothing measured (e.g. injected/test client)
 	}
+	a.recordUsage(u)
+}
 
+// RecordFailedStreamCost records one cost row for a Stream call that failed
+// while a stream was open, using the usage the client published for that
+// call. before is the usage stamp captured before the call started; when
+// the stamp is unchanged afterwards, the client never published usage for
+// this request (a policy refusal or a pre-send build error can return
+// before the provisional estimate is published, leaving stale usage from an
+// earlier request in the slot) and nothing is recorded. User cancels, HTTP
+// error statuses that arrived before any stream data (including the first
+// 404 of the zdr auto retry — the client tags those with ErrPreStreamStatus),
+// and requests refused before sending are excluded: refused, not billed. A
+// stream that was still open when it failed — including Wakil's own idle
+// timeout after stream data arrived — is recorded from the provisional
+// input estimate (Exact=false → approx) unless the client already holds
+// exact usage for this request; without a known price it counts as unpriced.
+// err must be the Stream call's error: a nil err simply means the caller is
+// wrong and would double-record a successful call. The caller passes its
+// own captured stamp, so this is safe only on the turn paths that capture
+// one; other Stream callers (aux paths) have their own recording.
+func (a *App) RecordFailedStreamCost(before uint64, err error) {
+	if err == nil {
+		return // no failure — nothing to attribute (and no double-count)
+	}
+	if err != nil && errors.Is(err, context.Canceled) {
+		return // user cancel — never billed, never retried
+	}
+	if err != nil && proxy.IsPreStreamStatus(err) {
+		return // HTTP error status before stream data — refused, not billed
+	}
+	if a.Costs == nil || a.Client == nil {
+		return
+	}
+	if a.Client.UsageStamp() == before {
+		return // no usage published for this request — nothing to attribute
+	}
+	u := a.Client.LastUsage()
+	if u.InputTok == 0 && u.OutputTok == 0 {
+		return
+	}
+	a.recordUsage(u)
+}
+
+// recordUsage prices and records one usage value through the shared
+// backend-aware path used by both the success and failed-stream recorders.
+func (a *App) recordUsage(u proxy.UsageStat) {
 	usedBackend := a.Client.LastUsedBackend()
 	// BackendList is replaced under stateMu by the deferred startup probes; read
 	// it under the lock. This function runs on the turn goroutine (and the RPC

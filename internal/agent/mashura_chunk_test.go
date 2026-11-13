@@ -42,7 +42,8 @@ func TestMashuraAsyncEmitsChunks(t *testing.T) {
 			Mode:   "panel",
 		},
 	}
-	app.Cfg.OracleEndpoint = srv.URL + "/v1/messages"
+	SetOracleEndpointHook(srv.URL + "/v1/messages")
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app.Confirm = func(_, _, _ string, _ bool) bool { return true }
 	// Register an origin chat id; chunk OriginChatID must match the op's
 	// registered origin (bug fix: not a worker-time a.chatID() re-read).
@@ -120,7 +121,8 @@ func TestMashuraSyncFallbackEmitsNoChunks(t *testing.T) {
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
 		"default": {Models: []string{"anthropic:claude-opus-4-8"}, Mode: "panel"},
 	}
-	app.Cfg.OracleEndpoint = srv.URL + "/v1/messages"
+	SetOracleEndpointHook(srv.URL + "/v1/messages")
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app.Confirm = func(_, _, _ string, _ bool) bool { return true }
 
 	// Force the synchronous fallback (registry stopping).

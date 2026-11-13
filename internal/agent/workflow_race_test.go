@@ -148,6 +148,8 @@ func reviewOracleApp(t *testing.T, onCall func()) (*App, *fakeExecutor) {
 
 	fe := newFakeExecutor()
 	fe.files[".wakil/plan.md"] = "## Task\n\nt\n\n## Plan\n\n1. one\n2. two\n"
+	SetOracleEndpointHook(srv.URL + "/v1/messages")
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app := &App{
 		Cfg: config.Config{
 			OracleAPIKeyEnv:      "MASHURA_TEST_KEY",
@@ -155,7 +157,6 @@ func reviewOracleApp(t *testing.T, onCall func()) (*App, *fakeExecutor) {
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      256,
 			OracleEnabled:        true,
-			OracleEndpoint:       srv.URL + "/v1/messages",
 			OracleTimeoutSeconds: 5,
 		},
 		Client:   &proxy.Client{},

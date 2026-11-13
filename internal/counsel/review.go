@@ -357,6 +357,17 @@ func isVoid(err error) bool {
 	return errors.As(err, &v)
 }
 
+// AnyUsable reports whether any panel member produced a usable answer (a
+// clean success whose coverage was confirmed).
+func AnyUsable(results []PanelMemberResult) bool {
+	for _, r := range results {
+		if ReviewUsableForVerdict(r) {
+			return true
+		}
+	}
+	return false
+}
+
 // voidCauseFrom classifies a VOID outcome for the cause-based retry:
 // limit (answer budget), empty, citation (citation-only / citation
 // failure), or other. The provider finish reason and the dispatch log are

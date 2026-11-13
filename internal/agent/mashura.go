@@ -19,22 +19,35 @@ import (
 	"github.com/treeol/wakil/internal/workflow"
 )
 
+// oracleEndpointHook is the test-only hook that re-points the Mashūra
+// transport at a test server. It is set by tests (never from config, env or
+// flags) and read only by transportClient; requests through it still pass
+// ApplyPolicy exactly like production requests.
+var oracleEndpointHook string
+
+// SetOracleEndpointHook registers the test-only Mashūra transport endpoint.
+// It is package-scoped (not per-App) so tests in other packages can reach
+// the same hook; production code never calls it.
+func SetOracleEndpointHook(url string) {
+	oracleEndpointHook = url
+}
+
 // transportClient returns the single transport for Mashūra calls. The
 // session's proxy client carries the OpenRouter origin, so Mashūra calls
 // always target OpenRouter regardless of the session's main endpoint.
-// Tests that inject an endpoint via OracleEndpoint get a client for that
-// endpoint (the explicit test hook, never used in production).
+// Tests that inject an endpoint via SetOracleEndpointHook get a client for
+// that endpoint (the explicit test hook, never used in production).
 func (a *App) transportClient() *proxy.Client {
 	if a.Client != nil {
-		if a.Cfg.OracleEndpoint != "" {
-			c := a.Client.CloneForBaseURL(a.Cfg.OracleEndpoint)
+		if oracleEndpointHook != "" {
+			c := a.Client.CloneForBaseURL(oracleEndpointHook)
 			return c
 		}
 		c := a.Client.CloneForBaseURL("https://openrouter.ai/api/v1/chat/completions")
 		return c
 	}
-	if a.Cfg.OracleEndpoint != "" {
-		return &proxy.Client{BaseURL: a.Cfg.OracleEndpoint}
+	if oracleEndpointHook != "" {
+		return &proxy.Client{BaseURL: oracleEndpointHook, ZDR: a.EffectiveZDR(), Region: a.EffectiveRegion(), TrustedLocalHosts: a.Cfg.TrustedLocalHosts}
 	}
 	return &proxy.Client{BaseURL: "https://openrouter.ai/api/v1/chat/completions", ZDR: a.EffectiveZDR(), Region: a.EffectiveRegion(), TrustedLocalHosts: a.Cfg.TrustedLocalHosts}
 }

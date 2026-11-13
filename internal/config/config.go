@@ -523,6 +523,12 @@ type Config struct {
 	// paths can be comma-separated; empty = no image attached.
 	AttachImage string `json:"-"`
 
+	// CorrectionCapture enables correction capture: automatic detection of
+	// user corrections and the confirmation prompt that records them. Off by
+	// default; when false no detection runs, no prompt appears and auto mode
+	// is never suspended by a correction.
+	CorrectionCapture bool `json:"correction_capture,omitempty"`
+
 	// Mashūra: counsel tool that calls an external AI API for a second opinion.
 	// The API key is read from OracleAPIKeyEnv at call time — never stored here or
 	// in session files. "mashura_*" is the canonical config spelling; the legacy
@@ -533,7 +539,6 @@ type Config struct {
 	OracleModel          string `json:"oracle_model"`                     // Anthropic model ID sent in the request
 	OracleMaxTokens      int    `json:"oracle_max_tokens"`                // max_tokens for the mashūra response
 	OracleAPIKeyEnv      string `json:"oracle_api_key_env"`               // env var that holds the API key
-	OracleEndpoint       string `json:"oracle_endpoint,omitempty"`        // override API endpoint (tests / proxies; empty = Anthropic)
 	OracleTimeoutSeconds int    `json:"oracle_timeout_seconds,omitempty"` // HTTP timeout for mashūra calls; 0 = use default (300s)
 	// OpenRouterAPIKeyEnv is the env var name for the OpenRouter API key.
 	// Defaults to "OPENROUTER_API_KEY". Used by mashura panel calls that route
@@ -1334,6 +1339,10 @@ func DefaultConfig() Config {
 
 var warnDevImageOnce sync.Once
 
+// oracleEndpointNoticeOnce guarantees the legacy oracle_endpoint notice fires
+// at most once per process (one session), when a config file still carries it.
+var oracleEndpointNoticeOnce sync.Once
+
 // resolveSandboxImage returns configured when non-empty (flag/env/file already
 // applied by the caller), else the image pinned into this binary at release
 // time, else — dev builds only — the unpinned DevSandboxImage plus a one-line
@@ -1451,6 +1460,17 @@ func LoadConfig(argv []string) (Config, error) {
 			return cfg, fmt.Errorf("parsing %s: %w", cfgPath, err)
 		} else {
 			cfgFileExists = true
+			// A legacy oracle_endpoint key is no longer a user config key:
+			// the file still loads, but the value is ignored (tests reach
+			// the transport endpoint through a test-only hook instead).
+			var probe struct {
+				OracleEndpoint string `json:"oracle_endpoint"`
+			}
+			if err := json.Unmarshal(b, &probe); err == nil && probe.OracleEndpoint != "" {
+				oracleEndpointNoticeOnce.Do(func() {
+					fmt.Fprintln(os.Stderr, "oracle_endpoint is ignored — Mashūra uses the OpenRouter transport")
+				})
+			}
 		}
 	}
 

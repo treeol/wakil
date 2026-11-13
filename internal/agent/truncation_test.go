@@ -279,7 +279,8 @@ func TestVoidReplyNeverCountsAsARound(t *testing.T) {
 	app, _ := mashuraTestApp(t, strings.Repeat("## Section\nbody text here\n\n", 800), "1. step", "done")
 	app.Cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = srv.URL
+	SetOracleEndpointHook(srv.URL)
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
 		"default": {Models: []string{"anthropic:test-model"}, Mode: "panel"},
 	}

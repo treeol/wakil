@@ -618,7 +618,8 @@ func TestSourcesReadReceiptsLogged(t *testing.T) {
 
 	app, fe := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
 	fe.files["src/lib.go"] = "package lib"
-	app.Cfg.OracleEndpoint = srv.URL
+	SetOracleEndpointHook(srv.URL)
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 
 	var outBuf strings.Builder
 	app.Out = &outBuf
@@ -695,7 +696,8 @@ func TestPanelSingleGateForWholePanel(t *testing.T) {
 			Mode:   "panel",
 		},
 	}
-	app.Cfg.OracleEndpoint = srv.URL
+	SetOracleEndpointHook(srv.URL)
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 
 	confirmCount := 0
 	app.Confirm = func(_, _, _ string, _ bool) bool {
@@ -809,7 +811,8 @@ func TestPanelCostPerModel(t *testing.T) {
 			Mode:   "panel",
 		},
 	}
-	app.Cfg.OracleEndpoint = srv.URL
+	SetOracleEndpointHook(srv.URL)
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	app.Confirm = func(_, _, _ string, _ bool) bool { return true }
 
 	app.handleMashura(context.Background(), "mashura__review",
@@ -877,7 +880,8 @@ func TestPanelPerCallOverride(t *testing.T) {
 		"default":   {Models: []string{"anthropic:default-model"}, Mode: "panel"},
 		"resilient": {Models: []string{"anthropic:fallback-model"}, Mode: "fallback"},
 	}
-	app.Cfg.OracleEndpoint = srv.URL
+	SetOracleEndpointHook(srv.URL)
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 
 	var capturedDetail string
 	app.Confirm = func(_, _, detail string, _ bool) bool {
@@ -1096,6 +1100,8 @@ func counselServer(t *testing.T) (*httptest.Server, *int) {
 		writeCitedReply(w, r, "diagnosis: fix the loop exit condition", `{"input_tokens":100,"output_tokens":50}`)
 	}))
 	t.Cleanup(srv.Close)
+	SetOracleEndpointHook(srv.URL)
+	t.Cleanup(func() { SetOracleEndpointHook("") })
 	return srv, count
 }
 
@@ -1114,7 +1120,7 @@ func buildStruggleTraces() []ToolTraceEntry {
 // TestAutoCounselBareRunZeroCalls confirms that without --auto-counsel
 // (AutoCounsel=false) the struggle detector fires no mashūra call.
 func TestAutoCounselBareRunZeroCalls(t *testing.T) {
-	srv, count := counselServer(t)
+	_, count := counselServer(t)
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
 	os.Setenv("MASHURA_TEST_OR_KEY", "x")
@@ -1129,7 +1135,6 @@ func TestAutoCounselBareRunZeroCalls(t *testing.T) {
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      4096,
 			OracleEnabled:        true,
-			OracleEndpoint:       srv.URL,
 			OracleTimeoutSeconds: 5,
 		},
 		Client:  &proxy.Client{},
@@ -1154,7 +1159,7 @@ func TestAutoCounselBareRunZeroCalls(t *testing.T) {
 // TestAutoCounselRespectsMaxCounsel verifies that repeated struggle signals are
 // capped at MaxCounsel and no further oracle calls are made after the cap.
 func TestAutoCounselRespectsMaxCounsel(t *testing.T) {
-	srv, count := counselServer(t)
+	_, count := counselServer(t)
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
 	os.Setenv("MASHURA_TEST_OR_KEY", "x")
@@ -1170,7 +1175,6 @@ func TestAutoCounselRespectsMaxCounsel(t *testing.T) {
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      4096,
 			OracleEnabled:        true,
-			OracleEndpoint:       srv.URL,
 			OracleTimeoutSeconds: 5,
 		},
 		Client:      &proxy.Client{},
@@ -1203,7 +1207,7 @@ func TestAutoCounselRespectsMaxCounsel(t *testing.T) {
 // TestCounselSuggestModeHintOnly verifies that CounselMode="suggest" prints a
 // hint but fires zero oracle HTTP calls.
 func TestCounselSuggestModeHintOnly(t *testing.T) {
-	srv, count := counselServer(t)
+	_, count := counselServer(t)
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
 	os.Setenv("MASHURA_TEST_OR_KEY", "x")
@@ -1219,7 +1223,6 @@ func TestCounselSuggestModeHintOnly(t *testing.T) {
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      4096,
 			OracleEnabled:        true,
-			OracleEndpoint:       srv.URL,
 			OracleTimeoutSeconds: 5,
 		},
 		Client:      &proxy.Client{},
@@ -1242,7 +1245,7 @@ func TestCounselSuggestModeHintOnly(t *testing.T) {
 // TestCounselAutoFiresUpToCapThenReverts verifies that CounselMode="auto" fires
 // oracle calls up to MaxCounsel and then falls back to hint text.
 func TestCounselAutoFiresUpToCapThenReverts(t *testing.T) {
-	srv, count := counselServer(t)
+	_, count := counselServer(t)
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
 	os.Setenv("MASHURA_TEST_OR_KEY", "x")
@@ -1259,7 +1262,6 @@ func TestCounselAutoFiresUpToCapThenReverts(t *testing.T) {
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      4096,
 			OracleEnabled:        true,
-			OracleEndpoint:       srv.URL,
 			OracleTimeoutSeconds: 5,
 		},
 		Client:      &proxy.Client{},
@@ -1292,7 +1294,7 @@ func TestCounselAutoFiresUpToCapThenReverts(t *testing.T) {
 // TestCounselCapSurvivesAutoApprove verifies that the per-turn cap holds even
 // when AutoApprove=true (/auto mode), i.e. the cap is hard.
 func TestCounselCapSurvivesAutoApprove(t *testing.T) {
-	srv, count := counselServer(t)
+	_, count := counselServer(t)
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
 	os.Setenv("MASHURA_TEST_OR_KEY", "x")
@@ -1307,7 +1309,6 @@ func TestCounselCapSurvivesAutoApprove(t *testing.T) {
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      4096,
 			OracleEnabled:        true,
-			OracleEndpoint:       srv.URL,
 			OracleTimeoutSeconds: 5,
 		},
 		Client:      &proxy.Client{},
@@ -1336,7 +1337,7 @@ func TestCounselCapSurvivesAutoApprove(t *testing.T) {
 // TestCounselOffSilent verifies that CounselMode="off" prints nothing and
 // fires zero oracle calls.
 func TestCounselOffSilent(t *testing.T) {
-	srv, count := counselServer(t)
+	_, count := counselServer(t)
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
 	os.Setenv("MASHURA_TEST_OR_KEY", "x")
@@ -1352,7 +1353,6 @@ func TestCounselOffSilent(t *testing.T) {
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      4096,
 			OracleEnabled:        true,
-			OracleEndpoint:       srv.URL,
 			OracleTimeoutSeconds: 5,
 		},
 		Client:      &proxy.Client{},
@@ -1375,7 +1375,7 @@ func TestCounselOffSilent(t *testing.T) {
 // appends a synthetic assistant+tool pair into Conv so the model sees the
 // diagnosis in its next turn.
 func TestAutoCounselInjectsIntoConv(t *testing.T) {
-	srv, _ := counselServer(t)
+	counselServer(t)
 	os.Setenv("MASHURA_TEST_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_KEY")
 	os.Setenv("MASHURA_TEST_OR_KEY", "x")
@@ -1390,7 +1390,6 @@ func TestAutoCounselInjectsIntoConv(t *testing.T) {
 			OracleModel:          "anthropic:test-model",
 			OracleMaxTokens:      4096,
 			OracleEnabled:        true,
-			OracleEndpoint:       srv.URL,
 			OracleTimeoutSeconds: 5,
 		},
 		Client:      &proxy.Client{},

@@ -59,6 +59,12 @@ func handleDataSwitchCommand(fields []string, app *App, kind string) (handled, q
 		if err := config.ValidateDataPolicy(map[string]string{"zdr": val, "region": ""}[kind], map[string]string{"zdr": "", "region": val}[kind]); err != nil {
 			return true, false, note(err.Error())
 		}
+		var prev string
+		if kind == "zdr" {
+			prev = app.EffectiveZDR()
+		} else {
+			prev = app.EffectiveRegion()
+		}
 		app.stateMu.Lock()
 		if kind == "zdr" {
 			app.ZDROverride = val
@@ -73,6 +79,16 @@ func handleDataSwitchCommand(fields []string, app *App, kind string) (handled, q
 			app.saveRepoState(func(s *RepoState) { s.Region = val })
 		}
 		msg := app.dataSwitchStatus(kind)
+		// A value that actually changed after the session has already sent a
+		// request resets the prompt cache (the request prefix changes under
+		// it). Re-setting the same value changes nothing, so it says so.
+		if app.Client != nil && app.Client.RequestsSent() > 0 {
+			if val == prev {
+				msg += "\nValue unchanged — no prompt cache reset."
+			} else {
+				msg += "\nChanging this mid-session resets the prompt cache."
+			}
+		}
 		if kind == "zdr" && val == "off" {
 			msg += "\nZDR may still be enforced by your OpenRouter account settings."
 		}

@@ -968,6 +968,25 @@ func TestLoadConfig_MashuraFallbackModelValid(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_LegacyOracleEndpointIgnored verifies that a config file
+// still carrying oracle_endpoint loads without error; the key is no longer a
+// config key and the value is ignored.
+func TestLoadConfig_LegacyOracleEndpointIgnored(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfgContent := `{
+		"base_url": "http://proxy:11400",
+		"oracle_enabled": true,
+		"oracle_endpoint": "http://localhost:9999"
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig([]string{"--config", cfgPath, "--exec", "direct"}); err != nil {
+		t.Fatalf("legacy oracle_endpoint must load without error: %v", err)
+	}
+}
+
 // TestLoadConfig_ServerToolsOnFusionRejected verifies that setting
 // server_tools on a fusion panel is rejected at load time.
 func TestLoadConfig_ServerToolsOnFusionRejected(t *testing.T) {

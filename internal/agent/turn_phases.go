@@ -316,8 +316,10 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// a write failure logs once and never fails the request.
 		a.dumpDebugRequest(msgs, tools)
 
+		before := a.Client.UsageStamp()
 		msg, err = a.Client.Stream(ctx, msgs, tools, sink, rsink)
 		if err != nil {
+			a.RecordFailedStreamCost(before, err)
 			return "", false, err
 		}
 		a.RecordInferenceCost() // main inference for this iteration
@@ -336,8 +338,10 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// (no dangling tool_calls without responses). The fallback's
 			// text becomes the final answer via the normal store below.
 			msgs2 := a.requestMessages()
+			before2 := a.Client.UsageStamp()
 			msg, err = a.Client.Stream(ctx, msgs2, nil, sink, rsink)
 			if err != nil {
+				a.RecordFailedStreamCost(before2, err)
 				return "", false, err
 			}
 			a.RecordInferenceCost()

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/memory"
 )
 
@@ -23,11 +24,14 @@ func testStore(t *testing.T) *memory.Store {
 }
 
 // newTestAppCorrection creates a minimal App with the fields needed for
-// correction-capture testing.
+// correction-capture testing. These tests exercise the capture loop itself,
+// so they run with correction_capture enabled; the off-by-default gate has
+// its own tests elsewhere.
 func newTestAppCorrection(t *testing.T) *App {
 	t.Helper()
 	app := &App{
 		AgentPrefix: "main",
+		Cfg:         config.Config{CorrectionCapture: true},
 		Confirm: func(toolName, headline, detail string, readAction bool) bool {
 			return true // auto-approve by default
 		},

@@ -918,7 +918,8 @@ func TestFinalReviewFiresAfterLastStep(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -951,7 +952,8 @@ func TestFinalReviewFlaggedGapsKeepsWorkflowOpen(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -1095,7 +1097,8 @@ func TestEverystepOracleCalledPerStep(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = false // isolate every-step from final review
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -1204,7 +1207,8 @@ func TestRemediationTurnRetriggersVerification(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -1355,7 +1359,8 @@ func TestCwdChangedMidWorkflowBriefingComplete(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -1437,7 +1442,8 @@ func TestFailedPlanReadRoutesUnavailable(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -1900,7 +1906,8 @@ func TestRemediationEvidenceAppendsToStepLog(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = true
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -2110,7 +2117,8 @@ func TestRunHeadlessDefaultInvokesOracle(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = false
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -2164,7 +2172,8 @@ func TestRunHeadlessNoOracleFlag(t *testing.T) {
 	app.Cfg.OracleEnabled = true // would be used if --no-oracle weren't set
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	app.Cfg.WFFinalReview = false
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
@@ -2868,7 +2877,8 @@ func TestReReviewClearsStaleFlag(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
@@ -2919,7 +2929,8 @@ func TestAutoModeAdvancesPastSuccessfulReview(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
@@ -2995,7 +3006,8 @@ func TestAutoModeStopsAtZeroStepPlan(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
@@ -3034,7 +3046,8 @@ func TestPlanReviewFromPresent(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake-key")
 
@@ -3516,7 +3529,8 @@ func TestReviewRetryOnTurnCompletion(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	t.Setenv("TEST_KEY", "fake")
 	t.Setenv("WAKIL_TEST_OR_KEY", "fake")
 

@@ -974,13 +974,28 @@ func FormatPanelResult(results []PanelMemberResult) string {
 		return "[mashūra error: panel has no members]"
 	}
 	var sb strings.Builder
-	if AnyVoid(results) {
-		sb.WriteString(VoidHeader(results))
-		sb.WriteString("\n\n")
-	}
-	if AnyBudgetStopped(results) {
-		sb.WriteString("[mashūra round NOT COMPLETED — review budget reached; what was obtained is kept — this is not a review round and not \"no findings\"]")
-		sb.WriteString("\n\n")
+	// A failed member blocks the round banner only when it leaves the panel
+	// without a usable answer. When some other member produced a usable
+	// review, the panel still counts as completed; each failure is instead
+	// named inline so the gap stays visible without mislabelling the round.
+	if AnyVoid(results) || AnyBudgetStopped(results) {
+		if !AnyUsable(results) {
+			if AnyVoid(results) {
+				sb.WriteString(VoidHeader(results))
+				sb.WriteString("\n\n")
+			}
+			if AnyBudgetStopped(results) {
+				sb.WriteString("[mashūra round NOT COMPLETED — review budget reached; what was obtained is kept — this is not a review round and not \"no findings\"]")
+				sb.WriteString("\n\n")
+			}
+		} else {
+			for _, r := range results {
+				if r.Void || r.BudgetStopped {
+					sb.WriteString(failureLine(r))
+					sb.WriteString("\n\n")
+				}
+			}
+		}
 	}
 	if len(results) == 1 {
 		r := results[0]
@@ -1069,6 +1084,8 @@ func VoidLine(r PanelMemberResult) string {
 
 // VoidHeader is the panel-wide banner printed when any reply is VOID. A reply
 // that stayed VOID through the automatic retry is reported as "not obtained".
+// FormatPanelResult shows it only when no member produced a usable answer;
+// otherwise the failure is named inline (see failureLine) instead.
 func VoidHeader(results []PanelMemberResult) string {
 	var models []string
 	notObtained := false
@@ -1086,6 +1103,27 @@ func VoidHeader(results []PanelMemberResult) string {
 	}
 	return fmt.Sprintf("[mashūra round NOT COMPLETED — VOID reply from %s; the review %s — this is not a review round and not \"no findings\"; do not count it]",
 		strings.Join(models, ", "), verb)
+}
+
+// failureLine names one failed panel member inline: the member, and why it
+// failed. It is shown when another member produced a usable answer, so the
+// round banner stays off while the gap remains visible.
+func failureLine(r PanelMemberResult) string {
+	switch {
+	case r.Void:
+		reason := ""
+		if r.Err != nil {
+			reason = r.Err.Error()
+		}
+		return fmt.Sprintf("[%s did not produce a review — %s]", r.PrefixedModel, reason)
+	case r.BudgetStopped:
+		note := r.BudgetNote
+		if note == "" {
+			note = budgetReachedReason
+		}
+		return fmt.Sprintf("[%s stopped — %s]", r.PrefixedModel, note)
+	}
+	return ""
 }
 
 // logFooter renders the per-reviewer "what was sent" line ("" without a Log).

@@ -647,6 +647,15 @@ func containsSecretPattern(text string) bool {
 //     (the rewind is a one-shot signal — one message, one chance).
 //   - If the signal has expired (beyond correctionDetectWindow), it's cleared.
 func (a *App) detectAndProposeCorrection(ctx context.Context, userText string) {
+	// Correction capture is opt-in (correction_capture, default false). When
+	// off, nothing here runs: no detection, no prompt, and auto mode is
+	// never suspended — the one-shot rewind is still consumed below.
+	if !a.Cfg.CorrectionCapture {
+		if a.lastRewind != nil {
+			a.ClearLastRewind()
+		}
+		return
+	}
 	if a.IsSubagent || a.MemoryStore == nil || a.Confirm == nil {
 		// Still clear stale rewind even if we can't propose.
 		if a.lastRewind != nil {

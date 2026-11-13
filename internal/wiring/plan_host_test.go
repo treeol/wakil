@@ -205,7 +205,8 @@ func TestPlanHostPassWithOracle(t *testing.T) {
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "TEST_OR_KEY"
-	app.Cfg.OracleEndpoint = oracleSrv.URL
+	agent.SetOracleEndpointHook(oracleSrv.URL)
+	t.Cleanup(func() { agent.SetOracleEndpointHook("") })
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("TEST_OR_KEY", "fake-key")
 	app.Workflow = &workflow.WorkflowState{Task: "t", Phase: workflow.WFGather, PlanPath: ".wakil/plan.md"}
