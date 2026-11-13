@@ -423,35 +423,44 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 	}
 
 	// Mashūra settings (TUI-only, endpoint-independent).
-	if len(st.MashuraPanels) > 0 {
-		if a.Cfg.MashuraPanels == nil {
-			a.Cfg.MashuraPanels = make(map[string]config.MashuraPanelConfig)
+	// When the new config block is present it wins: the five legacy RepoState
+	// mashura fields are skipped with one notice, so a stale repo file cannot
+	// resurrect legacy panels over the block.
+	if a.Cfg.Mashura != nil {
+		if len(st.MashuraPanels) > 0 || len(st.MashuraToolPanels) > 0 || st.MashuraDefaultModel != "" || st.MashuraMaxTokens > 0 || st.MashuraTimeoutSeconds > 0 {
+			applied = append(applied, "mashura-legacy-repo ignored (config block present)")
 		}
-		for name, panel := range st.MashuraPanels {
-			a.Cfg.MashuraPanels[name] = panel
+	} else {
+		if len(st.MashuraPanels) > 0 {
+			if a.Cfg.MashuraPanels == nil {
+				a.Cfg.MashuraPanels = make(map[string]config.MashuraPanelConfig)
+			}
+			for name, panel := range st.MashuraPanels {
+				a.Cfg.MashuraPanels[name] = panel
+			}
+			applied = append(applied, fmt.Sprintf("mashura-panels=%d", len(st.MashuraPanels)))
 		}
-		applied = append(applied, fmt.Sprintf("mashura-panels=%d", len(st.MashuraPanels)))
-	}
-	if len(st.MashuraToolPanels) > 0 {
-		if a.Cfg.MashuraToolPanels == nil {
-			a.Cfg.MashuraToolPanels = make(map[string]string)
+		if len(st.MashuraToolPanels) > 0 {
+			if a.Cfg.MashuraToolPanels == nil {
+				a.Cfg.MashuraToolPanels = make(map[string]string)
+			}
+			for tool, panel := range st.MashuraToolPanels {
+				a.Cfg.MashuraToolPanels[tool] = panel
+			}
+			applied = append(applied, "mashura-mappings")
 		}
-		for tool, panel := range st.MashuraToolPanels {
-			a.Cfg.MashuraToolPanels[tool] = panel
+		if st.MashuraDefaultModel != "" {
+			a.Cfg.OracleModel = st.MashuraDefaultModel
+			applied = append(applied, "mashura-model="+st.MashuraDefaultModel)
 		}
-		applied = append(applied, "mashura-mappings")
-	}
-	if st.MashuraDefaultModel != "" {
-		a.Cfg.OracleModel = st.MashuraDefaultModel
-		applied = append(applied, "mashura-model="+st.MashuraDefaultModel)
-	}
-	if st.MashuraMaxTokens > 0 {
-		a.Cfg.OracleMaxTokens = st.MashuraMaxTokens
-		applied = append(applied, fmt.Sprintf("mashura-maxtokens=%d", st.MashuraMaxTokens))
-	}
-	if st.MashuraTimeoutSeconds > 0 {
-		a.Cfg.OracleTimeoutSeconds = st.MashuraTimeoutSeconds
-		applied = append(applied, fmt.Sprintf("mashura-timeout=%d", st.MashuraTimeoutSeconds))
+		if st.MashuraMaxTokens > 0 {
+			a.Cfg.OracleMaxTokens = st.MashuraMaxTokens
+			applied = append(applied, fmt.Sprintf("mashura-maxtokens=%d", st.MashuraMaxTokens))
+		}
+		if st.MashuraTimeoutSeconds > 0 {
+			a.Cfg.OracleTimeoutSeconds = st.MashuraTimeoutSeconds
+			applied = append(applied, fmt.Sprintf("mashura-timeout=%d", st.MashuraTimeoutSeconds))
+		}
 	}
 
 	// Counsel mode (endpoint-independent).

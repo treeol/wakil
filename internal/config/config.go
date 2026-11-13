@@ -1515,6 +1515,142 @@ var warnDevImageOnce sync.Once
 // at most once per process (one session), when a config file still carries it.
 var oracleEndpointNoticeOnce sync.Once
 
+// mashuraDerivedNoticeOnce guarantees the legacy mashura derivation/ignore
+// notice fires at most once per process (one session).
+var mashuraDerivedNoticeOnce sync.Once
+
+// legacyMashuraKeysPresent lists the legacy mashura/oracle keys whose value
+// differs from DefaultConfig. A bool cannot distinguish absent from false,
+// so presence is detected by deviation from defaults — absent (zero) always
+// equals the default the field received from DefaultConfig, so absence is
+// indistinguishable and is correctly treated as "not present".
+func legacyMashuraKeysPresent(c Config) []string {
+	def := DefaultConfig()
+	var names []string
+	add := func(name string, differs bool) {
+		if differs {
+			names = append(names, name)
+		}
+	}
+	add("oracle_enabled", c.OracleEnabled != def.OracleEnabled)
+	add("oracle_model", c.OracleModel != def.OracleModel)
+	add("oracle_max_tokens", c.OracleMaxTokens != def.OracleMaxTokens)
+	add("oracle_api_key_env", c.OracleAPIKeyEnv != def.OracleAPIKeyEnv)
+	add("oracle_timeout_seconds", c.OracleTimeoutSeconds != def.OracleTimeoutSeconds)
+	add("mashura_fallback_model", c.MashuraFallbackModel != def.MashuraFallbackModel)
+	add("mashura_max_tokens", c.MashuraMaxTokens != def.MashuraMaxTokens)
+	add("mashura_timeout_seconds", c.MashuraTimeoutSeconds != def.MashuraTimeoutSeconds)
+	add("mashura_review_budget_usd", c.MashuraReviewBudgetUSD != def.MashuraReviewBudgetUSD)
+	add("mashura_mode", c.MashuraMode != def.MashuraMode)
+	add("mashura_max_tokens_by_tool", len(c.MashuraToolMaxTokens) > 0)
+	add("mashura_models", len(c.MashuraModels) > 0)
+	add("mashura_roles", len(c.MashuraRoles) > 0)
+	add("auto_counsel", c.AutoCounsel != def.AutoCounsel)
+	add("counsel_max_per_session", c.CounselMaxPerSession != def.CounselMaxPerSession)
+	add("mashura_panels", len(c.MashuraPanels) > 0)
+	add("mashura_tool_panels", len(c.MashuraToolPanels) > 0)
+	add("wf_oracle_mode", c.WFOracleMode != def.WFOracleMode)
+	add("wf_final_review", c.WFFinalReview != def.WFFinalReview)
+	add("wf_briefing_max_bytes", c.WFBriefingMaxBytes != def.WFBriefingMaxBytes)
+	return names
+}
+
+// deriveMashuraFromLegacy builds the new block from old keys (B1):
+//   - members: the panel the review tool points to; if there is no tool
+//     mapping, the default panel.
+//   - a tool that points to a different panel gets an override with that
+//     panel's members.
+//   - a role with an explicit reasoning effort becomes an override level for
+//     the matching tools: none/low → low, medium → medium, high and above →
+//     high. A role with only a token number and no effort creates no override.
+//   - oracle_enabled: false → level off. Otherwise level medium.
+//   - a legacy panel in fusion (or fallback) mode is treated as a normal panel.
+func deriveMashuraFromLegacy(c Config) *MashuraConfig {
+	m := &MashuraConfig{Level: MashuraLevelMedium}
+	if !c.OracleEnabled {
+		m.Level = MashuraLevelOff
+	}
+	// Members: panel the review tool points to, else the default panel.
+	panelMembers := func(name string) []string {
+		if p, ok := c.MashuraPanels[name]; ok && len(p.Models) > 0 {
+			return append([]string(nil), p.Models...)
+		}
+		return nil
+	}
+	if name, ok := c.MashuraToolPanels["review"]; ok {
+		if members := panelMembers(name); len(members) > 0 {
+			m.Members = members
+		}
+	}
+	if len(m.Members) == 0 {
+		if members := panelMembers("default"); len(members) > 0 {
+			m.Members = members
+		}
+	}
+	// Per-tool member overrides: a tool pointing to a different panel.
+	m.Overrides = map[string]MashuraOverride{}
+	for tool, panelName := range c.MashuraToolPanels {
+		members := panelMembers(panelName)
+		if len(members) == 0 {
+			continue
+		}
+		// Skip when it matches the block members (no override needed).
+		if len(members) == len(m.Members) {
+			same := true
+			for i := range members {
+				if members[i] != m.Members[i] {
+					same = false
+					break
+				}
+			}
+			if same {
+				continue
+			}
+		}
+		if ov, ok := m.Overrides[tool]; ok {
+			ov.Members = members
+			m.Overrides[tool] = ov
+		} else {
+			m.Overrides[tool] = MashuraOverride{Members: members}
+		}
+	}
+	// Role reasoning → override levels.
+	toolsForRole := map[string][]string{
+		"reviewer": {"review", "debug", "decide"},
+		"check":    {"check"},
+	}
+	for role, tools := range toolsForRole {
+		rc, ok := c.MashuraRoles[role]
+		if !ok || rc.Reasoning == nil || rc.Reasoning.Effort == "" {
+			continue // only effort creates an override
+		}
+		level := ""
+		switch rc.Reasoning.Effort {
+		case "none", "low", "minimal", "off":
+			level = MashuraLevelLow
+		case "medium":
+			level = MashuraLevelMedium
+		case "high", "xhigh", "max":
+			level = MashuraLevelHigh
+		}
+		if level == "" {
+			continue
+		}
+		for _, tool := range tools {
+			if ov, ok := m.Overrides[tool]; ok {
+				ov.Level = level
+				m.Overrides[tool] = ov
+			} else {
+				m.Overrides[tool] = MashuraOverride{Level: level}
+			}
+		}
+	}
+	if len(m.Overrides) == 0 {
+		m.Overrides = nil
+	}
+	return m
+}
+
 // resolveSandboxImage returns configured when non-empty (flag/env/file already
 // applied by the caller), else the image pinned into this binary at release
 // time, else — dev builds only — the unpinned DevSandboxImage plus a one-line
@@ -1672,6 +1808,24 @@ func LoadConfig(argv []string) (Config, error) {
 	}
 	if cfg.MashuraReviewBudgetUSD < 0 {
 		return cfg, fmt.Errorf("mashura_review_budget_usd must be >= 0 (got %g; 0 = off)", cfg.MashuraReviewBudgetUSD)
+	}
+
+	// The new mashura block (Group A) vs legacy keys (Group B). Old keys are
+	// interpreted at load time only; the file on disk is never rewritten.
+	// When the block is absent and legacy keys are present, derive the block
+	// from them (B1). When both are present, the block wins and one notice
+	// lists the ignored old keys (B2).
+	if cfg.Mashura != nil {
+		if names := legacyMashuraKeysPresent(cfg); len(names) > 0 {
+			mashuraDerivedNoticeOnce.Do(func() {
+				fmt.Fprintln(os.Stderr, "mashura block present; ignoring old keys: "+strings.Join(names, ", "))
+			})
+		}
+	} else if names := legacyMashuraKeysPresent(cfg); len(names) > 0 {
+		cfg.Mashura = deriveMashuraFromLegacy(cfg)
+		mashuraDerivedNoticeOnce.Do(func() {
+			fmt.Fprintln(os.Stderr, "mashura settings were derived from old keys; run /mashura to see the new config block")
+		})
 	}
 
 	switch cfg.Approval {
