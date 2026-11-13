@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Mashūra panel calls are always recorded: provider-reported `usage.cost` wins; otherwise the price table for the served model (for `openrouter/auto`, the model OpenRouter resolved); otherwise the call is counted as **unpriced** (shown as `unpriced N` in `/mode status` and the info panel) instead of a silent `$0.0000`.
 - Zero-token panel results are recorded as calls too.
+- **Failed stream cost**: a Stream call that failed after sending now records one cost row from the usage the client published for that request — exact usage when the provider sent it, otherwise the provisional input estimate (marked estimated), unpriced when no price is known. Nothing is recorded for user cancels, policy refusals before sending, or HTTP error statuses before stream data (including the first 404 of the zdr auto retry); Wakil's own idle timeout after stream data does record.
+- **Mashūra NOT COMPLETED banner**: it now appears only when no panel member produced a usable answer. When a later member succeeded, each failed member is instead named inline (member + reason). Dispatch, retry, verdict and panel selection are unchanged.
+- **Correction capture default**: `correction_capture` (new config key, boolean, default `false`) gates the correction-capture loop. When false, no detection runs, no prompt appears and auto mode is never suspended by a correction. Set `correction_capture: true` to restore the previous behaviour.
+- `oracle_endpoint` is no longer a user config key: a config file that still contains it loads without error, shows a one-line notice once, and ignores the value. Tests reach the transport endpoint through a test-only hook (`agent.SetOracleEndpointHook`) instead; requests through it still pass `ApplyPolicy`.
+- **`/zdr` and `/region` mid-session change**: when the value changes after the session has already sent a request, the command output adds one line — "Changing this mid-session resets the prompt cache."
 
 ### Added
 - `WAKIL_DEBUG_REQUESTS` also writes one `panel-*.json` capture per Mashūra/counsel call (raw usage objects, served model, status; no headers or keys).

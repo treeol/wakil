@@ -181,6 +181,12 @@ identical to the unguarded path** — nothing changes for existing users.
   repo cannot change them. User config provides the fallback through the
   `zdr` and `openrouter_region` config keys; a value in a committed project
   config is ignored.
+- **Mid-session changes reset the prompt cache.** Changing `/zdr` or
+  `/region` after the session has already sent a request adds one line to
+  the command output ("Changing this mid-session resets the prompt cache.") —
+  both switches change the request prefix, so the provider's cached prefix no
+  longer matches. Set both at session start; the pre-send change carries no
+  such line.
 
 All model traffic goes through one transport (`internal/proxy`); no other
 package opens a connection to a model host. The **direct Anthropic path has

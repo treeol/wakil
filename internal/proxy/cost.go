@@ -349,7 +349,10 @@ func (t *CostTracker) ExportRows() []CostRow {
 	return rows
 }
 
-// RestoreRows replaces tracker contents (used on resume; empty = no-op).
+// RestoreRows merges rows into the tracker: rows with matching keys are
+// added (calls, tokens, cost), new keys are inserted. Used on resume; empty
+// = no-op. Restoring the same rows twice double-counts — callers must pass
+// each row's contribution once.
 func (t *CostTracker) RestoreRows(rows []CostRow) {
 	if t == nil || len(rows) == 0 {
 		return

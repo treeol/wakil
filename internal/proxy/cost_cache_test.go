@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -114,6 +115,35 @@ func TestCategoryTotalsAndExportRestore(t *testing.T) {
 	ct2, _ := tr2.SnapshotDetail()
 	if ct2.Total != ct.Total || ct2.Main != ct.Main {
 		t.Errorf("restore mismatch: %+v vs %+v", ct2, ct)
+	}
+}
+
+// TestRestoreRowsMerges pins the C3 semantics: RestoreRows MERGES into the
+// tracker — a row whose key already exists adds (calls, tokens, cost) onto
+// the existing entry rather than replacing it. Restoring is therefore NOT
+// idempotent: the same rows restored twice double-count, and callers must
+// pass each row's contribution once.
+func TestRestoreRowsMerges(t *testing.T) {
+	tr := NewCostTracker()
+	tr.RecordCategorized("inference·openrouter/m", CostCatMain, 100, 50, 0.30, true, ConfExact)
+	_, rows := tr.SnapshotDetail()
+
+	dst := NewCostTracker()
+	dst.RecordCategorized("inference·openrouter/m", CostCatMain, 10, 5, 0.03, true, ConfExact)
+	dst.RestoreRows(rows)
+	ct, _ := dst.SnapshotDetail()
+	if math.Abs(ct.Main-0.33) > 1e-9 {
+		t.Errorf("Main = %v, want 0.33 (merge, not replace)", ct.Main)
+	}
+	if ct.InputTok != 110 {
+		t.Errorf("InputTok = %d, want 110 (100 + 10 merged)", ct.InputTok)
+	}
+	// Restoring the same rows a second time merges again (double-counts by
+	// design — this pins the merge, not replace-on-resume).
+	dst.RestoreRows(rows)
+	ct2, _ := dst.SnapshotDetail()
+	if math.Abs(ct2.Main-0.63) > 1e-9 {
+		t.Errorf("Main after second restore = %v, want 0.63 (merge again)", ct2.Main)
 	}
 }
 

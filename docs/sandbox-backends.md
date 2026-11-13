@@ -616,6 +616,8 @@ Absent file = nothing extra. Unknown keys are errors (the message names the key)
 | `hisn.mounts_rw[]` | absolute paths | extra read-write binds (`mounts.rw`); with `hisn.profile`: initial `--grant PATH:rw` (bounded by that profile's `grantable_rw`) |
 | `hisn.risk_ack` | string | **your** acknowledgement, verbatim as hisn expects it (`"root-equivalent"`, `"signing"`, `"host-exec"`, `"data"`, ...). Copied into every `[[forward]]`/`[[host_services]]` entry; Wakil never writes one itself. One string means one label: a project mixing capabilities with different labels uses `hisn.profile` |
 | `hisn.profile` | name | a built-in or `$HISN_PROFILES` profile used instead of generation; Wakil then only adds grants |
+| `hisn.home` | `"persist"` or `"tmpfs"` | override `sandbox.hisn.home` for this project (name only; the persistent path is never set per project) |
+| `hisn.rootfs` | store name | rootfs for this project (store name only; the absolute-path form is global-only, `sandbox.hisn.rootfs`) |
 
 One complete example (a project that runs a database inside the sandbox, reads
 reference data, and uses the host docker daemon for deploys):
