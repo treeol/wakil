@@ -396,6 +396,74 @@ explicitly. Use `mashura_roles` to override the Mashūra defaults.
 A reviewer never gets more than 16384 reasoning tokens (the `max` effort
 level maps to 16384 in the `EffortToBudget` table).
 
+## Mashūra levels
+
+Mashūra (the `mashura__review`, `mashura__debug`, `mashura__decide`, and
+`mashura__check` tools) is configured in one block:
+
+```json
+"mashura": {
+  "level": "medium",
+  "members": ["openrouter:anthropic/claude-sonnet-4"],
+  "overrides": { "check": { "level": "low" } }
+}
+```
+
+- `level` is one of `off`, `low`, `medium`, `high`.
+- `members` is the panel: every member runs as a panel at every level
+  (all members of a call run as a panel, as before).
+- `overrides` is optional. Each tool (`review`, `debug`, `decide`, `check`)
+  may set its own `members` and/or `level`. Unknown tool names and levels are
+  rejected at load. With the block present, per-model and per-role reasoning
+  (`mashura_models.*.reasoning`, `mashura_roles`) no longer apply; `mashura_models`
+  context/budget limits still do.
+
+What a level sets (for every tool unless an override says otherwise):
+
+| Level | Tools | Reasoning | Debate | Auto-counsel |
+|---|---|---|---|---|
+| `off` | none | — | — | — |
+| `low` | offered | off (`none` effort) | no | suggest only |
+| `medium` | offered | `medium` | no | on (ceiling) |
+| `high` | offered | `max` (highest accepted, clamped exactly as before) | yes | on (ceiling) |
+
+Debate is available at `high` only. With the block present, debate is chosen by the
+level (the panel's legacy `mode` is ignored). `/counsel` still chooses within
+the ceiling: `off` → silent, `low` → suggest, `medium`/`high` → auto allowed;
+your `/counsel` mode (default `suggest`) picks within it, so `medium` changes no
+behavior by default.
+
+`check` is deliberately calmer: it stays at `low` effort under `low` and
+`medium` and follows the level only at `high`. The `/mashura` status table shows
+this explicitly.
+
+Precedence, highest first: level `off` (from any source) → per-tool override
+→ per-repo level set with `/mashura` → config level.
+
+Per-repo level: `/mashura off|low|medium|high` sets it, `/mashura reset`
+removes it. It is stored in RepoState (the per-user store keyed by workspace),
+never in the repository. `/mashura` (bare) shows the effective level and where
+it comes from, the members, the overrides, the effective setting per tool, and
+the equivalent new block as JSON for copying. `/mode status` shows the level
+and member count. Changing the tool set mid-session adds the line "Changing
+this mid-session resets the prompt cache."
+
+Old keys: a config with only the old keys keeps working. At load (the file is
+never rewritten), members come from the panel the review tool points to (or the
+default panel); a tool pointing elsewhere gets an override; a role with an
+explicit reasoning effort becomes an override level (`none`/`low` → `low`,
+`medium` → `medium`, `high` and above → `high`); `oracle_enabled: false` →
+`off`, otherwise `medium`; a legacy panel in `fusion` mode is treated as a normal
+panel. One notice per session says the settings were derived and that `/mashura`
+prints the new block. If both the new block and old keys are present, the new
+block wins and one notice lists the ignored old keys.
+
+The legacy `fusion` panel mode, the `CallOracle`/`CallOracleURL` helpers, and
+the `oracle__ask` tool alias were removed. `oracle_api_key_env` no longer gates
+the tools; the gate is the unified predicate: effective level not `off` AND
+effective members non-empty AND the OpenRouter key (named by
+`openrouter_api_key_env`) is present.
+
 ## Execution modes
 
 Tool calls run inside one persistent Docker container for the process

@@ -88,8 +88,12 @@
     }
   },
 
-  "_comment_mashura": "Counsel: second opinions from external models. oracle_enabled gates the tools. mashura_panels defines named model groups; mashura_tool_panels maps each tool to a panel. Keys are read at call time from env vars, never stored here.",
+  "_comment_mashura": "Counsel: second opinions from external models. The mashura block is the single config: level (off|low|medium|high), members (backend:model list — every member runs as a panel at every level), and optional per-tool overrides (review|debug|decide|check, each with optional members/level). Off closes the gate (no tools, no auto-counsel, no workflow panel); low suggests only; medium enables auto-counsel; high enables debate. /mashura off|low|medium|high sets the level per-repo. Keys are read at call time from env vars, never stored here.",
 
+  "mashura": {
+    "level": "medium",
+    "members": ["anthropic:claude-sonnet-4-6"]
+  },
   "oracle_enabled": false,
   "oracle_model": "claude-sonnet-4-6",
   "oracle_api_key_env": "ANTHROPIC_API_KEY",

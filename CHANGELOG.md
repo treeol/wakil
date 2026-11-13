@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed behaviour
+
+- **Mashūra levels and a single config block.** The `mashura` block (`level` off|low|medium|high, `members`, optional per-tool `overrides`) is now the one place to configure Mashūra. `off` closes the tool gate, auto-counsel, and workflow panels; `low` is suggest-only; `medium` enables auto-counsel (same behavior as today by default); `high` raises reasoning to `max` (clamped as before) and enables debate. `check` stays at `low` effort below `high`. `/mashura off|low|medium|high|reset` sets a per-repo level (RepoState, never the repository); bare `/mashura` shows the effective level, source, members, overrides, the per-tool table, and the copyable block JSON; `/mode status` shows the level and member count; `/counsel` explains how to turn Mashūra on when it is off.
+- **Old Mashūra keys still work.** A config with only the old keys is derived into the new block at load (the file is never rewritten); one notice per session says so. When both are present the new block wins and one notice lists the ignored old keys.
+- **Removed:** the `fusion` panel mode (a legacy fusion panel is treated as a normal panel — a one-member panel is a single call), the `CallOracle`/`CallOracleURL` helpers, the `oracle__ask` tool alias (a model calling it gets the normal unknown-tool answer), and the `oracle_api_key_env` tool gate. Tools are now offered under one predicate: effective level not `off`, members non-empty, OpenRouter key present. `wiring/facade.go` now reads the configured `openrouter_api_key_env` name instead of a hard-coded literal.
+- **Timeout default.** `oracle_timeout_seconds: 0` now means idle+total as the docs promise: a stream silent for 120s (`stream_idle_timeout_seconds`) is cut, the total cap is 30 minutes — a slow, steadily streaming reply is not cut at 300 seconds. The 300s default is unchanged.
+- `phases-only` is documented everywhere as an alias of `on-deviation` (it always behaved the same); no separate code path remains.
+- **Reasoning default at `medium`:** the reviewer's default reserve changed from the old `{effort: medium, max_tokens: 8192}` to the `{effort: medium}` table value (4096). Debated panels at `high` now use `max` effort (table top, 16384) with the existing clamp path.
+
 ## [0.8.0] - 2026-11-13
 
 ### Changed behaviour
