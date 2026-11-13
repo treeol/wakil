@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Subagents were told not to re-run a command that had succeeded before, even after files changed. Tool dedup now covers only read-only local-file tools, and a state-changing tool call clears the cached reads afterwards.
+
 ## [0.8.0] - 2026-11-13
 
 ### Changed behaviour

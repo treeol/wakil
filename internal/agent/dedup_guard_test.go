@@ -181,8 +181,10 @@ func TestDedupEditInvalidatesRead(t *testing.T) {
 	}
 }
 
-// TestDedupEditDoesNotInvalidateOtherPaths verifies that editing one file
-// does NOT invalidate cache entries for a different file.
+// TestDedupEditDoesNotInvalidateOtherPaths is superseded by the whole-cache
+// clear rule: a state-changing edit clears every read entry, including
+// entries for other paths. The old per-path scoping was the source of the
+// stale-read bug (see TestDedupWriteInvalidatesPreviousRead).
 func TestDedupEditDoesNotInvalidateOtherPaths(t *testing.T) {
 	exec := newFakeExecutor()
 	exec.files["a.go"] = "original"
@@ -205,7 +207,10 @@ func TestDedupEditDoesNotInvalidateOtherPaths(t *testing.T) {
 	})
 	keyB := app.toolDedupKey("read_file", `{"path":"b.go"}`)
 
-	// Edit a.go — should only invalidate a.go entries, not b.go.
+	// Edit a.go — clears the whole cache, including the b.go entry. A
+	// path-scoped clear would leave a b.go entry whose file state may have
+	// been changed by a concurrent or side-effecting edit; the spec requires
+	// a whole-cache clear.
 	app.handleToolCall(context.Background(), proxy.ToolCall{
 		Function: proxy.FunctionCall{
 			Name:      "edit_file",
@@ -213,16 +218,16 @@ func TestDedupEditDoesNotInvalidateOtherPaths(t *testing.T) {
 		},
 	})
 
-	if _, ok := app.ToolCache[keyB]; !ok {
-		t.Error("b.go cache entry should NOT be invalidated by editing a.go")
+	if _, ok := app.ToolCache[keyB]; ok {
+		t.Error("b.go cache entry should be cleared by the whole-cache clear after editing a.go")
 	}
 
-	// Re-read b.go should still be deduped.
+	// Re-read b.go must execute, not be deduped.
 	r3 := app.handleToolCall(context.Background(), proxy.ToolCall{
 		Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"b.go"}`},
 	})
-	if !strings.Contains(r3.text, "already called") {
-		t.Errorf("b.go should still be deduped after editing a.go, got %q", r3.text)
+	if strings.Contains(r3.text, "already called") {
+		t.Errorf("b.go should execute after the whole-cache clear following the edit, got %q", r3.text)
 	}
 }
 
