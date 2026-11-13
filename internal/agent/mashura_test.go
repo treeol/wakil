@@ -1259,6 +1259,36 @@ func TestResolveCounselModeLevels(t *testing.T) {
 	}
 }
 
+// TestCounselModeDebugOverrideSilences pins the per-tool override contract:
+// resolveCounselMode keys on the debug tool (the one that fires), so a
+// per-tool debug: off override silences counsel even when the overall level
+// is on, while a review: off override does not. The /counsel refusal checks
+// the same tool so the two never disagree.
+func TestCounselModeDebugOverrideSilences(t *testing.T) {
+	mk := func(overrides map[string]config.MashuraOverride) *App {
+		cfg := config.DefaultConfig()
+		cfg.Mashura = &config.MashuraConfig{Level: "high", Members: []string{"openrouter:test-model"}, Overrides: overrides}
+		cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+		cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+		return &App{Cfg: cfg, Out: io.Discard}
+	}
+	debugOff := mk(map[string]config.MashuraOverride{"debug": {Level: "off"}})
+	if mode, src := debugOff.resolveCounselMode(); mode != "off" || src != "level off" {
+		t.Errorf("debug off override: resolve = (%q,%q), want (off, level off)", mode, src)
+	}
+	reviewOff := mk(map[string]config.MashuraOverride{"review": {Level: "off"}})
+	if mode, src := reviewOff.resolveCounselMode(); mode != "auto" || src != "level high" {
+		t.Errorf("review off override: resolve = (%q,%q), want (auto, level high)", mode, src)
+	}
+	// /counsel refuses to set at debug off, accepts at review off.
+	if handled, _, cmd := HandleTUICommand("/counsel suggest", debugOff); !handled || !strings.Contains(cmdNote(t, cmd), "Mashūra is off") {
+		t.Errorf("/counsel suggest at debug off should be refused: %q", cmdNote(t, cmd))
+	}
+	if handled, _, cmd := HandleTUICommand("/counsel suggest", reviewOff); handled && strings.Contains(cmdNote(t, cmd), "Mashūra is off") {
+		t.Errorf("/counsel suggest at review off must NOT be refused: %q", cmdNote(t, cmd))
+	}
+}
+
 // TestCounselResetReturnsControlToLevel verifies /counsel reset clears the
 // explicit choice so the level decides again.
 func TestCounselResetReturnsControlToLevel(t *testing.T) {
@@ -1466,6 +1496,88 @@ func TestCounselOffSilent(t *testing.T) {
 	}
 	if outBuf.Len() != 0 {
 		t.Errorf("off mode: expected no output, got: %q", outBuf.String())
+	}
+}
+
+// TestAutoBlockedReasonsPrinted pins one test per documented blocked-auto
+// reason: no members/key, declined consent, cap. Each prints the suggest
+// note plus the reason and does not count the round.
+func TestAutoBlockedReasonsPrinted(t *testing.T) {
+	// No key/members (mashuraAvailable false while level on).
+	_, count := counselServer(t)
+	t.Setenv("MASHURA_TEST_OR_KEY", "")
+	t.Setenv("MASHURA_TEST_KEY", "")
+	cfg := config.DefaultConfig()
+	cfg.Mashura = &config.MashuraConfig{Level: "high", Members: []string{"openrouter:test-model-a", "openrouter:test-model-b"}}
+	cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+
+	app := &App{Cfg: cfg, Client: &proxy.Client{}, CounselMode: "auto", MaxCounsel: 3, Confirm: func(_, _, _ string, _ bool) bool { return true }}
+	var out strings.Builder
+	app.Out = &out
+	app.recentTraces = buildStruggleTraces()
+	app.maybeSuggestDebug(context.Background())
+	if !strings.Contains(out.String(), "struggle detected") || !strings.Contains(out.String(), "auto not run") {
+		t.Errorf("no-key block: expected suggest + reason, got %q", out.String())
+	}
+	if app.counselCalls != 0 || *count != 0 {
+		t.Errorf("no-key block: calls=%d http=%d, want 0/0", app.counselCalls, *count)
+	}
+
+	// Cap reached (cap set, all spent). Fresh app with a working key so
+	// the availability gate passes and the cap branch is what fires.
+	t.Setenv("MASHURA_TEST_OR_KEY", "x")
+	t.Setenv("MASHURA_TEST_KEY", "x")
+	cfg.OracleModel = "test-model"
+	app2 := &App{Cfg: cfg, Client: &proxy.Client{}, CounselMode: "auto", MaxCounsel: 1, Confirm: func(_, _, _ string, _ bool) bool { return true }}
+	var out2 strings.Builder
+	app2.Out = &out2
+	app2.counselCalls = 1
+	app2.recentTraces = buildStruggleTraces()
+	app2.maybeSuggestDebug(context.Background())
+	if !strings.Contains(out2.String(), "cap") {
+		t.Errorf("cap block: expected cap reason, got %q", out2.String())
+	}
+	if app2.counselCalls != 1 {
+		t.Errorf("cap block: counselCalls=%d, want 1", app2.counselCalls)
+	}
+}
+
+// TestAutoDeclinedPrintsReason pins that a user decline of the automatic
+// panel prints the suggest note with the decline reason and does not count
+// the round (the runMashuraCore "[declined by user]" prefix).
+func TestAutoDeclinedPrintsReason(t *testing.T) {
+	_, count := counselServer(t)
+	t.Setenv("MASHURA_TEST_OR_KEY", "x")
+	t.Setenv("MASHURA_TEST_KEY", "x")
+	cfg := config.DefaultConfig()
+	cfg.Mashura = &config.MashuraConfig{Level: "high", Members: []string{"openrouter:test-model-a", "openrouter:test-model-b"}}
+	cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+	cfg.OracleModel = "test-model"
+
+	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return false }) // decline
+	app.Cfg.Mashura = cfg.Mashura
+	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	app.Cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+	app.Cfg.OracleModel = "test-model"
+	app.CounselMode = "auto"
+	app.MaxCounsel = 3
+	var out strings.Builder
+	app.Out = &out
+	app.recentTraces = buildStruggleTraces()
+	app.maybeSuggestDebug(context.Background())
+	if !strings.Contains(out.String(), "struggle detected") {
+		t.Errorf("declined: expected suggest note, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "auto not run") && !strings.Contains(out.String(), "auto blocked") {
+		t.Errorf("declined: expected block reason, got %q", out.String())
+	}
+	if app.counselCalls != 0 {
+		t.Errorf("declined: counselCalls=%d, want 0 (declined round not counted)", app.counselCalls)
+	}
+	if *count != 0 {
+		t.Errorf("declined: http calls=%d, want 0", *count)
 	}
 }
 

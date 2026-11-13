@@ -442,7 +442,8 @@ level (the panel's legacy `mode` is ignored).
 Only when the user has not chosen a counsel mode does the level pick one: `off`
 stays silent, `low` and `medium` suggest, and `high` starts a debug panel on a
 detected struggle unless the user chose another mode. The precedence, highest
-first, is: level `off` (any source) → an explicit `/counsel <mode>` choice (this
+first, is: level `off` (any source, including a per-tool `debug: off` override)
+→ an explicit `/counsel <mode>` choice (this
 session or the stored per-repo choice) → the `auto_counsel` config key → the
 level. An explicit choice wins in either direction, and `/counsel reset` (and
 `/mashura reset`) clears the choice so the level decides again. Bare

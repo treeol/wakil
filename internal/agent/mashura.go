@@ -1588,7 +1588,11 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		}
 		if a.MaxCounsel <= 0 || a.counselCalls >= a.MaxCounsel {
 			eval.ActionTaken = ""
-			suggestNote(fmt.Sprintf("cap %d/%d reached", a.counselCalls, a.MaxCounsel))
+			reason := fmt.Sprintf("cap %d/%d reached", a.counselCalls, a.MaxCounsel)
+			if a.MaxCounsel <= 0 {
+				reason = "no auto-counsel cap set"
+			}
+			suggestNote(reason)
 			return
 		}
 		skipGate := a.Consent().AutoApprove
@@ -1600,7 +1604,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		a.counselCalls++
 		level := eval.Level
 		if level == "" {
-			level = "high"
+			level = "default (no mashura level)"
 		}
 		eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, a.MaxCounsel)
 		// Announce loudly with the level BEFORE the call so it's visible.
@@ -1619,22 +1623,37 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		// auto-counsel stays SYNCHRONOUS — its diagnosis must be
 		// injected immediately as the assistant+tool pair below (cap/dedup
 		// semantics depend on the result being in hand right now).
+		// VOID replies are not a counsel round: give the call back so the
+		// per-turn cap counts only real reviews. captureVoid deltas the count
+		// back only if this call incremented it, so it can never run twice.
+		void := false
+		captureVoid := func() {
+			if void {
+				return
+			}
+			if a.lastPanelVoid {
+				a.counselCalls--
+				a.lastPanelVoid = false
+				void = true
+				fmt.Fprintln(a.Out, Yellow("⚠ auto-counsel: VOID reply — round not counted (cap unchanged)"))
+				eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (VOID, round not counted; cap %d/%d)", a.counselCalls, a.MaxCounsel)
+			}
+		}
 		a.lastPanelVoid = false
 		result := a.runMashuraCore(ctx, "mashura__debug", fakeTC, true)
 		a.autoCounselSkipGate = false // ensure cleared even on early return
-		if a.lastPanelVoid {
-			// A VOID reply is not a counsel round: give the call back so
-			// the per-turn cap counts only real reviews.
-			a.counselCalls--
-			a.lastPanelVoid = false
-			fmt.Fprintln(a.Out, Yellow("⚠ auto-counsel: VOID reply — round not counted (cap unchanged)"))
-			eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (VOID, round not counted; cap %d/%d)", a.counselCalls, a.MaxCounsel)
-		}
+		captureVoid()
 		// A blocked panel (consent declined, key/budget error) is not a
-		// diagnosis: do not inject the error, do not count the round, and
-		// show the suggest note with the reason instead.
+		// diagnosis: do not inject the error and do not count the round; show the
+		// suggest note with the reason instead. runMashuraCore's only refusal
+		// prefixes are "ERROR:" (level off, panel, key, prepare, size) and the
+		// confirm "[declined by user]" — a budget stop is NOT COMPLETED content
+		// inside the result, not a prefix, and is a handled panel outcome that
+		// stays injected (its cost line is shown by the panel outcome printer).
 		if strings.HasPrefix(result, "ERROR:") || strings.HasPrefix(result, "[declined by user]") {
-			a.counselCalls--
+			if !void {
+				a.counselCalls--
+			}
 			eval.ActionTaken = ""
 			suggestNote("auto blocked: " + truncateReason(result))
 			return
@@ -1653,10 +1672,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		}
 		// Mark shown only after the lines above were printed.
 		a.struggleSuggested[symptom] = true
-		if a.lastPanelVoid {
-			// VOID took precedence above; do not overwrite the VOID
-			// note with the decremented count.
-		} else {
+		if !void {
 			eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, a.MaxCounsel)
 		}
 		return

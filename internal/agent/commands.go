@@ -1144,7 +1144,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// explain). Setting the mode is still refused at level off: the
 		// "is off" note below is the last line before the switch.
 		if len(fields) >= 2 && app.Cfg.Mashura != nil {
-			if lv, _, _ := app.effectiveMashura("review"); lv == config.MashuraLevelOff {
+			// The refusal keys on debug — the tool that fires — matching
+			// resolveCounselMode. A review: off override never gates counsel.
+			if lv, _, _ := app.effectiveMashura("debug"); lv == config.MashuraLevelOff {
 				return true, false, note("Mashūra is off. Turn it on: /mashura low|medium|high (per-repo) or set \"mashura\": {\"level\": \"medium\", ...} in config.")
 			}
 		}
