@@ -388,7 +388,8 @@ func mashuraLevelStatus(app *App) string {
 		sb.WriteString("overrides:      (none)\n")
 	}
 	sb.WriteString("effective per tool:\n")
-	sb.WriteString("  tool      level    reasoning  debate  auto-counsel\n")
+	sb.WriteString("  tool      level    reasoning  debate  struggle (detected)  counsel mode [source]\n")
+	counselMode, counselSrc := app.resolveCounselMode()
 	for _, t := range []string{"review", "debug", "decide", "check"} {
 		lv, _, src := app.effectiveMashura(t)
 		r := config.LevelReasoning(t, lv)
@@ -400,12 +401,22 @@ func mashuraLevelStatus(app *App) string {
 		if config.LevelDebate(lv) {
 			debate = "yes"
 		}
-		sb.WriteString(fmt.Sprintf("  %-8s  %-8s %-10s %-6s %-6s", t, lv, reasoning, debate, config.LevelAutoCounsel(lv)))
-		if t == "check" && lv != config.MashuraLevelHigh {
-			sb.WriteString("  (check stays at low below high)")
+		// What happens on a detected struggle: nothing (off), suggest, or
+		// start (auto). The counsel mode with its source is the same for
+		// every tool row (struggle mode is level/counsel, not per-tool).
+		struggle := "nothing"
+		switch config.LevelAutoCounsel(lv) {
+		case "suggest":
+			struggle = "suggest"
+		case "auto":
+			struggle = "start"
 		}
-		sb.WriteString(fmt.Sprintf("  [%s]\n", src))
+		sb.WriteString(fmt.Sprintf("  %-8s  %-8s %-10s %-6s %-20s %-6s [%s]\n", t, lv, reasoning, debate, struggle, counselMode, src))
+		if t == "check" && lv != config.MashuraLevelHigh {
+			sb.WriteString("    (check stays at low below high)\n")
+		}
 	}
+	sb.WriteString(fmt.Sprintf("counsel mode: %s (source: %s)\n", counselMode, counselSrc))
 	sb.WriteString("\nconfig block (copy into config.json):\n")
 	block := *app.Cfg.Mashura
 	if len(block.Members) == 0 {

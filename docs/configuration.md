@@ -427,18 +427,42 @@ key); fresh `wakil init` writes `{"level": "medium"}` with the same semantics.
 
 What a level sets (for every tool unless an override says otherwise):
 
-| Level | Tools | Reasoning | Debate | Auto-counsel |
+| Level | Tools | Reasoning | Debate | On a detected struggle |
 |---|---|---|---|---|
-| `off` | none | — | — | — |
-| `low` | offered | off (`none` effort) | no | suggest only |
-| `medium` | offered | `medium` | no | on (ceiling) |
-| `high` | offered | `max` (highest accepted, clamped exactly as before) | yes | on (ceiling) |
+| `off` | none | — | — | nothing (silent) |
+| `low` | offered | off (`none` effort) | no | suggest a `mashura__debug` call |
+| `medium` | offered | `medium` | no | suggest a `mashura__debug` call |
+| `high` | offered | `max` (highest accepted, clamped exactly as before) | yes | start a `mashura__debug` panel |
 
 Debate is available at `high` only. With the block present, debate is chosen by the
-level (the panel's legacy `mode` is ignored). `/counsel` still chooses within
-the ceiling: `off` → silent, `low` → suggest, `medium`/`high` → auto allowed;
-your `/counsel` mode (default `suggest`) picks within it, so `medium` changes no
-behavior by default.
+level (the panel's legacy `mode` is ignored).
+
+### Counsel mode follows the level
+
+Only when the user has not chosen a counsel mode does the level pick one: `off`
+stays silent, `low` and `medium` suggest, and `high` starts a debug panel on a
+detected struggle unless the user chose another mode. The precedence, highest
+first, is: level `off` (any source) → an explicit `/counsel <mode>` choice (this
+session or the stored per-repo choice) → the `auto_counsel` config key → the
+level. An explicit choice wins in either direction, and `/counsel reset` (and
+`/mashura reset`) clears the choice so the level decides again. Bare
+`/counsel` shows the effective mode and its source, plus the last struggle
+evaluation; `/mashura` shows the counsel mode with its source in the per-tool
+table.
+
+The struggle detector fires on three plain conditions, in order: the two most
+recent tool calls both failed (non-zero exit); the same command ran twice in a
+row with no intervening progress; or the same file was written/edited three or
+more times in the recent window. Each symptom is shown at most once per turn. A
+read that the dedup cache answers still records a trace entry marked as a
+repeat, so the second identical read is visible to the detector. When an
+automatic panel would run but is blocked (no key, no members, no consent, the
+per-turn cap, or a budget stop), Wakil prints the suggest note plus the reason
+instead of staying silent; the only silent case is counsel mode `off` by the
+user's own choice.
+
+Known limitation: with parallel subagents, one subagent's write does not clear a
+sibling's read cache.
 
 `check` is deliberately calmer: it stays at `low` effort under `low` and
 `medium` and follows the level only at `high`. The `/mashura` status table shows
@@ -475,7 +499,13 @@ Legacy `/mashura panel|map|model|maxtokens|timeout` commands still work when no
 block is present. While the block is present they report that they do not
 affect calls (they would write values the block path ignores), and
 `/mashura reset` clears the stale RepoState legacy fields that the block's
-restore would otherwise skip.
+restore would otherwise skip, plus any counsel choice.
+
+The legacy Mashūra keys (`oracle_enabled`, `oracle_model`, `mashura_panels`,
+`mashura_models`, `mashura_roles`, `mashura_tool_panels`, `oracle_timeout_seconds`,
+`mashura_fallback_model`, `auto_counsel`, and friends) are still read and
+derived at load for existing configs. They are deprecated and will be removed
+in a later release; new configs should use the `mashura` block.
 
 The legacy `fusion` panel mode, the `CallOracle`/`CallOracleURL` helpers, and
 the `oracle__ask` tool alias were removed. `oracle_api_key_env` no longer gates
