@@ -425,6 +425,33 @@ func TestStrugglePathEndToEndAtEveryLevel(t *testing.T) {
 	assertStruggleLines(t, "high 12-writes", out, "auto")
 }
 
+// TestDetectStruggleScanMasking pins the symptom-masking fix (A3): a rule
+// whose symptom was already shown this turn must not hide a different rule
+// that also fires.
+func TestDetectStruggleScanMasking(t *testing.T) {
+	// Two consecutive failures (rule 1) + same command twice (rule 2) both
+	// fire on the same traces.
+	fail := ToolTraceEntry{Abbrev: "shell", Command: "go test ./...", ExitErr: true, FirstLine: "FAIL"}
+	traces := []ToolTraceEntry{fail, fail}
+	s1, d1, r1 := detectStruggleScan(traces)
+	if !d1 || r1 != "repeated failures" {
+		t.Fatalf("no predicate: got (%q, %v, %q), want repeated failures", s1, d1, r1)
+	}
+	// With the first symptom marked shown, the second rule must surface.
+	s2, d2, r2 := detectStruggleScan(traces, func(s string) bool { return s == s1 })
+	if !d2 || r2 != "repeat" {
+		t.Fatalf("shown first symptom: got (%q, %v, %q), want repeat", s2, d2, r2)
+	}
+	if s2 == s1 {
+		t.Fatalf("shown symptom resurfaced: %q", s2)
+	}
+	// With both marked shown, nothing fires.
+	_, d3, r3 := detectStruggleScan(traces, func(s string) bool { return s == s1 || s == s2 })
+	if d3 || r3 != "none" {
+		t.Fatalf("both shown: got (%v, %q), want none", d3, r3)
+	}
+}
+
 // assertStruggleLines checks the exact first user-visible struggle line for
 // the level: suggest prints the existing note; auto prints the announce line
 // naming the level.

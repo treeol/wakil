@@ -1523,6 +1523,18 @@ func (a *App) autoCounselCap() int {
 	return DefaultMaxCounsel
 }
 
+// AutoCounselCap is the exported form of autoCounselCap for cross-package
+// callers (wiring, cmd). It returns the effective per-turn cap for
+// automatic rounds.
+func (a *App) AutoCounselCap() int { return a.autoCounselCap() }
+
+// CounselCapIsDefault is the exported form of counselCapIsDefault.
+func (a *App) CounselCapIsDefault() bool { return a.counselCapIsDefault() }
+
+// ResolveCounselMode is the exported form of resolveCounselMode for
+// cross-package callers/tests.
+func (a *App) ResolveCounselMode() (string, string) { return a.resolveCounselMode() }
+
 // counselCapIsDefault reports whether the effective cap is the built-in
 // default rather than a user-set value.
 func (a *App) counselCapIsDefault() bool {
