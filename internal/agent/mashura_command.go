@@ -391,8 +391,10 @@ func mashuraLevelSetNote(app *App, prev, next string) string {
 	}
 	// Tool set changes (tools appear or vanish) only when the effective level
 	// crosses the off boundary between the previous and next states.
-	prevEffective := prev
-	if prev == "" {
+	var prevEffective string
+	if app.Cfg.Mashura == nil {
+		prevEffective = prev
+	} else if prev == "" {
 		// No override before: effective was the config level.
 		prevEffective, _, _ = app.Cfg.ResolveEffective("review", "")
 	} else {
