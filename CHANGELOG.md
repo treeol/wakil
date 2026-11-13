@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Subagents were told not to re-run a command that had succeeded before, even after files changed. Tool dedup now covers only read-only local-file tools, and a state-changing tool call clears the cached reads afterwards.
+
 ### Changed behaviour
 
 - **Mashūra levels and a single config block.** The `mashura` block (`level` off|low|medium|high, `members`, optional per-tool `overrides`) is now the one place to configure Mashūra. `off` closes the tool gate, auto-counsel, and workflow panels; `low` is suggest-only; `medium` enables auto-counsel (same behavior as today by default); `high` raises reasoning to `max` (clamped as before) and enables debate. `check` stays at `low` effort below `high`. `/mashura off|low|medium|high|reset` sets a per-repo level (RepoState, never the repository); bare `/mashura` shows the effective level, source, members, overrides, the per-tool table, and the copyable block JSON; `/mode status` shows the level and member count; `/counsel` explains how to turn Mashūra on when it is off.

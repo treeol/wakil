@@ -355,12 +355,15 @@ type App struct {
 	// demand. When false AND config.Verify is empty, verification is skipped.
 	VerifyEnabled bool
 
-	// ToolCache, when non-nil, deduplicates tool calls within the session.
-	// A repeated (name, args) pair returns a short notice instead of re-executing.
-	// Enabled for subagents. Each entry stores the spill path (for content recovery
+	// ToolCache, when non-nil, deduplicates calls to the explicit read-only
+	// local-file allowlist in dedupReadTools. A repeated (name, args) pair
+	// for one of those tools returns a short notice instead of re-executing.
+	// Subagent Apps initialize a map; the parent does not, so dedup is off
+	// globally there. Each entry stores the spill path (for content recovery
 	// after compaction/eviction) and the normalized path arg (for edit invalidation
 	// — when a file is edited, all cache entries for that path are invalidated so
-	// the child re-reads the updated content).
+	// the child re-reads the updated content). State-changing tools clear the
+	// whole cache after execution.
 	// Turn-goroutine only: all access (handleToolCall, finalizeToolResult,
 	// recordFileChanged) runs on the turn goroutine. No lock needed — no
 	// async/RPC path touches this map.
@@ -2299,6 +2302,68 @@ type toolDedupEntry struct {
 	path      string
 }
 
+// dedupReadTools is the explicit allowlist of tools that may be served a
+// repeat refusal from ToolCache. Every entry is a read-only local file
+// operation whose arguments identify the file state it reads, so a repeat
+// after an intervening cache clear is freshly executed query for the same
+// thing. Everything not in this map — run_shell, run_background, file
+// mutations, MCP tools, browser tools, web tools, Mashūra tools, subagent
+// dispatch, memory and staging tools, and unknown tools — is never
+// deduplicated: it always executes, and state-changing tools clear the
+// cache afterwards.
+var dedupReadTools = map[string]struct{}{
+	"read_file":      {},
+	"read_file_full": {},
+	"list_dir":       {},
+	"search_files":   {},
+	"find_files":     {},
+	"git_status":     {},
+	"git_diff":       {},
+	"git_log":        {},
+	"git_show":       {},
+	"git_blame":      {},
+}
+
+func dedupToolAllowed(name string) bool {
+	_, ok := dedupReadTools[name]
+	return ok
+}
+
+// stateChangingTool reports whether an executed tool can change local or
+// external state whose read results a ToolCache entry may describe. A
+// state-changing call clears the whole cache when handleToolCall finishes,
+// whether it succeeded or failed: a failed shell command may still have
+// changed files, and a failed write may have partially changed or created
+// one. This conservative clear is what prevents a cached read from serving
+// stale file state after the filesystem changed.
+func stateChangingTool(name string) bool {
+	switch name {
+	case "write_file", "write_binary_file", "edit_file", "delete_file", "move_file",
+		"run_shell", "run_background":
+		return true
+	}
+	if strings.HasPrefix(name, "mashura__") || name == "oracle__ask" {
+		return false
+	}
+	// MCP tools are dispatched through handleMCPTool after the built-in
+	// switch in executeToolCall; a namespaced tool name is an MCP call.
+	if strings.Contains(name, mcpNS) {
+		return true
+	}
+	return false
+}
+
+// clearToolCache drops every cached read result. Turn-goroutine only, like
+// the rest of ToolCache access.
+func (a *App) clearToolCache() {
+	if a.ToolCache == nil {
+		return
+	}
+	for key := range a.ToolCache {
+		delete(a.ToolCache, key)
+	}
+}
+
 // toolDedupKey builds a normalized cache key for (tool, args). Path arguments
 // are resolved to an absolute, cleaned form so ".", "./", "/work" and trailing
 // slashes all collapse to one entry; marshaling the parsed map also makes the
@@ -2514,15 +2579,14 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 		_ = prev // rating already bound via the pre-append strip
 	}
 
-	// Dedup: if an equivalent (tool, args) pair has been called before in this
-	// session, skip re-execution. Prevents infinite loops in subagents where the
-	// model keeps re-reading the same file. The key is normalized so trivial
-	// path variants (".", "./", "/work", trailing slash) collapse to one entry.
-	//
-	// The key is recorded AFTER execution so declined or transiently-failed calls
+	// Dedup (follow-up): ToolCache serves a repeat refusal only for an explicit
+	// allowlist of state-free local-file reads. Non-allowlisted tools never
+	// enter this branch, even if an old cache entry happens to match (an
+	// entry should not exist for them after this change).
+	// The key is recorded AFTER execution so declined or transiently-failed reads
 	// can be retried — recording before would permanently poison them.
 	var cacheKey string
-	if a.ToolCache != nil {
+	if a.ToolCache != nil && dedupToolAllowed(name) {
 		cacheKey = a.toolDedupKey(name, tc.Function.Arguments)
 		if entry, hit := a.ToolCache[cacheKey]; hit {
 			// Build a recovery-aware dedup message. If the original result
@@ -2597,6 +2661,14 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 		a.ToolCache[cacheKey] = &toolDedupEntry{
 			path: a.extractPathArg(name, tc.Function.Arguments),
 		}
+	}
+	// State-change invalidation. State-changing tools clear the whole cache
+	// after execution, whether the call succeeded or failed. A successful
+	// mutation is not supposed to clear before a later read anyway: the
+	// executing call must not have been dedup-blocked (it is not allowlisted),
+	// and a later read of the same path must execute to see the new state.
+	if stateChangingTool(name) {
+		a.clearToolCache()
 	}
 	return result
 }
