@@ -1515,10 +1515,11 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 		if oracleMode != "" {
 			switch oracleMode {
 			case "every-step", "on-deviation", "phases-only":
-				// valid
+				// phases-only is an alias of on-deviation (normalized by
+				// WorkflowState.EffectiveOracleMode).
 			default:
 				return true, false, note("unknown oracle mode " + strconv.Quote(oracleMode) +
-					" — use every-step, on-deviation, or phases-only")
+					" — use every-step or on-deviation (phases-only is an alias of on-deviation)")
 			}
 		}
 		if len(taskParts) == 0 {
@@ -1616,7 +1617,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /maxctx <chars>      cap effective context for large models (e.g. 200000 = ~200k chars; 0 = disabled)
 /maxctx              show current effective context cap and resulting thresholds
 /plan <task>         start a gather→plan→review→implement workflow for <task>
-/plan --oracle=MODE  set per-run oracle schedule (every-step|on-deviation|phases-only)
+/plan --oracle=MODE  set per-run oracle schedule (every-step|on-deviation; phases-only is an alias of on-deviation)
 /plan status         show current workflow phase and step
 /plan approve        approve the plan; force-skip review (logged); advance past pauses
 /plan review         retry the oracle plan review (when review is pending/unavailable)

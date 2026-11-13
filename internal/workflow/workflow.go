@@ -68,14 +68,25 @@ type WorkflowState struct {
 	VerifyDeclined bool
 }
 
+// NormalizeOracleMode maps the legacy phases-only alias to on-deviation.
+// phases-only is accepted everywhere (config, /plan --oracle) but has no
+// separate behavior; it behaves like on-deviation.
+func NormalizeOracleMode(mode string) string {
+	if mode == "phases-only" {
+		return "on-deviation"
+	}
+	return mode
+}
+
 // EffectiveOracleMode resolves the oracle consultation schedule in priority order:
 // per-run override (--oracle flag) → config WFOracleMode → hardcoded default.
+// The resolved mode is normalized (phases-only → on-deviation).
 func (w *WorkflowState) EffectiveOracleMode(cfg config.Config) string {
 	if w.OracleMode != "" {
-		return w.OracleMode
+		return NormalizeOracleMode(w.OracleMode)
 	}
 	if cfg.WFOracleMode != "" {
-		return cfg.WFOracleMode
+		return NormalizeOracleMode(cfg.WFOracleMode)
 	}
 	return "on-deviation"
 }

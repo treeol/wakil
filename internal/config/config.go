@@ -535,11 +535,16 @@ type Config struct {
 	// "oracle_*" keys remain accepted and, when both are present, the mashura_*
 	// value wins (merged in LoadConfig). The Go field names keep the Oracle prefix
 	// to avoid churn — only the JSON wire spelling and user-facing strings changed.
-	OracleEnabled        bool   `json:"oracle_enabled"`                   // gate: tool only declared when true AND key present
-	OracleModel          string `json:"oracle_model"`                     // Anthropic model ID sent in the request
-	OracleMaxTokens      int    `json:"oracle_max_tokens"`                // max_tokens for the mashūra response
-	OracleAPIKeyEnv      string `json:"oracle_api_key_env"`               // env var that holds the API key
-	OracleTimeoutSeconds int    `json:"oracle_timeout_seconds,omitempty"` // HTTP timeout for mashūra calls; 0 = use default (300s)
+	OracleEnabled   bool   `json:"oracle_enabled"`     // gate: tool only declared when true AND key present
+	OracleModel     string `json:"oracle_model"`       // Anthropic model ID sent in the request
+	OracleMaxTokens int    `json:"oracle_max_tokens"`  // max_tokens for the mashūra response
+	OracleAPIKeyEnv string `json:"oracle_api_key_env"` // env var that holds the API key
+	// OracleTimeoutSeconds is the total cap in seconds for one Mashūra call.
+	// 0 selects idle+total: no bytes for 120s (stream_idle_timeout_seconds)
+	// = stalled; total cap 30 minutes. Explicit 0 is preserved via
+	// OracleTimeoutExplicitZero (set in LoadConfig from the raw file probe).
+	OracleTimeoutSeconds      int  `json:"oracle_timeout_seconds,omitempty"` // 0 = idle+total (120s idle, 30min total)
+	OracleTimeoutExplicitZero bool // set in LoadConfig when the file sets the key to 0
 	// OpenRouterAPIKeyEnv is the env var name for the OpenRouter API key.
 	// Defaults to "OPENROUTER_API_KEY". Used by mashura panel calls that route
 	// through OpenRouter (provider prefix "openrouter:").
@@ -623,7 +628,10 @@ type Config struct {
 	Mashura *MashuraConfig `json:"mashura,omitempty"`
 
 	// Workflow settings.
-	WFOracleMode       string `json:"wf_oracle_mode,omitempty"`        // default oracle consult schedule: "every-step" | "on-deviation" | "phases-only"
+	// WFOracleMode: "every-step" | "on-deviation"; "phases-only" is an accepted
+	// alias of "on-deviation" (validated, then normalized by the workflow
+	// layer — no separate code path).
+	WFOracleMode       string `json:"wf_oracle_mode,omitempty"`
 	WFFinalReview      bool   `json:"wf_final_review"`                 // run closing oracle check after the last step (default true)
 	WFBriefingMaxBytes int    `json:"wf_briefing_max_bytes,omitempty"` // max bytes for final-review briefing; 0 = 16384
 
@@ -1771,12 +1779,21 @@ func LoadConfig(argv []string) (Config, error) {
 			// the file still loads, but the value is ignored (tests reach
 			// the transport endpoint through a test-only hook instead).
 			var probe struct {
-				OracleEndpoint string `json:"oracle_endpoint"`
+				OracleEndpoint       string `json:"oracle_endpoint"`
+				OracleTimeoutSeconds *int   `json:"oracle_timeout_seconds"`
 			}
-			if err := json.Unmarshal(b, &probe); err == nil && probe.OracleEndpoint != "" {
-				oracleEndpointNoticeOnce.Do(func() {
-					fmt.Fprintln(os.Stderr, "oracle_endpoint is ignored — Mashūra uses the OpenRouter transport")
-				})
+			if err := json.Unmarshal(b, &probe); err == nil {
+				if probe.OracleEndpoint != "" {
+					oracleEndpointNoticeOnce.Do(func() {
+						fmt.Fprintln(os.Stderr, "oracle_endpoint is ignored — Mashūra uses the OpenRouter transport")
+					})
+				}
+				// Explicit 0 in the file selects idle+total semantics; without
+				// this probe the merged value 0 is indistinguishable from
+				// DefaultConfig's 300.
+				if probe.OracleTimeoutSeconds != nil && *probe.OracleTimeoutSeconds == 0 {
+					cfg.OracleTimeoutExplicitZero = true
+				}
 			}
 		}
 	}
@@ -1808,6 +1825,11 @@ func LoadConfig(argv []string) (Config, error) {
 	if cfg.MashuraReviewBudgetUSD < 0 {
 		return cfg, fmt.Errorf("mashura_review_budget_usd must be >= 0 (got %g; 0 = off)", cfg.MashuraReviewBudgetUSD)
 	}
+
+	// Legacy mashura_* timeout alias feeds OracleTimeoutSeconds via the
+	// merge above; sibling aliases are folded here too. An explicit merged 0
+	// (from either spelling) still resolves through OracleTimeoutExplicitZero
+	// (set from the file probe below).
 
 	// The new mashura block (Group A) vs legacy keys (Group B). Old keys are
 	// interpreted at load time only; the file on disk is never rewritten.
@@ -2736,9 +2758,9 @@ func validateEnums(cfg Config) error {
 		return err
 	}
 	switch cfg.WFOracleMode {
-	case "", "every-step", "on-deviation", "phases-only":
+	case "", "every-step", "on-deviation", "phases-only": // phases-only = on-deviation alias
 	default:
-		return fmt.Errorf("wf_oracle_mode must be one of: every-step, on-deviation, phases-only (got %q)", cfg.WFOracleMode)
+		return fmt.Errorf("wf_oracle_mode must be one of: every-step, on-deviation, phases-only (=on-deviation) (got %q)", cfg.WFOracleMode)
 	}
 	if !OutputModeIsValid(cfg.OutputMode) {
 		return fmt.Errorf("output_mode must be one of: debug, simple (got %q)", cfg.OutputMode)

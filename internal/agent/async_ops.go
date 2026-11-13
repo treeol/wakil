@@ -87,11 +87,19 @@ const (
 	defaultSubagentSyncTimeoutSeconds = 600
 
 	// defaultMashuraTimeoutSeconds is the fallback Mashūra async-op timeout
-	// when OracleTimeoutSeconds is 0 (or unset). config.DefaultConfig sets
-	// the same value (300) — they must agree. The watchdog and the worker's
-	// cooperative context both read mashuraTimeout(), so 0 can never mean
-	// "no deadline" (that would let a hung panel spin the tab + leak the slot).
+	// when OracleTimeoutSeconds is unset (DefaultConfig sets 300). An explicit
+	// 0 selects the documented idle+total semantics: the watchdog uses the
+	// idle timeout (last byte) with a 30-minute total cap, so a slow but
+	// steadily streaming reply is not cut at 300 seconds while a silent
+	// connection is. The watchdog and the worker's cooperative context both
+	// read mashuraTimeout(), so the timeout can never be "no deadline" (that
+	// would let a hung panel spin the tab + leak the slot).
 	defaultMashuraTimeoutSeconds = 300
+
+	// mashuraIdleTotalCap is the total cap for the explicit-0 timeout: an
+	// idle (silent) stream is cut by the idle timeout; a streaming reply may
+	// run up to this total.
+	mashuraIdleTotalCap = 30 * time.Minute
 
 	// defaultBgShellTimeoutSeconds is the fallback background-shell async-op
 	// watchdog timeout when BgShellTimeoutSeconds is 0 (or unset). Detached
@@ -421,15 +429,56 @@ func (a *App) subagentBatchTimeout(jobCount int) time.Duration {
 //  1. the worker's cooperative context deadline (context.WithTimeout), and
 //  2. the watchdog's force-terminalization deadline (mashuraTimeout + grace).
 //
-// It never returns 0: when OracleTimeoutSeconds is 0 or unset it falls back to
-// defaultMashuraTimeoutSeconds (300), so a "0 = no timeout" config cannot
-// disable both the context deadline AND the watchdog — a hung panel would
-// otherwise spin the async-job tab forever and leak the admission slot.
+// A positive OracleTimeoutSeconds is the total cap. An explicit 0 selects the
+// documented idle+total semantics: the worker context gets the total cap
+// (30 minutes) and, critically, the watchdog deadline is NOT the idle+total
+// sum — armMashuraWatchdog arms at the idle timeout + grace for explicit 0,
+// so a silent stream terminalizes promptly while a steadily streaming reply
+// gets the full total. The watchdog never disables both deadlines: a hung
+// panel would otherwise spin the tab and leak the admission slot.
 func (a *App) mashuraTimeout() time.Duration {
 	if a.Cfg.OracleTimeoutSeconds > 0 {
 		return time.Duration(a.Cfg.OracleTimeoutSeconds) * time.Second
 	}
+	if a.mashuraTimeoutExplicitZero() {
+		return mashuraIdleTotalCap
+	}
 	return time.Duration(defaultMashuraTimeoutSeconds) * time.Second
+}
+
+// mashuraWatchdogTimeout returns the watchdog terminalization deadline.
+// For the explicit-0 idle+total case it is the idle timeout (not the total):
+// a stream silent for the idle duration is cut even though the worker context
+// still has total-cap room. Otherwise it is mashuraTimeout() (unchanged).
+func (a *App) mashuraWatchdogTimeout() time.Duration {
+	return a.mashuraWatchdogTimeoutFor(a.mashuraCallTimeout("panel"))
+}
+
+// mashuraWatchdogTimeoutFor scales the worker's actual deadline (callTimeout =
+// mashuraCallTimeout(mode), debate 2×) for the watchdog. Explicit-0 swaps the
+// idle timeout in; every other case uses the worker's own deadline so a
+// debate op's watchdog is never clipped to 1×.
+func (a *App) mashuraWatchdogTimeoutFor(callTimeout time.Duration) time.Duration {
+	if a.mashuraTimeoutExplicitZero() {
+		return a.mashuraIdleTimeout()
+	}
+	return callTimeout
+}
+
+// mashuraIdleTimeout is the per-byte idle bound for the explicit-0 timeout:
+// a stream delivering no bytes for this long is stalled.
+func (a *App) mashuraIdleTimeout() time.Duration {
+	if a.Cfg.StreamIdleTimeoutSeconds > 0 {
+		return time.Duration(a.Cfg.StreamIdleTimeoutSeconds) * time.Second
+	}
+	return 120 * time.Second
+}
+
+// mashuraTimeoutExplicitZero reports whether the config explicitly set
+// oracle_timeout_seconds to 0 (idle+total semantics) rather than leaving it
+// at the DefaultConfig value of 300. Set in LoadConfig (config side).
+func (a *App) mashuraTimeoutExplicitZero() bool {
+	return a.Cfg.OracleTimeoutSeconds == 0 && a.Cfg.OracleTimeoutExplicitZero
 }
 
 // mashuraCallTimeout returns the outer provider-call deadline for a Mashūra
@@ -931,9 +980,12 @@ func (a *App) enqueueAsyncOpInternal(toolName, label string, uiJob bool, callTim
 		// completion) and BEFORE launching the worker (so a stuck worker has no
 		// window without a backstop). Only uiJob (Mashūra) ops arm here — plain
 		// async ops and discovery-subagent batches use their own paths. The
-		// timeout matches the worker's effective budget (mashuraCallTimeout(mode)):
-		// debate is 2× so the watchdog fires no earlier than the debate deadline.
-		a.armMashuraWatchdog(op, callTimeout)
+		// watchdog deadline scales the worker deadline the worker actually gets
+		// (callTimeout = mashuraCallTimeout(mode): debate is 2×), with the
+		// explicit-0 swap: the worker context gets the total cap while the
+		// watchdog arms at the idle timeout, so a silent stream is cut by the
+		// idle timeout while a steadily streaming reply is not cut.
+		a.armMashuraWatchdog(op, a.mashuraWatchdogTimeoutFor(callTimeout))
 	}
 
 	safe.Go("async-op", func() {

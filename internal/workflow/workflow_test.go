@@ -46,9 +46,18 @@ func TestEffectiveOracleMode(t *testing.T) {
 	}
 
 	// Per-run override wins over config.
+	w.OracleMode = "every-step"
+	if got := w.EffectiveOracleMode(cfg); got != "every-step" {
+		t.Errorf("override mode = %q, want %q", got, "every-step")
+	}
+
+	// phases-only is an alias of on-deviation.
 	w.OracleMode = "phases-only"
-	if got := w.EffectiveOracleMode(cfg); got != "phases-only" {
-		t.Errorf("override mode = %q, want %q", got, "phases-only")
+	if got := w.EffectiveOracleMode(cfg); got != "on-deviation" {
+		t.Errorf("phases-only alias mode = %q, want %q", got, "on-deviation")
+	}
+	if got := NormalizeOracleMode("phases-only"); got != "on-deviation" {
+		t.Errorf("NormalizeOracleMode(phases-only) = %q, want on-deviation", got)
 	}
 }
 
