@@ -628,3 +628,83 @@ func TestMashuraCmdPanelBareShowsUsage(t *testing.T) {
 		t.Errorf("expected usage hint: %q", text)
 	}
 }
+
+// --- /counsel (bare) shows the last struggle evaluation ---
+
+func TestCounselBareShowsStruggleEvaluation(t *testing.T) {
+	app := mashuraCmdApp(t)
+	// Seed a trace window that fires the "repeated failures" rule.
+	app.recentTraces = buildStruggleTraces()
+	// Simulate a silent evaluation that already ran (mode off).
+	app.lastStruggleEval = app.struggleEvaluationSnapshot()
+	app.lastStruggleEval.ActionTaken = "nothing shown: mode off"
+
+	handled, _, cmd := HandleTUICommand("/counsel", app)
+	if !handled {
+		t.Fatal("not handled")
+	}
+	text := cmdNote(t, cmd)
+	for _, want := range []string{
+		"counsel mode:",
+		"last evaluation:",
+		"trace window",
+		"rule matched:",
+		"resolved mode:",
+		"action:",
+		"nothing shown: mode off",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("bare /counsel output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestCounselBareAtLevelOffShowsDiagnostics(t *testing.T) {
+	app := mashuraCmdApp(t)
+	app.Cfg.Mashura = &config.MashuraConfig{Level: config.MashuraLevelOff, Members: []string{"test-model"}}
+	app.recentTraces = buildStruggleTraces()
+	app.lastStruggleEval = app.struggleEvaluationSnapshot()
+	app.lastStruggleEval.ActionTaken = "nothing shown: level \"off\" is off"
+
+	handled, _, cmd := HandleTUICommand("/counsel", app)
+	if !handled {
+		t.Fatal("not handled")
+	}
+	text := cmdNote(t, cmd)
+	if !strings.Contains(text, "last evaluation:") {
+		t.Errorf("bare /counsel at level off should still show diagnostics:\n%s", text)
+	}
+	if !strings.Contains(text, "level: off") {
+		t.Errorf("expected level off to be shown:\n%s", text)
+	}
+	if !strings.Contains(text, "nothing shown: level \"off\" is off") {
+		t.Errorf("expected the level-off action to be shown:\n%s", text)
+	}
+	// Setting the mode is still refused at level off.
+	handled, _, cmd = HandleTUICommand("/counsel suggest", app)
+	if !handled {
+		t.Fatal("not handled")
+	}
+	text = cmdNote(t, cmd)
+	if !strings.Contains(text, "Mashūra is off") {
+		t.Errorf("setting mode at level off should be refused:\n%s", text)
+	}
+}
+
+func TestCounselBareNoEvaluationYetShowsWouldShow(t *testing.T) {
+	app := mashuraCmdApp(t)
+	app.Cfg.AutoCounsel = "suggest"
+	app.recentTraces = buildStruggleTraces()
+
+	handled, _, cmd := HandleTUICommand("/counsel", app)
+	if !handled {
+		t.Fatal("not handled")
+	}
+	text := cmdNote(t, cmd)
+	if !strings.Contains(text, "last evaluation:") {
+		t.Errorf("bare /counsel should still show an evaluation section:\n%s", text)
+	}
+	if !strings.Contains(text, "repeated failures") {
+		t.Errorf("expected the repeated-failures rule to be named:\n%s", text)
+	}
+}

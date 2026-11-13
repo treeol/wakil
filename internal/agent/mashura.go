@@ -1313,14 +1313,12 @@ func displayAbbrev(abbrev string) string {
 	return abbrev
 }
 
-// detectStruggle scans recent tool traces for a deterministic struggle signal and,
-// when found, returns a prefilled symptom string for mashura__debug. Signals: a
-// streak of two consecutive failures; the same command run twice in a row; or the
-// same file written/edited three or more times in the window. It only offers — the
-// caller never auto-calls the tool, and the human gate always applies.
-func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
+// detectStruggleScan is the shared scanner behind DetectStruggle and the
+// /counsel evaluation dump. The bool is whether a rule fired; rule names the
+// rule ("none" when nothing fired).
+func detectStruggleScan(traces []ToolTraceEntry) (symptom string, detected bool, rule string) {
 	if len(traces) < 2 {
-		return "", false
+		return "", false, "none"
 	}
 	n := len(traces)
 	last := traces[n-1]
@@ -1332,11 +1330,11 @@ func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
 		if last.FirstLine != "" {
 			s += " — " + last.FirstLine
 		}
-		return s, true
+		return s, true, "repeated failures"
 	}
 	// Same command twice in a row with no intervening progress.
 	if last.Command != "" && last.Command == prev.Command && last.Abbrev == prev.Abbrev {
-		return fmt.Sprintf("ran %s %q twice with no progress", displayAbbrev(last.Abbrev), last.Command), true
+		return fmt.Sprintf("ran %s %q twice with no progress", displayAbbrev(last.Abbrev), last.Command), true, "repeat"
 	}
 	// Repeated rewrites of the same file across the window.
 	counts := map[string]int{}
@@ -1344,11 +1342,135 @@ func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
 		if (e.Abbrev == "write" || e.Abbrev == "edit") && e.Command != "" {
 			counts[e.Command]++
 			if counts[e.Command] >= 3 {
-				return fmt.Sprintf("rewrote %q %d times — the fix may not be landing", e.Command, counts[e.Command]), true
+				return fmt.Sprintf("rewrote %q %d times — the fix may not be landing", e.Command, counts[e.Command]), true, "rewrites"
 			}
 		}
 	}
-	return "", false
+	return "", false, "none"
+}
+
+// detectStruggle scans recent tool traces for a deterministic struggle signal and,
+// when found, returns a prefilled symptom string for mashura__debug. Signals: a
+// streak of two consecutive failures; the same command run twice in a row; or the
+// same file written/edited three or more times in the window. It only offers — the
+// caller never auto-calls the tool, and the human gate always applies.
+func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
+	symptom, detected, _ = detectStruggleScan(traces)
+	return symptom, detected
+}
+
+// resolveCounselMode resolves the effective auto-counsel mode and where it
+// came from. CounselMode (TUI, set by /counsel, initialized from
+// cfg.AutoCounsel at startup) wins; otherwise cfg.AutoCounsel (config file,
+// empty = suggest) wins; otherwise the legacy AutoCounsel bool (headless
+// benchmark path) decides auto/off. The level then caps the result.
+// The TUI path is read under stateMu.RLock; the turn-goroutine path (which
+// holds no lock) reads the same fields — CounselMode is only mutated by
+// SetCounselModeValue under stateMu, so a turn in flight snapshots it at
+// prepareTurn and does not re-read it mid-turn; the re-read here is a
+// diagnostic snapshot, not a control decision.
+func (a *App) resolveCounselMode() (mode string, source string) {
+	mode = a.CounselModeLocked()
+	switch mode {
+	case "auto", "suggest", "off":
+		source = "/counsel"
+	default:
+		mode = a.Cfg.AutoCounsel
+		switch mode {
+		case "auto", "suggest", "off":
+			source = "config auto_counsel"
+		default:
+			// Legacy headless path: the AutoCounsel bool. Empty CounselMode
+			// with AutoCounsel=false resolves to off — the silent exit a
+			// headless session with no /counsel ever sees.
+			source = "AutoCounsel bool"
+			if a.AutoCounsel {
+				mode = "auto"
+			} else {
+				mode = "off"
+			}
+		}
+	}
+	// Level ceiling: off → silent, low → suggest at most, medium/high → as chosen.
+	// Keyed off the tool actually fired (debug), not review, so the recorded
+	// ceiling matches the tool that runs.
+	if a.Cfg.Mashura != nil {
+		if level, _, _ := a.effectiveMashura("debug"); level != "" {
+			if ceiling := config.LevelAutoCounsel(level); ceilingRank(ceiling) < ceilingRank(mode) {
+				mode = ceiling
+				source = "level ceiling (" + level + ")"
+			}
+		}
+	}
+	return mode, source
+}
+
+// struggleEvaluationSnapshot captures the current struggle evaluation exactly
+// as the detector sees it: the trace window, the rule that would fire, the
+// resolved mode and its source, and the level. It does not mutate state.
+func (a *App) struggleEvaluationSnapshot() struggleEvaluation {
+	eval := struggleEvaluation{TraceWindow: formatTraceWindow(a.recentTraces)}
+	symptom, detected, rule := detectStruggleScan(a.recentTraces)
+	if detected {
+		eval.RuleMatched = rule
+		eval.Symptom = symptom
+	} else {
+		eval.RuleMatched = "none"
+	}
+	eval.ResolvedMode, eval.ModeSource = a.resolveCounselMode()
+	if a.Cfg.Mashura != nil {
+		// Report the level for the tool that fires (debug), matching the
+		// ceiling key.
+		if level, _, _ := a.effectiveMashura("debug"); level != "" {
+			eval.Level = level
+		}
+	}
+	return eval
+}
+
+// lastStruggleEvalLocked returns the last recorded evaluation under
+// stateMu.RLock, so the bare /counsel handler (event loop) does not race the
+// turn goroutine that writes it.
+func (a *App) lastStruggleEvalLocked() struggleEvaluation {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.lastStruggleEval
+}
+
+// lastStruggleEval is written by maybeSuggestDebug on every entry (including
+// silent exits). It is set under stateMu.Lock and read via
+// lastStruggleEvalLocked, so the event-loop read path does not race the
+// turn-goroutine write path.
+func (a *App) setLastStruggleEval(ev struggleEvaluation) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.lastStruggleEval = ev
+}
+
+// formatTraceWindow renders the trace window the detector saw, one line per
+// entry: tool, target, ok/failed, and a repeat marker when the previous
+// entry is identical.
+func formatTraceWindow(traces []ToolTraceEntry) string {
+	if len(traces) == 0 {
+		return "(no recent tool calls)"
+	}
+	lines := make([]string, len(traces))
+	for i, e := range traces {
+		status := "ok"
+		if e.ExitErr {
+			status = "failed"
+		}
+		target := e.Command
+		if target == "" {
+			target = "(no target)"
+		}
+		line := fmt.Sprintf("%s %s %s", displayAbbrev(e.Abbrev), target, status)
+		if i > 0 && traces[i-1].Command == e.Command && traces[i-1].Abbrev == e.Abbrev && e.Command != "" {
+			line += " (repeat)"
+		}
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // mashuraAvailable reports whether mashura counsel tools are available.
@@ -1427,55 +1549,55 @@ func ceilingRank(mode string) int {
 // Each distinct symptom is deduplicated (struggleSuggested); that map is reset
 // at the start of each Send() when CounselMode is set (per-turn cap in TUI).
 func (a *App) maybeSuggestDebug(ctx context.Context) {
+	// Record the evaluation as the detector sees it, even when this call stays
+	// silent, so bare /counsel can explain a silent run afterwards. The
+	// snapshot is overwritten on every entry; it is read-only elsewhere.
+	eval := a.struggleEvaluationSnapshot()
+	defer func() { a.setLastStruggleEval(eval) }()
 	if !a.mashuraAvailable() {
-		return // no mashūra available
+		eval.ActionTaken = "nothing shown: mashura unavailable (level, members, or key)"
+		return
 	}
 	// Level ceiling (round-2 finding #11): off = silent, low = suggest only.
+	// Keyed off debug (the tool that fires), matching the ceiling in
+	// resolveCounselMode; mashuraAvailable already covers the review gate.
 	if a.Cfg.Mashura != nil {
-		if level, _, _ := a.effectiveMashura("review"); level == config.MashuraLevelOff {
+		if level, _, _ := a.effectiveMashura("debug"); level == config.MashuraLevelOff {
+			eval.ActionTaken = fmt.Sprintf("nothing shown: level %q is off", level)
 			return
 		}
 	}
-	symptom, ok := DetectStruggle(a.recentTraces)
+	// Reuse the snapshot's detection so symptom and rule never disagree —
+	// the snapshot already ran detectStruggleScan synchronously on this
+	// goroutine, so no re-scan is needed.
+	symptom, ok := eval.Symptom, eval.RuleMatched != "none"
 	if !ok {
+		eval.ActionTaken = "nothing shown: no struggle rule matched"
 		return
 	}
 	if a.struggleSuggested == nil {
 		a.struggleSuggested = map[string]bool{}
 	}
 	if a.struggleSuggested[symptom] {
+		eval.ActionTaken = "nothing shown: symptom already suggested this turn"
 		return
 	}
 	a.struggleSuggested[symptom] = true
 
-	// Resolve effective mode: CounselMode (TUI path) wins; fall back to the
-	// legacy AutoCounsel bool for backward-compatible headless behaviour.
-	mode := a.CounselMode
-	if mode == "" {
-		if a.AutoCounsel {
-			mode = "auto"
-		} else {
-			mode = "off"
-		}
-	}
-	// Level ceiling: the level caps the user's mode (off → silent,
-	// low → suggest at most, medium/high → as chosen).
-	if a.Cfg.Mashura != nil {
-		if level, _, _ := a.effectiveMashura("review"); level != "" {
-			ceiling := config.LevelAutoCounsel(level)
-			if ceilingRank(ceiling) < ceilingRank(mode) {
-				mode = ceiling
-			}
-		}
-	}
+	// Recorded mode/source from the snapshot (already ceiling-applied);
+	// resolveCounselMode is not re-run, so the recorded mode cannot differ
+	// from the mode acted on.
+	mode := eval.ResolvedMode
 
 	switch mode {
 	case "off":
+		eval.ActionTaken = "nothing shown: mode off"
 		return // truly silent — no output
 
 	case "auto":
 		if a.MaxCounsel > 0 && a.counselCalls < a.MaxCounsel {
 			a.counselCalls++
+			eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, a.MaxCounsel)
 			// Announce loudly with cost label BEFORE the call so it's visible.
 			fmt.Fprintln(a.Out, fmt.Sprintf("⚡ auto-counsel %d/%d · mashura__debug · %s",
 				a.counselCalls, a.MaxCounsel, symptom))
@@ -1501,6 +1623,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 				a.counselCalls--
 				a.lastPanelVoid = false
 				fmt.Fprintln(a.Out, Yellow("⚠ auto-counsel: VOID reply — round not counted (cap unchanged)"))
+				eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (VOID, round not counted; cap %d/%d)", a.counselCalls, a.MaxCounsel)
 			}
 			// Inject as assistant+tool pair so the model sees the diagnosis.
 			a.appendConv(
@@ -1514,12 +1637,22 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 					"· counsel cap reached (%d/%d) — reverting to suggest for this turn",
 					a.counselCalls, a.MaxCounsel)))
 			}
+			if a.lastPanelVoid {
+				// VOID took precedence above; do not overwrite the VOID
+				// note with the decremented count.
+			} else {
+				eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, a.MaxCounsel)
+			}
 			return
 		}
 		// Cap reached — fall through to suggest behavior.
+		eval.ActionTaken = fmt.Sprintf("suggest hint printed (cap %d/%d reached)", a.counselCalls, a.MaxCounsel)
 		fallthrough
 
 	default: // "suggest"
+		if eval.ActionTaken == "" {
+			eval.ActionTaken = "suggest hint printed"
+		}
 		fmt.Fprintln(a.Out, Dim("· struggle detected — mashura__debug can diagnose; symptom: "+symptom))
 	}
 }

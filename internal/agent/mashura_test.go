@@ -1153,6 +1153,23 @@ func TestAutoCounselBareRunZeroCalls(t *testing.T) {
 	if app.CounselCallsCount() != 0 {
 		t.Errorf("bare run: CounselCallsCount = %d, want 0", app.CounselCallsCount())
 	}
+	// The silent exit must still be explainable via the recorded evaluation.
+	if app.lastStruggleEval.RuleMatched == "none" {
+		t.Errorf("lastStruggleEval.RuleMatched = %q, want a rule (detector fired)", app.lastStruggleEval.RuleMatched)
+	}
+	if app.lastStruggleEval.ActionTaken == "" {
+		t.Error("lastStruggleEval.ActionTaken is empty; silent exits must record a reason")
+	}
+	// The mode resolves from cfg.AutoCounsel (empty = suggest) or the
+	// AutoCounsel bool; this bare-run app has neither set, so it stays off.
+	// The key assertion is that the recorded mode exists and the action names
+	// the off exit when mode is off.
+	if app.lastStruggleEval.ResolvedMode == "" {
+		t.Error("lastStruggleEval.ResolvedMode is empty; silent exits must record a mode")
+	}
+	if app.lastStruggleEval.ResolvedMode == "off" && app.lastStruggleEval.ActionTaken != "nothing shown: mode off" {
+		t.Errorf("off mode ActionTaken = %q, want 'nothing shown: mode off'", app.lastStruggleEval.ActionTaken)
+	}
 }
 
 // TestAutoCounselRespectsMaxCounsel verifies that repeated struggle signals are

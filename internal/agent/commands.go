@@ -1139,20 +1139,54 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 
 	case "/counsel":
 		// /counsel [auto|suggest|off] — set or show the auto-counsel mode.
-		if app.Cfg.Mashura != nil {
+		// Bare /counsel always shows the evaluation diagnostics, including
+		// when the level is off (the canonical silent exit this exists to
+		// explain). Setting the mode is still refused at level off: the
+		// "is off" note below is the last line before the switch.
+		if len(fields) >= 2 && app.Cfg.Mashura != nil {
 			if lv, _, _ := app.effectiveMashura("review"); lv == config.MashuraLevelOff {
 				return true, false, note("Mashūra is off. Turn it on: /mashura low|medium|high (per-repo) or set \"mashura\": {\"level\": \"medium\", ...} in config.")
 			}
 		}
 		if len(fields) < 2 {
-			mode := app.CounselModeLocked()
-			if mode == "" {
-				mode = "off"
-			}
-			msg := "counsel mode: " + mode
+			// Bare /counsel shows the mode plus the last struggle evaluation
+			// as the detector saw it, so a silent run is explainable: the
+			// trace window, the rule that matched (or none), the resolved
+			// mode with its source, and the action taken or the reason
+			// nothing was shown.
+			mode, source := app.resolveCounselMode()
+			msg := "counsel mode: " + mode + " (source: " + source + ")"
 			if mode == "auto" {
 				msg += fmt.Sprintf(" (cap: %d/turn)", app.MaxCounselLocked())
 			}
+			eval := app.lastStruggleEvalLocked()
+			if eval.TraceWindow == "" {
+				// No evaluation recorded yet this session: evaluate the
+				// current state read-only (does not mutate suggestion state).
+				eval = app.struggleEvaluationSnapshot()
+				switch {
+				case eval.RuleMatched == "none":
+					eval.ActionTaken = "nothing shown: no struggle rule matched"
+				case eval.ResolvedMode == "off":
+					eval.ActionTaken = "nothing shown: mode off"
+				default:
+					eval.ActionTaken = "would show: " + eval.ResolvedMode
+				}
+			}
+			msg += "\nlast evaluation:\n"
+			msg += "  trace window (tool target ok/failed, repeat):\n"
+			for _, line := range strings.Split(eval.TraceWindow, "\n") {
+				msg += "    " + line + "\n"
+			}
+			msg += "  rule matched: " + eval.RuleMatched + "\n"
+			if eval.Symptom != "" {
+				msg += "  symptom: " + eval.Symptom + "\n"
+			}
+			msg += "  resolved mode: " + eval.ResolvedMode + " (source: " + eval.ModeSource + ")"
+			if eval.Level != "" {
+				msg += " · level: " + eval.Level
+			}
+			msg += "\n  action: " + eval.ActionTaken
 			return true, false, note(msg)
 		}
 		switch fields[1] {
