@@ -902,7 +902,10 @@ func isMCPToolName(name string, servers []string) bool {
 // order on reconnect) would silently invalidate the prefix. Group order is
 // preserved so toggling a conditional group only invalidates the suffix,
 // not the entire prefix.
-func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
+// repoLevel is the per-repo Mashūra level override ("" = use config). It
+// threads through because cfg alone cannot see RepoState, which is restored
+// after App construction — and /mcp reconnect rebuilds with app.Cfg.
+func BuildTools(cfg config.Config, cwd string, mcp *MCPManager, repoLevel string) []proxy.Tool {
 	// Group 1: built-ins (DefaultTools already has a fixed order).
 	t := wtools.DefaultTools(cwd)
 	// check_pending is always available — it is the read-only
@@ -931,8 +934,15 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager) []proxy.Tool {
 	if mcp != nil {
 		t = append(t, mcp.OpenAITools()...)
 	}
-	// Group 4: oracle (conditional).
-	if cfg.OracleEnabled && (os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv(cfg.OpenRouterAPIKeyEnv) != "") {
+	// Group 4: oracle (conditional). New block: effective level != off AND
+	// effective members non-empty; the OpenRouter key check is the unified
+	// predicate shared with mashuraAvailable (no separate oracle_api_key_env
+	// gate). Legacy path keeps its original gate for byte-identical behavior.
+	if cfg.Mashura != nil {
+		if level, members, _ := cfg.ResolveEffective("review", repoLevel); level != config.MashuraLevelOff && len(members) > 0 && os.Getenv(cfg.OpenRouterAPIKeyEnv) != "" {
+			t = append(t, mashuraToolDefs()...)
+		}
+	} else if cfg.OracleEnabled && (os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv(cfg.OpenRouterAPIKeyEnv) != "") {
 		t = append(t, mashuraToolDefs()...)
 	}
 	// Group 5: LSP (conditional).

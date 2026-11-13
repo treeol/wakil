@@ -23,10 +23,16 @@ type fileSandbox struct {
 	Backend string `json:"backend"`
 }
 
+type fileMashura struct {
+	Level   string   `json:"level"`
+	Members []string `json:"members,omitempty"`
+}
+
 type fileConfig struct {
 	Endpoints       map[string]fileEndpoint `json:"endpoints"`
 	DefaultEndpoint string                  `json:"default_endpoint"`
 	Approval        string                  `json:"approval"`
+	Mashura         *fileMashura            `json:"mashura,omitempty"`
 	Sandbox         *fileSandbox            `json:"sandbox,omitempty"`
 }
 
@@ -55,6 +61,7 @@ func renderConfig(p plan) ([]byte, error) {
 		Endpoints:       map[string]fileEndpoint{p.EndpointName: ep},
 		DefaultEndpoint: p.EndpointName,
 		Approval:        p.Approval,
+		Mashura:         &fileMashura{Level: "medium"},
 	}
 	if p.Backend != "" {
 		fc.Sandbox = &fileSandbox{Backend: p.Backend}

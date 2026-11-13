@@ -247,7 +247,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		MCP:                          mcpMgr,
 		LSP:                          lspMgr,
 		Browser:                      browserMgr,
-		Tools:                        agent.BuildTools(cfg, exe.Cwd(), mcpMgr),
+		Tools:                        agent.BuildTools(cfg, exe.Cwd(), mcpMgr, ""),
 		AgentPrompt:                  promptForApp,
 		SelectedBackend:              cfg.Backend,
 		AgentPrefix:                  "main",

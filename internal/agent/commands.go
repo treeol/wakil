@@ -329,6 +329,10 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				_, fullSize := app.ConvStatsFull()
 				msg := fmt.Sprintf("context mode: %s · %d collapsed · sent ~%dk · full ~%dk",
 					app.ContextMode(), collapsedCount, sentSize/1024, fullSize/1024)
+				if app.Cfg.Mashura != nil {
+					lv, members, _ := app.effectiveMashura("review")
+					msg += fmt.Sprintf("\n mashūra: level %s · %d member(s)", lv, len(members))
+				}
 				if app.pruneEnabled() {
 					msg += " · " + app.pruneStatusLine()
 				}
@@ -776,7 +780,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				if err := app.MCP.Reconnect(context.Background(), name); err != nil {
 					return SysNoteMsg{Text: fmt.Sprintf("reconnect %q: %v", name, err)}
 				}
-				toolList := BuildTools(app.Cfg, app.Exec.Cwd(), app.MCP)
+				toolList := BuildTools(app.Cfg, app.Exec.Cwd(), app.MCP, app.MashuraLevelOverride)
 				return MCPReconnectedMsg{Name: name, Tools: toolList}
 			}
 		}
@@ -1133,6 +1137,11 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 
 	case "/counsel":
 		// /counsel [auto|suggest|off] — set or show the auto-counsel mode.
+		if app.Cfg.Mashura != nil {
+			if lv, _, _ := app.effectiveMashura("review"); lv == config.MashuraLevelOff {
+				return true, false, note("Mashūra is off. Turn it on: /mashura low|medium|high (per-repo) or set \"mashura\": {\"level\": \"medium\", ...} in config.")
+			}
+		}
 		if len(fields) < 2 {
 			mode := app.CounselModeLocked()
 			if mode == "" {

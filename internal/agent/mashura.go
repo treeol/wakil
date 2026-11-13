@@ -250,6 +250,12 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 	// must fail with zero source reads — previously the briefing was assembled
 	// first, wasting evidence gathering on a call that could never run.
 	panelOverride := mashuraPanelArg(tc)
+	// Effective-level off (new block): refuse before any source reads.
+	if a.Cfg.Mashura != nil {
+		if level, _, _ := a.effectiveMashura(strings.TrimPrefix(name, "mashura__")); level == config.MashuraLevelOff {
+			return "ERROR: Mashūra is off — set the mashura level to low, medium, or high in config, or run /mashura <level> in this repo"
+		}
+	}
 	panelName, panel, panelOK := a.resolvePanel(name, panelOverride)
 	if !panelOK {
 		return "ERROR: panel " + panelName + " not found or has no models"
@@ -323,6 +329,13 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		SessionCostFunc:       func() float64 { return a.SessionCostTotal() },
 	}
 	models, mode := panel.Models, panel.Mode
+	// With the new block present, debate is chosen by the level (high only);
+	// the panel's legacy mode is ignored there.
+	if a.Cfg.Mashura != nil {
+		if level, _, _ := a.effectiveMashura(strings.TrimPrefix(name, "mashura__")); config.LevelDebate(level) {
+			mode = "debate"
+		}
+	}
 
 	if sync {
 		results := counsel.RunPanel(ctx, models, mode, question, briefing, ccfg, apiKeys)
@@ -499,17 +512,22 @@ func (a *App) recordMashuraResults(results []counsel.PanelMemberResult) {
 }
 
 // mashuraModelLimits converts the mashura_models config to dispatcher limits.
+// With the new config block present, per-model reasoning is ignored (the
+// level owns reasoning); context_tokens/review_max_tokens stay live.
 func (a *App) mashuraModelLimits() map[string]counsel.ModelLimits {
 	if len(a.Cfg.MashuraModels) == 0 {
 		return nil
 	}
 	out := make(map[string]counsel.ModelLimits, len(a.Cfg.MashuraModels))
 	for k, v := range a.Cfg.MashuraModels {
-		out[k] = counsel.ModelLimits{
+		lim := counsel.ModelLimits{
 			ContextTokens:   v.ContextTokens,
 			ReviewMaxTokens: v.ReviewMaxTokens,
-			Reasoning:       v.Reasoning,
 		}
+		if a.Cfg.Mashura == nil {
+			lim.Reasoning = v.Reasoning
+		}
+		out[k] = lim
 	}
 	return out
 }
@@ -587,12 +605,38 @@ func (a *App) mashuraKeyErrorMessage(toolName, panelName string, keyErr error) s
 // bug where OpenRouter-only users saw tools advertised but every call failed
 // because the fallback hardcoded "anthropic:" + OracleModel.
 func (a *App) resolvePanel(toolName, override string) (name string, panel config.MashuraPanelConfig, ok bool) {
+	short := strings.TrimPrefix(toolName, "mashura__")
+	if toolName == "oracle__ask" {
+		short = "review"
+	}
+	// New config block: the effective members come from the level resolver
+	// (lazy fallback — never frozen into a legacy "default" panel). The mode
+	// is panel (debate added by runMashuraCore at high level). Legacy panels
+	// are still honored for named overrides the model passes explicitly.
+	if a.Cfg.Mashura != nil {
+		if override != "" {
+			if a.Cfg.MashuraPanels != nil {
+				if p, exists := a.Cfg.MashuraPanels[override]; exists && len(p.Models) > 0 {
+					if p.Mode == "" {
+						p.Mode = "panel"
+					}
+					return override, p, true
+				}
+			}
+			// Explicit named panel that does not exist: fail closed.
+			return override, config.MashuraPanelConfig{}, false
+		}
+		level, members, _ := a.effectiveMashura(short)
+		if level == config.MashuraLevelOff {
+			return "default", config.MashuraPanelConfig{}, false
+		}
+		if len(members) == 0 {
+			return "default", config.MashuraPanelConfig{}, false
+		}
+		return "default", config.MashuraPanelConfig{Models: members, Mode: "panel"}, true
+	}
 	name = override
 	if name == "" {
-		short := strings.TrimPrefix(toolName, "mashura__")
-		if toolName == "oracle__ask" {
-			short = "review"
-		}
 		if a.Cfg.MashuraToolPanels != nil {
 			name = a.Cfg.MashuraToolPanels[short]
 		}
@@ -1238,6 +1282,12 @@ func (a *App) mashuraReasoningFor(name string) *config.ReasoningSpec {
 	if name == "oracle__ask" {
 		short = "review"
 	}
+	// New config block present: the level (with the check exception) owns
+	// reasoning. Per-model/per-role reasoning is ignored in this mode.
+	if a.Cfg.Mashura != nil {
+		level, _, _ := a.effectiveMashura(short)
+		return config.LevelReasoning(short, level)
+	}
 	role := "reviewer"
 	if short == "check" {
 		role = "check"
@@ -1306,10 +1356,25 @@ func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
 	return "", false
 }
 
-// mashuraAvailable reports whether mashura counsel tools are available
-// (oracle enabled AND the resolved default panel's API keys are present).
-// WP-7.10d: single predicate.
+// mashuraAvailable reports whether mashura counsel tools are available.
+// Single predicate: the effective level is not off AND the effective member
+// list is non-empty AND the OpenRouter key the panel will need is present.
+// The fallback member counts (A4), resolved lazily via resolvePanel.
 func (a *App) mashuraAvailable() bool {
+	// New config block: level + members gate (key via mashuraPanelKeys).
+	if a.Cfg.Mashura != nil {
+		if level, members, _ := a.effectiveMashura("review"); level == config.MashuraLevelOff {
+			return false
+		} else if len(members) == 0 {
+			return false
+		}
+		_, panel, ok := a.resolvePanel("", "")
+		if !ok {
+			return false
+		}
+		_, err := a.mashuraPanelKeys(panel)
+		return err == nil
+	}
 	if !a.Cfg.OracleEnabled {
 		return false
 	}
@@ -1322,6 +1387,21 @@ func (a *App) mashuraAvailable() bool {
 	}
 	_, err := a.mashuraPanelKeys(panel)
 	return err == nil
+}
+
+// effectiveMashura returns the effective (level, members, source) for a tool
+// from the new config block and the per-repo level. With no block it returns
+// the default level (medium) and the legacy fallback member (caller may
+// ignore members).
+func (a *App) effectiveMashura(tool string) (string, []string, string) {
+	if a.Cfg.Mashura == nil {
+		return config.MashuraLevelDefault, nil, "default"
+	}
+	level, members, source := a.Cfg.ResolveEffective(tool, a.MashuraLevelOverride)
+	if len(members) == 0 {
+		members = []string{a.fallbackModel()}
+	}
+	return level, members, source
 }
 
 // maybeSuggestDebug offers mashura__debug when the rolling trace shows a struggle

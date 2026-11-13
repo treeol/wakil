@@ -98,6 +98,12 @@ type RepoState struct {
 	// Region is the per-repo OpenRouter region override (/region eu|us|off;
 	// "" = use the user config).
 	Region string `json:"openrouter_region,omitempty"`
+
+	// MashuraLevel is the per-repo Mashūra level override
+	// (/mashura off|low|medium|high; "" = use the config level). Stored
+	// only here, never in the repository — a cloned repo must never be able
+	// to set it.
+	MashuraLevel string `json:"mashura_level,omitempty"`
 }
 
 const repoStateSchemaVersion = 1
@@ -496,6 +502,14 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 	}
 	if st.ZDR != "" || st.Region != "" {
 		a.applyDataPolicyToClientLocked()
+	}
+
+	// Per-repo Mashūra level override (endpoint-independent, like zdr/region).
+	if st.MashuraLevel != "" {
+		if config.IsMashuraLevel(st.MashuraLevel) {
+			a.MashuraLevelOverride = st.MashuraLevel
+			applied = append(applied, "mashura-level="+st.MashuraLevel)
+		}
 	}
 
 	return applied

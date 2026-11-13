@@ -8,5 +8,8 @@
     }
   },
   "default_endpoint": "openrouter",
-  "approval": "ask"
+  "approval": "ask",
+  "mashura": {
+    "level": "medium"
+  }
 }

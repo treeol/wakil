@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -38,6 +39,17 @@ func handleMashuraCommand(fields []string, app *App) (handled, quit bool, cmd Cm
 	}
 
 	switch fields[1] {
+	case config.MashuraLevelOff, config.MashuraLevelLow, config.MashuraLevelMedium, config.MashuraLevelHigh:
+		level := fields[1]
+		prev := app.MashuraLevelOverride
+		app.MashuraLevelOverride = level
+		app.saveRepoState(func(s *RepoState) { s.MashuraLevel = level })
+		return true, false, note(mashuraLevelSetNote(app, prev, level))
+	case "reset":
+		prev := app.MashuraLevelOverride
+		app.MashuraLevelOverride = ""
+		app.saveRepoState(func(s *RepoState) { s.MashuraLevel = "" })
+		return true, false, note(mashuraLevelSetNote(app, prev, ""))
 	case "panel":
 		return handleMashuraPanel(fields, app)
 	case "map":
@@ -82,10 +94,15 @@ func mashuraStatus(app *App) string {
 	var sb strings.Builder
 	sb.WriteString("Mashūra Counsel Status\n")
 	sb.WriteString("──────────────────────\n")
-	sb.WriteString(fmt.Sprintf("default model:  %s\n", app.Cfg.OracleModel))
-	sb.WriteString(fmt.Sprintf("max tokens:     %d\n", app.Cfg.OracleMaxTokens))
-	sb.WriteString(fmt.Sprintf("timeout:        %ds\n", app.Cfg.OracleTimeoutSeconds))
-	sb.WriteString(fmt.Sprintf("enabled:        %v\n", app.mashuraAvailable()))
+	if app.Cfg.Mashura != nil {
+		sb.WriteString(mashuraLevelStatus(app))
+		sb.WriteString(fmt.Sprintf("enabled:        %v\n", app.mashuraAvailable()))
+	} else {
+		sb.WriteString(fmt.Sprintf("default model:  %s\n", app.Cfg.OracleModel))
+		sb.WriteString(fmt.Sprintf("max tokens:     %d\n", app.Cfg.OracleMaxTokens))
+		sb.WriteString(fmt.Sprintf("timeout:        %ds\n", app.Cfg.OracleTimeoutSeconds))
+		sb.WriteString(fmt.Sprintf("enabled:        %v\n", app.mashuraAvailable()))
+	}
 
 	// Panels
 	if len(app.Cfg.MashuraPanels) == 0 {
@@ -285,13 +302,105 @@ func handleMashuraMap(fields []string, app *App) (handled, quit bool, cmd Cmd) {
 }
 
 const mashuraHelpText = `/mashura commands:
-  /mashura                        Show status (panels, tool mappings, limits)
-  /mashura panel add <name> <models> [--mode panel|fallback|fusion|debate]
-  /mashura panel rm <name>         Remove a named panel
-  /mashura panel <name>            Show panel details
-  /mashura panel <name> --mode <mode>  Set panel mode
-  /mashura map <tool> <panel>      Map a tool (review|debug|decide|check) to a panel
+  /mashura                        Show status (level, members, per-tool table)
+  /mashura off|low|medium|high    Set the per-repo level
+  /mashura reset                  Remove the per-repo level
+  /mashura panel add <name> <models> [--mode panel|fallback|fusion|debate]  (legacy)
+  /mashura panel rm <name>         Remove a named panel (legacy)
+  /mashura panel <name>            Show panel details (legacy)
+  /mashura panel <name> --mode <mode>  Set panel mode (legacy)
+  /mashura map <tool> <panel>      Map a tool (review|debug|decide|check) to a panel (legacy)
   /mashura map <tool>              Show current mapping for a tool
-  /mashura model <model-id>        Set the default model
-  /mashura maxtokens <N>           Set max tokens for mashura responses
-  /mashura timeout <seconds>       Set timeout for mashura calls`
+  /mashura model <model-id>        Set the default model (legacy)
+  /mashura maxtokens <N>           Set max tokens for mashura responses (legacy)
+  /mashura timeout <seconds>       Set timeout for mashura calls (legacy)`
+
+// mashuraLevelStatus renders the effective level survey for the new block:
+// level + source, members, overrides, a per-tool effective table, and the
+// equivalent config block as copyable JSON. check's low-cost exception is
+// explicit in the table (stays at low below high).
+func mashuraLevelStatus(app *App) string {
+	level, members, source := app.effectiveMashura("review")
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("level:          %s (from %s)\n", level, source))
+	sb.WriteString(fmt.Sprintf("members (%d):   %s\n", len(members), strings.Join(members, ", ")))
+	if app.MashuraLevelOverride != "" {
+		sb.WriteString(fmt.Sprintf("per-repo level: %s\n", app.MashuraLevelOverride))
+	}
+	if app.Cfg.Mashura != nil && len(app.Cfg.Mashura.Overrides) > 0 {
+		sb.WriteString("overrides:\n")
+		tools := make([]string, 0, len(app.Cfg.Mashura.Overrides))
+		for t := range app.Cfg.Mashura.Overrides {
+			tools = append(tools, t)
+		}
+		sort.Strings(tools)
+		for _, t := range tools {
+			ov := app.Cfg.Mashura.Overrides[t]
+			parts := []string{}
+			if ov.Level != "" {
+				parts = append(parts, "level="+ov.Level)
+			}
+			if len(ov.Members) > 0 {
+				parts = append(parts, "members=["+strings.Join(ov.Members, ", ")+"]")
+			}
+			sb.WriteString(fmt.Sprintf("  %-8s %s\n", t, strings.Join(parts, " ")))
+		}
+	} else {
+		sb.WriteString("overrides:      (none)\n")
+	}
+	sb.WriteString("effective per tool:\n")
+	sb.WriteString("  tool      level    reasoning  debate  auto-counsel\n")
+	for _, t := range []string{"review", "debug", "decide", "check"} {
+		lv, _, src := app.effectiveMashura(t)
+		r := config.LevelReasoning(t, lv)
+		reasoning := r.Effort
+		if r.MaxTokens > 0 {
+			reasoning = fmt.Sprintf("%s/%d", r.Effort, r.MaxTokens)
+		}
+		debate := "no"
+		if config.LevelDebate(lv) {
+			debate = "yes"
+		}
+		sb.WriteString(fmt.Sprintf("  %-8s  %-8s %-10s %-6s %-6s", t, lv, reasoning, debate, config.LevelAutoCounsel(lv)))
+		if t == "check" && lv != config.MashuraLevelHigh {
+			sb.WriteString("  (check stays at low below high)")
+		}
+		sb.WriteString(fmt.Sprintf("  [%s]\n", src))
+	}
+	sb.WriteString("\nconfig block (copy into config.json):\n")
+	block := *app.Cfg.Mashura
+	if len(block.Members) == 0 {
+		block.Members = members
+	}
+	b, _ := json.MarshalIndent(map[string]interface{}{"mashura": block}, "", "  ")
+	sb.WriteString(string(b) + "\n")
+	return sb.String()
+}
+
+// mashuraLevelSetNote composes the confirmation for a /mashura level change.
+// When the tool set changes in a session that has already sent a request,
+// the prompt-cache line is appended (A6). The tool set changes when the
+// effective level crosses the off boundary (tools appear/disappear).
+func mashuraLevelSetNote(app *App, prev, next string) string {
+	effNext, membersNext, _ := app.effectiveMashura("review")
+	var sb strings.Builder
+	if next == "" {
+		fmt.Fprintf(&sb, "per-repo Mashūra level removed (now %s)\n", effNext)
+	} else {
+		fmt.Fprintf(&sb, "per-repo Mashūra level set: %s (effective %s, %d member(s))\n", next, effNext, len(membersNext))
+	}
+	// Tool set changes (tools appear or vanish) only when the effective level
+	// crosses the off boundary between the previous and next states.
+	prevEffective := prev
+	if prev == "" {
+		// No override before: effective was the config level.
+		prevEffective, _, _ = app.Cfg.ResolveEffective("review", "")
+	} else {
+		prevEffective, _, _ = app.Cfg.ResolveEffective("review", prev)
+	}
+	toolSetChanges := (prevEffective == config.MashuraLevelOff) != (effNext == config.MashuraLevelOff)
+	if toolSetChanges && app.sessionHasSent() {
+		sb.WriteString("Changing this mid-session resets the prompt cache.\n")
+	}
+	return sb.String()
+}

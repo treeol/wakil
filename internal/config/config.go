@@ -617,6 +617,11 @@ type Config struct {
 	// hint, persona) is a deliberate future feature — do not add it here.
 	MashuraToolPanels map[string]string `json:"mashura_tool_panels,omitempty"`
 
+	// MashuraLevels is the single user-facing Mashūra configuration block.
+	// A pointer so absent-vs-present is distinguishable for legacy key
+	// derivation. When set, it wins over every oracle_*/mashura_* key below.
+	Mashura *MashuraConfig `json:"mashura,omitempty"`
+
 	// Workflow settings.
 	WFOracleMode       string `json:"wf_oracle_mode,omitempty"`        // default oracle consult schedule: "every-step" | "on-deviation" | "phases-only"
 	WFFinalReview      bool   `json:"wf_final_review"`                 // run closing oracle check after the last step (default true)
@@ -1077,6 +1082,173 @@ type MashuraModelLimits struct {
 // "check" (see Config.MashuraRoles).
 type MashuraRoleConfig struct {
 	Reasoning *ReasoningSpec `json:"reasoning,omitempty"`
+}
+
+// Mashūra levels. The level is a preset for reasoning effort, debate
+// availability, and auto-counsel behavior; members are the same at every
+// level. Constants keep the wire spelling in one place.
+const (
+	MashuraLevelOff    = "off"
+	MashuraLevelLow    = "low"
+	MashuraLevelMedium = "medium"
+	MashuraLevelHigh   = "high"
+
+	// MashuraLevelDefault is the level applied when neither the new block
+	// nor any old key is present. It matches today's gate: tools are
+	// offered once an OpenRouter key exists, so the default is medium with
+	// the level/key predicate (BootTools + mashuraAvailable).
+	MashuraLevelDefault = MashuraLevelMedium
+)
+
+// MashuraToolNames lists the model-callable counsel tool short names
+// (overrides keys and validation).
+var MashuraToolNames = []string{"review", "debug", "decide", "check"}
+
+// IsMashuraTool reports whether name is one of the override-eligible tools.
+func IsMashuraTool(name string) bool {
+	for _, t := range MashuraToolNames {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsMashuraLevel reports whether level is one of off|low|medium|high.
+func IsMashuraLevel(level string) bool {
+	switch level {
+	case MashuraLevelOff, MashuraLevelLow, MashuraLevelMedium, MashuraLevelHigh:
+		return true
+	}
+	return false
+}
+
+// MashuraConfig is the single user-facing Mashūra block:
+//
+//	"mashura": {
+//	  "level": "medium",
+//	  "members": ["openrouter:anthropic/claude-sonnet-4"],
+//	  "overrides": {"check": {"level": "low"}}
+//	}
+//
+// Overrides is optional; each override field is optional. Unknown tool names
+// and levels are rejected at load.
+type MashuraConfig struct {
+	Level     string                     `json:"level"`
+	Members   []string                   `json:"members,omitempty"`
+	Overrides map[string]MashuraOverride `json:"overrides,omitempty"`
+}
+
+// MashuraOverride sets per-tool members and/or level. Each field is
+// optional: unset means inherit from the block level.
+type MashuraOverride struct {
+	Members []string `json:"members,omitempty"`
+	Level   string   `json:"level,omitempty"`
+}
+
+// EffectiveMembers resolves the block members, falling back to the legacy
+// effective default members (the same member resolvePanel would use today:
+// MashuraFallbackModel, else OracleModel, resolved lazily by the caller).
+func (m *MashuraConfig) EffectiveMembers(fallback []string) []string {
+	if m == nil || len(m.Members) == 0 {
+		return fallback
+	}
+	return m.Members
+}
+
+// ResolveEffective returns the effective (level, members) for one tool.
+// repoLevel is the per-repo level set with /mashura ("" = none).
+// Precedence, highest first: level off (from any source) → per-tool
+// override → per-repo level → config level.
+// legacyPresent distinguishes "no block and no old keys" (Group B handles
+// derivation; here it is just a flag for the caller) — the resolver itself
+// only needs the block + repo level.
+func (c *Config) ResolveEffective(tool, repoLevel string) (level string, members []string, source string) {
+	if c == nil || c.Mashura == nil {
+		return MashuraLevelDefault, nil, "default"
+	}
+	m := c.Mashura
+	level = m.Level
+	if level == "" {
+		level = MashuraLevelDefault
+	}
+	source = "config level"
+	members = append([]string(nil), m.Members...)
+	if repoLevel != "" {
+		level = repoLevel
+		source = "per-repo level (/mashura)"
+	}
+	if ov, ok := m.Overrides[tool]; ok {
+		if ov.Level != "" {
+			level = ov.Level
+			source = "override " + tool
+		}
+		if len(ov.Members) > 0 {
+			members = append([]string(nil), ov.Members...)
+			source += " (members override-" + tool + ")"
+		}
+	}
+	// Off from any source beats everything, including an explicit per-tool
+	// override: the config-level or per-repo off closes the gate for every
+	// tool. A per-tool override of "off" also wins (it is the off source).
+	// Detect: block level off, repo level off, or any override level off
+	// for this tool.
+	blockOff := m.Level == MashuraLevelOff
+	repoOff := repoLevel == MashuraLevelOff
+	ovOff := false
+	if ov, ok := m.Overrides[tool]; ok && ov.Level == MashuraLevelOff {
+		ovOff = true
+	}
+	if blockOff || repoOff {
+		// Off from any source wins over everything.
+		return MashuraLevelOff, members, "off"
+	}
+	if ovOff {
+		return MashuraLevelOff, members, "override " + tool
+	}
+	return level, members, source
+}
+
+// LevelReasoning maps a level to its reasoning spec. Debates aside, this is
+// the whole reasoning story for the new block. Effort maps through
+// EffortToBudget at the counsel layer; high uses the table top (max =
+// 16384), exactly as today's clamp path handles it.
+// check is deliberately calmer: it stays at low under low and medium and
+// follows the level only at high.
+func LevelReasoning(tool, level string) *ReasoningSpec {
+	if tool == "check" && level != MashuraLevelHigh {
+		if level == MashuraLevelMedium || level == MashuraLevelLow {
+			return &ReasoningSpec{Effort: "low"}
+		}
+		return &ReasoningSpec{Effort: "none"}
+	}
+	switch level {
+	case MashuraLevelLow:
+		return &ReasoningSpec{Effort: "none"}
+	case MashuraLevelMedium:
+		return &ReasoningSpec{Effort: "medium"}
+	case MashuraLevelHigh:
+		return &ReasoningSpec{Effort: "max"}
+	}
+	return &ReasoningSpec{Effort: "none"}
+}
+
+// LevelDebate reports whether debate is available at a level (high only).
+func LevelDebate(level string) bool {
+	return level == MashuraLevelHigh
+}
+
+// LevelAutoCounsel is the auto-counsel ceiling for a level:
+// off = silent, low = suggest only, medium/high = auto allowed.
+func LevelAutoCounsel(level string) string {
+	switch level {
+	case MashuraLevelOff:
+		return "off"
+	case MashuraLevelLow:
+		return "suggest"
+	default:
+		return "auto"
+	}
 }
 
 // NormalizedModels maps every member of the panel to the model id actually
@@ -2439,6 +2611,21 @@ func validateEnums(cfg Config) error {
 		// are resolved later). Just reject obviously invalid patterns.
 		if strings.ContainsAny(cfg.SubagentBackend, " \t\n") {
 			return fmt.Errorf("subagent_backend must not contain whitespace (got %q)", cfg.SubagentBackend)
+		}
+	}
+	// The mashura block: unknown tool names and levels are rejected at
+	// load with a clear message.
+	if cfg.Mashura != nil {
+		if cfg.Mashura.Level != "" && !IsMashuraLevel(cfg.Mashura.Level) {
+			return fmt.Errorf("mashura.level must be one of: off, low, medium, high (got %q)", cfg.Mashura.Level)
+		}
+		for tool, ov := range cfg.Mashura.Overrides {
+			if !IsMashuraTool(tool) {
+				return fmt.Errorf("mashura.overrides: unknown tool %q (expected review, debug, decide, or check)", tool)
+			}
+			if ov.Level != "" && !IsMashuraLevel(ov.Level) {
+				return fmt.Errorf("mashura.overrides.%s.level must be one of: off, low, medium, high (got %q)", tool, ov.Level)
+			}
 		}
 	}
 	// Data policy switches are load-time validated here (and again at policy

@@ -505,6 +505,12 @@ type App struct {
 	ZDROverride    string
 	RegionOverride string
 
+	// MashuraLevelOverride is the per-repo Mashūra level override
+	// (/mashura off|low|medium|high; "" = use the config level). Mirrors
+	// RepoState.MashuraLevel, persisted on the user's side like ZDR, never
+	// in the repository.
+	MashuraLevelOverride string
+
 	// Unexported auto-counsel bookkeeping (counselCalls, autoCounselSkipGate).
 	// Extracted to counsel_state.go (WP-6.3); embedded here so selector access
 	// is unchanged. The exported counsel fields above stay flat because they are
@@ -780,6 +786,14 @@ func (a *App) ConvSnapshot() []proxy.Message {
 	a.convMu.RLock()
 	defer a.convMu.RUnlock()
 	return sanitizeConvForSideQuestion(a.Conv)
+}
+
+// sessionHasSent reports whether the session has already sent a request
+// (the conversation has a user message). Changing the tool list mid-session
+// then resets the prompt cache.
+func (a *App) sessionHasSent() bool {
+	n, _ := a.ConvStats()
+	return n > 0
 }
 
 // ConvStats returns the conversation length and transcript size of what is

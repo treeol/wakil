@@ -310,18 +310,18 @@ func TestBuildToolsComposition(t *testing.T) {
 	// below fails (P0-5 in the improvement plan).
 	t.Setenv("OPENROUTER_API_KEY", "")
 
-	base := agent.BuildTools(config.Config{}, "/work", nil)
+	base := agent.BuildTools(config.Config{}, "/work", nil, "")
 	baseCount := len(base)
 	if baseCount == 0 {
 		t.Fatal("expected default tools")
 	}
 	// SearXNG adds its two tools.
-	withSearch := agent.BuildTools(config.Config{SearXngURL: "http://localhost:8888"}, "/work", nil)
+	withSearch := agent.BuildTools(config.Config{SearXngURL: "http://localhost:8888"}, "/work", nil, "")
 	if len(withSearch) != baseCount+2 {
 		t.Errorf("searxng should add 2 tools; got %d vs base %d", len(withSearch), baseCount)
 	}
 	// Counsel tools require both the flag and the key env; flag alone adds nothing.
-	withOracleNoKey := agent.BuildTools(config.Config{OracleEnabled: true, OracleAPIKeyEnv: "WAKIL_TEST_NO_SUCH_KEY"}, "/work", nil)
+	withOracleNoKey := agent.BuildTools(config.Config{OracleEnabled: true, OracleAPIKeyEnv: "WAKIL_TEST_NO_SUCH_KEY"}, "/work", nil, "")
 	if len(withOracleNoKey) != baseCount {
 		t.Errorf("counsel tools must not appear without the API key set; got %d", len(withOracleNoKey))
 	}

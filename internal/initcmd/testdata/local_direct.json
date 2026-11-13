@@ -8,6 +8,9 @@
   },
   "default_endpoint": "local",
   "approval": "auto",
+  "mashura": {
+    "level": "medium"
+  },
   "sandbox": {
     "backend": "direct"
   }
