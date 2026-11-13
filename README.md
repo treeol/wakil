@@ -125,7 +125,7 @@ Three things to know in the prompt:
 | Feature | What it does | Docs |
 |---|---|---|
 | Sandboxed tools | Shell, file and background-process tools run in hisn, Docker or (opt-out) directly on the host; per-project additions need `wakil sandbox trust` | [sandbox-backends.md](docs/sandbox-backends.md), [tools.md](docs/tools.md) |
-| Counsel (Mashūra) | `review`, `debug`, `decide` and `check` tools query named panels of external models; off until `oracle_enabled` is set | [features.md](docs/features.md#counsel-mashūra) |
+| Counsel (Mashūra) | `review`, `debug`, `decide` and `check` tools query panels of external models at a `mashura.level` (off by default); old `oracle_enabled`-only configs keep working | [features.md](docs/features.md#counsel-mashūra) |
 | Memory | Durable memory in two tiers with taint tracking, plus an ephemeral staging store | [memory.md](docs/memory.md), [staging.md](docs/staging.md) |
 | Skills | A global store of reference documents and file templates; automatic creation is off by default | [tools.md](docs/tools.md#skill-templates), [tui.md](docs/tui.md#using-skills) |
 | Trace and perf | JSONL session traces, and a phase timeline for start, `/new`, `/resume` and exit | [features.md](docs/features.md#trace-capture), [PERF-0.6.md](docs/PERF-0.6.md) |
@@ -139,7 +139,7 @@ The config file is JSON at `~/.config/wakil/config.json`; `WAKIL_CONFIG` or `--c
 
 - `endpoints` and `default_endpoint`: the model endpoints and which one starts active.
 - `sandbox.backend`: `docker`, `hisn` or `direct`. Unset means hisn when usable, else Docker.
-- `oracle_enabled`: turns on the Mashūra counsel tools.
+- `mashura.level` (`off` default; `low`/`medium`/`high` enable the Mashūra counsel tools at that reasoning/debate/auto-counsel level): the single Mashūra config block (`level`, `members`, optional per-tool `overrides`). Legacy `oracle_enabled`-only configs are derived into it at load.
 - `context_mode`: `long-session` (default) collapses finished requests to a question and answer; `standard` sends the full history.
 
 All keys, flags and subcommands are in [docs/configuration.md](docs/configuration.md); [config.example.json](config.example.json) is a commented reference. [docs/README.md](docs/README.md) indexes the rest of the documentation.

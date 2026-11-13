@@ -205,7 +205,7 @@ reference covering every section below.
 | `skill_creation.max_capture_files` | `12` | Files one automatic capture may include |
 | `skill_creation.panel` | — | Mashūra panel used for skill reviews (default panel when empty) |
 | `skill_creation.allowed_files` | `*.yml *.yaml *.sh *.sql *.conf *.md Dockerfile Dockerfile.*` | Base-name globs of capturable files. `.env*`, `*.pem`, `*.key`, `*secret*`, `*credential*`, `*token*`, `*id_rsa*` are never captured |
-| `oracle_enabled` | `false` | Gate for `mashura__*` counsel tools |
+| `oracle_enabled` | `false` | Legacy-only: feeds legacy derivation (absent/false → derived level `off`, otherwise `medium`). With the new `mashura` block present it is ignored. |
 | `oracle_model` | `"claude-sonnet-4-6"` | Model ID for counsel calls |
 | `oracle_api_key_env` | `"ANTHROPIC_API_KEY"` | Legacy env-var name (the direct Anthropic path was removed, so Mashūra calls always route through OpenRouter). After the level change it no longer gates the tools: the tools are offered when the effective level is not `off` and the `openrouter_api_key_env` key is present. Kept in old configs for reading; a session that derives from old keys prints a one-time notice and lists it among the ignored keys when the new block is present. |
 | `zdr` | `"off"` | Zero-data-retention switch for OpenRouter traffic: `off` \| `auto` \| `on`. **Off by default, and with both switches off the bytes on the wire are identical to the unguarded path.** `on` adds `"provider": {"zdr": true, "data_collection": "deny"}` (merged with any existing provider object) to every OpenRouter request and refuses non-OpenRouter, non-local hosts before sending. `auto` sends the same fields and, on an HTTP 404 before any stream data, retries once without them; a model that falls back is remembered for the rest of the session (later calls skip the first attempt) and shows one notice (`zdr auto: no ZDR endpoint for <model>, sent without ZDR.`). A per-repo `/zdr on\|off\|auto` override wins over this key. |
@@ -418,6 +418,13 @@ Mashūra (the `mashura__review`, `mashura__debug`, `mashura__decide`, and
   (`mashura_models.*.reasoning`, `mashura_roles`) no longer apply; `mashura_models`
   context/budget limits still do.
 
+A block with no `members` resolves to the built-in fallback member (the
+legacy `mashura_fallback_model`, else the OpenRouter default) — the fallback
+member always counts for the tool gate, matching today's behavior. A config
+with neither the block nor any legacy key behaves exactly as today (default
+level `medium` offered by the level/key predicate, gated on the OpenRouter
+key); fresh `wakil init` writes `{"level": "medium"}` with the same semantics.
+
 What a level sets (for every tool unless an override says otherwise):
 
 | Level | Tools | Reasoning | Debate | Auto-counsel |
@@ -448,15 +455,27 @@ the equivalent new block as JSON for copying. `/mode status` shows the level
 and member count. Changing the tool set mid-session adds the line "Changing
 this mid-session resets the prompt cache."
 
-Old keys: a config with only the old keys keeps working. At load (the file is
-never rewritten), members come from the panel the review tool points to (or the
-default panel); a tool pointing elsewhere gets an override; a role with an
-explicit reasoning effort becomes an override level (`none`/`low` → `low`,
-`medium` → `medium`, `high` and above → `high`); `oracle_enabled: false` →
-`off`, otherwise `medium`; a legacy panel in `fusion` mode is treated as a normal
-panel. One notice per session says the settings were derived and that `/mashura`
-prints the new block. If both the new block and old keys are present, the new
-block wins and one notice lists the ignored old keys.
+Old keys: a config with only the old keys keeps working — including one with
+only `oracle_enabled: true` and a key (its tools resolve to the fallback member,
+as before). At load (the file is never rewritten), members come from the panel
+the review tool points to (or the default panel); a tool pointing elsewhere
+gets an override, and tools with no mapping resolve to the default panel (not
+review's); a role with an explicit reasoning effort becomes an override level
+(`none` → `low`, `low` → `low`, `medium` → `medium`, `high` and above → `high` —
+so a reviewer at `low` moves from reasoning to off, by B1's stated mapping —
+and the check default `low` is preserved explicitly); `oracle_enabled: false`
+→ `off`, otherwise `medium`; a legacy panel in `fusion` mode is treated as a
+normal panel, with its `server_tools`, `web_search_engine`, and
+`server_tool_max_calls` not carried into the block. One notice per session says
+the settings were derived and that `/mashura` prints the new block. If both the
+new block and old keys are present, the new block wins and one notice lists the
+ignored old keys — including keys that only deviate from defaults by presence.
+
+Legacy `/mashura panel|map|model|maxtokens|timeout` commands still work when no
+block is present. While the block is present they report that they do not
+affect calls (they would write values the block path ignores), and
+`/mashura reset` clears the stale RepoState legacy fields that the block's
+restore would otherwise skip.
 
 The legacy `fusion` panel mode, the `CallOracle`/`CallOracleURL` helpers, and
 the `oracle__ask` tool alias were removed. `oracle_api_key_env` no longer gates

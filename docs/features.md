@@ -9,7 +9,7 @@ file or the matching flags/env vars (see [Configuration](configuration.md)).
 |---|---|---|
 | LSP code intelligence | `lsp_enabled` | [↓](#lsp-code-intelligence) |
 | Headless browser | `browser_enabled` | [↓](#headless-browser) |
-| Counsel (Mashūra) | `oracle_enabled` | [↓](#counsel-mashūra) |
+| Counsel (Mashūra) | `mashura.level` | [↓](#counsel-mashūra) |
 | Data policy (`/zdr`, `/region`) | `zdr`, `openrouter_region` | [↓](#data-policy) |
 | Web search | `searxng_url` / `google_api_key` | [↓](#web-search) |
 | Cost sidebar | `costs` | [↓](#cost-sidebar) |
@@ -108,23 +108,32 @@ to the filesystem or execute arbitrary commands.
 ## Counsel (Mashūra)
 
 `mashura__review` / `__debug` / `__decide` / `__check` — second opinions from
-external models, on demand. Enable with `oracle_enabled: true`. Execution
-mode is set per named **panel** in `mashura_panels`:
+external models, on demand. Enable with the `mashura` block (`level` low,
+medium, or high — see [Mashūra levels](configuration.md#mashūra-levels) in
+`docs/configuration.md`):
 
-| Mode | Behaviour |
+| Level | Behaviour |
 |---|---|
-| `panel` | Query all models in parallel, return all answers in labeled sections |
-| `fallback` | Try in order, stop on first success |
-| `fusion` | Single [OpenRouter Fusion](https://openrouter.ai/docs/guides/features/plugins/fusion) call — models run in parallel internally, a judge synthesizes the result |
-| `debate` | Two-round critique-of-critique: round 1 collects independent answers, round 2 has each model critique and refine based on all round-1 answers |
+| `off` | Tools not offered; auto-counsel and workflow panels off (default) |
+| `low` | Offered; reasoning off; auto-counsel suggests only |
+| `medium` | Offered; reasoning medium; auto-counsel on (ceiling) |
+| `high` | Offered; reasoning max; debate available; auto-counsel on (ceiling) |
+
+Legacy configs (only `oracle_enabled` and the old panel keys) keep working:
+at load, the settings are derived from them (members, per-tool overrides, role
+efforts); one notice per session says so, and `/mashura` prints the new block.
+The legacy `fusion` panel mode, the `oracle__ask` alias, and the
+`oracle_api_key_env` gate were removed — a fusion panel is treated as a normal
+panel, and the tools are offered when the level is not `off`, members are
+non-empty (the built-in fallback member counts), and the OpenRouter key named
+by `openrouter_api_key_env` is present.
 
 Model strings are provider-prefixed: `anthropic:claude-opus-4-8`,
-`openrouter:google/gemini-2.5-pro`. Fusion mode uses OpenRouter's `~model`
-syntax (`~anthropic/claude-opus-latest`).
+`openrouter:google/gemini-2.5-pro`.
 
-Keys are read at call time, never stored: `ANTHROPIC_API_KEY` (or override via
-`oracle_api_key_env`) for Anthropic, `OPENROUTER_API_KEY` for OpenRouter and
-Fusion. `mashura_tool_panels` maps individual tools to panels.
+Keys are read at call time, never stored: the OpenRouter key named by
+`openrouter_api_key_env` (default `OPENROUTER_API_KEY`). An Anthropic key, if
+configured, is ignored — Mashūra uses the configured backend.
 
 wakil reads evidence files from disk on the model's behalf — the model
 supplies **paths**, never content. Directory paths expand via `git ls-files`;
