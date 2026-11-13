@@ -58,15 +58,16 @@ func handleMashuraCommand(fields []string, app *App) (handled, quit bool, cmd Cm
 		// Reset also clears the counsel choice (session + per-repo) so the
 		// level decides again, and clears the stale legacy RepoState mashura
 		// fields so a pre-block repo file cannot resurrect them later.
-		cap := app.Cfg.CounselMaxPerSession
-		if cap <= 0 {
-			cap = 3
-		}
-		app.SetCounselModeValue("", cap)
+		app.stateMu.Lock()
+		app.CounselMode = ""
+		app.MaxCounsel = 0
+		app.CounselMaxSet = false
+		app.stateMu.Unlock()
 		app.saveRepoState(func(s *RepoState) {
 			s.MashuraLevel = ""
 			s.CounselMode = ""
 			s.MaxCounsel = 0
+			s.MaxCounselCapSet = false
 			s.MashuraPanels = nil
 			s.MashuraToolPanels = nil
 			s.MashuraDefaultModel = ""
@@ -418,6 +419,14 @@ func mashuraLevelStatus(app *App) string {
 		}
 	}
 	sb.WriteString(fmt.Sprintf("counsel mode: %s (source: %s)\n", counselMode, counselSrc))
+	if counselMode == "auto" {
+		cap := app.autoCounselCap()
+		how := "set by user"
+		if app.counselCapIsDefault() {
+			how = "default"
+		}
+		sb.WriteString(fmt.Sprintf("auto cap:      %d/turn (%s)\n", cap, how))
+	}
 	sb.WriteString("\nconfig block (copy into config.json):\n")
 	block := *app.Cfg.Mashura
 	if len(block.Members) == 0 {

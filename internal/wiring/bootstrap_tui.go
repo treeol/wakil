@@ -118,12 +118,14 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		_ = opts.RestoreRepoState
 		// Counsel mode (TUI defaults). CounselMode stays "" when not set —
 		// only an explicit choice is written; the level decides otherwise.
-		// The cap is always written so level-driven auto can fire.
+		// The cap stays 0 when the user set none — the default applies at
+		// use time (autoCounselCap), so a level-driven auto can fire.
 		if opts.CounselMode != "" {
 			app.SetCounselMode(opts.CounselMode)
 		}
-		if opts.CounselMax > 0 {
+		if opts.CounselMax != 0 {
 			app.MaxCounsel = opts.CounselMax
+			app.CounselMaxSet = true
 		}
 		// Startup notes (staging + memory scans). This is DEFERRED off the
 		// start path: the staging scan starts the sandbox session (lazy, first

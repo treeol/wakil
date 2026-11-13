@@ -599,7 +599,7 @@ type Config struct {
 	AutoCounsel string `json:"auto_counsel,omitempty"`
 
 	// CounselMaxPerSession caps auto-counsel calls per user turn in "auto" mode.
-	// Default 3 when auto_counsel is "auto" and this is unset.
+	// Default 2 when auto_counsel is "auto" and this is unset.
 	CounselMaxPerSession int `json:"counsel_max_per_session,omitempty"`
 
 	// SkillCreation configures automatic skill creation (/skill-creation).

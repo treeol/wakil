@@ -19,6 +19,11 @@ type counselState struct {
 	// when AutoApprove=true; consumed (cleared) by handleMashura.
 	autoCounselSkipGate bool
 
+	// autoCounselSinglePass, when true, tells runMashuraCore to run one
+	// single-pass panel (never debate) for the next call. Set immediately
+	// before an automatic struggle round; consumed (cleared) by runMashuraCore.
+	autoCounselSinglePass bool
+
 	// lastStruggleEval is the read-only snapshot of the most recent struggle
 	// evaluation, written by maybeSuggestDebug on every entry (including
 	// silent exits) and read by the bare /counsel diagnostics. It is the

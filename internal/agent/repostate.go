@@ -69,7 +69,10 @@ type RepoState struct {
 	CounselMode string `json:"counsel_mode,omitempty"`
 
 	// MaxCounsel persists the /counsel auto-mode cap (max calls per turn).
-	MaxCounsel int `json:"max_counsel,omitempty"`
+	// Zero means no user-set cap (the default applies). A deliberate 0 is
+	// persisted as MaxCounselCapSet=true with MaxCounsel == 0.
+	MaxCounsel       int  `json:"max_counsel,omitempty"`
+	MaxCounselCapSet bool `json:"max_counsel_set,omitempty"`
 
 	// SkillCreation persists the /skill-creation mode for this repo
 	// (off|on|auto|auto-mashura; "" = use the config default).
@@ -475,7 +478,12 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 	}
 	if st.MaxCounsel > 0 {
 		a.MaxCounsel = st.MaxCounsel
+		a.CounselMaxSet = true
 		applied = append(applied, fmt.Sprintf("counsel-cap=%d", st.MaxCounsel))
+	} else if st.MaxCounselCapSet {
+		a.MaxCounsel = 0
+		a.CounselMaxSet = true
+		applied = append(applied, "counsel-cap=0")
 	}
 	if st.SkillCreation != "" && config.ValidSkillCreationMode(st.SkillCreation) {
 		a.skillCreate.repoMode = st.SkillCreation

@@ -253,8 +253,9 @@ func (a *App) SetCounselModeValue(mode string, cap int) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	a.CounselMode = mode
-	if mode == "auto" {
+	if mode == "auto" && cap != 0 {
 		a.MaxCounsel = cap
+		a.CounselMaxSet = true
 	}
 }
 

@@ -48,11 +48,12 @@ func WithCosts(costs *proxy.CostTracker) AppOption {
 
 // WithAutoCounsel sets the auto-counsel configuration. When enabled is true,
 // mashura__debug fires automatically on struggle detection (bounded by max).
-// max=0 with enabled=true uses the default cap (3).
+// max=0 with enabled=true means no user-set cap (the default applies).
 func WithAutoCounsel(enabled bool, max int) AppOption {
 	return func(a *App) {
 		a.AutoCounsel = enabled
 		a.MaxCounsel = max
+		a.CounselMaxSet = max != 0
 	}
 }
 
@@ -156,4 +157,5 @@ func copyWorkflow(wf *workflow.WorkflowState) *workflow.WorkflowState {
 func (a *App) SetAutoCounsel(enabled bool, max int) {
 	a.AutoCounsel = enabled
 	a.MaxCounsel = max
+	a.CounselMaxSet = max != 0
 }

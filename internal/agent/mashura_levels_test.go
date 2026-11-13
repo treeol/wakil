@@ -224,8 +224,11 @@ func TestMashuraLevelsBehaviourMatrix(t *testing.T) {
 					t.Errorf("suggest cell announced auto: %q", out.String())
 				}
 			case "auto":
-				if !strings.Contains(out.String(), "⚡ auto-counsel") {
+				if !strings.Contains(out.String(), "⚡ struggle detected: starting mashura debug") {
 					t.Errorf("auto cell missing announce line: %q", out.String())
+				}
+				if !strings.Contains(out.String(), "single pass") {
+					t.Errorf("auto cell missing single-pass marker: %q", out.String())
 				}
 			}
 
@@ -436,8 +439,11 @@ func assertStruggleLines(t *testing.T, label, out, kind string) {
 			t.Errorf("%s: suggest case must not announce auto-counsel; out=%q", label, out)
 		}
 	case "auto":
-		if !strings.Contains(out, "⚡ auto-counsel") {
+		if !strings.Contains(out, "⚡ struggle detected: starting mashura debug") {
 			t.Errorf("%s: missing auto announce; out=%q", label, out)
+		}
+		if !strings.Contains(out, "single pass") {
+			t.Errorf("%s: missing single-pass marker; out=%q", label, out)
 		}
 	}
 }

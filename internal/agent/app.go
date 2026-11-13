@@ -490,11 +490,17 @@ type App struct {
 	// without it the call is declined and the slot is still consumed.
 	AutoCounsel bool
 
-	// MaxCounsel caps the total number of auto-counsel calls per session.
-	// Prevents a stuck benchmark task from generating unbounded paid
-	// consultations. Zero means auto-counsel is effectively disabled even if
-	// AutoCounsel=true. Typical benchmark value: 3.
+	// MaxCounsel caps the total number of auto-counsel calls per turn.
+	// Prevents a stuck task from generating unbounded paid consultations.
+	// Zero with CounselMaxSet false means "no user-set cap" — the default
+	// (DefaultMaxCounsel) applies when the resolved mode is auto. Zero with
+	// CounselMaxSet true is a deliberate user-set 0.
 	MaxCounsel int
+
+	// CounselMaxSet is true when the user explicitly set the cap
+	// (/counsel auto N, including 0, or a restored per-repo cap). It keeps a
+	// deliberate 0 from being overridden by the default.
+	CounselMaxSet bool
 
 	// CounselMode is the TUI session counsel mode: "suggest" | "auto" | "off".
 	// When empty, the effective mode is derived from AutoCounsel (headless path).
@@ -2342,7 +2348,7 @@ func stateChangingTool(name string) bool {
 		"run_shell", "run_background":
 		return true
 	}
-	if strings.HasPrefix(name, "mashura__") || name == "oracle__ask" {
+	if strings.HasPrefix(name, "mashura__") {
 		return false
 	}
 	// MCP tools are dispatched through handleMCPTool after the built-in

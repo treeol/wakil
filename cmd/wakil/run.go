@@ -175,10 +175,8 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] " +
 				"[--continue --max-turns N --max-time D [--verify-cmd CMD]] \"<task>\"")
 	}
-	// Default cap: 3 auto-counsel calls when --auto-counsel is set without --max-counsel.
-	if flags.AutoCounsel && flags.MaxCounsel == 0 {
-		flags.MaxCounsel = 3
-	}
+	// No default cap is baked in here: --max-counsel 0 means "not set" and
+	// the default applies at use time (autoCounselCap).
 	// Continuous-only flags are rejected without --continue, so bounds can never
 	// be silently ignored.
 	if !flags.continueFlag {

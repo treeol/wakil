@@ -1138,7 +1138,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, note(msg)
 
 	case "/counsel":
-		// /counsel [auto|suggest|off] — set or show the auto-counsel mode.
+		// /counsel [auto [N]|suggest|off|reset] — set or show the auto-counsel mode.
 		// Bare /counsel always shows the evaluation diagnostics, including
 		// when the level is off (the canonical silent exit this exists to
 		// explain). Setting the mode is still refused at level off: the
@@ -1159,7 +1159,12 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			mode, source := app.resolveCounselMode()
 			msg := "counsel mode: " + mode + " (source: " + source + ")"
 			if mode == "auto" {
-				msg += fmt.Sprintf(" (cap: %d/turn)", app.MaxCounselLocked())
+				cap := app.autoCounselCap()
+				if app.counselCapIsDefault() {
+					msg += fmt.Sprintf(" (cap: %d/turn, default)", cap)
+				} else {
+					msg += fmt.Sprintf(" (cap: %d/turn)", cap)
+				}
 			}
 			eval := app.lastStruggleEvalLocked()
 			if eval.TraceWindow == "" {
@@ -1171,6 +1176,18 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 					eval.ActionTaken = "nothing shown: no struggle rule matched"
 				case eval.ResolvedMode == "off":
 					eval.ActionTaken = "nothing shown: mode off"
+				case eval.ResolvedMode == "auto":
+					// The "would show" preview takes the cap and
+					// availability into account: announce what would
+					// actually happen, not just the mode name.
+					if !app.mashuraAvailable() {
+						eval.ActionTaken = "would show: suggest hint (auto not run: no panel members or key)"
+					} else if cap := app.autoCounselCap(); app.counselCalls >= cap {
+						eval.ActionTaken = fmt.Sprintf("would show: suggest hint (auto not run: cap %d/%d reached)", app.counselCalls, cap)
+					} else {
+						_, members, _ := app.effectiveMashura("debug")
+						eval.ActionTaken = fmt.Sprintf("would show: auto-counsel fires mashura__debug (level %s, %d members, single pass, round %d of %d)", eval.Level, len(members), app.counselCalls+1, cap)
+					}
 				default:
 					eval.ActionTaken = "would show: " + eval.ResolvedMode
 				}
@@ -1193,17 +1210,34 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		switch fields[1] {
 		case "auto":
-			cap := app.MaxCounselLocked()
-			if cap <= 0 {
-				cap = app.Cfg.CounselMaxPerSession
-				if cap <= 0 {
-					cap = 3
+			// /counsel auto [N]: bare auto keeps the current cap or the
+			// default; an explicit N (including 0) is the user's cap.
+			if len(fields) >= 3 {
+				n, err := strconv.Atoi(fields[2])
+				if err != nil || n < 0 {
+					return true, false, note("usage: /counsel auto [N] (N ≥ 0)")
 				}
+				app.stateMu.Lock()
+				app.CounselMode = "auto"
+				app.MaxCounsel = n
+				app.CounselMaxSet = true
+				app.stateMu.Unlock()
+				app.saveRepoState(func(s *RepoState) {
+					s.CounselMode = "auto"
+					s.MaxCounsel = n
+					s.MaxCounselCapSet = true
+				})
+				return true, false, note(fmt.Sprintf("counsel mode: auto (cap: %d/turn)", n))
 			}
+			cap := app.autoCounselCap()
 			app.SetCounselModeValue("auto", cap)
+			app.stateMu.Lock()
+			app.CounselMaxSet = true
+			app.stateMu.Unlock()
 			app.saveRepoState(func(s *RepoState) {
 				s.CounselMode = "auto"
 				s.MaxCounsel = cap
+				s.MaxCounselCapSet = true
 			})
 			return true, false, note(fmt.Sprintf("counsel mode: auto (cap: %d/turn)", cap))
 		case "suggest":
@@ -1216,19 +1250,20 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return true, false, note("counsel mode: off (silent)")
 		case "reset":
 			// Clear the session and per-repo choice so the level decides again.
-			cap := app.Cfg.CounselMaxPerSession
-			if cap <= 0 {
-				cap = 3
-			}
-			app.SetCounselModeValue("", cap)
+			app.stateMu.Lock()
+			app.CounselMode = ""
+			app.MaxCounsel = 0
+			app.CounselMaxSet = false
+			app.stateMu.Unlock()
 			app.saveRepoState(func(s *RepoState) {
 				s.CounselMode = ""
 				s.MaxCounsel = 0
+				s.MaxCounselCapSet = false
 			})
 			mode, source := app.resolveCounselMode()
 			return true, false, note(fmt.Sprintf("counsel mode reset — the level now decides (mode: %s, source: %s)", mode, source))
 		default:
-			return true, false, note("usage: /counsel auto|suggest|off|reset")
+			return true, false, note("usage: /counsel auto [N]|suggest|off|reset")
 		}
 
 	case "/mashura":
