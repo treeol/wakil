@@ -2326,9 +2326,10 @@ func validateContextLimits(cfg Config) error {
 	if cfg.ContextPruneAtTokens > 0 && cfg.ContextPruneTargetTokens >= cfg.ContextPruneAtTokens {
 		return fmt.Errorf("context_prune_target_tokens (%d) must be in (0, context_prune_at_tokens=%d)", cfg.ContextPruneTargetTokens, cfg.ContextPruneAtTokens)
 	}
-	if cfg.ContextPruneRater == "" {
-		cfg.ContextPruneRater = "off"
-	} else if cfg.ContextPruneRater != "main" && cfg.ContextPruneRater != "off" {
+	if cfg.ContextPruneRater == "" || cfg.ContextPruneRater == "off" || cfg.ContextPruneRater == "main" {
+		// Default and named rater values are accepted as-is; the "off"
+		// default itself is supplied by DefaultConfig.
+	} else {
 		if _, err := cfg.NormalizeEndpoint(cfg.ContextPruneRater); err != nil {
 			return err
 		}

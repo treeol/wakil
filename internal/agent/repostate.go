@@ -228,8 +228,8 @@ type RestoreRepoStateResult struct {
 }
 
 // RestoreRepoStateRead loads repo-state from disk. Pure I/O — no App
-// mutation, no lock. Used by the daemon handler and bootstrap path to
-// separate the I/O step from the locked apply step (Phase 7 split).
+// mutation, no lock. Used by the bootstrap path to separate the I/O step
+// from the locked apply step (Phase 7 split).
 func RestoreRepoStateRead(app *App) (*RepoState, error) {
 	return LoadRepoState(app.SessionWorkspace())
 }
@@ -333,7 +333,7 @@ func RestoreRepoStateResumeApply(app *App, st *RepoState) RestoreRepoStateResult
 // AllowDestructive is never touched — RepoState has no field for it.
 //
 // Backward-compatible wrapper: Read + Apply (no ctxLimit). Callers that
-// need the network probe (daemon handler, bootstrap_tui) should use
+// need the network probe (bootstrap_tui) should use
 // RestoreRepoStateRead + ResolveContextLimitForBackendModel +
 // RestoreRepoStateApply directly.
 func RestoreRepoState(app *App) RestoreRepoStateResult {
@@ -504,7 +504,7 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 // applyThinkFlagOnly applies just the --think CLI flag (taking stateMu) and
 // returns the result with a note naming it; the zero result when --think was
 // not passed. It is the whole restore when a workspace has no saved repo-state,
-// for /new, /resume and the daemon's restore RPCs alike. It also applies the
+// for /new and /resume alike. It also applies the
 // data policy (config defaults + any per-repo override already in memory).
 func (a *App) applyThinkFlagOnly() RestoreRepoStateResult {
 	a.stateMu.Lock()

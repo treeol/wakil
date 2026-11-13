@@ -72,11 +72,7 @@ func TestResolveWorkspaceKeys_CwdAgreesWithGC_Symlink(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	old, _ := os.Getwd()
-	if err := os.Chdir(link); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(old) })
+	t.Chdir(link)
 
 	k := ResolveWorkspaceKeys(directCfg(link))
 	if k.Diverges {
@@ -102,11 +98,7 @@ func TestResolveWorkspaceKeys_EnvPathOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old, _ := os.Getwd()
-	if err := os.Chdir(cwd); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(old) })
+	t.Chdir(cwd)
 	t.Setenv("WAKIL_WORKSPACE_PATH", "/mnt/wakil")
 
 	// 0.5.0 (D1): WAKIL_WORKSPACE_PATH no longer feeds store keys. The chat

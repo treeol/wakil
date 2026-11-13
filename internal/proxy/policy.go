@@ -21,6 +21,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/treeol/wakil/internal/config"
 )
 
 // Host classes for policy classification.
@@ -196,12 +198,9 @@ func ApplyPolicy(in PolicyInput, body []byte) PolicyOutput {
 	out := PolicyOutput{Host: in.Host, Body: body}
 
 	// Unknown mode spellings are a configuration error, never a silent pass:
-	// refusing beats sending unenforced traffic under a typo.
-	if err := validateZDRMode(in.ZDR); err != nil {
-		out.EnforcementErr = err
-		return out
-	}
-	if err := validateRegionMode(in.Region); err != nil {
+	// refusing beats sending unenforced traffic under a typo. The shared
+	// config validator is the single spelling implementation.
+	if err := config.ValidateDataPolicy(in.ZDR, in.Region); err != nil {
 		out.EnforcementErr = err
 		return out
 	}
@@ -264,32 +263,6 @@ func ApplyPolicy(in PolicyInput, body []byte) PolicyOutput {
 		return out
 	}
 }
-
-// validateZDRMode enforces the config spelling at policy time as well as at
-// load time, so a programmatically built Client (tests, subagents) cannot
-// smuggle an invalid mode past the gate.
-func validateZDRMode(m string) error {
-	switch m {
-	case "", "off", "auto", "on":
-		return nil
-	}
-	return fmt.Errorf("data policy: invalid zdr mode %q (want off|auto|on)", m)
-}
-
-// validateRegionMode enforces the config spelling for the region switch.
-func validateRegionMode(m string) error {
-	switch m {
-	case "", "off", "eu", "us":
-		return nil
-	}
-	return fmt.Errorf("data policy: invalid openrouter_region %q (want off|eu|us)", m)
-}
-
-// ValidateDataPolicy checks the data-policy switch spellings. The config
-// package validates the same spellings at LoadConfig (so a typo fails the
-// load with the field name); the policy re-validates per request via the
-// internal validators, so a programmatically built Client cannot smuggle an
-// invalid mode past the gate.
 
 // hostOfBaseURL extracts the host from a base URL ("https://openrouter.ai/api"
 // → "openrouter.ai"). An unparsable or host-less base URL is returned as-is so

@@ -170,9 +170,7 @@ func TestCwdIsSampledOnceNotTrackedLive(t *testing.T) {
 	// that it stays that way if the field is ever made lazy.
 	c := &Client{Model: "ilm", ChatID: "t", Cwd: "/mnt/ilmql"}
 	before := c.Cwd
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 	if c.Cwd != before {
 		t.Errorf("Client.Cwd changed to %q after chdir; want the sampled %q", c.Cwd, before)
 	}

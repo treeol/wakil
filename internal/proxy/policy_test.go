@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/treeol/wakil/internal/config"
 )
 
 // policyBody is the minimal chat-completions body used across the wire tests.
@@ -507,24 +509,21 @@ func TestClassifyHostExtras(t *testing.T) {
 	}
 }
 
-// TestPolicyErrorValidators covers the two mode validators.
+// TestPolicyErrorValidators covers the shared data-policy mode validation.
+// The single implementation lives in internal/config; the policy calls it per
+// request so a programmatically built Client cannot smuggle an invalid mode
+// past the gate.
 func TestPolicyErrorValidators(t *testing.T) {
-	if err := validateZDRMode("bogus"); err == nil {
+	if err := config.ValidateDataPolicy("bogus", ""); err == nil {
 		t.Error("bogus zdr must fail")
 	}
-	if err := validateRegionMode("ap-south"); err == nil {
+	if err := config.ValidateDataPolicy("", "ap-south"); err == nil {
 		t.Error("bogus region must fail")
 	}
-	if err := validateZDRMode("bogus"); err == nil {
-		t.Error("validateZDRMode bogus must fail")
-	}
-	if err := validateRegionMode("ap-south"); err == nil {
-		t.Error("validateRegionMode bogus must fail")
-	}
-	if err := validateZDRMode("on"); err != nil || err == nil && false {
+	if err := config.ValidateDataPolicy("on", ""); err != nil {
 		t.Errorf("valid zdr must pass: %v", err)
 	}
-	if err := validateRegionMode("eu"); err != nil {
+	if err := config.ValidateDataPolicy("", "eu"); err != nil {
 		t.Errorf("valid region must pass: %v", err)
 	}
 }
