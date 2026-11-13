@@ -432,10 +432,12 @@ What a level sets (for every tool unless an override says otherwise):
 | `off` | none | — | — | nothing (silent) |
 | `low` | offered | off (`none` effort) | no | suggest a `mashura__debug` call |
 | `medium` | offered | `medium` | no | suggest a `mashura__debug` call |
-| `high` | offered | `max` (highest accepted, clamped exactly as before) | yes | start a `mashura__debug` panel |
+| `high` | offered | `max` (highest accepted, clamped exactly as before) | yes | start a single-pass `mashura__debug` panel (at most 2 automatic rounds per turn by default) |
 
 Debate is available at `high` only. With the block present, debate is chosen by the
-level (the panel's legacy `mode` is ignored).
+level (the panel's legacy `mode` is ignored) — for rounds the model or the user
+asks for. A round started by a detected struggle never runs as a debate: it is
+always a single pass, though reasoning effort still follows the level.
 
 ### Counsel mode follows the level
 
@@ -450,6 +452,12 @@ level. An explicit choice wins in either direction, and `/counsel reset` (and
 `/counsel` shows the effective mode and its source, plus the last struggle
 evaluation; `/mashura` shows the counsel mode with its source in the per-tool
 table.
+
+The per-turn cap for automatic rounds defaults to 2. `/counsel auto` without a
+number uses that default; `/counsel auto N` sets N (0 disables automatic
+rounds). `/counsel` and `/mashura` show the cap and whether it is the default
+or the user's value. `counsel_max_per_session` in the config overrides the
+default when set.
 
 The struggle detector fires on three plain conditions, in order: the two most
 recent tool calls both failed (non-zero exit); the same command ran twice in a

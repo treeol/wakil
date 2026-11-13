@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed behaviour
 
-- **Auto-counsel follows the Mashūra level.** At level `high`, Wakil starts a `mashura__debug` panel on a detected struggle unless the user chose another counsel mode (`/counsel auto|suggest|off` or the `auto_counsel` config key — the explicit choice wins in either direction). At `low` and `medium` it suggests; at `off` it is silent. `/counsel reset` and `/mashura reset` clear the choice so the level decides again. Bare `/counsel` shows the effective mode and its source plus the last struggle evaluation; `/mashura` shows the counsel mode with its source in the per-tool table. When an automatic panel would run but is blocked (no key, no members, no consent, the per-turn cap, or a budget stop), Wakil prints the suggest note plus the reason instead of staying silent.
+- **Auto-counsel follows the Mashūra level.** At level `high`, Wakil starts a single-pass `mashura__debug` panel on a detected struggle unless the user chose another counsel mode (`/counsel auto [N]|suggest|off` or the `auto_counsel` config key — the explicit choice wins in either direction). At `low` and `medium` it suggests; at `off` it is silent. Automatic rounds are single-pass at every level (reasoning still follows the level); the announcement line states the level, member count, single-pass marker and round. Automatic rounds are capped at 2 per turn by default (`/counsel auto` without a number uses the default, `/counsel auto N` sets N); bare `/counsel` and `/mashura` show the cap and whether it is the default or the user's value. `/counsel reset` and `/mashura reset` clear the choice so the level decides again. Bare `/counsel` shows the effective mode and its source plus the last struggle evaluation; `/mashura` shows the counsel mode with its source in the per-tool table. When an automatic panel would run but is blocked (no key, no members, no consent, the per-turn cap, or a budget stop), Wakil prints the suggest note plus the reason instead of staying silent.
 - **Old Mashūra keys deprecated.** They are still read and derived at load, and will be removed in a later release; new configs should use the `mashura` block.
 
 ### Fixed
 
 - A read answered from the dedup cache now records a trace entry marked as a repeat, so the struggle detector sees the identical read run twice with no progress (it never did before).
 - A symptom is marked as shown only after a line was printed for it, so one silent skip could no longer suppress the hint for the rest of the turn; the per-turn reset of the counsel cap now runs every turn regardless of mode.
+- A rule whose symptom was already shown this turn no longer hides a different rule that also fires; the "would show" preview in bare `/counsel` now takes the cap and availability into account.
 
 ## [0.8.1] - 2026-11-13
 
