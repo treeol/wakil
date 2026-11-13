@@ -165,7 +165,7 @@ func TestExecCancelMidStream(t *testing.T) {
 // Error/Unwrap contracts.
 func TestHTTPStatusErrorAndPolicyRefusedErrorContracts(t *testing.T) {
 	h := &HTTPStatusError{StatusCode: 500, Body: "x"}
-	if h.Error() == "" || h.Unwrap() != ErrBackendFatal {
+	if h.Error() == "" || !errors.Is(h, ErrBackendFatal) {
 		t.Errorf("HTTPStatusError contract broken: %q %v", h.Error(), h.Unwrap())
 	}
 	p := &PolicyRefusedError{Err: &PolicyError{Host: "h", What: "ZDR"}}
@@ -202,8 +202,9 @@ func TestExecObservedEntryPoint(t *testing.T) {
 		t.Errorf("observed lines = %v", lines)
 	}
 	// JSON bodies round-trip unchanged through the observed seam check.
-	if b, _ := json.Marshal(res); !strings.Contains(string(b), `"StatusCode"`) {
-		// result shape sanity only
+	b, err := json.Marshal(res)
+	if err != nil || !strings.Contains(string(b), `"StatusCode"`) {
+		t.Errorf("result shape sanity failed: %v\n%s", err, b)
 	}
 }
 
