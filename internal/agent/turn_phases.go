@@ -85,13 +85,11 @@ func (a *App) prepareTurn() {
 	a.Client.AuxModel = a.Cfg.AuxModel
 
 	// Per-turn reset: counsel cap and per-symptom dedup reset on each user
-	// message so the cap is effectively per-turn in TUI mode. Only active when
-	// CounselMode is explicitly set (TUI path); the headless AutoCounsel path
-	// keeps a session-lifetime counter.
-	if a.CounselMode != "" {
-		a.counselCalls = 0
-		a.struggleSuggested = nil
-	}
+	// message so the cap is effectively per-turn. This runs every turn,
+	// independent of the counsel mode — the level can select auto without
+	// any explicit /counsel choice.
+	a.counselCalls = 0
+	a.struggleSuggested = nil
 }
 
 // checkEgressConsent prompts the user before the first request to an external

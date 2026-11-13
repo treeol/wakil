@@ -265,12 +265,11 @@ func main() {
 	// Build the bootstrap tea.Cmd: runs NewExecutor + attach-image + BootstrapTUI
 	// as one unit. SubscribeLive + StartEventPump run in the swap function
 	// (they need prog.Send which is only live after prog.Run() starts).
-	counselMode := cfg.AutoCounsel
-	if counselMode == "" {
-		counselMode = "suggest"
-	}
+	counselMode := cfg.AutoCounsel // "" = not set: the level decides (see resolveCounselMode)
 	counselMax := cfg.CounselMaxPerSession
-	if counselMode == "auto" && counselMax == 0 {
+	if counselMax == 0 {
+		// Default cap so level-driven auto (high) can fire. The cap is only
+		// consulted in auto mode, so defaulting it is harmless in suggest/off.
 		counselMax = 3
 	}
 

@@ -2598,7 +2598,12 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 			if entry != nil && entry.spillPath != "" {
 				msg = fmt.Sprintf("[already called %s with equivalent arguments — do not repeat it. The original result was spilled to: %s — use read_file to recover it if needed, otherwise use what you have.]", name, entry.spillPath)
 			}
-			return errResult(msg)
+			result := errResult(msg)
+			// Record a trace entry for the repeat so the struggle detector
+			// can see the identical read run twice with no progress.
+			a.captureToolTrace(tc, result)
+			a.recordRecentTrace(tc, result)
+			return result
 		}
 	}
 

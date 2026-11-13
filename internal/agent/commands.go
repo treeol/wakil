@@ -1212,8 +1212,21 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			app.SetCounselModeValue("off", 0)
 			app.saveRepoState(func(s *RepoState) { s.CounselMode = "off" })
 			return true, false, note("counsel mode: off (silent)")
+		case "reset":
+			// Clear the session and per-repo choice so the level decides again.
+			cap := app.Cfg.CounselMaxPerSession
+			if cap <= 0 {
+				cap = 3
+			}
+			app.SetCounselModeValue("", cap)
+			app.saveRepoState(func(s *RepoState) {
+				s.CounselMode = ""
+				s.MaxCounsel = 0
+			})
+			mode, source := app.resolveCounselMode()
+			return true, false, note(fmt.Sprintf("counsel mode reset — the level now decides (mode: %s, source: %s)", mode, source))
 		default:
-			return true, false, note("usage: /counsel auto|suggest|off")
+			return true, false, note("usage: /counsel auto|suggest|off|reset")
 		}
 
 	case "/mashura":

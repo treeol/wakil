@@ -1360,49 +1360,42 @@ func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
 }
 
 // resolveCounselMode resolves the effective auto-counsel mode and where it
-// came from. CounselMode (TUI, set by /counsel, initialized from
-// cfg.AutoCounsel at startup) wins; otherwise cfg.AutoCounsel (config file,
-// empty = suggest) wins; otherwise the legacy AutoCounsel bool (headless
-// benchmark path) decides auto/off. The level then caps the result.
-// The TUI path is read under stateMu.RLock; the turn-goroutine path (which
-// holds no lock) reads the same fields — CounselMode is only mutated by
-// SetCounselModeValue under stateMu, so a turn in flight snapshots it at
-// prepareTurn and does not re-read it mid-turn; the re-read here is a
-// diagnostic snapshot, not a control decision.
+// came from. Precedence, highest first:
+//  1. effective level off (any source) → off, source "level off"
+//  2. an explicit user choice: CounselMode (/counsel this session, or the
+//     stored per-repo choice restored from RepoState), else the auto_counsel
+//     config key, else the legacy AutoCounsel bool (headless benchmark path)
+//  3. otherwise the level: low/medium → suggest, high → auto
+//
+// "Not set" is a real state: nothing outside this resolver turns it into a
+// mode. The TUI must not write a default into CounselMode — an empty value
+// means the level decides. The TUI path is read under stateMu.RLock; the
+// turn-goroutine path (which holds no lock) reads the same fields —
+// CounselMode is only mutated by SetCounselModeValue under stateMu, so a turn
+// in flight snapshots it at prepareTurn and does not re-read it mid-turn;
+// the re-read here is a diagnostic snapshot, not a control decision.
 func (a *App) resolveCounselMode() (mode string, source string) {
-	mode = a.CounselModeLocked()
-	switch mode {
-	case "auto", "suggest", "off":
-		source = "/counsel"
-	default:
-		mode = a.Cfg.AutoCounsel
-		switch mode {
-		case "auto", "suggest", "off":
-			source = "config auto_counsel"
-		default:
-			// Legacy headless path: the AutoCounsel bool. Empty CounselMode
-			// with AutoCounsel=false resolves to off — the silent exit a
-			// headless session with no /counsel ever sees.
-			source = "AutoCounsel bool"
-			if a.AutoCounsel {
-				mode = "auto"
-			} else {
-				mode = "off"
-			}
-		}
-	}
-	// Level ceiling: off → silent, low → suggest at most, medium/high → as chosen.
-	// Keyed off the tool actually fired (debug), not review, so the recorded
-	// ceiling matches the tool that runs.
 	if a.Cfg.Mashura != nil {
-		if level, _, _ := a.effectiveMashura("debug"); level != "" {
-			if ceiling := config.LevelAutoCounsel(level); ceilingRank(ceiling) < ceilingRank(mode) {
-				mode = ceiling
-				source = "level ceiling (" + level + ")"
-			}
+		if level, _, _ := a.effectiveMashura("debug"); level == config.MashuraLevelOff {
+			return "off", "level off"
 		}
 	}
-	return mode, source
+	if m := a.CounselModeLocked(); m == "auto" || m == "suggest" || m == "off" {
+		return m, "/counsel"
+	}
+	if m := a.Cfg.AutoCounsel; m == "auto" || m == "suggest" || m == "off" {
+		return m, "config auto_counsel"
+	}
+	if a.AutoCounsel {
+		return "auto", "AutoCounsel bool"
+	}
+	// No explicit choice anywhere: the level selects the mode.
+	if a.Cfg.Mashura != nil {
+		level, _, _ := a.effectiveMashura("debug")
+		return config.LevelAutoCounsel(level), "level " + level
+	}
+	// No level block (legacy config): suggest, matching the old default.
+	return "suggest", "default (no mashura level)"
 }
 
 // struggleEvaluationSnapshot captures the current struggle evaluation exactly
@@ -1522,57 +1515,39 @@ func (a *App) effectiveMashura(tool string) (string, []string, string) {
 	return level, members, source
 }
 
-// ceilingRank orders auto-counsel modes for the level ceiling comparison:
-// off < suggest < auto.
-func ceilingRank(mode string) int {
-	switch mode {
-	case "off":
-		return 0
-	case "suggest":
-		return 1
-	case "auto":
-		return 2
-	}
-	return 0
-}
-
-// maybeSuggestDebug offers mashura__debug when the rolling trace shows a struggle
-// signal. Behavior is governed by the effective counsel mode:
+// maybeSuggestDebug offers mashura__debug when the rolling trace shows a
+// struggle signal. Behavior is governed by the effective counsel mode
+// (see resolveCounselMode):
 //
-//	"off"     — note the detection dimly but never consult
+//	"off"     — never consult, never print (level off, or the user's choice)
 //	"suggest" — hint only; the human decides whether to call mashura__debug
 //	"auto"    — fire the call directly up to MaxCounsel times per turn, then
 //	            fall back to suggest; each fire announced before the call
 //
-// Mode resolution: CounselMode (TUI, set by /counsel) takes precedence; falls
-// back to AutoCounsel bool for the headless benchmark path.
-// Each distinct symptom is deduplicated (struggleSuggested); that map is reset
-// at the start of each Send() when CounselMode is set (per-turn cap in TUI).
+// No-silent-skip rule: whenever an automatic action will not run (no
+// members, no key, consent missing, budget reached, cap reached), the user
+// sees the suggest note plus the reason. The single exception is mode off:
+// a user-chosen off, or level off, stays silent.
+// A symptom is marked as shown only after a line was printed for it, so a
+// silent exit can never suppress it for the rest of the turn.
 func (a *App) maybeSuggestDebug(ctx context.Context) {
 	// Record the evaluation as the detector sees it, even when this call stays
 	// silent, so bare /counsel can explain a silent run afterwards. The
 	// snapshot is overwritten on every entry; it is read-only elsewhere.
 	eval := a.struggleEvaluationSnapshot()
 	defer func() { a.setLastStruggleEval(eval) }()
-	if !a.mashuraAvailable() {
-		eval.ActionTaken = "nothing shown: mashura unavailable (level, members, or key)"
-		return
-	}
-	// Level ceiling (round-2 finding #11): off = silent, low = suggest only.
-	// Keyed off debug (the tool that fires), matching the ceiling in
-	// resolveCounselMode; mashuraAvailable already covers the review gate.
-	if a.Cfg.Mashura != nil {
-		if level, _, _ := a.effectiveMashura("debug"); level == config.MashuraLevelOff {
-			eval.ActionTaken = fmt.Sprintf("nothing shown: level %q is off", level)
-			return
-		}
-	}
+
 	// Reuse the snapshot's detection so symptom and rule never disagree —
 	// the snapshot already ran detectStruggleScan synchronously on this
 	// goroutine, so no re-scan is needed.
 	symptom, ok := eval.Symptom, eval.RuleMatched != "none"
 	if !ok {
 		eval.ActionTaken = "nothing shown: no struggle rule matched"
+		return
+	}
+	// Mode off by the user's own choice (or level off) is the one silent case.
+	if eval.ResolvedMode == "off" {
+		eval.ActionTaken = "nothing shown: mode off"
 		return
 	}
 	if a.struggleSuggested == nil {
@@ -1582,77 +1557,122 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		eval.ActionTaken = "nothing shown: symptom already suggested this turn"
 		return
 	}
-	a.struggleSuggested[symptom] = true
 
-	// Recorded mode/source from the snapshot (already ceiling-applied);
-	// resolveCounselMode is not re-run, so the recorded mode cannot differ
-	// from the mode acted on.
+	// suggestNote prints the suggest hint, optionally with the reason an
+	// automatic action did not run. It marks the symptom shown only after
+	// the line is on screen.
+	suggestNote := func(reason string) {
+		line := "· struggle detected — mashura__debug can diagnose; symptom: " + symptom
+		if reason != "" {
+			line += " (auto not run: " + reason + ")"
+		}
+		fmt.Fprintln(a.Out, Dim(line))
+		a.struggleSuggested[symptom] = true
+		if reason == "" {
+			eval.ActionTaken = "suggest hint printed"
+		} else {
+			eval.ActionTaken = "suggest hint printed (auto not run: " + reason + ")"
+		}
+	}
+
 	mode := eval.ResolvedMode
-
-	switch mode {
-	case "off":
-		eval.ActionTaken = "nothing shown: mode off"
-		return // truly silent — no output
-
-	case "auto":
-		if a.MaxCounsel > 0 && a.counselCalls < a.MaxCounsel {
-			a.counselCalls++
-			eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, a.MaxCounsel)
-			// Announce loudly with cost label BEFORE the call so it's visible.
-			fmt.Fprintln(a.Out, fmt.Sprintf("⚡ auto-counsel %d/%d · mashura__debug · %s",
-				a.counselCalls, a.MaxCounsel, symptom))
-			// Bypass the confirm gate when the session is also in /auto mode.
-			a.autoCounselSkipGate = a.Consent().AutoApprove
-			fakeTC := proxy.ToolCall{
-				ID:   fmt.Sprintf("auto-counsel-%d", a.counselCalls),
-				Type: "function",
-				Function: proxy.FunctionCall{
-					Name:      "mashura__debug",
-					Arguments: fmt.Sprintf(`{"symptom":%q}`, "auto-counsel: "+symptom),
-				},
-			}
-			// auto-counsel stays SYNCHRONOUS — its diagnosis must be
-			// injected immediately as the assistant+tool pair below (cap/dedup
-			// semantics depend on the result being in hand right now).
-			a.lastPanelVoid = false
-			result := a.runMashuraCore(ctx, "mashura__debug", fakeTC, true)
-			a.autoCounselSkipGate = false // ensure cleared even on early return
-			if a.lastPanelVoid {
-				// A VOID reply is not a counsel round: give the call back so
-				// the per-turn cap counts only real reviews.
-				a.counselCalls--
-				a.lastPanelVoid = false
-				fmt.Fprintln(a.Out, Yellow("⚠ auto-counsel: VOID reply — round not counted (cap unchanged)"))
-				eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (VOID, round not counted; cap %d/%d)", a.counselCalls, a.MaxCounsel)
-			}
-			// Inject as assistant+tool pair so the model sees the diagnosis.
-			a.appendConv(
-				proxy.Message{Role: "assistant", Content: nil, ToolCalls: []proxy.ToolCall{fakeTC}},
-				proxy.Message{Role: "tool", ToolCallID: fakeTC.ID, Name: fakeTC.Function.Name, Content: StrPtr(result)},
-			)
-			fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· auto-counsel %d/%d: %s",
-				a.counselCalls, a.MaxCounsel, Truncate(result, 120))))
-			if a.counselCalls >= a.MaxCounsel {
-				fmt.Fprintln(a.Out, Dim(fmt.Sprintf(
-					"· counsel cap reached (%d/%d) — reverting to suggest for this turn",
-					a.counselCalls, a.MaxCounsel)))
-			}
-			if a.lastPanelVoid {
-				// VOID took precedence above; do not overwrite the VOID
-				// note with the decremented count.
-			} else {
-				eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, a.MaxCounsel)
-			}
+	if mode == "auto" {
+		// Blocked cases: no members/key (mashuraAvailable false while the
+		// level is on), no consent to skip the gate, and the per-turn cap.
+		if !a.mashuraAvailable() {
+			// Level off resolves to mode off above, so unavailable here
+			// means members or key — say so, never stay silent.
+			eval.ActionTaken = ""
+			suggestNote("no panel members or key")
 			return
 		}
-		// Cap reached — fall through to suggest behavior.
-		eval.ActionTaken = fmt.Sprintf("suggest hint printed (cap %d/%d reached)", a.counselCalls, a.MaxCounsel)
-		fallthrough
-
-	default: // "suggest"
-		if eval.ActionTaken == "" {
-			eval.ActionTaken = "suggest hint printed"
+		if a.MaxCounsel <= 0 || a.counselCalls >= a.MaxCounsel {
+			eval.ActionTaken = ""
+			suggestNote(fmt.Sprintf("cap %d/%d reached", a.counselCalls, a.MaxCounsel))
+			return
 		}
-		fmt.Fprintln(a.Out, Dim("· struggle detected — mashura__debug can diagnose; symptom: "+symptom))
+		skipGate := a.Consent().AutoApprove
+		if !skipGate && a.Confirm == nil {
+			eval.ActionTaken = ""
+			suggestNote("no confirmer — refusing to send to external AI")
+			return
+		}
+		a.counselCalls++
+		level := eval.Level
+		if level == "" {
+			level = "high"
+		}
+		eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, a.MaxCounsel)
+		// Announce loudly with the level BEFORE the call so it's visible.
+		fmt.Fprintln(a.Out, fmt.Sprintf("⚡ auto-counsel %d/%d · mashura__debug · level %s · %s",
+			a.counselCalls, a.MaxCounsel, level, symptom))
+		// Bypass the confirm gate when the session is also in /auto mode.
+		a.autoCounselSkipGate = skipGate
+		fakeTC := proxy.ToolCall{
+			ID:   fmt.Sprintf("auto-counsel-%d", a.counselCalls),
+			Type: "function",
+			Function: proxy.FunctionCall{
+				Name:      "mashura__debug",
+				Arguments: fmt.Sprintf(`{"symptom":%q}`, "auto-counsel: "+symptom),
+			},
+		}
+		// auto-counsel stays SYNCHRONOUS — its diagnosis must be
+		// injected immediately as the assistant+tool pair below (cap/dedup
+		// semantics depend on the result being in hand right now).
+		a.lastPanelVoid = false
+		result := a.runMashuraCore(ctx, "mashura__debug", fakeTC, true)
+		a.autoCounselSkipGate = false // ensure cleared even on early return
+		if a.lastPanelVoid {
+			// A VOID reply is not a counsel round: give the call back so
+			// the per-turn cap counts only real reviews.
+			a.counselCalls--
+			a.lastPanelVoid = false
+			fmt.Fprintln(a.Out, Yellow("⚠ auto-counsel: VOID reply — round not counted (cap unchanged)"))
+			eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (VOID, round not counted; cap %d/%d)", a.counselCalls, a.MaxCounsel)
+		}
+		// A blocked panel (consent declined, key/budget error) is not a
+		// diagnosis: do not inject the error, do not count the round, and
+		// show the suggest note with the reason instead.
+		if strings.HasPrefix(result, "ERROR:") || strings.HasPrefix(result, "[declined by user]") {
+			a.counselCalls--
+			eval.ActionTaken = ""
+			suggestNote("auto blocked: " + truncateReason(result))
+			return
+		}
+		// Inject as assistant+tool pair so the model sees the diagnosis.
+		a.appendConv(
+			proxy.Message{Role: "assistant", Content: nil, ToolCalls: []proxy.ToolCall{fakeTC}},
+			proxy.Message{Role: "tool", ToolCallID: fakeTC.ID, Name: fakeTC.Function.Name, Content: StrPtr(result)},
+		)
+		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· auto-counsel %d/%d: %s",
+			a.counselCalls, a.MaxCounsel, Truncate(result, 120))))
+		if a.counselCalls >= a.MaxCounsel {
+			fmt.Fprintln(a.Out, Dim(fmt.Sprintf(
+				"· counsel cap reached (%d/%d) — reverting to suggest for this turn",
+				a.counselCalls, a.MaxCounsel)))
+		}
+		// Mark shown only after the lines above were printed.
+		a.struggleSuggested[symptom] = true
+		if a.lastPanelVoid {
+			// VOID took precedence above; do not overwrite the VOID
+			// note with the decremented count.
+		} else {
+			eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, a.MaxCounsel)
+		}
+		return
 	}
+	// suggest
+	eval.ActionTaken = ""
+	suggestNote("")
+}
+
+// truncateReason flattens a blocked-panel result into a short reason for the
+// suggest note.
+func truncateReason(result string) string {
+	r := strings.TrimSpace(result)
+	if i := strings.IndexByte(r, '\n'); i >= 0 {
+		r = r[:i]
+	}
+	r = strings.TrimPrefix(r, "ERROR: ")
+	return Truncate(r, 120)
 }

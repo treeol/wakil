@@ -37,11 +37,11 @@ type struggleEvaluation struct {
 	RuleMatched string
 	// Symptom is the detector symptom when a rule fired.
 	Symptom string
-	// ResolvedMode is the effective mode after CounselMode, AutoCounsel and
-	// the level ceiling were applied.
+	// ResolvedMode is the effective mode from resolveCounselMode (explicit
+	// choice, or the level when no choice is set).
 	ResolvedMode string
-	// ModeSource names where the mode came from (CounselMode, AutoCounsel,
-	// config auto_counsel, or level ceiling).
+	// ModeSource names where the mode came from (/counsel, config
+	// auto_counsel, level <name>, or the legacy AutoCounsel bool).
 	ModeSource string
 	// Level is the effective Mashūra level for the review tool.
 	Level string

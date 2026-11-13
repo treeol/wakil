@@ -1160,15 +1160,12 @@ func TestAutoCounselBareRunZeroCalls(t *testing.T) {
 	if app.lastStruggleEval.ActionTaken == "" {
 		t.Error("lastStruggleEval.ActionTaken is empty; silent exits must record a reason")
 	}
-	// The mode resolves from cfg.AutoCounsel (empty = suggest) or the
-	// AutoCounsel bool; this bare-run app has neither set, so it stays off.
-	// The key assertion is that the recorded mode exists and the action names
-	// the off exit when mode is off.
+	// The mode resolves from the level when no explicit choice is set; this
+	// bare-run app has no mashura block (legacy config), so it resolves to
+	// suggest (default). The key assertions are that the recorded mode exists
+	// and the action is not empty.
 	if app.lastStruggleEval.ResolvedMode == "" {
 		t.Error("lastStruggleEval.ResolvedMode is empty; silent exits must record a mode")
-	}
-	if app.lastStruggleEval.ResolvedMode == "off" && app.lastStruggleEval.ActionTaken != "nothing shown: mode off" {
-		t.Errorf("off mode ActionTaken = %q, want 'nothing shown: mode off'", app.lastStruggleEval.ActionTaken)
 	}
 }
 
@@ -1219,6 +1216,91 @@ func TestAutoCounselRespectsMaxCounsel(t *testing.T) {
 }
 
 // --- P33 tests: CounselMode ---
+
+// TestResolveCounselModeLevels verifies the new precedence: level off →
+// off; explicit /counsel / config choice wins in either direction; otherwise
+// the level: low/medium → suggest, high → auto.
+func TestResolveCounselModeLevels(t *testing.T) {
+	mk := func(level string, autoCounsel string, counselMode string) *App {
+		cfg := config.DefaultConfig()
+		cfg.Mashura = &config.MashuraConfig{Level: level, Members: []string{"openrouter:test-model"}}
+		cfg.AutoCounsel = autoCounsel
+		cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+		cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+		return &App{Cfg: cfg, CounselMode: counselMode, Out: io.Discard}
+	}
+	for _, tc := range []struct {
+		name, level, autoC, mode string
+		wantMode, wantSrc        string
+	}{
+		{"off any source", "off", "auto", "", "off", "level off"},
+		{"off beats counsel", "off", "", "auto", "off", "level off"},
+		{"high no choice auto", "high", "", "", "auto", "level high"},
+		{"medium no choice suggest", "medium", "", "", "suggest", "level medium"},
+		{"low no choice suggest", "low", "", "", "suggest", "level low"},
+		{"counsel suggest beats high", "high", "", "suggest", "suggest", "/counsel"},
+		{"counsel auto beats low", "low", "", "auto", "auto", "/counsel"},
+		{"counsel off beats high", "high", "", "off", "off", "/counsel"},
+		{"config auto beats low", "low", "auto", "", "auto", "config auto_counsel"},
+		{"config off beats high", "high", "off", "", "off", "config auto_counsel"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mode, src := mk(tc.level, tc.autoC, tc.mode).resolveCounselMode()
+			if mode != tc.wantMode || src != tc.wantSrc {
+				t.Errorf("resolve = (%q,%q), want (%q,%q)", mode, src, tc.wantMode, tc.wantSrc)
+			}
+		})
+	}
+	// Legacy AutoCounsel bool still wins over the level (headless path).
+	app := mk("low", "", "")
+	app.AutoCounsel = true
+	if mode, src := app.resolveCounselMode(); mode != "auto" || src != "AutoCounsel bool" {
+		t.Errorf("legacy bool: got (%q,%q), want (auto, AutoCounsel bool)", mode, src)
+	}
+}
+
+// TestCounselResetReturnsControlToLevel verifies /counsel reset clears the
+// explicit choice so the level decides again.
+func TestCounselResetReturnsControlToLevel(t *testing.T) {
+	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.Mashura = &config.MashuraConfig{Level: "high", Members: []string{"openrouter:test-model"}}
+	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	app.Cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+	app.SetCounselModeValue("suggest", 0)
+	if mode, _ := app.resolveCounselMode(); mode != "suggest" {
+		t.Fatalf("pre-reset mode = %q, want suggest", mode)
+	}
+	handled, _, _ := HandleTUICommand("/counsel reset", app)
+	if !handled {
+		t.Fatal("/counsel reset not handled")
+	}
+	if m := app.CounselModeLocked(); m != "" {
+		t.Errorf("after reset CounselMode = %q, want empty", m)
+	}
+	if mode, src := app.resolveCounselMode(); mode != "auto" || src != "level high" {
+		t.Errorf("after reset resolve = (%q,%q), want (auto, level high)", mode, src)
+	}
+}
+
+// TestMashuraResetClearsCounselChoice verifies /mashura reset also clears
+// the counsel choice as part of its reset.
+func TestMashuraResetClearsCounselChoice(t *testing.T) {
+	app := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.Mashura = &config.MashuraConfig{Level: "medium", Members: []string{"openrouter:test-model"}}
+	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	app.Cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+	app.SetCounselModeValue("off", 0)
+	handled, _, _ := HandleTUICommand("/mashura reset", app)
+	if !handled {
+		t.Fatal("/mashura reset not handled")
+	}
+	if m := app.CounselModeLocked(); m != "" {
+		t.Errorf("after /mashura reset CounselMode = %q, want empty", m)
+	}
+	if mode, src := app.resolveCounselMode(); mode != "suggest" || src != "level medium" {
+		t.Errorf("after /mashura reset resolve = (%q,%q), want (suggest, level medium)", mode, src)
+	}
+}
 
 // TestCounselSuggestModeHintOnly verifies that CounselMode="suggest" prints a
 // hint but fires zero oracle HTTP calls.

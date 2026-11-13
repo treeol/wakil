@@ -116,9 +116,13 @@ func BootstrapTUI(cfg config.Config, exe exec.Executor, resumeID string, deliver
 		// restore here. The RestoreRepoState field is kept for backward
 		// compatibility but is a no-op on the wiring path.
 		_ = opts.RestoreRepoState
-		// Counsel mode (TUI defaults).
+		// Counsel mode (TUI defaults). CounselMode stays "" when not set —
+		// only an explicit choice is written; the level decides otherwise.
+		// The cap is always written so level-driven auto can fire.
 		if opts.CounselMode != "" {
 			app.SetCounselMode(opts.CounselMode)
+		}
+		if opts.CounselMax > 0 {
 			app.MaxCounsel = opts.CounselMax
 		}
 		// Startup notes (staging + memory scans). This is DEFERRED off the

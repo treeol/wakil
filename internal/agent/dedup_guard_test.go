@@ -65,6 +65,33 @@ func TestDedupEntryNotCreatedOnFailedCall(t *testing.T) {
 	}
 }
 
+// TestDedupHitRecordsTraceEntry verifies that a repeat read answered from
+// the dedup cache records a trace entry, so the struggle detector sees the
+// identical read run twice with no progress.
+func TestDedupHitRecordsTraceEntry(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.files["a.go"] = "content"
+	app := &App{Exec: exec, ToolCache: map[string]*toolDedupEntry{}, Out: io.Discard}
+
+	tc := proxy.ToolCall{Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}}
+	app.handleToolCall(context.Background(), tc)
+	if len(app.recentTraces) != 1 {
+		t.Fatalf("recentTraces after first read = %d, want 1", len(app.recentTraces))
+	}
+	app.handleToolCall(context.Background(), tc)
+	if len(app.recentTraces) != 2 {
+		t.Fatalf("recentTraces after dedup hit = %d, want 2 (repeat recorded)", len(app.recentTraces))
+	}
+	second := app.recentTraces[1]
+	if second.Command != app.recentTraces[0].Command || second.Abbrev != app.recentTraces[0].Abbrev {
+		t.Errorf("dedup trace entry = (%q,%q), want repeat of (%q,%q)",
+			second.Abbrev, second.Command, app.recentTraces[0].Abbrev, app.recentTraces[0].Command)
+	}
+	if _, detected := DetectStruggle(app.recentTraces); !detected {
+		t.Error("DetectStruggle should fire on a deduped repeat read")
+	}
+}
+
 // TestDedupHitWithoutSpillPath verifies that when the original result was
 // small (no spill), the dedup message falls back to the generic notice without
 // a spill path reference.

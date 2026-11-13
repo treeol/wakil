@@ -309,7 +309,7 @@ func TestPrepareTurn_ResetsCounselStateInTUIMode(t *testing.T) {
 	}
 }
 
-func TestPrepareTurn_DoesNotResetCounselStateInHeadlessMode(t *testing.T) {
+func TestPrepareTurn_ResetsCounselStateInHeadlessMode(t *testing.T) {
 	app := &App{
 		Cfg:         config.DefaultConfig(),
 		Client:      &proxy.Client{Model: "test"},
@@ -320,8 +320,12 @@ func TestPrepareTurn_DoesNotResetCounselStateInHeadlessMode(t *testing.T) {
 
 	app.prepareTurn()
 
-	if app.counselCalls != 5 {
-		t.Errorf("counselCalls = %d, want 5 (not reset in headless mode)", app.counselCalls)
+	// The per-turn reset now runs every turn, independent of the mode.
+	if app.counselCalls != 0 {
+		t.Errorf("counselCalls = %d, want 0 (reset every turn)", app.counselCalls)
+	}
+	if len(app.struggleSuggested) != 0 {
+		t.Errorf("struggleSuggested should be reset every turn")
 	}
 }
 

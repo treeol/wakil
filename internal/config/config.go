@@ -592,9 +592,10 @@ type Config struct {
 	// check = low (no max_tokens, budget derived from effort).
 	MashuraRoles map[string]MashuraRoleConfig `json:"mashura_roles,omitempty"`
 
-	// AutoCounsel controls the TUI session counsel mode: "suggest" (default,
-	// hint-only), "auto" (auto-fire mashura__debug up to CounselMaxPerSession
-	// calls per user turn), or "off" (detect but print no hint). Empty = "suggest".
+	// AutoCounsel controls the TUI session counsel mode: "suggest" (hint-only),
+	// "auto" (auto-fire mashura__debug up to CounselMaxPerSession calls per user
+	// turn), or "off" (silent). Empty = follow the Mashūra level (low/medium
+	// suggest, high auto-fires). An explicit /counsel choice overrides both.
 	AutoCounsel string `json:"auto_counsel,omitempty"`
 
 	// CounselMaxPerSession caps auto-counsel calls per user turn in "auto" mode.
@@ -1246,13 +1247,15 @@ func LevelDebate(level string) bool {
 	return level == MashuraLevelHigh
 }
 
-// LevelAutoCounsel is the auto-counsel ceiling for a level:
-// off = silent, low = suggest only, medium/high = auto allowed.
+// LevelAutoCounsel is the auto-counsel mode a level selects when the user
+// has not chosen one: off = silent, low = hint only, medium = hint only,
+// high = auto-fire. An explicit /counsel or auto_counsel choice overrides
+// this in either direction (see App.resolveCounselMode).
 func LevelAutoCounsel(level string) string {
 	switch level {
 	case MashuraLevelOff:
 		return "off"
-	case MashuraLevelLow:
+	case MashuraLevelLow, MashuraLevelMedium:
 		return "suggest"
 	default:
 		return "auto"
