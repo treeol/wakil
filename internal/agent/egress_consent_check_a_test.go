@@ -25,17 +25,17 @@ func checkAApp(t *testing.T, confirm func(_, _, _ string, _ bool) bool) (*App, *
 
 	app := &App{
 		Cfg: config.Config{
-			OpenRouterAPIKeyEnv: "CHECK_A_OR_KEY",
-			OracleAPIKeyEnv:     "CHECK_A_OR_KEY",
-			OracleModel:         "anthropic:test-model",
-			OracleMaxTokens:     4096,
-			OracleEnabled:       true,
+			OpenRouterAPIKeyEnv:  "CHECK_A_OR_KEY",
+			OracleAPIKeyEnv:      "CHECK_A_OR_KEY",
+			OracleModel:          "anthropic:test-model",
+			OracleMaxTokens:      4096,
+			OracleEnabled:        true,
 			OracleTimeoutSeconds: 5,
-			Mashura:             &config.MashuraConfig{Level: "high", Members: []string{"openrouter:test-model"}},
+			Mashura:              &config.MashuraConfig{Level: "high", Members: []string{"openrouter:test-model"}},
 		},
-		Exec:   newFakeExecutor(),
-		Client: &proxy.Client{},
-		Out:    &strings.Builder{},
+		Exec:    newFakeExecutor(),
+		Client:  &proxy.Client{},
+		Out:     &strings.Builder{},
 		Confirm: confirm,
 		// Local main backend; never consented to OpenRouter this session.
 		SelectedBackend: "local",

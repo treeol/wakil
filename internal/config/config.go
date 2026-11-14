@@ -1525,9 +1525,9 @@ func DefaultConfig() Config {
 		// apply, per the documented default — set an explicit 0 in the file
 		// to preserve a truly zero cap, per OracleTimeoutExplicitZero.
 		OracleTimeoutSeconds: 0,
-		WFFinalReview:              true,
-		ZDR:                        "off",
-		Region:                     "off",
+		WFFinalReview:        true,
+		ZDR:                  "off",
+		Region:               "off",
 	}
 }
 
