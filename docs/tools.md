@@ -12,12 +12,19 @@ By default every tool call runs in the sandbox. The exceptions are the things th
 | `read_file` | no | Read a file with line numbers; supports offset/limit. Also reads absolute paths under the sandbox's own `/tmp` (docker and hisn backends; read-only; not in direct mode, where `/tmp` is the host's) |
 | `read_file_full` | no | Read an entire file (up to ~256 KB) in one call; same `/tmp` read exception (docker/hisn only) |
 | `write_file` | yes | Write/overwrite a file |
+| `write_binary_file` | yes | Write base64-decoded bytes to a file *(binary data such as images or PDFs)* |
 | `edit_file` | yes | Replace an exact substring in a file *(shows diff preview)* |
 | `delete_file` | yes | Delete a file or empty directory |
 | `move_file` | yes | Rename or move a file within the workspace |
 | `list_dir` | no | List directory entries |
 | `search_files` | no | Grep file contents for a pattern |
 | `find_files` | no | Find files by name glob recursively |
+| `math_eval` | no | Evaluate a mathematical expression (+ - * / % ^, sqrt, pow, …) |
+| `git_status` | no | Structured git working-tree status (porcelain-v1) |
+| `git_diff` | no | Show unstaged or staged diff, scoped by path/rev |
+| `git_log` | no | Structured commit log (JSON) |
+| `git_show` | no | Show a commit (or object) |
+| `git_blame` | no | Line-by-line blame for a file |
 | `open_url` | yes | Open a URL in the host browser *(always runs on the host, not the sandbox)* |
 | `dispatch_subagent` | no | Spawn a subagent for a bounded task — discovery (read-only), edit (file mutation, needs `/auto`), or tools (MCP/LSP/web search, needs `/auto`) *(contiguous same-turn calls run in parallel)* |
 | `dispatch_subagents` | no | Spawn several subagents concurrently, one per task *(bounded by `max_parallel_subagents`, default 2)* |
@@ -44,6 +51,7 @@ By default every tool call runs in the sandbox. The exceptions are the things th
 | `check_skill_template` | no | Report whether files written by `apply_skill_template` are unchanged, modified, or missing, show what changed since apply, and whether their skill has a newer version |
 | `lsp_definition` / `lsp_references` / `lsp_hover` / `lsp_symbols` | no | Language-server-backed code intelligence *(off by default — see [features](features.md#lsp-code-intelligence))* |
 | `browser_navigate` / `browser_screenshot` / `browser_viewport` / `browser_click` / `browser_eval` / `browser_text` / `browser_html` / `browser_reduced_motion` | no | Headless-browser tools — visual verification, DOM inspection, interaction testing *(off by default — see [features](features.md#headless-browser))* |
+| `searxng_search` / `searxng_url_read` | no | Native web search *(when `searxng_url` is configured)* |
 
 MCP tools *(stdio or HTTP)* append automatically when `mcp_servers` is
 configured. The host Docker socket passthrough (`--docker-sock`) is what lets
@@ -51,7 +59,7 @@ configured. The host Docker socket passthrough (`--docker-sock`) is what lets
 
 ## Gating
 
-**Gated** — `run_shell`, `write_file`, `edit_file`, `delete_file`, `move_file`,
+**Gated** — `run_shell`, `write_file`, `write_binary_file`, `edit_file`, `delete_file`, `move_file`,
 `run_background`, `kill_process`, `open_url`. By default each call prompts `y/n`
 before it runs; `/auto` changes this (see below). The skill write tools
 (`save_skill`, `update_skill`, `forget_skill`, `capture_skill_template`) and
@@ -59,6 +67,7 @@ before it runs; `/auto` changes this (see below). The skill write tools
 
 **Ungated** — `read_file`, `read_file_full`, `list_dir`, `search_files`,
 `find_files`, `dispatch_subagent`, `dispatch_subagents`, `read_process_log`,
+`math_eval`, `git_status` / `git_diff` / `git_log` / `git_show` / `git_blame`,
 and the `lsp_*` code-intelligence tools. All structured, argument-constrained
 calls: they read file contents, listings, and symbol data, but none of them
 can execute arbitrary commands.

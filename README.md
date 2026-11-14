@@ -4,162 +4,80 @@
   <img src="assets/wakil-braille.png" alt="Wakil" width="280">
 </p>
 
-Wakil is a terminal agentic coding assistant. It runs its tools in a [hisn](https://github.com/treeol/hisn) sandbox, works with the model endpoints you configure, and keeps memory and skills between sessions.
+Wakil is a terminal coding assistant. It reads and edits your code, runs your commands, and keeps memory between sessions — with the tool calls running in a sandbox and asks-first safeguards on the gates.
 
-[![Go version](https://img.shields.io/github/go-mod/go-version/treeol/wakil)](go.mod)
-[![Release](https://img.shields.io/github/v/release/treeol/wakil)](https://github.com/treeol/wakil/releases)
 [![License](https://img.shields.io/github/license/treeol/wakil)](LICENSE)
-[![CI](https://github.com/treeol/wakil/actions/workflows/ci.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/ci.yml)
-[![govulncheck](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml)
+[![Release](https://img.shields.io/github/v/release/treeol/wakil)](https://github.com/treeol/wakil/releases)
 
-## Why
+## Install
 
-By default every tool call runs in a sandbox. The exceptions are the things that have to touch your machine: open_url (opens in your host browser), lifecycle hooks, MCP servers and the clipboard. The headless-browser tools (`browser_*`) are not an exception — Chromium runs inside the sandbox. Shell commands and workspace writes ask for confirmation unless you turn on auto-approval; destructive commands stay gated even then. Second opinions come from Mashūra, which sends reviews, debugging questions and decisions to other models you configure. Memory persists per project and skills are shared across projects, so a new session starts with what earlier ones learned. Start is fast: 149 ms from launch to prompt (rubin, khatam repo, [docs/PERF-0.6.md](docs/PERF-0.6.md)), and exit has been near-instant since the ilm emitter was removed.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    user([User]) --> tui[TUI]
-    tui --> agent[Agent loop]
-    agent --> tools[Tools]
-    tools --> sandbox[hisn sandbox]
-    agent <--> llm[LLM providers]
-    agent --- memory[(Memory)]
-    agent --- skills[Skills]
-    agent --- counsel["Counsel (Mashūra)"]
-    counsel --> llm
-```
-
-- **TUI:** `internal/tui` (Bubble Tea terminal UI). `internal/wiring` bootstraps it and the headless `wakil run`.
-- **Agent loop:** `internal/agent` (turns, tool dispatch, subagents, slash commands) and `internal/workflow` (the `/plan` state machine).
-- **Tools and execution:** `internal/tools` defines the tools; `internal/exec` runs them on a sandbox backend (hisn, docker or direct).
-- **Sandbox:** `internal/sandbox` is the backend-neutral contract; `internal/sandbox/hisn` drives the hisn CLI and control socket.
-- **Counsel:** `internal/counsel` calls and combines the external models.
-- **Memory and skills:** `internal/memory` is the durable store (memory entries and the skill store); `internal/staging` is the ephemeral key-value store.
-- **LLM providers:** `internal/proxy` is the model client; `internal/orregistry` supplies model metadata.
-
-## Quick install
-
-For the impatient (Linux and macOS, amd64 and arm64). Download the script, read it if you like, then run it:
-
-```sh
-curl -fsSL https://github.com/treeol/wakil/releases/latest/download/install.sh -o install.sh && sh install.sh
-```
-
-The shorter piped form does the same, but you run the script without reading it first:
+Quick install (Linux and macOS, amd64 and arm64):
 
 ```sh
 curl -fsSL https://github.com/treeol/wakil/releases/latest/download/install.sh | sh
 ```
 
-What `install.sh` does:
+The script installs the latest release into `~/.local/bin`, verifies its checksum before extracting anything, and runs `wakil init` if no config exists. To read the script first:
 
-- Installs the latest Wakil release (or `--version vX.Y.Z`) into `~/.local/bin` (or `--prefix DIR` / `$WAKIL_INSTALL_DIR`) and warns if that directory is not on your `PATH`. It never edits your shell rc files.
-- Verifies every download against the sha256 sums published with its release **before** anything is extracted or made executable, and aborts with nothing installed on a mismatch. If `cosign` is installed it also verifies the signature of `checksums.txt`; `--require-signature` makes that mandatory.
-- On Linux, installs hisn 0.4.2 (the `gnu` build when glibc is 2.35 or newer, else the x86_64 `musl` build, which is not leak-tested) unless a new enough hisn is already on your `PATH`, and runs `hisn check`. If hisn cannot run here, Wakil falls back to Docker.
-- On Linux with root (or `sudo`, or `--sudo`), also installs the optional kvr-server 0.2.0 into `/usr/local/bin`, where the hisn sandbox can see it; without root it is skipped and staging stays off.
-- Writes **no config itself**. If `~/.config/wakil/config.json` exists it is kept. Otherwise, when `OPENROUTER_API_KEY` is set it runs `wakil init --provider openrouter --key-env OPENROUTER_API_KEY --yes` (the file stores only the variable name, never the key; the variable must also be set when you run wakil); else, with a terminal, it runs `wakil init` interactively; else it prints `next: run `wakil init``. `--no-config` skips this step.
+```sh
+curl -fsSL https://github.com/treeol/wakil/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
 
-Then `cd your-project && wakil .`. `sh install.sh --help` lists all options; `--uninstall` removes only what the script installed and leaves your config and data. The manual steps below remain the reference path.
-
-## Quickstart
-
-**1. Install Wakil** (Linux and macOS, amd64 and arm64). Take a `.tar.gz`, `.deb`, `.rpm` or `.apk` from the [releases page](https://github.com/treeol/wakil/releases), or build with Go:
+Manual install: take a `.tar.gz`, `.deb`, `.rpm` or `.apk` from the [releases page](https://github.com/treeol/wakil/releases), or build with Go:
 
 ```sh
 go install github.com/treeol/wakil/cmd/wakil@latest
 ```
 
-A release binary is pinned to a sandbox image by digest; a `go install` build is not (see `wakil version`). To verify a release, download `checksums.txt` and `checksums.txt.sigstore.json` from the same release:
+Then install [hisn](https://github.com/treeol/hisn) 0.4.2 or newer (`hisn check` must pass), or have Docker available. Wakil uses hisn when it is usable, otherwise Docker; `--sandbox direct` runs with no sandbox.
+
+## First run
 
 ```sh
-cosign verify-blob checksums.txt \
-  --bundle checksums.txt.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/treeol/wakil/\.github/workflows/release\.yml@refs/tags/v' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
-sha256sum --check --ignore-missing checksums.txt
+wakil init
 ```
 
-**2. Install hisn 0.4.2**, the minimum Wakil supports. hisn publishes Linux binaries on its [v0.4.2 release](https://github.com/treeol/hisn/releases/tag/v0.4.2); use `hisn-aarch64-linux-gnu` on arm64.
+It asks for a provider (OpenRouter, or any OpenAI-compatible server), a key, and a model, writes `~/.config/wakil/config.json`, and makes one test call. Then:
 
 ```sh
-V=https://github.com/treeol/hisn/releases/download/v0.4.2
-curl -fsSLO "$V/hisn-x86_64-linux-gnu" && curl -fsSLO "$V/SHA256SUMS"
-sha256sum --check --ignore-missing SHA256SUMS
-sudo install -m 0755 hisn-x86_64-linux-gnu /usr/local/bin/hisn
-hisn check
+cd your-project && wakil
 ```
-
-Wakil uses hisn when it is 0.4.2 or newer, `hisn check` passes and you chose no backend; otherwise it falls back to Docker, and the startup banner says why. `--sandbox direct` runs with no sandbox at all, and the confirmation prompt stays on.
-
-**3. Run `wakil init`.** It asks for a provider (OpenRouter, or any OpenAI-compatible server such as Ollama), your key (hidden input, or the name of an environment variable), and a model; it makes one test call and writes `~/.config/wakil/config.json` (mode 0600). `wakil config show` prints the result with each value's source. Details: [docs/configuration.md](docs/configuration.md#setup-wakil-init).
-
-*OpenRouter free models.* The default model is a `:free` one. You need an OpenRouter key even for free models; without credits you get 50 requests/day. Free models may train on your prompts, so OpenRouter blocks them when your privacy settings forbid that (the call then fails with a 404; Wakil says so and links <https://openrouter.ai/settings/privacy>). A free model shows that Wakil runs, but is weak at tool calling.
-
-Manual alternative: write the file yourself.
-
-```json
-{
-  "endpoints": {
-    "local": { "kind": "openai", "base_url": "http://localhost:8080", "model": "qwen3.6-35b" }
-  },
-  "default_endpoint": "local"
-}
-```
-
-**4. Run it** in a project, or pass the project directory as an argument. `wakil doctor` checks the container runtime, config and image.
-
-```sh
-cd ~/projects/myapp && wakil
-```
-
-Three things to know in the prompt:
 
 - `/new` starts a fresh conversation.
 - `/help` lists every slash command.
-- **Skills have no slash command.** Wakil matches your message against the skill store and injects up to two matching skills into the turn. The model can also load one with its `load_skill` tool. `/skill-create <topic>` writes a new one and `/skills` reviews drafts. Details: [docs/tui.md](docs/tui.md#using-skills).
 
-## Features
+## What you can do
 
-| Feature | What it does | Docs |
-|---|---|---|
-| Sandboxed tools | Shell, file and background-process tools run in hisn, Docker or (opt-out) directly on the host; per-project additions need `wakil sandbox trust` | [sandbox-backends.md](docs/sandbox-backends.md), [tools.md](docs/tools.md) |
-| Counsel (Mashūra) | `review`, `debug`, `decide` and `check` tools query panels of external models at a `mashura.level` (off by default); old `oracle_enabled`-only configs keep working | [features.md](docs/features.md#counsel-mashūra) |
-| Memory | Durable memory in two tiers with taint tracking, plus an ephemeral staging store | [memory.md](docs/memory.md), [staging.md](docs/staging.md) |
-| Skills | A global store of reference documents and file templates; automatic creation is off by default | [tools.md](docs/tools.md#skill-templates), [tui.md](docs/tui.md#using-skills) |
-| Trace and perf | JSONL session traces, and a phase timeline for start, `/new`, `/resume` and exit | [features.md](docs/features.md#trace-capture), [PERF-0.6.md](docs/PERF-0.6.md) |
-| Subagents | Discovery, edit and tools workers; edit workers use isolated git worktrees in git repositories | [tools.md](docs/tools.md#subagents) |
-| MCP connectors | Tools from MCP servers (stdio or HTTP) listed under `mcp_servers`; `/mcp` shows them | [configuration.md](docs/configuration.md), [tools.md](docs/tools.md) |
-| `/plan` and headless | A gather, plan, review, implement workflow; `wakil run` runs one task without the TUI and exits with a code | [tui.md](docs/tui.md#plan-workflow), [headless.md](docs/headless.md) |
+- **Ask and edit.** Read files, write and edit code, search the codebase, and run shell commands — the model calls the tools, and Wakil executes them.
+- **Run in the background.** Start long-running jobs with `run_background`, read their output with `read_process_log`, and stop them with `kill_process`.
+- **Delegate with subagents.** `dispatch_subagent` spawns a bounded worker (read-only discovery, file-editing, or tools/MCP-capable) to search the codebase, run a build, or fan out parallel tasks.
+- **Remember across sessions.** Durable memory entries and global skills persist per project and across projects; new sessions start with what earlier ones learned. `/remember` searches prior sessions, `/compact` shrinks the active context, and `/resume` returns to a saved conversation.
+- **Check your project.** `/verify` runs the tests, lint, or build you configured; `wakil doctor` checks the container runtime, config and image.
+- **Use the headless mode.** `wakil run` runs one task without the TUI and exits with a code. `/plan` walks a task through gather, plan, review and implement.
+- **Browse and search.** SearXNG web search (`searxng_search`, `searxng_url_read`) when `searxng_url` is configured, and `browser_*` tools for headless-browser verification when Chromium is available.
+- **Connect MCP servers.** List them under `mcp_servers` in the config; `/mcp` shows their tools.
 
-## Configuration
+## How it keeps you safe
 
-The config file is JSON at `~/.config/wakil/config.json`; `WAKIL_CONFIG` or `--config` point elsewhere. Precedence is defaults, then file, then environment, then flags. The keys most people set first:
+- **Sandbox.** By default tools run in hisn (rootless) or Docker — not directly on your host. `--sandbox direct` opts out; the confirmation prompt stays on.
+- **Approvals.** The shell, file-write and background-process tools ask for confirmation before running. `/auto` turns on auto-approval, but destructive commands and counsel calls still gate. Skill and template writes always ask.
+- **Egress consent.** Sending session context or a Mashūra briefing to an external host asks first, once per session — even in `/auto` mode.
+- **Data policy.** `/zdr` turns on OpenRouter zero-data-retention enforcement; `/region` pins OpenRouter traffic to a regional host. `trusted_local_hosts` treats listed host names as local.
 
-- `endpoints` and `default_endpoint`: the model endpoints and which one starts active.
-- `sandbox.backend`: `docker`, `hisn` or `direct`. Unset means hisn when usable, else Docker.
-- `mashura.level` (`off` default; `low`/`medium`/`high` enable the Mashūra counsel tools at that reasoning/debate/auto-counsel level): the single Mashūra config block (`level`, `members`, optional per-tool `overrides`). Legacy `oracle_enabled`-only configs are derived into it at load.
-- `context_mode`: `long-session` (default) collapses finished requests to a question and answer; `standard` sends the full history.
+## Second opinions (Mashūra)
 
-All keys, flags and subcommands are in [docs/configuration.md](docs/configuration.md); [config.example.json](config.example.json) is a commented reference. [docs/README.md](docs/README.md) indexes the rest of the documentation.
+Mashūra sends a review, a debugging question, or a decision to models other than the one you are talking to, so you get a second opinion on the same briefing. The models are configured in the `mashura` block (`level` plus `members`), and the model calls the `mashura__review`, `mashura__debug`, `mashura__decide` and `mashura__check` tools.
 
-## Development
+- `/mashura off|low|medium|high` changes the level for the current repo: `off` closes the gate, `low` suggests only, `medium` enables auto-counsel when the model struggles, `high` adds debate.
+- Cost: each call is billed per-token by the members' rates; caps (`mashura_review_budget_usd`) stop a panel before it spends more than you set.
 
-```sh
-go build -o wakil ./cmd/wakil
-go vet ./...
-golangci-lint run
-go test -count=1 -cover ./... | tee cover.txt
-scripts/check_coverage.sh cover.txt   # coverage floors for the damage-critical packages
-scripts/check_config_docs.sh          # every config.example.json key is documented
-```
+## Configuration and docs
 
-The race detector, the real-hisn integration tests and the CI gates are described in [CONTRIBUTING.md](CONTRIBUTING.md). Architecture decisions are in [docs/adr](docs/adr/README.md).
+The config file is JSON at `~/.config/wakil/config.json` (`WAKIL_CONFIG` or `--config` point elsewhere). All keys, flags and subcommands are in [docs/configuration.md](docs/configuration.md); [config.example.json](config.example.json) is a commented reference. The rest of the documentation is indexed in [docs/README.md](docs/README.md).
 
-## Status and roadmap
+## Project status and versioning
 
-The current release is 0.6.0; see [CHANGELOG.md](CHANGELOG.md). Open work is tracked in [docs/follow-ups.md](docs/follow-ups.md) and under "Known follow-ups" in the 0.6.0 changelog entry.
+Patch releases are cut from master with `vX.Y.Z` tags; [CHANGELOG.md](CHANGELOG.md) lists what each release changed, and the release page body is the matching section of that file. CI gates are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
