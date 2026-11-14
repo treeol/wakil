@@ -582,11 +582,21 @@ func TestAsyncAutoCounselStaysSync(t *testing.T) {
 	}
 	app.maybeSuggestDebug(context.Background())
 
-	// The diagnosis must have been injected inline into Conv (not queued).
+	// The diagnosis must have been injected inline into Conv (not queued),
+	// as a message from Wakil (Group B rule 3: no assistant mashura tool
+	// call the model did not make, and no tool result for such a call).
 	found := false
 	for _, m := range app.Conv {
-		if m.Role == "tool" && strings.Contains(DerefStr(m.Content), "fix the loop exit condition") {
+		if strings.Contains(DerefStr(m.Content), "fix the loop exit condition") {
+			if m.Role == "tool" {
+				t.Fatalf("auto-counsel delivered as a tool result; want a message from Wakil: %+v", m)
+			}
 			found = true
+		}
+		for _, tc := range m.ToolCalls {
+			if strings.HasPrefix(tc.Function.Name, "mashura__") {
+				t.Fatalf("assistant message carries a mashura tool call the model did not make: %+v", m)
+			}
 		}
 	}
 	if !found {

@@ -1203,6 +1203,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			if eval.Symptom != "" {
 				msg += "  symptom: " + eval.Symptom + "\n"
 			}
+			if eval.RuleMatched != "none" {
+				// Rule 4: a round already fired for this exact symptom
+				// withholds a second one. Name the withheld round so the
+				// user sees why nothing new was started.
+				if done, ok := app.AutoCounselRuleDone(eval.RuleMatched); ok && done == eval.Symptom {
+					msg += "  automatic round withheld: already fired for this symptom this turn (" + eval.RuleMatched + ")\n"
+				}
+			}
 			msg += "  resolved mode: " + eval.ResolvedMode + " (source: " + eval.ModeSource + ")"
 			if eval.Level != "" {
 				msg += " · level: " + eval.Level

@@ -90,6 +90,7 @@ func (a *App) prepareTurn() {
 	// any explicit /counsel choice.
 	a.counselCalls = 0
 	a.struggleSuggested = nil
+	a.autoCounselRulesDone = nil
 }
 
 // checkEgressConsent prompts the user before the first request to an external

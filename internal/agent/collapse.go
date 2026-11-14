@@ -240,6 +240,7 @@ const maxNotePaths = 12
 // spend bytes exactly where the cap is trying to save them.
 func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	toolCounts := map[string]int{}
+	autoRounds := 0
 	writeTargets := []string{}
 	reads := []string{}
 	seenWrite, seenRead := map[string]bool{}, map[string]bool{}
@@ -247,6 +248,13 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	for _, m := range w {
 		for _, tc := range m.ToolCalls {
 			name := tc.Function.Name
+			// Synthetic automatic Mashūra rounds are attributed to Wakil,
+			// not to the model: they are no longer counted among the
+			// model's tool calls and are reported on their own line.
+			if strings.HasPrefix(tc.ID, magicToolCallPrefix) {
+				autoRounds++
+				continue
+			}
 			toolCounts[name]++
 			isWrite := writeTargetTools[name]
 			seen := seenWrite
@@ -287,6 +295,9 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[request %d working set collapsed — %d tool calls: %s · %dkb]\n",
 		turn, sumCounts(toolCounts), toolSummary, renderWorkingSetBytes(w)/1024)
+	if autoRounds > 0 {
+		fmt.Fprintf(&b, "automatic mashura rounds (started by wakil): %d\n", autoRounds)
+	}
 	writeTargets, reads, hiddenWrite, hiddenRead := fitNotePaths(writeTargets, reads)
 	if len(writeTargets) > 0 {
 		b.WriteString("write targets: ")
@@ -317,6 +328,9 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 		var mb strings.Builder
 		fmt.Fprintf(&mb, "[request %d working set collapsed — %d tool calls · %dkb]\n",
 			turn, sumCounts(toolCounts), renderWorkingSetBytes(w)/1024)
+		if autoRounds > 0 {
+			fmt.Fprintf(&mb, "automatic mashura rounds (started by wakil): %d\n", autoRounds)
+		}
 		fmt.Fprintf(&mb, "full record: %s (read_file with offset/limit — host-side path: shell cannot see it)\n", archive)
 		note = mb.String()
 		// If even the minimal note exceeds the cap (very long archive path),

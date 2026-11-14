@@ -426,6 +426,10 @@ func (a *App) subagentBatchTimeout(jobCount int) time.Duration {
 // so a silent stream terminalizes promptly while a steadily streaming reply
 // gets the full total. The watchdog never disables both deadlines: a hung
 // panel would otherwise spin the tab and leak the admission slot.
+//
+// Unset (0 without the explicit-zero flag — the DefaultConfig state) uses
+// the idle+total semantics too: the pre-0.8.3 300-second total cap is no
+// longer the effective default.
 func (a *App) mashuraTimeout() time.Duration {
 	if a.Cfg.OracleTimeoutSeconds > 0 {
 		return time.Duration(a.Cfg.OracleTimeoutSeconds) * time.Second

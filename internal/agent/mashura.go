@@ -237,6 +237,14 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 // mashura__debug myself, which broke your rule".
 const autoCounselResultHeader = "[automatic mashura round — Wakil started this round automatically; you did not call it]\n\n"
 
+// magicToolCallPrefix marks tool calls injected by Wakil itself rather
+// than by the model (automatic Mashūra rounds). Any prefix the model
+// cannot produce — tool-call ids are model-chosen only between rounds —
+// is honest in the transcript: no assistant message on the wire carries
+// these ids as model output. The collapse note attributes such rounds
+// separately from the model's own tool calls.
+const magicToolCallPrefix = "wakil-auto-"
+
 // mashuraEgressHost is the consent key for the Mashūra host. Every Mashūra
 // call targets OpenRouter (transportClient, mashura.go:40-53).
 const mashuraEgressHost = "openrouter"
@@ -1437,18 +1445,29 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(string) bo
 			rule    string
 		}{fmt.Sprintf("ran %s %q twice with no progress", displayAbbrev(last.Abbrev), last.Command), "repeat"})
 	}
-	// Repeated rewrites of the same file across the window.
+	// Repeated rewrites of the same file across the window. The symptom
+	// names the file and the rule, not the running count: the count grows
+	// with every further rewrite, and rule 4 (one automatic round per
+	// symptom per turn) compares symptoms — a count-carrying symptom would
+	// make every further rewrite a "different" symptom and defeat the
+	// one-round-per-symptom bound.
 	counts := map[string]int{}
+	var paths []string
 	for _, e := range traces {
 		if (e.Abbrev == "write" || e.Abbrev == "edit") && e.Command != "" {
-			counts[e.Command]++
-			if counts[e.Command] >= 3 {
-				results = append(results, struct {
-					symptom string
-					rule    string
-				}{fmt.Sprintf("rewrote %q %d times — the fix may not be landing", e.Command, counts[e.Command]), "rewrites"})
-				break
+			if _, ok := counts[e.Command]; !ok {
+				paths = append(paths, e.Command)
 			}
+			counts[e.Command]++
+		}
+	}
+	for _, path := range paths {
+		if n := counts[path]; n >= 3 {
+			results = append(results, struct {
+				symptom string
+				rule    string
+			}{fmt.Sprintf("rewrote %q %d times — the fix may not be landing", path, n), "rewrites"})
+			break
 		}
 	}
 	for _, r := range results {
@@ -1622,6 +1641,14 @@ func (a *App) CounselCapIsDefault() bool { return a.counselCapIsDefault() }
 // cross-package callers/tests.
 func (a *App) ResolveCounselMode() (string, string) { return a.resolveCounselMode() }
 
+// AutoCounselRuleDone reports the symptom an automatic round already
+// fired for rule in this turn, if any (rule 4: one round per symptom).
+// Read-only, for the bare /counsel withheld-round explanation.
+func (a *App) AutoCounselRuleDone(rule string) (string, bool) {
+	s, ok := a.autoCounselRulesDone[rule]
+	return s, ok
+}
+
 // counselCapIsDefault reports whether the effective cap is the built-in
 // default rather than a user-set value.
 func (a *App) counselCapIsDefault() bool {
@@ -1708,6 +1735,18 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		eval.ActionTaken = "nothing shown: symptom already suggested this turn"
 		return
 	}
+	// One automatic round per symptom per turn (rule 4): a round already
+	// fired for this rule with this exact symptom withholds a second one
+	// even though the trace keeps growing (the symptom text carries the
+	// count, so a re-fire can only be the same struggle). A different
+	// symptom — different rule, or a different target — is a different
+	// symptom and is not withheld here.
+	if a.autoCounselRulesDone != nil {
+		if done, ok := a.autoCounselRulesDone[eval.RuleMatched]; ok && done == symptom {
+			eval.ActionTaken = "nothing shown: automatic round already fired for this symptom this turn"
+			return
+		}
+	}
 
 	// suggestNote prints the suggest hint, optionally with the reason an
 	// automatic action did not run. It marks the symptom shown only after
@@ -1778,7 +1817,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		// Automatic rounds are single-pass at every level (A2).
 		a.autoCounselSinglePass = true
 		fakeTC := proxy.ToolCall{
-			ID:   fmt.Sprintf("auto-counsel-%d", a.counselCalls),
+			ID:   fmt.Sprintf("%s%d", magicToolCallPrefix, a.counselCalls),
 			Type: "function",
 			Function: proxy.FunctionCall{
 				Name:      "mashura__debug",
@@ -1826,16 +1865,35 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			suggestNote("auto blocked: " + truncateReason(result))
 			return
 		}
-		// Inject as assistant+tool pair so the model sees the diagnosis.
-		// The result begins with one line stating that Wakil started this
-		// round automatically and the model did not call it — in manual tests
-		// the model must never be able to claim "I called mashura__debug
-		// myself". The synthetic header is one line; the report it prefixes
-		// is untouched.
+		// Inject as a message from Wakil so the model sees the diagnosis,
+		// attributed to the round's starter. The result begins with one
+		// line stating that Wakil started this round automatically and the
+		// model did not call it — in manual tests the model must never be
+		// able to claim "I called mashura__debug myself". No assistant
+		// message carries a mashura tool call the model did not make, so
+		// the request stays valid without a fabricated tool-call pair.
 		a.appendConv(
-			proxy.Message{Role: "assistant", Content: nil, ToolCalls: []proxy.ToolCall{fakeTC}},
-			proxy.Message{Role: "tool", ToolCallID: fakeTC.ID, Name: fakeTC.Function.Name, Content: StrPtr(autoCounselResultHeader + result)},
+			proxy.Message{Role: "user", Content: StrPtr(autoCounselResultHeader + result)},
 		)
+		// Surface the round in the Mashūra tab exactly like a requested
+		// round: the synchronous path emits no AsyncJobStartMsg, so emit
+		// Start+Done here around the (already-completed) panel, marked as
+		// started by Wakil. Cost was already recorded once — runMashuraCore's
+		// sync branch — and the tab events are display-only, so no second
+		// cost recording happens here.
+		a.sendEvent(AsyncJobStartMsg{
+			OpID:         fakeTC.ID,
+			Label:        fmt.Sprintf("automatic mashura__debug (started by wakil): %s", symptom),
+			ToolName:     "mashura__debug (automatic — started by wakil)",
+			OriginChatID: a.chatID(),
+		})
+		a.sendEvent(AsyncJobDoneMsg{
+			OpID:         fakeTC.ID,
+			Label:        fmt.Sprintf("automatic mashura__debug (started by wakil): %s", symptom),
+			ToolName:     "mashura__debug (automatic — started by wakil)",
+			Result:       result,
+			OriginChatID: a.chatID(),
+		})
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· auto-counsel %d/%d: %s",
 			a.counselCalls, capMax, Truncate(result, 120))))
 		if a.counselCalls >= capMax {
@@ -1845,6 +1903,14 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		}
 		// Mark shown only after the lines above were printed.
 		a.struggleSuggested[symptom] = true
+		// One automatic round per symptom per turn (rule 4): record this
+		// symptom against its rule so a later evaluation for the same rule
+		// and the same symptom stays silent, while a different target (or a
+		// different rule) may still fire, up to the per-turn cap.
+		if a.autoCounselRulesDone == nil {
+			a.autoCounselRulesDone = map[string]string{}
+		}
+		a.autoCounselRulesDone[eval.RuleMatched] = symptom
 		if !void {
 			eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, capMax)
 		}

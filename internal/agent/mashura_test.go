@@ -1224,11 +1224,22 @@ func TestAutoCounselRespectsMaxCounsel(t *testing.T) {
 	}
 
 	// Fire maybeSuggestDebug more times than the cap with distinct symptoms.
-	for i := 0; i < cap+3; i++ {
-		// Each iteration produces a distinct symptom to bypass the per-symptom
-		// dedup (we want to test the overall cap, not the per-symptom guard).
-		app.struggleSuggested = nil // reset dedup so new symptom is seen
-		app.recentTraces = buildStruggleTraces()
+	// Group B rule 4 (one automatic round per symptom per turn) means the
+	// per-turn cap is exercised with distinct RULES — distinct symptoms of
+	// the same rule no longer re-fire. The two firing rules with the
+	// strongest traces are "rewrites" and "repeated failures": feed each
+	// twice (the first fire per rule) and confirm the cap still holds.
+	rewriteTraces := []ToolTraceEntry{
+		{Abbrev: "write", Command: "answer.txt"},
+		{Abbrev: "write", Command: "answer.txt"},
+		{Abbrev: "write", Command: "answer.txt"},
+	}
+	for _, traces := range [][]ToolTraceEntry{rewriteTraces, buildStruggleTraces(), rewriteTraces, buildStruggleTraces(), rewriteTraces} {
+		// Each round needs the per-symptom dedup cleared so the rule is
+		// seen; the rule-4 record is what blocks a true repeat.
+		app.struggleSuggested = nil
+		app.autoCounselRulesDone = nil
+		app.recentTraces = traces
 		app.maybeSuggestDebug(context.Background())
 	}
 
@@ -1425,10 +1436,19 @@ func TestCounselAutoFiresUpToCapThenReverts(t *testing.T) {
 		MaxCounsel:  cap,
 	}
 
-	// Fire cap+2 times with distinct symptoms to test both auto and revert paths.
-	for i := 0; i < cap+2; i++ {
+	// Fire cap+2 times with distinct rules to test both auto and revert
+	// paths. Group B rule 4 (one automatic round per symptom per turn)
+	// means only distinct rules re-fire, so feed the two firing rules
+	// alternately.
+	rewriteTraces := []ToolTraceEntry{
+		{Abbrev: "write", Command: "answer.txt"},
+		{Abbrev: "write", Command: "answer.txt"},
+		{Abbrev: "write", Command: "answer.txt"},
+	}
+	for _, traces := range [][]ToolTraceEntry{rewriteTraces, buildStruggleTraces(), rewriteTraces, buildStruggleTraces()} {
 		app.struggleSuggested = nil
-		app.recentTraces = buildStruggleTraces()
+		app.autoCounselRulesDone = nil
+		app.recentTraces = traces
 		app.maybeSuggestDebug(context.Background())
 	}
 
@@ -1607,8 +1627,9 @@ func TestAutoDeclinedPrintsReason(t *testing.T) {
 }
 
 // TestAutoCounselInjectsIntoConv verifies that a fired auto-counsel call
-// appends a synthetic assistant+tool pair into Conv so the model sees the
-// diagnosis in its next turn.
+// appends a message from Wakil into Conv so the model sees the diagnosis
+// in its next turn. No assistant message carries a mashura tool call the
+// model did not make (Group B rule 3).
 func TestAutoCounselInjectsIntoConv(t *testing.T) {
 	counselServer(t)
 	os.Setenv("MASHURA_TEST_KEY", "x")
@@ -1642,23 +1663,21 @@ func TestAutoCounselInjectsIntoConv(t *testing.T) {
 	if app.CounselCallsCount() != 1 {
 		t.Fatalf("expected 1 auto-counsel call; got %d", app.CounselCallsCount())
 	}
-	// Should have injected 2 messages: assistant (tool call) + tool (result).
+	// Should have injected 1 message: a user message from Wakil carrying
+	// the header and the result.
 	added := len(app.Conv) - before
-	if added != 2 {
-		t.Errorf("expected 2 injected Conv messages, got %d", added)
+	if added != 1 {
+		t.Errorf("expected 1 injected Conv message, got %d", added)
 	}
-	// The injected assistant message must have a ToolCall with mashura__debug.
-	assistMsg := app.Conv[before]
-	if assistMsg.Role != "assistant" || len(assistMsg.ToolCalls) == 0 {
-		t.Errorf("injected assistant message malformed: role=%q calls=%d", assistMsg.Role, len(assistMsg.ToolCalls))
+	injected := app.Conv[before]
+	if injected.Role != "user" {
+		t.Errorf("injected message role = %q, want user (message from Wakil)", injected.Role)
 	}
-	if assistMsg.ToolCalls[0].Function.Name != "mashura__debug" {
-		t.Errorf("injected tool call name = %q, want mashura__debug", assistMsg.ToolCalls[0].Function.Name)
+	if len(injected.ToolCalls) != 0 {
+		t.Errorf("injected message carries %d tool calls, want 0 (no fabricated assistant tool call)", len(injected.ToolCalls))
 	}
-	// The injected tool result must reference the same call ID.
-	toolMsg := app.Conv[before+1]
-	if toolMsg.Role != "tool" || toolMsg.ToolCallID != assistMsg.ToolCalls[0].ID {
-		t.Errorf("injected tool result malformed: role=%q id=%q (want %q)", toolMsg.Role, toolMsg.ToolCallID, assistMsg.ToolCalls[0].ID)
+	if injected.Content == nil || !strings.HasPrefix(*injected.Content, autoCounselResultHeader) {
+		t.Errorf("injected message does not begin with the automatic-round header: %q", DerefStr(injected.Content))
 	}
 }
 

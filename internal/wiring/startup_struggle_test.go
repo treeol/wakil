@@ -134,9 +134,139 @@ func struggleFramesFake() [][]string {
 // passed while the real program left the cap at 0. This test closes that
 // gap: the App, its cap and its counsel state come from bootstrap, not
 // from a hand-set MaxCounsel.
+//
+// Group B additions: at level high the automatic round is delivered as a
+// message from Wakil (no assistant mashura tool call in the outgoing
+// payload), reaches the Mashūra tab as an async-job event marked started
+// by Wakil, and one round per symptom per turn keeps the four-identical-
+// writes sequence to the cap: four writes produce two rounds (rewrites +
+// repeated failures) and no more.
 func TestStrugglePathThroughRealStartup(t *testing.T) {
 	t.Setenv("MASHURA_TEST_OR_KEY", "x")
 	t.Setenv("MASHURA_TEST_KEY", "x")
+
+	runHighCapture := func(t *testing.T) (string, int, []event.Event, []*agent.App) {
+		t.Helper()
+		count, cleanupCounsel := counselServerFake(t)
+		t.Cleanup(cleanupCounsel)
+		srv := sseServer(t, struggleFramesFake()...)
+		t.Cleanup(srv.Close)
+		exe := &struggleExec{shellErr: fmt.Errorf("check failed")}
+
+		cfg := config.DefaultConfig()
+		cfg.WorkDir = t.TempDir()
+		cfg.ExecMode = "direct"
+		cfg.Mashura = &config.MashuraConfig{
+			Level:   "high",
+			Members: []string{"openrouter:test-model-a", "openrouter:test-model-b"},
+		}
+		cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+		cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+		cfg.OracleModel = "test-model"
+		cfg.Endpoint = config.EndpointConfig{Kind: config.EndpointKindOpenAI, BaseURL: srv.URL, Model: "ilm"}
+		cfg.BaseURL = srv.URL
+
+		var mu2 sync.Mutex
+		var delivered []event.Event
+		var out strings.Builder
+		deliver := func(ev event.Event) {
+			mu2.Lock()
+			defer mu2.Unlock()
+			delivered = append(delivered, ev)
+			if ev.Kind == event.KindMessageDelta {
+				if d, ok := ev.Payload.(event.MessageDelta); ok {
+					out.WriteString(d.Text)
+				}
+			}
+		}
+		rt, cleanup, err := BootstrapTUI(cfg, exe, "", deliver, BootstrapTUIOpts{
+			CounselMode: cfg.AutoCounsel,
+			CounselMax:  cfg.CounselMaxPerSession,
+		})
+		if err != nil {
+			t.Fatalf("BootstrapTUI: %v", err)
+		}
+		defer cleanup()
+
+		f, ok := rt.Facade.(*wiringFacade)
+		if !ok {
+			t.Fatalf("Facade is %T, want *wiringFacade", rt.Facade)
+		}
+		app := f.app
+
+		cr := f.DispatchCommand("/mashura high")
+		if !cr.Handled {
+			t.Fatalf("/mashura high: not handled")
+		}
+		f.SetAutoApprove(true)
+		app.GrantBackendConsentForTest("openrouter")
+
+		rt.StartEventPump(context.Background())
+		snap := rt.Facade.Snapshot()
+		if _, err := rt.Facade.SubmitInput(context.Background(), rt.Principal, core.SubmitInputRequest{
+			SessionID: snap.SessionID,
+			Text:      "write answer",
+		}); err != nil {
+			t.Fatalf("SubmitInput: %v", err)
+		}
+		waitUntil(t, func() bool {
+			mu2.Lock()
+			defer mu2.Unlock()
+			for _, ev := range delivered {
+				if ev.Kind == event.KindTurnCompleted {
+					return true
+				}
+			}
+			return false
+		})
+		return out.String(), *count, delivered, []*agent.App{app}
+	}
+
+	// Group B rule 4 through the real startup path: four identical writes
+	// produce exactly two rounds (cap 2), never three or four.
+	out, n, delivered, apps := runHighCapture(t)
+	_ = out
+	if n/2 != 2 {
+		t.Fatalf("four identical writes: panel fired %d rounds, want 2 (cap)", n/2)
+	}
+	// Group B rule 2: the automatic round reaches the Mashūra tab as an
+	// async-job event, marked as started by Wakil.
+	starts, dones := 0, 0
+	for _, ev := range delivered {
+		switch p := ev.Payload.(type) {
+		case event.AsyncJobStarted:
+			starts++
+			if !strings.Contains(p.Label, "started by wakil") {
+				t.Errorf("async-job start label %q must mark the round as started by Wakil", p.Label)
+			}
+		case event.AsyncJobCompleted:
+			dones++
+		}
+	}
+	if starts != 2 || dones != 2 {
+		t.Fatalf("async-job events: starts=%d dones=%d, want 2/2 (one per automatic round)", starts, dones)
+	}
+	// Group B rule 3: the outgoing payload holds no assistant mashura tool
+	// call for the automatic rounds, and the header is present once per
+	// round.
+	proj := apps[0].ConvSnapshot()
+	hdr := 0
+	for _, m := range proj {
+		for _, tc := range m.ToolCalls {
+			if strings.HasPrefix(tc.Function.Name, "mashura__") {
+				t.Fatalf("outgoing payload holds an assistant mashura tool call (%q) the model did not make", tc.Function.Name)
+			}
+		}
+		if m.Content != nil {
+			hdr += strings.Count(*m.Content, "[automatic mashura round — Wakil started this round automatically; you did not call it]")
+			if m.Role == "tool" && strings.Contains(*m.Content, "[automatic mashura round — Wakil started this round automatically; you did not call it]") {
+				t.Fatal("automatic round delivered as a tool result; want a message from Wakil")
+			}
+		}
+	}
+	if hdr != 2 {
+		t.Fatalf("automatic-round header present %d times in the projection, want 2 (once per round)", hdr)
+	}
 
 	runLevel := func(t *testing.T, level string) (string, int) {
 		t.Helper()
