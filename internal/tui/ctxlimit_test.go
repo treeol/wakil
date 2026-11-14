@@ -457,20 +457,22 @@ func TestHandleStreamErrorRetriesInAutoMode(t *testing.T) {
 	}
 }
 
-// TestHandleStreamErrorNoRetryInteractive: in interactive non-auto mode the
-// stream error is passed through unchanged — a human can re-send.
+// TestHandleStreamErrorNoRetryInteractive: in interactive non-auto mode
+// the stream error enters the retry loop (Group 4 changed the rule from
+// "surface immediately"); the streamResetServer answers with recovered
+// frames on the retry, so the recovery returns nil. See the agent package's
+// TestHandleStreamError_InteractiveNoRetry for the retry-count pin.
 func TestHandleStreamErrorNoRetryInteractive(t *testing.T) {
 	srv := streamResetServer(t, []string{contentChunk("recovered")})
 	defer srv.Close()
 
 	app := newTestApp(srv.URL, newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
-	// Default: AutoApprove=false, IsHeadless=false → interactive, no retry.
 	_, err := app.Send(context.Background(), "go")
 	if !errors.Is(err, proxy.ErrBackendStream) {
 		t.Fatalf("send should report a stream error, got: %v", err)
 	}
 	got := agent.HandleStreamError(context.Background(), app, err)
-	if !errors.Is(got, proxy.ErrBackendStream) {
-		t.Errorf("interactive mode should pass the stream error through, got: %v", got)
+	if got != nil {
+		t.Errorf("interactive retry should recover from the reset and return nil, got: %v", got)
 	}
 }
