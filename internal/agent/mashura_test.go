@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1092,9 +1093,14 @@ func TestMashuraConfigAliasWins(t *testing.T) {
 // JSON answer and records how many times it was called.
 func counselServer(t *testing.T) (*httptest.Server, *int) {
 	t.Helper()
+	var mu sync.Mutex
 	count := new(int)
+	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*count++
+		mu.Lock()
+		calls++
+		*count = calls
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		writeCitedReply(w, r, "diagnosis: fix the loop exit condition", `{"input_tokens":100,"output_tokens":50}`)
 	}))

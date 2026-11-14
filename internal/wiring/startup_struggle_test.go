@@ -23,9 +23,14 @@ import (
 // was hit.
 func counselServerFake(t *testing.T) (*int, func()) {
 	t.Helper()
+	var mu sync.Mutex
 	count := new(int)
+	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*count++
+		mu.Lock()
+		calls++
+		*count = calls
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		// The panel dispatch reads the usage object for cost accounting;
 		// the reply text must end with a LAST SECTION READ citation.

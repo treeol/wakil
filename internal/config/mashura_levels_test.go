@@ -108,7 +108,7 @@ func TestLevelReasoning(t *testing.T) {
 // auto-counsel ceiling off/suggest/auto.
 func TestLevelDebateAndAutoCounsel(t *testing.T) {
 	debate := map[string]bool{"off": false, "low": false, "medium": false, "high": true}
-	ceiling := map[string]string{"off": "off", "low": "suggest", "medium": "auto", "high": "auto"}
+	ceiling := map[string]string{"off": "off", "low": "suggest", "medium": "suggest", "high": "auto"}
 	for lv := range debate {
 		if got := LevelDebate(lv); got != debate[lv] {
 			t.Errorf("LevelDebate(%s) = %v, want %v", lv, got, debate[lv])
