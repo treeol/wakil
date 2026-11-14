@@ -748,17 +748,13 @@ func degradePointerLine(rec CollapseRecord, u []proxy.Message) string {
 // pruning is off (or nothing is pruned), the result is byte-identical to
 // the pre-prune projection.
 func (a *App) contextProjection() []proxy.Message {
+	a.convMu.RLock()
+	conv := append([]proxy.Message(nil), a.Conv...)
+	a.convMu.RUnlock()
 	if !a.IsLongSession() {
-		// Standard mode: return a.Conv under convMu.RLock for a consistent
-		// snapshot. In practice the turn goroutine is the sole reader at
-		// this point, but the lock prevents races with SaveSession/TUI.
-		a.convMu.RLock()
-		conv := a.Conv
-		a.convMu.RUnlock()
 		return a.pruneProjection(conv)
 	}
-	base := a.collapseProjection(a.Conv)
-	return a.pruneProjection(base)
+	return a.pruneProjection(a.collapseProjection(conv))
 }
 
 // collapseProjection is the master collapse logic: in standard mode or when
@@ -781,10 +777,7 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 		return conv
 	}
 
-	a.convMu.RLock()
-	defer a.convMu.RUnlock()
-
-	spans := turnSpansFromSlice(a.Conv)
+	spans := turnSpansFromSlice(conv)
 	// Build a set of collapsed turn numbers for fast lookup.
 	collapsedSet := collapsedCopy
 
@@ -795,7 +788,7 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 	// assistant message of the verbatim tail; those resolve directly.
 	partialBoundary := map[int]int{}
 	hasCollapsed := false
-	for _, m := range a.Conv {
+	for _, m := range conv {
 		rec, ok := collapsedSet[m.Turn]
 		if !ok || m.Turn == 0 {
 			continue
@@ -804,7 +797,7 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 			if _, checked := partialBoundary[m.Turn]; !checked {
 				s, sok := spans[m.Turn]
 				if sok {
-					bIdx := findBoundaryAssistantIdx(a.Conv, s, rec.BoundaryCallID)
+					bIdx := findBoundaryAssistantIdx(conv, s, rec.BoundaryCallID)
 					// A record anchored at the collapse_context call keeps
 					// that call plus its result as the kept tail. Resolving
 					// tailStart directly is correct for new records; the
@@ -822,7 +815,7 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 		}
 	}
 	if !hasCollapsed {
-		return a.Conv
+		return conv
 	}
 
 	var out []proxy.Message
@@ -852,7 +845,7 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 			}
 		}
 	}
-	for idx, m := range a.Conv {
+	for idx, m := range conv {
 		rec, isCollapsed := collapsedSet[m.Turn]
 		if !isCollapsed || m.Turn == 0 {
 			// Not collapsed, or legacy — pass through unchanged.
@@ -930,16 +923,16 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 		if degradedTurn[m.Turn] {
 			// Tier-2 degrade: one pointer line as a user-role message keeps
 			// the projection schema-valid (no leading orphan assistant turn).
-			pointer := degradePointerLine(rec, a.Conv[s.first:s.first+1])
+			pointer := degradePointerLine(rec, conv[s.first:s.first+1])
 			content := pointer
 			out = append(out, proxy.Message{Role: "user", Turn: m.Turn, Content: &content})
 			emittedTurn[m.Turn] = true
 			continue
 		}
 		// Emit U (first message of the turn).
-		out = append(out, a.Conv[s.first])
+		out = append(out, conv[s.first])
 		// Emit A (last message) with the note appended to its content.
-		lastMsg := a.Conv[s.last]
+		lastMsg := conv[s.last]
 		lastMsg.Content = projectTailAnswerContent(lastMsg.Content, rec, a.Cfg.ContextTailAnswerBytes)
 		out = append(out, lastMsg)
 		emittedTurn[m.Turn] = true

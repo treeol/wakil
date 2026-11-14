@@ -120,7 +120,7 @@ func e2eMustJSONChunk(v any) string {
 // until the target number of turns has completed.
 func e2eAnswerApprovals(t *testing.T, e *e2e, targetTurns int) {
 	t.Helper()
-	answered := map[event.ApprovalID]bool{}
+	answered := map[event.ApprovalID]time.Time{}
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		evs, err := e.events()
@@ -146,8 +146,10 @@ func e2eAnswerApprovals(t *testing.T, e *e2e, targetTurns int) {
 		if turns >= targetTurns {
 			return
 		}
-		if requested > resolved && latest != nil && !answered[latest.ApprovalID] {
-			answered[latest.ApprovalID] = true
+		// Persistence precedes TUI delivery. Retry an unanswered approval
+		// after a bounded delay if the first key arrived before the gate.
+		if requested > resolved && latest != nil && time.Since(answered[latest.ApprovalID]) > time.Second {
+			answered[latest.ApprovalID] = time.Now()
 			if latest.ToolName == "write_file" {
 				e.key("g")
 			} else {
