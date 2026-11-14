@@ -33,7 +33,7 @@ func TestIsMemoryTool(t *testing.T) {
 			t.Errorf("IsMemoryTool(%q) = false, want true", name)
 		}
 	}
-	for _, name := range []string{"", "memory", "staging_put", "google_search", "read_file"} {
+	for _, name := range []string{"", "memory", "staging_put", "read_file"} {
 		if IsMemoryTool(name) {
 			t.Errorf("IsMemoryTool(%q) = true, want false", name)
 		}
@@ -54,7 +54,7 @@ func TestIsMemoryMainOnlyTool(t *testing.T) {
 		}
 	}
 	// Non-memory tools.
-	for _, name := range []string{"", "staging_put", "google_search"} {
+	for _, name := range []string{"", "staging_put", "read_file"} {
 		if IsMemoryMainOnlyTool(name) {
 			t.Errorf("IsMemoryMainOnlyTool(%q) = true, want false", name)
 		}

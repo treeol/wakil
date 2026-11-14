@@ -59,7 +59,7 @@ const skillCreateTaskSuffix = `
 
 Research steps, in order:
 1. Call skill_search with queries derived from the topic. If a near-duplicate skill exists, note its exact key in the uncertainty array — do not invent a new skill for a topic that is already covered.
-2. Use context7 MCP tools (library/framework docs) and/or google_search (external best practices) if available and relevant. Skip what is unavailable.
+2. Use context7 MCP tools (library/framework docs) and/or searxng_search (external best practices) if available and relevant. Skip what is unavailable.
 3. Use read_file / search_files for workspace-specific conventions if the topic is repo-bound.
 
 Produce a draft skill. Respond with ONLY a valid JSON SubagentSummary object — no prose, no markdown, no code fences around the response (fences INSIDE the summary string are fine; escape them as JSON requires).

@@ -512,8 +512,6 @@ type Config struct {
 	MaxBinaryWriteBytes int               `json:"max_binary_write_bytes,omitempty"` // max decoded bytes write_binary_file accepts; default 10485760 (10 MB); 0 = use default
 	MaxRequestBytes     int               `json:"max_request_bytes,omitempty"`      // pre-send byte guard: trim largest tool results if request exceeds this; default 8388608 (8 MB); 0 = disabled
 	SearXngURL          string            `json:"searxng_url,omitempty"`            // native searxng_search tool if set
-	GoogleAPIKey        string            `json:"google_api_key,omitempty"`         // Google Custom Search API key (enables native google_search tool)
-	GoogleCX            string            `json:"google_cx,omitempty"`              // Google Programmable Search Engine ID
 	MentionBase         string            `json:"mention_base,omitempty"`           // base dir for "@" file mentions (default: launch cwd)
 	MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
 
@@ -1523,7 +1521,10 @@ func DefaultConfig() Config {
 		OracleMaxTokens:            4096,
 		OracleAPIKeyEnv:            "ANTHROPIC_API_KEY",
 		OpenRouterAPIKeyEnv:        "OPENROUTER_API_KEY",
-		OracleTimeoutSeconds:       300,
+		// 0 = unset: the idle+total semantics (120s idle, 30min total)
+		// apply, per the documented default — set an explicit 0 in the file
+		// to preserve a truly zero cap, per OracleTimeoutExplicitZero.
+		OracleTimeoutSeconds: 0,
 		WFFinalReview:              true,
 		ZDR:                        "off",
 		Region:                     "off",
@@ -1539,6 +1540,11 @@ var oracleEndpointNoticeOnce sync.Once
 // mashuraDerivedNoticeOnce guarantees the legacy mashura derivation/ignore
 // notice fires at most once per process (one session).
 var mashuraDerivedNoticeOnce sync.Once
+
+// googleRemovedNoticeOnce guarantees the removed-google-keys notice fires at
+// most once per process (one session), when a config file still carries the
+// removed keys.
+var googleRemovedNoticeOnce sync.Once
 
 // legacyMashuraKeysPresent lists the legacy mashura/oracle keys whose value
 // differs from DefaultConfig. A bool cannot distinguish absent from false,
@@ -1871,11 +1877,20 @@ func LoadConfig(argv []string) (Config, error) {
 			var probe struct {
 				OracleEndpoint       string `json:"oracle_endpoint"`
 				OracleTimeoutSeconds *int   `json:"oracle_timeout_seconds"`
+				GoogleAPIKey         string `json:"google_api_key"`
+				GoogleCX             string `json:"google_cx"`
 			}
 			if err := json.Unmarshal(b, &probe); err == nil {
 				if probe.OracleEndpoint != "" {
 					oracleEndpointNoticeOnce.Do(func() {
 						fmt.Fprintln(os.Stderr, "oracle_endpoint is ignored — Mashūra uses the OpenRouter transport")
+					})
+				}
+				// google_api_key / google_cx were removed in 0.8.3: a config
+				// that still carries them loads with one notice.
+				if probe.GoogleAPIKey != "" || probe.GoogleCX != "" {
+					googleRemovedNoticeOnce.Do(func() {
+						fmt.Fprintln(os.Stderr, "google_api_key / google_cx were removed in 0.8.3 — the google_search and google_fetch_url tools no longer exist; searxng serves the same role")
 					})
 				}
 				// Explicit 0 in the file selects idle+total semantics; without
@@ -2020,8 +2035,6 @@ func LoadConfig(argv []string) (Config, error) {
 
 	// 2) environment
 	envStr(&cfg.SearXngURL, "SEARXNG_URL")
-	envStr(&cfg.GoogleAPIKey, "GOOGLE_API_KEY")
-	envStr(&cfg.GoogleCX, "GOOGLE_CX")
 	envStr(&cfg.MentionBase, "WAKIL_MENTION_BASE")
 	// ILM_* env vars are legacy aliases. WAKIL_* is the preferred namespace.
 	// WAKIL_* takes precedence (checked last — last non-empty write wins).
@@ -2063,7 +2076,6 @@ func LoadConfig(argv []string) (Config, error) {
 	fs := flag.NewFlagSet("wakil", flag.ContinueOnError)
 	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "ilm proxy base URL (overrides host/port)")
 	fs.StringVar(&cfg.SearXngURL, "searxng-url", cfg.SearXngURL, "SearXNG base URL (enables native searxng_search tool)")
-	fs.StringVar(&cfg.GoogleCX, "google-cx", cfg.GoogleCX, "Google Programmable Search Engine ID (pair with GOOGLE_API_KEY env)")
 	fs.StringVar(&cfg.MentionBase, "mention-base", cfg.MentionBase, "base directory for @ file mentions (default: current directory)")
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "ilm proxy host (alternative to base-url)")
 	fs.IntVar(&cfg.Port, "port", cfg.Port, "ilm proxy port (used with --host, default 11400)")
@@ -3293,7 +3305,7 @@ func validateExternalCommands(cfg Config) error {
 // immediate failures or undefined behavior.
 func validateTimeouts(cfg Config) error {
 	if cfg.OracleTimeoutSeconds < 0 {
-		return fmt.Errorf("oracle_timeout_seconds must be >= 0 (got %d; 0 = use default 300s)", cfg.OracleTimeoutSeconds)
+		return fmt.Errorf("oracle_timeout_seconds must be >= 0 (got %d; 0 = idle+total: 120s idle, 30min total)", cfg.OracleTimeoutSeconds)
 	}
 	if cfg.LSPIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("lsp_idle_timeout_seconds must be >= 0 (got %d)", cfg.LSPIdleTimeoutSeconds)

@@ -972,9 +972,6 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager, repoLevel string
 	if cfg.SearXngURL != "" {
 		t = append(t, wtools.SearxngTools()...)
 	}
-	if cfg.GoogleAPIKey != "" && cfg.GoogleCX != "" {
-		t = append(t, wtools.GoogleTools()...)
-	}
 	// Group 3: MCP (conditional). OpenAITools already sorts by name.
 	if mcp != nil {
 		t = append(t, mcp.OpenAITools()...)

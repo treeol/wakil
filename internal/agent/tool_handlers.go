@@ -1341,50 +1341,6 @@ func (a *App) handleSearxngURLRead(ctx context.Context, tc proxy.ToolCall) strin
 	return result
 }
 
-// handleGoogleSearch performs a Google Custom Search and records grounding/cost.
-func (a *App) handleGoogleSearch(ctx context.Context, tc proxy.ToolCall) string {
-	var args struct {
-		Query  string `json:"query"`
-		Num    int    `json:"num"`
-		Start  int    `json:"start"`
-		After  string `json:"after"`
-		Before string `json:"before"`
-	}
-	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
-	}
-	if args.Query == "" {
-		return "ERROR: query is required"
-	}
-	result, urls := wtools.CallGoogle(a.Cfg.GoogleAPIKey, a.Cfg.GoogleCX, args.Query, args.Num, args.Start, args.After, args.Before)
-	a.RecordSearchCost()
-	for i, u := range urls {
-		if i >= 5 {
-			break
-		}
-		label := Truncate(u, 79)
-		a.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: label})
-	}
-	return result
-}
-
-// handleGoogleFetchURL fetches a URL's readable text content and records grounding.
-func (a *App) handleGoogleFetchURL(ctx context.Context, tc proxy.ToolCall) string {
-	var args struct {
-		URL      string `json:"url"`
-		MaxChars int    `json:"max_chars"`
-	}
-	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
-	}
-	result := wtools.GoogleFetchURL(args.URL, args.MaxChars)
-	if !strings.HasPrefix(result, "ERROR:") {
-		label := Truncate(args.URL, 79)
-		a.addExternalGrounding(proxy.GroundingEntry{Type: "web", Label: label})
-	}
-	return result
-}
-
 // handleDeleteFile deletes a file after confirmation and path confinement.
 func (a *App) handleDeleteFile(ctx context.Context, tc proxy.ToolCall) string {
 	var args struct {

@@ -99,9 +99,26 @@ func clientsNote(e lsEntry) string {
 // nothing serves it — "stopped" (`hisn stop`), "crashed" (the supervisor died),
 // or v1's "stale". "creating" and "stopping" are TRANSITIONAL, not ended: such a
 // session may still come up or still hold its processes, and is never treated
-// as dead.
+// as dead. Unknown state words (a state Wakil does not recognise, e.g. a
+// future hisn version's word) are warned about and treated as transitional:
+// they are the same "not provably over" shape as creating/stopping, so the
+// session gets the existing ready timeout instead of an instant failure.
 func (e lsEntry) Ended() bool {
-	return e.State == "stopped" || e.State == "crashed" || e.State == "stale"
+	if e.State == "stopped" || e.State == "crashed" || e.State == "stale" {
+		return true
+	}
+	return false
+}
+
+// unknownState reports whether the state word is one Wakil does not
+// recognise. Known states are live/running, stale, stopped, crashed,
+// creating and stopping.
+func (e lsEntry) unknownState() bool {
+	switch e.State {
+	case "live", "running", "stale", "stopped", "crashed", "creating", "stopping":
+		return false
+	}
+	return true
 }
 
 // heldDesc names how a session that is not ours holds an id or a name: "LIVE"
@@ -720,6 +737,11 @@ func (b *Backend) ready(ctx context.Context, id, name string) (bool, string) {
 	switch {
 	case !ok:
 		return false, "hisn ls reports the session missing"
+	case ent.unknownState():
+		// An unrecognised state word from a newer hisn： warn and treat the
+		// session as transitional — the existing ready timeout applies, so a
+		// future word can't turn this into an instant failure.
+		return false, fmt.Sprintf("hisn ls reports an unknown session state %q — treating as transitional (not yet live)", ent.rawState())
 	case !ent.Live():
 		return false, fmt.Sprintf("hisn ls reports the session %s", ent.rawState())
 	case name != "" && ent.Name != name:

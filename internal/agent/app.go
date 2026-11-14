@@ -1947,6 +1947,21 @@ func (a *App) buildPreamble(today string) string {
 		parts = append(parts, agentsMD)
 		a.touchedExternal.Store(true)
 		a.recordTaintReason("agentsmd", "AGENTS.md")
+		// One line at session start naming each AGENTS.md file the system
+		// prompt just loaded, and whether it was truncated (agentsmd.go
+		// marks the header "(truncated)" per section; collect those same
+		// labels here for the console receipt).
+		var loaded []string
+		for _, line := range strings.Split(agentsMD, "\n") {
+			if strings.HasPrefix(line, "### AGENTS.md") {
+				loaded = append(loaded, line)
+			}
+		}
+		if len(loaded) > 0 && a.Out != nil {
+			loadedText := strings.Join(loaded, "; ")
+			loadedText = strings.ReplaceAll(loadedText, "### ", "")
+			fmt.Fprintf(a.Out, "· AGENTS.md loaded into the system prompt: %s\n", loadedText)
+		}
 	}
 	parts = append(parts, date)
 	if cwd != "" {
@@ -2535,9 +2550,7 @@ func (a *App) buildSubagentTools() []proxy.Tool {
 	if a.Cfg.SearXngURL != "" {
 		t = append(t, wtools.SearxngTools()...)
 	}
-	if a.Cfg.GoogleAPIKey != "" && a.Cfg.GoogleCX != "" {
-		t = append(t, wtools.GoogleTools()...)
-	}
+
 	// LSP — only if the parent has it enabled.
 	if a.Cfg.LSPEnabled {
 		t = append(t, lsp.LSPTools(cwd)...)
@@ -3107,10 +3120,8 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleSearxngSearch(ctx, tc))
 	case "searxng_url_read":
 		return stringToToolResult(a.handleSearxngURLRead(ctx, tc))
-	case "google_search":
-		return stringToToolResult(a.handleGoogleSearch(ctx, tc))
-	case "google_fetch_url":
-		return stringToToolResult(a.handleGoogleFetchURL(ctx, tc))
+	case "google_search", "google_fetch_url":
+		return stringToToolResult("ERROR: the Google search tools were removed in 0.8.3")
 	case "run_background":
 		return stringToToolResult(a.handleRunBackground(ctx, tc))
 	case "check_pending":

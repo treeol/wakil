@@ -15,10 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`backend_max_retries: 0` now really means no retries.** It restores the field's documented contract (`BackendMaxRetries int // 0 disables retries`): the retry budget derivation turned a 0 into the default of 3. `DefaultConfig` supplies 3, so configs that load normally are unaffected.
 - **The tools are no longer offered when only an Anthropic key is configured.** The direct Anthropic path was removed in 0.8.0 and every Mashūra call needs the OpenRouter key — but v0.8.1 and v0.8.2 advertised the tools for legacy `oracle_enabled: true` configs carrying only an Anthropic key, and those tools could not run. They now read not-offered and not-available, for legacy configs and for the `mashura` block alike. The Mashūra tool gate is now one predicate used both for the tool list and for the call (`mashuraOffered`), so "offered" always equals "available when called".
 - **Automatic Mashūra rounds printed by their real origin** (see the matching entry under Changed behaviour: Injected rounds are labelled automatic).
+- **Mashūra timeout default is now idle+total.** When no timeout is set, the watchdog uses the idle timeout (120 s without data) with a 30-minute total cap instead of a flat 300 s total cap. An explicit number still means a total cap. The `oracle_timeout_seconds` doc and ✓ default are updated to match.
 
 ### Changed behaviour
 
 - **Context fallback unified at 128000 tokens.** The config default for `context_tokens_fallback` was 131072 while the counsel fallback was 128000; both now use 128000. Budgets derived from the fallback shrink by 3072 tokens for sessions whose backend fetch failed; sessions with a resolved limit are unaffected.
+- **Google search tools removed.** `google_search` and `google_fetch_url`, their config keys (`google_api_key`, `google_cx`) and their docs are gone. A config that still carries the keys loads with one notice. SearXNG serves the same role.
 
 - **Automatic Mashūra rounds respect egress consent.** Sessions whose main
   backend is not OpenRouter ask before the first panel call sends to

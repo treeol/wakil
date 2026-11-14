@@ -27,7 +27,7 @@ func TestIsStagingTool(t *testing.T) {
 			t.Errorf("IsStagingTool(%q) = false, want true", name)
 		}
 	}
-	for _, name := range []string{"", "staging", "memory_put", "google_search", "read_file"} {
+	for _, name := range []string{"", "staging", "memory_put", "read_file"} {
 		if IsStagingTool(name) {
 			t.Errorf("IsStagingTool(%q) = true, want false", name)
 		}

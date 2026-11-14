@@ -169,7 +169,7 @@ func TestDedupAllowlistAndStateChangingClassification(t *testing.T) {
 		"run_shell", "run_background", "write_file", "write_binary_file",
 		"edit_file", "delete_file", "move_file", "mashura__review",
 		"dispatch_subagent", "memory_put", "memory_get", "staging_put",
-		"lsp_definition", "browser_navigate", "google_search", "searxng_search",
+		"lsp_definition", "browser_navigate", "searxng_search",
 		"math_eval", "unknown_tool", "trello__get_boards",
 	}
 	for _, name := range reject {

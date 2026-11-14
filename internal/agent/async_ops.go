@@ -86,14 +86,12 @@ const (
 	// with build verification, but finite so a lost child doesn't run forever.
 	defaultSubagentSyncTimeoutSeconds = 600
 
-	// defaultMashuraTimeoutSeconds is the fallback Mashūra async-op timeout
-	// when OracleTimeoutSeconds is unset (DefaultConfig sets 300). An explicit
-	// 0 selects the documented idle+total semantics: the watchdog uses the
-	// idle timeout (last byte) with a 30-minute total cap, so a slow but
-	// steadily streaming reply is not cut at 300 seconds while a silent
-	// connection is. The watchdog and the worker's cooperative context both
-	// read mashuraTimeout(), so the timeout can never be "no deadline" (that
-	// would let a hung panel spin the tab + leak the slot).
+	// defaultMashuraTimeoutSeconds is kept for the explicit-0 probe path and
+	// as the documented fallback when OracleTimeoutSeconds is positive and
+	// mis-typed; the effective unset default is now idle+total (see
+	// mashuraTimeout). An explicit 0 also selects the documented idle+total
+	// semantics: the watchdog uses the idle timeout (last byte) with a
+	// 30-minute total cap.
 	defaultMashuraTimeoutSeconds = 300
 
 	// mashuraIdleTotalCap is the total cap for the explicit-0 timeout: an
@@ -440,10 +438,9 @@ func (a *App) mashuraTimeout() time.Duration {
 	if a.Cfg.OracleTimeoutSeconds > 0 {
 		return time.Duration(a.Cfg.OracleTimeoutSeconds) * time.Second
 	}
-	if a.mashuraTimeoutExplicitZero() {
-		return mashuraIdleTotalCap
-	}
-	return time.Duration(defaultMashuraTimeoutSeconds) * time.Second
+	// Unset (0 without the explicit-zero flag — the DefaultConfig state)
+	// uses the idle+total semantics, as does an explicit 0.
+	return mashuraIdleTotalCap
 }
 
 // mashuraWatchdogTimeout returns the watchdog terminalization deadline.
@@ -476,7 +473,9 @@ func (a *App) mashuraIdleTimeout() time.Duration {
 
 // mashuraTimeoutExplicitZero reports whether the config explicitly set
 // oracle_timeout_seconds to 0 (idle+total semantics) rather than leaving it
-// at the DefaultConfig value of 300. Set in LoadConfig (config side).
+// at the DefaultConfig value. Unset and explicit 0 share the same
+// idle+total semantics since the 0.8.3 default change; the flag remains so
+// /mashura timeout bookkeeping can distinguish the two.
 func (a *App) mashuraTimeoutExplicitZero() bool {
 	return a.Cfg.OracleTimeoutSeconds == 0 && a.Cfg.OracleTimeoutExplicitZero
 }

@@ -157,8 +157,6 @@
   "_comment_search": "Native web search. SearXNG (self-hosted) or Google Custom Search. Both built-in — no external binaries.",
 
   "searxng_url": "",
-  "google_api_key": "",
-  "google_cx": "",
 
   "_comment_context": "Context window management. Absolute byte limits (fallback) and relative fractions (override when n_ctx is known). tool_result_cap limits per-result bytes kept in context; turn_tool_budget is the per-turn cumulative budget.",
 

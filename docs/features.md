@@ -11,7 +11,7 @@ file or the matching flags/env vars (see [Configuration](configuration.md)).
 | Headless browser | `browser_enabled` | [↓](#headless-browser) |
 | Counsel (Mashūra) | `mashura.level` | [↓](#counsel-mashūra) |
 | Data policy (`/zdr`, `/region`) | `zdr`, `openrouter_region` | [↓](#data-policy) |
-| Web search | `searxng_url` / `google_api_key` | [↓](#web-search) |
+| Web search | `searxng_url` | [↓](#web-search) |
 | Cost sidebar | `costs` | [↓](#cost-sidebar) |
 | Memory and staging | built-in | [↓](#memory-and-staging) |
 | `/plan` workflow | built-in | [tui.md](tui.md#plan-workflow) |
@@ -208,13 +208,15 @@ is ignored, Mashūra uses the configured backend*). Configured
 
 ## Web search
 
-Two native options, both built directly into wakil — no external binaries, no
+One native option, built directly into wakil — no external binaries, no
 MCP config.
 
 - **SearXNG** — set `searxng_url` *(or `--searxng-url`)* for `searxng_search`
   + `searxng_url_read`.
-- **Google** — set `google_api_key` and `google_cx` *(or `GOOGLE_API_KEY` /
-  `GOOGLE_CX`)* for `google_search` + `google_fetch_url`.
+
+The Google Custom Search tools (`google_search`, `google_fetch_url`) were
+removed in 0.8.3; a config that still carries `google_api_key` /
+`google_cx` loads with one notice.
 
 ## Cost sidebar
 

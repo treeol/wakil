@@ -1,7 +1,7 @@
 package tools
 
 // schema.go contains shared JSON schema property builders used by all tool
-// definition functions (DefaultTools, DiscoveryTools, EditTools, GoogleTools,
+// definition functions (DefaultTools, DiscoveryTools, EditTools,
 // SearxngTools). Previously each function redefined these closures inline,
 // leading to drift (e.g. google.go's obj always emitted "required" while
 // tools.go's didn't).

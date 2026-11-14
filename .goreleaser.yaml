@@ -103,6 +103,7 @@ release:
     - glob: ./config.quickstart.json
 
 changelog:
+  skip: false
   sort: asc
   use: git
   groups:

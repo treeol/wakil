@@ -37,10 +37,8 @@ var outboundAllowlist = map[string]string{
 	"internal/proxy/client.go":    "the single transport (main loop Stream)",
 	"internal/proxy/transport.go": "the single transport (Exec)",
 	// Web search / fetch tools: the search query / fetched URL are tool args
-	// (not model prompts or session transcripts). google.go sends the Google
-	// API key as a query param (its own key, not a model-host key); searxng.go
-	// has no key and no model host.
-	"internal/tools/google.go":  "google_search (Google API key in query, model-supplied query) + google_fetch_url (model-supplied URL, no key) — search, not model traffic",
+	// (not model prompts or session transcripts). searxng.go has no key and
+	// no model host.
 	"internal/tools/searxng.go": "searxng_search (model-supplied query, no key) + searxng_url_read (model-supplied URL, no key) — search, not model traffic",
 	// MCP server transport (the SDK dials the user's configured MCP servers).
 	// Host: the user's configured MCP server URL. Sends MCP JSON-RPC session

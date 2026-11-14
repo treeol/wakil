@@ -492,7 +492,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, func() Msg {
 			ok, err := app.Compact(context.Background(), app.summarizeFn(), true)
 			if err != nil {
-				return SysNoteMsg{Text: "compact: " + err.Error()}
+				// A failed /compact (e.g. history summary failure) will be
+				// retried at the next /compact — name it.
+				return SysNoteMsg{Text: "compact: " + err.Error() + "\nnext: try again with /compact in the next turn"}
 			}
 			if !ok {
 				return SysNoteMsg{Text: "nothing to compact (transcript fits within keep_bytes window)"}
@@ -593,7 +595,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			if workflowActive {
 				results, err := app.rememberSearchRaw(ctx, query, originWorkspace, originChatID)
 				if err != nil {
-					return SysNoteMsg{Text: "remember: " + err.Error()}
+					return SysNoteMsg{Text: "remember: " + err.Error() + "\nnext: try again with /remember in the next turn"}
 				}
 				if len(results) == 0 {
 					return SysNoteMsg{Text: fmt.Sprintf("no prior sessions matched %q (indexed sessions are searchable once their transcript is saved)", query)}
@@ -602,7 +604,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			}
 			results, err := app.rememberSearchRaw(ctx, query, originWorkspace, originChatID)
 			if err != nil {
-				return SysNoteMsg{Text: "remember: " + err.Error()}
+				return SysNoteMsg{Text: "remember: " + err.Error() + "\nnext: try again with /remember in the next turn"}
 			}
 			if len(results) == 0 {
 				return SysNoteMsg{Text: fmt.Sprintf("no prior sessions matched %q (indexed sessions are searchable once their transcript is saved)", query)}
@@ -704,7 +706,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			return true, false, func() Msg {
 				sessions, hidden, err := ListSessionsScoped(scope)
 				if err != nil {
-					return SysNoteMsg{Text: "resume: " + err.Error()}
+					return SysNoteMsg{Text: "resume: " + err.Error() + "\nnext: run /resume again"}
 				}
 				return OpenResumePickerMsg{Sessions: sessions, Scope: scope, Hidden: hidden}
 			}
@@ -712,7 +714,7 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		return true, false, func() Msg {
 			s, err := LoadSession(arg)
 			if err != nil {
-				return SysNoteMsg{Text: "resume: " + err.Error()}
+				return SysNoteMsg{Text: "resume: " + err.Error() + "\nnext: run /resume again"}
 			}
 			return ResumeSessionMsg(app, s)
 		}
@@ -1643,9 +1645,9 @@ func HandlePlanCommand(fields []string, app *App) (handled, quit bool, cmd Cmd) 
 
 // mcpStatus builds the /mcp listing string.
 func mcpStatus(args []string, app *App) string {
-	hasSomething := (app.MCP != nil && len(app.MCP.Servers()) > 0) || app.Cfg.SearXngURL != "" || (app.Cfg.GoogleAPIKey != "" && app.Cfg.GoogleCX != "")
+	hasSomething := (app.MCP != nil && len(app.MCP.Servers()) > 0) || app.Cfg.SearXngURL != ""
 	if !hasSomething {
-		return "no tool servers configured (add mcp_servers, searxng_url, or google_api_key+google_cx to config)"
+		return "no tool servers configured (add mcp_servers or searxng_url to config)"
 	}
 
 	var sb strings.Builder
@@ -1670,12 +1672,6 @@ func mcpStatus(args []string, app *App) string {
 	if app.Cfg.SearXngURL != "" {
 		sb.WriteString("✓ searxng [connected] (native)\n")
 		for _, t := range tools.SearxngTools() {
-			sb.WriteString(fmt.Sprintf("    • %s: %s\n", t.Function.Name, Truncate(t.Function.Description, 70)))
-		}
-	}
-	if app.Cfg.GoogleAPIKey != "" && app.Cfg.GoogleCX != "" {
-		sb.WriteString("✓ google [connected] (native)\n")
-		for _, t := range tools.GoogleTools() {
 			sb.WriteString(fmt.Sprintf("    • %s: %s\n", t.Function.Name, Truncate(t.Function.Description, 70)))
 		}
 	}
