@@ -2114,14 +2114,35 @@ func (a *App) ensurePreamble() {
 	text := a.buildPreamble(today)
 	a.convMu.Lock()
 	defer a.convMu.Unlock()
-	if a.preambleDay != "" && len(a.Conv) > 0 && a.Conv[0].Role == "system" {
-		// Same session, day rolled over — refresh the existing slot in place.
-		a.Conv[0].Content = StrPtr(text)
-	} else if a.preambleDay == "" && len(a.Conv) > 0 && a.Conv[0].Role == "system" {
-		// Resumed session: Conv[0] is the stored preamble. Refresh it in
-		// place under the new text (e.g. a session saved before the pruning
-		// section moved first must not keep sending the old text beneath the
-		// new one as a second system message).
+	// A pinned first system message that this process has not yet adopted as
+	// its preamble (preambleDay == "") is a foreign seed — the stop-mode
+	// handoff context seeded by HandoffConversation on a fresh App.
+	// Overwriting it in place would drop the verbatim task text it carries;
+	// prepend the preamble instead, preserving the seed at index 1. The same
+	// guard applies when the first message is a handoff envelope, so a
+	// day-rollover refresh can never replace it either. Resumed sessions
+	// (preambleDay == "", unpinned Conv[0]) refresh in place as before, and
+	// day-rollover refreshes our owned preamble slot in place.
+	firstSystem := len(a.Conv) > 0 && a.Conv[0].Role == "system"
+	firstPinned := firstSystem && a.Conv[0].Pinned
+	firstContent := ""
+	if firstSystem {
+		firstContent = DerefStr(a.Conv[0].Content)
+	}
+	// Foreign pinned seed: a handoff envelope, or any pinned first system
+	// message this process has not adopted as its preamble (buildPreamble's
+	// output always carries the date line; the owned preamble does not get
+	// prepended again on /prompt switches that reset preambleDay).
+	isHandoffSeed := strings.HasPrefix(firstContent, handoffBlockHeader)
+	isOwnedPreamble := strings.Contains(firstContent, "Current date:")
+	if firstPinned && (isHandoffSeed || (a.preambleDay == "" && !isOwnedPreamble)) {
+		// Pinned handoff seed — insert the preamble ahead of it.
+		a.Conv = append([]proxy.Message{{Role: "system", Content: StrPtr(text), Pinned: true}}, a.Conv...)
+	} else if firstSystem {
+		// Same session, day rolled over, or resumed session: Conv[0] is the
+		// stored preamble. Refresh it in place under the new text (e.g. a
+		// session saved before the pruning section moved first must not keep
+		// sending the old text beneath the new one as a second system message).
 		a.Conv[0].Content = StrPtr(text)
 	} else {
 		// First turn this session, or Conv was just reset (NewConversation) —

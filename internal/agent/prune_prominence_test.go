@@ -119,6 +119,46 @@ func TestResumedSessionPreambleRefreshedInPlace(t *testing.T) {
 	}
 }
 
+// TestPinnedHandoffSeedSurvivesEnsurePreamble verifies the stop-mode handoff
+// fix: HandoffConversation seeds Conv[0] with a pinned system handoff context
+// on a fresh App (preambleDay == ""). ensurePreamble must prepend the preamble
+// instead of overwriting that seed, preserving it at index 1, and a later
+// day-rollover refresh must not replace it either.
+func TestPinnedHandoffSeedSurvivesEnsurePreamble(t *testing.T) {
+	app := pruneTestApp()
+	app.InjectDate = true
+	handoff := handoffBlockHeader + "Please write a summary of this task into summary.txt in one line." + handoffBlockEnd
+	app.Conv = []proxy.Message{{Role: "system", Content: StrPtr(handoff), Pinned: true}}
+	app.ensurePreamble()
+	if len(app.Conv) != 2 {
+		t.Fatalf("Conv has %d messages, want 2 (preamble + preserved handoff)", len(app.Conv))
+	}
+	if app.Conv[0].Role != "system" || !strings.Contains(DerefStr(app.Conv[0].Content), "Current date:") {
+		t.Errorf("Conv[0] should be the preamble, got role=%q %.80q", app.Conv[0].Role, DerefStr(app.Conv[0].Content))
+	}
+	if got := DerefStr(app.Conv[1].Content); got != handoff {
+		t.Errorf("handoff seed not preserved at index 1: %.120q", got)
+	}
+	if !app.Conv[1].Pinned {
+		t.Error("handoff seed lost Pinned")
+	}
+	// Day-rollover refresh (stale preambleDay) must refresh Conv[0] in place,
+	// never replace the pinned handoff at index 1.
+	app.preambleDay = "Monday, 1 January 2000"
+	app.ensurePreamble()
+	if len(app.Conv) != 2 || DerefStr(app.Conv[1].Content) != handoff {
+		t.Fatalf("day refresh disturbed handoff: len=%d Conv=%+v", len(app.Conv), app.Conv)
+	}
+	// And with the handoff alone at Conv[0] under a stale day, the refresh
+	// branch must prepend, not overwrite.
+	app.Conv = []proxy.Message{{Role: "system", Content: StrPtr(handoff), Pinned: true}}
+	app.preambleDay = "Monday, 1 January 2000"
+	app.ensurePreamble()
+	if len(app.Conv) != 2 || DerefStr(app.Conv[1].Content) != handoff {
+		t.Fatalf("stale-day refresh replaced pinned handoff: len=%d Conv=%+v", len(app.Conv), app.Conv)
+	}
+}
+
 // The three texts carry no discouraging sentence and no contradictions.
 func TestPruneProminenceTexts(t *testing.T) {
 	app := preambleTestApp()
