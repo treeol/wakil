@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Session grants no longer fail the turn.** Pressing `g` at a tool approval now records a valid grant event and runs the tool, instead of reporting an invalid approval outcome. Sessions containing grant events can be replayed and resumed.
+- **One automatic Mashūra round per struggle target.** Repeating a write and repeatedly rewriting the same file now share one symptom identity; repeated failures and repeats of the same command do too. The collapse notice includes the number of automatic rounds started by Wakil.
+- **Mid-turn collapse preserves the task and recent work.** The task message stays unchanged, the checkpoint is a separate message, and recent complete tool-call/result pairs are retained up to 30 percent of the collapse ceiling. Immutable task and system content can still exceed that ceiling.
+- **Stop-mode handoff keeps its context on the first request.** Building the new session's preamble no longer overwrites the pinned handoff message containing the original task.
+
 - **Mashūra review budget counts panel spend once.** With `SessionBudgetUSD = 1.00`, calls of `$0.30` fired the stop once the session total reached the cap; before, it fired after two calls (0.60 < 1.00) because `BudgetState.shouldStop` added the session total (already panel-inclusive) to `BudgetState.spent` (the same calls again). The session total is now the single measure.
 
 - **Retry classification is now one rule: HTTP 408, 429, 529 and 5xx are retryable, for the main loop and for Mashūra alike.** The two predicates disagreed (the main loop retried 408/529 where Mashūra failed once) — see `proxy.IsRetryableStatus`. Interactive sessions retry too (previously only auto/headless), each attempt prints the reason and the wait, and `Retry-After` is honoured up to 60 seconds.
